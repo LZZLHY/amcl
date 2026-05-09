@@ -1,0 +1,17 @@
+# OS / IDE artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Editor backups
+*~
+*.swp
+*.swo
+
+# Logs (this repo is docs-only — no logs should appear, but defensive)
+*.log
+
+# Local env (just in case)
+.env
+.env.local
