@@ -1,131 +1,121 @@
 # AMCL — Axe Minecraft Launcher for HarmonyOS NEXT
 
-> Public design specs & technical documentation for AMCL, an open-source third-party Minecraft Java Edition launcher targeting **HarmonyOS NEXT** (Huawei mobile / tablet devices).
+[简体中文](./README.zh-CN.md) · **English**
 
-[English](#english) · [中文](#中文)
+> A third-party Minecraft Java Edition launcher targeting HarmonyOS NEXT (Huawei mobile / tablet devices).
 
----
+## 1. Project Introduction
 
-<a id="english"></a>
+AMCL (**A**xe **M**inecraft **C**lient **L**auncher) is an individual-developer project that runs the unmodified Minecraft Java Edition client on HarmonyOS NEXT. It is built directly on the HarmonyOS NEXT C/C++ SDK and the ArkTS UI framework, embedding:
 
-## What this repository is
+- A patched OpenJDK HotSpot runtime cross-compiled for HarmonyOS NEXT (musl, aarch64)
+- A GLFW → XComponent compatibility shim
+- A MobileGlues GL → GLES 3.2 translation layer running on Maleoon GPUs
+- An OpenAL Soft audio stack backed by OHAudio
+- A custom ELF loader that bypasses HarmonyOS' `MAP_XPM` (no-write-execute) signing constraint
 
-This repository hosts the **technical design documents and project specifications** for AMCL. The application source code is currently kept in a private repository while the project is in pre-1.0 active development; it will be open-sourced after the first stable release. Documents here are intended for:
+The project is in **pre-1.0 active development**. This `amcl-public` repository hosts the **public documentation and technical specifications** only — the full application source code remains in a private repository and will be open-sourced **only after the project reaches a mature stable release**.
 
-- Reviewers evaluating the project (e.g. Microsoft Minecraft API access review)
-- Future contributors looking to understand the architecture
-- Developers building similar HarmonyOS-based runtimes for legacy JVM workloads
+## 2. Scope of Applicability
 
-## Project status
+| Aspect | Supported scope |
+|---|---|
+| Operating system | HarmonyOS NEXT, API level 20 (SDK 6.0.0) or later |
+| Devices | Huawei phones and tablets with a Maleoon-family GPU (verified on HUAWEI Mate 70) |
+| Game | Minecraft Java Edition only (no Bedrock support and none planned) |
+| Account | Microsoft genuine login (OAuth 2.0 Auth Code + PKCE; Xbox Live → XSTS → Mojang); offline accounts for development testing |
+| Network | Direct Mojang servers; BMCLAPI mirror with user consent |
 
-Minecraft Java Edition **1.20.4** has been launched and rendered successfully on real hardware:
+AMCL is intended for end-users who own a legal Minecraft Java Edition account. It does **not** redistribute the Minecraft client `.jar`; all game files are downloaded at runtime from official servers.
 
-| Subsystem | Status | Implementation |
+## 3. Adaptation Progress
+
+### 3.1 Mod loaders
+
+| Loader | Status |
+|---|---|
+| Vanilla | ✅ Supported |
+| Fabric | ✅ Supported |
+| Forge | ✅ Supported |
+| NeoForge | ❌ Not yet — data layer only (mod browsing works, install service pending) |
+| Quilt | ❌ Not yet |
+| OptiFine | ❌ Not yet |
+
+### 3.2 JDK runtimes
+
+AMCL ships two patched OpenJDK builds, cross-compiled in Docker for HarmonyOS NEXT (musl, aarch64). Runtime artifacts are downloaded on first launch from a dedicated GitHub Releases:
+
+**JDK repository**: <https://github.com/LZZLHY/mc-ohos-resources/releases>
+
+| Runtime | Release tag | Asset | Status |
+|---|---|---|---|
+| OpenJDK 17 | `v17.0.13-ohos-4` | `jdk17-ohos-full-v4.zip` (≈109 MB) | ✅ Stable |
+| OpenJDK 21 | `v21.0.5-ohos-6` | `jdk21-ohos-full.zip` (≈113 MB) | ⚠️ Experimental |
+
+### 3.3 Minecraft version coverage
+
+The MC version → required JDK mapping follows Mojang's official `java-runtime` selection (see the [Minecraft Wiki](https://minecraft.wiki/w/Tutorial:Update_Java)):
+
+| MC version range | Required JDK | AMCL adaptation status |
 |---|---|---|
-| Rendering | Working | MobileGlues (GL → GLES translation) on Maleoon 910 GPU |
-| Audio | Working | OpenAL Soft + OHAudio backend |
-| Input | Working | XComponent `DispatchTouchEvent` + on-screen virtual keys |
-| JVM | Working | OpenJDK 17.0.13-internal (HotSpot, 4 OHOS patches) |
-| ELF loader | Working | Custom loader bypassing HarmonyOS MAP_XPM, JDK `.so` files served from `filesDir/jdk/<ver>/` |
-| Microsoft sign-in | M2 in progress | OAuth 2.0 Authorization Code + PKCE; Xbox Live → XSTS → Mojang chain |
-| Account encryption | M2 in progress | HUKS AES-GCM-256 at-rest |
+| ≤ 1.12.2 | Java 8 + LWJGL 2.x | ❌ Not yet adapted |
+| 1.13 – 1.16.5 | Java 8 + LWJGL 3 | ❌ Not yet adapted |
+| 1.17 | Java 16 | ❌ Not yet adapted |
+| 1.18 – 1.20.4 | Java 17 | ✅ Adapted (verified on 1.20.4) |
+| 1.20.5 – 1.21.x | Java 21 | ✅ Adapted (experimental) |
+| 26.1 and newer | Java 25 | ❌ Not yet adapted |
 
-**Test device**: HUAWEI Mate 70 · HarmonyOS NEXT API 20 · GPU: Maleoon 910 (OpenGL ES 3.2).
+Notes:
 
-## Documentation
+- Beginning with Minecraft Java Edition **26.1**, the Mojang launcher bundles Java SE 25.
+- AMCL routes a chosen MC version to the appropriate JDK automatically (`autoSelectVersion`); manual override is available in Settings.
 
-Start at [`docs/README.md`](docs/README.md) — that is the canonical document index.
+## 4. Future Outlook
 
-Highlight pages:
+Short-term (toward the first stable v1.0):
 
-- [`docs/architecture.md`](docs/architecture.md) — full architectural overview
-- [`docs/JDK_ADAPTATION_GUIDE.md`](docs/JDK_ADAPTATION_GUIDE.md) — OpenJDK 17 patches for OHOS, ELF loader, signal-chaining
-- [`docs/guides/genuine-login-and-account-system-plan.md`](docs/guides/genuine-login-and-account-system-plan.md) — Microsoft genuine login / Xbox Live / XSTS / Mojang chain plan
-- [`docs/guides/openjdk_ohos_build_guide.md`](docs/guides/openjdk_ohos_build_guide.md) — cross-compiling OpenJDK in Docker
-- [`docs/guides/download-system.md`](docs/guides/download-system.md) — multi-mirror, multi-thread download engine
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and pending items
+- Cross-compile and integrate OpenJDK 8 to unlock the entire 1.0 – 1.16.5 catalogue (the largest body of legacy mods)
+- Cross-compile OpenJDK 16 for the 1.17 slot
+- Port LWJGL 2.x to HarmonyOS NEXT so pre-1.13 clients (still using LWJGL 2) can run
+- Implement the NeoForge install service (the data layer is already wired)
+- Add Quilt and OptiFine adapters
+- Cross-compile OpenJDK 25 for the 26.1+ slot once Mojang's snapshot cadence stabilises
 
-## Architecture (one-screen view)
+Long-term (parity with mature desktop launchers HMCL / PCL2):
 
-```
-Minecraft Java Edition (vanilla 1.20.4 jar, unmodified)
-        |
-     LWJGL 3.3.3
-        |
-+----------+------------+----------+
-|  GLFW    | MobileGlues| OpenAL   |
-|  Compat  | (GL->GLES) | Soft     |
-+----------+------------+----------+
-|XComponent|  GLES 3.2  | OHAudio  |
-|  + EGL   | (Maleoon)  |          |
-+----------+------------+----------+
-|         HarmonyOS NEXT API 20    |
-+-----------------------------------+
-|   OpenJDK 17 (HotSpot, 4 OHOS    |
-|   patches, custom ELF loader)    |
-+-----------------------------------+
-```
+- Multi-account vault with HUKS AES-GCM-256 at-rest encryption
+- Skin & cape management (preview, upload, change)
+- Modrinth + CurseForge integrated mod browsing and one-click install
+- Resource pack / shader pack / world / data pack one-click install
+- Full version isolation (per-version `.minecraft` directory and per-version JVM args)
+- Custom virtual key layouts with cloud sync
+- Crash reporter with automatic JVM thread dump and log harvesting
+- Background download manager with multi-mirror, multi-thread, resumable downloads
 
-## Compliance & legal notice
+## 5. Known Issues
 
-AMCL is an independent third-party launcher developed by individual contributors. It has **no affiliation, sponsorship, or endorsement** from Mojang Studios, Microsoft Corporation, or Xbox.
+The first public preview (`v1.0.0-alpha.1`, this release) carries the following limitations:
 
-- "Minecraft" is a trademark of Mojang Studios.
-- AMCL only launches Minecraft Java Edition installations the end-user has legally purchased through their own Microsoft account.
-- AMCL does **not** redistribute Minecraft client `.jar` files. Game files are downloaded at runtime from official Mojang servers (or BMCLAPI mirror, with user consent).
-- User credentials (Microsoft `access_token` / `refresh_token`, Mojang bearer tokens) are stored locally with HUKS AES-GCM-256 at-rest encryption and never leave the device.
-- Adheres to the [Minecraft Java EULA](https://www.minecraft.net/en-us/eula).
+- **HAP is unsigned.** The published HAP is produced by DevEco Studio's default unsigned profile. Real-device installation requires either (a) joining the Huawei Developer programme and self-signing, or (b) waiting for a signed redistribution we will publish once an organisational signing certificate is approved.
+- **HarmonyOS NEXT API 20 only.** Earlier ROMs (API ≤ 19) will reject the bundle.
+- **The `ALLOW_WRITABLE_CODE_MEMORY` ACL is required** for the JIT path of the patched HotSpot to work. Without it, the JDK falls back to the interpreter and the game runs at a fraction of expected FPS.
+- **Microsoft genuine login & HUKS credential encryption are in milestone M2 and only partially complete.** The current build allows offline accounts only.
+- **The OpenJDK 21 path is flagged experimental.** Real-headless AWT (our workaround for HarmonyOS NEXT's missing X11/Wayland) is stable on the tested code paths but has not received full coverage; mods that touch `java.awt` may still throw.
+- **GPU support is currently limited to the Maleoon 910 family.** Other Huawei chipsets are likely to work but have not been verified.
+- **MC version coverage is 1.18 – 1.21.x today.** Older and 26.1+ versions report a missing-runtime error at launch.
 
-## Contact
+## 6. Releases & Downloads
 
-For Microsoft Minecraft API approval review or other inquiries, please open an issue in this repository.
+Latest release: **v1.0.0-alpha.1** (pre-release).
 
----
+The HAP file is published as a GitHub release asset of this repository — see the [Releases page](https://github.com/LZZLHY/amcl/releases) for the download.
 
-<a id="中文"></a>
+## 7. Source Code Policy
 
-## 仓库说明（中文）
+Only this `amcl-public` repository (documentation and specifications) is open source. The application source code is kept in a private repository while the project is in pre-1.0 active development and **will be open-sourced after the first stable release**. Until then, this repository is the canonical public touchpoint for reviewers, future contributors, and developers building similar HarmonyOS-based JVM runtimes.
 
-本仓库存放 AMCL 项目的**技术设计文档与规范**。项目源代码当前位于私有仓库，待 v1.0 稳定版发布后再行开源。文档面向：
+## License
 
-- 评审方（如 Microsoft Minecraft API 访问审核）
-- 未来想了解架构的潜在贡献者
-- 在 HarmonyOS 上做类似 JVM 移植的开发者
+Documentation in this repository is released under the [MIT License](./LICENSE).
 
-## 项目状态
-
-Minecraft Java Edition **1.20.4** 已在真机成功启动并渲染：
-
-| 子系统 | 状态 | 实现 |
-|---|---|---|
-| 渲染 | ✅ 工作 | MobileGlues GL→GLES 翻译层 + Maleoon 910 GPU |
-| 音频 | ✅ 工作 | OpenAL Soft + OHAudio 后端 |
-| 输入 | ✅ 工作 | XComponent `DispatchTouchEvent` + 虚拟按键 |
-| JVM | ✅ 工作 | OpenJDK 17.0.13-internal（HotSpot，4 个 OHOS patch）|
-| ELF 加载器 | ✅ 工作 | 自定义 loader 绕过 HarmonyOS MAP_XPM，从 `filesDir/jdk/<ver>/` 加载 .so |
-| 微软正版登录 | 🚧 M2 进行中 | OAuth 2.0 Auth Code + PKCE；Xbox Live → XSTS → Mojang 链路 |
-| 凭据加密 | 🚧 M2 进行中 | HUKS AES-GCM-256 at-rest |
-
-**测试设备**：HUAWEI Mate 70 · HarmonyOS NEXT API 20 · GPU: Maleoon 910 (OpenGL ES 3.2)
-
-## 文档导航
-
-请从 [`docs/README.md`](docs/README.md) 入口阅读。
-
-重点文档：
-
-- [`docs/architecture.md`](docs/architecture.md) — 架构全景
-- [`docs/JDK_ADAPTATION_GUIDE.md`](docs/JDK_ADAPTATION_GUIDE.md) — JDK 适配（patch、信号链、ELF loader）
-- [`docs/guides/genuine-login-and-account-system-plan.md`](docs/guides/genuine-login-and-account-system-plan.md) — 微软正版登录 + Xbox Live / XSTS / Mojang 链路设计
-- [`docs/guides/openjdk_ohos_build_guide.md`](docs/guides/openjdk_ohos_build_guide.md) — Docker 交叉编译 OpenJDK
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — 待办与里程碑
-
-## 合规与法务声明
-
-AMCL 是个人独立开发的第三方启动器，**与 Mojang Studios / Microsoft / Xbox 无关联、无授权、无背书**。
-
-- "Minecraft" 是 Mojang Studios 的商标
-- AMCL 仅用于启动**用户自有的正版** Minecraft Java 版（用户通过自己的 Microsoft 账户购买）
-- AMCL **不**分发 Minecraft 客户端 `.jar`；游戏文件在运行时从官方 Mojang 服务器（或 BMCLAPI 镜像，需用户同意）下载
-- 用户凭据（Microsoft `access_token` / `refresh_token`、Mojang bearer token）通过 HUKS AES-GCM-256 本地加密存储，不上传任何第三方服务器
-- 遵守 [Minecraft Java 版 EULA](https://www.minecraft.net/zh-hans/eula)
+"Minecraft" is a trademark of Mojang Studios. AMCL has **no affiliation, sponsorship, or endorsement** from Mojang Studios, Microsoft Corporation, or Xbox.
