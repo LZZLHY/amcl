@@ -1,0 +1,21 @@
+# GitHub Pages config for the amcl-public repo
+# (Pages source is currently set to: main / (root))
+
+title: AMCL
+description: Axe Minecraft Client Launcher for HarmonyOS NEXT
+theme: jekyll-theme-cayman
+
+# Pretty URLs so privacy-policy.md is reachable at /privacy-policy/
+# (the .html form keeps working too)
+permalink: pretty
+
+# Auto-rewrite relative .md links to .html on the rendered site
+relative_links:
+  enabled: true
+  collections: true
+
+# Files that are not part of the published site
+exclude:
+  - LICENSE
+  - .gitignore
+  - "*.txt"
