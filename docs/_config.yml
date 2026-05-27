@@ -1,0 +1,24 @@
+title: AMCL
+description: Axe Minecraft Client Launcher for HarmonyOS NEXT — Privacy Policy & Public Docs
+theme: jekyll-theme-cayman
+
+# Generated site lives under https://<user>.github.io/amcl/
+# (publish source is set in repo Settings -> Pages to "Deploy from a branch: main / /docs")
+
+# Enable pretty URLs so docs/privacy-policy.md is served as /privacy-policy.html
+permalink: pretty
+
+# Convert relative .md links to .html so cross-doc navigation works after build
+relative_links:
+  enabled: true
+  collections: true
+
+include:
+  - privacy-policy.md
+  - index.md
+
+exclude:
+  - README.md
+  - README.zh-CN.md
+  - LICENSE
+  - "*.txt"
