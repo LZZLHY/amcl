@@ -1,8 +1,8 @@
 {
-  "versionCode": 1000074,
+  "versionCode": 1000117,
   "versionName": "1.0.0-beta.2",
   "tag": "v1.0.0-beta.2",
   "url": "https://github.com/LZZLHY/amcl/releases/latest",
-  "notes": "1.0.0-beta.2\n- 修复：下载任务详情页进度不实时刷新（需退出重进），现在圆环 / 阶段 / 文件进度条都实时平滑更新",
+  "notes": "1.0.0-beta.2\n- 新增：模组检查更新 / 一键更新\n- 新增：模组·资源包·光影·数据包导入，存档导入导出\n- 新增：问题反馈 / 崩溃日志上传\n- 优化：游戏内输入框重构（可正常唤起输入法）、版本拖拽排序",
   "mandatory": false
 }
