@@ -1,8 +1,8 @@
 {
-  "versionCode": 1000177,
-  "versionName": "1.0.0-beta.3",
-  "tag": "v1.0.0-beta.3",
+  "versionCode": 1000323,
+  "versionName": "1.0.0-beta.4",
+  "tag": "v1.0.0-beta.4",
   "url": "https://github.com/LZZLHY/amcl/releases/latest",
-  "notes": "1.0.0-beta.3\n- 新增：1.16.5 及以下版本适配（渲染+输入+声音）\n- 新增：JDK 8 运行时 + 老 Forge（1.7.10/1.8.9/1.14.4/1.16.4）下载安装运行\n- 新增：版本文件夹——浏览/导入/导出/管理版本游戏文件\n- 优化：检查更新逻辑\n- 修复：依赖库下载、完整性校验误报、加载页全屏等\n- 提醒：低版本尚未完整回归测试，游玩或下载时若遇崩溃/失败请务必反馈！",
+  "notes": "1.0.0-beta.4\n- 新增：整合包一键安装（CurseForge/Modrinth 在线 + 本地导入 .mrpack/.zip）\n- 新增：模组中文名显示与中文搜索、双源(Modrinth/CF)按源下载、整合包加载器筛选\n- 修复：正常退出误判为异常退出、整合包版本/加载器识别错误\n- 提醒：重型整合包尚未完整回归测试，遇到崩溃/失败请务必反馈！",
   "mandatory": false
 }
