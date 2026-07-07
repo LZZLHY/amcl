@@ -7,7 +7,7 @@ permalink: /privacy-policy/
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>AMCL 隐私政策</title>
-<meta name="description" content="AMCL（Axe Minecraft Launcher）隐私政策 · 面向 HarmonyOS NEXT 的第三方 Minecraft Java 版启动器" />
+<meta name="description" content="AMCL 隐私政策 · 面向 HarmonyOS NEXT 的第三方开源游戏启动器" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%AA%93%3C/text%3E%3C/svg%3E" />
 <style>
   :root {
@@ -189,7 +189,7 @@ permalink: /privacy-policy/
 
 <header class="hero">
   <h1>隐私政策</h1>
-  <p class="lead">AMCL（Axe Minecraft Launcher）是面向 HarmonyOS NEXT 的第三方 Minecraft Java 版启动器。我们恪守「最小必要」原则，坦诚说明会与不会处理哪些信息。</p>
+  <p class="lead">AMCL 是面向 HarmonyOS NEXT 的第三方开源游戏启动器。我们恪守「最小必要」原则，坦诚说明会与不会处理哪些信息。</p>
   <div class="meta">
     <span class="chip"><span class="dot"></span>文档版本 <b>v1.1</b></span>
     <span class="chip">生效日期 <b>2026-05-27</b></span>
@@ -220,8 +220,8 @@ permalink: /privacy-policy/
 
   <section id="intro">
     <h2>引言</h2>
-    <p>欢迎使用 <strong>AMCL（Axe Minecraft Launcher）</strong>，以下简称「本应用」或「AMCL」。</p>
-    <p>AMCL 是面向 HarmonyOS NEXT 的第三方 Minecraft Java 版启动器，由独立开发者维护，全部代码与文档遵循开源协议（详见 <a href="https://github.com/LZZLHY/amcl" target="_blank" rel="noopener">GitHub 仓库</a>）。本应用与 Mojang Studios、Microsoft Corporation、Xbox、华为终端有限公司均无关联、无授权、无背书。</p>
+    <p>欢迎使用 <strong>AMCL</strong>，以下简称「本应用」或「AMCL」。</p>
+    <p>AMCL 是面向 HarmonyOS NEXT 的第三方开源游戏启动器，由独立开发者维护，全部代码与文档遵循开源协议（详见 <a href="https://github.com/LZZLHY/amcl" target="_blank" rel="noopener">GitHub 仓库</a>）。本应用与 Mojang Studios、Microsoft Corporation、Xbox、网易公司、华为终端有限公司均无关联、无授权、无背书；相关游戏名称及商标归各自权利人所有。</p>
     <p>我们深知个人信息对您的重要性，并恪守「最小必要」原则。本隐私政策旨在以清晰、坦诚的方式向您说明：AMCL 在您使用过程中<strong>会</strong>和<strong>不会</strong>处理哪些信息、为什么需要、如何保护、以及您拥有哪些权利。</p>
     <div class="callout">
       <span class="ct">重要提示</span>
@@ -234,12 +234,12 @@ permalink: /privacy-policy/
     <p>本政策仅适用于您在 HarmonyOS NEXT 设备上安装并使用的 AMCL 应用本身（包名 <code>com.amcl.launcher</code>）。</p>
     <p>本政策<strong>不适用于</strong>以下场景，相关数据处理由各自服务的隐私政策约束：</p>
     <ul class="clean">
-      <li>您通过 AMCL 启动的 <strong>Minecraft Java 版游戏本体</strong>（由 Mojang Studios 提供，<a href="https://www.minecraft.net/en-us/privacy" target="_blank" rel="noopener">Mojang 隐私政策</a>）；</li>
+      <li>您通过 AMCL 启动的 <strong>Java 版游戏本体</strong>（由 Mojang Studios 提供，<a href="https://www.minecraft.net/en-us/privacy" target="_blank" rel="noopener">Mojang 隐私政策</a>）；</li>
       <li>您通过 AMCL 接入的 <strong>微软账户登录服务</strong>（由 Microsoft 提供，<a href="https://privacy.microsoft.com/zh-cn/privacystatement" target="_blank" rel="noopener">Microsoft 隐私声明</a>）；</li>
       <li>您通过 AMCL 接入的 <strong>Mojang / Xbox Live 鉴权服务</strong>；</li>
       <li>您通过 AMCL 接入的 <strong>第三方皮肤站（authlib-injector）</strong>，其数据处理由该皮肤站运营方约束；</li>
       <li>您主动启用的 <strong>第三方下载镜像</strong>（如 BMCLAPI，由其各自维护方运营）；</li>
-      <li>您安装的任何 <strong>Minecraft 模组（mod）/ 资源包 / 光影包</strong>；</li>
+      <li>您安装的任何 <strong>游戏模组（mod）/ 资源包 / 光影包</strong>；</li>
       <li>您从 GitHub Release 下载的、由 AMCL 项目维护者发布的 <strong>OpenJDK 运行时资源包</strong>（其源代码与构建脚本同样开源，详见仓库 <code>docker/</code> 目录）。</li>
     </ul>
   </section>
@@ -271,11 +271,11 @@ permalink: /privacy-policy/
       <table>
         <thead><tr><th>信息类别</th><th>内容</th><th>存储位置</th><th>用途</th></tr></thead>
         <tbody>
-          <tr><td>微软账户凭据</td><td>OAuth 2.0 access token、refresh token、Mojang access token、Xbox UserHash、Minecraft 玩家 UUID 与昵称</td><td>应用沙箱 <code>filesDir</code>，使用 HarmonyOS HUKS 加密保护（AES-GCM-256）</td><td>实现微软正版登录与游戏内身份鉴权</td></tr>
+          <tr><td>微软账户凭据</td><td>OAuth 2.0 access token、refresh token、Mojang access token、Xbox UserHash、游戏玩家 UUID 与昵称</td><td>应用沙箱 <code>filesDir</code>，使用 HarmonyOS HUKS 加密保护（AES-GCM-256）</td><td>实现微软正版登录与游戏内身份鉴权</td></tr>
           <tr><td>第三方皮肤站凭据</td><td>您自行输入的皮肤站账号与密码、access/client token、apiRoot、角色列表（authlib-injector 外置登录）</td><td>敏感字段经 HUKS 加密存于应用沙箱 <code>filesDir</code></td><td>实现第三方皮肤站登录与多角色切换</td></tr>
           <tr><td>离线账户信息</td><td>您自行输入的玩家昵称（仅本地）</td><td>应用沙箱 <code>filesDir</code></td><td>仅用于开发调试场景的离线启动</td></tr>
           <tr><td>启动器配置</td><td>已安装的 MC 版本列表、JVM 参数、虚拟按键布局、镜像源选择、UI 偏好</td><td>应用沙箱 <code>filesDir</code></td><td>保留您的启动偏好，下次启动时自动恢复</td></tr>
-          <tr><td>游戏文件</td><td>Minecraft 客户端 jar、资源、模组、存档、<code>options.txt</code> 等</td><td>应用沙箱 <code>filesDir/.minecraft/</code>（或您主动选择的公共下载目录）</td><td>启动并运行 Minecraft Java 版本身的需要</td></tr>
+          <tr><td>游戏文件</td><td>游戏客户端 jar、资源、模组、存档、<code>options.txt</code> 等</td><td>应用沙箱 <code>filesDir/.minecraft/</code>（或您主动选择的公共下载目录）</td><td>启动并运行 Java 版游戏本身的需要</td></tr>
           <tr><td>OpenJDK 运行时</td><td>从 GitHub Release 下载的 OpenJDK <code>.so</code> 库及配套数据</td><td>应用沙箱 <code>filesDir/jdk/&lt;version&gt;/</code></td><td>提供 Java 字节码执行环境</td></tr>
           <tr><td>运行日志</td><td><code>mc_output.log</code>、<code>mc_error.log</code>、AMCL 自身日志</td><td>应用沙箱 <code>filesDir</code></td><td>帮助您本地排查启动失败、崩溃等问题</td></tr>
         </tbody>
@@ -284,7 +284,7 @@ permalink: /privacy-policy/
     <p class="soft"><strong>说明</strong>：以上「应用沙箱」指 HarmonyOS 为本应用分配的私有目录，其它应用与第三方无法直接访问。卸载本应用时，HarmonyOS 系统会清理该目录。</p>
 
     <h3>2.3 因功能必需而发往<strong>第三方官方服务器</strong>的信息</h3>
-    <p>为完成 Minecraft Java 版的启动与正版鉴权，AMCL 会<strong>直接</strong>与下列第三方官方服务器通信。这些通信<strong>不经过任何 AMCL 开发者控制的中间服务器</strong>。所传输的信息和用途如下：</p>
+    <p>为完成 Java 版游戏的启动与正版鉴权，AMCL 会<strong>直接</strong>与下列第三方官方服务器通信。这些通信<strong>不经过任何 AMCL 开发者控制的中间服务器</strong>。所传输的信息和用途如下：</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>第三方端点</th><th>域名</th><th>传输内容</th><th>触发场景</th></tr></thead>
@@ -378,7 +378,7 @@ permalink: /privacy-policy/
       <li><strong>存储位置</strong>：所有 AMCL 写入的文件均位于 HarmonyOS 为本应用分配的私有沙箱（<code>filesDir</code>、<code>cacheDir</code>），位于您本人的设备本地；如您主动开启「沙箱外存储」，游戏数据会存入您选择的公共「下载」目录。</li>
       <li><strong>存储期限</strong>：直至您主动卸载本应用、清除应用数据，或在 AMCL 内主动执行「删除版本」「退出账号」等操作。</li>
       <li><strong>加密</strong>：账户凭据使用 HarmonyOS <strong>HUKS（Universal Keystore Kit）</strong> 进行 AES-GCM-256 加密；密钥由 HUKS 在系统级 TEE/SE 中保护，应用代码无法直接读取明文密钥。</li>
-      <li><strong>跨境传输</strong>：AMCL 不会将您的信息从您的设备主动传输至境外。但您主动选择登录微软账户或下载 Mojang 资源时，相关请求按其性质会发往 Microsoft / Mojang 在境外的服务器，这是 Minecraft Java 版本身的固有要求。</li>
+      <li><strong>跨境传输</strong>：AMCL 不会将您的信息从您的设备主动传输至境外。但您主动选择登录微软账户或下载相关资源时，相关请求按其性质会发往 Microsoft / Mojang 在境外的服务器，这是 Java 版游戏本身的固有要求。</li>
     </ul>
   </section>
 
@@ -403,7 +403,7 @@ permalink: /privacy-policy/
 
   <section id="minors">
     <h2>八、未成年人保护</h2>
-    <p>AMCL 是一款面向 Minecraft Java 版玩家的工具应用，预期用户年龄分级为 <strong>8 岁及以上</strong>。</p>
+    <p>AMCL 是一款面向 Java 版游戏玩家的工具应用，预期用户年龄分级为 <strong>8 岁及以上</strong>。</p>
     <ul class="clean">
       <li>我们<strong>不会</strong>主动收集 14 周岁以下未成年人的个人信息；</li>
       <li>若您是未成年人，请在监护人指导下使用本应用，并阅读本政策；</li>
@@ -443,7 +443,7 @@ permalink: /privacy-policy/
   <section id="glossary">
     <h2>附录：术语</h2>
     <ul class="clean">
-      <li><strong>AMCL</strong>：本应用的简称，全称 Axe Minecraft Launcher。</li>
+      <li><strong>AMCL</strong>：本应用的简称，为独立开发者维护的第三方开源游戏启动器。</li>
       <li><strong>HarmonyOS NEXT</strong>：华为终端有限公司发布的、不再兼容 Android 的纯鸿蒙操作系统。</li>
       <li><strong>HAP</strong>：HarmonyOS Ability Package，HarmonyOS 应用安装包格式。</li>
       <li><strong>沙箱</strong>：操作系统为每个应用分配的私有数据目录，仅本应用可读写。</li>
@@ -457,7 +457,7 @@ permalink: /privacy-policy/
 
   <footer>
     <p>本隐私政策的可读源代码托管于 <a href="https://github.com/LZZLHY/amcl/blob/main/privacy-policy.html" target="_blank" rel="noopener">GitHub</a>，与应用商店所示版本严格一致。</p>
-    <p>© 2026 AMCL · Axe Minecraft Launcher · 独立开发者维护 · 与 Mojang / Microsoft / 华为无关联</p>
+    <p>© 2026 AMCL · 独立开发者维护 · 与 Mojang / Microsoft / 网易 / 华为无关联</p>
   </footer>
 
 </div>
