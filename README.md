@@ -5,14 +5,8 @@
   <p>面向 HarmonyOS NEXT 的第三方 Minecraft Java 版游戏管理器与启动器</p>
   <p>
     <img src="https://img.shields.io/badge/HarmonyOS-NEXT-008577?style=flat-square" alt="HarmonyOS NEXT">
-    <img src="https://img.shields.io/badge/Language-ArkTS-32b8aa?style=flat-square" alt="Language ArkTS">
-    <img src="https://img.shields.io/badge/UI-ArkUI-32b8aa?style=flat-square" alt="UI ArkUI">
-  </p>
-  <p>
-    <img src="https://img.shields.io/badge/License-MIT-4c78d0?style=flat-square" alt="License MIT">
-    <img src="https://img.shields.io/badge/Version-1.0.1-f29d38?style=flat-square" alt="Version 1.0.1">
     <img src="https://img.shields.io/github/stars/LZZLHY/amcl?style=flat-square&label=stars" alt="GitHub stars">
-    <img src="https://img.shields.io/github/last-commit/LZZLHY/amcl?style=flat-square&label=last%20commit" alt="Last commit">
+    <img src="https://img.shields.io/badge/Version-1.0.1-f29d38?style=flat-square" alt="Version 1.0.1">
   </p>
   <p><strong>简体中文</strong> · <a href="./README.en.md">English</a></p>
   <p>
