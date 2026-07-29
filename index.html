@@ -1,0 +1,573 @@
+---
+layout: null
+permalink: /
+---
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0c1612">
+  <meta name="description" content="AMCL 是面向 HarmonyOS NEXT 的 Minecraft Java 版游戏管理器与启动器。">
+  <meta property="og:title" content="AMCL — HarmonyOS NEXT Minecraft Java 版游戏管理器">
+  <meta property="og:description" content="管理、安装并启动 Minecraft Java 版，支持主流加载器、模组平台、触控布局与可靠下载。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://lzzlhy.github.io/amcl/">
+  <title>AMCL — HarmonyOS NEXT Minecraft Java 版游戏管理器</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f7f5;
+      --bg-soft: #eaf1ed;
+      --surface: rgba(255, 255, 255, 0.82);
+      --surface-solid: #ffffff;
+      --surface-raised: #f9fbfa;
+      --text: #17211c;
+      --text-soft: #526159;
+      --text-faint: #7a8981;
+      --line: rgba(29, 65, 47, 0.13);
+      --line-strong: rgba(29, 65, 47, 0.22);
+      --green: #198754;
+      --green-bright: #2dbd74;
+      --green-soft: rgba(25, 135, 84, 0.11);
+      --blue: #2d6cdf;
+      --amber: #c57a16;
+      --shadow: 0 24px 70px rgba(16, 48, 32, 0.10);
+      --shadow-small: 0 12px 34px rgba(16, 48, 32, 0.08);
+      --radius-xl: 30px;
+      --radius-lg: 22px;
+      --radius-md: 15px;
+      --max-width: 1120px;
+      --font: -apple-system, BlinkMacSystemFont, "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1210;
+        --bg-soft: #101b16;
+        --surface: rgba(19, 30, 25, 0.84);
+        --surface-solid: #131e19;
+        --surface-raised: #18251f;
+        --text: #edf5f0;
+        --text-soft: #a7b8af;
+        --text-faint: #74867c;
+        --line: rgba(190, 232, 210, 0.12);
+        --line-strong: rgba(190, 232, 210, 0.22);
+        --green: #43cf87;
+        --green-bright: #62e39d;
+        --green-soft: rgba(67, 207, 135, 0.13);
+        --blue: #7da7f7;
+        --amber: #e9ad5c;
+        --shadow: 0 26px 80px rgba(0, 0, 0, 0.34);
+        --shadow-small: 0 14px 38px rgba(0, 0, 0, 0.25);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 90px; }
+    body {
+      margin: 0;
+      min-width: 300px;
+      font-family: var(--font);
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 4%, rgba(45, 189, 116, 0.14), transparent 34rem),
+        radial-gradient(circle at 92% 20%, rgba(45, 108, 223, 0.10), transparent 30rem),
+        var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    [hidden] { display: none !important; }
+
+    .shell { width: min(calc(100% - 40px), var(--max-width)); margin: 0 auto; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 78%, transparent);
+      backdrop-filter: blur(18px) saturate(150%);
+      -webkit-backdrop-filter: blur(18px) saturate(150%);
+    }
+    .topbar-inner {
+      min-height: 70px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      text-decoration: none;
+      font-size: 18px;
+      font-weight: 780;
+      letter-spacing: 0.02em;
+    }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      color: #ffffff;
+      font-size: 17px;
+      font-weight: 850;
+      background: linear-gradient(145deg, var(--green-bright), #147b4c);
+      box-shadow: 0 8px 22px rgba(25, 135, 84, 0.24);
+    }
+    .nav { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+    .nav-link {
+      padding: 8px 11px;
+      border-radius: 10px;
+      color: var(--text-soft);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .nav-link:hover { color: var(--text); background: var(--green-soft); }
+    .language-switch {
+      display: inline-flex;
+      padding: 3px;
+      margin-left: 3px;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+    .language-switch button {
+      min-width: 48px;
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 8px;
+      color: var(--text-soft);
+      background: transparent;
+      cursor: pointer;
+      font: 650 13px/1.2 var(--font);
+    }
+    .language-switch button[aria-pressed="true"] {
+      color: #ffffff;
+      background: var(--green);
+      box-shadow: 0 3px 10px rgba(25, 135, 84, 0.22);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.17fr) minmax(330px, 0.83fr);
+      gap: 64px;
+      align-items: center;
+      padding: 94px 0 72px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 20px;
+      padding: 7px 12px;
+      border: 1px solid color-mix(in srgb, var(--green) 35%, var(--line));
+      border-radius: 999px;
+      color: var(--green);
+      background: var(--green-soft);
+      font-size: 13px;
+      font-weight: 760;
+      letter-spacing: 0.03em;
+    }
+    .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--green-bright); box-shadow: 0 0 0 5px var(--green-soft); }
+    h1 {
+      max-width: 780px;
+      margin: 0;
+      font-size: clamp(42px, 6.5vw, 76px);
+      line-height: 1.04;
+      letter-spacing: -0.045em;
+      font-weight: 850;
+    }
+    .gradient-text {
+      color: transparent;
+      background: linear-gradient(100deg, var(--green), var(--green-bright) 48%, var(--blue));
+      background-clip: text;
+      -webkit-background-clip: text;
+    }
+    .hero-copy {
+      max-width: 680px;
+      margin: 25px 0 0;
+      color: var(--text-soft);
+      font-size: clamp(17px, 2vw, 20px);
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 48px;
+      padding: 0 18px;
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      color: var(--text);
+      background: var(--surface);
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 720;
+      transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    .button:hover { transform: translateY(-2px); border-color: var(--green); box-shadow: var(--shadow-small); }
+    .button.primary { color: #ffffff; border-color: transparent; background: linear-gradient(135deg, var(--green), #126d44); }
+    .button.privacy { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); color: var(--green); }
+    .arrow { font-family: var(--mono); font-size: 16px; }
+
+    .product-card {
+      position: relative;
+      overflow: hidden;
+      min-height: 410px;
+      padding: 25px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: linear-gradient(160deg, var(--surface-solid), var(--surface-raised));
+      box-shadow: var(--shadow);
+    }
+    .product-card::before {
+      content: "";
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      right: -110px;
+      top: -100px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(45, 189, 116, 0.30), transparent 68%);
+    }
+    .window-bar { position: relative; display: flex; align-items: center; gap: 7px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+    .window-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+    .window-title { margin-left: auto; color: var(--text-faint); font: 600 11px/1 var(--mono); letter-spacing: 0.12em; }
+    .product-logo { position: relative; display: flex; align-items: center; gap: 15px; margin-top: 30px; }
+    .product-logo .brand-mark { width: 56px; height: 56px; border-radius: 17px; font-size: 23px; }
+    .product-logo strong { display: block; font-size: 24px; line-height: 1.1; }
+    .product-logo span { color: var(--text-faint); font-size: 13px; }
+    .runtime-list { position: relative; display: grid; gap: 10px; margin-top: 28px; }
+    .runtime-row {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--surface) 74%, transparent);
+    }
+    .runtime-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; color: var(--green); background: var(--green-soft); font: 750 12px/1 var(--mono); }
+    .runtime-row strong { display: block; font-size: 14px; }
+    .runtime-row small { display: block; color: var(--text-faint); font-size: 12px; }
+    .runtime-status { margin-left: auto; color: var(--green); font: 700 11px/1 var(--mono); }
+
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding-bottom: 84px; }
+    .stat {
+      padding: 21px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      box-shadow: var(--shadow-small);
+    }
+    .stat strong { display: block; font-size: 23px; letter-spacing: -0.03em; }
+    .stat span { color: var(--text-faint); font-size: 13px; }
+
+    .section { padding: 80px 0; border-top: 1px solid var(--line); }
+    .section-heading { max-width: 690px; margin-bottom: 34px; }
+    .section-kicker { color: var(--green); font: 750 12px/1.3 var(--mono); letter-spacing: 0.13em; text-transform: uppercase; }
+    h2 { margin: 11px 0 0; font-size: clamp(30px, 4.3vw, 48px); line-height: 1.13; letter-spacing: -0.035em; }
+    .section-heading p { margin: 14px 0 0; color: var(--text-soft); font-size: 17px; }
+
+    .feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .feature-card {
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow-small);
+    }
+    .feature-number { display: inline-flex; margin-bottom: 20px; color: var(--green); font: 750 12px/1 var(--mono); letter-spacing: 0.08em; }
+    .feature-card h3 { margin: 0; font-size: 21px; letter-spacing: -0.02em; }
+    .feature-card p { margin: 10px 0 0; color: var(--text-soft); }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
+    .tag { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-faint); background: var(--surface-raised); font: 650 11px/1.2 var(--mono); }
+
+    .compatibility { display: grid; grid-template-columns: 0.84fr 1.16fr; gap: 18px; align-items: stretch; }
+    .compat-panel, .release-panel {
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow-small);
+    }
+    .compat-panel h3, .release-panel h3 { margin: 0; font-size: 21px; }
+    .support-list { display: grid; gap: 9px; margin-top: 22px; }
+    .support-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .support-row:last-child { border-bottom: 0; }
+    .support-state { margin-left: auto; color: var(--green); font-size: 12px; font-weight: 750; }
+    .release-panel {
+      position: relative;
+      overflow: hidden;
+      color: #f4fff8;
+      border-color: transparent;
+      background: linear-gradient(140deg, #123f2c, #0b251b 62%, #102f38);
+    }
+    .release-panel::after { content: "1.0.1"; position: absolute; right: -12px; bottom: -36px; color: rgba(255,255,255,.055); font: 850 88px/1 var(--font); letter-spacing: -0.07em; }
+    .release-panel .section-kicker { color: #76e8a9; }
+    .release-panel p { color: #b9d5c6; }
+    .release-list { position: relative; z-index: 1; margin: 21px 0 25px; padding: 0; list-style: none; }
+    .release-list li { position: relative; padding: 7px 0 7px 22px; color: #dcebe3; }
+    .release-list li::before { content: ""; position: absolute; left: 0; top: 16px; width: 8px; height: 8px; border-radius: 50%; background: #59d993; }
+    .release-link { position: relative; z-index: 1; color: #86efb5; font-weight: 720; text-decoration: none; }
+    .release-link:hover { text-decoration: underline; }
+
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; counter-reset: step; }
+    .step { counter-increment: step; padding: 27px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+    .step::before { content: "0" counter(step); display: block; margin-bottom: 32px; color: var(--green); font: 780 13px/1 var(--mono); }
+    .step h3 { margin: 0; font-size: 19px; }
+    .step p { margin: 9px 0 0; color: var(--text-soft); }
+    .step a { color: var(--green); font-weight: 700; text-decoration: none; }
+    .step a:hover { text-decoration: underline; }
+    .install-note { margin: 20px 0 0; padding: 17px 19px; border-left: 3px solid var(--amber); border-radius: 0 12px 12px 0; color: var(--text-soft); background: color-mix(in srgb, var(--amber) 9%, transparent); }
+
+    footer { padding: 34px 0 48px; border-top: 1px solid var(--line); color: var(--text-faint); font-size: 13px; }
+    .footer-inner { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+    .footer-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 16px; }
+    .footer-links a { color: var(--text-soft); text-decoration: none; }
+    .footer-links a:hover { color: var(--green); }
+
+    :focus-visible { outline: 3px solid color-mix(in srgb, var(--green) 60%, transparent); outline-offset: 3px; }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; gap: 42px; padding-top: 70px; }
+      .product-card { max-width: 620px; min-height: auto; }
+      .compatibility { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .steps { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      .shell { width: min(calc(100% - 28px), var(--max-width)); }
+      .topbar-inner { gap: 10px; min-height: 64px; }
+      .brand span:last-child { display: none; }
+      .nav-link { display: none; }
+      .language-switch { margin-left: auto; }
+      .hero { padding: 54px 0 52px; }
+      h1 { font-size: clamp(39px, 13vw, 58px); }
+      .hero-copy { font-size: 17px; }
+      .actions { display: grid; grid-template-columns: 1fr; }
+      .button { width: 100%; }
+      .product-card { padding: 20px; border-radius: 24px; }
+      .stats { gap: 10px; padding-bottom: 60px; }
+      .stat { padding: 17px; }
+      .stat strong { font-size: 20px; }
+      .section { padding: 58px 0; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .feature-card, .compat-panel, .release-panel, .step { padding: 22px; }
+      .footer-inner { flex-direction: column; }
+      .footer-links { justify-content: flex-start; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#top" aria-label="AMCL 首页">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span>AMCL</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="nav-link" href="#features">
+          <span data-lang-copy="zh">主要能力</span><span data-lang-copy="en" hidden>Features</span>
+        </a>
+        <a class="nav-link" href="#compatibility">
+          <span data-lang-copy="zh">兼容范围</span><span data-lang-copy="en" hidden>Compatibility</span>
+        </a>
+        <a class="nav-link" href="./privacy-policy/">
+          <span data-lang-copy="zh">隐私政策</span><span data-lang-copy="en" hidden>Privacy</span>
+        </a>
+        <a class="nav-link" href="https://github.com/LZZLHY/amcl" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <div class="language-switch" role="group" aria-label="Language">
+        <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
+        <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="shell hero">
+      <div data-lang-block="zh">
+        <div class="eyebrow"><span class="pulse" aria-hidden="true"></span>稳定版 1.0.1 已发布</div>
+        <h1>把 Java 版 Minecraft<br><span class="gradient-text">带到 HarmonyOS NEXT</span></h1>
+        <p class="hero-copy">AMCL 是为鸿蒙设备打造的 Minecraft Java 版游戏管理器。安装游戏与加载器、管理模组和账户、编辑触控布局，并用可靠的下载链路完成整套工作流。</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/LZZLHY/amcl/releases/latest"><span>下载最新 HAP</span><span class="arrow" aria-hidden="true">→</span></a>
+          <a class="button" href="https://amcl.lovedhy.cn/docs/install-hokit">安装指南</a>
+          <a class="button privacy" href="./privacy-policy/">查看隐私政策</a>
+        </div>
+      </div>
+      <div data-lang-block="en" hidden>
+        <div class="eyebrow"><span class="pulse" aria-hidden="true"></span>Stable version 1.0.1 is available</div>
+        <h1>Bring Minecraft Java<br><span class="gradient-text">to HarmonyOS NEXT</span></h1>
+        <p class="hero-copy">AMCL is a Minecraft Java Edition game manager built for HarmonyOS devices. Install games and loaders, manage content and accounts, customize touch controls, and rely on one resilient download workflow.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/LZZLHY/amcl/releases/latest"><span>Download latest HAP</span><span class="arrow" aria-hidden="true">→</span></a>
+          <a class="button" href="https://amcl.lovedhy.cn/docs/install-hokit">Installation guide</a>
+          <a class="button privacy" href="./privacy-policy/">Privacy policy</a>
+        </div>
+      </div>
+
+      <aside class="product-card" aria-label="AMCL runtime overview">
+        <div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span class="window-title">HARMONYOS NEXT</span></div>
+        <div class="product-logo">
+          <span class="brand-mark" aria-hidden="true">A</span>
+          <div><strong>AMCL</strong><span>Axe Minecraft Client Launcher</span></div>
+        </div>
+        <div class="runtime-list">
+          <div class="runtime-row"><span class="runtime-icon">JDK</span><div><strong>OpenJDK 8 / 17 / 21 / 25</strong><small data-lang-copy="zh">按游戏版本自动路由</small><small data-lang-copy="en" hidden>Automatic version routing</small></div><span class="runtime-status">READY</span></div>
+          <div class="runtime-row"><span class="runtime-icon">GL</span><div><strong>LWJGL 2 + LWJGL 3</strong><small data-lang-copy="zh">新旧版本兼容路径</small><small data-lang-copy="en" hidden>Legacy and current paths</small></div><span class="runtime-status">READY</span></div>
+          <div class="runtime-row"><span class="runtime-icon">MOD</span><div><strong>Fabric / Forge / NeoForge</strong><small data-lang-copy="zh">安装、依赖与启动</small><small data-lang-copy="en" hidden>Install, resolve, and launch</small></div><span class="runtime-status">READY</span></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="shell stats" aria-label="Project status">
+      <div class="stat"><strong>1.0.1</strong><span data-lang-copy="zh">最新稳定版</span><span data-lang-copy="en" hidden>Latest stable</span></div>
+      <div class="stat"><strong>1000450</strong><span>versionCode</span></div>
+      <div class="stat"><strong>4</strong><span data-lang-copy="zh">JDK 运行时系列</span><span data-lang-copy="en" hidden>JDK runtime families</span></div>
+      <div class="stat"><strong>4</strong><span data-lang-copy="zh">已接入游戏类型</span><span data-lang-copy="en" hidden>Integrated game types</span></div>
+    </section>
+
+    <section class="section" id="features">
+      <div class="shell">
+        <div class="section-heading" data-lang-block="zh">
+          <span class="section-kicker">核心能力</span>
+          <h2>不只是启动游戏</h2>
+          <p>从运行时、内容生态到触控交互，AMCL 把桌面启动器常用流程重新适配到 HarmonyOS NEXT。</p>
+        </div>
+        <div class="section-heading" data-lang-block="en" hidden>
+          <span class="section-kicker">Core capabilities</span>
+          <h2>More than launching a game</h2>
+          <p>From runtimes and content ecosystems to touch interaction, AMCL adapts the familiar desktop launcher workflow to HarmonyOS NEXT.</p>
+        </div>
+
+        <div class="feature-grid" data-lang-block="zh">
+          <article class="feature-card"><span class="feature-number">01 / GAME</span><h3>版本与加载器管理</h3><p>安装 Vanilla、Fabric、Forge 和 NeoForge，按版本选择 JDK，并隔离游戏目录、参数与语言配置。</p><div class="tag-list"><span class="tag">VANILLA</span><span class="tag">FABRIC</span><span class="tag">FORGE</span><span class="tag">NEOFORGE</span></div></article>
+          <article class="feature-card"><span class="feature-number">02 / CONTENT</span><h3>模组与整合包</h3><p>连接 Modrinth 与 CurseForge，处理依赖关系、版本兼容提示、模组资源和整合包安装。</p><div class="tag-list"><span class="tag">MODRINTH</span><span class="tag">CURSEFORGE</span><span class="tag">DEPENDENCY</span></div></article>
+          <article class="feature-card"><span class="feature-number">03 / TOUCH</span><h3>触控与布局编辑</h3><p>提供摇杆、按键、物品栏直点、菜单输入和可视化布局编辑，支持吸附、多选、分享与导入。</p><div class="tag-list"><span class="tag">LAYOUT</span><span class="tag">SNAP</span><span class="tag">SHARE</span></div></article>
+          <article class="feature-card"><span class="feature-number">04 / DOWNLOAD</span><h3>可靠下载与诊断</h3><p>统一管理多镜像、并行分段、断点续传、取消重试和慢尾接管，并提供活动日志与网络诊断。</p><div class="tag-list"><span class="tag">RESUME</span><span class="tag">RANGE</span><span class="tag">DIAGNOSTICS</span></div></article>
+        </div>
+        <div class="feature-grid" data-lang-block="en" hidden>
+          <article class="feature-card"><span class="feature-number">01 / GAME</span><h3>Versions and loaders</h3><p>Install Vanilla, Fabric, Forge, and NeoForge; select the right JDK; isolate game directories, arguments, and language settings.</p><div class="tag-list"><span class="tag">VANILLA</span><span class="tag">FABRIC</span><span class="tag">FORGE</span><span class="tag">NEOFORGE</span></div></article>
+          <article class="feature-card"><span class="feature-number">02 / CONTENT</span><h3>Mods and modpacks</h3><p>Connect to Modrinth and CurseForge, resolve dependencies, warn about compatibility, and install content and modpacks.</p><div class="tag-list"><span class="tag">MODRINTH</span><span class="tag">CURSEFORGE</span><span class="tag">DEPENDENCY</span></div></article>
+          <article class="feature-card"><span class="feature-number">03 / TOUCH</span><h3>Touch and layout editing</h3><p>Use joysticks, buttons, direct hotbar selection, menu input, and a visual editor with snapping, multi-select, sharing, and import.</p><div class="tag-list"><span class="tag">LAYOUT</span><span class="tag">SNAP</span><span class="tag">SHARE</span></div></article>
+          <article class="feature-card"><span class="feature-number">04 / DOWNLOAD</span><h3>Resilient downloads</h3><p>Manage mirrors, segmented transfers, resume, cancellation, retry, and slow-tail takeover, backed by activity logs and diagnostics.</p><div class="tag-list"><span class="tag">RESUME</span><span class="tag">RANGE</span><span class="tag">DIAGNOSTICS</span></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="compatibility">
+      <div class="shell">
+        <div class="section-heading" data-lang-block="zh"><span class="section-kicker">当前版本</span><h2>稳定版能力与最新修复</h2><p>1.0.1 是正式稳定补丁版本，重点处理 JDK 与大文件下载链路。</p></div>
+        <div class="section-heading" data-lang-block="en" hidden><span class="section-kicker">Current release</span><h2>Stable capabilities and recent fixes</h2><p>Version 1.0.1 is a stable patch focused on JDK and large-file download reliability.</p></div>
+
+        <div class="compatibility">
+          <div class="compat-panel">
+            <div data-lang-block="zh"><h3>安装与启动支持</h3><div class="support-list"><div class="support-row"><span>Vanilla</span><span class="support-state">已支持</span></div><div class="support-row"><span>Fabric</span><span class="support-state">已支持</span></div><div class="support-row"><span>Forge</span><span class="support-state">已支持</span></div><div class="support-row"><span>NeoForge</span><span class="support-state">已支持</span></div><div class="support-row"><span>LWJGL 2 / 3</span><span class="support-state">已接入</span></div></div></div>
+            <div data-lang-block="en" hidden><h3>Install and launch support</h3><div class="support-list"><div class="support-row"><span>Vanilla</span><span class="support-state">SUPPORTED</span></div><div class="support-row"><span>Fabric</span><span class="support-state">SUPPORTED</span></div><div class="support-row"><span>Forge</span><span class="support-state">SUPPORTED</span></div><div class="support-row"><span>NeoForge</span><span class="support-state">SUPPORTED</span></div><div class="support-row"><span>LWJGL 2 / 3</span><span class="support-state">INTEGRATED</span></div></div></div>
+          </div>
+          <article class="release-panel">
+            <div data-lang-block="zh"><span class="section-kicker">1.0.1 紧急修复</span><h3>下载过程不再停在最后一步</h3><ul class="release-list"><li>修复 JDK 下载失败、卡住和取消后重试无响应</li><li>修复下载尾段异常重下与 NeoForge 安装长时间停顿</li><li>优化断点续传、镜像健康判断和动态慢尾接管</li></ul><a class="release-link" href="https://github.com/LZZLHY/amcl/releases/tag/v1.0.1">查看完整 Release →</a></div>
+            <div data-lang-block="en" hidden><span class="section-kicker">1.0.1 HOTFIX</span><h3>Downloads no longer stall at the finish line</h3><ul class="release-list"><li>Fixed failed or stalled JDK downloads and retry after cancellation</li><li>Fixed repeated tail downloads and long NeoForge installation stalls</li><li>Improved resume, mirror health tracking, and dynamic slow-tail takeover</li></ul><a class="release-link" href="https://github.com/LZZLHY/amcl/releases/tag/v1.0.1">View the full release →</a></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="install">
+      <div class="shell">
+        <div class="section-heading" data-lang-block="zh"><span class="section-kicker">开始使用</span><h2>三步完成侧载安装</h2><p>公开 Release 提供 unsigned HAP，请使用 HoKit 等工具完成签名和安装。</p></div>
+        <div class="section-heading" data-lang-block="en" hidden><span class="section-kicker">Get started</span><h2>Sideload in three steps</h2><p>Public releases provide an unsigned HAP. Use HoKit or an equivalent tool to sign and install it.</p></div>
+
+        <div class="steps" data-lang-block="zh">
+          <article class="step"><h3>下载 HAP</h3><p>前往 <a href="https://github.com/LZZLHY/amcl/releases/latest">Latest Release</a>，下载文件名以 <code>-unsigned.hap</code> 结尾的资产。</p></article>
+          <article class="step"><h3>签名并安装</h3><p>按照 <a href="https://amcl.lovedhy.cn/docs/install-hokit">HoKit 安装指南</a> 完成签名和侧载。</p></article>
+          <article class="step"><h3>准备运行时</h3><p>首次启动后选择需要的 JDK，AMCL 会完成下载、校验与后续游戏安装。</p></article>
+        </div>
+        <div class="steps" data-lang-block="en" hidden>
+          <article class="step"><h3>Download the HAP</h3><p>Open the <a href="https://github.com/LZZLHY/amcl/releases/latest">latest release</a> and download the asset ending in <code>-unsigned.hap</code>.</p></article>
+          <article class="step"><h3>Sign and install</h3><p>Follow the <a href="https://amcl.lovedhy.cn/docs/install-hokit">HoKit installation guide</a> to sign and sideload the package.</p></article>
+          <article class="step"><h3>Prepare the runtime</h3><p>Select the required JDK on first launch. AMCL handles download, verification, and game installation.</p></article>
+        </div>
+        <p class="install-note" data-lang-block="zh">部分 HotSpot JIT 能力依赖 HarmonyOS 受限权限。不同设备、系统版本和分发方式下的实际能力可能不同。</p>
+        <p class="install-note" data-lang-block="en" hidden>Some HotSpot JIT capabilities depend on restricted HarmonyOS permissions. Behavior may vary by device, system version, and distribution channel.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell footer-inner">
+      <div data-lang-block="zh">AMCL 由独立开发者维护，与 Mojang、Microsoft、Xbox、网易及华为无关联。</div>
+      <div data-lang-block="en" hidden>AMCL is independently maintained and is not affiliated with Mojang, Microsoft, Xbox, NetEase, or Huawei.</div>
+      <div class="footer-links">
+        <a href="https://github.com/LZZLHY/amcl">GitHub</a>
+        <a href="https://github.com/LZZLHY/amcl/releases/latest">Releases</a>
+        <a href="./privacy-policy/"><span data-lang-copy="zh">隐私政策</span><span data-lang-copy="en" hidden>Privacy policy</span></a>
+        <a href="https://github.com/LZZLHY/amcl/issues">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var languageButtons = document.querySelectorAll('[data-set-lang]');
+      var languageBlocks = document.querySelectorAll('[data-lang-block]');
+      var languageCopies = document.querySelectorAll('[data-lang-copy]');
+      var descriptions = {
+        zh: 'AMCL 是面向 HarmonyOS NEXT 的 Minecraft Java 版游戏管理器与启动器。',
+        en: 'AMCL is a Minecraft Java Edition game manager and launcher for HarmonyOS NEXT.'
+      };
+      var titles = {
+        zh: 'AMCL — HarmonyOS NEXT Minecraft Java 版游戏管理器',
+        en: 'AMCL — Minecraft Java Edition for HarmonyOS NEXT'
+      };
+
+      function setLanguage(language, persist) {
+        var nextLanguage = language === 'en' ? 'en' : 'zh';
+        document.documentElement.lang = nextLanguage === 'zh' ? 'zh-CN' : 'en';
+        document.title = titles[nextLanguage];
+        document.querySelector('meta[name="description"]').setAttribute('content', descriptions[nextLanguage]);
+
+        languageBlocks.forEach(function (element) {
+          element.hidden = element.getAttribute('data-lang-block') !== nextLanguage;
+        });
+        languageCopies.forEach(function (element) {
+          element.hidden = element.getAttribute('data-lang-copy') !== nextLanguage;
+        });
+        languageButtons.forEach(function (button) {
+          button.setAttribute('aria-pressed', String(button.getAttribute('data-set-lang') === nextLanguage));
+        });
+
+        if (persist) {
+          try { window.localStorage.setItem('amcl-language', nextLanguage); } catch (error) { /* Storage may be unavailable. */ }
+        }
+      }
+
+      languageButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          setLanguage(button.getAttribute('data-set-lang'), true);
+        });
+      });
+
+      var savedLanguage = 'zh';
+      try {
+        if (window.localStorage.getItem('amcl-language') === 'en') { savedLanguage = 'en'; }
+      } catch (error) { /* Keep Chinese as the default. */ }
+      setLanguage(savedLanguage, false);
+    })();
+  </script>
+</body>
+</html>

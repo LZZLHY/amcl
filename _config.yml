@@ -2,7 +2,8 @@
 # (Pages source is currently set to: main / (root))
 
 title: AMCL
-description: Axe Minecraft Client Launcher for HarmonyOS NEXT
+description: 面向 HarmonyOS NEXT 的 Minecraft Java 版游戏管理器与启动器
+lang: zh-CN
 theme: jekyll-theme-cayman
 
 # Pretty URLs so privacy-policy.md is reachable at /privacy-policy/
