@@ -1,10 +1,28 @@
-# AMCL
-
-[简体中文](./README.md) · **English**
-
-> A third-party Minecraft Java Edition game manager and launcher for HarmonyOS NEXT.
-
-[Latest release](https://github.com/LZZLHY/amcl/releases/latest) · [HoKit installation guide](https://amcl.lovedhy.cn/docs/install-hokit) · [Project website](https://lzzlhy.github.io/amcl/) · [Privacy policy](https://lzzlhy.github.io/amcl/privacy-policy/) · [Issues](https://github.com/LZZLHY/amcl/issues)
+<div align="center">
+  <img src="./assets/agc-icon-216.png" width="128" height="128" alt="AMCL icon">
+  <h1>AMCL</h1>
+  <p><strong>Axe Minecraft Launcher</strong></p>
+  <p>A third-party Minecraft Java Edition game manager and launcher for HarmonyOS NEXT</p>
+  <p>
+    <img src="https://img.shields.io/badge/HarmonyOS-NEXT-008577?style=flat-square" alt="HarmonyOS NEXT">
+    <img src="https://img.shields.io/badge/Language-ArkTS-32b8aa?style=flat-square" alt="Language ArkTS">
+    <img src="https://img.shields.io/badge/UI-ArkUI-32b8aa?style=flat-square" alt="UI ArkUI">
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/License-MIT-4c78d0?style=flat-square" alt="License MIT">
+    <img src="https://img.shields.io/badge/Version-1.0.1-f29d38?style=flat-square" alt="Version 1.0.1">
+    <img src="https://img.shields.io/github/stars/LZZLHY/amcl?style=flat-square&label=stars" alt="GitHub stars">
+    <img src="https://img.shields.io/github/last-commit/LZZLHY/amcl?style=flat-square&label=last%20commit" alt="Last commit">
+  </p>
+  <p><a href="./README.md">简体中文</a> · <strong>English</strong></p>
+  <p>
+    <a href="https://github.com/LZZLHY/amcl/releases/latest">Latest release</a> ·
+    <a href="https://amcl.lovedhy.cn/docs/install-hokit">HoKit installation guide</a> ·
+    <a href="https://lzzlhy.github.io/amcl/">Project website</a> ·
+    <a href="https://lzzlhy.github.io/amcl/privacy-policy/">Privacy policy</a> ·
+    <a href="https://github.com/LZZLHY/amcl/issues">Issues</a>
+  </p>
+</div>
 
 ## Current status
 
@@ -17,7 +35,7 @@
 | Game | Minecraft Java Edition |
 | Bundled runtime families | OpenJDK 8 / 17 / 21 / 25 for HarmonyOS aarch64 |
 
-AMCL (**A**xe **M**inecraft **C**lient **L**auncher) is independently maintained. It combines ArkTS, the HarmonyOS C/C++ SDK, and native compatibility layers to run the unmodified Minecraft Java Edition client on HarmonyOS NEXT.
+AMCL (**Axe Minecraft Launcher**) is independently maintained. It combines ArkTS, the HarmonyOS C/C++ SDK, and native compatibility layers to run the unmodified Minecraft Java Edition client on HarmonyOS NEXT.
 
 This `amcl-public` repository is the public release endpoint for AMCL. It hosts release assets, the update manifest, project information, and the privacy policy. The application source is not hosted in this repository; any future publication plan will be announced separately.
 

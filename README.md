@@ -1,10 +1,28 @@
-# AMCL
-
-**简体中文** · [English](./README.en.md)
-
-> 面向 HarmonyOS NEXT 的第三方 Minecraft Java 版游戏管理器与启动器。
-
-[下载最新版本](https://github.com/LZZLHY/amcl/releases/latest) · [HoKit 安装指南](https://amcl.lovedhy.cn/docs/install-hokit) · [项目主页](https://lzzlhy.github.io/amcl/) · [隐私政策](https://lzzlhy.github.io/amcl/privacy-policy/) · [问题反馈](https://github.com/LZZLHY/amcl/issues)
+<div align="center">
+  <img src="./assets/agc-icon-216.png" width="128" height="128" alt="AMCL 图标">
+  <h1>AMCL</h1>
+  <p><strong>Axe Minecraft Launcher</strong></p>
+  <p>面向 HarmonyOS NEXT 的第三方 Minecraft Java 版游戏管理器与启动器</p>
+  <p>
+    <img src="https://img.shields.io/badge/HarmonyOS-NEXT-008577?style=flat-square" alt="HarmonyOS NEXT">
+    <img src="https://img.shields.io/badge/Language-ArkTS-32b8aa?style=flat-square" alt="Language ArkTS">
+    <img src="https://img.shields.io/badge/UI-ArkUI-32b8aa?style=flat-square" alt="UI ArkUI">
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/License-MIT-4c78d0?style=flat-square" alt="License MIT">
+    <img src="https://img.shields.io/badge/Version-1.0.1-f29d38?style=flat-square" alt="Version 1.0.1">
+    <img src="https://img.shields.io/github/stars/LZZLHY/amcl?style=flat-square&label=stars" alt="GitHub stars">
+    <img src="https://img.shields.io/github/last-commit/LZZLHY/amcl?style=flat-square&label=last%20commit" alt="Last commit">
+  </p>
+  <p><strong>简体中文</strong> · <a href="./README.en.md">English</a></p>
+  <p>
+    <a href="https://github.com/LZZLHY/amcl/releases/latest">下载最新版本</a> ·
+    <a href="https://amcl.lovedhy.cn/docs/install-hokit">HoKit 安装指南</a> ·
+    <a href="https://lzzlhy.github.io/amcl/">项目主页</a> ·
+    <a href="https://lzzlhy.github.io/amcl/privacy-policy/">隐私政策</a> ·
+    <a href="https://github.com/LZZLHY/amcl/issues">问题反馈</a>
+  </p>
+</div>
 
 ## 当前状态
 
@@ -17,7 +35,7 @@
 | 游戏类型 | Minecraft Java Edition |
 | 内置运行时 | OpenJDK 8 / 17 / 21 / 25（HarmonyOS aarch64） |
 
-AMCL（**A**xe **M**inecraft **C**lient **L**auncher）由独立开发者维护，使用 ArkTS、HarmonyOS C/C++ SDK 与自研原生兼容层，让未经修改的 Minecraft Java 版客户端能够在 HarmonyOS NEXT 上运行。
+AMCL（**Axe Minecraft Launcher**）由独立开发者维护，使用 ArkTS、HarmonyOS C/C++ SDK 与自研原生兼容层，让未经修改的 Minecraft Java 版客户端能够在 HarmonyOS NEXT 上运行。
 
 本 `amcl-public` 仓库是 AMCL 的公开发布入口，托管 Release、更新清单、项目说明和隐私政策。应用源码不在本仓库中，后续公开安排以项目公告为准。
 

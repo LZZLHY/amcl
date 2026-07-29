@@ -13,7 +13,10 @@ permalink: /
   <meta property="og:description" content="管理、安装并启动 Minecraft Java 版，支持主流加载器、模组平台、触控布局与可靠下载。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://lzzlhy.github.io/amcl/">
+  <meta property="og:image" content="https://lzzlhy.github.io/amcl/assets/agc-icon-216.png">
   <title>AMCL — HarmonyOS NEXT Minecraft Java 版游戏管理器</title>
+  <link rel="icon" type="image/png" sizes="216x216" href="{{ '/assets/agc-icon-216.png' | relative_url }}">
+  <link rel="apple-touch-icon" href="{{ '/assets/agc-icon-216.png' | relative_url }}">
   <style>
     :root {
       color-scheme: light dark;
@@ -111,14 +114,15 @@ permalink: /
     .brand-mark {
       width: 38px;
       height: 38px;
-      display: grid;
-      place-items: center;
+      display: block;
+      flex: 0 0 auto;
+      overflow: hidden;
+      border: 1px solid var(--line);
       border-radius: 12px;
-      color: #ffffff;
-      font-size: 17px;
-      font-weight: 850;
-      background: linear-gradient(145deg, var(--green-bright), #147b4c);
-      box-shadow: 0 8px 22px rgba(25, 135, 84, 0.24);
+      color: transparent;
+      font-size: 0;
+      background: #ffffff url("{{ '/assets/agc-icon-216.png' | relative_url }}") center / contain no-repeat;
+      box-shadow: 0 8px 22px rgba(25, 135, 84, 0.18);
     }
     .nav { display: flex; align-items: center; gap: 8px; margin-left: auto; }
     .nav-link {
@@ -375,7 +379,7 @@ permalink: /
   <header class="topbar">
     <div class="shell topbar-inner">
       <a class="brand" href="#top" aria-label="AMCL 首页">
-        <span class="brand-mark" aria-hidden="true">A</span>
+        <span class="brand-mark" aria-hidden="true"></span>
         <span>AMCL</span>
       </a>
       <nav class="nav" aria-label="Primary navigation">
@@ -423,8 +427,8 @@ permalink: /
       <aside class="product-card" aria-label="AMCL runtime overview">
         <div class="window-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span class="window-title">HARMONYOS NEXT</span></div>
         <div class="product-logo">
-          <span class="brand-mark" aria-hidden="true">A</span>
-          <div><strong>AMCL</strong><span>Axe Minecraft Client Launcher</span></div>
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div><strong>AMCL</strong><span>Axe Minecraft Launcher</span></div>
         </div>
         <div class="runtime-list">
           <div class="runtime-row"><span class="runtime-icon">JDK</span><div><strong>OpenJDK 8 / 17 / 21 / 25</strong><small data-lang-copy="zh">按游戏版本自动路由</small><small data-lang-copy="en" hidden>Automatic version routing</small></div><span class="runtime-status">READY</span></div>
