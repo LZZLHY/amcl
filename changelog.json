@@ -1,0 +1,1452 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-08-08T12:46:39Z",
+  "categories": [
+    "highlight",
+    "added",
+    "improved",
+    "refactored",
+    "fixed",
+    "notice"
+  ],
+  "latest": {
+    "versionName": "1.0.2",
+    "versionCode": 1000497,
+    "tag": "v1.0.2",
+    "date": "2026-08-08"
+  },
+  "releases": [
+    {
+      "versionName": "1.0.2",
+      "versionCode": 1000497,
+      "tag": "v1.0.2",
+      "date": "2026-08-08",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.2",
+      "title": "MC 26.3 可进游戏，下载与日志链路大修",
+      "titleEn": "Minecraft 26.3 playable, download and logging overhaul",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "MC 26.3（SDL3 时代）已可进入主菜单与世界：Mojang 从 26.3-snapshot-4 起把窗口 / 输入 / 平台集成从 GLFW 换成 SDL3，本版打通了这条新链路，真机可进主菜单、出画面、响应输入。",
+            "markdown": "**MC 26.3（SDL3 时代）已可进入主菜单与世界**：Mojang 从 26.3-snapshot-4 起把窗口 / 输入 / 平台集成从 GLFW 换成 SDL3，本版打通了这条新链路，真机可进主菜单、出画面、响应输入。",
+            "details": [
+              "之前是「点开就闪退」。三个串行阻塞逐个修掉：渲染后端在 SDL 时代不再被初始化（导致必崩）、26.3 新增的 OIT 着色器用了 GLSL ES 禁止的「非常量下标 fragment 输出数组」导致几乎所有着色器编译失败、以及输入桥跨 linker namespace 拿不到符号。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "应用内更新日志：新增更新日志页面与全新的更新提示弹窗，可按分类查看每个版本的变更。",
+            "markdown": "**应用内更新日志**：新增更新日志页面与全新的更新提示弹窗，可按分类查看每个版本的变更。",
+            "details": [
+              "更新日志改为单一事实源：网页、GitHub Release、App 三处内容由同一份文本生成，不会再各说各话。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "AI 崩溃日志分析：崩溃后可一键分析，给出结论与技术详情（可展开查看完整日志），结果支持 Markdown 渲染。",
+            "markdown": "**AI 崩溃日志分析**：崩溃后可一键分析，给出结论与技术详情（可展开查看完整日志），结果支持 Markdown 渲染。",
+            "details": [
+              "分析与日志分享由 [logshare.cn](https://logshare.cn) 提供：同一处可把日志上传生成分享链接，反馈问题时直接附上即可。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "活动账本：每条活动（下载 / 安装 / 修复 / 启动）都留一份完整、精确归属的记录。",
+            "markdown": "**活动账本**：每条活动（下载 / 安装 / 修复 / 启动）都留一份完整、精确归属的记录。"
+          },
+          {
+            "type": "improved",
+            "text": "清掉渲染后端逐帧、逐上传路径上的驱动往返，并升级 MobileGlues。"
+          },
+          {
+            "type": "improved",
+            "text": "下载速度显示不再「一会 MB 一会 KB 甚至 B」：改用累计字节时间差计算。"
+          },
+          {
+            "type": "improved",
+            "text": "按主机选择 IP 地址族：IPv6 不可达的镜像不再拖慢整体下载。"
+          },
+          {
+            "type": "improved",
+            "text": "安装加载器前不再干等 30 秒（校验文件探测改为并发 + 短超时），小文件也不再被切成多段各付一次握手。"
+          },
+          {
+            "type": "improved",
+            "text": "重绘崩溃诊断版面，日志分享升为独立卡片。"
+          },
+          {
+            "type": "fixed",
+            "text": "下载速度问题根治：模组下载卡在 11.5KB/s、client.jar 收尾停 57 秒、加载器安装慢，三类问题分别定位到根因后修复。",
+            "markdown": "**下载速度问题根治**：模组下载卡在 11.5KB/s、`client.jar` 收尾停 57 秒、加载器安装慢，三类问题分别定位到根因后修复。",
+            "details": [
+              "模组下载：测速探针的结论被丢弃、硬写官方源优先，而官方源对部分设备 307 到一台连不通的主机。",
+              "收尾停顿：结尾阶段被 3~4 条 7KB/s 的僵尾连接独占，现放开收尾补段并支持相对低速抢占。",
+              "加载器安装：BMCLAPI 镜像 URL 多带一段路径导致恒 404、单段下载被低速看门狗反复掐死、安装器下载全程没有进度回调。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上：安装器内部路径带前导斜杠被过严校验拦下。",
+            "markdown": "**旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上**：安装器内部路径带前导斜杠被过严校验拦下。"
+          },
+          {
+            "type": "fixed",
+            "text": "Fabric 安装会在版本列表里残留多余条目：Fabric 现在与 Forge / NeoForge 一样在安装沙箱里完成。",
+            "markdown": "**Fabric 安装会在版本列表里残留多余条目**：Fabric 现在与 Forge / NeoForge 一样在安装沙箱里完成。"
+          },
+          {
+            "type": "fixed",
+            "text": "Forge 深度修复改走与全新安装同一条流水线，不再原地重跑安装器，成功率大幅提升。",
+            "markdown": "**Forge 深度修复改走与全新安装同一条流水线**，不再原地重跑安装器，成功率大幅提升。"
+          },
+          {
+            "type": "fixed",
+            "text": "日志系统三处严重缺陷：突发场景丢失 96.8% 日志、游戏日志每次启动被清空、崩溃诊断对健康会话给出破坏性建议且上传出口未脱敏。"
+          },
+          {
+            "type": "fixed",
+            "text": "MC 26.3 画面整体发白（sRGB 被编码两次）。"
+          },
+          {
+            "type": "fixed",
+            "text": "补齐 Release 构建中虚拟控制相关的原生接口。"
+          },
+          {
+            "type": "fixed",
+            "text": "一次启动崩溃（循环 import 下的模块级初始化顺序问题）。"
+          },
+          {
+            "type": "notice",
+            "text": "MC 26.2 搭配钠（Sodium）这个模组仍有已知问题：部分设备上会出现地形错乱与严重卡顿，本版未能解决。原版（不装钠）的 26.x 不受影响。",
+            "markdown": "**MC 26.2 搭配钠（Sodium）这个模组仍有已知问题**：部分设备上会出现地形错乱与严重卡顿，本版未能解决。**原版（不装钠）的 26.x 不受影响。**",
+            "details": [
+              "本版已修好的相关问题：进入世界只剩 HUD、地形与材质透明成「虚空」、以及打开 F3 后的彩条遮挡。",
+              "地形错乱与卡顿本版做了多轮修法，全部在真机验证后被否证并回退，因此仍未解决；后续会继续跟进。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "MC 26.3 属于快照 / 预览版本，仍在适配中，可进入主菜单与世界但不保证稳定。"
+          },
+          {
+            "type": "notice",
+            "text": "附件为 unsigned HAP，需自行签名后侧载安装。",
+            "markdown": "附件为 **unsigned HAP**，需自行签名后侧载安装。"
+          }
+        ],
+        "summary": "本版打通了 MC 26.3 的 SDL3 时代，把「下载」与「日志」两条链路做了彻底大修，并让更新日志第一次进入 App 内。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Minecraft 26.3 (the SDL3 era) now reaches the main menu and worlds: from 26.3-snapshot-4 Mojang replaced GLFW with SDL3 for windowing, input and platform integration; this release brings that path up on device.",
+            "markdown": "**Minecraft 26.3 (the SDL3 era) now reaches the main menu and worlds**: from 26.3-snapshot-4 Mojang replaced GLFW with SDL3 for windowing, input and platform integration; this release brings that path up on device.",
+            "details": [
+              "It used to crash immediately on launch. Three serial blockers were fixed: the graphics translation layer was never initialised in the SDL era (a guaranteed crash), 26.3's new OIT shaders index a fragment output array with a non-constant expression which GLSL ES forbids (so nearly every shader failed to compile), and the input bridge could not resolve symbols across linker namespaces."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Changelog inside the app: a new changelog page and a redesigned update prompt let you browse every version's changes by category.",
+            "markdown": "**Changelog inside the app**: a new changelog page and a redesigned update prompt let you browse every version's changes by category.",
+            "details": [
+              "The changelog now has a single source of truth: the website, the GitHub release notes and the app are generated from the same text."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "AI crash log analysis: after a crash, analyse the log with one tap to get a verdict plus technical details (expandable to the full log), rendered as Markdown.",
+            "markdown": "**AI crash log analysis**: after a crash, analyse the log with one tap to get a verdict plus technical details (expandable to the full log), rendered as Markdown.",
+            "details": [
+              "Analysis and log sharing are powered by [logshare.cn](https://logshare.cn): the same place uploads a log and returns a shareable link to attach to your report."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Activity ledger: every activity (download / install / repair / launch) keeps a complete, correctly attributed record.",
+            "markdown": "**Activity ledger**: every activity (download / install / repair / launch) keeps a complete, correctly attributed record."
+          },
+          {
+            "type": "improved",
+            "text": "Removed driver round-trips from the per-frame and per-upload paths, and upgraded MobileGlues."
+          },
+          {
+            "type": "improved",
+            "text": "Download speed no longer flips between MB, KB and bytes; it is computed from cumulative byte/time deltas."
+          },
+          {
+            "type": "improved",
+            "text": "Per-host address family selection, so mirrors with unreachable IPv6 no longer slow everything down."
+          },
+          {
+            "type": "improved",
+            "text": "No more 30-second wait before a loader installer starts (checksum side-car probing is now concurrent with a short timeout), and small files are no longer split into segments that each pay a handshake."
+          },
+          {
+            "type": "improved",
+            "text": "Redesigned the crash diagnosis layout and promoted log sharing to its own card."
+          },
+          {
+            "type": "fixed",
+            "text": "Download speed problems fixed at the root: mods crawling at 11.5 KB/s, client.jar stalling for 57 seconds near the end, and slow loader installation were each traced to a distinct cause.",
+            "markdown": "**Download speed problems fixed at the root**: mods crawling at 11.5 KB/s, `client.jar` stalling for 57 seconds near the end, and slow loader installation were each traced to a distinct cause.",
+            "details": [
+              "Mods: the throughput probe's verdict was discarded in favour of hard-coded official-first routing, and the official source 307-redirects some devices to an unreachable host.",
+              "End-of-transfer stalls: the tail was monopolised by three or four 7 KB/s zombie connections; the tail can now be re-segmented and slow connections can be preempted.",
+              "Loader installation: a stray path segment in the BMCLAPI mirror URL always returned 404, single-segment transfers were repeatedly killed by the low-speed watchdog, and installer downloads reported no progress at all."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Legacy Forge (1.12.2 / 1.11.2 …) failed to install every time: the installer's internal path carried a leading slash and was rejected by an over-strict safety check.",
+            "markdown": "**Legacy Forge (1.12.2 / 1.11.2 …) failed to install every time**: the installer's internal path carried a leading slash and was rejected by an over-strict safety check."
+          },
+          {
+            "type": "fixed",
+            "text": "Fabric installation left a stray entry in the version list: Fabric now installs inside the sandbox like Forge and NeoForge.",
+            "markdown": "**Fabric installation left a stray entry in the version list**: Fabric now installs inside the sandbox like Forge and NeoForge."
+          },
+          {
+            "type": "fixed",
+            "text": "Forge deep repair now reuses the full installation pipeline instead of re-running the installer in place, which greatly improves its success rate.",
+            "markdown": "**Forge deep repair now reuses the full installation pipeline** instead of re-running the installer in place, which greatly improves its success rate."
+          },
+          {
+            "type": "fixed",
+            "text": "Three serious logging defects: 96.8% of records dropped under bursts, game logs wiped on every launch, and crash diagnosis giving destructive advice for healthy sessions while the upload path was not redacted."
+          },
+          {
+            "type": "fixed",
+            "text": "MC 26.3 rendering washed out (sRGB encoded twice)."
+          },
+          {
+            "type": "fixed",
+            "text": "Completed the native interfaces for virtual controls in release builds."
+          },
+          {
+            "type": "fixed",
+            "text": "A launch crash caused by module initialisation order under a circular import."
+          },
+          {
+            "type": "notice",
+            "text": "MC 26.2 with the Sodium mod still has known problems: scrambled terrain and severe stutter on some devices, unresolved in this release. Vanilla 26.x without Sodium is unaffected.",
+            "markdown": "**MC 26.2 with the Sodium mod still has known problems**: scrambled terrain and severe stutter on some devices, unresolved in this release. **Vanilla 26.x without Sodium is unaffected.**",
+            "details": [
+              "Related problems that this release did fix: worlds showing only the HUD with \"void\" terrain and textures, and colour bars after opening F3.",
+              "Several attempts at the terrain scrambling and the stutter were all disproved on device and reverted, so they remain open; work continues."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "MC 26.3 is a snapshot / preview version and is still being adapted: it reaches the main menu and worlds but is not guaranteed to be stable."
+          },
+          {
+            "type": "notice",
+            "text": "The attached HAP is unsigned; sign it yourself before sideloading.",
+            "markdown": "The attached HAP is **unsigned**; sign it yourself before sideloading."
+          }
+        ],
+        "summary": "This release brings up Minecraft 26.3's new SDL3 stack, overhauls the download and logging paths, and puts the changelog inside the app for the first time."
+      }
+    },
+    {
+      "versionName": "1.0.1",
+      "versionCode": 1000450,
+      "tag": "v1.0.1",
+      "date": "2026-07-29",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.1",
+      "title": "下载链路紧急修复",
+      "titleEn": "Downloader hotfix",
+      "zh": {
+        "entries": [
+          {
+            "type": "improved",
+            "text": "下载器断点续传、分段调度和镜像连接稳定性。"
+          },
+          {
+            "type": "improved",
+            "text": "Gitee JDK 镜像分卷，降低并行下载长尾。"
+          },
+          {
+            "type": "fixed",
+            "text": "JDK 下载失败、卡住、取消后重试无响应，以及阶段进度异常。"
+          },
+          {
+            "type": "fixed",
+            "text": "下载尾段异常重下，以及 NeoForge 安装依赖下载长时间停顿。"
+          },
+          {
+            "type": "notice",
+            "text": "本版是紧急修复版本，建议所有 1.0.0 用户升级。"
+          }
+        ],
+        "summary": "1.0.0 的下载相关紧急修复，不包含新的大型功能。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "improved",
+            "text": "Resumable downloads, segment scheduling and mirror connection stability."
+          },
+          {
+            "type": "improved",
+            "text": "Split Gitee JDK mirror volumes to cut the long tail of parallel downloads."
+          },
+          {
+            "type": "fixed",
+            "text": "JDK downloads failing, stalling, or not responding to retry after cancellation, plus wrong stage progress."
+          },
+          {
+            "type": "fixed",
+            "text": "Spurious re-downloads near the end of a transfer, and long stalls while fetching NeoForge install dependencies."
+          },
+          {
+            "type": "notice",
+            "text": "This is a hotfix release; upgrading is recommended for every 1.0.0 user."
+          }
+        ],
+        "summary": "A hotfix for the download stack in 1.0.0. No new major features."
+      }
+    },
+    {
+      "versionName": "1.0.0",
+      "versionCode": 1000422,
+      "tag": "v1.0.0",
+      "date": "2026-07-17",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0",
+      "title": "首个正式版：触摸手感与按键布局大跃进",
+      "titleEn": "First stable release, reworked touch and key layout",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "按键布局编辑器全面重做：单一浮层编辑器聚合编辑 / 样式 / 全局 / 手柄 / 方案 / 多选六个分页。",
+            "markdown": "**按键布局编辑器全面重做**：单一浮层编辑器聚合编辑 / 样式 / 全局 / 手柄 / 方案 / 多选六个分页。",
+            "details": [
+              "虚拟按键**自动对齐吸附**：对齐虚线 + 边/中心/相邻间距 + 黏滞轴锁定，摆放整齐不再靠手感。",
+              "**多选批量操作**：一键对齐、等间距、批量改样式、锁定、复制、删除，支持成组拖动。",
+              "布局方案支持鸿蒙原生分享导出、导入前分析（设备类型 / 合法性 / 旧版检测）、方案改名与按设备重置预设。",
+              "点击 `.json` 文件可经系统「打开方式」直接导入布局方案。",
+              "方案列表改为瀑布式紧凑排版，缩略图按**真实屏幕比例**还原（手机 / 平板各自比例）。"
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "触摸输入体验重做：视角 look 手感基于时间平滑并可选加速，高低帧率下一致更跟手。",
+            "markdown": "**触摸输入体验重做**：视角 look 手感基于时间平滑并可选加速，高低帧率下一致更跟手。",
+            "details": [
+              "**彻底根治「从菜单返回游戏视角瞬移」**：光标模型双量隔离，结构性解决而非补偿。",
+              "输入子系统下一代架构落地：C 层单一真相源解释器 + 输入台账，收口生命周期与线程安全。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "游戏语言选择：全局默认 + 单版本可跟随 / 可独立，由启动器权威写入 options.txt。",
+            "markdown": "**游戏语言选择**：全局默认 + 单版本可跟随 / 可独立，由启动器权威写入 `options.txt`。"
+          },
+          {
+            "type": "added",
+            "text": "物品栏直点：点屏幕底部物品栏直接切格，免数字键，默认开启并自动对齐。",
+            "markdown": "**物品栏直点**：点屏幕底部物品栏直接切格，免数字键，默认开启并自动对齐。"
+          },
+          {
+            "type": "added",
+            "text": "系统功能按钮（输入 / 设置 / 显示）统一为可移动、不可删除的按钮。"
+          },
+          {
+            "type": "added",
+            "text": "完整支持 F3+F4 等「按住 + 点按」跨菜单组合键。"
+          },
+          {
+            "type": "added",
+            "text": "游戏内按键名正常显示（W / A / S / D / Space，不再是 key.keyboard.x）。",
+            "markdown": "游戏内按键名正常显示（W / A / S / D / Space，不再是 `key.keyboard.x`）。"
+          },
+          {
+            "type": "added",
+            "text": "网络检测：全局网络异常横幅 + 分层诊断面板，可自证「能上网但连不上下载源」。",
+            "markdown": "**网络检测**：全局网络异常横幅 + 分层诊断面板，可自证「能上网但连不上下载源」。"
+          },
+          {
+            "type": "fixed",
+            "text": "第三方皮肤站（authlib-injector / LittleSkin）启动闪退。",
+            "markdown": "**第三方皮肤站（authlib-injector / LittleSkin）启动闪退**。"
+          },
+          {
+            "type": "fixed",
+            "text": "物品栏直点对齐、编辑器面板超屏被截断、chip 状态不刷新等编辑器问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "知识产权 / 去品牌化 / 备案合规调整（应对上架审核）。"
+          },
+          {
+            "type": "notice",
+            "text": "本版改动较大，尤其是触摸输入与布局编辑器；遇崩溃、安装失败或手感异常请务必反馈。"
+          },
+          {
+            "type": "notice",
+            "text": "附件为 unsigned HAP，需用 HoKit 自行签名侧载安装。",
+            "markdown": "附件为 **unsigned HAP**，需用 HoKit 自行签名侧载安装。"
+          }
+        ],
+        "summary": "AMCL 迎来 1.0.0 正式版。本版是「触摸手感 + 按键布局」的一次大跃进，配套完成了游戏语言、网络诊断与上架合规。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "On-screen key layout editor rebuilt: one floating editor with six tabs (edit / style / global / gamepad / presets / multi-select).",
+            "markdown": "**On-screen key layout editor rebuilt**: one floating editor with six tabs (edit / style / global / gamepad / presets / multi-select).",
+            "details": [
+              "**Snap alignment** for virtual keys: guide lines, edge / center / neighbour spacing and sticky axis locking.",
+              "**Batch editing on multi-select**: align, distribute, restyle, lock, duplicate, delete, and drag as a group.",
+              "Layout presets support HarmonyOS native share export, pre-import analysis (device type / validity / legacy detection), renaming and per-device preset reset.",
+              "Tapping a `.json` file can import a layout preset straight through the system \"open with\" dialog.",
+              "The preset list uses a compact masonry layout with thumbnails rendered at the **real screen aspect ratio** for phone and tablet."
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "Touch input reworked: look sensitivity is now time-based with optional acceleration, so it feels the same at high and low frame rates.",
+            "markdown": "**Touch input reworked**: look sensitivity is now time-based with optional acceleration, so it feels the same at high and low frame rates.",
+            "details": [
+              "**The \"camera jumps after returning from a menu\" bug is fixed structurally**, by separating the two cursor quantities instead of compensating for the drift.",
+              "Next-generation input architecture landed: a single-source-of-truth interpreter in C plus an input ledger that owns lifetime and thread safety."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "In-game language selection: a global default plus per-version follow-or-override, written authoritatively into options.txt by the launcher.",
+            "markdown": "**In-game language selection**: a global default plus per-version follow-or-override, written authoritatively into `options.txt` by the launcher."
+          },
+          {
+            "type": "added",
+            "text": "Direct hotbar tap: tap the hotbar at the bottom of the screen to switch slots without number keys, on by default and auto-aligned.",
+            "markdown": "**Direct hotbar tap**: tap the hotbar at the bottom of the screen to switch slots without number keys, on by default and auto-aligned."
+          },
+          {
+            "type": "added",
+            "text": "System function buttons (input / settings / display) are now movable but non-deletable."
+          },
+          {
+            "type": "added",
+            "text": "Full support for hold-and-tap combos such as F3+F4 across menus."
+          },
+          {
+            "type": "added",
+            "text": "In-game key names render properly (W / A / S / D / Space instead of key.keyboard.x).",
+            "markdown": "In-game key names render properly (W / A / S / D / Space instead of `key.keyboard.x`)."
+          },
+          {
+            "type": "added",
+            "text": "Network diagnostics: a global connectivity banner plus a layered diagnostic panel that can prove \"online but cannot reach the download source\".",
+            "markdown": "**Network diagnostics**: a global connectivity banner plus a layered diagnostic panel that can prove \"online but cannot reach the download source\"."
+          },
+          {
+            "type": "fixed",
+            "text": "Crash on launch with third-party skin services (authlib-injector / LittleSkin).",
+            "markdown": "**Crash on launch with third-party skin services** (authlib-injector / LittleSkin)."
+          },
+          {
+            "type": "fixed",
+            "text": "Editor issues: hotbar tap alignment, panels clipped off-screen, chip state not refreshing."
+          },
+          {
+            "type": "fixed",
+            "text": "IP / de-branding / filing compliance adjustments for store review."
+          },
+          {
+            "type": "notice",
+            "text": "Large change set, especially touch input and the layout editor; please report crashes, install failures or input anomalies."
+          },
+          {
+            "type": "notice",
+            "text": "The attached HAP is unsigned; sign it yourself with HoKit before sideloading.",
+            "markdown": "The attached HAP is **unsigned**; sign it yourself with HoKit before sideloading."
+          }
+        ],
+        "summary": "AMCL reaches 1.0.0. This release is a large step forward for touch feel and on-screen key layout, rounded out by in-game language selection, network diagnostics and store-compliance work."
+      }
+    },
+    {
+      "versionName": "1.0.0-beta.5",
+      "versionCode": 1000361,
+      "tag": "v1.0.0-beta.5",
+      "date": "2026-07-04",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-beta.5",
+      "title": "NeoForge 支持与手机端沙箱外存储",
+      "titleEn": "NeoForge support and external storage on phones",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "NeoForge 模组加载器支持（真机跑通）：与 Fabric / Forge 平级，安装、启动、模组管理全链路打通。",
+            "markdown": "**NeoForge 模组加载器支持**（真机跑通）：与 Fabric / Forge 平级，安装、启动、模组管理全链路打通。"
+          },
+          {
+            "type": "highlight",
+            "text": "手机端沙箱外存储：游戏数据可落在 下载/com.amcl.launcher 公共目录，卸载应用后存档与版本不丢失。",
+            "markdown": "**手机端沙箱外存储**：游戏数据可落在 `下载/com.amcl.launcher` 公共目录，**卸载应用后存档与版本不丢失**。"
+          },
+          {
+            "type": "added",
+            "text": "第三方皮肤站登录（authlib-injector / Yggdrasil）：支持 LittleSkin 等外置登录站，多角色切换、皮肤披风显示。",
+            "markdown": "**第三方皮肤站登录（authlib-injector / Yggdrasil）**：支持 LittleSkin 等外置登录站，多角色切换、皮肤披风显示。",
+            "details": [
+              "补齐 JVM 内 HTTPS 信任库，避免皮肤 / 联机验证失败。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "已装模组完整性校验：损坏检测 + 一键修复，支持 CurseForge 指纹反查与来源自动收编，未知来源不误判损坏。",
+            "markdown": "**已装模组完整性校验**：损坏检测 + 一键修复，支持 CurseForge 指纹反查与来源自动收编，未知来源不误判损坏。"
+          },
+          {
+            "type": "added",
+            "text": "内置文档中心 + JIT 指引：启动前检查与 Forge 安装前的 JIT 拦截新增「如何解决」跳转；设置页新增「常见问题」。",
+            "markdown": "**内置文档中心 + JIT 指引**：启动前检查与 Forge 安装前的 JIT 拦截新增「如何解决」跳转；设置页新增「常见问题」。"
+          },
+          {
+            "type": "added",
+            "text": "关于页：软件信息、GitHub、联系方式、QQ 群、检查更新。",
+            "markdown": "**关于页**：软件信息、GitHub、联系方式、QQ 群、检查更新。"
+          },
+          {
+            "type": "improved",
+            "text": "中文模组搜索：模糊匹配 + Modrinth 按 slug 直取 + 繁转简，修复「机械动力」等中文词搜不到、结果被高下载无关项淹没的问题。",
+            "markdown": "**中文模组搜索**：模糊匹配 + Modrinth 按 slug 直取 + 繁转简，修复「机械动力」等中文词搜不到、结果被高下载无关项淹没的问题。"
+          },
+          {
+            "type": "improved",
+            "text": "全链路缓存提速：模组搜索结果、模组图标、MC 版本清单均加缓存；译名库改为本地优先，冷启动模组列表直接显示中文名。",
+            "markdown": "**全链路缓存提速**：模组搜索结果、模组图标、MC 版本清单均加缓存；译名库改为本地优先，冷启动模组列表直接显示中文名。"
+          },
+          {
+            "type": "improved",
+            "text": "消除模组列表「加载球转完仍闪现『暂无结果』再出列表」的双搜竞态。"
+          },
+          {
+            "type": "fixed",
+            "text": "各处「去下载页」跳转只切大 Tab、不定位到模组 / 资源包 / 光影二级子页。"
+          },
+          {
+            "type": "fixed",
+            "text": "模组下载页「升级到该版本」只新增文件而未替换旧版。"
+          },
+          {
+            "type": "fixed",
+            "text": "原版 MC 26.x 经 MobileGlues 的低帧与物品栏 / 手部花屏（缓冲直写 + 帧边界栅栏）。"
+          },
+          {
+            "type": "fixed",
+            "text": "下载任务详情页速度 / 已下载 / 剩余不刷新。"
+          },
+          {
+            "type": "fixed",
+            "text": "平板端 sheet 取消系统右上角关闭按钮，避免与功能按钮重叠。"
+          },
+          {
+            "type": "fixed",
+            "text": "移除多余的 JIT 受限权限声明，与发布 Profile 对齐。"
+          },
+          {
+            "type": "notice",
+            "text": "本版改动量大且多为真机验证特性，遇崩溃 / 安装失败 / 启动问题请务必反馈，附日志更佳。"
+          }
+        ],
+        "summary": "内容最厚的一次 beta：两个重量级新特性打头，其余覆盖第三方皮肤站登录、模组完整性校验、全链路缓存提速与内置文档中心。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "NeoForge mod loader support, verified on device: a first-class peer of Fabric and Forge across install, launch and mod management.",
+            "markdown": "**NeoForge mod loader support**, verified on device: a first-class peer of Fabric and Forge across install, launch and mod management."
+          },
+          {
+            "type": "highlight",
+            "text": "External storage on phones: game data can live in the public Download/com.amcl.launcher folder, so worlds and installed versions survive uninstalling the app.",
+            "markdown": "**External storage on phones**: game data can live in the public `Download/com.amcl.launcher` folder, so **worlds and installed versions survive uninstalling the app**."
+          },
+          {
+            "type": "added",
+            "text": "Third-party skin service login (authlib-injector / Yggdrasil): services such as LittleSkin, with multi-profile switching and skin/cape rendering.",
+            "markdown": "**Third-party skin service login (authlib-injector / Yggdrasil)**: services such as LittleSkin, with multi-profile switching and skin/cape rendering.",
+            "details": [
+              "Added the missing HTTPS trust store inside the JVM so skin and session validation no longer fail."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Integrity check for installed mods: damage detection with one-tap repair, CurseForge fingerprint lookup and automatic source adoption; unknown sources are not flagged as broken.",
+            "markdown": "**Integrity check for installed mods**: damage detection with one-tap repair, CurseForge fingerprint lookup and automatic source adoption; unknown sources are not flagged as broken."
+          },
+          {
+            "type": "added",
+            "text": "Built-in documentation centre and JIT guidance: the pre-launch check and the JIT gate before Forge installation now link to \"how to fix\"; settings gained a FAQ entry.",
+            "markdown": "**Built-in documentation centre and JIT guidance**: the pre-launch check and the JIT gate before Forge installation now link to \"how to fix\"; settings gained a FAQ entry."
+          },
+          {
+            "type": "added",
+            "text": "About page: app info, GitHub, contact, QQ group and update check.",
+            "markdown": "**About page**: app info, GitHub, contact, QQ group and update check."
+          },
+          {
+            "type": "improved",
+            "text": "Chinese mod search: fuzzy matching, direct Modrinth slug lookup and traditional-to-simplified conversion, fixing terms like 机械动力 returning nothing and relevant hits drowning under high-download noise.",
+            "markdown": "**Chinese mod search**: fuzzy matching, direct Modrinth slug lookup and traditional-to-simplified conversion, fixing terms like 机械动力 returning nothing and relevant hits drowning under high-download noise."
+          },
+          {
+            "type": "improved",
+            "text": "Caching across the board: mod search results, mod icons and the Minecraft version manifest are cached; the translation database is local-first, so the mod list shows Chinese names on a cold start.",
+            "markdown": "**Caching across the board**: mod search results, mod icons and the Minecraft version manifest are cached; the translation database is local-first, so the mod list shows Chinese names on a cold start."
+          },
+          {
+            "type": "improved",
+            "text": "Removed the double-search race where the mod list flashed \"no results\" after the spinner finished."
+          },
+          {
+            "type": "fixed",
+            "text": "\"Go to downloads\" links only switched the top-level tab instead of landing on the mods / resource pack / shader sub-page."
+          },
+          {
+            "type": "fixed",
+            "text": "\"Upgrade to this version\" on the mod page added a file without replacing the old one."
+          },
+          {
+            "type": "fixed",
+            "text": "Low frame rate and corrupted hotbar / hand rendering for vanilla MC 26.x through MobileGlues (direct buffer writes plus a frame-boundary fence)."
+          },
+          {
+            "type": "fixed",
+            "text": "Speed / downloaded / remaining figures not refreshing on the task detail page."
+          },
+          {
+            "type": "fixed",
+            "text": "Removed the system close button from tablet sheets where it overlapped the function buttons."
+          },
+          {
+            "type": "fixed",
+            "text": "Dropped a redundant JIT restricted-permission declaration to match the release profile."
+          },
+          {
+            "type": "notice",
+            "text": "Large change set, mostly device-verified features; please report crashes, install failures and launch problems with logs."
+          }
+        ],
+        "summary": "The largest beta so far: two headline features, plus third-party skin login, mod integrity checking, caching across the board and a built-in documentation centre."
+      }
+    },
+    {
+      "versionName": "1.0.0-beta.4",
+      "versionCode": 1000323,
+      "tag": "v1.0.0-beta.4",
+      "date": "2026-06-26",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-beta.4",
+      "title": "整合包一键安装与模组下载体验提升",
+      "titleEn": "One-tap modpack install and a better mod browser",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "整合包一键安装：支持在线安装 CurseForge / Modrinth 整合包，也支持本地导入 .mrpack 与 CurseForge .zip。",
+            "markdown": "**整合包一键安装**：支持在线安装 CurseForge / Modrinth 整合包，也支持本地导入 `.mrpack` 与 CurseForge `.zip`。"
+          },
+          {
+            "type": "added",
+            "text": "中文名显示：模组、资源包、光影、整合包显示「中文名 (English)」，数据源 mcmod.cn，中文名会持续在线更新。",
+            "markdown": "**中文名显示**：模组、资源包、光影、整合包显示「中文名 (English)」，数据源 mcmod.cn，中文名会持续在线更新。"
+          },
+          {
+            "type": "added",
+            "text": "中文搜索：可直接搜「暮色森林」「匠魂」「工业时代」等中文名。",
+            "markdown": "**中文搜索**：可直接搜「暮色森林」「匠魂」「工业时代」等中文名。"
+          },
+          {
+            "type": "added",
+            "text": "打开网页：可跳转资源在 Modrinth / CurseForge 的页面，以及 MC 百科（mcmod）页面。",
+            "markdown": "**打开网页**：可跳转资源在 Modrinth / CurseForge 的页面，以及 MC 百科（mcmod）页面。"
+          },
+          {
+            "type": "improved",
+            "text": "下载提速：多源并发分段下载 + 动态加线程，多个模组 / 资源可并发下载，各自独立卡片并带图标。",
+            "markdown": "**下载提速**：多源并发分段下载 + 动态加线程，多个模组 / 资源可并发下载，各自独立卡片并带图标。"
+          },
+          {
+            "type": "fixed",
+            "text": "弱网下「下到一半卡死 / 进度回退 / 最终失败」。"
+          },
+          {
+            "type": "fixed",
+            "text": "正常退出游戏却误弹「上次异常退出」。"
+          },
+          {
+            "type": "fixed",
+            "text": "整合包与重命名版本的「真实 MC 版本 + 加载器」识别错误。"
+          },
+          {
+            "type": "notice",
+            "text": "仍为开发预览版，低版本与重型整合包尚未完整回归测试，遇到崩溃 / 失败请务必反馈。"
+          }
+        ],
+        "summary": "本次更新的重头是整合包一键安装，以及模组下载体验的全面提升。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "One-tap modpack install: install CurseForge / Modrinth modpacks online, or import .mrpack and CurseForge .zip files locally.",
+            "markdown": "**One-tap modpack install**: install CurseForge / Modrinth modpacks online, or import `.mrpack` and CurseForge `.zip` files locally."
+          },
+          {
+            "type": "added",
+            "text": "Chinese names: mods, resource packs, shaders and modpacks show \"Chinese name (English)\", sourced from mcmod.cn and refreshed online.",
+            "markdown": "**Chinese names**: mods, resource packs, shaders and modpacks show \"Chinese name (English)\", sourced from mcmod.cn and refreshed online."
+          },
+          {
+            "type": "added",
+            "text": "Chinese search: search directly for names such as 暮色森林, 匠魂 or 工业时代.",
+            "markdown": "**Chinese search**: search directly for names such as 暮色森林, 匠魂 or 工业时代."
+          },
+          {
+            "type": "added",
+            "text": "Open in browser: jump to a resource page on Modrinth / CurseForge, or to its MC Encyclopaedia (mcmod) page.",
+            "markdown": "**Open in browser**: jump to a resource page on Modrinth / CurseForge, or to its MC Encyclopaedia (mcmod) page."
+          },
+          {
+            "type": "improved",
+            "text": "Faster downloads: multi-source segmented transfers with dynamic thread scaling; several mods or resources download in parallel, each with its own card and icon.",
+            "markdown": "**Faster downloads**: multi-source segmented transfers with dynamic thread scaling; several mods or resources download in parallel, each with its own card and icon."
+          },
+          {
+            "type": "fixed",
+            "text": "Transfers stalling halfway, progress going backwards, or failing outright on a weak connection."
+          },
+          {
+            "type": "fixed",
+            "text": "A false \"last session exited abnormally\" prompt after quitting the game normally."
+          },
+          {
+            "type": "fixed",
+            "text": "Wrong detection of the real Minecraft version and loader for modpacks and renamed versions."
+          },
+          {
+            "type": "notice",
+            "text": "Still a development preview; older Minecraft versions and heavy modpacks have not been fully regression tested. Please report crashes and failures."
+          }
+        ],
+        "summary": "The headline of this release is one-tap modpack installation, together with a much better mod browsing experience."
+      }
+    },
+    {
+      "versionName": "1.0.0-beta.3",
+      "versionCode": 1000177,
+      "tag": "v1.0.0-beta.3",
+      "date": "2026-06-14",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-beta.3",
+      "title": "1.16.5 及以下版本适配与 JDK 8 运行时",
+      "titleEn": "Support for 1.16.5 and below, plus a JDK 8 runtime",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "1.16.5 及以下版本适配：完成 1.16.5 及以下（含 1.7.10 / 1.8.9 / 1.12.2 等老版本）的渲染、鼠标键盘输入与声音适配。",
+            "markdown": "**1.16.5 及以下版本适配**：完成 1.16.5 及以下（含 1.7.10 / 1.8.9 / 1.12.2 等老版本）的渲染、鼠标键盘输入与声音适配。"
+          },
+          {
+            "type": "highlight",
+            "text": "JDK 8 运行时 + 老 Forge 支持：老 Forge（1.7.10 / 1.8.9 / 1.14.4 / 1.16.4 等）可下载、安装、启动。",
+            "markdown": "**JDK 8 运行时 + 老 Forge 支持**：老 Forge（1.7.10 / 1.8.9 / 1.14.4 / 1.16.4 等）可下载、安装、启动。",
+            "details": [
+              "Java 版本可选 自动 / JDK 8 / 17 / 21 / 25，支持单版本独立指定与启动前匹配校验。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "版本文件夹：在版本详情里浏览、导入、导出、新建、重命名、删除该版本的游戏文件（沙箱内也能管理）。",
+            "markdown": "**版本文件夹**：在版本详情里浏览、导入、导出、新建、重命名、删除该版本的游戏文件（沙箱内也能管理）。"
+          },
+          {
+            "type": "improved",
+            "text": "检查更新改为启动自动检查，有新版弹提示并标红点；游戏中不打扰。"
+          },
+          {
+            "type": "fixed",
+            "text": "依赖库下载失败、完整性校验误报、加载画面未全屏等问题。"
+          },
+          {
+            "type": "notice",
+            "text": "1.16.5 及以下的低版本尚未完整回归测试，游玩或下载过程中遇到崩溃、下载失败请务必通过应用内「问题反馈」告知。"
+          },
+          {
+            "type": "notice",
+            "text": "未签名侧载包，当前仅建议在平板 / 2in1 设备上体验。"
+          }
+        ]
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Support for Minecraft 1.16.5 and below: rendering, keyboard/mouse input and audio adapted for older versions including 1.7.10, 1.8.9 and 1.12.2.",
+            "markdown": "**Support for Minecraft 1.16.5 and below**: rendering, keyboard/mouse input and audio adapted for older versions including 1.7.10, 1.8.9 and 1.12.2."
+          },
+          {
+            "type": "highlight",
+            "text": "JDK 8 runtime and legacy Forge: legacy Forge (1.7.10 / 1.8.9 / 1.14.4 / 1.16.4 …) can be downloaded, installed and launched.",
+            "markdown": "**JDK 8 runtime and legacy Forge**: legacy Forge (1.7.10 / 1.8.9 / 1.14.4 / 1.16.4 …) can be downloaded, installed and launched.",
+            "details": [
+              "The Java runtime can be set to Auto / JDK 8 / 17 / 21 / 25, per version, with a compatibility check before launch."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Version folder: browse, import, export, create, rename and delete a version's game files from its detail page, sandbox storage included.",
+            "markdown": "**Version folder**: browse, import, export, create, rename and delete a version's game files from its detail page, sandbox storage included."
+          },
+          {
+            "type": "improved",
+            "text": "Update checking now runs automatically at startup, showing a prompt and a red dot; it never interrupts an in-progress game."
+          },
+          {
+            "type": "fixed",
+            "text": "Library download failures, false positives in the integrity check, and the loading screen not going fullscreen."
+          },
+          {
+            "type": "notice",
+            "text": "Versions at or below 1.16.5 have not been fully regression tested; please report crashes and download failures through in-app feedback."
+          },
+          {
+            "type": "notice",
+            "text": "Unsigned sideload build; tablets and 2-in-1 devices are recommended for this release."
+          }
+        ]
+      }
+    },
+    {
+      "versionName": "1.0.0-beta.2",
+      "versionCode": 1000117,
+      "tag": "v1.0.0-beta.2",
+      "date": "2026-06-09",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-beta.2",
+      "title": "资源管理与存档管理",
+      "titleEn": "Resource and world management",
+      "zh": {
+        "entries": [
+          {
+            "type": "added",
+            "text": "已装模组显示是否为最新版，可一键更新。"
+          },
+          {
+            "type": "added",
+            "text": "模组 / 资源包 / 光影 / 数据包本地导入。"
+          },
+          {
+            "type": "added",
+            "text": "存档管理板块，存档一键导入 / 导出。"
+          },
+          {
+            "type": "added",
+            "text": "版本列表长按拖拽排序；版本详情页可直接启动；版本说明可折叠展开。"
+          },
+          {
+            "type": "added",
+            "text": "问题反馈与崩溃日志一键上传。"
+          },
+          {
+            "type": "added",
+            "text": "未装 JDK 17 或 JIT 不可用时，Forge 安装前提前提示拦截。"
+          },
+          {
+            "type": "refactored",
+            "text": "聊天 / 输入框重构，能正常唤起系统输入法。"
+          },
+          {
+            "type": "fixed",
+            "text": "正版头像不显示、切换账号后信息不刷新。"
+          },
+          {
+            "type": "notice",
+            "text": "停用兼容性较差的「新窗口模式」。"
+          },
+          {
+            "type": "notice",
+            "text": "本 HAP 为未签名包（DevEco 默认配置），安装需自备签名；仅支持 HarmonyOS NEXT API 20+。"
+          }
+        ]
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "added",
+            "text": "Installed mods show whether they are up to date, with one-tap update."
+          },
+          {
+            "type": "added",
+            "text": "Local import for mods, resource packs, shaders and data packs."
+          },
+          {
+            "type": "added",
+            "text": "A world management section with one-tap world import / export."
+          },
+          {
+            "type": "added",
+            "text": "Long-press drag reordering in the version list, launching straight from the version detail page, and collapsible version notes."
+          },
+          {
+            "type": "added",
+            "text": "One-tap upload for feedback and crash logs."
+          },
+          {
+            "type": "added",
+            "text": "Forge installation is now gated with an early prompt when JDK 17 is missing or JIT is unavailable."
+          },
+          {
+            "type": "refactored",
+            "text": "Rebuilt chat and text input so the system IME opens correctly."
+          },
+          {
+            "type": "fixed",
+            "text": "Missing avatars for genuine accounts, and stale info after switching accounts."
+          },
+          {
+            "type": "notice",
+            "text": "The poorly compatible \"new window mode\" has been disabled."
+          },
+          {
+            "type": "notice",
+            "text": "This HAP is unsigned (DevEco default configuration); you need your own signature to install it. HarmonyOS NEXT API 20+ only."
+          }
+        ]
+      }
+    },
+    {
+      "versionName": "1.0.0-beta.1",
+      "versionCode": 1000073,
+      "tag": "v1.0.0-beta.1",
+      "date": "2026-06-07",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-beta.1",
+      "title": "进入 beta：启动前校验与检查更新",
+      "titleEn": "Entering beta with pre-launch checks and update checking",
+      "zh": {
+        "entries": [
+          {
+            "type": "added",
+            "text": "启动前完整性校验：JIT / 运行时 / 版本文件 / assets 四项，通过后自动收起再启动。",
+            "markdown": "**启动前完整性校验**：JIT / 运行时 / 版本文件 / assets 四项，通过后自动收起再启动。"
+          },
+          {
+            "type": "added",
+            "text": "文件完整性校验 + 自动补全修复；损坏或残留版本在版本管理里标红，可修复或删除。"
+          },
+          {
+            "type": "added",
+            "text": "自定义 JVM 参数：全局（设置页）+ 单版本（版本详情内联编辑），用户参数优先。",
+            "markdown": "**自定义 JVM 参数**：全局（设置页）+ 单版本（版本详情内联编辑），用户参数优先。"
+          },
+          {
+            "type": "added",
+            "text": "检查更新：手动检查 + 启动自动检查（24 小时节流）+ 首页 / 设置红点提示。",
+            "markdown": "**检查更新**：手动检查 + 启动自动检查（24 小时节流）+ 首页 / 设置红点提示。"
+          },
+          {
+            "type": "added",
+            "text": "统一版本识别，支持中文路径与版本重命名。"
+          },
+          {
+            "type": "improved",
+            "text": "JDK 按版本纪元自动路由，不再全局套用同一个 JDK。"
+          },
+          {
+            "type": "improved",
+            "text": "下载提速：Forge 安装器与大文件走高并发分段。"
+          },
+          {
+            "type": "improved",
+            "text": "检查更新改走 GitHub 代理镜像，解决国内直连被阻断。"
+          },
+          {
+            "type": "fixed",
+            "text": "Forge：多版本及 MC 26.1 启动崩溃；新增损坏深度修复（保护存档与模组）。"
+          },
+          {
+            "type": "fixed",
+            "text": "Fabric 的 JDK 路由与推荐版本判定错误。"
+          },
+          {
+            "type": "fixed",
+            "text": "Sodium / LWJGL 校验错误。"
+          },
+          {
+            "type": "fixed",
+            "text": "崩溃提示新增 JDK 不兼容判断，正常退出不再误弹。"
+          },
+          {
+            "type": "notice",
+            "text": "HAP 未签名，需在已开启开发者模式的 HarmonyOS NEXT 设备上手动安装。"
+          }
+        ],
+        "summary": "从 alpha 进入 beta：启动链路更稳，新增完整性校验与检查更新。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "added",
+            "text": "Pre-launch integrity check covering JIT, runtime, version files and assets; the sheet collapses automatically once everything passes.",
+            "markdown": "**Pre-launch integrity check** covering JIT, runtime, version files and assets; the sheet collapses automatically once everything passes."
+          },
+          {
+            "type": "added",
+            "text": "File integrity verification with automatic repair; damaged or leftover versions are flagged in red in version management and can be repaired or deleted."
+          },
+          {
+            "type": "added",
+            "text": "Custom JVM arguments: global (settings) plus per-version (inline in version details), with user arguments taking precedence.",
+            "markdown": "**Custom JVM arguments**: global (settings) plus per-version (inline in version details), with user arguments taking precedence."
+          },
+          {
+            "type": "added",
+            "text": "Update checking: manual, automatic at startup (throttled to once per 24 h), with red dots on the home and settings entries.",
+            "markdown": "**Update checking**: manual, automatic at startup (throttled to once per 24 h), with red dots on the home and settings entries."
+          },
+          {
+            "type": "added",
+            "text": "Unified version detection, including Chinese paths and renamed versions."
+          },
+          {
+            "type": "improved",
+            "text": "The JDK is routed per version epoch instead of applying one runtime globally."
+          },
+          {
+            "type": "improved",
+            "text": "Faster downloads: the Forge installer and large files use highly concurrent segmented transfers."
+          },
+          {
+            "type": "improved",
+            "text": "Update checks go through GitHub proxy mirrors, working around blocked direct access in mainland China."
+          },
+          {
+            "type": "fixed",
+            "text": "Forge: launch crashes on several versions and on MC 26.1; added deep repair for damaged installs that preserves worlds and mods."
+          },
+          {
+            "type": "fixed",
+            "text": "Wrong JDK routing and recommended version for Fabric."
+          },
+          {
+            "type": "fixed",
+            "text": "Sodium / LWJGL verification errors."
+          },
+          {
+            "type": "fixed",
+            "text": "The crash prompt now recognises JDK incompatibility and no longer fires after a normal exit."
+          },
+          {
+            "type": "notice",
+            "text": "The HAP is unsigned and must be installed manually on a HarmonyOS NEXT device with developer mode enabled."
+          }
+        ],
+        "summary": "Moving from alpha to beta: a sturdier launch path, integrity checking and update checking."
+      }
+    },
+    {
+      "versionName": "1.0.0-alpha.5",
+      "versionCode": 1000000,
+      "tag": "v1.0.0-alpha.5",
+      "date": "2026-06-04",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-alpha.5",
+      "title": "修复 Fabric 1.21.x 崩溃，新增外置存储",
+      "titleEn": "Fabric 1.21.x crash fix and external storage",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "修复 Fabric 1.21.x 启动崩溃：vanilla 与 Fabric Loader 同时携带不同版本 ASM 库（如 9.6 / 9.9）导致 classpath 重复、启动闪退。",
+            "markdown": "**修复 Fabric 1.21.x 启动崩溃**：vanilla 与 Fabric Loader 同时携带不同版本 ASM 库（如 9.6 / 9.9）导致 classpath 重复、启动闪退。",
+            "details": [
+              "合并 libraries 时按 Maven `groupId:artifactId` 去重并保留最高版本；已安装版本无需重装即可生效。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "游戏数据外置目录：可把 .minecraft 存到 Download/com.amcl.launcher/，卸载应用后游戏文件保留。",
+            "markdown": "**游戏数据外置目录**：可把 `.minecraft` 存到 `Download/com.amcl.launcher/`，卸载应用后游戏文件保留。",
+            "details": [
+              "设置页可切换「沙箱 / 外部」存储位置，切换时按需申请权限并自动迁移已安装版本。",
+              "外部目录在系统文件管理器中显示为 AMCL 来源入口，便于手动管理游戏文件。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "外置存储仅平板 / 2in1 可用：手机因系统对 READ_WRITE_DOWNLOAD_DIRECTORY 权限支持受限，无法可靠地把 JVM 游戏数据写入公共 Download 目录，请继续使用默认沙箱存储。",
+            "markdown": "外置存储**仅平板 / 2in1 可用**：手机因系统对 `READ_WRITE_DOWNLOAD_DIRECTORY` 权限支持受限，无法可靠地把 JVM 游戏数据写入公共 Download 目录，请继续使用默认沙箱存储。"
+          },
+          {
+            "type": "notice",
+            "text": "HAP 仍为未签名构建，真机安装方式与此前 release 相同。"
+          }
+        ]
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Fixed the Fabric 1.21.x launch crash caused by vanilla and Fabric Loader shipping different ASM versions (9.6 / 9.9), which duplicated classpath entries.",
+            "markdown": "**Fixed the Fabric 1.21.x launch crash** caused by vanilla and Fabric Loader shipping different ASM versions (9.6 / 9.9), which duplicated classpath entries.",
+            "details": [
+              "Library merging now de-duplicates by Maven `groupId:artifactId` and keeps the highest version; existing installs benefit without reinstalling."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "External game data directory: .minecraft can live in Download/com.amcl.launcher/, so game files survive uninstalling the app.",
+            "markdown": "**External game data directory**: `.minecraft` can live in `Download/com.amcl.launcher/`, so game files survive uninstalling the app.",
+            "details": [
+              "Settings can switch between sandbox and external storage, requesting permissions on demand and migrating installed versions automatically.",
+              "The external directory appears as an AMCL source in the system file manager for manual management."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "External storage is tablet / 2-in-1 only: on phones the system's limited READ_WRITE_DOWNLOAD_DIRECTORY support cannot reliably let the JVM write game data into the public Download folder, so keep the default sandbox storage.",
+            "markdown": "External storage is **tablet / 2-in-1 only**: on phones the system's limited `READ_WRITE_DOWNLOAD_DIRECTORY` support cannot reliably let the JVM write game data into the public Download folder, so keep the default sandbox storage."
+          },
+          {
+            "type": "notice",
+            "text": "The HAP is still an unsigned build; install it the same way as previous releases."
+          }
+        ]
+      }
+    },
+    {
+      "versionName": "1.0.0-alpha.4",
+      "versionCode": 1000000,
+      "tag": "v1.0.0-alpha.4",
+      "date": "2026-05-31",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-alpha.4",
+      "title": "JDK 25 运行时与 Minecraft 26.2",
+      "titleEn": "JDK 25 runtime and Minecraft 26.2",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "JDK 25 运行时支持：完成 JDK 25 在 HarmonyOS NEXT 上的适配，可运行依赖 Java 25 的新版本 Minecraft。",
+            "markdown": "**JDK 25 运行时支持**：完成 JDK 25 在 HarmonyOS NEXT 上的适配，可运行依赖 Java 25 的新版本 Minecraft。",
+            "details": [
+              "与既有 JDK 17 / 21 多版本运行时并存，按 MC 版本自动路由。"
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "Minecraft 26.2（Pre-Release）支持：补齐 26.2 启动所需的全部 LWJGL 原生库（freetype / shaderc / spvc / vma）。",
+            "markdown": "**Minecraft 26.2（Pre-Release）支持**：补齐 26.2 启动所需的全部 LWJGL 原生库（`freetype` / `shaderc` / `spvc` / `vma`）。",
+            "details": [
+              "26.2 现可在鸿蒙设备上通过 OpenGL（MobileGlues）后端正常进入游戏。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "多项启动崩溃问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "选择 Vulkan 时自动回退到 OpenGL，不再崩溃；游戏内误选 Vulkan 也会在下次启动时自动纠正。"
+          },
+          {
+            "type": "notice",
+            "text": "暂不支持 Vulkan：Minecraft 26.2 内置的官方 Vulkan 后端依赖当前华为 Maleoon GPU 驱动尚未提供的扩展（VK_KHR_dynamic_rendering / VK_KHR_push_descriptor）。适配代码已就位，待驱动升级后即可启用。",
+            "markdown": "**暂不支持 Vulkan**：Minecraft 26.2 内置的官方 Vulkan 后端依赖当前华为 Maleoon GPU 驱动尚未提供的扩展（`VK_KHR_dynamic_rendering` / `VK_KHR_push_descriptor`）。适配代码已就位，待驱动升级后即可启用。"
+          },
+          {
+            "type": "notice",
+            "text": "当前推荐使用默认的 OpenGL（MobileGlues） 渲染后端获得最佳兼容性。",
+            "markdown": "当前推荐使用默认的 **OpenGL（MobileGlues）** 渲染后端获得最佳兼容性。"
+          }
+        ]
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "JDK 25 runtime support: JDK 25 has been ported to HarmonyOS NEXT, so Minecraft versions that require Java 25 can run.",
+            "markdown": "**JDK 25 runtime support**: JDK 25 has been ported to HarmonyOS NEXT, so Minecraft versions that require Java 25 can run.",
+            "details": [
+              "It coexists with the existing JDK 17 / 21 runtimes and is routed automatically per Minecraft version."
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "Minecraft 26.2 (pre-release) support: added every LWJGL native library 26.2 needs to boot (freetype, shaderc, spvc, vma).",
+            "markdown": "**Minecraft 26.2 (pre-release) support**: added every LWJGL native library 26.2 needs to boot (`freetype`, `shaderc`, `spvc`, `vma`).",
+            "details": [
+              "26.2 now reaches the game on HarmonyOS devices through the OpenGL (MobileGlues) backend."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Several launch crashes."
+          },
+          {
+            "type": "fixed",
+            "text": "Selecting Vulkan now falls back to OpenGL instead of crashing, and an in-game Vulkan selection is corrected on the next launch."
+          },
+          {
+            "type": "notice",
+            "text": "Vulkan is not supported yet: the official Vulkan backend in Minecraft 26.2 needs extensions the current Huawei Maleoon GPU driver does not expose (VK_KHR_dynamic_rendering, VK_KHR_push_descriptor). The adaptation code is in place and will be enabled once the driver supports them.",
+            "markdown": "**Vulkan is not supported yet**: the official Vulkan backend in Minecraft 26.2 needs extensions the current Huawei Maleoon GPU driver does not expose (`VK_KHR_dynamic_rendering`, `VK_KHR_push_descriptor`). The adaptation code is in place and will be enabled once the driver supports them."
+          },
+          {
+            "type": "notice",
+            "text": "Stay on the default OpenGL (MobileGlues) backend for the best compatibility.",
+            "markdown": "Stay on the default **OpenGL (MobileGlues)** backend for the best compatibility."
+          }
+        ]
+      }
+    },
+    {
+      "versionName": "1.0.0-alpha.3",
+      "versionCode": 1000000,
+      "tag": "v1.0.0-alpha.3",
+      "date": "2026-05-30",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-alpha.3",
+      "title": "虚拟按键与输入体验重构",
+      "titleEn": "Virtual keys and input experience rework",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "虚拟按键全面重构：统一为大小一致的方形按键，框内自动显示绑定键名；新增「添加按键」与全键盘改键，设置面板可拖动可滚动。",
+            "markdown": "**虚拟按键全面重构**：统一为大小一致的方形按键，框内自动显示绑定键名；新增「添加按键」与全键盘改键，设置面板可拖动可滚动。"
+          },
+          {
+            "type": "added",
+            "text": "多键组合：支持 F3+F4 切换游戏模式等组合键。"
+          },
+          {
+            "type": "added",
+            "text": "按住按键拖动瞄准：蓄力弓箭 / 举盾时可拖动视角。"
+          },
+          {
+            "type": "added",
+            "text": "按键显示场景切换（游戏中 / 菜单）。"
+          },
+          {
+            "type": "added",
+            "text": "内置手机 / 平板两套精简默认布局，并新增全局透明度调节。"
+          },
+          {
+            "type": "fixed",
+            "text": "聊天框输入：可正常呼出输入法并实时同步到游戏聊天框；存档搜索、创造物品栏、JEI 等游戏内文本框也可输入。"
+          }
+        ],
+        "summary": "本次主要优化虚拟按键与输入体验。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Virtual keys rebuilt: uniform square keys that display their bound key name, an \"add key\" flow, full-keyboard rebinding, and a draggable, scrollable settings panel.",
+            "markdown": "**Virtual keys rebuilt**: uniform square keys that display their bound key name, an \"add key\" flow, full-keyboard rebinding, and a draggable, scrollable settings panel."
+          },
+          {
+            "type": "added",
+            "text": "Multi-key combos such as F3+F4 for switching game mode."
+          },
+          {
+            "type": "added",
+            "text": "Hold-and-drag aiming: move the camera while drawing a bow or raising a shield."
+          },
+          {
+            "type": "added",
+            "text": "Per-scene key visibility (in game / in menus)."
+          },
+          {
+            "type": "added",
+            "text": "Two built-in minimal default layouts for phone and tablet, plus a global opacity control."
+          },
+          {
+            "type": "fixed",
+            "text": "Chat input: the IME opens and syncs live into the in-game chat box; world search, the creative inventory and JEI text fields accept input too."
+          }
+        ],
+        "summary": "This release focuses on virtual keys and the input experience."
+      }
+    },
+    {
+      "versionName": "1.0.0-alpha.2",
+      "versionCode": 1000000,
+      "tag": "v1.0.0-alpha.2",
+      "date": "2026-05-27",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-alpha.2",
+      "title": "多任务下载与声音修复",
+      "titleEn": "Multi-task download and audio fixes",
+      "zh": {
+        "entries": [
+          {
+            "type": "fixed",
+            "text": "多任务同时下载时的失败与卡住。"
+          },
+          {
+            "type": "fixed",
+            "text": "游戏内声音异常。"
+          },
+          {
+            "type": "notice",
+            "text": "本版属早期 alpha，发布时未留下更完整的更新记录，这里仅按原始发布说明如实转录。"
+          }
+        ]
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "fixed",
+            "text": "Failures and stalls when several download tasks ran at the same time."
+          },
+          {
+            "type": "fixed",
+            "text": "Broken in-game audio."
+          },
+          {
+            "type": "notice",
+            "text": "This is an early alpha; no more detailed release notes were recorded at the time, so the entries above transcribe the original announcement verbatim."
+          }
+        ]
+      }
+    },
+    {
+      "versionName": "1.0.0-alpha.1",
+      "versionCode": 1000000,
+      "tag": "v1.0.0-alpha.1",
+      "date": "2026-05-25",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.0-alpha.1",
+      "title": "首个公开预览版",
+      "titleEn": "First public preview",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Minecraft Java 版 1.18 – 1.21.x 已可在 HarmonyOS NEXT 上启动并渲染（已在 Mate 70 / Maleoon 910 上验证 MC 1.20.4）。",
+            "markdown": "**Minecraft Java 版 1.18 – 1.21.x 已可在 HarmonyOS NEXT 上启动并渲染**（已在 Mate 70 / Maleoon 910 上验证 MC 1.20.4）。"
+          },
+          {
+            "type": "added",
+            "text": "模组加载器：原版、Fabric、Forge。"
+          },
+          {
+            "type": "added",
+            "text": "内嵌为 HarmonyOS NEXT（musl, aarch64）交叉编译的 OpenJDK 17（稳定）与 OpenJDK 21（实验性）。"
+          },
+          {
+            "type": "added",
+            "text": "触摸输入 + 虚拟按键 + 自定义布局编辑器；音频走 OpenAL Soft + OHAudio。"
+          },
+          {
+            "type": "added",
+            "text": "多镜像、多线程、断点续传下载器，支持原版 / Fabric / Forge / Modrinth / CurseForge。"
+          },
+          {
+            "type": "added",
+            "text": "离线账户（用于开发）；微软正版登录在进行中。"
+          },
+          {
+            "type": "notice",
+            "text": "HAP 未签名，真机安装需通过华为开发者计划自签名。",
+            "markdown": "**HAP 未签名**，真机安装需通过华为开发者计划自签名。"
+          },
+          {
+            "type": "notice",
+            "text": "仅支持 HarmonyOS NEXT API 20（SDK 6.0.0+）。",
+            "markdown": "**仅支持 HarmonyOS NEXT API 20**（SDK 6.0.0+）。"
+          },
+          {
+            "type": "notice",
+            "text": "必须开启 ALLOW_WRITABLE_CODE_MEMORY ACL 才能启用 JIT。",
+            "markdown": "**必须开启 `ALLOW_WRITABLE_CODE_MEMORY` ACL** 才能启用 JIT。"
+          },
+          {
+            "type": "notice",
+            "text": "MC 版本覆盖为 1.18 – 1.21.x：1.18 以前需要 Java 8/16，26.1+ 需要 Java 25，两端当时都未适配。",
+            "markdown": "**MC 版本覆盖为 1.18 – 1.21.x**：1.18 以前需要 Java 8/16，26.1+ 需要 Java 25，两端当时都未适配。"
+          },
+          {
+            "type": "notice",
+            "text": "NeoForge / Quilt / OptiFine 暂不支持。",
+            "markdown": "**NeoForge / Quilt / OptiFine 暂不支持。**"
+          }
+        ],
+        "summary": "**AMCL — 鸿蒙 NEXT 平台 Axe Minecraft 启动器**的首个公开预览版，供评估用途。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Minecraft Java Edition 1.18 – 1.21.x launches and renders on HarmonyOS NEXT (verified on Mate 70 / Maleoon 910 with MC 1.20.4).",
+            "markdown": "**Minecraft Java Edition 1.18 – 1.21.x launches and renders on HarmonyOS NEXT** (verified on Mate 70 / Maleoon 910 with MC 1.20.4)."
+          },
+          {
+            "type": "added",
+            "text": "Mod loaders: Vanilla, Fabric, Forge."
+          },
+          {
+            "type": "added",
+            "text": "Embedded patched OpenJDK 17 (stable) and OpenJDK 21 (experimental), cross-compiled for HarmonyOS NEXT (musl, aarch64)."
+          },
+          {
+            "type": "added",
+            "text": "Touch input with on-screen virtual keys and a custom layout editor; audio through OpenAL Soft + OHAudio."
+          },
+          {
+            "type": "added",
+            "text": "Multi-mirror, multi-threaded, resumable downloader for vanilla / Fabric / Forge / Modrinth / CurseForge."
+          },
+          {
+            "type": "added",
+            "text": "Offline accounts for development; Microsoft genuine login in progress."
+          },
+          {
+            "type": "notice",
+            "text": "The HAP is unsigned. Real-device installation requires self-signing through the Huawei Developer programme.",
+            "markdown": "**The HAP is unsigned.** Real-device installation requires self-signing through the Huawei Developer programme."
+          },
+          {
+            "type": "notice",
+            "text": "HarmonyOS NEXT API 20 only (SDK 6.0.0+).",
+            "markdown": "**HarmonyOS NEXT API 20 only** (SDK 6.0.0+)."
+          },
+          {
+            "type": "notice",
+            "text": "The ALLOW_WRITABLE_CODE_MEMORY ACL is required for JIT to work.",
+            "markdown": "**The `ALLOW_WRITABLE_CODE_MEMORY` ACL is required** for JIT to work."
+          },
+          {
+            "type": "notice",
+            "text": "Version coverage is 1.18 – 1.21.x: anything before 1.18 needs Java 8/16 and 26.1+ needs Java 25, neither of which was adapted at the time.",
+            "markdown": "**Version coverage is 1.18 – 1.21.x**: anything before 1.18 needs Java 8/16 and 26.1+ needs Java 25, neither of which was adapted at the time."
+          },
+          {
+            "type": "notice",
+            "text": "NeoForge / Quilt / OptiFine are not supported yet.",
+            "markdown": "**NeoForge / Quilt / OptiFine are not supported yet.**"
+          }
+        ],
+        "summary": "The first public preview build of **AMCL — Axe Minecraft Launcher for HarmonyOS NEXT**, for evaluation purposes."
+      }
+    }
+  ]
+}

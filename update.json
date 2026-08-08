@@ -1,8 +1,94 @@
 {
-  "versionCode": 1000450,
-  "versionName": "1.0.1",
-  "tag": "v1.0.1",
+  "versionCode": 1000497,
+  "versionName": "1.0.2",
+  "tag": "v1.0.2",
   "url": "https://github.com/LZZLHY/amcl/releases/latest",
-  "notes": "1.0.1 紧急修复\n- 紧急修复：JDK 下载失败、卡住及取消后重试无响应\n- 修复：下载尾段异常重下和 NeoForge 安装长时间停顿\n- 优化：下载器断点续传、分段调度与镜像稳定性",
-  "mandatory": false
+  "notes": "1.0.2\n- 新增：MC 26.3（SDL3）可进入游戏、应用内更新日志页面\n- 新增：AI 崩溃日志分析与日志分享（logshare.cn）、活动账本\n- 修复：模组下载龟速、旧版 Forge 装不上、日志大量丢失\n- 注意：MC 26.2 + 钠（Sodium）组合仍有已知问题",
+  "mandatory": false,
+  "schema": 1,
+  "date": "2026-08-08",
+  "changelogUrl": "https://amcl.lovedhy.cn/changelog",
+  "notesEntries": [
+    {
+      "type": "highlight",
+      "text": "MC 26.3（SDL3 时代）已可进入主菜单与世界：Mojang 从 26.3-snapshot-4 起把窗口 / 输入 / 平台集成从 GLFW 换成 SDL3，本版打通了这条新链路，真机可进主菜单、出画面、响应输入。"
+    },
+    {
+      "type": "added",
+      "text": "应用内更新日志：新增更新日志页面与全新的更新提示弹窗，可按分类查看每个版本的变更。"
+    },
+    {
+      "type": "added",
+      "text": "AI 崩溃日志分析：崩溃后可一键分析，给出结论与技术详情（可展开查看完整日志），结果支持 Markdown 渲染。"
+    },
+    {
+      "type": "added",
+      "text": "活动账本：每条活动（下载 / 安装 / 修复 / 启动）都留一份完整、精确归属的记录。"
+    },
+    {
+      "type": "improved",
+      "text": "清掉渲染后端逐帧、逐上传路径上的驱动往返，并升级 MobileGlues。"
+    },
+    {
+      "type": "improved",
+      "text": "下载速度显示不再「一会 MB 一会 KB 甚至 B」：改用累计字节时间差计算。"
+    },
+    {
+      "type": "improved",
+      "text": "按主机选择 IP 地址族：IPv6 不可达的镜像不再拖慢整体下载。"
+    },
+    {
+      "type": "improved",
+      "text": "安装加载器前不再干等 30 秒（校验文件探测改为并发 + 短超时），小文件也不再被切成多段各付一次握手。"
+    },
+    {
+      "type": "improved",
+      "text": "重绘崩溃诊断版面，日志分享升为独立卡片。"
+    },
+    {
+      "type": "fixed",
+      "text": "下载速度问题根治：模组下载卡在 11.5KB/s、client.jar 收尾停 57 秒、加载器安装慢，三类问题分别定位到根因后修复。"
+    },
+    {
+      "type": "fixed",
+      "text": "旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上：安装器内部路径带前导斜杠被过严校验拦下。"
+    },
+    {
+      "type": "fixed",
+      "text": "Fabric 安装会在版本列表里残留多余条目：Fabric 现在与 Forge / NeoForge 一样在安装沙箱里完成。"
+    },
+    {
+      "type": "fixed",
+      "text": "Forge 深度修复改走与全新安装同一条流水线，不再原地重跑安装器，成功率大幅提升。"
+    },
+    {
+      "type": "fixed",
+      "text": "日志系统三处严重缺陷：突发场景丢失 96.8% 日志、游戏日志每次启动被清空、崩溃诊断对健康会话给出破坏性建议且上传出口未脱敏。"
+    },
+    {
+      "type": "fixed",
+      "text": "MC 26.3 画面整体发白（sRGB 被编码两次）。"
+    },
+    {
+      "type": "fixed",
+      "text": "补齐 Release 构建中虚拟控制相关的原生接口。"
+    },
+    {
+      "type": "fixed",
+      "text": "一次启动崩溃（循环 import 下的模块级初始化顺序问题）。"
+    },
+    {
+      "type": "notice",
+      "text": "MC 26.2 搭配钠（Sodium）这个模组仍有已知问题：部分设备上会出现地形错乱与严重卡顿，本版未能解决。原版（不装钠）的 26.x 不受影响。"
+    },
+    {
+      "type": "notice",
+      "text": "MC 26.3 属于快照 / 预览版本，仍在适配中，可进入主菜单与世界但不保证稳定。"
+    },
+    {
+      "type": "notice",
+      "text": "附件为 unsigned HAP，需自行签名后侧载安装。"
+    }
+  ],
+  "sizeBytes": 112312578
 }
