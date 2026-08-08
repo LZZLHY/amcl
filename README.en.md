@@ -12,7 +12,7 @@
   <p>
     <a href="https://github.com/LZZLHY/amcl/releases/latest">Latest release</a> ·
     <a href="https://amcl.lovedhy.cn/docs/install-hokit">HoKit installation guide</a> ·
-    <a href="https://lzzlhy.github.io/amcl/">Project website</a> ·
+    <a href="https://amcl.lovedhy.cn">Official website</a> ·
     <a href="https://lzzlhy.github.io/amcl/privacy-policy/">Privacy policy</a> ·
     <a href="https://github.com/LZZLHY/amcl/issues">Issues</a>
   </p>
