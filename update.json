@@ -1,94 +1,98 @@
 {
-  "versionCode": 1000497,
-  "versionName": "1.0.2",
-  "tag": "v1.0.2",
+  "versionCode": 1000583,
+  "versionName": "1.0.3",
+  "tag": "v1.0.3",
   "url": "https://github.com/LZZLHY/amcl/releases/latest",
-  "notes": "1.0.2\n- 新增：MC 26.3（SDL3）可进入游戏、应用内更新日志页面\n- 新增：AI 崩溃日志分析与日志分享（logshare.cn）、活动账本\n- 修复：模组下载龟速、旧版 Forge 装不上、日志大量丢失\n- 注意：MC 26.2 + 钠（Sodium）组合仍有已知问题",
+  "notes": "1.0.3\n- 头条：MC 26.3 SDL3 适配继续完善，Snapshot 9 与 Pre-Release 1 可启动、进入菜单和世界\n- 头条：键鼠适配完成核心链路重构，目前仅在 HarmonyOS 7（API 26）验证可玩\n- 新增：JDK 更新系统与本地压缩包导入\n- 修复：Fabric 启动崩溃、IPv6 联机、下载列表与正版登录等问题\n- 注意：HarmonyOS 6 等系统的键鼠可能有问题；MC 26.3 仍为预览版本",
   "mandatory": false,
   "schema": 1,
-  "date": "2026-08-08",
+  "date": "2026-09-02",
   "changelogUrl": "https://amcl.lovedhy.cn/changelog",
   "notesEntries": [
     {
       "type": "highlight",
-      "text": "MC 26.3（SDL3 时代）已可进入主菜单与世界：Mojang 从 26.3-snapshot-4 起把窗口 / 输入 / 平台集成从 GLFW 换成 SDL3，本版打通了这条新链路，真机可进主菜单、出画面、响应输入。"
+      "text": "Minecraft 26.3 的可玩性继续提升：Snapshot 9 与 Pre-Release 1 已在目标设备完成启动、主菜单、世界加载、画面和输入验证。"
+    },
+    {
+      "type": "highlight",
+      "text": "物理键鼠适配完成核心链路重构：统一键盘、鼠标按钮、滚轮、视角与失焦恢复的事件通道，改善输入一致性；当前可玩范围见下方“注意”。"
     },
     {
       "type": "added",
-      "text": "应用内更新日志：新增更新日志页面与全新的更新提示弹窗，可按分类查看每个版本的变更。"
+      "text": "JDK 更新系统：已安装但版本较旧的 JDK 不再一律判定为不可用，用户可以自行决定是否更新。"
     },
     {
       "type": "added",
-      "text": "AI 崩溃日志分析：崩溃后可一键分析，给出结论与技术详情（可展开查看完整日志），结果支持 Markdown 渲染。"
-    },
-    {
-      "type": "added",
-      "text": "活动账本：每条活动（下载 / 安装 / 修复 / 启动）都留一份完整、精确归属的记录。"
+      "text": "从本地压缩包导入 JDK：支持离线安装和用户自带 JDK 包。"
     },
     {
       "type": "improved",
-      "text": "清掉渲染后端逐帧、逐上传路径上的驱动往返，并升级 MobileGlues。"
+      "text": "优化 MC 26.3 的地形上传、GPU 提交和单人区块发包节奏；目标设备已确认区块边界卡顿感明显减少，但不宣称所有设备和模组组合都已彻底解决。"
     },
     {
       "type": "improved",
-      "text": "下载速度显示不再「一会 MB 一会 KB 甚至 B」：改用累计字节时间差计算。"
+      "text": "MobileGlues 升级到 2.0 基线，并补齐源码、构建参数、HAP 内原生库与签名产物之间的可追溯校验。"
     },
     {
-      "type": "improved",
-      "text": "按主机选择 IP 地址族：IPv6 不可达的镜像不再拖慢整体下载。"
+      "type": "refactored",
+      "text": "建立统一的渲染后端注册与路由层，彻底退役不可用的 Zink 路径。"
     },
     {
-      "type": "improved",
-      "text": "安装加载器前不再干等 30 秒（校验文件探测改为并发 + 短超时），小文件也不再被切成多段各付一次握手。"
-    },
-    {
-      "type": "improved",
-      "text": "重绘崩溃诊断版面，日志分享升为独立卡片。"
+      "type": "refactored",
+      "text": "完成多输入端 typed 通道迁移，并增加事件投递、按键持有、滚轮量纲和焦点恢复等完整性检查。"
     },
     {
       "type": "fixed",
-      "text": "下载速度问题根治：模组下载卡在 11.5KB/s、client.jar 收尾停 57 秒、加载器安装慢，三类问题分别定位到根因后修复。"
+      "text": "修复 Minecraft 26.3 Pre-Release 1 因缺少 SPNG 模块而在启动早期退出。"
     },
     {
       "type": "fixed",
-      "text": "旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上：安装器内部路径带前导斜杠被过严校验拦下。"
+      "text": "修复 MC 26.3 着色器被错误重写、旧翻译缓存继续命中以及 OIT 输出不兼容造成的启动崩溃。"
     },
     {
       "type": "fixed",
-      "text": "Fabric 安装会在版本列表里残留多余条目：Fabric 现在与 Forge / NeoForge 一样在安装沙箱里完成。"
+      "text": "修复 SDL3 辅助窗口触发“只支持一个窗口”、菜单完全无响应以及第一次点击只移动光标的问题。"
     },
     {
       "type": "fixed",
-      "text": "Forge 深度修复改走与全新安装同一条流水线，不再原地重跑安装器，成功率大幅提升。"
+      "text": "修复 Fabric 各版本因游戏 classpath 缺失而启动即崩溃。"
     },
     {
       "type": "fixed",
-      "text": "日志系统三处严重缺陷：突发场景丢失 96.8% 日志、游戏日志每次启动被清空、崩溃诊断对健康会话给出破坏性建议且上传出口未脱敏。"
+      "text": "修复加入 IPv6 服务器失败，并更新 JDK 8、17、21、25 的 IPv6 沙箱兼容组件。"
     },
     {
       "type": "fixed",
-      "text": "MC 26.3 画面整体发白（sRGB 被编码两次）。"
+      "text": "修复 Release 包中版本列表、模组列表和正版登录因属性名混淆而失效的问题。"
     },
     {
       "type": "fixed",
-      "text": "补齐 Release 构建中虚拟控制相关的原生接口。"
+      "text": "修复 GC 日志相对路径导致 JVM 创建失败、游戏完全无法启动的问题。"
     },
     {
       "type": "fixed",
-      "text": "一次启动崩溃（循环 import 下的模块级初始化顺序问题）。"
+      "text": "修复物理滚轮方向、量纲、首格重复、焦点释放和部分输入事件无法送达后端的问题。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复 Release 构建中的帧率调度接口失效，并移除出货包内不应携带的测试代码。"
     },
     {
       "type": "notice",
-      "text": "MC 26.2 搭配钠（Sodium）这个模组仍有已知问题：部分设备上会出现地形错乱与严重卡顿，本版未能解决。原版（不装钠）的 26.x 不受影响。"
+      "text": "物理键鼠目前仅在 HarmonyOS 7（API 26）设备上验证可玩；HarmonyOS 6（API 24）及其他较低系统版本可能遇到鼠标按键、视角或滚轮问题。"
     },
     {
       "type": "notice",
-      "text": "MC 26.3 属于快照 / 预览版本，仍在适配中，可进入主菜单与世界但不保证稳定。"
+      "text": "MC 26.2 搭配 Sodium 仍有已知问题：部分设备可能出现地形错乱或严重卡顿；原版 26.x 不受该组合问题影响。"
     },
     {
       "type": "notice",
-      "text": "附件为 unsigned HAP，需自行签名后侧载安装。"
+      "text": "MC 26.3 仍属于快照／预览版本，不保证所有后续快照、模组和设备均稳定。"
+    },
+    {
+      "type": "notice",
+      "text": "Release 附件为 unsigned HAP，需要自行签名后侧载安装，推荐使用 HoKit。"
     }
   ],
-  "sizeBytes": 112312578
+  "sizeBytes": 92367816
 }

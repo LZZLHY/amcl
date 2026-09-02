@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-08-08T12:46:39Z",
+  "generatedAt": "2026-09-02T15:05:46Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,228 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.2",
-    "versionCode": 1000497,
-    "tag": "v1.0.2",
-    "date": "2026-08-08"
+    "versionName": "1.0.3",
+    "versionCode": 1000583,
+    "tag": "v1.0.3",
+    "date": "2026-09-02"
   },
   "releases": [
+    {
+      "versionName": "1.0.3",
+      "versionCode": 1000583,
+      "tag": "v1.0.3",
+      "date": "2026-09-02",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.3",
+      "title": "MC 26.3 与键鼠适配大幅完善",
+      "titleEn": "Major Minecraft 26.3 and keyboard/mouse compatibility update",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Minecraft 26.3 的可玩性继续提升：Snapshot 9 与 Pre-Release 1 已在目标设备完成启动、主菜单、世界加载、画面和输入验证。",
+            "markdown": "**Minecraft 26.3 的可玩性继续提升**：Snapshot 9 与 Pre-Release 1 已在目标设备完成启动、主菜单、世界加载、画面和输入验证。",
+            "details": [
+              "补齐新版必需的 SPNG Java 与 OpenHarmony 原生模块，并修复 OIT、着色器翻译缓存、SDL3 多窗口和输入激活等连续阻塞。",
+              "应用切换到后台再返回后，窗口与输入能够恢复。"
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "物理键鼠适配完成核心链路重构：统一键盘、鼠标按钮、滚轮、视角与失焦恢复的事件通道，改善输入一致性；当前可玩范围见下方“注意”。",
+            "markdown": "**物理键鼠适配完成核心链路重构**：统一键盘、鼠标按钮、滚轮、视角与失焦恢复的事件通道，改善输入一致性；当前可玩范围见下方“注意”。",
+            "details": [
+              "物理鼠标不再套用为触屏抖动设计的平滑，减少停止移动后的视角拖尾感。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "JDK 更新系统：已安装但版本较旧的 JDK 不再一律判定为不可用，用户可以自行决定是否更新。",
+            "markdown": "**JDK 更新系统**：已安装但版本较旧的 JDK 不再一律判定为不可用，用户可以自行决定是否更新。"
+          },
+          {
+            "type": "added",
+            "text": "从本地压缩包导入 JDK：支持离线安装和用户自带 JDK 包。",
+            "markdown": "**从本地压缩包导入 JDK**：支持离线安装和用户自带 JDK 包。"
+          },
+          {
+            "type": "improved",
+            "text": "优化 MC 26.3 的地形上传、GPU 提交和单人区块发包节奏；目标设备已确认区块边界卡顿感明显减少，但不宣称所有设备和模组组合都已彻底解决。"
+          },
+          {
+            "type": "improved",
+            "text": "MobileGlues 升级到 2.0 基线，并补齐源码、构建参数、HAP 内原生库与签名产物之间的可追溯校验。"
+          },
+          {
+            "type": "refactored",
+            "text": "建立统一的渲染后端注册与路由层，彻底退役不可用的 Zink 路径。"
+          },
+          {
+            "type": "refactored",
+            "text": "完成多输入端 typed 通道迁移，并增加事件投递、按键持有、滚轮量纲和焦点恢复等完整性检查。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Minecraft 26.3 Pre-Release 1 因缺少 SPNG 模块而在启动早期退出。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 MC 26.3 着色器被错误重写、旧翻译缓存继续命中以及 OIT 输出不兼容造成的启动崩溃。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 SDL3 辅助窗口触发“只支持一个窗口”、菜单完全无响应以及第一次点击只移动光标的问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Fabric 各版本因游戏 classpath 缺失而启动即崩溃。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复加入 IPv6 服务器失败，并更新 JDK 8、17、21、25 的 IPv6 沙箱兼容组件。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Release 包中版本列表、模组列表和正版登录因属性名混淆而失效的问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 GC 日志相对路径导致 JVM 创建失败、游戏完全无法启动的问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复物理滚轮方向、量纲、首格重复、焦点释放和部分输入事件无法送达后端的问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Release 构建中的帧率调度接口失效，并移除出货包内不应携带的测试代码。"
+          },
+          {
+            "type": "notice",
+            "text": "物理键鼠目前仅在 HarmonyOS 7（API 26）设备上验证可玩；HarmonyOS 6（API 24）及其他较低系统版本可能遇到鼠标按键、视角或滚轮问题。",
+            "markdown": "**物理键鼠目前仅在 HarmonyOS 7（API 26）设备上验证可玩**；HarmonyOS 6（API 24）及其他较低系统版本可能遇到鼠标按键、视角或滚轮问题。"
+          },
+          {
+            "type": "notice",
+            "text": "MC 26.2 搭配 Sodium 仍有已知问题：部分设备可能出现地形错乱或严重卡顿；原版 26.x 不受该组合问题影响。",
+            "markdown": "**MC 26.2 搭配 Sodium 仍有已知问题**：部分设备可能出现地形错乱或严重卡顿；原版 26.x 不受该组合问题影响。"
+          },
+          {
+            "type": "notice",
+            "text": "MC 26.3 仍属于快照／预览版本，不保证所有后续快照、模组和设备均稳定。"
+          },
+          {
+            "type": "notice",
+            "text": "Release 附件为 unsigned HAP，需要自行签名后侧载安装，推荐使用 HoKit。",
+            "markdown": "Release 附件为 **unsigned HAP**，需要自行签名后侧载安装，推荐使用 HoKit。"
+          }
+        ],
+        "summary": "本版继续完善 Minecraft 26.3 的 SDL3 运行链路，并集中重构物理键盘与鼠标输入，另外补齐 JDK 管理、IPv6 联机以及多项 Release 稳定性修复。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Minecraft 26.3 continues to become more playable: Snapshot 9 and Pre-Release 1 have been validated through launch, the main menu, world loading, rendering and input on target devices.",
+            "markdown": "**Minecraft 26.3 continues to become more playable**: Snapshot 9 and Pre-Release 1 have been validated through launch, the main menu, world loading, rendering and input on target devices.",
+            "details": [
+              "Added the required SPNG Java and OpenHarmony native modules, and fixed successive blockers in OIT, shader translation caches, SDL3 multi-window handling and input activation.",
+              "Window and input state now recover after backgrounding and returning to the app."
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "The core physical keyboard and mouse path has been rebuilt: keyboard, mouse button, wheel, look and focus-loss handling now use a unified event path; see Notes below for the currently validated system range.",
+            "markdown": "**The core physical keyboard and mouse path has been rebuilt**: keyboard, mouse button, wheel, look and focus-loss handling now use a unified event path; see Notes below for the currently validated system range.",
+            "details": [
+              "Physical mouse input no longer uses touch-oriented smoothing, reducing trailing movement after the mouse stops."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "JDK update management: an installed but older JDK is no longer automatically treated as unusable, and the user can choose whether to update it.",
+            "markdown": "**JDK update management**: an installed but older JDK is no longer automatically treated as unusable, and the user can choose whether to update it."
+          },
+          {
+            "type": "added",
+            "text": "Local JDK archive import for offline installation and user-provided packages.",
+            "markdown": "**Local JDK archive import** for offline installation and user-provided packages."
+          },
+          {
+            "type": "improved",
+            "text": "Improved terrain uploads, GPU submission and single-player chunk delivery in Minecraft 26.3. Device testing shows noticeably reduced chunk-boundary stutter, but this does not claim that every device and mod combination is completely fixed."
+          },
+          {
+            "type": "improved",
+            "text": "Upgraded MobileGlues to the 2.0 baseline with reproducible source, build, HAP and signing provenance checks."
+          },
+          {
+            "type": "refactored",
+            "text": "Introduced a central renderer registry and routing layer, and completely retired the unusable Zink path."
+          },
+          {
+            "type": "refactored",
+            "text": "Completed the typed multi-backend input migration with delivery, held-state, wheel-unit and focus-recovery checks."
+          },
+          {
+            "type": "fixed",
+            "text": "Minecraft 26.3 Pre-Release 1 exiting early because the SPNG module was missing."
+          },
+          {
+            "type": "fixed",
+            "text": "Minecraft 26.3 launch failures caused by shader rewriting, stale translation caches and OIT output incompatibilities."
+          },
+          {
+            "type": "fixed",
+            "text": "SDL3 auxiliary-window failures, unresponsive menus and the first click only moving the cursor."
+          },
+          {
+            "type": "fixed",
+            "text": "Fabric versions crashing at launch because the game classpath was unavailable."
+          },
+          {
+            "type": "fixed",
+            "text": "Failure to join IPv6 servers, with updated sandbox compatibility components for JDK 8, 17, 21 and 25."
+          },
+          {
+            "type": "fixed",
+            "text": "Version lists, mod lists and Microsoft login breaking in Release builds because JSON property names were obfuscated."
+          },
+          {
+            "type": "fixed",
+            "text": "JVM creation failing because the GC log used a relative path."
+          },
+          {
+            "type": "fixed",
+            "text": "Wheel direction, units, duplicated first detents, focus release and backend event-delivery problems."
+          },
+          {
+            "type": "fixed",
+            "text": "Broken frame-rate scheduling interfaces in Release builds, and test-only code being included in shipping binaries."
+          },
+          {
+            "type": "notice",
+            "text": "Physical keyboard and mouse gameplay has currently only been validated on HarmonyOS 7 (API 26). HarmonyOS 6 (API 24) and other older system versions may encounter mouse button, look or wheel issues.",
+            "markdown": "**Physical keyboard and mouse gameplay has currently only been validated on HarmonyOS 7 (API 26)**. HarmonyOS 6 (API 24) and other older system versions may encounter mouse button, look or wheel issues."
+          },
+          {
+            "type": "notice",
+            "text": "Minecraft 26.2 with Sodium still has known issues on some devices, including corrupted terrain and severe stutter. Vanilla 26.x is unaffected by this combination-specific issue.",
+            "markdown": "**Minecraft 26.2 with Sodium still has known issues** on some devices, including corrupted terrain and severe stutter. Vanilla 26.x is unaffected by this combination-specific issue."
+          },
+          {
+            "type": "notice",
+            "text": "Minecraft 26.3 remains a snapshot/pre-release version and is not guaranteed to work with every later snapshot, mod or device."
+          },
+          {
+            "type": "notice",
+            "text": "The Release asset is an unsigned HAP and must be signed before sideloading; HoKit is recommended.",
+            "markdown": "The Release asset is an **unsigned HAP** and must be signed before sideloading; HoKit is recommended."
+          }
+        ],
+        "summary": "This release continues the Minecraft 26.3 SDL3 work, rebuilds the physical keyboard and mouse path, and adds JDK management, IPv6 connectivity and Release stability fixes."
+      }
+    },
     {
       "versionName": "1.0.2",
       "versionCode": 1000497,
