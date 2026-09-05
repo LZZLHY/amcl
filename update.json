@@ -1,5 +1,5 @@
 {
-  "versionCode": 1000497,
+  "versionCode": 1000591,
   "versionName": "1.0.3",
   "tag": "v1.0.3",
   "url": "https://github.com/LZZLHY/amcl/releases/latest",
@@ -94,5 +94,5 @@
       "text": "Release 附件为 unsigned HAP，需要自行签名后侧载安装，推荐使用 HoKit。"
     }
   ],
-  "sizeBytes": 92368220
+  "sizeBytes": 107922403
 }
