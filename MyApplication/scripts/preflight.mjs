@@ -41,8 +41,9 @@
 //      源码引用或工作树 ELF 当作运行时/真机成功证据。
 //  32. logging-evidence: 日志域、关键故障持久化、分享/UI失败恢复与 host/game writer 回归。
 //      runtime-foundation: JDK 元数据/区间、选定 LWJGL 槽与部署、平板持久进程策略/布局保存、ELF 输入边界；仅宿主证据。
-//      runtime-ownership: JVM 前属性冻结、精确槽名单、真实 JNI 加载器归属、SDL 消费者初始化与 processor 精确等待；不替代设备矩阵。
+//      runtime-ownership: JVM 前属性冻结/参数适配、真实JNA协议与独立native槽、精确槽名单、真实 JNI 加载器归属、SDL 消费者初始化与 processor 精确等待；不替代设备矩阵。
 //      runtime-exit: 独立游戏退出身份/有界记录、真实宿主 JNI exit/halt 回调与活动恢复；不替代平板 OS/前台验收。
+//      workspace-layout: 最后检查物理目录与链接；Agent 配置、自建临时/运行资料不得回流主项目，含负向自测。
 //
 // ⚠️ 本注释块自己曾经过期过（只列到第 8 项、写"4 个套件、断言总数 ≥101"），
 // 而 `docs/release-checklist.md` §0 同时写着"预期 6 项全绿"+ 一个不存在的 `--strict`。
@@ -64,6 +65,7 @@ import path from 'node:path';
 import url from 'node:url';
 import { spawnSync, execSync } from 'node:child_process';
 import { parseJson5 as parseProjectJson5 } from './product-contract.mjs';
+import { workspacePath } from './lib/workspace-paths.mjs';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -149,7 +151,8 @@ add('java-build', () => {
   if (!javac) return { ok: false, summary: 'javac not found in PATH or JAVA_HOME' };
 
   const javaApp = path.join(ROOT, 'JavaApp');
-  const buildDir = path.join(javaApp, 'build');
+  // preflight 自建 Java 测试树与正式 JavaApp 制品分离，避免递归清理时碰到已有发布中间物。
+  const buildDir = workspacePath('build', 'preflight-java');
   const cls = path.join(buildDir, 'classes');
   const tcls = path.join(buildDir, 'test-classes');
   fs.rmSync(buildDir, { recursive: true, force: true });
@@ -173,8 +176,8 @@ add('java-build', () => {
 // 3. java-tests
 add('java-tests', () => {
   const javaApp = path.join(ROOT, 'JavaApp');
-  const cls = path.join(javaApp, 'build', 'classes');
-  const tcls = path.join(javaApp, 'build', 'test-classes');
+  const cls = workspacePath('build', 'preflight-java', 'classes');
+  const tcls = workspacePath('build', 'preflight-java', 'test-classes');
   if (!fs.existsSync(tcls)) {
     return { ok: false, summary: 'build artifacts missing — run java-build first' };
   }
@@ -925,7 +928,7 @@ add('graphics-profile-inventory', () => {
     return { ok: false, summary: 'native graphics plan host 自测失败', detail: (planSelf.stdout || '') + (planSelf.stderr || '') };
   }
   const r = spawnSync('node', ['scripts/graphics-profile-inventory.mjs',
-    '--out', '.tmp/ci/graphics-profile-inventory.json'], {
+    '--out', workspacePath('run', 'preflight', 'graphics-profile-inventory.json')], {
     cwd: ROOT, encoding: 'utf8',
   });
   return {
@@ -1317,8 +1320,13 @@ add('runtime-ownership', () => {
   const python = process.env.AMCL_PYTHON || (isWin ? 'python' : 'python3');
   const commands = [
     [python, 'scripts/test-runtime-bootstrap-contract.py'],
+    [python, 'scripts/test-jvm-bootstrap-invocation.py'],
     [python, 'scripts/test-processor-wait.py'],
     ['node', 'scripts/test-runtime-slot-classpath.mjs'],
+    ['node', 'scripts/test-runtime-jvm-argument-policy.mjs'],
+    [python, 'scripts/test-jna-runtime-contract.py'],
+    ['node', 'scripts/test-check-jna-runtime.mjs'],
+    ['node', 'scripts/check-jna-runtime.mjs'],
     ['node', 'scripts/test-jni-classloader-ownership.mjs'],
     ['node', 'scripts/test-sdl3-host-runtime.mjs'],
     ['node', 'scripts/test-check-sdl3-launch-contract.mjs'],
@@ -1382,6 +1390,20 @@ add('runtime-exit', () => {
       detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
   }
   return { ok: true, summary: 'isolated exit identity/record, real host JNI exit/halt, and session recovery verified' };
+});
+
+// 最后运行物理布局门：前面的测试即使退出成功，也不能把自建输出重新留在主项目。
+// 门禁范围仅明确禁止的顶层名称及 docker/output，不扫描依赖内部，不以 gitignore 代替物理检查。
+add('workspace-layout', () => {
+  for (const script of ['scripts/test-check-workspace-layout.mjs', 'scripts/check-workspace-layout.mjs']) {
+    const run = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8' });
+    if (run.status !== 0) return {
+      ok: false,
+      summary: script.endsWith('test-check-workspace-layout.mjs') ? 'workspace layout guard self-test failed' : 'Agent/temporary entries remain or returned to the project',
+      detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || ''),
+    };
+  }
+  return { ok: true, summary: 'physical project layout clean; ignored directories and junctions cannot bypass this guard' };
 });
 
 // run

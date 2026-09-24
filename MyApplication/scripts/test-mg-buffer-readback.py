@@ -1,4 +1,6 @@
 """执行真实MG读回适配器与core/ARB/DSA入口，仅替换GPU和名称表边界。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import subprocess,tempfile
 from lib.host_cpp import compile_cpp
@@ -15,7 +17,7 @@ buffer=(mg/'gl/buffer.cpp').read_text(encoding='utf-8');dsa=(mg/'gl/ExtWrappers/
 parts=[function(buffer,'struct BufferReadbackDriver {')+';',function(buffer,'void glGetBufferSubData('),
        function(buffer,'void glGetBufferSubDataARB('),function(dsa,'void glGetNamedBufferSubData(')]
 template=(mg/'tests/buffer_readback_test.cpp.in').read_text(encoding='utf-8')
-with tempfile.TemporaryDirectory(prefix='amcl-mg-readback-') as directory:
+with workspace_temporary_directory(prefix='amcl-mg-readback-') as directory:
     out=Path(directory);source=out/'test.cpp';exe=out/'test.exe'
     source.write_text(template.replace('// @PRODUCTION_CODE@','\n'.join(parts)),encoding='utf-8')
     compile_cpp(source,exe,[mg],[])

@@ -3,6 +3,8 @@
 模板只替换驱动/窗口API；生产正文在每次执行时读取。所有二进制放临时目录，
 不加载GPU、不运行应用、不修改现役源文件。失败必须返回非零，不能静默跳过。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -21,7 +23,7 @@ template=(root/'entry/src/main/cpp/tests/host/vulkan_orientation.cpp.in').read_t
 code=template.replace('@ROOT@',root.as_posix()).replace('@WSI@',wsi).replace('@PROBE@',body)
 includes=[root/'entry/src/main/cpp/platform',root/'entry/src/main/cpp/tests/host/stubs',
           root/'prebuilt/mobilegl/src/3rdparty/Vulkan-Headers/include']
-with tempfile.TemporaryDirectory(prefix='amcl-vulkan-orientation-') as temporary:
+with workspace_temporary_directory(prefix='amcl-vulkan-orientation-') as temporary:
     source=Path(temporary)/'orientation.cpp'
     binary=Path(temporary)/('orientation.exe' if os.name=='nt' else 'orientation')
     source.write_text(code,encoding='utf-8')

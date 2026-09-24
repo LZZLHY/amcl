@@ -10,7 +10,8 @@ import compiler from './lib/ets-compiler.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const before = process.argv.includes('--before');
-const archive = 'diagnostics/nativegl-startup-audit-20260922';
+// 修复前正文位于版本化证据树；这里只迁移读取路径，不改旧正文以免污染负向回放。
+const archive = 'docs/testing/evidence/nativegl-startup-audit-20260922';
 const noop = () => {};
 
 /** 完整转译实际模块，不抽取方法或重写生产try/catch；未知依赖必须显式给出。 */

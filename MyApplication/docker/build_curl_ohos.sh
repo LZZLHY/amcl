@@ -11,13 +11,12 @@
 #    - curl 的 autotools 对交叉编译的 host triplet 敏感
 #    - OHOS compiler-rt 不导出 __clear_cache 符号，可能需要 icache shim
 #
-#  运行方式：
-#    docker run ... bash /build/setup_toolchain.sh
-#    docker run ... bash /build-scripts/build_curl_ohos.sh
+#  运行方式：主机 docker/build_curl_ohos.ps1 -Sysroot <原始SDK的sysroot目录>
+#  当前配方通过 /recipes 只读挂载；工作树和输出由统一启动器隔离。
 # ============================================================
 set -e
 
-WORK=/tmp/curl-build
+WORK=/build/curl-build
 OUTPUT=/output
 SYSROOT=/ohos-sysroot-rw
 TARGET=aarch64-linux-ohos
@@ -30,7 +29,8 @@ echo "=== Build libcurl + OpenSSL for OHOS aarch64 (POC) ==="
 echo "OpenSSL: ${OPENSSL_VER}  curl: ${CURL_VER}"
 echo ""
 
-rm -rf $WORK
+# 新入口提供新工作卷；重复执行时不擦除上次源码和日志，要求改开新任务。
+[ ! -e "$WORK" ] || { echo "ERROR: use a new build task: $WORK"; exit 1; }
 mkdir -p $WORK $OUTPUT
 
 # 用 setup_toolchain.sh 创建的 aarch64-linux-ohos-gcc 包装器，而不是直接调

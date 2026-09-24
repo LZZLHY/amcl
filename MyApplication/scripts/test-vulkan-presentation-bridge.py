@@ -3,6 +3,8 @@
 仅驱动、设备句柄、窗口只读查询和输入owner发现使用替身；跨层路由正文从当前源码
 逐字提取。用同一程序验证GLFW/SDL、失活输入、失败/未知swapchain和退休后的行为。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -126,7 +128,7 @@ int main() {
 }
 '''
 code = prefix.replace('@ROOT@', root.as_posix()) + '\n'.join(bridge_functions) + driver + '\n'.join(wsi_functions) + main
-with tempfile.TemporaryDirectory(prefix='amcl-present-bridge-') as temporary:
+with workspace_temporary_directory(prefix='amcl-present-bridge-') as temporary:
     source=Path(temporary)/'test.cpp';source.write_text(code,encoding='utf-8')
     binary=Path(temporary)/'test'
     subprocess.run(['g++','-std=c++17','-pthread','-I'+str(root/'prebuilt/khronos-egl-headers'),str(source),'-o',str(binary)],check=True,timeout=60)

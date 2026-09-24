@@ -1,0 +1,406 @@
+{
+  "schemaVersion": 1,
+  "abi": "arm64-v8a",
+  "selection": "actual Version.VERSION_NATIVE; same major and supplied minor >= requested minor; patch ignored",
+  "slots": [
+    {
+      "protocol": "5.1.0",
+      "javaVersionSource": "4.4.0",
+      "libraryName": "jnidispatch_v5",
+      "filename": "libjnidispatch_v5.so",
+      "artifactSha256": "e38d9d053e8bf3be88050b40b1672d9f59c8df7d1ac54d9366b3382de39f541f",
+      "artifactSize": 104480,
+      "upstream": {
+        "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/4.4.0/jna-4.4.0.jar",
+        "jarSha1": "cb208278274bf12ebdb56c61bd7407e6f774d65a",
+        "jarSha256": "c4dadeeecaa90c8847902082aee5eb107fcf59c5d0e63a17fcaf273c0e2d2bd1",
+        "entry": "com/sun/jna/linux-aarch64/libjnidispatch.so"
+      },
+      "allocatedSections": {
+        ".note.gnu.build-id": {
+          "address": 400,
+          "size": 36,
+          "sha256": "c8ac64b64117580090f2cdf6c7f70c237e200c5ba33162d8c46502fc34bf949a"
+        },
+        ".gnu.hash": {
+          "address": 440,
+          "size": 1236,
+          "sha256": "5675147dbee15c2ac4d8326ef0d79fadd13fb6547ba2ca506fe42d600fadc85a"
+        },
+        ".dynsym": {
+          "address": 1680,
+          "size": 4824,
+          "sha256": "cce516134ea7146599cf4fff1cd564ad0192664b0dc633c23dc50be9e109b17e"
+        },
+        ".dynstr": {
+          "address": 6504,
+          "size": 4650,
+          "sha256": "5ce656f3371f82f490417d31215728dd4ef6a91d693a9dc5db520e201f26bfd2"
+        },
+        ".gnu.version": {
+          "address": 11154,
+          "size": 402,
+          "sha256": "fece7f5c52c93ba46c50fba0af4b0a8a3971e25a4ab86b33874bbd131b6ea63b"
+        },
+        ".gnu.version_r": {
+          "address": 11560,
+          "size": 32,
+          "sha256": "9d52264dfedb61ecff5a60eeff0909dc459a2c1262d36c1d563f10f8bab34b02"
+        },
+        ".rela.dyn": {
+          "address": 11592,
+          "size": 2400,
+          "sha256": "3ce59e44e98d8bc4dbb464fb6cd290f377ef6708f3bdaac1525222e80690d2f8"
+        },
+        ".rela.plt": {
+          "address": 13992,
+          "size": 1248,
+          "sha256": "3e9ea0556457b03ebc839c9c8ad302d73350a616553375542768932d3601019a"
+        },
+        ".init": {
+          "address": 15240,
+          "size": 20,
+          "sha256": "4a4bf732703aabc3b8bc7e72bacd0ddc76fc7f6f028a3890d747190a8869898d"
+        },
+        ".plt": {
+          "address": 15264,
+          "size": 864,
+          "sha256": "c2c1b570b32e5b8f3cc32087de987f067ed992a04adb56293e5839a5d180959d"
+        },
+        ".text": {
+          "address": 16128,
+          "size": 60308,
+          "sha256": "25aa3e5aafbc23f94c38c2bed3f5d9a1883ec117886ea5a058bfd83e79cca847"
+        },
+        ".fini": {
+          "address": 76436,
+          "size": 16,
+          "sha256": "27a4135f0ef448195b3aaba32a661f2d0e290090b19501c7b4274d71cf655f69"
+        },
+        ".rodata": {
+          "address": 76456,
+          "size": 11008,
+          "sha256": "757f7c55c1b6db2b5be56825480c8f439b892b9893c8875b35ad1b86748cadb5"
+        },
+        ".eh_frame_hdr": {
+          "address": 87464,
+          "size": 252,
+          "sha256": "3bb6ade0f29c0ff4aa5d607a640f30595127045da728f587e4df86281d2c3fa6"
+        },
+        ".eh_frame": {
+          "address": 87720,
+          "size": 1724,
+          "sha256": "49ccc121451195380e7f5ce1dd3af0518945101e37327f99f46e332f6b674843"
+        },
+        ".init_array": {
+          "address": 154984,
+          "size": 8,
+          "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+        },
+        ".fini_array": {
+          "address": 154992,
+          "size": 8,
+          "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+        },
+        ".jcr": {
+          "address": 155000,
+          "size": 8,
+          "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+        },
+        ".data.rel.ro": {
+          "address": 155008,
+          "size": 168,
+          "sha256": "b99869d481c11b01cbf6edb6f15ae6c87491fdbb193697bb3110524119344582"
+        },
+        ".dynamic": {
+          "address": 155176,
+          "size": 480,
+          "sha256": "18841369529185755ea5c538f99c49eaa6ea6d7c56ed85286d40bccac8960d9a"
+        },
+        ".got": {
+          "address": 155656,
+          "size": 144,
+          "sha256": "718565fc74043bfe1b10de64eb5c296bfcf6127a6078f98cc9b312d09fecd571"
+        },
+        ".got.plt": {
+          "address": 155800,
+          "size": 440,
+          "sha256": "9634ed1b3ca79bb77ae7625e32c5281e7fb48974a22006539f1c10c7ae8c20e6"
+        },
+        ".data": {
+          "address": 156240,
+          "size": 544,
+          "sha256": "91fbe19b1e61302ea6d6fe3e8e26058af12525c679cc05f45c3a539ab06a9dfc"
+        }
+      },
+      "upstreamSoname": "/jnabuild/jnalib/build/native-linux-aarch64/libjnidispatch.so",
+      "sonamePolicy": "Preserved upstream; elf_loader indexes canonical path and basename, not DT_SONAME. Only one protocol is selected before JVM creation."
+    },
+    {
+      "protocol": "6.1.6",
+      "javaVersionSource": "5.13.0",
+      "libraryName": "jnidispatch_v6",
+      "filename": "libjnidispatch_v6.so",
+      "artifactSha256": "0d0a0e6ae88416651b53f711101d3f8bb8fb59d5efe8173ab4924c1151443c69",
+      "artifactSize": 162288,
+      "upstream": {
+        "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar",
+        "jarSha1": "1200e7ebeedbe0d10062093f32925a912020e747",
+        "jarSha256": "66d4f819a062a51a1d5627bffc23fac55d1677f0e0a1feba144aabdd670a64bb",
+        "entry": "com/sun/jna/linux-aarch64/libjnidispatch.so"
+      },
+      "allocatedSections": {
+        ".note.gnu.build-id": {
+          "address": 456,
+          "size": 36,
+          "sha256": "4aefd0f1e6e266cb1c2672b87622f2b31092ba583f3b0c27f720f03528ed8c98"
+        },
+        ".gnu.hash": {
+          "address": 496,
+          "size": 1272,
+          "sha256": "dc54f5d1bd452809347711630585a8733fe02255c89bf7c93ae466c859cbf4a3"
+        },
+        ".dynsym": {
+          "address": 1768,
+          "size": 5160,
+          "sha256": "c9ae1a9c248f0812e2a779f07b1ff7cc57f9ddb80a7237afd1a14268fc0dddcb"
+        },
+        ".dynstr": {
+          "address": 6928,
+          "size": 4791,
+          "sha256": "f589cfc8cebfb9bc30d919d53e8bc4bf32aed73e64523db2d3debb986563a3cb"
+        },
+        ".gnu.version": {
+          "address": 11720,
+          "size": 430,
+          "sha256": "1983814de22869ac37a493abdc50f7661193e9113e09c471eea1690ce1968cbb"
+        },
+        ".gnu.version_r": {
+          "address": 12152,
+          "size": 32,
+          "sha256": "228599be0469bae2697ada73c1b9f26275414e3edbd6a74269613768ea79bd6f"
+        },
+        ".rela.dyn": {
+          "address": 12184,
+          "size": 2616,
+          "sha256": "13eabd2bc21a91a77e12688eba8379d4193adb2e9746da3a1ca7c1871cf1d30a"
+        },
+        ".rela.plt": {
+          "address": 14800,
+          "size": 1368,
+          "sha256": "893d82938bd34e15bfe17150cd7b37417d7c8f3fff4bd6a9440ea4fb2530205c"
+        },
+        ".init": {
+          "address": 16168,
+          "size": 20,
+          "sha256": "2d5472b4268bf6020c801185e6e6687545365e37bb36c301f439e44f21d1bde9"
+        },
+        ".plt": {
+          "address": 16192,
+          "size": 944,
+          "sha256": "ea5556422d15661ca4256cfe8700c315b2c123b7a9445c46f9861ab39bc3cf58"
+        },
+        ".text": {
+          "address": 32768,
+          "size": 98516,
+          "sha256": "a7f96ed513dba1e5cd76266d6ecc2dfe996b00e3e454eb9236ffcc057a2250ca"
+        },
+        ".fini": {
+          "address": 131284,
+          "size": 16,
+          "sha256": "27a4135f0ef448195b3aaba32a661f2d0e290090b19501c7b4274d71cf655f69"
+        },
+        ".rodata": {
+          "address": 131304,
+          "size": 11184,
+          "sha256": "c2e13e2fb0ec2f21644ea8adb0c3d59f08728bb3991a44427be6edaaacf3aab7"
+        },
+        ".eh_frame_hdr": {
+          "address": 142488,
+          "size": 388,
+          "sha256": "0a4aa1953a38da8904670d37108b82f134119241af38b09980980626ad1dd569"
+        },
+        ".eh_frame": {
+          "address": 142880,
+          "size": 2460,
+          "sha256": "a28981539b8c68b8b2068ff762ed80c053016d22038cd965f10efa188b83168a"
+        },
+        ".init_array": {
+          "address": 212048,
+          "size": 8,
+          "sha256": "a4265e0d6d02153c7111b77ffc290a8f86239be963e5a1d0b9c86af78b122256"
+        },
+        ".fini_array": {
+          "address": 212056,
+          "size": 8,
+          "sha256": "861c2bbba28a1ccba4bfc4ef57fe58ffa1f6325b4fa41ec6bbcc8af6504e0aa2"
+        },
+        ".jcr": {
+          "address": 212064,
+          "size": 8,
+          "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+        },
+        ".data.rel.ro": {
+          "address": 212072,
+          "size": 264,
+          "sha256": "456adf8689e7a362f1abd2a5bf02d152df284cac0049f326be047ca8cb7bae9e"
+        },
+        ".dynamic": {
+          "address": 212336,
+          "size": 480,
+          "sha256": "1e9b4d9e2af0a9d3aa1bf20d8ff9cc1a68fb792e5bea6e9b9e899b492548bfbc"
+        },
+        ".got": {
+          "address": 212816,
+          "size": 152,
+          "sha256": "4757ae51a37a5d30a27c4a5c715cc22d94cfd2476022a5f57dc5f462bb44667e"
+        },
+        ".got.plt": {
+          "address": 212968,
+          "size": 480,
+          "sha256": "a556755b1fb6778bace016ac79c98f86dc419abba6f3073bf8162222b7ded947"
+        },
+        ".data": {
+          "address": 213448,
+          "size": 596,
+          "sha256": "4531a97e6bba6f996b7dc28fbc7fa8424308114ae5736a18413d07a3e220670b"
+        }
+      },
+      "upstreamSoname": "../build/libjnidispatch.so",
+      "sonamePolicy": "Preserved upstream; elf_loader indexes canonical path and basename, not DT_SONAME. Only one protocol is selected before JVM creation."
+    },
+    {
+      "protocol": "7.0.0",
+      "javaVersionSource": "5.14.0",
+      "libraryName": "jnidispatch",
+      "filename": "libjnidispatch.so",
+      "artifactSha256": "5c894177c2c4a1a422047886f5f526959e4f1a8c1561bb3cb2277fe0da85b744",
+      "artifactSize": 162288,
+      "upstream": {
+        "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar",
+        "jarSha1": "67bf3eaea4f0718cb376a181a629e5f88fa1c9dd",
+        "jarSha256": "34ed1e1f27fa896bca50dbc4e99cf3732967cec387a7a0d5e3486c09673fe8c6",
+        "entry": "com/sun/jna/linux-aarch64/libjnidispatch.so"
+      },
+      "allocatedSections": {
+        ".note.gnu.build-id": {
+          "address": 456,
+          "size": 36,
+          "sha256": "cb0bafb35b3c6350bd7f60742b751d4aa80aa14677196d03a66908f3bbf2d08d"
+        },
+        ".gnu.hash": {
+          "address": 496,
+          "size": 1272,
+          "sha256": "dc54f5d1bd452809347711630585a8733fe02255c89bf7c93ae466c859cbf4a3"
+        },
+        ".dynsym": {
+          "address": 1768,
+          "size": 5160,
+          "sha256": "c9ae1a9c248f0812e2a779f07b1ff7cc57f9ddb80a7237afd1a14268fc0dddcb"
+        },
+        ".dynstr": {
+          "address": 6928,
+          "size": 4791,
+          "sha256": "f589cfc8cebfb9bc30d919d53e8bc4bf32aed73e64523db2d3debb986563a3cb"
+        },
+        ".gnu.version": {
+          "address": 11720,
+          "size": 430,
+          "sha256": "1983814de22869ac37a493abdc50f7661193e9113e09c471eea1690ce1968cbb"
+        },
+        ".gnu.version_r": {
+          "address": 12152,
+          "size": 32,
+          "sha256": "228599be0469bae2697ada73c1b9f26275414e3edbd6a74269613768ea79bd6f"
+        },
+        ".rela.dyn": {
+          "address": 12184,
+          "size": 2616,
+          "sha256": "13eabd2bc21a91a77e12688eba8379d4193adb2e9746da3a1ca7c1871cf1d30a"
+        },
+        ".rela.plt": {
+          "address": 14800,
+          "size": 1368,
+          "sha256": "893d82938bd34e15bfe17150cd7b37417d7c8f3fff4bd6a9440ea4fb2530205c"
+        },
+        ".init": {
+          "address": 16168,
+          "size": 20,
+          "sha256": "2d5472b4268bf6020c801185e6e6687545365e37bb36c301f439e44f21d1bde9"
+        },
+        ".plt": {
+          "address": 16192,
+          "size": 944,
+          "sha256": "ea5556422d15661ca4256cfe8700c315b2c123b7a9445c46f9861ab39bc3cf58"
+        },
+        ".text": {
+          "address": 32768,
+          "size": 98516,
+          "sha256": "c0b721481e5f874d3bb0e84ad2e2b1c52346b42eb404a87c9f3b45fb7810f517"
+        },
+        ".fini": {
+          "address": 131284,
+          "size": 16,
+          "sha256": "27a4135f0ef448195b3aaba32a661f2d0e290090b19501c7b4274d71cf655f69"
+        },
+        ".rodata": {
+          "address": 131304,
+          "size": 11184,
+          "sha256": "0abba5d9cdf44937aac661e9b35d40864880d04a75257e818483ef4cf04a3019"
+        },
+        ".eh_frame_hdr": {
+          "address": 142488,
+          "size": 388,
+          "sha256": "0a4aa1953a38da8904670d37108b82f134119241af38b09980980626ad1dd569"
+        },
+        ".eh_frame": {
+          "address": 142880,
+          "size": 2460,
+          "sha256": "a28981539b8c68b8b2068ff762ed80c053016d22038cd965f10efa188b83168a"
+        },
+        ".init_array": {
+          "address": 212048,
+          "size": 8,
+          "sha256": "a4265e0d6d02153c7111b77ffc290a8f86239be963e5a1d0b9c86af78b122256"
+        },
+        ".fini_array": {
+          "address": 212056,
+          "size": 8,
+          "sha256": "861c2bbba28a1ccba4bfc4ef57fe58ffa1f6325b4fa41ec6bbcc8af6504e0aa2"
+        },
+        ".jcr": {
+          "address": 212064,
+          "size": 8,
+          "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+        },
+        ".data.rel.ro": {
+          "address": 212072,
+          "size": 264,
+          "sha256": "456adf8689e7a362f1abd2a5bf02d152df284cac0049f326be047ca8cb7bae9e"
+        },
+        ".dynamic": {
+          "address": 212336,
+          "size": 480,
+          "sha256": "1e9b4d9e2af0a9d3aa1bf20d8ff9cc1a68fb792e5bea6e9b9e899b492548bfbc"
+        },
+        ".got": {
+          "address": 212816,
+          "size": 152,
+          "sha256": "4757ae51a37a5d30a27c4a5c715cc22d94cfd2476022a5f57dc5f462bb44667e"
+        },
+        ".got.plt": {
+          "address": 212968,
+          "size": 480,
+          "sha256": "a556755b1fb6778bace016ac79c98f86dc419abba6f3073bf8162222b7ded947"
+        },
+        ".data": {
+          "address": 213448,
+          "size": 596,
+          "sha256": "4531a97e6bba6f996b7dc28fbc7fa8424308114ae5736a18413d07a3e220670b"
+        }
+      },
+      "upstreamSoname": "../build/libjnidispatch.so",
+      "sonamePolicy": "Preserved upstream; elf_loader indexes canonical path and basename, not DT_SONAME. Only one protocol is selected before JVM creation."
+    }
+  ]
+}

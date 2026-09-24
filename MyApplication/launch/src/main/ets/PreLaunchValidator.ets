@@ -8,13 +8,17 @@
  *
  * 校验项（顺序执行，任一失败即拦截）：
  *   1. JIT 可执行内存   —— testNapi.checkJitAvailable()（裸 mmap RWX 探测，不创建 JVM）
- *   2. 运行时环境       —— JDK 完整性（libjvm/libjli/lib/modules，由调用方注入 isInstalled
+ *   2. JDK 版本匹配     —— 复用 JDK 路由区间，保留既有上限拒绝与低版本调试确认
+ *   3. 运行时环境       —— JDK 完整性（libjvm/libjli/lib/modules，由调用方注入 isInstalled
  *                          结果）+ LWJGL OHOS jar 是否已部署
- *   3. 版本文件完整性   —— 复用 LaunchProfileBuilder.build()（version.json / 主 jar /
+ *   4. 版本文件完整性   —— 复用 LaunchProfileBuilder.build()（version.json / 主 jar /
  *                          依赖库齐全性 + ZIP 头校验 + Forge 产物校验 + 损坏自动清理），
  *                          这是最重要的一项，直接拿启动真正要用的构建器来验
- *   4. 启动契约         —— 复用**同一次** build() 的契约留痕（加载器世代 / classpath
+ *   5. 启动契约         —— 复用**同一次** build() 的契约留痕（加载器世代 / classpath
  *                          交付方式），不重新判定、不重新 build。见 runProfileChecks
+ *   6. 游戏资源完整性   —— 核对 assets 索引与缺失比例，保留原有小量缺失容忍
+ *   7. 模组安装状态     —— 仅等待安装完成、恢复 AMCL 中断的文件事务；模组依赖与
+ *                          兼容性由实际加载器处理，不在启动器中再次解析或裁决
  *
  * 设计取向：纯逻辑、无 UI、无服务实例耦合——JDK 安装状态由调用方（持有 JdkManager 的
  * Index）以布尔值注入，便于单测与解耦。UI 编排（逐项点亮 / 失败拦截）在
@@ -24,7 +28,7 @@
  */
 
 import { launchNative } from './LaunchNativeBridge';
-import { installedModEnvironment, inspectInstalledModSet, modInstallationActive, recoverModTransaction, withModDirectoryLock } from 'mods';
+import { modInstallationActive, normalizeModDirectory, recoverModTransaction, withModDirectoryLock } from 'mods';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LaunchProfileBuilder, LaunchProfile } from './LaunchProfileBuilder';
 import { VersionFileVerifier, AssetsCheckResult, VersionParser } from 'feature_core';
@@ -49,7 +53,7 @@ export type PreLaunchStatus = 'pending' | 'running' | 'pass' | 'warn' | 'fail';
 
 /** 一项校验的结果（UI 直接渲染）。 */
 export interface PreLaunchCheck {
-  /** 稳定 id：'jit' | 'jdk' | 'runtime' | 'files' | 'contract' | 'assets' */
+  /** 稳定 id：'jit' | 'jdk' | 'runtime' | 'files' | 'contract' | 'assets' | 'mod_install_state' */
   id: string;
   /** 展示标题 */
   title: string;
@@ -102,28 +106,40 @@ export class PreLaunchValidator {
         status: 'pending', detail: '等待检查…', fixActionKey: '',
       },
       { id: 'assets',   title: '游戏资源完整性', status: 'pending', detail: '等待检查…', fixActionKey: '' },
-      { id: 'mods', title: '模组依赖与兼容性', status: 'pending', detail: '等待检查…', fixActionKey: '' },
+      { id: 'mod_install_state', title: '模组安装状态', status: 'pending', detail: '等待检查…', fixActionKey: '' },
     ];
   }
 
   /** `contract` 项的展示标题。占位与各结论分支共用一处，避免同一项在 UI 上换名字。 */
   private static readonly CONTRACT_TITLE = '启动契约';
 
-  static async runMods(input: PreLaunchInput): Promise<PreLaunchCheck> {
-    const result: PreLaunchCheck = { id: 'mods', title: '模组依赖与兼容性', status: 'pass', detail: '模组组合检查通过', fixActionKey: '' };
+  /**
+   * 在游戏启动前确认 AMCL 自己的模组文件事务已经结束。
+   *
+   * 输入只使用实例的 gameDir；不读取加载器环境，也不扫描 JAR 或求解依赖。真实加载器
+   * 才掌握整合包覆盖配置、嵌套模组和自身版本规则，启动器不得用不完整规则提前拒启。
+   * 原版与模组实例走同一恢复流程，避免切换加载器后遗留未提交的文件事务。
+   *
+   * 活动安装返回 fail，用户等待下载完成后重试；遗留事务在原有目录锁内恢复，恢复失败
+   * 仍返回 fail 并完整保留原始原因，防止把半提交目录交给游戏。这里只复用事务模块的
+   * 恢复/清理语义，不把“已有终态但暂存清理待重试”再次解释成兼容性或启动错误。
+   */
+  static async runModInstallState(input: PreLaunchInput): Promise<PreLaunchCheck> {
+    const result: PreLaunchCheck = {
+      id: 'mod_install_state', title: '模组安装状态', status: 'pass',
+      detail: '模组安装状态正常', fixActionKey: '',
+    };
     try {
-      const dir = input.gameDir + '/mods';
+      // 活动计数使用规范化路径；检查与加锁必须使用同一个 key，含尾斜杠的 gameDir
+      // 也不能绕过正在进行的安装。加锁同步登记后才让出执行，沿用现有互斥边界。
+      const dir = normalizeModDirectory(input.gameDir + '/mods');
       if (modInstallationActive(dir)) throw new Error('此版本正在安装或更新模组，请等待完成后启动');
       await withModDirectoryLock<void>(dir, async (): Promise<void> => {
         await recoverModTransaction(dir);
-        const environment = installedModEnvironment(input.mcDir, input.version, input.jdkVersion);
-        if (environment.loader.length === 0) return;
-        const errors = await inspectInstalledModSet(dir, environment);
-        if (errors.length > 0) throw new Error(errors.join('\n'));
       });
     } catch (e) {
       result.status = 'fail';
-      result.detail = (e as Error).message;
+      result.detail = (e as Error).message || '未能确认模组安装状态，请重试并检查启动器日志。';
     }
     return result;
   }

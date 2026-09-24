@@ -175,7 +175,11 @@ export async function recoverModTransaction(dir: string): Promise<void> {
   cleanup(dir, staging);
 }
 
-/** Downloads and manifest validation must already have succeeded. */
+/**
+ * 提交已完成下载和文件完整性校验的安装计划；调用者必须持有目标目录锁。
+ * 本函数复验暂存文件身份并持久化恢复记录，不推断模组依赖或运行兼容性。
+ * 任何激活失败都沿用下方回滚流程，不能因移除包内兼容性审查而跳过文件事务。
+ */
 export async function commitModFiles(dir: string, staging: string, changes: ModFileChange[]): Promise<void> {
   if (modFileExists(dir + '/' + JOURNAL)) throw new Error('存在尚未恢复的模组安装');
   const name = staging.substring(staging.lastIndexOf('/') + 1);

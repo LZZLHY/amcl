@@ -6,10 +6,12 @@ import json
 import os
 import subprocess
 import zipfile
+from lib.workspace_paths import workspace_path
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "prebuilt/runtime-compat"
-BUILD = ROOT / "diagnostics/runtime-compat-fix/fabric-build"
+# Java 兼容 JAR 的编译中间物外置，最终工程交付 JAR 仍使用下方原有目标。
+BUILD = workspace_path("build", "fabric-compat")
 BUILD.mkdir(parents=True, exist_ok=True)
 spec = importlib.util.spec_from_file_location("jdk_tools", ROOT / "scripts/lwjgl-stb-compat/prepare.py")
 helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)

@@ -6,6 +6,8 @@
  * --repo 严格指定含锁定 commit 的只读 SDL 仓库；默认无仓库时采用逐字节冻结的上游
  * fixture，--fixture-only 强制离线路径。任何输入损坏或缺编译器均失败，不降级为 PASS。
  */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -132,7 +134,7 @@ const productionFunctions = [
 ].map((name) => extractFunction(core, name)).join('\n\n');
 const harness = fs.readFileSync(path.join(root, 'prebuilt/sdl3/tests/host-runtime-test.cpp'), 'utf8');
 assert.equal(harness.split('/* AMCL_PRODUCTION_FUNCTIONS */').length, 2);
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-sdl-host-'));
+const temporary = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-sdl-host-'));
 try {
   fs.writeFileSync(path.join(temporary, 'SDL_amclhostruntime.h'), header);
   fs.writeFileSync(path.join(temporary, 'host-runtime-test.cpp'), harness.replace('/* AMCL_PRODUCTION_FUNCTIONS */', productionFunctions));
@@ -146,6 +148,6 @@ try {
   console.log('[SDL host-runtime] pinned entrypoint, state, recursion, thread and rollback tests PASS');
 } finally {
   // 只清理本次 mkdtemp 创建且已经验证前缀的测试目录，不触碰仓库或用户资料。
-  assert.ok(temporary.startsWith(path.join(os.tmpdir(), 'amcl-sdl-host-')));
+  assert.ok(temporary.startsWith(path.join(workspaceTempRoot(), 'amcl-sdl-host-')));
   fs.rmSync(temporary, { recursive: true, force: true });
 }

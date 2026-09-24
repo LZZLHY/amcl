@@ -1,4 +1,6 @@
 /** 活动账本 V2 的宿主回归：直接加载生产 ArkTS 纯逻辑和 AI 服务，网络仅使用内存桩。 */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -137,7 +139,7 @@ test('AI queue status is coarse and Retry-After blocks repeat requests for the s
 });
 
 test('report store binds source and detects tampered or mismatched local bodies', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-ai-report-'));
+  const directory = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-ai-report-'));
   const digest = text => crypto.createHash('sha256').update(text).digest('hex');
   const load = makePureEtsLoader({
     '@kit.CoreFileKit': { fileIo: { accessSync: fs.existsSync, statSync: fs.statSync, readTextSync: file => fs.readFileSync(file, 'utf8') } },

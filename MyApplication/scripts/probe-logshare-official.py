@@ -1,6 +1,7 @@
 """Live public API smoke. Uses synthetic content and never prints deletion tokens or reasoning."""
 import json, time, urllib.request, urllib.error
 from pathlib import Path
+from lib.workspace_paths import workspace_path
 BASE = 'https://api.logshare.cn/v1'
 steps = []
 share = None
@@ -47,5 +48,6 @@ finally:
             with request('/log/'+share['id'],'DELETE',token=share['token']) as response: result=json.load(response)
             record('cleanup', result.get('success') is True)
         except Exception as error: record('cleanup',False,str(error))
-    output=Path('diagnostics/logshare-routing-20260910'); output.mkdir(parents=True,exist_ok=True)
+    # 在线探针结果属于这次执行，不再追加到日期写死的历史诊断目录。
+    output=workspace_path('run', 'logshare-probe'); output.mkdir(parents=True,exist_ok=True)
     (output/'official-smoke.json').write_text(json.dumps({'time':int(time.time()),'steps':steps},ensure_ascii=False,indent=2),encoding='utf-8')

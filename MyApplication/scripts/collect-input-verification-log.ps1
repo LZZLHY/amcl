@@ -19,7 +19,7 @@ collect-input-verification-log.ps1 — 输入链路真机复测的日志采集�
     powershell -ExecutionPolicy Bypass -File .\scripts\collect-input-verification-log.ps1 -Device 59JYD25815201311
 
 脚本会：调大缓冲 → 清空 → 停下来等你在设备上操作 → 你按 Enter → 拉全量存盘 → 打分类判读。
-全量日志会存到 -OutDir（默认 %TEMP%\amcl-verify），判读只是摘要，**结论有疑问时读全量**。
+全量日志会存到 -OutDir（默认工作区的本次 run 目录），判读只是摘要，**结论有疑问时读全量**。
 
 ============================ 它能证明什么、不能证明什么 ============================
 
@@ -30,7 +30,7 @@ collect-input-verification-log.ps1 — 输入链路真机复测的日志采集�
 
 param(
     [Parameter(Mandatory = $true)][string]$Device,
-    [string]$OutDir = (Join-Path $env:TEMP 'amcl-verify'),
+    [string]$OutDir = '',
     # ⚠️ 平台上限是 **16M**（实测：`hilog -G 64M` 返回
     # "Invalid buffer size, buffer size should be in range [64.0K, 16.0M] [CODE: -30]"）。
     # 这里曾默认 64M，于是调大**一直在静默失败**而脚本照旧打印"buffer=64M" ——
@@ -49,6 +49,9 @@ param(
 if ($PrepareOnly -and $DumpOnly) { throw '-PrepareOnly 与 -DumpOnly 互斥' }
 
 $ErrorActionPreference = 'Stop'
+# 参数覆盖仍经过同一仓外边界检查，避免沿用历史参数时重建源码目录中的日志文件夹。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+$OutDir = Get-AmclWorkspacePath -Kind run -Id 'input-verification' -ExplicitPath $OutDir
 $hdc = 'D:\Huawei\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe'
 if (-not (Test-Path -LiteralPath $hdc)) { throw "hdc not found: $hdc" }
 if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }

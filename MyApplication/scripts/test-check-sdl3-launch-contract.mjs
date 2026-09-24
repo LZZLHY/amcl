@@ -44,6 +44,12 @@ reject('freeze moved after JVM input', 'source', 'if (!amcl::jvm::FreezeBootstra
 reject('late property write', 'source', 'static bool phase_verifyRuntimeProperties(JNIEnv* env) {',
   'static bool phase_verifyRuntimeProperties(JNIEnv* env) { setSystemProperty(env, "org.lwjgl.sdl.libname", "libSDL3.so");',
   'bootstrap-readback-not-late-write');
+reject('failed property read treated as equal empty value', 'source',
+  '!getSystemProperty(env, property.first.c_str(), actual) || actual != property.second',
+  'actual != property.second', 'bootstrap-readback-not-late-write');
+reject('property mismatch ignored', 'source',
+  '!getSystemProperty(env, property.first.c_str(), actual) || actual != property.second',
+  '!getSystemProperty(env, property.first.c_str(), actual)', 'bootstrap-readback-not-late-write');
 reject('publish failure swallowed', 'source', 'if (!phase_publishPlatformRuntime(session))',
   'if (false)', 'publish-and-verify-fail-closed');
 reject('property readback failure swallowed', 'source', 'if (!phase_verifyRuntimeProperties(env))',

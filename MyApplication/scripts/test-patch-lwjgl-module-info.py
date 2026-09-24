@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """对生产 JAR 补丁执行跨宿主 ZIP 元数据回归，不修改锁文件或生产制品。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 import importlib.util
 from pathlib import Path
 import shutil
@@ -27,7 +29,7 @@ def host_zip_info(system):
 class ModuleInfoReproducibilityTest(unittest.TestCase):
     def test_windows_and_unix_produce_identical_bytes(self):
         """同一输入在两种宿主默认值下字节一致，最低版本和原有条目均得到保留。"""
-        with tempfile.TemporaryDirectory(prefix="amcl-module-info-") as directory:
+        with workspace_temporary_directory(prefix="amcl-module-info-") as directory:
             root = Path(directory)
             baseline = root / "upstream.jar"
             with zipfile.ZipFile(baseline, "w") as jar:

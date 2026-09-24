@@ -2,15 +2,15 @@
  * PreLaunchCheckSheet.ets — 启动前硬校验 Sheet
  *
  * 点击"启动游戏"后先弹出本 Sheet，依次跑各项校验（JIT / JDK 版本匹配 / 运行时环境 /
- * 版本文件完整性 / 启动契约 / 游戏资源完整性），逐项点亮。
+ * 版本文件完整性 / 启动契约 / 游戏资源完整性 / 模组安装状态），逐项点亮。
  * 【全部通过】才回调 onProceed() 真正创建 JVM 进游戏；任一不过
  * 则停在本 Sheet，展示失败原因 + 一键修复入口，绝不启动。这样用户全程停留在启动器、零进程
  * 开销，不再像旧 JIT 校验那样"进了启动流水线才发现不行、还得杀一次进程"。
  *
- * 校验逻辑在 features/launch/PreLaunchValidator.ets（纯函数）；本组件只负责编排与展示。
+ * 校验逻辑在 launch/PreLaunchValidator.ets；本组件负责编排、完整失败诊断与展示。
  */
 
-import { ThemeColors } from 'commons';
+import { ThemeColors, AppLogger, LOG_DOMAIN_LAUNCH } from 'commons';
 import { AppIconName } from 'commons';
 import { DOCS_NO_JIT_URL, DOCS_NO_JIT_FALLBACK_URL } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -43,7 +43,7 @@ export struct PreLaunchCheckSheet {
 
   /** JDK 是否已安装（由父组件用 JdkManager.isInstalled 注入，避免本组件耦合服务实例） */
   checkJdkInstalled: (jdkVersion: string) => boolean = () => false;
-  /** 三项全通过 → 真正启动（父组件 navigate / 创建 JVM） */
+  /** 所有必过项通过 → 真正启动（父组件 navigate / 创建 JVM） */
   onProceed: () => void = () => {};
   /** 失败项的一键修复（'open_jdk_manager' / 'open_versions' 等需要跳转的动作） */
   onFix: (actionKey: string) => void = () => {};
@@ -109,11 +109,20 @@ export struct PreLaunchCheckSheet {
     return new Promise<void>((resolve: () => void) => { setTimeout(() => { resolve(); }, ms); });
   }
 
-  /** 整表重新赋值以确保 ArkUI 重渲染（避免对数组元素就地改属性导致脏标记漏报）。 */
+  /**
+   * 整表重新赋值以确保 ArkUI 重渲染；失败时把完整原因写入启动器日志。
+   * 此时还没有本局游戏活动，不能依赖游戏日志保存拒启原因，也不能借用上局活动归属。
+   * 记录检查 id 与实例版本以定位本次失败，详情原样保留，并在失败终态请求刷盘。
+   */
   private setCheck(index: number, c: PreLaunchCheck): void {
     let next = this.checks.slice();
     next[index] = c;
     this.checks = next;
+    if (c.status === 'fail') {
+      AppLogger.error('PreLaunchCheckSheet', '启动前检查失败：' + c.id + '，版本=' + this.version
+        + '\n' + c.detail, null, LOG_DOMAIN_LAUNCH);
+      AppLogger.flush();
+    }
   }
 
   private setRunning(index: number): void {
@@ -184,11 +193,13 @@ export struct PreLaunchCheckSheet {
     this.setCheck(5, c3);
     if (c3.status === 'fail') { this.phase = 'failed'; return; }
 
+    // 6) 只确认安装互斥与遗留事务恢复；不扫描或裁决已有模组组合的兼容性。
+    // 安装中或恢复失败仍须停止，避免进入未提交完成的目录；其他模组问题交给加载器。
     this.setRunning(6);
-    const mods = await PreLaunchValidator.runMods(this.input());
+    const modInstallState = await PreLaunchValidator.runModInstallState(this.input());
     if (this.aborted) return;
-    this.setCheck(6, mods);
-    if (mods.status === 'fail') { this.phase = 'failed'; return; }
+    this.setCheck(6, modInstallState);
+    if (modInstallState.status === 'fail') { this.phase = 'failed'; return; }
 
     // 全部通过 → 真正启动
     this.phase = 'passed';
@@ -425,13 +436,12 @@ export struct PreLaunchCheckSheet {
           .fontWeight(600)
           .fontColor(this.theme.textPrimary)
           .width('100%')
+        // 外层已有 Scroll，完整展示恢复备份位置和逐文件失败原因，避免四行省略隐藏诊断。
         Text(c.detail)
           .fontSize(11)
           .lineHeight(16)
           .fontColor(c.status === 'fail' ? this.theme.error : (c.status === 'warn' ? this.theme.warning : this.theme.textSecondary))
           .width('100%')
-          .maxLines(4)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)

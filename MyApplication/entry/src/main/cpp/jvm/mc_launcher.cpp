@@ -26,6 +26,7 @@
 #include "jvm_launcher.h"
 #include "game_process_exit.h"
 #include "runtime_bootstrap_contract.h"
+#include "jna_runtime_contract.h"
 #include <sys/syscall.h>
 #include "jni_registry.h"
 #include "jni.h"
@@ -389,25 +390,38 @@ static void setSystemProperty(JNIEnv* env, const char* key, const char* value) {
 //   非 dlopen 内）。gl4es 的 GLES 函数来源由 LIBGL_GLES=libGLESv3.so（实库）经 dlsym 解析——
 //   不再需要 libentry 侧的 dlopen 预加载、set_getprocaddress 解析器注入或跨 .so 延迟 init 指针传递。
 
-// 读取 Java 系统属性（用于读 -D 注入的决策位，如 amcl.gl.backend）。失败/未设返回空串。
-static std::string getSystemProperty(JNIEnv* env, const char* key) {
-    std::string result;
+// 属性回读统一成标准 UTF-8，与 NAPI 传入并冻结的 native 路径按相同编码比较。
+// 未设置、JNI 异常或非法 UTF-16 返回 false；它们不能借空串冒充“期望值恰为空”。
+static bool getSystemProperty(JNIEnv* env, const char* key, std::string& result) {
+    result.clear();
     jclass systemClass = env->FindClass("java/lang/System");
-    if (!systemClass) { env->ExceptionClear(); return result; }
+    if (!systemClass) { env->ExceptionClear(); return false; }
     jmethodID getProp = env->GetStaticMethodID(systemClass, "getProperty",
         "(Ljava/lang/String;)Ljava/lang/String;");
-    if (!getProp) { env->ExceptionClear(); env->DeleteLocalRef(systemClass); return result; }
+    if (!getProp) { env->ExceptionClear(); env->DeleteLocalRef(systemClass); return false; }
     jstring jKey = env->NewStringUTF(key);
+    if (!jKey) { env->ExceptionClear(); env->DeleteLocalRef(systemClass); return false; }
     jstring jVal = (jstring)env->CallStaticObjectMethod(systemClass, getProp, jKey);
-    if (jVal) {
-        const char* s = env->GetStringUTFChars(jVal, nullptr);
-        if (s) { result = s; env->ReleaseStringUTFChars(jVal, s); }
-        env->DeleteLocalRef(jVal);
+    bool read = false;
+    if (jVal && !env->ExceptionCheck()) {
+        const jsize length = env->GetStringLength(jVal);
+        const jchar* characters = env->GetStringChars(jVal, nullptr);
+        if (characters) {
+            // 借用只覆盖转换；非法编码和 C++ 分配异常都归还，引用仅属于当前 attached 线程。
+            struct CharacterLease {
+                JNIEnv* env;
+                jstring value;
+                const jchar* characters;
+                ~CharacterLease() { env->ReleaseStringChars(value, characters); }
+            } lease{env, jVal, characters};
+            read = amcl::utf16ToUtf8(characters, static_cast<std::size_t>(length), result);
+        }
     }
+    if (jVal) env->DeleteLocalRef(jVal);
     env->DeleteLocalRef(jKey);
     env->DeleteLocalRef(systemClass);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); }
-    return result;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    return read;
 }
 
 // ============================================================
@@ -977,7 +991,8 @@ static void forceDisableForgeEarlyWindow(const std::string& gameDir) {
 static std::vector<amcl::jvm::BootstrapProperty> g_runtimeBootstrapProperties;
 static bool phase_verifyRuntimeProperties(JNIEnv* env) {
     for (const auto& property : g_runtimeBootstrapProperties) {
-        if (getSystemProperty(env, property.first.c_str()) != property.second) {
+        std::string actual;
+        if (!getSystemProperty(env, property.first.c_str(), actual) || actual != property.second) {
             g_mcStatus = "运行库属性已被提前修改: " + property.first;
             AMCL_LOG_E(LOG_TAG, "runtime_property_mismatch key=%{public}s", property.first.c_str());
             return false;
@@ -2195,9 +2210,26 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
         g_mcRunning = false;
         return -5;
     }
+    // 最终 classpath 已由 builder 完成加载器合并与库去重；在 JVM/agent 创建前读取
+    // 实际 JNA Java 常量声明的 native 协议，只选择兼容的内置 dispatch，不升级游戏
+    // 自己的 Java 依赖。未知或无法可靠解析的输入交回 JNA 自身加载并记录原因；只有
+    // 已确定要交付的宿主库缺失才在这里失败，不能把未知模组语义变成全局拒启条件。
+    const amcl::jvm::JnaBootstrap jnaBootstrap = amcl::jvm::ResolveJnaBootstrap(classpath, hapNativeDir);
+    if (!jnaBootstrap.ok) {
+        recordGraphicsLaunchFailure(-5, "bootstrap", "jna_runtime_artifact_missing", graphicsPlan.profile);
+        g_mcStatus = "JNA 运行库交付不完整: " + jnaBootstrap.requiredArtifact;
+        AMCL_LOG_E(LOG_TAG, "jna_runtime_rejected reason=%{public}s artifact=%{public}s",
+            jnaBootstrap.reason.c_str(), jnaBootstrap.requiredArtifact.c_str());
+        g_mcRunning = false;
+        return -5;
+    }
+    // 只输出协议、选择结果和固定原因，不打印完整 classpath 或可能含用户身份的参数。
+    AMCL_LOG_I(LOG_TAG, "AMCL_JNA_RUNTIME mode=%{public}s protocol=%{public}s library=%{public}s reason=%{public}s",
+        jnaBootstrap.mode.c_str(), jnaBootstrap.protocol.c_str(),
+        jnaBootstrap.bootLibraryName.c_str(), jnaBootstrap.reason.c_str());
     g_runtimeBootstrapProperties = amcl::jvm::RuntimeBootstrapProperties(
         hapNativeDir, gameDirStr, graphicsPlan.profile,
-        nativeVulkanPlan ? glLibrary : "libamcl_graphics_runtime.so", graphicsPlan.window == "SDL3");
+        nativeVulkanPlan ? glLibrary : "libamcl_graphics_runtime.so", graphicsPlan.window == "SDL3", jnaBootstrap);
     std::string bootstrapError;
     if (!amcl::jvm::FreezeBootstrapProperties(finalJvmArgs, g_runtimeBootstrapProperties, bootstrapError)) {
         recordGraphicsLaunchFailure(-5, "bootstrap", "runtime_property_conflict", graphicsPlan.profile);

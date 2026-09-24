@@ -1,6 +1,8 @@
 """执行现役MobileGL入口与实际原子资格门，GPU执行器仅用确定性暂停边界替换。
 同时移除资格判断做反控，证明并发执行会被测试发现；所有变体只写临时文件。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -15,7 +17,7 @@ driver=(root/'entry/src/main/cpp/platform/mobilegl_capability_driver.cpp').read_
 entry=extract.block(driver,driver.index('MobileGlProbeReport ProbeMobileGlCapability('))
 code=(root/'entry/src/main/cpp/tests/host/graphics_probe_gate.cpp.in').read_text(encoding='utf-8')
 code=code.replace('@ROOT@',root.as_posix()).replace('@ENTRY@',entry)
-with tempfile.TemporaryDirectory(prefix='amcl-probe-gate-') as temporary:
+with workspace_temporary_directory(prefix='amcl-probe-gate-') as temporary:
     source=Path(temporary)/'gate.cpp';binary=Path(temporary)/('gate.exe' if os.name=='nt' else 'gate')
     source.write_text(code,encoding='utf-8');compile_cpp(source,binary)
     subprocess.run([str(binary)],check=True,timeout=20)

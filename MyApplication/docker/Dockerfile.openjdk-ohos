@@ -5,18 +5,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ============================================================
 # AMCL openjdk-ohos-builder image
 #
-# 镜像里只装"构建机器"（toolchain + 通用脚本），不装"依赖配方"。
-# patches / shims 通过 mount 注入（详见 docs/guides/third-party-deps-restructure-plan.md §3.6）：
-#
-#   docker run --rm \
-#     -v "$(pwd)/prebuilt/jdk/17:/jdk-spec:ro" \    # patches/ + shims/
-#     -v "$(pwd)/prebuilt/stubs/src:/stubs-src:ro"  # cxxabi_shim + eh_stubs
-#     -v "$(pwd)/prebuilt/jdk/21:/jdk21-spec:ro"    # 仅 21 构建需要
-#     -v "/path/to/ohos/sysroot:/ohos-sysroot:ro" \
-#     -v "/path/to/output:/output" \
-#     openjdk-ohos-builder /build/build_jdk17_ohos.sh
-#
-# 这样改 patch 不需要 rebuild ~5 GB image。
+# 镜像只保存工具链；配方、stub 和补丁由 launch-builder.ps1 的只读挂载提供。
+# 不再 COPY 编排脚本进 /build，避免实际执行与主仓不同的旧脚本。
+# /build 使用本次独立 Linux 卷，输出映射到外部 .workspace/build/<id>/out。
+# 镜像只安装 boot JDK 17；其他 JDK 仍需各自 boot JDK/compiler-rt 前提。
+# 镜像构建成功不代表全部线上 JDK 已可复建。
 # ============================================================
 
 # 安装编译依赖 + clang-15 (与 OHOS NDK clang 15.0.4 版本匹配)
@@ -49,25 +42,5 @@ ENV OHOS_SYSROOT=/ohos-sysroot
 ENV TOOLCHAIN_DIR=/ohos-toolchain
 
 WORKDIR /build
-
-# 主编译脚本（构建机器，不动）
-COPY setup_toolchain.sh build_jdk17_ohos.sh build_jdk21_ohos.sh \
-     build_lwjgl_ohos.sh build_curl_ohos.sh build_fontconfig_ohos.sh \
-     apply_patches.sh /build/
-
-# 辅助脚本（rebuild、pack、configure 等；属于构建编排，不是依赖配方）
-COPY scripts/ /build/scripts/
-
-# 编译时 stub 头文件（cups、fontconfig、x11） — 这是 Docker 构建环境的一部分，
-# 不是 JDK 源码改动；留在镜像里
-COPY stubs/ /build/stubs/
-
-# 注意：以下目录从 Dockerfile 移除，改由 mount 注入（详见文件头注释）：
-#   • patches/      → mount 到 /jdk-spec/patches  (来自 prebuilt/jdk/17/patches/)
-#   • shims/        → mount 到 /jdk-spec/shims    (icache_patch.hpp)
-#                  + /stubs-src                 (cxxabi_shim.cpp + eh_stubs.c)
-
-RUN chmod +x /build/*.sh && \
-    find /build/scripts -name "*.sh" -exec chmod +x {} \;
 
 CMD ["/bin/bash"]

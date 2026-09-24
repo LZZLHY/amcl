@@ -5,6 +5,8 @@
  * 仅创建/删除自身唯一临时目录，不构建 HAP、不访问设备、不加载 AMCL 生产退出 hook。
  * 用法：node scripts/test-jvm-exit-invocation.mjs [--java-home <完整宿主 JDK>]
  */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +16,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const fixture = path.join(root, 'tests/host/jvm_exit_invocation');
-const temp = mkdtempSync(path.join(tmpdir(), 'amcl-jvm-exit-invocation-'));
+const temp = mkdtempSync(path.join(workspaceTempRoot(), 'amcl-jvm-exit-invocation-'));
 const args = process.argv.slice(2);
 
 /** 所有子命令前台执行且有超时；失败原样报告，不能把编译器/JVM 缺失当成跳过通过。 */
@@ -140,7 +142,7 @@ try {
 } finally {
   // 只删除本脚本 mkdtemp 的真实精确路径；不接受外部提供目录作为递归清理目标。
   const resolved = realpathSync(temp);
-  assert.equal(path.dirname(resolved), realpathSync(tmpdir()));
+  assert.equal(path.dirname(resolved), realpathSync(workspaceTempRoot()));
   assert.ok(path.basename(resolved).startsWith('amcl-jvm-exit-invocation-'));
   rmSync(resolved, { recursive: true, force: true });
 }

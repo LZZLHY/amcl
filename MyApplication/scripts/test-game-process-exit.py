@@ -3,6 +3,8 @@
 Windows 不伪称覆盖 POSIX：明确输出 SKIP。所有编译产物都在本次专用临时目录中。
 测试子进程只用它自己创建的临时文件；不访问游戏数据、不操作设备、不构建 HAP。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import subprocess
@@ -16,7 +18,7 @@ def main():
     targets = ['game_process_exit_test.cpp']
     if os.name != 'nt':
         targets.append('game_process_exit_posix_test.cpp')
-    with tempfile.TemporaryDirectory(prefix='amcl-game-exit-') as directory:
+    with workspace_temporary_directory(prefix='amcl-game-exit-') as directory:
         for name in targets:
             binary = Path(directory) / (Path(name).stem + ('.exe' if os.name == 'nt' else ''))
             compile_cpp(root / 'entry/src/main/cpp/tests/host' / name, binary)

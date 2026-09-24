@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Fixture tests for the AMCL MobileGlues source-list contract.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -55,7 +57,7 @@ target_link_libraries(glfw PRIVATE MobileGlues::Core)
 `;
 }
 
-const fixture = mkdtempSync(join(tmpdir(), 'amcl-mg-snapshot-'));
+const fixture = mkdtempSync(join(workspaceTempRoot(), 'amcl-mg-snapshot-'));
 const fixtureRoot = resolve(fixture);
 const mgSource = join(fixtureRoot, 'prebuilt', 'mobileglues', 'mg_src', 'MobileGlues-cpp');
 const cmakePath = join(fixtureRoot, 'entry', 'src', 'main', 'cpp', 'CMakeLists.txt');
@@ -133,7 +135,7 @@ try {
   );
   expectStatus(runGuard(fixtureRoot), 1, 'unreviewed upstream source is rejected', /drifted from snapshot/);
 } finally {
-  const tempRoot = resolve(tmpdir()).toLowerCase();
+  const tempRoot = resolve(workspaceTempRoot()).toLowerCase();
   if (!fixtureRoot.toLowerCase().startsWith(`${tempRoot}\\`) &&
       !fixtureRoot.toLowerCase().startsWith(`${tempRoot}/`)) {
     throw new Error(`refusing to remove fixture outside the OS temp directory: ${fixtureRoot}`);

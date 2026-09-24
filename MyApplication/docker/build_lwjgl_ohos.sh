@@ -57,9 +57,9 @@ NATIVE_SUFFIX=${NATIVE_SUFFIX:-}
 
 # The modern slot preserves the audited resize-v1 API in the same STB DSO.
 # Mount prebuilt/lwjgl3/compat/stb-v1 here (or override AMCL_STB_COMPAT_DIR).
-AMCL_STB_COMPAT_DIR=${AMCL_STB_COMPAT_DIR:-/amcl-stb-compat}
+AMCL_STB_COMPAT_DIR=${AMCL_STB_COMPAT_DIR:-/prebuilt/lwjgl3/compat/stb-v1}
 if [ "$LWJGL_TAG" = "3.4.2" ] && [ ! -f "$AMCL_STB_COMPAT_DIR/sources.json" ]; then
-    echo "ERROR: mount prebuilt/lwjgl3/compat/stb-v1 at /amcl-stb-compat for the modern compatibility build"
+    echo "ERROR: current prebuilt/lwjgl3/compat/stb-v1 input is required for the modern compatibility build"
     exit 1
 fi
 

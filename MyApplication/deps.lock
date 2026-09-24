@@ -361,7 +361,7 @@ commit   = PENDING   # release 前用 git ls-remote 查 jdk-17.0.13+11 tag 对�
 upstream = https://github.com/openjdk/jdk21u.git
 repo     = https://github.com/openjdk/jdk21u.git
 tag      = jdk-21.0.5+11
-commit   = dfcd8d2ee7b3ffd75e26d54f6b03cb6b6900824b   # git rev-parse 长 SHA
+commit   = dfcd8d2eecfe62e91070244d8eb10906dc3c812d   # 上游 jdk-21.0.5+11 tag 与两份现存构建源码 HEAD 一致；详见 prebuilt/jdk/source-provenance.json
 
 # -----------------------------------------------------------------------------
 # [openjdk-25] — OpenJDK 25u（三版本上线，2026-05-30；MC 26.1+ 要求 Java 25）
@@ -716,3 +716,9 @@ libopenal_version     = PENDING
 libopenal_sha256      = PENDING
 lwjgl-natives_version = PENDING
 lwjgl-natives_sha256  = PENDING
+
+# JNA 不同native协议槽；保留游戏Java依赖，由实际Version.class选择。
+# 上游JAR/条目摘要与运行分配节清单统一登记，SDK strip只允许删非运行节。
+[jna-runtime]
+manifest = prebuilt/jna/manifest.json
+manifest_sha256 = 25832ce2edc66fc9eda599896ef3f0a4fe409db55fa89bfa9feca56ed1b46cbf

@@ -1,4 +1,6 @@
 // Desktop service contract: source mirrors, actual HAP and native build inputs.
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { PRODUCT_ROOT, parseJson5 } from './product-contract.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
 import { computeSdl3PatchsetDigest, artifactEmbedsSdl3Patchset } from './sdl3-patchset-digest.mjs';
-import { stripComments } from './lib/source-noise.mjs';
+import { stripComments, stripStringLiterals } from './lib/source-noise.mjs';
 import { graphicsBootstrapIssues } from './graphics-bootstrap-contract.mjs';
 
 const normalize = s => s.replace(/\r\n/g, '\n');
@@ -31,13 +33,25 @@ function bodyAfter(source, signature) {
   const code = stripComments(source, 'cpp');
   const start = code.indexOf(signature);
   if (start < 0) return '';
-  const open = code.indexOf('{', start);
+  // 默认实参可以包含 JnaBootstrap{}；先越过完整形参括号，不能把实参初始化器
+  // 当成函数体。用共享词法屏蔽字面量后匹配界符，仍返回原正文供契约判断。
+  const delimiters = stripStringLiterals(code);
+  const parameters = delimiters.indexOf('(', start);
+  if (parameters < 0) return '';
+  let parentheses = 1, afterParameters = parameters + 1;
+  for (; afterParameters < delimiters.length && parentheses; afterParameters++) {
+    if (delimiters[afterParameters] === '(') parentheses++;
+    else if (delimiters[afterParameters] === ')') parentheses--;
+  }
+  if (parentheses) return '';
+  const open = delimiters.indexOf('{', afterParameters);
   if (open < 0) return '';
   let depth = 1, end = open + 1;
-  for (; end < code.length && depth; end++) {
-    if (code[end] === '{') depth++;
-    else if (code[end] === '}') depth--;
+  for (; end < delimiters.length && depth; end++) {
+    if (delimiters[end] === '{') depth++;
+    else if (delimiters[end] === '}') depth--;
   }
+  if (depth) return '';
   return code.slice(open + 1, end - 1);
 }
 export function evaluateDesktopCompletionSources(callbacks, page, ability) {
@@ -227,7 +241,7 @@ function inspectHap(path, nativeBuild, validation, sdk) {
   const configuredNm = /^CMAKE_NM:FILEPATH=(.+)$/m.exec(normalize(cache))?.[1];
   const nm = configuredNm && existsSync(configuredNm) ? configuredNm : join(sdk, 'native/llvm/bin', process.platform === 'win32' ? 'llvm-nm.exe' : 'llvm-nm');
   if (!existsSync(nm)) throw new Error('LLVM nm missing; pass --sdk <openharmony SDK>');
-  const dir = mkdtempSync(join(tmpdir(), 'amcl-desktop-artifact-'));
+  const dir = mkdtempSync(join(workspaceTempRoot(), 'amcl-desktop-artifact-'));
   const libraries = {};
   try {
     for (const [lib, symbol] of [['libentry.so', 'amclDesktopHostGetV1'], ['libglfw.so', 'amclDesktopHostResolve'], ['libSDL3.so', 'SDL_GetRevision']]) {

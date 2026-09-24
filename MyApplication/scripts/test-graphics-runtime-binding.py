@@ -1,4 +1,6 @@
 """编译并执行实际绑定源码的系统边界故障测试；不装载真实 GPU 驱动。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import subprocess
@@ -6,7 +8,7 @@ import tempfile
 from lib.host_cpp import compile_cpp
 
 root = Path(__file__).resolve().parent.parent
-with tempfile.TemporaryDirectory(prefix='amcl-runtime-binding-') as directory:
+with workspace_temporary_directory(prefix='amcl-runtime-binding-') as directory:
     binary = Path(directory) / ('binding.exe' if os.name == 'nt' else 'binding')
     compile_cpp(root / 'entry/src/main/cpp/tests/host/graphics_runtime_binding_test.cpp', binary,
         includes=[root / 'entry/src/main/cpp/tests/host/runtime_binding_stubs', root / 'prebuilt/khronos-egl-headers'])

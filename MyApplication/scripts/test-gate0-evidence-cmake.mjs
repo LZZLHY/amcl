@@ -9,6 +9,8 @@
 //
 // 用的是 host CMake，不需要 OHOS 工具链：门禁只读文件、只设变量，不定义任何目标。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import {
   mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, cpSync,
 } from 'node:fs';
@@ -124,7 +126,7 @@ function baseCapabilities() {
  * 门禁读的是 AMCL_REPO_ROOT，所以 fixture 根就是"仓库根"。
  */
 function buildFixture(capabilities, evidenceText) {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-gate0-cmake-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gate0-cmake-'));
   write(root, 'gate0-evidence.lock',
     JSON.stringify({ schemaVersion: 1, capabilities }, null, 2));
   write(root, 'docs/testing/gate0-fixture.md', evidenceText ?? EVIDENCE_TEXT);
@@ -391,7 +393,7 @@ for (const bogus of ['ON', 'true', 1]) {
 
 // 16. 未知 schemaVersion：不得当成批准。
 {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-gate0-cmake-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gate0-cmake-'));
   try {
     write(root, 'gate0-evidence.lock',
       JSON.stringify({ schemaVersion: 99, capabilities: baseCapabilities() }));
@@ -413,7 +415,7 @@ for (const bogus of ['ON', 'true', 1]) {
 // 17. 出货仓库的真实清单 + 全 OFF：确认 fixture 与出货配置没有分叉。
 {
   const result = (() => {
-    const root = mkdtempSync(join(tmpdir(), 'amcl-gate0-cmake-real-'));
+    const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gate0-cmake-real-'));
     try {
       cpSync(join(repoRoot, 'gate0-evidence.lock'), join(root, 'gate0-evidence.lock'));
       writeProbeScript(root);

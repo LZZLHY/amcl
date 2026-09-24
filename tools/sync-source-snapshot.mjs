@@ -24,14 +24,21 @@ const folders = new Set(['account', 'AppScope', 'commons', 'config', 'docker', '
   'feature_core', 'feature_system', 'gamecontrol', 'hvigor', 'JavaApp', 'launch',
   'mods', 'prebuilt', 'scripts', 'tests', 'tools', 'update']);
 const rootFiles = new Set(['.gitattributes', '.clang-tidy', 'amcl-build-menu.bat',
-  'build-app.ps1', 'build-hap.ps1', 'code-linter.json5', 'deps.lock', 'deps.versions',
+  'build-app.ps1', 'build-hap.ps1', 'build-delivery.ps1', 'code-linter.json5', 'deps.lock', 'deps.versions',
   'hvigorfile.ts', 'oh-package.json5', 'oh-package-lock.json5', 'setup_deps.sh', 'toolchain.lock']);
 const preserved = new Set(['scripts/run-host-tests-docker.sh']);
 // 已确认由 Hvigor 根据本次产品重新生成的旧快照输入，只解除清单管理；保留本地文件。
 const generated = new Set(['entry/src/main/resources/rawfile/graphics-manifest.json']);
+// 目录整理后，现役NativeGL宿主门禁从版本化证据目录读取这两份官方源码。
+// 只公开已经核对为Apache-2.0源码的固定输入，不因此开放整棵设备/历史证据目录。
+const publicTestInputs = new Set([
+  'docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_core.cpp',
+  'docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp',
+]);
 
 /** 只允许源码、构建配置和现役补丁；历史归档和开发环境输出没有发布用途。 */
 function selected(relative) {
+  if (publicTestInputs.has(relative)) return true;
   if (!folders.has(relative.split('/')[0]) && !rootFiles.has(relative)) return false;
   if (generated.has(relative)) return false;
   if (preserved.has(relative) || /(?:^|\/)(?:README[^/]*|AGENTS\.md)$/i.test(relative)) return false;

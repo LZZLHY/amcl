@@ -2,22 +2,27 @@
 set -e
 
 # ============================================================
-#  copy_jdk_to_project.sh — 从 Docker output 复制 JDK 文件到项目
+#  copy_jdk_to_project.sh — 从显式外部输出复制旧式拆分 JDK 文件到项目
 #
 #  在 Windows 上用 Git Bash 或 WSL 运行:
-#    bash docker/copy_jdk_to_project.sh
+#    bash docker/scripts/copy_jdk_to_project.sh /path/to/.workspace/build/<task>/out
 #
 #  或者手动复制:
-#    1. docker/output/jdk-libs/*.so → entry/libs/arm64-v8a/
-#    2. docker/output/jdk-data.zip → entry/src/main/resources/rawfile/
+#    1. <task>/out/jdk-libs/*.so → entry/libs/arm64-v8a/
+#    2. <task>/out/jdk-data.zip → entry/src/main/resources/rawfile/
 #    3. 删除 entry/src/main/resources/rawfile/jdk-full.zip
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-LIBS_SRC="$SCRIPT_DIR/output/jdk-libs"
-DATA_SRC="$SCRIPT_DIR/output/jdk-data.zip"
+# 不再猜测旧 docker/output，调用者必须明确指定审核过的外部输出。
+# 此旧式工具不是当前运行时 Release 下载资产的替代发布入口。
+OUTPUT_ROOT=${1:?Usage: copy_jdk_to_project.sh /absolute/task/out}
+OUTPUT_ROOT=$(cd "$OUTPUT_ROOT" && pwd)
+case "$OUTPUT_ROOT/" in "$PROJECT_DIR/"*) echo 'ERROR: input must be outside the project'; exit 1;; esac
+LIBS_SRC="$OUTPUT_ROOT/jdk-libs"
+DATA_SRC="$OUTPUT_ROOT/jdk-data.zip"
 LIBS_DST="$PROJECT_DIR/entry/libs/arm64-v8a"
 RAWFILE_DST="$PROJECT_DIR/entry/src/main/resources/rawfile"
 

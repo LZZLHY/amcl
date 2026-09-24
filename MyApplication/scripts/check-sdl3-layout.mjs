@@ -6,6 +6,8 @@
 // member-offset constants on a 64-bit JVM, generates C _Static_asserts, and
 // compiles them with the real HarmonyOS aarch64 clang and the pinned SDL headers.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspacePath, workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -113,7 +115,8 @@ function download(url, target) {
 async function ensureHostNativeJar() {
   const descriptor = hostNatives[process.platform];
   if (!descriptor) fail(`unsupported host for LWJGL layout reflection: ${process.platform}`);
-  const cache = join(root, 'docker', 'output', 'layout-probe-cache');
+  // 已锁哈希的宿主探针 JAR 可复用，但其下载缓存不属于 Docker 配方或工程输入。
+  const cache = workspacePath('build', 'sdl-layout-cache');
   mkdirSync(cache, { recursive: true });
   const name = `lwjgl-${lwjglVersion}-${descriptor.classifier}.jar`;
   const target = join(cache, name);
@@ -175,7 +178,7 @@ if (!existsSync(join(opt.repo, 'include', 'SDL3', 'SDL.h'))) fail(`not an SDL so
 for (const jar of [coreJar, sdlJar]) if (!existsSync(jar)) fail(`missing jar: ${jar}`);
 const sdk = locateSdk(opt.sdk);
 const hostNativeJar = await ensureHostNativeJar();
-const work = mkdtempSync(join(tmpdir(), 'amcl-sdl3-layout-'));
+const work = mkdtempSync(join(workspaceTempRoot(), 'amcl-sdl3-layout-'));
 
 try {
   const javaFile = join(work, 'LwjglSdlLayoutDump.java');

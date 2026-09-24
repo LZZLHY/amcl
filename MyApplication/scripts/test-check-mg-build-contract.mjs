@@ -2,6 +2,8 @@
 // Regression fixtures for variant-binding false greens. These tests do not
 // require DevEco, CMake, Git or a real ELF and therefore run on hosted CI.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { mkdtempSync } from 'node:fs';
 import {
   mkdirSync,
@@ -96,7 +98,7 @@ function ensureParent(path) {
   mkdirSync(dirname(path), { recursive: true });
 }
 
-const fixtureRoot = resolve(mkdtempSync(join(tmpdir(), 'amcl-mg-contract-')));
+const fixtureRoot = resolve(mkdtempSync(join(workspaceTempRoot(), 'amcl-mg-contract-')));
 const options = {
   root: fixtureRoot,
   product: 'default',
@@ -664,7 +666,7 @@ try {
   }
   console.log('[test-check-mg-build-contract] PASS: a translator pass missing from the artifact is rejected');
 } finally {
-  const temp = resolve(tmpdir());
+  const temp = resolve(workspaceTempRoot());
   const rel = resolve(fixtureRoot).slice(temp.length);
   if (!rel.startsWith('\\') && !rel.startsWith('/')) {
     throw new Error(`refusing to remove fixture outside temp: ${fixtureRoot}`);

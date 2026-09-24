@@ -4,8 +4,10 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PRODUCT_ROOT } from './product-contract.mjs';
 import { DIAGNOSTIC_FLAGS } from './diagnostic-profile.mjs';
+import { workspacePath } from './lib/workspace-paths.mjs';
 
-const dir = resolve(PRODUCT_ROOT, '.tmp-build/product-diagnostics/cmake-policy');
+// 仅改变宿主测试生成头/脚本的位置，产品诊断策略与原始 CMake 输入保持相同。
+const dir = workspacePath('build', 'diagnostics-cmake');
 mkdirSync(dir, { recursive: true });
 const script = resolve(dir, 'test.cmake');
 writeFileSync(script, `set(CMAKE_CURRENT_BINARY_DIR "${dir.replaceAll('\\', '/')}")\ninclude("${PRODUCT_ROOT.replaceAll('\\', '/')}/entry/src/main/cpp/cmake/ProductDiagnostics.cmake")\n`);

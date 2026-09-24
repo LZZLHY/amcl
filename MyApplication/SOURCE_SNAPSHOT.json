@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sourceCommit": "5d1be0112a82d13f0c564afe9c1dc54843f7aa2e",
+  "sourceCommit": "6bc3b34aebbf5aabe61a978966a5a8a5305275e4",
   "sourceBranch": "main",
   "sourceDirty": false,
   "note": "Current working-tree snapshot; sourceCommit is its base, not an assertion of identical committed content. Public docs, licenses and bootstrap tools are maintained separately.",
@@ -40,12 +40,12 @@
   "entries": [
     {
       "path": ".gitattributes",
-      "sha256": "d71f98791daa838ba3b2d09b1131b5f52e4a49bcb01a62b5ab030865b787c5db",
+      "sha256": "724b7949f473bd47b38ccb237141e591455766bd1bb11d43404bfa0ca387fba9",
       "normalization": "lf"
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "d11011888bace77b61fe2036dafc79bbb97f3d005b76964a8529200b543723d9",
+      "sha256": "dadfe0897c0d636ff0a615cd2d43514fe6372d1139c3a0d1fb453268a5d13aeb",
       "normalization": "lf"
     },
     {
@@ -310,12 +310,17 @@
     },
     {
       "path": "build-app.ps1",
-      "sha256": "81a10662c366e61f273edf7c1a507d3856321bbd459742eaae800585d0524fe3",
+      "sha256": "ddb2a8d93a61e1d9cda606400a8ef5fb53be9cb0ac174057b3a0633d4dbfa713",
+      "normalization": "lf"
+    },
+    {
+      "path": "build-delivery.ps1",
+      "sha256": "b40651c81647f2affb8118bf90b541414755a9c076128ce6914646249b4bb7c8",
       "normalization": "lf"
     },
     {
       "path": "build-hap.ps1",
-      "sha256": "496613844d0e653c3725799563d6e997fa14497fb3434aef3268f78713ddb34a",
+      "sha256": "6c328438db32ee483f71738781422c7810cc5507f814f9665d185a832718eac5",
       "normalization": "lf"
     },
     {
@@ -360,7 +365,7 @@
     },
     {
       "path": "commons/src/main/ets/common/Constants.ets",
-      "sha256": "d98ee6f31f99441d7b30f0e3dd7335d067af06ea745b12e866beaa5d9455295b",
+      "sha256": "d4e438ea7ada3898545df69f12e2042fb603622bb0f3c518732b869e31aeb0c4",
       "normalization": "lf"
     },
     {
@@ -580,7 +585,7 @@
     },
     {
       "path": "config/log-domains.json",
-      "sha256": "19bdf3840edc905bc1268cf4eb604dc2a0cf71a015a8600abb87fb7c11ffd96e",
+      "sha256": "2a0004f8e01179ff4922755b57e0537dfa88a3f83208822bb816dd83d9a98cee",
       "normalization": "lf"
     },
     {
@@ -595,7 +600,7 @@
     },
     {
       "path": "deps.lock",
-      "sha256": "df9204a9244bb302cc930507067aba9e42ba0770523407199178857b8e925e70",
+      "sha256": "8e3055ac30ff851fe4e89908e58a820028f4d67d14f14f519b53a4dbdcdd0b73",
       "normalization": "lf"
     },
     {
@@ -605,7 +610,7 @@
     },
     {
       "path": "docker/Dockerfile.openjdk-ohos",
-      "sha256": "50e65e8ab4dcc770725b4f3a95e5c937c7ed91e28950b7af7854349408f2afae",
+      "sha256": "c4a1e315c8edd4d64535b02f6d57368996e39f8a17337a3ae04a05112cbb6349",
       "normalization": "lf"
     },
     {
@@ -615,12 +620,12 @@
     },
     {
       "path": "docker/build_curl_ohos.ps1",
-      "sha256": "9f5a8bfc90b1b8f545f8de3b29e115a53caac98bfe75050f4d64e4ad7c75dd45",
+      "sha256": "114af500dd7763bc4738e5800682395ef8110ad439a013e00820262b499e0f4e",
       "normalization": "lf"
     },
     {
       "path": "docker/build_curl_ohos.sh",
-      "sha256": "729b3ab01335bd8013708c5d6c3f062edffdb2f3142040fe44c8e824e49f7c93",
+      "sha256": "c53e21ae0a02f80552037c54eec9d3c550951955184be3e5749c8d4c9f27661e",
       "normalization": "lf"
     },
     {
@@ -640,7 +645,7 @@
     },
     {
       "path": "docker/build_gl4es_ohos.sh",
-      "sha256": "abb1011bc3c7adbad9cb84ad927ab1e45079a914b7956c2742780aa431062430",
+      "sha256": "1906d29a2d03cec4c7a0a70f7d622b31e0f31e1624c81072b256d23970d4be8d",
       "normalization": "lf"
     },
     {
@@ -675,7 +680,7 @@
     },
     {
       "path": "docker/build_lwjgl_ohos.sh",
-      "sha256": "aff0ef478eee4e155401da861fe0e8eb841e308688e5533e56232f9372f00ed1",
+      "sha256": "69b713b18cc1295aa6aea9e2662d4ae959e0cb93ef93d577c5a4f89be13bac62",
       "normalization": "lf"
     },
     {
@@ -690,17 +695,27 @@
     },
     {
       "path": "docker/build_sdl3_ohos.sh",
-      "sha256": "a1260dcdcaa0ea553e387c036d9bc2d336a2300bf120ade11578342163099746",
+      "sha256": "98d907aaecc2223759665f8b4883608c9611c227c732fa7c13eefd3c08e085fe",
       "normalization": "lf"
     },
     {
       "path": "docker/build_shaderc_ohos.sh",
-      "sha256": "e63895f7d7a70f058fd3fb1e559575960f9b56f44bf7627fdad98f19ec58c413",
+      "sha256": "3ff1f4b8e674f940ff743e80c5e90f874ad74ea5202f17b9718b17bdcfab3c12",
       "normalization": "lf"
     },
     {
       "path": "docker/build_sve2_attr_probe.sh",
       "sha256": "5df7bda41ac59a86f000e4030e6b3eab9544a9663c672bc48f3b26f835ab830a",
+      "normalization": "lf"
+    },
+    {
+      "path": "docker/build_sysroot_probe.sh",
+      "sha256": "11da012144a7c6cd2146d8ba70b76474d3239cb5f3574978d49a95ac090c9199",
+      "normalization": "lf"
+    },
+    {
+      "path": "docker/builder-entry.sh",
+      "sha256": "44d31f454ad7ba405cd5766ece24a3cf3e9640b15c0f200e064b7cf1f2ca5d33",
       "normalization": "lf"
     },
     {
@@ -726,6 +741,11 @@
     {
       "path": "docker/jdk8_runtime_patches.py",
       "sha256": "e481f100acd0ae5ae2f5b293239c0e51bc3aa62cc6942124b9e97893873dd606",
+      "normalization": "lf"
+    },
+    {
+      "path": "docker/launch-builder.ps1",
+      "sha256": "53afde700cf003269cb4a53ef094a6dff4a19860150a3bf2f3341be1aae0a12a",
       "normalization": "lf"
     },
     {
@@ -755,7 +775,7 @@
     },
     {
       "path": "docker/scripts/copy_jdk_to_project.sh",
-      "sha256": "8a3e03142b2cff2be78495737c735e2fb65861549ffc3680b27bc9200a913a10",
+      "sha256": "7788dbddc2d7871829d67c7ae62961828e260009b2c42567433136e5c202655d",
       "normalization": "lf"
     },
     {
@@ -820,7 +840,7 @@
     },
     {
       "path": "docker/setup_toolchain.sh",
-      "sha256": "21ab58d4c91e9a93b1a7dfbf393d1e1de1f538a682c03b486281c36b58ca1c45",
+      "sha256": "9117dd7ca1dfc7b1c55bacbd008a754966b828ff85794101cb7dff9077ec9809",
       "normalization": "lf"
     },
     {
@@ -999,6 +1019,16 @@
       "normalization": "lf"
     },
     {
+      "path": "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_core.cpp",
+      "sha256": "c31315f507e6fb5b6c14692dcec85ba146de351700d891273a0aa499229b1839",
+      "normalization": "lf"
+    },
+    {
+      "path": "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp",
+      "sha256": "6a58a36023011cd2c2aac03c5484f3ba1da5a67e6597ddc0211f2341042b91ba",
+      "normalization": "lf"
+    },
+    {
       "path": "entry/.gitignore",
       "sha256": "c4868dbab8112ec2283b23448ad795702a967bb55229333ab317cbeb8c3ad690",
       "normalization": "lf"
@@ -1071,6 +1101,16 @@
     {
       "path": "entry/libs/arm64-v8a/libjnidispatch.so",
       "sha256": "5c894177c2c4a1a422047886f5f526959e4f1a8c1561bb3cb2277fe0da85b744",
+      "normalization": "none"
+    },
+    {
+      "path": "entry/libs/arm64-v8a/libjnidispatch_v5.so",
+      "sha256": "e38d9d053e8bf3be88050b40b1672d9f59c8df7d1ac54d9366b3382de39f541f",
+      "normalization": "none"
+    },
+    {
+      "path": "entry/libs/arm64-v8a/libjnidispatch_v6.so",
+      "sha256": "0d0a0e6ae88416651b53f711101d3f8bb8fb59d5efe8173ab4924c1151443c69",
       "normalization": "none"
     },
     {
@@ -1235,7 +1275,7 @@
     },
     {
       "path": "entry/src/main/cpp/CMakeLists.txt",
-      "sha256": "90422e43b748dbeeaa8235f20bfd2e283ce339c7a4e793684ae44cf9fccebc69",
+      "sha256": "96b9a6569ac4828db6e888bdc0e2549674e5156fbb5cc1cf260af1e00796847f",
       "normalization": "lf"
     },
     {
@@ -1824,6 +1864,16 @@
       "normalization": "lf"
     },
     {
+      "path": "entry/src/main/cpp/jvm/jna_runtime_contract.cpp",
+      "sha256": "5dbbeda2f678765ca01f1777c19e7ef0513385d9f46d998e1bf14289147eb35f",
+      "normalization": "lf"
+    },
+    {
+      "path": "entry/src/main/cpp/jvm/jna_runtime_contract.h",
+      "sha256": "6a5cca47fbae897feb7b458be69034892c3701de72ab378aeaeb5a32efd2e9ce",
+      "normalization": "lf"
+    },
+    {
       "path": "entry/src/main/cpp/jvm/jni.h",
       "sha256": "1266aea5b9f5d5db1cb6f8e5c6c43cfa7f80bc4f72d7fe42c6131bb939dc70f4",
       "normalization": "lf"
@@ -1835,7 +1885,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/jni_mutf8.h",
-      "sha256": "b767618616e2b6b8b9f475aff199925b103cdf20195be8b5c302cff2ab0b17cd",
+      "sha256": "10320e3d81ef785493635c37fb182cffcab41f04ac3929521a942dd12cd4aa70",
       "normalization": "lf"
     },
     {
@@ -1859,8 +1909,13 @@
       "normalization": "lf"
     },
     {
+      "path": "entry/src/main/cpp/jvm/jvm_heap_options.h",
+      "sha256": "6eb298889229399562f20994879e589bb00de71769ecf0b0c6071624f70a5924",
+      "normalization": "lf"
+    },
+    {
       "path": "entry/src/main/cpp/jvm/jvm_launcher.cpp",
-      "sha256": "7fdab72cdc0ed4440f9d5bf8e93fd8b0a82cb0d319a0b851d1e98a02b88cd23d",
+      "sha256": "efd3799f536d2aba74bb2d3312eceaf2f868d25c7273bdfae09c7a730233e9a5",
       "normalization": "lf"
     },
     {
@@ -1880,7 +1935,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/mc_launcher.cpp",
-      "sha256": "5e520dc7bc52f0af7225f7c311cf18ec02ef132d91aaed17a2ef1bae5f9cf624",
+      "sha256": "bc916424eb2b33267fa62da4d191c23682ec3858eaf6e31af24807407e5214bc",
       "normalization": "lf"
     },
     {
@@ -1895,7 +1950,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
-      "sha256": "f507d6cca99a17544cc951d58e6204a22d67f1a199a590876ec1919df3c3bdd1",
+      "sha256": "f205164e7b5390705ce47d1e9c956fd7765ead022da3aea5fe37a825b121218a",
       "normalization": "lf"
     },
     {
@@ -2650,7 +2705,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/CMakeLists.txt",
-      "sha256": "8750194acb5a4b024b267bb09993f333743a95e0357c90132766a68b7a97ca77",
+      "sha256": "0850768260a4c8f3ca167b3c2de1f617080247f295341215412af6f795d355ee",
       "normalization": "lf"
     },
     {
@@ -2890,7 +2945,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/graphics_probe_gate.cpp.in",
-      "sha256": "c7e66748a52596244ef329d4f60f04dcf8de570deeba178bdeac7a329f14ec89",
+      "sha256": "2016f2fb6511801eb5b806a34534dce78609638218a3e554798549cf7a7f198e",
       "normalization": "lf"
     },
     {
@@ -2954,6 +3009,11 @@
       "normalization": "lf"
     },
     {
+      "path": "entry/src/main/cpp/tests/host/jna_runtime_contract_test.cpp",
+      "sha256": "677e015e2cbd8d10f019bebc35594f9b362d11bd996a3b7376f88b54b265ed94",
+      "normalization": "lf"
+    },
+    {
       "path": "entry/src/main/cpp/tests/host/jni_bridge/NativeOwnershipTest.java",
       "sha256": "612cec11aeaab27f7f244606a2e98a840025cbad228daa9b6ed9b84f98843ba9",
       "normalization": "lf"
@@ -2980,12 +3040,22 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/jni_mutf8_test.cpp",
-      "sha256": "0aae67793a158ea7a70953d8be9c6a37de3e53f12904ff6149c053d82fc07c92",
+      "sha256": "58b729fb5711caaed3c8129b5d6944f0a7788b5b2e2fb980e12f932e530ad972",
       "normalization": "lf"
     },
     {
       "path": "entry/src/main/cpp/tests/host/joystick_sector_test.cpp",
       "sha256": "12c4a1d9c79324d35fd82ec56bae8298c018db2b9f84b9faf2a49c12254a4c47",
+      "normalization": "lf"
+    },
+    {
+      "path": "entry/src/main/cpp/tests/host/jvm_bootstrap_invocation.cpp",
+      "sha256": "fdc454e15b9100d0c6762a2d828fed4c9aae3bed8909862ed49e2597f5b54322",
+      "normalization": "lf"
+    },
+    {
+      "path": "entry/src/main/cpp/tests/host/jvm_heap_options_test.cpp",
+      "sha256": "ff0ad1c0dc4cb39185e47fed35c0af3beb1642ba97202e411775ea785aed0d30",
       "normalization": "lf"
     },
     {
@@ -3840,7 +3910,7 @@
     },
     {
       "path": "entry/src/main/ets/components/PreLaunchCheckSheet.ets",
-      "sha256": "8b192e48d956d99db0e2fd60cecf0207413374519b6471e92cc92476a9f28235",
+      "sha256": "5a489705dbc2d34ccc795315ebee022ee7601480ec92842a080ceb8d95d88896",
       "normalization": "lf"
     },
     {
@@ -4130,7 +4200,7 @@
     },
     {
       "path": "entry/src/main/ets/runtime/GraphicsLaunchFailure.ets",
-      "sha256": "b1a4edac8c02e4a5d6723e3b04f5cde76d87cfb64bd6369b0bd2070cb99a421d",
+      "sha256": "470a669e36c2861e87f81d2daf78319497f1fbaeed8f9e0ab16e6bed829ee061",
       "normalization": "lf"
     },
     {
@@ -4350,7 +4420,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "b3f805ab36c2750058756a5007fe6fd70efb6c6f3c2b198adca250ed8c1c7e75",
+      "sha256": "00908a975656ca9b569598d8bbf96b797587e419c72854b89ef1393e0166a036",
       "normalization": "lf"
     },
     {
@@ -4630,7 +4700,7 @@
     },
     {
       "path": "entry/src/test/ModInstallContract.test.ets",
-      "sha256": "3f23151e9a396f355032d7f995231e7e5fa7896c975905ce0c3c5e1f05ef0ecf",
+      "sha256": "285aef184869eff7233f74a15eb7c0a7da0bf3a5454a4bd1472317769bada5e3",
       "normalization": "lf"
     },
     {
@@ -5430,7 +5500,7 @@
     },
     {
       "path": "launch/src/main/ets/LaunchProfileBuilder.ets",
-      "sha256": "72e5279d83b9508e32918c1c6df2ebffd737be4be8c2cda890aa92f90b903957",
+      "sha256": "c5add6a2161ea7666876f7664a37368844763fc6d21299fee307152f6add91f7",
       "normalization": "lf"
     },
     {
@@ -5470,7 +5540,7 @@
     },
     {
       "path": "launch/src/main/ets/PreLaunchValidator.ets",
-      "sha256": "d44d86f25b2412f1605a9e6a311593c084a68c2043358ccc50f590f6488d2092",
+      "sha256": "0369ceb7236323c66f977fcdce214ff912dd14b4c34fcba59da5ebd50ae068d9",
       "normalization": "lf"
     },
     {
@@ -5486,6 +5556,11 @@
     {
       "path": "launch/src/main/ets/RuntimeDeployer.ets",
       "sha256": "e75506ff0d5fc45cefc1f0153bcdabf22c2c7a4f78be7cac45f4dd8124922ea6",
+      "normalization": "lf"
+    },
+    {
+      "path": "launch/src/main/ets/RuntimeJvmArgumentPolicy.ets",
+      "sha256": "a53eedd3bdbae82bf8b95b52285b63d6068b80ead598c4aab787d3a37a2b0aae",
       "normalization": "lf"
     },
     {
@@ -5525,7 +5600,7 @@
     },
     {
       "path": "mods/Index.ets",
-      "sha256": "2f06836389185afbcb2466584f57e7fb2d05e0f3e75a57126532039eac4fe5e7",
+      "sha256": "f08300e19cae7e851612da9f8c209d2674046ece95034a9dcd55183e99c70052",
       "normalization": "lf"
     },
     {
@@ -5579,18 +5654,13 @@
       "normalization": "lf"
     },
     {
-      "path": "mods/src/main/ets/InstalledLoaderVersion.ets",
-      "sha256": "20b6c835854cd9de831455226ca4addf02e41936c2b2cbec9b2006e4e5440c36",
-      "normalization": "lf"
-    },
-    {
       "path": "mods/src/main/ets/InstalledModIndex.ets",
       "sha256": "47e0496ebc5d62e55e7530d9aba1586885a8b5cfd6d732e7dfe1eae3085d38db",
       "normalization": "lf"
     },
     {
       "path": "mods/src/main/ets/LocalModScanner.ets",
-      "sha256": "afb80c61449b9d17531943fdde01e11ad244a18875d36ad96d9f1e5916d75774",
+      "sha256": "2d16f75bc305cc98f03e19c6d2bfe19fc6a3c2f840bfdb51ff4e305cbed1a5de",
       "normalization": "lf"
     },
     {
@@ -5600,27 +5670,22 @@
     },
     {
       "path": "mods/src/main/ets/ModInstallService.ets",
-      "sha256": "e896f01012e0b11b256f17da7a9fcd17ff4da7991623175a55a3a5439701c36a",
+      "sha256": "2d1fe8eb9484c023d9b5c7840b60d8e41474b2cf5d6848d36013b514cfb87dd4",
       "normalization": "lf"
     },
     {
       "path": "mods/src/main/ets/ModInstallTask.ets",
-      "sha256": "0247860e6e01ca654e96881dc029120bc46aa46ec5a96a50a49b7dcd9508c9e3",
+      "sha256": "8c492e2429886a1359dc0e4d39d710636a9b48cc76d45087933489c52add8812",
       "normalization": "lf"
     },
     {
       "path": "mods/src/main/ets/ModInstallTransaction.ets",
-      "sha256": "ec592ca2fb3670958a1dcf632ff0cb775b416b97789b6ce324077c006ff9684e",
+      "sha256": "98fd209126301dc75a4cc3ed334cabafe5ff995e6523e3f3d199737655fe9e22",
       "normalization": "lf"
     },
     {
       "path": "mods/src/main/ets/ModInstaller.ets",
       "sha256": "c3eaca07e7526ec410c77dac2caff1c0dc4b11b2985d1724a6f811a38e127677",
-      "normalization": "lf"
-    },
-    {
-      "path": "mods/src/main/ets/ModManifest.ets",
-      "sha256": "76f80f0b5bd31ced33a599e65c275d291f1891ce4e4a7827addd0456a82dde69",
       "normalization": "lf"
     },
     {
@@ -5651,16 +5716,6 @@
     {
       "path": "mods/src/main/ets/ModUpdatePolicy.ets",
       "sha256": "d78a908901602cb50374280f15471ecd282a0c66ff471109181a429ad5566d78",
-      "normalization": "lf"
-    },
-    {
-      "path": "mods/src/main/ets/ModVersionRange.ets",
-      "sha256": "e79305a2d67a4ed0d32eae3ab21e40b554bb58161a4afb3f0957e6408ee5b616",
-      "normalization": "lf"
-    },
-    {
-      "path": "mods/src/main/ets/ModZipReader.ets",
-      "sha256": "9e5b4a4a4f54067299f58c0be8c248976e164bf6da41ed3eeca7c6972f31e186",
       "normalization": "lf"
     },
     {
@@ -5939,9 +5994,29 @@
       "normalization": "lf"
     },
     {
+      "path": "prebuilt/jdk/source-provenance.json",
+      "sha256": "db05c49179a1a5ed62a1860bdef0cf11075c74205e79db947d2318cd45c8aae0",
+      "normalization": "lf"
+    },
+    {
       "path": "prebuilt/jna/libjnidispatch.so",
       "sha256": "5c894177c2c4a1a422047886f5f526959e4f1a8c1561bb3cb2277fe0da85b744",
       "normalization": "none"
+    },
+    {
+      "path": "prebuilt/jna/libjnidispatch_v5.so",
+      "sha256": "e38d9d053e8bf3be88050b40b1672d9f59c8df7d1ac54d9366b3382de39f541f",
+      "normalization": "none"
+    },
+    {
+      "path": "prebuilt/jna/libjnidispatch_v6.so",
+      "sha256": "0d0a0e6ae88416651b53f711101d3f8bb8fb59d5efe8173ab4924c1151443c69",
+      "normalization": "none"
+    },
+    {
+      "path": "prebuilt/jna/manifest.json",
+      "sha256": "25832ce2edc66fc9eda599896ef3f0a4fe409db55fa89bfa9feca56ed1b46cbf",
+      "normalization": "lf"
     },
     {
       "path": "prebuilt/khronos-egl-headers/EGL/egl.h",
@@ -6210,7 +6285,7 @@
     },
     {
       "path": "prebuilt/mobilegl/build-mobilegl.ps1",
-      "sha256": "2dced7913791caa14c659c7e92c61a20efc7ca8702ef92b6aa1a6a4583afd9da",
+      "sha256": "f062983842ce56fb90db86549fd33edc8251851fb738d7658292e0ccadb676d2",
       "normalization": "lf"
     },
     {
@@ -7110,7 +7185,7 @@
     },
     {
       "path": "prebuilt/runtime-compat/artifact.json",
-      "sha256": "71cb5ccc1f0f1bb3d4cbf32b3256a8ec2f7b468767db4a63d8deb2cbd07a53b7",
+      "sha256": "c8f5cf3ac01ca29c5ac89c8ac798dd73d557532ed4c882485fe7132ae08479f3",
       "normalization": "lf"
     },
     {
@@ -7405,7 +7480,7 @@
     },
     {
       "path": "scripts/benchmark-graphics-observer.py",
-      "sha256": "939a1024f5bbc14cffa606ee42a0b896eb6fcedc51bdb36ee2a2cc23e951ef38",
+      "sha256": "81ee470a851ccafcef0b4103b60a8570487317d5022a5edfd4e7745b373a97eb",
       "normalization": "lf"
     },
     {
@@ -7415,7 +7490,7 @@
     },
     {
       "path": "scripts/build-game-compat.py",
-      "sha256": "d3774fcc12d5b01e77219e365f6b2cdd9bbb169bee6c9cb2d4481e396b8fa1e2",
+      "sha256": "ba8f898c128e6c07d148b2214deb1d94a5400e8216f9a8fa730490eddb365a5f",
       "normalization": "lf"
     },
     {
@@ -7430,32 +7505,32 @@
     },
     {
       "path": "scripts/build-sdl3-ohos.ps1",
-      "sha256": "11bb5609f08d0a5732db9b4ba6e886ce9a63630a0b7dba5ab7292eecb2cec4e0",
+      "sha256": "a93a741a5bc48816456cb966a5d851dea0e32009aa591f2521b4d957b2810604",
       "normalization": "lf"
     },
     {
       "path": "scripts/build-typed-validation-hap.ps1",
-      "sha256": "55d35e3fff5497409dd6240fafc58899b7c89528747b63fac66c6aa3e0b49db6",
+      "sha256": "26342d6480a3a5d01ed7c3f9fbf1fef0bedd6461222a4674f11ad4479570a512",
       "normalization": "lf"
     },
     {
       "path": "scripts/capture-backend-input-evidence.ps1",
-      "sha256": "ea44767f970e4e6b36287044a0e274f2531eed09e980fa979a57025546b1c0c0",
+      "sha256": "ddef03fc5e7b0761a570f79d10dcbd11bb155b2429d95394cfe40d3b6693232c",
       "normalization": "lf"
     },
     {
       "path": "scripts/capture-look-evidence.ps1",
-      "sha256": "bd74a3889161e3ec57a87c4562cdf2d599cbde17d6cc628e7a3243deb5164061",
+      "sha256": "5444472e884533d9d944176d69380056b372a86042a3b047a75340f8d6c79264",
       "normalization": "lf"
     },
     {
       "path": "scripts/capture-mg-chunk-stutter.ps1",
-      "sha256": "d41f19ddcc068935c695f575e544e3bbbabff4ee0751bfd712a9fbceb8de9ae8",
+      "sha256": "6064ec87ed8bf46de56a9f70a11ecfbbeb9937feaeda8563d1a6038eafac983b",
       "normalization": "lf"
     },
     {
       "path": "scripts/check-activity-ui-arkts.mjs",
-      "sha256": "0d32539ed406cd44b34ab95bbef571e17ec9027536e98d7c37052bf412bd2165",
+      "sha256": "5e5112ee03b9a230d330a02acf508269befd4293bb9da8d7a6ebb5fe048a534d",
       "normalization": "lf"
     },
     {
@@ -7510,7 +7585,7 @@
     },
     {
       "path": "scripts/check-desktop-runtime.mjs",
-      "sha256": "2b92ab163e7d66fdf071beeb663bae6530f9b3ed8dedde33d868590d4b3f77f9",
+      "sha256": "a214e5c921d9581cce19ad66a0c529ff7526016b0d1f67dcdc717b4e733ab94a",
       "normalization": "lf"
     },
     {
@@ -7526,6 +7601,11 @@
     {
       "path": "scripts/check-empty-catch-napi.mjs",
       "sha256": "81aed97bbc7eda7c491b644f2da8544546cb4424628971f98835507e4f782883",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/check-evidence-archive.mjs",
+      "sha256": "892658999c9396130e6f68debaf75682d01071b48ebb852aa9fd9fb4efaf0128",
       "normalization": "lf"
     },
     {
@@ -7555,12 +7635,12 @@
     },
     {
       "path": "scripts/check-graphics-runtime-artifact.mjs",
-      "sha256": "ed417841708d906c70241f394742d76bde106aea541b52f376cf83896499cea6",
+      "sha256": "9602d79bf63995db1562fc0b01472d4d7c4e8a04a9c65a4b7f5c728e1ec5db71",
       "normalization": "lf"
     },
     {
       "path": "scripts/check-host-tests-crosscompile.ps1",
-      "sha256": "982407258074cd34872177e3289b56843573d817b5fef10ecc7182e8ce677bee",
+      "sha256": "89709d187b88281cd856f4a3bcbb70d03229311ebf35f92997efb61c736344d7",
       "normalization": "lf"
     },
     {
@@ -7576,6 +7656,11 @@
     {
       "path": "scripts/check-jdk-release-pin.mjs",
       "sha256": "2f08f4da779942f6d1324cb69d369b8ceb50613c689a59f1c6a8358ca492ae70",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/check-jna-runtime.mjs",
+      "sha256": "41f8d4ac57324b3a3c14d84329383426767806a20954adefad657dd857459645",
       "normalization": "lf"
     },
     {
@@ -7640,17 +7725,17 @@
     },
     {
       "path": "scripts/check-lwjgl-native-surface.mjs",
-      "sha256": "0dae1d9f0c637f2219c1c53bdbd0fe43ebfb54cf0c360eadce1deeae01914cd2",
+      "sha256": "3d48a5741ff3bb4d0493d1c50b78f17723966d81e7afd8d91b4ed12946135115",
       "normalization": "lf"
     },
     {
       "path": "scripts/check-lwjgl-target-manifest.mjs",
-      "sha256": "a91ee21c5572ccbc484ac037e2e54044e797a7c7e5ac91cd1216b76ffbb3f123",
+      "sha256": "7a5cdfebcf4cc79304ef86d7ae978b3da9098c1defa6045139a96f6a5dfeac62",
       "normalization": "lf"
     },
     {
       "path": "scripts/check-mg-build-contract.mjs",
-      "sha256": "0a2141631c1ebf0c4f7dc12a3c7e167893086a855ec4662f539a4db9097a7615",
+      "sha256": "29cae60c39f782d6076e5b53871b92757cdd3c5b42e45e2db62e808d807d77c0",
       "normalization": "lf"
     },
     {
@@ -7660,7 +7745,7 @@
     },
     {
       "path": "scripts/check-mg-pin.mjs",
-      "sha256": "66ba0a251d241ae142fccad5562ac4f91df4f4034d572b1dc118d5c6e9b69975",
+      "sha256": "a13d8fa9ae16628a980d29f72d332847d1f37c7cdf4a28e139b9380e8f800555",
       "normalization": "lf"
     },
     {
@@ -7700,7 +7785,7 @@
     },
     {
       "path": "scripts/check-mod-install-artifact.mjs",
-      "sha256": "fc8f1e872c0807a465665a83d03616a79270e3d3a8aafc5246c5cab29a0093ea",
+      "sha256": "71be8b8dc3d3fd25828a48bf760ada3617636863e38c68281a5e3212ed23c140",
       "normalization": "lf"
     },
     {
@@ -7735,12 +7820,12 @@
     },
     {
       "path": "scripts/check-product-tu-syntax.mjs",
-      "sha256": "76b92f541896c6257165fcc9696f4ebc413fe6f0c956680c794eef1af549aa7d",
+      "sha256": "2bd0cdf9fb0766d93d87759fd6cb307b796070888665c4646e9f65748d7ecf77",
       "normalization": "lf"
     },
     {
       "path": "scripts/check-release-no-test-symbols.mjs",
-      "sha256": "b05b1a66f5faac920b30a5845afaf2c29247dfc0167a4b7c5ee0e34ca82d06bc",
+      "sha256": "7520b263a8cdf2ec40c0219f5d633609fa9733ee68590a908aa94e29a548d7c9",
       "normalization": "lf"
     },
     {
@@ -7765,12 +7850,12 @@
     },
     {
       "path": "scripts/check-sdl3-launch-contract.mjs",
-      "sha256": "0ec3c0a19fe1171c87ecceb2ee60e32b93a026d3f4d6795421150cff039920a6",
+      "sha256": "8e8908c9a9d5415b3aa9657c2040b9498c225d39606a71b3b20e105d02ce453f",
       "normalization": "lf"
     },
     {
       "path": "scripts/check-sdl3-layout.mjs",
-      "sha256": "099fb8fc23ea5638bc7edacf877361cc4d8290a4287c03e34821468763e78606",
+      "sha256": "38266988a68bf848ac4651383beef2a47b155f519c659746a705408533a9e7c4",
       "normalization": "lf"
     },
     {
@@ -7795,7 +7880,7 @@
     },
     {
       "path": "scripts/check-sdl3-video-callbacks.mjs",
-      "sha256": "5409b147e20d9b85eb150ef1566da68b3e0195f5af1e262f656e75a71fc39cf8",
+      "sha256": "42a60ed0342053e54ba7d53742ad34b0790ec341294fa61e15886ae2a6e495e5",
       "normalization": "lf"
     },
     {
@@ -7814,13 +7899,18 @@
       "normalization": "lf"
     },
     {
+      "path": "scripts/check-workspace-layout.mjs",
+      "sha256": "969ed2adc338971ea3e18687b831f81f6529dd69548d3db03653a9cf24cf3839",
+      "normalization": "lf"
+    },
+    {
       "path": "scripts/classfile_api.py",
       "sha256": "9b9cd4bdc6014059b70f0ccf8e42e47425e2881375cb5d969d5e557eb0806e19",
       "normalization": "lf"
     },
     {
       "path": "scripts/collect-input-verification-log.ps1",
-      "sha256": "066c234462368748718a964c6ee048cc64bfbd3a78e343d6937165f2fd7da7b2",
+      "sha256": "2709dee20f0e489c9bd7deaaa33cab5e54032b9ecf9a27f54c5a0282c53f7b86",
       "normalization": "lf"
     },
     {
@@ -7840,17 +7930,17 @@
     },
     {
       "path": "scripts/deploy-amcl-prebuilts.sh",
-      "sha256": "d361099f60d52f2a6fdb621f3422d26afcf828cc2cd62a9afa983b95c5540dff",
+      "sha256": "d178d98b97b072779304251360e99966a22549479ef5e904bcd8455d33cd2385",
       "normalization": "lf"
     },
     {
       "path": "scripts/deploy-mirror-repos.sh",
-      "sha256": "e4f14720124bd5e60bbc0005336792d417ee910309e5e91634f295239df97fcb",
+      "sha256": "1cb6acc04b0b86a47484de69317bca4726ddd93573bd4b531888df56eb471c03",
       "normalization": "lf"
     },
     {
       "path": "scripts/deploy-validation-hap.ps1",
-      "sha256": "2698f3c5301aa20094e47d62f874dc6ed6f7b47199c8d17426eb0f9ffce48ed0",
+      "sha256": "6d91fc6f39a6bfb31178643b51d36a45ffbe1f717b170a7d2488d99f7de20e7f",
       "normalization": "lf"
     },
     {
@@ -7860,7 +7950,7 @@
     },
     {
       "path": "scripts/device-automation/artifacts.mjs",
-      "sha256": "08a29d8b6339475b73ea488c68b899e9d7c34cb829ce854d2bd8c9cabd1ba27a",
+      "sha256": "aca3ea46c914c22bc945b014652a34f314b2922e0fed082fcd6fc9529873147e",
       "normalization": "lf"
     },
     {
@@ -7880,7 +7970,7 @@
     },
     {
       "path": "scripts/device-automation/measure-log-sink-window.mjs",
-      "sha256": "4514c7db3f4549476e6f0bdcd65ec7ae9ecf79a87bf592d1666e2e1e8eace048",
+      "sha256": "cbe756dea2970b10c3b6895ebf595d421254cfe302365572e54ec80e4cb5bece",
       "normalization": "lf"
     },
     {
@@ -7890,7 +7980,7 @@
     },
     {
       "path": "scripts/device-automation/run-p0.mjs",
-      "sha256": "504f8664847ca7bb687e86a53915c10a793ddbff513d7585c0c78f07084e6e87",
+      "sha256": "3e28632532ec710daf6b176553d06939cf9dc021d328e214284b292b67c0f791",
       "normalization": "lf"
     },
     {
@@ -7930,7 +8020,12 @@
     },
     {
       "path": "scripts/finalize-lwjgl-native-hashes.py",
-      "sha256": "05649615b61341ac656263669f5d554a833e8108d6c7d7a3fa3d59d816ffa4fa",
+      "sha256": "8c514e5b554594dacd71af2d0a631ba7debe30caf2f843960e3d7e6894d5490f",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/fixtures/jna-runtime/version-constants.json",
+      "sha256": "5a7347a496a36fc3f003acf2afabca20b20e87527df3e11dd1ca6003dcbe3617",
       "normalization": "lf"
     },
     {
@@ -8014,6 +8109,11 @@
       "normalization": "lf"
     },
     {
+      "path": "scripts/fixtures/runtime-jvm-manifests.json",
+      "sha256": "26f668c5e5015deceee828e6f8d04c0a144c7fa6ec9e99f30ea1e8607f2b39f6",
+      "normalization": "lf"
+    },
+    {
       "path": "scripts/generate-desktop-review-tests.py",
       "sha256": "cb36623db967fb80563f26ded06ae437f233b932c5f41e518fd2c3f9eb0610cb",
       "normalization": "lf"
@@ -8045,7 +8145,7 @@
     },
     {
       "path": "scripts/graphics-profile-inventory.mjs",
-      "sha256": "4127dd67bb4395b1f07cf3690b8a5b0c3037060598fe64b1a146177b39b1957a",
+      "sha256": "27ffc46854e91791370fd7e5e2a79622cd7c3decd6b136df43f02fb652764c76",
       "normalization": "lf"
     },
     {
@@ -8059,13 +8159,18 @@
       "normalization": "lf"
     },
     {
+      "path": "scripts/lib/build-tools.ps1",
+      "sha256": "86de0ed6111862b22b7c751c17bdecfe29fadb0fb91bb35005ed5ae2c80cb240",
+      "normalization": "lf"
+    },
+    {
       "path": "scripts/lib/ets-compiler.mjs",
       "sha256": "587ffc86d64627cf4267a1be4b9c8ebf4ec465137d5d03ff2a5d4258dec92988",
       "normalization": "lf"
     },
     {
       "path": "scripts/lib/evidence-test-runtime.mjs",
-      "sha256": "efbf0f311e6c9cbb992db56406c353ae816de6ad1c5d5cf68318dc293b582ec3",
+      "sha256": "0e2bfac112adc827a52d0ca65a2278ac9dee2c18a0fd391f9173fed100a686d8",
       "normalization": "lf"
     },
     {
@@ -8075,7 +8180,7 @@
     },
     {
       "path": "scripts/lib/host_cpp.py",
-      "sha256": "1400e1aa8abb56fca49086b43886595973c31d4fda4e6514624a52072771852f",
+      "sha256": "69b2a91e42ea0136a8b13d4ef1401cd33119b6d8dac96f92d45fb2c998f26ca9",
       "normalization": "lf"
     },
     {
@@ -8091,6 +8196,21 @@
     {
       "path": "scripts/lib/source-noise.mjs",
       "sha256": "21175f6f6b51173783a1f7dc4c41b441291d229a808b51c2012a702584f3e5a7",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/lib/workspace-paths.mjs",
+      "sha256": "0e2c7aaf2009b4f4846dae23cfa14d1725ad8c8cb08f7bf5af83762a466e5fb9",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/lib/workspace-paths.ps1",
+      "sha256": "760520dc1e3ca723b5b7a4687f976cfdff5c4a69d0127173958cccf89414c88a",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/lib/workspace_paths.py",
+      "sha256": "ed5a5d8b9ec07a03d3e817fbbdb53faae59db530c0b2997ff211c0bd9942eda9",
       "normalization": "lf"
     },
     {
@@ -8135,7 +8255,7 @@
     },
     {
       "path": "scripts/lwjgl-stb-compat/prepare.py",
-      "sha256": "2dd239b53554f91e79de4421e64f1a0b7136446389ca99bd3bcd34ded0ec92bd",
+      "sha256": "35e4c002616a8deb9a7823b470c08e119e9caaf776c4f7c93e8ad3985c0a6ff2",
       "normalization": "lf"
     },
     {
@@ -8165,7 +8285,7 @@
     },
     {
       "path": "scripts/preflight.mjs",
-      "sha256": "2bdd5fde2e40e60cdd582e1ca2ae3f554b6ed5fd00c397aad97736645221ac11",
+      "sha256": "b37a06a4a8a1b7594a4f4e0efdcbb50bdc062bce0ce13ddb207dacad9b092850",
       "normalization": "lf"
     },
     {
@@ -8185,7 +8305,7 @@
     },
     {
       "path": "scripts/probe-logshare-official.py",
-      "sha256": "3f9d21825c85a2892ced4e1d52805e556a8c4164e394754c4a0e85c82865d967",
+      "sha256": "b81af0f58969e715fb7c2d6565d8819dc916943e52a4e38f11ad8bd0a64fb93e",
       "normalization": "lf"
     },
     {
@@ -8200,12 +8320,12 @@
     },
     {
       "path": "scripts/run-host-tests-msvc.ps1",
-      "sha256": "58d66ac9b38ba5eb1a9b9a14d0b0e0f076f9d72ec35b4a2ea4feb9e120697385",
+      "sha256": "423497aded0013aeafa12b88c848a8e0cefc29e1e927cd2ab6f00d73a0a613f5",
       "normalization": "lf"
     },
     {
       "path": "scripts/run-input-host-tests.ps1",
-      "sha256": "9de0ce028a01cec7ac5c27c69cdb5c1133549f83449607dacf99ed394b09bbca",
+      "sha256": "c98cf70af2f9cc237e291561ad694cbc213f3fa12c82f55f1f428dbe44855c3f",
       "normalization": "lf"
     },
     {
@@ -8235,7 +8355,7 @@
     },
     {
       "path": "scripts/test-activity-ui-model.mjs",
-      "sha256": "19ff61519ce9544471510c49deed9e195eae95857557745a0589eeb1ff0ebfd4",
+      "sha256": "9d86d441870ad45fcd195b4874725e1549653cb9d6b31eddd0ae75a2ace6c80f",
       "normalization": "lf"
     },
     {
@@ -8254,13 +8374,18 @@
       "normalization": "lf"
     },
     {
+      "path": "scripts/test-build-delivery.mjs",
+      "sha256": "f829de5da35587cce985a1db929cce6180093acd7b4b77f8e2e24ff26db0afd4",
+      "normalization": "lf"
+    },
+    {
       "path": "scripts/test-build-menu-signing.mjs",
-      "sha256": "717ab9a07775bb0eb03a723216a0feabf57e4f7639f57993af247a9519cde57b",
+      "sha256": "f64aa1d4db2d721bc793b282e77b24ee87589911dfa2976cb6c20b130eb0ae82",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-check-arkts-test-suite.mjs",
-      "sha256": "1d1514767afda6b2f3e2bc8c4d3257535a8072e048efe2dbe9682802272ae119",
+      "sha256": "6e0f89d5b84e5a28187d03af359d823e128f06c5277b675602d16b88763483cf",
       "normalization": "lf"
     },
     {
@@ -8290,7 +8415,7 @@
     },
     {
       "path": "scripts/test-check-desktop-runtime.mjs",
-      "sha256": "470f6fca11550a530d5595d2fe61311396383e4a2488ade8d0226f50d080baf2",
+      "sha256": "cb6b155b0275c26aee9fbd0260c1ca9741e832a05293616b9c6c57ec7d211bae",
       "normalization": "lf"
     },
     {
@@ -8300,7 +8425,7 @@
     },
     {
       "path": "scripts/test-check-gamecontrol-runtime-scope.mjs",
-      "sha256": "696b31d74b2f86a6df11acf9b17ad792ee9f030a6945bb860beaf942de168833",
+      "sha256": "9b9e1fb11cb69fdd59d0d6c8fd10ce7233192d997a55fbc8abeedba44eb6b81b",
       "normalization": "lf"
     },
     {
@@ -8310,7 +8435,7 @@
     },
     {
       "path": "scripts/test-check-gate0-evidence.mjs",
-      "sha256": "6baa5c8dc6bf3dc4b0c4232ee62b127565dcdc1489551c54b04f6074ecd08045",
+      "sha256": "1c0734406269511307707130dca6200911def829022d487762427b3170eafc8b",
       "normalization": "lf"
     },
     {
@@ -8326,6 +8451,11 @@
     {
       "path": "scripts/test-check-jdk-release-pin.mjs",
       "sha256": "6cc660f6e42edaf0fcb785308cf34d6c4bdc702e228675c8bd7c992b26a541b7",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-check-jna-runtime.mjs",
+      "sha256": "40a8505347f2c6fec385245b455f5105c7e634abfbf2466e0a912db0c5b907aa",
       "normalization": "lf"
     },
     {
@@ -8380,22 +8510,22 @@
     },
     {
       "path": "scripts/test-check-mg-build-contract.mjs",
-      "sha256": "37bea895eb96cf0c5c9102e4e4e027096d73a0b242df1023f71183d4df2c0808",
+      "sha256": "56db88167950bdad5e908676ffadb676e45e21318e0d7e990d62819228c603d8",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-check-mg-docs.mjs",
-      "sha256": "434f0f7fd9ae6e03871dfdf565b8e9915130dd6e9b05fcbb9b7c97ea0a1b5f9f",
+      "sha256": "f1b05511b2f61d1a294cd6757a4810ee680958d5eaa0e59ea8d82cdb80009d8b",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-check-mg-pin.mjs",
-      "sha256": "0c96fad2afced8ce27018c8d06455972a0a79d8a37a25668051557445a8df636",
+      "sha256": "927f5f4ebf23bbb5926106150d2f43bb68f9bbf4cf23015a2a4655b764d4e035",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-check-mg-snapshot.mjs",
-      "sha256": "8513418d541b29e70d303cf2471a6f9b42f20485f1e55e157676f5ffd462eb93",
+      "sha256": "a5963e6e7bb9d638c3b274be4b3fc9163e72b5a2e23f19701bcc2993c36ae0d2",
       "normalization": "lf"
     },
     {
@@ -8425,7 +8555,12 @@
     },
     {
       "path": "scripts/test-check-mobilegl-snapshot.mjs",
-      "sha256": "cb1c26095aae3f08f35ae3fc481f3f0fc88040d341d3d81eef8fac9fcd6f19b5",
+      "sha256": "abc9558ddcbed7b87216aab8d14d77ed17b9dd3dd4a34412b36933930dcaf8b9",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-check-mod-install-artifact.mjs",
+      "sha256": "339e5b671d637398ccd41dd1d583873533d0411440ac08583dee7738c3c83184",
       "normalization": "lf"
     },
     {
@@ -8440,12 +8575,12 @@
     },
     {
       "path": "scripts/test-check-product-identity-banner.mjs",
-      "sha256": "38a1ee94ef91a73f4da42b8b82262137ff7fee9ed3271aadf17a4fe1f74e4fed",
+      "sha256": "63e29d56b86db20b136f2be06a5618e6bf273271fa0f3a3b1cffe3be47cbfec3",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-check-product-tu-syntax.mjs",
-      "sha256": "51b3415534a3c6e909f799892f9085eb1fea859d6868b0ff67e8ad14e109fde9",
+      "sha256": "7783f4eea05380b8d7f8ebac488fb7a059e9bc24c79d05688d90cedbc49bd497",
       "normalization": "lf"
     },
     {
@@ -8465,7 +8600,7 @@
     },
     {
       "path": "scripts/test-check-sdl3-launch-contract.mjs",
-      "sha256": "f02664d0452827426cb96c5ad642ae64c7bd1df457dae449a91648a41a3dd269",
+      "sha256": "14a25aae1a76149c0a8f16c0b1c1eadcbb07dfb12ddf59dd90f0b0027d2ff4bd",
       "normalization": "lf"
     },
     {
@@ -8480,7 +8615,7 @@
     },
     {
       "path": "scripts/test-check-sdl3-video-callbacks.mjs",
-      "sha256": "bda1eb7734056698f12a404910f6091570094e096a9609035a045f57d2516484",
+      "sha256": "6db69599925dcef9c65bc9d8b9a0194754f1311e3bf51d740c54a81905f260a2",
       "normalization": "lf"
     },
     {
@@ -8491,6 +8626,11 @@
     {
       "path": "scripts/test-check-wire-json-obfuscation.mjs",
       "sha256": "d6dea3e25adb65b6c41d3916e4c6c897a0b1fe1995f30aadf15eb5234e02a500",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-check-workspace-layout.mjs",
+      "sha256": "06f609c92764f498ad2781ba07d93d7e0bbd46dad7727ea0c4436fa5c6772f12",
       "normalization": "lf"
     },
     {
@@ -8505,12 +8645,12 @@
     },
     {
       "path": "scripts/test-desktop-review-generator.py",
-      "sha256": "fc692eb8c3bf5d5cbea244447ca45656a923ff1317f440371636e9778b424ed0",
+      "sha256": "3ceaddc781cef296616479f1c1ed0ce1f819cf0c7225b7f43634dcd35e92cea7",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-device-automation.mjs",
-      "sha256": "849f8631fdb489c3ea8b8002bb51f2951e309653f5668b0d0b548cf52aadffce",
+      "sha256": "4c0e7cbec64166a1f9f5aab3c66aec82e2db18b01ffce35c11b740cf0a5a86d8",
       "normalization": "lf"
     },
     {
@@ -8525,7 +8665,12 @@
     },
     {
       "path": "scripts/test-diagnostics-cmake.mjs",
-      "sha256": "d9d3c23391f3afbc6b33ee09111946c9cadf51ce4c4728e6258a04fdc3f2651b",
+      "sha256": "4703cf913d033495ea7b5834cd337f00cf8105f2a87dae3521acff14eaccf51d",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-docker-build-layout.ps1",
+      "sha256": "a05ab11657e7376562ac3b5b127ed43dc0002c14678a962d192b76a9498dd8c6",
       "normalization": "lf"
     },
     {
@@ -8535,22 +8680,27 @@
     },
     {
       "path": "scripts/test-dso-undefined-symbols.mjs",
-      "sha256": "e1e7efefde74c3b67401709e8969de7eee1cca7637bd8ee78d084ad85e3b6f01",
+      "sha256": "fa3c0d71f90394b30f0a284371082d4390dddf24c51b7fc1a4f9939ec6bda9f3",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-egl-lifecycle.py",
-      "sha256": "71ec01cda20e3f001f83d9679e4150d2cc1699c20d3473a835511dc07fbb48e5",
+      "sha256": "4854d40608bf565d8d1ad6933d1e474e5cbe846384ce6d05797ca511a212da5e",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-elf-input-validation.py",
-      "sha256": "fead25c82e5e99760f604024e12ebfaffb1e1888a390c1b1ed744e1a378aa645",
+      "sha256": "2c89ea169e9b8ee1913c36082eb8ba82c5d371dc6889bf11182a4ab2c36f8dab",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-ets-compiler.mjs",
       "sha256": "b10e3472738c3b9626a1be18f00f39438eaf7c239cc7a941aa3165a15f1c3080",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-evidence-archive.mjs",
+      "sha256": "0b1ac377b23d6510321d83f50c51c9fc7d67db42dc08243f2555d97f27bfe671",
       "normalization": "lf"
     },
     {
@@ -8560,12 +8710,12 @@
     },
     {
       "path": "scripts/test-game-compat.py",
-      "sha256": "3cc292bb60dacf75e56af95117dbe42e2acb246f4c96192ee0b56deea19a8f9f",
+      "sha256": "cffce015d7d844e2bf2113916dc40d6996642dfd1ca11f10513c46d89d9b28ef",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-game-file-access.mjs",
-      "sha256": "2dfa46aca873dd4f93b2029b620fb6d3e2a47be886ec388d8bd71f95efea3ed9",
+      "sha256": "dd3906a0f9917df44dc30bf5b242a8132af757943adbd6117f08da1205ded0eb",
       "normalization": "lf"
     },
     {
@@ -8585,7 +8735,7 @@
     },
     {
       "path": "scripts/test-game-process-exit.py",
-      "sha256": "9b906a4ea8afc903227e8afbbb1397ac12c8914505f7a1b4a425ce007e3a448c",
+      "sha256": "a7ee473b971b3b9e53736bb2ad63f3c0a4fe85105aeaf5aef791ca42ebdcd7f7",
       "normalization": "lf"
     },
     {
@@ -8595,7 +8745,7 @@
     },
     {
       "path": "scripts/test-game-startup.mjs",
-      "sha256": "13bf096337634b10923a1cab341a3fcab14c6a818bbd32aefd5d1a4f092c223f",
+      "sha256": "a40f12f4d88543ccb94b6d71c2ded04b0fead2d4c1792af21a2466a2e2e0eb3a",
       "normalization": "lf"
     },
     {
@@ -8605,12 +8755,12 @@
     },
     {
       "path": "scripts/test-gate0-evidence-cmake.mjs",
-      "sha256": "076b6ab3cb2b9ddfdc19b58a836e60994e2e9dd9bf7c6bb0d99868d67c4770bf",
+      "sha256": "904a9f338205d01c9aaa3ff0d8b062c27f47ab57153249cfb6f50ae5686dc175",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-glfw-auxiliary-input.py",
-      "sha256": "5d3d0eb9b6c3546b9e3be7665e7bd2e6ce3c9a5dc1dd83664ec6ab72b09bc98b",
+      "sha256": "17103252bf6898f97d25c610815cbedea15458c3b5d045463d44117ce52a5c52",
       "normalization": "lf"
     },
     {
@@ -8635,27 +8785,27 @@
     },
     {
       "path": "scripts/test-graphics-features.py",
-      "sha256": "d3ac1a8ade1d4ac5443597e21d514bc6df4e83fce57d7c1005acc7f7c5e000bd",
+      "sha256": "203b45227247981725d20e376234e914f711d5a6a025bfe6a0c481856618a642",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-graphics-history.mjs",
-      "sha256": "81e092e4277d64dde32ccc89c4c5934907950324bdf0e472ad1206d3492e543a",
+      "sha256": "09102a201a0465fb5555f1f3eea17baf52422f2aa40f44c309cd86b92fffcfcc",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-graphics-launch-failure.mjs",
-      "sha256": "537945ce16c1a94a5e618c42caeb992588885acea66b31ebc29b28f6185dc554",
+      "sha256": "6d63f58cff8554e20ff4d1ec6c230e53d8ce6c06e4644976864ccf677b30edfb",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-graphics-launch-failure.py",
-      "sha256": "3f82d326577defba0899d05d519412f7213a9da62301a0daae32e8b8bbacfefc",
+      "sha256": "abf102a49ba213dfaaa26845b66287fe58d161abab47cce27fac0d83e50024ba",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-graphics-observation-abi.py",
-      "sha256": "d54ab6ed5e09bfe16ead7f49bc6a35a69b3a7d9c3d436ccf2c38dbbcd0e617e7",
+      "sha256": "f914557b9ae2491f20304a7b33f7dadf4ff39dafe294c642b998837a4d418ef6",
       "normalization": "lf"
     },
     {
@@ -8665,12 +8815,12 @@
     },
     {
       "path": "scripts/test-graphics-plan.mjs",
-      "sha256": "07d590a442cef687395c55b8068254d8603fe1c749d2240bf68f33fffaa4aed4",
+      "sha256": "e1cc50065c35ee22c15afb6b1d528c4fd9cc587674545320699a753bd3d42711",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-graphics-probe-gate.py",
-      "sha256": "ce0cccbb28634973399137ff6589e40afda0a8ac7d3785626bdd8187da9b7e9b",
+      "sha256": "794e88b8713d7b948407545627db2a6e682b6c596c909d2512b9bc1a6ae5ffb6",
       "normalization": "lf"
     },
     {
@@ -8690,7 +8840,7 @@
     },
     {
       "path": "scripts/test-graphics-recovery.mjs",
-      "sha256": "77b8482bb8b7740c027edd53adc6e85a2f630012f33ca9d6ec166c8b6bc53d48",
+      "sha256": "def02e224b3d8306601cf3f72b56103579a14a910ae67d5c46c48c42de18bd3d",
       "normalization": "lf"
     },
     {
@@ -8700,12 +8850,17 @@
     },
     {
       "path": "scripts/test-graphics-runtime-binding.py",
-      "sha256": "3e53784c390e38b5de4d8690768f08dc1438608879ebea747903bb1d6b5269d9",
+      "sha256": "523119d3c53654e813e12133afd69c97d650758573528361c5de94de2d44db44",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-graphics-runtime-images.py",
-      "sha256": "3f3e1676e46417ab0e15ae8a0c9725f3a302eb197f869435afa246c60ec80842",
+      "sha256": "dbb7233feb68d662b23cd432c20b6a4ddd080e666a5c57e5ea535e6ebfad0790",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-host-output-policy.py",
+      "sha256": "3a24a2d85375c35ac03c2b4559b87d8469dc73ac83812ab6abfe36435fcfc8af",
       "normalization": "lf"
     },
     {
@@ -8714,13 +8869,23 @@
       "normalization": "lf"
     },
     {
+      "path": "scripts/test-jna-runtime-contract.py",
+      "sha256": "529edd018847517754a3e0cce1b0d343d73f3166282b1439dcb7d4113748b99c",
+      "normalization": "lf"
+    },
+    {
       "path": "scripts/test-jni-classloader-ownership.mjs",
-      "sha256": "a06eedf968ac263b6c8caad861f80033ae3934428d98e361c5c405b4e3ef1f8f",
+      "sha256": "4d5aef75335ab9abfb0f42ff7c8b87c0a497f1602806f143bf9da7349543fd45",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-jvm-bootstrap-invocation.py",
+      "sha256": "b8c1cc9e71ccc6fcb6d3fa05e088c39168d74228174ab2d3c1e1097af6662be4",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-jvm-exit-invocation.mjs",
-      "sha256": "66f3fac3212d5eb987651928ed47eca2c7d80e2b64dbd4a576a177ff7624c81f",
+      "sha256": "6008d8efdb69534ee97ba2700784c892d8d9e661d4d2b84019fd254aefbaa6fa",
       "normalization": "lf"
     },
     {
@@ -8729,8 +8894,13 @@
       "normalization": "lf"
     },
     {
+      "path": "scripts/test-jvm-java-home-discovery.py",
+      "sha256": "514c9c46907cf7c65971b8a4dc42f471b5797347a10b48ca4e8831ac0db57f25",
+      "normalization": "lf"
+    },
+    {
       "path": "scripts/test-jvm-signal-dispatch.py",
-      "sha256": "664d4a9c2acc063a62c23cd1524aa4050b2d0304755cb2dbbed439c4aed3b3c5",
+      "sha256": "a2a6c526875a186be17932eae23797c17ea67593d1a757a0c762fe0b7ba1efa0",
       "normalization": "lf"
     },
     {
@@ -8760,7 +8930,7 @@
     },
     {
       "path": "scripts/test-logging-writer.py",
-      "sha256": "b49511cce36d4279ef0cdb2d4974ed052219779416cb122dbf77f6ee6fd65040",
+      "sha256": "fc2939d09df32fae81290ca745eb77e653805668ff4c1424ff128ada8afbf28d",
       "normalization": "lf"
     },
     {
@@ -8770,37 +8940,42 @@
     },
     {
       "path": "scripts/test-lwjgl-runtime-slots.mjs",
-      "sha256": "3da01ff074b5fe505b7670809e1e1a0d43b59dc0694249154aa44f6241ccd659",
+      "sha256": "0a32c683ca6b5fda9345415f2da2569e833cece7b93ee8bc49a0d35a342f135a",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mc-exit-seams.py",
-      "sha256": "2b6a38f4eae13fcd12336d88e01684d6a7c9798d351a30e6b6a062e91368414e",
+      "sha256": "e65c008fb9485844c5a64e72a3d4ff14d6a8f693a17934f5327e498bb4765a87",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mg-buffer-readback.py",
-      "sha256": "53095aa9607bb80d5419f6014ec6c92b2ca6d6a1f9da2a3c676d45254a93b3a3",
+      "sha256": "3a5b897228fed1af2a87e862afa6a7782adf4c25619c1a521bd205c1c9aa932f",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mobilegl-buffer-lifetime.py",
-      "sha256": "226786d3f90f3d4a59fe76de6ce911179a71ba022526e8d55898ca43d573bd1f",
+      "sha256": "10f4a955e3c5993e3e46a4d7bb52e6b3d22ffe62219175acdb4da2433bc0dede",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mobilegl-glfw.py",
-      "sha256": "6b600e8baa3bf38ffd0770c219a379a3c1f256196369f8d386f1fb5fe2b098b2",
+      "sha256": "f0b0773764e3ea11b8fdbf12cf64ba6d5d8f706df68dd3ccf8d99b5bc87f63e3",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mobilegl-present-result.py",
-      "sha256": "218ad84a1bf23dbc51ba4efba78353dd025e395bfcfdfdc04895c96a12415bae",
+      "sha256": "affbee2b592863a95a5a56c5c6c1c9fb5329af5cf50304c875f7aa416850fa87",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mod-dependency-plan.mjs",
       "sha256": "097266a8368782f87bcc9cdc18409f1418be7394097631133b1389e05ed75e69",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-mod-install-policy.mjs",
+      "sha256": "7aca21a799d5195af9a7f5f9d6638ecff595b616eb99159e70fe44de2dc7767b",
       "normalization": "lf"
     },
     {
@@ -8810,22 +8985,17 @@
     },
     {
       "path": "scripts/test-mod-install.mjs",
-      "sha256": "c7a1e3958935269c21eddf7156e098a0239b70219a16a43d9346d4ec6001e198",
+      "sha256": "6b99821067846c325481697ba1319305f4c3f6d813818373c5ab77365b5a24e1",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mod-loader-environment.mjs",
-      "sha256": "9808d70ca04e5ea53beae25d6e044848d8b3c86b8148503a84ee1b82ed4a8a07",
-      "normalization": "lf"
-    },
-    {
-      "path": "scripts/test-mod-manifest.mjs",
-      "sha256": "791cc1b3343f0a8656cda7816326019ea88b418717322ba0f030611d057c5788",
+      "sha256": "c38ef523b4a1af146c30ecf5072dd0dbb024f3093f583ff922befa25abaf7e3f",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-mod-member-tasks.mjs",
-      "sha256": "b092e7ccd4b69c3b666012f91dbeb9e1a2a7ef9aa02be86febbb5e65a85909f1",
+      "sha256": "12df44e53bf2e892fa3174c094ecb54e4cc11354f926ca385eee2fbc222f08be",
       "normalization": "lf"
     },
     {
@@ -8835,22 +9005,27 @@
     },
     {
       "path": "scripts/test-native-gl-probe.py",
-      "sha256": "474123c488ae7520437b3f5834d24252a9edc93818d7b5c10b286b0f247d14c1",
+      "sha256": "c6bcd2cc4fba377febb02cf6964575297e9ed0c74c84a1c685f9112d7b2a5a9f",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-native-log-durability.py",
-      "sha256": "2636a413c610063d81a00f0c01609d5a68db44d9186e35fdd1534a24b66af40e",
+      "sha256": "c97f7db66526e082870bcc52f13f37668df33d533780db4104e8e14c4a6e5b9f",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-ohos-runtime-cache-policy.mjs",
-      "sha256": "bbc05f9b887901eb14d7830230f48b684119cccb718d14b75f29fab5707512f1",
+      "sha256": "9c467574fcd57386fb8bf560feb5a0cebed8c9767210399d89d8f668b2340e3a",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-patch-lwjgl-module-info.py",
-      "sha256": "3729bec680e5c094b36c9f2456ad74d2a1782b0583aa105be1f167bcde2be0ff",
+      "sha256": "2cafe318b94a512f11cb768459417009e3978bce096bcdd145f9bb39a9c270d6",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-prelaunch-mod-state.mjs",
+      "sha256": "fe5f9a84160ebbf86d30f67a8496cb42ed7d0a74227df38fccf6eeb9099c35f3",
       "normalization": "lf"
     },
     {
@@ -8860,7 +9035,7 @@
     },
     {
       "path": "scripts/test-processor-wait.py",
-      "sha256": "d0e4e78af6713f6265dec15e82957df2106f359df25c3c6d5cd62bf06167e176",
+      "sha256": "960370a2d12f9683fee658afa735c06f5da6cbd4e0a898d0c9e3e8f5f4be99d7",
       "normalization": "lf"
     },
     {
@@ -8885,7 +9060,12 @@
     },
     {
       "path": "scripts/test-runtime-bootstrap-contract.py",
-      "sha256": "a4cd1d8a067e87e7a1dce52b0a45a749f5a8f3e158e28f9ffbf37133bcc45c8b",
+      "sha256": "8f3d222e35b9cc93b30dc9179ce9b581126c37d99649420fe9199d047a0048fa",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-runtime-jvm-argument-policy.mjs",
+      "sha256": "b234bf82718f24cc918ae5664c37fb3c2163fba1912c71c5e4ee700b46c687a6",
       "normalization": "lf"
     },
     {
@@ -8900,17 +9080,17 @@
     },
     {
       "path": "scripts/test-runtime-slot-store.py",
-      "sha256": "b1377e275ac63b273178e8654d9c9535c31e0c3644bc80ba1cb828f12d224868",
+      "sha256": "7781e2ab389bc17bda00867695b218ac581d952e0cac65bd60f17e51f14ca31c",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-sdl3-graphics-context.py",
-      "sha256": "579c9323ce842c9161acc05b0626fd15979b888725a3c43d2c3e6b877a2c22c8",
+      "sha256": "afc04282232336aca833e971aa865f65fbb99978bae1b7304dcb7578d4cee087",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-sdl3-host-runtime.mjs",
-      "sha256": "0b38ac50ca70f5fc1683480df506947bbb8f326c60c40b0599c75d04e2c040a2",
+      "sha256": "6c589086e177d4c7d538c038be093e239a4124fa6205ccca54e58904a456246a",
       "normalization": "lf"
     },
     {
@@ -8920,7 +9100,7 @@
     },
     {
       "path": "scripts/test-sdl3-pbuffer-limits.py",
-      "sha256": "c7cef45eabc1706b41117b0b687906be47d383355c74e93b82912ba30094b6ec",
+      "sha256": "ee02be18fbc8f3864132161d1ab2e1f405749fedff1832347613f218ace48dfa",
       "normalization": "lf"
     },
     {
@@ -8940,7 +9120,7 @@
     },
     {
       "path": "scripts/test-session-log-io.py",
-      "sha256": "435771a6f4da1ef4c35952709e9a5fc9ab203b661eddc1c8b1afb5c509dff6a6",
+      "sha256": "7d7dfde1bc68b8e3808a48f8a6a2d46d64d29ca2fedfd9ec2f5c60da4b775465",
       "normalization": "lf"
     },
     {
@@ -8950,7 +9130,7 @@
     },
     {
       "path": "scripts/test-stb-compat-host.py",
-      "sha256": "c0fcfc26aa186c09c11a25f6da1c4b9695d973781a14958bdfde7f2c322727b0",
+      "sha256": "89ca52d9ca5cff042d2dabf0a998556b1d0c03394af2e6ace684515347e96c61",
       "normalization": "lf"
     },
     {
@@ -8970,7 +9150,7 @@
     },
     {
       "path": "scripts/test-vulkan-capability-admission.py",
-      "sha256": "009ecab5d85cbf625f0fd190dbd442a2908d2b93a133556e4ea2af3fa2b3f5a5",
+      "sha256": "324ab989ab98b0881ace529a3697625dd8279b0752ea1c136218754daffbcf49",
       "normalization": "lf"
     },
     {
@@ -8980,22 +9160,27 @@
     },
     {
       "path": "scripts/test-vulkan-orientation.py",
-      "sha256": "ec7ded0e160b6f064646c04d71c48ac35453678f019f66c99a19162731427e41",
+      "sha256": "b930d1158852cf582a771d8d55030b3c5f0fa2b7c6ddd91fb378cf1d7a27e204",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-vulkan-presentation-bridge.py",
-      "sha256": "04912026068ca59911ee54d9e4317426e3dc9ace253040c5566344f1897e8934",
+      "sha256": "1c91976fc7fbd4d6efb0e5f846925869c0337298506f55abca206281b44921a0",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-vulkan-wsi-diagnostics.py",
-      "sha256": "2890f371d017ae832f50489686f7b7f02e3ed183256ca8d962f7be193773d889",
+      "sha256": "27a581681c6c7f24dd2777ab603d0bb2a2c301d4184cc9b4b4f0a3d1a994e48c",
       "normalization": "lf"
     },
     {
       "path": "scripts/test-window-resource-epochs.py",
-      "sha256": "39b2c8e554aeec56b6e4a63c3a54a4d566b708e464fa206fdbf2cea46217edac",
+      "sha256": "0b2eb129696b890f9ee99f8da957f39fc05b166e43d5b2cf7e6b2b0667c01a0f",
+      "normalization": "lf"
+    },
+    {
+      "path": "scripts/test-workspace-paths.mjs",
+      "sha256": "7691526f04dc85c4c4c03a941ddb978316936f5ceb4df94ab9631c2e445c71bd",
       "normalization": "lf"
     },
     {

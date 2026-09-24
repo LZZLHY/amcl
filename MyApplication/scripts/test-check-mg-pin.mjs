@@ -2,6 +2,8 @@
 // Object-level fixture tests for scripts/check-mg-pin.mjs. The fixture creates
 // four local bare repositories so provenance checks never depend on GitHub.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -188,7 +190,7 @@ fork_release_tag_commit = ${v.commit}
 `;
 }
 
-const fixtureRoot = resolve(mkdtempSync(join(tmpdir(), 'amcl-mg-pin-')));
+const fixtureRoot = resolve(mkdtempSync(join(workspaceTempRoot(), 'amcl-mg-pin-')));
 const submodule = join(fixtureRoot, 'prebuilt', 'mobileglues', 'mg_src');
 const pluginWork = join(fixtureRoot, 'plugin-work');
 const releaseWork = join(fixtureRoot, 'release-work');
@@ -240,6 +242,9 @@ try {
   mkdirSync(releaseWork, { recursive: true });
   mkdirSync(auditCache, { recursive: true });
   copyFileSync(SOURCE_GUARD, join(fixtureRoot, 'scripts', 'check-mg-pin.mjs'));
+  // 门禁在临时仓里独立启动；复制其真实路径依赖，避免依赖主项目的隐式 import 搜索位置。
+  mkdirSync(join(fixtureRoot, 'scripts', 'lib'), { recursive: true });
+  copyFileSync(new URL('./lib/workspace-paths.mjs', import.meta.url), join(fixtureRoot, 'scripts', 'lib', 'workspace-paths.mjs'));
   writeFileSync(join(fixtureRoot, 'prebuilt', 'mobileglues', 'patches', 'series'), '# fork model\n');
   writeFileSync(
     join(fixtureRoot, '.gitignore'),
@@ -406,7 +411,7 @@ try {
 
   git(submodule, ['remote', 'add', 'upstream', LOCK_SOURCE]);
   git(submodule, ['remote', 'set-url', '--push', 'upstream', NO_PUSH]);
-  git(fixtureRoot, ['add', '.gitignore', '.gitmodules', 'deps.lock', 'scripts/check-mg-pin.mjs', 'prebuilt/mobileglues/patches/series']);
+  git(fixtureRoot, ['add', '.gitignore', '.gitmodules', 'deps.lock', 'scripts/check-mg-pin.mjs', 'scripts/lib/workspace-paths.mjs', 'prebuilt/mobileglues/patches/series']);
   git(fixtureRoot, ['commit', '--quiet', '-m', 'fixture superproject']);
   const superHead = git(fixtureRoot, ['rev-parse', 'HEAD']);
   const sourceSuper = join(fixtureRoot, 'source-super.git');
@@ -436,7 +441,7 @@ try {
   renameSync(join(submodule, '.git'), join(shallow, '.git'));
   renameSync(originalGit, join(submodule, '.git'));
 } finally {
-  const tempRoot = resolve(tmpdir()).toLowerCase();
+  const tempRoot = resolve(workspaceTempRoot()).toLowerCase();
   if (!fixtureRoot.toLowerCase().startsWith(`${tempRoot}\\`) &&
       !fixtureRoot.toLowerCase().startsWith(`${tempRoot}/`)) {
     throw new Error(`refusing to remove fixture outside OS temp: ${fixtureRoot}`);

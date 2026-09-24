@@ -1,6 +1,8 @@
 /**
  * 安装、更新和修复共用的模组事务：锁定目录后重新解析环境与依赖，逐文件下载到暂存目录，
- * 校验完整组合后再统一提交。任何传输或校验失败都保留旧文件；native 全部收敛后才清理暂存。
+ * 完成来源声明的大小/哈希校验后统一提交文件与安装索引。任何传输或提交失败都保留旧文件；
+ * native 全部收敛后才清理暂存。模组语义及运行兼容性由实际加载器解释，服务不读取 JAR 内
+ * 元数据、不模拟全量模组依赖求解，也不把安装完成声明为组合一定能够运行。
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
@@ -12,11 +14,9 @@ import { ModSourceRouter } from './ModSourceRouter';
 import { CurseForgeRepository } from './CurseForgeRepository';
 import { makeResolverFromRouter, dependencyPlanErrors, isModVersionCompatible, ResolveOptions } from './ModDependencyResolver';
 import { resolveInstalledLoader, resolveInstalledMcVersion } from './InstalledLoaderResolver';
-import { resolveInstalledLoaderVersion } from './InstalledLoaderVersion';
 import { LocalModScanner } from './LocalModScanner';
 import { ModrinthRepository } from './ModrinthRepository';
 import { buildDownloadSpec } from './ModInstaller';
-import { ModDescriptor, ModEnvironment, readModDescriptors, validateModSet } from './ModManifest';
 import { InstalledModEntry, InstalledModIndex, readInstalledModIndex, INSTALLED_MOD_INDEX_FILE } from './InstalledModIndex';
 import {
   normalizeModDirectory, withModDirectoryLock, recoverModTransaction, createModStaging, commitModFiles,
@@ -24,9 +24,21 @@ import {
 } from './ModInstallTransaction';
 
 const TAG = 'ModInstallService';
+/** 服务与任务卡片共同消费的提交阶段标识；进入该阶段后取消入口必须同步关闭。 */
+export const MOD_INSTALL_COMMIT_PHASE: string = '正在提交模组文件与安装记录';
 interface IndexShape { version: number; entries: InstalledModEntry[]; }
 interface ModFingerprint { name: string; sha1: string; }
 
+/**
+ * 安装选版所需的实例环境。游戏版本与加载器类型用于核对来源 API 的文件标签；
+ * 不解析安装选版未使用的加载器具体版本，避免旧版/自定义元数据被无关规则误拒绝。
+ */
+export interface ModInstallEnvironment {
+  gameVersion: string;
+  loader: string;
+}
+
+/** 调用方固定的安装请求；进入事务后不再读取页面当前选项。 */
 export interface ModInstallRequest {
   mcDir: string;
   versionId: string;
@@ -35,7 +47,7 @@ export interface ModInstallRequest {
   title: string;
   router: ModSourceRouter;
   optionalIds: string[];
-  /** Explicit update/repair source; the service rechecks that it still exists. */
+  /** 更新/修复指定的旧文件；服务在持有目录锁时再次核对它仍在当前扫描结果中。 */
   oldPath?: string;
   wasEnabled?: boolean;
 }
@@ -73,28 +85,24 @@ interface PlannedModFile {
   stagedRelative: string;
 }
 
-/** 构造安装和组合检查的实际环境；缺少加载器版本时提前失败，避免下载后才被空值误拒绝。 */
-export function installedModEnvironment(mcDir: string, versionId: string, javaVersion: string = ''): ModEnvironment {
+/**
+ * 从实例元数据读取安装环境，避免以用户自定义目录名猜测加载器或 MC 版本。
+ * 具体加载器版本不参与来源 API 的文件选版，也不再为兼容性预检进行额外解析。
+ * 本函数不扫描模组目录或包内声明，游戏启动也不依赖它进行兼容性预判。
+ */
+export function installedModEnvironment(mcDir: string, versionId: string): ModInstallEnvironment {
   const loader = resolveInstalledLoader(mcDir, versionId);
   const game = resolveInstalledMcVersion(mcDir, versionId);
-  const loaderVersion = resolveInstalledLoaderVersion(mcDir, versionId, loader, game);
-  if (loader.length > 0 && loaderVersion.length === 0)
-    throw new Error('无法确认目标版本的 ' + loader + ' 加载器版本，请先修复该游戏版本的安装元数据');
-  return { gameVersion: game, loader: loader, loaderVersion: loaderVersion, javaVersion: javaVersion };
+  return { gameVersion: game, loader: loader };
 }
 
-export async function inspectInstalledModSet(dir: string, environment: ModEnvironment): Promise<string[]> {
-  const descriptors: ModDescriptor[] = [];
-  let names: string[] = [];
-  try { names = fs.listFileSync(dir); } catch (e) { if (modFileExists(dir)) throw e as Error; return []; }
-  for (const name of names) {
-    if (!name.toLowerCase().endsWith('.jar')) continue;
-    descriptors.push(...await readModDescriptors(dir + '/' + name, environment.loader));
-  }
-  return validateModSet(descriptors, environment);
-}
-
+/** 新装、更新、修复共用的文件事务服务；同一目录串行，失败按持久 journal 恢复。 */
 export class ModInstallService {
+  /**
+   * 重查实例和明确的 API 依赖计划，下载到同盘暂存目录，再将文件及索引一次性提交。
+   * 下载器负责期望大小/哈希，提交层核对暂存字节，目录快照防止下载期间的外部改动被覆盖；
+   * 取消发生在提交之前，提交中的失败由事务层回滚。包内声明不构成本服务的阻断条件。
+   */
   async install(request: ModInstallRequest, observer: ModInstallObserver, activityId: number = 0): Promise<void> {
     const dir = normalizeModDirectory(resourceKindToInstallDir(ResourceKind.MOD, request.mcDir, request.versionId, request.versionIsolation));
     await withModDirectoryLock<void>(dir, async (): Promise<void> => {
@@ -156,19 +164,9 @@ export class ModInstallService {
         if (!downloadReleased) throw new Error('下载线程仍在结束，已保留暂存文件，请稍后重试');
         if (batch.error !== null) throw batch.error;
         this.checkCancelled(observer);
-        observer.phase('正在检查模组组合');
-        const removed = new Set<string>();
-        for (const item of planned) for (const old of item.oldNames) removed.add(old);
-        const descriptors: ModDescriptor[] = [];
-        for (const m of scan.mods) {
-          if (m.enabled && !removed.has(m.filename)) descriptors.push(...await readModDescriptors(m.filePath, environment.loader));
-        }
-        for (const item of planned) {
-          const read = await readModDescriptors(staging + '/' + item.stagedRelative, environment.loader);
-          if (item.enabled) descriptors.push(...read);
-        }
-        const errors = validateModSet(descriptors, environment);
-        if (errors.length > 0) throw new Error('模组组合无法启动，原文件已保留：\n' + errors.join('\n'));
+        // 来源传输校验已经完成；这里只生成文件事务及索引，不读取新旧 JAR 的元数据。
+        // 旧 Forge、加载器插件、整合包依赖覆盖等语义都交给实际加载器处理。
+        observer.phase('正在准备模组文件提交');
         const index = readInstalledModIndex(dir);
         const changes: ModFileChange[] = [];
         for (const item of planned) {
@@ -189,7 +187,9 @@ export class ModInstallService {
           sha1: await computeFileSha1(staging + '/' + indexRelative) });
         this.checkCancelled(observer);
         if (await this.fingerprint(dir) !== initialFiles) throw new Error('安装期间本地模组发生变化，已保留原文件，请刷新后重试');
-        observer.phase('正在提交完整模组组合');
+        // 指纹读取会异步让出执行；用户在这段等待内仍可取消，必须在切入不可取消提交前再确认。
+        this.checkCancelled(observer);
+        observer.phase(MOD_INSTALL_COMMIT_PHASE);
         await commitModFiles(dir, staging, changes);
         AppLogger.info(TAG, 'mod plan committed: root=' + request.root.id + ' files=' + planned.length + ' dir=' + dir, LOG_DOMAIN_DOWNLOAD);
       } finally {

@@ -18,6 +18,7 @@ import { parseLibraryPathGav, compareMavenVersions, LibraryGav } from 'feature_c
 import { isMcVersionAtLeast } from 'commons';
 import { resolveInstalledMcVersion, resolveInstalledLoader } from 'mods';
 import { launchNative } from './LaunchNativeBridge';
+import { normalizeManifestJnaTmpdir, jvmArgumentOverrideKey, retainLastJvmArgumentValues } from './RuntimeJvmArgumentPolicy';
 import { applyGameCompatibility } from './GameCompatibility';
 import { ActivityLogger } from 'commons';
 import { updateSessionEnvironment, sessionEnvironmentFact } from 'commons';
@@ -1464,21 +1465,14 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
    *   其它（--add-opens / --add-exports 等可重复参数）→ ''（不参与去重，原样保留）
    */
   private jvmArgKey(arg: string): string {
-    if (arg.indexOf('-D') === 0) {
-      let eq = arg.indexOf('=')
-      return eq >= 0 ? arg.substring(0, eq) : arg
-    }
-    const memPrefixes: string[] = ['-Xmx', '-Xms', '-Xss', '-Xmn']
-    for (let p of memPrefixes) {
-      if (arg.indexOf(p) === 0) return p
-    }
-    return ''
+    return jvmArgumentOverrideKey(arg)
   }
 
   /**
    * 合入用户自定义 JVM 参数，语义对齐 FoldCraftLauncher / HMCL 的"用户优先"：
-   *   - 用户参数追加在末尾。JVM 对重复 -D 取最后一个，故天然覆盖 C 层 SSOT 默认参数
-   *     （SSOT 在 extraJvmArgs 之前注入），以及本函数保留的 version.json 参数。
+   *   - 用户参数先按键保留末项，再追加在末尾。上游按全局、单版本的顺序拼接，
+   *     所以单版本参数覆盖全局同键；清除失效旧值后，native 冻结检查的是最终生效值。
+   *     SSOT 在 extraJvmArgs 之前注入，用户最终值仍覆盖它和 version.json 的普通默认。
    *   - 同时把 version.json 里与用户【同键】(-Dkey / -Xmx 系列) 的参数剔除，避免命令行
    *     出现两条互相矛盾的 -Dkey（保留也会被覆盖，剔除让命令更干净）。
    *   - --add-opens / --add-exports 等可重复参数 jvmArgKey 返回 ''，不参与去重，原样保留。
@@ -1486,7 +1480,10 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
    * 例：用户写 "-Dsodium.checks.issue2561=true" 即可覆盖 SSOT 的 =false 默认（恢复检查）。
    */
   private mergeUserJvmArgs(versionArgs: string[]): string[] {
-    let userArgs = this.parseUserJvmArgs(this.customJvmArgs).filter((a: string) => a.length > 0)
+    // 此处只整理用户覆盖次序，不对显式路径、模板或图形身份做默认值替换。
+    // 最终异值仍会被后续 builder/native 拒绝；不能让已被覆盖的全局旧值误伤有效设置。
+    let userArgs = retainLastJvmArgumentValues(
+      this.parseUserJvmArgs(this.customJvmArgs).filter((a: string): boolean => a.length > 0))
     if (userArgs.length === 0) return versionArgs
 
     let userKeys = new Set<string>()
@@ -1776,8 +1773,11 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
   }
 
   private resolveJvmArgTemplate(arg: string, classpath: string): string | null {
-    if (arg.indexOf('${') < 0) return arg
-    let resolved = arg
+    // 此入口只消费清单参数，必须在通用占位符替换前识别官方 JNA 默认模板。
+    // 只改 jna.tmpdir 的已知默认值，java.library.path/LWJGL/Netty 仍沿用各自目录语义；
+    // 用户参数在 filterJvmArgs 之后合入，不经过该适配，显式异值会保留到严格冻结。
+    let resolved = normalizeManifestJnaTmpdir(arg, this.gameDir)
+    if (resolved.indexOf('${') < 0) return resolved
     resolved = LaunchProfileBuilder.substAll(resolved, '${library_directory}', this.mcDir + '/libraries')
     resolved = LaunchProfileBuilder.substAll(resolved, '${classpath_separator}', ':')
     resolved = LaunchProfileBuilder.substAll(resolved, '${version_name}', this.version)
@@ -1789,7 +1789,12 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     resolved = LaunchProfileBuilder.substAll(resolved, '${natives_directory}', this.gameDir + '/natives')
     resolved = LaunchProfileBuilder.substAll(resolved, '${launcher_name}', 'amcl')
     resolved = LaunchProfileBuilder.substAll(resolved, '${launcher_version}', '1.0')
-    if (resolved.indexOf('${') >= 0) return null
+    if (resolved.indexOf('${') >= 0) {
+      // 自定义 JNA 模板也属于受冻结保护的明确输入；无法解析时保留异值，
+      // 让 native 报出 jna.tmpdir 冲突，不能当作普通未知参数跳过后悄悄恢复默认目录。
+      if (this.jvmArgKey(arg) === '-Djna.tmpdir') return resolved
+      return null
+    }
     return resolved
   }
 

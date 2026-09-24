@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { stripComments, langForPath } from './lib/source-noise.mjs';
 import { readElfIdentity } from './check-mg-build-contract.mjs';
+import { assertExternalOutputPath } from './lib/workspace-paths.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourcePaths = [
@@ -91,11 +92,12 @@ export function buildInventory(root = ROOT, sourceRoot = root) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const arg = flag => { const at = process.argv.indexOf(flag); return at < 0 ? '' : process.argv[at + 1]; };
+    // 报告是本次宿主运行输出；在读取/审计前拒绝仓内显式路径，避免重建 diagnostics/.tmp。
+    const output = arg('--out') ? assertExternalOutputPath(arg('--out')) : '';
     const result = buildInventory(ROOT, arg('--source-root') ? path.resolve(arg('--source-root')) : ROOT);
     const json = JSON.stringify(result, null, 2) + '\n';
     if (arg('--out')) {
       // 全新 checkout 不包含本机报告目录；输出前创建父目录，不把旧报告当作输入。
-      const output = path.resolve(arg('--out'));
       fs.mkdirSync(path.dirname(output), { recursive: true });
       fs.writeFileSync(output, json);
     }

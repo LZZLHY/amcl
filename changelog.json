@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-24T04:34:27Z",
+  "generatedAt": "2026-09-24T20:37:42Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,142 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.4",
-    "versionCode": 1000671,
-    "tag": "v1.0.4",
-    "date": "2026-09-24"
+    "versionName": "1.0.5",
+    "versionCode": 1000678,
+    "tag": "v1.0.5",
+    "date": "2026-09-25"
   },
   "releases": [
+    {
+      "versionName": "1.0.5",
+      "versionCode": 1000678,
+      "tag": "v1.0.5",
+      "date": "2026-09-25",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.5",
+      "title": "启动兼容性与运行库修复",
+      "titleEn": "Startup compatibility and runtime fixes",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "修复部分游戏无论选择哪种渲染器，都因 JNA 临时目录参数冲突而无法启动的问题。"
+          },
+          {
+            "type": "highlight",
+            "text": "解除旧整合包被启动前兼容性检查误拦截的问题，保留安装完整性校验与失败恢复。"
+          },
+          {
+            "type": "improved",
+            "text": "区分启动参数冲突与 JNA 运行库缺失，提供针对性的错误说明，避免误导用户反复更换渲染器。"
+          },
+          {
+            "type": "fixed",
+            "text": "统一新旧游戏清单中的 JNA 默认临时目录，保留用户明确设置与必要的运行库校验。",
+            "details": [
+              "使用不同世代的真实客户端和官方加载器配置进行回归，覆盖原版、Fabric、Forge 与 NeoForge 的参数生成路径。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复包含 emoji 或扩展汉字的合法实例路径被误判为运行库属性异常的问题。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复自定义较小最大内存后，自动初始内存仍按旧值生成而导致 JVM 启动失败的问题。",
+            "details": [
+              "单版本 JVM 参数正确覆盖全局同键参数；显式初始内存和不同 Java 版本的堆对齐语义继续保留。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "根据游戏实际使用的 JNA 协议选择相应原生库，改善旧版 JNA 与固定原生库不匹配的问题。",
+            "details": [
+              "保留游戏原有 Java 依赖；无法可靠识别的组合交回 JNA 自身处理，不新增针对未知模组组合的强制拒启。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "取消启动、安装、更新和修复环节中不完整的模组组合兼容性否决，把实际兼容性判断交给对应加载器。",
+            "details": [
+              "下载来源、大小和摘要检查、必需前置、安装事务恢复与失败回滚继续保留。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修正模组安装提交前后的取消边界，避免取消与文件提交发生冲突。"
+          },
+          {
+            "type": "notice",
+            "text": "本版修复启动器侧问题，不代表所有整合包和第三方原生模组均已适配；不同设备、光影及复杂模组组合仍需真机验证。",
+            "details": [
+              "已完成宿主回归、构建及包内核验；不将这些检查等同于全部设备上的实际游戏运行通过。"
+            ]
+          }
+        ],
+        "summary": "本版集中修复 1.0.4 中的启动阻断和运行库兼容问题。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Fix games failing to start with any renderer because of conflicting JNA temporary-directory arguments."
+          },
+          {
+            "type": "highlight",
+            "text": "Remove incorrect compatibility checks that blocked existing modpacks, while retaining installation integrity checks and recovery."
+          },
+          {
+            "type": "improved",
+            "text": "Provide specific guidance for argument conflicts and missing JNA runtimes instead of suggesting renderer changes for these failures."
+          },
+          {
+            "type": "fixed",
+            "text": "Normalize JNA's default temporary directory across older and newer game manifests while preserving explicit user settings and required runtime checks.",
+            "details": [
+              "Regression coverage uses real clients and official loader profiles across vanilla, Fabric, Forge, and NeoForge generations."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix valid instance paths containing emoji or supplementary Unicode characters being rejected as modified runtime properties."
+          },
+          {
+            "type": "fixed",
+            "text": "Fix JVM startup failures when a smaller custom maximum heap was paired with an automatically generated initial heap based on the previous value.",
+            "details": [
+              "Per-instance JVM arguments override matching global arguments. Explicit initial-heap settings and Java-specific heap-alignment behavior are preserved."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Select native JNA libraries according to the protocol declared by the game's actual Java dependency, improving compatibility with older JNA versions.",
+            "details": [
+              "Keep the game's Java dependencies intact. Unrecognized combinations remain under JNA's own handling instead of introducing a new blanket rejection of modpacks."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Remove incomplete mod-compatibility vetoes from launching, installing, updating, and repairing. The corresponding loader remains responsible for actual compatibility decisions.",
+            "details": [
+              "Download source, size and digest checks, required dependencies, transaction recovery, and rollback remain enforced."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Correct cancellation boundaries around mod installation commits to avoid races with file changes."
+          },
+          {
+            "type": "notice",
+            "text": "These fixes address launcher-side issues; they do not guarantee compatibility with every modpack or third-party native mod. Device, shader, and complex mod combinations still require on-device validation.",
+            "details": [
+              "Host regressions, builds, and packaged-content checks do not constitute complete gameplay validation across all devices."
+            ]
+          }
+        ],
+        "summary": "This update addresses startup blockers and runtime compatibility issues in 1.0.4."
+      }
+    },
     {
       "versionName": "1.0.4",
       "versionCode": 1000671,

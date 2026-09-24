@@ -117,7 +117,9 @@ export function analyzeSdlLaunchSources(files) {
     ]) && launch.includes('if (!amcl::jvm::FreezeBootstrapProperties(finalJvmArgs, g_runtimeBootstrapProperties, bootstrapError)) {')
       && /return\s+-\d+;/.test(launch.slice(launch.indexOf('amcl::jvm::FreezeBootstrapProperties('),
         launch.indexOf('jvmSetExtraArgsList(finalJvmArgs)'))));
-    check('bootstrap-readback-not-late-write', verify.includes('getSystemProperty(env, property.first.c_str()) != property.second')
+    // 回读必须同时成功且等值；缺失属性/解码失败不能因空值恰好相同而放过，
+    // 也不能用后置 setProperty 掩盖已经被 Java 缓存的错误值。
+    check('bootstrap-readback-not-late-write', verify.includes('!getSystemProperty(env, property.first.c_str(), actual) || actual != property.second')
       && verify.includes('return false;') && !/setSystemProperty\s*\(/.test(verify)
       && !/setSystemProperty\s*\([^;]*"org\.lwjgl\./.test(source));
     check('attached-thread-publish-before-owner', ordered(thread, [

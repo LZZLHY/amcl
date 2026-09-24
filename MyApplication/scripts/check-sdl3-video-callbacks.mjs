@@ -180,13 +180,15 @@ const REQUIRED_MOUSE = [
 // 参数
 // ---------------------------------------------------------------------------
 function parseArgs(argv) {
-  let repo = path.resolve('..', '.tmp-sdl3', 'icculus-wt');
+  // 回调门禁检查打过 AMCL patch 的工作树，不能猜旧实验目录或把干净上游当适配后的源码。
+  let repo = '';
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === '--repo' && i + 1 < argv.length) {
       repo = path.resolve(argv[i + 1]);
       i++;
     }
   }
+  if (!repo) throw new Error('Pass --repo <patched SDL source worktree>; no historical temporary directory is assumed');
   return { repo };
 }
 

@@ -56,7 +56,10 @@ echo "  repo:      $REPO"
 echo "  mode:      $([ "$DRY_RUN" = true ] && echo DRY-RUN || echo LIVE)"
 echo ""
 
-workdir=$(mktemp -d -t amcl-prebuilts-XXXXXX)
+# 部署过程的临时克隆也归入统一工作树容器；不改变远端部署流程，不在源码根产生目录。
+workBase=$(python3 -B "${ROOT_DIR}/scripts/lib/workspace_paths.py" wt prebuilts-deploy)
+mkdir -p "$workBase"
+workdir=$(mktemp -d "${workBase}/clone-XXXXXX")
 echo "  workdir: $workdir"
 run git clone "https://github.com/${REPO}.git" "$workdir" 2>&1 | head -5
 

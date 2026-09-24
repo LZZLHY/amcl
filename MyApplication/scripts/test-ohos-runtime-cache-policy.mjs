@@ -3,6 +3,8 @@
 // with the configured OHOS SDK compiler. Every compiler artifact stays in a
 // unique temporary directory and is removed on success or failure.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import {
   existsSync,
   mkdtempSync,
@@ -173,7 +175,7 @@ function reportFailure(result, label) {
   throw new Error(`${label} failed with status ${result.status ?? 'unknown'}`);
 }
 
-const temp = mkdtempSync(join(tmpdir(), 'amcl-mg-cache-policy-'));
+const temp = mkdtempSync(join(workspaceTempRoot(), 'amcl-mg-cache-policy-'));
 try {
   verifyIdentityMirror();
 

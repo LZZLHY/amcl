@@ -2,6 +2,8 @@
 // Directed fixtures for check-gamecontrol-runtime-scope.mjs. Every dangerous
 // direction must produce a named issue; comments/generated trees must not.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -20,7 +22,7 @@ function write(root, path, content) {
 }
 
 function buildFixture() {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-gamecontrol-scope-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gamecontrol-scope-'));
   write(root, 'build-profile.json5', `{
     "modules": [
       { "name": "entry", "srcPath": "./entry" },

@@ -16,11 +16,12 @@ import { createHash } from 'node:crypto';
 import { dirname, join, relative as relative_, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { validateSummary } from './verdict.mjs';
+import { workspacePath } from '../lib/workspace-paths.mjs';
 
 /** 提交进仓库的摘要目录（契约 §8.5 硬约束 3）。 */
-export const COMMITTED_DIR = 'diagnostics/device-automation';
-/** 大件原始输出目录（`.gitignore` 已有 `/.logs/` ⇒ 本就不入库）。 */
-export const RAW_DIR = '.logs/device-automation';
+export const COMMITTED_DIR = 'docs/testing/evidence/device-automation';
+/** 含完整设备命令和原始日志的目录固定在仓库外；入库摘要仍先经过机密扫描。 */
+export const RAW_DIR = workspacePath('run', 'device-automation');
 
 /**
  * SN 脱敏：留首四位与末四位，够用来在多设备场景里区分，又不是完整序列号。

@@ -1,3 +1,5 @@
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,7 +8,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 
 const root = path.resolve(import.meta.dirname, '..');
-const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-file-access-'));
+const temp = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-file-access-'));
 const logger = { info() {}, warn() {} };
 const nativeFs = {
   accessSync: fs.existsSync,
@@ -140,6 +142,6 @@ try {
   pass('multiple saves keep unique names, continue after failure and clean incomplete world');
   console.log(`ALL PASS: ${count} behavior groups; platform APIs mocked, real temporary filesystem used`);
 } finally {
-  assert(path.resolve(temp).startsWith(path.resolve(os.tmpdir()) + path.sep + 'amcl-file-access-'));
+  assert(path.resolve(temp).startsWith(path.resolve(workspaceTempRoot()) + path.sep + 'amcl-file-access-'));
   fs.rmSync(temp, { recursive: true, force: true });
 }

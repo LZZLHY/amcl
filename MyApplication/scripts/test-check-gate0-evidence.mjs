@@ -5,6 +5,8 @@
 // 不会有任何构建信号。因此这里用临时 fixture 树逐条证明：合法清单通过，而每一种能
 // 绕过 Gate 0 的写法都必须被报出来。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -77,7 +79,7 @@ function approved(overrides) {
 
 /** 写一棵最小 fixture 树；capabilities 由调用方给出。 */
 function buildFixture(capabilities, options) {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-gate0-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gate0-'));
   write(root, 'gate0-evidence.lock',
     JSON.stringify({ schemaVersion: 1, capabilities }, null, 2));
   write(root, 'entry/src/main/cpp/input/Gate0Evidence.cmake', realGate);
@@ -379,7 +381,7 @@ check('cmake does not embed evidence ids', defaultCapabilities(),
 
 // 19. schemaVersion 未知：不得把未知 schema 当成批准。
 {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-gate0-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gate0-'));
   try {
     write(root, 'gate0-evidence.lock',
       JSON.stringify({ schemaVersion: 2, capabilities: defaultCapabilities() }));
@@ -400,7 +402,7 @@ check('cmake does not embed evidence ids', defaultCapabilities(),
 
 // 20. 清单缺失。
 {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-gate0-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-gate0-'));
   try {
     const issues = validateGate0Evidence(root);
     if (issues.some(issue => /gate0-evidence\.lock is missing/.test(issue))) {

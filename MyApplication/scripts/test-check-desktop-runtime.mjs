@@ -14,6 +14,9 @@ const nativeGl = readFileSync(new URL('../entry/src/main/cpp/platform/native_gl.
 const runtimeBootstrap = readFileSync(new URL('../entry/src/main/cpp/jvm/runtime_bootstrap_contract.h', import.meta.url), 'utf8');
 assert.deepEqual(evaluateDesktopCompletionSources(callbacks,page,ability),[]);
 assert.deepEqual(evaluateDesktopGraphicsPeerRouting(launcher, glfwCompat, nativeGl, runtimeBootstrap),[]);
+// 默认实参中的花括号不是函数体；两种合法初始化写法都必须解析到相同契约正文。
+assert.deepEqual(evaluateDesktopGraphicsPeerRouting(launcher, glfwCompat, nativeGl,
+  runtimeBootstrap.replace('JnaBootstrap{}', 'JnaBootstrap()')), []);
 // 通用冻结不应再局限于 desktop；但 native contextAPI 必须只属于 nativegl。
 assert.ok(evaluateDesktopGraphicsPeerRouting(launcher, glfwCompat, nativeGl,
   runtimeBootstrap.replace('if (profile == "nativegl")', 'if (true)')).some(s=>s.includes('freezing')));

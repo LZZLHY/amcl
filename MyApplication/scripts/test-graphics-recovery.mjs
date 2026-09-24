@@ -1,4 +1,6 @@
 // 验证恢复纯规则及实际磁盘协议：首帧、显式选择、PID/锁/身份/设置变化和一次消费反例。
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -82,7 +84,7 @@ for (const source of ['GAME_API', 'PREFERENCE', 'DEV']) {
 }
 assert.equal(permits(ticket, { ...failure, profile: 'minecraft-vulkan', nextProfile: 'mobilegl' }), true);
 assert.equal(permits(ticket, { ...failure, profile: 'minecraft-vulkan', nextProfile: 'mobilegl', presentCount: 1 }), false);
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-graphics-recovery-'));
+const root = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-graphics-recovery-'));
 try {
   store.create(root, ticket); assert.deepEqual(store.ticket(root, id), ticket);
   assert.throws(() => store.create(root, ticket), /already exists/);
@@ -110,7 +112,7 @@ try {
   assert.equal(directoryHandles.size, 0);
 } finally {
   const verified = fs.realpathSync(root);
-  assert.equal(path.dirname(verified).toLowerCase(), fs.realpathSync(os.tmpdir()).toLowerCase());
+  assert.equal(path.dirname(verified).toLowerCase(), fs.realpathSync(workspaceTempRoot()).toLowerCase());
   assert.ok(path.basename(verified).startsWith('amcl-graphics-recovery-'));
   fs.rmSync(verified, { recursive: true, force: true });
 }

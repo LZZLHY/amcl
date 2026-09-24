@@ -4,6 +4,8 @@
  * 正例使用仓内最终 JAR 字节；反例覆盖跨槽隔离、同大小损坏、缺标记、短写和发布失败。
  * 不启动 JVM、不访问设备、不更改 rawfile/prebuilt。
  */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -13,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-lwjgl-slots-'));
+const temporaryRoot = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-lwjgl-slots-'));
 const mcDir = temporaryRoot.replaceAll('\\', '/') + '/minecraft';
 const accesses = [];
 const mutations = [];
@@ -249,6 +251,6 @@ try {
   for (const fd of opened) fs.closeSync(fd);
   const resolved = fs.realpathSync(temporaryRoot);
   assert.ok(path.basename(resolved).startsWith('amcl-lwjgl-slots-'));
-  assert.equal(path.dirname(resolved), fs.realpathSync(os.tmpdir()));
+  assert.equal(path.dirname(resolved), fs.realpathSync(workspaceTempRoot()));
   fs.rmSync(resolved, { recursive: true, force: true });
 }

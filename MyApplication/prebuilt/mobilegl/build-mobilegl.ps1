@@ -36,10 +36,12 @@ $ErrorActionPreference = 'Stop'
 # ---------- [1/6] 路径解析 ----------
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # MyApplication/
 $SrcDir   = Join-Path $PSScriptRoot 'src'
+. (Join-Path $RepoRoot 'scripts\lib\workspace-paths.ps1')
+$MobileglBuildRoot = Get-AmclWorkspacePath -Kind build -Id 'mobilegl' -ProjectRoot $RepoRoot
 if ($BuildDir -eq '') {
-    # 刻意放在 workspace 根的 .tmp-*（与 .tmp-sdl3 同模式）：构建产物不进仓，
-    # 配方（本脚本）+ pin（deps.lock）才是可复现的真相。
-    $BuildDir = Join-Path (Split-Path -Parent $RepoRoot) '.tmp-mobilegl-build\ohos-arm64'
+    # 默认编译缓存放进统一外部目录；保留稳定的子目录以便 Ninja 增量编译。
+    # helper 为不同 checkout 分配不同根，防止复用另一个源码树的 CMakeCache。
+    $BuildDir = Join-Path $MobileglBuildRoot 'ohos-arm64'
 }
 $DistDir  = Join-Path $PSScriptRoot 'dist'
 
@@ -74,11 +76,24 @@ if (-not $python) { throw 'PATH 上无 python（SPIRV-Tools 构建期生成表�
 # ---------- [3/6] configure ----------
 & node (Join-Path $RepoRoot 'scripts/check-mobilegl-pin.mjs') --offline
 if ($LASTEXITCODE -ne 0) { throw 'MobileGL source pin check failed' }
-$BuildDir = [IO.Path]::GetFullPath($BuildDir)
-$MobileglWorkspace = [IO.Path]::GetFullPath((Split-Path -Parent $RepoRoot)).TrimEnd('\') + '\'
+$BuildDir = Get-AmclWorkspacePath -Kind build -Id 'mobilegl' -ProjectRoot $RepoRoot -ExplicitPath $BuildDir
+$MobileglWorkspace = [IO.Path]::GetFullPath($MobileglBuildRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+# 无论是否重新 configure，都禁止将输出写进任意工程目录或其他项目。
+# -Reconfigure 仅能移除本构建器专用根下的子目录，不能以整个 AMCL 根作为删除边界。
+if (-not $BuildDir.StartsWith($MobileglWorkspace, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "BuildDir must stay under $MobileglBuildRoot"
+}
 if ($Reconfigure -and (Test-Path -LiteralPath $BuildDir)) {
     if (-not $BuildDir.StartsWith($MobileglWorkspace, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove a build directory outside workspace: $BuildDir"
+    }
+    # 链接/目录联接可能把看似安全的前缀跳转到外部；沿路径逐级拒绝这类节点。
+    $Candidate = $BuildDir
+    while ($Candidate -and $Candidate.Length -ge $MobileglBuildRoot.Length) {
+        if ((Test-Path -LiteralPath $Candidate) -and ((Get-Item -LiteralPath $Candidate -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing to remove a linked build path: $Candidate"
+        }
+        $Candidate = Split-Path -Parent $Candidate
     }
     Remove-Item -LiteralPath $BuildDir -Recurse -Force
 }

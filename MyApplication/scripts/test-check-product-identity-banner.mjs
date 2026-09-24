@@ -6,6 +6,8 @@
 // 这里用临时 fixture 树逐条证明：合法的树通过，而**每一种能让 banner 静默失效的写法
 // 都必须被报出来**。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -88,7 +90,7 @@ export default class EntryAbility {
 
 /** 建一棵合法的最小 fixture 树；options 用来注入单点缺陷。 */
 function buildFixture(options = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-identity-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-identity-'));
   write(root, 'commons/src/main/ets/common/ProductIdentity.ets',
     options.identity ?? realIdentity);
   write(root, 'commons/src/main/ets/common/DiagnosticPolicy.ets',

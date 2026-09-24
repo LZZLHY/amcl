@@ -3,6 +3,8 @@
 全部产物位于本轮临时目录，不启动应用、不访问 GPU/设备，也不更改任何已有 HAP。
 宿主 fixture 计数 hilog，外层捕获 stderr；成功输出需有正控，不能只依赖静默结果。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import subprocess
@@ -14,7 +16,7 @@ source = root / 'entry/src/main/cpp/tests/host/vulkan_wsi_diagnostics_test.cpp'
 includes = [root / 'entry/src/main/cpp/tests/host/stubs',
             root / 'prebuilt/mobilegl/src/3rdparty/Vulkan-Headers/include']
 
-with tempfile.TemporaryDirectory(prefix='amcl-wsi-diagnostics-') as directory:
+with workspace_temporary_directory(prefix='amcl-wsi-diagnostics-') as directory:
     # 不传宏时也必须关闭；512 反例证明仅有 trace 位不能越过开发产品身份。
     for mask in [None, 0, 1, 512, 513]:
         effective = 0 if mask is None else mask

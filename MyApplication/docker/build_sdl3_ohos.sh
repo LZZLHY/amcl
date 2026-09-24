@@ -19,7 +19,7 @@ set -e
 #  方案与缺口矩阵见 docs/adaptation/SDL3_MIGRATION_PLAN.md、prebuilt/sdl3/README.md，
 #  施工过程见 docs/adaptation/SDL3_PORT_WORKLOG.md。
 #
-#  用法（容器内）：docker exec ohos-debug bash /host-docker/build_sdl3_ohos.sh
+#  历史 Docker 配方入口：launch-builder.ps1 -Component sdl3（主机权威构建仍是 build-sdl3-ohos.ps1）
 #  产物：/output/sdl3/libSDL3.so（→ entry/libs/arm64-v8a/）
 # ============================================================
 #
@@ -61,7 +61,7 @@ SDL3_REVISION=${SDL3_REVISION:-SDL-3.5.0-release-3.4.0-983-ge293db30d}
 OHOS_SYSROOT=${OHOS_SYSROOT_RW:-/ohos-sysroot-rw}
 OUTPUT_DIR=${OUTPUT_DIR:-/output/sdl3}
 JOBS=${JOBS:-$(nproc)}
-PATCH_DIR=${PATCH_DIR:-/host-prebuilt/sdl3/patches}
+PATCH_DIR=${PATCH_DIR:-/prebuilt/sdl3/patches}
 BUILD_TYPE=${BUILD_TYPE:-RelWithDebInfo}
 
 OHOS_LIBDIR=$OHOS_SYSROOT/usr/lib/aarch64-linux-ohos
@@ -83,15 +83,17 @@ if [ ! -d "$SRC_DIR/.git" ]; then
     git clone --branch "$SDL3_BRANCH" "$SDL3_REPO" "$SRC_DIR"
 fi
 cd "$SRC_DIR"
-git fetch origin "$SDL3_BRANCH" --quiet 2>/dev/null || true
-git checkout -q "$SDL3_COMMIT"
+# 当前任务必须使用干净源码，未知改动留给归档，不用 checkout . 擦除。
+[[ "$SDL3_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'ERROR: SDL3_COMMIT must be a full SHA'; exit 1; }
+[ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'ERROR: SDL source is dirty; use a fresh task'; exit 1; }
+git cat-file -e "$SDL3_COMMIT^{commit}"
+git checkout --detach -q "$SDL3_COMMIT"
 echo "[src] HEAD = $(git rev-parse --short HEAD)  ($(git log -1 --format=%s))"
 
 # ---------- AMCL 宿主集成补丁（只放"通用能力之外"的那几个） ----------
 # 通用能力一律在开发仓里改并回推上游；这里只应用与 AMCL 宿主耦合的部分。
 if [ -d "$PATCH_DIR" ] && [ -f "$PATCH_DIR/series" ]; then
     echo "[patch] applying AMCL host patches from $PATCH_DIR/series"
-    git checkout -q . 2>/dev/null || true
     while IFS= read -r p || [ -n "$p" ]; do
         p="${p%$'\r'}"
         [ -z "$p" ] && continue
@@ -100,7 +102,8 @@ if [ -d "$PATCH_DIR" ] && [ -f "$PATCH_DIR/series" ]; then
         git apply "$PATCH_DIR/$p"
     done < "$PATCH_DIR/series"
 else
-    echo "[patch] no patch series at $PATCH_DIR — building pristine pinned source"
+    echo "ERROR: AMCL patch series is required at $PATCH_DIR"
+    exit 1
 fi
 
 # ---------- 编译器包装器 ----------

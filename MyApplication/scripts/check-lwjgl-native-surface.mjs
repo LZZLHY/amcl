@@ -98,7 +98,10 @@ function moduleSourceMap(sourceRoot) {
 }
 
 export function runNativeSurfaceCheck({ sourceRoot = SOURCE_ROOT, output } = {}) {
-  const outputDir = resolve(output || join(ROOT, 'docker', 'output', 'lwjgl342'));
+  // 构建候选输出随任务 ID 外置，不能猜测某个旧 docker/output 路径或自动挑选最近文件。
+  // 调用者必须明确给出本次已审核的目录；正式制品检查也可显式传 entry/libs/arm64-v8a。
+  if (!output) fail('explicit native output directory required; pass the current task out directory');
+  const outputDir = resolve(output);
   const readelf = locateReadelf();
   for (const [name, sourcePaths] of moduleSourceMap(sourceRoot)) {
     const library = join(outputDir, name);

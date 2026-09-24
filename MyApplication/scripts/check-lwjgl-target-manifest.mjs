@@ -6,6 +6,8 @@
 //   node scripts/check-lwjgl-target-manifest.mjs --hap <selected-output.hap>
 //   node scripts/check-lwjgl-target-manifest.mjs --target 26.3 --client <official-client.jar>
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
@@ -782,7 +784,7 @@ export function verifyHapProviderNativeSurfaces(
     (entry.native.kind === 'bundle-file' || entry.native.kind === 'cmake-output'));
   let tempPath = '';
   let readelf = '';
-  const tempBase = resolve(tmpdir());
+  const tempBase = resolve(workspaceTempRoot());
   try {
     if (typeof inspectReadelf !== 'function') {
       tempPath = mkdtempSync(join(tempBase, 'amcl-lwjgl-provider-hap-'));
@@ -839,7 +841,7 @@ export function verifyHapProviderNativeSurfaces(
 
 function verifyHapModernNativeSurface(hapBytes, modernManifest, problems) {
   if (!Array.isArray(modernManifest?.natives)) return;
-  const tempBase = resolve(tmpdir());
+  const tempBase = resolve(workspaceTempRoot());
   const tempPath = mkdtempSync(join(tempBase, 'amcl-lwjgl-hap-'));
   let complete = true;
   try {

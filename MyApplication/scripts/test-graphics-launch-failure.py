@@ -4,6 +4,8 @@
 仅是进程身份、活动图形计划和 JVM 状态；NAPI 参数校验/页面调用顺序另作静态接线
 断言，不能把这些断言写成在 HarmonyOS NAPI 上执行过的集成测试。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import json
 import os
@@ -66,7 +68,7 @@ def require_wire(wire, rc, stage, code, profile, restart):
 
 
 record_count = verify_wiring()
-with tempfile.TemporaryDirectory(prefix='amcl-graphics-failure-') as directory:
+with workspace_temporary_directory(prefix='amcl-graphics-failure-') as directory:
     binary = Path(directory) / ('failure.exe' if os.name == 'nt' else 'failure')
     compile_cpp(root / 'entry/src/main/cpp/tests/host/graphics_launch_failure_test.cpp', binary)
     output = subprocess.check_output([str(binary)], timeout=20).decode('utf-8')

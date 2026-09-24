@@ -32,6 +32,7 @@
 #include "game_process_exit.h"
 #include "elf_loader.h"
 #include "jvm_common_args.h"
+#include "jvm_heap_options.h"
 #include "../platform/graphics_plan.h"
 #include "jni_mutf8.h"   // NewStringUTF 只吃 Modified UTF-8：用户内容一律先转（见头文件）
 #include "../utils/amcl_log.h"
@@ -524,6 +525,16 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         }
     }
 
+    // 堆参数在任何一次性认领、信号变更或 libjvm 装载之前检查。用户可以修正非法输入后
+    // 再启动；不能让 HotSpot 在 Xms>Xmx 时直接退出当前进程，丢掉可展示的错误原因。
+    amcl::jvm::HeapOptions heapOptions;
+    std::string heapError;
+    if (!amcl::jvm::ResolveHeapOptions(g_xmxMb, g_extraArgs, classicLayout, heapOptions, heapError)) {
+        g_status = "JVM 堆参数无效: " + heapError;
+        AMCL_LOG_E(LOG_TAG, "jvm_heap_options_rejected reason=%{public}s", heapError.c_str());
+        return -11;
+    }
+
     // ============================================================
     // 在改变进程信号/装载运行时前原子认领；后续失败保持非 Fresh，不得再建另一 JVM。
     const int creationClaim = g_runtimeOnce.beginResult();
@@ -690,44 +701,11 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     // 详见 docs/archive/jdk21-awt-headless-journey-202605.md §5（第一阶段方案）。
     // ============================================================
 
-    // Xmx
-    char optXmx[64];
-    snprintf(optXmx, sizeof(optXmx), "-Xmx%dm", g_xmxMb > 0 ? g_xmxMb : 128);
-
-    // ============================================================
-    //  -Xms：初始堆。2026-08-30 落地，此前从未传过（只传 -Xmx）。
-    //
-    //  为什么需要它（算据）：HotSpot 默认初始堆是 max(MinHeapSize, 物理内存/64)
-    //  ⇒ 本机 11.8 GB 约 184 MB，ParallelGC 默认 NewRatio=2 ⇒ eden 约 48 MB，
-    //  而 MC 每秒分配几百 MB。这会造成 young GC 频繁 + 反复扩堆 +
-    //  UseAdaptiveSizePolicy 每次 GC 重算分代比例，而 ParallelGC 全程
-    //  stop-the-world ⇒ 收集次数多 = 渲染线程被冻结次数多。
-    //
-    //  ⭐ 这条推断已被真机证据坐实（这也是它从"待办"变成"落地"的唯一理由）：
-    //  2026-08-30 在 MC 1.18.2 + Fabric 0.19.3 上采到 -Xlog:gc* 全量日志，约 72 秒内
-    //  Pause Young 185 次 / 合计 3109.5 ms / 最长 117.6 ms（另有 Full 4 次 / 905.7 ms /
-    //  最长 461.5 ms）。185 次 young GC 正是 eden 只有 48 MB 的直接后果。
-    //
-    //  取值：Xmx 的一半，钳在 [512, 1024] MB。上限保守是因为本设备有被 lowmemkiller
-    //  杀的历史（CHANGELOG 1000248 / 1000250 / 1000251）；-Xms 只 commit 不 pre-touch
-    //  （**不要**加 AlwaysPreTouch），所以 RSS 仍按实际使用增长。
-    //
-    //  ⚠️ 最后那道夹取不是冗余：g_xmxMb 未设时上面的兜底是 128 MB，而下限 512 会让
-    //  Xms > Xmx —— HotSpot 对此是**拒绝启动**（不是降级）。任何以后调整钳位区间的人
-    //  都必须保留这一条。
-    //
-    //  ⚠️ 刻意不一并改 NewRatio / -Xmn / -XX:-UseAdaptiveSizePolicy —— 那些是另外的
-    //  变量，混在一批里改会让真机 A/B 无法归因（1000488 就是两个变量同时改的教训）。
-    // ============================================================
-    char optXms[64];
-    {
-        const int xmxMb = g_xmxMb > 0 ? g_xmxMb : 128;
-        int xmsMb = xmxMb / 2;
-        if (xmsMb < 512) xmsMb = 512;
-        if (xmsMb > 1024) xmsMb = 1024;
-        if (xmsMb > xmxMb) xmsMb = xmxMb;
-        snprintf(optXms, sizeof(optXms), "-Xms%dm", xmsMb);
-    }
+    // 预检已按最后生效的用户 Xmx/别名计算自动 Xms。显式初始堆保持原输入及覆盖顺序；
+    // 不修改 GC/NewRatio/预触页策略。局部 heapOptions 在整个 Invocation 调用期间有效。
+    AMCL_LOG_I(LOG_TAG, "JVM heap effective maximum=%{public}llu initial=%{public}llu initialExplicit=%{public}d",
+        static_cast<unsigned long long>(heapOptions.maximumBytes),
+        static_cast<unsigned long long>(heapOptions.initialBytes), heapOptions.initialExplicit ? 1 : 0);
 
     // The plan is fixed by mc_launcher before this JVM is created. Expose its
     // validated profile as an early Java property so classes that inspect the
@@ -763,11 +741,7 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         { const_cast<char*>(opt2str.c_str()), nullptr },
         { opt3, nullptr }, { opt4, nullptr }, { opt5, nullptr },
         { const_cast<char*>(opt7str.c_str()), nullptr },
-        { optXmx, nullptr },
-        // 装在这里（而不是追加到末尾）是有意的：g_extraArgs 在本 vector 之后装入，
-        // HotSpot 对重复的 -Xms 取最后一个 ⇒ 用户在「自定义 JVM 参数」里写的 -Xms
-        // 仍然覆盖这里的注入值，与 ArkTS 侧「用户参数最高优先级」的约定一致。
-        { optXms, nullptr },
+        { const_cast<char*>(heapOptions.defaultMaximumOption.c_str()), nullptr },
         { opt6, nullptr },  // -XX:ErrorFile
 
         // 主进程专属
@@ -851,6 +825,12 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         // 检测到此属性后只 log 到 stderr 后 System.exit(1)，不进 Swing 路径。
         { (char*)"-Dfabric.noGui=true", nullptr },
     };
+
+    // 用户没有提供初始堆时才注入。它仍位于所有用户选项之前，用户 MinHeapSize 的
+    // 原始顺序保持不变；显式 -Xms0 的 HotSpot 自动计算含义也不被宿主默认值覆盖。
+    if (!heapOptions.automaticInitialOption.empty()) {
+        optVec.push_back({ const_cast<char*>(heapOptions.automaticInitialOption.c_str()), nullptr });
+    }
 
     // ============================================================
     // 游戏主进程专属 -D（fork 子进程/安装器 processor 不适用，见 g_forkChildMode）：

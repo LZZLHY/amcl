@@ -1,4 +1,6 @@
 """直接编译生产 MobileGL OpenGL 生命周期与 provider 分派测试，不调用真实设备或重建依赖。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import subprocess
@@ -6,7 +8,7 @@ import tempfile
 from lib.host_cpp import compile_cpp
 
 root = Path(__file__).resolve().parent.parent
-with tempfile.TemporaryDirectory(prefix='amcl-mobilegl-glfw-') as directory:
+with workspace_temporary_directory(prefix='amcl-mobilegl-glfw-') as directory:
     for source in ['mobilegl_egl_core_test.cpp', 'egl_provider_dispatch_test.cpp']:
         binary = Path(directory) / (Path(source).stem + ('.exe' if os.name == 'nt' else ''))
         compile_cpp(root / 'entry/src/main/cpp/tests/host' / source, binary,

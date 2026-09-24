@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "entry": "com/sun/jna/Version.class",
+  "versions": [
+    {
+      "version": "4.4.0",
+      "protocol": "5.1.0",
+      "libraryName": "jnidispatch_v5",
+      "sourceUrl": "https://libraries.minecraft.net/net/java/dev/jna/jna/4.4.0/jna-4.4.0.jar",
+      "jarSha256": "c4dadeeecaa90c8847902082aee5eb107fcf59c5d0e63a17fcaf273c0e2d2bd1",
+      "classSha256": "169af7e425b08235ee62f6a97abe68fa6809e6dc74235004e7623475319a5a58",
+      "classBase64": "yv66vgAAADIADwcACwcADAEAB1ZFUlNJT04BABJMamF2YS9sYW5nL1N0cmluZzsBAA1Db25zdGFudFZhbHVlCAANAQAOVkVSU0lPTl9OQVRJVkUIAA4BAApTb3VyY2VGaWxlAQAMVmVyc2lvbi5qYXZhAQATY29tL3N1bi9qbmEvVmVyc2lvbgEAEGphdmEvbGFuZy9PYmplY3QBAAU0LjQuMAEABTUuMS4wBgAAAQACAAAAAgAZAAMABAABAAUAAAACAAYAGQAHAAQAAQAFAAAAAgAIAAAAAQAJAAAAAgAK"
+    },
+    {
+      "version": "5.10.0",
+      "protocol": "6.1.2",
+      "libraryName": "jnidispatch_v6",
+      "sourceUrl": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.10.0/jna-5.10.0.jar",
+      "jarSha256": "e335c10679f743207d822c5f7948e930319835492575a9dba6b94f8a3b96fcc8",
+      "classSha256": "5a706bcc330585be08ac238c36533640a8a58210efdcdc9c6e60b0833a16149d",
+      "classBase64": "yv66vgAAADIADwcACwcADAEAB1ZFUlNJT04BABJMamF2YS9sYW5nL1N0cmluZzsBAA1Db25zdGFudFZhbHVlCAANAQAOVkVSU0lPTl9OQVRJVkUIAA4BAApTb3VyY2VGaWxlAQAMVmVyc2lvbi5qYXZhAQATY29tL3N1bi9qbmEvVmVyc2lvbgEAEGphdmEvbGFuZy9PYmplY3QBAAY1LjEwLjABAAU2LjEuMgYAAAEAAgAAAAIAGQADAAQAAQAFAAAAAgAGABkABwAEAAEABQAAAAIACAAAAAEACQAAAAIACg=="
+    },
+    {
+      "version": "5.12.1",
+      "protocol": "6.1.4",
+      "libraryName": "jnidispatch_v6",
+      "sourceUrl": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.12.1/jna-5.12.1.jar",
+      "jarSha256": "91a814ac4f40d60dee91d842e1a8ad874c62197984403d0e3c30d39e55cf53b3",
+      "classSha256": "be1769372dc29cac52fd525092edb5515fe7102ead3840c70843c37bd788c9e6",
+      "classBase64": "yv66vgAAADIADwcACwcADAEAB1ZFUlNJT04BABJMamF2YS9sYW5nL1N0cmluZzsBAA1Db25zdGFudFZhbHVlCAANAQAOVkVSU0lPTl9OQVRJVkUIAA4BAApTb3VyY2VGaWxlAQAMVmVyc2lvbi5qYXZhAQATY29tL3N1bi9qbmEvVmVyc2lvbgEAEGphdmEvbGFuZy9PYmplY3QBAAY1LjEyLjEBAAU2LjEuNAYAAAEAAgAAAAIAGQADAAQAAQAFAAAAAgAGABkABwAEAAEABQAAAAIACAAAAAEACQAAAAIACg=="
+    },
+    {
+      "version": "5.13.0",
+      "protocol": "6.1.6",
+      "libraryName": "jnidispatch_v6",
+      "sourceUrl": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar",
+      "jarSha256": "66d4f819a062a51a1d5627bffc23fac55d1677f0e0a1feba144aabdd670a64bb",
+      "classSha256": "c2fc1fdb0f31b1f04f9e3ce73a8242bcf2a146975b548e47759bddb8d8805972",
+      "classBase64": "yv66vgAAADIADwcACwcADAEAB1ZFUlNJT04BABJMamF2YS9sYW5nL1N0cmluZzsBAA1Db25zdGFudFZhbHVlCAANAQAOVkVSU0lPTl9OQVRJVkUIAA4BAApTb3VyY2VGaWxlAQAMVmVyc2lvbi5qYXZhAQATY29tL3N1bi9qbmEvVmVyc2lvbgEAEGphdmEvbGFuZy9PYmplY3QBAAY1LjEzLjABAAU2LjEuNgYAAAEAAgAAAAIAGQADAAQAAQAFAAAAAgAGABkABwAEAAEABQAAAAIACAAAAAEACQAAAAIACg=="
+    },
+    {
+      "version": "5.14.0",
+      "protocol": "7.0.0",
+      "libraryName": "jnidispatch",
+      "sourceUrl": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar",
+      "jarSha256": "34ed1e1f27fa896bca50dbc4e99cf3732967cec387a7a0d5e3486c09673fe8c6",
+      "classSha256": "818c90e0791ab360da3e653c5eee322ccb522911eac5f3f753c0bfdb955dd675",
+      "classBase64": "yv66vgAAADQADwcACwcADAEAB1ZFUlNJT04BABJMamF2YS9sYW5nL1N0cmluZzsBAA1Db25zdGFudFZhbHVlCAANAQAOVkVSU0lPTl9OQVRJVkUIAA4BAApTb3VyY2VGaWxlAQAMVmVyc2lvbi5qYXZhAQATY29tL3N1bi9qbmEvVmVyc2lvbgEAEGphdmEvbGFuZy9PYmplY3QBAAY1LjE0LjABAAU3LjAuMAYAAAEAAgAAAAIAGQADAAQAAQAFAAAAAgAGABkABwAEAAEABQAAAAIACAAAAAEACQAAAAIACg=="
+    },
+    {
+      "version": "5.17.0",
+      "protocol": "7.0.4",
+      "libraryName": "jnidispatch",
+      "sourceUrl": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar",
+      "jarSha256": "b3a9408e7c51e08ef0e3bfcc08f443f6ec0f6191ba8cd7c18d53d2b22e5bdbc0",
+      "classSha256": "4b34acc5dbc6051c77e6428a3cffed306a87062284fd6446fbf16d8aaa26f872",
+      "classBase64": "yv66vgAAADQADwcAAgEAE2NvbS9zdW4vam5hL1ZlcnNpb24HAAQBABBqYXZhL2xhbmcvT2JqZWN0AQAHVkVSU0lPTgEAEkxqYXZhL2xhbmcvU3RyaW5nOwEADUNvbnN0YW50VmFsdWUIAAkBAAY1LjE3LjABAA5WRVJTSU9OX05BVElWRQgADAEABTcuMC40AQAKU291cmNlRmlsZQEADFZlcnNpb24uamF2YQYAAAEAAwAAAAIAGQAFAAYAAQAHAAAAAgAIABkACgAGAAEABwAAAAIACwAAAAEADQAAAAIADg=="
+    }
+  ]
+}

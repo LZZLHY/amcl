@@ -38,13 +38,18 @@ int main(){
     std::thread owner([&]{first=ProbeMobileGlCapability("/fixture",{},"GLFW");});
     {std::unique_lock<std::mutex> lock(mutex);cv.wait(lock,[]{return started;});}
     std::vector<std::thread> contenders;
-    for(int i=0;i<16;++i)contenders.emplace_back([]{
-        const auto result=ProbeMobileGlCapability("/fixture",{},"SDL3");
-        CHECK(result.capability.reasonCode=="mobilegl_probe_busy");
+    std::vector<MobileGlProbeReport> contenderReports(16);
+    // 工作线程只写各自结果，不在持有者仍等待条件变量时调用CHECK退出进程。
+    // 否则故意移除忙门的负向用例会在静态条件变量析构时等待未结束线程，
+    // 形成测试清理死锁。先收束全部线程，再由主线程保留原来的精确断言。
+    for(size_t i=0;i<contenderReports.size();++i)contenders.emplace_back([&,i]{
+        contenderReports[i]=ProbeMobileGlCapability("/fixture",{},"SDL3");
     });
     for(auto& contender:contenders)contender.join();
     {std::lock_guard<std::mutex> lock(mutex);finish=true;cv.notify_all();}
-    owner.join();CHECK(first.capability.reasonCode=="executed" && executions==1 && maximum==1);
+    owner.join();
+    for(const auto& result:contenderReports)CHECK(result.capability.reasonCode=="mobilegl_probe_busy");
+    CHECK(first.capability.reasonCode=="executed" && executions==1 && maximum==1);
     CHECK(ProbeMobileGlCapability("/fixture",{},"SDL3").capability.reasonCode=="executed" && executions==2);
 
     // 在继承的状态字上模拟新PID认领；旧PID租约的析构不能清除新PID持有的busy。

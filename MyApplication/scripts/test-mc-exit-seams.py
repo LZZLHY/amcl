@@ -4,6 +4,8 @@
 源码直接抽取生产函数，既不抄写其判定，也不把 marker 当成 JVM 退出事实。
 变异仅写入 TemporaryDirectory：移除 Authorized 或 ACK 保护后必须被同组断言拒绝。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import re
@@ -11,8 +13,8 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
-from host_cpp import compile_cpp
+# 与其余宿主测试使用同一包入口，使 host_cpp 的相对 helper import 在直接执行时也成立。
+from lib.host_cpp import compile_cpp
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / 'entry/src/main/cpp/jvm/mc_launcher.cpp'
@@ -138,7 +140,7 @@ def main():
     """正向执行真实函数，再用同组断言拒绝仅临时副本上的两种保护丢失。"""
     text = SOURCE.read_text(encoding='utf-8')
     body = extract(text, 'extern "C" int mcIsRunning()') + '\n' + extract(text, 'extern "C" void mcForceExit()')
-    with tempfile.TemporaryDirectory(prefix='amcl-mc-exit-seams-') as temporary:
+    with workspace_temporary_directory(prefix='amcl-mc-exit-seams-') as temporary:
         directory = Path(temporary)
         result = compile_and_run(directory, 'production', body)
         print(result.stdout, end='')

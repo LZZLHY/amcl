@@ -4,6 +4,8 @@
 // 门禁本体用注入的假源码树（临时目录）测正负两向 —— 自测用自己控制的输入，
 // 上游一改就分不清"门禁坏了"还是"上游变了"（施工记录 §S9.4 的判据）。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,7 +34,7 @@ function check(name, cond, extra) {
 
 // ── 2. 假树端到端：正向 + 漂移红 + 快照缺失红 ──
 {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mobilegl-snap-'));
+  const tmp = fs.mkdtempSync(path.join(workspaceTempRoot(), 'mobilegl-snap-'));
   const src = path.join(tmp, 'src');
   fs.mkdirSync(path.join(src, 'MobileGL', 'MG_Test'), { recursive: true });
   fs.writeFileSync(path.join(src, 'CMakeLists.txt'), 'set(SOURCE_FILES\n    MobileGL/A.cpp\n)\n');

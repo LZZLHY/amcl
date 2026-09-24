@@ -5,6 +5,8 @@
  * 和 Windows 的 POSIX 兼容层由测试桩替换。每个用例使用全新 JVM，支持 MSVC 与 POSIX CC。
  * 所有编译产物位于唯一临时目录；失败保留诊断文本，退出时只清理本次创建的精确目录。
  */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +16,7 @@ import { spawnSync } from 'node:child_process';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const cpp = join(root, 'entry/src/main/cpp');
 const fixture = join(cpp, 'tests/host/jni_bridge');
-const temp = mkdtempSync(join(tmpdir(), 'amcl-jni-ownership-'));
+const temp = mkdtempSync(join(workspaceTempRoot(), 'amcl-jni-ownership-'));
 
 /** 同步前台执行，并打印编译/运行原始输出；任何失败都终止，禁止降级为“静态检查通过”。 */
 function run(program, args, env = process.env) {

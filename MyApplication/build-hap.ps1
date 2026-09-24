@@ -109,24 +109,10 @@ if (-not $HvigorCandidates) {
 }
 $Hvigorw = [System.IO.Path]::GetFullPath($HvigorCandidates[0])
 
-$ProductSdkOverride = if ($FormalDesktop) {
-    $env:AMCL_SDK_HOME_DESKTOP
-} else {
-    $env:AMCL_SDK_HOME_MOBILE
-}
-$ProductSdkCandidates = if ($FormalDesktop) {
-    @('D:\Huawei\command-line-tools\sdk', 'D:\Huawei\DevEco Studio\sdk')
-} else {
-    @('D:\Huawei\command-line-tools\sdk', 'D:\Huawei\DevEco Studio\sdk')
-}
-$SdkCandidates = @($ProductSdkOverride, $env:DEVECO_SDK_HOME) + $ProductSdkCandidates |
-    Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'default\openharmony')) }
-if (-not $SdkCandidates) {
-    throw 'No valid DevEco SDK root found (expected default\openharmony below it)'
-}
 # Do not inherit a stale machine/user value: Hvigor validates this variable
 # before it reads local.properties.
-$env:DEVECO_SDK_HOME = [System.IO.Path]::GetFullPath($SdkCandidates[0])
+. (Join-Path $ProjectRoot 'scripts/lib/build-tools.ps1')
+$env:DEVECO_SDK_HOME = Resolve-AmclBuildSdk -Product $Product
 & node "$ProjectRoot\scripts\test-desktop-arkts-seams.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Desktop Ability/API compatibility regression failed' }
 & node "$ProjectRoot\scripts\test-desktop-render-diagnostics.mjs"
@@ -169,8 +155,19 @@ if ($LASTEXITCODE -ne 0) { throw 'LWJGL target-manifest tests failed' }
 # 首次加载归属回归必须在打包前执行；JAR 去重检查不能替代真实 JVM/JNI 双加载器行为。
 & node "$ProjectRoot\scripts\test-runtime-slot-classpath.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime slot classpath regression failed' }
+# 同一正式入口验证参数适配与实际JNA协议；只让来源/内容门禁通过的独立槽进入包。
+& node "$ProjectRoot\scripts\test-runtime-jvm-argument-policy.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'JVM argument ownership regression failed' }
+& python "$ProjectRoot\scripts\test-jna-runtime-contract.py"
+if ($LASTEXITCODE -ne 0) { throw 'JNA protocol/ZIP/class regression failed' }
+& node "$ProjectRoot\scripts\test-check-jna-runtime.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'JNA artifact checker controls failed' }
+& node "$ProjectRoot\scripts\check-jna-runtime.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'JNA locked source artifacts/wiring failed' }
 & python "$ProjectRoot\scripts\test-runtime-bootstrap-contract.py"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime bootstrap contract regression failed' }
+& python "$ProjectRoot\scripts\test-jvm-bootstrap-invocation.py"
+if ($LASTEXITCODE -ne 0) { throw 'Actual JVM heap/property regression failed' }
 & python "$ProjectRoot\scripts\test-processor-wait.py"
 if ($LASTEXITCODE -ne 0) { throw 'Processor exact-PID wait regression failed' }
 & node "$ProjectRoot\scripts\test-jni-classloader-ownership.mjs"
@@ -391,7 +388,9 @@ Write-Host "=== [3/7] ArkTS local unit tests ===" -ForegroundColor Cyan
 $TestProduct = 'default'
 # 判定逻辑刻意放在 scripts\check-hvigor-test-log.mjs 里（带 test-check- 自测），不在这里
 # 内联正则：那条 "先剥 ANSI" 的前提一旦写错就是静默永绿，必须有自测钉住它。
-$ArkTsTestLogPath = Join-Path $ProjectRoot '.logs\arkts-unit-test-output.log'
+# 构建日志属于本次宿主运行，不属于工程输入；多命令任务可用 AMCL_RUN_DIR 归并记录。
+. (Join-Path $ProjectRoot 'scripts/lib/workspace-paths.ps1')
+$ArkTsTestLogPath = Join-Path (Get-AmclWorkspacePath -Kind run -Id 'hap-tests' -ProjectRoot $ProjectRoot) 'arkts-unit-test-output.log'
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArkTsTestLogPath) | Out-Null
 # ⚠️ 这一段的形状是被实测逼出来的（2026-08-21，计划 §64.5），改它之前请先读完：
 #
@@ -417,21 +416,10 @@ if ($LASTEXITCODE -ne 0) { throw "test-check-hvigor-test-log.mjs failed (exit $L
 if ($LASTEXITCODE -ne 0) { throw "ArkTS local unit tests reported failures (exit $LASTEXITCODE)" }
 
 Write-Host ""
-Write-Host "=== [4/7] Hvigor clean ===" -ForegroundColor Cyan
-& $Hvigorw clean --mode module -p "product=$Product" -p buildMode=$BuildMode --no-daemon
-if ($LASTEXITCODE -ne 0) { throw "hvigor clean failed (exit $LASTEXITCODE)" }
-
-# entry/.cxx is a fully reproducible CMake/Hvigor cache. Verify the resolved
-# location before recursive removal so this can never target outside the repo.
-$NativeCache = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot "entry\.cxx\$Product"))
-$ProjectPrefix = [System.IO.Path]::GetFullPath($ProjectRoot + [System.IO.Path]::DirectorySeparatorChar)
-if (-not $NativeCache.StartsWith($ProjectPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "refusing to clean native cache outside project: $NativeCache"
-}
-if (Test-Path -LiteralPath $NativeCache) {
-    Remove-Item -LiteralPath $NativeCache -Recurse -Force
-    Write-Host "  removed stale native cache: $NativeCache"
-}
+Write-Host "=== [4/7] Clean $Product/$BuildMode intermediates; retain SDK outputs ===" -ForegroundColor Cyan
+# Hvigor 的 module clean 会连其他产品的 entry/build 输出一起清掉。这里仍重建当前产品的
+# ArkTS/资源中间物与 native 编译树，但保留 SDK outputs，使连续构建后的包都能在原位置找到。
+Clear-AmclProductIntermediates -ProjectRoot $ProjectRoot -Product $Product -BuildMode $BuildMode -Abi $Abi
 
 Write-Host ""
 Write-Host "=== [5/7] Hvigor assembleHap (fresh $BuildMode native build) ===" -ForegroundColor Cyan
@@ -489,10 +477,17 @@ $Provenance = Join-Path $OutputDirectory $ProvenanceName
 if (-not (Test-Path -LiteralPath $Hap)) {
     throw "selected HAP was not produced: $Hap"
 }
+# 使用本次明确选定的包验证事务保障与旧兼容性裁决退役，不能沿用其他产品/旧包的结果。
+& node "$ProjectRoot\scripts\check-mod-install-artifact.mjs" $Hap
+if ($LASTEXITCODE -ne 0) { throw 'Mod installation/startup artifact policy failed' }
+& node "$ProjectRoot\scripts\check-jna-runtime.mjs" $Hap
+if ($LASTEXITCODE -ne 0) { throw 'JNA protocol slots final HAP identity failed' }
 & node "$ProjectRoot\scripts\test-graphics-runtime-artifact.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Graphics runtime artifact checker negative fixtures failed' }
+# 人工解包证据属于本次运行资料；HAP/provenance 仍沿用 SDK 输出，避免将审计中间树写回工程。
+$GraphicsRuntimeEvidenceDir = Get-AmclWorkspacePath -Kind run -Id 'hap-graphics-evidence' -ProjectRoot $ProjectRoot
 & node "$ProjectRoot\scripts\check-graphics-runtime-artifact.mjs" --hap $Hap `
-    --out (Join-Path $OutputDirectory 'graphics-runtime-evidence')
+    --out $GraphicsRuntimeEvidenceDir
 if ($LASTEXITCODE -ne 0) { throw 'Graphics runtime DSO/HAP linkage contract failed' }
 & node "$ProjectRoot\scripts\check-lwjgl-target-manifest.mjs" --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "LWJGL target manifest HAP check failed" }

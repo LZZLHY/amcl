@@ -3,6 +3,8 @@
 // actually shipped. The exported binding validator is intentionally free of
 // toolchain/Git dependencies so false-green cases can be covered by fixtures.
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -1045,7 +1047,8 @@ function decodePropertiesPath(value) {
   return value.trim().replace(/\\\\/g, '\\').replace(/\\:/g, ':');
 }
 
-function findHapSignTool(root) {
+/** 共享官方验签工具定位：兼容 SDK 根、local.properties 与本机受控工具包入口。 */
+export function findHapSignTool(root) {
   const sdkRoots = [process.env.DEVECO_SDK_HOME ?? '', process.env.OHOS_SDK_HOME ?? ''];
   const properties = join(root, 'local.properties');
   if (existsSync(properties)) {
@@ -1078,7 +1081,7 @@ export function verifyHapSignature(paths) {
   const javaProbe = spawnSync('java', ['-version'], { encoding: 'utf8' });
   if (javaProbe.error || javaProbe.status !== 0) throw new Error('java is unavailable for HAP verification');
 
-  const temp = mkdtempSync(join(tmpdir(), 'amcl-hap-signature-'));
+  const temp = mkdtempSync(join(workspaceTempRoot(), 'amcl-hap-signature-'));
   try {
     const certificate = join(temp, 'certificate-chain.cer');
     const profile = join(temp, 'profile.p7b');

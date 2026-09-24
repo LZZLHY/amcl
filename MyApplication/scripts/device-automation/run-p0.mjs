@@ -18,7 +18,7 @@
 // （契约 §8.4）。⇒ 退出码非零是本轮的正确结果，不是失败。
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hdc, resolveHdcPath, DEFAULT_BUNDLE } from './hdc.mjs';
 import { HilogCollector, Teardown } from './collector.mjs';
@@ -126,7 +126,7 @@ async function main() {
 
   const runId = runStamp();
   const startedAt = localIso();
-  const rawDir = join(REPO_ROOT, RAW_DIR, runId, 'raw');
+  const rawDir = join(RAW_DIR, runId, 'raw');
   mkdirSync(rawDir, { recursive: true });
 
   // 命令留痕（含完整 SN，落在被忽略的 raw 目录里；入库摘要一律脱敏）。
@@ -335,7 +335,7 @@ async function main() {
       scenarios,
       unknownsTouched: [],
       artifacts: {
-        rawDir: `${RAW_DIR}/${runId}/raw`,
+        rawDir: relative(REPO_ROOT, rawDir).replaceAll('\\', '/'),
         hashes: {},
       },
     };

@@ -4,6 +4,8 @@
 替换范围仅为设备扫描、库存在性、shader 探针和日志；不访问 GPU 或应用进程。
 宿主 PASS 只证明规则与接线，不代表真实设备或游戏通过。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import subprocess
@@ -150,7 +152,7 @@ int main(int argc, char**) try {
 '''
 # 编译完整生产链的临时翻译单元；保留原报告的生成样本不覆盖，反控只改临时正文。
 prefix = prefix.replace('../../entry/', (root / 'entry').as_posix() + '/')
-with tempfile.TemporaryDirectory(prefix='amcl-vulkan-admission-') as temporary:
+with workspace_temporary_directory(prefix='amcl-vulkan-admission-') as temporary:
     generated = Path(temporary) / 'probe.cpp'
     code = prefix + availability + '\nnamespace amcl::graphics {\n' + mapping + '\n}\n' + suffix
     generated.write_text(code, encoding='utf-8')

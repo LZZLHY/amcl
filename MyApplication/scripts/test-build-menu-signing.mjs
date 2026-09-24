@@ -1,3 +1,5 @@
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { createDecipheriv, X509Certificate } from 'node:crypto';
 import { selectSigning, publicSelection, prepareProfile, encryptPassword, matchingKeyAlias } from './build-menu-signing.mjs';
 
-const temp = mkdtempSync(join(tmpdir(), 'amcl signing & ! '));
+const temp = mkdtempSync(join(workspaceTempRoot(), 'amcl signing & ! '));
 try {
   const root = join(temp, 'MyApplication'); mkdirSync(root);
   const certDir = join(temp, 'AMCL'); mkdirSync(certDir); mkdirSync(join(certDir, 'material'));
@@ -65,7 +67,7 @@ try {
     for (const status of [0, 7]) {
       writeFileSync(join(root, 'build-hap.ps1'), `param($Product,$BuildMode,$HapKind)\nif ($Product -ne 'desktop' -or $BuildMode -ne 'release' -or $HapKind -ne 'signed') { exit 20 }\n$p=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'build-profile.json5') | ConvertFrom-Json\nif ($p.app.signingConfigs[0].material.keyAlias -ne 'releaseKey') { exit 21 }\nexit ${status}\n`);
       const result = spawnSync('pwsh.exe', ['-NoProfile','-File',helper,'-ProjectRoot',root,'-Certificate','release','-Product','desktop','-BuildMode','release'], {
-        cwd: tmpdir(), encoding: 'utf8', windowsHide: true, env: { ...process.env, AMCL_DEBUG_PROFILE:'', AMCL_RELEASE_PROFILE:'', AMCL_RELEASE_CERT_DIR:'' } });
+        cwd: workspaceTempRoot(), encoding: 'utf8', windowsHide: true, env: { ...process.env, AMCL_DEBUG_PROFILE:'', AMCL_RELEASE_PROFILE:'', AMCL_RELEASE_CERT_DIR:'' } });
       assert.equal(result.status, status, result.stdout + result.stderr);
       assert.deepEqual(readFileSync(profile), original, 'restore byte-for-byte after success/failure');
       assert.equal(existsSync(join(root, '.secrets/amcl-build-menu-profile.backup')), false);
@@ -73,7 +75,7 @@ try {
   }
   console.log('PASS: saved signing without prompts; renewed certificate public-key match and unrelated-key rejection; profile overrides; secret redaction; authoritative arguments; success/failure restore; spaces and ! paths');
 } finally {
-  assert.equal(dirname(resolve(temp)), resolve(tmpdir()));
+  assert.equal(dirname(resolve(temp)), resolve(workspaceTempRoot()));
   assert.ok(basename(temp).startsWith('amcl signing & ! '));
   rmSync(temp, { recursive: true, force: true });
 }

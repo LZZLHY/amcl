@@ -46,6 +46,7 @@
     "LaunchCoordinator": "launch",
     "LaunchProfileBuilder": "launch",
     "PreLaunchValidator": "launch",
+    "PreLaunchCheckSheet": "launch",
     "SessionMarker": "launch",
     "JdkImporter": "launch",
     "JdkInstaller": "launch",

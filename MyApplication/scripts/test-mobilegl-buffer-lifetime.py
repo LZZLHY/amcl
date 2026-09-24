@@ -3,6 +3,8 @@
 不复制映射实现或为用例重写产品类。--source-root可指向旧源码快照执行负对照；
 --expect-pointer-move仅用于确认旧缺陷，不作为修复通过条件。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import argparse,os,subprocess,tempfile,shutil
 root=Path(__file__).resolve().parents[1]
@@ -11,7 +13,7 @@ source=args.source_root.resolve()/'MobileGL/MG_State/GLState/BufferState/BufferO
 types=(root/'prebuilt/mobilegl/src/MobileGL/MG_Util/Types.h').read_text(encoding='utf-8')
 # Flags运算直接采用同一真实基础类型定义，stub只隔离与buffer无关的GLSL/EGL加载依赖。
 flags=types[types.index('    template <typename Bit,'):types.rindex('} // namespace MobileGL')]
-with tempfile.TemporaryDirectory(prefix='amcl-mobilegl-map-') as temporary:
+with workspace_temporary_directory(prefix='amcl-mobilegl-map-') as temporary:
     out=Path(temporary);(out/'MG_Util/Math').mkdir(parents=True)
     includes='''#pragma once
 #include <algorithm>

@@ -1,4 +1,6 @@
 // 宿主适配仅替换 OHOS 系统边界；被测实现直接从生产 .ets 编译，禁止真实网络发送。
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './workspace-paths.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,7 +9,7 @@ import zlib from 'node:zlib';
 import ts from './ets-compiler.mjs';
 const repo = path.resolve(import.meta.dirname, '../..');
 export function evidenceRuntime(options = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-evidence-test-'));
+  const directory = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-evidence-test-'));
   const cache = new Map();
   const control = { afterRead: undefined, failWrite: undefined, requests: [], files: [], main: '',
     remoteTransform: undefined, id: 'sAbCdEf', urlId: 'sAbCdEf', networkError: false };
@@ -108,7 +110,7 @@ export function evidenceRuntime(options = {}) {
   return { directory, context, control, load, kitFs,
     write(relative, content) { const file = path.join(directory, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); return file; },
     close() {
-      if (path.dirname(path.resolve(directory)) !== path.resolve(os.tmpdir()) || !path.basename(directory).startsWith('amcl-evidence-test-')) throw new Error('Unsafe fixture cleanup path');
+      if (path.dirname(path.resolve(directory)) !== path.resolve(workspaceTempRoot()) || !path.basename(directory).startsWith('amcl-evidence-test-')) throw new Error('Unsafe fixture cleanup path');
       fs.rmSync(directory, { recursive: true, force: true });
     },
   };

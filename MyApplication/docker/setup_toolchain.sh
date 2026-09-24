@@ -1,25 +1,36 @@
 #!/bin/bash
 set -e
 
-OHOS_SYSROOT_ORIG=${OHOS_SYSROOT:-/ohos-sysroot}
+OHOS_SYSROOT_ORIG=${AMCL_SYSROOT_BASE:-${OHOS_SYSROOT:-/ohos-sysroot}}
 TOOLCHAIN_DIR=${TOOLCHAIN_DIR:-/ohos-toolchain}
 
-# 将只读的 sysroot 复制到可写位置 (只复制一次)
-#
-# 用「临时目录 + 原子改名」而不是直接 cp 到目标位置：
-# 从 Windows bind mount 复制 73 MB / 上万个小文件很慢，中途被打断过一次，
-# 留下一个 22 MB 的残缺副本；而下面的 `-d $OHOS_SYSROOT/usr/include` 判断
-# 会认为「已经复制过」从而跳过，之后所有构建都在残缺 sysroot 上失败且原因难查。
-# 改成先复制到 .tmp 再 mv：被打断时 $OHOS_SYSROOT 根本不存在，重跑即重新复制。
-# 对已经存在的完整 sysroot 零影响（不会误删历史增补的 X11/cups/fontconfig/libdrm 头）。
-OHOS_SYSROOT=/ohos-sysroot-rw
-if [ ! -d "$OHOS_SYSROOT/usr/include" ]; then
-    echo "Copying sysroot to writable location (one-time)..."
-    rm -rf "${OHOS_SYSROOT}.tmp"
-    cp -a "$OHOS_SYSROOT_ORIG" "${OHOS_SYSROOT}.tmp"
-    rm -rf "$OHOS_SYSROOT"
-    mv "${OHOS_SYSROOT}.tmp" "$OHOS_SYSROOT"
-    echo "Done."
+# 只读 SDK 经完整复制和原子改名生成可写层；中断产生的 copy 目录保留用于追溯。
+# 不能将 include 存在视为复制成功，也不能直接认领旧容器的未知增补层。
+# 新入口把可写 sysroot 链到本次 Linux 工作卷，先解引用再原子发布，不能 rm 掉挂载别名。
+# 身份包含三个关键 SDK 文件和当前增补配方；这是明示范围的指纹，不冒充完整 SDK 校验。
+# 未登记的旧副本必须停止，不能因为 usr/include 存在就继续使用历史增补状态。
+OHOS_SYSROOT=$(readlink -m "${OHOS_SYSROOT_RW:-/ohos-sysroot-rw}")
+OHOS_SYSROOT_ORIG=$(readlink -m "$OHOS_SYSROOT_ORIG")
+[ "$OHOS_SYSROOT" != "$OHOS_SYSROOT_ORIG" ] || { echo 'ERROR: original and writable sysroot must differ'; exit 1; }
+for sentinel in usr/include/stdio.h usr/include/aarch64-linux-ohos/bits/alltypes.h usr/lib/aarch64-linux-ohos/libc.so; do
+    [ -f "$OHOS_SYSROOT_ORIG/$sentinel" ] || { echo "ERROR: incomplete SDK: $sentinel"; exit 1; }
+done
+setup_recipe=$(readlink -f "${BASH_SOURCE[0]}")
+input_identity=$({
+    cd "$OHOS_SYSROOT_ORIG"
+    sha256sum usr/include/stdio.h usr/include/aarch64-linux-ohos/bits/alltypes.h usr/lib/aarch64-linux-ohos/libc.so
+    sha256sum "$setup_recipe"
+} | sha256sum | cut -d' ' -f1)
+if [ -e "$OHOS_SYSROOT" ]; then
+    [ -f "$OHOS_SYSROOT/.amcl-input-identity" ] && [ "$(cat "$OHOS_SYSROOT/.amcl-input-identity")" = "$input_identity" ] || {
+        echo 'ERROR: writable sysroot has missing/different identity; use a new build task'; exit 1;
+    }
+else
+    mkdir -p "$(dirname "$OHOS_SYSROOT")"
+    sysroot_tmp=$(mktemp -d "${OHOS_SYSROOT}.copy-XXXXXX")
+    cp -a "$OHOS_SYSROOT_ORIG/." "$sysroot_tmp/"
+    printf '%s\n' "$input_identity" > "$sysroot_tmp/.amcl-input-identity"
+    mv -T "$sysroot_tmp" "$OHOS_SYSROOT"
 fi
 
 OHOS_LIBDIR=$OHOS_SYSROOT/usr/lib/aarch64-linux-ohos

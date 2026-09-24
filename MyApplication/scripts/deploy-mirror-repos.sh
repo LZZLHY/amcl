@@ -82,7 +82,11 @@ deploy_one() {
 
     # 2. 准备本地工作目录
     local workdir
-    workdir=$(mktemp -d -t mirror-deploy-XXXXXX)
+    # 远端部署所需的临时克隆独占一个子目录，统一归入外部工作树容器。
+    local workBase
+    workBase=$(python3 -B "${ROOT_DIR}/scripts/lib/workspace_paths.py" wt mirror-deploy)
+    mkdir -p "$workBase"
+    workdir=$(mktemp -d "${workBase}/clone-XXXXXX")
     log "  workdir: $workdir"
 
     # 3. Clone mirror（空仓也行）

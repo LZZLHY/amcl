@@ -23,6 +23,50 @@
 
 namespace amcl {
 
+/**
+ * 将 JNI GetStringChars 借出的 UTF-16 码元转换为标准 UTF-8，供 native 路径快照比较。
+ * GetStringUTFChars 返回的是 Modified UTF-8，增补字符会变成两个三字节代理，不能直接
+ * 与 ArkTS/NAPI 的标准 UTF-8 比较。模板只接收两个字节的码元，兼容 jchar 与 char16_t。
+ * 完整代理对合成一个码点；孤立代理或空指针配非零长度返回 false，且不修改输出，避免
+ * 以替换字符掩盖被修改的 Java 属性。嵌入 NUL 保留为字节零，比较仍使用完整 string 长度。
+ * 输入归调用者所有；本函数不取得 JNI 引用，调用后仍须 ReleaseStringChars。
+ */
+template<class CodeUnit>
+inline bool utf16ToUtf8(const CodeUnit* input, std::size_t length, std::string& output) {
+    static_assert(sizeof(CodeUnit) == 2, "UTF-16 requires two-byte code units");
+    if (!input && length != 0) return false;
+    std::string converted;
+    converted.reserve(length);
+    for (std::size_t index = 0; index < length; ++index) {
+        std::uint32_t codepoint = static_cast<std::uint16_t>(input[index]);
+        if (codepoint >= 0xD800U && codepoint <= 0xDBFFU) {
+            if (index + 1 == length) return false;
+            const auto low = static_cast<std::uint16_t>(input[++index]);
+            if (low < 0xDC00U || low > 0xDFFFU) return false;
+            codepoint = 0x10000U + ((codepoint - 0xD800U) << 10) + (low - 0xDC00U);
+        } else if (codepoint >= 0xDC00U && codepoint <= 0xDFFFU) {
+            return false;
+        }
+        if (codepoint < 0x80U) {
+            converted += static_cast<char>(codepoint);
+        } else if (codepoint < 0x800U) {
+            converted += static_cast<char>(0xC0U | (codepoint >> 6));
+            converted += static_cast<char>(0x80U | (codepoint & 0x3FU));
+        } else if (codepoint < 0x10000U) {
+            converted += static_cast<char>(0xE0U | (codepoint >> 12));
+            converted += static_cast<char>(0x80U | ((codepoint >> 6) & 0x3FU));
+            converted += static_cast<char>(0x80U | (codepoint & 0x3FU));
+        } else {
+            converted += static_cast<char>(0xF0U | (codepoint >> 18));
+            converted += static_cast<char>(0x80U | ((codepoint >> 12) & 0x3FU));
+            converted += static_cast<char>(0x80U | ((codepoint >> 6) & 0x3FU));
+            converted += static_cast<char>(0x80U | (codepoint & 0x3FU));
+        }
+    }
+    output.swap(converted);
+    return true;
+}
+
 inline std::string toModifiedUtf8(const std::string& in) {
     std::string out;
     out.reserve(in.size() + 8);

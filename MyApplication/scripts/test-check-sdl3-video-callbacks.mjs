@@ -13,6 +13,8 @@
 //
 // 用法：node scripts/test-check-sdl3-video-callbacks.mjs
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -237,7 +239,7 @@ function check(name, cond, extra) {
 // openharmony / android 两个目录总是先建好（android 缺文件时 main 会跳过对比段）。
 // main() 从顶部 import 拿（被 import 时静默，见门禁尾部守卫），模拟 `--repo <fixture>`。
 function runGate(files) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-svc-'));
+  const tmp = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-svc-'));
   fs.mkdirSync(path.join(tmp, 'src', 'video', 'openharmony'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'src', 'video', 'android'), { recursive: true });
   for (const [rel, content] of Object.entries(files)) {

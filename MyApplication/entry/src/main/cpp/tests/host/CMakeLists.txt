@@ -320,6 +320,16 @@ else()
 endif()
 add_test(NAME amcl_jni_mutf8_test COMMAND amcl_jni_mutf8_test)
 
+# 公共 JVM 堆选项预检必须与最终装配使用同一纯核心；不需要真实 JDK 即可检验溢出及覆盖顺序。
+add_executable(amcl_jvm_heap_options_test jvm_heap_options_test.cpp)
+target_compile_features(amcl_jvm_heap_options_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(amcl_jvm_heap_options_test PRIVATE /W4 /WX)
+else()
+    target_compile_options(amcl_jvm_heap_options_test PRIVATE -Wall -Wextra -Werror -pedantic)
+endif()
+add_test(NAME amcl_jvm_heap_options_test COMMAND amcl_jvm_heap_options_test)
+
 add_executable(amcl_input_host_tests
     input_state_core_test.cpp
     input_reconciliation_test.cpp

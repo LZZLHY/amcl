@@ -5,7 +5,7 @@
   "sources": [
     {
       "path": "scripts/build-game-compat.py",
-      "sha256": "d3774fcc12d5b01e77219e365f6b2cdd9bbb169bee6c9cb2d4481e396b8fa1e2"
+      "sha256": "ba8f898c128e6c07d148b2214deb1d94a5400e8216f9a8fa730490eddb365a5f"
     },
     {
       "path": "prebuilt/runtime-compat/lib/sources.json",

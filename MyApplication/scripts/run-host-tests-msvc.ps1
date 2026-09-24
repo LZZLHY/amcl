@@ -53,7 +53,9 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $hostDir  = Join-Path $repoRoot 'entry\src\main\cpp\tests\host'
-$buildDir = Join-Path $hostDir 'build-msvc-host'
+# 自建宿主构建树不属于工程；使用本次进程独占名称，清理只作用于通过边界校验的精确目录。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+$buildDir = Get-AmclWorkspacePath -Kind build -Id "msvc-host-$PID" -ProjectRoot $repoRoot
 
 # ---- 定位 MSVC 与 VS 自带的 cmake / ninja ----
 # 刻意用 vswhere 而不是写死路径：VS 的安装盘与版本号在不同机器上都不一样,而 vswhere
@@ -77,6 +79,7 @@ Write-Host "=== host tests (MSVC) ===" -ForegroundColor Cyan
 Write-Host "  VS:    $vs"
 
 if (Test-Path -LiteralPath $buildDir) {
+    $buildDir = Get-AmclWorkspacePath -Kind build -Id "msvc-host-$PID" -ProjectRoot $repoRoot -ExplicitPath $buildDir
     Remove-Item -LiteralPath $buildDir -Recurse -Force
 }
 
@@ -101,6 +104,7 @@ try {
 finally {
     Pop-Location
     if (-not $KeepBuildDir -and (Test-Path -LiteralPath $buildDir)) {
+        $buildDir = Get-AmclWorkspacePath -Kind build -Id "msvc-host-$PID" -ProjectRoot $repoRoot -ExplicitPath $buildDir
         Remove-Item -LiteralPath $buildDir -Recurse -Force
     }
 }

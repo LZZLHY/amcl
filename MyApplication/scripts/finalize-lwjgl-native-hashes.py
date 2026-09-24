@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import zipfile
+from lib.workspace_paths import workspace_path
 
 ROOT = Path(__file__).resolve().parent.parent
 JARS = ROOT / "prebuilt/lwjgl3/jars"
@@ -44,7 +45,8 @@ def finalize(check, jar_dir=JARS):
             helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
             sdk = helper.sdk_root()
             strip = sdk / "native/llvm/bin" / ("llvm-strip.exe" if __import__("os").name == "nt" else "llvm-strip")
-            cache = ROOT / "diagnostics/runtime-compat-fix/final-native"
+            # strip 的候选输出留在外部构建区；通过原有内容校验后才写回规范制品路径。
+            cache = workspace_path("build", "final-native")
             cache.mkdir(parents=True, exist_ok=True)
             temp = cache / native; shutil.copyfile(original, temp)
             subprocess.run([str(strip), "--strip-all", str(temp)], check=True)

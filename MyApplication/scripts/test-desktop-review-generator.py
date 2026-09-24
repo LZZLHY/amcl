@@ -4,6 +4,8 @@
 仓库时，再从 deps.lock pin 导出被补丁引用的原始文件，以真正的 git apply 逐个重放，
 逐已知行核对生成器结果。此测试不修改 SDL checkout、patch 或 pin，也不构建 HAP。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import argparse
 import re
@@ -76,7 +78,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--repo', type=Path, help='只读 SDL 仓库；显式输入不允许回退或跳过')
 args = parser.parse_args()
 verify_offsets()
-with tempfile.TemporaryDirectory(prefix='amcl-desktop-generator-') as directory:
+with workspace_temporary_directory(prefix='amcl-desktop-generator-') as directory:
     temporary = Path(directory)
     applied = None
     if args.repo:

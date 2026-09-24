@@ -19,14 +19,19 @@ param(
     [string]$Action,
 
     [string]$Device = '59JYD25815201311',
-    [string]$OutDir = (Join-Path $PSScriptRoot '..\diagnostics\mg-chunk-causal-20260826')
+    [string]$OutDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $hdc = 'D:\Huawei\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe'
 $bundle = 'com.amcl.launcher'
 $remoteMg = "/data/app/el2/100/base/$bundle/files/MG"
-$resolvedOut = [IO.Path]::GetFullPath($OutDir)
+# Prepare/Collect 必须共享同一会话；要求显式任务目录，避免两个进程各自新建默认目录丢失回执。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+if ([string]::IsNullOrWhiteSpace($OutDir) -and [string]::IsNullOrWhiteSpace($env:AMCL_RUN_DIR)) {
+    throw 'Set AMCL_RUN_DIR to one external session directory, or pass the same -OutDir to Prepare and Collect.'
+}
+$resolvedOut = Get-AmclWorkspacePath -Kind run -Id 'mg-chunk-capture' -ExplicitPath $OutDir
 if (-not (Test-Path -LiteralPath $resolvedOut)) {
     New-Item -ItemType Directory -Path $resolvedOut -Force | Out-Null
 }

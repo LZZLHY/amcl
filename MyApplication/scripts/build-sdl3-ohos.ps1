@@ -10,7 +10,10 @@ Set-StrictMode -Version Latest
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir '..'))
 $LockPath = Join-Path $ProjectRoot 'deps.lock'
-$AllowedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot 'docker\output'))
+# SDL 的锁定输入仍在工程中；打补丁的工作树和编译结果必须留在工作区统一构建目录。
+# helper 根据当前 checkout 生成隔离路径，避免不同工作树共享同一 CMake 缓存。
+. (Join-Path $ScriptDir 'lib\workspace-paths.ps1')
+$AllowedOutputRoot = Get-AmclWorkspacePath -Kind build -Id 'sdl3' -ProjectRoot $ProjectRoot
 
 function Read-LockField([string]$Section, [string]$Key) {
     $inside = $false
@@ -74,9 +77,9 @@ if ([string]::IsNullOrWhiteSpace($SourceRepo)) {
 $SourceRepo = [System.IO.Path]::GetFullPath($SourceRepo)
 
 if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
-    $BuildRoot = Join-Path $AllowedOutputRoot ("sdl3-build-" + $Commit.Substring(0, 9))
+    $BuildRoot = Join-Path $AllowedOutputRoot ("run-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 }
-$BuildRoot = [System.IO.Path]::GetFullPath($BuildRoot)
+$BuildRoot = Get-AmclWorkspacePath -Kind build -Id 'sdl3' -ProjectRoot $ProjectRoot -ExplicitPath $BuildRoot
 $AllowedPrefix = $AllowedOutputRoot.TrimEnd('\') + '\'
 if (-not $BuildRoot.StartsWith($AllowedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "BuildRoot must stay under $AllowedOutputRoot"
@@ -100,10 +103,8 @@ foreach ($raw in Get-Content -LiteralPath $Series) {
     Invoke-Checked 'git' @('-C', $Worktree, 'apply', $Patch)
 }
 
-# Fail before the expensive CMake/Ninja phase if the applied source lost any
-# part of the hybrid-window contract. The patch-series view is checked by
-# preflight/artifact; this second view proves those patches still land with the
-# required semantics on the exact pinned SDL commit.
+# 在昂贵的 CMake/Ninja 编译之前验证已打补丁源码的窗口契约。
+# preflight 检查补丁文件，这里再验证补丁真正落在精确锁定基线上之后的语义。
 Invoke-Checked 'node' @((Join-Path $ProjectRoot 'scripts\check-desktop-runtime.mjs'), '--sdl-repo', $Worktree)
 Invoke-Checked 'node' @(
     (Join-Path $ProjectRoot 'scripts\check-sdl3-multiwindow-contract.mjs'),

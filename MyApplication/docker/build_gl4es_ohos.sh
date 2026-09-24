@@ -34,12 +34,17 @@ if [ ! -d "$SRC_DIR/.git" ]; then
     git clone "$GL4ES_REPO" "$SRC_DIR"
 fi
 cd "$SRC_DIR"
-git checkout -q "$GL4ES_COMMIT" 2>/dev/null || true
+# 精确提交是构建输入身份；不存在或 checkout 失败必须停止，不能继续编译当前分支。
+# 也不再用 checkout . 丢弃未知修改：带补丁的旧副本应先归档，再使用新的工作副本。
+[[ "$GL4ES_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: GL4ES_COMMIT must be a full SHA"; exit 1; }
+[ -z "$(git status --porcelain --untracked-files=all)" ] || { echo "ERROR: gl4es source has local changes; use a fresh build source"; exit 1; }
+git cat-file -e "$GL4ES_COMMIT^{commit}"
+git checkout --detach -q "$GL4ES_COMMIT"
+[ "$(git rev-parse HEAD)" = "$GL4ES_COMMIT" ] || { echo "ERROR: gl4es checkout identity mismatch"; exit 1; }
 
 # 应用 OHOS 补丁（若有）
 if [ -d "$PATCH_DIR" ] && [ -f "$PATCH_DIR/series" ]; then
     echo "[patch] applying OHOS patches from $PATCH_DIR/series"
-    git checkout -q . 2>/dev/null || true
     while IFS= read -r p || [ -n "$p" ]; do
         p="${p%$'\r'}"
         [ -z "$p" ] && continue

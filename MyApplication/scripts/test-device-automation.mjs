@@ -10,9 +10,11 @@
 // ⭐ 两个"已知样本"是 2026-09-07 第一轮真机探针留下的真实日志（探针 README §6 记了
 // sha256）：`amcl_launcher_b1c.log` 含 `key=777` 那行、`amcl_launcher_after_ps.log`
 // 不含（那正是落盘窗口 §S03.3 的证据）。⇒ 天然是一对正/负样本。
-// 它们在 `.logs/`（被 .gitignore 忽略）⇒ CI 上取不到，此时样本组显式 SKIP，
+// 原始日志保存在仓库外，使用 AMCL_DEVICE_AUTOMATION_SAMPLE_DIR 指定目录；CI 缺失时显式 SKIP，
 // 合成 fixture 组仍然全跑（不能因为样本缺失就让整组静默通过）。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -497,7 +499,7 @@ check('assertNoSecrets 正向：脱敏后的文本干净', () => {
 // 反向必须能抓到未跟踪的 import —— 否则它就是一条恒为 true 的规则，
 // 而那正是它被创造出来要防的形状。
 check('collectSelfClosure 反向：未跟踪的 import 必须被列出且 committable=false', () => {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-closure-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-closure-'));
   try {
     // 临时目录不是 git 仓库 ⇒ 每个文件都"不在 HEAD 里"，正是要模拟的状态。
     writeFileSync(join(root, 'dep.mjs'), 'export const x = 1;\n', 'utf8');
@@ -528,7 +530,8 @@ check('assertNoSecrets 反向：token 形状必须被抓到', () => {
 //  ⑪ 真实样本组（探针 §6 的三份日志；CI 上会 SKIP）
 // ============================================================
 
-const SAMPLE_DIR = join(repoRoot, '.logs/device-automation/test-automation-probe-20260907/raw');
+// 迁移后的原始证据以清单记录位置，不猜“最新”目录；已有 SHA 校验继续确定样本身份。
+const SAMPLE_DIR = process.env.AMCL_DEVICE_AUTOMATION_SAMPLE_DIR || '';
 /** 探针 README §6 记录的 sha256 —— 先验证同一性，再拿它当判据样本。 */
 const SAMPLE_HASHES = {
   'amcl_launcher.log': '1b3167794d7583d9ae52ebdc2004e0049ed35d8d41f759a1a1de643252d093ab',
@@ -536,15 +539,15 @@ const SAMPLE_HASHES = {
   'amcl_launcher_b1c.log': '504360947e4eb80d869f7f76bc38cf17723b5fc8536626697f05d81610348cdb',
 };
 
-const samplesPresent = Object.keys(SAMPLE_HASHES).every(
+const samplesPresent = SAMPLE_DIR.length > 0 && Object.keys(SAMPLE_HASHES).every(
   name => existsSync(join(SAMPLE_DIR, name)));
 
 if (!samplesPresent) {
   // 显式说明，不静默跳过 —— 静默跳过会让这一组变成"声称存在但从不生效"的规则。
   console.log(
-    '  SKIP  真实样本组：`.logs/device-automation/test-automation-probe-20260907/raw/` 不存在。\n' +
-    '        这在 CI 上是预期的（`.gitignore` 有 `/.logs/`，原始日志不入库）。\n' +
-    '        样本身份与取回方式见 diagnostics/test-automation-probe-20260907/README.md §6。');
+    '  SKIP  真实样本组：AMCL_DEVICE_AUTOMATION_SAMPLE_DIR 未设置或日志不完整。\n' +
+    '        这在 CI 上是预期的（原始日志在仓库外保存，不入库）。\n' +
+    '        样本身份与取回方式见 docs/testing/evidence/test-automation-probe-20260907/README.md §6。');
 } else {
   check('样本同一性：三份日志的 sha256 与探针 README §6 一致', () => {
     for (const [name, expected] of Object.entries(SAMPLE_HASHES)) {

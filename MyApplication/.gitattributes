@@ -1,4 +1,6 @@
 *.sh text eol=lf
+# JNA来源清单被deps.lock按字节锁定，Windows/Linux checkout必须保持同一LF正文。
+prebuilt/jna/manifest.json text eol=lf
 # unified diff 的空白上下文行包含必要前缀，不能作为源码行尾空格清理。
 *.patch text eol=lf -whitespace
 # Preserve upstream bytes, including whitespace, for the SHA-pinned STB inputs.
@@ -6,4 +8,6 @@ prebuilt/lwjgl3/compat/stb-v1/* -text -whitespace
 # Gate 0 在配置期按原始字节校验该文档；各平台 checkout 必须保持 LF。
 docs/testing/gate0-raw-relative-evidence.md text eol=lf
 # 审计使用的上游原始样本按采集字节保存，不能为格式检查改写其来源指纹。
-diagnostics/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp -text -whitespace
+docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp -text -whitespace
+# 迁入的历史证据按迁移清单保留原始字节；不为换行/尾空白门禁重写已采集结果或冻结源码。
+docs/testing/evidence/** -text -whitespace

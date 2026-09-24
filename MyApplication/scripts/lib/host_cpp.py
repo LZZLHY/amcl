@@ -1,4 +1,6 @@
 """定位宿主 C++ 工具链并编译探针；普通 Windows 终端无需先手工运行 vcvars。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from .workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import shutil
@@ -37,7 +39,7 @@ def compile_cpp(source, binary, includes=(), defines=()):
     if vcvars is None:
         raise FileNotFoundError('MSVC not found: initialize vcvars64 or set AMCL_VCVARS64')
     quote = lambda value: '"' + str(value).replace('%', '%%').replace('"', '""') + '"'
-    with tempfile.TemporaryDirectory(prefix='amcl-host-compiler-') as directory:
+    with workspace_temporary_directory(prefix='amcl-host-compiler-') as directory:
         script = Path(directory) / 'compile.cmd'
         script.write_text('@echo off\ncall ' + quote(vcvars) + ' >nul\nif errorlevel 1 exit /b %errorlevel%\n'
                           + ' '.join(quote(arg) for arg in command) + '\nexit /b %errorlevel%\n', encoding='utf-8')

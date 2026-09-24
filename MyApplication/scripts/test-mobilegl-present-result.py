@@ -1,4 +1,6 @@
 """抽取完整生产呈现函数，验证零尺寸/重建/失败与成功事实贯穿到EGL证据序列。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -19,7 +21,7 @@ for token,path,signature in [
     source=(module/path).read_text(encoding='utf-8')
     template=template.replace(token,extract.block(source,source.index(signature)))
 template=template.replace('@ROOT@',root.as_posix())
-with tempfile.TemporaryDirectory(prefix='amcl-mobilegl-present-') as temporary:
+with workspace_temporary_directory(prefix='amcl-mobilegl-present-') as temporary:
     source=Path(temporary)/'test.cpp';source.write_text(template,encoding='utf-8')
     binary=Path(temporary)/('test.exe' if os.name=='nt' else 'test')
     compile_cpp(source,binary);subprocess.run([str(binary)],check=True,timeout=30)

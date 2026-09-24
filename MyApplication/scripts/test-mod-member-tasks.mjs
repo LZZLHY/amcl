@@ -10,6 +10,14 @@ import vm from 'node:vm';
 import { loader, root, ts } from './mod-install-test-runtime.mjs';
 
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
+// 阶段名从生产声明读取；防止服务调整文案后，任务卡片仍比较旧字面量而允许提交中取消。
+const serviceFile=path.join(root,'mods/src/main/ets/ModInstallService.ets');
+const serviceAst=ts.createSourceFile(serviceFile,fs.readFileSync(serviceFile,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+const phaseDeclaration=serviceAst.statements.find(n=>ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>d.name.getText(serviceAst)==='MOD_INSTALL_COMMIT_PHASE'));
+assert.ok(phaseDeclaration);
+const phaseExports={};
+vm.runInNewContext(ts.transpileModule(phaseDeclaration.getText(serviceAst),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:phaseExports});
+const commitPhase=phaseExports.MOD_INSTALL_COMMIT_PHASE;
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 const coreLoad=loader();
 const U=coreLoad('feature_core/src/main/ets/download/UnifiedDownloadTask.ets');
@@ -30,7 +38,7 @@ class Service {
 }
 const native={purgeTask:()=>true,cancel:id=>cancelled.push(id)};
 const load=loader({feature_core:{...U,DownloadManager:{instance:()=>native},getDownloadTaskRegistry:()=>registry},
-  './ModInstallService':{ModInstallService:Service}});
+  './ModInstallService':{ModInstallService:Service,MOD_INSTALL_COMMIT_PHASE:commitPhase}});
 const Task=load('mods/src/main/ets/ModInstallTask.ets').ModInstallTask;
 const request={mcDir:'/game',versionId:'v',versionIsolation:true,title:'Iris',router:{},optionalIds:[],
   root:{id:'iv',projectId:'iris',source:'modrinth',versionNumber:'1',files:[items[0].file],dependencies:[]}};
@@ -53,6 +61,13 @@ assert.equal(registry.runningIds_.length,1);
 callback.fileProgress(1,{taskId:21,progress:1,bytesDone:200,bytesTotal:200,filesDone:1,filesTotal:1,speedBps:0,etaSeconds:0,currentFile:'sodium.jar',finished:true,errorKind:'',errorMessage:''});
 assert.equal(registry.get(member.id).state,U.UnifiedTaskState.VERIFYING);
 assert.equal(task.view.bytesDone,50);
+// 文件已到齐后进入不可中断提交，主卡片和依赖卡片必须同时关掉取消入口。
+callback.phase(commitPhase);
+assert.ok(registry.listAll().every(v=>!v.canCancel));
+const cancellationsBeforeCommit=cancelled.length;
+await task.cancel(false);
+assert.equal(cancelled.length,cancellationsBeforeCommit);
+assert.equal(callback.cancelled(),false,'提交中的取消请求不能把已经确定提交的安装改为取消');
 control.resolve();await retry;await turn();
 assert.ok(registry.listAll().every(v=>v.state===U.UnifiedTaskState.DONE));
 registry.remove(task.view.id);assert.equal(registry.listAll().length,0);

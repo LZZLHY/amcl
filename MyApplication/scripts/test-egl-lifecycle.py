@@ -3,6 +3,8 @@
 临时目录仅保存宿主产物；不访问 GPU、设备或 HAP。编译器缺失、生成失败、正例失败
 都会阻断调用方。SDL 补丁全量校验由原测试负责，这个入口不声称验证了 SDL。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import subprocess
@@ -14,7 +16,7 @@ from lib.host_cpp import compile_cpp
 root = Path(__file__).resolve().parent.parent
 host = root / 'entry/src/main/cpp/tests/host'
 suffix = '.exe' if os.name == 'nt' else ''
-with tempfile.TemporaryDirectory(prefix='amcl-egl-lifecycle-') as directory:
+with workspace_temporary_directory(prefix='amcl-egl-lifecycle-') as directory:
     output = Path(directory)
     binary = output / ('core' + suffix)
     compile_cpp(host / 'gles_egl_core_test.cpp', binary, includes=[root / 'prebuilt/khronos-egl-headers'])

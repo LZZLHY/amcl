@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "case": "no-jna-declaration",
+      "source": {
+        "version": "1.19.4",
+        "url": "https://piston-meta.mojang.com/v1/packages/34363790e6c3684954487c713d615c178aad2c55/1.19.4.json",
+        "sha1": "34363790e6c3684954487c713d615c178aad2c55"
+      },
+      "projectionNote": "Official JVM argument array retained verbatim; unrelated downloads/assets/game arguments and libraries omitted for a network-free parameter test.",
+      "versionJson": {
+        "id": "1.19.4",
+        "type": "release",
+        "mainClass": "net.minecraft.client.main.Main",
+        "arguments": {
+          "jvm": [
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "osx"
+                  }
+                }
+              ],
+              "value": [
+                "-XstartOnFirstThread"
+              ]
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "windows"
+                  }
+                }
+              ],
+              "value": "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "windows",
+                    "version": "^10\\."
+                  }
+                }
+              ],
+              "value": [
+                "-Dos.name=Windows 10",
+                "-Dos.version=10.0"
+              ]
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "arch": "x86"
+                  }
+                }
+              ],
+              "value": "-Xss1M"
+            },
+            "-Djava.library.path=${natives_directory}",
+            "-Dminecraft.launcher.brand=${launcher_name}",
+            "-Dminecraft.launcher.version=${launcher_version}",
+            "-cp",
+            "${classpath}"
+          ]
+        },
+        "libraries": []
+      }
+    },
+    {
+      "case": "legacy-default-template",
+      "source": {
+        "version": "1.20.1",
+        "url": "https://piston-meta.mojang.com/v1/packages/2492c9d294776667e63b56a73a611ae327948de2/1.20.1.json",
+        "sha1": "2492c9d294776667e63b56a73a611ae327948de2"
+      },
+      "projectionNote": "Official JVM argument array retained verbatim; unrelated downloads/assets/game arguments and libraries omitted for a network-free parameter test.",
+      "versionJson": {
+        "id": "1.20.1",
+        "type": "release",
+        "mainClass": "net.minecraft.client.main.Main",
+        "arguments": {
+          "jvm": [
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "osx"
+                  }
+                }
+              ],
+              "value": [
+                "-XstartOnFirstThread"
+              ]
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "windows"
+                  }
+                }
+              ],
+              "value": "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "arch": "x86"
+                  }
+                }
+              ],
+              "value": "-Xss1M"
+            },
+            "-Djava.library.path=${natives_directory}",
+            "-Djna.tmpdir=${natives_directory}",
+            "-Dorg.lwjgl.system.SharedLibraryExtractPath=${natives_directory}",
+            "-Dio.netty.native.workdir=${natives_directory}",
+            "-Dminecraft.launcher.brand=${launcher_name}",
+            "-Dminecraft.launcher.version=${launcher_version}",
+            "-cp",
+            "${classpath}"
+          ]
+        },
+        "libraries": []
+      }
+    },
+    {
+      "case": "jna-subdirectory-template",
+      "source": {
+        "version": "26.2",
+        "url": "https://piston-meta.mojang.com/v1/packages/33c420747ce582e48dff1d8c5d8e67e5bb6257c9/26.2.json",
+        "sha1": "33c420747ce582e48dff1d8c5d8e67e5bb6257c9"
+      },
+      "projectionNote": "Official JVM argument array retained verbatim; unrelated downloads/assets/game arguments and libraries omitted for a network-free parameter test.",
+      "versionJson": {
+        "id": "26.2",
+        "type": "release",
+        "mainClass": "net.minecraft.client.main.Main",
+        "arguments": {
+          "jvm": [
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "osx"
+                  }
+                }
+              ],
+              "value": [
+                "-XstartOnFirstThread"
+              ]
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "name": "windows"
+                  }
+                }
+              ],
+              "value": "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
+            },
+            {
+              "rules": [
+                {
+                  "action": "allow",
+                  "os": {
+                    "arch": "x86"
+                  }
+                }
+              ],
+              "value": "-Xss1M"
+            },
+            "--sun-misc-unsafe-memory-access=allow",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Djava.library.path=${natives_directory}/java",
+            "-Djna.tmpdir=${natives_directory}/jna",
+            "-Dorg.lwjgl.system.SharedLibraryExtractPath=${natives_directory}/lwjgl",
+            "-Dio.netty.native.workdir=${natives_directory}/netty",
+            "-Dminecraft.launcher.brand=${launcher_name}",
+            "-Dminecraft.launcher.version=${launcher_version}",
+            "-cp",
+            "${classpath}"
+          ]
+        },
+        "libraries": []
+      }
+    }
+  ]
+}

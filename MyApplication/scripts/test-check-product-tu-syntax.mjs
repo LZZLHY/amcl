@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import {
   copyFileSync,
@@ -8,13 +10,14 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const fixtureRoot = mkdtempSync(join(tmpdir(), 'product-tu syntax '));
+const fixtureParent = mkdtempSync(join(workspaceTempRoot(), 'product-tu syntax '));
+// 父目录故意包含全部排除关键字；它们只有出现在工程 cpp 相对路径里才应排除。
+const fixtureRoot = join(fixtureParent, 'build', 'third_party', 'openal-soft', 'mobileglues', 'project');
 
 try {
   const scriptsDir = join(fixtureRoot, 'scripts');
@@ -68,6 +71,34 @@ assert.ok(!args.includes('-o'));
   assert.match(store.stdout, /PASS: 1 个产品 TU/);
   assert.doesNotMatch(store.stderr, /api26_input_link_probe/);
 
+  // 真正位于本工程的构建生成物/第三方源码仍须排除，不能为了接纳新父目录而删掉排除规则。
+  const storeDb = join(fixtureRoot, 'entry/.cxx/store/store/release/arm64-v8a/compile_commands.json');
+  const storeDirectory = dirname(storeDb);
+  const ownEntry = { directory: storeDirectory, file: source, command };
+  const excluded = ['build/generated.cpp', 'third_party/vendor.cpp',
+    'openal/openal-soft/vendor.cpp', 'mobileglues/vendor.cpp'];
+  const foreignSource = join(fixtureParent, 'other-project/entry/src/main/cpp/platform/touch_input.cpp');
+  mkdirSync(dirname(foreignSource), { recursive: true });
+  writeFileSync(foreignSource, '// foreign checkout\n');
+  const mustNotRun = `"${process.execPath}" -e "process.exit(73)"`;
+  const skippedEntries = excluded.map(file => {
+    const absolute = join(cppDir, file);
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, '// not a first-party product TU\n');
+    return { directory: storeDirectory, file: absolute, command: mustNotRun };
+  });
+  writeFileSync(storeDb, JSON.stringify([ownEntry, ...skippedEntries,
+    { directory: storeDirectory, file: foreignSource, command: mustNotRun }]));
+  const bounded = run('store');
+  assert.equal(bounded.status, 0, bounded.stdout + bounded.stderr);
+  assert.match(bounded.stdout, /PASS: 1 个产品 TU/);
+  // 仅外部同名 TU 不能构成“本工程已检查”；保留零选中硬失败，避免借其他克隆凑完整性。
+  writeFileSync(storeDb, JSON.stringify([{ directory: storeDirectory, file: foreignSource, command }]));
+  const foreignOnly = run('store');
+  assert.equal(foreignOnly.status, 2, foreignOnly.stdout + foreignOnly.stderr);
+  assert.match(foreignOnly.stderr, /选中 0 个 TU/);
+  writeFileSync(storeDb, JSON.stringify([ownEntry]));
+
   const desktop = run('desktop');
   assert.equal(desktop.status, 1, `${desktop.stdout}\n${desktop.stderr}`);
   assert.match(desktop.stderr, /platform\/api26_input_link_probe\.cpp/);
@@ -101,5 +132,5 @@ assert.ok(!args.includes('-o'));
 
   console.log('test-check-product-tu-syntax: PASS');
 } finally {
-  rmSync(fixtureRoot, { recursive: true, force: true });
+  rmSync(fixtureParent, { recursive: true, force: true });
 }

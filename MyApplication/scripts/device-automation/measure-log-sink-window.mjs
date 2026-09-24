@@ -48,7 +48,7 @@ async function main() {
   const hdc = new Hdc({ path: hdcPath, sn: targets[0] });
 
   const runId = `e4-${localIso().replace(/[-:+]/g, '').slice(0, 15)}`;
-  const rawDir = join(REPO_ROOT, RAW_DIR, runId, 'raw');
+  const rawDir = join(RAW_DIR, runId, 'raw');
   mkdirSync(rawDir, { recursive: true });
 
   const teardown = new Teardown(m => console.log(`teardown: ${m}`));

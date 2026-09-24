@@ -5,6 +5,8 @@
 调用方核验。ZIP 成员不是已装载的 image，结构通过不等于 JDK 运行通过。
 临时目录只保存本次编译产物，退出后清理。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import argparse
 import hashlib
@@ -23,7 +25,7 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     source = root / 'entry/src/main/cpp/tests/host/elf_input_validation_test.cpp'
-    with tempfile.TemporaryDirectory(prefix='amcl-elf-input-') as directory:
+    with workspace_temporary_directory(prefix='amcl-elf-input-') as directory:
         binary = Path(directory) / ('test.exe' if os.name == 'nt' else 'test')
         compile_cpp(source, binary)
         subprocess.run([str(binary)], check=True, timeout=20)

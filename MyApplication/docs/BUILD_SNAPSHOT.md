@@ -1,5 +1,7 @@
 # 公开快照构建说明
 
+1.0.5 / 1000678 的公开输入已同步至 `SOURCE_SNAPSHOT.json` 记录的干净源码提交，包含 JNA 三协议槽、启动参数与模组安装修复。下面的 1.0.4 全新克隆记录保留为历史证据；本次发布构建来自维护者源仓，不将其描述为重新完成了一次 1.0.5 公开克隆构建。当前 JNA 输入与验证入口见 [JNA 说明](../prebuilt/jna/README.md)。
+
 2026-09-24 已按此流程完成 **1.0.4 / 1000671、sideload / release / unsigned** HAP 构建及包内关键输入校验；环境、产物 SHA-256 和剩余限制见 [本轮核验记录](public-reproduction-audit.md)。
 
 本文从公开仓库的全新 Git 克隆开始，说明怎样准备依赖并编译 HarmonyOS HAP。工程目录为 MyApplication/，以下命令除克隆外均在该目录执行。

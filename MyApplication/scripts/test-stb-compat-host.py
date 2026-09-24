@@ -8,9 +8,11 @@ import subprocess
 import shutil
 import urllib.request
 import zipfile
+from lib.workspace_paths import workspace_path
 
 ROOT = Path(__file__).resolve().parent.parent
-BUILD = ROOT / "diagnostics/runtime-compat-fix/stb-host"
+# 宿主 DLL、类文件和日志统一落在按克隆隔离的外部构建区。
+BUILD = workspace_path("build", "stb-host")
 BUILD.mkdir(parents=True, exist_ok=True)
 spec = importlib.util.spec_from_file_location("stb_prepare", ROOT / "scripts/lwjgl-stb-compat/prepare.py")
 helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)

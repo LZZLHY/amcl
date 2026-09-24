@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "jna_runtime_contract.h"
 
 namespace amcl::jvm {
 /** 启动期属性键值。只存字符串，不持有 JNI 对象，不会初始化任何游戏平台类。 */
@@ -37,7 +38,8 @@ inline bool HasImplicitInvocationOptions(const char* toolOptions, const char* ja
  */
 inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
     const std::string& nativeDir, const std::string& gameDir,
-    const std::string& profile, const std::string& glLibrary, bool sdl) {
+    const std::string& profile, const std::string& glLibrary, bool sdl,
+    const JnaBootstrap& jna = JnaBootstrap{}) {
     std::vector<BootstrapProperty> result{
         {"java.system.class.loader", "com.amcl.launcher.AmclClassLoader"},
         {"os.name", "Linux"}, {"os.version", "5.10"},
@@ -50,7 +52,10 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
         {"org.lwjgl.shaderc.libname", "shaderc"},
         {"org.lwjgl.spvc.libname", "spirv-cross"},
         {"amcl.graphics.profile", profile}, {"amcl.sdl3", sdl ? "1" : "0"},
-        {"jna.boot.library.path", nativeDir}, {"jna.tmpdir", gameDir + "/natives/jna"},
+        // JNI 协议由实际 classpath JNA 决定。deferred 用空 boot path 与禁止系统搜索，
+        // 交回 JNA 自带 native，不能再无条件强制协议 7 或允许错误 fallback 偷换槽位。
+        {"jna.boot.library.path", jna.bootLibraryPath}, {"jna.boot.library.name", jna.bootLibraryName},
+        {"jna.nosys", "true"}, {"jna.tmpdir", gameDir + "/natives/jna"},
         {"imgui.library.path", nativeDir},
         {"minecraft.applet.TargetDirectory", gameDir},
         {"net.minecraft.clientmodname", "AMCL"}

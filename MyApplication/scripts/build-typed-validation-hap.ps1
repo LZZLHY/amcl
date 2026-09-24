@@ -216,7 +216,9 @@ Write-Host "  OK  libglfw.so carries the evidence id"
 $OutDir = Join-Path $RepoRoot "entry\build\$Product\outputs\$Product"
 $Source = Join-Path $OutDir "entry-$Product-signed.hap"
 if (-not (Test-Path -LiteralPath $Source)) { throw "expected HAP not found: $Source" }
-$KeepDir = Join-Path $RepoRoot 'validation-packages'
+# 验证包保留于任务输出，避免下一次 Hvigor clean 丢失，也不回流工程；打印出的路径用于部署。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+$KeepDir = Get-AmclWorkspacePath -Kind run -Id 'validation-packages' -ProjectRoot $RepoRoot
 New-Item -ItemType Directory -Force -Path $KeepDir | Out-Null
 $Target = Join-Path $KeepDir "entry-$Product-signed-TYPED-VALIDATION.hap"
 Copy-Item -LiteralPath $Source -Destination $Target -Force

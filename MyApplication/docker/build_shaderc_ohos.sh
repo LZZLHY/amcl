@@ -334,11 +334,11 @@ echo "  4. 真机 MC 26.2 选 Vulkan，确认 shaderc/spvc loadNative 不崩"
 # ============================================================
 #  本脚本要求 OHOS_LIBCXX_DIR（默认 /output/ohos-libcxx）下有 OHOS NDK 的 __n1 ABI
 #  libc++ 头 + aarch64 libc++ 库。NDK 在宿主机（Windows/macOS/Linux），容器未挂载，
-#  故 release 流程需先把它们 stage 到容器可见目录（/output 即宿主 docker/output）。
+#  故 release 流程需先把它们 stage 到本次任务可见目录（/output 对应外部任务 out）。
 #
 #  宿主机一次性 stage（NDK 路径按实际填）：
 #    NDK=/path/to/command-line-tools/sdk/default/openharmony/native/llvm
-#    DST=docker/output/ohos-libcxx
+#    DST=/path/to/.workspace/build/<task>/out/ohos-libcxx
 #    mkdir -p "$DST/include/c++/v1" "$DST/lib"
 #    cp -a "$NDK/include/libcxx-ohos/include/c++/v1/." "$DST/include/c++/v1/"
 #    cp "$NDK/lib/aarch64-linux-ohos/libc++_shared.so"  "$DST/lib/"

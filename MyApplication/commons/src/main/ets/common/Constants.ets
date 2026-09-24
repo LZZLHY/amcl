@@ -66,7 +66,7 @@ export const VULKAN_264_REQUIREMENT_ID: string = 'minecraft-26.4-snapshot1-sdl-v
 // ===== 应用信息 =====
 export const APP_NAME = 'AMCL'
 // 关于页与设置页共用的展示版本；发布准备时与 AppScope.versionName 同步。
-export const APP_VERSION = '1.0.4'
+export const APP_VERSION = '1.0.5'
 export const APP_FULL_NAME = 'Axe Minecraft Launcher'
 
 // 品牌免责声明（知识产权合规）：同时满足

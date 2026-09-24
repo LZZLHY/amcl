@@ -5,11 +5,11 @@
  */
 import { DownloadManager, DownloadTaskView, UnifiedTaskView, UnifiedTaskState, UnifiedDownloadAdapter,
   TaskCategory, getDownloadTaskRegistry } from 'feature_core';
-import { ModInstallRequest, ModInstallObserver, ModInstallService, ModInstallFile } from './ModInstallService';
+import { ModInstallRequest, ModInstallObserver, ModInstallService, ModInstallFile, MOD_INSTALL_COMMIT_PHASE } from './ModInstallService';
 import { RemoteVersion, resourceKindToInstallDir, ResourceKind } from './ModTypes';
 import { ResourceFileProvider, ResourceFileEntry } from './ResourceInstallTask';
 
-/** 将单文件原生进度投影到卡片。下载终态仍需等待上层组合校验及事务提交。 */
+/** 将单文件原生进度投影到卡片。下载终态仍需等待整组文件就绪及事务提交。 */
 function updateModFileProgress(view: UnifiedTaskView, native: DownloadTaskView): void {
   view.progress = native.progress * 95;
   view.bytesDone = native.bytesDone;
@@ -19,7 +19,7 @@ function updateModFileProgress(view: UnifiedTaskView, native: DownloadTaskView):
   view.speedBps = native.finished ? 0 : native.speedBps;
   view.etaSeconds = native.finished ? -1 : native.etaSeconds;
   view.state = native.finished ? UnifiedTaskState.VERIFYING : UnifiedTaskState.DOWNLOADING;
-  view.currentLabel = native.finished ? '下载已结束，等待模组组合校验' : native.currentFile;
+  view.currentLabel = native.finished ? '下载已结束，等待安装提交' : native.currentFile;
   view.errorKind = native.errorKind;
   view.errorMessage = native.errorMessage;
 }
@@ -74,7 +74,7 @@ export class ModInstallTask implements UnifiedDownloadAdapter, ResourceFileProvi
       phase: (label: string): void => {
         this.view.currentLabel = label;
         // 提交是不可中断的原子阶段；一旦进入就关闭取消，避免 UI 承诺无法兑现的中途撤回。
-        if (label === '正在提交完整模组组合') {
+        if (label === MOD_INSTALL_COMMIT_PHASE) {
           this.view.canCancel = false;
           for (const dependency of this.dependencies_) dependency.view.canCancel = false;
         }

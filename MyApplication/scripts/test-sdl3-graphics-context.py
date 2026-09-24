@@ -1,4 +1,6 @@
 """从现役SDL patch series提取生产上下文生命周期，与公共资格实现共同执行。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -18,7 +20,7 @@ for token,file,function in [('@EGL_DESTROY@','SDL_egl.c','SDL_EGL_DestroyContext
     ('@SDL_CREATE@','SDL_openharmonyopengl.c','OPENHARMONY_GLES_CreateContext'),
     ('@SDL_DESTROY@','SDL_openharmonyopengl.c','OPENHARMONY_GLES_DestroyContext')]:
     code=code.replace(token,extract.function(sources[file],function))
-with tempfile.TemporaryDirectory(prefix='amcl-sdl-context-') as temporary:
+with workspace_temporary_directory(prefix='amcl-sdl-context-') as temporary:
     source=Path(temporary)/'test.cpp';source.write_text(code,encoding='utf-8');binary=Path(temporary)/'test'
     subprocess.run(['g++','-std=c++17','-pthread','-I'+str(root/'prebuilt/khronos-egl-headers'),str(source),'-o',str(binary)],check=True,timeout=60)
     subprocess.run([str(binary)],check=True,timeout=30)

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-09-24",
+  "description": "已核对的发布资产身份与源码事实。下载资产锁正确不等于全部组件可由同一源码提交复建；unknown/PENDING 不得推测填入。",
+  "releaseRepository": "https://github.com/LZZLHY/mc-ohos-resources",
+  "evidence": "AMCL 工作区整理调查第 16 节：远端 digest、宿主发布 ZIP、amcl-jdk25-ipv6:/repack/final 四包逐个一致；原容器保留。",
+  "runtimes": [
+    {
+      "major": 8,
+      "tag": "v8u452-ohos-4",
+      "asset": "jdk8-ohos-full-v4.zip",
+      "bytes": 39555296,
+      "sha256": "02c2cedb3539682de3df3d7870b855bfefaac1f4cfe53951cfe90b0dea3d3a63",
+      "observedSourceHead": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sourceStatus": "已观察容器源码 HEAD；补丁、构建 workaround、最终全包与源码对应关系尚未全部闭合"
+    },
+    {
+      "major": 17,
+      "tag": "v17.0.13-ohos-5",
+      "asset": "jdk17-ohos-full-v5.zip",
+      "bytes": 113762513,
+      "sha256": "0e26b0dece38156838456cfb12058d863aa9856cdd8fd648f06f9bc5e91f8ecd",
+      "wholeRuntimeSourceCommit": null,
+      "depsLockCommit": "PENDING",
+      "packageReleaseJavaVersion": "17.0.19",
+      "packageReleaseSource": ".:git:b7d004b4f278+",
+      "libjvmEmbeddedVersion": "17.0.19-internal",
+      "libnetRebuildSource": {
+        "tag": "jdk-17.0.13+11",
+        "commit": "eed263c8077e066a32d746fd188f2dee8c47b9ab",
+        "observedPath": "amcl-jdk25-ipv6:/build/jdk17u"
+      },
+      "v4ToV5Comparison": "ZIP 逐项比较仅 lib/libnet.so 改变，其余 71 项相同",
+      "sourceStatus": "混合来源待逐组件核对；不得用 libnet 的源码提交代替整个运行时的源码锁"
+    },
+    {
+      "major": 21,
+      "tag": "v21.0.5-ohos-7",
+      "asset": "jdk21-ohos-full-v7.zip",
+      "bytes": 114267146,
+      "sha256": "21556d0d4fc5eea09ba27068cf8a96803bb1667b35adbc8495fdc5f831316275",
+      "upstreamTag": "jdk-21.0.5+11",
+      "sourceCommit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sourceStatus": "上游 tag 解引用与两份容器源码 HEAD 一致；已修正 deps.lock 中错误完整 SHA；未重新构建整包"
+    },
+    {
+      "major": 25,
+      "tag": "v25.0.4-ohos-2",
+      "asset": "jdk25-ohos-full-v2.zip",
+      "bytes": 118872200,
+      "sha256": "d8e31df5d199a9b34d6d13c188b71af19c2fb1738da7bf3c6eeaed89a0a37538",
+      "upstreamTag": "jdk-25.0.4+3",
+      "sourceCommit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sourceStatus": "现存源码 HEAD 与锁一致；未重新构建整包"
+    }
+  ]
+}

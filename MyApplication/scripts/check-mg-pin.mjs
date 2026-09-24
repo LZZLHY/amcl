@@ -10,6 +10,8 @@
 // must exist, and this superproject must be a clean `main` checkout published to
 // a real source remote (never the separate LZZLHY/amcl distribution repository).
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -495,7 +497,7 @@ function validateForkTag(actual, lock) {
 function auditOnline(lock, remotes) {
   let auditRoot = '';
   try {
-    auditRoot = mkdtempSync(join(tmpdir(), 'amcl-mg-pin-audit-'));
+    auditRoot = mkdtempSync(join(workspaceTempRoot(), 'amcl-mg-pin-audit-'));
     const sourceGit = initAuditRepo(
       auditRoot,
       'source',
@@ -543,7 +545,7 @@ function auditOnline(lock, remotes) {
     validateForkTag(forkTag, lock);
   } finally {
     if (auditRoot) {
-      const resolvedTemp = resolve(tmpdir()).toLowerCase();
+      const resolvedTemp = resolve(workspaceTempRoot()).toLowerCase();
       const resolvedAudit = resolve(auditRoot).toLowerCase();
       if (resolvedAudit.startsWith(`${resolvedTemp}\\`) || resolvedAudit.startsWith(`${resolvedTemp}/`)) {
         rmSync(auditRoot, { recursive: true, force: true });

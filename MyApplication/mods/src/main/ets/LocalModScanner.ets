@@ -13,7 +13,7 @@
  * Phase 3 轻量版（本次落地）的取舍：
  *   ✅ 列文件名 / 大小 / .jar vs .jar.disabled 启用态
  *   ✅ sha1 反查 Modrinth → 写入 remoteSource + remoteProjectId
- *   包内兼容性检查由 ModInstallService / ModManifest 执行；这里负责文件与来源识别。
+ *   这里只负责文件、完整性与来源识别；包内依赖和兼容性由游戏实际加载器解释。
  *   Modrinth 反查未命中时可使用注入的 CurseForge 指纹仓库。
  *
  * 这覆盖：

@@ -36,7 +36,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,8 +50,19 @@ const DB_CANDIDATES = [
 ];
 
 // 第三方源码不是本仓的责任面，且它们的告警会淹没真信号。
-// ⚠️ 归一化后 `'\\build\\'` 与 `'/build/'` 完全等价，留一条即可（上一版两条并存是死项）。
+// 只在当前工程 cpp 根的相对路径上判断；宿主工作区父目录可能叫 build/mobileglues，不能误排整棵工程。
 const SKIPPED = ['third_party', 'openal-soft', '/build/', 'mobileglues'];
+
+/**
+ * 将 compile db 条目绑定到本工程 cpp 根。file 相对路径按编译条目的 directory 解析；
+ * 外部克隆即使也有 entry/src/main/cpp，也不能替代本工程 TU 或让完整性交叉核对假通过。
+ */
+function productSourcePath(entry) {
+  const file = resolve(ROOT, entry.directory || '.', entry.file);
+  const source = relative(resolve(ROOT, 'entry/src/main/cpp'), file).replace(/\\/g, '/');
+  if (!source || source === '..' || source.startsWith('../') || isAbsolute(source)) return null;
+  return source;
+}
 
 // 完整性交叉核对用：**按设计**不该出现在产品 compile db 里的源码。
 // 只有这份清单之外的缺失才算 db 过期/漏编 —— 否则这个检查会被一堆预期缺失淹没。
@@ -237,13 +248,13 @@ if (existsSync(cachePath)) {
 }
 const filters = cli.filters;
 const selected = entries.filter((entry) => {
-  const file = entry.file.replace(/\\/g, '/');
-  if (SKIPPED.some((token) => file.toLowerCase().includes(token.replace(/\\/g, '/')))) {
+  const source = productSourcePath(entry);
+  if (source === null) return false;
+  if (SKIPPED.some((token) => `/${source}/`.toLowerCase().includes(token))) {
     return false;
   }
-  if (!file.includes('/entry/src/main/cpp/')) return false;
   if (filters.length === 0) return true;
-  return filters.some((filter) => file.includes(filter));
+  return filters.some((filter) => source.includes(filter.replace(/\\/g, '/')));
 });
 
 console.log('[check-product-tu-syntax]');
@@ -258,7 +269,7 @@ if (selected.length === 0) {
 
 const failures = [];
 for (const entry of selected) {
-  const short = entry.file.replace(/\\/g, '/').split('/entry/src/main/cpp/')[1] ?? entry.file;
+  const short = productSourcePath(entry) ?? entry.file;
   const argv = toArgv(entry);
   const args = [];
   for (let i = 1; i < argv.length; i++) {
@@ -282,7 +293,7 @@ for (const entry of selected) {
 const stale = [];
 if (filters.length === 0) {
   const inDb = new Set(entries
-    .map((entry) => entry.file.replace(/\\/g, '/').split('/entry/src/main/cpp/')[1])
+    .map(productSourcePath)
     .filter(Boolean));
   for (const source of collectFirstPartySources()) {
     if (inDb.has(source)) continue;

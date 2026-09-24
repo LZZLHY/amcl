@@ -1,4 +1,6 @@
 """执行真实生产 writer 的并发/完整性回归。Windows 自动定位 MSVC。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import json
 import os
@@ -9,7 +11,7 @@ from lib.host_cpp import compile_cpp
 
 repo = Path(__file__).resolve().parents[1]
 source = repo / 'entry/src/main/cpp/tests/host/logging_writer_test.cpp'
-with tempfile.TemporaryDirectory(prefix='amcl-logging-writer-') as temporary:
+with workspace_temporary_directory(prefix='amcl-logging-writer-') as temporary:
     out = Path(temporary)
     exe = out / ('writer.exe' if os.name == 'nt' else 'writer')
     compile_cpp(source, exe, [source.parent / 'logging_stubs'], ['AMCL_DIAGNOSTICS_MASK=0'])

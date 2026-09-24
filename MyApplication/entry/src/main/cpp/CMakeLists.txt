@@ -772,6 +772,7 @@ endif()
 
 # JVM 嵌入模块 + MC 启动器
 set(JVM_SOURCES
+    jvm/jna_runtime_contract.cpp # 只读实际 JNA 协议，选择独立 native ABI，不替换 Java 库
     jvm/jvm_launcher.cpp
     jvm/game_process_exit.cpp # 独立游戏进程的 JNI 退出记录与进程结束；不改变同进程/processor。
     jvm/mc_launcher.cpp
@@ -924,6 +925,7 @@ endif()
 target_compile_definitions(entry PRIVATE AMCL_NATIVE_DESKTOP_ONLY=$<BOOL:${AMCL_NATIVE_DESKTOP_ONLY}> AMCL_DESKTOP_NATIVE_GL_VALIDATE=$<BOOL:${AMCL_DESKTOP_NATIVE_GL_VALIDATE}>)
 target_compile_definitions(glfw PRIVATE AMCL_NATIVE_DESKTOP_ONLY=$<BOOL:${AMCL_NATIVE_DESKTOP_ONLY}> AMCL_DESKTOP_NATIVE_GL_VALIDATE=$<BOOL:${AMCL_DESKTOP_NATIVE_GL_VALIDATE}>)
 target_link_libraries(entry PRIVATE libpasteboard.so libudmf.so libdeviceinfo_ndk.z.so amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime)
+target_link_libraries(entry PRIVATE libz.so) # 有界 JNA ZIP 条目使用系统 raw-deflate/CRC 实现
 target_sources(entry PRIVATE platform/runtime_slot_store.cpp)
 # libentry 的GPU观察直连中立运行时，不经GLFW前端创建另一份MG默认图形域。
 

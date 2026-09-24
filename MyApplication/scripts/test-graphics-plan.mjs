@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const src = path.join(root, 'entry/src/main/cpp/platform');
@@ -11,7 +12,8 @@ if (!launcher.includes('options_preference_preserved=1') || launcher.includes('c
   throw new Error('options Vulkan preference must be preserved and never rewritten');
 }
 const compiler = process.env.CXX || 'g++';
-const out = path.join(process.env.TEMP || '/tmp', process.platform === 'win32' ? 'amcl-graphics-plan-host-test.exe' : 'amcl-graphics-plan-host-test');
+// 每个宿主进程使用独立名称，避免并发测试覆写；目录由共享策略保证在源码仓之外。
+const out = path.join(workspaceTempRoot(), `amcl-graphics-plan-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`);
 if (!existsSync(path.join(src, 'graphics_plan.cpp')) || !existsSync(testSource)) throw new Error('graphics plan host sources missing');
 const r = spawnSync(compiler, ['-std=c++17', '-I', src, path.join(src, 'graphics_plan.cpp'), testSource, '-o', out], { encoding: 'utf8' });
 if (r.error && r.error.code === 'ENOENT') {

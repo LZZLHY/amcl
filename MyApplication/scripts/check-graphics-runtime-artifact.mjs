@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readElfIdentity } from './check-mg-build-contract.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
+import { assertExternalOutputPath, workspacePath } from './lib/workspace-paths.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const wsiExports = ['vkGetInstanceProcAddr', 'amclVulkanSetAdmission', 'amclVulkanAdmissionGranted',
@@ -105,6 +106,8 @@ export function graphicsRuntimeIssues(images, options = {}) {
 }
 
 export function auditGraphicsRuntime(hap, evidenceDir) {
+  // 库调用与 CLI 使用同一边界，避免历史调用者通过导出函数重新创建仓内解包树。
+  evidenceDir = assertExternalOutputPath(evidenceDir);
   const archive = fs.readFileSync(hap);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const llvm = process.env.AMCL_LLVM_BIN || 'D:/Huawei/command-line-tools/sdk/default/openharmony/native/llvm/bin';
@@ -139,7 +142,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const arg = flag => { const at = process.argv.indexOf(flag); return at < 0 ? '' : process.argv[at + 1]; };
   try {
     if (!arg('--hap')) throw new Error('--hap is required; no source-only fallback');
-    const report = auditGraphicsRuntime(path.resolve(arg('--hap')), path.resolve(arg('--out') || path.join(ROOT, '.tmp-graphics-runtime-artifact')));
+    // 解包和产物审计只写外部会话；显式 --out 也不能重新创建仓内临时目录。
+    const report = auditGraphicsRuntime(path.resolve(arg('--hap')), assertExternalOutputPath(arg('--out') || workspacePath('run', 'graphics-artifact')));
     console.log(`graphics-runtime-artifact ${report.verdict}: physical WSI DSO, loader exports, GLFW/entry dependency closure`);
     if (report.issues.length) { console.error(report.issues.join('\n')); process.exitCode = 1; }
   } catch (error) { console.error(error.message); process.exitCode = 2; }

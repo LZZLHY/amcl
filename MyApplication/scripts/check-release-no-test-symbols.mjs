@@ -27,6 +27,8 @@
 // ❌ 没有 HAP 时默认放行（CI 无产物是正常的）；出货路径必须带 --require-artifact，
 //    否则"查不到产物 ⇒ 判据空真"会让这半检查恰好在最需要它的地方沉默。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -157,9 +159,9 @@ function main() {
       if (!soEntry) {
         toolError = `HAP 里找不到 libentry.so（${hapRel}）`;
       } else {
-        // 用 os.tmpdir() 而不是 `process.env.TEMP || '.'`：回退到 '.' 会把临时 .so 落进仓库根，
+        // 用 workspaceTempRoot() 而不是 `process.env.TEMP || '.'`：回退到 '.' 会把临时 .so 落进仓库根，
         // Ctrl-C 打断就留下未跟踪文件，绊倒 build-hap.ps1 -Release 的 dirty fail-closed。
-        const tmp = path.join(os.tmpdir(), `amcl-libentry-${process.pid}.so`);
+        const tmp = path.join(workspaceTempRoot(), `amcl-libentry-${process.pid}.so`);
         try {
           extractEntry(buf, soEntry, tmp);
           const out = execFileSync(strings, [tmp], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });

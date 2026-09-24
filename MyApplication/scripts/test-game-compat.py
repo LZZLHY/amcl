@@ -3,9 +3,11 @@ import json
 import os
 import subprocess
 import importlib.util
+from lib.workspace_paths import workspace_path
 
 ROOT = Path(__file__).resolve().parent.parent
-BUILD = ROOT / "diagnostics/runtime-compat-fix/mixin-test"
+# 真实字节码变换测试独立于源码与设备证据目录，不覆盖历史诊断记录。
+BUILD = workspace_path("build", "mixin-test")
 BUILD.mkdir(parents=True, exist_ok=True)
 spec = importlib.util.spec_from_file_location("jdk_tools", ROOT / "scripts/lwjgl-stb-compat/prepare.py")
 helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)

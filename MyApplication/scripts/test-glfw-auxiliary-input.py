@@ -1,4 +1,6 @@
 """逐字执行GLFW生产输入setter，验证辅助窗口不修改呈现owner；系统桥仅记录实际调用。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -18,7 +20,7 @@ for signature in ['GLFWcharfun glfwSetCharCallback', 'GLFWcharmodsfun glfwSetCha
     'GLFWcursorenterfun glfwSetCursorEnterCallback', 'void glfwSetInputMode', 'int glfwGetInputMode', 'void glfwSetCursorPos',
     'void glfwSetWindowMonitor']:
     functions.append(recipe.block(callbacks, callbacks.index(signature+'(')))
-with tempfile.TemporaryDirectory(prefix='amcl-aux-input-') as temp:
+with workspace_temporary_directory(prefix='amcl-aux-input-') as temp:
     file = Path(temp)/'test.cpp'
     prefix = '#include "'+(root/'entry/src/main/cpp/glfw/glfw_compat.h').as_posix()+'"\n'
     prefix += '#include "'+(root/'entry/src/main/cpp/input/adapters/glfw_backend_lifecycle.h').as_posix()+'"\n'

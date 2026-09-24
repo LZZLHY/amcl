@@ -48,7 +48,9 @@ if ($Action -eq 'clear') {
     exit 0
 }
 
-$OutDir = Join-Path $RepoRoot 'validation-packages\logs'
+# 原始证据由工作区会话保留，不再写回项目中的历史验证包目录。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+$OutDir = Get-AmclWorkspacePath -Kind run -Id 'backend-input-evidence' -ProjectRoot $RepoRoot
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $Raw = Join-Path $OutDir "$Label-$Stamp-raw.log"

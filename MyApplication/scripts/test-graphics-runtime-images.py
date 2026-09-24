@@ -3,6 +3,8 @@
 测试不以RTLD全局符号插入伪造成功：两份库均Bsymbolic且函数地址必须不同。Windows经WSL
 执行真实dlopen/fork，临时目录由TemporaryDirectory管理，绝不写入产品的依赖或游戏目录。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import shutil
@@ -17,7 +19,7 @@ if os.name == 'nt':
     subprocess.run(['wsl', '-d', 'Ubuntu', '--exec', 'python3', script], check=True, timeout=180)
     sys.exit(0)
 
-with tempfile.TemporaryDirectory(prefix='amcl-runtime-images-') as temp:
+with workspace_temporary_directory(prefix='amcl-runtime-images-') as temp:
     directory = Path(temp)
     # 编译补丁按顺序重建的真实SDL消费者头；不手抄PID/版本/缓存判定。
     spec = importlib.util.spec_from_file_location('recipe', root/'scripts/generate-desktop-review-tests.py')

@@ -25,8 +25,7 @@ export * from './src/main/ets/LocalModScanner';
 export * from './src/main/ets/InstalledModIndex';
 export * from './src/main/ets/CurseForgeFingerprint';
 export * from './src/main/ets/ResourceInstallTask';
-export * from './src/main/ets/ModManifest';
-export * from './src/main/ets/ModVersionRange';
+// 安装服务只公开文件计划与事务能力；包内依赖/版本语义由实际模组加载器负责。
 export * from './src/main/ets/ModInstallService';
 export * from './src/main/ets/ModInstallTask';
 export * from './src/main/ets/ModInstallTransaction';

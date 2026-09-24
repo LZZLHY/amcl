@@ -55,6 +55,26 @@ int main() {
             "overlong 4-byte encoding must be replaced");
     Require(toModifiedUtf8(Bytes({0xFF})) == "?", "invalid lead byte must be replaced");
 
+    // 属性回读必须恢复标准 UTF-8，而不是拿 MUTF-8 字节与 native 路径比较。
+    // 长度显式传递：验证嵌入 NUL、空串，以及两端补充平面的代理对边界。
+    std::string decoded = "unchanged";
+    const std::u16string path = u"/game/中文\U0001F600\U0002000B/natives/jna";
+    Require(amcl::utf16ToUtf8(path.data(), path.size(), decoded) &&
+        decoded == u8"/game/中文\U0001F600\U0002000B/natives/jna", "UTF-16 path must become standard UTF-8");
+    const char16_t boundaries[] = {0xD800, 0xDC00, 0xDBFF, 0xDFFF};
+    Require(amcl::utf16ToUtf8(boundaries, 4, decoded) &&
+        decoded == Bytes({0xF0, 0x90, 0x80, 0x80, 0xF4, 0x8F, 0xBF, 0xBF}), "supplementary bounds");
+    const char16_t nul[] = {u'a', 0, u'b'};
+    Require(amcl::utf16ToUtf8(nul, 3, decoded) && decoded == std::string("a\0b", 3), "embedded NUL preserved");
+    Require(amcl::utf16ToUtf8(static_cast<const char16_t*>(nullptr), 0, decoded) && decoded.empty(), "empty UTF-16");
+    // 不合法的 Java 字符串不能被替换成同一个占位字符而获得错误通过；失败保持输出不变。
+    decoded = "retained";
+    const char16_t high[] = {0xD800}, low[] = {0xDC00}, broken[] = {0xD800, u'a'};
+    Require(!amcl::utf16ToUtf8(high, 1, decoded) && decoded == "retained", "unpaired high surrogate rejected");
+    Require(!amcl::utf16ToUtf8(low, 1, decoded) && decoded == "retained", "unpaired low surrogate rejected");
+    Require(!amcl::utf16ToUtf8(broken, 2, decoded) && decoded == "retained", "broken pair rejected");
+    Require(!amcl::utf16ToUtf8(static_cast<const char16_t*>(nullptr), 1, decoded), "missing UTF-16 buffer rejected");
+
     std::cout << "jni_mutf8_test: PASS\n";
     return 0;
 }

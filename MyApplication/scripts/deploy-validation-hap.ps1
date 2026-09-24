@@ -20,7 +20,8 @@ DO-NOT-SHIP（无任何真机证据的伪造批准），`shipping` 那份是 loc
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateSet('typed', 'legacy', 'shipping')][string]$Which,
-    [Parameter(Mandatory = $true)][string]$Device
+    [Parameter(Mandatory = $true)][string]$Device,
+    [string]$HapPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,7 +35,13 @@ $Name = switch ($Which) {
     'shipping' { 'entry-default-signed-TYPED-SHIPPING.hap' }
     default { 'entry-default-signed-LEGACY-BASELINE.hap' }
 }
-$Hap = Join-Path $RepoRoot "validation-packages\$Name"
+# 包身份必须由调用者给出，或使用同一 AMCL_RUN_DIR 内构建的规范文件；不扫描“最新”历史包。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+if ([string]::IsNullOrWhiteSpace($HapPath)) {
+    if ([string]::IsNullOrWhiteSpace($env:AMCL_RUN_DIR)) { throw 'Pass -HapPath or set the same AMCL_RUN_DIR used for the validation build.' }
+    $HapPath = Join-Path (Get-AmclWorkspacePath -Kind run -Id 'validation-packages' -ProjectRoot $RepoRoot) $Name
+}
+$Hap = [IO.Path]::GetFullPath($HapPath)
 if (-not (Test-Path -LiteralPath $Hap)) { throw "package not found: $Hap" }
 
 # 外部命令的 stderr 在重定向下会被 EAP 当成终止错误（build-hap.ps1 [3/7] 同一个坑）。

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -19,7 +21,7 @@ function expectIssue(root, pattern, label) {
   console.log(`[test-check-mg-docs] PASS: ${label}`);
 }
 
-const root = mkdtempSync(join(tmpdir(), 'amcl-mg-docs-'));
+const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-mg-docs-'));
 try {
   // Fixture-local heads, deliberately not the ones the real deps.lock pins: the
   // gate must derive them from the lock it is handed, so a self-test carrying

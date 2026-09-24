@@ -1,4 +1,6 @@
 """执行 WindowHost、BackendSession 和真实 SDL 补丁头的资源/几何代际及清理反例。"""
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import os
 import subprocess
@@ -7,7 +9,7 @@ from lib.host_cpp import compile_cpp
 
 root = Path(__file__).resolve().parent.parent
 host = root / 'entry/src/main/cpp/tests/host'
-with tempfile.TemporaryDirectory(prefix='amcl-window-epochs-') as temporary:
+with workspace_temporary_directory(prefix='amcl-window-epochs-') as temporary:
     output = Path(temporary)
     cases = [('window_host_core.cpp', 'window_host_core_test.cpp'),
              ('graphics_backend_session.cpp', 'graphics_backend_session_host_test.cpp')]

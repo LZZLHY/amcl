@@ -1,6 +1,8 @@
 """编译完整生产NativeGL查询/生命周期和固定官方EGL引导正文，检查早期UI初始化及失败退休。
 每个用例是新进程；只替换动态库/GPU边界，源码与HAP包级配置另由实际Hvigor测试覆盖。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -13,7 +15,8 @@ from lib.host_cpp import compile_cpp
 root=Path(__file__).resolve().parent.parent
 spec=importlib.util.spec_from_file_location('extract',root/'scripts/generate-desktop-review-tests.py')
 extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
-official=root/'diagnostics/nativegl-admission-audit-20260921/openharmony'
+# 冻结上游样本随项目证据树迁移；原始正文与内容指纹不改变，继续提取同一真实 EGL 实现。
+official=root/'docs/testing/evidence/nativegl-admission-audit-20260921/openharmony'
 core=(official/'egl_core.cpp').read_text(encoding='utf-8')
 custom=(official/'egl_wrapper_custom.cpp').read_text(encoding='utf-8')
 select=extract.block(core,core.index('bool CheckIfEnableOpengl()'))
@@ -22,7 +25,7 @@ query=extract.block(custom,custom.index('EGLBoolean OHGraphicsQueryGLImpl(void)'
 code=(root/'entry/src/main/cpp/tests/host/native_gl_probe.cpp.in').read_text(encoding='utf-8')
 code=code.replace('@ROOT@',root.as_posix()).replace('@OFFICIAL@',select+'\nnamespace OHOS {\n'+initialize+'\n}\n'+query)
 includes=[root/'prebuilt/khronos-egl-headers']
-with tempfile.TemporaryDirectory(prefix='amcl-native-gl-probe-') as temporary:
+with workspace_temporary_directory(prefix='amcl-native-gl-probe-') as temporary:
     # 仓内锁定依赖提供GLES3.2公开头，是这里GL3诊断声明的超集。仅在临时宿主include
     # 目录补同名入口，不复制接口类型、不把OHOS sysroot的libc头混入MSVC标准库。
     header=Path(temporary)/'GLES3/gl3.h';header.parent.mkdir()

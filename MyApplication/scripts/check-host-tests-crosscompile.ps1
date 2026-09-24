@@ -72,7 +72,9 @@ $ninja      = "$sdk\openharmony\native\build-tools\cmake\bin\ninja.exe"
 # sysroot**（连 <cstdint> 都找不到），用它只会得到一堆假失败。
 $clang      = "$sdk\hms\native\BiSheng\bin\clang++.exe"
 $sysroot    = "$sdk/openharmony/native/sysroot"
-$buildDir   = Join-Path $hostDir 'build-ohos-verify'
+# 交叉编译验证树与 SDK 自动输出不同，独占外部目录避免在宿主测试源码目录留下中间物。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+$buildDir = Get-AmclWorkspacePath -Kind build -Id "ohos-host-$PID" -ProjectRoot $repoRoot
 
 foreach ($p in @($toolchain, $cmake, $ninja, $clang)) {
     if (-not (Test-Path -LiteralPath $p)) { throw "missing toolchain component: $p" }

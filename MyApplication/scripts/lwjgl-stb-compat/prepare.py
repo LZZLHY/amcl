@@ -11,12 +11,16 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+# 本脚本既能直接执行，也会被 importlib 装载；两种入口都复用工程脚本的共享路径策略。
+sys.path.insert(0, str(ROOT / "scripts"))
+from lib.workspace_paths import workspace_path
 VENDOR = ROOT / "prebuilt/lwjgl3/compat/stb-v1"
 MODERN = ROOT / "prebuilt/lwjgl3/lwjgl3_src/modules/lwjgl"
 JARS = ROOT / "prebuilt/lwjgl3/jars"
-BUILD = ROOT / "diagnostics/runtime-compat-fix/stb-build"
+BUILD = workspace_path("build", "stb-compat")
 
 
 def sha(data): return hashlib.sha256(data).hexdigest()

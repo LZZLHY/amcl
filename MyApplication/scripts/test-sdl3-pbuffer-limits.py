@@ -3,6 +3,8 @@
 只替换EGL/SDL系统边界，不复制被测容量决策或资源提交算法。Windows使用MSVC，
 POSIX使用本机C++编译器；GPU替身的成功仅代表生命周期契约，不代表真实设备验收。
 """
+# 宿主测试临时目录统一外置，继续使用上下文退出时仅清理自身目录的语义。
+from lib.workspace_paths import temporary_directory as workspace_temporary_directory
 from pathlib import Path
 import importlib.util
 import os
@@ -24,7 +26,7 @@ code = code.replace('@VALIDATE_SIZE@', recipe.function(gl, 'OPENHARMONY_GLES_Val
 code = code.replace('@VALIDATE_SURFACE@', recipe.function(gl, 'OPENHARMONY_GLES_ValidatePbufferSurface'))
 code = code.replace('@CREATE_AUXILIARY@', auxiliary)
 code = code.replace('@RESIZE@', recipe.function(window, 'OPENHARMONY_ApplyPendingAuxiliaryResize'))
-with tempfile.TemporaryDirectory(prefix='amcl-pbuffer-limits-') as temporary:
+with workspace_temporary_directory(prefix='amcl-pbuffer-limits-') as temporary:
     source = Path(temporary)/'pbuffer.cpp'
     source.write_text(code, encoding='utf-8')
     binary = Path(temporary)/('pbuffer.exe' if os.name == 'nt' else 'pbuffer')

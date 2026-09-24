@@ -5,9 +5,9 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceDir = Join-Path $repoRoot "entry/src/main/cpp/tests/host"
-if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = Join-Path $repoRoot ".tmp-build/amcl-input-host-tests-vs"
-}
+# 自建宿主测试输出与 SDK 原生 build 分开；显式目录同样校验，避免旧参数让缓存回流源码仓。
+. (Join-Path $PSScriptRoot 'lib/workspace-paths.ps1')
+$BuildDir = Get-AmclWorkspacePath -Kind build -Id 'input-host-tests' -ProjectRoot $repoRoot -ExplicitPath $BuildDir
 
 $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
 $cmake = if ($cmakeCommand) { $cmakeCommand.Source } else { "" }

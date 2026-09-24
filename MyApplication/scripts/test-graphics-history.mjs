@@ -1,4 +1,6 @@
 /** 执行真实历史文件协议与canonical resolver；编码器/原子提交器来自生产，替身仅为OHOS系统API。 */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,7 +36,7 @@ const commonLoad = makePureEtsLoader(ports);
 const commons = { ...commonLoad('commons/src/main/ets/utils/Base64Util.ets'), ...commonLoad('commons/src/main/ets/utils/EvidenceIo.ets') };
 const load = makePureEtsLoader({ ...ports, commons });
 const { GraphicsHistoryStore: history, graphicsHistoryOutcomePermitted: permitted } = load('entry/src/main/ets/runtime/GraphicsHistoryStore.ets');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-graphics-history-'));
+const root = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-graphics-history-'));
 fs.mkdirSync(path.join(root, 'graphics-recovery'));
 const scope = 'a'.repeat(64), changed = 'b'.repeat(64), day = 86400000;
 const id = '01234567-89ab-cdef-0123-456789abcdef';

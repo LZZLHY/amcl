@@ -3,6 +3,8 @@
  * 复用上一次 Hvigor 生成的模块解析配置，使用独立临时缓存，不生成或签名 HAP，
  * 因而不能替代 build-hap.ps1 的依赖、native、产物和发布门禁。
  */
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -36,7 +38,7 @@ config.rootPathSet = new Set(Array.isArray(config.rootPathSet) ? config.rootPath
 for (const key of ['syscapIntersectionSet', 'syscapUnionSet']) {
   if (config[key] !== undefined) config[key] = new Set(Array.isArray(config[key]) ? config[key] : []);
 }
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'amcl-ui-arkts-check-'));
+const temporary = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-ui-arkts-check-'));
 // entry/Product* 是产品源集别名，不是 npm 包。检查目录只映射真实 default 源集，绝不造类型桩。
 fs.symlinkSync(path.join(root, 'entry/src/main'), path.join(temporary, 'entry'), 'junction');
 for (const [name, moduleRoot] of Object.entries(config.modulePathMap)) {

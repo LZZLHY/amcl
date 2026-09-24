@@ -5,6 +5,8 @@
 // 那次事故的形态，所以这里用临时 fixture 树逐条证明三种腐烂都会被报出来，
 // 并且正常结构不会误报。
 
+// 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
+import { workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -26,7 +28,7 @@ const TEST_DIR = 'entry/src/test';
  * options 用来注入各种腐烂形态。
  */
 function buildFixture(options) {
-  const root = mkdtempSync(join(tmpdir(), 'amcl-arkts-suite-'));
+  const root = mkdtempSync(join(workspaceTempRoot(), 'amcl-arkts-suite-'));
   write(root, 'entry/oh-package.json5', options?.package ?? `{
   "name": "entry",
   "dependencies": {
