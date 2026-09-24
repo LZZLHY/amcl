@@ -30,6 +30,9 @@ function git(cwd, ...args) {
     { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, env: environment }).trim();
 }
 function run(command, args, cwd = root) {
+  // 外部 SPIRV-Headers 比顶层子模块更深。根仓库的 core.longpaths 不会自动
+  // 传入新建仓库，所有 Git 写入命令都显式启用，避免 Windows checkout 只落下一半文件。
+  if (command === 'git') args = ['-c', 'core.longpaths=true', ...args];
   console.log(`[public-deps] ${path.basename(command)} ${args.join(' ')}`);
   const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: environment });
   if (result.error) throw result.error;

@@ -181,6 +181,7 @@ Get-ChildItem entry/build/default/outputs -Recurse -Filter *.hap
 |---|---|
 | 子模块路径不存在或没有 gitlink | 是否保留 amcl 外层 Git 仓库、是否执行公开准备入口；不要从 ZIP 或独立复制的 MyApplication 开始 |
 | Git 下载迟迟没有完成 | 查看正在拉取的依赖及网络；首次 LWJGL/MobileGL 源码准备可能较大 |
+| Windows 提示 Filename too long | 准备入口已为所有 Git 写入（包括 External）启用 longpaths；仍建议短路径克隆，SDK/Native 工具也可能有自己的路径限制。旧版入口留下的半成品目录不要当作完整依赖，先保存自己的修改再恢复锁定文件 |
 | 下载停在 Git LFS / trace_replay 大型数据 | 使用 prepare-public-deps.mjs 入口；它自动跳过普通 HAP 不需要的可选 LFS 回放夹具，不必额外执行 git lfs pull |
 | 缺少 glslang External/spirv-tools | 重新运行 prepare-public-deps.mjs；这些依赖不由常规递归子模块初始化取得 |
 | javac 不支持 release 21 | JAVA_HOME 和实际 javac 是否为 JDK 21+；DevEco 终端可能继承旧环境变量 |
