@@ -1,0 +1,56 @@
+name: Publish update feeds
+on:
+  push:
+    branches: [main]
+    paths:
+      - update.json
+      - changelog.json
+      - assets/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          submodules: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /update.json
+            /changelog.json
+            /assets/
+      # Pages 是应用更新数据入口；源码通过 GitHub 获取，无需在此下载或部署第三方工作树。
+      - name: Validate and stage public update data
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const update = JSON.parse(fs.readFileSync('update.json', 'utf8'));
+          const changelog = JSON.parse(fs.readFileSync('changelog.json', 'utf8'));
+          assert.equal(update.versionCode, changelog.latest.versionCode);
+          assert.equal(update.versionName, changelog.latest.versionName);
+          assert.equal(update.tag, changelog.latest.tag);
+          NODE
+          mkdir _site
+          cp update.json changelog.json _site/
+          cp -R assets _site/assets
+          printf '%s\n' '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://amcl.lovedhy.cn/"><title>AMCL</title><a href="https://amcl.lovedhy.cn/">AMCL 官网</a></html>' > _site/index.html
+          printf '%s\n' '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://amcl.lovedhy.cn/privacy-policy.html"><title>AMCL 隐私政策</title><a href="https://amcl.lovedhy.cn/privacy-policy.html">隐私政策</a></html>' > _site/privacy-policy.html
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

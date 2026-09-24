@@ -28,6 +28,8 @@ AMCL 在 HarmonyOS NEXT 上管理和启动 Minecraft Java Edition，提供版本
 | [`changelog.json`](changelog.json) | 应用版本变更数据 |
 | [`assets/agc-icon-216.png`](assets/agc-icon-216.png) | AMCL 图标 |
 
+GitHub Pages 只部署更新清单、更新日志和图标，首页与旧隐私页跳转到官网。公开源码通过本仓库拉取；Pages 发布不需要初始化第三方子模块。
+
 ## 从源码构建
 
 工程根目录是 [`MyApplication/`](MyApplication/)，应当在 DevEco Studio 中打开这个目录。首次拉取需要准备锁定的第三方源码和 Java 依赖；仅下载 GitHub 源码 ZIP 不会包含 Git 子模块工作树和提交身份。
