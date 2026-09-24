@@ -1,0 +1,196 @@
+/** 直接编译完整生产WSI，并嵌入当前生产surface探针。替身仅位于驱动与NativeWindow
+ * 入口，调用均从公开GIPA/GDPA进入，验证实际提交参数、重建、作用域和资源退休。
+ * 不访问真实GPU；支持位与方向矩阵由驱动替身明确提供，不能当作实机结果。
+ */
+#include "@ROOT@/entry/src/main/cpp/tests/host/host_test_check.h"
+#include "@ROOT@/entry/src/main/cpp/platform/graphics_capability.h"
+#include <sstream>
+@WSI@
+
+namespace driver {
+const auto instance=reinterpret_cast<VkInstance>(0x2100);
+const auto physical=reinterpret_cast<VkPhysicalDevice>(0x2200);
+const auto device=reinterpret_cast<VkDevice>(0x2300);
+void* window=reinterpret_cast<void*>(0x2400);
+uint64_t generation=1, nextSurface=0x3000, nextSwapchain=0x4000;
+unsigned references=0, tokens=0, creates=0, capsCalls=0;
+bool omitCaps=false, raceProbe=false;
+VkResult capsStatus=VK_SUCCESS;
+VkSurfaceCapabilitiesKHR capabilities{};
+VkSwapchainCreateInfoKHR submitted{};
+
+// 同一个broker供真实WSI和探针使用；探针结束及游戏surface销毁后必须回到零引用/零token。
+int acquire(void*,uint64_t,void** p,int* width,int* height,uint64_t* g){
+    ++references;*p=window;*width=2688;*height=1216;*g=generation;return 1;
+}
+void release(void* p){CHECK(p==window && references>0);--references;}
+uint64_t peek(){return generation;}
+int claim(void* p,uint64_t g,uint32_t api,uint64_t* token){
+    if(p!=window || g!=generation || api!=2 || tokens)return 0;
+    ++tokens;*token=1;return 1;
+}
+int releaseToken(uint64_t token){CHECK(tokens==1 && token==1);--tokens;return 1;}
+AmclNativeWindowLeaseBrokerV2 broker{2,sizeof(AmclNativeWindowLeaseBrokerV2),acquire,release,
+    nullptr,nullptr,peek,nullptr,claim,nullptr,releaseToken};
+VKAPI_ATTR VkResult VKAPI_CALL createSurface(VkInstance,const SurfaceCreateInfo* info,const VkAllocationCallbacks*,VkSurfaceKHR* out){
+    CHECK(info->window==window && references==1 && tokens==1);
+    *out=reinterpret_cast<VkSurfaceKHR>(++nextSurface);return VK_SUCCESS;
+}
+VKAPI_ATTR void VKAPI_CALL destroySurface(VkInstance,VkSurfaceKHR,const VkAllocationCallbacks*){CHECK(references==1 && tokens==1);}
+VKAPI_ATTR VkResult VKAPI_CALL getCaps(VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR* out){
+    ++capsCalls;*out=capabilities;if(raceProbe)++generation;return capsStatus;
+}
+VKAPI_ATTR VkResult VKAPI_CALL formats(VkPhysicalDevice,VkSurfaceKHR,uint32_t* count,VkSurfaceFormatKHR* out){
+    *count=1;if(out)*out={VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};return VK_SUCCESS;
+}
+VKAPI_ATTR VkResult VKAPI_CALL modes(VkPhysicalDevice,VkSurfaceKHR,uint32_t* count,VkPresentModeKHR* out){
+    *count=1;if(out)*out=VK_PRESENT_MODE_FIFO_KHR;return VK_SUCCESS;
+}
+VKAPI_ATTR void VKAPI_CALL queues(VkPhysicalDevice,uint32_t* count,VkQueueFamilyProperties* out){
+    *count=1;if(out){*out={};out->queueCount=1;out->queueFlags=VK_QUEUE_GRAPHICS_BIT;}
+}
+VKAPI_ATTR VkResult VKAPI_CALL support(VkPhysicalDevice,uint32_t,VkSurfaceKHR,VkBool32* out){*out=VK_TRUE;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL enumerate(VkInstance,uint32_t* count,VkPhysicalDevice* out){*count=1;if(out)*out=physical;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL createDevice(VkPhysicalDevice,const VkDeviceCreateInfo*,const VkAllocationCallbacks*,VkDevice* out){*out=device;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL createSwapchain(VkDevice,const VkSwapchainCreateInfoKHR* info,const VkAllocationCallbacks*,VkSwapchainKHR* out){
+    ++creates;submitted=*info;*out=reinterpret_cast<VkSwapchainKHR>(++nextSwapchain);return VK_SUCCESS;
+}
+VKAPI_ATTR void VKAPI_CALL destroySwapchain(VkDevice,VkSwapchainKHR,const VkAllocationCallbacks*){}
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL deviceProc(VkDevice,const char* name){
+    if(!std::strcmp(name,"vkCreateSwapchainKHR"))return reinterpret_cast<PFN_vkVoidFunction>(createSwapchain);
+    if(!std::strcmp(name,"vkDestroySwapchainKHR"))return reinterpret_cast<PFN_vkVoidFunction>(destroySwapchain);
+    return nullptr;
+}
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL loader(VkInstance,const char* name){
+#define ENTRY(label, fn) if(!std::strcmp(name,label))return reinterpret_cast<PFN_vkVoidFunction>(fn)
+    ENTRY("vkGetInstanceProcAddr",loader);ENTRY("vkGetDeviceProcAddr",deviceProc);
+    ENTRY("vkEnumeratePhysicalDevices",enumerate);ENTRY("vkCreateDevice",createDevice);
+    ENTRY("vkCreateSurfaceOHOS",createSurface);ENTRY("vkDestroySurfaceKHR",destroySurface);
+    if(!omitCaps){ENTRY("vkGetPhysicalDeviceSurfaceCapabilitiesKHR",getCaps);}
+    ENTRY("vkGetPhysicalDeviceSurfaceFormatsKHR",formats);ENTRY("vkGetPhysicalDeviceSurfacePresentModesKHR",modes);
+    ENTRY("vkGetPhysicalDeviceQueueFamilyProperties",queues);ENTRY("vkGetPhysicalDeviceSurfaceSupportKHR",support);
+#undef ENTRY
+    return nullptr;
+}
+void resetCaps(uint32_t current,uint32_t supported=0x1ffu){
+    capabilities={};capabilities.currentTransform=static_cast<VkSurfaceTransformFlagBitsKHR>(current);
+    capabilities.supportedTransforms=supported;capabilities.currentExtent={2688,1216};
+    capabilities.minImageExtent={1,1};capabilities.maxImageExtent={8192,8192};capabilities.maxImageArrayLayers=1;
+    capabilities.minImageCount=2;capabilities.maxImageCount=4;
+    capabilities.supportedUsageFlags=VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    capabilities.supportedCompositeAlpha=VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+}
+}
+
+namespace probe_test {
+#define AMCL_HAVE_VULKAN_OHOS 1
+using VkSurfaceCreateInfoOHOS=SurfaceCreateInfo;
+using PFN_vkCreateSurfaceOHOS=CreateSurfaceFn;
+using OHNativeWindow=void;
+constexpr auto kStypeSurfaceCreateInfoOHOS=kSurfaceType;
+using amcl::graphics::CapabilityEvidence;
+struct VkScanResult {
+    CapabilityEvidence surfaceEvidence=CapabilityEvidence::NotRun,presentEvidence=CapabilityEvidence::NotRun;
+    CapabilityEvidence surfaceOrientationEvidence=CapabilityEvidence::NotRun;
+    uint64_t surfaceGeneration=0;
+    std::string surfaceReason,surfaceContractDetail;
+    bool surfaceContractQueried=false,sdlSurfaceContract=false;
+};
+int glfwOHOS_AcquireNativeWindowSnapshot(void*,uint64_t,void*,void** p,int* w,int* h,uint64_t* g,void** broker){
+    *broker=&driver::broker;return driver::acquire(nullptr,0,p,w,h,g);
+}
+void glfwOHOS_ReleaseNativeWindowLease(void* window,void*){driver::release(window);}
+std::string toHex(uint32_t n){std::ostringstream out;out<<"0x"<<std::hex<<n;return out.str();}
+@PROBE@
+}
+
+int main(){
+    using namespace driver;
+    CHECK(amclVulkanSetLoader(reinterpret_cast<void*>(loader)));
+    // 真实探针必须在无游戏surface时获取/退休临时租约，方向失败也不得遗留独占呈现权。
+    for(uint32_t turn : {1u,2u,4u,8u}){
+        resetCaps(turn);probe_test::VkScanResult scan;
+        probe_test::probeQueuePresentation(instance,physical,loader,scan);
+        CHECK(scan.surfaceOrientationEvidence==amcl::graphics::CapabilityEvidence::Yes && scan.sdlSurfaceContract);
+        CHECK(scan.surfaceContractDetail.find("selectedPreTransform=0x1")!=std::string::npos);
+        CHECK(references==0 && tokens==0);
+    }
+    resetCaps(2,2);probe_test::VkScanResult blocked;
+    probe_test::probeQueuePresentation(instance,physical,loader,blocked);
+    CHECK(blocked.surfaceOrientationEvidence==amcl::graphics::CapabilityEvidence::No && !blocked.sdlSurfaceContract);
+    CHECK(blocked.surfaceReason=="native_vulkan_identity_transform_unavailable" && references==0 && tokens==0);
+    resetCaps(2);omitCaps=true;probe_test::VkScanResult missing;
+    probe_test::probeQueuePresentation(instance,physical,loader,missing);omitCaps=false;
+    CHECK(missing.surfaceOrientationEvidence==amcl::graphics::CapabilityEvidence::Unknown && references==0 && tokens==0);
+    capsStatus=VK_ERROR_DEVICE_LOST;probe_test::VkScanResult failed;
+    probe_test::probeQueuePresentation(instance,physical,loader,failed);capsStatus=VK_SUCCESS;
+    CHECK(failed.surfaceOrientationEvidence==amcl::graphics::CapabilityEvidence::Unknown && references==0 && tokens==0);
+    raceProbe=true;probe_test::VkScanResult raced;
+    probe_test::probeQueuePresentation(instance,physical,loader,raced);raceProbe=false;
+    CHECK(raced.surfaceOrientationEvidence==amcl::graphics::CapabilityEvidence::Unknown && references==0 && tokens==0);
+
+    // 实际物理设备/逻辑设备包装先建立映射；不直接向生产私有map塞测试数据。
+    auto enumerateFn=reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(amclVulkanGetInstanceProcAddr(instance,"vkEnumeratePhysicalDevices"));
+    uint32_t count=1;VkPhysicalDevice selected{};CHECK(enumerateFn(instance,&count,&selected)==VK_SUCCESS);
+    auto deviceFn=reinterpret_cast<PFN_vkCreateDevice>(amclVulkanGetInstanceProcAddr(instance,"vkCreateDevice"));
+    VkDevice logical{};CHECK(deviceFn(selected,nullptr,nullptr,&logical)==VK_SUCCESS);
+    auto createFn=reinterpret_cast<PFN_vkCreateSwapchainKHR>(amclVulkanGetDeviceProcAddr(logical,"vkCreateSwapchainKHR"));
+    auto destroyFn=reinterpret_cast<PFN_vkDestroySwapchainKHR>(amclVulkanGetDeviceProcAddr(logical,"vkDestroySwapchainKHR"));
+    auto destroySurfaceFn=reinterpret_cast<PFN_vkDestroySurfaceKHR>(amclVulkanGetInstanceProcAddr(instance,"vkDestroySurfaceKHR"));
+    for(bool sdl : {false,true}){
+        CHECK(amclVulkanSetAdmission(1,"minecraft-vulkan",sdl?"minecraft-26.3-sdl-vulkan-conservative-v1":"minecraft-26.2-conservative-v1"));
+        VkSurfaceKHR surface{};
+        if(sdl){
+            char encoded[96];std::snprintf(encoded,sizeof(encoded),"2:%p",static_cast<void*>(&broker));
+            publishEnv(AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV,encoded);
+            auto createSurfaceFn=reinterpret_cast<CreateSurfaceFn>(amclVulkanGetInstanceProcAddr(instance,"vkCreateSurfaceOHOS"));
+            SurfaceCreateInfo info{kSurfaceType,nullptr,0,window};CHECK(createSurfaceFn(instance,&info,nullptr,&surface)==VK_SUCCESS);
+        }else{
+            uint64_t raw=0;CHECK(amclVulkanCreateSurface(instance,13,&broker,nullptr,&raw)==VK_SUCCESS);
+            surface=reinterpret_cast<VkSurfaceKHR>(raw);
+        }
+        VkSwapchainKHR previous{};
+        for(uint32_t turn : {2u,8u,1u,4u}){
+            resetCaps(turn);
+            VkImageFormatListCreateInfo extension{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+            VkSwapchainCreateInfoKHR request{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+            request.surface=surface;request.preTransform=capabilities.currentTransform;
+            request.imageExtent=turn==1u?VkExtent2D{1216,2688}:VkExtent2D{2688,1216};
+            capabilities.currentExtent=request.imageExtent;
+            // 模拟游戏查询后显示再次旋转；策略必须消费本次能力，不依赖旧的请求角度。
+            if(turn==4u)request.preTransform=VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR;
+            const auto requestedTransform=request.preTransform;
+            request.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;request.imageUsage=VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            request.imageArrayLayers=1;request.minImageCount=3;request.imageFormat=VK_FORMAT_R8G8B8A8_UNORM;
+            request.presentMode=VK_PRESENT_MODE_FIFO_KHR;
+            request.oldSwapchain=previous;request.pNext=&extension;
+            VkSwapchainKHR next{};CHECK(createFn(logical,&request,nullptr,&next)==VK_SUCCESS && next);
+            CHECK(submitted.preTransform==VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+            CHECK(submitted.imageExtent.width==request.imageExtent.width && submitted.imageExtent.height==request.imageExtent.height);
+            CHECK(submitted.compositeAlpha==VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR && submitted.pNext==request.pNext);
+            CHECK(submitted.oldSwapchain==previous && submitted.imageUsage==request.imageUsage && submitted.imageFormat==request.imageFormat);
+            CHECK(request.preTransform==requestedTransform && request.compositeAlpha==VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+            if(previous)destroyFn(logical,previous,nullptr);previous=next;
+        }
+        VkSwapchainCreateInfoKHR rejected{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+        rejected.surface=surface;rejected.preTransform=VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR;
+        rejected.imageExtent={2688,1216};rejected.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        const auto callsBefore=creates;VkSwapchainKHR unused{};
+        resetCaps(2,2);CHECK(createFn(logical,&rejected,nullptr,&unused)==VK_ERROR_INITIALIZATION_FAILED && creates==callsBefore);
+        resetCaps(0);CHECK(createFn(logical,&rejected,nullptr,&unused)==VK_ERROR_INITIALIZATION_FAILED && creates==callsBefore);
+        resetCaps(2);capsStatus=VK_ERROR_DEVICE_LOST;
+        CHECK(createFn(logical,&rejected,nullptr,&unused)==VK_ERROR_DEVICE_LOST && creates==callsBefore);capsStatus=VK_SUCCESS;
+        destroyFn(logical,previous,nullptr);destroySurfaceFn(instance,surface,nullptr);
+        CHECK(references==0 && tokens==0);
+    }
+    // 未受管surface即使自行预旋转也不得被Minecraft策略修改，且不能多查一次驱动caps。
+    VkSwapchainCreateInfoKHR foreign{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    foreign.surface=reinterpret_cast<VkSurfaceKHR>(0x9999);foreign.preTransform=VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR;
+    foreign.imageExtent={1216,2688};foreign.compositeAlpha=VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    foreign.imageUsage=VK_IMAGE_USAGE_TRANSFER_DST_BIT;foreign.imageArrayLayers=1;foreign.minImageCount=3;
+    foreign.imageFormat=VK_FORMAT_R8G8B8A8_UNORM;foreign.presentMode=VK_PRESENT_MODE_FIFO_KHR;
+    const auto beforeCaps=capsCalls;VkSwapchainKHR out{};CHECK(createFn(logical,&foreign,nullptr,&out)==VK_SUCCESS);
+    CHECK(submitted.preTransform==foreign.preTransform && submitted.imageExtent.width==1216 && submitted.imageExtent.height==2688);
+    CHECK(submitted.compositeAlpha==foreign.compositeAlpha && capsCalls==beforeCaps);destroyFn(logical,out,nullptr);
+    std::cout<<"Vulkan orientation PASS: production probe, GLFW/SDL public dispatch, rotation/rebuild, extent preservation, unsupported/failure cleanup, foreign passthrough\n";
+}

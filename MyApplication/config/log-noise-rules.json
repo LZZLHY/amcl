@@ -1,0 +1,132 @@
+{
+  "$doc": "游戏日志「已知无害噪声」白名单的单一事实源。commons/src/main/ets/utils/LogNoiseFilter.ets 持有运行时镜像，两者由 scripts/check-log-noise-rules.mjs 逐字段比对，该门禁同时在 scripts/fixtures/log-noise/ 的语料上跑正反回归。",
+  "$conventions": [
+    "needle 必须全小写：匹配方对整行 toLowerCase 之后做 indexOf。",
+    "needle 必须足够特异。噪声总体是**用户模组列表的函数**，不是常量 —— 过宽的 needle 会吃掉别人的真实错误，而那种误杀在日志里是看不见的。",
+    "reason 要能回答「为什么它在游戏正常可玩的会话里也会出现」。写不出这句话就不该加这条规则。",
+    "dropStack=true 会连带吞掉紧随其后的 Java 堆栈续行，只给异常型噪声用。",
+    "evidence 记这条规则是在哪份语料上标定的。前提变了要回来重标（AGENTS §二.7）。"
+  ],
+  "version": 2,
+  "rules": [
+    {
+      "id": "lwjgl-native-version-selfcheck",
+      "needle": "incompatible java and native library versions",
+      "dropStack": false,
+      "reason": "AMCL 在 OHOS 上统一打包定制 LWJGL 并替换官方 jar，LWJGL 自带的 jar↔native 配对自检必然告警；游戏照常运行",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "narrator-flite-missing",
+      "needle": "unable to load library 'flite'",
+      "dropStack": true,
+      "reason": "OHOS 无 flite 旁白语音库，Narrator 初始化失败被 MC 自行捕获，不影响游戏",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "narrator-flite-library",
+      "needle": "libflite",
+      "dropStack": true,
+      "reason": "OHOS 无 flite 旁白语音库；这条曾被 matchMissingFile 误判成「游戏文件缺失」并建议重下版本。缺失在日志里至少有 4 种措辞，逐条写规则首轮就漏了 JNA 的变体，故直接按库名匹配",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "narrator-init-exception",
+      "needle": "narrator$initializeexception",
+      "dropStack": true,
+      "reason": "Narrator 初始化异常，MC 内部已捕获并降级为无旁白",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "narrator-load-error",
+      "needle": "error while loading the narrator",
+      "dropStack": false,
+      "reason": "同 narrator-init-exception，MC 自己打的 ERROR 行，非致命",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "realms-service-exception",
+      "needle": "realmsserviceexception",
+      "dropStack": true,
+      "reason": "Realms 是可选联网功能，未登录正版 / 网络不通时必然失败，不影响单人游戏",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "realms-not-authorized",
+      "needle": "could not authorize you against realms",
+      "dropStack": false,
+      "reason": "同 realms-service-exception（HTTP 401）。真机上它是本局日志的最后一行，旧实现把它当成崩溃原因展示给用户",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "realms-feature-flags",
+      "needle": "failed to fetch realms feature flags",
+      "dropStack": false,
+      "reason": "同 realms-service-exception",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "realms-connect-failed",
+      "needle": "couldn't connect to realms",
+      "dropStack": false,
+      "reason": "同 realms-service-exception",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "user-properties-not-authorized",
+      "needle": "failed to fetch user properties",
+      "dropStack": true,
+      "reason": "Minecraft 后台可选用户属性请求在离线/占位账户下返回 HTTP 401，不影响渲染或单人游戏",
+      "evidence": "2026-09-13 WRIMjjv.log / 26.3-rc-2"
+    },
+    {
+      "id": "user-properties-invalid-credentials",
+      "needle": "invalidcredentialsexception: status: 401",
+      "dropStack": true,
+      "reason": "与 failed to fetch user properties 同一后台可选请求的异常顶行，属于离线/占位账户的非致命 401",
+      "evidence": "2026-09-13 WRIMjjv.log / 26.3-rc-2"
+    },
+    {
+      "id": "procfs-stat-unreadable",
+      "needle": "not readable: /proc/stat",
+      "dropStack": false,
+      "reason": "应用沙箱无权读 /proc/stat，OSHI 之类的硬件探测必然失败，不影响游戏",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "sysfs-cpu-access-denied",
+      "needle": "/sys/devices/system/cpu",
+      "dropStack": true,
+      "reason": "沙箱无权读 CPU 拓扑，抛 AccessDeniedException 后被上层捕获",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "log4j-no-tty",
+      "needle": "advanced terminal features are not available",
+      "dropStack": false,
+      "reason": "无 TTY 环境下 log4j 的正常提示",
+      "evidence": "2026-07-30 MRDI-W10 / 26.1.2-neoforge-26.1.2.87"
+    },
+    {
+      "id": "glfw-diag-poll",
+      "needle": "[glfw-diag] poll#",
+      "dropStack": false,
+      "reason": "AMCL 自己的每帧诊断输出，纯噪声（native 侧已过滤一部分，这里兜底）。1000183/1000202 的教训就是它把 Stopping! 挤出尾部，导致正常退出被误判成崩溃",
+      "evidence": "2026-06 真机，1000183 / 1000202"
+    },
+    {
+      "id": "mg-frame-telemetry",
+      "needle": "[mg-frame-",
+      "dropStack": false,
+      "reason": "MobileGlues 呈现边界帧遥测（[MG-FRAME-STATS] / [MG-FRAME-TRACE]），6 行/秒、2,322 B/秒。1000591 已把它关出出货包，但这条规则仍然必须存在：用户手上装着 ≤1000590 的包，诊断链读的是那些历史日志 —— 关掉编译开关不会让已经写下的行消失",
+      "evidence": "2026-09-05 调研 §6.1：用户 2026-09-03 上报的 mc_output.log，1,092 / 1,642 行是帧遥测（66.5%）"
+    },
+    {
+      "id": "mod-online-data-expired",
+      "needle": "online mod data expired",
+      "dropStack": false,
+      "reason": "Xaero 系及同族模组按期检查作者的联网数据，过期即打一行。⚠️ 本表第一条不是在标定设备上采到的规则，它来自一位装了 133 个模组的用户，正是「噪声总体是用户模组列表的函数」的实证；同一条措辞在 WARN 与 [Render thread/ERROR] 两个级别都出现过，游戏停在标题界面照常可玩",
+      "evidence": "2026-09-05 调研 §6.3：剥离后幸存的 7 行里有 3 行属于本族，其中一行是 ERROR 级"
+    }
+  ]
+}

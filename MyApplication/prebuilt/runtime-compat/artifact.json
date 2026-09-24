@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "sha256": "34b2efcf5b7b6edc335ef1d70f663cad5b230e394a263a48be1e757f7fb1457d",
+  "size": 7995,
+  "sources": [
+    {
+      "path": "scripts/build-game-compat.py",
+      "sha256": "d3774fcc12d5b01e77219e365f6b2cdd9bbb169bee6c9cb2d4481e396b8fa1e2"
+    },
+    {
+      "path": "prebuilt/runtime-compat/lib/sources.json",
+      "sha256": "ffd07f1de729fef8a3c371a649b8b0149ba9ba7ff0e753f9bbaf633955ac34c7"
+    },
+    {
+      "path": "prebuilt/runtime-compat/src/com/amcl/compat/CompatMixinPlugin.java",
+      "sha256": "5d1519dfa141e90d4d496de4602c5c840ffb53c65b4690dbaaf1e046993133de"
+    },
+    {
+      "path": "prebuilt/runtime-compat/src/com/amcl/compat/DeferredResize.java",
+      "sha256": "4ef71f492b1e3e0ef937ce5288e14119d946f519869d714ad537e553f11cf4ca"
+    },
+    {
+      "path": "prebuilt/runtime-compat/src/com/amcl/compat/mixin/CreateFlyLevelUniformsMixin.java",
+      "sha256": "e7cc29456aa148a39022947fe3ff3fdd81ba3e4c510eabfa8a6a53e69e59ca78"
+    },
+    {
+      "path": "prebuilt/runtime-compat/src/com/amcl/compat/mixin/CreateFlyStagingBufferMixin.java",
+      "sha256": "6a08eaed7b743187864e7ea54df7c52fa3b63b2cc0f1c25ae430090c8e06bc5f"
+    },
+    {
+      "path": "prebuilt/runtime-compat/src/com/amcl/compat/mixin/MinecraftResizeMixin.java",
+      "sha256": "00fde4d4282a13f98d437b7a83789d12ee44a097db2f9c61cc230a42915c7d0e"
+    },
+    {
+      "path": "prebuilt/runtime-compat/resources/amcl-runtime-compat.mixins.json",
+      "sha256": "564493628e4a91bf69f4f2758102339d4382fac72c3e460865e7d7a1c2a3ee2d"
+    },
+    {
+      "path": "prebuilt/runtime-compat/resources/fabric.mod.json",
+      "sha256": "1aef0d247b93abb68d24526af8dfa790919a4c0f7e5e0d0322db87aaad53a76e"
+    }
+  ]
+}

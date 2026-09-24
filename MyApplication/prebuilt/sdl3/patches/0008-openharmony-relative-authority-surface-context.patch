@@ -1,0 +1,369 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index a7e61e2..2c23e4c 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -158,6 +158,7 @@
+ #define AMCL_BACKEND_EVENT_CAPTURE 6u
+ #define AMCL_BACKEND_EVENT_RELATIVE 7u
+ #define AMCL_BACKEND_EVENT_DEVICE 8u
++#define AMCL_BACKEND_EVENT_SURFACE_CONTEXT 9u
+ #define AMCL_BACKEND_EVENT_TEXT_SESSION 10u
+ #define AMCL_BACKEND_EVENT_TEXT_COMMIT 11u
+ #define AMCL_BACKEND_EVENT_TEXT_EDITING 12u
+@@ -171,12 +172,23 @@
+ #define AMCL_BACKEND_RELATIVE_FLAG_MASK AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW
+ #define AMCL_CAPTURE_REASON_NONE 0u
+ #define AMCL_CAPTURE_REASON_GRANTED 1u
++#define AMCL_CAPTURE_REASON_MAX 8u
+ #define AMCL_DEVICE_ADDED 1
+ #define AMCL_DEVICE_REMOVED 2
+ #define AMCL_DEVICE_CLASS_UNKNOWN 0u
+ #define AMCL_DEVICE_CLASS_MOUSE 1u
+ #define AMCL_DEVICE_CLASS_TOUCHPAD 2u
+ #define AMCL_DEVICE_CAP_MASK 0xffu
++#define AMCL_SURFACE_CONTEXT_FIELD_WINDOW (1u << 0)
++#define AMCL_SURFACE_CONTEXT_FIELD_DISPLAY (1u << 1)
++#define AMCL_SURFACE_CONTEXT_FIELD_RECT (1u << 2)
++#define AMCL_SURFACE_CONTEXT_FIELD_DENSITY (1u << 3)
++#define AMCL_SURFACE_CONTEXT_FIELD_TRANSFORM (1u << 4)
++#define AMCL_SURFACE_CONTEXT_FIELD_REFRESH_RATE (1u << 5)
++#define AMCL_SURFACE_CONTEXT_FIELD_ALL 0x3fu
++#define AMCL_RELATIVE_DISABLE_NONE 0u
++#define AMCL_RELATIVE_DISABLE_FOCUS_LOST 1u
++#define AMCL_RELATIVE_DISABLE_CAPTURE_LOST 2u
+ #define AMCL_BACKEND_ACTION_UP 3u
+ #define AMCL_BACKEND_ACTION_DOWN 1u
+ #define AMCL_BACKEND_ACTION_REPEAT 2u
+@@ -315,6 +327,12 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+             } else if (event->action == 0u &&
+                        event->resetReason == AMCL_CAPTURE_REASON_GRANTED) {
+                 reason = "capture-inactive-granted";
++            } else if (event->action == 0u && event->code == 0 &&
++                       event->resetReason != AMCL_CAPTURE_REASON_NONE) {
++                reason = "capture-release-reason";
++            } else if (event->action == 0u && event->code != 0 &&
++                       event->resetReason > AMCL_CAPTURE_REASON_MAX) {
++                reason = "capture-loss-reason";
+             }
+             break;
+ 
+@@ -339,6 +357,36 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+             }
+             break;
+ 
++        case AMCL_BACKEND_EVENT_SURFACE_CONTEXT: {
++            const Uint32 valid_fields = (Uint32)(event->monotonicTimeNs & 0xffffffffu);
++            const Uint32 transform = (Uint32)(event->monotonicTimeNs >> 32u);
++            if (event->deviceId == 0u ||
++                (valid_fields & ~AMCL_SURFACE_CONTEXT_FIELD_ALL) != 0u) {
++                reason = "surface-context-header";
++            } else if ((valid_fields & AMCL_SURFACE_CONTEXT_FIELD_WINDOW) != 0u &&
++                       event->code <= 0) {
++                reason = "surface-context-window";
++            } else if ((valid_fields & AMCL_SURFACE_CONTEXT_FIELD_DISPLAY) != 0u &&
++                       event->rawCode < 0) {
++                reason = "surface-context-display";
++            } else if ((valid_fields & AMCL_SURFACE_CONTEXT_FIELD_RECT) != 0u &&
++                       (event->lockState == 0u || event->resetReason == 0u)) {
++                reason = "surface-context-rect";
++            } else if ((valid_fields & AMCL_SURFACE_CONTEXT_FIELD_DENSITY) != 0u &&
++                       (isnan(event->wheelX) || isinf(event->wheelX) ||
++                        event->wheelX <= 0.0f)) {
++                reason = "surface-context-density";
++            } else if ((valid_fields & AMCL_SURFACE_CONTEXT_FIELD_TRANSFORM) != 0u &&
++                       transform > 3u) {
++                reason = "surface-context-transform";
++            } else if ((valid_fields & AMCL_SURFACE_CONTEXT_FIELD_REFRESH_RATE) != 0u &&
++                       (isnan(event->wheelY) || isinf(event->wheelY) ||
++                        event->wheelY <= 0.0f || event->wheelY > 1000.0f)) {
++                reason = "surface-context-refresh";
++            }
++            break;
++        }
++
+         case AMCL_BACKEND_EVENT_TEXT_SESSION:
+             if (event->deviceId == 0u ||
+                 event->code < (Sint32)AMCL_TEXT_SESSION_STARTED ||
+@@ -629,8 +677,11 @@ static bool host_last_grabbing;
+ static bool host_baseline_valid;
+ static bool host_capture_requested;
+ static bool host_capture_active;
++static Uint32 host_relative_disable_authority;
+ static bool host_presented_active;
+ static bool host_deactivation_draining;
++static Uint64 host_surface_context_generation;
++static Uint64 host_unclassified_relative_release_count;
+ static SDL_AtomicInt host_bridge_pid;
+ 
+ static SDL_VideoData *OPENHARMONY_AMCL_GetVideoData(void);
+@@ -714,8 +765,11 @@ static void OPENHARMONY_ResetHostBridgeForPid(void)
+         host_baseline_valid = false;
+         host_capture_requested = false;
+         host_capture_active = false;
++        host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
+         host_presented_active = false;
+         host_deactivation_draining = false;
++        host_surface_context_generation = 0u;
++        host_unclassified_relative_release_count = 0u;
+         host_typed_attempts = 0;
+         SDL_SetAtomicInt(&host_typed_state, AMCL_TYPED_UNRESOLVED);
+         amcl_typed_malformed_events = 0;
+@@ -1494,11 +1548,17 @@ static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
+ // legacy path below has to run OPENHARMONY_ScancodeFromGlfwKey, which means the
+ // same key was translated twice and the platform's own scan code was already
+ // discarded by the first hop.
+-static void OPENHARMONY_DisableRelativeModeForHostLoss(void)
++static void OPENHARMONY_DisableRelativeModeForHostLoss(Uint32 authority)
+ {
+-    if (SDL_GetRelativeMouseMode() && !SDL_SetRelativeMouseMode(false)) {
++    if (!SDL_GetRelativeMouseMode()) {
++        return;
++    }
++    host_relative_disable_authority = authority;
++    const bool disabled = SDL_SetRelativeMouseMode(false);
++    host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
++    if (!disabled) {
+         SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
+-                    "openharmony: failed to leave relative mode after host capture loss: %s",
++                    "openharmony: failed to leave relative mode after host lifecycle loss: %s",
+                     SDL_GetError());
+     }
+ }
+@@ -1520,7 +1580,13 @@ static bool OPENHARMONY_ApplyTypedFocus(SDL_WindowID window_id, bool focused)
+     }
+ 
+     if (SDL_GetKeyboardFocus() == window) {
++        host_relative_disable_authority = AMCL_RELATIVE_DISABLE_FOCUS_LOST;
+         SDL_SetKeyboardFocus(NULL);
++        host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
++        if (SDL_GetRelativeMouseMode()) {
++            OPENHARMONY_DisableRelativeModeForHostLoss(
++                AMCL_RELATIVE_DISABLE_FOCUS_LOST);
++        }
+     }
+     window = OPENHARMONY_AMCL_GetLiveInputWindow(window_id);
+     if (!window) {
+@@ -1544,7 +1610,30 @@ static void OPENHARMONY_ApplyTypedCapture(
+         (!host_capture_active &&
+          event->resetReason != AMCL_CAPTURE_REASON_NONE)) {
+         host_baseline_valid = false;
+-        OPENHARMONY_DisableRelativeModeForHostLoss();
++        OPENHARMONY_DisableRelativeModeForHostLoss(
++            AMCL_RELATIVE_DISABLE_CAPTURE_LOST);
++        return;
++    }
++
++    /* A granted capture can arrive after focus/lifecycle handling suspended
++     * SDL's derived relative bit while the application's per-window request
++     * remained set.  Capture is an explicit recovery authority: restore the
++     * derived bit once, but only for the live focused presented window.  The
++     * driver hook observes that the bridge request is already true and keeps
++     * this just-granted active result instead of publishing a second request. */
++    SDL_Window *input_window = OPENHARMONY_AMCL_GetInputWindow();
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (host_capture_requested && host_capture_active &&
++        event->resetReason == AMCL_CAPTURE_REASON_GRANTED &&
++        host_presented_active && input_window && bridge &&
++        bridge->IsGrabbing && bridge->IsGrabbing() &&
++        SDL_GetKeyboardFocus() == input_window &&
++        (input_window->flags & SDL_WINDOW_MOUSE_RELATIVE_MODE) != 0 &&
++        !SDL_GetRelativeMouseMode() &&
++        !SDL_SetRelativeMouseMode(true)) {
++        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
++                    "openharmony: failed to restore relative mode after capture grant: %s",
++                    SDL_GetError());
+     }
+ }
+ 
+@@ -1723,9 +1812,11 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+             SDL_ResetKeyboard();
+             OPENHARMONY_ReleaseHeldMouseButtons(false, 0);
+             SDL_SendEditingText("", 0, 0);
+-            host_capture_requested = false;
+-            host_capture_active = false;
+-            OPENHARMONY_DisableRelativeModeForHostLoss();
++            /* RESET is a held-state boundary, not capture authority.  Focus,
++             * capture and surface lifecycle records carry their own ordered
++             * facts; collapsing every queue/baseline/device reset into a
++             * relative-mode release desynchronizes the application's retained
++             * per-window request from SDL and the host grab owner. */
+             host_baseline_valid = false;
+             break;
+ 
+@@ -1769,6 +1860,16 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+             break;
+         }
+ 
++        case AMCL_BACKEND_EVENT_SURFACE_CONTEXT:
++            /* Geometry is already consumed through the versioned NativeWindow
++             * broker.  Retain the generation only to make the additive typed
++             * ABI record an accepted, observable fact instead of treating a
++             * valid host event as malformed input. */
++            if (event.deviceId > host_surface_context_generation) {
++                host_surface_context_generation = event.deviceId;
++            }
++            break;
++
+         case AMCL_BACKEND_EVENT_TEXT_SESSION:
+             if (event.code == (Sint32)AMCL_TEXT_SESSION_ENDED ||
+                 event.code == (Sint32)AMCL_TEXT_SESSION_ABORTED) {
+@@ -2093,6 +2194,42 @@ void OPENHARMONY_AMCL_UpdatePresentedForeground(void)
+     if (should_be_active != host_presented_active) {
+         OPENHARMONY_AMCL_SetPresentedActive(should_be_active);
+     }
++    if (window && window->internal &&
++        window->internal->role == OPENHARMONY_WINDOW_PRESENTED &&
++        (window->flags & SDL_WINDOW_MOUSE_RELATIVE_MODE) == 0) {
++        /* SDL_SetWindowRelativeMouseMode(false) clears the per-window request
++         * before updating the global derived bit.  If host loss had already
++         * made that global bit false, SDL correctly skips the driver hook; the
++         * bridge request would otherwise remain true forever.  Reconcile that
++         * one missed app-release edge from current state.  SetGrabState(0) is
++         * idempotent and makes the next pass a no-op, so this cannot become a
++         * periodic release loop. */
++        OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++        if (bridge && bridge->SetGrabState && bridge->IsGrabbing &&
++            bridge->IsGrabbing()) {
++            host_capture_requested = false;
++            host_capture_active = false;
++            host_baseline_valid = false;
++            bridge->SetGrabState(0);
++            SDL_Log("openharmony: reconciled application relative-mode release "
++                    "after host suspension");
++        }
++    }
++    if (should_be_active && host_presented_active) {
++        /* SDL focus is derived state for a host-injected presented window.  A
++         * generic SDL mouse/focus path may clear it without an Ability,
++         * XComponent or broker loss.  Reconcile from the same current-state
++         * predicate that owns activation; SDL_SetKeyboardFocus also restores
++         * a still-requested per-window relative mode. */
++        const SDL_WindowID window_id = window->id;
++        if (SDL_GetKeyboardFocus() != window) {
++            SDL_SetKeyboardFocus(window);
++            window = SDL_GetWindowFromID(window_id);
++        }
++        if (window && window->internal && SDL_GetMouseFocus() != window) {
++            SDL_SetMouseFocus(window);
++        }
++    }
+ #else
+     /* OpenHarmony's supported build always has EGL; keep the internal helper
+      * harmless for reduced test configurations. */
+@@ -2109,16 +2246,82 @@ void OPENHARMONY_AMCL_UpdatePresentedForeground(void)
+ 
+ static bool OPENHARMONY_SetRelativeMouseMode(bool enabled)
+ {
+-    if (!host_presented_active || !OPENHARMONY_AMCL_GetInputWindow()) {
++    const Uint32 disable_authority = host_relative_disable_authority;
++    if (!enabled) {
++        /* Authority is scoped to exactly one core->driver disable attempt,
++         * including attempts made while the presented window is disappearing. */
++        host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
++    }
++    SDL_VideoDevice *video = SDL_GetVideoDevice();
++    const bool driver_teardown = video && video->is_quitting;
++    const bool message_box = SDL_GetMessageBoxCount() > 0;
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    SDL_Window *input_window = OPENHARMONY_AMCL_GetInputWindow();
++
++    if (!enabled && disable_authority != AMCL_RELATIVE_DISABLE_NONE) {
++        /* Focus/capture loss suspends only SDL's derived active bit.  The SDL
++         * per-window flag and bridge grabbed value both remain the application's
++         * request; the typed CAPTURE tuple independently carries host-active. */
++        host_capture_active = false;
++        host_baseline_valid = false;
++        SDL_Log("openharmony: suspended relative mode for host authority=%u; "
++                "the application request remains active",
++                disable_authority);
++        return true;
++    }
++
++    if (!enabled && driver_teardown) {
++        /* QuitMouse can run after the presented window vanished.  There is no
++         * request to preserve across driver teardown, so clear the process-wide
++         * bridge state whenever its symbol table is still reachable. */
++        host_capture_requested = false;
++        host_capture_active = false;
++        host_baseline_valid = false;
++        if (bridge && bridge->SetGrabState) {
++            bridge->SetGrabState(0);
++        }
++        SDL_Log("openharmony: accepted relative-mode release source=driver-teardown");
++        return true;
++    }
++
++    if (!host_presented_active || !input_window) {
+         return SDL_SetError("OpenHarmony: relative mouse mode requires an active presented window");
+     }
+-    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
+-    if (!bridge || !bridge->SetGrabState) {
++    if (!bridge || !bridge->SetGrabState || !bridge->IsGrabbing) {
+         return SDL_Unsupported();
+     }
+-    host_capture_requested = enabled;
+-    host_capture_active = false;
+-    bridge->SetGrabState(enabled ? 1 : 0);
++
++    if (!enabled &&
++        (input_window->flags & SDL_WINDOW_MOUSE_RELATIVE_MODE) != 0 &&
++        !message_box) {
++        ++host_unclassified_relative_release_count;
++        if (host_unclassified_relative_release_count == 1u ||
++            (host_unclassified_relative_release_count &
++             (host_unclassified_relative_release_count - 1u)) == 0u) {
++            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
++                        "openharmony: rejected unclassified relative-mode release "
++                        "while the presented request remains active count=%" SDL_PRIu64,
++                        host_unclassified_relative_release_count);
++        }
++        return SDL_SetError(
++            "OpenHarmony: relative-mode release lacks app or host lifecycle authority");
++    }
++    if (!enabled) {
++        SDL_Log("openharmony: accepted relative-mode release source=%s",
++                message_box ? "message-box" : "application");
++        host_capture_requested = false;
++        host_capture_active = false;
++        bridge->SetGrabState(0);
++    } else {
++        host_capture_requested = true;
++        /* A focus/capture recovery leaves the bridge request set.  Preserve an
++         * already granted host result and avoid a duplicate pending request;
++         * only a genuine application 0->1 transition starts a fresh capture. */
++        if (!bridge->IsGrabbing()) {
++            host_capture_active = false;
++            bridge->SetGrabState(1);
++        }
++    }
+     // Force a re-baseline: the host switches coordinate spaces on this call.
+     host_baseline_valid = false;
+     return true;
+@@ -2197,6 +2400,9 @@ void OPENHARMONY_AMCL_InitMouse(void)
+     host_presented_active = false;
+     host_capture_requested = false;
+     host_capture_active = false;
++    host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
++    host_surface_context_generation = 0u;
++    host_unclassified_relative_release_count = 0u;
+     SDL_Mouse *mouse = SDL_GetMouse();
+     if (!mouse) {
+         return;
+@@ -2223,6 +2429,17 @@ void OPENHARMONY_AMCL_QuitMouse(void)
+     // then discards every pending pre-present transaction and aligns the consumer to "now";
+     // neither a held button nor an old token may cross into the next SDL window generation.
+     OPENHARMONY_AMCL_SetPresentedActive(false);
++    /* SDL_QuitMouse() skips the backend false hook when host loss already made
++     * the global relative bit false.  Teardown nevertheless ends the retained
++     * application request, so clear the process-wide bridge explicitly. */
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (bridge && bridge->SetGrabState) {
++        bridge->SetGrabState(0);
++    }
++    host_capture_requested = false;
++    host_capture_active = false;
++    host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
++    host_baseline_valid = false;
+ }
+ 
+ // ===========================================================================

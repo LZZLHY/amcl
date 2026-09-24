@@ -1,0 +1,24 @@
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 7cb862d7c..096773525 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -527,7 +527,19 @@ void os::init_system_properties_values() {
+     if (pslash != nullptr) {
+       *pslash = '\0';            // Get rid of /{client|server|hotspot}.
+     }
++#ifdef __MUSL__
++    // OHOS PATCH: prefer SUN_BOOT_LIBRARY_PATH env var
++    {
++      const char* dll_dir_env = ::getenv("SUN_BOOT_LIBRARY_PATH");
++      if (dll_dir_env != nullptr && dll_dir_env[0] != '\0') {
++        Arguments::set_dll_dir(dll_dir_env);
++      } else {
++        Arguments::set_dll_dir(buf);
++      }
++    }
++#else
+     Arguments::set_dll_dir(buf);
++#endif
+ 
+     if (pslash != nullptr) {
+       pslash = strrchr(buf, '/');

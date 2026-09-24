@@ -1,0 +1,12 @@
+{
+  "name": "feature_system",
+  "version": "1.0.0",
+  "description": "AMCL 系统/平台域（system）：游戏存储位置、震动、存储探针、Vulkan 能力探针、相册保存、偏好设置。依赖 commons + feature_core；native 经 SystemNativeBridge 注入解耦。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons",
+    "feature_core": "file:../feature_core"
+  }
+}

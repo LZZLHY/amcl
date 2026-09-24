@@ -1,0 +1,405 @@
+# Define project specific obfuscation rules here.
+# You can include the obfuscation configuration files in the current module's build-profile.json5.
+#
+# For more details, see
+#   https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/source-obfuscation-V5
+
+# ============================================================
+# AMCL release 模式 obfuscation 规则
+# ============================================================
+# 本文件在 @entry/build-profile.json5 的 `obfuscation.ruleOptions.enable: true`
+# 时生效。release 构建打开下方 3 个 -enable-* flags。
+#
+# ⚠️  属性名混淆（-enable-property-obfuscation）已于 2026-08-22 关闭，不要再打开。
+#
+#   它会把 ArkTS 源码里的属性名改成短名（latest→n84、hits→o164），但**对象键名来自
+#   ArkTS 编译单元之外**的地方不会跟着改：HTTP 响应 JSON、Java/C++ 写出的文件、NAPI
+#   返回对象。于是 release 包里 `raw.latest` 读的是不存在的 `raw.n84` → 恒为 undefined。
+#   实测代价：版本列表 / 模组列表 / 加载器列表 / 整合包清单 / 微软-Xbox-Yggdrasil 登录
+#   全部在 release 里坏掉，而 debug 永远正常，报错还伪装成"请检查网络连接"。
+#   arkguard 只自动保留**写成字符串字面量**的属性名，所以 versions/data/id 侥幸能用、
+#   latest/hits 不能 —— 这种"一半能用"让问题更难认。
+#   完整证据：nameCache.json 的 PropertyCache + docs/guides/release-obfuscation-decision.md。
+#
+#   要重新打开必须先让 §A 的 -keep-property-name 覆盖全部 wire 字段，
+#   并让 scripts/check-wire-json-obfuscation.mjs 变绿。
+#
+# ⚠️  维护规则（新增 NAPI 函数时必读）：
+#
+#   C 侧通过 NAPI_FUNC("xxx", xxxImpl) 或 DL_NAPI_FUNC("xxx", Xxx) 把字符串名字
+#   写入 napi_property_descriptor，ArkTS 侧用 testNapi.xxx() 调用。属性名混淆一旦
+#   打开就会把 ArkTS 的属性名替换为短名，而 C 侧注册的字符串不变 → 调用找不到函数
+#   → 返回 undefined → 运行时静默失败。
+#
+#   §A 的 keep 清单**保留**（当前 dormant）：它是重新打开属性名混淆时唯一的保护，
+#   删掉等于无声移除保护。每次在任意 napi_*.cpp 或 download/download_napi.cpp 中
+#   注册新函数时，仍须同步在 §A 对应分组里追加函数名。
+#
+#   快速审计命令（在项目根执行）：
+#     node scripts/check-napi-obfuscation.mjs
+#     # C++ NAPI descriptor 与对象协议中的固定名字必须全部保留。
+#     node scripts/check-wire-json-obfuscation.mjs
+#     # 属性名混淆与"读外部 JSON"两者不能同时成立。
+#
+# ============================================================
+
+# Obfuscation options:
+-enable-toplevel-obfuscation
+-enable-filename-obfuscation
+-enable-export-obfuscation
+
+# ============================================================
+# §A — NAPI bridge：testNapi.<func> 调用的所有属性名（由脚本核对，禁止手工硬编码数量）
+#
+# 来源：entry/src/main/cpp/napi/ + entry/src/main/cpp/download/download_napi.cpp
+# 按源文件分组，便于维护。
+# ============================================================
+-keep-property-name
+# Desktop system bridge ABI
+desktopProcessId
+desktopGameProcessState
+desktopAttach
+desktopDetach
+desktopTakeCommand
+desktopCompleteCommand
+desktopPublishState
+desktopRequestClose
+desktopSetGamepadNativeMode
+desktopGamepadFocus
+getNativeGlCapability
+systemLibrary
+nativeGlValidationEnabled
+ready
+queryAvailable
+querySupported
+contextCreated
+pixelVerified
+bootstrapConfigured
+cleanupComplete
+cleanupError
+cleanupStage
+errorDomain
+restartRequired
+renderDiagnostics
+stage
+version
+vendor
+renderer
+error
+sequence
+generation
+kind
+a
+b
+c
+d
+text
+
+# --- xcomponent.cpp （kOhosRuntimeDescriptors：帧率调度提示）---
+# ⚠️ 这三个是**裸 napi_property_descriptor 初始化器**注册的，不经 NAPI_FUNC 宏。
+# check-napi-obfuscation.mjs 原先只认那两个宏，于是这三个名字**从未进过必需集合** ——
+# 门禁报 missing=0 对它们是空真，而 -enable-property-obfuscation 会把
+# `testNapi.setOhosFrameRateForeground` 重命名成不存在的属性，调用抛异常并被调用点的
+# `catch (e) { /* 老 native 兼容 */ }` 静默吞掉。⇒ 这三个接口在**所有 release 包里
+# 从来没工作过**（真机证据：帧率提示整场 active=0 foregroundMask=0，见计划 §80）。
+# 门禁已扩到按完整描述符形状识别；不要把这三行删掉。
+setOhosFrameRateForeground
+setOhosFrameRateCap
+refreshOhosFrameRateHint
+
+# --- napi_log.cpp （日志系统）---
+amclLogFlush
+amclLogGetStatus
+amclLogGetPath
+amclLogInit
+amclLogRead
+amclLogShutdown
+amclLogWrite
+amclLedgerBegin
+amclLedgerBindTask
+amclLedgerEnd
+amclLedgerEndAll
+amclLedgerSetLaunchActivity
+amclLedgerUnbindTask
+
+# --- napi_mc.cpp （MC 启动器 + 设备信息）---
+getDeviceMemoryMB
+getRecommendedXmx
+mcCheckFiles
+mcForceExit
+mcGetStatus
+mcGetGraphicsLaunchFailure
+mcGetGraphicsRuntimeState
+mcGetGraphicsRuntimeFailure
+desktopProcessAlive
+runtimeSlotCreateStage
+runtimeSlotPublish
+runtimeSlotDiscardStage
+runtimeSlotAcquire
+runtimeSlotRelease
+runtimeSlotRetire
+runtimeSlotCollect
+graphicsRecoveryMaintain
+mcIsRunning
+mcLaunchWithProfile
+mcLaunchWithProfileV2
+mcReadLog
+probeNativePath
+
+# --- napi_jvm.cpp （JVM / GPU / Vulkan / OSMesa）---
+checkJitAvailable
+downloadEngineProbe
+downloadEngineSelfTest
+getCommonJvmArgs
+getGpuInfo
+getVulkanCapabilityJson
+getGraphicsCapabilityJson
+getVulkanInfo
+isJvmTestRunning
+jvmInit
+runJvmEmbedTest
+runOSMesaSelfTest
+runVulkanSelfTest
+
+# --- napi_forge.cpp （Forge/NeoForge processor 子 JVM）---
+runJavaProcessor
+
+# --- napi_input.cpp （触摸 / 键鼠 / 手柄输入）---
+# clearButtons / clearJoystick / registerButton / registerJoystick 已随
+# "只写不读的矩形表" 一起删除（权威表述是 setControlSchema）。
+cancelAllInput
+abortTextInputSession
+beginTextInputSession
+commitTextInput
+configureInputProduct
+hardwareRawMouseAvailable
+endTextInputSession
+gate0InputTelemetryEnabled
+getInputResetEpoch
+getTextInputCandidatesUnsupportedCount
+isGrabbed
+onButtonPressed
+onGrabChange
+onHaptic
+physicalKeyTransaction
+physicalMouseButtonTransaction
+setCursorLocked
+noteCursorLockFocusLost
+isCursorLockSupported
+cursorLockWatchdogTick
+installWindowInputFilters
+uninstallWindowInputFilters
+windowInputFilterActive
+nativeWheelChannelActive
+wheelChannelClaim
+noteKeyRepeatSelfHealed
+noteArktsAxisEvent
+noteAxisPanActive
+noteTextInputCandidatesUnsupported
+setDisplayDensity
+physicalMenuCursorPositionTransaction
+physicalPointerMotionTransaction
+physicalPointerRelativeFallbackTransaction
+physicalPointerRelativeTransaction
+physicalPointerWheelTransaction
+publishInputSurfaceContext
+publishInputDeviceChange
+
+inputInvariantTick
+noteSourceReset
+releaseSourceHeld
+sendCharEvent
+sendCharModsEvent
+sendCursorDelta
+sendCursorPos
+sendKeyEvent
+sendMouseEvent
+sendScrollEvent
+sendSourceCursorDelta
+sendSourceKeyEvent
+sendSourceMouseEvent
+sendSourceScrollEvent
+sendTouchEvent
+submitTextInputCandidates
+setControlSchema
+setInvertY
+setLookAccel
+setLookSensitivity
+setLookSmoothing
+setTouchPaused
+textInputSessionSupported
+traceGate0ArktsMouse
+traceUnverifiedCursorPosition
+updateTextInputEditing
+updateTextInputSelection
+
+# --- download/download_napi.cpp （下载引擎全部 API）---
+# ⚠️  这一组是 CA bundle 注入的必要前提：downloadSetCaBundle 缺失会导致
+#    HTTPS 握手全部失败，诊断页显示"应用安全证书 CA 红色"。
+downloadCancel
+downloadClearRelay
+downloadComputeFileSha1
+downloadCreateTask
+downloadDeleteTaskFiles
+downloadDetachCallbacks
+downloadFetchText
+downloadListActive
+downloadOnComplete
+downloadOnProgress
+downloadPauseTask
+downloadPurgeTask
+downloadPublishNoReplace
+downloadQueryTask
+downloadRelayStats
+downloadResumeTask
+downloadRetryFailed
+downloadSetCaBundle
+downloadSetRelay
+downloadShutdown
+downloadStart
+
+# --- napi_tests.cpp （仅 MC_OHOS_BUILD_TESTS 构建时注册；release 已关）---
+#
+# 下面这些是 napi_tests.cpp 注册进 exports 的**属性名**。其中 7 个与底层 C++ 函数名逐字相同、
+# 另 7 个不同（runJitTests→runAllJitTests、runJvmTests→runJvmFeasibilityTests、
+# runGlfwTest→runGlfwCompatTest、runMgTest→runMobileGluesTest 以及三个 runDownload* →
+# runSha1IncrementalTests / runSourceScoringTests / runErrorAndSourceLifecycleTests）。
+# 所以别按"函数名"去理解它们 —— strip 掉符号并不会让这些属性名消失。
+#
+# ⚠️ **保留它们的理由与其它组不同，不要按"跨语言 ABI"去理解**：
+# 2026-08-23 起 release 传 -DMC_OHOS_BUILD_TESTS=OFF（entry/build-profile.json5 的
+# buildOptionSet[release].externalNativeOptions），这 14 个属性在**出货包里根本不注册**，
+# 所以对 release 而言它们既不是 ABI 也不需要防混淆。
+# 真正的理由是：check-napi-obfuscation.mjs 用正则扫 cpp 源码、**不做预处理器求值**，
+# `#ifdef MC_OHOS_BUILD_TESTS` 对它是普通文本 ⇒ 它照旧把这 14 个算进必需集合。
+# 删掉任何一行都会让那道门禁报 missing 并让 build-hap.ps1 [1/7] 抛错。
+# 多 keep 无害（脚本的 stale 分支只打一行信息、不参与判定），所以留着是最省事且正确的做法。
+#
+# 历史（别再改回去）：这里一度写「release 包通常不包含这些符号」，当时那句是**错的** ——
+# 产物级实测过 libentry.so 的 .rodata 里 14/14 在场、libs/arm64-v8a/libfakejvm.so 也在场。
+# 那不是判断失误，是 option 默认 ON 且 hvigor 配置命令里根本没有这个宏所致。
+# 现在那句重新成立，但成立的**原因是显式传了 OFF**，不是"通常不包含"。
+# 产物级判据见 scripts/check-release-no-test-symbols.mjs（build-hap.ps1 [5/7] 之后跑）。
+#
+# debug 仍然 ON：DevToolsPage / RenderPage 那 8 个按钮在 debug 包里照常可用；
+# release 包里点它们会走各自的 try/catch 显示红字错误（不崩、不静默）。
+runAmclLogConcurrentTest
+runDownloadErrorAndSourceLifecycleTests
+runDownloadSha1IncrementalTests
+runDownloadSourceScoringTests
+runDownloadTextFetchTests
+runGl4Test
+runGlfwTest
+runJitTests
+runJvmTests
+runInputLedgerTests
+runLwjglTest
+runMgTest
+runSdl3C2Test
+runSdl3WindowTest
+runMobileglProbe
+runIpv6Probe
+runIpv6JavaProbe
+
+# ============================================================
+# §B — NAPI 结构化对象协议字段（69 个）
+#
+# 这些字段由 native 通过固定字符串读取或写回。它们与函数名一样属于跨语言 ABI；
+# 例如 schemaVersion 若被改名，setControlSchema 即使可调用也会拒绝整张控件表。
+# ============================================================
+aborted
+activeThreads
+allowedRoot
+authRejects
+basename
+body
+bytesDone
+bytesTotal
+check
+compHeight
+compWidth
+controls
+currentFile
+currentFiles
+deadZone
+dragLook
+durationMs
+error
+errorKind
+errorMessage
+etaSeconds
+executionEpoch
+failedFiles
+failures
+fallbacks
+files
+filesDone
+filesTotal
+finalProgress
+grabbed
+h
+handledBy
+haptic
+headers
+hitSlop
+httpStatus
+id
+keyOrMouse
+keys
+kind
+lastError
+localPath
+maxConnections
+message
+name
+nativeCode
+ok
+overallProgress
+progress
+registrationGeneration
+requests
+schemaVersion
+sha1
+size
+speedBps
+state
+statusCode
+success
+taskId
+terminal
+triedUrls
+trigger
+tripped
+url
+urls
+usable
+w
+x
+y
+
+# ============================================================
+# §C — module.json5 abilities/extensionAbilities 反射查找的入口类
+#
+# HarmonyOS 通过 module.json5 abilities 配置按类名反射实例化，
+# 混淆类名会导致 Ability 找不到而崩溃。
+# 来源：entry/src/main/module.json5 abilities[*].name + extensionAbilities[*].name
+# ============================================================
+-keep-global-name
+EntryAbility
+GameAbility
+EntryBackupAbility
+
+-keep-property-name
+getDiagnosticCapabilities
+
+-keep-property-name
+runMobileglPbufferProbe
+
+-keep-property-name
+requiredByProduct
+
+-keep-property-name
+desktopPublishDrop
+
+# Native能力事实的跨语言固定字段。
+driverIdentity

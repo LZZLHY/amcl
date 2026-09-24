@@ -1,0 +1,212 @@
+{
+  "schema": 1,
+  "files": [
+    {
+      "component": "lwjgl3",
+      "file": "lwjgl3/LICENSE.md",
+      "sha256": "4c2f770897d0cfda4d9a65bb4d6d6983dccfd57d4c7eb74ea5ded0762cbc0e75",
+      "origin": "https://github.com/LWJGL/lwjgl3.git",
+      "commit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
+      "upstreamPath": "LICENSE.md",
+      "source": "https://github.com/LWJGL/lwjgl3/blob/32593afe25e2f1394c3425673f1b71a0122f5cd4/LICENSE.md"
+    },
+    {
+      "component": "mobileglues",
+      "file": "mobileglues/LICENSE",
+      "sha256": "35a20d16c9f153b1603bb46228d58344450606bbe7ce4f181bbf0a45aadc2ae7",
+      "origin": "https://github.com/LZZLHY/MobileGlues.git",
+      "commit": "02a5c2240f0a6a92ec4c09d5255faa5b97daa78b",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/LZZLHY/MobileGlues/blob/02a5c2240f0a6a92ec4c09d5255faa5b97daa78b/LICENSE"
+    },
+    {
+      "component": "mobilegl",
+      "file": "mobilegl/COPYING",
+      "sha256": "8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "920894cdcb360e359689fac39901d9785741edd6",
+      "upstreamPath": "COPYING",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/COPYING"
+    },
+    {
+      "component": "mobilegl",
+      "file": "mobilegl/COPYING.LESSER",
+      "sha256": "a5681bf9b05db14d86776930017c647ad9e6e56ff6bbcfdf21e5848288dfaf1b",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "920894cdcb360e359689fac39901d9785741edd6",
+      "upstreamPath": "COPYING.LESSER",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/COPYING.LESSER"
+    },
+    {
+      "component": "mobilegl",
+      "file": "mobilegl/LICENSE",
+      "sha256": "3bc99d638b3af022e7d902855341ca0eabbae6e87163d0dc74467500eb2214f4",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "920894cdcb360e359689fac39901d9785741edd6",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/LICENSE"
+    },
+    {
+      "component": "openal",
+      "file": "openal/COPYING",
+      "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15",
+      "origin": "https://github.com/kcat/openal-soft.git",
+      "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
+      "upstreamPath": "COPYING",
+      "source": "https://github.com/kcat/openal-soft/blob/dc7d7054a5b4f3bec1dc23a42fd616a0847af948/COPYING"
+    },
+    {
+      "component": "openal",
+      "file": "openal/LICENSE-pffft",
+      "sha256": "64056328b3e7bc104e24ef96accc1a7abead156f0c02d1b87c97e3f3a28030de",
+      "origin": "https://github.com/kcat/openal-soft.git",
+      "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
+      "upstreamPath": "LICENSE-pffft",
+      "source": "https://github.com/kcat/openal-soft/blob/dc7d7054a5b4f3bec1dc23a42fd616a0847af948/LICENSE-pffft"
+    },
+    {
+      "component": "fmt",
+      "file": "fmt/LICENSE",
+      "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+      "origin": "https://github.com/kcat/openal-soft.git",
+      "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
+      "upstreamPath": "fmt-11.1.1/LICENSE",
+      "source": "https://github.com/kcat/openal-soft/blob/dc7d7054a5b4f3bec1dc23a42fd616a0847af948/fmt-11.1.1/LICENSE"
+    },
+    {
+      "component": "sdl3",
+      "file": "sdl3/LICENSE.txt",
+      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+      "origin": "https://github.com/icculus/SDL.git",
+      "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+      "upstreamPath": "LICENSE.txt",
+      "source": "https://github.com/icculus/SDL/blob/e293db30d74cca888eafba4e27f0c894f128e67d/LICENSE.txt"
+    },
+    {
+      "component": "asio",
+      "file": "asio/COPYING",
+      "sha256": "6e9610a0e09a77debbe42f223dd9f6aef6a404e45b9da07583bda6ce4201227c",
+      "origin": "https://github.com/chriskohlhoff/asio.git",
+      "commit": "8806a6803cde7054c3049d3666d3ec36786568c5",
+      "upstreamPath": "COPYING",
+      "source": "https://github.com/chriskohlhoff/asio/blob/8806a6803cde7054c3049d3666d3ec36786568c5/COPYING"
+    },
+    {
+      "component": "asio",
+      "file": "asio/LICENSE_1_0.txt",
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "origin": "https://github.com/chriskohlhoff/asio.git",
+      "commit": "8806a6803cde7054c3049d3666d3ec36786568c5",
+      "upstreamPath": "LICENSE_1_0.txt",
+      "source": "https://github.com/chriskohlhoff/asio/blob/8806a6803cde7054c3049d3666d3ec36786568c5/LICENSE_1_0.txt"
+    },
+    {
+      "component": "glslang",
+      "file": "glslang/license-checker.cfg",
+      "sha256": "5ff8933ec26a2d865b8d44c6d6a594f7307709a58176d0c42e9c4c50fb580a5e",
+      "origin": "https://github.com/MobileGL-Dev/glslang.git",
+      "commit": "fa562bb911bdc61d087c20c2020065d511a3c1d0",
+      "upstreamPath": "license-checker.cfg",
+      "source": "https://github.com/MobileGL-Dev/glslang/blob/fa562bb911bdc61d087c20c2020065d511a3c1d0/license-checker.cfg"
+    },
+    {
+      "component": "glslang",
+      "file": "glslang/LICENSE.txt",
+      "sha256": "adb783e734e906d1f46db5df29991dbde84bdb0ceab502ac2febb44fe3c2b5f4",
+      "origin": "https://github.com/MobileGL-Dev/glslang.git",
+      "commit": "fa562bb911bdc61d087c20c2020065d511a3c1d0",
+      "upstreamPath": "LICENSE.txt",
+      "source": "https://github.com/MobileGL-Dev/glslang/blob/fa562bb911bdc61d087c20c2020065d511a3c1d0/LICENSE.txt"
+    },
+    {
+      "component": "spirv-cross",
+      "file": "spirv-cross/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://github.com/KhronosGroup/SPIRV-Cross.git",
+      "commit": "072444287f4e139c178d6d8fe32e04a0d2c34e8b",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/KhronosGroup/SPIRV-Cross/blob/072444287f4e139c178d6d8fe32e04a0d2c34e8b/LICENSE"
+    },
+    {
+      "component": "spirv-reflect",
+      "file": "spirv-reflect/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "origin": "https://github.com/KhronosGroup/SPIRV-Reflect.git",
+      "commit": "10b4f09a24d7ac1603071e767c089551dc6a3949",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/KhronosGroup/SPIRV-Reflect/blob/10b4f09a24d7ac1603071e767c089551dc6a3949/LICENSE"
+    },
+    {
+      "component": "spirv-tools",
+      "file": "spirv-tools/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "https://github.com/KhronosGroup/SPIRV-Tools.git",
+      "commit": "33e02568181e3312f49a3cf33df470bf96ef293a",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/KhronosGroup/SPIRV-Tools/blob/33e02568181e3312f49a3cf33df470bf96ef293a/LICENSE"
+    },
+    {
+      "component": "spirv-headers",
+      "file": "spirv-headers/LICENSE",
+      "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613",
+      "origin": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+      "commit": "2a611a970fdbc41ac2e3e328802aed9985352dca",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/KhronosGroup/SPIRV-Headers/blob/2a611a970fdbc41ac2e3e328802aed9985352dca/LICENSE"
+    },
+    {
+      "component": "vma",
+      "file": "vma/LICENSE.txt",
+      "sha256": "8d70e4cf2a9941f6454da71cd60e38484dd3e34810c824760d550e982af6d97a",
+      "origin": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+      "commit": "e722e57c891a8fbe3cc73ca56c19dd76be242759",
+      "upstreamPath": "LICENSE.txt",
+      "source": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/blob/e722e57c891a8fbe3cc73ca56c19dd76be242759/LICENSE.txt"
+    },
+    {
+      "component": "vulkan-headers",
+      "file": "vulkan-headers/LICENSE.md",
+      "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc",
+      "origin": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+      "commit": "ad9ce1235e88dc09287e19171dfac384db8ec32c",
+      "upstreamPath": "LICENSE.md",
+      "source": "https://github.com/KhronosGroup/Vulkan-Headers/blob/ad9ce1235e88dc09287e19171dfac384db8ec32c/LICENSE.md"
+    },
+    {
+      "component": "vulkan-utility",
+      "file": "vulkan-utility/LICENSE.md",
+      "sha256": "69760673abf91cfd0280ae73739a29c078f493804d9016a122b3b189b48ad6e6",
+      "origin": "https://github.com/KhronosGroup/Vulkan-Utility-Libraries.git",
+      "commit": "738ec97a3f659dd6469bff3c4078ef981b0a343f",
+      "upstreamPath": "LICENSE.md",
+      "source": "https://github.com/KhronosGroup/Vulkan-Utility-Libraries/blob/738ec97a3f659dd6469bff3c4078ef981b0a343f/LICENSE.md"
+    },
+    {
+      "component": "xxhash",
+      "file": "xxhash/LICENSE",
+      "sha256": "6ffedbc0f7878612d2b23589f1ff2ab15633e1df7963a5d9fc750ec5500c7e7a",
+      "origin": "https://github.com/Cyan4973/xxHash.git",
+      "commit": "1d7b2a9d21bf9a740ead540aa93f4bc4caf11ae0",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/Cyan4973/xxHash/blob/1d7b2a9d21bf9a740ead540aa93f4bc4caf11ae0/LICENSE"
+    },
+    {
+      "component": "tl-expected",
+      "file": "tl-expected/COPYING",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "920894cdcb360e359689fac39901d9785741edd6",
+      "upstreamPath": "include/tl/COPYING",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/include/tl/COPYING"
+    },
+    {
+      "component": "ska-flat-hash-map",
+      "file": "ska-flat-hash-map/LICENSE",
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "origin": "https://github.com/MobileGL-Dev/flat_hash_map.git",
+      "commit": "21c1cec95abee1beef827e4a7c95f692875d9594",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/MobileGL-Dev/flat_hash_map/blob/21c1cec95abee1beef827e4a7c95f692875d9594/LICENSE"
+    }
+  ]
+}

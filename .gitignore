@@ -9,9 +9,12 @@ Thumbs.db
 *.swp
 *.swo
 
-# Logs (this repo is docs-only — no logs should appear, but defensive)
+# 本地日志，源码快照的构建输出由 MyApplication/.gitignore 约束
 *.log
 
 # Local env (just in case)
 .env
 .env.local
+
+# MobileGL 默认在工程上一层创建可再生 Native 构建目录
+/.tmp-*/

@@ -1,0 +1,11 @@
+{
+  "name": "account",
+  "version": "1.0.0",
+  "description": "AMCL 账户域（account）：离线/微软正版账户、登录、皮肤/披风、Huks 加密存储。依赖 commons，无 native。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons"
+  }
+}

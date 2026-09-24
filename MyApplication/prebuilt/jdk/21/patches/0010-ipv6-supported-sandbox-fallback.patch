@@ -1,0 +1,81 @@
+diff --git a/src/java.base/unix/native/libnet/net_util_md.c b/src/java.base/unix/native/libnet/net_util_md.c
+index 7be6d9a69..198dc6872 100644
+--- a/src/java.base/unix/native/libnet/net_util_md.c
++++ b/src/java.base/unix/native/libnet/net_util_md.c
+@@ -108,6 +108,40 @@ jint  IPv6_supported()
+ 
+ #else /* !DONT_ENABLE_IPV6 */
+ 
++#ifdef __MUSL__
++#include <ifaddrs.h>
++
++/*
++ * OHOS PATCH: real capability probe used when /proc/net/if_inet6 cannot be read.
++ *
++ * Ask the kernel for the interface address list instead of reading procfs.
++ * Returns JNI_TRUE as soon as one AF_INET6 address is present.
++ *
++ * Loopback (::1) counts, on purpose: the upstream check reads only the *first*
++ * line of /proc/net/if_inet6, which on a normal Linux host is the loopback
++ * entry. Counting loopback here keeps this fallback answering exactly what
++ * upstream would have answered had the file been readable.
++ */
++static jint OHOS_ipv6_address_present(void)
++{
++    struct ifaddrs *ifa = NULL;
++    struct ifaddrs *p;
++    jint found = JNI_FALSE;
++
++    if (getifaddrs(&ifa) != 0) {
++        return JNI_FALSE;
++    }
++    for (p = ifa; p != NULL; p = p->ifa_next) {
++        if (p->ifa_addr != NULL && p->ifa_addr->sa_family == AF_INET6) {
++            found = JNI_TRUE;
++            break;
++        }
++    }
++    freeifaddrs(ifa);
++    return found;
++}
++#endif /* __MUSL__ */
++
+ jint  IPv6_supported()
+ {
+     int fd;
+@@ -136,6 +170,35 @@ jint  IPv6_supported()
+         char *bufP;
+ 
+         if (fP == NULL) {
++#ifdef __MUSL__
++            /*
++             * OHOS PATCH: an application sandbox can make /proc/net/if_inet6
++             * unreadable (EACCES) while the kernel does have IPv6 and this very
++             * process owns IPv6 addresses. In that situation the file is not an
++             * answer to "does this host have IPv6" -- it is a *missing
++             * observation*, and treating it as a negative answer disables IPv6
++             * for the whole VM (Net.isIPv6Available() stays false, every NIO
++             * channel is created IPv4-only, and connecting to an Inet6Address
++             * fails in Net.checkAddress with an exception that has no message).
++             *
++             * So fall back to asking the kernel directly. The inet_pton probe
++             * below is repeated here on purpose: the point of this fallback is
++             * to answer *what upstream would have answered had the file been
++             * readable*, and on that path the API-availability check still
++             * applies. Skipping it would make the fallback more permissive than
++             * the code it stands in for.
++             *
++             * ENOENT is deliberately NOT redirected here: the file really is
++             * absent when the kernel has no IPv6 support, which is exactly the
++             * case the upstream check was written for. Only turn an
++             * *unreadable* file into a real probe -- never a *missing* one.
++             */
++            if ((errno == EACCES || errno == EPERM)
++                && OHOS_ipv6_address_present() == JNI_TRUE
++                && JVM_FindLibraryEntry(RTLD_DEFAULT, "inet_pton") != NULL) {
++                return JNI_TRUE;
++            }
++#endif
+             return JNI_FALSE;
+         }
+         bufP = fgets(buf, sizeof(buf), fP);

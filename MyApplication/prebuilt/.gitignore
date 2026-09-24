@@ -1,0 +1,28 @@
+# 编译中间产物
+lwjgl3/ohos-glfw/classes/
+forge/build_classes/
+forge/classes/
+
+# JDK 完整产物 zip 不入 git（由 mc-ohos-resources Release 提供）
+jdk/17/jdk17-ohos-full-v4.zip
+jdk/17/jdk17-ohos-full-v4.zip.*
+jdk/17/jdk-data*.zip
+jdk/17/natives/
+
+# 自家代码本地构建产物（hvigor preBuild 现编）
+lwjgl3/jars/lwjgl-glfw.jar
+forge/libjli.so
+
+# LWJGL 上游 jar（由 setup_deps.sh 从 Maven Central 拉，详见 §3.2）
+lwjgl3/jars/lwjgl.jar
+lwjgl3/jars/lwjgl-opengl.jar
+lwjgl3/jars/lwjgl-stb.jar
+lwjgl3/jars/lwjgl-tinyfd.jar
+lwjgl3/jars/lwjgl-jemalloc.jar
+lwjgl3/jars/lwjgl-openal.jar
+lwjgl3/jars/lwjgl-vulkan.jar
+lwjgl3/jars/lwjgl-egl.jar
+lwjgl3/jars/lwjgl-opengles.jar
+
+# LWJGL natives（P7 后由 amcl-prebuilts Release 拉）
+lwjgl3/natives/liblwjgl*.so

@@ -1,0 +1,17 @@
+diff --git a/include/EGL/eglplatform.h b/include/EGL/eglplatform.h
+index ba20796..389f62b 100644
+--- a/include/EGL/eglplatform.h
++++ b/include/EGL/eglplatform.h
+@@ -83,6 +83,12 @@ typedef int   EGLNativeDisplayType;
+ typedef void *EGLNativeWindowType;
+ typedef void *EGLNativePixmapType;
+ 
++#elif defined(__OHOS__)  /* HarmonyOS NEXT: no X11; native window=OHNativeWindow* (void*) */
++
++typedef void *EGLNativeDisplayType;
++typedef void *EGLNativePixmapType;
++typedef void *EGLNativeWindowType;
++
+ #elif defined(__unix__) && !defined(ANDROID)
+ 
+ /* X11 (tentative)  */

@@ -1,0 +1,33 @@
+From: MC-OHOS <mc-ohos@harmonyos.next>
+Subject: [PATCH] Guard utmpx functions for musl libc compatibility
+
+musl libc does not implement setutxent/getutxent/endutxent.
+Guard these calls with #ifndef __MUSL__ to avoid link errors.
+
+---
+ src/hotspot/os/posix/os_posix.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/hotspot/os/posix/os_posix.cpp b/src/hotspot/os/posix/os_posix.cpp
+index 1561f50fb..a95c35c3e 100644
+--- a/src/hotspot/os/posix/os_posix.cpp
++++ b/src/hotspot/os/posix/os_posix.cpp
+@@ -443,6 +443,7 @@ void os::Posix::print_uptime_info(outputStream* st) {
+   int bootsec = -1;
+   int currsec = time(NULL);
+   struct utmpx* ent;
++#ifndef __MUSL__
+   setutxent();
+   while ((ent = getutxent())) {
+     if (!strcmp("system boot", ent->ut_line)) {
+@@ -450,6 +451,10 @@ void os::Posix::print_uptime_info(outputStream* st) {
+       break;
+     }
+   }
++  endutxent();
++#else
++  (void)ent;
++#endif
+ 
+   if (bootsec != -1) {
+     os::print_dhm(st, "OS uptime:", (long) (currsec-bootsec));

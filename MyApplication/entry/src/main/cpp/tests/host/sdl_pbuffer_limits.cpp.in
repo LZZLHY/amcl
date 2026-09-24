@@ -1,0 +1,179 @@
+/**
+ * SDL辅助pbuffer容量与事务回归。被测正文来自有序补丁，不在fixture里重写校验/创建/resize。
+ * EGL记录实际申请、尺寸查询和释放；失败必须不发布候选面，resize必须保留原面。
+ */
+#define EGL_NO_PLATFORM_SPECIFIC_TYPES
+#define SDL_VIDEO_OPENGL_EGL 1
+#include <cstdint>
+#include <EGL/egl.h>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <climits>
+#include <map>
+#include <string>
+#include <iostream>
+#include "@ROOT@/entry/src/main/cpp/platform/graphics_runtime_abi.h"
+#include "@ROOT@/entry/src/main/cpp/tests/host/host_test_check.h"
+using Sint64=int64_t;
+using SDL_ThreadID=uint64_t;
+#define SDL_strcmp std::strcmp
+#define SDL_LOG_CATEGORY_VIDEO 1
+#define OPENHARMONY_WINDOW_AUXILIARY_PBUFFER 1
+#define OPENHARMONY_SURFACE_READY 1
+#define OPENHARMONY_PROP_REQUESTED_FLAGS "flags"
+#define OPENHARMONY_PROP_WINDOW_ROLE "role"
+#define SDL_PROP_WINDOW_OPENHARMONY_SURFACE_POINTER "surface"
+struct SDL_WindowData {
+    int role=1,surface_width=0,surface_height=0,pending_width=0,pending_height=0,egl_config_id=0,surface_state=0;
+    EGLSurface egl_surface=EGL_NO_SURFACE;
+    SDL_ThreadID owner_thread=0;
+    bool is_current=false,construction_committed=false;
+    int has_swap_interval=0,swap_interval=0;
+};
+struct SDL_Window {unsigned id=1;int w=320,h=480;SDL_WindowData* internal=nullptr;};
+struct SDL_VideoData {int pinned_egl_config_id=2,auxiliary_window_count=0,auxiliary_create_ok=0;};
+struct EglData {
+    EGLDisplay egl_display=reinterpret_cast<EGLDisplay>(1);
+    EGLConfig egl_config=reinterpret_cast<EGLConfig>(2);
+    EGLint (*eglGetError)();
+    EGLBoolean (*eglQuerySurface)(EGLDisplay,EGLSurface,EGLint,EGLint*);
+};
+struct SDL_VideoDevice {EglData* egl_data;SDL_VideoData* internal;};
+struct Size {int width,height;};
+std::map<EGLSurface,Size> surfaces;
+AmclGraphicsRuntimeV1 runtime{};
+bool required=true,available=true,allocationFails=false,queryFails=false,clamped=false,bindFails=false,replayFails=false;
+int maximumWidth=4096,maximumHeight=4096,maximumPixels=0,surfaceType=EGL_WINDOW_BIT|EGL_PBUFFER_BIT;
+int queryConfigFailure=0,configId=2,creates=0,destroys=0,liveData=0,events=0,compatLogs=0;
+uintptr_t serial=0x100;
+std::string error;
+SDL_Window* currentWindow=nullptr;
+EGLSurface currentSurface=EGL_NO_SURFACE;
+EGLint lastError=EGL_SUCCESS;
+bool AMCL_GraphicsRuntimeRequired(){return required;}
+const AmclGraphicsRuntimeV1* AMCL_GraphicsRuntime(){return available?&runtime:nullptr;}
+bool SDL_SetError(const char* format,...) {
+    char text[512];va_list args;va_start(args,format);std::vsnprintf(text,sizeof(text),format,args);va_end(args);error=text;return false;
+}
+bool SDL_EGL_SetError(const char* text,const char*){error=text;return false;}
+bool SDL_EGL_SetErrorEx(const char* text,const char*,EGLint){error=text;return false;}
+void SDL_LogError(int,const char*,...){}
+void SDL_LogInfo(int,const char* text,...){if(std::strstr(text,"zero-pixel-limit"))++compatLogs;}
+EGLint getError(){const auto result=lastError;lastError=EGL_SUCCESS;return result;}
+bool OPENHARMONY_GLES_QueryConfig(SDL_VideoDevice*,EGLConfig,EGLint attribute,EGLint* out) {
+    if(attribute==queryConfigFailure)return SDL_SetError("config query failed");
+    switch(attribute){
+        case EGL_MAX_PBUFFER_WIDTH:*out=maximumWidth;break;
+        case EGL_MAX_PBUFFER_HEIGHT:*out=maximumHeight;break;
+        case EGL_MAX_PBUFFER_PIXELS:*out=maximumPixels;break;
+        case EGL_SURFACE_TYPE:*out=surfaceType;break;
+        case EGL_CONFIG_ID:*out=configId;break;
+        default:CHECK(false);
+    }return true;
+}
+EGLSurface SDL_EGL_CreateOffscreenSurface(SDL_VideoDevice*,int width,int height) {
+    ++creates;if(allocationFails){lastError=EGL_BAD_ALLOC;return EGL_NO_SURFACE;}
+    const auto surface=reinterpret_cast<EGLSurface>(++serial);
+    surfaces.emplace(surface,Size{clamped?width-1:width,height});return surface;
+}
+EGLBoolean querySurface(EGLDisplay,EGLSurface surface,EGLint attribute,EGLint* out) {
+    if(queryFails){lastError=EGL_BAD_SURFACE;return EGL_FALSE;}
+    CHECK(surfaces.count(surface)==1);
+    *out=attribute==EGL_WIDTH?surfaces.at(surface).width:surfaces.at(surface).height;return EGL_TRUE;
+}
+void SDL_EGL_DestroySurface(SDL_VideoDevice*,EGLSurface surface){CHECK(surfaces.erase(surface)==1);++destroys;}
+bool OPENHARMONY_GLES_EnsureWindowConfig(SDL_VideoDevice*,bool){return true;}
+void OPENHARMONY_GLES_ResetPolicyIfUnused(SDL_VideoDevice*){}
+void SDL_free(SDL_WindowData* data){delete data;--liveData;}
+void SDL_SetNumberProperty(int,const char*,Sint64){}
+void SDL_SetPointerProperty(int,const char*,void*){}
+int SDL_GetWindowProperties(SDL_Window*){return 1;}
+void OPENHARMONY_SetWindowPointers(SDL_Window*,SDL_WindowData*){}
+SDL_ThreadID SDL_GetCurrentThreadID(){return 7;}
+SDL_Window* SDL_GL_GetCurrentWindow(){return currentWindow;}
+void* SDL_GL_GetCurrentContext(){return reinterpret_cast<void*>(9);}
+using SDL_GLContext=void*;
+bool SDL_EGL_MakeCurrent(SDL_VideoDevice*,EGLSurface surface,SDL_GLContext) {
+    if(bindFails && currentWindow && surface!=currentWindow->internal->egl_surface)return false;
+    currentSurface=surface;return true;
+}
+bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice*,SDL_Window*,bool){return !replayFails;}
+void OPENHARMONY_SendGeometryEvents(SDL_Window* window,int width,int height){++events;window->w=width;window->h=height;}
+@VALIDATE_SIZE@
+@VALIDATE_SURFACE@
+bool CreateAuxiliary(SDL_VideoDevice* _this,SDL_Window* window) {
+    auto* data=new SDL_WindowData; ++liveData;
+    auto* videodata=_this->internal;const int window_props=1;const uint64_t requested=0;
+@CREATE_AUXILIARY@
+    CHECK(false);return false;
+}
+@RESIZE@
+
+/** 每例是全新驱动状态；只有fixture清理已成功交付的窗口，失败资源必须由生产正文回滚。 */
+void Reset(const char* profile="nativegl") {
+    CHECK(surfaces.empty() && liveData==0);
+    runtime={};runtime.profile=profile;runtime.api="OPENGL";runtime.contextApi="desktop-gl";
+    required=available=true;allocationFails=queryFails=clamped=bindFails=replayFails=false;
+    maximumWidth=maximumHeight=4096;maximumPixels=0;surfaceType=EGL_WINDOW_BIT|EGL_PBUFFER_BIT;
+    queryConfigFailure=0;configId=2;creates=destroys=events=compatLogs=0;error.clear();
+    currentWindow=nullptr;currentSurface=EGL_NO_SURFACE;lastError=EGL_SUCCESS;
+}
+void CloseFixture(SDL_VideoDevice* device,SDL_Window& window) {
+    SDL_EGL_DestroySurface(device,window.internal->egl_surface);SDL_free(window.internal);window.internal=nullptr;
+}
+int main(){
+    EglData egl;egl.eglGetError=getError;egl.eglQuerySurface=querySurface;
+    SDL_VideoData video;SDL_VideoDevice device{&egl,&video};
+    Reset();SDL_Window window;
+    CHECK(CreateAuxiliary(&device,&window));
+    CHECK(creates==1 && window.internal->surface_width==320 && window.internal->surface_height==480);
+    CHECK(window.internal->construction_committed && video.auxiliary_create_ok==1 && compatLogs==1);
+    CloseFixture(&device,window);
+
+    // 正常正值限制对全部GL后端保持一致；即使MobileGL同为desktop-gl，也不得借用系统GL特例。
+    for(const char* profile:{"nativegl","mobilegl","mobileglues","gl4es","minecraft-vulkan","unknown"}) {
+        Reset(profile);maximumPixels=320*480;CHECK(OPENHARMONY_GLES_ValidatePbufferSize(&device,320,480));
+        CHECK(!OPENHARMONY_GLES_ValidatePbufferSize(&device,321,480));
+        maximumPixels=0;if(std::strcmp(profile,"nativegl"))CHECK(!OPENHARMONY_GLES_ValidatePbufferSize(&device,320,480));
+    }
+    for(int variant=0;variant<10;++variant) {
+        Reset();
+        if(variant==0)required=false;if(variant==1)available=false;if(variant==2)runtime.api="VULKAN";
+        if(variant==3)surfaceType=EGL_WINDOW_BIT;if(variant==4)maximumPixels=-1;
+        if(variant==5)maximumWidth=0;if(variant==6)maximumHeight=0;
+        if(variant==7)queryConfigFailure=EGL_MAX_PBUFFER_PIXELS;
+        if(variant==8)queryConfigFailure=EGL_SURFACE_TYPE;if(variant==9)maximumWidth=319;
+        SDL_Window rejected;CHECK(!CreateAuxiliary(&device,&rejected));
+        CHECK(!rejected.internal && creates==0 && surfaces.empty() && liveData==0);
+    }
+    Reset();CHECK(!OPENHARMONY_GLES_ValidatePbufferSize(&device,0,480));
+    CHECK(!OPENHARMONY_GLES_ValidatePbufferSize(&device,-1,480));
+    maximumWidth=maximumHeight=maximumPixels=INT_MAX;
+    CHECK(!OPENHARMONY_GLES_ValidatePbufferSize(&device,INT_MAX,INT_MAX));
+    for(int variant=0;variant<4;++variant) {
+        Reset();allocationFails=variant==0;queryFails=variant==1;clamped=variant==2;if(variant==3)configId=3;
+        SDL_Window rejected;CHECK(!CreateAuxiliary(&device,&rejected));
+        CHECK(!rejected.internal && creates==1 && surfaces.empty() && liveData==0);
+        CHECK(destroys==(allocationFails?0:1));
+    }
+    // resize执行完整生产事务：成功退休旧面；申请/查询/绑定/回放失败不得提交新面或丢掉旧面。
+    for(int variant=0;variant<7;++variant) {
+        Reset();SDL_Window resized;CHECK(CreateAuxiliary(&device,&resized));
+        auto* data=resized.internal;const auto old=data->egl_surface;
+        data->pending_width=640;data->pending_height=360;data->has_swap_interval=1;data->swap_interval=1;
+        allocationFails=variant==1;queryFails=variant==2;clamped=variant==3;bindFails=variant==4;replayFails=variant==5;
+        if(variant==4 || variant==5){currentWindow=&resized;currentSurface=old;}
+        if(variant==6){data->is_current=true;data->owner_thread=99;}
+        const bool resizedOk=OPENHARMONY_ApplyPendingAuxiliaryResize(&device,&resized,SDL_GL_GetCurrentContext());
+        CHECK(resizedOk==(variant==0));CHECK(surfaces.size()==1 && liveData==1);
+        if(variant==0)CHECK(data->egl_surface!=old && data->surface_width==640 && data->surface_height==360);
+        else CHECK(data->egl_surface==old && data->surface_width==320 && data->surface_height==480);
+        if(variant==4 || variant==5)CHECK(currentSurface==old && data->has_swap_interval==1 && data->swap_interval==1);
+        if(variant==6)CHECK(creates==1 && data->pending_width==640);
+        CloseFixture(&device,resized);
+    }
+    CHECK(surfaces.empty() && liveData==0);
+    std::cout<<"SDL pbuffer limits PASS: native-only zero-area create/resize, exact surface checks, positive limits, other profiles, failure rollback\n";
+}

@@ -1,0 +1,87 @@
+# MC-OHOS OpenJDK 21u patch series
+# 标准 .patch 文件（git diff 格式），按顺序用 git apply 应用。
+#
+# 应用方式：bash docker/apply_patches.sh --patch-dir prebuilt/jdk/21/patches --target /build/jdk21u
+# 验证方式：每个 patch git apply --check 通过 → 全应用 → gmake images CONF_CHECK=ignore
+#
+# 2026-05-18 P2-NEW: JDK 21 上线第一步——把 JDK 17 的 8 个 OHOS 真 patch 移植到 jdk21u。
+#                    旧的 5 个伪 patch（hash 全 1234567..abcdefg + 2 个 patch_jdk21_os_*.py
+#                    手撕脚本）已删除；统一用与 17 相同的 git diff series 架构。
+#                    生成器：docker/port_jdk21_patches.sh
+#                    上游 base: jdk21u jdk-21.0.5+11 (commit dfcd8d2ee)
+
+# === 1-4: musl libc 与 OHOS 沙箱适配 ===
+
+# musl libc: 防止 dlvsym 重定义 + 跳过不支持的 dlinfo()
+0001-musl-dlvsym-dlinfo.patch
+
+# OHOS 沙箱: JAVA_HOME 路径推断失败，优先使用环境变量
+0002-java-home-env.patch
+
+# OHOS 沙箱: dll_dir 同理，优先使用 SUN_BOOT_LIBRARY_PATH
+0003-dll-dir-env.patch
+
+# musl libc: 跳过不支持的 setutxent/getutxent/endutxent
+0004-musl-utmpx.patch
+
+# === 5-8: OHOS 运行时关键 patch（HotSpot 信号处理 / Safepoint / libjli） ===
+
+# OHOS：javaSignalHandler 不在未识别信号上 abort，避免设备误杀 JVM
+# 注意：JDK 21 的参数名从 17 的 ucVoid 改成了 context（anchor 已对应调整）
+0005-signals-posix-abort-if-unrecognized.patch
+
+# OHOS：aarch64 信号处理对 ELF loader 加载的代码做 SafePoint polling SEGV fallback
+# （CodeCache 看不到 ELF-loaded code，需要在 SEGV 时 disarm polling page 让 CPU 重试）
+0006-aarch64-elf-safepoint-fallback.patch
+
+# OHOS：safepoint polling page 用 MEM_PROT_READ 而不是 MEM_PROT_NONE
+# 配合 0006 的 fallback 一起，让 polling 走 SIGSEGV→重试，避免 SIGBUS abort
+0007-safepoint-mechanism-mem-prot-read.patch
+
+# OHOS：libjli 跳过 re-exec 路径（RequiresSetenv 永远返回 JNI_FALSE）
+# ELF loader 已经处理好了 LD_LIBRARY_PATH，原路径是为 musl 早期版本的兜底，会触发死锁
+0008-libjli-skip-re-exec.patch
+
+# === 9: 已废弃 — patch 0009 (ohos-platform-graphics-info) 在 v6 (2026-05-19) 移除 ===
+#
+# 历史：v3-v5 试图在 java.desktop 模块里改 PlatformGraphicsInfo.createGE/
+# createToolkit/getDefaultHeadlessProperty，让 OHOS 走自带的 OhosHeadlessGE/Toolkit。
+# 失败原因：jvm_launcher.cpp 同时设了 -Djava.awt.headless=false（Cacio 模式遗留），
+# system property 优先级高于 platform default，patch 完全被绕过；崩点最终落在
+# Insets.<clinit>.initIDs（native 在 --enable-headless-only 不构建的 libawt_xawt.so 里）。
+#
+# v6 决策：放弃 Cacio，主进程 + Forge installer 子进程都设 -Djava.awt.headless=true，
+# 让 OpenJDK 自带 sun.awt.HeadlessToolkit 接管。所有 AWT 类的 <clinit> 通过
+# if (!isHeadless()) 保护跳过 native initIDs() 调用 —— 不需要 patch 源码。
+# 详见 docs/archive/jdk21-awt-headless-journey-202605.md §5（第一阶段方案）。
+
+
+# === 9: OHOS 沙箱下 IPv6 能力误判（路线 A / 方案 §四·五 R4） ===
+
+# 与 prebuilt/jdk/25/patches/0010-... **逐字节相同**（只有 index 行与 hunk 行号不同）：
+# jdk21u 与 jdk25u 的 IPv6_supported() 结构一致，都只有三条判据
+#（socket(AF_INET6) / 读 /proc/net/if_inet6 / dlsym(inet_pton)），没有 17 那条 getsockname(fd 0)。
+#
+# OHOS：应用沙箱对 /proc/net/if_inet6 返回 EACCES，而上游用「能不能读到该文件第一行」回答
+# 「本机有没有 IPv6」⇒ Net.isIPv6Available() 恒 false ⇒ NIO 只建 IPv4-only channel ⇒
+# 连 Inet6Address 在 Net.checkAddress 抛 UnsupportedAddressTypeException（message 为 null）。
+#
+# patch 语义（⚠️ 改它之前先读）：
+#   - **不删判据**。fopen 仍先试；文件可读时与上游逐字节一致（平台放开后自动退场）。
+#   - 只在 errno == EACCES / EPERM 时回落 getifaddrs() 真实探测 ——「读不到」是缺一次观测。
+#   - **ENOENT 刻意不回落**：文件真不存在＝内核没开 IPv6，那正是上游判据成立的场合。
+#   - 回落**同时要求 dlsym(inet_pton) 非空**：本 patch 的目标是给出「文件可读时上游会给的
+#     答案」，而那条路径上这个 API 可用性判据仍然成立。跳过它会让回落比它所替代的代码更宽松。
+#   - 回落把 loopback（::1）算作「有 IPv6」，与「文件可读时上游会给的答案」保持一致。
+#   - helper 是 static，不新增导出符号。
+#
+# ⭐ 验证（2026-08-29）：**不打本 patch 从本容器重编出的 libnet.so 与出货件逐字节相同**
+#   （v21.0.5-ohos-6 包内 lib/libnet.so，66688 B，sha256 69a3ec878c6347fad0880afedcd74df6e…）
+#   ⇒ 构建环境位级复现了出货产物，因此自建件与出货件的**唯一差异就是本 patch**。
+#   打上后 67048 B；同树基线对照：导出符号 50 → 50 **逐个相同**、DT_NEEDED 一致、
+#   未定义引用只多 getifaddrs/freeifaddrs、两边都仍引用 fopen（判据没删）。
+#
+# ⚠️ 应用方式必须用 docker/apply_patches.sh（它有 git apply → --3way → --ignore-whitespace
+#   回退链 + CRLF 剥离）。**本目录的 0001 在干净 jdk21u 树上过不了严格 git apply**，
+#   需要 --3way —— 而本文件开头那句「每个 patch git apply --check 通过」对 0001 已经过期。
+0010-ipv6-supported-sandbox-fallback.patch

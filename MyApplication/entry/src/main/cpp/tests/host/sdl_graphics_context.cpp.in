@@ -1,0 +1,93 @@
+// 原生provider函数使用既有系统替身；SDL创建/销毁正文及公共context资格均为生产代码。
+#define main OriginalGraphicsFeatureTestMain
+#include "@ROOT@/entry/src/main/cpp/tests/host/graphics_features_test.cpp"
+#undef main
+#define SDL_VIDEO_DRIVER_OPENHARMONY 1
+#define SDL_GL_CONTEXT_PROFILE_CORE 1
+#define OPENHARMONY_SURFACE_READY 0
+#define OPENHARMONY_SURFACE_LOST 1
+#define OPENHARMONY_SURFACE_RECREATE_PENDING 2
+#define OPENHARMONY_WINDOW_AUXILIARY_PBUFFER 1
+#define OPENHARMONY_WINDOW_PRESENTED 0
+using SDL_GLContext=void*;using SDL_ThreadID=uint64_t;
+struct SDL_WindowData {int role=1,surface_state=0;bool amcl_surface_suspended=false,is_current=false;
+    EGLSurface egl_surface=reinterpret_cast<void*>(10);SDL_ThreadID owner_thread=0,amcl_resume_thread=0;
+    SDL_GLContext last_context=nullptr,amcl_resume_context=nullptr;};
+struct SDL_Window {SDL_WindowData* internal;SDL_Window* next=nullptr;};
+struct SDL_VideoData {bool renderer_fatal=false;};
+struct SDL_VideoDevice {
+    struct Config {int major_version=3,minor_version=3,profile_mask=1;bool share_with_current_context=false;} gl_config;
+    struct Egl {EGLDisplay egl_display=reinterpret_cast<void*>(1);EGLConfig egl_config=reinterpret_cast<void*>(1);
+        EGLBoolean(*eglDestroyContext)(EGLDisplay,EGLContext)=fixture::destroyContext;}* egl_data;
+    SDL_VideoData* internal;SDL_Window* windows;
+};
+SDL_Window* currentWindow=nullptr;
+unsigned creates=0;bool failCreate=false,failUnbind=false;
+std::string lastError;
+int SDL_GetCurrentThreadID(){return 7;}
+SDL_Window* SDL_GL_GetCurrentWindow(){return currentWindow;}
+SDL_GLContext SDL_GL_GetCurrentContext(){return fixture::getContext();}
+bool SDL_SetError(const char* error){lastError=error;return false;}
+bool SDL_EGL_SetError(const char* error,const char*){return SDL_SetError(error);}
+const AmclGraphicsRuntimeV1* AMCL_GraphicsRuntime(){return &fixture::activeRuntime->publicApi;}
+bool AMCL_GraphicsRuntimeRequired(){return true;}
+bool OPENHARMONY_GLES_EnsureWindowConfig(SDL_VideoDevice*,bool){return true;}
+bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice*,SDL_Window*,bool){return true;}
+void OPENHARMONY_GLES_SetCurrentCache(SDL_VideoDevice*,SDL_Window* window,SDL_GLContext){currentWindow=window;}
+SDL_VideoData* videoData=nullptr;
+bool OPENHARMONY_GLES_MarkRendererFatal(SDL_Window*,const char*){videoData->renderer_fatal=true;return false;}
+void OPENHARMONY_GLES_MarkRendererRestartRequired(SDL_Window*,const char*){}
+bool SDL_EGL_MakeCurrent(SDL_VideoDevice* device,SDL_Window*,SDL_GLContext context){
+    if(!context && failUnbind)return false;
+    return fixture::makeCurrent(device->egl_data->egl_display,nullptr,nullptr,context);
+}
+SDL_GLContext SDL_EGL_CreateContext(SDL_VideoDevice* device,EGLSurface surface){
+    ++creates;if(failCreate)return nullptr;
+    const EGLContext shared=device->gl_config.share_with_current_context?fixture::getContext():nullptr;
+    EGLContext context=fixture::createContext(device->egl_data->egl_display,device->egl_data->egl_config,shared,nullptr);
+    fixture::makeCurrent(device->egl_data->egl_display,surface,surface,context);return context;
+}
+bool OPENHARMONY_GLES_DestroyContext(SDL_VideoDevice*,SDL_GLContext);
+@EGL_DESTROY@
+@SDL_CREATE@
+@SDL_DESTROY@
+int main(){
+    using namespace amcl::graphics;
+    GraphicsRuntimeBinding runtime;runtime.profile=FindGraphicsProfile("mobilegl");runtime.features=std::make_unique<GraphicsFeatureState>();
+    fixture::activeRuntime=&runtime;fixture::contexts.clear();fixture::current=0;fixture::next=1;
+    fixture::fault="global-state";fixture::surfaces=0;fixture::pendingError=0;
+    auto& api=runtime.egl;api.ready=true;api.eglGetCurrentContext=fixture::getContext;api.eglGetCurrentDisplay=fixture::getDisplay;
+    api.eglGetCurrentSurface=fixture::getSurface;api.eglCreatePbufferSurface=fixture::createPbuffer;
+    api.eglCreateContext=fixture::createContext;api.eglMakeCurrent=fixture::makeCurrent;api.eglDestroyContext=fixture::destroyContext;
+    api.eglDestroySurface=fixture::destroySurface;api.eglGetError=fixture::eglError;
+    auto& abi=runtime.publicApi;abi.structSize=sizeof(abi);abi.abiVersion=1;
+    abi.eglProc=[](const char* name)->void*{return !std::strcmp(name,"eglGetCurrentContext")?reinterpret_cast<void*>(&fixture::getContext):nullptr;};
+    abi.reserveContext=[](void* shared)->uint64_t{return ReserveGraphicsContext(*fixture::activeRuntime,shared);};
+    abi.commitContext=[](uint64_t permit,void* context)->int{return CommitGraphicsContext(*fixture::activeRuntime,permit,context);};
+    abi.retireContext=[](void* context)->int{return RetireGraphicsContext(*fixture::activeRuntime,context);};
+    abi.inspectContext=amclGraphicsInspectContextV1;
+    SDL_WindowData auxiliary,presented;presented.role=0;presented.egl_surface=reinterpret_cast<void*>(11);
+    SDL_Window mainWindow{&presented},utility{&auxiliary,&mainWindow};
+    SDL_VideoData video;videoData=&video;SDL_VideoDevice::Egl egl;
+    SDL_VideoDevice device{};device.egl_data=&egl;device.internal=&video;device.windows=&utility;
+    const auto context=OPENHARMONY_GLES_CreateContext(&device,&utility);
+    CHECK(context && creates==1 && runtime.features->contextPermits.size()==1 && !video.renderer_fatal);
+    CHECK(!GraphicsAuxiliaryVerified(runtime,true));
+    CHECK(!OPENHARMONY_GLES_CreateContext(&device,&mainWindow) && creates==1); // 未进入第二次驱动分配。
+    device.gl_config.share_with_current_context=true;
+    CHECK(!OPENHARMONY_GLES_CreateContext(&device,&mainWindow) && creates==1);
+    // 一个context切到另一surface不申请资格，原对象身份继续有效；SDL切换cache另有生产回归。
+    CHECK(fixture::makeCurrent(egl.egl_display,presented.egl_surface,presented.egl_surface,context));
+    presented.last_context=context;presented.owner_thread=7;presented.is_current=true;
+    CHECK(runtime.features->contextPermits.size()==1);
+    failUnbind=true;
+    CHECK(!OPENHARMONY_GLES_DestroyContext(&device,context) && auxiliary.last_context==context && runtime.features->contextPermits.size()==1);
+    failUnbind=false;fixture::fault="destroy-failed";
+    CHECK(!OPENHARMONY_GLES_DestroyContext(&device,context) && auxiliary.last_context==context && runtime.features->contextPermits.size()==1);
+    fixture::fault.clear();
+    CHECK(OPENHARMONY_GLES_DestroyContext(&device,context) && !auxiliary.last_context && !presented.last_context && runtime.features->contextPermits.empty());
+    device.gl_config.share_with_current_context=false;failCreate=true;
+    CHECK(!OPENHARMONY_GLES_CreateContext(&device,&utility) && video.renderer_fatal && runtime.features->contextPermits.size()==1);
+    const auto before=creates;CHECK(!OPENHARMONY_GLES_CreateContext(&device,&utility) && creates==before);
+    std::cout<<"SDL context contract PASS: production create/retire, shared owner permits, unsupported extra contexts, single-context multi-surface, failed retirement retention\n";
+}

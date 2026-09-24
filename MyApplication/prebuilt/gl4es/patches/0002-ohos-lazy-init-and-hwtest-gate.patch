@@ -1,0 +1,92 @@
+diff --git a/src/gl/getter.c b/src/gl/getter.c
+index b07b0f2..859d0b2 100755
+--- a/src/gl/getter.c
++++ b/src/gl/getter.c
+@@ -17,6 +17,7 @@
+ #endif
+ 
+ GLenum gl4es_glGetError() {
++    gl4es_ensure_init();
+     DBG(printf("glGetError(), noerror=%d, shim_error=%d\n", globals4es.noerror, glstate->shim_error);)
+     if(globals4es.noerror)
+         return GL_NO_ERROR;
+@@ -229,6 +230,7 @@ void BuildExtensionsList() {
+ }
+ 
+ const GLubyte *gl4es_glGetString(GLenum name) {
++    gl4es_ensure_init();
+     DBG(printf("glGetString(%s)\n", PrintEnum(name));)
+     errorShim(GL_NO_ERROR);
+     switch (name) {
+@@ -758,6 +760,7 @@ int gl4es_commonGet(GLenum pname, GLfloat *params) {
+ 
+ // glGet
+ void gl4es_glGetIntegerv(GLenum pname, GLint *params) {
++    gl4es_ensure_init();
+     DBG(printf("glGetIntegerv(%s, %p)\n", PrintEnum(pname), params);)
+     if (params==NULL) {
+         errorShim(GL_INVALID_OPERATION);
+@@ -856,6 +859,7 @@ void gl4es_glGetIntegerv(GLenum pname, GLint *params) {
+ void glGetIntegerv(GLenum pname, GLint *params) AliasExport("gl4es_glGetIntegerv");
+ 
+ void gl4es_glGetFloatv(GLenum pname, GLfloat *params) {
++    gl4es_ensure_init();
+     DBG(printf("glGetFloatv(%s, %p)\n", PrintEnum(pname), params);)
+     LOAD_GLES(glGetFloatv);
+     noerrorShim();
+@@ -1129,6 +1133,7 @@ void glGetClipPlanef(GLenum plane, GLfloat * equation) AliasExport("gl4es_glGetC
+ 
+ 
+ const GLubyte *gl4es_glGetStringi(GLenum name, GLuint index) {
++    gl4es_ensure_init();
+     DBG(printf("glGetStringi(%s, %d)\n", PrintEnum(name), index);)
+     BuildExtensionsList();
+     if (name!=GL_EXTENSIONS) {
+diff --git a/src/gl/init.c b/src/gl/init.c
+index 9410e66..73fb6c2 100755
+--- a/src/gl/init.c
++++ b/src/gl/init.c
+@@ -61,6 +61,18 @@ void set_getprocaddress(void *(*new_proc_address)(const char *)) {
+     gles_getProcAddress = new_proc_address;
+ }
+ 
++void initialize_gl4es();  // forward decl (defined below with constructor/visibility attrs)
++// OHOS lazy initialization. gl4es is built with NO_INIT_CONSTRUCTOR (a constructor would
++// dlopen the GLES lib nested inside the host loader's dlopen -> musl loader-lock deadlock).
++// On OHOS the GL library can be loaded by the JVM (LWJGL via org.lwjgl.opengl.libname) in a
++// SEPARATE linker namespace, where our explicit initialize_gl4es() call never reached -> that
++// instance stayed uninitialized (gles==NULL) -> LOAD_GLES skipped -> NULL GLES pointer -> crash.
++// Calling this at the top of the first GL entry points initializes whatever instance is being
++// used, from a normal call context (render thread, context current) -> no nested dlopen.
++void gl4es_ensure_init(void) {
++    if(!inited) initialize_gl4es();
++}
++
+ #ifdef NO_INIT_CONSTRUCTOR
+ __attribute__((visibility("default")))
+ #else
+@@ -198,7 +210,11 @@ void initialize_gl4es() {
+ #endif
+ 
+ #if (defined(NOEGL) && !defined(ANDROID) && !defined(__APPLE__)) || defined(__EMSCRIPTEN__)
+-    int gl4es_notest = !gles_getProcAddress;
++    // OHOS: gate the hardware test on having a real GLES library handle (set via LIBGL_GLES),
++    // not on a custom proc-address resolver. With NOEGL we probe on the current context using
++    // gles_* resolved by dlsym(gles), so a real libGLESv3 handle is enough and lets us detect the
++    // real GLSL/NPOT/texture caps required for correct shader conversion.
++    int gl4es_notest = !gles;
+ #else
+     int gl4es_notest = IsEnvVarTrue("LIBGL_NOTEST");
+ #endif
+diff --git a/src/gl/init.h b/src/gl/init.h
+index fef04bd..8161fc8 100755
+--- a/src/gl/init.h
++++ b/src/gl/init.h
+@@ -82,4 +82,7 @@ typedef struct _globals4es {
+ 
+ extern globals4es_t globals4es;
+ 
++// OHOS: lazy-init entry (see init.c)
++void gl4es_ensure_init(void);
++
+ #endif // _GL4ES_INIT_H_

@@ -1,0 +1,73 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ============================================================
+# AMCL openjdk-ohos-builder image
+#
+# 镜像里只装"构建机器"（toolchain + 通用脚本），不装"依赖配方"。
+# patches / shims 通过 mount 注入（详见 docs/guides/third-party-deps-restructure-plan.md §3.6）：
+#
+#   docker run --rm \
+#     -v "$(pwd)/prebuilt/jdk/17:/jdk-spec:ro" \    # patches/ + shims/
+#     -v "$(pwd)/prebuilt/stubs/src:/stubs-src:ro"  # cxxabi_shim + eh_stubs
+#     -v "$(pwd)/prebuilt/jdk/21:/jdk21-spec:ro"    # 仅 21 构建需要
+#     -v "/path/to/ohos/sysroot:/ohos-sysroot:ro" \
+#     -v "/path/to/output:/output" \
+#     openjdk-ohos-builder /build/build_jdk17_ohos.sh
+#
+# 这样改 patch 不需要 rebuild ~5 GB image。
+# ============================================================
+
+# 安装编译依赖 + clang-15 (与 OHOS NDK clang 15.0.4 版本匹配)
+RUN apt-get update && apt-get install -y \
+    build-essential autoconf automake libtool make cmake ninja-build \
+    unzip zip curl wget git python3 pkg-config \
+    libx11-dev libxext-dev libxrender-dev libxrandr-dev libxtst-dev libxt-dev \
+    libcups2-dev libfontconfig1-dev libasound2-dev libfreetype6-dev \
+    openjdk-17-jdk \
+    file patchelf \
+    clang-15 lld-15 llvm-15 \
+    libc++-15-dev libc++abi-15-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建 clang/llvm 工具的无版本后缀符号链接
+RUN ln -sf /usr/bin/clang-15 /usr/bin/ohos-clang && \
+    ln -sf /usr/bin/clang++-15 /usr/bin/ohos-clang++ && \
+    ln -sf /usr/bin/lld-15 /usr/bin/ohos-lld && \
+    ln -sf /usr/bin/ld.lld-15 /usr/bin/ld.lld && \
+    ln -sf /usr/bin/llvm-ar-15 /usr/bin/ohos-ar && \
+    ln -sf /usr/bin/llvm-ranlib-15 /usr/bin/ohos-ranlib && \
+    ln -sf /usr/bin/llvm-strip-15 /usr/bin/ohos-strip && \
+    ln -sf /usr/bin/llvm-objcopy-15 /usr/bin/ohos-objcopy && \
+    ln -sf /usr/bin/llvm-nm-15 /usr/bin/ohos-nm && \
+    ln -sf /usr/bin/llvm-objdump-15 /usr/bin/ohos-objdump && \
+    ln -sf /usr/bin/llvm-readelf-15 /usr/bin/ohos-readelf
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV OHOS_SYSROOT=/ohos-sysroot
+ENV TOOLCHAIN_DIR=/ohos-toolchain
+
+WORKDIR /build
+
+# 主编译脚本（构建机器，不动）
+COPY setup_toolchain.sh build_jdk17_ohos.sh build_jdk21_ohos.sh \
+     build_lwjgl_ohos.sh build_curl_ohos.sh build_fontconfig_ohos.sh \
+     apply_patches.sh /build/
+
+# 辅助脚本（rebuild、pack、configure 等；属于构建编排，不是依赖配方）
+COPY scripts/ /build/scripts/
+
+# 编译时 stub 头文件（cups、fontconfig、x11） — 这是 Docker 构建环境的一部分，
+# 不是 JDK 源码改动；留在镜像里
+COPY stubs/ /build/stubs/
+
+# 注意：以下目录从 Dockerfile 移除，改由 mount 注入（详见文件头注释）：
+#   • patches/      → mount 到 /jdk-spec/patches  (来自 prebuilt/jdk/17/patches/)
+#   • shims/        → mount 到 /jdk-spec/shims    (icache_patch.hpp)
+#                  + /stubs-src                 (cxxabi_shim.cpp + eh_stubs.c)
+
+RUN chmod +x /build/*.sh && \
+    find /build/scripts -name "*.sh" -exec chmod +x {} \;
+
+CMD ["/bin/bash"]

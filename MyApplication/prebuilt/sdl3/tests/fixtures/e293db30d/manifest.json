@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "sourceRepository": "https://github.com/icculus/SDL",
+  "sourceCommit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+  "license": "Zlib",
+  "licensePath": "LICENSE.txt",
+  "provenance": "Unmodified git blobs read from the exact deps.lock SDL commit; source headers and the complete upstream license are retained.",
+  "files": [
+    {
+      "path": "src/SDL.c",
+      "size": 28486,
+      "sha256": "cf3c6c73c1b3ffb0818200ab8a6c93f43fd20913cc36b9fa60153d3d4d19b0cc",
+      "gitBlob": "ee95ef14b3aa5882a0ca6a336dc4ee18db5bc394",
+      "sourceUrl": "https://github.com/icculus/SDL/blob/e293db30d74cca888eafba4e27f0c894f128e67d/src/SDL.c"
+    },
+    {
+      "path": "src/events/SDL_events.c",
+      "size": 71515,
+      "sha256": "4381c2503c333f3aa8732cb6b071b6d3fe95595947b59b987b4bd32dc919338c",
+      "gitBlob": "a0ed2fc3bfb36ce5f759be59f09c46630c2b6d66",
+      "sourceUrl": "https://github.com/icculus/SDL/blob/e293db30d74cca888eafba4e27f0c894f128e67d/src/events/SDL_events.c"
+    },
+    {
+      "path": "LICENSE.txt",
+      "size": 884,
+      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+      "gitBlob": "e9adee4484511b4b1730461679fed21d9b13d88e",
+      "sourceUrl": "https://github.com/icculus/SDL/blob/e293db30d74cca888eafba4e27f0c894f128e67d/LICENSE.txt"
+    }
+  ]
+}

@@ -1,0 +1,327 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index f1a64d908..d6d960436 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -59,16 +59,12 @@
+ //
+ // Coordinate model
+ // ----------------
+-// The host reports one cursor value whose meaning depends on grab state:
+-// while grabbed it is an *accumulated* look value (for first-person camera
+-// control), and while not grabbed it is an *absolute* menu position. SDL's
+-// relative-mouse-mode split matches that exactly, so we forward
+-//   grabbed     -> SDL_SendMouseMotion(relative=true,  dx, dy)
+-//   not grabbed -> SDL_SendMouseMotion(relative=false, x,  y)
+-// The delta is computed here, against a baseline that is *reset whenever grab
+-// state flips*. Without that reset the first frame after a grab change would
+-// report the difference between two unrelated coordinate spaces, which shows
+-// up as a large camera jump.
++// The host cursor snapshot is the legacy fallback and the menu-absolute owner.
++// Once the typed backend channel is ready, grabbed relative motion arrives as a
++// dedicated AMCL_BACKEND_EVENT_RELATIVE record and must not also be derived
++// from the accumulated host cursor. Normal/menu mode continues to consume the
++// absolute snapshot. Every owner transition invalidates the legacy baseline so
++// the first fallback sample can never bridge two coordinate spaces.
+
+ #include "SDL_openharmonyamcl.h"
+ #include "SDL_openharmonywindow.h"
+@@ -157,7 +153,14 @@
+ #define AMCL_BACKEND_EVENT_BUTTON 2u
+ #define AMCL_BACKEND_EVENT_WHEEL 3u
+ #define AMCL_BACKEND_EVENT_RESET 4u
++#define AMCL_BACKEND_EVENT_FOCUS 5u
++#define AMCL_BACKEND_EVENT_CAPTURE 6u
++#define AMCL_BACKEND_EVENT_RELATIVE 7u
+ #define AMCL_BACKEND_EVENT_ABI_VERSION 1u
++#define AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW (1u << 0)
++#define AMCL_BACKEND_RELATIVE_FLAG_MASK AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW
++#define AMCL_CAPTURE_REASON_NONE 0u
++#define AMCL_CAPTURE_REASON_GRANTED 1u
+ #define AMCL_BACKEND_ACTION_UP 3u
+ #define AMCL_BACKEND_ACTION_DOWN 1u
+ #define AMCL_BACKEND_ACTION_REPEAT 2u
+@@ -245,6 +248,34 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+              * identical. */
+             break;
+
++        case AMCL_BACKEND_EVENT_FOCUS:
++            if (event->action > 1u) {
++                reason = "focus-value";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_CAPTURE:
++            if (event->code < 0 || event->code > 1 || event->action > 1u) {
++                reason = "capture-value";
++            } else if (event->action != 0u &&
++                       (event->code == 0 ||
++                        event->resetReason != AMCL_CAPTURE_REASON_GRANTED)) {
++                reason = "capture-active-tuple";
++            } else if (event->action == 0u &&
++                       event->resetReason == AMCL_CAPTURE_REASON_GRANTED) {
++                reason = "capture-inactive-granted";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_RELATIVE:
++            if (isnan(event->wheelX) || isinf(event->wheelX) ||
++                isnan(event->wheelY) || isinf(event->wheelY)) {
++                reason = "relative-nonfinite";
++            } else if ((event->modifiers & ~AMCL_BACKEND_RELATIVE_FLAG_MASK) != 0u) {
++                reason = "relative-flags";
++            }
++            break;
++
+         default:
+             reason = "event-type";
+             break;
+@@ -361,7 +392,10 @@ static double host_last_x;
+ static double host_last_y;
+ static bool host_last_grabbing;
+ static bool host_baseline_valid;
++static bool host_capture_requested;
++static bool host_capture_active;
+ static bool host_presented_active;
++static bool host_deactivation_draining;
+ static SDL_AtomicInt host_bridge_pid;
+
+ static SDL_VideoData *OPENHARMONY_AMCL_GetVideoData(void);
+@@ -442,7 +476,10 @@ static void OPENHARMONY_ResetHostBridgeForPid(void)
+         host_last_y = 0.0;
+         host_last_grabbing = false;
+         host_baseline_valid = false;
++        host_capture_requested = false;
++        host_capture_active = false;
+         host_presented_active = false;
++        host_deactivation_draining = false;
+         host_typed_attempts = 0;
+         SDL_SetAtomicInt(&host_typed_state, AMCL_TYPED_UNRESOLVED);
+         amcl_typed_malformed_events = 0;
+@@ -874,7 +911,8 @@ static Uint8 OPENHARMONY_ButtonFromGlfwButton(int button)
+ // ---------------------------------------------------------------------------
+ // Cursor / look forwarding
+ // ---------------------------------------------------------------------------
+-static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge)
++static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge,
++                                       bool typed_relative_owner)
+ {
+     // Defence in depth: both resolve paths refuse to publish a partial
+     // bridge, so these cannot be NULL today. But this function calls straight
+@@ -889,6 +927,17 @@ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge)
+     }
+     const SDL_WindowID input_window_id = input_window->id;
+
++    const bool grabbing = bridge->IsGrabbing();
++    if (grabbing && typed_relative_owner) {
++        /* The typed relative record is the sole grabbed-motion owner. Keeping
++         * the accumulated cursor baseline live here would allow a second GLFW
++         * consumer to advance it and make SDL inject the same hardware sample
++         * twice. */
++        host_baseline_valid = false;
++        host_last_grabbing = true;
++        return;
++    }
++
+     // Read both axes in one call so they cannot come from different samples.
+     // Grab state still needs a second call, so a grab flip can in principle be
+     // observed one pump out of step with the coordinates it applies to; the
+@@ -897,7 +946,6 @@ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge)
+     double x = 0.0;
+     double y = 0.0;
+     bridge->GetCursorSnapshot(&x, &y);
+-    const bool grabbing = bridge->IsGrabbing();
+
+     // Grab flips swap the meaning of the value (accumulated look vs absolute
+     // menu position). Re-baseline instead of diffing across the boundary.
+@@ -1088,6 +1136,60 @@ static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
+ // legacy path below has to run OPENHARMONY_ScancodeFromGlfwKey, which means the
+ // same key was translated twice and the platform's own scan code was already
+ // discarded by the first hop.
++static void OPENHARMONY_DisableRelativeModeForHostLoss(void)
++{
++    if (SDL_GetRelativeMouseMode() && !SDL_SetRelativeMouseMode(false)) {
++        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
++                    "openharmony: failed to leave relative mode after host capture loss: %s",
++                    SDL_GetError());
++    }
++}
++
++static bool OPENHARMONY_ApplyTypedFocus(SDL_WindowID window_id, bool focused)
++{
++    SDL_Window *window = OPENHARMONY_AMCL_GetLiveInputWindow(window_id);
++    if (!window) {
++        return false;
++    }
++    if (focused) {
++        SDL_SetKeyboardFocus(window);
++        window = OPENHARMONY_AMCL_GetLiveInputWindow(window_id);
++        if (!window) {
++            return false;
++        }
++        SDL_SetMouseFocus(window);
++        return true;
++    }
++
++    if (SDL_GetKeyboardFocus() == window) {
++        SDL_SetKeyboardFocus(NULL);
++    }
++    window = OPENHARMONY_AMCL_GetLiveInputWindow(window_id);
++    if (!window) {
++        return false;
++    }
++    if (SDL_GetMouseFocus() == window) {
++        SDL_SetMouseFocus(NULL);
++    }
++    return true;
++}
++
++static void OPENHARMONY_ApplyTypedCapture(
++    const AMCL_BackendInputEvent *event)
++{
++    host_capture_requested = event->code != 0;
++    host_capture_active = event->action != 0u;
++    /* requested=1, active=0, reason=NONE is the asynchronous pending state.
++     * It must suppress relative samples without cancelling SDL's request; only
++     * an explicit release or a non-NONE loss result exits relative mode. */
++    if (!host_capture_requested ||
++        (!host_capture_active &&
++         event->resetReason != AMCL_CAPTURE_REASON_NONE)) {
++        host_baseline_valid = false;
++        OPENHARMONY_DisableRelativeModeForHostLoss();
++    }
++}
++
+ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+ {
+     OPENHARMONY_TypedNextFn typed_next = OPENHARMONY_GetTypedNext(bridge);
+@@ -1184,9 +1286,33 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+             // the player holding attack forever.
+             SDL_ResetKeyboard();
+             OPENHARMONY_ReleaseHeldMouseButtons(false, 0);
++            host_capture_requested = false;
++            host_capture_active = false;
++            OPENHARMONY_DisableRelativeModeForHostLoss();
+             host_baseline_valid = false;
+             break;
+
++        case AMCL_BACKEND_EVENT_FOCUS:
++            if (!OPENHARMONY_ApplyTypedFocus(
++                    input_window_id, event.action != 0u)) {
++                return;
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_CAPTURE:
++            OPENHARMONY_ApplyTypedCapture(&event);
++            break;
++
++        case AMCL_BACKEND_EVENT_RELATIVE:
++            if (host_capture_requested && host_capture_active &&
++                SDL_GetRelativeMouseMode() &&
++                (event.wheelX != 0.0f || event.wheelY != 0.0f)) {
++                SDL_SendMouseMotion(event.monotonicTimeNs, input_window,
++                                    SDL_DEFAULT_MOUSE_ID, true,
++                                    event.wheelX, event.wheelY);
++            }
++            break;
++
+         default:
+             break;  // unknown host event; ignore rather than guess.
+         }
+@@ -1228,10 +1354,11 @@ void OPENHARMONY_AMCL_PumpEvents(void)
+         typed_set_active(AMCL_BACKEND_ID_SDL3, 1);
+         bridge->typed_activated = true;
+     }
+-    // Cursor and grab stay on the legacy accessors in both cases: the host's
+-    // look funnel owns the accumulated look value and the menu cursor, and a
+-    // second source for those would desynchronise them from the grab flag.
+-    OPENHARMONY_PumpHostCursor(bridge);
++    /* Normal/menu absolute cursor stays on the legacy snapshot. Grabbed motion
++     * has exactly one owner: the typed RELATIVE record whenever that channel is
++     * callable, otherwise the accumulated-cursor fallback. */
++    bool typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
++    OPENHARMONY_PumpHostCursor(bridge, typed_relative_owner);
+     // ⭐ BOTH channels, and that is not a contradiction -- they carry disjoint
+     // sources. Getting this wrong in either direction is a real bug, so the
+     // reasoning is spelled out rather than summarised:
+@@ -1250,7 +1377,7 @@ void OPENHARMONY_AMCL_PumpEvents(void)
+     //     UNAVAILABLE result below latches on.
+     //
+     // So: typed first (physical, already SDL-encoded), then the ring (the rest).
+-    if (OPENHARMONY_GetTypedNext(bridge)) {
++    if (typed_relative_owner) {
+         OPENHARMONY_PumpTypedEvents(bridge);
+     }
+     OPENHARMONY_PumpHostEvents(bridge);
+@@ -1261,7 +1388,8 @@ void OPENHARMONY_AMCL_PumpEvents(void)
+     // later (the user had to tap twice). Sample once more after the ring so DOWN's absolute
+     // position enters SDL now. The host holds PRESS until a successful present, so this MOTION is
+     // consumed while the menu is still open and cannot leak into relative camera movement.
+-    OPENHARMONY_PumpHostCursor(bridge);
++    typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
++    OPENHARMONY_PumpHostCursor(bridge, typed_relative_owner);
+ }
+
+ void OPENHARMONY_AMCL_NotifyFramePresented(void)
+@@ -1288,6 +1416,26 @@ void OPENHARMONY_AMCL_NotifyFramePresented(void)
+
+ void OPENHARMONY_AMCL_SetPresentedActive(bool active)
+ {
++    if (!active && host_deactivation_draining) {
++        return;
++    }
++    SDL_Window *presented = OPENHARMONY_Window;
++    const bool host_injected = !presented || !presented->internal ||
++        !presented->internal->native_xcomponent;
++    if (!active && host_presented_active && host_injected) {
++        /* Core publishes RESET/CAPTURE/FOCUS before the foreground gate closes.
++         * Drain those lifecycle records while the old presented identity is
++         * still valid, then retire the consumer. Otherwise SetActive(0) clears
++         * the queue and SDL never observes the backend focus/capture facts. */
++        host_deactivation_draining = true;
++        OPENHARMONY_HostBridge *drain_bridge = OPENHARMONY_GetHostBridge();
++        if (drain_bridge && drain_bridge->typed_activated &&
++            OPENHARMONY_GetTypedNext(drain_bridge)) {
++            OPENHARMONY_PumpTypedEvents(drain_bridge);
++        }
++        host_deactivation_draining = false;
++        presented = OPENHARMONY_Window;
++    }
+     /* A lifecycle edge is a held-input boundary, not just a producer toggle.
+      * Clear both SDL keyboard and mouse state before changing the host cursors;
+      * otherwise a key/button whose release arrived during a surface gap remains
+@@ -1315,7 +1463,6 @@ void OPENHARMONY_AMCL_SetPresentedActive(bool active)
+             }
+         }
+     }
+-    SDL_Window *presented = OPENHARMONY_Window;
+     SDL_VideoData *videodata = OPENHARMONY_AMCL_GetVideoData();
+     if (presented && presented->internal &&
+         presented->internal->native_xcomponent) {
+@@ -1364,6 +1511,8 @@ void OPENHARMONY_AMCL_SetPresentedActive(bool active)
+         bridge->SetActive(0);
+         bridge->legacy_activated = false;
+     }
++    host_capture_requested = false;
++    host_capture_active = false;
+     host_baseline_valid = false;
+ }
+
+@@ -1451,6 +1600,8 @@ static bool OPENHARMONY_SetRelativeMouseMode(bool enabled)
+     if (!bridge || !bridge->SetGrabState) {
+         return SDL_Unsupported();
+     }
++    host_capture_requested = enabled;
++    host_capture_active = false;
+     bridge->SetGrabState(enabled ? 1 : 0);
+     // Force a re-baseline: the host switches coordinate spaces on this call.
+     host_baseline_valid = false;
+@@ -1528,6 +1679,8 @@ void OPENHARMONY_AMCL_InitMouse(void)
+         host_bridge.legacy_activated = false;
+     }
+     host_presented_active = false;
++    host_capture_requested = false;
++    host_capture_active = false;
+     SDL_Mouse *mouse = SDL_GetMouse();
+     if (!mouse) {
+         return;

@@ -1,0 +1,5 @@
+# Mesa OSMesa+Zink 的 OHOS/musl 适配补丁，按行顺序应用（build_mesa_zink_ohos.sh 读取）。
+0001-ohos-vulkan-loader-soname.patch
+0002-osmesa-link-zink-driver.patch
+0003-inline-sw-helper-include-zink-public.patch
+0004-osmesa-sha1-build-id.patch

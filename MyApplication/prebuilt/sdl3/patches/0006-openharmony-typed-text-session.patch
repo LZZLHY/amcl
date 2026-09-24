@@ -1,0 +1,516 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index ebff98721..7d5552865 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -78,6 +78,7 @@
+
+ #include <dlfcn.h>
+ #include <math.h>
++#include <string.h>
+ #include <unistd.h>
+
+ // ---------------------------------------------------------------------------
+@@ -157,6 +158,14 @@
+ #define AMCL_BACKEND_EVENT_CAPTURE 6u
+ #define AMCL_BACKEND_EVENT_RELATIVE 7u
+ #define AMCL_BACKEND_EVENT_DEVICE 8u
++#define AMCL_BACKEND_EVENT_TEXT_SESSION 10u
++#define AMCL_BACKEND_EVENT_TEXT_COMMIT 11u
++#define AMCL_BACKEND_EVENT_TEXT_EDITING 12u
++#define AMCL_BACKEND_EVENT_TEXT_CANDIDATES 13u
++#define AMCL_BACKEND_EVENT_TEXT_SELECTION 14u
++#define AMCL_BACKEND_ID_SDL3 3u
++/* The AMCL_BackendInputEvent envelope remains fixed at 64 bytes; text payload
++ * bytes live in the independent owned-packet descriptor below. */
+ #define AMCL_BACKEND_EVENT_ABI_VERSION 1u
+ #define AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW (1u << 0)
+ #define AMCL_BACKEND_RELATIVE_FLAG_MASK AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW
+@@ -176,6 +185,16 @@
+ #define AMCL_BACKEND_RESULT_ABI_ERROR (-2)
+ #define AMCL_BACKEND_RESULT_UNAVAILABLE (-3)
+ #define AMCL_BACKEND_RESULT_NOT_READY (-4)
++#define AMCL_BACKEND_RESULT_BUFFER_TOO_SMALL (-5)
++#define AMCL_BACKEND_RESULT_NOT_FOUND (-6)
++#define AMCL_BACKEND_RESULT_MALFORMED (-7)
++#define AMCL_TEXT_SESSION_STARTED 1u
++#define AMCL_TEXT_SESSION_ENDED 2u
++#define AMCL_TEXT_SESSION_ABORTED 3u
++#define AMCL_TEXT_SESSION_REASON_MAX 5u
++#define AMCL_TEXT_MAX_SCALARS 4096u
++#define AMCL_TEXT_MAX_ITEMS 64u
++#define AMCL_TEXT_MAX_BLOB_BYTES 16644u
+
+ typedef struct
+ {
+@@ -320,6 +339,58 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+             }
+             break;
+
++        case AMCL_BACKEND_EVENT_TEXT_SESSION:
++            if (event->deviceId == 0u ||
++                event->code < (Sint32)AMCL_TEXT_SESSION_STARTED ||
++                event->code > (Sint32)AMCL_TEXT_SESSION_ABORTED ||
++                event->action > AMCL_TEXT_SESSION_REASON_MAX) {
++                reason = "text-session";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_TEXT_COMMIT:
++            if (event->deviceId == 0u || event->code <= 0 ||
++                event->code > (Sint32)AMCL_TEXT_MAX_BLOB_BYTES) {
++                reason = "text-commit";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_TEXT_EDITING:
++            if (event->deviceId == 0u || event->code < 0 ||
++                event->code > (Sint32)AMCL_TEXT_MAX_BLOB_BYTES ||
++                event->action > AMCL_TEXT_MAX_SCALARS ||
++                event->modifiers > AMCL_TEXT_MAX_SCALARS) {
++                reason = "text-editing";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_TEXT_CANDIDATES:
++            if (event->deviceId == 0u || event->code < 4 ||
++                event->code > (Sint32)AMCL_TEXT_MAX_BLOB_BYTES ||
++                event->action >= AMCL_TEXT_MAX_ITEMS ||
++                event->modifiers >= AMCL_TEXT_MAX_ITEMS ||
++                event->lockState > AMCL_TEXT_MAX_ITEMS ||
++                event->resetReason > AMCL_TEXT_MAX_ITEMS) {
++                reason = "text-candidates";
++            } else if (event->resetReason != 0u &&
++                       (event->lockState == 0u ||
++                        event->modifiers + event->lockState >
++                            event->resetReason ||
++                        event->action < event->modifiers ||
++                        event->action >= event->modifiers + event->lockState)) {
++                reason = "text-candidate-page";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_TEXT_SELECTION:
++            if (event->deviceId == 0u || event->code < 0 ||
++                event->code > (Sint32)AMCL_TEXT_MAX_SCALARS ||
++                event->action > AMCL_TEXT_MAX_SCALARS ||
++                event->code + event->action > (Sint32)AMCL_TEXT_MAX_SCALARS) {
++                reason = "text-selection";
++            }
++            break;
++
+         default:
+             reason = "event-type";
+             break;
+@@ -368,6 +439,9 @@ typedef struct
+     // the host's look funnel is the single source of truth for them).
+     int (*TypedNext)(Uint32 backend, AMCL_BackendInputEvent *out);
+     void (*TypedSetActive)(Uint32 backend, int active);
++    int (*TextRead)(Uint32 backend, Uint64 packet, Uint8 *out,
++                    Uint32 capacity, Uint32 *count);
++    int (*TextRelease)(Uint32 backend, Uint64 packet);
+     bool typed_available;
+     bool typed_activated;
+     bool legacy_activated;
+@@ -406,10 +480,127 @@ static SDL_AtomicInt host_bridge_state;
+ #define AMCL_TYPED_ABSENT     3
+ static SDL_AtomicInt host_typed_state;
+ static int host_typed_attempts;
++static SDL_AtomicInt host_text_state;
++#define AMCL_TEXT_UNRESOLVED 0
++#define AMCL_TEXT_RESOLVING 1
++#define AMCL_TEXT_READY 2
++#define AMCL_TEXT_ABSENT 3
+
+ typedef int (*OPENHARMONY_TypedNextFn)(Uint32 backend,
+                                        AMCL_BackendInputEvent *out);
+ typedef void (*OPENHARMONY_TypedSetActiveFn)(Uint32 backend, int active);
++typedef int (*OPENHARMONY_TextReadFn)(Uint32 backend, Uint64 packet,
++                                      Uint8 *out, Uint32 capacity,
++                                      Uint32 *count);
++typedef int (*OPENHARMONY_TextReleaseFn)(Uint32 backend, Uint64 packet);
++
++static OPENHARMONY_TextReadFn OPENHARMONY_GetTextRead(
++        const OPENHARMONY_HostBridge *bridge);
++static OPENHARMONY_TextReleaseFn OPENHARMONY_GetTextRelease(
++        const OPENHARMONY_HostBridge *bridge);
++
++static Uint64 amcl_typed_text_degraded_editing;
++static Uint64 amcl_typed_text_degraded_selection;
++static Uint64 amcl_typed_text_degraded_candidates;
++
++static void OPENHARMONY_RecordTextDegradation(
++        const char *kind, Uint64 *counter) {
++    ++(*counter);
++    if (((*counter) & ((*counter) - 1u)) == 0u) {
++        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
++                    "openharmony: typed text degradation kind=%s count=%" SDL_PRIu64,
++                    kind, *counter);
++    }
++}
++
++static bool OPENHARMONY_ValidUtf8Bytes(const Uint8 *bytes, Uint32 length) {
++    Uint32 offset = 0u;
++    while (offset < length) {
++        const Uint8 first = bytes[offset++];
++        Uint32 need = 0u;
++        Uint32 value = 0u;
++        Uint32 minimum = 0u;
++        if (first <= 0x7fu) {
++            continue;
++        } else if (first >= 0xc2u && first <= 0xdfu) {
++            need = 1u; value = first & 0x1fu; minimum = 0x80u;
++        } else if (first >= 0xe0u && first <= 0xefu) {
++            need = 2u; value = first & 0x0fu; minimum = 0x800u;
++        } else if (first >= 0xf0u && first <= 0xf4u) {
++            need = 3u; value = first & 0x07u; minimum = 0x10000u;
++        } else {
++            return false;
++        }
++        if (need > length - offset) return false;
++        for (Uint32 i = 0u; i < need; ++i) {
++            const Uint8 continuation = bytes[offset++];
++            if ((continuation & 0xc0u) != 0x80u) return false;
++            value = (value << 6u) | (continuation & 0x3fu);
++        }
++        if (value < minimum || (value >= 0xd800u && value <= 0xdfffu) ||
++            value > 0x10ffffu) return false;
++    }
++    return true;
++}
++
++static bool OPENHARMONY_ReadAndReleaseText(
++        OPENHARMONY_HostBridge *bridge, Uint64 packet, Uint32 expected,
++        Uint8 **out_bytes) {
++    if (!out_bytes) return false;
++    *out_bytes = NULL;
++    OPENHARMONY_TextReadFn read = OPENHARMONY_GetTextRead(bridge);
++    OPENHARMONY_TextReleaseFn release = OPENHARMONY_GetTextRelease(bridge);
++    if (!read || !release || packet == 0u) return false;
++    Uint32 count = 0u;
++    int status = read(AMCL_BACKEND_ID_SDL3, packet, NULL, 0u, &count);
++    const int expected_status = expected == 0u
++        ? AMCL_BACKEND_RESULT_EVENT : AMCL_BACKEND_RESULT_BUFFER_TOO_SMALL;
++    if (status != expected_status || count != expected) {
++        (void)release(AMCL_BACKEND_ID_SDL3, packet);
++        return false;
++    }
++    Uint8 *bytes = (Uint8 *)SDL_malloc((size_t)expected + 1u);
++    if (!bytes) {
++        (void)release(AMCL_BACKEND_ID_SDL3, packet);
++        return false;
++    }
++    if (expected != 0u) {
++        status = read(AMCL_BACKEND_ID_SDL3, packet, bytes, expected, &count);
++    }
++    const int release_status = release(AMCL_BACKEND_ID_SDL3, packet);
++    if (status != AMCL_BACKEND_RESULT_EVENT || count != expected ||
++        (release_status != AMCL_BACKEND_RESULT_EVENT &&
++         release_status != AMCL_BACKEND_RESULT_NOT_FOUND)) {
++        SDL_free(bytes);
++        return false;
++    }
++    bytes[expected] = '\0';
++    *out_bytes = bytes;
++    return true;
++}
++
++static Uint32 OPENHARMONY_ReadLe32(const Uint8 *bytes) {
++    return (Uint32)bytes[0] | ((Uint32)bytes[1] << 8u) |
++           ((Uint32)bytes[2] << 16u) | ((Uint32)bytes[3] << 24u);
++}
++
++static OPENHARMONY_TextReadFn OPENHARMONY_GetTextRead(
++        const OPENHARMONY_HostBridge *bridge) {
++    if (!bridge || SDL_GetAtomicInt(&host_text_state) != AMCL_TEXT_READY) {
++        return NULL;
++    }
++    SDL_MemoryBarrierAcquire();
++    return bridge->TextRead;
++}
++
++static OPENHARMONY_TextReleaseFn OPENHARMONY_GetTextRelease(
++        const OPENHARMONY_HostBridge *bridge) {
++    if (!bridge || SDL_GetAtomicInt(&host_text_state) != AMCL_TEXT_READY) {
++        return NULL;
++    }
++    SDL_MemoryBarrierAcquire();
++    return bridge->TextRelease;
++}
+
+ static OPENHARMONY_TypedNextFn OPENHARMONY_GetTypedNext(
+     const OPENHARMONY_HostBridge *bridge)
+@@ -516,6 +707,7 @@ static void OPENHARMONY_ResetHostBridgeForPid(void)
+         SDL_zero(host_bridge);
+         SDL_MemoryBarrierRelease();
+         SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_UNRESOLVED);
++        SDL_SetAtomicInt(&host_text_state, AMCL_TEXT_UNRESOLVED);
+         host_last_x = 0.0;
+         host_last_y = 0.0;
+         host_last_grabbing = false;
+@@ -613,8 +805,6 @@ static bool OPENHARMONY_ResolveBridgeFromEnvironment(OPENHARMONY_HostBridge *bri
+
+ #define AMCL_BACKEND_BRIDGE_ENV "AMCL_BACKEND_INPUT_BRIDGE"
+ #define AMCL_BACKEND_BRIDGE_PREFIX "AMCLBEIV:1:"
+-#define AMCL_BACKEND_ID_SDL3 3u
+-
+ // Parse the already-SDL-encoded channel. Independent of the legacy descriptor:
+ // an older host publishes only that one, and this must then stay absent rather
+ // than half-resolved. Same all-or-nothing rule, same strict magic/version check
+@@ -655,6 +845,42 @@ static bool OPENHARMONY_ResolveTypedBridgeFromEnvironment(OPENHARMONY_HostBridge
+     return true;
+ }
+
++#define AMCL_TEXT_BRIDGE_ENV "AMCL_BACKEND_TEXT_BRIDGE"
++#define AMCL_TEXT_BRIDGE_PREFIX "AMCLBETV:1:"
++
++/* Text blobs have their own descriptor so the frozen AMCLBEIV:1 two-slot
++ * descriptor remains source-compatible with existing SDL builds.  The middle
++ * scalar-reader slot is intentionally parsed and ignored by SDL; LWJGL2 uses
++ * it directly.  Exact whole-string matching keeps a truncated/shifted pointer
++ * list fail-closed. */
++static bool OPENHARMONY_ResolveTextBridgeFromEnvironment(
++        OPENHARMONY_HostBridge *bridge) {
++    if (!bridge) return false;
++    const char *desc = SDL_getenv_unsafe(AMCL_TEXT_BRIDGE_ENV);
++    if (!desc || SDL_strncmp(desc, AMCL_TEXT_BRIDGE_PREFIX,
++                             SDL_strlen(AMCL_TEXT_BRIDGE_PREFIX)) != 0) {
++        return false;
++    }
++    const char *cursor = desc + SDL_strlen(AMCL_TEXT_BRIDGE_PREFIX);
++    uintptr_t slots[3] = {0, 0, 0};
++    for (int i = 0; i < 3; ++i) {
++        char *end = NULL;
++        const unsigned long long value = SDL_strtoull(cursor, &end, 10);
++        if (!end || end == cursor || value == 0u) return false;
++        slots[i] = (uintptr_t)value;
++        cursor = end;
++        if (i != 2) {
++            if (*cursor != ',') return false;
++            ++cursor;
++        }
++    }
++    if (*cursor != '\0') return false;
++    bridge->TextRead = (int (*)(Uint32, Uint64, Uint8 *, Uint32, Uint32 *))
++        slots[0];
++    bridge->TextRelease = (int (*)(Uint32, Uint64))slots[2];
++    return true;
++}
++
+ // Returns the bridge when it is ready and NULL while it is not. NULL doubles
+ // as the null-pointer defence for every caller: the only bridge pointer they
+ // can ever see is handed out after the acquire below, so its fields are
+@@ -697,6 +923,22 @@ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+                                          : AMCL_TYPED_UNRESOLVED);
+                 }
+             }
++            if (SDL_GetAtomicInt(&host_text_state) == AMCL_TEXT_UNRESOLVED &&
++                SDL_CompareAndSwapAtomicInt(&host_text_state,
++                                             AMCL_TEXT_UNRESOLVED,
++                                             AMCL_TEXT_RESOLVING)) {
++                OPENHARMONY_HostBridge text_bridge;
++                SDL_zero(text_bridge);
++                if (OPENHARMONY_ResolveTextBridgeFromEnvironment(
++                        &text_bridge)) {
++                    bridge->TextRead = text_bridge.TextRead;
++                    bridge->TextRelease = text_bridge.TextRelease;
++                    SDL_MemoryBarrierRelease();
++                    SDL_SetAtomicInt(&host_text_state, AMCL_TEXT_READY);
++                } else {
++                    SDL_SetAtomicInt(&host_text_state, AMCL_TEXT_ABSENT);
++                }
++            }
+             SDL_MemoryBarrierAcquire();
+             return bridge;
+         }
+@@ -733,6 +975,18 @@ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+         // both from the same place, so if the legacy one is up and this one is
+         // not, the host is simply older -- retrying would never change that.
+         bridge->typed_available = OPENHARMONY_ResolveTypedBridgeFromEnvironment(bridge);
++        {
++            OPENHARMONY_HostBridge text_bridge;
++            SDL_zero(text_bridge);
++            if (OPENHARMONY_ResolveTextBridgeFromEnvironment(&text_bridge)) {
++                bridge->TextRead = text_bridge.TextRead;
++                bridge->TextRelease = text_bridge.TextRelease;
++                SDL_MemoryBarrierRelease();
++                SDL_SetAtomicInt(&host_text_state, AMCL_TEXT_READY);
++            } else {
++                SDL_SetAtomicInt(&host_text_state, AMCL_TEXT_ABSENT);
++            }
++        }
+         if (bridge->typed_available) {
+             host_typed_attempts = 0;
+             SDL_SetAtomicInt(&host_typed_state, AMCL_TYPED_READY);
+@@ -1234,6 +1488,75 @@ static void OPENHARMONY_ApplyTypedCapture(
+     }
+ }
+
++static void OPENHARMONY_SendTypedCandidates(
++        OPENHARMONY_HostBridge *bridge,
++        const AMCL_BackendInputEvent *event) {
++    Uint8 *encoded = NULL;
++    if (!OPENHARMONY_ReadAndReleaseText(
++            bridge, event->deviceId, (Uint32)event->code, &encoded)) {
++        return;
++    }
++    if ((Uint32)event->code < 4u ||
++        OPENHARMONY_ReadLe32(encoded) > AMCL_TEXT_MAX_ITEMS) {
++        SDL_free(encoded);
++        OPENHARMONY_RecordTextDegradation(
++            "candidates-malformed", &amcl_typed_text_degraded_candidates);
++        return;
++    }
++    const Uint32 count = OPENHARMONY_ReadLe32(encoded);
++    Uint32 offset = 4u;
++    char **items = (char **)SDL_calloc(count, sizeof(*items));
++    if (count != 0u && !items) {
++        SDL_free(encoded);
++        return;
++    }
++    bool valid = true;
++    for (Uint32 index = 0u; index < count; ++index) {
++        if (offset > (Uint32)event->code - 4u ||
++            4u > (Uint32)event->code - offset) {
++            valid = false;
++            break;
++        }
++        const Uint32 length = OPENHARMONY_ReadLe32(encoded + offset);
++        offset += 4u;
++        if (length > (Uint32)event->code - offset ||
++            length > AMCL_TEXT_MAX_BLOB_BYTES ||
++            memchr(encoded + offset, 0, length) != NULL ||
++            !OPENHARMONY_ValidUtf8Bytes(encoded + offset, length)) {
++            valid = false;
++            break;
++        }
++        items[index] = (char *)SDL_malloc((size_t)length + 1u);
++        if (!items[index]) {
++            valid = false;
++            break;
++        }
++        if (length != 0u) SDL_memcpy(items[index], encoded + offset, length);
++        items[index][length] = '\0';
++        offset += length;
++    }
++    if (!valid || offset != (Uint32)event->code) {
++        OPENHARMONY_RecordTextDegradation(
++            "candidates-malformed", &amcl_typed_text_degraded_candidates);
++    } else {
++        if ((event->resetReason != 0u &&
++             (event->modifiers != 0u ||
++              event->lockState != count))) {
++            OPENHARMONY_RecordTextDegradation(
++                "candidates-page", &amcl_typed_text_degraded_candidates);
++        }
++        SDL_SendEditingTextCandidates(
++            items, (int)count, (int)event->action, false);
++    }
++    if (items) {
++        for (Uint32 index = 0u; index < count; ++index) {
++            SDL_free(items[index]);
++        }
++        SDL_free(items);
++    }
++    SDL_free(encoded);
++}
++
+ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+ {
+     OPENHARMONY_TypedNextFn typed_next = OPENHARMONY_GetTypedNext(bridge);
+@@ -1293,6 +1616,15 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+         }
+         input_window = OPENHARMONY_AMCL_GetLiveInputWindow(input_window_id);
+         if (!input_window) {
++            if (event.eventType == AMCL_BACKEND_EVENT_TEXT_COMMIT ||
++                event.eventType == AMCL_BACKEND_EVENT_TEXT_EDITING ||
++                event.eventType == AMCL_BACKEND_EVENT_TEXT_CANDIDATES) {
++                Uint8 *discarded_text = NULL;
++                (void)OPENHARMONY_ReadAndReleaseText(
++                    bridge, event.deviceId, (Uint32)event.code,
++                    &discarded_text);
++                SDL_free(discarded_text);
++            }
+             return;
+         }
+         switch (event.eventType) {
+@@ -1327,12 +1659,13 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+         case AMCL_BACKEND_EVENT_RESET:
+             // Same rule as the legacy path: clear both devices. Dropping only
+             // the keyboard leaves a mouse button latched, which a game reads as
+             // the player holding attack forever.
+             SDL_ResetKeyboard();
+             OPENHARMONY_ReleaseHeldMouseButtons(false, 0);
++            SDL_SendEditingText("", 0, 0);
+             host_capture_requested = false;
+             host_capture_active = false;
+             OPENHARMONY_DisableRelativeModeForHostLoss();
+             host_baseline_valid = false;
+             break;
+
+@@ -1376,6 +1709,66 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+             break;
+         }
+
++        case AMCL_BACKEND_EVENT_TEXT_SESSION:
++            if (event.code == (Sint32)AMCL_TEXT_SESSION_ENDED ||
++                event.code == (Sint32)AMCL_TEXT_SESSION_ABORTED) {
++                // SDL has no independent session token. Clearing the active
++                // composition is the only portable end/abort operation.
++                SDL_SendEditingText("", 0, 0);
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_TEXT_COMMIT: {
++            Uint8 *text = NULL;
++            if (!OPENHARMONY_ReadAndReleaseText(
++                    bridge, event.deviceId, (Uint32)event.code, &text)) {
++                OPENHARMONY_RecordTextDegradation(
++                    "commit-read", &amcl_typed_text_degraded_editing);
++                break;
++            }
++            if (!OPENHARMONY_ValidUtf8Bytes(text, (Uint32)event.code) ||
++                memchr(text, 0, (size_t)event.code) != NULL) {
++                OPENHARMONY_RecordTextDegradation(
++                    "commit-invalid", &amcl_typed_text_degraded_editing);
++            } else {
++                SDL_SendKeyboardText((const char *)text);
++            }
++            SDL_free(text);
++            break;
++        }
++
++        case AMCL_BACKEND_EVENT_TEXT_EDITING: {
++            Uint8 *text = NULL;
++            if (!OPENHARMONY_ReadAndReleaseText(
++                    bridge, event.deviceId, (Uint32)event.code, &text)) {
++                OPENHARMONY_RecordTextDegradation(
++                    "editing-read", &amcl_typed_text_degraded_editing);
++                break;
++            }
++            if (!OPENHARMONY_ValidUtf8Bytes(text, (Uint32)event.code) ||
++                memchr(text, 0, (size_t)event.code) != NULL) {
++                OPENHARMONY_RecordTextDegradation(
++                    "editing-invalid", &amcl_typed_text_degraded_editing);
++            } else {
++                SDL_SendEditingText(
++                    (const char *)text, (int)event.action,
++                    (int)event.modifiers);
++            }
++            SDL_free(text);
++            break;
++        }
++
++        case AMCL_BACKEND_EVENT_TEXT_CANDIDATES:
++            OPENHARMONY_SendTypedCandidates(bridge, &event);
++            break;
++
++        case AMCL_BACKEND_EVENT_TEXT_SELECTION:
++            // SDL3 has no standalone scalar selection event. Keep this
++            // explicit rather than pretending the range is a preedit range.
++            OPENHARMONY_RecordTextDegradation(
++                "selection", &amcl_typed_text_degraded_selection);
++            break;
++
+         default:
+             break;  // unknown host event; ignore rather than guess.
+         }

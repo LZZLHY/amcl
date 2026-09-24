@@ -1,0 +1,20 @@
+diff --git a/src/java.base/unix/native/libjli/java_md.c b/src/java.base/unix/native/libjli/java_md.c
+index 71c162b18..315478724 100644
+--- a/src/java.base/unix/native/libjli/java_md.c
++++ b/src/java.base/unix/native/libjli/java_md.c
+@@ -225,12 +225,14 @@ ContainsLibJVM(const char *env) {
+  */
+ static jboolean
+ RequiresSetenv(const char *jvmpath) {
++    /* OHOS patch: skip re-exec entirely — our ELF loader handles everything */
++    return JNI_FALSE;
+     char jpath[PATH_MAX + 1];
+     char *llp;
+     char *dmllp = NULL;
+     char *p; /* a utility pointer */
+ 
+-#ifdef MUSL_LIBC
++/*#ifdef MUSL_LIBC*/ #if 0
+     /*
+      * The musl library loader requires LD_LIBRARY_PATH to be set in order
+      * to correctly resolve the dependency libjava.so has on libjvm.so.

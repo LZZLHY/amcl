@@ -1,0 +1,216 @@
+# ============================================================================
+# AMCL 整合包译名库 (modpackdata-amcl.txt) —— 整合包专用，独立于模组库 moddata-amcl.txt
+# ============================================================================
+#
+# 为什么单独一份：mcmod 的模组库（moddata-amcl.txt）几乎不含整合包，且整合包在两站
+# 的 slug / 分类常不同；故整合包译名由本文件**手动维护**，查表按资源类型分流（整合包
+# 只查本库，不与模组库交叉，避免错配）。
+#
+# 数据来源：本批为 CurseForge + Modrinth 各自“下载量前 100”的整合包（经官方 API 实拉，
+# slug 真实）。当前**仅标注英文名（占位，待翻译）**，把 `|` 后的英文名改成中文即可。
+#
+# ── 行格式（同 AMCL 译名库格式）──
+#   <slug 段>|<名称>
+#   slug 段写法（cf 在前、mr 在后；务必各填两站真实 slug）：
+#     cf-slug            仅 CurseForge（该包 Modrinth 无 / 未进前 100）
+#     @mr-slug           仅 Modrinth
+#     cf-slug@           两边同名
+#     cf-slug@mr-slug    两边不同名（如 Prominence II：CF=prominence-2-hasturian-era，MR=prominence-2-fabric）
+#
+# ── 维护须知 ──
+#   1. 本文件**无末尾人气排名行**；条目不带 mcmod class id，故整合包不提供“打开 MC 百科”。
+#   2. 跨源合并仅在能确认是同一包时才写 cf@mr；不确定就分两条单源写（宁缺勿错，参考 Iris 教训）。
+#   3. 注意：Better MC 的 [FORGE]/[FABRIC]/[NEOFORGE] 是**不同工程**，已分别单列，勿合并。
+#
+# ── 数据正文从下一行开始 ──
+# ============================================================================
+rlcraft|RLCraft
+the-pixelmon-modpack@|The Pixelmon Modpack
+all-the-mods-10|All the Mods 10 - ATM10
+better-mc-forge-bmc4@|Better MC [FORGE] BMC4
+all-the-mods-9|All the Mods 9 - ATM9
+skyfactory-4|SkyFactory 4
+prominence-2-hasturian-era@prominence-2-fabric|Prominence™ II: Hasturian Era
+dawn-craft|DawnCraft - Echoes of Legends
+all-the-mods-8|All the Mods 8 - ATM8
+cursed-walking-a-modern-zombie-apocalypse|Cursed Walking - A Modern Zombie Apocalypse
+better-mc-fabric-bmc1|Better MC [FABRIC] BMC1
+deceasedcraft|DeceasedCraft - Urban Zombie Apocalypse
+roguelike-adventures-and-dungeons|Roguelike Adventures and Dungeons
+fabulously-optimized@|Fabulously Optimized
+sevtech-ages|SevTech: Ages
+ftb-presents-skyfactory-3|FTB Presents SkyFactory 3
+all-the-mods-6|All the Mods 6 - ATM6
+cave-horror-project|Cave Horror Project 1 - Best Horror Modpack with Quests!
+better-mc-forge-bmc1|Better MC [FORGE] BMC1
+vault-hunters-1-18-2|Vault Hunters Third Edition
+ftb-infinity-evolved|FTB Infinity Evolved
+stoneblock|StoneBlock
+minecraft-eternal|MC  Eternal
+zombie-apocalypse-slow-zombies-by-forge-labs|Mustard Virus by Forge Labs
+ciscos-adventure-rpg-ultimate|Cisco's Fantasy Medieval RPG [Ultimate]
+roguelike-adventures-and-dungeons-2|Roguelike Adventures and Dungeons 2
+medieval-mc-fabric-mmc1|Medieval MC [FABRIC] MMC1
+crazy-craft-updated|Crazy Craft Updated
+ftb-presents-stoneblock-2|FTB Presents Stoneblock 2
+cobbleverse-cobblemon@cobbleverse|COBBLEVERSE - Pokemon Adventure [Cobblemon]
+immersed-with-shaders|Immersed With Shaders
+darkrpg|DarkRPG - RPG with Magic, Origins, Quests, Adventure
+valhelsia-3|Valhelsia 3
+all-in-one-modded-one-block|All in One [Modded One Block]
+cobblemon-fabric@|Cobblemon Official Modpack [Fabric]
+all-the-mods-3|All the Mods 3 - ATM3
+project-ozone-3-a-new-way-forward|Project Ozone 3 A New Way Forward
+farming-valley|Farming Valley
+all-the-mods-7|All the Mods 7 - ATM7
+ftb-revelation|FTB Revelation
+beyond-depth|Beyond Depth
+dungeons-dragons-and-space-shuttles|Dungeons, Dragons and Space Shuttles
+all-the-mods-9-to-the-sky|All the Mods 9 - To the Sky - atm9sky
+steam-punk|SteamPunk [LPS]
+fear-nightfall|Fear Nightfall: Remains of Chaos
+bouncesmp-public|BounceSMP: Public
+valhelsia-2|Valhelsia 2
+forever-stranded|Forever Stranded
+create-above-and-beyond|Create: Above and Beyond
+craftoria|Craftoria
+better-mc-forge-bmc3|Better MC [FORGE] BMC3
+ftb-stoneblock-4|FTB StoneBlock 4
+agrarian-skies-2|Agrarian Skies 2
+project-ozone-2-reloaded|Project Ozone 2: Reloaded
+better-mc-forge-bmc2|Better MC [FORGE] BMC2
+better-mc-neoforge-bmc5@|Better MC [NEOFORGE] BMC5
+all-the-mods-10-sky|All the Mods 10: To the Sky   ATM10SKY
+ftb-beyond|FTB Beyond
+ftb-presents-direwolf20-1-12|FTB Presents Direwolf20 1.12
+bcg|BigChadGuys Plus (w/ Cobblemon!)
+better-mc-fabric-bmc2@|Better MC [FABRIC] BMC2
+mineshafts-monsters|Mineshafts & Monsters
+hexxit-updated|Hexxit Updated
+all-the-mods-7-to-the-sky|All the Mods 7 - To the Sky - atm7sky
+craft-to-exile-2|Craft to Exile 2 (VR Support)
+pokehaan-craft|Pokehaan Craft
+modern-skyblock-3-departed|Modern Skyblock 3: Departed
+dread-arrenek|DREAD - A Horror Survival Pack
+lucky-world-invasion|Lucky World Invasion
+ftb-presents-skyfactory-2-5|FTB Presents SkyFactory 2.5
+rlcraft-dregora|RLCraft Dregora
+parasites-by-forge-labs|Parasites by Forge Labs
+insanecraft-modpack|InsaneCraft Modpack
+homestead-cozy|Homestead - A Cozy Survival Experience
+kimetsu-no-yaiba-demon-slayer-mod-pack|Kimetsu no Yaiba (Demon-Slayer) ModPack
+zjjk|Zeefski Jujutsu Kaisen Craft
+lucky-block-challenge@|Lucky Block Challenge
+integrated-minecraft|Integrated MC
+fantasy-minecraft-fabric|Fantasy MC Fabric
+better-adventures-plus@better-adventures++|Better Adventures+
+medieval-mc-forge-mmc1|Medieval MC [FORGE] MMC1
+dungeon-heroes|Dungeon Heroes (RPG Series)
+valhelsia-enhanced-vanilla|Valhelsia: Enhanced Vanilla
+vault-hunters-official-modpack|Vault Hunters Official Modpack (Second Edition)
+solo-leveling-reawakening|Solo Leveling - Reawakening
+enigmatica2expert|Enigmatica 2: Expert - E2E
+kinda-crazy-craft|Kinda Crazy Craft
+gt-new-horizons|GT New Horizons
+nightfallcraft-the-casket-of-reveries|NightfallCraft - The Casket of Reveries
+minecolonies-official|MineColonies Official
+aoc|All of Create
+life-in-the-village|Life in the village
+enigmatica6|Enigmatica 6 - E6 - 1.16.5
+demon-slayers-unleashed|Demon Slayers Unleashed
+astrids-fnaf-pack|Astrid's FNAF Pack
+all-the-mons|All the Mons - ATMons
+boosted-fps|Boosted FPS (Performance Optimized) (FB)
+sevtech-ages-of-the-sky|SevTech: Ages of the Sky
+play-as-dragon|Play as Dragon [Abandoned]
+ftb-stoneblock-3|FTB StoneBlock 3
+@zombie-invade-100-days|Zombie Invade 100 Days
+@sodiumplus|Sodium Plus
+@vanilla-perfected|Vanilla Perfected
+@battlearmorytacz|BattleArmory TACZ
+@slimes-adventure|Slimes Adventure
+@optifabric-modpack|OptiFabric
+@cobblemondelta|Cobblemon Delta
+@cave-horror-project-modpack|Cave Horror Project 1
+@pokemon-elysium|Pokemon Elysium
+@aged|Aged
+@remarkably|Remarkably Optimized
+@rso|红石生电优化【Redstone Survival Optimization】
+@skyblock-enhanced|SkyBlock Enhanced
+@fps|FPS Modpack
+@hoplite-for-lunar-client|Hoplite for Lunar Client
+@skyblocker-modpack|Skyblocker Modpack - Hypixel Skyblock
+@ardacraft|ArdaCraft
+@realisticcraft|RealisticCraft
+@landscapes-reimagined-genesis|Landscapes Reimagined Genesis
+@fresh-smooth|Fresh & Smooth
+@create_plus|Create+
+@the-horrors-in-the-fog|the horrors in the fog
+@brasil-cobblemon-mobile|Cobblemon Brasil [Mobile]
+@distant-horizons-iris-shaders|Distant Horizons & Iris Shaders
+@svc-for-lunar-client|SVC for Lunar Client
+@cobblemon-neoforge|Cobblemon Official Modpack [NeoForge]
+@dwellers-modpack|THE DWELLERS
+@jornadas-cobblemon|Servidor Jornadas Cobblemon
+@optimized-fps|Optimized fps
+@parasites-reloaded|Parasites: Reloaded
+@plo|Haste
+@optifine-for-fabric|OptiFine for Fabric
+@legacy-minecraft|Re-Console
+@spunky-boost|Spunky Boost
+@wynncraft-for-lunar-client|Wynncraft for Lunar Client
+@mcf|月亮工厂MCF 【Moon Create factory】
+@backroomsff|Backrooms: Found Footage
+@homestead|Homestead
+@mcc-island-for-lunar-client|MCC Island for Lunar Client
+@minimalcreate|最小的机械动力
+@performium-was-taken|Performium
+@blockfront-mod-pack|BlockFront
+@skyblock-plus|SkyBlock Plus
+@vulkan-optimized|Vulkan Optimized
+@additive|Additive
+@xplus-2.0-modpack-global|XPlus PerioTable Modpack (Fabric)
+@pokemania|Pokemania Cobblemon
+@optimizationn|Optimization
+@elysium-days|Elysium Days
+@prehistoric-world-modpack|Prehistoric World
+@spunky-optimized|Spunky Optimized
+@heropack-verse-fiskheroes-server|Official HeroPack-Verse SuperHeroes Server
+@low-res-trailer-recreation|Low Res Trailer Recreation
+@adrenaline|Adrenaline
+@jonathans-cobblemon-pack|Cobblemon Expanded (by Jonathan)
+@conquest-reforged-modpack|Conquest Reforged Modpack (Fabric)
+@ukupvp|uku's pvp modpack
+@better-mc-fabric-bmc3|Better MC [FABRIC] - BMC3
+@hope-and-despair|Hope and despair
+@hypixel-skyblock-for-lunar-client|Hypixel Skyblock for Lunar Client
+@new-berks-dawn|Isle of Berk (Claws of Berk)
+@one-block-horror-dweller|One block horror
+@max-fps-optimized|MAX FPS: Optimized
+@the-lost-era|The Lost Era Modpack
+@cobblemon-opted|Cobblemon Optimized Adds all 1028 Pokemons + Megas + Legendaries
+@reimagined-intro-archived|Reimagined Intro [MOVED TO NEW PROJECT]
+@kimetsunoyaiba|Kimetsu no Yaiba (Demon-Slayer)
+@create-live-5|Create Live 5
+@zombie-storm-100-days|Zombie Storm 100 Days
+@jujutsu-kaisen-sorcery-fight|Jujutsu Kaisen (Sorcery Fight)
+@versatile|Versatile
+@cobblemongg|Cobblemon.gg - Ultimate Pokemon Experience
+@harpy-express|The Last Voyage of the Harpy Express
+@horizons1|HORIZONS
+@rtx-on|RTX ON
+@superheroes|SuperHeroes
+@alaskan-wilderness|Alaskan Wilderness
+@rl-craft|Rising Legends
+@fom|命运齿轮FOM【Fate's Machinery】
+@rapid_optimization|Rapid Optimization
+@fpsbooster|FPS Booster
+@void-rot|Void Rot
+@creat-more-attachments-and-optimization|机械动力：更多附属与优化 Creat : More Attachments and Optimization
+@thunder|Thunder
+@animatecraft-lankeren|AnimateCraft: Lankeren
+@shingeki-no-craft-modpack|Shingeki no Craft Official Modpack
+@cobblemon-island|Cobblemon Islands
+@modpack-better-pvp|Better PvP
+@shalz-one-block-survival-create|Shalz One Block Survival Create
+@fps-essentials|FPS Essentials

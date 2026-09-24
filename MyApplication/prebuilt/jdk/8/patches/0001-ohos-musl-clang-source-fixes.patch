@@ -1,0 +1,199 @@
+diff --git a/hotspot/src/os/linux/vm/jvm_linux.cpp b/hotspot/src/os/linux/vm/jvm_linux.cpp
+index ba84788a..fcafa7a1 100644
+--- a/hotspot/src/os/linux/vm/jvm_linux.cpp
++++ b/hotspot/src/os/linux/vm/jvm_linux.cpp
+@@ -128,6 +128,9 @@ JVM_END
+ 
+ */
+ 
++#ifndef SIGCLD
++#define SIGCLD SIGCHLD
++#endif
+ struct siglabel {
+   const char *name;
+   int   number;
+diff --git a/hotspot/src/os/linux/vm/os_linux.cpp b/hotspot/src/os/linux/vm/os_linux.cpp
+index 5629a640..66d34bd9 100644
+--- a/hotspot/src/os/linux/vm/os_linux.cpp
++++ b/hotspot/src/os/linux/vm/os_linux.cpp
+@@ -95,7 +95,9 @@
+ # include <string.h>
+ # include <syscall.h>
+ # include <sys/sysinfo.h>
++#ifdef __GLIBC__
+ # include <gnu/libc-version.h>
++#endif
+ # include <sys/ipc.h>
+ # include <sys/shm.h>
+ # include <link.h>
+@@ -395,7 +397,18 @@ void os::init_system_properties_values() {
+     if (pslash != NULL) {
+       *pslash = '\0';            // Get rid of /{client|server|hotspot}.
+     }
++#ifdef __MUSL__
++    {
++      const char* amcl_boot_lib = ::getenv("SUN_BOOT_LIBRARY_PATH");
++      if (amcl_boot_lib != NULL && amcl_boot_lib[0] != '\0') {
++        Arguments::set_dll_dir((char*)amcl_boot_lib); // OHOS: prefer injected native lib dir
++      } else {
++        Arguments::set_dll_dir(buf);
++      }
++    }
++#else
+     Arguments::set_dll_dir(buf);
++#endif
+ 
+     if (pslash != NULL) {
+       pslash = strrchr(buf, '/');
+@@ -407,7 +420,18 @@ void os::init_system_properties_values() {
+         }
+       }
+     }
++#ifdef __MUSL__
++    {
++      const char* amcl_java_home = ::getenv("JAVA_HOME");
++      if (amcl_java_home != NULL && amcl_java_home[0] != '\0') {
++        Arguments::set_java_home((char*)amcl_java_home); // OHOS: sandbox path inference unreliable
++      } else {
++        Arguments::set_java_home(buf);
++      }
++    }
++#else
+     Arguments::set_java_home(buf);
++#endif
+     set_boot_path('/', ':');
+   }
+ 
+@@ -596,8 +620,11 @@ void os::Linux::libpthread_init() {
+   } else {
+      // _CS_GNU_LIBC_VERSION is not supported, try gnu_get_libc_version()
+      static char _gnu_libc_version[32];
+-     jio_snprintf(_gnu_libc_version, sizeof(_gnu_libc_version),
+-              "glibc %s %s", gnu_get_libc_version(), gnu_get_libc_release());
++     #ifdef __GLIBC__
++     jio_snprintf(_gnu_libc_version, sizeof(_gnu_libc_version), "glibc %s %s", gnu_get_libc_version(), gnu_get_libc_release());
++#else
++     jio_snprintf(_gnu_libc_version, sizeof(_gnu_libc_version), "musl");
++#endif
+      os::Linux::set_glibc_version(_gnu_libc_version);
+   }
+ 
+diff --git a/hotspot/src/os_cpu/linux_aarch64/vm/copy_linux_aarch64.s b/hotspot/src/os_cpu/linux_aarch64/vm/copy_linux_aarch64.s
+index 6d00d9f7..a5d0c9a2 100644
+--- a/hotspot/src/os_cpu/linux_aarch64/vm/copy_linux_aarch64.s
++++ b/hotspot/src/os_cpu/linux_aarch64/vm/copy_linux_aarch64.s
+@@ -329,7 +329,7 @@ unal_bwd_copy:
+         blo     unal_bwd_copy_drain
+ 
+ unal_bwd_copy_again:
+-        prfm    pldl1keep, [s, #-256]
++        prfum    pldl1keep, [s, #-256]
+         str     t1, [d, #-8]
+         stp     t3, t0, [d, #-24]
+         ldp     t0, t1, [s, #-16]
+diff --git a/hotspot/src/os_cpu/linux_aarch64/vm/os_linux_aarch64.cpp b/hotspot/src/os_cpu/linux_aarch64/vm/os_linux_aarch64.cpp
+index db1cb104..7ff4b12c 100644
+--- a/hotspot/src/os_cpu/linux_aarch64/vm/os_linux_aarch64.cpp
++++ b/hotspot/src/os_cpu/linux_aarch64/vm/os_linux_aarch64.cpp
+@@ -72,7 +72,9 @@
+ # include <pwd.h>
+ # include <poll.h>
+ # include <ucontext.h>
++#ifdef __GLIBC__
+ # include <fpu_control.h>
++#endif
+ 
+ #define REG_FP 29
+ 
+@@ -382,7 +384,7 @@ JVM_handle_linux_signal(int sig,
+     // save all thread context in case we need to restore it
+     if (thread != NULL) thread->set_saved_exception_pc(pc);
+ 
+-    uc->uc_mcontext.pc = (__u64)stub;
++    uc->uc_mcontext.pc = (uintptr_t)stub;
+     return true;
+   }
+ 
+diff --git a/hotspot/src/share/vm/utilities/globalDefinitions_gcc.hpp b/hotspot/src/share/vm/utilities/globalDefinitions_gcc.hpp
+index 5760eb2f..ebda9ea9 100644
+--- a/hotspot/src/share/vm/utilities/globalDefinitions_gcc.hpp
++++ b/hotspot/src/share/vm/utilities/globalDefinitions_gcc.hpp
+@@ -226,7 +226,7 @@ extern "C" void breakpoint();
+ // checking for nanness
+ #ifdef SOLARIS
+ #ifdef SPARC
+-inline int g_isnan(float  f) { return isnanf(f); }
++inline int g_isnan(float  f) { return isnan(f); }
+ #else
+ // isnanf() broken on Intel Solaris use isnand()
+ inline int g_isnan(float  f) { return isnand(f); }
+@@ -235,7 +235,7 @@ inline int g_isnan(double f) { return isnand(f); }
+ #elif defined(__APPLE__)
+ inline int g_isnan(double f) { return isnan(f); }
+ #elif defined(LINUX) || defined(_ALLBSD_SOURCE)
+-inline int g_isnan(float  f) { return isnanf(f); }
++inline int g_isnan(float  f) { return isnan(f); }
+ inline int g_isnan(double f) { return isnan(f); }
+ #else
+ #error "missing platform-specific definition here"
+diff --git a/jdk/src/solaris/bin/java_md_solinux.c b/jdk/src/solaris/bin/java_md_solinux.c
+index a9671375..677faa20 100644
+--- a/jdk/src/solaris/bin/java_md_solinux.c
++++ b/jdk/src/solaris/bin/java_md_solinux.c
+@@ -287,6 +287,10 @@ ContainsLibJVM(int wanted, const char *env) {
+  */
+ static jboolean
+ RequiresSetenv(int wanted, const char *jvmpath) {
++#ifdef __MUSL__
++    /* OHOS: ELF loader resolves libs; never re-exec (avoids musl re-exec deadlock) */
++    return JNI_FALSE;
++#endif
+     char jpath[PATH_MAX + 1];
+     char *llp;
+     char *dmllp = NULL;
+diff --git a/jdk/src/solaris/native/java/net/linux_close.c b/jdk/src/solaris/native/java/net/linux_close.c
+index f4c53a0d..87071002 100644
+--- a/jdk/src/solaris/native/java/net/linux_close.c
++++ b/jdk/src/solaris/native/java/net/linux_close.c
+@@ -33,6 +33,9 @@
+ #include <sys/socket.h>
+ #include <sys/time.h>
+ #include <sys/resource.h>
++#if !defined(__SIGRTMAX) && defined(SIGRTMAX)
++#define __SIGRTMAX SIGRTMAX
++#endif
+ #include <sys/uio.h>
+ #include <unistd.h>
+ #include <errno.h>
+@@ -58,7 +61,7 @@ typedef struct {
+ /*
+  * Signal to unblock thread
+  */
+-static int sigWakeup = (__SIGRTMAX - 2);
++static int sigWakeup = 0; /* musl: SIGRTMAX is a runtime call, set in init() */
+ 
+ /*
+  * fdTable holds one entry per file descriptor, up to a certain
+@@ -102,6 +105,7 @@ static void sig_wakeup(int sig) {
+  * Allocate fd tables and sets up signal handler.
+  */
+ static void __attribute((constructor)) init() {
++    sigWakeup = __SIGRTMAX - 2;
+     struct rlimit nbr_files;
+     sigset_t sigset;
+     struct sigaction sa;
+diff --git a/jdk/src/solaris/native/sun/nio/ch/NativeThread.c b/jdk/src/solaris/native/sun/nio/ch/NativeThread.c
+index 5e2a78b7..e10f76b7 100644
+--- a/jdk/src/solaris/native/sun/nio/ch/NativeThread.c
++++ b/jdk/src/solaris/native/sun/nio/ch/NativeThread.c
+@@ -31,6 +31,10 @@
+ #include "jlong.h"
+ #include "sun_nio_ch_NativeThread.h"
+ #include "nio_util.h"
++#include <signal.h>
++#if !defined(__SIGRTMAX) && defined(SIGRTMAX)
++#define __SIGRTMAX SIGRTMAX
++#endif
+ 
+ #ifdef __linux__
+   #include <pthread.h>

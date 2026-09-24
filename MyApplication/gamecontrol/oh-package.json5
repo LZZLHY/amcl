@@ -1,0 +1,11 @@
+{
+  "name": "gamecontrol",
+  "version": "1.0.0",
+  "description": "AMCL 游戏控制域（gamecontrol）：键鼠/手柄输入映射、虚拟按键布局数据模型、布局持久化。依赖 commons；native 经 ControlNativeSink 注入解耦。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons"
+  }
+}

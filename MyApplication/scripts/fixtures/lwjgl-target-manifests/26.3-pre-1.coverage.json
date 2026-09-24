@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "versionId": "26.3-pre-1",
+  "metadata": "26.3-pre-1.json",
+  "metadataSha1": "5aa50e4ee37bd97bfe9429932046d09c21467570",
+  "clientSha1": "32cf188ffc8c6a4143e74b1dcc689267566d73fb",
+  "ruleEnvironment": {
+    "os": "linux",
+    "arch": "aarch64",
+    "version": "5.10"
+  },
+  "expectedEffectiveEntryCount": 23,
+  "expectedJavaModules": [
+    "lwjgl",
+    "lwjgl-freetype",
+    "lwjgl-jemalloc",
+    "lwjgl-openal",
+    "lwjgl-opengl",
+    "lwjgl-sdl",
+    "lwjgl-shaderc",
+    "lwjgl-spng",
+    "lwjgl-spvc",
+    "lwjgl-stb",
+    "lwjgl-vma",
+    "lwjgl-vulkan"
+  ],
+  "expectedLinuxNativeModules": [
+    "lwjgl",
+    "lwjgl-freetype",
+    "lwjgl-jemalloc",
+    "lwjgl-openal",
+    "lwjgl-opengl",
+    "lwjgl-sdl",
+    "lwjgl-shaderc",
+    "lwjgl-spng",
+    "lwjgl-spvc",
+    "lwjgl-stb",
+    "lwjgl-vma"
+  ],
+  "clientBootstrap": {
+    "class": "com/mojang/blaze3d/platform/NativeLibrariesBootstrap.class",
+    "classSha256": "6fed23ba378d066262963ccc29533ab15230a6267ce2fe062fd22acc9b9c5c49",
+    "eagerNativeModules": [
+      "lwjgl-freetype",
+      "lwjgl-openal",
+      "lwjgl-opengl",
+      "lwjgl-sdl",
+      "lwjgl-shaderc",
+      "lwjgl-spng",
+      "lwjgl-spvc",
+      "lwjgl-stb",
+      "lwjgl-vma"
+    ]
+  }
+}

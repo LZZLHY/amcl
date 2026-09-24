@@ -1,0 +1,23 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/RenderPage",
+    "pages/VulkanPage",
+    "pages/McGamePage",
+    "pages/DevToolsPage",
+    "pages/InputProbePage",
+    "pages/LayoutListPage",
+    "pages/LayoutEditorPage",
+    "pages/VersionSettingsPage",
+    "pages/DownloadHistoryPage",
+    "pages/MessageCenterPage",
+    "pages/ActivityLogPage",
+    "pages/LogShareHistoryPage",
+    "pages/SponsorPage",
+    "pages/FeedbackPage",
+    "pages/AboutPage",
+    "pages/ChangelogPage",
+    "pages/DocWebPage",
+    "pages/DesktopDeveloperToolsPage"
+  ]
+}

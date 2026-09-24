@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "versionId": "26.4-snapshot-1",
+  "metadata": "26.4-snapshot-1.json",
+  "metadataSource": "https://piston-meta.mojang.com/v1/packages/38de33cff6c65a518a24aa4b8198f7e3673ebd08/26.4-snapshot-1.json",
+  "metadataSha1": "38de33cff6c65a518a24aa4b8198f7e3673ebd08",
+  "clientSha1": "99dea8ec5ae3c5adc7d246061a90960e7d8441c3",
+  "ruleEnvironment": {
+    "os": "linux",
+    "arch": "aarch64",
+    "version": "5.10"
+  },
+  "expectedEffectiveEntryCount": 21,
+  "expectedJavaModules": [
+    "lwjgl",
+    "lwjgl-freetype",
+    "lwjgl-jemalloc",
+    "lwjgl-openal",
+    "lwjgl-opengl",
+    "lwjgl-sdl",
+    "lwjgl-shaderc",
+    "lwjgl-spvc",
+    "lwjgl-stb",
+    "lwjgl-vma",
+    "lwjgl-vulkan"
+  ],
+  "expectedLinuxNativeModules": [
+    "lwjgl",
+    "lwjgl-freetype",
+    "lwjgl-jemalloc",
+    "lwjgl-openal",
+    "lwjgl-opengl",
+    "lwjgl-sdl",
+    "lwjgl-shaderc",
+    "lwjgl-spvc",
+    "lwjgl-stb",
+    "lwjgl-vma"
+  ],
+  "clientBootstrap": {
+    "class": "com/mojang/blaze3d/platform/NativeLibrariesBootstrap.class",
+    "classSha256": "b561afacb1bb6a88ec30fb7cce6bca14626b57ea974c235bfc366d7d99d706b0",
+    "eagerNativeModules": [
+      "lwjgl-freetype",
+      "lwjgl-openal",
+      "lwjgl-opengl",
+      "lwjgl-sdl",
+      "lwjgl-shaderc",
+      "lwjgl-spvc",
+      "lwjgl-stb",
+      "lwjgl-vma"
+    ],
+    "auditNotes": [
+      "已核对官方清单 SHA-1、客户端 SHA-1 及 bootstrap 类 SHA-256。",
+      "26.4 Snapshot 1 与正式 26.3 的 LWJGL 依赖条目逐项相同，NativeLibrariesBootstrap 类字节完全相同；继续复用同一原生模块清单和 jemalloc 明确回退。",
+      "扩展要求变化在 VulkanFeatureSets，独立于此原生库交付检查。"
+    ]
+  }
+}

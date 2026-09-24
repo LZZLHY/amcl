@@ -1,0 +1,198 @@
+diff --git a/src/video/SDL_egl.c b/src/video/SDL_egl.c
+index f42611f6c..b87a17649 100644
+--- a/src/video/SDL_egl.c
++++ b/src/video/SDL_egl.c
+@@ -163,12 +163,27 @@ SDL_ELF_NOTE_DLOPEN(
+ typedef void (APIENTRY* PFNGLGETINTEGERVPROC) (GLenum pname, GLint * params);
+ #endif
+ 
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++#include "openharmony/SDL_amclgraphicsruntime.h"
++/* EGL/GL入口均来自同一冻结owner，宿主模式下绝不跨库兜底；NULL是真实不支持。 */
++static SDL_FunctionPointer AMCL_EglLoadFunction(SDL_VideoDevice *_this, const char *name) {
++    if (AMCL_GraphicsRuntimeRequired()) {
++        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++        return runtime ? (SDL_FunctionPointer)runtime->eglProc(name) : NULL;
++    }
++    return SDL_LoadFunction(_this->egl_data->egl_dll_handle, name);
++}
++#define SDL_EGL_LOAD_FUNCTION(device, name) AMCL_EglLoadFunction(device, name)
++#else
++#define SDL_EGL_LOAD_FUNCTION(device, name) SDL_LoadFunction((device)->egl_data->egl_dll_handle, name)
++#endif
++
+ #if defined(SDL_VIDEO_STATIC_ANGLE) || defined(SDL_VIDEO_DRIVER_VITA)
+ #define LOAD_FUNC(TYPE, NAME) \
+     _this->egl_data->NAME = NAME;
+ #else
+ #define LOAD_FUNC(TYPE, NAME)                                                               \
+-    _this->egl_data->NAME = (TYPE)SDL_LoadFunction(_this->egl_data->egl_dll_handle, #NAME); \
++    _this->egl_data->NAME = (TYPE)SDL_EGL_LOAD_FUNCTION(_this, #NAME); \
+     if (!_this->egl_data->NAME) {                                                     \
+         return SDL_SetError("Could not retrieve EGL function " #NAME);                \
+     }
+@@ -292,6 +307,13 @@ bool SDL_EGL_HasExtension(SDL_VideoDevice *_this, SDL_EGL_ExtensionType type, co
+ SDL_FunctionPointer SDL_EGL_GetProcAddressInternal(SDL_VideoDevice *_this, const char *proc)
+ {
+     SDL_FunctionPointer result = NULL;
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++    if (AMCL_GraphicsRuntimeRequired()) {
++        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++        return runtime && _this->egl_data ? (SDL_FunctionPointer)(SDL_strncmp(proc, "egl", 3) == 0 ?
++            runtime->eglProc(proc) : runtime->glProc(proc)) : NULL;
++    }
++#endif
+     if (_this->egl_data) {
+         const Uint32 eglver = (((Uint32)_this->egl_data->egl_version_major) << 16) | ((Uint32)_this->egl_data->egl_version_minor);
+         const bool is_egl_15_or_later = eglver >= ((((Uint32)1) << 16) | 5);
+@@ -345,6 +367,16 @@ static bool SDL_EGL_LoadLibraryInternal(SDL_VideoDevice *_this, const char *egl_
+     SDL_SharedObject *opengl_dll_handle = NULL;
+ #endif
+     const char *path = NULL;
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++    if (AMCL_GraphicsRuntimeRequired()) {
++        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++        if (!runtime || SDL_strcmp(runtime->api, "OPENGL") != 0)
++            return SDL_SetError("AMCL: missing or incompatible frozen graphics runtime");
++        path = runtime->profile;
++        SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "graphics_runtime_consumer provider=SDL3 profile=%s runtime=%p", path, (void *)runtime);
++        goto amcl_load_frozen_functions;
++    }
++#endif
+ #if defined(SDL_VIDEO_DRIVER_WINDOWS)
+     const char *d3dcompiler;
+ #endif
+@@ -480,6 +512,9 @@ static bool SDL_EGL_LoadLibraryInternal(SDL_VideoDevice *_this, const char *egl_
+ 
+     _this->egl_data->egl_dll_handle = egl_dll_handle;
+ 
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++amcl_load_frozen_functions:
++#endif
+     // Load new function pointers
+     LOAD_FUNC(PFNEGLGETDISPLAYPROC, eglGetDisplay);
+     LOAD_FUNC(PFNEGLINITIALIZEPROC, eglInitialize);
+diff --git a/src/video/openharmony/SDL_amclgraphicsobservation.h b/src/video/openharmony/SDL_amclgraphicsobservation.h
+index 8a0e0d6e3..d480b390d 100644
+--- a/src/video/openharmony/SDL_amclgraphicsobservation.h
++++ b/src/video/openharmony/SDL_amclgraphicsobservation.h
+@@ -2,6 +2,7 @@
+ #ifndef SDL_amclgraphicsobservation_h_
+ #define SDL_amclgraphicsobservation_h_
+ #include <stdint.h>
++#include <stddef.h>
+ #include <unistd.h>
+ typedef struct AMCL_GraphicsObserverV1 {
+     uint32_t structSize, abiVersion;
+@@ -11,6 +12,8 @@ typedef struct AMCL_GraphicsObserverV1 {
+     void (*fatal)(const char *, uint32_t, uint64_t);
+     void (*foreground)(int);
+     const char *(*snapshot)(int);
++    /* 可选尾部：新宿主支持关闭计时，旧宿主仍可使用V1前缀。 */
++    int (*samplesEnabled)(void);
+ } AMCL_GraphicsObserverV1;
+ 
+ /* 只解析一次同 PID 的只读描述符；fork 先比较 PID，不解引用父进程指针。成功帧计数
+@@ -28,9 +31,12 @@ static const AMCL_GraphicsObserverV1 *AMCL_GraphicsObserver(void)
+     if (!encoded || SDL_sscanf(encoded, "1:%llu:%p%n", &owner_pid, &address, &consumed) != 2 ||
+         encoded[consumed] || owner_pid != pid || !address) return NULL;
+     value = (const AMCL_GraphicsObserverV1 *)address;
+-    if (value->abiVersion != 1u || value->structSize < sizeof(*value) || value->processId != pid ||
++    if (value->abiVersion != 1u || value->structSize < offsetof(AMCL_GraphicsObserverV1, samplesEnabled) || value->processId != pid ||
+         !value->swapped || !value->fatal) return NULL;
+     SDL_SetAtomicPointer(&cached, address);
+     return value;
+ }
++static bool AMCL_GraphicsSamplingEnabled(const AMCL_GraphicsObserverV1 *observer) {
++    return observer && (observer->structSize < sizeof(*observer) || !observer->samplesEnabled || observer->samplesEnabled());
++}
+ #endif
+diff --git a/src/video/openharmony/SDL_amclgraphicsruntime.h b/src/video/openharmony/SDL_amclgraphicsruntime.h
+new file mode 100644
+index 000000000..69419efac
+--- /dev/null
++++ b/src/video/openharmony/SDL_amclgraphicsruntime.h
+@@ -0,0 +1,24 @@
++/* AMCL冻结图形运行时的纯C消费者，按SDL zlib许可分发。不管理context或窗口资源。 */
++#ifndef SDL_amclgraphicsruntime_h_
++#define SDL_amclgraphicsruntime_h_
++#include "graphics_runtime_abi.h"
++#include <unistd.h>
++/* 宿主存在但表损坏必须拒绝；只有独立SDL程序可沿用上游库发现流程。 */
++static bool AMCL_GraphicsRuntimeRequired(void) {
++    return SDL_getenv_unsafe(AMCL_GRAPHICS_RUNTIME_ENV) || SDL_getenv_unsafe("AMCL_GRAPHICS_PROFILE");
++}
++static const AmclGraphicsRuntimeV1 *AMCL_GraphicsRuntime(void) {
++    static void *cached;
++    const AmclGraphicsRuntimeV1 *value = (const AmclGraphicsRuntimeV1 *)SDL_GetAtomicPointer(&cached);
++    const uint64_t pid = (uint64_t)getpid();
++    if (value && value->processId == pid) return value;
++    const char *encoded = SDL_getenv_unsafe(AMCL_GRAPHICS_RUNTIME_ENV);
++    unsigned long long owner = 0; void *address = NULL; int consumed = 0;
++    if (!encoded || SDL_sscanf(encoded, "1:%llu:%p%n", &owner, &address, &consumed) != 2 ||
++        encoded[consumed] || owner != pid || !address) return NULL;
++    value = (const AmclGraphicsRuntimeV1 *)address;
++    if (value->structSize < sizeof(*value) || value->abiVersion != 1 || value->processId != pid ||
++        !value->profile || !value->api || !value->contextApi || !value->glProc || !value->eglProc) return NULL;
++    SDL_SetAtomicPointer(&cached, address); return value;
++}
++#endif
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 696b0eb78..d59630d70 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -34,14 +34,16 @@
+ #include "SDL_openharmonyamcl.h"
+ #include "../../events/SDL_windowevents_c.h"
+ #include "SDL_amclgraphicsobservation.h"
++#include "SDL_amclgraphicsruntime.h"
+ 
+ /* 观测真实驱动调用本身，辅助 pbuffer 不进入游戏呈现样本。该耗时不是 GPU 执行时间。 */
+ static bool OPENHARMONY_AMCL_ObservedSwap(SDL_VideoDevice *_this, SDL_WindowData *data, EGLint *error)
+ {
+     const AMCL_GraphicsObserverV1 *observer = data->role == OPENHARMONY_WINDOW_PRESENTED ? AMCL_GraphicsObserver() : NULL;
+-    const Uint64 before = observer ? SDL_GetTicksNS() : 0;
++    const bool sample = AMCL_GraphicsSamplingEnabled(observer);
++    const Uint64 before = sample ? SDL_GetTicksNS() : 0;
+     const bool result = SDL_EGL_SwapBuffersWithError(_this, data->egl_surface, error);
+-    if (observer) observer->swapped("SDL3", SDL_GetTicksNS() - before, result ? 1 : 0, (uint32_t)*error);
++    if (observer) observer->swapped("SDL3", sample ? SDL_GetTicksNS() - before : 0, result ? 1 : 0, (uint32_t)*error);
+     return result;
+ }
+ 
+@@ -75,6 +77,11 @@ static bool OPENHARMONY_AMCL_ObservedSwap(SDL_VideoDevice *_this, SDL_WindowData
+ //   reporting an error of EGL_SUCCESS)
+ static bool OPENHARMONY_GLES_NativeGlRequired(void)
+ {
++    /* 宿主模式按冻结context协议选API；环境变更不改变MobileGL/系统GL的桌面语义。 */
++    if (AMCL_GraphicsRuntimeRequired()) {
++        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++        return runtime && SDL_strcmp(runtime->contextApi, "desktop-gl") == 0;
++    }
+     const char *native_gl = SDL_getenv("AMCL_NATIVE_GL_ACTIVE");
+     return native_gl && SDL_strcmp(native_gl, "1") == 0;
+ }
+diff --git a/src/video/openharmony/graphics_runtime_abi.h b/src/video/openharmony/graphics_runtime_abi.h
+new file mode 100644
+index 000000000..023755cc9
+--- /dev/null
++++ b/src/video/openharmony/graphics_runtime_abi.h
+@@ -0,0 +1,18 @@
++#ifndef AMCL_GRAPHICS_RUNTIME_ABI_H
++#define AMCL_GRAPHICS_RUNTIME_ABI_H
++#include <stdint.h>
++#define AMCL_GRAPHICS_RUNTIME_ENV "AMCL_GRAPHICS_RUNTIME_V1"
++/** 冻结后发布的公共C描述符。字符串/函数指针由中立运行时保留到进程退出；消费者
++ * 先校验环境中的PID，再解引用并核验尺寸/版本。无有效表时宿主路线必须拒绝启动，
++ * 不能另选系统库。窗口前端不需要认识GLFW、C++类或另一个linker namespace。
++ */
++typedef struct AmclGraphicsRuntimeV1 {
++    uint32_t structSize, abiVersion;
++    uint64_t processId;
++    const char* profile;
++    const char* api;
++    const char* contextApi;
++    void* (*glProc)(const char*);
++    void* (*eglProc)(const char*);
++} AmclGraphicsRuntimeV1;
++#endif

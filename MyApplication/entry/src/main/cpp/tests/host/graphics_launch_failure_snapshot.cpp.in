@@ -1,0 +1,110 @@
+/**
+ * 生产快照存储/清空/读取/记录函数的宿主执行夹具。
+ * Python 将 mc_launcher.cpp 的实际源码块逐字放入唯一占位符；这里只提供进程身份、
+ * 活动计划和 JVM 状态边界桩。被测逻辑不复制到测试，不启动 JVM、NAPI 或图形设备。
+ */
+#include "graphics_launch_failure.h"
+#include <cstdlib>
+#include <future>
+#include <iostream>
+#include <string>
+#include <thread>
+
+using pid_t = int;
+namespace amcl::jvm {
+struct RuntimeOnce { enum State { Fresh = 0, Ready = 2 }; };
+}
+namespace amcl::graphics {
+/** 只提供 record 实际读取的不可变 profile 视图，不替代计划解析或准入逻辑。 */
+struct GraphicsPlan { std::string profile = "mobileglues"; };
+thread_local GraphicsPlan testPlan;
+thread_local bool testPlanActive = false;
+const GraphicsPlan* ActiveGraphicsPlan() { return testPlanActive ? &testPlan : nullptr; }
+}
+/** 桩状态按调用线程隔离，测试关注生产失败快照的 TLS，而非桩本身的并发共享。 */
+thread_local pid_t testPid = 100;
+thread_local int testRuntimeState = amcl::jvm::RuntimeOnce::Fresh;
+int jvmRuntimeState() { return testRuntimeState; }
+pid_t amclSnapshotTestPid() { return testPid; }
+#define getpid amclSnapshotTestPid
+
+@AMCL_PRODUCTION_FAILURE_SNAPSHOT@
+
+#undef getpid
+
+/** 失败立即非零退出；即使一条测试线程正等屏障，也不会把失败变成永久挂起。 */
+static void requireSnapshot(bool condition, const char* message) {
+    if (!condition) { std::cerr << "FAIL " << message << '\n'; std::exit(1); }
+}
+/** 输出真实 getter 的 JSON，由 Python 严格解析全部字段，避免只在 C++ 内查子串。 */
+static void reportSnapshot(const std::string& name, const std::string& wire) {
+    std::cout << name << '\t' << wire << '\n';
+}
+
+int main() {
+    reportSnapshot("cold", mcGetGraphicsLaunchFailure());
+    mcClearGraphicsLaunchFailure();
+    reportSnapshot("clear", mcGetGraphicsLaunchFailure());
+
+    // 实际 record 参数必须原样成为 wire.returnCode，不能被固定成最常见的 -5。
+    for (int rc : {-1, -2, -5, -6, -7}) {
+        recordGraphicsLaunchFailure(rc, "runtime", "rc-probe", "nativegl");
+        reportSnapshot("rc" + std::to_string(rc), mcGetGraphicsLaunchFailure());
+    }
+    // 走真实 record 对活动 plan/JVM/forceRestart 的读取，而非直接调用纯 Build 函数。
+    for (unsigned facts = 0; facts < 8; ++facts) {
+        amcl::graphics::testPlanActive = (facts & 1u) != 0;
+        testRuntimeState = (facts & 2u) ? amcl::jvm::RuntimeOnce::Ready : amcl::jvm::RuntimeOnce::Fresh;
+        recordGraphicsLaunchFailure(-5, "bootstrap", "state-probe", "", (facts & 4u) != 0);
+        reportSnapshot("state" + std::to_string(facts), mcGetGraphicsLaunchFailure());
+    }
+    amcl::graphics::testPlanActive = false;
+    testRuntimeState = amcl::jvm::RuntimeOnce::Fresh;
+
+    // 相同线程的下一次入口清空后，即使旧错误 rc 相同也必须完全消失。
+    recordGraphicsLaunchFailure(-5, "plan", "previous-attempt", "nativegl");
+    mcClearGraphicsLaunchFailure();
+    reportSnapshot("next-attempt", mcGetGraphicsLaunchFailure());
+    recordGraphicsLaunchFailure(-5, "plan", "current-attempt", "mobileglues");
+    reportSnapshot("current-attempt", mcGetGraphicsLaunchFailure());
+
+    // 模拟 fork 继承 TLS 后 PID 改变：继承快照不可读，子进程重新清空/记录后才有新值。
+    testPid = 101;
+    reportSnapshot("changed-pid", mcGetGraphicsLaunchFailure());
+    mcClearGraphicsLaunchFailure();
+    reportSnapshot("changed-pid-cleared", mcGetGraphicsLaunchFailure());
+    recordGraphicsLaunchFailure(-6, "preference", "new-process", "mobilegl");
+    reportSnapshot("changed-pid-recorded", mcGetGraphicsLaunchFailure());
+
+    // 屏障让写入顺序确定：A 先写，B 必须仍为空；B 再写，A 必须保留自己的值；A 清空
+    // 不能清掉 B。这里不靠并发竞态概率触发失败，两个线程的 getter 缓冲也应各自独立。
+    std::promise<void> aWritten, bWritten, aCleared;
+    auto aWrittenSignal = aWritten.get_future();
+    auto bWrittenSignal = bWritten.get_future();
+    auto aClearedSignal = aCleared.get_future();
+    std::string wireA, wireB, coldB;
+    std::thread a([&] {
+        mcClearGraphicsLaunchFailure();
+        recordGraphicsLaunchFailure(-5, "plan", "thread-a", "nativegl");
+        aWritten.set_value();
+        bWrittenSignal.wait();
+        wireA = mcGetGraphicsLaunchFailure();
+        mcClearGraphicsLaunchFailure();
+        requireSnapshot(std::string(mcGetGraphicsLaunchFailure()) == "{}", "thread A clear");
+        aCleared.set_value();
+    });
+    std::thread b([&] {
+        aWrittenSignal.wait();
+        coldB = mcGetGraphicsLaunchFailure();
+        requireSnapshot(coldB == "{}", "thread B must not inherit thread A snapshot");
+        recordGraphicsLaunchFailure(-7, "runtime", "thread-b", "mobilegl", true);
+        bWritten.set_value();
+        aClearedSignal.wait();
+        wireB = mcGetGraphicsLaunchFailure();
+    });
+    a.join(); b.join();
+    reportSnapshot("thread-b-cold", coldB);
+    reportSnapshot("thread-a", wireA);
+    reportSnapshot("thread-b", wireB);
+    reportSnapshot("main-after-threads", mcGetGraphicsLaunchFailure());
+}

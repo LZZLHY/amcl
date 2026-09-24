@@ -1,0 +1,53 @@
+#include <cstdio>
+using SDL_WindowID=int;
+using Uint64=unsigned long long;
+enum {OPENHARMONY_WINDOW_PRESENTED=1,OPENHARMONY_WINDOW_AUXILIARY_PBUFFER=2};
+enum {AMCL_DESKTOP_SHOW=7,AMCL_DESKTOP_HIDE=8,AMCL_DESKTOP_FULLSCREEN=3,SDL_EVENT_WINDOW_SHOWN=1,SDL_EVENT_WINDOW_HIDDEN=2};
+struct SDL_WindowData {bool shown=true;int role=1;};
+struct SDL_Window {int id=1;SDL_WindowData* internal;};
+struct SDL_VideoDevice {};
+static SDL_Window* current_window;
+static SDL_Window* mouse_focus;
+static SDL_Window* keyboard_focus;
+static int submitted_commands=0, last_kind=0, result=1;
+static bool active=true;
+static Uint64 fullscreen_sequence=0, visibility_sequence=0;
+static int fullscreen_status=0,visibility_window=0,shown_events=0,errors=0;
+static bool visibility_pending=false,visibility_shown=true;
+struct Snapshot {Uint64 completed=0;int status=0,lastError=0;};
+struct AmclDesktopHostV1 {
+    Uint64 submit(int kind,int,int,int,int,const char*)const{++submitted_commands;last_kind=kind;return result>0?42:0;}
+} host;
+const AmclDesktopHostV1* DesktopHost(){return &host;}
+template<class... T> bool SDL_SetError(const char*,T...){++errors;return false;}
+SDL_Window* OPENHARMONY_GetPresentedWindow(SDL_VideoDevice*){return current_window;}
+void OPENHARMONY_AMCL_UpdatePresentedForeground(){active=current_window && current_window->internal->shown;}
+void SDL_SendWindowEvent(SDL_Window*,int kind,int,int){if(kind==SDL_EVENT_WINDOW_SHOWN)++shown_events;}
+SDL_Window* SDL_GetWindowFromID(int){return current_window;}
+SDL_Window* SDL_GetMouseFocus(){return mouse_focus;}
+SDL_Window* SDL_GetKeyboardFocus(){return keyboard_focus;}
+void SDL_SetMouseFocus(SDL_Window* w){mouse_focus=w;}
+void SDL_SetKeyboardFocus(SDL_Window* w){keyboard_focus=w;}
+void OPENHARMONY_AMCL_SetPresentedActive(bool value){active=value;}
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
+@PRODUCTION@
+int main(){
+    SDL_WindowData data;SDL_Window window{1,&data};
+    current_window=&window;mouse_focus=&window;keyboard_focus=&window;
+    result=-1;OPENHARMONY_HideWindow(nullptr,&window);
+    CHECK(data.shown && active && mouse_focus==&window && keyboard_focus==&window && submitted_commands==1);
+    Snapshot facts;Reconcile(nullptr,&window,facts);
+    CHECK(!visibility_pending && data.shown && active && shown_events==1 && errors>0);
+    result=1;OPENHARMONY_HideWindow(nullptr,&window);
+    CHECK(!data.shown && !active && !mouse_focus && !keyboard_focus && submitted_commands==2 && last_kind==8);
+    facts.completed=41;Reconcile(nullptr,&window,facts);CHECK(visibility_pending && !data.shown);
+    facts.completed=42;facts.lastError=99;Reconcile(nullptr,&window,facts);
+    CHECK(!visibility_pending && data.shown && active && shown_events==2);
+    OPENHARMONY_HideWindow(nullptr,&window);facts.status=3;Reconcile(nullptr,&window,facts);
+    CHECK(!data.shown && !active && !visibility_pending);
+    data.shown=true;data.role=2;active=true;
+    OPENHARMONY_HideWindow(nullptr,&window);
+    CHECK(!data.shown && active && submitted_commands==3);
+    OPENHARMONY_HideWindow(nullptr,nullptr);CHECK(submitted_commands==3);
+    std::puts("SDL presented hide, queue rejection, auxiliary isolation and invalid window PASS");
+}

@@ -1,0 +1,76 @@
+[
+  {
+    "game_versions": [
+      "1.21.11"
+    ],
+    "loaders": [
+      "fabric"
+    ],
+    "environment": "client_only",
+    "id": "rkdTcxoT",
+    "project_id": "AANobbMI",
+    "author_id": "TEZXhE2U",
+    "featured": false,
+    "name": "Sodium 0.8.14 for Fabric 1.21.11",
+    "version_number": "mc1.21.11-0.8.14-fabric",
+    "changelog": "Sodium 0.8.14 fixes potential minor bugs.\n\n- Fix buffer overflow in Kernel32.getModuleFileName\n- Use the correct atomic operations on NativeBuffer.ALLOCATED\n- Use clearenv() to delete environment variables\n- Implement override/overlay priority in the graphics options Config API ([#3866](https://github.com/CaffeineMC/sodium/pull/3866))",
+    "changelog_url": null,
+    "date_published": "2026-08-28T21:00:18.180077Z",
+    "downloads": 589531,
+    "version_type": "release",
+    "status": "listed",
+    "requested_status": null,
+    "files": [
+      {
+        "id": "bLpytwga",
+        "hashes": {
+          "sha1": "4a8733fe544168068d12fa94b2ab03e6c0c7bf91",
+          "sha512": "04c43f9e8534b87a52c42ffd51b0e344d4ef92dc9cc52da33d13af6a18bf74b05380d2027f1e0db982698d0aff274c42741c1e21b313b0cd75ed3af005fc98d9"
+        },
+        "url": "https://cdn.modrinth.com/data/AANobbMI/versions/rkdTcxoT/sodium-fabric-0.8.14%2Bmc1.21.11.jar",
+        "filename": "sodium-fabric-0.8.14+mc1.21.11.jar",
+        "primary": true,
+        "size": 1909150,
+        "file_type": null
+      }
+    ],
+    "dependencies": []
+  },
+  {
+    "game_versions": [
+      "1.21.11"
+    ],
+    "loaders": [
+      "fabric"
+    ],
+    "environment": "client_only",
+    "id": "UddlN6L4",
+    "project_id": "AANobbMI",
+    "author_id": "DzLrfrbK",
+    "featured": false,
+    "name": "Sodium 0.8.7 for Fabric 1.21.11",
+    "version_number": "mc1.21.11-0.8.7-fabric",
+    "changelog": "This release updates to Minecraft 26.1, as well as fixing a few bugs.\n\n- Improved the error message about LWJGL being the wrong version ([PR](https://github.com/CaffeineMC/sodium/pull/3527))\n- Improved fluid culling and shaping ([PR](https://github.com/CaffeineMC/sodium/pull/2931))\n- Improved mod compatibility ([PR](https://github.com/CaffeineMC/sodium/pull/3540), [PR](https://github.com/CaffeineMC/sodium/pull/3539))\n- Fixed an issue with the fog distance ([PR](https://github.com/CaffeineMC/sodium/pull/3510))\n- Fixed a number of smaller issues and performed refactoring",
+    "changelog_url": null,
+    "date_published": "2026-03-24T16:30:41.342552Z",
+    "downloads": 4650408,
+    "version_type": "release",
+    "status": "listed",
+    "requested_status": null,
+    "files": [
+      {
+        "id": "W2eCIW5M",
+        "hashes": {
+          "sha512": "d7f035d6112eaac92cf0f11e4426db631fca5a7115dd355c2126efee4255b648a0102552bbf7b22a7eae9203d08f8740435842bfddcd94e2434f51b57ee9c641",
+          "sha1": "e8865210ba9a926fc206ab9e73f9d4988a81ff69"
+        },
+        "url": "https://cdn.modrinth.com/data/AANobbMI/versions/UddlN6L4/sodium-fabric-0.8.7%2Bmc1.21.11.jar",
+        "filename": "sodium-fabric-0.8.7+mc1.21.11.jar",
+        "primary": true,
+        "size": 1870358,
+        "file_type": null
+      }
+    ],
+    "dependencies": []
+  }
+]

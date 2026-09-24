@@ -1,0 +1,315 @@
+From: AMCL local adaptation
+Subject: [PATCH] Keep native GL profiles, release thread owners and deliver visibility commands
+
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -62,10 +62,15 @@
+ //   BackendCreationException: Failed to create window with OpenGL context:
+ //   Couldn't find matching EGL config (call to eglChooseConfig failed,
+ //   reporting an error of EGL_SUCCESS)
++static bool OPENHARMONY_GLES_NativeGlRequired(void)
++{
++    const char *native_gl = SDL_getenv("AMCL_NATIVE_GL_ACTIVE");
++    return native_gl && SDL_strcmp(native_gl, "1") == 0;
++}
++
+ void OPENHARMONY_GLES_EnsureUsableProfile(SDL_VideoDevice *_this)
+ {
+-    const char *native_gl = SDL_getenv("AMCL_NATIVE_GL_ACTIVE");
+-    if (native_gl && SDL_strcmp(native_gl,"1")==0) return;
++    if (OPENHARMONY_GLES_NativeGlRequired()) return;
+     if (!_this || !_this->egl_data) {
+         return;  // nothing loaded yet; nothing to reconcile.
+     }
+@@ -281,6 +286,10 @@
+                                            EGLint required_surface_type,
+                                            OPENHARMONY_EGLPolicy policy)
+ {
++    const bool native_gl = OPENHARMONY_GLES_NativeGlRequired();
++    if (native_gl && requested->profile_mask == SDL_GL_CONTEXT_PROFILE_ES) {
++        return SDL_SetError("OpenHarmony: nativegl requires a desktop OpenGL profile");
++    }
+     OPENHARMONY_GLES_ApplySelection(_this, requested);
+     SDL_EGL_UnlockConfig(_this);
+     _this->egl_data->egl_config = NULL;
+@@ -301,7 +310,7 @@
+      * probe and retry the same transaction with the GLES client profile;
+      * otherwise an auxiliary-first launch would report a false capability
+      * failure without ever testing the profile that the translator needs. */
+-    if (!selected && requested->profile_mask != SDL_GL_CONTEXT_PROFILE_ES) {
++    if (!selected && !native_gl && requested->profile_mask != SDL_GL_CONTEXT_PROFILE_ES) {
+         SDL_ClearError();
+         _this->egl_data->egl_config = NULL;
+         OPENHARMONY_GLES_ApplySelection(_this, requested);
+@@ -644,9 +653,12 @@
+     SDL_Window *old = SDL_GL_GetCurrentWindow();
+     if (old && old != window && old->internal) {
+         old->internal->is_current = false;
++        old->internal->owner_thread = 0;
+     }
+     if (window && window->internal) {
+         window->internal->is_current = true;
++        window->internal->owner_thread = SDL_GetCurrentThreadID();
++        window->internal->last_context = context;
+     }
+     _this->current_glwin = window;
+     _this->current_glctx = context;
+@@ -684,33 +696,18 @@
+                                                      SDL_WindowID previous_id,
+                                                      SDL_GLContext context)
+ {
+-    SDL_Window *current_window = SDL_GL_GetCurrentWindow();
+-    const SDL_WindowID current_id =
+-        current_window && SDL_ObjectValid(current_window, SDL_OBJECT_TYPE_WINDOW)
+-            ? current_window->id : 0;
+-    SDL_Window *previous_window =
+-        previous_id ? SDL_GetWindowFromID(previous_id) : NULL;
++    SDL_Window *previous_window = previous_id ? SDL_GetWindowFromID(previous_id) : NULL;
+     if (previous_window && previous_window->internal && context &&
+         previous_window->internal->surface_state == OPENHARMONY_SURFACE_READY &&
+         !previous_window->internal->amcl_surface_suspended &&
+         previous_window->internal->egl_surface != EGL_NO_SURFACE) {
+-        if (SDL_EGL_MakeCurrent(_this, previous_window->internal->egl_surface,
+-                                context)) {
++        if (SDL_EGL_MakeCurrent(_this, previous_window->internal->egl_surface, context)) {
+             OPENHARMONY_GLES_SetCurrentCache(_this, previous_window, context);
+-        } else {
+-            OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+-        }
+-    } else {
+-        if (SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
+-            OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+-        }
+-    }
+-    current_window = current_id ? SDL_GetWindowFromID(current_id) : NULL;
+-    previous_window = previous_id ? SDL_GetWindowFromID(previous_id) : NULL;
+-    if (current_window && current_window != previous_window &&
+-        current_window->internal) {
+-        current_window->internal->is_current = false;
+-    }
++        }
++    } else if (SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
++        OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
++    }
++    /* Failed EGL operations leave the actual binding and its cached owner intact. */
+ }
+
+ bool OPENHARMONY_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context)
+@@ -731,6 +728,7 @@
+         if (result) {
+             if (current_window && current_window->internal) {
+                 current_window->internal->is_current = false;
++                current_window->internal->owner_thread = 0;
+             }
+             OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+         }
+@@ -746,6 +744,7 @@
+     const SDL_WindowID window_id = window->id;
+     SDL_Window *previous_window = SDL_GL_GetCurrentWindow();
+     const SDL_WindowID previous_id = previous_window ? previous_window->id : 0;
++    const SDL_GLContext previous_context = SDL_GL_GetCurrentContext();
+     const bool was_current = previous_id != 0 && previous_id == window_id;
+     SDL_WindowData *data = window->internal;
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER &&
+@@ -816,9 +815,7 @@
+                             SDL_EGL_MakeCurrentWithError(
+                                 _this, data->egl_surface, context,
+                                 &retry_error)) {
+-                            data->owner_thread = SDL_GetCurrentThreadID();
+-                            data->last_context = context;
+-                            data->is_current = true;
++                            OPENHARMONY_GLES_SetCurrentCache(_this, window, context);
+                             if (OPENHARMONY_GLES_ReplaySwapInterval(
+                                     _this, window, true)) {
+                                 OPENHARMONY_GLES_SetCurrentCache(
+@@ -828,7 +825,7 @@
+                             } else {
+                                 retry_interval_failed = true;
+                                 OPENHARMONY_GLES_RestorePreviousBinding(
+-                                    _this, previous_id, context);
++                                    _this, previous_id, previous_context);
+                             }
+                         } else {
+                             makecurrent_error = retry_error;
+@@ -859,18 +856,12 @@
+         }
+         return false;
+     }
+-    data->owner_thread = SDL_GetCurrentThreadID();
+-    data->last_context = context;
+-    SDL_Window *previous_live = previous_id ? SDL_GetWindowFromID(previous_id) : NULL;
+-    if (previous_live && previous_live != window && previous_live->internal) {
+-        previous_live->internal->is_current = false;
+-    }
+-    data->is_current = true;
++    OPENHARMONY_GLES_SetCurrentCache(_this, window, context);
+     if (!OPENHARMONY_GLES_ReplaySwapInterval(
+             _this, window,
+             data->role == OPENHARMONY_WINDOW_PRESENTED)) {
+         OPENHARMONY_GLES_RestorePreviousBinding(_this, previous_id,
+-                                                 context);
++                                                 previous_context);
+         ((SDL_VideoData *)_this->internal)->makecurrent_fail++;
+         if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+             return OPENHARMONY_GLES_MarkRendererFatal(
+@@ -931,6 +922,7 @@
+         if (previous_window && previous_window != window &&
+             previous_window->internal) {
+             previous_window->internal->is_current = false;
++            previous_window->internal->owner_thread = 0;
+         }
+         data->owner_thread = SDL_GetCurrentThreadID();
+         data->last_context = result;
+diff --git a/src/video/openharmony/SDL_openharmonywindow.c b/src/video/openharmony/SDL_openharmonywindow.c
+--- a/src/video/openharmony/SDL_openharmonywindow.c
++++ b/src/video/openharmony/SDL_openharmonywindow.c
+@@ -208,7 +208,6 @@
+     data->surface_state = OPENHARMONY_SURFACE_READY;
+     data->requested_hidden = (requested & SDL_WINDOW_HIDDEN) != 0;
+     data->shown = false;
+-    OPENHARMONY_DesktopCommand(window,8,0,0,0,0,NULL);
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     data->egl_surface = EGL_NO_SURFACE;
+ #endif
+@@ -520,7 +519,7 @@
+         return false;
+     }
+     const SDL_ThreadID current_thread = SDL_GetCurrentThreadID();
+-    if (data->owner_thread && data->owner_thread != current_thread) {
++    if (data->is_current && data->owner_thread && data->owner_thread != current_thread) {
+         return false; /* owner thread will consume the pending request */
+     }
+     if (!OPENHARMONY_GLES_ValidatePbufferSize(
+@@ -627,7 +626,7 @@
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         data->pending_width = window->pending.w;
+         data->pending_height = window->pending.h;
+-        if (data->owner_thread &&
++        if (data->is_current && data->owner_thread &&
+             data->owner_thread != SDL_GetCurrentThreadID()) {
+             return;
+         }
+@@ -759,8 +758,9 @@
+     }
+     const SDL_WindowID window_id = window->id;
+     SDL_WindowData *data = window->internal;
++    if (data->role == OPENHARMONY_WINDOW_PRESENTED &&
++        OPENHARMONY_DesktopCommand(window,7,0,0,0,0,NULL) < 0) return;
+     data->shown = true;
+-    OPENHARMONY_DesktopCommand(window,7,0,0,0,0,NULL);
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER &&
+         !data->auxiliary_show_notified) {
+         data->auxiliary_show_notified = true;
+@@ -842,6 +842,10 @@
+     }
+     const SDL_WindowID window_id = window->id;
+     SDL_WindowData *data = window->internal;
++    /* The public host Window API hides the presented game by minimizing it.
++     * Auxiliary pbuffers never issue a host visibility command. */
++    if (data->role == OPENHARMONY_WINDOW_PRESENTED &&
++        OPENHARMONY_DesktopCommand(window,8,0,0,0,0,NULL) < 0) return;
+     data->shown = false;
+     if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+         if (SDL_GetMouseFocus() == window) {
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -3020,9 +3020,12 @@
+     SDL_Window *previous = SDL_GL_GetCurrentWindow();
+     if (previous && previous != window && previous->internal) {
+         previous->internal->is_current = false;
++        previous->internal->owner_thread = 0;
+     }
+     if (window && window->internal) {
+         window->internal->is_current = true;
++        window->internal->owner_thread = SDL_GetCurrentThreadID();
++        window->internal->last_context = context;
+     }
+     _this->current_glwin = window;
+     _this->current_glctx = context;
+@@ -3123,15 +3126,11 @@
+                 data->amcl_generation, published_generation,
+                 data->native_window);
+
+-    /* EGL surface surgery is owner-thread work.  A WindowData ownership mark
+-     * is deliberately conservative: once a context has been current on a
+-     * different thread, do not destroy/rebuild that window surface here even
+-     * if this thread happens to have an auxiliary pbuffer current.  Leave the
+-     * publication unadopted and let the owner boundary retry it. */
++    /* A remembered context is not a current binding. Explicit release or a
++     * successful switch frees the surface for another render thread. */
+     const SDL_ThreadID current_thread = SDL_GetCurrentThreadID();
+-    if (data->owner_thread &&
+-        data->owner_thread != current_thread &&
+-        (data->is_current || data->last_context != NULL)) {
++    if (data->is_current && data->owner_thread &&
++        data->owner_thread != current_thread) {
+         data->surface_state = OPENHARMONY_SURFACE_RECREATE_PENDING;
+         data->amcl_surface_suspended = true;
+         data->amcl_pending_generation = published_generation;
+diff --git a/src/video/openharmony/SDL_amcldesktop.c b/src/video/openharmony/SDL_amcldesktop.c
+--- a/src/video/openharmony/SDL_amcldesktop.c
++++ b/src/video/openharmony/SDL_amcldesktop.c
+@@ -7,6 +7,7 @@
+ #include "../../events/SDL_dropevents_c.h"
+ #include "SDL_openharmonywindow.h"
+ #include "SDL_openharmonyvideo.h"
++#include "SDL_openharmonyamcl.h"
+ #include "../../events/SDL_windowevents_c.h"
+ #include "../../events/SDL_displayevents_c.h"
+ #include <SDL3/SDL_joystick.h>
+@@ -20,6 +21,10 @@
+ static SDL_Joystick *virtual_handles[16];
+ static Uint64 virtual_generations[16];
+ static Uint64 fullscreen_sequence;
++static Uint64 visibility_sequence;
++static bool visibility_pending;
++static SDL_WindowID visibility_window;
++static bool visibility_shown;
+ static Uint64 last_event_epoch;
+ static int fullscreen_status;
+ static bool close_notified;
+@@ -48,6 +53,12 @@
+     const AmclDesktopHostV1 *api = DesktopHost();
+     if (!api || !Presented(window)) return 0;
+     const Uint64 sequence = api->submit(kind,a,b,c,d,text);
++    if (kind == AMCL_DESKTOP_SHOW || kind == AMCL_DESKTOP_HIDE) {
++        visibility_sequence = sequence;
++        visibility_pending = true;
++        visibility_window = window->id;
++        visibility_shown = kind == AMCL_DESKTOP_SHOW;
++    }
+     if (!sequence) { SDL_SetError("Desktop window command rejected (kind=%d)",kind); return -1; }
+     if (kind == AMCL_DESKTOP_FULLSCREEN) { fullscreen_sequence=sequence; fullscreen_status=a?1:0; }
+     return 1;
+@@ -184,6 +195,20 @@
+     SDL_Window *window=OPENHARMONY_GetPresentedWindow(device);if(!window)return;
+     AmclDesktopSnapshot f;api->snapshot(&f);
+     if(!f.active)return;
++    if (visibility_pending && f.completed >= visibility_sequence) {
++        visibility_pending = false;
++        if (window->id == visibility_window && window->internal) {
++            const bool shown = f.status != 3;
++            if (shown != visibility_shown) {
++                SDL_SetError("System rejected window visibility transition (code=%d)", f.lastError);
++                window->internal->shown = shown;
++                SDL_SendWindowEvent(window, shown ? SDL_EVENT_WINDOW_SHOWN : SDL_EVENT_WINDOW_HIDDEN, 0, 0);
++                OPENHARMONY_AMCL_UpdatePresentedForeground();
++                window = OPENHARMONY_GetPresentedWindow(device);
++                if (!window) return;
++            }
++        }
++    }
+     char packet[65536]; const char *paths[32];
+     for(int batch=0;batch<8;++batch){
+         const int bytes=api->takeDrop(packet,sizeof(packet));if(bytes<=0)break;
+@@ -220,7 +245,7 @@
+ void OPENHARMONY_DesktopQuit(void)
+ {
+     for(int i=0;i<16;++i)DropVirtual(i);
+-    SDL_zeroa(displays);SDL_zeroa(native_displays);fullscreen_sequence=0;close_notified=false;
++    SDL_zeroa(displays);SDL_zeroa(native_displays);fullscreen_sequence=0;visibility_sequence=0;visibility_pending=false;visibility_window=0;close_notified=false;
+ }
+ static int WaitDesktopEvents(SDL_VideoDevice *device, Sint64 timeoutNS) {
+     (void)device; const AmclDesktopHostV1 *api=DesktopHost();

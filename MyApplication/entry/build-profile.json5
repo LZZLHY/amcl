@@ -1,0 +1,171 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    "externalNativeOptions": {
+      "path": "./src/main/cpp/CMakeLists.txt",
+      "arguments": "",
+      "cppFlags": ""
+    },
+    "resOptions": {
+      "copyCodeResource": {
+        "enable": false
+      }
+    }
+  },
+  "buildOptionSet": [
+    {
+      "name": "debug",
+      "externalNativeOptions": {
+        "arguments": "-DMC_OHOS_BUILD_TESTS=ON -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=OFF"
+      }
+    },
+    {
+      "name": "release",
+      "externalNativeOptions": {
+        "arguments": "-DMC_OHOS_BUILD_TESTS=OFF -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=OFF"
+      },
+      "arkOptions": {
+        "obfuscation": {
+          "ruleOptions": {
+            "enable": true,
+            "files": [
+              "./obfuscation-rules.txt"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "targets": [
+    {
+      "name": "default",
+      "config": {
+        "deviceType": [
+          "phone",
+          "tablet",
+          "2in1"
+        ],
+        "buildOption": {
+          "externalNativeOptions": {
+            "arguments": "-DAMCL_BUILD_PRODUCT=default -DMC_OHOS_BUILD_TESTS=AUTO -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=OFF"
+          }
+        }
+      },
+      "source": {}
+    },
+    {
+      "name": "ohosTest",
+      "config": {
+        "buildOption": {
+          "externalNativeOptions": {
+            "arguments": "-DAMCL_BUILD_PRODUCT=default -DMC_OHOS_BUILD_TESTS=AUTO -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=OFF"
+          }
+        }
+      }
+    },
+    {
+      "name": "store",
+      "config": {
+        "deviceType": [
+          "phone",
+          "tablet",
+          "2in1"
+        ],
+        "buildOption": {
+          "externalNativeOptions": {
+            "arguments": "-DAMCL_BUILD_PRODUCT=store -DMC_OHOS_BUILD_TESTS=OFF -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=OFF"
+          }
+        }
+      },
+      "source": {
+        "sourceRoots": [
+          "./src/store"
+        ],
+        "pages": [
+          "pages/Index",
+          "pages/McGamePage",
+          "pages/LayoutListPage",
+          "pages/LayoutEditorPage",
+          "pages/VersionSettingsPage",
+          "pages/DownloadHistoryPage",
+          "pages/MessageCenterPage",
+          "pages/ActivityLogPage",
+          "pages/LogShareHistoryPage",
+          "pages/SponsorPage",
+          "pages/FeedbackPage",
+          "pages/AboutPage",
+          "pages/ChangelogPage",
+          "pages/DocWebPage"
+        ]
+      }
+    },
+    {
+      "name": "sideload",
+      "config": {
+        "deviceType": [
+          "phone",
+          "tablet",
+          "2in1"
+        ],
+        "buildOption": {
+          "externalNativeOptions": {
+            "arguments": "-DAMCL_BUILD_PRODUCT=sideload -DMC_OHOS_BUILD_TESTS=OFF -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=OFF"
+          }
+        }
+      },
+      "source": {
+        "sourceRoots": [
+          "./src/sideload"
+        ],
+        "pages": [
+          "pages/Index",
+          "pages/McGamePage",
+          "pages/LayoutListPage",
+          "pages/LayoutEditorPage",
+          "pages/VersionSettingsPage",
+          "pages/DownloadHistoryPage",
+          "pages/MessageCenterPage",
+          "pages/ActivityLogPage",
+          "pages/LogShareHistoryPage",
+          "pages/SponsorPage",
+          "pages/FeedbackPage",
+          "pages/AboutPage",
+          "pages/ChangelogPage",
+          "pages/DocWebPage"
+        ]
+      }
+    },
+    {
+      "name": "desktop",
+      "config": {
+        "deviceType": [
+          "2in1"
+        ],
+        "buildOption": {
+          "externalNativeOptions": {
+            "arguments": "-DAMCL_BUILD_PRODUCT=desktop -DMC_OHOS_BUILD_TESTS=OFF -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON -DAMCL_GLFW_API26_RAW_MOUSE_MOTION=ON -DAMCL_INPUT_COMPILED_FORMAL_DESKTOP=ON"
+          }
+        }
+      },
+      "source": {
+        "sourceRoots": [
+          "./src/desktop"
+        ],
+        "pages": [
+          "pages/Index",
+          "pages/McGamePage",
+          "pages/VersionSettingsPage",
+          "pages/DownloadHistoryPage",
+          "pages/MessageCenterPage",
+          "pages/ActivityLogPage",
+          "pages/LogShareHistoryPage",
+          "pages/SponsorPage",
+          "pages/FeedbackPage",
+          "pages/AboutPage",
+          "pages/ChangelogPage",
+          "pages/DocWebPage",
+          "pages/DesktopDeveloperToolsPage"
+        ]
+      }
+    }]
+}

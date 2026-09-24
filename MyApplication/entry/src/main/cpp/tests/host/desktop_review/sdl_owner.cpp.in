@@ -1,0 +1,46 @@
+#include <cstdio>
+using SDL_GLContext=void*;
+using SDL_WindowID=int;
+#define OPENHARMONY_SURFACE_READY 1
+#define EGL_NO_SURFACE nullptr
+struct SDL_WindowData {bool is_current=true;int owner_thread=11;SDL_GLContext last_context=reinterpret_cast<void*>(3);
+    int surface_state=1;bool amcl_surface_suspended=false;void* egl_surface=reinterpret_cast<void*>(2);};
+struct SDL_Window {SDL_WindowData* internal;int id=0;};
+struct SDL_VideoDevice {SDL_Window* current_glwin=nullptr;SDL_GLContext current_glctx=nullptr;int current_glwin_tls=0,current_glctx_tls=0;};
+static SDL_Window* current=nullptr;
+static int tid=11, driverOwner=11;
+static bool releaseFails=false;
+static bool bindFails=false;
+static SDL_Window* windows[2]{};
+SDL_Window* SDL_GL_GetCurrentWindow(){return current;}
+SDL_Window* SDL_GetWindowFromID(int id){return id>0 && id<=2?windows[id-1]:nullptr;}
+int SDL_GetCurrentThreadID(){return tid;}
+void SDL_SetTLS(int* key,void* value,void*){if(*key==1)current=static_cast<SDL_Window*>(value);}
+bool SDL_EGL_MakeCurrent(SDL_VideoDevice*,void*,void* ctx){if(ctx?bindFails:releaseFails)return false;driverOwner=ctx?tid:0;return true;}
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
+@PRODUCTION@
+int main(){
+    SDL_WindowData data;SDL_Window window{&data,1};current=&window;windows[0]=&window;
+    SDL_VideoDevice device;device.current_glwin_tls=1;
+    CHECK(RecoveryBlocked(&data,12) && ResizeBlocked(&data,12));
+    releaseFails=true;CHECK(!Release(&device,nullptr,nullptr));
+    CHECK(driverOwner==11 && data.owner_thread==11 && data.is_current && current==&window);
+    releaseFails=false;CHECK(Release(&device,nullptr,nullptr));
+    CHECK(driverOwner==0 && data.owner_thread==0 && !data.is_current && !current && data.last_context);
+    // Surface generation changes and an auxiliary pbuffer resize are now legal on B.
+    tid=12;CHECK(!RecoveryBlocked(&data,12) && !ResizeBlocked(&data,12));
+    OPENHARMONY_GLES_SetCurrentCache(&device,&window,data.last_context);
+    CHECK(data.owner_thread==12 && data.is_current && current==&window);
+    SDL_WindowData auxiliary;auxiliary.is_current=false;auxiliary.owner_thread=0;
+    SDL_Window other{&auxiliary,2};windows[1]=&other;
+    OPENHARMONY_GLES_SetCurrentCache(&device,&other,reinterpret_cast<void*>(4));
+    CHECK(data.owner_thread==0 && !data.is_current && auxiliary.owner_thread==12);
+    CHECK(!RecoveryBlocked(&data,13) && !ResizeBlocked(&data,13));
+    bindFails=true;OPENHARMONY_GLES_RestorePreviousBinding(&device,1,data.last_context);
+    CHECK(current==&other && auxiliary.owner_thread==12 && auxiliary.is_current);
+    bindFails=false;OPENHARMONY_GLES_RestorePreviousBinding(&device,1,data.last_context);
+    CHECK(current==&window && data.owner_thread==12 && auxiliary.owner_thread==0);
+    OPENHARMONY_AMCL_CommitCurrentCache(&device,&other,auxiliary.last_context);
+    CHECK(current==&other && data.owner_thread==0 && auxiliary.owner_thread==12);
+    std::puts("SDL failed/successful release, cross-thread surface/resize handoff and window switching PASS");
+}

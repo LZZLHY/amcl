@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 2,
+  "products": {
+    "default": {
+      "platform": "win32-x64",
+      "compileSdkVersion": "26.0.0.105",
+      "targetAPIVersion": 60100023,
+      "minAPIVersion": 60000020,
+      "nativeCompiler": "BiSheng",
+      "signingAlgorithm": "SHA256withECDSA",
+      "compiler": {
+        "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)",
+        "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c"
+      },
+      "cmake": {
+        "versionFirstLine": "cmake version 3.28.2",
+        "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e"
+      },
+      "hvigor": {
+        "version": "6.26.4",
+        "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0"
+      },
+      "toolchainFile": {
+        "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+      },
+      "hapSignTool": {
+        "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+      }
+    },
+    "store": {
+      "platform": "win32-x64",
+      "compileSdkVersion": "26.0.0.105",
+      "targetAPIVersion": 60100023,
+      "minAPIVersion": 60000020,
+      "nativeCompiler": "BiSheng",
+      "signingAlgorithm": "SHA256withECDSA",
+      "compiler": {
+        "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)",
+        "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c"
+      },
+      "cmake": {
+        "versionFirstLine": "cmake version 3.28.2",
+        "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e"
+      },
+      "hvigor": {
+        "version": "6.26.4",
+        "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0"
+      },
+      "toolchainFile": {
+        "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+      },
+      "hapSignTool": {
+        "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+      }
+    },
+    "sideload": {
+      "platform": "win32-x64",
+      "compileSdkVersion": "26.0.0.105",
+      "targetAPIVersion": 60100023,
+      "minAPIVersion": 60000020,
+      "nativeCompiler": "BiSheng",
+      "signingAlgorithm": "SHA256withECDSA",
+      "compiler": {
+        "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)",
+        "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c"
+      },
+      "cmake": {
+        "versionFirstLine": "cmake version 3.28.2",
+        "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e"
+      },
+      "hvigor": {
+        "version": "6.26.4",
+        "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0"
+      },
+      "toolchainFile": {
+        "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+      },
+      "hapSignTool": {
+        "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+      }
+    },
+    "desktop": {
+      "platform": "win32-x64",
+      "compileSdkVersion": "26.0.0.105",
+      "targetAPIVersion": 260000026,
+      "minAPIVersion": 60002022,
+      "nativeCompiler": "BiSheng",
+      "signingAlgorithm": "SHA256withECDSA",
+      "compiler": {
+        "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)",
+        "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c"
+      },
+      "cmake": {
+        "versionFirstLine": "cmake version 3.28.2",
+        "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e"
+      },
+      "hvigor": {
+        "version": "6.26.4",
+        "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0"
+      },
+      "toolchainFile": {
+        "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+      },
+      "hapSignTool": {
+        "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+      }
+    }
+  }
+}

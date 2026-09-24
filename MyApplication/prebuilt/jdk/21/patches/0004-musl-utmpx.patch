@@ -1,0 +1,22 @@
+diff --git a/src/hotspot/os/posix/os_posix.cpp b/src/hotspot/os/posix/os_posix.cpp
+index 7f95560a1..62ac46c5b 100644
+--- a/src/hotspot/os/posix/os_posix.cpp
++++ b/src/hotspot/os/posix/os_posix.cpp
+@@ -469,6 +469,7 @@ void os::Posix::print_uptime_info(outputStream* st) {
+   int bootsec = -1;
+   int currsec = time(nullptr);
+   struct utmpx* ent;
++#ifndef __MUSL__
+   setutxent();
+   while ((ent = getutxent())) {
+     if (!strcmp("system boot", ent->ut_line)) {
+@@ -476,6 +477,9 @@ void os::Posix::print_uptime_info(outputStream* st) {
+       break;
+     }
+   }
++#else
++  (void)ent;
++#endif
+ 
+   if (bootsec != -1) {
+     os::print_dhm(st, "OS uptime:", (long) (currsec-bootsec));

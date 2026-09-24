@@ -1,0 +1,101 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index af848dd..a9f1deb 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -1316,6 +1316,34 @@ static void OPENHARMONY_ReleaseHeldMouseButtons(bool teardown,
+         return;
+     }
+     const SDL_WindowID input_window_id = input_window->id;
++    typedef struct
++    {
++        SDL_MouseID mouse_id;
++        SDL_MouseButtonFlags held;
++    } OPENHARMONY_HeldMouseSource;
++
++    SDL_Mouse *mouse = SDL_GetMouse();
++    const int source_count = mouse ? mouse->num_sources : 0;
++    OPENHARMONY_HeldMouseSource *held_sources = source_count > 0
++        ? (OPENHARMONY_HeldMouseSource *)SDL_malloc(
++              (size_t)source_count * sizeof(*held_sources))
++        : NULL;
++    if (source_count > 0 && !held_sources) {
++        /* A reset must still make internal polling fail-safe under OOM. Event
++         * watchers cannot be called safely without a stable source snapshot. */
++        SDL_LogError(SDL_LOG_CATEGORY_INPUT,
++                     "openharmony: mouse reset snapshot allocation failed; clearing %d source states",
++                     source_count);
++        for (int source_index = 0; source_index < source_count; ++source_index) {
++            mouse->sources[source_index].buttonstate = 0;
++        }
++        return;
++    }
++    for (int source_index = 0; source_index < source_count; ++source_index) {
++        held_sources[source_index].mouse_id = mouse->sources[source_index].mouseID;
++        held_sources[source_index].held = mouse->sources[source_index].buttonstate;
++    }
++
+     /* SDL event watchers run synchronously from SDL_SendMouseButton.  Mark
+      * this short release transaction as one-way teardown so a watcher cannot
+      * recursively free the same SDL_Window while the outer lifecycle edge is
+@@ -1325,22 +1353,54 @@ static void OPENHARMONY_ReleaseHeldMouseButtons(bool teardown,
+         input_window->is_destroying = true;
+     }
+
+-    const SDL_MouseButtonFlags held = SDL_GetMouseState(NULL, NULL);
+-    for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_X2; button++) {
+-        if (held & SDL_BUTTON_MASK(button)) {
++    bool window_lost = false;
++    for (int source_index = 0; source_index < source_count; ++source_index) {
++        for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_X2; ++button) {
++            if (!(held_sources[source_index].held & SDL_BUTTON_MASK(button))) {
++                continue;
++            }
+             input_window = OPENHARMONY_AMCL_GetLiveInputWindowForTeardown(
+                 input_window_id);
+             if (!input_window) {
++                window_lost = true;
+                 break;
+             }
++            /* A synchronous watcher may remove a source after an earlier UP.
++             * Reconfirm this exact id still owns the bit so SDL's compatibility
++             * fallback cannot release the same button from a different mouse. */
++            bool still_held = false;
++            mouse = SDL_GetMouse();
++            for (int live_index = 0; mouse && live_index < mouse->num_sources;
++                 ++live_index) {
++                if (mouse->sources[live_index].mouseID ==
++                        held_sources[source_index].mouse_id &&
++                    (mouse->sources[live_index].buttonstate &
++                     SDL_BUTTON_MASK(button)) != 0u) {
++                    still_held = true;
++                    break;
++                }
++            }
++            if (!still_held) {
++                continue;
++            }
+             /* During a lifecycle teardown do not hand the retiring window
+-             * back to SDL's post-release focus machinery.  The queued
+-             * button-up still carries the current mouse focus ID, while a
+-             * NULL target prevents focus from being reacquired mid-hide. */
++             * back to SDL's post-release focus machinery. */
+             SDL_SendMouseButton(0, teardown ? NULL : input_window,
+-                                SDL_DEFAULT_MOUSE_ID, (Uint8)button, false);
++                                held_sources[source_index].mouse_id,
++                                (Uint8)button, false);
++        }
++        if (window_lost) {
++            break;
+         }
+     }
++    if (window_lost) {
++        mouse = SDL_GetMouse();
++        for (int live_index = 0; mouse && live_index < mouse->num_sources;
++             ++live_index) {
++            mouse->sources[live_index].buttonstate = 0;
++        }
++    }
++    SDL_free(held_sources);
+     SDL_Window *live_window = SDL_GetWindowFromID(input_window_id);
+     if (teardown && live_window && !was_destroying) {
+         live_window->is_destroying = false;

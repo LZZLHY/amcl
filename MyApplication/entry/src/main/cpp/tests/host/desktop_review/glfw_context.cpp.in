@@ -1,0 +1,181 @@
+#include <cstdio>
+#include <cstdlib>
+#include <chrono>
+#include <cstdint>
+#include <mutex>
+// 此测试只观察生产窗口/TLS/呈现顺序；时钟分布与故障总线有独立生产核心测试。
+int amclGraphicsObservationEnabledV1() { return 1; }
+void amclGraphicsSwapV1(const char*, uint64_t, int, uint32_t) {}
+void amclGraphicsFatalV1(const char*, uint32_t, uint64_t) {}
+using EGLDisplay=void*; using EGLSurface=void*; using EGLContext=void*; using EGLBoolean=int; using EGLint=int; using EGLenum=int;
+#define EGL_NO_DISPLAY nullptr
+#define EGL_NO_SURFACE nullptr
+#define EGL_NO_CONTEXT nullptr
+#define EGL_TRUE 1
+#define EGL_OPENGL_API 1
+#define EGL_OPENGL_ES_API 4
+#define EGL_DRAW 2
+#define EGL_READ 3
+#define EGL_CONTEXT_LOST 0x300E
+#define EGL_BAD_SURFACE 0x300D
+#define EGL_BAD_NATIVE_WINDOW 0x300B
+#define GLFW_PLATFORM_ERROR 0x10008
+#define GLFW_NO_API 0
+#define GLFW_OPENGL_API 0x00030001
+#define GLFW_NO_WINDOW_CONTEXT 0x0001000A
+#define GLFW_NO_CURRENT_CONTEXT 0x00010002
+#define OH_LOG_INFO(...) ((void)0)
+#define OH_LOG_WARN(...) ((void)0)
+#define OH_LOG_ERROR(...) ((void)0)
+#define AMCL_EXTERNAL_LOG_W(...) ((void)0)
+#define AMCL_EXTERNAL_LOG_E(...) ((void)0)
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
+struct GLFWwindow {
+    uint64_t nativeWindowGeneration=1;
+    int clientAPI=GLFW_OPENGL_API;
+    bool contextLostFatal=false, eglTeardownPending=false, auxiliary=false;
+    bool eglSurfaceDetachPending=false;
+    long long nextSurfaceRecoveryAttemptMs=0;
+    unsigned int surfaceRecoveryFailures=0;
+    int shouldClose=0;
+    int contextOwnerTid=0;
+    EGLDisplay display=reinterpret_cast<void*>(1);
+    EGLSurface surface=reinterpret_cast<void*>(2), parkingSurface=reinterpret_cast<void*>(4);
+    EGLContext context=reinterpret_cast<void*>(3);
+};
+static std::recursive_mutex g_contextLifecycleMutex;
+static thread_local GLFWwindow* g_threadCurrentContext=nullptr;
+static GLFWwindow* g_currentWindow=nullptr;
+static void (*g_errorCallback)(int,const char*)=nullptr;
+static int tid=11, selectedApi=0, driverOwner=0, unbinds=0, eglCalls=0;
+static int lastError=0;
+static bool nativeGl=true, mobileGl=false, failApi=false, failRelease=false, presentation=true, failSwap=false;
+static bool deferredSwap=false;
+static uint64_t actualPresentSequence=0;
+int amclGraphicsReadPresentSequenceV1(uint64_t* out){*out=actualPresentSequence;return mobileGl?1:0;}
+static int recordedPresents=0, observedPresents=0, inputPresents=0;
+static EGLContext driverContext=nullptr;
+static EGLSurface driverSurface=nullptr;
+int gettid(){return tid;}
+int eglBindAPI(int api){++eglCalls;if(failApi)return 0; selectedApi=api;return 1;}
+// 两种 client API 都必须先在接收线程绑定；模拟 MG frontend API 与系统 GLES 的查询约束。
+bool apiSelected(){return selectedApi==EGL_OPENGL_API || selectedApi==EGL_OPENGL_ES_API;}
+EGLDisplay eglGetCurrentDisplay(){++eglCalls;return apiSelected() && driverOwner==tid?reinterpret_cast<void*>(1):nullptr;}
+EGLContext eglGetCurrentContext(){++eglCalls;return apiSelected() && driverOwner==tid?driverContext:nullptr;}
+EGLSurface eglGetCurrentSurface(int){++eglCalls;return apiSelected() && driverOwner==tid?driverSurface:nullptr;}
+int eglMakeCurrent(EGLDisplay,EGLSurface surface,EGLSurface,EGLContext ctx){
+    ++eglCalls;
+    if(ctx){if(driverOwner && driverOwner!=tid)return 0;driverOwner=tid;driverContext=ctx;driverSurface=surface;return 1;}
+    if(failRelease)return 0;
+    if(apiSelected()){driverOwner=0;driverContext=nullptr;driverSurface=nullptr;++unbinds;}return 1;
+}
+int eglGetError(){++eglCalls;return 0x3002;}
+int eglSwapBuffers(EGLDisplay,EGLSurface){++eglCalls;if(!failSwap && !deferredSwap)++actualPresentSequence;return failSwap?0:EGL_TRUE;}
+void ReportError(int error,const char*){lastError=error;}
+bool consumePublishedSurfaceState(GLFWwindow*,const char*,bool){return presentation;}
+long long currentTimeMs(){return 100;}
+long long scheduleSurfaceRecovery(GLFWwindow* window){++window->surfaceRecoveryFailures;return 1;}
+void markEglSurfaceDetachPending(GLFWwindow* window,const char*){window->eglSurfaceDetachPending=true;}
+bool suspendGraphicsBackendSession(GLFWwindow*){return true;}
+bool destroyGraphicsBackendSession(GLFWwindow*,bool){return true;}
+void recordGraphicsBackendSessionPresent(GLFWwindow*){++recordedPresents;}
+void inputBridge_notifyFramePresented(){++inputPresents;}
+void observePresentedFrame(){++observedPresents;}
+void amcl_sampler_set_render_tid(int){}
+void amcl_sampler_start(){}
+// provider 类别是系统边界桩；生产 GLFW current/swap 函数仍从当前源码抽取。
+namespace amcl::desktop {bool NativeGlRequested(){return nativeGl;} bool UsesDesktopOpenGlContext(){return nativeGl || mobileGl;}}
+namespace amcl::ohos {void LeaveInteractiveRenderQoS(const char*){} void EnterInteractiveRenderQoS(const char*){}}
+@PRODUCTION@
+int main(){
+    GLFWwindow window;
+    glfwMakeContextCurrent(&window);
+    CHECK(driverOwner==11 && window.contextOwnerTid==11 && g_threadCurrentContext==&window);
+    GLFWwindow vulkanWindow;
+    vulkanWindow.clientAPI=GLFW_NO_API;
+    g_errorCallback=ReportError;
+    const int callsBeforeNoApi=eglCalls;
+    glfwMakeContextCurrent(&vulkanWindow);
+    glfwSwapBuffers(&vulkanWindow);
+    CHECK(lastError==GLFW_NO_WINDOW_CONTEXT && eglCalls==callsBeforeNoApi);
+    CHECK(driverOwner==11 && window.contextOwnerTid==11 && g_threadCurrentContext==&window);
+    CHECK(vulkanWindow.contextOwnerTid==0);
+    g_errorCallback=nullptr;
+    failRelease=true;
+    glfwMakeContextCurrent(nullptr);
+    CHECK(driverOwner==11 && window.contextOwnerTid==11 && g_threadCurrentContext==&window);
+    failRelease=false;failApi=true;selectedApi=0;
+    glfwMakeContextCurrent(nullptr);
+    CHECK(driverOwner==11 && window.contextOwnerTid==11 && g_threadCurrentContext==&window);
+    failApi=false;
+    glfwMakeContextCurrent(nullptr);
+    CHECK(driverOwner==0 && window.contextOwnerTid==0 && !g_threadCurrentContext && unbinds==1);
+    tid=12;selectedApi=0;
+    glfwMakeContextCurrent(&window);
+    CHECK(driverOwner==12 && window.contextOwnerTid==12 && g_threadCurrentContext==&window);
+    glfwMakeContextCurrent(nullptr);
+    tid=13;selectedApi=0;presentation=false;
+    glfwMakeContextCurrent(&window);
+    CHECK(driverOwner==13 && driverSurface==window.parkingSurface && window.contextOwnerTid==13);
+    clearEglContextOwnershipAfterDetach(&window,"test-native-parking");
+    CHECK(g_threadCurrentContext==&window && window.contextOwnerTid==13);
+    glfwMakeContextCurrent(nullptr);
+    CHECK(driverOwner==0 && window.contextOwnerTid==0);
+    nativeGl=false;
+    const int callsBeforeMobileNoApi=eglCalls;
+    glfwMakeContextCurrent(&vulkanWindow);
+    glfwMakeContextCurrent(nullptr);
+    CHECK(eglCalls==callsBeforeMobileNoApi && !g_threadCurrentContext && driverOwner==0);
+    // 验证的是从当前生产文件逐字抽取的 GLFW MakeCurrent/SwapBuffers：GLES 路线
+    // 缺少呈现窗口时也必须绑定停车面；显式 release 后 Swap 不得隐式重新接管。
+    selectedApi=0;presentation=false;
+    glfwMakeContextCurrent(&window);
+    CHECK(selectedApi==EGL_OPENGL_ES_API && driverSurface==window.parkingSurface);
+    CHECK(driverOwner==13 && window.contextOwnerTid==13 && g_threadCurrentContext==&window);
+    // 直接执行生产 TLS 清理函数，证明“已停车”不会被当作“已释放”。
+    clearEglContextOwnershipAfterDetach(&window,"test-gles-parking");
+    clearEglTlsAfterPartialDetach(&window);
+    CHECK(g_threadCurrentContext==&window && window.contextOwnerTid==13);
+    glfwMakeContextCurrent(nullptr);
+    CHECK(driverOwner==0 && !g_threadCurrentContext && window.contextOwnerTid==0);
+    g_errorCallback=ReportError;lastError=0;
+    glfwSwapBuffers(&window);
+    CHECK(lastError==GLFW_NO_CURRENT_CONTEXT && driverOwner==0 && !g_threadCurrentContext);
+    // 已释放后才允许另一个线程取得同一个 context；仍 current 时的跨线程接管被拒绝。
+    tid=14;selectedApi=0;
+    glfwMakeContextCurrent(&window);
+    CHECK(driverOwner==14 && window.contextOwnerTid==14 && driverSurface==window.parkingSurface);
+    tid=15;lastError=0;
+    glfwMakeContextCurrent(&window);
+    CHECK(lastError==GLFW_PLATFORM_ERROR && driverOwner==14 && window.contextOwnerTid==14);
+    tid=14;glfwMakeContextCurrent(nullptr);g_errorCallback=nullptr;
+    presentation=true;
+    glfwMakeContextCurrent(&window);
+    failSwap=true;
+    glfwSwapBuffers(&window);
+    CHECK(recordedPresents==0 && observedPresents==0 && inputPresents==0);
+    failSwap=false;
+    glfwSwapBuffers(&window);
+    CHECK(recordedPresents==1 && observedPresents==1 && inputPresents==1);
+    failSwap=true;
+    glfwSwapBuffers(&window);
+    CHECK(recordedPresents==1 && observedPresents==1 && inputPresents==1);
+    glfwMakeContextCurrent(nullptr);
+    // MobileGL 同样是桌面 OpenGL context；在非 nativegl 条件下检查真实函数选择 API、
+    // 停车保留 TLS 和显式 release，防止新 provider 又落入旧 GLES-only 分支。
+    mobileGl=true;failSwap=false;presentation=false;selectedApi=0;
+    glfwMakeContextCurrent(&window);
+    CHECK(selectedApi==EGL_OPENGL_API && driverSurface==window.parkingSurface);
+    clearEglContextOwnershipAfterDetach(&window,"test-mobilegl-parking");
+    CHECK(g_threadCurrentContext==&window && window.contextOwnerTid==14);
+    glfwMakeContextCurrent(nullptr);
+    CHECK(!g_threadCurrentContext && driverOwner==0);
+    // 同一生产swap入口必须拒绝把EGL成功但实际序列不变的暂缓帧交给输入与历史。
+    presentation=true;glfwMakeContextCurrent(&window);deferredSwap=true;
+    glfwSwapBuffers(&window);
+    CHECK(recordedPresents==1 && observedPresents==1 && inputPresents==1);
+    deferredSwap=false;glfwSwapBuffers(&window);
+    CHECK(recordedPresents==2 && observedPresents==2 && inputPresents==2);
+    glfwMakeContextCurrent(nullptr);
+    std::puts("GLFW context ownership, NO_API isolation and successful-swap-only presentation counters PASS");
+}

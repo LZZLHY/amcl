@@ -1,0 +1,11 @@
+[submodule "MyApplication/prebuilt/lwjgl3/lwjgl3_src"]
+	path = MyApplication/prebuilt/lwjgl3/lwjgl3_src
+	url = https://github.com/LWJGL/lwjgl3.git
+[submodule "MyApplication/prebuilt/mobileglues/mg_src"]
+	path = MyApplication/prebuilt/mobileglues/mg_src
+	url = https://github.com/LZZLHY/MobileGlues.git
+	branch = amcl/2.0-ohos
+[submodule "MyApplication/prebuilt/mobilegl/src"]
+	path = MyApplication/prebuilt/mobilegl/src
+	url = https://github.com/LZZLHY/MobileGL.git
+	branch = amcl/ohos

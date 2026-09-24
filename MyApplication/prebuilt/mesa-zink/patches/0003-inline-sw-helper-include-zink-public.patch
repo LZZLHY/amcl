@@ -1,0 +1,27 @@
+From: AMCL <LZZLHY>
+Date: 2026-06-24
+Subject: [PATCH] inline_sw_helper: GALLIUM_ZINK 时 include zink_public.h
+
+`src/gallium/auxiliary/target-helpers/inline_sw_helper.h` 在 `#ifdef GALLIUM_ZINK`
+分支里调用 `zink_create_screen()`，但文件顶部只为 softpipe/llvmpipe/virgl/d3d12
+include 了对应 public 头，**漏了 zink 的 zink_public.h**。
+
+平时（dri/egl target 经 pipe_loader 路径用 zink）不暴露此问题；但当我们让 OSMesa
+target 直接经 sw_screen_create→sw_screen_create_named 调 zink（patch 0002）时，
+`-DGALLIUM_ZINK` 生效、该分支被编译，`zink_create_screen` 因无声明触发
+`-Werror=implicit-function-declaration` + `-Werror=int-conversion` 编译失败。
+
+修复：在 d3d12 include 块后补 zink 的 public 头。
+
+--- a/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
++++ b/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
+@@
+ #ifdef GALLIUM_D3D12
+ #include "d3d12/d3d12_public.h"
+ #endif
++#ifdef GALLIUM_ZINK
++#include "zink/zink_public.h"
++#endif
+ 
+ static inline struct pipe_screen *
+ sw_screen_create_named(struct sw_winsys *winsys, const char *driver)

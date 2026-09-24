@@ -1,0 +1,9 @@
+{
+  "required": true,
+  "minVersion": "0.8.7",
+  "package": "com.amcl.compat.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "com.amcl.compat.CompatMixinPlugin",
+  "client": [],
+  "injectors": {"defaultRequire": 1}
+}

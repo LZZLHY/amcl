@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "families": {
+    "universal": {
+      "deviceTypes": [
+        "phone",
+        "tablet",
+        "2in1"
+      ],
+      "targetSdkVersion": "6.1.0(23)",
+      "compatibleSdkVersion": "6.0.0(20)",
+      "touchControls": true,
+      "desktopFrontend": true,
+      "legacyCompatibility": true,
+      "runtimeRawMouse": true,
+      "graphicsArtifactSet": "complete"
+    },
+    "desktop": {
+      "deviceTypes": [
+        "2in1"
+      ],
+      "targetSdkVersion": "26.0.0",
+      "compatibleSdkVersion": "6.0.2(22)",
+      "touchControls": false,
+      "desktopFrontend": true,
+      "legacyCompatibility": false,
+      "runtimeRawMouse": true,
+      "graphicsArtifactSet": "complete"
+    }
+  },
+  "products": {
+    "default": {
+      "family": "universal",
+      "channel": "sideload",
+      "publishable": false,
+      "developerDiagnostics": true,
+      "defaultBuildMode": "debug"
+    },
+    "sideload": {
+      "family": "universal",
+      "channel": "sideload",
+      "publishable": true,
+      "developerDiagnostics": false,
+      "defaultBuildMode": "release"
+    },
+    "store": {
+      "family": "universal",
+      "channel": "store",
+      "publishable": true,
+      "developerDiagnostics": false,
+      "defaultBuildMode": "release",
+      "distributionDevices": [
+        "tablet",
+        "2in1"
+      ]
+    },
+    "desktop": {
+      "family": "desktop",
+      "channel": "sideload",
+      "publishable": true,
+      "developerDiagnostics": false,
+      "defaultBuildMode": "release"
+    }
+  }
+}

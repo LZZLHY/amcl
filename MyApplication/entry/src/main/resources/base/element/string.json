@@ -1,0 +1,69 @@
+{
+  "string": [
+    { "name": "perm_reason_pasteboard", "value": "用于在游戏中粘贴服务器地址、命令和文字" },
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "AMCL"
+    },
+    {
+      "name": "perm_reason_download",
+      "value": "用于把游戏数据（.minecraft 目录）保存到下载目录，使其在卸载应用后仍然保留"
+    },
+    {
+      "name": "perm_reason_file_persist",
+      "value": "用于在重启后持续访问你授权过的下载目录，使游戏数据无需每次重新授权"
+    },
+    {
+      "name": "chat_input_field_placeholder",
+      "value": "已连接游戏文本框，开始输入…"
+    },
+    {
+      "name": "chat_input_chat_placeholder",
+      "value": "输入聊天内容…"
+    },
+    {
+      "name": "chat_input_send",
+      "value": "发送"
+    },
+    {
+      "name": "chat_input_close",
+      "value": "关闭输入"
+    },
+    {
+      "name": "chat_input_editor_hint",
+      "value": "点按可重新打开系统输入法"
+    },
+    {
+      "name": "chat_input_field_control",
+      "value": "游戏文本输入"
+    },
+    {
+      "name": "chat_input_chat_control",
+      "value": "聊天输入"
+    },
+    {
+      "name": "input_control_pressed",
+      "value": "已按下"
+    },
+    {
+      "name": "input_control_released",
+      "value": "未按下"
+    },
+    {
+      "name": "input_drawer_open",
+      "value": "已展开"
+    },
+    {
+      "name": "input_drawer_closed",
+      "value": "已收起"
+    }
+  ]
+}

@@ -1,0 +1,230 @@
+# SDL3 OHOS patch series（git apply 顺序）
+#
+# 背景见 ../README.md 与 docs/adaptation/SDL3_MIGRATION_PLAN.md §C1 / §C1.1 / §C1.3 / §C3.0。
+#
+# ⚠️ 2026-08-01 起本文件不再为空。语义随基线变更而改变：
+#
+#   · 旧基线（LZZLHY/SDL 分支 ohos，现为 fallback）下为空是**目标状态** ——
+#     所有改动都以可回推上游的 commit 形式存在于我们自己的分支上，不需要 patch。
+#   · 当前基线是 icculus/SDL 的 sdl3-harmonyos（见根 deps.lock 的 [sdl3-native]），
+#     **我们不拥有这个分支**，所以 AMCL 专有改动只能落成这里的 patch。
+#
+# ⚠️ 2026-08-02 范围扩大：原先只有「宿主注入 native window」一项。
+#    §C3.0 实测发现**输入侧存在与窗口侧同构的所有权反转**，因此本 patch 现在涵盖三件事。
+#    原 0001-openharmony-adopt-host-provided-native-window.patch 已被本文件取代。
+#
+# ── 为什么合并成一个 patch（而不是分三层）─────────────────────────────
+# 两个现实约束：① 开发用的 worktree 没有配置 user.name/user.email，无法创建 commit，
+# 也不允许改 git config，所以走不了 commit + format-patch 的分层路径；
+# ② 即便能 commit，SDL_openharmonywindow.c / SDL_openharmonyvideo.c 同时承载
+# 「注入窗口」与「缺陷修复」两类改动，按文件切分本就分不开，硬切会得到互相依赖、
+# 无法单独应用的 patch。将来要把纯修复部分投上游时，按下面的分条重新手工拆分
+# （另按 sdl3-ohos/AGENTS.md，投上游的代码需由人工独立编写确认）。
+#
+# 0001 涵盖三个关注点：
+#
+# ① 宿主提供的 native window（原 0001 的全部内容）
+#    上游假设 SDL 拥有 XComponent：native_xcomponent / native_window 只由 SDL 自己
+#    注册的 OnSurfaceCreated 回调填充，而那个注册发生在 napi 模块的 nm_register_func
+#    里（src/core/openharmony/SDL_openharmony.c:523/568），只有 ArkTS import libSDL3
+#    时才跑。AMCL 反过来 —— XComponent 属于宿主（libraryname 'entry'），libSDL3 只是被
+#    dlopen 进来当渲染库，回调永不触发，两个指针恒为 NULL，OPENHARMONY_CreateWindow
+#    在「Don't have Native XComponent or Native Window」处直接失败。
+#      · 从 AMCL 既有环境变量约定采纳 window（AMCL_NATIVE_WINDOW / AMCL_WINDOW_WIDTH /
+#        AMCL_WINDOW_HEIGHT，由 platform/xcomponent.cpp 的 OnSurfaceCreated 设置）
+#        ⇒ **宿主侧零改动**；环境变量跨 .so 可见、不受 linker namespace 隔离影响。
+#      · CreateWindow 容忍 native_xcomponent == NULL，尺寸取宿主报的 w/h。
+#      · 每次查询都重新同步而非只读一次，宿主替换/撤下 surface 都能被感知。
+#      · 必须用 SDL_getenv_unsafe() 而非 SDL_getenv()：后者读 SDL_GetEnvironment()
+#        的快照，而宿主 surface 可能晚于 SDL_Init 才就绪。
+#      · 真机已验证（Mate 70 API 26）：SDL_CreateWindow OK → GL_CreateContext OK →
+#        MakeCurrent OK → glGetString 有值（GL 4.0.0 MobileGlues 1.3.5）。
+#
+# ② 宿主驱动的输入（§C3.0，新增 SDL_openharmonyamcl.c/.h）
+#    与 ① 同源的所有权反转：既然 XComponent 回调从未注册，基线里已实现的
+#    SDL_OpenHarmonyDispatchTouchEvent / DispatchMouseEvent（吃 (component, window)，
+#    由回调驱动）在 AMCL 下**是死代码**，SDL 收不到任何触摸/鼠标/键盘输入。
+#      · OPENHARMONY_PumpEvents() 改为实体：从宿主的事件环拉事件转成 SDL_Send*。
+#        排在 PumpEvents 而非回调里，天然跑在调用 SDL_PollEvent 的线程上，
+#        绕开了 SDL 事件代码「必须在主线程」的断言。
+#      · 相对鼠标模式落到宿主的 grab 状态（单一权威写点，否则会重演
+#        CHANGELOG 1000413–1000420 那串视角瞬移）。宿主 grab 时报累加 look 值、
+#        非 grab 时报绝对坐标，正好对上 SDL 的 relative/absolute 划分；
+#        grab 翻转时重置差分基准，否则切换后第一帧会把两个坐标系之差当成一次巨大位移。
+#      · 全部符号用 dlsym(RTLD_DEFAULT) 机会性解析 ⇒ 不新增公开 API、宿主零改动，
+#        普通 SDL 应用完全不受影响（解析不到就整体退化为 no-op）。
+#      · 光标 X/Y 用宿主的原子成对读取接口，避免两次独立加锁读出撕裂的坐标。
+#      · dlsym 允许有限次重试（不是一次失败就永久缓存），因为库加载顺序不由我们决定。
+#      · 环溢出/窗口重建时同时清键盘与鼠标按下状态 —— 只清键盘会留下"鼠标一直按住"。
+#
+# ③ 后端缺陷修复（三条与 AMCL 无关，是基线自身的问题）
+#      · DispatchTouchEvent / DispatchMouseEvent 未判空即解引用 OPENHARMONY_Window。
+#        这两个回调在 SDL 窗口创建前与销毁后都会触发，是确定性的空指针解引用
+#        （上游 testautomation 已复现过）。
+#      · 鼠标分发路径的调试日志是 `#if 1`，每个 motion 事件打一行，已改为 `#if 0`。
+#      · SetWindowTitle / MinimizeWindow / SetWindowResizable 里留着注释掉的 Android
+#        实现，读起来像"未实现"，实际上在本平台是有意的 no-op；已换成说明性注释。
+#      · SetWindowFullscreen 补上「与系统实际尺寸对账并补发 SDL_EVENT_WINDOW_RESIZED」，
+#        并写明为什么返回 SUCCEEDED 是诚实的：窗口恒等于系统/宿主给的 surface，
+#        OHOS 应用没有窗口模式可退回；返回 FAILED 会让 SDL 核心 goto error
+#        （SDL_video.c:2049），使每次 SDL_SetWindowFullscreen 都失败。
+#      · 实现 GetDisplayModes：SDL 只在 display 尚无 fullscreen mode 时调用它
+#        （SDL_video.c:1225），而 SDL_AddBasicVideoDisplay() 只填 desktop_mode
+#        （SDL_video.c:841-850），不接线则 SDL_GetFullscreenDisplayModes() 返回空列表。
+#
+# ⚠️ 2026-08-04 再次扩大：26.3 在真机上跑过 P0（宿主显式触发 MobileGlues 初始化，
+#    落在 AMCL 侧 mc_launcher.cpp，不在本 patch）之后，暴露出两件必须在 SDL 侧修的事。
+#    两条都不是推断，是设备日志逐字给出的。
+#
+# ④ desktop-GL profile 请求与 GLES-only EGL 的调和（SDL_openharmonyopengl.c）
+#    OHOS 的 EGL 不提供任何 desktop-GL 可渲染 config。SDL 通用层按字面处理 profile：
+#    非 SDL_GL_CONTEXT_PROFILE_ES 一律去要 EGL_OPENGL_BIT + eglBindAPI(EGL_OPENGL_API)
+#    （SDL_egl.c 的 `attribs[i++] = EGL_OPENGL_BIT`）。MC 26.3 请求 GL 3.3 CORE +
+#    FORWARD_COMPATIBLE ⇒ eglChooseConfig 零匹配。真机（MatePad Pro，6.1.1.120）：
+#      BackendCreationException: Failed to create window with OpenGL context:
+#      Couldn't find matching EGL config (call to eglChooseConfig failed, ...)
+#      · 关键区分：profile 描述的是调用方想**调**的 API，不是 EGL 必须创建的 client 类型。
+#        走翻译层（GL→GLES）的应用，EGL 侧必须是 GLES，上层仍是桌面 GL。
+#      · 做法是**回落而非替换**：先按原样探一次 SDL_EGL_ChooseConfig，探不到才改 ES3。
+#        将来若有设备真提供 desktop-GL config，字面请求优先，本段不改变行为。
+#      · 探测失败会留下错误串，回落成功后必须 SDL_ClearError()，否则稍后以
+#        "eglChooseConfig failed" 的形式出现在一个无关调用上。
+#      · ES 版本刻意取 3.0：(major>=3, minor==0, profile ES, flags==0) 这一组合让 SDL
+#        走朴素的 EGL_CONTEXT_CLIENT_VERSION 路径而不是 EGL_KHR_create_context 属性，
+#        与 AMCL GLFW 路径（glfw_egl.cpp）在这些设备上长期出货的组合逐字一致。
+#      · 必须清掉 gl_config.flags：FORWARD_COMPATIBLE 是 desktop-GL 专属 context flag，
+#        喂给 GLES 的 eglCreateContext 是 EGL_BAD_ATTRIBUTE；且不清它就取不到上面那条路径。
+#
+# ⑤ SetWindowSize / SetWindowPosition 接线为「接受请求 + 回报真实几何」
+#    这两项原先刻意不接线（理由见下面那段被修正的判断）。真机证伪：MC 在上次异常退出后
+#    会重置为 windowed，于是走 SDL_SetWindowFullscreen(false) + SetWindowPosition +
+#    SetWindowSize 这条标准"退出全屏"序列，任一 false 即报错：
+#      [Render thread/ERROR]: Couldn't leave fullscreen: That operation is not supported
+#    —— SDL_Unsupported() 从后端传了出去，而请求其实**已经被满足**（窗口就是整个 surface，
+#    那是本平台最接近 windowed 的状态）。
+#      · 不是"claims success 的空壳"：两个 hook 立刻用 SDL_EVENT_WINDOW_RESIZED /
+#        _MOVED 回报真实几何，而正是这两个事件在更新 window->w/h、x/y 并清掉 pending 标志
+#        ⇒ 调用方回读 SDL_GetWindowSize() 拿到的是真相，不是它请求的值。
+#      · RESIZED 无条件补发（不是"仅当与请求不同才发"）：SDL 已经记下了 pending.w/h，
+#        数值恰好相同时跳过会把请求悬在那里。
+#
+# ⚠️ 本 patch **没有**去补 ShowWindow / GetWindowSizeInPixels / SyncWindow /
+#    SetWindow{Min,Max}imumSize / SetWindowIcon / SetDisplayMode / Start-StopTextInput
+#    —— 这是查证后的决定，不是遗漏。
+#    实测 SDL_video.c：前三者有合理回退（ShowWindow 缺失时 SDL 自己设 mouse/keyboard
+#    focus 并发 SHOWN —— 自己实现却忘了设焦点反而会丢键盘输入），后几者 SDL 自己就
+#    return SDL_Unsupported()，而它们要么由系统拥有、要么由宿主拥有。
+#    Android 后端同样一项都没接。
+#    逐项依据见 scripts/check-sdl3-video-callbacks.mjs 头部注释与该脚本报告。
+#
+#    ⚠️ 但这条判断此前被过度外推到了 SetWindowSize / SetWindowPosition（见 ⑤）。
+#    教训：「后端无权改」与「调用方能接受被告知无权改」是两个命题，只有第一个成立。
+#    评估一个回调该不该接线，除了读 SDL 核心的缺失行为，还必须读**调用方**拿到
+#    false 之后做什么。
+0001-openharmony-host-window-input-and-backend-fixes.patch
+#
+# ✅ 宿主销毁链已闭合：platform/xcomponent.cpp 在 OnSurfaceDestroyed 中
+#   同时清空 window/尺寸/代际状态与 AMCL_NATIVE_WINDOW、AMCL_WINDOW_WIDTH、
+#   AMCL_WINDOW_HEIGHT、AMCL_WINDOW_GENERATION。patch 的「每次同步」因此会在
+#   下次查询时放弃旧指针。
+#
+# 应用方式（2026-08-27 修正：此前误写成 docker/apply_patches.sh —— 那个脚本没有
+# sdl3 段，从不经手本目录）：实际应用点是
+#   · scripts/build-sdl3-ohos.ps1（Windows 宿主构建：git apply --check 预检后 git apply）
+#   · docker/build_sdl3_ohos.sh（容器构建：逐行 git apply）
+# 两者都按本文件行顺序应用；series 的行格式（每行一个 patch 名、# 注释、空行跳过）
+# 与 gl4es / mesa-zink 的 series 约定一致，只是应用器不同。
+# patch 必须是 LF 行尾（git apply 不容忍 LF 源码里的 CR）
+# —— 导出时用 `git diff --output=<file>`，绝不用 shell 重定向。
+#
+# ── 0002：存活窗口的 surface 代际恢复（附 bridge 发布竞态、描述符尾随校验修复）──
+# 0001 的「每次同步」只作用于下一次 SDL_CreateWindow；已存活窗口的 EGL surface 绑死
+# 采纳时的 OHNativeWindow，宿主重建 XComponent surface（后台/旋转/折叠）后 swap 永久失败
+# 且无恢复路径。0002 让 PumpEvents 每泵比对一次 AMCL_NATIVE_WINDOW_SNAPSHOT（单变量原子
+# 快照）的 generation，变化时在持有 GL 绑定的线程上重建 EGL surface。
+# 证据：2026-08-26 低帧审计 §7.2 与本轮代码审查。
+0002-openharmony-live-window-generation-recovery.patch
+0003-openharmony-hybrid-multi-window.patch
+# Typed backend lifecycle + direct relative owner. FOCUS/CAPTURE are consumed by
+# SDL, capture pending is distinct from loss, and grabbed motion has one owner.
+0004-openharmony-typed-input-lifecycle-relative.patch
+# Additive backend ABI V1 pointer identity: per-device MouseID routing and
+# DEVICE_ADDED/REMOVED consumption. The 64-byte envelope/version stay frozen;
+# deviceClass reuses resetReason only for pointer/device event types.
+0005-openharmony-pointer-device-identity.patch
+0006-openharmony-typed-text-session.patch
+0007-openharmony-multi-device-reset.patch
+# Relative mode is an application request, not a generic RESET side effect.
+# Authenticate every disable source, preserve the request across host loss,
+# reconcile presented focus, and consume additive surface-context event type 9.
+0008-openharmony-relative-authority-surface-context.patch
+#
+# ── 0009：grabbed 运动的 owner 判据收回它自己的作用域（2026-09-03 三世代真机回归）──
+# 0004 的 series 注释写着「grabbed motion has one owner」，实现落成
+#   if (grabbing && typed_relative_owner) { ...; return; }   // 抛弃累加光标那条路
+# 而 `typed_relative_owner` 只是 `OPENHARMONY_GetTypedNext() != NULL`，即**通道可调**。
+# 真正能出货的条件严格更窄：typed RELATIVE 记录只在 capture 被授予时才投递
+# （PumpTypedEvents 的 RELATIVE case 就是这么闸的）。而**触屏视角根本不产生 typed
+# RELATIVE 记录** —— 它由宿主视角漏斗累加，只存在于 cursor snapshot 里。
+# ⇒ MC 26.3 上进游戏后触屏视角整条无投递路径：菜单正常（走 ring/MENU_POINTER 与早退
+# **之下**的非 grabbed 绝对分支），≤26.2 正常（GLFW3 走 g_invoke_CursorPos 绝对路径），
+# 只有 26.3 的 grabbed 视角死。这与「26.2 及以下点哪都没反应」那条回归是**两件事**，
+# 成因同批（1b6087d7，2026-09-02）。
+# 修法：归属改由 OPENHARMONY_TypedRelativeOwnsGrabbedMotion() 决定 =
+#   typed_relative_owner && CaptureGranted() && host_typed_relative_seen
+# —— **只能由证据决定**：typed 必须真的投递过一条 RELATIVE 记录才能接管；grab 翻转清证据。
+# ⚠️ 两个能力型代理都被同一台真机否证，各留下 grabbed 运动**零 owner**（计划 §115/§116）：
+#   ① "typed 通道可调"：descriptor 一解析就为真，而纯触屏会话零 typed RELATIVE；
+#   ② "capture 已授予"：设备只要**报告**有鼠标能力，API 26 光标锁就成功（mouse=1 →
+#      cursor locked to window 89），鼠标一动不动它也为真。
+# 并补 delivered/suppressed 两个单调计数 —— 原早退**完全无日志**，这正是它藏了一整轮的原因；
+# 而这一对数在复测时一条日志就定了案。
+0009-openharmony-grabbed-motion-owner-scope.patch
+#
+# ── 2026-08-27：渲染分辨率缩放的几何一致性（改动横跨 0001 与 0002）─────────────
+# 现象：宿主 -Damcl.render.scale=0.75 对 NativeWindow 做 SET_BUFFER_GEOMETRY 后，
+# MC 26.3 点击系统性偏左上（系数 = scale）；scale=1 完全正常。真机日志 + MC 字节码
+# 核实的机制（**不是**当初猜的「core 全屏路径把 window->w/h 对齐 display mode」——
+# 本后端 device_caps 带 SENDS_FULLSCREEN_DIMENSIONS，SDL_video.c:2063 那段整个被跳过）：
+#   · MC 的 cursor→GUI 映射除以 screenWidth（MouseHandler.getScaledXPos =
+#     x × guiScaledWidth / getScreenWidth()），而 screenWidth 来自启动参数
+#     --width/--height（McGamePage 用 getDefaultDisplaySync 传**物理屏 px**，
+#     缩放上线后仍是 real 域），只能被 SDL_EVENT_WINDOW_RESIZED 更新；
+#   · SDL 侧鼠标绝对坐标与 framebuffer（GetWindowSizeInPixels）都在 scaled 域；
+#   · 0001 的 CreateWindow 原来**静默**改写 window->w/h = 注入尺寸 ⇒ 之后一切
+#     RESIZED 重播（SetWindowSize / SetWindowFullscreen / 0002 SyncLiveWindow）
+#     都被 core 按「尺寸未变」去重吞掉（SDL_windowevents.c:134），事件永远
+#     到不了 MC ⇒ MC 的 2800 域信念终生无人纠正，鼠标却在 2100 域 ⇒ ×0.75。
+# 修法（宿主零改动）：
+#   ⑥ (0001) CreateWindow 采纳注入尺寸时，与请求不同则改走
+#      SDL_SendWindowEvent(RESIZED) 真实事件路径（相同则跳过 —— scale=1 与旧行为
+#      逐字节等价）；VideoInit 的 desktop_mode 在有注入尺寸时用注入值（物理尺寸
+#      只作无注入 fallback）⇒ desktop/current mode、fullscreen 模式表、display
+#      bounds 与 surface 同域（MC 的 Monitor.tryCreate 消费的正是这三类查询）。
+#   (0002) SyncLiveWindow 稳态加第二道闸：display desktop_mode 与 window->w/h 均须
+#      等于当前快照尺寸，不一致即刷新/补发一次；发送本身回写 window->w/h、display
+#      刷新等值早退 ⇒ 不会产生事件循环。epoch 变更（resize/adopt）路径同步刷新
+#      display 几何（helper 绕过 fullscreen_active 闸 —— 本平台无临时模式切换，
+#      尺寸变化就是 desktop 本身变了）。
+
+# Desktop host Window, display, clipboard and native gamepad integration.
+0010-openharmony-desktop-services.patch
+0011-openharmony-desktop-review-fixes.patch
+0012-openharmony-presentation-session.patch
+# 宿主在允许线程发布纯数值身份；实际 SDL_InitSubSystem 消费并准备本实例，
+# 不由 AMCL Java 预加载 LWJGL。SDL_Quit 后不可复用，standalone 行为不变。
+0013-openharmony-host-runtime-ownership.patch
+0014-openharmony-resource-geometry-identity.patch
+0015-openharmony-graphics-observation.patch
+
+# 消费中立运行时冻结C ABI；观测关闭时不读取swap计时器。
+0016-openharmony-frozen-graphics-runtime.patch
+
+# 在新context交付前消费可选功能探针尾部，失败保留身份并要求退出当前进程。
+0017-openharmony-graphics-functional-observation.patch
+
+# 公共context资格、真实呈现证据与失败保留；单context utility/main路线保持。
+0018-openharmony-context-admission-and-present-evidence.patch
+
+# 仅原生GL的零总像素限制通过实际创建/尺寸回查验证，保留其他后端和正常边界。
+0019-openharmony-nativegl-pbuffer-limit-validation.patch

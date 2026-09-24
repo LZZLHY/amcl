@@ -1,0 +1,103 @@
+diff --git a/src/video/openharmony/SDL_amclgraphicsobservation.h b/src/video/openharmony/SDL_amclgraphicsobservation.h
+new file mode 100644
+index 000000000..8a0e0d6e3
+--- /dev/null
++++ b/src/video/openharmony/SDL_amclgraphicsobservation.h
+@@ -0,0 +1,36 @@
++/* AMCL 新增的只读图形观测接缝，按 SDL zlib 许可分发。没有宿主描述符时不改变 SDL 行为。 */
++#ifndef SDL_amclgraphicsobservation_h_
++#define SDL_amclgraphicsobservation_h_
++#include <stdint.h>
++#include <unistd.h>
++typedef struct AMCL_GraphicsObserverV1 {
++    uint32_t structSize, abiVersion;
++    uint64_t processId;
++    void (*presented)(const char *);
++    void (*swapped)(const char *, uint64_t, int, uint32_t);
++    void (*fatal)(const char *, uint32_t, uint64_t);
++    void (*foreground)(int);
++    const char *(*snapshot)(int);
++} AMCL_GraphicsObserverV1;
++
++/* 只解析一次同 PID 的只读描述符；fork 先比较 PID，不解引用父进程指针。成功帧计数
++ * 仍走已有 NotifyFramePresented，本接缝只补真实 swap 调用耗时与明确致命错误。 */
++static const AMCL_GraphicsObserverV1 *AMCL_GraphicsObserver(void)
++{
++    static void *cached;
++    const AMCL_GraphicsObserverV1 *value = (const AMCL_GraphicsObserverV1 *)SDL_GetAtomicPointer(&cached);
++    const uint64_t pid = (uint64_t)getpid();
++    if (value && value->processId == pid) return value;
++    const char *encoded = SDL_getenv_unsafe("AMCL_GRAPHICS_OBSERVER_V1");
++    unsigned long long owner_pid = 0;
++    void *address = NULL;
++    int consumed = 0;
++    if (!encoded || SDL_sscanf(encoded, "1:%llu:%p%n", &owner_pid, &address, &consumed) != 2 ||
++        encoded[consumed] || owner_pid != pid || !address) return NULL;
++    value = (const AMCL_GraphicsObserverV1 *)address;
++    if (value->abiVersion != 1u || value->structSize < sizeof(*value) || value->processId != pid ||
++        !value->swapped || !value->fatal) return NULL;
++    SDL_SetAtomicPointer(&cached, address);
++    return value;
++}
++#endif
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 7653393bb..696b0eb78 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -33,6 +33,17 @@
+ #include "../../core/openharmony/SDL_openharmony.h"
+ #include "SDL_openharmonyamcl.h"
+ #include "../../events/SDL_windowevents_c.h"
++#include "SDL_amclgraphicsobservation.h"
++
++/* 观测真实驱动调用本身，辅助 pbuffer 不进入游戏呈现样本。该耗时不是 GPU 执行时间。 */
++static bool OPENHARMONY_AMCL_ObservedSwap(SDL_VideoDevice *_this, SDL_WindowData *data, EGLint *error)
++{
++    const AMCL_GraphicsObserverV1 *observer = data->role == OPENHARMONY_WINDOW_PRESENTED ? AMCL_GraphicsObserver() : NULL;
++    const Uint64 before = observer ? SDL_GetTicksNS() : 0;
++    const bool result = SDL_EGL_SwapBuffersWithError(_this, data->egl_surface, error);
++    if (observer) observer->swapped("SDL3", SDL_GetTicksNS() - before, result ? 1 : 0, (uint32_t)*error);
++    return result;
++}
+ 
+ // ===========================================================================
+ // Desktop-GL requests on a platform that only has EGL/GLES
+@@ -639,6 +650,8 @@ static void OPENHARMONY_GLES_MarkRendererRestartRequired(
+ bool OPENHARMONY_GLES_MarkRendererFatal(SDL_Window *window,
+                                          const char *operation)
+ {
++    const AMCL_GraphicsObserverV1 *observer = AMCL_GraphicsObserver();
++    if (observer) observer->fatal(operation, 0u, window && window->internal ? window->internal->amcl_generation : 0);
+     OPENHARMONY_GLES_MarkRendererRestartRequired(window, operation);
+     if (window) {
+         SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_CLOSE_REQUESTED, 0, 0);
+@@ -1027,8 +1040,7 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+             return SDL_SetError("OpenHarmony: auxiliary pbuffer surface is unavailable");
+         }
+         EGLint auxiliary_error = EGL_SUCCESS;
+-        result = SDL_EGL_SwapBuffersWithError(
+-            _this, data->egl_surface, &auxiliary_error);
++        result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &auxiliary_error);
+         if (result) {
+             ((SDL_VideoData *)_this->internal)->swap_ok++;
+         } else {
+@@ -1074,8 +1086,7 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+         return SDL_SetError("OpenHarmony: presented surface is unavailable");
+     }
+     EGLint swap_error = EGL_SUCCESS;
+-    result = SDL_EGL_SwapBuffersWithError(_this, data->egl_surface,
+-                                          &swap_error);
++    result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &swap_error);
+     if (!result && (swap_error == EGL_BAD_SURFACE ||
+                     swap_error == EGL_BAD_NATIVE_WINDOW)) {
+         /* A BufferQueue can fail before the host publishes a new generation.
+@@ -1087,8 +1098,7 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+                 return false;
+             }
+             data = window->internal;
+-            result = SDL_EGL_SwapBuffersWithError(
+-                _this, data->egl_surface, &swap_error);
++            result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &swap_error);
+         } else if (OPENHARMONY_GLES_IsRecoveryDeferred(
+                        SDL_GetWindowFromID(window_id))) {
+             videodata->swap_fail++;

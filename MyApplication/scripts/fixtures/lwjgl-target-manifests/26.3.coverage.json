@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "versionId": "26.3",
+  "metadata": "26.3.json",
+  "metadataSource": "https://piston-meta.mojang.com/v1/packages/96c00d95a31328714d3811cfade2804bb050e455/26.3.json",
+  "metadataSha1": "96c00d95a31328714d3811cfade2804bb050e455",
+  "clientSha1": "e877b6a07acd633fb3bb475002175cec036e7b87",
+  "ruleEnvironment": {
+    "os": "linux",
+    "arch": "aarch64",
+    "version": "5.10"
+  },
+  "expectedEffectiveEntryCount": 21,
+  "expectedJavaModules": [
+    "lwjgl",
+    "lwjgl-freetype",
+    "lwjgl-jemalloc",
+    "lwjgl-openal",
+    "lwjgl-opengl",
+    "lwjgl-sdl",
+    "lwjgl-shaderc",
+    "lwjgl-spvc",
+    "lwjgl-stb",
+    "lwjgl-vma",
+    "lwjgl-vulkan"
+  ],
+  "expectedLinuxNativeModules": [
+    "lwjgl",
+    "lwjgl-freetype",
+    "lwjgl-jemalloc",
+    "lwjgl-openal",
+    "lwjgl-opengl",
+    "lwjgl-sdl",
+    "lwjgl-shaderc",
+    "lwjgl-spvc",
+    "lwjgl-stb",
+    "lwjgl-vma"
+  ],
+  "clientBootstrap": {
+    "class": "com/mojang/blaze3d/platform/NativeLibrariesBootstrap.class",
+    "classSha256": "b561afacb1bb6a88ec30fb7cce6bca14626b57ea974c235bfc366d7d99d706b0",
+    "eagerNativeModules": [
+      "lwjgl-freetype",
+      "lwjgl-openal",
+      "lwjgl-opengl",
+      "lwjgl-sdl",
+      "lwjgl-shaderc",
+      "lwjgl-spvc",
+      "lwjgl-stb",
+      "lwjgl-vma"
+    ],
+    "auditNotes": [
+      "已核对 client SHA-1 与实际 bootstrap class SHA-256。LWJGL core 首先 initialize，随后探测 Vulkan；其余列表经 Collections.shuffle 打乱。",
+      "eagerNativeModules 为两种 Vulkan 探测结果的需求并集；shaderc、spvc、vma 仅在 vulkanLoaderAvailable 为真时加入列表。",
+      "正式版使用 STBImage.stbi_failure_reason，不声明 pre-1 的 lwjgl-spng；modern 保留 spng 以继续覆盖已冻结 pre-1 消费者。"
+    ]
+  }
+}

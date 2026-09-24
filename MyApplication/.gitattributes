@@ -1,0 +1,9 @@
+*.sh text eol=lf
+# unified diff 的空白上下文行包含必要前缀，不能作为源码行尾空格清理。
+*.patch text eol=lf -whitespace
+# Preserve upstream bytes, including whitespace, for the SHA-pinned STB inputs.
+prebuilt/lwjgl3/compat/stb-v1/* -text -whitespace
+# Gate 0 在配置期按原始字节校验该文档；各平台 checkout 必须保持 LF。
+docs/testing/gate0-raw-relative-evidence.md text eol=lf
+# 审计使用的上游原始样本按采集字节保存，不能为格式检查改写其来源指纹。
+diagnostics/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp -text -whitespace

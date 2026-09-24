@@ -1,0 +1,11 @@
+{
+  "name": "feature_core",
+  "version": "1.0.0",
+  "description": "AMCL 核心下载/版本/模组加载域（download + version + modloader）。三者循环依赖，HAR 禁环，故合并为一个模块。依赖 commons；native 经 DownloadNativeEngine 注入解耦。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons"
+  }
+}

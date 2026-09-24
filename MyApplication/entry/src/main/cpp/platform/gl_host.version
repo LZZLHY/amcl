@@ -1,0 +1,14 @@
+AMCL_GL_HOST {
+    global:
+        gl[A-Z]*;
+        egl[A-Z]*;
+        mg_initialize_v1;
+        mg_get_init_report_v1;
+        mg_angle_in_use;
+        mg_multidraw_bench_progress;
+        mg_multidraw_bench_run;
+        mg_glMultiDraw*;
+        amclGlHost*;
+        glfwDependencyProbeGetProc;
+    local: *;
+};

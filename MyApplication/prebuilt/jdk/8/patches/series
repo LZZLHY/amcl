@@ -1,0 +1,102 @@
+# MC-OHOS OpenJDK 8u (jdk8u452) patch series — 探路阶段（HotSpot 已编译链接通过）
+#
+# 应用方式：bash docker/apply_patches.sh --patch-dir prebuilt/jdk/8/patches --target /build/jdk8u
+#
+# ⚠️ 与 17/21/25 不同：JDK 8 的构建系统不原生支持 clang/libc++/musl，大量适配在
+#    docker/build_jdk8_ohos.sh 的"构建系统 workaround"层（伪 gcc banner / X11·ALSA stub /
+#    libstdc++→libc++ / HOST_* 旗标 / USE_CLANG=true / WARNINGS_ARE_ERRORS= / BUILDLIBSAPROC= /
+#    clang-15 默认 -Werror 类降级），不在本 series。本 series 只含**源码级** musl/clang/aarch64 补丁。
+#
+# 进度：✅✅ 完整 OpenJDK 8 image 构建成功（configure → HotSpot/libjvm.so → JDK native → images）。
+#   产物：images/j2sdk-image/（jre/lib/aarch64/server/libjvm.so 14.9MB + libjava.so + rt.jar 65MB，经典布局）。
+#   ✅ 已出货并真机跑通（2026-06-12 起，MC 1.16.1 vanilla + 老 Forge 1.12.2/1.14.4/1.16.4）。
+#   ⚠️ 头两行原先跟着一句「仍属探路：未真机跑」——那是 2026-02 探路期的话，早已过期，2026-08-29 删掉。
+#   仍未移植：OHOS 运行时 patch 里 safepoint/signal 那一组（见文末「尚未移植」；java-home 那条已并入 0001）。
+
+# 源码级合并补丁（7 文件）：
+#   - globalDefinitions_gcc.hpp : isnanf → isnan（musl 无 isnanf）
+#   - copy_linux_aarch64.s      : prfm → prfum（clang 集成汇编器：负偏移用非缩放预取）
+#   - jvm_linux.cpp             : #define SIGCLD SIGCHLD（musl 无 SIGCLD）
+#   - os_linux.cpp              : gnu/libc-version.h + gnu_get_libc_version 包 __GLIBC__，musl 兜底
+#   - os_linux_aarch64.cpp      : fpu_control.h 包 __GLIBC__；(__u64)→(uintptr_t)
+#   - NativeThread.c            : #define __SIGRTMAX SIGRTMAX（musl 无 __SIGRTMAX）
+#   - linux_close.c             : __SIGRTMAX 同上；sigWakeup 静态初始化改运行时（musl SIGRTMAX 是函数调用）
+#
+# OHOS 运行时 patch（__MUSL__ 门控，已并入本补丁 · 可干净移植子集）：
+#   - os_linux.cpp set_java_home : 优先 JAVA_HOME 环境变量（沙箱路径推断不可靠）
+#   - os_linux.cpp set_dll_dir   : 优先 SUN_BOOT_LIBRARY_PATH（注入的 native lib 目录）
+#   - java_md_solinux.c RequiresSetenv : 直接返回 JNI_FALSE（ELF loader 已处理库解析，避免 musl re-exec 死锁）
+#
+# ⚠️ 尚未移植（需 JDK8 专门设计 + 真机验证，不可机械照搬 17）：
+#   - 0005 signals-abort / 0006 aarch64-elf-safepoint / 0007 safepoint-mem-prot-read
+#     —— 17 针对 thread-local handshake；JDK8 是旧全局 polling-page 机制，机制不同。
+#   - dlvsym/dlinfo(0001)、utmpx(0004)：JDK8 经核对不需要（musl 已解析 / 无对应代码）。
+#
+# 另：musl 兼容符号（isnanf/isinff/__xpg_strerror_r + JAWT awt_* 桩）走 docker/jdk8_musl_compat.c
+#     编进 libcxxabi_shim.so；构建系统 workaround 全在 docker/build_jdk8_ohos.sh。
+0001-ohos-musl-clang-source-fixes.patch
+
+# 0002 — clang/aarch64 代码生成 & UB 修复（真机 1.16.1 JDK8 出图后定位的三类 clang UB）：
+#   - immediate_aarch64.cpp:
+#       · replicate() 的 `result <<= nbits`（nbits 可为 64）是移位≥位宽 UB；clang -O3
+#         让其 poison 值算坏逻辑立即数表中 0xFFFFFFFFFFFFFFF0 的编码 → generate_call_stub
+#         首条 andr 即 guarantee("Field too big for insn") abort。改 `if(nbits<64)`。
+#       · initLITables 原 __attribute__((constructor))；自定义 ELF loader 不跑 libjvm
+#         的 .init_array → 表为空。改 pthread_once 懒初始化（双保险，与是否跑 init_array 无关）。
+#   - markOop.hpp value(): markOop 是"伪指针"（指针位即 mark word，低位编码锁态）；clang
+#       假设 markOopDesc*(align>=8) 低 3 位为 0，把 has_locker/has_monitor/is_neutral 常量
+#       折叠 → ObjectSynchronizer::inflate() 把 neutral 对象误当栈锁解引用 mark word(=1) →
+#       SIGSEGV。用空内联汇编 launder 指针，禁止对齐假设（一次修好所有 markword 判定）。
+#   - gcc.make: 加 -fno-delete-null-pointer-checks。JDK8 依赖 null-this 调成员函数 + 函数
+#       内部自带空指针保护（如 Arena::destruct_contents 的 _first->chop() / Chunk::chop）；
+#       clang 视 null this 为 UB 删除保护 → C2Compiler::initialize 阶段 SIGSEGV。
+0002-ohos-clang-codegen-ub-fixes.patch
+
+# 0003 — 补回 sun.security.util.ManifestEntryVerifier 单参构造器 (Manifest)：
+#   我们的 jdk8u 带"两参 backport"(Manifest, String)，单参形式已被移除；而 Forge modlauncher
+#   4.x/8.x（MC 1.13–1.16.5）的 SecureJarHandler.createCodeSource 编译期依赖单参 new
+#   ManifestEntryVerifier(manifest) → 运行期 NoSuchMethodError 启动崩（真机 1.16.4-forge 实证，
+#   崩在生成 CrashReport 时加载 net.minecraft 类的 createCodeSource）。补回单参构造器，委托两参
+#   并用 JarFile.MANIFEST_NAME 作 manifestFileName（与 backport 前 OpenJDK 8 语义一致）。
+#   纯附加、不改两参行为。Release v8u452-ohos-3 即含此补丁（libjvm 与 v2 一致，仅 rt.jar 内该类更新）。
+0003-ohos-manifestentryverifier-legacy-ctor.patch
+
+# === 4: OHOS 沙箱下 IPv6 能力误判（路线 A / 方案 §四·五 R4） ===
+
+# 与 17 的同名 patch 语义与代码形状**相同**（块内要 close(fd)），只有文件路径不同：
+# JDK 8 是老森林布局 `jdk/src/solaris/native/java/net/net_util_md.c`，
+# 17/21/25 是 `src/java.base/unix/native/libnet/net_util_md.c`。
+# JDK 8 的 IPv6_supported() 另有两处与新版不同（都不影响本 patch 的锚点）：
+# 整个函数体包在 `#ifndef AF_INET6` / `#ifdef AF_INET6` 里，且用 `JVM_Socket` 而非 `socket`。
+#
+# OHOS：应用沙箱对 /proc/net/if_inet6 返回 EACCES，而上游用「能不能读到该文件第一行」回答
+# 「本机有没有 IPv6」⇒ Net.isIPv6Available() 恒 false ⇒ 连 IPv6 地址直接被网络层拒收。
+#
+# patch 语义（⚠️ 改它之前先读）：
+#   - **不删判据**。fopen 仍先试；文件可读时与上游逐字节一致（平台放开后自动退场）。
+#   - 只在 errno == EACCES / EPERM 时回落 getifaddrs() 真实探测 ——「读不到」是缺一次观测。
+#   - 回落**同时要求 dlsym(inet_pton) 非空**（理由同 17 的 series）。
+#   - **ENOENT 刻意不回落**：文件真不存在＝内核没开 IPv6，那正是上游判据成立的场合。
+#   - 回落把 loopback（::1）算作「有 IPv6」，与「文件可读时上游会给的答案」保持一致。
+#   - helper 是 static，不新增导出符号。
+#
+# 前置事实（已核对）：该文件第 26 行已 `#include <errno.h>`；`-D__MUSL__` 由
+# docker/build_jdk8_ohos.sh 的 COMMON_CFLAGS 提供（第 149 行），所以 __MUSL__ 门控成立。
+#
+# 验证状态（2026-08-29，已构建并三方比对）：
+#   ✅ 在 jdk8u452-ga（commit 35c254f5，= openjdk/jdk8u-dev 的 jdk8u452-ga^{}）上
+#      应用本目录 0001–0003 之后生成。
+#   ✅ 已跑 docker/build_jdk8_ohos.sh build（完整 make images 通过）并做三方比对：
+#      · **不打 0010 的 baseline libnet.so 与 v8u452-ohos-3 出货件逐字节相同**
+#        —— 120672 B / sha256 2a3022344b7acaffd83192e3ea0a5e41d2ed31f384004082bcf703a8d29c23d2。
+#      · patched 121048 B / sha256 3050b4a8…（+376 B）。
+#      · 导出符号 93 → 93 逐个相同，且与出货件逐个相同；DT_NEEDED 一致
+#        （libc.so / libcxxabi_shim.so / libjava.so / libjvm.so，SONAME libnet.so）；
+#        未定义引用只多 getifaddrs / freeifaddrs；两侧都仍引用 fopen（判据没删）。
+#   ⚠️ **推翻本文件此前的一条结论**：原先写「8 的构建不可从本仓复现」。就 **libnet 这个编译单元**
+#      而言那是错的 —— 本目录 0001–0003 + docker/build_jdk8_ohos.sh 就足以位级复现出货件。
+#      文首「8 个待移植 runtime patch」是 hotspot 侧的事，不进入 libnet 的编译单元。
+#      ⚠️ 但**不要把这条推广到 libjvm.so**：那 8 个 patch 是否影响 libjvm 未验证过。
+#   ✅ 出货：Release v8u452-ohos-4（jdk8-ohos-full-v4.zip，只替换 jre/lib/aarch64/libnet.so）。
+#   ⏳ 真机 IPv6 场景未验（JDK 8 只服务 MC ≤1.16.5）。
+0010-ipv6-supported-sandbox-fallback.patch

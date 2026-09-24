@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "deviceTypes": [
+    "phone",
+    "tablet",
+    "2in1"
+  ],
+  "targetSdkVersion": "6.1.0(23)",
+  "compatibleSdkVersion": "6.0.0(20)",
+  "touchControls": true,
+  "desktopFrontend": true,
+  "legacyCompatibility": true,
+  "runtimeRawMouse": true,
+  "graphicsArtifactSet": "complete",
+  "family": "universal",
+  "channel": "sideload",
+  "publishable": true,
+  "developerDiagnostics": false,
+  "defaultBuildMode": "release",
+  "name": "sideload",
+  "distributionDevices": [
+    "phone",
+    "tablet",
+    "2in1"
+  ],
+  "build": {
+    "mode": "release",
+    "diagnostics": [],
+    "mask": 0,
+    "flags": {
+      "MC_OHOS_BUILD_TESTS": "OFF",
+      "AMCL_INPUT_TRACE": "OFF",
+      "AMCL_MG_FRAME_STATS": "OFF",
+      "AMCL_MG_FRAME_STATS_GL_SCOPES": "OFF",
+      "AMCL_MG_FRAME_STATS_EXHAUSTIVE": "OFF",
+      "AMCL_MG_UPLOAD_PROBE": "OFF",
+      "AMCL_STACK_SAMPLER": "OFF",
+      "AMCL_INPUT_GATE0_TELEMETRY": "OFF",
+      "AMCL_VULKAN_WSI_TRACE": "OFF"
+    },
+    "nativeGlValidation": false
+  }
+}

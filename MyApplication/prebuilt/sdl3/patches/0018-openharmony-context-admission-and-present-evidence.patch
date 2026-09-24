@@ -1,0 +1,664 @@
+diff --git a/src/video/SDL_egl.c b/src/video/SDL_egl.c
+index b87a17649..30cecb793 100644
+--- a/src/video/SDL_egl.c
++++ b/src/video/SDL_egl.c
+@@ -1346,85 +1346,95 @@ bool SDL_EGL_SetSwapInterval(SDL_VideoDevice *_this, int interval)
+ 
+ bool SDL_EGL_GetSwapInterval(SDL_VideoDevice *_this, int *interval)
+ {
+     if (!_this->egl_data) {
+         return SDL_SetError("EGL not initialized");
+     }
+ 
+     *interval = _this->egl_data->egl_swapinterval;
+     return true;
+ }
+ 
+ bool SDL_EGL_SwapBuffers(SDL_VideoDevice *_this, EGLSurface egl_surface)
+ {
+     return SDL_EGL_SwapBuffersWithError(_this, egl_surface, NULL);
+ }
+ 
+ bool SDL_EGL_SwapBuffersWithError(SDL_VideoDevice *_this,
+                                   EGLSurface egl_surface,
+                                   EGLint *egl_error)
+ {
+     if (egl_error) {
+         *egl_error = EGL_SUCCESS;
+     }
+     if (!_this->egl_data->eglSwapBuffers(_this->egl_data->egl_display, egl_surface)) {
+         const EGLint error = _this->egl_data->eglGetError();
+         if (egl_error) {
+             *egl_error = error;
+         }
+         return SDL_EGL_SetErrorEx("unable to show color buffer in an OS-native window",
+                                   "eglSwapBuffers", error);
+     }
+     return true;
+ }
+ 
+ bool SDL_EGL_DestroyContext(SDL_VideoDevice *_this, SDL_GLContext context)
+ {
+     EGLContext egl_context = (EGLContext)context;
+ 
+     // Clean up GLES and EGL
+     if (!_this->egl_data) {
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++        if (AMCL_GraphicsRuntimeRequired() && context) return SDL_SetError("AMCL: EGL display missing during context retirement");
++#endif
+         return true;
+     }
+ 
+     if (egl_context != NULL && egl_context != EGL_NO_CONTEXT) {
+-        _this->egl_data->eglDestroyContext(_this->egl_data->egl_display, egl_context);
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++        /* 宿主生命周期要求真实退休结果，不能在eglDestroyContext失败后抛弃owner。 */
++        if (AMCL_GraphicsRuntimeRequired()) {
++            if (!_this->egl_data->eglDestroyContext(_this->egl_data->egl_display, egl_context))
++                return SDL_EGL_SetError("AMCL: context retirement failed", "eglDestroyContext");
++        } else
++#endif
++        { _this->egl_data->eglDestroyContext(_this->egl_data->egl_display, egl_context); }
+     }
+     return true;
+ }
+ 
+ EGLSurface SDL_EGL_CreateSurface(SDL_VideoDevice *_this, SDL_Window *window, NativeWindowType nw)
+ {
+ #ifdef SDL_VIDEO_DRIVER_ANDROID
+     EGLint format_wanted;
+     EGLint format_got;
+ #endif
+     // max 16 key+value pairs, plus terminator.
+     EGLint attribs[33];
+     int attr = 0;
+ 
+     EGLSurface surface;
+ 
+     if (!SDL_EGL_ChooseConfig(_this)) {
+         return EGL_NO_SURFACE;
+     }
+ 
+ #ifdef SDL_VIDEO_DRIVER_ANDROID
+     /* On Android, EGL_NATIVE_VISUAL_ID is an attribute of the EGLConfig that is
+      * guaranteed to be accepted by ANativeWindow_setBuffersGeometry(). */
+     _this->egl_data->eglGetConfigAttrib(_this->egl_data->egl_display,
+                                         _this->egl_data->egl_config,
+                                         EGL_NATIVE_VISUAL_ID, &format_wanted);
+ 
+     // Format based on selected egl config.
+     ANativeWindow_setBuffersGeometry(nw, 0, 0, format_wanted);
+ #endif
+ 
+ #ifdef EGL_KHR_gl_colorspace
+     if (SDL_EGL_HasExtension(_this, SDL_EGL_DISPLAY_EXTENSION, "EGL_KHR_gl_colorspace")) {
+         const char *srgbhint = SDL_GetHint(SDL_HINT_OPENGL_FORCE_SRGB_FRAMEBUFFER);
+         if (srgbhint && *srgbhint) {
+             if (SDL_strcmp(srgbhint, "skip") == 0) {
+                 // don't set an attribute at all.
+             } else {
+                 attribs[attr++] = EGL_GL_COLORSPACE_KHR;
+                 attribs[attr++] = SDL_GetStringBoolean(srgbhint, false) ? EGL_GL_COLORSPACE_SRGB_KHR : EGL_GL_COLORSPACE_LINEAR_KHR;
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 877df9266..60346a8de 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -4,83 +4,95 @@
+ 
+   This software is provided 'as-is', without any express or implied
+   warranty.  In no event will the authors be held liable for any damages
+   arising from the use of this software.
+ 
+   Permission is granted to anyone to use this software for any purpose,
+   including commercial applications, and to alter it and redistribute it
+   freely, subject to the following restrictions:
+ 
+   1. The origin of this software must not be misrepresented; you must not
+      claim that you wrote the original software. If you use this software
+      in a product, an acknowledgment in the product documentation would be
+      appreciated but is not required.
+   2. Altered source versions must be plainly marked as such, and must not be
+      misrepresented as being the original software.
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
+ 
+ #if defined(SDL_VIDEO_DRIVER_OPENHARMONY) && defined(SDL_VIDEO_OPENGL_EGL)
+ 
+ // OpenHarmony/HarmonyOS SDL video driver implementation
+ 
+ #include "../SDL_egl_c.h"
+ #include "SDL_openharmonywindow.h"
+ 
+ #include "SDL_openharmonyvideo.h"
+ #include "SDL_openharmonyevents.h"
+ #include "SDL_openharmonyopengl.h"
+ #include "../../core/openharmony/SDL_openharmony.h"
+ #include "SDL_openharmonyamcl.h"
+ #include "../../events/SDL_windowevents_c.h"
+ #include "SDL_amclgraphicsobservation.h"
+ #include "SDL_amclgraphicsruntime.h"
+ 
+ /* 观测真实驱动调用本身，辅助 pbuffer 不进入游戏呈现样本。该耗时不是 GPU 执行时间。 */
+ static bool OPENHARMONY_AMCL_ObservedSwap(SDL_VideoDevice *_this, SDL_WindowData *data, EGLint *error)
+ {
+     const AMCL_GraphicsObserverV1 *observer = data->role == OPENHARMONY_WINDOW_PRESENTED ? AMCL_GraphicsObserver() : NULL;
+     const bool sample = AMCL_GraphicsSamplingEnabled(observer);
++    const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++    const bool verify = runtime && runtime->structSize >= offsetof(AmclGraphicsRuntimeV1, reserveContext) && runtime->presentSequence;
++    const uint64_t before_present = verify ? runtime->presentSequence() : 0;
++    data->amcl_last_swap_presented = false;
+     const Uint64 before = sample ? SDL_GetTicksNS() : 0;
+     const bool result = SDL_EGL_SwapBuffersWithError(_this, data->egl_surface, error);
++    data->amcl_last_swap_presented = verify ? runtime->presentSequence() > before_present : result;
+     if (observer) observer->swapped("SDL3", sample ? SDL_GetTicksNS() - before : 0, result ? 1 : 0, (uint32_t)*error);
++    /* present成功后下一帧acquire仍可能失败；先记真实帧再交回错误，避免把已出帧
++     * 的终局误当首帧前故障。辅助pbuffer永远不通知输入或学习历史。 */
++    if (data->role == OPENHARMONY_WINDOW_PRESENTED && data->amcl_last_swap_presented) {
++        OPENHARMONY_AMCL_NotifyFramePresented();
++        ((SDL_VideoData *)_this->internal)->presented_notify++;
++        ((SDL_VideoData *)_this->internal)->presented_swap_success++;
++    }
+     return result;
+ }
+ 
+ // ===========================================================================
+ // Desktop-GL requests on a platform that only has EGL/GLES
+ // ===========================================================================
+ // OpenHarmony's EGL implementation exposes no desktop-GL-renderable config: it
+ // is a GLES-only EGL. SDL's common EGL layer honours the requested profile
+ // literally -- for anything other than SDL_GL_CONTEXT_PROFILE_ES it asks
+ // eglChooseConfig for EGL_OPENGL_BIT and calls eglBindAPI(EGL_OPENGL_API)
+ // (SDL_egl.c, "attribs[i++] = EGL_OPENGL_BIT"). On this platform that request
+ // matches zero configs, so window creation fails with
+ // "Couldn't find matching EGL config", even though the caller could have been
+ // served perfectly well.
+ //
+ // That failure is what an application which drives desktop GL through a
+ // translation layer (GL -> GLES) runs into: the translator is itself a GLES
+ // client, so the EGL surface and context it needs are GLES ones, while the API
+ // it presents upwards is desktop GL. The profile the application asked for
+ // describes the API it wants to *call*, not the client type EGL must create.
+ //
+ // So: try the request as written, and only if the platform cannot satisfy it,
+ // retry as GLES. This is a fallback, not a substitution -- if some future
+ // OpenHarmony device does advertise desktop-GL configs, the literal request
+ // wins and nothing here changes behaviour.
+ //
+ // 2026-08-04 device evidence (MatePad Pro, OpenHarmony 6.1.1.120), Minecraft
+ // 26.3 requesting GL 3.3 core + forward-compatible:
+ //   BackendCreationException: Failed to create window with OpenGL context:
+ //   Couldn't find matching EGL config (call to eglChooseConfig failed,
+ //   reporting an error of EGL_SUCCESS)
+ static bool OPENHARMONY_GLES_NativeGlRequired(void)
+ {
+     /* 宿主模式按冻结context协议选API；环境变更不改变MobileGL/系统GL的桌面语义。 */
+     if (AMCL_GraphicsRuntimeRequired()) {
+         const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
+         return runtime && SDL_strcmp(runtime->contextApi, "desktop-gl") == 0;
+     }
+     const char *native_gl = SDL_getenv("AMCL_NATIVE_GL_ACTIVE");
+     return native_gl && SDL_strcmp(native_gl, "1") == 0;
+@@ -899,153 +911,184 @@ SDL_EGLSurface OPENHARMONY_GLES_GetEGLSurface(SDL_VideoDevice *_this,
+     (void)_this;
+     if (!window || !window->internal) {
+         return EGL_NO_SURFACE;
+     }
+     if (window->internal->surface_state != OPENHARMONY_SURFACE_READY ||
+         window->internal->amcl_surface_suspended) {
+         return EGL_NO_SURFACE;
+     }
+     return (SDL_EGLSurface)window->internal->egl_surface;
+ }
+ 
+ SDL_GLContext OPENHARMONY_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     SDL_GLContext result;
+ 
+     // !!! FIXME: Android has locking here; maybe it isn't necessary for OpenHarmony? What happens if we're in a background thread?
+     //if (!OPENHARMONY_WaitActiveAndLockActivity()) {
+     //    return NULL;
+     //}
+ 
+     if (!window || !window->internal) {
+         SDL_SetError("OpenHarmony: cannot create a context for an uninitialized window");
+         return NULL;
+     }
+     if (_this && _this->internal &&
+         ((SDL_VideoData *)_this->internal)->renderer_fatal) {
+         SDL_SetError("OpenHarmony: renderer is fatally unavailable; process restart required");
+         return NULL;
+     }
+     SDL_WindowData *data = window->internal;
+     if (data->surface_state != OPENHARMONY_SURFACE_READY ||
+         data->amcl_surface_suspended || data->egl_surface == EGL_NO_SURFACE) {
+         SDL_SetError("OpenHarmony: cannot create a context for an unavailable window surface");
+         return NULL;
+     }
+     if (!OPENHARMONY_GLES_EnsureWindowConfig(
+             _this,
+             data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER)) {
+         return NULL;
+     }
++    /* context资格与window角色独立。Minecraft utility/main绑定同一个context，所以
++     * 切换surface不申请额外资格；真正第二个独立/共享context必须通过公共实测门。 */
++    const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++    uint64_t permit = 0;
++    if (AMCL_GraphicsRuntimeRequired()) {
++        if (!runtime || runtime->structSize < sizeof(*runtime) || !runtime->reserveContext ||
++            !runtime->commitContext || !runtime->retireContext) {
++            SDL_SetError("AMCL: context admission protocol is unavailable"); return NULL;
++        }
++        void *shared = _this->gl_config.share_with_current_context ? SDL_GL_GetCurrentContext() : NULL;
++        permit = runtime->reserveContext(shared);
++        if (!permit) { SDL_SetError("AMCL: additional/shared context capability is unverified"); return NULL; }
++    }
+     SDL_Window *previous_window = SDL_GL_GetCurrentWindow();
+     result = SDL_EGL_CreateContext(_this, data->egl_surface);
+     if (result) {
+         if (previous_window && previous_window != window &&
+             previous_window->internal) {
+             previous_window->internal->is_current = false;
+             previous_window->internal->owner_thread = 0;
+         }
+         data->owner_thread = SDL_GetCurrentThreadID();
+         data->last_context = result;
+         data->is_current = true;
+         /* 新context尚未交付游戏，调用宿主中立功能探针。旧宿主没有尾部时保留既有行为；
+          * 失败保留WindowData中的context身份，标记终局，绝不退回另一个GL provider。 */
+-        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
+-        if (runtime && runtime->structSize >= sizeof(*runtime) && runtime->inspectContext &&
++        if (runtime && (!runtime->commitContext(permit, result))) {
++            OPENHARMONY_GLES_MarkRendererFatal(window, "context-permit-commit");
++            SDL_SetError("AMCL: context identity could not be committed"); return NULL;
++        }
++        if (runtime && runtime->structSize >= offsetof(AmclGraphicsRuntimeV1, presentSequence) && runtime->inspectContext &&
+             !runtime->inspectContext(_this->egl_data->egl_display, _this->egl_data->egl_config,
+                 result, data->egl_surface, _this->gl_config.major_version, _this->gl_config.minor_version,
+                 _this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_CORE ? 0x00032001 : 0)) {
+             OPENHARMONY_GLES_MarkRendererFatal(window, "functional-probe-retirement");
+             SDL_SetError("AMCL: graphics functional probe requires process restart");
+             return NULL;
+         }
+         if (!OPENHARMONY_GLES_ReplaySwapInterval(
+                 _this, window,
+                 data->role == OPENHARMONY_WINDOW_PRESENTED)) {
+             OPENHARMONY_GLES_MarkRendererRestartRequired(
+                 window, "initial-swap-interval");
+             SDL_EGL_MakeCurrent(_this, NULL, NULL);
+             OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+             data->is_current = false;
+             data->last_context = NULL;
+             data->owner_thread = 0;
+             OPENHARMONY_GLES_DestroyContext(_this, result);
+             result = NULL;
+         }
+     }
+ 
++    /* SDL通用创建器可能在绑定失败后尝试清理但仍返回NULL；这里无法证明其完整退休。
++     * 保留未提交资格并封闭本局，避免释放资格后同进程再创建一个对象域。 */
++    if (!result && permit) OPENHARMONY_GLES_MarkRendererFatal(window, "initial-context-create");
+     //OPENHARMONY_UnlockActivityMutex();
+ 
+     return result;
+ }
+ 
+-/* SDL core clears its TLS current pair before calling the platform destroy
+- * hook, but WindowData also carries ownership metadata used by resize and
+- * surface recovery.  Clear every reference to the context before handing the
+- * actual EGL object to the generic destroyer; otherwise a later recovery can
+- * try to bind a context that no longer exists (or incorrectly reject an
+- * owner-thread operation). */
++/* SDL先尝试解除current；宿主保留WindowData身份直至真实EGL销毁成功，避免
++ * 驱动失败后丢掉重试所需的句柄/线程，也避免恢复访问已经退休的context。 */
+ bool OPENHARMONY_GLES_DestroyContext(SDL_VideoDevice *_this,
+                                      SDL_GLContext context)
+ {
+     if (!_this) {
+         return SDL_SetError("OpenHarmony: cannot destroy a context without a video device");
+     }
++    /* 先证明owner线程并完成真实驱动退休，再清理任何窗口cache或公共资格。
++     * 上游SDL_GL_DestroyContext忽略release失败，故这里核验并重试实际解绑。 */
++    for (SDL_Window *owner = _this->windows; owner; owner = owner->next) {
++        SDL_WindowData *data = owner->internal;
++        if (data && (data->last_context == context || data->amcl_resume_context == context) &&
++            ((data->owner_thread && data->owner_thread != SDL_GetCurrentThreadID()) ||
++             (data->amcl_resume_thread && data->amcl_resume_thread != SDL_GetCurrentThreadID())))
++            return SDL_SetError("AMCL: context destruction requires its owner thread");
++    }
++    const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++    EGLContext (*get_current)(void) = runtime ? (EGLContext (*)(void))runtime->eglProc("eglGetCurrentContext") : NULL;
++    if ((get_current ? get_current() == context : SDL_GL_GetCurrentContext() == context) &&
++        !SDL_EGL_MakeCurrent(_this, NULL, NULL)) return false;
++    if (!SDL_EGL_DestroyContext(_this, context)) return false;
+     for (SDL_Window *window = _this->windows; window; window = window->next) {
+         SDL_WindowData *data = window->internal;
+         if (!data) {
+             continue;
+         }
+         if (data->last_context == context) {
+             data->last_context = NULL;
+             data->owner_thread = 0;
+             data->is_current = false;
+         }
+         if (data->amcl_resume_context == context) {
+             data->amcl_resume_context = NULL;
+             data->amcl_resume_thread = 0;
+             if (data->surface_state == OPENHARMONY_SURFACE_RECREATE_PENDING) {
+                 data->surface_state = OPENHARMONY_SURFACE_LOST;
+             }
+         }
+     }
+-    return SDL_EGL_DestroyContext(_this, context);
++    if (runtime && runtime->structSize >= sizeof(*runtime) && runtime->retireContext && !runtime->retireContext(context))
++        return SDL_SetError("AMCL: retired context was absent from its owner ledger");
++    return true;
+ }
+ 
+ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     bool result = false;
+     SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
+ 
+     // !!! FIXME: Android has locking here; maybe it isn't necessary for OpenHarmony? What happens if we're in a background thread?
+     //OPENHARMONY_LockActivityMutex();
+ 
+     if (!window || !window->internal) {
+         return SDL_SetError("OpenHarmony: cannot swap an uninitialized window");
+     }
+     const SDL_WindowID window_id = window->id;
+     OPENHARMONY_AMCL_UpdatePresentedForeground();
+     window = SDL_GetWindowFromID(window_id);
+     if (!window || !window->internal) {
+         return SDL_SetError("OpenHarmony: window was destroyed during lifecycle update");
+     }
+ 
+     if (_this && _this->internal &&
+         ((SDL_VideoData *)_this->internal)->renderer_fatal) {
+         return SDL_SetError("OpenHarmony: renderer is fatally unavailable; process restart required");
+     }
+ 
+     SDL_WindowData *data = window->internal;
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         if (data->pending_width > 0 && data->pending_height > 0) {
+             if (!OPENHARMONY_ApplyPendingAuxiliaryResize(
+                     _this, window, SDL_GL_GetCurrentContext())) {
+                 ((SDL_VideoData *)_this->internal)->swap_fail++;
+                 return false;
+             }
+             window = SDL_GetWindowFromID(window_id);
+             if (!window || !window->internal) {
+                 return false;
+             }
+             data = window->internal;
+             if (!data || data->pending_width > 0) {
+                 ((SDL_VideoData *)_this->internal)->swap_fail++;
+@@ -1093,85 +1136,80 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+                          fatal_window, "presented-recovery-before-swap")
+                    : false;
+     }
+     window = SDL_GetWindowFromID(window_id);
+     if (!window || !window->internal) {
+         return false;
+     }
+     data = window->internal;
+     if (!data || data->role != OPENHARMONY_WINDOW_PRESENTED ||
+         data->surface_state != OPENHARMONY_SURFACE_READY ||
+         data->amcl_surface_suspended || data->egl_surface == EGL_NO_SURFACE) {
+         return SDL_SetError("OpenHarmony: presented surface is unavailable");
+     }
+     EGLint swap_error = EGL_SUCCESS;
+     result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &swap_error);
+     if (!result && (swap_error == EGL_BAD_SURFACE ||
+                     swap_error == EGL_BAD_NATIVE_WINDOW)) {
+         /* A BufferQueue can fail before the host publishes a new generation.
+          * Force one full broker revalidation/rebuild and retry exactly once. */
+         if (OPENHARMONY_AMCL_PreparePresentedWindow(
+                 _this, window, context, true)) {
+             window = SDL_GetWindowFromID(window_id);
+             if (!window || !window->internal) {
+                 return false;
+             }
+             data = window->internal;
+             result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &swap_error);
+         } else if (OPENHARMONY_GLES_IsRecoveryDeferred(
+                        SDL_GetWindowFromID(window_id))) {
+             videodata->swap_fail++;
+             return false;
+         }
+     }
+     window = SDL_GetWindowFromID(window_id);
+     if (!window || !window->internal) {
+         return false;
+     }
+     data = window->internal;
+     if (result) {
+         videodata->swap_ok++;
+-        if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+-            OPENHARMONY_AMCL_NotifyFramePresented();
+-            videodata->presented_notify++;
+-            videodata->presented_swap_success++;
+-        }
+     } else {
+         videodata->swap_fail++;
+         SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                      "OPENHARMONY_WINDOW schema=1 event=swap_fail role=presented id=%u config_id=%d generation=%" SDL_PRIu64 " egl_error=0x%x",
+                      (unsigned int)window->id, data->egl_config_id,
+                      data->amcl_generation, (unsigned int)swap_error);
+         /* CONTEXT_LOST is immediately fatal; BAD_SURFACE/BAD_NATIVE_WINDOW
+          * reached this block only after their single forced rebuild retry.
+          * Every other final failure is fatal as well. */
+         return OPENHARMONY_GLES_MarkRendererFatal(window, "eglSwapBuffers");
+     }
+ 
+     //OPENHARMONY_UnlockActivityMutex();
+ 
+     return result;
+ }
+ 
+ bool OPENHARMONY_GLES_LoadLibrary(SDL_VideoDevice *_this, const char *path)
+ {
+     return SDL_EGL_LoadLibrary(_this, path, EGL_DEFAULT_DISPLAY);
+ }
+ 
+ bool OPENHARMONY_GLES_SetSwapInterval(SDL_VideoDevice *_this, int interval)
+ {
+     if (!_this || !_this->internal) {
+         return SDL_SetError("OpenHarmony: video data is not initialized");
+     }
+     if (interval < 0) {
+         return SDL_SetError("Late swap tearing currently unsupported");
+     }
+     SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
+     videodata->desired_swap_interval = interval;
+     videodata->desired_swap_interval_valid = true;
+ 
+     SDL_Window *current = SDL_GL_GetCurrentWindow();
+     if (!current || !current->internal) {
+         return SDL_EGL_SetSwapInterval(_this, interval);
+     }
+     SDL_WindowData *data = current->internal;
+     if (SDL_EGL_SetSwapInterval(_this, interval)) {
+diff --git a/src/video/openharmony/SDL_openharmonywindow.h b/src/video/openharmony/SDL_openharmonywindow.h
+index ffb81560c..6dddcc0be 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.h
++++ b/src/video/openharmony/SDL_openharmonywindow.h
+@@ -52,78 +52,79 @@ extern void OPENHARMONY_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window
+  * presented window is the only object allowed to touch the host XComponent.
+  */
+ typedef enum OPENHARMONY_WindowRole
+ {
+     OPENHARMONY_WINDOW_PRESENTED = 0,
+     OPENHARMONY_WINDOW_AUXILIARY_PBUFFER = 1
+ } OPENHARMONY_WindowRole;
+ 
+ typedef enum OPENHARMONY_SurfaceState
+ {
+     OPENHARMONY_SURFACE_READY = 0,
+     OPENHARMONY_SURFACE_LOST,
+     OPENHARMONY_SURFACE_RECREATE_PENDING,
+     OPENHARMONY_SURFACE_DESTROYING
+ } OPENHARMONY_SurfaceState;
+ 
+ extern SDL_Window *OPENHARMONY_GetPresentedWindow(SDL_VideoDevice *_this);
+ extern bool OPENHARMONY_AuxiliaryPbufferEnabled(void);
+ 
+ /* Compatibility view for the legacy input callbacks.  It is deliberately an
+  * accessor expression rather than storage: auxiliary windows can never become
+  * an input target or replace the host-presented window. */
+ #define OPENHARMONY_Window OPENHARMONY_GetPresentedWindow(SDL_GetVideoDevice())
+ 
+ struct SDL_WindowData
+ {
+     OPENHARMONY_WindowRole role;
+     OPENHARMONY_SurfaceState surface_state;
+     int egl_config_id;
+     int surface_width;
+     int surface_height;
+     int pending_width;
+     int pending_height;
+     bool requested_hidden;
+     bool shown;
+     bool auxiliary_show_notified;
+     bool construction_committed;
+     SDL_ThreadID owner_thread;
+     SDL_GLContext last_context;
+     bool is_current;
++    bool amcl_last_swap_presented; /* 实際呈现证据；EGL成功但暂缓时为false。 */
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     EGLSurface egl_surface;
+     EGLContext egl_context; // We use this to preserve the context when losing focus
+     int has_swap_interval;  // Save/Restore the swap interval / vsync
+     int swap_interval;
+ #endif
+     bool backup_done;
+     void *native_xcomponent;
+     void *native_window;
+ 
+     // --- AMCL host-injected window lifecycle (see SDL_openharmonyamcl.c) ---
+     // Which broker publication generation this window has fully adopted; 0
+     // until the first valid broker snapshot is committed.
+     // Compared against the broker's lock-free peek once per event pump.
+     Uint64 amcl_generation;
+     // Set while the host has no usable surface (or a rebuild is incomplete):
+     // swaps fail fast instead of touching a retired buffer queue.
+     bool amcl_surface_suspended;
+     /* Opaque ABI-v2 broker token. It is owned only by the presented role. */
+     const void *native_window_lease_broker;
+     bool native_window_lease_owned;
+     Uint64 native_window_lease_generation;
+     /* Logical presented GL session. Lease copies never own or release this token. */
+     AMCL_PresentationOwner presentation;
+     void *amcl_pending_native_window;
+     const void *amcl_pending_lease_broker;
+     bool amcl_pending_lease_owned;
+     Uint64 amcl_pending_generation;
+     int amcl_pending_width;
+     int amcl_pending_height;
+     bool amcl_recovery_in_progress;
+     // A surface rebuild was interrupted after this thread already unbound its
+     // GL context; lets the same thread resume the rebuild on the next pump.
+     SDL_GLContext amcl_resume_context;
+     SDL_ThreadID amcl_resume_thread;
+ };
+ 
+ #endif // SDL_openharmonywindow_h_
+diff --git a/src/video/openharmony/graphics_context_abi.h b/src/video/openharmony/graphics_context_abi.h
+new file mode 100644
+index 000000000..1b6abf70a
+--- /dev/null
++++ b/src/video/openharmony/graphics_context_abi.h
+@@ -0,0 +1,51 @@
++#ifndef AMCL_GRAPHICS_CONTEXT_ABI_H
++#define AMCL_GRAPHICS_CONTEXT_ABI_H
++#include <stdint.h>
++#ifdef __cplusplus
++#define AMCL_CONTEXT_DEFAULT(value) = value
++#else
++#define AMCL_CONTEXT_DEFAULT(value)
++#endif
++
++/** 窗口前端与进程owner交换的C资源记录。只包含固定宽度数值、驱动句柄和进程期
++ * 字符串指针，不包含std::string、智能指针、互斥或虚函数。调用期间由context owner
++ * 线程独占；所有权仍留在窗口会话中，结构本身不取得NativeWindow引用。
++ */
++typedef struct AmclEglFailureV1 {
++    const char* stage AMCL_CONTEXT_DEFAULT("");
++    int32_t error AMCL_CONTEXT_DEFAULT(0x3000);
++    uint32_t driverFailure AMCL_CONTEXT_DEFAULT(0);
++} AmclEglFailureV1;
++typedef struct AmclGraphicsContextStateV1 {
++    int32_t width AMCL_CONTEXT_DEFAULT(0), height AMCL_CONTEXT_DEFAULT(0), shouldClose AMCL_CONTEXT_DEFAULT(0);
++    int32_t swapInterval AMCL_CONTEXT_DEFAULT(0);
++    uint32_t swapIntervalSet AMCL_CONTEXT_DEFAULT(0);
++    void* display AMCL_CONTEXT_DEFAULT(0);
++    void* surface AMCL_CONTEXT_DEFAULT(0);
++    void* parkingSurface AMCL_CONTEXT_DEFAULT(0);
++    void* context AMCL_CONTEXT_DEFAULT(0);
++    void* shareContext AMCL_CONTEXT_DEFAULT(0);
++    void* config AMCL_CONTEXT_DEFAULT(0);
++    int32_t actualContextMajor AMCL_CONTEXT_DEFAULT(0), actualContextMinor AMCL_CONTEXT_DEFAULT(0);
++    int32_t actualContextProfile AMCL_CONTEXT_DEFAULT(0), actualContextFlags AMCL_CONTEXT_DEFAULT(0);
++    void* nativeWindow AMCL_CONTEXT_DEFAULT(0);
++    int32_t contextOwnerTid AMCL_CONTEXT_DEFAULT(0);
++    uint32_t eglSurfaceDetachPending AMCL_CONTEXT_DEFAULT(0), eglTeardownPending AMCL_CONTEXT_DEFAULT(0);
++    uint32_t contextLostFatal AMCL_CONTEXT_DEFAULT(0), auxiliary AMCL_CONTEXT_DEFAULT(0);
++    uint64_t shareGroup AMCL_CONTEXT_DEFAULT(0), contextPermit AMCL_CONTEXT_DEFAULT(0);
++    AmclEglFailureV1 lastFailure;
++} AmclGraphicsContextStateV1;
++
++// 请求参数与资源状态分开；create只用context请求，attach只用新窗口及其权威几何。
++typedef struct AmclGraphicsContextRequestV1 {
++    int32_t major, minor, profile;
++    uint32_t forward;
++    void* nativeWindow;
++    int32_t width, height;
++} AmclGraphicsContextRequestV1;
++#define AMCL_CONTEXT_CREATE 1u
++#define AMCL_CONTEXT_SUSPEND 2u
++#define AMCL_CONTEXT_ATTACH 3u
++#define AMCL_CONTEXT_DESTROY 4u
++#undef AMCL_CONTEXT_DEFAULT
++#endif
+diff --git a/src/video/openharmony/graphics_runtime_abi.h b/src/video/openharmony/graphics_runtime_abi.h
+index 370372953..d45859610 100644
+--- a/src/video/openharmony/graphics_runtime_abi.h
++++ b/src/video/openharmony/graphics_runtime_abi.h
+@@ -1,20 +1,37 @@
+ #ifndef AMCL_GRAPHICS_RUNTIME_ABI_H
+ #define AMCL_GRAPHICS_RUNTIME_ABI_H
+ #include <stdint.h>
++#include "graphics_context_abi.h"
+ #define AMCL_GRAPHICS_RUNTIME_ENV "AMCL_GRAPHICS_RUNTIME_V1"
+ /** 冻结后发布的公共C描述符。字符串/函数指针由中立运行时保留到进程退出；消费者
+  * 先校验环境中的PID，再解引用并核验尺寸/版本。无有效表时宿主路线必须拒绝启动，
+  * 不能另选系统库。窗口前端不需要认识GLFW、C++类或另一个linker namespace。
+  */
+ typedef struct AmclGraphicsRuntimeV1 {
+     uint32_t structSize, abiVersion;
+     uint64_t processId;
+     const char* profile;
+     const char* api;
+     const char* contextApi;
+     void* (*glProc)(const char*);
+     void* (*eglProc)(const char*);
+     // 兼容尾部：新context首次交付前的诊断，0表示临时资源无法安全退休，必须终止该局。
+     int (*inspectContext)(void*, void*, void*, void*, int, int, int);
++    // 可选尾部：只有需要独立present证据的翻译器提供。同线程swap前后比较，未增加
++    // 表示暂缓，不得递增成功呈现/输入屏障。空指针表示普通EGL成功语义足够。
++    uint64_t (*presentSequence)(void);
++    // context创建事务：先预留资格再进入驱动，成功登记真实句柄；只有实际销毁成功
++    // 才退休。相同context在多个surface之间切换不申请第二份资格，兼容SDL utility/main。
++    uint64_t (*reserveContext)(void* shareContext);
++    int (*commitContext)(uint64_t permit, void* context);
++    int (*retireContext)(void* context);
++    // 跨映像只传递C记录与有界错误缓冲区；实现和内部资源账本完全留在唯一owner。
++    int (*contextOperation)(uint32_t operation, AmclGraphicsContextStateV1* state, uint32_t stateSize,
++        const AmclGraphicsContextRequestV1* request, int32_t threadId, char* error, uint32_t errorCapacity);
++    int (*auxiliaryVerified)(int shared);
++    int (*cleanupSafe)(void);
++    const char* (*featuresJson)(void);
++    const char* implementationIdentity;
++    void* (*providerProc)(const char* name);
+ } AmclGraphicsRuntimeV1;
+ #endif

@@ -1,0 +1,9 @@
+--- a/alc/alc.cpp
++++ b/alc/alc.cpp
+@@ -0,0 +1,6 @@
++// OHAudio backend injection — applied by setup_deps.sh
++// This patch adds two lines to alc/alc.cpp:
++//   1. #include "ohaudio.h" (in the backend includes section)
++//   2. BackendInfo{"ohaudio", OHAudioBackendFactory::getFactory} (in BackendList)
++// The actual patching is done by the sed commands in setup_deps.sh
++// This file documents the intent; see setup_deps.sh for implementation.

@@ -1,0 +1,820 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index 64e34caf3..30344fe83 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -76,6 +76,7 @@
+ #include "../../events/SDL_events_c.h"
+ #include "../../events/SDL_keyboard_c.h"
+ #include "../../events/SDL_mouse_c.h"
++#include "../../events/SDL_windowevents_c.h"
+
+ #include <dlfcn.h>
+
+@@ -179,7 +180,6 @@ SDL_COMPILE_TIME_ASSERT(amcl_backend_event_size,
+
+ typedef struct
+ {
+-    bool available;
+     int attempts;
+     int (*NextEvent)(int *type, int *i1, int *i2, int *i3, int *i4);
+     void (*SetActive)(int active);
+@@ -210,6 +210,20 @@ typedef struct
+
+ static OPENHARMONY_HostBridge host_bridge;
+
++// Publication state for host_bridge. This replaces a plain `available` bool
++// that the resolver flipped *after* writing seven function pointers, with no
++// ordering between the stores: the event-pump thread and the GL swap thread
++// (via NotifyFramePresented) both resolve on demand, and on a weakly-ordered
++// core a reader could observe available==true while the pointer stores were
++// still in flight -- a call through a half-written bridge. Readers now only
++// ever obtain the bridge through an acquire that pairs with the resolver's
++// release, so a visible READY implies fully visible fields.
++#define AMCL_BRIDGE_UNRESOLVED 0 // nothing found yet; retry (bounded) on a later call
++#define AMCL_BRIDGE_RESOLVING  1 // exactly one thread is inside a resolve attempt
++#define AMCL_BRIDGE_READY      2 // bridge fields are published and final
++#define AMCL_BRIDGE_ABSENT     3 // gave up for good; no host bridge in this process
++static SDL_AtomicInt host_bridge_state;
++
+ // Cursor delta baseline, plus the grab state it was captured under.
+ static double host_last_x;
+ static double host_last_y;
+@@ -278,6 +292,14 @@ static bool OPENHARMONY_ResolveBridgeFromEnvironment(OPENHARMONY_HostBridge *bri
+         }
+     }
+
++    // Exact-match the *whole* string: anything after the last field means the
++    // descriptor is not the format this parser believes it is, and these
++    // seven values get jumped to. A descriptor that merely starts out looking
++    // right must be refused outright, not resolved approximately.
++    if (*cursor != '\0') {
++        return false;
++    }
++
+     bridge->NextEvent = (int (*)(int *, int *, int *, int *, int *))slots[0];
+     bridge->SetActive = (void (*)(int))slots[1];
+     bridge->NotifyFramePresented = (void (*)(void))slots[2];
+@@ -321,18 +343,48 @@ static bool OPENHARMONY_ResolveTypedBridgeFromEnvironment(OPENHARMONY_HostBridge
+         }
+     }
+
++    // Same full-string rule as the legacy descriptor above, for the same
++    // reason: these two values are call targets.
++    if (*cursor != '\0') {
++        return false;
++    }
++
+     bridge->TypedNext = (int (*)(Uint32, AMCL_BackendInputEvent *))slots[0];
+     bridge->TypedSetActive = (void (*)(Uint32, int))slots[1];
+     return true;
+ }
+
++// Returns the bridge when it is ready and NULL while it is not. NULL doubles
++// as the null-pointer defence for every caller: the only bridge pointer they
++// can ever see is handed out after the acquire below, so its fields are
++// complete by construction.
+ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+ {
+     OPENHARMONY_HostBridge *bridge = &host_bridge;
+
+-    if (bridge->available || (bridge->attempts >= AMCL_RESOLVE_ATTEMPTS)) {
+-        return bridge;  // resolved, or we have stopped looking
++    for (;;) {
++        const int state = SDL_GetAtomicInt(&host_bridge_state);
++        if (state == AMCL_BRIDGE_READY) {
++            // Pairs with SDL_MemoryBarrierRelease() in the publish paths
++            // below: every bridge field written before publication is
++            // visible after this point.
++            SDL_MemoryBarrierAcquire();
++            return bridge;
++        }
++        if (state == AMCL_BRIDGE_ABSENT) {
++            return NULL; // we stopped looking for good
++        }
++        if (state == AMCL_BRIDGE_RESOLVING) {
++            // Another thread is mid-attempt. Do not wait for it: every caller
++            // treats "no bridge" as a no-op and will simply ask again.
++            return NULL;
++        }
++        if (SDL_CompareAndSwapAtomicInt(&host_bridge_state, AMCL_BRIDGE_UNRESOLVED, AMCL_BRIDGE_RESOLVING)) {
++            break; // this thread owns the resolve attempt
++        }
++        // Lost the race to another thread; re-read the state it left behind.
+     }
++
+     bridge->attempts++;
+
+     // Preferred channel: the host hands us the entry points through the
+@@ -347,7 +399,6 @@ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+     // mismatch means the host is newer or older than this backend, and guessing
+     // at a different field order would call arbitrary code.
+     if (OPENHARMONY_ResolveBridgeFromEnvironment(bridge)) {
+-        bridge->available = true;
+         // Second, independent channel: already-SDL-encoded events. Resolved
+         // here rather than in its own retry loop because the host publishes
+         // both from the same place, so if the legacy one is up and this one is
+@@ -355,6 +406,10 @@ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+         bridge->typed_available = OPENHARMONY_ResolveTypedBridgeFromEnvironment(bridge);
+         SDL_Log("openharmony: using host-provided input bridge (environment channel, attempt %d, typed=%s)",
+                 bridge->attempts, bridge->typed_available ? "yes" : "no");
++        // Publish: all bridge stores above must be visible before any thread
++        // can observe READY.
++        SDL_MemoryBarrierRelease();
++        SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_READY);
+         return bridge;
+     }
+
+@@ -386,18 +441,24 @@ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+
+     // Require the full set. A partial bridge would inject input while getting
+     // grab state wrong, which is worse than staying out of the way entirely.
+-    bridge->available = (bridge->NextEvent != NULL) &&
+-                        (bridge->SetActive != NULL) &&
+-                        (bridge->NotifyFramePresented != NULL) &&
+-                        (bridge->SetGrabState != NULL) &&
+-                        (bridge->IsGrabbing != NULL) &&
+-                        (bridge->GetCursorSnapshot != NULL) &&
+-                        (bridge->SetLookCursor != NULL);
+-
+-    if (bridge->available) {
++    const bool resolved = (bridge->NextEvent != NULL) &&
++                          (bridge->SetActive != NULL) &&
++                          (bridge->NotifyFramePresented != NULL) &&
++                          (bridge->SetGrabState != NULL) &&
++                          (bridge->IsGrabbing != NULL) &&
++                          (bridge->GetCursorSnapshot != NULL) &&
++                          (bridge->SetLookCursor != NULL);
++
++    if (resolved) {
+         SDL_Log("openharmony: using host-provided input bridge (resolved on attempt %d, host module %s)",
+                 bridge->attempts, host_handle ? "found by name" : "in global scope");
+-    } else if (bridge->attempts == AMCL_RESOLVE_ATTEMPTS) {
++        // Publish: same release/acquire pairing as the environment channel.
++        SDL_MemoryBarrierRelease();
++        SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_READY);
++        return bridge;
++    }
++
++    if (bridge->attempts >= AMCL_RESOLVE_ATTEMPTS) {
+         // Say which parts were missing: "no bridge" and "a host that exports
+         // four of the five" need different fixes.
+         SDL_Log("openharmony: no host input bridge after %d attempts; input will come from XComponent callbacks only "
+@@ -408,9 +469,13 @@ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+                 bridge->IsGrabbing ? "ok" : "MISSING",
+                 bridge->GetCursorSnapshot ? "ok" : "MISSING",
+                 bridge->SetLookCursor ? "ok" : "MISSING");
++        SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_ABSENT);
++    } else {
++        // Not this time; hand the UNRESOLVED state back so a later pump
++        // (possibly on another thread) can try again.
++        SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_UNRESOLVED);
+     }
+-
+-    return bridge;
++    return NULL;
+ }
+
+ // ---------------------------------------------------------------------------
+@@ -556,6 +621,13 @@ static Uint8 OPENHARMONY_ButtonFromGlfwButton(int button)
+ // ---------------------------------------------------------------------------
+ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge)
+ {
++    // Defence in depth: both resolve paths refuse to publish a partial
++    // bridge, so these cannot be NULL today. But this function calls straight
++    // through them, and a future partial-bridge variant must degrade to "no
++    // cursor" rather than to a jump through NULL.
++    if (!bridge || !bridge->GetCursorSnapshot || !bridge->IsGrabbing) {
++        return;
++    }
+     if (!OPENHARMONY_Window) {
+         return;  // no window yet; nothing to attribute motion to.
+     }
+@@ -622,6 +694,10 @@ static void OPENHARMONY_ReleaseHeldMouseButtons(void)
+ // ---------------------------------------------------------------------------
+ static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
+ {
++    if (!bridge || !bridge->NextEvent) {
++        return; // same defensive rule as OPENHARMONY_PumpHostCursor()
++    }
++
+     int budget = AMCL_PUMP_BUDGET;
+     int type = 0, i1 = 0, i2 = 0, i3 = 0, i4 = 0;
+
+@@ -693,6 +769,10 @@ static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
+ // discarded by the first hop.
+ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+ {
++    if (!bridge || !bridge->TypedNext) {
++        return; // same defensive rule as OPENHARMONY_PumpHostCursor()
++    }
++
+     if (!bridge->typed_activated) {
+         // Align the host's read cursor to "now". Deliberately not a replay:
+         // keys pressed before SDL existed have long since sent their release.
+@@ -769,8 +849,8 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+ void OPENHARMONY_AMCL_PumpEvents(void)
+ {
+     OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
+-    if (!bridge->available) {
+-        return;
++    if (!bridge) {
++        return; // not resolved (yet); nothing to pump
+     }
+     // Cursor and grab stay on the legacy accessors in both cases: the host's
+     // look funnel owns the accumulated look value and the menu cursor, and a
+@@ -811,7 +891,7 @@ void OPENHARMONY_AMCL_PumpEvents(void)
+ void OPENHARMONY_AMCL_NotifyFramePresented(void)
+ {
+     OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
+-    if (bridge->available && bridge->NotifyFramePresented) {
++    if (bridge && bridge->NotifyFramePresented) {
+         // This entry point is called only after SDL_EGL_SwapBuffers returned success. A failed
+         // swap is not a consumption boundary and must not unlock a pending menu press.
+         bridge->NotifyFramePresented();
+@@ -828,7 +908,7 @@ void OPENHARMONY_AMCL_NotifyFramePresented(void)
+ static bool OPENHARMONY_SetRelativeMouseMode(bool enabled)
+ {
+     OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
+-    if (!bridge->available) {
++    if (!bridge || !bridge->SetGrabState) {
+         return SDL_Unsupported();
+     }
+     bridge->SetGrabState(enabled ? 1 : 0);
+@@ -840,7 +920,7 @@ static bool OPENHARMONY_SetRelativeMouseMode(bool enabled)
+ static bool OPENHARMONY_WarpMouse(SDL_Window *window, float x, float y)
+ {
+     OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
+-    if (!bridge->available) {
++    if (!bridge || !bridge->SetLookCursor) {
+         return SDL_Unsupported();
+     }
+     // The host treats this as "the caller's idea of where the cursor is",
+@@ -901,7 +981,7 @@ void OPENHARMONY_AMCL_InitMouse(void)
+
+     SDL_SetDefaultCursor(OPENHARMONY_CreateDefaultCursor());
+
+-    if (bridge->available && bridge->SetActive) {
++    if (bridge && bridge->SetActive) {
+         bridge->SetActive(1);
+     }
+     host_baseline_valid = false;
+@@ -914,10 +994,419 @@ void OPENHARMONY_AMCL_QuitMouse(void)
+     // then discards every pending pre-present transaction and aligns the consumer to "now";
+     // neither a held button nor an old token may cross into the next SDL window generation.
+     OPENHARMONY_ReleaseHeldMouseButtons();
+-    if (bridge->available && bridge->SetActive) {
++    if (bridge && bridge->SetActive) {
+         bridge->SetActive(0);
+     }
+     host_baseline_valid = false;
+ }
+
++// ===========================================================================
++// Live-window surface recovery (host-injected windows only)
++// ===========================================================================
++// The window-injection path in SDL_openharmonyvideo.c re-reads the host's
++// environment on every query, but that only steers the *next*
++// SDL_CreateWindow(). A window that already exists keeps its own copy of the
++// OHNativeWindow pointer in SDL_WindowData, with an EGL surface created on
++// it. When the host destroys and recreates its XComponent surface (background
++// / foreground cycle, rotation, fold), the live window keeps presenting into
++// the retired OHNativeWindow: eglSwapBuffers() fails -- or blocks on an
++// abandoned buffer queue -- from then on, with no recovery path. Evidence:
++// 2026-08-26 low-frame audit §7.2.
++//
++// Recovery consumes AMCL_NATIVE_WINDOW_SNAPSHOT, a *single* environment value
++// of the form "<generation>:<pointer>:<width>:<height>" that the host
++// rewrites on every surface publish / resize / clear (glfw_compat.cpp,
++// publishNativeWindowEnvSnapshot). The generation increases monotonically and
++// the pointer is 0 while no surface exists. This channel -- not the three
++// legacy AMCL_WINDOW_* variables -- because a single value cannot be read
++// torn across variables, and it is overwritten rather than unset (musl's
++// unsetenv can free storage out from under a concurrent getenv).
++//
++// Once per event pump the live window's adopted generation is compared with
++// the snapshot; the steady state costs one getenv() plus an integer compare
++// and is silent. On a change, the pump thread -- which for the primary
++// consumer (Minecraft 26.3) is also the GL/swap thread -- rebuilds the EGL
++// surface around the new OHNativeWindow and re-announces the geometry.
++// Everything is scoped to host-injected windows (no XComponent of our own),
++// so standalone SDL-on-OpenHarmony behaviour is untouched.
++
++#define AMCL_WINDOW_SNAPSHOT_ENV "AMCL_NATIVE_WINDOW_SNAPSHOT"
++
++typedef struct
++{
++    Uint64 generation;
++    void *native_window; // NULL while the host has no surface
++    int width;
++    int height;
++} AMCL_WindowSnapshot;
++
++// Read and strictly parse the snapshot. false means "no usable snapshot",
++// which callers must treat as "assume nothing changed" -- the only safe
++// reading of a value we could not fully understand.
++static bool OPENHARMONY_ReadWindowSnapshot(AMCL_WindowSnapshot *out)
++{
++    // Live getenv for the same reason as the window-adoption path: the host
++    // publishes after SDL_Init's environment snapshot was taken.
++    const char *live = SDL_getenv_unsafe(AMCL_WINDOW_SNAPSHOT_ENV);
++    if (!live || (*live == '\0')) {
++        return false;
++    }
++
++    // Copy before parsing: getenv hands back the environment's live buffer,
++    // and a concurrent setenv on the host's UI thread can free it mid-parse
++    // under musl. The copy narrows the exposure to one bounded read.
++    char buf[128];
++    SDL_strlcpy(buf, live, sizeof(buf));
++
++    // "<gen>:<ptr>:<w>:<h>", all decimal, matched against the *entire*
++    // string -- trailing bytes reject, same rule as the bridge descriptors.
++    const char *cur = buf;
++    char *end = NULL;
++    const unsigned long long gen = SDL_strtoull(cur, &end, 10);
++    if (!end || (end == cur) || (*end != ':') || (gen == 0)) {
++        return false; // the host never publishes generation 0
++    }
++    cur = end + 1;
++    const unsigned long long ptr = SDL_strtoull(cur, &end, 10); // 0 = surface lost
++    if (!end || (end == cur) || (*end != ':')) {
++        return false;
++    }
++    cur = end + 1;
++    const long w = SDL_strtol(cur, &end, 10);
++    if (!end || (end == cur) || (*end != ':') || (w < 0)) {
++        return false;
++    }
++    cur = end + 1;
++    const long h = SDL_strtol(cur, &end, 10);
++    if (!end || (end == cur) || (*end != '\0') || (h < 0)) {
++        return false;
++    }
++
++    out->generation = (Uint64)gen;
++    out->native_window = (void *)(uintptr_t)ptr;
++    out->width = (int)w;
++    out->height = (int)h;
++    return true;
++}
++
++// ---------------------------------------------------------------------------
++// OH_NativeWindow reference counting (lazily resolved)
++// ---------------------------------------------------------------------------
++// Status quo first: the existing adoption path takes *no* reference on the
++// pointer it copies out of the environment. That was survivable because the
++// host's own publication reference keeps the *current* window alive, and an
++// SDL window's lifetime always sat inside a single publication. The recovery
++// path below breaks that assumption -- an adopted window now outlives
++// publications -- so windows adopted *there* are pinned with
++// OH_NativeWindow_NativeObjectReference. Create-adopted windows stay
++// unpinned; SDL_WindowData.amcl_holds_window_ref records which case owns a
++// reference so the release side can never unbalance a count we do not own.
++//
++// SDL's OpenHarmony build does not link libnative_window.so (its CMake links
++// only ace/hilog/etc.), so the pair is resolved at runtime like the host
++// bridge symbols. Unlike libglfw, a plain dlopen() fallback is acceptable for
++// this library: it is a system NDK library whose refcount functions act on
++// the object passed in, so there is no per-library state that loading "a
++// second copy" could duplicate.
++typedef int32_t (*AMCL_NativeObjectRefFn)(void *obj);
++static AMCL_NativeObjectRefFn amcl_window_ref;
++static AMCL_NativeObjectRefFn amcl_window_unref;
++static bool amcl_window_ref_lookup_done;
++
++// Only ever called from the pump thread (SyncLiveWindow), so plain statics.
++static void OPENHARMONY_ResolveWindowRefFns(void)
++{
++    if (amcl_window_ref_lookup_done) {
++        return;
++    }
++    amcl_window_ref_lookup_done = true;
++
++    void *ref = dlsym(RTLD_DEFAULT, "OH_NativeWindow_NativeObjectReference");
++    void *unref = dlsym(RTLD_DEFAULT, "OH_NativeWindow_NativeObjectUnreference");
++    if (!ref || !unref) {
++        void *handle = dlopen("libnative_window.so", RTLD_NOLOAD | RTLD_NOW);
++        if (!handle) {
++            handle = dlopen("libnative_window.so", RTLD_NOW);
++        }
++        if (handle) {
++            ref = dlsym(handle, "OH_NativeWindow_NativeObjectReference");
++            unref = dlsym(handle, "OH_NativeWindow_NativeObjectUnreference");
++            // Keep the handle: the library must outlive any reference we
++            // hold, and it is a process-lifetime system library regardless.
++        }
++    }
++
++    if (ref && unref) {
++        amcl_window_ref = (AMCL_NativeObjectRefFn)ref;
++        amcl_window_unref = (AMCL_NativeObjectRefFn)unref;
++    } else {
++        // Both or neither: a reference that can be taken but never released
++        // is a leak; a release without the matching take corrupts the count.
++        // Recovery still works without the pair, it just cannot pin the
++        // adopted window during the gap between two host publications.
++        SDL_Log("openharmony: OH_NativeWindow refcount API unavailable (ref=%s unref=%s); recovered windows will not be pinned",
++                ref ? "ok" : "MISSING", unref ? "ok" : "MISSING");
++    }
++}
++
++void OPENHARMONY_AMCL_NoteWindowAdopted(SDL_WindowData *data)
++{
++    if (!data || data->native_xcomponent) {
++        return; // SDL owns the XComponent; its callbacks own the lifecycle
++    }
++    // Record which publication the adopted pointer belongs to, so the pump
++    // does not treat the very first snapshot it sees as a change. On a
++    // mismatch (no snapshot at all: older host; or a publication raced the
++    // window's creation) the generation stays 0 and the first parseable
++    // snapshot decides -- including a rebuild if the create path adopted a
++    // pointer the host has already retired.
++    AMCL_WindowSnapshot snap;
++    if (OPENHARMONY_ReadWindowSnapshot(&snap) && (snap.native_window == data->native_window)) {
++        data->amcl_generation = snap.generation;
++    }
++}
++
++void OPENHARMONY_AMCL_ReleaseWindowRef(SDL_WindowData *data)
++{
++    // amcl_holds_window_ref is only ever set after both refcount functions
++    // resolved, so the unref pointer cannot be NULL when this fires.
++    if (data && data->amcl_holds_window_ref) {
++        amcl_window_unref(data->native_window);
++        data->amcl_holds_window_ref = false;
++    }
++}
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++// ---------------------------------------------------------------------------
++// Display geometry follows the host surface
++// ---------------------------------------------------------------------------
++// On this platform the surface IS the display: there is no mode switching and
++// nothing else an application window could cover. VideoInit therefore
++// publishes the host-injected size as the desktop mode when a surface is
++// already up (SDL_openharmonyvideo.c); this is the live half, keeping the
++// mode in step with later host publications (render-scale re-publish, fold /
++// rotation, surface rebuild). Without it, every display query -- desktop /
++// current mode, the fullscreen mode list that mirrors it, display bounds --
++// keeps handing out geometry from a space the surface no longer lives in,
++// and callers that size coordinate math from those queries mix the spaces.
++static void OPENHARMONY_AMCL_RefreshDisplayDesktopMode(int w, int h)
++{
++    if ((w <= 0) || (h <= 0)) {
++        return;
++    }
++    SDL_VideoDisplay *display = SDL_GetVideoDisplay(SDL_GetPrimaryDisplay());
++    if (!display) {
++        return;
++    }
++    if ((display->desktop_mode.w == w) && (display->desktop_mode.h == h)) {
++        return; // steady state: two int compares per pump
++    }
++
++    SDL_DisplayMode mode;
++    SDL_copyp(&mode, &display->desktop_mode);
++    // The old desktop mode keeps ownership of its driver data:
++    // SDL_SetDesktopDisplayMode() frees the old mode's `internal`, so handing
++    // the same pointer back in would store a freed pointer.
++    mode.internal = NULL;
++    mode.w = w;
++    mode.h = h;
++
++    // The published fullscreen list mirrors the desktop mode 1:1 (see
++    // OPENHARMONY_GetDisplayModes). Dropping it here points current_mode back
++    // at desktop_mode -- so the bounds fallback in SDL_GetDisplayBounds()
++    // follows immediately -- and lets the next enumeration republish the new
++    // geometry instead of a mode that no longer exists.
++    SDL_ResetFullscreenDisplayModes(display);
++
++    // SDL_SetDesktopDisplayMode() refuses to touch the desktop mode while an
++    // exclusive-fullscreen window owns the display, because on a mode-setting
++    // platform the current mode is then a *temporary* one that must not be
++    // saved as the desktop. This platform cannot switch modes at all, so a
++    // size change arriving here is the desktop itself changing; honouring the
++    // guard would keep publishing a size that no longer exists.
++    const bool was_fullscreen_active = display->fullscreen_active;
++    display->fullscreen_active = false;
++    SDL_SetDesktopDisplayMode(display, &mode);
++    display->fullscreen_active = was_fullscreen_active;
++}
++#endif // SDL_VIDEO_OPENGL_EGL
++
++void OPENHARMONY_AMCL_SyncLiveWindow(SDL_VideoDevice *_this)
++{
++#ifdef SDL_VIDEO_OPENGL_EGL
++    SDL_Window *window = OPENHARMONY_Window;
++    if (!_this || !window || !window->internal) {
++        return;
++    }
++    SDL_WindowData *data = window->internal;
++
++    if (data->native_xcomponent) {
++        return; // standalone SDL: the surface callbacks own this, not the env
++    }
++    if (!(window->flags & SDL_WINDOW_OPENGL)) {
++        return; // recovery is EGL surgery; nothing safe to do for e.g. Vulkan
++    }
++
++    AMCL_WindowSnapshot snap;
++    if (!OPENHARMONY_ReadWindowSnapshot(&snap)) {
++        return; // no (parseable) snapshot: assume nothing changed
++    }
++    if (snap.generation == data->amcl_generation) {
++        // Steady state, by far the most common exit -- after enforcing one
++        // invariant: while a publication is live, the display mode and the
++        // window's cached size must both equal that publication's size.
++        //
++        // Both re-announcements are needed even without a generation change,
++        // because both can start out stale: VideoInit may have run before the
++        // host published a surface (physical-size fallback), and the window
++        // may have adopted its size without a deliverable event (the create
++        // path posts one only when the size differs from the caller's
++        // request; a request that matched an *older* publication leaves the
++        // caller believing that one). Neither send can loop: the display
++        // refresh early-outs on equality, and SDL_SendWindowEvent() itself
++        // realigns window->w/h with the announced size, so the next pump
++        // takes the silent path again.
++        if (snap.native_window && (snap.width > 0) && (snap.height > 0)) {
++            OPENHARMONY_AMCL_RefreshDisplayDesktopMode(snap.width, snap.height);
++            if ((window->w != snap.width) || (window->h != snap.height)) {
++                SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, snap.width, snap.height);
++            }
++        }
++        return;
++    }
++
++    // The host moved to a new surface epoch. Decide what kind of change.
++
++    if (!snap.native_window || (snap.width <= 0) || (snap.height <= 0)) {
++        // Lost: the host currently has no usable surface. Keep the SDL window
++        // and even the (doomed) EGL surface -- the consumer treats window
++        // death as fatal while a failing swap is survivable, and there may be
++        // no GL binding on this thread right now to tear the surface down
++        // with. The flag makes swaps fail fast instead of handing EGL a
++        // retired buffer queue; the next epoch with a window rebuilds.
++        SDL_Log("openharmony: host surface lost (generation %" SDL_PRIu64 " -> %" SDL_PRIu64 "); suspending presentation",
++                data->amcl_generation, snap.generation);
++        data->amcl_surface_suspended = true;
++        data->amcl_generation = snap.generation;
++        return;
++    }
++
++    if (!data->amcl_surface_suspended && (snap.native_window == data->native_window)) {
++        // Same OHNativeWindow, new epoch, and the surface was never lost:
++        // a resize (the host bumps the generation for those too). The EGL
++        // surface tracks its window's buffer size by itself; only SDL's
++        // cached geometry needs to catch up. Core dedupes if nothing changed.
++        SDL_Log("openharmony: host surface resized (generation %" SDL_PRIu64 " -> %" SDL_PRIu64 ", %dx%d)",
++                data->amcl_generation, snap.generation, snap.width, snap.height);
++        data->amcl_generation = snap.generation;
++        OPENHARMONY_AMCL_RefreshDisplayDesktopMode(snap.width, snap.height);
++        SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, snap.width, snap.height);
++        return;
++    }
++
++    // Replaced (different pointer), or recovering from Lost: the EGL surface
++    // must be rebuilt around the new OHNativeWindow.
++    //
++    // Only the thread that owns the window's GL binding may do that: EGL
++    // surface surgery from a second thread while the render thread is inside
++    // a frame is a straight race. For the primary consumer this gate passes
++    // immediately -- Minecraft 26.3 pumps events and swaps on the same render
++    // thread.
++    SDL_GLContext ctx = SDL_GL_GetCurrentContext();
++    if (ctx && (SDL_GL_GetCurrentWindow() == window)) {
++        // Normal case: the pumping thread holds the binding.
++    } else if (!ctx && data->amcl_resume_context && (SDL_GetCurrentThreadID() == data->amcl_resume_thread)) {
++        // This thread already started a rebuild, unbound itself, and then
++        // failed partway (surface creation). Resume with the saved context.
++        ctx = data->amcl_resume_context;
++    } else {
++        // Not this thread's binding to touch. Skip; the generation stays
++        // unadopted, so the next pump retries. Log once per epoch (one
++        // window per process, see OPENHARMONY_Window).
++        static Uint64 skip_logged_generation;
++        if (skip_logged_generation != snap.generation) {
++            skip_logged_generation = snap.generation;
++            SDL_Log("openharmony: new host surface (generation %" SDL_PRIu64 ") pending; pump thread does not hold the GL binding, deferring rebuild",
++                    snap.generation);
++        }
++        return;
++    }
++
++    SDL_Log("openharmony: adopting new host surface (generation %" SDL_PRIu64 " -> %" SDL_PRIu64 ", window %p -> %p, %dx%d)",
++            data->amcl_generation, snap.generation, data->native_window,
++            snap.native_window, snap.width, snap.height);
++
++    // Save the resume state *before* unbinding: every failure below leaves
++    // this thread with no current context, and the retry gate above must
++    // recognise it as the owner of the interrupted rebuild.
++    data->amcl_resume_context = ctx;
++    data->amcl_resume_thread = SDL_GetCurrentThreadID();
++
++    // Unbind through the public entry point: it clears SDL's cached
++    // (window, context) pair, without which the rebind below would
++    // short-circuit on "already current" and never reach eglMakeCurrent.
++    // It is also the order the Android backend uses: unbind first, so the
++    // old surface is no longer current when it is destroyed.
++    SDL_GL_MakeCurrent(window, NULL);
++
++    if (data->egl_surface != EGL_NO_SURFACE) {
++        SDL_EGL_DestroySurface(_this, data->egl_surface);
++        data->egl_surface = EGL_NO_SURFACE;
++    }
++
++    // Swap the pointer, pinning the new window before dropping the old name.
++    // The old pointer is unreferenced only if the recovery path pinned it
++    // earlier: create-adopted windows were never pinned (see the section
++    // comment above), and dropping a count we do not own would double-free.
++    OPENHARMONY_ResolveWindowRefFns();
++    void *old_native_window = data->native_window;
++    const bool old_pinned = data->amcl_holds_window_ref;
++    bool new_pinned = false;
++    if (amcl_window_ref && (amcl_window_ref(snap.native_window) == 0)) {
++        new_pinned = true;
++    }
++    if (old_pinned) {
++        amcl_window_unref(old_native_window);
++    }
++    data->native_window = snap.native_window;
++    data->amcl_holds_window_ref = new_pinned;
++    SDL_SetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_OPENHARMONY_WINDOW_POINTER, data->native_window);
++
++    data->egl_surface = SDL_EGL_CreateSurface(_this, window, (NativeWindowType)data->native_window);
++    if (data->egl_surface == EGL_NO_SURFACE) {
++        // Keep the generation unadopted so the next pump retries from the
++        // resume state. Log once per epoch, not once per pump: this path
++        // repeats every frame until it succeeds or the host moves on.
++        static Uint64 fail_logged_generation;
++        if (fail_logged_generation != snap.generation) {
++            fail_logged_generation = snap.generation;
++            SDL_Log("openharmony: EGL surface rebuild failed for generation %" SDL_PRIu64 " (%s); will retry",
++                    snap.generation, SDL_GetError());
++        }
++        data->amcl_surface_suspended = true;
++        return;
++    }
++    SDL_SetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_OPENHARMONY_SURFACE_POINTER, data->egl_surface);
++
++    if (!SDL_GL_MakeCurrent(window, ctx)) {
++        // The surface exists but the context would not bind. Unlikely (a GLES
++        // context is not tied to one surface); stay suspended and let the
++        // next pump retry through the resume gate above.
++        data->amcl_surface_suspended = true;
++        return;
++    }
++
++    data->amcl_resume_context = NULL;
++    data->amcl_resume_thread = 0;
++    data->amcl_surface_suspended = false;
++    data->amcl_generation = snap.generation;
++
++    // Geometry may have changed with the surface; SDL core dedupes if not.
++    OPENHARMONY_AMCL_RefreshDisplayDesktopMode(snap.width, snap.height);
++    SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, snap.width, snap.height);
++#else
++    (void)_this;
++#endif // SDL_VIDEO_OPENGL_EGL
++}
++
+ #endif // SDL_VIDEO_DRIVER_OPENHARMONY
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.h b/src/video/openharmony/SDL_openharmonyamcl.h
+index 7a685f2b3..c7f8ec631 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.h
++++ b/src/video/openharmony/SDL_openharmonyamcl.h
+@@ -42,4 +42,31 @@ extern void OPENHARMONY_AMCL_NotifyFramePresented(void);
+ extern void OPENHARMONY_AMCL_InitMouse(void);
+ extern void OPENHARMONY_AMCL_QuitMouse(void);
+
++// --- Live-window surface recovery -----------------------------------------
++// A host-injected window used to keep presenting into whatever OHNativeWindow
++// it was created on: once the host destroyed/recreated its XComponent surface
++// the EGL surface pointed at a retired window forever. These entry points let
++// the backend track the host's surface publications (the single-value
++// AMCL_NATIVE_WINDOW_SNAPSHOT environment channel) and rebuild the EGL
++// surface of a *live* window. All three are safe no-ops when SDL owns its own
++// XComponent, or when the host publishes no snapshot channel.
++//
++// Forward tags only: this header is included before ../SDL_sysvideo.h in some
++// translation units, so the sysvideo typedefs may not exist yet here.
++struct SDL_VideoDevice;
++struct SDL_WindowData;
++
++// Record which host publication the window's native_window was adopted under.
++// Call once from OPENHARMONY_CreateWindow after SDL_WindowData is filled in.
++extern void OPENHARMONY_AMCL_NoteWindowAdopted(struct SDL_WindowData *data);
++
++// Compare the live window against the host's snapshot; recover from surface
++// loss / replacement / resize. Called once per event pump, on the thread that
++// called SDL_PollEvent().
++extern void OPENHARMONY_AMCL_SyncLiveWindow(struct SDL_VideoDevice *_this);
++
++// Release the OH_NativeWindow reference the recovery path may hold. Call from
++// OPENHARMONY_DestroyWindow before SDL_WindowData is freed.
++extern void OPENHARMONY_AMCL_ReleaseWindowRef(struct SDL_WindowData *data);
++
+ #endif // SDL_openharmonyamcl_h_
+diff --git a/src/video/openharmony/SDL_openharmonyevents.c b/src/video/openharmony/SDL_openharmonyevents.c
+index 9ac240cf7..6ea6c35a1 100644
+--- a/src/video/openharmony/SDL_openharmonyevents.c
++++ b/src/video/openharmony/SDL_openharmonyevents.c
+@@ -206,7 +206,11 @@ void OPENHARMONY_InitEvents(void)
+
+ void OPENHARMONY_PumpEvents(SDL_VideoDevice *_this)
+ {
+-    (void)_this;
++    // Reconcile the live window with the host's surface publication *before*
++    // draining input: the handlers below attribute events to the window, and
++    // on the primary consumer a swap follows this pump on the same thread.
++    // No-op when SDL owns its XComponent or no snapshot channel exists.
++    OPENHARMONY_AMCL_SyncLiveWindow(_this);
+
+     // Input normally arrives asynchronously through the XComponent callbacks
+     // above, so there is nothing to poll for in the standalone case.
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 29b8650f8..22040db2f 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -144,6 +144,15 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+     // !!! FIXME: Android has locking here; maybe it isn't necessary for OpenHarmony? What happens if we're in a background thread?
+     //OPENHARMONY_LockActivityMutex();
+
++    // While the host has its surface torn down (or a surface rebuild is still
++    // incomplete), fail fast instead of handing EGL a surface whose
++    // OHNativeWindow is retired: such a swap reports an error at best and can
++    // block on an abandoned buffer queue at worst. Never set for standalone
++    // SDL windows, so this is dead code outside the host-injected case.
++    if (window->internal->amcl_surface_suspended) {
++        return SDL_SetError("OpenHarmony: host surface is suspended; waiting for the host to publish a new one");
++    }
++
+     result = SDL_EGL_SwapBuffers(_this, window->internal->egl_surface);
+     if (result) {
+         OPENHARMONY_AMCL_NotifyFramePresented();
+diff --git a/src/video/openharmony/SDL_openharmonywindow.c b/src/video/openharmony/SDL_openharmonywindow.c
+index 208723cb1..c57421e2a 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.c
++++ b/src/video/openharmony/SDL_openharmonywindow.c
+@@ -37,6 +37,7 @@
+ #include "SDL_openharmonyevents.h"
+ #include "SDL_openharmonywindow.h"
+ #include "SDL_openharmonyopengl.h"
++#include "SDL_openharmonyamcl.h"
+
+
+ // Currently only one window
+@@ -125,6 +126,12 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+     SDL_SetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_OPENHARMONY_XCOMPONENT_POINTER, data->native_xcomponent);
+     SDL_SetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_OPENHARMONY_WINDOW_POINTER, data->native_window);
+
++    // Record which host surface publication this pointer was adopted under,
++    // so the per-pump generation check starts from "current" instead of
++    // treating the first snapshot it sees as a change. No-op when SDL owns
++    // the XComponent.
++    OPENHARMONY_AMCL_NoteWindowAdopted(data);
++
+     /* Do not create EGLSurface for Vulkan window since it will then make the window
+        incompatible with vkCreateAndroidSurfaceKHR */
+ #ifdef SDL_VIDEO_OPENGL_EGL
+@@ -381,6 +388,11 @@ void OPENHARMONY_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
+             }
+ #endif
+
++            // Balance the OH_NativeWindow reference the recovery path may
++            // hold on a mid-flight-adopted window. No-op for create-adopted
++            // windows, which are kept alive by the host's own publication.
++            OPENHARMONY_AMCL_ReleaseWindowRef(data);
++
+             // the XComponent and native window live past the SDL_Window; it can be reused for future windows.
+
+             SDL_free(window->internal);
+diff --git a/src/video/openharmony/SDL_openharmonywindow.h b/src/video/openharmony/SDL_openharmonywindow.h
+index a9e5e6ab7..1119816fe 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.h
++++ b/src/video/openharmony/SDL_openharmonywindow.h
+@@ -49,6 +49,24 @@ struct SDL_WindowData
+     bool backup_done;
+     void *native_xcomponent;
+     void *native_window;
++
++    // --- AMCL host-injected window lifecycle (see SDL_openharmonyamcl.c) ---
++    // Which host surface publication (AMCL_NATIVE_WINDOW_SNAPSHOT generation)
++    // this window has fully adopted; 0 until the first parseable snapshot.
++    // Compared against the live snapshot once per event pump.
++    Uint64 amcl_generation;
++    // Set while the host has no usable surface (or a rebuild is incomplete):
++    // swaps fail fast instead of touching a retired buffer queue.
++    bool amcl_surface_suspended;
++    // The recovery path pinned native_window with
++    // OH_NativeWindow_NativeObjectReference. Windows adopted at creation are
++    // *not* pinned, so the release side must consult this flag rather than
++    // unbalance a reference count it does not own.
++    bool amcl_holds_window_ref;
++    // A surface rebuild was interrupted after this thread already unbound its
++    // GL context; lets the same thread resume the rebuild on the next pump.
++    SDL_GLContext amcl_resume_context;
++    SDL_ThreadID amcl_resume_thread;
+ };
+
+ #endif // SDL_openharmonywindow_h_

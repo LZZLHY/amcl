@@ -1,0 +1,1745 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+new file mode 100644
+index 000000000..64e34caf3
+--- /dev/null
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -0,0 +1,923 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "SDL_internal.h"
++
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++
++// ===========================================================================
++// Host-driven input path for embedded use.
++// ===========================================================================
++//
++// Why this file exists
++// --------------------
++// The OpenHarmony backend normally receives input through the XComponent
++// callbacks that SDL_openharmony.c registers, which then call
++// SDL_OpenHarmonyDispatchTouchEvent() / DispatchMouseEvent().
++//
++// That registration happens in SDL_Init_Native_Interfaces(), which is the
++// napi module's nm_register_func (SDL_openharmony.c:523/568) -- it only runs
++// when ArkTS imports the SDL module. A host application that dlopen()s
++// libSDL3.so from native code never triggers it, so those Dispatch entry
++// points are unreachable and SDL sees no input at all.
++//
++// This is the same ownership inversion that the host-provided native window
++// change addresses on the video side: the host owns the surface *and* the
++// input pipeline, and SDL has to adopt both rather than create them.
++//
++// How it works
++// ------------
++// The host keeps its input in a lock-free ring with one read cursor per
++// consumer, and exports a pull-style accessor. We resolve that accessor (and
++// a few state queries) lazily with dlsym(RTLD_DEFAULT) and drain the ring
++// from OPENHARMONY_PumpEvents(). Two consequences worth spelling out:
++//
++//   * No new public SDL API, and no host-side change. Everything here is
++//     opportunistic: if the symbols are absent (plain SDL app, or a host that
++//     does not provide a ring) every entry point degrades to a no-op.
++//   * Draining happens on whichever thread calls SDL_PollEvent(), which is
++//     the application's main loop thread. That sidesteps the cross-thread
++//     problems you get when input is injected straight from a UI-thread
++//     callback -- SDL's event code asserts it runs on the main thread.
++//
++// Coordinate model
++// ----------------
++// The host reports one cursor value whose meaning depends on grab state:
++// while grabbed it is an *accumulated* look value (for first-person camera
++// control), and while not grabbed it is an *absolute* menu position. SDL's
++// relative-mouse-mode split matches that exactly, so we forward
++//   grabbed     -> SDL_SendMouseMotion(relative=true,  dx, dy)
++//   not grabbed -> SDL_SendMouseMotion(relative=false, x,  y)
++// The delta is computed here, against a baseline that is *reset whenever grab
++// state flips*. Without that reset the first frame after a grab change would
++// report the difference between two unrelated coordinate spaces, which shows
++// up as a large camera jump.
++
++#include "SDL_openharmonyamcl.h"
++#include "SDL_openharmonywindow.h"
++#include "../SDL_sysvideo.h"
++#include "../../events/SDL_events_c.h"
++#include "../../events/SDL_keyboard_c.h"
++#include "../../events/SDL_mouse_c.h"
++
++#include <dlfcn.h>
++
++// ---------------------------------------------------------------------------
++// Host event ring protocol
++// ---------------------------------------------------------------------------
++// Event types and payload layout mirror the GLFW callback signatures the host
++// was originally built around, so i1..i4 line up with GLFW's callback
++// arguments. Verified against the host's own GLFW3 dispatch:
++//   KEY          -> (key, scancode, action, mods)
++//   CHAR         -> (codepoint, -, -, -)
++//   MOUSE_BUTTON -> (button, action, mods, -)
++//   SCROLL       -> (xoffset, yoffset, -, -)
++//   MENU_POINTER -> (phase, absolute x, absolute y, transaction token)
++//   INPUT_RESET  -> ring overflowed or the window was recreated; drop held state
++//
++// Which read cursor we borrow, and why that is a deliberate compromise
++// --------------------------------------------------------------------
++// The host's ring supports several independent consumers, each with its own
++// read cursor, and currently has two: one for callback-style dispatch and one
++// for poll-style dispatch. We attach to the poll-style cursor rather than
++// adding a third.
++//
++// AMCLSDLV:2 gives SDL a dedicated read cursor and keeps menu-pointer transactions
++// intact until the SDL-specific host adapter has applied its present barrier. In
++// v1 the host folded DOWN into PRESS immediately; because this backend had already
++// sampled the cursor, Minecraft received PRESS(oldX, oldY) and MOTION(newX, newY)
++// one pump later -- the exact reason a menu button required two physical taps.
++//
++// The tradeoff, stated plainly: if a build ever ran the poll-style consumer
++// *and* SDL against the same ring, the two would steal events from each other.
++// That cannot happen today (the poll consumer belongs to a legacy path that is
++// mutually exclusive with the SDL path), but it is a real constraint rather
++// than a theoretical one. If those paths ever need to coexist, the fix is to
++// add a dedicated read cursor on the host side and switch the symbol looked up
++// below; nothing else here changes.
++#define AMCL_EVENT_CHAR         1000
++#define AMCL_EVENT_CHAR_MODS    1001
++#define AMCL_EVENT_KEY          1005
++#define AMCL_EVENT_MOUSE_BUTTON 1006
++#define AMCL_EVENT_SCROLL       1007
++#define AMCL_EVENT_MENU_POINTER 1008
++#define AMCL_EVENT_INPUT_RESET  1009
++#define AMCL_MENU_POINTER_MOVE   0
++#define AMCL_MENU_POINTER_DOWN   1
++#define AMCL_MENU_POINTER_UP     2
++#define AMCL_MENU_POINTER_CANCEL 3
++
++// GLFW action / button values (stable ABI constants, safe to hardcode).
++#define AMCL_GLFW_RELEASE 0
++#define AMCL_GLFW_PRESS   1
++
++// Upper bound on events drained per pump. The ring is bounded, but a runaway
++// producer should degrade frame pacing rather than wedge the main loop.
++#define AMCL_PUMP_BUDGET 4096
++
++// ---------------------------------------------------------------------------
++// Preferred channel: host events that are already SDL-encoded
++// ---------------------------------------------------------------------------
++// The legacy channel below hands us GLFW-encoded events, which forces a second
++// translation here (OPENHARMONY_ScancodeFromGlfwKey). That is lossy in a way
++// that is easy to miss: the five-int payload has no room for a device id, a
++// timestamp, a sequence, a repeat flag or the platform lock-latch snapshot --
++// and SDL_GetModState needs the last of those. The host therefore grew a second
++// channel that delivers SDL_Scancode / SDL_BUTTON_* directly, with those fields
++// present. Both channels stay wired: the legacy one is the fallback for hosts
++// that predate this.
++//
++// ⚠️ This struct mirrors the host's AmclBackendInputEvent byte for byte. The
++// host asserts sizeof == 64 on its side; the SDL_COMPILE_TIME_ASSERT below is
++// the matching half. A silent layout drift here would read a neighbouring field
++// as a key code, so it must fail to compile rather than misbehave at runtime.
++#define AMCL_BACKEND_EVENT_KEY 1u
++#define AMCL_BACKEND_EVENT_BUTTON 2u
++#define AMCL_BACKEND_EVENT_WHEEL 3u
++#define AMCL_BACKEND_EVENT_RESET 4u
++#define AMCL_BACKEND_ACTION_UP 3u
++#define AMCL_BACKEND_RESULT_EVENT 1
++#define AMCL_BACKEND_RESULT_UNAVAILABLE (-3)
++
++typedef struct
++{
++    Uint16 abiVersion;
++    Uint16 structSize;
++    Uint32 eventType;
++    Sint32 code;
++    Sint32 rawCode;
++    Uint32 action;
++    Uint32 modifiers;
++    Uint32 lockState;
++    Uint32 resetReason;
++    float wheelX;
++    float wheelY;
++    Uint64 deviceId;
++    Uint64 monotonicTimeNs;
++    Uint64 sequence;
++} AMCL_BackendInputEvent;
++
++SDL_COMPILE_TIME_ASSERT(amcl_backend_event_size,
++                        sizeof(AMCL_BackendInputEvent) == 64);
++
++typedef struct
++{
++    bool available;
++    int attempts;
++    int (*NextEvent)(int *type, int *i1, int *i2, int *i3, int *i4);
++    void (*SetActive)(int active);
++    void (*NotifyFramePresented)(void);
++    void (*SetGrabState)(int grabbing);
++    bool (*IsGrabbing)(void);
++    // Paired read of both axes under one lock. Preferred over two separate
++    // per-axis getters, which can return coordinates sampled at different
++    // moments and tear a single motion into two.
++    void (*GetCursorSnapshot)(double *x, double *y);
++    void (*SetLookCursor)(double x, double y);
++    // Already-SDL-encoded channel. Resolved independently of the five above:
++    // an older host provides those but not this, and a host that provides this
++    // still provides those (cursor/grab stay on the legacy accessors, because
++    // the host's look funnel is the single source of truth for them).
++    int (*TypedNext)(Uint32 backend, AMCL_BackendInputEvent *out);
++    void (*TypedSetActive)(Uint32 backend, int active);
++    bool typed_available;
++    bool typed_activated;
++} OPENHARMONY_HostBridge;
++
++// Give up looking for the host after this many pumps. The bridge normally
++// resolves on the first try, but library load order is not ours to control:
++// if SDL is initialised before the host's own library finishes loading, a
++// single attempt would cache "no host" forever and silently kill all input.
++// Bounded retries fix that without turning every pump into a dlsym() storm.
++#define AMCL_RESOLVE_ATTEMPTS 240
++
++static OPENHARMONY_HostBridge host_bridge;
++
++// Cursor delta baseline, plus the grab state it was captured under.
++static double host_last_x;
++static double host_last_y;
++static bool host_last_grabbing;
++static bool host_baseline_valid;
++
++// Look up one host symbol.
++//
++// RTLD_DEFAULT first: it walks everything in the *global* scope, so a host that
++// loads its library with RTLD_GLOBAL needs no cooperation from us and we do not
++// have to know what it called that library.
++//
++// That is not enough on OpenHarmony in practice. 2026-08-04 device evidence:
++// with the host library present and initialised (Minecraft was rendering
++// through it), all five RTLD_DEFAULT lookups returned NULL and this backend
++// reported "no host input bridge found after 240 attempts". The host library is
++// pulled in as a DT_NEEDED dependency of the host's own module rather than with
++// RTLD_GLOBAL, so it is reachable but not in the global scope, while SDL itself
++// was dlopen()ed from a different loader (the JVM's class loader namespace).
++//
++// Hence the fallback: ask for the library by name, but **only with RTLD_NOLOAD**.
++// This is not a stylistic choice. A plain dlopen() that actually loads the
++// library would hand us a second instance with its own event ring and its own
++// grab flag: `available` would go true, no input would ever arrive, and grab
++// writes would land on a copy nobody reads. Failing to resolve is strictly
++// better than that. RTLD_NOLOAD gives us the already-loaded instance or nothing.
++static void *OPENHARMONY_HostSym(void *host_handle, const char *name)
++{
++    void *sym = dlsym(RTLD_DEFAULT, name);
++    if (!sym && host_handle) {
++        sym = dlsym(host_handle, name);
++    }
++    return sym;
++}
++
++#define AMCL_SDL_BRIDGE_ENV "AMCL_SDL_INPUT_BRIDGE"
++#define AMCL_SDL_BRIDGE_PREFIX "AMCLSDLV:2:"
++
++// Parse the host's environment channel. All-or-nothing: a partially parsed
++// descriptor is discarded, because a bridge that can inject events but cannot
++// read the grab state produces wrong input rather than no input.
++static bool OPENHARMONY_ResolveBridgeFromEnvironment(OPENHARMONY_HostBridge *bridge)
++{
++    // Must be the unsafe (live) getenv: the host publishes this from its own
++    // init, which can happen after SDL_Init took its environment snapshot.
++    const char *desc = SDL_getenv_unsafe(AMCL_SDL_BRIDGE_ENV);
++    if (!desc || SDL_strncmp(desc, AMCL_SDL_BRIDGE_PREFIX, SDL_strlen(AMCL_SDL_BRIDGE_PREFIX)) != 0) {
++        return false;
++    }
++
++    const char *cursor = desc + SDL_strlen(AMCL_SDL_BRIDGE_PREFIX);
++    uintptr_t slots[7] = { 0, 0, 0, 0, 0, 0, 0 };
++    for (int i = 0; i < 7; i++) {
++        char *end = NULL;
++        const unsigned long long value = SDL_strtoull(cursor, &end, 10);
++        if (!end || (end == cursor) || (value == 0)) {
++            return false;  // malformed or a null entry point
++        }
++        slots[i] = (uintptr_t)value;
++        cursor = end;
++        if (i < 6) {
++            if (*cursor != ',') {
++                return false;
++            }
++            cursor++;
++        }
++    }
++
++    bridge->NextEvent = (int (*)(int *, int *, int *, int *, int *))slots[0];
++    bridge->SetActive = (void (*)(int))slots[1];
++    bridge->NotifyFramePresented = (void (*)(void))slots[2];
++    bridge->SetGrabState = (void (*)(int))slots[3];
++    bridge->IsGrabbing = (bool (*)(void))slots[4];
++    bridge->GetCursorSnapshot = (void (*)(double *, double *))slots[5];
++    bridge->SetLookCursor = (void (*)(double, double))slots[6];
++    return true;
++}
++
++#define AMCL_BACKEND_BRIDGE_ENV "AMCL_BACKEND_INPUT_BRIDGE"
++#define AMCL_BACKEND_BRIDGE_PREFIX "AMCLBEIV:1:"
++#define AMCL_BACKEND_ID_SDL3 3u
++
++// Parse the already-SDL-encoded channel. Independent of the legacy descriptor:
++// an older host publishes only that one, and this must then stay absent rather
++// than half-resolved. Same all-or-nothing rule, same strict magic/version check
++// -- guessing at a different field order would call an arbitrary address.
++static bool OPENHARMONY_ResolveTypedBridgeFromEnvironment(OPENHARMONY_HostBridge *bridge)
++{
++    const char *desc = SDL_getenv_unsafe(AMCL_BACKEND_BRIDGE_ENV);
++    if (!desc || SDL_strncmp(desc, AMCL_BACKEND_BRIDGE_PREFIX, SDL_strlen(AMCL_BACKEND_BRIDGE_PREFIX)) != 0) {
++        return false;
++    }
++
++    const char *cursor = desc + SDL_strlen(AMCL_BACKEND_BRIDGE_PREFIX);
++    uintptr_t slots[2] = { 0, 0 };
++    for (int i = 0; i < 2; i++) {
++        char *end = NULL;
++        const unsigned long long value = SDL_strtoull(cursor, &end, 10);
++        if (!end || (end == cursor) || (value == 0)) {
++            return false;
++        }
++        slots[i] = (uintptr_t)value;
++        cursor = end;
++        if (i == 0) {
++            if (*cursor != ',') {
++                return false;
++            }
++            cursor++;
++        }
++    }
++
++    bridge->TypedNext = (int (*)(Uint32, AMCL_BackendInputEvent *))slots[0];
++    bridge->TypedSetActive = (void (*)(Uint32, int))slots[1];
++    return true;
++}
++
++static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
++{
++    OPENHARMONY_HostBridge *bridge = &host_bridge;
++
++    if (bridge->available || (bridge->attempts >= AMCL_RESOLVE_ATTEMPTS)) {
++        return bridge;  // resolved, or we have stopped looking
++    }
++    bridge->attempts++;
++
++    // Preferred channel: the host hands us the entry points through the
++    // environment. On OpenHarmony this is the only thing that actually works
++    // when SDL and the host module were loaded by different loaders -- see the
++    // measurements in OPENHARMONY_HostSym(). Format, published by the host as
++    // AMCL_SDL_INPUT_BRIDGE:
++    //
++    //   AMCLSDLV:2:<next>,<setActive>,<notifyPresent>,<setGrab>,<isGrab>,<getCursor>,<setLookCursor>
++    //
++    // decimal uintptr_t values. Magic and version are checked strictly: a
++    // mismatch means the host is newer or older than this backend, and guessing
++    // at a different field order would call arbitrary code.
++    if (OPENHARMONY_ResolveBridgeFromEnvironment(bridge)) {
++        bridge->available = true;
++        // Second, independent channel: already-SDL-encoded events. Resolved
++        // here rather than in its own retry loop because the host publishes
++        // both from the same place, so if the legacy one is up and this one is
++        // not, the host is simply older -- retrying would never change that.
++        bridge->typed_available = OPENHARMONY_ResolveTypedBridgeFromEnvironment(bridge);
++        SDL_Log("openharmony: using host-provided input bridge (environment channel, attempt %d, typed=%s)",
++                bridge->attempts, bridge->typed_available ? "yes" : "no");
++        return bridge;
++    }
++
++    // Fallbacks, kept for hosts that put their symbols in the global scope.
++    // Never RTLD_NOW without RTLD_NOLOAD here -- see OPENHARMONY_HostSym().
++    void *host_handle = dlopen("libglfw.so", RTLD_NOLOAD | RTLD_NOW);
++
++    // Prefer the consumer cursor the host maintains for SDL. Falling back to the
++    // LWJGL 2 cursor keeps older hosts working, but it is a fallback only: the
++    // two consumers would then share overflow and reset state, and a version
++    // switch could inherit the other backend's read position.
++    bridge->NextEvent = (int (*)(int *, int *, int *, int *, int *))OPENHARMONY_HostSym(host_handle, "inputBridge_sdlNextEvent");
++    if (!bridge->NextEvent) {
++        bridge->NextEvent = (int (*)(int *, int *, int *, int *, int *))OPENHARMONY_HostSym(host_handle, "inputBridge_l2NextEvent");
++    }
++    bridge->SetActive = (void (*)(int))OPENHARMONY_HostSym(host_handle, "inputBridge_sdlSetActive");
++    bridge->NotifyFramePresented = (void (*)(void))OPENHARMONY_HostSym(host_handle, "inputBridge_sdlNotifyFramePresented");
++    bridge->SetGrabState = (void (*)(int))OPENHARMONY_HostSym(host_handle, "inputBridge_setGrabState");
++    bridge->IsGrabbing = (bool (*)(void))OPENHARMONY_HostSym(host_handle, "inputBridge_isGrabbing");
++    bridge->GetCursorSnapshot = (void (*)(double *, double *))OPENHARMONY_HostSym(host_handle, "inputBridge_getCursorSnapshot");
++    bridge->SetLookCursor = (void (*)(double, double))OPENHARMONY_HostSym(host_handle, "inputBridge_setLookCursor");
++
++    if (host_handle) {
++        // Drop our reference: RTLD_NOLOAD did not load anything, so this only
++        // undoes the refcount bump. The resolved pointers stay valid because the
++        // library is kept alive by whoever really loaded it.
++        dlclose(host_handle);
++    }
++
++    // Require the full set. A partial bridge would inject input while getting
++    // grab state wrong, which is worse than staying out of the way entirely.
++    bridge->available = (bridge->NextEvent != NULL) &&
++                        (bridge->SetActive != NULL) &&
++                        (bridge->NotifyFramePresented != NULL) &&
++                        (bridge->SetGrabState != NULL) &&
++                        (bridge->IsGrabbing != NULL) &&
++                        (bridge->GetCursorSnapshot != NULL) &&
++                        (bridge->SetLookCursor != NULL);
++
++    if (bridge->available) {
++        SDL_Log("openharmony: using host-provided input bridge (resolved on attempt %d, host module %s)",
++                bridge->attempts, host_handle ? "found by name" : "in global scope");
++    } else if (bridge->attempts == AMCL_RESOLVE_ATTEMPTS) {
++        // Say which parts were missing: "no bridge" and "a host that exports
++        // four of the five" need different fixes.
++        SDL_Log("openharmony: no host input bridge after %d attempts; input will come from XComponent callbacks only "
++                "(handle=%s next=%s grab=%s isgrab=%s cursor=%s warp=%s)",
++                bridge->attempts, host_handle ? "yes" : "no",
++                bridge->NextEvent ? "ok" : "MISSING",
++                bridge->SetGrabState ? "ok" : "MISSING",
++                bridge->IsGrabbing ? "ok" : "MISSING",
++                bridge->GetCursorSnapshot ? "ok" : "MISSING",
++                bridge->SetLookCursor ? "ok" : "MISSING");
++    }
++
++    return bridge;
++}
++
++// ---------------------------------------------------------------------------
++// GLFW key -> SDL_Scancode
++// ---------------------------------------------------------------------------
++// The host persists user-defined key bindings as GLFW key codes, so the
++// mapping has to happen here rather than by changing the host's stored data.
++// GLFW's key codes are a fixed part of its ABI, so a static table is safe.
++static SDL_Scancode OPENHARMONY_ScancodeFromGlfwKey(int key)
++{
++    switch (key) {
++    // Printable ASCII block (GLFW uses the ASCII value for these).
++    case 32: return SDL_SCANCODE_SPACE;
++    case 39: return SDL_SCANCODE_APOSTROPHE;
++    case 44: return SDL_SCANCODE_COMMA;
++    case 45: return SDL_SCANCODE_MINUS;
++    case 46: return SDL_SCANCODE_PERIOD;
++    case 47: return SDL_SCANCODE_SLASH;
++    case 48: return SDL_SCANCODE_0;
++    case 49: return SDL_SCANCODE_1;
++    case 50: return SDL_SCANCODE_2;
++    case 51: return SDL_SCANCODE_3;
++    case 52: return SDL_SCANCODE_4;
++    case 53: return SDL_SCANCODE_5;
++    case 54: return SDL_SCANCODE_6;
++    case 55: return SDL_SCANCODE_7;
++    case 56: return SDL_SCANCODE_8;
++    case 57: return SDL_SCANCODE_9;
++    case 59: return SDL_SCANCODE_SEMICOLON;
++    case 61: return SDL_SCANCODE_EQUALS;
++    case 65: return SDL_SCANCODE_A;
++    case 66: return SDL_SCANCODE_B;
++    case 67: return SDL_SCANCODE_C;
++    case 68: return SDL_SCANCODE_D;
++    case 69: return SDL_SCANCODE_E;
++    case 70: return SDL_SCANCODE_F;
++    case 71: return SDL_SCANCODE_G;
++    case 72: return SDL_SCANCODE_H;
++    case 73: return SDL_SCANCODE_I;
++    case 74: return SDL_SCANCODE_J;
++    case 75: return SDL_SCANCODE_K;
++    case 76: return SDL_SCANCODE_L;
++    case 77: return SDL_SCANCODE_M;
++    case 78: return SDL_SCANCODE_N;
++    case 79: return SDL_SCANCODE_O;
++    case 80: return SDL_SCANCODE_P;
++    case 81: return SDL_SCANCODE_Q;
++    case 82: return SDL_SCANCODE_R;
++    case 83: return SDL_SCANCODE_S;
++    case 84: return SDL_SCANCODE_T;
++    case 85: return SDL_SCANCODE_U;
++    case 86: return SDL_SCANCODE_V;
++    case 87: return SDL_SCANCODE_W;
++    case 88: return SDL_SCANCODE_X;
++    case 89: return SDL_SCANCODE_Y;
++    case 90: return SDL_SCANCODE_Z;
++    case 91: return SDL_SCANCODE_LEFTBRACKET;
++    case 92: return SDL_SCANCODE_BACKSLASH;
++    case 93: return SDL_SCANCODE_RIGHTBRACKET;
++    case 96: return SDL_SCANCODE_GRAVE;
++
++    // Function / navigation block (GLFW_KEY_ESCAPE == 256 onward).
++    case 256: return SDL_SCANCODE_ESCAPE;
++    case 257: return SDL_SCANCODE_RETURN;
++    case 258: return SDL_SCANCODE_TAB;
++    case 259: return SDL_SCANCODE_BACKSPACE;
++    case 260: return SDL_SCANCODE_INSERT;
++    case 261: return SDL_SCANCODE_DELETE;
++    case 262: return SDL_SCANCODE_RIGHT;
++    case 263: return SDL_SCANCODE_LEFT;
++    case 264: return SDL_SCANCODE_DOWN;
++    case 265: return SDL_SCANCODE_UP;
++    case 266: return SDL_SCANCODE_PAGEUP;
++    case 267: return SDL_SCANCODE_PAGEDOWN;
++    case 268: return SDL_SCANCODE_HOME;
++    case 269: return SDL_SCANCODE_END;
++    case 280: return SDL_SCANCODE_CAPSLOCK;
++    case 281: return SDL_SCANCODE_SCROLLLOCK;
++    case 282: return SDL_SCANCODE_NUMLOCKCLEAR;
++    case 283: return SDL_SCANCODE_PRINTSCREEN;
++    case 284: return SDL_SCANCODE_PAUSE;
++    case 290: return SDL_SCANCODE_F1;
++    case 291: return SDL_SCANCODE_F2;
++    case 292: return SDL_SCANCODE_F3;
++    case 293: return SDL_SCANCODE_F4;
++    case 294: return SDL_SCANCODE_F5;
++    case 295: return SDL_SCANCODE_F6;
++    case 296: return SDL_SCANCODE_F7;
++    case 297: return SDL_SCANCODE_F8;
++    case 298: return SDL_SCANCODE_F9;
++    case 299: return SDL_SCANCODE_F10;
++    case 300: return SDL_SCANCODE_F11;
++    case 301: return SDL_SCANCODE_F12;
++
++    // Keypad.
++    case 320: return SDL_SCANCODE_KP_0;
++    case 321: return SDL_SCANCODE_KP_1;
++    case 322: return SDL_SCANCODE_KP_2;
++    case 323: return SDL_SCANCODE_KP_3;
++    case 324: return SDL_SCANCODE_KP_4;
++    case 325: return SDL_SCANCODE_KP_5;
++    case 326: return SDL_SCANCODE_KP_6;
++    case 327: return SDL_SCANCODE_KP_7;
++    case 328: return SDL_SCANCODE_KP_8;
++    case 329: return SDL_SCANCODE_KP_9;
++    case 330: return SDL_SCANCODE_KP_PERIOD;
++    case 331: return SDL_SCANCODE_KP_DIVIDE;
++    case 332: return SDL_SCANCODE_KP_MULTIPLY;
++    case 333: return SDL_SCANCODE_KP_MINUS;
++    case 334: return SDL_SCANCODE_KP_PLUS;
++    case 335: return SDL_SCANCODE_KP_ENTER;
++    case 336: return SDL_SCANCODE_KP_EQUALS;
++
++    // Modifiers.
++    case 340: return SDL_SCANCODE_LSHIFT;
++    case 341: return SDL_SCANCODE_LCTRL;
++    case 342: return SDL_SCANCODE_LALT;
++    case 343: return SDL_SCANCODE_LGUI;
++    case 344: return SDL_SCANCODE_RSHIFT;
++    case 345: return SDL_SCANCODE_RCTRL;
++    case 346: return SDL_SCANCODE_RALT;
++    case 347: return SDL_SCANCODE_RGUI;
++    case 348: return SDL_SCANCODE_APPLICATION;
++
++    default: return SDL_SCANCODE_UNKNOWN;
++    }
++}
++
++static Uint8 OPENHARMONY_ButtonFromGlfwButton(int button)
++{
++    switch (button) {
++    case 0: return SDL_BUTTON_LEFT;
++    case 1: return SDL_BUTTON_RIGHT;
++    case 2: return SDL_BUTTON_MIDDLE;
++    case 3: return SDL_BUTTON_X1;
++    case 4: return SDL_BUTTON_X2;
++    default: return (Uint8)(button + 1);
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Cursor / look forwarding
++// ---------------------------------------------------------------------------
++static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge)
++{
++    if (!OPENHARMONY_Window) {
++        return;  // no window yet; nothing to attribute motion to.
++    }
++
++    // Read both axes in one call so they cannot come from different samples.
++    // Grab state still needs a second call, so a grab flip can in principle be
++    // observed one pump out of step with the coordinates it applies to; the
++    // baseline reset below absorbs that -- worst case one pump reports no
++    // motion, instead of reporting a bogus delta across two coordinate spaces.
++    double x = 0.0;
++    double y = 0.0;
++    bridge->GetCursorSnapshot(&x, &y);
++    const bool grabbing = bridge->IsGrabbing();
++
++    // Grab flips swap the meaning of the value (accumulated look vs absolute
++    // menu position). Re-baseline instead of diffing across the boundary.
++    if (!host_baseline_valid || (grabbing != host_last_grabbing)) {
++        host_baseline_valid = true;
++        host_last_grabbing = grabbing;
++        host_last_x = x;
++        host_last_y = y;
++        return;
++    }
++
++    if (grabbing) {
++        const double dx = x - host_last_x;
++        const double dy = y - host_last_y;
++        if ((dx != 0.0) || (dy != 0.0)) {
++            host_last_x = x;
++            host_last_y = y;
++            SDL_SendMouseMotion(0, OPENHARMONY_Window, SDL_DEFAULT_MOUSE_ID, true, (float)dx, (float)dy);
++        }
++    } else {
++        if ((x != host_last_x) || (y != host_last_y)) {
++            host_last_x = x;
++            host_last_y = y;
++            SDL_SendMouseMotion(0, OPENHARMONY_Window, SDL_DEFAULT_MOUSE_ID, false, (float)x, (float)y);
++        }
++    }
++}
++
++// Send a release for every mouse button SDL currently believes is down.
++//
++// Note for anyone looking for SDL_ResetMouse(): it exists in SDL_mouse.c but is
++// wrapped in `#if 0` with an explicit request from upstream to leave it alone
++// until Wayland needs it, so it is unavailable here. Walking the public button
++// mask does the same job for our purposes without touching core SDL.
++static void OPENHARMONY_ReleaseHeldMouseButtons(void)
++{
++    if (!OPENHARMONY_Window) {
++        return;
++    }
++
++    const SDL_MouseButtonFlags held = SDL_GetMouseState(NULL, NULL);
++    for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_X2; button++) {
++        if (held & SDL_BUTTON_MASK(button)) {
++            SDL_SendMouseButton(0, OPENHARMONY_Window, SDL_DEFAULT_MOUSE_ID, (Uint8)button, false);
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Discrete events
++// ---------------------------------------------------------------------------
++static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
++{
++    int budget = AMCL_PUMP_BUDGET;
++    int type = 0, i1 = 0, i2 = 0, i3 = 0, i4 = 0;
++
++    while ((budget-- > 0) && bridge->NextEvent(&type, &i1, &i2, &i3, &i4)) {
++        switch (type) {
++        case AMCL_EVENT_KEY: {
++            const SDL_Scancode scancode = OPENHARMONY_ScancodeFromGlfwKey(i1);
++            if (scancode != SDL_SCANCODE_UNKNOWN) {
++                // i2 carries the host's scancode, which is what SDL wants as
++                // the raw code; fall back to the key itself when absent.
++                const int rawcode = i2 ? i2 : i1;
++                SDL_SendKeyboardKey(0, SDL_DEFAULT_KEYBOARD_ID, rawcode, scancode, i3 != AMCL_GLFW_RELEASE);
++            }
++            break;
++        }
++
++        case AMCL_EVENT_CHAR:
++        case AMCL_EVENT_CHAR_MODS: {
++            // i1 is a Unicode code point; SDL_SendKeyboardText wants UTF-8.
++            char utf8[5];
++            char *end = SDL_UCS4ToUTF8((Uint32)i1, utf8);
++            *end = '\0';
++            if (utf8[0]) {
++                SDL_SendKeyboardText(utf8);
++            }
++            break;
++        }
++
++        case AMCL_EVENT_MOUSE_BUTTON:
++            if (OPENHARMONY_Window) {
++                SDL_SendMouseButton(0, OPENHARMONY_Window, SDL_DEFAULT_MOUSE_ID,
++                                    OPENHARMONY_ButtonFromGlfwButton(i1),
++                                    i2 != AMCL_GLFW_RELEASE);
++            }
++            break;
++
++        case AMCL_EVENT_SCROLL:
++            if (OPENHARMONY_Window) {
++                SDL_SendMouseWheel(0, OPENHARMONY_Window, SDL_DEFAULT_MOUSE_ID,
++                                   (float)i1, (float)i2, SDL_MOUSEWHEEL_NORMAL);
++            }
++            break;
++
++        case AMCL_EVENT_INPUT_RESET:
++            // The host dropped events (ring overflow) or rebuilt the window, so
++            // the release half of anything currently held may never arrive.
++            // Clear *both* devices: dropping only the keyboard leaves a mouse
++            // button latched down, which in a game reads as the player holding
++            // the button forever (continuous attack / block).
++            SDL_ResetKeyboard();
++            OPENHARMONY_ReleaseHeldMouseButtons();
++            host_baseline_valid = false;
++            break;
++
++        default:
++            break;  // unknown host event; ignore rather than guess.
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Already-SDL-encoded events
++// ---------------------------------------------------------------------------
++// No key/button translation happens here: `code` is a SDL_Scancode for keys and
++// a SDL_BUTTON_* for buttons, because the host mapped raw OpenHarmony identity
++// straight to SDL's encoding. That is the whole point of this channel -- the
++// legacy path below has to run OPENHARMONY_ScancodeFromGlfwKey, which means the
++// same key was translated twice and the platform's own scan code was already
++// discarded by the first hop.
++static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
++{
++    if (!bridge->typed_activated) {
++        // Align the host's read cursor to "now". Deliberately not a replay:
++        // keys pressed before SDL existed have long since sent their release.
++        if (bridge->TypedSetActive) {
++            bridge->TypedSetActive(AMCL_BACKEND_ID_SDL3, 1);
++        }
++        bridge->typed_activated = true;
++    }
++
++    int budget = AMCL_PUMP_BUDGET;
++    AMCL_BackendInputEvent event;
++    for (;;) {
++        if (budget-- <= 0) {
++            break;
++        }
++        const int status = bridge->TypedNext(AMCL_BACKEND_ID_SDL3, &event);
++        if (status == AMCL_BACKEND_RESULT_UNAVAILABLE) {
++            // The host is on the legacy route, so physical edges are in the ring
++            // and this channel must stay out of the way for good. Latching it off
++            // matters: retrying every pump would be a per-frame call into the
++            // host for a channel that cannot become available without a restart
++            // (the route bit is startup-latched).
++            bridge->typed_available = false;
++            SDL_Log("openharmony: typed input channel unavailable (host on legacy route); using the ring");
++            return;
++        }
++        if (status != AMCL_BACKEND_RESULT_EVENT) {
++            break;  // empty, or an error we must not interpret as input
++        }
++        switch (event.eventType) {
++        case AMCL_BACKEND_EVENT_KEY:
++            // `rawCode` is the platform hardware scan code when the platform
++            // reported one. The legacy path could only ever pass the GLFW key
++            // back as its own raw code, because the first translation dropped it.
++            SDL_SendKeyboardKey(event.monotonicTimeNs, SDL_DEFAULT_KEYBOARD_ID,
++                                event.rawCode, (SDL_Scancode)event.code,
++                                event.action != AMCL_BACKEND_ACTION_UP);
++            break;
++
++        case AMCL_BACKEND_EVENT_BUTTON:
++            if (OPENHARMONY_Window) {
++                SDL_SendMouseButton(event.monotonicTimeNs, OPENHARMONY_Window,
++                                    SDL_DEFAULT_MOUSE_ID, (Uint8)event.code,
++                                    event.action != AMCL_BACKEND_ACTION_UP);
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_WHEEL:
++            if (OPENHARMONY_Window) {
++                // Float straight through: the host deliberately does not
++                // quantise on this channel, because "one detent" is a GLFW
++                // notion and SDL's wheel has always been continuous.
++                SDL_SendMouseWheel(event.monotonicTimeNs, OPENHARMONY_Window,
++                                   SDL_DEFAULT_MOUSE_ID, event.wheelX,
++                                   event.wheelY, SDL_MOUSEWHEEL_NORMAL);
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_RESET:
++            // Same rule as the legacy path: clear both devices. Dropping only
++            // the keyboard leaves a mouse button latched, which a game reads as
++            // the player holding attack forever.
++            SDL_ResetKeyboard();
++            OPENHARMONY_ReleaseHeldMouseButtons();
++            host_baseline_valid = false;
++            break;
++
++        default:
++            break;  // unknown host event; ignore rather than guess.
++        }
++    }
++}
++
++void OPENHARMONY_AMCL_PumpEvents(void)
++{
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (!bridge->available) {
++        return;
++    }
++    // Cursor and grab stay on the legacy accessors in both cases: the host's
++    // look funnel owns the accumulated look value and the menu cursor, and a
++    // second source for those would desynchronise them from the grab flag.
++    OPENHARMONY_PumpHostCursor(bridge);
++    // ⭐ BOTH channels, and that is not a contradiction -- they carry disjoint
++    // sources. Getting this wrong in either direction is a real bug, so the
++    // reasoning is spelled out rather than summarised:
++    //
++    //   · Host on the typed physical route: physical key/button/wheel go to the
++    //     neutral core only, never into the legacy ring (the ring's single
++    //     writer runs on the legacy route). The ring still carries on-screen
++    //     virtual controls, gamepad-mapped keys and character input, none of
++    //     which have been migrated. Draining only the typed channel would drop
++    //     all of those -- worse than the second translation it removes.
++    //   · Host on the legacy route: physical edges reach BOTH the core and the
++    //     ring, because core submission happens before the route fork and is
++    //     unconditional. Draining both would then deliver every key twice. The
++    //     host closes that by making the typed channel report "unavailable"
++    //     whenever the typed physical route is not active, which is what the
++    //     UNAVAILABLE result below latches on.
++    //
++    // So: typed first (physical, already SDL-encoded), then the ring (the rest).
++    if (bridge->typed_available && bridge->TypedNext) {
++        OPENHARMONY_PumpTypedEvents(bridge);
++    }
++    OPENHARMONY_PumpHostEvents(bridge);
++
++    // MENU_POINTER coordinates are committed while NextEvent drains the legacy ring. Before
++    // AMCLSDLV:2 this pump sampled the cursor only above, then NextEvent immediately returned
++    // PRESS: Minecraft therefore clicked the previous position and saw the new MOTION one pump
++    // later (the user had to tap twice). Sample once more after the ring so DOWN's absolute
++    // position enters SDL now. The host holds PRESS until a successful present, so this MOTION is
++    // consumed while the menu is still open and cannot leak into relative camera movement.
++    OPENHARMONY_PumpHostCursor(bridge);
++}
++
++void OPENHARMONY_AMCL_NotifyFramePresented(void)
++{
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (bridge->available && bridge->NotifyFramePresented) {
++        // This entry point is called only after SDL_EGL_SwapBuffers returned success. A failed
++        // swap is not a consumption boundary and must not unlock a pending menu press.
++        bridge->NotifyFramePresented();
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Mouse driver hooks
++// ---------------------------------------------------------------------------
++// Relative mouse mode has to land on the host's grab state, and nowhere else:
++// the host derives both the look accumulator and its menu-cursor behaviour
++// from that single flag, so a second source of truth would desynchronise them.
++
++static bool OPENHARMONY_SetRelativeMouseMode(bool enabled)
++{
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (!bridge->available) {
++        return SDL_Unsupported();
++    }
++    bridge->SetGrabState(enabled ? 1 : 0);
++    // Force a re-baseline: the host switches coordinate spaces on this call.
++    host_baseline_valid = false;
++    return true;
++}
++
++static bool OPENHARMONY_WarpMouse(SDL_Window *window, float x, float y)
++{
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (!bridge->available) {
++        return SDL_Unsupported();
++    }
++    // The host treats this as "the caller's idea of where the cursor is",
++    // which is exactly what it needs to keep its own reference point aligned.
++    bridge->SetLookCursor((double)x, (double)y);
++    host_baseline_valid = false;
++    return true;
++}
++
++// There is no system cursor to manipulate on this platform, but the mouse
++// subsystem still expects a cursor object to exist. Hand back a bare
++// SDL_Cursor so cursor bookkeeping in SDL_mouse.c has something to hold;
++// visibility is entirely the host's business.
++static SDL_Cursor *OPENHARMONY_CreateDefaultCursor(void)
++{
++    return (SDL_Cursor *)SDL_calloc(1, sizeof(SDL_Cursor));
++}
++
++static SDL_Cursor *OPENHARMONY_CreateCursor(SDL_Surface *surface, int hot_x, int hot_y)
++{
++    (void)surface;
++    (void)hot_x;
++    (void)hot_y;
++    return (SDL_Cursor *)SDL_calloc(1, sizeof(SDL_Cursor));
++}
++
++static SDL_Cursor *OPENHARMONY_CreateSystemCursor(SDL_SystemCursor id)
++{
++    (void)id;
++    return (SDL_Cursor *)SDL_calloc(1, sizeof(SDL_Cursor));
++}
++
++static void OPENHARMONY_FreeCursor(SDL_Cursor *cursor)
++{
++    SDL_free(cursor);
++}
++
++static bool OPENHARMONY_ShowCursor(SDL_Cursor *cursor)
++{
++    (void)cursor;
++    return true;  // host owns whether anything is drawn.
++}
++
++void OPENHARMONY_AMCL_InitMouse(void)
++{
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    SDL_Mouse *mouse = SDL_GetMouse();
++    if (!mouse) {
++        return;
++    }
++
++    mouse->CreateCursor = OPENHARMONY_CreateCursor;
++    mouse->CreateSystemCursor = OPENHARMONY_CreateSystemCursor;
++    mouse->ShowCursor = OPENHARMONY_ShowCursor;
++    mouse->FreeCursor = OPENHARMONY_FreeCursor;
++    mouse->WarpMouse = OPENHARMONY_WarpMouse;
++    mouse->SetRelativeMouseMode = OPENHARMONY_SetRelativeMouseMode;
++
++    SDL_SetDefaultCursor(OPENHARMONY_CreateDefaultCursor());
++
++    if (bridge->available && bridge->SetActive) {
++        bridge->SetActive(1);
++    }
++    host_baseline_valid = false;
++}
++
++void OPENHARMONY_AMCL_QuitMouse(void)
++{
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    // The SDL window still exists while the mouse driver quits, so release first. SetActive(0)
++    // then discards every pending pre-present transaction and aligns the consumer to "now";
++    // neither a held button nor an old token may cross into the next SDL window generation.
++    OPENHARMONY_ReleaseHeldMouseButtons();
++    if (bridge->available && bridge->SetActive) {
++        bridge->SetActive(0);
++    }
++    host_baseline_valid = false;
++}
++
++#endif // SDL_VIDEO_DRIVER_OPENHARMONY
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.h b/src/video/openharmony/SDL_openharmonyamcl.h
+new file mode 100644
+index 000000000..7a685f2b3
+--- /dev/null
++++ b/src/video/openharmony/SDL_openharmonyamcl.h
+@@ -0,0 +1,45 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "SDL_internal.h"
++
++#ifndef SDL_openharmonyamcl_h_
++#define SDL_openharmonyamcl_h_
++
++// Host-driven input for embedded use (see SDL_openharmonyamcl.c for rationale).
++//
++// When SDL is loaded by a host application that owns the XComponent itself,
++// SDL never registers the XComponent callbacks, so the Dispatch*Event()
++// entry points in SDL_openharmonyevents.c are never reached. These helpers
++// let the OpenHarmony backend pull input from the host's event ring instead.
++//
++// All of them are safe no-ops when no host bridge is present, so a plain
++// (non-embedded) SDL application is unaffected.
++
++// Pull whatever the host has queued and inject it into SDL. Called from
++// OPENHARMONY_PumpEvents(), i.e. on the thread that calls SDL_PollEvent().
++extern void OPENHARMONY_AMCL_PumpEvents(void);
++extern void OPENHARMONY_AMCL_NotifyFramePresented(void);
++
++// Wire up the mouse driver hooks that map onto the host's grab state.
++extern void OPENHARMONY_AMCL_InitMouse(void);
++extern void OPENHARMONY_AMCL_QuitMouse(void);
++
++#endif // SDL_openharmonyamcl_h_
+diff --git a/src/video/openharmony/SDL_openharmonyevents.c b/src/video/openharmony/SDL_openharmonyevents.c
+index c651cb004..9ac240cf7 100644
+--- a/src/video/openharmony/SDL_openharmonyevents.c
++++ b/src/video/openharmony/SDL_openharmonyevents.c
+@@ -29,6 +29,7 @@
+
+ #include "SDL_openharmonyevents.h"
+ //#include "SDL_openharmonykeyboard.h"
++#include "SDL_openharmonyamcl.h"
+ #include "SDL_openharmonywindow.h"
+ #include "../SDL_sysvideo.h"
+ #include "../../events/SDL_events_c.h"
+@@ -65,6 +66,14 @@ typedef struct {
+
+ void SDL_OpenHarmonyDispatchTouchEvent(void *component, void *window)
+ {
++    // The XComponent outlives the SDL window: this fires both before
++    // SDL_CreateWindow() and after the window is destroyed, and every event
++    // here needs a window to normalize coordinates against and to attribute
++    // the touch to. Bail out instead of dereferencing NULL.
++    if (!OPENHARMONY_Window) {
++        return;
++    }
++
+     OH_NativeXComponent *xcomponent = (OH_NativeXComponent *) component;
+     OH_NativeXComponent_TouchEvent event;
+     if (OH_NativeXComponent_GetTouchEvent(xcomponent, window, &event) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+@@ -150,13 +159,19 @@ void SDL_OpenHarmonyDispatchTouchEvent(void *component, void *window)
+
+ void SDL_OpenHarmonyDispatchMouseEvent(void *component, void *window)
+ {
++    // Same lifetime caveat as the touch path above: no window, nothing to
++    // attribute the event to.
++    if (!OPENHARMONY_Window) {
++        return;
++    }
++
+     OH_NativeXComponent *xcomponent = (OH_NativeXComponent *) component;
+     OH_NativeXComponent_MouseEvent event;
+     if (OH_NativeXComponent_GetMouseEvent(xcomponent, window, &event) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+         return;  // oh well.
+     }
+
+-#if 1
++#if 0  // noisy: one line per mouse motion event. Flip to 1 when debugging input.
+     SDL_Log("MOUSE EVENT! screenX=%f screenY=%f x=%f y=%f timestamp=%lld action=%d button=0x%X", event.screenX, event.screenY, event.x, event.y, (long long) event.timestamp, (int) event.action, (unsigned int) event.button);
+ #endif
+
+@@ -191,6 +206,16 @@ void OPENHARMONY_InitEvents(void)
+
+ void OPENHARMONY_PumpEvents(SDL_VideoDevice *_this)
+ {
++    (void)_this;
++
++    // Input normally arrives asynchronously through the XComponent callbacks
++    // above, so there is nothing to poll for in the standalone case.
++    //
++    // When SDL is embedded in a host that owns the XComponent, those callbacks
++    // are never registered and this is the only place input can enter: drain
++    // the host's ring here, on the thread that called SDL_PollEvent().
++    // No-op when no host bridge is present.
++    OPENHARMONY_AMCL_PumpEvents();
+ }
+
+ void OPENHARMONY_QuitEvents(void)
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 278c69423..29b8650f8 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -31,6 +31,81 @@
+ #include "SDL_openharmonyevents.h"
+ #include "SDL_openharmonyopengl.h"
+ #include "../../core/openharmony/SDL_openharmony.h"
++#include "SDL_openharmonyamcl.h"
++
++// ===========================================================================
++// Desktop-GL requests on a platform that only has EGL/GLES
++// ===========================================================================
++// OpenHarmony's EGL implementation exposes no desktop-GL-renderable config: it
++// is a GLES-only EGL. SDL's common EGL layer honours the requested profile
++// literally -- for anything other than SDL_GL_CONTEXT_PROFILE_ES it asks
++// eglChooseConfig for EGL_OPENGL_BIT and calls eglBindAPI(EGL_OPENGL_API)
++// (SDL_egl.c, "attribs[i++] = EGL_OPENGL_BIT"). On this platform that request
++// matches zero configs, so window creation fails with
++// "Couldn't find matching EGL config", even though the caller could have been
++// served perfectly well.
++//
++// That failure is what an application which drives desktop GL through a
++// translation layer (GL -> GLES) runs into: the translator is itself a GLES
++// client, so the EGL surface and context it needs are GLES ones, while the API
++// it presents upwards is desktop GL. The profile the application asked for
++// describes the API it wants to *call*, not the client type EGL must create.
++//
++// So: try the request as written, and only if the platform cannot satisfy it,
++// retry as GLES. This is a fallback, not a substitution -- if some future
++// OpenHarmony device does advertise desktop-GL configs, the literal request
++// wins and nothing here changes behaviour.
++//
++// 2026-08-04 device evidence (MatePad Pro, OpenHarmony 6.1.1.120), Minecraft
++// 26.3 requesting GL 3.3 core + forward-compatible:
++//   BackendCreationException: Failed to create window with OpenGL context:
++//   Couldn't find matching EGL config (call to eglChooseConfig failed,
++//   reporting an error of EGL_SUCCESS)
++void OPENHARMONY_GLES_EnsureUsableProfile(SDL_VideoDevice *_this)
++{
++    if (!_this || !_this->egl_data) {
++        return;  // nothing loaded yet; nothing to reconcile.
++    }
++
++    if (_this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_ES) {
++        return;  // already asking for what this platform has.
++    }
++
++    // Ask the driver, do not assume. SDL_EGL_ChooseConfig() leaves the chosen
++    // config in egl_data on success, so a successful probe is also the work the
++    // surface creation path would have done anyway.
++    if (SDL_EGL_ChooseConfig(_this)) {
++        return;  // the platform really does have a desktop-GL config.
++    }
++
++    // The probe failed and set an error string describing the desktop-GL
++    // attempt. Clear it: we are about to succeed, and a stale message here
++    // resurfaces later as a confusing "eglChooseConfig failed" on an unrelated
++    // call.
++    SDL_ClearError();
++
++    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,
++                "OpenHarmony: no desktop-GL EGL config (profile 0x%x, %d.%d requested); "
++                "falling back to an OpenGL ES 3 config/context. Desktop GL semantics, if any, "
++                "come from the GL library SDL was pointed at, not from EGL.",
++                _this->gl_config.profile_mask,
++                _this->gl_config.major_version,
++                _this->gl_config.minor_version);
++
++    _this->gl_config.profile_mask = SDL_GL_CONTEXT_PROFILE_ES;
++    _this->gl_config.major_version = 3;
++    // Keep minor at 0 on purpose: with (major >= 3, minor == 0, profile ES,
++    // flags == 0) SDL's common layer creates the context through plain
++    // EGL_CONTEXT_CLIENT_VERSION instead of the EGL_KHR_create_context
++    // attributes (SDL_egl.c). That is the exact combination AMCL's GLFW-era
++    // EGL path has been shipping on these devices.
++    _this->gl_config.minor_version = 0;
++    // SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG (and friends) are desktop-GL-only
++    // context flags; passing them to eglCreateContext for a GLES client is an
++    // EGL_BAD_ATTRIBUTE waiting to happen, and dropping them is required for
++    // the CLIENT_VERSION path above to be taken at all.
++    _this->gl_config.flags = 0;
++}
+
+ bool OPENHARMONY_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context)
+ {
+@@ -50,6 +125,11 @@ SDL_GLContext OPENHARMONY_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window
+     //    return NULL;
+     //}
+
++    // Normally already done when the window was created; repeated here because
++    // a caller may create the window for one API and the context for another,
++    // and because the call is idempotent.
++    OPENHARMONY_GLES_EnsureUsableProfile(_this);
++
+     result = SDL_EGL_CreateContext(_this, window->internal->egl_surface);
+
+     //OPENHARMONY_UnlockActivityMutex();
+@@ -65,6 +145,9 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+     //OPENHARMONY_LockActivityMutex();
+
+     result = SDL_EGL_SwapBuffers(_this, window->internal->egl_surface);
++    if (result) {
++        OPENHARMONY_AMCL_NotifyFramePresented();
++    }
+
+     //OPENHARMONY_UnlockActivityMutex();
+
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.h b/src/video/openharmony/SDL_openharmonyopengl.h
+index 8bcea9669..bf8e15f0b 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.h
++++ b/src/video/openharmony/SDL_openharmonyopengl.h
+@@ -23,6 +23,12 @@
+ #ifndef SDL_openharmonyopengl_h_
+ #define SDL_openharmonyopengl_h_
+
++// Reconcile a desktop-GL request with an EGL implementation that only has GLES.
++// Call before anything consumes _this->gl_config (config selection, context
++// creation). No-op when the request is already GLES, or when the platform turns
++// out to have a desktop-GL config after all. See the comment on the definition.
++extern void OPENHARMONY_GLES_EnsureUsableProfile(SDL_VideoDevice *_this);
++
+ extern SDL_GLContext OPENHARMONY_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window *window);
+ extern bool OPENHARMONY_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context);
+ extern bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window);
+diff --git a/src/video/openharmony/SDL_openharmonyvideo.c b/src/video/openharmony/SDL_openharmonyvideo.c
+index ad03967c5..5a99fc21d 100644
+--- a/src/video/openharmony/SDL_openharmonyvideo.c
++++ b/src/video/openharmony/SDL_openharmonyvideo.c
+@@ -42,6 +42,7 @@
+ #include "SDL_openharmonyopengl.h"
+ // !!! FIXME
+ //#include "SDL_openharmonyclipboard.h"
++#include "SDL_openharmonyamcl.h"
+ #include "SDL_openharmonyevents.h"
+ //#include "SDL_openharmonykeyboard.h"
+ //#include "SDL_openharmonymouse.h"
+@@ -63,17 +64,113 @@
+ static OH_NativeXComponent *native_xcomponent = NULL;
+ static void *native_window = NULL;
+
++/* ---- Host-injected native window ("the host owns the app") ----------------
++ *
++ * Upstream assumes SDL owns the XComponent: native_xcomponent/native_window are
++ * only ever filled in by the OnSurfaceCreated callback that SDL registers from
++ * its own napi module. That registration happens in SDL_Init_Native_Interfaces(),
++ * which is the module's nm_register_func -- so it only runs when ArkTS imports
++ * libSDL3 as a napi module.
++ *
++ * AMCL is the other way round: the XComponent belongs to the host (libraryname
++ * 'entry'), and libSDL3 is merely dlopen()ed as a rendering library. That callback
++ * therefore never fires, both pointers stay NULL, and OPENHARMONY_CreateWindow()
++ * fails at its "Don't have Native XComponent or Native Window" check.
++ *
++ * The host already publishes what we need. AMCL's platform/xcomponent.cpp exports
++ * the native window pointer and its size as environment variables from its own
++ * OnSurfaceCreated, because environment variables are visible across every .so and
++ * are not affected by OHOS linker namespace isolation. glfw_compat.cpp and
++ * glfw_vulkan.cpp already consume them the same way, so adopting them here needs
++ * no host-side change at all.
++ *
++ * Two things worth knowing:
++ *
++ *  1. This must use SDL_getenv_unsafe(), not SDL_getenv(). The latter reads the
++ *     SDL_GetEnvironment() snapshot, which is populated once; the host's surface
++ *     can become ready *after* SDL_Init, and a snapshot would never see the value
++ *     that was setenv()'d later. SDL_getenv_unsafe() goes straight to getenv().
++ *
++ *  2. In this mode there is no OH_NativeXComponent* to be had -- it lives in the
++ *     host's napi module. So the window size cannot come from
++ *     OH_NativeXComponent_GetXComponentSize(); we have to take the host's numbers.
++ *     Callers must therefore tolerate a NULL xcomponent, which is why
++ *     OPENHARMONY_CreateWindow() now only insists on the window itself.
++ */
++static int injected_window_w = 0;
++static int injected_window_h = 0;
++
++/* Re-read the host's variables and mirror whatever they currently say, including
++ * the transition back to "no surface". This is deliberately a *sync* rather than a
++ * one-shot adopt: the host may publish a surface long after SDL_Init, may replace it
++ * (surface re-created after the app returns to the foreground), or may drop it.
++ * Reflecting the current value on every query keeps us from handing out a stale
++ * window pointer, and means the host only has to maintain its variables.
++ *
++ * Note this only affects which window a *subsequent* SDL_CreateWindow() will pick up.
++ * An SDL_Window that already exists keeps its own copy in SDL_WindowData, so clearing
++ * here never pulls the surface out from under a live window. */
++static void OPENHARMONY_SyncHostNativeWindow(void)
++{
++    void *host_window = NULL;
++    int w = 0;
++    int h = 0;
++
++    const char *ptrstr = SDL_getenv_unsafe("AMCL_NATIVE_WINDOW");
++    if (ptrstr && (*ptrstr != '\0')) {
++        char *endp = NULL;
++        const unsigned long long raw = SDL_strtoull(ptrstr, &endp, 10);
++        // Reject a null pointer or anything that isn't a clean decimal value.
++        if ((raw != 0) && (!endp || (*endp == '\0'))) {
++            // The host publishes the pointer and the two dimensions as three separate
++            // variables, so a torn state is observable. Only commit once all three agree.
++            const char *wstr = SDL_getenv_unsafe("AMCL_WINDOW_WIDTH");
++            const char *hstr = SDL_getenv_unsafe("AMCL_WINDOW_HEIGHT");
++            const int hw = wstr ? SDL_atoi(wstr) : 0;
++            const int hh = hstr ? SDL_atoi(hstr) : 0;
++            if ((hw > 0) && (hh > 0)) {
++                host_window = (void *) (uintptr_t) raw;
++                w = hw;
++                h = hh;
++            }
++        }
++    }
++
++    native_window = host_window;
++    injected_window_w = w;
++    injected_window_h = h;
++}
++
+ void SDL_OpenHarmonyGetNativeWindowPointers(void **xcomponent, void **window)
+ {
++    /* Only consult the host when SDL has no XComponent of its own. If our callbacks
++     * did register, native_xcomponent is set and that state is authoritative -- the
++     * environment must not get a say in it. */
++    if (!native_xcomponent) {
++        OPENHARMONY_SyncHostNativeWindow();
++    }
++
+     *xcomponent = (void *) native_xcomponent;
+     *window = (void *) native_window;
+ }
+
++void SDL_OpenHarmonyGetInjectedWindowSize(int *w, int *h)
++{
++    if (w) {
++        *w = injected_window_w;
++    }
++    if (h) {
++        *h = injected_window_h;
++    }
++}
++
+ void SDL_OpenHarmonyVideoSurfaceDestroyed(void *component, void *window)
+ {
+     SDL_assert(native_xcomponent == ((OH_NativeXComponent *) component));  // right now we assume one surface, one window.
+     native_xcomponent = NULL;
+     native_window = NULL;
++    injected_window_w = 0;
++    injected_window_h = 0;
+ }
+
+ void SDL_OpenHarmonyVideoSurfaceChanged(void *component, void *window)
+@@ -117,6 +214,23 @@ bool OPENHARMONY_VideoInit(SDL_VideoDevice *_this)
+     mode.refresh_rate = (float) dispinfo->refreshRate;
+     mode.pixel_density = 1.0f;
+
++    /* When the host injects the drawable, the display this process can reach is
++     * the host's surface, not the panel. The host may run that surface at a
++     * reduced buffer geometry (AMCL render scale), and then everything it
++     * publishes -- window size, input coordinates -- lives in the scaled space.
++     * Publishing the panel's physical size here would leave the display mode as
++     * the one system API handing out geometry from the *other* space: callers
++     * that size their coordinate math from the desktop / current mode (or from
++     * the fullscreen mode list, which mirrors it) end up mixing the two spaces,
++     * which shows up as a constant-factor input offset. The physical size stays
++     * as the fallback whenever no host surface is published; the live sync in
++     * SDL_openharmonyamcl.c keeps the mode following later host publications. */
++    OPENHARMONY_SyncHostNativeWindow();
++    if ((injected_window_w > 0) && (injected_window_h > 0)) {
++        mode.w = injected_window_w;
++        mode.h = injected_window_h;
++    }
++
+     const NativeDisplayManager_Rotation rotation = dispinfo->rotation;
+     const NativeDisplayManager_Orientation orientation = dispinfo->orientation;
+
+@@ -161,6 +275,12 @@ bool OPENHARMONY_VideoInit(SDL_VideoDevice *_this)
+     OPENHARMONY_InitMouse();
+ #endif
+
++    // Mouse hooks that forward relative-mouse-mode onto a host-provided grab
++    // state. Self-disables when no host bridge is present, so this is safe
++    // regardless of how SDL was loaded. (Separate from the OPENHARMONY_InitMouse
++    // above, which is still unimplemented.)
++    OPENHARMONY_AMCL_InitMouse();
++
+     // We're done!
+     return true;
+ }
+@@ -172,6 +292,8 @@ void OPENHARMONY_VideoQuit(SDL_VideoDevice *_this)
+     OPENHARMONY_QuitMouse();
+     OPENHARMONY_QuitTouch();
+ #endif
++
++    OPENHARMONY_AMCL_QuitMouse();
+ }
+
+ static void OPENHARMONY_DeleteDevice(SDL_VideoDevice *device)
+@@ -206,8 +328,18 @@ static SDL_VideoDevice *OPENHARMONY_CreateDevice(void)
+     device->VideoInit = OPENHARMONY_VideoInit;
+     device->VideoQuit = OPENHARMONY_VideoQuit;
+
++    // Only called when a display has no fullscreen modes yet; publishes the one
++    // mode this platform has. See the comment block in SDL_openharmonywindow.c
++    // for why the other window/display hooks are deliberately left NULL.
++    device->GetDisplayModes = OPENHARMONY_GetDisplayModes;
+     device->CreateSDLWindow = OPENHARMONY_CreateWindow;
+     device->SetWindowTitle = OPENHARMONY_SetWindowTitle;
++    // Accept-and-reconcile, not stubs: see the comment above their definitions.
++    // Reporting SDL_Unsupported() here makes an application's "leave fullscreen"
++    // path fail even though the window is already in the only state this
++    // platform has.
++    device->SetWindowSize = OPENHARMONY_SetWindowSize;
++    device->SetWindowPosition = OPENHARMONY_SetWindowPosition;
+     device->SetWindowFullscreen = OPENHARMONY_SetWindowFullscreen;
+     device->MinimizeWindow = OPENHARMONY_MinimizeWindow;
+     device->SetWindowResizable = OPENHARMONY_SetWindowResizable;
+diff --git a/src/video/openharmony/SDL_openharmonyvideo.h b/src/video/openharmony/SDL_openharmonyvideo.h
+index 5efdb1bf0..c42ed2627 100644
+--- a/src/video/openharmony/SDL_openharmonyvideo.h
++++ b/src/video/openharmony/SDL_openharmonyvideo.h
+@@ -31,8 +31,15 @@ extern void SDL_OpenHarmonyVideoSurfaceChanged(void *component, void *window);
+ extern void SDL_OpenHarmonyVideoSurfaceCreated(void *component, void *window);
+
+ // Get the app's current native window.
++// The xcomponent may come back NULL when the host owns the surface and handed us
++// only a window (see the comment block in SDL_openharmonyvideo.c); callers must
++// cope with that and use SDL_OpenHarmonyGetInjectedWindowSize() for the geometry.
+ extern void SDL_OpenHarmonyGetNativeWindowPointers(void **xcomponent, void **window);
+
++// Size reported by the host alongside an injected window. Zero for both when there
++// is no injected window, which includes the normal case of SDL owning the XComponent.
++extern void SDL_OpenHarmonyGetInjectedWindowSize(int *w, int *h);
++
+ struct SDL_VideoData
+ {
+ // !!! FIXME: Android stuff.
+diff --git a/src/video/openharmony/SDL_openharmonywindow.c b/src/video/openharmony/SDL_openharmonywindow.c
+index 88466f02d..208723cb1 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.c
++++ b/src/video/openharmony/SDL_openharmonywindow.c
+@@ -36,6 +36,7 @@
+ #include "SDL_openharmonyvideo.h"
+ #include "SDL_openharmonyevents.h"
+ #include "SDL_openharmonywindow.h"
++#include "SDL_openharmonyopengl.h"
+
+
+ // Currently only one window
+@@ -57,10 +58,14 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+     }
+
+     void *voidxcomp, *native_window;
++    int win_w = 0, win_h = 0;
+     SDL_OpenHarmonyGetNativeWindowPointers(&voidxcomp, &native_window);
+     OH_NativeXComponent *native_xcomponent = (OH_NativeXComponent *) voidxcomp;
+-    if (!native_xcomponent || !native_window) {
+-        result = SDL_SetError("Don't have Native XComponent or Native Window");
++    // The xcomponent is optional: when the host owns the surface it can only give us
++    // the window itself, because the OH_NativeXComponent* lives in the host's napi
++    // module. The window is the part we genuinely cannot do without.
++    if (!native_window) {
++        result = SDL_SetError("Don't have a Native Window");
+         goto endfunction;
+     }
+
+@@ -69,14 +74,41 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+     Android_JNI_SetOrientation(window->w, window->h, window->flags & SDL_WINDOW_RESIZABLE, SDL_GetHint(SDL_HINT_ORIENTATIONS));
+ #endif
+
+-    uint64_t w, h;
+-    OH_NativeXComponent_GetXComponentSize(native_xcomponent, native_window, &w, &h);
++    if (native_xcomponent) {
++        uint64_t w = 0, h = 0;
++        OH_NativeXComponent_GetXComponentSize(native_xcomponent, native_window, &w, &h);
++        win_w = (int) w;
++        win_h = (int) h;
++    } else {
++        // No xcomponent to measure, so trust the size the host reported with the window.
++        SDL_OpenHarmonyGetInjectedWindowSize(&win_w, &win_h);
++    }
++
++    if ((win_w <= 0) || (win_h <= 0)) {
++        result = SDL_SetError("Native Window has no usable size (%dx%d)", win_w, win_h);
++        goto endfunction;
++    }
+
+-    // Adjust the window data to match the screen
++    // Adjust the window data to match the screen. The position is silent
++    // bookkeeping, but an adopted *size* must go through the real event path
++    // whenever it differs from what the caller asked for. A silent assignment
++    // leaves the application believing its requested size: SDL core dedupes
++    // every SDL_EVENT_WINDOW_RESIZED against window->w/h (SDL_windowevents.c),
++    // so once these fields hold the host's size without an event having been
++    // posted, every later re-announcement (SetWindowSize / SetWindowFullscreen
++    // below, the live-window sync) is swallowed and the caller can never learn
++    // the real geometry. Minecraft 26.3 sizes its cursor->GUI mapping from the
++    // width it believes (its launcher-provided --width), and with the host
++    // surface running at a scaled buffer geometry that belief is the unscaled
++    // panel size while the surface and the input coordinates live in the
++    // scaled space -- a constant-factor click offset with no error logged
++    // anywhere. When the sizes agree (no render scale, matching request) the
++    // guard skips the event and this is byte-for-byte the old behaviour.
+     window->x = 0;
+     window->y = 0;
+-    window->w = (int) w;
+-    window->h = (int) h;
++    if ((window->w != win_w) || (window->h != win_h)) {
++        SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, win_w, win_h);
++    }
+
+     // One window, it always has focus
+     SDL_SetMouseFocus(window);
+@@ -97,6 +129,11 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+        incompatible with vkCreateAndroidSurfaceKHR */
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     if (window->flags & SDL_WINDOW_OPENGL) {
++        // SDL_EGL_CreateSurface() picks the EGLConfig from _this->gl_config, and
++        // a desktop-GL profile request cannot be satisfied by this platform's
++        // GLES-only EGL. Reconcile first, or the surface fails to be created
++        // with "Couldn't find matching EGL config".
++        OPENHARMONY_GLES_EnsureUsableProfile(_this);
+         data->egl_surface = SDL_EGL_CreateSurface(_this, window, (NativeWindowType)data->native_window);
+         if (data->egl_surface == EGL_NO_SURFACE) {
+             SDL_free(data);
+@@ -122,81 +159,209 @@ endfunction:
+     return result;
+ }
+
++// ===========================================================================
++// A note on the window hooks this backend deliberately leaves unwired
++// ===========================================================================
++// It is tempting to read "hook not assigned" as "feature silently broken", but
++// SDL core does not treat them uniformly. Checked against SDL_video.c:
++//
++//   ShowWindow (3435)            -> falls back to SDL_SetMouseFocus() +
++//                                   SDL_SetKeyboardFocus() and still emits
++//                                   SDL_EVENT_WINDOW_SHOWN. Wiring a hook that
++//                                   forgets to set focus would be *worse* than
++//                                   not wiring one: the window would come up
++//                                   without keyboard focus.
++//   GetWindowSizeInPixels (3320) -> falls back to SDL_GetWindowSize() scaled by
++//                                   the display mode's pixel density.
++//   SyncWindow (3602)            -> falls back to `return true`, which is
++//                                   correct here: nothing about our window
++//                                   changes asynchronously.
++//   SetWindowIcon (2995)         -> `return SDL_Unsupported()`.
++//   SetWindow{Min,Max}imumSize   -> skipped, then routed through
++//     (3358 / 3398)                 SDL_SetWindowSize(), which is wired below.
++//   SetDisplayMode (1548)        -> skipped; the system owns the mode.
++//   Start/StopTextInput (5829)   -> skipped; text arrives from the host, see
++//                                   the input bridge.
++//
++// For every one of those, leaving the hook NULL produces either a correct
++// fallback or an honest "unsupported" — both better than a stub that claims
++// success while changing nothing.
++//
++// SetWindowSize / SetWindowPosition used to be on that list, for what looked
++// like the same reason. They are wired below instead, because "the backend
++// cannot honour this" and "the caller can cope with being told so" are two
++// different claims, and only the first one was true.
++//
++// GetDisplayModes is the other exception, and it is implemented below.
++// ===========================================================================
++
++bool OPENHARMONY_GetDisplayModes(SDL_VideoDevice *_this, SDL_VideoDisplay *display)
++{
++    // Unlike the hooks listed above, this one is worth wiring: SDL only calls it
++    // when a display has no fullscreen modes yet (SDL_video.c:1225), and
++    // SDL_AddBasicVideoDisplay() -- which VideoInit uses -- fills in
++    // desktop_mode *only* (SDL_video.c:841-850). Leave it NULL and
++    // SDL_GetFullscreenDisplayModes() hands the application an empty list.
++    //
++    // There is exactly one mode available on this platform: the one the system
++    // is already in. Publish that, so callers enumerating modes see something
++    // truthful instead of nothing.
++    (void)_this;
++    if (!display) {
++        return SDL_InvalidParamError("display");
++    }
++    SDL_DisplayMode mode = display->desktop_mode;
++    return SDL_AddFullscreenDisplayMode(display, &mode);
++}
++
+ void OPENHARMONY_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+-#if 0  // !!! FIXME
+-    Android_JNI_SetActivityTitle(window->title);
+-#endif
++    // Intentionally empty, not unimplemented: an OpenHarmony application fills
++    // its window and has no title bar for a caller-supplied string to appear
++    // in. The window title is still stored by SDL and readable via
++    // SDL_GetWindowTitle(), it just has nowhere to be displayed.
++    //
++    // SetWindowTitle returns void, so there is no way to signal "unsupported"
++    // here even if we wanted to; leaving the hook wired keeps SDL from having
++    // to special-case a NULL pointer on every title change.
++    (void)_this;
++    (void)window;
+ }
+
+-SDL_FullscreenResult OPENHARMONY_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Window *window, SDL_VideoDisplay *display, SDL_FullscreenOp fullscreen)
++// ===========================================================================
++// Size and position: accept the request, then report reality
++// ===========================================================================
++// The window is the system's (or, when SDL is embedded, the host's) surface;
++// the backend cannot move or resize it. The question is what to tell a caller
++// who asks anyway.
++//
++// Leaving these hooks NULL makes SDL_SetWindowSize() / SDL_SetWindowPosition()
++// report SDL_Unsupported(), which reads like the honest answer. It is honest
++// about the backend, but it is the wrong answer for the caller, because these
++// two entry points are not optional in practice:
++//
++//   SDL_SetWindowFullscreen(false) + SDL_SetWindowPosition() +
++//   SDL_SetWindowSize() is the canonical "leave fullscreen" sequence, and
++//   applications treat a false return from any of it as an error.
++//
++// 2026-08-04 device evidence (MatePad Pro, OpenHarmony 6.1.1.120): Minecraft
++// 26.3 restores a windowed mode on the first launch after an unclean shutdown,
++// and logged exactly that:
++//   [Render thread/ERROR]: Couldn't leave fullscreen: That operation is not supported
++// -- i.e. SDL_Unsupported() propagated out of this backend, from a request that
++// was in fact already satisfied: the window covers the whole surface, which is
++// the closest thing to "windowed" this platform has.
++//
++// So these hooks accept the request and then immediately re-announce the actual
++// geometry through the normal event path. That is not a stub claiming success:
++// SDL's cached size/position converge on what the window really is (the RESIZED
++// / MOVED events are what update window->w/h and window->x/y and clear the
++// pending flags), so a caller that reads back SDL_GetWindowSize() gets the
++// truth, not the value it asked for.
++// ===========================================================================
++
++void OPENHARMONY_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+-#if 0  // !!! FIXME
+-    Android_LockActivityMutex();
++    (void)_this;
+
+-    if (window == OPENHARMONY_Window) {
+-        SDL_WindowData *data;
+-        int old_w, old_h, new_w, new_h;
++    if (!window) {
++        return;
++    }
+
+-        // If the window is being destroyed don't change visible state
+-        if (!window->is_destroying) {
+-            Android_JNI_SetWindowStyle(fullscreen);
+-        }
++    // The size is whatever the surface is. Prefer the value the host published
++    // for the surface currently in use; fall back to what the window already
++    // believes when there is no host-injected size (SDL owns the XComponent).
++    int actual_w = 0;
++    int actual_h = 0;
++    SDL_OpenHarmonyGetInjectedWindowSize(&actual_w, &actual_h);
++    if ((actual_w <= 0) || (actual_h <= 0)) {
++        actual_w = window->w;
++        actual_h = window->h;
++    }
+
+-        /* Ensure our size matches reality after we've executed the window style change.
+-         *
+-         * It is possible that we've set width and height to the full-size display, but on
+-         * Samsung DeX or Chromebooks or other windowed Android environments, our window may
+-         * still not be the full display size.
+-         */
+-        if (!SDL_IsDeXMode() && !SDL_IsChromebook()) {
+-            goto endfunction;
+-        }
++    if ((actual_w > 0) && (actual_h > 0)) {
++        // Sent unconditionally, not only when it differs from the request: SDL
++        // has already recorded pending.w/h from the caller, and this event is
++        // what clears that pending state. Skipping it when the numbers happen
++        // to match would leave the request outstanding.
++        SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, actual_w, actual_h);
++    }
++}
+
+-        data = window->internal;
+-        if (!data || !data->native_window) {
+-            if (data && !data->native_window) {
+-                SDL_SetError("Missing native window");
+-            }
+-            goto endfunction;
+-        }
++bool OPENHARMONY_SetWindowPosition(SDL_VideoDevice *_this, SDL_Window *window)
++{
++    (void)_this;
+
+-        old_w = window->w;
+-        old_h = window->h;
++    if (!window) {
++        return SDL_InvalidParamError("window");
++    }
+
+-        new_w = ANativeWindow_getWidth(data->native_window);
+-        new_h = ANativeWindow_getHeight(data->native_window);
++    // There is one surface and it starts at the origin; there is nowhere else
++    // for a window to be on this platform.
++    SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_MOVED, 0, 0);
++    return true;
++}
+
+-        if (new_w < 0 || new_h < 0) {
+-            SDL_SetError("ANativeWindow_getWidth/Height() fails");
+-        }
++SDL_FullscreenResult OPENHARMONY_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Window *window, SDL_VideoDisplay *display, SDL_FullscreenOp fullscreen)
++{
++    // Why this reports SUCCEEDED without touching any window style
++    // --------------------------------------------------------------
++    // An OpenHarmony application window is sized by the system (and, when SDL
++    // is embedded, by the host that owns the XComponent). There is no windowed
++    // mode to switch to and no style for the backend to set: the SDL window
++    // already covers everything it is ever going to cover. So for
++    // SDL_FULLSCREEN_OP_ENTER "you are now fullscreen" is simply true, and for
++    // OP_LEAVE there is nothing to undo.
++    //
++    // Returning SDL_FULLSCREEN_FAILED here would be actively wrong: SDL's core
++    // treats that as a hard error (SDL_video.c does `goto error` on it), which
++    // would make every SDL_SetWindowFullscreen() call fail even though the
++    // window is in exactly the state the caller asked for. SDL core also emits
++    // the matching ENTER/LEAVE_FULLSCREEN event on SUCCEEDED, so the reported
++    // state stays self-consistent.
++    //
++    // What *is* worth doing on this path is what the Android backend does:
++    // reconcile SDL's cached window size with reality. The host can resize the
++    // surface underneath us, and a stale size shows up later as a wrongly
++    // scaled framebuffer rather than as an obvious error.
++    (void)display;
++    (void)fullscreen;
+
+-        if (old_w != new_w || old_h != new_h) {
+-            SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, new_w, new_h);
++    if (window == OPENHARMONY_Window) {
++        int host_w = 0;
++        int host_h = 0;
++        SDL_OpenHarmonyGetInjectedWindowSize(&host_w, &host_h);
++        if ((host_w > 0) && (host_h > 0) && ((window->w != host_w) || (window->h != host_h))) {
++            SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, host_w, host_h);
+         }
+     }
+
+-endfunction:
+-
+-    Android_UnlockActivityMutex();
+-#endif
+-
+     return SDL_FULLSCREEN_SUCCEEDED;
+ }
+
+ void OPENHARMONY_MinimizeWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+-#if 0  // !!! FIXME
+-    Android_JNI_MinimizeWindow();
+-#endif
++    // Not implemented: moving the application to the background is a decision
++    // for the user or the host application, not something a library should do
++    // on its own behalf. Android exposes a JNI call for this; the OpenHarmony
++    // NDK has no equivalent that a plain native library may invoke.
++    //
++    // MinimizeWindow returns void, so a caller cannot detect the no-op. That is
++    // survivable -- unlike the size-related hooks, nothing downstream computes
++    // geometry from it.
++    (void)_this;
++    (void)window;
+ }
+
+ void OPENHARMONY_SetWindowResizable(SDL_VideoDevice *_this, SDL_Window *window, bool resizable)
+ {
+-#if 0  // !!! FIXME
+-    // Set orientation
+-    Android_JNI_SetOrientation(window->w, window->h, window->flags & SDL_WINDOW_RESIZABLE, SDL_GetHint(SDL_HINT_ORIENTATIONS));
+-#endif
++    // Not implemented: on Android this maps onto locking screen orientation,
++    // which is an activity-level setting. The window is sized by the system (or
++    // the embedding host) either way, so SDL cannot make a window resizable or
++    // fixed-size from here.
++    (void)_this;
++    (void)window;
++    (void)resizable;
+ }
+
+ void OPENHARMONY_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
+diff --git a/src/video/openharmony/SDL_openharmonywindow.h b/src/video/openharmony/SDL_openharmonywindow.h
+index 07515eb42..a9e5e6ab7 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.h
++++ b/src/video/openharmony/SDL_openharmonywindow.h
+@@ -26,8 +26,11 @@
+ #include "../../core/openharmony/SDL_openharmony.h"
+ #include "../SDL_egl_c.h"
+
++extern bool OPENHARMONY_GetDisplayModes(SDL_VideoDevice *_this, SDL_VideoDisplay *display);
+ extern bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID create_props);
+ extern void OPENHARMONY_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window *window);
++extern void OPENHARMONY_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window);
++extern bool OPENHARMONY_SetWindowPosition(SDL_VideoDevice *_this, SDL_Window *window);
+ extern SDL_FullscreenResult OPENHARMONY_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Window *window, SDL_VideoDisplay *display, SDL_FullscreenOp fullscreen);
+ extern void OPENHARMONY_MinimizeWindow(SDL_VideoDevice *_this, SDL_Window *window);
+ extern void OPENHARMONY_SetWindowResizable(SDL_VideoDevice *_this, SDL_Window *window, bool resizable);

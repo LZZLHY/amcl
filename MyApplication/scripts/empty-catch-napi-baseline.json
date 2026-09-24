@@ -1,0 +1,17 @@
+{
+  "purpose": "空 catch 直接包住 testNapi.* 调用的每文件条数棘轮基线。门禁只在某个文件变多时失败。",
+  "howToUpdate": "偿还了某个文件之后跑 node scripts/check-empty-catch-napi.mjs --update-baseline。⚠️ 三条纪律：(1) 偿还的意思是让失败可被观测（记日志 / 一次性标记 / native 计数器），不是把 try/catch 整个删掉 —— 本门禁分不出这两者；(2) 热路径上不要无条件 warn，照 McGamePage 既有的 gate0TelemetryEnabled 一次性置位或 heldButtonProbeCount 有界日志写；(3) 若某个文件的数字是**变多**的，不得默默重记基线 —— 必须在计划文档里写下理由，否则棘轮退化成\"每次失败就重置\"，等于没有棘轮。",
+  "recordedAt": "2026-08-22",
+  "totals": {
+    "scannedFiles": 223,
+    "emptyCatchWithNapi": 51
+  },
+  "emptyCatchPerFile": {
+    "entry/src/main/ets/pages/McGamePage.ets": 35,
+    "entry/src/main/ets/entryability/EntryAbility.ets": 7,
+    "entry/src/main/ets/gameability/GameAbility.ets": 5,
+    "entry/src/main/ets/components/GameControls.ets": 2,
+    "entry/src/main/ets/components/ActivityLogUploader.ets": 1,
+    "entry/src/desktop/ProductGameControlSurface.ets": 1
+  }
+}

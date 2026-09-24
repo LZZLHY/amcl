@@ -1,0 +1,66 @@
+LIBGLFW {
+    global:
+        # API names have an uppercase character after their namespace prefix.
+        # This deliberately excludes internal data such as gl_state,
+        # glsl_cache_file_path, egl and gles even if visibility regresses.
+        glfw[A-Z]*;
+        gl[A-Z]*;
+        egl[A-Z]*;
+        glXGetProcAddress;
+        glXGetProcAddressARB;
+
+        # Public MobileGlues 2.0 helper ABI.
+        mg_initialize_v1;
+        mg_get_init_report_v1;
+        mg_angle_in_use;
+        mg_multidraw_bench_progress;
+        mg_multidraw_bench_run;
+
+        # Backend names returned by glXGetProcAddress after multidraw selection.
+        mg_glMultiDrawElementsBaseVertex_indirect;
+        mg_glMultiDrawElementsBaseVertex_multiindirect;
+        mg_glMultiDrawElementsBaseVertex_basevertex;
+        mg_glMultiDrawElementsBaseVertex_drawelements;
+        mg_glMultiDrawElementsBaseVertex_compute;
+        mg_glMultiDrawElementsBaseVertex_multibasevertex;
+        mg_glMultiDrawElements_indirect;
+        mg_glMultiDrawElements_multiindirect;
+        mg_glMultiDrawElements_basevertex;
+        mg_glMultiDrawElements_drawelements;
+        mg_glMultiDrawElements_compute;
+        mg_glMultiDrawElements_multibasevertex;
+        mg_glMultiDrawElements_multiarrays;
+        mg_glMultiDrawArrays_unroll;
+        mg_glMultiDrawArrays_multiarrays;
+        mg_glMultiDrawArrays_multiindirect;
+
+        # The neutral getter is the only symbol consumers may resolve by name.
+        # The descriptor helper implementation stays local; its single table
+        # pointer crosses namespaces through AMCL_INPUT_HOST_DESCRIPTOR.
+        amclInputGetHostApiV1;
+        amclDesktopHostResolve;
+
+        # Non-GLFW backends (LWJGL2 / SDL3) pull already-backend-encoded typed
+        # events through these. Their addresses travel by environment variable,
+        # because dlsym across the JVM's linker namespace was measured to fail
+        # (see backend_input_bridge.h). Exporting them anyway is for
+        # verifiability: a hidden symbol cannot be found in the artifact, and
+        # "the artifact can prove this channel is in it" is exactly what the
+        # AMCL_GATE0_EVIDENCE_IDS episode cost us.
+        #
+        # ⚠️ A visibility attribute alone is NOT enough here -- this version
+        # script is the export whitelist, and anything missing from it stays
+        # local no matter what the source says. That is how the first attempt
+        # at these three symbols silently produced `t` instead of `T`.
+        amclBackendInputNext;
+        amclBackendInputSetActive;
+        amclBackendInputPublishAddress;
+
+        inputBridge_*;
+        pojavStartPumping;
+        pojavPumpEvents;
+        pojavStopPumping;
+        Java_*;
+    local:
+        *;
+};

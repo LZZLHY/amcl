@@ -1,0 +1,18 @@
+{
+  "source": "https://modrinth.com/mod/create-fly/version/phlsMPgT",
+  "sourceJarSha1": "fe6f561de7d3b13e384dce6482760f766cb00cc0",
+  "classes": [
+    {
+      "path": "com/zurrtum/create/client/flywheel/backend/engine/uniform/LevelUniforms.class",
+      "sha256": "ed0263e27f4bec336b7673901c42aacd5395a59ac2e6f249a93754805174f1cb"
+    },
+    {
+      "path": "com/zurrtum/create/client/flywheel/backend/engine/uniform/UniformWriter.class",
+      "sha256": "98c1201182ecb50eda44a940385e6c51e3bd06ac9b8647ba30742b9fa6b580ba"
+    },
+    {
+      "path": "com/zurrtum/create/client/flywheel/backend/engine/uniform/UniformBuffer.class",
+      "sha256": "4da38b189b8f75b392568665ec92ae2939f80dae308b956d17936cbf65cdc9f4"
+    }
+  ]
+}

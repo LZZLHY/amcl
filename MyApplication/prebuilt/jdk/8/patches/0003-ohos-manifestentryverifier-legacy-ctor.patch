@@ -1,0 +1,23 @@
+diff --git a/jdk/src/share/classes/sun/security/util/ManifestEntryVerifier.java b/jdk/src/share/classes/sun/security/util/ManifestEntryVerifier.java
+index 303c96d7..8bf80564 100644
+--- a/jdk/src/share/classes/sun/security/util/ManifestEntryVerifier.java
++++ b/jdk/src/share/classes/sun/security/util/ManifestEntryVerifier.java
+@@ -76,6 +76,18 @@ public class ManifestEntryVerifier {
+     /**
+      * Create a new ManifestEntryVerifier object.
+      */
++    /**
++     * Create a new ManifestEntryVerifier object (legacy one-arg form).
++     * Re-added for compatibility with code compiled against pre-backport JDK 8
++     * (e.g. Forge modlauncher 4.x/8.x SecureJarHandler). Delegates to the
++     * two-arg constructor using the standard manifest file name.
++     */
++
++    public ManifestEntryVerifier(Manifest man)
++    {
++        this(man, JarFile.MANIFEST_NAME);
++    }
++
+     public ManifestEntryVerifier(Manifest man, String manifestFileName)
+     {
+         createdDigests = new HashMap<String, MessageDigest>(11);

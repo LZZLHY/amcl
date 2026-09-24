@@ -1,0 +1,231 @@
+/** 真实native_gl.cpp、SystemEgl函数表和探针核心，与固定官方EGL选择/锁存正文联合执行。
+ * 边界替身提供系统能力、动态库符号和GPU结果；每个场景由独立进程运行，禁止把
+ * 无真实GPU的通过当作电脑画面通过。失败资源计数与生产持有记录必须一致。
+ */
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <iostream>
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+#include "@ROOT@/entry/src/main/cpp/tests/host/host_test_check.h"
+bool deviceSupportsGl=true;
+#define OPENGL_WRAPPER_ENABLE_GL4 1
+#define USE_IGRAPHICS_EXTENDS_HOOKS 0
+#define WLOGI(...) ((void)0)
+#define WLOGE(...) ((void)0)
+namespace OHOS {
+constexpr auto SUPPORT_GL_TO_VK="fixture-support";
+namespace system { bool GetBoolParameter(const char*,bool){return deviceSupportsGl;} }
+struct Hook {bool isLoad=false,useMesa=false;int gl=0;} gWrapperHook;
+std::mutex gInitMutex;
+struct PreInit {bool InitStat(){return true;}}preInitializer;
+// 系统包装层的TLS不能省成no-op：装入EGL的线程先持有no-context表，首次EglCoreInit
+// 只修正执行初始化的那个线程。新线程的空TLS与已有no-context表是不同状态。
+int noContextHook=0;
+thread_local int* glHook=nullptr;
+struct ThreadPrivateDataCtl {static void SetGlHookTable(int* value){glHook=value;}};
+void WrapperHookTableInit(){}
+unsigned loads=0;
+struct EglWrapperLoader {
+    static EglWrapperLoader& GetInstance(){static EglWrapperLoader instance;return instance;}
+    bool Load(Hook* table){++loads;table->isLoad=true;return true;}
+};
+struct EglWrapperLayer {
+    static EglWrapperLayer& GetInstance(){static EglWrapperLayer instance;return instance;}
+    bool Init(Hook*){return true;}
+};
+}
+@OFFICIAL@
+namespace gpu {
+std::string fault;
+thread_local EGLenum api=EGL_OPENGL_ES_API;
+thread_local EGLContext currentGl=EGL_NO_CONTEXT,currentEs=EGL_NO_CONTEXT;
+thread_local EGLint lastError=EGL_SUCCESS;
+thread_local bool readDone=false;
+unsigned contexts=0,surfaces=0,creates=0,calls=0;
+unsigned wrapperCalls=0;
+std::mutex mutex;std::condition_variable cv;bool reading=false,continueRead=false;
+void* driverProc(const char* name);
+void configureEnvironment(const char* value){
+#ifdef _WIN32
+    _putenv_s("NEED_OPENGL",value?value:"");
+#else
+    if(value)setenv("NEED_OPENGL",value,1);else unsetenv("NEED_OPENGL");
+#endif
+}
+// 系统公开EGL入口先触发官方EglCoreInit，QueryGL返回设备能力而不是当前驱动路线。
+__eglMustCastToProperFunctionPointerType getProc(const char* name){
+    ++calls;OHOS::EglCoreInit();
+    return !std::strcmp(name,"OH_Graphics_QueryGL")?
+        reinterpret_cast<__eglMustCastToProperFunctionPointerType>(OHGraphicsQueryGLImpl):
+        reinterpret_cast<__eglMustCastToProperFunctionPointerType>(driverProc(name));
+}
+EGLContext getCurrent(){++calls;return api==EGL_OPENGL_API?currentGl:currentEs;}
+EGLenum queryApi(){++calls;return api;}
+EGLDisplay getDisplay(EGLNativeDisplayType){++calls;OHOS::EglCoreInit();return reinterpret_cast<EGLDisplay>(1);}
+EGLBoolean initialize(EGLDisplay,EGLint*,EGLint*){++calls;return EGL_TRUE;}
+EGLBoolean bind(EGLenum requested){
+    ++calls;
+    if(requested==EGL_OPENGL_API && !OHOS::gWrapperHook.useMesa){lastError=EGL_BAD_PARAMETER;return EGL_FALSE;}
+    if(requested==EGL_OPENGL_ES_API && fault=="restore" && creates){lastError=EGL_BAD_ACCESS;return EGL_FALSE;}
+    api=requested;return EGL_TRUE;
+}
+EGLBoolean choose(EGLDisplay,const EGLint*,EGLConfig* out,EGLint,EGLint* count){
+    ++calls;*out=reinterpret_cast<EGLConfig>(1);*count=fault=="config-count"?0:1;
+    if(fault=="config-count")lastError=EGL_CONTEXT_LOST;return EGL_TRUE;
+}
+EGLSurface pbuffer(EGLDisplay,EGLConfig,const EGLint*){++calls;++surfaces;return reinterpret_cast<EGLSurface>(1);}
+EGLContext create(EGLDisplay,EGLConfig,EGLContext,const EGLint*){++calls;++creates;++contexts;return reinterpret_cast<EGLContext>(2);}
+EGLBoolean makeCurrent(EGLDisplay,EGLSurface,EGLSurface,EGLContext context){
+    ++calls;
+    if(!context && fault=="unbind"){lastError=EGL_BAD_ACCESS;return EGL_FALSE;}
+    if(api==EGL_OPENGL_API)currentGl=context;else currentEs=context;return EGL_TRUE;
+}
+EGLBoolean destroyContext(EGLDisplay,EGLContext){
+    ++calls;if(fault=="context"){lastError=EGL_BAD_CONTEXT;return EGL_FALSE;}--contexts;return EGL_TRUE;
+}
+EGLBoolean destroySurface(EGLDisplay,EGLSurface){
+    ++calls;if(fault=="surface" || fault=="first-and-cleanup"){lastError=EGL_BAD_SURFACE;return EGL_FALSE;}--surfaces;return EGL_TRUE;
+}
+EGLint error(){++calls;const auto result=lastError;lastError=EGL_SUCCESS;return result;}
+const unsigned char* glString(unsigned name){return reinterpret_cast<const unsigned char*>(name==0x1f02?"4.2 fixture":"fixture");}
+const unsigned char* wrapperString(unsigned name){
+    ++wrapperCalls;
+    // 仅模拟日志已观察到的包装层错误返回；反例先检查解析地址，不故意解引用坏地址。
+    // 线程没有TLS时官方GetHookTable会补全；已有no-context表时不会被替换。
+    if(OHOS::glHook==&OHOS::noContextHook)return reinterpret_cast<const unsigned char*>(static_cast<uintptr_t>(name));
+    return glString(name);
+}
+unsigned glError(){return readDone && fault=="first-and-cleanup"?0x0502:0;}
+void clearColor(float,float,float,float){}
+void clear(unsigned){}
+void read(int,int,int,int,unsigned,unsigned,void* out){
+    readDone=true;
+    if(fault=="busy"){
+        std::unique_lock<std::mutex> lock(mutex);reading=true;cv.notify_all();cv.wait(lock,[]{return continueRead;});
+    }
+    if(fault=="throw")throw std::runtime_error("fixture GPU boundary exception");
+    const unsigned char pixel[]={64,128,191,255};std::memcpy(out,pixel,4);
+}
+void unexpected(){CHECK(false && "unexpected EGL operation");}
+void* driverProc(const char* name){
+    if(fault=="resolver-missing" && !std::strcmp(name,"glGetString"))return nullptr;
+#define DRIVER(label,fn) if(!std::strcmp(name,label))return reinterpret_cast<void*>(fn)
+    DRIVER("glGetString",glString);DRIVER("glGetError",glError);DRIVER("glClearColor",clearColor);
+    DRIVER("glClear",clear);DRIVER("glReadPixels",read);
+#undef DRIVER
+    return nullptr;
+}
+}
+#include "@ROOT@/entry/src/main/cpp/platform/native_gl.cpp"
+
+// 动态库边界使用真实函数签名；未用入口给致命替身，防止意外调用被静默当成成功。
+void* dlopen(const char*,int){return reinterpret_cast<void*>(1);}
+int dladdr(const void* p,Dl_info* out){out->dli_fname="/system/fixture.so";out->dli_fbase=reinterpret_cast<void*>(1);return p?1:0;}
+void* dlsym(void*,const char* name){
+#define PROC(label,fn) if(!std::strcmp(name,label))return reinterpret_cast<void*>(gpu::fn)
+    PROC("eglGetProcAddress",getProc);PROC("eglGetCurrentContext",getCurrent);PROC("eglQueryAPI",queryApi);
+    PROC("eglGetDisplay",getDisplay);PROC("eglInitialize",initialize);PROC("eglBindAPI",bind);
+    PROC("eglChooseConfig",choose);PROC("eglCreatePbufferSurface",pbuffer);PROC("eglCreateContext",create);
+    PROC("eglMakeCurrent",makeCurrent);PROC("eglDestroyContext",destroyContext);PROC("eglDestroySurface",destroySurface);
+    PROC("eglGetError",error);PROC("glGetString",wrapperString);PROC("glGetError",glError);
+    PROC("glClearColor",clearColor);PROC("glClear",clear);PROC("glReadPixels",read);
+#undef PROC
+    return reinterpret_cast<void*>(gpu::unexpected);
+}
+int main(int argc,char** argv){
+    using namespace amcl::desktop;
+    const std::string mode=argc>1?argv[1]:"early";
+    gpu::configureEnvironment(mode=="late" || mode=="missing"?nullptr:"1");
+    OHOS::glHook=&OHOS::noContextHook;
+    if(mode=="worker-main"){
+        // 与NAPI可用性worker -> mcLaunch主线程相同的顺序：官方EglCoreInit生产正文
+        // 在worker锁存Mesa，主线程仍为no-context表，EGL MakeCurrent不替换该包装层TLS。
+        std::thread worker([]{CHECK(QueryNativeGlCapability(false,true).querySupported);});worker.join();
+        CHECK(OHOS::glHook==&OHOS::noContextHook);
+        CHECK(NativeGlProc("glGetString")==reinterpret_cast<void*>(gpu::glString));
+        const auto cap=QueryNativeGlCapability(true,false);
+        CHECK(cap.ready && cap.version=="4.2 fixture" && cap.pixelVerified && cap.cleanupComplete);
+        CHECK(cap.renderDiagnostics.find("AMCL_DESKTOP_RENDER_PROBE_V3")!=std::string::npos && gpu::wrapperCalls==0);
+        CHECK(gpu::contexts==0 && gpu::surfaces==0);
+        std::cout<<"native-gl-probe PASS "<<mode<<'\n';return 0;
+    }
+    if(mode=="missing"){
+        const auto cap=QueryNativeGlCapability(false,true);
+        CHECK(!cap.bootstrapConfigured && cap.stage=="system-gl-bootstrap-missing" && gpu::calls==0);
+    }else{
+        deviceSupportsGl=mode!="unsupported";
+        // 模拟UI框架先于应用探针调用EGL；启动配置必须在这一刻已经生效。
+        gpu::getProc("OH_Graphics_QueryGL");
+        if(mode=="late")gpu::configureEnvironment("1");
+        const auto entry=QueryNativeGlCapability(false,true);
+        CHECK(entry.bootstrapConfigured && entry.queryAvailable && entry.querySupported==deviceSupportsGl);
+        if(mode=="late"){
+            const auto cap=QueryNativeGlCapability(false,false);
+            CHECK(!cap.ready && cap.stage=="bind-opengl" && cap.error==EGL_BAD_PARAMETER);
+            CHECK(!OHOS::gWrapperHook.useMesa && cap.cleanupComplete);
+        }else if(mode=="unsupported"){
+            CHECK(!OHOS::gWrapperHook.useMesa && gpu::bind(EGL_OPENGL_ES_API));
+            CHECK(!QueryNativeGlCapability(false,false).ready && gpu::creates==0);
+        }else if(mode=="busy"){
+            gpu::fault=mode;NativeGlCapability first;
+            std::thread owner([&]{first=QueryNativeGlCapability(false,false);});
+            {std::unique_lock<std::mutex> lock(gpu::mutex);gpu::cv.wait(lock,[]{return gpu::reading;});}
+            CHECK(QueryNativeGlCapability(false,false).stage=="native-gl-probe-busy");
+            {std::lock_guard<std::mutex> lock(gpu::mutex);gpu::continueRead=true;gpu::cv.notify_all();}
+            owner.join();CHECK(first.ready && gpu::creates==1 && gpu::contexts==0 && gpu::surfaces==0);
+        }else if(mode=="foreign-gl"){
+            gpu::currentGl=reinterpret_cast<EGLContext>(88);
+            const auto cap=QueryNativeGlCapability(false,false);
+            CHECK(cap.stage=="worker-opengl-context" && gpu::currentGl==reinterpret_cast<EGLContext>(88));
+            CHECK(gpu::api==EGL_OPENGL_ES_API && gpu::creates==0 && cap.cleanupComplete);
+        }else if(mode=="fork"){
+#ifndef _WIN32
+            const pid_t child=fork();CHECK(child>=0);
+            if(!child){const auto cap=QueryNativeGlCapability(false,true);_exit(cap.restartRequired && cap.stage=="native-gl-inherited-provider"?0:1);}
+            int status=0;CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
+#else
+            CHECK(false && "fork case requires POSIX");
+#endif
+        }else{
+            gpu::fault=mode;
+            const auto cap=QueryNativeGlCapability(false,false);
+            if(mode=="early"){
+                CHECK(cap.ready && cap.pixelVerified && cap.cleanupComplete);
+                CHECK(OHOS::gWrapperHook.useMesa && gpu::bind(EGL_OPENGL_ES_API));
+                CHECK(gpu::contexts==0 && gpu::surfaces==0 && !nativeGlProbeState().resources.live());
+            }else if(mode=="resolver-missing"){
+                CHECK(!cap.ready && cap.stage=="symbols" && cap.cleanupComplete && !cap.restartRequired);
+                CHECK(gpu::contexts==0 && gpu::surfaces==0);
+            }else if(mode=="config-count"){
+                CHECK(!cap.ready && cap.stage=="config-count" && cap.error==0 && cap.cleanupComplete);
+                CHECK(!cap.restartRequired && gpu::creates==0);
+            }else if(mode=="throw"){
+                CHECK(!cap.ready && cap.stage=="probe-exception" && cap.cleanupComplete);
+                CHECK(gpu::contexts==0 && gpu::surfaces==0);
+            }else{
+                CHECK(!cap.ready && !cap.cleanupComplete && cap.restartRequired && nativeGlProbeState().resources.live());
+                if(mode=="first-and-cleanup"){
+                    CHECK(cap.stage=="pixel-readback" && cap.error==0x0502 && cap.errorDomain=="GL");
+                    CHECK(cap.cleanupStage=="cleanup-surface" && cap.cleanupError==EGL_BAD_SURFACE);
+                    CHECK(gpu::surfaces==1 && nativeGlProbeState().resources.surface!=EGL_NO_SURFACE);
+                }
+                if(mode=="unbind")CHECK(gpu::api==EGL_OPENGL_API && gpu::currentGl!=EGL_NO_CONTEXT);
+                const auto before=gpu::calls;
+                CHECK(QueryNativeGlCapability(false,true).stage=="native-gl-probe-retirement-requires-restart");
+                CHECK(gpu::calls==before);
+            }
+        }
+    }
+    std::cout<<"native-gl-probe PASS "<<mode<<'\n';
+}

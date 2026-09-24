@@ -1,0 +1,8 @@
+# Intentionally empty.
+#
+# Active MG source is pinned to LZZLHY/MobileGlues amcl/2.0-ohos:
+# official 2.0 source baseline plus the reviewed integration commit stack.
+# Local patch files are forbidden by scripts/check-mg-pin.mjs.
+#
+# The removed full fork is preserved under ../fork-archive/ and at
+# tag amcl/fork-full-20260809 / branch amcl/fork-full-preserved.

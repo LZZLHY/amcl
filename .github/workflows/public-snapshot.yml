@@ -1,0 +1,24 @@
+name: Public source snapshot
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      # 公开门禁无需私有仓权限或 HarmonyOS SDK；正式 HAP 编译的实测记录见构建文档。
+      - name: Verify source files and public release contract
+        run: |
+          node MyApplication/scripts/check-public-snapshot.mjs
+          node tools/check-public-release.mjs
+          node MyApplication/scripts/test-project-json5.mjs

@@ -1,0 +1,84 @@
+{
+  "$comment": [
+    "gate0-evidence.lock — Gate 0 真机证据清单（唯一授权来源）",
+    "",
+    "为什么需要它：docs/refactor/实体键鼠输入架构重构计划.md 的 Gate 0 规定，未在目标",
+    "设备上证明的平台能力不得被宣称为可用。此前 AMCL_GLFW_*_VERIFIED 三个构建选项虽然",
+    "默认 OFF、运行时不可绕过，但任何人手工加一条 -D...=ON 就能打开，没有任何前置校验。",
+    "本文件把「允许打开」变成一次可追溯的书面批准：CMake 在 configure 期读它，只要某个",
+    "受管选项被判定为启用（判定用的是与宏发布同一次归一化求值，见 Gate0Evidence.cmake",
+    "里 amcl_gate0_normalize_enabled 的说明，不只是字面量 ON），而此处没有匹配的已批准",
+    "条目，就直接 FATAL_ERROR。绕过 option 直接注宏（例如经 CMAKE_CXX_FLAGS）由",
+    "glfw_input_mode.h 的 static_assert 兜住：断言了能力却没有 evidence id 时编译失败。",
+    "approved 必须是 JSON 布尔 true；字符串 \"ON\"/\"true\" 或数字 1 都会被拒绝。",
+    "",
+    "字段语义（approved=true 时全部必填）：",
+    "  approved            = 是否已批准打开对应构建选项。false 时该选项必须保持 OFF。",
+    "  evidenceId          = 证据标识，写入产物的 AMCL_GATE0_EVIDENCE_IDS 宏，便于反查。",
+    "                        允许 [A-Za-z0-9._-]，长度 >= 8，不得含 TODO/PLACEHOLDER/XXX。",
+    "  evidenceDocument    = 相对工程根的证据文档路径，必须存在。",
+    "  evidenceSha256      = 上述文档的 sha256（小写 64 位 hex）。文档改了就必须重新批准，",
+    "                        防止「先批准一份空文档、之后再往里写结论」。",
+    "  deviceMatrix        = 实际验证过的设备标识数组，不得为空。型号不能代替能力，但没有",
+    "                        设备标识就无法追溯，因此这里要求至少一项。",
+    "  sdkVersion          = 取得证据时的 SDK 版本串。",
+    "  approvedBy          = 批准人。",
+    "  approvedOn          = 批准日期 YYYY-MM-DD。",
+    "  independentReviewer = 未参与施工的独立复核人（计划 §1.1 第 3/5 条）。",
+    "",
+    "边界：本清单只能证明「有人书面批准过」，它不能代替真机测试本身。它的作用是让",
+    "「未经批准就打开未验证能力」从一个隐式可能变成配置期硬失败。",
+    "",
+    "校验入口：scripts/check-gate0-evidence.mjs（source gate）+",
+    "entry/src/main/cpp/input/Gate0Evidence.cmake（configure 期）。"
+  ],
+  "schemaVersion": 1,
+  "capabilities": {
+    "AMCL_GLFW_RAW_RELATIVE_VERIFIED": {
+      "approved": true,
+      "evidenceId": "raw-relative-2026-08-24-user-accepted-risk",
+      "evidenceDocument": "docs/testing/gate0-raw-relative-evidence.md",
+      "evidenceSha256": "8ba5882cad3e29b1275ce4d66b093934fdfe73af40913ccae3367d845de96e5b",
+      "deviceMatrix": [
+        "MatePad API24 deviceId=11 density=2.125 (R1/R2/R3 statistics source)",
+        "phone REDACTED-DEVICE-1 API26 density=2.125 rawQuantum=1 (typed plane on-device run)"
+      ],
+      "sdkVersion": "HarmonyOS NEXT command-line-tools sdk default (BiSheng clang 15.0.4, OHOS aarch64)",
+      "approvedBy": "LZZLHY",
+      "approvedOn": "2026-08-24",
+      "independentReviewer": "none-user-accepted-risk-G1-G7-open",
+      "requires": [],
+      "blockedBy": "⚠️ approved=true 不代表证据齐了：2026-08-24 由产品所有者显式接受风险后打开（用户原话「你先切换过去，后面有什么问题再测」），G1-G7 七个缺口**一条都没闭合**，independentReviewer 为空缺的自述串。撤销方式：本条 approved 改回 false + 从 entry/build-profile.json5 移除 -DAMCL_GLFW_RAW_RELATIVE_VERIFIED=ON 与 -DAMCL_GLFW_TYPED_PHYSICAL_DEFAULT=ON，即整体回到 legacy 平面。逐条风险对号见证据卷宗 §6.2。以下为原有的语义与证据记录，未作废。\n语义已改写（2026-08-23，计划 §83.8）：本条不再断言「rawDelta 是底层 raw HID」——那是来源命题，遥测日志原理上无法证明。改为断言三条数据能支持的性质：R1 量纲可归一（rawDelta × density 恒为整数 px，两份 MatePad 日志 2614 个非零分量无一例外，量子 0.470588 = 1/2.125 逐位相符）；R2 与光标解耦（相邻样本 rawDx×density == Δpx 只占 34/645 与 33/713；光标完全不动而 rawDelta 非零的样本 200/645 与 435/713；左边缘夹紧时 rawDelta 仍非零 93/94 与 41/48）；R3 未加速（剔除光标不动的样本后 |Δpx/(rawDelta×density)| 中位 2.375 与 2.286，且按幅度分桶 ≤2px/2-5/5-20/>20 单调不减，A 日志 2.000→2.000→2.667→4.360、B 日志 1.500→2.000→2.625→4.846 —— 成立的是单调性，两份的起止值不同；说明被指针加速的是光标而不是 rawDelta）。\n仍缺 G1-G7，全部闭合才可批准：G1 未证明 density 就是 displayPixels（只测到 2.125 一档）；G2 设备矩阵只有一台 MatePad、deviceId 只有 11，缺 ≥2 台与多 density；G3 只测到 surface 边缘夹紧，未测 surface 外；G4 未测丢失捕获（切后台/失焦/锁屏）后的连续性；G5 未确认是否存在不上报 rawDelta 的设备；G6 光标锁状态在日志里不可观测，无法排除部分样本处于非锁定态；G7 采样完整性未证（无丢样计数，无法排除遥测自身丢样使「相邻对」实际不相邻）。",
+      "sourceEvidenceSha256": "2a9d7c5b8646a86ab6278efc9bf51b65e346592935afd487d96ef359039aca2f"
+    },
+    "AMCL_GLFW_NATIVE_ABSOLUTE_VERIFIED": {
+      "approved": false,
+      "evidenceId": "",
+      "evidenceDocument": "",
+      "evidenceSha256": "",
+      "deviceMatrix": [],
+      "sdkVersion": "",
+      "approvedBy": "",
+      "approvedOn": "",
+      "independentReviewer": "",
+      "requires": [
+        "AMCL_GLFW_NATIVE_MOUSE_MONOTONIC_NS_VERIFIED"
+      ],
+      "blockedBy": "本机 SDK 只能证明 OH_NativeXComponent_MouseEvent.x/y 的原点相对 element 左上角，不能证明单位就是 surface physical px。需 1x/2x/3x density、非零窗口 offset、旋转/resize/recreate 对账。"
+    },
+    "AMCL_GLFW_NATIVE_MOUSE_MONOTONIC_NS_VERIFIED": {
+      "approved": false,
+      "evidenceId": "",
+      "evidenceDocument": "",
+      "evidenceSha256": "",
+      "deviceMatrix": [],
+      "sdkVersion": "",
+      "approvedBy": "",
+      "approvedOn": "",
+      "independentReviewer": "",
+      "requires": [],
+      "blockedBy": "公开 SDK 头未声明 OH_NativeXComponent_MouseEvent.timestamp 的单位与时钟域。stale-epoch 安全依赖它可与 CLOCK_MONOTONIC 纳秒发布边界比较，必须真机对账。"
+    }
+  },
+  "publicSnapshotNote": "Device serials are redacted. Original approvals, dates and known evidence gaps are unchanged. See sourceEvidenceSha256 for the original document identity."
+}

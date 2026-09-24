@@ -1,0 +1,172 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    // ⚰️ API26 formal desktop 开工时移除了 `easyGo: $profile:easy_go`：其
+    // `multiModalInputOptions.mouse2TouchEventMode` 在 API24/API26 已知设备上均零作用，
+    // 且官方 API26 Release SDK 的 easy_go schema 仍只接受 displayModeOptions；保留会让
+    // desktop@PreBuild 在 schema 校验阶段失败。鼠标派生触摸现由 native 身份分类与
+    // ProductInputPolicy allowlist 收口，不再依赖一个工具链明确拒绝的 profile。
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "orientation": "unspecified",
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          },
+          {
+            // 让 AMCL 出现在 .json 文件的系统「打开方式」里，用于导入按键布局方案。
+            // 按鸿蒙「文件打开能力」规范（file-processing-apps-startup.md 目标方接入）：
+            //   - action 固定 ohos.want.action.viewData；
+            //   - uris.scheme 固定 file、type 为支持的文件 UTD 类型（general.json = .json）；
+            //   - linkFeature 必填且【固定为 "FileOpen"（大小写敏感）】——它是系统识别"此 URI
+            //     用于文件打开"的标志，不是显示名；填自定义名会导致 App 不出现在「打开方式」里。
+            "actions": [
+              "ohos.want.action.viewData"
+            ],
+            "uris": [
+              {
+                "scheme": "file",
+                "type": "general.json",
+                "linkFeature": "FileOpen"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        // PC 固定使用私有游戏进程；受支持平板按冷启动锁存的持久开关派发，手机仍走页面。
+        "name": "GameAbility",
+        "process": ":game",
+        "launchType": "singleton",
+        "srcEntry": "./ets/gameability/GameAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": false,
+        "orientation": "unspecified",
+        "supportWindowMode": ["fullscreen", "split", "floating"]
+      }
+    ],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET"
+      },
+      {
+        // 网络诊断：读取默认网络是否可用 + 承载类型（WiFi/蜂窝/以太网）。
+        // 普通权限（normal），无需用户弹窗授权。用于「网络环境检测」区分
+        // 「设备无网」与「能上网但连不上下载服务器」。
+        "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      {
+        // R6：虚拟按键触觉反馈（HapticUtil.hapticTap → @ohos.vibrator）。
+        // 第三方应用可用，无需用户弹窗授权（system_grant）。
+        "name": "ohos.permission.VIBRATE"
+      },
+      {
+        // 沙箱外存储（Download/AMCL）：把 .minecraft 放到公共下载目录，使其卸载不丢。
+        // user_grant，需运行时弹窗授权 + reason/usedScene。官方注明该权限"仅 2in1/PC 设备
+        // 稳定支持"，手机/部分平板可能授权失败 —— StorageProbe 会在设备上实测后再决定是否启用。
+        "name": "ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY",
+        "reason": "$string:perm_reason_download",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        // 授权持久化（手机端 picker DOWNLOAD 路线）：picker 授予的访问默认是临时的，
+        // 退后台/重启即失效。该权限配合 fileShare.persistPermission/activatePermission，
+        // 让授权过的公共下载目录在重启后仍可访问。实测可授予普通第三方应用、安装不被拒
+        // （与系统级的 FILE_ACCESS_MANAGER 截然不同）。PhoneStorageProbe 用于真机验证。
+        "name": "ohos.permission.FILE_ACCESS_PERSIST",
+        "reason": "$string:perm_reason_file_persist",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        // ===== JIT 受限 ACL 权限（API 14+，system_basic / system_grant）=====
+        // 内嵌 OpenJDK HotSpot 的 JIT 需要"可写可执行匿名内存"。
+        // 跨平台框架应用：该权限官方限定【仅平板 / 2in1 设备可用】（手机不可用，
+        // 这也是本应用只上架平板、不上架手机的根因）。
+        // 使用前提：① 在此声明；② 必须在签名证书 ACL 里包含本权限，否则安装失败；
+        //   上架包需向 AGC 申请该受限权限、审核通过后更新 profile 证书再重打包。
+        // 无 reason/usedScene（system_grant 静默授予，不弹窗）。
+        "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY"
+      },
+      {
+        // 游戏内锁定鼠标光标（OH_WindowManager_LockCursor，since 22）。
+        // 这是"物理鼠标是与虚拟按键并列的独立输入端"的地基：锁定后光标不随鼠标移动、
+        // 不会撞到屏幕边缘、也不会停在虚拟按键上方，因此相对位移可以无限累积，
+        // 虚拟控件也不可能被鼠标命中。仅获焦窗口可锁，失焦由系统自动解锁。
+        // 权限级别 normal、system_grant（静默授予，不弹窗、无需 ACL）。
+        // API < 22 的设备没有该符号，native 侧用 dlsym 运行时探测后降级。
+        "name": "ohos.permission.LOCK_WINDOW_CURSOR"
+      },
+      // ============ 已移除：INTERCEPT_INPUT_EVENT / INPUT_MONITORING ============
+      // 这两条受限权限曾用于"从 multimodalinput 原始事件流取鼠标，绕过系统的
+      // 鼠标转触摸兜底转换"。真机 + 平台源码已证明这条路走不通，**不要再加回来**：
+      //
+      //   1) `OH_Input_AddMouseEventMonitor` 返回 201 与权限无关。NDK 客户端在任何
+      //      IPC 之前先拦一道（frameworks/native/input/oh_input_manager.cpp）：
+      //          if (!VerifySystemApp()) { if (!IsScreenCaptureWorking())
+      //              return INPUT_PERMISSION_DENIED; }
+      //      官方 C API 文档同样明写"该接口处于录屏场景时才允许调用"。
+      //      本应用 accessTokenIdEx=0x8_200DFD7D（bit32=0 ⇒ 非系统应用），
+      //      而 `atm dump -t -i 537787773` 确认 INPUT_MONITORING grantStatus=0
+      //      （已授予、grantFlag=4 SYSTEM_FIXED）、自动签名 profile 的
+      //      acls.allowed-acls 里也确实有它。即：权限一直是好的，门在别处。
+      //   2) 即使打通也没用。`Input_MouseEvent` 的 getter 全集是 DisplayX/Y、
+      //      GlobalX/Y、Button、Action、AxisType、AxisValue、ActionTime、WindowId、
+      //      DisplayId、CursorInfo —— **没有任何相对量**。拦截器同理。
+      //
+      // 本机唯一的无界相对量是 ArkUI 的 `MouseEvent.rawDeltaX/rawDeltaY`（API 15，
+      // 无需权限），native 等价物是 `OH_ArkUI_MouseEvent_GetRawDeltaX/Y`。
+      // 顺带：这两条是 system_basic 受限权限，留在包里会卡住上架审核，而它们不带来
+      // 任何能力，所以必须删。
+    ],
+    "extensionAbilities": [
+      {
+        "name": "EntryBackupAbility",
+        "srcEntry": "./ets/entrybackupability/EntryBackupAbility.ets",
+        "type": "backup",
+        "exported": false,
+        "metadata": [
+          {
+            "name": "ohos.extension.backup",
+            "resource": "$profile:backup_config"
+          }
+        ],
+      }
+    ]
+  }
+}

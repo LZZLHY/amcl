@@ -1,0 +1,12 @@
+{
+  "name": "update",
+  "version": "1.0.0",
+  "description": "AMCL 更新检查域（update）：拉取 GitHub update.json 比对 versionCode。依赖 commons + feature_core，native-free。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons",
+    "feature_core": "file:../feature_core"
+  }
+}

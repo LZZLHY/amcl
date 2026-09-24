@@ -1,0 +1,24 @@
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 3ef58971c..ea6c15675 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -634,7 +634,19 @@ void os::init_system_properties_values() {
+         *pslash = '\0';
+       }
+     }
++#ifdef __MUSL__
++    // OHOS PATCH: prefer SUN_BOOT_LIBRARY_PATH env var
++    {
++      const char* dll_dir_env = ::getenv("SUN_BOOT_LIBRARY_PATH");
++      if (dll_dir_env != nullptr && dll_dir_env[0] != '\0') {
++        Arguments::set_dll_dir(dll_dir_env);
++      } else {
++        Arguments::set_dll_dir(buf);
++      }
++    }
++#else
+     Arguments::set_dll_dir(buf);
++#endif
+ 
+     // Get rid of /lib, if binary is libjvm.so,
+     // or cut off /bin, if it is a statically linked binary.

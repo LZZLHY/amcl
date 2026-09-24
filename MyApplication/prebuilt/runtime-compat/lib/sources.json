@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "file": "sponge-mixin-0.17.3+mixin.0.8.7.jar",
+      "url": "https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.17.3+mixin.0.8.7/sponge-mixin-0.17.3+mixin.0.8.7.jar",
+      "sha256": "9e90efec71d2bad5b96c9089f019d14a8603227d3c5f408d12f53fae89d99d41",
+      "size": 1540060
+    },
+    {
+      "file": "asm-util-9.9.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-util/9.9/asm-util-9.9.jar",
+      "sha256": "3842e13cfe324ee9ab7cdc4914be9943541ead397c17e26daf0b8a755bede717",
+      "size": 94565
+    },
+    {
+      "file": "asm-analysis-9.9.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-analysis/9.9/asm-analysis-9.9.jar",
+      "sha256": "6a15d28e8bd29ba4fd5bca4baf9b50e8fba2d7b51fbf78cfa0c875a7214c678b",
+      "size": 35149
+    },
+    {
+      "file": "asm-commons-9.9.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-commons/9.9/asm-commons-9.9.jar",
+      "sha256": "db2f6f26150bbe7c126606b4a1151836bcc22a1e05a423b3585698bece995ff8",
+      "size": 74348
+    }
+  ],
+  "scope": "Build-time API and transformation tests; runtime uses Fabric Loader provided Mixin"
+}

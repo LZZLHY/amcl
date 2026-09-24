@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "slot": "modern",
+  "unsupportedStatePolicy": "build-blocking-until-precise-prelaunch-contract",
+  "auditedTargets": [
+    {
+      "versionId": "26.4-snapshot-1",
+      "metadataSha1": "38de33cff6c65a518a24aa4b8198f7e3673ebd08",
+      "clientSha1": "99dea8ec5ae3c5adc7d246061a90960e7d8441c3",
+      "classSha256": "b561afacb1bb6a88ec30fb7cce6bca14626b57ea974c235bfc366d7d99d706b0",
+      "eagerNativeModules": [
+        "lwjgl-freetype",
+        "lwjgl-openal",
+        "lwjgl-opengl",
+        "lwjgl-sdl",
+        "lwjgl-shaderc",
+        "lwjgl-spvc",
+        "lwjgl-stb",
+        "lwjgl-vma"
+      ]
+    },
+    {
+      "versionId": "26.3",
+      "metadataSha1": "96c00d95a31328714d3811cfade2804bb050e455",
+      "clientSha1": "e877b6a07acd633fb3bb475002175cec036e7b87",
+      "classSha256": "b561afacb1bb6a88ec30fb7cce6bca14626b57ea974c235bfc366d7d99d706b0",
+      "eagerNativeModules": [
+        "lwjgl-freetype",
+        "lwjgl-openal",
+        "lwjgl-opengl",
+        "lwjgl-sdl",
+        "lwjgl-shaderc",
+        "lwjgl-spvc",
+        "lwjgl-stb",
+        "lwjgl-vma"
+      ]
+    },
+    {
+      "versionId": "26.3-pre-1",
+      "metadataSha1": "5aa50e4ee37bd97bfe9429932046d09c21467570",
+      "clientSha1": "32cf188ffc8c6a4143e74b1dcc689267566d73fb",
+      "classSha256": "6fed23ba378d066262963ccc29533ab15230a6267ce2fe062fd22acc9b9c5c49",
+      "eagerNativeModules": [
+        "lwjgl-freetype",
+        "lwjgl-openal",
+        "lwjgl-opengl",
+        "lwjgl-sdl",
+        "lwjgl-shaderc",
+        "lwjgl-spng",
+        "lwjgl-spvc",
+        "lwjgl-stb",
+        "lwjgl-vma"
+      ]
+    }
+  ],
+  "modules": [
+    {
+      "name": "lwjgl",
+      "state": "provided",
+      "native": { "kind": "modern-slot", "artifact": "liblwjgl.so" }
+    },
+    {
+      "name": "lwjgl-freetype",
+      "state": "provided",
+      "native": {
+        "kind": "bundle-file",
+        "artifact": "entry/libs/arm64-v8a/libfreetype.so",
+        "size": 714048,
+        "sha256": "e0116d3152bc39fe0a1b190a04ee7dda263fbb3971f511627f11e284e4b6eb3b",
+        "requiredSymbols": ["FT_Init_FreeType"],
+        "libraryName": {
+          "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
+          "key": "org.lwjgl.freetype.libname",
+          "value": "libfreetype.so"
+        }
+      }
+    },
+    {
+      "name": "lwjgl-jemalloc",
+      "state": "intentional-fallback",
+      "reason": "The allocator probe must miss JEmalloc and continue to LWJGL StdlibAllocator because no OHOS libjemalloc.so is shipped.",
+      "evidence": "scripts/fixtures/lwjgl-target-manifests/lwjgl-jemalloc-intentional-fallback.json"
+    },
+    {
+      "name": "lwjgl-openal",
+      "state": "provided",
+      "native": {
+        "kind": "cmake-output",
+        "artifact": "libopenal.so",
+        "requiredSymbols": ["alcOpenDevice"],
+        "contracts": [
+          {
+            "source": "entry/src/main/cpp/CMakeLists.txt",
+            "contains": "add_subdirectory(openal ${CMAKE_CURRENT_BINARY_DIR}/openal)"
+          },
+          {
+            "source": "entry/src/main/cpp/openal/CMakeLists.txt",
+            "contains": "OUTPUT_NAME \"openal\""
+          }
+        ]
+      }
+    },
+    {
+      "name": "lwjgl-opengl",
+      "state": "provided",
+      "native": { "kind": "modern-slot", "artifact": "liblwjgl_opengl.so" }
+    },
+    {
+      "name": "lwjgl-sdl",
+      "state": "provided",
+      "native": {
+        "kind": "bundle-file",
+        "artifact": "entry/libs/arm64-v8a/libSDL3.so",
+        "size": 2226496,
+        "sha256": "6977a2dac89e862e0a63595d961ec3b8d1c61334be693019e1d5aa97a138a691",
+        "requiredSymbols": ["SDL_Init"],
+        "libraryName": {
+          "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
+          "key": "org.lwjgl.sdl.libname",
+          "value": "libSDL3.so"
+        }
+      }
+    },
+    {
+      "name": "lwjgl-shaderc",
+      "state": "provided",
+      "native": {
+        "kind": "bundle-file",
+        "artifact": "entry/libs/arm64-v8a/libshaderc.so",
+        "size": 8574080,
+        "sha256": "c9ffa2354dffe74354b2c88c71eb6185e1b7247886c864b051499c867e2f3881",
+        "requiredSymbols": ["shaderc_compiler_initialize"],
+        "libraryName": {
+          "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
+          "key": "org.lwjgl.shaderc.libname",
+          "value": "shaderc"
+        }
+      }
+    },
+    {
+      "name": "lwjgl-spng",
+      "state": "provided",
+      "native": { "kind": "modern-slot", "artifact": "liblwjgl_spng.so" }
+    },
+    {
+      "name": "lwjgl-spvc",
+      "state": "provided",
+      "native": {
+        "kind": "bundle-file",
+        "artifact": "entry/libs/arm64-v8a/libspirv-cross.so",
+        "size": 2767824,
+        "sha256": "8f284a7327e77c3975ff6096a36b103436034f46bda72c6e6f9b2416e6927ed2",
+        "requiredSymbols": ["spvc_context_create"],
+        "libraryName": {
+          "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
+          "key": "org.lwjgl.spvc.libname",
+          "value": "spirv-cross"
+        }
+      }
+    },
+    {
+      "name": "lwjgl-stb",
+      "state": "provided",
+      "native": { "kind": "modern-slot", "artifact": "liblwjgl_stb.so" }
+    },
+    {
+      "name": "lwjgl-vma",
+      "state": "provided",
+      "native": { "kind": "modern-slot", "artifact": "liblwjgl_vma.so" }
+    },
+    {
+      "name": "lwjgl-vulkan",
+      "state": "provided"
+    }
+  ]
+}

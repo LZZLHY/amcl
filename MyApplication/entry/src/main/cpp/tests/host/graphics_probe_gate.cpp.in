@@ -1,0 +1,60 @@
+/** 通过现役MobileGL探针入口验证实际忙门；GPU执行器仅作为可暂停、可计数的边界。
+ * 首个执行器保持运行时，其他调用必须得到busy，不能并发初始化同一进程provider。
+ */
+#include "@ROOT@/entry/src/main/cpp/platform/graphics_probe_gate.h"
+#include "@ROOT@/entry/src/main/cpp/platform/mobilegl_capability.h"
+#include "@ROOT@/entry/src/main/cpp/tests/host/host_test_check.h"
+#include <thread>
+#include <condition_variable>
+#include <mutex>
+#include <vector>
+namespace amcl::graphics {
+GraphicsProbeGate probeGate;
+std::mutex mutex;std::condition_variable cv;
+bool started=false,finish=false;
+int active=0,maximum=0,executions=0;
+int fixtureProcessId(){return 42;}
+#define getpid fixtureProcessId
+#define OH_LOG_INFO(...) ((void)0)
+class NativeProbeHost final : public MobileGlProbeHost {
+public:
+    NativeProbeHost(const std::string&,const MobileGlDeviceAudit&,const std::string&){}
+    bool acquire(MobileGlProbeWindow&,std::string&) override {CHECK(false);return false;}
+    bool load(MobileGlProbeFunctions&,std::string&) override {CHECK(false);return false;}
+    GraphicsCapability queryDevice(const std::string&) override {CHECK(false);return {};}
+    void requireRestart(const std::string&) override {CHECK(false);}
+};
+MobileGlProbeReport RunMobileGlCapabilityProbe(MobileGlProbeHost&,const std::string&,int,const std::string&,const std::string&){
+    std::unique_lock<std::mutex> lock(mutex);++executions;++active;if(active>maximum)maximum=active;
+    if(!started){started=true;cv.notify_all();cv.wait(lock,[]{return finish;});}
+    --active;MobileGlProbeReport result;result.capability.reasonCode="executed";return result;
+}
+@ENTRY@
+#undef getpid
+}
+int main(){
+    using namespace amcl::graphics;
+    MobileGlProbeReport first;
+    std::thread owner([&]{first=ProbeMobileGlCapability("/fixture",{},"GLFW");});
+    {std::unique_lock<std::mutex> lock(mutex);cv.wait(lock,[]{return started;});}
+    std::vector<std::thread> contenders;
+    for(int i=0;i<16;++i)contenders.emplace_back([]{
+        const auto result=ProbeMobileGlCapability("/fixture",{},"SDL3");
+        CHECK(result.capability.reasonCode=="mobilegl_probe_busy");
+    });
+    for(auto& contender:contenders)contender.join();
+    {std::lock_guard<std::mutex> lock(mutex);finish=true;cv.notify_all();}
+    owner.join();CHECK(first.capability.reasonCode=="executed" && executions==1 && maximum==1);
+    CHECK(ProbeMobileGlCapability("/fixture",{},"SDL3").capability.reasonCode=="executed" && executions==2);
+
+    // 在继承的状态字上模拟新PID认领；旧PID租约的析构不能清除新PID持有的busy。
+    GraphicsProbeGate gate;
+    auto* parent=new GraphicsProbeGate::Lease(gate,10);CHECK(parent->entered());
+    {
+        GraphicsProbeGate::Lease child(gate,11);CHECK(child.entered());delete parent;
+        GraphicsProbeGate::Lease competing(gate,11);CHECK(!competing.entered());
+    }
+    GraphicsProbeGate::Lease after(gate,11);CHECK(after.entered());
+    GraphicsProbeGate::Lease invalid(gate,0);CHECK(!invalid.entered());
+    std::cout<<"Graphics probe gate PASS: actual MobileGL entry, first-use concurrency, busy refusal, release and PID ownership\n";
+}

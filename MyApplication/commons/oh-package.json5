@@ -1,0 +1,9 @@
+{
+  "name": "commons",
+  "version": "1.0.0",
+  "description": "AMCL 公共能力层（commons）：常量/主题/图标/设备形态/纯工具。无业务、无 native、不依赖 features/products。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

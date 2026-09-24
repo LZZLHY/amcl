@@ -1,0 +1,12 @@
+{
+  "name": "mods",
+  "version": "1.0.0",
+  "description": "AMCL 模组域（mods）：Modrinth/CurseForge 仓库、依赖解析、本地扫描、资源安装、版本 id 解析。依赖 commons + feature_core，native-free。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons",
+    "feature_core": "file:../feature_core"
+  }
+}

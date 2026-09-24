@@ -1,0 +1,30 @@
+#include <cstdio>
+#include <cstdint>
+#define GLFW_PLATFORM_ERROR 0x10008
+#define AMCL_DESKTOP_FULLSCREEN 3
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
+struct GLFWwindow {};
+struct GLFWmonitor {int64_t desktopId;};
+static bool nativeGl=true, available=true, accepted=true;
+static int calls=0, errors=0, requestedKind=0, requestedEnabled=0, requestedId=0, requestedWidth=0, requestedHeight=0;
+struct Host {
+    uint64_t submit(int kind,int enabled,int id,int width,int height,const char*) const {
+        ++calls;requestedKind=kind;requestedEnabled=enabled;requestedId=id;requestedWidth=width;requestedHeight=height;
+        return accepted?42:0;
+    }
+} host;
+const Host* amclDesktopHostResolve(){return available?&host:nullptr;}
+void OnError(int,const char*){++errors;}
+static auto g_errorCallback=OnError;
+namespace amcl::desktop {bool NativeGlRequested(){return nativeGl;}}
+@PRODUCTION@
+int main(){
+    GLFWwindow window;GLFWmonitor monitor{7};
+    CHECK(glfwOHOS_ApplyInitialMonitor(&window,nullptr,1280,720) && calls==0);
+    CHECK(glfwOHOS_ApplyInitialMonitor(&window,&monitor,1280,720));
+    CHECK(calls==1 && requestedKind==3 && requestedEnabled==1 && requestedId==7 && requestedWidth==1280 && requestedHeight==720);
+    accepted=false;CHECK(!glfwOHOS_ApplyInitialMonitor(&window,&monitor,1280,720) && errors==1);
+    available=false;CHECK(!glfwOHOS_ApplyInitialMonitor(&window,&monitor,1280,720) && errors==2);
+    nativeGl=false;CHECK(glfwOHOS_ApplyInitialMonitor(&window,&monitor,1280,720) && calls==2);
+    std::puts("GLFW initial fullscreen dispatch, arguments, queue rejection and compatibility PASS");
+}

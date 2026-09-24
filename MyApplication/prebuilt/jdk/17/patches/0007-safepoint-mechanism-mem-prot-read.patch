@@ -1,0 +1,13 @@
+diff --git a/src/hotspot/share/runtime/safepointMechanism.cpp b/src/hotspot/share/runtime/safepointMechanism.cpp
+index 20e163a7f..0d0b30537 100644
+--- a/src/hotspot/share/runtime/safepointMechanism.cpp
++++ b/src/hotspot/share/runtime/safepointMechanism.cpp
+@@ -64,7 +64,7 @@ void SafepointMechanism::default_initialize() {
+     char* bad_page  = polling_page;
+     char* good_page = polling_page + page_size;
+ 
+-    os::protect_memory(bad_page,  page_size, os::MEM_PROT_NONE);
++    os::protect_memory(bad_page,  page_size, os::MEM_PROT_READ); // OHOS PATCH: avoid SIGSEGV for safepoint polling
+     os::protect_memory(good_page, page_size, os::MEM_PROT_READ);
+ 
+     log_info(os)("SafePoint Polling address, bad (protected) page:" INTPTR_FORMAT ", good (unprotected) page:" INTPTR_FORMAT, p2i(bad_page), p2i(good_page));

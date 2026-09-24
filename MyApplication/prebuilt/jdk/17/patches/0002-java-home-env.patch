@@ -1,0 +1,30 @@
+From: MC-OHOS <mc-ohos@harmonyos.next>
+Subject: [PATCH] Use JAVA_HOME env var instead of inferring from libjvm.so path
+
+On HarmonyOS, libjvm.so is loaded from the app sandbox via dlopen,
+so the default path inference gives the wrong JAVA_HOME.
+Check the JAVA_HOME environment variable first.
+
+---
+ src/hotspot/os/linux/os_linux.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index cf8925312..770a57d8a 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -463,7 +463,13 @@ void os::init_system_properties_values() {
+         *pslash = '\0';        // Get rid of /lib.
+       }
+     }
+-    Arguments::set_java_home(buf);
++    // OHOS: prefer JAVA_HOME env var (sandbox path inference fails)
++    const char* java_home_env = ::getenv("JAVA_HOME");
++    if (java_home_env != NULL && java_home_env[0] != '\0') {
++      Arguments::set_java_home(java_home_env);
++    } else {
++      Arguments::set_java_home(buf);
++    }
+     if (!set_boot_path('/', ':')) {
+       vm_exit_during_initialization("Failed setting boot class path.", NULL);
+     }

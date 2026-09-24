@@ -1,0 +1,146 @@
+// build-profile.json5.template — 项目构建配置模板
+//
+// 使用方法（首次 clone 项目后）：
+//   1. 复制本文件为 build-profile.json5：
+//        cp build-profile.json5.template build-profile.json5   （Linux/macOS）
+//        Copy-Item build-profile.json5.template build-profile.json5   （PowerShell）
+//   2. 在 DevEco Studio 中：File → Project Structure → Project → Signing Configs
+//      导入本机 .p12/.p7b/.cer，DevEco 会自动回填 material 字段。
+//   3. 不要把 build-profile.json5 提交到 git（已在 .gitignore 中）。
+//
+// 公开快照说明：docs/BUILD_SNAPSHOT.md
+{
+  "app": {
+    "signingConfigs": [
+      // 留空数组：由 DevEco Studio 在"Signing Configs"面板导入本机证书后自动填入。
+      // 若手动填写，请确保 keyPassword / storePassword 使用环境变量占位：
+      //   "keyPassword": "${env:HOS_SIGN_KEY_PASSWORD}",
+      //   "storePassword": "${env:HOS_SIGN_STORE_PASSWORD}"
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.1.0(23)",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          },
+          "nativeCompiler": "BiSheng"
+        }
+      },
+      // 一多分轨产物：
+      //   - store    三端适配；商店分发 tablet/2in1。
+      //   - sideload GitHub 三端通用侧载包。
+      //   - desktop       API26 formal 2in1 电脑轨；完整 raw/capture/focus 合同。
+      // deviceTypes 与差异源码由 entry/build-profile.json5 的同名 target 定义。
+      // bundleName 三轨一致（同一应用，不需要 hvigor 插件改包名）。
+      {
+        "name": "store",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.1.0(23)",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          },
+          "nativeCompiler": "BiSheng"
+        }
+      },
+      {
+        "name": "sideload",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.1.0(23)",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          },
+          "nativeCompiler": "BiSheng"
+        }
+      },
+      {
+        "name": "desktop",
+        "signingConfig": "default",
+        "compileSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "6.0.2(22)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          },
+          "nativeCompiler": "BiSheng"
+        }
+      }],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": ["default"]
+        },
+        {
+          "name": "store",
+          "applyToProducts": ["store"]
+        },
+        {
+          "name": "sideload",
+          "applyToProducts": ["sideload"]
+        },
+        {
+          "name": "desktop",
+          "applyToProducts": ["desktop"]
+        }]
+    },
+    // 三层架构重构（C 步）：公共能力层 + feature 域抽成独立 HAR 模块。
+    // 新增 HAR 模块后，记得在此模板同步登记（build-profile.json5 本体被 gitignore）。
+    {
+      "name": "commons",
+      "srcPath": "./commons"
+    },
+    {
+      "name": "account",
+      "srcPath": "./account"
+    },
+    {
+      "name": "gamecontrol",
+      "srcPath": "./gamecontrol"
+    },
+    {
+      "name": "feature_core",
+      "srcPath": "./feature_core"
+    },
+    {
+      "name": "update",
+      "srcPath": "./update"
+    },
+    {
+      "name": "mods",
+      "srcPath": "./mods"
+    },
+    {
+      "name": "feature_system",
+      "srcPath": "./feature_system"
+    },
+    {
+      "name": "launch",
+      "srcPath": "./launch"
+    }
+  ]
+}

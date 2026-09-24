@@ -1,0 +1,25 @@
+#pragma once
+// 由 scripts/generate-log-domain-tags.mjs 生成；修改 config/log-domains.json。
+static constexpr const char* AMCL_RENDER_LOG_TAGS[] = {
+    "AMCL_FRAME_RATE",
+    "AMCL_MG_BENCH",
+    "AMCL_NATIVE_WINDOW",
+    "AMCL_RENDER_QOS",
+    "AMCL_VULKAN_WSI",
+    "DesktopRenderDiagnostic",
+    "GLFW_CB",
+    "GLFW_COMPAT",
+    "GLFW_EGL",
+    "GLFW_VK",
+    "GraphicsCapability",
+    "GraphicsHistory",
+    "MG_CONFIG",
+    "MG_RENDER_PROBE",
+    "RenderPage",
+    "RendererSettings",
+    "VK_PROBE",
+    "VK_RENDER",
+    "VulkanCapability",
+    "VulkanPage",
+    "XCOMPONENT",
+};

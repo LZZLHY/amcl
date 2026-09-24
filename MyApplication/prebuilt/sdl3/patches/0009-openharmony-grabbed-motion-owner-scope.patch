@@ -1,0 +1,162 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index 2c23e4c3d..ab8ce3265 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -677,6 +677,17 @@ static bool host_last_grabbing;
+ static bool host_baseline_valid;
+ static bool host_capture_requested;
+ static bool host_capture_active;
++/* Grabbed-motion flow evidence.  Monotonic within the process -- only a pid
++ * change resets them (OPENHARMONY_ResetHostBridgeForPid); deliberately NOT
++ * cleared by Init/QuitMouse, because the question they answer ("did grabbed
++ * motion ever reach SDL in this process?") spans window generations. */
++static Uint64 host_grabbed_motion_delivered;
++static Uint64 host_grabbed_motion_suppressed;
++/* Has the typed channel actually carried a RELATIVE record for the current
++ * grab?  This is the *only* sound basis for taking grabbed motion away from the
++ * accumulated cursor; see OPENHARMONY_PumpHostCursor for the two proxies that
++ * were tried and measured wrong on a real device. */
++static bool host_typed_relative_seen;
+ static Uint32 host_relative_disable_authority;
+ static bool host_presented_active;
+ static bool host_deactivation_draining;
+@@ -765,6 +776,9 @@ static void OPENHARMONY_ResetHostBridgeForPid(void)
+         host_baseline_valid = false;
+         host_capture_requested = false;
+         host_capture_active = false;
++        host_grabbed_motion_delivered = 0u;
++        host_grabbed_motion_suppressed = 0u;
++        host_typed_relative_seen = false;
+         host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
+         host_presented_active = false;
+         host_deactivation_draining = false;
+@@ -1263,6 +1277,56 @@ static Uint8 OPENHARMONY_ButtonFromGlfwButton(int button)
+ // ---------------------------------------------------------------------------
+ // Cursor / look forwarding
+ // ---------------------------------------------------------------------------
++/* A typed RELATIVE record may be injected only while a real pointer capture is
++ * granted.  This is the delivery gate for the RELATIVE case in
++ * OPENHARMONY_PumpTypedEvents, and one half of the ownership test below. */
++static bool OPENHARMONY_TypedRelativeCaptureGranted(void)
++{
++    return host_capture_requested && host_capture_active;
++}
++
++/* Who owns grabbed motion?  Only a channel that is *actually carrying* it.
++ *
++ * ⚠️ Two weaker proxies were tried and both measured wrong on a real device
++ * (MatePad, API 26); each left grabbed motion with **zero** owners, i.e. touch
++ * look silently dropped on every pump:
++ *
++ *   · "typed channel callable" (`typed_relative_owner`) -- true on 26.3 the
++ *     moment the backend descriptor resolves, while a finger-only session
++ *     produces no typed RELATIVE record at all.
++ *   · "pointer capture granted" -- true because the platform cursor lock
++ *     succeeds whenever the device merely *reports* a mouse capability
++ *     (`InputDeviceMonitor: capability changed: mouse=1` → `AMCL_CURSOR_LOCK:
++ *     cursor locked to window 89`), even with no mouse moving.  Device log:
++ *     `grabbed-motion site=typed-owner delivered=0 suppressed=8192` while the
++ *     host kept producing look samples (`AMCL_INSRC looks touch=266`).
++ *
++ * Touch look never becomes a typed RELATIVE record: the host look funnel
++ * accumulates it and it exists only in the cursor snapshot.  So ownership must
++ * transfer on evidence -- a delivered RELATIVE record -- and never on
++ * capability.  Both halves are required: `...CaptureGranted()` so a later
++ * capture loss hands ownership straight back, and `host_typed_relative_seen`
++ * so a channel that has never carried a sample cannot claim it. */
++static bool OPENHARMONY_TypedRelativeOwnsGrabbedMotion(bool typed_relative_owner)
++{
++    return typed_relative_owner && OPENHARMONY_TypedRelativeCaptureGranted() &&
++           host_typed_relative_seen;
++}
++
++static void OPENHARMONY_LogGrabbedMotion(const char *site, Uint64 count)
++{
++    if (count == 0u || (count & (count - 1u)) != 0u) {
++        return;  // first + powers of two only; steady state stays silent.
++    }
++    /* One line carries both numbers so a single grep is a complete snapshot:
++     * delivered climbing = the fallback owns look and it works; suppressed
++     * climbing while delivered stays 0 = the ownership predicate is wrong
++     * again, and grabbed motion is being dropped between the two owners. */
++    SDL_Log("openharmony: grabbed-motion site=%s delivered=%" SDL_PRIu64
++            " suppressed=%" SDL_PRIu64,
++            site, host_grabbed_motion_delivered, host_grabbed_motion_suppressed);
++}
++
+ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge,
+                                        bool typed_relative_owner)
+ {
+@@ -1280,13 +1344,24 @@ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge,
+     const SDL_WindowID input_window_id = input_window->id;
+ 
+     const bool grabbing = bridge->IsGrabbing();
+-    if (grabbing && typed_relative_owner) {
+-        /* The typed relative record is the sole grabbed-motion owner. Keeping
+-         * the accumulated cursor baseline live here would allow a second GLFW
+-         * consumer to advance it and make SDL inject the same hardware sample
+-         * twice. */
++    /* Grab flip is the ownership epoch boundary, and it has to be observed even
++     * on a pump that ends up suppressed: otherwise a session that once carried
++     * mouse motion would keep the accumulated cursor disowned forever, and the
++     * next finger-only grab would lose look again. */
++    if (grabbing != host_last_grabbing) {
++        host_last_grabbing = grabbing;
++        host_baseline_valid = false;
++        host_typed_relative_seen = false;
++    }
++    if (grabbing && OPENHARMONY_TypedRelativeOwnsGrabbedMotion(typed_relative_owner)) {
++        /* The typed RELATIVE record is carrying this grab. Keeping the
++         * accumulated cursor baseline live now would let a GLFW consumer in
++         * another image advance it and make SDL inject the same hardware
++         * sample twice. */
++        ++host_grabbed_motion_suppressed;
++        OPENHARMONY_LogGrabbedMotion("typed-owner",
++                                     host_grabbed_motion_suppressed);
+         host_baseline_valid = false;
+-        host_last_grabbing = true;
+         return;
+     }
+ 
+@@ -1300,10 +1375,11 @@ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge,
+     bridge->GetCursorSnapshot(&x, &y);
+ 
+     // Grab flips swap the meaning of the value (accumulated look vs absolute
+-    // menu position). Re-baseline instead of diffing across the boundary.
+-    if (!host_baseline_valid || (grabbing != host_last_grabbing)) {
++    // menu position). Re-baseline instead of diffing across the boundary --
++    // the flip itself is detected above, which is the one place that owns
++    // host_last_grabbing, and it clears host_baseline_valid to land here.
++    if (!host_baseline_valid) {
+         host_baseline_valid = true;
+-        host_last_grabbing = grabbing;
+         host_last_x = x;
+         host_last_y = y;
+         return;
+@@ -1319,6 +1395,9 @@ static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge,
+             if (!input_window) {
+                 return;
+             }
++            ++host_grabbed_motion_delivered;
++            OPENHARMONY_LogGrabbedMotion("accumulated",
++                                         host_grabbed_motion_delivered);
+             SDL_SendMouseMotion(0, input_window, SDL_DEFAULT_MOUSE_ID, true, (float)dx, (float)dy);
+         }
+     } else {
+@@ -1832,9 +1911,15 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+             break;
+ 
+         case AMCL_BACKEND_EVENT_RELATIVE:
+-            if (host_capture_requested && host_capture_active &&
++            if (OPENHARMONY_TypedRelativeCaptureGranted() &&
+                 SDL_GetRelativeMouseMode() &&
+                 (event.wheelX != 0.0f || event.wheelY != 0.0f)) {
++                /* ⭐ The only place grabbed-motion ownership may transfer: a
++                 * delivered record. See ...OwnsGrabbedMotion for why. */
++                if (!host_typed_relative_seen) {
++                    host_typed_relative_seen = true;
++                    host_baseline_valid = false;
++                }
+                 SDL_SendMouseMotion(event.monotonicTimeNs, input_window,
+                                     OPENHARMONY_MouseIDFromHost(event.deviceId), true,
+                                     event.wheelX, event.wheelY);

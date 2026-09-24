@@ -1,0 +1,20 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Please describe the basic information.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "libentry.so": "file:./src/main/cpp/types/libentry",
+    "commons": "file:../commons",
+    "account": "file:../account",
+    "gamecontrol": "file:../gamecontrol",
+    "feature_core": "file:../feature_core",
+    "update": "file:../update",
+    "mods": "file:../mods",
+    "feature_system": "file:../feature_system",
+    "launch": "file:../launch"
+  }
+}
+

@@ -1,0 +1,152 @@
+diff --git a/src/video/openharmony/SDL_amclpresentation.h b/src/video/openharmony/SDL_amclpresentation.h
+index 90b017338..0759fab51 100644
+--- a/src/video/openharmony/SDL_amclpresentation.h
++++ b/src/video/openharmony/SDL_amclpresentation.h
+@@ -12,6 +12,17 @@
+ #include <stdint.h>
+ 
+ typedef uint32_t AMCL_NativeWindowPublicationState;
++/* 与宿主 V2 可选尾部同布局。引用与身份必须同事务返回，不能按指针推断资源连续。 */
++typedef struct AMCL_NativeWindowIdentityV1 {
++    uint32_t structSize;
++    uint32_t abiVersion;
++    void *nativeWindow;
++    uint64_t generation;
++    uint64_t resourceEpoch;
++    uint64_t geometryEpoch;
++    int width;
++    int height;
++} AMCL_NativeWindowIdentityV1;
+ typedef struct AMCL_NativeWindowLeaseBrokerV2
+ {
+     uint32_t abiVersion;
+@@ -25,6 +36,8 @@ typedef struct AMCL_NativeWindowLeaseBrokerV2
+     int (*claimPresentation)(void *, uint64_t, uint32_t, uint64_t *);
+     int (*movePresentation)(uint64_t, void *, uint64_t);
+     int (*releasePresentation)(uint64_t);
++    int (*acquireIdentity)(void *, uint64_t, AMCL_NativeWindowIdentityV1 *);
++    int (*movePresentationGeometry)(uint64_t, void *, uint64_t, uint64_t, uint64_t);
+ } AMCL_NativeWindowLeaseBrokerV2;
+ 
+ #define AMCL_PRESENTATION_BROKER_SIZE \
+@@ -36,6 +49,7 @@ typedef struct AMCL_PresentationSurface
+     void *surface;
+     void *native_window;
+     uint64_t generation;
++    uint64_t resource_epoch;
+ } AMCL_PresentationSurface;
+ 
+ typedef struct AMCL_PresentationOwner
+@@ -71,6 +85,37 @@ static inline unsigned int AMCL_PresentationLive(const AMCL_PresentationOwner *o
+            (owner->surfaces[1].surface != NULL ? 1u : 0u);
+ }
+ 
++/* 只在取得额外引用的同一宿主事务中读取身份；读完归还该引用，调用者本身的窗口租约
++ * 仍在。缺尾部返回未知 0，旧宿主保守重建；有尾部但竞态/失败也不能制造连续性。 */
++static inline bool AMCL_PresentationHasIdentity(const AMCL_NativeWindowLeaseBrokerV2 *broker)
++{
++    return broker && broker->structSize >= offsetof(AMCL_NativeWindowLeaseBrokerV2, movePresentationGeometry) +
++        sizeof(broker->movePresentationGeometry) && broker->acquireIdentity && broker->movePresentationGeometry && broker->release;
++}
++static inline uint64_t AMCL_PresentationResourceEpoch(const AMCL_NativeWindowLeaseBrokerV2 *broker,
++                                                    void *window, uint64_t generation)
++{
++    if (!AMCL_PresentationHasIdentity(broker)) return 0;
++    AMCL_NativeWindowIdentityV1 identity = { sizeof(identity), 1u, NULL, 0, 0, 0, 0, 0 };
++    const int acquired = broker->acquireIdentity(NULL, 0, &identity);
++    const uint64_t epoch = acquired == 1 && identity.nativeWindow == window &&
++        identity.generation == generation ? identity.resourceEpoch : 0;
++    if (acquired == 1 && identity.nativeWindow) broker->release(identity.nativeWindow);
++    return epoch;
++}
++static inline bool AMCL_PresentationCanPreserve(const AMCL_PresentationOwner *owner,
++                                               void *window, uint64_t generation)
++{
++    if (!owner || !owner->token || owner->retirement_failed || !AMCL_PresentationLive(owner)) return false;
++    const uint64_t epoch = AMCL_PresentationResourceEpoch(owner->broker, window, generation);
++    if (!epoch) return false;
++    for (unsigned int i = 0; i < 2u; ++i) {
++        if (owner->surfaces[i].surface && (owner->surfaces[i].native_window != window ||
++            owner->surfaces[i].resource_epoch != epoch)) return false;
++    }
++    return true;
++}
++
+ static inline bool AMCL_PresentationRelease(AMCL_PresentationOwner *owner)
+ {
+     if (AMCL_PresentationLive(owner) != 0u) {
+@@ -110,6 +155,11 @@ static inline void *AMCL_PresentationCreate(AMCL_PresentationOwner *owner,
+             return NULL;
+         }
+     }
++    const uint64_t resource_epoch = AMCL_PresentationResourceEpoch(broker, native_window, generation);
++    if (AMCL_PresentationHasIdentity(broker) && !resource_epoch) {
++        owner->rejected++;
++        return NULL;
++    }
+     bool claimed_here = false;
+     if (!owner->token) {
+         uint64_t token = 0;
+@@ -139,6 +189,7 @@ static inline void *AMCL_PresentationCreate(AMCL_PresentationOwner *owner,
+     owner->surfaces[slot].surface = surface;
+     owner->surfaces[slot].native_window = native_window;
+     owner->surfaces[slot].generation = generation;
++    owner->surfaces[slot].resource_epoch = resource_epoch;
+     owner->created++;
+     return surface;
+ }
+@@ -158,6 +209,7 @@ static inline bool AMCL_PresentationRetire(AMCL_PresentationOwner *owner,
+         owner->surfaces[i].surface = NULL;
+         owner->surfaces[i].native_window = NULL;
+         owner->surfaces[i].generation = 0;
++        owner->surfaces[i].resource_epoch = 0;
+         owner->destroyed++;
+         return true;
+     }
+@@ -170,13 +222,22 @@ static inline bool AMCL_PresentationMove(AMCL_PresentationOwner *owner,
+ {
+     if (!owner || !owner->token || !native_window || !generation ||
+         !AMCL_PresentationBrokerValid(owner->broker) || owner->retirement_failed) return false;
++    bool geometry_only = false;
+     for (unsigned int i = 0; i < 2u; ++i) {
+         if (owner->surfaces[i].surface && owner->surfaces[i].native_window != native_window) {
+             owner->rejected++;
+             return false;
+         }
++        if (owner->surfaces[i].surface && owner->surfaces[i].generation != generation) geometry_only = true;
+     }
+-    if (!owner->broker->movePresentation(owner->token, native_window, generation)) {
++    // 有旧代际 surface 仍存活时，只有资源 epoch 一致且宿主原子核验成功才移动 token。
++    // 全部旧 surface 已退休、只剩本代新建资源时仍使用原有恢复事务。
++    const uint64_t epoch = geometry_only ? AMCL_PresentationResourceEpoch(owner->broker, native_window, generation) : 0;
++    const bool moved = geometry_only ?
++        (AMCL_PresentationCanPreserve(owner, native_window, generation) && epoch &&
++         owner->broker->movePresentationGeometry(owner->token, native_window, owner->generation, generation, epoch)) :
++        owner->broker->movePresentation(owner->token, native_window, generation);
++    if (!moved) {
+         owner->rejected++;
+         return false;
+     }
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index 1498f2227..e9bbd1f39 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -2582,7 +2582,7 @@ SDL_COMPILE_TIME_ASSERT(amcl_lease_broker_tail_layout,
+                         AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PEEK_SIZE <=
+                             sizeof(AMCL_NativeWindowLeaseBrokerV2));
+ SDL_COMPILE_TIME_ASSERT(amcl_presentation_broker_tail_layout,
+-                        AMCL_PRESENTATION_BROKER_SIZE == sizeof(AMCL_NativeWindowLeaseBrokerV2));
++                        AMCL_PRESENTATION_BROKER_SIZE <= sizeof(AMCL_NativeWindowLeaseBrokerV2));
+ 
+ static bool OPENHARMONY_AMCL_BrokerDescriptorValid(
+     const AMCL_NativeWindowLeaseBrokerV2 *broker)
+@@ -3350,7 +3350,8 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+     data->amcl_recovery_in_progress = true;
+     if (same_pointer && !force_revalidate &&
+         data->surface_state == OPENHARMONY_SURFACE_READY &&
+-        !data->amcl_surface_suspended) {
++        !data->amcl_surface_suspended &&
++        AMCL_PresentationCanPreserve(&data->presentation, candidate.native_window, generation)) {
+         Uint64 checkpoint_generation = 0;
+         unsigned int checkpoint_state = AMCL_NATIVE_WINDOW_PUBLICATION_UNPUBLISHED;
+         if (!OPENHARMONY_AMCL_ReadStableNativeWindowPublication(

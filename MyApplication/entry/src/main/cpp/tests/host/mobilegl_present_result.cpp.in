@@ -1,0 +1,132 @@
+// 渲染设备与资源管理器为系统边界替身；@PRODUCTION@位置插入完整生产函数正文。
+// 本实验只证明呈现结果沿Vulkan→BackendObject→EGL→序列传播，不冒充GPU渲染测试。
+#include "@ROOT@/prebuilt/mobilegl/src/MobileGL/MG_Backend/PresentationResult.h"
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <stdexcept>
+#define MGLOG_D(...) ((void)0)
+#define MGLOG_E(...) ((void)0)
+#define MGLOG_E_ONCE(...) ((void)0)
+#define MOBILEGL_ASSERT(value, ...) do { if (!(value)) throw std::runtime_error("renderer invariant"); } while (0)
+#define CHECK(value) do { if (!(value)) throw std::runtime_error(#value); } while (0)
+using Bool=bool; using Uint64=uint64_t; using VkResult=int32_t;
+using EGLDisplay=uintptr_t; using EGLSurface=uintptr_t; using EGLContext=uintptr_t; using EGLBoolean=int;
+constexpr auto EGL_NO_SURFACE=0u,EGL_NO_CONTEXT=0u;
+constexpr auto EGL_FALSE=0,EGL_TRUE=1,EGL_SUCCESS=0x3000,EGL_BAD_SURFACE=0x300d,EGL_CONTEXT_LOST=0x300e;
+constexpr auto VK_NULL_HANDLE=0,VK_SUCCESS=0,VK_SUBOPTIMAL_KHR=1000001003,VK_ERROR_OUT_OF_DATE_KHR=-1000001004;
+constexpr auto VK_ERROR_SURFACE_LOST_KHR=-1000000000,VK_ERROR_DEVICE_LOST=-4,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR=1000001002;
+namespace driver {
+VkResult submit=VK_SUCCESS,present=VK_SUCCESS,acquire=VK_SUCCESS;
+bool recreate=true, resize=false;
+unsigned submissions=0,presents=0;
+}
+VkResult vkQueueSubmit(int,int,const int*,int){++driver::submissions;return driver::submit;}
+VkResult vkQueuePresentKHR(int,const int*){++driver::presents;return driver::present;}
+namespace MobileGL::MG_Backend::DirectVulkan {
+struct Frame { bool isCommandRecording=true,hasCommandBufferRecorded=false,hasPreCommandBufferRecorded=false;
+    int commandBuffer=1,imageInFlightFence=2;uint64_t lastSubmitIndex=0; };
+struct Frames {
+    Frame frame;
+    struct Submit {int submitInfo=0;};struct Present {int presentInfo=0;};
+    Frame& GetCurrent(){return frame;}
+    void EndCommandRecording(){} void AbandonPreCommandRecording(){} void EndPreCommandRecordingIfOpen(){}
+    VkResult WaitAndAcquireNextImage(int,int,unsigned&){return driver::acquire;}
+    void TransitionToPresent(int,int){}
+    Submit GetSubmitInfo(bool,unsigned){return {};}
+    Present GetPresentInfo(int,unsigned){return {};}
+    void AdvanceToNext(){} unsigned GetCurrentFrameIndex(){return 0;}
+};
+struct Swapchain {
+    int handle=1;
+    int GetHandle() const{return handle;}unsigned GetImageCount() const{return 1;}
+    int GetImageLayout(unsigned){return 0;}int GetImage(unsigned){return 1;}
+    void SetImageLayout(unsigned,int){}void SetImageContentDefined(unsigned,bool){}void SetAllDepthStencilContentUndefined(){}
+};
+struct VkRenderPassManager {
+    static VkRenderPassManager* GetActiveRenderPass(){return nullptr;}
+    static void EndRenderPass(int){}void OnPresent(){}
+};
+struct Factory {int OnFrameBoundary(){return 0;}void FlushPendingUploads(){}void BeginFrame(unsigned){};};
+struct {bool graphicsPipelineValid=false;} g_dynamicStateShadow;
+class VulkanRenderer {
+public:
+    Swapchain m_swapchainObject;Frames m_frameContext;
+    bool m_presentSuspended=false,m_swapchainResizeRequested=false;
+    unsigned m_imageIndexAcquired=0;
+    int m_device=1,m_graphicsQueue=2,m_presentQueue=3,m_drainsSinceLastPresent=0;
+    uint64_t m_submitCounter=0;
+    VkRenderPassManager renderPass;
+    Factory factory,m_bufferManager;
+    VkRenderPassManager* m_renderPassManager=&renderPass;
+    Factory *m_programFactory=&factory,*m_pipelineFactory=&factory,*m_vertexInputStateFactory=&factory,
+        *m_samplerManager=&factory,*m_textureManager=&factory,*m_uniformManager=&factory;
+    std::vector<int> m_convertedVertexStreams;
+    bool RecreateSwapchain(){if(driver::recreate)m_swapchainObject.handle=1;return driver::recreate;}
+    bool SwapchainIsOutOfDate(){return driver::resize;}
+    void InvalidatePipelineMemo(){}void InvalidateSetupDrawSnapshots(){}void TryDrainFrameTransients(){}
+    void RegisterSubmit(int,bool){++m_submitCounter;}
+    void OnSubmitsCompletedUpTo(uint64_t){}void CollectDeferredDepthMipmapCleanup(unsigned){}
+    PresentationResult Present();
+};
+@VULKAN_PRESENT@
+VulkanRenderer* active=nullptr;
+PresentationResult actualPresent(){return active->Present();}
+}
+namespace MobileGL::MG_Backend {
+int CurrentThreadKey(){return 1;}
+struct Functions {PresentationResult(*Present)()=&DirectVulkan::actualPresent;};
+class BackendObject {
+    std::recursive_mutex m_eglStateMutex;
+    bool m_eglDisplayInitialized=true,m_eglSurfaceInitialized=true;
+    EGLDisplay m_eglDisplay=1;EGLSurface m_eglSurface=1;
+    struct Current {EGLDisplay Display;EGLSurface DrawSurface;EGLContext Context;};
+    std::map<int,Current> m_eglCurrentThreads{{1,{1,1,1}}};
+    Functions functions;
+public:
+    const Functions& GetBackendFunctions(){return functions;}
+    PresentationResult SwapEGLBuffers(EGLDisplay,EGLSurface);
+};
+@BACKEND_SWAP@
+}
+namespace MobileGL::MG_Impl::EGLImpl {
+thread_local std::uint64_t presentedSequence=0;
+struct State {int error=EGL_SUCCESS;bool ValidateSurfaceOnDisplay(EGLDisplay,EGLSurface){return true;}void SetError(int value){error=value;}} state;
+State* GetState(){return &state;}
+MG_Backend::BackendObject backend;
+MG_Backend::BackendObject* GetBackendObject(State*){return &backend;}
+std::recursive_mutex& EGLOperationMutex(){static std::recursive_mutex value;return value;}
+@EGL_SWAP@
+@SEQUENCE@
+}
+int main() try {
+    using namespace MobileGL::MG_Backend::DirectVulkan;
+    using namespace MobileGL::MG_Impl::EGLImpl;
+    struct Case {const char* name;bool initial, recreate, resize;VkResult submit,present,acquire;bool success,actual;int error;};
+    const Case cases[]={
+        {"presented",true,true,false,0,0,0,true,true,EGL_SUCCESS},
+        {"zero-area",false,false,false,0,0,0,true,false,EGL_SUCCESS},
+        {"outdated-suspended",true,false,false,0,VK_ERROR_OUT_OF_DATE_KHR,0,true,false,EGL_SUCCESS},
+        {"outdated-rebuilt",true,true,false,0,VK_ERROR_OUT_OF_DATE_KHR,0,true,false,EGL_SUCCESS},
+        {"surface-lost",true,true,false,0,VK_ERROR_SURFACE_LOST_KHR,0,false,false,EGL_BAD_SURFACE},
+        {"device-lost",true,true,false,0,VK_ERROR_DEVICE_LOST,0,false,false,EGL_CONTEXT_LOST},
+        {"submit-failed",true,true,false,VK_ERROR_DEVICE_LOST,0,0,false,false,EGL_CONTEXT_LOST},
+        {"suboptimal",true,true,false,0,VK_SUBOPTIMAL_KHR,0,true,true,EGL_SUCCESS},
+        {"next-acquire-failed",true,true,false,0,0,VK_ERROR_DEVICE_LOST,false,true,EGL_CONTEXT_LOST},
+        {"present-then-suspend",true,false,true,0,0,0,true,true,EGL_SUCCESS}
+    };
+    for(const auto& test:cases){
+        VulkanRenderer renderer;active=&renderer;renderer.m_swapchainObject.handle=test.initial?1:0;
+        driver::recreate=test.recreate;driver::resize=test.resize;driver::submit=test.submit;
+        driver::present=test.present;driver::acquire=test.acquire;driver::submissions=driver::presents=0;
+        state.error=EGL_SUCCESS;const auto before=PresentedSequence();
+        CHECK((SwapBuffers(1,1)==EGL_TRUE)==test.success);
+        CHECK((PresentedSequence()>before)==test.actual);CHECK(state.error==test.error);
+        std::cout<<test.name<<": egl="<<test.success<<" actual="<<test.actual<<" error="<<state.error<<'\n';
+    }
+    std::cout<<"MobileGL actual-present propagation PASS: production renderer/backend/EGL/sequence\n";
+    return 0;
+}catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

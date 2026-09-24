@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "commit": "920894cdcb360e359689fac39901d9785741edd6",
+  "sourceTree": "cd7494812b5aecbf753adbad4e9d048959dd6375",
+  "files": {
+    "libmobilegl.so": "157c6f15da4bbe6a5df68d0975b0a6b03dfa395ed59e8c1eb9ad288efc2aef27",
+    "libmobilegl.unstripped.so": "290be3a0bcd4b856a4755a1d0fc626279b3a3328672b2310bc9c1633013b29ee"
+  },
+  "runtimeIdentity": "8e9956026913da7c64ffc0e74545ec8f72bf2ffe872921d477ff909c9577335f",
+  "cmakeCacheSha256": "31ab0524af5dd050879f4cb50b9fdd6dd5f91638274463c2bc7b66232d66d28e",
+  "ninjaSha256": "aeb63a5decbd1a369ec681a8443da53f7dcd23a7a62f72e5ac35ae6b10a11fda",
+  "linkFlags": "--rtlib=compiler-rt -fuse-ld=lld -static-libstdc++ -Wl,--build-id=sha1 -Wl,--warn-shared-textrel -Wl,--fatal-warnings -lunwind -Wl,--no-undefined -Qunused-arguments -Wl,-z,noexecstack   -Xlinker --exclude-libs -Xlinker ALL -Xlinker -Bsymbolic-functions"
+}

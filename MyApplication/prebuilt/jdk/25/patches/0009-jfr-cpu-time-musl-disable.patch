@@ -1,0 +1,27 @@
+diff --git a/src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp b/src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp
+index b5d1171ae..ac8a8944f 100644
+--- a/src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp
++++ b/src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp
+@@ -671,6 +671,14 @@ static void set_timer_time(timer_t timerid, int64_t period_nanos) {
+ }
+ 
+ bool JfrCPUSamplerThread::create_timer_for_thread(JavaThread* thread, timer_t& timerid) {
++#ifdef __MUSL__
++  // OHOS PATCH: musl lacks SIGEV_THREAD_ID and uses a different struct sigevent
++  // layout than glibc, so per-thread CPU-time JFR timers can't be created here.
++  // Degrade gracefully (caller logs a one-time warning + frees the queue).
++  // JFR CPU-time profiling is a diagnostic feature unused by Minecraft.
++  (void)thread; (void)timerid;
++  return false;
++#else
+   struct sigevent sev;
+   sev.sigev_notify = SIGEV_THREAD_ID;
+   sev.sigev_signo = SIG;
+@@ -690,6 +698,7 @@ bool JfrCPUSamplerThread::create_timer_for_thread(JavaThread* thread, timer_t& t
+     set_timer_time(timerid, period);
+   }
+   return true;
++#endif
+ }
+ 
+ 

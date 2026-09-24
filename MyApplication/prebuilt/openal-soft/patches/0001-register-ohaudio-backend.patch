@@ -1,0 +1,41 @@
+From: AMCL Maintainers <amcl@local>
+Subject: [PATCH] Register OHAudio backend in OpenAL Soft
+
+Adds the OHAudio backend (HarmonyOS NEXT, API 12+) to OpenAL Soft 1.24.3:
+
+  1. alc/alc.cpp: include "ohaudio.h" alongside other backend headers
+  2. alc/alc.cpp: register BackendInfo{"ohaudio", OHAudioBackendFactory::getFactory}
+     in BackendList[], guarded by HAVE_OHAUDIO
+
+HAVE_OHAUDIO is defined via target_compile_definitions in
+entry/src/main/cpp/openal/CMakeLists.txt rather than via configure_file
+(config_backends.h.in resets all HAVE_xxx to 0).
+
+This patch replaces the sed -i injection that lived in setup_deps.sh until
+2026-05-15, which silently no-op'd whenever upstream alc.cpp was reformatted.
+
+---
+diff --git a/alc/alc.cpp b/alc/alc.cpp
+index b55fce8..010de54 100644
+--- a/alc/alc.cpp
++++ b/alc/alc.cpp
+@@ -109,6 +109,9 @@
+ 
+ #include "backends/base.h"
+ #include "backends/null.h"
++#if HAVE_OHAUDIO
++#include "ohaudio.h"
++#endif
+ #include "backends/loopback.h"
+ #if HAVE_PIPEWIRE
+ #include "backends/pipewire.h"
+@@ -269,6 +272,9 @@ std::array BackendList{
+     BackendInfo{"otherio", OtherIOBackendFactory::getFactory},
+ #endif
+ 
++#if HAVE_OHAUDIO
++    BackendInfo{"ohaudio", OHAudioBackendFactory::getFactory},
++#endif
+     BackendInfo{"null", NullBackendFactory::getFactory},
+ #if HAVE_WAVE
+     BackendInfo{"wave", WaveBackendFactory::getFactory},

@@ -1,0 +1,48 @@
+{
+  "string": [
+    {
+      "name": "chat_input_field_placeholder",
+      "value": "Connected to the game text field. Start typing…"
+    },
+    {
+      "name": "chat_input_chat_placeholder",
+      "value": "Type a chat message…"
+    },
+    {
+      "name": "chat_input_send",
+      "value": "Send"
+    },
+    {
+      "name": "chat_input_close",
+      "value": "Close input"
+    },
+    {
+      "name": "chat_input_editor_hint",
+      "value": "Activate to reopen the system input method"
+    },
+    {
+      "name": "chat_input_field_control",
+      "value": "Game text input"
+    },
+    {
+      "name": "chat_input_chat_control",
+      "value": "Chat input"
+    },
+    {
+      "name": "input_control_pressed",
+      "value": "Pressed"
+    },
+    {
+      "name": "input_control_released",
+      "value": "Released"
+    },
+    {
+      "name": "input_drawer_open",
+      "value": "Expanded"
+    },
+    {
+      "name": "input_drawer_closed",
+      "value": "Collapsed"
+    }
+  ]
+}

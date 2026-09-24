@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "upstream": "LWJGL/lwjgl3",
+  "commit": "f0ec1437a6149dae00eaa27c47268e5e4efb129f",
+  "version": "3.3.3",
+  "files": [
+    {
+      "file": "stb_image_resize.h",
+      "url": "https://raw.githubusercontent.com/LWJGL/lwjgl3/f0ec1437a6149dae00eaa27c47268e5e4efb129f/modules/lwjgl/stb/src/main/c/stb_image_resize.h",
+      "size": 116516,
+      "sha256": "6a0e75adbabb48df9031c2e39ccd97437bb226fe31e7d4a01c7bf70a18d32ec6"
+    },
+    {
+      "file": "org_lwjgl_stb_STBImageResize.c",
+      "url": "https://raw.githubusercontent.com/LWJGL/lwjgl3/f0ec1437a6149dae00eaa27c47268e5e4efb129f/modules/lwjgl/stb/src/generated/c/org_lwjgl_stb_STBImageResize.c",
+      "size": 13322,
+      "sha256": "ca629688f86588794dfd2bb6ba94eba3646c305e7ec9753a0e85ed9105405408"
+    },
+    {
+      "file": "STBImageResize.java",
+      "url": "https://raw.githubusercontent.com/LWJGL/lwjgl3/f0ec1437a6149dae00eaa27c47268e5e4efb129f/modules/lwjgl/stb/src/generated/java/org/lwjgl/stb/STBImageResize.java",
+      "size": 47111,
+      "sha256": "49b417eb190f675c367d5e8bfe88dd262e94271f659045ed46f74195fb235664"
+    },
+    {
+      "file": "lwjgl-stb-3.3.3.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar",
+      "size": 120283,
+      "sha256": "0cff7aa46ea9d70fcc20857015293ea80fbf21adcac34600c84da9b81a44ca93"
+    }
+  ]
+}

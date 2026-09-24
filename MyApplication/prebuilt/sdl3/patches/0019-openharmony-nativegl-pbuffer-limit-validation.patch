@@ -1,0 +1,42 @@
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -559,11 +559,37 @@
+                                       EGL_MAX_PBUFFER_PIXELS, &max_pixels)) {
+         return false;
+     }
++    /* 系统原生GL可能为支持PBUFFER的配置报告正宽高上限、零总像素上限。
++     * 0不解释为无限：只对宿主已冻结的nativegl计划保留一次实际创建/精确尺寸回查路径。
++     * NativeGlRequired也包括MobileGL的desktop-gl协议，不能用于限定这个系统驱动特例。
++     * 查询失败、负值、其他后端/standalone及正常正上限都保持原先的拒绝边界。 */
++    bool verify_zero_pixel_limit = false;
++    if (max_pixels == 0 && max_width > 0 && max_height > 0 &&
++        width <= max_width && height <= max_height && AMCL_GraphicsRuntimeRequired()) {
++        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++        if (runtime && runtime->profile && runtime->api &&
++            SDL_strcmp(runtime->profile, "nativegl") == 0 &&
++            SDL_strcmp(runtime->api, "OPENGL") == 0) {
++            EGLint surface_type = 0;
++            if (!OPENHARMONY_GLES_QueryConfig(_this, _this->egl_data->egl_config,
++                                              EGL_SURFACE_TYPE, &surface_type)) {
++                return false;
++            }
++            verify_zero_pixel_limit = (surface_type & EGL_PBUFFER_BIT) != 0;
++        }
++    }
+     const Sint64 pixels = (Sint64)width * (Sint64)height;
+-    if (width > max_width || height > max_height || pixels > (Sint64)max_pixels) {
++    if (width > max_width || height > max_height || (!verify_zero_pixel_limit && pixels > (Sint64)max_pixels)) {
+         return SDL_SetError("OpenHarmony: pbuffer %dx%d exceeds config limits %dx%d/%d pixels",
+                             width, height, (int)max_width, (int)max_height,
+                             (int)max_pixels);
++    }
++    if (verify_zero_pixel_limit) {
++        /* 只记录进入驱动验证，不宣称surface已成功；首次创建与resize的提交/回滚
++         * 仍由真实eglCreatePbufferSurface及ValidatePbufferSurface结果决定。 */
++        SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,
++                    "OPENHARMONY_PBUFFER_LIMITS policy=nativegl-zero-pixel-limit request=%dx%d bounds=%dx%d action=driver-validation",
++                    width, height, (int)max_width, (int)max_height);
+     }
+     return true;
+ }

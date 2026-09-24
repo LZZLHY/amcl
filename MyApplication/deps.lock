@@ -1,0 +1,718 @@
+# =============================================================================
+# deps.lock — AMCL 第三方依赖精确锁
+# =============================================================================
+#
+# 替代了 deps.versions（保留作历史参考但不再被构建脚本读取）。
+# 本文件由 release 负责人手动更新；各消费脚本应校验自己使用的 section。
+# 当前 setup_deps.sh 已对 [mobileglues] 强制校验 repo + 40 位 commit；LWJGL 走
+# submodule，OpenAL Soft 校验锁定 commit 后应用 OHAudio 补丁；尚未完成全依赖统一强校验。
+#
+# 详见 docs/guides/third-party-deps-restructure-plan.md §5（deps.lock 设计）
+#
+# 字段语义:
+#   upstream = 上游 URL（仅供 reference + upstream-watch.yml 监听 "该不该升级"）
+#   repo     = setup_deps.sh 实际拉取的 URL（一般为我们的 *-mirror 镜像）
+#   commit   = 40-char SHA-1，pin 到具体内容
+#   tag      = 上游 release tag（mutable，故 commit 字段也必须填）
+#
+# 以下字段用于「我们自己 fork 并维护开发分支」的依赖（[sdl3-native] 与 [mobileglues]）。
+# 这类依赖没有上游 release tag 可 pin —— 它跟的是上游主线 + 我们的一串提交：
+#   branch         = 我们 fork 上的开发分支名
+#   base_commit    = 该分支所基于的上游 commit（rebase 后必须同步更新，且必须复跑 ABI 闸门）
+#   abi_base       = ABI 闸门的比较基线（LWJGL 绑定所对齐的上游 release）
+#   vendor_ref     = 第三方 fork 的 commit，仅作 cherry-pick 来源与署名依据
+#   version_string = 产物内嵌的版本串（`strings <so> | grep ^SDL-3.`），构建可复现性的直接凭据
+#
+# Mirror 仓策略详见 §3.5。当 *-mirror 仓尚未建立时，repo 字段可临时指向 upstream，
+# 但 setup_deps.sh 启动时会打印 ⚠️ 警告。
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# [mobileglues] — OpenGL → GLES translation layer
+# Source: prebuilt/mobileglues/mg_src (tracked gitlink).
+#
+# Baseline policy (2026-08-10):
+#   * source_main_commit/base_commit is the official source main merge observed
+#     for the 2.0.0 baseline. The source repository has no V2.0.0 tag.
+#   * android_renderer_commit is the renderer consumed by the official Android
+#     plugin. source_tree pins the identical tree shared by both commits.
+#   * android_plugin_commit pins the plugin's 2.0.0 release commit; the plugin's
+#     MobileGlues gitlink must resolve to android_renderer_commit.
+#   * release_repo/release_tag identify the separate APK/release-index repository.
+#   * AMCL carries fourteen reviewable commits. The first six are
+#     build/embed/toolchain-only. The seventh adds ESSL 4.3.6 conformance for
+#     dynamically indexed fragment output arrays; the eighth keys the persisted
+#     translation cache on translator behaviour so that fix cannot be served a
+#     stale pre-fix entry.
+#   * The ninth is the reviewed OHOS buffer-lifecycle and diagnostics baseline:
+#     requested/effective immutable-storage contracts, generation-safe context
+#     and buffer ownership, selective causal frame statistics, an eight-slot
+#     indirect-command ring, explicit platform/provider identity, and a bounded
+#     upload-scheduler seam. The scheduler remains compile-time OFF in AMCL
+#     shipping builds; it is not a second terrain staging implementation.
+#   * The tenth classifies glClientWaitSync by timeout/flags/result (frame
+#     statistics schema 4) so residual chunk-boundary waits are attributable;
+#     compiled out when AMCL_MG_FRAME_STATS is off. The eleventh adds opt-in
+#     present pacing consumed from AMCL_MG_FRAME_PACING_FPS at the shared
+#     present boundary (0 = off; host publishes the value per launch and the
+#     effective value is echoed once per arm as [MG-PRESENT-PACING]).
+#   * The twelfth advertises GL_ARB_draw_indirect (GLES >= 3.1 passthrough)
+#     and GL_ARB_multi_draw_indirect (only with real GL_EXT_multi_draw_indirect
+#     batching) so RenderPearl (MC 26.3+) can leave the one-instanced-draw-
+#     per-section fallback. At that commit GL_ARB_base_instance was still
+#     deliberately withheld (nonzero baseinstance was dropped by the draw
+#     family and would render wrong geometry).
+#     AMCL_MG_EXPOSE_INDIRECT_DRAW=0 is the A/B kill switch;
+#     [MG-INDIRECT-DRAW] echoes the effective advertisement.
+#   * The thirteenth completes RenderPearl's indirect trio
+#     (nonZeroFirstInstance): GL_ARB_base_instance is advertised only when the
+#     native driver exposes GL_EXT_base_instance and all three EXT entry
+#     points resolve; the base-instance draw family then forwards a nonzero
+#     baseinstance to those entry points instead of dropping it. Indirect
+#     command buffers were already passed through untouched, so their
+#     baseInstance field is honoured by the same native extension. Without
+#     the EXT nothing is advertised and behaviour is unchanged.
+#     AMCL_MG_EXPOSE_BASE_INSTANCE=0 is the A/B kill switch;
+#     [MG-BASE-INSTANCE] prints the probe verdict unconditionally.
+#   * The fourteenth adds a "force" state to that switch. Device probe showed
+#     Maleoon resolves all three EXT entry points while omitting
+#     GL_EXT_base_instance from its extension string; "force" trusts the
+#     symbols and advertises anyway (controlled experiment, user opts in
+#     explicitly). "0"/unset/"1" behave exactly as the thirteenth commit; the
+#     probe line names the deciding rule, e.g. advertise=yes(forced).
+#   * The old OHOS texture/depth patch is intentionally absent because 2.0 has
+#     the more complete upstream fix. No retired 1.3.5 Maleoon upload-policy
+#     patch is replayed; the active three-slot staging/slab/range-retirement
+#     workaround lives in AMCL's exact-hash Java compatibility layer.
+#   * Runtime delta from Android defaults is explicit: ANGLE force-disabled
+#     because AMCL ships no ANGLE DSO; all other defaults remain native 2.0.
+#
+# Reproducibility gates require deps.lock commit == superproject gitlink == MG
+# HEAD, exactly eighteen commits above base_commit, and the reviewed diff surface.
+# prebuilt/mobileglues/patches/series remains empty under this fork model.
+# -----------------------------------------------------------------------------
+[mobileglues]
+upstream               = https://github.com/MobileGL-Dev/MobileGlues.git
+repo                   = https://github.com/LZZLHY/MobileGlues.git
+branch                 = amcl/2.0-ohos
+commit                 = 02a5c2240f0a6a92ec4c09d5255faa5b97daa78b
+base_commit            = fbc4e412e353302607ba36489b2dd573b5becb25
+source_branch          = main
+source_main_commit     = fbc4e412e353302607ba36489b2dd573b5becb25
+source_tree            = 0ce931621bf2c982a84c8fb9dfbcf172bbc75dbe
+source_release_tag     = none
+android_renderer_commit      = f56af31d3e490d95808b3adc4ace20234249a37a
+android_plugin_repo          = https://github.com/MobileGL-Dev/MobileGlues-plugin.git
+android_plugin_branch        = dev
+android_plugin_commit        = c0e48848ef3850e326606ba092774edbb7d904ff
+android_plugin_main_commit   = f5105e4ddd1752cccdcc6421c402960d40ec3d9d
+android_plugin_renderer_path = MobileGlues
+release_repo            = https://github.com/MobileGL-Dev/MobileGlues-release.git
+release_tag             = V2.0.0
+release_commit          = d0211c4871ac7ccbc624070bc6cd990b2c5ee7f9
+nested_spirv_cross_commit = a0fba56c34a6700f1724bf9b751da5b488a3775c
+nested_glslang_commit     = f5f664dee8146676b04a332a7233959fc3ce9681
+nested_perfetto_commit    = 40b529923598b739b2892a536a7692eedbed5685
+nested_xxhash_commit      = c2866db364b6ea3a11933e62235ddc166ba18565
+nested_ska_commit         = 21c1cec95abee1beef827e4a7c95f692875d9594
+# Planned immutable fork tag. It is intentionally not claimed as published;
+# `check-mg-pin.mjs --release` requires the remote tag to exist at this commit.
+fork_release_tag         = amcl/mobileglues-2.0.0-ohos-r2
+fork_release_tag_commit  = 02a5c2240f0a6a92ec4c09d5255faa5b97daa78b
+
+# -----------------------------------------------------------------------------
+# [mobilegl] — MobileGL（MobileGL-Dev 从零重写的下一代 GL 实现，desktop GL 4.3 前端 +
+#   DirectGLES/DirectVulkan 双后端）。lifecycle=candidate（注册表 Phase 2b 才加，产品 UI 不可达）。
+# 治理: docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md（方案）+
+#       docs/guides/renderer-backend-governance.md（多后端层规范）+
+#       prebuilt/mobilegl/README.md（本依赖权威）
+# 源码位置: prebuilt/mobilegl/src（git submodule，gitlink 跟踪；⛔ 无 patches/ —— fork 模式，
+#   全部改动是 amcl/ohos 分支上可独立审阅、可回推上游的 commit，与 [mobileglues] 同模式）
+# 产物: prebuilt/mobilegl/dist/libmobilegl.so（gitignored，build-mobilegl.ps1 复现；
+#   Phase 2b 集成时才部署进 entry/libs/arm64-v8a/）
+# 构建: prebuilt/mobilegl/build-mobilegl.ps1（OHOS SDK cmake+ninja+clang15，
+#   OHOS_STL=c++_static —— NEEDED 仅 libvulkan.so/libhilog_ndk.z.so/libc.so，无 libc++；
+#   LTO OFF；--exclude-libs,ALL 收敛导出面到 egl*/gl*）
+# 三处一致（check-mobilegl-pin.mjs）: 下方 commit == superproject gitlink == origin/amcl/ohos
+# -----------------------------------------------------------------------------
+[mobilegl]
+upstream        = https://github.com/MobileGL-Dev/MobileGL.git
+repo            = https://github.com/LZZLHY/MobileGL.git
+branch          = amcl/ohos
+commit          = 920894cdcb360e359689fac39901d9785741edd6
+base_commit     = 0d2fceab0eb0776b8e9c10903b50572579de8cc3
+source_tree     = cd7494812b5aecbf753adbad4e9d048959dd6375
+# fork 提交栈（base..commit）：Phase 1（sstream 显式包含 / OHOS Vulkan
+# 平台分支 / 聚合体显式构造（P0960R3 绕行）/ 结构化绑定拷贝（P1091R3 绕行）/ tl::expected
+# 分流 / CMake OHOS 平台支持 / libc++experimental 链接 / --exclude-libs 符号面收敛）
+# + Phase 2a fork 侧的 3 个（hilog sink / DirectVulkan VK_OHOS_surface /
+# WindowBackend::OHOS 一等公民），以及 OHOS consumer pbuffer、surface 资源持久性和本地函数绑定。
+# glslang 的 External 依赖（按 src/3rdparty/glslang/known_good.json 的 pin 克隆，
+# 不是 submodule —— glslang 上游的惯例；build-mobilegl.ps1 会 fail-fast 校验存在）:
+spirv_tools_commit   = 33e02568181e3312f49a3cf33df470bf96ef293a
+spirv_headers_commit = 2a611a970fdbc41ac2e3e328802aed9985352dca
+# vendored 单头（fork 内 include/tl/，blob 为 LF；校验哈希用 git cat-file 而非工作区文件 ——
+# Windows autocrlf 会把工作区转成 CRLF）:
+tl_expected_tag      = v1.3.1
+tl_expected_sha256   = 0788f7d544a2fdec1dd7a794e1e9863ad4cc6a8817982b6fd93fd98724b9fa19
+# 产物指纹：持久映射地址生命周期修复；内嵌 GIT@920894c，与 dist/build-provenance.json 对账。
+libmobilegl_stripped_sha256 = 157c6f15da4bbe6a5df68d0975b0a6b03dfa395ed59e8c1eb9ad288efc2aef27
+libmobilegl_unstripped_sha256 = 290be3a0bcd4b856a4755a1d0fc626279b3a3328672b2310bc9c1633013b29ee
+
+# -----------------------------------------------------------------------------
+# [openal-soft] — 3D 音频库（OHAudio backend 通过 prebuilt/openal-soft/patches/ 注入）
+# 源码位置: entry/src/main/cpp/openal/openal-soft/（gitignored，setup_deps.sh 拉）
+# patches: prebuilt/openal-soft/patches/（series 应用顺序）
+# -----------------------------------------------------------------------------
+[openal-soft]
+upstream = https://github.com/kcat/openal-soft.git
+repo     = https://github.com/LZZLHY/openal-soft-mirror.git
+tag      = 1.24.3
+commit   = dc7d7054a5b4f3bec1dc23a42fd616a0847af948
+
+# -----------------------------------------------------------------------------
+# [lwjgl-jars] — LWJGL 上游 jar（运行时 classpath，从 Maven Central 拉）
+# 同步位置: prebuilt/lwjgl3/jars/（gitignored 后；P4 阶段从 git rm 移除）
+# 例外: lwjgl-glfw.jar 是我们 fork 编出来的，由 hvigor preBuild 现编（详见 §3.4.5）
+# -----------------------------------------------------------------------------
+[lwjgl-jars]
+version    = 3.4.2
+maven_base = https://repo1.maven.org/maven2/org/lwjgl
+modules    = lwjgl,lwjgl-glfw,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd,lwjgl-openal,lwjgl-vulkan,lwjgl-egl,lwjgl-opengles,lwjgl-freetype,lwjgl-shaderc,lwjgl-spvc,lwjgl-vma,lwjgl-sdl,lwjgl-spng
+# 各 jar 的 SHA-256（2026-08-01 升级 3.4.2 时重新计算；运行 setup_deps.sh 时校验）。
+# 这些是 Maven Central 上游原始包的 hash；AMCL 后处理产物由独立 manifest 锁定。
+# MC 26.3 要求 LWJGL 3.4.2 的 SDL 绑定；现代槽位整体替换，不与 3.4.1 混装。
+# 注：lwjgl-glfw.jar 用上游原版 lwjgl-glfw-3.4.2.jar 作 baseline（方案 B：保留上游 GLFW.class，
+#     仅由 build-prebuilt-jars.mjs 注入我们的 CallbackBridge/GLFWWindowProperties 桥接类）。
+# ⚠️ 不要把 lwjgl-jemalloc 加回来（2026-08-02 移除）。上面「补 jar 防 NoClassDefFoundError」
+#     的策略对 shaderc/spvc/vma 成立（lazy 加载，OHOS 走 GL 路径不触发），但对 jemalloc 相反：
+#     LWJGL 的 MemoryManage 会在启动时【主动】按 mimalloc→rpmalloc→jemalloc 探测 allocator。
+#     3.4.2 起实现类从顶层 JEmallocAllocator 变成嵌套 JEmalloc$Allocator（上游 2ea89788c），
+#     旧类的 static{ JEmalloc.getLibrary(); } 会让 Class.forName 当场失败并被 catch 回退，
+#     新嵌套类却能实例化成功，缺 libjemalloc.so 要等第一次 malloc 才炸，且 ExceptionInInitializerError
+#     不可恢复 → MC 在 NativeLibrariesBootstrap 阶段崩（Loading library STB/OpenGL）。
+#     我们没有 OHOS 版 libjemalloc.so（LWJGL 的 jemalloc 模块 0 个 .c，需外部源码；官方靠
+#     natives-linux 分类器 jar，那是 glibc 产物）。缺这个 jar 时 LWJGL 会静默回退 StdlibAllocator，
+#     也就是 3.4.1 时代一直在跑的分配器。若要更好的分配性能，改为补 lwjgl-rpmalloc
+#     （它自带单文件 rpmalloc.c，且探测顺序在 jemalloc 之前）。
+# 2026-05-31: MC 26.2 起字体后端改用 lwjgl-freetype（启动 eager-load，硬要求），
+#     另 26.2 version.json 还声明 shaderc/spvc/vma（Vulkan/着色器路径，OHOS 走 GL 多不触发，
+#     补 jar 防 NoClassDefFoundError，native 暂只编 freetype 的 libfreetype.so）。
+#     详见 docs/adaptation/LWJGL_FREETYPE_MODULE_PLAN.md。
+lwjgl_sha256          = 980072f45e9ece70d77ce8c8c4299075b2f36fa25c3b17b4e98090f7de75d639
+lwjgl-glfw_sha256     = 2bfd995b5dcc6f707e1f14c10f9b53b7ca43b49e26293b811746acdc44d7a174
+lwjgl-opengl_sha256   = b8c655fce5ccb5780287a5bae15cf32353582e76c44f1c77ea2d8fd27f1e1a67
+lwjgl-stb_sha256      = 6ee0b57fb8107e8ae961b981a262d96b97b88eff3ac86b8eb6f55362fbbfd82e
+lwjgl-tinyfd_sha256   = 2f7a1b33917e753194e0a429a841ed5a272870d04c948b9abf30b86043bb7c48
+lwjgl-openal_sha256   = ec67efd3ec98fd4a6f1cb2fa41e6c9a1493ee167d23ca27d394597b9a06d020c
+lwjgl-vulkan_sha256   = 373282b9e652ddc36c7cbacb659c889ce071c9fcf7c50ed7077f367c2648fbf3
+lwjgl-egl_sha256      = 364e3902337832f7629c6fb7c2b776164f704e295837bd694e27866a488f5732
+lwjgl-opengles_sha256 = a11c384eb6b30bc40dfc87772343fb042dffc37b3bcf914042dc5a5eff3a624e
+lwjgl-freetype_sha256 = cd086dcc53bf9897589a446b58bb990dfaa48136b72ac987e0a757803b9096b7
+lwjgl-shaderc_sha256  = aa66fba33fe8a9cef4aea46c515cbcfc1974acf3017506d5b9d840caec6e6cad
+lwjgl-spvc_sha256     = cd408d04011beadb6edc4e435438021b05f74f0fbc7be31b244d1e5666c5f3db
+lwjgl-vma_sha256      = 8b10a8eb44daba950b453e75388473d4a72f6e5a59a8cfbb2746d777945a7d78
+lwjgl-sdl_sha256      = 4acb736e7b2ab0d1b84b651ebac7a5405e25ce7252e830edc647c846bf4eb775
+lwjgl-spng_sha256     = 9382bda2026fbfe4ddc5246abab6aa0d3d5e7fc59a196bb98e936aa2f9186633
+# 仅供 scripts/check-sdl3-layout.mjs 在宿主 JVM 反射 LWJGL 布局；不属于设备运行时槽位。
+lwjgl-host-natives-windows_sha256 = 8e48cf335d308a84d7e782f001a5a89fdc9a30766e82a9056f30300bdff70d01
+lwjgl-host-natives-linux_sha256   = eb88f7341461174ec2084c41c0e1bfeeed957158e59ed55d9c34a13efcbe2665
+
+# -----------------------------------------------------------------------------
+# [lwjgl-natives] — 现代 LWJGL 3.4.2 官方 release tag（OHOS aarch64 musl native build）
+# 2026-08-01 v8: 3.4.1 → 3.4.2，libffi 3.5.1 → 3.7.1；无后缀现代槽位整体替换。
+# 2026-05-30 v7: 升级 3.3.3 → 3.4.1（MC 26.1 / Sodium 0.8.12 / Iris 1.10.9 要求 ≥ 3.4.1）。
+#   - 编译变更：libffi 3.4.6 → 3.5.1（3.4.1 的 LibFFI 绑定新增 ffi_get_version 等符号）；
+#     core/src/main/c 的 Callback.c 改名 Upcalls.c。详见 docker/build_lwjgl_ohos.sh v7 注释。
+# 2026-05-19 v6: 从 PojavLauncherTeam fork 切到官方 release tag（fork 的 Version.class 是
+#         3.3.2-snapshot，sodium 检查失败）。
+# 编译方式: docker exec ohos-debug env LWJGL_TAG=3.4.2 LIBFFI_VERSION=3.7.1 bash /host-docker/build_lwjgl_ohos.sh
+# 产物: prebuilt/lwjgl3/natives/*.so（P7 后从 amcl-prebuilts Release 拉，先暂留 git）
+# -----------------------------------------------------------------------------
+[lwjgl-natives]
+upstream = https://github.com/LWJGL/lwjgl3.git
+repo     = https://github.com/LWJGL/lwjgl3.git
+tag      = 3.4.2
+commit   = 32593afe25e2f1394c3425673f1b71a0122f5cd4
+liblwjgl_size          = 496200
+liblwjgl_sha256        = b996377b2048e8b5933f3c4d0529c1904653dd21abd45c97c953660ba49b16d7
+liblwjgl_opengl_size   = 343472
+liblwjgl_opengl_sha256 = 1581bffd7202faebcdcfd4ff6e91014167fc1dddece18cf5680e6a85bdfa2057
+liblwjgl_stb_size      = 413864
+liblwjgl_stb_sha256    = 77344c86be745893be35c9653063f230f8e72d97dc1a10d61f3130d0037bc44f
+liblwjgl_tinyfd_size   = 88768
+liblwjgl_tinyfd_sha256 = 74d3ddf4a6a6442a70e4aa05d28c17ddabdda89f546930a3a101a8a4ab6b0d1d
+liblwjgl_vma_size      = 155912
+liblwjgl_vma_sha256    = 5971ff5e465cf6977286bb0f0167fec703c35f2767751a96d461b25ef454fb9f
+liblwjgl_spng_size     = 154352
+liblwjgl_spng_sha256   = ed87489f0651feeaf268531664fda150df4e8399d73baa3ea3c0ebccfbed95d5
+
+# -----------------------------------------------------------------------------
+# [lwjgl-jars-322] — LWJGL 3.2.3 上游 jar（多版本方案 C / 322 套，覆盖 MC 1.13–1.18.2）
+# 这些 MC 版本绑 LWJGL 3.1–3.2，调 GLFWImage.mallocStack 等 3.3.0 已删 API，故需独立一套。
+# 同步位置: prebuilt/lwjgl3/3.2.3/jars/ → rawfile/lwjgl-3.2.3/（部署到设备 lwjgl-ohos-322/）。
+# 下面是【上游原版】sha256（setup_deps 校验下载用）。⚠️ 其中 4 个会被本仓后处理（不改变下载校验）：
+#   - lwjgl-opengl/stb/tinyfd: scripts/patch-lwjgl-libname.py 改模块 native 名 → *_v322
+#   - lwjgl-glfw: build-prebuilt-jars 注入 CallbackBridge/GLFWWindowProperties（同 341 方案 B）
+# 详见 prebuilt/lwjgl3/3.2.3/README.md。
+# -----------------------------------------------------------------------------
+[lwjgl-jars-322]
+version    = 3.2.3
+maven_base = https://repo1.maven.org/maven2/org/lwjgl
+modules    = lwjgl,lwjgl-glfw,lwjgl-jemalloc,lwjgl-openal,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd
+lwjgl_sha256          = f9928c3b4b540643a1bbd59286d3c7175e470849261a0c29a81389f52265ad8b
+lwjgl-glfw_sha256     = ef279cdaeede4ca344e756a56f85a85cbd039f7931011975672dc1b900b59c8f
+lwjgl-jemalloc_sha256 = 6f790dbe775eb56be638e9d97b355313c0caf374f13545996670756a15cbfe6f
+lwjgl-openal_sha256   = 9b1bfdf60a3fe7ba6c48976411d311575fb2b7a7e7457e5589d1588719820fb0
+lwjgl-opengl_sha256   = 10bcc37506e01d1477d65f1fcf0aa672c95eb785265b28b7f321c8381093eda2
+lwjgl-stb_sha256      = 86a7d7af24419c8ebf1d3a2f50797acaa82aaa2abf32e3d1ebf5c31c84708dae
+lwjgl-tinyfd_sha256   = 7a494dc8751e5ef8cb79ce7168c7db56664813782b9192bb1130e4329b914011
+
+# -----------------------------------------------------------------------------
+# [lwjgl-natives-322] — LWJGL 3.2.3 OHOS aarch64/musl native（带 _v322 后缀，与 341 套共存）
+# 编译: docker exec ohos-debug env LWJGL_TAG=3.2.3 NATIVE_SUFFIX=_v322 \
+#         OUTPUT_DIR=/output/lwjgl322 DYNCALL_LIBS_DIR=/output/dyncall-ohos \
+#         bash /build/build_lwjgl_ohos.sh
+# ⚠️ 3.2.x 用 dyncall（非 libffi，3.3.0 才切）→ 见 [dyncall-native]。产 4 个 .so（core/opengl/stb/tinyfd）。
+# 产物入 entry/libs/arm64-v8a/。下面 sha256 是本仓已入库的 _v322 .so。
+# -----------------------------------------------------------------------------
+[lwjgl-natives-322]
+upstream = https://github.com/LWJGL/lwjgl3.git
+tag      = 3.2.3
+commit   = e41032b23adb2d494e2c492777e99e5d9697a860
+liblwjgl_v322_sha256        = 963567fc6a82bf2aa67079e11596d407580b58ce2966fc1256f2b21a6da33564
+liblwjgl_opengl_v322_sha256 = 779f0b0a0eb6cba6a0f7d0430208ef0071a2465ef2dbfebd3e266093584dd1de
+liblwjgl_stb_v322_sha256    = 6c7e3da4f1e831dd52650bc196ae9f04ba4465a73b16ac6c13badffa687b202d
+liblwjgl_tinyfd_v322_sha256 = 6fd28d56b93d83b7eb3df684d03b08ebf45508d4fba6e35000e1afd747e4204a
+
+# -----------------------------------------------------------------------------
+# [dyncall-native] — dyncall 1.0（LWJGL 3.2.x 的 FFI 后端，3.3.0 起被 libffi 取代）
+# 322 套 core native 链接它。交叉编译: docker/build_dyncall_ohos.sh（CMake + OHOS 工具链）。
+# 产 libdyncall_s.a / libdyncallback_s.a / libdynload_s.a（静态库，链入 liblwjgl_v322.so，不单独入库）。
+# -----------------------------------------------------------------------------
+[dyncall-native]
+version  = 1.0
+source   = https://dyncall.org/r1.0/dyncall-1.0.tar.gz
+
+# -----------------------------------------------------------------------------
+# [gl4es] — Holy GL4ES（gl4es fork）OHOS aarch64/musl 移植：老 MC（1.7–1.16.5）固定管线渲染器
+# MobileGlues 只做现代管线（1.17+）；MC 1.13–1.16.5 用固定管线 GL（glAlphaFunc/matrix stack/
+# immediate mode）→ 需 gl4es 这类"OpenGL 1.x/2.x on GLES"翻译层。全端（Pojav/FCL/Amethyst）
+# 均 fork gl4es；AMCL 同模式维护 OHOS 分支。详见 docs/adaptation/OLD_MC_RENDERER_PLAN.md。
+# 编译: docker exec ohos-debug bash /build/build_gl4es_ohos.sh（CMake + OHOS clang/musl，NOX11）。
+# 产物: entry/libs/arm64-v8a/libgl4es.so（GL 符号翻译到 GLES；老 MC 经 org.lwjgl.opengl.libname 路由）。
+# OHOS 补丁见 prebuilt/gl4es/patches/series（随真机适配增补）。
+# -----------------------------------------------------------------------------
+[gl4es]
+upstream = https://github.com/PojavLauncherTeam/gl4es-114-extra.git
+repo     = https://github.com/PojavLauncherTeam/gl4es-114-extra.git
+commit   = 144d0dc79855b392e5256dd15fb2dbdedb17141a
+libgl4es_sha256 = e92fa7ebde6ba67e5c992e7ca99238518d94750ea03fc2889458af3bfb409d3e
+
+# -----------------------------------------------------------------------------
+# [shaderc-native] — Google shaderc 交叉编译（OHOS aarch64），导出 shaderc_* C API
+# MC 26.2+ 官方 Vulkan 渲染后端运行时 GLSL→SPIR-V 用。版本对齐 LWJGL 3.4.1 绑定
+# （doc/notes/3.4.1.md：Shaderc 2026.1 = glslang 16.2.0 + SPIRV-Tools 2026.1）。
+# 编译方式: docker exec ohos-debug env SHADERC_TAG=v2026.1 bash /build/build_shaderc_ohos.sh
+# 产物: entry/libs/arm64-v8a/libshaderc.so（org.lwjgl.shaderc.libname 指向）
+# 详见 docs/adaptation/VULKAN_ADAPTATION_PLAN.md Phase 3。
+# -----------------------------------------------------------------------------
+[shaderc-native]
+upstream = https://github.com/google/shaderc.git
+repo     = https://github.com/google/shaderc.git
+tag      = v2026.1
+commit   = 301b4ede53d59b68bf55f95bb26412d9233c8187
+# 2026-05-31 重编：改用 OHOS NDK libcxx-ohos 头（__n1 ABI）修复 symbol not found 启动崩溃。
+# 旧产物用 Ubuntu libc++-15 头（__1）→ 设备 libc++_shared.so 是 __n1 → iostream typeinfo 找不到。
+# 详见 docker/build_shaderc_ohos.sh Step 0 大注释块 + docs/adaptation/VULKAN_ADAPTATION_PLAN.md Phase 3。
+sha256   = c9ffa2354dffe74354b2c88c71eb6185e1b7247886c864b051499c867e2f3881   # libshaderc.so（8.57MB，导出 45 shaderc_*，纯 __n1）
+
+# -----------------------------------------------------------------------------
+# [spvc-native] — KhronosGroup SPIRV-Cross 交叉编译（OHOS aarch64），导出 spvc_* C API
+# MC 26.2+ Vulkan 后端 SPIR-V 反射/转换用。版本对齐 LWJGL 3.4.1 绑定（SPIRV-Cross 0.64.0，
+# 3.3.5 起，3.4.x 未再 bump）。SPIRV_CROSS_SHARED=ON 产 libspirv-cross-c-shared.so。
+# 编译方式: 同上脚本 build_shaderc_ohos.sh 一并产出 libspirv-cross.so
+# 产物: entry/libs/arm64-v8a/libspirv-cross.so（org.lwjgl.spvc.libname 指向）
+# -----------------------------------------------------------------------------
+[spvc-native]
+upstream = https://github.com/KhronosGroup/SPIRV-Cross.git
+repo     = https://github.com/KhronosGroup/SPIRV-Cross.git
+tag      = vulkan-sdk-1.3.290.0   # 含 SPIRV-Cross 0.64.x（与 LWJGL 3.4.1 绑定一致）
+commit   = 11e6d02d379319a4b570f3eb65d4b19ea7b543bf
+# 2026-05-31 重编：同 shaderc，改用 OHOS NDK libcxx-ohos 头（__n1 ABI）。
+sha256   = 8f284a7327e77c3975ff6096a36b103436034f46bda72c6e6f9b2416e6927ed2   # libspirv-cross.so（2.77MB，导出 169 spvc_*，纯 __n1）
+
+# -----------------------------------------------------------------------------
+# [openjdk] — OpenJDK 17u（Docker 容器内编译，不在主仓 srctree）
+# patches: prebuilt/jdk/17/patches/（P6.5 阶段从 docker/patches/jdk17u/ 迁来）
+# -----------------------------------------------------------------------------
+[openjdk]
+upstream = https://github.com/openjdk/jdk17u.git
+repo     = https://github.com/LZZLHY/jdk17u-mirror.git
+tag      = jdk-17.0.13+11
+commit   = PENDING   # release 前用 git ls-remote 查 jdk-17.0.13+11 tag 对应的 commit
+
+# -----------------------------------------------------------------------------
+# [openjdk-21] — OpenJDK 21u（双版本上线，2026-05-18）
+# patches: prebuilt/jdk/21/patches/（与 17 同构，docker/port_jdk21_patches.sh 生成）
+# -----------------------------------------------------------------------------
+[openjdk-21]
+upstream = https://github.com/openjdk/jdk21u.git
+repo     = https://github.com/openjdk/jdk21u.git
+tag      = jdk-21.0.5+11
+commit   = dfcd8d2ee7b3ffd75e26d54f6b03cb6b6900824b   # git rev-parse 长 SHA
+
+# -----------------------------------------------------------------------------
+# [openjdk-25] — OpenJDK 25u（三版本上线，2026-05-30；MC 26.1+ 要求 Java 25）
+# patches: prebuilt/jdk/25/patches/（与 21 同构，docker/port_jdk25_patches.sh 生成）
+# -----------------------------------------------------------------------------
+[openjdk-25]
+upstream = https://github.com/openjdk/jdk25u.git
+repo     = https://github.com/openjdk/jdk25u.git
+tag      = jdk-25.0.4+3
+commit   = e8f9ebe5ea813b675410a89fbfafa22e42c04e6a   # grafted HEAD of jdk-25.0.4+3
+
+# -----------------------------------------------------------------------------
+# [mc-ohos-resources] — JDK 完整产物 Release 通道（含 .so + lib/modules + libfontconfig）
+# 由 JdkManager 在运行时下载到 filesDir/jdk/17/，不入主仓 git
+# 一致性门禁：scripts/check-jdk-release-pin.mjs（preflight 的 jdk-release-pin 项）
+#   校验本节 ↔ launch/src/main/ets/JdkManager.JDK_VERSIONS['17']
+#         ↔ commons/src/main/ets/common/Constants.SUPPORTED_RELEASE_TAG/ASSET
+#         ↔ prebuilt/jdk/17/README.md
+#   外加分卷算术自洽（giteePartSizes 之和 == sizeBytes、卷名以 asset 开头）。
+#   ⚠️ 2026-08-29 之前这里写的是「CI 校验…」但**那个校验并不存在**，是空话。
+# -----------------------------------------------------------------------------
+[mc-ohos-resources]
+repo      = LZZLHY/mc-ohos-resources
+tag       = v17.0.13-ohos-5
+asset     = jdk17-ohos-full-v5.zip
+sizeBytes = 113762513
+sha256    = 0e26b0dece38156838456cfb12058d863aa9856cdd8fd648f06f9bc5e91f8ecd
+
+# -----------------------------------------------------------------------------
+# [mc-ohos-resources-21] — JDK 21 完整产物 Release 通道（双版本上线）
+# 与 [mc-ohos-resources] 同构。一致性门禁 scripts/check-jdk-release-pin.mjs 校验本节 ↔
+#   commons/src/main/ets/common/Constants.JDK21_RELEASE_TAG/ASSET
+#   launch/src/main/ets/JdkManager.JDK_VERSIONS['21']
+#   prebuilt/jdk/21/README.md
+# 以上必须与本节同步 —— 由 scripts/check-jdk-release-pin.mjs 门禁校验
+#   （preflight 的 jdk-release-pin 项，另含分卷算术自洽）。
+# 2026-05-18 release：sha256 / sizeBytes 在编译完成 + gh release upload 后回填。
+# -----------------------------------------------------------------------------
+[mc-ohos-resources-21]
+repo      = LZZLHY/mc-ohos-resources
+tag       = v21.0.5-ohos-7
+asset     = jdk21-ohos-full-v7.zip
+sizeBytes = 114267146
+sha256    = 21556d0d4fc5eea09ba27068cf8a96803bb1667b35adbc8495fdc5f831316275
+
+# -----------------------------------------------------------------------------
+# [mc-ohos-resources-25] — JDK 25 完整产物 Release 通道（三版本上线）
+# 与 [mc-ohos-resources-21] 同构。一致性门禁 scripts/check-jdk-release-pin.mjs 校验本节 ↔
+#   commons/src/main/ets/common/Constants.JDK25_RELEASE_TAG/ASSET
+#   launch/src/main/ets/JdkManager.JDK_VERSIONS['25']
+#   prebuilt/jdk/25/README.md
+# 三处必须与本节同步（门禁另含分卷算术自洽：各卷之和 == sizeBytes）。
+# 2026-05-30 release：sha256 / sizeBytes 在编译完成 + gh release upload 后回填。
+# -----------------------------------------------------------------------------
+[mc-ohos-resources-25]
+repo      = LZZLHY/mc-ohos-resources
+tag       = v25.0.4-ohos-2
+asset     = jdk25-ohos-full-v2.zip
+sizeBytes = 118872200
+sha256    = d8e31df5d199a9b34d6d13c188b71af19c2fb1738da7bf3c6eeaed89a0a37538
+
+# -----------------------------------------------------------------------------
+# [mc-ohos-resources-8] — JDK 8 完整产物 Release 通道（经典布局，2026-06-12 真机跑通）
+# 与 [mc-ohos-resources-21/25] 同构。一致性门禁 scripts/check-jdk-release-pin.mjs 校验本节 ↔
+#   launch/src/main/ets/JdkManager.JDK_VERSIONS['8']
+#   prebuilt/jdk/8/README.md
+# 两处必须与本节同步（门禁另含分卷算术自洽：各卷之和 == sizeBytes）。
+# v8u452-ohos-2：修好 4 类 clang UB（详见 prebuilt/jdk/8/patches/0002 + README），
+#   重编 libjvm.so 替换重打包；旧 v8u452-ohos-1（未修，会崩）已删除。
+# v8u452-ohos-3：在 v2 基础上补回 sun.security.util.ManifestEntryVerifier 单参构造器 (Manifest)，
+#   让 Forge modlauncher 4.x/8.x（MC 1.13–1.16.5）的 SecureJarHandler 不再 NoSuchMethodError；
+#   libjvm 与 v2 一致，仅 rt.jar 内该类更新。
+# v8u452-ohos-4：相对 v3 只替换 jre/lib/aarch64/libnet.so（IPv6 沙箱回落 patch 0010），
+#   包内其余 108 文件逐字节相同；不打 patch 重编出的 libnet.so 与 v3 出货件逐字节相同
+#   （2a302234…，120672 B）⇒ 本包与 v3 的唯一差异就是该 patch。旧 tag 与附件保持在线不动。
+# -----------------------------------------------------------------------------
+[mc-ohos-resources-8]
+repo      = LZZLHY/mc-ohos-resources
+tag       = v8u452-ohos-4
+asset     = jdk8-ohos-full-v4.zip
+sizeBytes = 39555296
+sha256    = 02c2cedb3539682de3df3d7870b855bfefaac1f4cfe53951cfe90b0dea3d3a63
+
+# -----------------------------------------------------------------------------
+# [cacert] — Mozilla CA bundle
+# P7.5 落地：由 setup_deps.sh 从 https://curl.se/ca/cacert-<version>.pem 拉到
+#          entry/src/main/resources/rawfile/cacert.pem，sha256 校验
+# -----------------------------------------------------------------------------
+[cacert]
+upstream = https://curl.se/ca/cacert.pem
+version  = 2026-02-11
+sha256   = b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171
+
+# -----------------------------------------------------------------------------
+# [libdrm] — DRM 用户态接口库（Mesa EGL/DRI/kopper 路径的构建依赖，Phase 2c 直呈现）
+# Mesa 开 egl/dri（→ HAVE_DRI → zink kopper WSI 直呈现路径）强依赖 libdrm。
+# 交叉编译: git clone -b libdrm-2.4.120 → meson（关全部 per-GPU 驱动，仅 core）→ 装进
+#   /ohos-sysroot-rw/usr/lib + pkgconfig 复制到 .../aarch64-linux-ohos/pkgconfig。
+# 注：OHOS 无标准 /dev/dri，libdrm 此处主要作 Mesa DRI 基础设施的【构建/链接】依赖；
+#   运行时 kopper 经 Vulkan WSI 呈现（非 DRM）。详见 docs/adaptation/ZINK_RENDERER_PLAN.md Phase 2c。
+# -----------------------------------------------------------------------------
+[libdrm]
+upstream = https://gitlab.freedesktop.org/mesa/drm.git
+repo     = https://gitlab.freedesktop.org/mesa/drm.git
+tag      = libdrm-2.4.120
+
+# -----------------------------------------------------------------------------
+# [mesa-zink] — Mesa OSMesa + Zink（OpenGL-on-Vulkan）OHOS aarch64/musl 移植
+# 目标: libOSMesa.so（含 Zink Gallium 驱动），在 Maleoon GPU 的 Vulkan 上提供真·桌面
+# OpenGL 4.6，用于跑 Voxy / Nvidium 等 MobileGlues(GL→GLES) 满足不了的 GL4.x-only mod。
+# Phase 0（能力探针）已判 Maleoon 920 = Vulkan 1.3 conformant、Zink GO。
+# 编译: docker exec ohos-debug bash /build/build_mesa_zink_ohos.sh {deps|configure|build}
+# 产物: entry/libs/arm64-v8a/libOSMesa.so（Phase 2 接入渲染器选择）。
+# patches: prebuilt/mesa-zink/patches/series（随 musl/OHOS 适配增补）。
+# 规划: docs/adaptation/ZINK_RENDERER_PLAN.md。参考: PojavLauncherTeam/osmesa-zink-builder。
+# ✅ Phase 1 交叉编译已成功（2026-06-24）：libOSMesa.so(14MB)+libglapi.so.0(382KB)，aarch64 OHOS。
+#    构建依赖 OHOS NDK libc++ __n1 头（OHOS_LIBCXX_DIR，同 shaderc）。Phase 2 集成时部署到 entry/libs。
+# -----------------------------------------------------------------------------
+[mesa-zink]
+upstream = https://gitlab.freedesktop.org/mesa/mesa.git
+repo     = https://gitlab.freedesktop.org/mesa/mesa.git
+tag      = mesa-24.3.4
+commit   = 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
+# 产物（docker/build_mesa_zink_ohos.sh build，stripped，aarch64 OHOS）。Phase 2 集成时部署。
+libOSMesa_sha256  = cae3ecb7b62f5f328ea6c1cc965ea8f611d236577a122a1152f6f4390e34a748   # 含 zink + sha1 build-id + 静态 glapi（shared-glapi/gles 关，无 libglapi.so 依赖，16MB）
+libglapi_sha256   = (已废弃：shared-glapi=disabled 后 glapi 静态链入 libOSMesa，不再单独产 libglapi.so)
+
+# -----------------------------------------------------------------------------
+# [sdl3-native] — SDL3 的 OpenHarmony 移植
+#
+# 为什么需要: MC 26.3+ 把窗口/输入层从 GLFW 换成了 SDL3（LWJGL 的 org.lwjgl.sdl 绑定）。
+#   没有 libSDL3.so，26.3+ 在 AMCL 上根本起不来。
+# 与其它依赖的不同: 上游没有任何 OHOS 支持（`git grep openharmony upstream/main` 为空），
+#   也没有 release tag 可 pin，所以用 repo + branch + commit + base_commit 定位。
+#
+# ⚠️ 2026-07-31 基线变更: 从自有 fork 转为 pin icculus 的分支 -----------------
+#
+# 原基线: LZZLHY/SDL 分支 ohos（cherry-pick libsdl-org/SDL#13152 的 MetsukiMio 实现
+#   + 我们的修正，15 提交 / 77 files / +6326）。产物见下方 fallback 记录。
+# 新基线: icculus/SDL 分支 sdl3-harmonyos —— SDL 核心作者 Ryan C. Gordon 从头重写的
+#   移植（43 提交 / 102 files / +4924，driver 注册名 openharmony）。
+#
+# 换的理由（**不是**"因为它一定会进上游"，那个预测不可靠 —— 他那个 fork 自述是
+#   experimental，抽查 5 个历史实验特性全部没进上游）。真正站得住的理由是
+#   **这个选择对"它是否进上游"不敏感**:
+#     · 若它进上游 → 我们的 AMCL 专有 patch 直接平移，零损失
+#     · 若它烂尾   → 我们手上仍是一个 365/365 符号覆盖、双机真机验证过、零警告的
+#                    实现，且已完整掌握其代码；此时我们是最自然的接手人
+#   而自己重写在两种走向下都要付出全部工作量，且一旦上游合了他的版本就整体作废。
+# 实测依据: 符号面闸门对本产物 VERDICT: PASS（365/365 必需符号、绑定全集 1043/1045、
+#   __1/__ndk1 = 0、NEEDED 无 libc++、未定义 gl* = 0 ⇒ C2 前提成立）。
+#   两台真机 testautomation: Mate 70 (API 26) 376/362 通过、MatePad Pro (API 24) 376/361 通过；
+#   Render suite 18/19（render backend = opengles2）；OHAudio 驱动初始化通过。
+# 决策与完整论证: docs/adaptation/SDL3_MIGRATION_PLAN.md §3.1/§3.3；
+#   上游格局调研与风险: docs/adaptation/SDL3_PORT_WORKLOG.md 2026-07-31 21:54:56 条目。
+#
+# 为什么 pin e293db30d 而不是分支最新: e293db30d 是唯一经过完整验证（符号面 + 双机
+#   376 项 testautomation）的 commit。分支已前进到 1cee28410（fullscreen/resize events、
+#   screensaver）；已静态核对这两个提交不影响我们已知的结论
+#   （src/video/openharmony/SDL_openharmonyevents.c 未变，MinimizeWindow 仍是 #if 0 空实现，
+#   SetWindowPosition/SetWindowSize/MaximizeWindow 仍未接线），但**未重测**。
+#   更新 pin 的前提是重跑双闸门 + 至少一台真机 testautomation。
+#
+# 编译（宿主 Windows + 华为自带 CMake/Ninja，**不进 Docker** —— icculus 的 README 明确
+#   要求必须用 HarmonyOS 开发工具自带的 CMake，标准 CMake 完全不认这个平台）:
+#   $N='D:\Huawei\command-line-tools\sdk\default\openharmony\native'
+#   $N\build-tools\cmake\bin\cmake.exe -G Ninja \
+#       -DCMAKE_TOOLCHAIN_FILE=$N/build/cmake/ohos.toolchain.cmake \
+#       -DCMAKE_MAKE_PROGRAM=$N\build-tools\cmake\bin\ninja.exe \
+#       -DCMAKE_BUILD_TYPE=Release \
+#       -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON \
+#       -DSDL_REVISION='SDL-3.5.0-release-3.4.0-983-ge293db30d' ..
+#   $N\build-tools\cmake\bin\ninja.exe SDL3-shared          # 零警告
+#   两个开关都是必须的:
+#     · CMAKE_PLATFORM_NO_VERSIONED_SONAME=ON —— 否则 SDL 根 CMakeLists.txt 会对
+#       UNIX（非 Android/Cygwin）设 VERSION/SOVERSION，产出 SONAME=libSDL3.so.0，
+#       而 AMCL 平铺部署 .so、由 HarmonyOS linker namespace 按确切文件名加载。
+#     · SDL_REVISION=… —— 我们在 git worktree 里构建，SDL 的
+#       git_describe() 拿不到版本，会退化成 "SDL-3.5.0--128-NOTFOUND"，
+#       使产物失去"由该 commit 编出"的可追溯凭据（CI 也会因此判失败）。
+#       值取 `git describe --tags <commit>` 的结果，格式对齐 SDL 自身的
+#       "SDL-${SDL3_VERSION}-${git describe}"。
+# 产物: entry/libs/arm64-v8a/libSDL3.so
+# 两道闸门（改 base_commit 或换产物后**都要**复跑）:
+#   node scripts/check-sdl3-abi.mjs      —— 公开 struct/函数 ABI diff（abi_base → base_commit）
+#   node scripts/check-sdl3-surface.mjs  —— LWJGL 必需符号面 365/365 覆盖 + __n1 ABI 纯净
+#     （该闸门同时认两种 OHOS 后端形态，见其 OHOS_BACKENDS 表；换基线不会假红）
+# patches: prebuilt/sdl3/patches/series 当前依次应用 0001、0002、0003。
+#   0001 保留宿主注入/输入桥接，0002 提供 live generation 基础，0003 在其上实现
+#   hybrid role、固定 WINDOW|PBUFFER EGLConfig、ABI-v2 NativeWindow lease、边界恢复
+#   和 role-aware 生命周期；三者必须作为一个可复现 series 应用到 pinned commit。
+#   host-injected presented 窗口只接受完整 ABI-v2 broker（含 peekGeneration/peekState），
+#   缺失或不完整时 fail-closed；SDL-owned XComponent 仍由自身回调独立管理。
+#   原先以为还需要「阻止 SDL 接管应用启动」，**已作废** —— C2 探针实测证明 native 侧
+#   dlopen 不会触发 napi 的 nm_register_func，XComponent 回调从未注册，SDL 不接管启动。
+#   详见 prebuilt/sdl3/README.md 与 docs/adaptation/SDL3_OPENHARMONY_HYBRID_MULTI_WINDOW_PLAN.md。
+# 规划: docs/adaptation/SDL3_MIGRATION_PLAN.md；施工记录: docs/adaptation/SDL3_PORT_WORKLOG.md
+# ✅ C2 关卡已在本基线真机复验（2026-07-31 23:53，平板 59JYD25815201311，连跑两次一致）:
+#    A (dlsym libglfw glGetError) == C (SDL_GL_GetProcAddress) == 0x5a37193d1c，
+#    driver=**openharmony**（icculus 后端在 AMCL 进程里正常起来），另抽查 6 个 gl 符号 6/6 同址；
+#    对照组 B (系统 GLES) = 0x5a16c62a18 不等于 A ⇒ MC 的 glGetError 硬校验会通过。
+#    ⚠️ 前提：探针在 SDL_Init 之前调了 SDL_SetMainReady()。不调则 4 个 driver 全部失败
+#    （报 "Application didn't initialize properly"，与 driver 名无关）—— 见 §C1.1。
+#    这同时实证了 §C1 模式 B 可行：宿主自己调 SDL_SetMainReady 就能把 SDL 当普通库用。
+# -----------------------------------------------------------------------------
+[sdl3-native]
+upstream       = https://github.com/libsdl-org/SDL.git
+repo           = https://github.com/icculus/SDL.git
+branch         = sdl3-harmonyos
+commit         = e293db30d74cca888eafba4e27f0c894f128e67d
+base_commit    = de51952c2ea538241909789926f4d01845ad1bb0   # icculus 分支的 upstream/main 基底（2026-06-08，落后 upstream 289 提交 —— 这是刻意的：MC/LWJGL 要的是特定 ABI，不追 main）
+abi_base       = f87239e71e42da91ca317a12eefb82cfbf3393eb   # release-3.4.12 = LWJGL 3.4.2 绑定所对齐的上游 release（当前最新稳定版）
+vendor_ref     = 03b7fb95b4069cc7798f5554ef12239d983bc7bf   # OpenMinecraft-Dev/SDL —— 已不是当前基线的来源；保留作 fallback 分支的 cherry-pick 出处与 MetsukiMio 署名依据（见 prebuilt/sdl3/README.md §署名）
+version_string = SDL-3.5.0-release-3.4.0-983-ge293db30d
+patchset_sha256  = a79702648a3e81cb2e52d4be62eb6b8425fc4c0d18f0de7e76df3f78575f0edd
+size            = 2226496
+sha256          = 6977a2dac89e862e0a63595d961ec3b8d1c61334be693019e1d5aa97a138a691
+hap_size        = 1835704
+hap_sha256      = f5c721bde8db75f815fe8f203436e5a1c6b0786eb94d4dd863bfe5fda275389f
+#
+#   2026-09-02 Gate D typed TextInputSession（commit 仍是 e293db30d，新增 0006）：
+#     SDL 保持 64B/version=1 backend envelope；文本 session/commit/editing/candidates/
+#     selection 使用独立 AMCLBETV owned-packet descriptor。SDL 在 pump 线程 read/copy/release
+#     blob，COMMIT→SDL_SendKeyboardText，EDITING→SDL_SendEditingText，候选页元数据不丢失地
+#     记录降级，SDL 无 standalone selection 则具名计数；END/ABORT 清预编辑。0005 同时修复
+#     UNKNOWN pointer class 的 generic 接受与 OpenHarmony Pointer 命名，避免伪装成 Mouse。
+#   2026-09-02 Gate C 多 pointer RESET（新增 0007）：
+#     RESET 先快照全部 SDL mouse source，再按各自 MouseID 逐按钮发送 UP；同步 watcher 删除
+#     source 时重新确认 owner，避免 SDL compatibility fallback 错放另一只鼠标。OOM 至少清 polling state。
+#
+#   2026-09-02 手机 SDL3 relative owner 修复（新增 0008）：
+#     Mate 70 实测 MC 仍保持 mouseGrabbed 时 SDL 内部 false 把 bridge grabbed 从 1 翻成 0，
+#     10.385 秒后宿主随即解锁并显示光标；同窗无 focus/surface/watchdog loss。0008 用
+#     per-window request bit + 一次性 host focus/capture authority 区分 app release、真实
+#     lifecycle loss 与无来源内部 release；host loss 保留应用 grab request，capture grant
+#     恢复 derived relative，current-state 对账补齐 suspended→menu 的漏边；RESET 只清 held/text；
+#     同时补齐 typed SURFACE_CONTEXT(type=9) 的严格验证与显式消费，消除合法事件被报 malformed。
+#
+#   2026-09-01 desktop capture/focus/relative typed 合同（commit 不变，新增 0004）：
+#     旧 sha256 = 142b573e324e7796906b244b3a5c55f82c67b086a755b1ec97447c697693b1f3（2,189,656 B）
+#     SDL 明确消费 backend FOCUS/CAPTURE，pending capture 不退出 relative；真实失败/丢失才退出。
+#     grabbed relative 改由 backend RELATIVE 事件唯一拥有；typed channel 可调用时禁用 host cursor 差分，
+#     避免另一 GLFW consumer 推进累加器后 SDL 对同一硬件样本重复注入。
+#
+#   2026-08-27 渲染分辨率缩放的几何一致性修复（commit 仍是 e293db30d，变的是 patches/ 的内容）：
+#     旧 sha256 = 93c2bb9f03f30b6bd9f5f0bab036d570b5867e18690b9771163a370ee0c8d6be（2,147,912 B）
+#     宿主以 -Damcl.render.scale 缩小 buffer 几何后，MC 26.3 点击系统性偏左上（系数=scale）。
+#     机制（真机+字节码核实）：MC 的 cursor→GUI 用 screenWidth（来自启动参数 --width=物理尺寸）
+#     除鼠标坐标（scaled 域）；SDL 侧 CreateWindow 静默改写 window->w/h = 注入尺寸导致后续一切
+#     RESIZED 重播全被 core 去重（SDL_windowevents.c 尺寸相同不投递），MC 永远学不到真实几何。
+#     修法（三处，宿主零改动）：① CreateWindow 采纳注入尺寸时若与请求不同改走
+#     SDL_SendWindowEvent(RESIZED) 真实事件路径（相同则跳过 —— scale=1 与现状逐字节等价）；
+#     ② VideoInit 的 desktop_mode 在有注入尺寸时用注入值（物理尺寸只作无注入 fallback），
+#     display/current/fullscreen-mode/bounds 全查询域一致；③ 0002 SyncLiveWindow 稳态加第二道闸：
+#     display desktop_mode 与 window->w/h 均须等于当前快照尺寸，不一致即补发（发送本身回写
+#     window->w/h、helper 等值早退 ⇒ 不会循环），epoch 变更路径同步刷新 display 几何。
+#
+#   2026-08-26 触控时序修复（commit 仍是 e293db30d，变的是 patches/ 的内容）：
+#     旧 sha256 = 0b06f2df2af126a97872e10453a1cfc2976ae7b495ff3a4282313af8a7f0fc15（2,144,072 B）
+#     `AMCLSDLV` 升到 v2，增加 SDL consumer lifecycle 与 accepted-present 通知。MENU_POINTER
+#     DOWN 只先提交绝对坐标；SDL pump 在 ring drain 后重采样并投递 MOTION，成功 present 后的
+#     下一轮才允许 PRESS。这样一次 tap 不再先点旧坐标，同时保留旧 GLFW 修复要求的
+#     movement-consumption barrier，避免关闭菜单后把菜单位移解释成相机旋转。
+#     快速 UP 会锁存并在延迟 PRESS 后配对 RELEASE；CANCEL、grab、overflow、window quit
+#     都会释放或作废事务，token 与 pending press 不得跨 SDL window generation。
+#
+#   2026-08-24 产物更新（commit 仍是 e293db30d，变的是 patches/ 的内容）：
+#     旧 sha256 = 702f5a28b0a52c8d0c6f22546100b5d4f0bb6a1050f18184742b10d7ab39e9e2（2,142,920 B）
+#     ⚠️ 同日第二版：2ef6217e78d789d124ff16aa012117a0a17f23eee4ca8c4096faaaa09b9d56a1（2,143,960 B）
+#        那一版把两条通道写成"二选一"，会让 MC 26.3+ 丢掉屏幕虚拟按键 / 手柄映射键 / 字符输入
+#        （它们仍在 legacy ring 里、从未迁移），且 bit10 关掉时物理边沿会被投递两次
+#        （core 提交在路由分叉之前、无条件）。**已改为两条都 drain**，由宿主的
+#        UNAVAILABLE 返回值闸住重复投递。不要回退到那一版。
+#     新产物含**输入侧的架构迁移**（计划 §100）：SDL 不再翻第二次。
+#       新增对宿主第二条通道 `AMCL_BACKEND_INPUT_BRIDGE`（"AMCLBEIV:1:next,setActive"）的解析，
+#       事件到手已经是 `SDL_Scancode` / `SDL_BUTTON_*`，因此 `OPENHARMONY_ScancodeFromGlfwKey`
+#       与 `OPENHARMONY_ButtonFromGlfwButton` 在该路径上**不再被调用**（两函数保留，是旧通道的
+#       fallback —— 宿主更老时仍走它）。同时拿到了旧通道结构上装不下的字段：真实
+#       hardware scan code（当 SDL 的 rawcode）、core 时间戳（当 SDL 事件时间戳）、
+#       浮点滚轮（不再被分格成整数）、以及 `lockState`（`SDL_GetModState` 需要的平台锁存快照）。
+#     ⚠️ 两条通道**永不同时 drain**：它们是同一份宿主状态上的两个独立读游标，同时读会互相
+#       偷走对方需要的边沿，留下没有 release 的按住键。选择在 `OPENHARMONY_AMCL_PumpEvents`
+#       里二选一，判据是 typed 通道是否解析成功。
+#     ⚠️ 光标与 grab **仍走旧访问器**（`getCursorSnapshot` / `setGrabState` / `isGrabbing` /
+#       `setLookCursor`）：宿主的 look 漏斗是累计视角量与菜单光标的唯一真相源，再开一个源会
+#       让它们与 grab 标志失同步。
+#     镜像结构 `AMCL_BackendInputEvent` 由 `SDL_COMPILE_TIME_ASSERT(sizeof == 64)` 与宿主侧
+#       同名 static_assert 两边钉住 —— 布局漂移必须编译失败，而不是把邻接字段读成键码。
+#   ⚠️ 该 sha256 是「commit + patches/ 全部应用后」编出的产物，与 gl4es / mesa-zink 同一约定。
+#   未应用 patch 的裸 commit 产物 sha256 = 54be00a6ec3851b7a8a68fa0d2795f84fd4a2229167ffca5af000445f528885f（2,134,056 B），
+#   仅作对照，不是 AMCL 使用的那份。version_string 不受 patch 影响（SDL_REVISION 是构建期传入的）。
+#
+#   2026-08-02 产物更新（commit 未变，仍是 e293db30d —— 变的是 patches/ 的内容）：
+#     旧 sha256 = 332a397308cc0899dd28546ae323d1fbd8768285799b1209ebce5865ebef44b7（2,134,776 B）
+#       —— 只含「宿主注入 native window」那一项。
+#     新产物额外含：宿主驱动输入（SDL_openharmonyamcl.c，§C3.0 的输入侧所有权反转）+
+#       三条基线缺陷修复（触摸/鼠标分发空指针、每帧鼠标调试日志、空壳回调澄清与 GetDisplayModes）。
+#       patch 文件同时改名以反映扩大后的范围，见 prebuilt/sdl3/patches/series。
+#     三道门禁已在该产物上复跑：abi PASS（0 breaking，函数签名差异 0）、
+#       surface PASS（MC 必需 365/365 全部导出）、video-callbacks PASS（0 硬失败 / 0 软警告）。
+#
+#   2026-08-04 产物更新（commit 仍是 e293db30d，变的是 patches/ 的内容）：
+#     旧 sha256 = 42dd75f7fcff7709c0a9faf8b2de4a6316f69ec2f1c8615ab2452b95ccb8afef（2,140,640 B）
+#     新产物额外含两项，都是 26.3 真机跑到下一步之后暴露出来的：
+#       ① EGL profile 调和：OHOS 的 EGL 只有 GLES，没有任何 desktop-GL 可渲染 config，
+#          而 MC 请求 PROFILE_CORE ⇒ SDL 通用层按字面去要 EGL_OPENGL_BIT ⇒ eglChooseConfig
+#          零匹配 ⇒ "Couldn't find matching EGL config"。现改为「先按原样探一次，探不到才
+#          回落 ES3」（是回落而非替换：将来若有设备真的提供 desktop-GL config，字面请求优先）。
+#       ② SetWindowSize / SetWindowPosition 接线为「接受请求 + 回报真实几何」。原先不接线
+#          让 SDL 返回 SDL_Unsupported()，真机上表现为 MC 的
+#          `Couldn't leave fullscreen: That operation is not supported`。
+#     旧 sha256 = 697de0fabe03db3b5ea553a50843446cd0057385a116ba24fe4855cc25bdbe92（2,142,024 B）
+#     再加一项（同日，MC 已能出主菜单后暴露）：
+#       ③ 宿主输入桥符号解析加 RTLD_NOLOAD 回退。真机实测：宿主库明明已加载并在渲染，
+#          5 个 dlsym(RTLD_DEFAULT) 全 NULL ⇒ `no host input bridge found after 240 attempts`，
+#          输入全哑。原因是宿主库是作为 DT_NEEDED 依赖进来的（不在 global scope），
+#          而 libSDL3 由 JVM 的 class loader namespace dlopen。
+#          **只用 RTLD_NOLOAD**：普通 dlopen 会拿到第二个实例（自己的事件环与 grab 标志），
+#          那会让 available 变真却永远收不到输入，比解析失败更糟。
+#          同时优先用宿主专为 SDL 维护的消费游标 inputBridge_sdlNextEvent（l2 仅作兜底）。
+
+# fallback（原基线，仍可用，产物已备份至 .tmp-sdl3/libSDL3.so.amcl-fork-34bb16660.bak）:
+#   repo = https://github.com/LZZLHY/SDL.git   branch = ohos
+#   commit = 34bb16660cca5d9a6dba76f543b0f1c5c34421ae
+#   base_commit = 331e10c2a39c4ad086577af34f55492dca46afa8
+#   version_string = SDL-3.5.0-release-3.4.0-1241-g34bb16660
+#   sha256 = 3d0ddfe3b585eceda7aa48de7ff3764b5cdb1b95a4ab8ca8ca60759585b3dd49  # 2,111,816 B，driver 名 ohos
+#   该分支同样通过符号面闸门（365/365），且是 2026-07-31 12:26 C2 真机 PASS 的那份产物。
+#   15 个按子系统切片的提交，作者保留为原作者 MetsukiMio，Starcloudsea / artin 以
+#   Co-authored-by 记名；来源 libsdl-org/SDL#13152。
+#   重建脚本 scripts/rebuild-sdl3-ohos-history.mjs（可重跑）。
+
+# 当前为占位；P7 阶段构建脚本已就绪（.github/workflows/templates/amcl-prebuilts-build-*.yml +
+# scripts/deploy-amcl-prebuilts.sh），但实际仓库未创建。所有 _version 字段保持
+# PENDING，setup_deps.sh 第 5 步会跳过下载并提示开发者用 docker/build_*.sh 自编。
+#
+# 启用方法：
+#   1. 创建 GitHub 仓 LZZLHY/amcl-prebuilts
+#   2. bash scripts/deploy-amcl-prebuilts.sh （把 4 个 build workflow 部署进去）
+#   3. 在 amcl-prebuilts 仓 Settings → Secrets 添加 OHOS_SYSROOT_URL
+#   4. 触发各个 build-*.yml workflow_dispatch
+#   5. 把首次成功 release 的版本号 + sha256 填回本节
+#   6. setup_deps.sh 启用自动下载
+# -----------------------------------------------------------------------------
+[amcl-prebuilts]
+repo                  = LZZLHY/amcl-prebuilts
+curl_version          = PENDING
+curl_sha256           = PENDING
+libglfw_version       = PENDING
+libglfw_sha256        = PENDING
+libopenal_version     = PENDING
+libopenal_sha256      = PENDING
+lwjgl-natives_version = PENDING
+lwjgl-natives_sha256  = PENDING

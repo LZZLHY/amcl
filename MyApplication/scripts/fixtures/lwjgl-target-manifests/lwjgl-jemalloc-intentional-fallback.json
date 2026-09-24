@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "module": "lwjgl-jemalloc",
+  "omittedJar": "lwjgl-jemalloc.jar",
+  "coreJar": "lwjgl.jar",
+  "classEntry": "org/lwjgl/system/MemoryManage.class",
+  "classSha256": "7ba7b68bf2135aa95735929238268c0d4aae5f08ee4c8e759a77c0559ce18a52",
+  "requiredClassConstants": [
+    "org.lwjgl.system.jemalloc.JEmalloc$Allocator",
+    "org/lwjgl/system/MemoryManage$StdlibAllocator",
+    "java/lang/Throwable",
+    "Using the system default."
+  ],
+  "absentClassEntry": "org/lwjgl/system/jemalloc/JEmalloc$Allocator.class"
+}

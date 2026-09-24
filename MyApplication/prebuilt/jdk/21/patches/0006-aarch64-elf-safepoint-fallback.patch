@@ -1,0 +1,26 @@
+diff --git a/src/hotspot/os_cpu/linux_aarch64/os_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/os_linux_aarch64.cpp
+index 86721c947..9de41250e 100644
+--- a/src/hotspot/os_cpu/linux_aarch64/os_linux_aarch64.cpp
++++ b/src/hotspot/os_cpu/linux_aarch64/os_linux_aarch64.cpp
+@@ -305,6 +305,21 @@ bool PosixSignals::pd_hotspot_signal_handler(int sig, siginfo_t* info,
+     }
+   }
+ 
++#ifdef __MUSL__
++  // OHOS PATCH: fallback for ELF-loaded code that CodeCache doesn't know about.
++  // When JVM handler can't find a stub (ELF code not in CodeCache), handle
++  // safepoint polling SEGV by disarming the polling page directly.
++  if (stub == nullptr && sig == SIGSEGV && info != nullptr) {
++    address fault_addr = (address)info->si_addr;
++    if (SafepointMechanism::is_poll_address(fault_addr)) {
++      // Safepoint polling from ELF-loaded code: disarm polling page
++      os::protect_memory((char*)SafepointMechanism::get_polling_page(),
++                         os::vm_page_size(), os::MEM_PROT_READ);
++      return true; // retry the faulting instruction (now readable)
++    }
++  }
++#endif
++
+   if (stub != nullptr) {
+     // save all thread context in case we need to restore it
+     if (thread != nullptr) thread->set_saved_exception_pc(pc);

@@ -1,0 +1,12 @@
+AMCL MyApplication
+Copyright (C) 2026 LZZLHY (AMCL Project)
+
+The original AMCL source code in this directory is licensed under the GNU
+General Public License, version 3 only. See LICENSE for the complete terms.
+
+This notice does not change the license of third-party files. Components,
+headers, patches, JAR files, native libraries, runtime archives and other
+materials under prebuilt/, entry/src/main/cpp/third_party/ and the declared
+Git submodules retain their own copyright notices and licenses. See
+docs/CREDITS.md and the corresponding component files before redistributing
+them.

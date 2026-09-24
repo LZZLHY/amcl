@@ -1,0 +1,33 @@
+From: AMCL <LZZLHY>
+Date: 2026-06-24
+Subject: [PATCH] osmesa: 把 zink 驱动链进 OSMesa target（启用 GL-on-Vulkan 离屏路径）
+
+stock Mesa 的 OSMesa target（src/gallium/targets/osmesa/osmesa_target.c）只链接
+`driver_swrast`（softpipe/llvmpipe）+ sw/null winsys，**不链 zink**。即便
+`-Dgallium-drivers=zink,softpipe` 编出了 libzink.a，OSMesa target 也不会用它，
+`GALLIUM_DRIVER=zink` 被彻底忽略（真机实测 GL_RENDERER 永远是 softpipe）。
+
+`osmesa_target.c::osmesa_create_screen()` → `sw_screen_create()` →
+`sw_screen_create_vk(winsys, false)`（inline_sw_helper.h）其实**会读 GALLIUM_DRIVER**，
+并能调 `zink_create_screen(null_sw_winsys, NULL)`——前提是编译期定义了 `GALLIUM_ZINK`
+且链接了 libzink。两者都由 `driver_zink` 这个 meson dependency 提供
+（`compile_args:'-DGALLIUM_ZINK'` + `link_with:[libzink]`）。
+
+故把 `driver_zink` 加进 OSMesa target 的 dependencies。zink 还用到 driconf
+（driParseConfigFiles/driQueryOptionb），需一并加 `idep_xmlconfig`（配合 `-Dxmlconfig=disabled`
+让其走 stub、免 expat 依赖，见 build_mesa_zink_ohos.sh）。
+
+注意：OSMesa→zink 走的是 `sw_screen_create` 直连 null sw winsys 的离屏路径，
+**不是** pipe_loader_sw.c 的 kopper 路径（那条要 HAVE_DRI/libdrm，本方案不需要）。
+
+--- a/src/gallium/targets/osmesa/meson.build
++++ b/src/gallium/targets/osmesa/meson.build
+@@ -38,7 +38,7 @@ libosmesa = shared_library(
+     libmesa, libgallium, libws_null, osmesa_link_with,
+   ],
+   dependencies : [
+-    dep_ws2_32, dep_thread, dep_clock, dep_unwind, driver_swrast, idep_mesautil,
++    dep_ws2_32, dep_thread, dep_clock, dep_unwind, driver_swrast, driver_zink, idep_xmlconfig, idep_mesautil,
+   ],
+   name_prefix : host_machine.system() == 'windows' ? '' : [],  # otherwise mingw will create libosmesa.dll
+   soversion : host_machine.system() == 'windows' ? '' : '8',

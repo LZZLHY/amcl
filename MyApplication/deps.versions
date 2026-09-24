@@ -1,0 +1,62 @@
+# MC-OHOS 核心依赖版本追踪
+# 本文件记录项目依赖的所有外部库版本，便于复现构建环境。
+#
+# ============================================================
+# ⚠️ 安全约定（release 必备 / 开发期可选）
+# ============================================================
+# 不同依赖采用三种不同的钉版机制：
+#
+# 1. LWJGL —— git submodule（推荐方式）
+#    源码在 prebuilt/lwjgl3/lwjgl3_src/，由主仓 .gitmodules + commit
+#    pointer 锁 SHA。不需要 setup_deps.sh / 环境变量介入。
+#    升级方式：`cd prebuilt/lwjgl3/lwjgl3_src && git fetch && git checkout <new-sha>`
+#             `cd ../../.. && git add prebuilt/lwjgl3/lwjgl3_src && git commit`
+#    本文件的 `LWJGL = 3.3.3` 仅作为人类可读注释，实际钉版以 .gitmodules
+#    + 主仓 commit 为准。
+#
+# 2. MobileGlues —— 环境变量 commit pin（暂未 submodule 化）
+#    setup_deps.sh 读 deps.versions 里的 MobileGlues_commit 字段或环境
+#    变量 MG_COMMIT，clone 后 git checkout 到该 sha。
+#    release 前必须确保 MobileGlues_commit 非空。
+#
+# 3. OpenAL Soft —— git tag pin
+#    通过 deps.versions 的 OpenAL_Soft 字段（如 1.24.3）锁定。
+#
+# release 前检查清单（发布负责人负责）：
+#   - LWJGL：`git submodule status prebuilt/lwjgl3/lwjgl3_src` 输出 SHA 前
+#            缀**不带 `+` / `-`**，即 submodule pointer 与 working tree HEAD 对齐。
+#   - MobileGlues：本文件 MobileGlues_commit 非空，且与 git ls-remote 输出对得上。
+#   - OpenAL Soft：tag 仍存在于上游。
+# ============================================================
+
+# MobileGlues — OpenGL → GLES 翻译层
+# 源码位置: entry/src/main/cpp/mobileglues/MobileGlues-cpp/ (git clone, .gitignore)
+# 仓库（2026-05-08 修正 URL，原 ArtisanCraft 仓已 404）: https://github.com/MobileGL-Dev/MobileGlues.git
+MobileGlues = main
+# 针对 default branch HEAD pin commit（release 前需重新 ls-remote 验证未漂移）。
+MobileGlues_commit = 961777c2f7868a58ba179db22299aa10329e267d
+
+# LWJGL — Lightweight Java Game Library (Native 层)
+# 源码位置: prebuilt/lwjgl3/lwjgl3_src/ (git submodule, 自 2026-05-18)
+# 仓库: https://github.com/LWJGL/lwjgl3.git【官方仓】
+# 实际钉版以主仓 .gitmodules + commit pointer 为准（参考上方说明）。
+# 2026-05-30: 部署 jar/native 升级到 3.4.1（见 deps.lock [lwjgl-jars]/[lwjgl-natives]）。
+# submodule 当前 HEAD 在 3.4.1 之后（3.4.2-dev），其 GLFW API 面与 3.4.1 一致，
+# 供 scripts/check-glfw-surface.mjs 做方法面 diff 用。下方 LWJGL = 仅人类可读注释。
+LWJGL = 3.4.1
+#
+# 注：上述源码仅供"开发参考合本"。Native .so 的实际构建走另一路径：
+# docker/build_lwjgl_ohos.sh 里 clone LWJGL 官方 release tag（默认 3.4.1；2026-05-30 起，
+# 配合 MC 26.1 / Sodium 0.8.12 升级，libffi 也从 3.4.6 升到 3.5.1）。详见 deps.lock [lwjgl-natives]。
+# PojavLauncherTeam_lwjgl3_commit = 39272d4d0ca119379024e3ca7207699fd3fce237
+
+# OpenAL Soft — 3D 音频库（已 pin 到 tag 1.24.3，安全）
+# 仓库: https://github.com/kcat/openal-soft.git
+OpenAL_Soft = 1.24.3
+
+# OpenJDK — JVM (Docker 容器内克隆编译，不在本地保留源码)
+# 仓库: https://github.com/openjdk/jdk17u.git
+OpenJDK = jdk-17.0.13+11
+
+# musl libc — C 标准库 (OHOS 使用 musl 而非 glibc)
+musl = 1.2.4

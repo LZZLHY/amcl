@@ -1,0 +1,25 @@
+From: AMCL <LZZLHY>
+Date: 2026-06-24
+Subject: [PATCH] osmesa: 用 SHA1 build-id（zink disk_cache 要求 20 字节）
+
+zink 的 `disk_cache_init`（src/gallium/drivers/zink/zink_screen.c:295）读取所在 ELF
+（libOSMesa.so，zink 静态链入其中）的 `NT_GNU_BUILD_ID` note 作为 shader 磁盘缓存键，
+并 `assert(note && build_id_len == 20)`——要求 20 字节（SHA1）build-id。
+
+lld 默认产生 `--build-id=fast`（xxHash，8 字节），断言失败 → SIGABRT（真机实测：
+`Assertion failed: note && build_id_len == 20 ... disk_cache_init: 295`）。
+
+修复：OSMesa target 链接时加 `-Wl,--build-id=sha1`，产生 20 字节 build-id。
+（strip + patchelf 会保留 .note.gnu.build-id。）
+
+--- a/src/gallium/targets/osmesa/meson.build
++++ b/src/gallium/targets/osmesa/meson.build
+@@ -2,7 +2,7 @@
+ # SPDX-License-Identifier: MIT
+ 
+ osmesa_link_with = []
+-osmesa_link_args = []
++osmesa_link_args = ['-Wl,--build-id=sha1']
+ osmesa_link_deps = []
+ 
+ if with_shared_glapi

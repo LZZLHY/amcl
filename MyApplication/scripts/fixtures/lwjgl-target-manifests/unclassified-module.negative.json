@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "library": {
+    "name": "org.lwjgl:lwjgl-future:9.9.9",
+    "downloads": {
+      "artifact": {
+        "path": "org/lwjgl/lwjgl-future/9.9.9/lwjgl-future-9.9.9.jar",
+        "sha1": "1111111111111111111111111111111111111111",
+        "size": 1,
+        "url": "https://example.invalid/lwjgl-future-9.9.9.jar"
+      }
+    }
+  },
+  "expectedError": "lwjgl-future is unclassified"
+}

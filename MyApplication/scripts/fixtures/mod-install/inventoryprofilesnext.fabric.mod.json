@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "inventoryprofilesnext",
+  "version": "2.2.6",
+  "name": "Inventory Profiles Next",
+  "description": "Inventory Profiles Next",
+  "authors": [
+    "Mirinimi"
+  ],
+  "contributors": [],
+  "contact": {
+    "homepage": "https://inventory-profiles-next.github.io/",
+    "issues": "https://discord.gg/23YCxmveUM"
+  },
+  "license": "AGPL-3",
+  "icon": "assets/inventoryprofilesnext/mod icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.anti_ad.mc.ipnext.InventoryProfilesKt::init"
+    ],
+    "modmenu": [
+      "org.anti_ad.mc.ipnext.compat.ModMenuApiImpl"
+    ]
+  },
+  "mixins": [
+    "mixins.ipnext.json"
+  ],
+  "accessWidener": "inventoryprofilesnext.accesswidener",
+  "depends": {
+    "minecraft": ">=1.21.11 <1.22",
+    "libipn": ">=6.6.3 <6.7",
+    "fabric-language-kotlin": ">=1.13.10+kotlin.2.3.20"
+  }
+}

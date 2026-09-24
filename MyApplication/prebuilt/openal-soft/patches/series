@@ -1,0 +1,11 @@
+# MC-OHOS OpenAL Soft patch series
+# 标准 git diff，按顺序用 git apply 应用。
+#
+# 替代了 setup_deps.sh 早期的 sed -i 注入做法（2026-05-15 P0 阶段迁移完成）。
+# upstream tag pin: 1.24.3 (commit dc7d7054a5b4f3bec1dc23a42fd616a0847af948)
+# 升级时：
+#   1. 切到新 tag 后 quilt push -a 或 docker/apply_patches.sh openal-soft <src>
+#   2. 应用失败 → 上游 alc/alc.cpp 重构了，需手动调整本 patch
+#   3. 不再有"sed 找不到锚点静默失败"的可能
+
+0001-register-ohaudio-backend.patch

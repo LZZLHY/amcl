@@ -1,0 +1,14 @@
+{
+  "name": "launch",
+  "version": "1.0.0",
+  "description": "AMCL 启动域（launch）：启动参数构建、启动前校验、JDK 管理/安装、运行时部署、错误分类、会话标记。依赖 commons + feature_core + account + mods；native 经 LaunchNativeBridge 注入。",
+  "main": "Index.ets",
+  "author": "LZZLHY",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "commons": "file:../commons",
+    "feature_core": "file:../feature_core",
+    "account": "file:../account",
+    "mods": "file:../mods"
+  }
+}

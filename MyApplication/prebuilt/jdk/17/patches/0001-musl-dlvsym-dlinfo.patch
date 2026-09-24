@@ -1,0 +1,48 @@
+From: MC-OHOS <mc-ohos@harmonyos.next>
+Subject: [PATCH] musl libc: guard dlvsym and dlinfo for OHOS cross-compilation
+
+When cross-compiling with -D__MUSL__, the musl libc headers already
+declare dlvsym, causing a redefinition error. Guard our fallback
+implementation with #ifndef __MUSL__.
+
+Also guard dlinfo() which musl does not implement.
+
+---
+ src/hotspot/os/linux/os_linux.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 3d2423481..cf8925312 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -138,13 +138,15 @@
+ #ifdef MUSL_LIBC
+ // dlvsym is not a part of POSIX
+ // and musl libc doesn't implement it.
++#ifndef __MUSL__
+ static void *dlvsym(void *handle,
+                     const char *symbol,
+                     const char *version) {
+    // load the latest version of symbol
+    return dlsym(handle, symbol);
+ }
+-#endif
++#endif  // __MUSL__
++#endif  // MUSL_LIBC
+ 
+ enum CoredumpFilterBit {
+   FILE_BACKED_PVT_BIT = 1 << 2,
+@@ -1910,7 +1912,13 @@ const char* os::Linux::dll_path(void* lib) {
+   const char* l_path = NULL;
+   assert(lib != NULL, "dll_path parameter must not be NULL");
+ 
++#ifdef __MUSL__
++  // musl does not have dlinfo()
++  int res_dli = -1;
++  (void)lmap;
++#else
+   int res_dli = ::dlinfo(lib, RTLD_DI_LINKMAP, &lmap);
++#endif
+   if (res_dli == 0) {
+     l_path = lmap->l_name;
+   }

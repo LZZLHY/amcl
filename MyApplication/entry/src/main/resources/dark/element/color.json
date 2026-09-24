@@ -1,0 +1,40 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#000000"
+    },
+    {
+      "name": "app_bg",
+      "value": "#000000"
+    },
+    {
+      "name": "card_bg",
+      "value": "#1A1A1A"
+    },
+    {
+      "name": "text_primary",
+      "value": "#E5E5E5"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#999999"
+    },
+    {
+      "name": "text_hint",
+      "value": "#666666"
+    },
+    {
+      "name": "primary_color",
+      "value": "#317AF7"
+    },
+    {
+      "name": "divider_color",
+      "value": "#333333"
+    },
+    {
+      "name": "tab_bar_bg",
+      "value": "#0A0A0A"
+    }
+  ]
+}

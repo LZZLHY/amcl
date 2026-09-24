@@ -1,0 +1,71 @@
+{
+  "purpose": "check-comment-identifiers.mjs 的允许清单：注释里提到、但确实不在本仓代码里的标识符。",
+  "rules": [
+    "每条必须写 why。没有 why 的条目下一个人无法判断它是'外部的'还是'我们删掉忘改注释的' —— 那样允许清单本身就变成新的假注释。",
+    "kind=external：官方 API / SDK 宏 / 第三方符号。加之前必须确认它真的在外部存在，不是我们删掉的。",
+    "kind=spec：docs/refactor 里的规格名（中性事件集合名等）。它们不是代码标识符，永远不会出现在符号表里。",
+    "不要用本清单让一条真的假注释闭嘴。判据是：该标识符在它声称的地方是否真的存在。"
+  ],
+  "external": [
+    {
+      "symbol": "OH_Input_AddMouseEventMonitor",
+      "kind": "external",
+      "why": "OHOS Input Kit C API（oh_input_manager.h）。cursor_lock.cpp 的注释记录的是把 multimodalinput 原始通道永久排除的理由（非系统应用 + Input_MouseEvent 无任何相对量），所以这个名字只会出现在注释里。"
+    },
+    {
+      "symbol": "getWindowDensityInfo",
+      "kind": "external",
+      "why": "@ohos.window 的 Window.getWindowDensityInfo()，API 15+。input_source.h 引用它是为了指出官方给 rawDelta 的 px→vp 换算路径（配合 UIContext.px2vp），本仓尚未标定所以没有调用点。"
+    },
+    {
+      "symbol": "getOrCreate",
+      "kind": "external",
+      "why": "Minecraft/Blaze3D 的 com.mojang.blaze3d.platform.InputConstants.Type.SCANCODE.getOrCreate(int)。glfw_compat.cpp 用它说明 scancode 恒为 0 时的影响面。本仓无 MC Java 源，证据级别 B。"
+    },
+    {
+      "symbol": "hasShiftDown",
+      "kind": "external",
+      "why": "Minecraft 的 Screen.hasShiftDown()。它是 shift+左键取整组的实际判据（-> InputConstants.isKeyDown -> glfwGetKey -> 我们的 win->keys[]），glfw_compat.cpp 的决定性探针就是为它写的。本仓无 MC Java 源，证据级别 B。"
+    },
+    {
+      "symbol": "TOOL_TYPE_MOUSE",
+      "kind": "external",
+      "why": "OHOS Input Kit 枚举 Input_TouchEventToolType 的成员（@since 24，值 6）。本仓刻意不 include 该头以支持较低 compatibleSdkVersion 编译，改用 window_event_filter.cpp 的本地镜像 kToolTypeMouse=6。"
+    },
+    {
+      "symbol": "TOUCHSCREEN",
+      "kind": "external",
+      "why": "OH_NativeXComponent_TouchEvent 的 source type 枚举成员（OH_NATIVEXCOMPONENT_SOURCE_TYPE_TOUCHSCREEN）。本仓代码只用到 _UNKNOWN 与 _MOUSE 两个成员，所以这个名字只出现在真机判读记录里。"
+    },
+    {
+      "symbol": "responseRegionList",
+      "kind": "external",
+      "why": "ArkUI 通用属性 responseRegionList（API 22+）。本仓从未使用：McGamePage 里那条注释记录的是 2026-08-19 被真机否证的方案（属性生效了但左键随之消失，因为合成流是本机左键的唯一载体）。"
+    },
+    {
+      "symbol": "isCursorFollowMovement",
+      "kind": "external",
+      "why": "OH_WindowManager_LockCursor 的参数名（@since 22）。cursor_lock.h 讨论它的取值语义与真机结论，本仓侧对应的是 g_followMovement。"
+    },
+    {
+      "symbol": "supportWindowMode",
+      "kind": "external",
+      "why": "module.json5 的 abilities 配置项名（官方窗口配置）。InputSourceRegistry 与规范 3.3 引用它是为了说明分屏/悬浮窗缺省即开启，所以 surface 几何变化是运行期常态。"
+    },
+    {
+      "symbol": "BaseEvent",
+      "kind": "external",
+      "why": "ArkUI 基础事件接口（SDK ets/component/common.d.ts:10960）。FocusAxisEvent extends BaseEvent，deviceId?: number 声明在 BaseEvent 上（:11243，@since 12，可选）。本仓从不声明该类型，只在注释里引用它来说明「事件对象上的 deviceId 与 inputDevice 编号域官方未关联」。"
+    },
+    {
+      "symbol": "PointerButton",
+      "kind": "spec",
+      "why": "计划文档 6.2 事件集合里的中性事件名（PointerButton { nativeButton, Down | Up }）。代码侧对应 AMCL_INPUT_EVENT_POINTER_BUTTON / AmclInputPointerButtonPayload / payload.pointerButton，规格名本身不是标识符。"
+    },
+    {
+      "symbol": "PhysicalKey",
+      "kind": "spec",
+      "why": "同上，计划文档 6.2 的中性事件名（PhysicalKey { ohosKeyCode, ..., modifiersSnapshot, lockState }）。glfw_input_adapter.h 用它说明哪些字段属于契约、哪些是真死字段。"
+    }
+  ]
+}

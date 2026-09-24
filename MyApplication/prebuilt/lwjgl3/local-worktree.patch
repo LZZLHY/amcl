@@ -1,0 +1,224 @@
+diff --git a/modules/lwjgl/vma/src/generated/c/org_lwjgl_util_vma_Vma.cpp b/modules/lwjgl/vma/src/generated/c/org_lwjgl_util_vma_Vma.cpp
+index 4f3c7a663..e09b1ca5d 100644
+--- a/modules/lwjgl/vma/src/generated/c/org_lwjgl_util_vma_Vma.cpp
++++ b/modules/lwjgl/vma/src/generated/c/org_lwjgl_util_vma_Vma.cpp
+@@ -5,11 +5,14 @@
+  */
+ #include "common_tools.h"
+ #include "lwjgl_malloc.h"
++#include <cstdio>
++#define AMCL_VMA_TRACE(...) do { std::fprintf(stderr, "[AMCL_VULKAN_VMA] " __VA_ARGS__); std::fputc('\n', stderr); std::fflush(stderr); } while (0)
+ DISABLE_WARNINGS()
+ #ifdef __clang__
+     _Pragma("GCC diagnostic ignored \"-Wnullability-completeness\"")
+ #endif
+ #define VMA_IMPLEMENTATION
++#define AMCL_VMA_USE_LINEAR_BLOCKS 1
+ #define VMA_STATIC_VULKAN_FUNCTIONS 0
+ #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+ #define VMA_SYSTEM_ALIGNED_MALLOC(size, alignment) org_lwjgl_aligned_alloc((alignment), (size))
+@@ -37,7 +40,28 @@ JNIEXPORT jint JNICALL Java_org_lwjgl_util_vma_Vma_nvmaCreateAllocator(JNIEnv *_
+     VmaAllocatorCreateInfo const *pCreateInfo = (VmaAllocatorCreateInfo const *)(uintptr_t)pCreateInfoAddress;
+     VmaAllocator *pAllocator = (VmaAllocator *)(uintptr_t)pAllocatorAddress;
+     UNUSED_PARAMS(__env, clazz)
+-    return (jint)vmaCreateAllocator(pCreateInfo, pAllocator);
++    std::fprintf(stderr, "[AMCL_VULKAN_VMA] create_allocator begin instance=%llu physical=%llu device=%llu\n",
++        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(pCreateInfo ? pCreateInfo->instance : VK_NULL_HANDLE)),
++        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(pCreateInfo ? pCreateInfo->physicalDevice : VK_NULL_HANDLE)),
++        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(pCreateInfo ? pCreateInfo->device : VK_NULL_HANDLE)));
++    std::fflush(stderr);
++    // Mobile Vulkan drivers in the OHOS target can expose Vulkan 1.1/1.2
++    // entry points while still hanging on the *2 memory-requirements path
++    // used by VMA when vulkanApiVersion >= 1.1.  MobileGL's working Vulkan
++    // renderer deliberately advertises API 1.0 to VMA for this reason.  The
++    // logical VkDevice remains created with Minecraft's requested API; this
++    // compatibility clamp only selects VMA's legacy requirements/bind path.
++    VmaAllocatorCreateInfo adjusted = *pCreateInfo;
++    adjusted.vulkanApiVersion = VK_API_VERSION_1_0;
++    std::fprintf(stderr, "[AMCL_VULKAN_VMA] allocator_api requested=%u effective=%u\n",
++        pCreateInfo ? pCreateInfo->vulkanApiVersion : 0u, adjusted.vulkanApiVersion);
++    std::fflush(stderr);
++    const VkResult result = vmaCreateAllocator(&adjusted, pAllocator);
++    std::fprintf(stderr, "[AMCL_VULKAN_VMA] create_allocator end result=%d allocator=%llu\n",
++        static_cast<int>(result),
++        static_cast<unsigned long long>(pAllocator && *pAllocator ? reinterpret_cast<uintptr_t>(*pAllocator) : 0));
++    std::fflush(stderr);
++    return (jint)result;
+ }
+ 
+ JNIEXPORT void JNICALL Java_org_lwjgl_util_vma_Vma_nvmaDestroyAllocator(JNIEnv *__env, jclass clazz, jlong allocatorAddress) {
+@@ -438,7 +462,18 @@ JNIEXPORT jint JNICALL Java_org_lwjgl_util_vma_Vma_nvmaCreateBuffer(JNIEnv *__en
+     VmaAllocation *pAllocation = (VmaAllocation *)(uintptr_t)pAllocationAddress;
+     VmaAllocationInfo *pAllocationInfo = (VmaAllocationInfo *)(uintptr_t)pAllocationInfoAddress;
+     UNUSED_PARAMS(__env, clazz)
+-    return (jint)vmaCreateBuffer(allocator, pBufferCreateInfo, pAllocationCreateInfo, pBuffer, pAllocation, pAllocationInfo);
++    AMCL_VMA_TRACE("create_buffer JNI begin allocator=%llu bufferInfo=%llu size=%llu usage=0x%X",
++        static_cast<unsigned long long>(allocatorAddress),
++        static_cast<unsigned long long>(pBufferCreateInfoAddress),
++        static_cast<unsigned long long>(pBufferCreateInfo ? pBufferCreateInfo->size : 0),
++        pBufferCreateInfo ? pBufferCreateInfo->usage : 0u);
++    const VkResult result = vmaCreateBuffer(allocator, pBufferCreateInfo, pAllocationCreateInfo,
++        pBuffer, pAllocation, pAllocationInfo);
++    AMCL_VMA_TRACE("create_buffer JNI end result=%d buffer=%llu allocation=%llu",
++        static_cast<int>(result),
++        static_cast<unsigned long long>(pBuffer && *pBuffer ? reinterpret_cast<uintptr_t>(*pBuffer) : 0),
++        static_cast<unsigned long long>(pAllocation && *pAllocation ? reinterpret_cast<uintptr_t>(*pAllocation) : 0));
++    return (jint)result;
+ }
+ 
+ JNIEXPORT jint JNICALL Java_org_lwjgl_util_vma_Vma_nvmaCreateDedicatedBuffer(JNIEnv *__env, jclass clazz, jlong allocatorAddress, jlong pBufferCreateInfoAddress, jlong pAllocationCreateInfoAddress, jlong pMemoryAllocateNextAddress, jlong pBufferAddress, jlong pAllocationAddress, jlong pAllocationInfoAddress) {
+diff --git a/modules/lwjgl/vma/src/main/c/vk_mem_alloc.h b/modules/lwjgl/vma/src/main/c/vk_mem_alloc.h
+index f2b58bf62..3430dfe22 100644
+--- a/modules/lwjgl/vma/src/main/c/vk_mem_alloc.h
++++ b/modules/lwjgl/vma/src/main/c/vk_mem_alloc.h
+@@ -12142,6 +12142,9 @@ VkResult VmaBlockVector::CommitAllocationRequest(
+ 
+ VkResult VmaBlockVector::CreateBlock(VkDeviceSize blockSize, size_t* pNewBlockIndex)
+ {
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("create_block begin size=%" PRIu64 " memoryType=%" PRIu32, blockSize, m_MemoryTypeIndex);
++#endif
+     VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+     allocInfo.pNext = m_pMemoryAllocateNext;
+     allocInfo.memoryTypeIndex = m_MemoryTypeIndex;
+@@ -12179,6 +12182,10 @@ VkResult VmaBlockVector::CreateBlock(VkDeviceSize blockSize, size_t* pNewBlockIn
+ 
+     VkDeviceMemory mem = VK_NULL_HANDLE;
+     VkResult res = m_hAllocator->AllocateVulkanMemory(&allocInfo, &mem);
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("create_block allocate end result=%d memory=%llu", (int)res,
++        (unsigned long long)(mem ? (uintptr_t)mem : 0));
++#endif
+     if (res < 0)
+     {
+         return res;
+@@ -12198,12 +12205,20 @@ VkResult VmaBlockVector::CreateBlock(VkDeviceSize blockSize, size_t* pNewBlockIn
+         m_Algorithm,
+         m_BufferImageGranularity);
+ 
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("create_block metadata initialized memory=%llu", (unsigned long long)(mem ? (uintptr_t)mem : 0));
++#endif
++
+     m_Blocks.push_back(pBlock);
+     if (pNewBlockIndex != VMA_NULL)
+     {
+         *pNewBlockIndex = m_Blocks.size() - 1;
+     }
+ 
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("create_block end result=0 blocks=%zu", m_Blocks.size());
++#endif
++
+     return VK_SUCCESS;
+ }
+ 
+@@ -13507,6 +13522,18 @@ VmaAllocator_T::VmaAllocator_T(const VmaAllocatorCreateInfo* pCreateInfo) :
+         if((m_GlobalMemoryTypeBits & (1U << memTypeIndex)) != 0)
+         {
+             const VkDeviceSize preferredBlockSize = CalcPreferredBlockSize(memTypeIndex);
++            #if defined(AMCL_VMA_USE_LINEAR_BLOCKS)
++            // The OHOS mobile Vulkan compatibility path can stall inside the
++            // TLSF metadata bootstrap immediately after vkAllocateMemory.
++            // Keep the allocator API and memory ownership unchanged, but use
++            // VMA's existing linear metadata implementation for default
++            // blocks so initialization does not enter that driver/runtime
++            // sensitive path. Explicit user pools retain their requested
++            // algorithm.
++            const uint32_t defaultBlockAlgorithm = VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT;
++            #else
++            const uint32_t defaultBlockAlgorithm = 0;
++            #endif
+             m_pBlockVectors[memTypeIndex] = vma_new(this, VmaBlockVector)(
+                 this,
+                 VK_NULL_HANDLE, // hParentPool
+@@ -13516,7 +13543,7 @@ VmaAllocator_T::VmaAllocator_T(const VmaAllocatorCreateInfo* pCreateInfo) :
+                 SIZE_MAX,
+                 GetBufferImageGranularity(),
+                 false, // explicitBlockSize
+-                0, // algorithm
++                defaultBlockAlgorithm, // algorithm
+                 0.5F, // priority (0.5 is the default per Vulkan spec)
+                 GetMemoryTypeMinAlignment(memTypeIndex), // minAllocationAlignment
+                 VMA_NULL); // // pMemoryAllocateNext
+@@ -13959,6 +13986,10 @@ VkResult VmaAllocator_T::AllocateMemoryOfType(
+         }
+     }
+ 
++    #if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("allocate_of_type block_vector begin size=%" PRIu64 " alignment=%" PRIu64 " type=%" PRIu32,
++        size, alignment, memTypeIndex);
++    #endif
+     res = blockVector.Allocate(
+         size,
+         alignment,
+@@ -13966,6 +13997,10 @@ VkResult VmaAllocator_T::AllocateMemoryOfType(
+         suballocType,
+         allocationCount,
+         pAllocations);
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("allocate_of_type block_vector end result=%d allocation=%llu", (int)res,
++        (unsigned long long)(pAllocations && *pAllocations ? (uintptr_t)*pAllocations : 0));
++#endif
+     if(res == VK_SUCCESS)
+         return VK_SUCCESS;
+ 
+@@ -14430,6 +14465,10 @@ VkResult VmaAllocator_T::CreateBuffer(
+     VmaAllocation* pAllocation,
+     VmaAllocationInfo* pAllocationInfo)
+ {
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("create_buffer begin size=%" PRIu64 " usage=0x%X", pBufferCreateInfo ? pBufferCreateInfo->size : 0,
++        pBufferCreateInfo ? pBufferCreateInfo->usage : 0u);
++#endif
+     *pBuffer = VK_NULL_HANDLE;
+     *pAllocation = VK_NULL_HANDLE;
+ 
+@@ -14447,6 +14486,10 @@ VkResult VmaAllocator_T::CreateBuffer(
+     // 1. Create VkBuffer.
+     VkResult res = (*m_VulkanFunctions.vkCreateBuffer)(m_hDevice, pBufferCreateInfo,
+         GetAllocationCallbacks(), pBuffer);
++#if defined(AMCL_VMA_TRACE)
++    AMCL_VMA_TRACE("create_buffer vkCreateBuffer result=%d buffer=%llu", (int)res,
++        (unsigned long long)(*pBuffer ? (uintptr_t)*pBuffer : 0));
++#endif
+     if (res >= 0)
+     {
+         // 2. vkGetBufferMemoryRequirements.
+@@ -14455,6 +14498,11 @@ VkResult VmaAllocator_T::CreateBuffer(
+         bool prefersDedicatedAllocation = false;
+         GetBufferMemoryRequirements(*pBuffer, vkMemReq,
+             requiresDedicatedAllocation, prefersDedicatedAllocation);
++#if defined(AMCL_VMA_TRACE)
++        AMCL_VMA_TRACE("create_buffer requirements size=%" PRIu64 " alignment=%" PRIu64 " typeBits=0x%X dedicated=%d preferred=%d",
++            vkMemReq.size, vkMemReq.alignment, vkMemReq.memoryTypeBits,
++            requiresDedicatedAllocation ? 1 : 0, prefersDedicatedAllocation ? 1 : 0);
++#endif
+ 
+         // 3. Allocate memory using allocator.
+         res = AllocateMemory(
+@@ -14469,12 +14517,24 @@ VkResult VmaAllocator_T::CreateBuffer(
+             VMA_SUBALLOCATION_TYPE_BUFFER,
+             1, // allocationCount
+             pAllocation);
++#if defined(AMCL_VMA_TRACE)
++        AMCL_VMA_TRACE("create_buffer allocation result=%d allocation=%llu", (int)res,
++            (unsigned long long)(*pAllocation ? (uintptr_t)*pAllocation : 0));
++#endif
+         if (res >= 0)
+         {
+             // 3. Bind buffer with memory.
+             if ((pAllocationCreateInfo->flags & VMA_ALLOCATION_CREATE_DONT_BIND_BIT) == 0)
+             {
++#if defined(AMCL_VMA_TRACE)
++                AMCL_VMA_TRACE("create_buffer bind begin buffer=%llu allocation=%llu",
++                    (unsigned long long)(*pBuffer ? (uintptr_t)*pBuffer : 0),
++                    (unsigned long long)(*pAllocation ? (uintptr_t)*pAllocation : 0));
++#endif
+                 res = BindBufferMemory(*pAllocation, 0, *pBuffer, VMA_NULL);
++#if defined(AMCL_VMA_TRACE)
++                AMCL_VMA_TRACE("create_buffer bind end result=%d", (int)res);
++#endif
+             }
+             if (res >= 0)
+             {

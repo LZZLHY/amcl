@@ -1,0 +1,7 @@
+{
+  "source": "https://github.com/ZurrTum/Create-Fly/releases/tag/v6.0.9-26.2-rc-2-1",
+  "artifactSha1": "fe6f561de7d3b13e384dce6482760f766cb00cc0",
+  "entry": "com/zurrtum/create/client/flywheel/backend/engine/indirect/StagingBuffer.class",
+  "entrySha256": "8df71d54f7d6275aaefa33e00d1640dc7d99117dc05e414ccaa02329cba5d141",
+  "scope": "仅供真实字节码变换回归，不打入生产兼容 JAR"
+}

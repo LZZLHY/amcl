@@ -1,0 +1,64 @@
+#include <cstdio>
+#include <cstring>
+#include "graphics_runtime_abi.h"
+// 纯选择测试只替换宿主描述符发布边界；描述符解析本身由双ELF+真实SDL头测试覆盖。
+static bool runtimeRequired=false;
+static AmclGraphicsRuntimeV1 runtime{};
+bool AMCL_GraphicsRuntimeRequired(){return runtimeRequired;}
+const AmclGraphicsRuntimeV1* AMCL_GraphicsRuntime(){return runtimeRequired?&runtime:nullptr;}
+using EGLConfig=void*; using EGLint=int; using EGLenum=unsigned;
+enum { SDL_GL_CONTEXT_PROFILE_ES=4, SDL_GL_CONTEXT_PROFILE_CORE=1,
+       SDL_LOG_CATEGORY_VIDEO=1, OPENHARMONY_EGL_POLICY_HYBRID_PINNED=1 };
+using OPENHARMONY_EGLPolicy=int;
+struct OPENHARMONY_GLSelectionKey {int profile_mask,major_version,minor_version,flags;};
+struct EglData {bool egl_config_locked;EGLConfig egl_config;int egl_surfacetype;};
+struct SDL_VideoDevice {EglData* egl_data;OPENHARMONY_GLSelectionKey gl_config;};
+struct SDL_VideoData {
+    OPENHARMONY_GLSelectionKey requested_gl_selection{},effective_gl_selection{};
+    bool requested_gl_selection_valid=false,effective_gl_selection_valid=false,auxiliary_mode_pbuffer=true;
+    int egl_policy=0,pinned_egl_config_id=0,pinned_surface_type=0,pinned_native_visual_id=0,config_lock_ok=0;
+};
+static const char* nativeFlag="1";
+static bool chooseNative=false, validateNative=true;
+static int nativeAttempts=0, esAttempts=0, cleared=0;
+static const char* error="";
+const char* SDL_getenv(const char*){return nativeFlag;}
+int SDL_strcmp(const char* a,const char* b){return std::strcmp(a,b);}
+void SDL_ClearError(){++cleared;error="";}
+bool SDL_SetError(const char* message){error=message;return false;}
+template<class... T> void SDL_LogInfo(T...){}
+bool SDL_EGL_ChooseConfig(SDL_VideoDevice* device){
+    const bool es=device->gl_config.profile_mask==4;
+    if(es)++esAttempts;else ++nativeAttempts;
+    if(!es && !chooseNative)return SDL_SetError("native choose failure");
+    device->egl_data->egl_config=reinterpret_cast<void*>(1);return true;
+}
+void SDL_EGL_UnlockConfig(SDL_VideoDevice* d){d->egl_data->egl_config_locked=false;}
+bool SDL_EGL_LockConfig(SDL_VideoDevice* d,EGLConfig){d->egl_data->egl_config_locked=true;return true;}
+void OPENHARMONY_GLES_ApplySelection(SDL_VideoDevice* d,const OPENHARMONY_GLSelectionKey* key){d->gl_config=*key;}
+void OPENHARMONY_GLES_CaptureSelection(SDL_VideoDevice* d,OPENHARMONY_GLSelectionKey* key){*key=d->gl_config;}
+bool OPENHARMONY_GLES_ValidateConfig(SDL_VideoDevice* d,EGLConfig,int,int* id,int* types,int* visual){
+    if(d->gl_config.profile_mask!=4 && !validateNative)return SDL_SetError("native surface validation failure");
+    *id=1;*types=5;*visual=1;return true;
+}
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
+@PRODUCTION@
+int main(){
+    for(int scenario=0;scenario<5;++scenario){
+        EglData egl{};SDL_VideoDevice device{&egl,{1,4,2,0}};SDL_VideoData video;
+        nativeFlag=scenario==3?nullptr:"1";chooseNative=scenario==1 || scenario==2;validateNative=scenario!=1;
+        nativeAttempts=0;esAttempts=0;cleared=0;error="";
+        if(scenario==4)device.gl_config.profile_mask=4;
+        const auto request=device.gl_config;
+        const bool ok=OPENHARMONY_GLES_TryPinConfig(&device,&video,&request,5,1);
+        if(scenario<2){CHECK(!ok && device.gl_config.profile_mask==1 && esAttempts==0 && cleared==0 && error[0]);}
+        if(scenario==2){CHECK(ok && device.gl_config.profile_mask==1 && esAttempts==0 && egl.egl_config_locked);}
+        if(scenario==3){CHECK(ok && device.gl_config.profile_mask==4 && esAttempts>0);}
+        if(scenario==4){CHECK(!ok && nativeAttempts==0 && esAttempts==0 && error[0]);}
+    }
+    runtimeRequired=true; runtime.contextApi="desktop-gl"; nativeFlag=nullptr;
+    CHECK(OPENHARMONY_GLES_NativeGlRequired());
+    runtime.contextApi="gles"; nativeFlag="1";
+    CHECK(!OPENHARMONY_GLES_NativeGlRequired());
+    std::puts("SDL native selection/validation failure stays native, ES request rejected, compatibility fallback PASS");
+}

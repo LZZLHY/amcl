@@ -1,0 +1,199 @@
+{
+  "$doc": "日志通道注册表 —— 每一个会在磁盘上产生日志的落点都必须登记在这里。scripts/check-log-channels.mjs 据此校验：第一方代码里任何创建日志 sink 的调用点，都必须属于某条通道声明的 writers。",
+  "$why": [
+    "通道此前是**长出来的**，不是被登记的：谁 fopen 一下就多一条。",
+    "2026-09-06 真机实测数出 10 条通道，而 2026-09-05 那份专门做普查的调研报告只列了 6 条 —— 连专门数的人都会漏 4 条，说明靠人普查不是解法（施工记录 §S03.2）。",
+    "漏登记的直接后果：MG/latest.log 存在了很久但任何读取 / 导出 / 清理路径都不碰它；agent-probe.log 与 logs/ai/ 同理。排障时拿不到，磁盘上却一直在。"
+  ],
+  "$fields": {
+    "id": "稳定标识。",
+    "path": "路径模板。filesDir = HAP 级 context.filesDir；appFilesDir = 应用级 applicationContext.filesDir（两者不同，MG 在后者）。",
+    "producer": "谁产生这些行。",
+    "writers": "第一方源码里**允许**创建这个 sink 的文件。空数组 = 第三方写的，我们管不了它怎么写，但必须登记它存在。",
+    "thirdParty": "true = 落点由第三方代码决定。",
+    "retention": "保留策略。null = 没有策略（这本身就是缺口，要在备注里说明）。",
+    "export": "diagnosticBundle / ledgerExport / logshare 三条外发路径里，这条通道进不进。",
+    "readers": "读取入口。空 = 没有任何路径读它（缺口）。",
+    "gap": "已知缺口，登记出来避免下一个人以为它被管着。"
+  },
+  "version": 1,
+  "channels": [
+    {
+      "id": "launcher",
+      "path": "filesDir/logs/amcl_launcher.log + .1..5",
+      "producer": "ArkTS AppLogger + native AMCL_LOG_* 汇聚到 amcl_log 的 writer 线程",
+      "writers": ["entry/src/main/cpp/utils/amcl_log.cpp"],
+      "thirdParty": false,
+      "retention": { "bytesPerFile": 2097152, "generations": 6, "totalBytes": 12582912 },
+      "export": { "diagnosticBundle": true, "ledgerExport": true, "logshare": true },
+      "readers": ["amclLogRead", "ledgerRead(LAUNCHER)"],
+      "gap": null
+    },
+    {
+      "id": "ledger",
+      "path": "filesDir/logs/ledger/<activityId>/{launcher.log,launcher.tail.log,launcher.tail.1.log,manifest.json} + index.json",
+      "producer": "amcl_log writer 线程按 activityId 分流（native TLS / ArkTS 显式 id）",
+      "writers": [
+        "entry/src/main/cpp/utils/amcl_log.cpp",
+        "commons/src/main/ets/utils/ActivityLedger.ets"
+      ],
+      "thirdParty": false,
+      "retention": { "headBytes": 524288, "tailBytes": 786432, "tailGenerations": 2, "entriesLru": 50, "totalBytes": 67108864 },
+      "export": { "diagnosticBundle": false, "ledgerExport": true, "logshare": false },
+      "readers": ["ledgerRead", "ledgerExport"],
+      "gap": "真机实测 50 条里 49 条是 launch、1 条 download，mod/repair/jdk/modpack 各 0 条 —— 归属机制建好了但接入面只有一个（施工记录 §S03.4）。另有 index 与磁盘目录数漂移。"
+    },
+    {
+      "id": "game_output",
+      "path": "<gameDir>/mc_output.log + .1..3",
+      "producer": "MC / JVM 的 stdout + stderr（含 MobileGlues 的 printf）",
+      "writers": [
+        "entry/src/main/cpp/jvm/mc_launcher.cpp",
+        "JavaApp/src/com/amcl/launcher/AmclLauncher.java"
+      ],
+      "thirdParty": false,
+      "retention": { "perSession": true, "generations": 4, "bytesPerFile": null },
+      "export": { "diagnosticBundle": true, "ledgerExport": true, "logshare": true },
+      "readers": ["readGameLogTail", "readGameLogFull", "SessionMarker.readMcLogTail", "findSessionLog"],
+      "gap": "单文件没有体积上限。"
+    },
+    {
+      "id": "mc_log4j",
+      "path": "<gameDir>/logs/latest.log, debug.log, <日期>-N.log.gz",
+      "producer": "Minecraft 自己的 log4j",
+      "writers": [],
+      "thirdParty": true,
+      "retention": { "byLog4j": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": true, "logshare": true },
+      "readers": ["GameLogPaths", "ledgerRead(MC_LATEST)"],
+      "gap": "不进 DiagnosticBundle。与 mc_output.log **内容不等价**（LWJGL 直接写 stderr 不经 log4j），只上传一个会丢证据。"
+    },
+    {
+      "id": "jvm_stderr",
+      "path": "filesDir/jvm_stderr.log",
+      "producer": "JNI_CreateJavaVM 窗口内的 stdout/stderr",
+      "writers": ["entry/src/main/cpp/jvm/jvm_launcher.cpp"],
+      "thirdParty": false,
+      "retention": { "truncateOnLaunch": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": true, "logshare": false },
+      "readers": ["jvm_launcher 逐行抄进启动器日志", "ledgerRead(JVM)"],
+      "gap": "每次启动 O_TRUNC；设计文档 §3.7 改造 5 要求归入会话目录，未实现。"
+    },
+    {
+      "id": "agent_probe",
+      "path": "filesDir/logs/agent-probe.log",
+      "producer": "Java Agent 探针（-Damcl.agentProbe.log）",
+      "writers": ["JavaApp/src/com/amcl/launcher/AmclAgentProbe.java"],
+      "thirdParty": false,
+      "retention": null,
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": [],
+      "gap": "⚠️ 三重缺口：无保留策略、无任何读取/导出路径、且时间戳是**毫秒级**（2026-09-04 14:49:29.963），与 amcl_launcher.log 的秒级不一致 —— 同一个应用两种时间精度（施工记录 §S03.2）。调研报告完全没列这条。"
+    },
+    {
+      "id": "ai_analysis",
+      "path": "filesDir/logs/ai/<sessionKey>.md",
+      "producer": "LogShare / AI 分析正文落盘",
+      "writers": [
+        "entry/src/main/ets/components/AiAnalysisService.ets",
+        "entry/src/main/ets/components/McSessionSnapshot.ets"
+      ],
+      "thirdParty": false,
+      "retention": { "byDownloadHistoryLru": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": ["McSessionSnapshot"],
+      "gap": "调研报告没列这条。正文是第三方 AI 的推测，导出时若带上会让推测看起来像结论 —— 刻意不导出是对的，但要登记。"
+    },
+    {
+      "id": "mobileglues",
+      "path": "appFilesDir/MG/latest.log",
+      "producer": "MobileGlues 的 write_log()（LOG_I / LOG_V / LOG_W_FORCE 无 DEBUG 门控）",
+      "writers": [],
+      "thirdParty": true,
+      "retention": { "truncateOnMgInit": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": [],
+      "gap": "⚠️ 两处曾被写错：① 路径在**应用级** appFilesDir，不是 HAP 级 filesDir ⇒ ArkTS 的 context.filesDir 够不到它；② 调研估算「每小时涨 8 MB」，真机实测只有 2,240 B / 31 行（全是一次性 init 行），差约 3.5 个数量级。同目录下真正占 8 MB 的是 glsl_cache.tmp，那是**着色器缓存不是日志**（施工记录 §S03.3）。真实缺口是「那 31 行含 MG_DIR_PATH / enableAngle / 后端设置，排渲染问题最想先看，却进不了任何导出」。"
+    },
+    {
+      "id": "forge_installer",
+      "path": "<mcDir>/forge-installer.log",
+      "producer": "forkRunJava 子进程的 stdout/stderr（Forge/NeoForge 安装器与 processor）",
+      "writers": ["entry/src/main/cpp/jvm/fork_run_java.cpp"],
+      "thirdParty": false,
+      "testOnly": false,
+      "retention": { "truncatePerStep": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": [],
+      "gap": "⚠️ **本门禁上线第一次运行就抓出来的第 11 条通道** —— 调研报告没有、真机目录普查也没看到（它在 mcDir 下且只在装 Forge 时出现）。三重缺口：每步 O_TRUNC（processor 有多步，前一步的日志被下一步覆盖）、无任何读取/导出路径、装载失败时用户拿不到它。这正是「通道是长出来的」的活标本。"
+    },
+    {
+      "id": "openal_soft",
+      "path": "由 ALSOFT_LOGFILE 环境变量指定（未设置则不产生）",
+      "producer": "OpenAL Soft（vendored 在 entry/src/main/cpp/openal/）",
+      "writers": ["entry/src/main/cpp/openal/openal-soft/alc/alc.cpp"],
+      "thirdParty": true,
+      "testOnly": false,
+      "retention": null,
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": [],
+      "gap": "同样由本门禁抓出。AMCL 目前不设置 ALSOFT_LOGFILE ⇒ 实际不落盘；登记是为了「哪天有人为排音频问题设了它」时，它已经在清单里而不是又长出一条。"
+    },
+    {
+      "id": "mg_render_probe",
+      "path": "filesDir/mg-render-probe/",
+      "producer": "MG 渲染链探针（entry/src/main/cpp/tests/mg_test.cpp，仅 MC_OHOS_BUILD_TESTS 构建可达）",
+      "writers": [],
+      "thirdParty": false,
+      "testOnly": true,
+      "retention": null,
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": [],
+      "gap": "属于在飞的 MG 渲染链工作线，本方向只登记存在、不认领其策略。writers 为空是因为写入方在 tests/ 下（诊断构建才编进去），不在本门禁的扫描面内 —— 用 testOnly 标出来，避免被当成「第一方却没人写」的错误。"
+    },
+    {
+      "id": "authlib_injector",
+      "path": "<gameDir>/authlib-injector.log",
+      "producer": "authlib-injector agent 自己",
+      "writers": [],
+      "thirdParty": true,
+      "retention": null,
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": [],
+      "gap": "AMCL 从不读它。登记以免下次普查又漏。"
+    },
+    {
+      "id": "platform_events",
+      "path": "filesDir/logs/platform-events/event-*.json",
+      "producer": "HarmonyOS HiAppEvent APP_CRASH/APP_KILLED 与 UIAbility lastExitReason",
+      "writers": ["entry/src/main/ets/runtime/PlatformDfxWatcher.ets"],
+      "thirdParty": false,
+      "retention": { "pendingUntilLedgerArchive": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": true, "logshare": true },
+      "readers": ["PlatformDfxWatcher", "ActivityLedger.archivePlatformEventFiles_"],
+      "gap": "事件在下一次冷启动前暂存；无法匹配 activityId 时保留 pending，不自动丢弃。"
+    },
+    {
+      "id": "evidence_export",
+      "path": "tempDir/amcl-evidence-<activityId>-<stamp>/",
+      "producer": "本地完整证据 ZIP 导出器，逐文件脱敏后的临时树",
+      "writers": ["entry/src/main/ets/components/EvidenceBundleExport.ets"],
+      "thirdParty": false,
+      "retention": { "deleteAfterExport": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": true, "logshare": false },
+      "readers": ["GameArchiveIO.exportDirZip"],
+      "gap": "导出进程被强杀时可能留临时目录，后续启动清理会处理。"
+    },
+    {
+      "id": "hilog",
+      "path": "(系统环形缓冲，非文件)",
+      "producer": "裸 OH_LOG_* / 裸 hilog.* / logTailThread 转发的整个 mc_output.log",
+      "writers": [],
+      "thirdParty": true,
+      "retention": { "systemRingBuffer": true, "clearedByHilogR": true },
+      "export": { "diagnosticBundle": false, "ledgerExport": false, "logshare": false },
+      "readers": ["只能 hdc 取"],
+      "gap": "承载着 native 落盘渗透率之外的全部。远端用户报的问题原理上拿不到这些行 —— 这正是 audit-logging 棘轮存在的理由。"
+    }
+  ]
+}

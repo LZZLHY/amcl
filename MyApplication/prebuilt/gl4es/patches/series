@@ -1,0 +1,12 @@
+# gl4es (Holy GL4ES) OHOS 适配补丁 series（git apply 顺序）
+# 背景见 prebuilt/gl4es/README.md、docs/adaptation/OLD_MC_RENDERER_PLAN.md
+# 注：构建时还会经 ohos-cc 包装器注入 -D__OHOS__/-DNOX11/-DNO_GBM（见 docker/build_gl4es_ohos.sh）。
+
+# 0001: eglplatform.h 加 OHOS 分支（native 类型用 void*，不 include X11/Xlib.h）。
+#       OHOS clang 报 __unix__/__linux__（无 __OHOS__），默认走 X11 分支 → 找不到 X11/Xlib.h。
+0001-ohos-eglplatform-native-types.patch
+# 0002: ① 懒初始化 gl4es_ensure_init()（init.c），getter.c 首批 GL 入口调用 → 解决 LWJGL 在独立
+#       命名空间加载的 libgl4es 实例从未被 initialize_gl4es 初始化（gles=NULL→NULL 调用→SIGSEGV→黑屏）。
+#       ② NOEGL 硬件测试门 gl4es_notest 由 !gles_getProcAddress 改 !gles（有真实 GLES 库句柄即跑探测）。
+#       生成脚本 docker/gl4es_ohos_patch_edits.py；详见 CHANGELOG 1000145。
+0002-ohos-lazy-init-and-hwtest-gate.patch

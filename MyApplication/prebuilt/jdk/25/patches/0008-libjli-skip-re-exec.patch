@@ -1,0 +1,15 @@
+diff --git a/src/java.base/unix/native/libjli/java_md.c b/src/java.base/unix/native/libjli/java_md.c
+index 0a61971b0..48e01ee37 100644
+--- a/src/java.base/unix/native/libjli/java_md.c
++++ b/src/java.base/unix/native/libjli/java_md.c
+@@ -209,6 +209,10 @@ ContainsLibJVM(const char *env) {
+  */
+ static jboolean
+ RequiresSetenv(const char *jvmpath) {
++#ifdef __MUSL__
++    /* OHOS patch: skip re-exec entirely - our ELF loader handles everything */
++    return JNI_FALSE;
++#endif
+     char jpath[PATH_MAX + 1];
+     char *llp;
+     char *p; /* a utility pointer */

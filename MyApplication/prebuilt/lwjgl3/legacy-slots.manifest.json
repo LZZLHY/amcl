@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "description": "AMCL 现役兼容槽最终交付字节；不是 Maven 上游原包摘要。现代槽继续以 modern-slot.manifest.json 为权威。",
+  "slots": [
+    {
+      "id": "legacy322",
+      "version": "3.2.3",
+      "deploymentDirectory": "lwjgl-ohos-322",
+      "resourceDirectory": "lwjgl-3.2.3",
+      "prebuiltDirectory": "prebuilt/lwjgl3/3.2.3/jars",
+      "manifestEntrySha256": "01301a0cc9a1e78b36d5b0d10d690761a78e7084067a4e34c808f3f021a541ef",
+      "jars": [
+        { "name": "lwjgl-glfw.jar", "size": 112856, "sha256": "99853e19ed3a0319db233900561368d523921ea738d0f9f6f8ab0dd85a03f549" },
+        { "name": "lwjgl-jemalloc.jar", "size": 34130, "sha256": "6f790dbe775eb56be638e9d97b355313c0caf374f13545996670756a15cbfe6f" },
+        { "name": "lwjgl-openal.jar", "size": 79432, "sha256": "9b1bfdf60a3fe7ba6c48976411d311575fb2b7a7e7457e5589d1588719820fb0" },
+        { "name": "lwjgl-opengl.jar", "size": 938214, "sha256": "5c473f23fd290385e33322426cbd9234bc505c27a1721e381fc43d59903a8046" },
+        { "name": "lwjgl-stb.jar", "size": 104146, "sha256": "bf416a52a841fa18508a40864544d7ef976a57733f2a13efbf5eb56f2a14ca96" },
+        { "name": "lwjgl-tinyfd.jar", "size": 6391, "sha256": "12b857110f4659adf56f33ddc3fdb4285b01edf755be8fab1d74cc3eab8007cd" },
+        { "name": "lwjgl.jar", "size": 553506, "sha256": "72a1b0b2816b21eaf6835739be7e23e1f6e96c118b648a44dcf9af9ff47a7f1b" }
+      ]
+    },
+    {
+      "id": "legacy2",
+      "version": "2.9.4",
+      "deploymentDirectory": "lwjgl-ohos-2",
+      "resourceDirectory": "lwjgl2",
+      "prebuiltDirectory": "",
+      "manifestEntrySha256": "98f9c2f40656718e3237d7846ce6a99107d69e535b8c6efe3ed5666d6a174e30",
+      "jars": [
+        { "name": "lwjgl.jar", "size": 1924101, "sha256": "30d9773d4917c5eb6a2cc5f4c35136eb87b21c92168c1c91bb284cace9a842ff" }
+      ]
+    }
+  ]
+}

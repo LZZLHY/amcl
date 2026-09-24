@@ -1,0 +1,195 @@
+{
+  "$doc": "日志噪声剥离 + 错误信号判定的语料。被 scripts/check-log-noise-rules.mjs 消费。",
+  "$provenance": "⚠️ 正向语料（survey-* 用例）是**按调研报告 §6.3 记录的措辞重建的**，不是从原始样本切出来的。原始样本 D:\\dhao1\\desktop\\6MYY2qG.txt 在 2026-09-06 复核时已不在该路径，无法重跑。⇒ 这些行的**措辞**是二手的，但它们要钉住的**判据**是一手的（调研逐条列了每行命中哪个判据）。将来若拿到新的用户样本，应当用真实切片替换本文件并复核。",
+  "$fields": {
+    "line / lines": "输入。单行用 line，多行（堆栈、上下文）用 lines。",
+    "expectNoise": "true = stripLogNoise 之后这段内容**一个字符都不剩**（整段都是已知无害噪声）。",
+    "expectErrorSignal": "剥离噪声后，hasErrorSignal 的结果。这是决定「弹不弹错误 Sheet」的那个布尔。",
+    "why": "为什么期望是这个值。写不出这一句就不该加这条语料。"
+  },
+  "cases": [
+    {
+      "name": "survey-6.3-controlify-mixin-target-absent",
+      "source": "调研 §6.3 幸存行 1/5（原文出现 ×3）",
+      "line": "[04:02:29] [main/WARN]: Error loading class: dev/isxander/controlify/api/ControlifyApi (java.lang.ClassNotFoundException: dev.isxander.controlify.api.ControlifyApi)",
+      "expectNoise": false,
+      "expectErrorSignal": false,
+      "why": "可选模组没装、Mixin target 不存在，模组自己降级处理。这是 WARN 级 —— 旧判据靠全文 indexOf('exception') 命中行内的 ClassNotFoundException，把它算成了真实错误"
+    },
+    {
+      "name": "survey-6.3-xaero-patreon-warn",
+      "source": "调研 §6.3 幸存行 2/5",
+      "line": "[04:02:33] [main/WARN]: io exception while checking patreon: Online mod data expired!",
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "模组联网数据过期。既被 mod-online-data-expired 规则剥掉，本身也是 WARN 级"
+    },
+    {
+      "name": "survey-6.3-xaero-versions-error-level",
+      "source": "调研 §6.3 幸存行 3/5 —— 7 行里唯一一条 ERROR 级",
+      "line": "[04:02:36] [Render thread/ERROR]: io exception while checking versions: Online mod data expired!",
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "⭐ 本批最关键的一条。它带 /ERROR] 级别标记 ⇒ 光靠「按级别判定」救不了它，必须有噪声规则。1000591 关掉帧遥测后，正是这一行会进 32 KB 尾窗并把健康会话判成 CRASHED（施工记录 §S01.2）"
+    },
+    {
+      "name": "survey-6.3-xaero-versions-warn",
+      "source": "调研 §6.3 幸存行 4/5",
+      "line": "[04:02:34] [main/WARN]: io exception while checking versions: Online mod data expired!",
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "同上，WARN 级的那一份"
+    },
+    {
+      "name": "survey-6.3-mobileglues-prose-exceptions",
+      "source": "调研 §6.3 幸存行 5/5",
+      "line": "[MG] multidrawMode is deprecated; see docs/multidraw.md for per-function exceptions.",
+      "expectNoise": false,
+      "expectErrorSignal": false,
+      "why": "⭐ MobileGlues 自己的弃用提示。旧判据 low.indexOf('exception') 命中了散文里的普通英文单词 \"exceptions\" —— 这条最能说明「子串匹配不是级别判定」"
+    },
+
+    {
+      "name": "mg-frame-telemetry-block",
+      "source": "调研 §6.1：这一族在样本里占 1,092 / 1,642 行",
+      "lines": [
+        "[MG-FRAME-STATS] seq=105 fps=58.21 frame_ms=17.18 present_ms=2.03",
+        "[MG-FRAME-STATS] seq=105 draw_calls=1842 tris=402113",
+        "[MG-FRAME-TRACE] seq=105 swap=ok"
+      ],
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "出货包自 1000591 起不再产生，但用户手上 ≤1000590 的包仍在写，诊断链读的就是那些历史日志"
+    },
+    {
+      "name": "legacy-noise-realms-401",
+      "source": "2026-07-30 标定语料",
+      "line": "[13:14:15] [Realms Notification Availability checker #1/ERROR]: Could not authorize you against Realms server: Invalid session id",
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "Realms 是可选联网功能；真机上它曾是本局最后一行并被当成崩溃原因。ERROR 级 ⇒ 同样只能靠噪声规则"
+    },
+    {
+      "name": "legacy-noise-lwjgl-selfcheck",
+      "source": "2026-07-30 标定语料",
+      "line": "[13:14:15] [main/ERROR]: Incompatible Java and native library versions detected.",
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "AMCL 用定制 LWJGL 替换官方 jar，自检必然告警；曾导致「建议改用 1.19 以上版本」的破坏性建议"
+    },
+    {
+      "name": "legacy-noise-user-properties-401",
+      "source": "2026-09-13 WRIMjjv.log / 26.3-rc-2",
+      "lines": [
+        "[15:39:50] [Download-2/ERROR]: Failed to fetch user properties",
+        "com.mojang.authlib.exceptions.InvalidCredentialsException: Status: 401",
+        "\tat net.minecraft.client.Minecraft.lambda$new$1(Minecraft.java:451)"
+      ],
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "后台可选用户属性请求在离线/占位账户下返回 HTTP 401，不影响渲染；dropStack=true 还要吞掉其异常续行"
+    },
+    {
+      "name": "legacy-noise-narrator-with-stack",
+      "source": "2026-07-30 标定语料，钉住 dropStack 语义",
+      "lines": [
+        "[13:14:15] [main/ERROR]: Unable to load library 'flite'",
+        "\tat com.sun.jna.NativeLibrary.loadLibrary(NativeLibrary.java:308)",
+        "\tat com.sun.jna.NativeLibrary.getInstance(NativeLibrary.java:427)",
+        "Caused by: java.lang.UnsatisfiedLinkError: libflite.so: cannot open shared object file",
+        "\t... 12 more"
+      ],
+      "expectNoise": true,
+      "expectErrorSignal": false,
+      "why": "dropStack=true 必须连带吞掉堆栈续行，否则 extractErrorSummary 的兜底分支会拿 Caused by 那行当摘要"
+    },
+    {
+      "name": "healthy-session-info-lines",
+      "source": "构造：一局正常跑到主菜单",
+      "lines": [
+        "[13:14:15] [Render thread/INFO]: Created: 2048x2048x4 minecraft:textures/atlas/blocks.png-atlas",
+        "[13:14:16] [Render thread/INFO]: Preparing spawn area: 0%",
+        "[13:14:20] [Render thread/INFO]: Loaded 7 advancements"
+      ],
+      "expectNoise": false,
+      "expectErrorSignal": false,
+      "why": "INFO 行不是噪声（不该被剥掉），但也不是错误信号"
+    },
+
+    {
+      "name": "reverse-fabric-loader-error-only",
+      "source": "反向语料：2026-08-29 那处对称缺口的最小形状",
+      "line": "[12:39:44] [ERROR] [FabricLoader/GameProvider]: Could not locate the game! The game may be absent from the class path.",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "⭐ 承重反向用例，且**必须是单行**。Fabric 的级别单独成段（[ERROR]），不是 MC 的 /ERROR] 排版。真机 Fabric 崩溃日志能侥幸过关只是因为尾部还带着一条 Java 的 Exception in thread —— 一旦 32 KB 尾窗只截到 Fabric 这几行，或噪声剥离连带吃掉了堆栈，就只剩这一行"
+    },
+    {
+      "name": "reverse-fabric-game-provider-failure",
+      "source": "反向语料：真实启动失败的完整形状",
+      "lines": [
+        "[12:39:44] [ERROR] [FabricLoader/GameProvider]: Could not locate the game! The game may be absent from the class path.",
+        "Exception in thread \"main\" java.lang.RuntimeException: Minecraft game provider couldn't locate the game!"
+      ],
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "真机上的完整排版。⚠️ 这条**证明不了**任何单个判据是承重的：它同时带着 [ERROR] 与 Java 异常顶行两个独立信号，删掉任一个它都还是绿的。隔离用例是上面那条单行的（自测 §7 抓出了这个夹具设计问题）"
+    },
+    {
+      "name": "reverse-mc-error-level",
+      "source": "反向语料",
+      "line": "[13:14:15] [Render thread/ERROR]: Reported exception thrown!",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "Minecraft 的 log4j 排版，级别跟在线程名后面"
+    },
+    {
+      "name": "reverse-java-throwable-top-line",
+      "source": "反向语料",
+      "line": "java.lang.NullPointerException: Cannot invoke \"net.minecraft.client.Minecraft.getWindow()\" because \"this.minecraft\" is null",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "没有任何级别标记的 Java 异常顶行 —— 走 stderr 的那一路就长这样"
+    },
+    {
+      "name": "reverse-caused-by-only",
+      "source": "反向语料：32 KB 尾窗从堆栈中间切进来",
+      "line": "Caused by: java.io.IOException: Failed to read version manifest",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "顶行被截在窗外时，Caused by 是唯一剩下的证据；漏掉它会把真崩溃判成 not_diagnosable"
+    },
+    {
+      "name": "reverse-jvm-bare-error-prefix",
+      "source": "反向语料",
+      "line": "Error: Could not find or load main class net.minecraft.client.main.Main",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "JVM 启动器自己打的，没有级别标记也没有异常类名"
+    },
+    {
+      "name": "reverse-crash-report-header",
+      "source": "反向语料",
+      "line": "---- Minecraft Crash Report ----",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "崩溃强信号"
+    },
+    {
+      "name": "reverse-hs-err-header",
+      "source": "反向语料",
+      "line": "# A fatal error has been detected by the Java Runtime Environment:",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "JVM 致命错误头"
+    },
+    {
+      "name": "reverse-forge-bootstrap-nosuchelement",
+      "source": "反向语料，1000586 那条 Forge 新 bootstrap 失败",
+      "line": "java.util.NoSuchElementException: No value present",
+      "expectNoise": false,
+      "expectErrorSignal": true,
+      "why": "Forge 新 bootstrap 建不出模块层时的顶行异常"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "amcl_runtime_compat",
+  "version": "1.1.0",
+  "name": "AMCL Runtime Compatibility",
+  "environment": "client",
+  "description": "Scoped compatibility for client initialization and verified Create Fly buffer uploads.",
+  "mixins": ["amcl-runtime-compat.mixins.json"],
+  "depends": {"fabricloader": ">=0.16.0", "minecraft": ["=1.21.11", "=26.2"], "java": ">=21"}
+}

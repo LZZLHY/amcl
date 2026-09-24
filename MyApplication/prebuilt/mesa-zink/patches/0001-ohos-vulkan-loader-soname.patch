@@ -1,0 +1,29 @@
+From: AMCL <LZZLHY>
+Date: 2026-06-24
+Subject: [PATCH] zink: OHOS 的 Vulkan loader soname 为 libvulkan.so（无 .1 后缀）
+
+OpenHarmony（HarmonyOS NEXT）的系统 Vulkan loader 库名是 `libvulkan.so`，没有
+`libvulkan.so.1` 这个版本化软链（设备 /system/lib64 下也不以文件形式存在，由 OHOS
+链接器命名空间解析）。但 Mesa zink 的 `VK_LIBNAME` 在非 Apple / 非 Android / 非 Windows
+分支硬编码为 `libvulkan.so.1` —— 因为 clang `--target=aarch64-linux-ohos` 只定义
+`__linux__`、不定义 `__OHOS__`/`__ANDROID__`，OHOS 落到了通用 Linux 分支。
+
+后果：zink `zink_internal_create_screen` 用 `util_dl_open("libvulkan.so.1")` 加载失败 →
+拿不到 Vulkan 设备 → screen 创建失败但上层未干净处理 → `st_api_create_context` 调
+`screen->context_create()`（坏指针）SIGSEGV（真机实证，详见 docs/adaptation/ZINK_RENDERER_PLAN.md）。
+
+修复：本 Mesa 仅为 OHOS 交叉编译，故把通用分支也改为 `libvulkan.so`（OHOS 同 Android）。
+
+注：此 patch 是 zink 真正生效的**必要但不充分**条件。OSMesa→zink 还需 kopper 路径
+（`pipe_loader_sw.c` 的 `#if defined(HAVE_DRI) && defined(HAVE_ZINK)`），即构建必须开启
+DRI+EGL（见 build_mesa_zink_ohos.sh 的配方修订与 ZINK_RENDERER_PLAN.md Phase 1.5）。
+
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -76,7 +76,7 @@
+ #elif DETECT_OS_ANDROID
+ #define VK_LIBNAME "libvulkan.so"
+ #else
+-#define VK_LIBNAME "libvulkan.so.1"
++#define VK_LIBNAME "libvulkan.so"
+ #endif

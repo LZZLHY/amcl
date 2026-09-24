@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { runtimeIdentity, policy, verifyHap } from './check-mobilegl-build-contract.mjs';
+const bytes = fs.readFileSync(new URL('../prebuilt/mobilegl/dist/libmobilegl.so', import.meta.url));
+const unstripped = fs.readFileSync(new URL('../prebuilt/mobilegl/dist/libmobilegl.unstripped.so', import.meta.url));
+const identity = runtimeIdentity(bytes);
+assert.equal(identity, runtimeIdentity(unstripped), 'strip must preserve allocated sections');
+assert.throws(() => runtimeIdentity(Buffer.from('not ELF')));
+const changed = Buffer.from(bytes);
+const marker = changed.indexOf(Buffer.from('GIT@'));
+assert.ok(marker >= 0);
+changed[marker] ^= 1;
+assert.notEqual(runtimeIdentity(changed), identity, 'runtime byte mutation must be detected');
+for (const product of ['default']) {
+  policy({ enabled: true, product });
+  policy({ enabled: true, product, release: true });
+}
+policy({ enabled: true, product: 'sideload' });
+policy({ enabled: true, product: 'desktop' });
+assert.throws(() => policy({ enabled: true, product: 'desktopLegacy' }));
+policy({ enabled: true, product: 'store' });
+const entry = { name: 'libs/arm64-v8a/libmobilegl.so', data: bytes };
+verifyHap([entry], true, identity);
+verifyHap([], false);
+assert.throws(() => verifyHap([entry], false));
+assert.throws(() => verifyHap([], true, identity));
+assert.throws(() => verifyHap([entry, entry], true, identity));
+assert.throws(() => verifyHap([{ ...entry, data: changed }], true, identity));
+assert.throws(() => verifyHap([{ ...entry, name: 'libs/x86_64/libmobilegl.so' }], true, identity));
+console.log('MobileGL artifact policy, strip equivalence, mutation and duplicate rejection: PASS');

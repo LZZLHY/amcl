@@ -1,0 +1,15 @@
+LIBGLFW {
+    global:
+        glfw[A-Z]*;
+        amclInputGetHostApiV1;
+        amclDesktopHostResolve;
+        amclBackendInputNext;
+        amclBackendInputSetActive;
+        amclBackendInputPublishAddress;
+        inputBridge_*;
+        pojavStartPumping;
+        pojavPumpEvents;
+        pojavStopPumping;
+        Java_*;
+    local: *;
+};

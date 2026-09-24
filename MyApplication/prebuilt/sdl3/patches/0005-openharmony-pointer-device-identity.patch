@@ -1,0 +1,143 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index d6d960436..ebff98721 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -156,11 +156,18 @@
+ #define AMCL_BACKEND_EVENT_FOCUS 5u
+ #define AMCL_BACKEND_EVENT_CAPTURE 6u
+ #define AMCL_BACKEND_EVENT_RELATIVE 7u
++#define AMCL_BACKEND_EVENT_DEVICE 8u
+ #define AMCL_BACKEND_EVENT_ABI_VERSION 1u
+ #define AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW (1u << 0)
+ #define AMCL_BACKEND_RELATIVE_FLAG_MASK AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW
+ #define AMCL_CAPTURE_REASON_NONE 0u
+ #define AMCL_CAPTURE_REASON_GRANTED 1u
++#define AMCL_DEVICE_ADDED 1
++#define AMCL_DEVICE_REMOVED 2
++#define AMCL_DEVICE_CLASS_UNKNOWN 0u
++#define AMCL_DEVICE_CLASS_MOUSE 1u
++#define AMCL_DEVICE_CLASS_TOUCHPAD 2u
++#define AMCL_DEVICE_CAP_MASK 0xffu
+ #define AMCL_BACKEND_ACTION_UP 3u
+ #define AMCL_BACKEND_ACTION_DOWN 1u
+ #define AMCL_BACKEND_ACTION_REPEAT 2u
+@@ -191,6 +198,27 @@ typedef struct
+ SDL_COMPILE_TIME_ASSERT(amcl_backend_event_size,
+                         sizeof(AMCL_BackendInputEvent) == 64);
+
++/* SDL reserves MouseID 1 for its compatibility/default device. OpenHarmony
++ * event ids are positive signed 32-bit values, so +1 is an injective mapping
++ * that keeps 0 as the explicit unknown/default bucket. */
++static SDL_MouseID OPENHARMONY_MouseIDFromHost(Uint64 device_id)
++{
++    return device_id == 0 ? SDL_DEFAULT_MOUSE_ID
++                          : (SDL_MouseID)(device_id + 1u);
++}
++
++static bool OPENHARMONY_ValidPointerIdentity(
++    const AMCL_BackendInputEvent *event, bool require_device)
++{
++    if (event->resetReason > AMCL_DEVICE_CLASS_TOUCHPAD) {
++        return false;
++    }
++    if (require_device && event->deviceId == 0) {
++        return false;
++    }
++    return event->deviceId <= (Uint64)(SDL_MAX_UINT32 - 1u);
++}
++
+ /* The typed function ABI has no out-buffer length parameter: the producer
+  * writes the v1 envelope directly into the caller's storage.  Consequently a
+  * producer with a different version/size must be rejected before any payload
+@@ -232,6 +260,8 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+             } else if (event->action != AMCL_BACKEND_ACTION_DOWN &&
+                        event->action != AMCL_BACKEND_ACTION_UP) {
+                 reason = "button-action";
++            } else if (!OPENHARMONY_ValidPointerIdentity(event, false)) {
++                reason = "button-identity";
+             }
+             break;
+
+@@ -239,6 +269,8 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+             if (isnan(event->wheelX) || isinf(event->wheelX) ||
+                 isnan(event->wheelY) || isinf(event->wheelY)) {
+                 reason = "wheel-nonfinite";
++            } else if (!OPENHARMONY_ValidPointerIdentity(event, false)) {
++                reason = "wheel-identity";
+             }
+             break;
+
+@@ -273,6 +305,18 @@ static bool OPENHARMONY_ValidateTypedEvent(const AMCL_BackendInputEvent *event)
+                 reason = "relative-nonfinite";
+             } else if ((event->modifiers & ~AMCL_BACKEND_RELATIVE_FLAG_MASK) != 0u) {
+                 reason = "relative-flags";
++            } else if (!OPENHARMONY_ValidPointerIdentity(event, false)) {
++                reason = "relative-identity";
++            }
++            break;
++
++        case AMCL_BACKEND_EVENT_DEVICE:
++            if ((event->code != AMCL_DEVICE_ADDED &&
++                 event->code != AMCL_DEVICE_REMOVED) ||
++                (event->modifiers & ~AMCL_DEVICE_CAP_MASK) != 0u) {
++                reason = "device-value";
++            } else if (!OPENHARMONY_ValidPointerIdentity(event, true)) {
++                reason = "device-identity";
+             }
+             break;
+
+@@ -1264,7 +1308,7 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+         case AMCL_BACKEND_EVENT_BUTTON:
+             if (input_window) {
+                 SDL_SendMouseButton(event.monotonicTimeNs, input_window,
+-                                    SDL_DEFAULT_MOUSE_ID, (Uint8)event.code,
++                                    OPENHARMONY_MouseIDFromHost(event.deviceId), (Uint8)event.code,
+                                     event.action != AMCL_BACKEND_ACTION_UP);
+             }
+             break;
+@@ -1272,10 +1316,10 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+         case AMCL_BACKEND_EVENT_WHEEL:
+             if (input_window) {
+                 // Float straight through: the host deliberately does not
+                 // quantise on this channel, because "one detent" is a GLFW
+                 // notion and SDL's wheel has always been continuous.
+                 SDL_SendMouseWheel(event.monotonicTimeNs, input_window,
+-                                   SDL_DEFAULT_MOUSE_ID, event.wheelX,
++                                   OPENHARMONY_MouseIDFromHost(event.deviceId), event.wheelX,
+                                    event.wheelY, SDL_MOUSEWHEEL_NORMAL);
+             }
+             break;
+@@ -1306,13 +1350,32 @@ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+         case AMCL_BACKEND_EVENT_RELATIVE:
+             if (host_capture_requested && host_capture_active &&
+                 SDL_GetRelativeMouseMode() &&
+                 (event.wheelX != 0.0f || event.wheelY != 0.0f)) {
+                 SDL_SendMouseMotion(event.monotonicTimeNs, input_window,
+-                                    SDL_DEFAULT_MOUSE_ID, true,
++                                    OPENHARMONY_MouseIDFromHost(event.deviceId), true,
+                                     event.wheelX, event.wheelY);
+             }
+             break;
+
++        case AMCL_BACKEND_EVENT_DEVICE: {
++            const SDL_MouseID mouse_id =
++                OPENHARMONY_MouseIDFromHost(event.deviceId);
++            if (event.code == AMCL_DEVICE_ADDED) {
++                const char *name =
++                    event.resetReason == AMCL_DEVICE_CLASS_TOUCHPAD
++                        ? "OpenHarmony Touchpad"
++                        : (event.resetReason == AMCL_DEVICE_CLASS_MOUSE
++                               ? "OpenHarmony Mouse"
++                               : "OpenHarmony Pointer");
++                SDL_AddMouse(mouse_id, name);
++            } else {
++                /* The host orders synthesized button releases before REMOVE,
++                 * so deleting the source cannot strand held state. */
++                SDL_RemoveMouse(mouse_id);
++            }
++            break;
++        }
++
+         default:
+             break;  // unknown host event; ignore rather than guess.
+         }

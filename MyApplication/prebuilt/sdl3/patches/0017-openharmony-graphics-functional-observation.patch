@@ -1,0 +1,55 @@
+diff --git a/src/video/openharmony/SDL_amclgraphicsruntime.h b/src/video/openharmony/SDL_amclgraphicsruntime.h
+index 69419efac..a8e17931a 100644
+--- a/src/video/openharmony/SDL_amclgraphicsruntime.h
++++ b/src/video/openharmony/SDL_amclgraphicsruntime.h
+@@ -3,6 +3,7 @@
+ #define SDL_amclgraphicsruntime_h_
+ #include "graphics_runtime_abi.h"
+ #include <unistd.h>
++#include <stddef.h>
+ /* 宿主存在但表损坏必须拒绝；只有独立SDL程序可沿用上游库发现流程。 */
+ static bool AMCL_GraphicsRuntimeRequired(void) {
+     return SDL_getenv_unsafe(AMCL_GRAPHICS_RUNTIME_ENV) || SDL_getenv_unsafe("AMCL_GRAPHICS_PROFILE");
+@@ -17,7 +18,7 @@ static const AmclGraphicsRuntimeV1 *AMCL_GraphicsRuntime(void) {
+     if (!encoded || SDL_sscanf(encoded, "1:%llu:%p%n", &owner, &address, &consumed) != 2 ||
+         encoded[consumed] || owner != pid || !address) return NULL;
+     value = (const AmclGraphicsRuntimeV1 *)address;
+-    if (value->structSize < sizeof(*value) || value->abiVersion != 1 || value->processId != pid ||
++    if (value->structSize < offsetof(AmclGraphicsRuntimeV1, inspectContext) || value->abiVersion != 1 || value->processId != pid ||
+         !value->profile || !value->api || !value->contextApi || !value->glProc || !value->eglProc) return NULL;
+     SDL_SetAtomicPointer(&cached, address); return value;
+ }
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index d59630d70..877df9266 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -947,6 +947,17 @@ SDL_GLContext OPENHARMONY_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window
+         data->owner_thread = SDL_GetCurrentThreadID();
+         data->last_context = result;
+         data->is_current = true;
++        /* 新context尚未交付游戏，调用宿主中立功能探针。旧宿主没有尾部时保留既有行为；
++         * 失败保留WindowData中的context身份，标记终局，绝不退回另一个GL provider。 */
++        const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
++        if (runtime && runtime->structSize >= sizeof(*runtime) && runtime->inspectContext &&
++            !runtime->inspectContext(_this->egl_data->egl_display, _this->egl_data->egl_config,
++                result, data->egl_surface, _this->gl_config.major_version, _this->gl_config.minor_version,
++                _this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_CORE ? 0x00032001 : 0)) {
++            OPENHARMONY_GLES_MarkRendererFatal(window, "functional-probe-retirement");
++            SDL_SetError("AMCL: graphics functional probe requires process restart");
++            return NULL;
++        }
+         if (!OPENHARMONY_GLES_ReplaySwapInterval(
+                 _this, window,
+                 data->role == OPENHARMONY_WINDOW_PRESENTED)) {
+diff --git a/src/video/openharmony/graphics_runtime_abi.h b/src/video/openharmony/graphics_runtime_abi.h
+index 023755cc9..370372953 100644
+--- a/src/video/openharmony/graphics_runtime_abi.h
++++ b/src/video/openharmony/graphics_runtime_abi.h
+@@ -14,5 +14,7 @@ typedef struct AmclGraphicsRuntimeV1 {
+     const char* contextApi;
+     void* (*glProc)(const char*);
+     void* (*eglProc)(const char*);
++    // 兼容尾部：新context首次交付前的诊断，0表示临时资源无法安全退休，必须终止该局。
++    int (*inspectContext)(void*, void*, void*, void*, int, int, int);
+ } AmclGraphicsRuntimeV1;
+ #endif

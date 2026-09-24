@@ -1,0 +1,94 @@
+# MC-OHOS OpenJDK 25u patch series
+# 标准 .patch 文件（git diff 格式），按顺序用 git apply 应用。
+#
+# 应用方式：bash docker/apply_patches.sh --patch-dir prebuilt/jdk/25/patches --target /build/jdk25u
+# 验证方式：每个 patch git apply --check 通过 → 全应用 → gmake images CONF_CHECK=ignore
+#
+# 2026-05-30 JDK25-NEW: MC 26.1+（YY.D.H 版本号格式）首个要求 Java 25 的版本。
+#                       把 JDK 21 的 8 个 OHOS 真 patch 移植到 jdk25u。
+#                       生成器：docker/port_jdk25_patches.sh（与 21 同构，python 锚点）
+#                       上游 base: jdk25u jdk-25.0.4+3 (commit e8f9ebe5e)
+#                       已在 fresh jdk25u tree 上 git apply --check 全部 8 个 OK。
+#
+# 与 21 的源码差异（已在生成器锚点处理）：
+#   - 0002/0003: jdk25u 删除了 set_java_home/set_dll_dir 前的 `// Get rid of /lib.`
+#                / `// Get rid of /{client|server|hotspot}.` 行内注释，锚点改用完整
+#                pslash block。
+#   - 0004: bootsec 赋值加了 (int) 强制转换（bootsec = (int)ent->ut_tv.tv_sec），
+#           正则锚点已对应。
+#   - 0001/0005/0006/0007/0008: 与 21 完全同构（锚点 verbatim 命中）。
+
+# === 1-4: musl libc 与 OHOS 沙箱适配 ===
+
+# musl libc: 防止 dlvsym 重定义 + 跳过不支持的 dlinfo()
+0001-musl-dlvsym-dlinfo.patch
+
+# OHOS 沙箱: JAVA_HOME 路径推断失败，优先使用环境变量
+0002-java-home-env.patch
+
+# OHOS 沙箱: dll_dir 同理，优先使用 SUN_BOOT_LIBRARY_PATH
+0003-dll-dir-env.patch
+
+# musl libc: 跳过不支持的 setutxent/getutxent/endutxent
+0004-musl-utmpx.patch
+
+# === 5-8: OHOS 运行时关键 patch（HotSpot 信号处理 / Safepoint / libjli） ===
+
+# OHOS：javaSignalHandler 不在未识别信号上 abort，避免设备误杀 JVM
+# JDK 25 参数名仍是 context（与 21 一致）
+0005-signals-posix-abort-if-unrecognized.patch
+
+# OHOS：aarch64 信号处理对 ELF loader 加载的代码做 SafePoint polling SEGV fallback
+# （CodeCache 看不到 ELF-loaded code，需要在 SEGV 时 disarm polling page 让 CPU 重试）
+0006-aarch64-elf-safepoint-fallback.patch
+
+# OHOS：safepoint polling page 用 MEM_PROT_READ 而不是 MEM_PROT_NONE
+# 配合 0006 的 fallback 一起，让 polling 走 SIGSEGV→重试，避免 SIGBUS abort
+0007-safepoint-mechanism-mem-prot-read.patch
+
+# OHOS：libjli 跳过 re-exec 路径（RequiresSetenv 永远返回 JNI_FALSE）
+# ELF loader 已经处理好了 LD_LIBRARY_PATH，原路径是为 musl 早期版本的兜底，会触发死锁
+0008-libjli-skip-re-exec.patch
+
+# === 9: JDK 25 新增特性的 musl 兼容（JDK 21 没有） ===
+
+# OHOS：JDK 25 新增 JFR CPU-time profiling（jfrCPUTimeThreadSampler.cpp）用 glibc 扩展
+# SIGEV_THREAD_ID 做 per-thread 定时器。musl 不定义该宏、且 struct sigevent 布局不同，
+# create_timer_for_thread 在 musl 上无法工作。OHOS target 直接 return false 优雅降级
+# （调用方已处理：log 一次 warning + 释放队列后继续）。JFR CPU-time 是诊断特性，MC 不用。
+0009-jfr-cpu-time-musl-disable.patch
+
+# === 10: OHOS 沙箱下 IPv6 能力误判（路线 A / 方案 §四·五 R4） ===
+
+# OHOS：应用沙箱对 /proc/net/if_inet6 返回 EACCES，而上游 IPv6_supported() 用「能不能
+# 读到这个文件的第一行」回答「本机有没有 IPv6」⇒ Net.isIPv6Available() 恒 false ⇒
+# NIO 只建 IPv4-only channel ⇒ 连 Inet6Address 在 Net.checkAddress 抛
+# UnsupportedAddressTypeException（且 message 为 null）。
+#
+# patch 语义（⚠️ 这是本条的要点，改它之前请先读）：
+#   - **不删判据**。fopen 仍然先试；文件可读时行为与上游逐字节一致（平台放开后自动退场）。
+#   - 只在 errno == EACCES / EPERM 时回落到 getifaddrs() 真实探测 ——
+#     「读不到」是**缺一次观测**，不是「本机没有 IPv6」这个答案。
+#   - **ENOENT 刻意不回落**：文件真不存在时就是内核没开 IPv6，那正是上游判据成立的场合。
+#   - 回落**同时要求 dlsym(inet_pton) 非空**：本 patch 的目标是给出「文件可读时上游会给的
+#     答案」，而那条路径上这个 API 可用性判据仍然成立。跳过它会让回落比它所替代的代码更宽松。
+#   - 回落把 loopback（::1）算作「有 IPv6」，因为上游只读该文件**第一行**，
+#     而正常 Linux 上第一行就是 lo 的 ::1 ⇒ 保持与「文件可读时上游会给的答案」一致。
+#   - helper 是 static，不新增导出符号（已验证：出货件 48 个导出，打了 patch 仍是 48 个，逐个相同）。
+#
+# ⭐ 验证（2026-08-29）里最有分量的一条：**不打本 patch 从本容器重编出的 libnet.so，
+#   与出货件逐字节相同**（sha256 2712cc83c5e8fe4ff551d96d4348c22c2e79692958690a43ffb61deae16d31e0，
+#   67584 B）。⇒ ① 构建环境位级复现了出货产物；② 因此自建件与出货件的**唯一差异就是本 patch**，
+#   没有别的东西被顺带改掉；③ 为绕开 WSL 判定而加的 `--build=x86_64-unknown-linux-gnu`
+#   不影响 target 代码生成。打上本 patch 后为 67944 B，导出符号仍 48 个逐个相同，
+#   未定义引用只多 getifaddrs/freeifaddrs，两边都仍引用 fopen。
+#
+# ⛔ 不要「照抄社区做法」把整块 fopen/fgets/fclose 删掉：那样在 AF_INET6 真被禁的设备上
+#    会连带把 NetworkInterface.getNetworkInterfaces() 的 IPv6 一起弄坏，且会丢掉
+#    「内核没 IPv6」这个本来正确的判据。
+#
+# 📌 本 patch 只修**消费者 1**（IPv6_supported）。同一个文件在 JDK 里还有**消费者 2**
+#    ——NetworkInterface.c 的 enumIPv6Interfaces()，它对 fopen 失败是静默容忍（IPv6 接口 0 条）。
+#    消费者 2 由应用侧的 ELF loader 垫片（路线 B，CHANGELOG 1000571）覆盖。两条路线不重复：
+#    A 修 1，B 修 1+2；B 在文件可读时自动透传，A 在文件可读时行为不变。
+0010-ipv6-supported-sandbox-fallback.patch

@@ -1,0 +1,13 @@
+diff --git a/src/hotspot/os/posix/signals_posix.cpp b/src/hotspot/os/posix/signals_posix.cpp
+index e5d44702d..4123454d8 100644
+--- a/src/hotspot/os/posix/signals_posix.cpp
++++ b/src/hotspot/os/posix/signals_posix.cpp
+@@ -655,7 +655,7 @@ int JVM_HANDLE_XXX_SIGNAL(int sig, siginfo_t* info,
+ static void javaSignalHandler(int sig, siginfo_t* info, void* ucVoid) {
+   // Do not add any code here!
+   // Only add code to either JVM_HANDLE_XXX_SIGNAL or PosixSignals::pd_hotspot_signal_handler.
+-  (void)JVM_HANDLE_XXX_SIGNAL(sig, info, ucVoid, true);
++  (void)JVM_HANDLE_XXX_SIGNAL(sig, info, ucVoid, false); // OHOS PATCH: do not abort on unrecognized signal
+ }
+ 
+ static void UserHandler(int sig, void *siginfo, void *context) {

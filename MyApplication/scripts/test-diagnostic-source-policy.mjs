@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { checkDiagnosticSources, unguardedDebugLines } from './diagnostic-source-policy.mjs';
+import { PRODUCT_ROOT } from './product-contract.mjs';
+assert.deepEqual(checkDiagnosticSources(PRODUCT_ROOT), []);
+assert.deepEqual(unguardedDebugLines("hilog.debug(0, 'X', 'debug')"), [1]);
+assert.deepEqual(unguardedDebugLines("if (true) hilog.debug(0, 'X', 'debug')"), [1]);
+assert.deepEqual(unguardedDebugLines("if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0, 'X', 'debug')"), []);
+assert.deepEqual(unguardedDebugLines("if (!DiagnosticPolicy.isDeveloperBuild()) return;\nhilog.debug(0, 'X', 'debug')", true), []);
+assert.deepEqual(unguardedDebugLines("if (!DiagnosticPolicy.isDeveloperBuild()) return;\nhilog.debug(0, 'X', 'debug')"), [2]);
+console.log('diagnostic-source-policy: guarded producers and unguarded regression rejection PASS');

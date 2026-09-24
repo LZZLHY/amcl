@@ -1,0 +1,29 @@
+From: MC-OHOS <mc-ohos@harmonyos.next>
+Subject: [PATCH] Use SUN_BOOT_LIBRARY_PATH env var for dll_dir
+
+Same rationale as JAVA_HOME: on OHOS the default dll_dir inference
+fails because libjvm.so is loaded from the sandbox.
+
+---
+ src/hotspot/os/linux/os_linux.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 770a57d8a..87cdea962 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -455,7 +455,13 @@ void os::init_system_properties_values() {
+     if (pslash != NULL) {
+       *pslash = '\0';            // Get rid of /{client|server|hotspot}.
+     }
+-    Arguments::set_dll_dir(buf);
++    // OHOS: prefer SUN_BOOT_LIBRARY_PATH env var
++    const char* dll_dir_env = ::getenv("SUN_BOOT_LIBRARY_PATH");
++    if (dll_dir_env != NULL && dll_dir_env[0] != '\0') {
++      Arguments::set_dll_dir(dll_dir_env);
++    } else {
++      Arguments::set_dll_dir(buf);
++    }
+ 
+     if (pslash != NULL) {
+       pslash = strrchr(buf, '/');

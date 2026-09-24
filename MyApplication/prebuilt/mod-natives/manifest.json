@@ -1,0 +1,25 @@
+{
+  "_comment": "AMCL Mod 原生库运行时清单。记录每个为 OHOS aarch64 重编译的 mod native 及其加载契约。详见 docs/guides/mod-native-runtime-plan.md 与各库子目录 README。",
+  "targetAbi": "aarch64-linux-ohos",
+  "runtimeDeps": ["libc++_shared.so", "libc.so"],
+  "libraries": [
+    {
+      "name": "imgui-java",
+      "artifact": "libimgui-java64.so",
+      "distribution": "bundled",
+      "bundledPath": "entry/libs/arm64-v8a/libimgui-java64.so",
+      "loadMechanism": "loadLibrary",
+      "loadMechanismNote": "imgui-java ImGui.<clinit> 先 System.loadLibrary(\"imgui-java64\")，命中 java.library.path(=hapNativeDir) 即用我们的库；失败才解压自带 x86 .so。AMCL 已把 hapNativeDir 放进 java.library.path，故无需额外接线。",
+      "systemProperties": {},
+      "imguiVersion": "1.86",
+      "upstream": "https://github.com/SpaiR/imgui-java",
+      "includedExtensions": ["core", "implot", "imnodes", "imguizmo", "knobs", "ImCurveEdit", "ImZoomSlider", "memory_editor"],
+      "excludedExtensions": ["TextEditor", "ImGuiFileDialog", "node-editor(thedmd/crude_json)"],
+      "excludedReason": "依赖 libc++ <locale> 的 glibc 专属 *_l 函数（strtoll_l 等），OHOS musl 无；且 CorgiLib/游戏类 mod 不用。",
+      "triggeredBy": ["CorgiLib (corgilib)"],
+      "sourceDir": "prebuilt/mod-natives/imgui-java/jni",
+      "buildScript": "prebuilt/mod-natives/imgui-java/build-ohos.sh",
+      "status": "built; 真机进游戏验证中"
+    }
+  ]
+}

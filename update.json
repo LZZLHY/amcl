@@ -1,98 +1,118 @@
 {
-  "versionCode": 1000591,
-  "versionName": "1.0.3",
-  "tag": "v1.0.3",
+  "versionCode": 1000671,
+  "versionName": "1.0.4",
+  "tag": "v1.0.4",
   "url": "https://github.com/LZZLHY/amcl/releases/latest",
-  "notes": "1.0.3\n- 头条：MC 26.3 SDL3 适配继续完善，Snapshot 9 与 Pre-Release 1 可启动、进入菜单和世界\n- 头条：键鼠适配完成核心链路重构，目前仅在 HarmonyOS 7（API 26）验证可玩\n- 新增：JDK 更新系统与本地压缩包导入\n- 修复：Fabric 启动崩溃、IPv6 联机、下载列表与正版登录等问题\n- 注意：HarmonyOS 6 等系统的键鼠可能有问题；MC 26.3 仍为预览版本",
+  "notes": "1.0.4\n- 图形：完善 MobileGL，适配 MC 26.4 Snapshot 1 的 Vulkan 自动选择\n- 日志：活动账本、快捷分享与 AI 摘要重做\n- 模组：修复依赖安装、NeoForge 下载和特定 Create Fly 组合\n- 平板：支持独立游戏进程与退出后返回启动器\n- 注意：原生 Vulkan 依赖设备能力，部分键鼠和光影组合仍需验证",
   "mandatory": false,
   "schema": 1,
-  "date": "2026-09-02",
+  "date": "2026-09-24",
   "changelogUrl": "https://amcl.lovedhy.cn/changelog",
   "notesEntries": [
     {
       "type": "highlight",
-      "text": "Minecraft 26.3 的可玩性继续提升：Snapshot 9 与 Pre-Release 1 已在目标设备完成启动、主菜单、世界加载、画面和输入验证。"
+      "text": "图形后端升级：完善 MobileGL 的 GLFW/SDL3 路线，适配 MC 26.4 Snapshot 1 的 Vulkan 自动选择，修复特定 Create Fly 组合的模型缺失与停帧。"
     },
     {
       "type": "highlight",
-      "text": "物理键鼠适配完成核心链路重构：统一键盘、鼠标按钮、滚轮、视角与失焦恢复的事件通道，改善输入一致性；当前可玩范围见下方“注意”。"
+      "text": "活动日志与设置重做：按每次启动查看、搜索和导出日志，支持快捷 LogShare 分享，并以摘要卡片呈现 AI 诊断。"
+    },
+    {
+      "type": "highlight",
+      "text": "模组安装更可靠：补齐必需前置与版本冲突检查，失败更新可恢复旧文件，修复 NeoForge 下载误拒绝与进度不刷新。"
     },
     {
       "type": "added",
-      "text": "JDK 更新系统：已安装但版本较旧的 JDK 不再一律判定为不可用，用户可以自行决定是否更新。"
+      "text": "在“设置 → 图形后端”统一选择自动、MobileGlues、MobileGL、系统 OpenGL 和 Minecraft Vulkan，并显示可用性原因。"
     },
     {
       "type": "added",
-      "text": "从本地压缩包导入 JDK：支持离线安装和用户自带 JDK 包。"
+      "text": "支持的平板默认采用独立游戏进程，设置中可关闭；修改后重启启动器生效。"
+    },
+    {
+      "type": "added",
+      "text": "活动账本新增环境信息、本地诊断、错误原文定位、重要活动保留和空间占用管理。"
+    },
+    {
+      "type": "added",
+      "text": "新增独立分享历史、在线撤回和脱敏 ZIP 导出，支持在本地活动删除后管理已保存的分享链接。"
+    },
+    {
+      "type": "added",
+      "text": "MC 26.4 下载详情增加 Vulkan 设备可行性报告，并提示自动策略及手动切换入口。"
     },
     {
       "type": "improved",
-      "text": "优化 MC 26.3 的地形上传、GPU 提交和单人区块发包节奏；目标设备已确认区块边界卡顿感明显减少，但不宣称所有设备和模组组合都已彻底解决。"
+      "text": "设置页增加本地搜索与常用配置入口，活动账本采用紧凑时间轴和宽屏详情工作区，改善阅读和导航。"
     },
     {
       "type": "improved",
-      "text": "MobileGlues 升级到 2.0 基线，并补齐源码、构建参数、HAP 内原生库与签名产物之间的可追溯校验。"
+      "text": "日志按版本保留游戏会话，分块读取并复用翻页游标，减少长日志反复读取。"
+    },
+    {
+      "type": "improved",
+      "text": "LogShare 预览、请求限额与实际发送内容保持一致，凭据先保存，后台核对已上传文件内容。"
+    },
+    {
+      "type": "improved",
+      "text": "减少 MobileGlues 重复状态计算和资源创建，帧统计整理移出呈现线程。"
     },
     {
       "type": "refactored",
-      "text": "建立统一的渲染后端注册与路由层，彻底退役不可用的 Zink 路径。"
+      "text": "统一图形计划、运行库、窗口生命周期与成功呈现记录，保持 GLFW/SDL3 的后端选择和资源归属一致。"
     },
     {
       "type": "refactored",
-      "text": "完成多输入端 typed 通道迁移，并增加事件投递、按键持有、滚轮量纲和焦点恢复等完整性检查。"
+      "text": "三套 LWJGL 运行槽按内容身份部署，JDK 选择综合游戏清单和加载器要求，补齐原子提交及启动前完整性检查。"
     },
     {
       "type": "fixed",
-      "text": "修复 Minecraft 26.3 Pre-Release 1 因缺少 SPNG 模块而在启动早期退出。"
+      "text": "修复超大日志脱敏触发的栈溢出，恢复长日志预览、导出与分享，同时保留凭据遮蔽和技术哈希。"
     },
     {
       "type": "fixed",
-      "text": "修复 MC 26.3 着色器被错误重写、旧翻译缓存继续命中以及 OIT 输出不兼容造成的启动崩溃。"
+      "text": "修复 MobileGL 横屏时反复重建交换链造成的半屏闪烁，以及已确认的持久映射生命周期错误。"
     },
     {
       "type": "fixed",
-      "text": "修复 SDL3 辅助窗口触发“只支持一个窗口”、菜单完全无响应以及第一次点击只移动光标的问题。"
+      "text": "修复 Minecraft 原生 Vulkan 的窗口、输入呈现通知、世界加载兼容补丁作用域和横屏方向适配。"
     },
     {
       "type": "fixed",
-      "text": "修复 Fabric 各版本因游戏 classpath 缺失而启动即崩溃。"
+      "text": "修复电脑系统 OpenGL 的初始化时序、函数提供者混用和 SDL pbuffer 限制误拒绝。"
     },
     {
       "type": "fixed",
-      "text": "修复加入 IPv6 服务器失败，并更新 JDK 8、17、21、25 的 IPv6 沙箱兼容组件。"
+      "text": "修复 Fabric 26.3 跨 ClassLoader 重复加载原生库的启动闪退，以及平板 JDK 8 游戏退出异常。"
     },
     {
       "type": "fixed",
-      "text": "修复 Release 包中版本列表、模组列表和正版登录因属性名混淆而失效的问题。"
+      "text": "修复特定 Create Fly 实现的缓冲越界与描述符刷新遗漏，配合 MobileGL 修复恢复模型渲染。"
     },
     {
       "type": "fixed",
-      "text": "修复 GC 日志相对路径导致 JVM 创建失败、游戏完全无法启动的问题。"
+      "text": "修复 Minecraft 1.21.11 特定背包整理组合的 AWT 闪退、窗口尺寸回调重入及 LWJGL 旧接口缺失。"
     },
     {
       "type": "fixed",
-      "text": "修复物理滚轮方向、量纲、首格重复、焦点释放和部分输入事件无法送达后端的问题。"
+      "text": "修复必需前置漏装、推荐模组版本冲突、更新失败破坏旧文件，以及 NeoForge 加载器识别和任务汇总问题。"
     },
     {
       "type": "fixed",
-      "text": "修复 Release 构建中的帧率调度接口失效，并移除出货包内不应携带的测试代码。"
+      "text": "修复旧崩溃报告误归属、后续会话污染旧记录、日志队列覆盖与唤醒遗漏，以及消息和分享状态提前显示成功。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复原生日志时间格式化的并发环境访问问题，并补齐嵌入 JVM 的信号与 TLS 调用约定。"
     },
     {
       "type": "notice",
-      "text": "物理键鼠目前仅在 HarmonyOS 7（API 26）设备上验证可玩；HarmonyOS 6（API 24）及其他较低系统版本可能遇到鼠标按键、视角或滚轮问题。"
+      "text": "MC 26.4 适配针对 Snapshot 1；原生 Vulkan 取决于设备能力，其他快照和模组组合需单独验证。"
     },
     {
       "type": "notice",
-      "text": "MC 26.2 搭配 Sodium 仍有已知问题：部分设备可能出现地形错乱或严重卡顿；原版 26.x 不受该组合问题影响。"
-    },
-    {
-      "type": "notice",
-      "text": "MC 26.3 仍属于快照／预览版本，不保证所有后续快照、模组和设备均稳定。"
-    },
-    {
-      "type": "notice",
-      "text": "Release 附件为 unsigned HAP，需要自行签名后侧载安装，推荐使用 HoKit。"
+      "text": "电脑系统 OpenGL、较低系统的键鼠和复杂光影组合仍需更多真机验证；不承诺普遍提升帧率。"
     }
   ],
-  "sizeBytes": 107922403
+  "sizeBytes": 76922276
 }

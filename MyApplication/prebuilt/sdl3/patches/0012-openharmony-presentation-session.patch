@@ -1,0 +1,718 @@
+diff --git a/src/video/openharmony/SDL_amclpresentation.h b/src/video/openharmony/SDL_amclpresentation.h
+new file mode 100644
+index 000000000..90b017338
+--- /dev/null
++++ b/src/video/openharmony/SDL_amclpresentation.h
+@@ -0,0 +1,191 @@
++/*
++ * AMCL embedded OpenHarmony presentation ownership.
++ * This is an AMCL addition, not an upstream SDL implementation.
++ *
++ * Copyright (c) AMCL contributors. Distributed under SDL's zlib license.
++ */
++#ifndef SDL_amclpresentation_h_
++#define SDL_amclpresentation_h_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++typedef uint32_t AMCL_NativeWindowPublicationState;
++typedef struct AMCL_NativeWindowLeaseBrokerV2
++{
++    uint32_t abiVersion;
++    uint32_t structSize;
++    int (*acquire)(void *, uint64_t, void **, int *, int *, uint64_t *);
++    void (*release)(void *);
++    int (*beginInputPublication)(int *, int *, uint64_t *);
++    void (*endInputPublication)(void);
++    uint64_t (*peekGeneration)(void);
++    AMCL_NativeWindowPublicationState (*peekState)(void);
++    int (*claimPresentation)(void *, uint64_t, uint32_t, uint64_t *);
++    int (*movePresentation)(uint64_t, void *, uint64_t);
++    int (*releasePresentation)(uint64_t);
++} AMCL_NativeWindowLeaseBrokerV2;
++
++#define AMCL_PRESENTATION_BROKER_SIZE \
++    ((uint32_t)(offsetof(AMCL_NativeWindowLeaseBrokerV2, releasePresentation) + \
++                sizeof(((AMCL_NativeWindowLeaseBrokerV2 *)0)->releasePresentation)))
++
++typedef struct AMCL_PresentationSurface
++{
++    void *surface;
++    void *native_window;
++    uint64_t generation;
++} AMCL_PresentationSurface;
++
++typedef struct AMCL_PresentationOwner
++{
++    const AMCL_NativeWindowLeaseBrokerV2 *broker;
++    uint64_t token;
++    void *native_window;
++    uint64_t generation;
++    /* A recovery transaction may build one candidate while retaining the old
++     * surface. Both belong to the same exclusive session. Token movement is
++     * forbidden until every old-native-window surface has really retired. */
++    AMCL_PresentationSurface surfaces[2];
++    bool retirement_failed;
++    uint64_t created;
++    uint64_t destroyed;
++    uint64_t rejected;
++} AMCL_PresentationOwner;
++
++typedef void *(*AMCL_PresentationCreateFn)(void *context, void *native_window);
++typedef bool (*AMCL_PresentationDestroyFn)(void *context, void *surface);
++
++static inline bool AMCL_PresentationBrokerValid(const AMCL_NativeWindowLeaseBrokerV2 *broker)
++{
++    return broker && broker->abiVersion == 2u &&
++           broker->structSize >= AMCL_PRESENTATION_BROKER_SIZE &&
++           broker->peekGeneration && broker->peekState &&
++           broker->claimPresentation && broker->movePresentation && broker->releasePresentation;
++}
++
++static inline unsigned int AMCL_PresentationLive(const AMCL_PresentationOwner *owner)
++{
++    return (owner->surfaces[0].surface != NULL ? 1u : 0u) +
++           (owner->surfaces[1].surface != NULL ? 1u : 0u);
++}
++
++static inline bool AMCL_PresentationRelease(AMCL_PresentationOwner *owner)
++{
++    if (AMCL_PresentationLive(owner) != 0u) {
++        owner->rejected++;
++        return false;
++    }
++    if (!owner->token) {
++        return true;
++    }
++    if (!AMCL_PresentationBrokerValid(owner->broker) ||
++        !owner->broker->releasePresentation(owner->token)) {
++        owner->rejected++;
++        return false;
++    }
++    owner->broker = NULL;
++    owner->token = 0;
++    owner->native_window = NULL;
++    owner->generation = 0;
++    owner->retirement_failed = false;
++    return true;
++}
++
++static inline void *AMCL_PresentationCreate(AMCL_PresentationOwner *owner,
++    const AMCL_NativeWindowLeaseBrokerV2 *broker, void *native_window,
++    uint64_t generation, void *context, AMCL_PresentationCreateFn create)
++{
++    if (!owner || !create || !native_window || !generation ||
++        !AMCL_PresentationBrokerValid(broker) || owner->retirement_failed ||
++        AMCL_PresentationLive(owner) >= 2u ||
++        broker->peekGeneration() != generation || broker->peekState() != 1u) {
++        if (owner) owner->rejected++;
++        return NULL;
++    }
++    for (unsigned int i = 0; i < 2u; ++i) {
++        if (owner->surfaces[i].surface && owner->surfaces[i].native_window == native_window) {
++            owner->rejected++;
++            return NULL;
++        }
++    }
++    bool claimed_here = false;
++    if (!owner->token) {
++        uint64_t token = 0;
++        if (!broker->claimPresentation(native_window, generation, 1u, &token) || !token) {
++            owner->rejected++;
++            return NULL;
++        }
++        owner->broker = broker;
++        owner->token = token;
++        owner->native_window = native_window;
++        owner->generation = generation;
++        claimed_here = true;
++    } else if (owner->broker != broker) {
++        owner->rejected++;
++        return NULL;
++    }
++    void *surface = create(context, native_window);
++    if (!surface) {
++        if (claimed_here) {
++            /* No resource escaped the failed first create. A refused release
++             * remains owned so another API cannot silently acquire it. */
++            AMCL_PresentationRelease(owner);
++        }
++        return NULL;
++    }
++    const unsigned int slot = owner->surfaces[0].surface ? 1u : 0u;
++    owner->surfaces[slot].surface = surface;
++    owner->surfaces[slot].native_window = native_window;
++    owner->surfaces[slot].generation = generation;
++    owner->created++;
++    return surface;
++}
++
++static inline bool AMCL_PresentationRetire(AMCL_PresentationOwner *owner,
++    void *surface, void *context, AMCL_PresentationDestroyFn destroy)
++{
++    if (!surface) return true;
++    if (!owner || !owner->token || !destroy) return false;
++    for (unsigned int i = 0; i < 2u; ++i) {
++        if (owner->surfaces[i].surface != surface) continue;
++        if (!destroy(context, surface)) {
++            owner->retirement_failed = true;
++            owner->rejected++;
++            return false;
++        }
++        owner->surfaces[i].surface = NULL;
++        owner->surfaces[i].native_window = NULL;
++        owner->surfaces[i].generation = 0;
++        owner->destroyed++;
++        return true;
++    }
++    owner->rejected++;
++    return false;
++}
++
++static inline bool AMCL_PresentationMove(AMCL_PresentationOwner *owner,
++    void *native_window, uint64_t generation)
++{
++    if (!owner || !owner->token || !native_window || !generation ||
++        !AMCL_PresentationBrokerValid(owner->broker) || owner->retirement_failed) return false;
++    for (unsigned int i = 0; i < 2u; ++i) {
++        if (owner->surfaces[i].surface && owner->surfaces[i].native_window != native_window) {
++            owner->rejected++;
++            return false;
++        }
++    }
++    if (!owner->broker->movePresentation(owner->token, native_window, generation)) {
++        owner->rejected++;
++        return false;
++    }
++    owner->native_window = native_window;
++    owner->generation = generation;
++    for (unsigned int i = 0; i < 2u; ++i) {
++        if (owner->surfaces[i].surface) owner->surfaces[i].generation = generation;
++    }
++    return true;
++}
++
++#endif
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index cce9787b8..81661b2c8 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -2549,21 +2549,6 @@ void OPENHARMONY_AMCL_QuitMouse(void)
+ // reference operation back in that owner image.
+ #define AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV "AMCL_NATIVE_WINDOW_LEASE_BROKER"
+ #define AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION 2u
+-typedef unsigned int AMCL_NativeWindowPublicationState;
+-typedef struct AMCL_NativeWindowLeaseBrokerV2
+-{
+-    Uint32 abiVersion;
+-    Uint32 structSize;
+-    int (*acquire)(void *retainedNativeWindow, Uint64 retainedGeneration,
+-                   void **outNativeWindow, int *outWidth, int *outHeight,
+-                   Uint64 *outGeneration);
+-    void (*release)(void *nativeWindow);
+-    int (*beginInputPublication)(int *outWidth, int *outHeight,
+-                                 Uint64 *outGeneration);
+-    void (*endInputPublication)(void);
+-    Uint64 (*peekGeneration)(void);
+-    AMCL_NativeWindowPublicationState (*peekState)(void);
+-} AMCL_NativeWindowLeaseBrokerV2;
+
+ #define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_CORE_SIZE \
+     ((Uint32)(offsetof(AMCL_NativeWindowLeaseBrokerV2, endInputPublication) + \
+@@ -2588,8 +2573,10 @@ SDL_COMPILE_TIME_ASSERT(amcl_lease_broker_core_layout,
+                             offsetof(AMCL_NativeWindowLeaseBrokerV2, endInputPublication) +
+                                 sizeof(((AMCL_NativeWindowLeaseBrokerV2 *)0)->endInputPublication));
+ SDL_COMPILE_TIME_ASSERT(amcl_lease_broker_tail_layout,
+-                        AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PEEK_SIZE ==
++                        AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PEEK_SIZE <=
+                             sizeof(AMCL_NativeWindowLeaseBrokerV2));
++SDL_COMPILE_TIME_ASSERT(amcl_presentation_broker_tail_layout,
++                        AMCL_PRESENTATION_BROKER_SIZE == sizeof(AMCL_NativeWindowLeaseBrokerV2));
+
+ static bool OPENHARMONY_AMCL_BrokerDescriptorValid(
+     const AMCL_NativeWindowLeaseBrokerV2 *broker)
+@@ -2823,6 +2810,119 @@ void OPENHARMONY_AMCL_ReleaseNativeWindowLease(SDL_WindowData *data)
+     data->native_window_lease_generation = 0;
+ }
+
++
++static bool OPENHARMONY_AMCL_PresentationFailure(SDL_WindowData *data, const char *operation)
++{
++    SDL_setenv_unsafe("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
++    SDL_VideoData *videodata = OPENHARMONY_AMCL_GetVideoData();
++    if (videodata) {
++        videodata->renderer_fatal = true;
++    }
++    SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
++                 "OPENHARMONY_PRESENTATION event=fatal operation=%s token=%" SDL_PRIu64 " live=%u",
++                 operation, data ? data->presentation.token : 0,
++                 data ? AMCL_PresentationLive(&data->presentation) : 0);
++    return SDL_SetError("OpenHarmony presentation ownership failure: %s", operation);
++}
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++typedef struct OPENHARMONY_PresentationCreateContext
++{
++    SDL_VideoDevice *device;
++    SDL_Window *window;
++} OPENHARMONY_PresentationCreateContext;
++
++static void *OPENHARMONY_AMCL_CreateSurfaceCallback(void *context, void *native_window)
++{
++    OPENHARMONY_PresentationCreateContext *create = context;
++    return SDL_EGL_CreateSurface(create->device, create->window, (NativeWindowType)native_window);
++}
++
++static bool OPENHARMONY_AMCL_DestroySurfaceCallback(void *context, void *surface)
++{
++    SDL_VideoDevice *_this = context;
++    if (!_this || !_this->egl_data || !_this->egl_data->eglDestroySurface) {
++        return SDL_SetError("OpenHarmony: EGL provider disappeared before surface retirement");
++    }
++    if (_this->egl_data->eglDestroySurface(_this->egl_data->egl_display, (EGLSurface)surface) != EGL_TRUE) {
++        const EGLint error = _this->egl_data->eglGetError();
++        return SDL_EGL_SetErrorEx("OpenHarmony: presented surface retirement failed", "eglDestroySurface", error);
++    }
++    return true;
++}
++#endif
++
++SDL_EGLSurface OPENHARMONY_AMCL_CreatePresentedSurface(SDL_VideoDevice *_this,
++    SDL_Window *window, SDL_WindowData *data, const SDL_WindowData *candidate)
++{
++#ifdef SDL_VIDEO_OPENGL_EGL
++    if (!data || !candidate || data->role != OPENHARMONY_WINDOW_PRESENTED) {
++        SDL_SetError("OpenHarmony: only presented OpenGL windows can claim presentation");
++        return NULL;
++    }
++    if (data->native_xcomponent) {
++        /* Standalone SDL owns its XComponent; it has no AMCL host broker. */
++        return SDL_EGL_CreateSurface(_this, window, (NativeWindowType)candidate->native_window);
++    }
++    OPENHARMONY_PresentationCreateContext context = { _this, window };
++    const AMCL_NativeWindowLeaseBrokerV2 *broker = candidate->native_window_lease_broker;
++    const SDL_EGLSurface surface = AMCL_PresentationCreate(&data->presentation, broker,
++        candidate->native_window, candidate->native_window_lease_generation,
++        &context, OPENHARMONY_AMCL_CreateSurfaceCallback);
++    if (!surface) {
++        SDL_SetError("OpenHarmony: presented GL surface creation or ownership claim failed");
++    }
++    return surface;
++#else
++    (void)_this;
++    (void)window;
++    (void)data;
++    (void)candidate;
++    return NULL;
++#endif
++}
++
++bool OPENHARMONY_AMCL_RetirePresentedSurface(SDL_VideoDevice *_this,
++    SDL_WindowData *data, SDL_EGLSurface surface)
++{
++#ifdef SDL_VIDEO_OPENGL_EGL
++    if (!surface) return true;
++    const bool retired = data->native_xcomponent
++        ? OPENHARMONY_AMCL_DestroySurfaceCallback(_this, surface)
++        : AMCL_PresentationRetire(&data->presentation, surface, _this,
++                                  OPENHARMONY_AMCL_DestroySurfaceCallback);
++    return retired ? true : OPENHARMONY_AMCL_PresentationFailure(data, "surface-retirement");
++#else
++    (void)_this;
++    (void)data;
++    return surface == NULL;
++#endif
++}
++
++bool OPENHARMONY_AMCL_MovePresentation(SDL_WindowData *data, void *native_window, Uint64 generation)
++{
++    if (data->native_xcomponent) return true;
++    /* The same session can retain old and candidate resources while preparing
++     * a transaction, but cannot move its token until old resources retire. */
++    if (!AMCL_PresentationMove(&data->presentation, native_window, generation)) {
++        return SDL_SetError("OpenHarmony: presentation generation changed during recovery");
++    }
++    return true;
++}
++
++bool OPENHARMONY_AMCL_ReleasePresentation(SDL_WindowData *data)
++{
++    if (!data || !data->presentation.token) return true;
++    const Uint64 token = data->presentation.token;
++    if (!AMCL_PresentationRelease(&data->presentation)) {
++        return OPENHARMONY_AMCL_PresentationFailure(data, "token-release-before-retirement");
++    }
++    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,
++                "OPENHARMONY_PRESENTATION event=release token=%" SDL_PRIu64
++                " created=%" SDL_PRIu64 " destroyed=%" SDL_PRIu64 " rejected=%" SDL_PRIu64 " live=0",
++                token, data->presentation.created, data->presentation.destroyed, data->presentation.rejected);
++    return true;
++}
+ Uint64 OPENHARMONY_AMCL_PeekNativeWindowGeneration(void)
+ {
+     const AMCL_NativeWindowLeaseBrokerV2 *broker =
+@@ -3035,6 +3135,50 @@ static void OPENHARMONY_AMCL_CommitCurrentCache(SDL_VideoDevice *_this,
+
+ static bool OPENHARMONY_AMCL_IsContextLostError(EGLint error);
+
++
++static void OPENHARMONY_AMCL_PreserveRecoveryCandidate(SDL_WindowData *data,
++    const SDL_WindowData *candidate, int width, int height, Uint64 generation,
++    bool owns_new_reference)
++{
++    const bool already_pending = data->amcl_pending_lease_owned &&
++        data->amcl_pending_native_window == candidate->native_window &&
++        data->amcl_pending_lease_broker == candidate->native_window_lease_broker &&
++        data->amcl_pending_generation == generation;
++    if (owns_new_reference && !already_pending) {
++        OPENHARMONY_AMCL_StorePendingLease(data, candidate, width, height, generation, true);
++    }
++}
++
++static bool OPENHARMONY_AMCL_AbortRecovery(SDL_WindowData *data,
++    const SDL_WindowData *candidate, int width, int height, Uint64 generation,
++    bool owns_new_reference, const char *operation)
++{
++    OPENHARMONY_AMCL_PreserveRecoveryCandidate(data, candidate, width, height, generation, owns_new_reference);
++    data->surface_state = OPENHARMONY_SURFACE_RECREATE_PENDING;
++    data->amcl_surface_suspended = true;
++    data->amcl_recovery_in_progress = false;
++    OPENHARMONY_AMCL_PresentationFailure(data, operation);
++    OPENHARMONY_AMCL_SetPresentedActive(false);
++    return false;
++}
++
++/* Failed driver retirement retains both the resource record and its candidate
++ * reference. A transient failed create can retry; an unretired driver resource
++ * requires process teardown and must never release the exclusive token. */
++static bool OPENHARMONY_AMCL_RetireRecoverySurface(SDL_VideoDevice *_this,
++    SDL_WindowData *data, EGLSurface surface, const SDL_WindowData *candidate,
++    int width, int height, Uint64 generation, bool owns_new_reference, bool from_pending)
++{
++    if (OPENHARMONY_AMCL_RetirePresentedSurface(_this, data, surface)) return true;
++    if (owns_new_reference && !from_pending) {
++        OPENHARMONY_AMCL_PreserveRecoveryCandidate(data, candidate, width, height, generation, true);
++    }
++    data->surface_state = OPENHARMONY_SURFACE_RECREATE_PENDING;
++    data->amcl_surface_suspended = true;
++    data->amcl_recovery_in_progress = false;
++    OPENHARMONY_AMCL_SetPresentedActive(false);
++    return false;
++}
+ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+                                                SDL_Window *window,
+                                                SDL_WindowData *data,
+@@ -3219,8 +3363,21 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+             OPENHARMONY_AMCL_SetPresentedActive(false);
+             return false;
+         }
+-        /* Same NativeWindow, new publication: the BufferQueue remains valid;
+-         * transfer the newly acquired lease and only update geometry. */
++        /* Same NativeWindow, new publication: no surface retirement is needed
++         * for the metadata-only atomic token move. */
++        if (!OPENHARMONY_AMCL_MovePresentation(data, candidate.native_window, generation)) {
++            if (candidate_from_pending) {
++                OPENHARMONY_AMCL_ReleasePendingLease(data);
++            } else if (owns_new_reference) {
++                OPENHARMONY_AMCL_ReleaseNativeWindowLease(&candidate);
++            }
++            data->surface_state = OPENHARMONY_SURFACE_RECREATE_PENDING;
++            data->amcl_surface_suspended = true;
++            data->amcl_recovery_in_progress = false;
++            OPENHARMONY_AMCL_SetPresentedActive(false);
++            return false;
++        }
++        /* Transfer the reference only after the session owns this generation. */
+         SDL_WindowData old = *data;
+         data->native_window = candidate.native_window;
+         data->native_window_lease_broker = candidate.native_window_lease_broker;
+@@ -3280,8 +3437,7 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+         /* A different NativeWindow can own a second EGLSurface while the old
+          * one remains valid. Prove create+bind+interval first, then commit and
+          * retire old resources. */
+-        new_surface = SDL_EGL_CreateSurface(
+-            _this, window, (NativeWindowType)candidate.native_window);
++        new_surface = OPENHARMONY_AMCL_CreatePresentedSurface(_this, window, data, &candidate);
+         EGLint bind_error = EGL_SUCCESS;
+         const bool bind_ok =
+             new_surface != EGL_NO_SURFACE &&
+@@ -3289,7 +3445,10 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+                                          &bind_error);
+         if (!bind_ok) {
+             if (new_surface != EGL_NO_SURFACE) {
+-                SDL_EGL_DestroySurface(_this, new_surface);
++                if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, new_surface, &candidate,
++                        width, height, generation, owns_new_reference, candidate_from_pending)) {
++                    return false;
++                }
+             }
+             if (owns_new_reference && !candidate_from_pending) {
+                 OPENHARMONY_AMCL_ReleaseNativeWindowLease(&candidate);
+@@ -3347,14 +3506,16 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+             OPENHARMONY_AMCL_CommitCurrentCache(_this, NULL, NULL);
+         }
+         if (old_surface != EGL_NO_SURFACE) {
+-            SDL_EGL_DestroySurface(_this, old_surface);
++            if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, old_surface, &candidate,
++                    width, height, generation, owns_new_reference, candidate_from_pending)) {
++                return false;
++            }
+         }
+         data->egl_surface = EGL_NO_SURFACE;
+         SDL_SetPointerProperty(SDL_GetWindowProperties(window),
+                                SDL_PROP_WINDOW_OPENHARMONY_SURFACE_POINTER,
+                                NULL);
+-        new_surface = SDL_EGL_CreateSurface(
+-            _this, window, (NativeWindowType)candidate.native_window);
++        new_surface = OPENHARMONY_AMCL_CreatePresentedSurface(_this, window, data, &candidate);
+         EGLint bind_error = EGL_SUCCESS;
+         const bool bind_ok =
+             new_surface != EGL_NO_SURFACE &&
+@@ -3362,7 +3523,10 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+                                          &bind_error);
+         if (!bind_ok) {
+             if (new_surface != EGL_NO_SURFACE) {
+-                SDL_EGL_DestroySurface(_this, new_surface);
++                if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, new_surface, &candidate,
++                        width, height, generation, owns_new_reference, candidate_from_pending)) {
++                    return false;
++                }
+             }
+             if (previous_window && previous_window != window) {
+                 OPENHARMONY_AMCL_RebindPreviousSurface(_this, previous_window,
+@@ -3403,16 +3567,23 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+         if (previous_window == window) {
+             /* `new_surface` is current and the old same-pointer surface was
+              * already retired; unbind before destroying the new one. */
+-            if (SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
+-                OPENHARMONY_AMCL_CommitCurrentCache(_this, NULL, NULL);
++            if (!SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
++                return OPENHARMONY_AMCL_AbortRecovery(data, &candidate, width, height, generation,
++                    owns_new_reference, "rollback-unbind");
+             }
++            OPENHARMONY_AMCL_CommitCurrentCache(_this, NULL, NULL);
+             data->is_current = false;
+         } else {
+-            OPENHARMONY_AMCL_RebindPreviousSurface(_this, previous_window,
+-                                                   context);
++            if (!OPENHARMONY_AMCL_RebindPreviousSurface(_this, previous_window, context)) {
++                return OPENHARMONY_AMCL_AbortRecovery(data, &candidate, width, height, generation,
++                    owns_new_reference, "rollback-restore");
++            }
+             data->is_current = false;
+         }
+-        SDL_EGL_DestroySurface(_this, new_surface);
++        if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, new_surface, &candidate,
++                width, height, generation, owns_new_reference, candidate_from_pending)) {
++            return false;
++        }
+         if (!different_pointer) {
+             data->egl_surface = EGL_NO_SURFACE;
+             SDL_SetPointerProperty(SDL_GetWindowProperties(window),
+@@ -3443,18 +3614,25 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+     if (!committed_publication || committed_generation != generation ||
+         committed_state != AMCL_NATIVE_WINDOW_PUBLICATION_READY) {
+         if (previous_window == window) {
+-            if (SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
+-                OPENHARMONY_AMCL_CommitCurrentCache(_this, NULL, NULL);
++            if (!SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
++                return OPENHARMONY_AMCL_AbortRecovery(data, &candidate, width, height, generation,
++                    owns_new_reference, "rollback-unbind");
+             }
++            OPENHARMONY_AMCL_CommitCurrentCache(_this, NULL, NULL);
+         } else {
+-            OPENHARMONY_AMCL_RebindPreviousSurface(_this, previous_window,
+-                                                   context);
++            if (!OPENHARMONY_AMCL_RebindPreviousSurface(_this, previous_window, context)) {
++                return OPENHARMONY_AMCL_AbortRecovery(data, &candidate, width, height, generation,
++                    owns_new_reference, "rollback-restore");
++            }
+         }
+         /* Rebinding the previous window may make an auxiliary pbuffer
+          * current again.  The candidate presented surface is being discarded,
+          * so its WindowData must not continue to claim current ownership. */
+         data->is_current = false;
+-        SDL_EGL_DestroySurface(_this, new_surface);
++        if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, new_surface, &candidate,
++                width, height, generation, owns_new_reference, candidate_from_pending)) {
++            return false;
++        }
+         if (different_pointer && owns_new_reference && !candidate_from_pending) {
+             OPENHARMONY_AMCL_ReleaseNativeWindowLease(&candidate);
+         } else if (!different_pointer &&
+@@ -3475,6 +3653,40 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+         return false;
+     }
+
++    /* The candidate is bound but has not been presented. Keep the old token
++     * exclusively owned while retiring the old driver resource, then move it
++     * atomically before publishing the new generation. */
++    if (different_pointer && old_surface != EGL_NO_SURFACE) {
++        if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, old_surface, &candidate,
++                width, height, generation, owns_new_reference, candidate_from_pending)) {
++            return false;
++        }
++    }
++    data->egl_surface = EGL_NO_SURFACE;
++    if (!OPENHARMONY_AMCL_MovePresentation(data, candidate.native_window, generation)) {
++        if (previous_window == window) {
++            if (!SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
++                return OPENHARMONY_AMCL_AbortRecovery(data, &candidate, width, height, generation, owns_new_reference, "move-rollback-unbind");
++            }
++            OPENHARMONY_AMCL_CommitCurrentCache(_this, NULL, NULL);
++        } else if (!OPENHARMONY_AMCL_RebindPreviousSurface(_this, previous_window, context)) {
++            return OPENHARMONY_AMCL_AbortRecovery(data, &candidate, width, height, generation, owns_new_reference, "move-rollback-restore");
++        }
++        data->is_current = false;
++        if (!OPENHARMONY_AMCL_RetireRecoverySurface(_this, data, new_surface, &candidate,
++                width, height, generation, owns_new_reference, candidate_from_pending)) {
++            return false;
++        }
++        if (owns_new_reference && !candidate_from_pending) {
++            OPENHARMONY_AMCL_PreserveRecoveryCandidate(data, &candidate, width, height, generation, true);
++        }
++        data->surface_state = OPENHARMONY_SURFACE_RECREATE_PENDING;
++        data->amcl_surface_suspended = true;
++        data->amcl_recovery_in_progress = false;
++        OPENHARMONY_AMCL_SetPresentedActive(false);
++        return false;
++    }
++
+     data->native_window = candidate.native_window;
+     data->native_window_lease_broker = candidate.native_window_lease_broker;
+     data->native_window_lease_owned = candidate.native_window_lease_owned;
+@@ -3497,14 +3709,7 @@ static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice *_this,
+     const bool geometry_changed = window->w != width || window->h != height;
+     OPENHARMONY_AMCL_CommitGeometry(window, data, width, height);
+
+-    if (different_pointer) {
+-        if (old_surface != EGL_NO_SURFACE) {
+-            SDL_EGL_DestroySurface(_this, old_surface);
+-        }
+-        if (owns_new_reference) {
+-            OPENHARMONY_AMCL_ReleaseNativeWindowLease(&old_lease);
+-        }
+-    } else if (owns_new_reference) {
++    if (owns_new_reference) {
+         OPENHARMONY_AMCL_ReleaseNativeWindowLease(&old_lease);
+     }
+     data->amcl_pending_native_window = NULL;
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.h b/src/video/openharmony/SDL_openharmonyamcl.h
+index 681674d27..184546e8d 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.h
++++ b/src/video/openharmony/SDL_openharmonyamcl.h
+@@ -76,6 +76,15 @@ extern bool OPENHARMONY_AMCL_AcquireNativeWindowLease(struct SDL_WindowData *dat
+                                                        Uint64 *generation);
+ extern void OPENHARMONY_AMCL_ReleaseNativeWindowLease(struct SDL_WindowData *data);
+ extern void OPENHARMONY_AMCL_ReleasePendingNativeWindowLease(struct SDL_WindowData *data);
++/* Presented OpenGL resources use the host presentation tail; auxiliary and
++ * Vulkan windows never call these creation/retirement helpers. */
++extern SDL_EGLSurface OPENHARMONY_AMCL_CreatePresentedSurface(struct SDL_VideoDevice *_this,
++    SDL_Window *window, struct SDL_WindowData *data, const struct SDL_WindowData *candidate);
++extern bool OPENHARMONY_AMCL_RetirePresentedSurface(struct SDL_VideoDevice *_this,
++    struct SDL_WindowData *data, SDL_EGLSurface surface);
++extern bool OPENHARMONY_AMCL_MovePresentation(struct SDL_WindowData *data,
++    void *native_window, Uint64 generation);
++extern bool OPENHARMONY_AMCL_ReleasePresentation(struct SDL_WindowData *data);
+ extern Uint64 OPENHARMONY_AMCL_PeekNativeWindowGeneration(void);
+ extern unsigned int OPENHARMONY_AMCL_PeekNativeWindowState(void);
+ extern bool OPENHARMONY_AMCL_ReadStableNativeWindowPublication(
+diff --git a/src/video/openharmony/SDL_openharmonywindow.c b/src/video/openharmony/SDL_openharmonywindow.c
+index 3ba86bfc3..7ff8707a5 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.c
++++ b/src/video/openharmony/SDL_openharmonywindow.c
+@@ -335,8 +335,8 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+     data->amcl_generation = generation;
+     window->x = 0;
+     window->y = 0;
+-    /* Do not create an EGL surface for a Vulkan window: the native window is
+-     * consumed by vkCreateAndroidSurfaceKHR instead. */
++    /* Vulkan claims its own presentation token through the WSI loader when
++     * vkCreateSurfaceOHOS runs; only OpenGL enters this EGL transaction. */
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     if (window->flags & SDL_WINDOW_OPENGL) {
+         if (!OPENHARMONY_GLES_EnsureWindowConfig(_this, false)) {
+@@ -345,8 +345,7 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+             SDL_free(data);
+             return false;
+         }
+-        data->egl_surface = SDL_EGL_CreateSurface(_this, window,
+-                                                  (NativeWindowType)data->native_window);
++        data->egl_surface = OPENHARMONY_AMCL_CreatePresentedSurface(_this, window, data, data);
+         if (data->egl_surface == EGL_NO_SURFACE) {
+             const EGLint egl_error = _this->egl_data->eglGetError();
+             SDL_EGL_SetErrorEx("OpenHarmony: unable to create presented window surface",
+@@ -356,6 +355,9 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+                          (unsigned int)window->id,
+                          videodata->pinned_egl_config_id,
+                          generation, (unsigned int)egl_error);
++            if (!OPENHARMONY_AMCL_ReleasePresentation(data)) {
++                return false; /* Retain the token and reference until the required process restart. */
++            }
+             OPENHARMONY_AMCL_ReleaseNativeWindowLease(data);
+             OPENHARMONY_GLES_ResetPolicyIfUnused(_this);
+             SDL_free(data);
+@@ -380,10 +382,15 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+          published_state != AMCL_NATIVE_WINDOW_PUBLICATION_READY)) {
+ #ifdef SDL_VIDEO_OPENGL_EGL
+         if (data->egl_surface != EGL_NO_SURFACE) {
+-            SDL_EGL_DestroySurface(_this, data->egl_surface);
++            if (!OPENHARMONY_AMCL_RetirePresentedSurface(_this, data, data->egl_surface)) {
++                return false; /* Driver still owns the resource; do not release its lease or token. */
++            }
+             data->egl_surface = EGL_NO_SURFACE;
+         }
+ #endif
++        if (!OPENHARMONY_AMCL_ReleasePresentation(data)) {
++            return false;
++        }
+         OPENHARMONY_AMCL_ReleaseNativeWindowLease(data);
+ #ifdef SDL_VIDEO_OPENGL_EGL
+         if (window->flags & SDL_WINDOW_OPENGL) {
+@@ -1023,11 +1030,22 @@ void OPENHARMONY_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
+
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     if (data->egl_surface != EGL_NO_SURFACE) {
+-        SDL_EGL_DestroySurface(_this, data->egl_surface);
++        if (role == OPENHARMONY_WINDOW_PRESENTED) {
++            if (!OPENHARMONY_AMCL_RetirePresentedSurface(_this, data, data->egl_surface)) {
++                window->internal = NULL;
++                return; /* Keep the driver resource, lease and token together until process exit. */
++            }
++        } else {
++            SDL_EGL_DestroySurface(_this, data->egl_surface);
++        }
+         data->egl_surface = EGL_NO_SURFACE;
+     }
+ #endif
+
++    if (role == OPENHARMONY_WINDOW_PRESENTED && !OPENHARMONY_AMCL_ReleasePresentation(data)) {
++        window->internal = NULL;
++        return;
++    }
+     OPENHARMONY_AMCL_ReleasePendingNativeWindowLease(data);
+     if (role == OPENHARMONY_WINDOW_PRESENTED) {
+         OPENHARMONY_AMCL_ReleaseNativeWindowLease(data);
+diff --git a/src/video/openharmony/SDL_openharmonywindow.h b/src/video/openharmony/SDL_openharmonywindow.h
+index 781a3c292..ffb81560c 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.h
++++ b/src/video/openharmony/SDL_openharmonywindow.h
+@@ -25,6 +25,7 @@
+
+ #include "../../core/openharmony/SDL_openharmony.h"
+ #include "../SDL_egl_c.h"
++#include "SDL_amclpresentation.h"
+
+ extern bool OPENHARMONY_GetDisplayModes(SDL_VideoDevice *_this, SDL_VideoDisplay *display);
+ extern bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID create_props);
+@@ -110,6 +111,8 @@ struct SDL_WindowData
+     const void *native_window_lease_broker;
+     bool native_window_lease_owned;
+     Uint64 native_window_lease_generation;
++    /* Logical presented GL session. Lease copies never own or release this token. */
++    AMCL_PresentationOwner presentation;
+     void *amcl_pending_native_window;
+     const void *amcl_pending_lease_broker;
+     bool amcl_pending_lease_owned;

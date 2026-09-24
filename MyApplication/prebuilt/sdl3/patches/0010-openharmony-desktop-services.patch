@@ -1,0 +1,543 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9a3cd5cba..b0d83bfa4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -4637,3 +4637,9 @@ string(APPEND CMAKE_OBJC_FLAGS " ${CMAKE_C_FLAGS}")
+ 
+ SDL_PrintSummary()
+ debug_show_sdl_deps()
++
++# Optional AMCL embedding services; the ABI mirror is checked by AMCL's build.
++option(SDL_AMCL_DESKTOP_HOST "Enable AMCL desktop host services" OFF)
++if(SDL_AMCL_DESKTOP_HOST AND TARGET SDL3-shared)
++  target_compile_definitions(SDL3-shared PRIVATE SDL_AMCL_DESKTOP_HOST=1)
++endif()
+diff --git a/src/video/openharmony/SDL_amcldesktop.c b/src/video/openharmony/SDL_amcldesktop.c
+new file mode 100644
+index 000000000..00d6ed0b7
+--- /dev/null
++++ b/src/video/openharmony/SDL_amcldesktop.c
+@@ -0,0 +1,241 @@
++/* AMCL desktop embedding services; standalone/mobile SDL retains its original backend. */
++#include "SDL_internal.h"
++#include "SDL_amcldesktop.h"
++#ifdef SDL_AMCL_DESKTOP_HOST
++#include "desktop_host_api.h"
++#include "desktop_drop_packet.h"
++#include "../../events/SDL_dropevents_c.h"
++#include "SDL_openharmonywindow.h"
++#include "SDL_openharmonyvideo.h"
++#include "../../events/SDL_windowevents_c.h"
++#include "../../events/SDL_displayevents_c.h"
++#include <SDL3/SDL_joystick.h>
++#include <SDL3/SDL_gamepad.h>
++#include <SDL3/SDL_loadso.h>
++
++struct SDL_DisplayData { Sint64 native_id; };
++static SDL_DisplayID displays[AMCL_DESKTOP_MAX_DISPLAYS];
++static Sint64 native_displays[AMCL_DESKTOP_MAX_DISPLAYS];
++static SDL_JoystickID virtual_ids[16];
++static SDL_Joystick *virtual_handles[16];
++static Uint64 virtual_generations[16];
++static Uint64 fullscreen_sequence;
++static Uint64 last_event_epoch;
++static int fullscreen_status;
++static bool close_notified;
++static const AmclDesktopHostV1 *DesktopHost(void)
++{
++    typedef const AmclDesktopHostV1 *(*Resolve)(void);
++    static SDL_SharedObject *module;
++    static Resolve resolve;
++    if (!module) {
++        module = SDL_LoadObject("libglfw.so");
++        if (!module) { SDL_ClearError(); return NULL; }
++        resolve = (Resolve)SDL_LoadFunction(module, "amclDesktopHostResolve");
++        if (!resolve) SDL_ClearError();
++    }
++    const AmclDesktopHostV1 *api = resolve ? resolve() : NULL;
++    if (!api || api->magic != AMCL_DESKTOP_HOST_MAGIC || api->size != sizeof(*api)) return NULL;
++    return api;
++}
++bool OPENHARMONY_DesktopAvailable(void) { return DesktopHost() != NULL; }
++static bool Presented(SDL_Window *window)
++{
++    return window && window->internal && window->internal->role == OPENHARMONY_WINDOW_PRESENTED;
++}
++int OPENHARMONY_DesktopCommand(SDL_Window *window, int kind, int a, int b, int c, int d, const char *text)
++{
++    const AmclDesktopHostV1 *api = DesktopHost();
++    if (!api || !Presented(window)) return 0;
++    const Uint64 sequence = api->submit(kind,a,b,c,d,text);
++    if (!sequence) { SDL_SetError("Desktop window command rejected (kind=%d)",kind); return -1; }
++    if (kind == AMCL_DESKTOP_FULLSCREEN) { fullscreen_sequence=sequence; fullscreen_status=a?1:0; }
++    return 1;
++}
++int OPENHARMONY_DesktopFullscreen(SDL_Window *window, SDL_VideoDisplay *display, bool enabled)
++{
++    const int id=display && display->internal ? (int)display->internal->native_id : -1;
++    return OPENHARMONY_DesktopCommand(window,AMCL_DESKTOP_FULLSCREEN,enabled,id,0,0,NULL);
++}
++static SDL_DisplayMode DisplayMode(const AmclDesktopDisplay *info)
++{
++    SDL_DisplayMode mode; SDL_zero(mode);
++    mode.format=SDL_PIXELFORMAT_BGRA8888; mode.w=info->width; mode.h=info->height;
++    mode.refresh_rate=info->refreshRate; mode.pixel_density=1.0f;
++    return mode;
++}
++static bool DisplayInfo(SDL_VideoDisplay *display, AmclDesktopDisplay *result)
++{
++    const AmclDesktopHostV1 *api=DesktopHost(); if (!api || !display || !display->internal) return false;
++    AmclDesktopSnapshot facts; api->snapshot(&facts);
++    for (int i=0;i<facts.displayCount;++i) if(facts.displays[i].id==display->internal->native_id) { *result=facts.displays[i]; return true; }
++    return false;
++}
++static bool DisplayBounds(SDL_VideoDevice *device, SDL_VideoDisplay *display, SDL_Rect *rect)
++{
++    (void)device; AmclDesktopDisplay info;
++    if(!DisplayInfo(display,&info)) return SDL_SetError("Desktop display disconnected");
++    rect->x=info.x;rect->y=info.y;rect->w=info.width;rect->h=info.height;return true;
++}
++static bool DisplayWorkArea(SDL_VideoDevice *device, SDL_VideoDisplay *display, SDL_Rect *rect)
++{
++    (void)device; AmclDesktopDisplay info;
++    if(!DisplayInfo(display,&info)) return SDL_SetError("Desktop display disconnected");
++    rect->x=info.workX;rect->y=info.workY;rect->w=info.workWidth;rect->h=info.workHeight;return true;
++}
++static void SyncDisplays(bool notify)
++{
++    const AmclDesktopHostV1 *api=DesktopHost(); if(!api)return;
++    AmclDesktopSnapshot facts;api->snapshot(&facts);
++    for(int slot=0;slot<AMCL_DESKTOP_MAX_DISPLAYS;++slot) {
++        if(!displays[slot])continue;bool found=false;
++        for(int i=0;i<facts.displayCount;++i)if(native_displays[slot]==facts.displays[i].id)found=true;
++        if(!found){SDL_DelVideoDisplay(displays[slot],notify);displays[slot]=0;}
++    }
++    for(int i=0;i<facts.displayCount;++i) {
++        int slot=-1;
++        for(int j=0;j<AMCL_DESKTOP_MAX_DISPLAYS;++j)if(displays[j] && native_displays[j]==facts.displays[i].id){slot=j;break;}
++        SDL_DisplayMode mode=DisplayMode(&facts.displays[i]);
++        if(slot<0) {
++            for(int j=0;j<AMCL_DESKTOP_MAX_DISPLAYS;++j)if(!displays[j]){slot=j;break;}
++            if(slot<0)continue;
++            SDL_VideoDisplay display;SDL_zero(display);
++            display.name=facts.displays[i].name;display.desktop_mode=mode;display.content_scale=facts.displays[i].scale;
++            display.internal=(SDL_DisplayData*)SDL_calloc(1,sizeof(SDL_DisplayData));
++            if(!display.internal)continue;
++            display.internal->native_id=facts.displays[i].id;
++            SDL_DisplayID id=SDL_AddVideoDisplay(&display,notify);
++            if(!id){SDL_free(display.internal);continue;}
++            displays[slot]=id;native_displays[slot]=facts.displays[i].id;
++        } else {
++            SDL_VideoDisplay *display=SDL_GetVideoDisplay(displays[slot]);
++            if(display){
++                if(display->desktop_mode.w!=mode.w || display->desktop_mode.h!=mode.h || display->desktop_mode.refresh_rate!=mode.refresh_rate){
++                    SDL_ResetFullscreenDisplayModes(display);SDL_SetDesktopDisplayMode(display,&mode);
++                }
++                SDL_SetDisplayContentScale(display,facts.displays[i].scale);
++            }
++        }
++    }
++}
++bool OPENHARMONY_DesktopVideoInit(SDL_VideoDevice *device)
++{
++    (void)device;SDL_zeroa(displays);SDL_zeroa(native_displays);SyncDisplays(false);
++    return displays[0] != 0;
++}
++static void Maximize(SDL_VideoDevice *device,SDL_Window *window){(void)device;OPENHARMONY_DesktopCommand(window,AMCL_DESKTOP_MAXIMIZE,0,0,0,0,NULL);}
++static void Restore(SDL_VideoDevice *device,SDL_Window *window){(void)device;OPENHARMONY_DesktopCommand(window,AMCL_DESKTOP_RESTORE,0,0,0,0,NULL);}
++static void Raise(SDL_VideoDevice *device,SDL_Window *window){(void)device;OPENHARMONY_DesktopCommand(window,AMCL_DESKTOP_SHOW,0,0,0,0,NULL);}
++static void Bordered(SDL_VideoDevice *device,SDL_Window *window,bool value){(void)device;OPENHARMONY_DesktopCommand(window,AMCL_DESKTOP_DECORATED,value,0,0,0,NULL);}
++static void Limits(SDL_VideoDevice *device,SDL_Window *window){(void)device;OPENHARMONY_DesktopCommand(window,AMCL_DESKTOP_LIMITS,window->min_w,window->min_h,window->max_w,window->max_h,NULL);}
++static bool Borders(SDL_VideoDevice *device,SDL_Window *window,int *top,int *left,int *bottom,int *right)
++{
++    (void)device;const AmclDesktopHostV1 *api=DesktopHost();if(!api||!Presented(window))return false;
++    AmclDesktopSnapshot f;api->snapshot(&f);*top=f.frameTop;*left=f.frameLeft;*bottom=f.frameBottom;*right=f.frameRight;return true;
++}
++static bool SetClipboard(SDL_VideoDevice *device,const char *text)
++{
++    (void)device;const AmclDesktopHostV1 *api=DesktopHost();
++    return api && api->clipboardWrite(text)==0 ? true : SDL_SetError("System clipboard write failed");
++}
++static char *GetClipboard(SDL_VideoDevice *device)
++{
++    (void)device;const AmclDesktopHostV1 *api=DesktopHost();if(!api)return NULL;
++    char *text=(char*)SDL_malloc(4*1024*1024+1);if(!text)return NULL;
++    if(api->clipboardRead(text,4*1024*1024+1)<0){SDL_free(text);SDL_SetError("System clipboard read failed or permission denied");return NULL;}
++    return text;
++}
++static void DropVirtual(int i)
++{
++    if(SDL_WasInit(SDL_INIT_JOYSTICK)){
++        if(virtual_handles[i] && SDL_GetJoystickFromID(virtual_ids[i])==virtual_handles[i])SDL_CloseJoystick(virtual_handles[i]);
++        if(virtual_ids[i] && SDL_IsJoystickVirtual(virtual_ids[i]))SDL_DetachVirtualJoystick(virtual_ids[i]);
++    }
++    virtual_handles[i]=NULL;virtual_ids[i]=0;virtual_generations[i]=0;
++}
++static void PumpGamepads(const AmclDesktopHostV1 *api)
++{
++    if(!SDL_WasInit(SDL_INIT_JOYSTICK))return;
++    static const int buttons[18]={0,1,2,3,6,8,7,9,10,4,5,11,13,14,12,15,16,17};
++    for(int i=0;i<16;++i){
++        AmclDesktopGamepad pad;SDL_zero(pad);const bool connected=api->gamepadRead(i,&pad)!=0;
++        if(virtual_ids[i] && (!connected || pad.generation!=virtual_generations[i]))DropVirtual(i);
++        if(virtual_ids[i] && SDL_GetJoystickFromID(virtual_ids[i])!=virtual_handles[i]) {virtual_ids[i]=0;virtual_handles[i]=NULL;SDL_ClearError();}
++        if(!connected)continue;
++        if(!virtual_ids[i]){
++            SDL_VirtualJoystickDesc desc;SDL_INIT_INTERFACE(&desc);
++            desc.type=SDL_JOYSTICK_TYPE_GAMEPAD;desc.naxes=6;desc.nbuttons=18;desc.nhats=1;
++            desc.axis_mask=0x3f;desc.button_mask=0x3ffff;desc.name=pad.name;
++            virtual_ids[i]=SDL_AttachVirtualJoystick(&desc);
++            if(!virtual_ids[i])continue;
++            virtual_handles[i]=SDL_OpenJoystick(virtual_ids[i]);virtual_generations[i]=pad.generation;
++            if(!virtual_handles[i]){DropVirtual(i);continue;}
++        }
++        for(int axis=0;axis<6;++axis){const float v=SDL_clamp(pad.axes[axis],-1.0f,1.0f);SDL_SetJoystickVirtualAxis(virtual_handles[i],axis,(Sint16)(v<0?v*32768.0f:v*32767.0f));}
++        for(int button=0;button<18;++button)SDL_SetJoystickVirtualButton(virtual_handles[i],button,pad.buttons[buttons[button]]!=0);
++        SDL_SetJoystickVirtualHat(virtual_handles[i],0,pad.hats[0]);
++    }
++}
++void OPENHARMONY_DesktopPump(SDL_VideoDevice *device)
++{
++    const AmclDesktopHostV1 *api=DesktopHost();if(!api)return;
++    last_event_epoch=api->eventEpoch();
++    SyncDisplays(true);PumpGamepads(api);
++    SDL_Window *window=OPENHARMONY_GetPresentedWindow(device);if(!window)return;
++    AmclDesktopSnapshot f;api->snapshot(&f);
++    if(!f.active)return;
++    char packet[65536]; const char *paths[32];
++    for(int batch=0;batch<8;++batch){
++        const int bytes=api->takeDrop(packet,sizeof(packet));if(bytes<=0)break;
++        const int count=amclDecodeDesktopDrop(packet,(size_t)bytes,paths,32);
++        if(count>0){for(int i=0;i<count;++i)SDL_SendDropFile(window,"AMCL",paths[i]);SDL_SendDropComplete(window);}
++    }
++    SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_MOVED,f.x,f.y);
++    if(fullscreen_sequence && f.completed>=fullscreen_sequence){
++        if((f.status==1)!=(fullscreen_status!=0)) SDL_SetError("System rejected fullscreen transition (code=%d)",f.lastError);
++        fullscreen_sequence=0;
++    }
++    // Reconcile both application requests and title-bar transitions from system facts.
++    // A rejected request must not leave SDL advertising a pending fullscreen mode.
++    if(!fullscreen_sequence) {
++        window->pending_flags=(window->pending_flags & ~SDL_WINDOW_FULLSCREEN) | (f.status==1?SDL_WINDOW_FULLSCREEN:0);
++        SDL_SendWindowEvent(window,f.status==1?SDL_EVENT_WINDOW_ENTER_FULLSCREEN:SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,0,0);
++        for(int i=0;i<AMCL_DESKTOP_MAX_DISPLAYS;++i) {
++            SDL_VideoDisplay *display=displays[i]?SDL_GetVideoDisplay(displays[i]):NULL;
++            if(!display)continue;
++            if(f.status==1 && native_displays[i]==f.displayId)display->fullscreen_window=window;
++            else if(display->fullscreen_window==window){display->fullscreen_window=NULL;display->fullscreen_active=false;}
++        }
++    }
++    if(f.status==2 && !(window->flags&SDL_WINDOW_MAXIMIZED))SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_MAXIMIZED,0,0);
++    else if(f.status!=2 && f.status!=3 && (window->flags&SDL_WINDOW_MAXIMIZED))SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_RESTORED,0,0);
++    if(f.status==3 && !(window->flags&SDL_WINDOW_MINIMIZED))SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_MINIMIZED,0,0);
++    else if(f.status!=3 && (window->flags&SDL_WINDOW_MINIMIZED))SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_RESTORED,0,0);
++    for(int i=0;i<AMCL_DESKTOP_MAX_DISPLAYS;++i)if(displays[i] && native_displays[i]==f.displayId){
++        SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_DISPLAY_CHANGED,(int)displays[i],0);break;
++    }
++    if(f.closeRequested && !close_notified){close_notified=true;SDL_SendWindowEvent(window,SDL_EVENT_WINDOW_CLOSE_REQUESTED,0,0);}
++    if(!f.closeRequested)close_notified=false;
++}
++void OPENHARMONY_DesktopQuit(void)
++{
++    for(int i=0;i<16;++i)DropVirtual(i);
++    SDL_zeroa(displays);SDL_zeroa(native_displays);fullscreen_sequence=0;close_notified=false;
++}
++static int WaitDesktopEvents(SDL_VideoDevice *device, Sint64 timeoutNS) {
++    (void)device; const AmclDesktopHostV1 *api=DesktopHost();
++    return api?api->waitEvents(last_event_epoch,timeoutNS):0;
++}
++static void WakeDesktopEvents(SDL_VideoDevice *device, SDL_Window *window) {
++    (void)device;(void)window;const AmclDesktopHostV1 *api=DesktopHost();if(api)api->wakeEvents();
++}
++void OPENHARMONY_DesktopInstall(SDL_VideoDevice *device)
++{
++    if(!OPENHARMONY_DesktopAvailable())return;
++    device->WaitEventTimeout=WaitDesktopEvents;device->SendWakeupEvent=WakeDesktopEvents;
++    device->GetDisplayBounds=DisplayBounds;device->GetDisplayUsableBounds=DisplayWorkArea;
++    device->MaximizeWindow=Maximize;device->RestoreWindow=Restore;device->RaiseWindow=Raise;
++    device->SetWindowBordered=Bordered;device->SetWindowMinimumSize=Limits;device->SetWindowMaximumSize=Limits;
++    device->GetWindowBordersSize=Borders;device->SetClipboardText=SetClipboard;device->GetClipboardText=GetClipboard;
++}
++#endif
+diff --git a/src/video/openharmony/SDL_amcldesktop.h b/src/video/openharmony/SDL_amcldesktop.h
+new file mode 100644
+index 000000000..1b20962b5
+--- /dev/null
++++ b/src/video/openharmony/SDL_amcldesktop.h
+@@ -0,0 +1,22 @@
++#ifndef SDL_amcldesktop_h_
++#define SDL_amcldesktop_h_
++#include "SDL_internal.h"
++#include "../SDL_sysvideo.h"
++#ifdef SDL_AMCL_DESKTOP_HOST
++bool OPENHARMONY_DesktopAvailable(void);
++bool OPENHARMONY_DesktopVideoInit(SDL_VideoDevice *device);
++void OPENHARMONY_DesktopInstall(SDL_VideoDevice *device);
++void OPENHARMONY_DesktopPump(SDL_VideoDevice *device);
++void OPENHARMONY_DesktopQuit(void);
++int OPENHARMONY_DesktopFullscreen(SDL_Window *window, SDL_VideoDisplay *display, bool enabled);
++int OPENHARMONY_DesktopCommand(SDL_Window *window, int kind, int a, int b, int c, int d, const char *text);
++#else
++#define OPENHARMONY_DesktopAvailable() false
++#define OPENHARMONY_DesktopVideoInit(d) false
++#define OPENHARMONY_DesktopInstall(d) ((void)0)
++#define OPENHARMONY_DesktopPump(d) ((void)0)
++#define OPENHARMONY_DesktopQuit() ((void)0)
++#define OPENHARMONY_DesktopFullscreen(w,d,e) 0
++#define OPENHARMONY_DesktopCommand(w,k,a,b,c,d,t) 0
++#endif
++#endif
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+index ab8ce3265..d38119161 100644
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -1,3 +1,4 @@
++#include "SDL_amcldesktop.h"
+ /*
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+@@ -3567,6 +3568,7 @@ static bool OPENHARMONY_AMCL_IsContextLostError(EGLint error)
+ // and callers that size coordinate math from those queries mix the spaces.
+ static void OPENHARMONY_AMCL_RefreshDisplayDesktopMode(int w, int h)
+ {
++    if (OPENHARMONY_DesktopAvailable()) return;
+     if ((w <= 0) || (h <= 0)) {
+         return;
+     }
+diff --git a/src/video/openharmony/SDL_openharmonyevents.c b/src/video/openharmony/SDL_openharmonyevents.c
+index b94d1fad3..16c5eb953 100644
+--- a/src/video/openharmony/SDL_openharmonyevents.c
++++ b/src/video/openharmony/SDL_openharmonyevents.c
+@@ -1,3 +1,4 @@
++#include "SDL_amcldesktop.h"
+ /*
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+@@ -258,6 +259,7 @@ void OPENHARMONY_PumpEvents(SDL_VideoDevice *_this)
+     // are never registered and this is the only place input can enter: drain
+     // the host's ring here, on the thread that called SDL_PollEvent().
+     // No-op when no host bridge is present.
++    OPENHARMONY_DesktopPump(_this);
+     OPENHARMONY_AMCL_PumpEvents();
+ }
+ 
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 264ef236b..4b4728745 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -64,6 +64,8 @@
+ //   reporting an error of EGL_SUCCESS)
+ void OPENHARMONY_GLES_EnsureUsableProfile(SDL_VideoDevice *_this)
+ {
++    const char *native_gl = SDL_getenv("AMCL_NATIVE_GL_ACTIVE");
++    if (native_gl && SDL_strcmp(native_gl,"1")==0) return;
+     if (!_this || !_this->egl_data) {
+         return;  // nothing loaded yet; nothing to reconcile.
+     }
+diff --git a/src/video/openharmony/SDL_openharmonyvideo.c b/src/video/openharmony/SDL_openharmonyvideo.c
+index b0ae4be19..5d7b6f535 100644
+--- a/src/video/openharmony/SDL_openharmonyvideo.c
++++ b/src/video/openharmony/SDL_openharmonyvideo.c
+@@ -1,3 +1,4 @@
++#include "SDL_amcldesktop.h"
+ /*
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+@@ -323,6 +324,12 @@ bool OPENHARMONY_VideoInit(SDL_VideoDevice *_this)
+     videodata->desired_swap_interval = 0;
+     videodata->presented_input_active = false;
+     videodata->renderer_fatal = false;
++    if (OPENHARMONY_DesktopAvailable()) {
++        OPENHARMONY_DesktopInstall(_this);
++        const bool ready = OPENHARMONY_DesktopVideoInit(_this);
++        if (ready) OPENHARMONY_AMCL_InitMouse();
++        return ready;
++    }
+ 
+     // !!! FIXME: eventually we'll want to enumerate displays, since you can probably plug in something
+     // !!! FIXME:  through a USB-C to HDMI adapter, or maybe there will be separate "outer" screens vs
+@@ -425,6 +432,7 @@ void OPENHARMONY_VideoQuit(SDL_VideoDevice *_this)
+     OPENHARMONY_QuitTouch();
+ #endif
+ 
++    OPENHARMONY_DesktopQuit();
+     OPENHARMONY_AMCL_QuitMouse();
+     /* VideoQuit is the ownership boundary for SDL's callback globals.  A
+      * host may omit a final OnSurfaceDestroyed notification during process
+@@ -530,6 +538,7 @@ static SDL_VideoDevice *OPENHARMONY_CreateDevice(void)
+     device->HasClipboardText = OPENHARMONY_HasClipboardText;
+ #endif
+ 
++    OPENHARMONY_DesktopInstall(device);
+     device->device_caps = VIDEO_DEVICE_CAPS_SENDS_FULLSCREEN_DIMENSIONS;
+ 
+     return device;
+diff --git a/src/video/openharmony/SDL_openharmonywindow.c b/src/video/openharmony/SDL_openharmonywindow.c
+index 5755b8ebe..a93c26312 100644
+--- a/src/video/openharmony/SDL_openharmonywindow.c
++++ b/src/video/openharmony/SDL_openharmonywindow.c
+@@ -1,3 +1,4 @@
++#include "SDL_amcldesktop.h"
+ /*
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+@@ -207,6 +208,7 @@ bool OPENHARMONY_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_Pr
+     data->surface_state = OPENHARMONY_SURFACE_READY;
+     data->requested_hidden = (requested & SDL_WINDOW_HIDDEN) != 0;
+     data->shown = false;
++    OPENHARMONY_DesktopCommand(window,8,0,0,0,0,NULL);
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     data->egl_surface = EGL_NO_SURFACE;
+ #endif
+@@ -456,8 +458,9 @@ bool OPENHARMONY_GetDisplayModes(SDL_VideoDevice *_this, SDL_VideoDisplay *displ
+ 
+ void OPENHARMONY_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window *window)
+ {
++    if (window && OPENHARMONY_DesktopCommand(window,9,0,0,0,0,window->title)) return;
+     // Intentionally empty, not unimplemented: an OpenHarmony application fills
+-    // its window and has no title bar for a caller-supplied string to appear
++    // its window on the mobile/standalone fallback and has no title bar for a caller-supplied string to appear
+     // in. The window title is still stored by SDL and readable via
+     // SDL_GetWindowTitle(), it just has nowhere to be displayed.
+     //
+@@ -615,6 +618,7 @@ bool OPENHARMONY_ApplyPendingAuxiliaryResize(SDL_VideoDevice *_this,
+ 
+ void OPENHARMONY_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window)
+ {
++    if (window && OPENHARMONY_DesktopCommand(window,1,window->pending.w,window->pending.h,0,0,NULL)) return;
+     if (!window || !window->internal) {
+         return;
+     }
+@@ -655,6 +659,8 @@ void OPENHARMONY_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window)
+ 
+ bool OPENHARMONY_SetWindowPosition(SDL_VideoDevice *_this, SDL_Window *window)
+ {
++    const int desktop = window ? OPENHARMONY_DesktopCommand(window,2,window->pending.x,window->pending.y,0,0,NULL) : 0;
++    if (desktop) return desktop > 0;
+     (void)_this;
+ 
+     if (!window) {
+@@ -675,10 +681,12 @@ bool OPENHARMONY_SetWindowPosition(SDL_VideoDevice *_this, SDL_Window *window)
+ 
+ SDL_FullscreenResult OPENHARMONY_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Window *window, SDL_VideoDisplay *display, SDL_FullscreenOp fullscreen)
+ {
++    const int desktop = OPENHARMONY_DesktopFullscreen(window,display,fullscreen == SDL_FULLSCREEN_OP_ENTER);
++    if (desktop) return desktop > 0 ? SDL_FULLSCREEN_PENDING : SDL_FULLSCREEN_FAILED;
+     // Why this reports SUCCEEDED without touching any window style
+     // --------------------------------------------------------------
+     // An OpenHarmony application window is sized by the system (and, when SDL
+-    // is embedded, by the host that owns the XComponent). There is no windowed
++    // is embedded on a mobile host, by the owner of the XComponent). There is no windowed
+     // mode to switch to and no style for the backend to set: the SDL window
+     // already covers everything it is ever going to cover. So for
+     // SDL_FULLSCREEN_OP_ENTER "you are now fullscreen" is simply true, and for
+@@ -719,6 +727,7 @@ SDL_FullscreenResult OPENHARMONY_SetWindowFullscreen(SDL_VideoDevice *_this, SDL
+ 
+ void OPENHARMONY_MinimizeWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ {
++    if (OPENHARMONY_DesktopCommand(window,4,0,0,0,0,NULL)) return;
+     // Not implemented: moving the application to the background is a decision
+     // for the user or the host application, not something a library should do
+     // on its own behalf. Android exposes a JNI call for this; the OpenHarmony
+@@ -733,6 +742,7 @@ void OPENHARMONY_MinimizeWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ 
+ void OPENHARMONY_SetWindowResizable(SDL_VideoDevice *_this, SDL_Window *window, bool resizable)
+ {
++    if (OPENHARMONY_DesktopCommand(window,12,resizable,0,0,0,NULL)) return;
+     // Not implemented: on Android this maps onto locking screen orientation,
+     // which is an activity-level setting. The window is sized by the system (or
+     // the embedding host) either way, so SDL cannot make a window resizable or
+@@ -750,6 +760,7 @@ void OPENHARMONY_ShowWindow(SDL_VideoDevice *_this, SDL_Window *window)
+     const SDL_WindowID window_id = window->id;
+     SDL_WindowData *data = window->internal;
+     data->shown = true;
++    OPENHARMONY_DesktopCommand(window,7,0,0,0,0,NULL);
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER &&
+         !data->auxiliary_show_notified) {
+         data->auxiliary_show_notified = true;
+diff --git a/src/video/openharmony/desktop_drop_packet.h b/src/video/openharmony/desktop_drop_packet.h
+new file mode 100644
+index 000000000..f619c727d
+--- /dev/null
++++ b/src/video/openharmony/desktop_drop_packet.h
+@@ -0,0 +1,15 @@
++#pragma once
++#include <stddef.h>
++#include <string.h>
++// NUL-terminated absolute UTF-8 paths; pointers borrow the caller's packet.
++static inline int amclDecodeDesktopDrop(const char* packet, size_t bytes, const char** paths, size_t capacity) {
++    if (!packet || !paths || bytes == 0) return -1;
++    size_t offset = 0, count = 0;
++    while (offset < bytes) {
++        const char* end = (const char*)memchr(packet + offset, 0, bytes - offset);
++        if (!end || packet[offset] != '/' || end == packet + offset || count >= capacity) return -1;
++        paths[count++] = packet + offset;
++        offset = (size_t)(end - packet) + 1;
++    }
++    return (int)count;
++}
+diff --git a/src/video/openharmony/desktop_host_api.h b/src/video/openharmony/desktop_host_api.h
+new file mode 100644
+index 000000000..3c749d25e
+--- /dev/null
++++ b/src/video/openharmony/desktop_host_api.h
+@@ -0,0 +1,59 @@
++#pragma once
++#include <stddef.h>
++#include <stdint.h>
++
++// Process-local, immutable ABI. UI objects never cross this boundary.
++#define AMCL_DESKTOP_HOST_MAGIC 0x414d434c44455331ULL
++#define AMCL_DESKTOP_MAX_DISPLAYS 16
++enum AmclDesktopCommandKind {
++    AMCL_DESKTOP_RESIZE = 1, AMCL_DESKTOP_MOVE, AMCL_DESKTOP_FULLSCREEN,
++    AMCL_DESKTOP_MINIMIZE, AMCL_DESKTOP_RESTORE, AMCL_DESKTOP_MAXIMIZE,
++    AMCL_DESKTOP_SHOW, AMCL_DESKTOP_HIDE, AMCL_DESKTOP_TITLE,
++    AMCL_DESKTOP_LIMITS, AMCL_DESKTOP_DECORATED, AMCL_DESKTOP_RESIZABLE, AMCL_DESKTOP_ASPECT,
++    AMCL_DESKTOP_CLIPBOARD_PERMISSION
++};
++typedef struct AmclDesktopGamepad {
++    uint64_t generation, events;
++    int32_t connected;
++    char id[128], name[128];
++    float axes[6];
++    unsigned char buttons[18], hats[1];
++} AmclDesktopGamepad;
++typedef struct AmclDesktopDisplay {
++    int64_t id;
++    int32_t x, y, width, height, workX, workY, workWidth, workHeight;
++    float scale, refreshRate, widthMM, heightMM;
++    char name[128];
++} AmclDesktopDisplay;
++typedef struct AmclDesktopSnapshot {
++    uint64_t generation, accepted, completed, failed;
++    int32_t active, windowId, status, decorated, resizable, lastError, closeRequested;
++    int64_t displayId;
++    int32_t x, y, width, height, displayCount;
++    int32_t frameLeft, frameTop, frameRight, frameBottom;
++    AmclDesktopDisplay displays[AMCL_DESKTOP_MAX_DISPLAYS];
++} AmclDesktopSnapshot;
++typedef struct AmclDesktopHostV1 {
++    uint64_t magic;
++    uint32_t size, pid;
++    uint64_t (*submit)(int32_t, int32_t, int32_t, int32_t, int32_t, const char*);
++    void (*snapshot)(AmclDesktopSnapshot*);
++    void (*requestClose)(int32_t);
++    int32_t (*clipboardRead)(char*, size_t);
++    int32_t (*clipboardWrite)(const char*);
++    int32_t (*gamepadRead)(int32_t, AmclDesktopGamepad*);
++    uint64_t (*eventEpoch)();
++    int32_t (*waitEvents)(uint64_t, int64_t);
++    void (*wakeEvents)();
++    int32_t (*takeDrop)(char*, size_t);
++} AmclDesktopHostV1;
++
++// Returns null on a mobile host or before desktop activation. A resolved API
++// remains pinned for the process lifetime, even after its Window detaches.
++#ifdef __cplusplus
++extern "C"
++#endif
++#if defined(__GNUC__)
++__attribute__((visibility("default")))
++#endif
++const AmclDesktopHostV1* amclDesktopHostResolve();

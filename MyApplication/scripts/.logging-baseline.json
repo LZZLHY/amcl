@@ -1,0 +1,8 @@
+{
+  "arktsBare": 290,
+  "nativeBare": 440,
+  "scannedEts": 289,
+  "scannedNative": 594,
+  "savedAt": "2026-09-06T13:35:05.112Z",
+  "note": "allowlist 口径（只含第一方模块根）。2026-09-06 之前的基线是全仓遍历口径，不可比。"
+}

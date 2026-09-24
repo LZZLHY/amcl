@@ -1,0 +1,353 @@
+diff --git a/src/core/openharmony/SDL_amclhostruntime.h b/src/core/openharmony/SDL_amclhostruntime.h
+new file mode 100644
+--- /dev/null
++++ b/src/core/openharmony/SDL_amclhostruntime.h
+@@ -0,0 +1,140 @@
++/*
++ * AMCL 下游宿主初始化契约，不属于 SDL 上游实现。
++ * 只处理十进制身份和本实例生命周期，不读取指针、不加载 Java 类或外部库。
++ * 调用者必须在短临界区内串行访问状态；不能把整个 SDL_InitSubSystem 加锁，
++ * 因为 video/audio 初始化可以合法地递归请求 events 子系统。
++ */
++#ifndef SDL_amclhostruntime_h_
++#define SDL_amclhostruntime_h_
++
++#include <stdint.h>
++#include <stdbool.h>
++
++typedef struct AMCL_SdlHostRuntime
++{
++    uint64_t pid;
++    uint64_t tid;
++    uint64_t session;
++    /* 0 未消费，1 已选择 standalone，2 宿主 main-ready，3 已退休。 */
++    unsigned int state;
++} AMCL_SdlHostRuntime;
++
++enum AMCL_SdlHostResult
++{
++    AMCL_SDL_HOST_STANDALONE = 0,
++    AMCL_SDL_HOST_FIRST = 1,
++    AMCL_SDL_HOST_READY = 2,
++    AMCL_SDL_HOST_MALFORMED = -1,
++    AMCL_SDL_HOST_WRONG_PID = -2,
++    AMCL_SDL_HOST_WRONG_THREAD = -3,
++    AMCL_SDL_HOST_CHANGED = -4,
++    AMCL_SDL_HOST_RETIRED = -5
++};
++
++/*
++ * 严格消费一个正十进制字段及其分隔符；拒绝符号、空白、零、前导零和溢出。
++ * 每次最多读取 20 个数字，故畸形超长环境变量不会导致无界扫描。
++ * 失败时不提交游标或输出值；最后字段必须直接以 NUL 结束。
++ */
++static inline int AMCL_SdlHostReadNumber(const char **cursor, char delimiter, uint64_t *value)
++{
++    const char *p = *cursor;
++    uint64_t result = 0;
++    unsigned int digits = 0;
++    if (*p < '1' || *p > '9') {
++        return 0;
++    }
++    while (*p >= '0' && *p <= '9') {
++        const uint64_t digit = (uint64_t)(*p - '0');
++        if (++digits > 20 || result > (UINT64_MAX - digit) / 10) {
++            return 0;
++        }
++        result = result * 10 + digit;
++        ++p;
++    }
++    if (*p != delimiter) {
++        return 0;
++    }
++    *cursor = delimiter ? p + 1 : p;
++    *value = result;
++    return 1;
++}
++
++/*
++ * 描述符 ABI 固定为 1:<pid>:<Linux gettid>:<session>；各身份均为正整数。
++ * 首次接受之前同时核对进程和实际调用线程，不把第一个调用者自动认作 owner。
++ * 无描述符仅在尚未进入 host 模式时保留 SDL 原生行为；一旦绑定不得撤回、
++ * 换 session、从 standalone 中途升级，或在 SDL_Quit 后用新身份复活同一实例。
++ * 返回 FIRST 只代表调用方应在本实例执行 SetMainReady，不代表 events/video 成功。
++ */
++static inline int AMCL_SdlHostPrepare(AMCL_SdlHostRuntime *runtime, const char *descriptor,
++                               uint64_t current_pid, uint64_t current_tid)
++{
++    uint64_t abi, pid, tid, session;
++    const char *cursor = descriptor;
++    if (!descriptor) {
++        if (runtime->state >= 2) {
++            return runtime->state == 3 ? AMCL_SDL_HOST_RETIRED : AMCL_SDL_HOST_CHANGED;
++        }
++        runtime->state = 1;
++        return AMCL_SDL_HOST_STANDALONE;
++    }
++    if (!AMCL_SdlHostReadNumber(&cursor, ':', &abi) || abi != 1 ||
++        !AMCL_SdlHostReadNumber(&cursor, ':', &pid) ||
++        !AMCL_SdlHostReadNumber(&cursor, ':', &tid) ||
++        !AMCL_SdlHostReadNumber(&cursor, '\0', &session)) {
++        return AMCL_SDL_HOST_MALFORMED;
++    }
++    if (pid != current_pid || current_pid == 0) {
++        return AMCL_SDL_HOST_WRONG_PID;
++    }
++    if (tid != current_tid || current_tid == 0) {
++        return AMCL_SDL_HOST_WRONG_THREAD;
++    }
++    if (runtime->state == 3) {
++        return AMCL_SDL_HOST_RETIRED;
++    }
++    if (runtime->state == 1 || (runtime->state == 2 &&
++        (runtime->pid != pid || runtime->tid != tid || runtime->session != session))) {
++        return AMCL_SDL_HOST_CHANGED;
++    }
++    if (runtime->state == 2) {
++        return AMCL_SDL_HOST_READY;
++    }
++    runtime->pid = pid;
++    runtime->tid = tid;
++    runtime->session = session;
++    runtime->state = 2;
++    return AMCL_SDL_HOST_FIRST;
++}
++
++/*
++ * 退休只改变宿主模式；standalone 仍可按 SDL 上游约定 Quit 后重新 Init。
++ * 只允许相同进程/线程/session 发起退休；外部调用不得越过此检查清空资源。
++ * 重复合法 Quit 保持幂等，但之后任何 Init 必须要求新游戏进程。
++ */
++static inline int AMCL_SdlHostRetire(AMCL_SdlHostRuntime *runtime, const char *descriptor,
++                              uint64_t current_pid, uint64_t current_tid)
++{
++    AMCL_SdlHostRuntime probe = *runtime;
++    int result;
++    if (probe.state == 3) {
++        probe.state = 2;
++    }
++    result = AMCL_SdlHostPrepare(&probe, descriptor, current_pid, current_tid);
++    if (result < 0) {
++        return result;
++    }
++    if (result != AMCL_SDL_HOST_STANDALONE) {
++        *runtime = probe;
++        runtime->state = 3;
++    }
++    return result;
++}
++
++/* 仅 SDL 内部调用，未新增 public/dynapi ABI；发布构建同样执行事件泵线程约束。 */
++#ifdef SDL_PLATFORM_OPENHARMONY
++extern bool SDL_AMCL_ValidateEventThread(bool observe_pump);
++#endif
++
++#endif
+diff --git a/src/SDL.c b/src/SDL.c
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -68,7 +68,9 @@
+ #ifdef SDL_PLATFORM_OPENHARMONY
+ #include "core/openharmony/SDL_openharmony.h"
++#include <sys/syscall.h>
++#include "core/openharmony/SDL_amclhostruntime.h"
+ #endif
+ 
+ #define SDL_ALL_SUBSYSTEM_FLAGS ~0U
+ 
+ // Initialization/Cleanup routines
+@@ -226,6 +231,100 @@
+ static bool SDL_bInMainQuit = false;
+ static Uint8 SDL_SubsystemRefCount[32];
+ 
++#ifdef SDL_PLATFORM_OPENHARMONY
++/*
++ * 每份实际 SDL 映像保存自己的 main-ready；宿主不 dlopen 另一份对象做旁路准备。
++ * 自旋锁只覆盖描述符消费和 SetMainReady，不跨越子系统递归、日志或外部回调。
++ * 原子 mode/pump 标记供事件泵低成本检查，避免逐帧 getenv/解析或 gettid 系统调用。
++ */
++static AMCL_SdlHostRuntime SDL_amclHostRuntime;
++static SDL_SpinLock SDL_amclHostLock;
++static SDL_AtomicInt SDL_amclHostMode;
++static SDL_AtomicInt SDL_amclHostPumpObserved;
++
++/* 返回错误保留阶段和数值原因，调用方不得吞掉错误继续初始化子系统。 */
++static bool SDL_AMCL_HostError(const char *phase, int result)
++{
++    return SDL_SetError("AMCL SDL host-runtime %s rejected (%d): ABI/PID/thread/session mismatch or process restart required", phase, result);
++}
++
++/*
++ * 真实 InitSubSystem 的第一步：先严格验证，再在同一实例、允许线程上设置 main-ready。
++ * SDL 的线程 ID 是 pthread 身份，不能与描述符 Linux TID 混比；两者分别记录。
++ * 前人通过 SetMainReady 或 InitMainThread 已绑定其他线程时明确失败，不覆盖事实。
++ */
++static bool SDL_AMCL_PrepareHostRuntime(void)
++{
++    const uint64_t pid = (uint64_t)getpid();
++    const uint64_t tid = (uint64_t)syscall(SYS_gettid);
++    const SDL_ThreadID thread = SDL_GetCurrentThreadID();
++    int result;
++    uint64_t session;
++    SDL_LockSpinlock(&SDL_amclHostLock);
++    result = AMCL_SdlHostPrepare(&SDL_amclHostRuntime,
++        SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"), pid, tid);
++    session = SDL_amclHostRuntime.session;
++    if (result > 0 && SDL_MainThreadID && SDL_MainThreadID != thread) {
++        /* 本实例已被其他主线程占用，永久退休；不容许外部改写后通过 READY 重试。 */
++        SDL_amclHostRuntime.state = 3;
++        SDL_SetAtomicInt(&SDL_amclHostMode, -1);
++        result = AMCL_SDL_HOST_WRONG_THREAD;
++    }
++    if (result == AMCL_SDL_HOST_FIRST) {
++        SDL_SetMainReady();
++        SDL_SetAtomicInt(&SDL_amclHostMode, 1);
++    }
++    SDL_UnlockSpinlock(&SDL_amclHostLock);
++    if (result < 0) {
++        return SDL_AMCL_HostError("prepare", result);
++    }
++    if (result == AMCL_SDL_HOST_FIRST) {
++        SDL_LogInfo(SDL_LOG_CATEGORY_SYSTEM,
++            "[AMCL-SDL-HOST] phase=main-ready instance=%p pid=%llu tid=%llu session=%llu main=%llu",
++            (void *)&SDL_amclHostRuntime, (unsigned long long)pid, (unsigned long long)tid,
++            (unsigned long long)session, (unsigned long long)SDL_MainThreadID);
++    }
++    return true;
++}
++
++/* SDL_Quit 是整局终点；不能靠保留的 SDL_MainIsReady 复活已退休游戏会话。 */
++static bool SDL_AMCL_RetireHostRuntime(void)
++{
++    int result;
++    SDL_LockSpinlock(&SDL_amclHostLock);
++    result = AMCL_SdlHostRetire(&SDL_amclHostRuntime,
++        SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"), (uint64_t)getpid(), (uint64_t)syscall(SYS_gettid));
++    if (result > 0) {
++        SDL_SetAtomicInt(&SDL_amclHostMode, -1);
++    }
++    SDL_UnlockSpinlock(&SDL_amclHostLock);
++    return result < 0 ? SDL_AMCL_HostError("quit", result) : true;
++}
++
++/*
++ * 主线程约束也作用于 release 事件泵，不依赖可能被编译移除的 SDL_assert。
++ * 模式通过原子发布，main 身份在整局内不变；首次合法泵记录三类线程供设备对账。
++ */
++bool SDL_AMCL_ValidateEventThread(bool observe_pump)
++{
++    const int mode = SDL_GetAtomicInt(&SDL_amclHostMode);
++    if (!mode) {
++        return true;
++    }
++    if (mode < 0 || SDL_GetCurrentThreadID() != SDL_MainThreadID) {
++        return SDL_AMCL_HostError("event-pump", mode < 0 ? AMCL_SDL_HOST_RETIRED : AMCL_SDL_HOST_WRONG_THREAD);
++    }
++    if (observe_pump && SDL_CompareAndSwapAtomicInt(&SDL_amclHostPumpObserved, 0, 1)) {
++        SDL_LogInfo(SDL_LOG_CATEGORY_SYSTEM,
++            "[AMCL-SDL-HOST] phase=event-pump instance=%p tid=%llu main=%llu events=%llu video=%llu",
++            (void *)&SDL_amclHostRuntime, (unsigned long long)syscall(SYS_gettid),
++            (unsigned long long)SDL_MainThreadID, (unsigned long long)SDL_EventsThreadID,
++            (unsigned long long)SDL_VideoThreadID);
++    }
++    return true;
++}
++#endif
++
+ // Private helper to increment a subsystem's ref counter.
+ static void SDL_IncrementSubsystemRefCount(Uint32 subsystem)
+ {
+@@ -330,6 +432,13 @@
+ {
+     Uint32 flags_initialized = 0;
+ 
++#ifdef SDL_PLATFORM_OPENHARMONY
++    /* 共用入口覆盖 SDL_Init 和递归 InitSubSystem；必须早于上游 main-ready 拒绝点。 */
++    if (!SDL_AMCL_PrepareHostRuntime()) {
++        return false;
++    }
++#endif
++
+     if (!SDL_MainIsReady) {
+         return SDL_SetError("Application didn't initialize properly, did you include SDL_main.h in the file containing your main() function?");
+     }
+@@ -381,6 +491,13 @@
+                 SDL_DecrementSubsystemRefCount(SDL_INIT_EVENTS);
+                 goto quit_and_error;
+             }
++#ifdef SDL_PLATFORM_OPENHARMONY
++            /* 只在真实 events 初始化成功后报告，不用 main-ready 冒充子系统可用。 */
++            if (SDL_GetAtomicInt(&SDL_amclHostMode) == 1) {
++                SDL_LogInfo(SDL_LOG_CATEGORY_SYSTEM, "[AMCL-SDL-HOST] phase=events-ready thread=%llu",
++                    (unsigned long long)SDL_EventsThreadID);
++            }
++#endif
+         } else {
+             SDL_IncrementSubsystemRefCount(SDL_INIT_EVENTS);
+         }
+@@ -415,6 +532,13 @@
+                 SDL_PopError();
+                 goto quit_and_error;
+             }
++#ifdef SDL_PLATFORM_OPENHARMONY
++            /* video 的成功独立于 main/events；保留上游失败时的 refcount 回滚路径。 */
++            if (SDL_GetAtomicInt(&SDL_amclHostMode) == 1) {
++                SDL_LogInfo(SDL_LOG_CATEGORY_SYSTEM, "[AMCL-SDL-HOST] phase=video-ready thread=%llu",
++                    (unsigned long long)SDL_VideoThreadID);
++            }
++#endif
+         } else {
+             SDL_IncrementSubsystemRefCount(SDL_INIT_VIDEO);
+         }
+@@ -705,5 +829,12 @@
+ void SDL_Quit(void)
+ {
++#ifdef SDL_PLATFORM_OPENHARMONY
++    /* 错误线程无权清理宿主会话；合法 Quit 先退休，阻止关闭回调重新 Init。 */
++    if (!SDL_AMCL_RetireHostRuntime()) {
++        return;
++    }
++#endif
++
+     SDL_bInMainQuit = true;
+ 
+     // Quit all subsystems
+diff --git a/src/events/SDL_events.c b/src/events/SDL_events.c
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -23,3 +23,7 @@
+ #include "SDL_internal.h"
+ 
++#ifdef SDL_PLATFORM_OPENHARMONY
++#include "../core/openharmony/SDL_amclhostruntime.h"
++#endif
++
+ // General event handling code for SDL
+@@ -1434,5 +1438,12 @@
+ static void SDL_PumpEventsInternal(bool push_sentinel)
+ {
++#ifdef SDL_PLATFORM_OPENHARMONY
++    /* 发布构建也验证实际泵线程；拒绝后不消费队列、不调用窗口/输入回调。 */
++    if (!SDL_AMCL_ValidateEventThread(true)) {
++        return;
++    }
++#endif
++
+     // This should only be called on the main thread, check in debug builds
+     SDL_assert(SDL_IsMainThread());
+ 
+@@ -1583,6 +1594,14 @@
+     bool include_sentinel = (timeoutNS == 0);
+     int result;
+ 
++#ifdef SDL_PLATFORM_OPENHARMONY
++    /* Wait/Poll 会在 pump 返回后直接读队列；须在这里独立拒绝，避免错误线程
++     * 仍取出缓存事件或进入无限等待。仅校验不记录首次泵，由实际 pump 入口记录。 */
++    if (!SDL_AMCL_ValidateEventThread(false)) {
++        return false;
++    }
++#endif
++
+     if (timeoutNS > 0) {
+         start = SDL_GetTicksNS();
+         expiration = start + timeoutNS;
