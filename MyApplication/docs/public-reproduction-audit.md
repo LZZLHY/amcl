@@ -28,15 +28,27 @@
 
 ## 公开工程的复建产物
 
+第一份产物来自独立公开工程目录：
+
 - 路径：`entry/build/sideload/outputs/sideload/entry-sideload-unsigned.hap`。
 - 大小：`76,922,244` 字节。
 - SHA-256：`9f82f9344ccb609e99b60fc707dc80fafe73d6d708b81166767a263b3b87d4d7`。
 - `pack.info`：`com.amcl.launcher`，`versionName=1.0.4`，`versionCode=1000671`。
 - 最终构建命令：`hvigorw assembleHap --mode module -p product=sideload -p buildMode=release --no-daemon`。
 
+随后又从 Git 对象创建全新克隆，并从公开远端更新到 `ed54c84d89ca520ea5e57f4951672e18f86da313`。
+该目录没有复用旧工程的构建输出；依赖入口从公开地址恢复全部必需源码/JAR，`ohpm install --all`
+后执行同一条 Hvigor 命令，结果为 **111 个任务全部执行、0 个 up-to-date，BUILD SUCCESSFUL**。
+新克隆产物为 `76,927,830` 字节，SHA-256
+`efbc0300a9ae1c42c78b7e3e69f14e02c182f465d58d6d9350c3a34155b7a6f8`；包内版本与
+产品/MobileGL 契约再次通过，构建后 1,814 个源码输入的完整性检查仍为零失败。
+
+这次还发现并修复了 Windows 深层 External 依赖检出时 `core.longpaths` 未传递的问题。
+新入口对所有 Git 写入显式启用长路径；最终 SDK 构建仍使用文档建议的短目录。
+
 该验证包没有替换 GitHub 上已发布的包。[v1.0.4 正式资产](https://github.com/LZZLHY/amcl/releases/tag/v1.0.4) 为 `amcl-v1.0.4-unsigned.hap`，大小 `76,922,276` 字节，SHA-256 为 `59fce3c9a7631a7ecb86513cdf8485284652ee9f32959b5627f68dd529f21b54`。
 
-两份 HAP 的 ZIP 项目名称完全一致；解压后不同的是三个本地重编 Native 库及 `amcl-launcher.jar`，其余项目相同。尚未逐项归因这些字节差异，因此本次证明的是源码可构建及产品/依赖契约成立，不是与发布资产逐字节相同。
+第一份复建 HAP 与正式资产的 ZIP 项目名称完全一致；解压后不同的是三个本地重编 Native 库及 `amcl-launcher.jar`，其余项目相同。尚未逐项归因各次构建的字节差异，因此本次证明的是源码可构建及产品/依赖契约成立，不是与发布资产逐字节相同。
 
 ## 保留的验证边界
 
