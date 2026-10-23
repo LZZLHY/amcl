@@ -1,0 +1,216 @@
+{
+  "versionCode": 1000910,
+  "versionName": "1.0.6",
+  "tag": "v1.0.6",
+  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.6",
+  "notes": "1.0.6\n- 新增：应用内更新、通道选择和官方安装包手动导入\n- 新增：完整游戏包及标准整合包导出\n- 新增：悬浮虚拟鼠标，优化触控、下载与启动界面\n- 修复：输入释放、部分加载器和渲染兼容问题\n- 注意：自更新需授权；导出及设备兼容范围详见完整日志",
+  "mandatory": false,
+  "schema": 1,
+  "date": "2026-10-24",
+  "prerelease": false,
+  "changelogUrl": "https://amcl.lovedhy.cn/changelog/v1.0.6",
+  "notesEntries": [
+    {
+      "type": "highlight",
+      "text": "新增应用内自更新，串联下载、校验、授权、手机签名与覆盖安装。"
+    },
+    {
+      "type": "highlight",
+      "text": "新增游戏包导出，支持完整 ZIP 与 Modrinth、CurseForge 标准格式。"
+    },
+    {
+      "type": "highlight",
+      "text": "新增可保存的悬浮虚拟鼠标，支持按住拖动、滚轮和 Shift。"
+    },
+    {
+      "type": "added",
+      "text": "软件更新支持稳定、预览通道与官方未签名 HAP 手动导入。"
+    },
+    {
+      "type": "added",
+      "text": "导出内容支持逐层勾选，完整包与标准包分别保留选择草稿。"
+    },
+    {
+      "type": "added",
+      "text": "触控布局新增持久控件组及部分第三方布局导入。"
+    },
+    {
+      "type": "added",
+      "text": "补充菜单触摸板、浮动摇杆、陀螺仪配置与按需操作引导。"
+    },
+    {
+      "type": "added",
+      "text": "JDK 管理接入签名目录与独立稳定、预览通道。"
+    },
+    {
+      "type": "added",
+      "text": "新增跟随深浅主题的体素聚斧开屏与首页归位动画。"
+    },
+    {
+      "type": "added",
+      "text": "新增沉浸光感设置，统一返回、关闭等圆形操作按钮。"
+    },
+    {
+      "type": "improved",
+      "text": "导出面板集中展示选择、检查、进度和结果，支持收起后继续。"
+    },
+    {
+      "type": "improved",
+      "text": "整合包浏览保留搜索和筛选，安装前可填写实例名称。"
+    },
+    {
+      "type": "improved",
+      "text": "统一下载任务策略，改善取消、重试、换源与共享任务生命周期。"
+    },
+    {
+      "type": "improved",
+      "text": "模组详情开放完整版本浏览，本地列表支持完整多关键词搜索。"
+    },
+    {
+      "type": "improved",
+      "text": "精简触控编辑器，分离布局编辑与输入设置。"
+    },
+    {
+      "type": "improved",
+      "text": "改进多来源视角、手柄死区、捕获和前后台恢复。"
+    },
+    {
+      "type": "improved",
+      "text": "减少冷启动、亮屏恢复、空闲下载和日志维护中的重复工作。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复更新推荐漏更、缓存目标错配和旧任务结果干扰。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复整合包恢复和外部存储发布，保护已有配置与存档。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复 Forge 身份解析、内嵌库重复下载及批量失败误报。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复未知大小断点续传、并发目录创建与下载清理边界。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复导出检查重入崩溃及旧资源、草稿和目标读取异常。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复多来源卡键、拖动释放及恢复后游戏输入失效。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复菜单、容器和快捷栏对齐，补齐末段移动与滚动。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复 IME 会话恢复、选区混淆和 LWJGL2 补充字符截断。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复旧加载器扫描现代 LWJGL 失败，补齐相关模块和 EGL 信息。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复部分图形状态、地形透明及上下文生命周期问题。"
+    },
+    {
+      "type": "fixed",
+      "text": "改进 OHAudio 格式协商、中断、暂停恢复、限幅和释放。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复限定旧 Create Fly 组合的列车网络包线程归属。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复 JDK 列表消失、旧目录覆盖，以及下载子页末项不可达。"
+    },
+    {
+      "type": "notice",
+      "text": "自更新需要兼容签名材料、开发者授权、无线调试和系统信任。"
+    },
+    {
+      "type": "notice",
+      "text": "导出的完整游戏包面向 Windows x64 使用，不包含启动器和 Java。"
+    },
+    {
+      "type": "notice",
+      "text": "游戏包导出仍存在部分问题，部分整合包及大体积内容可能出现异常。"
+    },
+    {
+      "type": "notice",
+      "text": "JDK 测试通道需手动选择，测试版本可能存在较多问题，且最新运行包暂不支持本版。"
+    },
+    {
+      "type": "notice",
+      "text": "通用侧载包支持手机、平板和鸿蒙电脑，部分模组与设备仍可能存在兼容问题。"
+    }
+  ],
+  "updateChannel": "stable",
+  "publicationId": "c4670803b8c11b8200a1c499ec63eaaebf206909d8959934a99c629dc8b63f84",
+  "sizeBytes": 102802182,
+  "delivery": {
+    "schema": 1,
+    "ready": true,
+    "publicationReady": true,
+    "assets": [
+      {
+        "tag": "v1.0.6",
+        "versionCode": 1000910,
+        "versionName": "1.0.6",
+        "product": "sideload",
+        "name": "amcl-v1.0.6-sideload-unsigned.hap",
+        "sha256": "f6b597c49a5abf2f143bba955dab7facfba52039204b6bb264aac8def7979796",
+        "sizeBytes": 102802182,
+        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.6/amcl-v1.0.6-sideload-unsigned.hap",
+        "legacyUniversal": false,
+        "githubAssetId": 669749132,
+        "audit": {
+          "bundleName": "com.amcl.launcher",
+          "versionCode": 1000910,
+          "versionName": "1.0.6",
+          "product": "sideload",
+          "packagedProduct": "sideload",
+          "sourceRevision": "fb1b299f87c7bbac069cac24cfe65df303ebb381",
+          "auditLevel": "package-profile",
+          "minApi": 20,
+          "targetApi": 23,
+          "abi": "arm64-v8a",
+          "deviceTypes": [
+            "phone",
+            "tablet",
+            "2in1"
+          ]
+        },
+        "mirrors": [
+          {
+            "provider": "fyhub",
+            "projectId": "amcl",
+            "assetId": "amcl:422088095:669749132",
+            "ready": true,
+            "firstVerifiedAt": 1792774444511,
+            "lastVerifiedAt": 1792778047827,
+            "lastCheckedAt": 1792778047827,
+            "health": "available"
+          },
+          {
+            "provider": "miawa",
+            "projectId": "amcl",
+            "filePath": "amcl/v1.0.6/amcl-v1.0.6-sideload-unsigned.hap",
+            "ready": true,
+            "firstVerifiedAt": 1792775345282,
+            "lastVerifiedAt": 1792778047827,
+            "lastCheckedAt": 1792778047827,
+            "health": "available"
+          }
+        ],
+        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/f6b597c49a5abf2f143bba955dab7facfba52039204b6bb264aac8def7979796/amcl-v1.0.6-sideload-unsigned.hap"
+      }
+    ]
+  }
+}
