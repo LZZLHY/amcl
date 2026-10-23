@@ -5,6 +5,7 @@ on:
     paths:
       - update.json
       - changelog.json
+      - updates/**
       - assets/**
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -31,6 +32,7 @@ jobs:
           sparse-checkout: |
             /update.json
             /changelog.json
+            /updates/
             /assets/
       # Pages 是应用更新数据入口；源码通过 GitHub 获取，无需在此下载或部署第三方工作树。
       - name: Validate and stage public update data
@@ -47,6 +49,9 @@ jobs:
           mkdir _site
           cp update.json changelog.json _site/
           cp -R assets _site/assets
+          if [ -d updates ]; then
+            cp -R updates _site/updates
+          fi
           printf '%s\n' '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://amcl.lovedhy.cn/"><title>AMCL</title><a href="https://amcl.lovedhy.cn/">AMCL 官网</a></html>' > _site/index.html
           printf '%s\n' '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://amcl.lovedhy.cn/privacy-policy.html"><title>AMCL 隐私政策</title><a href="https://amcl.lovedhy.cn/privacy-policy.html">隐私政策</a></html>' > _site/privacy-policy.html
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
