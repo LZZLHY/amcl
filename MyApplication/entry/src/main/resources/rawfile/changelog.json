@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-10-23T13:25:46Z",
+  "generatedAt": "2026-10-23T16:21:19Z",
   "categories": [
     "highlight",
     "added",
@@ -13,14 +13,14 @@
     "versionName": "1.0.6",
     "versionCode": 1000910,
     "tag": "v1.0.6",
-    "date": "2026-10-23"
+    "date": "2026-10-24"
   },
   "releases": [
     {
       "versionName": "1.0.6",
       "versionCode": 1000910,
       "tag": "v1.0.6",
-      "date": "2026-10-23",
+      "date": "2026-10-24",
       "prerelease": false,
       "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.6",
       "title": "应用自更新、游戏包导出与操控体验更新",
@@ -88,7 +88,7 @@
             "text": "JDK 管理接入签名目录与独立稳定、预览通道。",
             "details": [
               "提供手动及定期检查、运行时更新提示和显式启用的 AMCL 自有源；核对导入结构、架构与主版本，保护使用中的运行时，安装失败保留旧版本。",
-              "配套 JDK 更新改进 Java Sound 兼容性，并修复 JDK 8 JFR 链接和 JDK 25 部分长时间停帧问题；需安装对应运行包。"
+              "JDK 运行包需单独安装或更新，不随本次 HAP 自动更换；可用版本受启动器兼容范围限制。"
             ]
           },
           {
@@ -284,9 +284,10 @@
           },
           {
             "type": "notice",
-            "text": "体验新版 JDK 需手动选择测试通道，测试版本可能存在较多问题。",
+            "text": "JDK 测试通道需手动选择，测试版本可能存在较多问题，且最新运行包暂不支持本版。",
             "details": [
-              "请在 JDK 管理中手动切换通道；日常游玩建议使用稳定通道，遇到问题可切回稳定通道并选择原有可用 JDK。"
+              "当前最新 R12 运行包需要后续启动器版本支持，暂不适用于 1.0.6；测试通道可能不显示可安装版本。",
+              "日常游玩建议使用稳定通道；已安装的兼容 JDK 可继续使用，更新运行包前请确认启动器版本要求。"
             ]
           },
           {
@@ -360,7 +361,7 @@
             "text": "Add a signed JDK catalog with independent stable and preview channels.",
             "details": [
               "Include manual and scheduled checks, runtime update notices and an explicitly enabled AMCL-hosted source. Validate structure, architecture and Java major version; protect runtimes in use and retain the previous version after failure.",
-              "Related runtime updates improve Java Sound compatibility and address JDK 8 JFR linking and some prolonged JDK 25 freezes. Install the corresponding runtime package for these changes."
+              "JDK runtime packages must be installed or updated separately and are not replaced by this HAP update. Available versions depend on launcher compatibility."
             ]
           },
           {
@@ -549,9 +550,10 @@
           },
           {
             "type": "notice",
-            "text": "Select the JDK test channel manually to try newer runtimes; test versions may have many issues.",
+            "text": "Select the JDK test channel manually. Test runtimes may have many issues, and the latest packages are currently unsupported by this version.",
             "details": [
-              "Switch channels in JDK Manager. The stable channel is recommended for everyday play; if problems occur, return to it and select a previously working JDK."
+              "The latest R12 packages require support from a later launcher version and are currently unavailable in 1.0.6; the test channel may show no installable versions.",
+              "Use the stable channel for everyday play. Compatible JDKs you already installed remain usable; check launcher version requirements before updating a runtime."
             ]
           },
           {

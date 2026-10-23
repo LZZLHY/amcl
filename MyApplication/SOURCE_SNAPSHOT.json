@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sourceCommit": "d5c059a4df22a29abc2bc39dd667913e22021642",
+  "sourceCommit": "fb1b299f87c7bbac069cac24cfe65df303ebb381",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Current working-tree snapshot; sourceCommit is its base, not an assertion of identical committed content. Public docs, licenses and bootstrap tools are maintained separately.",
@@ -5805,7 +5805,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "394b364d4d90d79fc7b496b6a844ebd81836c7183dc0b0f057baa91362fce510",
+      "sha256": "15727578f539c8632c69fdfa35e3b04ef978283eecfa1d918efc0a9c9cbaaea5",
       "normalization": "lf"
     },
     {
