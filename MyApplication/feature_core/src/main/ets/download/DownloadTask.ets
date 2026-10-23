@@ -33,6 +33,10 @@ import { AssetsPhase } from './phases/AssetsPhase';
 import { ModloaderPhase } from './phases/ModloaderPhase';
 import { MergePhase } from './phases/MergePhase';
 import { safeBaseName } from '../modloader/MavenUtils';
+import { claimVersionInstall, newVersionInstallOwner } from '../version/VersionInstallLease';
+import { MODPACK_PENDING_FILE } from 'commons';
+import { McInstallSession, MC_INSTALL_PENDING, listMcInstallRecovery, saveMcInstallSession,
+  writeMcInstallRecord, ownsMcInstallDirectory } from '../version/McInstallSession';
 
 const TAG = LogTags.SVC_DOWNLOAD_TASK;
 
@@ -215,6 +219,10 @@ export class DownloadTask {
   // Phase 6.5: 当前活跃的 PhaseRunner / 共享状态（cancel/pause/resume 透传给它）
   private runner_: PhaseRunner | null = null;
   private flowState_: DownloadFlowState | null = null;
+  /** 父整合包与基础版本共用租约身份；普通版本自行生成，跨任务不得复用。 */
+  private directoryOwner_: string;
+  /** 整合包子任务由父会话负责；普通任务才保存自己的意图。 */
+  private installSession_: McInstallSession | undefined = undefined;
 
   constructor(
     gameVersion: string,
@@ -222,7 +230,8 @@ export class DownloadTask {
     loaderVersion: string,
     versionName: string,
     mcDir: string,
-    filesDir: string
+    filesDir: string,
+    directoryOwner?: string
   ) {
     if (safeBaseName(gameVersion) !== gameVersion) {
       throw new Error('gameVersion 不是安全文件名');
@@ -236,10 +245,21 @@ export class DownloadTask {
     this.versionName = versionName;
     this.mcDir = mcDir;
     this.filesDir = filesDir;
+    this.directoryOwner_ = directoryOwner ?? newVersionInstallOwner();
+    if (directoryOwner === undefined) {
+      let previous = listMcInstallRecovery(filesDir, mcDir).find((record: McInstallSession): boolean =>
+        record.gameVersion === gameVersion && record.versionName === versionName
+        && record.loaderType === (loaderType ?? '') && record.loaderVersion === loaderVersion);
+      this.installSession_ = previous ?? { schemaVersion: 1, id: this.directoryOwner_, gameVersion: gameVersion,
+        versionName: versionName, loaderType: loaderType ?? '', loaderVersion: loaderVersion, mcDir: mcDir, complete: false };
+      this.directoryOwner_ = this.installSession_.id;
+      this._isRetry = previous !== undefined;
+    }
     this.downloader = new McDownloader(mcDir);
     // 活动账本（L2-b）：activityId 由外部（McVersionTask）在构造后赋值，
     // 见 setActivityId。这里先留 0（不归属）。
-    this.tempDir = mcDir + '/download-temp';
+    // 每个安装意图拥有独占临时根；同对象重试及已确认的冷启动恢复复用同一持久身份。
+    this.tempDir = mcDir + '/download-temp/' + this.directoryOwner_;
     this.initPhaseDetails();
   }
 
@@ -287,6 +307,12 @@ export class DownloadTask {
       } catch (e) {
         // expected: Error '已取消' 或其他失败；全部吞掉，调用方通过 this.phase 判断结果
       }
+    } else if (this.phase !== DownloadPhase.DONE) {
+      // 排队取消没有 start() 的 catch 来同步状态；明确落 ABORTED，确保后续 retry
+      // 真正从 prepare 开跑，而不是被内部 phase 守卫静默吞掉。
+      this.phase = DownloadPhase.ABORTED;
+      this.errorMessage = '已取消';
+      this.notify();
     }
     // 清理磁盘
     if (cleanupFiles) {
@@ -332,17 +358,7 @@ export class DownloadTask {
     this.updateOverallProgress();
     this.notify();
 
-    // 清理残留的目标版本目录（Forge installer 可能留下不完整的 json/jar）
-    // doStart 开头会用统一标准检查，但这里先清一遍避免任何残留干扰
-    let targetDir = this.mcDir + '/versions/' + this.versionName;
-    try {
-      let st = fs.statSync(targetDir);
-      if (st.isDirectory()) {
-        removeDirRecursive(targetDir);
-        this.alog_.info(TAG, `retry: cleaned target dir: ${targetDir}`, LOG_DOMAIN_DOWNLOAD)
-      }
-    } catch (e) { /* not exists, OK */ }
-
+    // 清理统一在 startWithLease_ 取得租约后执行，重试不能抢先删除其他写入者的目录。
     return this.start();
   }
 
@@ -382,31 +398,24 @@ export class DownloadTask {
 
   /**
    * v5: 清理磁盘残留。
-   *   1. 对当前引擎任务做 deleteTaskFiles（清 libraries/assets 等半下文件+meta）
-   *   2. 清 tempDir
-   *   3. 清目标版本目录（无论 versionName 是否等于 gameVersion）
-   * 返回释放的字节数（仅第 1 步统计）。
+   * 等待本消费者停写，只清独占暂存与匹配 pending owner 的未交付实例。
+   * 公共 libraries/assets 不属于本安装的可删除文件，返回 0 表示未统计递归清理字节。
    */
   async deleteResidualFiles(): Promise<number> {
+    // 排队任务没有版本归属；即使 UI 明确请求清理，也不能删除另一个安装或已有实例。
+    // 先确认 Native 已停写。这里只清自身暂存，不删除共享 libraries/assets。
+    await this.settleNativeOwners_();
     let freed = 0;
-    if (this.currentEngineTaskId > 0) {
-      try {
-        freed = DownloadManager.instance().deleteTaskFiles(this.currentEngineTaskId);
-      } catch (e) { /* ignore */ }
-      // v5 Bug-3: 清完磁盘后顺手 purge native 注册表里的 LoaderDownload 记录。
-      // purge 只在终态允许 —— 此处调用方应已通过 cancelAndAwait 让任务进入 Aborted/Failed；
-      // 若不是终态 native 会拒绝，这里 best-effort 忽略。
-      try {
-        if (DownloadManager.instance().purgeTask(this.currentEngineTaskId)) {
-          this.currentEngineTaskId = 0;
-        }
-      } catch (e) { /* ignore; retain id so cleanup can be retried */ }
-    }
     // 清 tempDir（fetchVersionInfo 缓存）
     this.cleanTempDir();
-    // 清目标版本目录（v5 S0-2 修复：无条件删，之前"versionName===gameVersion"时不清理的 bug）
+    // 只有匹配持久 owner 的未交付普通实例可清理；整合包目录交给父安装器。
     let targetDir = this.mcDir + '/versions/' + this.versionName;
-    try { removeDirRecursive(targetDir); } catch (e) { /* ignore */ }
+    if (this.installSession_ !== undefined && ownsMcInstallDirectory(targetDir, this.directoryOwner_)
+      && !isVersionInstalled(this.mcDir, this.versionName)) removeDirRecursive(targetDir);
+    if (this.installSession_ !== undefined) {
+      this.installSession_.complete = true;
+      saveMcInstallSession(this.filesDir, this.installSession_);
+    }
     this.alog_.info(TAG, `deleteResidualFiles: freed=${freed} bytes`, LOG_DOMAIN_DOWNLOAD)
     return freed;
   }
@@ -494,7 +503,7 @@ export class DownloadTask {
       this.alog_.warn(TAG, 'start() called while task already running, awaiting old one...', null, LOG_DOMAIN_DOWNLOAD)
       try { await this.activeTaskPromise; } catch (e) { /* ignore */ }
     }
-    const p = this.doStart();
+    const p = this.startWithLease_();
     this.activeTaskPromise = p;
     try {
       await p;
@@ -530,6 +539,29 @@ export class DownloadTask {
    *   3. PhaseRunner 顺序调度，进度回调走 handlePhaseProgress 翻译成老 phaseDetails 模型
    * 公开 API（start/cancel/cancelAndAwait/retry/pause/resume/onStateChange）签名零改动。
    */
+  /** 在任何目标目录清理前取得共享租约；整个基础版本流水线都属于同一写入者。 */
+  private async startWithLease_(): Promise<void> {
+    let release = claimVersionInstall(this.mcDir, this.versionName, this.directoryOwner_);
+    try { await this.doStart(); } finally { release(); }
+  }
+
+  /**
+   * 终态回调早于Native栈退出。显式清理可有限等待后拒绝；持有Registry action/版本
+   * 租约的执行finally必须继续保留owner直到真实退出，不能warn后释放槽位冒充空闲。
+   * 等待只轮询已有purge屏障，不启动新下载或删除任何材料。
+   */
+  private async settleNativeOwners_(holdOwner: boolean = false): Promise<void> {
+    for (let attempt = 0; holdOwner || attempt < 120; attempt++) {
+      try { if (this.purgeNativeOwners()) return; }
+      catch (_) { /* 查询失败不授予释放权，下一轮继续确认。 */ }
+      if (holdOwner && attempt === 120) {
+        this.alog_.warn(TAG, '安装文件仍在收敛，继续保留执行槽位、版本租约和暂存材料', null, LOG_DOMAIN_DOWNLOAD);
+      }
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 250); });
+    }
+    throw new Error('下载执行仍在收敛，已保留文件，请稍后重试');
+  }
+
   private async doStart(): Promise<void> {
     this.cancelled = false;
     this.errorMessage = '';
@@ -543,22 +575,56 @@ export class DownloadTask {
       this.alog_.warn(TAG, 'Source probe failed, using defaults', e, LOG_DOMAIN_DOWNLOAD)
     }
 
+    // 元数据测速期间也可收到取消，进入目录写入前必须再次检查。
+    if (this.cancelled) throw new CancelledError();
     // 检查目标版本是否已安装（统一标准：jar > 1MB）
     let targetDir = this.mcDir + '/versions/' + this.versionName;
+    // 持久 pending 所有权防止重启后普通安装把整合包半成品当作可随意删除的目录。
+    let reserved = false;
+    try { reserved = fs.statSync(targetDir + '/' + MODPACK_PENDING_FILE).isFile(); } catch (e) { /* absent */ }
+    if (reserved) {
+      let pending = JSON.parse(fs.readTextSync(targetDir + '/' + MODPACK_PENDING_FILE)) as Record<string, string>;
+      if (pending['id'] !== this.directoryOwner_) throw new Error('该版本属于未完成的整合包安装，请从下载页继续');
+    }
     if (isVersionInstalled(this.mcDir, this.versionName)) {
+      // commit 已持久化而进程在更新会话/移除 pending 前退出：只收尾，不重复安装。
+      if (this.installSession_ !== undefined && ownsMcInstallDirectory(targetDir, this.directoryOwner_)) {
+        this.installSession_.complete = true;
+        saveMcInstallSession(this.filesDir, this.installSession_);
+        fs.unlinkSync(targetDir + '/' + MC_INSTALL_PENDING);
+        this.phase = DownloadPhase.DONE;
+        this.progress = 100;
+        this.cleanTempDir();
+        this.notify();
+        return;
+      }
       throw new Error('版本 ' + this.versionName + ' 已存在');
     }
-    removeVersionInstallCommit(this.mcDir, this.versionName);
-    // 如果目录存在但不完整（残留），自动清理后继续
-    try {
-      let stat = fs.statSync(targetDir);
-      if (stat.isDirectory()) {
-        this.alog_.info(TAG, `Cleaning incomplete version dir: ${targetDir}`, LOG_DOMAIN_DOWNLOAD)
-        removeDirRecursive(targetDir);
+    if (!reserved && this.installSession_ !== undefined) {
+      // 先保存意图，再创建实例。已有未归属目录不做猜测式删除；恢复重跑校验与合并，
+      // 原有 client staging 和用户加入的配置一直保留。
+      this.installSession_.complete = false;
+      saveMcInstallSession(this.filesDir, this.installSession_);
+      let exists = false;
+      try { fs.lstatSync(targetDir); exists = true; } catch (e) { /* absent */ }
+      // mkdir 成功而 marker 尚未写入就退出，只能在持久意图恢复且目录仍为空时接管。
+      // 一旦有任何用户文件或链接，仍拒绝猜测归属。
+      let recoverEmpty = exists && this._isRetry && fs.lstatSync(targetDir).isDirectory()
+        && !fs.lstatSync(targetDir).isSymbolicLink() && fs.listFileSync(targetDir).length === 0;
+      if (exists && !ownsMcInstallDirectory(targetDir, this.directoryOwner_) && !recoverEmpty)
+        throw new Error('目标目录已有内容且不属于本次安装，请保留原目录并选择其他名称');
+      if (!exists) {
+        try { fs.mkdirSync(this.mcDir + '/versions', true); } catch (e) { /* exists */ }
+        fs.mkdirSync(targetDir);
       }
-    } catch (e) { /* dir not exists, OK */ }
+      if (!exists || recoverEmpty) {
+        let marker: Record<string, string> = { 'id': this.directoryOwner_ };
+        writeMcInstallRecord(targetDir + '/' + MC_INSTALL_PENDING, marker);
+      }
+    }
+    removeVersionInstallCommit(this.mcDir, this.versionName);
 
-    if (this._isRetry) {
+    if (this._isRetry || reserved) {
       this.alog_.info(TAG, 'Retry mode: preserving tempDir to reuse client.jar / version.json', LOG_DOMAIN_DOWNLOAD)
     } else {
       this.cleanTempDir();
@@ -581,6 +647,7 @@ export class DownloadTask {
       this.versionName,
       this.mcDir,
       this.filesDir,
+      this.tempDir,
     );
 
     // 选用合适的权重表（与现有 PHASE_WEIGHTS_MC* 字典一一对应）
@@ -619,6 +686,11 @@ export class DownloadTask {
       // 只有全部 phase 成功后才发布 durable commit marker。marker 写入失败必须让安装失败，
       // 防止半安装目录被后续扫描识别为可启动版本。
       writeVersionInstallCommit(this.mcDir, this.versionName);
+      if (this.installSession_ !== undefined) {
+        this.installSession_.complete = true;
+        saveMcInstallSession(this.filesDir, this.installSession_);
+        if (ownsMcInstallDirectory(targetDir, this.directoryOwner_)) fs.unlinkSync(targetDir + '/' + MC_INSTALL_PENDING);
+      }
       for (let d of this.phaseDetails) {
         if (d.status === 'running' || d.status === 'pending') {
           d.status = 'done';
@@ -679,28 +751,25 @@ export class DownloadTask {
         } catch (fe) { /* best-effort */ }
       }
 
-      // 失败或取消时目标目录一定是不完整安装，必须清理；不能再以
-      // versionName !== gameVersion 为条件，否则原版同名安装失败会留下残目录。
-      // tempDir（client.jar / version.json）仍保留供 retry 复用。
+      // 失败后保留带 owner 的实例和临时材料；整合包父任务可沿原恢复计划继续。
+      // 这里没有删除操作，日志必须反映保留行为，避免被误当成目录已删除的证据。
       try {
-        removeDirRecursive(targetDir);
-        this.alog_.info(TAG, `Cleaned up incomplete target dir: ${targetDir}`, LOG_DOMAIN_DOWNLOAD)
+        // 失败不是用户授权清理：保留带 owner 的实例及用户配置，后续继续同一意图。
+        this.alog_.info(TAG, `Retained incomplete target dir for recovery: ${targetDir}`, LOG_DOMAIN_DOWNLOAD);
       } catch (e2) { /* ignore */ }
 
       this.notify();
       throw new Error(this.errorMessage);
     } finally {
-      // v5 S0-2: 条件化清理 tempDir —
-      //   - DONE：安装完了，temp 已无用，清
-      //   - cleanupRequested（用户选了"取消+清理"或手动 deleteResidualFiles）：清
-      //   - 其他失败/ABORTED：保留 tempDir（里面有 version.json），retry 时复用
-      if (this.phase === DownloadPhase.DONE || this.cleanupRequested) {
-        this.cleanTempDir();
-      }
+      // 失败与取消保留现场；显式清理由 cancelAndAwait 在真实收敛后处理。
+      // 已交付成功的清理失败只记日志，不能把完整实例改报安装失败。
+      await this.settleNativeOwners_(true);
+      const settled = true;
+      if (this.phase === DownloadPhase.DONE && settled) this.cleanTempDir();
       // 2026-05-05 沙箱化: 无论成功失败都清理 installSandboxDir。
       // Phase 6.5: 由 ModloaderPhase 写入 state.installSandboxDir，从这里读出来清理。
       let sandbox = state.installSandboxDir;
-      if (sandbox.length > 0) {
+      if (sandbox.length > 0 && settled) {
         try { removeDirRecursive(sandbox); } catch (e) { /* */ }
         this.alog_.info(TAG, `Sandbox cleaned: ${sandbox}`, LOG_DOMAIN_DOWNLOAD)
       }

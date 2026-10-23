@@ -54,6 +54,7 @@
 namespace download {
 
 class NetFile;
+class HostAdmissionLease;
 
 class MultiDownloader {
 public:
@@ -112,8 +113,17 @@ public:
     /** 停止事件循环，等待线程退出 */
     void shutdown();
 
-    /** 批量入队待下载的 NetThread（线程安全，可从任意线程调用） */
-    void enqueue(std::vector<NetThreadPtr> threads);
+    /**
+     * 外部批量入队事务（线程安全）：成功完整接收；分配失败回滚并返回 false。
+     * 借用输入，不移动其引用，也不在内部通知 owner；Engine 解生命周期锁后负责失败收尾。
+     */
+    bool enqueue(const std::vector<NetThreadPtr>& threads) noexcept;
+
+    /**
+     * 取消令牌发布后唤醒调度线程，避免 pending 只有长 Retry-After 时睡到冷却结束。
+     * 只同步条件变量通知，不改 pending/active 数量，不代替事件循环的 owner 收敛。
+     */
+    void notifyCancellation();
 
     /** 当前正在传输的数量 */
     int activeCount() const { return active_count_.load(std::memory_order_relaxed); }
@@ -146,8 +156,15 @@ private:
         NetSourcePtr   source;
         std::string    host;
         std::string    actual_url;       // 当前请求的 URL（可能经过 302 重定向）
+        // 实际 host 的统一 Engine 名额；析构兜底未执行/取消，不伪造健康成功。
+        std::unique_ptr<HostAdmissionLease> admission;
+        int            redirect_count = 0;
+        // 仅本次传输的显式Bearer头，避免curl认证协商在一次权限中隐式重复GET。
+        std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> authorization_headers{nullptr, curl_slist_free_all};
         int64_t        retry_after_ms = 0;
         int64_t        requested_offset = 0;
+        int64_t        requested_end = -1;  // 发出时冻结，动态拆分不追溯改变 HTTP 窗口
+        int64_t        done_before = 0;
         bool           range_requested = false;
         bool           content_range_seen = false;
         bool           content_range_valid = false;
@@ -159,24 +176,24 @@ private:
         curl_off_t connect_time_us = 0;
         bool           fd_acquired = false;
         char           err_buf[CURL_ERROR_SIZE] = {0};
-        // M-2 修复：header callback 监测 302 Location 头时记录被拦截的 bad host，
-        // handleFailure 看到 abort_reason_bad_host 时不再走通用 timeout 路径，
-        // 直接换源重试。
-        std::string    abort_reason_bad_host;
         // 本次 transfer 实际使用的 CURLOPT_IPRESOLVE 与打分用的主机 key
         //（见 DownloadEngine::ipResolveFor / noteFamilyOutcome）。
         std::string    family_host;
         long           family_resolve = CURL_IPRESOLVE_WHATEVER;
+        bool           family_retry = false;
     };
 
-    // M-2 修复：header callback，拦截 302→bad host 重定向。
-    // 在 Location 头到达时检查目标主机是否在 Engine::isBadHost；命中返回 0
-    // 让 curl 报 CURLE_WRITE_ERROR，handleFailure 看 abort_reason_bad_host
-    // 直接换源，避免 connect timeout 浪费 5-10s。
+    // 仅收集响应事实；重定向完成后下一hop重新准入，回调内不等待或领取探针。
     static size_t onHeader(char* buffer, size_t size, size_t nitems, void* userdata);
 
     // easy handle → TransferCtx 映射
     std::unordered_map<CURL*, std::unique_ptr<TransferCtx>> transfers_;
+    /**
+     * 下一 hop 仍使用原 NetThread/NetSource 和 owner，只更换实际 URL。
+     * 仅事件循环访问；准入未成功时保留，终态清理。不会持久化权限或建立另一套任务。
+     */
+    struct RedirectState { NetSourcePtr source; std::string url; int count = 0; };
+    std::unordered_map<NetThread*, RedirectState> pending_redirects_;
     std::unordered_map<std::string, int> host_active_;
     std::unordered_map<std::string, int> host_limit_;
     std::unordered_map<std::string, int> host_success_streak_;

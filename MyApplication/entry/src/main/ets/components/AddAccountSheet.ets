@@ -26,6 +26,7 @@
  * 创建日期：2026-05-09 · v2 重设计 2026-05-23
  */
 
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { webview } from '@kit.ArkWeb';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { ThemeColors } from 'commons';
@@ -118,17 +119,35 @@ export struct AddAccountSheet {
   // 防止 onLoadIntercept 多次触发同一个 code（WebView 重定向期间会反复回调）
   private codeConsumed: boolean = false;
 
+
+  /** 标题只投影当前账户分支；授权流程与表单草稿仍由原 mode/业务方法持有。 */
+  private accountTitle_(): string {
+    if (this.mode === MODE_OFFLINE) return '添加离线账户';
+    if (this.mode === MODE_AUTHLIB) return this.authPickProfiles.length > 0 ? '选择角色' : '添加第三方账户';
+    if (this.mode === MODE_MICROSOFT) return '微软账户登录';
+    return '添加账户';
+  }
+
+  /** 后端交换令牌期间不能返回；其余操作保留原返回分支的状态重置顺序。 */
+  private requestAccountBack_(): void {
+    if (this.busy) return;
+    // 多角色选择是第三方登录的内部一层；返回先清选择会话，不能直接跳过表单回类型页。
+    if (this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0) {
+      this.authPickProfiles = []; this.authSession = null; this.errorMsg = '';
+      return;
+    }
+    if (this.statusMsg.length > 0) return;
+    const microsoft: boolean = this.mode === MODE_MICROSOFT;
+    this.mode = MODE_CHOOSER; this.errorMsg = ''; this.codeConsumed = false;
+    if (microsoft) this.stage = STAGE_NONE;
+  }
+
   build() {
     Column() {
-      if (this.mode === MODE_CHOOSER) {
-        this.ChooserView();
-      } else if (this.mode === MODE_OFFLINE) {
-        this.OfflineView();
-      } else if (this.mode === MODE_MICROSOFT) {
-        this.MicrosoftView();
-      } else if (this.mode === MODE_AUTHLIB) {
-        this.AuthlibView();
-      }
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: this.accountTitle_(), subtitle: this.mode === MODE_MICROSOFT ? 'login.microsoftonline.com' : '', theme: this.theme, modal: false, showBack: this.mode !== MODE_CHOOSER, showClose: true, backEnabled: !this.busy && (this.statusMsg.length === 0 || (this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0)), surfaceColor: this.theme.bgSecondary, backLabel: this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0 ? '返回第三方账户表单' : '返回账户类型', closeLabel: '关闭添加账户', backId: 'add-account-back', closeId: 'add-account-close', onBack: (): void => { this.requestAccountBack_(); }, onClose: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%')
     .height('100%')
@@ -142,12 +161,6 @@ export struct AddAccountSheet {
   @Builder
   ChooserView() {
     Column({ space: 14 }) {
-      // 标题
-      Text('添加账户')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.theme.textPrimary)
-        .margin({ top: 8, bottom: 4 })
 
       // 微软正版 Hero 卡（渐变 + 阴影 + 三 chip）
       this.MicrosoftHero();
@@ -365,7 +378,7 @@ export struct AddAccountSheet {
   @Builder
   OfflineView() {
     Column({ space: 16 }) {
-      this.HeaderWithBack('添加离线账户');
+
 
       Text('用户名')
         .fontSize(14)
@@ -431,7 +444,7 @@ export struct AddAccountSheet {
   AuthlibForm() {
     Scroll() {
       Column({ space: 14 }) {
-        this.HeaderWithBack('添加第三方账户');
+
 
         // 预设皮肤站快捷填充
         if (SKIN_SERVER_PRESETS.length > 0) {
@@ -542,32 +555,7 @@ export struct AddAccountSheet {
   @Builder
   AuthlibProfilePicker() {
     Column({ space: 12 }) {
-      Row({ space: 12 }) {
-        Row() {
-          AppIcon({ name: AppIconName.ChevronLeft, iconSize: 22, color: this.theme.textPrimary })
-        }
-        .width(36)
-        .height(36)
-        .borderRadius(18)
-        .backgroundColor(this.theme.bgInput)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => {
-          if (this.busy) return;
-          this.authPickProfiles = [];
-          this.authSession = null;
-          this.errorMsg = '';
-        })
-        Text('选择角色')
-          .fontSize(18)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .padding({ top: 4, bottom: 4 })
-      .alignItems(VerticalAlign.Center)
-
+      // 内层角色标题和返回由同一外层宿主投影，避免旧36vp按钮与原生返回重复。
       Text('该账号下有多个角色，请选择要使用的角色')
         .fontSize(13)
         .fontColor(this.theme.textSecondary)
@@ -626,8 +614,8 @@ export struct AddAccountSheet {
   @Builder
   MicrosoftView() {
     Column() {
-      // —— 顶部 header（返回 + 标题 + 帮助） ——
-      this.MicrosoftHeader();
+      // 标题与返回由外层唯一宿主持有；此处保留原步骤、状态条与Web正文。
+
 
       // —— 步骤 progress ——
       this.StepProgress();
@@ -705,45 +693,7 @@ export struct AddAccountSheet {
     .height('100%')
   }
 
-  @Builder
-  MicrosoftHeader() {
-    Row({ space: 10 }) {
-      Row() {
-        AppIcon({ name: AppIconName.ChevronLeft, iconSize: 22, color: this.theme.textPrimary })
-      }
-      .width(36)
-      .height(36)
-      .borderRadius(18)
-      .backgroundColor(this.theme.bgInput)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
-      .onClick(() => {
-        if (this.statusMsg.length > 0) return;  // 后端流程进行中禁止后退
-        this.mode = MODE_CHOOSER;
-        this.errorMsg = '';
-        this.codeConsumed = false;
-        this.stage = STAGE_NONE;
-      })
 
-      Column({ space: 2 }) {
-        Text('微软账户登录')
-          .fontSize(16)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.theme.textPrimary)
-          .maxLines(1)
-        Text('login.microsoftonline.com')
-          .fontSize(11)
-          .fontWeight(FontWeight.Regular)
-          .fontColor(this.theme.textHint)
-          .maxLines(1)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ top: 6, bottom: 8, left: 12, right: 12 })
-    .alignItems(VerticalAlign.Center)
-  }
 
   @Builder
   StepProgress() {
@@ -841,37 +791,10 @@ export struct AddAccountSheet {
   }
 
   // ============================================================
-  //  公共：标题栏（带返回按钮）+ 错误条
+  //  公共：错误反馈条（标题和返回已统一到外层宿主）
   // ============================================================
 
-  @Builder
-  HeaderWithBack(title: string) {
-    Row({ space: 12 }) {
-      Row() {
-        AppIcon({ name: AppIconName.ChevronLeft, iconSize: 22, color: this.theme.textPrimary })
-      }
-      .width(36)
-      .height(36)
-      .borderRadius(18)
-      .backgroundColor(this.theme.bgInput)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
-      .onClick(() => {
-        if (this.busy || this.statusMsg.length > 0) return;  // 进行中禁止后退
-        this.mode = MODE_CHOOSER;
-        this.errorMsg = '';
-        this.codeConsumed = false;
-      })
-      Text(title)
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.theme.textPrimary)
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ top: 4, bottom: 4 })
-    .alignItems(VerticalAlign.Center)
-  }
+
 
   @Builder
   ErrorBanner(msg: string) {
@@ -1161,6 +1084,21 @@ export struct AddAccountSheet {
       this.stage = STAGE_NONE;
     }
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      if (this.mode === MODE_CHOOSER) {
+        this.ChooserView();
+      } else if (this.mode === MODE_OFFLINE) {
+        this.OfflineView();
+      } else if (this.mode === MODE_MICROSOFT) {
+        this.MicrosoftView();
+      } else if (this.mode === MODE_AUTHLIB) {
+        this.AuthlibView();
+      }
+
+      }
 }
 
 // ============================================================

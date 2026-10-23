@@ -268,6 +268,17 @@ bool parseFileConfig(napi_env env, napi_value js_file, NetFile::Config& out,
     }
     out.urls = std::move(urls);
 
+    // 下载授权只允许一个 HTTPS 原始地址，禁止把令牌广播给镜像/重定向或落入普通 URL 日志。
+    if (hasNamedProp(env, js_file, "bearerToken")) {
+        if (!readStringProp(env, js_file, "bearerToken", out.bearer_token, 128, false) ||
+            out.bearer_token.size() < 32 || out.bearer_token.find_first_not_of(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos ||
+            out.urls.size() != 1 || out.urls[0].rfind("https://", 0) != 0) {
+            err = "authorized download requires one HTTPS URL and a bounded token";
+            return false;
+        }
+    }
+
     if (hasNamedProp(env, js_file, "check")) {
         napi_value js_check = nullptr;
         napi_valuetype check_type = napi_undefined;
@@ -306,6 +317,34 @@ bool parseFileConfig(napi_env env, napi_value js_file, NetFile::Config& out,
             return false;
         }
         out.max_connections = static_cast<int>(max_conn); // checked range before cast
+    }
+
+    if (!out.bearer_token.empty() && (out.check.expected_size <= 0 || out.max_connections != 1)) {
+        err = "authorized download requires exact size and a single connection";
+        return false;
+    }
+    // Bearer与消费策略必须同时提交。持续时间转换为Native steady截止，不接收JS时钟起点。
+    if (!out.bearer_token.empty()) {
+        napi_value policy = nullptr, single = nullptr; napi_valuetype type = napi_undefined;
+        if (!hasNamedProp(env, js_file, "authorizedPolicy") ||
+            napi_get_named_property(env, js_file, "authorizedPolicy", &policy) != napi_ok ||
+            napi_typeof(env, policy, &type) != napi_ok || type != napi_object ||
+            napi_get_named_property(env, policy, "singleUse", &single) != napi_ok ||
+            napi_typeof(env, single, &type) != napi_ok || type != napi_boolean ||
+            napi_get_value_bool(env, single, &out.authorized_single_use) != napi_ok) {
+            err = "authorized download requires explicit consumption policy"; return false;
+        }
+        double attempts = 0, duration = 0, budget = 0;
+        if (!readNumberProp(env, policy, "maxHttpAttempts", attempts) || std::floor(attempts) != attempts || attempts < 1 || attempts > 30 ||
+            (out.authorized_single_use && attempts != 1) ||
+            !readNumberProp(env, policy, "validForNewRequestMs", duration) || std::floor(duration) != duration || duration < 1 || duration > 3600000 ||
+            !readNumberProp(env, policy, "maxBytes", budget) || std::floor(budget) != budget || budget < out.check.expected_size || budget > kMaxDownloadFileBytes) {
+            err = "download authorization policy is invalid"; return false;
+        }
+        out.authorized_policy = true; out.authorized_max_http_attempts = static_cast<int>(attempts);
+        out.authorized_valid_for_ms = static_cast<int64_t>(duration); out.authorized_max_bytes = static_cast<int64_t>(budget);
+    } else if (hasNamedProp(env, js_file, "authorizedPolicy")) {
+        err = "download policy requires a bearer token"; return false;
     }
 
     return true;
@@ -417,23 +456,6 @@ napi_value createStringArray(napi_env env, const std::vector<std::string>& value
     return array;
 }
 
-napi_value createErrorSnapshot(napi_env env, const DownloadExceptionPtr& error) {
-    napi_value object = nullptr;
-    if (!error) {
-        napi_get_null(env, &object);
-        return object;
-    }
-    napi_create_object(env, &object);
-    setStringProp(env, object, "kind", errorKindToString(error->kind));
-    setStringProp(env, object, "message", error->message);
-    setInt32Prop(env, object, "nativeCode", error->native_code);
-    setInt64Prop(env, object, "httpStatus", error->http_status);
-    setStringProp(env, object, "url", error->url_context);
-    napi_set_named_property(env, object, "triedUrls",
-                            createStringArray(env, error->tried_urls));
-    return object;
-}
-
 napi_value createFailedFilesSnapshot(napi_env env,
                                      const std::vector<FailedFileInfo>& failed_files) {
     napi_value array = nullptr;
@@ -449,7 +471,8 @@ napi_value createFailedFilesSnapshot(napi_env env,
                                                  : failed.local_path.substr(slash + 1));
         if (failed.last_error) {
             napi_set_named_property(env, object, "lastError",
-                                    createErrorSnapshot(env, failed.last_error));
+                                    createDownloadErrorSnapshot(env,
+                                        DownloadErrorSnapshot::Capture(failed.last_error)));
         }
         napi_set_named_property(env, object, "triedUrls",
                                 createStringArray(env, failed.tried_urls));
@@ -486,12 +509,17 @@ napi_value createTaskSnapshot(napi_env env, const LoaderDownloadPtr& task) {
     setInt64Prop(env, object, "etaSeconds", progress.eta_seconds);
     setInt64Prop(env, object, "durationMs", task->durationMs());
     setBoolProp(env, object, "terminal", isTerminalState(state));
+    // 逻辑终态与真实执行收敛分开：此事实包含 startup、callback、文件操作和传输引用，
+    // 仍由 Engine 统一裁决。调用方最终释放 owner 必须继续检查 purge 的原子结果。
+    setBoolProp(env, object, "executionSettled",
+                DownloadEngine::instance().isTaskExecutionSettled(task->taskId()));
     napi_set_named_property(env, object, "currentFiles",
                             createStringArray(env, progress.current_files));
 
     const auto error = task->error();
     if (error) {
-        napi_set_named_property(env, object, "error", createErrorSnapshot(env, error));
+        napi_set_named_property(env, object, "error",
+                                createDownloadErrorSnapshot(env, DownloadErrorSnapshot::Capture(error)));
     }
     napi_set_named_property(env, object, "failedFiles",
                             createFailedFilesSnapshot(env, task->failedFiles()));
@@ -565,12 +593,17 @@ struct EnvBridgeRegistry {
         if (old_complete) old_complete->close();
     }
 
-    void closeAll() {
+    /**
+     * detach 只是撤销本轮观察者；同一个仍存活的 env 随后可以重新 install。
+     * 只有 env cleanup 传入永久关闭，防止把 Ability 重绑误当作进程/JS 环境销毁。
+     * 无论哪种模式，先让旧 generation 失效再释放 TSFN，排队的旧回调均不能倒灌。
+     */
+    void closeAll(bool permanently = false) {
         std::unordered_map<uint64_t, BridgeSlot<NapiProgressBridgePtr>> old_progress;
         std::unordered_map<uint64_t, BridgeSlot<NapiCompleteBridgePtr>> old_complete;
         {
             std::lock_guard<std::mutex> lock(mutex);
-            closing = true;
+            closing = closing || permanently;
             for (auto& item : progress) {
                 item.second.current_generation->store(0, std::memory_order_release);
             }
@@ -600,7 +633,7 @@ void cleanupEnvRegistry(void* data) {
         auto it = g_registries.find(registry->env);
         if (it != g_registries.end() && it->second == registry) g_registries.erase(it);
     }
-    registry->closeAll();
+    registry->closeAll(true);
     delete registry;
 }
 
@@ -770,7 +803,10 @@ napi_value DownloadPurgeTask(napi_env env, napi_callback_info info) {
         return throwErrorAndReturnNull(env, "downloadPurgeTask: invalid taskId");
     }
     bool ok = DownloadEngine::instance().purgeTask(task_id);
-    if (ok) {
+    // createTask可能已原子回收旧终态owner。底层purge(missing)仍保持false合同，
+    // 但该ID不会复用，env里残留的观察者也必须幂等关闭，否则两类TSFN会持有旧
+    // JS closure直到env cleanup。仍存在但未收敛的任务不得被此分支提前解绑。
+    if (ok || !DownloadEngine::instance().getTask(task_id)) {
         if (auto* registry = getRegistry(env)) registry->closeTask(task_id);
     }
     napi_value r;
@@ -1325,6 +1361,11 @@ napi_value DownloadRelayStats(napi_env env, napi_callback_info /*info*/) {
 #define DL_NAPI_FUNC(name, fn) \
     { name, nullptr, fn, nullptr, nullptr, nullptr, napi_default, nullptr }
 
+/** 供短时lease使用相同的Native单调基准；不读用户时钟、不导出进程或设备身份。 */
+napi_value DownloadSteadyTime(napi_env env, napi_callback_info) {
+    napi_value result; napi_create_double(env, static_cast<double>(netThreadSteadyNowMs()), &result); return result;
+}
+
 } // namespace
 
 // ============================================================================
@@ -1339,6 +1380,7 @@ void registerDownloadNapi(napi_env env, napi_value exports) {
     }
     napi_property_descriptor desc[] = {
         DL_NAPI_FUNC("downloadCreateTask",      DownloadCreateTask),
+        DL_NAPI_FUNC("downloadSteadyTime",      DownloadSteadyTime),
         DL_NAPI_FUNC("downloadStart",           DownloadStart),
         DL_NAPI_FUNC("downloadCancel",          DownloadCancel),
         DL_NAPI_FUNC("downloadOnProgress",      DownloadOnProgress),

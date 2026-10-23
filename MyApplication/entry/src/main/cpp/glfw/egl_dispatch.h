@@ -9,7 +9,9 @@
 #include <utility>
 
 namespace amcl::desktop {
-/** MobileGL 向游戏提供桌面 OpenGL，内部 Vulkan 并不改变 EGL 的 client API。 */
+/** 从已冻结注册表取得 provider 公开 client API。MG 的 GLES、MobileGL 的 Vulkan
+ * 是 provider 内部 transport，不替代游戏 context 的桌面请求与实际授予身份。
+ */
 inline bool UsesDesktopOpenGlContext() {
     const auto* runtime = amcl::graphics::RequireGraphicsRuntime();
     return runtime && runtime->desktopGl();

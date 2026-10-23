@@ -7,6 +7,9 @@
 // `size_t` 用在下方的模板参数上。本 TU 从 2026-08-20 起也进主机侧 `-pedantic -Werror`
 // 构建（input_channel_policy_test），不能再依赖 <atomic> 间接引入它。
 #include <cstddef>
+#include <map>
+#include <mutex>
+#include <vector>
 
 #undef LOG_TAG
 #define LOG_TAG "AMCL_INPOLICY"
@@ -18,9 +21,13 @@ namespace {
 std::atomic<uint32_t> g_leftSeen{0};
 std::atomic<uint32_t> g_wheelSeen{0};
 
-// in-flight 的左键按下持有者。0 = 当前没有按下。
-std::atomic<uint8_t> g_leftPressOwner{
-    static_cast<uint8_t>(AMCL_INPUT_CHANNEL_NONE)};
+// 能力选择按按钮，持有记录按设备。不能把同通道的第二台设备当成重复 DOWN，
+// 更不能让它的 UP 清掉第一台设备的配对。surface gate 负责跨下游事务串行；
+// 本锁保护策略自身，测试/诊断访问不依赖平台锁。
+std::mutex g_buttonMutex;
+std::map<uint32_t, uint32_t> g_buttonSeen;
+using ButtonIdentity = std::pair<uint32_t, uint64_t>;
+std::map<ButtonIdentity, AmclInputChannel> g_buttonPressOwners;
 
 // 上一次打印过的所有者，用于"只在变化时打一行"。
 std::atomic<uint8_t> g_loggedLeftOwner{255u};
@@ -79,6 +86,18 @@ AmclInputChannel LeftOwnerLocked() {
     return PickOwner(kLeftPriority, g_leftSeen.load(std::memory_order_acquire));
 }
 
+// 平台按钮位掩码是 ABI，组合位和未知新位必须拒绝，不能误造左键。
+bool ValidButton(uint32_t button) {
+    return button == 1u || button == 2u || button == 4u ||
+           button == 8u || button == 16u;
+}
+
+bool ValidButtonChannel(AmclInputChannel channel, uint32_t button) {
+    return channel == AMCL_INPUT_CHANNEL_ARKUI_MOUSE ||
+           channel == AMCL_INPUT_CHANNEL_NATIVE_MOUSE ||
+           (button == 1u && channel == AMCL_INPUT_CHANNEL_TOUCH_MIRROR);
+}
+
 // 所有者变化时打一行。热路径上只做一次原子比较，稳态零日志。
 void LogOwnerChange(bool left, AmclInputChannel owner) {
     std::atomic<uint8_t>& slot = left ? g_loggedLeftOwner : g_loggedWheelOwner;
@@ -132,42 +151,84 @@ extern "C" bool amcl_input_policy_wheel_accepts(AmclInputChannel channel) {
 }
 
 extern "C" bool amcl_input_policy_left_begin(AmclInputChannel channel) {
-    if (channel == AMCL_INPUT_CHANNEL_NONE) return false;
-
-    const AmclInputChannel owner = LeftOwnerLocked();
-    if (owner != channel) return false;
-
-    // 已经有一次按下在飞行中：这是**同一条通道**的重复 DOWN（平台重发或合成流的
-    // DOWN/MOVE/DOWN 序列），不能再发一个 PRESS，否则 MC 侧的按下计数会失衡。
-    // 不同通道的重复 DOWN 上面那一行已经挡掉了。
-    uint8_t expected = static_cast<uint8_t>(AMCL_INPUT_CHANNEL_NONE);
-    if (!g_leftPressOwner.compare_exchange_strong(
-            expected, static_cast<uint8_t>(channel),
-            std::memory_order_acq_rel, std::memory_order_acquire)) {
-        return false;
-    }
-    return true;
+    // 兼容旧调用/host 契约：它们先显式 note，身份只能表达未知桶。新生产者应使用
+    // button_begin；该入口不可再承担有 deviceId 的物理事件。
+    if (LeftOwnerLocked() != channel) return false;
+    return amcl_input_policy_button_begin(channel, 0u, 1u);
 }
 
 extern "C" bool amcl_input_policy_left_end(AmclInputChannel channel) {
-    if (channel == AMCL_INPUT_CHANNEL_NONE) return false;
-    // 只认按下时的持有者，**刻意不看当前优先级**：一对 press/release 必须由同一条
-    // 通道送完。这正是旧的"500ms 空窗交接"做不到、从而导致左键卡在按下态的地方。
-    uint8_t expected = static_cast<uint8_t>(channel);
-    return g_leftPressOwner.compare_exchange_strong(
-        expected, static_cast<uint8_t>(AMCL_INPUT_CHANNEL_NONE),
-        std::memory_order_acq_rel, std::memory_order_acquire);
+    return amcl_input_policy_button_end(channel, 0u, 1u);
 }
 
 extern "C" bool amcl_input_policy_left_held(void) {
-    return g_leftPressOwner.load(std::memory_order_acquire) !=
-           static_cast<uint8_t>(AMCL_INPUT_CHANNEL_NONE);
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    for (const auto& held : g_buttonPressOwners) {
+        if (held.first.first == 1u) return true;
+    }
+    return false;
 }
 
 extern "C" void amcl_input_policy_reset_pairing(void) {
-    // 只清 in-flight 的配对，保留能力位图（理由见 .h）。
-    g_leftPressOwner.store(static_cast<uint8_t>(AMCL_INPUT_CHANNEL_NONE),
-                           std::memory_order_release);
+    // 只清在途配对，保留每个按钮已经证明的通道能力。
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    g_buttonPressOwners.clear();
+}
+
+extern "C" bool amcl_input_policy_button_begin(
+        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
+    if (!ValidButton(nativeButton) || !ValidButtonChannel(channel, nativeButton)) return false;
+    if (nativeButton == 1u) amcl_input_policy_note_left_channel(channel);
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    uint32_t& seen = g_buttonSeen[nativeButton];
+    seen |= ChannelBit(channel);
+    // 左键旧诊断入口仍可登记能力；其位图与新协议使用同一事实。
+    if (nativeButton == 1u) seen |= g_leftSeen.load(std::memory_order_acquire);
+    if (PickOwner(kLeftPriority, seen) != channel) return false;
+    const ButtonIdentity identity{nativeButton, deviceId};
+    if (g_buttonPressOwners.find(identity) != g_buttonPressOwners.end()) return false;
+    for (const auto& held : g_buttonPressOwners) {
+        if (held.first.first != nativeButton) continue;
+        // native/mirror 没有共享设备标识，不能猜测它与 ArkUI 是不同的硬件，
+        // 也不能在一次按住中迁移身份。已接受的通道完成 UP 后新优先级才生效。
+        if (held.second != channel) return false;
+    }
+    g_buttonPressOwners.emplace(identity, channel);
+    return true;
+}
+
+extern "C" bool amcl_input_policy_button_end(
+        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    const auto found = g_buttonPressOwners.find({nativeButton, deviceId});
+    if (found == g_buttonPressOwners.end() || found->second != channel) return false;
+    g_buttonPressOwners.erase(found);
+    return true;
+}
+
+extern "C" void amcl_input_policy_button_abort(
+        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
+    // 下游拒绝 DOWN 时只撤销该生产者刚取得的预留，不影响其它设备或按钮。
+    (void)amcl_input_policy_button_end(channel, deviceId, nativeButton);
+}
+
+extern "C" void amcl_input_policy_release_pointer_device(
+        uint64_t deviceId, bool includeUnknown,
+        AmclPhysicalButtonReleaseFn release, void* context) {
+    std::vector<ButtonIdentity> retired;
+    {
+        std::lock_guard<std::mutex> lock(g_buttonMutex);
+        for (auto it = g_buttonPressOwners.begin(); it != g_buttonPressOwners.end();) {
+            if (it->first.second == deviceId || (includeUnknown && it->first.second == 0u)) {
+                retired.push_back(it->first);
+                it = g_buttonPressOwners.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // 摘表先于回调，且不持策略锁进入 ingress/ledger，避免下游同步重入形成锁反转。
+    if (release) for (const auto& identity : retired) release(identity.second, identity.first, context);
 }
 
 extern "C" void amcl_input_policy_log_state(void) {

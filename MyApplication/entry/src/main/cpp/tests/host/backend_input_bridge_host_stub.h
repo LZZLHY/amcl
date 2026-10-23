@@ -19,6 +19,7 @@ void amclBackendInputHostStubReset(void);
 // unavailable = 1 时 `amclBackendInputNext` 返回 UNAVAILABLE 而不是 EMPTY。这两个返回值
 // 必须分开：宿主拿 UNAVAILABLE 表示 legacy 路由生效、物理边沿在 ring 里。
 void amclBackendInputHostStubSetUnavailable(int unavailable);
+int amclBackendInputHostStubTypedRouteActive(void);
 void amclBackendInputHostStubPush(const AmclBackendInputEvent* event);
 void amclBackendInputHostStubSetTextPacket(
     uint64_t packetId, const uint8_t* bytes, uint32_t byteCount);

@@ -18,12 +18,15 @@ import {
   EvidenceFileRecord, EvidenceFileState, EvidenceManifest, EvidenceRole,
   EvidenceSource, EvidenceUploadPolicy, EvidenceUploadSelection,
   defaultEvidenceSelection,
-  isDefaultEvidenceFile, isSafeEvidencePath,
+  isDefaultEvidenceFile, isSafeEvidencePath, isInternalEvidencePath,
 } from './EvidenceTypes';
 import { ensureDirSync } from './FileUtils';
 import { stringToUtf8 } from './Base64Util';
-import { evidenceFileStamp, evidenceTextDigest, hashEvidenceRange, readEvidenceTextBounded, writeEvidenceTextAtomic } from './EvidenceIo';
-import { readSessionCapture, CaptureSource, verifyCapturedSource, nativeSessionIo } from './SessionCapture';
+import { evidenceFileStamp, evidenceFileStampAsync, evidenceTextDigest, hashEvidenceRange,
+  readEvidenceTextBounded, writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync, ensureEvidenceTextDurableAsync, ensureEvidenceDirectoryAsync,
+  assertEvidencePreparationCurrent } from './EvidenceIo';
+import { readSessionCapture, readSessionCaptureAsync, CaptureSource, verifyCapturedSource,
+  verifyCapturedSourceAsync, nativeSessionIo, nativeSessionIoAsync } from './SessionCapture';
 import { readSessionBannerActivityId } from './GameLogPaths';
 
 const EVIDENCE_MANIFEST_NAME: string = 'evidence-manifest.json';
@@ -188,7 +191,8 @@ function newRecord_(fileId: string, path: string, localPath: string,
     bytes: bytes,
     lines: 0,
     capturedAt: 0,
-    completedAt: state === EvidenceFileState.COMPLETE ? Date.now() : 0,
+    // 目录枚举时钟不是生产者完成时刻；没有来源证明的新记录一律保持未知。
+    completedAt: 0,
     attribution: 'unknown',
     reason: safePath.length > 0 ? '' : '外发相对路径不安全',
     digest: '',
@@ -196,6 +200,38 @@ function newRecord_(fileId: string, path: string, localPath: string,
   record.defaultSelected = isDefaultEvidenceFile(record);
   if (record.defaultSelected) record.uploadPolicy = EvidenceUploadPolicy.DEFAULT;
   return record;
+}
+
+/** 证据时间只接受有限非负毫秒值；未来时间/损坏字段不作为已完成证明。 */
+function validEvidenceTime_(value: number): number {
+  return Number.isSafeInteger(value) && value >= 0 && value <= Date.now() ? value : 0;
+}
+
+/**
+ * 实际清单重建时只复用同一原件、同状态的旧有效时间。文件指纹仅确认内容没有变化，
+ * 不把 mtime 或本轮恢复时钟转换为完成证明；新增/变化文件仍保留 newRecord_ 的未知时间0。
+ * 固定 SHA 收据在本轮和旧轮均已核验时也可证明内容相同，适配旧清单没有轻量指纹的情况。
+ * 复用不会修改 state、归属或固定收据，损坏文件仍由原完整性校验降为 partial。
+ */
+function reuseStableEvidenceTimes_(files: EvidenceFileRecord[], previous: EvidenceManifest | undefined): void {
+  if (previous === undefined) return;
+  const oldFiles: Map<string, EvidenceFileRecord> = new Map<string, EvidenceFileRecord>();
+  for (const old of previous.files) oldFiles.set(old.path, old);
+  for (const file of files) {
+    const old = oldFiles.get(file.path);
+    if (old === undefined || old.fileId !== file.fileId || old.localPath !== file.localPath
+      || old.role !== file.role || old.source !== file.source || old.state !== file.state
+      || old.attribution !== file.attribution || old.reason !== file.reason || old.bytes !== file.bytes
+      || (old.verification ?? 'unverified') !== (file.verification ?? 'unverified')
+      || (old.rawSha256 ?? '') !== (file.rawSha256 ?? '') || (old.rawBytes ?? 0) !== (file.rawBytes ?? 0)) continue;
+    const sameFingerprint: boolean = file.digest.length > 0 && file.digest !== 'missing' && old.digest === file.digest;
+    const sameVerifiedReceipt: boolean = file.verification === 'verified' && old.verification === 'verified'
+      && (file.rawSha256 ?? '').length === 64 && old.rawSha256 === file.rawSha256 && old.rawBytes === file.rawBytes;
+    if (!sameFingerprint && !sameVerifiedReceipt) continue;
+    file.capturedAt = validEvidenceTime_(old.capturedAt);
+    file.completedAt = validEvidenceTime_(old.completedAt);
+    if (file.capturedAt > 0 && file.completedAt > 0 && file.completedAt < file.capturedAt) file.completedAt = 0;
+  }
 }
 
 function classify_(relativePath: string): EvidenceClassification {
@@ -274,9 +310,8 @@ function appendRecord_(out: EvidenceFileRecord[], activityId: number,
   localPath: string, relativePath: string, role: EvidenceRole,
   source: EvidenceSource, bytes: number, state: EvidenceFileState): void {
   if (bytes <= 0 || relativePath.length === 0) return;
-  // 恢复展示去重回执是内部协调状态，不是启动器正文；目录扫描不能把它默认外发，
-  // 也不能因它没有 capture-host 计数而把已经封账的游戏日志误标为 partial。
-  if (relativePath === 'launcher/recovery-receipt.json') return;
+  // 内务状态既不外发，也不以缺少正文采集计数为由反向影响会话完整性。
+  if (isInternalEvidencePath(relativePath)) return;
   const fileId: string = 'activity-' + activityId + '/' + relativePath;
   const record: EvidenceFileRecord = newRecord_(fileId, relativePath, localPath, role, source, bytes, state);
   if (record.path.length === 0) return;
@@ -294,10 +329,9 @@ function scanTree_(root: string, prefix: string, activityId: number,
   let names: string[] = [];
   try { names = fs.listFileSync(root); } catch (e) { return; }
   for (const name of names) {
-    if (name === EVIDENCE_MANIFEST_NAME || name === EVIDENCE_SELECTION_NAME
-      || name.indexOf('.tmp-') >= 0 || name.endsWith('.partial')) continue;
     const local: string = root + '/' + name;
     const remote: string = prefix.length > 0 ? prefix + '/' + name : name;
+    if (isInternalEvidencePath(remote)) continue;
     if (isDirectory_(local)) {
       scanTree_(local, remote, activityId, out, depth + 1);
       continue;
@@ -307,6 +341,61 @@ function scanTree_(root: string, prefix: string, activityId: number,
     appendRecord_(out, activityId, local, remote, kind.role, kind.source, bytes,
       EvidenceFileState.COMPLETE);
   }
+}
+
+/** 异步枚举的轻量边界：缺失文件保留原缺失语义，元数据错误不读取大正文。 */
+async function fileBytesAsync_(path: string): Promise<number> {
+  try { return Math.max(0, (await fs.stat(path)).size); } catch (_) { return 0; }
+}
+async function isDirectoryAsync_(path: string): Promise<boolean> {
+  try { return (await fs.stat(path)).isDirectory(); } catch (_) { return false; }
+}
+async function readTextAsync_(path: string): Promise<string> {
+  try { return await fs.readText(path); } catch (_) { return ''; }
+}
+/** 分类/选择为纯函数，文件身份由异步stat生成；内部协调记录永不进入可分享正文。 */
+async function appendRecordAsync_(out: EvidenceFileRecord[], activityId: number,
+  localPath: string, relativePath: string, role: EvidenceRole, source: EvidenceSource,
+  bytes: number, state: EvidenceFileState): Promise<void> {
+  if (bytes <= 0 || relativePath.length === 0 || isInternalEvidencePath(relativePath)) return;
+  if (out.some((record: EvidenceFileRecord): boolean => record.localPath === localPath)) return;
+  const record = newRecord_('activity-' + activityId + '/' + relativePath, relativePath, localPath, role, source, bytes, state);
+  if (record.path.length === 0) return;
+  try { record.digest = await evidenceFileStampAsync(localPath); } catch (_) { record.digest = 'missing'; }
+  out.push(record);
+}
+/** 只扫描本局公开证据目录，且每个目录/属性操作真正让出IO线程；不扫描全账本。 */
+async function scanTreeAsync_(root: string, prefix: string, activityId: number,
+  out: EvidenceFileRecord[], depth: number): Promise<void> {
+  if (depth > MAX_SCAN_DEPTH || !await isDirectoryAsync_(root)) return;
+  let names: string[];
+  try { names = await fs.listFile(root); } catch (_) { return; }
+  for (const name of names) {
+    const local: string = root + '/' + name;
+    const remote: string = prefix + '/' + name;
+    if (isInternalEvidencePath(remote)) continue;
+    if (await isDirectoryAsync_(local)) { await scanTreeAsync_(local, remote, activityId, out, depth + 1); continue; }
+    const kind = classify_(remote);
+    await appendRecordAsync_(out, activityId, local, remote, kind.role, kind.source, await fileBytesAsync_(local), EvidenceFileState.COMPLETE);
+  }
+}
+/** bounded横幅异步读取；只有横幅行的activityId证明stdout归属。 */
+async function readSessionBannerActivityIdAsync_(path: string): Promise<number> {
+  let file: fs.File | undefined;
+  try {
+    file = await fs.open(path, fs.OpenMode.READ_ONLY);
+    const buffer = new ArrayBuffer(2048);
+    const got: number = await fs.read(file.fd, buffer, { offset: 0, length: buffer.byteLength });
+    const head: string = util.TextDecoder.create('utf-8', { ignoreBOM: true }).decodeToString(new Uint8Array(buffer, 0, got));
+    const start: number = head.indexOf('##AMCL-SESSION-BEGIN');
+    if (start < 0) return 0;
+    const end: number = head.indexOf('\n', start);
+    const banner: string = head.substring(start, end < 0 ? head.length : end);
+    const match = banner.match(new RegExp('"activityId"\\s*:\\s*(\\d+)'));
+    const id: number = match === null ? 0 : Number(match[1]);
+    return Number.isSafeInteger(id) && id > 0 ? id : 0;
+  } catch (_) { return 0; }
+  finally { if (file !== undefined) { try { await fs.close(file); } catch (_) {} } }
 }
 
 /** 列出当前账本的全部真实证据文件，兼容旧六段文件名。 */
@@ -354,6 +443,8 @@ export function listSessionEvidence(filesDir: string, activityId: number, verify
   const capture = readSessionCapture(filesDir, activityId);
   if (capture !== undefined) {
     for (const item of capture.sources) {
+      // 兼容旧 capture 文件也必须经过内务分类，不能借来源插入绕过目录枚举规则。
+      if (isInternalEvidencePath(item.destination)) continue;
       let file = out.find((record: EvidenceFileRecord): boolean => record.path === item.destination);
       if (file === undefined) {
         const kind = classify_(item.destination);
@@ -488,13 +579,17 @@ export function refreshSessionEvidence(filesDir: string, activityId: number,
   missingReasons: string[] = []): EvidenceManifest {
   const files: EvidenceFileRecord[] = listSessionEvidence(filesDir, activityId);
   let previous = readSessionEvidence(filesDir, activityId);
+  reuseStableEvidenceTimes_(files, previous);
   let revision: number = previous === undefined ? 1 : previous.revision;
   let changed: boolean = previous === undefined || previous.files.length !== files.length;
   if (!changed && previous !== undefined) {
     for (let i = 0; i < files.length; i++) {
     if (files[i].path !== previous.files[i].path || files[i].bytes !== previous.files[i].bytes
         || files[i].state !== previous.files[i].state || files[i].attribution !== previous.files[i].attribution
-        || files[i].digest !== previous.files[i].digest) {
+        || files[i].digest !== previous.files[i].digest || files[i].reason !== previous.files[i].reason
+        || (files[i].verification ?? 'unverified') !== (previous.files[i].verification ?? 'unverified')
+        || (files[i].rawSha256 ?? '') !== (previous.files[i].rawSha256 ?? '')
+        || (files[i].rawBytes ?? 0) !== (previous.files[i].rawBytes ?? 0)) {
         changed = true;
         break;
       }
@@ -531,7 +626,8 @@ export function refreshSessionEvidence(filesDir: string, activityId: number,
   if (!files.some((file: EvidenceFileRecord): boolean => file.bytes > 0)) reasons.push('没有可用证据文件');
   if (reasons.length > 0) integrityState = 'partial';
   if (previous?.captureState !== captureState || previous?.integrityState !== integrityState
-    || previous?.droppedEvents !== dropped) changed = true;
+    || previous?.droppedEvents !== dropped || JSON.stringify(previous?.missingReasons ?? []) !== JSON.stringify(Array.from(new Set<string>(reasons)))) changed = true;
+  if (!changed && previous !== undefined) return previous;
   if (changed && previous !== undefined) revision++;
   const manifest: EvidenceManifest = {
     schema: 2, activityId: activityId, revision: revision,
@@ -562,7 +658,8 @@ function parseRecord_(value: Object): EvidenceFileRecord | undefined {
   const obj = value as Record<string, Object>;
   const path: string = parseString_(obj, 'path', '');
   const localPath: string = parseString_(obj, 'localPath', '');
-  if (!isSafeEvidencePath(path) || localPath.length === 0) return undefined;
+  // 老清单中的派生条目只在读取投影剔除，不为了清理字段而主动改写原清单字节。
+  if (!isSafeEvidencePath(path) || isInternalEvidencePath(path) || localPath.length === 0) return undefined;
   const role: EvidenceRole = parseString_(obj, 'role', EvidenceRole.OTHER) as EvidenceRole;
   const source: EvidenceSource = parseString_(obj, 'source', EvidenceSource.DERIVED) as EvidenceSource;
   const state: EvidenceFileState = parseString_(obj, 'state', EvidenceFileState.PARTIAL) as EvidenceFileState;
@@ -573,7 +670,7 @@ function parseRecord_(value: Object): EvidenceFileRecord | undefined {
     path: path, localPath: localPath, role: role, source: source, state: state,
     uploadPolicy: policy, defaultSelected: obj['defaultSelected'] === true,
     bytes: parseNumber_(obj, 'bytes', 0), lines: parseNumber_(obj, 'lines', 0),
-    capturedAt: parseNumber_(obj, 'capturedAt', 0), completedAt: parseNumber_(obj, 'completedAt', 0),
+    capturedAt: validEvidenceTime_(parseNumber_(obj, 'capturedAt', 0)), completedAt: validEvidenceTime_(parseNumber_(obj, 'completedAt', 0)),
     attribution: parseString_(obj, 'attribution', 'unknown'),
     reason: parseString_(obj, 'reason', ''), digest: parseString_(obj, 'digest', ''),
     rawSha256: parseString_(obj, 'rawSha256', ''), rawBytes: parseNumber_(obj, 'rawBytes', 0),
@@ -654,6 +751,7 @@ function normalizeEvidenceSelectionForFiles_(files: EvidenceFileRecord[],
   ids: string[]): string[] {
   const out: string[] = [];
   for (const file of files) {
+    if (isInternalEvidencePath(file.path)) continue;
     if (ids.indexOf(file.fileId) < 0 || file.uploadPolicy === EvidenceUploadPolicy.NEVER || file.bytes <= 0) continue;
     if (file.state === EvidenceFileState.MISSING || file.state === EvidenceFileState.NOT_PRODUCED
       || file.state === EvidenceFileState.NOT_APPLICABLE || file.state === EvidenceFileState.UNAVAILABLE
@@ -683,4 +781,247 @@ export function setEvidenceSelection(filesDir: string, activityId: number,
 export function resetEvidenceSelection(filesDir: string, activityId: number): EvidenceUploadSelection {
   const files: EvidenceFileRecord[] = listSessionEvidence(filesDir, activityId);
   return setEvidenceSelection(filesDir, activityId, defaultEvidenceSelection(files), true);
+}
+
+
+/** 异步恢复和首屏投影入口；复用原归属、完整性和选择策略，不在主线程读取大文件或同步递归。 */
+async function captureStatusAsync_(dir: string, game: boolean): Promise<NativeCaptureStatus | undefined> {
+  try {
+    return JSON.parse(await fs.readText(dir + (game ? '/capture-game.json' : '/capture-host.json'))) as NativeCaptureStatus;
+  } catch (e) { return undefined; }
+}
+
+async function applyCaptureStateAsync_(dir: string, files: EvidenceFileRecord[], activityId: number): Promise<void> {
+  for (const file of files) {
+    if (file.source === EvidenceSource.AMCL_LAUNCHER || file.role === EvidenceRole.RENDERER) {
+      const status = await captureStatusAsync_(dir, file.path.indexOf('-game.log') >= 0);
+      if (status !== undefined) {
+        const lost: number = status.dropped + status.writeFailures + status.truncated;
+        file.state = lost > 0 ? EvidenceFileState.PARTIAL
+          : status.sealed ? EvidenceFileState.COMPLETE : EvidenceFileState.WRITING;
+        file.attribution = 'exact';
+        file.reason = lost > 0 ? '采集缺口：丢弃 ' + status.dropped + '，写入失败 '
+          + status.writeFailures + '，截断 ' + status.truncated : '';
+      } else {
+        file.state = EvidenceFileState.PARTIAL;
+        file.reason = '历史文件没有采集计数，不能证明完整';
+      }
+    } else {
+      file.state = EvidenceFileState.AVAILABLE;
+      file.reason = '已保存文件；归属及完整性由采集记录说明';
+      // stdout 由归档器按横幅复制；清单每次读取原件横幅复核，兼容修复前已归档的文件。
+      // 仅有旧时间横幅或完全没有横幅时仍为 unknown，不靠文件名升级历史归属。
+      if (file.source === EvidenceSource.MC_STDIO) {
+        const id: number = await readSessionBannerActivityIdAsync_(file.localPath);
+        if (id === activityId) {
+          file.attribution = 'exact';
+          file.reason = '已核对游戏输出横幅中的活动 ID';
+        } else if (id > 0) {
+          file.attribution = 'previous-session';
+          file.state = EvidenceFileState.NOT_APPLICABLE;
+          file.reason = '游戏输出横幅属于其他活动';
+          file.uploadPolicy = EvidenceUploadPolicy.NEVER;
+        }
+      }
+      if (file.source === EvidenceSource.PLATFORM_DFX && file.path.startsWith('system/crash-report-event-')) {
+        file.attribution = 'exact';
+        file.reason = '已核对平台事件时间与进程归属';
+      }
+    }
+    file.defaultSelected = isDefaultEvidenceFile(file);
+    if (file.uploadPolicy !== EvidenceUploadPolicy.NEVER) {
+      file.uploadPolicy = file.defaultSelected ? EvidenceUploadPolicy.DEFAULT : EvidenceUploadPolicy.OPTIONAL;
+    }
+  }
+}
+
+export async function listSessionEvidenceAsync(filesDir: string, activityId: number, verifyReceipts: boolean = true): Promise<EvidenceFileRecord[]> {
+  const out: EvidenceFileRecord[] = [];
+  if (!filesDir || activityId <= 0) return out;
+  const dir: string = ledgerDir_(filesDir, activityId);
+  if (!await isDirectoryAsync_(dir)) return out;
+
+  const legacyNames: string[] = [
+    'launcher.log', 'launcher.tail.log', 'launcher.tail.1.log',
+    'game.log', 'mc-latest.log', 'jvm.log', 'crash-report.txt', 'system-crash.log',
+  ];
+  for (const name of legacyNames) {
+    const local: string = dir + '/' + name;
+    const bytes: number = await fileBytesAsync_(local);
+    if (bytes <= 0) continue;
+    // U03 归档器会同时保留兼容根文件和官方相对路径文件；优先列新路径，
+    // 避免活动页把同一份 latest/JVM/crash 显示两次。
+    if (name === 'game.log' && await fileBytesAsync_(dir + '/game/mc_output.log') > 0) continue;
+    if (name === 'mc-latest.log' && await fileBytesAsync_(dir + '/game/logs/latest.log') > 0) continue;
+    if (name === 'jvm.log' && await fileBytesAsync_(dir + '/jvm/jvm-stderr.log') > 0) continue;
+    if (name === 'crash-report.txt' && await isDirectoryAsync_(dir + '/crash-reports')) continue;
+    const mapping = legacyMapping_(name);
+    let remote: string = mapping.path;
+    if (name === 'launcher.log' && await fileBytesAsync_(dir + '/launcher/launcher-host.log') > 0) remote = 'launcher/launcher-legacy.log';
+    if (name === 'launcher.tail.log') remote = 'launcher/launcher-tail.log';
+    if (name === 'launcher.tail.1.log') remote = 'launcher/launcher-tail.1.log';
+    await appendRecordAsync_(out, activityId, local, remote, mapping.role, mapping.source, bytes,
+      EvidenceFileState.COMPLETE);
+  }
+  await scanTreeAsync_(dir + '/game', 'game', activityId, out, 0);
+  await scanTreeAsync_(dir + '/crash-reports', 'crash-reports', activityId, out, 0);
+  await scanTreeAsync_(dir + '/launcher', 'launcher', activityId, out, 0);
+  await scanTreeAsync_(dir + '/jvm', 'jvm', activityId, out, 0);
+  await scanTreeAsync_(dir + '/render', 'render', activityId, out, 0);
+  await scanTreeAsync_(dir + '/renderer', 'renderer', activityId, out, 0);
+  await scanTreeAsync_(dir + '/system', 'system', activityId, out, 0);
+  await scanTreeAsync_(dir + '/input', 'input', activityId, out, 0);
+  await scanTreeAsync_(dir + '/audio', 'audio', activityId, out, 0);
+  await scanTreeAsync_(dir + '/network', 'network', activityId, out, 0);
+  await scanTreeAsync_(dir + '/installer', 'installer', activityId, out, 0);
+  await scanTreeAsync_(dir + '/agent', 'agent', activityId, out, 0);
+  await applyCaptureStateAsync_(dir, out, activityId);
+  const capture = await readSessionCaptureAsync(filesDir, activityId);
+  if (capture !== undefined) {
+    for (const item of capture.sources) {
+      // 旧来源记录不具有把恢复状态变成正文证据的权限。
+      if (isInternalEvidencePath(item.destination)) continue;
+      let file = out.find((record: EvidenceFileRecord): boolean => record.path === item.destination);
+      if (file === undefined) {
+        const kind = classify_(item.destination);
+        file = newRecord_('activity-' + activityId + '/' + item.destination, item.destination,
+          dir + '/' + item.destination, kind.role, kind.source, 0, EvidenceFileState.NOT_PRODUCED);
+        out.push(file);
+      }
+      // 原件横幅与本局不匹配时，旧收据不能覆盖当前已证实的错误归属。
+      if (file.attribution === 'previous-session') continue;
+      file.state = item.state as EvidenceFileState;
+      file.attribution = item.attribution ?? 'unknown';
+      file.reason = item.reason;
+      // 清单只能消费固定归档收据。文件存在/大小变化/revision 更新都不能替代完整性校验。
+      if (item.captured.length > 0 && file.state !== EvidenceFileState.WRITING) {
+        // UI 可先枚举轻量来源，再通过异步读取逐份校验；外发/封账默认仍严格同步核验。
+        const issue: string = verifyReceipts ? await verifyCapturedSourceAsync(item, file.localPath) : '';
+        file.rawSha256 = item.capturedSha256;
+        file.rawBytes = item.capturedBytes;
+        file.captureMode = item.mode ?? 'snapshot';
+        file.verification = !verifyReceipts ? 'pending' : issue.length === 0 ? 'verified' : 'unverified';
+        if (issue.length > 0) { file.state = EvidenceFileState.PARTIAL; file.reason = issue; }
+      }
+      if (item.attribution === 'previous-session') {
+        file.state = EvidenceFileState.NOT_APPLICABLE;
+        file.uploadPolicy = EvidenceUploadPolicy.NEVER;
+      }
+      file.defaultSelected = isDefaultEvidenceFile(file);
+      if (file.uploadPolicy !== EvidenceUploadPolicy.NEVER) file.uploadPolicy = file.defaultSelected
+        ? EvidenceUploadPolicy.DEFAULT : EvidenceUploadPolicy.OPTIONAL;
+    }
+  }
+  if (!out.some((file: EvidenceFileRecord): boolean => file.role === EvidenceRole.LAUNCHER)) {
+    const status = await captureStatusAsync_(dir, false) ?? await captureStatusAsync_(dir, true);
+    const missing = newRecord_('activity-' + activityId + '/launcher/launcher-host.log',
+      'launcher/launcher-host.log', dir + '/launcher/launcher-host.log', EvidenceRole.LAUNCHER,
+      EvidenceSource.AMCL_LAUNCHER, 0, status === undefined ? EvidenceFileState.UNAVAILABLE : EvidenceFileState.NOT_PRODUCED);
+    missing.reason = status === undefined ? '启动器采集没有状态记录，无法确认完整性' : '本次活动没有产生启动器正文';
+    missing.uploadPolicy = EvidenceUploadPolicy.NEVER;
+    out.push(missing);
+  }
+  out.sort((a: EvidenceFileRecord, b: EvidenceFileRecord): number =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return out;
+}
+
+export async function readSessionEvidenceAsync(filesDir: string, activityId: number): Promise<EvidenceManifest | undefined> {
+  const text: string = await readTextAsync_(evidenceManifestPath_(filesDir, activityId));
+  if (text.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(text) as Record<string, Object>;
+    const values = parsed['files'];
+    const files: EvidenceFileRecord[] = [];
+    if (Array.isArray(values)) {
+      for (const value of values as Object[]) {
+        const record = parseRecord_(value);
+        if (record !== undefined) files.push(record);
+      }
+    }
+    return {
+      schema: parseNumber_(parsed, 'schema', 2),
+      activityId: parseNumber_(parsed, 'activityId', activityId),
+      revision: parseNumber_(parsed, 'revision', 1),
+      captureState: parseString_(parsed, 'captureState', 'unknown'),
+      integrityState: parseString_(parsed, 'integrityState', 'partial'),
+      droppedEvents: parseNumber_(parsed, 'droppedEvents', 0),
+      missingReasons: Array.isArray(parsed['missingReasons'])
+        ? parsed['missingReasons'] as string[] : [],
+      files: files,
+    };
+  } catch (e) {
+    return undefined;
+  }
+}
+
+/** 无变化不写盘；新清单耐久保存失败严格抛错，恢复owner不得确认消费输入。 */
+export async function refreshSessionEvidenceAsync(filesDir: string, activityId: number,
+  captureState: string = 'sealed', integrityState: string = 'complete',
+  missingReasons: string[] = [], publishGuard: (() => boolean) | undefined = undefined): Promise<EvidenceManifest> {
+  assertEvidencePreparationCurrent(publishGuard);
+  const files: EvidenceFileRecord[] = await listSessionEvidenceAsync(filesDir, activityId);
+  let previous = await readSessionEvidenceAsync(filesDir, activityId);
+  reuseStableEvidenceTimes_(files, previous);
+  let revision: number = previous === undefined ? 1 : previous.revision;
+  let changed: boolean = previous === undefined || previous.files.length !== files.length;
+  if (!changed && previous !== undefined) {
+    for (let i = 0; i < files.length; i++) {
+    if (files[i].path !== previous.files[i].path || files[i].bytes !== previous.files[i].bytes
+        || files[i].state !== previous.files[i].state || files[i].attribution !== previous.files[i].attribution
+        || files[i].digest !== previous.files[i].digest || files[i].reason !== previous.files[i].reason
+        || (files[i].verification ?? 'unverified') !== (previous.files[i].verification ?? 'unverified')
+        || (files[i].rawSha256 ?? '') !== (previous.files[i].rawSha256 ?? '')
+        || (files[i].rawBytes ?? 0) !== (previous.files[i].rawBytes ?? 0)) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  const reasons: string[] = missingReasons.filter((reason: string): boolean =>
+    reason !== '日志进程未完成封账' && reason !== '没有可用证据文件'
+      && reason.indexOf('日志采集有缺口') < 0 && !reason.startsWith('文件采集缺口：'));
+  let dropped: number = 0;
+  const io = await nativeSessionIoAsync(filesDir, activityId);
+  if (io !== undefined && (!io.consoleReady || io.ioError !== 0)) reasons.push('游戏原始输出重定向或写入失败');
+  if (io !== undefined && captureState !== 'running' && !io.ended) reasons.push('游戏原始输出未取得有序关闭证明');
+  if (io === undefined && files.some((file: EvidenceFileRecord): boolean => file.role === EvidenceRole.MINECRAFT_OUTPUT)) {
+    reasons.push('历史游戏输出没有连续采集与关闭收据，已保存内容可读取但完整性未证实');
+  }
+  const unverified = files.filter((file: EvidenceFileRecord): boolean => file.bytes > 0
+    && (file.source === EvidenceSource.MC_STDIO || file.source === EvidenceSource.MOJANG_LOG4J || file.source === EvidenceSource.JVM)
+    && file.verification !== 'verified');
+  if (unverified.length > 0) reasons.push('部分游戏/JVM 文件缺少可核验的封账收据');
+  for (const game of [false, true]) {
+    const status = await captureStatusAsync_(ledgerDir_(filesDir, activityId), game);
+    if (status === undefined) continue;
+    dropped += status.dropped;
+    if (status.dropped + status.writeFailures + status.truncated > 0) {
+      reasons.push((game ? '游戏进程' : '启动器进程') + '日志采集有缺口');
+    }
+    if (captureState !== 'running' && !status.sealed) reasons.push('日志进程未完成封账');
+  }
+  for (const file of files) {
+    if (file.state === EvidenceFileState.PARTIAL || file.state === EvidenceFileState.UNAVAILABLE) {
+      reasons.push('文件采集缺口：' + file.path + ' · ' + file.reason);
+    }
+  }
+  if (!files.some((file: EvidenceFileRecord): boolean => file.bytes > 0)) reasons.push('没有可用证据文件');
+  if (reasons.length > 0) integrityState = 'partial';
+  if (previous?.captureState !== captureState || previous?.integrityState !== integrityState
+    || previous?.droppedEvents !== dropped || JSON.stringify(previous?.missingReasons ?? []) !== JSON.stringify(Array.from(new Set<string>(reasons)))) changed = true;
+  if (!changed && previous !== undefined) {
+    await ensureEvidenceTextDurableAsync(evidenceManifestPath_(filesDir, activityId));
+    assertEvidencePreparationCurrent(publishGuard);
+    return previous;
+  }
+  if (changed && previous !== undefined) revision++;
+  const manifest: EvidenceManifest = {
+    schema: 2, activityId: activityId, revision: revision,
+    captureState: captureState, integrityState: integrityState,
+    droppedEvents: dropped, missingReasons: Array.from(new Set<string>(reasons)), files: files,
+  };
+  await ensureEvidenceDirectoryAsync(ledgerDir_(filesDir, activityId));
+  await writeEvidenceTextAtomicAsync(evidenceManifestPath_(filesDir, activityId), serializeManifest_(manifest), publishGuard);
+  return manifest;
 }

@@ -10,3 +10,10 @@
 #       ② NOEGL 硬件测试门 gl4es_notest 由 !gles_getProcAddress 改 !gles（有真实 GLES 库句柄即跑探测）。
 #       生成脚本 docker/gl4es_ohos_patch_edits.py；详见 CHANGELOG 1000145。
 0002-ohos-lazy-init-and-hwtest-gate.patch
+# 0003: 逐批参数/列表所有权、宽索引与 first、错误保留及通用 shader 属性。
+0003-draw-submission-lifetime-and-wide-indices.patch
+# 0004: 真实软件 GLES 验收暴露的未启用纹理/空 uniform cache C 边界。
+0004-fpe-zero-texture-and-empty-uniform-cache.patch
+# 0005: VAO 切换保留 context 的 ARRAY/PACK/UNPACK 绑定，查询/删除语义及资源清理。
+0005-vao-context-buffer-bindings.patch
+0006-texture-binding-query-desktop-names.patch

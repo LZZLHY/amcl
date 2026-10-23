@@ -71,6 +71,9 @@ try {
     hostLibrary = join(temp, 'bridge_host_fixture.dll');
     const common = ['/nologo', '/LD', '/MD', '/W4', '/D_CRT_SECURE_NO_WARNINGS',
       '/DAMCL_JNI_BRIDGE_HOST_TEST', '/DJNIEXPORT=__declspec(dllexport)', `/I${join(fixture, 'win32')}`];
+    // JDK会先加载自身捆绑的旧msvcp140.dll，新MSVC头的constexpr mutex布局不能交给它。
+    // 仅宿主夹具使用STL提供的兼容构造器；OHOS产品代码、互斥行为和所有用例均保持原路径。
+    common.push('/D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR');
     run('cl.exe', [...common, '/std:c++17', '/EHsc', join(fixture, 'bridge_host_fixture.cpp'),
       join(cpp, 'jvm/jni_registry.cpp'), '/link', `/OUT:${hostLibrary}`], env);
     run('cl.exe', [...common, '/TC', '/std:c11', join(cpp, 'glfw/jni_reregister.c'),
@@ -98,5 +101,7 @@ try {
   process.exitCode = 1;
 } finally {
   // temp 是本脚本的 mkdtemp 返回值，绝不使用 workspace/home 或用户提供的路径递归删除。
-  rmSync(temp, { recursive: true, force: true });
+  // 失败日志和hs_err必须保留，避免诊断路径打印出来后随即被删除。
+  if (!process.exitCode) rmSync(temp, { recursive: true, force: true });
+  else console.error('[test-jni-classloader-ownership] retained evidence: ' + temp);
 }

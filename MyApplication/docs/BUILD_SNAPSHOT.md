@@ -1,6 +1,6 @@
 # 公开快照构建说明
 
-1.0.5 / 1000678 的公开输入已同步至 `SOURCE_SNAPSHOT.json` 记录的干净源码提交，包含 JNA 三协议槽、启动参数与模组安装修复。下面的 1.0.4 全新克隆记录保留为历史证据；本次发布构建来自维护者源仓，不将其描述为重新完成了一次 1.0.5 公开克隆构建。当前 JNA 输入与验证入口见 [JNA 说明](../prebuilt/jna/README.md)。
+1.0.6 / 1000910 的公开输入对应干净源提交 `d5c059a4df22a29abc2bc39dd667913e22021642`，完整文件身份见 `SOURCE_SNAPSHOT.json`。本轮更新包含手机自更新与签名入口、游戏包导出、触控与下载修复及其构建输入；公开候选的文件/依赖身份核验与正式 HAP 构建、真机验收分别记录，不把同步快照称为重新完成公开克隆构建。下面的 1.0.4 全新克隆结果保留为历史证据。当前 JNA 输入与验证入口见 [JNA 说明](../prebuilt/jna/README.md)。
 
 2026-09-24 已按此流程完成 **1.0.4 / 1000671、sideload / release / unsigned** HAP 构建及包内关键输入校验；环境、产物 SHA-256 和剩余限制见 [本轮核验记录](public-reproduction-audit.md)。
 
@@ -20,7 +20,8 @@
 | Hvigor 基线 | 锁文件记录 6.26.4；过旧插件可能在读取 26.0.0 SDK 配置时失败 |
 | Native 基线 | BiSheng clang 15.0.4、CMake 3.28.2；具体工具身份还记录在 toolchain.lock 的 SHA-256 中 |
 | Node.js | 使用与所装 Hvigor 配套的 Node，并确保 node 命令在 PATH 中可用 |
-| JDK | JDK 21 或更高，含 javac、java、jar；设置 JAVA_HOME。启动器本体使用 --release 8，但 Fabric 兼容产物使用 --release 21 |
+| JDK | HAP 构建使用完整 JDK 21 或更高，含 javac、java、jar；兼容层输入可单独配置完整 JDK 25，见 build-dependencies.local.json.example，不提交本机配置 |
+| Rust | 非 store 产品的手机 HDC 使用 Cargo 与 aarch64-unknown-linux-ohos target，按 Cargo.lock 的 --locked 模式构建；没有对应工具链时会明确失败 |
 | Python | Python 3；python 命令应在 PATH 可用。Java 构建和 LWJGL 后处理均会调用 Python；AMCL_PYTHON 可指定部分 Node 入口使用的解释器 |
 | PowerShell | 本文示例采用 PowerShell；可选的独立 Native 重建配方通过 pwsh 调用 PowerShell 7 |
 
@@ -50,7 +51,7 @@ node scripts/check-public-snapshot.mjs
 
 [SOURCE_SNAPSHOT.json](../SOURCE_SNAPSHOT.json) 记录同步时的源仓库提交、工作区是否有未提交改动以及文件 SHA-256。sourceDirty 为 true 表示快照包含当时工作区的改动，sourceCommit 只是其基线提交，不能独自标识快照的全部内容。文件清单用于核对实际交付内容；文本校验按 LF 规范化，避免 Windows 换行转换造成误报。
 
-完整 Git 仓库的根位于 MyApplication/ 的上一层。[根 .gitmodules](../../.gitmodules) 与 Git 索引中的三个 gitlink 共同记录 LWJGL、MobileGlues 和 MobileGL。GitHub 的 ZIP 下载不包含依赖工作树，也缺少这些来源检查需要的 Git 身份；请使用 Git 克隆并保留外层仓库。
+完整 Git 仓库的根位于 MyApplication/ 的上一层。[根 .gitmodules](../../.gitmodules) 与 Git 索引中的四个 gitlink 共同记录 LWJGL、MobileGlues、MobileGL 和 muka-rust-hdc。HDC 的源码身份沿 SOURCE_SNAPSHOT 中的精确源 gitlink 记录，原三个依赖仍与 deps.lock 交叉核验。GitHub 的 ZIP 下载不包含依赖工作树，也缺少这些来源检查需要的 Git 身份；请使用 Git 克隆并保留外层仓库。
 
 [gate0-evidence.lock](../gate0-evidence.lock) 与其引用的 [docs/testing/gate0-raw-relative-evidence.md](testing/gate0-raw-relative-evidence.md) 也是构建必需输入。默认 Native 配置启用受 Gate 0 管理的输入能力，CMake 在配置阶段校验批准条目、文档存在性与内容身份；删除其中任一文件会使该配置被拒绝。
 
@@ -104,6 +105,7 @@ node scripts/prepare-public-deps.mjs --check
 | OpenAL Soft | setup_deps.sh 按 deps.lock 的 upstream/tag/commit 拉取并校验 SHA，再通过 docker/apply_patches.sh 幂等应用 OHAudio 注册补丁 |
 | SDL3 源码 | 根据 deps.lock [sdl3-native] 准备到 prebuilt/sdl3/sdl3_src；普通 HAP 使用快照内已保留的 SDL3 库 |
 | MobileGL | 初始化 fork 和所需嵌套依赖（包括生产线程池使用的 asio），补全 glslang known_good 外部依赖；校验随仓 dist 并准备 HAP 输入 |
+| 手机 HDC | 初始化 muka-rust-hdc 固定子模块；AMCL 适配、Cargo.lock 和构建入口保留在源码内，非 store 产品正常构建时生成静态库 |
 | ArkTS HAR | 下一步通过 ohpm 安装，Git 子模块步骤不负责 HAR |
 | JDK 游戏运行时 | 应用运行时按配置下载；构建主机的 JAVA_HOME 和设备使用的 JDK 是两件事 |
 

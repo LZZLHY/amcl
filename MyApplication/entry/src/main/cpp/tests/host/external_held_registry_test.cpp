@@ -239,6 +239,41 @@ void TestKeyAndMouseOutputsAreDistinct() {
     CHECK(registry.TakeSameSource(mouse0, AMCL_INPUT_SOURCE_GAMEPAD) == 22);
 }
 
+// Forget 是 PRESS 回滚专用（见 external_held_edge_router.cpp）：按 owner 精确摘除，而不是像
+// TakeSameSource 那样按 LIFO 取最近一条。若退化成 LIFO，回滚会摘掉同端后登记的另一条记录，
+// 留下的恰好是本该回滚的那条 —— 即一条幽灵 owner。
+void TestForgetRemovesExactOwnerOnly() {
+    ExternalHeldRegistry registry;
+    CHECK(registry.Acquire(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 1));
+    CHECK(registry.Acquire(kSpace, AMCL_INPUT_SOURCE_TOUCH_CONTROLS, 2));
+    CHECK(registry.Acquire(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 3));
+    // 摘栈底那条 1（LIFO 会取到 3），同端的 3 与别端的 2 都不许动。
+    CHECK(registry.Forget(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 1));
+    CHECK(registry.PeekSameSource(kSpace, AMCL_INPUT_SOURCE_GAMEPAD) == 3);
+    CHECK(registry.LiveCountForSource(AMCL_INPUT_SOURCE_GAMEPAD) == 1u);
+    CHECK(registry.LiveCountForSource(AMCL_INPUT_SOURCE_TOUCH_CONTROLS) == 1u);
+    // 端、owner、输出任一不匹配，或 owner 为哨兵 0、端越界，都不改变任何状态。
+    CHECK(!registry.Forget(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 2));
+    CHECK(!registry.Forget(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 1));
+    CHECK(!registry.Forget(kLeftButton, AMCL_INPUT_SOURCE_GAMEPAD, 3));
+    CHECK(!registry.Forget(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 0));
+    CHECK(!registry.Forget(kSpace, static_cast<AmclInputSource>(AMCL_INPUT_SOURCE_COUNT), 3));
+    CHECK(registry.LiveTotal() == 2u);
+    // 精确摘除计入 released：每一端 acquired - released == live 保持成立。
+    for (int i = 0; i < AMCL_INPUT_SOURCE_COUNT; ++i) {
+        const AmclInputSource source = static_cast<AmclInputSource>(i);
+        CHECK(registry.AcquiredForSource(source) - registry.ReleasedForSource(source) ==
+              static_cast<unsigned>(registry.LiveCountForSource(source)));
+    }
+    CHECK(registry.ReleasedForSource(AMCL_INPUT_SOURCE_GAMEPAD) == 1u);
+    // 摘空之后表照常可用：同端再登记、再取回都正常。
+    CHECK(registry.Forget(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 3));
+    CHECK(registry.Forget(kSpace, AMCL_INPUT_SOURCE_TOUCH_CONTROLS, 2));
+    CHECK(registry.LiveTotal() == 0u);
+    CHECK(registry.Acquire(kSpace, AMCL_INPUT_SOURCE_GAMEPAD, 4));
+    CHECK(registry.TakeSameSource(kSpace, AMCL_INPUT_SOURCE_GAMEPAD) == 4);
+}
+
 // ---------------------------------------------------------------------------
 // MaxRecordsForSameSource（2026-09-01 新增）
 //
@@ -313,6 +348,7 @@ int main() {
     TestClearLeavesRegistryReusable();
     TestPeekAfterDrainReturnsZero();
     TestKeyAndMouseOutputsAreDistinct();
+    TestForgetRemovesExactOwnerOnly();
     TestMaxRecordsForSameSourceIsOneWhenHealthy();
     TestCrossSourceSharingIsNotCountedAsStacking();
     TestSameSourceStackingIsVisible();

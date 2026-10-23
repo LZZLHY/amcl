@@ -3,8 +3,7 @@
  *
  * 新版结构（自上而下）：
  *   ┌──────────────────────────────────────────┐
- *   │ DragPill                              [+] │
- *   │ 账户管理                                  │
+ *   │ 共享模态标题 · 账户管理             [+][×] │
  *   ├──────────────────────────────────────────┤
  *   │ [HeroCard · 当前账户]                     │
  *   │   左：96x160 全身皮肤渲染                  │
@@ -21,7 +20,8 @@
  *   - 其他账户列表，单击 → 切换到当前
  *   - HeroCard 的 "皮肤详情" → 弹出 SkinCapeDetailSheet（更大的皮肤+披风预览）
  *   - HeroCard 的 "刷新令牌" → 微软账户走 refresh()，离线账户禁用
- *   - 长按 / X 图标 → 二次确认删除
+ *   - 账户移除动作经过二次确认；标题关闭不删除账户
+ *   - 标题 [+] 仅展开既有添加流程，标题 [×] 仅请求父层关闭整个账户管理
  *
  * 与 v1 的差异：
  *   - v1 把所有账户平铺成等大的行；选中态只在背景色区分
@@ -43,6 +43,7 @@ import { CapePreview } from './CapePreview';
 import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { centerSheetForLayout, sheetWidthForLayout, detailSheetHeightForLayout, largeSheetHeightForLayout } from 'commons';
 import { Breakpoint, DeviceForm } from 'commons';
 
@@ -120,39 +121,14 @@ export struct AccountListSheet {
 
   build() {
     Column() {
-      // ===== 顶部标题栏 =====
-      Row({ space: 8 }) {
-        Text('账户管理')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-        Row() {
-          AppIcon({ name: AppIconName.Plus, iconSize: 22, color: this.theme.primary, weight: FontWeight.Bold })
-        }
-        .width(36)
-        .height(36)
-        .borderRadius(18)
-        .backgroundColor(this.theme.primaryLight)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => { this.showAddSheet = true; })
-      }
-      .width('100%')
-      .padding({ left: 20, right: 16, top: 12, bottom: 8 })
-      .alignItems(VerticalAlign.Center)
-
-      // ===== 主体 =====
-      if (this.accounts.length === 0) {
-        this.EmptyView();
-      } else {
-        this.MainScroll();
-      }
-
-      // ===== Refresh 错误横幅（绝对定位在底部，3s 自动消失） =====
-      if (this.refreshErrorMsg.length > 0) {
-        this.ErrorToast(this.refreshErrorMsg);
-      }
+      // 主列表标题与圆形新增入口共享真实标题宿主；新增仍只打开原 AddAccount 子 Sheet。
+      // X 继续调用父层 onClose，选择账户、刷新令牌、皮肤预览与自动登录均不由标题接管。
+      ImmersiveTitleScaffold({ title: '账户管理', theme: this.theme, surfaceColor: this.theme.bgSecondary,
+        modal: true, closeLabel: '关闭账户管理', onClose: (): void => { this.onClose(); },
+        menuActions: [{ id: 'add-account', label: '新增账户', icon: AppIconName.Plus }],
+        onMenuAction: (id: string): void => { if (id === 'add-account') this.showAddSheet = true; },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
 
       // ===== 子 Sheet 锚点（与 Index.ets 模式保持一致） =====
       // 不可见锚点：承载 AddAccountSheet。把 bindSheet 绑在零尺寸 Column 上避免和后面
@@ -885,4 +861,20 @@ export struct AccountListSheet {
     if (acc.type !== AccountType.MICROSOFT) return false;
     return acc.uuid.length === 32 || acc.uuid.length === 36;
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      // ===== 主体 =====
+      if (this.accounts.length === 0) {
+        this.EmptyView();
+      } else {
+        this.MainScroll();
+      }
+
+      // ===== Refresh 错误横幅（绝对定位在底部，3s 自动消失） =====
+      if (this.refreshErrorMsg.length > 0) {
+        this.ErrorToast(this.refreshErrorMsg);
+      }
+      }
 }

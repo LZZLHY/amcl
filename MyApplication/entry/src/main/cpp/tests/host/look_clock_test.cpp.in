@@ -1,0 +1,92 @@
+/**
+ * idle/UP封尾与SDK采样时钟的生产路径回归。复用既有transport的宿主窗口/平台边缘，
+ * 不复制Source、Core、family数学、stream顺序、ring或产品GLFW callback状态机。
+ */
+@TRANSPORT_PREFIX@
+
+/** 比较真实owner输出；误差仅容纳生产线性贡献相加的double舍入。 */
+bool clockNear(double a,double b){return std::abs(a-b)<1e-8;}
+
+int main(){
+    // 合法资源初始化沿原transport fixture；公告也在真实生产consumer启动之前发布。
+    const auto* core=amclInputGetHostApiV1();CHECK(amclInputHostDescriptorPublishV1(core)==0);
+    uint64_t epoch=0;CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+    AmclInputSurfacePayload surface{};surface.active=1;surface.widthPx=1280;surface.heightPx=720;surface.density=1;
+    surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;CHECK(core->publishSurface(&surface)==0);
+    AmclInputEvent context{};context.header.abiVersion=1;context.header.structSize=sizeof(context);
+    context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+    context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=42;context.payload.surfaceContext.displayId=1;
+    context.payload.surfaceContext.widthPx=1280;context.payload.surfaceContext.heightPx=720;context.payload.surfaceContext.density=1;
+    context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    CHECK(core->submitEvent(&context)==0);
+    CHECK(inputBridge_configureMenuCursorConsumerV1(1,1)==1);(void)inputBridge_setInputReady(1);
+    GLFWwindow window;window.cursorPosCb=moved;g_currentWindow=&window;
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&window),1,42);inputBridge_glfwSetActive(&window,1);
+    inputBridge_setGrabState(1);amclLookExecutionPublishV1();inputBridge_setLookPrefixCallbackV1(bridgeLookPrefixCallback);
+    const auto* look=amclLookExecutionGetPortV1();CHECK(look);
+    const AmclLookPolicyV1 policy{sizeof(policy),0,1,.6,0};CHECK(look->applyPolicy(1,&policy)==0);
+    AmclLookResourceV1 resource{};CHECK(inputBridge_getLookResourceV1(&resource)==1);
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;stream.kind=AMCL_LOOK_TOUCH_DELTA;
+    stream.unit=AMCL_LOOK_SURFACE_PIXELS;stream.clock=AMCL_LOOK_PLATFORM_SAMPLE;stream.resource=resource;
+    uint64_t handle=0;CHECK(look->openStream(&stream,&handle)==0);
+    const uint64_t n1=1000000000,n2=1025000000,queued=1005000000;
+    AmclLookPrefixV1 first{},tail{},next{};
+    CHECK(amclLookExecutionCommitV1(handle,10,0,n1,1,101,n1,0,&first)==1);
+    const auto beforeFlush=amcl::input::SourceLookPipelineSnapshot();
+    // flush2不能携带新非零delta，拒绝时不能交换候选贡献或返回假prefix。
+    CHECK(amclLookExecutionCommitV1(handle,1,0,n2,1,102,n2,2,&next)==AMCL_LOOK_REJECTED&&next.token==0);
+    CHECK(amcl::input::SourceLookPipelineSnapshot().accepted==beforeFlush.accepted);
+    CHECK(amclLookExecutionCommitV1(handle,0,0,n2,1,103,n2,2,&tail)==1);
+    const auto afterSeal=amcl::input::SourceLookPipelineSnapshot();
+    // 精确时间的真实owner事务：flush不能使n1+5ms这个合法SDK sample变逆序。
+    const int queuedAccepted=amclLookExecutionCommitV1(handle,1,0,queued,1,104,n2+1,0,&next);
+    CHECK(queuedAccepted==AMCL_LOOK_PREFIX_READY);
+    CHECK(afterSeal.accepted==beforeFlush.accepted);
+    CHECK(look->retirePrefix(first.token)==0&&look->retirePrefix(tail.token)==0&&look->retirePrefix(next.token)==0);
+    CHECK(look->retireStream(handle)==0&&look->openStream(&stream,&handle)==0);
+    // 新流sample=0仍共享本来源family.last；只修stream.sample的一半修法会在这里失败。
+    CHECK(amclLookExecutionCommitV1(handle,1,0,queued+1,1,105,n2+2,0,&next)==1);
+    CHECK(look->retirePrefix(next.token)==0);
+    CHECK(amclLookExecutionCommitV1(handle,1,0,queued,1,106,n2+3,0,&next)==AMCL_LOOK_REJECTED&&next.token==0);
+    CHECK(look->retireStream(handle)==0);
+
+    // 实际Source→bridge容量预留→owner→GLFW：延迟UI提交的SDK样本跨idle后仍累计11px。
+    const double basis=window.cursorX;const uint64_t sdkFirst=now(),sdkQueued=sdkFirst+5000000;
+    CHECK(amclSourceLookSubmit(1,10,0,static_cast<int64_t>(sdkFirst)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));CHECK(now()>sdkQueued);
+    CHECK(amclSourceLookFlush(1,true));
+    const auto afterIdle=amcl::input::SourceLookPipelineSnapshot();
+    CHECK(amclSourceLookSubmit(1,1,0,static_cast<int64_t>(sdkQueued)));
+    CHECK(amcl::input::SourceLookPipelineSnapshot().accepted==afterIdle.accepted+1);
+    const auto beforeReverse=amcl::input::SourceLookPipelineSnapshot();
+    CHECK(!amclSourceLookSubmit(1,1,0,static_cast<int64_t>(sdkQueued-1)));
+    CHECK(amcl::input::SourceLookPipelineSnapshot().accepted==beforeReverse.accepted);
+    CHECK(amclSourceLookFlush(1,true));pump(window);CHECK(clockNear(window.cursorX,basis+11));
+    // 正常UP的true只封尾、不退休；随后cancel/reopen也不能继承idle deadline作采样水位。
+    CHECK(amclSourceLookFlush(1,false));
+    CHECK(amclSourceLookSubmit(1,2,0,static_cast<int64_t>(sdkQueued+1000000)));
+    CHECK(amclSourceLookFlush(1,true));pump(window);CHECK(clockNear(window.cursorX,basis+13));
+    // CANCEL在晚消费之前精确撤旧流pending和prefix，不把旧运动补进新手势。
+    const double beforeCancel=window.cursorX;
+    CHECK(amclSourceLookSubmit(1,7,0,static_cast<int64_t>(sdkQueued+2000000)));
+    CHECK(amcl::input::SourceLookPipelineSnapshot().backlogDx>0);
+    CHECK(amclSourceLookFlush(1,false));pump(window);CHECK(clockNear(window.cursorX,beforeCancel));
+    CHECK(amclSourceLookSubmit(1,3,0,static_cast<int64_t>(sdkQueued+3000000)));
+    CHECK(amclSourceLookFlush(1,true));pump(window);CHECK(clockNear(window.cursorX,basis+16));
+
+    // delta封尾仍推进已知mapped速率的owner时钟；未指定的mapped pending不能被flush2偷补。
+    CHECK(look->openStream(&stream,&handle)==0);
+    AmclLookStreamV1 mapped=stream;mapped.source=2;mapped.kind=AMCL_LOOK_MAPPED_RATE;
+    mapped.clock=AMCL_LOOK_OWNER_MONOTONIC;mapped.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;
+    mapped.device=9;mapped.connection=1;uint64_t rate=0;CHECK(look->openStream(&mapped,&rate)==0);
+    const uint64_t rateStart=now();CHECK(look->submitVelocity(rate,1080,0,rateStart)==0);
+    CHECK(amclLookExecutionCommitV1(handle,0,0,0,1,107,rateStart+10000000,2,&next)==1);
+    const auto* control=amclControlDeliveryGetPortV1();uint64_t consumer=0;CHECK(control->open(1,42,&consumer)==0);
+    CHECK(look->bindConsumer(consumer,0,0)==0);AmclLookEmissionV1 emission{};
+    CHECK(look->prepare(consumer,next.token,&emission)==1&&clockNear(emission.dx,6.48));
+    CHECK(look->claim(&emission)==1&&look->complete(&emission,AMCL_CONTROL_STATE_FINAL)==0);
+    look->closeConsumer(consumer);control->close(consumer);
+    CHECK(look->retireStream(rate)==0&&look->retireStream(handle)==0&&look->retirePrefix(next.token)==0);
+    std::puts("LOOK CLOCK PASS: delayed SDK sample/stream reopen/true reverse/nonzero flush rejection/UP/CANCEL/mapped owner advance/real GLFW");
+}

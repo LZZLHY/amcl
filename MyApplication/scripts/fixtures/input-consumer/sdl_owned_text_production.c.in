@@ -1,0 +1,85 @@
+/* 真实 Source/Core owned 文本 → backend packet → SDK send → SDL_PollEvent。
+ * 平台窗口发现是显式宿主边缘；Core资格/Source编辑键/包读释放/SDL缓存与队列均真实。
+ * 观察记录不承担第二份文本模型，SDK字符串在每次真实Poll时立即复制，不借悬垂指针。 */
+@PRELUDE@
+static const AmclInputHostApiV1 *core;
+static const AmclSourceControlPortV1 *source;
+static Uint64 producer, epoch, packetIds[64];static unsigned packetCount;
+static unsigned textInputs,textEdits,backDown,backUp;static int lastStart,lastLength;
+static char lastText[128];
+static const char unicodeText[]="汉😀字a";
+void recordOwnedPacket(const AmclBackendInputEvent *event) {
+ if(event->eventType!=AMCL_BACKEND_INPUT_EVENT_TEXT_COMMIT&&event->eventType!=AMCL_BACKEND_INPUT_EVENT_TEXT_EDITING)return;
+ CHECK(packetCount<64);packetIds[packetCount++]=event->deviceId;
+ // 真正的只读scalar口必须将汉字/emoji视为独立scalar；不按UTF8字节数猜。
+ Uint32 count=0;int status=amclBackendInputReadTextScalars(3,event->deviceId,NULL,0,&count);
+ CHECK(status==AMCL_BACKEND_INPUT_ERROR_BUFFER_TOO_SMALL||status==AMCL_BACKEND_INPUT_EVENT);
+ Uint32 scalars[64];CHECK(count<64);CHECK(amclBackendInputReadTextScalars(3,event->deviceId,scalars,64,&count)==AMCL_BACKEND_INPUT_EVENT);
+ if(event->code==(Sint32)SDL_strlen(unicodeText))CHECK(count==4&&scalars[0]==0x6c49u&&scalars[1]==0x1f600u&&scalars[2]==0x5b57u&&scalars[3]==97u);
+}
+/* 以下producer助手直接调用真实Core API；stamp只冻结当前合法文字命令的epochs，
+ * session/commit/editing返回真实接受或拒绝码，不提供假的transport结果。 */
+static AmclInputSnapshotV1 snapshotCore(void){AmclInputSnapshotV1 s;SDL_zero(s);s.abiVersion=1;s.structSize=sizeof(s);CHECK(core->getSnapshot(&s)==0);return s;}
+static void stamp(AmclInputEvent *e,Uint32 type){SDL_zero(*e);e->header.abiVersion=1;e->header.structSize=sizeof(*e);e->header.source=AMCL_INPUT_SOURCE_IME;e->header.eventType=type;AmclInputSnapshotV1 s=snapshotCore();e->header.sessionEpoch=s.sessionEpoch;e->header.focusEpoch=s.focusEpoch;e->header.surfaceEpoch=s.surfaceEpoch;}
+static int session(Uint64 id,Uint32 change){AmclInputEvent e;stamp(&e,AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED);e.payload.textSession.textSessionId=id;e.payload.textSession.change=change;e.payload.textSession.reason=AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;return core->submitEvent(&e);}
+static int commit(Uint64 id,const char *s){AmclInputEvent e;stamp(&e,AMCL_INPUT_EVENT_TEXT_COMMIT);e.payload.textCommit.textSessionId=id;return core->submitTextPacket(&e,(const Uint8*)s,(Uint32)SDL_strlen(s));}
+static int editing(Uint64 id,const char *s,Uint32 begin,Uint32 length){AmclInputEvent e;stamp(&e,AMCL_INPUT_EVENT_TEXT_EDITING);e.payload.textEditing.textSessionId=id;e.payload.textEditing.selectionStart=begin;e.payload.textEditing.selectionLength=length;return core->submitTextPacket(&e,(const Uint8*)s,(Uint32)SDL_strlen(s));}
+static void pollActual(void){SDL_Event e;while(SDL_PollEvent(&e)){
+ if(e.type==SDL_EVENT_TEXT_INPUT){++textInputs;SDL_strlcpy(lastText,e.text.text,sizeof(lastText));}
+ else if(e.type==SDL_EVENT_TEXT_EDITING){++textEdits;lastStart=e.edit.start;lastLength=e.edit.length;SDL_strlcpy(lastText,e.edit.text,sizeof(lastText));}
+ else if(e.type==SDL_EVENT_KEY_DOWN&&e.key.scancode==SDL_SCANCODE_BACKSPACE)++backDown;
+ else if(e.type==SDL_EVENT_KEY_UP&&e.key.scancode==SDL_SCANCODE_BACKSPACE)++backUp;
+}}
+/* pump只安排真实生产SDL归并与实际Poll；观察计数不复制任何text/held贡献算法。 */
+static void pump(void){for(int n=0;n<4;n++){OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);pollActual();}}
+/* Core池和backend复制包分别归零；只看Core blobBytes会漏掉未release的复制包。 */
+static void emptyPackets(void){CHECK(snapshotCore().blobBytes==0);for(unsigned i=0;i<packetCount;i++){Uint32 bytes=99;CHECK(amclBackendInputReadText(3,packetIds[i],NULL,0,&bytes)==AMCL_BACKEND_INPUT_ERROR_NOT_FOUND);}}
+/* resource与编辑tap使用真实当前Core文字租约和Source尾；SDK Poll另核完整按放对。 */
+static AmclInputTextCoreResourceV1 resource(void){AmclInputTextCoreResourceV1 r;SDL_zero(r);CHECK(amclInputOwnerReadTextResourceV1(&r)==1);return r;}
+static bool tap(AmclInputTextCoreResourceV1 r){AmclSourceResultV1 result;SDL_zero(result);source->ownedTextKeyTap(producer,r.textSession,r.scope,259,&result);return result.accepted!=0;}
+int main(void){
+ core=amclInputGetHostApiV1();CHECK(amclInputHostDescriptorPublishV1(core)==0);
+ amclControlDeliveryPublishV1();amclLookExecutionPublishV1();amclSourceControlPublishV1();CHECK(amclSourceControlPrepareV1()==1);
+ CHECK(amclSourceControlResolveV1(&source)==0&&source->preparedProducer(AMCL_SOURCE_ENTRY,&producer)==0);
+ CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+ AmclInputSurfacePayload surface;SDL_zero(surface);surface.active=1;surface.widthPx=640;surface.heightPx=480;surface.density=1;surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;CHECK(core->publishSurface(&surface)==0);
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");CHECK(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ activeWindow=SDL_CreateWindow("owned SDL text",640,480,SDL_WINDOW_HIDDEN);CHECK(activeWindow);initialWindowId=activeWindow->id;
+ replacement=SDL_CreateWindow("owned replacement",640,480,SDL_WINDOW_HIDDEN);CHECK(replacement);
+ // 几何发布沿真实平台的无expected-epoch入口；它建立新的surface资源，不能借文字命令的旧surface戳。
+ AmclInputEvent context;SDL_zero(context);context.header.abiVersion=1;context.header.structSize=sizeof(context);context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+ context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=activeWindow->id;context.payload.surfaceContext.displayId=1;
+ context.payload.surfaceContext.widthPx=640;context.payload.surfaceContext.heightPx=480;context.payload.surfaceContext.density=1;
+ context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+ CHECK(core->submitEvent(&context)==0);CHECK(sourceSdkBind()==1);sourceSdkActivate();CHECK(amclControlDeliveryBindSessionV1(1)==0);
+ host_look_port=amclLookExecutionGetPortV1();CHECK(host_look_port->bindSession(1)==0);
+ bridge.NextEvent=nextLegacy;bridge.IsGrabbing=isGrabbing;bridge.GetCursorSnapshot=getCursor;bridge.InteractionFence=frameFence;
+ bridge.TypedNextThrough=nextTypedThrough;bridge.LegacyPeekOrder=peekLegacyOrder;bridge.LegacyNextThrough=nextLegacyThrough;bridge.pump_order_limit=UINT64_MAX;
+ SDL_SetKeyboardFocus(activeWindow);SDL_SetMouseFocus(activeWindow);CHECK(OPENHARMONY_ControlReady(activeWindow->id));
+ amclBackendInputSetActive(3,1);amclBackendInputPublishAddress();
+ // 状态从UNRESOLVED开始，只有真实已发布函数地址的严格parser成功才采用Ready。
+ CHECK(SDL_GetAtomicInt(&host_text_state)==AMCL_TEXT_UNRESOLVED&&OPENHARMONY_GetTextRead(&bridge)==NULL);
+ adoptProductionTextBindings(&bridge);CHECK(SDL_GetAtomicInt(&host_text_state)==AMCL_TEXT_READY);
+ CHECK(OPENHARMONY_GetTextRead(&bridge)==amclBackendInputReadText&&OPENHARMONY_GetTextRelease(&bridge)==amclBackendInputReleaseText);
+ pump();CHECK(SDL_StartTextInput(activeWindow));CHECK(session(700,AMCL_INPUT_TEXT_SESSION_STARTED)==0);pump();
+ AmclInputTextCoreResourceV1 first=resource();CHECK(tap(first));pump();CHECK(backDown==1&&backUp==1&&!SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]);
+ textInputs=textEdits=0;CHECK(commit(700,unicodeText)==0);pump();CHECK(textInputs==1&&SDL_strcmp(lastText,unicodeText)==0);emptyPackets();
+ textInputs=textEdits=0;CHECK(editing(700,unicodeText,1,2)==0);pump();CHECK(textEdits==1&&textInputs==0&&SDL_strcmp(lastText,unicodeText)==0&&lastStart==1&&lastLength==2);emptyPackets();
+ // 内部选区不能按11字节当成4个scalar；超过真实scalar尾的请求由真实Core拒绝。
+ CHECK(editing(700,unicodeText,3,2)<0);CHECK(commit(700,"\xED\xA0\x80")<0);pump();emptyPackets();
+ // standalone selection不能伪造SDL事件；它仍从真实Core进入生产degradation分支。
+ Uint64 degradation=amcl_typed_text_degraded_selection;AmclInputEvent select;stamp(&select,AMCL_INPUT_EVENT_TEXT_SELECTION);select.payload.textSelection.textSessionId=700;select.payload.textSelection.selectionStart=1;select.payload.textSelection.selectionLength=2;
+ CHECK(core->submitEvent(&select)==0);textInputs=textEdits=0;pump();CHECK(amcl_typed_text_degraded_selection==degradation+1&&textInputs==0&&textEdits==0);
+ // 原accepted命令按原order送达，再END清composition；不是用current lease重盖旧命令。
+ CHECK(commit(700,"accepted-before-END")==0);CHECK(session(700,AMCL_INPUT_TEXT_SESSION_ENDED)==0);textInputs=textEdits=0;pump();CHECK(textInputs==1&&textEdits>=1&&lastText[0]=='\0');emptyPackets();
+ CHECK(commit(700,"stale-after-END")<0&&!tap(first));CHECK(session(700,AMCL_INPUT_TEXT_SESSION_STARTED)==0);AmclInputTextCoreResourceV1 next=resource();CHECK(next.scope!=first.scope&&!tap(first)&&tap(next));pump();
+ CHECK(editing(700,unicodeText,1,2)==0);CHECK(session(700,AMCL_INPUT_TEXT_SESSION_ABORTED)==0);textEdits=0;pump();CHECK(textEdits>=1&&lastText[0]=='\0');CHECK(commit(700,"after-cancel")<0&&!tap(next));emptyPackets();
+ CHECK(session(701,AMCL_INPUT_TEXT_SESSION_STARTED)==0);AmclInputTextCoreResourceV1 lost=resource();CHECK(core->publishFocus(0)==0);pump();CHECK(!tap(lost)&&commit(701,"after-focus-loss")<0);emptyPackets();
+ CHECK(core->publishFocus(1)==0);SDL_SetKeyboardFocus(activeWindow);pump();CHECK(SDL_StartTextInput(activeWindow));CHECK(session(702,AMCL_INPUT_TEXT_SESSION_STARTED)==0);AmclInputTextCoreResourceV1 oldWindow=resource();
+ // 实际surface资源换代，旧文字scope不能借新窗口恢复；最后统一退休真实consumer与blob。
+ surface.publicationGeneration=2;CHECK(core->publishSurface(&surface)==0);context.payload.surfaceContext.generation=2;context.payload.surfaceContext.windowId=replacement->id;CHECK(core->submitEvent(&context)==0);activeWindow=replacement;SDL_SetKeyboardFocus(replacement);SDL_SetMouseFocus(replacement);pump();CHECK(!tap(oldWindow));emptyPackets();
+ CHECK(SDL_StartTextInput(replacement));CHECK(session(703,AMCL_INPUT_TEXT_SESSION_STARTED)==0);AmclInputTextCoreResourceV1 freshWindow=resource();CHECK(freshWindow.scope!=oldWindow.scope&&tap(freshWindow));textInputs=0;CHECK(commit(703,unicodeText)==0);pump();CHECK(textInputs==1&&SDL_strcmp(lastText,unicodeText)==0);emptyPackets();
+ amclBackendInputSetActive(3,0);sourceSdkDeactivate();OPENHARMONY_CloseControl();CHECK(core->endSession(epoch)==0);emptyPackets();
+ SDL_DestroyWindow(SDL_GetWindowFromID(initialWindowId));SDL_DestroyWindow(replacement);SDL_Quit();
+ puts("PASS owned SDL actual Core/Source lease, UTF8 Chinese/emoji scalar editing, actual Poll, END/cancel/resource scopes and final blobs");return 0;
+}

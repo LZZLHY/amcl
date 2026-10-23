@@ -10,7 +10,13 @@ const end = index.indexOf('\n  /**\n   * 统一跳转', start);
 const endCrLf = index.indexOf('\r\n  /**\r\n   * 统一跳转', start);
 const finish = end > start ? end : endCrLf;
 assert.ok(start > 0 && finish > start);
-const compiled = compiler.transpileModule('class Probe {\n' + index.slice(start, finish)
+// 派发和设置保存现经同一个惰性偏好 getter。使用 SDK AST 按真实成员边界提取，
+// 保留 getter 的缓存及构造判据；各场景只把既有偏好端口放入真实缓存字段。
+const indexAst = compiler.createSourceFile('Index.ets', index, compiler.ScriptTarget.Latest, true);
+const indexComponent = indexAst.statements.find(node => node.members?.some(member => member.name?.getText(indexAst) === 'getPrefManager_'));
+const prefGetter = indexComponent?.members.find(member => member.name?.getText(indexAst) === 'getPrefManager_');
+assert.ok(prefGetter?.body, '必须提取生产偏好 getter，不能用夹具方法替代惰性访问');
+const compiled = compiler.transpileModule('class Probe {\n' + prefGetter.getText(indexAst) + '\n' + index.slice(start, finish)
   + '\n}\nmodule.exports=Probe;', { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
 
 for (const combination of [{ state: 0, desktop: false }, { state: 1, desktop: false },
@@ -20,9 +26,16 @@ for (const combination of [{ state: 0, desktop: false }, { state: 1, desktop: fa
   let currentState = combination.state;
   const starts = [];
   const recoveryTickets = [];
+  const intents = [];
   const module = { exports: {} };
   const values = { ProductInputProfile: { selection: () => ({ isolatedGameProcess: combination.enabled !== false, desktopWindow: combination.desktop }),
       canChooseTabletProcess: () => !combination.desktop },
+    // default控制面没有商店门控；Host明确为空闲，保留原PID/锁状态组合的真实分支。
+    getGameSessionHost: () => ({ isRunning: () => false }),
+    GameRunAdmission: { assertToken() {}, installTicket() {} },
+    // 系统UUID和父恢复登记是运输边界；冻结token并记录实际派发前的原活动身份。
+    util: { generateRandomUUID: () => 'A1234567-1234-4123-8123-123456789ABC' },
+    SessionRecoveryRuntime: { coordinator: () => ({ trackLaunch: async (activity, token) => intents.push({ activity, token }) }) },
     GameLayoutJournal: { importPending: async () => ({ imported: 0, pending: 0, deferred: false, conflicts: [] }) },
     DesktopLaunchSnapshot: { pending: () => false, prepare: async () => ({ id: 'snapshot', account: 'account' }), discard() {} },
     GraphicsRecoveryStore: { create: (_files, ticket) => {
@@ -37,11 +50,19 @@ for (const combination of [{ state: 0, desktop: false }, { state: 1, desktop: fa
   const subject = new module.exports();
   subject.context = { filesDir: '/sandbox', startAbility: async want => { starts.push(want); },
     startAbilityForResult: (want, fn) => { callback = fn; starts.push({ ...want, mode: 'for-result' }); } };
-  subject.prefManager = {};
+  subject.prefManager_ = {};
+  // 本回归观察可操作首页的启动/返回，开屏前输入门禁由启动专项验证。
+  subject.startupFinished_ = true;
+  subject.pendingRunAdmission_ = '';
   subject.graphicsPreferenceStamp_ = () => 'fixture-preference-stamp';
   subject.mcRoot = () => '/mc'; subject.mcVersion = '1.16.5'; subject.preLaunchGameDir = '/mc/game';
   subject.preLaunchJdkVersion = '8'; subject.preLaunchXmx = 1024;
   await subject.performLaunch();
+  assert.equal(intents.length, combination.state === 0 ? 1 : 0);
+  if (intents.length) {
+    assert.equal(intents[0].activity, starts[0].parameters.activityId);
+    assert.equal(intents[0].token, 'a1234567-1234-4123-8123-123456789abc');
+  }
   assert.equal(subject.desktopPreparing, false, '派发不能等待游戏终局才释放准备态');
   assert.equal(recoveryTickets.length, combination.state === 0 ? 1 : 0);
   if (recoveryTickets.length) {
@@ -85,7 +106,7 @@ console.log('PASS: production tablet dispatch returns immediately; result callba
   new Function('module', ...Object.keys(values), compiled)(module, ...Object.values(values));
   const subject = new module.exports();
   subject.tabletIndependentGameProcess = true;
-  subject.prefManager = { saveTabletIndependentGameProcess() {
+  subject.prefManager_ = { saveTabletIndependentGameProcess() {
     saves++;
     return new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; });
   } };
@@ -124,16 +145,37 @@ const entryEnd = entry.indexOf('\n  /**', entryStart);
 assert.ok(entryStart > 0 && entryEnd > entryStart);
 const entryCompiled = compiler.transpileModule('class Probe {\n' + entry.slice(entryStart, entryEnd)
   + '\n}\nmodule.exports=Probe;', { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
-for (const value of [55, 0, -1, '55', 1.5, undefined]) {
-  const module = { exports: {} }; let recoveries = 0;
-  new Function('module', 'runLogShareConnectivityWant', 'AppLogger', 'TAG', 'LOG_DOMAIN_LAUNCH', 'AppStorage', entryCompiled)(
-    module, () => {}, { info() {} }, 'test', 1, { setOrCreate() {} });
+// 正式商店与侧载均经过原游戏退出身份守卫；只有侧载产品消费更新恢复参数。
+// 参数边界替身只记录真实调用，恢复结局仍由被抽取的生产onNewWant判定。
+for (const storeChannel of [false, true]) for (const value of [55, 0, -1, '55', 1.5, undefined]) {
+  const module = { exports: {} }; let recoveries = 0, updateRecoveries = 0, testWants = 0;
+  const context = { filesDir: '/sandbox' };
+  const want = { parameters: { gameExitActivityId: value,
+    amclSideloadUpdateTransaction: 'fixture-transaction', amclSideloadUpdateNonce: 'fixture-nonce' } };
+  const values = {
+    isInputObservationTestWant: () => false,
+    forwardInputObservationTestWant() { throw Error('ordinary game-return Want must not enter observation forwarding'); },
+    runLogShareConnectivityWant() {}, AppLogger: { info() {} }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
+    AppStorage: { setOrCreate() {} }, ProductBuildProfile: { storeChannel },
+    SideloadUpdateService: { get(actualContext) {
+      assert.equal(actualContext, context);
+      return { recover(id, nonce) { assert.equal(id, 'fixture-transaction'); assert.equal(nonce, 'fixture-nonce'); updateRecoveries++; } };
+    } },
+    // TestWant是受控诊断入口，本fixture仅验证热启动传入原context/want，不代替其内部许可测试。
+    runSideloadUpdateTestWant(actualContext, actualWant) {
+      assert.equal(actualContext, context); assert.equal(actualWant, want); testWants++;
+    },
+  };
+  new Function('module', ...Object.keys(values), entryCompiled)(module, ...Object.values(values));
   const subject = new module.exports();
+  subject.context = context;
   subject.consumeDesktopLaunchWant = () => {};
   subject.consumeNotificationWant = () => {};
   subject.extractImportUri = () => '';
   subject.recoverExitedGameSessions_ = () => { recoveries++; };
-  subject.onNewWant({ parameters: { gameExitActivityId: value } }, {});
+  subject.onNewWant(want, {});
   assert.equal(recoveries, value === 55 ? 1 : 0);
+  assert.equal(updateRecoveries, storeChannel ? 0 : 1, '产品守卫必须实际隔离更新恢复');
+  assert.equal(testWants, 1, '热启动传递真实Want到受控诊断边界');
 }
 console.log('PASS: production Entry return Want invokes the existing guarded recovery entry');

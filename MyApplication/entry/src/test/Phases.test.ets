@@ -47,15 +47,17 @@ export default function phasesContractTest() {
   // ============================================================
   describe('DownloadFlowState 派生路径', () => {
 
-    it('tempDir = mcDir + "/download-temp"', 0, () => {
+    it('不同任务使用独占临时根，不能退回共享父目录', 0, () => {
       let s = makeState();
-      expect(s.tempDir).assertEqual('/data/storage/el2/base/.amcl/.minecraft/download-temp');
+      let other = makeState();
+      expect(s.tempDir.startsWith('/data/storage/el2/base/.amcl/.minecraft/download-temp/')).assertTrue();
+      expect(s.tempDir === other.tempDir).assertFalse();
     });
 
     it('tempVersionDir = tempDir + "/versions/" + gameVersion', 0, () => {
       let s = makeState();
       expect(s.tempVersionDir).assertEqual(
-        '/data/storage/el2/base/.amcl/.minecraft/download-temp/versions/1.20.4');
+        s.tempDir + '/versions/1.20.4');
     });
 
     it('targetDir = mcDir + "/versions/" + versionName', 0, () => {
@@ -67,7 +69,14 @@ export default function phasesContractTest() {
     it('tempJsonPath 默认 = tempVersionDir + "/" + gameVersion + ".json"', 0, () => {
       let s = makeState();
       expect(s.tempJsonPath).assertEqual(
-        '/data/storage/el2/base/.amcl/.minecraft/download-temp/versions/1.20.4/1.20.4.json');
+        s.tempVersionDir + '/1.20.4.json');
+    });
+
+    it('显式任务根在重建阶段容器时保持稳定，重试可复用自己的文件', 0, () => {
+      let first = new DownloadFlowState('1.20.4', null, '', 'pack', '/mc', '/files', '/mc/download-temp/owner');
+      let retry = new DownloadFlowState('1.20.4', null, '', 'pack', '/mc', '/files', first.tempDir);
+      expect(retry.tempJsonPath).assertEqual(first.tempJsonPath);
+      expect(retry.targetDir).assertEqual('/mc/versions/pack');
     });
 
     it('初始可变字段：versionInfo=null, loaderJsonPath=null, installSandboxDir=空', 0, () => {

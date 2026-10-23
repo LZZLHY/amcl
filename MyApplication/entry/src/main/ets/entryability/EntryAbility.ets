@@ -1,8 +1,15 @@
-import { DesktopGameResults } from '../runtime/DesktopGameResults';
+import { forwardInputObservationTestWant, isInputObservationTestWant } from '../components/InputObservationTestWant';
 import { GameLayoutJournal, GameLayoutImportReport } from '../runtime/GameLayoutJournal';
 import { runLogShareConnectivityWant } from '../components/LogShareConnectivityProbe';
 import { EntryDownloadEngine, EntryNativeLogSink, EntryLedgerScopeSink, installProcessNativeBridges } from '../runtime/ProcessRuntime';
+import { stopGameSession } from '../runtime/GameSessionHost';
+import { getGameExportCoordinator } from '../export/GameExportCoordinator';
+import { GameRunAdmission } from '../runtime/GameRunAdmission';
 import { PlatformDfxWatcher } from '../runtime/PlatformDfxWatcher';
+import { SessionRecoveryRuntime } from '../runtime/SessionRecoveryRuntime';
+import { SideloadUpdateService } from '../sideload/SideloadUpdateService';
+import { InstallFence } from '../sideload/InstallFence';
+import { runSideloadUpdateTestWant } from '../sideload/SideloadUpdateTestWant';
 import { setRelayNativeBridge, RelayStatsNative, RelayNativeBridge } from 'feature_core';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
@@ -21,13 +28,12 @@ import {
   DownloadTaskSpec, DownloadProgressEvent, DownloadCompleteEvent,
   setForgeNativeBridge, ForgeNativeBridge,
 } from 'feature_core';
-import { removeDirRecursive } from 'commons';
+import { LauncherStartupRuntime } from '../runtime/LauncherStartupRuntime';
 import { AppLogger } from 'commons';
 import { NativeLogSink } from 'commons';
-import { LedgerScopeSink, setLedgerScopeSink, ledgerResolveStale } from 'commons';
+import { LedgerScopeSink, setLedgerScopeSink } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
-import { SessionMarker, McSessionInfo, listJvmExitSessions } from 'launch';
 import { setLaunchNativeBridge, LaunchNativeBridge } from 'launch';
 import { getInputDeviceMonitor } from 'gamecontrol';
 import { setControlNativeSink, ControlNativeSink } from 'gamecontrol';
@@ -39,26 +45,53 @@ import { GameStorage, PreferenceManager } from 'feature_system';
 // 全部走 AppLogger 让启动期失败现场也能拉回 filesDir/logs/amcl_launcher.log。
 const TAG = LogTags.ENTRY_ABILITY;
 const FRAME_RATE_FOREGROUND_SOURCE_ENTRY: number = 1;
+/** 模块在同一进程只初始化一次；Ability 重建不能把本进程仍使用的沙箱判作旧目录。 */
+const FORGE_SANDBOX_PROCESS_CUTOFF: number = Date.now() / 1000;
 
 export default class EntryAbility extends UIAbility {
   private windowClass: window.Window | null = null;
   private downloadEngine_: EntryDownloadEngine | null = null;
+  /** 已核实的安装待确认活动只传给本进程首次恢复，不由普通亮屏重新推断更新豁免。 */
+  private pendingUpdateRecoveryIds_: number[] = [];
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics, testNapi.getDiagnosticCapabilities());
+    // 外部自动化只使用exported的启动器入口，受控操作内部转发到已存在的私有游戏Ability。
+    // 独立固定参数通道不复用任意导入URL、日志分享或安装事务参数。
+    if (isInputObservationTestWant(want)) {
+      forwardInputObservationTestWant(this.context,want);
+      // 冷启动仍完成启动器正常初始化，但诊断参数不能旁路触发文件导入、通知或安装事务。
+      want={};
+    }
     DistributionPolicy.configure(ProductBuildProfile.storeChannel ? DistributionChannel.Store : DistributionChannel.Sideload);
+    // 私有准入初始化失败仅关闭运行，版本和文件管理仍可用；旧票据不靠偏好缓存续期。
+    try { GameRunAdmission.initialize(this.context); }
+    catch (_) { AppStorage.setOrCreate<string>('gameRunAdmissionError', '运行调试授权暂不可保存，请检查存储后重试。'); }
     ProductInputProfile.initialize(this.context);
     // 2026-05-23 API NEXT 迁移：把 UIAbilityContext 缓存到 AppStorage。
     // 所有 @Entry 页面后续都通过 AppStorage.get('uiAbilityContext') 取，不再调
     // 已弃用的 getContext(this)。详见 docs/guides/api-migration-2026-05.md。
     AppStorage.setOrCreate<common.UIAbilityContext>('uiAbilityContext', this.context);
+    // 导出恢复仅属于启动器进程：识别旧任务中断，不自动重启压缩或续用失效文档授权。
+    // 异常保留任务原件，不阻断首页初始化；用户可在版本管理导出页重新检查。
+    getGameExportCoordinator().recover(this.context).catch((error: Error): void => {
+      AppLogger.warn(TAG, '游戏包导出恢复记录暂不可读取', error, LOG_DOMAIN_LAUNCH);
+    });
+    // 必须先固定Native安装根并恢复持久fence，再初始化下载/游戏自动任务入口。
+    // store也使用严格Native文件租约，只配置应用根不启动HDC或自更新。
+    try {
+      if (!testNapi.configureSideloadInstallRoot(this.context.filesDir)) throw new Error('无法固定保护目录');
+      if (!ProductBuildProfile.storeChannel) InstallFence.init(this.context.filesDir);
+    } catch (_) {
+      // Native未配置/坏journal仍fail closed；只保留可见诊断，不建立假的无保护运行环境。
+      AppStorage.setOrCreate<string>('amclInstallProtectionError', '安装保护记录暂不可安全初始化，请检查存储并查看更新状态');
+    }
 
     // U05：平台崩溃/被杀事件必须尽早订阅。回调只落 pending 事件文件，
     // 账本归属和用户分享在后续冷启动/活动页处理，避免系统事件回调阻塞主流程。
     PlatformDfxWatcher.start(this.context.filesDir);
     PlatformDfxWatcher.recordLastExit(this.context.filesDir,
       launchParam.lastExitReason, launchParam.lastExitMessage ?? '');
-
     // Phase 3.3：监听归 InputDeviceMonitor 进程单例所有。EntryAbility 与 GameAbility
     // 都可以先启动；任意一方只做幂等 ensure，某个 WindowStage 销毁不会让另一个
     // 活跃游戏窗口丢失 DEVICE_REMOVED。
@@ -99,11 +132,23 @@ export default class EntryAbility extends UIAbility {
       // 唯一可靠的判据，晚做就分不清是残留还是本次刚开的。
       setLedgerScopeSink(new EntryLedgerScopeSink());
       try {
-        const stale: number = testNapi.desktopGameProcessState(this.context.filesDir, 0) === 0
-          ? ledgerResolveStale(this.context.filesDir) : 0;
-        if (stale > 0) {
-          AppLogger.info(TAG, `ledger: marked ${stale} interrupted activities`, LOG_DOMAIN_LAUNCH);
+        // 更新有意结束旧进程，必须在日志 scope 可用之后、通用中断收尾之前核实。
+        // 只有与更新事务绑定的安装待确认活动获得豁免，下载/签名子任务仍按中断保存。
+        let pendingUpdates: number[] = [];
+        if (!ProductBuildProfile.storeChannel) {
+          try {
+          const updater = SideloadUpdateService.get(this.context);
+          const id = want.parameters?.['amclSideloadUpdateTransaction'];
+          const nonce = want.parameters?.['amclSideloadUpdateNonce'];
+          pendingUpdates = updater.recoverActivity();
+          updater.recover(typeof id === 'string' ? id : '', typeof nonce === 'string' ? nonce : '');
+          } catch (_) {
+            // 损坏的更新现场不能阻止其他活动的冷启动收尾；无可信身份就不授予豁免。
+            pendingUpdates = [];
+          }
         }
+        // 耐久恢复交给进程owner的真实异步FileIO；这里仅冻结更新豁免，不能同步遍历所有日志。
+        this.pendingUpdateRecoveryIds_ = pendingUpdates.slice();
       } catch (e) {
         AppLogger.warn(TAG, 'ledgerResolveStale failed', e, LOG_DOMAIN_LAUNCH);
       }
@@ -139,6 +184,19 @@ export default class EntryAbility extends UIAbility {
     // mcLaunch 已退出、ArkTS 尚未来得及写 marker 的窗口；不得把残留 marker 直接称作崩溃。
     this.recoverExitedGameSessions_();
 
+    // 先让轻量开屏提交纯背景并开始像素入场，之后才执行下载/文件准备。
+    // 保护根目录、fence 与 native bridge 已在上方完成；任何首页网络检查仍等待本准备完成。
+    LauncherStartupRuntime.install(async (): Promise<void> => {
+      await this.cleanupOrphanSandboxes();
+      this.completeDeferredStartup_();
+      runLogShareConnectivityWant(this.context, want);
+      runSideloadUpdateTestWant(this.context, want);
+    });
+    AppLogger.info(TAG, 'Ability onCreate; optional boot work awaits splash first frame', LOG_DOMAIN_LAUNCH);
+  }
+
+  /** 下载引擎的 CA 必须早于首页网络调用，顺序保持原契约；只移动执行时机。 */
+  private completeDeferredStartup_(): void {
     // 初始化下载引擎的 CA bundle（抽 rawfile/cacert.pem → filesDir/cacert.pem → NAPI set）
     // OHOS 没有标准 /etc/ssl/certs，不在启动期 set 的话首次 HTTPS 下载会报
     // "SSL certificate problem: self-signed certificate in certificate chain" (curl rc=60)。
@@ -161,20 +219,18 @@ export default class EntryAbility extends UIAbility {
       AppLogger.warn(TAG, 'inject phoneExternalDir failed', e as Object, LOG_DOMAIN_LAUNCH);
     }
 
-    // 清理孤儿 Forge 安装沙箱: 上次运行中用户强杀/进程崩溃/断电时,
-    // DownloadTask 的 finally 子句没跑, filesDir/forge-install-sandbox/<sid>/ 会残留.
-    // 每个残留 50-100 MB (vanilla jar + installer + patches libs), 累积会吃磁盘.
-    //
-    // 关键修复：以前同步跑在 onCreate 主线程，5 个残留 ≈ 500 MB 同步删除可能触发 ANR。
-    // 推迟到 setTimeout(0) 让 onCreate 先返回，UI 立刻能起来，扫描在 microtask 异步进行。
-    setTimeout(() => { this.cleanupOrphanSandboxes(); }, 0);
-
-    AppLogger.info(TAG, 'Ability onCreate', LOG_DOMAIN_LAUNCH);
-    runLogShareConnectivityWant(this.context, want);
   }
 
   /** 「打开方式」热启动：app 已在运行时点击 .json 文件会走这里，暂存 uri 触发导入。 */
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    if (isInputObservationTestWant(want)) { forwardInputObservationTestWant(this.context,want); return; }
+    // 自动重启也可能抵达用户已打开的新实例，热启动与冷启动使用同一身份核验。
+    if (!ProductBuildProfile.storeChannel) {
+      const id = want.parameters?.['amclSideloadUpdateTransaction'];
+      const nonce = want.parameters?.['amclSideloadUpdateNonce'];
+      try { SideloadUpdateService.get(this.context).recover(typeof id === 'string' ? id : '', typeof nonce === 'string' ? nonce : ''); }
+      catch (_) { /* 恢复失败保留事务，不能阻断正常 Want。 */ }
+    }
     this.consumeDesktopLaunchWant(want);
     // 平板 forResult 的父窗口返回请求只是恢复提示，不带游戏结局。
     // 真正读取仍须经过统一入口的进程锁和 journal 身份校验，不能信任外部 Want 推断成功。
@@ -185,6 +241,7 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate<number>('graphicsRecoverySignal', returnedActivity);
     }
     runLogShareConnectivityWant(this.context, want);
+    runSideloadUpdateTestWant(this.context, want);
     const uri = this.extractImportUri(want);
     if (uri.length > 0) {
       AppStorage.setOrCreate<string>('pendingLayoutImportUri', uri);
@@ -230,35 +287,47 @@ export default class EntryAbility extends UIAbility {
   }
 
   /**
-   * 启动时扫 filesDir/forge-install-sandbox/ 下所有子目录并删除.
-   * 正常安装路径下, finally 会在任务结束时清理自己的沙箱, 这里只能扫到 上次运行 的孤儿.
-   * 当前运行并发创建的沙箱 sid 包含 Date.now() + random, 所以不会被误杀.
-   *
-   * 调用方式：onCreate 里通过 setTimeout(0) 异步调度，避免阻塞 ArkTS 主线程。
+   * 首页任务入口开放前清理前一进程的 Forge 沙箱。真实异步 FileIO 让每次目录/文件操作
+   * 都能让出 UI 线程；不再用 setTimeout 包裹同步递归。只枚举本轮启动前已存在的子目录，
+   * 跳过符号链接和启动后更新的目录，所有路径限定在私有 sandbox 根下，失败保留原件。
    */
-  private cleanupOrphanSandboxes(): void {
+  private async cleanupOrphanSandboxes(): Promise<void> {
+    const sandboxRoot: string = this.context.filesDir + '/forge-install-sandbox';
     try {
-      let sandboxRoot = this.context.filesDir + '/forge-install-sandbox';
-      let st = fs.statSync(sandboxRoot);
-      if (!st.isDirectory()) return;
-      let orphans = fs.listFileSync(sandboxRoot);
-      let cleanedCount = 0;
-      for (let name of orphans) {
-        let dir = sandboxRoot + '/' + name;
+      const rootStat = await fs.lstat(sandboxRoot);
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
+      const names: string[] = await fs.listFile(sandboxRoot);
+      for (const name of names) {
+        if (name.length === 0 || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) continue;
+        const directory: string = sandboxRoot + '/' + name;
         try {
-          removeDirRecursive(dir);
-          cleanedCount++;
-        } catch (e) {
-          AppLogger.warn(TAG, `Failed to clean sandbox ${dir}`, e as Object, LOG_DOMAIN_LAUNCH);
+          const stat = await fs.lstat(directory);
+          if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mtime >= FORGE_SANDBOX_PROCESS_CUTOFF) continue;
+          await this.removeSandboxTree_(directory);
+        } catch (error) {
+          AppLogger.warn(TAG, 'Old Forge sandbox retained after cleanup failure', error, LOG_DOMAIN_LAUNCH);
         }
       }
-      if (cleanedCount > 0) {
-        AppLogger.info(TAG, `Cleaned ${cleanedCount} orphan Forge sandbox(es) at boot`, LOG_DOMAIN_LAUNCH);
-      }
-    } catch (e) { /* sandbox root not exist, first launch or never installed Forge */ }
+    } catch (_) { /* 首次运行没有沙箱；可选清理失败不阻止首页。 */ }
+  }
+
+  /** 只接受上面校验出的私有路径；lstat 不追踪链接，叶节点异步删除。 */
+  private async removeSandboxTree_(directory: string): Promise<void> {
+    for (const name of await fs.listFile(directory)) {
+      if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) continue;
+      const path: string = directory + '/' + name;
+      const stat = await fs.lstat(path);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) await this.removeSandboxTree_(path);
+      else await fs.unlink(path);
+    }
+    await fs.rmdir(directory);
   }
 
   onDestroy(): void {
+    LauncherStartupRuntime.detach();
+    // 同进程游戏的运行资源归会话；无游戏宿主时空操作，不触碰管理侧的 JVM/下载寿命。
+    stopGameSession('entry-ability-destroy');
+    if (!ProductBuildProfile.storeChannel) SideloadUpdateService.get(this.context).setAbilityForeground(false);
     try {
       testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_ENTRY, false);
     } catch (e) { /* 老 native 兼容 */ }
@@ -299,12 +368,16 @@ export default class EntryAbility extends UIAbility {
       // 2026-05-23 API NEXT 迁移：UIAbility 里没有 this.getUIContext()，
       // 改走 windowClass.getUIContext().px2vp(...)（旧的全局 px2vp 已弃用）。
       let uiContext = this.windowClass.getUIContext();
+      // 各弹窗和 Sheet 共享实时窗口高度；旋转、分屏和桌面缩窗时同步更新。
+      this.windowClass.on('windowSizeChange', this.updateWindowSize);
       AppStorage.setOrCreate<number>('topRectHeight', uiContext.px2vp(topArea.topRect.height));
       AppStorage.setOrCreate<number>('bottomRectHeight', uiContext.px2vp(bottomArea.bottomRect.height));
       // 2026-05-23：屏幕高度（vp）也缓存进来，给 SheetSizes 这种非组件工具函数读，
       // 让它们不必再调已弃用的全局 px2vp（display API 在工具函数里没有 UIContext）。
       try {
         let winRect = this.windowClass.getWindowProperties().windowRect;
+        // 首次窄窗口/分屏启动也发布真实宽度；不能等 resize 事件后才纠正更新弹窗外框。
+        AppStorage.setOrCreate<number>('screenWidthVp', uiContext.px2vp(winRect.width));
         AppStorage.setOrCreate<number>('screenHeightVp', uiContext.px2vp(winRect.height));
       } catch (e) {
         AppLogger.warn(TAG, 'Failed to cache screenHeightVp', e as Object, LOG_DOMAIN_LAUNCH);
@@ -320,8 +393,20 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    this.windowClass?.off('windowSizeChange', this.updateWindowSize);
     AppLogger.info(TAG, 'Ability onWindowStageDestroy', LOG_DOMAIN_LAUNCH);
   }
+
+  private updateWindowSize = (size: window.Size): void => {
+    if (this.windowClass === null) return;
+    const ui = this.windowClass.getUIContext();
+    AppStorage.setOrCreate<number>('screenHeightVp', ui.px2vp(size.height));
+    AppStorage.setOrCreate<number>('screenWidthVp', ui.px2vp(size.width));
+    const top = this.windowClass.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+    const bottom = this.windowClass.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+    AppStorage.setOrCreate<number>('topRectHeight', ui.px2vp(top.topRect.height));
+    AppStorage.setOrCreate<number>('bottomRectHeight', ui.px2vp(bottom.bottomRect.height));
+  };
 
   onForeground(): void {
     // 平板隔离仍是触控窗口；恢复取决于实际进程边界，不能再以 desktopWindow 排除平板。
@@ -332,14 +417,18 @@ export default class EntryAbility extends UIAbility {
     try {
       testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_ENTRY, true);
     } catch (e) { /* 老 native 兼容 */ }
+    // Native先收到真实前台事实，再让本进程页面runtime重新评估capture/输入准入。
+    // 手机/共用进程平板不保证另有page-show/onFocus；独立游戏进程在此没有注册端。
+    getInputSourceRegistry().notifyAbilityForeground();
     // M5：消息投递按前后台分流（前台=灵动弹窗，后台=系统通知），见 AppNotifier。
     AppStorage.setOrCreate<boolean>('appInForeground', true);
+    if (!ProductBuildProfile.storeChannel) SideloadUpdateService.get(this.context).setAbilityForeground(true);
   }
 
   /**
    * 仅在游戏锁明确空闲时发布恢复候选；活跃或不可确认时既不消费 marker，也不扫描退出文件。
-   * 两个进程共用活动主键，数组一次发布避免多次同步覆盖 lastMcSession 只通知到最后一局。
-   * 原生记录始终保留，最终结论、历史和展示去重由 Index 的串行恢复链处理。
+   * 两个进程共用活动主键，恢复服务通过持久待办逐局提交；Index只应用已提交的展示结果。
+   * 原生记录始终保留。无新退出/平台发布的普通前台不会重新枚举所有旧journal或全部账本。
    */
   private recoverExitedGameSessions_(): void {
     try {
@@ -355,19 +444,9 @@ export default class EntryAbility extends UIAbility {
         AppLogger.warn(TAG, '游戏布局导入失败，提交原文保留，下一次启动前重试', error, LOG_DOMAIN_LAUNCH);
         AppStorage.setOrCreate<string>('gameLayoutSyncNotice', '游戏布局暂未同步，提交记录已保留；请稍后重试启动。');
       });
-      DesktopGameResults.importPending(this.context).then((message: string) => {
-        if (message.length > 0) AppStorage.setOrCreate<string>('desktopLaunchError', message);
-      }).catch((error: Error) => { AppLogger.warn(TAG, 'Game result import failed', error, LOG_DOMAIN_LAUNCH); });
-      const sessions: McSessionInfo[] = listJvmExitSessions(this.context.filesDir);
-      const marker: McSessionInfo | null = SessionMarker.readAndClear(this.context.filesDir);
-      if (marker !== null && !sessions.some((session: McSessionInfo): boolean => session.startedAt === marker.startedAt)) {
-        sessions.push(marker);
-      }
-      if (sessions.length === 0) return;
-      sessions.sort((a: McSessionInfo, b: McSessionInfo): number => a.startedAt - b.startedAt);
-      AppStorage.setOrCreate<McSessionInfo[]>('pendingJvmExitSessions', sessions);
-      const revision: number = AppStorage.get<number>('desktopSessionRevision') ?? 0;
-      AppStorage.setOrCreate<number>('desktopSessionRevision', revision + 1);
+      SessionRecoveryRuntime.wake(this.context, this.pendingUpdateRecoveryIds_).catch((error: Error): void => {
+        AppLogger.warn(TAG, 'Game session recovery deferred; journals and durable work retained', error, LOG_DOMAIN_LAUNCH);
+      });
     } catch (e) {
       // 包括锁查询错误：未知不能当空闲；下一次前台或冷启动仍可从保留原文恢复。
       AppLogger.warn(TAG, 'Game session recovery deferred', e, LOG_DOMAIN_LAUNCH);
@@ -386,6 +465,7 @@ export default class EntryAbility extends UIAbility {
     } catch (e) { /* 老 native 兼容 */ }
     // M5：切后台后产生的消息改走系统通知，见 AppNotifier 的分流表。
     AppStorage.setOrCreate<boolean>('appInForeground', false);
+    if (!ProductBuildProfile.storeChannel) SideloadUpdateService.get(this.context).setAbilityForeground(false);
     AppLogger.info(TAG, 'Ability onBackground', LOG_DOMAIN_LAUNCH);
   }
 

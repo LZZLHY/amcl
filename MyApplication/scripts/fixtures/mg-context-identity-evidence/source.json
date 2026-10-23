@@ -1,0 +1,24 @@
+{
+  "schema": "amcl-mg-context-identity-realraw/v1",
+  "copiedAt": "2026-10-08T17:57:28.7520091+08:00",
+  "scope": "Exact real Linux cold process production factory raw; not OHOS/device/Java/outer-PID/RETURN proof",
+  "sourceHead": "14af696c3e30e6a15f8eeb82b8b86d9db6c8ba5a",
+  "mgCommit": "8b69f7fee6c11a46d325731f29ef6b5008da2878",
+  "loaderSha256": "3e0792b764d26f923c5d04f94be1e03692daac92f46e124c6622919eb3434919",
+  "manifestSha256": "7643b18095cf913b7724d12ccb02c9c3635491718ced180dbe8e24f2b360536b",
+  "originalReceipt": "D:/dhao1/desktop/AMCL/.workspace/run/cf-full/baseline/mg-context-identity-shared-handoff.json",
+  "fixtureSha256": {
+    "low.jsonl": "b58dae5bf27bd53281dd131193a15feb27c58f07096ebffef7f8f3e1c1e19951",
+    "high.jsonl": "884eeb84aab725f2bbf95f994a3bd73129ccdb273a21846b09bd02bd89a0ee77",
+    "old-low.jsonl": "73fd4b5fbc182f3d4b68fa8ee0b6ab1e0fb3702dede5484da96a2fae295c2ac6",
+    "old-high.jsonl": "cf76806b4610b0a27a2b29d3b29b0ecc109e9923319348141d31648dce8f6f81"
+  },
+  "actualNewGlHostSha256": "3444b13e1dd056a16a945783a56e6e95ab5a63501e285bc4eb57c16f4eb20073",
+  "actualNewRuntimeSha256": "1fe73ae8416f4da8956466818439dec76d319a8943120f1b0adfa77bafeca368",
+  "originalPaths": {
+    "low": "frontend/mg-identity-shared-final2-new-low/scene.jsonl",
+    "old-low": "frontend/mg-identity-shared-final2-old-low/scene.jsonl",
+    "old-high": "frontend/mg-identity-shared-final2-old-high/scene.jsonl",
+    "high": "frontend/mg-identity-shared-final2-new-high/scene.jsonl"
+  }
+}

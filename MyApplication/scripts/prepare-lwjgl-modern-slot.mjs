@@ -60,7 +60,10 @@ syncExact();
 if (!checkQuietly()) {
   const python = locatePython();
   run(python.command, [...python.prefix, join(SCRIPT_DIR, 'patch-lwjgl-module-info.py'), PREBUILT]);
-  run(python.command, [...python.prefix, join(SCRIPT_DIR, 'patch-lwjgl-modulepackages.py'), join(PREBUILT, 'lwjgl.jar')]);
+  // 与干净下载入口共用 core/NanoVG 的 ModulePackages 后处理顺序，
+  // 避免本机同步成功而独立克隆无法生成同一组锁定 JAR。
+  run(python.command, [...python.prefix, join(SCRIPT_DIR, 'patch-lwjgl-modulepackages.py'),
+    join(PREBUILT, 'lwjgl.jar'), join(PREBUILT, 'lwjgl-nanovg.jar')]);
   run(process.execPath, [join(SCRIPT_DIR, 'lwjgl-stack-backfill', 'apply.mjs'), PREBUILT]);
   run(process.execPath, [join(SCRIPT_DIR, 'build-prebuilt-jars.mjs'), '--force']);
   run(python.command, [...python.prefix, join(SCRIPT_DIR, 'lwjgl-stb-compat', 'prepare.py'), '--module', 'stb']);
@@ -72,5 +75,9 @@ if (!checkQuietly()) {
 const checkArgs = [CHECKER];
 if (process.argv.includes('--require-source')) checkArgs.push('--require-source');
 run(process.execPath, checkArgs);
+// 源槽最终后处理完成后只读审核已锁定的 JDK 派生视图。源码升级需要维护者显式
+// --update-lock；常规 preBuild 不接受新摘要，也不在手机上临时转换 ZIP。
+const viewPython = locatePython();
+run(viewPython.command, [...viewPython.prefix, join(SCRIPT_DIR, 'build-lwjgl-jdk-views.py')]);
 run(process.execPath, [join(SCRIPT_DIR, 'check-lwjgl-native-surface.mjs'), join(ROOT, 'entry', 'libs', 'arm64-v8a')]);
 console.log('[prepare-lwjgl-modern-slot] modern slot ready');

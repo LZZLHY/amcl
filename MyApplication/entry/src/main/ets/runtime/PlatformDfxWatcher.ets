@@ -16,11 +16,10 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
 import { AbilityConstant } from '@kit.AbilityKit';
 import { process, util } from '@kit.ArkTS';
-import { ensureDirSync, writeEvidenceTextAtomic, archivePlatformEventFiles_, setLedgerProcessRunNonce,
-  listActivityIds, ledgerManifest, LedgerState } from 'commons';
+import { ensureDirSync, writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync, setLedgerProcessRunNonce,
+  ledgerLaunchManifestsAsync, LedgerState } from 'commons';
 
 const TAG: string = 'amcl_platform_dfx';
-const MAX_PENDING_EVENTS: number = 64;
 interface ProcessRun { pid: number; nonce: string; startedAt: number; }
 
 export class PlatformDfxWatcher {
@@ -29,6 +28,21 @@ export class PlatformDfxWatcher {
   private static sequence: number = 0;
   private static filesDir: string = '';
   private static previousRun: ProcessRun | undefined = undefined;
+  /** 平台原件写入串行队列，所有FileIO真正异步执行；失败原件/暂存现场由下次恢复核实。 */
+  private static persistence: Promise<void> = Promise.resolve();
+  private static recoveryWake: (() => void) | undefined = undefined;
+
+  /** 装配层注入有界唤醒端口；回调只通知owner，不在系统回调内匹配账本或上传内容。 */
+  static setRecoveryWake(callback: () => void): void { PlatformDfxWatcher.recoveryWake = callback; }
+  static flushPending(): Promise<void> { return PlatformDfxWatcher.persistence; }
+
+  /** 原件file+directory同步成功才唤醒；没有64条截断，未归属证据保持原始字节。 */
+  private static queuePersistence_(operation: () => Promise<void>): void {
+    const previous = PlatformDfxWatcher.persistence;
+    const job: Promise<void> = previous.catch((): void => {}).then(operation);
+    PlatformDfxWatcher.persistence = job;
+    job.catch((): void => { /* 原件写失败不消费任何恢复义务，下一次冷启动重新核实。 */ });
+  }
 
   /** 在 EntryAbility.onCreate 尽早注册，应用重启后系统才会投递上次事件。 */
   static start(filesDir: string, owner: string = 'host'): void {
@@ -71,36 +85,26 @@ export class PlatformDfxWatcher {
     PlatformDfxWatcher.sequence++;
     const stamp: number = Date.now();
     const path: string = PlatformDfxWatcher.outputDir + '/event-'
-      + stamp + '-' + process.pid + '-' + PlatformDfxWatcher.sequence + '-exit.json';
+      + stamp + '-' + process.pid + '-' + PlatformDfxWatcher.sequence + '-' + util.generateRandomUUID() + '-exit.json';
     const payload: Record<string, Object> = {
       'schema': 1, 'domain': 'OS', 'name': 'LAST_EXIT_REASON',
       'receivedAt': stamp, 'reasonCode': reason,
       'reason': PlatformDfxWatcher.lastExitReasonName_(reason), 'message': message,
     };
     const previous = PlatformDfxWatcher.previousRun;
-    if (previous !== undefined) {
-      for (const id of listActivityIds(filesDir)) {
-        const manifest = ledgerManifest(filesDir, id);
-        if (manifest?.category !== 'launch' || manifest.runNonce !== previous.nonce
-          || manifest.ownerPid !== previous.pid) continue;
-        if (manifest.state !== LedgerState.RUNNING && manifest.state !== LedgerState.INTERRUPTED) continue;
-        payload['activityId'] = id; payload['runNonce'] = previous.nonce;
-        break;
+    PlatformDfxWatcher.queuePersistence_(async (): Promise<void> => {
+      if (previous !== undefined) {
+        for (const manifest of await ledgerLaunchManifestsAsync(filesDir)) {
+          if (manifest?.runNonce !== previous.nonce || manifest.ownerPid !== previous.pid) continue;
+          if (manifest.state !== LedgerState.RUNNING && manifest.state !== LedgerState.INTERRUPTED) continue;
+          payload['activityId'] = manifest.activityId; payload['runNonce'] = previous.nonce; break;
+        }
       }
-    }
-    let file: fs.File | undefined = undefined;
-    try {
-      file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, JSON.stringify(payload));
-      fs.fsyncSync(file.fd);
-      fs.closeSync(file);
-      file = undefined;
-      PlatformDfxWatcher.trimPending_();
-    } catch (e) {
-      if (file !== undefined) {
-        try { fs.closeSync(file); } catch (ignored) { /* 保留主错误 */ }
-      }
-    }
+      await writeEvidenceTextAtomicAsync(path, JSON.stringify(payload));
+      // 跨进程唤醒提示在原件之后发布；提示可覆盖，原件不可覆盖，owner一次归档全部未消费事件。
+      await writeEvidenceTextAtomicAsync(filesDir + '/logs/platform-events/publication.json', JSON.stringify({ schema: 1, publication: path }));
+      PlatformDfxWatcher.recoveryWake?.();
+    });
   }
 
   private static lastExitReasonName_(reason: AbilityConstant.LastExitReason): string {
@@ -124,7 +128,7 @@ export class PlatformDfxWatcher {
         PlatformDfxWatcher.sequence++;
         const stamp: number = Date.now();
         const path: string = PlatformDfxWatcher.outputDir + '/event-'
-          + stamp + '-' + process.pid + '-' + PlatformDfxWatcher.sequence + '.json';
+          + stamp + '-' + process.pid + '-' + PlatformDfxWatcher.sequence + '-' + util.generateRandomUUID() + '.json';
         let paramsText: string = '{}';
         try { paramsText = JSON.stringify(info.params); } catch (e) { /* 只保留事件名称 */ }
         let eventAt: number = 0;
@@ -141,40 +145,14 @@ export class PlatformDfxWatcher {
           'eventAt': eventAt,
           'params': JSON.parse(paramsText) as Object,
         };
-        let file: fs.File | undefined = undefined;
-        try {
-          file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-          if (fs.writeSync(file.fd, JSON.stringify(payload)) <= 0) throw new Error('平台事件写入失败');
-          fs.fsyncSync(file.fd);
-          fs.closeSync(file);
-          file = undefined;
-          archivePlatformEventFiles_(PlatformDfxWatcher.filesDir);
-          PlatformDfxWatcher.trimPending_();
-        } catch (e) {
-          if (file !== undefined) {
-            try { fs.closeSync(file); } catch (ignored) { /* 保留主错误 */ }
-          }
-        }
+        const text: string = JSON.stringify(payload);
+        PlatformDfxWatcher.queuePersistence_(async (): Promise<void> => {
+          await writeEvidenceTextAtomicAsync(path, text);
+          await writeEvidenceTextAtomicAsync(PlatformDfxWatcher.outputDir + '/publication.json', JSON.stringify({ schema: 1, publication: path }));
+          PlatformDfxWatcher.recoveryWake?.();
+        });
       }
     }
   }
 
-  /** pending 事件不能无限堆积；优先保留最新事件，已归档文件不会出现在这里。 */
-  private static trimPending_(): void {
-    if (PlatformDfxWatcher.outputDir.length === 0) return;
-    let names: string[] = [];
-    try { names = fs.listFileSync(PlatformDfxWatcher.outputDir); } catch (e) { return; }
-    const events: string[] = names.filter((name: string): boolean =>
-      name.startsWith('event-') && name.endsWith('.json'));
-    if (events.length <= MAX_PENDING_EVENTS) return;
-    events.sort((a: string, b: string): number => {
-      const at: number = Number(a.substring(6).split('-')[0]);
-      const bt: number = Number(b.substring(6).split('-')[0]);
-      return at - bt;
-    });
-    const removeCount: number = events.length - MAX_PENDING_EVENTS;
-    for (let i = 0; i < removeCount; i++) {
-      try { fs.unlinkSync(PlatformDfxWatcher.outputDir + '/' + events[i]); } catch (e) { /* 下次继续 */ }
-    }
-  }
 }

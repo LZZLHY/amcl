@@ -1,0 +1,5090 @@
+{
+  "schema": 1,
+  "description": "full/显式 DeepAudit 的门禁清单及旧调用完整性见证；quick 直接运行 SDK 和当前 HAP 轻量检查，不按本目录扫描、选测或回退。quick/cachePolicy 字段仅供显式 DeepAudit 的既有计划器解释。",
+  "quickPolicy": {
+    "schema": 1,
+    "mode": "sdk-incremental",
+    "requiresFullBaseline": false
+  },
+  "gates": [
+    {
+      "id": "check-quick-hap",
+      "script": "scripts/check-quick-hap.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["build-hap.ps1"]
+    },
+    {
+      "id": "test-check-quick-hap",
+      "script": "scripts/test-check-quick-hap.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "defer",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["build-hap.ps1"]
+    },
+    {
+      "id": "test-build-profile-dispatch",
+      "script": "scripts/test-build-profile-dispatch.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "defer",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["build-hap.ps1"]
+    },
+    {
+      "id": "build-app",
+      "script": "build-app.ps1",
+      "tool": "powershell",
+      "kind": "prepare",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-delivery.ps1"
+      ]
+    },
+    {
+      "id": "build-hap",
+      "script": "build-hap.ps1",
+      "tool": "powershell",
+      "kind": "prepare",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-app.ps1",
+        "build-delivery.ps1",
+        "scripts/invoke-build-menu.ps1"
+      ]
+    },
+    {
+      "id": "audit-logging",
+      "script": "scripts/audit-logging.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "build-amcl-launcher",
+      "script": "scripts/build-amcl-launcher.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "build-lwjgl-jdk-views",
+      "script": "scripts/build-lwjgl-jdk-views.py",
+      "tool": "python",
+      "kind": "prepare",
+      "domain": "jdk",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "build-menu-signing",
+      "script": "scripts/build-menu-signing.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/invoke-build-menu.ps1"
+      ]
+    },
+    {
+      "id": "build-prebuilt-jars",
+      "script": "scripts/build-prebuilt-jars.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "build-sideload-signer",
+      "script": "scripts/build-sideload-signer.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "update",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "check-app-product",
+      "script": "scripts/check-app-product.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-app.ps1"
+      ]
+    },
+    {
+      "id": "check-arkts-test-suite",
+      "script": "scripts/check-arkts-test-suite.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-backend-keymap-parity",
+      "script": "scripts/check-backend-keymap-parity.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-comment-identifiers",
+      "script": "scripts/check-comment-identifiers.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-comment-layering",
+      "script": "scripts/check-comment-layering.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-cpp-runtime-assert",
+      "script": "scripts/check-cpp-runtime-assert.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-critical-logging",
+      "script": "scripts/check-critical-logging.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-desktop-api26-baseline",
+      "script": "scripts/check-desktop-api26-baseline.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-desktop-build-contract",
+      "script": "scripts/check-desktop-build-contract.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-desktop-render-diagnostics",
+      "script": "scripts/check-desktop-render-diagnostics.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-desktop-runtime",
+      "script": "scripts/check-desktop-runtime.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "check-diagnostics-contract",
+      "script": "scripts/check-diagnostics-contract.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-app.ps1",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-dso-undefined-symbols",
+      "script": "scripts/check-dso-undefined-symbols.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-empty-catch-napi",
+      "script": "scripts/check-empty-catch-napi.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-env-mutation",
+      "script": "scripts/check-env-mutation.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-game-runtime-compat",
+      "script": "scripts/check-game-runtime-compat.py",
+      "tool": "python",
+      "kind": "artifact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-gamecontrol-runtime-scope",
+      "script": "scripts/check-gamecontrol-runtime-scope.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-gate-f-readiness",
+      "script": "scripts/check-gate-f-readiness.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-gate0-evidence",
+      "script": "scripts/check-gate0-evidence.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-glfw-surface",
+      "script": "scripts/check-glfw-surface.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-graphics-runtime-artifact",
+      "script": "scripts/check-graphics-runtime-artifact.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-hvigor-test-log",
+      "script": "scripts/check-hvigor-test-log.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-input-build-profile",
+      "script": "scripts/check-input-build-profile.mjs",
+      "tool": "node",
+      "kind": "static",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "pass",
+      "deterministic": true,
+      "environmentKeys": [],
+      "inputs": {
+        "files": [
+          "scripts/check-input-build-profile.mjs",
+          "entry/build-profile.json5"
+        ]
+      },
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-input-runtime-boundary",
+      "script": "scripts/check-input-runtime-boundary.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-jdk-release-pin",
+      "script": "scripts/check-jdk-release-pin.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "jdk",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-jna-runtime",
+      "script": "scripts/check-jna-runtime.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-keymap-parity",
+      "script": "scripts/check-keymap-parity.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-launch-agent-probe",
+      "script": "scripts/check-launch-agent-probe.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-launch-generation-contract",
+      "script": "scripts/check-launch-generation-contract.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-line-refs",
+      "script": "scripts/check-line-refs.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "docs",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-log-channels",
+      "script": "scripts/check-log-channels.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-log-coalesce-wiring",
+      "script": "scripts/check-log-coalesce-wiring.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-log-domains",
+      "script": "scripts/check-log-domains.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-log-export-budget",
+      "script": "scripts/check-log-export-budget.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "export",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-log-noise-rules",
+      "script": "scripts/check-log-noise-rules.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-lwjgl-legacy-slots",
+      "script": "scripts/check-lwjgl-legacy-slots.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-lwjgl-modern-slot",
+      "script": "scripts/check-lwjgl-modern-slot.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-lwjgl-native-surface",
+      "script": "scripts/check-lwjgl-native-surface.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-lwjgl-target-manifest",
+      "script": "scripts/check-lwjgl-target-manifest.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-mg-build-contract",
+      "script": "scripts/check-mg-build-contract.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-app.ps1",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-mg-docs",
+      "script": "scripts/check-mg-docs.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-mg-pin",
+      "script": "scripts/check-mg-pin.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-mg-snapshot",
+      "script": "scripts/check-mg-snapshot.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-mobilegl-build-contract",
+      "script": "scripts/check-mobilegl-build-contract.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "check-mod-install-artifact",
+      "script": "scripts/check-mod-install-artifact.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "download",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-napi-obfuscation",
+      "script": "scripts/check-napi-obfuscation.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "obfuscation",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-nav-param-keys",
+      "script": "scripts/check-nav-param-keys.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-obfuscation-rules",
+      "script": "scripts/check-obfuscation-rules.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "obfuscation",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-ohos-runtime-optimizations",
+      "script": "scripts/check-ohos-runtime-optimizations.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-product-contract",
+      "script": "scripts/check-product-contract.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-app.ps1",
+        "build-hap.ps1",
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "check-product-identity-banner",
+      "script": "scripts/check-product-identity-banner.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-product-tu-syntax",
+      "script": "scripts/check-product-tu-syntax.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-release-no-test-symbols",
+      "script": "scripts/check-release-no-test-symbols.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "check-renderer-naming",
+      "script": "scripts/check-renderer-naming.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-renderer-registry",
+      "script": "scripts/check-renderer-registry.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-sdl3-abi",
+      "script": "scripts/check-sdl3-abi.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-sdl3-artifact",
+      "script": "scripts/check-sdl3-artifact.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "entry/hvigorfile.ts",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-sdl3-launch-contract",
+      "script": "scripts/check-sdl3-launch-contract.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-sdl3-layout",
+      "script": "scripts/check-sdl3-layout.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-sdl3-multiwindow-contract",
+      "script": "scripts/check-sdl3-multiwindow-contract.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-sdl3-presentation-contract",
+      "script": "scripts/check-sdl3-presentation-contract.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-sdl3-surface",
+      "script": "scripts/check-sdl3-surface.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-sdl3-text-session-contract",
+      "script": "scripts/check-sdl3-text-session-contract.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-sdl3-video-callbacks",
+      "script": "scripts/check-sdl3-video-callbacks.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-typed-sink-wiring",
+      "script": "scripts/check-typed-sink-wiring.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-upstream-updates",
+      "script": "scripts/check-upstream-updates.sh",
+      "tool": "bash",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-wire-json-obfuscation",
+      "script": "scripts/check-wire-json-obfuscation.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "obfuscation",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "check-workspace-layout",
+      "script": "scripts/check-workspace-layout.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "deploy-amcl-prebuilts",
+      "script": "scripts/deploy-amcl-prebuilts.sh",
+      "tool": "bash",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "deploy-mirror-repos",
+      "script": "scripts/deploy-mirror-repos.sh",
+      "tool": "bash",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "diagnostic-profile",
+      "script": "scripts/diagnostic-profile.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "download-lwjgl-modern-slot",
+      "script": "scripts/download-lwjgl-modern-slot.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "download",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "generate-log-domain-tags",
+      "script": "scripts/generate-log-domain-tags.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "graphics-profile-inventory",
+      "script": "scripts/graphics-profile-inventory.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "lib-workspace-paths",
+      "script": "scripts/lib/workspace-paths.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "workspace",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "log-retention-probe",
+      "script": "scripts/log-retention-probe.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "logging",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "preflight",
+      "script": "scripts/preflight.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "prepare-game-compat-inputs",
+      "script": "scripts/prepare-game-compat-inputs.py",
+      "tool": "python",
+      "kind": "prepare",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "prepare-lwjgl-modern-slot",
+      "script": "scripts/prepare-lwjgl-modern-slot.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "prepare-lwjgl2-test-inputs",
+      "script": "scripts/prepare-lwjgl2-test-inputs.py",
+      "tool": "python",
+      "kind": "prepare",
+      "domain": "input",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "prepare-product-artifact",
+      "script": "scripts/prepare-product-artifact.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "product",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "entry/hvigorfile.ts"
+      ]
+    },
+    {
+      "id": "prepare-release-profile",
+      "script": "scripts/prepare-release-profile.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "rebuild-sdl3-ohos-history",
+      "script": "scripts/rebuild-sdl3-ohos-history.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "sdl3-patchset-digest",
+      "script": "scripts/sdl3-patchset-digest.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "graphics",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "sync-prebuilt",
+      "script": "scripts/sync_prebuilt.sh",
+      "tool": "bash",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-activity-log-reader",
+      "script": "scripts/test-activity-log-reader.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-ai-diagnostic",
+      "script": "scripts/test-ai-diagnostic.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-app-product-contract",
+      "script": "scripts/test-app-product-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-app.ps1"
+      ]
+    },
+    {
+      "id": "test-app-update-channels",
+      "script": "scripts/test-app-update-channels.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-audit-logging",
+      "script": "scripts/test-audit-logging.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-bm-terminal-evidence",
+      "script": "scripts/test-bm-terminal-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-build-gate-cache",
+      "script": "scripts/test-build-gate-cache.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-build-gate-inventory",
+      "script": "scripts/test-build-gate-inventory.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-build-gate-runtime",
+      "script": "scripts/test-build-gate-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-build-gate-session",
+      "script": "scripts/test-build-gate-session.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-capture-backend-input-evidence",
+      "script": "scripts/test-capture-backend-input-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-arkts-test-suite",
+      "script": "scripts/test-check-arkts-test-suite.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-backend-keymap-parity",
+      "script": "scripts/test-check-backend-keymap-parity.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-cpp-runtime-assert",
+      "script": "scripts/test-check-cpp-runtime-assert.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-desktop-api26-baseline",
+      "script": "scripts/test-check-desktop-api26-baseline.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-desktop-runtime",
+      "script": "scripts/test-check-desktop-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-empty-catch-napi",
+      "script": "scripts/test-check-empty-catch-napi.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-env-mutation",
+      "script": "scripts/test-check-env-mutation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-gamecontrol-runtime-scope",
+      "script": "scripts/test-check-gamecontrol-runtime-scope.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-gate-f-readiness",
+      "script": "scripts/test-check-gate-f-readiness.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-gate0-evidence",
+      "script": "scripts/test-check-gate0-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-hvigor-test-log",
+      "script": "scripts/test-check-hvigor-test-log.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-input-build-profile",
+      "script": "scripts/test-check-input-build-profile.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-input-runtime-boundary",
+      "script": "scripts/test-check-input-runtime-boundary.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-jdk-release-pin",
+      "script": "scripts/test-check-jdk-release-pin.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-jna-runtime",
+      "script": "scripts/test-check-jna-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-keymap-parity",
+      "script": "scripts/test-check-keymap-parity.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-launch-agent-probe",
+      "script": "scripts/test-check-launch-agent-probe.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-launch-generation-contract",
+      "script": "scripts/test-check-launch-generation-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-log-channels",
+      "script": "scripts/test-check-log-channels.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-log-coalesce-wiring",
+      "script": "scripts/test-check-log-coalesce-wiring.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-log-domains",
+      "script": "scripts/test-check-log-domains.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-log-export-budget",
+      "script": "scripts/test-check-log-export-budget.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-log-noise-rules",
+      "script": "scripts/test-check-log-noise-rules.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-lwjgl-module-coverage",
+      "script": "scripts/test-check-lwjgl-module-coverage.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-lwjgl-native-surface",
+      "script": "scripts/test-check-lwjgl-native-surface.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-lwjgl-target-manifest",
+      "script": "scripts/test-check-lwjgl-target-manifest.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-mg-build-contract",
+      "script": "scripts/test-check-mg-build-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-mg-docs",
+      "script": "scripts/test-check-mg-docs.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-check-mg-pin",
+      "script": "scripts/test-check-mg-pin.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-check-mg-snapshot",
+      "script": "scripts/test-check-mg-snapshot.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-check-nav-param-keys",
+      "script": "scripts/test-check-nav-param-keys.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-obfuscation-rules",
+      "script": "scripts/test-check-obfuscation-rules.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "obfuscation",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-product-identity-banner",
+      "script": "scripts/test-check-product-identity-banner.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-product-tu-syntax",
+      "script": "scripts/test-check-product-tu-syntax.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-release-no-test-symbols",
+      "script": "scripts/test-check-release-no-test-symbols.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-check-renderer-naming",
+      "script": "scripts/test-check-renderer-naming.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-renderer-registry",
+      "script": "scripts/test-check-renderer-registry.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-sdl3-launch-contract",
+      "script": "scripts/test-check-sdl3-launch-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-sdl3-multiwindow-contract",
+      "script": "scripts/test-check-sdl3-multiwindow-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-sdl3-text-session-contract",
+      "script": "scripts/test-check-sdl3-text-session-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-sdl3-video-callbacks",
+      "script": "scripts/test-check-sdl3-video-callbacks.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-typed-sink-wiring",
+      "script": "scripts/test-check-typed-sink-wiring.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-wire-json-obfuscation",
+      "script": "scripts/test-check-wire-json-obfuscation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "obfuscation",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-check-workspace-layout",
+      "script": "scripts/test-check-workspace-layout.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-control-delivery-sequences",
+      "script": "scripts/test-control-delivery-sequences.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-control-groups-editor",
+      "script": "scripts/test-control-groups-editor.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-control-groups-storage",
+      "script": "scripts/test-control-groups-storage.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ],
+      "quickPilot": "download-tab",
+      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
+    },
+    {
+      "id": "test-control-groups",
+      "script": "scripts/test-control-groups.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-desktop-arkts-seams",
+      "script": "scripts/test-desktop-arkts-seams.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-desktop-render-diagnostics",
+      "script": "scripts/test-desktop-render-diagnostics.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-desktop-review-generator",
+      "script": "scripts/test-desktop-review-generator.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-device-automation",
+      "script": "scripts/test-device-automation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-device-connection-runtime",
+      "script": "scripts/test-device-connection-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-diagnostic-profile",
+      "script": "scripts/test-diagnostic-profile.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-diagnostic-source-policy",
+      "script": "scripts/test-diagnostic-source-policy.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-diagnostics-cmake",
+      "script": "scripts/test-diagnostics-cmake.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-docker-project",
+      "script": "scripts/test-docker-project.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-download-native",
+      "script": "scripts/test-download-native.sh",
+      "tool": "bash",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-download-system",
+      "script": "scripts/test-download-system.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-download-task-snapshot",
+      "script": "scripts/test-download-task-snapshot.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-egl-lifecycle",
+      "script": "scripts/test-egl-lifecycle.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-elf-input-validation",
+      "script": "scripts/test-elf-input-validation.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-entry-ime-stage-observation",
+      "script": "scripts/test-entry-ime-stage-observation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-entry-text-input-runtime",
+      "script": "scripts/test-entry-text-input-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-ets-compiler",
+      "script": "scripts/test-ets-compiler.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-evidence-archive",
+      "script": "scripts/test-evidence-archive.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "workspace",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-evidence-system",
+      "script": "scripts/test-evidence-system.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-export-check-digest",
+      "script": "scripts/test-export-check-digest.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-export-content-selection",
+      "script": "scripts/test-export-content-selection.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-export-native-bridge",
+      "script": "scripts/test-export-native-bridge.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-export-native",
+      "script": "scripts/test-export-native.sh",
+      "tool": "bash",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-export-sheet-selection",
+      "script": "scripts/test-export-sheet-selection.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-frame-rate-controller",
+      "script": "scripts/test-frame-rate-controller.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-frozen-settings-save",
+      "script": "scripts/test-frozen-settings-save.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-compat-receipt",
+      "script": "scripts/test-game-compat-receipt.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/test-game-compat.py"
+      ]
+    },
+    {
+      "id": "test-game-compat",
+      "script": "scripts/test-game-compat.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-controls-release",
+      "script": "scripts/test-game-controls-release.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-export-lifecycle",
+      "script": "scripts/test-game-export-lifecycle.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-game-export-plan",
+      "script": "scripts/test-game-export-plan.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-game-gui-bridge",
+      "script": "scripts/test-game-gui-bridge.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-game-gui-observation",
+      "script": "scripts/test-game-gui-observation.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-gui-source-lease",
+      "script": "scripts/test-game-gui-source-lease.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-input-runtime",
+      "script": "scripts/test-game-input-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-layout-journal-core",
+      "script": "scripts/test-game-layout-journal-core.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-layout-transport",
+      "script": "scripts/test-game-layout-transport.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-layout-v2",
+      "script": "scripts/test-game-layout-v2.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ],
+      "quickPilot": "download-tab",
+      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
+    },
+    {
+      "id": "test-game-page-exit",
+      "script": "scripts/test-game-page-exit.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-process-exit",
+      "script": "scripts/test-game-process-exit.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-runtime-compat",
+      "script": "scripts/test-game-runtime-compat.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-session-host",
+      "script": "scripts/test-game-session-host.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-startup",
+      "script": "scripts/test-game-startup.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-game-vulkan-preference",
+      "script": "scripts/test-game-vulkan-preference.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-gamepad-analog-stability",
+      "script": "scripts/test-gamepad-analog-stability.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ],
+      "quickPilot": "download-tab",
+      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
+    },
+    {
+      "id": "test-gate0-evidence-cmake",
+      "script": "scripts/test-gate0-evidence-cmake.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-gl4es-draw-math",
+      "script": "scripts/test-gl4es-draw-math.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-glfw-auxiliary-input",
+      "script": "scripts/test-glfw-auxiliary-input.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-glfw-document-selection",
+      "script": "scripts/test-glfw-document-selection.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-glfw-native-egl",
+      "script": "scripts/test-glfw-native-egl.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-glfw-touch-target-publication",
+      "script": "scripts/test-glfw-touch-target-publication.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-glfw-typed-menu-cursor",
+      "script": "scripts/test-glfw-typed-menu-cursor.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-artifact-manifest",
+      "script": "scripts/test-graphics-artifact-manifest.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-availability",
+      "script": "scripts/test-graphics-availability.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-bootstrap",
+      "script": "scripts/test-graphics-bootstrap.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-builder-history",
+      "script": "scripts/test-graphics-builder-history.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-capability-adapter",
+      "script": "scripts/test-graphics-capability-adapter.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-features",
+      "script": "scripts/test-graphics-features.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-history",
+      "script": "scripts/test-graphics-history.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-launch-failure-mjs",
+      "script": "scripts/test-graphics-launch-failure.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-launch-failure-py",
+      "script": "scripts/test-graphics-launch-failure.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-observation-abi",
+      "script": "scripts/test-graphics-observation-abi.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-observation-report",
+      "script": "scripts/test-graphics-observation-report.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-plan",
+      "script": "scripts/test-graphics-plan.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-probe-gate",
+      "script": "scripts/test-graphics-probe-gate.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-profile-inventory",
+      "script": "scripts/test-graphics-profile-inventory.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-profiles",
+      "script": "scripts/test-graphics-profiles.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-qualification",
+      "script": "scripts/test-graphics-qualification.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-recovery-handoff",
+      "script": "scripts/test-graphics-recovery-handoff.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-recovery",
+      "script": "scripts/test-graphics-recovery.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-runtime-artifact",
+      "script": "scripts/test-graphics-runtime-artifact.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-runtime-binding",
+      "script": "scripts/test-graphics-runtime-binding.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-runtime-images",
+      "script": "scripts/test-graphics-runtime-images.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-graphics-scene-evidence",
+      "script": "scripts/test-graphics-scene-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-gyro-lease",
+      "script": "scripts/test-gyro-lease.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-gyro-policy-activation",
+      "script": "scripts/test-gyro-policy-activation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ],
+      "quickPilot": "download-tab",
+      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
+    },
+    {
+      "id": "test-host-output-policy",
+      "script": "scripts/test-host-output-policy.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "workspace",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-ime-callback-lease",
+      "script": "scripts/test-ime-callback-lease.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-immersive-light",
+      "script": "scripts/test-immersive-light.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-input-architecture-regressions",
+      "script": "scripts/test-input-architecture-regressions.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-config-hud",
+      "script": "scripts/test-input-config-hud.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-configuration-runtime",
+      "script": "scripts/test-input-configuration-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-consumer-semantics",
+      "script": "scripts/test-input-consumer-semantics.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-latency-parser",
+      "script": "scripts/test-input-latency-parser.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-launch-plan-mjs",
+      "script": "scripts/test-input-launch-plan.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-launch-plan-py",
+      "script": "scripts/test-input-launch-plan.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-mapped-ranges",
+      "script": "scripts/test-input-mapped-ranges.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-input-observation-control",
+      "script": "scripts/test-input-observation-control.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-policy-activation",
+      "script": "scripts/test-input-policy-activation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-settings-editor",
+      "script": "scripts/test-input-settings-editor.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-surface-metadata",
+      "script": "scripts/test-input-surface-metadata.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-input-surface-reader",
+      "script": "scripts/test-input-surface-reader.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk-catalog-list",
+      "script": "scripts/test-jdk-catalog-list.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk-directory-lease",
+      "script": "scripts/test-jdk-directory-lease.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk-runtime-contract",
+      "script": "scripts/test-jdk-runtime-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk-tree-validation",
+      "script": "scripts/test-jdk-tree-validation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk25-safepoint-contract",
+      "script": "scripts/test-jdk25-safepoint-contract.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jna-runtime-contract",
+      "script": "scripts/test-jna-runtime-contract.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jni-classloader-ownership",
+      "script": "scripts/test-jni-classloader-ownership.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jvm-bootstrap-invocation",
+      "script": "scripts/test-jvm-bootstrap-invocation.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jvm-exit-invocation",
+      "script": "scripts/test-jvm-exit-invocation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jvm-exit-recovery",
+      "script": "scripts/test-jvm-exit-recovery.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-layout-catalog-paging",
+      "script": "scripts/test-layout-catalog-paging.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-layout-editor-failures",
+      "script": "scripts/test-layout-editor-failures.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-layout-editor-panel",
+      "script": "scripts/test-layout-editor-panel.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-layout-store-metadata",
+      "script": "scripts/test-layout-store-metadata.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-layout-store-transactions",
+      "script": "scripts/test-layout-store-transactions.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-ledger-native-async",
+      "script": "scripts/test-ledger-native-async.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-ledger-performance",
+      "script": "scripts/test-ledger-performance.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-lib-source-noise",
+      "script": "scripts/test-lib-source-noise.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-log-experience",
+      "script": "scripts/test-log-experience.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-log-ux",
+      "script": "scripts/test-log-ux.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-logging-writer",
+      "script": "scripts/test-logging-writer.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-logshare-protocol",
+      "script": "scripts/test-logshare-protocol.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-lwjgl-jdk-views",
+      "script": "scripts/test-lwjgl-jdk-views.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-lwjgl-runtime-slots",
+      "script": "scripts/test-lwjgl-runtime-slots.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-lwjgl2-context",
+      "script": "scripts/test-lwjgl2-context.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mapped-look-execution",
+      "script": "scripts/test-mapped-look-execution.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-maven-batch-result",
+      "script": "scripts/test-maven-batch-result.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mc-exit-seams",
+      "script": "scripts/test-mc-exit-seams.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-menu-cursor-startup",
+      "script": "scripts/test-menu-cursor-startup.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-menu-mouse-production",
+      "script": "scripts/test-menu-mouse-production.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mg-buffer-readback",
+      "script": "scripts/test-mg-buffer-readback.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mg-context-identity-evidence",
+      "script": "scripts/test-mg-context-identity-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mg-depth-evidence",
+      "script": "scripts/test-mg-depth-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mg-depth-range",
+      "script": "scripts/test-mg-depth-range.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-buffer-lifetime",
+      "script": "scripts/test-mobilegl-buffer-lifetime.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-cold-publication",
+      "script": "scripts/test-mobilegl-cold-publication.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-glfw",
+      "script": "scripts/test-mobilegl-glfw.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-loaded-evidence",
+      "script": "scripts/test-mobilegl-loaded-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-present-result",
+      "script": "scripts/test-mobilegl-present-result.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-program-evidence",
+      "script": "scripts/test-mobilegl-program-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mobilegl-replay-evidence",
+      "script": "scripts/test-mobilegl-replay-evidence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-mod-install",
+      "script": "scripts/test-mod-install.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-native-gamepad-route",
+      "script": "scripts/test-native-gamepad-route.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-native-gl-probe",
+      "script": "scripts/test-native-gl-probe.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-native-log-durability",
+      "script": "scripts/test-native-log-durability.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-ohos-runtime-cache-policy",
+      "script": "scripts/test-ohos-runtime-cache-policy.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-owned-text-key-scope",
+      "script": "scripts/test-owned-text-key-scope.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-owned-text-modal-napi",
+      "script": "scripts/test-owned-text-modal-napi.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-owner-layout-source",
+      "script": "scripts/test-owner-layout-source.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ],
+      "quickPilot": "download-tab",
+      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
+    },
+    {
+      "id": "test-patch-lwjgl-module-info",
+      "script": "scripts/test-patch-lwjgl-module-info.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-platform-event-recovery-cost",
+      "script": "scripts/test-platform-event-recovery-cost.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-preflight-cli",
+      "script": "scripts/test-preflight-cli.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-preflight-runner",
+      "script": "scripts/test-preflight-runner.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-prelaunch-runtime-slot",
+      "script": "scripts/test-prelaunch-runtime-slot.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-prepare-lwjgl2-test-inputs",
+      "script": "scripts/test-prepare-lwjgl2-test-inputs.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-processor-wait",
+      "script": "scripts/test-processor-wait.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-product-benchmark-contract",
+      "script": "scripts/test-product-benchmark-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-product-contract",
+      "script": "scripts/test-product-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-project-json5",
+      "script": "scripts/test-project-json5.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-runtime-bootstrap-contract",
+      "script": "scripts/test-runtime-bootstrap-contract.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-catalog-install",
+      "script": "scripts/test-runtime-catalog-install.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-catalog",
+      "script": "scripts/test-runtime-catalog.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-jvm-argument-policy",
+      "script": "scripts/test-runtime-jvm-argument-policy.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-packaging",
+      "script": "scripts/test-runtime-packaging.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-process-capture",
+      "script": "scripts/test-runtime-process-capture.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-slot-classpath",
+      "script": "scripts/test-runtime-slot-classpath.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-slot-store",
+      "script": "scripts/test-runtime-slot-store.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-update-ui",
+      "script": "scripts/test-runtime-update-ui.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdk-build-inputs",
+      "script": "scripts/test-sdk-build-inputs.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-sdl-desktop-device",
+      "script": "scripts/test-sdl-desktop-device.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl-host-consumer",
+      "script": "scripts/test-sdl-host-consumer.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-context-loss",
+      "script": "scripts/test-sdl3-context-loss.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-graphics-context",
+      "script": "scripts/test-sdl3-graphics-context.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-host-runtime",
+      "script": "scripts/test-sdl3-host-runtime.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-patchset-digest",
+      "script": "scripts/test-sdl3-patchset-digest.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-pbuffer-limits",
+      "script": "scripts/test-sdl3-pbuffer-limits.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-presentation-contract",
+      "script": "scripts/test-sdl3-presentation-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-touch-target",
+      "script": "scripts/test-sdl3-touch-target.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sdl3-vulkan-input-resume",
+      "script": "scripts/test-sdl3-vulkan-input-resume.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-session-completeness",
+      "script": "scripts/test-session-completeness.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-session-evidence-types",
+      "script": "scripts/test-session-evidence-types.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-session-log-io",
+      "script": "scripts/test-session-log-io.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "logging",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-session-retention",
+      "script": "scripts/test-session-retention.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sideload-activity-relations",
+      "script": "scripts/test-sideload-activity-relations.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-sideload-install-fence",
+      "script": "scripts/test-sideload-install-fence.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-sideload-recovery",
+      "script": "scripts/test-sideload-recovery.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-sideload-storage",
+      "script": "scripts/test-sideload-storage.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-sideload-update",
+      "script": "scripts/test-sideload-update.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-source-control",
+      "script": "scripts/test-source-control.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-source-look-policy-native",
+      "script": "scripts/test-source-look-policy-native.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-source-look-policy",
+      "script": "scripts/test-source-look-policy.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-store-channel-policy",
+      "script": "scripts/test-store-channel-policy.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-store-manager-ui",
+      "script": "scripts/test-store-manager-ui.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-store-run-admission",
+      "script": "scripts/test-store-run-admission.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-tablet-game-return",
+      "script": "scripts/test-tablet-game-return.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-tablet-process-policy",
+      "script": "scripts/test-tablet-process-policy.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-basics",
+      "script": "scripts/test-touch-basics.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-bridge-controls",
+      "script": "scripts/test-touch-bridge-controls.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-deadline-transaction",
+      "script": "scripts/test-touch-deadline-transaction.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-feedback-native",
+      "script": "scripts/test-touch-feedback-native.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-groups-production",
+      "script": "scripts/test-touch-groups-production.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-groups",
+      "script": "scripts/test-touch-groups.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-input-maintenance",
+      "script": "scripts/test-touch-input-maintenance.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-maintenance",
+      "script": "scripts/test-touch-maintenance.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-menu-napi",
+      "script": "scripts/test-touch-menu-napi.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-menu-registration",
+      "script": "scripts/test-touch-menu-registration.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-optimization",
+      "script": "scripts/test-touch-optimization.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-production",
+      "script": "scripts/test-touch-production.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-publication",
+      "script": "scripts/test-touch-publication.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-schema-napi",
+      "script": "scripts/test-touch-schema-napi.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-schema-preservation",
+      "script": "scripts/test-touch-schema-preservation.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-surface-controller",
+      "script": "scripts/test-touch-surface-controller.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-terminal-samples",
+      "script": "scripts/test-touch-terminal-samples.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-touch-ui-publication",
+      "script": "scripts/test-touch-ui-publication.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-unified-actions",
+      "script": "scripts/test-unified-actions.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-update-delivery",
+      "script": "scripts/test-update-delivery.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-update-dialog-sdk-runtime",
+      "script": "scripts/test-update-dialog-sdk-runtime.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-version-export-archive",
+      "script": "scripts/test-version-export-archive.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "export",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1"
+      ]
+    },
+    {
+      "id": "test-virtual-mouse-entry-position",
+      "script": "scripts/test-virtual-mouse-entry-position.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-virtual-mouse-entry-visibility",
+      "script": "scripts/test-virtual-mouse-entry-visibility.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-virtual-mouse-interaction",
+      "script": "scripts/test-virtual-mouse-interaction.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-virtual-mouse-wheel",
+      "script": "scripts/test-virtual-mouse-wheel.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ],
+      "quickPilot": "download-tab",
+      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
+    },
+    {
+      "id": "test-vulkan-capability-admission",
+      "script": "scripts/test-vulkan-capability-admission.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-vulkan-download-status",
+      "script": "scripts/test-vulkan-download-status.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "download",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-vulkan-orientation",
+      "script": "scripts/test-vulkan-orientation.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-vulkan-presentation-bridge",
+      "script": "scripts/test-vulkan-presentation-bridge.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-vulkan-wsi-diagnostics",
+      "script": "scripts/test-vulkan-wsi-diagnostics.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "graphics",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-window-resource-epochs",
+      "script": "scripts/test-window-resource-epochs.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-workspace-paths",
+      "script": "scripts/test-workspace-paths.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "workspace",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-zip-entry-buffer",
+      "script": "scripts/test-zip-entry-buffer.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml",
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "zip-entry-buffer",
+      "script": "scripts/zip-entry-buffer.mjs",
+      "tool": "node",
+      "kind": "fact",
+      "domain": "build",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    }
+  ]
+}

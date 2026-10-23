@@ -1,15 +1,15 @@
 #!/bin/bash
-# port_jdk25_patches.sh — 把 JDK 21 的 8 个 OHOS patch 移植到 jdk25u
+# port_jdk25_patches.sh — 维护JDK25受审基础补丁，保留上游安全点协议
 #
 # MC 26.1+（YY.D.H 版本号格式）首个要求 Java 25 的版本。本脚本与
-# port_jdk21_patches.sh 同构：8 个 patch 的 python 锚点在 jdk25u 上
-# 已逐个 grep 验证 verbatim 存在（详见 docs/adaptation/JDK25_ADAPTATION_ASSESSMENT.md §二）。
+# port_jdk21_patches.sh的历史移植背景见适配评估；0006/0007已退役，不能再生成。
+# 锚点存在和patch可应用不代表语义正确，真实源码还要通过25专项安全点守卫。
 #
 # 在 ohos-debug 容器内运行：
 #   docker exec ohos-debug bash /build/port_jdk25_patches.sh
 #
-# 输出：jdk25u/.git 下生成 8 个 git diff，写到 /tmp/jdk25-patches-new/，
-#       再手动 cp 到 prebuilt/jdk/25/patches/ 并更新 series。
+# 输出：只生成下方明确列出的基础补丁，写到本次外部/output子目录；后续独立补丁
+# 仍由活动series管理。输出目录必须为空，不能把上次残留的历史补丁再次通配复制。
 #
 # 策略：
 #   1. 重置 jdk25u 工作树
@@ -19,8 +19,12 @@
 set -euo pipefail
 
 JDK=/build/jdk25u
-PATCH_OUT=/tmp/jdk25-patches-new
+PATCH_OUT=${AMCL_JDK25_PATCH_OUTPUT:-/output/jdk25-patches-new}
 mkdir -p "$PATCH_OUT"
+if [[ -n "$(find "$PATCH_OUT" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "ERROR: patch output must be empty; preserve the previous output and choose a new directory" >&2
+    exit 1
+fi
 
 cd "$JDK"
 git config user.email "build@amcl.local" 2>/dev/null || true
@@ -252,80 +256,8 @@ echo "  generated $(wc -l < $PATCH_OUT/0005-signals-posix-abort-if-unrecognized.
 git reset --hard HEAD
 git clean -fdx -- src/
 
-# ============================================================
-# 0006: aarch64 ELF safepoint fallback
-# ============================================================
-echo "[0006] aarch64-elf-safepoint-fallback..."
-python3 << 'PYEOF'
-fp = '/build/jdk25u/src/hotspot/os_cpu/linux_aarch64/os_linux_aarch64.cpp'
-with open(fp) as f: s = f.read()
-
-# Insert the ELF-loader safepoint fallback before "if (stub != nullptr) {".
-# os_linux_aarch64.cpp only compiles for aarch64 target, never for x86_64
-# buildjdk, so we can leave this unconditional. But adding __MUSL__ guard
-# is harmless extra safety (in case someone ever builds buildjdk on aarch64 host).
-import re
-m = re.search(r'(\n)(\n  if \(stub != nullptr\) \{\n    // save all thread context in case we need to restore it\n)', s)
-if m is None:
-    m = re.search(r'(\n)(\n  if \(stub != NULL\) \{\n    // save all thread context in case we need to restore it\n)', s)
-assert m is not None, "stub != nullptr anchor not found in os_linux_aarch64.cpp"
-
-insert = '''
-#ifdef __MUSL__
-  // OHOS PATCH: fallback for ELF-loaded code that CodeCache doesn't know about.
-  // When JVM handler can't find a stub (ELF code not in CodeCache), handle
-  // safepoint polling SEGV by disarming the polling page directly.
-  if (stub == nullptr && sig == SIGSEGV && info != nullptr) {
-    address fault_addr = (address)info->si_addr;
-    if (SafepointMechanism::is_poll_address(fault_addr)) {
-      // Safepoint polling from ELF-loaded code: disarm polling page
-      os::protect_memory((char*)SafepointMechanism::get_polling_page(),
-                         os::vm_page_size(), os::MEM_PROT_READ);
-      return true; // retry the faulting instruction (now readable)
-    }
-  }
-#endif
-'''
-
-s = s[:m.start(2)] + insert + s[m.start(2):]
-with open(fp, 'w') as f: f.write(s)
-print("OK 0006")
-PYEOF
-
-git diff > "$PATCH_OUT/0006-aarch64-elf-safepoint-fallback.patch"
-echo "  generated $(wc -l < $PATCH_OUT/0006-aarch64-elf-safepoint-fallback.patch) lines"
-git reset --hard HEAD
-git clean -fdx -- src/
-
-# ============================================================
-# 0007: safepoint mechanism MEM_PROT_READ
-# ============================================================
-echo "[0007] safepoint-mechanism-mem-prot-read..."
-python3 << 'PYEOF'
-fp = '/build/jdk25u/src/hotspot/share/runtime/safepointMechanism.cpp'
-with open(fp) as f: s = f.read()
-
-# Gate change with __MUSL__: only OHOS target uses MEM_PROT_READ; host buildjdk
-# keeps MEM_PROT_NONE so its polling SIGSEGV mechanism still works.
-old = '    os::protect_memory(bad_page,  page_size, os::MEM_PROT_NONE);'
-new = '''#ifdef __MUSL__
-    // OHOS PATCH: avoid SIGSEGV for safepoint polling; readable + 0006 fallback handles it.
-    os::protect_memory(bad_page,  page_size, os::MEM_PROT_READ);
-#else
-    os::protect_memory(bad_page,  page_size, os::MEM_PROT_NONE);
-#endif'''
-if old in s:
-    s = s.replace(old, new, 1)
-else:
-    raise SystemExit("safepoint MEM_PROT_NONE not found")
-with open(fp, 'w') as f: f.write(s)
-print("OK 0007")
-PYEOF
-
-git diff > "$PATCH_OUT/0007-safepoint-mechanism-mem-prot-read.patch"
-echo "  generated $(wc -l < $PATCH_OUT/0007-safepoint-mechanism-mem-prot-read.patch) lines"
-git reset --hard HEAD
-git clean -fdx -- src/
+# 0006/0007保留历史原件但不再生成：共享坏页必须不可读，未知fault不能全局disarm。
+# 这里刻意不触碰安全点和AArch64信号文件；编译前会核对其与锁定上游完全一致。
 
 # ============================================================
 # 0008: libjli skip re-exec
@@ -424,7 +356,7 @@ echo "=== Patches generated, verifying all apply cleanly on fresh tree ==="
 
 git reset --hard HEAD
 git clean -fdx -- src/
-for p in 0001 0002 0003 0004 0005 0006 0007 0008 0009; do
+for p in 0001 0002 0003 0004 0005 0008 0009; do
     pfile=$(ls "$PATCH_OUT"/${p}-*.patch 2>/dev/null | head -1)
     [ -z "$pfile" ] && { echo "MISSING: $p"; exit 1; }
     if git apply --check "$pfile" 2>&1; then
@@ -437,7 +369,7 @@ for p in 0001 0002 0003 0004 0005 0006 0007 0008 0009; do
 done
 
 echo ""
-echo "=== All 9 patches applied cleanly on fresh jdk25u tree ==="
+echo "=== Selected active base patches applied cleanly on fresh jdk25u tree ==="
 ls -la "$PATCH_OUT/"
 echo ""
-echo "Next: cp $PATCH_OUT/*.patch to prebuilt/jdk/25/patches/ and create series."
+echo "Next: review only the selected generated patches against the active series; never reactivate retired safepoint patches."

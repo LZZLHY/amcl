@@ -155,6 +155,7 @@ GLFWwindowposfun glfwSetWindowPosCallback(GLFWwindow* window, GLFWwindowposfun c
 int glfwGetKey(GLFWwindow* window, int key) {
     if (!window || key < 0 || key >= 512) return GLFW_RELEASE;
     const int state = window->keys[key];
+    glfwOHOS_RecordControlPoll(window,1u,key,state!=GLFW_RELEASE);
     // ---- 决定性探针：MC 到底有没有在轮询修饰键 ----
     //
     // 背景：shift+左键在创造物品栏应当取整组，实测退化成取一个。而
@@ -180,7 +181,9 @@ int glfwGetKey(GLFWwindow* window, int key) {
 
 int glfwGetMouseButton(GLFWwindow* window, int button) {
     if (!window || button < 0 || button >= 8) return GLFW_RELEASE;
-    return window->mouseButtons[button];
+    const int state=window->mouseButtons[button];
+    glfwOHOS_RecordControlPoll(window,2u,button,state!=GLFW_RELEASE);
+    return state;
 }
 
 void glfwGetCursorPos(GLFWwindow* window, double* xpos, double* ypos) {
@@ -190,10 +193,12 @@ void glfwGetCursorPos(GLFWwindow* window, double* xpos, double* ypos) {
     }
 }
 
-// GLFW_CURSOR 是 grab 状态的唯一权威入口：记录 cursorMode、发布兼容 env，
-// 再由 inputBridge_setGrabState() 同步 native grab 状态。menu→grabbed 时 bridge 会使用
+// GLFW_CURSOR 是 grab 状态的唯一权威入口：记录 cursorMode，再由 inputBridge_setGrabState()
+// 同步 native grab 状态（原子量，libentry 经 isGrabbing 读取）。menu→grabbed 时 bridge 会使用
 // 最近一次 glfwSetCursorPos() 记录的 MC 中心重锚 look/pump 基准；菜单残余位移则由
 // MENU_POINTER 的 +2 present 提交屏障在 Screen 关闭前消费。
+// 本函数在游戏线程上随每次光标模式翻转调用，因此绝不写环境变量（I27-05）：原先的
+// AMCL_CURSOR_MODE 镜像没有任何读者，却在游戏线程上 setenv 并释放旧串。
 void glfwSetInputMode(GLFWwindow* window, int mode, int value) {
     OH_LOG_INFO(LOG_APP, "GLFW: setInputMode mode=%{public}d value=%{public}d", mode, value);
     if (mode == GLFW_CURSOR) {
@@ -210,8 +215,6 @@ void glfwSetInputMode(GLFWwindow* window, int mode, int value) {
             // grant is set only by the later typed capture-result sink.
             if (!requested) window->inputCapture.active = false;
         }
-        // 通过环境变量发布 grab 状态（过渡期兜底；touch_input 现主要读 inputBridge_isGrabbing 原子）。
-        setenv("AMCL_CURSOR_MODE", (value == GLFW_CURSOR_DISABLED) ? "grabbed" : "normal", 1);
         inputBridge_setGrabState(value == GLFW_CURSOR_DISABLED);
         OH_LOG_INFO(LOG_APP, "GLFW: cursor mode -> %{public}s",
                     (value == GLFW_CURSOR_DISABLED) ? "grabbed" : "normal");
@@ -441,11 +444,20 @@ void glfwSetWindowAspectRatio(GLFWwindow* window, int numer, int denom) { if (wi
 void glfwIconifyWindow(GLFWwindow* window) { if (window && !window->auxiliary) desktopCommand(AMCL_DESKTOP_MINIMIZE); }
 void glfwRestoreWindow(GLFWwindow* window) { if (window && !window->auxiliary) desktopCommand(AMCL_DESKTOP_RESTORE); }
 void glfwMaximizeWindow(GLFWwindow* window) { if (window && !window->auxiliary) desktopCommand(AMCL_DESKTOP_MAXIMIZE); }
-void glfwShowWindow(GLFWwindow* window) { if (glfwOHOS_PromoteWindow(window)) desktopCommand(AMCL_DESKTOP_SHOW); }
+void glfwShowWindow(GLFWwindow* window) {
+    if (!glfwOHOS_PromoteWindow(window)) return;
+    desktopCommand(AMCL_DESKTOP_SHOW);
+    // 实际目标资格发生变化后立即重开baseline。桌面命令可能同步触发用户回调，
+    // 因而刷新只通过当前绑定取目标，不再解引用传入的window。
+    glfwOHOS_RefreshTypedInputActivation();
+}
 void glfwHideWindow(GLFWwindow* window) {
     if (!window) return;
     window->visible = false;
     if (!window->auxiliary) desktopCommand(AMCL_DESKTOP_HIDE);
+    // Hide和下一次poll之间也可能产生输入，必须在这里同步停止typed/legacy
+    // 两条消费流；只在poll中检查visible会让Hide→Show间的旧包被重新播放。
+    glfwOHOS_RefreshTypedInputActivation();
 }
 void glfwFocusWindow(GLFWwindow* window) { if (window && !window->auxiliary) desktopCommand(AMCL_DESKTOP_SHOW); }
 void glfwRequestWindowAttention(GLFWwindow* window) {
@@ -463,6 +475,10 @@ int glfwGetWindowAttrib(GLFWwindow* window, int attrib) {
     if (window->clientAPI == GLFW_NO_API && (attrib == GLFW_CONTEXT_VERSION_MAJOR || attrib == GLFW_CONTEXT_VERSION_MINOR ||
         attrib == GLFW_OPENGL_PROFILE || attrib == GLFW_OPENGL_FORWARD_COMPAT || attrib == GLFW_CONTEXT_CREATION_API)) return 0;
     if (amcl::desktop::UsesDesktopOpenGlContext()) {
+        // 当前窗口的实际授予由 production desktop owner 回查 GL 字符串、profile 和
+        // flags 后保存。低版本请求可获更高实际版本；此处不能返回创建请求或随后
+        // 变更的全局 hints。冻结的 public API 覆盖 MG，但不把其 GLES transport 改成
+        // 系统 desktop driver，也不扩大 GL4ES 既有 GLES context 的属性解释范围。
         switch (attrib) {
             case GLFW_CONTEXT_VERSION_MAJOR: return window->actualContextMajor;
             case GLFW_CONTEXT_VERSION_MINOR: return window->actualContextMinor;
@@ -754,8 +770,16 @@ void glfwInitHint(int hint, int value) {
 }
 void glfwInitAllocator(const void* allocator) { }
 
-static int g_lastError = 0;
-static const char* g_lastErrorDesc = nullptr;
+// GLFW 错误按线程保存；一个线程消费错误不能抹掉另一个线程的 NativeEGL 查询失败。
+// 当前写入者只传静态文本，因此 description 可按 GLFW 契约持续借用到下一次错误查询。
+// AMCL_GLFW_ERROR_SLOT_BEGIN
+static thread_local int g_lastError = 0;
+static thread_local const char* g_lastErrorDesc = nullptr;
+void glfwOHOS_ReportError(int code, const char* description) {
+    g_lastError = code;
+    g_lastErrorDesc = description;
+    if (g_errorCallback) g_errorCallback(code, description);
+}
 int glfwGetError(const char** description) {
     if (description) *description = g_lastErrorDesc;
     int err = g_lastError;
@@ -763,6 +787,7 @@ int glfwGetError(const char** description) {
     g_lastErrorDesc = nullptr;
     return err;
 }
+// AMCL_GLFW_ERROR_SLOT_END
 
 // GLFW owns a virtual window; OHOS supplies the external NativeWindow. It exposes
 // none of the Cocoa/X11/Wayland native-window APIs, so use the official NULL enum.
@@ -770,9 +795,8 @@ int glfwGetPlatform(void) { return GLFW_PLATFORM_NULL; }
 int glfwPlatformSupported(int platform) { return platform == GLFW_PLATFORM_NULL ? GLFW_TRUE : GLFW_FALSE; }
 bool glfwOHOS_ValidatePlatformHint() {
     if (g_platformHint == GLFW_ANY_PLATFORM || glfwPlatformSupported(g_platformHint)) return true;
-    g_lastError = GLFW_PLATFORM_UNAVAILABLE;
-    g_lastErrorDesc = "OHOS host window does not provide the requested GLFW native platform";
-    if (g_errorCallback) g_errorCallback(g_lastError, g_lastErrorDesc);
+    glfwOHOS_ReportError(GLFW_PLATFORM_UNAVAILABLE,
+        "OHOS host window does not provide the requested GLFW native platform");
     return false;
 }
 

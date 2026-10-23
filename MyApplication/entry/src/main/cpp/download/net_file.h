@@ -3,11 +3,11 @@
  *
  * 对应 PCL2 `NetFile`。职责：
  *   1. 管理一组 sources（镜像 URL）
- *   2. HEAD 请求确定 file_size（如果 sha1 预检通过可跳过 HEAD）
+ *   2. 精确 size 直接启动；未知 size 在共享有界预算内取首个有效探测结果
  *   3. 分段切片：根据 size 和 FilePieceLimit 切成 N 段，每段一个 NetThread
  *   4. 维护 fd（按需 open/close，共享给所有 NetThread 做 pwrite）
  *   5. 合并进度（各 thread.done() 求和）
- *   6. 断点恢复：启动时读 .download-meta.json 重建分段状态
+ *   6. 断点恢复：由原业务意图重建任务后读 .download-meta v1，重建分段状态
  *   7. 下载完成后触发 FileChecker 做 sha1 最终校验
  *
  * 线程安全：threads_ / state_ / download_done_ 等被多个 NetThread 读写，
@@ -20,7 +20,7 @@
  *   - 保证同一文件的多个 segment 共享同一 fd（refcount 保护生命周期）
  *
  * 关键不同于 PCL2：
- *   - 不用 .part + merge，直接 pwrite 到最终文件
+ *   - 不按段单独落盘再 merge；所有段 pwrite 到固定 .amcl.part，校验后原子替换 final
  *   - 文件预分配（ftruncate）创建稀疏文件，不占物理空间直到写入
  *   - 中断恢复时，文件本身（非 meta）里已经有部分数据，就在正确的 offset
  */
@@ -67,6 +67,13 @@ public:
         // 这一区分允许 client 限制到 4 连接而不被当作 Forge/模组高并发任务。
         // 完整性仍由下载结束的 SHA1/size 终检兜底。
         int                      max_connections = 0;
+        std::string bearer_token;           // 单源短时凭据；断点元数据从不序列化此字段
+        // 期限从Native接收配置时的steady时钟起算，只限制新请求；在途健康GET不超时取消。
+        bool authorized_policy = false;
+        bool authorized_single_use = false;
+        int authorized_max_http_attempts = 0;
+        int64_t authorized_valid_for_ms = 0;
+        int64_t authorized_max_bytes = 0;
     };
 
     explicit NetFile(Config cfg);
@@ -81,7 +88,21 @@ public:
     const std::vector<NetSourcePtr>& sources() const { return sources_; }
     const FileChecker& checker() const { return cfg_.check; }
     uint64_t taskId() const { return cfg_.task_id; }
-    NetState state() const { return state_.load(std::memory_order_relaxed); }
+    const std::string& bearerToken() const { return cfg_.bearer_token; }
+    /** HTTP真正发出前占本文件lease次数，两条传输路径共同调用；无授权时无操作。 */
+    DownloadExceptionPtr beginAuthorizedRequest();
+    /** 累计所有收到的HTTP正文，不因Range重置本地done而恢复供应方预算。 */
+    bool consumeAuthorizedBytes(size_t bytes);
+    void noteAuthorizedHeaders(long status);
+    DownloadExceptionPtr authorizationFailure(DownloadExceptionPtr cause = nullptr, bool renew = true) const;
+    bool singleUseAuthorization() const { return cfg_.authorized_policy && cfg_.authorized_single_use; }
+    /** 只有完整摘要已证伪后才启用：普通重试仍保留前缀；授权任务永不进入此复验模式。 */
+    bool requiresSingleSourceRecheck() const { return single_source_recheck_.load(std::memory_order_acquire); }
+    bool acceptsAuthorizedUrl(const std::string& value) const {
+        return cfg_.bearer_token.empty() || (cfg_.urls.size() == 1 && cfg_.urls.front() == value);
+    }
+    /** acquire 与启动/终态的 release 发布配对，公开查询同时观察已发布的文件事实。 */
+    NetState state() const { return state_.load(std::memory_order_acquire); }
     int64_t  fileSize() const { return file_size_.load(std::memory_order_relaxed); }
     // v6.1：真正的高并发模式只指显式上限高于默认 piece_limit 的路径（当前为 5..16）。
     // 1..piece_limit 仅是硬上限：继续复用连接、使用默认分段和动态最快源选择；这让 client
@@ -137,9 +158,9 @@ public:
     void                  abort();
 
     /**
-     * v5: 删除本地文件 + .download-meta。
-     * 仅在 Aborted / Failed 状态下允许调用。返回释放的字节数。
-     * Finished 状态下拒绝（用户可能仍想保留下好的文件）。
+     * 取消/失败后的主动清理：Engine 已取得完整执行屏障和独占操作预占。
+     * 只删除 inode 收据匹配的 staging/meta，保留原 final 和后来替换的用户文件。
+     * 返回实际 unlink 成功的字节数；Finished 拒绝，未收敛时立即保留而不阻塞回调。
      */
     int64_t deleteLocalAndMeta();
 
@@ -172,13 +193,14 @@ public:
      *   - 已有段在稳定下载、且"准备中"的段不多于"下载中"的段（避免一轮加太多、连接还没 ramp）；
      *   - 存在剩余 >= kAdaptiveMinSplitBytes 的可拆大段（且该段支持 Range，即 end>=start）。
      */
-    void maybeGrowThreads();
+    void maybeGrowThreads() noexcept;
 
     /** 供 NetThread 访问（pwrite fd、选源、报错） */
     /**
      * 延迟 fd 管理（v4.2）：
      *   acquireFd() — 首次调用自动 open+ftruncate，后续调用 refcount++
-     *   releaseFd() — refcount--，归零时 close fd
+     *   releaseFd() — refcount--，归零时持久化并 close fd；未知大小仅截到有效前缀，
+     *                 失败/取消关闭不能确定 total。完整大小由最终校验和提交成功后发布。
      *   fd()        — 返回当前 fd（可能 -1，调用方应先 acquireFd）
      */
     int  acquireFd();
@@ -190,6 +212,8 @@ public:
      * 即使当前没有打开的写 fd，也会 no-follow 打开 staging 并 fsync（恢复提交路径）。
      */
     int  syncStagingDurable();
+    /** 生产 meta 入口：数据 fsync 后在同一可信父目录写 v1，并与文件提交/丢弃串行。 */
+    bool persistResumeMeta(const struct DownloadMeta& meta, uint64_t storage_generation);
     NetSourcePtr pickBestSource(bool needs_range = false, int preferred_idx = -1);
     int64_t nextSourceReadyMs(bool needs_range = false) const;
 
@@ -199,26 +223,46 @@ public:
      * 才允许放弃当前连接，单段文件绝不自杀（对齐 PCL2 的单线程豁免）。
      */
     int activeSegmentCount() const;
-    void reportThreadFinished(NetThread* thr);  // 仅接受 executionSettled 的线程
+    void reportThreadFinished(NetThread* thr) noexcept;  // 仅接受 transport-settled 的线程
 
     /** 当前文件的所有已创建 segment 是否都已离开 worker/curl callback。 */
     bool isExecutionSettled() const;
 
     /** 序列化当前状态为 DownloadMeta（供 engine 定时 flush 到磁盘） */
-    struct MetaSnapshot { std::vector<NetThread::Snapshot> segments; int64_t file_size; };
+    struct MetaSnapshot {
+        std::vector<NetThread::Snapshot> segments;
+        int64_t file_size;
+        uint64_t storage_generation;
+        bool execution_active;
+    };
     MetaSnapshot snapshotForMeta() const;
 
     /** 指向所属任务的弱引用（不持所有权，任务必须 outlive file） */
     void setOwner(LoaderDownload* owner) { owner_ = owner; }
+    /** 构造阶段写入后不再变化；Engine 用指针身份确认 ID 对应本任务，避免全文件扫描。 */
+    bool ownedBy(const LoaderDownload* owner) const { return owner_ == owner; }
 
 private:
+    // 授权计数独立于下载段/文件retry epoch；同一NetFile不允许reset获得新权限。
+    mutable std::mutex authorization_mu_;
+    int authorized_http_attempts_ = 0;
+    int64_t authorized_bytes_ = 0;
+    int64_t authorized_deadline_ms_ = 0;
+    bool authorized_headers_seen_ = false;
+    bool authorized_budget_exhausted_ = false;
     const Config                cfg_;
     const std::string           staging_path_;
     std::vector<NetSourcePtr>   sources_;
 
     // 状态
     std::atomic<NetState>       state_{NetState::WaitingForSchedule};
-    std::atomic<int64_t>        file_size_{-1};  // -1 未知 / -2 server 不支持 Content-Length
+    // start 及文件完成编排本身也属于执行；线程表为空/被重建不代表这些栈已经退出。
+    std::atomic<unsigned>      active_file_operations_{0};
+    // 覆盖尚无 segment 的 startup 与最终提交窗口；取消不能只给已有线程发令牌。
+    std::atomic<bool>          abort_requested_{false};
+    // -1 未知 / -2 HEAD 未取得大小。正数来自调用方/探测的完整长度，或最终验证和提交
+    // 成功后的完整正文；绝不能来自尚未完成的 downloadedBytes 前缀。
+    std::atomic<int64_t>        file_size_{-1};
     int                         fd_{-1};
     // root_fd_ 是**借用**的共享目录 fd（TrustedRootFdPool，见 net_file.cpp 的 fd 治理注释）。
     // 生命周期由 root_fd_holder_ 引用计数管理；本类不得直接 close root_fd_。
@@ -231,12 +275,20 @@ private:
     // acquire and final release are serialized by the same mutex. This deliberately
     // avoids the former load-then-increment race with close/fd-number reuse.
     mutable std::mutex          fd_init_mu_;
+    // 仅串行磁盘发布、meta 持久化和丢弃；不在网络写回调里持有，也不包住业务回调。
+    // 锁序固定 storage_mu_ -> fd_init_mu_；fd_init_mu_ 的已有路径不能反入 storage_mu_。
+    mutable std::mutex          storage_mu_;
+    // 丢弃/重建 staging 后递增，拒绝 ticker 在上一份文件上取得的旧 meta 快照。
+    std::atomic<uint64_t>        storage_generation_{0};
     int                         fd_refcount_{0};
     int                         fd_error_{0};
     bool                        staging_identity_set_{false};
     uint64_t                    staging_device_{0};
     uint64_t                    staging_inode_{0};
     bool                        resume_from_meta_{false};
+    bool                        meta_identity_set_{false};
+    uint64_t                    meta_device_{0};
+    uint64_t                    meta_inode_{0};
     mutable std::mutex          mu_;
     std::vector<NetThreadPtr>   threads_;        // 已分段的线程列表
     std::vector<NetThreadPtr>   threads_pending_launch_;
@@ -292,12 +344,12 @@ private:
     // 能救回"HEAD/整文件 GET 正常、但对 Range 报错"的源。一次性，避免病态循环。
     bool                        single_segment_fullget_tried_{false};
 
-    // AMCL: SHA1 终检失败换源 —— 当前源交付的内容哈希不符（典型：某镜像给了 Log4Shell
-    // 打补丁后的 log4j jar，而 Forge 期望 Maven Central 原版哈希）。把交付坏内容的源标记
-    // checksum_bad（pickBestSource 永久跳过），重建单段从下一个未排除源重下。bounded：
-    // 最多 kMaxChecksumSourceSwaps 次，且无可用源时直接判失败，杜绝病态循环。
+    // 完整 SHA1 证伪后的有界复验。只有单段全部保留字节的来源证明才可标 checksum_bad；
+    // 混合或旧 meta 的未知 prefix 先从0做单源复验，不能把最后交付 tail 的健康源误禁。
+    // 最多 kMaxChecksumSourceSwaps 轮，计数属于文件，不随新段重新补次数；权限预算独立。
     static constexpr int        kMaxChecksumSourceSwaps = 6;
     int                         checksum_source_swaps_{0};
+    std::atomic<bool>           single_source_recheck_{false};
 
     // ---- 内部步骤 ----
     DownloadExceptionPtr preCheckExistingFile();  // sha1 命中则跳过下载
@@ -308,9 +360,19 @@ private:
     int                  openAndTruncate();
     DownloadExceptionPtr validatePaths() const;
     DownloadExceptionPtr syncCloseAndCommit();
+    /** 打开可信 staging 并校验 inode；单段可传增量 SHA，其余沿用 checkFd 全量校验。 */
+    DownloadExceptionPtr checkStaging(const std::string* fast_sha1 = nullptr);
+    /** 只删除当前进程已读/写收据匹配的 meta；保留未知或被替换的文件。 */
+    int64_t removeResumeMeta();
     void                 discardStaging();
     void                 rebuildSingleSegment();
+    /** 完整校验失败后的有限复验：先分配完整替换布局/提交引用，再发布到同一执行器。 */
+    void                 retrySingleSegmentAfterCheck(const NetSourcePtr& preferred, bool isolate_source);
     void                 reportTerminalOnce();
+    /** 完成编排主体；公开入口捕获分配/observer 异常，避免逃出 worker/multi 线程。 */
+    void                 reportThreadFinishedImpl(NetThread* thr);
+    /** 保留原补段策略的主体；公开入口拒绝让优化阶段分配异常逃出 ticker。 */
+    void                 maybeGrowThreadsImpl();
 };
 
 using NetFilePtr = std::shared_ptr<NetFile>;

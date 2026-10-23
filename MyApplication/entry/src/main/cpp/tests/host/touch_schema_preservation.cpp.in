@@ -1,0 +1,222 @@
+// 持续输入合同回归：真实生产解释器与InputLedger；平台替身只注入触点/时钟并记录边沿和触觉。
+// 通过旧实现负对照证明C1/B1断言参与生产路径，不复制schema更新或连滑算法。
+@FIXTURE@
+
+// 以单调时钟驱动真实触点入口，phase对应平台DOWN/UP/MOVE/CANCEL；仅替换硬件事件来源。
+void touch(int phase,int id,float x,float y,int64_t advance=10000000) {
+    clockNs+=advance; OH_NativeXComponent_TouchEvent event{phase,clockNs}; handleSchemaGrabbedTouch(event,x,y,id);
+}
+// 读取实际ledger投递边沿，多个owner共持同一输出时不能把单owner释放误算成最终松键。
+int count(OutputKind kind,int code,int action) {
+    int n=0; for(const auto& e:edges) if(e.output.kind==kind&&e.output.code==code&&e.action==action) ++n; return n;
+}
+// 独立场景全复位；测试结束必须仍能通过生产取消释放一切，禁止靠新schema掩盖残留。
+void reset() {
+    schemaCancelGenerationLocked(); ledger.releaseAll(); edges.clear(); axisPan=false; looks=scrolls=0;
+    lookX=lookY=0; clockNs+=1000000000; hapticCalls=0;
+}
+// 固定样本只构造协议合法控件，haptic开启使无意义重按能够被观察；判定全部留在生产函数。
+AmclCtrlEntry button(const char* id,int key,float x,float y=100) {
+    AmclCtrlEntry e{}; std::strcpy(e.id,id); e.kind=0; e.keyOrMouse=key;
+    e.x=x; e.y=y; e.w=e.h=100; e.hitSlop=16; e.haptic=1; return e;
+}
+
+int main() {
+    // 通过真实 descriptor/Source prepare 和 GLFW 消费者握手取得本次资格，随后才运行既有保持场景。
+    CHECK(initializeSourceFixture());
+    reset(); TouchInteractionConfig config;
+    // 反馈-only表更新必须真实安装新haptic，但不能退休已抬指的toggle贡献。
+    // 第一轮在未修生产代码上记录held/RELEASE/菜单scope，避免只凭比较器名字判断成因。
+    auto feedbackToggle=button("feedback-toggle",65,100); feedbackToggle.trigger=1;
+    const auto feedbackGeneration=ohos_set_control_schema_v3(&feedbackToggle,1,1000,1000,1,.18f,3,&config);
+    CHECK(feedbackGeneration>0); touch(0,0,150,150); touch(1,0,150,150);
+    CHECK(ledger.isHeld({OutputKind::Key,65})&&count(OutputKind::Key,65,0)==0&&hapticCalls==1);
+    const auto feedbackOwner=s_schemaButtons["feedback-toggle"].owner;
+    const auto feedbackMenuRetirements=menuScopeRetirements;
+    feedbackToggle.haptic=0;
+    CHECK(ohos_set_control_schema_v3(&feedbackToggle,1,1000,1000,1,.18f,3,&config)>feedbackGeneration);
+    CHECK(s_schema[0].haptic==0);
+    std::cout<<"feedback-only toggle: held="<<ledger.isHeld({OutputKind::Key,65})
+        <<" releases="<<count(OutputKind::Key,65,0)
+        <<" menuScopeRetired="<<(menuScopeRetirements-feedbackMenuRetirements)<<" installedHaptic="<<s_schema[0].haptic<<"\n";
+    CHECK(ledger.isHeld({OutputKind::Key,65})&&count(OutputKind::Key,65,0)==0);
+    CHECK(s_schemaButtons["feedback-toggle"].owner==feedbackOwner&&s_schemaButtons["feedback-toggle"].control.haptic==1);
+    CHECK(menuScopeRetirements==feedbackMenuRetirements);
+    // 后续真实DOWN使用新表：先关闭旧toggle，再开启新toggle，旧反馈不能跟着owner永久继承。
+    touch(0,0,150,150); touch(1,0,150,150); CHECK(!ledger.isHeld({OutputKind::Key,65}));
+    touch(0,0,150,150); touch(1,0,150,150); CHECK(ledger.isHeld({OutputKind::Key,65})&&hapticCalls==1);
+    CHECK(s_schemaButtons["feedback-toggle"].control.haptic==0);
+    reset(); config=TouchInteractionConfig{};
+    std::cout<<"PASS feedback-only native table installation preserves old toggle and gives new contact new feedback\n";
+    // 仍贴屏的press按DOWN冻结反馈/绑定。真实新表安装后MOVE维持原owner，UP配对原输出；
+    // 后来独立DOWN才读取新haptic，不能在差异退休时改写旧finger或按钮runtime快照。
+    auto feedbackPress=button("feedback-press",65,100);
+    CHECK(ohos_set_control_schema_v3(&feedbackPress,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); const auto feedbackPressOwner=s_schemaButtons["feedback-press"].owner;
+    feedbackPress.haptic=0;
+    CHECK(ohos_set_control_schema_v3(&feedbackPress,1,1000,1000,1,.18f,3,&config)>0);
+    CHECK(ledger.isHeld({OutputKind::Key,65})&&count(OutputKind::Key,65,0)==0&&hapticCalls==1);
+    CHECK(s_schemaFingers[0].role==SCHEMA_FINGER_BUTTON&&s_schemaFingers[0].control.haptic==1);
+    CHECK(s_schemaButtons["feedback-press"].owner==feedbackPressOwner&&s_schemaButtons["feedback-press"].control.haptic==1);
+    touch(2,0,155,150); CHECK(ledger.isHeld({OutputKind::Key,65}));
+    touch(1,0,155,150); CHECK(!ledger.isHeld({OutputKind::Key,65})&&count(OutputKind::Key,65,0)==1);
+    touch(0,0,150,150); CHECK(hapticCalls==1&&s_schemaFingers[0].control.haptic==0);
+    touch(1,0,150,150);
+    // 新指加入旧gesture只共持原owner，自己的contact快照读取新反馈，不覆盖原聚合快照。
+    feedbackPress.haptic=1; CHECK(ohos_set_control_schema_v3(&feedbackPress,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); const auto sharedFeedbackCalls=hapticCalls;
+    feedbackPress.haptic=0; CHECK(ohos_set_control_schema_v3(&feedbackPress,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,1,152,150); CHECK(s_schemaFingers[1].control.haptic==0&&s_schemaButtons["feedback-press"].control.haptic==1);
+    touch(1,0,150,150); CHECK(ledger.isHeld({OutputKind::Key,65})&&hapticCalls==sharedFeedbackCalls);
+    touch(1,1,152,150); CHECK(!ledger.isHeld({OutputKind::Key,65}));
+    feedbackPress.haptic=1; CHECK(ohos_set_control_schema_v3(&feedbackPress,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); CHECK(hapticCalls==sharedFeedbackCalls+1&&s_schemaFingers[0].control.haptic==1); touch(1,0,150,150);
+    reset(); config=TouchInteractionConfig{};
+    // 长按候选的原deadline/快照保持：反馈变化不撤旧意图、不提前触发，也不把新开关贴到旧指。
+    auto feedbackLong=button("feedback-long",66,100); feedbackLong.trigger=3;
+    CHECK(ohos_set_control_schema_v3(&feedbackLong,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); const auto feedbackDeadline=s_schemaButtons["feedback-long"].longDeadlineNs;
+    feedbackLong.haptic=0; CHECK(ohos_set_control_schema_v3(&feedbackLong,1,1000,1000,1,.18f,3,&config)>0);
+    CHECK(s_schemaButtons["feedback-long"].longDeadlineNs==feedbackDeadline&&s_schemaFingers[0].control.haptic==1);
+    CHECK(count(OutputKind::Key,66,1)==0); clockNs=feedbackDeadline+1; schemaPollLongPressLocked();
+    CHECK(ledger.isHeld({OutputKind::Key,66})&&hapticCalls==1); touch(1,0,150,150); CHECK(ledger.ownerCount()==0);
+    touch(0,0,150,150); clockNs=s_schemaButtons["feedback-long"].longDeadlineNs+1; schemaPollLongPressLocked();
+    CHECK(ledger.isHeld({OutputKind::Key,66})&&hapticCalls==1&&s_schemaFingers[0].control.haptic==0);
+    touch(1,0,150,150); reset(); config=TouchInteractionConfig{};
+    std::cout<<"PASS feedback-only preserves real press/frozen feedback/paired UP and original long-press deadline\n";
+    // 连滑到已存在但空闲的按钮runtime也属于新gesture，必须采纳新反馈，不仅修普通DOWN。
+    auto feedbackSwipeA=button("feedback-swipe-a",65,100),feedbackSwipeB=button("feedback-swipe-b",66,300);
+    feedbackSwipeA.swipeGroup=feedbackSwipeB.swipeGroup=1;
+    AmclCtrlEntry feedbackSwipe[]{feedbackSwipeA,feedbackSwipeB};
+    CHECK(ohos_set_control_schema_v3(feedbackSwipe,2,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,350,150); touch(1,0,350,150); CHECK(hapticCalls==1);
+    feedbackSwipe[1].haptic=0; CHECK(ohos_set_control_schema_v3(feedbackSwipe,2,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); CHECK(hapticCalls==2); touch(2,0,350,150);
+    CHECK(ledger.isHeld({OutputKind::Key,66})&&hapticCalls==2&&s_schemaButtons["feedback-swipe-b"].control.haptic==0);
+    touch(1,0,350,150); reset(); config=TouchInteractionConfig{};
+    std::cout<<"PASS new swipe gesture adopts current feedback without rewriting active shared gesture\n";
+    auto joy=button("joy",0,100,300); joy.kind=1; joy.w=joy.h=200;
+    auto attack=button("attack",-1,600); auto drawer=button("drawer",0,800); drawer.handledBy=1; drawer.hitSlop=0;
+    auto child=drawer; std::strcpy(child.id,"child"); child.y=210;
+    AmclCtrlEntry closed[]{joy,attack,drawer},opened[]{joy,attack,drawer,child};
+    auto generation=ohos_set_control_schema_v3(closed,3,1000,1000,1,.18f,3,&config); CHECK(generation>0);
+    touch(0,0,200,400); touch(2,0,200,320); touch(0,1,650,150);
+    CHECK(ledger.isHeld({OutputKind::Key,87})&&ledger.isHeld({OutputKind::Mouse,0}));
+    // 第三指展开/关闭抽屉，顺序重排及未使用key槽变化都不能中断另外两指。
+    touch(0,2,850,150); touch(1,2,850,150);
+    CHECK(ohos_set_control_schema_v3(opened,4,1000,1000,1,.18f,3,&config)>generation);
+    CHECK(s_schemaFingers[0].role==SCHEMA_FINGER_JOYSTICK&&s_schemaFingers[1].role==SCHEMA_FINGER_BUTTON);
+    CHECK(count(OutputKind::Key,87,0)==0&&count(OutputKind::Mouse,0,0)==0);
+    AmclCtrlEntry reordered[]{child,drawer,attack,joy}; reordered[2].keys[5]=99;
+    CHECK(ohos_set_control_schema_v3(reordered,4,1000,1000,1,.18f,3,&config)>0);
+    touch(2,0,200,310); touch(2,1,652,150);
+    CHECK(ledger.isHeld({OutputKind::Key,87})&&ledger.isHeld({OutputKind::Mouse,0}));
+    // 删除攻击仅退休攻击；继续MOVE/迟到UP不能复活旧输出或误击新表同位置控件。
+    AmclCtrlEntry remaining[]{joy,drawer};
+    CHECK(ohos_set_control_schema_v3(remaining,2,1000,1000,1,.18f,3,&config)>0);
+    CHECK(ledger.isHeld({OutputKind::Key,87})&&!ledger.isHeld({OutputKind::Mouse,0}));
+    CHECK(s_schemaFingers[0].role==SCHEMA_FINGER_JOYSTICK&&s_schemaFingers[1].role==SCHEMA_FINGER_NONE);
+    attack.keyOrMouse=66; AmclCtrlEntry remapped[]{joy,attack,drawer};
+    CHECK(ohos_set_control_schema_v3(remapped,3,1000,1000,1,.18f,3,&config)>0);
+    touch(2,1,650,150); touch(1,1,650,150); CHECK(count(OutputKind::Key,66,1)==0);
+    touch(0,1,650,150); CHECK(ledger.isHeld({OutputKind::Key,66})); touch(1,1,650,150); touch(1,0,200,310);
+    CHECK(ledger.ownerCount()==0);
+    std::cout<<"PASS UI/reorder retention, local removal, stale MOVE/UP and remap isolation\n";
+
+    // 两指共享同按钮owner时，UI更新不能拆开引用；只允许末指UP产生最终RELEASE。
+    reset(); attack.keyOrMouse=65;
+    CHECK(ohos_set_control_schema_v3(&attack,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,650,150); touch(0,1,652,150); AmclCtrlEntry sharedUi[]{attack,child};
+    CHECK(ohos_set_control_schema_v3(sharedUi,2,1000,1000,1,.18f,3,&config)>0);
+    touch(1,0,650,150); CHECK(ledger.isHeld({OutputKind::Key,65})&&count(OutputKind::Key,65,0)==0);
+    touch(1,1,652,150); CHECK(!ledger.isHeld({OutputKind::Key,65})&&count(OutputKind::Key,65,0)==1);
+
+    // 未变toggle与长按期限保持；改一个控件的绑定必须释放旧输出而保留另一长按。
+    reset(); auto toggle=button("toggle",65,100); toggle.trigger=1;
+    auto longKey=button("long",66,300); longKey.trigger=3;
+    AmclCtrlEntry keys[]{toggle,longKey},withUi[]{toggle,longKey,child};
+    CHECK(ohos_set_control_schema_v3(keys,2,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); touch(1,0,150,150); touch(0,1,350,150);
+    const auto deadline=s_schemaButtons["long"].longDeadlineNs;
+    CHECK(ohos_set_control_schema_v3(withUi,3,1000,1000,1,.18f,3,&config)>0);
+    CHECK(ledger.isHeld({OutputKind::Key,65})&&s_schemaButtons["long"].longDeadlineNs==deadline);
+    clockNs=deadline+1; schemaPollLongPressLocked(); CHECK(ledger.isHeld({OutputKind::Key,66}));
+    withUi[0].keyOrMouse=67;
+    CHECK(ohos_set_control_schema_v3(withUi,3,1000,1000,1,.18f,3,&config)>0);
+    CHECK(!ledger.isHeld({OutputKind::Key,65})&&ledger.isHeld({OutputKind::Key,66}));
+    touch(1,1,350,150); CHECK(ledger.ownerCount()==0);
+    touch(0,1,350,150); const auto presses=count(OutputKind::Key,66,1);
+    CHECK(ohos_set_control_schema_v3(&child,1,1000,1000,1,.18f,3,&config)>0);
+    clockNs+=1000000000; schemaPollLongPressLocked(); CHECK(count(OutputKind::Key,66,1)==presses&&ledger.ownerCount()==0);
+    std::cout<<"PASS toggle and original long deadline retained; changed/removed controls cannot fire later\n";
+
+    // 自动前进没有活动手指仍属原摇杆；局部UI变化保持，删除摇杆释放方向/疾跑而不误松其它端。
+    reset(); config.autoWalk=true; config.sprint=true; config.floatingJoystick=true;
+    CHECK(ohos_set_control_schema_v3(&joy,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,200,400); touch(2,0,200,260); touch(1,0,200,260);
+    CHECK(!s_touchJoystick.Locked()&&!ledger.isHeld({OutputKind::Key,87}));
+    const auto gamepadOwner=SourceAcquireControl({AMCL_INPUT_SOURCE_GAMEPAD,1,"fixture:gamepad-preserve"},{{OutputKind::Key,87}});
+    CHECK(gamepadOwner!=0);AmclCtrlEntry joyUi[]{joy,child};
+    CHECK(ohos_set_control_schema_v3(joyUi,2,1000,1000,1,.18f,3,&config)>0);
+    CHECK(!s_touchJoystick.Locked()&&!ledger.owns(OWNER_SCHEMA_WASD,{OutputKind::Key,87}));
+    CHECK(ohos_set_control_schema_v3(&child,1,1000,1000,1,.18f,3,&config)>0);
+    CHECK(!s_touchJoystick.Locked()&&!ledger.owns(OWNER_SCHEMA_WASD,{OutputKind::Key,87}));
+    CHECK(ledger.owns(gamepadOwner,{OutputKind::Key,87}));CHECK(SourceReleaseControl(gamepadOwner));CHECK(ledger.ownerCount()==0);
+
+    // 空白look、hotbar长按与菜单原事务在仅UI表变化时保留；策略/视口变化及非法表仍守原边界。
+    reset(); config=TouchInteractionConfig{}; config.hotbarDrop=true; config.holdMs=300;
+    auto hotbar=button("hotbar",0,100,600); hotbar.kind=4; hotbar.w=180; hotbar.h=22;
+    CHECK(ohos_set_control_schema_v3(&hotbar,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,500,500); touch(0,1,130,610); const auto holdDeadline=s_schemaFingers[1].deadlineNs;
+    s_menuTouch.Event(TouchPhase::Down,2,400,400,clockNs,emitMenuInteraction); CHECK(s_menuTouch.Active());
+    AmclCtrlEntry hotUi[]{hotbar,child};
+    CHECK(ohos_set_control_schema_v3(hotUi,2,1000,1000,1,.18f,3,&config)>0);
+    CHECK(s_menuTouch.Active()&&s_schemaFingers[0].role==SCHEMA_FINGER_LOOK&&s_schemaFingers[1].deadlineNs==holdDeadline);
+    touch(2,0,520,500); CHECK(lookX==20);
+    auto invalid=hotbar; invalid.w=std::numeric_limits<float>::quiet_NaN(); generation=s_schemaGeneration;
+    CHECK(ohos_set_control_schema_v3(&invalid,1,1000,1000,1,.18f,3,&config)==0&&s_schemaGeneration==generation&&s_menuTouch.Active());
+    clockNs=holdDeadline+1; schemaPollTouchHoldsLocked(); CHECK(ledger.isHeld({OutputKind::Key,config.actions[TouchDrop]}));
+    CHECK(ohos_set_control_schema_v3(&child,1,1000,1000,1,.18f,3,&config)>0);
+    CHECK(!ledger.isHeld({OutputKind::Key,config.actions[TouchDrop]})&&s_schemaFingers[0].role==SCHEMA_FINGER_LOOK);
+    // 退役字段不再改变运行政策；这里改变仍有效的菜单增益，验证真实政策变更会退休旧触点。
+    auto changed=config; changed.menuSensitivity=1.5;
+    CHECK(ohos_set_control_schema_v3(&child,1,1000,1000,1,.18f,3,&changed)>0);
+    CHECK(!s_menuTouch.Active()&&s_schemaFingers[0].role==SCHEMA_FINGER_NONE&&ledger.ownerCount()==0);
+    touch(0,0,500,500); s_menuTouch.Event(TouchPhase::Down,2,400,400,clockNs,emitMenuInteraction);
+    CHECK(ohos_set_control_schema_v3(&child,1,1200,1000,1,.18f,3,&changed)>0);
+    CHECK(!s_menuTouch.Active()&&s_schemaFingers[0].role==SCHEMA_FINGER_NONE);
+    std::cout<<"PASS locked joystick/external owner, look/hotbar/menu retention and global-policy/invalid atomicity\n";
+
+    // 连滑扩张带微动只触发一次按下与触觉；真正离开/抬起仍松开。
+    reset(); config=TouchInteractionConfig{}; auto a=button("a",65,100); a.swipeGroup=1;
+    CHECK(ohos_set_control_schema_v3(&a,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,92,150); for(int i=0;i<6;++i) touch(2,0,92+(i%2),150);
+    CHECK(count(OutputKind::Key,65,1)==1&&count(OutputKind::Key,65,0)==0&&hapticCalls==1);
+    touch(1,0,92,150); CHECK(count(OutputKind::Key,65,0)==1&&ledger.ownerCount()==0);
+    reset(); auto b=button("b",66,205); b.swipeGroup=1; AmclCtrlEntry neighbors[]{a,b};
+    CHECK(ohos_set_control_schema_v3(neighbors,2,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); touch(2,0,210,150); // B视觉矩形在A扩张带内，必须仍能精确接力。
+    CHECK(!ledger.isHeld({OutputKind::Key,65})&&ledger.isHeld({OutputKind::Key,66})&&hapticCalls==2);
+    touch(2,0,310,150); touch(2,0,311,150); CHECK(count(OutputKind::Key,66,1)==1);
+    touch(2,0,400,150); CHECK(ledger.ownerCount()==0); touch(1,0,400,150);
+    reset(); b.handledBy=1; b.hitSlop=0; b.swipeGroup=0; // ArkUI按钮不参加native连滑，保留协议拒绝非法组的约束。
+    CHECK(ohos_set_control_schema_v3(neighbors,2,1000,1000,1,.18f,3,&config)>0);
+    neighbors[1]=b; CHECK(ohos_set_control_schema_v3(neighbors,2,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150); touch(2,0,210,150); CHECK(ledger.ownerCount()==0&&count(OutputKind::Key,66,1)==0);
+    touch(1,0,210,150); reset(); CHECK(ledger.ownerCount()==0);
+    std::cout<<"PASS slop stays held, exact neighbor handoff and ArkUI blocker; no repeated haptic\n";
+
+    // 平台合并MOVE时，只收到DOWN→远处UP也必须退休候选，不能凭moved=false误发空白点击。
+    reset(); config=TouchInteractionConfig{}; config.gestureMode=1;
+    CHECK(ohos_set_control_schema_v3(nullptr,0,2000,1000,1,.18f,3,&config)>0);
+    touch(0,0,500,500); touch(1,0,560,500);
+    CHECK(count(OutputKind::Mouse,1,1)==0&&ledger.ownerCount()==0);
+    // 宽快捷栏同一格内也可能超过slop；相同槽位不能替代原始落点终点判据。
+    reset(); config=TouchInteractionConfig{}; config.hotbarSwap=true;
+    hotbar.w=1800; hotbar.x=0;
+    CHECK(ohos_set_control_schema_v3(&hotbar,1,2000,1000,1,.18f,3,&config)>0);
+    touch(0,0,40,610); touch(1,0,40,610);
+    touch(0,0,40,610); touch(1,0,90,610);
+    CHECK(count(OutputKind::Key,config.actions[TouchSwap],1)==0&&ledger.ownerCount()==0);
+    std::cout<<"PASS coalesced MOVE: final endpoint blocks blank tap and same-slot hotbar double tap\n";
+}

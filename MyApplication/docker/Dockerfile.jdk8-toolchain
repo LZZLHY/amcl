@@ -1,0 +1,14 @@
+# 在已登记的现代工具链上只增加校验过的宿主 boot JDK8；不继承历史源码和构建树。
+# 调用者先核对 BASE_IMAGE 的本地完整 ID；最终构建由 project.py 再锁定实际 image ID。
+ARG BASE_IMAGE=amcl-jdk-toolchain:runtime-audio-v2
+FROM ${BASE_IMAGE}
+ARG BOOT8_SHA256=9448308a21841960a591b47927cf2d44fdc4c0533a5f8111a4b243a6bafb5d27
+RUN set -eu; \
+    curl --fail --location --retry 3 --connect-timeout 30 --max-time 600 \
+      https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u452-b09/OpenJDK8U-jdk_x64_linux_hotspot_8u452b09.tar.gz \
+      -o /tmp/amcl-boot8.tar.gz; \
+    echo "${BOOT8_SHA256}  /tmp/amcl-boot8.tar.gz" | sha256sum -c -; \
+    mkdir /usr/lib/jvm/java-8-openjdk-amd64; \
+    tar -xzf /tmp/amcl-boot8.tar.gz --strip-components=1 -C /usr/lib/jvm/java-8-openjdk-amd64; \
+    rm /tmp/amcl-boot8.tar.gz; \
+    /usr/lib/jvm/java-8-openjdk-amd64/bin/java -version

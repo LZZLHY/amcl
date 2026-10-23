@@ -1,21 +1,12 @@
-import { DiagnosticPolicy } from 'commons';
+import { DiagnosticPolicy, DistributionPolicy } from 'commons';
 /**
- * ModBrowsePage.ets — 模组浏览页（P1-MODS Phase 1.6 → 2.3 升级）
+ * ModBrowsePage.ets — 模组、光影、资源包与整合包的共享下载浏览页。
  *
- * 文档：docs/guides/mod-download-system-plan.md §八.2
- *
- * Phase 2 升级范围（本次）：
- *   - 双数据源：Modrinth + CurseForge（通过 ModSourceRouter 自动合并去重）
- *   - 依赖自动解析：点击卡片 → 解析 root 版本 + REQUIRED 依赖图 → 一次性下载
- *   - OPTIONAL 依赖：弹一次性确认对话框，"全部安装" / "只装必需"
- *
- * 保留 Phase 1 已有：
- *   - 类别切换 / 搜索框 + 去抖 / 版本+loader 筛选 / ModCard 列表 + 无限滚动
- *   - 状态消息 / 加载 / 错误 / 空状态
- *
- * 后续 Phase（待做）：完整 ModDetailSheet（用户手动选版本 + 单独勾选每个依赖）
- *
- * 创建日期：2026-05-11
+ * 搜索栏常驻，二级面板管理加载器/排序；其他资源保留原目标版本选择，网络状态只替换结果区。
+ * 整合包使用适应实际内容宽度的卡片网格，新安装沿用设置的全局存储根，本地导入与恢复
+ * 在筛选收起、加载、空结果或错误时仍可用。恢复使用持久记录的原根，不迁移已有实例。
+ * 详情选版、可选前置与统一任务由现有仓库/安装服务负责，页面销毁不拥有后台安装生命周期。
+ * 当前行为与验收入口见 docs/guides/download-system.md。
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -34,7 +25,8 @@ import { ModInstallTask, ModInstallRequest, dependencyPlanErrors, isModVersionCo
 import { getDownloadHistoryStore, DownloadHistoryRecord } from 'feature_core';
 import { ActivityCategory } from 'feature_core';
 // 活动账本：模组/资源安装也要有自己的日志（2026-08-01 自审补漏）
-import { ledgerBegin, ledgerEnd, LedgerBeginMeta, LedgerOutcome, LedgerState } from 'commons';
+import { ledgerBeginAsync, ledgerEndAsync, ledgerManifestAsync, ledgerDirOf, writeEvidenceTextAtomicAsync,
+  LedgerBeginMeta, LedgerOutcome, LedgerState } from 'commons';
 import { getMetadataCacheStore } from 'feature_core';
 // 加速下载开启时强制官方源（见 resolveModrinthMode）
 import { getRelayClient } from 'feature_core';
@@ -70,28 +62,39 @@ import { resolveInstalledLoader, resolveInstalledMcVersion } from 'mods';
 import { IRemoteModRepository, SortBy } from 'mods';
 import { ModrinthSourceMode } from 'mods';
 import { ModCard } from '../components/ModCard';
+import { ModpackCard } from '../components/ModpackCard';
 import { loadModTranslationStores, ModTranslationStores,
   getCachedTranslationStores, onTranslationStoresUpdated, offTranslationStoresUpdated } from '../services/ModTranslationLoader';
 // v6.5 (2026-05-22)：ModBrowsePage 不再推送 ModDlState 给 Index；改为 registry.enqueue。
 import { ModDetailSheet, ModDetailDepRow } from '../components/ModDetailSheet';
 import { getDownloadTaskRegistry } from 'feature_core';
 import { ResourceInstallTask } from 'mods';
-import { ModpackInstallTask } from 'mods';
-import { CfFileResolution } from 'mods';
+import { ModpackInstallTask, sanitizeVersionName, validateModpackVersionName, displayTitleOf } from 'mods';
+import { ModpackNameInput } from '../components/ModpackNameInput';
+import { createModpackFileResolver, listModpackRecovery, ModpackRecoveryItem } from 'mods';
+import { isIsolatedModpackInstance } from 'commons';
+import { UnifiedTaskState, newVersionInstallOwner } from 'feature_core';
 import { ModpackMissingItem } from 'mods';
 import { GameArchiveIO } from '../components/GameArchiveIO';
 import { LocalModScanner } from 'mods';
 import { InstalledModIndex } from 'mods';
 import { ModUpdateCoordinator } from '../components/ModUpdateCoordinator';
-import { centerSheetForLayout, sheetWidthForLayout, detailSheetHeightForLayout } from 'commons';
+import { centerSheetForLayout, sheetWidthForLayout, detailSheetHeightForLayout, floatingDockReserveHeight } from 'commons';
 import { Breakpoint, DeviceForm } from 'commons';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { AppIconName } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 import { AppIcon } from '../components/AppIcon';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
+import { AppRoundIconButton } from '../components/AppRoundIconButton';
 
 const TAG = 'ModBrowsePage';
+/** 单局真实业务终态原件；nonce绑定原manifest，冷启只能消费匹配的安装活动。 */
+interface ModInstallTerminal {
+  schema: number; activityId: number; category: string; runNonce: string;
+  outcome: LedgerOutcome; record: DownloadHistoryRecord;
+}
 
 const SEARCH_DEBOUNCE_MS = 300;
 const USER_AGENT = APP_NAME + '/' + APP_VERSION + ' (https://github.com/axecraft/amcl)';
@@ -149,6 +152,8 @@ export struct ModBrowsePage {
 
   /** 给 Index 做 toast/log 的回调（可选） */
   onStatusMessage: (msg: string) => void = () => {};
+  /** 打开已登记任务的详情；确认界面属于任务面板，浏览页销毁不丢计划。 */
+  onOpenDownloadTask: (id: string) => void = () => {};
   // v6.5：以下两个回调已下台，走 registry 是唯一的模组下载路径。
 
   // ===================== 内部状态 =====================
@@ -160,6 +165,10 @@ export struct ModBrowsePage {
   @State private queryInput_: string = '';
   @State private gameVersionInput_: string = '';
   @State private loaderInput_: string = 'fabric';
+  @State private sortInput_: SortBy = SortBy.DOWNLOADS;
+  private sortExplicit_: boolean = false;
+  @State private modpackRecovery_: ModpackRecoveryItem[] = [];
+  @State private showModpackRecovery_: boolean = false;
 
   /** ctrl.getState() 的快照，UI 渲染用 */
   @State private view_: ModSearchState = makeInitialSearchState();
@@ -171,11 +180,33 @@ export struct ModBrowsePage {
 
   /** 详情 sheet 显示开关 */
   @State private showDetailSheet_: boolean = false;
+  /** 仅表示版本目录请求失败；安装目标、文件地址与依赖错误另存，不影响完整目录浏览。 */
   @State private detailError_: string = '';
+  /** 安装准备独立于详情展示；异步扫描、补地址或解依赖期间禁止提交安装。 */
+  @State private detailPreparingInstall_: boolean = false;
+  /** 当前文件不能安装的具体原因；为空不代表可安装，还须检查 ready 和目标快照。 */
+  @State private detailInstallError_: string = '';
+  /** 仅在当前选版、依赖计划和目标快照全部准备完成时为 true。 */
+  @State private detailInstallReady_: boolean = false;
+  /** false 时依赖卡仅展示远端直接声明，不能当作已解析且可勾选的安装计划。 */
+  @State private detailDependenciesResolved_: boolean = false;
+  /** 准备成功时绑定的真实安装目标，防止相同 MC/loader 的另一个实例误用旧计划。 */
+  private detailPreparedMcDir_: string = '';
+  private detailPreparedVersionId_: string = '';
+  /** 下载详情中的名称草稿；选版只刷新文件元数据，不能覆盖用户正在编辑的名称。 */
+  @State private detailModpackName_: string = '';
+  @State private detailModpackNameError_: string = '';
+  /** 本地文件选择结束后的安装前详情。原根在打开文件选择器之前快照。 */
+  @State private showLocalModpackDetail_: boolean = false;
+  @State private localModpackName_: string = '';
+  @State private localModpackNameError_: string = '';
+  private localModpackArchive_: string = '';
+  private localModpackRoot_: string = '';
+  private localModpackFilesDir_: string = '';
   private detailOptionalIds_: string[] = [];
   /** 当前打开详情的 project；空对象 → 占位 */
   @State private detailProject_: RemoteProject = {} as RemoteProject;
-  /** 已解析的 best version；null 表示尚在 fetch 中 */
+  /** 当前浏览版本：优先推荐适配目标的文件，无推荐时仍展示项目的最新客户端文件。 */
   @State private detailSelectedVersion_: RemoteVersion | null = null;
   /** 该项目全部版本列表（picker step 用） */
   @State private detailAllVersions_: RemoteVersion[] = [];
@@ -183,7 +214,7 @@ export struct ModBrowsePage {
   @State private detailPrimaryFile_: RemoteFile | null = null;
   /** 依赖项展示 */
   @State private detailDeps_: ModDetailDepRow[] = [];
-  /** 详情 fetch 中标记 */
+  /** 仅版本目录请求中的标记；选中文件和依赖准备不隐藏已经可浏览的版本。 */
   @State private detailLoading_: boolean = false;
   /** LocalModScanner 命中的本地版本 id（picker 用） */
   @State private detailInstalledVersionIds_: string[] = [];
@@ -201,6 +232,8 @@ export struct ModBrowsePage {
 
   /** Phase 3 LocalModScanner 缓存（同 mcDir + versionId 之间共享一次扫描结果） */
   private localScanCache_: Map<string, LocalMod[]> = new Map<string, LocalMod[]>();
+  /** 缓存失效代次：换实例、开关详情或安装结束后，在途旧扫描不能重新填入缓存。 */
+  private localScanCacheEpoch_: number = 0;
 
   /**
    * 详情 sheet 内的本地扫描诊断信息（直接展示在版本选择卡底部）。
@@ -234,33 +267,16 @@ export struct ModBrowsePage {
   /** 本设备外部存储是否可用（取得到 Download 路径） */
   @State private externalAvailable_: boolean = false;
 
-  // ===================== Phase R-3+ 头部滑动收起 =====================
+  // ===================== 常驻搜索与二级筛选 =====================
 
   /**
-   * 折叠态：true 表示 ContextCard / Loader chips / Sort row 都收起，
-   * 只保留搜索框（顶部 6-tab 由 DownloadTab 负责，始终可见）。
-   *
-   * 实现：用 ListItemGroup({ header: SearchBox }) + .sticky(StickyStyle.Header)。
-   * 搜索框作为 List 的粘性头部，**永远钉在 List 视口顶端**；
-   * 折叠区（ContextCard/Loader/Sort）作为 List 的第一个普通 ListItem，
-   * 跟卡片一起滚 — 上滑被搜索框遮挡消失，下滑从搜索框背后浮现。
-   *
-   * 这是 ArkUI 标准的"粘性头部"模式：
-   *   - 折叠区和卡片必须在**同一个 List 容器**才能视觉同步、无空隙
-   *   - 任意位置下拉都能召回折叠区，因为它本来就在 list 的滚动序列里
-   *   - 不漂移：列表布局不重排（外层 Column / 兄弟节点都不变化）
-   *
-   * 触发：
-   *   ① 自然滚动 — onDidScroll 仅读 yOffset 决定 chev 朝向，不参与动画
-   *   ② 搜索框右侧 ▾ / ▴ 按钮 → scroller.scrollTo({ yOffset: 0 / FilterPanelHeight })
+   * 搜索栏始终是结果容器外的稳定节点；展开按钮只改变二级筛选区的显隐。
+   * 加载、错误、空结果及列表滚动均不能重建搜索输入，也不能代替用户的筛选开关。
+   * 整合包默认收起筛选以优先展示内容，其他资源沿用首次展开的入口习惯。
    */
   @State private headerCollapsed_: boolean = false;
-  /** 列表滚动控制器（按钮触发滚动用） */
-  private listScroller_: Scroller = new Scroller();
-  /** 折叠区域占用的 vp 高度（按钮滚动 + 阈值判定用它） */
-  private static readonly FILTER_PANEL_HEIGHT = 160;
-  /** 滚动方向状态判断阈值（vp） */
-  private static readonly COLLAPSE_THRESHOLD = 20;
+  /** 当前内容区宽度（vp）；使用实际可用空间，避免平板侧栏或分屏使卡片过窄。 */
+  @State private browseWidth_: number = 0;
 
   // ===================== 运行时服务（aboutToAppear 注入） =====================
 
@@ -288,6 +304,7 @@ export struct ModBrowsePage {
     if (this.defaultKindIdx >= 0 && this.defaultKindIdx <= 3) {
       this.kindIdx_ = this.defaultKindIdx;
     }
+    this.headerCollapsed_ = this.kindIdx_ === 3;
 
     // 1. 构造服务（复用全局单例）
     let dm = DownloadManager.instance();
@@ -346,7 +363,8 @@ export struct ModBrowsePage {
     this.gameVersionInput_ = resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_);
     let detectedLoader = resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_);
     // 原版（detected===''）保留 'fabric' 默认（搜模组最常见）
-    this.loaderInput_ = detectedLoader.length > 0 ? detectedLoader : 'fabric';
+    this.loaderInput_ = this.kindIdx_ === 3 ? '' : (detectedLoader.length > 0 ? detectedLoader : 'fabric');
+    this.refreshModpackRecovery_();
 
     // 3. 应用到控制器
     this.applyFiltersToController();
@@ -371,6 +389,8 @@ export struct ModBrowsePage {
   }
 
   aboutToDisappear() {
+    // 页面退出后废弃所有详情代次，避免来源请求/依赖解析回写已卸载的页面。
+    this.closeDetail();
     if (this.debounceTimer_ !== 0) {
       clearTimeout(this.debounceTimer_);
       this.debounceTimer_ = 0;
@@ -387,7 +407,6 @@ export struct ModBrowsePage {
     // v6.5：installer_ 已下台。
     this.scanner_ = null;
     this.modrinth_ = null;
-    this.localScanCache_.clear();
   }
 
   /** 译名库经后台远程刷新有更新时回调：重新注入路由器 + 重搜刷新译名。 */
@@ -427,13 +446,23 @@ export struct ModBrowsePage {
       // 包括其 header（搜索框），TextInput 重挂载会触发 onChange 形成无限循环。
       this.PinnedSearchHeader()
 
-      // ============== 列表区 ==============
-      // 设计：用 ListItemGroup + sticky:Header 让搜索框作为 List 的真正粘性头部？
-      // ✗ 不行 —— 见上面注释，TextInput 不能跟 List 一起 unmount。
-      // ✓ 做法：搜索框外置 + 折叠区作为 List 的第一个普通 ListItem。
-      //   - 上滑：折叠区 + 卡片一起从屏幕顶端滑出（被搜索框区域遮住，clip 在 Stack 边界）
-      //   - 下滑：从搜索框背后一起滑出来（任意位置都能召回）
-      //   - 不漂移：折叠区在 List 内部，跟卡片一起滚动，外层 Column 不重排
+      // 目标版本选择沿用原卡片与原位置；二级展开收起只管理筛选，不改变安装目标入口。
+      if (this.kindIdx_ !== 3) {
+        Column() { this.ContextCard() }
+          .width('100%').padding({ left: 16, right: 16, bottom: 8 })
+      }
+
+      // 二级面板与其他下载资源共享相同的筛选组件；显隐不依赖网络结果。
+      if (!this.headerCollapsed_) {
+        this.BrowseFilterPanel()
+      }
+
+      // 导入与恢复为浏览操作，收起筛选或离线时仍可达；没有持久任务时不展示恢复入口。
+      if (this.kindIdx_ === 3) {
+        this.ModpackImportRow()
+      }
+
+      // 结果容器可按加载/错误/空态替换；上方操作区的身份和可达性保持不变。
       Stack({ alignContent: Alignment.TopStart }) {
         if (this.view_.loading && this.view_.hits.length === 0) {
           this.LoadingBlock('正在搜索...')
@@ -442,27 +471,10 @@ export struct ModBrowsePage {
             this.view_.errorKind, this.view_.httpStatus, this.view_.errorMessage))
         } else if (this.view_.hits.length === 0) {
           this.EmptyBlock()
+        } else if (this.kindIdx_ === 3) {
+          this.ModpackResultsGrid()
         } else {
-          List({ space: 8, scroller: this.listScroller_ }) {
-            // 第一项：折叠区（ContextCard / Loader chips / Sort row）
-            ListItem() {
-              Column({ space: 10 }) {
-                // 整合包创建独立新版本，无"安装到目标版本"概念，不显示 ContextCard
-                if (this.kindIdx_ !== 3) {
-                  this.ContextCard()
-                }
-                if (this.kindIdx_ === 0 || this.kindIdx_ === 3) {
-                  this.LoaderChipsRow()
-                }
-                if (this.kindIdx_ === 3) {
-                  this.ModpackImportRow()
-                }
-                this.SortRow()
-              }
-              .width('100%')
-              .padding({ left: 4, right: 4, top: 4, bottom: 8 })
-            }
-
+          List({ space: 8 }) {
             ForEach(this.view_.hits, (p: RemoteProject) => {
               ListItem() {
                 Row() {
@@ -507,14 +519,11 @@ export struct ModBrowsePage {
           }
           .width('100%')
           .height('100%')
-          .padding({ left: 12, right: 12, bottom: 16 })
+          .padding({ left: 16, right: 16, bottom: 16 })
           .onReachEnd(() => {
             if (this.view_.hasMore && !this.view_.loading) {
               this.loadNextPage();
             }
-          })
-          .onDidScroll((_scrollOffset: number, _scrollState: ScrollState) => {
-            this.handleListScroll()
           })
         }
       }
@@ -538,6 +547,11 @@ export struct ModBrowsePage {
 
       // ============== VersionPickerSheet 锚点（选安装目标版本） ==============
       Column().width(0).height(0)
+        .bindSheet($$this.showModpackRecovery_, this.ModpackRecoveryPanel(), {
+          height: '70%', showClose: false, backgroundColor: this.theme.bgPrimary,
+        })
+
+      Column().width(0).height(0)
         .bindSheet($$this.showVersionPicker_, this.VersionPickerBuilder(), {
           height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
           width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
@@ -548,9 +562,92 @@ export struct ModBrowsePage {
           preferType: centerSheetForLayout(this.deviceForm, this.appBreakpoint) ? SheetType.CENTER : SheetType.BOTTOM,
           onDisappear: () => { this.showVersionPicker_ = false },
         })
+      Column().width(0).height(0)
+        .bindSheet($$this.showLocalModpackDetail_, this.LocalModpackDetailBuilder_(), {
+          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
+          width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
+          showClose: false, backgroundColor: this.theme.bgPrimary,
+          preferType: centerSheetForLayout(this.deviceForm, this.appBreakpoint) ? SheetType.CENTER : SheetType.BOTTOM,
+        })
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((_, area) => {
+      // ArkUI 返回 vp 布局宽度。仅在宽度真正改变时刷新，避免滚动触发重复布局。
+      const nextWidth = area.width as number;
+      if (nextWidth > 0 && Math.abs(nextWidth - this.browseWidth_) > 1) this.browseWidth_ = nextWidth;
+    })
+  }
+
+  /**
+   * 常驻搜索下方的第二层：展开时才显示加载器和排序。
+   * 宽屏整合包将两者排在同一工具行；窄屏允许加载器横向滚动，避免压缩点击热区。
+   * 目标版本卡片由外层稳定展示，本面板只管理筛选与排序。
+   */
+  @Builder
+  BrowseFilterPanel() {
+    Column({ space: 8 }) {
+      if (this.kindIdx_ === 3 && this.browseWidth_ >= 600) {
+        Row({ space: 16 }) {
+          Scroll() { this.LoaderChipsRow() }
+            .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+          this.SortButton()
+        }.width('100%').alignItems(VerticalAlign.Center)
+      } else {
+        if (this.kindIdx_ === 0 || this.kindIdx_ === 3) {
+          Scroll() { this.LoaderChipsRow() }
+            .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+        }
+        this.SortRow()
+      }
+    }
+    .width('100%').padding({ left: 16, right: 16, bottom: 8 })
+  }
+
+  /** 手机保持单列；平板/电脑按内容区每列至少 320vp 排为一至三列，分屏随宽度降列。 */
+  private modpackColumnCount_(): number {
+    if (this.deviceForm === DeviceForm.PHONE) return 1;
+    return Math.max(1, Math.min(3, Math.floor((this.browseWidth_ - 32 + 12) / 332)));
+  }
+
+  /** Grid 的列模板由当前可用空间生成，不能只使用整个窗口的断点。 */
+  private modpackColumnsTemplate_(): string {
+    return '1fr '.repeat(this.modpackColumnCount_()).trim();
+  }
+
+  /**
+   * 整合包结果使用同一网格容器完成单列/多列切换，项目 key 与详情回调保持稳定。
+   * 分页继续由生产搜索控制器负责；末尾完整跨列，并在内容尾部预留悬浮导航的空间。
+   */
+  @Builder
+  ModpackResultsGrid() {
+    Grid() {
+      ForEach(this.view_.hits, (project: RemoteProject) => {
+        GridItem() {
+          ModpackCard({ theme: this.theme, project: project,
+            onTap: (selected: RemoteProject) => { this.openDetail(selected); } })
+        }.width('100%')
+      }, (project: RemoteProject): string => project.source + ':' + project.id)
+      GridItem() {
+        Column() {
+          Row({ space: 8 }) {
+            if (this.view_.loading) {
+              LoadingProgress().width(20).height(20).color(this.theme.primary)
+            }
+            Text(this.view_.hasMore ? (this.view_.loading ? '加载中…' : '上滑加载更多') : '已展示全部结果')
+              .fontSize(12).fontColor(this.theme.textSecondary)
+          }.height(44).justifyContent(FlexAlign.Center)
+        }
+        .width('100%').height(44 + floatingDockReserveHeight(this.bottomSafeHeight))
+        .alignItems(HorizontalAlign.Center)
+      }.columnStart(0).columnEnd(this.modpackColumnCount_() - 1)
+    }
+    .columnsTemplate(this.modpackColumnsTemplate_()).columnsGap(12).rowsGap(12)
+    .width('100%').height('100%').padding({ left: 16, right: 16 })
+    .scrollBar(BarState.Off)
+    .onReachEnd(() => {
+      if (this.view_.hasMore && !this.view_.loading) this.loadNextPage();
+    })
   }
 
   /** VersionPickerSheet builder（被 bindSheet 引用） */
@@ -584,6 +681,13 @@ export struct ModBrowsePage {
       installedVersionIds: this.detailInstalledVersionIds_,
       loading: this.detailLoading_,
       blockingError: this.detailError_,
+      preparingInstall: this.detailPreparingInstall_,
+      installBlockReason: this.detailInstallError_,
+      installReady: this.detailInstallReady_,
+      dependenciesResolved: this.detailDependenciesResolved_,
+      modpackName: this.detailModpackName_,
+      modpackNameError: this.detailModpackNameError_,
+      onModpackNameChange: (value: string): void => { this.updateDetailModpackName_(value); },
       scanInfo: this.detailScanInfo_,
       onInstall: () => { this.confirmInstallFromSheet() },
       onOpenWebsite: () => { this.openWebsiteFromSheet() },
@@ -605,11 +709,113 @@ export struct ModBrowsePage {
     })
   }
 
+  /** 本地导入的安装前详情，名称输入和在线资源详情共用样式；短屏可滚动内容。 */
+  @Builder
+  LocalModpackDetailBuilder_() {
+    Column() {
+    // 接管原系统叉号，仍通过原绑定flag收起；名称草稿和安装请求不由标题组件处理。
+    ImmersiveTitleScaffold({ title: '导入整合包', theme: this.theme, modal: true,
+      closeLabel: '关闭整合包导入详情', surfaceColor: this.theme.bgPrimary,
+      onClose: (): void => { this.showLocalModpackDetail_ = false },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
+    }.width('100%').height('100%')
+  }
+
+  /** 在线草稿只在当前下载详情中编辑，开始安装时以值传入任务。 */
+  private updateDetailModpackName_(value: string): void {
+    this.detailModpackName_ = value;
+    this.detailModpackNameError_ = validateModpackVersionName(value);
+  }
+
+  /** 本地开始按钮与在线入口一样，先校验并快照名称，再创建独立安装任务。 */
+  private confirmLocalModpack_(): void {
+    this.localModpackNameError_ = validateModpackVersionName(this.localModpackName_);
+    if (this.localModpackNameError_.length > 0 || this.localModpackArchive_.length === 0) return;
+    let task = new ModpackInstallTask({
+      title: this.localModpackName_.trim(), subtitle: '整合包 · 本地导入',
+      versionName: this.localModpackName_.trim(), archivePath: this.localModpackArchive_,
+      mcDir: this.localModpackRoot_, filesDir: this.localModpackFilesDir_,
+      existingVersions: this.availableVersions, requireConfirmation: true,
+      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta),
+    });
+    this.showLocalModpackDetail_ = false;
+    this.localModpackArchive_ = '';
+    this.runModpackInstall_(task);
+  }
+
+  /** 恢复入口每次打开现读计划；无需搜索成功或已选 MC 版本。 */
+  private refreshModpackRecovery_(): void {
+    let ctx = this.uiCtx();
+    this.modpackRecovery_ = ctx !== undefined ? listModpackRecovery(ctx.filesDir) : [];
+  }
+
+  private resumeModpack_(item: ModpackRecoveryItem): void {
+    let ctx = this.uiCtx();
+    if (ctx === undefined) return;
+    this.showModpackRecovery_ = false;
+    let id = 'modpack:' + item.id;
+    if (getDownloadTaskRegistry().getAdapter(id) !== null) {
+      this.onOpenDownloadTask(id); return;
+    }
+    let task = new ModpackInstallTask({ title: item.title, sessionId: item.id,
+      filesDir: ctx.filesDir, mcDir: item.mcDir, existingVersions: this.availableVersions,
+      requireConfirmation: true, resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta) });
+    this.runModpackInstall_(task);
+  }
+
+  @Builder
+  ModpackRecoveryRow() {
+    // 调用方只在存在持久计划时显示；点击会现读列表，已有 Registry 任务复用原详情。
+    Button('继续安装 · ' + this.modpackRecovery_.length)
+      .height(28).fontSize(12).fontColor(this.theme.primary)
+      .backgroundColor(this.theme.primaryLight)
+      .padding({ left: 12, right: 12 })
+      .responseRegion({ x: 0, y: -8, width: '100%', height: 44 })
+      .onClick(() => { this.refreshModpackRecovery_(); this.showModpackRecovery_ = true; })
+  }
+
+  @Builder
+  ModpackRecoveryPanel() {
+    Column() {
+    // 复用完整模态标题，系统showClose关闭以避免两个叉号；原恢复入口保持原动作。
+    ImmersiveTitleScaffold({ title: '继续安装与补齐', theme: this.theme, modal: true,
+      closeLabel: '关闭安装恢复列表', surfaceColor: this.theme.bgPrimary,
+      onClose: (): void => { this.showModpackRecovery_ = false },
+      content: (): void => { this.ImmersiveTitleContent2_(); }
+    })
+    }.width('100%').height('100%')
+  }
+
+  private sortLabel_(): string {
+    if (this.sortInput_ === SortBy.RELEVANCE) return '按相关度';
+    if (this.sortInput_ === SortBy.NEWEST) return '按发布时间';
+    if (this.sortInput_ === SortBy.UPDATED) return '按更新时间';
+    return '按下载量';
+  }
+
+  /** 实际提交所选排序，选项与标签共享 SortBy，避免只有外观没有行为。 */
+  private chooseSort_(): void {
+    // ActionMenu 的颜色类型比普通组件的 ResourceColor 更窄，只接受 string/Resource。
+    let textColor = this.theme.textPrimary;
+    let menuColor: string = typeof textColor === 'string' ? textColor : '#3478F6';
+    this.getUIContext().getPromptAction().showActionMenu({
+      title: '排序方式', buttons: [
+        { text: '相关度', color: menuColor }, { text: '下载量', color: menuColor },
+        { text: '最新发布', color: menuColor }, { text: '最近更新', color: menuColor }],
+    }).then((result: promptAction.ActionMenuSuccessResponse): void => {
+      let values: SortBy[] = [SortBy.RELEVANCE, SortBy.DOWNLOADS, SortBy.NEWEST, SortBy.UPDATED];
+      if (result.index < 0 || result.index >= values.length) return;
+      this.sortInput_ = values[result.index]; this.sortExplicit_ = true;
+      this.applyFiltersToController(); this.triggerSearch(true);
+    }).catch((): void => {});
+  }
+
   private searchPlaceholder(): string {
-    if (this.kindIdx_ === 1) return '搜索资源包 / Modrinth + CurseForge…';
-    if (this.kindIdx_ === 2) return '搜索光影 / Modrinth + CurseForge…';
-    if (this.kindIdx_ === 3) return '搜索整合包 / Modrinth + CurseForge…';
-    return '搜索模组 / Modrinth + CurseForge…';
+    if (this.kindIdx_ === 1) return '搜索资源包';
+    if (this.kindIdx_ === 2) return '搜索光影';
+    if (this.kindIdx_ === 3) return '搜索整合包';
+    return '搜索模组';
   }
 
   /** 把内部 kindIdx 转为用户可读的资源类型标签（Context Card / 状态栏用） */
@@ -697,31 +903,25 @@ export struct ModBrowsePage {
     .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
   }
 
-  /**
-   * sticky 搜索框头部：作为 ListItemGroup.header。
-   * 关键约束：
-   *   - 必须实色背景（this.theme.bgPrimary），否则身后滚动的 list 内容会透出来
-   *   - padding 跟整个 List 的水平 padding 对齐，让搜索框跟卡片视觉对齐
-   *   - 不能加 shadow / borderRadius，否则会破坏"内容滑过后面消失"的错觉
-   */
+  /** 搜索栏固定在下载内容区顶部，与筛选和结果共用 16vp 对齐；状态切换不重挂 TextInput。 */
   @Builder
   PinnedSearchHeader() {
     Column() {
       this.SearchBox()
     }
     .width('100%')
-    .padding({ left: 4, right: 4, top: 8, bottom: 8 })
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
     .backgroundColor(this.theme.bgPrimary)
   }
 
-  /** Phase R-2：搜索框（圆角 22dp + 图标 + 清除） */
+  /** 搜索附属操作共用44vp命中区、28vp视觉圆；它们是输入操作，保持普通材质。 */
   @Builder
   SearchBox() {
     Row() {
       AppIcon({ name: AppIconName.Search, iconSize: 15, color: this.theme.textHint })
       TextInput({ placeholder: this.searchPlaceholder(), text: this.queryInput_ })
-        .height(38)
-        .fontSize(13)
+        .height(36)
+        .fontSize(14)
         .layoutWeight(1)
         .margin({ left: 8 })
         .backgroundColor(Color.Transparent)
@@ -731,47 +931,38 @@ export struct ModBrowsePage {
           this.debouncedSearch();
         })
       if (this.queryInput_.length > 0) {
-        Row() {
-          AppIcon({ name: AppIconName.Close, iconSize: 14, color: this.theme.textHint })
-        }
-        .padding({ left: 10, right: 6 })
-        .onClick(() => {
+        AppRoundIconButton({ name: AppIconName.Close, theme: this.theme, visualDiameter: 28, iconSize: 14,
+          color: this.theme.textHint, containerBg: Color.Transparent, accessibilityLabel: '清除搜索',
+          onAction: (): void => {
           this.queryInput_ = '';
           this.applyFiltersToController();
           this.triggerSearch(true);
-        })
+        } })
       }
 
-      // 折叠 / 展开切换按钮（搜索框右端 ▾ / ▴）
-      Row() {
-        AppIcon({
-          name: this.headerCollapsed_ ? AppIconName.ChevronUp : AppIconName.ChevronDown,
-          iconSize: 13,
-          color: this.headerCollapsed_ ? this.theme.primary : this.theme.textSecondary,
-          weight: FontWeight.Bold,
-        })
-      }
-      .width(28).height(28)
-      .borderRadius(14)
-      .backgroundColor(this.headerCollapsed_ ? this.theme.primaryLight : this.theme.bgInput)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
+      // 箭头只表示二级筛选面板状态；不再借列表滚动模拟收起。
+      AppRoundIconButton({
+          name: this.headerCollapsed_ ? AppIconName.ChevronDown : AppIconName.ChevronUp,
+          theme: this.theme, visualDiameter: 28, iconSize: 13,
+          color: this.headerCollapsed_ ? this.theme.textSecondary : this.theme.primary,
+          containerBg: this.headerCollapsed_ ? this.theme.bgInput : this.theme.primaryLight,
+          accessibilityLabel: this.headerCollapsed_ ? '展开筛选' : '收起筛选',
+          onAction: (): void => { this.setHeaderCollapsed(!this.headerCollapsed_) } })
       .margin({ left: 6 })
-      .onClick(() => { this.setHeaderCollapsed(!this.headerCollapsed_) })
     }
     .width('100%')
     .height(44)
-    .padding({ left: 14, right: 8 })
+    .padding({ left: 12, right: 6 })
     .backgroundColor(this.theme.bgCard)
-    .borderRadius(22)
+    .borderRadius(20)
     .alignItems(VerticalAlign.Center)
-    .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
   }
 
   /** Loader chips 行（与设计稿 Screen B 一致：Fabric / Forge / NeoForge / Quilt） */
   @Builder
   LoaderChipsRow() {
     Row({ space: 8 }) {
+      this.LoaderChip('')
       this.LoaderChip('fabric')
       this.LoaderChip('forge')
       this.LoaderChip('neoforge')
@@ -780,13 +971,15 @@ export struct ModBrowsePage {
     .width('100%')
   }
 
-  /** 排序行：左侧 "共 N 条 · 按下载量"、右侧"排序 ▾" */
+  /** 窄屏筛选中的排序行；整合包统计放在稳定操作行，避免重复占据首屏。 */
   @Builder
   SortRow() {
     Row() {
       // 左侧统计
-      if (this.view_.totalHits > 0) {
-        Text('共 ' + this.view_.totalHits + ' 条 · 按下载量')
+      if (this.kindIdx_ === 3) {
+        Text('排序方式').fontSize(12).fontColor(this.theme.textSecondary).layoutWeight(1)
+      } else if (this.view_.totalHits > 0) {
+        Text('共 ' + this.view_.totalHits + ' 条 · ' + this.sortLabel_())
           .fontSize(11)
           .fontWeight(500)
           .fontColor(this.theme.textSecondary)
@@ -804,20 +997,24 @@ export struct ModBrowsePage {
           .layoutWeight(1)
       }
 
-      // 右侧排序按钮（P3 占位 - 当前只有"下载量"排序）
-      Row({ space: 4 }) {
-        Text('排序').fontSize(11).fontWeight(500).fontColor(this.theme.textSecondary)
-        AppIcon({ name: AppIconName.ChevronDown, iconSize: 11, color: this.theme.textSecondary })
-      }
-      .height(28)
-      .padding({ left: 10, right: 10 })
-      .borderRadius(14)
-      .backgroundColor(this.theme.bgCard)
-      .alignItems(VerticalAlign.Center)
-      .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
+      this.SortButton()
     }
     .width('100%')
     .alignItems(VerticalAlign.Center)
+  }
+
+  /** 排序标签直接展示已提交的值；宽窄布局复用同一菜单，不产生仅改变外观的筛选。 */
+  @Builder
+  SortButton() {
+    Row({ space: 8 }) {
+      Text(this.sortLabel_()).fontSize(12).fontColor(this.theme.textSecondary)
+      AppIcon({ name: AppIconName.ChevronDown, iconSize: 12, color: this.theme.textSecondary })
+    }
+    .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(14)
+    .responseRegion({ x: 0, y: -9, width: '100%', height: 44 })
+    .backgroundColor(this.theme.bgCard).alignItems(VerticalAlign.Center)
+    .accessibilityText('排序方式：' + this.sortLabel_()).focusable(true)
+    .onClick(() => { this.chooseSort_(); })
   }
 
   /** 首字母大写（loader 名展示用） */
@@ -881,12 +1078,16 @@ export struct ModBrowsePage {
     this.targetMcDir_ = root;
     this.targetVersionId_ = versionId;
     this.targetValid_ = true;
+    // 必须先废弃旧缓存再开始新准备，否则切回实例时可能同步取到已失效的扫描结果。
+    this.invalidateLocalScanCache();
+    // 完整版本目录与目标无关；改选实例只重新准备当前文件的安装计划，不重拉/缩窄目录。
+    if (this.showDetailSheet_ && this.detailSelectedVersion_ !== null) {
+      this.pickDetailVersion(this.detailSelectedVersion_);
+    }
     // 把搜索筛选同步到所选版本：MC 版本号 + loader（整合包/重命名走快照/内容解析）
     this.gameVersionInput_ = resolveInstalledMcVersion(root, versionId);
     let dl = resolveInstalledLoader(root, versionId);
     if (dl.length > 0) this.loaderInput_ = dl;
-    // 目标根/版本变了 → 失效本地扫描缓存
-    this.localScanCache_.clear();
     this.showVersionPicker_ = false;
     this.applyFiltersToController();
     this.triggerSearch(true);
@@ -894,44 +1095,17 @@ export struct ModBrowsePage {
   }
 
   // ============================================================
-  //  头部滑动收起
+  //  二级筛选面板显隐
   // ============================================================
 
   /**
-   * 切换折叠态（按钮触发）：把列表平滑滚到指定位置。
-   * 注意：headerCollapsed_ 不立即写入 — 由 onDidScroll 根据真实滚动位置判定，
-   * 这样按钮触发的滚动和手势触发的滚动状态保持一致。
+   * 按钮直接切换面板布局，结果列表保持自己的滚动位置。
+   * 不滚走结果来冒充收起，也不重建搜索输入；筛选选择由页面状态保存，重新展开仍保留。
    */
   private setHeaderCollapsed(collapsed: boolean): void {
-    let target: number = collapsed ? ModBrowsePage.FILTER_PANEL_HEIGHT : 0;
-    try {
-      this.listScroller_.scrollTo({
-        xOffset: 0, yOffset: target,
-        animation: { duration: 220, curve: Curve.FastOutSlowIn },
-      });
-    } catch (e) {
-      // scroller 还没绑定（极早调用）— 直接更新 state，下次绘制时生效
+    this.getUIContext().animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
       this.headerCollapsed_ = collapsed;
-    }
-  }
-
-  /**
-   * List.onDidScroll 回调：根据 scroller.currentOffset() 判定折叠态（仅控制 chev 朝向）。
-   *
-   * 阈值取折叠区 1/3 防抖：滚过 1/3 就算折叠，没滚过就算展开。
-   */
-  private handleListScroll(): void {
-    try {
-      let off = this.listScroller_.currentOffset();
-      let y = (off as object as Record<string, number>)['yOffset'];
-      if (typeof y !== 'number') return;
-      let threshold = Math.max(ModBrowsePage.COLLAPSE_THRESHOLD,
-        ModBrowsePage.FILTER_PANEL_HEIGHT / 3);
-      let nextCollapsed = y >= threshold;
-      if (nextCollapsed !== this.headerCollapsed_) {
-        this.headerCollapsed_ = nextCollapsed;
-      }
-    } catch (e) { /* scroller not ready */ }
+    });
   }
 
   // ============================================================
@@ -942,24 +1116,25 @@ export struct ModBrowsePage {
    * 用户点击 ModCard：打开详情 sheet 并异步预取版本 / 依赖。
    * 不再直接触发安装。
    *
-   * 防御：
-   *   - 没装好 currentMcVersion 不弹 sheet（避免后续依赖解析无的放矢），仅 toast 提示
-   *   - 已经在装别的 mod → 仍可弹详情，但 confirmInstallFromSheet 会拒绝
+   * 浏览不要求已经选择或安装 MC；安装目标和依赖仅参与推荐及安装准备。
+   * 每次打开废弃上一轮异步回写；真实提交仍由 confirmInstallFromSheet 和安装服务复验。
    */
   private openDetail(project: RemoteProject): void {
-    this.localScanCache_.clear();
-    // 整合包创建独立新版本（不装进已有版本），不需要先选目标版本；
-    // 仅 模组/资源包/光影/数据包 这类"装进已有版本"的资源才要求先选版本。
-    if (project.kind !== ResourceKind.MODPACK && !this.hasValidCurrentVersion()) {
-      this.toast('请先点上方"切换"选择一个已安装的 MC 版本');
-      return;
-    }
+    this.invalidateLocalScanCache();
 
     // 1. 重置 detail 状态 + 显式打开 sheet（先弹后等）
     this.detailFetchEpoch_ += 1;
     let myEpoch = this.detailFetchEpoch_;
     this.detailProject_ = project;
+    this.detailModpackName_ = sanitizeVersionName(displayTitleOf(project) || project.title);
+    this.detailModpackNameError_ = validateModpackVersionName(this.detailModpackName_);
     this.detailError_ = '';
+    this.detailPreparingInstall_ = false;
+    this.detailInstallReady_ = false;
+    this.detailInstallError_ = '';
+    this.detailDependenciesResolved_ = false;
+    this.detailPreparedMcDir_ = '';
+    this.detailPreparedVersionId_ = '';
     this.detailOptionalIds_ = [];
     this.detailSelectedVersion_ = null;
     this.detailPrimaryFile_ = null;
@@ -969,7 +1144,7 @@ export struct ModBrowsePage {
     this.detailInstalledPrimary_ = null;
     this.detailResolvedDeps_ = [];
     this.detailLoading_ = true;
-    this.detailScanInfo_ = '正在扫描本地 mods/…';
+    this.detailScanInfo_ = '';
     this.showDetailSheet_ = true;
 
     // 异步预取
@@ -979,56 +1154,85 @@ export struct ModBrowsePage {
       let msg = e.message !== undefined ? e.message : String(e);
       AppLogger.warn(TAG, 'prefetchDetail failed', e, LOG_DOMAIN_DOWNLOAD);
       this.detailLoading_ = false;
-      this.detailScanInfo_ = '扫描失败：' + msg;
       this.detailError_ = msg;
       this.toast('版本信息加载失败：' + msg);
     });
   }
 
+  /**
+   * 获取完整客户端版本目录。当前实例只用于默认推荐，绝不成为目录请求的过滤条件。
+   * 无匹配推荐时回退到最新客户端文件；空目录是可展示的空态，不冒充网络/安装失败。
+   */
   private async prefetchDetail(project: RemoteProject, epoch: number): Promise<void> {
     const router = this.router_;
     if (router === null) throw new Error('模组来源未就绪');
     const repo = router.repoFor(project.source);
     if (repo === null) throw new Error('没有对应的模组来源');
-    const mcDir = this.targetMcDir_;
-    const versionId = this.targetVersionId_;
-    const loader = project.kind === ResourceKind.MOD ? resolveInstalledLoader(mcDir, versionId) : '';
-    const game = project.kind === ResourceKind.MOD ? resolveInstalledMcVersion(mcDir, versionId) : '';
-    this.detailError_ = '';
-    const versions = await repo.getVersions(project.id, loader.length > 0 ? [loader] : undefined, game.length > 0 ? [game] : undefined);
+    const fetched = await repo.getVersions(project.id, undefined, undefined);
+    const versions = fetched.filter((version: RemoteVersion): boolean => version.isServerPack !== true);
     if (this.detailFetchEpoch_ !== epoch) return;
-    if (mcDir !== this.targetMcDir_ || versionId !== this.targetVersionId_) throw new Error('安装目标已变化，请重新打开详情');
     this.detailAllVersions_ = versions.slice();
-    const picked = pickBestVersion(versions, loader, game);
-    if (picked === null) throw new Error('没有匹配目标版本的可下载文件');
-    this.detailSelectedVersion_ = picked;
-    const installed = project.kind === ResourceKind.MOD ? await this.getOrScanInstalled() : [];
-    if (this.detailFetchEpoch_ !== epoch) return;
-    const own = installed.filter((m: LocalMod): boolean => m.remoteSource === project.source && m.remoteProjectId === project.id);
-    this.detailInstalledVersionIds_ = own.map((m: LocalMod): string => m.remoteVersionId ?? '');
-    this.detailInstalledPrimary_ = own.length === 0 ? null : {
-      filePath: own[0].filePath, enabled: own[0].enabled, baseName: InstalledModIndex.baseNameOf(own[0].filename)
-    };
-    this.detailScanInfo_ = '本地共 ' + installed.length + ' 个模组，已识别 '
-      + installed.filter((m: LocalMod): boolean => (m.remoteProjectId ?? '').length > 0).length + ' 个来源';
-    await this.loadChosenDetail(picked, epoch, installed);
+    this.detailLoading_ = false;
+    const useTarget = project.kind === ResourceKind.MOD && this.hasValidCurrentVersion();
+    const loader = useTarget ? resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_) : '';
+    const game = useTarget ? resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_) : '';
+    const picked = pickBestVersion(versions, loader, game) ?? pickBestVersion(versions, '', '');
+    if (picked === null) {
+      this.detailInstallError_ = '该项目暂无可浏览的客户端版本';
+      return;
+    }
+    await this.loadChosenDetail(picked, epoch);
   }
 
+  /** 手选只切换浏览文件；先同步展示元数据，再独立准备当前目标的安装计划。 */
   private async pickDetailVersion(v: RemoteVersion): Promise<void> {
     const epoch = ++this.detailFetchEpoch_;
-    this.detailLoading_ = true;
-    this.detailError_ = '';
-    this.detailPrimaryFile_ = null;
-    this.detailSelectedVersion_ = v;
-    try {
-      const installed = this.detailProject_.kind === ResourceKind.MOD ? await this.getOrScanInstalled() : [];
-      if (epoch !== this.detailFetchEpoch_) return;
-      await this.loadChosenDetail(v, epoch, installed);
-    } catch (e) {
-      if (epoch !== this.detailFetchEpoch_) return;
-      this.detailError_ = (e as Error).message;
-      this.detailLoading_ = false;
+    // 可选前置属于具体发布文件；切换文件清空旧勾选，重算同一文件时保留用户选择。
+    if (this.detailSelectedVersion_ === null || this.detailSelectedVersion_.id !== v.id
+      || this.detailSelectedVersion_.source !== v.source) this.detailOptionalIds_ = [];
+    await this.loadChosenDetail(v, epoch);
+  }
+
+  /**
+   * 浏览态只投影所选文件的直接依赖声明，不替其他 MC/loader 伪造依赖解析结果。
+   * 未指定项目时保留精确版本 ID/文件名；这些行仅供阅读，安装计划成功后再整体替换。
+   */
+  private buildDeclaredDepRows(v: RemoteVersion): ModDetailDepRow[] {
+    const rows: ModDetailDepRow[] = [];
+    const seen: Set<string> = new Set<string>();
+    for (const dep of v.dependencies) {
+      // 浏览保留冲突/内嵌等所有声明，只有安装下载投影才过滤无需下载的类型。
+      // 业务身份不用数组序号；重复的相同声明合并，避免 ForEach 重复 key。
+      const key = JSON.stringify([v.source, v.projectId, v.id, dep.projectId ?? '', dep.versionId ?? '',
+        dep.fileName ?? '', dep.dependencyType]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ displayName: dep.projectId || dep.versionId || dep.fileName || '未命名前置',
+        author: '', iconUrl: '', downloads: -1, dependencyType: dep.dependencyType, estimatedSizeBytes: 0,
+        selected: false, alreadyInstalled: false, key: key,
+        versionNumber: dep.versionId ?? '' });
     }
+    return rows;
+  }
+
+  /**
+   * 只判断当前文件对当前目标的安装准入。返回原因不影响浏览；提交时再次调用，
+   * 防止 UI 旧状态、空加载器/MC 标签的通配行为或目标变动绕过安装边界。
+   */
+  private detailInstallIssue(v: RemoteVersion): string {
+    if (v.isServerPack === true) return '服务端整合包不能安装到客户端';
+    if (this.detailProject_.kind !== ResourceKind.MODPACK) {
+      if (!this.hasValidCurrentVersion() || this.targetMcDir_.length === 0) return '请先选择已安装的 MC 实例；仍可浏览全部版本';
+      if (this.detailProject_.kind === ResourceKind.MOD) {
+        const loader = resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_);
+        const game = resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_);
+        if (loader.length === 0) return '当前实例未识别到模组加载器；仍可查看此版本';
+        if (game.length === 0) return '当前实例的 MC 版本无法识别；仍可查看此版本';
+        if (!isModVersionCompatible(v, loader, game)) return '此文件不匹配当前实例（' + loader + ' / MC ' + game + '），仍可查看详情';
+      }
+    }
+    if (pickPrimaryFile(v.files) === null) return '此版本没有可下载主文件，仍可查看版本信息';
+    return '';
   }
 
   /**
@@ -1053,7 +1257,7 @@ export struct ModBrowsePage {
   }
 
   private toggleDetailDep(key: string): void {
-    if (this.detailLoading_) return;
+    if (this.detailPreparingInstall_ || !this.detailDependenciesResolved_) return;
     const row = this.detailDeps_.find((r: ModDetailDepRow): boolean => r.key === key);
     if (row === undefined || row.dependencyType !== DependencyType.OPTIONAL) return;
     this.detailOptionalIds_ = this.detailOptionalIds_.indexOf(key) >= 0
@@ -1062,7 +1266,7 @@ export struct ModBrowsePage {
   }
 
   private selectAllDetailDeps(): void {
-    if (this.detailLoading_) return;
+    if (this.detailPreparingInstall_ || !this.detailDependenciesResolved_) return;
     this.detailOptionalIds_ = this.detailDeps_.filter((r: ModDetailDepRow): boolean => r.dependencyType === DependencyType.OPTIONAL)
       .map((r: ModDetailDepRow): string => r.key);
     if (this.detailSelectedVersion_ !== null) this.pickDetailVersion(this.detailSelectedVersion_);
@@ -1070,9 +1274,17 @@ export struct ModBrowsePage {
 
   /** sheet 关闭 → 复位状态 */
   private closeDetail(): void {
+    this.invalidateLocalScanCache();
     this.showDetailSheet_ = false;
     this.detailFetchEpoch_ += 1; // 失效任何在飞的 prefetch
     this.detailLoading_ = false;
+    this.detailPreparingInstall_ = false;
+    this.detailInstallReady_ = false;
+    this.detailInstallError_ = '';
+    this.detailError_ = '';
+    this.detailDependenciesResolved_ = false;
+    this.detailPreparedMcDir_ = '';
+    this.detailPreparedVersionId_ = '';
     this.detailProject_ = {} as RemoteProject;
     this.detailSelectedVersion_ = null;
     this.detailPrimaryFile_ = null;
@@ -1088,6 +1300,8 @@ export struct ModBrowsePage {
 
   /** sheet 中点"网页"：拉起浏览器（默认打开项目自身页面；多源/百科由菜单分项走 openExternalUrl_） */
   private openWebsiteFromSheet(): void {
+    // 商店不暴露资源网页，旧 Sheet 回调也不能恢复此动作；API 资源解析/下载不受影响。
+    if (DistributionPolicy.isStore()) return;
     let url = this.detailProject_.websiteUrl;
     if (!url || url.length === 0) {
       this.toast('该项目无可用网址');
@@ -1098,6 +1312,7 @@ export struct ModBrowsePage {
 
   /** 经系统 Want 拉起浏览器打开外部 URL。 */
   private openExternalUrl_(url: string): void {
+    if (DistributionPolicy.isStore()) return;
     if (!url || url.length === 0) {
       this.toast('网址为空');
       return;
@@ -1170,6 +1385,7 @@ export struct ModBrowsePage {
    */
   private async switchDetailSource(source: ModSource): Promise<void> {
     let p = this.detailProject_;
+    const epoch = this.detailFetchEpoch_;
     if (p.source === source) return;
     if (p.altSource !== source) {
       this.toast('该源暂无此资源');
@@ -1182,6 +1398,8 @@ export struct ModBrowsePage {
     } catch (e) {
       AppLogger.warn(TAG, 'resolveCounterpart failed', e as Object, LOG_DOMAIN_DOWNLOAD);
     }
+    // 切源也是详情请求：关闭、换项目、换文件或页面销毁后，旧响应不能重新打开旧项目。
+    if (epoch !== this.detailFetchEpoch_ || !this.showDetailSheet_ || this.router_ === null) return;
     if (resolved === null) {
       this.toast((source === ModSource.CURSEFORGE ? 'CurseForge' : 'Modrinth') + ' 上未找到该资源');
       return;
@@ -1191,6 +1409,8 @@ export struct ModBrowsePage {
 
   /** 网页菜单"打开另一源页面"：解析另一源真实工程 → 用其真实网址拉起浏览器（避免按分类猜 URL 404）。 */
   private async openCrossSourceWeb(source: ModSource): Promise<void> {
+    // 在任何“解析另一网站”网络请求之前拒绝商店的一般网页操作。
+    if (DistributionPolicy.isStore()) return;
     let p = this.detailProject_;
     this.toast('正在解析' + (source === ModSource.CURSEFORGE ? ' CurseForge ' : ' Modrinth ') + '页面…');
     let resolved: RemoteProject | null = null;
@@ -1207,15 +1427,30 @@ export struct ModBrowsePage {
   }
 
   private confirmInstallFromSheet(): void {
-    if (this.detailLoading_) { this.toast('正在解析依赖，请等待完成'); return; }
+    if (this.detailLoading_ || this.detailPreparingInstall_) { this.toast('正在准备安装，请等待完成'); return; }
     if (this.detailError_.length > 0) { this.toast(this.detailError_); return; }
     const project = this.detailProject_;
     const picked = this.detailSelectedVersion_;
     const primary = this.detailPrimaryFile_;
+    if (picked?.isServerPack === true) { this.toast('服务端整合包不能安装到客户端'); return; }
     if (picked === null || primary === null || primary.url.length === 0) { this.toast('该版本不可下载'); return; }
+    // 先按真实当前目标复验，再检查准备结果；可浏览不代表存在可提交的安装计划。
+    const issue = this.detailInstallIssue(picked);
+    if (issue.length > 0) { this.toast(issue); return; }
+    if (!this.detailInstallReady_ || this.detailInstallError_.length > 0) {
+      this.toast(this.detailInstallError_ || '安装计划尚未准备完成'); return;
+    }
+    if (project.kind !== ResourceKind.MODPACK && (this.detailPreparedMcDir_ !== this.targetMcDir_
+      || this.detailPreparedVersionId_ !== this.targetVersionId_)) {
+      this.toast('安装目标已变化，请重新选择版本'); return;
+    }
     if (this.downloadingProjectIds_.has(project.id)) { this.toast('该资源正在安装'); return; }
     if (project.kind === ResourceKind.MODPACK) {
-      this.showDetailSheet_ = false; this.installModpackFromSheet(project, picked, primary); return;
+      this.detailModpackNameError_ = validateModpackVersionName(this.detailModpackName_);
+      if (this.detailModpackNameError_.length > 0) return;
+      // sheet 的 onDisappear 会清空详情状态，必须在关闭前捕获名称，与来源/文件一起入队。
+      const name = this.detailModpackName_.trim();
+      this.showDetailSheet_ = false; this.installModpackFromSheet(project, picked, primary, name); return;
     }
     if (!this.hasValidCurrentVersion()) { this.toast('安装目标已失效'); return; }
     if (project.kind === ResourceKind.MOD && !isModVersionCompatible(picked,
@@ -1231,7 +1466,8 @@ export struct ModBrowsePage {
    * 整合包安装入口：下载 .mrpack/.zip → 建带 loader 的新隔离版本 → 批量下文件 → 铺 overrides。
    * 走 ModpackInstallTask（统一下载任务），在 DownloadTasksSheet 显示橙色卡片。
    */
-  private installModpackFromSheet(project: RemoteProject, picked: RemoteVersion, primary: RemoteFile): void {
+  private installModpackFromSheet(project: RemoteProject, picked: RemoteVersion, primary: RemoteFile,
+    versionName?: string): void {
     let ctx = this.uiCtx();
     if (ctx === undefined) { this.toast('环境未就绪，无法安装整合包'); return; }
     let filesDir = ctx.filesDir;
@@ -1240,18 +1476,23 @@ export struct ModBrowsePage {
     let sourceLabel = project.source === ModSource.CURSEFORGE ? 'CurseForge' : 'Modrinth';
     let task = new ModpackInstallTask({
       title: project.title,
+      versionName: versionName ?? sanitizeVersionName(displayTitleOf(project) || project.title),
       subtitle: '整合包 · ' + sourceLabel,
       iconUrl: project.iconUrl,
       archiveUrl: primary.url,
       archiveMirrors: primary.mirrors,
       archiveFilename: primary.filename,
-      mcDir: this.targetMcDir_,
+      archiveSha1: primary.sha1,
+      archiveSha512: primary.sha512,
+      archiveSize: primary.size,
+      sourceVersionId: picked.id,
+      requireConfirmation: true,
+      // 新整合包使用设置传入的当前全局根，不消费其他资源的临时目标版本选择。
+      mcDir: this.mcDir,
       filesDir: filesDir,
       existingVersions: this.availableVersions,
       projectId: project.id,
-      resolveCfFile: (pid: number, fid: number, gv: string, ld: string): Promise<CfFileResolution> => {
-        return this.resolveCfFileForModpack_(pid, fid, gv, ld);
-      },
+      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta),
     });
     this.runModpackInstall_(task, project.id);
   }
@@ -1261,6 +1502,11 @@ export struct ModBrowsePage {
     if (lockId !== undefined) this.downloadingProjectIds_.add(lockId);
     getDownloadTaskRegistry().enqueue(task).then(() => {
       if (lockId !== undefined) this.downloadingProjectIds_.delete(lockId);
+      this.refreshModpackRecovery_();
+      if (task.view.state !== UnifiedTaskState.DONE) {
+        this.onStatusMessage(task.view.currentLabel);
+        return;
+      }
       let res = task.getResult();
       let name = res !== null ? res.versionName : task.view.title;
       if (res !== null && res.missing.length > 0) {
@@ -1276,6 +1522,7 @@ export struct ModBrowsePage {
       AppLogger.error(TAG, 'modpack install failed', e, LOG_DOMAIN_DOWNLOAD);
       this.toast('整合包安装失败：' + msg);
     });
+    this.onOpenDownloadTask(task.view.id);
   }
 
   /** 缺失清单对话框（决策4：明确告知整合包不完整 + 列出缺失项 + 可复制手动补齐清单）。 */
@@ -1332,7 +1579,10 @@ export struct ModBrowsePage {
     let ctx = this.uiCtx();
     if (ctx === undefined) { this.toast('环境未就绪，无法导入整合包'); return; }
     let filesDir = ctx.filesDir;
-    let importDir = filesDir + '/modpack-import';
+    // 文件选择是异步操作；在入口快照设置中的全局根，避免等待期间被页面临时目标覆盖。
+    const installRoot = this.mcDir;
+    // 每次导入使用独占目录，排队期间再次选择同名 ZIP 不会替换前一任务输入。
+    let importDir = filesDir + '/modpack-import/' + newVersionInstallOwner();
     let res = await GameArchiveIO.importResourceFile(ctx, importDir, ['.mrpack', '.zip']);
     if (res.cancelled) return;
     if (!res.ok) { this.toast(res.message); return; }
@@ -1340,37 +1590,14 @@ export struct ModBrowsePage {
     let title = res.name;
     let dot = title.lastIndexOf('.');
     if (dot > 0) title = title.substring(0, dot);
-    this.onStatusMessage('开始导入整合包 ' + title + '…');
-    let task = new ModpackInstallTask({
-      title: title,
-      subtitle: '整合包 · 本地导入',
-      archivePath: archivePath,
-      mcDir: this.targetMcDir_,
-      filesDir: filesDir,
-      existingVersions: this.availableVersions,
-      resolveCfFile: (pid: number, fid: number, gv: string, ld: string): Promise<CfFileResolution> => {
-        return this.resolveCfFileForModpack_(pid, fid, gv, ld);
-      },
-    });
-    this.runModpackInstall_(task);
-  }
-
-  /** 为整合包内 CurseForge 文件解析下载 URL + 文件名（projectID/fileID → CDN 直链）。
-   *  gameVersion/loader 供"精确 fileId 已被作者删除时回退到兼容版本"使用。 */
-  private async resolveCfFileForModpack_(
-    projectId: number, fileId: number, gameVersion: string, loader: string,
-  ): Promise<CfFileResolution> {
-    let router = this.router_;
-    if (router === null) throw new Error('CurseForge 仓库不可用');
-    let repo = router.repoFor(ModSource.CURSEFORGE);
-    if (repo === null) throw new Error('CurseForge 仓库不可用');
-    let cfRepo = repo as CurseForgeRepository;
-    // 用增强解析：downloadUrl 为空（作者禁用分发）时按 fileId 反推 CDN；
-    // 精确 fileId 已删除时回退到同 MC 版本 + loader 的最新兼容文件。
-    let info = await cfRepo.resolveFileDownloadInfo(
-      projectId.toString(), fileId.toString(), gameVersion, loader);
-    let resolution: CfFileResolution = { urls: info.urls, filename: info.filename, size: info.size, sha1: info.sha1 };
-    return resolution;
+    // 本地没有在线项目详情可预填，使用文件名生成安全默认名；选完文件后仍先展示
+    // 下载详情，让用户像普通版本一样改名并点击开始。此时尚未入队，也未写实例目录。
+    this.localModpackArchive_ = archivePath;
+    this.localModpackRoot_ = installRoot;
+    this.localModpackFilesDir_ = filesDir;
+    this.localModpackName_ = sanitizeVersionName(title);
+    this.localModpackNameError_ = validateModpackVersionName(this.localModpackName_);
+    this.showLocalModpackDetail_ = true;
   }
 
 
@@ -1390,15 +1617,16 @@ export struct ModBrowsePage {
     const kindLabel = this.kindLabelOf(project.kind);
     this.downloadingProjectIds_.add(project.id);
     const context = this.uiCtx();
-    if (context !== undefined) {
-      const meta: LedgerBeginMeta = {
-        category: ActivityCategory.MOD_INSTALL, title: project.title + '（' + kindLabel + '）',
-        gameVersionId: versionId, mcDir: mcDir,
-        appFilesDir: context.getApplicationContext().filesDir,
-      };
-      ledgerBegin(context.filesDir, started, meta);
-    }
     try {
+      if (context !== undefined) {
+        const meta: LedgerBeginMeta = {
+          category: ActivityCategory.MOD_INSTALL, title: project.title + '（' + kindLabel + '）',
+          gameVersionId: versionId, mcDir: mcDir,
+          appFilesDir: context.getApplicationContext().filesDir,
+        };
+        // 基线和scope必须先于producer，开账异常仍进入下方finally释放页面下载中标记。
+        if (!await ledgerBeginAsync(context.filesDir, started, meta)) throw new Error('安装活动日志尚未建立，请稍后重试');
+      }
       let view: UnifiedTaskView;
       if (project.kind === ResourceKind.MOD) {
         const request: ModInstallRequest = { mcDir: mcDir, versionId: versionId, versionIsolation: isolation, root: picked,
@@ -1412,13 +1640,20 @@ export struct ModBrowsePage {
         view = task.view;
         await getDownloadTaskRegistry().enqueue(task);
       }
-      this.recordHistory(project, kindLabel, started, view.filesDone, view.bytesDone, 'success', '', historyGame, historyLoader);
+      // 安装结果已经确定；记录函数自行保留IO失败义务，不将已安装SUCCESS改成业务FAILED。
+      await this.recordHistory(project, kindLabel, started, view.filesDone, view.bytesDone, 'success', '', historyGame, historyLoader, context?.filesDir ?? '');
       this.onStatusMessage(project.title + ' 安装完成');
       this.toast(project.title + ' 安装完成');
     } catch (e) {
-      this.recordHistory(project, kindLabel, started, 0, 0, 'failed', (e as Error).message, historyGame, historyLoader);
+      await this.recordHistory(project, kindLabel, started, 0, 0, 'failed', (e as Error).message, historyGame, historyLoader, context?.filesDir ?? '');
       throw e as Error;
-    } finally { this.downloadingProjectIds_.delete(project.id); this.localScanCache_.clear(); }
+    } finally { this.downloadingProjectIds_.delete(project.id); this.invalidateLocalScanCache(); }
+  }
+
+  /** 同时清除现有条目和退休在途扫描；仅 clear Map 无法阻止旧请求迟到回填。 */
+  private invalidateLocalScanCache(): void {
+    this.localScanCacheEpoch_ += 1;
+    this.localScanCache_.clear();
   }
 
   /**
@@ -1431,6 +1666,7 @@ export struct ModBrowsePage {
     let cacheKey = this.targetMcDir_ + '::' + this.targetVersionId_ + '::' + (this.versionIsolation ? '1' : '0');
     let cached = this.localScanCache_.get(cacheKey);
     if (cached !== undefined) return cached;
+    const epoch = this.localScanCacheEpoch_;
     try {
       let result = await this.scanner_!.scan({
         mcDir: this.targetMcDir_,
@@ -1439,7 +1675,8 @@ export struct ModBrowsePage {
         kind: ResourceKind.MOD,
         lookupLimit: 64,
       });
-      this.localScanCache_.set(cacheKey, result.mods);
+      // 调用方仍接收本次快照并按详情代次处理；已失效请求不再污染后续选版缓存。
+      if (epoch === this.localScanCacheEpoch_) this.localScanCache_.set(cacheKey, result.mods);
       return result.mods;
     } catch (e) {
       AppLogger.warn(TAG, 'localScan failed', e, LOG_DOMAIN_DOWNLOAD);
@@ -1479,40 +1716,48 @@ export struct ModBrowsePage {
     })
   }
 
-  /** 整合包标签下的「从本地导入」行（kindIdx_===3 时显示）。 */
+  /** 整合包稳定操作行：统计、轻量导入与有任务时才出现的恢复入口，不跟随筛选收起。 */
   @Builder
   ModpackImportRow() {
     Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Import, iconSize: 16, color: this.theme.primary })
-      Text('从本地导入 .mrpack / .zip')
-        .fontSize(13)
-        .fontWeight(500)
-        .fontColor(this.theme.primary)
-        .layoutWeight(1)
-      AppIcon({ name: AppIconName.ChevronRight, iconSize: 14, color: this.theme.textHint })
+      Text(this.view_.totalHits > 0 ? '共 ' + this.view_.totalHits + ' 个整合包' : '整合包')
+        .fontSize(12).fontColor(this.theme.textSecondary).layoutWeight(1)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      Button() {
+        Row({ space: 4 }) {
+          AppIcon({ name: AppIconName.Import, iconSize: 14, color: this.theme.primary })
+          Text('本地导入').fontSize(12).fontColor(this.theme.primary)
+        }.alignItems(VerticalAlign.Center)
+      }
+      .height(28).type(ButtonType.Normal).borderRadius(14)
+      .responseRegion({ x: 0, y: -8, width: '100%', height: 44 })
+      .padding({ left: 8, right: 8 }).backgroundColor(Color.Transparent)
+      .accessibilityText('从本地导入 .mrpack 或 .zip 整合包')
+      .onClick(() => {
+        this.importLocalModpack_().catch((e: Error) => {
+          AppLogger.warn(TAG, 'importLocalModpack failed', e, LOG_DOMAIN_DOWNLOAD);
+          this.toast('导入失败：' + (e.message !== undefined ? e.message : String(e)));
+        });
+      })
+      if (this.modpackRecovery_.length > 0) {
+        this.ModpackRecoveryRow()
+      }
     }
-    .width('100%')
-    .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-    .borderRadius(this.theme.cardRadius)
-    .backgroundColor(this.theme.bgCard)
-    .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-    .onClick(() => {
-      this.importLocalModpack_().catch((e: Error) => {
-        AppLogger.warn(TAG, 'importLocalModpack failed', e, LOG_DOMAIN_DOWNLOAD);
-        this.toast('导入失败：' + (e.message !== undefined ? e.message : String(e)));
-      });
-    })
+    .width('100%').alignItems(VerticalAlign.Center)
+    .padding({ left: 16, right: 16, bottom: 8 })
   }
 
   @Builder
   LoaderChip(loader: string) {
-    Text(loader)
+    // 与 DownloadTab 的正式版/快照胶囊保持一致：12vp 字号、横12/纵6留白、14vp圆角。
+    // 扩展触摸热区而不设置 minHeight，避免将紧凑筛选视觉膨胀为44vp的大按钮。
+    Text(loader === 'neoforge' ? 'NeoForge' : (loader.length > 0 ? this.capitalize(loader) : '全部'))
       .fontSize(12)
-      .fontWeight(this.loaderInput_ === loader ? 600 : 400)
       .fontColor(this.loaderInput_ === loader ? this.theme.textOnPrimary : this.theme.textSecondary)
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(14)
-      .backgroundColor(this.loaderInput_ === loader ? this.theme.primary : this.theme.bgInput)
+      .backgroundColor(this.loaderInput_ === loader ? this.theme.primary : this.theme.bgCard)
+      .responseRegion({ x: 0, y: -9, width: '100%', height: 44 })
       .onClick(() => {
         if (this.loaderInput_ === loader) return;
         this.loaderInput_ = loader;
@@ -1565,6 +1810,11 @@ export struct ModBrowsePage {
         .fontSize(14).fontColor(this.theme.textSecondary)
       Text('试试换一个关键词 / 修改筛选条件')
         .fontSize(12).fontColor(this.theme.textHint).margin({ top: 6 })
+      Button('清除搜索与加载器筛选').height(44)
+        .onClick(() => {
+          this.queryInput_ = ''; this.loaderInput_ = '';
+          this.applyFiltersToController(); this.triggerSearch(true);
+        })
     }
     .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
   }
@@ -1599,7 +1849,9 @@ export struct ModBrowsePage {
     } else {
       ctrl.setLoader('');
     }
-    ctrl.setSortBy(SortBy.DOWNLOADS);
+    this.sortInput_ = this.sortExplicit_ ? this.sortInput_
+      : (this.queryInput_.trim().length > 0 ? SortBy.RELEVANCE : SortBy.DOWNLOADS);
+    ctrl.setSortBy(this.sortInput_);
   }
 
   private triggerSearch(first: boolean): void {
@@ -1636,7 +1888,7 @@ export struct ModBrowsePage {
     if (this.kindIdx_ === 1) sub = 'resourcepacks';
     else if (this.kindIdx_ === 2) sub = 'shaderpacks';
     else sub = 'mods';
-    if (this.versionIsolation && this.targetVersionId_.length > 0) {
+    if ((this.versionIsolation || isIsolatedModpackInstance(this.targetMcDir_, this.targetVersionId_)) && this.targetVersionId_.length > 0) {
       return 'versions/' + this.targetVersionId_ + '/' + sub + '/';
     }
     return '.minecraft/' + sub + '/';
@@ -1671,6 +1923,11 @@ export struct ModBrowsePage {
    * 长会话用户可能装 ≥几十个 mod，集合大小可控（每次成功/失败一条记录）。
    */
   private recordedHistoryKeys_: Set<number> = new Set<number>();
+  /** 同ID收尾串行且冻结首次实际结果；失败保留原事实供同进程重试，原件供冷启恢复。 */
+  private historyFinalizationJobs_: Map<number, Promise<void>> = new Map<number, Promise<void>>();
+  private historyTerminalFacts_: Map<number, ModInstallTerminal> = new Map<number, ModInstallTerminal>();
+  /** 历史成功与canonical成功独立；只补未完成阶段，不能因关闭重试追加同一历史。 */
+  private historySavedKeys_: Set<number> = new Set<number>();
 
   /**
    * v2: 把单次模组安装写入 DownloadHistory，跟 MC 整版下载共用一套历史表。
@@ -1678,7 +1935,7 @@ export struct ModBrowsePage {
    *
    * 防重入：使用 startedAtMs 作 dedup key，避免成功路径 + catch 路径双触发导致两份历史。
    */
-  private recordHistory(
+  private async recordHistory(
     project: RemoteProject,
     kindLabel: string,
     startedAtMs: number,
@@ -1688,13 +1945,15 @@ export struct ModBrowsePage {
     errorMessage: string,
     gameVersion: string,
     loaderVersion: string,
-  ): void {
+    filesDir: string = '',
+  ): Promise<void> {
     if (this.recordedHistoryKeys_.has(startedAtMs)) {
       if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'recordHistory skipped (already recorded for startedAt=%{public}d)',
         startedAtMs);
       return;
     }
-    this.recordedHistoryKeys_.add(startedAtMs);
+    const runningJob = this.historyFinalizationJobs_.get(startedAtMs);
+    if (runningJob !== undefined) { await runningJob; return; }
     let loaderType = project.source === ModSource.MODRINTH ? 'mod-modrinth' : 'mod-curseforge';
     let nowMs = Date.now();
     let record: DownloadHistoryRecord = {
@@ -1713,22 +1972,45 @@ export struct ModBrowsePage {
       title: project.title,
       subtitle: kindLabel,
     };
-    // 活动账本封账：与活动记录同一主键、同一时刻
-    try {
-      let outcome: LedgerOutcome = {
+    const original = this.historyTerminalFacts_.get(startedAtMs);
+    const fact: ModInstallTerminal = original ?? { schema: 1, activityId: startedAtMs,
+      category: ActivityCategory.MOD_INSTALL, runNonce: '', record: record,
+      outcome: {
         state: status === 'success' ? LedgerState.SUCCESS : LedgerState.FAILED,
         source: 'modInstall.terminal',
         summary: errorMessage.length > 0 ? errorMessage
-          : (fileCount + ' 个文件安装完成'),
+          : (fileCount + ' 个文件安装完成'), endedAt: nowMs,
+      } };
+    this.historyTerminalFacts_.set(startedAtMs, fact);
+    const job: Promise<void> = (async (): Promise<void> => {
+      const manifest = filesDir.length > 0 ? await ledgerManifestAsync(filesDir, startedAtMs) : null;
+      if (manifest !== null) {
+        if (manifest.category !== ActivityCategory.MOD_INSTALL || (manifest.runNonce ?? '').length === 0
+          || fact.runNonce.length > 0 && fact.runNonce !== manifest.runNonce) {
+          throw new Error('安装活动身份无法核实，原业务结果保留');
+        }
+        fact.runNonce = manifest.runNonce ?? '';
+        // 在任何耗时关闭前保存固定终态。冷启只按category/id/nonce严格消费该单局原件。
+        await writeEvidenceTextAtomicAsync(ledgerDirOf(filesDir, startedAtMs) + '/task-terminal.json', JSON.stringify(fact));
       }
-      let lc = this.uiCtx()
-      if (lc !== undefined) ledgerEnd(lc.filesDir, startedAtMs, outcome)
-    } catch (e) {
-      AppLogger.warn(TAG, 'ledgerEnd for mod install failed', e, LOG_DOMAIN_DOWNLOAD);
-    }
-    getDownloadHistoryStore().add(record).catch((e: Error) => {
-      AppLogger.warn(TAG, 'recordHistory failed', e, LOG_DOMAIN_DOWNLOAD);
+      // 历史先保存真实业务结果；账本关闭失败不能让下一层catch把SUCCESS重写成FAILED。
+      const store = getDownloadHistoryStore();
+      await store.waitReady();
+      if (!this.historySavedKeys_.has(startedAtMs)) {
+        const saved: boolean = store.listStored().some((row: DownloadHistoryRecord): boolean =>
+          row.category === fact.category && row.startedAt === startedAtMs
+            && row.endedAt === fact.record.endedAt && row.status === fact.record.status);
+        if (!saved) await store.add(fact.record);
+        this.historySavedKeys_.add(startedAtMs);
+      }
+      if (manifest !== null) await ledgerEndAsync(filesDir, startedAtMs, fact.outcome);
+      this.recordedHistoryKeys_.add(startedAtMs);
+      this.historyTerminalFacts_.delete(startedAtMs);
+    })().catch((error: Error): void => {
+      AppLogger.warn(TAG, '安装结果记录尚未完成，原终态保留等待重试', error, LOG_DOMAIN_DOWNLOAD);
     });
+    this.historyFinalizationJobs_.set(startedAtMs, job);
+    try { await job; } finally { this.historyFinalizationJobs_.delete(startedAtMs); }
   }
 
 
@@ -1746,38 +2028,127 @@ export struct ModBrowsePage {
     }
   }
 
-  private async loadChosenDetail(v: RemoteVersion, epoch: number, installed: LocalMod[]): Promise<void> {
+  /**
+   * 先发布可浏览的版本/文件/直接依赖，再独立补齐安装所需的地址、本地扫描和依赖计划。
+   * 所有 await 后都受选版代次与目标快照约束；失败只禁止安装，不清除浏览元数据。
+   */
+  private async loadChosenDetail(v: RemoteVersion, epoch: number): Promise<void> {
+    if (this.detailFetchEpoch_ !== epoch) return;
     const project = this.detailProject_;
     const mcDir = this.targetMcDir_;
     const versionId = this.targetVersionId_;
-    const router = this.router_;
-    if (router === null) throw new Error('模组来源未就绪');
     let primary = pickPrimaryFile(v.files);
-    if (primary === null) throw new Error('该版本没有可下载文件');
-    if (primary.url.length === 0 && v.source === ModSource.CURSEFORGE) {
-      const repo = router.repoFor(v.source) as CurseForgeRepository;
-      const info = await repo.resolveFileDownloadInfo(v.projectId, v.id);
-      primary = { url: info.urls[0] ?? '', mirrors: info.urls.slice(1), filename: info.filename,
-        size: info.size, sha1: info.sha1, isPrimary: true };
-    }
-    let dependencies: ResolvedDependency[] = [];
-    let errors: string[] = [];
-    if (project.kind === ResourceKind.MOD) {
-      const loader = resolveInstalledLoader(mcDir, versionId);
-      const game = resolveInstalledMcVersion(mcDir, versionId);
-      if (!isModVersionCompatible(v, loader, game)) throw new Error('所选文件不支持 ' + loader + ' / MC ' + game);
-      const opt: ResolveOptions = { loader: loader, gameVersion: game, installed: installed,
-        followOptional: true, selectedOptionalIds: this.detailOptionalIds_.slice() };
-      const result = await makeResolverFromRouter(router).resolve(v, opt);
-      dependencies = result.dependencies;
-      errors = dependencyPlanErrors(result);
-    }
-    if (this.detailFetchEpoch_ !== epoch) return;
-    if (mcDir !== this.targetMcDir_ || versionId !== this.targetVersionId_) throw new Error('安装目标已变化，请重新选择');
+    this.detailSelectedVersion_ = v;
     this.detailPrimaryFile_ = primary;
-    this.detailResolvedDeps_ = dependencies;
-    this.detailDeps_ = this.buildDepRows(dependencies, installed);
-    this.detailError_ = errors.join('\n');
+    this.detailDeps_ = this.buildDeclaredDepRows(v);
+    this.detailResolvedDeps_ = [];
+    this.detailDependenciesResolved_ = false;
+    this.detailInstalledVersionIds_ = [];
+    this.detailInstalledPrimary_ = null;
+    this.detailScanInfo_ = '';
     this.detailLoading_ = false;
+    this.detailPreparingInstall_ = false;
+    this.detailInstallReady_ = false;
+    this.detailPreparedMcDir_ = '';
+    this.detailPreparedVersionId_ = '';
+    this.detailInstallError_ = this.detailInstallIssue(v);
+    if (this.detailInstallError_.length > 0 || primary === null) return;
+
+    this.detailPreparingInstall_ = true;
+    try {
+      const router = this.router_;
+      if (router === null) throw new Error('模组来源未就绪');
+      // 地址获取属于安装准备；即使 CF 的补地址请求失败，也保留原文件名/大小供浏览。
+      if (primary.url.length === 0 && v.source === ModSource.CURSEFORGE) {
+        const repo = router.repoFor(v.source) as CurseForgeRepository;
+        const info = await repo.resolveFileDownloadInfo(v.projectId, v.id);
+        if (this.detailFetchEpoch_ !== epoch) return;
+        primary = { url: info.urls[0] ?? '', mirrors: info.urls.slice(1), filename: info.filename,
+          size: info.size, sha1: info.sha1, isPrimary: true };
+      }
+      if (primary.url.length === 0) throw new Error('此版本的下载地址暂不可用，仍可查看详情');
+      const installed = project.kind === ResourceKind.MOD ? await this.getOrScanInstalled() : [];
+      if (this.detailFetchEpoch_ !== epoch) return;
+      if (mcDir !== this.targetMcDir_ || versionId !== this.targetVersionId_) throw new Error('安装目标已变化，请重新选择版本');
+      let dependencies: ResolvedDependency[] = [];
+      let errors: string[] = [];
+      if (project.kind === ResourceKind.MOD) {
+        const loader = resolveInstalledLoader(mcDir, versionId);
+        const game = resolveInstalledMcVersion(mcDir, versionId);
+        const opt: ResolveOptions = { loader: loader, gameVersion: game, installed: installed,
+          followOptional: true, selectedOptionalIds: this.detailOptionalIds_.slice() };
+        const result = await makeResolverFromRouter(router).resolve(v, opt);
+        dependencies = result.dependencies;
+        errors = dependencyPlanErrors(result);
+      }
+      if (this.detailFetchEpoch_ !== epoch) return;
+      if (mcDir !== this.targetMcDir_ || versionId !== this.targetVersionId_) throw new Error('安装目标已变化，请重新选择版本');
+      const own = installed.filter((m: LocalMod): boolean => m.remoteSource === project.source && m.remoteProjectId === project.id);
+      this.detailInstalledVersionIds_ = own.map((m: LocalMod): string => m.remoteVersionId ?? '');
+      this.detailInstalledPrimary_ = own.length === 0 ? null : {
+        filePath: own[0].filePath, enabled: own[0].enabled, baseName: InstalledModIndex.baseNameOf(own[0].filename)
+      };
+      this.detailScanInfo_ = project.kind === ResourceKind.MOD ? '本地共 ' + installed.length + ' 个模组，已识别 '
+        + installed.filter((m: LocalMod): boolean => (m.remoteProjectId ?? '').length > 0).length + ' 个来源' : '';
+      this.detailPrimaryFile_ = primary;
+      this.detailResolvedDeps_ = dependencies;
+      this.detailDeps_ = this.buildDepRows(dependencies, installed);
+      this.detailDependenciesResolved_ = true;
+      this.detailInstallError_ = errors.join('\n');
+      this.detailPreparedMcDir_ = mcDir;
+      this.detailPreparedVersionId_ = versionId;
+      this.detailInstallReady_ = errors.length === 0;
+    } catch (error) {
+      if (this.detailFetchEpoch_ !== epoch) return;
+      this.detailInstallError_ = (error as Error).message || '安装准备失败，仍可查看详情';
+    } finally {
+      if (this.detailFetchEpoch_ === epoch) this.detailPreparingInstall_ = false;
+    }
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+    Column({ space: 12 }) {
+      Scroll() {
+        Column({ space: 12 }) {
+          Text('将在设置选择的位置创建独立版本').fontSize(12).fontColor(this.theme.textSecondary)
+          ModpackNameInput({ theme: this.theme, value: this.localModpackName_, error: this.localModpackNameError_,
+            onChange: (value: string): void => {
+              this.localModpackName_ = value;
+              this.localModpackNameError_ = validateModpackVersionName(value);
+            } })
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
+      Button('开始安装').width('100%').height(44).borderRadius(14)
+        .backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary)
+        .enabled(this.localModpackNameError_.length === 0 && this.localModpackArchive_.length > 0)
+        .onClick((): void => { this.confirmLocalModpack_(); })
+    }.width('100%').height('100%').padding(16).alignItems(HorizontalAlign.Start)
+    }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent2_() {
+    Column({ space: 12 }) {
+      if (this.modpackRecovery_.length === 0) {
+        Text('没有需要继续的安装').fontColor(this.theme.textSecondary)
+      } else {
+        List({ space: 8 }) {
+          ForEach(this.modpackRecovery_, (item: ModpackRecoveryItem) => {
+            ListItem() {
+              Column({ space: 4 }) {
+                Text(item.versionName.length > 0 ? item.versionName : item.title)
+                  .fontSize(15).fontColor(this.theme.textPrimary)
+                Text(item.confirmed ? ('继续原实例 · ' + item.missingCount + ' 项待处理') : '清单已保存 · 待确认安装')
+                  .fontSize(12).fontColor(this.theme.textSecondary)
+              }
+              .width('100%').padding(14).backgroundColor(this.theme.bgCard).borderRadius(12)
+              .onClick(() => { this.resumeModpack_(item); })
+            }
+          }, (item: ModpackRecoveryItem): string => item.id)
+        }.layoutWeight(1).width('100%')
+      }
+    }.padding(20).width('100%').height('100%')
+    }
 }

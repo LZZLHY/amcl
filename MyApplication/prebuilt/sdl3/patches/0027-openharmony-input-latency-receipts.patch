@@ -1,0 +1,264 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -63,6 +63,7 @@
+ #include "../../events/SDL_mouse_c.h"
+ #include "control_delivery_client.h"
+ #include "input/delivery/look_execution_client.h"
++#include "input/input_latency_client.h"
+ #include "../../SDL_amclinputcontrol_c.h"
+ #include "../../events/SDL_windowevents_c.h"
+ 
+@@ -688,6 +689,10 @@
+ static const AmclControlDeliveryPortV1 *host_control_port;
+ /* 只借同一 neutral owner 的私有 look 表；SDL 不持有来源积分或 prefix 数值。 */
+ static const AmclLookExecutionPortV1 *host_look_port;
++/* 只在原 control/look 同 owner 冷握手成功后借一次可选表；旧/缺/foreign 只丢诊断。
++ * 本 SDK 供多 product 复用，getter 缺席时不在输入热路径重试或调用诊断时钟。 */
++static const AmclInputLatencyPortV2 *host_latency_port;
++static bool host_latency_attempted;
+ static Uint64 host_control_consumer;
+ static SDL_WindowID host_control_target;
+ static SDL_ThreadID host_control_thread;
+@@ -1610,6 +1615,10 @@
+     /* 激活/换 target/模式重锚借真正 SDL 缓存作为基线；同一 activation 下 owner 幂等，
+      * 不用最新宿主累计重算历史。内部读取不是公开 getter，不记游戏实际轮询。 */
+     if (!host_look_port && amclLookExecutionResolveV1(&host_look_port) < 0) return false;
++    if (!host_latency_attempted) {
++        host_latency_attempted = true;
++        (void)amclInputLatencyResolveV2(host_look_port, host_control_port, &host_latency_port);
++    }
+     SDL_Mouse *mouse = SDL_GetMouse();
+     const double basis_x = mouse->x, basis_y = mouse->y;
+     /* 先核实际 control 身份，再公告 look 出口活跃，最后以同一实际基线重锚新的 look epoch。
+@@ -1741,6 +1750,9 @@
+ typedef struct OPENHARMONY_LookContext {
+     const AmclLookExecutionPortV1 *port;
+     AmclLookEmissionV1 emission;
++    /* 原 prepare 生成的同一票及本次调用前捕获的可选 owner；同步 SDK hook 不重绑。 */
++    const AmclInputLatencyPortV2 *latency;
++    AmclInputLatencyV1 observation;
+ } OPENHARMONY_LookContext;
+ static bool OPENHARMONY_LookCurrent(void *value)
+ {
+@@ -1755,6 +1767,9 @@
+ static void OPENHARMONY_LookCacheApplied(void *value)
+ {
+     OPENHARMONY_LookContext *context = (OPENHARMONY_LookContext *)value;
++    if (context->latency && context->latency->pid == amclInputLatencyClientPidV2())
++        context->latency->note(AMCL_ILAT_CACHE, AMCL_BACKEND_ID_SDL3,
++            AMCL_ILAT_ENDPOINT_SDL_QUEUE_ADD, &context->observation);
+     (void)context->port->complete(&context->emission, AMCL_CONTROL_STATE_ONLY);
+ }
+ /* 运输只携 opaque token。SDL 只转换可表示的 float 增量与真实 SDK 边缘，不能把加工的
+@@ -1767,7 +1782,10 @@
+     for (int attempt = 0; attempt < 2; ++attempt) {
+         AmclLookEmissionV1 emission;
+         if (host_look_port->prepare(host_control_consumer, token, &emission) != AMCL_LOOK_PREFIX_READY) break;
+-        OPENHARMONY_LookContext context = { host_look_port, emission };
++        OPENHARMONY_LookContext context = { host_look_port, emission, host_latency_port, { 0 } };
++        context.observation.prefix = emission.prefix; context.observation.consumer = emission.consumer;
++        context.observation.activation = emission.activation; context.observation.target = emission.target;
++        context.observation.ticket = emission.ticket;
+         if (context.port->claim(&emission) != AMCL_LOOK_PREFIX_READY) {
+             (void)context.port->complete(&emission, AMCL_CONTROL_DISCARDED);
+             continue;
+@@ -1787,6 +1805,20 @@
+         SDL_Window *window = OPENHARMONY_AMCL_GetLiveInputWindow(receipt.target);
+         if (window) SDL_SendMouseMotionWithReceipt(timestamp, window, mouse_id, true, dx, dy, &receipt);
+         --host_control_dispatch_depth;
++        /* posted 只表示真正 SDK ADD 成功；此钟位于原 SendMouseMotionWithReceipt 返回后，
++         * 是 ADD 成功回执的 Native 观察边界，不是 SDL_PollEvent/game ACK 或精确 ADD 语句钟。
++         * note 忙丢时另以同票 finish 确认终态；finish 不补钟，业务 complete 仍走原时机。 */
++        if (context.latency && context.latency->pid == amclInputLatencyClientPidV2()) {
++            if (receipt.posted) {
++                context.latency->note(AMCL_ILAT_RETURN, AMCL_BACKEND_ID_SDL3,
++                    AMCL_ILAT_ENDPOINT_SDL_QUEUE_ADD, &context.observation);
++                context.latency->finish(AMCL_BACKEND_ID_SDL3, AMCL_ILAT_ENDPOINT_SDL_QUEUE_ADD,
++                    &context.observation, AMCL_ILAT_SDL_QUEUE_COMMITTED);
++            } else {
++                context.latency->finish(AMCL_BACKEND_ID_SDL3, AMCL_ILAT_ENDPOINT_SDL_QUEUE_ADD,
++                    &context.observation, receipt.cached ? AMCL_ILAT_NO_CALLBACK : AMCL_ILAT_REJECTED);
++            }
++        }
+         (void)context.port->complete(&emission, receipt.posted ? AMCL_CONTROL_PULL_COMMITTED :
+             (receipt.cached ? AMCL_CONTROL_STATE_FINAL : AMCL_CONTROL_DISCARDED));
+         if (receipt.cached) return;
+diff --git a/src/video/openharmony/input/input_latency_observation.h b/src/video/openharmony/input/input_latency_observation.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/input_latency_observation.h
+@@ -0,0 +1,103 @@
++/** 输入诊断私有值记录，公开事件/Core/control/look POD均不改变。
++ * 采集实现仅诊断编译时存在；共同值声明供可选client读取。字段不是输入资格/策略，
++ * 不记录文本、键码、坐标或用户配置。
++ * 六时点同Native MONOTONIC，位图说明已知段；原SDK域与prefix贡献范围未证时明确unknown。
++ */
++#ifndef AMCL_INPUT_LATENCY_OBSERVATION_H
++#define AMCL_INPUT_LATENCY_OBSERVATION_H
++#include <stdint.h>
++#if AMCL_INPUT_TRACE
++#include "amcl_input_api.h" /* 仅owner声明复用可见性宏；client的POD/table不依赖Core API。 */
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
++enum { AMCL_ILAT_ENTRY=0, AMCL_ILAT_ACCEPT=1, AMCL_ILAT_ENQUEUE=2,
++       AMCL_ILAT_READ=3, AMCL_ILAT_CACHE=4, AMCL_ILAT_RETURN=5,
++       AMCL_ILAT_CALLBACK_BEGIN=6 }; /* BEGIN只标执行状态，不新增第七个时点。 */
++/* NO_CALLBACK由真GLFW完成边缘证明；INCOMPLETE不能推断输入未接受或未回调。 */
++enum { AMCL_ILAT_CALLBACK=1, AMCL_ILAT_NO_CALLBACK=2, AMCL_ILAT_RETIRED=3,
++       AMCL_ILAT_REJECTED=4, AMCL_ILAT_INCOMPLETE=5, AMCL_ILAT_CALLBACK_RETIRED=6,
++       AMCL_ILAT_RETIRED_WAIT_CALLBACK=7, AMCL_ILAT_SKIPPED=8 };
++typedef struct AmclInputLatencyV1 {
++    uint64_t id,session,stream,prefix,prefixOrder,ringSequence,ringOrder;
++    uint64_t consumer,activation,target,ticket;
++    uint64_t ns[6];
++    uint32_t mask,outcome,contributions,clockFailures;
++} AmclInputLatencyV1;
++typedef struct AmclInputLatencyStatsV1 {
++    uint64_t sampled,skipped,full,busy,missing,exported,clockFailures;
++    uint32_t recordBytes,capacity,counterUncertain;
++} AmclInputLatencyStatsV1;
++/** 拉取型 ABI 的终点不能冒称 GLFW callback。沿同一152B输出记录用独立终态编码
++ * 区分真实SDK ADD成功后返回adapter的回执、L2坐标view读回与无终点缓存；
++ * SDL Native钟并非SDK内ADD语句的精确钟。原1–8及ILAT1格式保持原合同。 */
++enum { AMCL_ILAT_SDL_QUEUE_COMMITTED=9, AMCL_ILAT_L2_POLL_VIEW_COPIED=10,
++       AMCL_ILAT_SDL_CACHE_ONLY=11, AMCL_ILAT_L2_CACHE_UNOBSERVED=12,
++       AMCL_ILAT_SDL_RETIRED=13, AMCL_ILAT_L2_RETIRED=14,
++       AMCL_ILAT_SDL_INCOMPLETE=15, AMCL_ILAT_L2_INCOMPLETE=16,
++       AMCL_ILAT_SDL_REJECTED=17, AMCL_ILAT_L2_REJECTED=18 };
++enum { AMCL_ILAT_ENDPOINT_SDL_QUEUE_ADD=1, AMCL_ILAT_ENDPOINT_L2_POLL_VIEW=2 };
++#define AMCL_INPUT_LATENCY_PORT_MAGIC_V2 UINT64_C(0x414d434c494c4132)
++/** 私有可选表只借同一个已核look/Core映像。无独立owner/环境槽；client先核原
++ * look/control ownerHost、PID和getter/全部函数的可执行地址，再冷借一次此表。
++ * 声明在TRACE外供共用预编译client编译；OFF runtime不定义getter或采集实现。
++ * note仅接CACHE/TERMINAL(ns[5])；finish无补钟，只结束原backend/原完整票诊断。
++ */
++typedef struct AmclInputLatencyPortV2 {
++    uint64_t magic;
++    uint32_t version,size,pid,reserved;
++    uint64_t ownerHost;
++    void (*note)(uint32_t stage,uint32_t backend,uint32_t endpoint,const AmclInputLatencyV1* original);
++    void (*finish)(uint32_t backend,uint32_t endpoint,const AmclInputLatencyV1* original,uint32_t outcome);
++} AmclInputLatencyPortV2;
++#if AMCL_INPUT_TRACE
++/** 下列入口只在唯一runtime内部调用；外部映像须经已校验bridge可选尾，不直调本地副本。 */
++// runtime的既有amclInput*导出通配不能硬保证“内部”注释。只给这些诊断实现入口
++// 显式hidden，阻止默认可见性ELF构建将它们作为可绕过bridge owner的动态ABI；不改变
++// 整个target可见性，不影响其它现役C入口。MSVC没有dllexport的这些声明保持原内部链接消费。
++#if defined(__GNUC__) || defined(__clang__)
++#define AMCL_INPUT_LATENCY_INTERNAL __attribute__((visibility("hidden")))
++#else
++#define AMCL_INPUT_LATENCY_INTERNAL
++#endif
++AMCL_INPUT_LATENCY_INTERNAL uint64_t amclInputLatencyBeginV1(uint64_t stream);
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyEndV1(uint64_t previous,int result);
++AMCL_INPUT_LATENCY_INTERNAL uint64_t amclInputLatencyCurrentV1(void);
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyAcceptV1(uint64_t prefix,uint64_t order,uint64_t session,uint32_t contributions);
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyNoteV1(uint32_t stage,const AmclInputLatencyV1* original);
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyFinishV1(uint64_t prefix,uint32_t outcome);
++/** consumer终态必须携原缓存票；未知/冲突票只缺诊断，不借prefix/TLS/current结束另一票。 */
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyFinishTicketV1(const AmclInputLatencyV1* original,uint32_t outcome);
++/** 冻结InputPlan原成功点只登记诊断选择；失败/冲突不改变真实输入的准备结果。
++ * configure须在该游戏输入生产前执行，同backend/session幂等，拒绝运行中换选择。 */
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyConfigureBackendV2(uint32_t backend,uint64_t gameSession);
++/** READ用于真neutral复制slot；CACHE/TERMINAL经已核可选client携原票返回同owner。 */
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyNoteBackendV2(uint32_t stage,uint32_t backend,uint32_t endpoint,const AmclInputLatencyV1* original);
++AMCL_INPUT_LATENCY_INTERNAL void amclInputLatencyFinishBackendV2(uint32_t backend,uint32_t endpoint,const AmclInputLatencyV1* original,uint32_t outcome);
++/** try-drain只复制已有值，输出至调用方固定数组；不等待、不格式化、不推进输入。 */
++AMCL_INPUT_LATENCY_INTERNAL uint32_t amclInputLatencyDrainV1(AmclInputLatencyV1* records,uint32_t capacity,AmclInputLatencyStatsV1* stats);
++#undef AMCL_INPUT_LATENCY_INTERNAL
++/** 非热路径固定格式：缺段输出“-”，SDK/贡献样本区间明确unknown；溢出返回0，不发截断记录。 */
++AMCL_INPUT_PUBLIC uint32_t inputBridge_formatInputLatencyV1(const AmclInputLatencyV1* record,char* output,uint32_t capacity);
++/** 真owner委派出口；旧/缺尾部只缺诊断。输出数组在同一PID地址空间中短期借用。 */
++void inputBridge_noteInputLatencyV1(uint32_t stage,const AmclInputLatencyV1* original);
++void inputBridge_finishInputLatencyV1(uint64_t prefix,uint32_t outcome);
++/** 追加私有可选尾；旧owner缺此组只缺终态诊断，原输入/look能力不改变。 */
++void inputBridge_finishInputLatencyTicketV1(const AmclInputLatencyV1* original,uint32_t outcome);
++uint32_t inputBridge_drainInputLatencyV1(AmclInputLatencyV1* records,uint32_t capacity,AmclInputLatencyStatsV1* stats);
++/** 仅TRACE runtime动态导出；旧/关闭提供者缺符号是诊断缺席，不是输入握手失败。 */
++AMCL_INPUT_PUBLIC const AmclInputLatencyPortV2* inputBridge_getInputLatencyPortV2(void);
++#ifdef AMCL_INPUT_LATENCY_HOST_TESTING
++/** 仅宿主故障注入：真正hold同一诊断mutex、或关闭诊断clock，不改变生产输入时钟。 */
++void amclInputLatencyTestHoldV1(int hold);
++void amclInputLatencyTestClockV1(int failed);
++uint32_t amclInputLatencyTestStorageV1(void);
++/** 仅HOST在实际cache note退出诊断锁后暂停产品线程，用于派发前退休的竞争反例。 */
++void amclInputLatencyTestCacheGateV1(void (*gate)(void));
++#endif
++#endif /* AMCL_INPUT_TRACE：共同POD/可选表声明始终可读，采集入口只在ON存在。 */
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/video/openharmony/input/input_latency_client.h b/src/video/openharmony/input/input_latency_client.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/input_latency_client.h
+@@ -0,0 +1,65 @@
++/**
++ * SDL/LWJGL2 私有诊断借用层。
++ * 只在原 control/look 冷握手已成功之后解析一次可选诊断表；不创建输入 owner、
++ * 不重新读取环境描述符、不加载或 pin DSO。缺席、旧版本、foreign provider 与 PID
++ * 不符都只关闭诊断，原 prepare/claim/cache/complete/poll 返回值继续由原端口裁决。
++ */
++#ifndef AMCL_INPUT_LATENCY_CLIENT_H
++#define AMCL_INPUT_LATENCY_CLIENT_H
++#include "input_latency_observation.h"
++#include "delivery/look_execution_client.h"
++
++/** fork 后旧表不复活；只读 PID 用于丢诊断，不参与原输入资格或线程裁决。 */
++static inline uint32_t amclInputLatencyClientPidV2(void) {
++#ifdef _WIN32
++    return (uint32_t)_getpid();
++#else
++    return (uint32_t)getpid();
++#endif
++}
++
++/**
++ * verifiedLook/verifiedControl 必须是调用方已经通过原 resolver 全部验证的同 owner
++ * 表；本函数不替代原握手。先定位该 look 的真实代码映像，再从同一映像借新 getter。
++ * 成功只借一个只读表；调用方保存 attempted 事实，缺席不在输入热路径循环重试。
++ * output 总是先清空，所有失败返回 0；它从不成为生产 input NotReady/Rejected。
++ */
++static inline int amclInputLatencyResolveV2(const AmclLookExecutionPortV1* verifiedLook,
++        const AmclControlDeliveryPortV1* verifiedControl, const AmclInputLatencyPortV2** output) {
++    uintptr_t base = 0, address = 0;
++    uint32_t process = 0;
++    typedef const AmclInputLatencyPortV2* (*Getter)(void);
++    if (output) *output = NULL;
++    if (!output || !verifiedLook || !verifiedControl || !verifiedLook->ownerHost ||
++        verifiedLook->ownerHost != verifiedControl->ownerHost || !verifiedLook->verifyOwner) return 0;
++#ifdef _WIN32
++    HMODULE image = NULL;
++    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++            (LPCSTR)(uintptr_t)verifiedLook->verifyOwner, &image)) return 0;
++    base = (uintptr_t)image;
++    address = (uintptr_t)GetProcAddress(image, "inputBridge_getInputLatencyPortV2");
++    process = (uint32_t)_getpid();
++#else
++    Dl_info original = {0}, getter = {0};
++    if (!dladdr((const void*)verifiedLook->verifyOwner, &original) || !original.dli_fbase) return 0;
++    base = (uintptr_t)original.dli_fbase;
++    /* RTLD_DEFAULT 不新开 handle；不同 namespace 未暴露 getter 时保守关闭诊断。
++     * 即使同名导出先解析到另一个真实映像，也须先拒绝，绝不能调用 foreign getter。 */
++    address = (uintptr_t)dlsym(RTLD_DEFAULT, "inputBridge_getInputLatencyPortV2");
++    if (!address || !dladdr((const void*)address, &getter) || getter.dli_fbase != original.dli_fbase ||
++        getter.dli_saddr != (void*)address || !getter.dli_sname ||
++        strcmp(getter.dli_sname, "inputBridge_getInputLatencyPortV2") != 0) return 0;
++    process = (uint32_t)getpid();
++#endif
++    if (!address || !amclControlAddressInOwner(address, base)) return 0;
++    const AmclInputLatencyPortV2* port = ((Getter)address)();
++    if (!port || port->magic != AMCL_INPUT_LATENCY_PORT_MAGIC_V2 || port->version != 2 ||
++        port->size != sizeof(*port) || port->pid != process ||
++        port->ownerHost != verifiedLook->ownerHost ||
++        !amclControlAddressInOwner((uintptr_t)port->note, base) ||
++        !amclControlAddressInOwner((uintptr_t)port->finish, base)) return 0;
++    *output = port;
++    return 1;
++}
++#endif

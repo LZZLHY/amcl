@@ -26,7 +26,7 @@
  * 创建日期：2026-05-05
  */
 
-import { DownloadFileSpec, DownloadCheck, DownloadTaskView } from '../download/DownloadManager';
+import { DownloadFileSpec, DownloadCheck, DownloadTaskView, compileDownloadFiles } from '../download/DownloadManager';
 import {
   MavenLibEntry,
   LibBatchDownloadResult,
@@ -52,6 +52,8 @@ export interface MavenSpecResult {
   invalidNames: string[];
   /** localPath → 原始 Maven 坐标，供 parseDoneEventToBatchResult 反查失败 lib name */
   pathToName: Map<string, string>;
+  /** 同内容别名仍逐输入结算；旧单值映射继续保留给既有调用方。 */
+  pathToNames?: Map<string, string[]>;
 }
 
 // ============================================================
@@ -104,8 +106,8 @@ function pushSafeUrl(urls: string[], url: string): void {
  *   .Replace("maven.minecraftforge.net", "maven")
  *   .Replace("maven.fabricmc.net", "maven")
  * 这里取同样语义，但用**完整仓库根白名单 + 最长匹配**而不是字符串替换：
- * 未在白名单里的主机（用户自建仓库、整合包私有源）不猜它的布局，沿用旧的
- * "只剥 host" 行为，避免误伤重定位库。
+ * 未在白名单里的主机（用户自建仓库、整合包私有源）不猜布局，仅保留明确直链
+ * 或仓库hint，不把未知来源路径套到公共镜像。
  *
  * ⚠️ 必须**延迟构建**，不能写成模块级数组字面量。
  *   本文件与 MavenUtils 是**循环 import**（MavenUtils 导入 buildSpecsForLibs /
@@ -189,7 +191,7 @@ function stripKnownRepoBase(url: string): string {
  * 用于把 Forge / NeoForge 显式 directUrl 的真实路径套到各镜像上。解析失败返回空串。
  *
  * 已知仓库根 → 连路径前缀一起剥（`/releases/`、`/maven2/`、`/repository/public/` …）；
- * 未知主机 → 只剥 `scheme://host/`（旧行为，保持兼容）。
+ * 未知仓库没有已证明的镜像关系，返回空串并保留原直链，不能猜路径后送其他仓库。
  */
 function relPathFromUrl(url: string): string {
   if (!isSafeHttpUrl(url)) return '';
@@ -200,9 +202,42 @@ function relPathFromUrl(url: string): string {
   if (hIdx >= 0) clean = clean.substring(0, hIdx);
   let stripped = stripKnownRepoBase(clean);
   if (stripped.length > 0) return safeRelPath(stripped);
-  let m = clean.match(/^https?:\/\/[^/]+\/(.*)$/);
-  if (m === null || m.length < 2) return '';
-  return safeRelPath(m[1]);
+  return '';
+}
+
+/**
+ * 已知仓库工件的候选准备原语，同时服务坐标安装与电脑导出。输入仍是远端语义，
+ * 不改本地storagePath，也不因“目录看起来像Maven”替换未知私有来源。
+ */
+function buildArtifactCandidates(relative: string, direct: string, hint: string, preferReal: boolean): string[] {
+  const urls: string[] = [];
+  const mirrors = [BMCLAPI_MAVEN + relative, BMCLAPI_LIBRARIES + relative];
+  const owner = loaderOwnedRepo(relative);
+  const repositories = owner.length > 0 ? [owner] : DEFAULT_MAVEN_REPOS;
+  if (!preferReal) for (const url of mirrors) pushSafeUrl(urls, url);
+  pushSafeUrl(urls, direct);
+  pushSafeUrl(urls, hint);
+  for (const repository of repositories) {
+    pushSafeUrl(urls, (repository.endsWith('/') ? repository : repository + '/') + relative);
+  }
+  if (preferReal) for (const url of mirrors) pushSafeUrl(urls, url);
+  return urls;
+}
+
+/** 只有已登记仓库根才能产生等价候选；未知URL保持唯一原直链。 */
+export function buildMavenArtifactUrls(url: string, preferRealSource: boolean = false): string[] {
+  if (!isSafeHttpUrl(url)) return [];
+  const relative = relPathFromUrl(url);
+  return relative.length > 0 ? buildArtifactCandidates(relative, url, '', preferRealSource) : [url];
+}
+
+/** sidecar后缀属于路径，必须置于原query之前；不能把令牌/query文字改成文件后缀。 */
+export function artifactSidecarUrl(url: string, suffix: string): string {
+  const fragment = url.indexOf('#');
+  const address = fragment < 0 ? url : url.substring(0, fragment);
+  const tail = fragment < 0 ? '' : url.substring(fragment);
+  const query = address.indexOf('?');
+  return (query < 0 ? address + suffix : address.substring(0, query) + suffix + address.substring(query)) + tail;
 }
 
 /**
@@ -230,11 +265,9 @@ export function buildMavenUrls(
   // 且其路径通过严格相对路径校验时，才允许拿来构造镜像 URL。
   let safeDirectUrl = (directUrl !== undefined && isSafeHttpUrl(directUrl)) ? directUrl : '';
   let directRel = safeDirectUrl.length > 0 ? relPathFromUrl(safeDirectUrl) : '';
+  if (safeDirectUrl.length > 0 && directRel.length === 0) return [safeDirectUrl];
   let mirrorRel = directRel.length > 0 ? directRel : relPath;
 
-  let bmclapiUrl = BMCLAPI_MAVEN + mirrorRel;
-  let bmclapiLibUrl = BMCLAPI_LIBRARIES + mirrorRel;
-  let urls: string[] = [];
 
   // repoHint（库自身声明的真实仓库，如 maven central / forge maven）
   let hintUrl: string = '';
@@ -242,34 +275,14 @@ export function buildMavenUrls(
     let base = repoHint.endsWith('/') ? repoHint : repoHint + '/';
     let candidate = base + mirrorRel;
     if (isSafeHttpUrl(candidate)) hintUrl = candidate;
-  }
-
-  // 2026-07-30：加载器自有 group 只保留"它自己的上游仓库"作为兜底，其余通用仓库
-  // 对这些坐标恒 404（见 LOADER_OWNED_GROUP_PREFIXES 注释）。
-  let ownerRepo = loaderOwnedRepo(mirrorRel);
-  let fallbackRepos: string[] = ownerRepo.length > 0 ? [ownerRepo] : DEFAULT_MAVEN_REPOS;
-
-  if (preferRealSource) {
-    pushSafeUrl(urls, safeDirectUrl);
-    pushSafeUrl(urls, hintUrl);
-    for (let repo of fallbackRepos) {
-      let base = repo.endsWith('/') ? repo : repo + '/';
-      pushSafeUrl(urls, base + mirrorRel);
-    }
-    pushSafeUrl(urls, bmclapiUrl);
-    pushSafeUrl(urls, bmclapiLibUrl);
-  } else {
-    pushSafeUrl(urls, bmclapiUrl);
-    pushSafeUrl(urls, bmclapiLibUrl);
-    pushSafeUrl(urls, safeDirectUrl);
-    pushSafeUrl(urls, hintUrl);
-    for (let repo of fallbackRepos) {
-      let base = repo.endsWith('/') ? repo : repo + '/';
-      pushSafeUrl(urls, base + mirrorRel);
+    // 未登记仓库根可能是私有制品库，坐标本身不授予其它镜像等价性。没有已知
+    // 官方directUrl时仅使用明确仓库，不拿通用Maven布局猜公开镜像的相同内容。
+    if (safeDirectUrl.length === 0 && !knownMavenRepoBases().some((known: string): boolean => known === base)) {
+      return hintUrl.length > 0 ? [hintUrl] : [];
     }
   }
 
-  return urls;
+  return buildArtifactCandidates(mirrorRel, safeDirectUrl, hintUrl, preferRealSource);
 }
 
 /**
@@ -327,7 +340,9 @@ export function buildSpecsForLibs(
   let specs: DownloadFileSpec[] = [];
   let invalidNames: string[] = [];
   let pathToName: Map<string, string> = new Map<string, string>();
-  let seenPaths: Set<string> = new Set<string>();
+  let pathToNames: Map<string, string[]> = new Map<string, string[]>();
+  let positions: Map<string, number> = new Map<string, number>();
+  let conflicts: Set<string> = new Set<string>();
 
   for (let lib of libs) {
     let spec = buildSpecForLib(lib, libDir, preferRealSource);
@@ -335,17 +350,30 @@ export function buildSpecsForLibs(
       invalidNames.push(lib.name);
       continue;
     }
-    // 同一目标只提交一次，避免同一 task 内多个 NetFile 并发截断/写入同一路径。
-    if (seenPaths.has(spec.localPath)) continue;
-    seenPaths.add(spec.localPath);
-    specs.push(spec);
-    pathToName.set(spec.localPath, lib.name);
+    let names = pathToNames.get(spec.localPath);
+    if (names === undefined) { names = []; pathToNames.set(spec.localPath, names); }
+    if (names.indexOf(lib.name) < 0) names.push(lib.name);
+    if (!pathToName.has(spec.localPath)) pathToName.set(spec.localPath, lib.name);
+    if (conflicts.has(spec.localPath)) { invalidNames.push(lib.name); continue; }
+    const previous = positions.get(spec.localPath);
+    if (previous === undefined) {
+      positions.set(spec.localPath, specs.length); specs.push(spec);
+    } else {
+      // 两项相同内容可合并传输，但不能在去重时丢掉不同摘要/size/约束。只比较
+      // 当前一对，避免批量数千库反复编译全部前缀形成二次方开销。
+      try { specs[previous] = compileDownloadFiles([specs[previous], spec])[0]; }
+      catch (_) {
+        conflicts.add(spec.localPath);
+        for (const name of names) if (invalidNames.indexOf(name) < 0) invalidNames.push(name);
+      }
+    }
   }
 
   let result: MavenSpecResult = {
-    specs: specs,
+    specs: specs.filter((spec: DownloadFileSpec): boolean => !conflicts.has(spec.localPath)),
     invalidNames: invalidNames,
     pathToName: pathToName,
+    pathToNames: pathToNames,
   };
   return result;
 }
@@ -355,17 +383,20 @@ export function buildSpecsForLibs(
  *
  * 行为约定：
  *   - libs.length === 0：直接返回空结果（无失败、无错误）
- *   - view.success === true 且 failedFiles 空：全部计入 ok
+ *   - view.success === true 且 failedFiles 空：合法输入计入 ok，非法坐标仍计入 failed
  *   - 有 failedFiles：对每个 failedFile，反查 pathToName 拿原始 lib name；
- *     未在 pathToName 的（防御性，不应发生）跳过不计入
- *   - view.success === false 但 failedFiles 空（如 CA bundle 未初始化等任务级失败）：
- *     全部 lib 视为失败，错误信息走 view.errorMessage
- *   - ok = libs.length - failed（保证 ok + failed <= libs.length）
+ *     只有全部失败路径都能映射到当前输入时，才把其他库认定为成功。
+ *   - 取消、未知失败路径、或 false 但没有可解释文件失败：整个输入保守计为失败；
+ *     无法确认完成的文件不能因失败清单缺失而被假报成功。
+ *   - invalidNames 与文件失败在同一处按坐标去重；failed 统计输入条目，failedNames
+ *     只保存唯一坐标，重复输入也不会被漏计为成功。ok + failed 始终等于输入条目数。
  */
 export function parseDoneEventToBatchResult(
   view: DownloadTaskView,
   libs: MavenLibEntry[],
-  pathToName: Map<string, string>
+  pathToName: Map<string, string>,
+  invalidNames: string[] = [],
+  pathToNames?: Map<string, string[]>
 ): LibBatchDownloadResult {
   let failedNames: string[] = [];
   let errors: string[] = [];
@@ -374,33 +405,52 @@ export function parseDoneEventToBatchResult(
     return { ok: 0, failed: 0, errors: errors, failedNames: failedNames };
   }
 
+  let inputNames: Set<string> = new Set<string>();
+  for (let lib of libs) inputNames.add(lib.name);
+  let failureMessages: Map<string, string> = new Map<string, string>();
+  let hasUnmappedFailure = false;
   let failedFiles = view.failedFiles;
   if (failedFiles !== undefined && failedFiles.length > 0) {
-    // 有具体失败文件：精准反查
+    // 有完整路径身份的失败可以精准反查；映射指向本批次以外坐标也视为清单不可信。
     for (let f of failedFiles) {
-      let name = pathToName.get(f.localPath);
-      if (name === undefined) {
-        // 防御性：localPath 不在我们生成的 pathToName 里 — 跳过不计入
+      const primary = pathToName.get(f.localPath);
+      const aliases = pathToNames?.get(f.localPath) ?? (primary === undefined ? [] : [primary]);
+      if (aliases.length === 0 || aliases.some((name: string): boolean => !inputNames.has(name))) {
+        hasUnmappedFailure = true;
         continue;
       }
-      if (failedNames.indexOf(name) >= 0) continue;  // 同一 lib 多次错误去重
-      failedNames.push(name);
       let kind = (f.lastError !== undefined) ? f.lastError.kind : 'Unknown';
       let msg = (f.lastError !== undefined) ? f.lastError.message : '';
-      errors.push(name + ': ' + kind + (msg.length > 0 ? ' (' + msg + ')' : ''));
-    }
-  } else if (!view.success) {
-    // 任务级失败（如 CA bundle 未初始化）— 没有具体文件信息，全部归为失败
-    let topMsg = view.errorMessage.length > 0 ? view.errorMessage : 'task failed without file detail';
-    for (let lib of libs) {
-      failedNames.push(lib.name);
-      errors.push(lib.name + ': ' + topMsg);
+      let httpStatus = (f.lastError !== undefined) ? f.lastError.httpStatus : 0;
+      for (const name of aliases) {
+        if (!failureMessages.has(name)) failureMessages.set(name, kind + (httpStatus > 0 ? ' http=' + httpStatus : '')
+          + (msg.length > 0 ? ' (' + msg + ')' : ''));
+      }
     }
   }
 
-  let failed = failedNames.length;
+  if (view.aborted || hasUnmappedFailure || (!view.success && failureMessages.size === 0)) {
+    // 只有可解释的完整终态清单才支持部分成功。已有具体错误保留，其他条目补保守原因。
+    let topMsg = view.errorMessage.length > 0 ? view.errorMessage : 'task failed without file detail';
+    if (view.aborted) topMsg = 'download aborted: ' + topMsg;
+    else if (hasUnmappedFailure) topMsg = 'unmapped failed file: ' + topMsg;
+    for (let lib of libs) {
+      if (!failureMessages.has(lib.name)) failureMessages.set(lib.name, topMsg);
+    }
+  }
+
+  // 构造阶段拒绝的坐标从未交给 Native；成功和 reject 两条路径都必须在这里合并，
+  // 不能在外层只增加 failed 却保留原 ok，或对同一非法输入重复累计。
+  for (let name of invalidNames) {
+    if (inputNames.has(name)) failureMessages.set(name, 'invalid maven coordinate');
+  }
+  failureMessages.forEach((message: string, name: string): void => {
+    failedNames.push(name);
+    errors.push(name + ': ' + message);
+  });
+  let failed = 0;
+  for (let lib of libs) if (failureMessages.has(lib.name)) failed++;
   let ok = libs.length - failed;
-  if (ok < 0) ok = 0;  // 防御性：不会发生但保护
 
   let result: LibBatchDownloadResult = {
     ok: ok,

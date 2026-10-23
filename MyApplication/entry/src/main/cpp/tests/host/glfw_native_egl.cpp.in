@@ -1,0 +1,121 @@
+// fixture 只提供窗口/运行时外部状态；查询、错误槽与全部分支均从当前生产文件逐字抽取。
+#include <algorithm>
+#include <cassert>
+#include <cstdio>
+#include <mutex>
+#include <thread>
+#include <vector>
+#define GLFW_TRUE 1
+#define GLFW_FALSE 0
+#define GLFW_NOT_INITIALIZED 0x00010001
+#define GLFW_INVALID_VALUE 0x00010004
+#define GLFW_PLATFORM_ERROR 0x00010008
+#define GLFW_NO_WINDOW_CONTEXT 0x0001000A
+#define GLFW_NO_API 0
+#define EGL_NO_DISPLAY nullptr
+#define EGL_NO_CONTEXT nullptr
+struct GLFWwindow {
+    int clientAPI = 1;
+    bool contextLostFatal = false, eglTeardownPending = false;
+    void* display = nullptr;
+    void* context = nullptr;
+    void* surface = nullptr;
+    void* config = nullptr;
+    // NativeEGL 不得用内部停车面冒充已经退休的窗口面。
+    void* parkingSurface = reinterpret_cast<void*>(99);
+};
+static int g_initialized = 0;
+static bool g_nativeEglContextCreated = false;
+static std::recursive_mutex g_contextLifecycleMutex;
+static std::vector<GLFWwindow*> g_windows;
+static void (*g_errorCallback)(int, const char*) = nullptr;
+static bool restarted = false, hasRuntime = true;
+bool glfwGraphicsRestartRequired() { return restarted; }
+namespace amcl::graphics {
+struct TestRuntime {
+    struct { bool ready = true; } egl;
+    void* contextOperations = reinterpret_cast<void*>(1);
+    void* initializedDisplay = nullptr;
+} runtime;
+const TestRuntime* BoundGraphicsRuntime() { return hasRuntime ? &runtime : nullptr; }
+// owner 的真实 created/untrack/跨namespace 查询在独立 runtime-binding 生产 TU 套件运行。
+// 此 seam 只提供其公开只读结果，用于验证 GLFW 资格与窗口表相互独立。
+void* InitializedEglDisplay(const TestRuntime& value) { return value.initializedDisplay; }
+}
+@ERROR_SLOT@
+@NATIVE_EGL@
+
+int main() {
+    // 未初始化错误可在 glfwGetError 查询，且一次消费后清空；不需安装错误回调才能观察失败。
+    assert(glfwGetEGLDisplay() == nullptr);
+    assert(glfwGetError(nullptr) == GLFW_NOT_INITIALIZED);
+    assert(glfwGetError(nullptr) == 0);
+    g_initialized = 1;
+    // 官方契约允许 EGL 尚未按需创建，此时没有 current context 不得制造一个新 display。
+    assert(glfwGetEGLDisplay() == nullptr && glfwGetError(nullptr) == 0);
+    GLFWwindow first, second;
+    first.display = reinterpret_cast<void*>(11); first.context = reinterpret_cast<void*>(12);
+    first.surface = reinterpret_cast<void*>(13); first.config = reinterpret_cast<void*>(14);
+    second.display = first.display; second.context = reinterpret_cast<void*>(22);
+    second.surface = reinterpret_cast<void*>(23); second.config = reinterpret_cast<void*>(24);
+    g_windows = { &first, &second };
+    g_nativeEglContextCreated = true;
+    amcl::graphics::runtime.initializedDisplay = first.display;
+    // fixture 故意没有 current TLS 或 eglGetCurrent* 函数：查询应只返回指定活窗口的资源身份。
+    assert(glfwGetEGLDisplay() == first.display);
+    assert(glfwGetEGLContext(&second) == second.context);
+    assert(glfwGetEGLSurface(&second) == second.surface);
+    void* config = nullptr;
+    assert(glfwGetEGLConfig(&second, &config) == GLFW_TRUE && config == second.config);
+    second.surface = nullptr;
+    assert(glfwGetEGLSurface(&second) == nullptr && glfwGetError(nullptr) == 0);
+    // NULL/销毁地址/NO_API 不得偷用另一窗口或另一个 provider 的资源。
+    assert(glfwGetEGLContext(nullptr) == nullptr && glfwGetError(nullptr) == GLFW_INVALID_VALUE);
+    assert(glfwGetEGLContext(reinterpret_cast<GLFWwindow*>(1)) == nullptr);
+    assert(glfwGetError(nullptr) == GLFW_INVALID_VALUE);
+    second.clientAPI = GLFW_NO_API;
+    config = reinterpret_cast<void*>(777);
+    assert(glfwGetEGLConfig(&second, &config) == GLFW_FALSE && config == reinterpret_cast<void*>(777));
+    assert(glfwGetError(nullptr) == GLFW_NO_WINDOW_CONTEXT);
+    second.clientAPI = 1;
+    hasRuntime = false;
+    assert(glfwGetEGLContext(&first) == nullptr && glfwGetError(nullptr) == GLFW_NO_WINDOW_CONTEXT);
+    hasRuntime = true;
+    second.eglTeardownPending = true;
+    assert(glfwGetEGLContext(&second) == nullptr && glfwGetError(nullptr) == GLFW_PLATFORM_ERROR);
+    second.eglTeardownPending = false;
+    second.contextLostFatal = true;
+    assert(glfwGetEGLSurface(&second) == nullptr && glfwGetError(nullptr) == GLFW_PLATFORM_ERROR);
+    second.contextLostFatal = false;
+    restarted = true;
+    assert(glfwGetEGLDisplay() == nullptr);
+    assert(glfwGetEGLContext(&first) == nullptr && glfwGetError(nullptr) == GLFW_PLATFORM_ERROR);
+    restarted = false;
+    // 错误回调立即销毁目标：生产查询必须已经结束资源读取，不能回调后再访问原窗口。
+    g_errorCallback = [](int, const char*) { g_windows.clear(); };
+    second.clientAPI = GLFW_NO_API;
+    assert(glfwGetEGLContext(&second) == nullptr && g_windows.empty());
+    g_errorCallback = nullptr;
+    assert(glfwGetError(nullptr) == GLFW_NO_WINDOW_CONTEXT);
+    // 系统/MG 末窗后 display 仍由 owner 保持；本查询不能把窗口表为空当成 terminate。
+    assert(g_windows.empty() && glfwGetEGLDisplay() == first.display);
+    // MobileGL 的最后跨前端 context 真实 terminate 后，owner 读值为空，禁止回旧缓存。
+    amcl::graphics::runtime.initializedDisplay = nullptr;
+    assert(glfwGetEGLDisplay() == nullptr);
+    amcl::graphics::runtime.initializedDisplay = first.display;
+    // terminate 后未 init 必须标准报错；重新 init 未交付本轮 context 时不可借旧轮或SDL的display。
+    g_initialized = 0; g_nativeEglContextCreated = false;
+    assert(glfwGetEGLDisplay() == nullptr && glfwGetError(nullptr) == GLFW_NOT_INITIALIZED);
+    g_initialized = 1;
+    assert(glfwGetEGLDisplay() == nullptr);
+    // 错误槽必须按线程隔离，消费者一侧取错不能抹掉另一侧的待处理错误。
+    glfwOHOS_ReportError(GLFW_INVALID_VALUE, "main thread");
+    std::thread other([] {
+        assert(glfwGetError(nullptr) == 0);
+        glfwOHOS_ReportError(GLFW_NOT_INITIALIZED, "worker thread");
+        assert(glfwGetError(nullptr) == GLFW_NOT_INITIALIZED);
+    });
+    other.join();
+    assert(glfwGetError(nullptr) == GLFW_INVALID_VALUE && glfwGetError(nullptr) == 0);
+    std::puts("PASS NativeEGL live resource identity, no-current queries, suspended surface, invalid/no-api/fatal rejection, reentrant callback and TLS errors");
+}

@@ -114,6 +114,13 @@ int amclLedgerBegin(long long activityId, const char* dir);
  */
 void amclLedgerEnd(long long activityId);
 
+/**
+ * 请求相同的有序关闭协议，并确认 writer 已释放该 scope。
+ * 1 表示 scope 已关闭或此前不存在；0 表示主键无效或刷新超时后 scope 仍待关闭。
+ * 此接口可能等待 writer，必须由 NAPI 工作线程调用；返回值不替代 native-io 的完整性收据。
+ */
+int amclLedgerEndChecked(long long activityId);
+
 /** 关闭全部 scope（进程退出 / fork 子进程用）。 */
 void amclLedgerEndAll(void);
 

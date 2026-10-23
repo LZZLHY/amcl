@@ -51,12 +51,14 @@ export function evaluateProductHap(buffer, name, publishing = false) {
   const expected = productDefinition(name);
   const module = JSON.parse(readUniqueZipEntry(buffer, 'module.json').toString('utf8'));
   const metadata = JSON.parse(readUniqueZipEntry(buffer, 'resources/rawfile/product-profile.json').toString('utf8'));
-  const { schemaVersion, build, ...observed } = metadata;
+  const { schemaVersion, build, sourceRevision, ...observed } = metadata;
   const issues = auditGraphicsManifest(buffer, name);
   issues.push(...graphicsBootstrapIssues(module.app));
   if (publishing && build?.nativeGlValidation) issues.push('Native GL validation artifacts cannot be published');
   if (publishing && (module.app.buildMode !== 'release' || module.app.debug !== false)) issues.push('publishing requires a Release HAP');
   if (schemaVersion !== 1 || !equal(observed, expected)) issues.push('HAP product metadata does not match requested product');
+  // 源码身份为单独的载荷字段，不能混入产品定义比较，也不能接受缺失或任意短标签。
+  if (typeof sourceRevision !== 'string' || !/^[0-9a-f]{40}$/.test(sourceRevision)) issues.push('HAP source revision missing or invalid');
   if (!equal([...module.module.deviceTypes].sort(), [...expected.deviceTypes].sort())) issues.push('HAP deviceTypes mismatch');
   const bytecode = readUniqueZipEntry(buffer, 'ets/modules.abc');
   if (!bytecode.includes(Buffer.from('DesktopGameControlSurface'))) issues.push('HAP shared desktop frontend missing');

@@ -29,6 +29,9 @@ struct GraphicsFeatureState {
     // 仅由生命周期操作访问。一个display可有多个GLFW context；最后一个退休才允许terminate。
     std::recursive_mutex resourcesMutex;
     std::set<EglContextState*> contexts;
+    // 首个成功交付的 context 证明 display 已完成初始化。窗口字段在 destroy 时会清空，
+    // 此 owner 记录独立于 GLFW/SDL 窗口表；仅真实 provider eglTerminate 成功后退休。
+    void* initializedEglDisplay = nullptr;
     uint64_t nextShareGroup = 0;
     // 前端无关的真实context资格账本，0句柄表示驱动创建中的预留。SDL的多个surface
     // 不增加记录；并发创建必须先看到预留，不能同时把自己当成第一个context。

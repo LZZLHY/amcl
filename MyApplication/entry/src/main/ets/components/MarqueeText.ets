@@ -5,7 +5,7 @@
  *   - 内容能塞下视口 → 退化为普通 Text，零滚动
  *   - 内容溢出（默认行为）→ 自动**单向**循环：滚到第一份末尾后留一段 gap 留白，
  *     无缝接上第二份副本，整体看像新闻条无限往左走，不来回 bounce
- *   - 用户摸屏 → 立刻停 tick，进入"用户模式"
+ *   - 用户开始横拖 → 停止渲染侧动画，进入"用户模式"
  *     · 若按下时 offsetX 在自然窗口 [0, contentW - viewportW] 内 → 直接 anchored
  *       （左右两端都 clamp）
  *     · 若按下时在过渡区（offsetX 已过 naturalMax，正在跨 gap 准备绕回头）
@@ -21,11 +21,11 @@
  *
  * 实现要点：
  *   1. content / fontSize / fontWeight 任一变 → 重测 contentW
- *   2. Stack 视口裁剪；两份 Text 各自显式宽 = contentW，用 .position 摆位置
- *      第一份在 -offsetX；第二份在 contentW + gap - offsetX
- *   3. tick 16ms 推 offsetX += step；到 cycleWidth = contentW + gap 时减一个 cycle
- *      因为第二份副本左缘正好在 cycleWidth 处，减完后视觉位置等于第一份 → 无缝
- *   4. 用户拖动用 onTouch 增量 dx：finger 左移（dx<0）→ offsetX 增大（与 auto 同向）
+ *   2. Stack 视口裁剪；副本只在固定位置布局，共同用 translate 做渲染侧位移。
+ *   3. 自动滚动使用原生 Animator 的实际 onFrame 偏移，不再使用 16ms JS interval；
+ *      translate 不触发布局，手动接管以最后一帧实际值为准，不根据墙钟猜动画位置。
+ *      从任意归一化偏移续播需要第三份副本接力，循环首尾画面保持一致。
+ *   4. 用户拖动使用 PanGesture 累计位移：手指左移 → offsetX 增大（与 auto 同向）
  *   5. mode 状态机：auto / free / anchored —— 详见 docstring 顶部
  *
  * 不接管的属性（外层容器自行 padding / margin / alignItems 控制视觉位置）：
@@ -34,7 +34,9 @@
  *   - 文本对齐（始终左起 — 与原版 Text 一致）
  */
 
-import { MeasureText } from '@kit.ArkUI';
+import { systemDateTime } from '@kit.BasicServicesKit';
+import { AnimatorResult } from '@kit.ArkUI';
+import { UiMotion } from './UiMotion';
 
 @Component
 export struct MarqueeText {
@@ -46,12 +48,12 @@ export struct MarqueeText {
   @Prop @Watch('onMeasureDepsChange') fontWeight: number = 400;
   /** 字色 */
   @Prop fontColor: ResourceColor = '#FFFFFF';
-  /** 自动滚速度（px/秒）。默认 60 ≈ 视觉舒适，不晃眼 */
-  @Prop pixelsPerSec: number = 60;
+  /** 历史属性名保持兼容；实际偏移以 vp/秒推进，默认 60 沿用原滚动速率。 */
+  @Prop @Watch('onMotionDepsChange') pixelsPerSec: number = 60;
   /** 用户松手后多久恢复自动滚（ms）。默认 2000 */
   @Prop resumeDelayMs: number = 2000;
   /** 两份副本之间的留白（vp）。值越大"换行感"越明显，太小看起来像粘连 */
-  @Prop gapVp: number = 60;
+  @Prop @Watch('onMotionDepsChange') gapVp: number = 60;
 
   /** 视口宽（vp） —— 由外层 Stack onAreaChange 测出 */
   @State private viewportW: number = 0;
@@ -68,35 +70,66 @@ export struct MarqueeText {
 
   /**
    * 宿主页面（Index）是否可见。router.pushUrl 进游戏时 Index 只是被覆盖、并不销毁，
-   * 所以 aboutToDisappear 不会触发，本组件的 16ms 定时器会**在整局游戏期间**继续
-   * 每帧写 @State → 每帧让 ArkUI 主线程做一次布局/重绘，而屏幕上根本看不到它。
-   * 那条主线程正是物理鼠标 onMouse / onAxisEvent 的派发线程，所以这不只是耗电，
-   * 而是直接给键鼠输入加延迟。Index 的 onPageShow/onPageHide 负责发布该标志。
+   * 所以 aboutToDisappear 不一定触发。Index 发布宿主和首页页签可见事实，Ability
+   * 发布应用前台事实；三者同时成立且组件存活才允许运行动画或用户恢复计时。
    */
-  @StorageProp('amclHostPageVisible') @Watch('onHostPageVisibilityChange')
-  private hostPageVisible: boolean = true;
+  @StorageProp('amclHostPageVisible') @Watch('onVisibilityChange')
+  private hostPageVisible: boolean = false;
+  @StorageProp('appInForeground') @Watch('onVisibilityChange')
+  private appInForeground: boolean = false;
+  @StorageProp('amclHomeTabVisible') @Watch('onVisibilityChange')
+  private homeTabVisible: boolean = false;
 
-  /** tick 定时器 id；0 = 未跑 */
-  private tickTimer_: number = 0;
+  /** 原生动画资格；仅实际帧值可更新偏移，取消后的在途帧通过世代拒绝。 */
+  private alive_: boolean = false;
+  private animationRunning_: boolean = false;
+  private animationGeneration_: number = 0;
+  private animation_: AnimatorResult | undefined = undefined;
+  private dragging_: boolean = false;
+  /** 隐藏时暂停用户恢复倒计时；回到真正首页继续剩余等待，不能永久停在用户模式。 */
+  private resumeRemaining_: number = 0;
+  private resumeDeadline_: number = 0;
+  private resumeGeneration_: number = 0;
   /** 用户松手后的恢复定时器 id；0 = 未跑 */
   private resumeTimer_: number = 0;
 
   aboutToAppear() {
+    this.alive_ = true;
     this.measureContent();
     this.startTick();
   }
 
   aboutToDisappear() {
     this.stopAll();
+    this.alive_ = false;
+    this.dragging_ = false;
+    this.resumeRemaining_ = 0;
   }
 
-  private onHostPageVisibilityChange(): void {
-    if (this.hostPageVisible) {
-      // 回到前台再重新起；offsetX 保留，视觉上从原位置继续滚。
-      this.startTick();
-    } else {
+  /** 任一可见条件消失立即停止；重新满足时延续自动模式或用户松手后的剩余等待。 */
+  private onVisibilityChange(): void {
+    if (!this.canRun_()) {
       this.stopAll();
+      if (this.dragging_) {
+        this.dragging_ = false;
+        this.resumeRemaining_ = Math.max(0, this.resumeDelayMs);
+      }
+    } else if (this.mode === 'auto') {
+      this.startTick();
+    } else if (!this.dragging_) {
+      this.scheduleResume_();
     }
+  }
+
+  /** 存活、前台和真实首页共同授权动效，未知事实按不可见处理。 */
+  private canRun_(): boolean {
+    return this.alive_ && this.hostPageVisible && this.appInForeground && this.homeTabVisible;
+  }
+
+  /** 用户恢复等待使用 ACTIVE 单调毫秒，避免修改日期影响剩余延时；不用于推算动画帧。 */
+  private activeTime_(): number {
+    try { return systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE, false); }
+    catch (_) { return 0; }
   }
 
   // ============================================================
@@ -133,10 +166,20 @@ export struct MarqueeText {
   }
 
   private onMeasureDepsChange(): void {
+    this.stopAll();
     this.measureContent();
     this.offsetX = 0;
     this.mode = 'auto';
-    // tick 已经在跑（aboutToAppear 起的）—— 无需重启
+    this.dragging_ = false;
+    this.resumeRemaining_ = 0;
+    this.startTick();
+  }
+
+  /** 速度/留白变化先冻结旧动画快照，再按新周期续播；用户拖动模式不会被设置变化夺回。 */
+  private onMotionDepsChange(): void {
+    this.stopTick();
+    this.normalizeOffsetX();
+    this.startTick();
   }
 
   // ============================================================
@@ -144,41 +187,47 @@ export struct MarqueeText {
   // ============================================================
 
   private startTick(): void {
-    if (this.tickTimer_ !== 0) return;
-    // 宿主页面被游戏页覆盖时不起定时器：看不见的滚动不值得每帧占用 UI 线程。
-    if (!this.hostPageVisible) return;
-    // 16ms ≈ 60 fps，每帧推进 pixelsPerSec * 16/1000 px
-    this.tickTimer_ = setInterval(() => this.tick(), 16);
+    if (this.animationRunning_ || !this.canRun_() || this.mode !== 'auto' || UiMotion.reduced()
+      || !this.shouldScroll() || this.viewportW <= 0 || !Number.isFinite(this.pixelsPerSec)
+      || this.pixelsPerSec <= 0) return;
+    this.normalizeOffsetX();
+    const cycle: number = this.contentW + Math.max(0, this.gapVp);
+    if (!Number.isFinite(cycle) || cycle <= 0) return;
+    const generation: number = ++this.animationGeneration_;
+    const animator: AnimatorResult = this.getUIContext().createAnimator({
+      duration: Math.max(1, Math.ceil(cycle / this.pixelsPerSec * 1000)), easing: 'linear', delay: 0,
+      iterations: -1, fill: 'forwards', direction: 'normal', begin: this.offsetX, end: this.offsetX + cycle,
+    });
+    this.animation_ = animator;
+    this.animationRunning_ = true;
+    // 原生 Animator 的实际帧进度是唯一位置权威，系统动画倍率不需要人工推算。
+    // 每帧只更新合成位移；隐藏/用户接管前撤销世代，迟到帧不会覆盖手动位置。
+    animator.onFrame = (offset: number): void => {
+      if (generation !== this.animationGeneration_ || !this.canRun_() || this.mode !== 'auto') return;
+      this.offsetX = offset;
+    };
+    animator.play();
   }
 
+  /** 取消原生动画后保留最后实际帧；不会使用最终目标或单调时钟估计用户接管位置。 */
   private stopTick(): void {
-    if (this.tickTimer_ !== 0) {
-      clearInterval(this.tickTimer_);
-      this.tickTimer_ = 0;
-    }
+    if (!this.animationRunning_) return;
+    this.animationRunning_ = false;
+    this.animationGeneration_++;
+    const animator: AnimatorResult | undefined = this.animation_;
+    this.animation_ = undefined;
+    animator?.cancel();
+    this.normalizeOffsetX();
   }
 
   private stopAll(): void {
     this.stopTick();
     if (this.resumeTimer_ !== 0) {
+      this.resumeRemaining_ = Math.max(0, this.resumeDeadline_ - this.activeTime_());
       clearTimeout(this.resumeTimer_);
       this.resumeTimer_ = 0;
     }
-  }
-
-  private tick(): void {
-    if (this.mode !== 'auto') return;
-    if (this.contentW <= 0 || this.viewportW <= 0) return;
-    if (this.contentW <= this.viewportW) return; // 不溢出 → 不滚
-
-    let cycleWidth = this.contentW + this.gapVp;
-    let step = this.pixelsPerSec * 16 / 1000;
-    let next = this.offsetX + step;
-    // 单向无限：到一个 cycle 末尾立刻减一个 cycle，第二份副本接力顶上去，无缝
-    if (next >= cycleWidth) {
-      next -= cycleWidth;
-    }
-    this.offsetX = next;
+    this.resumeGeneration_++;
   }
 
   // ============================================================
@@ -196,7 +245,11 @@ export struct MarqueeText {
   private panBaseOffset_: number = 0;
 
   private handlePanStart(): void {
+    if (!this.canRun_() || !this.shouldScroll()) return;
     this.stopTick();
+    this.dragging_ = true;
+    this.resumeGeneration_++;
+    this.resumeRemaining_ = 0;
     if (this.resumeTimer_ !== 0) {
       clearTimeout(this.resumeTimer_);
       this.resumeTimer_ = 0;
@@ -212,6 +265,7 @@ export struct MarqueeText {
   }
 
   private handlePanUpdate(panOffsetX: number): void {
+    if (!this.dragging_ || !this.canRun_()) return;
     let target = this.panBaseOffset_ - panOffsetX;
     let nm = this.naturalMax();
     if (this.mode === 'anchored') {
@@ -233,13 +287,25 @@ export struct MarqueeText {
   }
 
   private handlePanEnd(): void {
-    if (this.resumeTimer_ !== 0) clearTimeout(this.resumeTimer_);
+    if (!this.dragging_) return;
+    this.dragging_ = false;
+    this.resumeRemaining_ = Math.max(0, this.resumeDelayMs);
+    this.scheduleResume_();
+  }
+
+  /** 恢复等待只有一个在途定时器；隐藏/销毁/新手势使旧回调丧失发布资格。 */
+  private scheduleResume_(): void {
+    if (!this.canRun_() || this.dragging_ || this.mode === 'auto' || this.resumeTimer_ !== 0) return;
+    const generation: number = ++this.resumeGeneration_;
+    this.resumeDeadline_ = this.activeTime_() + this.resumeRemaining_;
     this.resumeTimer_ = setTimeout(() => {
+      if (generation !== this.resumeGeneration_ || !this.canRun_() || this.dragging_) return;
       this.normalizeOffsetX();
       this.mode = 'auto';
       this.resumeTimer_ = 0;
+      this.resumeRemaining_ = 0;
       this.startTick();
-    }, this.resumeDelayMs);
+    }, this.resumeRemaining_);
   }
 
   // ============================================================
@@ -259,7 +325,7 @@ export struct MarqueeText {
    */
   private normalizeOffsetX(): void {
     if (this.contentW <= 0) return;
-    let cycleWidth = this.contentW + this.gapVp;
+    let cycleWidth = this.contentW + Math.max(0, this.gapVp);
     if (cycleWidth <= 0) return;
     while (this.offsetX >= cycleWidth) this.offsetX -= cycleWidth;
     while (this.offsetX < 0) this.offsetX += cycleWidth;
@@ -280,7 +346,7 @@ export struct MarqueeText {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      // 第一份副本：显式宽 contentW，绝对位置摆在 -offsetX
+      // 副本固定布局，自动/手动偏移仅作用于可动画的 translate，不逐帧触发 position 布局。
       // 内容塞得下时 contentW <= viewportW，offsetX 永远 0，等价普通 Text
       Text(this.content)
         .fontSize(this.fontSize)
@@ -288,7 +354,8 @@ export struct MarqueeText {
         .fontColor(this.fontColor)
         .maxLines(1)
         .width(this.contentW > 0 ? this.contentW : undefined)
-        .position({ x: -this.offsetX, y: 0 })
+        .position({ x: 0, y: 0 })
+        .translate({ x: -this.offsetX, y: 0 })
 
       // 第二份副本：仅溢出时画，作"接力位置"用
       // 摆在 (contentW + gap) - offsetX 处；当 offsetX 接近 cycleWidth 时它会
@@ -300,7 +367,17 @@ export struct MarqueeText {
           .fontColor(this.fontColor)
           .maxLines(1)
           .width(this.contentW)
-          .position({ x: this.contentW + this.gapVp - this.offsetX, y: 0 })
+          .position({ x: this.contentW + Math.max(0, this.gapVp), y: 0 })
+          .translate({ x: -this.offsetX, y: 0 })
+        // 从周期中间续播会越过第二份末尾，第三份补齐该区间；首尾复制画面完全一致。
+        Text(this.content)
+          .fontSize(this.fontSize)
+          .fontWeight(this.fontWeight)
+          .fontColor(this.fontColor)
+          .maxLines(1)
+          .width(this.contentW)
+          .position({ x: 2 * (this.contentW + Math.max(0, this.gapVp)), y: 0 })
+          .translate({ x: -this.offsetX, y: 0 })
       }
     }
     .width('100%')
@@ -308,7 +385,12 @@ export struct MarqueeText {
     .clip(true)
     .onAreaChange((_oldArea: Area, newArea: Area) => {
       let w = newArea.width as number;
-      if (w > 0) this.viewportW = w;
+      if (w > 0 && Math.abs(w - this.viewportW) > 0.5) {
+        this.stopTick();
+        this.viewportW = w;
+        if (!this.shouldScroll()) this.offsetX = 0;
+        this.startTick();
+      }
     })
     // ⚠️ 用 PanGesture 而不是 onTouch 处理拖动 ——
     //   onTouch 只是 listener，不消费事件，父级 Scroll 仍会同时收到 down/move
@@ -319,7 +401,7 @@ export struct MarqueeText {
     //   distance:1 让识别尽量灵敏，避免用户开始拖时父级先抢到事件。
     .gesture(
       PanGesture({ direction: PanDirection.Horizontal, distance: 1 })
-        .onActionStart((e: GestureEvent) => {
+        .onActionStart((_e: GestureEvent) => {
           this.handlePanStart()
         })
         .onActionUpdate((e: GestureEvent) => {

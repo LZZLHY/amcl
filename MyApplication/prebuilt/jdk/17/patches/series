@@ -80,3 +80,12 @@
 #      exit 127。**也就是说 docker/build_jdk17_ohos.sh 今天在这台机器上跑不过。**
 #   3) boot JDK 必须是 16 或 17（不是越新越好）。
 0010-ipv6-supported-sandbox-fallback.patch
+
+# OHOS Java Sound：保留解析与共享 JNI，原生设备能力正常返回不可用。
+0011-ohos-javasound-capabilities.patch
+
+# 交叉构建工具 JVM 使用 glibc 宿主声明，避免 target musl 配置污染。
+0012-ohos-buildjdk-libc-guard.patch
+
+# Docker 使用 Linux 用户空间；WSL 内核标识不能改变构建宿主 ABI。
+0013-ohos-linux-container-build-host.patch

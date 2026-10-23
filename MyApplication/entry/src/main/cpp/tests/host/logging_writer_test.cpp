@@ -41,6 +41,8 @@ static int controlled_vsnprintf(char* out, size_t size, const char* fmt, va_list
 #include "../../utils/amcl_log.cpp"
 #undef vsnprintf
 #undef localtime_r
+// 暴露仅测试可用的缓存复位入口，才能在同一进程内分别验证“缓存命中”和“解析阶段失败关闭”。
+#define AMCL_LOG_BRIDGE_TESTING 1
 #include "../../utils/amcl_log_bridge.h"
 static std::string readFile(const std::string& path) { std::ifstream file(path); std::ostringstream out; out << file.rdbuf(); return out.str(); }
 static void expect(bool value, const char* reason) { if (!value) { std::fprintf(stderr, "FAIL: %s\n", reason); std::exit(1); } }
@@ -111,6 +113,21 @@ int main(int argc, char** argv) {
         waitForWriterWork();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
         expect(elapsed < LOG_FLUSH_INTERVAL_MS / 2, "published work waited for the idle timeout");
+    } else if (mode == "idle-wakeup") {
+        // 真正的生产等待函数：稳定空队列跨原500ms仍睡眠，显式reopen必须立即唤醒。
+        for (unsigned int index = 0; index < LOG_BUFFER_SIZE; ++index) g_buffer[index].sequence.store(index);
+        g_globalWritable.store(true);
+        std::atomic<bool> returned{false};
+        std::thread waiter([&] { waitForWriterWork(); returned.store(true); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        expect(!returned.load(), "clean idle writer still wakes on the old 500ms timer");
+        g_reopenRequested.store(true); notifyWriter(); waiter.join();
+        expect(returned.load(), "explicit reopen did not wake idle writer");
+        // 脏capture状态须保留原定时维护，否则最后一批状态可能永远留在内存。
+        g_reopenRequested.store(false);g_scopes[0].activityId=101;g_scopes[0].statusDirty=true;
+        const auto started=std::chrono::steady_clock::now();waitForWriterWork();
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count();
+        expect(elapsed >= LOG_FLUSH_INTERVAL_MS / 2 && elapsed < 3000, "pending scope lost bounded maintenance");
     } else if (mode == "retention") {
         const std::string dir = base + "/ledger";
         expect(amclLedgerBegin(101, dir.c_str()) == 1, "scope failed to open");
@@ -186,12 +203,31 @@ int main(int argc, char** argv) {
         amclLogFlush();
         expect(readFile(dir + "/render/renderer.log").find("EXTERNAL_FAILURE=123") != std::string::npos, "external provider failed to reach host writer");
         expect(readFile(dir + "/launcher/launcher-host.log").find("EXTERNAL_FAILURE") == std::string::npos, "optional render leaked into launcher");
+        // 同一 PID 再初始化不重写描述符（进程常量，只发布一次）。
+        const std::string published = std::getenv("AMCL_LOG_SINK_V1") ? std::getenv("AMCL_LOG_SINK_V1") : "";
+        expect(!published.empty(), "sink descriptor was not published by init");
 #ifdef _WIN32
         _putenv_s("AMCL_LOG_SINK_V1", "0:1");
 #else
         setenv("AMCL_LOG_SINK_V1", "0:1", 1);
 #endif
+        // 已验证的回调按 PID 缓存：之后的环境改写（只能来自越界写者）不影响本 PID 的解析结果。
+        amclExternalLogWrite(3, "GLFW_EGL", "CACHED_AFTER_MUTATION");
+        // 清空缓存后，PID 不符的描述符必须在解析阶段失败关闭：地址 1 若被调用会立即崩溃。
+        amclExternalLogResetSinkCache();
         amclExternalLogWrite(3, "GLFW_EGL", "WRONG_PID");
+        // 失败不进缓存：描述符恢复后下一条日志重新解析并送达。
+#ifdef _WIN32
+        _putenv_s("AMCL_LOG_SINK_V1", published.c_str());
+#else
+        setenv("AMCL_LOG_SINK_V1", published.c_str(), 1);
+#endif
+        amclExternalLogWrite(3, "GLFW_EGL", "RECOVERED_AFTER_REJECTION");
+        amclLogFlush();
+        const std::string renderer = readFile(dir + "/render/renderer.log");
+        expect(renderer.find("CACHED_AFTER_MUTATION") != std::string::npos, "validated sink was not cached");
+        expect(renderer.find("WRONG_PID") == std::string::npos, "wrong-PID descriptor reached a sink");
+        expect(renderer.find("RECOVERED_AFTER_REJECTION") != std::string::npos, "rejected resolution was cached as a failure");
         amclLogShutdown();
     } else if (mode == "routing") {
         for (const char* tag : {"GLFW_EGL", "AMCL_FRAME_RATE", "AMCL_MG_BENCH", "AMCL_VULKAN_WSI", "GraphicsCapability"}) expect(isRenderTag(tag), "render detail leaked into launcher");

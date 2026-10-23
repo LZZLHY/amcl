@@ -11,6 +11,7 @@ import { ProcessPreferences, GameLayoutCommitSink, LaunchPreferenceSnapshot, Lau
   copyLaunchPreferenceSnapshot, writeEvidenceTextAtomic, ensureDirSync, evidenceFileDigestSync,
   AppLogger, LOG_DOMAIN_LAUNCH } from 'commons';
 import { getLayoutStore, mergeLayoutPreferences, utf8ByteLength, GameLayoutImportResult } from 'gamecontrol';
+import { GameLayoutTransportV2 } from './GameLayoutTransportV2';
 
 const MAX_JOURNAL_BYTES: number = 4 * 1024 * 1024;
 
@@ -203,6 +204,12 @@ export class GameLayoutJournal {
       report.deferred = true;
       return report;
     }
+    const v2 = await GameLayoutTransportV2.importPending(context);
+    report.imported = v2.imported;
+    report.pending = v2.pending;
+    report.deferred = v2.deferred;
+    report.conflicts = v2.conflicts.slice();
+    if (report.deferred) return report;
     const directory: string = journalDirectory(context);
     let names: string[] = [];
     try { names = fs.listFileSync(directory); }
@@ -214,7 +221,7 @@ export class GameLayoutJournal {
     }
     const pending: string[] = names.filter((name: string): boolean =>
       name.endsWith('.json') && validSnapshotId(name.substring(0, name.length - 5)));
-    report.pending = pending.length;
+    report.pending += pending.length;
     if (pending.length === 0) {
       GameLayoutJournal.cleanSettledBases(context, names);
       return report;

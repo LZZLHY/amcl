@@ -5,10 +5,13 @@
  * 所有设置项集中管理，避免 get/put key 字符串分散在各处。
  */
 
-import { ProcessPreferences, LaunchPreferenceStore } from 'commons';
+import { ProcessPreferences, LaunchPreferenceStore, LaunchPreferenceValue } from 'commons';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeMode } from 'commons';
-import { SUPPORTED_JDK_VERSION, SUPPORTED_JDK_VERSIONS, JDK_AUTO } from 'commons';
+import { DockLightMode, normalizeDockLightMode } from 'commons';
+import { ImmersiveLightPreferences, migrateImmersiveLightPreferences,
+  decodeImmersiveLightPreferences, encodeImmersiveLightPreferences } from 'commons';
+import { SUPPORTED_JDK_VERSION, isJdkSlotVersion, JDK_AUTO } from 'commons';
 import { DEFAULT_GAME_LANGUAGE, normalizeGlobalGameLanguage } from 'commons';
 import { formatError } from 'commons';
 
@@ -16,15 +19,134 @@ const TAG = 'PreferenceManager'
 const PREF_NAME = 'amcl_settings'
 const OHOS_FRAME_RATE_CAP_MIN: number = 30
 const OHOS_FRAME_RATE_CAP_MAX: number = 240
+const IMMERSIVE_LIGHT_KEY: string = 'immersiveLightPreferences';
+const IMMERSIVE_LIGHT_ABSENT: string = '__amcl_immersive_light_absent__';
+
+/** 同一偏好目录的写入队列与确认值屏障；独立页面的读取也不能看到在途缓存。 */
+class ImmersiveLightWriteState {
+  tail: Promise<void> = Promise.resolve();
+  original: LaunchPreferenceValue | undefined = undefined;
+}
+
+/**
+ * 仅两项冻结设置的原owner写事务。tail按同一Preferences目录串行保存与回滚；originals
+ * 只保存正在提交或回滚未确认的旧值，供getter避开put已改但flush尚未确认的缓存。
+ * 真正持久权威仍是amcl_settings；这里不创建第二份偏好或运行政策。不同owner取得不同
+ * 对象，旧异步续体一直持原对象；普通组件重建/manager重建不清掉在途事务或磁盘未知态。
+ */
+class FrozenSettingsWriteState {
+  tail: Promise<void> = Promise.resolve();
+  originals: Map<string, LaunchPreferenceValue> = new Map<string, LaunchPreferenceValue>();
+}
+
+/** store选择独立串行保存；不扩大现有两项冻结输入设置的允许键集合。 */
+class StoreDebugWriteState {
+  tail: Promise<void> = Promise.resolve();
+  original: boolean | undefined = undefined;
+}
 
 export class PreferenceManager {
-  get desktopNativeGamepad(): boolean { return this.getBool('desktopNativeGamepad', false); }
-  set desktopNativeGamepad(value: boolean) { this.put('desktopNativeGamepad', value); }
+  /** 模块随真实进程重建；目录+固定PREF_NAME识别同一owner，不用UIContext对象猜一轮保存。 */
+  private static frozenSettingOwners: Map<string, FrozenSettingsWriteState> = new Map<string, FrozenSettingsWriteState>();
+  private static storeDebugOwners: Map<string, StoreDebugWriteState> = new Map<string, StoreDebugWriteState>();
+  private storeDebugState: StoreDebugWriteState | undefined = undefined;
+  private static immersiveLightOwners: Map<string, ImmersiveLightWriteState> = new Map<string, ImmersiveLightWriteState>();
+  private immersiveLightWrites: ImmersiveLightWriteState | undefined = undefined;
+
+  /** 只读已确认值；保存期间不把Preferences的临时缓存当下局可采用的选择。 */
+  get desktopNativeGamepad(): boolean { return this.readFrozenSetting_('desktopNativeGamepad', false) as boolean; }
 
   private pref: LaunchPreferenceStore;
+  /** 档位 put 后到 flush 确认前的读取屏障，防止 onPageShow 发布 Preferences 在途缓存。 */
+  private dockLightConfirmedDuringSave: DockLightMode | undefined = undefined;
+  private frozenSettings: FrozenSettingsWriteState | undefined = undefined;
 
   constructor(context: Context) {
     this.pref = ProcessPreferences.open(context, PREF_NAME);
+    // 游戏快照只读，不与启动器写事务共享读屏障。缺真实目录的旧只读调用方仍可读原store，
+    // 但两项新保存入口明确拒绝，不能把undefined或组件实例名拼成虚假的Preferences owner。
+    const directory: string = context.preferencesDir;
+    if (!ProcessPreferences.isGameProcess() && typeof directory === 'string' && directory.length > 0) {
+      let state: FrozenSettingsWriteState | undefined = PreferenceManager.frozenSettingOwners.get(directory);
+      if (state === undefined) {
+        state = new FrozenSettingsWriteState();
+        PreferenceManager.frozenSettingOwners.set(directory, state);
+      }
+      this.frozenSettings = state;
+      let debugState = PreferenceManager.storeDebugOwners.get(directory);
+      if (debugState === undefined) {
+        debugState = new StoreDebugWriteState();
+        PreferenceManager.storeDebugOwners.set(directory, debugState);
+      }
+      this.storeDebugState = debugState;
+      let lightState: ImmersiveLightWriteState | undefined = PreferenceManager.immersiveLightOwners.get(directory);
+      if (lightState === undefined) {
+        lightState = new ImmersiveLightWriteState();
+        PreferenceManager.immersiveLightOwners.set(directory, lightState);
+      }
+      this.immersiveLightWrites = lightState;
+    }
+  }
+
+  /** 读取原owner的确认基线；回滚flush失败继续保旧值，但这个值不证明磁盘已经恢复。 */
+  private readFrozenSetting_(key: string, fallback: LaunchPreferenceValue): LaunchPreferenceValue {
+    const state: FrozenSettingsWriteState | undefined = this.frozenSettings;
+    if (state !== undefined && state.originals.has(key)) return state.originals.get(key) as LaunchPreferenceValue;
+    try { return this.pref.getSync(key, fallback); }
+    catch (_) { return fallback; }
+  }
+
+  /**
+   * 仅保存原amcl_settings中的两个已存在字段。先在原owner队列中读确认基线，再put和await
+   * flush；失败只回滚本键，不覆盖另一键。回滚未确认时传播“磁盘未知”，保原基线供显式
+   * 重试；后继事务仍串行，不能普通mount清墓碑或把旧任务接到后来owner。这个Promise
+   * 只证明持久保存，不激活本局的Native手柄或已冻结交互路线。
+   */
+  private saveFrozenSetting_(key: string, value: LaunchPreferenceValue, fallback: LaunchPreferenceValue): Promise<void> {
+    if (key !== 'desktopNativeGamepad' && key !== 'desktopInteraction') return Promise.reject(new Error('不是本次冻结设置字段'));
+    const state: FrozenSettingsWriteState | undefined = this.frozenSettings;
+    if (ProcessPreferences.isGameProcess()) return Promise.reject(new Error('请在启动器设置中修改本项设置'));
+    if (state === undefined) return Promise.reject(new Error('无法确认设置存储目录，请重新打开启动器'));
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器设置中修改本项设置');
+      const previous: LaunchPreferenceValue = state.originals.has(key)
+        ? state.originals.get(key) as LaunchPreferenceValue : await this.pref.get(key, fallback);
+      if (ProcessPreferences.isGameProcess()) throw new Error('设置存储身份已改变，请重新打开启动器');
+      // 同owner排队的重复选择在前笔确认后幂等返回；未知回滚的旧值只是读屏障，
+      // 即使与请求相同也必须真正写盘重试，不能把磁盘未知态短路成成功。
+      if (!state.originals.has(key) && previous === value) return;
+      state.originals.set(key, previous);
+      try {
+        await this.pref.put(key, value);
+        await this.pref.flush();
+        state.originals.delete(key);
+      } catch (error) {
+        try {
+          this.pref.putSync(key, previous);
+          await this.pref.flush();
+          state.originals.delete(key);
+        } catch (rollbackError) {
+          hilog.warn(0x0000, TAG, 'Frozen setting rollback unconfirmed %{public}s: %{public}s', key, formatError(rollbackError));
+          throw new Error('保存失败，磁盘回滚尚未确认，请重试：' + formatError(error));
+        }
+        throw error as Error;
+      }
+    });
+    // 队列只吞异常来允许下一次明确重试；原调用者仍收到task的原失败，不能虚报保存成功。
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  /** 原生手柄偏好只供下一局初始化；非法值或child写入在任何put以前拒绝。 */
+  saveDesktopNativeGamepad(value: boolean): Promise<void> {
+    if (typeof value !== 'boolean') return Promise.reject(new Error('手柄设置值非法'));
+    return this.saveFrozenSetting_('desktopNativeGamepad', value, false);
+  }
+
+  /** 交互模式保存完成以后才由调用方更新desired；不得利用这个方法改变已冻结路线。 */
+  saveDesktopInteraction(value: string): Promise<void> {
+    if (value !== 'auto' && value !== 'touch' && value !== 'desktop') return Promise.reject(new Error('交互设置值非法'));
+    return this.saveFrozenSetting_('desktopInteraction', value, 'auto');
   }
 
   // ===== 基础读写 =====
@@ -68,8 +190,44 @@ export class PreferenceManager {
 
   // ===== 业务属性 =====
 
-  get desktopInteraction(): string { return this.getString('desktopInteraction', 'auto'); }
-  set desktopInteraction(v: string) { this.put('desktopInteraction', v); }
+  /** 缺省拒绝，非法类型也不授予运行；保存期间只暴露已经确认的旧值。 */
+  get storeAllowDebug(): boolean {
+    const state = this.storeDebugState;
+    if (state !== undefined && state.original !== undefined) return state.original;
+    try { const value = this.pref.getSync('storeAllowDebug', false); return typeof value === 'boolean' && value; }
+    catch (_) { return false; }
+  }
+
+  /**
+   * 等待本键flush后才承认保存；失败仅回滚本键，回滚未知时保留读屏障并向UI报告。
+   * child不能写偏好；跨进程实时撤销由entry的GameRunAdmission私有门控承担。
+   */
+  saveStoreAllowDebug(value: boolean): Promise<void> {
+    const state = this.storeDebugState;
+    if (typeof value !== 'boolean' || ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('运行调试选择只能在已初始化的启动器中保存'));
+    }
+    const task = state.tail.then(async (): Promise<void> => {
+      const previous = this.storeAllowDebug;
+      state.original = previous;
+      try {
+        await this.pref.put('storeAllowDebug', value);
+        await this.pref.flush();
+        state.original = undefined;
+      } catch (error) {
+        try {
+          this.pref.putSync('storeAllowDebug', previous);
+          await this.pref.flush();
+          state.original = undefined;
+        } catch (_) { throw new Error('运行调试选择保存失败，回滚尚未确认，请重试'); }
+        throw error as Error;
+      }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  get desktopInteraction(): string { return this.readFrozenSetting_('desktopInteraction', 'auto') as string; }
 
   /**
    * 平板独立游戏进程的持久选择；不复用历史 useNewWindow（窗口样式并不等于进程边界）。
@@ -110,6 +268,84 @@ export class PreferenceManager {
 
   get themeMode(): ThemeMode { return this.getNumber('themeMode', ThemeMode.SYSTEM) as ThemeMode; }
   set themeMode(v: ThemeMode) { this.put('themeMode', v); }
+
+  /** 独立外观键不进入旧 saveAll 快照，避免其他设置的批量保存覆盖正在确认的档位。 */
+  get dockLightMode(): DockLightMode {
+    if (this.dockLightConfirmedDuringSave !== undefined) return this.dockLightConfirmedDuringSave;
+    return normalizeDockLightMode(this.getString('dockLightMode', DockLightMode.AUTO));
+  }
+
+  /** 新键缺失才兼容旧五档；无效新键安全关闭，同目录各 manager 共用确认读取屏障。 */
+  get immersiveLightPreferences(): ImmersiveLightPreferences {
+    try {
+      const state: ImmersiveLightWriteState | undefined = this.immersiveLightWrites;
+      const raw: LaunchPreferenceValue = state !== undefined && state.original !== undefined
+        ? state.original : this.pref.getSync(IMMERSIVE_LIGHT_KEY, IMMERSIVE_LIGHT_ABSENT);
+      if (raw === IMMERSIVE_LIGHT_ABSENT) return migrateImmersiveLightPreferences(this.dockLightMode);
+      return decodeImmersiveLightPreferences(typeof raw === 'string' ? raw : '');
+    } catch (_) {
+      return decodeImmersiveLightPreferences('');
+    }
+  }
+
+  /**
+   * 一次确认总开关、档位和两个模块；写事务按原目录串行，确认前所有页面仍读旧整组。
+   * 首次保存失败时恢复键缺失，允许下次仍按旧五档读取；回滚失败保留确认值屏障。
+   * 不双写旧键、不触碰主题和启动快照，进程重建后重新以真实持久记录为准。
+   */
+  saveImmersiveLightPreferences(value: ImmersiveLightPreferences): Promise<void> {
+    const serialized: string = encodeImmersiveLightPreferences(value);
+    const state: ImmersiveLightWriteState | undefined = this.immersiveLightWrites;
+    if (state === undefined || ProcessPreferences.isGameProcess()) return Promise.reject(new Error('当前进程无法保存沉浸光感设置'));
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器中修改沉浸光感设置');
+      const previous: LaunchPreferenceValue = state.original !== undefined ? state.original
+        : this.pref.getSync(IMMERSIVE_LIGHT_KEY, IMMERSIVE_LIGHT_ABSENT);
+      state.original = previous;
+      try {
+        await this.pref.put(IMMERSIVE_LIGHT_KEY, serialized);
+        await this.pref.flush();
+        state.original = undefined;
+      } catch (error) {
+        try {
+          if (previous === IMMERSIVE_LIGHT_ABSENT) this.pref.deleteSync(IMMERSIVE_LIGHT_KEY);
+          else this.pref.putSync(IMMERSIVE_LIGHT_KEY, previous);
+          await this.pref.flush();
+          state.original = undefined;
+        } catch (_) { throw new Error('沉浸光感保存失败，回滚尚未确认，请重试'); }
+        throw error as Error;
+      }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  /**
+   * Index 在保存期间禁用切换；只有 flush 成功后才发布新档位。
+   * 本方法仅写本键，不改主题或启动设置；失败恢复旧缓存并等待回滚，错误交回 UI。
+   * 即使回滚失败也不虚报成功，保留用户可重试的错误信息；游戏进程不允许写入。
+   */
+  async saveDockLightMode(mode: DockLightMode): Promise<void> {
+    if (normalizeDockLightMode(mode) !== mode || ProcessPreferences.isGameProcess()) {
+      throw new Error('底部栏光感设置无效或当前进程不可保存');
+    }
+    const previous: DockLightMode = this.dockLightMode;
+    this.dockLightConfirmedDuringSave = previous;
+    try {
+      await this.pref.put('dockLightMode', mode);
+      await this.pref.flush();
+      this.dockLightConfirmedDuringSave = undefined;
+    } catch (error) {
+      try {
+        this.pref.putSync('dockLightMode', previous);
+        await this.pref.flush();
+        this.dockLightConfirmedDuringSave = undefined;
+      } catch (_) {
+        throw new Error('底部栏光感保存失败，回滚尚未确认，请重试');
+      }
+      throw error as Error;
+    }
+  }
 
   get mcVersion(): string { return this.getString('mcVersion', '1.20.4'); }
   set mcVersion(v: string) { this.put('mcVersion', v); }
@@ -351,10 +587,10 @@ export class PreferenceManager {
   /**
    * JDK 版本（全局默认 Java 运行时选择）。
    *
-   * 取值：'auto'（按 MC 版本纪元自动路由，**新默认**）或具体版本（SUPPORTED_JDK_VERSIONS 之一）。
+   * 取值：'auto'（按游戏要求自动选择）或规范数字主版本，离线时也保留用户选择。
    * 历史：旧默认是 '17'。已显式存过具体版本的用户保留其值（仍当作"偏好 hint"，
    *      由 LaunchCoordinator/resolveLaunchJdk 在兼容时采用、不兼容回退纪元路由——行为同旧版）；
-   *      新用户拿到 'auto'。未知脏数据（如 '19'）才回退到 'auto'。
+   *      新用户拿到 'auto'。只有非法槽位语法才回退，不能因当前目录没有某版本就清空偏好。
    *
    * 性能：getter 在 Index.onPageShow / updateJdkReadyState 等热路径里高频调用；
    * `migratedOnce_` 标志保证 disk write 每个 Preferences 实例最多一次。
@@ -362,8 +598,8 @@ export class PreferenceManager {
   private migratedJdkVersionOnce_: boolean = false;
   get jdkVersion(): string {
     let saved = this.getString('jdkVersion', JDK_AUTO);
-    // 合法值 = 'auto' ∪ SUPPORTED_JDK_VERSIONS；其余（历史脏数据）迁移到 auto。
-    if (saved !== JDK_AUTO && SUPPORTED_JDK_VERSIONS.indexOf(saved) < 0) {
+    // 目录离线/下架不能擦除用户对未来主版本的偏好；启动时另验适配与真实安装内容。
+    if (saved !== JDK_AUTO && !isJdkSlotVersion(saved)) {
       if (!this.migratedJdkVersionOnce_) {
         hilog.warn(0x0000, TAG,
           'Migrate unknown jdkVersion %{public}s -> %{public}s',
@@ -415,10 +651,24 @@ export class PreferenceManager {
    */
   get jdkSource(): string {
     let v = this.getString('jdkSource', 'auto');
-    if (v !== 'auto' && v !== 'github' && v !== 'gitee' && v !== 'mirror') return 'auto';
+    if (v !== 'auto' && v !== 'github' && v !== 'gitee' && v !== 'mirror' && v !== 'web') return 'auto';
     return v;
   }
   set jdkSource(v: string) { this.put('jdkSource', v); }
+
+  /** JDK 独立偏好：默认稳定、自动检查开启，自有服务器必须由用户显式启用。 */
+  get jdkChannel(): string { return this.getString('jdkChannel','stable') === 'preview' ? 'preview' : 'stable'; }
+  set jdkChannel(v: string) { this.put('jdkChannel',v === 'preview' ? 'preview' : 'stable'); }
+  get jdkWebEnabled(): boolean { return this.getBool('jdkWebEnabled',false); }
+  set jdkWebEnabled(v: boolean) { this.put('jdkWebEnabled',v); }
+  get jdkAutoCheck(): boolean { return this.getBool('jdkAutoCheck',true); }
+  set jdkAutoCheck(v: boolean) { this.put('jdkAutoCheck',v); }
+  get jdkLastCheck(): number { return this.getNumber('jdkLastCheck',0); }
+  set jdkLastCheck(v: number) { this.put('jdkLastCheck',v); }
+  get jdkDeferredAt(): number { return this.getNumber('jdkDeferredAt',0); }
+  set jdkDeferredAt(v: number) { this.put('jdkDeferredAt',v); }
+  get jdkDeferredTarget(): string { return this.getString('jdkDeferredTarget',''); }
+  set jdkDeferredTarget(v: string) { this.put('jdkDeferredTarget',v); }
 
   /** 是否缓存远程元数据（项目详情 / 版本列表 TTL 缓存） */
   get cacheRemoteMeta(): boolean { return this.getBool('cacheRemoteMeta', true); }
@@ -476,6 +726,35 @@ export class PreferenceManager {
   set lastPlayedVersion(v: string) { this.put('lastPlayedVersion', v); }
 
   // ===== 检查更新（节流 + 红点持久化） =====
+
+  /** App 订阅独立于 jdkChannel；旧安装默认稳定，不沿用未知或损坏的选择。 */
+  get appUpdateChannel(): string { return this.getString('appUpdateChannel','stable') === 'preview' ? 'preview' : 'stable'; }
+  set appUpdateChannel(value: string) { this.put('appUpdateChannel',value === 'preview' ? 'preview' : 'stable'); }
+  /** 每个产品／通道拥有独立节流与推荐缓存，旧全局缓存不自动迁为稳定版事实。 */
+  private appUpdateKey(product: string, channel: string, field: string): string {
+    return 'appUpdate.' + (product === 'desktop' ? 'desktop' : 'sideload') + '.' + (channel === 'preview' ? 'preview' : 'stable') + '.' + field;
+  }
+  appUpdateLastCheck(product: string, channel: string): number { return this.getNumber(this.appUpdateKey(product,channel,'checkedAt'),0); }
+  appUpdateLatestSeen(product: string, channel: string): number { return this.getNumber(this.appUpdateKey(product,channel,'latestCode'),0); }
+  /** 目标键已绑定 tag/code/hash；从已保存 tag 恢复发行名，旧缓存无合法名字时只按 code 判断。 */
+  appUpdateLatestName(product: string, channel: string): string {
+    const tag = this.getString(this.appUpdateKey(product,channel,'target'),'').split(':')[0];
+    return tag.startsWith('v') ? tag.substring(1) : '';
+  }
+  appUpdateDeferredAt(product: string, channel: string): number { return this.getNumber(this.appUpdateKey(product,channel,'deferredAt'),0); }
+  /** 切换通道后允许立即检查；只清该通道节流，不动其它订阅与安装事务。 */
+  resetAppUpdateCheck(product: string, channel: string): void { this.put(this.appUpdateKey(product,channel,'checkedAt'),0); }
+  /** 只记录成功的可信候选。目标改变清除旧延后；新推荐较低也如实替换红点事实。 */
+  rememberAppUpdate(product: string, channel: string, code: number, target: string): void {
+    const key=this.appUpdateKey(product,channel,'target');
+    if(this.getString(key,'')!==target) this.put(this.appUpdateKey(product,channel,'deferredAt'),0);
+    this.put(key,target); this.put(this.appUpdateKey(product,channel,'latestCode'),code);
+    this.put(this.appUpdateKey(product,channel,'checkedAt'),Date.now());
+  }
+  /** 延后绑定展示时目标与通道，旧弹窗关闭不会压制后来发现的新候选。 */
+  deferAppUpdate(product: string, channel: string, target: string): void {
+    if(this.getString(this.appUpdateKey(product,channel,'target'),'')===target) this.put(this.appUpdateKey(product,channel,'deferredAt'),Date.now());
+  }
 
   /** 上次成功检查更新（自动或手动）的 wall-clock 时间戳（ms），0 = 从未。用于自动节流。 */
   get lastUpdateCheckAt(): number { return this.getNumber('lastUpdateCheckAt', 0); }

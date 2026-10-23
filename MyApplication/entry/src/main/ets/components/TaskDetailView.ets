@@ -19,6 +19,8 @@
  * ArkUI 原地更新 Progress.value，本身就平滑，无需独立组件。
  */
 
+import { AppRoundIconButton } from './AppRoundIconButton';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import {
   DownloadTaskRegistry, getDownloadTaskRegistry,
 } from 'feature_core';
@@ -27,6 +29,7 @@ import {
 } from 'feature_core';
 import { McVersionTask } from 'feature_core';
 import { ResourceFileProvider, ResourceFileEntry } from 'mods';
+import { ModpackInstallTask, ModpackFile, ModpackProblem, modpackFileKey } from 'mods';
 import { DownloadPhase, PhaseDetailModel } from 'feature_core';
 import { ThemeColors } from 'commons';
 import { AppIconName } from 'commons';
@@ -252,18 +255,22 @@ export struct TaskDetailView {
   @ObjectLink view: UnifiedTaskView
   @Prop theme: ThemeColors
   @Prop bottomSafeHeight: number = 0
+  @State private packSelectionRevision_: number = 0
 
   /** 返回任务列表。 */
   onBack: () => void = () => {}
   /** 关闭整个 sheet。 */
   onClose: () => void = () => {}
+  /** APP_UPDATE的恢复交回完整更新入口，不能从下载详情单独重启签名/安装。 */
+  onExternalRecovery: () => void = () => {}
 
   private registry_: DownloadTaskRegistry = getDownloadTaskRegistry()
 
   // ---- 适配器现取（不缓存，build() 重跑时拿最新字段）----
   private mcAdapter_(): McVersionTask | null {
     let a = this.registry_.getAdapter(this.view.id)
-    return a ? (a as object as McVersionTask) : null
+    // 展示分类不能证明执行能力；修复任务也使用 MC 配色，但没有普通安装阶段模型。
+    return a instanceof McVersionTask ? a : null
   }
 
   /** 是否为「资源安装任务」(ResourceInstallTask 适配器) —— 仅这些可调 getFileEntries。 */
@@ -273,29 +280,62 @@ export struct TaskDetailView {
         || c === TaskCategory.RESOURCE_PACK || c === TaskCategory.DATAPACK
   }
 
+  /** 从 Registry 取稳定安装对象；UI 的临时字段只负责编辑，不拥有安装服务。 */
+  private modpackAdapter_(): ModpackInstallTask | undefined {
+    if (this.view.category !== TaskCategory.MODPACK) return undefined
+    let adapter = this.registry_.getAdapter(this.view.id)
+    return adapter ? adapter as ModpackInstallTask : undefined
+  }
+
+  private packSummary_(): string {
+    let session = this.modpackAdapter_()?.getSession()
+    if (session === undefined) return '正在下载并解析清单；有可选内容时会提示选择。'
+    let bytes = 0
+    for (let file of session.plan.files) bytes += Math.max(0, file.size)
+    return 'Minecraft ' + session.plan.gameVersion + ' · ' + session.plan.loaderType + ' ' + session.plan.loaderVersion
+      + '\n内容文件约 ' + formatBytes(bytes) + '；另需基础版本、加载器和解压空间。'
+  }
+
+  private packOptionCount_(): number {
+    // revision 是外部任务对象选择改变后触发 ArkUI 重绘的显式依赖。
+    let revision = this.packSelectionRevision_
+    return revision >= 0 ? (this.modpackAdapter_()?.getSession()?.selectedOptional.length ?? 0) : 0
+  }
+
+  private packIssues_(): string[] {
+    let session = this.modpackAdapter_()?.getSession()
+    if (session === undefined) return []
+    let lines: string[] = []
+    for (let item of session.missing) {
+      lines.push(item.name + '：' + item.reason + (item.path ? '\n目标：' + item.path : '')
+        + (item.url ? '\n' + item.url : ''))
+    }
+    for (let warning of session.warnings) lines.push('提示：' + warning)
+    return lines
+  }
+
+  private confirmModpack_(): void {
+    let task = this.modpackAdapter_()
+    if (task === undefined) return
+    try {
+      task.confirmSelection()
+      this.registry_.resume(this.view.id).catch((error: Error): void => {
+        this.getUIContext().getPromptAction().showToast({ message: error.message })
+      })
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({ message: (e as Error).message })
+    }
+  }
+
+  /** 电脑依赖闭包会动态发现；只显示真实已校验项，未知总量不能显示成3/0。 */
+  private exportPreparedCount_(): string { return '已校验 ' + this.view.filesDone + ' 项' }
+
   build() {
     Column() {
-      this.DetailHeader_()
-      Scroll() {
-        Column({ space: 14 }) {
-          this.DetailHeroCard_()
-          this.DetailStatsRow_()
-          if (this.view.category === TaskCategory.MC_VERSION) {
-            this.McPhaseListPanel_()
-          } else if (this.view.category === TaskCategory.JDK) {
-            this.JdkPhaseListPanel_()
-          } else if (this.view.category === TaskCategory.MODPACK) {
-            this.ModpackInfoPanel_()
-          } else {
-            this.ResourceFilesPanel_()
-          }
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 12, bottom: 16 })
-      }
-      .layoutWeight(1)
-      .scrollBar(BarState.Auto)
-      this.DetailActionBar_()
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: this.view.title, subtitle: this.detailHeaderLabel_(), theme: this.theme, modal: false, showClose: true, surfaceColor: this.theme.bgPrimary, backLabel: '返回任务列表', closeLabel: '关闭下载管理', backId: 'task-detail-back', closeId: 'task-detail-close', onBack: (): void => { this.onBack(); }, onClose: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%')
     .height('100%')
@@ -488,6 +528,29 @@ export struct TaskDetailView {
   @Builder
   ModpackInfoPanel_() {
     Column({ space: 8 }) {
+      Text(this.packSummary_()).fontSize(13).fontColor(this.theme.textSecondary).width('100%')
+      // 名称在开始安装前的下载详情编辑，执行期只展示持久意图/实际目录，恢复不会改名。
+      Text('版本名称：' + (this.modpackAdapter_()?.getInstallName() ?? this.view.title))
+        .fontSize(13).fontColor(this.theme.textPrimary).width('100%')
+      if (this.view.requiresConfirmation) {
+        Text('安装位置：' + (this.modpackAdapter_()?.getInstallRoot() ?? ''))
+          .fontSize(12).fontColor(this.theme.textSecondary).width('100%')
+        Text('可选内容 · 已选 ' + this.packOptionCount_() + ' 项')
+          .fontSize(13).fontWeight(600).fontColor(this.theme.textPrimary)
+        ForEach(this.modpackAdapter_()?.optionalFiles() ?? [], (file: ModpackFile) => {
+          Row({ space: 8 }) {
+            Checkbox({ name: modpackFileKey(file) })
+              .select(this.modpackAdapter_()?.optionalSelected(file) ?? false)
+              .onChange((selected: boolean): void => {
+                this.modpackAdapter_()?.setOptionalSelected(file, selected); this.packSelectionRevision_++
+              })
+            Text(file.fileNameHint ?? file.path).fontSize(13).layoutWeight(1).fontColor(this.theme.textPrimary)
+            Text(formatBytes(file.size)).fontSize(11).fontColor(this.theme.textSecondary)
+          }.width('100%').constraintSize({ minHeight: 44 })
+        }, (file: ModpackFile): string => modpackFileKey(file))
+        Text('未选择的可选文件不会下载；必需内容不可用时会保留缺失清单。')
+          .fontSize(12).fontColor(this.theme.textSecondary)
+      }
       Row() {
         Text('·  整合包安装')
           .fontSize(13)
@@ -520,7 +583,14 @@ export struct TaskDetailView {
           .width('100%')
           .margin({ top: 4 })
       }
-      Text('整合包会创建一个独立新版本（下载基础版本+加载器、批量下模组、铺覆盖文件）。完成后可在版本列表查看。')
+      ForEach(this.packIssues_(), (line: string) => {
+        Text(line).fontSize(12).fontColor(this.theme.warning).width('100%')
+      })
+      if (this.view.state === UnifiedTaskState.DONE && this.view.canRetry) {
+        Button('仅补齐原实例缺失内容').height(44).width('100%')
+          .onClick(() => { this.registry_.retry(this.view.id) })
+      }
+      Text('整合包使用独立实例。暂停或保留取消后可继续；补齐仅处理缺失内容，保留已有配置与存档。')
         .fontSize(11)
         .fontColor(this.theme.textHint)
         .width('100%')
@@ -561,45 +631,7 @@ export struct TaskDetailView {
   //  Header
   // ============================================================
 
-  @Builder
-  DetailHeader_() {
-    Row({ space: 10 }) {
-      Stack() {
-        AppIcon({ name: AppIconName.Back, iconSize: 18, color: this.theme.textPrimary })
-      }
-      .width(40).height(40)
-      .borderRadius(20)
-      .backgroundColor(this.theme.bgCard)
-      .onClick(() => { this.onBack() })
 
-      Column({ space: 1 }) {
-        Text(this.detailHeaderLabel_())
-          .fontSize(11)
-          .fontWeight(500)
-          .fontColor(this.detailHeaderLabelColor_())
-          .maxLines(1)
-        Text(this.view.title)
-          .fontSize(18)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Stack() {
-        AppIcon({ name: AppIconName.More, iconSize: 18, color: this.theme.textSecondary })
-      }
-      .width(40).height(40)
-      .borderRadius(20)
-      .backgroundColor(this.theme.bgCard)
-      .onClick(() => { this.onClose() })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 10 })
-    .alignItems(VerticalAlign.Center)
-  }
 
   private detailHeaderLabel_(): string {
     let v = this.view
@@ -685,6 +717,15 @@ export struct TaskDetailView {
 
   private heroTitleText_(v: UnifiedTaskView): string {
     if (this.isHeroError_(v)) return v.title
+    // 此卡只承担电脑依赖准备，不能套用安装器“安装完成”或宣称整包已保存。
+    if (v.category === TaskCategory.GAME_EXPORT) {
+      return (v.state === UnifiedTaskState.DONE ? '电脑文件准备完成' : stateLabel(v.state)) + ' · ' + v.title
+    }
+    // 更新适配器只承担下载/校验，不能沿用其他安装器的“安装完成”措辞。
+    // 系统覆盖安装的成功以独立更新活动的新进程确认结论为准。
+    if (v.category === TaskCategory.APP_UPDATE) {
+      return (v.state === UnifiedTaskState.DONE ? '下载并校验完成' : stateLabel(v.state)) + ' · ' + v.title
+    }
     if (v.state === UnifiedTaskState.DONE) return '安装完成 ' + v.title
     if (v.state === UnifiedTaskState.PAUSED) return '已暂停 ' + v.title
     if (v.state === UnifiedTaskState.WAITING) return '排队中 ' + v.title
@@ -799,14 +840,27 @@ export struct TaskDetailView {
   @Builder
   DetailActionBar_() {
     Row({ space: 12 }) {
-      if (this.view.state === UnifiedTaskState.DONE) {
+      if (this.view.requiresConfirmation) {
+        this.PrimaryActionBtn_(AppIconName.ArrowDown, '安装所选内容',
+          this.theme.textOnPrimary, this.theme.primary, () => { this.confirmModpack_() })
+        this.SecondaryCircleBtn_(AppIconName.Close, this.theme.error,
+          this.theme.errorBg, () => { this.registry_.cancel(this.view.id, false) })
+      } else if (this.view.state === UnifiedTaskState.DONE) {
         this.PrimaryActionBtn_(AppIconName.Check, '完成',
           this.theme.textOnPrimary, this.theme.success,
           () => this.onBack())
       } else if (this.isHeroError_(this.view)) {
-        this.PrimaryActionBtn_(AppIconName.Refresh, '重试',
-          this.theme.textOnPrimary, this.theme.primary,
-          () => { this.registry_.retry(this.view.id) })
+        if (this.view.canRecoverExternally) {
+          this.PrimaryActionBtn_(AppIconName.Refresh, this.view.category === TaskCategory.GAME_EXPORT ? '重新检查导出' : '重新检查应用更新',
+            this.theme.textOnPrimary, this.theme.primary, () => { this.onExternalRecovery() })
+        } else if (this.view.canRetry) {
+          this.PrimaryActionBtn_(AppIconName.Refresh, '重试',
+            this.theme.textOnPrimary, this.theme.primary,
+            () => { this.registry_.retry(this.view.id) })
+        } else {
+          this.PrimaryActionBtn_(AppIconName.Back, '返回列表',
+            this.theme.textSecondary, this.theme.bgCard, () => this.onBack())
+        }
         this.SecondaryCircleBtn_(AppIconName.Trash, this.theme.textHint,
           this.theme.bgCard, () => { this.registry_.remove(this.view.id) })
       } else if (this.view.canResume) {
@@ -857,12 +911,49 @@ export struct TaskDetailView {
   @Builder
   SecondaryCircleBtn_(icon: AppIconName, fgColor: ResourceColor,
                       bgColor: ResourceColor, handler: () => void) {
-    Stack() {
-      AppIcon({ name: icon, iconSize: 18, color: fgColor })
-    }
-    .width(46).height(46)
-    .borderRadius(23)
-    .backgroundColor(bgColor)
-    .onClick(handler)
+    // 页脚取消/暂停/移除保留原handler与危险色，只统一普通按钮和明确的读屏语义。
+    AppRoundIconButton({ name: icon, theme: this.theme, color: fgColor, containerBg: bgColor,
+      visualDiameter: 46, accessibilityLabel: icon === AppIconName.Close ? '取消任务' :
+        icon === AppIconName.Pause ? '暂停任务' : '移除任务记录',
+      actionEnabled: icon === AppIconName.Close ? (this.view.requiresConfirmation || this.view.canResume || this.view.canCancel) :
+        icon === AppIconName.Pause ? (this.view.canPause && isActiveState(this.view.state)) : this.isHeroError_(this.view),
+      controlId: 'task-detail-action-' + icon, onAction: handler })
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+
+      Scroll() {
+        Column({ space: 14 }) {
+          this.DetailHeroCard_()
+          this.DetailStatsRow_()
+          if (this.view.category === TaskCategory.MC_VERSION) {
+            this.McPhaseListPanel_()
+          } else if (this.view.category === TaskCategory.JDK) {
+            this.JdkPhaseListPanel_()
+          } else if (this.view.category === TaskCategory.MODPACK) {
+            this.ModpackInfoPanel_()
+          } else if (this.view.category === TaskCategory.GAME_EXPORT) {
+            // 没有普通资源安装器的文件模型；显示真实当前文件/阶段和无分母的校验计数。
+            Text(this.view.currentLabel || '等待准备电脑文件').fontSize(14).fontColor(this.theme.textPrimary)
+              .width('100%').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.exportPreparedCount_()).fontSize(13).fontColor(this.theme.textSecondary).width('100%')
+          } else if (this.view.category === TaskCategory.APP_UPDATE) {
+            // 更新下载没有 ResourceFileProvider，不能强转普通模组适配器。
+            Text(this.view.currentLabel || '等待安装包下载').fontSize(14).fontColor(this.theme.textPrimary).width('100%')
+            Text('此任务仅负责下载和校验安装包。授权、签名与安装结果保存在关联的应用更新活动中；失败后可从检查更新重新开始。')
+              .fontSize(13).lineHeight(21).fontColor(this.theme.textSecondary).width('100%')
+          } else {
+            this.ResourceFilesPanel_()
+          }
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 12, bottom: 16 })
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Auto)
+      this.DetailActionBar_()
+
+      }
 }

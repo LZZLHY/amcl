@@ -1,19 +1,11 @@
 /**
- * net_thread.cpp — 单分段下载的 curl 工作线程
+ * net_thread.cpp — 一个分段的worker执行与两执行器共用的正文回调。
  *
- * 运行流程：
- *   loop over sources:
- *     state = Connecting
- *     easy = curl_easy_init + setopt(URL, Range, callbacks, timeouts, ca-bundle)
- *     state = Downloading (由 write_callback 第一次触发)
- *     rc = curl_easy_perform  (阻塞)
- *     curl_easy_cleanup
- *     if rc OK && http 2xx: state=Finished，return
- *     else: source.recordFailure(ex) + 重试下一个源（done_ 重置为 0）
- *   全部源失败 → state=Failed
+ * worker独占/复用它所在线程的easy；每个真实HTTP hop先取得Engine主机租约，再初始化
+ * 请求时钟、响应及速度锚点。来源恢复保留有效前缀，仅明确错位/坏区间时重置内容。
+ * pwrite写入NetFile拥有的staging fd；完整校验与最终发布仍由NetFile负责。
  *
- * pwrite：write_callback 内部对 task_->fd() 做 pwrite(buf, n, start_ + done_)。
- *         POSIX pwrite 保证原子性，多线程并发写同一 fd 的不同 offset 是安全的。
+ * UI终态与transport/completion两阶段收敛继续分开，不能由租约释放替代owner屏障。
  */
 #include "net_thread.h"
 
@@ -34,6 +26,8 @@
 #include "config.h"
 #include "engine.h"
 #include "http_range.h"
+#include "host_admission.h"
+#include "transport_policy.h"
 #include "net_file.h"
 #include "relay.h"
 
@@ -52,14 +46,7 @@ namespace {
  * 正是「实际要连的那台机器」（github.moeyy.xyz），这才是被限流的主体。
  */
 std::string extractHostForSlot(const std::string& url) {
-    size_t s = url.find("://");
-    if (s == std::string::npos) return {};
-    s += 3;
-    size_t e = url.find('/', s);
-    size_t p = url.find(':', s);
-    if (p != std::string::npos && (e == std::string::npos || p < e)) e = p;
-    if (e == std::string::npos) return url.substr(s);
-    return url.substr(s, e - s);
+    return transportHost(url);
 }
 
 int64_t nowMs() {
@@ -122,8 +109,10 @@ int countUsableSources(const NetFile* file) {
     int usable = 0;
     for (const auto& s : file->sources()) {
         if (!s) continue;
-        if (s->checksum_bad.load(std::memory_order_relaxed)) continue;
-        if (s->is_failed.load(std::memory_order_relaxed)) continue;
+        if (!s->isAvailable(nowMs())) continue;
+        const auto host = transportHost(s->url);
+        if (DownloadEngine::instance().isBadHost(host) ||
+            DownloadEngine::instance().hostRateLimitUntilMs(host) > nowMs()) continue;
         ++usable;
     }
     return usable;
@@ -166,6 +155,7 @@ NetThread::NetThread(std::shared_ptr<NetFile> task,
     : task_keepalive_(std::move(task)), task_(task_keepalive_.get()),
       start_(start), initial_done_(done), end_(end) {
     done_.store(done, std::memory_order_relaxed);
+    content_unknown_ = done > 0;
 }
 
 NetThread::NetThread(NetFile* task, int64_t start, int64_t end, int64_t done)
@@ -182,6 +172,16 @@ void NetThread::markExecutionSettled() {
                settled, epoch, std::memory_order_acq_rel, std::memory_order_acquire)) {}
     if (settled >= epoch) return;
 
+    // report可能分配完成集合或进入业务回调并抛出。transport已结算后，后续再次
+    // mark会幂等返回，因此必须在当前栈无条件发布捕获epoch的completion屏障；
+    // 外层原owner负责异常后的abort，不在OOM收尾中再分配另一份错误/任务。
+    const auto publish_completion = [this, epoch](NetThread*) noexcept {
+        uint64_t reported = completion_reported_epoch_.load(std::memory_order_acquire);
+        while (reported < epoch && !completion_reported_epoch_.compare_exchange_weak(
+            reported, epoch, std::memory_order_release, std::memory_order_acquire)) {}
+    };
+    std::unique_ptr<NetThread, decltype(publish_completion)> completion_guard(this, publish_completion);
+
     // 第一阶段：curl callback/worker 已退出，先移走本轮 keepalive。report 期间
     // completion_reported_epoch 仍落后，因此 Engine::purgeTask 不能销毁 LoaderDownload。
     // report 可能同步 prepare 新 epoch；下面只发布捕获到的旧 epoch，绝不污染新轮次。
@@ -192,10 +192,6 @@ void NetThread::markExecutionSettled() {
     }
     if (owner) owner->reportThreadFinished(this);
 
-    uint64_t reported = completion_reported_epoch_.load(std::memory_order_acquire);
-    while (reported < epoch &&
-           !completion_reported_epoch_.compare_exchange_weak(
-               reported, epoch, std::memory_order_release, std::memory_order_acquire)) {}
 }
 
 bool NetThread::prepareForRetryExecution() {
@@ -222,6 +218,7 @@ bool NetThread::prepareForRetryExecution() {
     retry_count_.store(0, std::memory_order_release);
     retry_delay_ms_.store(0, std::memory_order_release);
     retry_deadline_ms_.store(0, std::memory_order_release);
+    admission_deadline_ms_.store(0, std::memory_order_release);
     retry_not_before_ms_.store(0, std::memory_order_release);
     const int64_t current_done = done_.load(std::memory_order_acquire);
     speed_.last_ts_ms.store(0, std::memory_order_release);
@@ -241,6 +238,8 @@ bool NetThread::tryBeginAttempt(int max_attempts) {
     const int64_t now = nowMs();
     int64_t deadline = retry_deadline_ms_.load(std::memory_order_acquire);
     if (deadline == 0) {
+        const int64_t admission_deadline = admission_deadline_ms_.load(std::memory_order_acquire);
+        if (admission_deadline > 0 && now >= admission_deadline) return false;
         int64_t expected = 0;
         const int64_t proposed = now + kRetryLifetimeMs;
         if (retry_deadline_ms_.compare_exchange_strong(expected, proposed,
@@ -262,6 +261,73 @@ bool NetThread::tryBeginAttempt(int max_attempts) {
         }
     }
     return false;
+}
+
+int64_t NetThread::schedulingDeadlineMs() {
+    const int64_t active_deadline = retryDeadlineMs();
+    if (active_deadline > 0) return active_deadline;
+    int64_t deadline = admission_deadline_ms_.load(std::memory_order_acquire);
+    if (deadline == 0) {
+        const int64_t proposed = transportDeadlineAfter(nowMs(), 5 * 60 * 1000LL);
+        if (admission_deadline_ms_.compare_exchange_strong(deadline, proposed,
+                std::memory_order_acq_rel, std::memory_order_acquire)) deadline = proposed;
+    }
+    return deadline;
+}
+
+void NetThread::resetResponseHeaders() {
+    response_retry_after_ms_.store(0, std::memory_order_release);
+    response_content_range_seen_.store(false, std::memory_order_release);
+    response_content_range_valid_.store(false, std::memory_order_release);
+    response_content_range_start_.store(-1, std::memory_order_release);
+    response_content_range_end_.store(-1, std::memory_order_release);
+    response_content_range_total_.store(-1, std::memory_order_release);
+    hdr_status_code_.store(0, std::memory_order_release);
+}
+
+void NetThread::beginTransportAttempt(HostAdmissionLease* admission) {
+    // 保留断点 done，速度只计算本次新增字节。复用连接 connect_time=0 也是合法传输，
+    // 不再用进程开机时间作为第一条速度采样的分母。
+    const int64_t now = nowMs();
+    attempt_admission_ = admission;
+    attempt_initial_done_ = done();
+    attempt_health_reported_ = false;
+    transfer_start_ms_.store(now, std::memory_order_release);
+    last_data_receive_ms_.store(0, std::memory_order_release);
+    speed_.last_ts_ms.store(now, std::memory_order_release);
+    speed_.last_done.store(done(), std::memory_order_release);
+    speed_.last_speed_bps.store(0, std::memory_order_release);
+    family_retry_pending_.store(false, std::memory_order_release);
+    clearWriteErrno();
+    resetResponseHeaders();
+}
+
+bool NetThread::prepareContentSource(const NetSourcePtr& source) {
+    if (!source) {
+        std::lock_guard<std::mutex> boundary_lk(write_boundary_mu_);
+        attempt_content_source_.reset();
+        return false;
+    }
+    bool rewind = false;
+    {
+        std::lock_guard<std::mutex> boundary_lk(write_boundary_mu_);
+        rewind = task_->requiresSingleSourceRecheck() && done() > 0 &&
+            (content_unknown_ || content_mixed_ || !content_source_ ||
+             content_source_.get() != source.get() || source->no_range_support.load(std::memory_order_acquire));
+    }
+    // 此入口只在旧 HTTP 已退出、下次真实 HTTP 准入后调用；不与正文回调并发。
+    // resetDone 自身取得相同边界锁，不能在上面的锁内递归调用。
+    if (rewind) resetDone();
+    {
+        std::lock_guard<std::mutex> boundary_lk(write_boundary_mu_);
+        attempt_content_source_ = source;
+    }
+    return rewind;
+}
+
+NetSourcePtr NetThread::provenSingleContentSource() const {
+    std::lock_guard<std::mutex> boundary_lk(write_boundary_mu_);
+    return content_unknown_ || content_mixed_ ? nullptr : content_source_;
 }
 
 bool NetThread::addRetryDelayMs(int64_t delay_ms, int64_t total_budget_ms) {
@@ -303,7 +369,8 @@ DownloadExceptionPtr NetThread::writeFailure(const std::string& url_context) con
     } else if (e == EIO) {
         kind = ErrorKind::StorageIoError;
     }
-    auto ex = makeException(kind, "pwrite failed errno=" + std::to_string(e));
+    auto ex = makeException(kind, e == EFBIG ? "download staging exceeds supported 1 TiB byte limit"
+        : "pwrite failed errno=" + std::to_string(e));
     ex->native_code = e;
     ex->url_context = url_context;
     return ex;
@@ -391,6 +458,10 @@ size_t NetThread::onWrite(char* ptr, size_t sz, size_t nmemb, void* userdata) {
     if (sz != 0 && nmemb > std::numeric_limits<size_t>::max() / sz) return 0;
     const size_t requested = sz * nmemb;
     if (requested == 0) return 0;
+    // 供应方预算按网络正文累计，Range回退/本地done重置不能重置权限额度。
+    if (!self->task_->consumeAuthorizedBytes(requested)) {
+        self->setError(self->task_->authorizationFailure()); return 0;
+    }
 
     // ⚠️ 2026-07-31：丢弃 3xx 重定向响应体（如 "302 Found"/"307" 的 HTML body）。
     //   手动 follow（CURLOPT_FOLLOWLOCATION=0）时它不属于目标文件，写入会污染 done_/SHA1，
@@ -436,6 +507,13 @@ size_t NetThread::onWrite(char* ptr, size_t sz, size_t nmemb, void* userdata) {
         return 0;
     }
     off_t offset = static_cast<off_t>(self->start_ + current_done);
+    // HEAD缺失或无授权的未知大小GET也必须有全局硬界。先拒绝再pwrite，不能让
+    // 不可信正文无限延展staging；沿原本地失败出口停止，不靠换源绕过支持上限。
+    if (offset < 0 || offset > kMaxDownloadFileBytes ||
+        n > static_cast<uint64_t>(kMaxDownloadFileBytes - offset)) {
+        self->write_errno_.store(EFBIG, std::memory_order_release);
+        return 0;
+    }
 
     size_t written = 0;
     while (written < n) {
@@ -457,6 +535,15 @@ size_t NetThread::onWrite(char* ptr, size_t sz, size_t nmemb, void* userdata) {
     }
 
     self->done_.fetch_add(written, std::memory_order_acq_rel);
+    if (written > 0) {
+        if (!self->attempt_content_source_) self->content_unknown_ = true;
+        else if (!self->content_source_) self->content_source_ = self->attempt_content_source_;
+        else if (self->content_source_.get() != self->attempt_content_source_.get()) self->content_mixed_ = true;
+    }
+    if (!self->attempt_health_reported_ && self->done() - self->attempt_initial_done_ >= 1024 * 1024) {
+        self->attempt_health_reported_ = true;
+        if (self->attempt_admission_) self->attempt_admission_->noteHealthy();
+    }
 
     // v4.6: 增量 SHA1 — 下载同时计算，完成后直接取结果，零额外 I/O
     if (written > 0) {
@@ -498,7 +585,11 @@ size_t NetThread::onHeader(char* ptr, size_t sz, size_t nmemb, void* userdata) {
         const void* sp = memchr(ptr, ' ', n);
         if (sp != nullptr) {
             long code = std::strtol(static_cast<const char*>(sp) + 1, nullptr, 10);
-            if (code > 0) self->hdr_status_code_.store(code, std::memory_order_release);
+            if (code > 0) {
+                self->resetResponseHeaders();
+                self->hdr_status_code_.store(code, std::memory_order_release);
+                self->task_->noteAuthorizedHeaders(code);
+            }
         }
         return n;
     }
@@ -524,17 +615,7 @@ size_t NetThread::onHeader(char* ptr, size_t sz, size_t nmemb, void* userdata) {
     size_t last = value.find_last_not_of(" \t\r\n");
     if (first == std::string::npos || last < first) return n;
     value = value.substr(first, last - first + 1);
-    int64_t delay_ms = 0;
-    char* endp = nullptr;
-    errno = 0;
-    long long seconds = std::strtoll(value.c_str(), &endp, 10);
-    if (errno == 0 && endp && *endp == '\0' && seconds >= 0) {
-        delay_ms = seconds > 86400 ? 86400000 : seconds * 1000;
-    } else {
-        time_t when = curl_getdate(value.c_str(), nullptr);
-        time_t now = std::time(nullptr);
-        if (when > now) delay_ms = std::min<int64_t>(86400000, static_cast<int64_t>(when - now) * 1000);
-    }
+    const int64_t delay_ms = parseTransportRetryAfter(value);
     if (delay_ms > 0) self->response_retry_after_ms_.store(delay_ms, std::memory_order_release);
     return n;
 }
@@ -591,7 +672,6 @@ int NetThread::onProgress(void* userdata, int64_t /*dltotal*/, int64_t /*dlnow*/
         static constexpr int64_t kZombieMinRunMs       = 15 * 1000;
         static constexpr int64_t kZombieSpeedFloorBps  = 32 * 1024;
         static constexpr int64_t kZombieMinRemainBytes = 512 * 1024;
-        static constexpr int64_t kZombieAggregateRatio = 6;
         if (curr_done > 0 && bps >= 0 && bps < kZombieSpeedFloorBps) {
             const int64_t seg_end = self->end_.load(std::memory_order_acquire);
             const int64_t started = self->transfer_start_ms_.load(std::memory_order_relaxed);
@@ -602,7 +682,9 @@ int NetThread::onProgress(void* userdata, int64_t /*dltotal*/, int64_t /*dlnow*/
                 self->state_.load(std::memory_order_relaxed) == NetState::Downloading &&
                 self->task_ != nullptr && self->task_->activeSegmentCount() >= 2) {
                 const int64_t file_bps = self->task_->sumRecentSpeedBps();
-                if (bps * kZombieAggregateRatio < file_bps) {
+                // 聚合速度随分段数增长；直接与 sum 比较会把 16 条同样慢的连接全部
+                // 当成“明显落后”。只与其余活跃段的平均速度比较，整条链路慢时不互杀。
+                if (slowerThanTransportPeers(bps, file_bps, self->task_->activeSegmentCount())) {
                     AMCL_LOG_W(LOG_TAG,
                         "zombie segment preempted: %{public}lldB/s (file %{public}lldB/s) "
                         "for %{public}lldms, remain=%{public}lldB seg=[%{public}lld-%{public}lld], "
@@ -658,24 +740,8 @@ int NetThread::onProgress(void* userdata, int64_t /*dltotal*/, int64_t /*dlnow*/
 
 DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
     curl_easy_reset(easy);
-    clearWriteErrno();
-    // 每次尝试都重置 stall 看门狗基线：首字节到达前用它计时，避免"连上不吐字节"的连接
-    // 永远挂住（见 progress_callback 里的 baseline 计算）。
-    transfer_start_ms_.store(nowMs(), std::memory_order_relaxed);
-    last_data_receive_ms_.store(0, std::memory_order_relaxed);
-    // 每次尝试独立判定"是否该换地址族再试"，不能继承上一次的结论。
+    admission_deferred_ = false;
     family_retry_pending_.store(false, std::memory_order_release);
-    const auto resetResponseHeaders = [this]() {
-        response_retry_after_ms_.store(0, std::memory_order_release);
-        response_content_range_seen_.store(false, std::memory_order_release);
-        response_content_range_valid_.store(false, std::memory_order_release);
-        response_content_range_start_.store(-1, std::memory_order_release);
-        response_content_range_end_.store(-1, std::memory_order_release);
-        response_content_range_total_.store(-1, std::memory_order_release);
-        // 每跳（含首次）都清零本响应状态码；onHeader 收到状态行后再填入。这样 onWrite
-        // 对 3xx 的丢弃判定只反映"当前这一跳"，重定向后的最终 200/206 能正常写入。
-        hdr_status_code_.store(0, std::memory_order_release);
-    };
     resetResponseHeaders();
 
     // v4.3: 手动处理 302 重定向。不让 curl 自动 follow，而是在 follow 前
@@ -691,104 +757,35 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
     // 也就是自动回退直连 —— 加速只做增强，绝不降低可用性。
     bool via_relay = false;
     {
-        std::string rewritten = relayRewriteUrl(actual_url);
+        std::string rewritten = task_->bearerToken().empty() ? relayRewriteUrl(actual_url) : "";
         if (!rewritten.empty()) {
             actual_url = rewritten;
             via_relay = true;
         }
     }
     curl_easy_setopt(easy, CURLOPT_URL, actual_url.c_str());
+    // 短时令牌不在 URL 内，不经过加速网关；每次 curl_easy_reset 后只为原授权节点设置。
+    if (!task_->bearerToken().empty()) {
+        // 一次权限不可交给认证协商自动重发GET；也不复用可能已被服务端关闭的旧连接。
+        curl_easy_setopt(easy, CURLOPT_FRESH_CONNECT, 1L);
+        curl_easy_setopt(easy, CURLOPT_FORBID_REUSE, 1L);
+    }
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);  // 不自动 follow
     curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);        // 多线程必须
-    // v4.3: 共享 DNS 缓存 + SSL session（减少 TLS 握手，assets 3000+ 文件请求同域名）
+    // 共享 DNS 缓存；SSL session 未在 Engine 注册共享，不能宣称其已被复用。
     CURLSH* sh = DownloadEngine::instance().curlShare();
     if (sh) {
         curl_easy_setopt(easy, CURLOPT_SHARE, sh);
     }
-    // v4.3: 超时策略
-    int64_t file_sz = task_->fileSize();
-    bool is_small = (file_sz > 0 && file_sz < 1024 * 1024);
-    // GitHub 代理被判定为多线程不友好时，NetFile 仍保留 max_connections>0，
-    // 但实际段是 [0, EOF) 的单段 full GET。它不能继续套用“多 Range 慢启动”专用的
-    // 4KB/s×30s 宽容策略，否则真机上 5KB/s 的劣质镜像会占位近一分钟。
-    const bool is_single_full_get =
-        start_ == 0 && end_.load(std::memory_order_acquire) < start_;
-    // ⚠️ 2026-07-30 修复「加载器安装器下载 3.6MB 花 184 秒」：
-    //   单段全量 GET 过去**固定** 16KB/s×15s 快速淘汰。那条策略的前提是"还有别的源可换"
-    //   （原始场景：一堆 GitHub 代理里有一个 5KB/s 的劣质节点，掐掉换下一个稳赚）。
-    //   但只剩一个可用源时，掐断不会让速度变快，只会白付一次 TTFB：
-    //     真机 hdc 2026-07-30 20:55:45~20:58:45，NeoForge installer（BMCLAPI 无此 beta →
-    //     仅 maven.neoforged.net 可用）稳定 8~24KB/s、全程没有一次断流，却被 16KB/s
-    //     判定连掐 4 次（"Operation too slow. Less than 16384 bytes/sec transferred the
-    //     last 15 seconds"），每次重连再付 1.6~5.4s TTFB，3.60MB 走了 184.1s。
-    //   PCL2 在同样情形下**完全不掐**（Modules/Base/ModNet.vb:1102-1105）：
-    //     If Th.LastReceiveTime > 0 AndAlso DeltaTime > 5000 AndAlso DeltaTime > RealDataCount
-    //        AndAlso Th.Source.SingleThread Is Nothing Then  '单线程下载豁免
-    //   —— 阈值约 1KB/s、判据是"单个数据包间隔 > 5s"，且单线程模式整条豁免。
-    //   这里取同样语义：只有**存在备选源**时才保留 16KB/s 快淘汰；只剩一个源就退回
-    //   1KB/s 地板，真死连接由 onProgress 的 stall 看门狗（20s 一个字节都没有）兜住。
-    const bool has_alternate_source = countUsableSources(task_) > 1;
-    const long low_speed_floor_bps =
-        (is_single_full_get && has_alternate_source) ? 16L * 1024L : 1024L;
-    // 连接超时。⚠️ 2026-07-31：6s→12s（真机 cdn-alt.modrinth.com 实测数据驱动）。
-    //   劣质跨境路由（模组真机：cdn-alt 解析到 203.10.96.211，RTT 395ms + 丢包）上，
-    //   TCP+TLS 握手需多次重传，connect_ms 实测在 0~5387ms 剧烈波动。旧的 6s 上限把
-    //   "5~6s 才能建立"的连接在门口掐死（日志现象：rc=28 "SSL connection timeout"、
-    //   done=0、addBadHost cdn-alt fail N/12），5 段并发握手竞争进一步放大失败率。
-    //   放宽到 12s 让这类慢连接得以建立（openssl 无连接超时时同一源能下）。代价——死镜像
-    //   多等几秒——由 addBadHost 主机熔断（普通 3 次 / 受保护 12 次）兜底；且 GitHub 代理/
-    //   BMCLAPI 已被 isMultiThreadUnfriendlyHost 强制单段，放宽只影响那一条连接。
-    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, is_small ? 8L : 12L);
-    curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, low_speed_floor_bps);
-    curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, is_small ? 10L : 15L);
-    if (is_small) {
-        curl_easy_setopt(easy, CURLOPT_TIMEOUT, 20L);  // 小文件总超时 20s（5s连接+15s传输足够）
-    } else {
-        curl_easy_setopt(easy, CURLOPT_TIMEOUT, 0L);   // 大文件不设总超时
-    }
-    // v7.5：真正的高并发 Range 路径低速看门狗放宽到 4KB/s×30s，避免高 TTFB
-    // 让短分段反复 thrash；单段 full GET 则保留上面的 16KB/s×15s 快速淘汰策略。
-    if (task_->isHighParallel() && !is_single_full_get) {
-        curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 4096L);   // 4KB/s
-        curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 30L);      // 30s
-    }
-    curl_easy_setopt(easy, CURLOPT_FAILONERROR, 1L);         // HTTP 4xx/5xx 返回错误
-    // v6.2：高吞吐调优。设备实测——平板浏览器单连接对 cdn.modrinth.com 可达 5MB/s，
-    // 但本引擎仅 ~160KB/s/连接。根因是 TCP 接收窗口没涨起来：① 之前每段强制全新连接
-    //（FRESH_CONNECT），256KB 小段还没走完 TCP 慢启动就结束，窗口永远小→已去掉，改回连接复用，
-    // 让长连接的窗口在多段之间持续 ramp；② 默认 16KB 接收缓冲太小，app 排空慢→内核不放大窗口，
-    // 改大到 512KB；③ 显式放大 SO_RCVBUF（见 NetThread::sockoptCb），覆盖高 RTT(中国→Cloudflare)
-    // 的带宽时延积。
-    //
-    // ⚠️ 2026-07-30：判据从「高并发模式（模组/JDK）」改为「高并发模式**或**大文件」。
-    //
-    //   这套调优在 1000182 就实测有效，但一直被 `isHighParallel()` 门控住，于是 MC 原版的
-    //   client.jar / 大 library **从来没享受到**，07-29 把 isHighParallel 收窄成
-    //   `max_connections > piece_limit` 之后连 client 的 maxConnections=4 也进不去。
-    //
-    //   决定性对照（2026-07-30，真机 hdc，同一设备同一网络同一源，零 AMCL 代码）：
-    //     设备 shell 裸 `openssl s_client` 单连接 GET piston-data.mojang.com 的 client.jar
-    //       → 39,193,950 bytes / 27.8s = **1378 KB/s**
-    //     同一次安装里我们引擎对同一 URL 的 `perform PERF`
-    //       → 单连接平均 **487 KB/s**（区间 92~1241）
-    //   即我们的单连接吞吐只有裸 HTTPS 的 ~35%。两处差异正是这里被跳过的三项 + 下面的
-    //   HTTP 版本：裸 openssl 是纯 HTTP/1.1 + 内核自适应窗口；我们是 h2（NONE 时 libcurl
-    //   默认协商 h2）+ 16KB 接收缓冲，per-stream 流控窗口固定 64KB → 64KB/RTT 天花板。
-    //
-    //   为什么用**文件大小**而不是继续用并发模式做判据：这三项的收益来自"让单条 TCP 连接
-    //   的窗口 ramp 到 BDP"，只有传输时间足够长才 ramp 得起来；而代价（每 socket 申请 4MB
-    //   SO_RCVBUF）在海量小文件下会被放大 64 倍。assets（3000+ 个、多数 <1MB）与多数
-    //   library 保持原路径不变，行为零改动；client.jar / 大 library / JDK / 模组进新路径。
-    static constexpr int64_t kThroughputTuningMinBytes = 4 * 1024 * 1024;
-    const bool tune_throughput =
-        task_->isHighParallel() || (file_sz >= kThroughputTuningMinBytes);
-    if (tune_throughput) {
-        curl_easy_setopt(easy, CURLOPT_BUFFERSIZE, 512L * 1024L);
-        curl_easy_setopt(easy, CURLOPT_TCP_NODELAY, 1L);
-        // v7：显式放大 socket 接收缓冲，强制内核用大 TCP 窗口（修复单连接卡在 ~21KB/s 的
-        // 小窗口问题，见 sockoptEnlargeRcvbuf 注释）。
+    // 把旧默认策略投影为一次请求 profile，首次与每个重定向 hop 使用完全同一份值。
+    // 这里仅抽取既有数值：不改变 worker/multi 分流、线程数或 maxConnections 的含义。
+    const bool is_single_full_get = start_ == 0 && end_.load(std::memory_order_acquire) < start_;
+    const auto profile = workerRequestProfile(task_->fileSize(), task_->isHighParallel(),
+                                             is_single_full_get, countUsableSources(task_) > 1);
+    applyTransportProfile(easy, profile);
+    if (profile.enlarge_socket_buffer)
         curl_easy_setopt(easy, CURLOPT_SOCKOPTFUNCTION, sockoptEnlargeRcvbuf);
-    }
+    curl_easy_setopt(easy, CURLOPT_FAILONERROR, 1L);
     // 1. server 若对 Range 请求返回压缩，Content-Length 是压缩后大小，
     //    curl 解压后实际字节和 Range 不一致，pwrite 位置会错乱
     // 2. MC 下载的 .jar 本身就是压缩归档，二次 gzip 几乎无收益
@@ -820,7 +817,7 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         requested_end = request_end >= requested_offset ? request_end : -1;
         std::string range = buildRangeHeader(start_, request_end, current_done);
         range_was_requested = !range.empty();
-        if (range_was_requested) curl_easy_setopt(easy, CURLOPT_RANGE, range.c_str());
+        curl_easy_setopt(easy, CURLOPT_RANGE, range_was_requested ? range.c_str() : nullptr);
     };
     applyCurrentRange();
 
@@ -831,18 +828,6 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
     curl_easy_setopt(easy, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(easy, CURLOPT_XFERINFOFUNCTION, &NetThread::onProgress);
     curl_easy_setopt(easy, CURLOPT_XFERINFODATA, this);
-
-    // 高吞吐路径固定 CURL_HTTP_VERSION_1_1：实测 h2 的 per-stream 流控窗口固定 64KB 反而
-    // 限速（见 CHANGELOG 1000182），且独立 TCP 连接更能叠加吞吐。
-    // 注：曾试用 CURL_HTTP_VERSION_2TLS 但因上述流控窗口问题回退，此处不再启用 h2。
-    //
-    // ⚠️ 2026-07-30：与上面的 tune_throughput 同一判据（高并发**或** >=4MiB）。
-    //   `CURL_HTTP_VERSION_NONE` 在 libcurl 8.x 上等于"HTTPS 优先协商 h2"，于是 client.jar
-    //   走 h2 被 64KB/RTT 钳死（RTT ~200ms → ~320KB/s，与实测单连接 487KB/s 同量级），
-    //   而设备裸 HTTP/1.1 对同一 URL 能跑 1378KB/s。海量小文件仍用 NONE：它们单文件传输
-    //   时间短、窗口本来 ramp 不起来，h2 的连接复用反而省握手。
-    curl_easy_setopt(easy, CURLOPT_HTTP_VERSION,
-                     tune_throughput ? CURL_HTTP_VERSION_1_1 : CURL_HTTP_VERSION_NONE);
 
     // ⚠️ 2026-07-31：每主机 IP 地址族选择（PCL2 DNSLookup 等价物）。
     //   实测依据（真机 hdc，裸 openssl，零本引擎代码）：同一个 1.2MB 模组
@@ -868,6 +853,12 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         void add(const std::string& s) { if (!s.empty()) h = curl_slist_append(h, s.c_str()); }
         void reset() { if (h) { curl_slist_free_all(h); h = nullptr; } }
     } relay_headers;
+    HeaderList authorized_headers;
+    if (!task_->bearerToken().empty()) {
+        authorized_headers.add("Authorization: Bearer " + task_->bearerToken());
+        if (!authorized_headers.h) return makeException(ErrorKind::InternalError, "authorization header allocation failed");
+        curl_easy_setopt(easy, CURLOPT_HTTPHEADER, authorized_headers.h);
+    }
 
     const auto applyRelayAuth = [&](const std::string& url_for_sig) -> bool {
         relay_headers.reset();
@@ -898,29 +889,97 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
     char err_buf[CURL_ERROR_SIZE] = {0};
     curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, err_buf);
 
-    CURLcode rc = curl_easy_perform(easy);
-
+    CURLcode rc = CURLE_OK;
     long http_code = 0;
-    curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http_code);
+    // 所有实际 hop 共用 Engine 准入；relay 改写/鉴权回退以后才确定真实主机。
+    // 等待名额不消费请求次数，也不启动首字节/低速计时。RAII 覆盖全部提前返回。
+    const auto performHop = [&]() -> DownloadExceptionPtr {
+        HostAdmissionLease admission;
+        family_host = transportHost(actual_url);
+        ip_resolve = DownloadEngine::instance().ipResolveFor(family_host);
+        curl_easy_setopt(easy, CURLOPT_IPRESOLVE, ip_resolve);
+        const int64_t admission_deadline = schedulingDeadlineMs();
+        if (!admission.tryAcquire(family_host)) {
+            if (isAborted()) return makeException(ErrorKind::AbortedByUser, "cancelled before HTTP admission");
+            if (nowMs() >= admission_deadline)
+                return makeRetryTerminationException(error(), "host admission exceeds retry deadline");
+            // 实际CDN/relay可能限流，而原origin仍可选。把就绪时刻关联到本候选，
+            // 回外层挑健康备源；只有全部候选都不可用时才有界等待，不钉住一台host。
+            auto& engine = DownloadEngine::instance();
+            const int64_t ready = std::max(transportDeadlineAfter(nowMs(), 50),
+                std::max(engine.badHostReadyAtMs(family_host), engine.hostRateLimitUntilMs(family_host)));
+            source->extendCooldownUntil(ready);
+            admission_deferred_ = true;
+            return makeException(ErrorKind::ConnectionError, "HTTP host admission deferred");
+        }
+        if (isAborted()) return makeException(ErrorKind::AbortedByUser, "cancelled before HTTP attempt");
+        if (!tryBeginAttempt(30))
+            return makeRetryTerminationException(error(), "retry attempts exhausted");
+        if (auto denied = task_->beginAuthorizedRequest()) return denied;
+        // actual hop 已准入并完成原授权计费；普通模式此调用只记录贡献来源。
+        // 摘要证伪后的单源复验若换来源，从0开始并同步更新真正发出的 Range 窗口。
+        if (prepareContentSource(source)) applyCurrentRange();
+        beginTransportAttempt(&admission);
+        const int64_t before = done();
+        rc = curl_easy_perform(easy);
+        endTransportAttempt();
+        http_code = 0;
+        curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_off_t received = 0;
+        curl_easy_getinfo(easy, CURLINFO_SIZE_DOWNLOAD_T, &received);
+        char* primary = nullptr;
+        curl_easy_getinfo(easy, CURLINFO_PRIMARY_IP, &primary);
+        const std::string ip = primary ? primary : "";
+        auto& engine = DownloadEngine::instance();
+        // HTTP 错误也证明地址族连通；本地取消/磁盘写错不能伪造地址族失败。
+        if (http_code > 0 || received > 0 || isFamilyConnectFailure(rc, http_code, received))
+            engine.noteFamilyOutcome(family_host, ip_resolve, ip,
+                                     http_code > 0 || received > 0,
+                                     rc == CURLE_COULDNT_RESOLVE_HOST);
+        const long used = ip_resolve == CURL_IPRESOLVE_WHATEVER
+            ? DownloadEngine::familyFromIp(ip) : ip_resolve;
+        const bool family_retry = isFamilyConnectFailure(rc, http_code, received) &&
+            engine.hasUntriedFamily(family_host, used);
+        family_retry_pending_.store(family_retry, std::memory_order_release);
+        const int64_t progress = done() > before ? done() - before : 0;
+        const bool local_failure = writeErrno() != 0 ||
+            (error() && error()->needs_new_lease);
+        const bool healthy = !isAborted() && !local_failure &&
+            ((rc == CURLE_OK && http_code >= 200 && http_code < 400) || progress >= 1024 * 1024);
+        admission.finish(healthy);
+        if (!healthy && !isAborted() && !local_failure && !family_retry &&
+                 isFamilyConnectFailure(rc, http_code, received)) engine.addBadHost(family_host);
+        // 对中断且确实交付有效字节的请求也采样，避免评分永远冻结在早期快成功值。
+        // 连接复用时 connect_time==0 合法，不应丢掉这次正文吞吐。
+        if (progress > 0 && !isAborted() && !local_failure && http_code >= 200 && http_code < 300) {
+            curl_off_t total_us = 0, connect_us = 0;
+            curl_easy_getinfo(easy, CURLINFO_TOTAL_TIME_T, &total_us);
+            curl_easy_getinfo(easy, CURLINFO_CONNECT_TIME_T, &connect_us);
+            if (total_us > 0) source->recordSample(static_cast<int>(connect_us / 1000),
+                static_cast<double>(progress) * 1000000.0 / static_cast<double>(total_us));
+        }
+        return nullptr;
+    };
+    if (auto denied = performHop()) return denied;
 
     // v4.3: 手动处理 302/301/307/308 重定向
     // 在 follow 前检查目标主机是否在全局坏主机黑名单中
     for (int redir = 0; redir < 5 && rc == CURLE_OK
             && (http_code == 301 || http_code == 302 || http_code == 307 || http_code == 308);
          ++redir) {
+        if (!task_->bearerToken().empty()) break; // 节点改变必须重新授权，不能把 Bearer 带给另一主机。
         char* redir_url = nullptr;
         curl_easy_getinfo(easy, CURLINFO_REDIRECT_URL, &redir_url);
         if (!redir_url || redir_url[0] == '\0') break;
 
         // 从 redir_url 提取 host
         std::string rurl(redir_url);
-        size_t hs = rurl.find("://");
-        if (hs != std::string::npos) {
-            hs += 3;
-            size_t he = rurl.find('/', hs);
-            size_t pe = rurl.find(':', hs);
-            if (pe != std::string::npos && (he == std::string::npos || pe < he)) he = pe;
-            std::string rhost = rurl.substr(hs, he == std::string::npos ? std::string::npos : he - hs);
+        if (!isTransportHttpUrl(rurl)) {
+            auto ex = makeException(ErrorKind::ProtocolError, "redirect protocol is not HTTP(S)");
+            ex->http_status = http_code; ex->url_context = actual_url; return ex;
+        }
+        const std::string rhost = transportHost(rurl);
+        if (!rhost.empty()) {
 
             if (DownloadEngine::instance().isBadHost(rhost)) {
                 // 目标主机在黑名单中，立即返回错误，不浪费时间连接
@@ -948,12 +1007,7 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
                 const int64_t host_ready =
                     DownloadEngine::instance().badHostReadyAtMs(rhost);
                 if (host_ready > 0) source->extendCooldownUntil(host_ready);
-                // AMCL 关键修复：在返回前重置 done + SHA1。否则本次 perform 已把 302
-                // 响应体（如 ~116 字节的 "302 Found" HTML）经 onWrite 写进文件、done_ 也
-                // 随之前移；run() 收到 ConnectionError 后走 continue（不 resetDone），
-                // 下一个源便从被污染的偏移 Range 续传 → 文件大小正确但前段是 302 垃圾
-                // → SHA1 终检失败（典型：guava 等库 done 比实际多下 ~116 字节）。
-                resetDone();
+                // 3xx 正文由 onWrite 丢弃；候选被拒没有写入，必须保留原有效断点。
                 auto ex = std::make_shared<DownloadException>();
                 ex->kind = ErrorKind::ConnectionError;
                 ex->native_code = 0;
@@ -966,6 +1020,7 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
 
         // 目标主机不在黑名单，正常 follow
         actual_url = rurl;
+        resetResponseHeaders();
         // ⚠️ 2026-07-31：不再 resetDone()。3xx 响应体已由 onWrite 依据 hdr_status_code_
         //   丢弃，不会污染 done_/SHA1，因此无需归零。保留 done_ 让"续传请求经
         //   cdn.modrinth.com→307→cdn-alt"后仍从断点继续 Range，消除旧实现每次重定向
@@ -974,39 +1029,16 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         // 每个 HTTP hop 都有独立响应头。若不清零，最终 206 缺失/错误 Content-Range
         // 时可能误用上一跳留下的值并错误通过区间校验；resetResponseHeaders 同时清零
         // hdr_status_code_，使下一跳的状态码由其自身状态行重新决定。
-        resetResponseHeaders();
         curl_easy_reset(easy);
         curl_easy_setopt(easy, CURLOPT_URL, actual_url.c_str());
         curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
         curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
         CURLSH* sh2 = DownloadEngine::instance().curlShare();
         if (sh2) curl_easy_setopt(easy, CURLOPT_SHARE, sh2);
-        int64_t fsz2 = task_->fileSize();
-        bool small2 = (fsz2 > 0 && fsz2 < 1024 * 1024);
-        // 与首次请求同一套连接超时（8s/12s）。这一跳才是**真正搬数据**的那次请求
-        // （cdn.modrinth.com→307→cdn-alt 正是本次问题原型），若这里仍用 6s，等于把上面
-        // 放宽到 12s 的修复完全抵消。
-        curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, small2 ? 8L : 12L);
-        // 与首次请求同一套低速策略（含"只剩一个源就退回 1KB/s 地板"）。
-        curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, low_speed_floor_bps);
-        curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, small2 ? 10L : 15L);
-        if (small2) curl_easy_setopt(easy, CURLOPT_TIMEOUT, 20L);
-        else curl_easy_setopt(easy, CURLOPT_TIMEOUT, 0L);
-        curl_easy_setopt(easy, CURLOPT_FAILONERROR, 1L);
-        if (task_->isHighParallel() && !is_single_full_get) {
-            // 与首次请求一致：只对真正多 Range 路径放宽到 4KB/s×30s。
-            curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 4096L);
-            curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 30L);
-        }
-        // 2026-07-30：传输层调优与 HTTP 版本必须与首次请求同判据，否则 302 之后（BMCLAPI
-        // 几乎总是 302 到镜像节点）真正搬数据的那一跳又退回 16KB 缓冲 + h2 小窗口。
-        if (tune_throughput) {
-            curl_easy_setopt(easy, CURLOPT_BUFFERSIZE, 512L * 1024L);
-            curl_easy_setopt(easy, CURLOPT_TCP_NODELAY, 1L);
+        applyTransportProfile(easy, profile);
+        if (profile.enlarge_socket_buffer)
             curl_easy_setopt(easy, CURLOPT_SOCKOPTFUNCTION, sockoptEnlargeRcvbuf);
-        }
-        curl_easy_setopt(easy, CURLOPT_HTTP_VERSION,
-                         tune_throughput ? CURL_HTTP_VERSION_1_1 : CURL_HTTP_VERSION_NONE);
+        curl_easy_setopt(easy, CURLOPT_FAILONERROR, 1L);
         // 重定向目标是**另一台**主机（cdn.modrinth.com → cdn-alt.modrinth.com 正是
         // 本次问题的原型），必须按新主机重新挑地址族；curl_easy_reset 已清掉上一跳的
         // CURLOPT_IPRESOLVE，这里不重设就退回系统默认（本设备 = 优先 IPv6）。
@@ -1021,7 +1053,9 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         via_relay = relayIsRelayUrl(actual_url);
         if (via_relay && !applyRelayAuth(actual_url)) {
             AMCL_LOG_W(LOG_TAG, "relay auth unavailable after redirect, aborting relay attempt");
-            via_relay = false;
+            // 不得继续向网关发送缺少持有证明的请求，也不把上一跳凭据留给其他主机。
+            auto ex = makeException(ErrorKind::ConnectionError, "relay authorization unavailable after redirect");
+            ex->url_context = actual_url; return ex;
         }
 
         // 重新设置 CA、Range、callbacks 等
@@ -1044,9 +1078,7 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         err_buf[0] = '\0';
         curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, err_buf);
 
-        rc = curl_easy_perform(easy);
-        http_code = 0;
-        curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http_code);
+        if (auto denied = performHop()) return denied;
     }
     curl_off_t reported_cl = -1;
     curl_easy_getinfo(easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &reported_cl);
@@ -1063,36 +1095,7 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
     curl_off_t starttransfer_us = -1;
     curl_easy_getinfo(easy, CURLINFO_STARTTRANSFER_TIME_T, &starttransfer_us);
 
-    // ⚠️ 2026-07-31：记录本次尝试的地址族结果（PCL2 RecordIPReliability，
-    //   ModNet.vb:368-375：成功 +0.5 / 失败 -0.7，v = v*0.5 + result*0.5）。
-    //   family_host 在重定向循环里已被更新为**最后真正连接的那台主机**，正是要打分的对象。
-    {
-        auto& fam_engine = DownloadEngine::instance();
-        const bool fam_got_bytes = size_download > 0;
-        const bool fam_unresolvable = (rc == CURLE_COULDNT_RESOLVE_HOST);
-        // 首次请求 ip_resolve 是 WHATEVER（不盲猜），靠实际连接的 IP 反推走了哪一族。
-        char* primary_ip = nullptr;
-        curl_easy_getinfo(easy, CURLINFO_PRIMARY_IP, &primary_ip);
-        const std::string fam_ip = (primary_ip && primary_ip[0] != '\0') ? primary_ip : "";
-        fam_engine.noteFamilyOutcome(family_host, ip_resolve, fam_ip,
-                                     rc == CURLE_OK || fam_got_bytes, fam_unresolvable);
-        const long fam_used =
-            (ip_resolve == CURL_IPRESOLVE_V4 || ip_resolve == CURL_IPRESOLVE_V6)
-                ? ip_resolve : DownloadEngine::familyFromIp(fam_ip);
-        // "连都没连上、一个字节没拿到" 这类失败极可能是族特异性的（本设备 cdn-alt 的
-        // IPv6 就是 137ms 立刻失败）。此时另一族若还没试过，应当换族重试，而**不是**
-        // 把整台主机记进全局熔断 —— 对齐 PCL2 的源禁用条件（ModNet.vb:1158-1163，
-        // 里面没有任何"某一族连不上就废掉源"的条目）。由 run() 的 penalize_host 消费。
-        const bool fam_connect_class_failure =
-            rc != CURLE_OK && !fam_got_bytes &&
-            (rc == CURLE_COULDNT_CONNECT || rc == CURLE_COULDNT_RESOLVE_HOST ||
-             rc == CURLE_OPERATION_TIMEDOUT || rc == CURLE_SSL_CONNECT_ERROR ||
-             rc == CURLE_RECV_ERROR || rc == CURLE_SEND_ERROR ||
-             rc == CURLE_GOT_NOTHING || rc == CURLE_PARTIAL_FILE);
-        family_retry_pending_.store(
-            fam_connect_class_failure && fam_engine.hasUntriedFamily(family_host, fam_used),
-            std::memory_order_release);
-    }
+    // 每一跳的地址族与主机结果已在 performHop 按真实连接单独结算。
 
     // ============================================================
     //  加速网关健康记账（2026-08-01）
@@ -1112,6 +1115,17 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
             // 鉴权类失败（401/403）说明票据/签名有问题，重签一次也没用：
             // 直接把本次尝试判为失败让 run() 换源重试，届时熔断可能已生效 → 走直连。
         }
+    }
+
+    if (isAborted()) return makeException(ErrorKind::AbortedByUser, "cancelled during HTTP");
+    if (auto write_ex = writeFailure(actual_url)) return write_ex;
+    if (auto denied = error(); denied && denied->needs_new_lease) return denied;
+    if (rc == CURLE_OK && (http_code < 200 || http_code >= 300)) {
+        auto ex = makeException(ErrorKind::ProtocolError, "HTTP response did not deliver artifact content");
+        ex->http_status = http_code; ex->url_context = actual_url;
+        if (!task_->bearerToken().empty() && http_code >= 300 && http_code < 400)
+            return task_->authorizationFailure(ex);
+        return ex;
     }
 
     // v4.10：统一读一次 atomic end（自适应分段可能在途中缩小它），后续判定都用这个快照。
@@ -1140,6 +1154,14 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
 
     // 每个 Range 响应都必须证明服务端返回的字节窗口与 pwrite 偏移一致。
     // 仅看 206 或 Content-Length 无法防止错误代理返回错位区间。
+    // 没发Range的full GET不能把意外206的部分对象当作完整EOF；尤其无checker的
+    // 未知大小入口没有后续摘要可以兜底。保留失败事实，下一轮从零取完整对象。
+    if (!range_was_requested && http_code == 206) {
+        resetDone();
+        auto ex = makeException(ErrorKind::SizeMismatch, "unsolicited partial response for full GET");
+        ex->http_status = http_code; ex->url_context = source->url;
+        return ex;
+    }
     if (range_was_requested && http_code == 206) {
         ParsedContentRange range;
         range.start = response_content_range_start_.load(std::memory_order_acquire);
@@ -1147,9 +1169,14 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         range.total = response_content_range_total_.load(std::memory_order_acquire);
         // 校验发送时捕获的请求窗口，而不是可能已被 shrinkEndTo 缩短的写入窗口。
         // 后者只决定本线程何时主动停写；不能追溯改变已经在途的 HTTP Range。
+        // 开放式 bytes=offset- 用于未知大小续传，完成必须抵达响应声明的对象末尾。
+        // 仅 start 对齐且 curl 正常 EOF 仍可能只交付中间窗口（如 offset..offset+99），
+        // 无 checker 时不能将它误当整文件。这里只校验该响应，不将 header 升格为
+        // NetFile 权威总长；未知总长继续由最终校验与提交成功后确定。
         if (!response_content_range_seen_.load(std::memory_order_acquire) ||
             !response_content_range_valid_.load(std::memory_order_acquire) ||
-            !contentRangeMatches(range, requested_offset, requested_end, task_->fileSize())) {
+            !contentRangeMatches(range, requested_offset, requested_end, task_->fileSize()) ||
+            (requested_end < 0 && range.end != range.total - 1)) {
             source->no_range_support.store(true, std::memory_order_release);
             resetDone();
             auto ex = makeException(ErrorKind::SizeMismatch,
@@ -1160,6 +1187,16 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
             return ex;
         }
         source->range_verified.store(true, std::memory_order_release);
+        // header 的末尾虽然正确，实际正文仍可能通过更短的 Content-Length 提前正常
+        // EOF。未知总长不能只看 CURLE_OK；用本次已验证窗口算出该段应累计到的长度，
+        // 交下方既有 short-read 判定。这里只影响本次响应，不污染下一候选的权威total。
+        if (requested_end < 0 && expected_len < 0) expected_len = range.total - start_;
+        if (requested_end < 0 && current_done > range.total - start_) {
+            resetDone();
+            auto ex = makeException(ErrorKind::SizeMismatch, "open-ended Range body exceeded declared object EOF");
+            ex->http_status = http_code; ex->url_context = source->url;
+            return ex;
+        }
     }
 
     // A 200 response ignores Range. It is only byte-aligned when the requested offset is
@@ -1180,6 +1217,7 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
         return ex;
     }
 
+    if (auto budget = error(); budget && budget->needs_new_lease) return budget;
     // 成功分支 1：curl rc=OK 且段完整写满（典型 206 Partial Content）
     // 成功分支 2：段完整写满但 rc=CURLE_WRITE_ERROR（server 返回 200 全量，
     //             我们 onWrite 填满后主动截断，curl 报 write error）
@@ -1273,6 +1311,8 @@ DownloadExceptionPtr NetThread::performOnce(NetSourcePtr source, CURL* easy) {
 
 void NetThread::run(CURL* reusable_easy) {
     if (aborted_.load(std::memory_order_relaxed)) {
+        // 用户取消由 Aborted 状态表达，不能继续携带此前换源产生的 HTTP 失败。
+        setError(nullptr);
         state_.store(NetState::Aborted, std::memory_order_release);
         task_->reportThreadFinished(this);
         return;
@@ -1283,6 +1323,8 @@ void NetThread::run(CURL* reusable_easy) {
     // 条件 end_ >= 0 是为了排除 HEAD 未完成（未知大小）的场景。
     if (end_.load(std::memory_order_acquire) >= 0 &&
         done_.load(std::memory_order_relaxed) >= length()) {
+        // 已完成段的续传短路与真实传输成功保持一致，不留旧错误供快照误读。
+        setError(nullptr);
         state_.store(NetState::Finished, std::memory_order_release);
         task_->reportThreadFinished(this);
         return;
@@ -1328,18 +1370,20 @@ void NetThread::run(CURL* reusable_easy) {
     }
 
     DownloadExceptionPtr last_ex;
+    NetSourcePtr family_retry_source;
     int same_source_size_mismatch_retries = 0;
     constexpr int kSameSourceRetryLimit = 3;
 
     for (int attempt = 0; ; ++attempt) {
-        int64_t retry_deadline = retryDeadlineMs();
+        int64_t retry_deadline = schedulingDeadlineMs();
         if (retryCount() >= 30 ||
             (retry_deadline > 0 && nowMs() >= retry_deadline)) {
-            last_ex = makeException(ErrorKind::ConnectionError, "retry budget exhausted");
+            last_ex = makeRetryTerminationException(last_ex, "retry budget exhausted");
             break;
         }
         if (aborted_.load(std::memory_order_relaxed)) {
             if (owns_easy) curl_easy_cleanup(easy);
+            setError(nullptr);
             state_.store(NetState::Aborted, std::memory_order_release);
             releaseFdGuard();
             task_->reportThreadFinished(this);
@@ -1348,51 +1392,42 @@ void NetThread::run(CURL* reusable_easy) {
 
         // v4.2: 非段 0 的分段下载需要 Range 支持，跳过不支持 Range 的源
         // v6: 首次尝试用本段的首选源（多源轮询，段i→源i）；重试时回退 -1 按评分选最优源。
-        const bool needs_range = requiresRangeSupport();
-        NetSourcePtr src = task_->pickBestSource(needs_range,
-            /*preferred_idx=*/(attempt == 0) ? preferred_source_idx_ : -1);
+        const bool needs_range = requiresRangeSupport() &&
+            !(task_->requiresSingleSourceRecheck() && start_ == 0 && end() < start_);
+        NetSourcePtr src = std::move(family_retry_source);
+        if (!src || !src->isAvailable(nowMs())) src = task_->pickBestSource(needs_range,
+            /*preferred_idx=*/((task_->requiresSingleSourceRecheck() ? retryCount() == 0 : attempt == 0)
+                               ? preferred_source_idx_ : -1));
         if (!src) {
             int64_t ready = task_->nextSourceReadyMs(needs_range);
             int64_t now = nowMs();
             if (ready > now) {
-                int64_t deadline = retryDeadlineMs();
+                int64_t deadline = schedulingDeadlineMs();
                 if (deadline > 0 && ready > deadline) {
-                    last_ex = makeException(ErrorKind::ConnectionError,
+                    last_ex = makeRetryTerminationException(last_ex,
                                             "source cooldown exceeds retry deadline");
                     break;
                 }
                 const int64_t wait_until = deadline > 0 ? std::min(ready, deadline) : ready;
                 while (!aborted_.load(std::memory_order_acquire) && now < wait_until) {
+                    // 半开探针可能已经真实成功。每次取消检查顺便读取最新 ready，
+                    // 不能把先前捕获的45s租约整段睡满，耽误已经恢复的来源。
+                    if (task_->nextSourceReadyMs(needs_range) <= now) break;
                     std::this_thread::sleep_for(std::chrono::milliseconds(
                         std::min<int64_t>(100, wait_until - now)));
                     now = nowMs();
                 }
                 continue;
             }
-            last_ex = makeException(ErrorKind::ConnectionError,
+            // 最近实际响应才是失败原因；“无源可选”只是调度终止条件。
+            // 保留同一次 run 中最近的分类/状态/URL，不读取其他段或源的历史缓存。
+            last_ex = makeRetryTerminationException(last_ex,
                                     "no available sources (all failed)");
             break;
         }
 
-        // ⚠️ 2026-07-29：每主机并发闸门（防 HTTP 429）。JDK 的 16 段若全压同一个
-        //   GitHub 代理必被限流（真机 570~887 条 429）。这里在真正发请求前占名额，
-        //   占不到就短暂让行并重新选源（其它镜像可能还有名额）。
-        //   MultiDownloader 早有同款 host_limit_，worker 池路径此前完全没有。
-        //   注意：必须放在 tryBeginAttempt **之前** —— 否则每次让行都白耗一次重试预算
-        //   （上限 30 次），高并发下会迅速把预算耗尽而误报 "retry attempts exhausted"。
-        const std::string slot_host = extractHostForSlot(src->url);
-        if (!DownloadEngine::instance().tryAcquireHostSlot(slot_host)) {
-            if (aborted_.load(std::memory_order_acquire)) continue;
-            std::this_thread::sleep_for(std::chrono::milliseconds(120));
-            continue;
-        }
-
-        if (!tryBeginAttempt(30)) {
-            DownloadEngine::instance().releaseHostSlot(slot_host, false);
-            last_ex = makeException(ErrorKind::ConnectionError, "retry attempts exhausted");
-            break;
-        }
-
+        // 请求准入和计数位于 performOnce 的真实 hop；此处尚未发生 HTTP。
+        const std::string slot_host = transportHost(src->url);
         // v6: 记录本段当前使用的源，供 maybeGrowThreads 避让（防同源并发 Range 损坏）。
         current_source_id_.store(src->id, std::memory_order_relaxed);
         const int64_t attempt_done_before = done_.load(std::memory_order_acquire);
@@ -1401,9 +1436,16 @@ void NetThread::run(CURL* reusable_easy) {
             src->url.c_str(), (long long)attempt_done_before, retryCount());
 
         auto ex = performOnce(src, easy);
+        if (admission_deferred_) {
+            current_source_id_.store(-1, std::memory_order_release);
+            continue; // 未发生本hop HTTP，不扣来源/权限预算，不撤销有效前缀
+        }
         const int64_t attempt_done_after = done_.load(std::memory_order_acquire);
-        const int64_t attempt_bytes = attempt_done_after > attempt_done_before
-            ? attempt_done_after - attempt_done_before : 0;
+        // 摘要证伪后的完整复验可能在 perform 内从0重做；该模式使用实际 HTTP 起点，
+        // 不能从旧 prefix 相减而把本次新增字节误算为0。普通恢复保持原口径。
+        const int64_t actual_base = task_->requiresSingleSourceRecheck() ? attempt_initial_done_ : attempt_done_before;
+        const int64_t attempt_bytes = attempt_done_after > actual_base
+            ? attempt_done_after - actual_base : 0;
         const bool user_aborted = aborted_.load(std::memory_order_acquire);
 
         // progress callback 的主动 stall 中止不是用户取消，先归一成 Timeout，确保下面的
@@ -1413,10 +1455,7 @@ void NetThread::run(CURL* reusable_easy) {
             ex->message = "stall detected (no data), retrying";
         }
 
-        const bool transient_transport_error = ex &&
-            (ex->kind == ErrorKind::ConnectionError ||
-             ex->kind == ErrorKind::Timeout ||
-             ex->kind == ErrorKind::SslError);
+        const bool transient_transport_error = ex && isTransientTransportFailure(ex->kind);
         constexpr int64_t kSubstantialAttemptProgressBytes = 1024 * 1024;
         const bool attempt_has_substantial_progress =
             transient_transport_error && attempt_bytes >= kSubstantialAttemptProgressBytes;
@@ -1443,25 +1482,10 @@ void NetThread::run(CURL* reusable_easy) {
         }
 
         auto& engine = DownloadEngine::instance();
-        engine.releaseHostSlot(slot_host, transport_healthy);
-        // ⚠️ 2026-07-31：族特异性失败不计入全局主机熔断。
-        //   真机实测 cdn-alt.modrinth.com 的 IPv6 是 0 字节 / 137ms 立刻失败，而 IPv4
-        //   能完整下完 1,205,063 字节。旧逻辑把这种失败记成 addBadHost，于是重定向块
-        //   看到"目标主机在黑名单"就把官方源整条冷却（真机 22:57~23:01 反复 4 分钟），
-        //   镜像源迟迟轮不上 —— 而这台主机其实只是**一族**不可达。
-        //   family_retry_pending_ 由 performOnce 置位（另一族尚未试过时才为真），
-        //   下一次尝试 ipResolveFor 会自动翻到另一族。
         const bool family_retry = family_retry_pending_.load(std::memory_order_acquire);
-        const bool penalize_host =
-            !transport_healthy && transient_transport_error && !user_aborted
-            && !attempt_made_progress && !family_retry;
-        if (transport_healthy) {
-            engine.markHostHealthy(slot_host);
-            if (effective_host != slot_host) engine.markHostHealthy(effective_host);
-        } else if (penalize_host) {
-            engine.addBadHost(effective_host);
-        }
-
+        // 这里只用于日志；真实主机健康已在每个 hop 内按实际连接结算。
+        const bool penalize_host = !transport_healthy && transient_transport_error &&
+            !user_aborted && !attempt_made_progress && !family_retry;
         if (ex) {
             const int64_t deadline = retryDeadlineMs();
             AMCL_LOG_I(LOG_TAG,
@@ -1476,7 +1500,7 @@ void NetThread::run(CURL* reusable_easy) {
                 (long long)(deadline > 0 ? deadline - nowMs() : 0));
         }
         if (ex && ex->http_status == 429) {
-            engine.penalizeHost(slot_host);
+            engine.penalizeHost(effective_host);
         }
         if (!ex) {
             src->recordSuccess();
@@ -1485,18 +1509,8 @@ void NetThread::run(CURL* reusable_easy) {
                 std::lock_guard<std::mutex> lk(last_used_source_mu_);
                 last_used_source_ = src;
             }
-            // Phase 8: 成功路径采样（RTT + 瞬时吞吐）供后续 pickBestSourceWeighted 用。
-            // CONNECT_TIME_T 单位是 microseconds；SPEED_DOWNLOAD_T 是 B/s（过去整次请求的平均）。
-            {
-                curl_off_t connect_us = 0;
-                curl_off_t speed_bps = 0;
-                curl_easy_getinfo(easy, CURLINFO_CONNECT_TIME_T, &connect_us);
-                curl_easy_getinfo(easy, CURLINFO_SPEED_DOWNLOAD_T, &speed_bps);
-                if (connect_us > 0) {
-                    int rtt_ms = static_cast<int>(connect_us / 1000);
-                    src->recordSample(rtt_ms, static_cast<double>(speed_bps));
-                }
-            }
+            // 先清除本段此前失败，再发布 Finished；消费者不能看到成功段挂着旧 HTTP 错误。
+            setError(nullptr);
             state_.store(NetState::Finished, std::memory_order_release);
             if (owns_easy) curl_easy_cleanup(easy);
             releaseFdGuard();
@@ -1507,6 +1521,7 @@ void NetThread::run(CURL* reusable_easy) {
         // 如果是真正的用户取消，立即退出
         if (user_aborted) {
             if (owns_easy) curl_easy_cleanup(easy);
+            setError(nullptr);
             state_.store(NetState::Aborted, std::memory_order_release);
             releaseFdGuard();
             task_->reportThreadFinished(this);
@@ -1514,7 +1529,21 @@ void NetThread::run(CURL* reusable_easy) {
         }
 
         last_ex = ex;
+        ex->retry_after_ms = std::max(ex->retry_after_ms,
+            response_retry_after_ms_.load(std::memory_order_acquire));
+        // 一次性GET结束后不得进入普通EOF/Range/地址族重试；401/403也必须交业务层
+        // 重新获取当前节点权限。这里保留本地I/O与用户取消的原分类，不热循环授权。
+        const bool local_error = isLocalTransportFailure(ex->kind);
+        if (task_->singleUseAuthorization() && !local_error) ex = task_->authorizationFailure(ex);
+        else if (!task_->bearerToken().empty() && (ex->http_status == 401 || ex->http_status == 403 || ex->http_status == 429 || ex->http_status == 503)) ex = task_->authorizationFailure(ex);
+        if (!task_->bearerToken().empty() && (ex->http_status == 429 || ex->http_status == 503)) ex->retry_after_ms = std::max<int64_t>(1000, ex->retry_after_ms);
+        last_ex = ex;
         setError(ex);
+        if (ex->needs_new_lease) {
+            if ((ex->http_status == 429 || ex->http_status == 503) && ex->retry_after_ms > 0)
+                engine.noteHostRateLimit(effective_host, ex->retry_after_ms);
+            break;
+        }
 
         if (ex->kind == ErrorKind::DiskFullError ||
             ex->kind == ErrorKind::QuotaExceededError ||
@@ -1563,6 +1592,11 @@ void NetThread::run(CURL* reusable_easy) {
 
         // v4.3: 快速错误处理
         // ConnectionError (CURLE_COULDNT_CONNECT 等)：无实质进度时 1 次弃用。
+        // 未试另一地址族的连接失败只改变下一次连接选择，不能先把整个 URL 标死。
+        // 同一权限仍由 beginAuthorizedRequest 计费；单次授权已在上面退出，不会绕过限制。
+        if (family_retry) { family_retry_source = src; continue; }
+        // 某个重定向目标正在临时熔断只决定 not-before，不把原 URL 永久标坏。
+        if (ex->http_status >= 300 && ex->http_status < 400 && src->readyAtMs() > nowMs()) continue;
         if (ex->kind == ErrorKind::ConnectionError) {
             src->recordFailure(ex, /*max_failures=*/1);
             continue;
@@ -1623,11 +1657,12 @@ void NetThread::run(CURL* reusable_easy) {
                 //   使 pickBestSource / nextSourceReadyMs 都能看到正确的"何时可再试"。
                 constexpr int64_t kMaxDelayMs = 5 * 60 * 1000LL;
                 int64_t retry_after = response_retry_after_ms_.load(std::memory_order_acquire);
-                int64_t until = DownloadEngine::instance().noteHostRateLimit(slot_host, retry_after);
+                int64_t until = DownloadEngine::instance().noteHostRateLimit(effective_host, retry_after);
                 int64_t delay_ms = until > nowMs() ? until - nowMs() : 0;
-                if (delay_ms > 0 && !addRetryDelayMs(delay_ms, kMaxDelayMs)) break;
                 // 同步到源级 cooldown：让选源与等待逻辑一致地跳过该源。
                 src->extendCooldownUntil(until);
+                if (countUsableSources(task_) > 0) continue;
+                if (delay_ms > 0 && !addRetryDelayMs(delay_ms, kMaxDelayMs)) break;
                 while (!aborted_.load(std::memory_order_acquire) && nowMs() < until) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(
                         std::min<int64_t>(100, until - nowMs())));

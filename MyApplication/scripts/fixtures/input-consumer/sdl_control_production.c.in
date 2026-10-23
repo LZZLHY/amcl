@@ -1,0 +1,373 @@
+/* 完整SDL SDK+neutral生产owner的宿主验证。只替换OHOS窗口资格与原始运输边缘；
+ * SDK的keyboard/mouse缓存、focus、touch、filter、watcher、Push/Get/Poll均来自真实源码。
+ * 下面的来源队列保存测试材料，不承担贡献归约；所有生命周期与选择规则执行抽取的生产正文。 */
+#define SDL_MAIN_HANDLED
+#include "SDL_internal.h"
+#include "video/SDL_sysvideo.h"
+#include "events/SDL_keyboard_c.h"
+#include "events/SDL_mouse_c.h"
+#include "events/SDL_touch_c.h"
+#include "SDL_amclinputcontrol_c.h"
+#include "control_delivery_client.h"
+#include "input/delivery/look_execution_client.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <stdatomic.h>
+#ifndef _WIN32
+/* 宿主PID/TID是实际POSIX边缘；不造固定进程身份，Windows继续使用原系统接口。 */
+#include <unistd.h>
+#include <sys/syscall.h>
+#endif
+#define CHECK(value) do { if (!(value)) { fprintf(stderr,"CHECK failed line %d: %s\n",__LINE__,#value); exit(1); } } while (0)
+@CONSTANTS@
+@EVENT@
+static SDL_Window *activeWindow, *replacement;
+static SDL_WindowID initialWindowId;
+static bool presented=true, grabbing=false, captureGranted=true;
+static void setFixtureHostDescriptor(void) {
+ char descriptor[128];
+#ifdef _WIN32
+ snprintf(descriptor,sizeof(descriptor),"1:%u:%lu:1",(unsigned)_getpid(),(unsigned long)GetCurrentThreadId());
+ _putenv_s("AMCL_SDL_HOST_RUNTIME",descriptor);
+#else
+ snprintf(descriptor,sizeof(descriptor),"1:%llu:%llu:1",(unsigned long long)getpid(),(unsigned long long)syscall(SYS_gettid));
+ setenv("AMCL_SDL_HOST_RUNTIME",descriptor,1);
+#endif
+}
+/* 仅菜单位置是宿主窗口边缘提供的材料。新 look 的真实 owner/prefix 在独立夹具验证，
+ * 这里不再保留已经退出的 g_look 累计模型或无活动用途的桥/mutex 替身。 */
+static double g_menuX=25,g_menuY=30;
+static SDL_Window *OPENHARMONY_AMCL_GetInputWindow(void) { return presented ? activeWindow : NULL; }
+static SDL_Window *OPENHARMONY_AMCL_GetLiveInputWindow(SDL_WindowID id) {
+    return presented && activeWindow && activeWindow->id==id ? SDL_GetWindowFromID(id) : NULL;
+}
+static SDL_Window *OPENHARMONY_AMCL_GetLiveInputWindowForTeardown(SDL_WindowID id) {
+    return activeWindow && activeWindow->id==id ? SDL_GetWindowFromID(id) : NULL;
+}
+static bool OPENHARMONY_AMCL_IsPresentedActive(void) { return presented && activeWindow; }
+static SDL_Scancode OPENHARMONY_ScancodeFromGlfwKey(int key) { return key==65 ? SDL_SCANCODE_A : (SDL_Scancode)key; }
+static Uint8 OPENHARMONY_ButtonFromGlfwButton(int button) { return (Uint8)(button+1); }
+static bool OPENHARMONY_TypedRelativeCaptureGranted(void) { return captureGranted; }
+static bool OPENHARMONY_ValidUtf8Bytes(const Uint8 *data, Uint32 length) { (void)data; (void)length; return true; }
+static void OPENHARMONY_RecordTextDegradation(const char *site, Uint64 *count) { (void)site; ++*count; }
+static SDL_AtomicInt host_typed_state={1};
+static Uint64 host_surface_context_generation, amcl_typed_text_degraded_editing,
+    amcl_typed_text_degraded_selection, amcl_typed_malformed_events;
+static bool host_last_grabbing,host_baseline_valid,host_capture_requested,host_capture_active,host_presented_active=true;
+static double host_last_x,host_last_y;
+static Uint32 host_relative_disable_authority;
+static const AmclControlDeliveryPortV1 *host_control_port;
+/* look 仅为当前 consumer 的真实协议依赖；来源、数学与 prefix 验证在独立 look 夹具。 */
+static const AmclLookExecutionPortV1 *host_look_port;
+static Uint64 host_control_consumer;
+static SDL_WindowID host_control_target;
+static SDL_ThreadID host_control_thread;
+static bool host_control_thread_valid;
+static unsigned host_control_dispatch_depth;
+@CONTEXT@
+typedef int (*OPENHARMONY_TypedNextFn)(Uint32,AMCL_BackendInputEvent *);
+/* 五整数legacy与完整typed字段仍按真实桥合同运输，顺序/预算/目标由生产pump判断。 */
+typedef struct OPENHARMONY_HostBridge {
+ int(*NextEvent)(int*,int*,int*,int*,int*);void(*GetCursorSnapshot)(double*,double*);bool(*IsGrabbing)(void);
+ Uint64(*InteractionFence)(void);int(*TypedNextThrough)(Uint32,AMCL_BackendInputEvent*,Uint64);
+ Uint64(*LegacyPeekOrder)(void);int(*LegacyNextThrough)(int*,int*,int*,int*,int*,Uint64);
+ Uint64 pump_order_limit;int pump_budget;bool pump_did_read;
+} OPENHARMONY_HostBridge;
+static int legacy[4096][5], legacyBegin,legacyEnd;
+static Uint64 legacyOrders[4096], frameLimit=UINT64_MAX;
+static AMCL_BackendInputEvent typed[4096];static int typedBegin,typedEnd;
+static int nextLegacy(int*t,int*a,int*b,int*c,int*d) {
+ if(legacyBegin==legacyEnd)return 0;int* e=legacy[legacyBegin++];
+ *t=e[0];*a=e[1];*b=e[2];*c=e[3];*d=e[4];return 1;
+}
+static int nextTyped(Uint32 backend,AMCL_BackendInputEvent*out) {
+ CHECK(backend==AMCL_BACKEND_ID_SDL3);if(typedBegin==typedEnd)return 0;*out=typed[typedBegin++];return 1;
+}
+static Uint64 peekLegacyOrder(void) { return legacyBegin<legacyEnd ? legacyOrders[legacyBegin] : UINT64_MAX; }
+static Uint64 frameFence(void) { return frameLimit; }
+static int nextLegacyThrough(int*t,int*a,int*b,int*c,int*d,Uint64 limit) {
+ if(peekLegacyOrder()>limit)return 0;return nextLegacy(t,a,b,c,d);
+}
+static int nextTypedThrough(Uint32 backend,AMCL_BackendInputEvent*out,Uint64 limit) {
+ if(typedBegin==typedEnd || typed[typedBegin].sequence>limit)return 0;return nextTyped(backend,out);
+}
+static OPENHARMONY_TypedNextFn OPENHARMONY_GetTypedNext(OPENHARMONY_HostBridge* bridge) { (void)bridge;return nextTyped; }
+static void getCursor(double*x,double*y) { *x=g_menuX;*y=g_menuY; }
+static bool isGrabbing(void) { return grabbing; }
+static bool OPENHARMONY_ReadAndReleaseText(OPENHARMONY_HostBridge*b,Uint64 packet,Uint32 length,Uint8**out) {
+ (void)b;(void)packet;(void)length;*out=NULL;return false;
+}
+static void OPENHARMONY_SendTypedCandidates(OPENHARMONY_HostBridge*b,const AMCL_BackendInputEvent*event) {(void)b;(void)event;}
+/* capture政策已有独立测试；本夹具只提供其边缘事实，focus生命周期则执行实际正文。 */
+static void OPENHARMONY_ApplyTypedCapture(const AMCL_BackendInputEvent*event) {(void)event;}
+@PRODUCTION@
+static OPENHARMONY_HostBridge bridge={nextLegacy,getCursor,isGrabbing,frameFence,nextTypedThrough,peekLegacyOrder,nextLegacyThrough,UINT64_MAX,0,false};
+static void pushLegacy(Uint64 order,int type,int a,int b,int c,int d) {
+ CHECK(legacyEnd<4096);int*e=legacy[legacyEnd];e[0]=type;e[1]=a;e[2]=b;e[3]=c;e[4]=d;legacyOrders[legacyEnd++]=order;
+}
+static void pushTyped(Uint64 order,Uint32 type,Uint32 action,int code,Uint64 device) {
+ CHECK(typedEnd<4096);AMCL_BackendInputEvent*e=&typed[typedEnd++];SDL_zero(*e);
+ e->abiVersion=1;e->structSize=sizeof(*e);e->sequence=order;e->eventType=type;e->action=action;e->code=code;e->deviceId=device;
+}
+static SDL_Event seen[8192], polled[8192];static int seenCount,queueReads,reentryMode,polledCount;
+static int drainControls(void);
+static bool rejectEvents;
+static AmclControlSnapshotV1 snapshot(void) {
+ AmclControlSnapshotV1 value;SDL_zero(value);value.size=sizeof(value);
+ CHECK(host_control_port&&host_control_consumer&&host_control_port->snapshot(host_control_consumer,&value)==0);return value;
+}
+static bool keyHeld(SDL_Scancode key) { int count=0;const bool*actual=SDL_GetKeyboardState(&count);CHECK(count==SDL_SCANCODE_COUNT);return actual[key]; }
+static SDL_MouseButtonFlags buttonsHeld(void) { return SDL_GetMouseState(NULL,NULL); }
+/* 真实SDL事件watcher在cache写后/Push中回入，替换贡献或窗口，不在夹具猜测归约结果。 */
+static bool SDLCALL watcher(void*userdata,SDL_Event*event) {
+ (void)userdata;if(event->type==SDL_EVENT_KEY_DOWN||event->type==SDL_EVENT_KEY_UP||
+  event->type==SDL_EVENT_MOUSE_BUTTON_DOWN||event->type==SDL_EVENT_MOUSE_BUTTON_UP||event->type==SDL_EVENT_MOUSE_MOTION) {
+  CHECK(seenCount<8192);seen[seenCount++]=*event;
+ }
+ int mode=reentryMode;
+ if(mode==1 && event->type==SDL_EVENT_KEY_UP && event->key.scancode==SDL_SCANCODE_A) {
+  reentryMode=0;OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_B,AMCL_CONTROL_DOWN);
+ } else if(mode==2 && event->type==SDL_EVENT_MOUSE_BUTTON_UP && event->button.button==SDL_BUTTON_LEFT) {
+  reentryMode=0;OPENHARMONY_SendButtonFromPlane(2,99,0,activeWindow,SDL_BUTTON_RIGHT,true);
+ } else if(mode==3 && (event->type==SDL_EVENT_KEY_UP || event->type==SDL_EVENT_MOUSE_BUTTON_UP)) {
+  reentryMode=0;activeWindow=replacement;SDL_SetKeyboardFocus(replacement);SDL_SetMouseFocus(replacement);
+ } else if(mode==4 && event->type==SDL_EVENT_WINDOW_MOUSE_ENTER) {
+  reentryMode=0;activeWindow=replacement;OPENHARMONY_RetireControls(3,0,false,false);SDL_SetMouseFocus(replacement);
+ } else if(mode==5 && event->type==SDL_EVENT_FINGER_DOWN) {
+  reentryMode=0;OPENHARMONY_RetireControls(3,0,false,false);SDL_RemoveMouse(SDL_DEFAULT_MOUSE_ID);
+ } else if(mode==6 && event->type==SDL_EVENT_KEY_UP && event->key.scancode==SDL_SCANCODE_A) {
+  reentryMode=0;OPENHARMONY_SendButtonFromPlane(2,99,0,activeWindow,SDL_BUTTON_RIGHT,true);
+ } else if(mode==7 && event->type==SDL_EVENT_KEY_DOWN && event->key.scancode==SDL_SCANCODE_B) {
+  CHECK(keyHeld(SDL_SCANCODE_LSHIFT));reentryMode=0;
+ } else if(mode==8 && event->type==SDL_EVENT_KEY_DOWN && event->key.scancode==SDL_SCANCODE_A) {
+  CHECK(keyHeld(SDL_SCANCODE_A));reentryMode=0;OPENHARMONY_RetireControls(1,0,false,false);
+ } else if(mode==9 && event->type==SDL_EVENT_KEY_DOWN && event->key.scancode==SDL_SCANCODE_A) {
+  reentryMode=0;pushLegacy(22,AMCL_EVENT_KEY,65,0,0,0);frameLimit=22;
+  int unread=legacyBegin;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+  CHECK(legacyBegin==unread&&keyHeld(SDL_SCANCODE_A));CHECK(drainControls()==0);
+ }
+ return true;
+}
+static bool SDLCALL filter(void*userdata,SDL_Event*event) {
+ (void)userdata;return !(rejectEvents&&(event->type==SDL_EVENT_KEY_DOWN||event->type==SDL_EVENT_KEY_UP||
+  event->type==SDL_EVENT_MOUSE_BUTTON_DOWN||event->type==SDL_EVENT_MOUSE_BUTTON_UP));
+}
+/* 真正从SDL的队列领取，不把watcher记录/neutral claim/生产Ready当读取计数。 */
+static int drainControls(void) {
+ int controls=0;SDL_Event event;while(SDL_PollEvent(&event)) {
+  if(event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP||
+   event.type==SDL_EVENT_MOUSE_BUTTON_DOWN||event.type==SDL_EVENT_MOUSE_BUTTON_UP){++controls;++queueReads;CHECK(polledCount<8192);polled[polledCount++]=event;}
+ }return controls;
+}
+static void resetFixture(void) {
+ reentryMode=0;rejectEvents=false;SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN,true);SDL_SetEventEnabled(SDL_EVENT_KEY_UP,true);
+ SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_DOWN,true);SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_UP,true);
+ activeWindow=SDL_GetWindowFromID(initialWindowId);CHECK(activeWindow);presented=true;
+ SDL_SetKeyboardFocus(activeWindow);SDL_SetMouseFocus(activeWindow);
+ OPENHARMONY_CloseControl();
+ host_control_consumer=0;host_control_target=0;host_control_thread_valid=false;host_control_port=NULL;
+ SDL_ResetKeyboard();SDL_Mouse* mouse=SDL_GetMouse();for(int i=0;i<mouse->num_sources;i++)mouse->sources[i].buttonstate=0;
+ mouse->mouse_touch_events=false;mouse->auto_capture=false;
+ mouse->relative_mode=false;grabbing=false;
+ legacyBegin=legacyEnd=typedBegin=typedEnd=0;frameLimit=UINT64_MAX;host_baseline_valid=false;
+ drainControls();seenCount=0;queueReads=0;polledCount=0;
+ CHECK(OPENHARMONY_ControlReady(activeWindow->id));
+}
+static void checkTraces(void) {
+ const int trace[][4]={@TRACE@};resetFixture();
+ for(unsigned i=0;i<sizeof(trace)/sizeof(trace[0]);++i) {
+  const int*r=trace[i];if(r[0]==1)pushLegacy(i+1,r[1]<0?AMCL_EVENT_INPUT_RESET:AMCL_EVENT_KEY,65,0,r[1],0);
+  else pushTyped(i+1,r[1]<0?AMCL_BACKEND_EVENT_RESET:AMCL_BACKEND_EVENT_KEY,
+   r[1]==0?AMCL_BACKEND_ACTION_UP:(Uint32)r[1],SDL_SCANCODE_A,0);
+  OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+  CHECK(keyHeld(SDL_SCANCODE_A)==(r[2]!=0));CHECK(snapshot().pullCommitted==(Uint64)r[3]);
+ }
+ CHECK(drainControls()==9&&queueReads==9);
+ resetFixture();const int mouseTrace[][4]={@MOUSE_TRACE@};
+ for(unsigned i=0;i<sizeof(mouseTrace)/sizeof(mouseTrace[0]);++i) {
+  const int*r=mouseTrace[i];if(r[0]==1)pushLegacy(i+1,r[1]<0?AMCL_EVENT_INPUT_RESET:AMCL_EVENT_MOUSE_BUTTON,0,r[1],0,0);
+  else pushTyped(i+1,r[1]<0?AMCL_BACKEND_EVENT_RESET:AMCL_BACKEND_EVENT_BUTTON,
+   r[1]==0?AMCL_BACKEND_ACTION_UP:(Uint32)r[1],SDL_BUTTON_LEFT,7);
+  OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+  CHECK((buttonsHeld()&SDL_BUTTON_LMASK)==(r[2]?SDL_BUTTON_LMASK:0));CHECK(snapshot().pullCommitted==(Uint64)r[3]);
+ }
+ CHECK(drainControls()==4);CHECK(snapshot().pollMismatches==0);
+ puts("PASS SDL real source->ordered pump->neutral->SDK cache/queue->SDL_PollEvent traces");
+}
+static void checkDevicesAndRetire(void) {
+ resetFixture();OPENHARMONY_SendButtonFromPlane(2,7,0,activeWindow,SDL_BUTTON_LEFT,true);
+ OPENHARMONY_SendButtonFromPlane(2,8,0,activeWindow,SDL_BUTTON_LEFT,true);
+ OPENHARMONY_SendButtonFromPlane(1,0,0,activeWindow,SDL_BUTTON_LEFT,true);
+ OPENHARMONY_RetireControls(2,7,true,false);CHECK(buttonsHeld()&SDL_BUTTON_LMASK);
+ OPENHARMONY_RetireControls(1,0,false,false);CHECK(buttonsHeld()&SDL_BUTTON_LMASK);
+ OPENHARMONY_SendButtonFromPlane(2,8,0,activeWindow,SDL_BUTTON_LEFT,false);CHECK(!buttonsHeld());
+ CHECK(snapshot().pullCommitted==2&&drainControls()==2);
+ resetFixture();OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_A,1);OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_B,1);
+ reentryMode=1;OPENHARMONY_RetireControls(2,0,false,false);
+ CHECK(!keyHeld(SDL_SCANCODE_A)&&keyHeld(SDL_SCANCODE_B));CHECK(snapshot().pullCommitted==3);
+ CHECK(host_control_port->query(host_control_consumer,AMCL_CONTROL_KEY,SDL_SCANCODE_B)==1);
+ resetFixture();OPENHARMONY_SendButtonFromPlane(2,7,0,activeWindow,SDL_BUTTON_LEFT,true);
+ OPENHARMONY_SendButtonFromPlane(2,8,0,activeWindow,SDL_BUTTON_RIGHT,true);reentryMode=2;
+ OPENHARMONY_RetireControls(2,0,false,false);CHECK(buttonsHeld()==SDL_BUTTON_RMASK);CHECK(snapshot().pullCommitted==3);
+ CHECK(host_control_port->query(host_control_consumer,AMCL_CONTROL_BUTTON,SDL_BUTTON_RIGHT)==1);
+ /* 一次退休先摘掉键盘和按钮整批；释放键A的watcher新建按钮不得被随后二次reset清除。 */
+ resetFixture();OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_A,1);OPENHARMONY_SendButtonFromPlane(2,7,0,activeWindow,SDL_BUTTON_RIGHT,true);
+ reentryMode=6;OPENHARMONY_RetireControls(2,0,false,false);CHECK(!keyHeld(SDL_SCANCODE_A)&&buttonsHeld()==SDL_BUTTON_RMASK);
+ CHECK(host_control_port->query(host_control_consumer,AMCL_CONTROL_BUTTON,SDL_BUTTON_RIGHT)==1&&snapshot().pullCommitted==3);
+ /* 原UP队列payload固定旧窗口。watcher换窗后后续旧ticket不得进入新窗口。 */
+ resetFixture();OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_A,1);OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_B,1);
+ int before=seenCount;SDL_WindowID old=activeWindow->id;reentryMode=3;OPENHARMONY_RetireControls(2,0,false,false);
+ CHECK(seenCount==before+1&&seen[before].key.windowID==old);CHECK(snapshot().pullCommitted==2);
+ CHECK(!keyHeld(SDL_SCANCODE_B));CHECK(snapshot().stateOnly==4);CHECK(snapshot().pollMismatches==0);
+ CHECK(OPENHARMONY_ControlReady(replacement->id));CHECK(host_control_target==replacement->id);
+ before=seenCount;OPENHARMONY_SendKeyFromPlane(2,0,0,SDL_SCANCODE_B,1);
+ CHECK(seenCount==before+1&&seen[before].type==SDL_EVENT_KEY_DOWN&&!seen[before].key.repeat&&seen[before].key.windowID==replacement->id);
+ /* 按钮也在实际换窗后仅清旧cache；新窗口首Down不被旧全局bit吞掉。 */
+ resetFixture();OPENHARMONY_SendButtonFromPlane(2,7,0,activeWindow,SDL_BUTTON_LEFT,true);
+ OPENHARMONY_SendButtonFromPlane(2,8,0,activeWindow,SDL_BUTTON_RIGHT,true);before=seenCount;
+ reentryMode=3;OPENHARMONY_RetireControls(2,0,false,false);CHECK(!buttonsHeld());
+ CHECK(seenCount==before+1&&snapshot().pullCommitted==2&&snapshot().stateOnly==4&&snapshot().pollMismatches==0);
+ CHECK(OPENHARMONY_ControlReady(replacement->id));before=seenCount;
+ OPENHARMONY_SendButtonFromPlane(2,8,0,activeWindow,SDL_BUTTON_RIGHT,true);CHECK(seenCount==before+1);
+ puts("PASS SDL real cache/queue scoped device, atomic retirement and synchronous new owner/window reentry");
+}
+static void checkReceiptsAndPolling(void) {
+ resetFixture();rejectEvents=true;OPENHARMONY_SendKeyFromPlane(1,0,0,SDL_SCANCODE_A,1);
+ OPENHARMONY_SendButtonFromPlane(1,0,0,activeWindow,SDL_BUTTON_LEFT,true);
+ CHECK(keyHeld(SDL_SCANCODE_A)&&(buttonsHeld()&SDL_BUTTON_LMASK));CHECK(snapshot().pullCommitted==0&&snapshot().stateOnly==2);
+ CHECK(drainControls()==0&&snapshot().pollMismatches==0);
+ rejectEvents=false;SDL_SetEventEnabled(SDL_EVENT_KEY_UP,false);SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_UP,false);
+ OPENHARMONY_RetireControls(1,0,false,false);CHECK(!keyHeld(SDL_SCANCODE_A)&&!buttonsHeld());
+ CHECK(snapshot().pullCommitted==0&&snapshot().stateOnly==4&&drainControls()==0);
+ Uint64 accepted=snapshot().accepted,edges=snapshot().edges,reads=snapshot().legalPollReads;
+ (void)SDL_GetKeyboardState(NULL);(void)SDL_GetMouseState(NULL,NULL);
+ CHECK(snapshot().legalPollReads==reads+2&&snapshot().accepted==accepted&&snapshot().edges==edges);
+ /* 事件通知之前的鼠标focus hook可以换窗，原Down不得写缓存或入队。 */
+ resetFixture();SDL_SetMouseFocus(NULL);reentryMode=4;
+ OPENHARMONY_SendButtonFromPlane(2,7,0,activeWindow,SDL_BUTTON_LEFT,true);
+ CHECK(!buttonsHeld()&&snapshot().pullCommitted==0&&snapshot().stateOnly==0&&snapshot().discarded==2);
+ /* synthetic touch在cache之前运行；真正RemoveMouse后必须禁止旧source重建/解引用。 */
+ resetFixture();SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"1");SDL_GetMouse()->mouse_touch_events=true;
+ CHECK(SDL_AddTouch(SDL_MOUSE_TOUCHID,SDL_TOUCH_DEVICE_DIRECT,"AMCL synthetic mouse touch")>=0);
+ reentryMode=5;OPENHARMONY_SendButtonFromPlane(2,7,0,activeWindow,SDL_BUTTON_LEFT,true);CHECK(reentryMode==0);
+ /* claimed Down尚未写cache，退休计划UP亦无cache可改；两笔都只有DISCARDED事实。 */
+ CHECK(!buttonsHeld()&&snapshot().pullCommitted==0&&snapshot().stateOnly==0&&snapshot().discarded==2);
+ SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
+ puts("PASS SDL actual filter/disabled/cache receipts, legal getter reads and pre-cache focus/touch rejection");
+}
+static int foreignThread(void*userdata) {
+ (void)userdata;OPENHARMONY_SendKeyFromPlane(1,0,0,SDL_SCANCODE_B,1);return 0;
+}
+static void checkOrderedAndAdmission(void) {
+ resetFixture();frameLimit=4;pushLegacy(1,AMCL_EVENT_KEY,SDL_SCANCODE_LSHIFT,0,1,0);
+ pushTyped(2,AMCL_BACKEND_EVENT_KEY,AMCL_BACKEND_ACTION_DOWN,SDL_SCANCODE_B,0);
+ pushLegacy(3,AMCL_EVENT_KEY,SDL_SCANCODE_LSHIFT,0,0,0);
+ pushTyped(4,AMCL_BACKEND_EVENT_KEY,AMCL_BACKEND_ACTION_UP,SDL_SCANCODE_B,0);
+ pushLegacy(6,AMCL_EVENT_KEY,SDL_SCANCODE_C,0,1,0);reentryMode=7;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(reentryMode==0);
+ CHECK(!keyHeld(SDL_SCANCODE_LSHIFT)&&!keyHeld(SDL_SCANCODE_B)&&!keyHeld(SDL_SCANCODE_C)&&legacyBegin==2);
+ frameLimit=6;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(keyHeld(SDL_SCANCODE_C));
+ Uint64 accepted=snapshot().accepted;SDL_Thread*t=SDL_CreateThread(foreignThread,"amcl-sdl-consumer",NULL);CHECK(t);SDL_WaitThread(t,NULL);
+ CHECK(snapshot().accepted==accepted&&!keyHeld(SDL_SCANCODE_B));
+ presented=false;pushLegacy(7,AMCL_EVENT_KEY,65,0,1,0);int unread=legacyBegin;
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(legacyBegin==unread);
+ presented=true;OPENHARMONY_RetireControls(3,0,false,true);CHECK(!keyHeld(SDL_SCANCODE_C));
+ pushTyped(8,AMCL_BACKEND_EVENT_FOCUS,0,0,0);frameLimit=8;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ CHECK(!SDL_GetKeyboardFocus());pushTyped(9,AMCL_BACKEND_EVENT_FOCUS,1,0,0);frameLimit=9;
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(SDL_GetKeyboardFocus()==activeWindow);
+ puts("PASS SDL ordered fence, consumer-thread admission, unavailable target and actual focus recovery");
+}
+static void checkPressureAndJoystickBoundary(void) {
+ resetFixture();for(Uint64 device=1;device<=513;device++)OPENHARMONY_SendButtonFromPlane(2,device,0,activeWindow,SDL_BUTTON_LEFT,true);
+ CHECK(snapshot().accepted==512&&snapshot().pullCommitted==1&&buttonsHeld()==SDL_BUTTON_LMASK);
+ OPENHARMONY_SendButtonFromPlane(2,513,0,activeWindow,SDL_BUTTON_LEFT,false);CHECK(snapshot().accepted==512);
+ Uint64 consumer=host_control_consumer;CHECK(SDL_InitSubSystem(SDL_INIT_JOYSTICK));
+ CHECK((SDL_WasInit(SDL_INIT_JOYSTICK)&SDL_INIT_JOYSTICK)!=0&&host_control_consumer==consumer&&snapshot().accepted==512);
+ SDL_QuitSubSystem(SDL_INIT_JOYSTICK);CHECK(buttonsHeld()==SDL_BUTTON_LMASK);
+ OPENHARMONY_RetireControls(2,0,false,false);CHECK(!buttonsHeld()&&snapshot().pullCommitted==2&&drainControls()==2);
+ OPENHARMONY_SendButtonFromPlane(2,513,0,activeWindow,SDL_BUTTON_LEFT,true);CHECK(buttonsHeld()==SDL_BUTTON_LMASK);
+ puts("PASS SDL common owner pressure recovery and independent SDL joystick initialization boundary");
+}
+static void checkAdditiveSourceMotion(void) {
+ resetFixture();grabbing=true;SDL_GetMouse()->relative_mode=true;
+ OPENHARMONY_PumpHostCursor(&bridge,true);seenCount=0;g_menuX=999;g_menuY=999;
+ OPENHARMONY_PumpHostCursor(&bridge,true);CHECK(seenCount==0);
+ /* 菜单绝对位置继续保持旧基线翻转规则；grabbed 的新prefix由独立全SDK夹具验收。 */
+ grabbing=false;SDL_GetMouse()->relative_mode=false;
+ g_menuX=25;g_menuY=30;OPENHARMONY_PumpHostCursor(&bridge,true);CHECK(seenCount==0);
+ g_menuX=42;g_menuY=43;OPENHARMONY_PumpHostCursor(&bridge,true);CHECK(seenCount==1&&seen[0].motion.x==42&&seen[0].motion.y==43);
+ puts("PASS SDL grabbed snapshot retirement and preserved absolute menu cursor policy");
+}
+static void checkQueueAndPullReentry(void) {
+ /* SDL watcher在实际ADD之前执行：其生命周期退休必须阻止原Down随后排到Up后面。 */
+ resetFixture();reentryMode=8;OPENHARMONY_SendKeyFromPlane(1,0,0,SDL_SCANCODE_A,1);
+ CHECK(!keyHeld(SDL_SCANCODE_A));int taken=drainControls();
+ printf("HOST_SDL_REENTRY actualCache=%d actualPoll=%d firstType=%u lastType=%u queueCommit=%llu\n",
+  keyHeld(SDL_SCANCODE_A)?1:0,taken,taken?polled[0].type:0,taken?polled[taken-1].type:0,(unsigned long long)snapshot().pullCommitted);
+ CHECK(taken==1&&polled[0].type==SDL_EVENT_KEY_UP);
+ CHECK(snapshot().pullCommitted==1&&snapshot().stateOnly==2);
+ /* watcher可以读真实cache/Poll，但源队列的再入pump须等当前不可撤回交接完成。 */
+ resetFixture();reentryMode=9;pushLegacy(21,AMCL_EVENT_KEY,65,0,1,0);frameLimit=21;
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(keyHeld(SDL_SCANCODE_A)&&legacyBegin==1);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(!keyHeld(SDL_SCANCODE_A));
+ CHECK(drainControls()==2&&polled[0].type==SDL_EVENT_KEY_DOWN&&polled[1].type==SDL_EVENT_KEY_UP);
+ CHECK(snapshot().pullCommitted==2&&snapshot().pollMismatches==0);
+ puts("PASS SDL actual post-watcher queue validation, legal Poll reentry and nonrecursive source pull");
+}
+static void checkConsumerRetirement(void) {
+ resetFixture();Uint64 old=host_control_consumer;OPENHARMONY_SendKeyFromPlane(1,0,0,SDL_SCANCODE_A,1);
+ OPENHARMONY_RetireControls(3,0,false,true);OPENHARMONY_CloseControl();OPENHARMONY_CloseControl();
+ AmclControlSnapshotV1 expired;SDL_zero(expired);expired.size=sizeof(expired);
+ CHECK(host_control_port->snapshot(old,&expired)==AMCL_CONTROL_STALE&&host_control_consumer==0&&!host_control_thread_valid);
+ CHECK(OPENHARMONY_ControlReady(activeWindow->id)&&host_control_consumer!=old&&!keyHeld(SDL_SCANCODE_A));
+ puts("PASS SDL exact consumer close, duplicate cleanup and fresh opaque consumer admission");
+}
+int main(void) {
+ /* 真正的cold getter不初始化SDL、不借owner、不创建consumer，也不改所选描述符。 */
+ CHECK(SDL_WasInit(0)==0&&host_control_port==NULL&&host_control_consumer==0);
+ CHECK(SDL_AMCL_InputControlProtocolV1()==1&&SDL_AMCL_ValidateInputRuntimeV1(false));
+ CHECK(SDL_WasInit(0)==0&&host_control_port==NULL&&host_control_consumer==0);
+#ifdef _WIN32
+ setFixtureHostDescriptor();_putenv_s(AMCL_CONTROL_ENV,"");
+#else
+ setFixtureHostDescriptor();unsetenv(AMCL_CONTROL_ENV);
+#endif
+ CHECK(!SDL_InitSubSystem(SDL_INIT_EVENTS)&&SDL_WasInit(0)==0);
+#ifdef _WIN32
+ _putenv_s(AMCL_CONTROL_ENV,"AMCLCONTROL:1:bad");
+#else
+ setenv(AMCL_CONTROL_ENV,"AMCLCONTROL:1:bad",1);
+#endif
+ CHECK(!SDL_InitSubSystem(SDL_INIT_EVENTS)&&SDL_WasInit(0)==0);
+#ifdef _WIN32
+ _putenv_s("AMCL_SDL_HOST_RUNTIME","");_putenv_s(AMCL_CONTROL_ENV,"");
+#else
+ unsetenv("AMCL_SDL_HOST_RUNTIME");unsetenv(AMCL_CONTROL_ENV);
+#endif
+ puts("PASS SDL actual cold protocol/no-init/no-consumer and actual Init rejects missing/bad Core owner");
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");CHECK(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ activeWindow=SDL_CreateWindow("AMCL SDL host fixture",640,480,SDL_WINDOW_HIDDEN);CHECK(activeWindow);initialWindowId=activeWindow->id;
+ replacement=SDL_CreateWindow("AMCL SDL replacement",640,480,SDL_WINDOW_HIDDEN);CHECK(replacement);
+ CHECK(SDL_AddEventWatch(watcher,NULL));SDL_SetEventFilter(filter,NULL);
+ /* 第一轮owner描述符缺席和损坏必须拒绝，输入源材料没有被READY/claim冒充消费。 */
+ pushLegacy(1,AMCL_EVENT_KEY,65,0,1,0);OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(legacyBegin==0);
+#ifdef _WIN32
+ _putenv_s(AMCL_CONTROL_ENV,"AMCLCONTROL:1:bad");
+#else
+ setenv(AMCL_CONTROL_ENV,"AMCLCONTROL:1:bad",1);
+#endif
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(legacyBegin==0);
+ amclControlDeliveryPublishV1();amclLookExecutionPublishV1();
+ CHECK(amclLookExecutionGetPortV1()->bindSession(1)==0);CHECK(SDL_AMCL_ValidateInputRuntimeV1(true));
+#ifdef _WIN32
+ setFixtureHostDescriptor();
+#else
+ setFixtureHostDescriptor();
+#endif
+ CHECK(SDL_InitSubSystem(SDL_INIT_EVENTS));CHECK(host_control_consumer==0);
+ checkQueueAndPullReentry();checkTraces();checkDevicesAndRetire();checkReceiptsAndPolling();checkOrderedAndAdmission();checkPressureAndJoystickBoundary();checkAdditiveSourceMotion();checkConsumerRetirement();
+ CHECK(snapshot().pollMismatches==0);SDL_RemoveEventWatch(watcher,NULL);SDL_SetEventFilter(NULL,NULL);
+ SDL_DestroyWindow(SDL_GetWindowFromID(initialWindowId));SDL_DestroyWindow(replacement);SDL_Quit();
+ puts("PASS SDL full ordered series + complete real SDK + unique neutral Core owner");return 0;
+}

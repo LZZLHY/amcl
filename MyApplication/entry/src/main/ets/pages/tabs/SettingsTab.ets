@@ -3,6 +3,7 @@ import { MobileglRendererSettings } from '../../components/MobileglRendererSetti
 import { ProductDeveloperSettings } from 'entry/ProductDeveloperSettings'
 import { ProductTouchSettings } from 'entry/ProductTouchSettings';
 import { DistributionPolicy } from 'commons';
+import { TouchLearningStore } from '../../components/TouchLearningStore'
 /**
  * SettingsTab.ets — 设置 Tab 组件
  *
@@ -19,11 +20,13 @@ import { router, promptAction } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors, ThemeMode } from 'commons';
+import { ImmersiveLightPreferences, dockLightModeLabel } from 'commons';
 import { APP_VERSION } from 'commons';
 import { DOCS_INSTALL_URL, DOCS_INSTALL_FALLBACK_URL, DOCS_NO_JIT_URL, DOCS_NO_JIT_FALLBACK_URL } from 'commons';
 import { AMCL_WEB_BASE } from 'commons';
 import { DeviceProfile } from 'commons';
 import { JDK_AUTO } from 'commons';
+import { JdkVersionInfo } from 'launch';
 import { GAME_LANGUAGES, GameLanguageOption, gameLanguageLabel } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from '../../components/AppIcon';
@@ -33,9 +36,11 @@ import { floatingDockReserveHeight } from 'commons';
 import { AnimatedPillBar } from '../../components/AnimatedPillBar';
 import { MotionSection } from '../../components/MotionSection';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
+import { ImmersiveLightSettings } from '../../components/ImmersiveLightSettings';
+import { ImmersiveTitleScaffold } from '../../components/ImmersiveTitleScaffold';
 
 
-/** 设置分区的检索词仅用于本地导航，不改变任一配置值。 */
+/** 设置分区的检索词仅用于本地导航；JDK 更新跟随下载分类，不改变任一配置值。 */
 interface SettingsSection {
   id: string;
   title: string;
@@ -43,15 +48,23 @@ interface SettingsSection {
   keywords: string;
   icon: AppIconName;
 }
+/** 普通启动器和商店管理态共享同一个光感分区，保证侧栏、搜索和概览入口一致。 */
+const IMMERSIVE_SECTION: SettingsSection = {
+  id: 'immersive', title: '沉浸光感', description: '导航材质 · 底部栏 · 圆形图标按钮',
+  keywords: '沉浸 光感 导航 材质 精美 轻柔 流畅 自动 底部栏 标题栏 返回 关闭 按钮', icon: AppIconName.Settings
+};
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'performance', title: '游戏与性能', description: '内存 · Java · 游戏进程', keywords: '内存 堆 虚拟 java jdk jvm 性能 独立 进程 平板 启动 重启', icon: AppIconName.Memory },
-  { id: 'controls', title: '显示与操控', description: '主题 · 帧率 · 语言 · 输入与渲染', keywords: '显示 主题 浅色 深色 帧率 语言 隔离 窗口 触控 手柄 渲染 mobilegl 开发', icon: AppIconName.GameController },
-  { id: 'download', title: '下载与存储', description: '下载源 · 加速 · 游戏数据位置', keywords: '下载 存储 镜像 官方 jdk 模组 数据 位置 缓存 并发 加速', icon: AppIconName.Download },
+  { id: 'controls', title: '显示与操控', description: '主题 · 帧率 · 输入', keywords: '显示 主题 浅色 深色 帧率 语言 隔离 窗口 触控 手柄 渲染 mobilegl 开发', icon: AppIconName.GameController },
+  IMMERSIVE_SECTION,
+  { id: 'download', title: '下载与存储', description: '下载源 · 加速 · 游戏数据位置', keywords: '下载 存储 镜像 官方 jdk 模组 数据 位置 缓存 并发 加速 JDK 更新 检查 稳定 预览 通道', icon: AppIconName.Download },
   { id: 'logs', title: '日志与支持', description: '日志保留 · 网络检测 · 反馈', keywords: '日志 保留 导出 剪贴板 网络 检测 jit 安装 帮助 支持 反馈 关于 更新', icon: AppIconName.Help },
 ];
 
 @Component
 export struct SettingsTab {
+  /** 父页面统一发布有效运行能力；商店管理态保留主题、文件归属和下载配置。 */
+  @Prop @Watch('onRunCapabilityChanged_') canRunGame: boolean = true
   @Prop mcDir: string = ''
   @Prop mcVersion: string = ''
   @Prop theme: ThemeColors = {} as ThemeColors
@@ -64,6 +77,14 @@ export struct SettingsTab {
   /** 虚拟内存（堆文件 / -XX:AllocateHeapAt）模式开关。 */
   @Prop virtualMemoryMode: boolean = false
   @Prop themeMode: ThemeMode = ThemeMode.SYSTEM
+  /** 光感详情只消费父层的完整确认态；保存、回退和设备查询均留在父层。 */
+  @Prop immersiveLight: ImmersiveLightPreferences = new ImmersiveLightPreferences()
+  @Prop immersiveLightSaving: boolean = false
+  @Prop immersiveLightHasPresets: boolean = false
+  @Prop immersiveLightStatus: string = ''
+  @Prop immersiveLightSaveError: string = ''
+  /** Tab 隐藏不会卸载组件；显式可见性用于撤销设置二级页的系统返回消费资格。 */
+  @Prop @Watch('syncSectionBack_') visible: boolean = false
   @Prop selectedJdkVersion: string = '17'
   @Prop versionIsolation: boolean = true
   @Prop useNewWindow: boolean = false
@@ -90,6 +111,13 @@ export struct SettingsTab {
   @Prop accelStatus: string = ''
   /** JDK 下载源偏好：'auto'|'github'|'gitee'|'mirror'。 */
   @Prop jdkSource: string = 'auto'
+  @Prop jdkVersions: JdkVersionInfo[] = []
+  @Prop jdkChannel: string = 'stable'
+  @Prop jdkWebEnabled: boolean = false
+  @Prop jdkAutoCheck: boolean = true
+  @Prop jdkChecking: boolean = false
+  @Prop jdkHasUpdate: boolean = false
+  @Prop jdkCatalogStatus: string = ''
   /** MC 版本下载源偏好：'auto'|'mirror'|'official'（client.jar / 依赖库 / 游戏资源）。 */
   @Prop mcSource: string = 'auto'
   /** 全局自定义 JVM 参数（空格分隔）。对所有版本生效；单版本参数会在其后追加。 */
@@ -105,6 +133,9 @@ export struct SettingsTab {
   onXmxChange: (value: number) => void = () => {}
   onVirtualMemoryModeChange: (isOn: boolean) => void = () => {}
   onThemeChange: (mode: ThemeMode) => void = () => {}
+  onImmersiveLightChange: (preferences: ImmersiveLightPreferences) => void = () => {}
+  /** 父页面保有系统返回优先级，设置页仅登记当前二级分区是否可以退回概览。 */
+  onSectionBackReady: (handler: (() => boolean) | undefined) => void = () => {}
   onVersionIsolationChange: (isOn: boolean) => void = () => {}
   onNewWindowChange: (isOn: boolean) => void = () => {}
   /** 父页面负责等待保存/错误回滚；此组件不修改当前进程路线或正在运行的游戏。 */
@@ -124,6 +155,10 @@ export struct SettingsTab {
   onJdkVersionChange: (version: string) => void = () => {}
   /** 用户切换 JDK 下载源；父组件持久化到 prefs 并注入 setJdkDownloadSource。 */
   onJdkSourceChange: (value: string) => void = () => {}
+  onJdkChannelChange: (value: string) => void = () => {}
+  onJdkWebChange: (enabled: boolean) => void = () => {}
+  onJdkAutoCheckChange: (enabled: boolean) => void = () => {}
+  onCheckJdkUpdate: () => void = () => {}
   /** 用户切换 MC 版本下载源；父组件持久化到 prefs 并注入 setMcSourcePreference。 */
   onMcSourceChange: (value: string) => void = () => {}
   /** 用户编辑全局自定义 JVM 参数；父组件持久化到 prefs（PreferenceManager.customJvmArgs）。 */
@@ -145,16 +180,38 @@ export struct SettingsTab {
   @State private jvmArgsDraft: string = ''
   /** 宽度取自当前窗口；折叠屏与分屏缩放时不依赖设备出厂类型。 */
   @State private viewportWidth: number = 0
-  @State private activeSection: string = 'overview'
+  @State @Watch('syncSectionBack_') private activeSection: string = 'overview'
   @State private settingsQuery: string = ''
   @State private xmxDraft: string = ''
   @State private memoryError: string = ''
   /** 只控制设置内容区；标题和搜索栏为固定兄弟节点，不随内容滚走。 */
   private contentScroller: Scroller = new Scroller()
+  /** 非响应式挂载标记防止初始 Prop 同步期间过早发布返回处理器。 */
+  private sectionBackMounted_: boolean = false
+  /** 处理器保持稳定身份；执行时再次验证可见性，隐藏后的旧闭包不会误消费返回。 */
+  private sectionBackHandler_: () => boolean = (): boolean => {
+    if (!this.sectionBackMounted_ || !this.visible || this.activeSection === 'overview') return false
+    this.selectSection_('overview')
+    return true
+  }
 
   aboutToAppear() {
     this.jvmArgsDraft = this.customJvmArgs
     this.xmxDraft = String(this.mcXmx)
+    this.sectionBackMounted_ = true
+    this.syncSectionBack_()
+  }
+
+  /** 组件卸载时注销闭包；仅切换 Tab 时由 visible 的 Watch 完成同样的撤销。 */
+  aboutToDisappear(): void {
+    this.sectionBackMounted_ = false
+    this.onSectionBackReady(undefined)
+  }
+
+  /** 分区与可见性共用一个登记点，不建立新的路由栈，也不截获其他页面的返回。 */
+  private syncSectionBack_(): void {
+    if (!this.sectionBackMounted_) return
+    this.onSectionBackReady(this.visible && this.activeSection !== 'overview' ? this.sectionBackHandler_ : undefined)
   }
 
   /** 持久化全局自定义 JVM 参数（trim 首尾空白）。 */
@@ -235,6 +292,7 @@ export struct SettingsTab {
 
   /** 分区切换前保存 JVM 草稿，进入任何分区都从顶部开始，不继承上个分区的滚动位置。 */
   private selectSection_(section: string): void {
+    if (section === 'performance' && !this.canRunGame) section = 'overview'
     if (this.jvmArgsExpanded) this.saveCustomJvmArgs()
     this.jvmArgsExpanded = false
     this.activeSection = section
@@ -272,12 +330,31 @@ export struct SettingsTab {
 
   private visibleSections_(): SettingsSection[] {
     const query: string = this.settingsQuery.trim().toLowerCase()
-    return SETTINGS_SECTIONS.filter((section: SettingsSection): boolean =>
+    return this.availableSections_().filter((section: SettingsSection): boolean =>
       query.length === 0 || (section.title + ' ' + section.description + ' ' + section.keywords).toLowerCase().indexOf(query) >= 0)
   }
 
+  /** 搜索、侧栏和概览共用同一分区库存，隐藏入口时不保留可搜索的运行术语。 */
+  private availableSections_(): SettingsSection[] {
+    if (this.canRunGame) return SETTINGS_SECTIONS
+    return [
+      { id: 'controls', title: '主题与文件归属', description: '主题 · 版本隔离', keywords: '主题 浅色 深色 隔离 文件', icon: AppIconName.Settings },
+      IMMERSIVE_SECTION,
+      { id: 'download', title: '下载与存储', description: '下载源 · 游戏数据位置', keywords: '下载 存储 镜像 官方 模组 数据 位置 缓存 并发', icon: AppIconName.Download },
+      { id: 'logs', title: '日志与支持', description: '日志保留 · 网络检测 · 关于', keywords: '日志 保留 导出 网络 检测 关于', icon: AppIconName.Help },
+    ]
+  }
+
+  private onRunCapabilityChanged_(): void {
+    if (!this.canRunGame) {
+      this.jvmArgsExpanded = false
+      this.settingsQuery = ''
+      if (this.activeSection === 'performance') this.activeSection = 'overview'
+    }
+  }
+
   private sectionTitle_(): string {
-    const section = SETTINGS_SECTIONS.find((candidate: SettingsSection): boolean => candidate.id === this.activeSection)
+    const section = this.availableSections_().find((candidate: SettingsSection): boolean => candidate.id === this.activeSection)
     return section?.title ?? '设置'
   }
 
@@ -295,6 +372,16 @@ export struct SettingsTab {
     catch (e) { /* 当前页面可能已离开，不再触发第二次导航。 */ }
   }
 
+  /** 固定搜索放入共同标题附加区，沿用原查询状态和分区切换，正文滚动器不重建。 */
+  @Builder
+  private SettingsHeaderAccessory_() {
+    Column() {
+      TextInput({ placeholder: '搜索设置或功能', text: this.settingsQuery })
+        .height(44).fontSize(14).borderRadius(22).backgroundColor(this.theme.bgCard).id('settings-fixed-search')
+        .onChange((value: string): void => { this.changeSearch_(value) })
+    }.width('100%').height(56).padding({ bottom: 12 })
+  }
+
   build() {
     Row({ space: 24 }) {
       if (this.viewportWidth >= 840) {
@@ -304,7 +391,7 @@ export struct SettingsTab {
             .fontColor(this.activeSection === 'overview' ? this.theme.primary : this.theme.textPrimary)
             .backgroundColor(this.activeSection === 'overview' ? this.theme.bgCard : Color.Transparent)
             .onClick(() => { this.selectSection_('overview') })
-          ForEach(SETTINGS_SECTIONS, (section: SettingsSection) => {
+          ForEach(this.availableSections_(), (section: SettingsSection) => {
             Button(section.title).height(48).width('100%').fontSize(14)
               .fontColor(this.activeSection === section.id ? this.theme.primary : this.theme.textSecondary)
               .backgroundColor(this.activeSection === section.id ? this.theme.bgCard : Color.Transparent)
@@ -313,52 +400,19 @@ export struct SettingsTab {
           Button('活动账本').height(48).width('100%').fontSize(14).onClick(() => { this.openLedger_() })
         }.width(184).height('100%').padding({ top: this.topSafeHeight + 32, bottom: 24 })
       }
-      Column({ space: 20 }) {
-        // 固定栏与 Scroll 平级，不用覆盖层遮住滚动内容，也不随二级设置的内容高度移动。
-        Column({ space: 16 }) {
-          Row({ space: 12 }) {
-            if (this.activeSection !== 'overview' && this.viewportWidth < 840) {
-              Button() { AppIcon({ name: AppIconName.Back, iconSize: 20, color: this.theme.primary }) }
-                .width(44).height(44).backgroundColor(this.theme.bgCard)
-                .accessibilityText('返回常用设置').onClick(() => { this.selectSection_('overview') })
-            }
-            Column({ space: 4 }) {
-              Text('AMCL / YOUR LAUNCHER').fontSize(12).fontColor(this.theme.textSecondary)
-              Text(this.sectionTitle_()).fontSize(28).fontWeight(600).fontColor(this.theme.textPrimary)
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            AppIcon({ name: AppIconName.Settings, iconSize: 24, color: this.theme.primary })
-          }.width('100%')
-          TextInput({ placeholder: '搜索设置或功能', text: this.settingsQuery })
-            .height(44).fontSize(14).borderRadius(22).backgroundColor(this.theme.bgCard).id('settings-fixed-search')
-            .onChange((value: string): void => { this.changeSearch_(value) })
-        }.width('100%').padding({ top: this.topSafeHeight + 16 }).backgroundColor(this.theme.bgPrimary)
-        Scroll(this.contentScroller) {
-          Column({ space: 20 }) {
-            if (this.settingsQuery.trim().length > 0) {
-              ForEach(this.visibleSections_(), (section: SettingsSection) => { this.SectionRow_(section) },
-                (section: SettingsSection): string => section.id)
-              if (this.visibleSections_().length === 0) {
-                Text('没有匹配的设置，试试“内存”“日志”或“下载源”。').fontSize(14).fontColor(this.theme.textSecondary).padding(24)
-              }
-            } else if (this.activeSection === 'overview') {
-              this.Overview_()
-            } else if (this.activeSection === 'performance') {
-              MotionSection({ order: 0 }) { this.MemorySection_() }
-              MotionSection({ order: 1 }) { this.RuntimeSection_() }
-            } else if (this.activeSection === 'controls') {
-              MotionSection({ order: 0 }) { this.ControlsSection_() }
-            } else if (this.activeSection === 'download') {
-              MotionSection({ order: 0 }) { this.DownloadsSection_() }
-            } else {
-              MotionSection({ order: 0 }) { this.SupportSection_() }
-            }
-            Text('AMCL v' + APP_VERSION).fontSize(12).fontColor(this.theme.textSecondary)
-              .width('100%').textAlign(TextAlign.Center).padding({ top: 8, bottom: 24 })
-          }.width('100%').padding({ bottom: floatingDockReserveHeight(this.bottomSafeHeight) })
-        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).id('settings-content-scroll')
-          // 视口始终铺满，dock 覆盖在内容上方；仅内容尾部留可滚动余量，不截短整个页面。
+      Column() {
+        // 包括光感分区自身在内，所有二级设置使用共同标题；返回仍只回overview。
+        ImmersiveTitleScaffold({ title: this.sectionTitle_(), theme: this.theme,
+          subtitle: DistributionPolicy.isStore() ? 'AMCL / VERSION MANAGER' : 'AMCL / YOUR LAUNCHER',
+          titleId: 'settings-section-title', topSafeHeight: this.topSafeHeight, surfaceColor: this.theme.bgPrimary,
+          showBack: this.activeSection !== 'overview' && this.viewportWidth < 840,
+          backLabel: '返回常用设置', backId: 'settings-section-back',
+          onBack: (): void => { this.selectSection_('overview') },
+          accessoryHeight: 56, headerAccessory: (): void => { this.SettingsHeaderAccessory_() },
+          content: (): void => { this.ImmersiveTitleContent1_(); }
+        })
       }.layoutWeight(1).height('100%')
-    }.width('100%').height('100%').padding({ left: 20, right: 20 }).backgroundColor(this.theme.bgPrimary)
+    }.width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
       .onAreaChange((_old: Area, current: Area) => { this.viewportWidth = Number(current.width) })
   }
 
@@ -371,7 +425,10 @@ export struct SettingsTab {
         Blank()
         Text('全局生效').fontSize(12).fontColor(this.theme.textSecondary)
       }.width('100%')
-      if (this.viewportWidth >= 600) {
+      if (!this.canRunGame) {
+        this.QuickTheme_()
+        this.LedgerShortcut_()
+      } else if (this.viewportWidth >= 600) {
         Row({ space: 20 }) {
           Column({ space: 20 }) {
             MotionSection({ order: 0 }) { this.QuickMemory_() }
@@ -392,7 +449,7 @@ export struct SettingsTab {
       }
       Text('按场景调整').fontSize(16).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
       Column({ space: 2 }) {
-        ForEach(SETTINGS_SECTIONS, (section: SettingsSection) => { this.SectionRow_(section) },
+        ForEach(this.availableSections_(), (section: SettingsSection) => { this.SectionRow_(section) },
           (section: SettingsSection): string => section.id)
       }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(24)
       Button('关于 AMCL').height(44).fontSize(14).fontColor(this.theme.primary).backgroundColor(Color.Transparent)
@@ -452,6 +509,10 @@ export struct SettingsTab {
         onSelect: (index: number): void => {
           this.onThemeChange(index === 0 ? ThemeMode.LIGHT : index === 1 ? ThemeMode.DARK : ThemeMode.SYSTEM)
         } })
+      Button('沉浸光感：' + this.immersiveLightSummary_())
+        .height(44).fontSize(13).fontColor(this.theme.primary).backgroundColor(Color.Transparent)
+        .id('settings-quick-immersive')
+        .onClick((): void => { this.selectSection_('immersive') })
     }.width('100%').padding(20).borderRadius(24).backgroundColor(this.theme.bgCard)
   }
 
@@ -585,10 +646,9 @@ export struct SettingsTab {
           .fontSize(12).fontWeight(400).fontColor(this.theme.textHint).margin({ top: 2 })
         Flex({ wrap: FlexWrap.Wrap }) {
           this.JdkChoiceChip(JDK_AUTO, '自动', '')
-          this.JdkChoiceChip('8', 'JDK 8', '实验')
-          this.JdkChoiceChip('17', 'JDK 17', '')
-          this.JdkChoiceChip('21', 'JDK 21', '新')
-          this.JdkChoiceChip('25', 'JDK 25', '新')
+          ForEach(this.jdkVersions, (jdk: JdkVersionInfo) => {
+            this.JdkChoiceChip(jdk.version, 'JDK ' + jdk.version, jdk.updateAvailable ? '更新' : '')
+          }, (jdk: JdkVersionInfo): string => jdk.version)
         }
         .width('100%').margin({ top: 12 })
       }
@@ -660,9 +720,30 @@ export struct SettingsTab {
   }
 
   /** 显示/控制复用现有产品组件，设备能力和发行渠道的开关不在此重定义。 */
+  /** 设置只登记重学请求；回到游戏世界后由真正的触控面开始引导，不在启动器另开模拟课堂。 */
+  private requestTouchGuide_(): void {
+    const context=this.getUIContext().getHostContext()
+    if(context===undefined) return
+    const success: boolean=new TouchLearningStore(context.filesDir).request()
+    this.getUIContext().getPromptAction().showToast({message:success ? '已开启引导，进入游戏世界后开始' : '未能保存引导设置，请重试'})
+  }
   @Builder
   private ControlsSection_() {
     Column({ space: 20 }) {
+      if(this.canRunGame && ProductInputProfile.supportsTouchLayouts()) {
+        Button('触控与输入设置').height(48).width('100%').onClick((): void => {
+          this.getUIContext().getRouter().pushUrl({url:'pages/LayoutEditorPage',params:{settingsOnly:true}})
+        })
+        Row({space:12}) {
+          Column({space:4}) {
+            Text('触控操作帮助').fontSize(16).fontColor(this.theme.textPrimary)
+            Text('进入世界后，用真正的摇杆、物品栏和菜单学习操作；可随时关闭或重新开启。')
+              .fontSize(14).fontColor(this.theme.textHint)
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Button('开始引导').fontSize(16).height(48)
+            .onClick((): void => { this.requestTouchGuide_() })
+        }.width('100%').padding(16).backgroundColor(this.theme.bgCard).borderRadius(20)
+      }
       // 显示卡片
       Column() {
         this.SettingSectionTitle('显示')
@@ -679,6 +760,10 @@ export struct SettingsTab {
 
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
 
+        this.ImmersiveLightEntry_()
+        Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
+
+        if (this.canRunGame) {
         Column() {
           Text('系统调度帧率上限')
             .fontSize(16).fontWeight(400).fontColor(this.theme.textPrimary)
@@ -698,6 +783,7 @@ export struct SettingsTab {
         }
         .alignItems(HorizontalAlign.Start)
         .width('100%').padding({ top: 12, bottom: 12 })
+        }
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 4, bottom: 4 })
@@ -705,6 +791,7 @@ export struct SettingsTab {
       .borderRadius(24)
       .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
       Column() {
+        if (this.canRunGame) {
         // 游戏语言（options.txt 的 lang）—— 全局默认；单版本可在「版本管理 → 版本详情」覆盖
         Row() {
           Column() {
@@ -733,6 +820,7 @@ export struct SettingsTab {
         .alignItems(VerticalAlign.Center)
 
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
+        }
         Row() {
           Column() {
             Text('版本隔离')
@@ -747,7 +835,7 @@ export struct SettingsTab {
         .width('100%').height(56).alignItems(VerticalAlign.Center)
 
         // 平板的实际路线由“游戏与性能”中的独立进程开关解释，不再并列一条错误的页面路线说明。
-        if (!ProductInputProfile.canChooseTabletProcess()) {
+        if (this.canRunGame && !ProductInputProfile.canChooseTabletProcess()) {
           Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
           Row() {
             Column() {
@@ -766,18 +854,20 @@ export struct SettingsTab {
 
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
 
+        if (this.canRunGame) {
         ProductTouchSettings({ theme: this.theme })
         DesktopGamepadSettings({ theme: this.theme })
         MobileglRendererSettings({ theme: this.theme, mcDir: this.mcDir, mcVersion: this.mcVersion })
 
         ProductDeveloperSettings({ theme: this.theme })
+        }
 
       }
       .width('100%').padding(20).backgroundColor(this.theme.bgCard).borderRadius(24).alignItems(HorizontalAlign.Start)
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
-  /** 下载源、数据位置与模组下载迁入同一分类，但保留所有原有回调与禁用条件。 */
+  /** 下载源、JDK 更新、数据位置与模组下载归于同一分类，保留原有回调与禁用条件。 */
   @Builder
   private DownloadsSection_() {
     Column({ space: 20 }) {
@@ -800,25 +890,68 @@ export struct SettingsTab {
 
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
 
+        if (this.canRunGame) {
         // JDK 下载源偏好
         Column() {
           Text('JDK 下载源')
             .fontSize(16).fontWeight(400).fontColor(this.theme.textPrimary)
-          Text('自动 = Gitee 国内直连优先（推荐）；源站 = 优先直连 GitHub（开代理/VPN 时最快，快过任何镜像）；Gitee = 强制国内镜像；镜像 = 只走 GitHub 加速代理。')
+          Text('自动优先使用可用的 Gitee 分卷，再尝试 GitHub；源站只直连 GitHub，镜像只使用 GitHub 加速代理。')
             .fontSize(12).fontWeight(400).fontColor(this.theme.textHint).margin({ top: 2 })
           Flex({ wrap: FlexWrap.Wrap }) {
             this.JdkSourceChip('auto', '自动')
             this.JdkSourceChip('github', '源站')
             this.JdkSourceChip('gitee', 'Gitee')
             this.JdkSourceChip('mirror', '镜像')
+            if (this.jdkWebEnabled) { this.JdkSourceChip('web', 'AMCL 服务器') }
           }
           .width('100%').margin({ top: 12 })
+          Row() {
+            Text('启用 AMCL 服务器下载 JDK').fontSize(14).fontColor(this.theme.textSecondary).layoutWeight(1)
+            Toggle({ type:ToggleType.Switch,isOn:this.jdkWebEnabled })
+              .onChange((enabled: boolean): void => { this.onJdkWebChange(enabled) })
+          }.width('100%').margin({ top:10 })
+          Text('默认关闭；启用后可作为自动回退来源，也可单独选择。')
+            .fontSize(12).fontColor(this.theme.textHint)
+        }
+        .alignItems(HorizontalAlign.Start)
+        .width('100%').padding({ top: 12, bottom: 12 })
+
+        Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
+        // JDK 更新与下载源相邻：只迁移展示位置，检查状态、自动检查及通道持久化仍由 Index 管理。
+        // 检查期间继续禁用按钮；更新红点、目录状态和预览提示沿用同一组 @Prop，不重复请求或保存配置。
+        Column() {
+          Row() {
+            Text('JDK 更新').fontSize(15).fontColor(this.theme.textPrimary).layoutWeight(1)
+            if (this.jdkHasUpdate) { Circle().width(7).height(7).fill(this.theme.error).margin({ right:8 }) }
+            Button(this.jdkChecking ? '正在检查…' : '检查 JDK 更新')
+              .enabled(!this.jdkChecking).fontSize(12).onClick((): void => { this.onCheckJdkUpdate() })
+          }.width('100%').margin({ top:12 })
+          if (this.jdkCatalogStatus.length > 0) {
+            Text(this.jdkCatalogStatus).fontSize(12).fontColor(this.theme.textHint).margin({ top:6 })
+          }
+          Row() {
+            Text('自动检查 JDK 更新').fontSize(14).fontColor(this.theme.textSecondary).layoutWeight(1)
+            Toggle({ type:ToggleType.Switch,isOn:this.jdkAutoCheck })
+              .onChange((enabled: boolean): void => { this.onJdkAutoCheckChange(enabled) })
+          }.width('100%').margin({ top:8 })
+          Row({ space:8 }) {
+            Text('更新通道').fontSize(14).fontColor(this.theme.textSecondary).layoutWeight(1)
+            Button(this.jdkChannel === 'stable' ? '稳定 ✓' : '稳定').fontSize(12)
+              .onClick((): void => { this.onJdkChannelChange('stable') })
+            Button(this.jdkChannel === 'preview' ? '预览 ✓' : '预览').fontSize(12)
+              .onClick((): void => { this.onJdkChannelChange('preview') })
+          }.width('100%').margin({ top:8 })
+          if (this.jdkChannel === 'preview') {
+            Text('预览包包含较新的修复，尚待更多设备与模组验证。现有 JDK 可继续使用。')
+              .fontSize(12).fontColor(this.theme.textHint).margin({ top:6 })
+          }
         }
         .alignItems(HorizontalAlign.Start)
         .width('100%').padding({ top: 12, bottom: 12 })
 
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
         // 游戏数据位置：沙箱(默认,卸载即删) / 外部 Download/com.amcl.launcher(文件管理器显示为 AMCL,卸载不丢)
+        }
         Row() {
           Column() {
             Text('游戏数据位置')
@@ -1025,6 +1158,7 @@ export struct SettingsTab {
       // 支持作者卡片（内嵌 AMCL-web 赞助页）
       Column() {
         this.SettingSectionTitle('支持')
+        if (!DistributionPolicy.isStore()) {
         Row() {
           Column() {
             Text('支持作者')
@@ -1063,11 +1197,23 @@ export struct SettingsTab {
 
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
 
+        }
+        if (!DistributionPolicy.isStore()) {
+          Row() {
+            Column() {
+              Text('软件更新').fontSize(16).fontColor(this.theme.textPrimary)
+              Text('稳定／测试通道 · 手动安装包').fontSize(12).fontColor(this.theme.textHint).margin({top:2})
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            this.SettingNavChevron()
+          }.width('100%').height(56).alignItems(VerticalAlign.Center)
+            .onClick((): void=>{this.getUIContext().getRouter().pushUrl({url:'pages/SoftwareUpdatePage'});})
+          Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
+        }
         Row() {
           Column() {
             Text('关于')
               .fontSize(16).fontWeight(400).fontColor(this.theme.textPrimary)
-            Text(DistributionPolicy.isStore() ? '版本信息 · GitHub · 联系方式' : '版本信息 · GitHub · 联系方式 · 检查更新')
+            Text(DistributionPolicy.isStore() ? '版本信息 · 联系方式 · 允许调试' : '版本信息 · GitHub · 联系方式 · 检查更新')
               .fontSize(12).fontWeight(400).fontColor(this.theme.textHint).margin({ top: 2 })
           }
           .alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -1112,6 +1258,30 @@ export struct SettingsTab {
   @Builder
   SettingNavChevron() {
     AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.textHint })
+  }
+
+  /** 概览和旧显示分区只呈现确认态摘要，四档及模块编辑统一放到独立光感详情。 */
+  private immersiveLightSummary_(): string {
+    if (!this.immersiveLight.enabled) return '已关闭'
+    if (!this.immersiveLight.bottomBar && !this.immersiveLight.titleButtons) return '未启用模块'
+    return dockLightModeLabel(this.immersiveLight.navigationMode)
+  }
+
+  /** 保留原显示卡片里的一个导航行，不再维护第二套五档编辑器。 */
+  @Builder
+  private ImmersiveLightEntry_() {
+    Button() {
+      Row({ space: 12 }) {
+        Column({ space: 4 }) {
+          Text('沉浸光感').fontSize(16).fontColor(this.theme.textPrimary)
+          Text('导航材质与应用位置 · ' + this.immersiveLightSummary_())
+            .fontSize(12).fontColor(this.theme.textHint)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        this.SettingNavChevron()
+      }.width('100%')
+    }.width('100%').constraintSize({ minHeight: 64 }).padding({ top: 12, bottom: 12 })
+      .backgroundColor(Color.Transparent).id('settings-open-immersive')
+      .onClick((): void => { this.selectSection_('immersive') })
   }
 
   @Builder
@@ -1162,6 +1332,7 @@ export struct SettingsTab {
 
   /** 用系统浏览器打开外部链接（上架轨的赞助/反馈跳转用，避免内嵌自有服务器 WebView）。 */
   private openExternal_(url: string): void {
+    if (DistributionPolicy.isStore()) return
     try {
       let ctx = AppStorage.get<common.UIAbilityContext>('uiAbilityContext');
       if (!ctx) return;
@@ -1286,4 +1457,43 @@ export struct SettingsTab {
       }
     }
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+        Scroll(this.contentScroller) {
+          Column({ space: 20 }) {
+            if (this.settingsQuery.trim().length > 0) {
+              ForEach(this.visibleSections_(), (section: SettingsSection) => { this.SectionRow_(section) },
+                (section: SettingsSection): string => section.id)
+              if (this.visibleSections_().length === 0) {
+                Text(this.canRunGame ? '没有匹配的设置，试试“内存”“日志”或“下载源”。' : '没有匹配的设置，试试“主题”“存储”或“下载源”。').fontSize(14).fontColor(this.theme.textSecondary).padding(24)
+              }
+            } else if (this.activeSection === 'overview') {
+              this.Overview_()
+            } else if (this.activeSection === 'performance' && this.canRunGame) {
+              MotionSection({ order: 0 }) { this.MemorySection_() }
+              MotionSection({ order: 1 }) { this.RuntimeSection_() }
+            } else if (this.activeSection === 'controls') {
+              MotionSection({ order: 0 }) { this.ControlsSection_() }
+            } else if (this.activeSection === 'immersive') {
+              MotionSection({ order: 0 }) {
+                ImmersiveLightSettings({
+                  theme: this.theme, preferences: this.immersiveLight,
+                  saving: this.immersiveLightSaving, hasPresets: this.immersiveLightHasPresets,
+                  status: this.immersiveLightStatus, saveError: this.immersiveLightSaveError,
+                  onChange: (next: ImmersiveLightPreferences): void => { this.onImmersiveLightChange(next) }
+                })
+              }
+            } else if (this.activeSection === 'download') {
+              MotionSection({ order: 0 }) { this.DownloadsSection_() }
+            } else {
+              MotionSection({ order: 0 }) { this.SupportSection_() }
+            }
+            Text('AMCL v' + APP_VERSION).fontSize(12).fontColor(this.theme.textSecondary)
+              .width('100%').textAlign(TextAlign.Center).padding({ top: 8, bottom: 24 })
+          }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: floatingDockReserveHeight(this.bottomSafeHeight) })
+        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).id('settings-content-scroll')
+          // 视口始终铺满，dock 覆盖在内容上方；仅内容尾部留可滚动余量，不截短整个页面。
+        }
 }

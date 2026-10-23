@@ -14,9 +14,11 @@ import {readUniqueZipEntry} from './zip-entry-buffer.mjs';
 // 再要求本轮新入口及状态 id；不能以某个优化后的内部名字缺失判断文件保障被删除。
 export const requiredModMarkers = ['ModInstallService', 'ModInstallTransaction', 'mod plan committed:',
   '.amcl-mod-transaction.json', '模组提交前文件校验失败：', '模组恢复尚未完成，原文件备份保留在 ',
-  'runModInstallState', 'mod_install_state', '模组安装状态'];
+  'runModInstallState', 'mod_install_state', '模组安装状态',
+  '.amcl-modpack-pending.json', '整合包恢复计划损坏', '整合包归档 SHA-1 与所选文件不一致',
+  '归档恢复来源与安装根不一致', '仅补齐原实例缺失内容'];
 export const retiredModMarkers = ['runMods', 'NestedModSearch', 'ModVersionRange', 'ModZipReader',
-  '模组依赖与兼容性', '模组组合无法启动，原文件已保留', '正在检查模组组合'];
+  '模组依赖与兼容性', '模组组合无法启动，原文件已保留', '正在检查模组组合', 'cleanupStrayLoaderVersion_'];
 
 /** 校验真实提取或测试注入的 ABC 字节；遇到缺失保障或残留旧判据均抛错。 */
 export function verifyModInstallAbc(abc) {

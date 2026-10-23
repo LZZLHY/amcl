@@ -1,0 +1,29 @@
+{
+  "schema": "amcl-mg-context-identity-contract/v1",
+  "sceneVersion": 1,
+  "loaderSource": "tests/graphics-semantics/mg_context_identity_scene.cpp",
+  "loaderMacro": "ID_LOAD",
+  "hostMarker": "MG_CONTEXT_IDENTITY_RESULT",
+  "terminalKind": "mg-context-identity-scene-end",
+  "metadataKinds": ["context-identity-config"],
+  "counts": {"checks": 11, "queryChecks": 4, "pixelChecks": 0},
+  "identityCases": ["context-identity-0", "context-identity-1", "context-identity-2", "context-identity-3"],
+  "setupCases": ["identity-runtime-ready", "identity-provider-owned", "identity-create-low", "identity-create-high", "identity-production-feature-probe"],
+  "cleanupCases": ["identity-retire-high", "identity-retire-low"],
+  "requests": {
+    "low": {"major":3, "minor":2, "profile":204801, "forward":true},
+    "high": {"major":4, "minor":0, "profile":204801, "forward":false}
+  },
+  "eglIdentity": {"clientApi":12450, "clientMajorRole":"MG wrapper granted major; general desktop EGL creation attribute not inferred"},
+  "profileMask": 1,
+  "flagsForwardBit": 1,
+  "eglOwnedEntries": ["eglBindAPI", "eglMakeCurrent", "eglGetCurrentContext", "eglGetCurrentDisplay", "eglGetError",
+                      "eglGetDisplay", "eglInitialize", "eglChooseConfig", "eglCreateContext", "eglCreatePbufferSurface",
+                      "eglQuerySurface", "eglDestroyContext", "eglDestroySurface", "eglGetCurrentSurface", "eglQueryAPI", "eglTerminate"],
+  "providerOwnedEntries": ["eglQueryContext"],
+  "requiredFields": ["turn", "slot", "readOrder", "requested", "requestedProfile", "requestedForward", "context", "eglApi", "eglClientMajor",
+                     "integer", "stringInteger", "ownerInteger", "profile", "flags", "ownerProfile", "ownerFlags", "version", "renderer", "glsl",
+                     "versionPointer", "pointerStable", "heldPointersStable", "heldVersions", "current", "ownerTid", "error", "errorCount", "errorDrainComplete", "eglError"],
+  "qualificationScope": "production frontend identity and owner retirement; no depth/init/JVM/Core semantic qualification",
+  "callerResponsibilities": ["cold process claim", "FreezeGraphicsRuntime", "fixed same-owner resolver", "I/O and actual loaded-image copy", "external RETURN"]
+}

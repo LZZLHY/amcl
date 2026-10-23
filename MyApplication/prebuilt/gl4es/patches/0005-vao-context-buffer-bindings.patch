@@ -1,0 +1,83 @@
+diff --git a/src/gl/buffers.c b/src/gl/buffers.c
+--- a/src/gl/buffers.c
++++ b/src/gl/buffers.c
+@@ -732,10 +732,19 @@
+     DBG(printf("glBindVertexArray(%u)\n", array);)
+     FLUSH_BEGINEND;
+ 
++    /* ARRAY_BUFFER 和像素 PACK/UNPACK 绑定属于 context，不在 ARB VAO 保存的状态中。
++     * 上游把这些字段放在 glvao_t 内；保持兼容布局，但每次切换把当前全局绑定传给新
++     * active VAO。属性自身的 buffer 和 EBO 仍由各 VAO 独立保存，不能跟着复制。
++     * 否则调用方先绑 VBO 再建 VAO 时，合法的 0/8/12/16 offset 会被当作客户端指针。
++     */
++    glbuffer_t *array_binding=glstate->vao->vertex;
++    glbuffer_t *pack_binding=glstate->vao->pack;
++    glbuffer_t *unpack_binding=glstate->vao->unpack;
++
+    	khint_t k;
+    	int ret;
+ 	khash_t(glvao) *list = glstate->vaos;
+-    // if array = 0 => unbind buffer!
++    // VAO 0 只恢复默认顶点数组/EBO；全局 buffer 绑定在下方保留。
+     if (array == 0) {
+         // unbind buffer
+         glstate->vao = glstate->defaultvao;
+@@ -744,8 +753,12 @@
+         k = kh_get(glvao, list, array);
+         glvao_t *glvao = NULL;
+         if (k == kh_end(list)){
++            /* 先准备对象，再发布到表；分配失败保留旧 active VAO 和全部绑定。 */
++            glvao = malloc(sizeof(glvao_t));
++            if(!glvao) { errorShim(GL_OUT_OF_MEMORY); return; }
+             k = kh_put(glvao, list, array, &ret);
+-            glvao = kh_value(list, k) = malloc(sizeof(glvao_t));
++            if(ret<0) { free(glvao); errorShim(GL_OUT_OF_MEMORY); return; }
++            kh_value(list, k) = glvao;
+             // new vao is binded to nothing
+             VaoInit(glvao);
+             // TODO: check if should copy status of current VAO instead of cleanning everything
+@@ -757,6 +770,10 @@
+         }
+         glstate->vao = glvao;
+     }
++
++    glstate->vao->vertex=array_binding;
++    glstate->vao->pack=pack_binding;
++    glstate->vao->unpack=unpack_binding;
+ 
+     noerrorShim();
+ }
+@@ -775,9 +792,16 @@
+                 k = kh_get(glvao, list, t);
+                 if (k != kh_end(list)) {
+                     glvao = kh_value(list, k);
++                    /* 删除当前 VAO 时先正常回到 0；该入口也会保留 context 的 buffer
++                     * 绑定。其余 VAO 的属性/EBO 不受影响，随后只释放被删除对象的缓存。
++                     */
++                    if(glstate->vao==glvao) gl4es_glBindVertexArray(0);
+                     VaoSharedClear(glvao);
+                     kh_del(glvao, list, k);
+-                    //free(glvao);  //let the use delete those
++                    /* 属性描述不拥有 VBO；VaoSharedClear 只释放自有转换缓存。
++                     * 字典和 active 均已解除对该对象的引用，避免每次区块重载漏一个 VAO。
++                     */
++                    free(glvao);
+                 }
+             }
+         }
+diff --git a/src/gl/getter.c b/src/gl/getter.c
+--- a/src/gl/getter.c
++++ b/src/gl/getter.c
+@@ -452,6 +452,12 @@
+         case GL_TEXTURE_BINDING_CUBE_MAP:
+             *params=glstate->texture.bound[glstate->texture.active][ENABLED_CUBE_MAP]?glstate->texture.bound[glstate->texture.active][ENABLED_CUBE_MAP]->glname:0;
+             break;
++        /* ARB/core 与 OES 的 VAO binding token 都是 0x85B5；返回逻辑 VAO 名字，
++         * 不查询 GLES 的硬件 VAO，因为此库的 VAO 由兼容层保存和切换。
++         */
++        case GL_VERTEX_ARRAY_BINDING_OES:
++            *params=glstate->vao->array;
++            break;
+         case  GL_ARRAY_BUFFER_BINDING:
+             *params=(glstate->vao->vertex)?glstate->vao->vertex->buffer:0;
+             break;

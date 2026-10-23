@@ -2,6 +2,8 @@ import preferenceSnapshotTest from './PreferenceSnapshot.test';
 import runtimeCompatibilityTest from './RuntimeCompatibility.test';
 import gameLaunchGateTest from './GameLaunchGate.test';
 import mavenUtilsTest from './MavenUtils.test';
+// Forge 清单短版本必须映射到实际 Maven 发布身份；同时保护显式分支与缺项回退。
+import forgeArtifactResolverTest from './ForgeArtifactResolver.test';
 import pathUtilsTest from './PathUtils.test';
 import versionParserTest from './VersionParser.test';
 import fabricServiceTest from './FabricService.test';
@@ -102,12 +104,17 @@ import probeRegistryTest from './ProbeRegistry.test';
 // 2026-09-06（日志系统重构 P5）：导出配额分配 + 头尾截断。
 // 钉的是 N-7：上传出去的正文可能一行启动器日志都没有。
 import logExportBudgetTest from './LogExportBudget.test';
+// 通用游戏包导出：目标电脑版闭包、标准清单、隐私排除与归档路径冲突。
+import gameExportPlanTest from './GameExportPlan.test';
+// Forge/NeoForge 是独立专项，按门禁要求在唯一 suite 入口直接注册，避免间接注册遗漏。
+import forgelikeExportPlanTest from './ForgelikeExportPlan.test';
 
 export default function testsuite() {
   preferenceSnapshotTest();
   gameLaunchGateTest();
   // 2026-05-04 新增：纯函数单元测试
   mavenUtilsTest();
+  forgeArtifactResolverTest();
   pathUtilsTest();
   versionParserTest();
   fabricServiceTest();
@@ -323,4 +330,6 @@ export default function testsuite() {
   // 可能几个月都没人碰到。
   probeRegistryTest();
   runtimeCompatibilityTest();
+  gameExportPlanTest();
+  forgelikeExportPlanTest();
 }

@@ -1,0 +1,15 @@
+--- a/src/java/org/lwjgl/opengl/ContextGL.java
++++ b/src/java/org/lwjgl/opengl/ContextGL.java
+@@ -189,9 +189,11 @@
+ 		checkAccess();
+ 		if ( destroyed )
+ 			throw new IllegalStateException("Context is destroyed");
++		// Native 绑定失败时保留原线程 owner 和 TLS；只有实际绑定成功后才提交 Java 状态。
++		// 后续能力表初始化若抛错，context 仍真实 current，保留此状态供调用者正常释放。
++		implementation.makeCurrent(peer_info, handle);
+ 		thread = Thread.currentThread();
+ 		current_context_local.set(this);
+-		implementation.makeCurrent(peer_info, handle);
+ 		GLContext.useContext(this, forwardCompatible);
+ 	}
+ 

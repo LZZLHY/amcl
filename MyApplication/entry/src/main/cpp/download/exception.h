@@ -37,6 +37,7 @@ enum class ErrorKind : uint8_t {
     InternalError    = 11,
     QuotaExceededError = 12, // EDQUOT
     StorageIoError   = 13, // EIO / durable commit failure
+    AuthorizationRenewalRequired = 14, // 本次短时权限不能再发HTTP，请业务层在收敛后重领
 };
 
 const char* errorKindToString(ErrorKind k);
@@ -51,6 +52,13 @@ public:
     // v5 新增：下载期间所有试过的源 URL（去重后）。供 UI 显示
     // "已尝试: 2 个源（BMCLAPI / Mojang）"等详情。
     std::vector<std::string> tried_urls;
+    // 授权的结构化执行事实；只含次数/状态，不含Bearer或上游授权正文。
+    bool needs_new_lease = false;
+    bool request_started = false;
+    bool successful_headers_seen = false;
+    int64_t bytes_written = 0;
+    int http_attempts = 0;
+    int64_t retry_after_ms = 0;
 
     DownloadException() = default;
     DownloadException(ErrorKind k, std::string msg) : kind(k), message(std::move(msg)) {}
@@ -65,5 +73,16 @@ using DownloadExceptionPtr = std::shared_ptr<DownloadException>;
 inline DownloadExceptionPtr makeException(ErrorKind k, std::string msg) {
     return std::make_shared<DownloadException>(k, std::move(msg));
 }
+
+/**
+ * 在换源或重试调度停止时保留最近一次真实失败，并补充停止原因。
+ *
+ * cause 必须来自本段当前执行中的实际异常，不能从多个源的历史错误中任意选取。
+ * 有 cause 时完整复制所有字段，保留 HTTP/CURL 分类、出错 URL、授权事实和 Retry-After；
+ * 副本只追加调度说明，避免改动其他分段或 NetSource 正在共享的原异常。
+ * 尚未产生真实异常时，才返回只描述调度原因的 ConnectionError。
+ */
+DownloadExceptionPtr makeRetryTerminationException(const DownloadExceptionPtr& cause,
+                                                   const std::string& stop_reason);
 
 } // namespace download

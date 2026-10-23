@@ -1,4 +1,5 @@
 #include "cursor_lock.h"
+#include "cursor_capture_context.h"
 
 #include <dlfcn.h>
 #include <hilog/log.h>
@@ -27,6 +28,10 @@ struct Resolver {
 
 std::mutex g_mutex;
 Resolver g_resolver;
+amcl::input::CursorCaptureContext g_context;
+// 唯一写者为既有Ability foreground mask发布器。独立原子避免frame-rate→cursor
+// 锁边；平台加锁期间若窗口管理器重入焦点回调，不会反向卡在frame-rate发布锁上。
+std::atomic<bool> g_foregroundAllowed{true};
 bool g_locked = false;
 int32_t g_lockedWindowId = 0;
 // Read from the input hot path without taking the mutex.
@@ -147,6 +152,10 @@ const Resolver& ResolveLocked() {
 extern "C" AmclCursorLockResult amcl_cursor_lock_set(int32_t windowId,
                                                     bool locked) {
     std::lock_guard<std::mutex> guard(g_mutex);
+    // 阻断迟到的ArkTS心跳：组件失焦/销毁/暂停后，窗口本身仍获焦也不能重新capture。
+    if (locked && !g_context.CanLock(g_foregroundAllowed.load(std::memory_order_acquire))) {
+        return AMCL_CURSOR_LOCK_CONTEXT_INACTIVE;
+    }
     const Resolver& resolver = ResolveLocked();
     if (!resolver.lock || !resolver.unlock) {
         return AMCL_CURSOR_LOCK_UNSUPPORTED;
@@ -311,6 +320,25 @@ extern "C" bool amcl_cursor_lock_supported(void) {
 
 extern "C" bool amcl_cursor_lock_active(void) {
     return g_lockedFlag.load(std::memory_order_acquire);
+}
+
+extern "C" void amcl_cursor_lock_set_surface(bool available) {
+    { std::lock_guard<std::mutex> guard(g_mutex); g_context.Surface(available); }
+    if (!available) (void)amcl_cursor_lock_set(0, false);
+}
+
+extern "C" void amcl_cursor_lock_set_focus(bool focused) {
+    { std::lock_guard<std::mutex> guard(g_mutex); g_context.Focused(focused); }
+    if (!focused) (void)amcl_cursor_lock_set(0, false);
+}
+
+extern "C" void amcl_cursor_lock_set_paused(bool paused) {
+    { std::lock_guard<std::mutex> guard(g_mutex); g_context.Paused(paused); }
+    if (paused) (void)amcl_cursor_lock_set(0, false);
+}
+
+extern "C" void amcl_cursor_lock_set_foreground(bool foreground) {
+    g_foregroundAllowed.store(foreground, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------

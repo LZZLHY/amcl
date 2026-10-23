@@ -4,7 +4,14 @@ extern "C" void amclDesktopNotifyInput();
 static void amclDesktopNotifyInput() {}
 #endif
 #include "input_state_core.h"
+#include "delivery/l2_keyboard_scope.h"
+#include "input_surface_context_semantics.h"
+#include "input_surface_context_snapshot.h"
+#include "input_interaction_order.h"
+#include "input_look_core_hook.h"
+#include "input_build_identity.h"
 #include "adapters/glfw_input_mode.h"
+#include "adapters/backend_keymaps.h"
 #include "text_utf8_codec.h"
 #include "runtime_desktop_capability.h"
 
@@ -13,6 +20,7 @@ static void amclDesktopNotifyInput() {}
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -22,6 +30,33 @@ static void amclDesktopNotifyInput() {}
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <atomic>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
+namespace {
+uint32_t coreHookPid(){
+#ifdef _WIN32
+    return static_cast<uint32_t>(_getpid());
+#else
+    return static_cast<uint32_t>(getpid());
+#endif
+}
+const uint32_t lookHookProcess=coreHookPid();
+std::atomic<AmclInputLookCommitV1> lookCommitHook{nullptr};
+amcl::input::InputStateCore* lookHookCore=nullptr;
+}
+extern "C" int amclInputOwnerInstallLookCommitV1(AmclInputLookCommitV1 commit){
+    if(!commit||coreHookPid()!=lookHookProcess)return 0;
+    const auto installed=lookCommitHook.load(std::memory_order_acquire);if(installed)return installed==commit;
+    lookHookCore=&amcl::input::HostInputStateCore();
+    AmclInputLookCommitV1 expected=nullptr;
+    return lookCommitHook.compare_exchange_strong(expected,commit,std::memory_order_release,std::memory_order_acquire)||expected==commit;
+}
+extern "C" int amclInputOwnerLookCommitReadyV1(){return coreHookPid()==lookHookProcess&&lookCommitHook.load(std::memory_order_acquire)!=nullptr;}
 
 #undef LOG_TAG
 #define LOG_TAG "INPUT_CORE"
@@ -32,6 +67,10 @@ static void amclDesktopNotifyInput() {}
 #ifndef AMCL_INPUT_BLOB_POOL_CAPACITY
 #define AMCL_INPUT_BLOB_POOL_CAPACITY 65536u
 #endif
+
+extern "C" AMCL_INPUT_PUBLIC const char* amclInputRuntimeBuildIdentityV1() {
+    return amcl::input::InputBuildIdentityV1();
+}
 
 namespace amcl::input {
 namespace {
@@ -162,6 +201,51 @@ bool IsResetReason(uint32_t reason) {
            reason <= AMCL_INPUT_RESET_BACKEND_ABANDONED;
 }
 
+// 大于本 core 认识的最大类型即“未知类型”：生产者比 core 新，或误用了 ABI。
+// 类型 0 不在此列——它从来不是合法类型，由 ValidatePayload 当作非法载荷拒绝。
+bool IsUnknownEventType(uint32_t type) {
+    return type > AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED;
+}
+
+// 批量提交只接受普通输入（键、指针采样/按钮/滚轮/进入、文本选区）。下列生命周期/控制
+// 事件的单条路径会走 ResetThenLifecycle、ResetOnly、焦点/捕获/surface/上下文/文本会话/
+// 设备状态迁移或后端握手；混进批次后，溢出时批次回滚会撤掉单条路径本应已提交的迁移，
+// 使同一个 OVERFLOW_RESET 在两条路径上代表不同的已提交状态。所以在任何状态变化前整批拒绝。
+bool IsBatchRejectedControlType(uint32_t type) {
+    switch (type) {
+        case AMCL_INPUT_EVENT_FOCUS_CHANGED:
+        case AMCL_INPUT_EVENT_DEVICE_CHANGED:
+        case AMCL_INPUT_EVENT_CAPTURE_CHANGED:
+        case AMCL_INPUT_EVENT_SURFACE_CHANGED:
+        case AMCL_INPUT_EVENT_RESET:
+        case AMCL_INPUT_EVENT_BACKEND_CONSUMER_STATE:
+        case AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED:
+        case AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 文本 blob 事件引用的包 id；非 blob 事件返回 0（包 id 从 1 开始分配，0 从不合法）。
+uint64_t BlobPacketId(const AmclInputEvent& event) {
+    switch (event.header.eventType) {
+        case AMCL_INPUT_EVENT_TEXT_COMMIT:
+            return event.payload.textCommit.utf8Blob.packetId;
+        case AMCL_INPUT_EVENT_TEXT_EDITING:
+            return event.payload.textEditing.utf8Blob.packetId;
+        case AMCL_INPUT_EVENT_TEXT_CANDIDATES:
+            return event.payload.textCandidates.itemsBlob.packetId;
+        default:
+            return 0u;
+    }
+}
+
+// 压力隔离计划里的消费者至多几个，线性查找即可；计划只是模拟，不代表已经退休。
+bool IsPlanned(const std::vector<uint64_t>& planned, uint64_t consumer) {
+    return std::find(planned.begin(), planned.end(), consumer) != planned.end();
+}
+
 int32_t CopyKnownEvent(const AmclInputEvent* input, AmclInputEvent* output) {
     if (!input || !output) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
     if (input->header.abiVersion != AMCL_INPUT_EVENT_ABI_VERSION ||
@@ -225,10 +309,19 @@ enum class ConsumerBackendRole : uint8_t {
     GlfwRetiring = 2,
 };
 
+// 私有基线/终止记录同样携带全宽交互序号，拷贝和回滚保留原序号。
+struct OrderedControlRecord : AmclInputEvent {
+    uint64_t interactionOrder;
+    OrderedControlRecord(const AmclInputEvent& event)
+        : AmclInputEvent(event), interactionOrder(amclInputNextInteractionOrder()) {}
+};
 struct ConsumerState {
     uint64_t sessionEpoch;
     uint64_t generation;
-    std::deque<AmclInputEvent> pendingControl;
+    std::deque<OrderedControlRecord> pendingControl;
+    // 局部退休通知必须排在已接受的共享记录之后；不能借 baseline 队列抢先发 RESET，
+    // 否则随后 drain 的旧 DOWN 会重新建立已被退休的按下态。
+    std::deque<OrderedControlRecord> terminalControl{};
     uint64_t baselineSequence = 0;
     bool baselineConsumed = false;
     bool acceptingEvents = true;
@@ -236,6 +329,15 @@ struct ConsumerState {
     // 0 = 还没申领任何后端角色。非 0 时必须是 AMCL_INPUT_BACKEND_* 之一，
     // 且与 `backendSlots[backend - 1]` 互为唯一：槽记 handle，这里记 backend。
     uint32_t backend = 0;
+    // 队列/文本池压力只退休落后的接收者。其私有 RESET 送完后返回 STALE，
+    // 让 adapter 释放本地注入态并重新握手，而不清除其他消费者使用的全局状态。
+    bool deliveryRetired = false;
+    // 最近一次 NextEvent 成功交出的记录的 sequence（私有控制、共享队列、终止通知三种来源
+    // 都算）。READY 检查用它认出 adapter 启动 drain 中“刚读走、blob 尚未归还、要交给首次
+    // Pump”的那一条；除它之外已读走却仍持有的文本包都算协议异常。
+    uint64_t lastDeliveredSequence = 0;
+    // 最近实际取出的原记录所冻结的L2 Keyboard资格；peek不更新，不按current补戳。
+    uint64_t lastL2KeyboardScope = 0;
 };
 
 // 一个后端的 READY/RETIRING 两个槽。**每个后端一份**是这次重构的核心：
@@ -251,8 +353,24 @@ bool IsKnownBackend(uint32_t backend) {
     return backend >= AMCL_INPUT_BACKEND_GLFW_PHYSICAL &&
            backend < AMCL_INPUT_BACKEND_COUNT;
 }
-struct EventRecord { AmclInputEvent event; std::set<uint64_t> recipients; };
-struct PacketRecord { std::vector<uint8_t> data; std::set<uint64_t> owners; };
+// 发布时分配顺序；不同消费者读同一记录时看到同一序号，不能在 Next 时重新盖章。
+struct EventRecord {
+    AmclInputEvent event;
+    std::set<uint64_t> recipients;
+    uint64_t interactionOrder;
+    AmclInputSurfaceContextPayload lookContext{};
+    uint32_t lookBackendMask=0;
+    uint64_t l2KeyboardScope=0;
+    EventRecord(const AmclInputEvent& value, const std::set<uint64_t>& receivers)
+        : event(value), recipients(receivers), interactionOrder(amclInputNextInteractionOrder()) {}
+};
+// `sequence` 是引用本包的那条文本事件被盖上的 sequence。READY 检查据此把“已读走、尚未
+// ReleasePacket”的包与该消费者最近一次读走的记录对应起来（见 `lastDeliveredSequence`）。
+struct PacketRecord {
+    std::vector<uint8_t> data;
+    std::set<uint64_t> owners;
+    uint64_t sequence = 0;
+};
 
 AmclInputEvent BlankEvent(uint32_t type) {
     AmclInputEvent event{};
@@ -289,38 +407,6 @@ bool SameSurface(const AmclInputSurfacePayload& a,
            a.publicationGeneration == b.publicationGeneration;
 }
 
-bool SameSurfaceContext(const AmclInputSurfaceContextPayload& a,
-                        const AmclInputSurfaceContextPayload& b) {
-    const uint32_t aValid =
-        a.validFields & AMCL_INPUT_SURFACE_CONTEXT_FIELD_ALL;
-    const uint32_t bValid =
-        b.validFields & AMCL_INPUT_SURFACE_CONTEXT_FIELD_ALL;
-    if (aValid != bValid || a.generation != b.generation) return false;
-    if ((aValid & AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW) != 0u &&
-        a.windowId != b.windowId) {
-        return false;
-    }
-    if ((aValid & AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY) != 0u &&
-        a.displayId != b.displayId) {
-        return false;
-    }
-    if ((aValid & AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT) != 0u &&
-        (a.leftPx != b.leftPx || a.topPx != b.topPx ||
-         a.widthPx != b.widthPx || a.heightPx != b.heightPx)) {
-        return false;
-    }
-    if ((aValid & AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY) != 0u &&
-        a.density != b.density) {
-        return false;
-    }
-    if ((aValid & AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM) != 0u &&
-        a.transform != b.transform) {
-        return false;
-    }
-    return (aValid & AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE) == 0u ||
-           a.refreshRateHz == b.refreshRateHz;
-}
-
 }  // namespace
 
 struct InputStateCore::Impl {
@@ -335,11 +421,17 @@ struct InputStateCore::Impl {
     // Ordered so late-consumer DEVICE_ADDED baseline replay is deterministic.
     std::map<uint64_t, DeviceRecord> devices;
     uint64_t nextSequence = 1;
+    // 全局复位的进程内权威代次；消费者基线/局部退休不能推进它。
+    uint64_t resetAuthorityEpoch = 1u;
     uint64_t nextConsumer = 1;
     uint64_t nextPacket = 1;
     uint64_t sessionEpoch = 0;
     uint64_t focusEpoch = 0;
     uint64_t surfaceEpoch = 0;
+    // 进程生命周期的“全局容量复位”计数，经 AmclInputSnapshotV1.overflowResetCount 导出：
+    // 只在 `OverflowReset` 与 `ResetThenLifecycle` 溢出分支（清空全部 held/capture/text、
+    // 所有接收者只收到一条 RESET）时递增。局部压力退休另记 `pressureRetirementsQueue` /
+    // `pressureRetirementsBlob`，两者不能混成一个数。
     uint64_t overflowResetCount = 0;
     // 索引 = backend - 1。槽 0 是 GLFW3，1 是 LWJGL2，2 是 SDL3。
     BackendSlot backendSlots[AMCL_INPUT_BACKEND_COUNT - 1u]{};
@@ -354,6 +446,14 @@ struct InputStateCore::Impl {
     const bool requireGlfwReady;
     const bool requireTextReady;
     uint64_t textSessionId = 0;
+    // Core文本资格的发布围栏，非第二registry。正scope仅在成功START后签发，所有真实
+    // 退休先发布0；计数跨游戏session保留且不回绕。Source最终提交只原子读它，不取Core锁。
+    std::atomic<uint64_t> textKeyScope{0};
+    // 这是control owner事实的原子投影，Core既不分配generation也不建键盘状态机。
+    std::atomic<uint64_t> l2KeyboardScope{0};
+    std::atomic<uint32_t> selectedKeyboardBackend{0};
+    uint64_t transactionL2KeyboardScope=0;
+    uint64_t nextTextKeyScope = 1;
     AmclInputSurfacePayload surface{};
     AmclInputSurfaceContextPayload surfaceContext{};
     AmclInputCapturePayload capture{};
@@ -385,6 +485,8 @@ struct InputStateCore::Impl {
         uint64_t queueReads = 0;
         uint64_t queueDiscarded = 0;
         uint64_t overflowResets = 0;
+        uint64_t pressureRetirementsQueue = 0;
+        uint64_t pressureRetirementsBlob = 0;
         uint64_t resetsEmitted = 0;
         uint64_t captureRequested = 0;
         uint64_t captureActivated = 0;
@@ -398,6 +500,7 @@ struct InputStateCore::Impl {
         uint64_t textSessionStarts = 0;
         uint64_t textSessionEnds = 0;
         uint64_t textSessionAborts = 0;
+        uint64_t unknownEventTypes = 0;
     };
     Observability obs;
 
@@ -462,6 +565,7 @@ struct InputStateCore::Impl {
         for (const auto& record : queue) pending += record.recipients.size();
         for (const auto& entry : consumers) {
             pending += entry.second.pendingControl.size();
+            pending += entry.second.terminalControl.size();
         }
         return pending;
     }
@@ -607,6 +711,8 @@ struct InputStateCore::Impl {
         out.queueDiscarded = obs.queueDiscarded;
         out.queuePending = static_cast<uint64_t>(PendingDeliveriesLocked());
         out.queueOverflowResets = obs.overflowResets;
+        out.pressureRetirementsQueue = obs.pressureRetirementsQueue;
+        out.pressureRetirementsBlob = obs.pressureRetirementsBlob;
         out.resetsEmitted = obs.resetsEmitted;
 
         out.captureRequested = obs.captureRequested;
@@ -624,7 +730,24 @@ struct InputStateCore::Impl {
         out.textSessionStarts = obs.textSessionStarts;
         out.textSessionEnds = obs.textSessionEnds;
         out.textSessionAborts = obs.textSessionAborts;
+        out.unknownEventTypes = obs.unknownEventTypes;
         return out;
+    }
+
+    // 未知事件类型的统一拒绝点（单条 SubmitLocked 与批量预检共用）。先计数（饱和，不回绕），
+    // 再按 1、2、4…这种 2 的幂节流写一条 WARN：首个样本与增长趋势都留得下，持续误用也不会
+    // 刷屏。返回 INVALID_ARGUMENT 让生产者知道这条没有生效——不再像旧实现那样静默返回 OK。
+    // 调用方已持有 `mutex`；日志条数按 log2 增长，锁内输出的代价有界。
+    int32_t RejectUnknownEventTypeLocked(uint32_t type) {
+        if (obs.unknownEventTypes != UINT64_MAX) ++obs.unknownEventTypes;
+        const uint64_t count = obs.unknownEventTypes;
+        if ((count & (count - 1u)) == 0u) {
+            OH_LOG_WARN(LOG_APP,
+                "input core rejected unknown event type=%{public}u "
+                "count=%{public}llu (INVALID_ARGUMENT, nothing applied)",
+                type, static_cast<unsigned long long>(count));
+        }
+        return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
     }
 
     // Callers must already hold `mutex`. EndSession needs this because it emits
@@ -657,6 +780,11 @@ struct InputStateCore::Impl {
         event.header.abiVersion = AMCL_INPUT_EVENT_ABI_VERSION;
         event.header.structSize = static_cast<uint16_t>(sizeof(event));
         event.header.sequence = sequence;
+        if (event.header.eventType == AMCL_INPUT_EVENT_RESET) {
+            if ((event.payload.reset.scope & AMCL_INPUT_RESET_SCOPE_CONSUMER_LOCAL) == 0u &&
+                resetAuthorityEpoch != UINT64_MAX) ++resetAuthorityEpoch;
+            event.payload.reset.authorityEpoch = resetAuthorityEpoch;
+        }
         uint64_t eventTime = transactionTime;
         if (!synthetic &&
             (event.header.flags &
@@ -701,6 +829,12 @@ struct InputStateCore::Impl {
             ++obs.queueWrites;
             obs.queueDeliveries += static_cast<uint64_t>(recipients.size());
             queue.push_back(EventRecord{event, std::move(recipients)});
+            // private physical memo原资源在接受时冻结；不能在未来consumer读取时取新context。
+            auto& record=queue.back();record.lookContext=surfaceContext;
+            record.l2KeyboardScope=transactionL2KeyboardScope;
+            for(const auto handle:record.recipients){const auto consumer=consumers.find(handle);
+                if(consumer!=consumers.end()&&consumer->second.backend>=1&&consumer->second.backend<=3)
+                    record.lookBackendMask|=1u<<(consumer->second.backend-1);}
         } else {
             // Not a drop: held state already moved and the sequence was spent.
             // It is tracked apart from queueWrites so "nobody was listening"
@@ -741,15 +875,234 @@ struct InputStateCore::Impl {
                     [](const EventRecord& record) {
                         return IsTextType(record.event.header.eventType);
                     }), queue.end());
+        textKeyScope.store(0, std::memory_order_release);
         textSessionActive = false;
         textSessionId = 0u;
     }
 
+    // 同一游戏可能合法同时运行 GLFW 的视角泵与 LWJGL2 的离散事件消费者。
+    // 槽独立只是准入保证；以下判断使局部退出/背压也不能清掉活跃兄弟的状态。
+    bool HasOtherReadyBackend(uint64_t consumer) const {
+        for (const auto& slot : backendSlots) {
+            if (slot.ready != 0u && slot.ready != consumer) return true;
+        }
+        return false;
+    }
+
+    // 压力隔离计划的模拟视图：假设 `planned` 中的消费者都已局部退休，READY 后端的槽也就
+    // 随之清空（与 RetireDeliveryForPressure → MarkGlfwRetiring 的真实效果一致）。
+    // 这两个判断只读，不改任何状态；`planned` 为空时与 AnyBackendReady /
+    // HasOtherReadyBackend 完全等价。
+    bool AnyBackendReadyAfter(const std::vector<uint64_t>& planned) const {
+        for (const auto& slot : backendSlots) {
+            if (slot.ready != 0u && !IsPlanned(planned, slot.ready)) return true;
+        }
+        return false;
+    }
+    bool HasOtherReadyBackendAfter(uint64_t consumer,
+                                   const std::vector<uint64_t>& planned) const {
+        for (const auto& slot : backendSlots) {
+            if (slot.ready != 0u && slot.ready != consumer &&
+                !IsPlanned(planned, slot.ready)) return true;
+        }
+        return false;
+    }
+
+    // 在模拟视图上返回待回收资源持有最多、且尚未进入计划的可隔离消费者（0 = 没有）。
+    // 观察者永远不能令活跃后端复位；后端只有在另一个后端仍 READY 时才局部隔离，最后活跃
+    // 后端保留既有全局恢复合同。欠账为 0 的消费者不会被选中：退休它腾不出任何容量。
+    uint64_t PressureVictim(bool blobPressure,
+                            const std::vector<uint64_t>& planned) const {
+        if ((!requireGlfwReady && !requireTextReady) ||
+            !AnyBackendReadyAfter(planned)) {
+            return 0u;
+        }
+        uint64_t victim = 0u;
+        size_t maximum = 0u;
+        for (const auto& entry : consumers) {
+            const auto& state = entry.second;
+            if (IsPlanned(planned, entry.first) || state.deliveryRetired ||
+                (!state.acceptingEvents &&
+                 state.backendRole != ConsumerBackendRole::GlfwRetiring) ||
+                (state.backendRole != ConsumerBackendRole::None &&
+                 !HasOtherReadyBackendAfter(entry.first, planned))) continue;
+            size_t owed = 0u;
+            if (blobPressure) {
+                for (const auto& packet : packets) {
+                    if (packet.second.owners.count(entry.first) != 0u) {
+                        // 空包同样占一个 pool slot，故权重至少为一。
+                        owed += std::max<size_t>(packet.second.data.size(), 1u);
+                    }
+                }
+            } else {
+                for (const auto& record : queue) {
+                    owed += record.recipients.count(entry.first);
+                }
+            }
+            if (owed > maximum) { maximum = owed; victim = entry.first; }
+        }
+        return victim;
+    }
+
+    // 压力边界只摘该接收者的引用、包和控制记录。全局 held、capture、text token
+    // 完全不变；落后端读到 RESET 后以 STALE 完成旧 incarnation 的收尾。
+    bool RetireDeliveryForPressure(uint64_t consumer, uint32_t reason,
+                                   size_t reservedSequences = 1u) {
+        auto found = consumers.find(consumer);
+        // 定向RESET也消耗一个sequence，不能侵占调用方已经为整批合成边沿
+        // （例如设备移除的多键UP+DEVICE）预留的预算。
+        if (found == consumers.end() || reservedSequences == SIZE_MAX ||
+            !HasSequenceBudget(reservedSequences + 1u)) return false;
+        auto& state = found->second;
+        AmclInputEvent reset = BlankEvent(AMCL_INPUT_EVENT_RESET);
+        reset.payload.reset.reason = reason;
+        reset.payload.reset.closingEpoch = sessionEpoch;
+        reset.payload.reset.scope = AMCL_INPUT_RESET_SCOPE_CONSUMER_LOCAL;
+        if (!Stamp(reset, NowNs(), true)) return false;
+        CountDiscardedDeliveriesLocked(state.pendingControl.size() +
+                                       state.terminalControl.size());
+        state.pendingControl.clear();
+        state.terminalControl.clear();
+        DropConsumerFromQueueLocked(consumer);
+        for (auto& packet : packets) packet.second.owners.erase(consumer);
+        state.acceptingEvents = false;
+        state.deliveryRetired = true;
+        if (state.backendRole == ConsumerBackendRole::GlfwReady) {
+            MarkGlfwRetiring(consumer);
+        }
+        state.terminalControl.push_back(reset);
+        CountAcceptedLocked(reset, true);
+        ++obs.queueWrites;
+        ++obs.queueDeliveries;
+        // 局部退休不是全局复位：只进按资源拆分的压力计数；`overflowResetCount` 与
+        // `obs.overflowResets` 专记清空全局状态的那一类复位。
+        if (reason == AMCL_INPUT_RESET_BLOB_POOL_EXHAUSTED) {
+            ++obs.pressureRetirementsBlob;
+        } else {
+            ++obs.pressureRetirementsQueue;
+        }
+        Prune();
+        return true;
+    }
+
+    // 模拟：退休 `planned` 后共享队列还剩几条。一条记录只有在全部接收者都已退休时才会被
+    // Prune 回收——两个 READY 后端欠着同一批记录时，只退休其中一个腾不出任何槽位。
+    size_t QueueSizeAfter(const std::vector<uint64_t>& planned) const {
+        size_t remaining = 0u;
+        for (const auto& record : queue) {
+            for (const uint64_t recipient : record.recipients) {
+                if (!IsPlanned(planned, recipient)) {
+                    ++remaining;
+                    break;
+                }
+            }
+        }
+        return remaining;
+    }
+
+    // 模拟：退休 `planned` 后文本包池能否再放下一个 `required` 字节的新包。包只有在全部
+    // 所有者都已退休时才会被回收；包数上限与字节上限分别判断，与 EnsureBlobSpace 同口径。
+    bool BlobFitsAfter(const std::vector<uint64_t>& planned,
+                       size_t required) const {
+        size_t count = 0u;
+        size_t bytes = 0u;
+        for (const auto& packet : packets) {
+            for (const uint64_t owner : packet.second.owners) {
+                if (!IsPlanned(planned, owner)) {
+                    ++count;
+                    bytes += packet.second.data.size();
+                    break;
+                }
+            }
+        }
+        return count < kBlobPacketCapacity && bytes <= kBlobCapacity &&
+               required <= kBlobCapacity - bytes;
+    }
+
+    // 压力隔离计划：按“欠账最多者优先”的贪心顺序在模拟视图上逐个加入 victim，直到模拟
+    // 结果放得下；再从后往前逐个试删，去掉对腾出容量没有贡献的 victim。放不下（无人可
+    // 隔离，或只能靠退休最后一个 READY 后端）时清空计划并返回 false：调用方随即走唯一一次
+    // 全局 OverflowReset，而不是先白白退休一个接收者、紧接着又全局复位（旧实现的双重打击）。
+    // 只读，不改任何状态。删掉某个 victim 只会让其余 victim 的“另有 READY 后端”前提更易
+    // 成立，所以精简后的计划依然合法；计划至多包含全部消费者，循环必然终止。
+    bool PlanPressureIsolation(bool blobPressure, size_t required,
+                               std::vector<uint64_t>* plan) const {
+        plan->clear();
+        const auto fits = [&](const std::vector<uint64_t>& candidate) {
+            return blobPressure
+                ? BlobFitsAfter(candidate, required)
+                : QueueSizeAfter(candidate) + required <= kQueueCapacity;
+        };
+        while (!fits(*plan)) {
+            const uint64_t victim = PressureVictim(blobPressure, *plan);
+            if (victim == 0u) {
+                plan->clear();
+                return false;
+            }
+            plan->push_back(victim);
+        }
+        for (size_t index = plan->size(); index-- > 0u;) {
+            std::vector<uint64_t> reduced = *plan;
+            reduced.erase(reduced.begin() + static_cast<std::ptrdiff_t>(index));
+            if (fits(reduced)) *plan = std::move(reduced);
+        }
+        return true;
+    }
+
+    // 执行计划。每个 victim 的定向 RESET 各耗一个 sequence，调用方还要为自己的记录保留
+    // `reservedSequences` 个；先按总数一次核预算，不足则一个都不退休（返回 false 由调用方
+    // 全局复位），避免退到一半才发现不够。预算已核过，逐个退休按构造不会再失败；若将来
+    // 出现新的失败原因，这里返回 false，调用方仍以全局复位收口（fail closed）。
+    bool CommitPressureIsolation(const std::vector<uint64_t>& plan,
+                                 uint32_t reason, size_t reservedSequences) {
+        if (plan.empty()) return true;
+        if (reservedSequences > SIZE_MAX - plan.size() ||
+            !HasSequenceBudget(reservedSequences + plan.size())) {
+            return false;
+        }
+        for (const uint64_t victim : plan) {
+            if (!RetireDeliveryForPressure(victim, reason, reservedSequences)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // 为 `required` 条新记录腾出共享队列空间。没有接收者时记录根本不入队，直接放行；
+    // 放不下时只按“确实能腾出空间”的计划局部隔离，否则返回 false（不隔离任何人），
+    // 由调用方走一次全局复位。`required` 同时是调用方为自身记录保留的 sequence 数。
     bool EnsureSpace(size_t required) {
         Prune();
         if (CurrentRecipients().empty()) return true;
-        return required <= kQueueCapacity &&
-               queue.size() + required <= kQueueCapacity;
+        if (required > kQueueCapacity) return false;
+        if (queue.size() + required <= kQueueCapacity) return true;
+        std::vector<uint64_t> plan;
+        if (!PlanPressureIsolation(false, required, &plan) ||
+            !CommitPressureIsolation(plan, AMCL_INPUT_RESET_QUEUE_OVERFLOW,
+                                     required)) {
+            return false;
+        }
+        return queue.size() + required <= kQueueCapacity;
+    }
+
+    // 为一个 `required` 字节的新文本包腾出包池空间，规则同 EnsureSpace。比整个池还大的包
+    // 由 SubmitTextPacket 预先拒绝（不复位）；这里的 `required > kBlobCapacity` 只是兜底。
+    // 调用方已为文本事件本身核过 1 个 sequence，所以计划预留 1 个。
+    bool EnsureBlobSpace(size_t required) {
+        Prune();
+        if (required > kBlobCapacity) return false;
+        if (packets.size() < kBlobPacketCapacity &&
+            required <= kBlobCapacity - blobBytes) {
+            return true;
+        }
+        std::vector<uint64_t> plan;
+        if (!PlanPressureIsolation(true, required, &plan) ||
+            !CommitPressureIsolation(plan,
+                                     AMCL_INPUT_RESET_BLOB_POOL_EXHAUSTED, 1u)) {
+            return false;
+        }
+        return packets.size() < kBlobPacketCapacity &&
+               required <= kBlobCapacity - blobBytes;
     }
 
     bool HasSpaceAfterDroppingText(size_t required) const {
@@ -771,6 +1124,7 @@ struct InputStateCore::Impl {
         capture = AmclInputCapturePayload{};
         packets.clear();
         blobBytes = 0;
+        textKeyScope.store(0, std::memory_order_release);
         textSessionActive = false;
         textSessionId = 0u;
         DiscardQueuedRecordsLocked();
@@ -839,6 +1193,8 @@ struct InputStateCore::Impl {
         surface = AmclInputSurfacePayload{};
         hasSurfaceContext = false;
         surfaceContext = AmclInputSurfaceContextPayload{};
+        textKeyScope.store(0, std::memory_order_release);
+        l2KeyboardScope.store(0, std::memory_order_release);
         textSessionActive = false;
         textSessionId = 0u;
     }
@@ -847,11 +1203,40 @@ struct InputStateCore::Impl {
         const auto state = consumers.find(consumer);
         if (state == consumers.end()) return false;
         if (!state->second.pendingControl.empty()) return true;
+        if (!state->second.terminalControl.empty()) return true;
         for (const auto& record : queue) {
             if (record.recipients.count(consumer) != 0u) return true;
         }
         for (const auto& packet : packets) {
             if (packet.second.owners.count(consumer) != 0u) return true;
+        }
+        return false;
+    }
+
+    // READY 申领时的投递异常检查。基线之后追加、仍排队给本消费者的共享记录**不是**异常：
+    // 它们只可能在本消费者 OpenConsumer 之后写入（接收者集合取自写入时刻），READY 后按序
+    // 送达，不含任何基线之前的历史 DOWN。仍算异常、须 STALE 让 adapter 重开的是：
+    //   · 私有终止通知未读 / 已被压力退休（旧 incarnation 正在收尾，不能再申领）；
+    //   · 持有“已读走却未 ReleasePacket”的文本包，且它不是最近一次读走的那条记录。
+    // 最近一次读走的那条正是 adapter 启动 drain 停下时交给首次 Pump 的记录，它的 blob
+    // 在首次 Pump 复制后才归还；其余情况说明消费者没按协议处理 blob，不能放行。
+    bool HasReadyAnomalyLocked(uint64_t consumer,
+                               const ConsumerState& state) const {
+        if (!state.terminalControl.empty() || state.deliveryRetired) return true;
+        std::set<uint64_t> queuedPackets;
+        for (const auto& record : queue) {
+            const uint64_t packetId = BlobPacketId(record.event);
+            if (packetId != 0u && record.recipients.count(consumer) != 0u) {
+                queuedPackets.insert(packetId);
+            }
+        }
+        for (const auto& packet : packets) {
+            if (packet.second.owners.count(consumer) == 0u ||
+                queuedPackets.count(packet.first) != 0u) continue;
+            if (packet.second.sequence == 0u ||
+                packet.second.sequence != state.lastDeliveredSequence) {
+                return true;
+            }
         }
         return false;
     }
@@ -932,12 +1317,36 @@ struct InputStateCore::Impl {
             return AMCL_INPUT_ERROR_NOT_FOUND;
         }
 
+        if (HasOtherReadyBackend(consumer)) {
+            // 局部窗口/职责退出只终止本消费者。其 adapter 在读到定向 RESET 时
+            // 释放自己注入的键/按钮；其他后端仍持有的物理键与 IME token 必须继续有效。
+            if (!HasSequenceBudget(1u)) return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
+            AmclInputEvent reset = BlankEvent(AMCL_INPUT_EVENT_RESET);
+            reset.payload.reset.reason = reason;
+            reset.payload.reset.closingEpoch = sessionEpoch;
+            reset.payload.reset.scope = AMCL_INPUT_RESET_SCOPE_CONSUMER_LOCAL;
+            if (!Stamp(reset, transactionTime, true)) {
+                return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
+            }
+            state->second.terminalControl.push_back(reset);
+            CountAcceptedLocked(reset, true);
+            ++obs.queueWrites;
+            ++obs.queueDeliveries;
+            MarkGlfwRetiring(consumer);
+            return AMCL_INPUT_OK;
+        }
+
         // The retirement RESET is ordered after packets already accepted for
         // this consumer, so those owned blobs remain drainable. Ownership is
         // fenced immediately; the adapter clears composition when it reaches
         // the RESET after the drain.
+        textKeyScope.store(0, std::memory_order_release);
         textSessionActive = false;
         textSessionId = 0u;
+        // 最后一个实际后端退出才结束全局捕获快照。其他后端仍READY的分支已在
+        // 上方定向返回，不能借一个窗口的销毁撤销另一职责仍在使用的capture。
+        captureActive = false;
+        capture = AmclInputCapturePayload{};
         int32_t result = AMCL_INPUT_OK;
         const size_t required = held.size() + 1u;
         if (HasSequenceBudget(required) && EnsureSpace(required)) {
@@ -983,6 +1392,21 @@ struct InputStateCore::Impl {
             return AMCL_INPUT_ERROR_NOT_FOUND;
         }
 
+        if (HasOtherReadyBackend(consumer)) {
+            // 消费者已不可调用时不再给它补边沿。只回收其自身投递，不能把
+            // ABANDON 升格成另一个仍 READY 窗口的 held/capture/text reset。
+            state->second.acceptingEvents = false;
+            if (slot->ready == consumer) slot->ready = 0u;
+            if (slot->retiring == consumer) slot->retiring = 0u;
+            CountDiscardedDeliveriesLocked(state->second.pendingControl.size() +
+                                           state->second.terminalControl.size());
+            DropConsumerFromQueueLocked(consumer);
+            for (auto& packet : packets) packet.second.owners.erase(consumer);
+            consumers.erase(state);
+            Prune();
+            return AMCL_INPUT_OK;
+        }
+
         state->second.acceptingEvents = false;
         if (slot->ready == consumer) slot->ready = 0;
         if (slot->retiring == consumer) slot->retiring = 0;
@@ -995,8 +1419,10 @@ struct InputStateCore::Impl {
         DropConsumerFromQueueLocked(consumer);
         for (auto& packet : packets) packet.second.owners.erase(consumer);
         // These were stamped (they consumed sequences) and will never be read.
-        CountDiscardedDeliveriesLocked(state->second.pendingControl.size());
+        CountDiscardedDeliveriesLocked(state->second.pendingControl.size() +
+                                       state->second.terminalControl.size());
         state->second.pendingControl.clear();
+        state->second.terminalControl.clear();
         Prune();
 
         int32_t result = AMCL_INPUT_OK;
@@ -1411,22 +1837,34 @@ struct InputStateCore::Impl {
         const auto& text = event.payload.textSession;
         if (text.change == AMCL_INPUT_TEXT_SESSION_STARTED &&
             textSessionActive && textSessionId == text.textSessionId) {
-            return AMCL_INPUT_OK;
+            return textKeyScope.load(std::memory_order_acquire) != 0u
+                ? AMCL_INPUT_OK : AMCL_INPUT_ERROR_STALE;
         }
+        if (text.change == AMCL_INPUT_TEXT_SESSION_STARTED && nextTextKeyScope == UINT64_MAX)
+            return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
+        // 先核未提交失败条件：false end没有退休原文字会话，不能仅凭尝试把legacy
+        // 编辑资格永久置0。EnsureSpace若真实压力退休了后端/text，其原状态自行保持退休。
         if (!HasSequenceBudget(1u)) {
             return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
         }
         if (!EnsureSpace(1u)) return AMCL_INPUT_OVERFLOW_RESET;
+        const uint64_t originalScope=textKeyScope.load(std::memory_order_acquire);
+        // 已通过预算的end/替换先围栏，再Append；Core可等待order，但Source只原子核围栏。
+        // Append失败且原会话仍未变时恢复未提交的资格，不把失败误报真实退休。
+        textKeyScope.store(0, std::memory_order_release);
         if (!Append(event, transactionTime, false)) {
+            textKeyScope.store(originalScope,std::memory_order_release);
             return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
         }
         if (text.change == AMCL_INPUT_TEXT_SESSION_STARTED) {
             textSessionActive = true;
             textSessionId = text.textSessionId;
+            textKeyScope.store(nextTextKeyScope++, std::memory_order_release);
         } else {
             // Outstanding owned packets remain readable until their consumer
             // releases them.  The ordered END/ABORT clears composition state in
             // adapters without invalidating a COMMIT already handed out.
+            textKeyScope.store(0, std::memory_order_release);
             textSessionActive = false;
             textSessionId = 0u;
         }
@@ -1610,11 +2048,15 @@ struct InputStateCore::Impl {
         if (!slot) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
 
         if (control.state == AMCL_INPUT_BACKEND_CONSUMER_READY) {
+            // READY 只要求“当前基线已被完整消费”：同一条 baseline RESET、私有重放（surface/
+            // context/text/device）全部读完、仍在接收、没有投递异常。基线之后追加的共享记录
+            // 允许仍在排队——第二个后端握手时生产者闸门早已打开，若连这些也要求读空，
+            // 持续输入会让它反复 STALE、永远建不起来（§129 设计决定 5）。
             if (!state->second.baselineConsumed ||
                 state->second.baselineSequence != control.baselineSequence ||
                 !state->second.pendingControl.empty() ||
                 !state->second.acceptingEvents ||
-                HasPendingForConsumer(control.consumer)) {
+                HasReadyAnomalyLocked(control.consumer, state->second)) {
                 return AMCL_INPUT_ERROR_STALE;
             }
             if (slot->retiring != 0u) {
@@ -1642,9 +2084,11 @@ struct InputStateCore::Impl {
 
     int32_t SubmitLocked(const AmclInputEvent& input,
                          uint64_t transactionTime) {
-        if (input.header.eventType >
-            AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED) {
-            return AMCL_INPUT_OK;
+        // 未知类型在一切校验之前拒绝并计数：本 core 无法解释其载荷，也就谈不上会话/epoch
+        // 校验。旧实现在这里静默返回 OK，生产者会把“没有生效”误记成成功（§九要求产品输出
+        // 区分 unknown）。生产者靠能力位决定是否发送新类型，前向兼容不需要一个假 OK。
+        if (IsUnknownEventType(input.header.eventType)) {
+            return RejectUnknownEventTypeLocked(input.header.eventType);
         }
         const int32_t payloadValidation = ValidatePayload(input);
         if (payloadValidation != AMCL_INPUT_OK) return payloadValidation;
@@ -1673,6 +2117,12 @@ struct InputStateCore::Impl {
             return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
         }
         AmclInputEvent event = input;
+        // 本局L2只在真实完整Keyboard资源存在时接受新的键工作；UP仍允许精确撤原held。
+        // 投影不从window/Mouse/查询次数升Ready，其他后端沿其原已验资格。
+        if(selectedKeyboardBackend.load(std::memory_order_acquire)==2u&&
+           (!transactionL2KeyboardScope||transactionL2KeyboardScope!=l2KeyboardScope.load(std::memory_order_acquire))&&
+           event.header.eventType==AMCL_INPUT_EVENT_PHYSICAL_KEY&&event.payload.physicalKey.action!=AMCL_INPUT_ACTION_UP)
+            return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
         event.header.flags &= ~AMCL_INPUT_EVENT_FLAG_SYNTHETIC;
         switch (event.header.eventType) {
             case AMCL_INPUT_EVENT_PHYSICAL_KEY:
@@ -1786,10 +2236,13 @@ struct InputStateCore::Impl {
                     }
                     if (event.payload.surfaceContext.generation ==
                         surfaceContext.generation) {
-                        return SameSurfaceContext(
-                            surfaceContext, event.payload.surfaceContext)
-                            ? AMCL_INPUT_OK
-                            : AMCL_INPUT_ERROR_STALE;
+                        if (!SameInputSurfaceContextIdentity(surfaceContext, event.payload.surfaceContext)) {
+                            return AMCL_INPUT_ERROR_STALE;
+                        }
+                        // 同身份只更新Hz/validbit现快照，不生成CONTEXT记录、RESET或新sequence。
+                        // held/capture/text与绝对坐标授权时钟原样承接；late consumer基线可读最新元数据。
+                        surfaceContext = event.payload.surfaceContext;
+                        return AMCL_INPUT_OK;
                     }
                 }
                 if (!HasSequenceBudget(1u)) {
@@ -1822,7 +2275,10 @@ struct InputStateCore::Impl {
             case AMCL_INPUT_EVENT_TEXT_CANDIDATES:
                 return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
             default:
-                return AMCL_INPUT_OK;
+                // 按构造不可达：未知类型已在入口拒绝，类型 0 与 DIAGNOSTIC_DROP 由
+                // ValidatePayload 拒绝，BACKEND_CONSUMER_STATE 在 switch 之前处理。
+                // 若将来新增类型却漏写分支，这里失败关闭，而不是假装已经生效。
+                return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
         }
     }
 };
@@ -1926,9 +2382,23 @@ int32_t InputStateCore::SubmitEvent(const AmclInputEvent* event) {
     if (IsAbsolutePositionBoundButton(known)) {
         return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
     }
+    // 新私有physical执行使用与batch相同的接受/回滚闭包。hook缺席的独立Core与显式旧
+    // fixture仍保既有路线；新consumer必协商look端口，不能用缺hook谎称memo已存在。
+    if((known.header.eventType==AMCL_INPUT_EVENT_POINTER_RELATIVE&&lookCommitHook.load(std::memory_order_acquire)&&this==lookHookCore)||
+       (known.header.eventType==AMCL_INPUT_EVENT_PHYSICAL_KEY&&impl_->selectedKeyboardBackend.load(std::memory_order_acquire)==2u))
+        return SubmitBatch(&known,1);
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const uint64_t now = NowNs();
+    impl_->transactionL2KeyboardScope=impl_->l2KeyboardScope.load(std::memory_order_acquire);
     const int32_t result = impl_->SubmitLocked(known, now);
+    if(result==AMCL_INPUT_OK&&known.header.eventType==AMCL_INPUT_EVENT_DEVICE_CHANGED&&known.payload.device.change==AMCL_INPUT_DEVICE_REMOVED&&
+        lookCommitHook.load(std::memory_order_acquire)&&this==lookHookCore){
+        // Source退休是真实Core生命周期接受点，独立于排队的device REMOVE何时被SDK pump。
+        // 此hook路径无分配、无ABI输出，移除不能等待consumer取走旧运动后才撤未应用贡献。
+        AmclInputLookFactV1 retired{};retired.event=known;retired.context=impl_->surfaceContext;
+        // 退休通知不携可执行look order，不把Core nextSequence冒充另一个时钟/序号域。
+        (void)lookCommitHook.load(std::memory_order_acquire)(&retired,1);
+    }
     if (result == kLifecycleOverflowHandled) {
         return AMCL_INPUT_OVERFLOW_RESET;
     }
@@ -1945,12 +2415,13 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
     for (uint32_t i = 0; i < count; ++i) {
         const int32_t copyResult = CopyKnownEvent(&events[i], &known[i]);
         if (copyResult != AMCL_INPUT_OK) return copyResult;
-        // Backend readiness changes consumer ownership rather than queued input
-        // state. The existing batch rollback snapshot intentionally excludes
-        // consumers, so accepting this command in a batch would make rollback
-        // partial and could leave a ghost ready/retiring owner.
-        if (known[i].header.eventType ==
-            AMCL_INPUT_EVENT_BACKEND_CONSUMER_STATE) {
+        // 批次只承载普通输入；生命周期/控制事件（含后端握手）一律在取锁、改任何状态之前
+        // 整批拒绝，判定集合与理由见 IsBatchRejectedControlType。这样批次里出现的
+        // OVERFLOW_RESET 只可能来自普通输入，“整批未生效、只提交一条全局 RESET”与单条
+        // 普通输入溢出的已提交状态一致。唯一生产调用方（ingress 原生绝对鼠标事务）只发
+        // [POINTER_ABSOLUTE, POINTER_BUTTON]。批内背压仍可能局部退休接收者，所以下方
+        // 回滚快照必须包含 consumer/slot。
+        if (IsBatchRejectedControlType(known[i].header.eventType)) {
             return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
         }
         if (IsAbsolutePositionBoundButton(known[i]) &&
@@ -1962,7 +2433,15 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
         }
     }
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    // 整batch先冻结一份原key lease，不能DOWN等待order后给UP改贴新Keyboard。
+    impl_->transactionL2KeyboardScope=impl_->l2KeyboardScope.load(std::memory_order_acquire);
+    InteractionBatch orderedBatch;
     for (const auto& event : known) {
+        // 与单条路径同一口径：未知类型计数、节流日志并拒绝整批。它发生在回滚快照之前，
+        // 所以计数不会被回滚抹掉，批内其他元素也还没有改过任何状态。
+        if (IsUnknownEventType(event.header.eventType)) {
+            return impl_->RejectUnknownEventTypeLocked(event.header.eventType);
+        }
         const int32_t payloadValidation = impl_->ValidatePayload(event);
         if (payloadValidation != AMCL_INPUT_OK) return payloadValidation;
     }
@@ -1970,7 +2449,13 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
     const auto held = impl_->held;
     const auto packets = impl_->packets;
     const auto devices = impl_->devices;
+    // 压力隔离属于同一原子事务：后续样本失败时，不得只恢复shared recipients，
+    // 却把它们的接收者留在retired状态，或遗留一个引用已回滚sequence的私有RESET。
+    const auto consumers = impl_->consumers;
+    const std::vector<BackendSlot> backendSlots(
+        impl_->backendSlots, impl_->backendSlots + AMCL_INPUT_BACKEND_COUNT - 1u);
     const uint64_t nextSequence = impl_->nextSequence;
+    const uint64_t resetAuthorityEpoch = impl_->resetAuthorityEpoch;
     const uint64_t nextPacket = impl_->nextPacket;
     const uint64_t focusEpoch = impl_->focusEpoch;
     const uint64_t surfaceEpoch = impl_->surfaceEpoch;
@@ -1989,9 +2474,23 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
     const bool hasSurfaceContext = impl_->hasSurfaceContext;
     const bool textSessionActive = impl_->textSessionActive;
     const uint64_t textSessionId = impl_->textSessionId;
+    const uint64_t textKeyScope = impl_->textKeyScope.load(std::memory_order_acquire);
     const auto surface = impl_->surface;
     const auto surfaceContext = impl_->surfaceContext;
     const auto capture = impl_->capture;
+    // hook拒绝同样回滚全部Core接受事实；不能只撤queue却留下sequence/held/consumer统计。
+    const auto restore=[&](){
+        impl_->queue=queue;impl_->held=held;impl_->packets=packets;impl_->devices=devices;impl_->consumers=consumers;
+        std::copy(backendSlots.begin(),backendSlots.end(),impl_->backendSlots);impl_->nextSequence=nextSequence;
+        impl_->resetAuthorityEpoch=resetAuthorityEpoch;impl_->nextPacket=nextPacket;impl_->focusEpoch=focusEpoch;impl_->surfaceEpoch=surfaceEpoch;
+        impl_->lastTimeNs=lastTimeNs;impl_->overflowResetCount=overflowResetCount;impl_->obs=observability;impl_->blobBytes=blobBytes;
+        impl_->focused=focused;impl_->captureActive=captureActive;impl_->hasSurface=hasSurface;impl_->hasSurfaceContext=hasSurfaceContext;
+        // batch已持原order；回滚的临时退休没有被Source最终提交观察。生命周期/START
+        // 不允许进入此batch，故仅恢复未提交候选的原scope，不复活真实end或已退休scope。
+        impl_->textKeyScope.store(textKeyScope,std::memory_order_release);
+        impl_->textSessionActive=textSessionActive;impl_->textSessionId=textSessionId;impl_->surface=surface;
+        impl_->surfaceContext=surfaceContext;impl_->capture=capture;
+    };
     const uint64_t now = NowNs();
     for (uint32_t i = 0; i < count; ++i) {
         const int32_t result = impl_->SubmitLocked(known[i], now);
@@ -2001,7 +2500,10 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
         impl_->held = held;
         impl_->packets = packets;
         impl_->devices = devices;
+        impl_->consumers = consumers;
+        std::copy(backendSlots.begin(), backendSlots.end(), impl_->backendSlots);
         impl_->nextSequence = nextSequence;
+        impl_->resetAuthorityEpoch = resetAuthorityEpoch;
         impl_->nextPacket = nextPacket;
         impl_->focusEpoch = focusEpoch;
         impl_->surfaceEpoch = surfaceEpoch;
@@ -2015,10 +2517,14 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
         impl_->hasSurfaceContext = hasSurfaceContext;
         impl_->textSessionActive = textSessionActive;
         impl_->textSessionId = textSessionId;
+        impl_->textKeyScope.store(textKeyScope,std::memory_order_release);
         impl_->surface = surface;
         impl_->surfaceContext = surfaceContext;
         impl_->capture = capture;
 
+        // 普通输入溢出：整批（含批内已做的局部隔离）回滚后提交一次全局 RESET，与单条普通
+        // 输入溢出的结果一致。控制事件已在入口拒绝，kLifecycleOverflowHandled 在这里按构造
+        // 不可达；保留它只为不让内部哨兵值漏给调用方。
         if (result == AMCL_INPUT_OVERFLOW_RESET ||
             result == kLifecycleOverflowHandled) {
             return impl_->OverflowReset(now)
@@ -2026,6 +2532,16 @@ int32_t InputStateCore::SubmitBatch(const AmclInputEvent* events,
                        : AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
         }
         return result;
+    }
+    const auto commit=lookCommitHook.load(std::memory_order_acquire);
+    if(commit&&coreHookPid()==lookHookProcess&&this==lookHookCore){
+        std::vector<AmclInputLookFactV1> lookFacts;
+        for(const auto& record:impl_->queue)if(record.event.header.sequence>=nextSequence&&record.event.header.eventType==AMCL_INPUT_EVENT_POINTER_RELATIVE)
+            lookFacts.push_back(AmclInputLookFactV1{record.event,record.lookContext,record.interactionOrder,record.lookBackendMask,0});
+        if(!lookFacts.empty()){
+            const int32_t lookResult=commit(lookFacts.data(),static_cast<uint32_t>(lookFacts.size()));
+            if(lookResult!=AMCL_INPUT_OK){restore();return lookResult;}
+        }
     }
     return AMCL_INPUT_OK;
 }
@@ -2085,13 +2601,27 @@ int32_t InputStateCore::SubmitTextPacket(const AmclInputEvent* input,
             return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
         }
     }
+    // 比整个包池还大的包，无论怎样回收都放不下：这是本 host 容量下的参数错误，和上面编解码
+    // 的长度上限同类，所以在取锁、改任何状态之前以 INVALID_ARGUMENT 拒绝，**不做**全局
+    // 复位（旧实现会为一个注定失败的包丢掉全部 held/capture/text）。不用 RESOURCE_EXHAUSTED：
+    // 那个码留给 sequence/epoch/包 id 这类共享预算耗尽，调用方可能据此认定整个 host 不可用。
+    // 产品池 64 KiB 大于编解码上限，实际只在缩容的宿主测试配置里可达。
+    if (static_cast<size_t>(byteCount) > kBlobCapacity) {
+        return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    }
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const uint64_t now = NowNs();
     const int32_t validation = impl_->Validate(known);
+    const uint64_t originalKeyScope=impl_->l2KeyboardScope.load(std::memory_order_acquire);
+    InteractionBatch originalKeyboardOrder;
     if (validation != AMCL_INPUT_OK) return validation;
     if (impl_->requireTextReady && !impl_->AnyBackendReady()) {
         return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
     }
+    if(known.header.eventType==AMCL_INPUT_EVENT_TEXT_COMMIT&&
+       impl_->selectedKeyboardBackend.load(std::memory_order_acquire)==2u&&
+       (!originalKeyScope||originalKeyScope!=impl_->l2KeyboardScope.load(std::memory_order_acquire)))
+        return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
     if (!impl_->HasSequenceBudget(1u) || impl_->nextPacket == 0u ||
         impl_->nextPacket == UINT64_MAX) {
         return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
@@ -2101,13 +2631,13 @@ int32_t InputStateCore::SubmitTextPacket(const AmclInputEvent* input,
                    ? AMCL_INPUT_OVERFLOW_RESET
                    : AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
     }
-    if (impl_->packets.size() >= kBlobPacketCapacity ||
-        static_cast<size_t>(byteCount) > kBlobCapacity - impl_->blobBytes) {
-        if (!impl_->OverflowReset(
-                now, AMCL_INPUT_RESET_BLOB_POOL_EXHAUSTED)) {
-            return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
-        }
-        return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
+    if (!impl_->EnsureBlobSpace(static_cast<size_t>(byteCount))) {
+        // 包池不足且无法局部隔离：全局复位成功时如实返回 OVERFLOW_RESET（本包未入队，
+        // 只提交了一条 BLOB_POOL_EXHAUSTED RESET），与队列溢出同一语义；复位本身因
+        // sequence 耗尽失败才返回 RESOURCE_EXHAUSTED。
+        return impl_->OverflowReset(now, AMCL_INPUT_RESET_BLOB_POOL_EXHAUSTED)
+                   ? AMCL_INPUT_OVERFLOW_RESET
+                   : AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
     }
 
     AmclInputEvent event = known;
@@ -2129,6 +2659,7 @@ int32_t InputStateCore::SubmitTextPacket(const AmclInputEvent* input,
         return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
     }
     const AmclInputBlobRef blob{packetId, 0, byteCount};
+    packet.sequence = event.header.sequence;
     if (event.header.eventType == AMCL_INPUT_EVENT_TEXT_COMMIT) {
         event.payload.textCommit.utf8Blob = blob;
     } else if (event.header.eventType == AMCL_INPUT_EVENT_TEXT_EDITING) {
@@ -2150,6 +2681,7 @@ int32_t InputStateCore::SubmitTextPacket(const AmclInputEvent* input,
         impl_->blobBytes += packet.data.size();
         impl_->packets.emplace(packetId, std::move(packet));
         impl_->queue.push_back(EventRecord{event, owners});
+        impl_->queue.back().l2KeyboardScope=originalKeyScope;
     }
     return AMCL_INPUT_OK;
 }
@@ -2211,6 +2743,7 @@ int32_t InputStateCore::OpenConsumer(
     if (impl_->sessionActive) {
         AmclInputEvent baseline = BlankEvent(AMCL_INPUT_EVENT_RESET);
         baseline.payload.reset.reason = AMCL_INPUT_RESET_CONSUMER_BASELINE;
+        baseline.payload.reset.scope = AMCL_INPUT_RESET_SCOPE_CONSUMER_LOCAL;
         baseline.payload.reset.closingEpoch = impl_->sessionEpoch;
         if (!impl_->Stamp(baseline, NowNs(), true)) {
             return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
@@ -2274,6 +2807,10 @@ int32_t InputStateCore::OpenConsumer(
             if (!impl_->Stamp(text, NowNs(), true)) {
                 return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
             }
+            // 这是host合成的“当前IME会话”基线：SYNTHETIC标志描述产生方式，
+            // source仍须描述其IME语义，供严格文本adapter校验。仅在内部基线恢复
+            // 此字段，不改变外部Submit的来源/标志校验，也不重放历史commit或按键。
+            text.header.source = AMCL_INPUT_SOURCE_IME;
             impl_->CountAcceptedLocked(text, true);
             ++impl_->obs.queueWrites;
             ++impl_->obs.queueDeliveries;
@@ -2308,7 +2845,8 @@ int32_t InputStateCore::OpenConsumer(
 }
 
 int32_t InputStateCore::NextEvent(AmclInputConsumerHandle consumer,
-                                  AmclInputEvent* outEvent) {
+                                  AmclInputEvent* outEvent, uint64_t* outOrder,
+                                  uint64_t maxOrder, bool peekOnly) {
     if (!outEvent) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto state = impl_->consumers.find(consumer);
@@ -2316,6 +2854,10 @@ int32_t InputStateCore::NextEvent(AmclInputConsumerHandle consumer,
         return impl_->MissingConsumerStatus(consumer);
     }
     if (!state->second.pendingControl.empty()) {
+        const uint64_t order = state->second.pendingControl.front().interactionOrder;
+        if (order > maxOrder) return AMCL_INPUT_EMPTY;
+        if (outOrder) *outOrder = order;
+        if (peekOnly) return AMCL_INPUT_OK;
         *outEvent = state->second.pendingControl.front();
         state->second.pendingControl.pop_front();
         // §11 queue read. The baseline/control channel is counted alongside the
@@ -2323,6 +2865,8 @@ int32_t InputStateCore::NextEvent(AmclInputConsumerHandle consumer,
         // reading, and splitting the two would hide a stalled ordinary drain
         // behind a healthy-looking total.
         ++impl_->obs.queueReads;
+        // 三种来源每成功交出一条都记下它的 sequence，供 READY 的投递异常检查使用。
+        state->second.lastDeliveredSequence = outEvent->header.sequence;
         if (outEvent->header.eventType == AMCL_INPUT_EVENT_RESET &&
             outEvent->payload.reset.reason ==
                 AMCL_INPUT_RESET_CONSUMER_BASELINE &&
@@ -2334,13 +2878,32 @@ int32_t InputStateCore::NextEvent(AmclInputConsumerHandle consumer,
     for (auto& record : impl_->queue) {
         const auto recipient = record.recipients.find(consumer);
         if (recipient != record.recipients.end()) {
+            if (record.interactionOrder > maxOrder) return AMCL_INPUT_EMPTY;
+            if (outOrder) *outOrder = record.interactionOrder;
+            if (peekOnly) return AMCL_INPUT_OK;
             *outEvent = record.event;
+            state->second.lastL2KeyboardScope=record.l2KeyboardScope;
             record.recipients.erase(recipient);
             ++impl_->obs.queueReads;
+            state->second.lastDeliveredSequence = outEvent->header.sequence;
             impl_->Prune();
             return AMCL_INPUT_OK;
         }
     }
+    // 定向退休通知排在本消费者仍负有投递责任的旧记录之后。压力隔离已将旧
+    // recipient摘除，所以该分支会立即清其本地状态；正常RETIRE仍完整drain旧批次。
+    if (!state->second.terminalControl.empty()) {
+        const uint64_t order = state->second.terminalControl.front().interactionOrder;
+        if (order > maxOrder) return AMCL_INPUT_EMPTY;
+        if (outOrder) *outOrder = order;
+        if (peekOnly) return AMCL_INPUT_OK;
+        *outEvent = state->second.terminalControl.front();
+        state->second.terminalControl.pop_front();
+        ++impl_->obs.queueReads;
+        state->second.lastDeliveredSequence = outEvent->header.sequence;
+        return AMCL_INPUT_OK;
+    }
+    if (state->second.deliveryRetired) return AMCL_INPUT_ERROR_STALE;
     if (state->second.generation != AMCL_INPUT_HOST_API_GENERATION ||
         (state->second.sessionEpoch != 0 &&
          state->second.sessionEpoch != impl_->sessionEpoch)) {
@@ -2440,7 +3003,8 @@ int32_t InputStateCore::CloseConsumer(AmclInputConsumerHandle consumer) {
     }
     // Anything still owed to this consumer -- both its private control channel
     // and its slots in the shared queue -- becomes a counted discard.
-    impl_->CountDiscardedDeliveriesLocked(state->second.pendingControl.size());
+    impl_->CountDiscardedDeliveriesLocked(state->second.pendingControl.size() +
+                                         state->second.terminalControl.size());
     impl_->consumers.erase(state);
     impl_->DropConsumerFromQueueLocked(consumer);
     for (auto& packet : impl_->packets) packet.second.owners.erase(consumer);
@@ -2483,6 +3047,73 @@ int32_t InputStateCore::GetObservability(CoreObservabilityV1* outObservability) 
     *outObservability = impl_->SnapshotObservabilityLocked();
     return AMCL_INPUT_OK;
 }
+
+int32_t InputStateCore::ReadCurrentSurfaceContext(AmclInputSurfaceContextPayload* outContext) {
+    if (!outContext) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    *outContext = {};
+    if (!impl_->sessionActive || !impl_->hasSurfaceContext) return AMCL_INPUT_EMPTY;
+    *outContext = impl_->surfaceContext;
+    return AMCL_INPUT_OK;
+}
+/** 在Core同一锁中捕获原文本和输入resource。backend Ready是已登记实例事实，
+ * Source随后还必须预留真实key运输receiver；此读不创建consumer或把方法存在说成Ready。 */
+int32_t InputStateCore::ReadTextResource(AmclInputTextCoreResourceV1* out) {
+    if(!out)return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(impl_->mutex);*out={};
+    const uint64_t scope=impl_->textKeyScope.load(std::memory_order_acquire);
+    if(!scope||!impl_->textSessionActive||!impl_->AnyBackendReady()||!impl_->sessionActive||
+       !impl_->focused||!impl_->hasSurface||!HasValidActiveDimensions(impl_->surface)||!impl_->hasSurfaceContext)
+        return AMCL_INPUT_EMPTY;
+    out->size=sizeof(*out);out->active=1;out->textSession=impl_->textSessionId;out->scope=scope;
+    out->input.size=sizeof(out->input);out->input.active=1;out->input.sessionEpoch=impl_->sessionEpoch;
+    out->input.surfaceEpoch=impl_->surfaceEpoch;out->input.focusEpoch=impl_->focusEpoch;out->input.context=impl_->surfaceContext;
+    return AMCL_INPUT_OK;
+}
+/** 只供原order事务内最终提交复核；不取Core mutex，不回读当前ID替旧工作换scope。 */
+int32_t InputStateCore::ValidateTextScope(uint64_t scope) {
+    return scope&&impl_->textKeyScope.load(std::memory_order_acquire)==scope?AMCL_INPUT_OK:AMCL_INPUT_EMPTY;
+}
+uint64_t InputStateCore::L2KeyboardScope() const{return impl_->l2KeyboardScope.load(std::memory_order_acquire);}
+bool InputStateCore::CompareL2KeyboardScope(uint64_t expected,uint64_t desired){
+    return impl_->l2KeyboardScope.compare_exchange_strong(expected,desired,std::memory_order_acq_rel);
+}
+void InputStateCore::SelectKeyboardBackend(uint32_t backend){
+    // 单局实际ABI在启动契约点冻结；后续caller不能用0/nonL2改写以绕独立键资源准入。
+    if(backend<1||backend>3)return;
+    uint32_t empty=0;(void)impl_->selectedKeyboardBackend.compare_exchange_strong(empty,backend,std::memory_order_acq_rel);
+}
+uint32_t InputStateCore::SelectedKeyboardBackend() const{return impl_->selectedKeyboardBackend.load(std::memory_order_acquire);}
+/** 仅查询该consumer刚由Next实际取出的那一条；队列GC后仍保原侧带，不能查未来current。
+ * bounded状态附着原consumer，close自动释放，不引入另一个按sequence增长的全局map。
+ */
+int32_t InputStateCore::ReadL2KeyStamp(uint64_t consumer,uint64_t sequence,uint64_t* scope){
+    if(!scope)return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    *scope=0;
+    std::lock_guard<std::mutex> lock(impl_->mutex);const auto it=impl_->consumers.find(consumer);
+    if(it==impl_->consumers.end()||it->second.lastDeliveredSequence!=sequence)return AMCL_INPUT_ERROR_STALE;
+    *scope=it->second.lastL2KeyboardScope;return AMCL_INPUT_OK;
+}
+int32_t InputStateCore::ReadL2HeldKey(int32_t key){
+    // Keyboard使用有界L2编码集合；这次恢复只投影当前唯一raw held，不修改它的device寿命。
+    if(key<=0||key>=256)return 0;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if(!impl_->sessionActive||!impl_->focused||!impl_->hasSurface||!impl_->l2KeyboardScope.load(std::memory_order_acquire))return 0;
+    const auto mapper=Lwjgl2OhosInputMapper();
+    for(const auto& item:impl_->held){
+        if(item.first.kind!=AMCL_INPUT_EVENT_PHYSICAL_KEY)continue;
+        const auto& fact=item.second.downEvent;GlfwMappedKey mapped{};
+        if(mapper.mapKey&&mapper.mapKey(mapper.context,fact.header.deviceId,fact.payload.physicalKey.physicalKey,
+                fact.payload.physicalKey.hardwareScanCode,fact.payload.physicalKey.hidUsage,&mapped)&&mapped.key==key)return 1;
+    }
+    return 0;
+}
+int32_t InputStateCore::ReadLookResource(AmclInputLookCoreResourceV1* out){if(!out)return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(impl_->mutex);*out={};
+    if(!impl_->sessionActive||!impl_->focused||!impl_->hasSurface||!HasValidActiveDimensions(impl_->surface)||!impl_->hasSurfaceContext)
+        return AMCL_INPUT_EMPTY;
+    out->size=sizeof(*out);out->active=1;out->sessionEpoch=impl_->sessionEpoch;out->surfaceEpoch=impl_->surfaceEpoch;
+    out->focusEpoch=impl_->focusEpoch;out->context=impl_->surfaceContext;return AMCL_INPUT_OK;}
 
 void InputStateCore::LogObservabilitySummary(const char* reason) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -2530,12 +3161,16 @@ void InputStateCore::Impl::LogObservabilityLocked(const char* reason) {
     // returns before bucketing when reason == NONE. It is printed anyway so a
     // non-zero value reads as a counting bug instead of hiding behind an index
     // nobody logs.
+    // `overflow` 只含全局容量复位；局部压力退休按资源单列在 pressureRetire(queue/blob)，
+    // 未知事件类型拒绝数单列在 unknownEventTypes，三者不能相加成一个“复位次数”。
     OH_LOG_INFO(LOG_APP,
         "input core observability reason=%{public}s "
         "queue(accepted/write/noRecipient/deliveries/read/discard/pending/"
         "overflow/reset)="
         "%{public}llu/%{public}llu/%{public}llu/%{public}llu/%{public}llu/"
         "%{public}llu/%{public}llu/%{public}llu/%{public}llu "
+        "pressureRetire(queue/blob)=%{public}llu/%{public}llu "
+        "unknownEventTypes=%{public}llu "
         "capture(requested/active/lost)=%{public}llu/%{public}llu/%{public}llu "
         "captureLostBy(none/granted/platform/focus/surface/unsupported/unknown)="
         "%{public}llu/%{public}llu/%{public}llu/%{public}llu/%{public}llu/"
@@ -2553,6 +3188,9 @@ void InputStateCore::Impl::LogObservabilityLocked(const char* reason) {
         (unsigned long long)m.queuePending,
         (unsigned long long)m.queueOverflowResets,
         (unsigned long long)m.resetsEmitted,
+        (unsigned long long)m.pressureRetirementsQueue,
+        (unsigned long long)m.pressureRetirementsBlob,
+        (unsigned long long)m.unknownEventTypes,
         (unsigned long long)m.captureRequested,
         (unsigned long long)m.captureActivated,
         (unsigned long long)m.captureLost,
@@ -2603,17 +3241,60 @@ InputStateCore& HostInputStateCore() {
     // Existing host API tests intentionally exercise text packets without
     // constructing a backend consumer. Product builds keep the readiness gate
     // enabled; dedicated ingress/adapter tests register a backend explicitly.
-    static InputStateCore core(
+    static InputStateCore* const core=new InputStateCore(
         LatchedGlfwInputRouteConfig().typedPhysical, false);
 #else
-    static InputStateCore core(
+    // 公共Core表及其借用adapter是进程pin。global adapter可能先于首次Core使用构造，
+    // 函数static对象的退出析构会先释放Core再让adapter.Close访问旧map；host owner不析构，
+    // generic局部InputStateCore仍正常RAII。初始化分配异常按原C++初始化失败机制终止，不借空表。
+    static InputStateCore* const core=new InputStateCore(
         LatchedGlfwInputRouteConfig().typedPhysical, true);
 #endif
-    return core;
+    return *core;
 }
 
 }  // namespace amcl::input
 
+// 隐藏owner内部接缝，跨image/frontend只能经bridge整表委派，不能直取私有Core实例。
+extern "C" int amcl_input_owner_read_surface_context(AmclInputSurfaceContextPayload* outContext) {
+    return amcl::input::HostInputStateCore().ReadCurrentSurfaceContext(outContext) == AMCL_INPUT_OK ? 1 : 0;
+}
+extern "C" int amclInputOwnerReadLookResourceV1(AmclInputLookCoreResourceV1* out){
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().ReadLookResource(out)==AMCL_INPUT_OK?1:0;}
+
+// 与look私有口同样先拒foreign PID，再触及进程Core guard/锁；不在fork child重建owner。
+extern "C" int amclInputOwnerReadTextResourceV1(AmclInputTextCoreResourceV1* out) {
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().ReadTextResource(out)==AMCL_INPUT_OK?1:0;
+}
+extern "C" int amclInputOwnerValidateTextScopeV1(uint64_t scope) {
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().ValidateTextScope(scope)==AMCL_INPUT_OK?1:0;
+}
+extern "C" uint64_t amclInputOwnerL2KeyboardScopeV1(){
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().L2KeyboardScope();
+}
+extern "C" int amclInputOwnerCompareL2KeyboardScopeV1(uint64_t expected,uint64_t desired){
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().CompareL2KeyboardScope(expected,desired)?1:0;
+}
+extern "C" void amclInputOwnerSelectKeyboardBackendV1(uint32_t backend){
+    if(coreHookPid()==lookHookProcess)amcl::input::HostInputStateCore().SelectKeyboardBackend(backend);
+}
+extern "C" uint32_t amclInputOwnerSelectedKeyboardBackendV1(){
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().SelectedKeyboardBackend();
+}
+extern "C" int amclInputOwnerReadL2KeyStampV1(uint64_t host,uint64_t consumer,uint64_t sequence,uint64_t* scope){
+    if(coreHookPid()!=lookHookProcess||host!=reinterpret_cast<uintptr_t>(amclInputGetHostApiV1()))return 0;
+    return amcl::input::HostInputStateCore().ReadL2KeyStamp(consumer,sequence,scope)==AMCL_INPUT_OK?1:0;
+}
+extern "C" int amclInputOwnerReadL2HeldKeyV1(int32_t key){
+    if(coreHookPid()!=lookHookProcess)return 0;
+    return amcl::input::HostInputStateCore().ReadL2HeldKey(key);
+}
 namespace {
 using amcl::input::HostInputStateCore;
 int32_t Begin(uint64_t* value) { return HostInputStateCore().BeginSession(value); }
@@ -2627,6 +3308,17 @@ int32_t Device(uint64_t id, uint32_t change, uint32_t caps) { const int32_t resu
 int32_t Reset(uint32_t reason) { const int32_t result = HostInputStateCore().RequestReset(reason); amclDesktopNotifyInput(); return result; }
 int32_t Open(AmclInputConsumerHandle* value) { return HostInputStateCore().OpenConsumer(value); }
 int32_t Next(AmclInputConsumerHandle value, AmclInputEvent* event) { return HostInputStateCore().NextEvent(value, event); }
+// 有序读取和 peek 共用 core 的锁与队列选择，避免 peek 后生命周期替换造成越过 fence。
+int32_t NextOrdered(AmclInputConsumerHandle value, AmclInputEvent* event,
+                    uint64_t maxOrder, uint64_t* order) {
+    if (!order) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    return HostInputStateCore().NextEvent(value, event, order, maxOrder);
+}
+int32_t PeekOrder(AmclInputConsumerHandle value, uint64_t* order) {
+    if (!order) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    AmclInputEvent event{};
+    return HostInputStateCore().NextEvent(value, &event, order, UINT64_MAX, true);
+}
 int32_t ReadBlob(AmclInputConsumerHandle value, const AmclInputBlobRef* blob, uint8_t* bytes, uint32_t capacity, uint32_t* count) { return HostInputStateCore().ReadPacketBlob(value, blob, bytes, capacity, count); }
 int32_t Release(AmclInputConsumerHandle value, uint64_t packet) { return HostInputStateCore().ReleasePacket(value, packet); }
 int32_t Close(AmclInputConsumerHandle value) { return HostInputStateCore().CloseConsumer(value); }
@@ -2666,6 +3358,8 @@ amclInputGetHostApiV1(void) {
             AMCL_INPUT_CAP_DEVICE_CLASS |
             AMCL_INPUT_CAP_SURFACE_CONTEXT |
             AMCL_INPUT_CAP_TEXT_INPUT_SESSION |
+            AMCL_INPUT_CAP_CONSUMER_ISOLATION | AMCL_INPUT_CAP_INTERACTION_ORDER |
+            AMCL_INPUT_CAP_RESET_AUTHORITY_EPOCH |
              (typedPhysicalRoute
                 ? AMCL_INPUT_CAP_GLFW_TYPED_PHYSICAL_ROUTE : 0u) |
              (verifiedRelative
@@ -2690,6 +3384,9 @@ amclInputGetHostApiV1(void) {
         Release,
         Close,
         Snapshot,
+        NextOrdered,
+        PeekOrder,
+        amclInputInteractionFence,
     };
     return &api;
 }

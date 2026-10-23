@@ -1,0 +1,51 @@
+// Entry跨层测试接收器：逐条执行真实Native注册/来源退休/移动/按键，不复制prefix状态机。
+// 本次cpp主体由既有test-menu-mouse-production生产提取配方拼接；SDK/最终bridge输出沿既有宿主接缝。
+#include <sstream>
+int main(){
+ // 真实共同Source/Core/bridge准备先于UI表与来源操作；Node每次重放仍取得独立原进程资格。
+ CHECK(initializeSourceFixture());
+ s_surfaceInputGate.active=true;s_surfaceInputGate.publicationGeneration=7;
+ s_menuTouch.Configure(1000,1000,1,TouchInteractionConfig{},[](MenuTouchAction,double,double){});
+ TouchPublicationContext context;context.surface=7;context.session=3;context.schema=1;context.policy=1;context.density=1;
+ std::string operation="init";unsigned operations=1;
+ auto first=s_touchAdmission.Begin(operation,"layout",context,context);
+ s_touchAdmission.Complete(context,false);
+ if(!s_touchAdmission.Confirm(operation,first.token,context)) return 2;
+ std::string line;
+ while(std::getline(std::cin,line)){
+  std::istringstream input(line);std::string command;input>>command;bool ok=false;
+  if(command=="bounds"){
+   double x,y,w,h;uint64_t token;std::string prefix;input>>x>>y>>w>>h>>token>>prefix;
+   const auto state=s_touchAdmission.Query(context);
+   const bool owns=token!=0&&state.token==token&&state.context.surface!=0&&
+    (state.status==TouchPublicationStatus::Committed||state.status==TouchPublicationStatus::Unchanged||
+     (state.status==TouchPublicationStatus::Idle&&!state.fenced));
+   ok=owns&&ohos_set_menu_mouse_bounds_for_panel(x,y,w,h,prefix.c_str(),token);
+  }else if(command=="move"){
+   double dx,dy;uint64_t token;std::string prefix;input>>dx>>dy>>token>>prefix;
+   ok=s_touchAdmission.AcceptsUiContinuation(token,context)&&ohos_move_touch_menu_pointer(dx,dy,prefix.c_str(),token);
+  }else if(command=="button"){
+   std::string owner;int code,down;uint64_t token;input>>owner>>code>>down>>token;
+   ok=(!down||s_touchAdmission.AcceptsUiToken(token))&&ohos_touch_menu_button(owner.c_str(),code,down!=0,down?token:0);
+  }else if(command=="wheel"){
+   int steps;uint64_t token;std::string prefix;input>>steps>>token>>prefix;
+   ok=s_touchAdmission.AcceptsUiContinuation(token,context)&&ohos_touch_menu_scroll(steps,prefix.c_str(),token);
+  }else if(command=="cancel"){
+   std::string prefix;input>>prefix;ok=ohos_cancel_touch_menu_mouse(prefix.c_str());
+  }else if(command=="source-reset"){
+   // 现役releaseSourceHeld NAPI实际调用的生产函数；该释放原语不修改publication/context。
+   ohos_release_input_source_held(AMCL_INPUT_SOURCE_TOUCH_CONTROLS);ok=true;
+  }else if(command=="new-context"){
+   // 真实TouchPublicationState重新发布/确认，用来检验身份变更后重新登记的正对照。
+   ++context.session;++testTouchDomain;operation="context-"+std::to_string(++operations);
+   const auto next=s_touchAdmission.Begin(operation,"layout",context,context);
+   s_touchAdmission.Complete(context,false);ok=s_touchAdmission.Confirm(operation,next.token,context);
+  }else return 3;
+  const auto state=s_touchAdmission.Query(context);
+  std::cout<<"{\"ok\":"<<(ok?"true":"false")<<",\"prefix\":\""<<s_menuToolPanelPrefix
+   <<"\",\"token\":"<<state.token<<",\"accepts\":"<<(s_touchAdmission.AcceptsUiToken(state.token)?"true":"false")
+   <<",\"surface\":"<<context.surface<<",\"session\":"<<context.session<<",\"schema\":"<<context.schema
+   <<",\"policy\":"<<context.policy<<",\"grabEpoch\":"<<context.grabEpoch<<",\"menuEpoch\":"<<menuEpoch
+   <<",\"toolEpoch\":"<<toolEpoch<<",\"toolLive\":"<<s_menuToolOwners.size()<<",\"nativeRelativeOutputs\":"<<relatives.size()<<"}\n";
+ }
+}

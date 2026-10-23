@@ -8,7 +8,7 @@ set -e
 #  状态 (2026-05-30): JDK 25 上线编译路径（MC 26.1+ YY.D.H 纪元首个要求 Java 25）
 #  - 8 个 OHOS 真 patch（与 21 同构，由 docker/port_jdk25_patches.sh 生成）
 #  - 默认上游：jdk25u jdk-25.0.4+3 (commit e8f9ebe5e)
-#  - 输出：/output/jdk25-ohos-full.zip（与 21 的 jdk21-ohos-full.zip 同构）
+#  - 输出：/output/jdk25-ohos-runtime-audio-rc2.zip（与 21 的 jdk21-ohos-full.zip 同构）
 #  - 严格对齐 build_jdk21_ohos.sh，仅替换版本号 + boot JDK 25
 #
 #  用法:
@@ -93,19 +93,7 @@ echo ""
 echo "[2/7] Cloning OpenJDK 25u..."
 cd $WORK_DIR
 
-if [ ! -d "jdk25u" ]; then
-    # 用稳定 tag jdk-25.0.4+3
-    git clone --depth 1 --branch jdk-25.0.4+3 https://github.com/openjdk/jdk25u.git jdk25u || \
-    git clone --depth 1 https://github.com/openjdk/jdk25u.git jdk25u
-    echo "Clone complete."
-else
-    echo "Source already exists, resetting..."
-    cd jdk25u
-    git reset --hard HEAD
-    git clean -fdx -- src/
-    cd ..
-fi
-
+python3 /build/scripts/prepare_jdk_source.py 25
 cd jdk25u
 
 # --- Step 3: 安装 stub 头文件 ---
@@ -150,7 +138,6 @@ echo ""
 echo "[4/7] Applying source patches..."
 
 # 修复 WSL 检测 (Docker Desktop 运行在 WSL2 内核上会被误判)
-sed -i 's/uname -r | grep -i microsoft/false/' make/autoconf/build-aux/config.guess 2>/dev/null || true
 
 # Patch / shim 来源（mount: prebuilt/jdk/25/ → /jdk25-spec, prebuilt/stubs → /stubs-src）
 # stubs sources 实际放在 /stubs-src/src/{cxxabi_shim.cpp, eh_stubs.c}
@@ -175,8 +162,11 @@ fi
 echo "  patches: $PATCH_DIR"
 echo "  stubs:   $STUBS_SRC_DIR"
 
-# 使用统一补丁系统应用 8 个 OHOS patch
-bash /build/apply_patches.sh --patch-dir "$PATCH_DIR" --target /build/jdk25u
+# 仅重放series声明的活动补丁；历史0006/0007原件仍用于追溯，不能通配应用。
+python3 /build/scripts/apply_jdk_patches.py --patch-dir "$PATCH_DIR" --target /build/jdk25u
+# 编译前核对完整上游安全点文件，防止旧绕过换名回生；不改变宿主信号链。
+python3 /build/scripts/verify_jdk25_safepoint.py --source /build/jdk25u \
+    --patch-dir "$PATCH_DIR" --inputs /prebuilt/jdk/build-inputs.json
 
 # --- Step 5: Configure ---
 echo ""
@@ -223,8 +213,10 @@ LIBCXX_INC=/usr/lib/llvm-15/include/c++/v1
 TARGET_LIB="${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos"
 
 COMMON_CFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
-COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -stdlib=libc++ -nostdlib++ -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
+COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -stdlib=libc++ -nostdlib++ -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
 
+# 固定上游源码时间，避免构建时间成为未登记输入。
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 bash configure \
     `# 2026-08-29：显式声明构建主机，别让 config.guess 自己猜。` \
     `# Docker Desktop 的容器跑在 WSL2 VM 里，uname -r 带 "microsoft-standard-WSL2"，` \
@@ -283,15 +275,10 @@ fi
 echo ""
 echo "[7/7] Post-build: rebuild libjli + pack zip..."
 
-IMAGE_DIR=$(find /build/jdk25u/build -path "*/images/jdk" -type d -not -path "*/support/*" 2>/dev/null | head -1)
-if [ -z "$IMAGE_DIR" ]; then
-    # legacy fallback
-    IMAGE_DIR=$(find /build/jdk25u/build -path "*/images/jdk" -type d 2>/dev/null | head -1)
-fi
-if [ -z "$IMAGE_DIR" ]; then
-    echo "ERROR: Build output not found"
-    exit 1
-fi
+# 精确消费最终 image，禁止选中 support/images 的中间目录。
+IMAGE_DIR=/build/jdk25u/build/linux-aarch64-server-release/images/jdk
+[ -f "$IMAGE_DIR/release" ] && [ -f "$IMAGE_DIR/lib/modules" ] || { echo 'ERROR: missing final image'; exit 1; }
+
 echo "  JDK images at: $IMAGE_DIR"
 
 # 复制 libcxxabi_shim.so 到 image lib/（保证打包包含）
@@ -308,13 +295,10 @@ echo "============================================"
 echo " BUILD SUCCESSFUL!"
 echo " JDK:     $IMAGE_DIR"
 echo " Version: $(grep JAVA_VERSION= $IMAGE_DIR/release | head -1)"
-echo " Output:  /output/jdk25-ohos-full.zip"
+echo " Output:  /output/jdk25-ohos-runtime-audio-rc2.zip"
 echo "============================================"
 du -sh $IMAGE_DIR
-ls -lh /output/jdk25-ohos-full.zip 2>/dev/null || echo "WARNING: pack_jdk_full.sh did not produce zip!"
+ls -lh /output/jdk25-ohos-runtime-audio-rc2.zip 2>/dev/null || echo "WARNING: pack_jdk_full.sh did not produce zip!"
 
 echo ""
-echo "Next steps:"
-echo "  1. sha256sum /output/jdk25-ohos-full.zip"
-echo "  2. gh release create v25.0.4-ohos-1 /output/jdk25-ohos-full.zip --repo LZZLHY/mc-ohos-resources"
-echo "  3. Update entry/src/main/ets/services/JdkManager.ets JDK_VERSIONS['25'].sha256/sizeBytes"
+echo "Candidate runtime built; use the recorded remote validation plan before any immutable new release."

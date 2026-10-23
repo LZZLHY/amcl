@@ -1,5 +1,7 @@
 #include "backend_input_bridge_host_stub.h"
 #include "../../input/text_utf8_codec.h"
+#include "../../input/amcl_input_api.h"
+#include "../../input/input_interaction_order.h"
 
 #include <cstring>
 #include <deque>
@@ -16,6 +18,17 @@ std::map<uint64_t, std::vector<uint8_t>> g_textPackets;
 
 }  // namespace
 
+// 测试替身只提供快照需要的不可变路由位，真实队列仍由下方既有stub显式控制。
+#ifndef AMCL_CONTROL_DELIVERY_HOST_TESTING
+extern "C" const AmclInputHostApiV1* amclInputGetHostApiV1(void) {
+    static AmclInputHostApiV1 api{};
+    api.capabilityBits = g_unavailable ? 0u : AMCL_INPUT_CAP_GLFW_TYPED_PHYSICAL_ROUTE;
+    return &api;
+}
+#endif
+// 链接真实Core时只替代可编程typed transport的资格，绝不再伪造Core owner表。
+extern "C" int amclBackendInputHostStubTypedRouteActive(void) { return g_unavailable ? 0 : 1; }
+
 extern "C" void amclBackendInputHostStubReset(void) {
     g_queue.clear();
     g_unavailable = false;
@@ -29,7 +42,10 @@ extern "C" void amclBackendInputHostStubSetUnavailable(int unavailable) {
 
 extern "C" void amclBackendInputHostStubPush(const AmclBackendInputEvent* event) {
     if (!event) return;
-    g_queue.push_back(*event);
+    // 与真实 core 同样在生产时盖交互顺序，支持 typed/ring 交错轨迹的消费断言。
+    AmclBackendInputEvent ordered = *event;
+    ordered.sequence = amclInputNextInteractionOrder();
+    g_queue.push_back(ordered);
 }
 
 extern "C" void amclBackendInputHostStubSetTextPacket(
@@ -45,6 +61,11 @@ extern "C" unsigned long long amclBackendInputHostStubActiveCalls(void) {
 }
 
 extern "C" int amclBackendInputNext(uint32_t backend, AmclBackendInputEvent* out) {
+    return amclBackendInputNextThrough(backend, out, UINT64_MAX);
+}
+
+extern "C" int amclBackendInputNextThrough(uint32_t backend, AmclBackendInputEvent* out,
+                                          uint64_t maxOrder) {
     if (!out) return AMCL_BACKEND_INPUT_ERROR_ARGUMENT;
     if (backend != AMCL_BACKEND_INPUT_LWJGL2 &&
         backend != AMCL_BACKEND_INPUT_SDL3) {
@@ -52,6 +73,7 @@ extern "C" int amclBackendInputNext(uint32_t backend, AmclBackendInputEvent* out
     }
     if (g_unavailable) return AMCL_BACKEND_INPUT_ERROR_UNAVAILABLE;
     if (g_queue.empty()) return AMCL_BACKEND_INPUT_EMPTY;
+    if (g_queue.front().sequence > maxOrder) return AMCL_BACKEND_INPUT_EMPTY;
     *out = g_queue.front();
     g_queue.pop_front();
     out->abiVersion = static_cast<uint16_t>(AMCL_BACKEND_INPUT_ABI_VERSION);
@@ -119,3 +141,6 @@ extern "C" int amclBackendInputReleaseText(
 }
 
 extern "C" void amclBackendInputPublishAddress(void) {}
+/** Source/GLFW组合的typed平台边界没有L2记录；仅读旁带明确缺席，不补当前scope。
+ * 真L2组合链接生产backend_input_bridge.cpp，不消费本fixture替身。 */
+extern "C" int amclBackendInputL2ReadKeyScopeV1(uint64_t,uint64_t* scope){if(scope)*scope=0;return 0;}

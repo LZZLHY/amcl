@@ -172,19 +172,21 @@ test('live reader only consumes appended bytes, preserves split UTF-8 and reject
 
 test('pinned activities survive retention and explicit clear; actual storage groups remain auditable', async () => {
   const f = evidenceRuntime();
+  const ledger = f.load('commons/src/main/ets/utils/ActivityLedger.ets');
+  // 预览场景以生产批次hold暂停自动淘汰，避免7条准备过程中默认5条策略先删掉待pin的记录。
+  ledger.ledgerBeginMaintenanceBatch(f.directory);
   try {
-    const ledger = f.load('commons/src/main/ets/utils/ActivityLedger.ets');
     const storage = f.load('commons/src/main/ets/utils/ActivityStorage.ets');
     for (let id = 1; id <= 7; id++) {
-      ledger.ledgerBegin(f.directory, id, { category: 'launch', title: 'one version', gameVersionId: 'v1' });
-      const manifest = ledger.ledgerManifest(f.directory, id); manifest.state = ledger.LedgerState.SUCCESS;
-      f.write('logs/ledger/' + id + '/manifest.json', JSON.stringify(manifest));
+      // 通过当前真实串行owner发布终态，不能外写manifest却保留RUNNING的内存索引来伪造结束。
+      assert.equal(await ledger.ledgerBeginAsync(f.directory, id, { category: 'launch', title: 'one version', gameVersionId: 'v1' }), true);
       f.write('logs/ledger/' + id + '/game/logs/latest.log', 'body-' + id);
+      await ledger.ledgerEndAsync(f.directory, id, { state: ledger.LedgerState.SUCCESS });
     }
-    ledger.ledgerSetPinned(f.directory, 1, true);
-    assert.deepEqual(ledger.ledgerRetentionVictims(f.directory, 5), [2]);
-    assert.throws(() => ledger.ledgerRemove(f.directory, 1), /保留/);
-    assert.match(ledger.ledgerClearBlockReason(f.directory), /保留/);
+    await ledger.ledgerSetPinnedAsync(f.directory, 1, true);
+    assert.deepEqual(await ledger.ledgerRetentionVictimsAsync(f.directory, 5), [2]);
+    await assert.rejects(ledger.ledgerRemoveAsync(f.directory, 1), /保留/);
+    assert.match(await ledger.ledgerClearBlockReasonAsync(f.directory), /保留/);
     const summary = await storage.readActivityStorage(f.directory, () => false);
     assert.equal(summary.groups.length, 1); assert.equal(summary.groups[0].items.length, 7);
     assert.equal(summary.bytes, ledger.ledgerTotalBytes(f.directory), '管理菜单与占用面板都包含内部清单');
@@ -192,7 +194,7 @@ test('pinned activities survive retention and explicit clear; actual storage gro
     storage.setActivityStorageAlert(f.directory, 256 * 1024 * 1024);
     assert.equal(storage.activityStorageAlert(f.directory), 256 * 1024 * 1024);
     assert.equal(ledger.listActivityIds(f.directory).length, 7, '提醒阈值不执行删除');
-  } finally { f.close(); }
+  } finally { await ledger.ledgerEndMaintenanceBatchAsync(f.directory); f.close(); }
 });
 
 test('diagnostic index scans full sources, links real stages and deduplicates repeated errors without changing outcome', async () => {
@@ -220,21 +222,23 @@ test('diagnostic index scans full sources, links real stages and deduplicates re
 });
 
 test('queue retries allocate a new activity with a parent while resume keeps the original identity', async () => {
-  const terminal = state => ['done', 'error', 'aborted'].includes(state);
-  const f = evidenceRuntime({ imports: { './UnifiedDownloadTask': {
-    UnifiedTaskState: { WAITING: 'waiting', PREPARING: 'preparing', PAUSED: 'paused', DONE: 'done', ERROR: 'error', ABORTED: 'aborted' },
-    TaskCategory: { MC_VERSION: 'mc' }, isTerminalState: terminal,
-    isInProgressState: state => !terminal(state), aggregateProgress: () => 0,
-  } } });
+  const f = evidenceRuntime();
   try {
+    // 任务状态、恢复策略和默认view均加载真实生产模块；这里只替代执行adapter，
+    // 不再复制旧枚举/辅助函数，以免产品增加策略后fixture掩盖或制造回归。
+    const { UnifiedTaskView, UnifiedTaskState, TaskCategory, TaskRetryStrategy } =
+      f.load('feature_core/src/main/ets/download/UnifiedDownloadTask.ets');
     const { DownloadTaskRegistry } = f.load('feature_core/src/main/ets/download/DownloadTaskRegistry.ets');
     const registry = new DownloadTaskRegistry();
-    const view = { id: 'task', title: 'synthetic', category: 'mc', startedAtMs: 0, state: 'waiting',
-      parentActivityId: 0, activityRelation: '', canCancel: true, canRetry: false, canResume: false };
+    const view = new UnifiedTaskView();
+    Object.assign(view, { id: 'task', title: 'synthetic', category: TaskCategory.MC_VERSION, canCancel: true });
     const adapter = { view, purgeNativeOwner: () => true, dispose() {}, start: async () => {
-      view.state = 'paused'; view.canResume = true;
-    }, resume: async () => { view.state = 'error'; view.canRetry = true; }, retry: async () => { view.state = 'done'; } };
+      view.state = UnifiedTaskState.PAUSED; view.canResume = true;
+    }, resume: async () => { view.state = UnifiedTaskState.ERROR; view.canRetry = true; },
+    retry: async () => { view.state = UnifiedTaskState.DONE; } };
     await registry.enqueue(adapter); await new Promise(resolve => setImmediate(resolve)); const first = view.startedAtMs;
+    assert.equal(view.retryStrategy, TaskRetryStrategy.INTERNAL);
+    assert.equal(view.canRecoverExternally, false);
     await registry.resume(view.id); await new Promise(resolve => setImmediate(resolve)); assert.equal(view.startedAtMs, first);
     await registry.retry(view.id); assert(view.startedAtMs > first); assert.equal(view.parentActivityId, first);
     assert.equal(view.activityRelation, 'retry'); registry.purgeFinished();

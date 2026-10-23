@@ -183,6 +183,7 @@ export function isDefaultCrashEvidence(role: EvidenceRole): boolean {
 
 /** 计算默认分享选择。用户可在页面逐项取消；optional 永远不会被隐式加入。 */
 export function isDefaultEvidenceFile(file: EvidenceFileRecord): boolean {
+  if (isInternalEvidencePath(file.path)) return false;
   if (file.bytes <= 0) return false;
   if (file.uploadPolicy === EvidenceUploadPolicy.NEVER) return false;
   if (file.state === EvidenceFileState.NOT_PRODUCED || file.state === EvidenceFileState.MISSING
@@ -215,6 +216,23 @@ export function isSafeEvidencePath(path: string): boolean {
   return true;
 }
 
+/**
+ * 识别账本自己的派生状态与发布暂存路径。输入是账本根下的相对路径，函数不读取或删除文件。
+ * canonical 的事实文件表、证据枚举和旧清单读取共用本规则，防止恢复检查点的字节变化
+ * 反过来成为新证据/新 revision。空间统计仍须计入这些实际物理字节，不能用本规则减占用。
+ * capture-sources、native-io、capture-host/game 和环境/配置是来源事实，不能一并排除。
+ */
+export function isInternalEvidencePath(path: string): boolean {
+  if (path === 'experience-index.json' || path === 'platform-inputs.json') return true;
+  const parts: string[] = path.split('/');
+  for (const part of parts) {
+    if (part === 'manifest.json' || part === 'evidence-manifest.json' || part === 'evidence-selection.json'
+      || part === 'recovery-state.json' || part === 'recovery-receipt.json' || part === 'recovery-state'
+      || part.endsWith('.pending-dir') || part.endsWith('.partial') || part.indexOf('.tmp-') >= 0) return true;
+  }
+  return false;
+}
+
 /** 取文件的稳定默认选择，集中在模型层避免页面和上传器两套规则。 */
 export function defaultEvidenceSelection(files: EvidenceFileRecord[]): string[] {
   const out: string[] = [];
@@ -229,6 +247,7 @@ export function normalizeEvidenceSelection(files: EvidenceFileRecord[],
   selectedFileIds: string[]): string[] {
   const out: string[] = [];
   for (const file of files) {
+    if (isInternalEvidencePath(file.path)) continue;
     if (file.bytes <= 0) continue;
     if (file.uploadPolicy === EvidenceUploadPolicy.NEVER) continue;
     if (file.state === EvidenceFileState.MISSING

@@ -4,7 +4,7 @@
  * 路由：从 LayoutListPage 跳入，params.profileName = 要编辑的方案名。
  * 行为：
  *   - aboutToAppear 强制 LANDSCAPE + 全屏沉浸
- *   - 把目标方案设为 active，再渲染 LayoutEditor 全屏
+ *   - 只读取目标方案，渲染布局或独立输入设置；保存成功才激活
  *   - 编辑器 onDone 调 router.back()，自动回到 LayoutListPage
  *   - aboutToDisappear 恢复 UNSPECIFIED，避免影响下一个页面
  */
@@ -12,12 +12,14 @@ import { router, window } from '@kit.ArkUI'
 import { common } from '@kit.AbilityKit'
 import { LayoutProfile } from 'gamecontrol'
 import { LayoutEditor } from '../components/LayoutEditor'
+import { InputSettingsEditor } from '../components/InputSettingsEditor'
 import { getLayoutStore } from 'gamecontrol'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 
 interface EditorPageParams {
   profileName?: string
+  settingsOnly?: boolean
 }
 
 @Entry
@@ -26,6 +28,7 @@ struct LayoutEditorPage {
   @State screenW: number = 720
   @State screenH: number = 360
   @State ready: boolean = false
+  @State private settingsOnly: boolean = false
   @State loadError: string = ''
 
   private targetProfileName: string = ''
@@ -69,23 +72,15 @@ struct LayoutEditorPage {
     try {
       const params = this.getUIContext().getRouter().getParams() as EditorPageParams
       this.targetProfileName = params?.profileName ?? ''
+      this.settingsOnly = params?.settingsOnly === true
       const context = this.getAbilityContext()
       await store.init(context)
       if (!this.pageMounted || generation !== this.pageGeneration) return
       if (!store.beginEditorSession()) throw new Error('布局正在同步，请稍后再试')
       this.editorLeaseHeld = true
       store.beginEditorTransaction()
-      if (this.targetProfileName.length > 0) {
-        const target: LayoutProfile | undefined = store.getAllProfiles().find((profile: LayoutProfile): boolean =>
-          profile.name === this.targetProfileName)
-        if (target !== undefined) {
-          if (target.isPreset) {
-            if ((await store.cloneAsUser(this.targetProfileName)) === null) throw new Error('无法创建预设的编辑副本')
-          } else {
-            await store.setActiveProfile(this.targetProfileName)
-          }
-        }
-      }
+      if (this.targetProfileName.length>0 && store.getProfile(this.targetProfileName)===null)
+        throw new Error('方案已删除，请重新选择')
       if (!this.pageMounted || generation !== this.pageGeneration) return
       // 窗口 Promise 的拒绝统一收口，不把布局已初始化误报成存储失败。
       await this.applyEditorWindowStyle_(true, generation)
@@ -173,12 +168,19 @@ struct LayoutEditorPage {
       Column().width('100%').height('100%').backgroundColor('#333333')
 
       if (this.ready) {
+        if (this.settingsOnly) {
+          InputSettingsEditor({targetProfileName:this.targetProfileName,screenWidth:this.screenW,screenHeight:this.screenH,
+            onDone:(_result: LayoutProfile | null): void => { this.finishEditorPage_() },
+            onInitializationFailed:(message: string): void => { this.reportEditorPageError_(message) }})
+        } else {
         LayoutEditor({
+          targetProfileName:this.targetProfileName,
           screenWidth: this.screenW,
           screenHeight: this.screenH,
           onDone: (_result: LayoutProfile | null) => { this.finishEditorPage_() },
           onInitializationFailed: (message: string) => { this.reportEditorPageError_(message) }
         })
+        }
       } else if (this.loadError.length > 0) {
         Text(this.loadError).fontSize(14).fontColor('#FFFFFF').padding(24)
       }

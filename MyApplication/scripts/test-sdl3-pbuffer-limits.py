@@ -26,6 +26,12 @@ code = code.replace('@VALIDATE_SIZE@', recipe.function(gl, 'OPENHARMONY_GLES_Val
 code = code.replace('@VALIDATE_SURFACE@', recipe.function(gl, 'OPENHARMONY_GLES_ValidatePbufferSurface'))
 code = code.replace('@CREATE_AUXILIARY@', auxiliary)
 code = code.replace('@RESIZE@', recipe.function(window, 'OPENHARMONY_ApplyPendingAuxiliaryResize'))
+code = code.replace('@AUXILIARY_HELPERS@', '\n\n'.join(recipe.function(window, name) for name in
+    ['OPENHARMONY_RememberAuxiliaryFailure', 'OPENHARMONY_RetireAuxiliarySurface',
+     'OPENHARMONY_RetainAuxiliaryFailure', 'OPENHARMONY_FinishAuxiliaryResizeFailure']))
+code = code.replace('@CONTEXT_ERROR@', recipe.function(gl, 'OPENHARMONY_GLES_IsFatalContextError'))
+code = code.replace('@REPLAY@', recipe.function(gl, 'OPENHARMONY_GLES_ReplaySwapIntervalWithError'))
+code = code.replace('@EGL_INTERVAL@', recipe.function(sources['SDL_egl.c'], 'SDL_EGL_SetSwapIntervalWithError'))
 with workspace_temporary_directory(prefix='amcl-pbuffer-limits-') as temporary:
     source = Path(temporary)/'pbuffer.cpp'
     source.write_text(code, encoding='utf-8')

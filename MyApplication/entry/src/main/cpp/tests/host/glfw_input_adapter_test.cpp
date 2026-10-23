@@ -53,6 +53,8 @@ struct FakeHost {
     bool enqueueRetireReset = true;
     bool replaySurface = false;
     bool replaySurfaceContext = false;
+    // 在基线/重放之后追加记录，模拟握手期间生产者写入（sequence 必然大于基线）。
+    void (*afterOpenConsumer)(FakeHost&) = nullptr;
     uint32_t expectedBackend = AMCL_INPUT_BACKEND_GLFW_PHYSICAL;
     uint32_t snapshotFocused = 1u;
     uint32_t snapshotCaptureRequested = 0u;
@@ -232,6 +234,7 @@ struct FakeHost {
             context.payload.surfaceContext.generation = 33u;
             gHost->events.push_back(context);
         }
+        if (gHost->afterOpenConsumer) gHost->afterOpenConsumer(*gHost);
         return AMCL_INPUT_OK;
     }
     static int32_t NextEvent(AmclInputConsumerHandle, AmclInputEvent* output) {
@@ -2174,6 +2177,134 @@ void TestCommittedClearsRollBackWhenCloseWinsDispatchFence() {
     RunCommittedClearEventRollbackCase(AMCL_INPUT_EVENT_DEVICE_CHANGED);
 }
 
+// 握手期间写入的记录（sequence 在基线之后）：先一条普通键，再一条启动类 DEVICE。
+void InjectKeyThenDevice(FakeHost& host) {
+    host.Push(Key(1u, 10u, AMCL_INPUT_ACTION_DOWN));
+    AmclInputEvent device = FakeHost::Event(AMCL_INPUT_EVENT_DEVICE_CHANGED, 5u);
+    device.payload.device.change = AMCL_INPUT_DEVICE_ADDED;
+    host.Push(device);
+}
+
+// 启动类 TEXT_SESSION(STARTED) 之后跟一条带 blob 的 COMMIT，COMMIT 会被携带。
+void InjectTextSessionThenCommit(FakeHost& host) {
+    AmclInputEvent start = FakeHost::Event(AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED);
+    start.header.source = AMCL_INPUT_SOURCE_IME;
+    start.payload.textSession.textSessionId = 55u;
+    start.payload.textSession.change = AMCL_INPUT_TEXT_SESSION_STARTED;
+    start.payload.textSession.reason = AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;
+    host.Push(start);
+    AmclInputEvent text = FakeHost::Event(AMCL_INPUT_EVENT_TEXT_COMMIT);
+    text.header.source = AMCL_INPUT_SOURCE_IME;
+    text.payload.textCommit.utf8Blob.packetId = 301u;
+    text.payload.textCommit.utf8Blob.length = 2u;
+    text.payload.textCommit.textSessionId = 55u;
+    host.blobs[301u] = {'h', 'i'};
+    host.Push(text);
+}
+
+void InjectMalformedRelative(FakeHost& host) {
+    AmclInputEvent malformed = FakeHost::Event(
+        AMCL_INPUT_EVENT_POINTER_RELATIVE, 1u);
+    malformed.payload.pointerRelative.rawDx =
+        std::numeric_limits<double>::quiet_NaN();
+    host.Push(malformed);
+}
+
+// 启动 drain 遇到基线后的普通记录不再拒绝：它被携带给首次 Pump，排在延迟的启动回调
+// 之后、host 队列剩余记录之前；它后面的启动类记录也照常按序送达。
+void TestStartupCarriesFirstOrdinaryRecordToPump() {
+    FakeHost host;
+    host.replaySurface = true;
+    host.afterOpenConsumer = InjectKeyThenDevice;
+    Recorder recorder;
+    GlfwInputAdapter adapter;
+    recorder.adapter = &adapter;
+    CHECK(adapter.Open(&host.api, Mapper(), recorder.Sink()) ==
+          GlfwAdapterStatus::kOk);
+    CHECK(adapter.LastOpenRejectSite() == GlfwOpenRejectSite::kNone);
+    CHECK(host.readyCalls == 1);
+    CHECK(host.events.size() == 1u);  // 只剩 DEVICE：键已被 Open 取出并携带。
+    CHECK(recorder.keys.empty() && recorder.surfaces.empty());
+    const GlfwPumpResult pump = adapter.Pump();
+    CHECK(pump.status == GlfwAdapterStatus::kOk);
+    CHECK(pump.eventsDrained == 2u);
+    CHECK(recorder.surfaces.size() == 1u && recorder.keys.size() == 1u);
+    CHECK(recorder.devices.size() == 1u);
+    CHECK(recorder.keys[0].action == GlfwInputAction::kPress);
+    CHECK(recorder.surfaces[0].sequence < recorder.keys[0].sequence);
+    CHECK(recorder.keys[0].sequence < recorder.devices[0].sequence);
+    CHECK(adapter.IsKeyPressed(65));
+    CHECK(adapter.DiscardedFetchedEventCount() == 0u);
+    CHECK(adapter.Close() == GlfwAdapterStatus::kOk);
+    CHECK(!adapter.IsKeyPressed(65));
+}
+
+// 携带文本 blob 时所有权跨过 READY：Open 之后仍未归还，首次 Pump 复制后才归还一次。
+void TestCarriedBlobOwnershipSpansReady() {
+    FakeHost host;
+    host.afterOpenConsumer = InjectTextSessionThenCommit;
+    Recorder recorder;
+    GlfwInputAdapter adapter;
+    recorder.adapter = &adapter;
+    CHECK(adapter.Open(&host.api, Mapper(), recorder.Sink()) ==
+          GlfwAdapterStatus::kOk);
+    CHECK(host.releaseCalls == 0 && host.blobs.count(301u) == 1u);
+    CHECK(adapter.Pump().status == GlfwAdapterStatus::kOk);
+    CHECK(recorder.textSessions.size() == 1u);
+    CHECK(recorder.textCommits.size() == 1u);
+    CHECK(recorder.textCommits[0].utf8 == std::vector<uint8_t>({'h', 'i'}));
+    CHECK(recorder.textSessions[0].sequence < recorder.textCommits[0].sequence);
+    CHECK(host.releaseCalls == 1 && host.blobs.empty());
+    CHECK(adapter.Close() == GlfwAdapterStatus::kOk);
+}
+
+// READY 之后、首次 Pump 之前就 Close：携带记录排在收尾 drain 最前，回调并归还 blob。
+void TestCloseBeforeFirstPumpDrainsCarriedBlob() {
+    FakeHost host;
+    host.afterOpenConsumer = InjectTextSessionThenCommit;
+    Recorder recorder;
+    GlfwInputAdapter adapter;
+    recorder.adapter = &adapter;
+    CHECK(adapter.Open(&host.api, Mapper(), recorder.Sink()) ==
+          GlfwAdapterStatus::kOk);
+    CHECK(adapter.Close() == GlfwAdapterStatus::kOk);
+    CHECK(host.releaseCalls == 1 && host.blobs.empty());
+    CHECK(recorder.textCommits.size() == 1u);
+    CHECK(adapter.DiscardedFetchedEventCount() == 0u);
+    CHECK(!adapter.HasConsumer());
+}
+
+// 负向对照：携带之后 READY 仍被拒时，Open 失败关闭；携带记录不回调、由 closeConsumer
+// 在 host 侧回收。携带的记录若本身畸形，照常被首次 Pump 校验并放弃本代。
+void TestCarriedRecordRejectionPaths() {
+    {
+        FakeHost host;
+        host.afterOpenConsumer = InjectKeyThenDevice;
+        host.readyStatus = AMCL_INPUT_ERROR_STALE;
+        Recorder recorder;
+        GlfwInputAdapter adapter;
+        recorder.adapter = &adapter;
+        CHECK(adapter.Open(&host.api, Mapper(), recorder.Sink()) ==
+              GlfwAdapterStatus::kBaselineRejected);
+        CHECK(adapter.LastOpenRejectSite() == GlfwOpenRejectSite::kReadySubmit);
+        CHECK(host.closeCalls == 1 && !adapter.HasConsumer());
+        CHECK(recorder.keys.empty() && recorder.devices.empty());
+    }
+    {
+        FakeHost host;
+        host.afterOpenConsumer = InjectMalformedRelative;
+        Recorder recorder;
+        GlfwInputAdapter adapter;
+        recorder.adapter = &adapter;
+        CHECK(adapter.Open(&host.api, Mapper(), recorder.Sink()) ==
+              GlfwAdapterStatus::kOk);
+        const GlfwPumpResult result = adapter.Pump();
+        CHECK(result.status == GlfwAdapterStatus::kMalformedEvent);
+        CHECK(result.abandoned && host.abandonCalls == 1);
+        CHECK(recorder.relatives.empty() && !adapter.HasConsumer());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -2211,6 +2342,10 @@ int main() {
     TestFetchedBlobReleaseFailureIsReportedWhenCloseWinsFence();
     TestCommittedKeyRollsBackWhenCloseWinsDispatchFence();
     TestCommittedClearsRollBackWhenCloseWinsDispatchFence();
+    TestStartupCarriesFirstOrdinaryRecordToPump();
+    TestCarriedBlobOwnershipSpansReady();
+    TestCloseBeforeFirstPumpDrainsCarriedBlob();
+    TestCarriedRecordRejectionPaths();
     std::cout << "glfw_input_adapter_test: PASS\n";
     return 0;
 }

@@ -9,103 +9,8 @@ const SNAPSHOT = '12345678-1234-4234-8234-123456789abc';
 const ROOT_JOURNAL = 'entry/src/main/ets/runtime/GameLayoutJournal.ets';
 const ROOT_SNAPSHOT = 'entry/src/main/ets/runtime/DesktopLaunchSnapshot.ets';
 
-function fixture() {
-  const disk = evidenceRuntime();
-  // 只在测试边界将宿主 ENOENT 对应到 OHOS 明确的 13900002，其它 IO 错误不得吞掉。
-  const originalList = disk.kitFs.listFileSync;
-  disk.kitFs.listFileSync = directory => {
-    try { return originalList(directory); }
-    catch (error) { if (error.code === 'ENOENT') error.code = 13900002; throw error; }
-  };
-  const io = disk.load('commons/src/main/ets/utils/EvidenceIo.ets');
-  const state = { lock: 0, failOwnerFlush: false, failOwnerFlushCount: 0, failOwnerMarkerPut: false };
-  const ownerData = new Map();
-  // 缓存与已 flush 数据分开，冷启动 fixture 不能把未成功持久化的内存冒充磁盘内容。
-  const ownerDurable = new Map();
-  const prefs = name => {
-    if (!ownerData.has(name)) ownerData.set(name, new Map());
-    const data = ownerData.get(name);
-    return { getSync: (key, fallback) => data.get(key) ?? fallback,
-      get: async (key, fallback) => data.get(key) ?? fallback,
-      putSync: (key, value) => data.set(key, value), put: async (key, value) => {
-        if (name === 'control_layout' && key.startsWith('game_layout_applied_') && state.failOwnerMarkerPut) {
-          throw new Error('owner marker put failure');
-        }
-        data.set(key, value);
-      },
-      deleteSync: key => data.delete(key), getAllSync: () => Object.fromEntries(data),
-      flush: async () => {
-        if (name === 'control_layout' && (state.failOwnerFlush || state.failOwnerFlushCount > 0)) {
-          if (state.failOwnerFlushCount > 0) state.failOwnerFlushCount--;
-          throw new Error('owner disk failure');
-        }
-        ownerDurable.set(name, new Map(data));
-      } };
-  };
-  function role(pid) {
-    let xmlOpens = 0;
-    let installedSink;
-    const common = { AppLogger: { info() {}, warn() {}, error() {} }, LOG_DOMAIN_LAUNCH: 1,
-      ensureDirSync: path => fs.mkdirSync(path, { recursive: true }), ...io };
-    const gamecontrol = {};
-    const account = { id: 'offline', type: 'offline', refresh: async () => {} };
-    const dependencies = { 'commons': common, 'gamecontrol': gamecontrol,
-      'libentry.so': { default: { desktopProcessId: () => pid, desktopGameProcessState: () => state.lock } },
-      '@kit.CoreFileKit': { fileIo: disk.kitFs }, '@kit.AbilityKit': {},
-      '@kit.ArkTS': { util: { generateRandomUUID: () => SNAPSHOT } },
-      '@kit.ArkData': { preferences: { getPreferencesSync: (_context, options) => { xmlOpens++; return prefs(options.name); } } },
-      '@kit.ArkUI': { display: { getDefaultDisplaySync: () => ({ width: 2400, height: 1600, densityPixels: 2 }) } },
-      '@kit.BasicServicesKit': { deviceInfo: { marketName: 'host-test' } },
-      '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
-      'feature_system': { PreferenceManager: class { resolveLaunch() {} } },
-      'account': { AccountType: { OFFLINE: 'offline' }, getAccountManager: () => ({ init: async () => {},
-        getSelected: () => account, findById: () => account, persistOne: async () => {} }) },
-      './DesktopFileDrop': { DesktopFileDrop: { clearPrevious: async () => {} } },
-    };
-    const load = makePureEtsLoader(dependencies);
-    Object.assign(common, load('commons/src/main/ets/utils/PreferenceSnapshot.ets'),
-      load('commons/src/main/ets/utils/ProcessPreferences.ets'));
-    // 保留生产安装器，只捕获实际注入的 sink，供直接输入越权反例验证边界而不修改生产导出。
-    const installSink = common.ProcessPreferences.installGameLayoutCommitSink;
-    common.ProcessPreferences.installGameLayoutCommitSink = sink => { installedSink = sink; installSink(sink); };
-    Object.assign(gamecontrol, load('gamecontrol/src/main/ets/ControlLayout.ets'),
-      load('gamecontrol/src/main/ets/LayoutStore.ets'), load('gamecontrol/src/main/ets/LayoutMerge.ets'));
-    return { load, store: gamecontrol.getLayoutStore(), process: common.ProcessPreferences,
-      journal: load(ROOT_JOURNAL).GameLayoutJournal, snapshot: load(ROOT_SNAPSHOT).DesktopLaunchSnapshot,
-      xmlOpens: () => xmlOpens, sink: () => installedSink };
-  }
-  const owner = role(100), child = role(200);
-  const activity = Date.now() - 1000;
-  return { disk, state, ownerData, owner, child, activity,
-    path: disk.directory + '/game-layout-journal/' + SNAPSHOT + '.json',
-    async launch() {
-      const ref = await owner.snapshot.prepare(disk.context, 100, '1.16.5', activity);
-      state.lock = 1;
-      child.snapshot.consume(disk.context, ref.id, ref.account, 100, activity, 200);
-      await child.store.init(disk.context);
-      return ref;
-    },
-    async launchLegacy() {
-      // 历史版本可能传入全量 control_layout。直接经过同一个 prepare/installGame 边界，
-      // 而 owner 当前的常规 capture 已只输出两键；不可为构造旧数据反例而放宽常规快照。
-      await owner.store.init(disk.context);
-      ownerData.get('control_layout').set('legacy_touch_hint', '保留的旧值');
-      ownerData.get('control_layout').set('legacy_scale', 1.5);
-      const base = await owner.process.captureOwner(disk.context, 'control_layout');
-      owner.journal.prepare(disk.context, SNAPSHOT, activity, 100, base);
-      state.lock = 1;
-      child.process.installGameSnapshots([base, { name: 'amcl_settings', values: {} },
-        { name: 'amcl_accounts', values: {} }]);
-      child.journal.installGame(disk.context, SNAPSHOT, activity, 100, 200, base);
-      await child.store.init(disk.context);
-      return base;
-    },
-    restartOwner() {
-      ownerData.clear();
-      for (const [name, values] of ownerDurable) ownerData.set(name, new Map(values));
-      return role(300);
-    } };
-}
+export { fixture } from './lib/game-layout-fixture.mjs';
+import { fixture } from './lib/game-layout-fixture.mjs';
 
 test('实际snapshot→child布局保存→journal→parent导入，child从不打开XML且保留父并行新增', async () => {
   const f = fixture();
@@ -135,7 +40,7 @@ test('child原子提交失败恢复内存及上一份已确认journal，失败�
   try {
     await f.launch(); await f.child.store.createProfile('saved');
     const before = fs.readFileSync(f.path, 'utf8');
-    f.disk.control.failWrite = path => String(path).includes(SNAPSHOT + '.json.tmp-');
+    f.disk.control.failWrite = path => String(path).includes(SNAPSHOT + '.json.') && String(path).endsWith('/content.pending');
     await assert.rejects(() => f.child.store.createProfile('failed'), /保存失败|synthetic disk failure/);
     assert.equal(f.child.store.getProfileNames().includes('failed'), false);
     assert.equal(f.child.store.getActiveProfile().name, 'saved');
@@ -253,8 +158,9 @@ test('receipt落盘失败保留pending与基线，重试不复制已导入方案
   const f = fixture();
   try {
     await f.launch(); await f.child.store.createProfile('child'); f.state.lock = 0;
-    f.disk.control.failWrite = path => String(path).includes('.applied.json.tmp-');
-    await assert.rejects(() => f.owner.journal.importPending(f.disk.context), /synthetic disk failure/);
+    f.disk.control.failWrite = path => String(path).includes('.applied.json.') && String(path).endsWith('/content.pending');
+    await assert.rejects(() => f.owner.journal.importPending(f.disk.context),
+      { name: 'AtomicWriteError', kind: 'not-committed', published: false });
     assert.ok(fs.existsSync(f.path)); assert.ok(fs.existsSync(f.path.replace('.json', '.base.json')));
     assert.ok(f.owner.store.getProfileNames().includes('child'));
     f.disk.control.failWrite = undefined;
@@ -268,8 +174,9 @@ test('owner同flush完成标记跨冷启动保护父侧删除，不被缺失文�
   const f = fixture();
   try {
     await f.launch(); await f.child.store.createProfile('child-added'); f.state.lock = 0;
-    f.disk.control.failWrite = path => String(path).includes('.applied.json.tmp-');
-    await assert.rejects(() => f.owner.journal.importPending(f.disk.context), /synthetic disk failure/);
+    f.disk.control.failWrite = path => String(path).includes('.applied.json.') && String(path).endsWith('/content.pending');
+    await assert.rejects(() => f.owner.journal.importPending(f.disk.context),
+      { name: 'AtomicWriteError', kind: 'not-committed', published: false });
     assert.ok(fs.existsSync(f.path));
     assert.match(f.ownerData.get('control_layout').get('game_layout_applied_' + SNAPSHOT), /^[0-9a-f]{64}$/);
     const restarted = f.restartOwner(); await restarted.store.init(f.disk.context);
@@ -367,6 +274,58 @@ test('pending清理失败仍由receipt防重放，parent后续编辑不会被覆
     assert.equal(f.owner.store.getProfileNames().includes('child'), false);
     assert.equal(fs.existsSync(f.path), false);
     assert.equal(fs.existsSync(f.path.replace('.json', '.base.json')), false);
+  } finally { f.disk.close(); }
+});
+
+test('I27-02/X1：带空格改名与重名新建后，独立进程启动准备仍成功，child 看到 trim 后的活动方案', async () => {
+  const f = fixture();
+  try {
+    await f.owner.store.init(f.disk.context);
+    assert.equal((await f.owner.store.createProfile('A')).name, 'A');
+    assert.equal((await f.owner.store.createProfile('A')).name, 'A 副本');
+    // 改名的必须是当前活动方案，才能覆盖“活动名写成未 trim 值”的缺陷路径。
+    await f.owner.store.setActiveProfile('A');
+    assert.equal(await f.owner.store.renameProfile('A', '  B  '), true);
+    const snapshot = await f.owner.store.captureLaunchPreferences();
+    assert.equal(snapshot.values.active_profile, 'B');
+    assert.deepEqual(Object.keys(snapshot.values).sort(), ['active_profile', 'profiles']);
+    const { mergeLayoutPreferences } = f.owner.load('gamecontrol/src/main/ets/LayoutMerge.ets');
+    mergeLayoutPreferences(snapshot, snapshot, snapshot, SNAPSHOT);
+    await f.launch();
+    assert.equal(f.child.store.getActiveProfile().name, 'B');
+    assert.equal(f.child.xmlOpens(), 0);
+  } finally { f.disk.close(); }
+});
+
+test('I27-08：父进程损坏存档先隔离再修复，prepare 成功；隔离键只在启动器，child 与导入都不碰它', async () => {
+  const f = fixture();
+  try {
+    const layout = f.owner.load('gamecontrol/src/main/ets/ControlLayout.ets');
+    const good = layout.getDefaultLayout(); good.name = 'A'; good.isPreset = false;
+    const bad = layout.getDefaultLayout(); bad.name = '坏'; bad.isPreset = false; bad.controls[0].type = 99;
+    const raw = JSON.stringify([good, bad]);
+    f.ownerData.set('control_layout', new Map([['profiles', raw], ['active_profile', ' A ']]));
+    // 负向对照：原文直接进启动快照时，布局合并会整笔拒绝（这正是修复前独立进程启动失败的原因）。
+    const { mergeLayoutPreferences } = f.owner.load('gamecontrol/src/main/ets/LayoutMerge.ets');
+    const rawSnapshot = { name: 'control_layout', values: { profiles: raw, active_profile: ' A ' } };
+    assert.throws(() => mergeLayoutPreferences(rawSnapshot, rawSnapshot, rawSnapshot, SNAPSHOT), /Invalid layout profile/);
+    await f.launch();
+    const owner = f.ownerData.get('control_layout');
+    const doc = JSON.parse(owner.get('profiles_quarantine'));
+    assert.equal(doc.entries.length, 1); assert.equal(doc.entries[0].raw, raw);
+    assert.equal(owner.get('active_profile'), 'A');
+    const identity = JSON.parse(fs.readFileSync(f.path.replace('.json', '.base.json'), 'utf8'));
+    assert.deepEqual(Object.keys(identity.base.values).sort(), ['active_profile', 'profiles']);
+    assert.equal(f.child.store.getActiveProfile().name, 'A');
+    assert.equal(f.child.store.getProfileNames().includes('坏'), false);
+    await f.child.store.createProfile('child-after-repair');
+    assert.equal(f.child.xmlOpens(), 0);
+    const record = JSON.parse(fs.readFileSync(f.path, 'utf8'));
+    assert.deepEqual(Object.keys(record.proposed.values).sort(), ['active_profile', 'profiles']);
+    f.state.lock = 0;
+    assert.equal((await f.owner.journal.importPending(f.disk.context)).imported, 1);
+    assert.ok(f.owner.store.getProfileNames().includes('child-after-repair'));
+    assert.equal(owner.get('profiles_quarantine'), JSON.stringify(doc), '导入不改动只追加的隔离记录');
   } finally { f.disk.close(); }
 });
 

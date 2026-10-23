@@ -32,6 +32,7 @@ import { forgeNative } from './ForgelikeNative';
 import { removeDirRecursive, fileExistsAndNonEmpty } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_MODLOADER } from 'commons';
+import { withInstallerProcessorLock } from '../version/VersionInstallLease';
 
 const TAG = 'ForgelikeProcRunner';
 
@@ -157,10 +158,14 @@ export class ForgelikeProcessorRunner {
 
       let logFile = mcDir + '/forge-installer.log'; // 追加式日志（runJavaProcessor 内 O_TRUNC，每步覆盖）
       let rc = -1;
+      const processor: ResolvedProcessor = resolved;
       try {
-        rc = await forgeNative().runJavaProcessor(
-          filesDir, installerJdk, xmxMb,
-          resolved.classpath, resolved.mainClass, resolved.args, mcDir, logFile);
+        rc = await withInstallerProcessorLock<number>(async (): Promise<number> => {
+          // 等待别的安装释放 processor 槽之后重报步骤，产品 callback 可在此接收取消。
+          ForgelikeProcessorRunner.report(callback, 'installing', 5 + (i / clientProcessors.length), 8, stepMsg);
+          return forgeNative().runJavaProcessor(filesDir, installerJdk, xmxMb,
+            processor.classpath, processor.mainClass, processor.args, mcDir, logFile);
+        });
       } catch (e) {
         return new ForgelikeProcessorResult(false,
           loaderName + ' 安装步骤 ' + (i + 1) + ' 执行异常: ' + (e as Error).message, ran);

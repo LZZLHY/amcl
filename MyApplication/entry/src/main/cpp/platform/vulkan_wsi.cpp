@@ -1,4 +1,5 @@
 #include "vulkan_wsi.h"
+#include "env_slot.h"
 #include "graphics_profile_mirror.generated.h"
 #include "graphics_observation_abi.h"
 #include "vulkan_surface_policy.h"
@@ -176,20 +177,8 @@ Runtime& runtime() {
     return *current;
 }
 
-// LWJGL's Vulkan backend compares its loader function pointer with SDL's
-// SDL_Vulkan_GetVkGetInstanceProcAddr() result.  The Java class-loader and SDL
-// video DSO may map this shim in different linker namespaces, so keep the
-// address of the most recently loaded shim image observable.  The value is a
-// diagnostic identity for the next SDL load; it does not grant admission or
-// replace the owner table below.
-#if defined(__GNUC__) && !defined(_WIN32)
-__attribute__((constructor)) static void publishLoaderFunctionIdentity() {
-    char value[64] = {0};
-    std::snprintf(value, sizeof(value), "%llu",
-        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&vkGetInstanceProcAddr)));
-    publishEnv("AMCL_VULKAN_WSI_GIPA", value);
-}
-#endif
+// ⚠️ 墓碑: 构造函数 publishLoaderFunctionIdentity 已删除（每装入一份映像就 setenv 一次诊断身份，
+// JVM namespace 的那份在游戏线程装入，违反 I27-05；唯一读者是准入日志，现改为直接打印本映像地址）。
 
 // A JVM linker namespace can map this DSO twice. Publish one process-owner
 // dispatch table, so every wrapper resolves back to the admitted host image.
@@ -220,15 +209,30 @@ OwnerApi& localApi() {
     }
     return *api;
 }
+// 远端 owner 表解析，渲染线程在每个 WSI 入口都会调用。owner 描述符每进程只发布一次，所以只缓存
+// 本 PID “已发布且校验通过”的结论：远端表指针，或“本映像就是 owner”（缓存 nullptr）。缺席与
+// 校验失败不缓存，下一次调用重新解析；fork 子进程 PID 不同，缓存自然失效（I27-05）。
+struct RemoteOwnerCache {
+    std::atomic<uint64_t> processId{0};
+    std::atomic<const OwnerApi*> api{nullptr};
+};
+RemoteOwnerCache g_remoteOwnerCache;
 const OwnerApi* remoteApi() {
+    const uint64_t current = pid();
+    if (g_remoteOwnerCache.processId.load(std::memory_order_acquire) == current) {
+        return g_remoteOwnerCache.api.load(std::memory_order_relaxed);
+    }
     const char* value = std::getenv("AMCL_VULKAN_WSI_OWNER");
     if (!value || !*value) return nullptr;
     char* end = nullptr;
     const auto address = std::strtoull(value, &end, 10);
     if (!end || *end || !address) return nullptr;
     const auto* api = reinterpret_cast<const OwnerApi*>(static_cast<uintptr_t>(address));
-    if (api == &localApi() || api->version != 2 || api->size < sizeof(OwnerApi) || api->processId != pid()) return nullptr;
-    return api;
+    const bool self = api == &localApi();
+    if (!self && (api->version != 2 || api->size < sizeof(OwnerApi) || api->processId != current)) return nullptr;
+    g_remoteOwnerCache.api.store(self ? nullptr : api, std::memory_order_relaxed);
+    g_remoteOwnerCache.processId.store(current, std::memory_order_release);
+    return self ? nullptr : api;
 }
 PFN_vkGetInstanceProcAddr systemLoader() {
     auto& r = runtime();
@@ -426,7 +430,18 @@ bool validBroker(const AmclNativeWindowLeaseBrokerV2* b) {
         b->structSize >= AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PRESENTATION_SIZE &&
         b->acquire && b->release && b->peekGeneration && b->claimPresentation && b->releasePresentation;
 }
+// 窗口宿主 v2 broker 描述符同样每进程只发布一次：解析且表头通过 validBroker 后才按 PID 缓存，
+// 解析失败或表头不合格都不缓存（下一次调用重新解析）。createSurface 仍在每次使用前再校验一次。
+struct PublishedBrokerCache {
+    std::atomic<uint64_t> processId{0};
+    std::atomic<const AmclNativeWindowLeaseBrokerV2*> broker{nullptr};
+};
+PublishedBrokerCache g_publishedBrokerCache;
 const AmclNativeWindowLeaseBrokerV2* publishedBroker() {
+    const uint64_t current = pid();
+    if (g_publishedBrokerCache.processId.load(std::memory_order_acquire) == current) {
+        return g_publishedBrokerCache.broker.load(std::memory_order_relaxed);
+    }
     const char* text = std::getenv(AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV);
     if (!text || !*text) return nullptr;
     unsigned version = 0;
@@ -434,7 +449,11 @@ const AmclNativeWindowLeaseBrokerV2* publishedBroker() {
     int consumed = 0;
     if (std::sscanf(text, "%u:%p%n", &version, &address, &consumed) != 2 ||
         text[consumed] != '\0' || version != AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION || !address) return nullptr;
-    return static_cast<const AmclNativeWindowLeaseBrokerV2*>(address);
+    const auto* broker = static_cast<const AmclNativeWindowLeaseBrokerV2*>(address);
+    if (!validBroker(broker)) return broker;  // 调用方照旧拒绝；不把失败固化进缓存
+    g_publishedBrokerCache.broker.store(broker, std::memory_order_relaxed);
+    g_publishedBrokerCache.processId.store(current, std::memory_order_release);
+    return broker;
 }
 
 void release(const SurfaceRecord& record) {
@@ -442,9 +461,11 @@ void release(const SurfaceRecord& record) {
         auto& r = runtime();
         std::lock_guard<std::mutex> lock(r.mutex);
         r.quarantined.push_back(record);
-        publishEnv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1");
-        emitWsiLog(true, "graphics_surface_retirement_quarantined window=%llu token=%llu",
-            static_cast<unsigned long long>(record.windowId), static_cast<unsigned long long>(record.token));
+        // 进程级重启标记经已登记槽位原位置 '1'（I27-05）；本函数可能在渲染线程执行，绝不 setenv。
+        const int restartStatus = amcl::envslot::RequestRendererRestart();
+        emitWsiLog(true, "graphics_surface_retirement_quarantined window=%llu token=%llu restart_marker=%d",
+            static_cast<unsigned long long>(record.windowId), static_cast<unsigned long long>(record.token),
+            restartStatus);
         return;
     }
     record.broker->release(record.nativeWindow);
@@ -847,8 +868,11 @@ VKAPI_ATTR VkResult VKAPI_CALL queuePresent(VkQueue queue, const VkPresentInfoKH
     }
     if (haveFrame) notifyFramePresented(frame.provider, frame.windowId, frame.generation);
 
-    if (result != VK_SUCCESS || (presentCount != 0 && (presentCount % 300u) == 0u)) {
-        emitWsiLog(result == VK_SUCCESS ? false : true, "graphics_queue_present result=%d presents=%llu",
+    // SUBOPTIMAL仍完成呈现，不是终局故障；默认不因它逐帧同步写hilog/stderr。
+    // 必要计数和输入通知已在上面提交，周期成功摘要仅在显式WSI trace下输出。
+    const bool failed = result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR;
+    if (failed || (presentCount != 0 && (presentCount % 300u) == 0u)) {
+        AMCL_WSI_TRACE(failed, "graphics_queue_present result=%d presents=%llu",
             static_cast<int>(result), static_cast<unsigned long long>(presentCount));
     }
     return result;
@@ -964,11 +988,11 @@ VkResult createSurface(VkInstance instance, uint64_t windowId,
             static_cast<unsigned long long>(windowId), static_cast<unsigned long long>(generation),
             static_cast<unsigned long long>(r.created), r.surfaces.size());
     }
-    publishEnv("AMCL_GRAPHICS_ACTUAL_VULKAN", "YES");
+    // 实际 provider 只进日志。AMCL_GRAPHICS_ACTUAL_VULKAN/PROVIDER 在这里（游戏线程、每次建面）
+    // 的 setenv 没有任何读者，已随 I27-05 删除；启动前由 graphics_plan 写入的 UNKNOWN 初值保持不变。
 #ifndef _WIN32
     Dl_info provider{};
     if (dladdr(reinterpret_cast<void*>(create), &provider) && provider.dli_fname) {
-        publishEnv("AMCL_GRAPHICS_ACTUAL_PROVIDER", provider.dli_fname);
         emitWsiLog(false, "graphics_surface_provider path=%s api=VULKAN", provider.dli_fname);
     }
 #endif
@@ -996,10 +1020,16 @@ extern "C" AMCL_VK_EXPORT int amclVulkanSetAdmission(int admitted, const char* p
         amcl::graphics::GraphicsProfileSupportsRequirement(*metadata, requirement);
     r.admitted = admitted && profile && std::strcmp(profile, "minecraft-vulkan") == 0 && auditedRequirement;
     const auto ownerAddress = std::to_string(reinterpret_cast<uintptr_t>(&localApi()));
-    publishEnv("AMCL_VULKAN_WSI_OWNER", ownerAddress.c_str());
-    emitWsiLog(false, "graphics_loader_admission admitted=%d profile=%s requirement=%s owner=%s gipa=%s",
+    // owner 描述符是本 PID 的进程常量：mc_launcher 在 JVM 之前会调用本函数多次，只有第一次写环境
+    // （I27-05）。fork 子进程 localApi() 换了新表、PID 也不同，会重新发布自己的描述符。
+    static std::atomic<uint64_t> ownerPublishedPid{0};
+    if (ownerPublishedPid.load(std::memory_order_acquire) != pid()) {
+        publishEnv("AMCL_VULKAN_WSI_OWNER", ownerAddress.c_str());
+        ownerPublishedPid.store(pid(), std::memory_order_release);
+    }
+    emitWsiLog(false, "graphics_loader_admission admitted=%d profile=%s requirement=%s owner=%s gipa=%llu",
         r.admitted ? 1 : 0, profile ? profile : "", requirement ? requirement : "",
-        ownerAddress.c_str(), std::getenv("AMCL_VULKAN_WSI_GIPA") ? std::getenv("AMCL_VULKAN_WSI_GIPA") : "");
+        ownerAddress.c_str(), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&vkGetInstanceProcAddr)));
     return admitted ? (r.admitted ? 1 : 0) : 1;
 }
 extern "C" AMCL_VK_EXPORT int amclVulkanAdmissionGranted() {

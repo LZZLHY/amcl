@@ -25,6 +25,13 @@ export enum TaskCategory {
   DATAPACK = 'datapack',     // 青色 📜 卷轴
   MODPACK = 'modpack',       // 橙色 📦 礼盒
   JDK = 'jdk',               // 红橙 ☕ 咖啡杯
+  APP_UPDATE = 'app_update', // 应用更新安装包；使用主题主色，与游戏下载分开识别。
+  GAME_EXPORT = 'game_export', // 导出电脑依赖准备；不是游戏下载/安装成功。
+}
+
+/** 稳定的恢复策略由执行适配器声明，排队取消或兜底错误不能凭空制造内部重试能力。 */
+export enum TaskRetryStrategy {
+  INTERNAL = 'internal', EXTERNAL_UPDATE = 'external-update', EXTERNAL_EXPORT = 'external-export', NONE = 'none'
 }
 
 /** 任务在 sheet 中可见的统一状态。 */
@@ -112,14 +119,25 @@ export class UnifiedTaskView {
   /** 明确的上次尝试/父任务身份；只由入队调用方或 retry 操作设置，不按标题猜关系。 */
   parentActivityId: number = 0;
   activityRelation: string = '';
+  /** 导出准备的原任务身份；恢复必须重新检查并另存，不能复用旧目标URI。 */
+  exportTaskId: string = '';
+  /** 仅用于恢复导出页面的固定源身份，不包含或延长Document Picker目标授权。 */
+  exportMcRoot: string = '';
+  exportVersionId: string = '';
+  exportVersionIsolation: boolean = true;
 
   /** 可执行的操作（决定卡片右侧按钮组）。 */
   canPause: boolean = false;
   canResume: boolean = false;
   canCancel: boolean = false;
   canRetry: boolean = false;
+  /** 应用更新或游戏导出需重新检查原业务授权，UI显示完整流程入口而非adapter内部retry。 */
+  canRecoverExternally: boolean = false;
+  retryStrategy: TaskRetryStrategy = TaskRetryStrategy.INTERNAL;
   /** MC 整版有 6 阶段详情；JDK 有 3 阶段；mod 有文件级 */
   canViewDetail: boolean = false;
+  /** 整合包清单准备完成、尚未确认内容；详情显示确认表单而不是普通继续按钮。 */
+  requiresConfirmation: boolean = false;
 
   /** 仅 ERROR 态：错误类型（"Network" / "Sha1Mismatch"）+ 文案 */
   errorKind: string = '';
@@ -141,6 +159,8 @@ export class UnifiedTaskView {
  */
 export interface UnifiedDownloadAdapter {
   readonly view: UnifiedTaskView;
+  /** 缺省保持旧游戏下载适配器内部重试；声明后在一次适配器寿命内不能升级。 */
+  readonly retryStrategy?: TaskRetryStrategy;
 
   /** 启动任务。返回 Promise 用于 registry 串联终态 */
   start(): Promise<void>;
@@ -225,6 +245,8 @@ export function categoryLabel(c: TaskCategory): string {
     case TaskCategory.DATAPACK:      return '数据包';
     case TaskCategory.MODPACK:       return '整合包';
     case TaskCategory.JDK:           return 'JDK';
+    case TaskCategory.APP_UPDATE:    return '应用更新';
+    case TaskCategory.GAME_EXPORT:   return '导出准备';
     default:                          return '';
   }
 }

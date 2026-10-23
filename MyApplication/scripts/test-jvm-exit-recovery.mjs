@@ -164,23 +164,27 @@ test('真实Index恢复链按id串行/幂等并使用退出时间；晚到crash�
   try {
     f.publish();
     const reader = f.runtime.load(readerPath);
-    const resolver = f.runtime.load(resolverPath);
+    const Coordinator = f.runtime.load('launch/src/main/ets/SessionRecoveryCoordinator.ets').SessionRecoveryCoordinator;
     const source = fs.readFileSync(new URL('../entry/src/main/ets/pages/Index.ets', import.meta.url), 'utf8');
     const start = source.indexOf('  private consumeLastSession(): void {');
     const end = source.indexOf('\n  onPageShow()', start);
-    const recordStart = source.indexOf('  private recordLaunchSession_(');
-    const recordEnd = source.indexOf('\n  /**', recordStart);
-    assert.ok(start > 0 && end > start && recordEnd > recordStart);
+    assert.ok(start > 0 && end > start);
     const compiled = compiler.transpileModule('class Probe {\n' + source.slice(start, end)
-      + source.slice(recordStart, recordEnd) + '\n}\nmodule.exports=Probe;',
+      + '\n}\nmodule.exports=Probe;',
     { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
     const records = new Map();
     let writes = 0, failWrite = false, sheets = 0;
+    const owner = new Coordinator(f.runtime.directory, { isIdle: () => true, applyHistory: async result => {
+      if (failWrite) throw new Error('history unavailable'); writes++;
+      records.set(result.session.startedAt, { ...result.session, status: result.outcome.state,
+        endedAt: result.session.endedAt, durationMs: result.session.endedAt - result.session.startedAt });
+    }, changed() {} });
     const module = { exports: {} };
     const values = { testNapi: { desktopGameProcessState: () => 0 },
-      resolveRecoveredSessionOutcome: resolver.resolveRecoveredSessionOutcome,
-      readJvmExitEvidence: reader.readJvmExitEvidence, hasSessionRecoveryReceipt: reader.hasSessionRecoveryReceipt,
-      writeSessionRecoveryReceipt: reader.writeSessionRecoveryReceipt,
+      SessionRecoveryRuntime: { wake: () => owner.wake(), coordinator: () => owner,
+        reportSettled: () => f.ledger.ledgerFlushMaintenanceAsync(f.runtime.directory) },
+      writeSessionRecoveryReceiptAsync: reader.writeSessionRecoveryReceiptAsync,
+      AppStorage: { get: () => true },
       ActivityStatus: { SUCCESS: 'success', FAILED: 'failed', CRASHED: 'crashed', ABORTED: 'aborted' },
       ActivityCategory: { LAUNCH: 'launch' }, LedgerState: f.ledger.LedgerState,
       getDownloadHistoryStore: () => ({ upsertLaunchSession: async record => {
@@ -189,28 +193,38 @@ test('真实Index恢复链按id串行/幂等并使用退出时间；晚到crash�
     new Function('module', ...Object.keys(values), compiled)(module, ...Object.values(values));
     const subject = new module.exports();
     subject.context = f.runtime.context;
-    subject.tabController = { changeIndex() {} };
+    subject.recoveryPresentationEpoch_ = 0;
+    // 本例验证正常首页中的历史恢复与错误呈现；开屏期间生产代码只耐久恢复并延迟呈现。
+    // 明确提供已经完成退场的事实，避免把未初始化的undefined误当成正常首页状态。
+    subject.startupFinished_ = true;
+    subject.showPrivacy = false;
+    subject.showMcErrorSheet = false;
+    subject.currentTab = 2;
+    subject.tabController = { changeIndex() { assert.fail('历史恢复不能撤销用户选择的设置页'); } };
     subject.refreshRecentActivities_ = () => {};
-    subject.openErrorSheetBySession_ = () => { sheets++; };
+    subject.openErrorSheetBySession_ = async () => { sheets++; return true; };
     const sessions = reader.listJvmExitSessions(f.runtime.directory);
     failWrite = true;
-    await assert.rejects(() => subject.consumeRecoveredSessions_(sessions), /history unavailable/);
-    const outcome = await resolver.resolveRecoveredSessionOutcome(f.runtime.directory, f.id);
+    await assert.rejects(() => subject.consumeRecoveredSessions_(0), /history unavailable/);
+    const manifestBefore = f.ledger.ledgerManifest(f.runtime.directory, f.id);
+    const outcome = { state: manifestBefore.state, source: manifestBefore.outcomeSource, summary: manifestBefore.outcomeSummary };
     assert.equal(reader.hasSessionRecoveryReceipt(f.runtime.directory, f.id, outcome), false);
     failWrite = false;
-    await subject.consumeRecoveredSessions_([sessions[0], sessions[0]]);
-    await subject.consumeRecoveredSessions_(sessions);
+    await subject.consumeRecoveredSessions_(0);
+    await subject.consumeRecoveredSessions_(0);
     assert.equal(writes, 1);
+    assert.equal(subject.currentTab, 2, '历史结果仍耐久确认，当前用户导航保持不变');
     assert.equal(records.get(f.id).endedAt, f.record.timestamp);
     assert.equal(records.get(f.id).durationMs, f.record.timestamp - f.id);
     assert.equal(sheets, 0);
     const manifest = f.ledger.ledgerManifest(f.runtime.directory, f.id);
     f.ledger.applyPlatformOutcome_(manifest, JSON.stringify({ name: 'APP_CRASH' }));
     f.runtime.write('logs/ledger/' + f.id + '/manifest.json', JSON.stringify(manifest));
-    await subject.consumeRecoveredSessions_(sessions);
+    await owner.enqueue(f.id);
+    await subject.consumeRecoveredSessions_(0);
     assert.equal(writes, 2);
     assert.equal(records.size, 1);
-    assert.equal(records.get(f.id).status, 'crashed');
+    assert.equal(records.get(f.id).status, f.ledger.LedgerState.CRASHED, 'owner端口传递的是已裁决LedgerState；历史字符串转换由runtime完成');
     assert.equal(sheets, 1);
   } finally { f.runtime.close(); }
 });
@@ -222,18 +236,27 @@ test('真实Entry前台恢复覆盖触控平板，锁活跃/异常时不消费�
   assert.ok(start > 0 && end > start);
   const compiled = compiler.transpileModule('class Probe {\n' + source.slice(start, end)
     + '\n}\nmodule.exports=Probe;', { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
-  for (const state of [0, 1, -1, -2, -3, 'throw']) {
+  // 正式商店包与侧载包都执行退出恢复；仅侧载包通知真实更新服务的前台状态。
+  // 同时覆盖两种产品值，防止缺失产品依赖后用固定true跳过生产分支造成假通过。
+  for (const storeChannel of [false, true]) for (const state of [0, 1, -1, -2, -3, 'throw']) {
     const storage = new Map();
-    let scans = 0, markers = 0;
+    let wakes = 0, foregrounds = 0, updateForegrounds = 0;
     const module = { exports: {} };
     const values = {
       ProductInputProfile: { selection: () => ({ isolatedGameProcess: true, desktopWindow: false }) },
+      ProductBuildProfile: { storeChannel },
+      // 只替代真实Ability context边界；正文仍执行原产品守卫，并验证上下文及前台实参。
+      SideloadUpdateService: { get(context) {
+        assert.equal(context.filesDir, '/sandbox');
+        return { setAbilityForeground(foreground) { assert.equal(foreground, true); updateForegrounds++; } };
+      } },
+      // 输入前台恢复与退出账本消费是独立职责；即使游戏进程仍存活也应通知本进程输入端。
+      getInputSourceRegistry: () => ({ notifyAbilityForeground() { foregrounds++; } }),
       testNapi: { desktopGameProcessState: () => { if (state === 'throw') throw new Error('lock error'); return state; },
         setOhosFrameRateForeground() {} },
     DesktopGameResults: { importPending: async () => '' },
     GameLayoutJournal: { importPending: async () => ({ imported: 0, pending: 0, deferred: false, conflicts: [] }) },
-      listJvmExitSessions: () => { scans++; return [{ startedAt: 55, version: '26.3', mcDir: '/mc', endedAt: 66 }]; },
-      SessionMarker: { readAndClear: () => { markers++; return { startedAt: 55, version: '26.3', mcDir: '/mc' }; } },
+      SessionRecoveryRuntime: { wake: async () => { wakes++; } },
       AppStorage: { get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value) },
       AppLogger: { warn() {}, info() {} }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
       FRAME_RATE_FOREGROUND_SOURCE_ENTRY: 1,
@@ -241,12 +264,10 @@ test('真实Entry前台恢复覆盖触控平板，锁活跃/异常时不消费�
     new Function('module', ...Object.keys(values), compiled)(module, ...Object.values(values));
     const subject = new module.exports(); subject.context = { filesDir: '/sandbox' };
     subject.onForeground();
-    assert.equal(scans, state === 0 ? 1 : 0, String(state));
-    assert.equal(markers, state === 0 ? 1 : 0, String(state));
-    if (state === 0) {
-      assert.equal(storage.get('pendingJvmExitSessions').length, 1);
-      assert.equal(storage.get('pendingJvmExitSessions')[0].endedAt, 66);
-      assert.equal(storage.get('desktopSessionRevision'), 1);
-    }
+    assert.equal(foregrounds, 1, '实际Ability前台必须发布输入恢复事实');
+    assert.equal(updateForegrounds, storeChannel ? 0 : 1, '仅侧载产品通知更新服务前台事实');
+    assert.equal(wakes, state === 0 ? 1 : 0, String(state));
+    assert.equal(storage.has('pendingJvmExitSessions'), false, 'Entry不再向页面发布全部历史候选');
+    assert.equal(storage.has('desktopSessionRevision'), false, '无真实提交不能只因前台通知递增结果revision');
   }
 });

@@ -19,16 +19,20 @@ namespace amcl::input {
 // `input_bridge_ohos.c` 的 `resolveGrabChangeCb` 消费）、`AMCL_TOUCH_GRAB_CB`、
 // `AMCL_TOUCH_CANCEL_CB`。它们都是独立 env 变量、**不属于** v7 `OHOS_INPUT_BRIDGE`
 // 那个 fail-closed 元组 ⇒ 加第四条**不需要升协议版本**。
-// ⚠️ `AMCL_GRAB_CB` 尤其值得对照：它的发布点是一个 ArkTS 显式调用的 NAPI 方法，
+// ⚠️ `AMCL_GRAB_CB` 尤其值得对照：它的发布点是 `registerInputNapi`（模块初始化，I27-05），
 // **本来就不在 `resolveBridge` 里** —— 那就是"publish 必须与 bridge-resolve 解耦"的
 // 仓内既有先例（本条同样这么做，见 `publishReverseTrampolines`）。
 using GlfwTypedLookSink = bool (*)(double dx, double dy);
+// 现役typed接口必须携带生产者采样时间；旧双参数接口仅保留源码兼容和独立测试，
+// 不再作为产品typed通道的降级路径。不能以出队时间重新解释积压样本的加速度。
+using GlfwTimedLookSink = bool (*)(double dx, double dy, uint64_t monotonicTimeNs);
 
 enum class GlfwTypedLookStatus : uint8_t {
     kApplied = 0,
     kNoSink = 1,
     kNonFinite = 2,
     kSinkRejected = 3,
+    kInvalidTimestamp = 4,
 };
 
 // 从 env 文本解析 trampoline 地址。0 = 拒绝。
@@ -46,6 +50,11 @@ public:
     bool Latch(GlfwTypedLookSink sink);
     bool HasSink() const;
 
+    // 带时间接口与旧接口独立闭锁；调用约束仍为adapter callbackMutex，地址冲突拒绝。
+    bool LatchTimed(GlfwTimedLookSink sink);
+    bool HasTimedSink() const;
+    GlfwTypedLookStatus ApplyTimed(double dx, double dy, uint64_t monotonicTimeNs);
+
     // 非有限值**绝不跨 DSO**：在这里 fail closed，漏斗的持久 backlog 不可被污染。
     // 须在 callbackMutex 内调用。
     GlfwTypedLookStatus Apply(double dx, double dy);
@@ -56,6 +65,7 @@ public:
 
 private:
     GlfwTypedLookSink sink_ = nullptr;
+    GlfwTimedLookSink timedSink_ = nullptr;
     std::atomic<uint64_t> rejectCount_{0u};
 };
 

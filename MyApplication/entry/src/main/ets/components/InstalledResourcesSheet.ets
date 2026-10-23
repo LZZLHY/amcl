@@ -1,3 +1,4 @@
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { DiagnosticPolicy } from 'commons';
 /**
  * InstalledResourcesSheet.ets — 当前版本已装"模组 / 资源包 / 光影 / 数据包"管理 Sheet
@@ -28,30 +29,30 @@ import { DiagnosticPolicy } from 'commons';
  * 不做：
  *   - jar 内 manifest 解析（mod 名 / 作者）
  *   - 资源包 / 光影内 pack.mcmeta 解析（仅显示 .zip 文件名）
- *   - 检查更新（Modrinth /version_files/update）
+ *   来源识别与更新信息在完整本地列表发布后受限补全；包内语义仍交由实际加载器处理。
  */
 
-import { promptAction } from '@kit.ArkUI';
-import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { GameArchiveIO } from './GameArchiveIO';
 import { ThemeColors } from 'commons';
+import { resolveInstanceGameDir } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
-import { RemoteImage } from './RemoteImage';
+import { InstalledResourceRow as ResourceRow, InstalledResourceData } from './InstalledResourceData';
+import { InstalledResourceItem } from './InstalledResourceItem';
+import { installedResourceWork } from './InstalledResourceWork';
 import {
   ModInstaller,
   isDisabledFilename,
   enableFilename,
 } from 'mods';
 import { DownloadManager } from 'feature_core';
-import { formatBytes } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD, LOG_DOMAIN_UI } from 'commons';
 import { ResourceKind } from 'mods';
 import { kindIcon } from '../components/ResourceIcons';
-import { LocalModScanner } from 'mods';
+import { LocalModScanner, LocalMod, LocalModScanControl, enumerateLocalResourceFiles } from 'mods';
 import { ModrinthRepository } from 'mods';
 import { CurseForgeRepository } from 'mods';
 import { ModIntegrity } from 'mods';
@@ -59,11 +60,10 @@ import { ModSource } from 'mods';
 import { getMetadataCacheStore } from 'feature_core';
 import { ModrinthSourceMode } from 'mods';
 import { pickPrimaryFile, resolveInstalledMcVersion } from 'mods';
-import { pickLatestModVersion } from 'mods';
 import { RemoteVersion } from 'mods';
-import { inferLoaderKey, resolveInstalledLoaderKey } from '../components/LoaderCatalog';
+import { resolveInstalledLoaderKey } from '../components/LoaderCatalog';
 import { ModUpdateCoordinator } from './ModUpdateCoordinator';
-import { ModSourceRouter, pickModUpdate } from 'mods';
+import { ModSourceRouter, createModUpdateSession } from 'mods';
 import { PreferenceManager } from 'feature_system';
 
 const TAG = 'InstalledResourcesSheet';
@@ -143,14 +143,6 @@ function metaOf(kind: ResourceKind): KindMeta {
 //  Row 数据
 // ============================================================
 
-/**
- * 取版本列表里「最新」的一条。统一走 mods.pickLatestModVersion（版本号为主键、日期为次），
- * 与下载页 pickBestVersion 同一判定，杜绝"下载页/管理页谁是最新"分叉。空表 → null。
- */
-function pickLatestVersion(versions: RemoteVersion[]): RemoteVersion | null {
-  return pickLatestModVersion(versions);
-}
-
 /** 单个 mod 的源关联信息（更新检查 / 修复复用）。 */
 interface ModUpdateMeta {
   /** ModSource 值（'modrinth' | 'curseforge'）：决定用哪个仓储查版本。 */
@@ -159,49 +151,16 @@ interface ModUpdateMeta {
   installedVersionId: string;
 }
 
-interface ResourceRow {
-  filePath: string;
-  filename: string;
-  /** 不带 .disabled / 扩展名后缀的展示名 */
-  displayName: string;
-  enabled: boolean;
-  sizeBytes: number;
-  /**
-   * 远程项目图标 URL（来自 Modrinth 反查 sha1 → getProject）。
-   * 空字符串 = 还没反查到 / 反查失败 → 由 RemoteImage 回退到 AppIcon 占位。
-   * 异步填充：refresh() 完成后立刻挂出 rows（icon 全空），后台并发 sha1 lookup 命中后
-   * 通过 setRowIcon() 局部更新单行，避免一次大重建闪屏。
-   */
-  iconUrl: string;
-  /**
-   * 更新检查状态（仅 MOD 类有意义；其它 kind 恒为 'none'）：
-   *   - 'none'      还没查 / 没反查到 Modrinth 项目 / 非 mod
-   *   - 'checking'  正在查最新版
-   *   - 'latest'    已是最新（与当前 profile 的 loader+gameVersion 匹配的最新版）
-   *   - 'outdated'  有新版可更新（latestVersionNumber 为目标版本号）
-   *   - 'updating'  正在下载替换
-   */
-  updateState: string;
-  /** outdated 时展示的目标版本号（如 "0.5.13"） */
-  latestVersionNumber: string;
-  /** updating 时的下载进度百分比（0~100） */
-  updatingPct: number;
-  /**
-   * 完整性/来源状态（ModIntegrity 值；'none'=还没算/非 mod）：
-   *   verified 完好 · linked 已链接 · corrupt 已损坏(可修复) · unknown 未知来源(不可查更新,非损坏) · recheck 待校验
-   */
-  integrity: string;
-}
 
 @Component
 export struct InstalledResourcesSheet {
   @Prop theme: ThemeColors = {} as ThemeColors;
   @Prop bottomSafeHeight: number = 0;
   /** .minecraft 根（不带尾部 /） */
-  @Prop mcDir: string = '';
+  @Prop @Watch('onScopeChanged') mcDir: string = '';
   /** 目标版本 id；为空时显示空态 + 引导提示 */
   @Prop @Watch('onScopeChanged') versionId: string = '';
-  @Prop versionIsolation: boolean = true;
+  @Prop @Watch('onScopeChanged') versionIsolation: boolean = true;
   /** 资源类型；改 kind 会触发重扫（standalone 走 aboutToAppear，embedded 走 @Watch） */
   @Prop @Watch('onScopeChanged') kind: ResourceKind = ResourceKind.MOD;
   /**
@@ -219,10 +178,18 @@ export struct InstalledResourcesSheet {
   @Prop @Watch('onScopeChanged') active: boolean = true;
 
   @State private rows: ResourceRow[] = [];
+  /** 全量轻量清单和可见投影分开；数据源实例不随输入重建。 */
+  private resourceData_: InstalledResourceData = new InstalledResourceData();
+  @State private query: string = '';
+  @State private visibleCount: number = 0;
+  private scopeKey_: string = '';
+  private mounted_: boolean = false;
+  private scanControl_: LocalModScanControl | null = null;
+  private localMods_: LocalMod[] = [];
 
   @State private loaded: boolean = false;
   /** 二次确认中的删除目标 filename；空 = 无对话框 */
-  @State private pendingDelete: string = '';
+  @State @Watch('publishNavigationBlocked_') private pendingDelete: string = '';
   /**
    * 每次 refresh() 自增的"扫描代号"。后台 sha1 lookup 完成时如果 epoch 与启动时不同，
    * 说明用户已经切版本/切 kind/再次刷新过，旧任务结果应当丢弃，避免：
@@ -258,6 +225,8 @@ export struct InstalledResourcesSheet {
   onClose: () => void = () => {};
   /** 嵌入模式：返回上一步（版本详情）。standalone 模式下无意义。 */
   onBack: () => void = () => {};
+  /** 只投影本面板原遮罩/事务是否阻止导航，父宿主不复制文件业务状态。 */
+  onNavigationBlocked: (blocked: boolean) => void = () => {};
   /**
    * 引导用户跳转到下载 Tab 安装新资源（资源包 / 光影 / 模组都走 ModBrowsePage）。
    * 携带当前资源类别 `kind`，让父组件把下载页二级 Tab 定位到对应分类（模组/资源包/光影）。
@@ -270,11 +239,16 @@ export struct InstalledResourcesSheet {
   private coordListener: () => void = () => { this.onCoordChange() };
 
   aboutToAppear() {
+    this.navigationProjectionAlive_ = true;
+    this.mounted_ = true;
     ModUpdateCoordinator.instance().addListener(this.coordListener)
     if (this.active) this.refresh();
   }
 
   aboutToDisappear() {
+    this.navigationProjectionAlive_ = false;
+    this.mounted_ = false;
+    this.cancelScan();
     ModUpdateCoordinator.instance().removeListener(this.coordListener)
   }
 
@@ -302,42 +276,67 @@ export struct InstalledResourcesSheet {
    * 因此靠 @Watch 驱动重扫；active 门控避免在非资源步做无谓的磁盘/网络开销。
    */
   onScopeChanged(): void {
-    if (this.active) this.refresh();
+    const scope = this.targetDir() + '|' + this.kind;
+    if (scope !== this.scopeKey_) {
+      this.scopeKey_ = scope;
+      this.query = '';
+      this.visibleCount = this.resourceData_.filter('');
+      this.pendingDelete = '';
+    }
+    if (this.active && this.mounted_) this.refresh();
+    else { this.cancelScan(); this.loaded = false; }
+  }
+
+  /** 失效后不再发布旧状态；控制器同时停止扫描器排队及后续联网工作。 */
+  private cancelScan(): void {
+    this.scanEpoch_++;
+    this.scanControl_?.cancel();
+    this.scanControl_ = null;
+    this.verifying = false;
+  }
+
+  private isCurrent(epoch: number): boolean {
+    return this.mounted_ && this.active && epoch === this.scanEpoch_;
+  }
+
+
+  /** 卸载后不再向父标题发布迟到状态；文件任务和扫描的原所有权不变。 */
+  private navigationProjectionAlive_: boolean = false;
+
+  /** 导航只观察原遮罩事实，不取消任务或跳过原确认；未屏蔽正文时仍允许原返回。 */
+  private navigationBlocked_(): boolean { return this.pendingDelete.length > 0; }
+
+  /** 业务状态变化后只发一个布尔投影，供已有父标题同步禁用状态。 */
+  private publishNavigationBlocked_(): void {
+    if (this.navigationProjectionAlive_) this.onNavigationBlocked(this.navigationBlocked_());
   }
 
   build() {
-    Column() {
-      if (this.embedded) {
-        // 嵌入模式：← 版本详情 返回按钮（与版本详情步的"← 版本管理"同款）
-        Row() {
-          Row({ space: 4 }) {
-            AppIcon({ name: AppIconName.ChevronLeft, iconSize: 14, color: this.theme.textPrimary })
-            Text('版本详情').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-          }
-          .height(32)
-          .padding({ left: 10, right: 12 })
-          .borderRadius(16)
-          .backgroundColor(this.theme.bgInput)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => { this.onBack() })
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 10, bottom: 4 })
-        .justifyContent(FlexAlign.Start)
-      } else {
-        // Drag pill（独立 sheet 模式）
-        Row() {
-          Column().width(36).height(4).backgroundColor(this.theme.divider).borderRadius(2)
-        }
-        .width('100%').justifyContent(FlexAlign.Center).padding({ top: 10, bottom: 6 })
-      }
+    if (this.embedded) {
+      this.PanelBody_();
+    } else {
+      ImmersiveTitleScaffold({ title: metaOf(this.kind).title, theme: this.theme, modal: true,
+        surfaceColor: this.theme.bgPrimary, closeLabel: '关闭管理面板',
+        closeId: 'installedresourcessheet-close', closeEnabled: !this.navigationBlocked_(),
+        onClose: (): void => { if (!this.navigationBlocked_()) this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+  }
 
+  /** 原面板正文与覆盖层保持原组件所有权，宿主只接管导航动作。 */
+  @Builder
+  private PanelBody_() {
+    Column() {
       this.Header()
+      this.SearchHeader()
 
       if (!this.loaded) {
         this.LoadingState()
       } else if (this.rows.length === 0) {
         this.EmptyState()
+      } else if (this.visibleCount === 0) {
+        this.NoSearchResults()
       } else {
         this.ListView()
       }
@@ -349,6 +348,7 @@ export struct InstalledResourcesSheet {
     .width('100%')
     .height('100%')
     .backgroundColor(this.theme.bgPrimary)
+
   }
 
   // ============================================================
@@ -360,10 +360,6 @@ export struct InstalledResourcesSheet {
     Column({ space: 6 }) {
       Row() {
         Column({ space: 2 }) {
-          Text(metaOf(this.kind).title)
-            .fontSize(22)
-            .fontWeight(700)
-            .fontColor(this.theme.textPrimary)
           Text(this.headerSubtitle())
             .fontSize(11)
             .fontColor(this.theme.textHint)
@@ -402,6 +398,7 @@ export struct InstalledResourcesSheet {
             .backgroundColor(this.theme.bgInput)
             .alignItems(VerticalAlign.Center)
             .opacity(this.verifying ? 0.5 : 1)
+            .enabled(this.loaded && !this.verifying)
             .onClick(() => { this.doFullVerify() })
           }
 
@@ -442,246 +439,81 @@ export struct InstalledResourcesSheet {
     .alignItems(HorizontalAlign.Start)
   }
 
+  /** 搜索框常驻，加载或无结果时不重挂输入框，保留软键盘和焦点。 */
+  @Builder
+  SearchHeader() {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        AppIcon({ name: AppIconName.Search, iconSize: 16, color: this.theme.textHint })
+        TextInput({ placeholder: '搜索当前版本' + metaOf(this.kind).unit + '文件名', text: this.query })
+          .id('installed-resource-search')
+          .height(40).fontSize(14).layoutWeight(1)
+          .backgroundColor(Color.Transparent)
+          .onChange((value: string) => { this.applyQuery(value) })
+        if (this.query.length > 0) {
+          Button('清除')
+            .id('installed-resource-search-clear')
+            .fontSize(12).height(32)
+            .fontColor(this.theme.textSecondary).backgroundColor(Color.Transparent)
+            .accessibilityText('清除模组搜索')
+            .onClick(() => { this.applyQuery('') })
+        }
+      }
+      .width('100%').padding({ left: 12, right: 4 })
+      .backgroundColor(this.theme.bgInput).borderRadius(12)
+      Text('找到 ' + this.visibleCount + ' / 共 ' + this.rows.length + ' 个' + metaOf(this.kind).unit)
+        .id('installed-resource-search-count')
+        .fontSize(11).fontColor(this.theme.textHint)
+    }
+    .width('100%').alignItems(HorizontalAlign.Start)
+    .padding({ left: 20, right: 20, bottom: 10 })
+  }
+
+  /** 搜索只改轻量清单的内存投影，禁用项和未识别来源项不被额外排除。 */
+  private applyQuery(value: string): void {
+    this.query = value;
+    this.visibleCount = this.resourceData_.filter(value);
+    this.expandedPath = '';
+  }
+
+  @Builder
+  NoSearchResults() {
+    Column({ space: 12 }) {
+      Text('没有匹配的' + metaOf(this.kind).unit)
+        .fontSize(16).fontColor(this.theme.textPrimary)
+      Text('试试文件名中的其他文字，或清除搜索查看全部资源。')
+        .fontSize(12).fontColor(this.theme.textHint).textAlign(TextAlign.Center)
+      Button('清除搜索').onClick(() => { this.applyQuery('') })
+    }
+    .width('100%').layoutWeight(1).padding(24)
+    .justifyContent(FlexAlign.Center)
+  }
+
   @Builder
   ListView() {
     List({ space: 10 }) {
-      // key 故意 = filePath + iconUrl：iconUrl 异步从空变成真 URL 时，key 跟着变，
-      // ArkUI ForEach 把这一行的 ListItem 强制 rebuild，新的 row.iconUrl 才会被
-      // RemoteImage 的 @Prop 拿到。如果只用 filePath 当 key，ArkUI 认为是"同一项"
-      // 不重建 → row.iconUrl 永远停在初始空字符串，图标永远是占位。
-      // 启用态切换不会改 filePath（只改 enabled），但因为 setRowIcon / handleToggle
-      // 都走 `this.rows = next` 整体替换，ArkUI 至少会重跑 ForEach 主体；带 iconUrl
-      // 进 key 同时也兜住了"先反查到图标后用户再禁用 / 启用"的边界场景。
-      ForEach(this.rows, (row: ResourceRow) => {
+      LazyForEach(this.resourceData_, (row: ResourceRow) => {
         ListItem() {
-          this.RowItem(row)
+          InstalledResourceItem({
+            row: row, theme: this.theme, kind: this.kind,
+            togglable: metaOf(this.kind).togglable,
+            expanded: this.expandedPath === row.filePath,
+            onExpand: () => { this.toggleExpand(row.filePath) },
+            onToggle: (enabled: boolean) => { this.handleToggle(row, enabled) },
+            onDelete: () => { this.pendingDelete = row.filename },
+            onRepair: () => { this.doRepair(row) },
+            onUpdate: () => { this.doUpdate(row) },
+            onRecheck: () => { this.recheckUpdate(row) },
+            onIgnore: () => { this.ignoreUpdate(row) },
+          })
         }
-      }, (row: ResourceRow) => row.filePath + '|' + row.iconUrl + '|' + (row.enabled ? '1' : '0') + '|' + row.updateState + '|' + row.latestVersionNumber + '|' + row.updatingPct)
-
-      ListItem() {
-        Text(this.footerHint())
-          .fontSize(11)
-          .fontColor(this.theme.textHint)
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .padding({ top: 12, bottom: 30 })
-      }
+      }, (row: ResourceRow) => row.filePath)
     }
     .layoutWeight(1)
     .width('100%')
     .padding({ left: 20, right: 20 })
     .scrollBar(BarState.Off)
-  }
-
-  @Builder
-  RowItem(row: ResourceRow) {
-    Column({ space: 0 }) {
-      // ===== 主行（折叠态：保持原始紧凑样式）=====
-      Row({ space: 10 }) {
-        // 左：资源图标
-        RemoteImage({
-          url: row.iconUrl,
-          diameter: 40,
-          cornerRadius: 10,
-          fallbackIcon: kindIcon(this.kind),
-          fallbackBg: row.enabled ? this.theme.primaryLight : this.theme.bgInput,
-          fallbackColor: row.enabled ? this.theme.primary : this.theme.textHint,
-          fallbackIconSize: 20,
-        })
-
-        // 中：名字 + 状态/大小
-        Column({ space: 4 }) {
-          Text(row.displayName)
-            .fontSize(14)
-            .fontWeight(600)
-            .fontColor(row.enabled ? this.theme.textPrimary : this.theme.textHint)
-            .maxLines(2)
-            // 默认 wordBreak 会在第一个连字符处就断行，导致第一行只剩 "fabric-" 一大截空白。
-            // BREAK_ALL：按字符填满每一行再换行，长文件名两行都填满后才省略。
-            .wordBreak(WordBreak.BREAK_ALL)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Row({ space: 6 }) {
-            if (metaOf(this.kind).togglable) {
-              Text(row.enabled ? '启用' : '禁用')
-                .fontSize(10).fontWeight(700)
-                .fontColor(row.enabled ? this.theme.success : this.theme.textHint)
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .borderRadius(5)
-                .backgroundColor(row.enabled ? this.theme.successBg : this.theme.bgInput)
-            }
-            Text(formatBytes(row.sizeBytes))
-              .fontSize(11).fontWeight(500).fontColor(this.theme.textHint)
-            // 完整性徽章（优先于更新状态显示）
-            if (row.integrity === ModIntegrity.CORRUPT) {
-              Text('已损坏')
-                .fontSize(10).fontWeight(700)
-                .fontColor(this.theme.error)
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .borderRadius(5)
-                .backgroundColor(this.theme.errorBg)
-            } else if (row.integrity === ModIntegrity.UNKNOWN) {
-              Text('未知来源')
-                .fontSize(10).fontWeight(500).fontColor(this.theme.textHint)
-            }
-            // 折叠态更新状态：只显示极简标记（详细动作在展开区）
-            if (row.updateState === 'outdated') {
-              Text('可更新')
-                .fontSize(10).fontWeight(700)
-                .fontColor(this.theme.primary)
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .borderRadius(5)
-                .backgroundColor(this.theme.primaryLight)
-            } else if (row.updateState === 'latest') {
-              Text('已最新')
-                .fontSize(10).fontWeight(600).fontColor(this.theme.textHint)
-            } else if (row.updateState === 'updating') {
-              Text('更新中 ' + row.updatingPct + '%')
-                .fontSize(10).fontWeight(700)
-                .fontColor(this.theme.primary)
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .borderRadius(5)
-                .backgroundColor(this.theme.primaryLight)
-            } else if (row.updateState === 'checking') {
-              Text('检查更新…')
-                .fontSize(10).fontWeight(500).fontColor(this.theme.textHint)
-            }
-          }
-          .alignItems(VerticalAlign.Center)
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        // 右：展开箭头（仅有 Modrinth 关联时）+ toggle + 删除
-        Row({ space: 8 }) {
-          if (this.isExpandable(row)) {
-            Row() {
-              AppIcon({
-                name: this.expandedPath === row.filePath ? AppIconName.ChevronUp : AppIconName.ChevronDown,
-                iconSize: 14,
-                color: row.updateState === 'outdated' ? this.theme.primary : this.theme.textSecondary,
-              })
-            }
-            .width(32).height(32).borderRadius(10)
-            .backgroundColor(row.updateState === 'outdated' ? this.theme.primaryLight : this.theme.bgInput)
-            .justifyContent(FlexAlign.Center)
-            .onClick(() => { this.toggleExpand(row.filePath) })
-          }
-
-          if (metaOf(this.kind).togglable) {
-            Toggle({ type: ToggleType.Switch, isOn: row.enabled })
-              .selectedColor(this.theme.primary)
-              .onChange((isOn: boolean) => { this.handleToggle(row, isOn) })
-          }
-
-          Row() {
-            AppIcon({ name: AppIconName.Trash, iconSize: 15, color: this.theme.error })
-          }
-          .width(36).height(36)
-          .borderRadius(10)
-          .backgroundColor(this.theme.errorBg)
-          .justifyContent(FlexAlign.Center)
-          .onClick(() => { this.pendingDelete = row.filename })
-        }
-        .alignItems(VerticalAlign.Center)
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-
-      // ===== 展开态：更新动作区（拓宽卡片）=====
-      if (this.expandedPath === row.filePath && this.isExpandable(row)) {
-        Column({ space: 0 }) {
-          Row().width('100%').height(1).backgroundColor(this.theme.divider)
-            .margin({ top: 10, bottom: 10 })
-
-          if (row.updateState === 'updating') {
-            Column({ space: 6 }) {
-              Row({ space: 8 }) {
-                LoadingProgress().width(16).height(16).color(this.theme.primary)
-                Text('正在更新到 ' + row.latestVersionNumber + '  ' + row.updatingPct + '%')
-                  .fontSize(12).fontWeight(500).fontColor(this.theme.textSecondary)
-                  .layoutWeight(1)
-              }
-              .width('100%').alignItems(VerticalAlign.Center)
-              Progress({ value: row.updatingPct, total: 100, type: ProgressType.Linear })
-                .color(this.theme.primary)
-                .width('100%')
-            }
-            .width('100%')
-          } else if (row.integrity === ModIntegrity.CORRUPT) {
-            Text('文件已损坏（与模组源校验不一致）')
-              .fontSize(12).fontWeight(600).fontColor(this.theme.error)
-              .width('100%').margin({ bottom: 4 })
-            Text('可从原始来源重新下载同一版本进行修复。')
-              .fontSize(11).fontColor(this.theme.textHint)
-              .width('100%').margin({ bottom: 8 })
-            Row({ space: 8 }) {
-              Row({ space: 4 }) {
-                AppIcon({ name: AppIconName.Download, iconSize: 13, color: this.theme.textOnPrimary })
-                Text('重新下载修复').fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
-              }
-              .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-              .backgroundColor(this.theme.error).alignItems(VerticalAlign.Center)
-              .onClick(() => { this.doRepair(row) })
-            }
-            .width('100%').alignItems(VerticalAlign.Center)
-          } else if (row.updateState === 'outdated') {
-            Text('可更新到 ' + row.latestVersionNumber)
-              .fontSize(12).fontWeight(600).fontColor(this.theme.textPrimary)
-              .width('100%').margin({ bottom: 8 })
-            Row({ space: 8 }) {
-              // 更新（主操作）
-              Row({ space: 4 }) {
-                AppIcon({ name: AppIconName.Download, iconSize: 13, color: this.theme.textOnPrimary })
-                Text('更新').fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
-              }
-              .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-              .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
-              .onClick(() => { this.doUpdate(row) })
-              // 检查更新
-              Row({ space: 4 }) {
-                AppIcon({ name: AppIconName.Refresh, iconSize: 13, color: this.theme.textSecondary })
-                Text('检查更新').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-              }
-              .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-              .backgroundColor(this.theme.bgInput).alignItems(VerticalAlign.Center)
-              .onClick(() => { this.recheckUpdate(row) })
-              // 忽略
-              Row({ space: 4 }) {
-                AppIcon({ name: AppIconName.Close, iconSize: 13, color: this.theme.textSecondary })
-                Text('忽略').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-              }
-              .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-              .backgroundColor(this.theme.bgInput).alignItems(VerticalAlign.Center)
-              .onClick(() => { this.ignoreUpdate(row) })
-            }
-            .width('100%').alignItems(VerticalAlign.Center)
-          } else {
-            // latest / ignored：已是最新或已忽略 → 仅提供「检查更新」
-            Row({ space: 8 }) {
-              Text(row.updateState === 'ignored' ? '已忽略此更新' : '已是最新版')
-                .fontSize(12).fontWeight(500).fontColor(this.theme.textSecondary)
-                .layoutWeight(1)
-              Row({ space: 4 }) {
-                AppIcon({ name: AppIconName.Refresh, iconSize: 13, color: this.theme.textSecondary })
-                Text('检查更新').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-              }
-              .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-              .backgroundColor(this.theme.bgInput).alignItems(VerticalAlign.Center)
-              .onClick(() => { this.recheckUpdate(row) })
-            }
-            .width('100%').alignItems(VerticalAlign.Center)
-          }
-        }
-        .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: 220, curve: Curve.FastOutSlowIn }))
-      }
-    }
-    .width('100%')
-    .padding({ left: 12, right: 10, top: 10, bottom: 10 })
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(14)
-    .alignItems(HorizontalAlign.Start)
-    .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
+    .cachedCount(3)
   }
 
   @Builder
@@ -799,17 +631,6 @@ export struct InstalledResourcesSheet {
     return this.versionId + ' · ' + total + ' 个 · ' + enabled + ' 启用'
   }
 
-  private footerHint(): string {
-    let m = metaOf(this.kind)
-    let total = this.rows.length
-    if (!m.togglable) return '共 ' + total + ' 个' + m.unit
-    let enabled = 0
-    for (let r of this.rows) { if (r.enabled) enabled++ }
-    let disabled = Math.max(0, total - enabled)
-    if (disabled === 0) return '共 ' + total + ' 个' + m.unit + ' · 全部启用'
-    return '共 ' + total + ' 个' + m.unit + ' · ' + enabled + ' 启用 · ' + disabled + ' 禁用'
-  }
-
   private emptyTitle(): string {
     if (this.versionId.length === 0) return '请先选择一个已装版本'
     return '尚未安装任何' + metaOf(this.kind).unit
@@ -823,78 +644,55 @@ export struct InstalledResourcesSheet {
   private targetDir(): string {
     if (this.mcDir.length === 0) return ''
     let sub = metaOf(this.kind).subdir
-    if (!this.versionIsolation) return this.mcDir + '/' + sub
-    if (this.versionId.length === 0) return ''
-    return this.mcDir + '/versions/' + this.versionId + '/' + sub
+    if (this.versionId.length === 0 && this.versionIsolation) return ''
+    return resolveInstanceGameDir(this.mcDir, this.versionId, this.versionIsolation) + '/' + sub
   }
 
+  /**
+   * 创建本轮控制器并异步枚举完整目录；首屏只依赖本地轻量记录，来源反查不作为显示前提。
+   * 每个 await 后校验代次与激活状态，避免快速返回、刷新或切实例时旧结果覆盖新清单。
+   */
   private refresh(): void {
-    this.loaded = false
-    // 自增 epoch；任何后台 lookup 完成时会校对 epoch，过期则丢弃
-    this.scanEpoch_++
-    this.pendingUpdates_.clear()
-    this.modMeta_.clear()
-    this.expandedPath = ''
-    let myEpoch = this.scanEpoch_
-    let dir = this.targetDir()
-    if (dir.length === 0) {
-      this.rows = []
-      this.loaded = true
-      return
-    }
-    let entries: string[] = []
-    try {
-      entries = fs.listFileSync(dir)
-    } catch (e) {
-      this.rows = []
-      this.loaded = true
-      return
-    }
-    let m = metaOf(this.kind)
-    let result: ResourceRow[] = []
-    for (let name of entries) {
-      let lower = name.toLowerCase()
-      let isPrimary = lower.endsWith(m.primaryExt)
-      let isDisabled = m.disabledExt.length > 0 && lower.endsWith(m.disabledExt)
-      if (!isPrimary && !isDisabled) continue
-      let path = dir + '/' + name
-      let size = 0
-      try { size = fs.statSync(path).size } catch (e) { /* skip stat fail */ }
-      result.push({
-        filePath: path,
-        filename: name,
-        displayName: this.displayNameOf(name, m),
-        // 注意：判断"启用"必须先看 disabledExt 后看 primaryExt（disabledExt 更长，
-        // 否则 .zip.disabled 会被 .zip 误命中为"启用"）
-        enabled: !isDisabled,
-        sizeBytes: size,
-        // iconUrl 异步填充：先空着，sha1 lookup 命中后通过 setRowIcon() 局部更新
-        iconUrl: '',
-        updateState: 'none',
-        latestVersionNumber: '',
-        updatingPct: 0,
-        integrity: 'none',
-      })
-    }
-    // ===== 持久化排序：按 PreferenceManager 里存的逻辑名顺序排，启用切换不影响顺序 =====
-    this.rows = this.applyPersistedOrder(result, m)
-    this.loaded = true
-    // 重连协调器：若某行正被全局协调器更新（如退出 sheet 再进来），立刻恢复 'updating' + 进度，
-    // 而不是把正在被替换的旧文件当普通行展示。新文件在暂存目录下载，不会出现在 mods/ 列表里。
-    this.reconnectUpdatingRows()
-    if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG,
-      'refresh kind=%{public}s dir=%{public}s found=%{public}d',
-      this.kind as string, dir, result.length)
+    this.cancelScan();
+    if (!this.active || !this.mounted_) return;
+    this.scopeKey_ = this.targetDir() + '|' + this.kind;
+    this.loaded = false;
+    this.pendingUpdates_.clear();
+    this.modMeta_.clear();
+    this.expandedPath = '';
+    const epoch = this.scanEpoch_;
+    const control = new LocalModScanControl();
+    this.scanControl_ = control;
+    this.loadLocalRows(epoch, control).catch((error: Error) => {
+      if (!this.isCurrent(epoch)) return;
+      this.rows = this.resourceData_.replace([]);
+      this.visibleCount = 0;
+      this.loaded = true;
+      AppLogger.warn(TAG, '本地资源枚举失败', error, LOG_DOMAIN_UI);
+    });
+  }
 
-    // ======= 异步 sha1 反查 → 拿真实 iconUrl（仅 MOD 类有意义）=======
-    // - MOD 才反查（资源包 / 光影 在 Modrinth 也有 sha1 反查接口，但 UI 不展示作者卡，
-    //   省一次 HTTP；以后真有需要再开）
-    // - DATAPACK / MODPACK 跳过
-    // - 失败 / 反查不命中 → iconUrl 维持空 → RemoteImage 自动回退占位
-    if (this.kind === ResourceKind.MOD && result.length > 0) {
-      this.fetchIconsAsync(myEpoch).catch((e: Error) => {
-        AppLogger.warn(TAG, 'fetchIconsAsync uncaught', e, LOG_DOMAIN_DOWNLOAD)
-      })
+  private async loadLocalRows(epoch: number, control: LocalModScanControl): Promise<void> {
+    const dir = this.targetDir();
+    const meta = metaOf(this.kind);
+    const extensions = meta.disabledExt.length > 0 ? [meta.primaryExt, meta.disabledExt] : [meta.primaryExt];
+    const files: LocalMod[] = dir.length === 0 ? [] : await enumerateLocalResourceFiles(dir, extensions, control);
+    if (!this.isCurrent(epoch)) return;
+    this.localMods_ = files;
+    const result: ResourceRow[] = files.map((file: LocalMod) => new ResourceRow({
+      filePath: file.filePath, filename: file.filename,
+      displayName: this.displayNameOf(file.filename, meta), enabled: file.enabled,
+      sizeBytes: file.sizeBytes, iconUrl: '', updateState: 'none',
+      latestVersionNumber: '', updatingPct: 0, integrity: 'none',
+    }));
+    this.rows = this.resourceData_.replace(this.applyPersistedOrder(result));
+    this.visibleCount = this.resourceData_.filter(this.query);
+    this.loaded = true;
+    this.reconnectUpdatingRows();
+    if (this.kind === ResourceKind.MOD && files.length > 0) {
+      this.fetchIconsAsync(epoch).catch((error: Error) => {
+        if (this.isCurrent(epoch)) AppLogger.warn(TAG, '模组附加信息加载失败', error, LOG_DOMAIN_DOWNLOAD);
+      });
     }
   }
 
@@ -908,6 +706,8 @@ export struct InstalledResourcesSheet {
    * 取消语义：进函数前记下的 epoch 与当前 scanEpoch_ 不等 → 立即返回，丢弃所有结果。
    */
   private async fetchIconsAsync(epoch: number, fullVerify: boolean = false): Promise<void> {
+    const control = this.scanControl_;
+    if (control === null || !this.isCurrent(epoch)) return;
     let dm = DownloadManager.instance()
     if (!dm.isCaBundleInitialized()) {
       // CA bundle 未就绪（极早冷启动）→ 跳过反查；rows 维持占位图标，不报错
@@ -925,12 +725,23 @@ export struct InstalledResourcesSheet {
       versionIsolation: this.versionIsolation,
       kind: ResourceKind.MOD,
       fullVerify: fullVerify,
+      control: control,
+      localMods: this.localMods_,
     })
-    if (epoch !== this.scanEpoch_) return  // 用户已经切走，丢弃结果
+    if (!this.isCurrent(epoch)) return  // 用户已经切走，丢弃结果
 
     // 先把完整性状态写回所有行（含 corrupt / unknown / verified / linked / recheck）
     for (let m of scanResult.mods) {
       this.setRowIntegrity(m.filePath, m.integrity !== undefined ? m.integrity : ModIntegrity.UNKNOWN)
+      if (m.remoteSource !== undefined && m.remoteProjectId !== undefined && m.remoteVersionId !== undefined) {
+        this.modMeta_.set(m.filePath, { source: m.remoteSource, projectId: m.remoteProjectId,
+          installedVersionId: m.remoteVersionId });
+      }
+    }
+    // 显式完整性校验不再等待整合包的在线更新历史；来源映射已保留供损坏项修复。
+    if (fullVerify) {
+      for (const row of this.rows) { if (row.updateState === 'checking') row.updateState = 'none'; }
+      return;
     }
 
     // 有源链接（managed / linked）的行：拉图标 + 检查更新
@@ -942,7 +753,11 @@ export struct InstalledResourcesSheet {
     let loaderKey = resolveInstalledLoaderKey(this.mcDir, this.versionId)
     let gameVer = resolveInstalledMcVersion(this.mcDir, this.versionId)
     let canCheckUpdate = loaderKey !== 'vanilla' && gameVer.length > 0
-    let iconLookups = hits.map(async (m): Promise<void> => {
+    // 本轮共享具体版本与反向依赖索引，避免每个候选重复读取全体已装版本。
+    const updateSession = createModUpdateSession(scanResult.mods,
+      new ModSourceRouter([modrinth, curseforge]), () => !this.isCurrent(epoch));
+    const loadOne = async (m: LocalMod): Promise<void> => {
+      if (!this.isCurrent(epoch)) return;
       let src = m.remoteSource as ModSource
       // 源关联(含损坏行)先记入 modMeta_，供修复 / 检查更新复用
       if (m.remoteVersionId !== undefined && m.remoteVersionId.length > 0) {
@@ -951,11 +766,12 @@ export struct InstalledResourcesSheet {
       // 图标（源感知）
       try {
         let iconUrl = await this.projectIconUrl_(src, m.remoteProjectId!, modrinth, curseforge)
-        if (epoch !== this.scanEpoch_) return
+        if (!this.isCurrent(epoch)) return
         if (iconUrl.length > 0) this.setRowIcon(m.filePath, iconUrl)
       } catch (e) {
         if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'getProject failed for %{public}s', m.filename)
       }
+      if (!this.isCurrent(epoch)) return;
       // 损坏的行不做更新检查（先修复）；未知来源的行本就不在 hits 里。
       if (m.integrity === ModIntegrity.CORRUPT) return
       // 更新检查（源感知）
@@ -967,9 +783,9 @@ export struct InstalledResourcesSheet {
           this.setRowUpdate(m.filePath, 'checking', '')
           try {
             let versions = await this.getVersionsForSource_(src, m.remoteProjectId!, loaderKey, gameVer, modrinth, curseforge)
-            if (epoch !== this.scanEpoch_) return
-            let latest = await pickModUpdate(src, m.remoteProjectId!, m.remoteVersionId!, versions, scanResult.mods,
-              new ModSourceRouter([modrinth, curseforge]))
+            if (!this.isCurrent(epoch)) return
+            let latest = await updateSession.pick(src, m.remoteProjectId!, m.remoteVersionId!, versions)
+            if (!this.isCurrent(epoch)) return;
             if (latest !== null && latest.id !== m.remoteVersionId && pickPrimaryFile(latest.files) !== null) {
               this.pendingUpdates_.set(m.filePath, latest)
               if (this.ignoredKeys_.has(m.filePath + '|' + latest.id)) {
@@ -981,13 +797,21 @@ export struct InstalledResourcesSheet {
               this.setRowUpdate(m.filePath, 'latest', '')
             }
           } catch (e) {
-            if (epoch === this.scanEpoch_) this.setRowUpdate(m.filePath, 'none', '')
+            if (this.isCurrent(epoch)) this.setRowUpdate(m.filePath, 'none', '')
             if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'update check failed for %{public}s', m.filename)
           }
         }
       }
-    })
-    await Promise.all(iconLookups)
+    };
+    // 只创建三个消费器；跨页面实例的闸门确保刷新不会叠加无限在途查询。
+    let cursor = 0;
+    const consume = async (): Promise<void> => {
+      while (this.isCurrent(epoch) && cursor < hits.length) {
+        const mod = hits[cursor++];
+        await installedResourceWork.run(() => loadOne(mod), () => !this.isCurrent(epoch));
+      }
+    };
+    await Promise.all([consume(), consume(), consume()]);
   }
 
   /** 取项目图标 URL（源感知）。失败 / 无图标返回空串。 */
@@ -1009,91 +833,30 @@ export struct InstalledResourcesSheet {
     return modrinth.getVersions(projectId, [loaderKey], [gameVer])
   }
 
-  /**
-   * 局部更新单行的 iconUrl，并通过整体重赋值 rows 触发 ArkUI 重渲。
-   *
-   * 之所以整体重建 rows 而非直接 mutate row.iconUrl：
-   *   - ArkUI @State<Array> 的 dirty-track 仅监听数组引用变化，对 row.iconUrl
-   *     这种字段级 mutate 不触发；必须用 `this.rows = newArray` 整体替换才稳。
-   */
+  /** 以下单项回写按物理路径定位稳定行，由 ObjectLink 只刷新可见消费者。 */
   private setRowIcon(filePath: string, iconUrl: string): void {
-    let next: ResourceRow[] = this.rows.map((r): ResourceRow => {
-      if (r.filePath !== filePath) return r
-      return {
-        filePath: r.filePath,
-        filename: r.filename,
-        displayName: r.displayName,
-        enabled: r.enabled,
-        sizeBytes: r.sizeBytes,
-        iconUrl: iconUrl,
-        updateState: r.updateState,
-        latestVersionNumber: r.latestVersionNumber,
-        updatingPct: r.updatingPct,
-        integrity: r.integrity,
-      }
-    })
-    this.rows = next
-    if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'setRowIcon: %{public}s', filePath)
+    const row = this.resourceData_.find(filePath);
+    if (row !== undefined) row.iconUrl = iconUrl;
   }
 
-  /** 局部更新单行的完整性状态（整体重赋值触发重渲）。 */
   private setRowIntegrity(filePath: string, integrity: string): void {
-    let next: ResourceRow[] = this.rows.map((r): ResourceRow => {
-      if (r.filePath !== filePath) return r
-      return {
-        filePath: r.filePath,
-        filename: r.filename,
-        displayName: r.displayName,
-        enabled: r.enabled,
-        sizeBytes: r.sizeBytes,
-        iconUrl: r.iconUrl,
-        updateState: r.updateState,
-        latestVersionNumber: r.latestVersionNumber,
-        updatingPct: r.updatingPct,
-        integrity: integrity,
-      }
-    })
-    this.rows = next
+    const row = this.resourceData_.find(filePath);
+    if (row !== undefined) row.integrity = integrity;
   }
 
-  /** 局部更新单行的更新检查状态（与 setRowIcon 同样整体重赋值触发重渲）。 */
   private setRowUpdate(filePath: string, state: string, latestVersionNumber: string): void {
-    let next: ResourceRow[] = this.rows.map((r): ResourceRow => {
-      if (r.filePath !== filePath) return r
-      return {
-        filePath: r.filePath,
-        filename: r.filename,
-        displayName: r.displayName,
-        enabled: r.enabled,
-        sizeBytes: r.sizeBytes,
-        iconUrl: r.iconUrl,
-        updateState: state,
-        latestVersionNumber: latestVersionNumber,
-        updatingPct: state === 'updating' ? r.updatingPct : 0,
-        integrity: r.integrity,
-      }
-    })
-    this.rows = next
+    const row = this.resourceData_.find(filePath);
+    if (row === undefined) return;
+    row.updateState = state;
+    row.latestVersionNumber = latestVersionNumber;
+    if (state !== 'updating') row.updatingPct = 0;
   }
 
-  /** 仅更新某行的下载进度百分比（updating 期间高频调用）。 */
   private setRowUpdatingPct(filePath: string, pct: number): void {
-    let next: ResourceRow[] = this.rows.map((r): ResourceRow => {
-      if (r.filePath !== filePath) return r
-      return {
-        filePath: r.filePath,
-        filename: r.filename,
-        displayName: r.displayName,
-        enabled: r.enabled,
-        sizeBytes: r.sizeBytes,
-        iconUrl: r.iconUrl,
-        updateState: 'updating',
-        latestVersionNumber: r.latestVersionNumber,
-        updatingPct: pct,
-        integrity: r.integrity,
-      }
-    })
-    this.rows = next
+    const row = this.resourceData_.find(filePath);
+    if (row === undefined) return;
+    row.updateState = 'updating';
+    row.updatingPct = Math.max(0, Math.min(100, Math.floor(pct)));
   }
 
   /** 重连：把正被全局协调器更新的行恢复为 'updating' + 当前进度。 */
@@ -1175,21 +938,27 @@ export struct InstalledResourcesSheet {
    * 复用 fetchIconsAsync(fullVerify=true)。完成后 toast 汇总损坏数。
    */
   private async doFullVerify(): Promise<void> {
+    // 初始枚举是唯一发布基础清单的任务，不能被空快照校验打断。
+    if (!this.loaded || !this.active || !this.mounted_) return;
     if (this.verifying) return
     if (this.kind !== ResourceKind.MOD) return
     let dm = DownloadManager.instance()
     if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return }
+    this.cancelScan();
+    const epoch = this.scanEpoch_;
+    this.scanControl_ = new LocalModScanControl();
     this.verifying = true
     this.safeToast('正在校验完整性…', 1500)
     try {
-      await this.fetchIconsAsync(this.scanEpoch_, true)
+      await this.fetchIconsAsync(epoch, true)
+      if (!this.isCurrent(epoch)) return;
       let corrupt = 0
       for (let r of this.rows) { if (r.integrity === ModIntegrity.CORRUPT) corrupt++ }
-      this.safeToast(corrupt > 0 ? ('校验完成：发现 ' + corrupt + ' 个损坏模组') : '校验完成：全部完好', 2400)
+      this.safeToast(corrupt > 0 ? ('校验完成：发现 ' + corrupt + ' 个损坏模组') : '校验完成：未发现已确认的损坏', 2400)
     } catch (e) {
-      this.safeToast('校验失败：' + (e as Error).message, 2200)
+      if (this.isCurrent(epoch)) this.safeToast('校验失败：' + (e as Error).message, 2200)
     } finally {
-      this.verifying = false
+      if (this.isCurrent(epoch)) this.verifying = false
     }
   }
 
@@ -1260,13 +1029,6 @@ export struct InstalledResourcesSheet {
     )
   }
 
-  /** 该行是否可展开（有 Modrinth 关联，能展示更新动作；或已损坏可修复）。 */
-  private isExpandable(row: ResourceRow): boolean {
-    return row.updateState === 'outdated' || row.updateState === 'latest'
-      || row.updateState === 'updating' || row.updateState === 'ignored'
-      || row.integrity === ModIntegrity.CORRUPT
-  }
-
   /** 展开 / 折叠某行（手风琴：同一时刻只展开一行）。带高度/淡入动画。 */
   private toggleExpand(filePath: string): void {
     this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, () => {
@@ -1276,6 +1038,9 @@ export struct InstalledResourcesSheet {
 
   /** 单条「检查更新」：清掉该行的忽略记录后，重新查一次最新版。 */
   private async recheckUpdate(row: ResourceRow): Promise<void> {
+    const epoch = this.scanEpoch_;
+    const control = this.scanControl_;
+    if (!this.isCurrent(epoch) || control === null || row.updateState === 'checking') return;
     let meta = this.modMeta_.get(row.filePath)
     if (meta === undefined) { this.safeToast('无法检查（未关联 Modrinth）', 1800); return }
     // 清掉该文件的所有忽略记录（用户主动检查 = 想看到结果）
@@ -1293,10 +1058,15 @@ export struct InstalledResourcesSheet {
       let curseforge = this.makeCurseForge(dm)
       let src = (meta.source === ModSource.CURSEFORGE) ? ModSource.CURSEFORGE : ModSource.MODRINTH
       let versions = await this.getVersionsForSource_(src, meta.projectId, loaderKey, gameVer, modrinth, curseforge)
+      if (!this.isCurrent(epoch)) return;
       const scan = await new LocalModScanner(modrinth, curseforge).scan({ mcDir: this.mcDir,
-        versionId: this.versionId, versionIsolation: this.versionIsolation, kind: ResourceKind.MOD })
-      let latest = await pickModUpdate(src, meta.projectId, meta.installedVersionId, versions, scan.mods,
-        new ModSourceRouter([modrinth, curseforge]))
+        versionId: this.versionId, versionIsolation: this.versionIsolation, kind: ResourceKind.MOD,
+        control: control, localMods: this.localMods_ })
+      if (!this.isCurrent(epoch)) return;
+      const session = createModUpdateSession(scan.mods, new ModSourceRouter([modrinth, curseforge]),
+        () => !this.isCurrent(epoch));
+      let latest = await session.pick(src, meta.projectId, meta.installedVersionId, versions)
+      if (!this.isCurrent(epoch)) return;
       if (latest !== null && latest.id !== meta.installedVersionId && pickPrimaryFile(latest.files) !== null) {
         this.pendingUpdates_.set(row.filePath, latest)
         this.setRowUpdate(row.filePath, 'outdated', latest.versionNumber)
@@ -1305,7 +1075,8 @@ export struct InstalledResourcesSheet {
         this.safeToast('当前没有满足依赖要求的更新', 1800)
       }
     } catch (e) {
-      this.setRowUpdate(row.filePath, 'latest', '')
+      if (!this.isCurrent(epoch)) return;
+      this.setRowUpdate(row.filePath, 'none', '')
       this.safeToast('检查失败：' + (e as Error).message, 2200)
     }
   }
@@ -1455,9 +1226,9 @@ export struct InstalledResourcesSheet {
    *   1. 持久化数组里出现过的项 → 按数组里的相对顺序
    *   2. 没出现过的新项 → 按 displayName 字母序追加到末尾
    *
-   * 调用方需要传入 `meta`（来自 metaOf(kind)），仅用来判断"是否需要持久化"的 kind 名。
+   * 资源类型从组件当前作用域读取；排序只处理当前完整清单。
    */
-  private applyPersistedOrder(scanned: ResourceRow[], meta: KindMeta): ResourceRow[] {
+  private applyPersistedOrder(scanned: ResourceRow[]): ResourceRow[] {
     if (scanned.length === 0) return scanned
     let kindKey = this.kind as string
     if (this.versionId.length === 0 || kindKey.length === 0) return scanned
@@ -1517,4 +1288,10 @@ export struct InstalledResourcesSheet {
     }
     return true
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+        this.PanelBody_();
+      }
 }

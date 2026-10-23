@@ -24,6 +24,7 @@
 
 import { ModLoaderType } from '../../modloader/ModLoaderTypes';
 import { FetchVersionInfoResult } from '../McDownloader';
+import { newVersionInstallOwner } from '../../version/VersionInstallLease';
 
 export class DownloadFlowState {
   // 输入（构造后只读，TypeScript 没有真正的 readonly 但约定不改）
@@ -33,7 +34,7 @@ export class DownloadFlowState {
   readonly versionName: string;
   readonly mcDir: string;
   readonly filesDir: string;
-  readonly tempDir: string;          // mcDir + '/download-temp'
+  readonly tempDir: string;          // 当前安装独占的临时根；重试复用同一根，不清理其他任务。
   readonly tempVersionDir: string;   // tempDir + '/versions/' + gameVersion
   readonly targetDir: string;        // mcDir + '/versions/' + versionName
 
@@ -53,6 +54,7 @@ export class DownloadFlowState {
     versionName: string,
     mcDir: string,
     filesDir: string,
+    taskTempDir?: string,
   ) {
     this.gameVersion = gameVersion;
     this.loaderType = loaderType;
@@ -60,7 +62,8 @@ export class DownloadFlowState {
     this.versionName = versionName;
     this.mcDir = mcDir;
     this.filesDir = filesDir;
-    this.tempDir = mcDir + '/download-temp';
+    // 生产 DownloadTask 显式传入稳定的任务目录；独立调用也必须生成独占目录。
+    this.tempDir = taskTempDir ?? (mcDir + '/download-temp/' + newVersionInstallOwner());
     this.tempVersionDir = this.tempDir + '/versions/' + gameVersion;
     this.targetDir = mcDir + '/versions/' + versionName;
     this.tempJsonPath = this.tempVersionDir + '/' + gameVersion + '.json';

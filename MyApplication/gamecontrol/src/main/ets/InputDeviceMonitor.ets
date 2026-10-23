@@ -1,3 +1,4 @@
+import { InputDeviceConnectionRegistry, InputDeviceConnectionLease, InputDeviceConnectionReader, InputDeviceIdentityEvidence, InputDeviceConnectionCapture, InputDeviceConnectionChange } from './InputDeviceConnectionLease'
 import { AppLogger } from 'commons';
 /**
  * InputDeviceMonitor.ets — 进程级物理设备监听，及它产出的两种视图
@@ -41,7 +42,6 @@ import inputDevice from '@ohos.multimodalInput.inputDevice'
 import { DeviceChangeEvent } from './InputDeviceAbi'
 import {
   DeviceChangeFanout, DeviceGamepadIdentityTable, DeviceGamepadKind,
-  LatestAsyncRequestCommitGuard,
   ProcessDeviceMonitorRegistrationLatch, normalizeInputDeviceChange,
 } from './InputDeviceLifecycleCoordinator'
 
@@ -67,10 +67,37 @@ class InputDeviceMonitor {
   private deviceChangeHandler: ((data: inputDevice.DeviceListener) => void) | undefined = undefined
   private deviceMonitorLatch: ProcessDeviceMonitorRegistrationLatch =
     new ProcessDeviceMonitorRegistrationLatch()
-  // EntryAbility、GameAbility、页面 appear 与 change 回调都可并发刷新。只允许最新请求
-  // 提交，禁止较早 getDeviceList 的迟到结果把 capability 倒退成旧快照。
-  private capabilityRefreshGuard: LatestAsyncRequestCommitGuard =
-    new LatestAsyncRequestCommitGuard()
+  /** 本模块只拥有应用连接资格，不持Native held或系统generation。 */
+  private connections: InputDeviceConnectionRegistry = new InputDeviceConnectionRegistry()
+  private connectionListeners: ((event: InputDeviceConnectionChange) => void)[] = []
+  private sourcesByConnection: Map<InputDeviceConnectionLease, string[]> = new Map<InputDeviceConnectionLease, string[]>()
+
+  /** 只读原对象reader；allowsLegacyDeviceField不表示Native consumer已经就绪。 */
+  connectionReader(): InputDeviceConnectionReader { return this.connections.reader }
+
+  /** 第一入口冻结原连接，不开hardware；known0与missing兼容声明必须来自原字段证据。 */
+  captureConnection(rawPlatformId: number, idKnown: boolean, compatibilityRequested: boolean): InputDeviceConnectionCapture {
+    return this.connections.capture(new InputDeviceIdentityEvidence(rawPlatformId, idKnown, compatibilityRequested))
+  }
+
+  /** 原descriptor副本，移除listener能读原lease而不是重入add后的新sameid。 */
+  sourcesForConnection(connection: InputDeviceConnectionLease): string[] | undefined {
+    return this.sourcesByConnection.get(connection)?.slice()
+  }
+  addConnectionListener(listener: (event: InputDeviceConnectionChange) => void): void {
+    if (this.connectionListeners.indexOf(listener) < 0) this.connectionListeners.push(listener)
+  }
+  removeConnectionListener(listener: (event: InputDeviceConnectionChange) => void): void {
+    const index = this.connectionListeners.indexOf(listener)
+    if (index >= 0) this.connectionListeners.splice(index, 1)
+  }
+  /** 精确同一change快照扇出，监听器抛错/退订/重入不会让后续listener借后来原对象。 */
+  private notifyConnectionChange(event: InputDeviceConnectionChange): void {
+    const snapshot = this.connectionListeners.slice()
+    for (const listener of snapshot) {
+      try { listener(event) } catch (error) { AppLogger.warn(TAG, 'connection listener failed: ' + String(error)) }
+    }
+  }
 
   /** 同步读当前设备能力（不查 SDK，直接返回缓存）。 */
   capabilityNow(): DeviceCapability {
@@ -89,8 +116,8 @@ class InputDeviceMonitor {
    * 这个 deviceId 是不是手柄。**三值**，`Unknown` 必须走保守分支（见 `DeviceGamepadKind`）。
    *
    * 编号域：参数取自 `inputDevice` 自己的编号域（`getDeviceList()` / `on('change')`）。
-   * ⚠️ 官方**从未**说明 ArkUI 事件对象上的 `deviceId`（`KeyEvent` / `BaseEvent`）与它是不是
-   * 同一个编号空间，所以**不要**拿事件里的 deviceId 来查这张表。
+   * 当前SDK/官方主源表明同输入设备ID域，可以关联描述；ID相同仍不是连接generation。
+   * 新异步/退休调用用sourcesForConnection原对象，不能靠此raw缓存给旧facts补新代资格。
    */
   gamepadKindOf(deviceId: number): DeviceGamepadKind {
     return this.gamepadIdentity.kindOf(deviceId)
@@ -146,9 +173,10 @@ class InputDeviceMonitor {
   /**
    * 幂等启动进程级物理设备监听。两个 Ability 的 onCreate 都调它。
    *
-   * 该监听只做两件事：刷新聚合 capability，并把带 deviceId 的原始 add/remove 扇出给
-   * 当前页面。它不持有 held、epoch 或 backend 状态；那些仍分别属于页面临时缓存与
-   * native InputStateCore。回调不捕获 Ability，因此不能延长窗口生命周期。
+   * 该监听先围栏应用已观察到的原连接，再刷新聚合 capability并发布原change；仍为明确旧
+   * 调用者保留raw ID扇出。应用lease不等于平台generation或Native输入epoch，持有贡献/
+   * 清理墓碑由Manager/SourceClient管理，实际输入权威仍在Native。回调不捕获Ability，
+   * 不以窗口显示或观察订阅存在作为设备连接的owner。
    */
   ensureStarted(): void {
     if (!this.deviceMonitorLatch.begin()) {
@@ -157,24 +185,17 @@ class InputDeviceMonitor {
     }
 
     const handler = (data: inputDevice.DeviceListener): void => {
+      const event = normalizeInputDeviceChange(data.type as string, data.deviceId)
+      if (event === undefined) { this.refreshCapability(); AppLogger.warn(TAG, 'unsupported inputDevice change type'); return }
+      // remove先fence原对象；刷新请求必须在该实时revision之后，仍受removed tombstone约束。
+      const change = event.added ? this.connections.observeAdd(event.deviceId) : this.connections.retireCurrent(event.deviceId)
       this.refreshCapability()
-      const event: DeviceChangeEvent | undefined =
-        normalizeInputDeviceChange(data.type as string, data.deviceId)
-      if (event === undefined) {
-        // 未知平台枚举绝不能被 `else` 猜成 REMOVED；误删一个 deviceId 会释放
-        // 本来仍有效的 owner。保留 capability 刷新，但拒绝协议边沿。
-        AppLogger.warn(TAG, `unsupported inputDevice change type`)
-        return
-      }
-      this.notifyDeviceChange(event)
+      this.notifyConnectionChange(change)
+      this.notifyDeviceChange(event) // 旧无lease调用者明确兼容；新Page接上面原对象入口。
       if (!event.added) {
-        // **分发之后**才忘：消费者正是在这一刻需要"被拔的是不是手柄"的答案。
-        //
-        // 已知竞态（方向是安全的，不修）：上面那次 refreshCapability 是异步的，若平台的
-        // getDeviceList 在 remove 之后仍短暂含该设备（官方无时序承诺），它的整表提交会把
-        // 这条记录重新写回来。后果只是该设备在下一次刷新前仍被当作在线手柄，即"照旧保守
-        // 释放手柄端" —— 与本次改动之前的行为相同，不会退化成漏放。
-        this.gamepadIdentity.forget(event.deviceId)
+        if (change.originalConnection !== undefined) this.sourcesByConnection.delete(change.originalConnection)
+        // listener可能同步add同ID；只能忘已退代的旧raw表，不能删除新代描述。
+        if (this.captureConnection(event.deviceId, true, false).connection === undefined) this.gamepadIdentity.forget(event.deviceId)
       }
     }
     try {
@@ -202,43 +223,40 @@ class InputDeviceMonitor {
    * inputDevice.getDeviceList / getDeviceInfoSync 都是 since 9 + 第三方应用可用。
    */
   async refreshCapability(): Promise<void> {
-    const refreshGeneration: number = this.capabilityRefreshGuard.begin()
-    let cap: DeviceCapability = { mouse: false, keyboard: false, gamepad: false }
-    // 逐设备手柄身份与聚合布尔来自同一次遍历。只登记**成功读到 sources** 的设备：
-    // 详情读取失败的那一个不写入，于是它保持 Unknown 而不是被记成"不是手柄"。
-    const gamepadByDevice: Map<number, boolean> = new Map()
+    const ticket = this.connections.beginInventory()
+    if (ticket === undefined) return
+    const cap: DeviceCapability = { mouse: false, keyboard: false, gamepad: false }
+    const gamepadByDevice: Map<number, boolean> = new Map<number, boolean>()
+    const descriptions: Map<InputDeviceConnectionLease, string[]> = new Map<InputDeviceConnectionLease, string[]>()
     try {
       const ids: number[] = await inputDevice.getDeviceList()
-      for (let i = 0; i < ids.length; i++) {
+      if (!this.connections.acceptsInventory(ticket)) return
+      for (const rawId of ids) {
+        const connection = this.connections.inventoryConnection(ticket, rawId)
+        if (connection === undefined) continue
         try {
-          const info = inputDevice.getDeviceInfoSync(ids[i])
+          // SDK真实详情口仍是sync。同步回入remove/add同样使原ticket/lease失效，不能发布新代。
+          const info = inputDevice.getDeviceInfoSync(connection.rawPlatformId)
+          if (!this.connections.acceptsInventory(ticket, connection)) return
+          const sourceTypes: string[] = []
           let isGamepad: boolean = false
-          for (let j = 0; j < info.sources.length; j++) {
-            const s = info.sources[j] as string
-            if (s === 'mouse' || s === 'touchpad') cap.mouse = true
-            else if (s === 'keyboard') cap.keyboard = true
-            else if (s === 'joystick' || s === 'gamepad') { cap.gamepad = true; isGamepad = true }
+          for (const value of info.sources) {
+            const sourceType: string = value as string
+            sourceTypes.push(sourceType)
+            if (sourceType === 'mouse' || sourceType === 'touchpad') cap.mouse = true
+            else if (sourceType === 'keyboard') cap.keyboard = true
+            else if (sourceType === 'joystick' || sourceType === 'gamepad') { cap.gamepad = true; isGamepad = true }
           }
-          gamepadByDevice.set(ids[i], isGamepad)
-        } catch (e) {
-          // 某个 device 取详情失败不致命，跳过
-        }
+          descriptions.set(connection, sourceTypes); gamepadByDevice.set(connection.rawPlatformId, isGamepad)
+        } catch (_) { if (!this.connections.acceptsInventory(ticket, connection)) return }
       }
-    } catch (e) {
-      AppLogger.warn(TAG, `refreshCapability failed: ${(e as Error).message}`)
-      return
-    }
-    if (!this.capabilityRefreshGuard.isCurrent(refreshGeneration)) return
-    // 无条件提交（不放进下面的 changed 分支）：逐设备构成可以变化而聚合三个布尔不变
-    // —— 拔掉手柄 A 同时插上手柄 B 时 `gamepad` 一直是 true，但表必须换。
+    } catch (error) { AppLogger.warn(TAG, 'refreshCapability failed: ' + String(error)); return }
+    if (!this.connections.acceptsInventory(ticket)) return
+    // 构成变化而cap布尔不变也必须发布原lease表，不能用UI显隐/模态作为这条维护的owner。
+    this.sourcesByConnection = descriptions
     this.gamepadIdentity.commitSnapshot(gamepadByDevice)
-    if (cap.mouse !== this.capability.mouse ||
-        cap.keyboard !== this.capability.keyboard ||
-        cap.gamepad !== this.capability.gamepad) {
-      this.capability = cap
-      hilog.info(0x0000, TAG, 'capability changed: mouse=%{public}s keyboard=%{public}s gamepad=%{public}s',
-        cap.mouse ? '1' : '0', cap.keyboard ? '1' : '0', cap.gamepad ? '1' : '0')
-      this.fireCapability()
+    if (cap.mouse !== this.capability.mouse || cap.keyboard !== this.capability.keyboard || cap.gamepad !== this.capability.gamepad) {
+      this.capability = cap; this.fireCapability()
     }
   }
 

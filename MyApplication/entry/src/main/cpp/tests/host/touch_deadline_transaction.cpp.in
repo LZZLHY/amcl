@@ -1,0 +1,87 @@
+// 真实deadline执行函数、真实grab公告/carry和bridge mode fence的确定交错回归。
+// fixture只替换SDK/surface准入/单调时钟；生产函数逐字提取，不复制期限与迁移算法。
+// worker赢时用真实ledger出口阻塞，确认grab writer等待同一mode fence后才允许继续。
+// grab赢时先由真实bridge公告退休旧候选；最终bool相同的多次翻转也逐条处理。
+// 准入不可用不建立假持有，旧实现负对照必须编译成功并在运行时违反以上合同。
+@FIXTURE@
+
+// 只读取生产ledger测试出口记录的边沿，不另行推断或修改持有状态。
+int count(OutputKind kind,int code,int action) {
+    int total=0;
+    for (const auto& edge:edges) if (edge.output.kind==kind && edge.output.code==code && edge.action==action) ++total;
+    return total;
+}
+
+// DOWN登记真实物理finger；触点与schema均通过生产解释器，终止保持原绑定配对。
+int beginLong(const AmclCtrlEntry& control) {
+    inputBridge_setGrabState(1);
+    consumeGrabEpochLocked(true);
+    CHECK(ohos_set_control_schema_v3(&control,1,1000,1000,1,.18f,3,&s_touchConfig)>0);
+    s_fingerDown[0]=true;
+    OH_NativeXComponent_TouchEvent event{OH_NATIVEXCOMPONENT_DOWN,clockNs};
+    handleSchemaGrabbedTouch(event,150,150,0);
+    clockNs=s_schemaButtons[control.id].longDeadlineNs+1;
+    return 0;
+}
+
+int main() {
+    CHECK(initializeSourceFixture());
+    // 真bridge writer调用公告callback，公告队列和worker共用实际生产mode围栏。
+    char callback[64]; std::snprintf(callback,sizeof(callback),"%llu",
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&announceGrab)));
+    setTestEnv("AMCL_TOUCH_GRAB_CB",callback);
+    AmclCtrlEntry longKey{};std::strcpy(longKey.id,"long");longKey.kind=0;
+    longKey.trigger=3;longKey.keyOrMouse=65;longKey.x=longKey.y=100;longKey.w=longKey.h=100;
+
+    // grab先取得真实fence：旧长按尚未触发，worker必须先消费公告，不能菜单首次PRESS后carry。
+    CHECK(beginLong(longKey)==0); inputBridge_setGrabState(0);
+    CHECK(schemaExecuteDueDeadlines());
+    CHECK(!ledger.isHeld({OutputKind::Key,65})&&s_schemaCarriedOwners.empty());
+    CHECK(s_schemaButtons.empty());
+
+    // game→menu→game即使最终bool相同，全部公告也必须消费；旧未触发候选不能复活。
+    s_fingerDown[0]=false;CHECK(beginLong(longKey)==0);
+    inputBridge_setGrabState(0);inputBridge_setGrabState(1);
+    CHECK(schemaExecuteDueDeadlines());
+    CHECK(!ledger.isHeld({OutputKind::Key,65})&&s_schemaButtons.empty()&&s_fingerDead[0]);
+    s_fingerDown[0]=s_fingerDead[0]=false;
+
+    // worker先赢：在生产ledger PRESS出口阻塞，随后真实writer必须等待mode fence。
+    // 解除阻塞后outputDown/longFired一起成立，公告再capture这个真正已经生效的owner。
+    CHECK(beginLong(longKey)==0); blockPress=true;pressEntered=false;releasePress=false;
+    std::thread worker([](){ if(!schemaExecuteDueDeadlines()) std::abort(); });
+    while(!pressEntered.load(std::memory_order_acquire)) std::this_thread::yield();
+    std::thread writer([](){inputBridge_setGrabState(0);});
+    while(inputBridge_testGrabWriterWaiters()==0) std::this_thread::yield();
+    releasePress.store(true,std::memory_order_release);worker.join();writer.join();blockPress=false;
+    consumeGrabEpochLocked(false);
+    CHECK(ledger.isHeld({OutputKind::Key,65})&&s_schemaCarriedOwners.size()==1u);
+    const auto owner=s_schemaCarriedOwners.begin()->first;ledger.releaseOwner(owner);
+    s_schemaCarriedOwners.clear();s_schemaCarriedByFinger.clear();s_fingerDown[0]=false;
+
+    // gate/mode不可用不标记longFired/outputDown，也不撤销原始期限；后续恢复仍可执行一次。
+    CHECK(beginLong(longKey)==0);const auto deadline=s_schemaButtons["long"].longDeadlineNs;
+    surfaceAvailable=false;CHECK(!schemaExecuteDueDeadlines());surfaceAvailable=true;
+    modeAvailable=false;CHECK(!schemaExecuteDueDeadlines());modeAvailable=true;
+    CHECK(!s_schemaButtons["long"].longFired&&!s_schemaButtons["long"].outputDown&&
+        s_schemaButtons["long"].longDeadlineNs==deadline);
+    CHECK(schemaExecuteDueDeadlines());CHECK(ledger.isHeld({OutputKind::Key,65}));
+    schemaCancelGenerationLocked();CHECK(ledger.ownerCount()==0);
+    // 无组菜单普通长按在没有任何后续触摸事件时也必须到期按下；再次维护不重复DOWN。
+    s_fingerDown[0]=s_fingerDead[0]=false;
+    inputBridge_setGrabState(0);consumeGrabEpochLocked(false);
+    CHECK(ohos_set_control_schema_v3(&longKey,1,1000,1000,0,.18f,3,&s_touchConfig)>0);
+    CHECK(schemaOwnsMenuButtonLocked(0,true,150,150));
+    s_fingerDown[0]=true;
+    OH_NativeXComponent_TouchEvent menuDown{OH_NATIVEXCOMPONENT_DOWN,clockNs};
+    handleSchemaGrabbedTouch(menuDown,150,150,0);
+    const int beforeMenu=count(OutputKind::Key,65,1);
+    clockNs=s_schemaButtons["long"].longDeadlineNs+1;
+    CHECK(schemaExecuteDueDeadlines());
+    CHECK(!s_touchGroups.Enabled()&&ledger.isHeld({OutputKind::Key,65}));
+    CHECK(schemaExecuteDueDeadlines()&&count(OutputKind::Key,65,1)==beforeMenu+1);
+    OH_NativeXComponent_TouchEvent menuUp{OH_NATIVEXCOMPONENT_UP,clockNs};
+    handleSchemaGrabbedTouch(menuUp,150,150,0);s_fingerDown[0]=false;
+    CHECK(!ledger.isHeld({OutputKind::Key,65})&&ledger.ownerCount()==0);
+    std::cout<<"PASS production deadline: grab-first, worker-first, repeated flip, carry, unavailable gate/mode\n";
+}

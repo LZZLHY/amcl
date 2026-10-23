@@ -5,8 +5,8 @@
  *
  * ⭐ 为什么需要它（2026-08-23，计划 §86.1）：
  *
- * 本仓的 DSO 依赖是**单向**的 `libentry → libglfw`（`input_bridge_ohos.c` 自述"本库是
- * 宿主 libentry 的 DT_NEEDED 依赖"），`target_link_libraries(glfw ...)` 不含 entry。
+ * 最初本仓 DSO 依赖是 `libentry → libglfw`，GLFW没有entry反向依赖；此后公共输入/
+ * 图形owner拆入中立DSO，合法C调用仍须由本次所选ELF的直接DT_NEEDED与真实定义证明。
  * 于是 libglfw 里任何对 libentry 符号的**按名引用**都是错的，而它**不会在构建期报错**：
  * glfw 目标的 `target_link_options` 没有 `--no-undefined` ⇒ 符号留成 UND、链接静默通过、
  * 加载期才炸。
@@ -17,10 +17,9 @@
  * **当时四条门禁全绿**：host 断言 30/30、aarch64 交叉编译 PASS、preflight 全绿、
  * `check-product-tu-syntax.mjs` 76/76 —— 因为它们全都只做**编译**，而这是**链接**问题。
  *
- * 判据：`libglfw.so` 的 undefined 符号里**不得出现**本仓自己的命名空间/前缀
- * （`amcl::` / `amcl_` / `ohos_` / `inputBridge_`）。实测干净基线是 **0 个**
- * （297 个 UND 全部是 libc/libc++/EGL/GLES/hilog 之类的系统符号），所以这条判据不需要
- * 白名单，也就没有"白名单越加越松"的退化路径。
+ * 判据：本仓undefined必须由本次目录的已链接provider满足，不能凭名字或目录外/global
+ * dlsym放行。look-v1冷getter尤其保持版本：consumer强U与neutral强/default/非零FUNC定义
+ * 必须精确对应AMCL_INPUT_RUNTIME，不能剥掉@后把wrongversion当成同一个能力。
  *
  * ⚠️ 边界（刻意的）：
  *   1. 需要一次已完成的构建产出 `.so`。找不到时**硬失败**（exit 2），不静默通过 ——
@@ -57,8 +56,17 @@ const NM_CANDIDATES = [
   'llvm-nm',
 ];
 
-// 本仓自己的符号形状。libglfw 里出现这些的 UND ⇒ 引用了它没有链接的 DSO。
-const OWN_SYMBOL_PATTERNS = [/amcl/i, /^ohos_/, /^inputBridge_/, /^pojav/];
+// 本仓自己的符号形状。没有真实selected-provider闭包的UND仍为错误，不放宽成前缀豁免。
+const OWN_SYMBOL_PATTERNS = [/amcl/i, /^ohos_/, /^inputBridge/, /^pojav/];
+
+/** 只读实际dynsym字段；保留版本字符串，不能把hidden/weak/UND/零地址当成动态定义。 */
+function dynamicSymbols(text) {
+  return text.split(/\r?\n/).flatMap(line => {
+    const row = line.trim().match(/^\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+    return row ? [{ value: BigInt('0x' + row[1]), size: Number(row[2]), type: row[3],
+      bind: row[4], visibility: row[5], section: row[6], name: row[7] }] : [];
+  });
+}
 
 function firstExisting(candidates, relativeToRoot) {
   for (const candidate of candidates) {
@@ -116,15 +124,36 @@ const undefinedSymbols = raw.split(/\r?\n/)
 // actual DT_NEEDED edge and dynamic definition must both exist in this variant;
 // a name prefix or a source-level CMake declaration alone is not evidence.
 const linkedGraphics = new Set();
+// 版本化look import单独保留完整名字；旧符号的basename集合不能让该getter错版本通过。
+const linkedLookImports = new Set();
 const readelf = nm.replace(/llvm-nm(?=\.exe$|$)/, 'llvm-readelf');
 const dynamic = execFileSync(readelf, ['-d', so], { encoding: 'utf8' });
 const needed = [...dynamic.matchAll(/\(NEEDED\).*?\[([^\]]+)\]/g)].map((m) => m[1]);
-for (const library of ['libamcl_vulkan_wsi.so', 'libamcl_window_host.so', 'libamcl_gl_host.so', 'libamcl_graphics_runtime.so']) {
+const consumerIdentity = readElfIdentity(readFileSync(so));
+for (const library of ['libamcl_vulkan_wsi.so', 'libamcl_window_host.so', 'libamcl_gl_host.so', 'libamcl_graphics_runtime.so', 'libamcl_input_runtime.so']) {
   if (!needed.includes(library)) continue;
   const provider = join(dirname(so), library);
   if (!existsSync(provider)) continue;
   const providerIdentity = readElfIdentity(readFileSync(provider));
   if (providerIdentity.soname !== library) continue;
+  if (library === 'libamcl_input_runtime.so' && consumerIdentity.machine === 183 && providerIdentity.machine === 183) {
+    // 这一入口的协议/归属已在neutral门声明。这里仅用当前selected两映像证明加载闭包：
+    // SONAME/NEEDED已核，再核完整版本、强函数定义/可见性/真实地址；不借环境或其它目录。
+    const consumerRows = dynamicSymbols(execFileSync(readelf, ['--dyn-syms', '--wide', so],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+    const providerRows = dynamicSymbols(execFileSync(readelf, ['--dyn-syms', '--wide', provider],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+    const versionNeeds = execFileSync(readelf, ['--version-info', '--wide', so],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split("Version needs section")[1] ?? '';
+    const requirement = versionNeeds.match(/File:\s+libamcl_input_runtime\.so\b([^]*?)(?=\sFile:|$)/)?.[1] ?? '';
+    const imported = consumerRows.filter(row => row.name === 'amclLookExecutionGetPortV1@AMCL_INPUT_RUNTIME' &&
+      row.type === 'FUNC' && row.bind === 'GLOBAL' && row.visibility === 'DEFAULT' && row.section === 'UND');
+    const defined = providerRows.filter(row => row.name === 'amclLookExecutionGetPortV1@@AMCL_INPUT_RUNTIME' &&
+      row.type === 'FUNC' && row.bind === 'GLOBAL' && row.visibility === 'DEFAULT' &&
+      /^\d+$/.test(row.section) && row.value !== 0n && row.size > 0);
+    if (imported.length === 1 && defined.length === 1 && /Name:\s+AMCL_INPUT_RUNTIME\b/.test(requirement))
+      linkedLookImports.add(imported[0].name);
+  }
   const defined = execFileSync(nm, ['--defined-only', '--dynamic', provider], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   for (const line of defined.split(/\r?\n/)) {
     const symbol = (line.trim().split(/\s+/).pop() ?? '').split('@')[0];
@@ -135,12 +164,14 @@ for (const library of ['libamcl_vulkan_wsi.so', 'libamcl_window_host.so', 'libam
         (library === 'libamcl_gl_host.so' && /^mg_/.test(symbol)) ||
         // 公共图形运行时既有 C ABI，也有 BackendSession 等跨 DSO C++ 接口。
         // 必须同时存在实际 DT_NEEDED、正确 SONAME 和动态定义，名字前缀本身不能放行。
-        (library === 'libamcl_graphics_runtime.so' && (/^amclGraphics/.test(symbol) || /^_Z.*4amcl8graphics/.test(symbol)))) linkedGraphics.add(symbol);
+        (library === 'libamcl_graphics_runtime.so' && (/^amclGraphics/.test(symbol) || /^_Z.*4amcl8graphics/.test(symbol))) ||
+        // 输入owner独立后只允许其真实C ABI定义，不根据宽泛amcl前缀豁免未链接调用。
+        (library === 'libamcl_input_runtime.so' && /^(?:amclInput|amclBackendInput|inputBridge_|inputBridge(?:StartPumping|PumpEvents|StopPumping)$|pojav(?:StartPumping|PumpEvents|StopPumping)$)/.test(symbol))) linkedGraphics.add(symbol);
   }
 }
 const offenders = [...new Set(
   undefinedSymbols.filter((name) => OWN_SYMBOL_PATTERNS.some((p) => p.test(name))),
-)].filter((name) => !linkedGraphics.has(name.split('@')[0])).sort();
+)].filter((name) => !linkedGraphics.has(name.split('@')[0]) && !linkedLookImports.has(name)).sort();
 
 console.log('[check-dso-undefined-symbols]');
 console.log(`  variant: product=${PRODUCT} target=${TARGET}`);
@@ -156,9 +187,8 @@ if (offenders.length === 0) {
 
 console.error('\n[check-dso-undefined-symbols] FAIL: libglfw.so 引用了它没有链接的本仓符号');
 for (const name of offenders) console.error(`    ${name}`);
-console.error('\n  成因几乎总是同一个：某个 TU 的定义只进了 PLATFORM_SOURCES（libentry），');
-console.error('  而 libglfw 里的代码按名字调它。依赖方向是 libentry → libglfw，反向不通。');
-console.error('  两条修法：① 把那个 TU 也加进 add_library(glfw SHARED ...)（纯函数 TU 适用）；');
-console.error('  ② 改用既有的反向 env trampoline 机制（有状态 / 需要 libentry 全局时适用）。');
+console.error('\n  核对所选provider的物理依赖、SONAME、动态定义和版本；entry不能反向充当GLFW定义。');
+console.error('  公共输入/Look状态继续只归neutral：修正确链接或出口合同，不复制实现或借全局dlsym。');
+console.error('  纯无状态TU仍按本仓职责归属处理；需要entry能力的旧兼容调用只用其明确接缝。');
 console.error('  ⚠️ 这类缺陷不会被任何**编译**面门禁抓到，只有产物级检查能抓（计划 §86.1）。');
 process.exit(1);

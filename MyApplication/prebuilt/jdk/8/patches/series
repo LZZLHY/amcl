@@ -100,3 +100,13 @@
 #   ✅ 出货：Release v8u452-ohos-4（jdk8-ohos-full-v4.zip，只替换 jre/lib/aarch64/libnet.so）。
 #   ⏳ 真机 IPv6 场景未验（JDK 8 只服务 MC ≤1.16.5）。
 0010-ipv6-supported-sandbox-fallback.patch
+
+# 明确关闭 OHOS 上不存在的硬件后端；保留 MIDI/WAV 解析和软件 provider。
+0011-ohos-java-sound-capability.patch
+
+# 配置日志管线不得掩盖 configure 失败。
+0012-configure-propagate-failure.patch
+
+# JFR BitSet 的 BitMap 析构必须看到 ArrayAllocator 的真实模板定义。
+# 只修正这一编译单元，保持既有分配/释放语义及其他 JDK 的补丁不变。
+0013-jfr-bitset-allocation-template.patch

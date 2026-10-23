@@ -1,0 +1,34 @@
+{
+  "schema": "amcl-uniform-initializer-case-contract/v1",
+  "sceneVersion": 1,
+  "hostMarker": "UNIFORM_INITIALIZER_RESULT",
+  "queryKinds": ["uniform-query"],
+  "queryComponents": 4,
+  "queryTolerance": 0.000002,
+  "pixelsPerCheck": 64,
+  "channelTolerance": 1,
+  "terminalKind": "initializer-scene-end",
+  "metadataKinds": ["preexisting-errors"],
+  "counts": {"checks": 16, "queryChecks": 2, "pixelChecks": 2},
+  "loaderSource": "depth_range_scene.cpp",
+  "loaderMacro": "U_LOAD",
+  "extraProbeResolutions": [],
+  "requiredChecks": [
+    {"kind": "setup", "case": "initializer-rgba8-fbo", "count": 1},
+    {"kind": "gl-error", "case": "initializer-fbo-setup", "count": 1},
+    {"kind": "shader", "case": "initializer-vertex", "count": 1},
+    {"kind": "shader", "case": "initializer-fragment", "count": 1},
+    {"kind": "shader", "case": "initializer-program", "count": 1},
+    {"kind": "setup", "case": "initializer-tint-location", "count": 1},
+    {"kind": "gl-error", "case": "initializer-link-query", "count": 1},
+    {"kind": "gl-error", "case": "initializer-draw-setup", "count": 1},
+    {"kind": "gl-error", "case": "initializer-default-readback", "count": 1},
+    {"kind": "gl-error", "case": "initializer-manual-query", "count": 1},
+    {"kind": "gl-error", "case": "initializer-manual-readback", "count": 1},
+    {"kind": "gl-error", "case": "initializer-owner-retire", "count": 1}
+  ],
+  "cases": [
+    {"id": "initializer-link-default", "expectedUniform": [0.25, 0.5, 0.75, 1], "expectedRgba": [64, 128, 191, 255], "pixelChecks": 1},
+    {"id": "initializer-manual-setter", "expectedUniform": [0, 1, 0, 1], "expectedRgba": [0, 255, 0, 255], "pixelChecks": 1}
+  ]
+}

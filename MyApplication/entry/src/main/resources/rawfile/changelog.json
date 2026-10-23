@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-24T20:37:42Z",
+  "generatedAt": "2026-10-23T13:25:46Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,561 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.5",
-    "versionCode": 1000678,
-    "tag": "v1.0.5",
-    "date": "2026-09-25"
+    "versionName": "1.0.6",
+    "versionCode": 1000910,
+    "tag": "v1.0.6",
+    "date": "2026-10-23"
   },
   "releases": [
+    {
+      "versionName": "1.0.6",
+      "versionCode": 1000910,
+      "tag": "v1.0.6",
+      "date": "2026-10-23",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.6",
+      "title": "应用自更新、游戏包导出与操控体验更新",
+      "titleEn": "In-app updates, game export and control improvements",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "新增应用内自更新，串联下载、校验、授权、手机签名与覆盖安装。",
+            "details": [
+              "提供独立软件更新页及紧凑更新弹窗，分阶段显示真实下载进度、校验、签名、传送、安装与结果核实状态。",
+              "更新任务接入下载管理和最近活动；展开日志、错误详情和端口设置时保留任务，失败后可查看原因并重试。",
+              "自更新需要完成开发者授权并准备兼容的签名材料；部分账号或设备可能无法完成此流程，可继续使用外部签名侧载。"
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "新增游戏包导出，支持完整 ZIP 与 Modrinth、CurseForge 标准格式。",
+            "details": [
+              "从版本管理进入，使用共用导出面板选择内容、检查文件、准备电脑依赖、查看进度并另存结果。",
+              "完整包面向 Windows x64，可选择 PCL/HMCL 对应的导出适配；不包含启动器和 Java。"
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "新增可保存的悬浮虚拟鼠标，支持按住拖动、滚轮和 Shift。",
+            "details": [
+              "支持单指随动、双指接力和屏幕边缘摆位；入口作为系统控件保存，可移动、缩放、调整外观及显隐。",
+              "旧方案缺少入口时补在右下方，保留已有用户定位和设置。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "软件更新支持稳定、预览通道与官方未签名 HAP 手动导入。",
+            "details": [
+              "应用通道和 JDK 通道独立保存；切换通道不立即安装，符合新协议的同编号预览支持比较与返回正式版提示。",
+              "手动包先检查产品、版本、来源和完整性，再进入原签名安装流程；不把任意第三方 HAP 视为受支持的官方更新原件。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "导出内容支持逐层勾选，完整包与标准包分别保留选择草稿。",
+            "details": [
+              "根据实际库存展示模组和配置、禁用模组、资源包、光影、地图、投影、回放、存档、截图和服务器列表等，空分类和读取错误分别提示。",
+              "完整包首次默认包含全部可导出的用户内容，包括存档；标准包使用较小默认集，存档、截图和回放等需主动选择。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "触控布局新增持久控件组及部分第三方布局导入。",
+            "details": [
+              "支持组的初始显隐、成员和分阶段显示、隐藏、切换动作；运行中切组保留其他来源的合法按住状态。",
+              "可转换 Pojav/Amethyst、FCL 和 Zalith 2 的部分常规布局，并在导入前展示差异；补齐 FCL 21 组适配和 AMCL v5 组关系保存、导出。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "补充菜单触摸板、浮动摇杆、陀螺仪配置与按需操作引导。",
+            "details": [
+              "提供推远疾跑、双指滚动和独立快捷栏双击、长按动作；五步引导在用户明确请求后进入，可关闭并从设置重新开启。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "JDK 管理接入签名目录与独立稳定、预览通道。",
+            "details": [
+              "提供手动及定期检查、运行时更新提示和显式启用的 AMCL 自有源；核对导入结构、架构与主版本，保护使用中的运行时，安装失败保留旧版本。",
+              "配套 JDK 更新改进 Java Sound 兼容性，并修复 JDK 8 JFR 链接和 JDK 25 部分长时间停帧问题；需安装对应运行包。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "新增跟随深浅主题的体素聚斧开屏与首页归位动画。",
+            "details": [
+              "首帧使用主题背景，像素从屏外汇成品牌斧；实际准备就绪后归位到首页，处理减少动态效果、前后台、长等待和失败重试。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "新增沉浸光感设置，统一返回、关闭等圆形操作按钮。",
+            "details": [
+              "底部栏和图标按钮可独立控制，提供自动、精美、轻柔、流畅等档位；能力不足时降级并保留偏好，迁移旧设置的关闭意图。",
+              "保留原有草稿确认、内部返回、任务收起、禁用状态、读屏和触摸范围。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "导出面板集中展示选择、检查、进度和结果，支持收起后继续。",
+            "details": [
+              "返回保留勾选与滚动位置，关闭检查草稿；依赖下载展示当前文件和实际进度，支持取消、查看历史结果、中断后重新检查与另存。",
+              "完整包按电脑端元数据准备本体、库、原生依赖和资源，补齐传统及现代 Forge、NeoForge 运行文件；未知组合或缺少必需内容时给出具体原因。",
+              "摘要、CRC 与 ZIP64 归档交由有界 Native 任务，改进依赖准备和快照并发；实际导出速度受设备、文件数量和内容体积影响。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "整合包浏览保留搜索和筛选，安装前可填写实例名称。",
+            "details": [
+              "搜索常驻顶部，筛选可展开收起，保留关键词、加载器和排序；卡片展示版本和加载器并按可用宽度排列。",
+              "在线安装和本地导入复用命名交互，换包版本保留草稿；沿用全局存储位置，恢复任务绑定原实例和存储根。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "统一下载任务策略，改善取消、重试、换源与共享任务生命周期。",
+            "details": [
+              "游戏、资源、模组、整合包、JDK、应用更新及导出依赖使用一致的传输与所有者管理，减少共享进程退出和并发清理冲突。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "模组详情开放完整版本浏览，本地列表支持完整多关键词搜索。",
+            "details": [
+              "无合适实例或加载器时仍可阅读其他文件的版本、大小、支持范围和依赖；当前实例用于默认推荐，实际安装另行校验。",
+              "本地模组按需构建、有界扫描，按文件名和显示名进行大小写无关的多关键词搜索，包含禁用和未知来源项；补齐 Quilt 下 Fabric 前置查询。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "精简触控编辑器，分离布局编辑与输入设置。",
+            "details": [
+              "布局页集中处理控件、组、位置外观、对齐、多选和撤销；触控、来源视角和手柄配置进入独立设置。",
+              "非当前方案可只读查看，预设保存时创建副本；失败保留草稿，复制、删除、撤销和恢复保护方案关系。",
+              "移除草稿试用、自动前进、空白区域建造/战斗手势及玩法模板；保留旧字段读写兼容与基础摇杆恢复。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "改进多来源视角、手柄死区、捕获和前后台恢复。",
+            "details": [
+              "物理输入、触控、手柄和外部来源分别配置视角，保留旧方案手感，并展示实际应用状态和等待原因。",
+              "改善二维死区、角点速度、扳机及移动迟滞，减少重复摇杆状态对平滑的干扰；设备移除、重连和覆盖层切换分别收口。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "减少冷启动、亮屏恢复、空闲下载和日志维护中的重复工作。",
+            "details": [
+              "优化活动历史迁移、版本列表和关联读取，避免重复恢复或打断已选页签；隐藏首页停止额外观察。",
+              "减少音频控制及输入热路径的重复维护，默认关闭额外帧采样、GPU 等待等诊断，移除正常游戏中不必要的输入叠层。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复更新推荐漏更、缓存目标错配和旧任务结果干扰。",
+            "details": [
+              "官网当前产品、通道推荐优先；明确无推荐时不复活旧静态数据，异常回退仍要求完整产品收据。",
+              "复用包前核对原件、摘要、大小、已装版本与 UID；修复升级完成仍显示进行中、关联旧活动及恢复来源错误，防止重复派发。",
+              "华为授权 Sheet 显示进度并在成功后返回原流程；改进超时、取消和登录复用，尝试发现本机无线调试端口并保留手动入口。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复整合包恢复和外部存储发布，保护已有配置与存档。",
+            "details": [
+              "保存来源、选择、阶段及文件收据，在原实例继续或补齐；部分完成不再显示完整成功，处理跨文件系统发布和内容、图标、地图校验。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Forge 身份解析、内嵌库重复下载及批量失败误报。",
+            "details": [
+              "兼容短版本及正式发布身份；保留 Maven 各项真实结果，重试优先处理真正失败项目。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复未知大小断点续传、并发目录创建与下载清理边界。",
+            "details": [
+              "失败仅保存已收到前缀，不把该长度当作总长；核对 Range 完整性及旧元数据，目录已存在时核实实际类型后复用。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复导出检查重入崩溃及旧资源、草稿和目标读取异常。",
+            "details": [
+              "防止 Native Promise 重复交付和重入释放，改进旧资源、选择草稿和目标文件读取异常的处理；保留源文件、归档内容及可用的目标读回检查。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复多来源卡键、拖动释放及恢复后游戏输入失效。",
+            "details": [
+              "GLFW、SDL 和 LWJGL2 统一输入贡献和释放顺序，避免一个来源退出误清其他来源；修复 Vulkan 返回后画面刷新但输入不响应。",
+              "修复抽屉或未变化控件更新打断按住、边缘连滑抖动、绘制与命中层级不一致，以及短窗口操作不可达。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复菜单、容器和快捷栏对齐，补齐末段移动与滚动。",
+            "details": [
+              "改进实际 GUI 缩放提示与恢复原设置，修复跨格按下位置、拖动后释放和双指滚动最后一段遗漏。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复 IME 会话恢复、选区混淆和 LWJGL2 补充字符截断。",
+            "details": [
+              "区分预编辑与文档选区，局部重建不沿用旧字符；启动等待实际输入配置就绪，旧页面和迟到准备不能重启已停止会话。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复旧加载器扫描现代 LWJGL 失败，补齐相关模块和 EGL 信息。",
+            "details": [
+              "为 JDK 17/21/25 提供匹配的多版本类视图，改善 Wing 等旧 Fabric/TinyRemapper 组合；补全 NanoVG、OpenGLES、shaderc 及 GLFW NativeEGL。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复部分图形状态、地形透明及上下文生命周期问题。",
+            "details": [
+              "gl4es 修复 MultiDraw、索引、列表及 VAO/VBO 状态；已确认 Mercury 地形透明场景有对应修复。",
+              "MobileGlues 修复深度范围、uniform 声明初值、状态查询和版本返回；MobileGL 改进程序重链、精度失败和 VSync 传递。",
+              "改善上下文丢失、SDL 辅助面回滚和 LWJGL2 上下文所有权。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "改进 OHAudio 格式协商、中断、暂停恢复、限幅和释放。",
+            "details": [
+              "默认启用输出限幅，补齐降音量、异常缓冲及释放失败保护。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复限定旧 Create Fly 组合的列车网络包线程归属。",
+            "details": [
+              "已识别的 26.2 旧配置沿游戏线程处理客户端与集成服务器包；未知或不完整配置不启用专项补丁，避免泛化到所有 Create 版本。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复 JDK 列表消失、旧目录覆盖，以及下载子页末项不可达。",
+            "details": [
+              "JDK 切预览、离线或推荐不可用时保留合法已安装项，拒绝换源迟到结果，处理分卷取消清理。",
+              "下载页版本和 JDK 子页按剩余高度滚动，JDK 从顶部排列，末尾避让悬浮导航。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "自更新需要兼容签名材料、开发者授权、无线调试和系统信任。",
+            "details": [
+              "请按引导完成授权及无线调试配对；无法使用应用内更新时，可自行下载官方未签名 HAP，签名后侧载安装。",
+              "升级到本版后，可在软件更新页主动选择后续预览版。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "导出的完整游戏包面向 Windows x64 使用，不包含启动器和 Java。",
+            "details": [
+              "请在 Windows 电脑上准备相应启动器及游戏所需的 Java，并在导出时选择对应的 PCL/HMCL 适配。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "游戏包导出仍存在部分问题，部分整合包及大体积内容可能出现异常。",
+            "details": [
+              "依赖准备、导出耗时和大文件处理仍可能遇到问题；导出前请检查内容选择，重要存档与配置建议另行备份，失败时可保留错误信息反馈。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "体验新版 JDK 需手动选择测试通道，测试版本可能存在较多问题。",
+            "details": [
+              "请在 JDK 管理中手动切换通道；日常游玩建议使用稳定通道，遇到问题可切回稳定通道并选择原有可用 JDK。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "通用侧载包支持手机、平板和鸿蒙电脑，部分模组与设备仍可能存在兼容问题。",
+            "details": [
+              "部分触控相关模组和物品操作尚未适配，个别游戏版本退出时可能出现异常；反馈时请附设备型号、游戏版本、模组或整合包信息及日志。"
+            ]
+          }
+        ],
+        "summary": "本版发布通用侧载包，新增应用内更新、游戏包导出与虚拟鼠标，并改进触控、下载、运行时管理和游戏兼容性。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Add in-app updating through download, verification, authorization, on-device signing and installation.",
+            "details": [
+              "A dedicated page and compact dialog show actual download progress and verification, signing, transfer, installation and result checks. Tasks remain available in Download Manager and Recent Activity.",
+              "Updating requires developer authorization and compatible signing material. Some accounts or devices may be unable to complete this flow; external signing and sideloading remain available."
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "Add complete ZIP exports and standard Modrinth and CurseForge modpack exports.",
+            "details": [
+              "Export from version management through a shared panel for content selection, checks, desktop dependencies, progress and saving.",
+              "Complete exports target Windows x64 with PCL/HMCL-specific export options. They include neither a launcher nor Java."
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "Add a persistent floating virtual mouse with dragging, wheel and Shift controls.",
+            "details": [
+              "Improve single-finger following, two-finger handoff and edge placement. Move, resize and customize its saved system control; preserve existing placement in older layouts."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add stable and preview app channels and manual import of official unsigned HAP files.",
+            "details": [
+              "App and JDK channels are separate. Changing channels does not install immediately. New-protocol previews support same-code ordering and a return-to-stable prompt.",
+              "Manual files undergo product, version, source and integrity checks before entering the signing and installation flow."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add hierarchical export selection with separate complete and standard export drafts.",
+            "details": [
+              "Show actual mods, configuration, disabled mods, resources, shaders, maps, schematics, replays, worlds, screenshots and server lists. Empty categories and read errors have separate states.",
+              "Complete exports initially select all exportable user content, including worlds. Standard formats use a smaller default; worlds, screenshots and replays require explicit selection."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add persistent touch groups and conversion of selected third-party layouts.",
+            "details": [
+              "Configure initial visibility, members and staged show, hide and toggle actions without clearing other input sources.",
+              "Support selected Pojav/Amethyst, FCL and Zalith 2 layouts with a conversion report, FCL 21 group adaptation and AMCL v5 group persistence and export."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add optional menu trackpad, floating joystick, gyro settings and an on-demand tutorial.",
+            "details": [
+              "Provide distance-based sprint, two-finger scrolling and separate hotbar double-tap and long-press actions. The five-step tutorial starts only on request and can be reopened from settings."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add a signed JDK catalog with independent stable and preview channels.",
+            "details": [
+              "Include manual and scheduled checks, runtime update notices and an explicitly enabled AMCL-hosted source. Validate structure, architecture and Java major version; protect runtimes in use and retain the previous version after failure.",
+              "Related runtime updates improve Java Sound compatibility and address JDK 8 JFR linking and some prolonged JDK 25 freezes. Install the corresponding runtime package for these changes."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add a theme-aware voxel axe startup animation with a handoff to the home screen.",
+            "details": [
+              "Handle reduced motion, background transitions, long preparation and retries using actual startup readiness."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Add immersive-light settings and consistent round navigation and close buttons.",
+            "details": [
+              "Control the bottom bar and icon buttons separately with automatic, rich, gentle and smooth modes. Fall back according to device capability while preserving preferences and existing close, back and draft-confirmation behavior."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Keep export selection, checks, progress and results in one panel, with background continuation.",
+            "details": [
+              "Preserve selections and scroll positions. Show actual dependency downloads, cancellation, historical results, rechecks and save-again actions.",
+              "Prepare desktop client files, libraries, natives and assets, including legacy and modern Forge and NeoForge files. Explain unsupported or incomplete combinations.",
+              "Use bounded native work for hashes, CRC and ZIP64 archives, dependency preparation and snapshots. Export speed depends on the device, file count and content size."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Preserve modpack search and filters and allow naming an instance before installation.",
+            "details": [
+              "Retain search text, loader, sorting and name drafts while switching versions. Recovery continues in the original instance and storage root."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Unify download policy and shared task ownership across content, runtimes and app updates.",
+            "details": [
+              "Improve cancellation, retry, source switching and shared-process cleanup, including export dependency downloads."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Restore complete mod release browsing and full local multi-keyword search.",
+            "details": [
+              "Browse release details without a matching instance or loader. Keep recommendations separate from installation checks; search disabled and unknown-source mods as well. Improve Fabric dependency candidates under Quilt."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Simplify touch editing and separate layout work from input settings.",
+            "details": [
+              "Retain groups, appearance, alignment, multi-selection, undo, read-only browsing and safe preset copies.",
+              "Remove draft trial mode, auto-forward, empty-area building/combat gestures and gameplay templates while retaining legacy field compatibility and basic joystick restoration."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Improve source-specific look controls, gamepad deadzones, capture and lifecycle recovery.",
+            "details": [
+              "Preserve compatible legacy feel, report applied and waiting states, and improve diagonal speed, triggers, hysteresis and device reconnection."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Reduce repeated work during startup, screen-on recovery and idle maintenance.",
+            "details": [
+              "Improve activity-history migration, version lists and relationship reads without changing the user's selected tab. Stop extra observations on hidden pages and reduce audio and input maintenance.",
+              "Disable optional production frame sampling and GPU waits by default, and remove unnecessary in-game input overlays."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix missed update recommendations, mismatched cached files and stale task results.",
+            "details": [
+              "Prefer the current official product/channel head. An explicit absence does not revive an older static recommendation. Verify asset identity, hashes, size, installed version and UID before reuse.",
+              "Correct completed-task states, activity associations and recovery sources; prevent duplicate installation dispatch. Improve authorization progress, return navigation, timeout, login reuse and wireless-port discovery with a manual fallback."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix modpack recovery and publication to external storage while preserving user data.",
+            "details": [
+              "Retain source, choices, stages and file receipts; distinguish partial completion and handle cross-filesystem publication and content, icon and map validation."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix Forge identity resolution, redundant embedded-library downloads and batch failure reporting.",
+            "details": [
+              "Preserve individual Maven outcomes and retry the items that actually failed."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix unknown-length resume, concurrent directory creation and download cleanup boundaries.",
+            "details": [
+              "Keep received prefixes without treating their length as the complete file size. Validate Range responses, legacy metadata and existing directory types."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix export reentrancy crashes and legacy-resource, draft and destination-read errors.",
+            "details": [
+              "Prevent duplicate Native Promise delivery and reentrant release. Improve legacy-resource, selection-draft and destination-read error handling while retaining source, archive and available destination-readback checks."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix stuck input, drag release and lost input after returning to a game.",
+            "details": [
+              "Coordinate GLFW, SDL and LWJGL2 sources without clearing another source's held keys. Address a Vulkan resume case where frames continued but input stopped.",
+              "Correct drawer-related hold interruption, edge jitter, paint/hit order and controls that were unreachable in short windows."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix menu, container and hotbar alignment and missing final movement or scroll events.",
+            "details": [
+              "Improve actual GUI-scale guidance and restoration, cross-slot press positions, drag release and the final two-finger scroll segment."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix IME recovery, selection confusion and supplementary-character truncation in LWJGL2.",
+            "details": [
+              "Distinguish preedit and document selections. Wait for actual input readiness and reject stale pages or preparation results that would reactivate a stopped session."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix old loaders scanning modern LWJGL and complete related modules and EGL information.",
+            "details": [
+              "Provide Java 17/21/25-appropriate multi-release views for combinations such as Wing with older Fabric/TinyRemapper; complete NanoVG, OpenGLES, shaderc and GLFW NativeEGL integration."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix selected graphics state, transparent terrain and context-lifetime failures.",
+            "details": [
+              "Correct gl4es MultiDraw, indices, lists and VAO/VBO state, including a confirmed Mercury terrain case.",
+              "Improve MobileGlues depth ranges, uniform initializers, queries and version reporting, and MobileGL relinking, precision failure and VSync requests. Handle context loss, SDL auxiliary-surface rollback and LWJGL2 ownership."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Improve OHAudio format negotiation, interruptions, pause/resume, limiting and release.",
+            "details": [
+              "Enable output limiting by default and protect ducking, invalid buffers and failed release paths."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix train-packet thread affinity in a specific older Create Fly combination.",
+            "details": [
+              "Route recognized 26.2 client and integrated-server packets through their game thread. Do not enable the targeted patch for unknown or incomplete profiles."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fix disappearing JDK entries and unreachable final items on download pages.",
+            "details": [
+              "Retain valid installed runtimes when preview or remote recommendations are unavailable, reject stale source results and handle split-download cancellation.",
+              "Give version and JDK lists the remaining viewport height, top-align short JDK lists and reserve space for floating navigation."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "In-app updating requires compatible signing material, developer authorization, wireless debugging and system trust.",
+            "details": [
+              "Follow the authorization and wireless-debugging pairing instructions. If in-app updating is unavailable, download the official unsigned HAP, sign it and sideload it.",
+              "After upgrading to this version, opt into later previews from the Software Update page if desired."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "Complete game exports target Windows x64 and include neither a launcher nor Java.",
+            "details": [
+              "Prepare the appropriate launcher and Java version on your Windows PC, and select the matching PCL/HMCL export option."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "Game exports still have some issues, particularly with certain modpacks and large content sets.",
+            "details": [
+              "Dependency preparation, export time and large-file handling may encounter problems. Check selected content, keep a separate backup of important worlds and configuration, and retain error details when reporting a failure."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "Select the JDK test channel manually to try newer runtimes; test versions may have many issues.",
+            "details": [
+              "Switch channels in JDK Manager. The stable channel is recommended for everyday play; if problems occur, return to it and select a previously working JDK."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "The universal sideload package supports phones, tablets and HarmonyOS PCs; some mods and devices may have compatibility issues.",
+            "details": [
+              "Some touch-related mods and inventory operations are not yet adapted, and certain game versions may encounter exit errors. Include your device, game version, mod or modpack details and logs when reporting a problem."
+            ]
+          }
+        ],
+        "summary": "This universal sideload release adds in-app updates, game exports and a virtual mouse, with improvements to touch controls, downloads, runtime management and game compatibility."
+      }
+    },
     {
       "versionName": "1.0.5",
       "versionCode": 1000678,

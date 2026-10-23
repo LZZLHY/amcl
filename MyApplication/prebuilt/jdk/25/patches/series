@@ -32,19 +32,16 @@
 # musl libc: 跳过不支持的 setutxent/getutxent/endutxent
 0004-musl-utmpx.patch
 
-# === 5-8: OHOS 运行时关键 patch（HotSpot 信号处理 / Safepoint / libjli） ===
+# === 5/8: OHOS 运行时边界（HotSpot 信号包装 / libjli） ===
 
 # OHOS：javaSignalHandler 不在未识别信号上 abort，避免设备误杀 JVM
 # JDK 25 参数名仍是 context（与 21 一致）
 0005-signals-posix-abort-if-unrecognized.patch
 
-# OHOS：aarch64 信号处理对 ELF loader 加载的代码做 SafePoint polling SEGV fallback
-# （CodeCache 看不到 ELF-loaded code，需要在 SEGV 时 disarm polling page 让 CPU 重试）
-0006-aarch64-elf-safepoint-fallback.patch
-
-# OHOS：safepoint polling page 用 MEM_PROT_READ 而不是 MEM_PROT_NONE
-# 配合 0006 的 fallback 一起，让 polling 走 SIGSEGV→重试，避免 SIGBUS abort
-0007-safepoint-mechanism-mem-prot-read.patch
+# 0006/0007已退出活动series；原字节留在本目录作旧制品追溯与负对照，不能通配应用。
+# 必须保留上游坏页NONE/好页READ及正常poll stub协议；自定义ELF装载不取消JIT安全点。
+# 构建前与来源记录前均由verify_jdk25_safepoint.py检查真实源码，拒绝换名回生。
+# 退役说明见INACTIVE-SAFEPOINT-PATCHES.md；修复验收仍按专项方案，不由移除条目推定通过。
 
 # OHOS：libjli 跳过 re-exec 路径（RequiresSetenv 永远返回 JNI_FALSE）
 # ELF loader 已经处理好了 LD_LIBRARY_PATH，原路径是为 musl 早期版本的兜底，会触发死锁
@@ -92,3 +89,10 @@
 #    消费者 2 由应用侧的 ELF loader 垫片（路线 B，CHANGELOG 1000571）覆盖。两条路线不重复：
 #    A 修 1，B 修 1+2；B 在文件可读时自动透传，A 在文件可读时行为不变。
 0010-ipv6-supported-sandbox-fallback.patch
+
+# OHOS Java Sound：保留解析与共享 JNI，原生设备能力正常返回不可用。
+0011-ohos-javasound-capabilities.patch
+
+
+# Docker 使用 Linux 用户空间；WSL 内核标识不能改变构建宿主 ABI。
+0013-ohos-linux-container-build-host.patch

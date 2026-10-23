@@ -7,6 +7,7 @@
  */
 #include "napi_jvm.h"
 #include "napi_helpers.h"
+#include "graphics_semantics_guard.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -59,7 +60,7 @@ napi_value GetGraphicsCapabilityJson(napi_env env, napi_callback_info info) {
 
 // --- Vulkan 实战自检（VULKAN_ADAPTATION_PLAN.md Phase B · 端到端呈现链）---
 // 真的建 instance→device→OHOS surface→swapchain→clear→present 跑一遍，逐步报告卡在哪。
-// 可选参数 nativeWindowPtr（XComponent 的 OHNativeWindow 数值字符串）；缺省回退环境变量。
+// 可选参数 nativeWindowPtr（XComponent 的 OHNativeWindow 数值字符串）只用于核对；窗口经窗口宿主租约取得。
 #ifdef MC_OHOS_BUILD_TESTS
 napi_value RunVulkanSelfTest(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -91,6 +92,8 @@ napi_value RunVulkanSelfTest(napi_env env, napi_callback_info info) {
 
 // --- JVM 初始化 ---
 napi_value JvmInit(napi_env env, napi_callback_info info) {
+    // 冷进程语义探针开始后，普通JVM入口也必须要求重启，避免复用测试配置/provider。
+    if (amcl::napi::RejectGraphicsSemanticsJvmStart(env)) return nullptr;
     size_t argc = 2;
     napi_value argv[2];
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
@@ -110,6 +113,8 @@ napi_value JvmInit(napi_env env, napi_callback_info info) {
 // --- JVM 诊断测试 ---
 #ifdef MC_OHOS_BUILD_TESTS
 napi_value RunJvmEmbedTest(napi_env env, napi_callback_info info) {
+    // 嵌入诊断也会真正创建JVM，遵守相同的语义测试进程重启边界。
+    if (amcl::napi::RejectGraphicsSemanticsJvmStart(env)) return nullptr;
     size_t argc = 2;
     napi_value argv[2];
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);

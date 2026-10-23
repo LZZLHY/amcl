@@ -1,0 +1,180 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -503,6 +503,9 @@
+     Uint64 pump_order_limit;
+     int pump_budget;
+     bool pump_did_read;
++    /* 私有touch尾协议：输入发布代次与真实图形呈现代次分别交给同一neutral owner。 */
++    void (*SetInputTarget)(Uint64, Uint64, Uint64);
++    void (*NotifyFramePresentedForTarget)(Uint64, Uint64);
+ } OPENHARMONY_HostBridge;
+ 
+ // Give up looking for the host after this many pumps. The bridge normally
+@@ -840,6 +843,55 @@
+ #define AMCL_SDL_BRIDGE_ENV "AMCL_SDL_INPUT_BRIDGE"
+ #define AMCL_SDL_BRIDGE_PREFIX "AMCLSDLV:3:"
+ // 新宿主通过 NativeWindow broker 尾部发布前台资格，不再读可变环境快照。
++/* 旧AMCLSDLV/ORDER前缀不变；新增能力整体协商，存在但损坏必须拒绝，不能猜符号地址。 */
++static bool OPENHARMONY_ResolveTouchBridge(OPENHARMONY_HostBridge *bridge)
++{
++    const char *desc = SDL_getenv_unsafe("AMCL_SDL_TOUCH_BRIDGE");
++    const char *prefix = "AMCLSDLTOUCH:1:";
++    if (!desc) return true; /* 只有明确缺少尾协议时沿用旧宿主行为。 */
++    if (SDL_strncmp(desc, prefix, SDL_strlen(prefix)) != 0) return false;
++    const char *cursor = desc + SDL_strlen(prefix);
++    uintptr_t slots[2] = {0};
++    for (int i = 0; i < 2; ++i) {
++        char *end = NULL;
++        if (*cursor < '0' || *cursor > '9') return false;
++        const unsigned long long value = SDL_strtoull(cursor, &end, 10);
++        if (end == cursor || value == 0 || value >= UINTPTR_MAX) return false;
++        slots[i] = (uintptr_t)value;
++        cursor = end;
++        if (i == 0 && *cursor++ != ',') return false;
++    }
++    if (*cursor != '\0') return false;
++    bridge->SetInputTarget = (void (*)(Uint64, Uint64, Uint64))slots[0];
++    bridge->NotifyFramePresentedForTarget = (void (*)(Uint64, Uint64))slots[1];
++    return true;
++}
++
++/* 只发布已被窗口owner采纳的事实：SDL逻辑窗口ID与Native发布代次不是NativeWindow指针。
++ * neutral入口不执行游戏回调；重复当前身份幂等，同窗geometry变更也会退休旧菜单事务。
++ */
++static void OPENHARMONY_AMCL_PublishTouchInputTarget(OPENHARMONY_HostBridge *bridge,
++                                                    SDL_Window *window)
++{
++    if (!bridge || !bridge->SetInputTarget) return;
++    if (window && window->internal &&
++        window->internal->role == OPENHARMONY_WINDOW_PRESENTED &&
++        !window->internal->native_xcomponent && window->internal->amcl_generation) {
++        /* WSI创建入口实际使用nativeWindow高位身份域，SDL_WindowID与它不能相互替代。
++         * 此公式与neutral Vulkan createOhosSurface一致，只使用本窗口已取得的真实NativeWindow。 */
++        const bool vulkan = (window->flags & SDL_WINDOW_VULKAN) != 0;
++        const Uint64 wsi_identity = vulkan && window->internal->native_window
++            ? (Uint64)(uintptr_t)window->internal->native_window | (UINT64_C(1) << 63) : 0;
++        if (vulkan && !wsi_identity) {
++            bridge->SetInputTarget(0, 0, 0);
++            return;
++        }
++        bridge->SetInputTarget((Uint64)window->id, window->internal->amcl_generation, wsi_identity);
++    } else {
++        bridge->SetInputTarget(0, 0, 0);
++    }
++}
++
+ static bool OPENHARMONY_ResolveOrderBridge(OPENHARMONY_HostBridge *bridge)
+ {
+     const char *desc = SDL_getenv_unsafe("AMCL_INPUT_ORDER_BRIDGE");
+@@ -905,7 +957,7 @@
+     }
+ 
+     // 所有槽完成验证后才接受 legacy 描述符，避免半套有序能力被当成可用。
+-    if (!OPENHARMONY_ResolveOrderBridge(bridge)) return false;
++    if (!OPENHARMONY_ResolveTouchBridge(bridge) || !OPENHARMONY_ResolveOrderBridge(bridge)) return false;
+     bridge->NextEvent = (int (*)(int *, int *, int *, int *, int *))slots[0];
+     bridge->SetActive = (void (*)(int))slots[1];
+     bridge->NotifyFramePresented = (void (*)(void))slots[2];
+@@ -998,6 +1050,32 @@
+ // as the null-pointer defence for every caller: the only bridge pointer they
+ // can ever see is handed out after the acquire below, so its fields are
+ // complete by construction.
++/* 环境解析失败以后，symbol fallback不能把损坏的新touch/legacy描述符当成旧宿主。
++ * 用临时表完成整体协商后才复制两个尾槽；失败零正式写入，不遗留一半能力。
++ * 新tail明确缺失保留旧行为；新tail完整但legacy env尚未发布，才允许已有符号路径。
++ */
++static bool OPENHARMONY_ValidateTouchFallback(OPENHARMONY_HostBridge *bridge)
++{
++    if (!SDL_getenv_unsafe("AMCL_SDL_TOUCH_BRIDGE")) {
++        bridge->SetInputTarget = NULL;
++        bridge->NotifyFramePresentedForTarget = NULL;
++        return true;
++    }
++    OPENHARMONY_HostBridge candidate;
++    SDL_zero(candidate);
++    if (!OPENHARMONY_ResolveTouchBridge(&candidate) ||
++        !OPENHARMONY_ResolveOrderBridge(&candidate) ||
++        SDL_getenv_unsafe(AMCL_SDL_BRIDGE_ENV)) return false;
++    bridge->SetInputTarget = candidate.SetInputTarget;
++    bridge->NotifyFramePresentedForTarget = candidate.NotifyFramePresentedForTarget;
++    bridge->InteractionFence = candidate.InteractionFence;
++    bridge->TypedNextThrough = candidate.TypedNextThrough;
++    bridge->LegacyPeekOrder = candidate.LegacyPeekOrder;
++    bridge->LegacyNextThrough = candidate.LegacyNextThrough;
++    bridge->pump_order_limit = UINT64_MAX;
++    return true;
++}
++
+ static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void)
+ {
+     OPENHARMONY_ResetHostBridgeForPid();
+@@ -1114,6 +1192,13 @@
+         SDL_MemoryBarrierRelease();
+         SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_READY);
+         return bridge;
++    }
++
++    /* 新协议存在但损坏必须在真正调用者拒绝；不能只让parser返回false又走dlsym绕过。 */
++    if (!OPENHARMONY_ValidateTouchFallback(bridge)) {
++        SDL_LogError(SDL_LOG_CATEGORY_INPUT, "openharmony: malformed touch input descriptor; symbol fallback refused");
++        SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_ABSENT);
++        return NULL;
+     }
+ 
+     // Fallbacks, kept for hosts that put their symbols in the global scope.
+@@ -2210,6 +2295,7 @@
+         typed_set_active(AMCL_BACKEND_ID_SDL3, 1);
+         bridge->typed_activated = true;
+     }
++    OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, presented);
+     bool typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
+     if (bridge->InteractionFence) {
+         OPENHARMONY_PumpOrderedEvents(bridge, presented_id);
+@@ -2237,9 +2323,15 @@
+         }
+         return;
+     }
+-    if (bridge && bridge->NotifyFramePresented) {
+-        // This entry point is called only after SDL_EGL_SwapBuffers returned success. A failed
+-        // swap is not a consumption boundary and must not unlock a pending menu press.
++    SDL_Window *presented = OPENHARMONY_Window;
++    if (bridge && bridge->NotifyFramePresentedForTarget && presented && presented->internal &&
++        presented->internal->role == OPENHARMONY_WINDOW_PRESENTED &&
++        (!current_window || current_window == presented)) {
++        /* 成功present的真实逻辑窗口与已采纳代次；辅助窗口和失败swap不推进触控屏障。 */
++        OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, presented);
++        bridge->NotifyFramePresentedForTarget((Uint64)presented->id, presented->internal->amcl_generation);
++    } else if (bridge && !bridge->NotifyFramePresentedForTarget && bridge->NotifyFramePresented) {
++        /* 明确旧宿主兼容路径，不能用匿名present替新协议的精确目标解锁。 */
+         bridge->NotifyFramePresented();
+     }
+ }
+@@ -2322,6 +2414,7 @@
+             bridge->SetActive(1);
+             bridge->legacy_activated = true;
+         }
++        OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, presented);
+         OPENHARMONY_TypedSetActiveFn typed_set_active =
+             OPENHARMONY_GetTypedSetActive(bridge);
+         if (typed_set_active && !bridge->typed_activated) {
+@@ -2339,6 +2432,7 @@
+         }
+         bridge->typed_activated = false;
+     }
++    OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, NULL);
+     if (bridge && bridge->legacy_activated && bridge->SetActive) {
+         bridge->SetActive(0);
+         bridge->legacy_activated = false;
+@@ -2408,6 +2502,11 @@
+     }
+     if (should_be_active != host_presented_active) {
+         OPENHARMONY_AMCL_SetPresentedActive(should_be_active);
++    }
++    if (should_be_active && host_presented_active) {
++        /* SetPresentedActive仅在布尔边沿执行；同窗geometry采纳仍须发布新的输入目标代次。 */
++        window = OPENHARMONY_Window;
++        OPENHARMONY_AMCL_PublishTouchInputTarget(OPENHARMONY_GetHostBridge(), window);
+     }
+     if (window && window->internal &&
+         window->internal->role == OPENHARMONY_WINDOW_PRESENTED &&

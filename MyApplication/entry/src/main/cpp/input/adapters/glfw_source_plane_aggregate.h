@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <memory>
+#include "../delivery/control_delivery.h"
+#include "../delivery/look_execution.h"
 
 namespace amcl::input {
 
@@ -26,12 +28,15 @@ struct GlfwAggregateKeyEvent {
     int32_t scanCode;
     GlfwAggregateAction action;
     int32_t modifiers;
+    // 冻结的neutral receipt；实际ABI缓存与callback完成后报告，不改绑current。
+    AmclControlEmissionV1 receipt{};
 };
 
 struct GlfwAggregateButtonEvent {
     int32_t button;
     GlfwAggregateAction action;
     int32_t modifiers;
+    AmclControlEmissionV1 receipt{};
 };
 
 using GlfwAggregateKeySink = void (*)(
@@ -45,10 +50,9 @@ struct GlfwAggregateSink {
     GlfwAggregateButtonSink button = nullptr;
 };
 
-// Process-local final mapped-control owner. State is committed under its own
-// mutex, then callbacks run after unlock so Minecraft may synchronously reenter
-// GLFW polling/input-mode APIs. Unknown releases and duplicate presses are
-// idempotent; only an explicit REPEAT from an already-held plane is forwarded.
+// GLFW薄facade只借用neutral的opaque consumer，不再拥有另一份mapped-control归约状态。
+// neutral先提交贡献，再在锁外调用实际GLFW出口；Minecraft可同步重入poll/input-mode。
+// 未知UP、重复DOWN和未知repeat由共同owner明确Rejected；facade不伪造成功或额外边沿。
 class GlfwSourcePlaneAggregate final {
 public:
     GlfwSourcePlaneAggregate();
@@ -102,6 +106,13 @@ public:
 
     bool IsKeyPressed(int32_t key) const;
     bool IsButtonPressed(int32_t button) const;
+    void BindTarget(uint64_t target);
+    void ObservePoll(uint32_t kind,int32_t code,int32_t actualHeld);
+    void Complete(const AmclControlEmissionV1& receipt,uint32_t phase);
+    bool Validate(const AmclControlEmissionV1& receipt) const;
+    bool Snapshot(AmclControlSnapshotV1& output) const;
+    // 首次完整验证与control相同owner的look表；以后只复用进程期连接，不缓存窗口/票据Ready。
+    const AmclLookExecutionPortV1* LookPort() const;
 
 private:
     struct Impl;

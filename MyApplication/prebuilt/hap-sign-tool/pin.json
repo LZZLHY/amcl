@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "project": "OpenHarmony developtools_hapsigner",
+  "revision": "b5d2d41ceccff5a7c81c5e18ef18d843615f3251",
+  "url": "https://raw.githubusercontent.com/openharmony/developtools_hapsigner/b5d2d41ceccff5a7c81c5e18ef18d843615f3251/dist/hap-sign-tool.jar",
+  "sha256": "9cee965bb292080a0d29fb48450091f5dcc9d010bb18da39175f581ffed7c4f4",
+  "license": "Apache-2.0"
+}

@@ -67,11 +67,21 @@ export function evaluateDesktopCompletionSources(callbacks, page, ability) {
     if (!new RegExp(`window->${field}\\s*=\\s*callback`).test(body) || !body.includes(`old = window->${field}`) || !body.includes('return old')) issues.push(`${setter}: callback storage/previous value missing`);
     if (!poll.includes(change) || !new RegExp(`window->${field}\\s*\\(`).test(poll)) issues.push(`${field}: system state callback dispatch missing`);
   }
-  const launch = bodyAfter(page, 'private async startMCOnce()');
-  const prepare = launch.indexOf('await this.gameWindowCoordinator.enter(');
-  const native = launch.indexOf('await this.startMCInternal()');
-  if (prepare < 0 || native < prepare || !launch.includes('snapshot.contextGeneration <= 0') || !launch.includes('throw new Error')) issues.push('Desktop launch must require valid Window before launch preparation');
-  if (!bodyAfter(page, 'private startMC()').includes('this.gameLaunchGate.run(')) issues.push('Page launch single-flight gate disconnected');
+  // 页面的调用现在携带原进程预约，实参数量不是窗口契约。先按 ArkTS 的词法屏蔽
+  // 注释、字符串、模板与正则，再识别真实 await 调用；日志中的旧空参文本不能充数。
+  // 两次屏蔽均保留偏移，故可以直接比较窗口获取、有效快照拒绝和内部启动的先后位置。
+  const pageCode = stripStringLiterals(stripComments(page, { lang: 'js' }), { lang: 'js' });
+  const launch = bodyAfter(pageCode, 'private async startMCOnce()');
+  const prepare = launch.search(/\bawait\s+this\s*\.\s*sessionHost\s*\.\s*enterWindow\s*\(/);
+  // 先找首次真实调用，再核该次是否 await；若只搜索带 await 的调用，提前插入的
+  // fire-and-forget 调用会被忽略，后面的合法 await 就能错误掩盖它。
+  const native = launch.search(/\bthis\s*\.\s*startMCInternal\s*\(/);
+  const nativeAwaited = native >= 0 && /\bawait\s*$/.test(launch.slice(0, native));
+  // 必须是对原 snapshot 四项事实的实际拒绝分支，而不是别处的任意 throw 或诊断文本。
+  // 此处固定现役契约的正向无效值判断；若维护者改变快照结构，应同步审查这一门禁。
+  const guard = launch.search(/\bif\s*\(\s*snapshot\s*\.\s*windowId\s*<=\s*0\s*\|\|\s*snapshot\s*\.\s*contextGeneration\s*<=\s*0\s*\|\|\s*snapshot\s*\.\s*width\s*<=\s*0\s*\|\|\s*snapshot\s*\.\s*height\s*<=\s*0\s*\)\s*\{\s*throw\s+new\s+Error\s*\(/);
+  if (prepare < 0 || guard <= prepare || native <= guard || !nativeAwaited) issues.push('Desktop launch must require valid Window before launch preparation');
+  if (!bodyAfter(pageCode, 'private startMC()').includes('this.sessionHost.runLaunch(')) issues.push('Session launch single-flight gate disconnected');
   for (const phase of ['onBackground()', 'onDestroy()']) if (!bodyAfter(ability, phase).includes('testNapi.desktopGamepadFocus(false)')) issues.push(`${phase}: native gamepad reset missing`);
   return issues;
 }

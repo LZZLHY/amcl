@@ -35,6 +35,8 @@ import { GraphicsProfileInput } from './GraphicsProfileResolver';
 import { minecraftGraphicsBackendForApi, withMinecraftGraphicsBackend } from './MinecraftGraphicsPreference';
 import { lwjglSlotClasspath } from './RuntimeSlotClasspath';
 import { lwjglGenerationDirectory } from './RuntimeSlotGenerations';
+import { ResolvedInputPlan, resolveInputPlan, serializeInputPlan, inputPlanMatchesRuntime,
+  INPUT_PLAN_ARG_KEY } from './ResolvedInputPlan';
 // 加载器世代路由（启动世代契约规范 §1.1 / 施工记录 §S02）：契约表在 LoaderGenerationRegistry，
 // 判定在 LoaderGenerationResolver，校验在 LaunchContractPreflight。
 // ⚠️ 改启动契约行为**只改契约表**，不要在本文件加 `if (某个世代)` 特例。
@@ -91,6 +93,9 @@ export interface LaunchProfile {
   classpathDelivery: string
   graphicsPlanWire?: string
   graphicsPlan?: ResolvedGraphicsPlan
+  /** 新 Builder 必定生成；可选形态只兼容旧的外部 Profile 构造者。 */
+  inputPlanWire?: string
+  inputPlan?: ResolvedInputPlan
   /** 诊断事实来自已解析版本，实例显示名不能代替基础版本和加载器版本。 */
   baseGameVersion?: string
   loaderType?: string
@@ -424,7 +429,8 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     }
 
     // 路由仍由版本/LWJGL 契约决定；确定槽后锁定本 HAP 清单对应的不可变内容目录。
-    lwjglJarDir = lwjglGenerationDirectory(this.mcDir, lwjglJarDir)
+    // 同一实际 JDK 选择同时绑定代际目录与 classpath 清单，未来 MR 层只存在于源制品。
+    lwjglJarDir = lwjglGenerationDirectory(this.mcDir, lwjglJarDir, Number(this.jdkVersion))
 
     // ============================================================
     // 渲染后端路由（治理规范 §4.1；施工记录 §S3）
@@ -465,6 +471,14 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     const graphicsPlan: ResolvedGraphicsPlan = resolveGraphicsPlan(graphicsInput)
     const rendererDecision: RendererDecision = graphicsPlan.decision
     const graphicsPlanWire: string = serializeGraphicsPlan(graphicsPlan)
+    // 与图形复用同次事实和最终派生槽，独立决议真实输入 ABI。LWJGL2+GLFW 是
+    // 合法窗口组合，但必须由 L2 消费输入；禁止以 provider 名替代消费者身份。
+    const inputPlan: ResolvedInputPlan = resolveInputPlan(gameFacts, lwjglJarDir)
+    if (!inputPlanMatchesRuntime(inputPlan, graphicsPlan.lwjglSlot, graphicsPlan.windowProvider)) {
+      this.lastBuildError = '图形与输入启动子契约的运行库或窗口组合不一致'
+      return null
+    }
+    const inputPlanWire: string = serializeInputPlan(inputPlan)
     this.alog.info(TAG, rendererDecision.logLine, LOG_DOMAIN_LAUNCH)
     // Preserve the optional GL-only compatibility marker. Native Vulkan has no GL backend id.
     if (graphicsPlan.legacyGlBackendMarker.length > 0 && graphicsPlan.legacyGlBackendMarker !== GRAPHICS_DEFAULT_PROFILE_ID) {
@@ -526,92 +540,16 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
         this.alog.info(TAG, 'GC: G1 + 40ms pause target (chunk-boundary stutter fix; pick any -XX:+Use*GC to override)', LOG_DOMAIN_LAUNCH)
       }
 
-      // awaitSubmit 等待归因（诊断期默认开）：把 RenderPearl 两槽提交等待按语义调用方
-      // （global_submit / source_ring / gpu_fence_poll）与 owner 帧内容（uploader/retired/idle）
-      // 聚合成每秒一行 [AMCL-GPU-WAIT]（TerrainWaitDiagnostics）。开销 = 每次等待两个
-      // nanoTime + 每秒一行 stdout。跨区块归因闭环后撤这个默认。用户显式给值时不覆盖。
-      let hasUserWaitDiag = false
-      for (let arg of parsed.jvmArgs) {
-        if (arg.indexOf('-Damcl.gpuWaitDiagnostics=') === 0) { hasUserWaitDiag = true; break }
-      }
-      if (!hasUserWaitDiag) {
-        parsed.jvmArgs.push('-Damcl.gpuWaitDiagnostics=true')
-        this.alog.info(TAG, 'GPU wait diagnostics: on (owner-correlated awaitSubmit attribution)', LOG_DOMAIN_LAUNCH)
-      }
+      // 等待诊断由用户显式传 -Damcl.gpuWaitDiagnostics=true 开启。
+      // Java 侧继续按后端/精确类指纹准入；默认不装反射计时 hook，
+      // 地形正确性与既有 GC 选择保持各自独立的契约。
 
     }
 
-    // ⚠️ 以下**刻意在 usesSdl3 门之外** —— 版本无关的观测面，而上面那个门是按
-    // "26.3+/SDL3 路线"划的。放在门内曾让旧版本连诊断都采不到。
-    // 门内保留的三项各有独立理由，**不要**跟着外提：
-    //   · G1 三项 —— 1000253 的 ATM8 G1 OOM 教训只对重型整合包/GLFW 路线成立；
-    //   · gpuWaitDiagnostics —— 它靠 RenderPearl 两个类的 exact-SHA256 字节码补丁挂钩
-    //     （AmclClassLoader all-or-none），pre-1.20 客户端没有那些类，开了也恒为零数据。
-    //
-    // ⚠️ 这里原本外提了**两段**（渲染停顿采样 + GC 日志），现在只剩 GC 日志一段，
-    // 采样器已于 2026-08-30 撤回默认关（理由见下）。外提时引用的那条论据 ——
-    // 「1.18.2 有 93% 墙钟落在 GL 之外、单个非 GL 空洞达 4415ms，所以要问空洞里在干什么」
-    // —— **其前提已被同日的审计推翻**：那个 93% 是在常驻观测（causal 窗口 + always-on
-    // BufferAllocation + upload probe）与 10ms 栈采样同时开着的会话里测的，而
-    // outside_gl_ns 按定义还含"causal 窗口之外的未观测 GL"。⇒ 它既不能证明时间在 GL 之外，
-    // 也不能用来给"必须默认开采样器"背书。引用它之前先看 AGENTS §二.7。
-
-    // 渲染线程停顿采样：hiperf tracepoint 对 shell 无权限（sched 采样 0 样本），改在 JVM
-    // 内以 10ms 周期取渲染线程栈，同栈持续 ≥150ms 打印一条 [AMCL-RENDER-STALL] 全栈 ——
-    // 空洞期间渲染线程停在哪，由栈自己开口。RenderStallSampler.install() 由 AmclLauncher
-    // 无条件调用、只由本属性自门控，且归因帧回退到 stack[0]，因此不依赖任何 MC 版本。
-    //
-    // ⚠️ 2026-08-30：**撤掉默认注入**，改成只有用户显式传 `-Damcl.renderStallSampler=true`
-    // 才开。上面那段"版本无关的观测面所以放在门外"的理由本身没错，错的是把它默认打开 ——
-    // 它是 100 次/秒的渲染线程 stack walk，而它服务的那个问题（"空洞里在干什么"）恰恰是
-    // 帧率问题。1000551 早就给观测者效应定过价（平板 exhaustive 逐调用计时 59.53 → 27.59 FPS）。
-    //
-    // ⭐ 同轮 A/B 结果（2026-08-30 16:50，同设备同存档同 options.txt，三样观测一起关）：
-    // **假设被否证**。1.18.2 纯原版 active_world 的 present 率 —— 插桩几乎为零的那场
-    // （08-29 22:22，observed_calls 峰值 2）p50 只有 **23.39**，三样全开那场（11:19，峰值
-    // 81903）p50 **43.89**，全关这场（16:50，峰值 0）p50 **39.54**。观测量与帧率无负相关。
-    // ⇒ 关掉它不是修复，**别把这次改动当成性能修复引用**。它仍然该默认关，理由只是
-    // 「未经量化的常驻开销不该出货」，不是「关了会变快」。
-    //
-    // ⚠️ 重开的话要带自己的 A/B（固定镜头路线、样本远大于本轮的 46 个一秒窗）。本轮样本不足以
-    // 支撑"关掉反而慢了几帧"这个具体差值，只够支撑"没有出现预期的大幅改善"。
-
-    // 轻量 GC 日志（JDK9+ 统一日志），写进游戏目录 logs/，2 个文件 × 2MB 轮转，开销可忽略；
-    // 用户已自带 -Xlog:gc（version.json 或自定义参数）时不重复注入。
-    // 证据纪律（AGENTS §二 1）：先让停顿变成可以数的数，再决定怎么修。
-    //
-    // ⚠️ 2026-08-27 真机教训（JNI_CreateJavaVM 返回 -6，游戏完全起不来）：
-    //   `file=` 必须是**绝对路径**且目录必须**此刻已存在** —— HotSpot 在
-    //   JNI_CreateJavaVM 期间就打开该文件，而 chdir(gameDir) 在 Phase 4
-    //   redirectIO 才发生，相对路径 `logs/` 解析到进程根 CWD → ENOENT →
-    //   -Xlog 初始化失败对 JVM 创建是**致命**的（不是降级）。Phase 4 的
-    //   mkdir(logs) 对它来说也太晚，必须在这里先建。建不了就跳过注入 ——
-    //   诊断日志永远不能挡启动。
-    let hasUserGcLog = false
-    for (let arg of parsed.jvmArgs) {
-      if (arg.indexOf('-Xlog:gc') === 0) { hasUserGcLog = true; break }
-    }
-    if (!hasUserGcLog) {
-      for (let ua of this.parseUserJvmArgs(this.customJvmArgs)) {
-        if (ua.indexOf('-Xlog:gc') === 0) { hasUserGcLog = true; break }
-      }
-    }
-    if (!hasUserGcLog) {
-      let gcLogDir = this.alog.id() > 0 ? this.filesDir + '/logs/ledger/' + this.alog.id() + '/jvm' : this.gameDir + '/logs'
-      let gcLogDirReady = true
-      try {
-        fs.mkdirSync(gcLogDir, true)
-      } catch (e) {
-        try { fs.statSync(gcLogDir) } catch (e2) { gcLogDirReady = false }
-      }
-      if (gcLogDirReady) {
-        parsed.jvmArgs.push('-Xlog:gc*:file=' + gcLogDir + '/gc-amcl.log:time,uptime:'
-          + (this.alog.id() > 0 ? 'filecount=0' : 'filecount=2,filesize=2m'))
-        this.alog.info(TAG, `GC diagnostics: -Xlog:gc* -> ${gcLogDir}/gc-amcl.log`, LOG_DOMAIN_LAUNCH)
-      } else {
-        this.alog.warn(TAG, `GC diagnostics skipped: cannot create ${gcLogDir}`, null, LOG_DOMAIN_LAUNCH)
-      }
-    }
+    // 常规启动不自动注入 Java 抓栈、等待计时或 -Xlog:gc*。用户/版本提供的
+    // 诊断参数仍沿既有参数合并路径传入；需要写文件的 -Xlog 必须由诊断发起方
+    // 指定已存在目录的绝对路径，避免 JVM 初始化时因日志路径不可用而拒绝启动。
+    // 这里仅撤掉额外观察，不更换收集器，也不改地形上传和资源退休策略。
 
     // 统一使用 OHOS LWJGL jar（参考 Amethyst-iOS：所有 org.lwjgl 库统一跳过替换）
     // 不再区分 Forge/非 Forge，避免原版 LWJGL jar 与 OHOS native .so 不匹配
@@ -707,6 +645,11 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     // 用户自定义 JVM 参数：最高优先级，最后合入（同 -Dkey / -Xmx 覆盖 version.json 与 SSOT 默认）
     parsed.jvmArgs = this.mergeUserJvmArgs(parsed.jvmArgs)
     for (let arg of parsed.jvmArgs) {
+      if (arg.indexOf(INPUT_PLAN_ARG_KEY) === 0) {
+        this.lastBuildError = '输入启动计划由启动器生成，不允许自定义 JVM 参数覆盖'
+        this.alog.error(TAG, 'Rejected custom input plan override', null, LOG_DOMAIN_LAUNCH)
+        return null
+      }
       if (arg.indexOf('-Damcl.graphics.plan=') === 0 || arg.indexOf('-Damcl.graphics.profile=') === 0
         || arg.indexOf('-Dorg.lwjgl.vulkan.libname=') === 0) {
         this.lastBuildError = '图形后端计划及运行库由启动器生成，不允许自定义 JVM 参数覆盖'
@@ -717,6 +660,8 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     // The selected plan is an AMCL launch invariant. Inject it after custom args
     // merge so an arbitrary JVM marker cannot silently replace the resolved route.
     parsed.jvmArgs.push('-Damcl.graphics.plan=' + graphicsPlanWire)
+    // 用户参数合并后才发布不可变计划，Native 创建 JVM 前独立核验此参数。
+    parsed.jvmArgs.push(INPUT_PLAN_ARG_KEY + inputPlanWire)
 
     // 构建 MC 启动参数。
     //
@@ -819,6 +764,8 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
       classpathDelivery: genDecision.contract.classpathDelivery,
       graphicsPlanWire: graphicsPlanWire,
       graphicsPlan: graphicsPlan,
+      inputPlanWire: inputPlanWire,
+      inputPlan: inputPlan,
       baseGameVersion: resolveInstalledMcVersion(this.mcDir, this.version),
       loaderType: resolveInstalledLoader(this.mcDir, this.version) || 'vanilla',
       loaderVersion: this.loaderVersion_(parsed.libraries),
@@ -918,7 +865,7 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     // 必需文件即使缺失也保留在列表中，由下方 findMissingJars 给出准确诊断；
     // 不能因为扫描目录只看见部分文件，就把不完整部署误判成完整 classpath。
     if (useOhosLwjgl && lwjglJarDir) {
-      let lwjglJars = lwjglSlotClasspath(lwjglJarDir)
+      let lwjglJars = lwjglSlotClasspath(lwjglJarDir, Number(this.jdkVersion))
       for (let jar of lwjglJars) {
         jars.push(jar)
       }
@@ -1501,7 +1448,13 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
       kept.push(va)
     }
     this.alog.info(TAG, `Merged ${userArgs.length} custom JVM arg(s)`, LOG_DOMAIN_LAUNCH)
-    return kept.concat(userArgs)
+    const merged = kept.concat(userArgs)
+    // none 是真实库名，不是静音开关。保留高级用户的显式选择，但留下可操作的诊断。
+    if (merged.includes('-Dorg.lwjgl.openal.libname=none')) {
+      this.alog.warn(TAG, 'OpenAL 库名被设置为 none：LWJGL3 会寻找 libnone.so。'
+        + '若未提供该自定义库，请移除此参数；它不能关闭 Java Sound 或 MIDI。', null, LOG_DOMAIN_LAUNCH)
+    }
+    return merged
   }
 
   /**

@@ -1,0 +1,97 @@
+{
+  "schema": "amcl-mobilegl-program-case-contract/v1",
+  "sceneVersion": 1,
+  "hostMarker": "MOBILEGL_PROGRAM_RESULT",
+  "loaderSource": "tests/graphics-semantics/mobilegl_program_scene.cpp",
+  "loaderMacro": "P_LOAD",
+  "queryKinds": ["uniform-query", "state-query"],
+  "pixelsPerCheck": 64,
+  "channelTolerance": 1,
+  "terminalKind": "mobilegl-program-scene-end",
+  "metadataKinds": ["preexisting-errors", "program-scene-config", "float64-disposition"],
+  "expectationSource": "caller independently binds actual driver feature; never extension token or backend name",
+  "qualificationScope": "fixed monolithic graphics/current and dynamic uint pair; not fullCore/CTS/OHOS",
+  "notRunDomains": ["pipeline", "vertexFloat64", "computeDispatch"],
+  "commonCases": [
+    ["setup", "program-rgba8-fbo"],
+    ["shader", "program-vertex-compile"],
+    ["shader", "program-resource-compile"],
+    ["shader", "program-resource-link"],
+    ["setup", "program-resource-setup"],
+    ["uniform-query", "program-gain-query"],
+    ["uniform-query", "program-sampler-query"],
+    ["pixels", "program-resource-pixel"],
+    ["shader", "program-invalid-compile"],
+    ["shader", "program-failed-link"],
+    ["state-query", "program-failed-current"],
+    ["pixels", "program-failed-current-pixel"],
+    ["api-error", "program-old-location-error"],
+    ["api-error", "program-named-setter-error"],
+    ["state-query", "program-failed-location-error"],
+    ["api-error", "program-failed-reuse-error"],
+    ["api-error", "program-live-ubo-update"],
+    ["pixels", "program-live-ubo-pixel"],
+    ["shader", "program-repeat-invalid-compile"],
+    ["shader", "program-repeat-failed-link"],
+    ["pixels", "program-repeat-failed-pixel"],
+    ["shader", "program-good-recompile"],
+    ["shader", "program-good-relink"],
+    ["setup", "program-relinked-state"],
+    ["pixels", "program-relinked-pixel"],
+    ["pixels", "program-delete-current-pixel"],
+    ["setup", "program-deleted-retired"],
+    ["shader", "float32-companion-compile"],
+    ["shader", "float32-companion-link"],
+    ["setup", "float32-companion-locations"],
+    ["uniform-query", "float32-inputs-gap0"],
+    ["pixels", "float32-pixel-gap0"],
+    ["uniform-query", "float32-inputs-gap1"],
+    ["pixels", "float32-pixel-gap1"],
+    ["shader", "float64-compile"],
+    ["shader", "float64-link"]
+  ],
+  "branches": {
+    "Unsupported": {
+      "counts": {"checks": 40, "queryChecks": 7, "pixelChecks": 9},
+      "coreFP64Qualified": false,
+      "disposition": "limited-rejected",
+      "requiredCases": [
+        ["state-query", "float64-rejected-current"],
+        ["pixels", "float64-rejected-old-pixel"],
+        ["api-error", "float64-rejected-empty-error"]
+      ]
+    },
+    "Supported": {
+      "counts": {"checks": 43, "queryChecks": 8, "pixelChecks": 10},
+      "disposition": "native-values-verified",
+      "requiredCases": [
+        ["setup", "float64-locations"],
+        ["api-error", "float64-use"],
+        ["uniform-query", "float64-inputs-gap1"],
+        ["pixels", "float64-pixel-gap1"],
+        ["uniform-query", "float64-inputs-gap0"],
+        ["pixels", "float64-pixel-gap0"]
+      ]
+    }
+  },
+  "cleanupCases": [["cleanup", "program-owner-retire"]],
+  "inputQueries": {
+    "float32-inputs-gap0": {"expected": [16777217,16777216,0], "guardsIntact": true},
+    "float32-inputs-gap1": {"expected": [16777217,16777216,1], "guardsIntact": true},
+    "float64-inputs-gap1": {"expected": [16777217,16777216,1], "guardsIntact": true},
+    "float64-inputs-gap0": {"expected": [16777217,16777216,0], "guardsIntact": true}
+  },
+  "fixedPixels": {
+    "program-resource-pixel": [0,255,0,255],
+    "program-failed-current-pixel": [0,255,0,255],
+    "program-live-ubo-pixel": [255,0,0,255],
+    "program-repeat-failed-pixel": [255,0,0,255],
+    "program-relinked-pixel": [255,0,0,255],
+    "program-delete-current-pixel": [255,0,0,255],
+    "float32-pixel-gap0": [0,255,0,255],
+    "float32-pixel-gap1": [255,0,0,255],
+    "float64-rejected-old-pixel": [255,0,0,255],
+    "float64-pixel-gap1": [0,255,0,255],
+    "float64-pixel-gap0": [255,0,0,255]
+  }
+}

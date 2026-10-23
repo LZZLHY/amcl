@@ -1,0 +1,127 @@
+/**
+ * 生产owner整表/reader、GLFW getter与其真实resolve caller，连接实际ingress/Core当前快照。
+ * Resolver/Adapter/Window是SDK接缝；队列、元数据接受、Core读锁和getter分支均取生产实现。
+ */
+#include "input_surface_context_snapshot.h"
+#include "input_surface_context_semantics.h"
+#include "input_menu_cursor_snapshot.h"
+#include "platform_input_ingress.h"
+#include "amcl_input_api.h"
+#include "adapters/glfw_typed_input_resolve_guard.h"
+#include <atomic>
+#include <cstddef>
+#include <cstring>
+#include <cstdlib>
+#include <iostream>
+#include <mutex>
+#include <thread>
+#define JNIEXPORT
+#define CHECK(e) do{if(!(e)){std::cerr<<"READER CHECK "<<__LINE__<<": "<<#e<<'\n';std::exit(1);}}while(0)
+#define AMCL_EXTERNAL_LOG_E(...) ((void)0)
+#define AMCL_EXTERNAL_LOG_W(...) ((void)0)
+#define OH_LOG_INFO(...) ((void)0)
+using mc_exit_callback_t=void(*)();
+using GLFW_invoke_CursorPos_func=void(*)(void*,double,double);
+using GLFW_invoke_MouseButton_func=void(*)(void*,int,int,int);
+using GLFW_invoke_Key_func=void(*)(void*,int,int,int,int);
+using GLFW_invoke_Scroll_func=void(*)(void*,double,double);
+using InputBridgeOrderedPump=int(*)(void*,uint64_t);
+namespace amcl::input {
+@PRODUCED_TYPES@
+// Mapper/Sink仅为Adapter接缝的可辨标记，route判定仍使用现役Guard与完整ensure调用者。
+int GlfwOhosInputMapper(){return 0;}
+class GlfwInputAdapter {public:bool ready=false,consumer=false;int sink=0;
+ bool HasConsumer()const{return consumer;}bool IsReady()const{return ready;}
+ GlfwAdapterStatus Close(){ready=false;consumer=false;return GlfwAdapterStatus::kOk;}
+ GlfwAdapterStatus Open(const AmclInputHostApiV1*,int,int kind){sink=kind;ready=true;consumer=true;return GlfwAdapterStatus::kOk;}
+ uint64_t SessionEpoch()const{return 1;}};
+void GlfwApplyCaptureState(int*,bool,bool){}
+}
+using namespace amcl::input;
+@OWNER_TABLE@
+@TAIL_MACRO@
+static const InputBridgeInstanceV1* selectedOwner=nullptr;
+static const InputBridgeInstanceV1* bridgeDelegate(){return selectedOwner;}
+static std::mutex g_inputSurfaceContextMutex;
+static AmclInputSurfaceContextPayload g_inputSurfaceContext{};
+static bool g_hasInputSurfaceContext=false;
+static std::atomic<bool> g_inputSurfaceOwnerBaselineAllowed{false};
+static int ownerReads=0;
+static int ReadOwner(AmclInputSurfaceContextPayload* out){
+ // 确定性try_lock证明owner/Core读在局部cache锁外，不能用sleep或同线程递归锁冒充证据。
+ std::atomic<bool> unlocked{false};std::thread witness([&]{if(g_inputSurfaceContextMutex.try_lock()){
+   unlocked=true;g_inputSurfaceContextMutex.unlock();}});witness.join();CHECK(unlocked.load());
+ ++ownerReads;return amcl_input_owner_read_surface_context(out);
+}
+@BRIDGE_READER@
+@GETTERS@
+static GlfwInputAdapter g_typedInputAdapter;
+static GlfwTypedInputResolveGuard g_typedInputResolveGuard;
+static GlfwAdapterStatus g_typedInputLastOpenStatus=GlfwAdapterStatus::kOk;
+static const AmclInputHostApiV1* g_typedInputHost=nullptr;
+static bool g_typedInputLegacyLatched=false,g_typedInputOpenFailureLogged=false;
+struct SDKWindow {int inputCapture=0;} sdkWindow;
+static SDKWindow* g_currentWindow=&sdkWindow;
+struct SDKAbsoluteRoute {void Reset(){}} g_typedAbsoluteRoute;
+static void glfwOHOS_ResetPreedit(SDKWindow*,bool){}
+static bool retainTypedPresentedInputTarget(){return true;}
+static int typedInputSink(){return 1;}static int typedTextOnlySink(){return 2;}
+static AmclInputHostApiV1 provider{};
+static int resolveStatus=AMCL_INPUT_HOST_DESCRIPTOR_OK;
+static bool resolverHasHost=true;
+static int sdkResolve(const AmclInputHostApiV1** out){*out=resolverHasHost?&provider:nullptr;return resolveStatus;}
+// 宏仅替换外部descriptor resolver接缝，ensure与其Guard的每个生产分支保持原文。
+#define amclInputHostDescriptorResolveV1 sdkResolve
+@CALLER@
+#undef amclInputHostDescriptorResolveV1
+
+static AmclInputSurfaceContextPayload Context(){AmclInputSurfaceContextPayload c{};c.generation=5;c.windowId=8;c.displayId=1;
+ c.leftPx=4;c.topPx=6;c.widthPx=800;c.heightPx=600;c.density=2;c.transform=1;c.refreshRateHz=60;c.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_ALL;return c;}
+static void Route(uint32_t caps,int status=AMCL_INPUT_HOST_DESCRIPTOR_OK,bool hasHost=true){
+ provider.capabilityBits=caps;resolveStatus=status;resolverHasHost=hasHost;(void)ensureTypedInputOpen();}
+static AmclInputSnapshotV1 Snapshot(const AmclInputHostApiV1* api){AmclInputSnapshotV1 s{};s.abiVersion=AMCL_INPUT_HOST_API_VERSION;s.structSize=sizeof(s);CHECK(api->getSnapshot(&s)==AMCL_INPUT_OK);return s;}
+int main(){
+#ifdef _WIN32
+ CHECK(_putenv_s("AMCL_INPUT_SHADOW","")==0);CHECK(_putenv_s("AMCL_GLFW_INPUT_BACKEND","")==0);
+#else
+ CHECK(unsetenv("AMCL_INPUT_SHADOW")==0);CHECK(unsetenv("AMCL_GLFW_INPUT_BACKEND")==0);
+#endif
+ const auto* api=amclInputGetHostApiV1();CHECK(api);
+ AmclInputSurfaceContextPayload out{};CHECK(amcl_input_owner_read_surface_context(&out)==0&&out.generation==0);
+ amcl::input::PlatformInputSurfaceCreated(800,600,99);auto a=Context();CHECK(PlatformInputSurfaceContextChanged(a));
+ PlatformInputDeviceChanged(42,true,AMCL_INPUT_DEVICE_CAP_POINTER_BUTTONS,AMCL_INPUT_DEVICE_CLASS_MOUSE);
+ CHECK(PlatformInputPointerButton(42,1,AMCL_INPUT_ACTION_DOWN,0,AMCL_INPUT_DEVICE_CLASS_MOUSE,1)!=0);
+ PlatformInputCaptureRequested(true);PlatformInputCaptureChanged(true,true,AMCL_INPUT_CAPTURE_REASON_GRANTED);
+ CHECK(PlatformInputTextSessionBegin(55));const auto initial=Snapshot(api);CHECK(initial.heldControlCount==1&&initial.captureActive==1);
+ InputBridgeInstanceV1 owner{};owner.abiVersion=1;owner.structSize=sizeof(owner);owner.readSurfaceContext=ReadOwner;selectedOwner=&owner;
+ CHECK(!glfwOHOS_ReadInputSurfaceContext(nullptr)&&ownerReads==0);
+ // 实际typed caller冷态拒绝从Core越过尚未领取的geometry；输出清零。
+ Route(AMCL_INPUT_CAP_GLFW_TYPED_PHYSICAL_ROUTE);out.generation=999;
+ CHECK(!glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==0);
+ GlfwSurfaceContextSinkEvent event{};event.surfaceContext=a;typedSurfaceContextSink(nullptr,event);
+ auto meta=a;meta.refreshRateHz=120;CHECK(PlatformInputSurfaceContextChanged(meta));
+ CHECK(glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==5&&out.widthPx==800&&out.refreshRateHz==120);
+ CHECK(g_inputSurfaceContext.refreshRateHz==60); // getter不反写有序cache，只有消费sink能换其完整身份。
+ const auto after=Snapshot(api);CHECK(after.heldControlCount==1&&after.captureActive==1&&after.focusEpoch==initial.focusEpoch&&after.surfaceEpoch==initial.surfaceEpoch);
+ CHECK(PlatformInputOwnedTextSessionMatches(55));
+ // Core已有尚未poll的新geometry，getter仍返回实际已领取A；随后真正sink领取B才切换。
+ auto b=meta;b.generation=6;b.widthPx=1000;b.refreshRateHz=144;CHECK(PlatformInputSurfaceContextChanged(b));
+ CHECK(glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==5&&out.widthPx==800&&out.refreshRateHz==60);
+ event.surfaceContext=b;typedSurfaceContextSink(nullptr,event);b.refreshRateHz=180;CHECK(PlatformInputSurfaceContextChanged(b));
+ CHECK(glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==6&&out.widthPx==1000&&out.refreshRateHz==180);
+ b.validFields&=~AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE;b.refreshRateHz=0;CHECK(PlatformInputSurfaceContextChanged(b));
+ CHECK(glfwOHOS_ReadInputSurfaceContext(&out)&&out.refreshRateHz==0&&(out.validFields&AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE)==0);
+ // 旧short/NULLtail没有current能力，不能落到delegate本地那个已拥有数据的Core。
+ glfwOHOS_ClearInputSurfaceContext();Route(0);owner.structSize=offsetof(InputBridgeInstanceV1,readSurfaceContext);
+ out.generation=999;CHECK(!glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==0);
+ owner.structSize=sizeof(owner);owner.readSurfaceContext=nullptr;CHECK(!glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==0);
+ owner.readSurfaceContext=ReadOwner;CHECK(glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==6&&out.widthPx==1000);
+ glfwOHOS_ClearInputSurfaceContext();Route(AMCL_INPUT_CAP_TEXT_INPUT_SESSION);
+ CHECK(g_typedInputAdapter.sink==2&&glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==6);
+ Route(AMCL_INPUT_CAP_GLFW_TYPED_PHYSICAL_ROUTE);glfwOHOS_ClearInputSurfaceContext();CHECK(!glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==0);
+ Route(0,AMCL_INPUT_HOST_DESCRIPTOR_ERROR_MALFORMED);CHECK(!glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==0);
+ Route(0,AMCL_INPUT_HOST_DESCRIPTOR_OK,false);CHECK(!glfwOHOS_ReadInputSurfaceContext(&out)&&out.generation==0);
+ CHECK(api->endSession(initial.sessionEpoch)==AMCL_INPUT_OK);out.generation=999;
+ CHECK(inputBridge_readSurfaceContextV1(&out)==0&&out.generation==0);
+ std::cout<<"PASS actual owner/Core/GLFW getter/caller: fresh same-id Hz, ordered geometry, legacy/textOnly cold baseline, typed/unknown unavailable, optional-tail isolation, held/capture/text preserved\n";
+}

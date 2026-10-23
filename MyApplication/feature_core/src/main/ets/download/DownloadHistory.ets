@@ -14,7 +14,7 @@
 
 import { formatBytes } from './DownloadManager';
 import { formatDurationMs } from 'commons';
-import { ledgerList, ledgerManifest, LedgerState, LedgerManifest } from 'commons';
+import { ledgerList, ledgerManifest, ledgerListAsync, ledgerManifestAsync, LedgerState, LedgerManifest, LedgerEntry } from 'commons';
 import { DownloadTask } from './DownloadTask';
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
@@ -31,6 +31,8 @@ const TAG = 'DownloadHistory';
  * 旧记录无 category 字段 → 反序列化时按 loaderType 推断回填（见 deserializeRecord）。
  */
 export class ActivityCategory {
+  static readonly APP_UPDATE: string = 'app_update'; // 从更新意图到新进程核实的整轮活动。
+  static readonly APP_UPDATE_DOWNLOAD: string = 'app_update_download'; // 统一队列中的安装包下载子活动。
   static readonly DOWNLOAD:        string = 'download';        // MC 版本下载（含加载器）
   static readonly MOD_INSTALL:     string = 'mod_install';     // 模组/资源包/光影/数据包安装
   static readonly LAUNCH:          string = 'launch';          // 启动游戏
@@ -38,6 +40,8 @@ export class ActivityCategory {
   static readonly JDK:             string = 'jdk';             // JDK 下载/删除
   static readonly ACCOUNT:         string = 'account';         // 账户添加/登录/删除
   static readonly MODPACK:         string = 'modpack';         // 整合包安装（创建一个新版本）
+  /** 游戏包导出有自己的文件写入终态，不能复用下载成功来表示已保存目标。 */
+  static readonly GAME_EXPORT:     string = 'game_export';
   // 扩展档（按需）
   static readonly VERSION_MANAGE:  string = 'version_manage';  // 版本删除/重命名
   static readonly RESOURCE_MANAGE: string = 'resource_manage'; // 模组启停/删除/更新、存档导入导出
@@ -87,6 +91,8 @@ export interface DownloadHistoryRecord {
   endedAt?: number;         // ms；缺省 = startedAt + durationMs（方案 A 时间窗取日志用）
   title?: string;           // 展示主标题；缺省回退 versionName
   subtitle?: string;        // 展示副标题（加载器+版本 / 资源类型 / 设备 等）
+  /** 只关联私有导出记录的任务 ID；完整请求、目标 URI 和恢复材料不进入活动展示摘要。 */
+  exportTaskId?: string;
   errorKind?: string;       // McErrorClassifier errorKind（启动失败时）
   errorCategory?: string;   // McErrorClassifier category
   uploadedLogId?: string;   // 已上传到 web 返回的 log id；非空 = 已上传（去重 + UI 标记）
@@ -116,6 +122,13 @@ export interface DownloadHistoryRecord {
 
 /** 活动记录类型别名（新代码统一用此名；与 DownloadHistoryRecord 同构，过渡期并存）。 */
 export type ActivityRecord = DownloadHistoryRecord;
+
+/** 同一轮页面只读结果；目录身份、占用和真实结局一起发布，不由行 build 临时扫描磁盘。 */
+export interface DownloadHistoryReadSnapshot {
+  records: DownloadHistoryRecord[];
+  ledgerIds: number[];
+  ledgerBytes: number;
+}
 
 /** 旧活动记录已离开 LRU 时，从持久账本恢复可查看的入口。 */
 function historyRecordFromLedger(m: LedgerManifest): DownloadHistoryRecord {
@@ -392,6 +405,11 @@ export function deserializeRecord(json: string): DownloadHistoryRecord | null {
   if (typeof ti === 'string' && (ti as string).length > 0) result.title = ti as string;
   let st = obj['subtitle'];
   if (typeof st === 'string') result.subtitle = st as string;
+  // 导出结果通过已持久化的任务重入。只接受受控文件名身份，不将历史正文拼为任意路径。
+  const exportTaskId = obj['exportTaskId'];
+  if (typeof exportTaskId === 'string' && /^[0-9]+-[a-zA-Z0-9-]+$/.test(exportTaskId)) {
+    result.exportTaskId = exportTaskId;
+  }
   let ek = obj['errorKind'];
   if (typeof ek === 'string') result.errorKind = ek as string;
   let ec = obj['errorCategory'];
@@ -574,7 +592,56 @@ export class DownloadHistoryStore {
     await this.commit_((draft: DownloadHistoryLru): void => { draft.clear(); });
   }
 
-  /** 当前所有记录的副本（最新 → 最老） */
+  /**
+   * 首帧只读已持久化的 LRU 副本，不探测磁盘或把派生索引当最终结局。
+   * 完整历史视图由 readSnapshotAsync 读取实际清单后原子发布，首帧数据仅为加载期旧视图。
+   */
+  listStored(): DownloadHistoryRecord[] { return this.lru_.list(); }
+
+  /**
+   * 页面完整只读投影：索引与清单均使用真正异步 IO，每批最多八份清单，批次之间让出
+   * UI 事件循环。取消抛出而非发布部分/假空结果；不归档、不封账、不修改历史原件。
+   * IO 结束后重新取得当前耐久 LRU，保留读取期间的新提交；按活动 ID 合并实际结局，
+   * 与同步 list 使用同一 withLedgerOutcome_，保留分享、AI、下载统计和父子关系。
+   */
+  async readSnapshotAsync(cancelled: () => boolean): Promise<DownloadHistoryReadSnapshot> {
+    if (cancelled()) throw new Error('活动列表读取已取消');
+    const entries: LedgerEntry[] = this.filesDir_.length > 0 ? await ledgerListAsync(this.filesDir_, cancelled) : [];
+    const manifests: LedgerManifest[] = [];
+    for (let start: number = 0; start < entries.length; start += 8) {
+      if (cancelled()) throw new Error('活动列表读取已取消');
+      const batch: (LedgerManifest | null)[] = await Promise.all(entries.slice(start, start + 8)
+        .map((entry: LedgerEntry): Promise<LedgerManifest | null> => ledgerManifestAsync(this.filesDir_, entry.activityId)));
+      if (cancelled()) throw new Error('活动列表读取已取消');
+      for (const manifest of batch) if (manifest !== null) manifests.push(manifest);
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
+    }
+    if (cancelled()) throw new Error('活动列表读取已取消');
+    const records: DownloadHistoryRecord[] = this.lru_.list();
+    const positions: Map<number, number> = new Map<number, number>();
+    records.forEach((record: DownloadHistoryRecord, index: number): void => { positions.set(record.startedAt, index); });
+    // 复制/结局合并也有批次预算，不能在异步读取结束的一个Promise回调中加工全部历史。
+    for (let start: number = 0; start < manifests.length; start += 32) {
+      if (cancelled()) throw new Error('活动列表读取已取消');
+      for (const manifest of manifests.slice(start, start + 32)) {
+        const position: number | undefined = positions.get(manifest.activityId);
+        if (position !== undefined) records[position] = this.withLedgerOutcome_(records[position], manifest);
+        else {
+          positions.set(manifest.activityId, records.length);
+          records.push(historyRecordFromLedger(manifest));
+        }
+      }
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
+    }
+    if (cancelled()) throw new Error('活动列表读取已取消');
+    return { records: records.sort((a: DownloadHistoryRecord, b: DownloadHistoryRecord): number => b.startedAt - a.startedAt),
+      ledgerIds: entries.map((entry: LedgerEntry): number => entry.activityId),
+      // 任一目录统计未知时不能把已知部分伪装成完整总占用；沿用页面-1“暂不可读”状态。
+      ledgerBytes: entries.some((entry: LedgerEntry): boolean => entry.bytesState === 'unknown') ? -1
+        : entries.reduce((sum: number, entry: LedgerEntry): number => sum + entry.bytes, 0) };
+  }
+
+  /** 当前所有记录的副本（最新 → 最老）；保留原同步兼容入口，页面首开使用异步投影。 */
   list(): DownloadHistoryRecord[] {
     const records = this.lru_.list();
     // 账本是日志入口的事实源，不能被通用活动 LRU 挤掉。

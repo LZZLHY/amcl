@@ -18,9 +18,10 @@
 
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
+import { ProcessActivityCoordinator } from './ProcessActivityCoordinator';
 import {
   UnifiedDownloadAdapter, UnifiedTaskView, UnifiedTaskState,
-  isInProgressState, isTerminalState, aggregateProgress, TaskCategory,
+  isInProgressState, isTerminalState, aggregateProgress, TaskCategory, TaskRetryStrategy,
 } from './UnifiedDownloadTask';
 
 const TAG = 'DownloadTaskRegistry';
@@ -51,6 +52,10 @@ export class DownloadTaskRegistry {
 
   /** id -> adapter 映射（id 是 adapter.view.id） */
   private adapters_: Map<string, UnifiedDownloadAdapter> = new Map();
+  /** 等待旧 Native 释放的准入预约；异步等待期间同 ID 仍只能有一个候选 owner。 */
+  private admissions_: Map<string, UnifiedDownloadAdapter> = new Map();
+  /** 排队取消也可能清理持久现场，结束前不允许 retry/remove/同 ID 入队。 */
+  private queuedCancellations_: Map<string, Promise<void>> = new Map();
   /** 维持插入顺序的 id 数组（Map.values() 顺序在 ArkTS 严格模式下不保证） */
   private orderedIds_: string[] = [];
   private listeners_: RegistryListener[] = [];
@@ -61,14 +66,49 @@ export class DownloadTaskRegistry {
   private pendingStarts_: Map<string, PendingStart> = new Map();
   /** 同一队列同时出队的任务也必须有不同的毫秒活动主键。 */
   private lastActivityAt_: number = 0;
+  /** 重试准入反馈属于原请求代次；迟到拒绝不能覆盖同 adapter 后来一次尝试的提示。 */
+  private retryFeedback_: Map<string, number> = new Map();
+  private nextRetryFeedback_: number = 0;
   /** 依赖任务的 UI 身份归属。成员可独立展示，但执行、取消、重试仍由整组 owner 统一负责。 */
   private attachedOwners_: Map<string, string> = new Map();
+  /** 应用覆盖安装持有的空闲租约；含解压/验证/processor 阶段，不能只观察 Native 下载终态。 */
+  private replacementHeld_: boolean = false;
+  private acquireFileLease_: (() => number) | undefined = undefined;
+  private releaseFileLease_: ((token: number) => void) | undefined = undefined;
+  /** Entry注入进程内真实Native共享租约，HAR不反向依赖libentry或UIContext。 */
+  setFileLeaseProvider(acquire: () => number, release: (token: number) => void): void {
+    this.acquireFileLease_ = acquire; this.releaseFileLease_ = release;
+  }
+  /** 终态只开放适配器已声明的恢复方式，generic取消不得提升执行能力。 */
+  private enableRecovery_(adapter: UnifiedDownloadAdapter): void {
+    const strategy = adapter.retryStrategy ?? TaskRetryStrategy.INTERNAL;
+    adapter.view.retryStrategy = strategy;
+    adapter.view.canRetry = strategy === TaskRetryStrategy.INTERNAL;
+    adapter.view.canRecoverExternally = strategy === TaskRetryStrategy.EXTERNAL_UPDATE || strategy === TaskRetryStrategy.EXTERNAL_EXPORT;
+  }
+
+  /** 在同一 ArkTS 事件循环内原子检查并封住新入队，返回幂等释放函数。 */
+  acquireReplacementLease(): () => void {
+    if (this.replacementHeld_ || this.activeCount() > 0 || this.waitingCount() > 0 ||
+      this.runningIds_.length > 0 || this.pendingStarts_.size > 0 || this.admissions_.size > 0 || this.queuedCancellations_.size > 0) {
+      throw new Error('下载、解压或文件安装任务尚未结束，请完成后再更新应用');
+    }
+    this.replacementHeld_ = true;
+    let released = false;
+    return (): void => { if (!released) { released = true; this.replacementHeld_ = false; } };
+  }
 
   static instance(): DownloadTaskRegistry {
     if (!DownloadTaskRegistry._instance) {
       DownloadTaskRegistry._instance = new DownloadTaskRegistry();
     }
     return DownloadTaskRegistry._instance;
+  }
+
+  /** 更新父活动与其下载子任务共用单调主键分配器，避免同毫秒与并行 JDK/游戏包下载撞账。 */
+  reserveActivityId(minimum: number = 0): number {
+    this.lastActivityAt_ = Math.max(Date.now(), this.lastActivityAt_ + 1, minimum);
+    return this.lastActivityAt_;
   }
 
   // ============================================================
@@ -79,10 +119,27 @@ export class DownloadTaskRegistry {
    * 把 adapter 加入 FIFO 队列。最多同时运行 maxConcurrent 个任务；返回 Promise reflect 终态。
    */
   enqueue(adapter: UnifiedDownloadAdapter): Promise<void> {
+    // 排队、旧 Native 等待及整个 action 都是持续任务。同步占位封住共享游戏准入窗口；
+    // 仅 Promise 真正结束才释放，不依据 view.state 或下载 complete 回调。
+    let release: (() => void) | undefined = undefined;
+    try {
+      release = ProcessActivityCoordinator.instance().acquireFileTask('下载或安装任务');
+      return this.enqueueInternal_(adapter).finally(release);
+    } catch (error) {
+      if (release !== undefined) release();
+      return Promise.reject(error as Error);
+    }
+  }
+
+  /** 原入队算法；外层预约同时覆盖异步旧 owner 清理等待。 */
+  private enqueueInternal_(adapter: UnifiedDownloadAdapter): Promise<void> {
+    if (this.replacementHeld_) return Promise.reject(new Error('应用正在更新，暂不可开始文件任务'));
     let id = adapter.view.id;
     if (id.length === 0) {
       return Promise.reject(new Error('adapter.view.id 不能为空'));
     }
+    if (this.admissions_.has(id)) return Promise.reject(new Error('任务正在等待旧下载资源释放：' + adapter.view.title));
+    if (this.queuedCancellations_.has(id)) return Promise.reject(new Error('任务仍在结束：' + adapter.view.title));
 
     let existing = this.adapters_.get(id);
     if (existing) {
@@ -98,7 +155,11 @@ export class DownloadTaskRegistry {
       if (!this.tryPurgeNativeOwner_(id, existing)) {
         let pendingAdapter: UnifiedDownloadAdapter = adapter;
         let staleAdapter: UnifiedDownloadAdapter = existing;
-        return this.purgeThenEnqueue_(id, pendingAdapter, staleAdapter);
+        // 在第一个 await 前预约 ID。释放资源的等待者也是 owner，后到者不能绕过它。
+        this.admissions_.set(id, pendingAdapter);
+        return this.purgeThenEnqueue_(id, pendingAdapter, staleAdapter).finally((): void => {
+          if (this.admissions_.get(id) === pendingAdapter) this.admissions_.delete(id);
+        });
       }
       this.removeInternal_(id);
     }
@@ -133,8 +194,13 @@ export class DownloadTaskRegistry {
 
   /** 真正落地入队（adapters_ 登记 + waiting/pending 配对 + drain）。 */
   private commitEnqueue_(id: string, adapter: UnifiedDownloadAdapter): Promise<void> {
+    if (this.replacementHeld_) return Promise.reject(new Error('应用正在更新，暂不可开始文件任务'));
+    // 异步 purge 后必须重新检查，不得把另一个新任务当作已删除的 stale 直接覆盖。
+    if (this.adapters_.has(id)) return Promise.reject(new Error('任务已被新的下载占用：' + adapter.view.title));
     this.adapters_.set(id, adapter);
     this.orderedIds_.push(id);
+    adapter.view.retryStrategy = adapter.retryStrategy ?? TaskRetryStrategy.INTERNAL;
+    adapter.view.canRecoverExternally = false;
     adapter.view.state = UnifiedTaskState.WAITING;
     adapter.view.progress = 0;
     adapter.view.queuePosition = 0;
@@ -193,6 +259,23 @@ export class DownloadTaskRegistry {
   }
 
   cancel(id: string, cleanupFiles: boolean = false): Promise<void> {
+    // 排队取消先拒绝原 enqueue Promise，再异步清理；独立预约覆盖取消真正收口，
+    // 防止列表已显示 Aborted 时共享游戏插入并在退出时终止文件清理。
+    let release: (() => void) | undefined = undefined;
+    try {
+      release = ProcessActivityCoordinator.instance().acquireFileTask('文件任务清理');
+      return this.cancelInternal_(id, cleanupFiles).finally(release);
+    } catch (error) {
+      if (release !== undefined) release();
+      return Promise.reject(error as Error);
+    }
+  }
+
+  /** 原取消算法；外层只管理进程生存期预约，不改变任务归属与错误处理。 */
+  private cancelInternal_(id: string, cleanupFiles: boolean = false): Promise<void> {
+    if (this.replacementHeld_) return Promise.reject(new Error('应用正在更新，暂不可修改文件任务'));
+    let cancelling = this.queuedCancellations_.get(id);
+    if (cancelling !== undefined) return cancelling;
     const ownerId = this.attachedOwners_.get(id);
     if (ownerId !== undefined) return this.cancel(ownerId, cleanupFiles);
     let a = this.adapters_.get(id);
@@ -214,20 +297,22 @@ export class DownloadTaskRegistry {
       a.view.canCancel = false;
       a.view.canPause = false;
       a.view.canResume = false;
-      a.view.canRetry = true;
+      a.view.canRetry = false;
       let adapter: UnifiedDownloadAdapter = a;
-      try {
-        adapter.cancel(cleanupFiles).catch((e: Error): void => {
-          AppLogger.warn(TAG, `cancel(queued) adapter rejected id=${id}`, e, LOG_DOMAIN_DOWNLOAD);
+      // 先登记取消 owner，再调用可能同步通知的 adapter，避免重入启动下一轮。
+      let completion = Promise.resolve().then((): Promise<void> => adapter.cancel(cleanupFiles))
+        .catch((e: Error): void => { adapter.view.errorMessage = e.message; })
+        .finally((): void => {
+          this.queuedCancellations_.delete(id);
+          this.enableRecovery_(adapter);
+          this.notify();
         });
-      } catch (e) {
-        AppLogger.warn(TAG, `cancel(queued) adapter threw id=${id}`, e as Error, LOG_DOMAIN_DOWNLOAD);
-      }
+      this.queuedCancellations_.set(id, completion);
       if (pending) pending.reject(new Error('已取消'));
       this.updateQueuePositions_();
       this.notify();
       this.drainQueue_();
-      return Promise.resolve();
+      return completion;
     }
     return a.cancel(cleanupFiles).then(() => this.notify());
   }
@@ -263,23 +348,58 @@ export class DownloadTaskRegistry {
       AppLogger.warn(TAG, `retry ignored: adapter not found id=${id}`, null, LOG_DOMAIN_DOWNLOAD);
       return Promise.resolve();
     }
+    if ((a.retryStrategy ?? TaskRetryStrategy.INTERNAL) !== TaskRetryStrategy.INTERNAL) {
+      // 应用更新和导出都必须重走完整业务流程，保留既有自更新恢复契约中的明确提示。
+      return Promise.reject(new Error('此任务需要通过原业务入口重新检查，完成完整流程后恢复'));
+    }
     if (!a.view.canRetry) {
       AppLogger.warn(TAG,
         `retry ignored: canRetry=false id=${id} state=${a.view.state}`, null, LOG_DOMAIN_DOWNLOAD);
       return Promise.resolve();
     }
     let adapter: UnifiedDownloadAdapter = a;
+    const feedback: number = ++this.nextRetryFeedback_;
+    this.retryFeedback_.set(id, feedback);
+    const previousState: string = adapter.view.state;
+    const previousActivity: number = adapter.view.startedAtMs;
+    let invoked: boolean = false;
     // 在出队重设 startedAtMs 之前保存上次尝试身份；暂停恢复不建立新的重试关系。
     adapter.view.parentActivityId = adapter.view.startedAtMs;
     adapter.view.activityRelation = 'retry';
     return this.scheduleAction_(id, UnifiedTaskState.PREPARING,
-      (): Promise<void> => adapter.retry(), true).catch((e: Error) => {
+      (): Promise<void> => { invoked = true; return adapter.retry(); }, true).catch((e: Error) => {
       AppLogger.warn(TAG, `retry id=${id} threw`, e, LOG_DOMAIN_DOWNLOAD);
+      // Sheet 不等待 retry Promise。尚未入队/执行的准入拒绝必须投影到原卡片，而不能
+      // 只写日志；保留原 state/canRetry，不把“游戏正在运行”伪装成新下载尝试失败。
+      // 四重身份约束排除新 adapter、新请求代次、新活动和已调度后继；旧 catch 即使
+      // 晚到，也不能覆盖另一次正在运行或已经完成的尝试所发布的错误与进度。
+      if (!invoked && this.adapters_.get(id) === adapter && this.retryFeedback_.get(id) === feedback &&
+          adapter.view.state === previousState && adapter.view.startedAtMs === previousActivity &&
+          !this.pendingStarts_.has(id) && this.runningIds_.indexOf(id) < 0 && this.waitingIds_.indexOf(id) < 0) {
+        adapter.view.errorMessage = e.message;
+      }
       this.notify();
+    }).finally((): void => {
+      if (this.retryFeedback_.get(id) === feedback) this.retryFeedback_.delete(id);
     });
   }
 
   private scheduleAction_(id: string, startState: string, action: () => Promise<void>, newAttempt: boolean = false): Promise<void> {
+    // resume/retry 不一定经过 enqueue；在任何状态改写和 action 调度前同样同步预约。
+    let release: (() => void) | undefined = undefined;
+    try {
+      release = ProcessActivityCoordinator.instance().acquireFileTask('下载或安装任务');
+      return this.scheduleReservedAction_(id, startState, action, newAttempt).finally(release);
+    } catch (error) {
+      if (release !== undefined) release();
+      return Promise.reject(error as Error);
+    }
+  }
+
+  /** 原 FIFO 调度；调用方保留持续预约直到实际 action 的 finally 结束。 */
+  private scheduleReservedAction_(id: string, startState: string, action: () => Promise<void>, newAttempt: boolean = false): Promise<void> {
+    if (this.replacementHeld_) return Promise.reject(new Error('应用正在更新，暂不可恢复文件任务'));
+    if (this.queuedCancellations_.has(id)) return Promise.reject(new Error('任务仍在取消收尾，请稍后重试'));
     let a = this.adapters_.get(id);
     if (!a) return Promise.reject(new Error('任务不存在: ' + id));
     if (this.pendingStarts_.has(id) || this.runningIds_.indexOf(id) >= 0) {
@@ -345,7 +465,7 @@ export class DownloadTaskRegistry {
           orphanAdapter.view.errorMessage = '任务调度状态失步，请重试';
           orphanAdapter.view.queuePosition = 0;
           orphanAdapter.view.canCancel = false;
-          orphanAdapter.view.canRetry = true;
+          this.enableRecovery_(orphanAdapter);
         }
         AppLogger.warn(TAG,
           `drainQueue_: waiting/pending desync for id=${id}; forced to ERROR so it stays retryable`,
@@ -366,20 +486,26 @@ export class DownloadTaskRegistry {
       this.runningIds_.push(id);
       adapter.view.queuePosition = 0;
       if (pending.newAttempt || adapter.view.startedAtMs <= 0) {
-        adapter.view.startedAtMs = Math.max(Date.now(), this.lastActivityAt_ + 1);
-        this.lastActivityAt_ = adapter.view.startedAtMs;
+        adapter.view.startedAtMs = this.reserveActivityId();
       }
       adapter.view.state = pending.startState;
       // 2026-08-04：一个**即将开始跑**的任务不该还挂着"重试"按钮。
       // 原来没人复位它：adapter 在失败终态里把 canRetry 置 true，重试后又没人置回 false，
       // 于是运行中的卡片一直显示可点的重试按钮，点下去只会撞 scheduleAction_ 的重入守卫。
-      adapter.view.canRetry = false;
+      adapter.view.canRetry = false; adapter.view.canRecoverExternally = false;
       this.updateQueuePositions_();
       this.notify();
       let actionPromise: Promise<void>;
+      let fileLease = 0;
+      let completionError: Error | undefined = undefined;
+      let completionSucceeded = false;
       AppLogger.info(TAG, `drainQueue_: invoking action for id=${id} startState=${pending.startState}`,
         LOG_DOMAIN_DOWNLOAD);
       try {
+        if (this.acquireFileLease_ !== undefined) {
+          fileLease = this.acquireFileLease_();
+          if (fileLease <= 0) throw new Error('应用安装尚未核实或游戏文件正在更新，暂不可开始文件任务');
+        }
         actionPromise = pending.action();
       } catch (e) {
         let syncError = e as Error;
@@ -396,14 +522,15 @@ export class DownloadTaskRegistry {
         adapter.view.canCancel = false;
         adapter.view.canPause = false;
         adapter.view.canResume = false;
-        adapter.view.canRetry = true;
+        this.enableRecovery_(adapter);
+        if (fileLease > 0) this.releaseFileLease_?.(fileLease);
         pending.reject(syncError);
         AppLogger.warn(TAG, `task id=${id} threw before returning Promise`, syncError, LOG_DOMAIN_DOWNLOAD);
         this.notify();
         continue;
       }
       actionPromise.then((): void => {
-        pending.resolve();
+        completionSucceeded = true;
       }).catch((e: Error): void => {
         AppLogger.warn(TAG, `task id=${id} rejected`, e, LOG_DOMAIN_DOWNLOAD);
         // ⚠️ 2026-08-04：异步 reject 必须和上面的同步 throw 分支**对称**地兜住终态。
@@ -431,17 +558,21 @@ export class DownloadTaskRegistry {
           adapter.view.canCancel = false;
           adapter.view.canPause = false;
           adapter.view.canResume = false;
-          adapter.view.canRetry = true;
+          this.enableRecovery_(adapter);
           AppLogger.warn(TAG,
             `task id=${id} rejected without a terminal state; forced to ERROR so it stays `
             + 'retryable and removable', null, LOG_DOMAIN_DOWNLOAD);
         }
-        pending.reject(e);
+        completionError = e;
       }).finally((): void => {
+        if (fileLease > 0) this.releaseFileLease_?.(fileLease);
         let runningIndex = this.runningIds_.indexOf(id);
         if (runningIndex >= 0) this.runningIds_.splice(runningIndex, 1);
         this.notify();
         this.drainQueue_();
+        // 调用方的await只能在实际执行/Native租约收尾之后返回，避免抢到假空闲安装窗口。
+        if (completionError !== undefined) pending.reject(completionError);
+        else if (completionSucceeded) pending.resolve();
       });
     }
     this.updateQueuePositions_();
@@ -456,6 +587,8 @@ export class DownloadTaskRegistry {
 
   /** 主动把已 finalize 的任务从清单移除（用户点"清理"） */
   remove(id: string): void {
+    if (this.replacementHeld_) return;
+    if (this.queuedCancellations_.has(id) || this.admissions_.has(id)) return;
     let a = this.adapters_.get(id);
     if (!a) return;
     if (!isTerminalState(a.view.state)) {
@@ -469,6 +602,7 @@ export class DownloadTaskRegistry {
 
   /** 一键清理所有终态任务；逐项确认 native owner 已 purge 后再 dispose adapter。 */
   purgeFinished(): number {
+    if (this.replacementHeld_) return 0;
     let removed = 0;
     let terminalIds: string[] = [];
     for (let id of this.orderedIds_) {

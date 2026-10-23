@@ -16,6 +16,8 @@ export interface GraphicsRecoveryFailure {
 export interface GraphicsRuntimeState {
   pid: number; profile: string; provider: string; apiFamily: string; presentCount: number; failureSequence: number;
   failureStage: string; failureCode: number; failurePresentCount: number; surfaceGeneration: number;
+  /** 由本进程 Native owner 回报；缺失不表示允许持续采样或输出。 */
+  samplesEnabled?: boolean;
 }
 export interface GraphicsRecoveryDispatch { rootActivityId: number; attempt: number; profile: string; diagnosticInjected?: boolean; }
 
@@ -85,7 +87,8 @@ export function parseGraphicsRuntimeState(wire: string): GraphicsRuntimeState | 
       apiFamily: typeof value['apiFamily'] === 'string' ? value['apiFamily'] as string : 'UNKNOWN',
       presentCount: value['presentCount'] as number, failureSequence: value['failureSequence'] as number,
       failureStage: value['failureStage'] as string, failureCode: value['failureCode'] as number,
-      failurePresentCount: value['failurePresentCount'] as number, surfaceGeneration: value['surfaceGeneration'] as number
+      failurePresentCount: value['failurePresentCount'] as number, surfaceGeneration: value['surfaceGeneration'] as number,
+      samplesEnabled: value['samplesEnabled'] === true
     };
     return state;
   } catch (_) { return undefined; }

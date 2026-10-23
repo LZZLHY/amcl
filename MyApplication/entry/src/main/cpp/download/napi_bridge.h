@@ -19,6 +19,22 @@
 
 namespace download {
 
+/**
+ * 错误的值快照：在持有任务/文件错误的调用线程复制一次，TSFN 只传递这个副本。
+ * complete、query、list 和 failedFiles 必须走同一序列化函数，避免授权恢复事实
+ * 只出现在某个出口。detail 保留 DownloadException 的原始口径，尤其 bytes_written
+ * 不是新定义的持久化字节数；这里不根据显示文字推断 needs_new_lease。
+ */
+struct DownloadErrorSnapshot {
+    bool has_error = false;
+    DownloadException detail;
+
+    static DownloadErrorSnapshot Capture(const DownloadExceptionPtr& error);
+};
+
+/** 仅在有效 JS 线程/env 中调用；无错误返回 null，不暴露任何 Bearer/授权正文。 */
+napi_value createDownloadErrorSnapshot(napi_env env, const DownloadErrorSnapshot& snapshot);
+
 class NapiProgressBridge : public std::enable_shared_from_this<NapiProgressBridge> {
 public:
     static std::shared_ptr<NapiProgressBridge> Create(

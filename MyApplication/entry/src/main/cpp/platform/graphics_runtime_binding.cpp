@@ -1,5 +1,6 @@
 // 冻结 provider 的唯一实现位于中立 libamcl_graphics_runtime。环境仅用于首次输入，之后不参与每帧分派。
 #include "graphics_runtime_binding.h"
+#include "graphics_runtime_service.h"
 #include "graphics_bootstrap.h"
 #include "system_gl_dispatch.h"
 #include "gl_host.h"
@@ -30,13 +31,8 @@ const GraphicsRuntimeBinding* localBound() {
 }
 // 同一DSO可能被OHOS的另一个linker namespace再次装入。GPU绑定必须仍归首个服务owner；
 // 表仅含C ABI字段，先校验PID/版本/布局再调用，旧进程的表绝不能在fork后复用。
-struct RuntimeService {
-    uint32_t size, abi, publicApiSize;
-    int pid;
-    int (*bind)(const char*, const char*, char*, int);
-    const AmclGraphicsRuntimeV1* (*bound)();
-};
-constexpr const char* serviceEnv = "AMCL_GRAPHICS_RUNTIME_SERVICE_V2";
+using RuntimeService = AmclGraphicsRuntimeServiceV2;
+constexpr const char* serviceEnv = AMCL_GRAPHICS_RUNTIME_SERVICE_ENV;
 std::atomic<const RuntimeService*> cachedService{nullptr};
 int bindLocal(const char* profile, const char* api, char* output, int capacity) {
     std::string error;
@@ -79,8 +75,7 @@ const RuntimeService* service(bool create, std::string* error = nullptr) {
         delete candidate; return reject(ownerPid != pid ? "graphics_binding_inherited_requires_restart" : "graphics_runtime_service_invalid");
     }
     const auto* owner = static_cast<const RuntimeService*>(address);
-    if (owner->size < sizeof(RuntimeService) || owner->abi != 2 || owner->publicApiSize < sizeof(AmclGraphicsRuntimeV1) ||
-        owner->pid != pid || !owner->bind || !owner->bound) {
+    if (!ValidGraphicsRuntimeServiceV2(owner, pid)) {
         if (owner != candidate) delete candidate;
         return reject("graphics_runtime_service_abi_mismatch");
     }
@@ -242,6 +237,11 @@ bool freezeLocal(const char* id, const char* api, std::string& error) {
     if (!GraphicsProfileStringEqual(metadata->api, "VULKAN")) {
         value->contextOperations = FindEglContextOperations(metadata->id);
         if (!value->contextOperations) { error = "graphics_context_implementation_missing"; return false; }
+        // 创建 owner 与跨映像只读视图都按同一公开 client API 解释请求。注册表镜像或
+        // 实现表若遗漏同步，在任何 provider/驱动副作用前拒绝，不能发布两种身份。
+        if (value->contextOperations->desktopApi != value->desktopGl()) {
+            error = "graphics_context_api_contract_mismatch"; return false;
+        }
         value->glLibrary = metadata->systemLibrary ? dlopen(metadata->glLibName, RTLD_NOW | RTLD_LOCAL) :
             openSibling(value->is("mobileglues") ? "libamcl_gl_host.so" : metadata->glLibName);
         value->eglLibrary = translatorsOwnSymbols(*value) ? value->glLibrary : dlopen("libEGL.so", RTLD_NOW | RTLD_LOCAL);
@@ -318,10 +318,14 @@ void* providerProc(const char* name) { const auto* r = localBound(); return r ? 
 int contextOperation(uint32_t operation, AmclGraphicsContextStateV1* state, uint32_t size,
     const AmclGraphicsContextRequestV1* request, int32_t tid, char* output, uint32_t capacity) {
     const auto* r = localBound(); std::string error; bool ready = false;
-    const bool valid = r && r->contextOperations && state && size >= sizeof(*state) && tid > 0;
+    const bool valid = r && r->contextOperations && state && size >= sizeof(*state) &&
+        (operation == AMCL_CONTEXT_QUERY_DISPLAY || tid > 0);
     try {
         if (!valid) error = "graphics_context_abi_or_owner_invalid";
-        else if (operation == AMCL_CONTEXT_CREATE && request) {
+        else if (operation == AMCL_CONTEXT_QUERY_DISPLAY) {
+            // 查询只触碰调用者的临时输出，不修改实际窗口/线程状态，也不进入驱动。
+            state->display = InitializedEglDisplay(*r); ready = true;
+        } else if (operation == AMCL_CONTEXT_CREATE && request) {
             const amcl::desktop::ContextRequest q{request->major, request->minor, request->profile, request->forward != 0};
             ready = r->contextOperations->create(*r, *state, q, tid, error);
         } else if (operation == AMCL_CONTEXT_ATTACH && request)
@@ -351,6 +355,10 @@ bool FreezeGraphicsRuntime(const char* id, const char* api, std::string& error) 
     if (!value) { error = "graphics_binding_owner_missing"; return false; }
     char encoded[96]; std::snprintf(encoded, sizeof(encoded), "1:%d:%p", value->processId,
         static_cast<const void*>(value->delegate ? value->delegate : &value->publicApi));
+    // 描述符是本 PID 的进程常量：启动时 mc_launcher 首次冻结即已发布（早于 JVM）。之后其他映像
+    // 或 glfwInit 再冻结同一绑定时内容恒等，直接返回，不在游戏线程上重复 setenv（I27-05）。
+    if (const char* published = std::getenv(AMCL_GRAPHICS_RUNTIME_ENV);
+        published && std::strcmp(published, encoded) == 0) return true;
 #if defined(_WIN32)
     const int published = _putenv_s(AMCL_GRAPHICS_RUNTIME_ENV, encoded);
 #else

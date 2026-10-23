@@ -1,0 +1,336 @@
+{
+  "schema": "amcl-mobilegl-program-fixture-source/v1",
+  "capturedAt": "2026-10-08T17:54:06.946281+08:00",
+  "handoff": {
+    "source": ".workspace/run/cf-full/baseline/mobilegl-shared-program-handoff-final4.json",
+    "sha256": "93fc0158262d48d2c7fd1326d4315a44ded10cef579a0ef809e73296adbf3204",
+    "recordedAt": "2026-10-08T15:40:32.2445306+08:00",
+    "sourceHead": "14af696c3e30e6a15f8eeb82b8b86d9db6c8ba5a",
+    "sourceFiles": {
+      "mobilegl_program_scene.h": "983e76354319c9f6e7bddaddd1de901ff3688b53626009680226b2c09833e82e",
+      "mobilegl_program_scene.cpp": "895b23f3bcf695edb90ba72cbccd6cd506e7d1cc17e2405aef3b990c67dd0569",
+      "mobilegl_program_cases.json": "0b38c35de80f3c49660e72011297ee01a68f17a9ddad696274c90327d7bcc03f"
+    },
+    "actualLibrarySha256": "3ac3ff897400d6339cd038a624ca62304049b8f004cac00467255fa8af31c4e4",
+    "oldLibrarySha256": "9dc3deba10813b602dc240dd06ec2631c149e5101036808898bede196fc4c490",
+    "nativeEglSha256": "875ecbb2a07d60e32216c9f102965abc1e9cc1da7789558e2e9b8b9c107e231d",
+    "icdSha256": "9d69cae2004b16572acca424741109be37c4ffc759c2461af69d75f7d1c6c139"
+  },
+  "fixtures": {
+    "gles": {
+      "file": "gles.jsonl",
+      "source": ".workspace/run/cf-full/float64/shared-program-final4-gles/scene.jsonl",
+      "sha256": "5ab494f9941d8df36400d22b7590cf0b5b8ca827f8c1a85543931ff3ec115899",
+      "bytes": 13554,
+      "actualRun": {
+        "start": "2026-10-08T15:37:13.2793932+08:00",
+        "finish": "2026-10-08T15:37:15.7302398+08:00",
+        "exitCode": 0,
+        "library": "/mnt/d/dhao1/desktop/AMCL/.workspace/build/mgl-fp64-build-20261008-141713-a7d5e2-49438ee5/out/artifacts/libMobileGL.so",
+        "production": 1,
+        "backend": "DirectGLES",
+        "float64Supported": 0
+      },
+      "actualFailedCases": [],
+      "scope": "original host scene bytes; not new GPU/9952/OHOS/device qualification"
+    },
+    "native": {
+      "file": "native.jsonl",
+      "source": ".workspace/run/cf-full/float64/shared-program-final4-native/scene.jsonl",
+      "sha256": "b48ad6fd1b3a38ba9fbaf61a9f219ff3c4dd6951122b7245a32e9c8121d1ad70",
+      "bytes": 13544,
+      "actualRun": {
+        "start": "2026-10-08T15:37:13.2828577+08:00",
+        "finish": "2026-10-08T15:37:15.6136032+08:00",
+        "exitCode": 0,
+        "library": "/usr/lib/x86_64-linux-gnu/libEGL.so.1",
+        "production": 0,
+        "backend": "",
+        "float64Supported": 1
+      },
+      "actualFailedCases": [],
+      "scope": "original host scene bytes; not new GPU/9952/OHOS/device qualification"
+    },
+    "vulkan": {
+      "file": "vulkan.jsonl",
+      "source": ".workspace/run/cf-full/float64/shared-program-final4-vulkan/scene.jsonl",
+      "sha256": "042f4dc281c7aae0fcbf04cbd385f1724a67f66b13f476e2c2e36cad326b2846",
+      "bytes": 14230,
+      "actualRun": {
+        "start": "2026-10-08T15:37:13.282135+08:00",
+        "finish": "2026-10-08T15:37:15.7178118+08:00",
+        "exitCode": 0,
+        "library": "/mnt/d/dhao1/desktop/AMCL/.workspace/build/mgl-fp64-build-20261008-141713-a7d5e2-49438ee5/out/artifacts/libMobileGL.so",
+        "production": 1,
+        "backend": "DirectVulkan",
+        "float64Supported": 1
+      },
+      "actualFailedCases": [],
+      "scope": "original host scene bytes; not new GPU/9952/OHOS/device qualification"
+    },
+    "old-gles": {
+      "file": "old-gles.jsonl",
+      "source": ".workspace/run/cf-full/float64/shared-program-final4-old-gles/scene.jsonl",
+      "sha256": "e2079278979074e706c3ff4e47196ac787caae732a2a9e75227e5d4d15cbba4d",
+      "bytes": 13167,
+      "actualRun": {
+        "start": "2026-10-08T15:37:13.3167684+08:00",
+        "finish": "2026-10-08T15:37:15.7110736+08:00",
+        "exitCode": 1,
+        "library": "/mnt/d/dhao1/desktop/AMCL/.workspace/build/mgl-replay-candidate6-20261008-080724-2c1658-49438ee5/out/artifacts/libMobileGL.so",
+        "production": 1,
+        "backend": "DirectGLES",
+        "float64Supported": 0
+      },
+      "actualFailedCases": [
+        "program-failed-current-pixel",
+        "program-failed-location-error",
+        "program-live-ubo-pixel",
+        "program-repeat-failed-pixel",
+        "float64-link",
+        "float64-rejected-old-pixel",
+        "float64-rejected-empty-error"
+      ],
+      "scope": "original host scene bytes; not new GPU/9952/OHOS/device qualification"
+    },
+    "old-vulkan": {
+      "file": "old-vulkan.jsonl",
+      "source": ".workspace/run/cf-full/float64/shared-program-final4-old-vulkan/scene.jsonl",
+      "sha256": "0ad930d280a7bf631b07f587c4f0fc1218773a84dbe0f66b0f077ea79ba65566",
+      "bytes": 14237,
+      "actualRun": {
+        "start": "2026-10-08T15:37:13.3376325+08:00",
+        "finish": "2026-10-08T15:37:15.7123962+08:00",
+        "exitCode": 1,
+        "library": "/mnt/d/dhao1/desktop/AMCL/.workspace/build/mgl-replay-candidate6-20261008-080724-2c1658-49438ee5/out/artifacts/libMobileGL.so",
+        "production": 1,
+        "backend": "DirectVulkan",
+        "float64Supported": 1
+      },
+      "actualFailedCases": [
+        "program-failed-current-pixel",
+        "program-failed-location-error",
+        "program-live-ubo-pixel",
+        "program-repeat-failed-pixel"
+      ],
+      "scope": "original host scene bytes; not new GPU/9952/OHOS/device qualification"
+    }
+  },
+  "fabricatedControls": [
+    {
+      "name": "pending-extra-tail",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-extra-tail.jsonl",
+      "sha256": "d850177fc0a34e9072e1b7d8d6a5a2d677ae919a7655d3ca2292f5143f50d372",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {
+            "errorCount": 2
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-undrained",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-undrained.jsonl",
+      "sha256": "46f4ea74c4789429aab1743e73a75e8598d54fb89627b0839567c97cf6b14c56",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {
+            "errorDrainComplete": false
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-wrong-count",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-wrong-count.jsonl",
+      "sha256": "49d4ff77c2696e48f462f4056943c77d69b9e8c2028f7f8b6fcb590158ce1a3e",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {
+            "errorCount": 0
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-log-declared",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-log-declared.jsonl",
+      "sha256": "4a7ee167b1a0d0c309664893c57bc85a225f1b7755b12ed2d3f1de63fc3196cd",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {
+            "declaredLogLength": 300
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-log-return",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-log-return.jsonl",
+      "sha256": "0a96b1eb4faa5bd1acd1ab32b0708f4bfad7632c55a7ef675a85399d76f4d3a5",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {
+            "returnedLogLength": 10
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-log-bytes",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-log-bytes.jsonl",
+      "sha256": "89ff45cb109682bbde13ee0ad729450a874a5ea9ec716f3336ae376bc0eaddb0",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {
+            "logBytes": 300
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-missing-errors",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-missing-errors.jsonl",
+      "sha256": "ec1cf87603439a0290fb80d724d4f563faa452267d3cbed3388ae456734e62ae",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {},
+          "delete": [
+            "errorCount",
+            "errorDrainComplete"
+          ]
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "pending-missing-lengths",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/pending-missing-lengths.jsonl",
+      "sha256": "440c070c2279d622bd716fb4c7c02b33c6727d1b77d219f72f1a35c28f7252f8",
+      "changes": [
+        {
+          "case": "float64-link",
+          "set": {},
+          "delete": [
+            "declaredLogLength",
+            "returnedLogLength",
+            "logBytes"
+          ]
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "fresh-missing-marker",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/fresh-missing-marker.jsonl",
+      "sha256": "7713b6517b8296b8852cb92320a99af445458d4caed29fe0f3de7d9be28e8778",
+      "changes": [
+        {
+          "case": "float64-rejected-empty-error",
+          "set": {},
+          "delete": [
+            "freshLink"
+          ]
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "fresh-false-marker",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/fresh-false-marker.jsonl",
+      "sha256": "de30185019929dfe52c85f63097c0f3efa72221a5f5929cbad2268ba904c4c85",
+      "changes": [
+        {
+          "case": "float64-rejected-empty-error",
+          "set": {
+            "freshLink": false
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "fresh-new-same1280",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/fresh-new-same1280.jsonl",
+      "sha256": "e9cf83611ac906539f2621ec65df2860771f792b8d4b67e4dfa0c7cf44815b27",
+      "changes": [
+        {
+          "case": "float64-rejected-empty-error",
+          "set": {
+            "error": 1280,
+            "errorCount": 1
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "fresh-extra-tail",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/fresh-extra-tail.jsonl",
+      "sha256": "8f4d12157ad39ec13e2e74e2a5697abfaaf347ebc91d092c0400e36440f964e9",
+      "changes": [
+        {
+          "case": "float64-rejected-empty-error",
+          "set": {
+            "errorCount": 1
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "fresh-wrong-status",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/fresh-wrong-status.jsonl",
+      "sha256": "286e285d557c6be00c421d033baf6515eeb244510c529feb3624f6685fa57b32",
+      "changes": [
+        {
+          "case": "float64-rejected-empty-error",
+          "set": {
+            "status": 1
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    },
+    {
+      "name": "fresh-log-declared",
+      "source": ".workspace/run/cf-full/float64/shared-program-bad-reports-final4/fresh-log-declared.jsonl",
+      "sha256": "b93211cd0331acc30d23b2be0bcd20a8871bc7c6413cb4bc7041c4e6c8e0289d",
+      "changes": [
+        {
+          "case": "float64-rejected-empty-error",
+          "set": {
+            "declaredLogLength": 300
+          },
+          "delete": []
+        }
+      ],
+      "scope": "fabricated report fields retaining pass/footer; no GPU execution"
+    }
+  ],
+  "qualificationBoundary": "fixed raw host evidence/parser controls only; actual3ac was reviewed dirty7fec build, not relabelled9952 or device"
+}

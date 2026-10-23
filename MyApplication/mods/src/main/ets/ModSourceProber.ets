@@ -59,6 +59,8 @@ interface ProbeResult {
 
 let cached_: ModSourceRanking | null = null;
 let inflight_: Promise<ModSourceRanking> | null = null;
+/** 手动刷新/清缓存只撤销旧结果发布权；旧HTTP自然结束后不可覆盖新排名。 */
+let generation_: number = 0;
 
 // ============================================================
 //  公开 API
@@ -107,11 +109,12 @@ export async function ensureModrinthRanking(): Promise<ModSourceRanking> {
   let fresh = getCachedModRanking();
   if (fresh !== null) return fresh;
   if (inflight_ !== null) return inflight_;
-  inflight_ = doProbe();
+  const pending = doProbe(generation_);
+  inflight_ = pending;
   try {
-    return await inflight_;
+    return await pending;
   } finally {
-    inflight_ = null;
+    if (inflight_ === pending) inflight_ = null;
   }
 }
 
@@ -123,6 +126,7 @@ export async function ensureModrinthRanking(): Promise<ModSourceRanking> {
  * 完全没起作用。现在同时清两个，强制走一次新 probe。
  */
 export async function refreshModrinthRanking(): Promise<ModSourceRanking> {
+  generation_++;
   cached_ = null;
   inflight_ = null;
   return ensureModrinthRanking();
@@ -130,6 +134,7 @@ export async function refreshModrinthRanking(): Promise<ModSourceRanking> {
 
 /** 清缓存 / 测试用 */
 export function clearModrinthRankingCache(): void {
+  generation_++;
   cached_ = null;
   inflight_ = null;
 }
@@ -165,7 +170,7 @@ export function decideModrinthMode(
 //  内部：doProbe
 // ============================================================
 
-async function doProbe(): Promise<ModSourceRanking> {
+async function doProbe(generation: number): Promise<ModSourceRanking> {
   AppLogger.info(TAG, 'Starting Modrinth source probe...', LOG_DOMAIN_DOWNLOAD);
   let results = await Promise.all([
     probeEndpoint('mcim', PROBE_URL_MCIM),
@@ -182,7 +187,7 @@ async function doProbe(): Promise<ModSourceRanking> {
     rttOfficial: official.ok ? official.rtt : -1,
     probedAt: Date.now(),
   };
-  cached_ = ranking;
+  if (generation === generation_) cached_ = ranking;
   AppLogger.info(TAG, `Modrinth probe done: mode=${mode} rttMcim=${ranking.rttMcim} rttOfficial=${ranking.rttOfficial}`, LOG_DOMAIN_DOWNLOAD);
   return ranking;
 }

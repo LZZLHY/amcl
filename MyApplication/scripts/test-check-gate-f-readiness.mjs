@@ -233,6 +233,152 @@ function fullFixture({
   return f;
 }
 
+// 固定新版实际生产形式：token 防耗尽分配、两套阶段出口和 private relative 在 neutral
+// consumer 内还原旧 ABI。保留 fullFixture 的旧 inline token 作为刻意的干扰项，证明
+// 新协议一旦断接，门禁不能借旧变量/旧 case 回退为“保留合同仍成立”。这里仅是源码
+// 谓词的固定样本，不把它当设备通过、typed 等价替代或 Gate F 证据批准。
+function causalTouchFixture() {
+  const fixture = fullFixture();
+  fixture.touchText += `
+    #define MENU_POINTER_BEGIN 4
+    #define MENU_POINTER_END 5
+    void emitMenuInteraction(MenuTouchAction action, double x, double y) {
+      if (action == MenuTouchAction::Begin || action == MenuTouchAction::RelativeBegin) {
+        if (s_touchMenuNextToken == 0) return;
+        s_touchMenuToken = s_touchMenuNextToken;
+        s_touchMenuNextToken = s_touchMenuNextToken == 0x7fffffffu ? 0 : s_touchMenuNextToken + 1;
+      }
+      if (relative) {
+        if (s_touchMenuToken == 0) return;
+        const int phase = action == MenuTouchAction::RelativeBegin ? MENU_POINTER_BEGIN :
+          action == MenuTouchAction::RelativeDown ? MENU_POINTER_DOWN :
+          action == MenuTouchAction::RelativeUp ? MENU_POINTER_UP :
+          action == MenuTouchAction::RelativeEnd ? MENU_POINTER_END :
+          action == MenuTouchAction::RelativeCancel ? MENU_POINTER_CANCEL : MENU_POINTER_MOVE;
+        if (phase == MENU_POINTER_CANCEL || mapMenuRelativePayload(x,y,&dx,&dy,&maxX,&maxY))
+          inputBridge_publishTouchMenuRelativeV1(phase,s_touchMenuToken,dx,dy,maxX,maxY);
+        if (phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) s_touchMenuToken = 0;
+        return;
+      }
+      if (action == MenuTouchAction::Position) {
+        if (s_touchMenuToken != 0) sendEvent(EVENT_TYPE_MENU_POINTER,MENU_POINTER_MOVE,mx,my,s_touchMenuToken);
+      } else if (action == MenuTouchAction::Begin || action == MenuTouchAction::Down) {
+        if (s_touchMenuToken != 0) sendEvent(EVENT_TYPE_MENU_POINTER,
+          action == MenuTouchAction::Begin ? MENU_POINTER_BEGIN : MENU_POINTER_DOWN,mx,my,s_touchMenuToken);
+      } else if (s_touchMenuToken != 0) {
+        sendEvent(EVENT_TYPE_MENU_POINTER,action == MenuTouchAction::Up ? MENU_POINTER_UP :
+          action == MenuTouchAction::End ? MENU_POINTER_END : MENU_POINTER_CANCEL,mx,my,s_touchMenuToken);
+        if (action == MenuTouchAction::End || action == MenuTouchAction::Cancel) s_touchMenuToken = 0;
+      }
+    }
+    void schemaRetireTouchPolicyLocked() {
+      inputBridge_retireTouchMenuScopeV1();
+      s_menuTouch.Cancel(emitMenuInteraction);
+    }
+    void menuEvent() { s_menuTouch.Event(phase,id,x,y,time,emitMenuInteraction); }
+  `;
+  fixture.lwjglBridgeText += `
+    #define EVENT_TYPE_MENU_POINTER 1008
+    #define EVENT_TYPE_CURSOR_POSITION 1010
+    #define EVENT_TYPE_MOUSE_BUTTON 1006
+    #define EVENT_TYPE_TOUCH_MENU_RELATIVE 1017
+    void inputBridge_publishTouchMenuRelativeV1(int phase,uint32_t token,double dx,double dy,double maxX,double maxY) {
+      if (phase < MENU_POINTER_MOVE || phase > MENU_POINTER_END || (phase != MENU_POINTER_MOVE && token == 0)) return;
+      publishMenuRelative(EVENT_TYPE_TOUCH_MENU_RELATIVE,phase,token,dx,dy,maxX,maxY);
+    }
+    void sendData_locked() {
+      slot->menuScopeEpoch = atomic_load_explicit(&g_touchMenuScopeEpoch,memory_order_relaxed);
+      if (relative) slot->relative = *relative;
+      if (phase == MENU_POINTER_BEGIN) g_producerMenuGestureToken = token;
+      slot->gestureToken = token;
+      if (phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) g_producerMenuGestureToken = 0;
+    }
+    void inputBridge_retireTouchMenuScopeV1() {
+      atomic_fetch_add_explicit(&g_touchMenuScopeEpoch,1ULL,memory_order_release);
+    }
+    bool scopedMenuEventValid(int type,uint64_t menuEpoch,uint64_t toolEpoch) {
+      if (isScopedMenuEvent(type) && menuEpoch != atomic_load_explicit(&g_touchMenuScopeEpoch,memory_order_acquire)) return false;
+      return true;
+    }
+    bool queuedMenuInvalidates(uint32_t token,uint64_t epoch,bool gestureBegun) {
+      bool canceled = epoch != atomic_load_explicit(&g_touchMenuScopeEpoch,memory_order_acquire);
+      if (value == token && phase == MENU_POINTER_CANCEL) canceled = true;
+      if (value == token && (phase == MENU_POINTER_END || (!gestureBegun && phase == MENU_POINTER_UP))) normallyEnded = true;
+      if (!normallyEnded && (phase == MENU_POINTER_BEGIN || phase == MENU_POINTER_DOWN) && value != token) canceled = true;
+      return canceled;
+    }
+    void resolveRelativeMenuCursor(uint32_t backend) {
+      currentMenuCursor(backend,x,y);
+      *x += dx; *y += dy;
+      *x = fmin(relative->maxX,*x); *y = fmin(relative->maxY,*y);
+    }
+    bool resolveRelativeMenuEvent(uint32_t backend) {
+      if (token != currentToken) return false;
+      resolveRelativeMenuCursor(backend,event,relative,menuX,menuY);
+      event->type = EVENT_TYPE_MENU_POINTER; event->i1 = phase; event->i4 = (int)token;
+      return true;
+    }
+    bool advanceGlfwMenuPending() {
+      if (queuedMenuInvalidates() || g_menuInputTargetEpoch != targetEpoch || g_glfwPresentedIdentity != g_menuPresentedIdentity) {
+        cancelMenuTransaction(window,true); return true;
+      }
+      if (g_presentSerial < g_menuPressAfterPresent) return false;
+      g_menuPressAfterPresent = g_presentSerial + 2ULL;
+      return true;
+    }
+    void inputBridge_pumpOrdered() {
+      if (!scopedMenuEventValid()) continue;
+      if (!resolveRelativeMenuEvent(1,&event,&relative,token,&x,&y)) continue;
+      if (queuedMenuInvalidates()) continue;
+      if (!acceptMenuGestureStart()) continue;
+      if (phase == MENU_POINTER_BEGIN || phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) return;
+      g_menuPressAfterPresent = g_presentSerial + 2ULL;
+    }
+    int inputBridge_l2NextEvent() {
+      if (!scopedMenuEventValid()) continue;
+      if (!resolveRelativeMenuEvent(2,&event,&relative,token,&x,&y)) continue;
+      if (queuedMenuInvalidates()) continue;
+      if (!acceptMenuGestureStart()) continue;
+      if (phase == MENU_POINTER_BEGIN || phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) return;
+      returnOrderedMenuCursor(x,y,2,order,outType,o1,o2,o3,o4);
+      e.type = EVENT_TYPE_MOUSE_BUTTON;
+      return returnLegacyEvent(&e,outType,o1,o2,o3,o4);
+    }
+    int inputBridge_sdlNextThrough() {
+      if (!scopedMenuEventValid()) continue;
+      if (!resolveRelativeMenuEvent(3,&event,&relative,token,&x,&y)) continue;
+      if (queuedMenuInvalidates()) continue;
+      if (!acceptMenuGestureStart()) continue;
+      if (phase == MENU_POINTER_BEGIN) return consumeSdlMenuPointer(&event,order,epoch,x,y);
+    }
+    int consumeSdlMenuPointer() {
+      if (phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) clearSdlMenuTransactionLocked();
+      if (cursor) return returnOrderedMenuCursor(x,y,3,order,outType,o1,o2,o3,o4);
+      return returnSdlMenuButtonEvent(action,outType,o1,o2,o3,o4);
+    }
+    int returnDueSdlMenuButton() {
+      if (g_sdlMenuState.inputTargetEpoch != targetEpoch || g_sdlMenuState.targetPresentedIdentity != presentedIdentity || queuedMenuInvalidates()) {
+        clearSdlMenuTransactionLocked();
+      } else if (baselinePending) {
+        g_sdlMenuState.pressAfterPresent = g_sdlMenuState.presentSerial + 1ULL;
+      } else if (g_sdlMenuState.presentSerial >= g_sdlMenuState.pressAfterPresent) return 1;
+      return 0;
+    }
+    int returnLegacyEvent() {
+      if (outType) *outType = event->type;
+      if (o1) *o1 = event->i1; if (o2) *o2 = event->i2;
+      if (o3) *o3 = event->i3; if (o4) *o4 = event->i4;
+      return 1;
+    }
+    int returnOrderedMenuCursor() { if (outType) *outType = EVENT_TYPE_CURSOR_POSITION; return 1; }
+    int returnSdlMenuButtonEvent() {
+      GLFWInputEvent event = {EVENT_TYPE_MOUSE_BUTTON,0,action,0,0};
+      return returnLegacyEvent(&event,outType,o1,o2,o3,o4);
+    }
+  `;
+  return fixture;
+}
+
 function mutate(fixture, key, from, to) {
   const before = fixture[key];
   const hit = typeof from === 'string' ? before.includes(from) : from.test(before);
@@ -424,6 +570,116 @@ check('profile parser supports quoted/type-suffixed form',
   check('removing touch MENU_POINTER without replacement blocks activation',
     !report.ok && report.issues.some(issue => issue.includes("'touch-menu-pointer-contract'")),
     JSON.stringify(report.issues));
+}
+
+// 统一菜单解释器沿用token/cancel/present合同；正例及断接反例防止门禁只认旧变量名。
+{
+  const fixture = fullFixture();
+  fixture.touchText = fixture.touchText.replaceAll('s_activeMenuTransactionToken', 's_touchMenuToken') + `
+    s_touchMenuToken = s_touchMenuNextToken++;
+    s_menuTouch.Event(phase, id, x, y, time, emitMenuInteraction);
+    s_menuTouch.Cancel(emitMenuInteraction);
+  `;
+  const report = analyzeGateFReadiness(fixture);
+  check('unified touch interpreter preserves the transaction contract',
+    report.ok && prerequisite(report, 'touch-menu-pointer-contract')?.mode === 'preserved-legacy',
+    JSON.stringify(report.issues));
+  for (const [name, pattern] of [
+    ['allocation', /s_touchMenuToken = s_touchMenuNextToken\+\+;/],
+    ['event ingress', /s_menuTouch\.Event\([^;]+;/],
+    ['cancel ingress', /s_menuTouch\.Cancel\([^;]+;/],
+  ]) {
+    const broken = analyzeGateFReadiness({...fixture, touchText: fixture.touchText.replace(pattern, '')});
+    check(`unified touch missing ${name} blocks activation`,
+      !broken.ok && broken.issues.some(issue => issue.includes("'touch-menu-pointer-contract'")),
+      JSON.stringify(broken.issues));
+  }
+}
+
+// 新版手势身份的固定正例及断接反例。Gate F 激活的其它三组使用原 fullFixture；
+// 只变异当前触控合同，必须同时显示缺失具体条目和整个 touch prerequisite BLOCKED。
+{
+  const fixture = causalTouchFixture();
+  const report = analyzeGateFReadiness(fixture);
+  check('causal BEGIN/END + relative preserves legacy touch, never claims typed replacement',
+    report.ok && prerequisite(report, 'touch-menu-pointer-contract')?.mode === 'preserved-legacy',
+    JSON.stringify(report.prerequisites));
+  for (const [name, key, from, to, checkId] of [
+    ['token allocation', 'touchText', 's_touchMenuToken = s_touchMenuNextToken;', '', 'touch-token-allocation'],
+    ['token exhaustion guard', 'touchText', 'if (s_touchMenuNextToken == 0) return;', '', 'touch-token-allocation'],
+    ['cancel ingress', 'touchText', 's_menuTouch.Cancel(emitMenuInteraction);', '', 'touch-token-allocation'],
+    ['UP incorrectly retires token', 'touchText', 'phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) s_touchMenuToken = 0;',
+      'phase == MENU_POINTER_UP || phase == MENU_POINTER_END || phase == MENU_POINTER_CANCEL) s_touchMenuToken = 0;', 'touch-gesture-lifetime'],
+    ['relative END phase', 'touchText', 'MenuTouchAction::RelativeEnd ? MENU_POINTER_END',
+      'MenuTouchAction::RelativeEnd ? MENU_POINTER_UP', 'touch-gesture-lifetime'],
+    ['relative token publisher', 'touchText', 'inputBridge_publishTouchMenuRelativeV1(phase,s_touchMenuToken,dx,dy,maxX,maxY);',
+      'inputBridge_publishTouchMenuRelativeV1(phase,0,dx,dy,maxX,maxY);', 'touch-relative-publication'],
+    ['frozen relative metadata', 'lwjglBridgeText', 'slot->relative = *relative;', '', 'touch-relative-publication'],
+    ['full scope retirement', 'touchText', 'inputBridge_retireTouchMenuScopeV1();', '', 'touch-scope-retirement'],
+    ['queued CANCEL authority', 'lwjglBridgeText', 'if (value == token && phase == MENU_POINTER_CANCEL) canceled = true;', '', 'touch-scope-retirement'],
+    ['BEGIN known UP treated as END', 'lwjglBridgeText', '(!gestureBegun && phase == MENU_POINTER_UP)',
+      '(phase == MENU_POINTER_UP)', 'touch-scope-retirement'],
+    ['normal END then BEGIN replaces completed tap', 'lwjglBridgeText', '!normallyEnded && (phase == MENU_POINTER_BEGIN',
+      '(phase == MENU_POINTER_BEGIN', 'touch-scope-retirement'],
+    ['relative actual consumer baseline', 'lwjglBridgeText', 'currentMenuCursor(backend,x,y);',
+      'desiredMenuCursor(backend,x,y);', 'touch-relative-current'],
+    ['GLFW relative consumer', 'lwjglBridgeText', 'resolveRelativeMenuEvent(1,&event',
+      'resolveRelativeMenuEvent(9,&event', 'touch-three-consumers'],
+    ['LWJGL2 relative consumer', 'lwjglBridgeText', 'resolveRelativeMenuEvent(2,&event',
+      'resolveRelativeMenuEvent(9,&event', 'touch-three-consumers'],
+    ['SDL relative consumer', 'lwjglBridgeText', 'resolveRelativeMenuEvent(3,&event',
+      'resolveRelativeMenuEvent(9,&event', 'touch-three-consumers'],
+    ['GLFW actual present test', 'lwjglBridgeText', 'if (g_presentSerial < g_menuPressAfterPresent) return false;', '', 'touch-present-barriers'],
+    ['SDL actual present test', 'lwjglBridgeText', 'g_sdlMenuState.presentSerial >= g_sdlMenuState.pressAfterPresent',
+      'pollCount >= 1', 'touch-present-barriers'],
+    ['game pull ABI word four', 'lwjglBridgeText', '*o4 = event->i4;',
+      '*o4 = event->i3;', 'touch-old-game-abi'],
+  ]) {
+    const broken = analyzeGateFReadiness(mutate(fixture, key, from, to));
+    const contract = prerequisite(broken, 'touch-menu-pointer-contract');
+    check(`causal missing ${name} blocks activation despite old inline decoys`,
+      !broken.ok && contract?.mode === 'missing' &&
+        contract.checks.some(item => item.id === checkId && !item.ok) &&
+        broken.issues.some(issue => issue.includes("'touch-menu-pointer-contract'")),
+      JSON.stringify(contract));
+  }
+}
+
+// 同一固定反例还必须能在实仓形态定位断接，防止样本正例和谓词相互迁就。
+// 只在内存变异 source view，不改生产文件或 evidence；DORMANT 本身仍不批准 Gate F。
+{
+  const fixture = readGateFSources();
+  for (const [name, key, from, to, checkId] of [
+    ['token allocation', 'touchText', /s_touchMenuToken\s*=\s*s_touchMenuNextToken\s*;/,
+      's_touchMenuToken=0;', 'touch-token-allocation'],
+    ['CANCEL hook', 'touchText', /s_menuTouch\.Cancel\s*\(\s*emitMenuInteraction\s*\)/g,
+      's_menuTouch.Cancel(nullptr)', 'touch-token-allocation'],
+    ['queued cancel scan', 'lwjglBridgeText', /value == token && phase == MENU_POINTER_CANCEL\) canceled = true;/,
+      'value == token && phase == MENU_POINTER_CANCEL) canceled = false;', 'touch-scope-retirement'],
+    ['shared actual present comparison', 'pointerTransactionText', /presentSerial < state->pressAfterPresent/,
+      'false', 'touch-present-barriers'],
+    ['GLFW policy', 'lwjglBridgeText', /g_glfwPointerPolicy\s*=\s*\{2u,\s*false,\s*false\}/,
+      'g_glfwPointerPolicy = {0u, false, false}', 'touch-present-barriers'],
+    ['SDL policy', 'lwjglBridgeText', /g_sdlPointerPolicy\s*=\s*\{1u,\s*true,\s*true\}/,
+      'g_sdlPointerPolicy = {0u, false, false}', 'touch-present-barriers'],
+    ['shared source freeze', 'pointerTransactionText', /state->sourceX\s*=\s*x;/,
+      'state->sourceX = 0;', 'touch-three-consumers'],
+    ['shared contact accepts only one DOWN', 'pointerTransactionText', /state->downAccepted\s*=\s*true;/,
+      'state->downAccepted = false;', 'touch-three-consumers'],
+    ['LWJGL2 shared transaction call', 'lwjglBridgeText', /amclPointerAccept\(&g_l2Pointer,/,
+      'otherPointerAccept(&g_l2Pointer,', 'touch-three-consumers'],
+    ['SDL shared transaction call', 'lwjglBridgeText', /amclPointerAccept\(&g_sdlMenuState.pointer,/,
+      'otherPointerAccept(&g_sdlMenuState.pointer,', 'touch-three-consumers'],
+    ['LWJGL2 relative call', 'lwjglBridgeText', /resolveRelativeMenuEvent\(2,/, 'resolveRelativeMenuEvent(9,', 'touch-three-consumers'],
+  ]) {
+    const broken = analyzeGateFReadiness(mutate(fixture, key, from, to));
+    const contract = prerequisite(broken, 'touch-menu-pointer-contract');
+    check(`real production source detects missing ${name} without fabricating Gate F approval`,
+      broken.state === 'DORMANT' && !broken.activationRequested &&
+        !broken.evidence.absoluteApproved && !broken.evidence.timestampApproved &&
+        contract?.mode === 'missing' && contract.checks.some(item => item.id === checkId && !item.ok),
+      JSON.stringify(contract));
+  }
 }
 
 // 8. touch 可以不是永久 legacy：typed 等价替代的完整符号集合也应通过。

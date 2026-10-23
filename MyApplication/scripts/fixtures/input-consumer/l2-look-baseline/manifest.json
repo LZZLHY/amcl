@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "recordedAt": "2026-10-08T12:59:46.627775+08:00",
+  "sourceRef": "f63a44814671b63b0842079015b37a959106a438",
+  "purpose": "actual maintained P3 delivery before look ABI; public clone uses fixed bytes without git refs",
+  "files": [
+    {
+      "name": "amcl_lwjgl2_backend.c",
+      "size": 33194,
+      "sha256": "f187ba3ae5d0befd1950e97ba1fd59ba4827fc7fe08de0556521a7ccab4da3fd"
+    },
+    {
+      "name": "lwjgl.jar",
+      "size": 1908258,
+      "sha256": "28c9186178642e1ae023e53011feb9d157d6d8d1015825fcf7684c769923bf2c"
+    }
+  ]
+}

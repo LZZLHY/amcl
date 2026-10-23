@@ -1,0 +1,15 @@
+diff --git a/hotspot/src/share/vm/jfr/leakprofiler/chains/bitset.cpp b/hotspot/src/share/vm/jfr/leakprofiler/chains/bitset.cpp
+--- a/hotspot/src/share/vm/jfr/leakprofiler/chains/bitset.cpp
++++ b/hotspot/src/share/vm/jfr/leakprofiler/chains/bitset.cpp
+@@ -25,6 +25,11 @@
+ #include "precompiled.hpp"
+ #include "jfr/leakprofiler/chains/bitset.hpp"
+ #include "jfr/recorder/storage/jfrVirtualMemory.hpp"
++// AMCL：BitSet 持有 BitMap，initialize 的临时对象及析构会实例化 ArrayAllocator::free。
++// allocation.hpp 只有该模板方法的声明；必须在这个编译单元提供完整定义，
++// 否则 clang 会留下 HotSpot 内部未定义强引用，使 libjvm 在创建 JVM 前装载失败。
++// 引入上游真实实现，保持 malloc/mmap 释放与内存记账语义，不增加外部 shim。
++#include "memory/allocation.inline.hpp"
+ #include "memory/memRegion.hpp"
+ 
+ BitSet::BitSet(const MemRegion& covered_region) :

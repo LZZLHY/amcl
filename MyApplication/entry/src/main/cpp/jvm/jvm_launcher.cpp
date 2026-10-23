@@ -1,3 +1,4 @@
+#include "jdk_directory_lease.h"
 #include "../utils/product_diagnostics.h"
 /**
  * jvm_launcher.cpp — JVM 嵌入模块 (JNI Invocation API)
@@ -34,6 +35,7 @@
 #include "jvm_common_args.h"
 #include "jvm_heap_options.h"
 #include "../platform/graphics_plan.h"
+#include "../platform/env_publication.h"  // I27-05：JVM 创建认领时封存环境槽位登记表
 #include "jni_mutf8.h"   // NewStringUTF 只吃 Modified UTF-8：用户内容一律先转（见头文件）
 #include "../utils/amcl_log.h"
 #include "../utils/session_log_io.h"
@@ -441,6 +443,9 @@ static void ensureJvmCfg(const std::string& libDir) {
  * @param jdkVersion   JDK 版本号（如 "17"），NULL 则使用默认路径 filesDir/jdk/
  * @return 0 成功，负数失败
  */
+// JVM 映射开始后进程不能重建另一运行时；共享租约与该进程同寿命。
+static int g_jdkDirectoryLeaseFd = -1;
+
 extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     const int runtimeState = g_runtimeOnce.state();
     if (runtimeState == amcl::jvm::RuntimeOnce::ForkReserved) {
@@ -477,6 +482,14 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         jdkDataDir = std::string(appFilesDir) + "/jdk";
     }
     AMCL_LOG_I(LOG_TAG, "JDK path: %{public}s", jdkDataDir.c_str());
+    amcl::jdk::DirectoryReadLease directoryLease;
+    std::string leaseError;
+    if (!directoryLease.acquire(appFilesDir, jdkVersion, leaseError)) {
+        g_status = leaseError;
+        AMCL_LOG_E(LOG_TAG, "jdk_runtime_in_use: %{public}s", leaseError.c_str());
+        return -12;
+    }
+
 
     // ============================================================
     // 查找 libjvm.so（ELF loader 模式，从 filesDir 加载）
@@ -546,6 +559,15 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         g_status = "JVM 创建事务已被认领，需要重启进程";
         return -7;
     }
+
+    // I27-05：认领之后本进程不会再有第二个 JVM，JNI_CreateJavaVM 一返回就有 JVM 线程。在此封存
+    // 环境槽位登记表：此后第一方代码只允许原位改值，登记新名字一律失败并记录。认领之前的可重试
+    // 失败不封存，同一进程换路线重试时仍能登记新路线的槽位。
+    amcl::ohos::SealProcessEnvironment(g_forkChildMode ? "fork-child-jvm-claim" : "jvm-create-claim");
+
+    // 只有成功认领运行时才保留共享租约；前面的任何可重试失败由栈对象自动释放。
+    if (g_jdkDirectoryLeaseFd >= 0) close(g_jdkDirectoryLeaseFd);
+    g_jdkDirectoryLeaseFd = directoryLease.releaseToProcess();
 
     // 必须在一次性创建认领之后准备退出 fd，防止 processor fork 与宿主配置并发。
     // 仅 native 持锁授权的当前游戏 PID 可安装；页面路线/安装器不继承此权限。

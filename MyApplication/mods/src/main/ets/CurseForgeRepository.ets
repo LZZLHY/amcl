@@ -64,6 +64,7 @@ import {
   CFFilesResponseRaw,
   CFFileResponseRaw,
   CFFileRaw,
+  classifyCurseForgeFileDirectory,
   CFDownloadUrlResponseRaw,
   CFFingerprintMatchesResponseRaw,
 } from './CurseForgeUrls';
@@ -97,6 +98,8 @@ export interface CfFileDownloadInfo {
   filename: string;
   size: number;
   sha1?: string;
+  /** 客户端实例中的资源目录，由来源项目类型或文件模块解析。 */
+  targetDirectory: string;
 }
 
 export class CurseForgeRepository implements IRemoteModRepository {
@@ -245,12 +248,19 @@ export class CurseForgeRepository implements IRemoteModRepository {
 
     let result: RemoteVersion[] = [];
     let index = 0;
-    const MAX_PAGES = 4;
-    for (let page = 0; page < MAX_PAGES; page++) {
+    // 完整消费来源分页；旧实现四页即结束，会把前 200 条冒充完整历史。
+    // 检测未推进的文件身份，防止异常镜像反复返回第一页造成无限循环。
+    let seen = new Set<number>();
+    while (true) {
       let urls = buildCurseForgeFilesUrl(projectId, gv, modLoaderType, index, PAGE_SIZE_FILES);
       let body = await this.cachedFetch(urls, TTL_VERSIONS_MS);
       let raw = this.parseJson<CFFilesResponseRaw>(body);
+      let newIds = 0;
       for (let f of raw.data) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        newIds++;
+        if (f.isServerPack === true || f.isAvailable === false) continue;
         try { result.push(mapCurseForgeFileAsVersion(f)); }
         catch (e) {
           AppLogger.warn(TAG, 'skip file', e as Object, LOG_DOMAIN_DOWNLOAD);
@@ -263,6 +273,7 @@ export class CurseForgeRepository implements IRemoteModRepository {
         break;
       }
       index += raw.data.length;
+      if (newIds === 0) throw new Error('CurseForge 历史版本分页未推进，请重试');
     }
     return result;
   }
@@ -333,8 +344,22 @@ export class CurseForgeRepository implements IRemoteModRepository {
     const raw = this.parseJson<CFFileResponseRaw>(body);
     if (raw.data === undefined || raw.data === null || String(raw.data.id) !== id || String(raw.data.modId) !== modId)
       throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, 'CurseForge 返回的文件身份不符');
+    if (raw.data.isServerPack === true) throw new Error('指定文件是服务端分发，不能安装到客户端');
     const info = this.buildInfoFromCfFile_(raw.data);
     if (info === null) throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, '该指定文件没有可用下载地址，请手动选择其他版本');
+    if (info.targetDirectory.length === 0) {
+      // 模块元数据不足时再查询项目分类，避免把所有 ZIP 默认为 mods 或 saves。
+      const projectUrls = buildCurseForgeProjectUrl(modId);
+      const projectBody = await this.cachedFetch(projectUrls, TTL_PROJECT_MS);
+      const projectRaw = this.parseJson<CFModResponseRaw>(projectBody);
+      if (String(projectRaw.data.id) !== modId) throw new Error('CurseForge 资源项目身份不符');
+      const kind = projectRaw.data.classId;
+      if (kind === 6) info.targetDirectory = 'mods';
+      else if (kind === 12) info.targetDirectory = 'resourcepacks';
+      else if (kind === 6552) info.targetDirectory = 'shaderpacks';
+      else if (kind === 17) info.targetDirectory = 'saves';
+      else throw new Error('无法确认该 CurseForge 文件的客户端资源类型');
+    }
     return info;
   }
 
@@ -367,7 +392,9 @@ export class CurseForgeRepository implements IRemoteModRepository {
       let clean = q >= 0 ? officialUrl.substring(0, q) : officialUrl;
       finalName = clean.substring(clean.lastIndexOf('/') + 1).split('%20').join(' ');
     }
-    return { urls: urls, filename: finalName, size: file.fileLength, sha1: extractSha1FromCfHashes(file.hashes) ?? undefined };
+    return { urls: urls, filename: finalName, size: file.fileLength,
+      sha1: extractSha1FromCfHashes(file.hashes) ?? undefined,
+      targetDirectory: classifyCurseForgeFileDirectory(file) };
   }
 
   // ============================================================

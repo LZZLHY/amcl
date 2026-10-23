@@ -76,13 +76,14 @@ int main(){
     assert(glfwGetInputMode(&auxiliary,GLFW_CURSOR)==GLFW_CURSOR_DISABLED && glfwGetInputMode(&presented,GLFW_CURSOR)==GLFW_CURSOR_NORMAL);
     assert(auxiliary.cursorX==12 && auxiliary.cursorY==34 && !auxiliary.inputCapture.requested);
     glfwSetInputMode(&presented,GLFW_CURSOR,GLFW_CURSOR_DISABLED); glfwSetCursorPos(&presented,2,3);
-    assert(envWrites==1 && lookWrites==1 && presented.inputCapture.requested && bridgeWrites==4);
+    // I27-05：光标模式翻转在游戏线程上发生，只经 bridge 原子发布，任何窗口都不得写环境变量。
+    assert(envWrites==0 && lookWrites==1 && presented.inputCapture.requested && bridgeWrites==4);
     // 调用实际promotion所用setter组合：取得呈现权后才发布隐藏阶段保存的callback/grab。
     g_currentWindow=&auxiliary; auxiliary.auxiliary=false;
     glfwSetCharCallback(&auxiliary,auxiliary.charCb); glfwSetCharModsCallback(&auxiliary,auxiliary.charModsCb);
     glfwSetCursorEnterCallback(&auxiliary,auxiliary.cursorEnterCb); glfwSetInputMode(&auxiliary,GLFW_CURSOR,auxiliary.cursorMode);
     assert(character==reinterpret_cast<void*>(callbackB) && characterMods==reinterpret_cast<void*>(modsB) && cursorEnter==reinterpret_cast<void*>(enterB));
-    assert(auxiliary.inputCapture.requested && envWrites==2);
+    assert(auxiliary.inputCapture.requested && envWrites==0);
     std::cout<<"GLFW production input setters PASS: per-window callbacks/cursor intent, no auxiliary input authority, promotion publication\n";
 }
 ''', encoding='utf-8')

@@ -87,6 +87,7 @@
           "pages/LayoutListPage",
           "pages/LayoutEditorPage",
           "pages/VersionSettingsPage",
+          "pages/GameExportPage",
           "pages/DownloadHistoryPage",
           "pages/MessageCenterPage",
           "pages/ActivityLogPage",
@@ -95,6 +96,7 @@
           "pages/FeedbackPage",
           "pages/AboutPage",
           "pages/ChangelogPage",
+          "pages/LocalPolicyPage",
           "pages/DocWebPage"
         ]
       }
@@ -123,6 +125,7 @@
           "pages/LayoutListPage",
           "pages/LayoutEditorPage",
           "pages/VersionSettingsPage",
+          "pages/GameExportPage",
           "pages/DownloadHistoryPage",
           "pages/MessageCenterPage",
           "pages/ActivityLogPage",
@@ -131,6 +134,7 @@
           "pages/FeedbackPage",
           "pages/AboutPage",
           "pages/ChangelogPage",
+          "pages/LocalPolicyPage",
           "pages/DocWebPage"
         ]
       }
@@ -155,6 +159,7 @@
           "pages/Index",
           "pages/McGamePage",
           "pages/VersionSettingsPage",
+          "pages/GameExportPage",
           "pages/DownloadHistoryPage",
           "pages/MessageCenterPage",
           "pages/ActivityLogPage",
@@ -163,6 +168,7 @@
           "pages/FeedbackPage",
           "pages/AboutPage",
           "pages/ChangelogPage",
+          "pages/LocalPolicyPage",
           "pages/DocWebPage",
           "pages/DesktopDeveloperToolsPage"
         ]

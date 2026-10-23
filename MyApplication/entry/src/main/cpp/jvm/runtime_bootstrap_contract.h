@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include "jna_runtime_contract.h"
+#include "../platform/egl_provider_dispatch.h"
 
 namespace amcl::jvm {
 /** 启动期属性键值。只存字符串，不持有 JNI 对象，不会初始化任何游戏平台类。 */
@@ -32,6 +33,22 @@ inline bool HasImplicitInvocationOptions(const char* toolOptions, const char* ja
 }
 
 /**
+ * 为 LWJGL EGL Java 绑定固定唯一的查询桥。MG/MobileGL 的 display、context 与 surface
+ * 由进程 owner 持有；Java ClassLoader 即使使用绝对路径，也可能在另一 linker namespace
+ * 再映射 provider，直接传其路径会形成两套 wrapper 对象域。独立桥不实现任何 EGL 操作，
+ * 只把 eglGetProcAddress 转给已经冻结的 amclGraphicsEglProcV1，因此窗口和 Java 始终
+ * 使用同一函数表。这里仅生成路径，不装入桥、provider 或系统驱动。
+ * Vulkan/未知 profile 没有已准入的 EGL provider，返回空并由调用方省略该属性。
+ */
+inline std::string RuntimeEglLibrary(const std::string& nativeDir, const std::string& profile) {
+    using amcl::desktop::EglProvider;
+    const auto provider = amcl::desktop::SelectEglProvider(profile == "nativegl", profile.c_str(),
+        profile == "minecraft-vulkan" ? "VULKAN" : "OPENGL");
+    if (provider != EglProvider::kUnavailable) return nativeDir + "/libamcl_lwjgl_egl.so";
+    return {};
+}
+
+/**
  * 按已准入的 GraphicsPlan 生成早读属性。调用方负责验证绝对路径与 provider 制品；
  * 本函数不重新选择后端，也不触碰加载器。所有值必须在 Java agent/Configuration 初始化前生效。
  * JNA 临时目录沿用实例的隔离目录，避免后置 setProperty 改写已缓存的路径。
@@ -45,6 +62,11 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
         {"os.name", "Linux"}, {"os.version", "5.10"},
         {"org.lwjgl.librarypath", nativeDir},
         {"org.lwjgl.opengl.libname", glLibrary},
+        // OHOS 的真实 GLES API 由系统 libGLESv3.so 提供；Linux 默认 .so.2 不存在。
+        // EGL 查询始终属于已冻结 provider；本属性只补库名，不把桌面 GL context 变为
+        // GLES。调用者须保证同线程已有兼容的真实 GLES current context，本属性不切换它。
+        {"org.lwjgl.opengles.libname", "libGLESv3.so"},
+        {"org.lwjgl.opengles.contextAPI", "EGL"},
         {"org.lwjgl.glfw.libname", "libglfw.so"},
         {"org.lwjgl.sdl.libname", "libSDL3.so"},
         {"org.lwjgl.freetype.libname", "libfreetype.so"},
@@ -60,6 +82,10 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
         {"minecraft.applet.TargetDirectory", gameDir},
         {"net.minecraft.clientmodname", "AMCL"}
     };
+    // 必须在 agent 与 LWJGL Configuration 初始化前冻结；Linux 默认 libEGL.so.1
+    // 既不匹配 OHOS 系统库名，也不能代表 MG/MobileGL 的 wrapper 对象域。
+    const auto eglLibrary = RuntimeEglLibrary(nativeDir, profile);
+    if (!eglLibrary.empty()) result.emplace_back("org.lwjgl.egl.libname", eglLibrary);
     if (profile == "nativegl") result.emplace_back("org.lwjgl.opengl.contextAPI", "native");
     return result;
 }

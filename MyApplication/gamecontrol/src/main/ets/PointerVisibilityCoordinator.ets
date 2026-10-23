@@ -108,7 +108,8 @@ class PointerVisibilityCoordinator {
   restore(): void {
     this.desired = true
     this.reassertTicksLeft = 0
-    if (this.current) return
+    // current只表示最后完成的请求；仍在飞的隐藏请求可能随后完成。
+    // 即使缓存为true也必须在串行链末尾排一次true，销毁后没有heartbeat替我们收敛。
     this.enqueue(true)
   }
 }

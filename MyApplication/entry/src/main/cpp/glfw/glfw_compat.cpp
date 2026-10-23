@@ -6,6 +6,7 @@
 // EGL → glfw_egl.cpp | 回调/stub → glfw_callbacks.cpp | JNI → glfw_jni.cpp
 
 #include "glfw_internal.h"
+#include "../input/input_build_identity.h"
 #if !AMCL_NATIVE_DESKTOP_ONLY
 #include "amcl_mg_source_identity.h"
 #endif
@@ -17,15 +18,23 @@
 #include "../input/adapters/backend_input_bridge.h"
 #include "../input/adapters/glfw_input_adapter.h"
 #include "../input/adapters/glfw_source_plane_aggregate.h"
+#include "../input/delivery/look_transport.h"
+#include "../input/input_latency_observation.h"
+#include "../input/input_look_core_hook.h"
 #include "../input/adapters/glfw_typed_absolute_route.h"
 #include "../input/adapters/glfw_typed_input_resolve_guard.h"
 #include "../input/adapters/glfw_typed_runtime_dispatch.h"
+#include "../input/input_menu_cursor_snapshot.h" // actual typed出口同步本consumer游标，不能把window轮询B留在neutral基线A之外。
+#include "../input/input_surface_context_snapshot.h"
+#include "../input/input_surface_context_semantics.h"
 #include "../input/adapters/glfw_input_mode.h"
 #include "../input/adapters/glfw_typed_look_route.h"
 #include "../input/amcl_input_host_descriptor.h"
+#include "../input/delivery/look_execution_client.h"
 #include "../input/text_utf8_codec.h"
 #include "../platform/physical_wheel_quantizer.h"
 #include "../platform/graphics_observation_abi.h"
+#include "../platform/env_slot.h"
 #include "utils/stack_sampler.h"
 #if !AMCL_NATIVE_DESKTOP_ONLY
 #include "../platform/gl_host.h"
@@ -63,8 +72,14 @@ typedef void (*GLFW_invoke_Scroll_func_t)(void* window, double xoffset, double y
 extern "C" {
     void inputBridgeStartPumping(void);
     void inputBridgePumpEvents(void* window);
+    void inputBridge_pumpOrdered(void* window, int (*pump)(void*, uint64_t),
+                                 void* context, uint64_t maxOrder);
     void inputBridgeStopPumping(void);
     void inputBridge_notifyFramePresented(void);
+    // 菜单延期资格使用实际呈现窗口及Native租约代次；不能让另一个窗口的帧解锁旧点击。
+    void inputBridge_notifyFramePresentedForTargetV1(uint64_t window, uint64_t generation);
+    // logical指针、输入发布代次与WSI生命周期counter分开，避免把Vulkan呈现身份当成指针。
+    void inputBridge_glfwSetTargetV1(uint64_t logicalWindow, uint64_t inputGeneration, uint64_t graphicsWindowId);
     void inputBridge_cancelMenuTransaction(void* window);
     void inputBridge_cancelAllState(void* window, int reason);
     void inputBridge_setWindowSize(int w, int h);
@@ -96,6 +111,9 @@ static thread_local GLFWwindow* g_threadCurrentContext = nullptr;
 // 创建/销毁与current转移串行化，避免两个线程同时通过“owner=0”的检查。swap不持此锁。
 static std::recursive_mutex g_contextLifecycleMutex;
 static std::vector<GLFWwindow*> g_windows;
+// 只表示当前 GLFW init/terminate 寿命曾成功交付过 EGL context，不缓存原生句柄。
+// display 的真实存活状态由跨 GLFW/SDL/namespace 的中立 owner 账本回答。
+static bool g_nativeEglContextCreated = false;
 static bool g_hintVisible = true;
 GLFWerrorfun g_errorCallback = nullptr;
 int g_initialized = 0;
@@ -474,7 +492,8 @@ static bool s_loggedClose = false;
 
 // ==================== Input bridge → GLFWwindow callback wrappers ====================
 static std::atomic<uint64_t> g_invalidCursorPositionCallbackCount{0u};
-static void bridgeCursorPosCallback(void* window, double xpos, double ypos) {
+/** 轮询位置与实际游戏通知分开：return1只表示真正cursorPosCb已经返回，不能以wrapper存在伪造ACK。 */
+static int bridgeCursorReceiptCallback(void* window, double xpos, double ypos) {
     if (!std::isfinite(xpos) || !std::isfinite(ypos)) {
         const uint64_t count = g_invalidCursorPositionCallbackCount.fetch_add(
                                    1u, std::memory_order_relaxed) + 1u;
@@ -483,15 +502,25 @@ static void bridgeCursorPosCallback(void* window, double xpos, double ypos) {
                 "GLFW: cursor callback rejected non-finite position count=%{public}llu",
                 static_cast<unsigned long long>(count));
         }
-        return;
+        return 0;
     }
     GLFWwindow* win = (GLFWwindow*)window;
     if (!win) win = g_currentWindow;
     if (win) {
         win->cursorX = xpos;
         win->cursorY = ypos;
-        if (win->cursorPosCb) win->cursorPosCb(win, xpos, ypos);
+        const GLFWcursorposfun callback = win->cursorPosCb;
+        if (callback) {
+            callback(win, xpos, ypos);
+            // 游戏可在callback销毁窗口；返回后不再解引用win，neutral用此前冻结cookie复核生命周期。
+            return 1;
+        }
     }
+    return 0;
+}
+/** 保留旧void callback前缀供兼容调用；正式product另强注册带交付回执的入口。 */
+static void bridgeCursorPosCallback(void* window, double xpos, double ypos) {
+    (void)bridgeCursorReceiptCallback(window, xpos, ypos);
 }
 
 // The typed adapter already aggregates physical contributors, while the legacy
@@ -499,6 +528,156 @@ static void bridgeCursorPosCallback(void* window, double xpos, double ypos) {
 // coexistence between those two source planes. Its sink runs after the ledger
 // lock is released, so Minecraft callbacks may synchronously reenter GLFW.
 static amcl::input::GlfwSourcePlaneAggregate g_sourcePlaneAggregate;
+/**
+ * 实际GLFW边缘只消费冻结prefix；借aggregate原control handle/activation/target，写当前
+ * window cursor后才报告cache，再在所有look锁外执行callback。返回后不再解引用可被销毁win。
+ */
+static int bridgeLookPrefixCallback(void* window,uint64_t prefix) {
+#if AMCL_INPUT_TRACE
+    // 只观察本callback已有票据和原返回值。没有source/stream/schema/resource字段，不能
+    // 把此行称为单finger来源关联或Minecraft tick采纳；budget未命中不额外查询owner或打印。
+    static std::atomic<uint64_t> observations{0},failures{0};
+    const uint64_t observation=observations.fetch_add(1,std::memory_order_relaxed)+1;
+#ifndef AMCL_INPUT_TRACE_SAMPLE_INTERVAL
+#define AMCL_INPUT_TRACE_SAMPLE_INTERVAL 256u
+#endif
+    constexpr uint64_t interval=AMCL_INPUT_TRACE_SAMPLE_INTERVAL;
+    static_assert(interval==0||(interval&(interval-1))==0,"input trace sample interval must be zero or power of two");
+    const bool sample=interval!=0&&(observation==1||(observation&(interval-1))==0);
+    const int notCalled=INT_MIN;
+    int bindResult=notCalled,prepareResult[2]={notCalled,notCalled},claimResult[2]={notCalled,notCalled},
+        validateResult[2]={notCalled,notCalled},discardResult[2]={notCalled,notCalled},
+        stateResult=notCalled,terminalResult=notCalled,abandonResult=notCalled;
+    bool controlRead=false,cacheWritten=false,callbackCalled=false,callbackReturned=false;
+    AmclControlSnapshotV1 observedFacts{};AmclLookEmissionV1 observedEmission{};
+    const auto finish=[&](int result,const char* stage){
+        // finish只用此前prefix/POD；失败/无callback明确终结观察，不补任何输入或新window读取。
+        // 只用本次prepare已捕获的原票；未知/失败票不借prefix终结别的consumer缓存。
+        AmclInputLatencyV1 terminal{};terminal.prefix=observedEmission.prefix;
+        terminal.consumer=observedEmission.consumer;terminal.activation=observedEmission.activation;
+        terminal.target=observedEmission.target;terminal.ticket=observedEmission.ticket;
+        inputBridge_finishInputLatencyTicketV1(&terminal,!cacheWritten?AMCL_ILAT_REJECTED:
+            !callbackCalled?AMCL_ILAT_NO_CALLBACK:!callbackReturned?AMCL_ILAT_SKIPPED:AMCL_ILAT_CALLBACK);
+        const bool failed=!cacheWritten; // cache已写但无callback的return0不是拒绝。
+        const uint64_t failure=failed?failures.fetch_add(1,std::memory_order_relaxed)+1:0;
+        if(sample||(failed&&(failure==1||(failure&(failure-1))==0)))
+            amclExternalLogWrite(1,LOG_TAG,
+                "AMCL_LOOK_GLFW obs=%{public}llu prefix=%{public}llu stage=%{public}s result=%{public}d "
+                "control=%{public}d session=%{public}llu consumer=%{public}llu activation=%{public}llu target=%{public}llu "
+                "ticketConsumer=%{public}llu ticketActivation=%{public}llu ticketTarget=%{public}llu "
+                "ticket=%{public}llu order=%{public}llu bind=%{public}d prep=%{public}d/%{public}d "
+                "claim=%{public}d/%{public}d valid=%{public}d/%{public}d discard=%{public}d/%{public}d "
+                "state=%{public}d terminal=%{public}d abandon=%{public}d cache=%{public}d callback=%{public}d/%{public}d "
+                "delta=%{public}.3f,%{public}.3f cursor=%{public}.3f,%{public}.3f scope=prefix-abi-only",
+                (unsigned long long)observation,(unsigned long long)prefix,stage,result,controlRead,
+                (unsigned long long)observedFacts.gameSession,(unsigned long long)observedFacts.consumer,
+                (unsigned long long)observedFacts.activation,(unsigned long long)observedFacts.target,
+                (unsigned long long)observedEmission.consumer,(unsigned long long)observedEmission.activation,
+                (unsigned long long)observedEmission.target,
+                (unsigned long long)observedEmission.ticket,(unsigned long long)observedEmission.order,
+                bindResult,prepareResult[0],prepareResult[1],claimResult[0],claimResult[1],validateResult[0],validateResult[1],
+                discardResult[0],discardResult[1],stateResult,terminalResult,abandonResult,cacheWritten,callbackCalled,callbackReturned,
+                observedEmission.dx,observedEmission.dy,observedEmission.x,observedEmission.y);
+        return result;
+    };
+#else
+    // 关闭时编译裁剪所有计数、POD副本与logger；仅保原返回行为。
+    const auto finish=[](int result,const char*){return result;};
+#endif
+    GLFWwindow* win=static_cast<GLFWwindow*>(window);if(!win)win=g_currentWindow;if(!win)return finish(0,"window-missing");
+    g_sourcePlaneAggregate.BindTarget(win->windowId);AmclControlSnapshotV1 facts{};
+    const bool factsReady=g_sourcePlaneAggregate.Snapshot(facts);
+#if AMCL_INPUT_TRACE
+    controlRead=factsReady;observedFacts=facts;
+#endif
+    if(!factsReady)return finish(0,"control-snapshot");
+    // control consumer来自已发布的neutral owner；同namespace的本地getter可能属于另一份
+    // runtime，不能拿真实owner的handle/token去读它。解析缺席/拒绝不在此另建consumer规则。
+    // 连接由同一facade冷握手并与control owner交叉核验；逐prefix只核活资源和票据，
+    // 不在游戏回调热路径反复做文件锁、maps及全部动态函数地址解析。
+    const AmclLookExecutionPortV1* look=g_sourcePlaneAggregate.LookPort();
+    if(!look)return finish(0,"owner-missing");
+    const int bound=look->bindConsumer(facts.consumer,win->cursorX,win->cursorY);
+#if AMCL_INPUT_TRACE
+    bindResult=bound;
+#endif
+    if(bound<0)return finish(0,"bind");
+    AmclLookEmissionV1 emission{};bool ready=false;
+    // 一次源退休可撤原未cache票并重新取仍有效兄弟贡献；最多两次准备，不在游戏线程无界循环。
+    for(unsigned attempt=0;attempt<2;++attempt){
+        const int prepared=look->prepare(facts.consumer,prefix,&emission);
+#if AMCL_INPUT_TRACE
+        prepareResult[attempt]=prepared;observedEmission=emission;
+#endif
+        if(prepared!=1)break;
+        const int claimed=look->claim(&emission);
+#if AMCL_INPUT_TRACE
+        claimResult[attempt]=claimed;
+#endif
+        int validated=INT_MIN;if(claimed==1)validated=look->validate(&emission);
+#if AMCL_INPUT_TRACE
+        validateResult[attempt]=validated;
+#endif
+        if(claimed==1&&validated==1){ready=true;break;}
+        const int discarded=look->complete(&emission,AMCL_CONTROL_DISCARDED);
+        (void)discarded;
+#if AMCL_INPUT_TRACE
+        discardResult[attempt]=discarded;
+#endif
+    }
+    if(!ready){const int abandoned=look->abandonPrefix(facts.consumer,prefix);
+#if AMCL_INPUT_TRACE
+        abandonResult=abandoned;
+#endif
+        return finish(0,"prepare-claim-validate");}
+    // GLFW旧world入口按floor曝光累计坐标；fraction保在neutral current，下次prefix守恒，
+    // 不借结构迁移改变已验收微量化手感。SDL/L2分别沿自己的SDK变换/整数余量政策。
+    win->cursorX=floor(emission.x);win->cursorY=floor(emission.y);const auto callback=win->cursorPosCb;
+#if AMCL_INPUT_TRACE
+    AmclInputLatencyV1 latency{};latency.prefix=prefix;latency.consumer=emission.consumer;
+    latency.activation=emission.activation;latency.target=emission.target;latency.ticket=emission.ticket;
+    // 这里只复制原callback地址是否存在的事实；私有诊断借此保护STATE_ONLY后的长回调，
+    // 不把cache当最终交付，也不持/查window，实际调用仍完全沿原分支。
+    latency.outcome=callback?AMCL_ILAT_CALLBACK:AMCL_ILAT_NO_CALLBACK;
+    inputBridge_noteInputLatencyV1(AMCL_ILAT_CACHE,&latency);
+#endif
+    const int stateCompleted=look->complete(&emission,AMCL_CONTROL_STATE_ONLY);
+    (void)stateCompleted;
+#if AMCL_INPUT_TRACE
+    cacheWritten=true;stateResult=stateCompleted;
+#endif
+    // owner操作已返回且内部锁已释放。callback可能同步destroy/rebind，以下只用原票/POD，
+    // 日志不再解引用win，也不增加snapshot或其它冷认证读取。
+    if(callback){
+#if AMCL_INPUT_TRACE
+        callbackCalled=true;inputBridge_noteInputLatencyV1(AMCL_ILAT_CALLBACK_BEGIN,&latency);
+#endif
+        callback(win,floor(emission.x),floor(emission.y));
+#if AMCL_INPUT_TRACE
+        // 回调刚返回就记同钟，不把随后complete取锁/回收等待误算为回调自身时延。
+        inputBridge_noteInputLatencyV1(AMCL_ILAT_RETURN,&latency);
+#endif
+        const int completed=look->complete(&emission,AMCL_CONTROL_CALLBACK_RETURNED);
+        (void)completed;
+#if AMCL_INPUT_TRACE
+        callbackReturned=true;terminalResult=completed;
+        // callback可能销毁窗口；此处只用被冻结的票值，绝不读取win/current。
+#endif
+        return finish(1,"delivered-callback");}
+    const int completed=look->complete(&emission,AMCL_CONTROL_STATE_FINAL);
+    (void)completed;
+#if AMCL_INPUT_TRACE
+    terminalResult=completed;
+#endif
+    return finish(0,"delivered-state");
+}
+// 实际GLFW查询才计poll，不能用ringTaken、核心query或反馈getter冒充游戏读取。
+void glfwOHOS_RecordControlPoll(GLFWwindow* window,uint32_t kind,int32_t code,int32_t held) {
+    if (!window || window != g_currentWindow || !window->windowId) return;
+    g_sourcePlaneAggregate.BindTarget(window->windowId);
+    g_sourcePlaneAggregate.ObservePoll(kind,code,held);
+}
+
 
 // GLFW 语义下 `mods` 是**事件发生那一刻的修饰键状态**，由 GLFW 自己从按键状态推出，
 // 而不是由事件生产者携带。我们此前把它一路写死成 0：
@@ -578,13 +757,18 @@ static void dispatchAggregateKey(
         void* context, const amcl::input::GlfwAggregateKeyEvent& event) {
     GLFWwindow* win = static_cast<GLFWwindow*>(context);
     if (!win) win = g_currentWindow;
-    if (!win) return;
+    if (!win || event.key < 0 || event.key >= 512 || event.receipt.target != win->windowId ||
+        !g_sourcePlaneAggregate.Validate(event.receipt)) {
+        g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_DISCARDED);
+        return;
+    }
     if (event.key >= 0 && event.key < 512) {
         // GLFW polling remains binary even when the callback action is REPEAT.
         win->keys[event.key] =
             event.action == amcl::input::GlfwAggregateAction::kRelease
                 ? GLFW_RELEASE : GLFW_PRESS;
     }
+    g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_STATE_ONLY);
     if (win->keyCb) {
         // 轮询状态已在上面更新，所以这里算出的 mods 已经包含**本次边沿自身**的效果 ——
         // 与真 GLFW 一致（按下 Shift 的那一条事件自己就带 SHIFT 位）。
@@ -597,6 +781,7 @@ static void dispatchAggregateKey(
         const int scanCode = event.scanCode != 0 ? event.scanCode : event.key;
         win->keyCb(win, event.key, scanCode,
                    static_cast<int>(event.action), mods);
+        g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_CALLBACK_RETURNED);
     }
 }
 
@@ -604,12 +789,17 @@ static void dispatchAggregateButton(
         void* context, const amcl::input::GlfwAggregateButtonEvent& event) {
     GLFWwindow* win = static_cast<GLFWwindow*>(context);
     if (!win) win = g_currentWindow;
-    if (!win) return;
+    if (!win || event.button < 0 || event.button >= 8 || event.receipt.target != win->windowId ||
+        !g_sourcePlaneAggregate.Validate(event.receipt)) {
+        g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_DISCARDED);
+        return;
+    }
     if (event.button >= 0 && event.button < 8) {
         win->mouseButtons[event.button] =
             event.action == amcl::input::GlfwAggregateAction::kRelease
                 ? GLFW_RELEASE : GLFW_PRESS;
     }
+    g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_STATE_ONLY);
     // ---- 决定性探针：按下左键的那一刻，MC 能不能轮询到 Shift ----
     //
     // Minecraft 的 shift+左键（整组取物）**不看鼠标事件的 mods**，它调
@@ -662,6 +852,7 @@ static void dispatchAggregateButton(
         const int mods = currentModifierMask(win);
         win->mouseButtonCb(win, event.button,
                            static_cast<int>(event.action), mods);
+        g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_CALLBACK_RETURNED);
     }
 }
 
@@ -671,6 +862,9 @@ static amcl::input::GlfwAggregateSink aggregateSink(void* window = nullptr) {
 
 static void bridgeMouseButtonCallback(
         void* window, int button, int action, int mods) {
+    if (!window) window = g_currentWindow;
+    if (!window) return;
+    g_sourcePlaneAggregate.BindTarget(static_cast<GLFWwindow*>(window)->windowId);
     g_sourcePlaneAggregate.SubmitButton(
         amcl::input::GlfwSourcePlane::kLegacy, button,
         static_cast<amcl::input::GlfwAggregateAction>(action), mods,
@@ -679,6 +873,9 @@ static void bridgeMouseButtonCallback(
 
 static void bridgeKeyCallback(
         void* window, int key, int scancode, int action, int mods) {
+    if (!window) window = g_currentWindow;
+    if (!window) return;
+    g_sourcePlaneAggregate.BindTarget(static_cast<GLFWwindow*>(window)->windowId);
     g_sourcePlaneAggregate.SubmitKey(
         amcl::input::GlfwSourcePlane::kLegacy, key, scancode,
         static_cast<amcl::input::GlfwAggregateAction>(action), mods,
@@ -709,12 +906,22 @@ static amcl::input::GlfwTypedInputResolveGuard g_typedInputResolveGuard;
 // monotonic interval instead of on every frame.
 static constexpr long long kTypedInputResolveRetryMs = 500;
 static long long g_nextTypedInputResolveMs = 0;
+// 最近一次 ensureTypedInputOpen 中 adapter.Open 的结果；本次没走到 Open（描述符解析失败、
+// legacy 路由、旧消费者清理未完成）时为 kOk。与上面的节流量一样只在游戏线程读写，
+// 供节流判断“这次失败是否只是握手期间 core 状态恰好变化导致的基线被拒”。
+static amcl::input::GlfwAdapterStatus g_typedInputLastOpenStatus =
+    amcl::input::GlfwAdapterStatus::kOk;
+// 基线被拒后放行的那一次“下一帧立即重试”是否已排上；它本身再失败就回到 500 ms 节流。
+static bool g_typedInputBaselineRetryPending = false;
 // kLegacyCapability is decided by the one published host table, whose capability
 // bits are latched once from an immutable build/startup selection. Unlike a
 // resolve failure (the XComponent owner may simply not be loaded yet) it can
 // never become typed later, so retrying it forever would pay the descriptor
 // flock plus a /proc/self/maps probe twice a second for the whole session.
 static bool g_typedInputLegacyLatched = false;
+// 只有已解析为legacy/textOnly的实际路线可以无事件cache读owner基线；typed physical不能偷跑未消费的坐标身份。
+// 视频查询可能在另一线程，单独原子发布该只读资格，不跨线程读取游戏线程的route/host裸指针。
+static std::atomic<bool> g_inputSurfaceOwnerBaselineAllowed{false};
 static std::atomic<uint64_t> g_typedUnsupportedKeyMappingCount{0u};
 static std::atomic<uint64_t> g_typedUnsupportedButtonMappingCount{0u};
 static std::atomic<uint64_t> g_typedDiagnosticDropCount{0u};
@@ -728,6 +935,9 @@ struct TypedWindowInputBinding {
     uint32_t widthPx = 0u;
     uint32_t heightPx = 0u;
     bool active = false;
+    // 只由渲染/生命周期owner读取GLFWwindow的不可变windowId并随同一快照发布。
+    // 事件线程使用这一值绑定真实Vulkan呈现，不能跨线程读取普通渲染代次字段。
+    uint64_t graphicsWindowId = 0u;
 };
 
 static amcl::input::GlfwTypedRuntimeTarget makeTypedRuntimeTarget(
@@ -765,7 +975,13 @@ static void publishTypedWindowInputBinding(GLFWwindow* window, bool active) {
     g_typedWindowInputBinding = {
         window, window->nativeWindowGeneration,
         static_cast<uint32_t>(window->width),
-        static_cast<uint32_t>(window->height), true};
+        static_cast<uint32_t>(window->height), true, window->windowId};
+}
+
+/** 复制已发布的完整输入身份；返回后释放shared锁，中立桥更新/后续回调不在此锁内执行。 */
+static TypedWindowInputBinding snapshotTypedWindowInputBinding() {
+    std::shared_lock<std::shared_mutex> lock(g_typedWindowInputBindingMutex);
+    return g_typedWindowInputBinding;
 }
 
 static void clearTypedWindowInputBinding(GLFWwindow* expectedWindow) {
@@ -786,6 +1002,8 @@ public:
             binding_.window, binding_.generation, binding_.widthPx,
             binding_.heightPx, binding_.active);
     }
+    /** 实际WSI身份来自与target同一份冻结发布，不跨线程读取GLFWwindow普通生命周期字段。 */
+    uint64_t graphicsWindowId() const { return binding_.graphicsWindowId; }
 
 private:
     std::shared_lock<std::shared_mutex> lock_;
@@ -835,6 +1053,7 @@ static void logTypedAbsoluteRouteDrop(const char* stage) {
 
 static void typedKeySink(void*, const amcl::input::GlfwKeySinkEvent& event) {
     g_typedAbsoluteRoute.CancelAuthorization();
+    if (g_currentWindow) g_sourcePlaneAggregate.BindTarget(g_currentWindow->windowId);
     g_sourcePlaneAggregate.SubmitKey(
         amcl::input::GlfwSourcePlane::kTyped, event.key, event.scanCode,
         static_cast<amcl::input::GlfwAggregateAction>(event.action),
@@ -847,6 +1066,7 @@ static void typedButtonSink(
         GLFWwindow* callbackWindow = g_currentWindow;
         GLFWmousebuttonfun callback = nullptr;
         amcl::input::GlfwTypedRuntimeButtonCommit committed{};
+        if (callbackWindow) g_sourcePlaneAggregate.BindTarget(callbackWindow->windowId);
         const auto status = amcl::input::GlfwTypedRuntimeCommitButton(
             g_typedAbsoluteRoute, g_sourcePlaneAggregate, event,
             makeTypedRuntimeTarget(callbackWindow, 0u, 0u, 0u,
@@ -874,7 +1094,9 @@ static void typedButtonSink(
             callback(callbackWindow, committed.event.button,
                      static_cast<int>(committed.event.action),
                      currentModifierMask(callbackWindow));
+            g_sourcePlaneAggregate.Complete(committed.event.receipt, AMCL_CONTROL_CALLBACK_RETURNED);
         }
+        if (committed.notify) g_sourcePlaneAggregate.Complete(committed.event.receipt, AMCL_CONTROL_STATE_FINAL);
         return;
     }
 
@@ -884,6 +1106,8 @@ static void typedButtonSink(
     {
         ScopedTypedWindowInputBinding windowBinding;
         ScopedTypedNativeWindowPublication publication;
+        if (windowBinding.target().identity) g_sourcePlaneAggregate.BindTarget(
+            static_cast<GLFWwindow*>(windowBinding.target().identity)->windowId);
         const auto status = amcl::input::GlfwTypedRuntimeCommitButton(
             g_typedAbsoluteRoute, g_sourcePlaneAggregate, event,
             windowBinding.target(), publication.publication(), committed);
@@ -915,7 +1139,9 @@ static void typedButtonSink(
         callback(callbackWindow, committed.event.button,
                  static_cast<int>(committed.event.action),
                  currentModifierMask(callbackWindow));
+        g_sourcePlaneAggregate.Complete(committed.event.receipt, AMCL_CONTROL_CALLBACK_RETURNED);
     }
+    if (committed.notify) g_sourcePlaneAggregate.Complete(committed.event.receipt, AMCL_CONTROL_STATE_FINAL);
 }
 
 static void typedAbsoluteSink(
@@ -923,11 +1149,16 @@ static void typedAbsoluteSink(
     GLFWwindow* callbackWindow = nullptr;
     GLFWcursorposfun callback = nullptr;
     amcl::input::GlfwTypedRuntimeAbsoluteCommit committed{};
+    uint64_t logicalTarget = 0, inputPublication = 0, wsiIdentity = 0, cursorCookie = 0;
+    // core sequence是授权用的连续序号；共同interactionOrder必须从正在投递本事件的真实adapter读取。
+    // 在任何游戏回调之前冻结它，回调关闭/重开adapter后不能现读新实例状态来绑定旧坐标。
+    const uint64_t interactionOrder = g_typedInputAdapter.CurrentInteractionOrder();
     {
         ScopedTypedWindowInputBinding windowBinding;
         ScopedTypedNativeWindowPublication publication;
+        const auto target = windowBinding.target();
         const auto status = amcl::input::GlfwTypedRuntimeCommitAbsolute(
-            g_typedAbsoluteRoute, event, windowBinding.target(),
+            g_typedAbsoluteRoute, event, target,
             publication.publication(), committed);
         if (status != amcl::input::GlfwTypedRuntimeCommitStatus::kCommitted) {
             logTypedAbsoluteRouteDrop(
@@ -940,6 +1171,13 @@ static void typedAbsoluteSink(
         }
         callbackWindow = static_cast<GLFWwindow*>(committed.target);
         callback = callbackWindow->cursorPosCb;
+        logicalTarget = reinterpret_cast<uint64_t>(committed.target);
+        inputPublication = target.publicationGeneration;
+        wsiIdentity = windowBinding.graphicsWindowId();
+        // 已验证的轮询状态先提交current B，使回调内glfwGetCursorPos能同步读B；此时还不是ACK。
+        // neutral入口不回调且不解引用window，目标/资格匹配失败只拒同步，不绕过已有typed授权。
+        cursorCookie = inputBridge_beginGlfwMenuCursorV1(logicalTarget, inputPublication, wsiIdentity,
+            interactionOrder, committed.x, committed.y);
         // Linearization point: the public polling state is committed under the
         // exact target/publication guards. Notification is deliberately later.
     }
@@ -948,6 +1186,13 @@ static void typedAbsoluteSink(
     // callbackWindow is fenced by the adapter until this sink returns.
     if (committed.notify && callback) {
         callback(callbackWindow, committed.x, committed.y);
+        // 只有实际执行并返回的cursor callback才获得ACK。合法轮询current B与ACK不是同一事实，
+        // callback尚未注册时不能凭public state写入就宣称该坐标已向游戏回调交付。
+        // 回调可销毁/重新激活同地址窗口；只用冻结tuple/cookie，不再解引用window。
+        if (cursorCookie != 0) {
+            (void)inputBridge_completeGlfwMenuCursorV1(logicalTarget, inputPublication, wsiIdentity,
+                cursorCookie, interactionOrder, committed.x, committed.y);
+        }
     }
 }
 
@@ -963,9 +1208,26 @@ static bool g_hasInputSurfaceContext = false;
 bool glfwOHOS_ReadInputSurfaceContext(
         AmclInputSurfaceContextPayload* outContext) {
     if (!outContext) return false;
+    // owner/core读锁在GLFW局部cache锁之外；same-generation元数据无需排新CONTEXT事件，仍可读最新Hz。
+    AmclInputSurfaceContextPayload fresh{};
+    const bool hasFresh = inputBridge_readSurfaceContextV1(&fresh) != 0;
     std::lock_guard<std::mutex> lock(g_inputSurfaceContextMutex);
-    if (!g_hasInputSurfaceContext) return false;
+    if (!g_hasInputSurfaceContext) {
+        // 旧路或textOnly没有surfaceContext sink，使用真正owner基线；未知/typed路线继续等待有序事件。
+        if (hasFresh && g_inputSurfaceOwnerBaselineAllowed.load(std::memory_order_acquire)) {
+            *outContext = fresh;
+            return true;
+        }
+        *outContext = {};
+        return false;
+    }
     *outContext = g_inputSurfaceContext;
+    // 只合并同一输入identity的Hz与其有效位。core可能已有尚未poll的新geometry，不能借getter越过队列。
+    if (hasFresh && amcl::input::SameInputSurfaceContextIdentity(*outContext, fresh)) {
+        outContext->refreshRateHz = fresh.refreshRateHz;
+        const uint32_t rateBit = AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE;
+        outContext->validFields = (outContext->validFields & ~rateBit) | (fresh.validFields & rateBit);
+    }
     return true;
 }
 
@@ -1093,19 +1355,22 @@ static void typedTextCandidatesSink(
         static_cast<int>(event.pageStart), static_cast<int>(event.pageSize));
 }
 
+/**
+ * V1独立TEXT_SELECTION表示原文本会话的文档选区，不表示当前预编辑内部的选区。
+ * GLFW字符/预编辑出口没有修改真实游戏文档选区的能力，因此所有合法独立选区都
+ * 沿原具名降级计数收口；不能因当前有preedit且数值恰落在其长度内就取得修改权。
+ * 合法预编辑caret/选区继续由TEXT_EDITING同包的scalar范围进入typedTextEditingSink，
+ * 本出口不改那份文本或触发预编辑callback，也不补发编辑键、提交或另一条回退路线。
+ * adapter已核原text session与范围，本函数仅报告该消费者缺少文档能力；运输接受
+ * 不是游戏文档已选中，降级日志只记种类/有界频率计数，不记录用户文字或选区正文。
+ */
 static void typedTextSelectionSink(
-        void*, const amcl::input::GlfwTextSelectionSinkEvent& event) {
-    if (glfwOHOS_UpdatePreeditSelection(
-            g_currentWindow, static_cast<int>(event.selectionStart),
-            static_cast<int>(event.selectionLength))) {
-        return;
-    }
+        void*, const amcl::input::GlfwTextSelectionSinkEvent&) {
     const uint64_t count = g_typedTextSelectionDegradedCount.fetch_add(
                                1u, std::memory_order_relaxed) + 1u;
     if ((count & (count - 1u)) == 0u) {
         AMCL_EXTERNAL_LOG_W(LOG_TAG,
-            "GLFW: typed text selection has no active preedit; "
-            "document selection unsupported count=%{public}llu",
+            "GLFW: typed document selection unsupported count=%{public}llu",
             static_cast<unsigned long long>(count));
     }
 }
@@ -1113,12 +1378,12 @@ static void typedTextSelectionSink(
 static amcl::input::GlfwTypedLookRoute g_typedLookRoute;
 
 static void resolveTypedLookRoute() {
-    if (g_typedLookRoute.HasSink()) return;
+    if (g_typedLookRoute.HasTimedSink()) return;
     const uintptr_t address = amcl::input::ParseGlfwTypedLookTrampoline(
-        getenv("AMCL_LOOK_DELTA_CB"));
+        getenv("AMCL_LOOK_DELTA_V2_CB"));
     if (address == 0u) return;  // libentry 尚未 publish；下一个样本再试，不缓存失败。
-    (void)g_typedLookRoute.Latch(
-        reinterpret_cast<amcl::input::GlfwTypedLookSink>(address));
+    (void)g_typedLookRoute.LatchTimed(
+        reinterpret_cast<amcl::input::GlfwTimedLookSink>(address));
 }
 
 // 相对位移被那道门丢掉了多少条。⚠️ **必须把三个合取项分别打出来**，否则这个计数回答不了
@@ -1171,9 +1436,17 @@ static void typedRelativeSink(
     // 滑条全部失效，而其中"倒置 Y 失效"零日志。逐项对照见计划 §85。
     //
     // 现在它只做**生产者**：把增量交给同一条漏斗（跨 DSO，见 GlfwTypedLookRoute 头）。
+    // 公告只在真实Core hook登记成功后发布，资格属于公告owner而非本namespace的Core副本。
+    // 描述符缺席保既有旧能力路径；已公告但损坏/错映像时停止，不重加工已被owner接受的物理量。
+    if(getenv(AMCL_LOOK_EXECUTION_ENV)){
+        uint64_t prefix=0;const AmclLookExecutionPortV1* look=g_sourcePlaneAggregate.LookPort();
+        if(look&&look->physicalPrefix(event.sequence,&prefix)==AMCL_LOOK_PREFIX_READY)
+            (void)bridgeLookPrefixCallback(window,prefix);
+        return;
+    }
     resolveTypedLookRoute();
     const amcl::input::GlfwTypedLookStatus status =
-        g_typedLookRoute.Apply(event.dx, event.dy);
+        g_typedLookRoute.ApplyTimed(event.dx, event.dy, event.monotonicTimeNs);
     if (status == amcl::input::GlfwTypedLookStatus::kApplied) return;
     const uint64_t count = g_typedLookRoute.RejectCount();
     if ((count & (count - 1u)) == 0u) {
@@ -1368,7 +1641,48 @@ static int32_t typedInputAdapterClose(void* context) {
     return status;
 }
 
+static bool isBackendSurfaceReady(const GLFWwindow* window);
+extern "C" void inputBridge_glfwSetActive(void* window, int active);
+
+// 实例初始化与输入激活分开。没有呈现窗口的辅助 GLFW 实例不能申领 READY，
+// 否则从不执行 poll 的实例会持续占住 shared queue，并拖累同进程的 SDL/L2。
+// Close 在旧目标仍存活时释放本消费者注入态；core负责隔离兄弟消费者的状态。
+static bool retainTypedPresentedInputTarget() {
+    GLFWwindow* window = g_currentWindow;
+    const uint64_t lifetime = window ? window->sizeNotifications.lifetime : 0u;
+    const TypedWindowInputBinding published = snapshotTypedWindowInputBinding();
+    if (published.active && published.window == window &&
+        amcl::input::GlfwHasPresentedInputTarget(
+            window != nullptr, window && window->auxiliary,
+            window && window->visible,
+            window && isBackendSurfaceReady(window),
+            window && window->contextLostFatal)) {
+        // 菜单与typed共享同一权威发布快照。setter只标记退休，不直接回调应用；
+        // 真实呈现的windowId与Native输入代次各自有权威，不将二者混成一个数字。
+        inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(window),
+            published.generation, published.graphicsWindowId);
+        inputBridge_glfwSetActive(window, 1);
+        return g_currentWindow == window && window &&
+            window->sizeNotifications.lifetime == lifetime;
+    }
+    // 只退休L3 reader及其legacy plane，不触碰L2/SDL的游标或持有。
+    // 桥中的释放回调可能销毁window，所以本调用之后只读取当前全局绑定。
+    inputBridge_glfwSetTargetV1(0, 0, 0);
+    inputBridge_glfwSetActive(window, 0);
+    // 同步释放回调允许销毁旧窗并创建新窗。新的adapter incarnation属于新目标，
+    // 不能由外层Hide的剩余清理关闭；指针复用也以lifetime而非地址判断。
+    if (g_currentWindow != window ||
+        (window && window->sizeNotifications.lifetime != lifetime)) return false;
+    if (g_typedInputAdapter.HasConsumer()) {
+        (void)typedInputAdapterClose(&g_typedInputAdapter);
+        g_typedInputHost = nullptr;
+    }
+    return false;
+}
+
 static bool ensureTypedInputOpen() {
+    g_typedInputLastOpenStatus = amcl::input::GlfwAdapterStatus::kOk;
+    if (!retainTypedPresentedInputTarget()) return false;
     const AmclInputHostApiV1* host = nullptr;
     const int32_t resolve = amclInputHostDescriptorResolveV1(&host);
     const amcl::input::GlfwTypedInputRetireOps retireOps{
@@ -1376,6 +1690,9 @@ static bool ensureTypedInputOpen() {
         typedInputAdapterClose};
     const amcl::input::GlfwTypedInputResolveResult route =
         g_typedInputResolveGuard.Apply(resolve, host, retireOps);
+    g_inputSurfaceOwnerBaselineAllowed.store(
+        route.outcome == amcl::input::GlfwTypedInputResolveOutcome::kLegacyCapability,
+        std::memory_order_release);
     const bool textOnlyRoute =
         route.outcome ==
             amcl::input::GlfwTypedInputResolveOutcome::kLegacyCapability &&
@@ -1442,6 +1759,7 @@ static bool ensureTypedInputOpen() {
     amcl::input::GlfwAdapterStatus status = g_typedInputAdapter.Open(
         host, amcl::input::GlfwOhosInputMapper(),
         textOnlyRoute ? typedTextOnlySink() : typedInputSink());
+    g_typedInputLastOpenStatus = status;
     if (status == amcl::input::GlfwAdapterStatus::kOk) {
         g_typedInputHost = host;
         g_typedInputOpenFailureLogged = false;
@@ -1460,10 +1778,17 @@ static bool ensureTypedInputOpen() {
     return false;
 }
 
+void glfwOHOS_RefreshTypedInputActivation() {
+    // 库初始化不调用此入口；真实窗口的Show/Hide、promotion和poll才决定资格。
+    // ensure在目标失效时同步退休，恢复时重新建立baseline，不重放隐藏批次。
+    (void)ensureTypedInputOpen();
+}
+
 // Frame-rate safe gate in front of ensureTypedInputOpen(). The resolve it
 // performs is deliberately expensive and is called once per rendered frame, so
 // it must only run when there is no live consumer, and then at a bounded rate.
 static bool ensureTypedInputOpenThrottled() {
+    if (!retainTypedPresentedInputTarget()) return false;
     if (g_typedInputAdapter.IsReady()) return true;
     if (g_typedInputLegacyLatched) {
         // The legacy physical owner is this process's final decision. Never
@@ -1481,12 +1806,25 @@ static bool ensureTypedInputOpenThrottled() {
         return false;
     }
     g_nextTypedInputResolveMs = now + kTypedInputResolveRetryMs;
-    return ensureTypedInputOpen();
+    const bool immediateRetry = g_typedInputBaselineRetryPending;
+    g_typedInputBaselineRetryPending = false;
+    const bool opened = ensureTypedInputOpen();
+    // 基线被拒只说明握手期间 core 状态恰好变了（会话切换、兄弟消费者收尾等），下一帧通常
+    // 就能成功：放行一次下一帧立即重试，不让一次竞争换来 500 ms 没有视角/按键。立即重试
+    // 仍失败，或失败原因是描述符解析、路由、清理未完成、会话尚未开始，都保持 500 ms 节流，
+    // 避免每帧支付描述符解析（flock + /proc/self/maps 探测）的开销。
+    if (!opened && !immediateRetry &&
+        g_typedInputLastOpenStatus ==
+            amcl::input::GlfwAdapterStatus::kBaselineRejected) {
+        g_typedInputBaselineRetryPending = true;
+        g_nextTypedInputResolveMs = 0;
+    }
+    return opened;
 }
 
-static void pumpTypedInput() {
+static void pumpTypedInput(uint64_t maxOrder = UINT64_MAX) {
     if (!ensureTypedInputOpenThrottled()) return;
-    const amcl::input::GlfwPumpResult result = g_typedInputAdapter.Pump();
+    const amcl::input::GlfwPumpResult result = g_typedInputAdapter.Pump(0u, maxOrder);
     if (result.eventsDiscarded != 0u || result.abandoned) {
         AMCL_EXTERNAL_LOG_W(LOG_TAG,
             "GLFW: typed input recovery status=%{public}d drained=%{public}u "
@@ -1516,6 +1854,14 @@ static void pumpTypedInput() {
                 result.recoveryHostStatus);
 }
 
+// owner ring 在每条兼容边沿之前调用本函数，两个来源因而按同一入队顺序更新轮询态及回调。
+// 任意 Minecraft 回调都可能隐藏/销毁窗口；返回 0 将停止 ring，避免使用失效 context。
+static int pumpTypedThrough(void* context, uint64_t maxOrder) {
+    if (g_currentWindow != context || !retainTypedPresentedInputTarget()) return 0;
+    pumpTypedInput(maxOrder);
+    return g_currentWindow == context && retainTypedPresentedInputTarget() ? 1 : 0;
+}
+
 static long long scheduleSurfaceRecovery(GLFWwindow* window) {
     ++window->surfaceRecoveryFailures;
     const unsigned int shift = window->surfaceRecoveryFailures > 4
@@ -1524,6 +1870,47 @@ static long long scheduleSurfaceRecovery(GLFWwindow* window) {
     const long long delayMs = 125LL << shift;
     window->nextSurfaceRecoveryAttemptMs = currentTimeMs() + delayMs;
     return delayMs;
+}
+
+/** 读取已有的进程重启事实，不新增可变 provider/恢复通道。一个 context 丢失后，同进程
+ * 其他共享或独立窗口也不能继续绑定、呈现或创建空 context；正常 owner 释放与销毁不受此门阻挡。
+ */
+static bool glfwGraphicsRestartRequired() {
+    const char* marker = getenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART");
+    return marker && std::strcmp(marker, "1") == 0;
+}
+
+/** 发布进程级重启标记（I27-05）：经 env_slot.h 已登记的单字节槽位原位置 '1'，绝不 setenv
+ * （本函数跑在游戏/渲染线程，setenv 会释放并发 getenv 读者持有的旧串）。登记表缺失或槽位已被
+ * 预编译 SDL 摘走且值不是 "1" 时只能大声记录；本地终局（contextLostFatal/shouldClose）由调用方
+ * 另行设置，不依赖这次写入成功。glfw_egl.cpp 的失败报告共用本函数。
+ */
+void requestRendererProcessRestart(const char* stage) {
+    const int status = amcl::envslot::RequestRendererRestart();
+    if (status < 0) {
+        AMCL_EXTERNAL_LOG_E(LOG_TAG, "GLFW: renderer restart marker not recorded stage=%{public}s status=%{public}d",
+            stage ? stage : "unknown", status);
+    }
+}
+
+/** 记录 GLFW 直接调用 EGL 的失败；error 必须在失败调用后立即读取，stage 必须为静态字面量。
+ * 普通驱动错误保留当前所有权供原路径重试；context lost 则要求结束本局，后续不能新建空
+ * context 冒充恢复。这里只发布终局事实，不解绑、不销毁句柄、不释放 NativeWindow/token，
+ * 真实退休仍由 context owner 的正常销毁流程完成。已有终局首因不得被后续清理错误覆盖。
+ * 返回值表示本次是否为 context lost；没有窗口的外部 current 恢复失败仍发布进程级故障。
+ */
+static bool recordGlfwEglFailure(GLFWwindow* window, const char* stage, EGLint error) {
+    const bool wasFatal = window && window->contextLostFatal;
+    if (window && !wasFatal) window->lastFailure = {stage, error, 1u};
+    if (error != EGL_CONTEXT_LOST) return false;
+    if (window) {
+        window->contextLostFatal = true;
+        window->shouldClose = 1;
+    }
+    requestRendererProcessRestart("egl-context-lost");
+    if (!wasFatal) amclGraphicsFatalV1("egl-context-lost", static_cast<uint32_t>(error),
+        window ? window->nativeWindowGeneration : 0);
+    return true;
 }
 
 static void markEglSurfaceDetachPending(GLFWwindow* window, const char* reason) {
@@ -1588,6 +1975,8 @@ static bool isBackendSurfaceReady(const GLFWwindow* window) {
 static bool consumePublishedSurfaceState(GLFWwindow* window, const char* checkpoint,
                                          bool presentationCheckpoint) {
     if (!window) return false;
+    // 其他窗口报告终局后，PollEvents/MakeCurrent 也不能借 surface 消费重建 EGL 资源。
+    if (glfwGraphicsRestartRequired()) return false;
     if (window->clientAPI != GLFW_NO_API && (window->contextLostFatal || window->eglSurfaceDetachPending ||
         window->eglTeardownPending || !window->graphicsBackendSession)) {
         publishTypedWindowInputBinding(window, false);
@@ -1634,7 +2023,7 @@ static bool consumePublishedSurfaceState(GLFWwindow* window, const char* checkpo
     if (handle->session->state() == amcl::graphics::BackendSessionState::kFailed) {
         window->contextLostFatal = true;
         window->shouldClose = 1;
-        setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+        requestRendererProcessRestart("session-failed");
         publishTypedWindowInputBinding(window, false);
         return false;
     }
@@ -1701,7 +2090,7 @@ static bool consumePublishedSurfaceState(GLFWwindow* window, const char* checkpo
             if (handle->session->state() == amcl::graphics::BackendSessionState::kFailed) {
                 window->contextLostFatal = true;
                 window->shouldClose = 1;
-                setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+                requestRendererProcessRestart("session-resume-failed");
             }
             publishTypedWindowInputBinding(window, false);
             AMCL_EXTERNAL_LOG_W(LOG_TAG, "GLFW: session attach retained ownership; failure=%{public}u backoff=%{public}lldms",
@@ -1730,6 +2119,11 @@ static bool consumePublishedSurfaceState(GLFWwindow* window, const char* checkpo
     return isBackendSurfaceReady(window);
 }
 // ==================== GLFW 核心实现 ====================
+extern "C" __attribute__((visibility("default")))
+const char* glfwOHOS_InputBuildIdentityV1() {
+    return amcl::input::InputBuildIdentityV1();
+}
+
 int glfwInit(void) {
     // One record per mapped libglfw image. This turns linker-namespace copies
     // into observable device evidence without assuming that one HAP DSO entry
@@ -1750,6 +2144,7 @@ int glfwInit(void) {
     if (g_hintClientAPI != GLFW_NO_API)
         g_hintClientAPI = amcl::desktop::UsesDesktopOpenGlContext() ? GLFW_OPENGL_API : GLFW_OPENGL_ES_API;
     g_startTime = std::chrono::steady_clock::now();
+    g_nativeEglContextCreated = false;
     g_initialized = 1;
     g_swapCount = 0;
     g_pollCount = 0;
@@ -1780,7 +2175,9 @@ int glfwInit(void) {
      * 守卫本身没错 —— 错在它的作用域被当成了全部答案。现在补上的那条通道是
      * input_bridge_instance_descriptor.h：非 owner 的那份 image 会把每个 inputBridge_*
      * 入口转发给 owner，所以"不发布"对它已经不再等于"没有输入"。
-     * ⇒ 删掉这道守卫会让 26.3 重新坏掉；删掉那条实例通道会让 ≤26.2 重新坏掉。两者都要在。 */
+     * ⇒ 删掉这道守卫会让 26.3 重新坏掉；删掉那条实例通道会让 ≤26.2 重新坏掉。两者都要在。
+     * I27-05：两个发布函数自带一次性守卫，libentry 在模块初始化时已完成唯一一次写入；本调用
+     * 在游戏线程上只是空操作，保留它只为覆盖早期发布未运行的宿主测试/异常拓扑。 */
     if (g_inputPublisherGeneration.load(std::memory_order_acquire) != 0 &&
         g_inputPublisherPid.load(std::memory_order_acquire) == static_cast<uint64_t>(getpid())) {
         amclBackendInputPublishAddress();
@@ -1789,14 +2186,15 @@ int glfwInit(void) {
 
     // Register C-level callback wrappers
     inputBridge_setCursorPosCallback(bridgeCursorPosCallback);
+    // void前缀不携带actual callback结果，私有强接口避免无游戏callback时仍发布ACK。
+    inputBridge_setCursorReceiptCallbackV1(bridgeCursorReceiptCallback);
+    inputBridge_setLookPrefixCallbackV1(bridgeLookPrefixCallback);
     inputBridge_setMouseButtonCallback(bridgeMouseButtonCallback);
     inputBridge_setKeyCallback(bridgeKeyCallback);
     inputBridge_setScrollCallback(bridgeScrollCallback);
 
-    // Establish READY as soon as both source-plane callback wrappers exist.
-    // The descriptor may legitimately be absent here (or select legacy); the
-    // create/poll checkpoints retry without ever enabling a silent fallback.
-    (void)ensureTypedInputOpen();
+    // 此处只注册回调，尚无呈现窗口，不能申领输入 READY。首次创建或辅助窗口
+    // promotion 在目标/尺寸发布之后激活；后续 poll 负责按真实surface状态重试。
 
     // ⭐ 构建身份行。`AMCL_GATE0_EVIDENCE_IDS` 在此之前**没有任何运行期读者** ——
     // 它只被 `Gate0EvidenceIdsRecorded()` 在编译期读，于是字符串字面量根本不会进产物。
@@ -1846,6 +2244,7 @@ void glfwTerminate(void) {
     g_threadCurrentContext = nullptr;
     amcl::ohos::LeaveInteractiveRenderQoS("glfw-terminate");
     g_initialized = 0;
+    g_nativeEglContextCreated = false;
     OH_LOG_INFO(LOG_APP, "GLFW: Terminated");
 }
 
@@ -1864,6 +2263,12 @@ void glfwWindowHint(int hint, int value) {
 GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
                               GLFWmonitor* monitor, GLFWwindow* share) {
     std::lock_guard<std::recursive_mutex> lifecycle(g_contextLifecycleMutex);
+    // 必须早于窗口对象、context 资格、NativeWindow 引用和呈现 token 的任何分配。
+    // 即使游戏已销毁旧窗口，也不能在同一终局进程中新建空对象域继续运行。
+    if (glfwGraphicsRestartRequired()) {
+        if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "Graphics runtime requires a new game process");
+        return nullptr;
+    }
     if ((g_hintVisible && g_currentWindow) || amcl::graphics::BackendSession::quarantinedCount() != 0) {
         if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR,
             "A window or failed backend still owns presentation; complete its teardown first");
@@ -1894,6 +2299,18 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
             "GLFW_NO_API requires an admitted Minecraft Vulkan graphics plan");
         return nullptr;
     }
+    // client API 是 GLFW 的硬请求，不能在 MG desktop provider 下把显式 ES hint 静默
+    // 当桌面请求创建后，再把窗口属性标成 ES。缺省 hint 已从同一冻结注册表产生；
+    // 此处仅补 MG 不匹配的显式请求，且位于窗口/租约/context 的任何分配之前。
+    // 系统GL和MobileGL继续由后方原有门返回它们既定的错误，GL4ES 的 GLES 合同不变。
+    // profile 判断只消费进程冻结身份，不把可变环境当第二套 provider 选择表。
+    if (!admittedVulkanWindow && amcl::desktop::RuntimeProfileIs("mobileglues") &&
+        amcl::desktop::UsesDesktopOpenGlContext() &&
+        g_hintClientAPI != GLFW_OPENGL_API) {
+        if (g_errorCallback) g_errorCallback(GLFW_API_UNAVAILABLE,
+            "Selected provider requires an OpenGL client API context");
+        return nullptr;
+    }
     if (amcl::desktop::RuntimeProfileIs("nativegl") &&
         ((g_hintClientAPI != GLFW_OPENGL_API && !admittedVulkanWindow) || width <= 0 || height <= 0)) {
         if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR,
@@ -1918,12 +2335,18 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
     const EGLContext previousContext = runtime->egl.ready ? eglGetCurrentContext() : EGL_NO_CONTEXT;
     const EGLSurface previousDraw = runtime->egl.ready ? eglGetCurrentSurface(EGL_DRAW) : EGL_NO_SURFACE;
     const EGLSurface previousRead = runtime->egl.ready ? eglGetCurrentSurface(EGL_READ) : EGL_NO_SURFACE;
+    GLFWwindow* previousWindow = g_threadCurrentContext;
     const auto restorePrevious = [&]() {
         if (previousContext == EGL_NO_CONTEXT) return true;
         const bool restored = eglMakeCurrent(previousDisplay, previousDraw, previousRead, previousContext) == EGL_TRUE;
         if (!restored) {
-            setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
-            amclGraphicsFatalV1("context-restore-failed", 0, 0);
+            const EGLint error = eglGetError();
+            // 前序错误回调可能已销毁原窗口；先核对活动集合，再把错误写回它的状态。
+            GLFWwindow* retainedPrevious = previousWindow &&
+                std::find(g_windows.begin(), g_windows.end(), previousWindow) != g_windows.end() ? previousWindow : nullptr;
+            const bool lost = recordGlfwEglFailure(retainedPrevious, "create-restore-current", error);
+            requestRendererProcessRestart("create-restore-current");
+            if (!lost) amclGraphicsFatalV1("context-restore-failed", static_cast<uint32_t>(error), 0);
         }
         return restored;
     };
@@ -1952,12 +2375,21 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
         // 离屏窗口不取得NativeWindow/呈现token、不打开输入目标，也不触发世界首帧。
         // 首个隐藏窗口可稍后show成为主窗口；额外context已在上面的实测能力门通过。
         win->sizeNotifications.Prime(++g_windowLifetime, width, height);
-        if (!InitEGL(win) || !eglMakeCurrent(win->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+        bool initialized = InitEGL(win);
+        // 初始化有自己的 typed 错误边界；只有这里执行的 release 失败才读取它的原生错误。
+        if (initialized && !eglMakeCurrent(win->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+            recordGlfwEglFailure(win, "auxiliary-create-release", eglGetError());
+            initialized = false;
+        }
+        if (!initialized) {
             amclGraphicsFatalV1("window-create-failed", 0, 0);
-            glfwDestroyWindow(win); (void)restorePrevious(); return nullptr;
+            glfwDestroyWindow(win); (void)restorePrevious();
+            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "Auxiliary EGL context initialization or release failed");
+            return nullptr;
         }
         win->contextOwnerTid = 0;
         if (!restorePrevious()) { glfwDestroyWindow(win); return nullptr; }
+        g_nativeEglContextCreated = true;
         return win;
     }
 
@@ -1979,22 +2411,10 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
         nativeWindow = nullptr;
     }
 
-    // 兼容旧宿主：尚未调用原子发布 API 时才回退到环境变量。
-    const char* envPtr = nullptr;
-    if (!nativeWindow && nativeWindowGeneration == 0) {
-        envPtr = getenv("AMCL_NATIVE_WINDOW");
-        if (envPtr && envPtr[0] != '\0') {
-            nativeWindow = (void*)(uintptr_t)strtoull(envPtr, nullptr, 10);
-            nativeWindowGeneration = 0;
-            const char* envW = getenv("AMCL_WINDOW_WIDTH");
-            const char* envH = getenv("AMCL_WINDOW_HEIGHT");
-            if (envW) nwWidth = atoi(envW);
-            if (envH) nwHeight = atoi(envH);
-        }
-    }
-
+    // 窗口宿主是唯一权威：宿主与 GLFW 同包交付，不存在“宿主从未发布、只能读环境变量”的旧宿主。
+    // 旧的 AMCL_NATIVE_WINDOW 环境回退已随 I27-05 删除（写者同批删除）；尚未发布时只等待快照。
     if (!nativeWindow) {
-        OH_LOG_INFO(LOG_APP, "GLFW: Waiting for NativeWindow (env AMCL_NATIVE_WINDOW)...");
+        OH_LOG_INFO(LOG_APP, "GLFW: Waiting for NativeWindow (window host publication)...");
         int waitMs = 0;
         while (!nativeWindow && waitMs < 30000) {
             usleep(50000);
@@ -2004,22 +2424,10 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
                     nullptr, 0, nullptr, &nativeWindow, &nwWidth, &nwHeight,
                     &nativeWindowGeneration,
                     &nativeWindowLeaseBroker) != 0;
-            if (!nativeWindowFromSnapshot) {
-                nativeWindow = nullptr;
-                if (nativeWindowGeneration == 0) {
-                    envPtr = getenv("AMCL_NATIVE_WINDOW");
-                    if (envPtr && envPtr[0] != '\0') {
-                        nativeWindow = (void*)(uintptr_t)strtoull(envPtr, nullptr, 10);
-                        const char* envW = getenv("AMCL_WINDOW_WIDTH");
-                        const char* envH = getenv("AMCL_WINDOW_HEIGHT");
-                        if (envW) nwWidth = atoi(envW);
-                        if (envH) nwHeight = atoi(envH);
-                    }
-                }
-            }
+            if (!nativeWindowFromSnapshot) nativeWindow = nullptr;
             if (waitMs % 2000 == 0 && !nativeWindow) {
-                OH_LOG_INFO(LOG_APP, "GLFW: Still waiting... %{public}dms env=%{public}s",
-                            waitMs, envPtr ? envPtr : "null");
+                OH_LOG_INFO(LOG_APP, "GLFW: Still waiting... %{public}dms generation=%{public}llu",
+                            waitMs, static_cast<unsigned long long>(nativeWindowGeneration));
             }
         }
     }
@@ -2086,11 +2494,12 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
             win->contextLostFatal = true;
             win->shouldClose = 1;
             g_currentWindow = win;
-            setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+            requestRendererProcessRestart("create-window-fatal");
         }
+        (void)restorePrevious();
+        // 用户错误回调可以销毁窗口；所有内部恢复必须先完成，回调之后不再访问窗口指针。
         if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR,
             "Window creation failed: the native window and presentation owner must both be available");
-        (void)restorePrevious();
         return nullptr;
     }
     g_currentWindow = win;
@@ -2141,9 +2550,10 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
     if (win->display != EGL_NO_DISPLAY) {
         const bool released = eglMakeCurrent(win->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) == EGL_TRUE;
         if (!released) {
-            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR,"OpenGL context release failed");
+            recordGlfwEglFailure(win, "presented-create-release", eglGetError());
             glfwDestroyWindow(win);
             (void)restorePrevious();
+            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR,"OpenGL context release failed");
             return nullptr;
         }
         if (released) win->contextOwnerTid = 0;
@@ -2157,6 +2567,7 @@ GLFWwindow* glfwCreateWindow(int width, int height, const char* title,
     if (monitor && !glfwOHOS_ApplyInitialMonitor(win, monitor, width, height)) {
         glfwDestroyWindow(win); (void)restorePrevious(); return nullptr;
     }
+    if (win->clientAPI != GLFW_NO_API) g_nativeEglContextCreated = true;
     return win;
 }
 
@@ -2169,7 +2580,10 @@ void glfwDestroyWindow(GLFWwindow* window) {
         return;
     }
     if (window->auxiliary && !window->graphicsBackendSession) {
-        if (!TerminateEGL(window)) return;
+        if (!TerminateEGL(window)) {
+            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "Auxiliary EGL teardown failed; ownership retained");
+            return;
+        }
         if (g_threadCurrentContext == window) g_threadCurrentContext = nullptr;
         g_windows.erase(std::remove(g_windows.begin(), g_windows.end(), window), g_windows.end());
         free(const_cast<char*>(window->title)); glfwOHOS_DestroyPreeditState(window); delete window;
@@ -2229,9 +2643,10 @@ void glfwDestroyWindow(GLFWwindow* window) {
     g_sourcePlaneAggregate.ClearAll(aggregateSink(window));
     if (!destroyGraphicsBackendSession(window, false)) {
         clearEglTlsAfterPartialDetach(window);
-        setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+        requestRendererProcessRestart("destroy-teardown-failed");
         AMCL_EXTERNAL_LOG_E(LOG_TAG,
                      "GLFW: BackendSession retained its token and lease after failed EGL teardown");
+        if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "EGL teardown failed; ownership retained");
         return;
     }
     releaseWindowNativeWindowLease(window);
@@ -2295,13 +2710,17 @@ void glfwSetWindowShouldClose(GLFWwindow* window, int value) {
 }
 
 void glfwSwapBuffers(GLFWwindow* window) {
+    // 辅助窗口与呈现窗口共用终局门；丢失后只允许正常退休，不继续提交 pbuffer swap。
+    if (glfwGraphicsRestartRequired() || (window && (window->contextLostFatal || window->eglTeardownPending))) return;
     if (window && window->auxiliary) {
         if (g_threadCurrentContext != window || window->contextOwnerTid != static_cast<int>(gettid())) {
             if (g_errorCallback) g_errorCallback(GLFW_NO_CURRENT_CONTEXT, "Auxiliary swap requires its owning current context");
             return;
         }
-        if (eglSwapBuffers(window->display, window->surface) != EGL_TRUE && g_errorCallback)
-            g_errorCallback(GLFW_PLATFORM_ERROR, "Auxiliary pbuffer swap failed");
+        if (eglSwapBuffers(window->display, window->surface) != EGL_TRUE) {
+            recordGlfwEglFailure(window, "auxiliary-swap", eglGetError());
+            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "Auxiliary pbuffer swap failed");
+        }
         return;
     }
 
@@ -2313,7 +2732,12 @@ void glfwSwapBuffers(GLFWwindow* window) {
     // 三条 GL 路线均先验证真实 current，再消费宿主发布。SwapBuffers 不能替应用
     // 重新绑定已经显式释放的 context，也不能从其他线程抢走仍在停车的 context。
     const EGLenum clientApi = amcl::desktop::UsesDesktopOpenGlContext() ? EGL_OPENGL_API : EGL_OPENGL_ES_API;
-    if (eglBindAPI(clientApi) != EGL_TRUE || g_threadCurrentContext != window ||
+    if (eglBindAPI(clientApi) != EGL_TRUE) {
+        recordGlfwEglFailure(window, "swap-bind-api", eglGetError());
+        if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "Cannot select this thread's EGL client API");
+        return;
+    }
+    if (g_threadCurrentContext != window ||
          eglGetCurrentDisplay() != window->display ||
          eglGetCurrentContext() != window->context) {
         if (g_errorCallback) g_errorCallback(GLFW_NO_CURRENT_CONTEXT,"OpenGL swap requires this window's current context");
@@ -2344,6 +2768,9 @@ void glfwSwapBuffers(GLFWwindow* window) {
     // frame can never be presented through a destroyed/replaced pointer even
     // when Minecraft skipped glfwPollEvents for this iteration.
     if (!consumePublishedSurfaceState(window, "swap", true)) {
+        // 内部 session 事务已经返回，才允许回调销毁窗口；回调后不得再读取 window。
+        if (window->contextLostFatal && g_errorCallback)
+            g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context was lost while updating the presentation surface");
         return;
     }
     // 恢复成功才允许真正 present，parking surface 不能计作窗口呈现。
@@ -2360,6 +2787,8 @@ void glfwSwapBuffers(GLFWwindow* window) {
         const bool requiresPresentEvidence = amclGraphicsReadPresentSequenceV1(&beforePresent) != 0;
         const auto swapStarted = sampleSwap ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         const EGLBoolean swapped = eglSwapBuffers(window->display, window->surface);
+        // 首因必须先于计时/呈现序列读取及观测回调保存，其他入口不得消费或覆盖此 EGL 错误。
+        const EGLint swapError = swapped != EGL_TRUE ? eglGetError() : 0;
         const uint64_t swapNs = sampleSwap ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - swapStarted).count()) : 0;
         uint64_t afterPresent = 0;
@@ -2369,31 +2798,19 @@ void glfwSwapBuffers(GLFWwindow* window) {
         // 再记录失败，避免首帧之后的致命错误被误当成可冷重试的首帧前故障。
         if (actualPresent && swapped != EGL_TRUE) {
             recordGraphicsBackendSessionPresent(window);
-            inputBridge_notifyFramePresented();
+            inputBridge_notifyFramePresentedForTargetV1(
+                reinterpret_cast<uint64_t>(window), window->nativeWindowGeneration);
             observePresentedFrame();
         }
         if (swapped != EGL_TRUE) {
-            const EGLint error = eglGetError();
+            const EGLint error = swapError;
             amclGraphicsSwapV1("GLFW", swapNs, 0, static_cast<uint32_t>(error));
-            if (error == EGL_CONTEXT_LOST) {
-                amclGraphicsFatalV1("egl-context-lost", static_cast<uint32_t>(error), window->nativeWindowGeneration);
-                // A new context would not contain Minecraft's textures,
-                // buffers, programs, or sync objects.  Never advertise this as
-                // a recovered surface; terminate the unusable EGL state and
-                // make the standard close path report a genuine session exit.
+            if (recordGlfwEglFailure(window, "presented-swap", error)) {
+                // 新 context 不含 Minecraft 的纹理、buffer、程序与同步对象，不能冒充
+                // surface 恢复；保留真实所有权，由标准关闭流程退休失效资源并结束本局。
                 AMCL_EXTERNAL_LOG_E(LOG_TAG,
                              "GLFW: EGL_CONTEXT_LOST is fatal; requesting game shutdown");
-                window->contextLostFatal = true;
-                window->shouldClose = 1;
-                window->eglSurfaceDetachPending = false;
-                if (destroyGraphicsBackendSession(window, false)) {
-                    clearEglContextOwnershipAfterDetach(window,
-                                                        "egl-context-lost-fatal");
-                } else {
-                    clearEglTlsAfterPartialDetach(window);
-                    AMCL_EXTERNAL_LOG_E(LOG_TAG,
-                                 "GLFW: fatal context teardown deferred; handles/lease retained");
-                }
+                // 与绑定/辅助 swap 相同：保留句柄和租约，交给 owner 的正常关闭流程退休。
                 if (g_errorCallback) {
                     g_errorCallback(GLFW_PLATFORM_ERROR,
                                     "HarmonyOS EGL context was lost; GL resources cannot be recovered");
@@ -2426,7 +2843,8 @@ void glfwSwapBuffers(GLFWwindow* window) {
         if (!actualPresent) return;
         recordGraphicsBackendSessionPresent(window);
         amclGraphicsSwapV1("GLFW", swapNs, 1, 0);
-        inputBridge_notifyFramePresented();
+        inputBridge_notifyFramePresentedForTargetV1(
+            reinterpret_cast<uint64_t>(window), window->nativeWindowGeneration);
         observePresentedFrame();
     }
 }
@@ -2474,12 +2892,16 @@ void glfwPollEvents(void) {
             })) return;
     }
 
-    // Typed physical input and the compatibility ring have disjoint producers
-    // in typed startup mode. Pump typed first so its polling state is current;
-    // keep legacy pumping for phone/tablet virtual controls and gamepads.
-    pumpTypedInput();
+    // 先完成基线，再从真正 owner 取得同一帧上限。ring 逐边沿回调 typed 到对应上限，
+    // 触控/手柄修饰键不会因“typed 总先执行”而落在实体按键之后。
+    if (!retainTypedPresentedInputTarget()) return;
+    (void)ensureTypedInputOpenThrottled();
+    if (!retainTypedPresentedInputTarget()) return;
+    const uint64_t inputFence = amclInputHasInteractionOrder(g_typedInputHost)
+        ? g_typedInputHost->interactionFence() : UINT64_MAX;
     inputBridgeStartPumping();
-    inputBridgePumpEvents((void*)g_currentWindow);
+    inputBridge_pumpOrdered((void*)g_currentWindow, pumpTypedThrough,
+                            (void*)g_currentWindow, inputFence);
     inputBridgeStopPumping();
 
     // 诊断信息：只在首次 poll 打一次（确认 poll 循环已起来）。
@@ -2498,20 +2920,29 @@ void glfwPollEvents(void) {
     }
 }
 
-void glfwMakeContextCurrent(GLFWwindow* window) {
+/** 标准 GLFW 与 JNI checked 入口共用的绑定事务。成功才提交 TLS/owner；拒绝或驱动
+ * 失败返回 false，即使原 TLS 仍指向该窗口也不能误报本次调用成功。错误回调可重入，
+ * 因此结果是本次栈上的返回值，不能用一个可被回调覆盖的 TLS“最后结果”代替。
+ */
+static bool makeGlfwContextCurrent(GLFWwindow* window) {
     std::lock_guard<std::recursive_mutex> lifecycle(g_contextLifecycleMutex);
     if (window && window->clientAPI == GLFW_NO_API) {
         if (g_errorCallback) g_errorCallback(GLFW_NO_WINDOW_CONTEXT, "A GLFW_NO_API window has no OpenGL context");
-        return;
+        return false;
     }
-    if (!window && !g_threadCurrentContext) return;
+    if (!window && !g_threadCurrentContext) return true;
+    if (window && (glfwGraphicsRestartRequired() || window->contextLostFatal || window->eglTeardownPending)) {
+        if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context is lost or awaiting teardown");
+        return false;
+    }
     const int currentTid = static_cast<int>(gettid());
     // EGL 的 client API 与 current 查询均按线程生效；接收线程必须选择对应 API。
     // MG 还在 wrapper 中记录 frontend API，GL4ES 的 context 则来自系统 GLES。
     const EGLenum clientApi = amcl::desktop::UsesDesktopOpenGlContext() ? EGL_OPENGL_API : EGL_OPENGL_ES_API;
     if (eglBindAPI(clientApi) != EGL_TRUE) {
+        recordGlfwEglFailure(window ? window : g_threadCurrentContext, "current-bind-api", eglGetError());
         if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR,"Cannot select this thread's EGL client API");
-        return;
+        return false;
     }
     if (!window) {
         GLFWwindow* releasedWindow = g_threadCurrentContext;
@@ -2521,13 +2952,15 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
             EGLBoolean rc =
                 eglMakeCurrent(curDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if (rc != EGL_TRUE) {
+                const EGLint error = eglGetError();
+                recordGlfwEglFailure(releasedWindow, "current-release", error);
                 AMCL_EXTERNAL_LOG_W(LOG_TAG,
                             "GLFW: eglMakeCurrent(NULL) failed: 0x%{public}x "
                             "(thread %{public}d)",
-                            eglGetError(), currentTid);
+                            error, currentTid);
                 if (g_errorCallback)
                     g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context release failed; binding retained");
-                return;
+                return false;
             }
         }
         if (releasedWindow && releasedWindow->contextOwnerTid == currentTid) {
@@ -2536,14 +2969,7 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
         g_threadCurrentContext = nullptr;
         amcl::ohos::LeaveInteractiveRenderQoS("context-released");
         OH_LOG_INFO(LOG_APP, "GLFW: context actually released (thread %{public}d)", currentTid);
-        return;
-    }
-
-    if (window->contextLostFatal || window->eglTeardownPending) {
-        AMCL_EXTERNAL_LOG_E(LOG_TAG, "GLFW: refusing MakeCurrent after fatal EGL context loss");
-        if (g_errorCallback)
-            g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context is lost or awaiting teardown");
-        return;
+        return true;
     }
 
     if (window->contextOwnerTid != 0 && window->contextOwnerTid != currentTid) {
@@ -2552,7 +2978,7 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
                     currentTid, window->contextOwnerTid);
         if (g_errorCallback)
             g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context is current on another thread");
-        return;
+        return false;
     }
     // ⚰️ zink 曾在此额外校验进程级 OSMesa context 的实际 owner tid，见 §S7。
     GLFWwindow* previousWindow = g_threadCurrentContext;
@@ -2563,7 +2989,11 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
     const bool presentationReady = window->auxiliary || consumePublishedSurfaceState(window, "make-current", true);
     EGLSurface contextSurface = window->surface;
     if (!presentationReady) {
-        if (window->contextLostFatal || window->eglTeardownPending) return;
+        if (window->contextLostFatal || window->eglTeardownPending) {
+            // session 已完成失败资源登记；将通知延后到这里，避免回调释放仍在执行的 adapter。
+            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context is lost or awaiting teardown");
+            return false;
+        }
         // 显式 MakeCurrent 在宿主暂不能呈现时仍可工作。使用初次初始化已验证的停车
         // surface，继续使用原 context/对象域；不分 nativegl、MG 或 GL4ES。
         contextSurface = window->parkingSurface;
@@ -2600,9 +3030,12 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
             //   org.lwjgl.opengl.libname 在 JVM 命名空间加载，并在【首个 GL 调用】时自行懒初始化
             //   （OHOS 补丁 0002：getter.c 入口调 gl4es_ensure_init），那一刻正好在本渲染线程、
             //   context 已 current、且非 dlopen 内 → 安全。详见 prebuilt/gl4es/README.md。
+            return true;
         } else {
+            const EGLint error = eglGetError();
+            recordGlfwEglFailure(window, "current-bind", error);
             AMCL_EXTERNAL_LOG_E(LOG_TAG, "GLFW: eglMakeCurrent FAILED: 0x%{public}x (thread %{public}d)",
-                         eglGetError(), (int)gettid());
+                         error, (int)gettid());
             if (g_errorCallback)
                 g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context bind failed");
         }
@@ -2613,10 +3046,25 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
         if (g_errorCallback)
             g_errorCallback(GLFW_PLATFORM_ERROR, "EGL context or surface is unavailable");
     }
+    return false;
+}
+
+// 标准 ABI 保持 void；需要同步异常传播的本地桥使用下面的 checked 扩展读取同一事务结果。
+void glfwMakeContextCurrent(GLFWwindow* window) {
+    (void)makeGlfwContextCurrent(window);
+}
+
+// 只报告这次操作实际成功与否，不依赖可能保留旧绑定的 glfwGetCurrentContext 或错误回调。
+int glfwOHOS_MakeContextCurrentChecked(GLFWwindow* window) {
+    return makeGlfwContextCurrent(window) ? 1 : 0;
 }
 
 bool glfwOHOS_PromoteWindow(GLFWwindow* window) {
     std::lock_guard<std::recursive_mutex> lifecycle(g_contextLifecycleMutex);
+    if (glfwGraphicsRestartRequired()) {
+        if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "Graphics runtime requires a new game process");
+        return false;
+    }
     if (!window || std::find(g_windows.begin(), g_windows.end(), window) == g_windows.end()) return false;
     if (!window->auxiliary) { window->visible = true; return true; }
     if (g_currentWindow || window->contextLostFatal || window->eglTeardownPending ||
@@ -2650,8 +3098,11 @@ bool glfwOHOS_PromoteWindow(GLFWwindow* window) {
             eglMakeCurrent(previousDisplay, previousDraw, previousRead, previousContext) == EGL_TRUE :
             eglMakeCurrent(window->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) == EGL_TRUE;
         if (!restored) {
+            const EGLint error = eglGetError();
+            const bool lost = recordGlfwEglFailure(window, "promotion-restore-current", error);
             window->contextLostFatal = true; window->shouldClose = 1;
-            amclGraphicsFatalV1("context-restore-failed", 0, generation); return false;
+            if (!lost) amclGraphicsFatalV1("context-restore-failed", static_cast<uint32_t>(error), generation);
+            return false;
         }
         window->contextOwnerTid = 0;
     }
@@ -2682,16 +3133,131 @@ GLFWwindow* glfwGetCurrentContext(void) {
     return g_threadCurrentContext;
 }
 
+// AMCL_NATIVE_EGL_ACCESS_BEGIN
+/**
+ * NativeEGL 查询的单次资源快照。只借出窗口已拥有的句柄，不调用 EGL、不创建 display、
+ * 不改变 current/context owner，也不取得额外的 NativeWindow 或呈现租约。生命周期锁
+ * 仅保护验证与拷贝；用户错误回调必须在锁外执行，避免重入销毁后继续访问原 window。
+ */
+struct NativeEglAccess {
+    void* display = nullptr;
+    void* context = nullptr;
+    void* surface = nullptr;
+    void* config = nullptr;
+    int error = 0;
+    const char* description = nullptr;
+};
+
+/**
+ * 校验目标是本映像登记的活 EGL 窗口。Native access 查询按 GLFW 契约允许从任何线程
+ * 读取非 current 的目标窗口，不能用 eglGetCurrent* 替代它自己的句柄；NO_API 或不存在
+ * 的资源明确拒绝。挂起时 surface 可为空，但 context/config 仍为真实保留的对象。
+ */
+static NativeEglAccess queryNativeEglWindow(GLFWwindow* window) {
+    std::lock_guard<std::recursive_mutex> lifecycle(g_contextLifecycleMutex);
+    NativeEglAccess result;
+    if (!g_initialized) {
+        result.error = GLFW_NOT_INITIALIZED;
+        result.description = "The GLFW library is not initialized";
+        return result;
+    }
+    // 先按地址核对登记表再解引用，销毁后残留的 Java long 不得读取已经释放的对象。
+    if (!window || std::find(g_windows.begin(), g_windows.end(), window) == g_windows.end()) {
+        result.error = GLFW_INVALID_VALUE;
+        result.description = "Native EGL access requires a live GLFW window";
+        return result;
+    }
+    const auto* runtime = amcl::graphics::BoundGraphicsRuntime();
+    if (window->clientAPI == GLFW_NO_API || !runtime || !runtime->egl.ready ||
+        !runtime->contextOperations || window->display == EGL_NO_DISPLAY ||
+        window->context == EGL_NO_CONTEXT || !window->config) {
+        result.error = GLFW_NO_WINDOW_CONTEXT;
+        result.description = "The specified window has no EGL context";
+        return result;
+    }
+    if (window->contextLostFatal || window->eglTeardownPending || glfwGraphicsRestartRequired()) {
+        result.error = GLFW_PLATFORM_ERROR;
+        result.description = "The EGL context is lost or awaiting teardown";
+        return result;
+    }
+    result.display = window->display;
+    result.context = window->context;
+    // 返回属于该窗口的面；停车面用于内部连续性，不能冒充已经退休的窗口面。
+    result.surface = window->surface;
+    result.config = window->config;
+    return result;
+}
+
+/**
+ * 返回当前 GLFW 寿命已使用且 owner 仍保持初始化的 display。末窗销毁不是 display
+ * 退休证据：系统/MG 保留它，MobileGL 则由跨前端最后 context 的真实 terminate 清除。
+ * 首次 context 之前与重新 init 后仍返回 NO_DISPLAY，不借 SDL/旧轮寿命的对象冒充。
+ */
+void* glfwGetEGLDisplay(void) {
+    void* display = nullptr;
+    bool initialized = false;
+    {
+        std::lock_guard<std::recursive_mutex> lifecycle(g_contextLifecycleMutex);
+        initialized = g_initialized != 0;
+        const auto* runtime = amcl::graphics::BoundGraphicsRuntime();
+        if (initialized && g_nativeEglContextCreated && runtime && runtime->egl.ready && runtime->contextOperations &&
+            !glfwGraphicsRestartRequired()) {
+            display = amcl::graphics::InitializedEglDisplay(*runtime);
+        }
+    }
+    if (!initialized) glfwOHOS_ReportError(GLFW_NOT_INITIALIZED, "The GLFW library is not initialized");
+    return display;
+}
+
+/** 借出目标窗口的真实 EGLContext；不会把调用线程另一个窗口的 current context 返回。 */
+void* glfwGetEGLContext(GLFWwindow* window) {
+    const auto access = queryNativeEglWindow(window);
+    if (access.error) glfwOHOS_ReportError(access.error, access.description);
+    return access.context;
+}
+
+/** 借出目标窗口当前拥有的 EGLSurface；surface 暂失时如实返回 EGL_NO_SURFACE。 */
+void* glfwGetEGLSurface(GLFWwindow* window) {
+    const auto access = queryNativeEglWindow(window);
+    if (access.error) glfwOHOS_ReportError(access.error, access.description);
+    return access.surface;
+}
+
+/**
+ * 匹配 LWJGL 现役绑定的 int glfwGetEGLConfig(GLFWwindow*, EGLConfig*) C ABI。
+ * 成功写入该窗口创建 context 时选择的同一 config；错误时保持输出原值，符合官方备注：
+ * EGL 没有定义可写入的统一 invalid config。输出位置只能在验证成功后修改。
+ * 输出指针为空时不读取窗口；回调可以销毁窗口，所以错误报告后不再访问任何窗口状态。
+ */
+int glfwGetEGLConfig(GLFWwindow* window, void** config) {
+    if (!config) {
+        glfwOHOS_ReportError(GLFW_INVALID_VALUE, "Native EGL config output must not be null");
+        return GLFW_FALSE;
+    }
+    const auto access = queryNativeEglWindow(window);
+    if (access.error) {
+        glfwOHOS_ReportError(access.error, access.description);
+        return GLFW_FALSE;
+    }
+    *config = access.config;
+    return GLFW_TRUE;
+}
+// AMCL_NATIVE_EGL_ACCESS_END
+
 void glfwSwapInterval(int interval) {
     GLFWwindow* window = g_threadCurrentContext;
-    if (!window) return;
+    if (!window || glfwGraphicsRestartRequired() || window->contextLostFatal || window->eglTeardownPending) return;
     // Remember the request regardless of surface state: EGL swap interval is
     // per-surface, so AttachEGLSurface/InitEGL must replay it after every
     // surface (re)creation or vsync-off silently reverts to the default 1.
     window->swapInterval = interval;
     window->swapIntervalSet = true;
     if (window->display != EGL_NO_DISPLAY && window->surface != EGL_NO_SURFACE) {
-        eglSwapInterval(window->display, interval);
+        // 失败也保留请求供普通 surface 恢复重放，但 context lost 必须关闭而非等待下次 swap。
+        if (eglSwapInterval(window->display, interval) != EGL_TRUE) {
+            recordGlfwEglFailure(window, "swap-interval", eglGetError());
+            if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "EGL swap interval failed");
+        }
     }
 }
 
@@ -2817,9 +3383,9 @@ static void publishInputBindingsBeforeCommit(const AmclWindowHostSnapshot* snaps
     if (descriptorResult != AMCL_INPUT_HOST_DESCRIPTOR_OK) {
         AMCL_EXTERNAL_LOG_W(LOG_TAG, "GLFW: input host descriptor publication failed rc=%{public}d", descriptorResult);
     }
-    // These callbacks only publish the input bridge after the host has accepted
-    // a real NativeWindow reference. They execute under the host's exclusive
-    // publication transaction, so input never observes a torn epoch/size pair.
+    // 这两个环境描述符只含函数地址（进程常量），正常流程已由 libentry 在模块初始化时、任何
+    // 游戏/JVM 线程出现前发布（I27-05）；这里的调用命中一次性守卫后直接返回，只在早期发布未
+    // 运行时补发。它们在宿主独占发布事务内执行，输入不会看到撕裂的 epoch/尺寸对。
     amclBackendInputPublishAddress();
     inputBridge_publishAddress();
 }

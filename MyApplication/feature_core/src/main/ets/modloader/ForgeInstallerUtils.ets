@@ -18,9 +18,12 @@ import {
   safeRelPath,
   isSafeHttpUrl,
   MavenLibEntry,
+  computeFileSha1,
+  isValidJarFile,
 } from './MavenUtils';
 import { BMCLAPI_BASE, BMCLAPI_HOST, MOJANG_META } from 'commons';
-import { DownloadManager } from '../download/DownloadManager';
+import { DownloadManager, DownloadTaskView } from '../download/DownloadManager';
+import { buildSortedUrls } from '../download/SourceProber';
 import { fileExistsAndNonEmpty } from 'commons';
 import { AppLogger } from 'commons';
 import { LogTags } from 'commons';
@@ -408,7 +411,8 @@ export function extractLibrariesFromInstallerJson(
  *   下载原版 Json 文件 → 获取 client_mappings URL → 下载到对应 Maven 路径
  */
 export async function preDownloadMappings(
-  installProfilePath: string, gameVersion: string, libDir: string
+  installProfilePath: string, gameVersion: string, libDir: string,
+  onProgress?: (view: DownloadTaskView) => void
 ): Promise<void> {
   let profileObj = readJsonFile(installProfilePath);
   if (!profileObj) return;
@@ -436,16 +440,12 @@ export async function preDownloadMappings(
   }
   let localPath = libDir + '/' + relPath;
 
-  // 检查是否已存在
-  if (fileExistsAndNonEmpty(localPath)) {
-    AppLogger.info(TAG, `Mappings already exists: ${localPath}`, LOG_DOMAIN_MODLOADER);
-    return;
-  }
-
   // 获取原版 JSON → 从中提取 client_mappings 下载地址
   // Phase 9 (ARCH-1 闭环)：全部走 NAPI fetchText（享受多源 fallback + 坏主机黑名单）
   AppLogger.info(TAG, 'Downloading version manifest to get client_mappings URL...', LOG_DOMAIN_MODLOADER);
   let mappingsUrl = '';
+  let mappingsSha1 = '';
+  let mappingsSize = 0;
   let mgr = DownloadManager.instance();
   let manifestUrls = [BMCLAPI_VERSION_MANIFEST, MOJANG_VERSION_MANIFEST];
   for (let mUrl of manifestUrls) {
@@ -475,8 +475,10 @@ export async function preDownloadMappings(
       let versionJson = JSON.parse(versionText) as Record<string, Object>;
       let downloads = versionJson['downloads'] as Record<string, Object> | undefined;
       if (downloads && downloads['client_mappings']) {
-        let cm = downloads['client_mappings'] as Record<string, string>;
-        mappingsUrl = cm['url'] || '';
+        const cm = downloads['client_mappings'] as Record<string, Object>;
+        mappingsUrl = typeof cm['url'] === 'string' ? cm['url'] as string : '';
+        mappingsSha1 = typeof cm['sha1'] === 'string' ? (cm['sha1'] as string).toLowerCase() : '';
+        mappingsSize = typeof cm['size'] === 'number' ? cm['size'] as number : 0;
       }
       if (mappingsUrl.length > 0) break;
     } catch (e) {
@@ -487,6 +489,9 @@ export async function preDownloadMappings(
   if (mappingsUrl.length === 0) {
     AppLogger.warn(TAG, `Could not find client_mappings URL for ${gameVersion}`, null, LOG_DOMAIN_MODLOADER);
     return;
+  }
+  if (!/^[0-9a-f]{40}$/.test(mappingsSha1) || !Number.isSafeInteger(mappingsSize) || mappingsSize <= 0) {
+    throw new Error('client_mappings 缺少可信SHA1/大小，不能把未知映射交给处理器');
   }
 
   // 下载 mappings 文件
@@ -499,28 +504,31 @@ export async function preDownloadMappings(
     .replace('piston-data.mojang.com', BMCLAPI_HOST)
     .replace('launcher.mojang.com', BMCLAPI_HOST);
 
-  let mappingDownloaded = false;
-  // 保留循环 + 单源 fetchText：每个源需要逐一做"HTML/JSON 错误页"内容校验后才能
-  // 判定是否成功（NAPI 引擎不感知 body 内容，仅校验 HTTP 200 + sha1/size）。
-  for (let url of [bmclapiMappingsUrl, mappingsUrl]) {
-    try {
-      let text = await mgr.fetchText(url);
-      // BUG-3 fix: 校验内容非 HTML/JSON 错误页（真正的 mappings 不以 '<' 或 '{' 开头）
-      if (text.length > 0 && (text.charAt(0) === '<' || text.charAt(0) === '{')) {
-        AppLogger.warn(TAG, `Mappings response looks like error page (starts with ${text.charAt(0)}), skipping source`, null, LOG_DOMAIN_MODLOADER);
-        continue;
-      }
-      let f = fs.openSync(localPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-      try { fs.writeSync(f.fd, text); } finally { fs.closeSync(f); }
-      if (fileExistsAndNonEmpty(localPath)) {
-        mappingDownloaded = true;
-        break;
-      }
-    } catch (e) {
-      AppLogger.warn(TAG, `Mappings download failed from ${url}`, e, LOG_DOMAIN_MODLOADER);
-    }
+  let taskId = 0;
+  // 明确的Error容器跨回调保留首个取消异常；不依赖ArkTS对闭包赋值的局部收窄。
+  const callbackErrors: Error[] = [];
+  try {
+    // 映射是明文工件，不能套JAR魔数；元数据中的SHA1/size真正传入Native，既能
+    // 强预检已有文件，也能拒绝HTML/JSON错误页，并保留原写盘/断点/提交保护。
+    await mgr.createAndWait({ name: 'Forge client mappings ' + gameVersion, files: [{ localPath,
+      allowedRoot: libDir, urls: buildSortedUrls(bmclapiMappingsUrl, mappingsUrl),
+      check: { sha1: mappingsSha1, size: mappingsSize } }] }, (view: DownloadTaskView): void => {
+        taskId = view.taskId;
+        try { onProgress?.(view); }
+        catch (error) {
+          // 安装phase以取消异常撤销后继步骤。观察回调异常不会穿透Native事件分发，
+          // 因此明确请求取消本ID，再由正常Promise/真实release屏障收尾。
+          if (callbackErrors.length === 0) callbackErrors.push(error as Error);
+          if (taskId > 0) mgr.cancel(taskId);
+        }
+      });
+    if (callbackErrors.length > 0) throw callbackErrors[0];
+  } finally {
+    // processor/沙箱租约持有本调用栈，必须真实释放后才可继续或清理，不能有限等待
+    // 后丢掉ID，让后台writer在父任务已经退出时仍写同一映射。
+    if (taskId > 0) await mgr.awaitTaskReleased(taskId, true);
   }
-  AppLogger.info(TAG, `Mappings download: ${mappingDownloaded ? 'ok' : 'failed'}`, LOG_DOMAIN_MODLOADER);
+  AppLogger.info(TAG, 'Mappings download verified', LOG_DOMAIN_MODLOADER);
 }
 
 /**
@@ -536,6 +544,62 @@ export function copyMavenToLibraries(mavenDir: string, libDir: string): void {
   }
   let copied = copyDirRecursive(mavenDir, libDir);
   AppLogger.info(TAG, `Copied ${copied} files from maven/ to libraries/`, LOG_DOMAIN_MODLOADER);
+}
+
+/**
+ * 为旧版安装器确切提供并复制的库附加强校验身份，不按“目标已存在”泛化跳过下载。
+ * 方式2以install.path/filePath绑定坐标与源JAR；方式1只识别maven目录内同一声明路径的源。
+ * 源来自本次已校验的installer，目标必须是它复制出的同一普通文件/大小/SHA-1；
+ * 元数据已有摘要或大小与源冲突时失败，不能静默覆写。普通依赖和现代universal不受影响。
+ * 参数均由当前安装owner持有；异步摘要期间父任务继续等待，源/目标都不在这里改写。
+ */
+export async function attachLegacyBundledLibraryChecks(libs: MavenLibEntry[], installerDir: string,
+  profilePath: string, libDir: string): Promise<void> {
+  let profile = readJsonFile(profilePath);
+  if (profile === null) throw new Error('无法读取旧版 Forge 内嵌库来源清单');
+  let install = profile['install'] as Record<string, string> | undefined;
+  for (let lib of libs) {
+    let coordinatePath = mavenToRelativePath(lib.name);
+    let targetPath = safeRelPath(lib.storagePath ?? coordinatePath);
+    if (coordinatePath.length === 0 || targetPath.length === 0) continue;
+    let source = '';
+    if (install !== undefined) {
+      if (lib.name !== install['path']) continue;
+      let fileRef = normalizeInstallerEntryPath(install['filePath'] ?? '');
+      if (fileRef.length === 0 || targetPath !== coordinatePath) {
+        throw new Error('旧版 Forge 内嵌库来源或目标路径不匹配：' + lib.name);
+      }
+      source = installerDir + '/' + fileRef;
+    } else {
+      source = installerDir + '/maven/' + targetPath;
+      // 方式1没有声明内嵌该普通依赖时，仍交由原远程来源和校验处理。
+      if (!fileExistsAndNonEmpty(source)) continue;
+    }
+    let target = libDir + '/' + targetPath;
+    try {
+      let sourceStat = fs.lstatSync(source);
+      let targetStat = fs.lstatSync(target);
+      if (!sourceStat.isFile() || sourceStat.isSymbolicLink() || !targetStat.isFile()
+        || targetStat.isSymbolicLink() || sourceStat.size !== targetStat.size || !isValidJarFile(source)
+        || !isValidJarFile(target)) throw new Error('源或复制后的 JAR 不完整');
+      let sourceSha1 = await computeFileSha1(source);
+      let targetSha1 = await computeFileSha1(target);
+      if (!/^[0-9a-fA-F]{40}$/.test(sourceSha1) || sourceSha1 !== targetSha1) {
+        throw new Error('复制前后 SHA-1 不一致或无法取得来源摘要');
+      }
+      if ((lib.sha1 !== undefined && lib.sha1.length > 0 && lib.sha1.toLowerCase() !== sourceSha1)
+        || (lib.size !== undefined && lib.size > 0 && lib.size !== sourceStat.size)) {
+        throw new Error('声明的摘要或大小与已验证内嵌工件冲突');
+      }
+      // 只写新提取的本次依赖对象；MavenSpecBuilder会透传至Native预检，仍走统一归属/统计链。
+      lib.sha1 = sourceSha1;
+      lib.size = sourceStat.size;
+      AppLogger.info(TAG, 'Legacy bundled library verified: ' + lib.name + ' size=' + lib.size
+        + ' sha1=' + sourceSha1, LOG_DOMAIN_MODLOADER);
+    } catch (e) {
+      throw new Error('旧版 Forge 内嵌库校验失败：' + lib.name + '；' + (e as Error).message);
+    }
+  }
 }
 
 /**
@@ -623,6 +687,14 @@ export function installLegacyForge(
 
     let filePath = installField['filePath'] || '';
     let mavenPath = installField['path'] || '';
+
+    // install字段承诺了具体内嵌产物；缺项/非法坐标/缺源不能写JSON后伪装安装成功。
+    let promisedPath = mavenToRelativePath(mavenPath);
+    let promisedSource = normalizeInstallerEntryPath(filePath);
+    if (promisedPath.length === 0 || promisedSource.length === 0
+      || !fileExistsAndNonEmpty(installerTempDir + '/' + promisedSource)) {
+      return new LegacyForgeInstallResult(false, versionId, '旧版 Forge 安装器缺少有效的内嵌加载器 JAR');
+    }
 
     // 解压指定的 jar 文件到 libraries
     if (mavenPath.length > 0) {

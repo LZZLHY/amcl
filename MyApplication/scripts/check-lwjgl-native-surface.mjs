@@ -14,6 +14,30 @@ const SOURCE_ROOT = join(ROOT, 'prebuilt', 'lwjgl3', 'lwjgl3_src', 'modules', 'l
 
 function fail(message) { throw new Error(message); }
 
+/**
+ * 必需函数来自锁定上游源码，不能让工作树删掉绑定后门禁也跟着缩减。纯判据独立导出
+ * 供负控测试；真实入口始终从 Git 取得 HEAD/状态，不能由命令行自报洁净或跳过。
+ */
+export function lwjglSourceIdentityProblems(expectedCommit, head, status) {
+  const problems = [];
+  if (!/^[0-9a-f]{40}$/.test(expectedCommit || '')) problems.push('modern manifest sourceCommit is malformed');
+  if (head !== expectedCommit) problems.push(`LWJGL source HEAD=${head}, expected=${expectedCommit}`);
+  if (status.trim()) problems.push(`LWJGL pinned source is dirty; refusing mutable JNI/required-function input:\n${status.trim()}`);
+  return problems;
+}
+
+/** 工作树和 HAP 检查都验证同一源码身份；临时 HAP 解包目录不会替代此受审查来源。 */
+export function assertPinnedLwjglSource({ root = ROOT, sourceDirectory, manifest } = {}) {
+  sourceDirectory ??= join(root, 'prebuilt/lwjgl3/lwjgl3_src');
+  manifest ??= JSON.parse(readFileSync(join(root, 'prebuilt/lwjgl3/modern-slot.manifest.json'), 'utf8'));
+  if (!existsSync(join(sourceDirectory, '.git'))) fail(`LWJGL pinned source is not initialized: ${sourceDirectory}`);
+  const head = execFileSync('git', ['-C', sourceDirectory, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const status = execFileSync('git', ['-C', sourceDirectory, 'status', '--porcelain=v1', '--untracked-files=all'], { encoding: 'utf8' });
+  const problems = lwjglSourceIdentityProblems(manifest.sourceCommit, head, status);
+  if (problems.length) fail(problems.join('\n'));
+  return head;
+}
+
 export function locateReadelf() {
   if (process.env.OHOS_LLVM_READELF && existsSync(process.env.OHOS_LLVM_READELF)) {
     return process.env.OHOS_LLVM_READELF;
@@ -57,6 +81,9 @@ function setDifference(a, b) {
 }
 
 const requiredGeneratedEntries = new Map([
+  // NanoVG 与 STB/SPNG 一样由 lwjgl_malloc.h 生成分配器安装入口；宏展开前 C 源中
+  // 没有完整 Java_ 标识，因此必须在所属库显式补入，不能用其他库同名入口代替。
+  ['liblwjgl_nanovg.so', new Set(['Java_org_lwjgl_nanovg_LibNanoVG_setupMalloc'])],
   ['liblwjgl_stb.so', new Set(['Java_org_lwjgl_stb_LibSTB_setupMalloc'])],
   ['liblwjgl_spng.so', new Set(['Java_org_lwjgl_util_spng_LibSPNG_setupMalloc'])],
   ['liblwjgl_vma.so', new Set(['Java_org_lwjgl_util_vma_LibVma_setupMalloc'])],
@@ -90,6 +117,9 @@ function moduleSourceMap(sourceRoot) {
       ...files(join(sourceRoot, 'core', 'src', 'generated', 'c', 'linux'), '.c', (name) => !name.includes('liburing')),
     ]],
     ['liblwjgl_opengl.so', files(join(sourceRoot, 'opengl', 'src', 'generated', 'c'), '.c', (name) => name !== 'org_lwjgl_opengl_WGL.c')],
+    // 两个扩展模块是现代槽的完整 JNI 提供方；覆盖所有生成文件，不能只验证 create 等锚点。
+    ['liblwjgl_nanovg.so', files(join(sourceRoot, 'nanovg', 'src', 'generated', 'c'), '.c')],
+    ['liblwjgl_opengles.so', files(join(sourceRoot, 'opengles', 'src', 'generated', 'c'), '.c')],
     ['liblwjgl_stb.so', files(join(sourceRoot, 'stb', 'src', 'generated', 'c'), '.c')],
     ['liblwjgl_spng.so', files(join(sourceRoot, 'spng', 'src', 'generated', 'c'), '.c')],
     ['liblwjgl_tinyfd.so', [join(sourceRoot, 'tinyfd', 'src', 'generated', 'c', 'org_lwjgl_util_tinyfd_TinyFileDialogs.c')]],
@@ -101,6 +131,8 @@ export function runNativeSurfaceCheck({ sourceRoot = SOURCE_ROOT, output } = {})
   // 构建候选输出随任务 ID 外置，不能猜测某个旧 docker/output 路径或自动挑选最近文件。
   // 调用者必须明确给出本次已审核的目录；正式制品检查也可显式传 entry/libs/arm64-v8a。
   if (!output) fail('explicit native output directory required; pass the current task out directory');
+  // 正常 source/HAP 路径都钉住 HEAD 与工作树状态；不能仅在可选 --require-source 时执行。
+  assertPinnedLwjglSource({ sourceDirectory: resolve(sourceRoot, '../..') });
   const outputDir = resolve(output);
   const readelf = locateReadelf();
   for (const [name, sourcePaths] of moduleSourceMap(sourceRoot)) {
@@ -124,7 +156,8 @@ export function runNativeSurfaceCheck({ sourceRoot = SOURCE_ROOT, output } = {})
       fail('liblwjgl_vma.so was built against std::__1 instead of OHOS std::__n1');
     }
 
-    const actual = new Set([...symbolsText.matchAll(/\bJava_[A-Za-z0-9_]+\b/g)].map((match) => match[0]));
+    // dlsym 只能取得已定义且可见的动态入口；未定义引用、LOCAL 或 HIDDEN 不能冒充实现。
+    const actual = new Set([...symbolsText.matchAll(/\b(?:FUNC|IFUNC)\s+(?:GLOBAL|WEAK)\s+(?:DEFAULT|PROTECTED)\s+(?!UND\b)\S+\s+(Java_[A-Za-z0-9_]+)/g)].map((match) => match[1]));
     const expected = javaSymbolsFromSources(sourcePaths);
     if (name === 'liblwjgl_stb.so') {
       const legacy = javaSymbolsFromSources([join(ROOT, 'prebuilt', 'lwjgl3', 'compat', 'stb-v1', 'org_lwjgl_stb_STBImageResize.c')]);

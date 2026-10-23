@@ -1,0 +1,13 @@
+# 从现存、固定身份的工具链镜像构建干净输入层；仅复制 boot JDK 与 compiler-rt。
+# 不从历史容器继承源码、已打补丁的 sysroot 或构建输出。两个 ARG 必须由调用者
+# 传入与已解析镜像 ID 绑定的本地输入标签；BuildKit 的 FROM 不接受裸本地 ID。
+# 实际 ID 和版本由外部构建清单登记，运行容器仍使用最终完整镜像 ID。
+ARG BOOT_IMAGE=amcl-jdk-input:boot-ba68b646777e
+ARG BASE_IMAGE=amcl-jdk-input:base-384faa4eb888
+FROM ${BOOT_IMAGE} AS boot
+FROM ${BASE_IMAGE}
+COPY --from=boot /usr/lib/jvm/temurin-21-jdk-amd64 /usr/lib/jvm/temurin-21-jdk-amd64
+COPY --from=boot /usr/lib/jvm/temurin-25-jdk-amd64 /usr/lib/jvm/temurin-25-jdk-amd64
+COPY --from=boot /usr/lib/llvm-15/lib/clang /usr/lib/llvm-15/lib/clang
+COPY --from=boot /usr/lib/llvm-15/include/c++ /usr/lib/llvm-15/include/c++
+WORKDIR /build

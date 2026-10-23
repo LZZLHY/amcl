@@ -7,9 +7,9 @@
  *   - 认证标签：16 字节，HUKS finishSession 输出 ciphertext || tag
  *   - 失败语义：tag 校验失败 → decrypt 抛错；调用方应丢弃该账户记录
  *
- * 兜底策略：
- *   - isAvailable() 探测一次（生成/查询密钥），失败返回 false
- *   - CLI 测试 / 模拟器无 SE 环境下 isAvailable() 应返回 false，调用方应换 PlaintextCryptoProvider
+ * 密钥生命周期：查询异常不代表不存在；创建明确禁止覆写同alias，进程内初始化串行。
+ * 解密只使用已存在的密钥，不能用新密钥伪装修复旧密文。签名域不采用明文兜底。
+ * isAvailable保留旧账户接口，暂态失败返回false但不永久缓存，后续可以重新核实。
  *
  * 创建日期：2026-05-09（M2 Phase B）
  */
@@ -37,43 +37,85 @@ const TAG = 'HuksCryptoProvider';
 const KEY_ALIAS = 'amcl_account_master_v1';
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
-const AES_256_BITS = 256;
 
 // ============================================================
 //  Provider
 // ============================================================
 
 export class HuksAesGcm256Provider implements CryptoProvider {
+  /** 相同alias的并发首次初始化共用执行者；系统禁止覆写参数另覆盖跨进程竞态。 */
+  private static initializing: Map<string, Promise<boolean>> = new Map<string, Promise<boolean>>();
   private _availableCache: boolean | null = null;
+  private keyAlias_: string;
+
+  /** 默认继续使用账户原密钥；同应用其他敏感域可显式采用独立固定alias，避免生命周期耦合。 */
+  constructor(keyAlias: string = KEY_ALIAS) {
+    if (!new RegExp('^amcl_[a-zA-Z0-9_]{1,64}$').test(keyAlias)) throw new Error('Invalid HUKS namespace');
+    this.keyAlias_ = keyAlias;
+  }
 
   /**
    * 探测 HUKS 可用性。
-   * 流程：尝试 hasKeyItem(KEY_ALIAS)；若不存在则 generateKeyItem。任何环节抛错即不可用。
-   * 结果缓存（同进程内不再探测）。
+   * 保留账户CryptoProvider的布尔探测接口；只缓存已核实可用，不缓存暂态失败。
+   * 新密钥只能在hasKeyItem明确返回false后创建，RPC/权限错误直接终止本次探测。
    */
   async isAvailable(): Promise<boolean> {
-    if (this._availableCache !== null) return this._availableCache;
     try {
-      let exists = await this.hasKey();
-      if (!exists) {
-        await this.generateKey();
-      }
-      this._availableCache = true;
-      AppLogger.info(TAG, `HUKS available; key alias=${KEY_ALIAS}`, LOG_DOMAIN_ACCOUNT);
-      return true;
+      return await this.ensureKey(true);
     } catch (e) {
-      AppLogger.warn(TAG, 'HUKS unavailable', e as Object, LOG_DOMAIN_ACCOUNT);
-      this._availableCache = false;
+      AppLogger.warn(TAG, 'HUKS暂不可用，保留原密钥并等待重新核实', null, LOG_DOMAIN_ACCOUNT);
+      this._availableCache = null;
       return false;
     }
+  }
+
+  /** 仅查询现有密钥，用于有历史密文的Vault；查询错误仍传播，不能触发生成。 */
+  async hasExistingKey(): Promise<boolean> {
+    const exists = await this.hasKey();
+    this._availableCache = exists ? true : null;
+    return exists;
+  }
+
+  /** 初始化只在明确许可时创建；调用方可通过allowCreate=false保护已经存在的历史密文。 */
+  private async ensureKey(allowCreate: boolean): Promise<boolean> {
+    if (this._availableCache === true) return true;
+    if (await this.hasKey()) { this._availableCache = true; return true; }
+    if (!allowCreate) return false;
+    let pending = HuksAesGcm256Provider.initializing.get(this.keyAlias_);
+    if (pending === undefined) {
+      pending = this.createMissingKey();
+      HuksAesGcm256Provider.initializing.set(this.keyAlias_, pending);
+    }
+    const owner = pending;
+    try {
+      const available = await owner;
+      if (available) this._availableCache = true;
+      return available;
+    } finally {
+      if (HuksAesGcm256Provider.initializing.get(this.keyAlias_) === owner) {
+        HuksAesGcm256Provider.initializing.delete(this.keyAlias_);
+      }
+    }
+  }
+
+  /** 二次确认缺失后创建，不覆写选项保证另一个进程先创建也不会破坏它的密钥。 */
+  private async createMissingKey(): Promise<boolean> {
+    if (await this.hasKey()) return true;
+    try { await this.generateKey(); }
+    catch (error) {
+      // 其他进程可能先完成创建；只有新的真实存在性查询成功才允许使用，不能吞普通生成失败。
+      if (await this.hasKey()) return true;
+      throw error as Error;
+    }
+    return await this.hasKey();
   }
 
   // 2026-05-23 ArkTS 严格模式：huks.initSession / finishSession / generateKeyItem /
   // cryptoFramework.createRandom / generateRandomSync 都会报 'Function may throw'。
   // 本文件在几个必须拋到调用方的点按下面模式包 try-catch + AppLogger
   // + rethrow，保持原有错误传播。详见 docs/guides/api-migration-2026-05.md。
-  async encrypt(plaintext: string): Promise<EncryptedBlob> {
-    if (!(await this.isAvailable())) {
+  async encrypt(plaintext: string, allowCreate: boolean = true): Promise<EncryptedBlob> {
+    if (!(await this.ensureKey(allowCreate))) {
       throw new Error('HuksAesGcm256Provider.encrypt: HUKS unavailable');
     }
     let nonce = generateNonce();
@@ -90,13 +132,15 @@ export class HuksAesGcm256Provider implements CryptoProvider {
       ],
       inData: inData,
     };
-    let session: huks.HuksSessionHandle;
+    let session: huks.HuksSessionHandle | undefined = undefined;
     let result: huks.HuksReturnResult;
     try {
-      session = await huks.initSession(KEY_ALIAS, opts);
+      session = await huks.initSession(this.keyAlias_, opts);
       result = await huks.finishSession(session.handle, opts);
     } catch (e) {
-      AppLogger.warn(TAG, 'encrypt: HUKS session failed', e as Object, LOG_DOMAIN_ACCOUNT);
+      this._availableCache = null;
+      await this.abortFailedSession(session, opts);
+      AppLogger.warn(TAG, 'HUKS加密会话失败，原密钥保留', null, LOG_DOMAIN_ACCOUNT);
       throw e as Error;
     }
     let outData = (result.outData as Uint8Array | undefined);
@@ -114,8 +158,8 @@ export class HuksAesGcm256Provider implements CryptoProvider {
   }
 
   async decrypt(blob: EncryptedBlob): Promise<string> {
-    if (!(await this.isAvailable())) {
-      throw new Error('HuksAesGcm256Provider.decrypt: HUKS unavailable');
+    if (!(await this.hasExistingKey())) {
+      throw new Error('加密记录的原密钥不存在，请恢复原配置；不能重新生成密钥解密');
     }
     let nonce = decodeStandardBase64(blob.iv);
     let ct = decodeStandardBase64(blob.ciphertext);
@@ -141,13 +185,15 @@ export class HuksAesGcm256Provider implements CryptoProvider {
       ],
       inData: ct,
     };
-    let session: huks.HuksSessionHandle;
+    let session: huks.HuksSessionHandle | undefined = undefined;
     let result: huks.HuksReturnResult;
     try {
-      session = await huks.initSession(KEY_ALIAS, opts);
+      session = await huks.initSession(this.keyAlias_, opts);
       result = await huks.finishSession(session.handle, opts);
     } catch (e) {
-      AppLogger.warn(TAG, 'decrypt: HUKS session failed', e as Object, LOG_DOMAIN_ACCOUNT);
+      this._availableCache = null;
+      await this.abortFailedSession(session, opts);
+      AppLogger.warn(TAG, 'HUKS解密会话失败，保留原密文和密钥', null, LOG_DOMAIN_ACCOUNT);
       throw e as Error;
     }
     let outData = (result.outData as Uint8Array | undefined);
@@ -161,21 +207,28 @@ export class HuksAesGcm256Provider implements CryptoProvider {
   //  内部
   // ============================================================
 
-  /** 探测主密钥是否已存在。 */
+  /**
+   * 探测主密钥是否已存在。
+   * @throws HUKS查询的RPC/权限错误原样传播，不把失败解释为缺少密钥。
+   */
   private async hasKey(): Promise<boolean> {
     let opts: huks.HuksOptions = { properties: [] };
-    try {
-      return await huks.hasKeyItem(KEY_ALIAS, opts);
-    } catch (e) {
-      // hasKeyItem 在某些版本上对不存在的 key 也抛错；视为"不存在"
-      return false;
-    }
+    return await huks.hasKeyItem(this.keyAlias_, opts);
+  }
+
+  /** finish失败后尽力回收仍存活的handle；已由系统结束的会话拒绝abort时不覆盖原始错误。 */
+  private async abortFailedSession(session: huks.HuksSessionHandle | undefined, opts: huks.HuksOptions): Promise<void> {
+    if (session === undefined) return;
+    try { await huks.abortSession(session.handle, opts); }
+    catch (_) { /* 原失败由encrypt/decrypt传播，不打印含敏感参数的SDK异常对象。 */ }
   }
 
   /** 生成 AES-256 主密钥，限制只能用于 ENCRYPT/DECRYPT，绑定 GCM。 */
   private async generateKey(): Promise<void> {
     let opts: huks.HuksOptions = {
       properties: [
+        // API20起可用，当前通用/desktop最低API覆盖。禁止系统默认覆写同名密钥。
+        { tag: huks.HuksTag.HUKS_TAG_KEY_OVERRIDE, value: false },
         { tag: huks.HuksTag.HUKS_TAG_ALGORITHM, value: huks.HuksKeyAlg.HUKS_ALG_AES },
         { tag: huks.HuksTag.HUKS_TAG_KEY_SIZE, value: huks.HuksKeySize.HUKS_AES_KEY_SIZE_256 },
         {
@@ -189,12 +242,12 @@ export class HuksAesGcm256Provider implements CryptoProvider {
       ],
     };
     try {
-      await huks.generateKeyItem(KEY_ALIAS, opts);
+      await huks.generateKeyItem(this.keyAlias_, opts);
     } catch (e) {
-      AppLogger.error(TAG, 'generateKeyItem failed', e as Object, LOG_DOMAIN_ACCOUNT);
+      AppLogger.error(TAG, 'HUKS新密钥创建失败，未覆盖现有alias', null, LOG_DOMAIN_ACCOUNT);
       throw e as Error;
     }
-    AppLogger.info(TAG, `generated master key alias=${KEY_ALIAS}`, LOG_DOMAIN_ACCOUNT);
+    AppLogger.info(TAG, `generated master key alias=${this.keyAlias_}`, LOG_DOMAIN_ACCOUNT);
   }
 }
 

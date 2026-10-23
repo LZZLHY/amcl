@@ -13,6 +13,8 @@
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
+import { AppTitleAction } from '../components/AppTitleAction';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
@@ -187,89 +189,27 @@ struct MessageCenterPage {
     return pad(d.getMonth() + 1) + '-' + pad(d.getDate())
   }
 
+  /** 标题只描述原有动作，回调按稳定 id 分派；不把业务函数塞进状态对象。 */
+  private messageTitleActions_(): AppTitleAction[] {
+    if (this.unreadCount_() > 0) return [{ id: 'mark-all-read', label: '全部已读' }];
+    if (this.messages.length > 0) return [{ id: 'clear-messages', label: '清空' }];
+    return [];
+  }
+
   build() {
     Column() {
-      // 导航栏
-      Row() {
-        Row({ space: 4 }) {
-          AppIcon({ name: AppIconName.Back, iconSize: 18, color: this.theme.primary })
-          Text('返回')
-            .fontSize(16).fontWeight(400).fontColor(this.theme.primary)
-        }
-        .onClick(() => { this.getUIContext().getRouter().back() })
-        .padding({ left: 12, top: 8, bottom: 8, right: 8 })
-
-        Text('消息')
-          .fontSize(20).fontWeight(700).fontColor(this.theme.textPrimary)
-          .layoutWeight(1).textAlign(TextAlign.Center)
-
-        // 有未读 → 「全部已读」；无未读但有消息 → 「清空」
-        if (this.unreadCount_() > 0) {
-          Text('全部已读')
-            .fontSize(14).fontColor(this.theme.primary)
-            .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-            .onClick(() => { this.markAllRead_() })
-        } else if (this.messages.length > 0) {
-          Text('清空')
-            .fontSize(14).fontColor(this.theme.textHint)
-            .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-            .onClick(() => { this.confirmClear_() })
-        } else {
-          Text('')
-            .padding({ left: 12, right: 12 })
-        }
-      }
-      .width('100%')
-      .height(56)
-      .alignItems(VerticalAlign.Center)
-
-      if (this.loadingError.length > 0) {
-        Row({ space: 8 }) {
-          AppIcon({ name: AppIconName.Warning, iconSize: 14, color: this.theme.error })
-          Text(this.loadingError).fontSize(12).fontColor(this.theme.error).layoutWeight(1)
-          Button('重试').fontSize(12).onClick(() => { this.refresh_() })
-        }.width('100%').padding({ left: 12, right: 12, top: 6, bottom: 6 })
-      }
-
-      if (!this.loaded) {
-        Column() {
-          Text('加载中...')
-            .fontSize(14).fontColor(this.theme.textHint)
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else if (this.loadingError.length > 0 && this.messages.length === 0) {
-        Column() {
-          Text('消息暂不可用，请重试加载').fontSize(16).fontColor(this.theme.textSecondary)
-        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else if (this.messages.length === 0) {
-        Column({ space: 12 }) {
-          AppIcon({ name: AppIconName.Notification, iconSize: 40, color: this.theme.textHint })
-          Text('暂无消息')
-            .fontSize(16).fontColor(this.theme.textHint)
-          Text('AI 分析完成等异步结果会在这里出现，最多保留 '
-            + APP_MESSAGE_CAPACITY + ' 条')
-            .fontSize(12).fontColor(this.theme.textHint)
-            .textAlign(TextAlign.Center)
-            .padding({ left: 32, right: 32 })
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else {
-        Scroll() {
-          Column({ space: 8 }) {
-            ForEach(this.messages, (m: AppMessage) => {
-              this.MessageCard(m)
-            }, (m: AppMessage) => m.id)
-          }
-          .width('100%')
-          .padding({ left: 12, right: 12, top: 8, bottom: 24 + this.bottomSafeHeight })
-        }
-        .layoutWeight(1)
-        .scrollBar(BarState.Auto)
-      }
+      ImmersiveTitleScaffold({ title: '消息', theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary, menuActions: this.messageTitleActions_(),
+        onBack: (): void => { this.getUIContext().getRouter().back(); },
+        onMenuAction: (id: string): void => {
+          if (id === 'mark-all-read') this.markAllRead_();
+          else if (id === 'clear-messages') this.confirmClear_();
+        },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%')
     .height('100%')
-    .padding({ top: this.topSafeHeight })
     .backgroundColor(this.theme.bgPrimary)
   }
 
@@ -323,4 +263,52 @@ struct MessageCenterPage {
     .alignItems(VerticalAlign.Center)
     .onClick(() => { this.onTapMessage_(m) })
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      if (this.loadingError.length > 0) {
+        Row({ space: 8 }) {
+          AppIcon({ name: AppIconName.Warning, iconSize: 14, color: this.theme.error })
+          Text(this.loadingError).fontSize(12).fontColor(this.theme.error).layoutWeight(1)
+          Button('重试').fontSize(12).onClick(() => { this.refresh_() })
+        }.width('100%').padding({ left: 12, right: 12, top: 6, bottom: 6 })
+      }
+
+      if (!this.loaded) {
+        Column() {
+          Text('加载中...')
+            .fontSize(14).fontColor(this.theme.textHint)
+        }
+        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else if (this.loadingError.length > 0 && this.messages.length === 0) {
+        Column() {
+          Text('消息暂不可用，请重试加载').fontSize(16).fontColor(this.theme.textSecondary)
+        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else if (this.messages.length === 0) {
+        Column({ space: 12 }) {
+          AppIcon({ name: AppIconName.Notification, iconSize: 40, color: this.theme.textHint })
+          Text('暂无消息')
+            .fontSize(16).fontColor(this.theme.textHint)
+          Text('AI 分析完成等异步结果会在这里出现，最多保留 '
+            + APP_MESSAGE_CAPACITY + ' 条')
+            .fontSize(12).fontColor(this.theme.textHint)
+            .textAlign(TextAlign.Center)
+            .padding({ left: 32, right: 32 })
+        }
+        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else {
+        Scroll() {
+          Column({ space: 8 }) {
+            ForEach(this.messages, (m: AppMessage) => {
+              this.MessageCard(m)
+            }, (m: AppMessage) => m.id)
+          }
+          .width('100%')
+          .padding({ left: 12, right: 12, top: 8, bottom: 24 + this.bottomSafeHeight })
+        }
+        .layoutWeight(1)
+        .scrollBar(BarState.Auto)
+      }
+      }
 }

@@ -10,6 +10,7 @@
 
 import { pasteboard } from '@kit.BasicServicesKit';
 import { AppIcon } from './AppIcon';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { ThemeColors, AppIconName } from 'commons';
 import {
   runNetworkDiagnostics, NetworkReport, NetworkProbe,
@@ -97,19 +98,20 @@ export struct NetworkDiagnosticsSheet {
 
   build() {
     Column() {
-      // 头部
-      Row() {
-        Text('网络环境检测')
-          .fontSize(18).fontWeight(600).fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-        Button({ type: ButtonType.Circle, stateEffect: true }) {
-          AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-        }
-        .width(44).height(44).backgroundColor(this.theme.bgCard).accessibilityText('关闭网络检测')
-        .onClick(() => { this.onClose() })
-      }
-      .width('100%').padding({ left: 20, right: 16, top: 14, bottom: 10 })
+    // 按官方 MODAL 导航标题栏承载 X；只沿用父组件 onClose，不接管检测任务或 Sheet 宿主。
+    ImmersiveTitleScaffold({ title: '网络环境检测', theme: this.theme, modal: true,
+      closeLabel: '关闭网络检测', surfaceColor: this.theme.bgSecondary,
+      onClose: (): void => { this.onClose(); },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
+    }
+    .width('100%').height('100%')
+    .backgroundColor(this.theme.bgSecondary)
+  }
 
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
       Scroll() {
         Column({ space: 14 }) {
           // 结论卡片
@@ -227,7 +229,4 @@ export struct NetworkDiagnosticsSheet {
       .width('100%')
       .padding({ left: 16, right: 16, top: 8, bottom: Math.max(16, this.bottomSafeHeight + 8) })
     }
-    .width('100%').height('100%')
-    .backgroundColor(this.theme.bgSecondary)
-  }
 }

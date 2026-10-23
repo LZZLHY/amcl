@@ -457,6 +457,9 @@ public:
     // Open is fail-closed: it replaces any prior consumer, calls openConsumer,
     // and becomes ready only after a validated baseline RESET for the current
     // active session. The injected table is borrowed and must remain stable.
+    // 启动 drain 只消费基线与启动类记录（surface/context/文本会话/device）；遇到基线之后的
+    // 第一条普通记录即停下，READY 成功后把它交给首次 Pump（或 Close 的收尾 drain）最先处理，
+    // 其文本 blob 所有权随之保留到那时才归还。握手期间持续到达的输入因此不再使 Open 失败。
     //
     // `backend` selects which AMCL_INPUT_BACKEND_* READY/RETIRE slot this
     // instance claims in the core. The whole class is backend-parameterised:
@@ -474,7 +477,15 @@ public:
     // callbacks run synchronously on the calling thread. No adapter or host-call
     // lock is held while a mapper or sink is entered. Queries and Close may be
     // called synchronously from either callback; Open/Pump remain non-reentrant.
-    GlfwPumpResult Pump();
+    // maxEvents=0沿用直接回调消费者的完整drain；pull桥传1，使一次请求只提交一条core记录，
+    // 下一层在取走其输出之前不再抽取新记录。生命周期单条记录仍作为完整事务分发，不能把
+    // 一次RESET的释放截在半途。预算只限制普通取记录循环，不改变Open/Close的基线与收尾纪律。
+    // maxOrder 来自 owner fence/另一通道的队首，超过上限的事件与 blob 留在 host。
+    GlfwPumpResult Pump(uint32_t maxEvents = 0u, uint64_t maxOrder = UINT64_MAX);
+    // 仅供同步 sink 读取当前记录的跨通道顺序；启动基线及本地紧急释放为 0。
+    uint64_t CurrentInteractionOrder() const;
+    /** 仅读当前dispatch原Core身份；三个数字是host/Core consumer/原sequence，不借control身份。 */
+    bool CurrentCoreRecord(uint64_t* host,uint64_t* consumer,uint64_t* sequence) const;
 
     // A ready backend is explicitly retired, drained (including owned blobs),
     // and only then closed. A cleanup failure retains the remote handle so a

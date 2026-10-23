@@ -1,0 +1,117 @@
+// 只替换原生队列/游戏事件接收边界；下方插入真实Java路由与状态机。
+import java.util.*;
+import java.nio.ByteBuffer;
+public class L2InputSemantics {
+  private final byte[] keyPlaneOwners=new byte[512], keyDownState=new byte[512];
+  private final byte[] mousePlaneOwners=new byte[16], mouseButtonState=new byte[16];
+  // 游戏事件队列只记录生产序列化得到的bytes；不参与鼠标owner/手势判定。
+  private final ByteBuffer mouseEventBuf=ByteBuffer.allocate(22);
+  private EventQueue mouseEventQueue=new EventQueue(),keyboardEventQueue=new EventQueue();
+  private final int[] evTmp=new int[5];
+  private final ArrayDeque<int[]> pending=new ArrayDeque<>();
+  private final ArrayList<String> keys=new ArrayList<>(),buttons=new ArrayList<>();
+  private final ArrayList<String> mouseRoute=new ArrayList<>();
+  private int accumWheel;
+  private boolean grabbed;
+  private double nativeX,nativeY;
+  private boolean inputFocused=true;
+  // nNextEvent替身只反映Native出线的当前坐标，生产1010编码/Java解码仍由真实方法完成。
+  private boolean nNextEvent(int[] out){
+    if(pending.isEmpty())return false;
+    System.arraycopy(pending.remove(),0,out,0,5);
+    if(out[0]==1010){
+      nativeX=Double.longBitsToDouble(((long)out[2]<<32)|(out[1]&0xffffffffL));
+      nativeY=Double.longBitsToDouble(((long)out[4]<<32)|(out[3]&0xffffffffL));
+    }
+    return true;
+  }
+  private double nGetCursorX(){return nativeX;}
+  private double nGetCursorY(){return nativeY;}
+  private int getHeight(){return 800;}
+  private final class EventQueue {
+    void putEvent(ByteBuffer original){
+      ByteBuffer frozen=ByteBuffer.allocate(original.remaining());
+      frozen.put(original.duplicate());frozen.flip();
+      int button=frozen.get(),state=frozen.get(),x=frozen.getInt(),y=frozen.getInt();
+      buttons.add(button+":"+state);
+      mouseRoute.add(button+":"+state+":"+x+":"+y+":"+mouseButtonState[0]);
+    }
+  }
+  private void putKeyEvent(int key,boolean down,int cp,boolean repeat){keys.add(key+":"+(repeat?2:down?1:0));}
+  // 仅编码边界输入，不实现或重建生产鼠标状态机。
+  static int[] cursor(double x,double y){
+    long xb=Double.doubleToRawLongBits(x),yb=Double.doubleToRawLongBits(y);
+    return new int[]{1010,(int)xb,(int)(xb>>>32),(int)yb,(int)(yb>>>32)};
+  }
+  @PRODUCTION@
+  static void check(boolean value,String label){if(!value)throw new AssertionError("CHECK failed: "+label);}
+  public static void main(String[] args){
+    L2InputSemantics input=new L2InputSemantics();
+    int[][] trace={@TRACE@};
+    for(int i=0;i<trace.length;i++){
+      int[] row=trace[i];
+      if(row[1]<0)input.pending.add(new int[]{row[0]==1?1009:2009,0,0,0,0});
+      else input.pending.add(new int[]{row[0]==1?1005:2005,row[0]==1?65:30,0,row[1],0});
+      input.drainEvents();
+      check(input.keyDownState[30]==row[2],"keyboard held step="+i);
+      check(input.keys.size()==row[3],"keyboard edges step="+i);
+    }
+    check(input.keys.get(1).equals("30:2"),"explicit repeat preserved");
+    input.keys.clear();
+    int[][] mouse={@MOUSE_TRACE@};
+    for(int i=0;i<mouse.length;i++){
+      int[] row=mouse[i];
+      input.pending.add(row[1]<0?new int[]{row[0]==1?1009:2009,0,0,0,0}:
+        new int[]{row[0]==1?1006:2006,0,row[1],0,0});
+      input.drainEvents();
+      check(input.mouseButtonState[0]==row[2],"mouse held step="+i);
+      check(input.buttons.size()==row[3],"mouse edges step="+i);
+    }
+    input.pending.add(new int[]{2010,0,0,0,0});input.drainEvents();check(!input.inputFocused,"host blur");
+    input.pending.add(new int[]{2009,0,0,0,0});input.drainEvents();check(!input.inputFocused,"local reset is not focus gain");
+    input.pending.add(new int[]{2010,1,0,0,0});input.drainEvents();check(input.inputFocused,"host focus gain");
+    // 真正失焦是完整Java实例边界；只输入正式FOCUS=false，不在Native边界桩里补RESET。
+    // legacy/typed共持A、LEFT、RIGHT时必须清polling，并各产生一个末位释放，不能仅改active。
+    L2InputSemantics focused=new L2InputSemantics();
+    for(int plane:new int[]{1,2}){
+      focused.pending.add(new int[]{plane==1?1005:2005,plane==1?65:30,0,1,0});
+      focused.pending.add(new int[]{plane==1?1006:2006,0,1,0,0});
+      focused.pending.add(new int[]{plane==1?1006:2006,1,1,0,0});
+    }
+    focused.drainEvents();
+    check(focused.keyDownState[30]==1&&focused.mouseButtonState[0]==1&&focused.mouseButtonState[1]==1,"two planes held before focus loss");
+    check(focused.keys.size()==1&&focused.buttons.size()==2,"focus test first owner PRESS only");
+    focused.pending.add(new int[]{2010,0,0,0,0});focused.drainEvents();
+    check(!focused.inputFocused&&focused.keyDownState[30]==0&&focused.mouseButtonState[0]==0&&focused.mouseButtonState[1]==0,"focus-only releases held keyboard and mouse");
+    check(focused.keyPlaneOwners[30]==0&&focused.mousePlaneOwners[0]==0&&focused.mousePlaneOwners[1]==0,"focus-only retires both owner planes");
+    check(focused.keys.equals(Arrays.asList("30:1","30:0")),"focus-only key last-owner RELEASE once");
+    check(focused.buttons.equals(Arrays.asList("0:1","1:1","0:0","1:0")),"focus-only LEFT and RIGHT last-owner RELEASE once");
+    focused.pending.add(new int[]{2010,0,0,0,0});focused.drainEvents();
+    check(focused.keys.size()==2&&focused.buttons.size()==4,"repeated blur cannot duplicate RELEASE");
+    focused.pending.add(new int[]{2010,1,0,0,0});focused.drainEvents();
+    check(focused.inputFocused&&focused.keyDownState[30]==0&&focused.mouseButtonState[0]==0&&focused.mouseButtonState[1]==0,"focus gain cannot restore retired held state");
+    // 同一drain批次的源点按下、持续移动及终点释放必须各自进入真实ByteBuffer队列。
+    // 只核最后poll坐标会把中途MOVE全丢失的旧实现也误判为通过。
+    input.buttons.clear();input.mouseRoute.clear();
+    input.pending.add(cursor(10,20));
+    input.pending.add(new int[]{1006,0,1,0,0});
+    input.pending.add(cursor(300,400));
+    input.pending.add(cursor(350,450));
+    input.pending.add(new int[]{1006,0,0,0,0});
+    input.drainEvents();
+    check(input.mouseRoute.equals(Arrays.asList("-1:0:10:780:0","0:1:10:780:1",
+      "-1:0:300:400:1","-1:0:350:350:1","0:0:350:350:0")),"ordered source/held MOVE/UP route");
+    input.nativeX=999;input.nativeY=999;
+    check(input.mouseRoute.get(1).equals("0:1:10:780:1"),"later native cursor cannot rewrite queued source");
+    check(input.mouseButtonState[0]==0,"causal drag completed without a second click");
+    // double低位包含符号bits和小数；菜单左下原点只转换一次。
+    input.mouseRoute.clear();input.pending.add(cursor(300.5,-1.25));input.drainEvents();
+    check(input.mouseRoute.equals(Arrays.asList("-1:0:301:801:0")),"1010 raw double bits and one coordinate conversion");
+    // 世界视角由poll相对增量承接，绝对菜单位置及无效double都不得伪造Mouse事件。
+    input.mouseRoute.clear();input.grabbed=true;input.pending.add(cursor(700,600));input.drainEvents();
+    check(input.mouseRoute.isEmpty(),"grabbed excludes menu absolute MOVE");
+    input.grabbed=false;input.pending.add(cursor(Double.NaN,20));input.drainEvents();
+    check(input.mouseRoute.isEmpty(),"nonfinite cursor rejected");
+    System.out.println("PASS L2 real drain: source overlap, scoped RESET, frozen source, held MOVE and endpoint UP");
+  }
+}

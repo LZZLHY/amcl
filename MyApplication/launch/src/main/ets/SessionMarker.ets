@@ -23,6 +23,7 @@
  */
 
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import { stripLogNoise, NoiseStripResult } from 'commons';
@@ -49,6 +50,35 @@ export interface McSessionInfo {
 export class SessionMarker {
   private static markerPath(filesDir: string): string {
     return filesDir + '/' + MARKER_NAME;
+  }
+
+  /**
+   * 恢复owner只读marker，先耐久建立对应活动待办，再调用clearMatchingAsync。
+   * 解析失败保留原文件，不能以“避免重复”为由丢掉唯一退出前证据。
+   */
+  static async readPendingAsync(filesDir: string): Promise<McSessionInfo | null> {
+    const path: string = SessionMarker.markerPath(filesDir);
+    let stat: fs.Stat;
+    try { stat = await fs.stat(path); }
+    catch (error) { if ((error as BusinessError).code === 13900002) return null; throw error as Error; }
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 4096) throw new Error('游戏会话标记损坏，原件已保留');
+    const obj = JSON.parse(await fs.readText(path)) as Record<string, Object>;
+    const startedAt = obj['startedAt']; const version = obj['version']; const mcDir = obj['mcDir'];
+    if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt <= 0
+      || typeof version !== 'string' || (mcDir !== undefined && typeof mcDir !== 'string')) {
+      throw new Error('游戏会话标记身份无效，原件已保留');
+    }
+    return { startedAt: startedAt as number, version: version as string, mcDir: (mcDir as string) ?? '' };
+  }
+
+  /** 只有当前文件仍对应已耐久入队的原身份才删除；新游戏重写marker不能被旧回调清走。 */
+  static async clearMatchingAsync(filesDir: string, expected: McSessionInfo): Promise<void> {
+    const actual = await SessionMarker.readPendingAsync(filesDir);
+    if (actual === null || actual.startedAt !== expected.startedAt || actual.version !== expected.version
+      || actual.mcDir !== expected.mcDir) return;
+    await fs.unlink(SessionMarker.markerPath(filesDir));
+    const parent = await fs.open(filesDir, fs.OpenMode.READ_ONLY);
+    try { await fs.fsync(parent.fd); } finally { await fs.close(parent); }
   }
 
   /**

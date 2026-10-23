@@ -50,7 +50,7 @@ typedef struct {
     unsigned physicalIdentityLive;   // 1a：LegacyPhysicalEdgeRouter 的持有身份数，瞬时值
     unsigned ledgerOwnerLive;        // 2：至少持有一个输出的 owner 数，瞬时值
     unsigned ledgerOutputLive;       // 2：MC 侧当前按下的控件数，瞬时值
-    // 1b 的幽灵特征：同一 `(output, source)` 上的最大记录数（1 = 正常）。
+    // 1b同一(output,source)的最大记录数；有身份的多控件共享可合法大于1，不单独判故障。
     // ⚠️ **刻意不参与任何不变量位**，只入日志（理由见计划 §107.3，并有断言钉住这个决定）。
     unsigned maxSameSourceHeld;
 } AmclInputInvariantSnapshot;

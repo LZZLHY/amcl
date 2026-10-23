@@ -22,6 +22,7 @@ using SDL_ThreadID=uint64_t;
 #define SDL_LOG_CATEGORY_VIDEO 1
 #define OPENHARMONY_WINDOW_AUXILIARY_PBUFFER 1
 #define OPENHARMONY_SURFACE_READY 1
+#define OPENHARMONY_SURFACE_DESTROYING 2
 #define OPENHARMONY_PROP_REQUESTED_FLAGS "flags"
 #define OPENHARMONY_PROP_WINDOW_ROLE "role"
 #define SDL_PROP_WINDOW_OPENHARMONY_SURFACE_POINTER "surface"
@@ -31,20 +32,41 @@ struct SDL_WindowData {
     SDL_ThreadID owner_thread=0;
     bool is_current=false,construction_committed=false;
     int has_swap_interval=0,swap_interval=0;
+    // 对齐现役私有窗口状态；失败节点由生产保留链拥有，fixture 只模拟进程结束时释放。
+    EGLSurface amcl_auxiliary_candidate=EGL_NO_SURFACE,amcl_auxiliary_current_surface=EGL_NO_SURFACE;
+    bool amcl_auxiliary_retained=false;
+    SDL_WindowData* amcl_auxiliary_retained_next=nullptr;
+    EGLint amcl_auxiliary_first_error=EGL_SUCCESS;
+    char amcl_auxiliary_first_stage[64]{},amcl_auxiliary_first_text[256]{};
 };
 struct SDL_Window {unsigned id=1;int w=320,h=480;SDL_WindowData* internal=nullptr;};
-struct SDL_VideoData {int pinned_egl_config_id=2,auxiliary_window_count=0,auxiliary_create_ok=0;};
+struct SDL_VideoData {int pinned_egl_config_id=2,auxiliary_window_count=0,auxiliary_create_ok=0;
+    bool renderer_fatal=false,desired_swap_interval_valid=true;int desired_swap_interval=1;
+    int interval_replay_ok=0,interval_replay_fail=0;};
 struct EglData {
     EGLDisplay egl_display=reinterpret_cast<EGLDisplay>(1);
     EGLConfig egl_config=reinterpret_cast<EGLConfig>(2);
     EGLint (*eglGetError)();
     EGLBoolean (*eglQuerySurface)(EGLDisplay,EGLSurface,EGLint,EGLint*);
+    EGLBoolean (*eglDestroySurface)(EGLDisplay,EGLSurface);
+    EGLBoolean (*eglSwapInterval)(EGLDisplay,EGLint);
+    int egl_swapinterval=0;
 };
 struct SDL_VideoDevice {EglData* egl_data;SDL_VideoData* internal;};
 struct Size {int width,height;};
 std::map<EGLSurface,Size> surfaces;
 AmclGraphicsRuntimeV1 runtime{};
 bool required=true,available=true,allocationFails=false,queryFails=false,clamped=false,bindFails=false,replayFails=false;
+bool restoreFails=false,destroyOnFatal=false;
+EGLint bindError=EGL_BAD_MATCH,intervalError=EGL_BAD_MATCH;
+EGLSurface destroyFailure=EGL_NO_SURFACE;
+SDL_VideoData* activeVideo=nullptr;
+SDL_WindowData* OPENHARMONY_retained_auxiliary=nullptr;
+// fixture 为单线程调度；锁边界仍经过同名调用，生产使用 SDL 的真实 spinlock。
+using SDL_SpinLock=int;SDL_SpinLock OPENHARMONY_retained_auxiliary_lock=0;
+void SDL_LockSpinlock(SDL_SpinLock* lock){CHECK(*lock==0);*lock=1;}
+void SDL_UnlockSpinlock(SDL_SpinLock* lock){CHECK(*lock==1);*lock=0;}
+int fatalCount=0;EGLint fatalCode=EGL_SUCCESS;std::string fatalStage;
 int maximumWidth=4096,maximumHeight=4096,maximumPixels=0,surfaceType=EGL_WINDOW_BIT|EGL_PBUFFER_BIT;
 int queryConfigFailure=0,configId=2,creates=0,destroys=0,liveData=0,events=0,compatLogs=0;
 uintptr_t serial=0x100;
@@ -59,6 +81,9 @@ bool SDL_SetError(const char* format,...) {
 }
 bool SDL_EGL_SetError(const char* text,const char*){error=text;return false;}
 bool SDL_EGL_SetErrorEx(const char* text,const char*,EGLint){error=text;return false;}
+const char* SDL_GetError(){return error.c_str();}
+void SDL_ClearError(){error.clear();}
+void SDL_strlcpy(char* to,const char* from,size_t size){std::snprintf(to,size,"%s",from);}
 void SDL_LogError(int,const char*,...){}
 void SDL_LogInfo(int,const char* text,...){if(std::strstr(text,"zero-pixel-limit"))++compatLogs;}
 EGLint getError(){const auto result=lastError;lastError=EGL_SUCCESS;return result;}
@@ -84,6 +109,15 @@ EGLBoolean querySurface(EGLDisplay,EGLSurface surface,EGLint attribute,EGLint* o
     *out=attribute==EGL_WIDTH?surfaces.at(surface).width:surfaces.at(surface).height;return EGL_TRUE;
 }
 void SDL_EGL_DestroySurface(SDL_VideoDevice*,EGLSurface surface){CHECK(surfaces.erase(surface)==1);++destroys;}
+EGLBoolean destroySurface(EGLDisplay,EGLSurface surface){
+    if(surface==destroyFailure){lastError=EGL_BAD_SURFACE;return EGL_FALSE;}
+    CHECK(surfaces.erase(surface)==1);++destroys;return EGL_TRUE;
+}
+EGLBoolean swapInterval(EGLDisplay,EGLint){if(replayFails){lastError=intervalError;return EGL_FALSE;}return EGL_TRUE;}
+bool OPENHARMONY_GLES_MarkRendererFatalWithError(SDL_Window* window,const char* stage,EGLint code){
+    activeVideo->renderer_fatal=true;if(!fatalCount++){fatalCode=code;fatalStage=stage;}
+    if(destroyOnFatal)window->internal=nullptr;return false;
+}
 bool OPENHARMONY_GLES_EnsureWindowConfig(SDL_VideoDevice*,bool){return true;}
 void OPENHARMONY_GLES_ResetPolicyIfUnused(SDL_VideoDevice*){}
 void SDL_free(SDL_WindowData* data){delete data;--liveData;}
@@ -99,8 +133,19 @@ bool SDL_EGL_MakeCurrent(SDL_VideoDevice*,EGLSurface surface,SDL_GLContext) {
     if(bindFails && currentWindow && surface!=currentWindow->internal->egl_surface)return false;
     currentSurface=surface;return true;
 }
-bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice*,SDL_Window*,bool){return !replayFails;}
+bool SDL_EGL_MakeCurrentWithError(SDL_VideoDevice*,EGLSurface surface,SDL_GLContext,EGLint* out){
+    *out=EGL_SUCCESS;
+    if((bindFails && currentWindow && surface!=currentWindow->internal->egl_surface) ||
+       (restoreFails && currentWindow && surface==currentWindow->internal->egl_surface)){
+        *out=bindError;error="injected bind failure";return false;
+    }
+    currentSurface=surface;return true;
+}
 void OPENHARMONY_SendGeometryEvents(SDL_Window* window,int width,int height){++events;window->w=width;window->h=height;}
+@CONTEXT_ERROR@
+@EGL_INTERVAL@
+@REPLAY@
+@AUXILIARY_HELPERS@
 @VALIDATE_SIZE@
 @VALIDATE_SURFACE@
 bool CreateAuxiliary(SDL_VideoDevice* _this,SDL_Window* window) {
@@ -116,16 +161,26 @@ void Reset(const char* profile="nativegl") {
     CHECK(surfaces.empty() && liveData==0);
     runtime={};runtime.profile=profile;runtime.api="OPENGL";runtime.contextApi="desktop-gl";
     required=available=true;allocationFails=queryFails=clamped=bindFails=replayFails=false;
+    restoreFails=destroyOnFatal=false;destroyFailure=EGL_NO_SURFACE;bindError=intervalError=EGL_BAD_MATCH;
+    fatalCount=0;fatalCode=EGL_SUCCESS;fatalStage.clear();if(activeVideo)*activeVideo={};
     maximumWidth=maximumHeight=4096;maximumPixels=0;surfaceType=EGL_WINDOW_BIT|EGL_PBUFFER_BIT;
     queryConfigFailure=0;configId=2;creates=destroys=events=compatLogs=0;error.clear();
     currentWindow=nullptr;currentSurface=EGL_NO_SURFACE;lastError=EGL_SUCCESS;
 }
 void CloseFixture(SDL_VideoDevice* device,SDL_Window& window) {
+    if(OPENHARMONY_retained_auxiliary){
+        // 终局策略是保留到进程退出；这里模拟退出，不能把 fixture 释放误算成产品退休成功。
+        auto* retained=OPENHARMONY_retained_auxiliary;OPENHARMONY_retained_auxiliary=retained->amcl_auxiliary_retained_next;
+        CHECK(retained->amcl_auxiliary_retained);
+        if(retained->egl_surface)SDL_EGL_DestroySurface(device,retained->egl_surface);
+        if(retained->amcl_auxiliary_candidate)SDL_EGL_DestroySurface(device,retained->amcl_auxiliary_candidate);
+        SDL_free(retained);window.internal=nullptr;return;
+    }
     SDL_EGL_DestroySurface(device,window.internal->egl_surface);SDL_free(window.internal);window.internal=nullptr;
 }
 int main(){
-    EglData egl;egl.eglGetError=getError;egl.eglQuerySurface=querySurface;
-    SDL_VideoData video;SDL_VideoDevice device{&egl,&video};
+    EglData egl;egl.eglGetError=getError;egl.eglQuerySurface=querySurface;egl.eglDestroySurface=destroySurface;egl.eglSwapInterval=swapInterval;
+    SDL_VideoData video;activeVideo=&video;SDL_VideoDevice device{&egl,&video};
     Reset();SDL_Window window;
     CHECK(CreateAuxiliary(&device,&window));
     CHECK(creates==1 && window.internal->surface_width==320 && window.internal->surface_height==480);
@@ -167,13 +222,43 @@ int main(){
         if(variant==4 || variant==5){currentWindow=&resized;currentSurface=old;}
         if(variant==6){data->is_current=true;data->owner_thread=99;}
         const bool resizedOk=OPENHARMONY_ApplyPendingAuxiliaryResize(&device,&resized,SDL_GL_GetCurrentContext());
-        CHECK(resizedOk==(variant==0));CHECK(surfaces.size()==1 && liveData==1);
-        if(variant==0)CHECK(data->egl_surface!=old && data->surface_width==640 && data->surface_height==360);
+        // 普通 pbuffer 不支持 interval 仍采用现有延迟回放语义，不能与 context lost 混同。
+        CHECK(resizedOk==(variant==0 || variant==5));CHECK(surfaces.size()==1 && liveData==1);
+        if(variant==0 || variant==5)CHECK(data->egl_surface!=old && data->surface_width==640 && data->surface_height==360);
         else CHECK(data->egl_surface==old && data->surface_width==320 && data->surface_height==480);
-        if(variant==4 || variant==5)CHECK(currentSurface==old && data->has_swap_interval==1 && data->swap_interval==1);
+        if(variant==4)CHECK(currentSurface==old && data->has_swap_interval==1 && data->swap_interval==1);
+        if(variant==5)CHECK(currentSurface==data->egl_surface && !data->has_swap_interval);
         if(variant==6)CHECK(creates==1 && data->pending_width==640);
         CloseFixture(&device,resized);
     }
+    // 真实生产失败事务：候选/旧面退休失败、回绑失败、bind/interval context lost。
+    for(int variant=0;variant<6;++variant){
+        Reset();SDL_Window resized;CHECK(CreateAuxiliary(&device,&resized));
+        auto* data=resized.internal;const auto old=data->egl_surface;
+        data->pending_width=640;data->pending_height=360;data->is_current=true;data->owner_thread=7;
+        currentWindow=&resized;currentSurface=old;
+        if(variant==0 || variant==1){destroyFailure=old;restoreFails=variant==1;}
+        if(variant==2){clamped=true;destroyFailure=reinterpret_cast<EGLSurface>(serial+1);}
+        if(variant==3){bindFails=true;bindError=EGL_CONTEXT_LOST;}
+        if(variant==4){replayFails=true;intervalError=EGL_CONTEXT_LOST;}
+        if(variant==5){bindFails=true;destroyFailure=reinterpret_cast<EGLSurface>(serial+1);destroyOnFatal=true;}
+        CHECK(!OPENHARMONY_ApplyPendingAuxiliaryResize(&device,&resized,SDL_GL_GetCurrentContext()));
+        CHECK(video.renderer_fatal && data->amcl_auxiliary_retained && OPENHARMONY_retained_auxiliary==data);
+        CHECK(data->egl_surface==old && data->amcl_auxiliary_candidate && surfaces.size()==2);
+        CHECK(data->surface_width==320 && data->surface_height==480 && events==0);
+        CHECK(data->amcl_auxiliary_current_surface==currentSurface);
+        if(variant==0 || variant==1)CHECK(fatalCode==EGL_BAD_SURFACE && fatalStage=="auxiliary-old-retire");
+        if(variant==2)CHECK(fatalCode==0 && fatalStage=="auxiliary-resize-validation");
+        if(variant==3 || variant==4)CHECK(fatalCode==EGL_CONTEXT_LOST);
+        if(variant==5)CHECK(fatalCode==EGL_BAD_MATCH && fatalStage=="auxiliary-resize-bind" && !resized.internal);
+        const int allocated=creates;CHECK(!OPENHARMONY_ApplyPendingAuxiliaryResize(&device,&resized,SDL_GL_GetCurrentContext()));
+        CHECK(creates==allocated);CloseFixture(&device,resized);
+    }
+    // 首次辅助窗口查询失败后，退休失败仍持有 WindowData，不能在 create 返回 false 时丢失。
+    Reset();SDL_Window rejected;clamped=true;destroyFailure=reinterpret_cast<EGLSurface>(serial+1);
+    CHECK(!CreateAuxiliary(&device,&rejected));CHECK(video.renderer_fatal && liveData==1 && surfaces.size()==1);
+    CHECK(OPENHARMONY_retained_auxiliary && rejected.internal==OPENHARMONY_retained_auxiliary);
+    CloseFixture(&device,rejected);
     CHECK(surfaces.empty() && liveData==0);
-    std::cout<<"SDL pbuffer limits PASS: native-only zero-area create/resize, exact surface checks, positive limits, other profiles, failure rollback\n";
+    std::cout<<"SDL pbuffer limits PASS: bounds and exact create/resize; failed old/new retirement, rollback bind, context loss, retained current/resources/first error, synchronous close\n";
 }

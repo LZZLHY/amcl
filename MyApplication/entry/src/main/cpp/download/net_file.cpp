@@ -6,7 +6,7 @@
  *     1. 如果 local_path 已存在且 sha1 命中 → 跳过下载，Finished
  *     2. 检查 .download-meta 是否存在且兼容 → 恢复 threads_
  *     3. 否则：HEAD 请求拿 file_size → 切片 → 创建 NetThread 链表
- *     4. open local_path (O_WRONLY|O_CREAT) + ftruncate(file_size)
+ *     4. 保留固定 staging 名，实际 fd 由传输首次 acquire 时延迟打开
  *     5. 把 threads_ 送进 threads_pending_launch_，等 Engine 分发到 WorkerPool
  *
  *   reportThreadFinished():
@@ -16,7 +16,7 @@
  *        * 所有 thread Finished → state=FinalCheck → sha1 校验 → Finished
  *
  * fd 管理：
- *   - 由 start() 打开，finalize() 关闭
+ *   - 由 segment acquire/release 引用计数开关，结束后再次 no-follow 打开并校验/提交
  *   - 生命周期跨多个 NetThread，pwrite 是线程安全的（POSIX 保证）
  *   - abort() 不关 fd（可能还在写，先让线程 aborted 收敛）
  */
@@ -44,6 +44,8 @@
 #include "engine.h"
 #include "http_range.h"
 #include "loader_download.h"
+#include "transport_policy.h"
+#include "host_admission.h"
 
 #include "../utils/amcl_log.h"
 
@@ -54,6 +56,15 @@ namespace download {
 
 namespace {
 
+/** 文件内部同步执行栈守卫；旧线程表被替换后也继续阻止清理/回收。 */
+struct FileOperationGuard {
+    std::atomic<unsigned>& count;
+    explicit FileOperationGuard(std::atomic<unsigned>& value) : count(value) {
+        count.fetch_add(1, std::memory_order_acq_rel);
+    }
+    ~FileOperationGuard() { count.fetch_sub(1, std::memory_order_release); }
+};
+
 /** 用 curl 做 HEAD 请求，取 Content-Length 和 Accept-Ranges */
 enum class RangeCap { Unknown, Supported, Unsupported };
 
@@ -63,6 +74,29 @@ struct HeadResult {
     long     http_code = 0;
 };
 
+struct HeadHeaders {
+    RangeCap range = RangeCap::Unknown;
+    int64_t retry_after_ms = 0;
+};
+
+/** 读取有界响应头中的 Retry-After；不自行实现另一套秒数/date/cap 规则。 */
+int64_t retryAfterHeader(const char* data, size_t total) {
+    static constexpr char key[] = "retry-after:";
+    if (total <= sizeof(key) - 1) return 0;
+    for (size_t i = 0; i < sizeof(key) - 1; ++i) {
+        char c = data[i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != key[i]) return 0;
+    }
+    return parseTransportRetryAfter(std::string(data + sizeof(key) - 1, total - (sizeof(key) - 1)));
+}
+
+/** HEAD/0-0 与 startup 共用取消令牌，取消不等每个源逐个耗尽超时。 */
+int probeProgressCb(void* value, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    const auto* token = static_cast<const std::atomic<bool>*>(value);
+    return token && token->load(std::memory_order_acquire) ? 1 : 0;
+}
+
 /**
  * HEAD 响应头回调：解析 `Accept-Ranges`。
  *   - `Accept-Ranges: bytes` → 支持 Range
@@ -70,9 +104,11 @@ struct HeadResult {
  *   - 其它/缺失               → 保持 Unknown（由 0-0 探测兜底）
  */
 size_t headHeaderCb(char* buffer, size_t size, size_t nitems, void* userdata) {
+    if (size != 0 && nitems > SIZE_MAX / size) return 0;
     const size_t total = size * nitems;
-    auto* cap = static_cast<RangeCap*>(userdata);
-    if (!cap) return total;
+    auto* headers = static_cast<HeadHeaders*>(userdata);
+    if (!headers) return total;
+    headers->retry_after_ms = std::max(headers->retry_after_ms, retryAfterHeader(buffer, total));
     // 归一化 header 名部分为小写后比较，值部分裁掉前后空白/CRLF。
     static const char kKey[] = "accept-ranges:";
     const size_t key_len = sizeof(kKey) - 1;
@@ -94,8 +130,8 @@ size_t headHeaderCb(char* buffer, size_t size, size_t nitems, void* userdata) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
         value.push_back(c);
     }
-    if (value == "none") *cap = RangeCap::Unsupported;
-    else if (value == "bytes") *cap = RangeCap::Supported;
+    if (value == "none") headers->range = RangeCap::Unsupported;
+    else if (value == "bytes") headers->range = RangeCap::Supported;
     return total;
 }
 
@@ -104,6 +140,7 @@ struct ProbeHeaders {
     bool content_range_seen = false;
     long response_code = 0;
     size_t body_bytes = 0;
+    int64_t retry_after_ms = 0;
 };
 
 size_t probeHeaderCb(char* buffer, size_t size, size_t nitems, void* userdata) {
@@ -126,8 +163,10 @@ size_t probeHeaderCb(char* buffer, size_t size, size_t nitems, void* userdata) {
         headers->content_range = ParsedContentRange{};
         headers->content_range_seen = false;
         headers->body_bytes = 0;
+        headers->retry_after_ms = 0;
         return total;
     }
+    headers->retry_after_ms = std::max(headers->retry_after_ms, retryAfterHeader(buffer, total));
     ParsedContentRange parsed;
     if (parseContentRangeHeader(buffer, total, parsed)) {
         headers->content_range = parsed;
@@ -179,13 +218,7 @@ size_t probeWriteCb(char*, size_t size, size_t nitems, void* userdata) {
  */
 /** 从 URL 提取 host（用于 bad host 黑名单查询 / 多线程友好性判定） */
 std::string extractHostFromUrl(const std::string& url) {
-    size_t hs = url.find("://");
-    if (hs == std::string::npos) return {};
-    hs += 3;
-    size_t he = url.find('/', hs);
-    size_t pe = url.find(':', hs);
-    if (pe != std::string::npos && (he == std::string::npos || pe < he)) he = pe;
-    return url.substr(hs, he == std::string::npos ? std::string::npos : he - hs);
+    return transportHost(url);
 }
 
 bool isMultiThreadUnfriendlyHost(const std::string& url) {
@@ -212,14 +245,14 @@ bool isMultiThreadUnfriendlyHost(const std::string& url) {
 /**
  * 用 curl 做 HEAD 请求，取 Content-Length 和 Accept-Ranges。
  *
- * M-4 修复：
- *   1. 设 CURLOPT_SHARE（DNS / SSL session 复用），与 NetThread 走同一 share；
+ * 有界 startup 探测：
+ *   1. 设 CURLOPT_SHARE（当前仅 DNS 复用），与 NetThread 走同一 share；
  *   2. 手动 follow 重定向（FOLLOWLOCATION=0），每跳前查 bad host 黑名单，
  *      命中立即返回失败，避免 30s 超时卡住整个文件初始化；
- *   3. 缩短 connect/total timeout（10s / 15s）— HEAD 只读 metadata，不该
- *      与下载等同的 30s。
+ *   3. 全候选及重定向/0-0 共用 5s 总预算，单次连接不超过剩余预算和 3s；
+ *   4. 每个真实 hop 用同一 HostAdmissionLease 与 Retry-After 规则，取消令牌可中断。
  */
-HeadResult doHead(const std::string& url) {
+HeadResult doHead(const std::string& url, int64_t deadline_ms, const std::atomic<bool>* abort_token) {
     HeadResult r;
 
     // 第一跳前查源 URL 本身的 host 是否在黑名单
@@ -235,22 +268,26 @@ HeadResult doHead(const std::string& url) {
     const int kMaxRedir = 5;
     std::string final_url = url;   // 最终 2xx 的 URL，供 0-0 探测复用
     for (int redir = 0; redir <= kMaxRedir; ++redir) {
+        const int64_t remaining_ms = deadline_ms - netThreadSteadyNowMs();
+        if (remaining_ms <= 0 || abort_token->load(std::memory_order_acquire)) break;
         curl_easy_reset(easy);
         curl_easy_setopt(easy, CURLOPT_URL, cur_url.c_str());
         curl_easy_setopt(easy, CURLOPT_NOBODY, 1L);
         curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);   // 手动 follow
         curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
-        // 2026-07-29：connect 10s→5s。HEAD 只读 metadata，不该比下载路径（6s）更宽松；
-        // 死镜像能更快被淘汰，减少 no-expected-size 场景下的串行探测总耗时。
-        curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
-        curl_easy_setopt(easy, CURLOPT_TIMEOUT, 15L);
+        // metadata 不能独占 startup 等完每个慢镜像；剩余预算覆盖连接和完整响应。
+        curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min<int64_t>(3000, remaining_ms)));
+        curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, static_cast<long>(remaining_ms));
+        curl_easy_setopt(easy, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(easy, CURLOPT_XFERINFOFUNCTION, probeProgressCb);
+        curl_easy_setopt(easy, CURLOPT_XFERINFODATA, abort_token);
         curl_easy_setopt(easy, CURLOPT_FAILONERROR, 1L);
         curl_easy_setopt(easy, CURLOPT_USERAGENT, "amcl/0.1 (OHOS; libcurl/8.10.1)");
         // H-04：解析 Accept-Ranges 头，得到真实 Range 能力（而非硬编码 true）
-        RangeCap header_cap = RangeCap::Unknown;
+        HeadHeaders head_headers;
         curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, headHeaderCb);
-        curl_easy_setopt(easy, CURLOPT_HEADERDATA, &header_cap);
-        // M-4 修复：使用 Engine 的 curl_share 复用 DNS / SSL session
+        curl_easy_setopt(easy, CURLOPT_HEADERDATA, &head_headers);
+        // 当前 Engine 的 curl_share 只启用了 DNS；TLS/easy 仍遵循各自执行器生命周期。
         CURLSH* sh = DownloadEngine::instance().curlShare();
         if (sh) curl_easy_setopt(easy, CURLOPT_SHARE, sh);
         // CA bundle（和 NetThread 走同一 path）
@@ -259,8 +296,16 @@ HeadResult doHead(const std::string& url) {
             curl_easy_setopt(easy, CURLOPT_CAINFO, ca_path.c_str());
         }
 
+        HostAdmissionLease admission;
+        const std::string request_host = transportHost(cur_url);
+        if (!admission.tryAcquire(request_host)) break;
         CURLcode rc = curl_easy_perform(easy);
         curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &r.http_code);
+        // 每个 hop 在后续选源/重定向前归还，避免本次半开 token 被只读查询误认为
+        // “另一条正在探测的请求”。HTTP 4xx/5xx 仍是连通证据，冷却另行按状态记录。
+        admission.finish(r.http_code > 0 || rc == CURLE_OK);
+        if (r.http_code == 429 || r.http_code == 503)
+            DownloadEngine::instance().noteHostRateLimit(request_host, head_headers.retry_after_ms);
 
         if (rc != CURLE_OK) {
             // 失败：不是 redirect，直接结束
@@ -278,6 +323,7 @@ HeadResult doHead(const std::string& url) {
             curl_easy_getinfo(easy, CURLINFO_REDIRECT_URL, &redir_url);
             if (!redir_url || redir_url[0] == '\0') break;
             std::string next(redir_url);
+            if (!isTransportHttpUrl(next)) { r.http_code = 0; break; }
             // M-4 关键：每跳前查 bad host 黑名单
             std::string next_host = extractHostFromUrl(next);
             if (DownloadEngine::instance().isBadHost(next_host)) {
@@ -294,9 +340,12 @@ HeadResult doHead(const std::string& url) {
         final_url = cur_url;
         curl_off_t cl = -1;
         curl_easy_getinfo(easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
-        if (cl > 0) r.size = static_cast<int64_t>(cl);
+        // 远端头也属于不可信输入，不能因调用方没给 expected size 就绕过既有 1TiB
+        // 上限，把 LLONG_MAX 送进分段算术或 ftruncate。非法探测保留后备真实 GET 机会。
+        if (cl > 0 && cl <= static_cast<curl_off_t>(kMaxDownloadFileBytes))
+            r.size = static_cast<int64_t>(cl);
         // H-04：以 Accept-Ranges 头为准；缺失/未知时用 Range: bytes=0-0 探测兜底。
-        r.range = header_cap;
+        r.range = head_headers.range;
         break;
     }
 
@@ -308,13 +357,18 @@ HeadResult doHead(const std::string& url) {
         long probe_code = 0;
         bool probe_completed = false;
         for (int redir = 0; redir <= kMaxRedir; ++redir) {
+            const int64_t remaining_ms = deadline_ms - netThreadSteadyNowMs();
+            if (remaining_ms <= 0 || abort_token->load(std::memory_order_acquire)) break;
             curl_easy_reset(easy);
             curl_easy_setopt(easy, CURLOPT_URL, probe_url.c_str());
             curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
             curl_easy_setopt(easy, CURLOPT_RANGE, "0-0");
             curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
-            curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 10L);
-            curl_easy_setopt(easy, CURLOPT_TIMEOUT, 15L);
+            curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min<int64_t>(3000, remaining_ms)));
+            curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, static_cast<long>(remaining_ms));
+            curl_easy_setopt(easy, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(easy, CURLOPT_XFERINFOFUNCTION, probeProgressCb);
+            curl_easy_setopt(easy, CURLOPT_XFERINFODATA, abort_token);
             curl_easy_setopt(easy, CURLOPT_FAILONERROR, 0L);
             curl_easy_setopt(easy, CURLOPT_USERAGENT, "amcl/0.1 (OHOS; libcurl/8.10.1)");
             curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, probeWriteCb);
@@ -326,8 +380,14 @@ HeadResult doHead(const std::string& url) {
             std::string ca_path = getCaBundlePath();
             if (!ca_path.empty()) curl_easy_setopt(easy, CURLOPT_CAINFO, ca_path.c_str());
 
+            HostAdmissionLease admission;
+            const std::string request_host = transportHost(probe_url);
+            if (!admission.tryAcquire(request_host)) break;
             CURLcode rc = curl_easy_perform(easy);
             curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &probe_code);
+            admission.finish(probe_code > 0 || rc == CURLE_OK);
+            if (probe_code == 429 || probe_code == 503)
+                DownloadEngine::instance().noteHostRateLimit(request_host, probe_headers.retry_after_ms);
             const bool intentionally_stopped_unsupported_body =
                 rc == CURLE_WRITE_ERROR && probe_code == 200;
             if (rc != CURLE_OK && !intentionally_stopped_unsupported_body) break;
@@ -337,6 +397,7 @@ HeadResult doHead(const std::string& url) {
                 curl_easy_getinfo(easy, CURLINFO_REDIRECT_URL, &redirect_url);
                 if (!redirect_url || redirect_url[0] == '\0') break;
                 std::string next(redirect_url);
+                if (!isTransportHttpUrl(next)) break;
                 if (DownloadEngine::instance().isBadHost(extractHostFromUrl(next))) break;
                 probe_url = std::move(next);
                 probe_headers = ProbeHeaders{};
@@ -635,10 +696,53 @@ NetFile::NetFile(Config cfg)
       // Engine 的 canonical path ownership 已保证同一路径单 owner；确定性名称使
       // taskId 重置后的新进程仍能找到同一 staging，与固定 meta 路径共同恢复。
       staging_path_(cfg_.local_path + ".amcl.part") {
+    if (cfg_.authorized_policy) authorized_deadline_ms_ = netThreadSteadyNowMs() + cfg_.authorized_valid_for_ms;
     sources_.reserve(cfg_.urls.size());
     for (size_t i = 0; i < cfg_.urls.size(); ++i) {
         sources_.push_back(std::make_shared<NetSource>(static_cast<int>(i), cfg_.urls[i]));
     }
+}
+
+DownloadExceptionPtr NetFile::beginAuthorizedRequest() {
+    if (!cfg_.authorized_policy) return nullptr;
+    bool denied = false;
+    {
+        std::lock_guard<std::mutex> lock(authorization_mu_);
+        const int limit = cfg_.authorized_single_use ? 1 : cfg_.authorized_max_http_attempts;
+        denied = netThreadSteadyNowMs() >= authorized_deadline_ms_ ||
+            authorized_http_attempts_ >= limit || authorized_budget_exhausted_ || authorized_bytes_ >= cfg_.authorized_max_bytes;
+        // 请求结果不明时同样已占次数；不以curl是否读到响应推断服务器未消费权限。
+        if (!denied) ++authorized_http_attempts_;
+    }
+    return denied ? authorizationFailure() : nullptr;
+}
+
+bool NetFile::consumeAuthorizedBytes(size_t bytes) {
+    if (!cfg_.authorized_policy) return true;
+    std::lock_guard<std::mutex> lock(authorization_mu_);
+    if (bytes > static_cast<uint64_t>(cfg_.authorized_max_bytes - authorized_bytes_)) {
+        authorized_budget_exhausted_ = true; return false;
+    }
+    authorized_bytes_ += static_cast<int64_t>(bytes); return true;
+}
+
+void NetFile::noteAuthorizedHeaders(long status) {
+    if (!cfg_.authorized_policy || status < 200 || status >= 300) return;
+    std::lock_guard<std::mutex> lock(authorization_mu_); authorized_headers_seen_ = true;
+}
+
+DownloadExceptionPtr NetFile::authorizationFailure(DownloadExceptionPtr cause, bool renew) const {
+    if (!cfg_.authorized_policy) return cause;
+    auto result = cause ? std::make_shared<DownloadException>(*cause) :
+        makeException(ErrorKind::AuthorizationRenewalRequired, "download authorization requires renewal");
+    std::lock_guard<std::mutex> lock(authorization_mu_);
+    result->needs_new_lease = renew;
+    result->request_started = authorized_http_attempts_ > 0;
+    result->successful_headers_seen = authorized_headers_seen_;
+    result->bytes_written = authorized_bytes_;
+    result->http_attempts = authorized_http_attempts_;
+    if (renew) result->kind = ErrorKind::AuthorizationRenewalRequired;
+    return result;
 }
 
 NetFile::~NetFile() {
@@ -735,7 +839,9 @@ NetSourcePtr NetFile::pickBestSource(bool needs_range, int preferred_idx) {
             int64_t now_ms0 = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             bool range_ok = !(needs_range && ps->no_range_support.load(std::memory_order_relaxed));
-            if (ps->isAvailable(now_ms0) && range_ok) return ps;
+            // 显式首选只改变候选顺序，也必须遵守真实主机的服务端冷却，不能绕过共享预算。
+            if (ps->isAvailable(now_ms0) && range_ok &&
+                DownloadEngine::instance().hostRateLimitUntilMs(extractHostFromUrl(ps->url)) <= now_ms0) return ps;
         }
     }
     NetSourcePtr best;
@@ -798,36 +904,44 @@ NetSourcePtr NetFile::pickBestSource(bool needs_range, int preferred_idx) {
 
 DownloadExceptionPtr NetFile::preCheckExistingFile() {
     if (!cfg_.check.needsAnyCheck()) return nullptr;
-    if (!fileExists(cfg_.local_path)) return nullptr;
-    auto ex = cfg_.check.check(cfg_.local_path);
+    int parent_fd = -1;
+    std::string leaf;
+    if (!openTrustedParentAt(root_fd_, cfg_.allowed_root, cfg_.local_path,
+                             false, parent_fd, leaf))
+        return makeException(ErrorKind::FileIoError, "precheck trusted parent unavailable");
+    // 固定父目录后再读取叶子；缺失才下载，权限/类型错误不能转成删除请求。
+    int fd = ::openat(parent_fd, leaf.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    const int saved = errno;
+    ::close(parent_fd);
+    if (fd < 0) {
+        if (saved == ENOENT) return nullptr;
+        return makeException(ErrorKind::FileIoError, "precheck openat failed errno=" + std::to_string(saved));
+    }
+    struct stat st{};
+    auto ex = cfg_.check.checkFd(fd);
+    const bool stat_ok = ::fstat(fd, &st) == 0;
+    const bool close_ok = ::close(fd) == 0;
+    if (!stat_ok || !close_ok) return makeException(ErrorKind::FileIoError, "precheck fstat/close failed");
     if (!ex) {
         AMCL_LOG_I(LOG_TAG, "preCheckExistingFile: local file hit sha1, skip download: %{public}s",
                     cfg_.local_path.c_str());
         state_.store(NetState::Finished, std::memory_order_release);
-        struct stat st{};
-        if (::lstat(cfg_.local_path.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
-            file_size_.store(static_cast<int64_t>(st.st_size), std::memory_order_release);
-        }
+        file_size_.store(static_cast<int64_t>(st.st_size), std::memory_order_release);
         return nullptr;  // 不报错，但 state 已是 Finished，调用者看 state
     }
-    // 校验不过：删掉重下（可能是部分数据残留）
+    if (ex->kind != ErrorKind::SizeMismatch && ex->kind != ErrorKind::ChecksumMismatch) return ex;
+    // 预检不删除最终文件；只有 staging 下载并校验成功后才原子替换旧内容。
     AMCL_LOG_I(LOG_TAG, "preCheckExistingFile: local file check failed (%{public}s), will re-download",
                 errorKindToString(ex->kind));
-    ::unlink(cfg_.local_path.c_str());
     return nullptr;
 }
 
 DownloadExceptionPtr NetFile::validatePaths() const {
     if (cfg_.local_path.empty()) return makeException(ErrorKind::InvalidConfig, "empty local path");
-    auto rejectSpecial = [](const std::string& path) -> DownloadExceptionPtr {
-        struct stat st{};
-        if (::lstat(path.c_str(), &st) == 0 && !S_ISREG(st.st_mode)) {
-            return makeException(ErrorKind::FileIoError, "refusing symlink/non-regular path: " + path);
-        }
-        return nullptr;
-    };
-    if (auto ex = rejectSpecial(cfg_.local_path)) return ex;
-    if (auto ex = rejectSpecial(staging_path_)) return ex;
+    if (cfg_.check.expected_size < -1 || cfg_.check.expected_size > kMaxDownloadFileBytes)
+        return makeException(ErrorKind::InvalidConfig, "expected size exceeds supported file boundary");
+    // 此处仅检查逻辑边界；类型检查必须在打开可信 root/parent 后用 fstatat 完成，
+    // 绝对路径 lstat 不能证明后续操作仍落在同一个父目录。
     if (!cfg_.allowed_root.empty()) {
         std::string root = cfg_.allowed_root;
         while (root.size() > 1 && root.back() == '/') root.pop_back();
@@ -861,6 +975,8 @@ int64_t NetFile::nextSourceReadyMs(bool needs_range) const {
 }
 
 void NetFile::discardStaging() {
+    std::lock_guard<std::mutex> storage_lk(storage_mu_);
+    storage_generation_.fetch_add(1, std::memory_order_acq_rel);
     std::lock_guard<std::mutex> lk(fd_init_mu_);
     // 仅允许在 startup 尚未打开 fd，或所有 segment 已收敛并完成最后 release 后调用。
     if (fd_refcount_ != 0) {
@@ -873,10 +989,32 @@ void NetFile::discardStaging() {
         ::close(fd_);
         fd_ = -1;
     }
-    if (::unlink(staging_path_.c_str()) != 0 && errno != ENOENT) {
-        AMCL_LOG_W(LOG_TAG, "discardStaging unlink failed errno=%{public}d: %{public}s",
-                    errno, staging_path_.c_str());
+    int parent_fd = -1;
+    std::string leaf;
+    if (!openTrustedParentAt(root_fd_, cfg_.allowed_root, cfg_.local_path, false, parent_fd, leaf)) return;
+    leaf += ".amcl.part";
+    struct stat st{};
+    if (::fstatat(parent_fd, leaf.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        // 只丢弃 startup 识别的旧 staging 或本执行实际创建的 inode。名字相同不能
+        // 授权删除后来替换进去的用户文件，更不能通过被替换的父路径触及根外对象。
+        if (!staging_identity_set_ || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+            staging_device_ != static_cast<uint64_t>(st.st_dev) ||
+            staging_inode_ != static_cast<uint64_t>(st.st_ino)) {
+            ::close(parent_fd);
+            fd_error_ = ESTALE;
+            return;
+        }
+        if (::unlinkat(parent_fd, leaf.c_str(), 0) != 0) {
+            fd_error_ = errno;
+            ::close(parent_fd);
+            return;
+        }
+    } else if (errno != ENOENT) {
+        fd_error_ = errno;
+        ::close(parent_fd);
+        return;
     }
+    ::close(parent_fd);
     staging_identity_set_ = false;
     staging_device_ = 0;
     staging_inode_ = 0;
@@ -896,6 +1034,9 @@ void NetFile::rebuildSingleSegment() {
 }
 
 DownloadExceptionPtr NetFile::syncCloseAndCommit() {
+    std::lock_guard<std::mutex> storage_lk(storage_mu_);
+    if (abort_requested_.load(std::memory_order_acquire))
+        return makeException(ErrorKind::AbortedByUser, "file cancelled before commit");
     // 恢复自 meta 且所有 segment 已完成时，本进程可能从未 acquireFd；提交前仍必须
     // 对 staging 本体执行一次显式 fsync，不能仅相信旧 meta 的完成位。
     int durable_error = syncStagingDurable();
@@ -905,10 +1046,6 @@ DownloadExceptionPtr NetFile::syncCloseAndCommit() {
                                 "durable write failed errno=" + std::to_string(durable_error));
         ex->native_code = durable_error;
         return ex;
-    }
-    struct stat part_st{};
-    if (::lstat(staging_path_.c_str(), &part_st) != 0 || !S_ISREG(part_st.st_mode)) {
-        return makeException(ErrorKind::FileIoError, "staging is missing or non-regular");
     }
     int parent_fd = -1;
     std::string final_leaf;
@@ -921,6 +1058,17 @@ DownloadExceptionPtr NetFile::syncCloseAndCommit() {
         return ex;
     }
     const std::string staging_leaf = final_leaf + ".amcl.part";
+    struct stat part_st{};
+    {
+        std::lock_guard<std::mutex> fd_lk(fd_init_mu_);
+        if (::fstatat(parent_fd, staging_leaf.c_str(), &part_st, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(part_st.st_mode) || part_st.st_nlink != 1 || !staging_identity_set_ ||
+            staging_device_ != static_cast<uint64_t>(part_st.st_dev) ||
+            staging_inode_ != static_cast<uint64_t>(part_st.st_ino)) {
+            ::close(parent_fd);
+            return makeException(ErrorKind::FileIoError, "staging identity changed before commit");
+        }
+    }
     // ⚠️ N-01 修复（2026-07-29）：目标已存在时不能把整个文件判死。
     //
     // 旧行为：final 一存在就返回 FileIoError("refusing to replace existing final path")。
@@ -972,6 +1120,167 @@ DownloadExceptionPtr NetFile::syncCloseAndCommit() {
     return nullptr;
 }
 
+void NetFile::retrySingleSegmentAfterCheck(const NetSourcePtr& preferred, bool isolate_source) {
+    // 此方法只从完整 checker 已失败且旧执行收敛的分支进入；授权/Bearer 调用方
+    // 明确禁止此普通重试。预算/模式属于 NetFile，不能随新 NetThread 自动重置。
+    // 长摘要校验期间也可能取消；不为已经取消的文件做任何新分配或 HTTP 准备。
+    if (abort_requested_.load(std::memory_order_acquire)) {
+        state_.store(NetState::Aborted, std::memory_order_release);
+        reportTerminalOnce();
+        return;
+    }
+    std::vector<NetThreadPtr> replacement, submission;
+    replacement.reserve(1);
+    submission.reserve(1);
+    auto thread = std::make_shared<NetThread>(this, 0, -1, 0);
+    if (preferred && !preferred->checksum_bad.load(std::memory_order_acquire))
+        thread->setPreferredSourceIdx(preferred->id);
+    replacement.push_back(thread);
+    submission.push_back(thread);
+    bool published = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto current = state_.load(std::memory_order_acquire);
+        // 与 abort 的线程遍历同锁：准备候选期间取消若已完成，绝不发布漏 token 的
+        // 新布局。未发布候选仅由局部引用持有，退出即释放，不构成 file<->segment 环。
+        if (current == NetState::FinalCheck && !abort_requested_.load(std::memory_order_acquire)) {
+            threads_.swap(replacement);
+            threads_pending_launch_.clear();
+            completed_threads_.clear();
+            threads_done_count_.store(0, std::memory_order_release);
+            target_connections_ = 1;
+            error_.reset();
+            resume_from_meta_ = false;
+            if (isolate_source) single_source_recheck_.store(true, std::memory_order_release);
+            for (const auto& source : sources_) {
+                if (!source || source->checksum_bad.load(std::memory_order_acquire)) continue;
+                const auto failure = source->lastError();
+                if (failure && failure->http_status == 404) continue;
+                source->fail_count.store(0, std::memory_order_release);
+                source->is_failed.store(false, std::memory_order_release);
+                // 真实 cooldown、host not-before 和已知 Range 能力全部保留。
+            }
+            // 与布局一起发布状态；解锁后不再无条件覆盖可能已到达的取消/终态。
+            state_.store(NetState::Downloading, std::memory_order_release);
+            published = true;
+        } else if (current == NetState::FinalCheck) {
+            state_.store(NetState::Aborted, std::memory_order_release);
+        } else if (current != NetState::Finished && current != NetState::Failed && current != NetState::Aborted) {
+            // 非预期编排状态也不能无条件 return 遗留 FinalCheck/Loading；明确失败，
+            // 不在此分配另一份错误来处理资源或状态异常。
+            state_.store(NetState::Failed, std::memory_order_release);
+        }
+    }
+    if (!published) {
+        reportTerminalOnce(); // 所有转态/owner callback 仍在 mu_ 外。
+        return;
+    }
+    { std::lock_guard<std::mutex> fd_lk(fd_init_mu_); fd_error_ = 0; }
+    // 取消可恰在布局发布后到达；同锁遍历会看到新段，入队前再补一次 token。
+    if (abort_requested_.load(std::memory_order_acquire)) thread->abort();
+    const bool multi = fileSize() > 0 && fileSize() < 1024 * 1024 && !isHighParallel();
+    if (multi) DownloadEngine::instance().enqueueMulti(std::move(submission));
+    else DownloadEngine::instance().enqueueThreads(std::move(submission));
+}
+
+DownloadExceptionPtr NetFile::checkStaging(const std::string* fast_sha1) {
+    std::lock_guard<std::mutex> storage_lk(storage_mu_);
+    int parent_fd = -1;
+    std::string leaf;
+    if (!openTrustedParentAt(root_fd_, cfg_.allowed_root, cfg_.local_path, false, parent_fd, leaf))
+        return makeException(ErrorKind::FileIoError, "check trusted staging parent unavailable");
+    leaf += ".amcl.part";
+    int checked_fd = ::openat(parent_fd, leaf.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    ::close(parent_fd);
+    if (checked_fd < 0) return makeException(ErrorKind::FileIoError, "check staging openat failed");
+    struct stat before{}, after{};
+    bool safe = ::fstat(checked_fd, &before) == 0 && S_ISREG(before.st_mode) && before.st_nlink == 1;
+    {
+        std::lock_guard<std::mutex> fd_lk(fd_init_mu_);
+        if (safe && staging_identity_set_) {
+            safe = staging_device_ == static_cast<uint64_t>(before.st_dev) &&
+                   staging_inode_ == static_cast<uint64_t>(before.st_ino);
+        } else if (safe) {
+            // 全部完成的旧 v1 恢复可没有当前进程写 fd；读取可信 part 后固定其身份。
+            staging_identity_set_ = true;
+            staging_device_ = static_cast<uint64_t>(before.st_dev);
+            staging_inode_ = static_cast<uint64_t>(before.st_ino);
+        }
+    }
+    DownloadExceptionPtr ex;
+    if (!safe) {
+        ex = makeException(ErrorKind::FileIoError, "check staging identity changed");
+    } else if (fast_sha1) {
+        // 继续保留新鲜单段的增量 SHA 优化，但 size/type 检查绑定到同一个可信 fd。
+        // 旧绝对路径 checkFast 在父目录被替换时会校验另一份文件；此处不重复读内容。
+        FileChecker size_only = cfg_.check;
+        size_only.expected_sha1.clear();
+        ex = size_only.checkFd(checked_fd);
+        std::string actual = *fast_sha1, expected = cfg_.check.expected_sha1;
+        const auto ascii_lower = [](unsigned char ch) {
+            return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch);
+        };
+        std::transform(actual.begin(), actual.end(), actual.begin(), ascii_lower);
+        std::transform(expected.begin(), expected.end(), expected.begin(), ascii_lower);
+        if (!ex && (actual.empty() || actual != expected))
+            ex = makeException(ErrorKind::ChecksumMismatch, "expected " + expected + " got " + actual);
+    } else {
+        ex = cfg_.check.checkFd(checked_fd);
+    }
+    // 检查期间同 inode 被外部写入也不能当作稳定校验结果；恢复、多段仍走完整读取。
+    if (::fstat(checked_fd, &after) != 0 || after.st_dev != before.st_dev ||
+        after.st_ino != before.st_ino || after.st_size != before.st_size ||
+        after.st_mtim.tv_sec != before.st_mtim.tv_sec || after.st_mtim.tv_nsec != before.st_mtim.tv_nsec ||
+        after.st_ctim.tv_sec != before.st_ctim.tv_sec || after.st_ctim.tv_nsec != before.st_ctim.tv_nsec)
+        ex = makeException(ErrorKind::FileIoError, "staging changed during integrity check");
+    if (::close(checked_fd) != 0) ex = makeException(ErrorKind::FileIoError, "check staging close failed");
+    return ex;
+}
+
+int64_t NetFile::removeResumeMeta() {
+    std::lock_guard<std::mutex> storage_lk(storage_mu_);
+    if (!meta_identity_set_) return 0;
+    int parent_fd = -1;
+    std::string leaf;
+    if (!openTrustedParentAt(root_fd_, cfg_.allowed_root, cfg_.local_path, false, parent_fd, leaf)) return 0;
+    leaf += ".download-meta";
+    struct stat st{};
+    int64_t freed = 0;
+    if (::fstatat(parent_fd, leaf.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+        S_ISREG(st.st_mode) && st.st_nlink == 1 &&
+        meta_device_ == static_cast<uint64_t>(st.st_dev) && meta_inode_ == static_cast<uint64_t>(st.st_ino) &&
+        ::unlinkat(parent_fd, leaf.c_str(), 0) == 0) {
+        freed = static_cast<int64_t>(st.st_size);
+        meta_identity_set_ = false;
+    }
+    ::close(parent_fd);
+    return freed;
+}
+
+bool NetFile::persistResumeMeta(const DownloadMeta& meta, uint64_t storage_generation) {
+    std::lock_guard<std::mutex> storage_lk(storage_mu_);
+    const NetState state = state_.load(std::memory_order_acquire);
+    // ticker 的快照可能早于最后一个 segment；提交开始后不再写旧 meta，避免 final
+    // 已发布/旧任务已取消后又留下看似可恢复的新记录。
+    if ((state != NetState::Downloading && state != NetState::Connecting && state != NetState::Reading) ||
+        storage_generation != storage_generation_.load(std::memory_order_acquire)) return true;
+    if (int failure = syncStagingDurable(); failure != 0) { errno = failure; return false; }
+    int parent_fd = -1;
+    std::string leaf;
+    if (!openTrustedParentAt(root_fd_, cfg_.allowed_root, cfg_.local_path, false, parent_fd, leaf)) return false;
+    MetaFileIdentity identity;
+    const bool ok = writeMetaFileAt(parent_fd, leaf + ".download-meta", meta, &identity);
+    const int failure = errno;
+    ::close(parent_fd);
+    if (ok) {
+        meta_identity_set_ = true;
+        meta_device_ = identity.device;
+        meta_inode_ = identity.inode;
+    }
+    errno = failure;
+    return ok;
+}
+
 DownloadExceptionPtr NetFile::determineFileSize() {
     const int64_t expected_size = cfg_.check.expected_size;
 
@@ -1008,12 +1317,17 @@ DownloadExceptionPtr NetFile::determineFileSize() {
     int successful_probes = 0;
     int unsupported_probes = 0;
     bool size_set = false;
+    // 大小未知的所有候选共用一个短预算，不能对每个镜像串行等 15s + Range 探测。
+    // 首个有效大小即可启动；失败或预算耗尽仍交给现有单段真实 GET 进行容错。
+    const int64_t probe_deadline_ms = transportDeadlineAfter(netThreadSteadyNowMs(), 5000);
 
     // 能力必须按源记录。无 expected_size 时仍需 HEAD 拿 size，顺带实测 Range 能力；
     // 单源 Unsupported 不得把支持 Range 的备源一起降级。
     for (const auto& src : sources_) {
+        if (abort_requested_.load(std::memory_order_acquire) ||
+            netThreadSteadyNowMs() >= probe_deadline_ms) break;
         if (!src || src->is_failed.load(std::memory_order_relaxed)) continue;
-        HeadResult result = doHead(src->url);
+        HeadResult result = doHead(src->url, probe_deadline_ms, &abort_requested_);
         if (result.size <= 0) {
             AMCL_LOG_W(LOG_TAG, "HEAD/probe failed on %{public}s (http=%{public}ld, size=%{public}lld)",
                         src->url.c_str(), result.http_code, (long long)result.size);
@@ -1038,13 +1352,15 @@ DownloadExceptionPtr NetFile::determineFileSize() {
             src->no_range_support.store(true, std::memory_order_release);
             ++unsupported_probes;
         }
+        break; // 未探测源保留 Unknown，不能因首个不支持 Range 就一并禁止它们。
     }
 
     if (expected_size > 0 && !size_set) {
         file_size_.store(expected_size, std::memory_order_release);
         size_set = true;
     }
-    all_sources_range_unsupported_ = successful_probes > 0 &&
+    all_sources_range_unsupported_ = successful_probes == static_cast<int>(sources_.size()) &&
+                                     successful_probes > 0 &&
                                      unsupported_probes == successful_probes;
     if (size_set) return nullptr;
 
@@ -1088,8 +1404,9 @@ void NetFile::initSegments() {
     // v4.9 / 2026-07-29：显式 max_connections 始终是硬上限；只有上限高于默认
     // piece_limit(4) 时才进入高并发模式并降低最小分段大小。这样 1 可强制单连接，4 可恢复
     // client 的 beta.5 连接规模，而 8/16 仍保留 Forge/模组已验证的高并发能力。
-    int     piece_limit = cfg_.piece_limit;
-    int64_t piece_min   = cfg_.piece_min_bytes;
+    // Native 直接调用也需要有效参数；不能只依赖 NAPI 的输入检查。
+    int     piece_limit = std::max(1, std::min(cfg_.piece_limit, kHighParallelMaxConnections));
+    int64_t piece_min   = std::max<int64_t>(1, cfg_.piece_min_bytes);
     if (cfg_.max_connections > 0) {
         piece_limit = std::min(cfg_.max_connections, kHighParallelMaxConnections);
     }
@@ -1103,8 +1420,9 @@ void NetFile::initSegments() {
         // 保留分段，并由每个 NetSource 的运行期严格响应校验继续筛选。
         pieces = 1;
     } else {
-        pieces = std::min(piece_limit,
-                          (int)((size + piece_min - 1) / piece_min));
+        // 正数向上取整采用 (size-1)/min+1，先在 int64_t 内钳上限再缩窄，避免加法
+        // 和 int 转换溢出；普通规格保持既有分段数量。
+        pieces = static_cast<int>(std::min<int64_t>(piece_limit, (size - 1) / piece_min + 1));
         if (pieces < 1) pieces = 1;
     }
 
@@ -1229,7 +1547,22 @@ void NetFile::restoreFromMeta(const DownloadMeta& meta) {
         target_connections_ = std::min(cfg_.max_connections, kHighParallelMaxConnections);
     }
 
-    if (meta.file_size > 0) {
+    const bool ambiguous_open_prefix = cfg_.check.expected_size < 0 && meta.file_size > 0 &&
+        meta.segments.size() == 1 && meta.segments.front().start == 0 &&
+        meta.segments.front().end == -1;
+    if (ambiguous_open_prefix) {
+        // v1 没有记录 total 的来源。旧 releaseFd 会在未知大小失败/取消关闭后，把
+        // 已保存前缀写成正数 file_size。后续Range拒绝/resetDone或取消还可能再次
+        // 持久化done<file_size（包括0），因此所有无权威来源的单一开放段都需降级。
+        // 这个形状也可能来自已知 HEAD 长度的完整正文，因此不能称全部记录都损坏，
+        // 但没有调用方精确 expected_size 时同样缺少可信的“已到对象EOF”证明。
+        // 保守保留每个已持久化字节和原 v1 段布局，只降 total 为未知；下一次开放式
+        // Range 从原 done 继续验证。不得丢前缀、改磁盘格式或覆盖权威 expected_size。
+        file_size_.store(-2, std::memory_order_release);
+        AMCL_LOG_I(LOG_TAG,
+            "restoreFromMeta: keeping open-ended prefix with unproven total unknown: %{public}s",
+            cfg_.local_path.c_str());
+    } else if (meta.file_size > 0) {
         file_size_.store(meta.file_size, std::memory_order_release);
     }
     for (const auto& seg : meta.segments) {
@@ -1251,6 +1584,7 @@ void NetFile::restoreFromMeta(const DownloadMeta& meta) {
 }
 
 DownloadExceptionPtr NetFile::start() {
+    FileOperationGuard operation(active_file_operations_);
     terminal_reported_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -1276,18 +1610,7 @@ DownloadExceptionPtr NetFile::start() {
         return ex;
     }
 
-    // 1. 已有文件 sha1 预检
-    if (auto ex = preCheckExistingFile()) {
-        std::lock_guard<std::mutex> lk(mu_);
-        error_ = ex;
-        state_.store(NetState::Failed, std::memory_order_release);
-        return ex;
-    }
-    if (state_.load(std::memory_order_relaxed) == NetState::Finished) {
-        return nullptr;  // preCheck 已经把 state 翻到 Finished
-    }
-
-    // 2. 从可信 allowedRoot fd 逐级 no-follow 创建/打开父目录。后续 staging open、
+    // 1. 从可信 allowedRoot fd 逐级 no-follow 创建/打开父目录。已有文件预检、staging open、
     // durable reopen 和 commit 都复用该 root identity，不再通过绝对路径解析父目录。
     {
         std::lock_guard<std::mutex> lk(fd_init_mu_);
@@ -1301,7 +1624,7 @@ DownloadExceptionPtr NetFile::start() {
                 auto ex = makeException(ErrorKind::FileIoError,
                     "open trusted root failed errno=" + std::to_string(open_errno));
                 ex->native_code = open_errno;
-                error_ = ex;
+                { std::lock_guard<std::mutex> error_lk(mu_); error_ = ex; }
                 state_.store(NetState::Failed, std::memory_order_release);
                 return ex;
             }
@@ -1318,19 +1641,73 @@ DownloadExceptionPtr NetFile::start() {
             auto ex = makeException(ErrorKind::FileIoError,
                 "open trusted parent failed errno=" + std::to_string(saved));
             ex->native_code = saved;
-            error_ = ex;
+            { std::lock_guard<std::mutex> error_lk(mu_); error_ = ex; }
             state_.store(NetState::Failed, std::memory_order_release);
             return ex;
+        }
+        // 在首次 startup 识别专用 staging 名对应的旧 inode；后续丢弃、重开和清理
+        // 只能作用于这个对象。目标 final 仅检查类型，绝不把 path owner 当成其创建收据。
+        struct stat target_st{};
+        if (::fstatat(parent_fd, leaf.c_str(), &target_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            (!S_ISREG(target_st.st_mode) || target_st.st_nlink != 1)) {
+            ::close(parent_fd);
+            auto ex = makeException(ErrorKind::FileIoError, "refusing unsafe final file");
+            { std::lock_guard<std::mutex> error_lk(mu_); error_ = ex; }
+            state_.store(NetState::Failed, std::memory_order_release);
+            return ex;
+        }
+        const std::string part_leaf = leaf + ".amcl.part";
+        if (::fstatat(parent_fd, part_leaf.c_str(), &target_st, AT_SYMLINK_NOFOLLOW) == 0) {
+            const bool same = !staging_identity_set_ ||
+                (staging_device_ == static_cast<uint64_t>(target_st.st_dev) &&
+                 staging_inode_ == static_cast<uint64_t>(target_st.st_ino));
+            if (!S_ISREG(target_st.st_mode) || target_st.st_nlink != 1 || !same) {
+                ::close(parent_fd);
+                auto ex = makeException(ErrorKind::FileIoError, "refusing unsafe or replaced staging file");
+                { std::lock_guard<std::mutex> error_lk(mu_); error_ = ex; }
+                state_.store(NetState::Failed, std::memory_order_release);
+                return ex;
+            }
+            staging_identity_set_ = true;
+            staging_device_ = static_cast<uint64_t>(target_st.st_dev);
+            staging_inode_ = static_cast<uint64_t>(target_st.st_ino);
         }
         ::close(parent_fd);
     }
 
+    // 2. 预检也必须位于上述可信目录边界内；坏文件保留到原子提交。
+    if (auto ex = preCheckExistingFile()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        error_ = ex;
+        state_.store(NetState::Failed, std::memory_order_release);
+        return ex;
+    }
+    if (state_.load(std::memory_order_relaxed) == NetState::Finished) return nullptr;
+
     // 3. 尝试从 meta 恢复
     bool restored = false;
-    if (auto meta_opt = readMetaFile(metaPath())) {
-        struct stat part_st{};
-        bool safe_part = ::lstat(staging_path_.c_str(), &part_st) == 0 &&
-                         S_ISREG(part_st.st_mode);
+    std::optional<DownloadMeta> meta_opt;
+    struct stat part_st{};
+    bool safe_part = false;
+    {
+        int parent_fd = -1;
+        std::string leaf;
+        if (openTrustedParentAt(root_fd_, cfg_.allowed_root, cfg_.local_path, false, parent_fd, leaf)) {
+            MetaFileIdentity identity;
+            meta_opt = readMetaFileAt(parent_fd, leaf + ".download-meta", &identity);
+            if (meta_opt) {
+                meta_identity_set_ = true;
+                meta_device_ = identity.device;
+                meta_inode_ = identity.inode;
+            }
+            safe_part = ::fstatat(parent_fd, (leaf + ".amcl.part").c_str(), &part_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                        S_ISREG(part_st.st_mode) && part_st.st_nlink == 1 && staging_identity_set_ &&
+                        staging_device_ == static_cast<uint64_t>(part_st.st_dev) &&
+                        staging_inode_ == static_cast<uint64_t>(part_st.st_ino);
+            ::close(parent_fd);
+        }
+    }
+    if (meta_opt) {
         if (safe_part && isMetaCompatible(*meta_opt, cfg_.urls, cfg_.check)) {
             if (meta_opt->file_size > 0) {
                 safe_part = part_st.st_size == meta_opt->file_size;
@@ -1341,6 +1718,9 @@ DownloadExceptionPtr NetFile::start() {
             }
         }
         if (safe_part && isMetaCompatible(*meta_opt, cfg_.urls, cfg_.check)) {
+            // 任务已向 UI 发布 Loading，进度查询会取 mu_ 读取 threads_；即使还未入队，
+            // startup 也必须用同一把锁发布恢复布局，不能依赖“现在还没有 worker”。
+            std::lock_guard<std::mutex> threads_lk(mu_);
             restoreFromMeta(*meta_opt);
             restored = !threads_.empty();
             resume_from_meta_ = restored;
@@ -1348,7 +1728,7 @@ DownloadExceptionPtr NetFile::start() {
         if (!restored) {
             AMCL_LOG_I(LOG_TAG, "meta/part incompatible, discarding: %{public}s",
                         metaPath().c_str());
-            ::unlink(metaPath().c_str());
+            removeResumeMeta();
             discardStaging();
         }
     }
@@ -1362,7 +1742,7 @@ DownloadExceptionPtr NetFile::start() {
             state_.store(NetState::Failed, std::memory_order_release);
             return ex;
         }
-        initSegments();
+        { std::lock_guard<std::mutex> threads_lk(mu_); initSegments(); }
     }
 
     // 5. v4.2: 不再在这里 open fd——延迟到 NetThread::run() 调 acquireFd() 时打开。
@@ -1516,11 +1896,14 @@ void NetFile::releaseFd() {
     if (fd_refcount_ != 0 || fd_ < 0) return;
 
     if (file_size_.load(std::memory_order_relaxed) <= 0) {
+        // 未知大小的单段可能因断流、取消或换源而最后归还 fd；downloadedBytes 只证明
+        // 当前已保存的前缀，不能证明完整工件大小。这里仅收掉预分配/旧正文尾部并落盘，
+        // 保持 total 未知，下一轮仍可用同一前缀请求 Range。若把 actual 写入 file_size_，
+        // 577640B 前缀会被当成 3699647B 工件的总长，造成错误分流并拒绝正确的 206。
+        // 完整未知大小仅在 onAllThreadsDone 的校验和原子提交全部成功后发布。
         int64_t actual = downloadedBytes();
         if (::ftruncate(fd_, actual) != 0) {
             if (fd_error_ == 0) fd_error_ = errno;
-        } else {
-            file_size_.store(actual, std::memory_order_release);
         }
     }
     int rc;
@@ -1562,13 +1945,32 @@ int NetFile::activeSegmentCount() const {
 }
 
 bool NetFile::isExecutionSettled() const {
+    if (active_file_operations_.load(std::memory_order_acquire) != 0) return false;
     std::lock_guard<std::mutex> lk(mu_);
     return std::all_of(threads_.begin(), threads_.end(), [](const NetThreadPtr& thread) {
         return !thread || thread->executionSettled();
     });
 }
 
-void NetFile::reportThreadFinished(NetThread* thr) {
+void NetFile::reportThreadFinished(NetThread* thr) noexcept {
+    try { reportThreadFinishedImpl(thr); }
+    catch (...) {
+        AMCL_LOG_E(LOG_TAG, "file completion interrupted by allocation/observer exception; retaining recoverable staging");
+        // 已成功提交的工件不因观察者抛异常倒退为失败；尚未完成的文件明确失败并取消
+        // 实际执行，不能把一个未入队或未登记收据的段算作下载成功。
+        if (state() == NetState::Finished) {
+            // 工件已提交，但 Loader 的完成身份插入也可能正是在此处抛出；保留 file
+            // 成功，仍让未归集的 owner 明确失败，不能让任务永远停在 Loading。
+            if (owner_) owner_->failSchedulingWithoutAllocation();
+            return;
+        }
+        try { abort(); } catch (...) { abort_requested_.store(true, std::memory_order_release); }
+        state_.store(NetState::Failed, std::memory_order_release);
+        if (owner_) owner_->failSchedulingWithoutAllocation();
+    }
+}
+
+void NetFile::reportThreadFinishedImpl(NetThread* thr) {
     // run()/multi completion 可能先设置终态；只有 worker 已返回或 easy handle 已从
     // CURLM 移除后，markExecutionSettled() 才允许该终态进入文件 barrier。
     if (!thr || !thr->executionTransportSettled()) return;
@@ -1600,6 +2002,10 @@ void NetFile::reportThreadFinished(NetThread* thr) {
 }
 
 void NetFile::onAllThreadsDone() {
+    FileOperationGuard operation(active_file_operations_);
+    // 收敛、重建分段和校验期间停止 ticker 持久化/补段；重试完成重新发布 Downloading。
+    // 否则旧快照可能在 part 已丢弃后为新文件声明上一轮的 done 字节。
+    state_.store(NetState::FinalCheck, std::memory_order_release);
     // 检查各线程结果
     bool any_failed = false;
     bool any_aborted = false;
@@ -1617,7 +2023,7 @@ void NetFile::onAllThreadsDone() {
         }
     }
 
-    if (any_aborted) {
+    if (any_aborted || abort_requested_.load(std::memory_order_acquire)) {
         state_.store(NetState::Aborted, std::memory_order_release);
         reportTerminalOnce();
         return;
@@ -1823,12 +2229,6 @@ void NetFile::onAllThreadsDone() {
         return;
     }
 
-    // 如果 file_size_ 之前是 -2（HEAD 失败的 fallback），现在下完了可以
-    // 用累计的 downloadedBytes 更新，方便 UI 展示"总字节"。
-    if (file_size_.load(std::memory_order_relaxed) <= 0) {
-        file_size_.store(downloadedBytes(), std::memory_order_release);
-    }
-
     if (cfg_.check.needsAnyCheck()) {
         DownloadExceptionPtr ex;
 
@@ -1836,156 +2236,82 @@ void NetFile::onAllThreadsDone() {
         // 3000+ asset 文件每个 fopen+fread+sha1+fclose → 数千次阻塞 syscall 堵住事件循环
         // 增量 SHA1 在 onWrite 中已算好，checkFast 只需 stat + strcmp，零文件 re-read
         bool used_fast_path = false;
+        std::string precomputed;
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (!resume_from_meta_ && threads_.size() == 1 && threads_[0]->isSingleSegment() &&
                 threads_[0]->canUseFastHash() &&
                 threads_[0]->state() == NetState::Finished &&
                 !cfg_.check.expected_sha1.empty()) {
-                std::string precomputed = threads_[0]->finalSha1();
-                ex = cfg_.check.checkFast(staging_path_, precomputed);
+                precomputed = threads_[0]->finalSha1();
                 used_fast_path = true;
             }
         }
 
         // 多段文件或无 SHA1 要求时：传统 re-read 校验（libraries、client.jar 等大文件）
-        if (!used_fast_path) {
-            ex = cfg_.check.check(staging_path_);
-        }
+        ex = checkStaging(used_fast_path ? &precomputed : nullptr);
 
         if (ex) {
+            // 路径/inode/读取故障不是坏网络内容，不能删除可疑对象后以换源重试掩盖。
+            if (ex->kind == ErrorKind::FileIoError || ex->kind == ErrorKind::StorageIoError ||
+                ex->kind == ErrorKind::DiskFullError || ex->kind == ErrorKind::QuotaExceededError) {
+                { std::lock_guard<std::mutex> lk(mu_); error_ = ex; }
+                state_.store(NetState::Failed, std::memory_order_release);
+                reportTerminalOnce();
+                return;
+            }
             // 校验失败：删 meta + 删损坏 staging，并重置 inode identity 后再重试。
-            ::unlink(metaPath().c_str());
+            removeResumeMeta();
             discardStaging();
 
-            // v4.7: 多段下载 SHA1 失败时，退化为单段重试（不消耗 retry_count_）
-            // 原因：某些 CDN（如 BMCLAPI 镜像）对 Range 请求返回错误数据，
-            // 导致拼接后大小正确但 SHA1 不匹配。退化为 full GET 可避免此问题。
-            bool was_multi_segment = false;
-            {
-                std::lock_guard<std::mutex> lk(mu_);
-                was_multi_segment = threads_.size() > 1;
-            }
-
-            if (was_multi_segment && sha1_fallback_to_single_ == 0) {
-                sha1_fallback_to_single_++;
-                AMCL_LOG_W(LOG_TAG, "final check FAILED (multi-seg, fallback to single-seg): %{public}s: %{public}s",
-                            cfg_.local_path.c_str(), ex->toString().c_str());
-
-                // 重建为单段线程
+            const bool restricted = cfg_.authorized_policy || !cfg_.bearer_token.empty();
+            if (restricted) {
+                // 完整摘要/大小失败不能由通用引擎另发一次授权 GET；只补事实交业务决议。
+                // 不重置 lease 次数/正文预算，已证伪的 part/meta 已在上面精确丢弃。
+                ex = authorizationFailure(ex, false);
+            } else {
+                bool was_multi_segment = false;
+                NetSourcePtr culprit, tail_source;
                 {
                     std::lock_guard<std::mutex> lk(mu_);
-                    threads_.clear();
-                    completed_threads_.clear();
-                    auto t = std::make_shared<NetThread>(this, 0, -1, 0);
-                    threads_.push_back(t);
-                    threads_done_count_.store(0, std::memory_order_release);
-                    error_ = nullptr;
-                    resume_from_meta_ = false;
-                }
-                { std::lock_guard<std::mutex> fd_lk(fd_init_mu_); fd_error_ = 0; }
-
-                // 重置所有源的失败状态
-                {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    for (auto& src : sources_) {
-                        src->fail_count.store(0, std::memory_order_relaxed);
-                        src->is_failed.store(false, std::memory_order_relaxed);
-                        src->no_range_support.store(false, std::memory_order_relaxed);
+                    was_multi_segment = threads_.size() > 1;
+                    if (!was_multi_segment && !threads_.empty() && threads_[0]) {
+                        tail_source = threads_[0]->lastUsedSource();
+                        if (!resume_from_meta_ && threads_[0]->start() == 0)
+                            culprit = threads_[0]->provenSingleContentSource();
                     }
                 }
-
-                state_.store(NetState::Downloading, std::memory_order_release);
-
-                // 入队单段线程
-                std::vector<NetThreadPtr> retry_threads;
-                {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    retry_threads = threads_;
+                if (was_multi_segment && sha1_fallback_to_single_ == 0) {
+                    ++sha1_fallback_to_single_;
+                    // 多段首次校验失败延续既有单段退化；摘要已证伪时同时要求后续
+                    // 全量复验保持单一 logical 来源，不用混合正文猜测某个坏源。
+                    retrySingleSegmentAfterCheck(nullptr, ex->kind == ErrorKind::ChecksumMismatch);
+                    return;
                 }
-
-                int64_t fsize = fileSize();
-                bool use_multi = (fsize > 0 && fsize < 1024 * 1024 && retry_threads.size() == 1 && !isHighParallel());
-                if (use_multi) {
-                    DownloadEngine::instance().enqueueMulti(std::move(retry_threads));
-                } else {
-                    DownloadEngine::instance().enqueueThreads(std::move(retry_threads));
-                }
-                return;  // 等待单段重试结果
-            }
-
-            // AMCL: SHA1 终检失败换源。到这里说明：要么本就单段（如 log4j 1.79MB < 2MB
-            // 不分段，跳过了上面的多段→单段退化），要么多段退化后单段仍校验失败。此时
-            // 大概率是"当前源交付的内容不对"（如某镜像给了 Log4Shell 补丁版 log4j，而
-            // Forge 期望 Maven Central 原版哈希）。把交付坏内容的源标记 checksum_bad
-            // （pickBestSource 永久跳过、不被瞬时失败重置清除），换下一个未排除源重下。
-            // 仅 ChecksumMismatch 触发（size 不符走线程内 SizeMismatch 逻辑）；bounded。
-            if (ex->kind == ErrorKind::ChecksumMismatch
-                    && checksum_source_swaps_ < kMaxChecksumSourceSwaps) {
-                // 定位交付坏内容的源：单段场景 = 唯一线程的 lastUsedSource。
-                NetSourcePtr culprit;
-                {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    if (threads_.size() == 1 && threads_[0]) {
-                        culprit = threads_[0]->lastUsedSource();
-                    }
-                }
-                if (culprit) {
-                    culprit->checksum_bad.store(true, std::memory_order_release);
-                    // 统计还剩几个未排除（非 checksum_bad）的源。
-                    int usable = 0;
-                    {
-                        std::lock_guard<std::mutex> lk(mu_);
-                        for (const auto& s : sources_) {
-                            if (s && !s->checksum_bad.load(std::memory_order_relaxed)) usable++;
+                if (ex->kind == ErrorKind::ChecksumMismatch &&
+                    checksum_source_swaps_ < kMaxChecksumSourceSwaps) {
+                    // lastUsedSource 只描述最后一次成功 HTTP。A 的坏 prefix + B 的正确
+                    // tail、或旧 meta 的未知 prefix 都不能证明 B 交付了整份坏文件。
+                    // 只有完整单段全部保留字节的单源证明才能永久排除该 logical 来源。
+                    if (culprit) culprit->checksum_bad.store(true, std::memory_order_release);
+                    bool available = false;
+                    for (const auto& source : sources_) {
+                        if (source && !source->checksum_bad.load(std::memory_order_acquire)) {
+                            available = true;
+                            break;
                         }
                     }
-                    if (usable > 0) {
-                        checksum_source_swaps_++;
+                    if (available) {
+                        ++checksum_source_swaps_; // 归 NetFile，创建新段也不补次数。
                         AMCL_LOG_W(LOG_TAG,
-                            "checksum mismatch from source %{public}s; marked bad, swapping source "
-                            "(swap %{public}d/%{public}d, %{public}d usable left): %{public}s",
-                            culprit->url.c_str(), checksum_source_swaps_, kMaxChecksumSourceSwaps,
-                            usable, cfg_.local_path.c_str());
-
-                        // 重建单段线程（与多段→单段退化同款），并重置其余源的"瞬时失败态"
-                        // 给它们再次机会；但 checksum_bad 保持不清，pickBestSource 仍跳过坏源。
-                        {
-                            std::lock_guard<std::mutex> lk(mu_);
-                            threads_.clear();
-                            completed_threads_.clear();
-                            auto t = std::make_shared<NetThread>(this, 0, -1, 0);
-                            threads_.push_back(t);
-                            threads_done_count_.store(0, std::memory_order_release);
-                            error_ = nullptr;
-                            resume_from_meta_ = false;
-                            for (auto& src : sources_) {
-                                if (!src) continue;
-                                src->fail_count.store(0, std::memory_order_relaxed);
-                                src->is_failed.store(false, std::memory_order_relaxed);
-                                src->no_range_support.store(false, std::memory_order_relaxed);
-                                // checksum_bad 不重置：坏内容源在本文件生命周期内持续排除。
-                            }
-                        }
-
-                        state_.store(NetState::Downloading, std::memory_order_release);
-                        std::vector<NetThreadPtr> retry_threads;
-                        {
-                            std::lock_guard<std::mutex> lk(mu_);
-                            retry_threads = threads_;
-                        }
-                        int64_t fsize = fileSize();
-                        bool use_multi = (fsize > 0 && fsize < 1024 * 1024 && retry_threads.size() == 1 && !isHighParallel());
-                        if (use_multi) {
-                            DownloadEngine::instance().enqueueMulti(std::move(retry_threads));
-                        } else {
-                            DownloadEngine::instance().enqueueThreads(std::move(retry_threads));
-                        }
-                        return;  // 等待换源重试结果
+                            "checksum recheck: attributable=%{public}d round=%{public}d/%{public}d file=%{public}s",
+                            culprit ? 1 : 0, checksum_source_swaps_, kMaxChecksumSourceSwaps,
+                            cfg_.local_path.c_str());
+                        // 混合/未知来源优先让刚正确交付尾部的候选独自从0复验；无法
+                        // 证明时不标坏任何候选。模式内换源必须从0，普通恢复不受影响。
+                        retrySingleSegmentAfterCheck(culprit ? nullptr : tail_source, true);
+                        return;
                     }
-                    AMCL_LOG_W(LOG_TAG,
-                        "checksum mismatch: all sources excluded (no usable left), giving up: %{public}s",
-                        cfg_.local_path.c_str());
                 }
             }
 
@@ -2008,11 +2334,20 @@ void NetFile::onAllThreadsDone() {
             std::lock_guard<std::mutex> lk(mu_);
             error_ = ex;
         }
-        state_.store(NetState::Failed, std::memory_order_release);
+        state_.store(ex->kind == ErrorKind::AbortedByUser ? NetState::Aborted : NetState::Failed,
+                     std::memory_order_release);
         reportTerminalOnce();
         return;
     }
-    ::unlink(metaPath().c_str());
+    removeResumeMeta();
+    // 所有段已完成且 checker、可信 staging 提交、父目录 fsync 均已成功，此时才有
+    // 资格把未知 total 变成最终工件长度。在 checker 之前发布会让一份完整但摘要错误
+    // 的短正文污染下一候选的 Range/预分配/进度；在 releaseFd 发布则连失败前缀也会
+    // 冒充 total。已知 expected_size/探测总长保持原值，绝不以较弱进度覆盖它们。
+    // 此步骤不创建新执行轮次、不重置授权 HTTP/正文累计预算或 steady 截止。
+    if (file_size_.load(std::memory_order_relaxed) <= 0) {
+        file_size_.store(downloadedBytes(), std::memory_order_release);
+    }
     state_.store(NetState::Finished, std::memory_order_release);
     AMCL_LOG_I(LOG_TAG, "file finished: %{public}s", cfg_.local_path.c_str());
     if (owner_) owner_->reportFileFinished(this);
@@ -2075,10 +2410,20 @@ static constexpr int64_t kStragglerMinSampleMs        = 2500;
 
 
 
-void NetFile::maybeGrowThreads() {
+void NetFile::maybeGrowThreads() noexcept {
+    try { maybeGrowThreadsImpl(); }
+    catch (...) {
+        // URL 分类等准备步骤也可能分配；它们发生在布局事务之前。可选优化失败保留
+        // 现有执行，不让异常逃出 ticker/segment callback，更不能伪造一个完成段。
+        AMCL_LOG_W(LOG_TAG, "adaptive growth skipped after preparation exception");
+    }
+}
+
+void NetFile::maybeGrowThreadsImpl() {
     // 廉价快筛（无锁）：绝大多数文件（已完成 / 等待 / 小文件）在这里直接返回，
     // 不进临界区。一个任务里同时处于 Downloading 的大文件通常只有个位数。
-    if (state_.load(std::memory_order_relaxed) != NetState::Downloading) return;
+    if (abort_requested_.load(std::memory_order_acquire) ||
+        state_.load(std::memory_order_acquire) != NetState::Downloading) return;
     // Without an integrity checker, a dynamically split boundary cannot be proven
     // equivalent after retries/source changes. Keep the original non-overlapping plan.
     if (!cfg_.check.needsAnyCheck()) return;
@@ -2123,8 +2468,14 @@ void NetFile::maybeGrowThreads() {
     if (cur_speed >= growth_floor) return;
 
     NetThreadPtr new_thread;
+    std::vector<NetThreadPtr> submission;
     {
         std::lock_guard<std::mutex> lk(mu_);
+
+        // 快筛与取得 mu_ 之间可以发生取消；abort 同样在 mu_ 下遍历线程表。
+        // 若取消先完成，绝不能再为旧区间创建一个未收到 token 的新段。
+        if (abort_requested_.load(std::memory_order_acquire) ||
+            state_.load(std::memory_order_acquire) != NetState::Downloading) return;
 
         // 统计活跃段 + 找「ETA 最差（剩余/速度最大）的慢长杆段」。
         // v7.6：从「切最大段」改为「切最慢段」（IDM「优先切慢段」的真正做法）。根因（hdc
@@ -2392,10 +2743,26 @@ void NetFile::maybeGrowThreads() {
         int64_t new_len = e - split_start + 1;
         if (split_start <= cur || keep_len < min_keep || new_len < min_new) return;
 
+        // 所有会分配的步骤必须先于缩边。补段是可选优化，reserve/构造失败时保留
+        // 原布局直接返回；不能缩掉旧段的尾部后才发现无人接管，或让 bad_alloc 逃 ticker。
+        try {
+            threads_.reserve(threads_.size() + 1);
+            submission.reserve(1);
+            new_thread = std::make_shared<NetThread>(this, split_start, e, 0);
+            submission.push_back(new_thread);
+        } catch (...) {
+            AMCL_LOG_W(LOG_TAG, "adaptive growth skipped: allocation failed before boundary mutation");
+            return;
+        }
+        // 长循环/评分期间也可能发布取消。切边界之前再次检查；切分、建段和插入
+        // 与 abort 的线程表遍历用同一把 mu_，因此取消返回后不会漏掉后增的段。
+        if (abort_requested_.load(std::memory_order_acquire) ||
+            state_.load(std::memory_order_acquire) != NetState::Downloading) return;
         int64_t old_end = worst->shrinkEndTo(split_start - 1);
         if (old_end < 0) return;  // 竞态：该段刚下过头或已变更，本轮放弃
 
-        new_thread = std::make_shared<NetThread>(this, split_start, old_end, 0);
+        // end 只由持本锁的补段逻辑改变；网络写回调只推进 done。因而 old_end==e，
+        // 候选已精确覆盖释放尾部。缩边之后只复制预留 shared_ptr，不再取新锁或分配。
         threads_.push_back(new_thread);
         last_split_ms_ = now_ms;   // 抢占节流窗口（仍在 mu_ 内）
         AMCL_LOG_D(LOG_TAG,
@@ -2411,11 +2778,17 @@ void NetFile::maybeGrowThreads() {
 
     // 锁外入队（enqueueThreads 自身线程安全）。大文件走 worker 池。
     if (new_thread) {
-        DownloadEngine::instance().enqueueThreads({ new_thread });
+        // 取消若恰在锁内最后检查后发生，发布入队前先补 token；abort 随后的同锁
+        // 遍历也一定能看到已插入的线程。允许取消进行中收敛，禁止取消完成后再发 GET。
+        if (abort_requested_.load(std::memory_order_acquire)) new_thread->abort();
+        // 提交 vector 已在缩边前分配，移动不分配；Engine 的队列事务负责完整接收，
+        // 或明确失败并结算未入队段，不能留下“布局有段但没有执行器”的悬挂 owner。
+        DownloadEngine::instance().enqueueThreads(std::move(submission));
     }
 }
 
 void NetFile::abort() {
+    abort_requested_.store(true, std::memory_order_release);
     std::lock_guard<std::mutex> lk(mu_);
     for (auto& t : threads_) {
         t->abort();
@@ -2429,38 +2802,8 @@ int64_t NetFile::deleteLocalAndMeta() {
         return 0;
     }
 
-    // M-7：unlink 前要求 execution 双阶段 barrier 完整收敛。
-    //   1. abort() 让 worker/curl 尽快退出；
-    //   2. 最多等待 2 秒；超时保留文件并返回 0，调用方可稍后重试；
-    //   3. 只有 transport 和 completion callback 都结束后才关闭 fd/unlink。
-    // 绝不再以 POSIX 匿名 inode 为理由强行清理，因为那会提前释放路径 ownership，
-    // 并允许新任务与旧 worker 在同一最终路径上并发。
-
-    // 这条路径只在 Aborted/Failed 后用户主动清理时进入，性能不敏感。
-    abort();
-
-    size_t total_threads = 0;
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        total_threads = threads_.size();
-    }
-    if (total_threads > 0) {
-        auto t0 = std::chrono::steady_clock::now();
-        const auto kTimeout = std::chrono::milliseconds(2000);
-        while (threads_done_count_.load(std::memory_order_acquire) <
-                   static_cast<int>(total_threads)) {
-            if (std::chrono::steady_clock::now() - t0 > kTimeout) {
-                AMCL_LOG_W(LOG_TAG,
-                    "deleteLocalAndMeta: execution quiescence timeout (done=%{public}d "
-                    "total=%{public}zu), retaining files for retry: %{public}s",
-                    threads_done_count_.load(std::memory_order_acquire),
-                    total_threads, cfg_.local_path.c_str());
-                return 0;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-
+    // Engine 已确认 startup/transport/completion/维护全部收敛并保持操作预占。
+    // 这里仍防御直接调用，但不在回调内 sleep 等待自己，也不把超时当成删除授权。
     if (!isExecutionSettled()) {
         AMCL_LOG_W(LOG_TAG,
             "deleteLocalAndMeta: completion callback still active, retaining: %{public}s",
@@ -2468,36 +2811,36 @@ int64_t NetFile::deleteLocalAndMeta() {
         return 0;
     }
 
-    // 所有 execution epoch 已完成，随后关 fd 与 unlink 不会和 worker/curl 回调竞态。
+    int64_t freed = removeResumeMeta();
     {
+        std::lock_guard<std::mutex> storage_lk(storage_mu_);
         std::lock_guard<std::mutex> lk(fd_init_mu_);
+        if (fd_refcount_ != 0) return freed;
         if (fd_ >= 0) {
             ::close(fd_);
             fd_ = -1;
         }
-        fd_refcount_ = 0;
-    }
-
-    // 真正 unlink（最终文件、staging 和 meta）
-    int64_t freed = 0;
-    struct stat st{};
-    for (const std::string* path : {&cfg_.local_path, &staging_path_}) {
-        if (::lstat(path->c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
-            freed += st.st_size;
-            if (::unlink(path->c_str()) != 0) {
-                AMCL_LOG_W(LOG_TAG, "deleteLocalAndMeta: unlink %{public}s failed errno=%{public}d",
-                            path->c_str(), errno);
+        int parent_fd = -1;
+        std::string leaf;
+        if (staging_identity_set_ && openTrustedParentAt(root_fd_, cfg_.allowed_root,
+                cfg_.local_path, false, parent_fd, leaf)) {
+            leaf += ".amcl.part";
+            struct stat st{};
+            if (::fstatat(parent_fd, leaf.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                S_ISREG(st.st_mode) && st.st_nlink == 1 &&
+                staging_device_ == static_cast<uint64_t>(st.st_dev) &&
+                staging_inode_ == static_cast<uint64_t>(st.st_ino) &&
+                ::unlinkat(parent_fd, leaf.c_str(), 0) == 0) {
+                // 只有 unlink 真成功才累计；不能把 stat 大小当成已释放字节。
+                freed += static_cast<int64_t>(st.st_size);
+                staging_identity_set_ = false;
+                storage_generation_.fetch_add(1, std::memory_order_acq_rel);
             }
+            ::close(parent_fd);
         }
     }
-    std::string mp = metaPath();
-    if (::stat(mp.c_str(), &st) == 0) {
-        freed += st.st_size;
-        if (::unlink(mp.c_str()) != 0) {
-            AMCL_LOG_W(LOG_TAG, "deleteLocalAndMeta: unlink %{public}s failed errno=%{public}d",
-                        mp.c_str(), errno);
-        }
-    }
+    // final 可能是任务开始前的坏缓存，也可能在下载期间被用户修改；本实现没有其
+    // 创建收据。取消/失败清理始终保留 final，只有成功校验后的 commit 才替换它。
     return freed;
 }
 
@@ -2513,6 +2856,7 @@ bool NetFile::resetForRetry() {
         return false;
     }
     // 清 error + 计数
+    abort_requested_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(mu_);
         error_.reset();
@@ -2540,7 +2884,13 @@ bool NetFile::resetForRetry() {
 }
 
 NetFile::MetaSnapshot NetFile::snapshotForMeta() const {
+    // 与 discard/commit 共用 storage 锁；如果处于内部重试重建窗口，明确不给 ticker
+    // 可持久化快照，避免“新 generation + 旧 threads”被组合成有效恢复点。
+    std::lock_guard<std::mutex> storage_lk(storage_mu_);
     MetaSnapshot out;
+    out.storage_generation = storage_generation_.load(std::memory_order_acquire);
+    const NetState state = state_.load(std::memory_order_acquire);
+    out.execution_active = state == NetState::Downloading || state == NetState::Connecting || state == NetState::Reading;
     out.file_size = file_size_.load(std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lk(mu_);

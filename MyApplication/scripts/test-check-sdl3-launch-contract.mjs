@@ -57,6 +57,19 @@ reject('property readback failure swallowed', 'source', 'if (!phase_verifyRuntim
 reject('descriptor ABI drift', 'source', '"1:%llu:%llu:%llu"', '"2:%llu:%llu:%llu"', 'publish-exact-runtime-identity');
 reject('descriptor overwritten', 'source', 'previous && std::strcmp(previous, descriptor) != 0',
   'false', 'publish-exact-runtime-identity');
+// I27-05：回到游戏线程上的 setenv，或不再为 SDL3 预登记槽位，都必须具名失败。
+reject('late setenv on game thread', 'source',
+  'amcl::envslot::ProcessRegistry().Store(amcl::envslot::kSdlHostRuntimeEnv, descriptor) < 0',
+  'setenv("AMCL_SDL_HOST_RUNTIME", descriptor, 1) != 0', 'sdl-host-runtime-slot-pre-registered');
+reject('late setenv breaks slot identity', 'source',
+  'amcl::envslot::ProcessRegistry().Store(amcl::envslot::kSdlHostRuntimeEnv, descriptor) < 0',
+  'setenv("AMCL_SDL_HOST_RUNTIME", descriptor, 1) != 0', 'publish-exact-runtime-identity');
+reject('slot not registered for SDL route', 'source',
+  'amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)',
+  'amcl::ohos::PrepareRuntimeEnvironmentSlots(false, environmentError)', 'sdl-host-runtime-slot-pre-registered');
+reject('slot registration removed before JVM creation', 'source',
+  'amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)',
+  'true', 'sdl-host-runtime-slot-pre-registered');
 reject('bridge publish bypass', 'source', 'publishCallbackBridgeHostV1(session) != JNI_OK',
   'false', 'bridge-descriptor-first');
 reject('patch omitted from build recipe', 'series', '\n0013-openharmony-host-runtime-ownership.patch',

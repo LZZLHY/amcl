@@ -18,14 +18,11 @@ import { AppLogger } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_MODLOADER } from 'commons';
 import { DownloadManager, DownloadTaskView } from '../download/DownloadManager';
-import { buildSpecsForLibs, parseDoneEventToBatchResult } from './MavenSpecBuilder';
+import { buildSpecsForLibs, buildSpecForLib, parseDoneEventToBatchResult } from './MavenSpecBuilder';
 import { formatError } from 'commons';
 
 const TAG = LogTags.MOD_MAVEN;
 
-const CONNECT_TIMEOUT = 10000;
-const READ_TIMEOUT = 30000;
-const TOTAL_TIMEOUT = 60000;
 
 // 远端元数据进入本地路径/网络层前的统一边界。只接受已经规范的正斜杠相对路径，
 // 绝不尝试“修复”不可信输入，避免不同调用方产生不一致的路径语义。
@@ -129,29 +126,35 @@ export function parseMavenMetadataVersions(xml: string): string[] {
  * 多镜像拉取 maven-metadata.xml 并合并去重（保留首次出现顺序）。返回空数组表示全部源失败
  * （由调用方决定缓存 / 抛错）。
  *
- * 共享策略（原 Forge/NeoForge 各写一份）：**官方源 + BMCLAPI 镜像都拉、合并去重**，
- * 不"首个非空即返回"——避免某镜像 metadata 落后时丢掉新版本（Forge 1.20.1 曾因此不可见）。
+ * 共享策略：官方源与镜像独立并行请求，按来源顺序合并去重，不首个非空即返回。
+ * 单个来源的失败只产生告警；有界超时由调用方指定，安装时不应叠加两次串行等待。
+ * 列表只提供正向发布证据；空列表或缺项不能证明对应工件不存在。
  */
-export async function fetchMergedMavenVersions(urls: string[], label: string): Promise<string[]> {
-  let merged: string[] = [];
+export async function fetchMergedMavenVersions(urls: string[], label: string,
+  timeoutSeconds: number = 30): Promise<string[]> {
   let mgr = DownloadManager.instance();
+  let requests: Promise<string[]>[] = [];
   for (let url of urls) {
     if (!isSafeHttpUrl(url)) {
       AppLogger.warn(TAG, `${label} metadata URL rejected`, null, LOG_DOMAIN_MODLOADER);
       continue;
     }
-    try {
-      let xml = await mgr.fetchText(url);
+    requests.push(mgr.fetchText(url, [], timeoutSeconds).then((xml: string): string[] => {
       let vers = parseMavenMetadataVersions(xml);
       if (vers.length > 0) {
-        for (let v of vers) { if (merged.indexOf(v) < 0) merged.push(v); }
         AppLogger.info(TAG, `${label} metadata: url=${url} count=${vers.length}`, LOG_DOMAIN_MODLOADER);
       } else {
         AppLogger.warn(TAG, `${label} metadata empty: ${url}`, null, LOG_DOMAIN_MODLOADER);
       }
-    } catch (e) {
+      return vers;
+    }).catch((e: Object): string[] => {
       AppLogger.warn(TAG, `${label} metadata fetch failed: url=${url} err=${(e as Error).message}`, null, LOG_DOMAIN_MODLOADER);
-    }
+      return [];
+    }));
+  }
+  let merged: string[] = [];
+  for (let vers of await Promise.all(requests)) {
+    for (let version of vers) if (merged.indexOf(version) < 0) merged.push(version);
   }
   return merged;
 }
@@ -431,115 +434,43 @@ export interface LibBatchDownloadResult {
  */
 export async function downloadMavenLibrary(
   name: string, repoUrl: string | undefined, libDir: string,
-  expectedSha1?: string, expectedSize?: number
+  expectedSha1?: string, expectedSize?: number, storagePath?: string, directUrl?: string,
+  preferRealSource: boolean = false
 ): Promise<LibDownloadResult> {
-  let relPath = mavenToRelativePath(name);
-  if (!relPath) {
-    let errResult: LibDownloadResult = { success: false, path: '', error: 'Invalid maven coordinate: ' + name };
-    return errResult;
-  }
-  if (repoUrl !== undefined && !isSafeHttpUrl(repoUrl)) {
-    return { success: false, path: '', error: 'Invalid maven repository URL' };
-  }
+  // 旧单库入口保留签名并复用同一工件准备，不在取得Native路径owner前unlink/mkdir。
+  if (repoUrl !== undefined && !isSafeHttpUrl(repoUrl)) return { success: false, path: '', error: 'Invalid Maven repository URL' };
   if (expectedSha1 !== undefined && expectedSha1.length > 0 && !isValidSha1(expectedSha1)) {
     return { success: false, path: '', error: 'Invalid SHA-1 for ' + name };
   }
-
-  let destPath = libDir + '/' + relPath;
-
-  // 已存在则跳过（校验 PK magic + 可选 SHA1，防止损坏文件永久残留）
+  if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 0)) {
+    return { success: false, path: '', error: 'Invalid artifact size for ' + name };
+  }
+  const library: MavenLibEntry = { name };
+  if (repoUrl !== undefined) library.url = repoUrl;
+  if (expectedSha1 !== undefined) library.sha1 = expectedSha1;
+  if (expectedSize !== undefined) library.size = expectedSize;
+  if (storagePath !== undefined) library.storagePath = storagePath;
+  if (directUrl !== undefined) library.directUrl = directUrl;
+  const spec = buildSpecForLib(library, libDir, preferRealSource);
+  if (spec === null) return { success: false, path: '', error: 'Invalid Maven artifact: ' + name };
+  const manager = DownloadManager.instance();
+  if (!manager.isCaBundleInitialized()) {
+    // Entry/游戏进程都在注入bridge后同步初始化CA。失败表示该传输能力尚不可用；
+    // 不能退回绕过canonical owner、可信fd与原子提交的HTTP+TRUNC写入器。
+    return { success: false, path: spec.localPath, error: 'CA bundle not initialized; retry after download engine initialization' };
+  }
+  let taskId = 0;
   try {
-    let stat = fs.statSync(destPath);
-    if (stat.size > 0 && isValidJarFile(destPath)) {
-      // 如果有期望 SHA1，校验一下
-      if (expectedSha1 && isValidSha1(expectedSha1)) {
-        let actual = await computeFileSha1(destPath);
-        if (actual !== expectedSha1.toLowerCase()) {
-          AppLogger.warn(TAG, `Existing file SHA1 mismatch, will re-download: ${name} (expected=${expectedSha1} actual=${actual})`, null, LOG_DOMAIN_MODLOADER);
-          try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
-        } else {
-          return { success: true, path: destPath } as LibDownloadResult;
-        }
-      } else {
-        return { success: true, path: destPath } as LibDownloadResult;
-      }
-    } else if (stat.size > 0) {
-      // PK magic 不通过 → 删除重下
-      AppLogger.warn(TAG, `Existing file invalid (bad magic), will re-download: ${name} (${stat.size} bytes)`, null, LOG_DOMAIN_MODLOADER);      try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
-    } else {
-      try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
-    }
-  } catch (e) { /* not exists */ }
-
-  // 确保目录存在
-  let destDir = destPath.substring(0, destPath.lastIndexOf('/'));
-  try { fs.mkdirSync(destDir, true); } catch (e) { /* exists */ }
-
-  // 构建下载 URL 列表（多源容错）
-  let urls: string[] = [];
-
-  // 1. BMCLAPI 镜像优先
-  urls.push(BMCLAPI_MAVEN + relPath);
-
-  // 2. 指定仓库
-  if (repoUrl) {
-    let repoCandidate = mavenToUrl(name, repoUrl);
-    if (repoCandidate.length > 0 && urls.indexOf(repoCandidate) < 0) urls.push(repoCandidate);
-  }
-
-  // 3. 默认仓库列表
-  for (let repo of DEFAULT_MAVEN_REPOS) {
-    let url = mavenToUrl(name, repo);
-    if (url.length > 0 && urls.indexOf(url) < 0) {
-      urls.push(url);
-    }
-  }
-
-  // 逐个尝试下载
-  let lastErr = '';
-  for (let url of urls) {
     try {
-      await httpDownloadFile(url, destPath);
-      // 验证文件大小 > 0 且是合法 JAR/ZIP（PK 头）
-      let stat = fs.statSync(destPath);
-      if (stat.size > 0) {
-        if (!isValidJarFile(destPath)) {
-          AppLogger.warn(TAG, `Downloaded file is not a valid JAR (bad magic), discarding: ${name} from ${url} (${stat.size} bytes)`, null, LOG_DOMAIN_MODLOADER);
-          try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
-          lastErr = 'Not a valid JAR file (CDN error page?) from ' + url;
-          continue;
-        }
-        // BUG-2 fix: 可选 size + SHA1 校验
-        if (expectedSize && expectedSize > 0 && stat.size !== expectedSize) {
-          AppLogger.warn(TAG, `Size mismatch: ${name} from ${url} (expected=${expectedSize} actual=${stat.size})`, null, LOG_DOMAIN_MODLOADER);
-          try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
-          lastErr = 'Size mismatch from ' + url;
-          continue;
-        }
-        if (expectedSha1 && isValidSha1(expectedSha1)) {
-          let actual = await computeFileSha1(destPath);
-          if (actual !== expectedSha1.toLowerCase()) {
-            AppLogger.warn(TAG, `SHA1 mismatch: ${name} from ${url} (expected=${expectedSha1} actual=${actual})`, null, LOG_DOMAIN_MODLOADER);
-            try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
-            lastErr = 'SHA1 mismatch from ' + url;
-            continue;
-          }
-        }
-        if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'Downloaded: %{public}s (%{public}d bytes)', name, stat.size);
-        let okResult: LibDownloadResult = { success: true, path: destPath };
-        return okResult;
-      }
-      // 空文件，删除后尝试下一个源
-      try { fs.unlinkSync(destPath); } catch (e) { /* ignore */ }
-    } catch (e) {
-      lastErr = (e as Error).message || String(e);
-      if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'Failed from %{public}s: %{public}s', url, lastErr);
-      try { fs.unlinkSync(destPath); } catch (e2) { /* ignore */ }
+      await manager.createAndWait({ name: 'Maven ' + name, files: [spec] },
+        (view: DownloadTaskView): void => { taskId = view.taskId; });
+    } finally {
+      // 父安装仍拥有调用栈和目录租约；网络失败也要等真实owner释放后才可清沙箱。
+      if (taskId > 0) await manager.awaitTaskReleased(taskId, true);
     }
-  }
-
-  let failResult: LibDownloadResult = { success: false, path: destPath, error: 'All sources failed for ' + name + ': ' + lastErr };
-  return failResult;
+    return isValidJarFile(spec.localPath) ? { success: true, path: spec.localPath } :
+      { success: false, path: spec.localPath, error: 'Downloaded content is not a valid JAR' };
+  } catch (error) { return { success: false, path: spec.localPath, error: (error as Error).message }; }
 }
 
 /**
@@ -556,9 +487,8 @@ export async function downloadMavenLibrary(
  * 接口契约保持 100% 向后兼容：onProgress 签名、LibBatchDownloadResult 字段
  * 不变。Forge / Fabric 调用方零改动。
  *
- * 异常路径 fallback：DownloadManager 抛异常（如 CA bundle 未初始化）时，
- * 退回到老的 ArkTS HTTP 顺序下载（保留 downloadMavenLibrary 单库实现）。
- * 这避免了引擎初始化失败导致整个 Forge 安装失败。
+ * 初始化失败受控回报，不再启动绕过Native owner与提交保护的HTTP写入器。
+ * 旧单库入口仍保留为同一Native执行链的兼容门面，合法目录与数据不迁移。
  */
 /**
  * A-01 修复（2026-07-29）：从上一轮结果里挑出**仅失败**的库，供重试使用。
@@ -606,6 +536,11 @@ export function selectFailedLibs(
 export type MavenLibsProgressCallback =
   (done: number, total: number, name: string, fraction: number) => void;
 
+/** 当前一次批量调用的终态容器；异步回调发布视图，取消不作为可确认的部分成功清单。 */
+interface MavenBatchTerminalSnapshot {
+  view?: DownloadTaskView;
+}
+
 export async function downloadMavenLibraries(
   libs: MavenLibEntry[],
   libDir: string,
@@ -625,17 +560,29 @@ export async function downloadMavenLibraries(
   if (buildResult.specs.length > 0) {
     let mgr = DownloadManager.instance();
     if (!mgr.isCaBundleInitialized()) {
-      // CA bundle 未初始化 — 引擎走不通，回退到旧逻辑
-      AppLogger.warn(TAG, `CA bundle not initialized, falling back to ArkTS HTTP for ${libs.length} libraries`, null, LOG_DOMAIN_MODLOADER);
-      return await downloadMavenLibrariesLegacy(libs, libDir, onProgress);
+      const unavailable = new DownloadTaskView();
+      unavailable.errorMessage = 'CA bundle not initialized; retry after download engine initialization';
+      return parseDoneEventToBatchResult(unavailable, libs, buildResult.pathToName,
+        buildResult.invalidNames, buildResult.pathToNames);
     }
 
+    // createAndWait 的失败契约是 reject，而完整 failedFiles 会先通过终态回调发布。
+    // 单独保留本次调用的成功/失败终态，不能在 catch 中把一次文件失败扩成整批失败，
+    // 也不能从全局任务列表猜测属于哪次执行的历史快照。
+    let terminalSnapshot: MavenBatchTerminalSnapshot = {};
+    let logicalTaskId = 0;
+    // 回调与await续体共享明确的Error容器，保留首个异常。ArkTS不会把回调内赋值
+    // 计入外层局部变量的控制流收窄；数组元素保持Error类型，避免错误被推断为never。
+    const callbackErrors: Error[] = [];
     try {
       let view = await mgr.createAndWait({
         name: 'Maven libraries (' + buildResult.specs.length + ')',
+        shareFiles: true,
         files: buildResult.specs,
       }, (v: DownloadTaskView): void => {
-        if (onProgress !== undefined) {
+        if (v.taskId > 0) logicalTaskId = v.taskId;
+        if (v.finished && !v.aborted) terminalSnapshot.view = v;
+        if (onProgress !== undefined && callbackErrors.length === 0) {
           let name = v.currentFiles.length > 0 ? v.currentFiles[0] : v.currentFile;
           // 字节加权优先；bytesTotal 尚未确定（首个响应前）时给 -1 让调用方回退文件计数。
           let fraction = -1;
@@ -644,91 +591,50 @@ export async function downloadMavenLibraries(
             if (fraction < 0) fraction = 0;
             if (fraction > 1) fraction = 1;
           }
-          onProgress(v.filesDone, v.filesTotal, name, fraction);
+          try { onProgress(v.filesDone, v.filesTotal, name, fraction); }
+          catch (error) {
+            // 此回调属于安装编排，ModloaderPhase用取消异常撤销后继步骤。Shared
+            // 隔离观察异常，所以须显式撤本逻辑消费者；其他订阅者继续运行。
+            callbackErrors.push(error as Error);
+            if (logicalTaskId > 0) mgr.cancel(logicalTaskId);
+          }
         }
       });
+      if (callbackErrors.length > 0) throw callbackErrors[0];
       // 3. 把 view 转回 LibBatchDownloadResult
-      let result = parseDoneEventToBatchResult(view, libs, buildResult.pathToName);
-      // 把 buildSpecsForLibs 报告的非法坐标合并到失败结果
-      for (let n of buildResult.invalidNames) {
-        if (result.failedNames.indexOf(n) >= 0) continue;
-        result.failed++;
-        result.failedNames.push(n);
-        result.errors.push(n + ': invalid maven coordinate');
-      }
-      // ok 不能因非法坐标膨胀（合法 specs 已经计入 ok 了，非法的本就不在 libs 路径里）
+      let result = parseDoneEventToBatchResult(view, libs, buildResult.pathToName, buildResult.invalidNames, buildResult.pathToNames);
       let durMs = view.durationMs;
       let kbps = durMs > 0 ? Math.round(view.bytesDone / 1024 / (durMs / 1000)) : 0;
       AppLogger.info(TAG, `downloadMavenLibraries via NAPI: ok=${result.ok} failed=${result.failed} bytes=${view.bytesDone} durMs=${durMs} KBps=${kbps} (success=${view.success ? 'true' : 'false'})`, LOG_DOMAIN_MODLOADER);
       return result;
     } catch (e) {
       let msg = (e as Error).message || formatError(e);
-      // 引擎抛异常（如 cancelAndAwait 路径被外部触发，或 NAPI 层错误）
-      // 这里不做重试，直接归报为全部失败 — 调用方会展示给用户
+      // 已收到非取消终态时按具体失败清单回报，调用方才能只重试真正失败的坐标。
+      // 初始化异常、缺少终态或取消不能证明其他文件成功，仍由同一转换器保守归报。
       AppLogger.error(TAG, `downloadMavenLibraries via NAPI threw: ${msg}`, null, LOG_DOMAIN_MODLOADER);
-      let failedNames: string[] = [];
-      let errors: string[] = [];
-      for (let lib of libs) {
-        failedNames.push(lib.name);
-        errors.push(lib.name + ': ' + msg);
+      let snapshot = terminalSnapshot.view;
+      if (callbackErrors.length > 0) {
+        snapshot = new DownloadTaskView(); snapshot.aborted = true;
+        snapshot.errorMessage = callbackErrors[0].message;
+      } else if (snapshot === undefined) {
+        snapshot = new DownloadTaskView();
+        snapshot.errorMessage = msg;
       }
-      return { ok: 0, failed: libs.length, errors: errors, failedNames: failedNames };
+      let result = parseDoneEventToBatchResult(snapshot, libs, buildResult.pathToName, buildResult.invalidNames, buildResult.pathToNames);
+      AppLogger.info(TAG, `downloadMavenLibraries failed batch: ok=${result.ok} failed=${result.failed} terminal=${terminalSnapshot.view !== undefined}`,
+        LOG_DOMAIN_MODLOADER);
+      return result;
+    } finally {
+      // 父安装的沙箱/目录租约不能因共享层的可见终态或取消而提前退出。这里等待
+      // 当前逻辑消费者真实释放；仍有其他订阅者的物理批次按Shared合同继续运行。
+      if (logicalTaskId > 0) await mgr.awaitTaskReleased(logicalTaskId, true);
     }
   }
 
-  // 全部坐标非法（buildResult.specs 为空）
-  let allInvalidErrors: string[] = [];
-  for (let n of buildResult.invalidNames) {
-    allInvalidErrors.push(n + ': invalid maven coordinate');
-  }
-  return {
-    ok: 0,
-    failed: buildResult.invalidNames.length,
-    errors: allInvalidErrors,
-    failedNames: buildResult.invalidNames,
-  };
-}
-
-/**
- * 向后兼容的 fallback：当 DownloadManager 不可用时（CA bundle 未抽取等极端场景），
- * 用老的 ArkTS HTTP 顺序下载维持基础可用性。
- *
- * 不应在常规路径走到这里 — 走到说明 EntryAbility.onCreate 没正确初始化 CA bundle。
- */
-async function downloadMavenLibrariesLegacy(
-  libs: MavenLibEntry[],
-  libDir: string,
-  onProgress?: MavenLibsProgressCallback
-): Promise<LibBatchDownloadResult> {
-  let ok = 0;
-  let failed = 0;
-  let errors: string[] = [];
-  let failedNames: string[] = [];
-
-  for (let i = 0; i < libs.length; i++) {
-    let lib = libs[i];
-    if (onProgress) {
-      // legacy 顺序下载没有字节总量 → fraction=-1，调用方回退文件计数。
-      onProgress(i, libs.length, lib.name, -1);
-    }
-
-    let result = await downloadMavenLibrary(lib.name, lib.url, libDir, lib.sha1, lib.size);
-    if (result.success) {
-      ok++;
-    } else {
-      failed++;
-      failedNames.push(lib.name);
-      if (result.error) errors.push(lib.name + ': ' + result.error);
-      AppLogger.warn(TAG, `Library download failed (legacy): ${lib.name}`, null, LOG_DOMAIN_MODLOADER);
-    }
-  }
-
-  if (onProgress) {
-    onProgress(libs.length, libs.length, 'done', 1);
-  }
-
-  let batchResult: LibBatchDownloadResult = { ok, failed, errors, failedNames };
-  return batchResult;
+  // 全部坐标非法，不创建 Native 任务；依旧走同一归一化入口，避免重复坐标膨胀计数。
+  let invalidView = new DownloadTaskView();
+  invalidView.success = true;
+  return parseDoneEventToBatchResult(invalidView, libs, buildResult.pathToName, buildResult.invalidNames, buildResult.pathToNames);
 }
 
 // ============================================================
@@ -740,7 +646,8 @@ async function downloadMavenLibrariesLegacy(
  * JAR/ZIP 文件开头必须是 PK\x03\x04（local file header）或 PK\x05\x06（空 archive）。
  * CDN 错误页（HTML/XML）通常以 '<' 或 '{' 开头，会被正确拒绝。
  */
-function isValidJarFile(path: string): boolean {
+/** 供安装与修复共用的 ZIP 结构检查；没有来源哈希的历史库和 processor 产物使用此降级规则。 */
+export function isValidJarFile(path: string): boolean {
   let file: fs.File | null = null;
   try {
     file = fs.openSync(path, fs.OpenMode.READ_ONLY);
@@ -805,9 +712,19 @@ const HASH_CHUNK_SIZE = 256 * 1024;
 // updateSync / closeSync / digestSync 都报 'Function may throw'。整体包一层
 // try-catch + log + rethrow。详见 docs/guides/api-migration-2026-05.md。
 export async function computeFileSha1(path: string): Promise<string> {
+  return computeFileDigest(path, 'SHA1');
+}
+
+/** 整合包归档可提供 SHA-512；沿用同一分块 IO/关闭纪律，不将大归档读入单块内存。 */
+export async function computeFileSha512(path: string): Promise<string> {
+  return computeFileDigest(path, 'SHA512');
+}
+
+/** 只由上述固定算法入口调用；摘要与文件异常向上传播，finally 保证句柄归还。 */
+async function computeFileDigest(path: string, algorithm: string): Promise<string> {
   let file: fs.File | null = null;
   try {
-    let md = cryptoFramework.createMd('SHA1');
+    let md = cryptoFramework.createMd(algorithm);
     file = fs.openSync(path, fs.OpenMode.READ_ONLY);
     let buffer = new ArrayBuffer(HASH_CHUNK_SIZE);
     while (true) {
@@ -831,59 +748,4 @@ export async function computeFileSha1(path: string): Promise<string> {
       try { fs.closeSync(file); } catch (_) { /* ignore */ }
     }
   }
-}
-
-// ============================================================
-//  HTTP 下载工具
-// ============================================================
-
-function httpDownloadFile(url: string, destPath: string): Promise<void> {
-  if (!isSafeHttpUrl(url)) return Promise.reject(new Error('Unsafe download URL rejected'));
-  return new Promise<void>((resolve: Function, reject: Function) => {
-    // 删除旧文件
-    try { fs.unlinkSync(destPath); } catch (e) { /* ignore */ }
-
-    let httpRequest = http.createHttp();
-    let done = false;
-    let timer = setTimeout(() => {
-      if (!done) {
-        done = true;
-        try { httpRequest.destroy(); } catch (e) { /* ignore */ }
-        reject(new Error('Timeout: ' + url));
-      }
-    }, TOTAL_TIMEOUT);
-
-    httpRequest.request(url, {
-      method: http.RequestMethod.GET,
-      connectTimeout: CONNECT_TIMEOUT,
-      readTimeout: READ_TIMEOUT,
-      expectDataType: http.HttpDataType.ARRAY_BUFFER,
-    }).then((resp) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-
-      if (resp.responseCode !== 200) {
-        try { httpRequest.destroy(); } catch (e) { /* ignore */ }
-        reject(new Error('HTTP ' + resp.responseCode + ' for ' + url));
-        return;
-      }
-
-      let data = resp.result as ArrayBuffer;
-      let file = fs.openSync(destPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-      try {
-        fs.writeSync(file.fd, data);
-      } finally {
-        fs.closeSync(file);
-      }
-      try { httpRequest.destroy(); } catch (e) { /* ignore */ }
-      resolve();
-    }).catch((e: Error) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { httpRequest.destroy(); } catch (e2) { /* ignore */ }
-      reject(e);
-    });
-  });
 }

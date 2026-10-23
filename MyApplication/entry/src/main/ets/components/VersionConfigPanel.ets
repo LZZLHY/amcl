@@ -17,7 +17,7 @@
  *   - "了解区别 ›" 链接（Screen G 加载器选择详细页）— 当前 P3 待实现
  */
 
-import { ThemeColors } from 'commons';
+import { ThemeColors, DistributionPolicy } from 'commons';
 import { ModLoaderType, ModLoaderVersion } from 'feature_core';
 import { ModLoaderManager } from 'feature_core';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -1276,19 +1276,19 @@ export struct VersionConfigPanel {
   /** Forge 安装所需 JIT 不可用：弹框说明并拦截（不进入下载）。 */
   private promptJitUnavailableForForge(): void {
     try {
+      // 按真实 promptAction.Button 类型构造动作；商店只显示本地说明的确认按钮。
+      const buttons: promptAction.Button[] = [{ text: '我知道了', color: this.theme.primary as string }];
+      if (!DistributionPolicy.isStore()) buttons.unshift({ text: '如何解决', color: this.theme.textSecondary as string });
       this.getUIContext().getPromptAction().showDialog({
         title: '无法安装 Forge：JIT 不可用',
         message: 'Forge 安装器需要在本机运行一个 Java 进程（依赖 JIT 可执行内存），'
           + '但当前设备/环境探测到 JIT 不可用，安装会失败。\n\n'
           + '请确认已授予应用「可写可执行内存(JIT)」权限后重试；'
           + '或改用 Fabric 加载器。',
-        buttons: [
-          { text: '如何解决', color: this.theme.textSecondary as string },
-          { text: '我知道了', color: this.theme.primary as string },
-        ],
+        buttons: buttons,
       }).then((res: promptAction.ShowDialogSuccessResponse) => {
         // 点「如何解决」（index 0）→ 打开无 JIT 解决办法文档
-        if (res.index === 0) this.openNoJitDoc()
+        if (!DistributionPolicy.isStore() && res.index === 0) this.openNoJitDoc()
       }).catch(() => { /* ignore */ })
     } catch (e) {
       try {
@@ -1299,6 +1299,8 @@ export struct VersionConfigPanel {
 
   /** 打开「无 JIT 权限的解决办法」文档（内嵌 WebView）。 */
   private openNoJitDoc(): void {
+    // Forge 下载准备与运行准入分别管理，但不能从下载错误兜底打开商店禁用网页。
+    if (DistributionPolicy.isStore()) return
     try {
       this.getUIContext().getRouter().pushUrl({
         url: 'pages/DocWebPage',

@@ -28,7 +28,7 @@ export class InputSurfaceContextCandidate {
   provisional: boolean = true
 }
 
-/** Immutable-by-convention snapshot returned as a defensive copy. */
+/** 输入身份与显示元数据共用一份事实快照；对外返回防御副本，不让消费者反写平台采样。 */
 export class InputSurfaceContext {
   windowId: number = 0
   displayId: number = -1
@@ -39,6 +39,11 @@ export class InputSurfaceContext {
   density: number = 0
   transform: number = 0
   refreshRateHz: number = 0
+  /**
+   * generation只标识窗口、坐标矩形、解释单位、方向、暂定/权威状态及这些字段的可用性。
+   * 刷新率与其有效位仍随每次真实采样更新，但不改变触点坐标解释，不能借此退休正在拖动的手指。
+   * publisher结束/替换仍显式换代；新页面即使复用相同矩形，也不能取得旧页面的输入身份。
+   */
   generation: number = 0
   validFields: number = 0
   provisional: boolean = true
@@ -79,8 +84,8 @@ export class InputSurfacePublisherLease {
 }
 
 /**
- * Process-local SSOT. Equivalent publications are deduplicated; a provisional
- * default-display sample is never equivalent to an authoritative Window sample.
+ * 当前进程的输入surface事实源。等价输入身份复用generation，所有已归一化元数据仍原样更新。
+ * 默认display的暂定采样与真实Window采样不同；不能用相同尺寸把权威缺失或页面退休解释成可用。
  */
 export class InputSurfaceContextStore {
   private currentValue: InputSurfaceContext = new InputSurfaceContext()
@@ -111,10 +116,10 @@ export class InputSurfaceContextStore {
   ): InputSurfaceContext | undefined {
     if (!this.matchesPublisher(lease)) return undefined
     const normalized: InputSurfaceContext = InputSurfaceContextStore.normalize(candidate)
-    if (InputSurfaceContextStore.sameSemantics(this.currentValue, normalized)) {
-      return this.currentValue.copy()
-    }
-    normalized.generation = this.takeGeneration()
+    // 只更新Hz/Hz可用性时保留输入身份，却必须保存新元数据；返回旧快照会冻结真实刷新率。
+    // 几何、单位、方向或权威字段可用性变化则分配新身份，由消费者执行对应生命周期边界。
+    normalized.generation = InputSurfaceContextStore.sameSemantics(this.currentValue, normalized) ?
+      this.currentValue.generation : this.takeGeneration()
     this.currentValue = normalized
     return normalized.copy()
   }
@@ -215,8 +220,9 @@ export class InputSurfaceContextStore {
       left.heightPx === right.heightPx &&
       left.density === right.density &&
       left.transform === right.transform &&
-      left.refreshRateHz === right.refreshRateHz &&
-      left.validFields === right.validFields &&
+      // 仅排除刷新率有效位，窗口/坐标/密度/方向任一字段失效仍须换代，不能把缺失当作零值相等。
+      (left.validFields & ~INPUT_SURFACE_FIELD_REFRESH_RATE) ===
+        (right.validFields & ~INPUT_SURFACE_FIELD_REFRESH_RATE) &&
       left.provisional === right.provisional
   }
 }

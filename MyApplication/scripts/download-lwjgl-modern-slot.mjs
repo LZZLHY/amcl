@@ -143,7 +143,10 @@ try {
 
   const python = locatePython();
   run(python.file, [...python.prefix, join(scriptDir, 'patch-lwjgl-module-info.py'), stage]);
-  run(python.file, [...python.prefix, join(scriptDir, 'patch-lwjgl-modulepackages.py'), join(stage, 'lwjgl.jar')]);
+  // core 的 MR 隐藏包与新增 NanoVG 模块均需完整 ModulePackages；必须与维护者
+  // 首次后处理使用同一顺序，否则干净下载无法重生 manifest 锁定的最终 JAR。
+  run(python.file, [...python.prefix, join(scriptDir, 'patch-lwjgl-modulepackages.py'),
+    join(stage, 'lwjgl.jar'), join(stage, 'lwjgl-nanovg.jar')]);
   run(process.execPath, [join(scriptDir, 'lwjgl-stack-backfill/apply.mjs'), stage]);
   // Order is part of the locked ZIP identity, including bridge and TinyFD metadata.
   run(process.execPath, [join(scriptDir, 'build-prebuilt-jars.mjs'), '--force', '--lwjgl-dir', stage]);

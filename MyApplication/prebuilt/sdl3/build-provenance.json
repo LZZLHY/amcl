@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/icculus/SDL.git",
+    "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+    "abiBase": "f87239e71e42da91ca317a12eefb82cfbf3393eb",
+    "amclSourceBeforeLock": "89ac944c1b214518fd6c44c9bff1e1823a2ef042"
+  },
+  "recipe": {
+    "patchsetSha256": "c16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81",
+    "revision": "SDL-3.5.0-release-3.4.0-983-ge293db30d-amclpsc16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81",
+    "orderedInputs": [
+      {
+        "ordinal": 1,
+        "name": "0001-openharmony-host-window-input-and-backend-fixes.patch",
+        "size": 81046,
+        "sha256": "10231434c86acab2b671ca030425886b86dd66b9727d227265796a8c0f264fe0"
+      },
+      {
+        "ordinal": 2,
+        "name": "0002-openharmony-live-window-generation-recovery.patch",
+        "size": 40404,
+        "sha256": "55dd662c5dd26bec189aa5cc792355307b9b985b443dba85a4368e89151300f0"
+      },
+      {
+        "ordinal": 3,
+        "name": "0003-openharmony-hybrid-multi-window.patch",
+        "size": 296622,
+        "sha256": "4acfcb9eaca803fafd8e66871b45bd62105701330a068ea05b48e26698830cf3"
+      },
+      {
+        "ordinal": 4,
+        "name": "0004-openharmony-typed-input-lifecycle-relative.patch",
+        "size": 14453,
+        "sha256": "aeda31ac59b32aa542c18b6ed2a336f0a5ae554adbb103a96935d1de7107690c"
+      },
+      {
+        "ordinal": 5,
+        "name": "0005-openharmony-pointer-device-identity.patch",
+        "size": 6724,
+        "sha256": "087b9f41663699e97a90a313397c037b73c889c183e2777905c718cca7d12c68"
+      },
+      {
+        "ordinal": 6,
+        "name": "0006-openharmony-typed-text-session.patch",
+        "size": 21540,
+        "sha256": "2a8bcd5440cb72310b2d9b5c3b470bcfa0de14f1f59430af797d09fc14ceba47"
+      },
+      {
+        "ordinal": 7,
+        "name": "0007-openharmony-multi-device-reset.patch",
+        "size": 4770,
+        "sha256": "ad37e3235e419397750e41c1c3e2fb86d771eb58d434d60c5b5e577979640b36"
+      },
+      {
+        "ordinal": 8,
+        "name": "0008-openharmony-relative-authority-surface-context.patch",
+        "size": 18167,
+        "sha256": "f24fee81b04341150272e10aabb1d5df61ac07a83c79d8abaf3ac5f6a64befef"
+      },
+      {
+        "ordinal": 9,
+        "name": "0009-openharmony-grabbed-motion-owner-scope.patch",
+        "size": 8638,
+        "sha256": "facfc6ce60b9f7e900f182fc5762823a90327750d65c7080bc0945809cc2296b"
+      },
+      {
+        "ordinal": 10,
+        "name": "0010-openharmony-desktop-services.patch",
+        "size": 27508,
+        "sha256": "48f27fc2be0531b916ac88e5c0000c8aa9e4419245e8ae801732458f74d876fe"
+      },
+      {
+        "ordinal": 11,
+        "name": "0011-openharmony-desktop-review-fixes.patch",
+        "size": 15241,
+        "sha256": "0a380965940ba2826eef36c26a1f57a7a8bc9865bf07b8b42008182012b9b4ee"
+      },
+      {
+        "ordinal": 12,
+        "name": "0012-openharmony-presentation-session.patch",
+        "size": 34212,
+        "sha256": "fffa137c37f1b6f7dcf9e783f0dfcfd1a57f3d03b4f2e70e47d288c0462ad695"
+      },
+      {
+        "ordinal": 13,
+        "name": "0013-openharmony-host-runtime-ownership.patch",
+        "size": 13311,
+        "sha256": "96f9a9341adac7bab9abf002984372aceb983e55e693bc3b35133cfbc3bb1624"
+      },
+      {
+        "ordinal": 14,
+        "name": "0014-openharmony-resource-geometry-identity.patch",
+        "size": 7756,
+        "sha256": "2bcb73a0be896c84cee51fd74ca7e1533908564a35b3d0bcb7276db4d79fa5e2"
+      },
+      {
+        "ordinal": 15,
+        "name": "0015-openharmony-graphics-observation.patch",
+        "size": 5457,
+        "sha256": "c309b454716c399830344f03852deddf92d3fb37b8cb596748357a61a0041cbf"
+      },
+      {
+        "ordinal": 16,
+        "name": "0016-openharmony-frozen-graphics-runtime.patch",
+        "size": 10108,
+        "sha256": "9844298749631f843fe85e22e1c68c85f168b770e481f5eef7a82e8b2177e683"
+      },
+      {
+        "ordinal": 17,
+        "name": "0017-openharmony-graphics-functional-observation.patch",
+        "size": 3503,
+        "sha256": "461907087d23ac1a3e88165ce8b9ad9d3f911b02bbaa2bccb164b10eed3e03a0"
+      },
+      {
+        "ordinal": 18,
+        "name": "0018-openharmony-context-admission-and-present-evidence.patch",
+        "size": 31580,
+        "sha256": "af7f2c6440e412b7fda853f876d38733afe201aa8243647719e7d2592685c815"
+      },
+      {
+        "ordinal": 19,
+        "name": "0019-openharmony-nativegl-pbuffer-limit-validation.patch",
+        "size": 2571,
+        "sha256": "4dbf8ad6795c0c524a716456d22fdd339f3e6672f3059fc3721f3e8c1ef23d6a"
+      },
+      {
+        "ordinal": 20,
+        "name": "0020-openharmony-context-loss-and-auxiliary-transactions.patch",
+        "size": 95308,
+        "sha256": "e1d33ba49cafc7e72afc66c6308165ee1fdc360b26cab721f377a6332e6c433b"
+      },
+      {
+        "ordinal": 21,
+        "name": "0021-openharmony-input-source-semantics.patch",
+        "size": 20792,
+        "sha256": "e8625b2a6d1bf48c47dcb71af54a16a9470f28892d9fe83ec3fd432a954724bc"
+      },
+      {
+        "ordinal": 22,
+        "name": "0022-openharmony-ordered-input-and-foreground.patch",
+        "size": 13948,
+        "sha256": "7f577e19939965c989e78c64fbcb8aba2f748ce4335f5b7abeef6b55ac6a4eff"
+      },
+      {
+        "ordinal": 23,
+        "name": "0023-openharmony-vulkan-input-generation.patch",
+        "size": 4408,
+        "sha256": "c27ea865b50b6a5cb7db010f22eeb11994e224a719757999f6c4d8ce7aa67c47"
+      },
+      {
+        "ordinal": 24,
+        "name": "0024-openharmony-touch-causal-target.patch",
+        "size": 9000,
+        "sha256": "c9a0f9841304bec928c6e6cbd65bbd59cdfb346365e5b8b6fa3eb3618c847c9a"
+      },
+      {
+        "ordinal": 25,
+        "name": "0025-openharmony-shared-control-delivery.patch",
+        "size": 286163,
+        "sha256": "b2ab47c404625ae7ddfdba56c071b8571d9a0ea5213fa739747f04018559579a"
+      },
+      {
+        "ordinal": 26,
+        "name": "0026-openharmony-ordered-look-prefix.patch",
+        "size": 93151,
+        "sha256": "735d41c77dc1f87489fbd76e961070cd8ef8adb4cbcdeb79f2724536c634d329"
+      },
+      {
+        "ordinal": 27,
+        "name": "0027-openharmony-input-latency-receipts.patch",
+        "size": 16629,
+        "sha256": "7689d580e14b6be24acb76590fd499eb582bbde0b0e69945e3920eaed2a17278"
+      },
+      {
+        "ordinal": 28,
+        "name": "0028-openharmony-desktop-device-gate.patch",
+        "size": 1359,
+        "sha256": "7755a3469f454004598aa324db50d53e271345f2cda62befdbff7f99857b92ff"
+      }
+    ]
+  },
+  "configuration": {
+    "target": "aarch64-linux-ohos",
+    "buildType": "Release",
+    "desktopHost": true,
+    "virtualJoystick": true,
+    "dynamicApi": false,
+    "consumerReadyClaimed": false
+  },
+  "tools": {
+    "CMAKE_C_COMPILER": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\clang.exe",
+      "size": 106704824,
+      "sha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba"
+    },
+    "CMAKE_CXX_COMPILER": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\clang++.exe",
+      "size": 106704824,
+      "sha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba"
+    },
+    "CMAKE_LINKER": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\ld.lld.exe",
+      "size": 65278904,
+      "sha256": "27628fed00f2bca9d1528391bdb6c08a933e254a62d4493a5072c12fe352f11a"
+    },
+    "CMAKE_AR": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\llvm-ar.exe",
+      "size": 16797112,
+      "sha256": "e30f494ff4bb165e65f85241f6a1abe0ce9ad73e5ea3bd4956c1958d5add84db"
+    },
+    "CMAKE_RANLIB": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\llvm-ranlib.exe",
+      "size": 16797112,
+      "sha256": "e30f494ff4bb165e65f85241f6a1abe0ce9ad73e5ea3bd4956c1958d5add84db"
+    }
+  },
+  "artifacts": {
+    "raw": {
+      "size": 2251080,
+      "sha256": "921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816"
+    },
+    "sdkStripAll": {
+      "size": 1855520,
+      "sha256": "1ed3799167e7d53a3e010de14e2281f73eaef7e899c20f3bf3ed261de9c27277",
+      "stripToolSha256": "7092b2a07041635687d30d54f1e60b9cc440bc914d50cf0e2f3a21c348c97967"
+    }
+  },
+  "independentBuilds": [
+    {
+      "startedAt": "2026-10-14T20:15:44.2143146+08:00",
+      "finishedAt": "2026-10-14T20:16:14.7172549+08:00",
+      "state": "complete fresh OHOS Release candidate; all original gates passed",
+      "receipt": "E:\\AMCL\\.workspace\\build\\sdl3-49438ee5\\perf28-candidate\\candidate-receipt.json"
+    },
+    {
+      "state": "fresh normal locked OHOS Release build and Deploy; exit 0, original gates passed",
+      "verifiedAt": "2026-10-14T20:19:57.692178+08:00",
+      "receipt": "E:\\AMCL\\.workspace\\run\\runtime-perf-1014\\sdl28-closure.json",
+      "startTime": "not separately captured; do not substitute file timestamps for process start"
+    }
+  ],
+  "verification": {
+    "sourceGates": true,
+    "standardAbi": true,
+    "layout": true,
+    "surface": true,
+    "launchContract": true,
+    "independentRawByteEquality": true,
+    "independentSdkStripAllByteEquality": true,
+    "lookAndControlColdExports": true,
+    "actualHap": false,
+    "device": false,
+    "latencyPortRuntimeReachable": "UNKNOWN"
+  },
+  "evidenceTask": "runtime-perf-1014",
+  "recordedAt": "2026-10-14T20:19:57.692178+08:00",
+  "rawAndStripComparisonReceipt": "E:\\AMCL\\.workspace\\run\\runtime-perf-1014\\sdl28-closure.json",
+  "previousProvenance": {
+    "gitSource": "89ac944c1b214518fd6c44c9bff1e1823a2ef042",
+    "path": "prebuilt/sdl3/build-provenance.json",
+    "preservedRaw": "E:\\AMCL\\.workspace\\run\\runtime-perf-1014\\sdl-before\\build-provenance.json",
+    "sha256": "9581bcbbb26a41c57f638b7de41c8346af4754f29261e8cfb85c0d3510fb5319"
+  },
+  "qualification": "SDL28 fixed-device qualification, source/Native/lock and independent reproducibility; new HAP and device regression remain separate"
+}

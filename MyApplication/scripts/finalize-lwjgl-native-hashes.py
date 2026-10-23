@@ -20,7 +20,9 @@ JARS = ROOT / "prebuilt/lwjgl3/jars"
 NATIVES = ROOT / "entry/libs/arm64-v8a"
 MANIFEST = ROOT / "prebuilt/lwjgl3/modern-slot.manifest.json"
 MODULES = {"lwjgl": "liblwjgl.so", "lwjgl-opengl": "liblwjgl_opengl.so", "lwjgl-stb": "liblwjgl_stb.so",
-           "lwjgl-tinyfd": "liblwjgl_tinyfd.so", "lwjgl-vma": "liblwjgl_vma.so", "lwjgl-spng": "liblwjgl_spng.so"}
+           "lwjgl-tinyfd": "liblwjgl_tinyfd.so", "lwjgl-vma": "liblwjgl_vma.so", "lwjgl-spng": "liblwjgl_spng.so",
+           # 扩展模块也必须绑定最终 OHOS native 指纹；只复制 Java JAR 会产生半交付。
+           "lwjgl-nanovg": "liblwjgl_nanovg.so", "lwjgl-opengles": "liblwjgl_opengles.so"}
 
 
 def digest(data, algorithm="sha256"): return hashlib.new(algorithm, data).hexdigest()

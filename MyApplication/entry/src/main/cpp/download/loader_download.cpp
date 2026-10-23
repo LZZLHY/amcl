@@ -2,6 +2,8 @@
  * loader_download.cpp — 任务级封装
  */
 #include "loader_download.h"
+#include "download_execution_context.h"
+#include "engine.h"
 
 #include <hilog/log.h>
 #include <sys/stat.h>
@@ -35,14 +37,6 @@ int64_t nowMs() {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// 与并行批次新增的 NetFile::Config::task_id 兼容；字段合入后会走首个 overload。
-template <typename T>
-auto publishTaskId(T& cfg, uint64_t task_id, int) -> decltype(cfg.task_id = task_id, void()) {
-    cfg.task_id = task_id;
-}
-template <typename T>
-void publishTaskId(T&, uint64_t, long) {}
-
 bool isTerminalFileState(NetState state) {
     return state == NetState::Finished || state == NetState::Failed || state == NetState::Aborted;
 }
@@ -51,8 +45,11 @@ bool isTerminalFileState(NetState state) {
 
 LoaderDownload::LoaderDownload(Config cfg) : cfg_(std::move(cfg)) {
     files_.reserve(cfg_.files.size());
-    for (auto& fc : cfg_.files) {
-        publishTaskId(fc, cfg_.task_id, 0);
+    for (auto fc : cfg_.files) {
+        // cfg_ 是不可变任务规格；必须复制到可写文件规格后显式传入真实批次 ID。
+        // 旧 SFINAE 对 const Config 的赋值不成立，会静默落到空重载，导致文件 ID 为 0，
+        // 后续 multi 公平队列、worker retry/grow 和活动归属失去原批次身份。
+        fc.task_id = cfg_.task_id;
         auto f = std::make_shared<NetFile>(std::move(fc));
         f->setOwner(this);
         files_.push_back(f);
@@ -92,7 +89,20 @@ void LoaderDownload::onStart() {
     consecutive_meta_failures_.store(0, std::memory_order_release);
 
     transitTo(LoadState::Loading);
-    if (files_.empty()) transitTo(LoadState::Finished);
+    LoadState preserved_result = LoadState::Waiting;
+    {
+        std::lock_guard<std::mutex> completion_lk(completion_mu_);
+        // 取消可在最后一个文件已 Finished、Loader 聚合尚未完成时获胜；resume 保留
+        // 全部成功文件后 startup 不会再收到 callback，须在这里按已归集结果同步收敛。
+        // 同样检查失败/取消分类，不能把子集 retry 保留的失败文件一并洗成成功。
+        if (completed_files_.size() == files_.size()) {
+            if (abort_requested_.load(std::memory_order_acquire) || files_aborted_count_.load() > 0)
+                preserved_result = LoadState::Aborted;
+            else if (files_failed_count_.load() > 0) preserved_result = LoadState::Failed;
+            else preserved_result = LoadState::Finished;
+        }
+    }
+    if (preserved_result != LoadState::Waiting) transitTo(preserved_result);
 }
 
 void LoaderDownload::setOnStateChanged(StateChangedCb cb) {
@@ -118,6 +128,17 @@ void LoaderDownload::setOnTerminal(std::function<void(uint64_t)> cb) {
 void LoaderDownload::trackThreadsForProgress(const std::vector<NetThreadPtr>& threads) {
     if (threads.empty()) return;
     std::lock_guard<std::mutex> lk(progress_threads_mu_);
+    // 先扩充弱引用容器，再修改身份集合；否则 push 分配失败会留下“集合已登记但
+    // 向量无此段”的半条观察记录。后续 pair/weak_ptr 复制不分配，失败可安全跳过观察。
+    const size_t required = tracked_threads_.size() + threads.size();
+    if (required > tracked_threads_.capacity()) {
+        // 保留 vector 的几何增长特性；若每个 asset 都 reserve(size+1)，数千小文件
+        // 会反复复制整张观察表，重新引入二次成本。只在容量不足时扩充。
+        const size_t capacity = tracked_threads_.capacity();
+        const size_t doubled = capacity <= tracked_threads_.max_size() / 2
+            ? capacity * 2 : tracked_threads_.max_size();
+        tracked_threads_.reserve(std::max(required, std::max<size_t>(8, doubled)));
+    }
     for (const auto& thread : threads) {
         if (!thread || !tracked_thread_ids_.insert(thread.get()).second) continue;
         tracked_threads_.push_back({thread.get(), thread});
@@ -125,6 +146,9 @@ void LoaderDownload::trackThreadsForProgress(const std::vector<NetThreadPtr>& th
 }
 
 bool LoaderDownload::isExecutionSettled() const {
+    // 用户可见终态先发布，随后才同步投递 state/complete/owner 回调；这些回调也可能
+    // 反入 Engine。全部退出前不得 purge、复位 epoch 或释放 final-path 所有权。
+    if (active_callbacks_.load(std::memory_order_acquire) != 0) return false;
     return std::all_of(files_.begin(), files_.end(), [](const NetFilePtr& file) {
         return !file || file->isExecutionSettled();
     });
@@ -159,7 +183,36 @@ void LoaderDownload::reject(DownloadExceptionPtr ex) {
     transitTo(LoadState::Failed);
 }
 
+void LoaderDownload::failSchedulingWithoutAllocation() noexcept {
+    const auto current = state();
+    if (current == LoadState::Finished || current == LoadState::Failed || current == LoadState::Aborted) return;
+    infrastructure_failure_.store(true, std::memory_order_release);
+    // 这里不能再次 makeException/string 拼接以“处理”分配失败。先取消所有实际执行，
+    // transitTo 在 callback 快照分配前就发布 Failed；即使持续 OOM 导致观察未送达，
+    // Native 查询仍读到失败且完整执行屏障仍阻止提前释放。不是全系统 OOM 恢复框架。
+    for (auto& file : files_) {
+        try { file->abort(); } catch (...) { /* 保留 owner，真实执行仍由屏障约束。 */ }
+    }
+    try { transitTo(LoadState::Failed); }
+    catch (...) { AMCL_LOG_E(LOG_TAG, "scheduling failure: terminal snapshot unavailable; query retains Failed state"); }
+    // Failed 已发布，cancelTask 的 Loader.abort 因终态而幂等，不会改成用户取消；仍沿
+    // 现有 Engine 通道唤醒多路循环，避免另一文件卡在 120s Retry-After 睡眠直到旧期限。
+    // 所有调用点均在 lifecycle/task/file 锁外进入此降级方法。
+    try { DownloadEngine::instance().cancelTask(cfg_.task_id); }
+    catch (...) { AMCL_LOG_E(LOG_TAG, "scheduling failure cancellation wake unavailable; execution remains guarded"); }
+}
+
 void LoaderDownload::transitTo(LoadState new_state) {
+    DownloadExecutionContext callback_context;
+    // 在终态 CAS 之前占用回调屏障，消除“已读到终态但回调尚未登记”的回收窗口。
+    // 局部守卫保证重复转移、异常退出也归还计数，且整个回调过程不持 Loader 的锁。
+    struct CallbackGuard {
+        std::atomic<unsigned>& count;
+        explicit CallbackGuard(std::atomic<unsigned>& value) : count(value) {
+            count.fetch_add(1, std::memory_order_acq_rel);
+        }
+        ~CallbackGuard() { count.fetch_sub(1, std::memory_order_release); }
+    } callback_guard(active_callbacks_);
     // L-4 修复：终态吸收 — 一旦进入 Finished/Failed/Aborted 任一终态，
     // 拒绝再次 transitTo。原实现仅判 `old == new_state`，可能从 Finished
     // 被误转到 Failed/Aborted（外部调用方或后续逻辑误触），导致 onComplete
@@ -356,6 +409,11 @@ void LoaderDownload::settleFile_(NetFile* f, NetState terminal_state,
         return;
     }
 
+    LoadState final_state = LoadState::Waiting;
+    bool all_done = false;
+    // 文件异常先按 NetFile 自身的锁复制，不能持 Loader.mu_ 反向进入 NetFile；后面
+    // 统一按 completion_mu_ -> mu_ 归集。reset 的 mu_/completion 两段从不嵌套。
+    DownloadExceptionPtr file_error = terminal_state == NetState::Failed ? f->error() : nullptr;
     {
         std::lock_guard<std::mutex> lk(completion_mu_);
         if (!completed_files_.insert(f).second) {
@@ -363,27 +421,27 @@ void LoaderDownload::settleFile_(NetFile* f, NetState terminal_state,
                         f->localPath().c_str());
             return;
         }
+        // 不能先发布 done 再登记 failed/error：失败 A 在 done++ 后被抢占时，最后
+        // 成功的 B 会误判 failed=0 并发出 Finished。身份去重、分类、异常、done 和
+        // 最终结果必须形成同一个临界区的完整收据，之后才允许锁外发回调。
+        if (terminal_state == NetState::Failed) {
+            files_failed_count_.fetch_add(1, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> error_lk(mu_);
+            if (!error_) error_ = std::move(file_error);
+        } else if (terminal_state == NetState::Aborted) {
+            files_aborted_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+        const size_t new_done = completed_files_.size();
+        files_done_count_.store(static_cast<int>(new_done), std::memory_order_release);
+        all_done = new_done == files_.size();
+        if (all_done) {
+            if (abort_requested_.load(std::memory_order_acquire) ||
+                files_aborted_count_.load(std::memory_order_relaxed) > 0) final_state = LoadState::Aborted;
+            else if (files_failed_count_.load(std::memory_order_relaxed) > 0) final_state = LoadState::Failed;
+            else final_state = LoadState::Finished;
+        }
     }
-
-    int new_done = files_done_count_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (terminal_state == NetState::Failed) {
-        files_failed_count_.fetch_add(1, std::memory_order_acq_rel);
-        std::lock_guard<std::mutex> lk(mu_);
-        if (!error_) error_ = f->error();
-    } else if (terminal_state == NetState::Aborted) {
-        files_aborted_count_.fetch_add(1, std::memory_order_acq_rel);
-    }
-
-    if (static_cast<size_t>(new_done) < files_.size()) return;
-
-    if (abort_requested_.load(std::memory_order_acquire) ||
-        files_aborted_count_.load(std::memory_order_acquire) > 0) {
-        transitTo(LoadState::Aborted);
-    } else if (files_failed_count_.load(std::memory_order_acquire) > 0) {
-        transitTo(LoadState::Failed);
-    } else {
-        transitTo(LoadState::Finished);
-    }
+    if (all_done) transitTo(final_state);
 }
 
 void LoaderDownload::reportFileFinished(NetFile* f) {
@@ -391,8 +449,8 @@ void LoaderDownload::reportFileFinished(NetFile* f) {
 }
 
 void LoaderDownload::reportFileAbortedBeforeStart(NetFile* f) {
-    // NetFile::abort() 只给已有 NetThread 发 token，尚未 start 的文件无法自行切到
-    // Aborted；由任务层记录一个逻辑终态，保证 files_done 与取消收敛完整。
+    // NetFile::abort() 同时记录文件 token 和取消已有段；尚未 start 的文件没有执行
+    // 侧终态 callback，由任务层记录逻辑 Aborted，保证 files_done 与取消收敛完整。
     settleFile_(f, NetState::Aborted, false);
 }
 
@@ -567,6 +625,8 @@ bool LoaderDownload::retryFailedFiles(const std::vector<std::string>& local_path
 }
 
 void LoaderDownload::tickProgress() {
+    // 直接 C++ 调用 tickProgress 也遵循同步 callback 的 shutdown 防重入合同。
+    DownloadExecutionContext callback_context;
     ProgressChangedCb cb;
     {
         std::lock_guard<std::mutex> lk(mu_);

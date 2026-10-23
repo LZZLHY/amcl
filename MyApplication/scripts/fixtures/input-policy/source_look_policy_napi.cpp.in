@@ -1,0 +1,65 @@
+/** 实际NAPI函数与唯一Native owner联合验证；仅替换SDK值读取，不复制政策/数学算法。 */
+#include "@CPP@/platform/source_look_processor.h"
+#include "@CPP@/input/delivery/look_execution.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
+#include <vector>
+constexpr int napi_ok=0,napi_invalid_arg=1;
+enum ValueType { NUMBER, BOOLEAN, STRING };
+struct Value { ValueType type; double number; bool boolean; };
+using napi_value=Value*;using napi_env=void*;
+struct Call { std::vector<Value> values; };using napi_callback_info=Call*;
+/** SDK替身保持类型错误和实际argc；参数类型转换不能悄悄通过生产解析。 */
+int napi_get_cb_info(napi_env,napi_callback_info call,size_t*argc,napi_value*out,void*,void*) {
+    if(!call||!argc)return napi_invalid_arg;
+    const auto count=std::min(*argc,call->values.size());
+    for(size_t i=0;i<count;++i)out[i]=&call->values[i];*argc=count;return napi_ok;
+}
+int napi_get_value_double(napi_env,napi_value value,double*out) {
+    if(!value||value->type!=NUMBER)return napi_invalid_arg;*out=value->number;return napi_ok;
+}
+int napi_get_value_bool(napi_env,napi_value value,bool*out) {
+    if(!value||value->type!=BOOLEAN)return napi_invalid_arg;*out=value->boolean;return napi_ok;
+}
+namespace amcl::napi { Value result{BOOLEAN,0,false};
+napi_value MakeBoolResult(napi_env,bool accepted){result.boolean=accepted;return &result;} }
+@NAPI_FUNCTION@
+#define CHECK(condition) do { if(!(condition)){std::fprintf(stderr,"SOURCE POLICY FAIL %d %s\n",__LINE__,#condition);return 1;} } while(0)
+/** 五个原参数值通过实际入口，不直接调用owner绕过解析边界。 */
+bool apply(double source,double sensitivity,bool invert,double smoothing,double accel) {
+    Call call{{{NUMBER,source,false},{NUMBER,sensitivity,false},{BOOLEAN,0,invert},
+        {NUMBER,smoothing,false},{NUMBER,accel,false}}};
+    return ApplySourceLookConfiguration(nullptr,&call)->boolean;
+}
+bool near(double a,double b){return std::abs(a-b)<1e-8;}
+int main() {
+    CHECK(amcl_apply_source_look_configuration(-1,1,false,1,0));
+    const auto physicalEpoch=amclLookPolicyEpochV1(3);
+    CHECK(apply(2,2,true,1,0));CHECK(amclLookPolicyEpochV1(3)==physicalEpoch);
+    double x=0,y=0;
+    CHECK(amcl_process_source_look_delta(3,3,4,1000000000,&x,&y));CHECK(near(x,3)&&near(y,4));
+    CHECK(amcl_process_source_look_delta(2,3,4,1000000000,&x,&y));CHECK(near(x,6)&&near(y,-8));
+    CHECK(!apply(2.25,1,false,1,0));CHECK(!apply(-1,1,false,1,0));CHECK(!apply(4,1,false,1,0));
+    CHECK(!apply(std::numeric_limits<double>::infinity(),1,false,1,0));
+    const auto before=amclLookPolicyEpochV1(2);
+    CHECK(!apply(2,1,false,9,0));CHECK(amclLookPolicyEpochV1(2)==before);
+    CHECK(amcl_process_source_look_delta(2,1,2,2000000000,&x,&y));CHECK(near(x,2)&&near(y,-4));
+    Call bad{{{NUMBER,2,false},{NUMBER,1,false},{STRING,0,false},{NUMBER,1,false},{NUMBER,0,false}}};
+    CHECK(!ApplySourceLookConfiguration(nullptr,&bad)->boolean);
+    bad.values.pop_back();CHECK(!ApplySourceLookConfiguration(nullptr,&bad)->boolean);
+    // touch与gyro同政策、分开时钟/积分；gyro不能继承手指平滑，也不能拿走其旧尾量。
+    CHECK(apply(1,2,true,.5,0));
+    CHECK(amcl_process_source_look_delta(1,10,0,3000000000,&x,&y));CHECK(near(x,10));
+    CHECK(amcl_process_touch_gyro_delta(3,4,2000000000,&x,&y));CHECK(near(x,6)&&near(y,-8));
+    CHECK(apply(1,1,false,1,0));
+    CHECK(amcl_flush_source_look_delta(1,true,&x,&y));CHECK(near(x,10)&&near(y,0));
+    // 明确未标记兼容0与物理3不同；重申相同值幂等，不推进epoch或其它来源。
+    CHECK(apply(0,3,false,1,0));CHECK(apply(3,2,false,.1,0));const auto epoch=amclLookPolicyEpochV1(3);
+    CHECK(apply(3,2,false,.1,0));CHECK(amclLookPolicyEpochV1(3)==epoch);
+    CHECK(amcl_process_source_look_delta(0,1,0,4000000000,&x,&y));CHECK(near(x,3));
+    CHECK(amcl_process_source_look_delta(3,1,0,4000000000,&x,&y));CHECK(near(x,2));
+    std::puts("source look policy actual NAPI/Core/owner checks passed");return 0;
+}

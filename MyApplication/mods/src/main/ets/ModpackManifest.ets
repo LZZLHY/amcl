@@ -48,6 +48,8 @@ export interface ModpackFile {
   urls: string[];
   /** Modrinth 提供 sha1；CurseForge 无。 */
   sha1?: string;
+  /** 保留来源的强哈希，收据/补齐复查不能只剩文件名。 */
+  sha512?: string;
   /** 文件字节数；未知为 0。 */
   size: number;
   /** 客户端需求级别。 */
@@ -58,6 +60,23 @@ export interface ModpackFile {
   cfFileId?: number;
   /** 给用户看的名字（缺失提示用）。 */
   fileNameHint?: string;
+}
+
+/** 解析/下载缺失事实；保存来源身份和落点，供原实例补齐与手动下载使用。 */
+export interface ModpackProblem {
+  name: string;
+  reason: string;
+  url?: string;
+  path?: string;
+  cfProjectId?: number;
+  cfFileId?: number;
+  required?: boolean;
+}
+
+/** 用户选择与缺失条目使用来源精确身份，CF 解析前后文件名变化不改变其 key。 */
+export function modpackFileKey(file: ModpackFile): string {
+  return file.cfProjectId !== undefined && file.cfFileId !== undefined
+    ? 'cf:' + file.cfProjectId + ':' + file.cfFileId : file.path;
 }
 
 /** 归一化后的统一安装计划 */
@@ -72,6 +91,8 @@ export interface ModpackPlan {
   files: ModpackFile[];
   /** ZIP 内要铺到实例的 overrides 目录（按顺序后者覆盖前者）。 */
   overrideDirs: string[];
+  /** 无法构造下载文件的清单条目也必须进入最终缺失统计，不能只藏在 warnings。 */
+  problems: ModpackProblem[];
 }
 
 /** 解析结果：计划 + 解析阶段已知的告警（缺字段 / 跳过的文件等）。 */
@@ -160,10 +181,27 @@ export function parseModrinthIndex(jsonText: string): ParsedModpack {
   }
   let warnings: string[] = [];
 
+  if (raw === null || typeof raw !== 'object' || raw.formatVersion !== 1 || raw.game !== 'minecraft') {
+    throw new Error('不支持的 Modrinth 格式：需要 formatVersion=1、game=minecraft');
+  }
+  if (!Array.isArray(raw.files)) throw new Error('Modrinth 清单 files 必须是数组');
+  let problems: ModpackProblem[] = [];
+
   let deps: Record<string, string> | undefined = raw.dependencies;
+  if (deps !== undefined && (deps === null || typeof deps !== 'object' || Array.isArray(deps))) {
+    throw new Error('Modrinth dependencies 必须是版本对象');
+  }
   let gameVersion: string = depGet(deps, 'minecraft');
   if (gameVersion.length === 0) {
     throw new Error('modrinth.index.json 缺少 dependencies.minecraft');
+  }
+  if (safeBaseName(gameVersion) !== gameVersion) throw new Error('清单 Minecraft 版本名称不安全');
+  // 未知依赖不能静默退化为原版；只检查容器声明，不解释模组内部兼容性。
+  let dependencyNames: string[] = deps === undefined ? [] : Object.keys(deps);
+  for (let key of dependencyNames) {
+    if (['minecraft', 'fabric-loader', 'quilt-loader', 'forge', 'neoforge'].indexOf(key) < 0) {
+      throw new Error('暂不支持清单依赖：' + key);
+    }
   }
 
   // loader：按优先级取第一个出现的（一个整合包只会有一个 loader）
@@ -173,6 +211,9 @@ export function parseModrinthIndex(jsonText: string): ParsedModpack {
   let quilt: string = depGet(deps, 'quilt-loader');
   let forge: string = depGet(deps, 'forge');
   let neoforge: string = depGet(deps, 'neoforge');
+  if ([fabric, quilt, forge, neoforge].filter((version: string): boolean => version.length > 0).length > 1) {
+    throw new Error('整合包声明了多个互斥加载器，无法确定基础版本');
+  }
   if (fabric.length > 0) {
     loaderType = ModpackLoader.FABRIC; loaderVersion = fabric;
   } else if (quilt.length > 0) {
@@ -189,17 +230,22 @@ export function parseModrinthIndex(jsonText: string): ParsedModpack {
   let rawFiles: MrIndexFile[] = raw.files ?? [];
   for (let f of rawFiles) {
     let rawPath: string = f.path ?? '';
-    if (rawPath.length === 0) { warnings.push('跳过一个缺少 path 的文件条目'); continue; }
+    if (typeof rawPath !== 'string' || rawPath.length === 0) {
+      problems.push({ name: '未命名文件', reason: '清单缺少有效 path', required: true }); continue;
+    }
     // 安全校验：拒绝绝对路径 / 盘符 / .. 逃逸（防 zip-slip 写出实例目录外）
     let path: string = safeRelPath(rawPath);
-    if (path.length === 0) { warnings.push('跳过一个非法路径的文件条目：' + rawPath); continue; }
+    if (path.length === 0) {
+      problems.push({ name: rawPath, reason: '清单文件路径不安全，未写入实例', required: true }); continue;
+    }
     let env: ModpackEnv = mrEnvOf(f.env);
     // 纯服务端文件不装到客户端
     if (env === ModpackEnv.UNSUPPORTED) { continue; }
     let downloads: string[] = f.downloads ?? [];
-    if (downloads.length === 0) {
-      warnings.push('文件缺少下载地址，已跳过：' + path);
-      continue;
+    if (!Array.isArray(downloads)) throw new Error('清单文件 downloads 必须是数组');
+    // 空地址保留在计划中；必需项计入缺失，可选项仍可由用户明确取消选择。
+    for (let url of downloads) {
+      if (typeof url !== 'string' || !url.startsWith('https://')) throw new Error('整合包下载地址必须为 HTTPS');
     }
     let hashes: MrIndexHashes = f.hashes ?? {};
     let file: ModpackFile = {
@@ -210,6 +256,18 @@ export function parseModrinthIndex(jsonText: string): ParsedModpack {
       fileNameHint: baseName(path),
     };
     if (hashes.sha1 !== undefined && hashes.sha1.length > 0) file.sha1 = hashes.sha1;
+    if (hashes.sha512 !== undefined && hashes.sha512.length > 0) file.sha512 = hashes.sha512;
+    if (file.sha1 !== undefined && !new RegExp('^[a-fA-F0-9]{40}$').test(file.sha1)) {
+      throw new Error('整合包文件 SHA-1 无效：' + path);
+    }
+    if (file.sha512 !== undefined && !new RegExp('^[a-fA-F0-9]{128}$').test(file.sha512)) {
+      throw new Error('整合包文件 SHA-512 无效：' + path);
+    }
+    if (file.sha1 === undefined) throw new Error('Modrinth 文件缺少必需的 SHA-1：' + path);
+    if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error('清单文件大小无效：' + path);
+    if (files.some((existing: ModpackFile): boolean => existing.path === path)) {
+      throw new Error('整合包清单包含重复目标路径：' + path);
+    }
     files.push(file);
   }
 
@@ -223,6 +281,7 @@ export function parseModrinthIndex(jsonText: string): ParsedModpack {
     summary: raw.summary ?? '',
     files,
     overrideDirs: ['overrides', 'client-overrides'],
+    problems,
   };
   return { plan, warnings };
 }
@@ -232,6 +291,7 @@ function mrEnvOf(env?: MrIndexFileEnv): ModpackEnv {
   let client: string = (env !== undefined && env.client !== undefined) ? env.client : 'required';
   if (client === 'unsupported') return ModpackEnv.UNSUPPORTED;
   if (client === 'optional') return ModpackEnv.OPTIONAL;
+  if (client !== 'required') throw new Error('不支持的客户端环境声明：' + client);
   return ModpackEnv.REQUIRED;
 }
 
@@ -252,11 +312,18 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
   }
   let warnings: string[] = [];
 
+  if (raw === null || typeof raw !== 'object' || raw.manifestType !== 'minecraftModpack' || raw.manifestVersion !== 1) {
+    throw new Error('不支持的 CurseForge 格式：需要 minecraftModpack、manifestVersion=1');
+  }
+  if (!Array.isArray(raw.files)) throw new Error('CurseForge 清单 files 必须是数组');
+  let problems: ModpackProblem[] = [];
+
   let mc: CfMinecraft = raw.minecraft ?? {};
   let gameVersion: string = mc.version ?? '';
-  if (gameVersion.length === 0) {
+  if (typeof gameVersion !== 'string' || gameVersion.length === 0) {
     throw new Error('manifest.json 缺少 minecraft.version');
   }
+  if (safeBaseName(gameVersion) !== gameVersion) throw new Error('CurseForge Minecraft 版本名称不安全');
 
   // modLoaders：取 primary，否则首个
   let loaderId: string = '';
@@ -275,7 +342,7 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
     loaderType = parsed.type;
     loaderVersion = parsed.version;
     if (loaderType === ModpackLoader.NONE) {
-      warnings.push('无法识别的加载器标识：' + loaderId);
+      throw new Error('暂不支持整合包声明的加载器：' + loaderId);
     }
   } else {
     warnings.push('整合包未声明 mod 加载器，将作为原版安装');
@@ -286,7 +353,10 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
   for (let f of rawFiles) {
     let pid: number = f.projectID ?? 0;
     let fid: number = f.fileID ?? 0;
-    if (pid <= 0 || fid <= 0) { warnings.push('跳过一个缺少 projectID/fileID 的文件条目'); continue; }
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(fid) || pid <= 0 || fid <= 0) {
+      problems.push({ name: 'CF 文件 ' + pid + '/' + fid, reason: '清单 projectID/fileID 无效', required: f.required !== false });
+      continue;
+    }
     let env: ModpackEnv = (f.required === false) ? ModpackEnv.OPTIONAL : ModpackEnv.REQUIRED;
     let file: ModpackFile = {
       path: '',            // CF 文件名/路径在解析下载 URL 时确定（落到 mods/）
@@ -304,7 +374,7 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
   let overrides: string = safeRelPath(overridesRaw);
   let overrideDirs: string[] = [];
   if (overrides.length === 0) {
-    warnings.push('忽略非法 overrides 路径：' + overridesRaw);
+    problems.push({ name: overridesRaw, reason: 'overrides 路径不安全，未应用覆盖文件', required: true });
   } else {
     overrideDirs.push(overrides);
   }
@@ -318,6 +388,7 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
     summary: '',
     files,
     overrideDirs,
+    problems,
   };
   return { plan, warnings };
 }
@@ -369,6 +440,7 @@ export function safeBaseName(name: string): string {
 function depGet(deps: Record<string, string> | undefined, key: string): string {
   if (deps === undefined) return '';
   let v: string | undefined = deps[key];
+  if (v !== undefined && typeof v !== 'string') throw new Error('清单依赖版本必须是字符串：' + key);
   return v ?? '';
 }
 

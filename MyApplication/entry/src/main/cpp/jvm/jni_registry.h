@@ -16,7 +16,8 @@ extern "C" {
 /** launchId 必须非零；成功为 JNI_OK，重复发布、环境写入失败等均返回 JNI_ERR。 */
 int publishCallbackBridgeHostV1(uint64_t launchId);
 
-/** 撤销原生入口和环境发现线索；不 UnregisterNatives，也不假装能卸载已经运行的 JVM。 */
+/** 撤销原生入口（getter 此后返回 NULL）；环境描述符文本保留在预登记槽位里、不 unsetenv
+ * （JVM 线程仍在运行，I27-05）。不 UnregisterNatives，也不假装能卸载已经运行的 JVM。 */
 void revokeCallbackBridgeHostV1(void);
 
 #ifdef __cplusplus

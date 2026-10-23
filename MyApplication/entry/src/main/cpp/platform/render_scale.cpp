@@ -94,4 +94,35 @@ double MapY(double y) {
     return MapAxis(y, real, scaled);
 }
 
+/** 同一菜单ACK的两轴必须用同一有效比例，不能用两个独立MapX/MapY读取拼出跨快照逆变换。 */
+bool UnmapWindowPoint(double x,double y,double* surfaceX,double* surfaceY) {
+    if(!surfaceX || !surfaceY || !std::isfinite(x) || !std::isfinite(y)) return false;
+    const uint64_t packed=g_snapshot.load(std::memory_order_acquire);
+    double resultX=x,resultY=y;
+    if(packed!=0) {
+        const int realW=static_cast<int>((packed>>48)&0xFFFF),realH=static_cast<int>((packed>>32)&0xFFFF);
+        const int scaledW=static_cast<int>((packed>>16)&0xFFFF),scaledH=static_cast<int>(packed&0xFFFF);
+        resultX=MapAxis(x,scaledW,realW);resultY=MapAxis(y,scaledH,realH);
+    }
+    if(!std::isfinite(resultX) || !std::isfinite(resultY)) return false;
+    *surfaceX=resultX;*surfaceY=resultY;return true;
+}
+
+/** 位移与限制来自同一几何样本；即使两个轴独立缩放也不读出混合snapshot。 */
+bool MapPointerDelta(double dx,double dy,double maxX,double maxY,
+                     double* windowDx,double* windowDy,double* windowMaxX,double* windowMaxY) {
+    if(!windowDx || !windowDy || !windowMaxX || !windowMaxY || !std::isfinite(dx) || !std::isfinite(dy) ||
+       !std::isfinite(maxX) || !std::isfinite(maxY) || maxX<0 || maxY<0) return false;
+    const uint64_t packed=g_snapshot.load(std::memory_order_acquire);
+    double x=dx,y=dy,mx=maxX,my=maxY;
+    if(packed!=0) {
+        const int realW=static_cast<int>((packed>>48)&0xFFFF),realH=static_cast<int>((packed>>32)&0xFFFF);
+        const int scaledW=static_cast<int>((packed>>16)&0xFFFF),scaledH=static_cast<int>(packed&0xFFFF);
+        x=MapAxis(dx,realW,scaledW);mx=MapAxis(maxX,realW,scaledW);
+        y=MapAxis(dy,realH,scaledH);my=MapAxis(maxY,realH,scaledH);
+    }
+    if(!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(mx) || !std::isfinite(my)) return false;
+    *windowDx=x;*windowDy=y;*windowMaxX=mx;*windowMaxY=my;return true;
+}
+
 }  // namespace amcl::renderscale

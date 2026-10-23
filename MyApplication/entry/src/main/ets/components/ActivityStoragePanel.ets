@@ -1,13 +1,16 @@
 /** 活动账本占用面板。统计异步、离页取消；只操作保留设置和提醒，删除在活动详情确认。 */
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { ThemeColors, ActivityStorageGroup, ActivityStorageItem, readActivityStorage, formatLogBytes,
-  activityStorageAlert, setActivityStorageAlert, ledgerSetPinned } from 'commons';
+  activityStorageAlert, setActivityStorageAlert, ledgerSetPinnedAsync } from 'commons';
 
 @Component
 export struct ActivityStoragePanel {
   @Prop theme: ThemeColors = new ThemeColors();
   onOpenActivity: (activityId: number) => void = () => {};
+  /** 只收起原账本占用 Sheet；选择活动后的延迟导航仍由宿主 onDisappear 执行。 */
+  onClose: () => void = () => {};
   @State private groups: ActivityStorageGroup[] = [];
   @State private total: number = 0;
   @State private busy: boolean = false;
@@ -19,7 +22,7 @@ export struct ActivityStoragePanel {
   private context: common.UIAbilityContext | undefined = AppStorage.get<common.UIAbilityContext>('uiAbilityContext');
 
   aboutToAppear(): void { this.active = true; this.refresh_(); }
-  aboutToDisappear(): void { this.active = false; this.generation++; }
+  aboutToDisappear(): void { this.active = false; this.generation++; this.busy = false; }
 
   private async refresh_(): Promise<void> {
     const context = this.context;
@@ -30,7 +33,7 @@ export struct ActivityStoragePanel {
       const result = await readActivityStorage(context.filesDir, (): boolean => !this.active || generation !== this.generation);
       if (!this.active || generation !== this.generation) return;
       this.groups = result.groups; this.total = result.bytes; this.error = result.issues.join('；');
-    } catch (e) { if (this.active) this.error = '占用统计未完成：' + (e as Error).message; }
+    } catch (e) { if (this.active && generation === this.generation) this.error = '占用统计未完成：' + (e as Error).message; }
     finally { if (generation === this.generation) this.busy = false; }
   }
 
@@ -48,17 +51,43 @@ export struct ActivityStoragePanel {
     }).catch((): void => {});
   }
 
-  private pin_(item: ActivityStorageItem): void {
-    if (this.context === undefined || this.busy) return;
-    try { ledgerSetPinned(this.context.filesDir, item.activityId, !item.pinned); this.refresh_(); }
-    catch (e) { this.error = '保留设置未保存：' + (e as Error).message; }
+  /**
+   * 保留修改排入本活动canonical写门，等待耐久完成再刷新；不能同步覆盖恢复事务的旧快照。
+   * 忙态挡住重复点击，离页只撤销展示资格，不撤销用户已派发的持久保存意图。
+   */
+  private async pin_(item: ActivityStorageItem): Promise<void> {
+    if (this.context === undefined || this.busy || !this.active) return;
+    const generation: number = ++this.generation;
+    this.busy = true; this.error = '';
+    let saved: boolean = false;
+    try {
+      await ledgerSetPinnedAsync(this.context.filesDir, item.activityId, !item.pinned);
+      saved = true;
+    } catch (e) {
+      if (this.active && generation === this.generation) this.error = '保留设置未保存：' + (e as Error).message;
+    } finally {
+      if (this.active && generation === this.generation) {
+        this.busy = false;
+        if (saved) await this.refresh_();
+      }
+    }
   }
 
   build() {
+    Column() {
+    ImmersiveTitleScaffold({ title: '账本占用与保留', theme: this.theme, surfaceColor: this.theme.bgPrimary,
+      modal: true, closeLabel: '关闭账本占用与保留', onClose: (): void => { this.onClose(); },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
+    }.width('100%').height('100%')
+  }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
     Column({ space: 12 }) {
-      Text('账本占用与保留').fontSize(22).fontWeight(600).fontColor(this.theme.textPrimary).width('100%');
       Row() {
-        Text(formatLogBytes(this.total)).fontSize(24).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1);
+        Text(this.total < 0 ? '占用暂不可读' : formatLogBytes(this.total)).fontSize(24).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1);
         Button('刷新').height(44).enabled(!this.busy).onClick(() => { this.refresh_(); });
       }.width('100%');
       Text('游戏按每版本保留数量；已保留和运行中的活动不会自动清理。普通活动的 64 MiB 预算不限制游戏总占用。')
@@ -79,7 +108,7 @@ export struct ActivityStoragePanel {
                 Row({ space: 8 }) {
                   Text(group.title || '其他活动').fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1)
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis });
-                  Text(formatLogBytes(group.bytes) + ' · ' + group.items.length + ' 条').fontSize(12).fontColor(this.theme.primary);
+                  Text((group.bytes < 0 ? '占用未知' : formatLogBytes(group.bytes)) + ' · ' + group.items.length + ' 条').fontSize(12).fontColor(this.theme.primary);
                 }.width('100%');
               }.width('100%').padding(12).backgroundColor(this.theme.bgCard).onClick(() => { this.expandedKey = this.expandedKey === group.key ? '' : group.key; });
               if (this.expandedKey === group.key) {
@@ -88,7 +117,7 @@ export struct ActivityStoragePanel {
                     Button() {
                       Column({ space: 4 }) {
                         Text(new Date(item.activityId).toLocaleString()).fontSize(12).fontColor(this.theme.textPrimary);
-                        Text(formatLogBytes(item.bytes) + (item.running ? ' · 进行中' : '')).fontSize(12).fontColor(this.theme.textSecondary);
+                        Text((item.bytes < 0 ? '占用未知' : formatLogBytes(item.bytes)) + (item.running ? ' · 进行中' : '')).fontSize(12).fontColor(this.theme.textSecondary);
                       }.alignItems(HorizontalAlign.Start);
                     }.layoutWeight(1).height(52).backgroundColor(Color.Transparent).onClick(() => { this.onOpenActivity(item.activityId); });
                     Button(item.pinned ? '取消保留' : '保留').height(44).fontSize(12).enabled(!this.busy)
@@ -101,5 +130,5 @@ export struct ActivityStoragePanel {
         }, (group: ActivityStorageGroup): string => group.key);
       }.width('100%').layoutWeight(1);
     }.width('100%').height('100%').padding(20).alignItems(HorizontalAlign.Start).backgroundColor(this.theme.bgPrimary);
-  }
+    }
 }

@@ -8,11 +8,13 @@ import { mkdtempSync } from 'node:fs';
 import {
   mkdirSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { isDesktopImplementationInputPath } from './check-desktop-build-contract.mjs';
 import {
   classifyMobileGluesCompileRows,
   ContractError,
@@ -641,6 +643,69 @@ try {
     throw new Error('invalid provenance timestamp must fail closed');
   }
   console.log('[test-check-mg-build-contract] PASS: provenance survives artifact mtime changes');
+
+  // AOCI 是 Agent 管理资产，当前 Hvigor、CMake 和 HAP 没有消费这些文件。仅明确
+  // 排除根治理目录和准确索引名，不能把所有点目录、txt/json 或含 aoci 的源码
+  // 一起排除；后者会让真实实现改动绕过桌面来源摘要及 HAP 时序核验。
+  const agentOnlyPaths = [
+    '.aoci/baseline.json', '.aoci/config.json', '.aoci/transactions/pending.json',
+    '.aoci/hooks/after-write.mjs', '.aoci/drafts/candidate.txt',
+    'aoci.txt', 'aoci.meta.txt', 'aoci.code.txt', 'aoci.database.txt',
+  ];
+  for (const name of agentOnlyPaths) {
+    if (isDesktopImplementationInputPath(name)) {
+      throw new Error('Agent governance asset must not masquerade as an implementation input: ' + name);
+    }
+  }
+  const requiredSourcePaths = [
+    'entry/src/main/ets/pages/Index.ets', 'entry/src/main/cpp/download/net_thread.cpp',
+    'entry/src/main/cpp/CMakeLists.txt', 'JavaApp/src/com/amcl/launcher/Launcher.java',
+    'hvigorfile.ts', 'entry/hvigorfile.ts', 'build-profile.json5', 'toolchain.lock',
+    'config/products.json', 'entry/src/main/resources/rawfile/runtime-catalog/builtin.json',
+    'scripts/check-desktop-build-contract.mjs', '.config/source.json',
+    '.aoci2/baseline.json', 'config/aoci.json', 'aoci.config.json', 'aoci-fixture.txt', 'aoci.database-schema.txt',
+    'entry/src/main/ets/AociPolicy.ets', 'entry/src/main/resources/rawfile/aoci.txt',
+  ];
+  for (const name of requiredSourcePaths) {
+    if (!isDesktopImplementationInputPath(name)) {
+      throw new Error('AOCI classification must retain real or independently named implementation inputs: ' + name);
+    }
+  }
+  for (const name of ['', 'docs/aoci.txt', 'prebuilt/library/source.cpp', 'README.md', 'asset.png']) {
+    if (isDesktopImplementationInputPath(name)) {
+      throw new Error('Existing implementation-input scope changed unexpectedly: ' + name);
+    }
+  }
+  console.log('[test-check-mg-build-contract] PASS: only explicit root AOCI assets are excluded from implementation inputs');
+
+  // 直接通过生产分类器选择待取证文件，再用生产 fileRecord 取实际字节摘要。治理
+  // 文件在 HAP 之后变化不改变所选实现集合；同样时序下 C++ 字节变动仍进入摘要，
+  // 确保修复不靠关闭摘要/时序核验或冻结外部 Agent 的动态资产来获得通过。
+  const implementationPath = 'entry/src/main/cpp/coordinate-fixture.cpp';
+  const governancePath = '.aoci/baseline.json';
+  for (const name of [implementationPath, governancePath]) ensureParent(join(fixtureRoot, name));
+  writeFileSync(join(fixtureRoot, implementationPath), 'int coordinate_fixture = 1;\n');
+  writeFileSync(join(fixtureRoot, governancePath), '{"generation":1}\n');
+  const selectedInputNames = [implementationPath, governancePath].filter(isDesktopImplementationInputPath);
+  const initialInputRecords = selectedInputNames.map(name => fileRecord(fixtureRoot, join(fixtureRoot, name)));
+  writeFileSync(join(fixtureRoot, governancePath), '{"generation":2}\n');
+  utimesSync(join(fixtureRoot, governancePath), Date.now() / 1000 + 120, Date.now() / 1000 + 120);
+  const afterAgentRecords = selectedInputNames.map(name => fileRecord(fixtureRoot, join(fixtureRoot, name)));
+  const fixtureHapTime = statSync(paths.hapPath).mtimeMs;
+  const newerAfterAgent = selectedInputNames.filter(name => statSync(join(fixtureRoot, name)).mtimeMs > fixtureHapTime + 1000);
+  if (selectedInputNames.length !== 1 || selectedInputNames[0] !== implementationPath
+      || JSON.stringify(initialInputRecords) !== JSON.stringify(afterAgentRecords) || newerAfterAgent.length !== 0) {
+    throw new Error('Dynamic governance changes must not change the selected implementation evidence');
+  }
+  writeFileSync(join(fixtureRoot, implementationPath), 'int coordinate_fixture = 2;\n');
+  utimesSync(join(fixtureRoot, implementationPath), Date.now() / 1000 + 120, Date.now() / 1000 + 120);
+  const changedImplementationRecords = selectedInputNames.map(name => fileRecord(fixtureRoot, join(fixtureRoot, name)));
+  const newerAfterSource = selectedInputNames.filter(name => statSync(join(fixtureRoot, name)).mtimeMs > fixtureHapTime + 1000);
+  if (JSON.stringify(initialInputRecords) === JSON.stringify(changedImplementationRecords)
+      || newerAfterSource.length !== 1 || newerAfterSource[0] !== implementationPath) {
+    throw new Error('Real C++ implementation changes must remain observable in source evidence');
+  }
+  console.log('[test-check-mg-build-contract] PASS: dynamic AOCI changes preserve source evidence and real C++ changes invalidate it');
 
   // Behavioural translator passes are asserted from the artifact's .rodata,
   // because the source tree staying self-consistent is exactly what let one of

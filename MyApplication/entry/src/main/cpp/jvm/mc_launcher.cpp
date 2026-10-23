@@ -1,4 +1,6 @@
 #include "../platform/native_gl.h"
+#include "update_install_lease.h"
+#include <memory>
 #include "../platform/graphics_runtime_binding.h"
 #include "../platform/graphics_observation_abi.h"
 #include "../platform/graphics_fault_injection.h"
@@ -26,6 +28,8 @@
 #include "jvm_launcher.h"
 #include "game_process_exit.h"
 #include "runtime_bootstrap_contract.h"
+#include "input_launch_plan.h"
+#include "input_library_claim.h"
 #include "jna_runtime_contract.h"
 #include <sys/syscall.h>
 #include "jni_registry.h"
@@ -41,6 +45,11 @@
 // 渲染分辨率缩放（-Damcl.render.scale）：解析纯函数 + 启动时机补偿钩子（契约见该头）。
 #include "../platform/render_scale.h"
 #include "../platform/graphics_plan.h"
+// 菜单游标回执只认本局实际输入consumer；启动时用已冻结slot/window绑定，不按最后活跃库猜测。
+#include "../input/input_menu_cursor_snapshot.h"
+// I27-05：进程环境静态槽位（重启标记、SDL 宿主身份）与建 JVM 前的封存。
+#include "../platform/env_publication.h"
+#include "../platform/env_slot.h"
 #include "graphics_launch_failure.h"
 
 #include <hilog/log.h>
@@ -989,6 +998,43 @@ static void forceDisableForgeEarlyWindow(const std::string& gameDir) {
  * 也不通过 FindClass 初始化 LWJGL、SDL 或 CallbackBridge。发布后同一 JVM 不会再启动第二局。
  */
 static std::vector<amcl::jvm::BootstrapProperty> g_runtimeBootstrapProperties;
+// 启动入口在 JVM 前核验并冻结；启动线程仅读取。JVM 已占用后禁止启动第二局，
+// 因此这里不为页面 detach/Surface 替换清零，也不冒充实际 consumer 的 READY。
+static amcl::input::LaunchPlan g_inputLaunchPlan;
+// SDL的选定制品由进程持有，准备失败或单局结束都不卸仍可能被消费者借用的DSO。
+// 本对象在模块建立时取得PID；cold校验只声明制品协议，游戏SDK实例Ready仍由合法初始化证明。
+static amcl::input::ProcessSdlInputLibraryClaim g_sdlInputLibraryClaim;
+static bool g_inputLaunchLegacy = false;
+
+/**
+ * 将已解析输入意图与同次nativeDir解析结果组成实际启动子契约。只有SDL输入ABI装入
+ * 精确制品；候选参数/属性全成功才提交本局plan。失败保留原参数与属性，已cold装入的
+ * DSO仍归进程claim保留，不能以准备失败推断SDK/Java没有借用。成功只证明制品协议，
+ * 不SDL_Init、不open consumer、不预加载游戏Java、不宣称实际实例Ready。
+ */
+static bool phase_prepareInputArtifact(const amcl::input::LaunchPlan& plan, bool legacy,
+        const std::string& nativeDir, std::vector<std::string>& arguments,
+        std::vector<amcl::jvm::BootstrapProperty>& properties, std::string& error) {
+    if (!amcl::input::ValidLaunchPlan(plan)) { error = "InputContractMismatch:input_plan_invalid"; return false; }
+    auto candidateArguments = arguments;
+    auto candidateProperties = properties;
+    auto candidatePlan = plan;
+    if (plan.abi == "SDL3") {
+        const std::string selectedPath = nativeDir + "/" + plan.binding;
+        if ((!legacy && !amcl::input::ValidateSelectedSdlEnvironment(std::getenv("SDL3_DYNAMIC_API"), error)) ||
+            !amcl::input::FreezeSelectedSdlProperty(candidateArguments, candidateProperties, selectedPath, error) ||
+            !g_sdlInputLibraryClaim.Claim(selectedPath, legacy, error)) return false;
+        // 同实际selected库独立核control/look两个冷标识；仍没有SDL_Init或游戏consumer Ready。
+        AMCL_LOG_I(LOG_TAG, "AMCL_INPUT_ARTIFACT abi=SDL3 protocol=%{public}u look_protocol=%{public}u legacy=%{public}d selected=verified consumer_ready=0",
+            g_sdlInputLibraryClaim.Protocol(),g_sdlInputLibraryClaim.LookProtocol(), legacy ? 1 : 0);
+    }
+    arguments.swap(candidateArguments);
+    properties.swap(candidateProperties);
+    g_inputLaunchPlan = std::move(candidatePlan);
+    g_inputLaunchLegacy = legacy;
+    error.clear();
+    return true;
+}
 static bool phase_verifyRuntimeProperties(JNIEnv* env) {
     for (const auto& property : g_runtimeBootstrapProperties) {
         std::string actual;
@@ -1006,23 +1052,47 @@ static bool phase_verifyRuntimeProperties(JNIEnv* env) {
  * 发布本局 SDL 的不可变宿主描述符，不打开 SDL/GLFW，不借 Java 层提前加载 JNI core。
  * SDL 的实际实例在 InitSubSystem 入口验证 PID、系统 TID、session 后完成 main-ready。
  * 描述符一直保留到进程退出；即使主函数返回，本进程的 JVM 也已经不可复用。
+ * I27-05：本函数跑在 g_mcThread 上，此时 JVM 线程已存在，绝不 setenv。两个描述符都写进
+ * launchWithProfileImpl 在建 JVM 前预登记的文本槽位（原位填写，名字早已存在）；读者
+ * （CallbackBridge 的 JNI_OnLoad、SDL_InitSubSystem）都在本线程之后执行。空槽位视为缺席。
  */
 static bool phase_publishPlatformRuntime(uint64_t session) {
+    const auto* plan = &g_inputLaunchPlan;
+    if (!amcl::input::ValidLaunchPlan(*plan)) { g_mcStatus = "缺少已冻结的输入计划"; return false; }
+    // 不在游戏线程重装SDL或重新查协议；只核本进程已选制品的冻结事实。另一个namespace
+    // 的真实SDK实例仍须自行核自身协议/Core owner，本bootstrap不冒充那个实例READY。
+    if (plan->abi == "SDL3" && !g_sdlInputLibraryClaim.VerifiedForCurrentProcess(!g_inputLaunchLegacy)) {
+        g_mcStatus = "InputContractMismatch: SDL 输入制品尚未通过本局契约";
+        return false;
+    }
     if (publishCallbackBridgeHostV1(session) != JNI_OK) {
         g_mcStatus = "JNI bridge 宿主接口发布失败";
         return false;
     }
-    const auto* plan = amcl::graphics::ActiveGraphicsPlan();
-    if (!plan) { g_mcStatus = "缺少已激活的图形计划"; return false; }
+    // 消费实例选择只读独立输入子契约。prepare绑定本局期望ABI/session，不提前加载
+    // Java类、不宣称游戏实例READY；实际注册与线程校验仍由合法初始化入口完成。
+    uint32_t inputConsumer = 0;
+    if (plan->abi == "LWJGL2") {
+        inputConsumer = AMCL_MENU_CURSOR_BACKEND_LWJGL2;
+    } else if (plan->abi == "SDL3") {
+        inputConsumer = AMCL_MENU_CURSOR_BACKEND_SDL3;
+    } else if (plan->abi == "GLFW") {
+        inputConsumer = AMCL_MENU_CURSOR_BACKEND_GLFW;
+    }
+    if (inputConsumer == 0 || inputBridge_configureMenuCursorConsumerV1(inputConsumer, session) != 1) {
+        g_mcStatus = "游戏菜单输入消费者或会话身份绑定失败";
+        return false;
+    }
     if (plan->window == "SDL3") {
         char descriptor[128];
         const long tid = static_cast<long>(syscall(SYS_gettid));
         std::snprintf(descriptor, sizeof(descriptor), "1:%llu:%llu:%llu",
             static_cast<unsigned long long>(getpid()), static_cast<unsigned long long>(tid),
             static_cast<unsigned long long>(session));
-        const char* previous = std::getenv("AMCL_SDL_HOST_RUNTIME");
+        const char* previous = std::getenv(amcl::envslot::kSdlHostRuntimeEnv);
+        if (previous && !*previous) previous = nullptr;
         if ((previous && std::strcmp(previous, descriptor) != 0) ||
-            setenv("AMCL_SDL_HOST_RUNTIME", descriptor, 1) != 0) {
+            amcl::envslot::ProcessRegistry().Store(amcl::envslot::kSdlHostRuntimeEnv, descriptor) < 0) {
             g_mcStatus = "SDL 宿主运行身份冲突，需要重启游戏进程";
             return false;
         }
@@ -1370,7 +1440,11 @@ static bool phase_launchMain(JNIEnv* env, const std::string& mainClass,
     // 这里我们从 mainClass 推断——如果是 AmclLauncher，gameDir 在 JSON 参数中
     // 简单方案：直接用全局的 stdout 重定向目标
     extern std::string g_mcOutputLogPath; // 在 phase_redirectIO 中设置
-    if (!g_mcOutputLogPath.empty()) {
+    // stdout/stderr 已完整保存到游戏输出文件。只有本次启动显式请求实时镜像时
+    // 才创建 tail 线程；缺省不轮询文件、不拆行、不向 hilog 复制成功日志。
+    // 同步故障现场与退出封账仍使用各自原有路径，不依赖此可选观察线程。
+    const char* mirror = std::getenv("AMCL_MC_LOG_MIRROR");
+    if (!g_mcOutputLogPath.empty() && mirror && std::strcmp(mirror, "1") == 0) {
         const uint64_t generation =
             g_logTailGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
         std::thread tailThread(logTailThread, g_mcOutputLogPath, generation);
@@ -1540,7 +1614,8 @@ static void mcLaunchThreadWithProfile(std::string filesDir, std::string gameDir,
                                       std::string hapNativeDir, std::string mainClass,
                                       std::string mcClasspath,
                                       std::vector<std::string> mcArgs,
-                                      bool isForge, bool isFabric) {
+                                      bool isForge, bool isFabric,
+                                      [[maybe_unused]] std::shared_ptr<amcl::UpdateInstallReadLease> updateLease) {
     // 活动账本（L3）：本线程后续所有 MC_LAUNCHER / JVM_LAUNCHER 日志归属到这一局。
     // 必须放在函数最开头 —— 下面第一条 AMCL_LOG_I 就该被算进账本。
     AmclActivityScope actScope(amclLedgerGetLaunchActivity());
@@ -1635,6 +1710,11 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
     }
 
     // 原子认领启动事务，防止两个入口在 JVM 创建之前各自看到 false 后同时修改全局参数。
+    auto updateLease = std::make_shared<amcl::UpdateInstallReadLease>(appFilesDir);
+    if (!updateLease->acquired()) {
+        g_mcStatus = "应用正在更新，安装完成后再启动游戏";
+        return -8;
+    }
     bool expectedRunning = false;
     if (!g_mcRunning.compare_exchange_strong(expectedRunning, true)) {
         g_mcStatus = "MC 正在启动中";
@@ -1642,9 +1722,15 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
     }
     g_mcStatus = "正在启动...";
 
-    /* A normal new launch starts with an explicit clean marker.  Never clear
-     * it after the process has been tainted; the guard above rejects reuse. */
-    unsetenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART");
+    /* 干净标记是预登记槽位里的 "0"（I27-05）：模块初始化时已登记，这里只确保存在，绝不
+     * unsetenv——之后所有写者只把同一字节原位置 '1'，environ 里这个名字从不增删。
+     * 已被污染的进程在上面的守卫里就被拒绝，这里不会把 "1" 清回 "0"。 */
+    if (amcl::ohos::EnsureRendererRestartSlot() < 0) {
+        g_mcStatus = "渲染器重启标记槽位登记失败，需要重启游戏进程";
+        AMCL_LOG_E(LOG_TAG, "renderer_restart_slot_unavailable");
+        g_mcRunning = false;
+        return -1;
+    }
 
     // 重置上次启动可能残留的 extraLibPath（避免 Forge→Vanilla 切换时路径污染）
     jvmSetExtraLibPath("");
@@ -1709,6 +1795,22 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
             return -5;
         }
     }
+    // 新调用者发送独立输入计划；旧外部调用者只在没有该参数时兼容一次原槽分流。
+    // 本段先纯解析/校验，避免输入冲突在激活图形或创建JVM之后才被发现。
+    std::string inputError;
+    bool legacyInputPlan = false;
+    amcl::input::LaunchPlan inputPlan;
+    const bool inputPlanOk = amcl::input::ResolveLaunchArguments(extraJvmArgs, graphicsPlan.slot,
+        graphicsPlan.window, inputPlan, legacyInputPlan, inputError);
+    if (!inputPlanOk) {
+        g_mcStatus = "输入计划拒绝: " + inputError;
+        AMCL_LOG_E(LOG_TAG, "input_plan_rejected reason=%{public}s", inputError.c_str());
+        g_mcRunning = false;
+        return -13;
+    }
+    AMCL_LOG_I(LOG_TAG, "AMCL_INPUT_PLAN v=%{public}s abi=%{public}s slot=%{public}s window=%{public}s binding=%{public}s policy=%{public}s legacy=%{public}d ready=0",
+        inputPlan.version.c_str(), inputPlan.abi.c_str(), inputPlan.slot.c_str(), inputPlan.window.c_str(),
+        inputPlan.binding.c_str(), inputPlan.policy.c_str(), legacyInputPlan ? 1 : 0);
     if (!amcl::graphics::ActivateGraphicsPlan(graphicsPlan, graphicsError)) {
         recordGraphicsLaunchFailure(-5, "activation", graphicsError, graphicsPlan.profile);
         g_mcStatus = std::string("图形计划无法激活: ") + graphicsError;
@@ -2156,17 +2258,9 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
         }
     }
 
-    // Native Vulkan can legitimately pass loader/device creation and still
-    // stall in the post-device Java/VMA/command-encoder boundary before a
-    // window exists.  The default product already carries diagnostics, so
-    // enable a bounded Java stack sampler for this route.  It emits five
-    // snapshots at 8-second intervals and then stops; it is deliberately not
-    // enabled for OpenGL or for the desktop product.
-    if (graphicsPlan.api == "VULKAN" && (AMCL_DIAGNOSTICS_MASK & 1)) {
-        finalJvmArgs.push_back("-Damcl.watchdog=true");
-        finalJvmArgs.push_back("-Damcl.vulkan.startupWatchdog=true");
-        AMCL_LOG_I(LOG_TAG, "vulkan_startup_watchdog=bounded interval=8s rounds=5");
-    }
+    // 原生 Vulkan 与开发产品身份都不能自动授权抓取全 Java 线程栈。
+    // 需要启动排障时仍可显式传 amcl.watchdog=true 及
+    // amcl.vulkan.startupWatchdog=true，复用 Java 侧既有五轮上限。
 
     // ============================================================
     //  GC：保持 SSOT 的 SerialGC（不路由 G1）。
@@ -2230,6 +2324,20 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
     g_runtimeBootstrapProperties = amcl::jvm::RuntimeBootstrapProperties(
         hapNativeDir, gameDirStr, graphicsPlan.profile,
         nativeVulkanPlan ? glLibrary : "libamcl_graphics_runtime.so", graphicsPlan.window == "SDL3", jnaBootstrap);
+    // 与同次运行库解析得到的hapNativeDir及独立inputPlan.binding形成唯一SDL制品选择。
+    // 仅SDL输入ABI走此支；不借图形profile推输入、不按SONAME另猜一个库、不调用SDL_Init。
+    // 新应用计划要求common control v1；只有缺新marker的既有legacy计划可接受旧SDL。
+    if (!phase_prepareInputArtifact(inputPlan, legacyInputPlan, hapNativeDir,
+            finalJvmArgs, g_runtimeBootstrapProperties, inputError)) {
+        g_mcStatus = "输入运行库协议不匹配: " + inputError;
+        AMCL_LOG_E(LOG_TAG, "input_contract_rejected abi=%{public}s reason=%{public}s ready=0",
+            inputPlan.abi.c_str(), inputError.c_str());
+        g_mcRunning = false;
+        return -13;
+    }
+    // 输入参数与Native冻结计划组成同一启动事实；合法等值参数只保留一次，异值由
+    // 既有Freeze拒绝。启动线程回读时不会加载任何游戏类来探测consumer Ready。
+    g_runtimeBootstrapProperties.emplace_back("amcl.input.plan", amcl::input::SerializeLaunchPlan(g_inputLaunchPlan));
     std::string bootstrapError;
     if (!amcl::jvm::FreezeBootstrapProperties(finalJvmArgs, g_runtimeBootstrapProperties, bootstrapError)) {
         recordGraphicsLaunchFailure(-5, "bootstrap", "runtime_property_conflict", graphicsPlan.profile);
@@ -2263,24 +2371,37 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
     }
     // 只读取显式诊断属性，不干预游戏的上传/提交/帧率策略。开关在owner发布前冻结，
     // 关闭时仍保留安全恢复所需的首帧与swap失败计数；非法值保留默认并明确报告。
-    const char* observationValue = "1";
+    const char* observationValue = "0";
     const char* observationCostValue = "0";
+    const char* logMirrorValue = "0";
+    const char* audioDiagnosticsValue = "0";
     for (const auto& arg : finalJvmArgs) {
         const std::string samplePrefix = "-Damcl.graphics.observation=";
         const std::string costPrefix = "-Damcl.graphics.observation.cost=";
+        const std::string mirrorPrefix = "-Damcl.log.mirror=";
+        const std::string audioPrefix = "-Damcl.audio.diagnostics=";
         const bool sampling = arg.compare(0, samplePrefix.size(), samplePrefix) == 0;
         const bool costing = arg.compare(0, costPrefix.size(), costPrefix) == 0;
-        if (!sampling && !costing) continue;
-        const std::string value = arg.substr(sampling ? samplePrefix.size() : costPrefix.size());
+        const bool mirroring = arg.compare(0, mirrorPrefix.size(), mirrorPrefix) == 0;
+        const bool audio = arg.compare(0, audioPrefix.size(), audioPrefix) == 0;
+        if (!sampling && !costing && !mirroring && !audio) continue;
+        const std::string value = arg.substr(sampling ? samplePrefix.size() : costing ? costPrefix.size() : mirroring ? mirrorPrefix.size() : audioPrefix.size());
         if (value != "0" && value != "1") {
-            AMCL_LOG_W(LOG_TAG, "graphics_observer_option_invalid option=%{public}s", sampling ? "sampling" : "cost");
+            AMCL_LOG_W(LOG_TAG, "runtime_diagnostic_option_invalid option=%{public}s",
+                       sampling ? "sampling" : costing ? "cost" : mirroring ? "log-mirror" : "audio");
             continue;
         }
         if (sampling) observationValue = value == "0" ? "0" : "1";
-        else observationCostValue = value == "0" ? "0" : "1";
+        else if (costing) observationCostValue = value == "0" ? "0" : "1";
+        else if (mirroring) logMirrorValue = value == "0" ? "0" : "1";
+        else audioDiagnosticsValue = value == "0" ? "0" : "1";
     }
     setenv("AMCL_GRAPHICS_OBSERVATION", observationValue, 1);
     setenv("AMCL_GRAPHICS_OBSERVATION_COST", observationCostValue, 1);
+    // 每次启动覆盖旧值，避免同进程诊断重试遗留镜像线程准入。
+    setenv("AMCL_MC_LOG_MIRROR", logMirrorValue, 1);
+    // OHAudio在renderer发布回调前只读一次；不能让默认混音回调持续计时/更新性能样本。
+    setenv("AMCL_AUDIO_DIAGNOSTICS", audioDiagnosticsValue, 1);
     // 观测 owner 在 JVM 和 SDL 装载前发布；失败只丢失增强诊断，不改变图形准入结论。
     if (!amclGraphicsPublishObserverV1()) {
         AMCL_LOG_W(LOG_TAG, "graphics_observer_unavailable");
@@ -2370,6 +2491,20 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
         }
     }
 
+    // I27-05：JNI_CreateJavaVM 会创建 JVM 线程，随后 g_mcThread 启动游戏。这里补登本局只在游戏
+    // 线程原位填写的两个文本槽位（之后游戏线程只原位改值，名字早已存在）；jvmInit 认领 JVM 创建
+    // 事务时再封存登记表。本函数之后的 setenv 仅剩 jvm_launcher 在 JNI_CreateJavaVM 之前的四个
+    // JVM 前置变量；认领前的可重试失败回到这里时重复登记幂等。
+    {
+        std::string environmentError;
+        if (!amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)) {
+            g_mcStatus = "进程环境槽位登记失败，需要重启游戏进程";
+            AMCL_LOG_E(LOG_TAG, "process_environment_slots_failed detail=%{public}s", environmentError.c_str());
+            g_mcRunning = false;
+            return -1;
+        }
+    }
+
     // Phase 1: INIT_JVM（使用 ArkTS 传入的 classpath 与世代契约的 delivery）
     if (!phase_initJvmWithClasspath(filesDir, gameDirStr, std::string(classpath),
                                      xmx, jdkVersion, classpathDelivery)) {
@@ -2391,9 +2526,10 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
     bool isFabric = std::string(mainClass).find("fabricmc") != std::string::npos ||
                     std::string(mainClass).find("Knot") != std::string::npos;
 
+    // 租约随实际游戏线程结束；不能随此异步派发函数返回而提前释放。
     g_mcThread = std::thread(mcLaunchThreadWithProfile, filesDir, gameDirStr, mcDirStr,
-                             hapNativeDir, std::string(mainClass),
-                             std::string(classpath), mcArgs, isForge, isFabric);
+                             hapNativeDir, std::string(mainClass), std::string(classpath),
+                             mcArgs, isForge, isFabric, updateLease);
     g_mcThread.detach();
 
     return 0;

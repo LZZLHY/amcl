@@ -17,7 +17,9 @@
 namespace {
 struct Observation {
     const uint64_t pid = static_cast<uint64_t>(getpid());
-    const bool enabled = !std::getenv("AMCL_GRAPHICS_OBSERVATION") || std::strcmp(std::getenv("AMCL_GRAPHICS_OBSERVATION"), "0") != 0;
+    // 详细帧采样只在启动期显式请求时开启；缺省与非法环境值均保持静默。
+    // 首帧/失败原子事实和输入呈现屏障独立于此开关，不能随诊断一起裁掉。
+    const bool enabled = std::getenv("AMCL_GRAPHICS_OBSERVATION") && std::strcmp(std::getenv("AMCL_GRAPHICS_OBSERVATION"), "1") == 0;
     const bool costEnabled = std::getenv("AMCL_GRAPHICS_OBSERVATION_COST") && std::strcmp(std::getenv("AMCL_GRAPHICS_OBSERVATION_COST"), "1") == 0;
     std::atomic<uint64_t> totalFrames{0}, totalSwapFailures{0}, dropped{0}, costNs{0}, costMaxNs{0}, costCount{0};
     std::atomic<unsigned> provider{0};
@@ -183,6 +185,11 @@ const AmclGraphicsObserverV1* descriptor() {
     return value;
 }
 int enabled() { return local().enabled ? 1 : 0; }
+// Ability 前后台提示在 owner 发布之前的暂存（-1 未知，0 后台，1 前台）。原先经环境变量
+// AMCL_GRAPHICS_FOREGROUND 暂存，而它唯一的读者就是本映像的 amclGraphicsPublishObserverV1；
+// 每次前后台边沿 setenv 会在游戏期间释放并发读者持有的旧串（I27-05），因此改为映像内原子量。
+// 写者（ohos_frame_rate_hint，UI 线程）与读者（mc_launcher 启动时）都经 libentry 依赖的同一映像。
+std::atomic<int> g_foregroundHint{-1};
 }
 extern "C" int amclGraphicsPublishObserverV1() {
     if (descriptor()) return 1;
@@ -200,8 +207,8 @@ extern "C" int amclGraphicsPublishObserverV1() {
     if (!owns) delete value;
     if (!winner || setenv(AMCL_GRAPHICS_OBSERVER_ENV, winner, 1) != 0) return 0;
     const auto* api = descriptor(); if (!api) return 0;
-    const char* visible = std::getenv("AMCL_GRAPHICS_FOREGROUND");
-    if (visible) api->foreground(std::strcmp(visible, "0") != 0);
+    const int visible = g_foregroundHint.load(std::memory_order_acquire);
+    if (visible >= 0) api->foreground(visible != 0);
     return 1;
 }
 extern "C" void amclGraphicsPresentedV1(const char* provider) { if (const auto* api = descriptor()) api->presented(provider); }
@@ -222,7 +229,7 @@ extern "C" void amclGraphicsFatalV1(const char* stage, uint32_t error, uint64_t 
     if (const auto* api = descriptor()) api->fatal(stage, error, generation);
 }
 extern "C" void amclGraphicsForegroundV1(int visible) {
-    setenv("AMCL_GRAPHICS_FOREGROUND", visible ? "1" : "0", 1);
+    g_foregroundHint.store(visible ? 1 : 0, std::memory_order_release);
     if (const auto* api = descriptor()) api->foreground(visible);
 }
 extern "C" const char* amclGraphicsRuntimeJsonV1() {

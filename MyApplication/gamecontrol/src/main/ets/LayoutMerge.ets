@@ -138,6 +138,9 @@ function preserveConflict(proposed: LayoutProfile, result: Map<string, LayoutPro
     const copy: LayoutProfile = cloneLayout(proposed)
     copy.name = name
     copy.isPreset = false
+    // V1历史仍按冻结名称映射处理，但冲突副本是新的实体，不能继承child被parent占用的稳定ID。
+    copy.profileId = 'v1conflict_' + sessionId.replace(/-/g, '').slice(0, 16) + '_' + digest
+    copy.profileRevision = 1
     const existing: LayoutProfile | undefined = result.get(name)
     if (existing === undefined) { result.set(name, copy); return name }
     if (equalProfile(existing, copy)) return name

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "profile": "sdk26-win32-x64-default-arm64-bisheng-v1",
+  "scope": { "platform": "win32", "arch": "x64", "abi": "arm64-v8a", "product": "default", "mode": "debug", "nativeCompiler": "BiSheng", "sdkVersion": "26.0.0.105", "clangVersion": "15.0.4" },
+  "evidence": [
+    "toolchain.lock products.default and build-hap.ps1 default/debug gates",
+    "348 actual E compile_commands rows use sibling hms/native/BiSheng clang/clang++; Ninja deps contain 847 SDK headers",
+    "hmos.toolchain.bisheng.cmake includes OHOS toolchain and HMS sysroot; Ninja rules use aarch64-linux-ohos and OHOS sysroot",
+    "check-product-tu-syntax/check-desktop-runtime/check-input-runtime-boundary/check-graphics-runtime-artifact use compiler/readelf/nm/strings tools",
+    "SDK ETS loader/Ark compiler payload and Previewer common plus HMS mock/module/systemHsp retained conservatively for real local unit tests"
+  ],
+  "layoutMembers": {
+    "": ["hms", "openharmony", "sdk-pkg.json"],
+    "openharmony": ["ets", "js", "native", "previewer", "toolchains"],
+    "hms": ["ets", "js", "native", "previewer", "toolchains"],
+    "openharmony/native": ["build", "build-tools", "compatible_config.json", "docs", "llvm", "nativeapi_syscap_config.json", "ndk_system_capability.json", "NOTICE.txt", "oh-uni-package.json", "sysroot", "sysroot_lite"],
+    "hms/native": ["BinXO", "BiSheng", "build", "docs", "lldb", "nativeapi_syscap_config.json", "ndk_system_capability.json", "NOTICE.txt", "sysroot", "uni-package.json"],
+    "openharmony/native/llvm/lib/clang": ["15.0.4"],
+    "hms/native/BiSheng/lib/clang": ["15.0.4"],
+    "openharmony/native/sysroot/usr/lib": ["aarch64-linux-ohos", "arm-linux-ohos", "x86_64-linux-ohos"],
+    "hms/native/sysroot/usr/lib": ["aarch64-linux-ohos", "arm-linux-ohos", "x86_64-linux-ohos"],
+    "openharmony/ets/build-tools/ets-loader/bin/ark/build-win": ["aot", "bin", "legacy_api8"]
+  },
+  "trees": [
+    "openharmony/ets", "openharmony/js", "hms/ets", "hms/js",
+    "openharmony/previewer/common", "openharmony/previewer/resources",
+    "hms/previewer/apiMock", "hms/previewer/module", "hms/previewer/resources", "hms/previewer/systemHsp",
+    "openharmony/native/build", "hms/native/build", "hms/native/BinXO",
+    "openharmony/native/build-tools/cmake/bin", "openharmony/native/build-tools/cmake/share",
+    "openharmony/native/sysroot/usr/include", "hms/native/sysroot/usr/include",
+    "openharmony/native/sysroot/usr/lib/aarch64-linux-ohos", "hms/native/sysroot/usr/lib/aarch64-linux-ohos",
+    "openharmony/native/llvm/include/c++", "openharmony/native/llvm/include/libcxx-ohos",
+    "hms/native/BiSheng/include/c++", "hms/native/BiSheng/include/libcxx-ohos",
+    "openharmony/native/llvm/lib/aarch64-linux-ohos", "hms/native/BiSheng/lib/aarch64-linux-ohos",
+    "openharmony/native/llvm/lib/clang/15.0.4/include", "hms/native/BiSheng/lib/clang/15.0.4/include",
+    "openharmony/native/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos", "hms/native/BiSheng/lib/clang/15.0.4/lib/aarch64-linux-ohos",
+    "openharmony/native/llvm/lib/clang/15.0.4/share", "hms/native/BiSheng/lib/clang/15.0.4/share",
+    "openharmony/toolchains/configcheck", "openharmony/toolchains/modulecheck", "openharmony/toolchains/rescheck", "openharmony/toolchains/syscapcheck",
+    "openharmony/toolchains/lib", "hms/toolchains"
+  ],
+  "excludedTrees": [
+    "openharmony/ets/build-tools/ets-loader/bin/ark/build-win/legacy_api8",
+    "openharmony/native/sysroot/usr/include/arm-linux-ohos", "openharmony/native/sysroot/usr/include/x86_64-linux-ohos", "openharmony/native/sysroot/usr/include/i686-linux-ohos",
+    "openharmony/native/sysroot/usr/include/asm-loongarch", "openharmony/native/sysroot/usr/include/asm-mips", "openharmony/native/sysroot/usr/include/asm-riscv"
+  ],
+  "nativeBinDirectories": ["openharmony/native/llvm/bin", "hms/native/BiSheng/bin"],
+  "nativeTools": ["clang.exe", "clang++.exe", "ld.lld.exe", "llvm-ar.exe", "llvm-ranlib.exe", "llvm-strip.exe", "llvm-readelf.exe", "llvm-readobj.exe", "llvm-nm.exe", "llvm-strings.exe", "llvm-objdump.exe", "llvm-objcopy.exe", "llvm-cxxfilt.exe", "llvm-symbolizer.exe"],
+  "bishengDriverTools": ["bisheng-clang.exe", "bisheng-clang++.exe"],
+  "toolFiles": ["openharmony/toolchains/restool.exe", "openharmony/toolchains/syscap_tool.exe", "openharmony/toolchains/idl.exe", "openharmony/toolchains/glslang_validator.exe", "openharmony/toolchains/spirv-remap.exe", "openharmony/toolchains/ark_disasm.exe"],
+  "metadataFiles": ["sdk-pkg.json", "openharmony/native/compatible_config.json", "openharmony/native/nativeapi_syscap_config.json", "openharmony/native/ndk_system_capability.json", "hms/native/nativeapi_syscap_config.json", "hms/native/ndk_system_capability.json", "openharmony/toolchains/id_defined.json", "openharmony/toolchains/restool_faq.json"],
+  "requiredFiles": ["openharmony/native/build/cmake/ohos.toolchain.cmake", "hms/native/build/cmake/hmos.toolchain.bisheng.cmake", "openharmony/native/build-tools/cmake/bin/cmake.exe", "openharmony/native/build-tools/cmake/bin/ninja.exe", "openharmony/native/sysroot/usr/include/stdint.h", "hms/native/BiSheng/include/libcxx-ohos/include/c++/v1/__config", "openharmony/ets/build-tools/ets-loader/bin/ark/build-win/bin/es2abc.exe", "openharmony/previewer/common/bin/Previewer.exe", "openharmony/toolchains/lib/hap-sign-tool.jar"],
+  "systemDllPattern": "^(?:api-ms-win-|ext-ms-win-|kernel32\\.dll$|kernelbase\\.dll$|ntdll\\.dll$|advapi32\\.dll$|user32\\.dll$|gdi32\\.dll$|shell32\\.dll$|shlwapi\\.dll$|ole32\\.dll$|oleaut32\\.dll$|ws2_32\\.dll$|bcrypt\\.dll$|crypt32\\.dll$|secur32\\.dll$|version\\.dll$|winmm\\.dll$|msvcrt\\.dll$|ucrtbase\\.dll$|vcruntime[0-9_]*\\.dll$|msvcp[0-9_]*\\.dll$|imm32\\.dll$|comdlg32\\.dll$|comctl32\\.dll$|iphlpapi\\.dll$|psapi\\.dll$|dbghelp\\.dll$|rpcrt4\\.dll$|wintrust\\.dll$|netapi32\\.dll$|normaliz\\.dll$|userenv\\.dll$|setupapi\\.dll$|cfgmgr32\\.dll$|powrprof\\.dll$)",
+  "observedSystemDllNames": ["OPENGL32.dll", "WLDAP32.dll", "WSOCK32.dll"],
+  "excludedReason": "Content outside this declared consumer scope is not a full-SDK hash: unrelated LLVM/debugger/profile tools, docs/examples, lite/wearable and non-arm64 target payload are not read. All directory members and links are still traversed and validated; observed Ninja SDK dependencies outside scope reject availability."
+}

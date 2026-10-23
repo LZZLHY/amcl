@@ -1,3 +1,22 @@
+// window_host.cpp — libamcl_window_host：进程唯一的 NativeWindow 发布 owner 与租约 broker。
+//
+// 同一个 DSO 可能被不同 linker namespace 各装入一份（libentry 依赖的一份、JVM 装入的一份）。
+// 第一份发布 surface 的映像成为进程 owner：它把 owner 函数表与 v2 broker 的地址写进两个
+// 进程常量环境描述符（AMCL_WINDOW_HOST_OWNER / AMCL_NATIVE_WINDOW_LEASE_BROKER），其他映像
+// 解析描述符后把全部调用转发给 owner，保证只有一份租约账本和一把发布锁。
+//
+// 环境纪律（I27-05）：
+//   - 两个描述符在进程内只写一次（publishOwner 的 ownerPublished 标志），正常流程由 libentry
+//     在首个 NAPI 模块初始化时经 amclWindowHostPublishOwner 提前写入，早于任何游戏/JVM 线程；
+//   - owner()/resolveBroker() 处在 GLFW 每帧的 poll/swap/make-current 热路径上，只缓存本 PID
+//     “已发布且校验通过”的解析结果，缺席/畸形/继承自父进程的结果不缓存；
+//   - surface 状态只经 broker/快照 API 读取，不再镜像到任何环境变量。
+// fork 子进程：processId() 变化后 runtime()/localOwnerApi() 各自换成新对象，缓存按 PID 失效，
+// 继承来的描述符因 PID 不符被当作 kInherited，子进程从未发布状态开始。
+//
+// 输入前台位（broker 的 peekInputForeground 尾部）：XComponent 门禁的计算结果经
+// amclWindowHostSetInputForeground 转发给 owner 映像的 Runtime 原子量；消费者（SDL 每次
+// pump/swap/make-current）经已缓存的 broker 指针做一次 acquire 读，替代逐帧 getenv。
 #include "window_host.h"
 #include "window_host_core.h"
 #include <atomic>
@@ -31,19 +50,13 @@ uint64_t processId() {
     return static_cast<uint64_t>(getpid());
 #endif
 }
+// 只被 publishOwner 调用，写两个进程常量描述符；调用受 ownerPublicationMutex 串行化且每进程一次。
 void publishEnv(const char* name, const char* value) {
 #ifdef _WIN32
     _putenv_s(name, value);
 #else
     setenv(name, value, 1);
 #endif
-}
-void publishSnapshot(const AmclWindowHostSnapshot& snapshot, void*) {
-    char encoded[128];
-    std::snprintf(encoded, sizeof(encoded), "%llu:%llu:%d:%d",
-        static_cast<unsigned long long>(snapshot.generation),
-        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(snapshot.nativeWindow)), snapshot.width, snapshot.height);
-    publishEnv("AMCL_NATIVE_WINDOW_SNAPSHOT", encoded);
 }
 int nativeReference(void* window, void*) {
 #if defined(AMCL_WINDOW_HOST_TESTING)
@@ -65,7 +78,11 @@ struct Runtime {
     const uint64_t pid = processId();
     std::mutex ownerPublicationMutex;
     bool ownerPublished = false;
-    WindowHostCore core{NativeReferenceDriver{nativeReference, nativeUnreference, nullptr, publishSnapshot}};
+    // 宿主输入前台门禁的最新值（0/1）。写者只有 owner 映像的 localSetInputForeground
+    // （XComponent 门禁锁内，UI 线程），读者是 broker 尾部的无锁 peek；单个 32 位原子量，
+    // release/acquire 配对即可让读者看到写入前的门禁状态，不需要额外的锁或代次。
+    std::atomic<uint32_t> inputForeground{0u};
+    WindowHostCore core{NativeReferenceDriver{nativeReference, nativeUnreference, nullptr}};
 };
 Runtime& runtime() {
     // Never touch mutexes or native handles inherited from a different PID.
@@ -99,10 +116,19 @@ int localAcquireIdentity(void* retained, uint64_t generation, AmclNativeWindowId
 int localMoveGeometry(uint64_t token, void* window, uint64_t previous, uint64_t generation, uint64_t resourceEpoch) {
     return runtime().core.movePresentationGeometry(token, window, previous, generation, resourceEpoch);
 }
+// broker 尾部：本映像（即 owner，broker 表只从 owner 发布）的前台位。只读一个原子量，
+// 可在任意线程逐帧调用；fork 子进程经 runtime() 换成新对象后从 0 开始。
+uint32_t localPeekInputForeground() { return runtime().inputForeground.load(std::memory_order_acquire); }
+// owner 表里的写入口：把任意非零值规范成 1，保证读者只见到 ABI 声明的 0/1 两个值。
+int localSetInputForeground(int foreground) {
+    runtime().inputForeground.store(foreground != 0 ? 1u : 0u, std::memory_order_release);
+    return 1;
+}
 const AmclNativeWindowLeaseBrokerV2 kLocalBroker{
     AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION, sizeof(AmclNativeWindowLeaseBrokerV2),
     localAcquire, localRelease, localBeginInput, localEndInput, localPeekGeneration, localPeekState,
-    localClaim, localMove, localReleasePresentation, localAcquireIdentity, localMoveGeometry
+    localClaim, localMove, localReleasePresentation, localAcquireIdentity, localMoveGeometry,
+    localPeekInputForeground
 };
 
 uint64_t localPublish(void*, int, int, AmclWindowHostCommitFn, void*);
@@ -118,7 +144,7 @@ int localRetry() { return runtime().core.retryRetiredReferences() ? 1 : 0; }
 const AmclNativeWindowLeaseBrokerV2* localBroker() { return &kLocalBroker; }
 #if defined(AMCL_WINDOW_HOST_TESTING)
 int localSetDriver(AmclWindowHostReferenceFn reference, AmclWindowHostReferenceFn unreference, void* context) {
-    return runtime().core.setReferenceDriver({reference, unreference, context, publishSnapshot}) ? 1 : 0;
+    return runtime().core.setReferenceDriver({reference, unreference, context}) ? 1 : 0;
 }
 #endif
 struct OwnerApi {
@@ -132,13 +158,16 @@ struct OwnerApi {
     decltype(&localStats) stats;
     decltype(&localRetry) retry;
     decltype(&localBroker) broker;
+    // 前台位写入口：非 owner 映像经此转发，保证 broker 尾部读到的是唯一一份门禁状态。
+    decltype(&localSetInputForeground) setInputForeground;
 #if defined(AMCL_WINDOW_HOST_TESTING)
     decltype(&localSetDriver) setDriver;
 #endif
 };
 OwnerApi& localOwnerApi() {
     static std::atomic<OwnerApi*> slot{new OwnerApi{1, sizeof(OwnerApi), processId(),
-        localPublish, localUpdate, localClear, localRead, localStats, localRetry, localBroker
+        localPublish, localUpdate, localClear, localRead, localStats, localRetry, localBroker,
+        localSetInputForeground
 #if defined(AMCL_WINDOW_HOST_TESTING)
         , localSetDriver
 #endif
@@ -154,7 +183,21 @@ OwnerApi& localOwnerApi() {
 }
 enum class OwnerStatus { kAbsent, kLocal, kRemote, kInherited, kMalformed };
 struct OwnerResolution { const OwnerApi* api; OwnerStatus status; };
-OwnerResolution owner() {
+
+// 已验证解析的每 PID 缓存。写者先存数据再以 release 存 PID，读者以 acquire 读 PID 后才取数据；
+// 并发的两次成功解析写入的是同一组值（描述符每进程只发布一次），因此不需要锁。
+// 常量初始化（atomic 的 constexpr 构造），不依赖跨 TU 的静态初始化顺序。
+struct ResolutionCache {
+    std::atomic<uint64_t> ownerPid{0};
+    std::atomic<const OwnerApi*> ownerApi{nullptr};
+    std::atomic<int> ownerStatus{0};
+    std::atomic<uint64_t> brokerPid{0};
+    std::atomic<const AmclNativeWindowLeaseBrokerV2*> broker{nullptr};
+};
+ResolutionCache g_resolutionCache;
+
+// 纯解析：每次都读环境，失败语义与原实现逐条一致（畸形 → nullptr 失败关闭，PID 不符 → 本地）。
+OwnerResolution parseOwner(uint64_t currentPid) {
     const char* encoded = std::getenv(kOwnerEnv);
     if (!encoded || !*encoded) return {&localOwnerApi(), OwnerStatus::kAbsent};
     unsigned long long pid = 0;
@@ -162,12 +205,29 @@ OwnerResolution owner() {
     int consumed = 0;
     if (std::sscanf(encoded, "%llu:%p%n", &pid, &address, &consumed) != 2 || encoded[consumed] != '\0' || !address)
         return {nullptr, OwnerStatus::kMalformed};
-    if (pid != processId()) return {&localOwnerApi(), OwnerStatus::kInherited};
+    if (pid != currentPid) return {&localOwnerApi(), OwnerStatus::kInherited};
     const auto* api = static_cast<const OwnerApi*>(address);
-    if (api->version != 1 || api->size < sizeof(OwnerApi) || api->pid != processId() ||
-        !api->publish || !api->update || !api->clear || !api->read || !api->stats || !api->retry || !api->broker)
+    if (api->version != 1 || api->size < sizeof(OwnerApi) || api->pid != currentPid ||
+        !api->publish || !api->update || !api->clear || !api->read || !api->stats || !api->retry || !api->broker ||
+        !api->setInputForeground)
         return {nullptr, OwnerStatus::kMalformed};
     return {api, api == &localOwnerApi() ? OwnerStatus::kLocal : OwnerStatus::kRemote};
+}
+// 只有“本 PID 已发布且表校验通过”（kLocal/kRemote）才进缓存：缺席时稍后可能由本映像或
+// 另一映像发布，畸形时必须每次失败关闭，继承态会在子进程自己发布后变成 kLocal。
+OwnerResolution owner() {
+    const uint64_t pid = processId();
+    if (g_resolutionCache.ownerPid.load(std::memory_order_acquire) == pid) {
+        return {g_resolutionCache.ownerApi.load(std::memory_order_relaxed),
+                static_cast<OwnerStatus>(g_resolutionCache.ownerStatus.load(std::memory_order_relaxed))};
+    }
+    const OwnerResolution resolved = parseOwner(pid);
+    if (resolved.status == OwnerStatus::kLocal || resolved.status == OwnerStatus::kRemote) {
+        g_resolutionCache.ownerApi.store(resolved.api, std::memory_order_relaxed);
+        g_resolutionCache.ownerStatus.store(static_cast<int>(resolved.status), std::memory_order_relaxed);
+        g_resolutionCache.ownerPid.store(pid, std::memory_order_release);
+    }
+    return resolved;
 }
 bool validBroker(const AmclNativeWindowLeaseBrokerV2* broker) {
     if (!broker || broker->abiVersion != AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION ||
@@ -175,12 +235,27 @@ bool validBroker(const AmclNativeWindowLeaseBrokerV2* broker) {
         !broker->beginInputPublication || !broker->endInputPublication) return false;
     return broker->structSize < AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PEEK_SIZE || (broker->peekGeneration && broker->peekState);
 }
+void cacheBroker(uint64_t pid, const AmclNativeWindowLeaseBrokerV2* broker) {
+    g_resolutionCache.broker.store(broker, std::memory_order_relaxed);
+    g_resolutionCache.brokerPid.store(pid, std::memory_order_release);
+}
+// 缓存条件同 owner()：只有已发布 owner（kLocal/kRemote）且 broker 与 owner 一致时才缓存。
+// 旧 ABI 只有 broker 描述符的情形（owner 缺席）仍逐次解析，保持可消费但不固化。
 const AmclNativeWindowLeaseBrokerV2* resolveBroker() {
+    const uint64_t pid = processId();
+    if (g_resolutionCache.brokerPid.load(std::memory_order_acquire) == pid) {
+        return g_resolutionCache.broker.load(std::memory_order_relaxed);
+    }
     const auto resolved = owner();
     if (!resolved.api) return nullptr;
     if (resolved.status == OwnerStatus::kInherited) return &kLocalBroker;
+    const bool ownerPublished = resolved.status != OwnerStatus::kAbsent;
     const char* encoded = std::getenv(AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV);
-    if (!encoded || !*encoded) return resolved.api->broker();
+    if (!encoded || !*encoded) {
+        const auto* local = resolved.api->broker();
+        if (ownerPublished) cacheBroker(pid, local);
+        return local;
+    }
     unsigned version = 0;
     void* address = nullptr;
     int consumed = 0;
@@ -188,9 +263,9 @@ const AmclNativeWindowLeaseBrokerV2* resolveBroker() {
         version != AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION || !address) return nullptr;
     const auto* broker = static_cast<const AmclNativeWindowLeaseBrokerV2*>(address);
     if (!validBroker(broker)) return nullptr;
-    // Existing legacy ABI descriptors remain consumable. A new-style owner
-    // descriptor must agree with the published broker, never split ownership.
-    if (resolved.status != OwnerStatus::kAbsent && broker != resolved.api->broker()) return nullptr;
+    // 旧 ABI 描述符仍可消费；新式 owner 描述符必须与已发布 broker 一致，绝不拆分所有权。
+    if (ownerPublished && broker != resolved.api->broker()) return nullptr;
+    if (ownerPublished) cacheBroker(pid, broker);
     return broker;
 }
 bool publishOwner() {
@@ -198,17 +273,17 @@ bool publishOwner() {
     std::lock_guard<std::mutex> lock(state.ownerPublicationMutex);
     const auto resolved = owner();
     if (!resolved.api || resolved.status == OwnerStatus::kRemote) return false;
+    // 一次性守卫：描述符是进程常量，已发布就不再写环境（I27-05）。
     if (state.ownerPublished) return true;
-    // A pre-existing descriptor belongs to another owner that does not expose
-    // the new owner table. Never overwrite it from a duplicate image. A fork
-    // child is the exception: its inherited descriptor has a different PID
-    // and runtime() deliberately starts a fresh owner.
+    // 已存在的 broker 描述符属于一个不提供新 owner 表的旧 owner，重复映像绝不覆盖它。
+    // 例外是 fork 子进程：继承的描述符 PID 不同，runtime() 已为子进程换成全新的 owner。
     if (resolved.status != OwnerStatus::kInherited) {
         const char* existing = std::getenv(AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV);
         if (existing && *existing) return false;
     }
     char encoded[96];
-    // Keep the established v2 transport exactly; consumers already parse 2:%p.
+    // 保持既有 v2 线格式 "2:%p"，SDL 等消费者已按它解析。先 broker 后 owner：看见 owner 的
+    // 读者一定也能解析到一致的 broker。
     std::snprintf(encoded, sizeof(encoded), "%u:%p", AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION,
         static_cast<const void*>(&kLocalBroker));
     publishEnv(AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV, encoded);
@@ -220,8 +295,8 @@ bool publishOwner() {
 }
 uint64_t localPublish(void* window, int width, int height, AmclWindowHostCommitFn callback, void* context) {
     if (!publishOwner()) return 0;
-    // Once this image has published, a descriptor mutation is evidence of a
-    // split owner. Refuse to advance its private core until the wire is fixed.
+    // 本映像已发布后，若解析出的 broker 不是本映像的，说明所有权被拆分；在描述符恢复一致前
+    // 拒绝推进私有 core。缓存只记录本 PID 首次通过校验的结果，所以此检查针对的是首次解析。
     if (runtime().ownerPublished && resolveBroker() != &kLocalBroker) return 0;
     return runtime().core.publish(window, width, height, callback, context);
 }
@@ -299,6 +374,17 @@ void amclWindowHostGetStats(AmclWindowHostStats* stats) {
 int amclWindowHostRetryRetiredReferences(void) {
     const auto resolved = owner();
     return resolved.api ? resolved.api->retry() : 0;
+}
+// 提前发布进程 owner 描述符（I27-05）：与首次 amclWindowHostPublish 内部走同一个 publishOwner()
+// （同一把锁、同一次性标志），因此之后的 surface 发布不再写环境。只应由 XComponent 所在映像
+// （libentry 的直接依赖）在任何游戏/JVM 线程出现之前调用。
+int amclWindowHostPublishOwner(void) { return publishOwner() ? 1 : 0; }
+// 前台位写入：与 publish/update 同样经 owner() 转发，owner 未发布时写本映像（它随后发布时
+// 就是 owner）；畸形描述符失败关闭返回 0。不写环境、不加宿主发布锁，调用方自己的门禁锁
+// 已经串行化“计算 + 发布”。
+int amclWindowHostSetInputForeground(int foreground) {
+    const auto resolved = owner();
+    return resolved.api ? resolved.api->setInputForeground(foreground) : 0;
 }
 #if defined(AMCL_WINDOW_HOST_TESTING)
 int amclWindowHostSetReferenceDriver(AmclWindowHostReferenceFn reference, AmclWindowHostReferenceFn unreference, void* context) {

@@ -5,16 +5,16 @@
  * 由产品层 Index 在 aboutToAppear 判定（未同意 → 盖一层全屏遮罩弹窗）。
  *   - 「同意并继续」：落盘 privacyAgreed=true，关闭弹窗，正常进入。
  *   - 「不同意并退出」：终止应用（terminateSelf）。
- *   - 「隐私政策」「用户协议」内链：用系统浏览器打开 GitHub Pages 上的完整政策。
+ *   - 完整政策：商店进入随包本地文本页，其他渠道保留原浏览器入口。
  *
  * 纯展示组件：状态（是否已同意）与持久化由 Index + PreferenceManager 管，
- * 本组件只发 onAgree / onDisagree 回调 + 自己负责打开浏览器。
+ * 本组件只发 onAgree / onDisagree 回调，并按渠道打开本地阅读页或原浏览器入口。
  */
 
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ThemeColors } from 'commons';
+import { ThemeColors, DistributionPolicy } from 'commons';
 import { PRIVACY_POLICY_URL, BRAND_DISCLAIMER } from 'commons';
 
 const TAG = 'PrivacyConsentDialog';
@@ -27,6 +27,11 @@ export struct PrivacyConsentDialog {
 
   private openPolicy(): void {
     try {
+      // 首次同意前也必须能离线阅读完整既有政策；此分支不创建 Web 或外部 Want。
+      if (DistributionPolicy.isStore()) {
+        this.getUIContext().getRouter().pushUrl({ url: 'pages/LocalPolicyPage', params: { 'policy': 'privacy' } });
+        return;
+      }
       let ctx = AppStorage.get<common.UIAbilityContext>('uiAbilityContext');
       if (!ctx) return;
       let want: Want = {
@@ -38,7 +43,8 @@ export struct PrivacyConsentDialog {
     } catch (e) {
       hilog.error(0x0000, TAG, 'open policy failed: %{public}s', (e as BusinessError).message);
       try {
-        this.getUIContext().getPromptAction().showToast({ message: '无法打开浏览器，请手动访问 ' + PRIVACY_POLICY_URL, duration: 2500 });
+        this.getUIContext().getPromptAction().showToast({ message: DistributionPolicy.isStore()
+          ? '暂时无法打开本地隐私政策，请重试' : '无法打开浏览器，请手动访问 ' + PRIVACY_POLICY_URL, duration: 2500 });
       } catch (_) { /* */ }
     }
   }

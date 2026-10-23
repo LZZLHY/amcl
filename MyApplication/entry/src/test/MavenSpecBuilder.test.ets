@@ -1,9 +1,8 @@
 /*
  * MavenSpecBuilder.test.ets — Phase 1 (ARCH-1) 纯函数单元测试
  *
- * TDD 红阶段：本文件先于 MavenSpecBuilder.ets 创建。
- * 当前预期：编译失败（Cannot find module 'feature_core'）。
- * 这就是 TDD 红信号。
+ * 直接执行生产 Maven 规格与结果转换函数；网络/文件执行不进入本纯函数套件。
+ * 失败路径必须绑定本批输入；未知路径、取消与非法坐标不能产生虚假的成功计数。
  *
  * 覆盖范围（全部为纯函数，零 I/O）：
  *   - buildMavenUrls(coordinate, repoHint?)          BMCLAPI 优先 + 多源 fallback + 去重
@@ -35,6 +34,7 @@ const FABRIC_REPO = 'https://maven.fabricmc.net/';
 // 无法区分"repoHint 生效了"和"兜底仓库恰好也是它"，断言会恒真。
 // 换成这个地址后，候选链里出现该 host 只可能来自 repoHint 这一条路径。
 const HINT_ONLY_REPO = 'https://repo.papermc.io/repository/maven-public/';
+const KNOWN_HINT_ONLY_REPO = 'https://repo.maven.apache.org/maven2/';
 const FORGE_REPO = 'https://maven.minecraftforge.net/';
 const NEOFORGE_REPO = 'https://maven.neoforged.net/releases/';
 const MOJANG_LIB_REPO = 'https://libraries.minecraft.net/';
@@ -84,16 +84,11 @@ export default function mavenSpecBuilderTest() {
         + 'net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar');
     });
 
-    // 原用例断言 repoHint 恰好在 urls[1]。那是 BMCLAPI 只贡献一个 URL 时代的写法；
-    // 现在 BMCLAPI 同时给出 /maven 与 /libraries 两条，硬编码下标必然失效。
-    // 契约本身没变：BMCLAPI 全部在前，repoHint 紧随其后，通用兜底仓库最后。
-    // 因此断言相对顺序而不是下标 —— 以后增删任何镜像都不会让这条假失败。
-    //
-    // 用 HINT_ONLY_REPO 而不是 FABRIC_REPO：hint 必须是兜底列表里没有的地址，
-    // 否则 hintIndex 能被兜底项"凑"出来，"repoHint 被彻底忽略"这种回归就抓不到。
-    it('repoHint 排在所有 BMCLAPI 之后、通用兜底之前', 0, () => {
-      let urls = buildMavenUrls('org.ow2.asm:asm:9.6', HINT_ONLY_REPO);
-      let hint = HINT_ONLY_REPO + 'org/ow2/asm/asm/9.6/asm-9.6.jar';
+    // 已登记仓库可使用既有镜像关系；用不在通用fallback中的Apache根验证hint
+    // 真正被消费，不能以未知私有根来凑“公开镜像等价”的前提。
+    it('已登记 repoHint 排在所有 BMCLAPI 之后、通用兜底之前', 0, () => {
+      let urls = buildMavenUrls('org.ow2.asm:asm:9.6', KNOWN_HINT_ONLY_REPO);
+      let hint = KNOWN_HINT_ONLY_REPO + 'org/ow2/asm/asm/9.6/asm-9.6.jar';
       let hintIndex = urls.indexOf(hint);
       // 该 host 只可能来自 repoHint，所以 hintIndex >= 0 本身就是"透传成功"的证据。
       expect(hintIndex > 0).assertTrue();
@@ -117,6 +112,12 @@ export default function mavenSpecBuilderTest() {
         }
       }
       expect(fallbackAfterHint > 0).assertTrue();
+    });
+
+    it('未知仓库只使用明确hint，不猜公共镜像或通用fallback', 0, () => {
+      const urls = buildMavenUrls('org.ow2.asm:asm:9.6', HINT_ONLY_REPO);
+      expect(urls.length).assertEqual(1);
+      expect(urls[0]).assertEqual(HINT_ONLY_REPO + 'org/ow2/asm/asm/9.6/asm-9.6.jar');
     });
 
     it('repoHint 未提供时，该 host 不会出现在候选链里（上一条的负向对照）', 0, () => {
@@ -470,7 +471,7 @@ export default function mavenSpecBuilderTest() {
       expect(result.failed).assertEqual(2);
     });
 
-    it('failedFile.localPath 不在 pathToName 时跳过（防御性）', 0, () => {
+    it('未知 failedFile 路径不能把失败任务假报为成功', 0, () => {
       let libs: MavenLibEntry[] = [
         { name: 'net.fabricmc:fabric-loader:0.16.10' },
       ];
@@ -480,9 +481,38 @@ export default function mavenSpecBuilderTest() {
       ];
       let view = makeViewForBatch(false, failedFiles);
       let result = parseDoneEventToBatchResult(view, libs, buildResult.pathToName);
-      // 未知路径不计入 ok 也不计入 failed（保守处理）
-      // ok = libs.length - failed (反查到的)
-      expect(result.ok + result.failed <= libs.length).assertTrue();
+      // 无法绑定失败身份就不能确认输入成功；按整个输入保守失败，而不是静默丢行。
+      expect(result.ok).assertEqual(0);
+      expect(result.failed).assertEqual(1);
+      expect(result.failedNames[0]).assertEqual(libs[0].name);
+    });
+
+    it('非法坐标与下载失败合并时保持输入计数', 0, () => {
+      let libs: MavenLibEntry[] = [
+        { name: 'net.fabricmc:fabric-loader:0.16.10' },
+        { name: 'org.lwjgl:lwjgl:3.3.1' },
+        { name: 'invalid-coordinate' },
+      ];
+      let built = buildSpecsForLibs(libs, MC_LIB_DIR_T);
+      let view = makeViewForBatch(false, [
+        makeFailedFileForBatch(built.specs[0].localPath, 'fabric-loader.jar', 'ProtocolError', 'HTTP 404'),
+      ]);
+      let result = parseDoneEventToBatchResult(view, libs, built.pathToName, built.invalidNames);
+      expect(result.ok).assertEqual(1);
+      expect(result.failed).assertEqual(2);
+      expect(result.ok + result.failed).assertEqual(libs.length);
+      expect(result.failedNames.indexOf('invalid-coordinate') >= 0).assertTrue();
+    });
+
+    it('取消及重复非法输入不虚增成功项', 0, () => {
+      let libs: MavenLibEntry[] = [{ name: 'bad' }, { name: 'bad' }];
+      let built = buildSpecsForLibs(libs, MC_LIB_DIR_T);
+      let view = makeViewForBatch(false, []);
+      view.aborted = true;
+      let result = parseDoneEventToBatchResult(view, libs, built.pathToName, built.invalidNames);
+      expect(result.ok).assertEqual(0);
+      expect(result.failed).assertEqual(2);
+      expect(result.failedNames.length).assertEqual(1);
     });
 
     it('view 无 failedFiles 但 success=false 时降级处理', 0, () => {

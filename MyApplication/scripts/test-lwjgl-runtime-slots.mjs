@@ -78,12 +78,21 @@ const load = makePureEtsLoader({
   commons: { AppLogger: logger, stringToUtf8: (value) => new Uint8Array(Buffer.from(value)), SUPPORTED_JDK_VERSIONS: [] },
   feature_core: {},
   './GameCompatibility': {},
+  // 此用例核验产品部署边界，不复制 JDK ELF/release 判据；另用错误注入证明拒绝先于写入。
+  './JdkTreeValidation': { validateRuntimeTree: () => runtimeIdentityError },
 });
-const { lwjglRuntimeSlot } = load('launch/src/main/ets/LwjglRuntimeSlots.ets');
-const { verifyLwjglRuntimeSlot, verifyLwjglRuntimeSlotSync, lwjglBytesSha256 } = load('launch/src/main/ets/LwjglSlotIntegrity.ets');
+let runtimeIdentityError = '';
+const { lwjglRuntimeSlot: selectSlot } = load('launch/src/main/ets/LwjglRuntimeSlots.ets');
+// 旧集成用例以显式 JDK 17 覆盖 modern，生产缺少 feature 时仍必须失败。
+const featureFor = name => name.endsWith('/lwjgl-ohos') || name === 'lwjgl-ohos' ? 17 : 0;
+const lwjglRuntimeSlot = name => selectSlot(name, featureFor(name));
+const { verifyLwjglRuntimeSlot: verifySelected, verifyLwjglRuntimeSlotSync: verifySelectedSync, lwjglBytesSha256 } = load('launch/src/main/ets/LwjglSlotIntegrity.ets');
+// 保持真实生产校验器，仅为原有 17/旧槽用例补充显式 feature。
+const verifyLwjglRuntimeSlot = directory => verifySelected(directory, featureFor(directory));
+const verifyLwjglRuntimeSlotSync = (directory, marker = true) => verifySelectedSync(directory, marker, featureFor(directory));
 const { RuntimeDeployer } = load('launch/src/main/ets/RuntimeDeployer.ets');
 const { lwjglGenerationDirectory, setRuntimeSlotNativeOps } = load('launch/src/main/ets/RuntimeSlotGenerations.ets');
-const slotDir = name => lwjglGenerationDirectory(mcDir, name);
+const slotDir = name => lwjglGenerationDirectory(mcDir, name, featureFor(name));
 let stageSequence = 0;
 let failPublication = false;
 const stages = new Set();
@@ -139,6 +148,28 @@ try {
   assert.notEqual(lwjglRuntimeSlot('lwjgl-ohos-322').jars[0].sha256, 'changed');
   assert.equal(lwjglRuntimeSlot('lwjgl-ohos-322').jars.length, 7);
   assert.equal(lwjglBytesSha256(new Uint8Array([1, 2, 3])), crypto.createHash('sha256').update(Buffer.from([1, 2, 3])).digest('hex'));
+
+  // 实际执行三份派生描述符的生产部署/校验。17/21 共享核心字节仍必须有不同 marker，
+  // 错误 JDK、源包替代派生件、未知 feature 均不能被“文件存在”放行。
+  assert.throws(() => selectSlot('lwjgl-ohos'), /未交付/);
+  assert.throws(() => selectSlot('lwjgl-ohos', 23), /未交付/);
+  assert.notEqual(lwjglGenerationDirectory(mcDir, 'lwjgl-ohos', 17), lwjglGenerationDirectory(mcDir, 'lwjgl-ohos', 21));
+  assert.equal(selectSlot('lwjgl-ohos', 17).jars.at(-1).sha256, selectSlot('lwjgl-ohos', 21).jars.at(-1).sha256);
+  for (const feature of [17, 21, 25]) {
+    const directory = lwjglGenerationDirectory(mcDir, 'lwjgl-ohos', feature);
+    deployer.deployLwjglSlotForLaunch(mcDir, 'lwjgl-ohos', feature);
+    check(await verifySelected(directory, feature), true, 'JDK ' + feature + ' 所选视图');
+    check(await verifySelected(directory, feature === 25 ? 17 : 25), false, '错误 JDK 不能冒用 marker');
+    fs.writeFileSync(directory + '/lwjgl.jar', fs.readFileSync(path.join(root, 'prebuilt/lwjgl3/jars/lwjgl.jar')));
+    check(await verifySelected(directory, feature), false, '原始未来层核心不能冒用派生清单');
+    deployer.extractLwjglJars(mcDir, feature);
+    check(await verifySelected(directory, feature), true, '恢复本 JDK 派生身份');
+  }
+  runtimeIdentityError = 'release 声明与所选 Java feature 不一致';
+  mutations.length = 0;
+  assert.throws(() => deployer.deployLwjglSlotForLaunch(mcDir, 'lwjgl-ohos', 17), /JDK 身份校验/);
+  assert.deepEqual(mutations, [], '错误实际 JDK 在任何视图写入之前失败');
+  runtimeIdentityError = '';
 
   for (const [slotName, method] of slots) {
     const directory = slotDir(slotName);
@@ -236,7 +267,7 @@ try {
 
   // 首页统一部署保持三个槽独立；被损坏的资源明确日志失败，不能获得 marker。
   fs.mkdirSync(context.filesDir, { recursive: true });
-  badResource = 'lwjgl/lwjgl.jar';
+  badResource = selectSlot('lwjgl-ohos', 17).jars.find(jar => jar.name === 'lwjgl.jar').resourcePath;
   deployer.deployAll(mcDir);
   badResource = '';
   check(await verifyLwjglRuntimeSlot(slotDir('lwjgl-ohos')), false, '发布失败保留原损坏代，不伪装成功');

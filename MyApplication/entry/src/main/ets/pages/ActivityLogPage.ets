@@ -15,6 +15,8 @@
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
+import { AppTitleAction } from '../components/AppTitleAction';
 import { promptAction } from '@kit.ArkUI';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
@@ -27,7 +29,7 @@ import { flushPendingShareCredentials } from '../components/EvidenceShareService
 import { EvidenceExportSnapshot, EvidenceUploadSelection, createEvidenceExportSnapshot,
   disposeEvidenceExportSnapshot, verifySessionCaptureRotations,
   normalizeEvidenceSelection, snapshotShareFiles } from 'commons';
-import { acquireEvidenceLease, releaseEvidenceLease, ledgerRemovalBlockReason, ledgerBytesOf } from 'commons';
+import { acquireEvidenceLease, releaseEvidenceLease, ledgerRemovalBlockReason } from 'commons';
 import { startAiAnalysis, getAiTaskSnapshot, cancelAiAnalysis } from '../components/AiAnalysisService';
 import { ActivityAiCard } from '../components/ActivityAiCard';
 import { ActivityShareSheet } from '../components/ActivityShareSheet';
@@ -42,7 +44,7 @@ import { clearSessionShare } from '../components/McSessionSnapshot';
 import {
   LedgerPart, LedgerState, LedgerManifest,
   ledgerManifest, ledgerParts, ledgerRead, ledgerPartBytes, ledgerExport,
-  ledgerRemove, ledgerPartLabel, ledgerStateLabel, isAbnormalState,
+  ledgerRemoveAsync, ledgerListAsync, ledgerRemovalBlockReasonAsync, ledgerPartLabel, ledgerStateLabel, isAbnormalState,
   formatLogBytes, LogExportTarget, sanitizeLogForExport,
   EvidenceFileRecord, EvidenceFileState, EvidenceRole, evidenceRoleLabel,
   listSessionEvidence, evidenceSelectionOf, setEvidenceSelection,
@@ -53,7 +55,7 @@ import {
 import { ActivityCategory } from 'feature_core';
 import { evidenceReadable, evidenceCaptureLabel, evidenceIntegrityCaption, sortEvidenceForView,
   recommendedEvidenceFile, evidenceDisplayName, SessionEnvironmentFact, readObservedSessionEnvironment,
-  ledgerSetPinned, ledgerRelatedActivities, LedgerRelatedActivity, environmentFactLabel } from 'commons';
+  ledgerSetPinnedAsync, ledgerRelatedActivitiesAsync, LedgerRelatedActivity, environmentFactLabel } from 'commons';
 import { loadActivityEvidence } from '../components/ActivityEvidenceService';
 import { ActivityDiagnosis, ActivityFinding, ActivityPhase, buildActivityDiagnosis } from '../components/ActivityDiagnostics';
 import { exportSessionEvidenceZip } from '../components/EvidenceBundleExport';
@@ -114,6 +116,10 @@ export struct ActivityLogWorkspace {
   @State private searchAllFiles: boolean = false
   @State private environmentFacts: SessionEnvironmentFact[] = []
   @State private pinned: boolean = false
+  /** pin保存与恢复终态共用canonical写门，提交完成前不切换目标活动或重复派发。 */
+  @State @Watch('notifyBusy_') private pinSaving_: boolean = false
+  @State private confirmingRemoval_: boolean = false
+  private pinGeneration_: number = 0
   @State private relatedActivities: LedgerRelatedActivity[] = []
   @State private showRelated: boolean = false
   @State private followLatest: boolean = false
@@ -194,6 +200,7 @@ export struct ActivityLogWorkspace {
   private hostVisibilityChanged_(): void {
     this.pageActive = this.hostVisible
     if (!this.hostVisible) {
+      this.pinGeneration_++; this.pinSaving_ = false
       this.stopFollowing_(); this.model.cancel(); this.readGeneration++; this.evidenceGeneration++; this.diagnosisGeneration++
       this.reading = false; this.diagnosisProgress = ''
     }
@@ -320,14 +327,25 @@ export struct ActivityLogWorkspace {
     finally { this.exportingEvidence = false }
   }
 
-  /** 保留只影响本地清理，不改变公开链接保留期；写盘成功后再更新按钮。 */
-  private togglePinned_(): void {
+  /** 保留只影响本地清理；await owner耐久提交成功后才更新当前活动，离页旧回调不发布。 */
+  private async togglePinned_(): Promise<void> {
+    if (this.pinSaving_ || !this.pageActive || this.sharing || this.exportingEvidence) return
+    const generation: number = ++this.pinGeneration_
+    const activityId: number = this.activityId
+    const pinned: boolean = !this.pinned
+    this.pinSaving_ = true
     try {
-      ledgerSetPinned(this.context.filesDir, this.activityId, !this.pinned)
-      this.pinned = !this.pinned
+      await ledgerSetPinnedAsync(this.context.filesDir, activityId, pinned)
+      if (!this.pageActive || generation !== this.pinGeneration_ || activityId !== this.activityId) return
+      this.pinned = pinned
+      // 先释放选中活动的UI忙态，再通知宿主刷新，避免宿主按“正在保存”拒绝这次真实更新。
+      this.pinSaving_ = false
+      this.notifyBusy_()
       this.onMetadataChanged()
       this.toast_(this.pinned ? '已保留，不会自动清理' : '已取消保留，将遵循日志保留设置')
-    } catch (e) { this.toast_('设置失败：' + (e as Error).message) }
+    } catch (e) {
+      if (this.pageActive && generation === this.pinGeneration_ && activityId === this.activityId) this.toast_('设置失败：' + (e as Error).message)
+    } finally { if (generation === this.pinGeneration_) this.pinSaving_ = false }
   }
 
   /** 仅初始化当前活动，不自动公开日志或启动 AI。嵌入式实例由活动主键重建。 */
@@ -344,7 +362,7 @@ export struct ActivityLogWorkspace {
   }
 
   /** 平板发送/导出期间锁住左侧选择，避免异步结果被显示到另一活动。 */
-  private notifyBusy_(): void { this.onBusyChanged(this.sharing || this.exportingEvidence) }
+  private notifyBusy_(): void { this.onBusyChanged(this.sharing || this.exportingEvidence || this.pinSaving_) }
 
   /** 每次明确打开都创建新的 UI 会话，不让系统 sheet 缓存复用上次已关闭的 alive/阶段值。 */
   private shareVisibilityChanged_(): void { if (this.showShareOptions) this.shareNonce++ }
@@ -364,13 +382,14 @@ export struct ActivityLogWorkspace {
     const height: number = detailSheetHeightForLayout(form, breakpoint, this.bottomSafeHeight, this.topSafeHeight)
     return { height: this.shareMode === 'quick' ? Math.min(height, 440) : height,
       width: sheetWidthForLayout(form, breakpoint), preferType: center ? SheetType.CENTER : SheetType.BOTTOM,
-      showClose: true, dragBar: !center, backgroundColor: this.theme.bgPrimary,
+      // 分享正文已提供统一 X；保留 onDisappear，系统 Back/拖拽关闭仍走原收口。
+      showClose: false, dragBar: !center, backgroundColor: this.theme.bgPrimary,
       onDisappear: (): void => { this.showShareOptions = false } }
   }
 
   /** 只读 AI 阅读层。不发网络请求，关闭后流仍由服务管理，重开可看到最新内容。 */
   private aiSheetOptions_(): SheetOptions {
-    return { height: '88%', preferType: SheetType.BOTTOM, showClose: true, dragBar: true,
+    return { height: '88%', preferType: SheetType.BOTTOM, showClose: false, dragBar: true,
       backgroundColor: this.theme.bgPrimary,
       onDisappear: (): void => {
         this.showAiResult = false
@@ -380,7 +399,7 @@ export struct ActivityLogWorkspace {
 
   /** 低频操作收进明确命名的菜单，手机标题栏不并排挤四个图标；删除仍走二次确认。 */
   private moreActions_(): void {
-    if (this.sharing || this.exportingEvidence || this.loading) return
+    if (this.sharing || this.exportingEvidence || this.pinSaving_ || this.loading) return
     try {
       this.getUIContext().getPromptAction().showActionMenu({ title: '活动日志操作', buttons: [
         { text: '复制全部脱敏证据', color: this.theme.primary as string },
@@ -458,7 +477,16 @@ export struct ActivityLogWorkspace {
     this.pinned = this.manifest?.pinned === true
     this.parts = ledgerParts(dir, this.activityId)
     this.environmentFacts = readObservedSessionEnvironment(dir, this.activityId).facts
-    this.relatedActivities = ledgerRelatedActivities(dir, this.activityId)
+    // 关联导航不是首帧必须的文件读取；按同一规则异步读取manifest，避免在首次
+    // layout回调扫描全部账本。离页、刷新或更换活动后旧结果不得覆盖当前工作区。
+    ledgerRelatedActivitiesAsync(dir, this.activityId,
+      (): boolean => !this.pageActive || generation !== this.evidenceGeneration).then((values: LedgerRelatedActivity[]): void => {
+      if (this.pageActive && generation === this.evidenceGeneration) this.relatedActivities = values
+    }).catch((error: Error): void => {
+      if (this.pageActive && generation === this.evidenceGeneration) {
+        AppLogger.warn(TAG, 'Related activity metadata unavailable; original evidence retained', error)
+      }
+    })
     const previous = readSessionEvidence(dir, this.activityId)
     this.evidenceFiles = sortEvidenceForView(previous?.files ?? [])
     this.evidenceRevision = previous?.revision ?? 1
@@ -493,6 +521,7 @@ export struct ActivityLogWorkspace {
 
   aboutToDisappear(): void {
     this.pageActive = false
+    this.pinGeneration_++; this.pinSaving_ = false
     this.evidenceGeneration++
     this.diagnosisGeneration++
     this.stopFollowing_()
@@ -634,8 +663,8 @@ export struct ActivityLogWorkspace {
 
   /** UI 忙态与账本保护共同决定可删除性；对话框确认后再次调用，避免确认期间状态改变。 */
   private canDelete_(): boolean {
-    return !this.loading && !this.reading && !this.sharing && !this.copying && !this.exportingEvidence
-      && !this.deleting && this.activityId > 0
+    return !this.loading && !this.reading && !this.sharing && !this.copying && !this.exportingEvidence && !this.pinSaving_
+      && !this.deleting && !this.confirmingRemoval_ && this.activityId > 0
       && ledgerRemovalBlockReason(this.context.filesDir, this.activityId).length === 0
   }
 
@@ -802,21 +831,14 @@ export struct ActivityLogWorkspace {
   /** 手机阅读层独立滚动，持续接收公开流式正文；列表与概览始终只渲染短摘要。 */
   @Builder
   private AiReadingSheet_() {
-    Column({ space: 16 }) {
-      Column({ space: 6 }) {
-        Text('AI 分析').fontSize(24).fontWeight(600).fontColor(this.theme.textPrimary)
-        Text(this.manifest?.title ?? this.diagnosisTitle).fontSize(12).fontColor(this.theme.textSecondary)
-          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text('实时内容 · 关闭后可随时继续阅读').fontSize(12).fontColor(this.theme.primary)
-      }.width('100%').padding({ right: 32 }).alignItems(HorizontalAlign.Start)
-      Scroll() {
-        ActivityAiCard({ activityId: this.activityId, refreshNonce: this.refreshNonce, theme: this.theme, expanded: true,
-          allowAnalyze: !this.sharing && !this.exportingEvidence,
-          onRequestAnalysis: (): void => { this.analyzeAfterReading = true; this.showAiResult = false } })
-          .margin({ bottom: 24 })
-      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-    }.width('100%').height('100%').padding({ top: 24, left: 20, right: 20, bottom: 16 })
-      .alignItems(HorizontalAlign.Start)
+    Column() {
+    // X 仅收起原阅读层；后续分析仍在 aiSheetOptions_.onDisappear 中消费，不能提前触发两次。
+    ImmersiveTitleScaffold({ title: 'AI 分析', subtitle: this.manifest?.title ?? this.diagnosisTitle,
+      modal: true, theme: this.theme, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭 AI 分析阅读',
+      onClose: (): void => { this.showAiResult = false; },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
+    }.width('100%').height('100%')
   }
 
   private shareSourceText_(): string {
@@ -856,38 +878,52 @@ export struct ActivityLogWorkspace {
   }
 
   /** 展示标题、占用和影响边界；关闭/取消确认框都不删除数据。 */
-  private requestRemoveLedger_(): void {
+  private async requestRemoveLedger_(): Promise<void> {
     if (!this.canDelete_()) return
-    const title: string = this.manifest?.title ?? '这条活动'
-    const message: string = '将删除“' + title + '”的本地日志和证据清单。\n'
-      + '状态：' + (this.manifest === null ? '未知' : ledgerStateLabel(this.manifest.state))
-      + ' · 占用 ' + formatLogBytes(ledgerBytesOf(this.context.filesDir, this.activityId)) + '\n\n'
-      + '在线分享链接不会被撤回；如需撤回，请到“全部分享记录与撤回”处理。'
+    const activityId: number = this.activityId
+    const generation: number = this.pinGeneration_
+    const cancelled: () => boolean = (): boolean => !this.pageActive || generation !== this.pinGeneration_ || activityId !== this.activityId
+    this.confirmingRemoval_ = true
+    let accepted: boolean = false
     try {
-      this.getUIContext().getPromptAction().showDialog({
+      const reason: string = await ledgerRemovalBlockReasonAsync(this.context.filesDir, activityId)
+      if (cancelled()) return
+      if (reason.length > 0) { this.toast_(reason); return }
+      const entry = (await ledgerListAsync(this.context.filesDir, cancelled)).find((value): boolean => value.activityId === activityId)
+      if (cancelled()) return
+      const title: string = this.manifest?.title ?? '这条活动'
+      const message: string = '将删除“' + title + '”的本地日志和证据清单。\n'
+        + '状态：' + (this.manifest === null ? '未知' : ledgerStateLabel(this.manifest.state))
+        + ' · 占用 ' + (entry?.bytesState === 'current' ? formatLogBytes(entry.bytes) : '暂不可读') + '\n\n'
+        + '在线分享链接不会被撤回；如需撤回，请到“全部分享记录与撤回”处理。'
+      const result: promptAction.ShowDialogSuccessResponse | undefined = await this.getUIContext().getPromptAction().showDialog({
         title: '删除本地活动日志？',
         message: message,
         buttons: [
           { text: '取消', color: this.theme.primary as string },
           { text: '删除本地日志', color: this.theme.error as string },
         ],
-      }).then((res: promptAction.ShowDialogSuccessResponse) => {
-        if (res.index === 1) this.removeLedger_()
-      }).catch(() => { /* 点框外 = 取消 */ })
+      }).catch((): undefined => undefined)
+      accepted = result?.index === 1
     } catch (e) {
-      this.shareError = '无法打开确认框：' + (e as Error).message
-    }
+      if (!cancelled()) this.shareError = '无法核实或确认清理：' + (e as Error).message
+    } finally { this.confirmingRemoval_ = false }
+    if (accepted && !cancelled()) await this.removeLedger_()
   }
 
-  private removeLedger_(): void {
+  /** 已确认删除真正等待异步owner；成功/失败只发布给仍存活的同一活动，忙态拒绝重复操作。 */
+  private async removeLedger_(): Promise<void> {
     if (!this.canDelete_()) return
+    const activityId: number = this.activityId
+    const generation: number = this.pinGeneration_
     this.deleting = true
     try {
-      ledgerRemove(this.context.filesDir, this.activityId)
+      await ledgerRemoveAsync(this.context.filesDir, activityId)
+      if (!this.pageActive || generation !== this.pinGeneration_ || activityId !== this.activityId) return
       this.toast_('已删除本条日志')
       this.close_()
     } catch (e) {
-      this.toast_((e as Error).message)
+      if (this.pageActive && generation === this.pinGeneration_ && activityId === this.activityId) this.toast_((e as Error).message)
       hilog.warn(0x0000, TAG, 'remove failed: %{public}s', (e as Error).message)
     } finally {
       this.deleting = false
@@ -902,7 +938,10 @@ export struct ActivityLogWorkspace {
     if (cat === ActivityCategory.MOD_INSTALL) return '安装'
     if (cat === ActivityCategory.REPAIR) return '修复'
     if (cat === ActivityCategory.JDK) return 'JDK'
+    if (cat === ActivityCategory.APP_UPDATE) return '应用更新'
+    if (cat === ActivityCategory.APP_UPDATE_DOWNLOAD) return '更新包下载'
     if (cat === ActivityCategory.MODPACK) return '整合包'
+    if (cat === ActivityCategory.GAME_EXPORT) return '游戏包导出'
     if (cat === ActivityCategory.STORAGE) return '存储'
     if (cat === ActivityCategory.VERSION_MANAGE) return '版本管理'
     return cat.length > 0 ? cat : '活动'
@@ -936,95 +975,34 @@ export struct ActivityLogWorkspace {
     return formatDurationMs(m.endedAt - m.startedAt)
   }
 
+  /** 标题动作使用可观察字段生成描述；原忙态约束和业务分派都保留。 */
+  private workspaceTitleActions_(): AppTitleAction[] {
+    const actions: AppTitleAction[] = [];
+    if (this.activeView === 'logs') {
+      actions.push({ id: 'focus-reader', label: this.focusedReader ? '退出专注' : '专注阅读' });
+    }
+    actions.push({ id: 'activity-menu', label: '导出、保留与活动管理', icon: AppIconName.More,
+      enabled: !this.sharing && !this.exportingEvidence && !this.pinSaving_ && !this.confirmingRemoval_ && !this.deleting && !this.loading });
+    return actions;
+  }
+
   build() {
-    Column({ space: 12 }) {
-      Row({ space: 8 }) {
-        if (!this.embedded) {
-          Button() { AppIcon({ name: AppIconName.Back, iconSize: 20, color: this.theme.primary }) }
-            .width(44).height(44).backgroundColor(Color.Transparent)
-            .accessibilityText('返回活动账本').onClick(() => { this.close_() })
-        }
-        AppIcon({ name: this.activeView === 'logs' ? AppIconName.Document : AppIconName.History, iconSize: 20, color: this.theme.textSecondary })
-        Text(this.focusedReader ? '日志阅读' : '活动详情').fontSize(16).fontWeight(600)
-          .fontColor(this.theme.textPrimary).layoutWeight(1).id('activity-log-title')
-          .bindSheet(this.showAiResult, this.AiReadingSheet_(), this.aiSheetOptions_())
-        if (this.activeView === 'logs') {
-          Button(this.focusedReader ? '退出专注' : '专注阅读').height(44).fontSize(12)
-            .fontColor(this.theme.primary).backgroundColor(Color.Transparent).onClick(() => { this.focusReader_() })
-        }
-        // 三点明确表示操作菜单，原网格符号容易被误认为布局切换。
-        Button() { Text('⋯').fontSize(24).fontWeight(600).fontColor(this.theme.textSecondary) }
-          .width(44).height(44).backgroundColor(Color.Transparent).accessibilityText('导出、保留与活动管理')
-          .enabled(!this.sharing && !this.exportingEvidence && !this.loading).onClick(() => { this.moreActions_() })
-      }.width('100%')
-      ActivityViewTabs({ labels: ['概览', '日志', '环境与附件'], theme: this.theme,
-        selectedIndex: WORKSPACE_VIEWS.indexOf(this.activeView),
-        onSelect: (index: number): void => { this.activeView = WORKSPACE_VIEWS[index] } })
-      Column() {
-      ActivityPaneMotion({ identity: this.activeView, active: this.hostVisible }) {
-      if (this.loading) {
-        Column({ space: 12 }) {
-          LoadingProgress().width(32).height(32).color(this.theme.primary)
-          Text('正在读取活动记录…').fontSize(14).fontColor(this.theme.textSecondary)
-        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else if (this.activeView === 'overview') {
-        Scroll() {
-          Column({ space: 20 }) {
-            this.HeaderCard_()
-            // 只在宽屏概览使用辅助栏；日志正文始终保留完整阅读宽度。
-            if (this.viewportWidth >= 760) {
-              Row({ space: 20 }) {
-                Column() { this.DiagnosticOverview_() }.layoutWeight(1)
-                Column() { this.OverviewTools_() }.width(260)
-              }.width('100%').alignItems(VerticalAlign.Top)
-            } else {
-              this.DiagnosticOverview_()
-              this.OverviewTools_()
-            }
-          }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 8, bottom: 16 })
-        }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Auto)
-        this.OverviewActions_()
-      } else if (this.activeView === 'files') {
-        Scroll() {
-          Column({ space: 20 }) {
-            this.EnvironmentFacts_()
-            this.EvidenceList_()
-          }.width('100%')
-        }.width('100%').layoutWeight(1).align(Alignment.TopStart)
-      } else {
-        Row({ space: 8 }) {
-          Button() {
-            Row({ space: 8 }) {
-              AppIcon({ name: AppIconName.Document, iconSize: 16, color: this.theme.primary })
-              Text(this.searchAllFiles ? '本次全部可读日志' : this.activeEvidenceLabel_()).fontSize(13)
-                .fontColor(this.theme.primary).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              AppIcon({ name: AppIconName.ChevronRight, iconSize: 14, color: this.theme.primary })
-            }.width('100%')
-          }.height(44).layoutWeight(1).padding({ left: 12, right: 12 }).borderRadius(10).backgroundColor(this.theme.bgInput)
-            .onClick(() => { this.showFilePicker = true })
-            .bindSheet(this.showFilePicker, this.FilePicker_(), { height: '70%', showClose: true,
-              backgroundColor: this.theme.bgPrimary, onDisappear: (): void => { this.showFilePicker = false } })
-          Button('阅读选项').height(44).fontSize(12).borderRadius(10).backgroundColor(this.theme.bgInput).fontColor(this.theme.textPrimary)
-            .onClick(() => { this.readerOptions_() })
-        }.width('100%')
-        this.ToolBar_()
-        this.LogBody_()
-        Row({ space: 8 }) {
-          Button('上一页').height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.theme.primary).enabled(!this.reading && this.pageStart > 0)
-            .onClick(() => { this.stopFollowing_(); this.loadCurrentPage_(Math.max(0, this.pageStart - 300)) })
-          Text(this.showingTail ? '最新事件窗口' : '第 ' + (Math.floor(this.pageStart / 300) + 1) + ' 页').fontSize(12).fontColor(this.theme.textSecondary)
-          Button('下一页').height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.theme.primary).enabled(!this.reading && this.hasNextPage)
-            .onClick(() => { this.stopFollowing_(); this.loadCurrentPage_(this.pageStart + 300) })
-          Blank()
-          Button(this.showSearch ? '收起搜索' : '搜索').height(44).fontSize(12).backgroundColor(this.theme.bgInput).fontColor(this.theme.textPrimary)
-            .borderRadius(10).onClick(() => { this.showSearch = !this.showSearch })
-        }.width('100%')
-      }
-      }
-      }.layoutWeight(1).width('100%')
+    Column() {
+    // embedded 工作区不生成路由返回；独立页仍执行 close_，保留同一正文与阅读状态。
+    ImmersiveTitleScaffold({ title: this.focusedReader ? '日志阅读' : '活动详情', titleId: 'activity-log-title',
+      theme: this.theme, surfaceColor: this.embedded ? this.theme.bgCard : this.theme.bgPrimary,
+      topSafeHeight: this.embedded ? 0 : this.topSafeHeight, showBack: !this.embedded, backLabel: '返回活动账本',
+      menuActions: this.workspaceTitleActions_(), onBack: (): void => { this.close_(); },
+      onMenuAction: (id: string): void => {
+        if (id === 'focus-reader') this.focusReader_();
+        else if (id === 'activity-menu') this.moreActions_();
+      },
+      content: (): void => { this.ImmersiveTitleContent2_(); }
+    })
+    // 标题 Text 迁移后用稳定锚点承载阅读 Sheet，不能丢失流式阅读关闭后的原回调。
+    Column().width(0).height(0)
+      .bindSheet(this.showAiResult, this.AiReadingSheet_(), this.aiSheetOptions_())
     }.width('100%').height('100%')
-      .padding({ top: this.embedded ? 12 : this.topSafeHeight + 8, left: 16, right: 16,
-        bottom: this.embedded ? 12 : this.bottomSafeHeight + 8 })
       .backgroundColor(this.embedded ? this.theme.bgCard : this.theme.bgPrimary).borderRadius(this.embedded ? 18 : 0)
       .onAreaChange((_old: Area, current: Area) => { this.viewportWidth = Number(current.width) })
       .bindSheet(this.showShareOptions, this.ShareSelection_(), this.shareSheetOptions_())
@@ -1076,7 +1054,13 @@ export struct ActivityLogWorkspace {
   /** 文件抽屉只改变阅读来源；不与分享多选共用选择状态。 */
   @Builder
   private FilePicker_() {
-    Scroll() { this.EvidenceList_() }.width('100%').height('100%').padding(20).align(Alignment.TopStart)
+    Column() {
+      ImmersiveTitleScaffold({ title: '选择日志文件', modal: true, theme: this.theme,
+        surfaceColor: this.theme.bgPrimary, closeLabel: '关闭日志文件选择',
+        onClose: (): void => { this.showFilePicker = false; },
+        content: (): void => { this.ImmersiveTitleContent3_(); }
+      })
+    }.width('100%').height('100%')
   }
 
   /** 明确关系与同版本历史分开标注；每个入口仍打开独立活动，不合并原件或退出结局。 */
@@ -1266,7 +1250,8 @@ export struct ActivityLogWorkspace {
       }
       Row({ space: 8 }) {
         if (this.manifest !== null) {
-          AppIcon({ name: this.manifest.category === ActivityCategory.LAUNCH ? AppIconName.GameController : AppIconName.Download,
+          AppIcon({ name: this.manifest.category === ActivityCategory.LAUNCH ? AppIconName.GameController :
+            this.manifest.category === ActivityCategory.GAME_EXPORT ? AppIconName.Export : AppIconName.Download,
             iconSize: 18, color: this.theme.primary })
           Text(this.categoryLabel_(this.manifest.category) + '记录').fontSize(12).fontColor(this.theme.textSecondary).layoutWeight(1)
           // 使用 API 20 的背景/圆角绘制装饰点，避免新版 fill 重载。
@@ -1549,6 +1534,102 @@ export struct ActivityLogWorkspace {
     }.width('100%').layoutWeight(1).borderRadius(12).clip(true).backgroundColor('#0F141D')
   }
 
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+    Column({ space: 16 }) {
+      Text('实时内容 · 关闭后可随时继续阅读').fontSize(12).fontColor(this.theme.primary)
+        .width('100%').align(Alignment.Start)
+      Scroll() {
+        ActivityAiCard({ activityId: this.activityId, refreshNonce: this.refreshNonce, theme: this.theme, expanded: true,
+          allowAnalyze: !this.sharing && !this.exportingEvidence,
+          onRequestAnalysis: (): void => { this.analyzeAfterReading = true; this.showAiResult = false } })
+          .margin({ bottom: 24 })
+      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+    }.width('100%').height('100%').padding({ top: 8, left: 20, right: 20, bottom: 16 })
+      .alignItems(HorizontalAlign.Start)
+    }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent2_() {
+    Column({ space: 12 }) {
+      ActivityViewTabs({ labels: ['概览', '日志', '环境与附件'], theme: this.theme,
+        selectedIndex: WORKSPACE_VIEWS.indexOf(this.activeView),
+        onSelect: (index: number): void => { this.activeView = WORKSPACE_VIEWS[index] } })
+      Column() {
+      ActivityPaneMotion({ identity: this.activeView, active: this.hostVisible }) {
+      if (this.loading) {
+        Column({ space: 12 }) {
+          LoadingProgress().width(32).height(32).color(this.theme.primary)
+          Text('正在读取活动记录…').fontSize(14).fontColor(this.theme.textSecondary)
+        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else if (this.activeView === 'overview') {
+        Scroll() {
+          Column({ space: 20 }) {
+            this.HeaderCard_()
+            // 只在宽屏概览使用辅助栏；日志正文始终保留完整阅读宽度。
+            if (this.viewportWidth >= 760) {
+              Row({ space: 20 }) {
+                Column() { this.DiagnosticOverview_() }.layoutWeight(1)
+                Column() { this.OverviewTools_() }.width(260)
+              }.width('100%').alignItems(VerticalAlign.Top)
+            } else {
+              this.DiagnosticOverview_()
+              this.OverviewTools_()
+            }
+          }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 8, bottom: 16 })
+        }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Auto)
+        this.OverviewActions_()
+      } else if (this.activeView === 'files') {
+        Scroll() {
+          Column({ space: 20 }) {
+            this.EnvironmentFacts_()
+            this.EvidenceList_()
+          }.width('100%')
+        }.width('100%').layoutWeight(1).align(Alignment.TopStart)
+      } else {
+        Row({ space: 8 }) {
+          Button() {
+            Row({ space: 8 }) {
+              AppIcon({ name: AppIconName.Document, iconSize: 16, color: this.theme.primary })
+              Text(this.searchAllFiles ? '本次全部可读日志' : this.activeEvidenceLabel_()).fontSize(13)
+                .fontColor(this.theme.primary).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              AppIcon({ name: AppIconName.ChevronRight, iconSize: 14, color: this.theme.primary })
+            }.width('100%')
+          }.height(44).layoutWeight(1).padding({ left: 12, right: 12 }).borderRadius(10).backgroundColor(this.theme.bgInput)
+            .onClick(() => { this.showFilePicker = true })
+            .bindSheet(this.showFilePicker, this.FilePicker_(), { height: '70%', showClose: false,
+              backgroundColor: this.theme.bgPrimary, onDisappear: (): void => { this.showFilePicker = false } })
+          Button('阅读选项').height(44).fontSize(12).borderRadius(10).backgroundColor(this.theme.bgInput).fontColor(this.theme.textPrimary)
+            .onClick(() => { this.readerOptions_() })
+        }.width('100%')
+        this.ToolBar_()
+        this.LogBody_()
+        Row({ space: 8 }) {
+          Button('上一页').height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.theme.primary).enabled(!this.reading && this.pageStart > 0)
+            .onClick(() => { this.stopFollowing_(); this.loadCurrentPage_(Math.max(0, this.pageStart - 300)) })
+          Text(this.showingTail ? '最新事件窗口' : '第 ' + (Math.floor(this.pageStart / 300) + 1) + ' 页').fontSize(12).fontColor(this.theme.textSecondary)
+          Button('下一页').height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.theme.primary).enabled(!this.reading && this.hasNextPage)
+            .onClick(() => { this.stopFollowing_(); this.loadCurrentPage_(this.pageStart + 300) })
+          Blank()
+          Button(this.showSearch ? '收起搜索' : '搜索').height(44).fontSize(12).backgroundColor(this.theme.bgInput).fontColor(this.theme.textPrimary)
+            .borderRadius(10).onClick(() => { this.showSearch = !this.showSearch })
+        }.width('100%')
+      }
+      }
+      }.layoutWeight(1).width('100%')
+    }.width('100%').height('100%')
+      .padding({ top: this.embedded ? 12 : 8, left: 16, right: 16,
+        bottom: this.embedded ? 12 : this.bottomSafeHeight + 8 })
+    }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent3_() {
+        Scroll() { this.EvidenceList_() }.width('100%').height('100%').padding(20).align(Alignment.TopStart)
+      }
 }
 
 

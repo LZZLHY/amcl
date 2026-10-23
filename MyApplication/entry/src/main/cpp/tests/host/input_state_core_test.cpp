@@ -36,7 +36,9 @@ static_assert(offsetof(AmclInputSurfaceContextPayload, generation) == 40,
 static_assert(offsetof(AmclInputDiagnosticDropPayload, rawControl) == 8,
               "diagnostic raw-control ABI");
 static_assert(sizeof(AmclInputEvent) == 120, "event ABI");
-static_assert(sizeof(AmclInputHostApiV1) == 144, "table ABI");
+// 冻结前缀与可选有序尾表分别验收，不能把追加尾部误当成改动旧字段偏移。
+static_assert(AMCL_INPUT_HOST_API_V1_PREFIX_SIZE == 144, "table prefix ABI");
+static_assert(sizeof(AmclInputHostApiV1) == 168, "ordered table ABI");
 static_assert(offsetof(AmclInputHostApiV1, beginSession) == 24, "table prefix ABI");
 
 namespace {
@@ -125,6 +127,34 @@ AmclInputEvent BackendControl(uint32_t state,
     return event;
 }
 
+// 载荷全部合法的生命周期/控制事件样本，覆盖批次拒绝集合的每一种类型；
+// 下标 1 是 DEVICE_CHANGED(ADDED)，供“单条仍被接受”的负向对照使用。
+std::vector<AmclInputEvent> BatchRejectedControls(uint64_t epoch) {
+    AmclInputEvent focus = Event(AMCL_INPUT_EVENT_FOCUS_CHANGED, epoch);
+    focus.payload.focus.focused = 0u;
+    AmclInputEvent device = Event(AMCL_INPUT_EVENT_DEVICE_CHANGED, epoch);
+    device.header.deviceId = 77u;
+    device.payload.device.change = AMCL_INPUT_DEVICE_ADDED;
+    device.payload.device.capabilities = AMCL_INPUT_DEVICE_CAP_KEYBOARD;
+    AmclInputEvent capture = Event(AMCL_INPUT_EVENT_CAPTURE_CHANGED, epoch);
+    capture.payload.capture.requested = 1u;
+    capture.payload.capture.active = 1u;
+    capture.payload.capture.reason = AMCL_INPUT_CAPTURE_REASON_GRANTED;
+    AmclInputEvent surface = Event(AMCL_INPUT_EVENT_SURFACE_CHANGED, epoch);
+    surface.payload.surface.active = 1u;
+    surface.payload.surface.widthPx = 640u;
+    surface.payload.surface.heightPx = 480u;
+    surface.payload.surface.validFields = AMCL_INPUT_SURFACE_FIELD_DIMENSIONS;
+    AmclInputEvent reset = Event(AMCL_INPUT_EVENT_RESET, epoch);
+    reset.payload.reset.reason = AMCL_INPUT_RESET_EXPLICIT;
+    AmclInputEvent context =
+        Event(AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED, epoch);
+    context.payload.surfaceContext.generation = 1u;
+    return {focus, device, capture, surface, reset, context,
+            TextSession(AMCL_INPUT_TEXT_SESSION_STARTED, kTextSessionId, epoch),
+            BackendControl(AMCL_INPUT_BACKEND_CONSUMER_READY, 1u, epoch, 1u)};
+}
+
 AmclInputEvent CoreBaseline(amcl::input::InputStateCore& core,
                             AmclInputConsumerHandle consumer) {
     AmclInputEvent baseline{};
@@ -188,6 +218,11 @@ amcl::input::CoreObservabilityV1 CoreObs(amcl::input::InputStateCore& core) {
     amcl::input::CoreObservabilityV1 value{};
     CHECK(core.GetObservability(&value) == AMCL_INPUT_OK);
     return value;
+}
+
+// gApi 背后的进程单例 core 的 §11 计数（C++ 内部面，不经冻结的 V1 函数表）。
+amcl::input::CoreObservabilityV1 HostObs() {
+    return CoreObs(amcl::input::HostInputStateCore());
 }
 
 void CheckSnapshotStateEqual(const AmclInputSnapshotV1& actual,
@@ -257,10 +292,18 @@ void TestAbiAndFirstBegin() {
           gApi->closeConsumer && gApi->getSnapshot);
     AmclInputSnapshotV1 bad{};
     CHECK(gApi->getSnapshot(&bad) == AMCL_INPUT_ERROR_ABI_MISMATCH);
+    // 未知类型不再静默 OK：单条与批量都拒绝并计数；类型 0 属非法载荷，不计入 unknown。
+    const auto unknownBefore = HostObs();
     AmclInputEvent futureWithoutSession = Event(0x80000000u);
-    CHECK(gApi->submitEvent(&futureWithoutSession) == AMCL_INPUT_OK);
+    CHECK(gApi->submitEvent(&futureWithoutSession) ==
+          AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    CHECK(gApi->submitBatch(&futureWithoutSession, 1u) ==
+          AMCL_INPUT_ERROR_INVALID_ARGUMENT);
     AmclInputEvent invalidType = Event(0u);
     CHECK(gApi->submitEvent(&invalidType) == AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    const auto unknownAfter = HostObs();
+    CHECK(unknownAfter.unknownEventTypes == unknownBefore.unknownEventTypes + 2u);
+    CHECK(unknownAfter.accepted == unknownBefore.accepted);
 
     AmclInputConsumerHandle consumer = 0;
     CHECK(gApi->openConsumer(&consumer) == AMCL_INPUT_OK);
@@ -406,7 +449,9 @@ void TestEpochFocusAndUnknown() {
     AmclInputEvent future = Event(0x7fffffffu);
     future.header.structSize =
         static_cast<uint16_t>(sizeof(AmclInputEvent) + 16u);
-    CHECK(gApi->submitEvent(&future) == AMCL_INPUT_OK);
+    const uint64_t unknownInSession = HostObs().unknownEventTypes;
+    CHECK(gApi->submitEvent(&future) == AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    CHECK(HostObs().unknownEventTypes == unknownInSession + 1u);
     AmclInputEvent tooSmall = Key(1, 3, AMCL_INPUT_ACTION_DOWN);
     tooSmall.header.structSize =
         static_cast<uint16_t>(sizeof(AmclInputEvent) - 1u);
@@ -931,27 +976,39 @@ void TestBlobReclamationAndExhaustion() {
     CHECK(gApi->submitEvent(&textStart) == AMCL_INPUT_OK);
     CHECK(Drain(session.consumer).size() == 1u);
     AmclInputEvent text = Event(AMCL_INPUT_EVENT_TEXT_COMMIT);
+    // 比整个池（本配置 256 字节）还大的包是参数错误：不复位，held/text/计数全都不变。
+    const AmclInputEvent held = Key(61u, 5u, AMCL_INPUT_ACTION_DOWN);
+    CHECK(gApi->submitEvent(&held) == AMCL_INPUT_OK);
+    CHECK(Drain(session.consumer).size() == 1u);
+    const AmclInputSnapshotV1 beforeOversized = Snapshot();
     const std::vector<uint8_t> oversized(257u, static_cast<uint8_t>('z'));
     CHECK(gApi->submitTextPacket(&text, oversized.data(),
                                  static_cast<uint32_t>(oversized.size())) ==
-          AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED);
-    CHECK(Snapshot().blobBytes == 0u);
+          AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    CheckSnapshotStateEqual(Snapshot(), beforeOversized);
+    CHECK(Snapshot().heldControlCount == 1u);
+    CHECK(Drain(session.consumer).empty());
+    // 负向对照：同一 token 的合法包仍被接受，证明文本会话没有被复位。
+    const uint8_t extra = static_cast<uint8_t>('y');
+    CHECK(gApi->submitTextPacket(&text, &extra, 1) == AMCL_INPUT_OK);
     auto output = Drain(session.consumer);
     CHECK(output.size() == 1u);
-    CHECK(output[0].header.eventType == AMCL_INPUT_EVENT_RESET);
-    CHECK(output[0].payload.reset.reason ==
-          AMCL_INPUT_RESET_BLOB_POOL_EXHAUSTED);
+    CHECK(output[0].header.eventType == AMCL_INPUT_EVENT_TEXT_COMMIT);
+    CHECK(gApi->releasePacket(
+              session.consumer,
+              output[0].payload.textCommit.utf8Blob.packetId) == AMCL_INPUT_OK);
 
-    CHECK(gApi->submitEvent(&textStart) == AMCL_INPUT_OK);
-    CHECK(Drain(session.consumer).size() == 1u);
+    // 放得进池却无人可局部隔离：全局复位成功时如实返回 OVERFLOW_RESET。
     const std::vector<uint8_t> full(256u, static_cast<uint8_t>('x'));
     CHECK(gApi->submitTextPacket(&text, full.data(),
                                  static_cast<uint32_t>(full.size())) == AMCL_INPUT_OK);
     CHECK(Snapshot().blobBytes == full.size());
-    const uint8_t extra = static_cast<uint8_t>('y');
+    const uint64_t overflowBefore = Snapshot().overflowResetCount;
     CHECK(gApi->submitTextPacket(&text, &extra, 1) ==
-          AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED);
+          AMCL_INPUT_OVERFLOW_RESET);
     CHECK(Snapshot().blobBytes == 0u);
+    CHECK(Snapshot().heldControlCount == 0u);
+    CHECK(Snapshot().overflowResetCount == overflowBefore + 1u);
     output = Drain(session.consumer);
     CHECK(output.size() == 1u);
     CHECK(output[0].header.eventType == AMCL_INPUT_EVENT_RESET);
@@ -1005,6 +1062,36 @@ void TestBatchRollbackAndOverflow() {
     };
     CHECK(gApi->submitBatch(invalidTypeBatch, 2) ==
           AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    CHECK(Snapshot().heldControlCount == 0u);
+    CHECK(Drain(session.consumer).empty());
+
+    // 生命周期/控制事件即使载荷合法，也不得混进批次：任何状态变化之前整批拒绝。
+    const AmclInputSnapshotV1 beforeControl = Snapshot();
+    const auto controlObs = HostObs();
+    for (const AmclInputEvent& control : BatchRejectedControls(session.epoch)) {
+        const AmclInputEvent mixed[] = {Key(3, 10, AMCL_INPUT_ACTION_DOWN), control};
+        CHECK(gApi->submitBatch(mixed, 2u) == AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+        CHECK(gApi->submitBatch(&control, 1u) ==
+              AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+        CheckSnapshotStateEqual(Snapshot(), beforeControl);
+        CHECK(Drain(session.consumer).empty());
+    }
+    CHECK(HostObs().accepted == controlObs.accepted);
+    CHECK(HostObs().resetsEmitted == controlObs.resetsEmitted);
+    // 负向对照：同一个合法载荷单条提交仍被接受——拒绝只针对“混进批次”。
+    const AmclInputEvent singleDevice = BatchRejectedControls(session.epoch)[1];
+    CHECK(gApi->submitEvent(&singleDevice) == AMCL_INPUT_OK);
+    CHECK(Drain(session.consumer).size() == 1u);
+
+    // 批内未知类型：取锁后、回滚快照前拒绝整批并计数，前面的合法键没有生效。
+    AmclInputEvent unknownBatch[] = {
+        Key(3, 11, AMCL_INPUT_ACTION_DOWN),
+        Event(0x40000000u),
+    };
+    const uint64_t unknownBefore = HostObs().unknownEventTypes;
+    CHECK(gApi->submitBatch(unknownBatch, 2u) ==
+          AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    CHECK(HostObs().unknownEventTypes == unknownBefore + 1u);
     CHECK(Snapshot().heldControlCount == 0u);
     CHECK(Drain(session.consumer).empty());
 
@@ -1354,7 +1441,19 @@ void TestLateConsumerReplaysCurrentSurfaceBeforeReady() {
     CHECK(replay.payload.surface.widthPx == surface.widthPx);
     CHECK(replay.payload.surface.heightPx == surface.heightPx);
     CHECK(replay.payload.surface.publicationGeneration == 55u);
+    // 私有重放读完前 READY 仍 STALE（见上）。读完后，基线之后写入、仍排队的共享记录不再
+    // 挡 READY：READY 后按序送达，且只有这一条，不会冒出基线之前的历史记录。
+    AmclInputEvent device = Event(AMCL_INPUT_EVENT_DEVICE_CHANGED, epoch);
+    device.header.deviceId = 91u;
+    device.payload.device.change = AMCL_INPUT_DEVICE_ADDED;
+    device.payload.device.capabilities = AMCL_INPUT_DEVICE_CAP_KEYBOARD;
+    CHECK(core.SubmitEvent(&device) == AMCL_INPUT_OK);
     CHECK(core.SubmitEvent(&ready) == AMCL_INPUT_OK);
+    AmclInputEvent afterReady{};
+    CHECK(core.NextEvent(consumer, &afterReady) == AMCL_INPUT_OK);
+    CHECK(afterReady.header.eventType == AMCL_INPUT_EVENT_DEVICE_CHANGED);
+    CHECK(afterReady.header.sequence > replay.header.sequence);
+    CHECK(core.NextEvent(consumer, &afterReady) == AMCL_INPUT_EMPTY);
     AmclInputEvent retire = BackendControl(
         AMCL_INPUT_BACKEND_CONSUMER_RETIRE, consumer, epoch);
     CHECK(core.SubmitEvent(&retire) == AMCL_INPUT_OK);
@@ -1946,9 +2045,27 @@ void TestTypedBackendOwnerRolloverAndBlobDrain() {
     CHECK(tail[0].payload.reset.reason == AMCL_INPUT_RESET_BACKEND_RETIRED);
     CHECK(core.CloseConsumer(first) == AMCL_INPUT_OK);
 
-    // A consumer that waited beside the prior owner accumulated that owner's
-    // traffic and cannot be promoted with a stale baseline. It must reopen.
-    CHECK(core.SubmitEvent(&waitingReady) == AMCL_INPUT_ERROR_STALE);
+    // 规则变更：等在旁边的消费者基线仍有效（同会话、重放已读完、仍在接收），积压的全是
+    // 基线之后按序写给它的共享记录（不含历史 DOWN），所以可直接升格，不再强制重开。
+    CHECK(core.SubmitEvent(&waitingReady) == AMCL_INPUT_OK);
+    const auto backlog = CoreDrain(core, waiting);
+    CHECK(backlog.size() == 3u);
+    CHECK(backlog[0].header.eventType ==
+          AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED);
+    CHECK(backlog[1].header.eventType == AMCL_INPUT_EVENT_TEXT_COMMIT);
+    CHECK(backlog[2].header.eventType == AMCL_INPUT_EVENT_RESET);
+    CHECK(backlog[2].payload.reset.reason ==
+          AMCL_INPUT_RESET_BACKEND_RETIRED);
+    for (const auto& record : backlog) {
+        CHECK(record.header.sequence > waitingBaseline.header.sequence);
+    }
+    CHECK(core.ReleasePacket(
+              waiting, backlog[1].payload.textCommit.utf8Blob.packetId) ==
+          AMCL_INPUT_OK);
+    AmclInputEvent waitingRetire = BackendControl(
+        AMCL_INPUT_BACKEND_CONSUMER_RETIRE, waiting, epoch);
+    CHECK(core.SubmitEvent(&waitingRetire) == AMCL_INPUT_OK);
+    CoreDrain(core, waiting);
     CHECK(core.CloseConsumer(waiting) == AMCL_INPUT_OK);
     AmclInputConsumerHandle fresh = 0;
     CHECK(core.OpenConsumer(&fresh) == AMCL_INPUT_OK);

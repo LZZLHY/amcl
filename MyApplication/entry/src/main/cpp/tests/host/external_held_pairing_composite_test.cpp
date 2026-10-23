@@ -8,9 +8,9 @@
 // acquired-released==live 守恒），ledger 侧也完全正常（引用计数正确），组合起来却是一个
 // 卡死的按键。两个单侧测试各自全绿，缺陷照样出厂。
 //
-// 本文件复刻 `touch_input.cpp` 的 `routerKey` / `routerOutput` /
-// `ohos_release_input_source_held` 三段真实逻辑（只有三行，刻意不抽共享代码 —— 抽了就等于
-// 让测试和产品共享同一个可能错的实现），因此它测的是产品语义而不是近似。
+// 本文件独立复刻 registry × ledger 组合的**边沿**语义与 `ohos_release_input_source_held`，作为
+// 与产品实现（`ExternalHeldEdgeRouter`）互不共享代码的第二份实现；产品 TU 本身、以及 NAPI 返回值
+// “本端变更是否生效”的判据，由 external_held_edge_router_test.cpp 直接链接产品代码来测。
 //
 // ============================ 被钉住的故障（2026-08-21） ============================
 //
@@ -68,8 +68,8 @@ struct Edge {
     int action = -1;
 };
 
-// registry + ledger 的复合平面，逐行对应产品实现：
-//   Key()           == routerKey() 的 external 分支 + routerOutput()
+// registry + ledger 的复合平面，独立复刻产品实现的边沿语义：
+//   Key()           == ExternalHeldEdgeRouter::Route() 的边沿部分（不含结构上不可达的 PRESS 回滚）
 //   ReleaseSource() == ohos_release_input_source_held()
 //   CancelAll()     == ohos_cancel_all_input() 里那两行（Clear + releaseAll）
 // 唯一简化是没有那三把锁 —— 本类是单线程的，而锁序由产品侧的调用点负责。
@@ -80,7 +80,8 @@ public:
               edges_.push_back(Edge{output, action});
           }) {}
 
-    // 返回值语义与 routerKey 一致：true == 本次调用向 MC 发出了一条聚合边沿。
+    // 返回 true == 本次调用向 MC 发出了一条聚合边沿（对应 Route() 返回 AppliedEmitted）。
+    // 这不是 NAPI 返回值：跨端聚合时本端变更已生效、这里却返回 false；那条判据见 router 测试。
     bool Key(AmclInputSource source, const Output& output, int action) {
         OwnerToken owner = 0;
         if (action == kPress) {

@@ -1,0 +1,108 @@
+// SDL 系统边界替身；被测错误分类、fatal 锁存、owner/cache 与 MakeCurrent 来自当前补丁。
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
+#include <iostream>
+#include <string>
+using SDL_GLContext=void*;using SDL_WindowID=int;using EGLint=int;
+#define OPENHARMONY_SURFACE_READY 1
+#define OPENHARMONY_SURFACE_LOST 2
+#define OPENHARMONY_SURFACE_RECREATE_PENDING 3
+#define OPENHARMONY_WINDOW_PRESENTED 0
+#define OPENHARMONY_WINDOW_AUXILIARY_PBUFFER 1
+#define EGL_NO_SURFACE nullptr
+#define EGL_SUCCESS 0x3000
+#define EGL_BAD_SURFACE 0x300d
+#define EGL_BAD_NATIVE_WINDOW 0x300b
+#define EGL_BAD_CONTEXT 0x3006
+#define EGL_CONTEXT_LOST 0x300e
+#define SDL_LOG_CATEGORY_VIDEO 1
+#define SDL_EVENT_WINDOW_CLOSE_REQUESTED 1
+#define SDL_VIDEO_DRIVER_OPENHARMONY 1
+#define SDL_VIDEO_OPENGL_EGL 1
+#define SDL_WINDOW_OPENGL 2
+#define NOT_AN_OPENGL_WINDOW "not OpenGL"
+#define CHECK_WINDOW_MAGIC(window,value) do{}while(0)
+#define CHECK(x) do{if(!(x)){std::fprintf(stderr,"line %d: %s\n",__LINE__,#x);std::exit(1);}}while(0)
+struct SDL_WindowData {
+    bool is_current=true;int owner_thread=11;SDL_GLContext last_context=reinterpret_cast<void*>(3);
+    int surface_state=1;bool amcl_surface_suspended=false;void* egl_surface=reinterpret_cast<void*>(2);
+    int pending_width=0,role=0;uint64_t amcl_generation=17;
+};
+struct SDL_Window {SDL_WindowData* internal;int id=1;int flags=SDL_WINDOW_OPENGL;};
+struct SDL_VideoData {bool renderer_fatal=false;int makecurrent_fail=0,makecurrent_ok=0;};
+struct SDL_VideoDevice {
+    SDL_Window* current_glwin=nullptr;SDL_GLContext current_glctx=nullptr;
+    int current_glwin_tls=1,current_glctx_tls=2;SDL_VideoData* internal;
+    bool gl_allow_no_surface=false;
+    bool (*GL_MakeCurrent)(SDL_VideoDevice*,SDL_Window*,SDL_GLContext)=nullptr;
+};
+struct AMCL_GraphicsObserverV1 {void(*fatal)(const char*,uint32_t,uint64_t);};
+SDL_Window* current=nullptr;SDL_Window* live=nullptr;SDL_GLContext currentContext=nullptr;
+SDL_VideoDevice* deviceOwner=nullptr;
+SDL_VideoDevice* _this=nullptr;
+bool driverFails=false,restartRequired=false,destroyOnClose=false;
+EGLint driverError=EGL_CONTEXT_LOST;
+int driverCalls=0,fatalCalls=0,closeCalls=0;
+uint32_t firstCode=0;uint64_t firstGeneration=0;std::string firstStage;
+void recordFatal(const char* stage,uint32_t code,uint64_t generation){
+    if(fatalCalls++==0){firstCode=code;firstGeneration=generation;firstStage=stage;}
+}
+AMCL_GraphicsObserverV1 observer{recordFatal};
+const AMCL_GraphicsObserverV1* AMCL_GraphicsObserver(){return &observer;}
+SDL_Window* SDL_GL_GetCurrentWindow(){return current;}
+SDL_GLContext SDL_GL_GetCurrentContext(){return currentContext;}
+SDL_Window* SDL_GetWindowFromID(int id){return live&&live->id==id?live:nullptr;}
+SDL_VideoDevice* SDL_GetVideoDevice(){return deviceOwner;}
+int SDL_GetCurrentThreadID(){return 11;}
+void SDL_SetTLS(int* key,void* value,void*){if(*key==1)current=static_cast<SDL_Window*>(value);else currentContext=value;}
+bool SDL_SetError(const char*){return false;}
+bool SDL_UninitializedVideo(){return false;}
+const char* SDL_GetError(){return "injected EGL context loss";}
+void SDL_LogError(int,const char*,...){}
+void SDL_setenv_unsafe(const char*,const char*,int){restartRequired=true;}
+void SDL_SendWindowEvent(SDL_Window* window,int,int,int){++closeCalls;if(destroyOnClose){window->internal=nullptr;live=nullptr;}}
+void OPENHARMONY_AMCL_UpdatePresentedForeground(){}
+bool OPENHARMONY_ApplyPendingAuxiliaryResize(SDL_VideoDevice*,SDL_Window*,SDL_GLContext){return true;}
+bool OPENHARMONY_AMCL_PreparePresentedWindow(SDL_VideoDevice*,SDL_Window*,SDL_GLContext,bool){return true;}
+bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice*,SDL_Window*,bool){return true;}
+bool SDL_EGL_MakeCurrentWithError(SDL_VideoDevice*,void*,SDL_GLContext context,EGLint* error){
+    ++driverCalls;*error=driverFails?driverError:EGL_SUCCESS;
+    if(driverFails)return false;currentContext=context;return true;
+}
+bool SDL_EGL_MakeCurrent(SDL_VideoDevice* device,void* surface,SDL_GLContext context){
+    EGLint error;return SDL_EGL_MakeCurrentWithError(device,surface,context,&error);
+}
+@PRODUCTION@
+int main(){
+    for(int scenario=0;scenario<4;++scenario){
+        SDL_WindowData data;data.role=scenario==1?OPENHARMONY_WINDOW_AUXILIARY_PBUFFER:OPENHARMONY_WINDOW_PRESENTED;
+        SDL_Window window{&data,1};SDL_VideoData video;SDL_VideoDevice device;device.internal=&video;
+        deviceOwner=_this=&device;device.GL_MakeCurrent=OPENHARMONY_GLES_MakeCurrent;
+        current=live=&window;currentContext=data.last_context;
+        driverFails=true;driverError=EGL_CONTEXT_LOST;driverCalls=fatalCalls=closeCalls=0;
+        restartRequired=false;destroyOnClose=scenario==3;firstCode=0;firstStage.clear();
+        CHECK(!SDL_GL_MakeCurrent(scenario==0?nullptr:&window,scenario==0?nullptr:reinterpret_cast<void*>(9)));
+        CHECK(driverCalls==1 && video.renderer_fatal && restartRequired && fatalCalls==1 && closeCalls==1);
+        CHECK(firstCode==EGL_CONTEXT_LOST && firstGeneration==17);
+        CHECK(data.owner_thread==11 && data.is_current && currentContext==data.last_context);
+        if(scenario==3){CHECK(!live && !window.internal);continue;}
+        // 终局后所有角色/其他上下文均不能重新绑定；已有 owner 仍可真正释放供退出退休。
+        driverFails=false;
+        CHECK(!SDL_GL_MakeCurrent(&window,reinterpret_cast<void*>(9)) && driverCalls==1);
+        // 关键补充：公开入口同 window/context 的 cache 命中同样不能假报成功。
+        CHECK(!SDL_GL_MakeCurrent(&window,data.last_context) && driverCalls==1);
+        CHECK(SDL_GL_MakeCurrent(nullptr,nullptr));
+        CHECK(driverCalls==2 && currentContext==nullptr && !data.is_current && data.owner_thread==0);
+        CHECK(firstCode==EGL_CONTEXT_LOST && fatalCalls==1);
+    }
+    // 普通释放失败必须保留 current 与 owner，但不伪造 context lost 终局。
+    SDL_WindowData data;SDL_Window window{&data,1};SDL_VideoData video;SDL_VideoDevice device;device.internal=&video;
+    deviceOwner=_this=&device;device.GL_MakeCurrent=OPENHARMONY_GLES_MakeCurrent;
+    current=live=&window;currentContext=data.last_context;destroyOnClose=false;
+    driverFails=true;driverError=EGL_BAD_SURFACE;driverCalls=fatalCalls=0;
+    CHECK(!SDL_GL_MakeCurrent(nullptr,nullptr));
+    CHECK(!video.renderer_fatal && !fatalCalls && data.owner_thread==11 && data.is_current);
+    const int calls=driverCalls;CHECK(SDL_GL_MakeCurrent(&window,data.last_context) && driverCalls==calls);
+    std::cout<<"SDL context loss PASS: public cache and backend release/auxiliary/presented fatal, native first error, reject rebind, owner cleanup, synchronous close, ordinary error distinction\n";
+}

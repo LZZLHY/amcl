@@ -4,11 +4,11 @@
 //   node scripts/check-lwjgl-modern-slot.mjs --require-source
 
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import process from 'node:process';
+import { runModuleCoverageCheck } from './check-lwjgl-module-coverage.mjs';
+import { assertPinnedLwjglSource, runNativeSurfaceCheck } from './check-lwjgl-native-surface.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, '..');
@@ -74,14 +74,15 @@ if (manifest.schema !== 1 || manifest.slot !== 'modern') fail('unsupported moder
 if (manifest.deploymentDirectory !== 'lwjgl-ohos' || manifest.nativeSuffix !== '') {
   fail('3.4.2 must replace the unversioned modern slot; do not create a parallel 342 slot');
 }
-if (!Array.isArray(manifest.jars) || manifest.jars.length !== 15) fail('modern slot must contain exactly 15 jars');
-// 15 不是 16：lwjgl-jemalloc 被刻意排除，见 deps.lock [lwjgl-jars] 的说明。
+// 集合大小由模块配套 policy 精确核对，新增模块必须同时声明其提供方，不再保留会过期的数字。
+if (!Array.isArray(manifest.jars) || manifest.jars.length === 0) fail('modern slot must contain jars');
 if (manifest.jars.some((jar) => jar.name === 'lwjgl-jemalloc.jar')) {
   fail('lwjgl-jemalloc.jar must stay out of the modern slot: no OHOS libjemalloc.so exists and LWJGL 3.4.2+ cannot fall back once the nested allocator instantiates');
 }
 if (!manifest.jars.some((jar) => jar.name === 'lwjgl-sdl.jar')) fail('modern slot must include lwjgl-sdl.jar');
 if (!manifest.jars.some((jar) => jar.name === 'lwjgl-spng.jar')) fail('modern slot must include lwjgl-spng.jar');
-if (!Array.isArray(manifest.natives) || manifest.natives.length !== 6) fail('modern slot must contain exactly 6 LWJGL natives');
+if (!manifest.jars.some((jar) => jar.name === 'lwjgl-nanovg.jar')) fail('modern slot must include lwjgl-nanovg.jar');
+if (!Array.isArray(manifest.natives) || manifest.natives.length === 0) fail('modern slot must contain native providers');
 if (!manifest.natives.some((native) => native.name === 'liblwjgl_spng.so')) fail('modern slot must include liblwjgl_spng.so');
 
 const sorted = [...manifest.jars].sort((a, b) => a.name.localeCompare(b.name));
@@ -128,10 +129,12 @@ const modules = field(jarsLock, 'modules').split(',').filter(Boolean).sort();
 const manifestModules = sorted.map((jar) => jar.name.replace(/\.jar$/, '')).sort();
 if (modules.join('|') !== manifestModules.join('|')) fail('deps.lock modules do not exactly match the modern-slot jar set');
 
-if (process.argv.includes('--require-source')) {
-  if (!existsSync(join(SOURCE_DIR, '.git'))) fail('LWJGL source submodule is not initialized');
-  const head = execFileSync('git', ['-C', SOURCE_DIR, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  if (head !== manifest.sourceCommit) fail(`LWJGL source HEAD=${head}, expected=${manifest.sourceCommit}`);
-}
+// --require-source 保留为旧调用兼容参数；正常门禁已无条件要求锁定 HEAD 且工作树洁净，
+// 否则修改生成源码会同时改变“预期”并隐藏真实缺口。
+assertPinnedLwjglSource({ sourceDirectory: SOURCE_DIR, manifest });
 
+// 清单和 SHA 一致只说明复制正确；额外检查每个实际 JAR 的 native 配套及全部必需函数，
+// 同时逐库核对生成 JNI 集合，使新增 NanoVG/GLES 不会再次成为“有 Java、缺胶水”。
+runModuleCoverageCheck();
+runNativeSurfaceCheck({ output: NATIVE_DIR });
 console.log(`[lwjgl-modern-slot] OK ${manifest.version}: ${sorted.length} jars, manifest ${entryDigest}`);

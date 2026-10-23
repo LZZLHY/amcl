@@ -42,6 +42,10 @@ message(STATUS "${AMCL_DIAGNOSTICS_MARKER}")
 
 set(AMCL_PRODUCT_HILOG_HEADER "${CMAKE_CURRENT_LIST_DIR}/../utils/product_hilog.h")
 function(amcl_apply_diagnostic_policy target)
+    # 诊断option与mask只是配置身份，不会自动成为C++宏。消费回调的#if必须由这个
+    # 已通过default-only校验的同一开关驱动；按原target私有定义0/1，保持默认关闭、
+    # 非default拒绝与公共ABI不变，不能以mask写了ON替代生产正文实际编入。
+    target_compile_definitions(${target} PRIVATE AMCL_INPUT_TRACE=$<BOOL:${AMCL_INPUT_TRACE}>)
     target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/utils/product_diagnostics_identity.cpp")
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_options(${target} PRIVATE

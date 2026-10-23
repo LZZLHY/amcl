@@ -14,6 +14,20 @@ namespace amcl::input {
 // 再提交事件，因此 mutex_ 只保护索引，不承担跨模块回调的锁顺序。
 InputLedger::InputLedger(EmitFn emit) : emit_(std::move(emit)) {}
 
+void InputLedger::CopyStateFrom(const InputLedger& prior) {
+    if (this == &prior) return;
+    std::scoped_lock lock(mutex_, prior.mutex_);
+    byOwner_ = prior.byOwner_;
+    byOutput_ = prior.byOutput_;
+}
+
+void InputLedger::SwapState(InputLedger& candidate) noexcept {
+    if (this == &candidate) return;
+    std::scoped_lock lock(mutex_, candidate.mutex_);
+    byOwner_.swap(candidate.byOwner_);
+    byOutput_.swap(candidate.byOutput_);
+}
+
 LedgerTransitionResult InputLedger::acquireTransition(
         OwnerToken owner, const Output& output) {
     std::lock_guard<std::recursive_mutex> submitLock(emitMutex_);
@@ -145,6 +159,12 @@ bool InputLedger::owns(OwnerToken owner, const Output& output) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = byOwner_.find(owner);
     return it != byOwner_.end() && it->second.count(output) != 0;
+}
+
+bool InputLedger::isHeld(const Output& output) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = byOutput_.find(output);
+    return found != byOutput_.end() && !found->second.empty();
 }
 
 // 只取 mutex_（索引锁），**不取 emitMutex_**：这两个 getter 不产生边沿，而在提交事务

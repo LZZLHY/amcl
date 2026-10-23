@@ -25,6 +25,7 @@ import { APP_VERSION, APP_REPO_URL, CHANGELOG_PAGE_URL } from 'commons';
 import { DeviceProfile } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from '../components/AppIcon';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
 import { changelogTone } from '../components/SemanticColors';
 import { PreferenceManager } from 'feature_system';
 import {
@@ -151,6 +152,8 @@ struct ChangelogPage {
   }
 
   private openUrl_(url: string): void {
+    // 更新日志在store仅本地阅读，所有二级动作/错误兜底均不得外跳网页。
+    if (DistributionPolicy.isStore()) return;
     try {
       let want: Want = {
         action: 'ohos.want.action.viewData',
@@ -175,60 +178,13 @@ struct ChangelogPage {
 
   build() {
     Column() {
-      // ===== 顶栏 =====
-      Row() {
-        Stack() {
-          AppIcon({ name: AppIconName.Back, iconSize: 20, color: this.theme.textPrimary })
-        }
-        .width(40).height(40).borderRadius(20)
-        .backgroundColor(this.theme.bgCard)
-        .onClick(() => { this.getUIContext().getRouter().back() })
-
-        Text('更新日志')
-          .fontSize(20).fontWeight(700).fontColor(this.theme.textPrimary)
-          .margin({ left: 12 }).layoutWeight(1)
-
-        if (!this.storeTrack) {
-          Stack() {
-            AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 18, color: this.theme.primary })
-          }
-          .width(40).height(40).borderRadius(20)
-          .backgroundColor(this.theme.bgCard)
-          .onClick(() => { this.openUrl_(CHANGELOG_PAGE_URL) })
-        }
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: this.topSafeHeight + 12, bottom: 10 })
-      .alignItems(VerticalAlign.Center)
-
-      if (this.loading) {
-        Column({ space: 12 }) {
-          LoadingProgress().width(40).height(40).color(this.theme.primary)
-          Text('正在读取更新日志…').fontSize(13).fontColor(this.theme.textHint)
-        }
-        .width('100%').layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else if (this.releases.length === 0) {
-        this.EmptyState()
-      } else {
-        Scroll() {
-          Column({ space: 14 }) {
-            this.CurrentVersionCard()
-            this.FilterChips()
-            ForEach(this.visibleReleases_(), (r: ChangelogRelease) => {
-              this.ReleaseCard(r)
-            }, (r: ChangelogRelease) => r.tag + ':' + this.filter)
-            Text('仅展示面向用户的变更 · 完整开发日志见 GitHub 仓库'
-              + (this.sourceLabel_().length > 0 ? ' · ' + this.sourceLabel_() : ''))
-              .fontSize(11).fontColor(this.theme.textHint)
-              .textAlign(TextAlign.Center).width('100%')
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: Math.max(24, this.bottomSafeHeight + 16) })
-        }
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-      }
+    // 只迁移返回和获准的外跳入口；商店态继续不生成外跳菜单项，正文过滤与滚动保持原状态。
+    ImmersiveTitleScaffold({ title: '更新日志', theme: this.theme, topSafeHeight: this.topSafeHeight,
+      surfaceColor: this.theme.bgPrimary, showExternal: !this.storeTrack,
+      onBack: (): void => { this.getUIContext().getRouter().back(); },
+      onExternal: (): void => { this.openUrl_(CHANGELOG_PAGE_URL); },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
     }
     .width('100%')
     .height('100%')
@@ -413,4 +369,37 @@ struct ChangelogPage {
     let latest = this.latestRelease_()
     return latest !== null && latest.tag === r.tag
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      if (this.loading) {
+        Column({ space: 12 }) {
+          LoadingProgress().width(40).height(40).color(this.theme.primary)
+          Text('正在读取更新日志…').fontSize(13).fontColor(this.theme.textHint)
+        }
+        .width('100%').layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+      } else if (this.releases.length === 0) {
+        this.EmptyState()
+      } else {
+        Scroll() {
+          Column({ space: 14 }) {
+            this.CurrentVersionCard()
+            this.FilterChips()
+            ForEach(this.visibleReleases_(), (r: ChangelogRelease) => {
+              this.ReleaseCard(r)
+            }, (r: ChangelogRelease) => r.tag + ':' + this.filter)
+            Text('仅展示面向用户的变更 · 完整开发日志见 GitHub 仓库'
+              + (this.sourceLabel_().length > 0 ? ' · ' + this.sourceLabel_() : ''))
+              .fontSize(11).fontColor(this.theme.textHint)
+              .textAlign(TextAlign.Center).width('100%')
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 4, bottom: Math.max(24, this.bottomSafeHeight + 16) })
+        }
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+      }
+    }
 }

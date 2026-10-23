@@ -48,7 +48,9 @@ export function isModVersionCompatible(v: RemoteVersion, loader: string, game: s
   return loaderOk && (game.length === 0 || v.gameVersions.indexOf(game) >= 0);
 }
 export function pickBestVersion(versions: RemoteVersion[], loader: string, game: string): RemoteVersion | null {
-  return pickLatestModVersion(versions.filter((v: RemoteVersion): boolean => isModVersionCompatible(v, loader, game)));
+  // 服务端分发不参与客户端自动选版，即使它比客户端文件更新。
+  return pickLatestModVersion(versions.filter((v: RemoteVersion): boolean => v.isServerPack !== true
+    && isModVersionCompatible(v, loader, game)));
 }
 export function isProjectInstalled(source: ModSource, id: string, installed: LocalMod[], versionId: string = ''): boolean {
   return installed.some((m: LocalMod): boolean => m.enabled && id.length > 0 && m.remoteSource === source
@@ -99,6 +101,12 @@ export class ModDependencyResolver {
     const key = source === ModSource.CURSEFORGE && id.indexOf('/') < 0 ? projectId + '/' + id : id;
     return this.versionByIdFetcher_(source, key);
   }
+  /**
+   * 选择来源文件：精确 pin 优先，其次复用已装的兼容文件，最后查询可安装候选。
+   * 候选查询必须覆盖共享匹配规则允许的加载器；Quilt 接受 Fabric 时分别发单标签请求，
+   * 兼容 CurseForge 仅消费第一个 loader 的接口。任一查询失败仍由上层阻断所需依赖，
+   * 不把未知结果当作完整计划；合并按来源/项目/版本去重，最终仍用原匹配器检查 MC/loader。
+   */
   private async choose(item: PendingDependency, pid: string, pin: string, opt: ResolveOptions): Promise<RemoteVersion> {
     if (pin.length > 0) return this.exact(item.source, pid, pin);
     const local = opt.installed.find((m: LocalMod): boolean => isProjectInstalled(item.source, pid, [m]));
@@ -108,7 +116,20 @@ export class ModDependencyResolver {
     }
     const loaders = opt.loader.length > 0 ? [opt.loader] : [];
     const games = opt.gameVersion.length > 0 ? [opt.gameVersion] : [];
-    const candidates = await this.versionsFetcher_(item.source, pid, loaders, games);
+    const queries: string[][] = opt.loader === 'quilt' ? [['quilt'], ['fabric']] : [loaders];
+    const requests: Promise<RemoteVersion[]>[] = [];
+    for (const query of queries) requests.push(this.versionsFetcher_(item.source, pid, query, games));
+    const batches = await Promise.all(requests);
+    const candidates: RemoteVersion[] = [];
+    const seen: Set<string> = new Set<string>();
+    for (const batch of batches) {
+      for (const candidate of batch) {
+        const key = JSON.stringify([candidate.source, candidate.projectId, candidate.id]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    }
     const picked = pickBestVersion(candidates, opt.loader, opt.gameVersion);
     if (picked === null) throw new Error('没有匹配 ' + opt.loader + ' / MC ' + opt.gameVersion + ' 的版本');
     return picked;

@@ -11,10 +11,18 @@
 
 #include "../tests/tests.h"
 #include "../download/tests/download_tests.h"
+#include "../platform/env_slot.h"
+#include <string>
 #include <thread>
 #include <unistd.h>
 
 namespace {
+
+// I27-05：SDL 探针在本进程直接改写 SDL/驱动环境变量。登记表已封存 = JVM 已被认领、可能已有
+// JVM/游戏线程在 getenv，此时拒绝运行（重启应用后、启动游戏前再跑），探针因此只在线程出现前改环境。
+bool ProcessEnvironmentFrozen() { return amcl::envslot::ProcessRegistry().Sealed(); }
+constexpr const char* kEnvironmentFrozenReport =
+    "SKIP: 本进程已认领 JVM（环境登记表已封存），探针会改写进程环境；请重启应用后在启动游戏前运行\n";
 
 // --- P0: JIT 边界测试 ---
 napi_value RunJitTests(napi_env env, napi_callback_info info) {
@@ -43,6 +51,26 @@ napi_value RunGl4Test(napi_env env, napi_callback_info info) {
 // --- P4: MobileGlues GL→GLES 翻译层测试 ---
 napi_value RunMgTest(napi_env env, napi_callback_info info) {
     return amcl::napi::WrapStringResult(env, runMobileGluesTest());
+}
+
+// 首批语义资格入口只编排同一共享场景；冷启动专用进程、provider冻结与context
+// 生命周期由native探针统一处理，页面和后续自动化均只消费这份真实报告。
+napi_value RunMgDepthRangeTest(napi_env env, napi_callback_info /*info*/) {
+    return amcl::napi::WrapStringResult(env, runMgDepthRangeTest());
+}
+
+// 固定两种首次查询顺序分别由UI明确选择，native不接收自由配置或替换provider。
+napi_value RunMgContextIdentityTest(napi_env env, napi_callback_info info) {
+    size_t count=1; napi_value argument; double highFirst=-1;
+    if(napi_get_cb_info(env,info,&count,&argument,nullptr,nullptr)!=napi_ok || count!=1 ||
+       napi_get_value_double(env,argument,&highFirst)!=napi_ok || (highFirst!=0&&highFirst!=1)) {
+        napi_throw_type_error(env,"GRAPHICS_IDENTITY_ORDER","顺序参数必须为0或1");
+        return nullptr;
+    }
+    return amcl::napi::WrapStringResult(env,runMgContextIdentityTest(static_cast<int>(highFirst)));
+}
+napi_value RunMobileGlProgramTest(napi_env env, napi_callback_info /*info*/) {
+    return amcl::napi::WrapStringResult(env,runMobileGlProgramTest());
 }
 
 // --- P5: LWJGL native 库测试 ---
@@ -83,21 +111,27 @@ napi_value RunAmclLogConcurrentTest(napi_env env, napi_callback_info info) {
 }
 
 napi_value RunInputLedgerTests(napi_env env, napi_callback_info /*info*/) {
-    return amcl::napi::WrapStringResult(env, runInputLedgerTests());
+    // neutral仅返回线程局部借用C字符，不跨DSO传C++容器。先在entry取本次独立副本，
+    // 再由WrapStringResult同步创建NAPI字符串；其分配/潜在回入不能改写当前report。
+    // JS公开属性runInputLedgerTests与其参数/返回字符串合同保持不变。
+    const std::string report(amclInputRunInputLedgerTests());
+    return amcl::napi::WrapStringResult(env, report.c_str());
 }
 
 // --- SDL3 移植 C2 关卡真机探针（见 docs/adaptation/SDL3_MIGRATION_PLAN.md §四 C2） ---
 // 可选参数：libSDL3.so 的绝对路径；不传则按名字 dlopen，走应用 namespace 默认搜索路径。
 napi_value RunSdl3C2Test(napi_env env, napi_callback_info info) {
+    if (ProcessEnvironmentFrozen()) return amcl::napi::WrapStringResult(env, kEnvironmentFrozenReport);
     char path[512] = {0};
     amcl::napi::ReadStringArg(env, info, path, sizeof(path));
     return amcl::napi::WrapStringResult(env, runSdl3C2Test(path));
 }
 
 // --- SDL3 窗口创建探针（见 SDL3_MIGRATION_PLAN.md §C1.3；验证 patches/0001）---
-// ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage / VulkanPage）：它依赖宿主
-// OnSurfaceCreated 设的 AMCL_NATIVE_WINDOW 等三个环境变量。DevTools 页没有 surface。
+// ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage / VulkanPage）：它经窗口宿主快照取
+// OnSurfaceCreated 发布的 NativeWindow（宿主不再发布窗口指针环境变量）。DevTools 页没有 surface。
 napi_value RunSdl3WindowTest(napi_env env, napi_callback_info info) {
+    if (ProcessEnvironmentFrozen()) return amcl::napi::WrapStringResult(env, kEnvironmentFrozenReport);
     char path[512] = {0};
     amcl::napi::ReadStringArg(env, info, path, sizeof(path));
     return amcl::napi::WrapStringResult(env, runSdl3WindowTest(path));
@@ -131,8 +165,8 @@ napi_value RunIpv6JavaProbe(napi_env env, napi_callback_info info) {
 }
 
 // --- MobileGL DirectVulkan 出帧探针（MOBILEGL_ADAPTATION_PLAN.md §5.2 Phase 2a）---
-// ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage）：依赖 OnSurfaceCreated 设的
-// AMCL_NATIVE_WINDOW 等三个环境变量；且 libmobilegl.so 需先 -DeployToLibs 部署。
+// ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage）：经窗口宿主快照取 OnSurfaceCreated
+// 发布的 NativeWindow；且 libmobilegl.so 需先 -DeployToLibs 部署。
 napi_value RunMobileglProbe(napi_env env, napi_callback_info info) {
     (void)info;
     return amcl::napi::WrapStringResult(env, runMobileglProbe());
@@ -152,6 +186,9 @@ constexpr napi_property_descriptor kTestsDescriptors[] = {
     NAPI_FUNC("runGlfwTest",                              RunGlfwTest),
     NAPI_FUNC("runGl4Test",                               RunGl4Test),
     NAPI_FUNC("runMgTest",                                RunMgTest),
+    NAPI_FUNC("runMgDepthRangeTest",                      RunMgDepthRangeTest),
+    NAPI_FUNC("runMgContextIdentityTest",                 RunMgContextIdentityTest),
+    NAPI_FUNC("runMobileGlProgramTest",                   RunMobileGlProgramTest),
     NAPI_FUNC("runLwjglTest",                             RunLwjglTest),
     NAPI_FUNC("runDownloadSha1IncrementalTests",          RunDownloadSha1IncrementalTests),
     NAPI_FUNC("runDownloadTextFetchTests",                RunDownloadTextFetchTests),

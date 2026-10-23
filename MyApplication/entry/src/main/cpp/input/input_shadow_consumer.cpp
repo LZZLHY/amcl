@@ -28,6 +28,10 @@ struct State {
     uint64_t surfaceEpoch = 0;
     std::map<LedgerKey, uint32_t> keys;
     std::map<LedgerKey, uint32_t> buttons;
+    // core 文本会话的队列序镜像：只由本消费者读到的 RESET/TEXT_SESSION 记录改写，
+    // 供 ingress 在恢复与 BEGIN 冲突时认出无人持有的孤儿会话（ingress 锁序在外）。
+    bool textSessionActive = false;
+    uint64_t textSessionId = 0;
 };
 State g;
 
@@ -40,7 +44,25 @@ void ClearLocalLocked() {
     g.surfaceEpoch = 0;
     g.keys.clear();
     g.buttons.clear();
+    // 句柄作废后文本镜像也无从证明；重新 Open 时 core 基线会补发尚存的 STARTED。
+    g.textSessionActive = false;
+    g.textSessionId = 0;
     trace::SetHeld(0, 0);
+}
+
+// 按队列顺序维护文本会话镜像。调用者持有本文件锁，且只对顺序合法的记录调用。
+void TrackTextSessionLocked(const AmclInputEvent& event) {
+    if (event.header.eventType == AMCL_INPUT_EVENT_RESET) {
+        g.textSessionActive = false;
+        g.textSessionId = 0;
+        return;
+    }
+    if (event.header.eventType != AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED) return;
+    // STARTED 覆盖为新号；END/ABORT 无论号是否一致都表示 core 已无活动会话。
+    g.textSessionActive =
+        event.payload.textSession.change == AMCL_INPUT_TEXT_SESSION_STARTED;
+    g.textSessionId =
+        g.textSessionActive ? event.payload.textSession.textSessionId : 0u;
 }
 
 void CloseBestEffortLocked(const AmclInputHostApiV1* api) {
@@ -156,6 +178,7 @@ void Consume(const AmclInputHostApiV1* api, const AmclInputEvent& event) {
         g.keys.clear();
         g.buttons.clear();
     }
+    TrackTextSessionLocked(event);
     if (IsTextBlob(event.header.eventType)) ConsumeText(api, event);
     trace::SetHeld(g.keys.size(), g.buttons.size());
     trace::RecordConsumed();
@@ -216,6 +239,9 @@ DrainResult Drain(const AmclInputHostApiV1* api, bool terminal) {
             // to learn that this drain crossed a reset boundary exactly once.
             drained.observedResetState = true;
             drained.observedReset = true;
+            drained.resetAuthorityEpoch =
+                (api->capabilityBits & AMCL_INPUT_CAP_RESET_AUTHORITY_EPOCH) != 0u
+                    ? event.payload.reset.authorityEpoch : 0u;
             drained.resetLatched = true;
         }
         Consume(api, event);
@@ -230,6 +256,13 @@ void CloseBestEffort(const AmclInputHostApiV1* api) {
 void Abandon() {
     std::lock_guard<std::mutex> lock(g.mutex);
     ClearLocalLocked();
+}
+
+// 只读快照；没有消费者句柄时镜像已在 ClearLocalLocked 清空，因而返回 false。
+bool ObservedTextSession(uint64_t* textSessionId) {
+    std::lock_guard<std::mutex> lock(g.mutex);
+    if (textSessionId) *textSessionId = g.textSessionActive ? g.textSessionId : 0u;
+    return g.consumer != 0 && g.textSessionActive;
 }
 
 }  // namespace amcl::input::shadow

@@ -1,0 +1,30 @@
+diff --git a/src/video/openharmony/SDL_amcldesktop.c b/src/video/openharmony/SDL_amcldesktop.c
+--- a/src/video/openharmony/SDL_amcldesktop.c
++++ b/src/video/openharmony/SDL_amcldesktop.c
+@@ -3,6 +3,7 @@
+ #include "SDL_amcldesktop.h"
+ #ifdef SDL_AMCL_DESKTOP_HOST
+ #include "desktop_host_api.h"
++#include <deviceinfo.h>
+ #include "desktop_drop_packet.h"
+ #include "../../events/SDL_dropevents_c.h"
+ #include "SDL_openharmonywindow.h"
+@@ -30,6 +31,18 @@
+ static bool close_notified;
+ static const AmclDesktopHostV1 *DesktopHost(void)
+ {
++    /* 现有amclDesktopHostResolve只允许2in1；先判断同一固定设备资格，
++       避免phone/tablet的每次Pump加载本不可能提供桌面服务的GLFW。
++       这里只缓存设备类型，不缓存模块/owner失败，2in1的晚发布继续逐次解析。
++       原子值0未判定、1桌面、2非桌面；冷并发可重复查询，不引入fork后等待状态。 */
++    static SDL_AtomicInt device_kind;
++    int kind = SDL_GetAtomicInt(&device_kind);
++    if (!kind) {
++        const char *type = OH_GetDeviceType();
++        kind = (type && SDL_strcmp(type, "2in1") == 0) ? 1 : 2;
++        SDL_SetAtomicInt(&device_kind, kind);
++    }
++    if (kind != 1) return NULL;
+     typedef const AmclDesktopHostV1 *(*Resolve)(void);
+     static SDL_SharedObject *module;
+     static Resolve resolve;

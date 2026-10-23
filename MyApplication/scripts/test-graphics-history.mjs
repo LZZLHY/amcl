@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 import compiler from './lib/ets-compiler.mjs';
 const loadLaunch = makePureEtsLoader();
@@ -14,13 +14,22 @@ const { resolveGraphicsProfile: resolve } = loadLaunch('launch/src/main/ets/Grap
 let nextDirectory = -1, failRename = false;
 const directories = new Set();
 const fileIo = {
-  OpenMode: { CREATE: 64, WRITE_ONLY: 1, READ_ONLY: 0, TRUNC: 512 },
+  OpenMode: { CREATE: 64, WRITE_ONLY: 1, READ_ONLY: 0, TRUNC: 512, NOFOLLOW: 131072 },
   accessSync: file => fs.existsSync(file), statSync: file => typeof file === 'number' ? fs.fstatSync(file) : fs.statSync(file),
+  // 新公共writer通过真实非递归mkdir取得独占临时目录，空目录只由本轮写入清理。
+  mkdirSync: (file,recursive=false) => fs.mkdirSync(file,{recursive}),rmdirSync: file => fs.rmdirSync(file),
   readTextSync: file => fs.readFileSync(file, 'utf8'),
   readSync: (fd, bytes, options) => fs.readSync(fd, Buffer.from(bytes), 0, options.length, options.offset),
   openSync(file, flags) {
     if (fs.existsSync(file) && fs.statSync(file).isDirectory()) { const fd = nextDirectory--; directories.add(fd); return { fd }; }
-    return { fd: fs.openSync(file, flags === 577 ? 'w' : 'r') };
+    // SDK NOFOLLOW作为系统边界显式检查，并映射掉专属bit；不要把新CREATE|WRITE_ONLY误判为只读。
+    if ((flags & fileIo.OpenMode.NOFOLLOW)!==0 && fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw Error('NOFOLLOW rejects link');
+    // SDK与Windows Node的CREATE/TRUNC数值不同，逐项映射实际标志，读取仍保持只读。
+    let hostFlags=0;
+    if((flags & fileIo.OpenMode.CREATE)!==0)hostFlags|=fs.constants.O_CREAT;
+    if((flags & fileIo.OpenMode.WRITE_ONLY)!==0)hostFlags|=fs.constants.O_WRONLY;
+    if((flags & fileIo.OpenMode.TRUNC)!==0)hostFlags|=fs.constants.O_TRUNC;
+    return { fd: fs.openSync(file,hostFlags) };
   },
   writeSync: (fd, bytes) => fs.writeSync(fd, Buffer.from(bytes).subarray(0, 29)),
   fsyncSync: fd => { if (!directories.has(fd)) fs.fsyncSync(fd); },
@@ -28,7 +37,7 @@ const fileIo = {
   unlinkSync: file => fs.unlinkSync(file),
   renameSync: (a, b) => { if (failRename) throw new Error('injected commit failure'); fs.renameSync(a, b); }
 };
-const ports = { launch: registry, '@kit.CoreFileKit': { fileIo }, '@kit.ArkTS': { util: {} },
+const ports = { launch: registry, '@kit.CoreFileKit': { fileIo }, '@kit.ArkTS': { util: {generateRandomUUID:randomUUID} },
   '@kit.BasicServicesKit': { zlib: {} }, '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => {
     const hash = createHash('sha256'); return { updateSync: v => hash.update(v.data), digestSync: () => ({ data: hash.digest() }) };
   } } } };
@@ -84,6 +93,7 @@ try {
   failRename = true;
   assert.throws(() => history.learn(root, { ...ticket, activityId: 105 }, { ...fallback, activityId: 105, createdAt: 6000 }, 21, id, 6000), /保存失败/);
   failRename = false; assert.deepEqual(fs.readFileSync(path.join(root, 'graphics-history.json')), before);
+  assert.equal(fs.readdirSync(root).some(name=>name.endsWith('.pending-dir')),false,'失败后不遗留真实独占目录');
   fs.writeFileSync(path.join(root, 'graphics-history.json'), '{broken');
   assert.deepEqual(history.hints(root, scope, 5000), []);
   fs.writeFileSync(path.join(root, 'graphics-recovery', id + '.outcome.json'), JSON.stringify({ ...outcome, schema: 1, childPid: '22' }));
@@ -91,7 +101,7 @@ try {
 
   // 真实Scope工厂读取真实临时库字节、生产SHA256与偏好解析结果；设备/API只替换系统边界。
   const bundle = path.join(root, 'bundle'); fs.mkdirSync(path.join(bundle, 'libs', 'arm64'), { recursive: true });
-  const libraries = ['libentry.so', 'libamcl_graphics_runtime.so', 'libamcl_gl_host.so', 'libmobilegl.so', 'libgl4es.so', 'libglfw.so', 'libSDL3.so', 'liblwjgl.so'];
+  const libraries = ['libentry.so', 'libamcl_input_runtime.so', 'libamcl_graphics_runtime.so', 'libamcl_gl_host.so', 'libmobilegl.so', 'libgl4es.so', 'libglfw.so', 'libSDL3.so', 'liblwjgl.so'];
   for (const library of libraries) fs.writeFileSync(path.join(bundle, 'libs', 'arm64', library), library);
   const manifestPath = path.join(root, 'game.json'); fs.writeFileSync(manifestPath, '{"id":"26.2","loader":"fixture"}');
   const device = { productModel: 'fixture-gpu', osFullName: 'fixture-os-1', sdkApiVersion: 26 };
@@ -121,11 +131,13 @@ try {
     const directory = path.join(root, 'parent-' + alive); fs.mkdirSync(path.join(directory, 'graphics-recovery'), { recursive: true });
     history.report(directory, outcome); let now = 3000;
     const dependencies = { ...policy, Date: { now: () => now }, setTimeout: fn => { now += 100; fn(); },
+      // default历史学习没有store授权限制，继续由真实进程空闲与历史身份判据决定结果。
+      GameRunAdmission: { isAllowed: () => true, assertToken() {} },
       GraphicsHistoryStore: history, GraphicsRecoveryStore: { ticket: () => ticket, failure: () => undefined },
       testNapi: { desktopProcessId: () => 21, desktopGameProcessState: () => alive, desktopProcessAlive: () => alive },
       AppLogger: { info() {}, warn() {} }, TAG: 'fixture', LOG_DOMAIN_LAUNCH: 1 };
     const module = { exports: {} }; new Function('module', ...Object.keys(dependencies), code)(module, ...Object.values(dependencies));
-    const parent = new module.exports(); Object.assign(parent, { pendingGraphicsRecoveryId_: id, graphicsRecoveryPolling_: false, context: { filesDir: directory } });
+    const parent = new module.exports(); Object.assign(parent, { pendingGraphicsRecoveryId_: id, pendingRunAdmission_: '', graphicsRecoveryPolling_: false, context: { filesDir: directory } });
     await parent.recoverGraphics_();
     assert.equal(fs.existsSync(path.join(directory, 'graphics-history.json')), !alive, '真实父路径必须等子进程结束');
   }

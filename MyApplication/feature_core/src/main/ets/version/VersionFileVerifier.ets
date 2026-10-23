@@ -108,10 +108,12 @@ export class VersionFileVerifier {
    * 合法 ZIP 头"，不做 sha1/size 比对——否则会把完整安装误判为损坏。
    * 与 LaunchProfileBuilder.filterForgeGeneratedArtifacts 保持同一判定口径。
    */
-  private static isGeneratedArtifact_(path: string): boolean {
+  static isGeneratedArtifact_(path: string): boolean {
     let p = path.replace(/\\/g, '/');
-    let isForgeClient = p.indexOf('net/minecraftforge/forge/') >= 0 && p.indexOf('-client.jar') >= 0;
-    let isForgeUniversal = p.indexOf('net/minecraftforge/forge/') >= 0 && p.indexOf('-universal.jar') >= 0;
+    // 与实际启动 classpath 的判定一致，NeoForge processor 产物也不使用上游原件哈希。
+    let loader = p.indexOf('net/minecraftforge/forge/') >= 0 || p.indexOf('net/neoforged/neoforge/') >= 0;
+    let isForgeClient = loader && p.endsWith('-client.jar');
+    let isForgeUniversal = loader && p.endsWith('-universal.jar');
     let isMcExtra = p.indexOf('net/minecraft/client/') >= 0 && p.indexOf('-extra.jar') >= 0;
     let isMcSrg = p.indexOf('net/minecraft/client/') >= 0 && p.indexOf('-srg.jar') >= 0;
     return isForgeClient || isForgeUniversal || isMcExtra || isMcSrg;

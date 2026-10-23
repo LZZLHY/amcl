@@ -1,10 +1,25 @@
+import { LauncherStartupRuntime } from '../runtime/LauncherStartupRuntime';
+import { StartupSplash } from '../components/startup/StartupSplash';
+import { StartupTargetRect } from '../components/startup/StartupTypes';
+import { UiMotion } from '../components/UiMotion';
+import { ProcessPreferences } from 'commons';
+import { util } from '@kit.ArkTS';
 import { DesktopLaunchSnapshot, DesktopLaunchSnapshotRef } from '../runtime/DesktopLaunchSnapshot';
 import { GraphicsRecoveryStore } from '../runtime/GraphicsRecoveryStore';
 import { GraphicsHistoryStore } from '../runtime/GraphicsHistoryStore';
 import { GraphicsRecoveryTicket, GraphicsRecoveryDispatch, graphicsRecoveryPermitted } from '../runtime/GraphicsRecoveryPolicy';
 import { GameLayoutJournal, GameLayoutImportReport } from '../runtime/GameLayoutJournal';
+import { SessionRecoveryRuntime } from '../runtime/SessionRecoveryRuntime';
+import { GameRunAdmission } from '../runtime/GameRunAdmission';
+import { getGameSessionHost } from '../runtime/GameSessionHost';
+import { getGameExportCoordinator } from '../export/GameExportCoordinator';
+import { storeManagerAction, storeManagerActionLabel } from '../components/StoreManagerUiPolicy';
 import { DiagnosticPolicy } from 'commons';
 import { DistributionPolicy } from 'commons';
+// 渠道决定更新入口；不能用构建模式推断store与侧载产品。
+import { ProductBuildProfile } from 'entry/ProductBuildProfile';
+import { SideloadUpdateTestSession, SideloadUpdateCheckSource, SideloadUpdatePromptCandidate,
+  SideloadUpdatePromptPolicy } from '../sideload/SideloadUpdateTestSession';
 /**
  * Index.ets — AMCL 启动器主页面（骨架）
  *
@@ -20,10 +35,14 @@ import { router, mediaquery, window, promptAction, SymbolGlyphModifier } from '@
 // 文档：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ui-design-hds-component-material
 import { HdsTabs, HdsTabsController } from '@kit.UIDesignKit';
 import { LauncherTabsStyle } from '../components/LauncherTabsStyle';
+import { immersiveLightCapabilities, publishImmersiveLightPreferences,
+  effectiveBottomLightMode, immersiveLightStatus } from '../components/ImmersiveLightRuntime';
+import { ImmersiveLightPreferences, copyImmersiveLightPreferences } from 'commons';
 import { common, Want, ConfigurationConstant, bundleManager } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { JdkManager, JdkStatus, JdkVersionInfo } from 'launch';
-import { setJdkDownloadSource } from 'launch';
+import { setJdkDownloadSource, setJdkWebEnabled, RuntimeCatalogRepository, RuntimeBuild,
+  RuntimeRefreshResult, runtimeCheckDue, runtimePromptDue } from 'launch';
 import { setAccelActive } from 'launch';
 import { RuntimeDeployer } from 'launch';
 import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
@@ -46,12 +65,12 @@ import { DownloadTasksSheet } from '../components/DownloadTasksSheet';
 import {
   DownloadTaskRegistry, RegistryListener, getDownloadTaskRegistry,
 } from 'feature_core';
-import { McVersionTask } from 'feature_core';
+import { McVersionTask, McInstallSession } from 'feature_core';
 import { mergeVersionOrder } from 'feature_core';
 import { JdkInstallTask } from 'launch';
 // 2026-08-29（JDK 更新系统 / 本地导入）：导入器 + 槽位列表 + 文件选择封装。
 import { JdkImporter } from 'launch';
-import { SUPPORTED_JDK_VERSIONS } from 'commons';
+import { SUPPORTED_JDK_VERSIONS, isJdkSlotVersion } from 'commons';
 import { GameArchiveIO } from '../components/GameArchiveIO';
 // 2026-05-23：Fabric API 伴随下载——需要 ResourceInstallTask + RemoteVersion 类型。
 import { ResourceInstallTask } from 'mods';
@@ -73,10 +92,9 @@ import {
   loadSessionAiText, saveSessionAiText, saveSessionShare, clearSessionShare,
 } from '../components/McSessionSnapshot';
 // 活动账本（L2-b）：每条活动一份完整、精确归属的日志
-import { resolveRecoveredSessionOutcome, readJvmExitEvidence,
-  hasSessionRecoveryReceipt, writeSessionRecoveryReceipt } from 'launch';
+import { SessionRecoveryResult, writeSessionRecoveryReceiptAsync } from 'launch';
 import {
-  ledgerBegin, ledgerEnd, ledgerManifest, LedgerBeginMeta, LedgerOutcome, LedgerState,
+  ledgerBegin, ledgerBeginAsync, ledgerEndAsync, ledgerManifest, ledgerManifestAsync, LedgerBeginMeta, LedgerOutcome, LedgerState,
 } from 'commons';
 // M4/M5：消息中心 + 灵动弹窗
 import {
@@ -91,6 +109,7 @@ import { VersionConfigPanel } from '../components/VersionConfigPanel';
 import { VersionManagerSheet } from '../components/VersionManagerSheet';
 import { ResourceKind } from 'mods';
 import { removeDirRecursive, countFilesWithExtensions, renameVersion } from 'commons';
+import { resolveInstanceGameDir, isIsolatedModpackInstance } from 'commons';
 // v6.5：formatBytes 曾迁出 Index；2026-08-08 更新弹窗要显示 HAP 体积（update.json 的
 // sizeBytes），重新引入。格式化在宿主做，UpdateDialog 只收预格式化文案。
 import { formatBytes } from 'commons';
@@ -112,7 +131,9 @@ import { AccountListSheet } from '../components/AccountListSheet';
 import { McErrorSheet } from '../components/McErrorSheet';
 import { PreLaunchCheckSheet } from '../components/PreLaunchCheckSheet';
 import { NetworkDiagnosticsSheet } from '../components/NetworkDiagnosticsSheet';
-import { UpdateDialog } from '../components/UpdateDialog';
+import { SideloadUpdateService } from '../sideload/SideloadUpdateService';
+import { UpdatePromptPresenter } from '../components/UpdatePromptPresenter';
+import { UpdateDialog, UpdateDialogItem } from '../components/UpdateDialog';
 import { quickConnectivityCheck } from 'feature_core';
 import { VersionFileVerifier, VerifyReport } from 'feature_core';
 import { RepairTask } from 'feature_core';
@@ -128,6 +149,8 @@ import { JdkRange } from 'launch';
 
 import { AppIconName } from 'commons';
 import { AppIcon } from '../components/AppIcon';
+import { AppRoundIconButton } from '../components/AppRoundIconButton';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
 import { inferLoaderInfo, resolveInstalledLoaderInfo } from '../components/LoaderCatalog';
 import { invalidateInstalledLoaderCache } from 'mods';
 // 三层架构重构（执行计划第 0 步）：设备形态 / 响应式断点统一抽象（公共能力层）。
@@ -139,11 +162,19 @@ import { ProductLauncherWindowChrome } from 'entry/ProductLauncherWindowChrome';
 
 const TAG = LogTags.PAGE_INDEX
 
+
 @Entry
 @Component
 struct Index {
   // ==================== Tab 状态 ====================
-  @State currentTab: number = 0
+  @State @Watch('onHomeTabVisibilityChanged_') currentTab: number = 0
+  /** 首页页签可见事实供本页自动滚动组件使用，避免下载/设置页仍运行首页动画。 */
+  private onHomeTabVisibilityChanged_(): void {
+    AppStorage.setOrCreate<boolean>('amclHomeTabVisible', this.currentTab === 0 && this.startupFinished_
+      && AppStorage.get<boolean>('amclHostPageVisible') !== false)
+    AppStorage.setOrCreate<boolean>('amclSettingsTabVisible', this.currentTab === 2 && this.startupFinished_
+      && AppStorage.get<boolean>('amclHostPageVisible') !== false)
+  }
   /**
    * 下载页二级 Tab 受控导航命令：编码 = dlNavCounter_ × 10 + 目标子页序号。
    * 目标子页：0=版本 / 1=模组 / 2=光影 / 3=资源包 / 4=整合包 / 5=JDK。
@@ -171,6 +202,17 @@ struct Index {
   // （对齐 256MB），让用户最大可分配到全部物理内存（超 80% 时 UI 会弹风险确认）。
   @State xmxSliderMax: number = 8192
   @State isRunning: boolean = false
+  @State private canRunGame_: boolean = GameRunAdmission.isAllowed()
+  @State private storeManagerAction_: string = 'checking'
+  @State private storeManagerStatus_: string = '正在检查版本文件…'
+  @State private storeReadyVersions_: string[] = []
+  @State private storeHasSession_: boolean = false
+  private storeCheckGeneration_: number = 0
+  private storeCheckSignature_: string = ''
+  private storeScanError_: string = ''
+  /** 所有产品复用同一导出内存订阅；历史字段名保留，隐藏/销毁时统一解除。 */
+  private storeExportUnsubscribe_: (() => void) | null = null
+  private pendingRunAdmission_: string = ''
   @State statusMsg: string = ''
   @State availableVersions: string[] = []
   @State orphanVersionDirs: string[] = []
@@ -199,6 +241,7 @@ struct Index {
   @State fabViewportHeight: number = 800
   /** v6.5：统一任务 sheet 可见性 */
   @State showTasksSheet: boolean = false
+  @State downloadTaskFocusId: string = ''
   /** v6.5：registry listener tick，每次 registry 变动 +1，driver FAB 计算 fn 重设 */
   @State private tasksRev: number = 0
 
@@ -214,6 +257,11 @@ struct Index {
   // 切换由 SettingsTab 处理（权限 + 可选迁移）；这里仅持有当前会话生效值。
   @State storageLocation: StorageLocation = StorageLocation.SANDBOX
   @State themeMode: ThemeMode = ThemeMode.SYSTEM
+  /** 整组光感配置只发布已确认值；总关闭保留两模块及档位偏好。 */
+  @State private immersiveLight: ImmersiveLightPreferences = new ImmersiveLightPreferences()
+  @State private immersiveLightSaving: boolean = false
+  @State private immersiveLightSaveError: string = ''
+  private settingsSectionBack_: (() => boolean) | undefined = undefined
   @State systemIsDark: boolean = false
   @State selectedJdkVersion: string = JDK_AUTO
   /** 当前 MC 版本【实际生效】的 JDK 版本（由 updateJdkReadyState 经 LaunchCoordinator.resolveJdk 算出）。
@@ -233,6 +281,20 @@ struct Index {
   @State accelStatus: string = ''
   /** JDK 下载源偏好：'auto'|'github'|'gitee'|'mirror'。同步注入 launch.setJdkDownloadSource。 */
   @State jdkSource: string = 'auto'
+  @State jdkChannel: string = 'stable'
+  @State jdkWebEnabled: boolean = false
+  @State jdkAutoCheck: boolean = true
+  @State jdkChecking: boolean = false
+  @State jdkHasUpdate: boolean = false
+  @State jdkCatalogStatus: string = ''
+  private runtimeAutoCheckStarted_: boolean = false
+  private pendingRuntimePrompt_: boolean = false
+  private pendingRuntimePromptManual_: boolean = false
+  private pendingRuntimeCheck_: boolean = false
+  /** 清单、原始来源代次和手动意图一起排队；展示时不得重新猜测当前全局测试来源。 */
+  private pendingAppUpdate_: SideloadUpdatePromptCandidate | null = null
+  /** 返回手动更新页后重新采样订阅；旧队列与旧节流不能跨通道。 */
+  private shownAppUpdateChannel: string = 'stable'
   /**
    * MC 版本下载源偏好：'auto'|'mirror'|'official'。同步注入 feature_core.setMcSourcePreference。
    * 2026-08-04 新增 —— 在此之前版本下载的源顺序只由 RTT 探测决定，设置页那个开关只管模组。
@@ -249,6 +311,12 @@ struct Index {
   @State showLogDialog: boolean = false
   @State launcherLog: string = ''
   @State showVersionManager: boolean = false
+  /**
+   * 导出内容嵌入版本管理 Sheet 后，系统返回、下拉及遮罩关闭也必须经过草稿保护。
+   * 回调只在导出组件存活期间注册；普通版本管理仍交给系统原有关闭行为。
+   * 这里仅转交交互，不持有导出选择，也不因宿主收起而取消协调器任务。
+   */
+  private versionExportDismiss_: ((back?: boolean) => void) | undefined = undefined
   // M2 Phase B：账户管理 Sheet
   @State showAccountListSheet: boolean = false
   @State accountUsername: string = 'MCPlayer'
@@ -288,9 +356,23 @@ struct Index {
   // 字段初始化时 EntryAbility 已经跑完 onCreate（顺序由 onWindowStageCreate
   // → loadContent 保证），非空断言 ! 安全。详见 docs/guides/api-migration-2026-05.md。
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!;
-  private jdkManager: JdkManager = new JdkManager(this.context);
-  private launchCoordinator: LaunchCoordinator = new LaunchCoordinator(this.jdkManager);
-  private prefManager: PreferenceManager = new PreferenceManager(this.context);
+  /** 三个业务服务惰性建立，避免目录/偏好同步加载挡住开屏首帧。 */
+  private jdkManager_: JdkManager | null = null;
+  private launchCoordinator_: LaunchCoordinator | null = null;
+  private prefManager_: PreferenceManager | null = null;
+
+  private getJdkManager_(): JdkManager {
+    if (this.jdkManager_ === null) this.jdkManager_ = new JdkManager(this.context);
+    return this.jdkManager_;
+  }
+  private getLaunchCoordinator_(): LaunchCoordinator {
+    if (this.launchCoordinator_ === null) this.launchCoordinator_ = new LaunchCoordinator(this.getJdkManager_());
+    return this.launchCoordinator_;
+  }
+  private getPrefManager_(): PreferenceManager {
+    if (this.prefManager_ === null) this.prefManager_ = new PreferenceManager(this.context);
+    return this.prefManager_;
+  }
   private landscapeListener: mediaquery.MediaQueryListener | null = null
   /** 启动器主窗口；同时是 FAB 坐标空间与 windowSizeChange 监听的所有者。 */
   private launcherWindow_: window.Window | null = null
@@ -319,12 +401,16 @@ struct Index {
   }
   /** 返回信号只唤醒核验。必须等待游戏锁和原 PID 都结束，且用户没有另选实例/设置。 */
   private async recoverGraphics_(): Promise<void> {
+    if (!GameRunAdmission.isAllowed()) return
     if (this.graphicsRecoveryPolling_ || this.pendingGraphicsRecoveryId_.length === 0) return
     const id: string = this.pendingGraphicsRecoveryId_
     const ticket = GraphicsRecoveryStore.ticket(this.context.filesDir, id)
     const failure = GraphicsRecoveryStore.failure(this.context.filesDir, id)
     const outcome = GraphicsHistoryStore.outcome(this.context.filesDir, id)
     if (ticket === undefined || (failure === undefined && outcome === undefined)) return
+    // 恢复仍属于原用户启动，不能在等待旧进程结束后重新捕获授权给旧请求续命。
+    const admission: string = this.pendingRunAdmission_
+    GameRunAdmission.assertToken(this.context, admission)
     const childPid: number = failure !== undefined ? failure.childPid : outcome!.childPid
     this.graphicsRecoveryPolling_ = true
     try {
@@ -332,12 +418,14 @@ struct Index {
       let state: number = -1
       let alive: number = -1
       do {
+        GameRunAdmission.assertToken(this.context, admission)
         if (this.pendingGraphicsRecoveryId_ !== id) return
         state = testNapi.desktopGameProcessState(this.context.filesDir, 0)
         alive = testNapi.desktopProcessAlive(childPid)
         if (state === 0 && alive === 0) break
         await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 100) })
       } while (Date.now() < deadline)
+      GameRunAdmission.assertToken(this.context, admission)
       if (state === 0 && alive === 0 && outcome !== undefined && outcome.childPid === childPid && failure?.diagnosticInjected !== true) {
         try {
           if (GraphicsHistoryStore.learn(this.context.filesDir, ticket, outcome, testNapi.desktopProcessId(),
@@ -358,35 +446,196 @@ struct Index {
         + ` failed=${failure.profile} candidate=${failure.nextProfile}`, undefined, LOG_DOMAIN_LAUNCH)
       const retry: GraphicsRecoveryDispatch = { rootActivityId: ticket.rootActivityId, attempt: 1, profile: failure.nextProfile }
       if (failure.diagnosticInjected === true || ticket.diagnosticInjected === true) retry.diagnosticInjected = true
-      await this.performLaunch(retry)
+      await this.performLaunch(retry, admission)
     } finally { this.graphicsRecoveryPolling_ = false }
   }
   @StorageProp('gameLayoutSyncNotice') @Watch('onGameLayoutSyncNotice') private gameLayoutSyncNotice: string = ''
   /** 布局保存的冲突/暂失败不伪装成游戏启动失败；原文保留，用户知道去哪里查看。 */
   private onGameLayoutSyncNotice(): void {
+    if (!this.startupFinished_) return;
     if (this.gameLayoutSyncNotice.length === 0) return
     this.safeToast_(this.gameLayoutSyncNotice)
     AppStorage.setOrCreate<string>('gameLayoutSyncNotice', '')
   }
   private onDesktopSessionChanged(): void { this.lastSessionShown = false; this.consumeLastSession() }
+  /** 错误通知只负责展示；启动快照由确认撤回的交接或child消费，不凭一条错误通知提前删除。 */
   private onDesktopLaunchError(): void {
+    if (!this.startupFinished_) return;
     if (this.desktopLaunchError.length === 0) return
-    DesktopLaunchSnapshot.discard(this.context, this.pendingDesktopSnapshot)
-    this.pendingDesktopSnapshot = ''
     this.getUIContext().getPromptAction().showToast({ message: this.desktopLaunchError, duration: 3500 })
     AppStorage.setOrCreate<string>('desktopLaunchError', '')
   }
   private lastSessionShown: boolean = false  // SessionMarker Sheet 去重
   /** 恢复串行闸门，防止冷启动/前台两个通知同时为同一活动写历史。 */
   private recoveringSessions_: boolean = false
+  /** 页面只拥有结果展示资格；离页后完成的owner恢复仍继续，旧UI回调不得确认展示。 */
+  private recoveryPresentationEpoch_: number = 0
+  /** 首次可见首页的准入条件：本地初始化与整批历史恢复完成，不能把同步续作留给首次点击。 */
+  @State private launcherStartupReady_: boolean = false
+  /** 初始化、首页揭示与最终输入资格独立，避免 onFinish 被系统提前触发时越过准备。 */
+  @State private launcherInitialized_: boolean = false;
+  @State private startupRevealed_: boolean = false;
+  @State private startupFinished_: boolean = false;
+  @State private startupTarget_: StartupTargetRect = new StartupTargetRect();
+  @State private startupHomeLaidOut_: boolean = false;
+  @State private startupRouteVisible_: boolean = true;
+  @State private startupReduced_: boolean = false;
+  private startupAlive_: boolean = false;
+  private launcherPreparationStarted_: boolean = false;
+  @State private launcherInitializationComplete_: boolean = false;
+  /** 首次挂载只扫描一次；普通路由返回仍按旧行为刷新。 */
+  private startupInitialPageShow_: boolean = true;
+  private recoveryPresentationDeferred_: boolean = false;
+  private versionScanEpoch_: number = 0;
+  /** 库存异步刷新时禁止按上一个存储根的选择派发游戏。 */
+  private versionScanPending_: boolean = false;
+  /** Sheet 动画完成后的呈现回执，必须与当前会话及页面代次匹配。 */
+  private errorSheetVisibleKey_: number = 0;
+  private errorSheetVisibleEpoch_: number = -1;
+  private errorSheetWaitKey_: number = 0;
+  private errorSheetWaitEpoch_: number = 0;
+  private errorSheetWait_: ((shown: boolean) => void) | null = null;
+  private errorSheetWaitTask_: Promise<boolean> | null = null;
+  private errorSheetWaitTimer_: number = -1;
+
+  /** 显示失败、离页或销毁都必须收口 Promise；无法证明呈现就保留恢复义务。 */
+  private finishErrorSheetWait_(shown: boolean): void {
+    if (this.errorSheetWaitTimer_ >= 0) clearTimeout(this.errorSheetWaitTimer_);
+    this.errorSheetWaitTimer_ = -1;
+    const finish = this.errorSheetWait_;
+    this.errorSheetWait_ = null;
+    this.errorSheetWaitTask_ = null;
+    if (finish !== null) finish(shown);
+  }
+
+  /** SheetOptions.onAppear 在显示动画结束后触发，而非设置 show=true 的时刻。 */
+  private recoverySheetOptions_(): SheetOptions {
+    const options: SheetOptions = this.adaptiveSheetOptions(this.theme.bgSecondary);
+    options.onAppear = (): void => {
+      if (!this.startupAlive_ || !this.startupRouteVisible_ || !this.startupFinished_
+        || this.errorSheetWaitEpoch_ !== this.recoveryPresentationEpoch_) return;
+      this.errorSheetVisibleKey_ = this.mcErrorSessionKey;
+      this.errorSheetVisibleEpoch_ = this.recoveryPresentationEpoch_;
+      if (this.startupAlive_ && this.startupRouteVisible_ && this.startupFinished_
+        && this.errorSheetWaitKey_ === this.mcErrorSessionKey
+        && this.errorSheetWaitEpoch_ === this.recoveryPresentationEpoch_) this.finishErrorSheetWait_(true);
+    };
+    options.onDisappear = (): void => {
+      this.errorSheetVisibleKey_ = 0;
+      this.finishErrorSheetWait_(false);
+      this.resumeRecoveryPresentation_();
+      this.onOpenErrorSheetReq();
+      this.drainUpdateDialogs_();
+    };
+    return options;
+  }
+
+  /** 同一已显示会话可复用；不同会话必须等上一张 Sheet 关闭，避免覆盖后误 ack。 */
+  private waitForErrorSheet_(key: number): Promise<boolean> {
+    if (this.startupAlive_ && this.startupRouteVisible_ && this.errorSheetVisibleKey_ === key
+      && this.errorSheetVisibleEpoch_ === this.recoveryPresentationEpoch_) return Promise.resolve(true);
+    if (this.errorSheetWaitKey_ === key && this.errorSheetWaitTask_ !== null) return this.errorSheetWaitTask_;
+    this.finishErrorSheetWait_(false);
+    this.errorSheetWaitTask_ = new Promise<boolean>((resolve: (shown: boolean) => void): void => {
+      this.errorSheetWaitKey_ = key;
+      this.errorSheetWaitEpoch_ = this.recoveryPresentationEpoch_;
+      this.errorSheetWait_ = resolve;
+      this.errorSheetWaitTimer_ = setTimeout((): void => { this.finishErrorSheetWait_(false); }, 4000);
+    });
+    return this.errorSheetWaitTask_;
+  }
+
+  /** 隐私优先，错误结果逐张展示；原件只在匹配的实际呈现之后才确认。 */
+  private resumeRecoveryPresentation_(): void {
+    if (!this.startupFinished_ || !this.startupRouteVisible_ || this.showPrivacy || this.showMcErrorSheet
+      || this.recoveringSessions_) return;
+    if (this.recoveryPresentationDeferred_) {
+      this.recoveryPresentationDeferred_ = false;
+      this.lastSessionShown = false;
+      this.consumeLastSession();
+    }
+  }
+
+  /** 收到真实窗口内品牌矩形后才允许归位；页面尺寸变化沿用同一启动轮次。 */
+  private onStartupTarget_(rect: StartupTargetRect): void {
+    if (!this.startupAlive_) return;
+    this.startupTarget_ = rect;
+    if (rect.valid) this.startupHomeLaidOut_ = true;
+  }
+
+  /** 退场时显示首页但保留输入遮挡，header 图像由飞行斧占位。 */
+  private revealStartupHome_(): void {
+    if (!this.startupAlive_ || !this.launcherStartupReady_ || !this.startupHomeLaidOut_) return;
+    this.startupRevealed_ = true;
+  }
+
+  /** 最后一帧才交还原图、触控与可见事实；自动弹窗和外部导入从这里排队交接。 */
+  private finishStartup_(): void {
+    if (!this.startupAlive_ || this.startupFinished_ || !this.launcherStartupReady_) return;
+    this.startupRevealed_ = true;
+    this.startupFinished_ = true;
+    this.onHomeTabVisibilityChanged_();
+    this.resumeRecoveryPresentation_();
+    this.onDesktopLaunchError();
+    this.onGameLayoutSyncNotice();
+    if (AppStorage.get<boolean>('amclSideloadUpdateCompleted') === true) {
+      AppStorage.setOrCreate<boolean>('amclSideloadUpdateCompleted', false);
+      this.safeToast_('AMCL 已更新完成');
+    }
+    this.onOpenErrorSheetReq();
+    this.onPendingToast();
+    this.onOpenNetDiagReq();
+    this.tryConsumeLayoutImport();
+    this.drainUpdateDialogs_();
+    this.showUpdateRecovery_();
+    AppLogger.info(TAG, 'Launcher splash handoff completed; home input enabled', LOG_DOMAIN_UI);
+  }
+  /** 启动失败保留准备页和原始证据；用户可重试，不能按“已经显示首页”掩盖未完成的恢复。 */
+  @State private launcherStartupFailed_: boolean = false
+  /** 只等待现有本地存储/账户初始化，联网更新与目录请求不阻止应用进入首页。 */
+  private launcherStartupJobs_: Promise<void>[] = []
+  /** 恢复任务包括历史写入、展示回执和 finally 收尾；新前台批次会替换此身份。 */
+  private sessionRecoveryTask_: Promise<void> = Promise.resolve()
+  private sessionRecoveryError_: Error | null = null
+  /** 组件销毁或重试会推进代次，旧异步回调不能开放已退出的页面。 */
+  private launcherStartupAttempt_: number = 0
+  /** 开账异步任务按ID跟踪，终态必须等待自己的开账，不能被全局owner忙碌异常吞掉。 */
+  private activityBeginJobs_: Map<number, Promise<void>> = new Map<number, Promise<void>>()
 
   // v6.5: 统一任务 registry + listener
   private registry: DownloadTaskRegistry = getDownloadTaskRegistry();
   private registryListener: RegistryListener = () => {
-    this.tasksRev = this.tasksRev + 1;
-    // 取代原来的 modDl_ 终态 toast：检测刚进入终态的 MC 任务完成后同步状态栏
-    this.syncStatusFromRegistry_();
+    this.onRegistryChanged_();
   };
+  /** 本页生命周期与Ability前台共同决定视觉/网络观察资格，不能仅凭组件尚存活。 */
+  private launcherWorkVisible_: boolean = false
+  @StorageProp('appInForeground') @Watch('onLauncherWorkVisibilityChanged_')
+  private launcherWorkForeground_: boolean = false
+  private tasksProjectionDirty_: boolean = false
+
+  /** 业务终态/活动封账始终处理；隐藏页的每次进度事件只记一次待投影标记。 */
+  private onRegistryChanged_(): void {
+    if (this.launcherWorkVisible_ && this.launcherWorkForeground_) this.tasksRev++
+    else this.tasksProjectionDirty_ = true
+    this.syncStatusFromRegistry_()
+    this.refreshStoreManager_()
+  }
+
+  /** 前台或页面边沿停止自动网络复检，返回后合并刷新视觉投影，不补跑历史定时tick。 */
+  private onLauncherWorkVisibilityChanged_(): void {
+    if (!this.launcherInitialized_) return;
+    if (!this.launcherWorkVisible_ || !this.launcherWorkForeground_) {
+      this.netCheckEpoch_++
+      this.stopNetRecheck_()
+      return
+    }
+    if (this.tasksProjectionDirty_) {
+      this.tasksProjectionDirty_ = false
+      this.tasksRev++
+    }
+    if (this.netInitialCheckPending_) this.runNetCheck_(true)
+    this.onNetBannerChange()
+  }
 
   // v6 (2026-05-19) — McErrorSheet 数据
   // aboutToAppear 检测到 lastMcSession 时填充这三个字段并把 showMcErrorSheet=true
@@ -435,6 +684,10 @@ struct Index {
   @StorageLink('amcl_open_netdiag_nonce') @Watch('onOpenNetDiagReq') openNetDiagNonce: number = 0
   // 横幅显示时的周期性复检定时器（网络恢复后自动隐藏横幅）。-1 = 未运行。
   private netRecheckTimer: number = -1
+  /** 请求不重叠；离页代次使旧结果失效。初次检查可延后到真实可见时执行。 */
+  private netCheckBusy_: boolean = false
+  private netCheckEpoch_: number = 0
+  private netInitialCheckPending_: boolean = false
 
   // 启动前硬校验 Sheet（JIT / 运行时环境 / 版本文件完整性）。
   // launchMC 点击后先弹此 Sheet 校验，三项全通过才 doLaunchAfterChecks 真正创建 JVM。
@@ -449,13 +702,15 @@ struct Index {
     ceilingSource: 'none', ceilingEvidence: '', generation: '', displayName: '' }
   @State private preLaunchXmx: number = 0
 
-  /** 检查更新红点：线上最新 versionCode > 已装时为 true（驱动 设置入口 / 检查更新行 的红点）。 */
+  /** 检查更新红点：目标满足code/发行名/通道准入时为true，升级后同code的旧预览也会清除。 */
   @State private updateDot: boolean = false
 
   /**
    * 更新弹窗控制器。每次弹之前重建（内容随 manifest 变化，@CustomDialog 的入参在
    * 构造时固化），持有引用只为让实例活到弹窗关闭。
    */
+  private exitPresentedUpdate: () => boolean = (): boolean => true
+  private updatePresenterOwner: string = 'index-' + util.generateRandomUUID()
   private updateDialogCtrl_: CustomDialogController | null = null
 
   /**
@@ -466,7 +721,40 @@ struct Index {
   private gameLaunchedThisSession: boolean = false
 
   /** aboutToAppear 可能在同一进程重复进入；自动更新检查每个进程最多启动一次。 */
+  @StorageProp('amclSideloadUpdateAttentionRevision') @Watch('onUpdateAttentionChanged_') private updateAttentionRevision_: number = 0
+  @StorageProp('amclSideloadUpdateCompleted') @Watch('onUpdateCompleted_') private updateCompleted_: boolean = false
+  private onUpdateAttentionChanged_(): void {
+    this.recoveryPromptShown = false; this.showUpdateRecovery_()
+  }
+  private onUpdateCompleted_(): void {
+    if (this.startupFinished_ && this.updateCompleted_ && AppStorage.get<boolean>('amclHostPageVisible') === true) {
+      AppStorage.setOrCreate<boolean>('amclSideloadUpdateCompleted', false)
+      this.getUIContext().getPromptAction().showToast({ message: 'AMCL 已更新完成' })
+    }
+  }
+  private recoveryPromptShown: boolean = false
   private autoUpdateCheckStarted: boolean = false
+  /** default测试入口只通知真实“检查更新”动作，不从测试侧构造弹窗或安装结果。 */
+  @StorageProp('amclSideloadTestRequest') @Watch('onSideloadTestRequest_') private sideloadTestRequest_: number = 0
+  private handledSideloadTestRequest_: number = 0
+  /** 自更新缺少运行时的明确出口；只切到既有设置页，不自行下载用户运行时。 */
+  @StorageProp('amclUpdateOpenSettings') @Watch('onUpdateOpenSettings_') private updateOpenSettings_: number = 0
+  // 更新服务独立于本页面封账；成功/失败/取消都刷新最近活动，不能只等待路由再次显示。
+  @StorageProp('amclUpdateActivityRevision') @Watch('refreshRecentActivities_') private updateActivityRevision_: number = 0
+  private onUpdateOpenSettings_(): void { this.currentTab = 2; }
+  @StorageProp('amclUpdateRecoveryRequested') @Watch('onUpdateRecoveryRequested_') private updateRecoveryRequested_: number = 0
+  private handledUpdateRecovery_: number = 0
+  private onUpdateRecoveryRequested_(): void {
+    if (AppStorage.get<boolean>('amclHostPageVisible') !== true || this.updateRecoveryRequested_ === this.handledUpdateRecovery_) return
+    this.handledUpdateRecovery_ = this.updateRecoveryRequested_; this.checkForUpdate()
+  }
+
+
+  private onSideloadTestRequest_(): void {
+    if (!SideloadUpdateTestSession.active() || this.sideloadTestRequest_ === this.handledSideloadTestRequest_) return
+    this.handledSideloadTestRequest_ = this.sideloadTestRequest_
+    this.checkForUpdate()
+  }
 
   // 版本文件全量校验（SHA1）覆盖层：版本详情手动触发，跑 VersionFileVerifier.verifyAll。
   @State private showVerifyOverlay: boolean = false
@@ -548,7 +836,63 @@ struct Index {
     }, 0)
   }
 
-  aboutToAppear() {
+  /**
+   * 首次出现只确定主题。只读一个设置键，不执行 loadAll、JDK 检查或整棵首页构建；
+   * 真正业务准备由开屏提交空背景并开始入场后触发。系统启动窗不能预读私有主题。
+   */
+  aboutToAppear(): void {
+    this.startupAlive_ = true;
+    this.systemIsDark = this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    try {
+      const raw = ProcessPreferences.open(this.context, 'amcl_settings').getSync('themeMode', ThemeMode.SYSTEM);
+      this.themeMode = raw === ThemeMode.LIGHT ? ThemeMode.LIGHT
+        : raw === ThemeMode.DARK ? ThemeMode.DARK : ThemeMode.SYSTEM;
+    } catch (_) { this.themeMode = ThemeMode.SYSTEM; }
+    this.theme = resolveTheme(this.themeMode, this.systemIsDark);
+    this.startupReduced_ = UiMotion.reduced();
+    this.onHomeTabVisibilityChanged_();
+  }
+
+  /** 首个动画绘制机会以后才挂载首页并执行原有初始化；路由身份始终为 Index。 */
+  private async beginLauncherPreparation_(): Promise<void> {
+    if (!this.startupAlive_ || this.launcherPreparationStarted_) return;
+    this.launcherPreparationStarted_ = true;
+    try {
+      await LauncherStartupRuntime.prepare();
+      if (!this.startupAlive_) return;
+      this.launcherInitialized_ = true;
+      this.initializeLauncher_();
+      this.launcherInitializationComplete_ = true;
+      if (this.startupRouteVisible_) this.onPageShow();
+    } catch (error) {
+      this.launcherStartupFailed_ = true;
+      AppLogger.error(TAG, 'Launcher startup initialization failed; retry retains preparation gate', error, LOG_DOMAIN_LAUNCH);
+    }
+  }
+
+  /** 同步初始化失败与恢复失败分开重试，不能用空 jobs 数组放行一个未初始化的首页。 */
+  private retryStartup_(): void {
+    if (this.launcherInitializationComplete_) {
+      this.consumeLastSession();
+      this.completeLauncherStartup_();
+      return;
+    }
+    this.launcherStartupAttempt_++;
+    this.registry.removeListener(this.registryListener);
+    this.landscapeListener?.off('change');
+    this.landscapeListener = null;
+    if (this.launcherWindow_ !== null) {
+      this.launcherWindow_.off('windowSizeChange', this.launcherWindowSizeListener_);
+      this.launcherWindow_ = null;
+    }
+    this.launcherPreparationStarted_ = false;
+    this.launcherInitialized_ = false;
+    this.launcherStartupFailed_ = false;
+    this.beginLauncherPreparation_();
+  }
+
+  /** 延续既有初始化及恢复所有权，不用动画结束代替真实就绪。 */
+  private initializeLauncher_(): void {
     // 2026-05-23 API NEXT 迁移：全局 mediaquery / px2vp / promptAction / router /
     //   animateTo 均已弃用，本页全部改走 this.getUIContext().XXX(...)。
     //   详见 docs/guides/api-migration-2026-05.md。
@@ -588,7 +932,7 @@ struct Index {
     this.loadPreferences()
     // 开屏隐私政策（上架合规）：仅"上架轨"形态（平板 / 2in1）且未同意过时弹窗。
     // 手机（侧载轨）不弹（视使用即同意，见隐私政策正文）。
-    if (DistributionPolicy.requiresPrivacyConsent() && !this.prefManager.privacyAgreed) {
+    if (DistributionPolicy.requiresPrivacyConsent() && !this.getPrefManager_().privacyAgreed) {
       this.showPrivacy = true
     }
     // 启动检查更新：先按缓存即时显示红点（无需联网），再按 24h 节流静默联网刷新。
@@ -627,17 +971,17 @@ struct Index {
     }
 
     // 独立游戏进程可能仍在读取 JAR；首页重新建立不能覆盖它使用中的运行时。
-    this.deployRuntimeIfIdle_()
+    const runtimeReady: Promise<void> = this.deployRuntimeIfIdle_(true);
 
-    // Phase 5.3: 下载历史 — 早期初始化 Preferences；不阻塞 UI（fire-and-forget）
-    getDownloadHistoryStore().init(this.context).then(() => {
+    // 下载历史沿用现有初始化；其本地数据发布完成后才允许首次显示首页。
+    const historyReady: Promise<void> = getDownloadHistoryStore().init(this.context).then(() => {
       this.refreshRecentActivities_()
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'DownloadHistoryStore.init failed', e, LOG_DOMAIN_DOWNLOAD)
     })
 
-    // M4：消息中心 — 早期 init 以便铃铛角标在首帧就正确（fire-and-forget）
-    getAppMessageStore().init(this.context).then(() => {
+    // 消息初始化同样纳入本地就绪条件，避免准备页退出后再集中刷新角标与列表。
+    const messagesReady: Promise<void> = getAppMessageStore().init(this.context).then(() => {
       refreshUnreadCount()
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'AppMessageStore.init failed', e, LOG_DOMAIN_UI)
@@ -651,112 +995,161 @@ struct Index {
     }
 
     // JDK
-    this.jdkManager.setStatusCallback((s: JdkStatus) => {
+    this.getJdkManager_().setStatusCallback((s: JdkStatus) => {
       this.updateJdkReadyState()
       this.jdkExtractProgress = s.progress
     })
     // v6.5：JDK 下载进度可视化全部迁到 DownloadTasksSheet（JdkInstallTask、Index 不再接管 onDownload）。
     // checkAndExtract 只会用 setStatusCallback 报完成状态，不需要 setDownloadCallback。
-    this.jdkManager.checkAndExtract()
+    this.getJdkManager_().checkAndExtract()
     // v6.5：registry listener 启动后才能接收 task 事件
     this.registry.addListener(this.registryListener)
-    this.jdkVersions = this.jdkManager.listVersions()
+    this.jdkVersions = this.getJdkManager_().listVersions()
     this.updateJdkReadyState()
 
-    this.scanVersions()
+    const versionsReady: Promise<void> = this.scanVersions();
 
-    // M2 Phase B：初始化账户系统，同步当前选中账户。
-    // init() 会探测 HUKS 并加载所有账户；fire-and-forget，不阻塑 UI。
-    getAccountManager().init(this.context).then(() => {
+    // 账户探测和本地加载在准备阶段完成；网络登录仍由用户进入账户界面后发起。
+    const accountReady: Promise<void> = getAccountManager().init(this.context).then(() => {
       this.refreshCurrentAccount()
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'AccountManager.init failed', e, LOG_DOMAIN_ACCOUNT)
     })
 
-    // 上次 MC 因 System.exit 触发 SIGABRT 杀掉 app 时，EntryAbility.onCreate 会把
-    // 上次会话信息塞进 AppStorage 'lastMcSession'。这里读出来弹 McErrorSheet
-    // 给用户看异常摘要 + 完整 stack trace，避免下次进 app 只能干瞪眼以为是闪退。
-    //
-    // v6（2026-05-19）从简单 toast 升级为结构化错误 Sheet（含 mc_output.log 尾部）：
-    //   1. 摘要由 SessionMarker.extractErrorSummary 在日志尾部 heuristic 提取
-    //      （Fabric "Some of your mods are incompatible" / Java 异常顶行 / 兜底最后一行）
-    //   2. logTail 在 aboutToAppear 时同步读（filesDir/<mcDir>/versions/<id>/mc_output.log
-    //      尾部 32 KB，足够覆盖任何 Java 异常 stack trace）
-    //   3. 用户可复制全文到剪贴板（带版本+时间元信息），方便去 issue 反馈
-    //
-    // 不需要主动清 AppStorage：
-    //   - aboutToAppear 在一个 app 进程里只跑一次（router.back 回 Index 走 onPageShow）
-    //   - 进程死后 AppStorage 会被新进程的 EntryAbility 重新初始化
-    //   - 因此 lastMcSession 不会被同一进程读到第二次
-    // 用本地 dedup 标志兜底防御未来 lifecycle 变动导致重复触发。
-    //
-    // 详见 docs/archive/jdk21-awt-headless-journey-202605.md §5.2（第二阶段方案）。
+    // 进程恢复owner已经拥有原件、终态提交和历史投影；页面仅消费持久待展示结果。
+    // 离页不取消owner，不确认尚未应用的结果。首次首页仍等待本地初始化及这轮展示确认。
     this.consumeLastSession()
+    this.launcherStartupJobs_ = [historyReady, messagesReady, accountReady, versionsReady, runtimeReady]
+    this.completeLauncherStartup_()
   }
 
   private consumeLastSession(): void {
     if (this.lastSessionShown || this.recoveringSessions_) return
-    const sessions: McSessionInfo[] = (AppStorage.get<McSessionInfo[]>('pendingJvmExitSessions') ?? []).slice()
-    const last: McSessionInfo | undefined = AppStorage.get<McSessionInfo>('lastMcSession')
-    if (last !== undefined && last.startedAt > 0
-      && !sessions.some((session: McSessionInfo): boolean => session.startedAt === last.startedAt)) sessions.push(last)
     this.lastSessionShown = true
-    if (sessions.length === 0) return
     this.recoveringSessions_ = true
+    this.sessionRecoveryError_ = null
     const revision: number = this.desktopSessionRevision
-    this.consumeRecoveredSessions_(sessions).then((): void => {
-      // 恢复期间若收到了新的前台通知，保留新批次，不能用旧回调把它清空。
-      if (revision === this.desktopSessionRevision) {
-        AppStorage.setOrCreate<McSessionInfo[]>('pendingJvmExitSessions', [])
-        AppStorage.delete('lastMcSession')
-      } else this.lastSessionShown = false
+    const epoch: number = this.recoveryPresentationEpoch_
+    this.sessionRecoveryTask_ = this.consumeRecoveredSessions_(epoch).then((): void => {
+      if (revision !== this.desktopSessionRevision || epoch !== this.recoveryPresentationEpoch_) this.lastSessionShown = false
     }).catch((error: Error) => {
       this.lastSessionShown = false
+      this.sessionRecoveryError_ = error
       AppLogger.warn(TAG, 'Cannot resolve previous game outcome; evidence retained', error, LOG_DOMAIN_LAUNCH)
     }).finally((): void => {
       this.recoveringSessions_ = false
       if (revision !== this.desktopSessionRevision) this.consumeLastSession()
+      // 用户可能在呈现回执落盘前就已关闭Sheet；此时没有第二个onDisappear可唤醒下一项。
+      if (this.sessionRecoveryError_ === null) {
+        this.resumeRecoveryPresentation_();
+        this.drainUpdateDialogs_();
+        this.showUpdateRecovery_();
+      }
     })
   }
 
-  /** 逐主键串行恢复；marker 与退出 journal 同局去重，异常保留整批，稍后可幂等重试。 */
-  private async consumeRecoveredSessions_(sessions: McSessionInfo[]): Promise<void> {
-    const handled: Set<number> = new Set<number>()
-    for (const session of sessions) {
-      if (session.startedAt <= 0 || handled.has(session.startedAt)) continue
-      // await 之间可能发起了新游戏；锁必须仍明确空闲，不能把活跃会话封账。
-      if (testNapi.desktopGameProcessState(this.context.filesDir, 0) !== 0) {
-        throw new Error('游戏进程仍在运行或状态不可确认，稍后继续恢复')
+  /** 仅消费进程owner已经耐久提交并投影历史的结果；页面不再裁决/封账或扫描原件。 */
+  private async consumeRecoveredSessions_(epoch: number): Promise<void> {
+    await SessionRecoveryRuntime.wake(this.context, [], false)
+    // 启动仅等待 owner 的耐久恢复/历史投影。展示义务留到首页真实揭示后消费，
+    // 不在动画下方打开系统 Sheet，也不等待退场而形成 ready/展示相互等待。
+    if (!this.startupFinished_ || this.showPrivacy || this.showMcErrorSheet) {
+      this.recoveryPresentationDeferred_ = true;
+      return;
+    }
+    const coordinator = SessionRecoveryRuntime.coordinator(this.context)
+    for (const result of await coordinator.results()) {
+      if (epoch !== this.recoveryPresentationEpoch_ || AppStorage.get<boolean>('amclHostPageVisible') === false) return
+      await this.consumeRecoveredSession_(result, epoch)
+      if (epoch !== this.recoveryPresentationEpoch_) return
+      await coordinator.acknowledgePresentation(result.session.startedAt, result.revision)
+      if (result.outcome.state === LedgerState.CRASHED || result.outcome.state === LedgerState.FAILED) {
+        this.recoveryPresentationDeferred_ = true;
+        break;
       }
-      await this.consumeRecoveredSession_(session)
-      handled.add(session.startedAt)
+    }
+    await SessionRecoveryRuntime.reportSettled(this.context)
+  }
+
+  /** 同结果版本只应用一次原错误Sheet和列表刷新，不拥有用户当前Tab的选择权。 */
+  private async consumeRecoveredSession_(result: SessionRecoveryResult, epoch: number): Promise<void> {
+    const session = result.session; const outcome = result.outcome
+    this.lastMcSession = session
+    this.refreshRecentActivities_()
+    // 旧会话恢复不拥有当前Tab的选择权；用户已切到设置/下载时保持其实际导航，
+    // 历史结果和原错误Sheet仍展示、确认，不重启父进程或复用已退出的JVM。
+    if (outcome.state === LedgerState.CRASHED || outcome.state === LedgerState.FAILED) {
+      // 原入口等待历史就绪后才设置Sheet；必须等真正应用成功，不能把“已发起Promise”当展示完成。
+      if (!await this.openErrorSheetBySession_(session.startedAt, epoch)) throw new Error('恢复结果尚未应用到当前页面，展示义务保留');
+    }
+    await writeSessionRecoveryReceiptAsync(this.context.filesDir, session.startedAt, outcome)
+  }
+
+  /**
+   * 首次首页等待本地初始化及本页实际消费的必要恢复/展示任务。ended历史迁移单独后台排队，
+   * 浏览ready不代表游戏已准入；所有真实新游戏派发仍await owner.trackLaunch的来源保护和发布互斥。
+   * 耗时准备已由进程owner
+   * 和异步文件边界承接，本页只在它们完成后发布可见事实；事件循环让步用于观察
+   * 追加批次，不能当成耗时工作已移出UI线程的证据。失败保留原批次，销毁代次失效。
+   */
+  private async completeLauncherStartup_(): Promise<void> {
+    const attempt: number = ++this.launcherStartupAttempt_
+    this.launcherStartupFailed_ = false
+    try {
+      await Promise.all(this.launcherStartupJobs_)
+      while (true) {
+        const recovery: Promise<void> = this.sessionRecoveryTask_
+        await recovery
+        // 最后一段文件/历史回调收尾后让渲染队列获得一轮机会，再检查是否有新批次。
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0) })
+        if (attempt !== this.launcherStartupAttempt_) return
+        if (recovery !== this.sessionRecoveryTask_) continue
+        if (this.sessionRecoveryError_ !== null) throw this.sessionRecoveryError_
+        break
+      }
+      this.launcherStartupReady_ = true
+      this.onHomeTabVisibilityChanged_()
+      AppLogger.info(TAG, 'Launcher startup ready; local initialization and critical recovery completed; history migration runs separately', LOG_DOMAIN_LAUNCH)
+    } catch (error) {
+      if (attempt !== this.launcherStartupAttempt_) return
+      this.launcherStartupFailed_ = true
+      AppLogger.warn(TAG, 'Launcher preparation incomplete; original recovery batch retained', error, LOG_DOMAIN_LAUNCH)
     }
   }
 
-  private async consumeRecoveredSession_(session: McSessionInfo): Promise<void> {
-    const outcome = await resolveRecoveredSessionOutcome(this.context.filesDir, session.startedAt)
-    if (hasSessionRecoveryReceipt(this.context.filesDir, session.startedAt, outcome)) return
-    const exit = readJvmExitEvidence(this.context.filesDir, session.startedAt)
-    if (exit !== undefined) session.endedAt = exit.timestamp
-    this.lastMcSession = session
-    const status: string = outcome.state === LedgerState.SUCCESS ? ActivityStatus.SUCCESS
-      : outcome.state === LedgerState.CRASHED ? ActivityStatus.CRASHED
-      : outcome.state === LedgerState.FAILED ? ActivityStatus.FAILED : ActivityStatus.ABORTED
-    await this.recordLaunchSession_(session, status, outcome.summary, outcome.errorKind ?? '')
-    // 活着返回启动器时回到首页；不重启父进程，也不复用已经退出的 JVM。
-    this.currentTab = 0
-    try { this.tabController.changeIndex(0) } catch (e) { /* 首次布局前仅更新受控状态 */ }
-    if (outcome.state === LedgerState.CRASHED || outcome.state === LedgerState.FAILED) this.openErrorSheetBySession_(session.startedAt)
-    writeSessionRecoveryReceipt(this.context.filesDir, session.startedAt, outcome)
-  }
-
   onPageShow() {
+    this.startupRouteVisible_ = true;
+    if (!this.launcherInitializationComplete_) return;
+    const initialShow: boolean = this.startupInitialPageShow_;
+    this.startupInitialPageShow_ = false;
+    const channel=this.getPrefManager_().appUpdateChannel
+    if(channel!==this.shownAppUpdateChannel) {
+      this.shownAppUpdateChannel=channel; this.pendingAppUpdate_=null; this.autoUpdateCheckStarted=false
+      this.initUpdateCheck()
+    }
+    this.updateDot=!DistributionPolicy.isStore() && UpdateChecker.hasCachedUpdate(UpdateChecker.currentVersionCode(),
+      this.getPrefManager_().appUpdateLatestSeen(ProductBuildProfile.product,channel),UpdateChecker.currentVersionName(),
+      this.getPrefManager_().appUpdateLatestName(ProductBuildProfile.product,channel),channel)
+    this.launcherWorkVisible_ = true
+    this.onLauncherWorkVisibilityChanged_()
+    this.onSideloadTestRequest_()
+    // 只消费新进程按版本/UID/载荷/一次性凭据核实后的成功信号，不以旧安装命令返回值报成功。
+    if (this.startupFinished_ && AppStorage.get<boolean>('amclSideloadUpdateCompleted') === true) {
+      AppStorage.setOrCreate<boolean>('amclSideloadUpdateCompleted', false)
+      this.getUIContext().getPromptAction().showToast({ message: 'AMCL 已更新完成' })
+    }
     // 本页被覆盖期间（pushUrl 进游戏）本页组件并不销毁，仍会继续跑自己的定时器。
     // 该标志是"看不见就别占 UI 线程"的唯一权威来源，游戏内的鼠标事件与本页共用
     // 同一条 ArkUI 线程，所以这直接关系到键鼠输入延迟。
     AppStorage.setOrCreate('amclHostPageVisible', true)
-    this.scanVersions()
-    this.loadPreferences()
+    this.onHomeTabVisibilityChanged_()
+    this.lastSessionShown = false; this.consumeLastSession()
+    this.onUpdateRecoveryRequested_()
+    if (!initialShow) {
+      this.scanVersions();
+      this.loadPreferences();
+    }
+    this.refreshStoreManager_(true)
     this.updateJdkReadyState()
     this.refreshRecentActivities_()  // 从下载页/活动页/游戏页返回时刷新最近活动
     // 账户可能被其他页面改过（未来扩展），重新拉一次
@@ -766,14 +1159,40 @@ struct Index {
     // 冷启动经「打开方式」拉起（EntryAbility.onCreate 已写入 uri）→ 消费并跳到导入流程。
     this.tryConsumeLayoutImport()
     this.onGraphicsRecoverySignal_()
+    this.drainUpdateDialogs_()
+    this.showUpdateRecovery_()
+    // 路由被覆盖时保留的通知不会再次触发 Watch，返回后按真实可见资格补消费。
+    if (this.startupFinished_) {
+      this.onOpenErrorSheetReq();
+      this.onPendingToast();
+      this.onOpenNetDiagReq();
+      this.onDesktopLaunchError();
+      this.onGameLayoutSyncNotice();
+    }
   }
 
   /**
    * 被其他页面覆盖（含 pushUrl 进游戏）时发布不可见，让本页的周期性动画自行停摆。
-   * 只发布事实，不在这里逐个去关定时器——各组件自己订阅，避免页面与组件互相耦合。
+   * 各子组件订阅可见事实；本页自己拥有的网络观察由同一生命周期收口。
    */
   onPageHide() {
+    this.startupRouteVisible_ = false;
+    this.errorSheetVisibleKey_ = 0;
+    this.errorSheetVisibleEpoch_ = -1;
+    this.finishErrorSheetWait_(false);
+    if (!this.launcherInitialized_) return;
+    this.storeCheckGeneration_++
+    this.storeCheckSignature_ = ''
+    if (this.storeExportUnsubscribe_ !== null) this.storeExportUnsubscribe_()
+    this.storeExportUnsubscribe_ = null
+    this.launcherWorkVisible_ = false
+    this.onLauncherWorkVisibilityChanged_()
     AppStorage.setOrCreate('amclHostPageVisible', false)
+    AppStorage.setOrCreate<boolean>('amclHomeTabVisible', false)
+    AppStorage.setOrCreate<boolean>('amclSettingsTabVisible', false)
+    this.recoveryPresentationEpoch_++
+    this.exitUpdateForRoute_(); setTimeout((): void => { this.exitUpdateForRoute_(); }, 0)
+    // 页面后台只发布可见事实；系统设置往返保留原更新席位与本轮许可。
   }
 
   /** @Watch 回调：app 已在前台时点击 .json（onNewWant 写入 uri）→ 消费。 */
@@ -783,13 +1202,17 @@ struct Index {
 
   /** 若有待处理的布局导入 uri：清空并跳转到布局方案页执行导入（分析→检测→导入）。 */
   private tryConsumeLayoutImport(): void {
+    if (!this.startupFinished_ || !this.startupRouteVisible_) return;
     const uri = this.pendingLayoutImportUri
     if (!uri || uri.length === 0) return
-    this.pendingLayoutImportUri = ''   // 立即清空，避免重复消费（同时写回 AppStorage）
+    // 管理态保留待导入原文，开启调试后才允许进入纯操控配置。
+    if (!GameRunAdmission.isAllowed()) return
     // API22+ desktop 不提供触控虚拟布局。module profile 仍是多产品共享时，必须在这里
     // fail closed，避免系统 FileOpen 深链绕过 Settings 的产品入口门。
     if (!ProductInputProfile.supportsTouchLayouts()) return
     setTimeout(() => {
+      if (!GameRunAdmission.isAllowed()) return
+      this.pendingLayoutImportUri = ''
       try {
         this.getUIContext().getRouter().pushUrl({
           url: 'pages/LayoutListPage',
@@ -820,6 +1243,26 @@ struct Index {
   }
 
   aboutToDisappear() {
+    this.startupAlive_ = false;
+    this.errorSheetVisibleKey_ = 0;
+    this.errorSheetVisibleEpoch_ = -1;
+    this.versionScanEpoch_++;
+    this.finishErrorSheetWait_(false);
+    // 旧设置子组件的返回闭包不跨启动器实例存活。
+    this.settingsSectionBack_ = undefined
+    this.storeCheckGeneration_++
+    if (this.storeExportUnsubscribe_ !== null) this.storeExportUnsubscribe_()
+    this.storeExportUnsubscribe_ = null
+    this.launcherWorkVisible_ = false
+    this.onLauncherWorkVisibilityChanged_()
+    // 只取消本组件发布就绪状态的资格；正在执行的耐久恢复仍按原契约完成并保留证据。
+    this.launcherStartupAttempt_++
+    this.recoveryPresentationEpoch_++
+    AppStorage.setOrCreate<boolean>('amclHomeTabVisible', false)
+    AppStorage.setOrCreate<boolean>('amclSettingsTabVisible', false)
+    if (UpdatePromptPresenter.owns(this.updatePresenterOwner)) this.exitPresentedUpdate()
+    this.closeUpdateDialog_()
+    UpdatePromptPresenter.forget(this.updatePresenterOwner)
     if (this.landscapeListener) {
       this.landscapeListener.off('change')
     }
@@ -873,8 +1316,11 @@ struct Index {
 
   /** 隐私政策：同意 → 落盘 + 关闭弹窗。 */
   private onPrivacyAgree(): void {
-    this.prefManager.privacyAgreed = true
+    this.getPrefManager_().privacyAgreed = true
     this.showPrivacy = false
+    this.resumeRecoveryPresentation_();
+    this.onOpenErrorSheetReq();
+    this.initRuntimeUpdateCheck_()
   }
 
   /** 隐私政策：不同意 → 退出应用。 */
@@ -887,40 +1333,52 @@ struct Index {
   }
 
   private loadPreferences() {
-    let snap = this.prefManager.loadAll()
+    this.canRunGame_ = GameRunAdmission.isAllowed()
+    if (!this.canRunGame_) this.showPreLaunchSheet = false
+    let snap = this.getPrefManager_().loadAll()
     this.themeMode = snap.themeMode
+    // 新记录缺失才迁移旧五档；在途保存由同目录读取屏障保证不会发布缓存中间态。
+    this.immersiveLight = this.getPrefManager_().immersiveLightPreferences
+    publishImmersiveLightPreferences(this.immersiveLight)
     this.mcVersion = snap.mcVersion
     // 历史 useNewWindow 不再参与进程选择；新设置独立存储，由 RuntimeProductProfile 冷启动锁存。
     this.useNewWindow = false
     this.tabletIndependentGameProcess = ProductInputProfile.canChooseTabletProcess()
-      ? this.prefManager.tabletIndependentGameProcess : false
+      ? this.getPrefManager_().tabletIndependentGameProcess : false
     this.versionIsolation = snap.versionIsolation
     this.selectedJdkVersion = snap.jdkVersion
     if (snap.mcXmx > 0) this.mcXmx = snap.mcXmx
-    this.modSource = this.prefManager.modSource
-    this.cacheRemoteMeta = this.prefManager.cacheRemoteMeta
-    this.modConcurrentDownloads = this.prefManager.modConcurrentDownloads
+    this.modSource = this.getPrefManager_().modSource
+    this.cacheRemoteMeta = this.getPrefManager_().cacheRemoteMeta
+    this.modConcurrentDownloads = this.getPrefManager_().modConcurrentDownloads
     // 加速下载：读盘后若为开则后台握手（不阻塞启动；失败静默回退直连）
-    this.accelDownload = DistributionPolicy.allowPublisherServices() && this.prefManager.accelDownload
+    this.accelDownload = DistributionPolicy.allowPublisherServices() && this.getPrefManager_().accelDownload
     if (this.accelDownload) {
       this.initRelay_()
     }
     // JDK 下载源偏好：读盘 + 注入到 launch 模块级全局（JdkInstaller 下载时读取）
-    this.jdkSource = this.prefManager.jdkSource
+    this.jdkSource = this.getPrefManager_().jdkSource
+    this.jdkChannel = this.getPrefManager_().jdkChannel
+    this.jdkWebEnabled = this.getPrefManager_().jdkWebEnabled
+    this.jdkAutoCheck = this.getPrefManager_().jdkAutoCheck
+    setJdkWebEnabled(this.jdkWebEnabled)
     setJdkDownloadSource(this.jdkSource)
+    RuntimeCatalogRepository.instance(this.context).configure(this.jdkChannel,this.jdkSource,this.jdkWebEnabled)
+      .then((): void => { this.updateJdkReadyState(); this.initRuntimeUpdateCheck_(); })
+      .catch((e: Error): void => { this.jdkCatalogStatus = '目录加载失败：' + e.message; })
     // MC 版本下载源偏好：读盘 + 注入 feature_core 模块级全局（McDownloader 的
     // buildSortedUrls 会读它）。必须在任何下载发起之前注入，否则第一次下载仍按默认走。
-    this.mcSource = this.prefManager.mcSource
+    this.mcSource = this.getPrefManager_().mcSource
     setMcSourcePreference(this.mcSource)
-    this.virtualMemoryMode = this.prefManager.virtualMemoryMode
-    this.gameLanguage = this.prefManager.gameLanguage
-    this.ohosFrameRateCap = this.prefManager.ohosFrameRateCap
-    this.lastPlayedAt = this.prefManager.lastPlayedAt
+    this.virtualMemoryMode = this.getPrefManager_().virtualMemoryMode
+    this.gameLanguage = this.getPrefManager_().gameLanguage
+    this.ohosFrameRateCap = this.getPrefManager_().ohosFrameRateCap
+    this.lastPlayedAt = this.getPrefManager_().lastPlayedAt
 
     // 存储位置：偏好选了外部,但本设备不可用 / 平板权限被回收 → 本会话回落沙箱(留 pref,
     // 重新就绪后自动恢复)。设备差异：平板需 READ_WRITE_DOWNLOAD_DIRECTORY 仍在授权；
     // 手机靠 GameStorage 启动期注入的缓存路径，isExternalAvailable() 已能反映是否就绪。
-    let locPref = parseStorageLocation(this.prefManager.mcStorageLocation)
+    let locPref = parseStorageLocation(this.getPrefManager_().mcStorageLocation)
     let tabletPermMissing = GameStorage.isTabletSilent() && !GameStorage.isDownloadPermissionGranted(this.context)
     if (locPref === StorageLocation.EXTERNAL
         && (!GameStorage.isExternalAvailable() || tabletPermMissing)) {
@@ -988,7 +1446,7 @@ struct Index {
       })
     } else {
       // 手机：DocumentViewPicker DOWNLOAD 模式（无弹窗）学一次公共目录路径，无需权限弹窗 / persist / activate
-      GameStorage.ensurePhoneExternalDir(this.context, this.prefManager).then((dir: string) => {
+      GameStorage.ensurePhoneExternalDir(this.context, this.getPrefManager_()).then((dir: string) => {
         if (dir.length === 0) {
           this.toast_('未获取到下载目录，已保持沙箱存储')
           return
@@ -1032,7 +1490,7 @@ struct Index {
    * 推迟部署并记录原因，绝不把只读失败解释成空闲。完整匹配槽由部署器只读复用。
    * 这不是完整跨进程部署租约：本批只防止已运行的游戏被首页重建覆盖，后续事务另验。
    */
-  private deployRuntimeIfIdle_(): void {
+  private async deployRuntimeIfIdle_(startup: boolean = false): Promise<void> {
     try {
       const state: number = testNapi.desktopGameProcessState(this.context.filesDir, 0)
       if (state !== 0) {
@@ -1040,7 +1498,10 @@ struct Index {
           undefined, LOG_DOMAIN_LAUNCH)
         return
       }
-      new RuntimeDeployer(this.context).deployAll(this.mcRoot())
+      // 只有开屏入口采用异步准备并由 startupJobs 封住输入。存储切换仍在同一
+      // UI 调用内同步完成旧部署契约，不能因 await 引入用户提前启动的窗口。
+      if (startup) await new RuntimeDeployer(this.context).deployAllForStartup(this.mcRoot());
+      else new RuntimeDeployer(this.context).deployAll(this.mcRoot());
     } catch (e) {
       AppLogger.warn(TAG, 'Runtime deployment deferred: process check or deployment failed', e, LOG_DOMAIN_LAUNCH)
     }
@@ -1052,7 +1513,7 @@ struct Index {
     let to = GameStorage.resolveMcDir(this.context, target)
 
     let commit = (): void => {
-      this.prefManager.mcStorageLocation = target
+      this.getPrefManager_().mcStorageLocation = target
       this.storageLocation = target
       // 私有游戏进程仍活跃时推迟部署；不能因切换首页路径改写正在使用的运行时。
       this.deployRuntimeIfIdle_()
@@ -1081,8 +1542,33 @@ struct Index {
     }
   }
 
+  /** 只消费当前设置二级分区的系统返回，不改变首页或其他路由的退出语义。 */
+  onBackPress(): boolean {
+    if (this.currentTab !== 2 || this.settingsSectionBack_ === undefined) return false
+    try { return this.settingsSectionBack_() }
+    catch (error) { AppLogger.warn(TAG, '设置分区返回暂不可用', error, LOG_DOMAIN_UI); return false }
+  }
+
+  /** 只允许一个设置写入在途；失败重新发布已确认副本，复位原生开关的内部状态。 */
+  private async changeImmersiveLight_(next: ImmersiveLightPreferences): Promise<void> {
+    if (this.immersiveLightSaving) return
+    this.immersiveLightSaving = true
+    this.immersiveLightSaveError = ''
+    try {
+      await this.getPrefManager_().saveImmersiveLightPreferences(next)
+      this.immersiveLight = this.getPrefManager_().immersiveLightPreferences
+      publishImmersiveLightPreferences(this.immersiveLight)
+    } catch (error) {
+      this.immersiveLight = copyImmersiveLightPreferences(this.getPrefManager_().immersiveLightPreferences)
+      this.immersiveLightSaveError = '保存失败，请重试：' + formatError(error)
+      AppLogger.warn(TAG, '沉浸光感保存失败', error, LOG_DOMAIN_UI)
+    } finally {
+      this.immersiveLightSaving = false
+    }
+  }
+
   private savePreferences() {
-    this.prefManager.saveAll({
+    this.getPrefManager_().saveAll({
       themeMode: this.themeMode,
       mcVersion: this.mcVersion,
       useNewWindow: this.useNewWindow,
@@ -1094,24 +1580,24 @@ struct Index {
 
   private updateJdkReadyState() {
     let validVersions: string[] = []
-    let versions = this.jdkManager.listVersions()
+    let versions = this.getJdkManager_().listVersions()
     for (let v of versions) validVersions.push(v.version)
-    // 'auto' 是合法的全局选择（按 MC 版本纪元自动路由）；其余必须是已知具体版本，
-    // 否则（prefs 残留脏值）收敛到 'auto'。
+    // 只迁移无效槽位语法。离线/下架/新增版本都不能悄悄覆盖用户保存的选择。
     if (this.selectedJdkVersion !== JDK_AUTO &&
-        validVersions.length > 0 && validVersions.indexOf(this.selectedJdkVersion) < 0) {
+        !isJdkSlotVersion(this.selectedJdkVersion)) {
       AppLogger.warn(TAG, `Force selected JDK ${this.selectedJdkVersion} -> ${JDK_AUTO} (not a known version)`, null, LOG_DOMAIN_LAUNCH)
       this.selectedJdkVersion = JDK_AUTO
       this.savePreferences()
     }
     // jdkReady = 当前 MC 版本【实际生效】的 JDK 是否已安装（单版本覆盖 > 全局 hint > 纪元路由）。
     // 复用 LaunchCoordinator.resolveJdk，与真正启动时的路由一致，避免就绪态与实际不符。
-    let pvJdk = this.prefManager.getVersionOverride(this.mcVersion).jdkVersion
-    let effJdk = this.launchCoordinator.resolveJdk(
+    let pvJdk = this.getPrefManager_().getVersionOverride(this.mcVersion).jdkVersion
+    let effJdk = this.getLaunchCoordinator_().resolveJdk(
       this.mcVersion, this.mcRoot(), pvJdk, this.selectedJdkVersion)
-    this.jdkReady = this.jdkManager.isInstalled(effJdk)
+    this.jdkReady = this.getJdkManager_().isInstalled(effJdk)
     this.effectiveJdkVersion = effJdk
     this.jdkVersions = versions
+    this.jdkHasUpdate = versions.some((version: JdkVersionInfo): boolean => version.updateAvailable && !version.userImported)
   }
 
   /**
@@ -1120,7 +1606,7 @@ struct Index {
    */
   private installedJdkMajors_(): number[] {
     let out: number[] = []
-    for (let v of this.jdkManager.listVersions()) {
+    for (let v of this.getJdkManager_().listVersions()) {
       if (!v.installed) continue
       let n = parseInt(v.version, 10)
       if (!isNaN(n)) out.push(n)
@@ -1128,7 +1614,10 @@ struct Index {
     return out
   }
 
-  private scanVersions() {
+  private async scanVersions(): Promise<void> {
+    const epoch: number = ++this.versionScanEpoch_;
+    this.versionScanPending_ = true;
+    this.storeScanError_ = ''
     // 版本集合可能变化（新装/删除/重命名整合包等）→ 清 loader 解析缓存，避免读到旧结果
     invalidateInstalledLoaderCache()
     let versionsDir = this.mcRoot() + '/versions'
@@ -1136,15 +1625,18 @@ struct Index {
     let orphans: string[] = []
     let mtimes = new Map<string, number>()   // 版本目录名 → mtime（秒），用于"最新下载在上"默认排序
     try {
-      let entries = fs.listFileSync(versionsDir)
+      let entries = await fs.listFile(versionsDir)
       for (let name of entries) {
         if (name === 'download-temp' || name.startsWith('.')) continue
         let dirPath = versionsDir + '/' + name
         try {
-          let dirStat = fs.statSync(dirPath)
+          let dirStat = await fs.stat(dirPath)
           if (!dirStat.isDirectory()) continue
           mtimes.set(name, dirStat.mtime)
-        } catch (e) { continue }
+        } catch (e) {
+          if ((e as BusinessError).code !== 13900002) this.storeScanError_ = (e as Error).message
+          continue
+        }
 
         // 判定规则 (2026-05-05 加强): 一个版本"真已安装" 当且仅当 同时满足:
         //   1. <id>.jar 存在且 > 1 MB
@@ -1155,14 +1647,14 @@ struct Index {
         let jsonPath = dirPath + '/' + name + '.json'
         let jarOk = false
         try {
-          let stat = fs.statSync(jarPath)
+          let stat = await fs.stat(jarPath)
           jarOk = stat.size > 1024 * 1024
         } catch (e) { /* jar missing */ }
 
         let jsonOk = false
         if (jarOk) {
           try {
-            let jsonText = fs.readTextSync(jsonPath)
+            let jsonText = await fs.readText(jsonPath)
             let obj = JSON.parse(jsonText) as Record<string, Object>
             let hasId = obj['id'] !== undefined && obj['id'] !== null
             let hasMainClass = obj['mainClass'] !== undefined && obj['mainClass'] !== null
@@ -1177,14 +1669,225 @@ struct Index {
           orphans.push(name)
         }
       }
-    } catch (e) { /* versions dir doesn't exist yet */ }
+    } catch (e) {
+      if ((e as BusinessError).code !== 13900002) this.storeScanError_ = (e as Error).message
+    }
+    if (!this.startupAlive_ || epoch !== this.versionScanEpoch_ || versionsDir !== this.mcRoot() + '/versions') {
+      if (epoch === this.versionScanEpoch_) this.versionScanPending_ = false;
+      return;
+    }
+    const previousVersion: string = this.mcVersion;
     // 排序：用户拖拽自定义顺序优先；新下载（未在自定义顺序里）按 mtime 倒序排在最上面。
-    this.availableVersions = mergeVersionOrder(versions, mtimes, this.prefManager.versionOrder)
+    this.availableVersions = mergeVersionOrder(versions, mtimes, this.getPrefManager_().versionOrder)
     this.orphanVersionDirs = orphans
     if (this.availableVersions.length > 0 && this.availableVersions.indexOf(this.mcVersion) < 0) {
       this.mcVersion = this.availableVersions[0]
+    } else if (DistributionPolicy.isStore() && this.availableVersions.length === 0 && orphans.length > 0 && !orphans.includes(this.mcVersion)) {
+      this.mcVersion = orphans[0]
     }
+    this.versionScanPending_ = false;
+    this.updateJdkReadyState();
+    if (previousVersion !== this.mcVersion) this.savePreferences();
     this.scanInstalledModsCount()
+    this.refreshStoreManager_()
+  }
+
+  /** 管理态仅消费异步真实核验；代次和源身份绑定，旧响应不能把切换后的版本标为完整。 */
+  private forceStoreSourceRecheck_(): void {
+    if (!DistributionPolicy.isStore()) return
+    // 文件内容变化不一定改变版本ID库存。先撤销旧资格；隐藏页不启动检查，返回时再核验。
+    this.storeCheckSignature_ = ''
+    this.storeReadyVersions_ = []
+    if (!this.launcherWorkVisible_) { this.storeCheckGeneration_++; return }
+    this.refreshStoreManager_(true)
+  }
+
+  /** 文件浏览器及资源面板共用这一真实回调，不额外重扫版本目录或复制修改源文件。 */
+  private onVersionFilesChanged_(): void {
+    this.scanInstalledModsCount()
+    this.forceStoreSourceRecheck_()
+  }
+
+  private selectManagedVersion_(version: string): void {
+    this.mcVersion = version
+    this.savePreferences()
+    this.scanInstalledModsCount()
+    this.forceStoreSourceRecheck_()
+  }
+
+  private changeManagedIsolation_(enabled: boolean): void {
+    this.versionIsolation = enabled
+    this.savePreferences()
+    this.forceStoreSourceRecheck_()
+  }
+
+  /**
+   * 可见首页在所有产品订阅进程内导出通知。内嵌Sheet关闭不会触发onPageShow，
+   * 因此终态及历史add耐久完成后的稳定通知都须重新投影LRU；每个字节的活动进度
+   * 只读取内存任务，不读历史、不盘点源。store额外消费原有管理行动，其余产品不进入源扫描。
+   * 注册幂等，生命周期继续由既有onPageHide/aboutToDisappear解除，不创建第二套监听或轮询。
+   */
+  private observeExportActivities_(): void {
+    if (!this.launcherWorkVisible_ || this.storeExportUnsubscribe_ !== null) return
+    this.storeExportUnsubscribe_ = getGameExportCoordinator().subscribe((): void => {
+      if (!this.launcherWorkVisible_) return
+      const task = getGameExportCoordinator().getTask()
+      if (task !== null && (task.state === 'succeeded' || task.state === 'failed' || task.state === 'cancelled')) {
+        this.refreshRecentActivities_()
+      }
+      if (DistributionPolicy.isStore()) this.refreshStoreManager_()
+    })
+  }
+
+  private refreshStoreManager_(force: boolean = false): void {
+    // 挂载首页共用的轻量订阅后才判断store策略，default仍在下方guard返回，不做源检查。
+    this.observeExportActivities_()
+    if (!DistributionPolicy.isStore() || !this.launcherWorkVisible_) return
+    const root: string = this.mcRoot()
+    const version: string = this.mcVersion
+    const tasks = this.registry.listAll()
+    const task = getGameExportCoordinator().getTask()
+    const exporting: boolean = task !== null && (task.state === 'running' || task.state === 'cancelling')
+    let session = false
+    let unknownSession = false
+    try {
+      const remote: number = testNapi.desktopGameProcessState(this.context.filesDir, 0)
+      session = testNapi.mcIsRunning() || remote === 1
+      unknownSession = remote < 0
+    } catch (_) { unknownSession = true }
+    this.storeHasSession_ = session
+    const busy: boolean = session || unknownSession || tasks.some((view): boolean => !isTerminalState(view.state))
+    if (exporting) {
+      this.storeCheckGeneration_++
+      this.storeCheckSignature_ = ''
+      this.storeManagerAction_ = 'progress'
+      this.storeManagerStatus_ = '导出任务进行中，点击查看进度。'
+      return
+    }
+    if (this.storeScanError_.length > 0) {
+      this.storeCheckGeneration_++
+      this.storeCheckSignature_ = ''
+      this.storeReadyVersions_ = []
+      this.storeManagerAction_ = 'storage'
+      this.storeManagerStatus_ = '无法读取游戏目录：' + this.storeScanError_
+      return
+    }
+    if (busy) {
+      this.storeCheckGeneration_++
+      this.storeCheckSignature_ = ''
+      this.storeReadyVersions_ = []
+      this.storeManagerAction_ = session ? 'session' : unknownSession ? 'check' : 'downloads'
+      this.storeManagerStatus_ = session ? '已有游戏运行；返回游戏退出后重新检查并导出。' : unknownSession ? '暂时无法确认游戏空闲，请稍后重新检查。' : '下载或资源任务尚未结束，请先处理任务。'
+      return
+    }
+    const candidates: string[] = this.availableVersions.concat(this.orphanVersionDirs)
+    const signature: string = root + '\n' + version + '\n' + String(this.versionIsolation) + '\n' + candidates.join('\n')
+      + '\n' + tasks.map((view): string => view.id + ':' + view.state).join('|')
+    if (!force && signature === this.storeCheckSignature_) return
+    this.storeCheckSignature_ = signature
+    const generation: number = ++this.storeCheckGeneration_
+    this.storeReadyVersions_ = []
+    this.storeManagerAction_ = candidates.length > 0 ? 'checking' : 'download'
+    this.storeManagerStatus_ = candidates.length > 0 ? '正在核验游戏文件；无需登录或安装运行时。' : '下载游戏版本后，可管理文件并导出到电脑。'
+    if (candidates.length === 0) return
+    const ordered: string[] = candidates.includes(version) ? [version].concat(candidates.filter((id: string): boolean => id !== version)) : candidates
+    this.checkStoreVersions_(root, version, ordered, generation)
+  }
+
+  private async checkStoreVersions_(root: string, selected: string, candidates: string[], generation: number): Promise<void> {
+    const ready: string[] = []
+    let selectedIssue = ''
+    let selectedMissing = false
+    for (const version of candidates) {
+      if (generation !== this.storeCheckGeneration_) return
+      try {
+        const source = await getGameExportCoordinator().inspectSource(root, version, this.versionIsolation)
+        // 标准包只核源就绪；Windows完整包补依赖和接收端限制留给用户选择后的导出向导。
+        source.request.format = 'modrinth'
+        source.request.launcher = 'hmcl'
+        const preview = await getGameExportCoordinator().checkPlan(source.request, false)
+        const errors = preview.issues.filter((issue): boolean => issue.severity === 'error')
+        if (errors.length === 0) ready.push(version)
+        else if (version === selected) {
+          selectedIssue = errors[0].message
+          selectedMissing = errors.some((issue): boolean => issue.code === 'SOURCE_FILE_INVALID')
+        }
+      } catch (error) {
+        if (version === selected) {
+          selectedIssue = (error as Error).message
+          selectedMissing = (error as BusinessError).code === 13900002
+        }
+      }
+      if (generation !== this.storeCheckGeneration_ || root !== this.mcRoot() || selected !== this.mcVersion) return
+      this.storeReadyVersions_ = ready.slice()
+      this.storeManagerAction_ = storeManagerAction({ checking: true, currentReady: ready.includes(selected),
+        otherReady: ready.length > 0, hasCandidates: true, busy: false, failed: false, exporting: false })
+      if (ready.includes(selected)) {
+        this.storeManagerStatus_ = '版本文件核验通过，可选择完整包或标准整合包。'
+        return
+      }
+      if (ready.length > 0) {
+        this.storeManagerStatus_ = '当前版本尚未就绪，可选择其他已核验版本。'
+        return
+      }
+    }
+    if (generation !== this.storeCheckGeneration_) return
+    this.storeManagerAction_ = storeManagerAction({ checking: false, currentReady: ready.includes(selected),
+      otherReady: ready.length > 0, hasCandidates: true, busy: false, failed: selectedMissing, exporting: false })
+    this.storeManagerStatus_ = ready.includes(selected) ? '版本文件核验通过，可选择完整包或标准整合包。' : ready.length > 0 ? '当前版本尚未就绪，可选择其他已核验版本。' : selectedIssue || '请选择版本并检查必需文件。'
+  }
+
+  private async openStoreExport_(version: string, taskId: string = ''): Promise<void> {
+    try {
+      const task = taskId.length > 0 ? getGameExportCoordinator().getTask() : null
+      await this.getUIContext().getRouter().pushUrl({ url: 'pages/GameExportPage', params: {
+        'mcRoot': task?.request.mcRoot ?? this.mcRoot(), 'versionId': task?.request.versionId ?? version,
+        'versionIsolation': this.versionIsolation, 'taskId': taskId } })
+    } catch (error) { this.safeToast_('无法打开导出：' + (error as Error).message) }
+  }
+
+  private handleStoreManagerAction_(): void {
+    try {
+    if (this.storeManagerAction_ === 'progress') {
+      const task = getGameExportCoordinator().getTask()
+      if (task !== null) this.openStoreExport_(task.request.versionId, task.id)
+    } else if (this.storeManagerAction_ === 'export') this.openStoreExport_(this.mcVersion)
+    else if (this.storeManagerAction_ === 'choose') {
+      const choices: string[] = this.storeReadyVersions_.slice(0, 6)
+      if (choices.length === 0) { this.refreshStoreManager_(true); return }
+      const buttons: [promptAction.Button, promptAction.Button?, promptAction.Button?, promptAction.Button?, promptAction.Button?, promptAction.Button?] = [
+        { text: choices[0], color: this.theme.primary as string } ]
+      for (let index = 1; index < choices.length; index++) buttons.push({ text: choices[index], color: this.theme.primary as string })
+      this.getUIContext().getPromptAction().showActionMenu({ title: '选择可导出的版本',
+        buttons: buttons })
+        .then((result): void => {
+          const version: string = choices[result.index]
+          if (version) { this.mcVersion = version; this.savePreferences(); this.refreshStoreManager_(true) }
+        }).catch((): void => {})
+    } else if (this.storeManagerAction_ === 'session') this.returnExistingGame_()
+    else if (this.storeManagerAction_ === 'downloads') this.showTasksSheet = true
+    else if (this.storeManagerAction_ === 'repair') {
+      const version: string = this.mcVersion
+      this.getUIContext().getPromptAction().showActionMenu({ title: '版本文件需要补全', buttons: [
+        { text: '查看版本与文件', color: this.theme.primary as string }, { text: '补全当前版本文件', color: this.theme.primary as string } ] }).then((result): void => {
+          if (result.index === 1) this.repairVersionFiles(version)
+          else { this.versionManagerInitialStep = 'list'; this.showVersionManager = true }
+        }).catch((): void => {})
+    } else if (this.storeManagerAction_ === 'check') this.refreshStoreManager_(true)
+    else if (this.storeManagerAction_ === 'storage') { this.tabController.changeIndex(2); this.currentTab = 2 }
+    else if (this.storeManagerAction_ === 'download') this.jumpToDownloadSub(0)
+    } catch (error) { this.safeToast_('无法打开管理操作：' + (error as Error).message) }
+  }
+
+  /** 既有Host可重新挂接；不能为了“返回”创建新的Host/JVM，真实新派发仍由服务收口。 */
+  private async returnExistingGame_(): Promise<void> {
+    try {
+      if (getGameSessionHost().isRunning()) {
+        await this.getUIContext().getRouter().pushUrl({ url: 'pages/McGamePage' })
+      } else if (testNapi.desktopGameProcessState(this.context.filesDir, 0) === 1) {
+        await this.context.startAbility({ bundleName: 'com.amcl.launcher', abilityName: 'GameAbility' })
+      } else { this.safeToast_('原游戏会话已结束'); this.refreshStoreManager_(true) }
+    } catch (error) { this.safeToast_('无法返回游戏：' + (error as Error).message) }
   }
 
   /**
@@ -1204,7 +1907,7 @@ struct Index {
     for (let v of this.availableVersions) {
       if (cleaned.indexOf(v) < 0) cleaned.push(v)
     }
-    this.prefManager.versionOrder = cleaned
+    this.getPrefManager_().versionOrder = cleaned
     this.availableVersions = cleaned
   }
 
@@ -1227,9 +1930,7 @@ struct Index {
       return
     }
     let mcDir = this.mcRoot()
-    let dir = this.versionIsolation
-      ? mcDir + '/versions/' + this.mcVersion + '/mods'
-      : mcDir + '/mods'
+    let dir = resolveInstanceGameDir(mcDir, this.mcVersion, this.versionIsolation) + '/mods'
     this.installedModsCount = countFilesWithExtensions(dir, ['.jar', '.jar.disabled'])
     if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, 'INDEX',
       'scanInstalledModsCount ver=%{public}s dir=%{public}s count=%{public}d',
@@ -1249,7 +1950,7 @@ struct Index {
     this.showDeleteConfirm = true
   }
 
-  private executeDeleteVersion() {
+  private async executeDeleteVersion(): Promise<void> {
     let version = this.pendingDeleteVersion
     if (!version) return
     let versionDir = this.mcRoot() + '/versions/' + version
@@ -1265,7 +1966,7 @@ struct Index {
     }
     this.pendingDeleteVersion = ''
     this.showDeleteConfirm = false
-    this.scanVersions()
+    await this.scanVersions()
     this.savePreferences()
   }
 
@@ -1291,6 +1992,13 @@ struct Index {
   // ==================== 业务逻辑 ====================
 
   private launchMC() {
+    if (!this.startupFinished_ || this.versionScanPending_) {
+      this.safeToast_('正在刷新本地版本，请稍候');
+      return;
+    }
+    if (this.storeHasSession_) { this.returnExistingGame_(); return }
+    try { this.pendingRunAdmission_ = GameRunAdmission.capture(this.context) }
+    catch (error) { this.safeToast_((error as Error).message); return }
     // 标记本次会话已启动游戏：之后自动检查更新只刷红点、不再弹提示框（不打扰）。
     this.gameLaunchedThisSession = true
     let mcDir = this.mcRoot()
@@ -1301,8 +2009,8 @@ struct Index {
     // 单版本设置：先解析该版本【实际生效】的启动配置（单版本覆盖 or 沿用全局），
     // 得到生效的 xmx / jdk / customJvmArgs（customJvmArgs 由 McGamePage 按 mcVersion 自行解析）。
     // 启动计划（版本隔离 gameDir + JDK 路由）下沉到 launch HAR 的 LaunchCoordinator（三层架构第四步）。
-    let eff = this.prefManager.resolveLaunch(this.mcVersion)
-    let plan = this.launchCoordinator.resolvePlan({
+    let eff = this.getPrefManager_().resolveLaunch(this.mcVersion)
+    let plan = this.getLaunchCoordinator_().resolvePlan({
       mcVersion: this.mcVersion,
       mcDir: mcDir,
       versionIsolation: this.versionIsolation,
@@ -1313,7 +2021,7 @@ struct Index {
     this.preLaunchGameDir = plan.gameDir
     this.preLaunchJdkVersion = plan.jdkVersion
     // 区间与"选了哪个 JDK"无关（单版本硬覆盖会绕过路由），所以独立取一次。
-    this.preLaunchJdkRange = this.jdkManager.jdkRangeFor(this.mcVersion, mcDir)
+    this.preLaunchJdkRange = this.getJdkManager_().jdkRangeFor(this.mcVersion, mcDir)
     this.preLaunchXmx = plan.xmx
     this.showPreLaunchSheet = true
   }
@@ -1324,10 +2032,10 @@ struct Index {
    * （供 PreLaunchCheckSheet 用新值重跑校验）。
    */
   private switchCurrentVersionJdkToAuto(): string {
-    let o = this.prefManager.getVersionOverride(this.mcVersion)
+    let o = this.getPrefManager_().getVersionOverride(this.mcVersion)
     o.jdkVersion = JDK_AUTO
-    this.prefManager.setVersionOverride(this.mcVersion, o)
-    let newJdk = this.launchCoordinator.resolveJdk(this.mcVersion, this.mcRoot(), JDK_AUTO, this.selectedJdkVersion)
+    this.getPrefManager_().setVersionOverride(this.mcVersion, o)
+    let newJdk = this.getLaunchCoordinator_().resolveJdk(this.mcVersion, this.mcRoot(), JDK_AUTO, this.selectedJdkVersion)
     this.preLaunchJdkVersion = newJdk
     this.updateJdkReadyState()
     AppLogger.info(TAG, `switchCurrentVersionJdkToAuto: ${this.mcVersion} -> ${newJdk}`, LOG_DOMAIN_LAUNCH)
@@ -1348,11 +2056,9 @@ struct Index {
     }
     // 先定 activityId 再造任务：任务要拿它去绑 native 下载日志的归属
     let startedAt = Date.now()
-    this.beginActivity_(ActivityCategory.JDK, 'JDK ' + jdkVersion, startedAt)
-    let task = new JdkInstallTask(jdkVersion, this.jdkManager, startedAt)
+    let task = new JdkInstallTask(jdkVersion, this.getJdkManager_(), startedAt)
     this.registry.enqueue(task).then(() => {
       this.updateJdkReadyState()
-      this.addActivity_(ActivityCategory.JDK, 'JDK ' + jdkVersion, this.terminalStatus_(task.view.state), startedAt, '启动前一同下载', '')
     }).catch((e: Error) => {
       AppLogger.warn(TAG, `inline JDK download failed: ${jdkVersion}`, e, LOG_DOMAIN_LAUNCH)
     })
@@ -1378,6 +2084,21 @@ struct Index {
   }
 
   /**
+   * 仅版本管理宿主增加关闭接缝，其余 Sheet 继续使用统一的尺寸与系统交互。
+   * onWillDismiss 自 API 12 提供，涵盖系统 Back、手势及遮罩；注册后由内容确认
+   * 是否关闭，避免系统先销毁组件，再尝试询问尚未保存的导出选择。
+   */
+  private versionManagerSheetOptions_(): SheetOptions {
+    const options: SheetOptions = this.adaptiveSheetOptions(this.theme.bgCard)
+    options.onWillDismiss = (action: DismissSheetAction): void => {
+      const dismissExport: ((back?: boolean) => void) | undefined = this.versionExportDismiss_
+      if (dismissExport !== undefined) dismissExport(action.reason === DismissReason.PRESS_BACK)
+      else action.dismiss()
+    }
+    return options
+  }
+
+  /**
    * 启动前三项校验全通过后真正启动游戏（导航 / 创建 JVM）。
    *
    * 交互：先收起校验 Sheet（失败时不会走到这里，所以"失败不收回"天然成立），
@@ -1388,20 +2109,39 @@ struct Index {
    * 这样校验失败时不会误记一次"已游玩"（lastPlayedAt 只在真正进游戏时写）。
    */
   private doLaunchAfterChecks() {
+    const admission: string = this.pendingRunAdmission_
+    try { GameRunAdmission.assertToken(this.context, admission) }
+    catch (error) { this.showPreLaunchSheet = false; this.safeToast_((error as Error).message); return }
     // 1) 先收起 Sheet（触发 bindSheet 的收回动画）
     this.showPreLaunchSheet = false
     // 2) 等收回动画播放完再启动。300ms ≈ bindSheet 默认收起时长。
-    setTimeout(() => { this.performLaunch().catch((e: Error) => {
+    setTimeout(() => { this.performLaunch(undefined, admission).catch((e: Error) => {
       AppLogger.error(TAG, 'Launch dispatch failed', e, LOG_DOMAIN_LAUNCH)
       this.getUIContext().getPromptAction().showToast({ message: '启动准备失败：' + e.message })
     }) }, 300)
   }
 
+  /**
+   * 保存派发失败原文并请求owner核验父意图能否撤回。错误保存失败不能继续删除
+   * 快照或消费义务，也不能覆盖原始派发异常；调用方仍向用户报告该次启动失败。
+   */
+  private async retainLaunchDispatchFailure_(activityId: number, intentToken: string, stage: string,
+    error: Error): Promise<boolean> {
+    try {
+      return await SessionRecoveryRuntime.reportLaunchDispatchFailure(this.context, activityId, intentToken, stage, error)
+    } catch (persistenceError) {
+      AppLogger.warn(TAG, 'Launch dispatch evidence persistence deferred; original intent retained', persistenceError, LOG_DOMAIN_LAUNCH)
+      return false
+    }
+  }
+
   /** 真正拉起游戏（新窗口 startAbility 或内嵌 pushUrl McGamePage）。 */
   private desktopPreparing: boolean = false
   private pendingDesktopSnapshot: string = ''
-  private async performLaunch(recovery: GraphicsRecoveryDispatch | undefined = undefined): Promise<void> {
+  private async performLaunch(recovery: GraphicsRecoveryDispatch | undefined = undefined,
+    admission: string = this.pendingRunAdmission_): Promise<void> {
     if (this.desktopPreparing || DesktopLaunchSnapshot.pending(this.context, this.pendingDesktopSnapshot)) return
+    if (getGameSessionHost().isRunning()) { await this.returnExistingGame_(); return }
     // 新的用户启动取消尚未消费的旧恢复请求；恢复自身则携带一次性的明确候选。
     // 无论用户保存了开启还是关闭，只要旧的独立游戏仍活着，就只能聚焦现有会话。
     // 尤其父进程重启并应用关闭值后，不得绕过隔离分支而在启动器里再建第二个 JVM。
@@ -1414,6 +2154,7 @@ struct Index {
         await this.context.startAbility(focusWant)
         return
       }
+      GameRunAdmission.assertToken(this.context, admission)
       // 切回兼容模式也要先接收旧独立会话的布局，不能只在 prepare 独立快照时同步。
       // 活跃草稿/未持久化提交保留原文并阻止本次新启动，避免把“同步尚未完成”当已保存。
       const layouts: GameLayoutImportReport = await GameLayoutJournal.importPending(this.context)
@@ -1432,11 +2173,15 @@ struct Index {
     let now = Date.now()
     // U08：启动活动主键在派发前确定，内嵌页和 desktop 独立进程必须复用同一个值。
     const launchActivityId: number = now
+    // 父意图token仅区分本次派发；游戏进程的runNonce由自己的RUNNING基线发布，不能伪造为同值。
+    const launchIntentToken: string = util.generateRandomUUID().toLowerCase()
     this.lastPlayedAt = now
-    this.prefManager.lastPlayedAt = now
-    this.prefManager.lastPlayedVersion = this.mcVersion
+    this.getPrefManager_().lastPlayedAt = now
+    this.getPrefManager_().lastPlayedVersion = this.mcVersion
     // 私有进程与桌面交互是独立决策。平板验证仍使用真实 tablet 身份和触控输入，
     // 这里只决定启动边界，不通过伪造 desktopWindow 强制改变渲染或窗口样式。
+    GameRunAdmission.assertToken(this.context, admission)
+    GameRunAdmission.installTicket(this.context, admission)
     if (ProductInputProfile.selection().isolatedGameProcess) {
       let wantParams: Record<string, string | number> = {
         'parentPid': testNapi.desktopProcessId(),
@@ -1453,8 +2198,10 @@ struct Index {
         abilityName: 'GameAbility',
         parameters: wantParams
       };
-      // Desktop launch failures remain visible; never silently run the JVM in the launcher process.
+      // 独立游戏派发失败继续向用户报告，不在启动器进程静默回退创建JVM。
       this.desktopPreparing = true
+      let registrationAttempted: boolean = false
+      let intentTracked: boolean = false
       try {
         const state: number = testNapi.desktopGameProcessState(this.context.filesDir, 0)
         if (state < 0) throw new Error('无法核验游戏进程状态')
@@ -1487,29 +2234,51 @@ struct Index {
           }
           wantParams['snapshotId'] = snapshot.id
           wantParams['accountSnapshot'] = snapshot.account
+          // 快照和可选恢复票据准备完毕才建立父退出义务；准备失败从未派发child，不留缺基线待办。
+          // 义务仍必须在实际dispatch前耐久完成，游戏极早退出也能按本局ID找到journal。
+          registrationAttempted = true
+          await SessionRecoveryRuntime.coordinator(this.context).trackLaunch(launchActivityId, launchIntentToken)
+          intentTracked = true
         }
+        GameRunAdmission.assertToken(this.context, admission)
         if (state === 0 && !ProductInputProfile.selection().desktopWindow) {
           // 平板新建独立游戏登记终局回调，注册后立即结束派发；不能 await 到整局游戏结束。
           // 既有游戏仅聚焦、电脑窗口仍保留原来的普通 startAbility 协议。
-          this.startTabletGameForResult_(want, launchActivityId, this.pendingDesktopSnapshot)
+          this.startTabletGameForResult_(want, launchActivityId, this.pendingDesktopSnapshot, launchIntentToken)
         } else {
           await this.context.startAbility(want)
         }
       } catch (e) {
-        DesktopLaunchSnapshot.discard(this.context, this.pendingDesktopSnapshot)
-        this.pendingDesktopSnapshot = ''
+        // 系统拒绝派发不证明child没有启动；只有owner确认尚无基线/生产者且空闲才撤回父意图。
+        // 不确定时保留快照，迟到child仍能消费自己的启动输入并建立RUNNING基线。
+        // 登记await失败可能已发布意图或队列字节，独立错误原文必须覆盖该耐久性未知窗口。
+        const withdrawn: boolean = registrationAttempted && await this.retainLaunchDispatchFailure_(launchActivityId,
+          launchIntentToken, intentTracked ? 'ability.dispatch' : 'ability.intent', e as Error)
+        if (!intentTracked || withdrawn) {
+          // 尚未走到dispatch的快照从未交付child，可以清理；这不代表登记义务已被消费。
+          DesktopLaunchSnapshot.discard(this.context, this.pendingDesktopSnapshot)
+          this.pendingDesktopSnapshot = ''
+        }
         AppLogger.error(TAG, 'startAbility failed', e, LOG_DOMAIN_LAUNCH)
         throw e as Error
       } finally {
         this.desktopPreparing = false
       }
     } else {
+      let registrationAttempted: boolean = false
+      let intentTracked: boolean = false
       try {
+        registrationAttempted = true
+        await SessionRecoveryRuntime.coordinator(this.context).trackLaunch(launchActivityId, launchIntentToken)
+        intentTracked = true
         // 键必须写成引号字符串：读侧 McGamePage 用 params?.['filesDir'] 取值，而标识符键
         // 会被属性名混淆改名、字符串下标不会 —— 两者口径不一致时 release 下 6 个参数
         // 全变 undefined（debug 恒正常）。上面 startAbility 那支的 wantParams 同理，
         // 它一直是引号键，本支此前是标识符键，是这条链路上唯一的例外。
-        this.getUIContext().getRouter().pushUrl({
+        // Promise兑现才表示本次路由派发成功；异步拒绝与同步throw走相同原件保留入口。
+        GameRunAdmission.assertToken(this.context, admission)
+        GameRunAdmission.installTicket(this.context, admission)
+        await this.getUIContext().getRouter().pushUrl({
           url: 'pages/McGamePage',
           params: {
             'filesDir': this.context.filesDir,
@@ -1522,6 +2291,8 @@ struct Index {
           }
         })
       } catch (e) {
+        if (registrationAttempted) await this.retainLaunchDispatchFailure_(launchActivityId, launchIntentToken,
+          intentTracked ? 'router.dispatch' : 'router.intent', e as Error)
         AppLogger.error(TAG, 'pushUrl McGamePage failed', e, LOG_DOMAIN_LAUNCH)
         throw e as Error
       }
@@ -1533,35 +2304,43 @@ struct Index {
    * 退出码；只记录该结果，并在游戏锁明确空闲后请求父 EntryAbility 前台恢复。
    * 真正游戏结局仍由原生 journal 和会话证据裁决。旧回调遇到新游戏持锁时不抢前台。
    */
-  private startTabletGameForResult_(want: Want, activityId: number, snapshotId: string): void {
+  private startTabletGameForResult_(want: Want, activityId: number, snapshotId: string, intentToken: string): void {
     this.context.startAbilityForResult(want, (error: BusinessError, result: common.AbilityResult): void => {
       const errorCode: number = error ? error.code : 0
       const resultCode: string = result && typeof result.resultCode === 'number'
         ? result.resultCode.toString() : 'absent'
       AppLogger.info(TAG, `AMCL_TABLET_ABILITY_RESULT activityId=${activityId}`
         + ` errorCode=${errorCode} abilityResultCode=${resultCode}`, LOG_DOMAIN_LAUNCH)
-      if (errorCode !== 0) {
-        DesktopLaunchSnapshot.discard(this.context, snapshotId)
-        if (this.pendingDesktopSnapshot === snapshotId) this.pendingDesktopSnapshot = ''
-        AppStorage.setOrCreate<string>('desktopLaunchError', `游戏窗口返回错误（${errorCode}），请查看本局日志。`)
-      }
-      try {
-        if (testNapi.desktopGameProcessState(this.context.filesDir, 0) !== 0) {
-          AppLogger.info(TAG, 'Tablet return deferred: game process is active or unconfirmed', LOG_DOMAIN_LAUNCH)
-          return
-        }
-        const returnParameters: Record<string, number> = { 'gameExitActivityId': activityId }
-        const returnWant: Want = { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility',
-          parameters: returnParameters }
-        // onNewWant 与 onForeground 都复用 Entry 的退出恢复入口；这里只请求 UI，不写历史终态。
-        this.context.startAbility(returnWant).then((): void => {
-          AppLogger.info(TAG, `AMCL_TABLET_RETURN_REQUESTED activityId=${activityId}`, LOG_DOMAIN_LAUNCH)
-        }).catch((failure: Error) => {
-          AppLogger.warn(TAG, 'Tablet return request failed; exit journal retained', failure, LOG_DOMAIN_LAUNCH)
+      // callback返回错误也可能迟于child开始。先保留原文并由owner核验撤回，不能先删启动快照。
+      const report: Promise<void> = errorCode === 0 ? Promise.resolve()
+        : this.retainLaunchDispatchFailure_(activityId, intentToken, 'ability.result', error).then((withdrawn: boolean): void => {
+          if (withdrawn) {
+            DesktopLaunchSnapshot.discard(this.context, snapshotId)
+            if (this.pendingDesktopSnapshot === snapshotId) this.pendingDesktopSnapshot = ''
+          }
+          AppStorage.setOrCreate<string>('desktopLaunchError', `游戏窗口返回错误（${errorCode}），请查看本局日志。`)
         })
-      } catch (failure) {
-        AppLogger.warn(TAG, 'Tablet return control unavailable; exit journal retained', failure, LOG_DOMAIN_LAUNCH)
-      }
+      report.then((): void => {
+        try {
+          if (testNapi.desktopGameProcessState(this.context.filesDir, 0) !== 0) {
+            AppLogger.info(TAG, 'Tablet return deferred: game process is active or unconfirmed', LOG_DOMAIN_LAUNCH)
+            return
+          }
+          const returnParameters: Record<string, number> = { 'gameExitActivityId': activityId }
+          const returnWant: Want = { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility',
+            parameters: returnParameters }
+          // onNewWant 与 onForeground 都复用 Entry 的退出恢复入口；这里只请求 UI，不写历史终态。
+          this.context.startAbility(returnWant).then((): void => {
+            AppLogger.info(TAG, `AMCL_TABLET_RETURN_REQUESTED activityId=${activityId}`, LOG_DOMAIN_LAUNCH)
+          }).catch((failure: Error) => {
+            AppLogger.warn(TAG, 'Tablet return request failed; exit journal retained', failure, LOG_DOMAIN_LAUNCH)
+          })
+        } catch (failure) {
+          AppLogger.warn(TAG, 'Tablet return control unavailable; exit journal retained', failure, LOG_DOMAIN_LAUNCH)
+        }
+      }).catch((failure: Error): void => {
+        AppLogger.warn(TAG, 'Tablet result evidence retained; return control deferred', failure, LOG_DOMAIN_LAUNCH)
+      })
     })
   }
 
@@ -1573,7 +2352,7 @@ struct Index {
     this.tabletProcessMessage = ''
     this.tabletIndependentGameProcess = enabled
     try {
-      await this.prefManager.saveTabletIndependentGameProcess(enabled)
+      await this.getPrefManager_().saveTabletIndependentGameProcess(enabled)
       this.tabletProcessMessage = '已保存。修改仅在重启启动器后生效。'
     } catch (error) {
       this.tabletIndependentGameProcess = previous
@@ -1684,7 +2463,8 @@ struct Index {
   private refreshRecentActivities_(): void {
     let store = getDownloadHistoryStore()
     store.waitReady().then(() => {
-      this.recentActivities = store.list().slice(0, 5)
+      // 恢复owner已耐久upsert最新结局；首页小卡仅取LRU投影，不在显示回调同步合并全部账本。
+      this.recentActivities = store.listStored().slice(0, 5)
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'refreshRecentActivities failed', e, LOG_DOMAIN_DOWNLOAD)
     })
@@ -1719,7 +2499,20 @@ struct Index {
       }
       try { meta.appFilesDir = this.context.getApplicationContext().filesDir }
       catch (e) { /* 旧宿主没有应用级 filesDir 时保持空 */ }
-      ledgerBegin(this.context.filesDir, startedAt, meta)
+      // registry观察者返回后producer就可能写第一行；新ID沿用有界同步scope注册顺序，
+      // 不将开账变为fire-and-forget异步。只有已有scope的同ID元信息更新才可排队。
+      let job: Promise<void>
+      try {
+        if (!ledgerBegin(this.context.filesDir, startedAt, meta)) throw new Error('活动账本尚未耐久建立，原任务事实保留')
+        job = Promise.resolve()
+      } catch (error) {
+        if (ledgerManifest(this.context.filesDir, startedAt) === null) throw error as Error
+        job = ledgerBeginAsync(this.context.filesDir, startedAt, meta).then((began: boolean): void => {
+          if (!began) throw new Error('已有活动元信息更新尚未完成，保留原scope和任务事实')
+        })
+      }
+      this.activityBeginJobs_.set(startedAt, job)
+      job.catch((error: Error): void => { AppLogger.warn(TAG, '活动异步开账失败，终态将保留重试', error, LOG_DOMAIN_UI) })
     } catch (e) {
       // 账本开失败不能影响活动本身，全局日志里仍有内容
       AppLogger.warn(TAG, 'beginActivity_ failed', e, LOG_DOMAIN_UI)
@@ -1735,26 +2528,35 @@ struct Index {
     return LedgerState.SUCCESS
   }
 
-  /** 活动结束：封账（关 native scope + 补齐 manifest + 淘汰）。 */
-  private endActivity_(startedAt: number, status: string, summary: string,
-    errorKind: string = ''): void {
+  /** 活动结束等待本局开账和真实async scope关闭；全局维护由owner合并，不在这里逐局淘汰。 */
+  private async endActivity_(startedAt: number, status: string, summary: string,
+    errorKind: string = '', fallbackMeta: LedgerBeginMeta | undefined = undefined): Promise<void> {
     try {
       let outcome: LedgerOutcome = {
         state: this.ledgerStateOf_(status),
         source: 'task.terminalState',
         summary: summary,
+        endedAt: Date.now(),
       }
       if (errorKind.length > 0) outcome.errorKind = errorKind
-      ledgerEnd(this.context.filesDir, startedAt, outcome)
+      const begin = this.activityBeginJobs_.get(startedAt)
+      if (begin !== undefined) await begin
+      else if (await ledgerManifestAsync(this.context.filesDir, startedAt) === null && fallbackMeta !== undefined) {
+        if (!await ledgerBeginAsync(this.context.filesDir, startedAt, fallbackMeta)) throw new Error('活动账本建立失败')
+      }
+      await ledgerEndAsync(this.context.filesDir, startedAt, outcome)
+      this.activityBeginJobs_.delete(startedAt)
     } catch (e) {
       AppLogger.warn(TAG, 'endActivity_ failed', e, LOG_DOMAIN_UI)
+      throw e as Error
     }
   }
 
   private addActivity_(category: string, title: string, status: string,
     startedAt: number, subtitle: string, errorMessage: string): void {
     // 活动记录与账本同一主键、同一时刻封账 —— 保证「有记录就有账本入口」
-    this.endActivity_(startedAt, status, errorMessage.length > 0 ? errorMessage : subtitle)
+    const commit = this.endActivity_(startedAt, status, errorMessage.length > 0 ? errorMessage : subtitle,
+      '', { category: category, title: title })
     let nowMs = Date.now()
     let rec: ActivityRecord = {
       versionName: title,
@@ -1771,16 +2573,17 @@ struct Index {
       subtitle: subtitle,
     }
     if (errorMessage.length > 0) rec.errorMessage = errorMessage
-    getDownloadHistoryStore().add(rec).then(() => {
+    commit.then((): Promise<void> => getDownloadHistoryStore().add(rec)).then(() => {
       this.refreshRecentActivities_()
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'activity record add failed', e, LOG_DOMAIN_DOWNLOAD)
     })
   }
 
-  /** enqueue 成功 resolve 时按终态区分 success / aborted。 */
+  /** 队列Promise收口不代表业务成功；ERROR/未知态保守记失败，避免修复/JDK错误冒充成功。 */
   private terminalStatus_(state: string): string {
-    return state === UnifiedTaskState.ABORTED ? ActivityStatus.ABORTED : ActivityStatus.SUCCESS
+    if (state === UnifiedTaskState.ABORTED) return ActivityStatus.ABORTED
+    return state === UnifiedTaskState.DONE ? ActivityStatus.SUCCESS : ActivityStatus.FAILED
   }
 
   private repairVersionFiles(ver: string, inSheet: boolean = false) {
@@ -1789,29 +2592,17 @@ struct Index {
     let fg = LaunchCoordinator.parseForgeVersionId(ver)
     if (fg !== null && LaunchCoordinator.needsForgeDeepRepair(mcDir, ver, fg)) {
       let ftask = new ForgeRepairTask(ver, fg.game, fg.loader, mcDir, this.context.filesDir)
-      let repairStartedAt = Date.now()
-      this.beginActivity_(ActivityCategory.REPAIR, ver, repairStartedAt, ver)
       this.registry.enqueue(ftask)
-        .then(() => { this.addActivity_(ActivityCategory.REPAIR, ver, this.terminalStatus_(ftask.view.state), repairStartedAt, '版本修复(Forge)', '') })
         .catch((e: Error) => {
           AppLogger.warn(TAG, 'enqueue forge repair rejected', e, LOG_DOMAIN_DOWNLOAD)
           this.statusMsg = '修复启动失败: ' + e.message
-          if (e.message.indexOf('已在进行中') < 0) {
-            this.addActivity_(ActivityCategory.REPAIR, ver, ActivityStatus.FAILED, repairStartedAt, '版本修复(Forge)', e.message)
-          }
         })
     } else {
       let task = new RepairTask(ver, mcDir)
-      let repairStartedAt = Date.now()
-      this.beginActivity_(ActivityCategory.REPAIR, ver, repairStartedAt, ver)
       this.registry.enqueue(task)
-        .then(() => { this.addActivity_(ActivityCategory.REPAIR, ver, this.terminalStatus_(task.view.state), repairStartedAt, '版本修复', '') })
         .catch((e: Error) => {
           AppLogger.warn(TAG, 'enqueue repair rejected', e, LOG_DOMAIN_DOWNLOAD)
           this.statusMsg = '修复启动失败: ' + e.message
-          if (e.message.indexOf('已在进行中') < 0) {
-            this.addActivity_(ActivityCategory.REPAIR, ver, ActivityStatus.FAILED, repairStartedAt, '版本修复', e.message)
-          }
         })
     }
     // inSheet=true：留在启动前校验 Sheet 内镜像进度，不跳转下载页、不关弹层。
@@ -1824,23 +2615,33 @@ struct Index {
   }
 
   /**
-   * 检查更新：拉 update.json 比对 versionCode。toast 提示"检查中"，结果分三路：
+   * 检查更新：按所选通道比对安装编号与发行名。toast提示检查中，结果分三路：
    * 失败 → toast；已是最新 → toast；有新版 → 弹窗（版本 + 更新日志 + 前往下载/稍后）。
    */
   private async checkForUpdate() {
+    if (DistributionPolicy.isStore()) return
+    // 发请求前固定来源；TestWant 的 finally clear 或重新 configure 不能改写迟到响应的身份。
+    const source = SideloadUpdateTestSession.captureSource()
+    const channel = this.getPrefManager_().appUpdateChannel
     let pa = this.getUIContext().getPromptAction()
     try { pa.showToast({ message: '正在检查更新…', duration: 1500 }) } catch (e) { /* */ }
-    let res: UpdateCheckResult = await UpdateChecker.checkForUpdate()
+    let res: UpdateCheckResult = await UpdateChecker.checkForUpdate(source.urls, ProductBuildProfile.product,channel)
+    // 过期测试检查不刷新正式红点/时间戳，也不进入弹窗队列，更不能按 GitHub 候选继续。
+    if (channel !== this.getPrefManager_().appUpdateChannel || !SideloadUpdateTestSession.isCurrent(source)) {
+      AppLogger.info(TAG, '丢弃已结束测试会话的迟到更新检查', LOG_DOMAIN_UI)
+      return
+    }
+    SideloadUpdateTestSession.validateResult(res, source)
     this.applyUpdateResult(res)   // 同步红点 + 持久化（节流时间戳 + latestSeen）
     if (!res.ok) {
       try { pa.showToast({ message: '检查更新失败：' + res.error, duration: 2500 }) } catch (e) { /* */ }
       return
     }
     if (!res.hasUpdate) {
-      try { pa.showToast({ message: '已是最新版本', duration: 1800 }) } catch (e) { /* */ }
+      try { pa.showToast({ message: res.error || '已是最新版本', duration: 1800 }) } catch (e) { /* */ }
       return
     }
-    this.showUpdateDialog(res.manifest!)
+    this.showUpdateDialog(res.manifest!, true, source)
   }
 
   /**
@@ -1854,27 +2655,65 @@ struct Index {
    * 「稍后」记录延后时间并保留红点；24 小时内冷启动不再联网/弹框，期满后再提示。
    * 弹窗构建失败（极端情况）时退化为直接打开下载页，不能把用户卡在"什么都没发生"。
    */
-  private showUpdateDialog(m: UpdateManifest): void {
+  private showUpdateDialog(m: UpdateManifest, manual: boolean = true,
+    source: SideloadUpdateCheckSource = SideloadUpdateTestSession.productionSource()): void {
+    if (!this.startupFinished_ || this.showMcErrorSheet || this.recoveringSessions_ || this.recoveryPresentationDeferred_) {
+      this.pendingAppUpdate_ = SideloadUpdatePromptPolicy.queue(this.pendingAppUpdate_, { manifest: m, manual: manual, source: source });
+      return;
+    }
+
+    if(!source.testSource && (m.updateChannel ?? 'stable')!==this.getPrefManager_().appUpdateChannel) return
+    // 首次展示和出队重入共用同一来源判据；过期测试清单直接丢弃，不改标识或降级安装参数。
+    const candidate = SideloadUpdatePromptPolicy.candidate(m, source, manual)
+    if (candidate === null) return
+    // 后续 builder 和回调只使用候选拥有的深复制 DTO，检查调用方不能反向修改提示身份。
+    m = candidate.manifest; source = candidate.source
+    // 迟到自动结果和其他页面手动controller不能占第二席；仅可见的合格宿主展示。
+    if (AppStorage.get<boolean>('amclHostPageVisible') !== true || this.showPrivacy || !UpdatePromptPresenter.claim(this.updatePresenterOwner)) {
+      this.pendingAppUpdate_ = SideloadUpdatePromptPolicy.queue(this.pendingAppUpdate_, candidate)
+      UpdatePromptPresenter.defer(this.updatePresenterOwner, (): void => { this.drainUpdateDialogs_(); }); return;
+    }
+    if (this.updateDialogCtrl_ !== null) {
+      this.pendingAppUpdate_ = SideloadUpdatePromptPolicy.queue(this.pendingAppUpdate_, candidate); return;
+    }
     try {
+      // 参数只在合法展示时生成一次。ArkUI builder 后续重建仍使用这份固定值，
+      // 不能因为全局测试配置已 clear 而让一个已展示面板突然改走正式资产解析。
+      const selfUpdateParams = ProductBuildProfile.storeChannel ? undefined : SideloadUpdateTestSession.parameters(m, source)
+      const sourceLabel = source.testSource ? '临时测试源' : 'GitHub 发布'
       // 正在展示的新提示已经消费旧的延后状态；若用户再次点「稍后」，回调会写入新时间。
-      this.prefManager.updatePromptDeferredAt = 0
+      // 延后由成功检查时的目标身份变化自动清理。
       let ctrl: CustomDialogController | null = null
+      // 同一弹窗进入连续更新后，遮罩/返回键不能越过内容层的取消与安装状态保护。
+      let allowDismiss: () => boolean = (): boolean => true
       ctrl = new CustomDialogController({
         builder: UpdateDialog({
           theme: this.theme,
           newVersion: m.versionName.length > 0 ? m.versionName : m.tag,
-          currentVersion: APP_VERSION,
+          currentVersion: UpdateChecker.currentVersionName() || APP_VERSION,
+          title: UpdateChecker.isStableReturn(m) ? '返回正式版' : '',
           releaseDate: m.date,
           sizeLabel: m.sizeBytes > 0 ? formatBytes(m.sizeBytes) : '',
           mandatory: m.mandatory,
           entries: UpdateChecker.displayEntries(m),
           showChangelogEntry: true,
-          onDownload: () => {
+          actionLabel: UpdateChecker.isStableReturn(m) ? '返回此正式版' : '立即更新',
+          selfUpdateParams: selfUpdateParams,
+          onDismissGuardReady: (guard: () => boolean): void => { allowDismiss = guard; },
+          onExitGuardReady: (exit: () => boolean): void => { this.exitPresentedUpdate = exit; },
+          sourceLabel: sourceLabel,
+          showManualDownload: !ProductBuildProfile.storeChannel,
+          onManualDownload: (): void => {
             this.closeUpdateDialog_()
             this.openExternalUrl(m.url)
           },
+          onDownload: () => {
+            this.closeUpdateDialog_()
+            // 非侧载用途保留原下载出口；侧载立即更新已由弹窗内部连续推进。
+            this.openExternalUrl(m.url)
+          },
           onLater: () => {
-            this.prefManager.updatePromptDeferredAt = Date.now()
+            this.getPrefManager_().deferAppUpdate(ProductBuildProfile.product,m.updateChannel ?? 'stable',UpdateChecker.targetKey(m,ProductBuildProfile.product))
             // updateDot/latestSeenVersionCode 均不清除，所以下次启动红点仍在。
             this.closeUpdateDialog_()
           },
@@ -1884,22 +2723,203 @@ struct Index {
           },
         }),
         autoCancel: !m.mandatory,
+        onWillDismiss: (action: DismissDialogAction): void => { if (allowDismiss()) action.dismiss(); },
+        cancel: (): void => {
+          this.getPrefManager_().deferAppUpdate(ProductBuildProfile.product,m.updateChannel ?? 'stable',UpdateChecker.targetKey(m,ProductBuildProfile.product))
+          this.updateDialogCtrl_ = null
+          UpdatePromptPresenter.release(this.updatePresenterOwner)
+          this.drainUpdateDialogs_()
+        },
         customStyle: true,
         alignment: DialogAlignment.Center,
       })
       this.updateDialogCtrl_ = ctrl
       ctrl.open()
     } catch (e) {
+      this.updateDialogCtrl_ = null; UpdatePromptPresenter.release(this.updatePresenterOwner)
       AppLogger.warn(TAG, 'UpdateDialog open failed, fallback to browser', e, LOG_DOMAIN_UI)
-      this.openExternalUrl(m.url)
+      // 打开失败时仍核来源有效性；过期测试候选连浏览器回退也不再自动触发。
+      if (SideloadUpdateTestSession.matchesManifest(m, source)) this.openExternalUrl(m.url)
     }
   }
 
   /** UpdateDialog 不拥有 controller；关闭统一由创建它的父页面执行。 */
+  /** 恢复入口独立于新清单；已安装latest但系统执行权未知仍能进入真实核实。 */
+  private showUpdateRecovery_(): void {
+    if (!this.startupFinished_ || this.showMcErrorSheet || this.recoveringSessions_ || this.recoveryPresentationDeferred_) return;
+    if (ProductBuildProfile.storeChannel || this.recoveryPromptShown || this.updateDialogCtrl_ !== null || this.showPrivacy ||
+      AppStorage.get<boolean>('amclHostPageVisible') !== true) return
+    const service = SideloadUpdateService.get(this.context)
+    if (!service.needsAttention() || !UpdatePromptPresenter.claim(this.updatePresenterOwner)) return
+    this.recoveryPromptShown = true
+    let allowDismiss: () => boolean = (): boolean => true
+    try {
+    this.updateDialogCtrl_ = new CustomDialogController({
+      builder: UpdateDialog({ theme: this.theme, title: '核实上次更新', actionLabel: '查看更新状态',
+        newVersion: service.state()?.asset.versionName ?? '', currentVersion: APP_VERSION, showChangelogEntry: false,
+        sourceLabel: '上次更新', emptyNotesLabel: '上次安装仍有待核实状态。查看更新状态可以安全核实执行权，不会重复安装。',
+        selfUpdateParams: { autoStart: false }, onDismissGuardReady: (guard: () => boolean): void => { allowDismiss = guard; },
+          onExitGuardReady: (exit: () => boolean): void => { this.exitPresentedUpdate = exit; },
+        onLater: (): void => { this.closeUpdateDialog_(); } }),
+      autoCancel: true, onWillDismiss: (action: DismissDialogAction): void => { if (allowDismiss()) action.dismiss(); },
+      cancel: (): void => { this.updateDialogCtrl_ = null; UpdatePromptPresenter.release(this.updatePresenterOwner); },
+      customStyle: true, alignment: DialogAlignment.Center
+    })
+    this.updateDialogCtrl_.open()
+    } catch (error) {
+      this.updateDialogCtrl_ = null; UpdatePromptPresenter.release(this.updatePresenterOwner); this.recoveryPromptShown = false
+      AppLogger.warn(TAG, '更新恢复提示暂无法显示，可从关于页打开', error, LOG_DOMAIN_UI)
+    }
+  }
+
+  /** 路由离开与系统后台/helper往返区分，只有本实例仍持席位才退出自己的更新。 */
+  private exitUpdateForRoute_(): void {
+    if (this.updateDialogCtrl_ === null || !UpdatePromptPresenter.owns(this.updatePresenterOwner)) return
+    try {
+      const current = this.getUIContext().getRouter().getState()
+      if (current.name !== 'Index' && current.name !== 'pages/Index') { this.exitPresentedUpdate(); this.closeUpdateDialog_(); }
+    } catch (_) { /* 路由尚未更新时不把后台误判退出；真正销毁仍执行显式出口。 */ }
+  }
+
   private closeUpdateDialog_(): void {
     let ctrl: CustomDialogController | null = this.updateDialogCtrl_
     this.updateDialogCtrl_ = null
     if (ctrl !== null) ctrl.close()
+    UpdatePromptPresenter.release(this.updatePresenterOwner)
+    this.resumeRecoveryPresentation_();
+    this.onOpenErrorSheetReq();
+    setTimeout((): void => { this.drainUpdateDialogs_(); }, 150)
+  }
+
+  /** 两类更新共用一个面板席位；自动提示只在启动器可见且本会话未开过游戏时排队。 */
+  private drainUpdateDialogs_(): void {
+    if (!this.startupFinished_ || this.showMcErrorSheet || this.recoveringSessions_ || this.recoveryPresentationDeferred_) return;
+    if (this.updateDialogCtrl_ !== null || this.showPrivacy ||
+      AppStorage.get<boolean>('amclHostPageVisible') !== true) return
+    if (this.pendingAppUpdate_ !== null) {
+      // 延迟展示前必须重新检查原测试代次。失效候选被消费并丢弃，让后续运行时提示正常排队。
+      const candidate = SideloadUpdatePromptPolicy.select(this.pendingAppUpdate_, this.gameLaunchedThisSession)
+      this.pendingAppUpdate_ = null
+      if (candidate !== null && (candidate.source.testSource || (candidate.manifest.updateChannel ?? 'stable')===this.getPrefManager_().appUpdateChannel)) {
+        this.showUpdateDialog(candidate.manifest, candidate.manual, candidate.source); return;
+      }
+    }
+    if (this.pendingRuntimePrompt_) {
+      const manual = this.pendingRuntimePromptManual_;
+      this.pendingRuntimePrompt_ = false; this.pendingRuntimePromptManual_ = false;
+      this.showRuntimeUpdateDialog_(manual);
+    }
+  }
+
+  /** 运行时自动检查独立于 App/store 更新策略，只读取自己的成功时间与用户开关。 */
+  private initRuntimeUpdateCheck_(): void {
+    if (DistributionPolicy.isStore() && !GameRunAdmission.isAllowed()) return
+    if (this.runtimeAutoCheckStarted_ || this.showPrivacy || !this.jdkAutoCheck) return
+    this.runtimeAutoCheckStarted_ = true
+    if (runtimeCheckDue(Date.now(),this.getPrefManager_().jdkLastCheck)) this.checkRuntimeUpdates_(false)
+    else if (this.jdkHasUpdate) { this.pendingRuntimePrompt_ = true; this.drainUpdateDialogs_(); }
+  }
+
+  private async checkRuntimeUpdates_(manual: boolean): Promise<void> {
+    // 检查中切换通道/手动重查不能丢弃请求。旧请求结束后只补一次最新偏好的检查。
+    if (this.jdkChecking) { this.pendingRuntimeCheck_ = this.pendingRuntimeCheck_ || manual; return; }
+    const channel = this.jdkChannel; const source = this.jdkSource; const web = this.jdkWebEnabled;
+    this.jdkChecking = true; this.jdkCatalogStatus = '正在检查 JDK 更新…'
+    try {
+      const repository = RuntimeCatalogRepository.instance(this.context)
+      await repository.configure(channel,source,web)
+      const result: RuntimeRefreshResult = await repository.refresh()
+      if (channel !== this.jdkChannel || source !== this.jdkSource || web !== this.jdkWebEnabled) return
+      this.updateJdkReadyState()
+      if (!result.ok) { this.jdkCatalogStatus = '检查未完成：' + result.error + '；保留现有运行时'; return; }
+      this.getPrefManager_().jdkLastCheck = Date.now()
+      this.jdkCatalogStatus = this.jdkHasUpdate ? '有 JDK 更新可用' : '当前通道的已装 JDK 暂无更新，版本列表已刷新'
+      if (this.jdkHasUpdate) {
+        if (manual) this.showRuntimeUpdateDialog_(true)
+        else { this.pendingRuntimePrompt_ = true; this.drainUpdateDialogs_(); }
+      }
+    } catch (e) { this.jdkCatalogStatus = '检查失败：' + (e as Error).message; }
+    finally {
+      this.jdkChecking = false;
+      if (this.pendingRuntimeCheck_) {
+        this.pendingRuntimeCheck_ = false;
+        setTimeout((): void => { this.checkRuntimeUpdates_(true); },0);
+      }
+    }
+  }
+
+  /** 复用 UpdateDialog 的说明、滚动和稍后按钮；选中的 JDK 进入既有统一下载任务。 */
+  private showRuntimeUpdateDialog_(manual: boolean): void {
+    if (!this.startupFinished_ || this.showMcErrorSheet || this.recoveringSessions_ || this.recoveryPresentationDeferred_) {
+      this.pendingRuntimePrompt_ = true;
+      this.pendingRuntimePromptManual_ = this.pendingRuntimePromptManual_ || manual;
+      return;
+    }
+    // 已有面板继续持有自己的席位；本次手动意图仅排队，不能提前释放或创建第二个面板。
+    if (this.updateDialogCtrl_ !== null) {
+      this.pendingRuntimePrompt_ = true; this.pendingRuntimePromptManual_ = this.pendingRuntimePromptManual_ || manual; return;
+    }
+    // 自动提示在开过游戏后直接消费。后台或隐私页期间仍保留手动意图，等宿主重新可见再展示。
+    // 这些准入检查必须先于 claim，否则一次不展示的检查就会占住 App/关于页共用的席位。
+    if (!manual && this.gameLaunchedThisSession) return
+    if (this.showPrivacy || AppStorage.get<boolean>('amclHostPageVisible') !== true) {
+      this.pendingRuntimePrompt_ = true; this.pendingRuntimePromptManual_ = this.pendingRuntimePromptManual_ || manual;
+      UpdatePromptPresenter.defer(this.updatePresenterOwner, (): void => { this.drainUpdateDialogs_(); }); return;
+    }
+    const repository = RuntimeCatalogRepository.instance(this.context)
+    const items: UpdateDialogItem[] = []; const targets: Record<string,string> = {}; let total = 0
+    for (const state of this.getJdkManager_().listVersions()) {
+      if (!state.updateAvailable || state.userImported) continue
+      const build = repository.buildFor(state.version); if (build === undefined) continue
+      const item: UpdateDialogItem = { id:state.version,title:'JDK ' + state.version + (state.rollback ? ' · 回退修复' : ''),
+        current:state.installedTag || '旧安装',target:build.id,sizeLabel:formatBytes(build.archive.sizeBytes),
+        description:(state.rollback ? state.stateText + '\n' : '') + build.notes.join('\n') }
+      items.push(item); targets[state.version] = build.id + ':' + build.archive.sha256; total += build.archive.sizeBytes
+    }
+    if (items.length === 0) return
+    const fingerprint = this.jdkChannel + ':' + JSON.stringify(targets)
+    if (!manual && !runtimePromptDue(Date.now(),this.getPrefManager_().jdkDeferredAt,this.getPrefManager_().jdkDeferredTarget,fingerprint)) return
+    // 只有确实存在允许提示的更新目标时才申请展示席位；空列表和有效延后均不能阻塞其他更新。
+    if (!UpdatePromptPresenter.claim(this.updatePresenterOwner)) {
+      this.pendingRuntimePrompt_ = true; this.pendingRuntimePromptManual_ = this.pendingRuntimePromptManual_ || manual;
+      UpdatePromptPresenter.defer(this.updatePresenterOwner, (): void => { this.drainUpdateDialogs_(); }); return;
+    }
+    const defer = (): void => {
+      this.getPrefManager_().jdkDeferredAt = Date.now(); this.getPrefManager_().jdkDeferredTarget = fingerprint
+      this.closeUpdateDialog_()
+    }
+    try {
+      this.updateDialogCtrl_ = new CustomDialogController({
+        builder:UpdateDialog({ theme:this.theme,title:'JDK 更新',actionLabel:'更新所选 JDK',
+          newVersion:this.jdkChannel === 'preview' ? '预览通道' : '稳定通道',currentVersion:'',
+          releaseDate:repository.snapshot().issuedAt.substring(0,10),sizeLabel:formatBytes(total),
+          showChangelogEntry:false,items:items,onLater:defer,
+          onInstallItems:(versions: string[]): void => {
+            this.closeUpdateDialog_(); this.showTasksSheet = true
+            for (const version of versions) {
+              const build = repository.buildFor(version)
+              if (build === undefined || targets[version] !== build.id + ':' + build.archive.sha256 || !this.getJdkManager_().inspect(version).offerUpdate) {
+                this.jdkCatalogStatus = '推荐已改变，请重新检查后选择更新'; continue
+              }
+              const started = Date.now(); const task = new JdkInstallTask(version,this.getJdkManager_(),started,true)
+              this.registry.enqueue(task).then((): void => {
+                this.updateJdkReadyState()
+              }).catch((error: Error): void => {
+                this.jdkCatalogStatus = 'JDK ' + version + ' 更新失败：' + error.message
+              })
+            }
+          } }),
+        autoCancel:true,cancel:(): void => {
+          this.getPrefManager_().jdkDeferredAt = Date.now(); this.getPrefManager_().jdkDeferredTarget = fingerprint
+          this.updateDialogCtrl_ = null; UpdatePromptPresenter.release(this.updatePresenterOwner); this.drainUpdateDialogs_()
+        },customStyle:true,alignment:DialogAlignment.Center
+      })
+      this.updateDialogCtrl_.open()
+    } catch (e) {
+      // controller 构造或 open 失败时没有可关闭的面板，必须在这里释放刚取得的全局席位。
+      this.updateDialogCtrl_ = null; UpdatePromptPresenter.release(this.updatePresenterOwner)
+      this.jdkCatalogStatus = '无法打开 JDK 更新面板：' + (e as Error).message
+    }
   }
 
   /** 打开更新日志页。 */
@@ -1913,30 +2933,51 @@ struct Index {
 
   /** 其它页面请求打开网络诊断 Sheet（把 amcl_open_netdiag_nonce 置时间戳触发）。 */
   onOpenNetDiagReq(): void {
+    if (!this.startupFinished_) return;
     if (this.openNetDiagNonce > 0) {
       this.showNetDiagSheet = true
     }
   }
 
-  /** 横幅可见性变化：可见时启动周期复检（恢复即自动隐藏），隐藏时停掉复检。 */
+  /** 自动复检只服务真实可见且前台的横幅；其它页面报告错误不能唤醒隐藏首页。 */
   onNetBannerChange(): void {
-    if (this.netBannerVisible) {
+    if (this.netBannerVisible && this.launcherWorkVisible_ && this.launcherWorkForeground_) {
       this.startNetRecheck_()
     } else {
       this.stopNetRecheck_()
     }
   }
 
-  /** 横幅显示期间每 15s 复检一次网络；一旦恢复即隐藏横幅并停表。 */
+  /** 保留15秒周期，但慢请求不叠加；页面/Ability失活时清理定时器。 */
   private startNetRecheck_(): void {
     if (this.netRecheckTimer >= 0) return
     this.netRecheckTimer = setInterval(() => {
-      quickConnectivityCheck().then((ok: boolean) => {
-        if (ok) {
-          this.netBannerVisible = false   // 触发 onNetBannerChange → stopNetRecheck_
-        }
-      }).catch(() => { /* 复检失败保持横幅 */ })
+      this.runNetCheck_(false)
     }, 15000)
+  }
+
+  /** 同时最多一个真实请求；不能取消的网络调用允许自然结束，但旧页结果不回写UI。
+   * 初次检查若因离页失效，回到前台后重试一次；周期复检失败保持已有横幅。 */
+  private async runNetCheck_(initial: boolean): Promise<void> {
+    if (this.netCheckBusy_ || !this.launcherWorkVisible_ || !this.launcherWorkForeground_) return
+    const epoch: number = this.netCheckEpoch_
+    this.netCheckBusy_ = true
+    if (initial) this.netInitialCheckPending_ = false
+    try {
+      const ok: boolean = await quickConnectivityCheck()
+      if (epoch !== this.netCheckEpoch_ || !this.launcherWorkVisible_ || !this.launcherWorkForeground_) {
+        if (initial) this.netInitialCheckPending_ = true
+        return
+      }
+      if (initial && !ok) this.netBannerText = '网络连接异常，下载 / 搜索可能不可用，点此检测'
+      if (initial || ok) this.netBannerVisible = !ok
+    } catch (_) { /* 检查失败不改变用户现有状态，也不阻止其它业务。 */ }
+    finally {
+      this.netCheckBusy_ = false
+      if (this.netInitialCheckPending_ && this.launcherWorkVisible_ && this.launcherWorkForeground_) {
+        this.runNetCheck_(true)
+      }
+    }
   }
 
   private stopNetRecheck_(): void {
@@ -1951,14 +2992,8 @@ struct Index {
    * 只读心跳，不弹窗、不阻塞；正常则隐藏横幅。横幅显示后由 onNetBannerChange 启动周期复检。
    */
   private initNetworkCheck(): void {
-    quickConnectivityCheck().then((ok: boolean) => {
-      if (!ok) {
-        this.netBannerText = '网络连接异常，下载 / 搜索可能不可用，点此检测'
-        this.netBannerVisible = true
-      } else {
-        this.netBannerVisible = false
-      }
-    }).catch(() => { /* 自检失败不打扰 */ })
+    this.netInitialCheckPending_ = true
+    this.runNetCheck_(true)
   }
 
   /**
@@ -1971,10 +3006,10 @@ struct Index {
     if (!DistributionPolicy.allowPublisherServices()) { this.disableRelay_(); return }
     let client = getRelayClient()
     // deviceId 持久化，保证同一台设备在面板里是同一条记录（便于溯源与配额）
-    let did = this.prefManager.relayDeviceId
+    let did = this.getPrefManager_().relayDeviceId
     if (did.length === 0) {
       did = generateDeviceId()
-      this.prefManager.relayDeviceId = did
+      this.getPrefManager_().relayDeviceId = did
     }
     client.setDeviceInfo({
       deviceId: did,
@@ -1986,9 +3021,12 @@ struct Index {
     })
     this.accelStatus = ''
     client.setEnabled(true).then((ok: boolean) => {
-      this.accelStatus = ok ? 'ok' : client.status().lastError
+      // 旧握手可能晚于关闭/新握手返回；界面和JDK来源只能投影当前会话，不能复用
+      // 旧Promise的ok重新打开加速，也不能用旧失败覆盖已经成功的新代次。
+      const status = client.status()
+      this.accelStatus = status.active ? 'ok' : status.lastError
       // 注入到 launch：加速生效时 JDK 也强制走官方源（见 JdkManager.getJdkDownloadSource）
-      setAccelActive(ok)
+      setAccelActive(status.active)
       AppLogger.info(TAG,
         `加速下载握手${ok ? '成功' : '失败'}${ok ? '' : '：' + this.accelStatus}`,
         LOG_DOMAIN_DOWNLOAD)
@@ -2004,7 +3042,7 @@ struct Index {
 
   /**
    * 启动时初始化检查更新（aboutToAppear 调，同一进程用 autoUpdateCheckStarted 去重）：
-   *   1. 即时红点：用持久化的 latestSeenVersionCode 对比已装 versionCode（无需联网，瞬时）。
+   *   1. 即时红点：缓存目标与实际安装版本走相同的code/发行名/通道判据，无需联网。
    *   2. 自动联网：距上次成功检查满 24h 才拉 update.json。
    *      - 有新版 且 本次会话【尚未启动游戏】→ 弹更新提示框（+ 红点）。
    *      - 有新版 但 用户已点过「启动游戏」→ 只保留红点，不弹框（不打扰）。
@@ -2018,27 +3056,33 @@ struct Index {
     // 未来方向：接入应用市场更新接口 / 跳转应用市场详情页。侧载轨保持 GitHub update.json 自检。
     if (DistributionPolicy.isStore()) return
     let hasCachedUpdate: boolean = UpdateChecker.hasCachedUpdate(
-      cur, this.prefManager.latestSeenVersionCode)
+      cur, this.getPrefManager_().appUpdateLatestSeen(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel),UpdateChecker.currentVersionName(),
+      this.getPrefManager_().appUpdateLatestName(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel),this.getPrefManager_().appUpdateChannel)
     this.updateDot = hasCachedUpdate
     let now: number = Date.now()
     if (!UpdateChecker.shouldRunAutoCheck(
       now,
-      this.prefManager.lastUpdateCheckAt,
-      this.prefManager.updatePromptDeferredAt,
+      this.getPrefManager_().appUpdateLastCheck(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel),
+      this.getPrefManager_().appUpdateDeferredAt(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel),
       hasCachedUpdate
     )) {
       AppLogger.debug(TAG,
         `auto update check throttled: cached=${hasCachedUpdate ? 'yes' : 'no'} `
-          + `lastCheckAt=${this.prefManager.lastUpdateCheckAt} `
-          + `deferredAt=${this.prefManager.updatePromptDeferredAt}`,
+          + `lastCheckAt=${this.getPrefManager_().appUpdateLastCheck(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel)} `
+          + `deferredAt=${this.getPrefManager_().appUpdateDeferredAt(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel)}`,
         LOG_DOMAIN_UI)
       return
     }
-    UpdateChecker.checkForUpdate().then((res: UpdateCheckResult) => {
+    // 启动自动检查固定为正式源；后来收到 TestWant 也不能给这个请求补上测试候选。
+    const source = SideloadUpdateTestSession.productionSource()
+    const channel = this.getPrefManager_().appUpdateChannel
+    UpdateChecker.checkForUpdate(source.urls, ProductBuildProfile.product,channel).then((res: UpdateCheckResult) => {
+      if(channel !== this.getPrefManager_().appUpdateChannel) return
+      SideloadUpdateTestSession.validateResult(res, source)
       this.applyUpdateResult(res)
       if (res.ok && res.hasUpdate && res.manifest !== null && !this.gameLaunchedThisSession
-          && UpdateChecker.shouldShowAutoPrompt(Date.now(), this.prefManager.updatePromptDeferredAt)) {
-        this.showUpdateDialog(res.manifest)
+          && UpdateChecker.shouldShowAutoPrompt(Date.now(), this.getPrefManager_().appUpdateDeferredAt(ProductBuildProfile.product,this.getPrefManager_().appUpdateChannel))) {
+        this.showUpdateDialog(res.manifest, false, source)
       }
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'auto update check failed', e, LOG_DOMAIN_UI)
@@ -2047,17 +3091,18 @@ struct Index {
 
   /** 把检查结果落到红点 + 持久化（节流时间戳 + latestSeen），手动/自动共用。 */
   private applyUpdateResult(res: UpdateCheckResult): void {
-    if (!res.ok || res.manifest === null) return   // 网络/解析失败不动红点与时间戳
-    this.prefManager.lastUpdateCheckAt = Date.now()
-    if (res.manifest.versionCode > this.prefManager.latestSeenVersionCode) {
-      this.prefManager.latestSeenVersionCode = res.manifest.versionCode
-    }
-    this.updateDot = res.hasUpdate
-    if (!res.hasUpdate) this.prefManager.updatePromptDeferredAt = 0
+    if (!res.ok || res.manifest === null) return
+    const channel=this.getPrefManager_().appUpdateChannel
+    if((res.manifest.updateChannel ?? 'stable')!==channel) return
+    this.getPrefManager_().rememberAppUpdate(ProductBuildProfile.product,channel,res.manifest.versionCode,
+      UpdateChecker.targetKey(res.manifest,ProductBuildProfile.product))
+    this.updateDot=res.hasUpdate
   }
 
   /** 用系统浏览器打开外部链接（release 下载页）。 */
   private openExternalUrl(url: string) {
+    // store即便从旧缓存/错误兜底来到这里，也不恢复一般网页下载或更新跳转。
+    if (DistributionPolicy.isStore()) return
     if (!url || url.length === 0) {
       try { this.getUIContext().getPromptAction().showToast({ message: '下载链接为空', duration: 2000 }) } catch (e) { /* */ }
       return
@@ -2122,7 +3167,9 @@ struct Index {
     try {
       const store = getDownloadHistoryStore()
       await store.init(this.context)
-      const recent = store.list().find((record: ActivityRecord): boolean => record.category === ActivityCategory.LAUNCH)
+      const epoch = this.recoveryPresentationEpoch_
+      const snapshot = await store.readSnapshotAsync((): boolean => epoch !== this.recoveryPresentationEpoch_)
+      const recent = snapshot.records.find((record: ActivityRecord): boolean => record.category === ActivityCategory.LAUNCH)
       if (recent === undefined) { this.safeToast_('尚无游戏活动，启动一次游戏后可在这里查看'); return }
       const params: Record<string, Object> = { 'activityId': recent.startedAt, 'view': 'logs' }
       await this.getUIContext().getRouter().pushUrl({ url: 'pages/ActivityLogPage', params: params })
@@ -2199,6 +3246,20 @@ struct Index {
 
   private syncStatusFromRegistry_(): void {
     for (let v of this.registry.listAll()) {
+      // JDK 的初次执行与重试共用出队身份；入口只提交意图，不提前开一个不同的账本。
+      if (v.category === TaskCategory.JDK) {
+        if (v.startedAtMs > 0 && !this.ledgerBegun_.has(v.startedAtMs)) {
+          this.ledgerBegun_.add(v.startedAtMs)
+          this.beginActivity_(ActivityCategory.JDK, v.title, v.startedAtMs, '', v.parentActivityId, v.activityRelation)
+        }
+        const jdkKey = 'jdk:' + v.id + ':' + v.startedAtMs.toString()
+        if (v.startedAtMs > 0 && isTerminalState(v.state) && !this.mcTerminalRecorded_.has(jdkKey)) {
+          this.mcTerminalRecorded_.add(jdkKey)
+          this.addActivity_(ActivityCategory.JDK, v.title, this.terminalStatus_(v.state), v.startedAtMs, 'JDK 安装', v.errorMessage)
+          this.updateJdkReadyState()
+        }
+        continue
+      }
       // 附属 Fabric API 安装也拥有自己的账本，并能从父游戏下载记录回溯。
       if (v.category === TaskCategory.MOD && v.activityRelation === 'companion' && v.startedAtMs > 0) {
         if (!this.ledgerBegun_.has(v.startedAtMs)) {
@@ -2219,7 +3280,8 @@ struct Index {
           this.beginActivity_(ActivityCategory.MODPACK, v.title, v.startedAtMs, '', v.parentActivityId, v.activityRelation)
         }
         if (isTerminalState(v.state)) {
-          let dedupMp = 'mp:' + v.id + ':' + v.state
+          // 同标题重装/重试是新的安装尝试；不能用永久 taskId 吞掉其终态和启动参数应用。
+          let dedupMp = 'mp:' + v.id + ':' + v.startedAtMs.toString() + ':' + v.state
           if (!this.mcTerminalRecorded_.has(dedupMp)) {
             this.mcTerminalRecorded_.add(dedupMp)
             this.recordModpackActivity_(v)
@@ -2235,6 +3297,23 @@ struct Index {
         continue
       }
       if (v.category !== TaskCategory.MC_VERSION) continue
+      // 分类用于外观，接口资格由真实 adapter 决定；修复活动同样按每次尝试结账，
+      // 不能读取它不存在的 getTask/dlState，也不能只记录初次 enqueue 的 Promise。
+      const service = this.registry.getAdapter(v.id)
+      if (service instanceof RepairTask || service instanceof ForgeRepairTask) {
+        if (v.startedAtMs > 0 && !this.ledgerBegun_.has(v.startedAtMs)) {
+          this.ledgerBegun_.add(v.startedAtMs)
+          this.beginActivity_(ActivityCategory.REPAIR, v.title, v.startedAtMs, v.title, v.parentActivityId, v.activityRelation)
+        }
+        const repairKey = 'repair:' + v.id + ':' + v.startedAtMs.toString()
+        if (v.startedAtMs > 0 && isTerminalState(v.state) && !this.mcTerminalRecorded_.has(repairKey)) {
+          this.mcTerminalRecorded_.add(repairKey)
+          this.addActivity_(ActivityCategory.REPAIR, v.title, this.terminalStatus_(v.state), v.startedAtMs, v.currentLabel, v.errorMessage)
+          if (v.state === UnifiedTaskState.DONE) this.scanVersions()
+        }
+        continue
+      }
+      if (!(service instanceof McVersionTask)) continue
 
       // 活动账本（L2-b）：任务真正开始跑（拿到 startedAtMs）时开账本。
       // 不在 enqueue 时开 —— 排队中的任务 startedAtMs 还是 0，而 activityId 必须
@@ -2286,7 +3365,7 @@ struct Index {
 
   /** 整合包安装终态 → 写活动记录（成功/失败），让"最近活动"和活动页可见。 */
   private recordModpackActivity_(v: UnifiedTaskView): void {
-    let status = v.state === UnifiedTaskState.DONE ? ActivityStatus.SUCCESS : ActivityStatus.FAILED
+    let status = this.terminalStatus_(v.state)
     let startedAt = v.startedAtMs > 0 ? v.startedAtMs : Date.now()
     let subtitle = '整合包'
     let errMsg = ''
@@ -2321,14 +3400,14 @@ struct Index {
       // 合并而非整体覆盖：读现有 override，仅写本次解析出的字段，保留用户已设的 jdkVersion 等。
       let ov: VersionLaunchOverride
       try {
-        ov = this.prefManager.getVersionOverride(res.versionName)
+        ov = this.getPrefManager_().getVersionOverride(res.versionName)
       } catch (e) {
         ov = { xmx: 0, jdkVersion: '', customJvmArgs: '', gameLanguage: '' }
       }
       if (xmx > 0) ov.xmx = xmx
       if (args !== undefined && args.length > 0) ov.customJvmArgs = args
       try {
-        this.prefManager.setVersionOverride(res.versionName, ov)
+        this.getPrefManager_().setVersionOverride(res.versionName, ov)
         AppLogger.info(TAG, `applied modpack recommended jvm to ${res.versionName}: xmx=${xmx} args="${args}"`, LOG_DOMAIN_LAUNCH)
       } catch (e) {
         AppLogger.warn(TAG, 'apply modpack jvm override failed', e as Error, LOG_DOMAIN_LAUNCH)
@@ -2347,54 +3426,14 @@ struct Index {
   private recordHistory(t: DownloadTask, startedAtMs: number, maxBytesTotal: number, status: string): void {
     let record = buildHistoryRecordFromTask(t, startedAtMs, maxBytesTotal, status)
     // 活动账本封账（L2-b）：与活动记录同一主键、同一时刻
-    this.endActivity_(startedAtMs, status,
-      (record.errorMessage && record.errorMessage.length > 0) ? record.errorMessage : '下载完成')
+    const commit = this.endActivity_(startedAtMs, status,
+      (record.errorMessage && record.errorMessage.length > 0) ? record.errorMessage : '下载完成',
+      '', { category: record.category ?? ActivityCategory.DOWNLOAD, title: record.title ?? record.versionName })
     record.mcDir = this.mcRoot()
-    getDownloadHistoryStore().add(record).then(() => {
+    commit.then((): Promise<void> => getDownloadHistoryStore().add(record)).then(() => {
       this.refreshRecentActivities_()
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'DownloadHistory.add failed', e, LOG_DOMAIN_DOWNLOAD)
-    })
-  }
-
-  /**
-   * 写一条「启动游戏」活动记录（会话恢复时调用，统一覆盖正常退出/崩溃两种结局）。
-   * 独立游戏进程结束后由仍存活的启动器前台恢复，或由下次冷启动恢复；结局只消费
-   * SessionOutcomeResolver 的结果。精确平台崩溃及本局真实报告优先，不能以退出请求覆盖。
-   * durationMs 优先使用经身份验证的 JVM 退出请求时间；旧 marker 缺失时间时才退回恢复时刻。
-   * 同一 startedAt 使用专用 upsert，晚到崩溃更正不会重复历史或丢失已有分享/AI 字段。
-   */
-  private recordLaunchSession_(last: McSessionInfo, status: string, summary: string,
-    errorKind: string): Promise<void> {
-    const nowMs: number = Date.now()
-    // 退出请求时间已由 journal 身份检查确认；旧 marker 缺失时保留原来的恢复时刻兜底。
-    const endedAt: number = last.endedAt !== undefined && Number.isFinite(last.endedAt)
-      && last.endedAt >= last.startedAt && last.endedAt <= nowMs ? last.endedAt : nowMs
-    let rec: ActivityRecord = {
-      versionName: last.version,
-      gameVersion: last.version,
-      loaderType: 'launch',
-      startedAt: last.startedAt,
-      durationMs: endedAt - last.startedAt,
-      totalBytes: 0,
-      fileCount: 0,
-      status: status,
-      category: ActivityCategory.LAUNCH,
-      endedAt: endedAt,
-      title: last.version,
-      subtitle: '游戏会话',
-      // M3：把 mcDir 一起存下来。没有它，用户从活动记录重入时无法定位这一局的日志
-      // （版本隔离开关、存储位置迁移都会让「当前 mcRoot」与当时不是一回事）。
-      mcDir: last.mcDir,
-    }
-    if (summary.length > 0) rec.errorMessage = summary
-    if (errorKind.length > 0) rec.errorKind = errorKind
-    // 账本终态已由统一解析器写入；这里只幂等同步历史，不按尾部日志重新推断或覆盖结论。
-    return getDownloadHistoryStore().upsertLaunchSession(rec).then(() => {
-      this.refreshRecentActivities_()
-    }).catch((e: Error) => {
-      AppLogger.warn(TAG, 'launch session record add failed', e, LOG_DOMAIN_LAUNCH)
-      throw e
     })
   }
 
@@ -2411,22 +3450,27 @@ struct Index {
    *
    * @param sessionKey 会话主键（= ActivityRecord.startedAt）
    */
-  private openErrorSheetBySession_(sessionKey: number): void {
-    if (sessionKey <= 0) return
+  private openErrorSheetBySession_(sessionKey: number, expectedEpoch: number | undefined = undefined): Promise<boolean> {
+    if (sessionKey <= 0) return Promise.resolve(false)
     let store = getDownloadHistoryStore()
-    store.waitReady().then(() => {
+    return store.waitReady().then((): boolean | Promise<boolean> => {
+      if (!this.startupFinished_ || !this.startupRouteVisible_ || this.showPrivacy || this.updateDialogCtrl_ !== null) return false;
+      if (this.showMcErrorSheet && this.mcErrorSessionKey !== sessionKey) return false;
+      if (expectedEpoch !== undefined && (expectedEpoch !== this.recoveryPresentationEpoch_
+        || AppStorage.get<boolean>('amclHostPageVisible') === false)) return false
       let rec = store.findByStartedAt(sessionKey)
       if (rec === null) {
         this.safeToast_('这条记录已被清理，无法查看详情')
-        return
+        return false
       }
       let snap = resolveSessionSnapshot(rec, this.mcRoot())
-      if (snap.logExpired) {
+      if (snap.logExpired && expectedEpoch === undefined) {
         // 日志已被后续会话挤出保留窗口：老实说清楚，不要让用户点进一个空白 Sheet
         this.safeToast_('该次日志已不可用，可在“设置 → 日志”调整保留数量')
-        return
+        return false
       }
-      let logTail = readSnapshotLogTail(snap)
+      // 恢复结局可以有准确退出事实但没有正文；展示真实摘要及缺失说明，不伪造完整日志。
+      let logTail = snap.logExpired ? '本次日志正文不可用或尚未完整归档，退出事实与活动结局仍保留。' : readSnapshotLogTail(snap)
       this.lastMcSession = snapshotToSessionInfo(snap)
       this.lastMcSessionSummary = (rec.errorMessage && rec.errorMessage.length > 0)
         ? rec.errorMessage
@@ -2439,22 +3483,28 @@ struct Index {
       this.mcErrorLsToken = snap.lsToken
       this.mcErrorLsSharedAt = snap.lsSharedAt
       this.mcErrorAiText = loadSessionAiText(snap.aiPath)
+      const shown: Promise<boolean> = this.waitForErrorSheet_(sessionKey);
       this.showMcErrorSheet = true
       AppLogger.info(TAG, 'error sheet reopened: key=' + sessionKey
         + ' log=' + snap.logPath + ' archive=' + snap.logArchiveIndex
         + ' exact=' + snap.logExact + ' ai=' + (this.mcErrorAiText.length > 0),
         LOG_DOMAIN_LAUNCH)
+      return shown
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'openErrorSheetBySession failed', e, LOG_DOMAIN_LAUNCH)
+      return false
     })
   }
 
   /** @Watch：别的页面把 sessionKey 写进 AppStorage 请求打开错误 Sheet（活动记录「查看详情」）。 */
   onOpenErrorSheetReq(): void {
-    let key = this.openErrorSheetSession
-    if (key <= 0) return
-    this.openErrorSheetSession = 0   // 立即清空，允许同一条记录再次点开
-    this.openErrorSheetBySession_(key)
+    if (!this.startupFinished_ || this.showPrivacy || this.updateDialogCtrl_ !== null) return;
+    const key: number = this.openErrorSheetSession;
+    if (key <= 0 || (this.showMcErrorSheet && this.mcErrorSessionKey !== key)) return;
+    this.openErrorSheetBySession_(key).then((shown: boolean): void => {
+      // 只有同一个请求确实显示后才消费，期间到来的新会话请求不能被旧闭包清掉。
+      if (shown && this.openErrorSheetSession === key) this.openErrorSheetSession = 0;
+    });
   }
 
   private safeToast_(msg: string): void {
@@ -2471,6 +3521,7 @@ struct Index {
    * 而「点一下回到错误 Sheet」正是这条消息的意义所在。
    */
   onPendingToast(): void {
+    if (!this.startupFinished_) return;
     let id = this.pendingToastMsgId
     if (id.length === 0) return
     this.pendingToastMsgId = ''   // 立即清空，允许下一条
@@ -2560,7 +3611,38 @@ struct Index {
       })
   }
 
+  /**
+   * 准备阶段保持主内容的布局与组件实例，避免开放首页时重新构造整棵 UI 树；
+   * 隐藏同时禁止输入，真实首页的可见与点击资格由同一个就绪状态控制。
+   */
   build() {
+    Stack() {
+      if (this.launcherInitializationComplete_) {
+        this.LauncherContent_()
+      }
+      if (!this.startupFinished_) {
+        StartupSplash({
+          ready: this.launcherStartupReady_ && this.startupHomeLaidOut_,
+          failed: this.launcherStartupFailed_,
+          isDark: resolveIsDark(this.themeMode, this.systemIsDark),
+          active: this.startupRouteVisible_ && this.launcherWorkForeground_,
+          reducedMotion: this.startupReduced_,
+          targetRect: this.startupTarget_,
+          onFirstFrame: (): void => { this.beginLauncherPreparation_(); },
+          onReveal: (): void => { this.revealStartupHome_(); },
+          onFinished: (): void => { this.finishStartup_(); },
+          onRetry: (): void => { this.retryStartup_(); }
+        })
+      }
+    }
+    .width('100%').height('100%')
+    .backgroundColor(this.startupRevealed_ ? this.theme.bgPrimary
+      : resolveIsDark(this.themeMode, this.systemIsDark) ? '#101114' : '#FFFFFF')
+  }
+
+  /** 原主界面与全部 Sheet 仍由同一组件持有，准备期间不消费用户输入。 */
+  @Builder
+  private LauncherContent_() {
     Stack({ alignContent: Alignment.Bottom }) {
       Column() {
         // API23 uses adaptive floating material; LauncherTabsStyle supplies the API20–22 fallback.
@@ -2570,6 +3652,17 @@ struct Index {
         }) {
           TabContent() {
             HomeTab({
+              startupRevealed: this.startupRevealed_,
+              startupHandoffPending: !this.startupFinished_,
+              onStartupAxeRect: (rect: StartupTargetRect): void => { this.onStartupTarget_(rect); },
+              storeManager: DistributionPolicy.isStore(),
+              canRunGame: this.canRunGame_,
+              managerAction: this.storeManagerAction_,
+              managerLabel: storeManagerActionLabel(this.storeManagerAction_),
+              managerStatus: this.storeManagerStatus_,
+              hasExistingGame: this.storeHasSession_,
+              onManagerAction: (): void => { this.handleStoreManagerAction_() },
+              onReturnGame: (): void => { this.returnExistingGame_() },
               theme: this.theme,
               topSafeHeight: this.topSafeHeight,
               bottomSafeHeight: this.bottomSafeHeight,
@@ -2592,7 +3685,7 @@ struct Index {
               isRunning: this.isRunning,
               mcDownloading: this.isMcDownloading_(),
               statusMsg: this.statusMsg,
-              versionIsolation: this.versionIsolation,
+              versionIsolation: this.versionIsolation || isIsolatedModpackInstance(this.mcRoot(), this.mcVersion),
               accountUsername: this.accountUsername,
               accountTypeLabel: this.accountTypeLabel,
               accountUuid: this.accountUuid,
@@ -2602,9 +3695,7 @@ struct Index {
               onLaunch: () => { this.launchMC() },
               onGoDownload: () => { this.jumpToDownloadSub(0) },
               onSelectVersion: (ver: string) => {
-                this.mcVersion = ver
-                this.savePreferences()
-                this.scanInstalledModsCount()
+                this.selectManagedVersion_(ver)
               },
               onDeleteVersion: (ver: string) => { this.deleteInstalledVersion(ver) },
               onOpenVersionManager: () => { this.versionManagerInitialStep = 'list'; this.showVersionManager = true },
@@ -2629,10 +3720,23 @@ struct Index {
               // 受控二级 Tab 导航命令：sheet「安装」等入口据此定位到模组/资源包/光影/版本子页
               navCommand: this.dlNavCommand,
               jdkVersions: this.jdkVersions,
+              // 下载页直接展示当前通道、目录检查结果和重试入口；目录失败也有明确的恢复动作。
+              jdkChannel: this.jdkChannel,
+              jdkChecking: this.jdkChecking,
+              jdkCatalogStatus: this.jdkCatalogStatus,
+              onRefreshJdkCatalog: (): void => { this.checkRuntimeUpdates_(true); },
               jdkDownloadMsg: '',         // v6.5：JDK 进度全部在 DownloadTasksSheet 里展示
               jdkDownloadPercent: 0,
               // P1-MODS Phase 1.7：模组浏览页的上下文（.minecraft 根目录 + 当前版本 + 隔离开关）
               mcDir: this.mcRoot(),
+              filesDir: this.context.filesDir,
+              taskRevision: this.tasksRev,
+              onRecoverMc: (session: McInstallSession): void => {
+                if (session.mcDir !== this.mcRoot()) return
+                const loader: ModLoaderType | null = session.loaderType.length > 0 ? session.loaderType as ModLoaderType : null
+                this.beginDownload(session.gameVersion, loader, session.loaderVersion, session.versionName, null)
+                this.showTasksSheet = true
+              },
               currentMcVersion: this.mcVersion,
               versionIsolation: this.versionIsolation,
               onSelectGameVersion: (ver: string, category: string) => {
@@ -2641,25 +3745,25 @@ struct Index {
                 this.showVersionConfig = true
               },
               onJdkDelete: (version: string) => {
-                this.jdkManager.deleteVersion(version)
+                // writer/use 租约或文件系统错误都可能拒绝删除；反馈必须与实际结果一致。
+                const deleted = this.getJdkManager_().deleteVersion(version)
                 this.updateJdkReadyState()
-                this.jdkExtractProgress = 'JDK ' + version + ' 已删除'
+                this.jdkExtractProgress = deleted ? 'JDK ' + version + ' 已删除'
+                  : 'JDK ' + version + ' 删除失败，请关闭游戏或相关安装任务后重试'
+                if (!deleted) this.showToast_(this.jdkExtractProgress)
               },
               onJdkDownload: (version: string) => {
                 // v6.5：走 registry —— 任务在 DownloadTasksSheet 中呈现
                 this.statusMsg = '添加 JDK ' + version + ' 下载任务...'
                 this.showTasksSheet = true  // 自动弹开 sheet 让用户看到
                 let jdkStartedAt = Date.now()
-                this.beginActivity_(ActivityCategory.JDK, 'JDK ' + version, jdkStartedAt)
-                let task = new JdkInstallTask(version, this.jdkManager, jdkStartedAt)
+                let task = new JdkInstallTask(version, this.getJdkManager_(), jdkStartedAt)
                 this.registry.enqueue(task).then(() => {
                   this.updateJdkReadyState()
-                  this.addActivity_(ActivityCategory.JDK, 'JDK ' + version, this.terminalStatus_(task.view.state), jdkStartedAt, '下载安装', '')
                 }).catch((e: Error) => {
                   AppLogger.warn(TAG, 'enqueue JDK task rejected', e, LOG_DOMAIN_DOWNLOAD)
                   this.statusMsg = 'JDK 下载启动失败: ' + e.message
                   if (e.message.indexOf('已在进行中') < 0) {
-                    this.addActivity_(ActivityCategory.JDK, 'JDK ' + version, ActivityStatus.FAILED, jdkStartedAt, '下载安装', e.message)
                   }
                 })
               },
@@ -2670,18 +3774,13 @@ struct Index {
                 this.statusMsg = '添加 JDK ' + version + ' 更新任务...'
                 this.showTasksSheet = true
                 let jdkStartedAt = Date.now()
-                this.beginActivity_(ActivityCategory.JDK, 'JDK ' + version + ' 更新', jdkStartedAt)
-                let task = new JdkInstallTask(version, this.jdkManager, jdkStartedAt, true)
+                let task = new JdkInstallTask(version, this.getJdkManager_(), jdkStartedAt, true)
                 this.registry.enqueue(task).then(() => {
                   this.updateJdkReadyState()
-                  this.addActivity_(ActivityCategory.JDK, 'JDK ' + version + ' 更新',
-                    this.terminalStatus_(task.view.state), jdkStartedAt, '更新', '')
                 }).catch((e: Error) => {
                   AppLogger.warn(TAG, 'enqueue JDK update task rejected', e, LOG_DOMAIN_DOWNLOAD)
                   this.statusMsg = 'JDK 更新启动失败: ' + e.message
                   if (e.message.indexOf('已在进行中') < 0) {
-                    this.addActivity_(ActivityCategory.JDK, 'JDK ' + version + ' 更新',
-                      ActivityStatus.FAILED, jdkStartedAt, '更新', e.message)
                   }
                 })
               },
@@ -2696,6 +3795,9 @@ struct Index {
               onModStatusMessage: (msg: string) => {
                 this.statusMsg = msg
               },
+              onOpenDownloadTask: (id: string): void => {
+                this.downloadTaskFocusId = id; this.showTasksSheet = true
+              },
               // P0 修复 #4：传给 ModBrowsePage 用于版本存在性校验
               availableVersions: this.availableVersions,
               // P1-MODS：把用户偏好真正接通到 ModrinthRepository / CurseForgeRepository
@@ -2708,6 +3810,7 @@ struct Index {
 
           TabContent() {
             SettingsTab({
+              canRunGame: this.canRunGame_,
               mcDir: this.mcRoot(),
               mcVersion: this.mcVersion,
               theme: this.theme,
@@ -2717,6 +3820,14 @@ struct Index {
               xmxMax: this.xmxSliderMax,
               virtualMemoryMode: this.virtualMemoryMode,
               themeMode: this.themeMode,
+              immersiveLight: this.immersiveLight,
+              immersiveLightSaving: this.immersiveLightSaving,
+              immersiveLightHasPresets: immersiveLightCapabilities().floatingSupported,
+              immersiveLightStatus: immersiveLightStatus(this.immersiveLight),
+              immersiveLightSaveError: this.immersiveLightSaveError,
+              visible: this.currentTab === 2,
+              onSectionBackReady: (handler: (() => boolean) | undefined): void => { this.settingsSectionBack_ = handler },
+              onImmersiveLightChange: (next: ImmersiveLightPreferences): void => { this.changeImmersiveLight_(next) },
               selectedJdkVersion: this.selectedJdkVersion,
               versionIsolation: this.versionIsolation,
               useNewWindow: this.useNewWindow,
@@ -2739,7 +3850,7 @@ struct Index {
               },
               onVirtualMemoryModeChange: (isOn: boolean) => {
                 this.virtualMemoryMode = isOn
-                this.prefManager.virtualMemoryMode = isOn
+                this.getPrefManager_().virtualMemoryMode = isOn
               },
               onThemeChange: (mode: ThemeMode) => {
                 this.themeMode = mode
@@ -2749,8 +3860,7 @@ struct Index {
                 this.savePreferences()
               },
               onVersionIsolationChange: (isOn: boolean) => {
-                this.versionIsolation = isOn
-                this.savePreferences()
+                this.changeManagedIsolation_(isOn)
               },
               onNewWindowChange: (isOn: boolean) => {
                 this.useNewWindow = isOn
@@ -2767,13 +3877,13 @@ struct Index {
               modConcurrentDownloads: this.modConcurrentDownloads,
               onModSourceChange: (value: string) => {
                 this.modSource = value
-                this.prefManager.modSource = value
+                this.getPrefManager_().modSource = value
               },
               accelDownload: this.accelDownload,
               accelStatus: this.accelStatus,
               onAccelDownloadChange: (isOn: boolean) => {
                 this.accelDownload = DistributionPolicy.allowPublisherServices() && isOn
-                this.prefManager.accelDownload = isOn
+                this.getPrefManager_().accelDownload = isOn
                 if (isOn) {
                   this.initRelay_()
                 } else {
@@ -2782,23 +3892,62 @@ struct Index {
               },
               onCacheRemoteMetaChange: (isOn: boolean) => {
                 this.cacheRemoteMeta = isOn
-                this.prefManager.cacheRemoteMeta = isOn
+                this.getPrefManager_().cacheRemoteMeta = isOn
               },
               onModConcurrentDownloadsChange: (value: number) => {
                 this.modConcurrentDownloads = value
-                this.prefManager.modConcurrentDownloads = value
+                this.getPrefManager_().modConcurrentDownloads = value
               },
               jdkSource: this.jdkSource,
+              jdkVersions: this.jdkVersions,
+              jdkChannel: this.jdkChannel,
+              jdkWebEnabled: this.jdkWebEnabled,
+              jdkAutoCheck: this.jdkAutoCheck,
+              jdkChecking: this.jdkChecking,
+              jdkHasUpdate: this.jdkHasUpdate,
+              jdkCatalogStatus: this.jdkCatalogStatus,
+              onCheckJdkUpdate: (): void => { this.checkRuntimeUpdates_(true); },
+              onJdkChannelChange: (channel: string): void => {
+                this.jdkChannel = channel; this.getPrefManager_().jdkChannel = channel
+                this.getPrefManager_().jdkLastCheck = 0
+                // configure 先失效旧通道请求，即使当前已有检查，队列也会以新通道重查。
+                RuntimeCatalogRepository.instance(this.context).configure(channel,this.jdkSource,this.jdkWebEnabled)
+                  .then((): void => { this.updateJdkReadyState(); this.checkRuntimeUpdates_(true); })
+                  .catch((e: Error): void => { this.jdkCatalogStatus = '切换通道失败：' + e.message; })
+              },
+              onJdkAutoCheckChange: (enabled: boolean): void => {
+                this.jdkAutoCheck = enabled; this.getPrefManager_().jdkAutoCheck = enabled
+                if (enabled) { this.runtimeAutoCheckStarted_ = false; this.initRuntimeUpdateCheck_(); }
+              },
+              onJdkWebChange: (enabled: boolean): void => {
+                this.jdkWebEnabled = enabled; this.getPrefManager_().jdkWebEnabled = enabled; setJdkWebEnabled(enabled)
+                if (!enabled && this.jdkSource === 'web') {
+                  this.jdkSource = 'auto'; this.getPrefManager_().jdkSource = 'auto'; setJdkDownloadSource('auto')
+                }
+                RuntimeCatalogRepository.instance(this.context).configure(this.jdkChannel,this.jdkSource,enabled)
+                  .then((): void => {
+                    // 先使旧来源请求失效，再沿用检查队列合并一次最新偏好的手动检查；
+                    // 检查正在运行时也不能丢掉用户刚修改的来源选择。
+                    this.updateJdkReadyState(); this.checkRuntimeUpdates_(true)
+                  })
+                  .catch((e: Error): void => { this.jdkCatalogStatus = '切换自有来源失败：' + e.message; })
+              },
               onJdkSourceChange: (value: string) => {
                 this.jdkSource = value
-                this.prefManager.jdkSource = value
+                this.getPrefManager_().jdkSource = value
                 setJdkDownloadSource(value)
+                RuntimeCatalogRepository.instance(this.context).configure(this.jdkChannel,value,this.jdkWebEnabled)
+                  .then((): void => {
+                    // 与通道切换共用最新检查意图；旧请求的成功结果不能代替新来源检查。
+                    this.updateJdkReadyState(); this.checkRuntimeUpdates_(true)
+                  })
+                  .catch((e: Error): void => { this.jdkCatalogStatus = '切换下载源失败：' + e.message; })
                 AppLogger.info(TAG, `User switched JDK download source to ${value}`, LOG_DOMAIN_LAUNCH)
               },
               mcSource: this.mcSource,
               onMcSourceChange: (value: string) => {
                 this.mcSource = value
-                this.prefManager.mcSource = value
+                this.getPrefManager_().mcSource = value
                 // 立即注入：正在排队/尚未开始的下载也会用新顺序（已在传输中的任务不受影响，
                 // 它的 URL 列表在建 task 时就固化了）。
                 setMcSourcePreference(value)
@@ -2811,22 +3960,22 @@ struct Index {
                 this.updateJdkReadyState()
                 AppLogger.info(TAG, `User switched JDK to ${version}`, LOG_DOMAIN_LAUNCH)
               },
-              customJvmArgs: this.prefManager.customJvmArgs,
+              customJvmArgs: this.getPrefManager_().customJvmArgs,
               onCustomJvmArgsChange: (args: string) => {
                 // 全局自定义 JVM 参数：直接落盘到 PreferenceManager（McGamePage 启动时按 mcVersion 解析合并）
-                this.prefManager.customJvmArgs = args
+                this.getPrefManager_().customJvmArgs = args
               },
               gameLanguage: this.gameLanguage,
               onGameLanguageChange: (code: string) => {
                 // 全局游戏语言：落盘 + 更新 @State（启动时经 resolveLaunch 注入 options.txt lang）
                 this.gameLanguage = code
-                this.prefManager.gameLanguage = code
+                this.getPrefManager_().gameLanguage = code
                 AppLogger.info(TAG, `User switched global game language to ${code}`, LOG_DOMAIN_LAUNCH)
               },
               ohosFrameRateCap: this.ohosFrameRateCap,
               onOhosFrameRateCapChange: (fpsCap: number) => {
                 this.ohosFrameRateCap = fpsCap
-                this.prefManager.ohosFrameRateCap = fpsCap
+                this.getPrefManager_().ohosFrameRateCap = fpsCap
                 let accepted = false
                 try {
                   accepted = testNapi.setOhosFrameRateCap(fpsCap)
@@ -2847,8 +3996,9 @@ struct Index {
         .layoutWeight(1)
         .barOverlap(true)
         .vertical(false)
-        // Material and adjacent-page caching require API23; older systems use API20 styling.
-        .attributeModifier(new LauncherTabsStyle(this.bottomSafeHeight))
+        // 档位和主题状态直接作为修饰器输入；不重建 Tabs，保留页签、滚动与 Sheet 状态。
+        .attributeModifier(new LauncherTabsStyle(this.bottomSafeHeight,
+          effectiveBottomLightMode(this.immersiveLight), this.theme.bgCard))
         .animationDuration(300)
         .onAnimationStart((_index: number, targetIndex: number) => {
           this.currentTab = targetIndex
@@ -2887,7 +4037,7 @@ struct Index {
       // 不可见锚点：承载 VersionManager Sheet
       Column().width(0).height(0)
         .bindSheet($$this.showVersionManager, this.VersionManagerBuilder(),
-          this.adaptiveSheetOptions(this.theme.bgCard))
+          this.versionManagerSheetOptions_())
 
       // M2 Phase B：账户管理 Sheet 锚点
       // 走 detailSheetHeight (80%) —— 跟其他详情类 sheet 一致。账户管理虽然有 Hero 卡，
@@ -2903,7 +4053,7 @@ struct Index {
       // lastMcSession + lastMcSessionSummary + lastMcSessionLogTail 后翻 true 这个 flag。
       Column().width(0).height(0)
         .bindSheet($$this.showMcErrorSheet, this.McErrorSheetBuilder(),
-          this.adaptiveSheetOptions(this.theme.bgSecondary))
+          this.recoverySheetOptions_())
 
       // 网络诊断 Sheet 锚点（横幅点击 / 各下载错误处「网络检测」触发）
       Column().width(0).height(0)
@@ -2978,6 +4128,9 @@ struct Index {
     .backgroundColor(this.theme.bgPrimary)
     .bindSheet($$this.showLogDialog, this.LogDialogBuilder(),
       this.adaptiveSheetOptions(this.theme.bgCard))
+    .visibility(this.startupRevealed_ ? Visibility.Visible : Visibility.Hidden)
+    .enabled(this.startupFinished_)
+    .accessibilityLevel(this.startupFinished_ ? 'auto' : 'no-hide-descendants')
   }
 
   // ==================== P0 修复 #1：FAB 决策 + 模组下载状态处理 ====================
@@ -3056,10 +4209,11 @@ struct Index {
   @Builder
   DownloadTasksSheetBuilder() {
     DownloadTasksSheet({
+      initialTaskId: this.downloadTaskFocusId,
       theme: this.theme,
       bottomSafeHeight: this.bottomSafeHeight,
       topSafeHeight: this.topSafeHeight,
-      onClose: () => { this.showTasksSheet = false },
+      onClose: () => { this.showTasksSheet = false; this.downloadTaskFocusId = '' },
     })
   }
 
@@ -3099,7 +4253,7 @@ struct Index {
       jdkVersion: this.preLaunchJdkVersion,
       jdkRange: this.preLaunchJdkRange,
       xmxMb: this.preLaunchXmx,
-      checkJdkInstalled: (v: string): boolean => this.jdkManager.isInstalled(v),
+      checkJdkInstalled: (v: string): boolean => this.getJdkManager_().isInstalled(v),
       onProceed: () => { this.doLaunchAfterChecks() },
       onFix: (key: string) => { this.handlePreLaunchFix(key) },
       onStartRepair: () => { this.repairVersionFiles(this.mcVersion, true) },
@@ -3152,6 +4306,11 @@ struct Index {
   private async importLocalJdk_(): Promise<void> {
     if (this.jdkImporting) return
     const versions: string[] = SUPPORTED_JDK_VERSIONS.slice()
+    // 首次目录尚未就绪时不给用户展示 undefined 槽位，也不让包内容自行决定安装位置。
+    if (versions.length === 0) {
+      this.showToast_('暂无可用的 JDK 槽位，请先刷新运行时目录后重试')
+      return
+    }
     let pickedIdx = -1
     try {
       // ⚠️ ArkTS 严格模式：对象/数组字面量必须有显式声明类型
@@ -3162,17 +4321,43 @@ struct Index {
       // 不硬编码一个在深色模式下会瞎掉的颜色。
       const tp = this.theme.textPrimary
       const menuColor: string = typeof tp === 'string' ? tp as string : '#000000'
-      const b0: promptAction.Button = { text: 'JDK ' + versions[0], color: menuColor }
-      const b1: promptAction.Button = { text: 'JDK ' + versions[1], color: menuColor }
-      const b2: promptAction.Button = { text: 'JDK ' + versions[2], color: menuColor }
-      const b3: promptAction.Button = { text: 'JDK ' + versions[3], color: menuColor }
-      const opts: promptAction.ActionMenuOptions = {
-        title: '把这个包装到哪个 JDK 槽位？',
-        buttons: [b0, b1, b2, b3],
+      // SDK 的操作菜单最多展示六个按钮。每页四个真实槽位，为上一页/下一页各留一席；
+      // 注册表增加第五个或更多主版本时仍能选择，离线只剩少量槽位也不生成空白按钮。
+      const pageSize: number = 4
+      let offset: number = 0
+      while (pickedIdx < 0) {
+        const pageVersions: string[] = versions.slice(offset,offset + pageSize)
+        // ActionMenuOptions.buttons 的 SDK 类型要求至少一项、最多六项的元组，不能传普通数组。
+        const first: promptAction.Button = { text:'JDK ' + pageVersions[0],color:menuColor }
+        const buttons: [promptAction.Button,promptAction.Button?,promptAction.Button?,
+          promptAction.Button?,promptAction.Button?,promptAction.Button?] = [first]
+        for (let i = 1; i < pageVersions.length; i++) {
+          const button: promptAction.Button = { text:'JDK ' + pageVersions[i],color:menuColor }
+          buttons.push(button)
+        }
+        let previousIndex: number = -1
+        let nextIndex: number = -1
+        if (offset > 0) {
+          previousIndex = buttons.length
+          const previous: promptAction.Button = { text:'上一页',color:menuColor }
+          buttons.push(previous)
+        }
+        if (offset + pageSize < versions.length) {
+          nextIndex = buttons.length
+          const next: promptAction.Button = { text:'下一页',color:menuColor }
+          buttons.push(next)
+        }
+        const opts: promptAction.ActionMenuOptions = {
+          title:'把这个包装到哪个 JDK 槽位？',buttons:buttons,
+        }
+        const res: promptAction.ActionMenuSuccessResponse =
+          await this.getUIContext().getPromptAction().showActionMenu(opts)
+        const index: number = res.index !== undefined ? res.index : -1
+        if (index >= 0 && index < pageVersions.length) pickedIdx = offset + index
+        else if (previousIndex >= 0 && index === previousIndex) offset -= pageSize
+        else if (nextIndex >= 0 && index === nextIndex) offset += pageSize
+        else return
       }
-      const res: promptAction.ActionMenuSuccessResponse =
-        await this.getUIContext().getPromptAction().showActionMenu(opts)
-      pickedIdx = res.index !== undefined ? res.index : -1
     } catch (e) {
       // showActionMenu 在用户点遮罩/返回时以 reject 表达取消 —— 这不是错误，静默返回
       return
@@ -3272,15 +4457,12 @@ struct Index {
         this.statusMsg = '添加 JDK ' + jdkVer + ' 下载任务...'
         this.showTasksSheet = true
         let jdkStartedAt = Date.now()
-        this.beginActivity_(ActivityCategory.JDK, 'JDK ' + jdkVer, jdkStartedAt)
-        let task = new JdkInstallTask(jdkVer, this.jdkManager, jdkStartedAt)
+        let task = new JdkInstallTask(jdkVer, this.getJdkManager_(), jdkStartedAt)
         this.registry.enqueue(task).then(() => {
           this.updateJdkReadyState()
-          this.addActivity_(ActivityCategory.JDK, 'JDK ' + jdkVer, this.terminalStatus_(task.view.state), jdkStartedAt, '下载安装', '')
         }).catch((e: Error) => {
           AppLogger.warn(TAG, 'enqueue JDK task rejected', e, LOG_DOMAIN_DOWNLOAD)
           if (e.message.indexOf('已在进行中') < 0) {
-            this.addActivity_(ActivityCategory.JDK, 'JDK ' + jdkVer, ActivityStatus.FAILED, jdkStartedAt, '下载安装', e.message)
           }
         })
       }
@@ -3298,6 +4480,14 @@ struct Index {
   VersionManagerBuilder() {
     Stack() {
       VersionManagerSheet({
+        onRegisterExportDismiss: (handler: ((back?: boolean) => void) | undefined): void => {
+          this.versionExportDismiss_ = handler
+        },
+        canRunGame: this.canRunGame_,
+        storeManager: DistributionPolicy.isStore(),
+        onOpenDownloadTask: (id: string): void => {
+          this.downloadTaskFocusId = id; this.showTasksSheet = true
+        },
         theme: this.theme,
         bottomSafeHeight: this.bottomSafeHeight,
         mcXmx: this.mcXmx,
@@ -3310,7 +4500,7 @@ struct Index {
         // R-JDK21：版本详情 sheet 的 JDK 行可以下拉选择 跟随全局/自动/具体版本；
         // suggestedJdkVersion 是按当前 mcVersion 推算的"自动选择"结果，
         // sheet 内会在对应具体版本加" · 推荐"标签
-        suggestedJdkVersion: this.jdkManager.autoSelectVersion(this.mcVersion),
+        suggestedJdkVersion: this.getJdkManager_().autoSelectVersion(this.mcVersion),
         supportedJdkVersions: this.jdkVersions.map((v: JdkVersionInfo) => v.version),
         currentVersion: this.mcVersion,
         availableVersions: this.availableVersions,
@@ -3319,10 +4509,7 @@ struct Index {
         // 仅外部存储显示系统文件管理入口；沙箱使用应用内版本文件夹。
         isExternalStorage: this.storageLocation === StorageLocation.EXTERNAL,
         onSelectVersion: (ver: string) => {
-          this.mcVersion = ver
-          this.savePreferences()
-          // R-5：用户在版本管理 sheet 切版本后，立刻刷新 HomeTab Quick Stats 的"已装模组"数
-          this.scanInstalledModsCount()
+          this.selectManagedVersion_(ver)
         },
         onDeleteVersion: (ver: string) => {
           this.confirmDeleteVersion(ver)
@@ -3385,8 +4572,7 @@ struct Index {
           this.jumpToDownloadSub(this.resourceKindToDlSubTab(kind))
         },
         onResourcesChanged: () => {
-          // 嵌入资源步启用/禁用/删除后刷新首页 Quick Stats 的"已装模组"数字
-          this.scanInstalledModsCount()
+          this.onVersionFilesChanged_()
         },
         onClose: () => { this.showVersionManager = false },
         onLaunchVersion: (ver: string) => {
@@ -3400,30 +4586,30 @@ struct Index {
         },
         // 单版本 JDK 选择：详情 sheet 内联下拉，读写走 PreferenceManager 的版本覆盖 jdkVersion 字段。
         //   '' = 跟随全局 | 'auto' = 该版本自动路由 | 具体版本 = 硬覆盖（即便不匹配也照用，供调试）。
-        loadVersionJdk: (ver: string): string => this.prefManager.getVersionOverride(ver).jdkVersion,
+        loadVersionJdk: (ver: string): string => this.getPrefManager_().getVersionOverride(ver).jdkVersion,
         onSaveVersionJdk: (ver: string, choice: string) => {
-          let o = this.prefManager.getVersionOverride(ver)
+          let o = this.getPrefManager_().getVersionOverride(ver)
           o.jdkVersion = choice
-          this.prefManager.setVersionOverride(ver, o)
+          this.getPrefManager_().setVersionOverride(ver, o)
           // 若改的是当前选中版本，刷新启动按钮的 jdkReady 就绪态
           if (ver === this.mcVersion) this.updateJdkReadyState()
           AppLogger.info(TAG, `Set per-version JDK: ${ver} -> ${choice}`, LOG_DOMAIN_LAUNCH)
         },
         // 单版本自定义 JVM 参数：详情 sheet 内联编辑，读写走 PreferenceManager 的版本覆盖
         // （只动 customJvmArgs 字段，xmx/jdk 各有独立入口）。
-        loadVersionJvmArgs: (ver: string): string => this.prefManager.getVersionOverride(ver).customJvmArgs,
+        loadVersionJvmArgs: (ver: string): string => this.getPrefManager_().getVersionOverride(ver).customJvmArgs,
         onSaveVersionJvmArgs: (ver: string, args: string) => {
-          let o = this.prefManager.getVersionOverride(ver)
+          let o = this.getPrefManager_().getVersionOverride(ver)
           o.customJvmArgs = args
-          this.prefManager.setVersionOverride(ver, o)
+          this.getPrefManager_().setVersionOverride(ver, o)
         },
         // 单版本游戏语言：详情 sheet 内联下拉，读写走 PreferenceManager 的版本覆盖 gameLanguage 字段。
         //   '' = 跟随全局设置 | 具体 code（'zh_cn'/'en_us'…）= 单版本硬覆盖。
-        loadVersionGameLang: (ver: string): string => this.prefManager.getVersionOverride(ver).gameLanguage,
+        loadVersionGameLang: (ver: string): string => this.getPrefManager_().getVersionOverride(ver).gameLanguage,
         onSaveVersionGameLang: (ver: string, code: string) => {
-          let o = this.prefManager.getVersionOverride(ver)
+          let o = this.getPrefManager_().getVersionOverride(ver)
           o.gameLanguage = code
-          this.prefManager.setVersionOverride(ver, o)
+          this.getPrefManager_().setVersionOverride(ver, o)
           AppLogger.info(TAG, `Set per-version game language: ${ver} -> ${code === '' ? '(follow global)' : code}`, LOG_DOMAIN_LAUNCH)
         },
         onVerifyVersionFiles: (ver: string) => { this.verifyVersionFilesFull(ver) },
@@ -3546,19 +4732,15 @@ struct Index {
       Row() {
         Text('版本管理')
           .fontSize(20).fontWeight(700).fontColor(this.theme.textPrimary).layoutWeight(1)
-        Row() {
-          AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-        }
-        .width(36).height(36).borderRadius(18)
-        .backgroundColor(this.theme.bgInput)
-        .justifyContent(FlexAlign.Center)
-        .onClick(() => { this.showVersionManager = false })
+        // 兼容保留的旧Builder也复用普通按钮；现役版本管理走独立完整标题宿主。
+        AppRoundIconButton({ name: AppIconName.Close, theme: this.theme, accessibilityLabel: '关闭版本管理',
+          onAction: (): void => { this.showVersionManager = false } })
       }
       .width('100%')
       .padding({ left: 20, right: 20, top: 16, bottom: 16 })
 
       Row() {
-        Text(this.versionIsolation ? '版本隔离已开启' : '版本隔离已关闭')
+        Text((this.versionIsolation || isIsolatedModpackInstance(this.mcRoot(), this.mcVersion)) ? '版本隔离已开启' : '版本隔离已关闭')
           .fontSize(13).fontWeight(400).fontColor(this.theme.textSecondary)
       }
       .width('100%')
@@ -3690,20 +4872,20 @@ struct Index {
   @Builder
   LogDialogBuilder() {
     Column() {
-      Row() {
-        Text('启动器运行日志')
-          .fontSize(20).fontWeight(700).fontColor(this.theme.textPrimary).layoutWeight(1)
-        Row() {
-          AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-        }
-        .width(36).height(36).borderRadius(18)
-        .backgroundColor(this.theme.bgInput)
-        .justifyContent(FlexAlign.Center)
-        .onClick(() => { this.showLogDialog = false })
-      }
-      .width('100%')
-      .padding({ left: 20, right: 20, top: 16, bottom: 12 })
+      // 只接管日志Sheet标题，关闭仍更新原flag，日志刷新和复制行为保持原样。
+      ImmersiveTitleScaffold({ title: '启动器运行日志', theme: this.theme, modal: true,
+        closeLabel: '关闭运行日志', surfaceColor: this.theme.bgCard,
+        onClose: (): void => { this.showLogDialog = false },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+    .width('100%').height('100%')
+    .backgroundColor(this.theme.bgCard)
+  }
 
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
       Row({ space: 12 }) {
         Button('刷新')
           .type(ButtonType.Capsule).fontSize(13).height(36)
@@ -3726,8 +4908,5 @@ struct Index {
       .backgroundColor(this.theme.bgInput)
       .borderRadius(12)
       .margin({ left: 16, right: 16, bottom: 16 })
-    }
-    .width('100%').height('100%')
-    .backgroundColor(this.theme.bgCard)
-  }
+      }
 }

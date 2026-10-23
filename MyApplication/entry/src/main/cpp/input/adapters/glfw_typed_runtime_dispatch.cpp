@@ -88,12 +88,15 @@ GlfwTypedRuntimeCommitStatus GlfwTypedRuntimeCommitButton(
         GlfwSourcePlane::kTyped, event.button,
         static_cast<GlfwAggregateAction>(event.action),
         static_cast<int32_t>(event.modifiers), &emission);
-    if (notify && target.mouseButtons && emission.button >= 0 &&
-        static_cast<uint32_t>(emission.button) < target.mouseButtonCount) {
+    const bool cacheApplied = notify && target.mouseButtons && emission.button >= 0 &&
+        static_cast<uint32_t>(emission.button) < target.mouseButtonCount && aggregate.Validate(emission.receipt);
+    if (cacheApplied) {
         target.mouseButtons[emission.button] =
             emission.action == GlfwAggregateAction::kRelease ? 0 : 1;
     }
-    commit = {target.identity, emission, notify && target.identity != nullptr};
+    if (cacheApplied) aggregate.Complete(emission.receipt, AMCL_CONTROL_STATE_ONLY);
+    else if (notify) aggregate.Complete(emission.receipt, AMCL_CONTROL_DISCARDED);
+    commit = {target.identity, emission, cacheApplied && target.identity != nullptr};
     return GlfwTypedRuntimeCommitStatus::kCommitted;
 }
 

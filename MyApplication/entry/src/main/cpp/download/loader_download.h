@@ -94,7 +94,9 @@ public:
     // ---- 只读 ----
     uint64_t                   taskId() const { return cfg_.task_id; }
     const std::string&         name() const { return cfg_.name; }
-    LoadState                  state() const { return state_.load(std::memory_order_relaxed); }
+    // 终态在 callback 屏障登记后 release 发布；回收者必须 acquire 读取，不能在 ARM
+    // 上看到新终态却仍读取到旧的 callback=0，提前放走路径所有权。
+    LoadState                  state() const { return state_.load(std::memory_order_acquire); }
     TaskProgress               computeProgress() const;
     DownloadExceptionPtr       error() const;
     const std::vector<NetFilePtr>& files() const { return files_; }
@@ -115,7 +117,7 @@ public:
     /** 外部取消 */
     void abort();
     bool isAbortRequested() const { return abort_requested_.load(std::memory_order_acquire); }
-    /** 所有文件的 worker/multi 执行引用均已释放；purge/retry 的硬门禁。 */
+    /** 所有文件的传输、完成回调及本任务状态/终态回调均已退出；Engine 还需检查 startup。 */
     bool isExecutionSettled() const;
 
     /** Engine startup/retry 用：当前 epoch 是否允许启动该文件。 */
@@ -130,10 +132,13 @@ public:
 
     /** 创建阶段配置/ownership 冲突的可观察拒绝。 */
     void reject(DownloadExceptionPtr ex);
+    /** 调度/完成栈分配失败的无分配降级：取消子执行并发布 Failed，允许异常为空供查询恢复。 */
+    void failSchedulingWithoutAllocation() noexcept;
     /**
      * v5: 清理磁盘残留（Aborted / Failed 状态下才允许调用）。
-     * 对每个非 Finished 的文件 unlink(local) + unlink(.download-meta)。
-     * 返回释放的字节数。调 cancel + 用户选"清理"路径。
+     * 对每个非 Finished 的文件只清理本任务识别的 staging/meta，保留原 final。
+     * Engine 必须先占用任务操作屏障并确认 startup、传输与回调全部收敛。
+     * 返回实际成功删除的字节数；无创建收据的文件不能仅因路径相同而删除。
      */
     int64_t deleteFilesOnDisk();
     /**
@@ -162,6 +167,8 @@ private:
     std::vector<NetFilePtr>  files_;
 
     std::atomic<LoadState>   state_{LoadState::Waiting};
+    // 覆盖 Loading/终态的同步回调，防止观察到终态后抢先销毁或复位任务。
+    std::atomic<unsigned>    active_callbacks_{0};
     std::atomic<int>         files_done_count_{0};
     // v4.1 fix：单 file Failed 不再 cascading abort 整个任务。每个 file 收敛时走
     // reportFileFinished，若是 Failed 则 files_failed_count_++，其他 file 继续

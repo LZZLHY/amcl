@@ -85,3 +85,10 @@
 #   回退链 + CRLF 剥离）。**本目录的 0001 在干净 jdk21u 树上过不了严格 git apply**，
 #   需要 --3way —— 而本文件开头那句「每个 patch git apply --check 通过」对 0001 已经过期。
 0010-ipv6-supported-sandbox-fallback.patch
+
+# OHOS Java Sound：保留解析与共享 JNI，原生设备能力正常返回不可用。
+0011-ohos-javasound-capabilities.patch
+
+
+# Docker 使用 Linux 用户空间；WSL 内核标识不能改变构建宿主 ABI。
+0013-ohos-linux-container-build-host.patch

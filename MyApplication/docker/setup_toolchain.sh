@@ -123,12 +123,22 @@ done
 cat > $TOOLCHAIN_DIR/aarch64-linux-ohos-gcc << WRAPPER
 #!/bin/bash
 ARGS=()
+LINK_EXECUTABLE=1
+HAS_OUTPUT=0
 for arg in "\$@"; do
+    case "\$arg" in
+        -c|-E|-S|-shared|-r) LINK_EXECUTABLE=0 ;;
+        -o) HAS_OUTPUT=1 ;;
+    esac
     case "\$arg" in
         -lpthread|-ldl|-lrt|-lresolv) ;;
         *) ARGS+=("\$arg") ;;
     esac
 done
+# Ubuntu clang 不识别 OHOS 默认解释器；此路径与当前 OHOS SDK clang -### 一致。
+if [ "\$LINK_EXECUTABLE" = 1 ] && [ "\$HAS_OUTPUT" = 1 ]; then
+    ARGS+=("-Wl,--dynamic-linker=/lib/ld-musl-aarch64.so.1")
+fi
 exec /usr/bin/ohos-clang \
     --target=aarch64-linux-ohos \
     --sysroot=$OHOS_SYSROOT \
@@ -139,12 +149,22 @@ WRAPPER
 cat > $TOOLCHAIN_DIR/aarch64-linux-ohos-g++ << WRAPPER
 #!/bin/bash
 ARGS=()
+LINK_EXECUTABLE=1
+HAS_OUTPUT=0
 for arg in "\$@"; do
+    case "\$arg" in
+        -c|-E|-S|-shared|-r) LINK_EXECUTABLE=0 ;;
+        -o) HAS_OUTPUT=1 ;;
+    esac
     case "\$arg" in
         -lpthread|-ldl|-lrt|-lresolv) ;;
         *) ARGS+=("\$arg") ;;
     esac
 done
+# Ubuntu clang 不识别 OHOS 默认解释器；此路径与当前 OHOS SDK clang -### 一致。
+if [ "\$LINK_EXECUTABLE" = 1 ] && [ "\$HAS_OUTPUT" = 1 ]; then
+    ARGS+=("-Wl,--dynamic-linker=/lib/ld-musl-aarch64.so.1")
+fi
 exec /usr/bin/ohos-clang++ \
     --target=aarch64-linux-ohos \
     --sysroot=$OHOS_SYSROOT \

@@ -64,6 +64,11 @@ void PlatformInputCaptureRequested(bool requested);
 // active=true; only a successful WindowManager operation may call this entry
 // with active=true/reason=GRANTED.
 void PlatformInputCaptureChanged(bool requested, bool active, uint32_t reason);
+
+// 系统锁定/解锁结果入口。实现持有 ingress 锁后读取当前游戏请求，再发布实际状态；
+// 调用方只提供平台事实，禁止为解锁硬编码 requested=false 或读取锁外 intent。
+// 迟到授予在请求已撤回/失焦时被拒绝，真实失败与解锁仍可完成状态收口。
+void PlatformInputCapturePlatformChanged(bool active, uint32_t reason);
 void PlatformInputRequestReset(uint32_t reason);
 
 // Typed text is an additive V1 capability carried through the existing
@@ -75,6 +80,8 @@ bool PlatformInputTextSessionSupported();
 bool PlatformInputTextSessionBegin(uint64_t textSessionId);
 bool PlatformInputTextSessionEnd(uint64_t textSessionId);
 bool PlatformInputTextSessionAbort(uint64_t textSessionId);
+/** legacy编辑键也必须证明当前owned文本会话；只核对会话/焦点/surface，不改变physical路由或epoch。 */
+bool PlatformInputOwnedTextSessionMatches(uint64_t textSessionId);
 bool PlatformInputTextCommit(uint64_t textSessionId,
                              const uint8_t* utf8, uint32_t byteCount);
 bool PlatformInputTextEditing(uint64_t textSessionId,
@@ -90,6 +97,53 @@ bool PlatformInputTextCandidates(uint64_t textSessionId,
                                  uint32_t selected, uint32_t pageStart,
                                  uint32_t pageSize, uint32_t itemCount);
 
+// IME 编辑键（退格/前删/回车/小键盘回车/Esc）一次“按下+抬起”的三态结果。
+// 数值是跨语言镜像：NAPI textInputKeyTap 原样返回，ArkTS 的 TextInputKeyTapResult
+// 逐值对应；改任一侧都必须同步另一侧。
+enum class PlatformInputTextKeyTapResult : uint8_t {
+    // DOWN+UP 已作为一个原子批次进入 core，与同会话的 commit 共用 core 序号。
+    Submitted = 0,
+    // 进程锁存的物理平面不是 typed：调用方必须改走原 legacy ring 按键路径。
+    NotTypedRoute = 1,
+    // typed 路由已锁存但本次被拒（键不在白名单、门禁关闭、会话号不是当前会话、
+    // core 拒收）。调用方不得回退 ring，否则同一编辑键会越过已排队的 commit。
+    Rejected = 2,
+};
+
+// IME 编辑键在 core 中使用的保留设备身份（ASCII "AMCLIME" + 0x01）。
+// 选择依据：NAPI 的真实设备号经 int64 读入，只能得到 JS 双精度能精确表示的整数或
+// 饱和值；本值是 2^62 以上的奇数，JS 数值无法精确产生，因而不会与任何真实键盘或
+// 触控设备在 core held 表、GLFW adapter 贡献者表里撞键。SDL3 键盘事件固定用默认
+// 键盘号、LWJGL2 键事件不读设备号，所以这个身份只影响“按设备配对”的那几层。
+// 它从不进入设备清单，也不会有 DEVICE_REMOVED；按下与抬起在同一批次内完成。
+constexpr uint64_t kPlatformInputTextKeyDeviceId = 0x414D434C494D4501ull;
+
+// 当前文本会话内的有序编辑键：先按白名单核对 (ohosKeyCode, glfwKey) 配对，再判断
+// typed 路由；只有 textSessionId 等于 ingress 镜像的当前会话时，才把 PHYSICAL_KEY
+// DOWN+UP 以一个 submitBatch 提交（来源 IME、设备 kPlatformInputTextKeyDeviceId）。
+// 调用方必须在整个调用期间持有 SurfaceInputGateTransaction，并把结果作为
+// gateAccepted 传入。同一函数还给“实体编辑键与 IME 编辑回调在短窗口内相继出现”
+// 计数（只诊断，不抑制任何一方）。
+PlatformInputTextKeyTapResult PlatformInputTextSessionKeyTap(
+    uint64_t textSessionId, uint32_t ohosKeyCode, int32_t glfwKey,
+    bool gateAccepted);
+
+// 文本入口的累计诊断（进程生命周期、单调递增、只读快照）。
+struct PlatformInputTextDiagnostics {
+    uint64_t keyTapSubmitted = 0u;
+    uint64_t keyTapNotTypedRoute = 0u;
+    uint64_t keyTapRejected = 0u;
+    // 同类编辑键：实体键 DOWN/REPEAT 与 IME 编辑键在 50ms 窗口内相继出现的次数。
+    uint64_t keyTapPhysicalOverlap = 0u;
+    // core 仍持有而 ingress 与 ArkTS 都已放弃的文本会话被中止的次数。
+    uint64_t orphanSessionsAborted = 0u;
+    // 文本归属不符（epoch 未变的 STALE/SESSION）被就地处理、未走 epoch 恢复的次数。
+    uint64_t ownerMismatches = 0u;
+    // 其中为让 ArkTS 重新 BEGIN 而推进前端 epoch 的次数（每次不符至多一次）。
+    uint64_t ownerMismatchEpochAdvances = 0u;
+};
+PlatformInputTextDiagnostics PlatformInputTextDiagnosticsSnapshot();
+
 // HarmonyOS InputMethodController currently exposes no candidate-list callback.
 // The Entry producer records that named degradation once per attempted text
 // session instead of fabricating candidates from preview/commit callbacks.
@@ -101,7 +155,22 @@ uint64_t PlatformInputCandidatesUnsupportedCount();
 // touch/schema/ledger owners are empty. ArkTS compares the value but never owns
 // or mutates it. The counter saturates rather than wrapping into an old epoch.
 uint64_t PlatformInputResetEpoch();
-void PlatformInputCompleteResetBoundary();
+constexpr uint32_t kInputResetTouch = 1u;
+constexpr uint32_t kInputResetGamepad = 2u;
+constexpr uint32_t kInputResetPhysical = 4u;
+constexpr uint32_t kInputResetText = 8u;
+constexpr uint32_t kInputResetAll = 15u;
+struct PlatformInputResetSnapshot {
+    uint64_t epoch = 1u;
+    uint64_t touch = 1u;
+    uint64_t gamepad = 1u;
+    uint64_t physical = 1u;
+    uint64_t text = 1u;
+};
+// 原子快照保存每个域的累计代次，不能用“最后一次mask”代替，否则两次心跳间的不同
+// 复位会互相覆盖。完成边界的调用者必须已经撤销所声明域的权威 held/motion 状态。
+PlatformInputResetSnapshot PlatformInputResetDomains();
+void PlatformInputCompleteResetBoundary(uint32_t domains = kInputResetAll);
 
 #ifdef AMCL_INPUT_HOST_TESTING
 // ============================================================================

@@ -5,9 +5,52 @@ prebuilt/jna/manifest.json text eol=lf
 *.patch text eol=lf -whitespace
 # Preserve upstream bytes, including whitespace, for the SHA-pinned STB inputs.
 prebuilt/lwjgl3/compat/stb-v1/* -text -whitespace
+# LWJGL2 上游 ContextGL 是按字节锁定的回归输入，不能由 checkout 改写换行。
+prebuilt/lwjgl2/source-fixtures/* -text -whitespace
 # Gate 0 在配置期按原始字节校验该文档；各平台 checkout 必须保持 LF。
 docs/testing/gate0-raw-relative-evidence.md text eol=lf
 # 审计使用的上游原始样本按采集字节保存，不能为格式检查改写其来源指纹。
 docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp -text -whitespace
 # 迁入的历史证据按迁移清单保留原始字节；不为换行/尾空白门禁重写已采集结果或冻结源码。
 docs/testing/evidence/** -text -whitespace
+
+# 运行时目录投影保留原字节，避免换行转换破坏来源摘要。
+entry/src/main/resources/rawfile/runtime-catalog/*.json -text
+# JDK 派生 JSON 与生成 ETS 是按固定正文审计的交付输入，跨平台必须保持 LF。
+prebuilt/lwjgl3/jdk-views/manifest.json text eol=lf
+entry/src/main/resources/rawfile/lwjgl-jdk/manifest.json text eol=lf
+launch/src/main/ets/LwjglJdkViews.ets text eol=lf
+# 派生 JAR 是锁定的二进制资产，不能参与换行转换。
+prebuilt/lwjgl3/jdk-views/*.jar -text
+entry/src/main/resources/rawfile/lwjgl-jdk/*.jar -text
+# 此完整旧Entry是跨层回归的冻结负控，按原始SHA证明“确为修复前实现”，不是普通可格式化源码。
+# Windows core.autocrlf/公开clone/CI均不得改写LF为CRLF或归一其字节；只保护这一证据路径，正常ETS规则不变。
+scripts/fixtures/touch-menu-registration/EntryVirtualMouse.cached.ets -text
+# 完整旧桌面组件用于生命周期/回调撤回负控，按原提交 raw SHA 绑定；只保护此固定样本的字节。
+scripts/fixtures/desktop-control-schema/DesktopGameControlSurface.legacy.ets -text
+# 图形资格夹具按实取原字节SHA绑定；跨平台checkout不能改写JSONL或UI返回文本的换行。
+scripts/fixtures/mg-depth-evidence/positive-scene.jsonl -text
+scripts/fixtures/mg-initializer-evidence/positive-scene.jsonl -text
+scripts/fixtures/mobilegl-program-evidence/*.jsonl -text
+scripts/fixtures/mg-context-identity-evidence/*.jsonl -text
+# 下列在役场景源码与合同被固定证据按原始LF字节绑定；保持跨平台检出身份，不归一已采集JSONL。
+tests/graphics-semantics/mobilegl_program_cases.json text eol=lf
+tests/graphics-semantics/mobilegl_program_scene.cpp text eol=lf
+tests/graphics-semantics/mobilegl_program_scene.h text eol=lf
+tests/graphics-semantics/mg_context_identity_cases.json text eol=lf
+tests/graphics-semantics/mg_context_identity_scene.cpp text eol=lf
+tests/graphics-semantics/mg_context_identity_scene.h text eol=lf
+# 此原始UI文本投影含CRLF，证据字节不能为差异空白检查重新编码。
+scripts/fixtures/mobilegl-loaded-evidence/capability.txt -text -whitespace
+
+# 固定实际旧交付反控保原字节；Windows检出不能转换后触发假checksum漂移。
+scripts/fixtures/game-gui-sync-reference/game_gui_bridge.cpp -text
+scripts/fixtures/game-gui-sync-reference/GameGuiBridge.java -text
+scripts/fixtures/input-consumer/l2-baseline/amcl_lwjgl2_backend.c -text
+scripts/fixtures/input-consumer/l2-baseline/lwjgl.jar binary
+scripts/fixtures/input-consumer/l2-look-baseline/amcl_lwjgl2_backend.c -text
+scripts/fixtures/input-consumer/l2-look-baseline/lwjgl.jar binary
+# SDL 正式 patch 的两份私有控制表按原始字节与 neutral 镜像核对。
+# 仅固定这两个合同头的 LF checkout；Windows core.autocrlf 不能产生假内容漂移，原 byte 门保持。
+entry/src/main/cpp/input/delivery/control_delivery.h text eol=lf
+entry/src/main/cpp/input/delivery/control_delivery_client.h text eol=lf

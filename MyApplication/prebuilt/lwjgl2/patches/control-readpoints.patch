@@ -1,0 +1,278 @@
+diff --git a/src/java/org/lwjgl/input/Keyboard.java b/src/java/org/lwjgl/input/Keyboard.java
+index 00c7652..41fc6f0 100644
+--- a/src/java/org/lwjgl/input/Keyboard.java
++++ b/src/java/org/lwjgl/input/Keyboard.java
+@@ -310,10 +310,24 @@ public class Keyboard {
+ 		if (!initialized)
+ 			initialize();
+ 		implementation = impl;
+-		implementation.createKeyboard();
+-		created = true;
+-		readBuffer = ByteBuffer.allocate(EVENT_SIZE*BUFFER_SIZE);
+-		reset();
++		// AMCL只能在真实上游全部创建步骤成功后公告独立Keyboard资格；非AMCL失败行为保持原样。
++		boolean amclCompleted = false;
++		try {
++			implementation.createKeyboard();
++			created = true;
++			readBuffer = ByteBuffer.allocate(EVENT_SIZE*BUFFER_SIZE);
++			reset();
++			// 此处仍在公开create原GlobalLock内；不能把implementation的早期EventQueue当成功。
++			Display.amclKeyboardCompleteCreate(implementation);
++			amclCompleted = true;
++		} finally {
++			// heap分配、reset或末级登记失败均先撤原lease，再复用keys-only清理；Mouse不退休。
++			if (!amclCompleted && Display.amclKeyboardManaged(implementation)) {
++				created = false;
++				readBuffer = null;
++				implementation.destroyKeyboard();
++			}
++		}
+ 	}
+ 
+ 	/**
+@@ -385,6 +399,8 @@ public class Keyboard {
+ 			if (!created)
+ 				throw new IllegalStateException("Keyboard must be created before you can poll the device");
+ 			implementation.pollKeyboard(keyDownBuffer);
++			// 真实poll缓存已经由implementation填好，一次JNI/owner锁核完整实际view。
++			Display.amclInputPollView(implementation, 1, keyDownBuffer);
+ 			read();
+ 		}
+ 	}
+@@ -404,7 +420,10 @@ public class Keyboard {
+ 		synchronized (OpenGLPackageAccess.global_lock) {
+ 			if (!created)
+ 				throw new IllegalStateException("Keyboard must be created before you can query key state");
+-			return keyDownBuffer.get(key) != 0;
++			// 保留旧缓存读取，并把已发生的真实查询归给原implementation的consumer。
++			boolean held = keyDownBuffer.get(key) != 0 && Display.amclKeyboardStateReady(implementation);
++			Display.amclInputPoll(implementation, 1, key, held);
++			return held;
+ 		}
+ 	}
+ 
+@@ -451,8 +470,19 @@ public class Keyboard {
+ 				throw new IllegalStateException("Keyboard must be created before you can read events");
++			// 先沿原implementation有限处理有序FOCUS，Native同步回入换资源时不碰新缓冲。
++			InputImplementation origin = implementation;
++			ByteBuffer originalBuffer = readBuffer;
++			if (!Display.amclKeyboardReadPreflight(origin) || !created ||
++				implementation != origin || readBuffer != originalBuffer) return 0;
+ 			int old_position = readBuffer.position();
+ 			int num_events = 0;
+-			while (readNext(tmp_event) && (!tmp_event.repeat || repeat_enabled))
+-				num_events++;
++			// 事件数只窥探字节；不能领取ticket，完整失焦取消的记录不计入可用事件。
++			int record_offset = 0;
++			while (readNext(tmp_event)) {
++				boolean ready = Display.amclInputRecordReady(implementation, 1, record_offset++);
++				// 保留上游遇到首条不可报告repeat即停止统计的行为，旁带窥探不改变旧API。
++				if (ready && tmp_event.repeat && !repeat_enabled) break;
++				if (ready) num_events++;
++			}
+ 			readBuffer.position(old_position);
+ 			return num_events;
+ 		}
+@@ -474,10 +499,20 @@ public class Keyboard {
+ 			if (!created)
+ 				throw new IllegalStateException("Keyboard must be created before you can read events");
+ 
+-			boolean result;
+-			while ((result = readNext(current_event)) && current_event.repeat && !repeat_enabled)
+-				;
+-			return result;
++			// preflight在移动原字节之前完成；耗尽/重入只暂缓，不能丢尚未见FOCUS的记录。
++			InputImplementation origin = implementation;
++			ByteBuffer originalBuffer = readBuffer;
++			if (!Display.amclKeyboardReadPreflight(origin) || !created ||
++				implementation != origin || readBuffer != originalBuffer) return false;
++			// 每次真正推进readBuffer恰好领取一个旁带；合法短脉冲不按当前held修订删除。
++			while (readBuffer.hasRemaining()) {
++				boolean ready = Display.amclInputRecordReady(implementation, 1, 0);
++				boolean result = readNext(current_event);
++				boolean delivered = ready && !(current_event.repeat && !repeat_enabled);
++				Display.amclInputRead(implementation, 1, delivered);
++				if (result && delivered) return true;
++			}
++			return false;
+ 		}
+ 	}
+ 
+diff --git a/src/java/org/lwjgl/input/Mouse.java b/src/java/org/lwjgl/input/Mouse.java
+index 9c32bc6..d6fae61 100644
+--- a/src/java/org/lwjgl/input/Mouse.java
++++ b/src/java/org/lwjgl/input/Mouse.java
+@@ -249,6 +249,8 @@ public class Mouse {
+ 
+ 	private static void resetMouse() {
+ 		dx = dy = dwheel = 0;
++		// setGrabbed既有行为明确丢掉未读记录，旁带报告discarded而不是game read。
++		Display.amclInputDiscard(implementation, 2, readBuffer.remaining() / EVENT_SIZE);
+ 		readBuffer.position(readBuffer.limit());
+ 	}
+ 
+@@ -349,10 +351,14 @@ public class Mouse {
+ 		synchronized (OpenGLPackageAccess.global_lock) {
+ 			if (!created) throw new IllegalStateException("Mouse must be created before you can poll it");
+ 			implementation.pollMouse(coord_buffer, buttons);
++			// 保留真实按钮缓存，观测整个view只调用一次JNI，不逐按钮回锁共同owner。
++			Display.amclInputPollView(implementation, 2, buttons);
+ 
+ 			/* If we're grabbed, poll returns mouse deltas, if not it returns absolute coordinates */
+ 			int poll_coord1 = coord_buffer.get(0);
+ 			int poll_coord2 = coord_buffer.get(1);
++			// 两个坐标已被真实Mouse.poll读取，再观测look消费；不把implementation入队计作读取。
++			Display.amclLookPollView(implementation, coord_buffer);
+ 			/* The wheel is always relative */
+ 			int poll_dwheel = coord_buffer.get(2);
+ 
+@@ -397,8 +403,12 @@ public class Mouse {
+ 			if (!created) throw new IllegalStateException("Mouse must be created before you can poll the button state");
+ 			if (button >= buttonCount || button < 0)
+ 				return false;
+-			else
+-				return buttons.get(button) == 1;
++			else {
++				// 此处是游戏实际查询的旧ABI缓存，不能用neutral desired状态替代。
++				boolean held = buttons.get(button) == 1;
++				Display.amclInputPoll(implementation, 2, button, held);
++				return held;
++			}
+ 		}
+ 	}
+ 
+@@ -442,6 +452,11 @@ public class Mouse {
+ 	public static boolean next() {
+ 		synchronized (OpenGLPackageAccess.global_lock) {
+ 			if (!created) throw new IllegalStateException("Mouse must be created before you can read events");
++			// 完整失焦取消的旧记录仍占原缓冲槽，跳过字节并同步丢其旁带。
++			while (readBuffer.hasRemaining() && !Display.amclInputRecordReady(implementation, 2, 0)) {
++				readBuffer.position(readBuffer.position() + EVENT_SIZE);
++				Display.amclInputRead(implementation, 2, false);
++			}
+ 			if (readBuffer.hasRemaining()) {
+ 				eventButton = readBuffer.get();
+ 				eventState = readBuffer.get() != 0;
+@@ -468,6 +483,8 @@ public class Mouse {
+ 				}
+ 				event_dwheel = readBuffer.getInt();
+ 				event_nanos = readBuffer.getLong();
++				// 真正next已经把22字节记录写入游戏可查询event字段后才完成pull。
++				Display.amclInputRead(implementation, 2, true);
+ 				return true;
+ 			} else
+ 				return false;
+diff --git a/src/java/org/lwjgl/opengl/Display.java b/src/java/org/lwjgl/opengl/Display.java
+index 8b0a55f..05365c8 100644
+--- a/src/java/org/lwjgl/opengl/Display.java
++++ b/src/java/org/lwjgl/opengl/Display.java
+@@ -154,7 +154,7 @@ public final class Display {
+ 	private static DisplayImplementation createDisplayImplementation() {
+ 		switch ( LWJGLUtil.getPlatform() ) {
+ 			case LWJGLUtil.PLATFORM_LINUX:
+-				return new LinuxDisplay();
++				return new AMCLDisplay();
+ 			case LWJGLUtil.PLATFORM_WINDOWS:
+ 				return new WindowsDisplay();
+ 			case LWJGLUtil.PLATFORM_MACOSX:
+@@ -1036,6 +1036,76 @@ public final class Display {
+ 		update();
+ 	}
+ 
++	/** 只识别本适配器；第三方/AWT等实现保留其原上游创建和失败语义。 */
++	public static boolean amclKeyboardManaged(InputImplementation source) {
++		synchronized ( GlobalLock.lock ) {
++			return source instanceof AMCLDisplay;
++		}
++	}
++
++	/** 完整Keyboard.create已分配并reset实际readBuffer，成功末点才登记原lease及合法held基线。 */
++	public static void amclKeyboardCompleteCreate(InputImplementation source) throws LWJGLException {
++		synchronized ( GlobalLock.lock ) {
++			if (source instanceof AMCLDisplay) ((AMCLDisplay)source).keyboardCompleteCreate();
++		}
++	}
++
++	/** 目标/局部资源失权后旧poll缓存不再授予held；其他实现继续读取原缓存。 */
++	public static boolean amclKeyboardStateReady(InputImplementation source) {
++		synchronized ( GlobalLock.lock ) {
++			return !(source instanceof AMCLDisplay) || ((AMCLDisplay)source).keyboardStateReady();
++		}
++	}
++
++	/** 领取/窥探前沿原implementation做有界FOCUS观察；其它实现保持上游缓存语义。 */
++	public static boolean amclKeyboardReadPreflight(InputImplementation source) {
++		synchronized ( GlobalLock.lock ) {
++			return !(source instanceof AMCLDisplay) || ((AMCLDisplay)source).keyboardReadPreflight();
++		}
++	}
++
++	/** AMCL私有读取hook自身持原GlobalLock；既有调用方已持锁时重入，不改绑旧记录。 */
++	public static boolean amclInputRecordReady(InputImplementation source, int kind, int offset) {
++		synchronized ( GlobalLock.lock ) {
++			return !(source instanceof AMCLDisplay) || ((AMCLDisplay)source).controlRecordReady(kind, offset);
++		}
++	}
++
++	/** 只有实际next已经取出记录后才调用；过滤repeat/明确丢弃采用discarded阶段。 */
++	public static void amclInputRead(InputImplementation source, int kind, boolean delivered) {
++		synchronized ( GlobalLock.lock ) {
++			if (source instanceof AMCLDisplay) ((AMCLDisplay)source).controlRead(kind, delivered);
++		}
++	}
++
++	/** 既有Mouse.resetMouse丢缓冲时同步丢旁带，不能留到下一条记录被误认。 */
++	public static void amclInputDiscard(InputImplementation source, int kind, int count) {
++		synchronized ( GlobalLock.lock ) {
++			if (source instanceof AMCLDisplay) ((AMCLDisplay)source).controlDiscardRead(kind, count);
++		}
++	}
++
++	/** 真正poll取得完整实际缓存后一次观测，不在getter循环中反复调用JNI。 */
++	public static void amclInputPollView(InputImplementation source, int kind, ByteBuffer states) {
++		synchronized ( GlobalLock.lock ) {
++			if (source instanceof AMCLDisplay) ((AMCLDisplay)source).controlPollView(kind, states);
++		}
++	}
++
++	/** 已完成实际isKeyDown/isButtonDown读取后才计数，参数来自旧ABI实际缓存。 */
++	public static void amclInputPoll(InputImplementation source, int kind, int code, boolean held) {
++		synchronized ( GlobalLock.lock ) {
++			if (source instanceof AMCLDisplay) ((AMCLDisplay)source).controlPoll(kind, code, held);
++		}
++	}
++
++	/** 真实Mouse.poll取得完整坐标view后观测，仍沿原GlobalLock串行资源边界。 */
++	public static void amclLookPollView(InputImplementation source, java.nio.IntBuffer coordinates) {
++		synchronized ( GlobalLock.lock ) {
++			if (source instanceof AMCLDisplay) ((AMCLDisplay)source).lookPollView(coordinates);
++		}
++	}
++
+ 	static DisplayImplementation getImplementation() {
+ 		return display_impl;
+ 	}
+diff --git a/src/java/org/lwjgl/opengl/EventQueue.java b/src/java/org/lwjgl/opengl/EventQueue.java
+--- a/src/java/org/lwjgl/opengl/EventQueue.java
++++ b/src/java/org/lwjgl/opengl/EventQueue.java
+@@ -80,4 +80,19 @@
+ 		} else
+ 			return false;
+ 	}
++	/**
++	 * AMCL字符pair的包内批量出口；不改变既有单条event_size或公开Keyboard ABI。
++	 * 在同一monitor中先验证完整记录与总剩余预算，再一次ByteBuffer bulk复制。
++	 * 拒绝时queue及源buffer的position/limit/内容均不变；成功才推进完整批次。
++	 * queue的私有存储不可充作源，避免自拷贝在容量判断前改变内部游标。
++	 */
++	synchronized boolean putEvents(ByteBuffer events) {
++		if (events == null || events == queue) return false;
++		final int bytes = events.remaining();
++		if (bytes == 0 || bytes % event_size != 0) return false;
++		if (queue.remaining() < bytes) return false;
++		queue.put(events);
++		return true;
++	}
++
+ }

@@ -3,13 +3,18 @@
 #include "backend_keymaps.h"
 #include "backend_input_event_encode.h"
 #include "glfw_input_adapter.h"
+#include "sdl_pointer_device_id.h"
 #include "../text_utf8_codec.h"
 #include "../amcl_input_api.h"
 #include "../amcl_input_event.h"
+#include "../input_look_core_hook.h"
+#include "../delivery/look_execution.h"
+#include "../delivery/l2_keyboard_scope.h"
 // 跨 linker namespace 的 host table 解析。本 TU 不得用本地 getter，理由见 EnsureOpenLocked。
 #include "../amcl_input_host_descriptor.h"
 // 滚轮量纲与符号只有一份契约，本通道不得再写一遍（计划 §102.1）。
 #include "../../platform/physical_wheel_quantizer.h"
+#include "../../platform/input_source.h"
 
 #include <hilog/log.h>
 
@@ -21,6 +26,11 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #undef LOG_TAG
 #define LOG_TAG "BACKEND_INPUT"
@@ -77,15 +87,25 @@ constexpr size_t kQueueCapacity = 128u;
 constexpr size_t kTextPacketCapacity = 128u;
 constexpr size_t kTextByteCapacity = 1024u * 1024u;
 
+// 内部队列同时保留旧wire的core sequence与新的共同交互顺序。旧Next不改变字段语义，
+// 只有经独立AMCLORDER契约协商的NextThrough才把共同顺序写到返回的sequence槽。
+struct BackendQueuedEvent : AmclBackendInputEvent {
+    uint64_t interactionOrder;
+    uint64_t l2KeyboardScope;
+    BackendQueuedEvent(const AmclBackendInputEvent& event, uint64_t order = 0u,uint64_t keyScope=0u)
+        : AmclBackendInputEvent(event), interactionOrder(order),l2KeyboardScope(keyScope) {}
+};
+
 struct BackendChannel {
     std::mutex mutex;
     GlfwInputAdapter adapter;
-    std::deque<AmclBackendInputEvent> queue;
+    std::deque<BackendQueuedEvent> queue;
     std::map<uint64_t, std::vector<uint8_t>> textPackets;
     uint64_t nextTextPacket = 1u;
     size_t textPacketBytes = 0u;
     bool opened = false;
     bool active = false;
+    uint64_t lastKeyScopeOrder=0,lastKeyScope=0; // 仅读原已出队记录的有界侧带，不是current资格
     // ⚠️ 墓碑: resetPending 已删除（三处写、零处读 —— 溢出时那条 RESET 本身就在队列里，
     // 这个布尔量没有第二个读者），详见计划 §103.1
     uint64_t droppedEvents = 0;
@@ -126,10 +146,58 @@ struct BackendChannel {
     // 缺陷换成正向证据：`amclBackendInputSetActive` 从未被调用时，本函数每帧静默返回
     // NOT_READY，而"通道没激活"与"用户没按键"在日志里长得一模一样（规范 §八 纪律 5）。
     uint64_t inactivePulls = 0;
+    // 只用于 SDL 通道：指针记录（BUTTON/WHEEL/RELATIVE/DEVICE）的设备号压缩表，见
+    // sdl_pointer_device_id.h。键盘、文本与 surface-context 记录的 deviceId 槽语义不同，从不经过它。
+    amcl::input::SdlPointerDeviceIdMap sdlPointerIds;
+    // Open 返回 kInvalidConfiguration（永久失败）时的一次性 ERROR 是否已打过（进程内每通道一次）。
+    bool invalidConfigurationLogged = false;
 };
 
 // 索引 0 = LWJGL2、1 = SDL3。GLFW3 不在这里：它有自己的 sink 直接进 GLFW 运行期状态。
 BackendChannel g_channels[2];
+
+// 注册锁只保护函数/PID的成组发布。调用加工器前释放它，避免跨平台回调持有
+// 服务发现锁；加工器只取自己的参数/滤波锁，不能反向获取channel/core/ingress。
+std::mutex g_lookProcessorMutex;
+AmclBackendLookProcessorV1 g_lookProcessor = nullptr;
+uint64_t g_lookProcessorPid = 0u;
+AmclBackendLookResetV1 g_lookReset = nullptr;
+uint64_t g_lookResetPid = 0u;
+
+uint64_t CurrentProcessId() {
+#ifdef _WIN32
+    return static_cast<uint64_t>(_getpid());
+#else
+    return static_cast<uint64_t>(getpid());
+#endif
+}
+
+AmclBackendLookProcessorV1 ResolveLookProcessor() {
+    std::lock_guard<std::mutex> lock(g_lookProcessorMutex);
+    return g_lookProcessorPid == CurrentProcessId() ? g_lookProcessor : nullptr;
+}
+
+void ResetPhysicalLookForSdl(BackendChannel* channel) {
+    if (channel != &g_channels[1]) return;
+    AmclBackendLookResetV1 reset = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_lookProcessorMutex);
+        if (g_lookResetPid == CurrentProcessId()) reset = g_lookReset;
+    }
+    // 本调用仍持channel锁，但不持注册锁。callback只能取source processor锁，
+    // 后者无任何下游回调/bridge访问，因此不存在反向channel/core/ingress依赖。
+    if (reset) reset(AMCL_INPUT_SOURCE_PHYSICAL_KBM);
+}
+
+// 发布接口同时被OHOS与真实宿主集成测试编译；Windows没有setenv，使用其等价
+// 显式覆盖入口。失败返回调用者，不能发布缺少text读/释放半边的backend descriptor。
+bool PublishEnvironment(const char* name, const char* value) {
+#ifdef _WIN32
+    return _putenv_s(name, value) == 0;
+#else
+    return setenv(name, value, 1) == 0;
+#endif
+}
 
 BackendChannel* ChannelFor(uint32_t backend) {
     if (backend == AMCL_BACKEND_INPUT_LWJGL2) return &g_channels[0];
@@ -153,6 +221,31 @@ AmclBackendInputEvent BlankEvent(uint32_t type) {
     return event;
 }
 
+// SDL 通道指针记录的出线设备号。**必须在 channel->mutex 内调用**（sink 调用链已持有）。
+// 契约内的号原样返回；契约外的号换进 SDL 安全值域并在首次 / 2 的幂次时打 WARN，因为它说明
+// 平台给出了 OpenHarmony 事件设备号值域之外的身份。LWJGL2 通道原样返回（它的出线不带设备号）。
+uint64_t SdlPointerDeviceIdLocked(BackendChannel* channel, uint64_t hostId) {
+    if (backendOf(channel) != AMCL_BACKEND_INPUT_SDL3) return hostId;
+    auto& ids = channel->sdlPointerIds;
+    const amcl::input::SdlPointerDeviceIdMap::Result mapped = ids.Map(hostId);
+    if (mapped.remappedNow || mapped.folded) {
+        const uint64_t count = mapped.folded ? ids.folded() : ids.remapped();
+        if ((count & (count - 1u)) == 0u) {
+            OH_LOG_WARN(LOG_APP,
+                "AMCL_BACKEND_SDL_POINTER_ID %{public}s host=%{public}llu "
+                "sdlDevice=%{public}llu live=%{public}zu remapped=%{public}llu "
+                "released=%{public}llu folded=%{public}llu",
+                mapped.folded ? "fold-to-unknown" : "remap",
+                static_cast<unsigned long long>(hostId),
+                static_cast<unsigned long long>(mapped.deviceId), ids.live(),
+                static_cast<unsigned long long>(ids.remapped()),
+                static_cast<unsigned long long>(ids.released()),
+                static_cast<unsigned long long>(ids.folded()));
+        }
+    }
+    return mapped.deviceId;
+}
+
 // 入队。**必须在 channel->mutex 内调用。** 溢出时整条清空并投一条 RESET：留下半截
 // 序列比丢掉整段更糟 —— 消费者会拿到一批没有配对 UP 的 DOWN，在游戏里读作卡键。
 void EnqueueLocked(BackendChannel* channel, const AmclBackendInputEvent& event) {
@@ -161,6 +254,8 @@ void EnqueueLocked(BackendChannel* channel, const AmclBackendInputEvent& event) 
         channel->queue.clear();
         channel->textPackets.clear();
         channel->textPacketBytes = 0u;
+        channel->wheelRemainderPx = 0.0;
+        ResetPhysicalLookForSdl(channel);
         ++channel->overflowCount;
         AmclBackendInputEvent reset = BlankEvent(AMCL_BACKEND_INPUT_EVENT_RESET);
         reset.resetReason = AMCL_INPUT_RESET_QUEUE_OVERFLOW;
@@ -172,7 +267,11 @@ void EnqueueLocked(BackendChannel* channel, const AmclBackendInputEvent& event) 
             static_cast<unsigned long long>(channel->overflowCount));
         return;
     }
-    channel->queue.push_back(event);
+    uint64_t keyScope=0,host=0,consumer=0,sequence=0;
+    // 状态锁已经由adapter POD读取释放；这里只查询原Core已交出的同sequence侧带。
+    if(channel->adapter.CurrentCoreRecord(&host,&consumer,&sequence))
+        (void)amclInputOwnerReadL2KeyStampV1(host,consumer,sequence,&keyScope);
+    channel->queue.emplace_back(event, channel->adapter.CurrentInteractionOrder(),keyScope);
 }
 
 bool EnqueueTextLocked(BackendChannel* channel,
@@ -186,6 +285,8 @@ bool EnqueueTextLocked(BackendChannel* channel,
         channel->queue.clear();
         channel->textPackets.clear();
         channel->textPacketBytes = 0u;
+        channel->wheelRemainderPx = 0.0;
+        ResetPhysicalLookForSdl(channel);
         ++channel->overflowCount;
         AmclBackendInputEvent reset = BlankEvent(
             AMCL_BACKEND_INPUT_EVENT_RESET);
@@ -243,7 +344,8 @@ void ButtonSink(void* context, const amcl::input::GlfwButtonSinkEvent& event) {
     out.action = event.action == amcl::input::GlfwInputAction::kRelease
         ? AMCL_BACKEND_INPUT_ACTION_UP
         : AMCL_BACKEND_INPUT_ACTION_DOWN;
-    out.deviceId = event.deviceId;
+    // SDL 以设备号区分按钮贡献者：契约外的宿主号先换进不撞保留号的值域。
+    out.deviceId = SdlPointerDeviceIdLocked(channel, event.deviceId);
     out.resetReason = event.deviceClass;
     out.sequence = event.sequence;
     out.monotonicTimeNs = event.monotonicTimeNs;
@@ -365,7 +467,7 @@ void WheelSink(void* context, const amcl::input::GlfwWheelSinkEvent& event) {
     AmclBackendInputEvent out = BlankEvent(AMCL_BACKEND_INPUT_EVENT_WHEEL);
     out.wheelX = 0.0f;
     out.wheelY = static_cast<float>(detentsY);
-    out.deviceId = event.deviceId;
+    out.deviceId = SdlPointerDeviceIdLocked(channel, event.deviceId);
     out.resetReason = event.deviceClass;
     out.sequence = event.sequence;
     out.monotonicTimeNs = event.monotonicTimeNs;
@@ -375,6 +477,9 @@ void WheelSink(void* context, const amcl::input::GlfwWheelSinkEvent& event) {
 void ResetSink(void* context, const amcl::input::GlfwResetSinkEvent& event) {
     // 已在 channel->mutex 内。
     auto* channel = static_cast<BackendChannel*>(context);
+    // 残量属于旧投递代次；任何全局或定向RESET都不能把半格滚动带到恢复之后。
+    channel->wheelRemainderPx = 0.0;
+    ResetPhysicalLookForSdl(channel);
     AmclBackendInputEvent out = BlankEvent(AMCL_BACKEND_INPUT_EVENT_RESET);
     out.resetReason = event.reason;
     out.sequence = event.sequence;
@@ -423,7 +528,14 @@ void DeviceSink(void* context,
         // guessing Mouse vs Touchpad.
         return;
     }
-    EnqueueLocked(channel, amcl::input::EncodeBackendDevice(event));
+    AmclBackendInputEvent out = amcl::input::EncodeBackendDevice(event);
+    out.deviceId = SdlPointerDeviceIdLocked(channel, event.deviceId);
+    EnqueueLocked(channel, out);
+    // REMOVED 已按旧号编码（core 把该设备的合成 UP 排在它之前，也用的是旧号），之后释放表项；
+    // 同一宿主号以后再出现会分到新号，SDL 那侧已随 REMOVED 删除了旧 MouseID。
+    if (out.code == AMCL_BACKEND_INPUT_DEVICE_REMOVED) {
+        channel->sdlPointerIds.Release(event.deviceId);
+    }
 }
 
 void RelativeSink(void* context,
@@ -431,20 +543,39 @@ void RelativeSink(void* context,
     // Already inside channel->mutex. SDL owns the final relative-motion event;
     // this path must not feed the process-wide GLFW look accumulator as well.
     auto* channel = static_cast<BackendChannel*>(context);
+    if(amclInputOwnerLookCommitReadyV1()){
+        // Core已在接受事务中唯一加工此sequence，三consumer只借同一memo。原64-byte
+        // envelope/raw硬件能力/设备映射仍保留，实际SDL/L2 edge通过private port领取prefix。
+        uint64_t token=0;const auto* look=amclLookExecutionGetPortV1();
+        if(!look||look->physicalPrefix(event.sequence,&token)!=AMCL_LOOK_PREFIX_READY)return;
+        AmclBackendInputEvent out{};if(!amcl::input::EncodeBackendRelative(event,&out))return;
+        if(backendOf(channel)==AMCL_BACKEND_INPUT_SDL3)out.deviceId=SdlPointerDeviceIdLocked(channel,event.deviceId);
+        EnqueueLocked(channel,out);return;
+    }
     if (backendOf(channel) != AMCL_BACKEND_INPUT_SDL3) {
         return;  // LWJGL2 retains its existing accumulated-cursor owner.
     }
+    // SDL与GLFW/L2使用同一source参数处理，但SDL自己发最终运动，禁止再写
+    // 共享accumulator。缺加工器不能悄悄退回原始量，否则用户配置会随消费者失效。
+    const AmclBackendLookProcessorV1 processor = ResolveLookProcessor();
+    amcl::input::GlfwRelativeSinkEvent processed = event;
+    const bool processedOk = processor && event.monotonicTimeNs <= INT64_MAX &&
+        processor(AMCL_INPUT_SOURCE_PHYSICAL_KBM, event.dx, event.dy,
+                  static_cast<int64_t>(event.monotonicTimeNs),
+                  &processed.dx, &processed.dy);
     AmclBackendInputEvent out{};
-    if (!amcl::input::EncodeBackendRelative(event, &out)) {
+    if (!processedOk || !amcl::input::EncodeBackendRelative(processed, &out)) {
         const uint64_t count =
             g_relativeRejectCount.fetch_add(1u, std::memory_order_relaxed) + 1u;
         if ((count & (count - 1u)) == 0u) {
             OH_LOG_ERROR(LOG_APP,
-                "backend relative rejected float overflow count=%{public}llu",
+                "backend relative rejected processor/magnitude count=%{public}llu",
                 static_cast<unsigned long long>(count));
         }
         return;
     }
+    // 相对运动经 SDL_MouseID 归属到设备：与按钮 / 滚轮 / 设备记录共用同一张压缩表。
+    out.deviceId = SdlPointerDeviceIdLocked(channel, out.deviceId);
     EnqueueLocked(channel, out);
 }
 
@@ -670,7 +801,8 @@ OpenOutcome EnsureOpenLocked(BackendChannel* channel, uint32_t backend) {
 // 被淹在滚轮里，而"键到没到"恰好是本次迁移最需要证明的那一条。各类累计值每次都
 // 一起打，所以任何一行都是一份完整快照 —— 验收只需要 grep 最后一行。
 void CountDeliveredLocked(BackendChannel* channel, uint32_t backend,
-                          uint32_t eventType) {
+                          uint32_t eventType, uint64_t order, uint64_t coreSequence,
+                          uint64_t sampleTimeNs) {
     switch (eventType) {
         case AMCL_BACKEND_INPUT_EVENT_KEY: ++channel->deliveredKeys; break;
         case AMCL_BACKEND_INPUT_EVENT_BUTTON: ++channel->deliveredButtons; break;
@@ -691,20 +823,21 @@ void CountDeliveredLocked(BackendChannel* channel, uint32_t backend,
         default: return;
     }
     const uint64_t keys = channel->deliveredKeys;
-    const bool firstOfOther = keys == 0u &&
-        channel->deliveredButtons + channel->deliveredWheels +
+    const uint64_t total = keys + channel->deliveredButtons + channel->deliveredWheels +
         channel->deliveredResets + channel->deliveredFocus +
         channel->deliveredCapture + channel->deliveredRelative +
         channel->deliveredDevices + channel->deliveredSurfaceContexts +
-        channel->deliveredText == 1u;
-    if (!firstOfOther && (keys == 0u || (keys & (keys - 1u)) != 0u)) return;
+        channel->deliveredText;
+    // 按总投递数节流。只检查keys会在按键数恰为2的幂时把每条鼠标运动都写日志。
+    if (eventType != AMCL_BACKEND_INPUT_EVENT_RESET && (total & (total - 1u)) != 0u) return;
     OH_LOG_INFO(LOG_APP,
         "AMCL_BACKEND_DELIVERED backend=%{public}u keys=%{public}llu "
         "buttons=%{public}llu wheels=%{public}llu resets=%{public}llu "
         "focus=%{public}llu capture=%{public}llu "
         "relative=%{public}llu devices=%{public}llu contexts=%{public}llu "
         "text=%{public}llu "
-        "dropped=%{public}llu overflow=%{public}llu",
+        "dropped=%{public}llu overflow=%{public}llu "
+        "interaction=%{public}llu coreSequence=%{public}llu sampleNs=%{public}llu",
         backend,
         static_cast<unsigned long long>(keys),
         static_cast<unsigned long long>(channel->deliveredButtons),
@@ -717,13 +850,52 @@ void CountDeliveredLocked(BackendChannel* channel, uint32_t backend,
         static_cast<unsigned long long>(channel->deliveredSurfaceContexts),
         static_cast<unsigned long long>(channel->deliveredText),
         static_cast<unsigned long long>(channel->droppedEvents),
-        static_cast<unsigned long long>(channel->overflowCount));
+        static_cast<unsigned long long>(channel->overflowCount),
+        static_cast<unsigned long long>(order),
+        static_cast<unsigned long long>(coreSequence),
+        static_cast<unsigned long long>(sampleTimeNs));
 }
 
 }  // namespace
 
+extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputSetLookProcessorV1(
+        AmclBackendLookProcessorV1 processor) {
+    if (!processor) return 0;
+    std::lock_guard<std::mutex> lock(g_lookProcessorMutex);
+    const uint64_t pid = CurrentProcessId();
+    if (g_lookProcessorPid == pid && g_lookProcessor &&
+        g_lookProcessor != processor) return 0;
+    g_lookProcessor = processor;
+    g_lookProcessorPid = pid;
+    return 1;
+}
+
+extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputSetLookResetV1(
+        AmclBackendLookResetV1 reset) {
+    if (!reset) return 0;
+    std::lock_guard<std::mutex> lock(g_lookProcessorMutex);
+    const uint64_t pid = CurrentProcessId();
+    if (g_lookResetPid == pid && g_lookReset && g_lookReset != reset) return 0;
+    g_lookReset = reset;
+    g_lookResetPid = pid;
+    return 1;
+}
+
+static int NextBackendEvent(uint32_t backend, AmclBackendInputEvent* out,
+                            uint64_t maxOrder, bool orderedEnvelope);
+
 extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputNext(uint32_t backend,
                                     AmclBackendInputEvent* out) {
+    return NextBackendEvent(backend, out, UINT64_MAX, false);
+}
+
+extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputNextThrough(uint32_t backend,
+                                    AmclBackendInputEvent* out, uint64_t maxOrder) {
+    return NextBackendEvent(backend, out, maxOrder, true);
+}
+
+static int NextBackendEvent(uint32_t backend, AmclBackendInputEvent* out,
+                            uint64_t maxOrder, bool orderedEnvelope) {
     if (!out) return AMCL_BACKEND_INPUT_ERROR_ARGUMENT;
     BackendChannel* channel = ChannelFor(backend);
     if (!channel) return AMCL_BACKEND_INPUT_ERROR_ARGUMENT;
@@ -757,25 +929,64 @@ extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputNext(uint32_t backend,
             // 都已经是"这一轮不取，下一轮再来"，所以这条不需要改它们任何一行。
             return AMCL_BACKEND_INPUT_ERROR_NOT_READY;
     }
-    if (channel->queue.empty()) {
+    for (unsigned skipped = 0u; channel->queue.empty() && skipped < 64u; ++skipped) {
         // ⭐ pull 自己当泵。adapter 的 sink 在本调用栈里同步跑，所以 Pump 返回之后
         // 队列里就是本次新到的事件 —— 不需要常驻线程，也不依赖 glfwPollEvents
         // （SDL3 那条根本不调它）。
-        const GlfwPumpResult pump = channel->adapter.Pump();
+        // 输出没有被调用者取走前不再读下一条core记录。无输出的诊断/未映射记录最多跳过
+        // 64条，既不让它们各自拖延一帧，也不让持续无效生产者占满一次平台事件泵。
+        const GlfwPumpResult pump = channel->adapter.Pump(1u, maxOrder);
         if (pump.status != GlfwAdapterStatus::kOk &&
             pump.status != GlfwAdapterStatus::kOverflowReset) {
+            // 后端曾READY并不代表之后一直可用；记录真实Pump失败，区分主动停用与适配器恢复。
+            // 两个channel各有自己的锁，此累计数必须原子化；按2的幂节流，异常记录不保存输入载荷。
+            static std::atomic<uint64_t> pumpFailures{0};
+            const uint64_t failures = pumpFailures.fetch_add(1u, std::memory_order_relaxed) + 1u;
+            if ((failures & (failures - 1u)) == 0u) {
+                OH_LOG_WARN(LOG_APP,
+                    "AMCL_BACKEND_PUMP_FAILED backend=%{public}u status=%{public}d drained=%{public}u count=%{public}llu",
+                    backend, static_cast<int>(pump.status), pump.eventsDrained,
+                    static_cast<unsigned long long>(failures));
+            }
             /* A stale/session failure closes the adapter internally.  Do not
              * leave the channel's opened bit latched: the next active window
              * must establish a fresh consumer baseline instead of polling a
              * permanently not-ready adapter forever. */
             channel->opened = false;
+            // 有界Pump可能恰好在私有RESET之后停下，下一次Next才读到STALE。维持原有
+            // 自动重握手合同：当前调用内允许一次有进展的重开，随后先交付基线/收尾输出。
+            if (pump.status == GlfwAdapterStatus::kStale &&
+                EnsureOpenLocked(channel, backend) == OpenOutcome::kOpen) continue;
+            break;
         }
+        if (pump.eventsDrained == 0u) break;
+    }
+    // L2键/文字按接受时的原scope失权，不能在本次读取时补新current。Mouse和SDL不受影响。
+    while(!channel->queue.empty()&&backend==AMCL_BACKEND_INPUT_LWJGL2&&amclInputOwnerSelectedKeyboardBackendV1()==2u){
+        const auto& original=channel->queue.front();
+        const bool keyWork=original.eventType==AMCL_BACKEND_INPUT_EVENT_KEY||original.eventType==AMCL_BACKEND_INPUT_EVENT_TEXT_COMMIT;
+        if(!keyWork||(original.l2KeyboardScope&&original.l2KeyboardScope==amclInputOwnerL2KeyboardScopeV1()))break;
+        if(original.eventType==AMCL_BACKEND_INPUT_EVENT_TEXT_COMMIT){
+            const auto packet=channel->textPackets.find(original.deviceId);
+            if(packet!=channel->textPackets.end()){channel->textPacketBytes-=packet->second.size();channel->textPackets.erase(packet);}
+        }
+        ++channel->droppedEvents;channel->queue.pop_front();
     }
     if (channel->queue.empty()) return AMCL_BACKEND_INPUT_EMPTY;
+    const uint64_t order = channel->queue.front().interactionOrder;
+    if (order > maxOrder) return AMCL_BACKEND_INPUT_EMPTY;
     *out = channel->queue.front();
+    channel->lastKeyScopeOrder=order;channel->lastKeyScope=channel->queue.front().l2KeyboardScope;
     channel->queue.pop_front();
-    CountDeliveredLocked(channel, backend, out->eventType);
+    CountDeliveredLocked(channel, backend, out->eventType, order, out->sequence, out->monotonicTimeNs);
+    if (orderedEnvelope) out->sequence = order;
     return AMCL_BACKEND_INPUT_EVENT;
+}
+extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputL2ReadKeyScopeV1(uint64_t originalOrder,uint64_t* scope){
+    if(!scope)return 0;*scope=0;BackendChannel* channel=ChannelFor(AMCL_BACKEND_INPUT_LWJGL2);
+    if(!channel)return 0;std::lock_guard<std::mutex> lock(channel->mutex);
+    if(!originalOrder||channel->lastKeyScopeOrder!=originalOrder)return 0;
+    *scope=channel->lastKeyScope;return 1;
 }
 
 extern "C" AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputReadText(
@@ -851,6 +1062,11 @@ extern "C" AMCL_BACKEND_INPUT_PUBLIC void amclBackendInputSetActive(uint32_t bac
     BackendChannel* channel = ChannelFor(backend);
     if (!channel) return;
     std::lock_guard<std::mutex> lock(channel->mutex);
+    // 生命周期边界本身必须可追溯：消费者刚报告就绪又被窗口停用时，不能只剩生产者的NOT_READY。
+    // 只在显式SetActive调用时记录，不在每帧拉取时打印，也不改变原有关闭、排空和激活顺序。
+    OH_LOG_INFO(LOG_APP,
+        "AMCL_BACKEND_ACTIVE backend=%{public}u active=%{public}d previous=%{public}d opened=%{public}d",
+        backend, active != 0 ? 1 : 0, channel->active ? 1 : 0, channel->opened ? 1 : 0);
     channel->active = active != 0;
     if (!channel->active) {
         /* Retire the adapter consumer as well as this small output queue.  Merely
@@ -876,7 +1092,12 @@ extern "C" AMCL_BACKEND_INPUT_PUBLIC void amclBackendInputSetActive(uint32_t bac
     channel->wheelRemainderPx = 0.0;
 }
 
+// 两个描述符只含本 image 的函数地址，是进程常量：成功发布一次后置位，之后 surface 重建、
+// glfwInit 与 libentry 早期发布的重复调用都直接返回，不再 setenv（I27-05）。
+static std::atomic<bool> g_backendDescriptorsPublished{false};
+
 extern "C" AMCL_BACKEND_INPUT_PUBLIC void amclBackendInputPublishAddress(void) {
+    if (g_backendDescriptorsPublished.load(std::memory_order_acquire)) return;
     // 格式："AMCLBEIV:<ver>:<next>,<setActive>"（十进制 uintptr_t）。magic 与版本由
     // 消费侧严格校验：不匹配意味着两边版本不同，猜字段顺序等于调用任意代码。
     char buffer[128];
@@ -896,12 +1117,19 @@ extern "C" AMCL_BACKEND_INPUT_PUBLIC void amclBackendInputPublishAddress(void) {
                       &amclBackendInputReadTextScalars)),
                   static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(
                       &amclBackendInputReleaseText)));
-    setenv("AMCL_BACKEND_TEXT_BRIDGE", textBuffer, 1);
+    if (!PublishEnvironment("AMCL_BACKEND_TEXT_BRIDGE", textBuffer)) {
+        OH_LOG_ERROR(LOG_APP, "backend text descriptor publication failed");
+        return;
+    }
     // Publish the owned-packet descriptor first. A consumer that observes the
     // legacy descriptor is then guaranteed to find read/release functions too;
     // older hosts simply omit this independent variable and never emit text
     // packet event types.
-    setenv("AMCL_BACKEND_INPUT_BRIDGE", buffer, 1);
+    if (!PublishEnvironment("AMCL_BACKEND_INPUT_BRIDGE", buffer)) {
+        OH_LOG_ERROR(LOG_APP, "backend input descriptor publication failed");
+        return;
+    }
+    g_backendDescriptorsPublished.store(true, std::memory_order_release);
     OH_LOG_INFO(LOG_APP,
         "backend input bridge published ver=%{public}u", AMCL_BACKEND_INPUT_ABI_VERSION);
 }

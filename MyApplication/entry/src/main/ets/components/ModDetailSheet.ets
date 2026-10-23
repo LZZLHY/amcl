@@ -27,9 +27,10 @@
  *   - 一键安装回调透传给现有的 quickInstall 逻辑
  */
 
-import { ThemeColors } from 'commons';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
+import { ThemeColors, DistributionPolicy } from 'commons';
 import {
-  ModSource, RemoteProject, RemoteVersion, RemoteFile, DependencyType, VersionChannel,
+  ModSource, RemoteProject, RemoteVersion, RemoteFile, DependencyType, VersionChannel, ResourceKind,
   pickPrimaryFile, displayTitleOf,
   mcmodClassUrl, modrinthWebUrl, curseforgeWebUrl,
 } from 'mods';
@@ -39,6 +40,7 @@ import { compareModVersionFreshness } from 'mods';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
 import { RemoteImage } from './RemoteImage';
+import { ModpackNameInput } from './ModpackNameInput';
 import { kindIcon, formatDownloadCount } from './ModCard';
 // 2026-05-23 图标系统统一：loader name → icon/颜色全部走 LoaderCatalog。
 import { inferLoaderInfo } from '../components/LoaderCatalog';
@@ -94,7 +96,7 @@ export struct ModDetailSheet {
   /** 当前展示的项目；空对象表示"无选中状态"占位 */
   @Prop project: RemoteProject = {} as RemoteProject
 
-  /** 当前选定的版本（已挑好的 best version）；null 时显示占位 */
+  /** 当前浏览版本；初次优先推荐目标匹配项，用户随后可自由选择其他发布文件。 */
   @Prop selectedVersion: RemoteVersion | null = null
 
   /** 选定版本的 primary file（决定下载大小、文件名） */
@@ -104,9 +106,9 @@ export struct ModDetailSheet {
   @Prop dependencies: ModDetailDepRow[] = []
 
   /**
-   * 该项目的全部远端版本列表（按 datePublished 排序，最新在前）。
-   * 由父组件在 openDetail 时调 `repo.getVersions(projectId, ...)` 拉到 → 透传。
-   * 用于 step 2 「版本 picker」的列表展示；空数组时 picker 显示空占位。
+   * 该项目完整的客户端版本目录，不预先按当前安装实例的 MC/loader 筛窄。
+   * 父组件在 openDetail 时无过滤获取；MC 分组和组内排序由本组件统一完成。
+   * 用于 step 2/3 的完整版本浏览，空目录仍可展示明确空态。
    */
   @Prop allVersions: RemoteVersion[] = []
 
@@ -130,9 +132,22 @@ export struct ModDetailSheet {
    */
   @Prop scanInfo: string = ''
 
-  /** 是否正在加载版本/依赖 */
+  /** 仅远端版本目录请求中的状态，不因安装依赖准备而隐藏当前版本信息。 */
   @Prop loading: boolean = false
+  /** 目录请求错误；与下方安装资格原因分开显示，完整列表不受安装错误影响。 */
   @Prop blockingError: string = ''
+  /** 当前选版的补地址/本地扫描/依赖准备状态，只禁用安装及依赖勾选。 */
+  @Prop preparingInstall: boolean = false
+  /** 当前目标不匹配、未选实例或文件/依赖不可用的原因，不阻止版本选择和阅读。 */
+  @Prop installBlockReason: string = ''
+  /** 父组件已完成当前选版和目标快照的安装计划；空错误本身不能授予安装资格。 */
+  @Prop installReady: boolean = false
+  /** false 时仅展示来源声明的直接依赖；没有解析结果不能宣称可独立安装。 */
+  @Prop dependenciesResolved: boolean = false
+  /** 仅整合包使用。父页面预填并持有名称，跨选版保留编辑，开始安装时快照。 */
+  @Prop modpackName: string = ''
+  @Prop modpackNameError: string = ''
+  onModpackNameChange: (value: string) => void = (_value: string): void => {}
 
   onInstall: () => void = () => {}
   onOpenWebsite: () => void = () => {}
@@ -148,8 +163,8 @@ export struct ModDetailSheet {
   /** 点击"全选"（一键勾选所有未选） */
   onSelectAllDeps: () => void = () => {}
   /**
-   * 点击 picker 列表中的某个版本 → 父组件重算 primaryFile + 依赖。
-   * 选中后 sheet 滑入第三级"版本详情"页（不再自动回主页）。
+   * 在第三级文件列表中选择版本，父组件先同步文件和声明依赖，再异步准备安装。
+   * 选中后返回主详情；不匹配目标仍可阅读，不能因此隐藏版本或授予安装资格。
    */
   onSelectVersion: (version: RemoteVersion) => void = () => {}
 
@@ -168,47 +183,25 @@ export struct ModDetailSheet {
   @State private selectedMcGroup: string = ''
   private static readonly ANIM_DURATION_MS = 280
 
+
+  /** 标题仅投影远端版本选择层，不推入新路由，也不改变父层安装资格或当前选版。 */
+  private modDetailTitle_(): string {
+    if (this.currentStep === 'picker') return '选择版本';
+    if (this.currentStep === 'files') return this.selectedMcGroup.length === 0 ? '其他版本' : 'Minecraft ' + this.selectedMcGroup;
+    return this.project.title || '资源详情';
+  }
+
+  /** 文件列表返回版本分组，分组返回详情；沿用原 animateTo 与槽位身份。 */
+  private requestModBack_(): void {
+    if (this.currentStep === 'files') this.backToPicker();
+    else if (this.currentStep === 'picker') this.backToMain();
+  }
+
   build() {
     Column() {
-      // ============== Drag pill（两个 step 共用） ==============
-      Row() {
-        Column().width(36).height(4).backgroundColor(this.theme.divider).borderRadius(2)
-      }
-      .width('100%')
-      .justifyContent(FlexAlign.Center)
-      .padding({ top: 10, bottom: 4 })
-
-      // ============== 双 step 容器（horizontal slide） ==============
-      Stack() {
-        // Main step
-        Column() {
-          this.MainStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: -this.slidePct * this.viewportW })
-
-        // Picker step
-        Column() {
-          this.PickerStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (1 - this.slidePct) * this.viewportW })
-
-        // Files step（第三级：某游戏版本下的全部模组版本）
-        Column() {
-          this.GroupFilesStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (2 - this.slidePct) * this.viewportW })
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .clip(true)
-      .onAreaChange((_, area) => {
-        let w = area.width as number
-        if (w > 0 && Math.abs(w - this.viewportW) > 0.5) {
-          this.viewportW = w
-        }
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: this.modDetailTitle_(), subtitle: this.currentStep === 'picker' ? this.pickerHeaderSub() : this.currentStep === 'files' ? this.selectedGroupVersions().length + ' 个模组版本' : '', theme: this.theme, modal: false, showBack: this.currentStep !== 'main', showClose: true, surfaceColor: this.theme.bgPrimary, backLabel: '返回上一层', closeLabel: '关闭资源详情', backId: 'mod-detail-back', closeId: 'mod-detail-close', onBack: (): void => { this.requestModBack_(); }, onClose: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
     .width('100%')
@@ -231,6 +224,9 @@ export struct ModDetailSheet {
             this.DescCard()
           }
           this.VersionSelectCard()
+          if (this.project.kind === ResourceKind.MODPACK) {
+            this.ModpackNameCard_()
+          }
           // 依赖卡片：始终展示（哪怕 0 个）— 让用户明确知道"这 mod 没依赖"，
           // 而不是看到没卡片就以为流程出错。仅当当前选中版本本身不存在时才隐藏。
           if (this.selectedVersion !== null) {
@@ -251,6 +247,12 @@ export struct ModDetailSheet {
   // ============================================================
   //  Hero Card —— 大图标 + 标题 + 作者 + 三联徽章
   // ============================================================
+
+  @Builder
+  ModpackNameCard_() {
+    ModpackNameInput({ theme: this.theme, value: this.modpackName, error: this.modpackNameError,
+      onChange: (value: string): void => { this.onModpackNameChange(value); } })
+  }
 
   @Builder
   HeroCard() {
@@ -483,7 +485,7 @@ export struct ModDetailSheet {
         .borderRadius(10)
         .alignItems(VerticalAlign.Center)
       } else if (this.selectedVersion === null) {
-        Text('尚未加载版本')
+        Text(this.allVersions.length === 0 ? '该项目暂无可浏览的客户端版本' : '请选择版本')
           .fontSize(12).fontColor(this.theme.textHint)
           .padding({ left: 12, right: 12, top: 12, bottom: 12 })
           .backgroundColor(this.theme.bgInput)
@@ -501,7 +503,7 @@ export struct ModDetailSheet {
             // 标签行：loader + channel（位置不够自动换行）
             Flex({ wrap: FlexWrap.Wrap }) {
               if (this.selectedVersion!.loaders.length > 0) {
-                Text(this.selectedVersion!.loaders[0])
+                Text(this.selectedVersion!.loaders.join(' / '))
                   .fontSize(9).fontWeight(700).fontColor(this.loaderTextColor(this.selectedVersion!.loaders[0]))
                   .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                   .borderRadius(5)
@@ -523,6 +525,12 @@ export struct ModDetailSheet {
               .fontSize(11).fontWeight(500).fontColor(this.theme.textSecondary)
               .width('100%')
               .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            // 文件信息来自当前浏览版本，地址不可用或目标不匹配也保留供用户核对。
+            if (this.primaryFile !== null && this.primaryFile.filename.length > 0) {
+              Text(this.primaryFile.filename)
+                .fontSize(11).fontColor(this.theme.textSecondary)
+                .width('100%').maxLines(3).wordBreak(WordBreak.BREAK_ALL)
+            }
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
@@ -544,6 +552,9 @@ export struct ModDetailSheet {
 
       if (this.blockingError.length > 0) {
         Text(this.blockingError).fontSize(12).fontColor(this.theme.warning).width('100%')
+      }
+      if (this.installBlockReason.length > 0) {
+        Text(this.installBlockReason).fontSize(12).fontColor(this.theme.warning).width('100%')
       }
       // 本地扫描诊断：让用户能看到 sheet 是否真的找到本地已装
       if (this.scanInfo.length > 0) {
@@ -613,7 +624,7 @@ export struct ModDetailSheet {
           .borderRadius(8)
           .backgroundColor(this.theme.primaryLight)
         Column().layoutWeight(1)
-        if (this.dependencies.length > 0 && this.hasAnyTogglableDep()) {
+        if (this.dependenciesResolved && !this.preparingInstall && this.dependencies.length > 0 && this.hasAnyTogglableDep()) {
           Text('全选')
             .fontSize(11).fontWeight(600).fontColor(this.theme.primary)
             .onClick(() => { this.onSelectAllDeps() })
@@ -622,15 +633,21 @@ export struct ModDetailSheet {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
+      if (!this.dependenciesResolved) {
+        // 浏览其他目标的文件时只展示原始声明，不以当前实例误解依赖或显示“可独立安装”。
+        Text(this.preparingInstall ? '正在为当前实例解析安装依赖；版本信息可继续浏览'
+          : '以下为此版本声明的直接依赖，尚未为安装实例解析')
+          .fontSize(12).fontColor(this.theme.textSecondary).width('100%')
+      }
       if (this.dependencies.length === 0) {
-        // 无依赖：明确告诉用户 — 让"啥都没有"这种状态可被理解（例如 Sodium 不依赖 Fabric API）
+        // 空直接声明与已完成的安装计划区分，避免把未解析的空数组当成安装成功保证。
         Row({ space: 6 }) {
           AppIcon({
             name: AppIconName.CheckCircle,
             iconSize: 12,
             color: this.theme.success,
           })
-          Text('该模组无外部依赖，可独立安装')
+          Text(this.dependenciesResolved ? '该版本没有需要下载的外部依赖' : '此版本未声明直接外部依赖')
             .fontSize(12).fontWeight(500).fontColor(this.theme.textSecondary)
             .layoutWeight(1)
         }
@@ -661,7 +678,7 @@ export struct ModDetailSheet {
         }
         ForEach(this.dependencies, (d: ModDetailDepRow) => {
           this.DepRow(d)
-        }, (d: ModDetailDepRow) => d.key + '|' + (d.selected ? '1' : '0') + '|' + (d.alreadyInstalled ? '1' : '0') + '|' + (d.compatWarning !== undefined ? '1' : '0'))
+        }, (d: ModDetailDepRow) => this.depRenderKey(d))
       }
     }
     .width('100%')
@@ -677,6 +694,14 @@ export struct ModDetailSheet {
       if (d.compatWarning !== undefined && d.compatWarning.length > 0) return true
     }
     return false
+  }
+
+  /**
+   * 行是不可变的平面展示快照，DepRow 按值接收；任一展示字段变化都须更新 ForEach key。
+   * 序列化同时包含稳定业务 key 和完整内容，防止同项换依赖版本/错误文本后复用旧 Builder。
+   */
+  private depRenderKey(d: ModDetailDepRow): string {
+    return JSON.stringify(d)
   }
 
   @Builder
@@ -766,8 +791,8 @@ export struct ModDetailSheet {
     .opacity(d.alreadyInstalled ? 0.55 : 1)
     .alignItems(HorizontalAlign.Start)
     .onClick(() => {
-      // 已装项不可切换（CTA 也不会下载它），点击吞掉
-      if (d.alreadyInstalled) return
+      // 仅已完成解析的可选前置能勾选；声明浏览态和在途准备不能修改安装计划。
+      if (!this.dependenciesResolved || this.preparingInstall || d.alreadyInstalled) return
       this.onToggleDep(d.key)
     })
   }
@@ -810,8 +835,8 @@ export struct ModDetailSheet {
         this.SourceSelectorRow()
       }
       Row({ space: 10 }) {
-      // 紧凑型"网页"次按钮
-      Row({ space: 6 }) {
+      // 商店只保留检索和 API 下载；一般资源网站菜单不作为可见动作展示。
+      if (!DistributionPolicy.isStore()) { Row({ space: 6 }) {
         AppIcon({
           name: AppIconName.ArrowUpRight,
           iconSize: 14,
@@ -827,6 +852,7 @@ export struct ModDetailSheet {
       .alignItems(VerticalAlign.Center)
       .justifyContent(FlexAlign.Center)
       .bindMenu(this.buildWebMenu())
+      }
 
       // 主按钮：4 状态（已装当前版 / 升级 / 安装 / 不可装）
       Column({ space: 1 }) {
@@ -990,7 +1016,7 @@ export struct ModDetailSheet {
     if (!this.selectedVersion) return ''
     let bits: string[] = []
     if (this.selectedVersion.gameVersions && this.selectedVersion.gameVersions.length > 0) {
-      bits.push('MC ' + this.selectedVersion.gameVersions[0])
+      bits.push('MC ' + this.selectedVersion.gameVersions.join(' / '))
     }
     if (this.selectedVersion.datePublished && this.selectedVersion.datePublished.length > 0) {
       bits.push(this.selectedVersion.datePublished.substring(0, 10))
@@ -1041,8 +1067,12 @@ export struct ModDetailSheet {
    *   - 不可装（无版本 / 无文件 url）：「不可下载」
    */
   private ctaTitle(): string {
-    if (this.loading) return '正在解析依赖'
-    if (this.blockingError.length > 0) return '依赖尚未解决'
+    if (this.project.kind === ResourceKind.MODPACK && this.canInstall()) return '开始安装'
+    if (this.project.kind === ResourceKind.MODPACK && this.modpackNameError.length > 0) return '请检查版本名称'
+    if (this.loading) return '正在加载版本'
+    if (this.preparingInstall) return '正在准备安装'
+    if (this.blockingError.length > 0) return '版本加载失败'
+    if (this.installBlockReason.length > 0 || !this.installReady) return '暂不可安装'
     if (this.selectedVersion === null || this.primaryFile === null
         || this.primaryFile!.url.length === 0) {
       return '不可下载'
@@ -1075,9 +1105,13 @@ export struct ModDetailSheet {
    *   - 不可装 / 加载中：空串
    */
   private ctaSubText(): string {
-    if (!this.primaryFile || this.loading) return ''
+    if (this.installBlockReason.length > 0) return this.installBlockReason
+    if (!this.primaryFile || this.loading || this.preparingInstall) return ''
     if (this.primaryFile!.url.length === 0) return ''
     if (this.blockingError.length > 0) return this.blockingError
+    if (this.project.kind === ResourceKind.MODPACK) {
+      return '归档 ' + formatBytes(this.primaryFile.size) + ' · 有可选内容时提示选择'
+    }
 
     let depBytes = 0
     let depCount = 0
@@ -1099,10 +1133,13 @@ export struct ModDetailSheet {
    * 是否允许触发安装（被 CTA 按钮 onClick 守卫）。
    *
    * 注意：当前版已装时仍允许"重装"——不阻塞用户主动重新下载（场景：损坏 jar 修复）。
-   * 仅在选中版本不存在 / 没有 primary file / 文件 URL 为空时禁掉。
+   * 浏览文件不等于完成安装准备；必须由父组件明确授予当前选版的安装资格。
    */
   private canInstall(): boolean {
-    if (this.loading || this.blockingError.length > 0) return false
+    if (this.loading || this.preparingInstall || !this.installReady
+      || this.blockingError.length > 0 || this.installBlockReason.length > 0) return false
+    if (this.project.kind === ResourceKind.MODPACK && this.modpackNameError.length > 0) return false
+    if (this.selectedVersion?.isServerPack === true) return false
     return this.selectedVersion !== null
       && this.primaryFile !== null
       && this.primaryFile!.url.length > 0
@@ -1220,39 +1257,6 @@ export struct ModDetailSheet {
   @Builder
   PickerStep() {
     Column() {
-      // ----- 头部：← 返回 + 标题 + 版本计数 -----
-      Row({ space: 8 }) {
-        Row({ space: 4 }) {
-          AppIcon({
-            name: AppIconName.ChevronLeft,
-            iconSize: 16,
-            color: this.theme.primary,
-            weight: FontWeight.Bold,
-          })
-          Text('返回')
-            .fontSize(13).fontWeight(600).fontColor(this.theme.primary)
-        }
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .backgroundColor(this.theme.bgCard)
-        .borderRadius(12)
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => { this.backToMain() })
-
-        Column({ space: 2 }) {
-          Text('选择版本')
-            .fontSize(18).fontWeight(700).fontColor(this.theme.textPrimary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.pickerHeaderSub())
-            .fontSize(11).fontWeight(500).fontColor(this.theme.textSecondary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 6, bottom: 8 })
-      .alignItems(VerticalAlign.Center)
-
       // ----- 游戏版本列表（点击进入第三级：该游戏版本的全部模组版本）-----
       if (this.allVersions.length === 0) {
         Column() {
@@ -1399,39 +1403,6 @@ export struct ModDetailSheet {
   @Builder
   GroupFilesStep() {
     Column() {
-      // ----- 头部：← 返回(picker) + 游戏版本 + 计数 -----
-      Row({ space: 8 }) {
-        Row({ space: 4 }) {
-          AppIcon({
-            name: AppIconName.ChevronLeft,
-            iconSize: 16,
-            color: this.theme.primary,
-            weight: FontWeight.Bold,
-          })
-          Text('返回')
-            .fontSize(13).fontWeight(600).fontColor(this.theme.primary)
-        }
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .backgroundColor(this.theme.bgCard)
-        .borderRadius(12)
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => { this.backToPicker() })
-
-        Column({ space: 2 }) {
-          Text(this.selectedMcGroup.length === 0 ? '其他版本' : ('Minecraft ' + this.selectedMcGroup))
-            .fontSize(18).fontWeight(700).fontColor(this.theme.textPrimary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.selectedGroupVersions().length + ' 个模组版本')
-            .fontSize(11).fontWeight(500).fontColor(this.theme.textSecondary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 6, bottom: 8 })
-      .alignItems(VerticalAlign.Center)
-
       // ----- 该游戏版本对应的模组版本（文件）列表 -----
       Scroll() {
         Column({ space: 8 }) {
@@ -1555,6 +1526,8 @@ export struct ModDetailSheet {
 
   /** 构造"网页"按钮的下拉菜单：项目自身源页面 + 另一源页面 + MC 百科（按可用性增减）。 */
   private buildWebMenu(): MenuElement[] {
+    // 菜单可能被旧引用直接请求，函数边界也按不可变分发渠道拒绝。
+    if (DistributionPolicy.isStore()) return []
     let items: MenuElement[] = []
     let p = this.project
     if (p === undefined) {
@@ -1567,27 +1540,27 @@ export struct ModDetailSheet {
       if (ownUrl.length === 0) ownUrl = curseforgeWebUrl(p.kind, p.slug)
       if (ownUrl.length > 0) {
         let u = ownUrl
-        items.push({ value: '打开 CurseForge 页面', action: () => { this.onOpenUrl(u) } })
+        items.push({ value: '打开 CurseForge 页面', action: () => { if (!DistributionPolicy.isStore()) this.onOpenUrl(u) } })
       }
       // 另一源（Modrinth）：真实网址由父组件按工程数据解析（不按分类猜，避免 404）
       if (p.altSource === ModSource.MODRINTH) {
-        items.push({ value: '打开 Modrinth 页面', action: () => { this.onOpenCrossSourceWeb(ModSource.MODRINTH) } })
+        items.push({ value: '打开 Modrinth 页面', action: () => { if (!DistributionPolicy.isStore()) this.onOpenCrossSourceWeb(ModSource.MODRINTH) } })
       }
     } else {
       if (ownUrl.length === 0) ownUrl = modrinthWebUrl(p.kind, p.slug)
       if (ownUrl.length > 0) {
         let u = ownUrl
-        items.push({ value: '打开 Modrinth 页面', action: () => { this.onOpenUrl(u) } })
+        items.push({ value: '打开 Modrinth 页面', action: () => { if (!DistributionPolicy.isStore()) this.onOpenUrl(u) } })
       }
       // 另一源（CurseForge）：真实网址由父组件按工程数据解析（CF 分类常与 MR 不同，猜会 404）
       if (p.altSource === ModSource.CURSEFORGE) {
-        items.push({ value: '打开 CurseForge 页面', action: () => { this.onOpenCrossSourceWeb(ModSource.CURSEFORGE) } })
+        items.push({ value: '打开 CurseForge 页面', action: () => { if (!DistributionPolicy.isStore()) this.onOpenCrossSourceWeb(ModSource.CURSEFORGE) } })
       }
     }
 
     if (p.wikiId !== undefined && p.wikiId > 0) {
       let u = mcmodClassUrl(p.wikiId)
-      if (u.length > 0) items.push({ value: '打开 MC 百科 (mcmod)', action: () => { this.onOpenUrl(u) } })
+      if (u.length > 0) items.push({ value: '打开 MC 百科 (mcmod)', action: () => { if (!DistributionPolicy.isStore()) this.onOpenUrl(u) } })
     }
 
     if (items.length === 0) {
@@ -1600,5 +1573,51 @@ export struct ModDetailSheet {
     if (d.alreadyInstalled) return this.theme.disabled
     return d.selected ? this.theme.primary : this.theme.bgCard
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      // ============== Drag pill（两个 step 共用） ==============
+      Row() {
+        Column().width(36).height(4).backgroundColor(this.theme.divider).borderRadius(2)
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+      .padding({ top: 10, bottom: 4 })
+
+      // ============== 双 step 容器（horizontal slide） ==============
+      Stack() {
+        // Main step
+        Column() {
+          this.MainStep()
+        }
+        .width('100%').height('100%')
+        .translate({ x: -this.slidePct * this.viewportW })
+
+        // Picker step
+        Column() {
+          this.PickerStep()
+        }
+        .width('100%').height('100%')
+        .translate({ x: (1 - this.slidePct) * this.viewportW })
+
+        // Files step（第三级：某游戏版本下的全部模组版本）
+        Column() {
+          this.GroupFilesStep()
+        }
+        .width('100%').height('100%')
+        .translate({ x: (2 - this.slidePct) * this.viewportW })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .clip(true)
+      .onAreaChange((_, area) => {
+        let w = area.width as number
+        if (w > 0 && Math.abs(w - this.viewportW) > 0.5) {
+          this.viewportW = w
+        }
+      })
+
+      }
 }
 

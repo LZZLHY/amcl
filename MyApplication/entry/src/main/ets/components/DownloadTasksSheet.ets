@@ -25,10 +25,11 @@
 import {
   DownloadTaskRegistry, RegistryListener, getDownloadTaskRegistry,
 } from 'feature_core';
-import { UnifiedTaskView } from 'feature_core';
+import { UnifiedTaskView, TaskCategory } from 'feature_core';
 import { ThemeColors } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { TaskCard } from './TaskCard';
 import { TaskDetailView } from './TaskDetailView';
 import { DownloadTaskSnapshot, makeDownloadTaskSnapshot } from './DownloadTaskSnapshot';
@@ -45,6 +46,8 @@ const STEP_DETAIL = 'detail'
 
 @Component
 export struct DownloadTasksSheet {
+  /** 新建整合包直接进入同一任务详情，清单准备完成后在此确认而不依赖原浏览页。 */
+  @Prop @Watch('openInitialTask_') initialTaskId: string = ''
   @Prop theme: ThemeColors = {} as ThemeColors
   @Prop bottomSafeHeight: number = 0
   @Prop topSafeHeight: number = 0
@@ -62,6 +65,8 @@ export struct DownloadTasksSheet {
 
   /** 关闭 sheet（用户点击 ✕ 或所有任务已 purge） */
   onClose: () => void = () => {}
+  /** 自更新嵌入宿主先退出原弹窗，再回完整检查入口；普通宿主使用下方缺省路由。 */
+  onAppUpdateRecovery?: () => void
 
   private registry_: DownloadTaskRegistry = getDownloadTaskRegistry()
   private listener_: RegistryListener = () => { this.refresh() }
@@ -69,6 +74,11 @@ export struct DownloadTasksSheet {
   aboutToAppear(): void {
     this.registry_.addListener(this.listener_)
     this.refresh()
+    this.openInitialTask_()
+  }
+
+  private openInitialTask_(): void {
+    if (this.initialTaskId.length > 0) this.openDetail_(this.initialTaskId)
   }
 
   aboutToDisappear(): void {
@@ -110,7 +120,8 @@ export struct DownloadTasksSheet {
 
   private openDetail_(id: string): void {
     let v = this.registry_.get(id)
-    if (!v) return
+    // 卡片和外部深链都经过同一能力门，禁止将无详情模型的修复任务强转为普通下载。
+    if (!v || !v.canViewDetail) return
     this.selectedTaskId = id
     this.selectedView = v
     this.currentStep = STEP_DETAIL
@@ -138,6 +149,7 @@ export struct DownloadTasksSheet {
           bottomSafeHeight: this.bottomSafeHeight,
           onBack: () => { this.backToList_() },
           onClose: () => { this.onClose() },
+          onExternalRecovery: () => { if (this.selectedView !== null) this.recoverTask_(this.selectedView) },
         })
       }
     }
@@ -153,44 +165,12 @@ export struct DownloadTasksSheet {
   @Builder
   ListView() {
     Column() {
-      // ============ Stats Bar ============
-      this.StatsBar()
-
-      // ============ Filter Chips ============
-      this.FilterChips()
-
-      // ============ 任务列表 / 空态 ============
-      if (this.snapshot.all.length === 0) {
-        this.EmptyState()
-      } else {
-        Scroll() {
-          Column({ space: 10 }) {
-            ForEach(this.filteredSnapshot(), (v: UnifiedTaskView) => {
-              TaskCard({
-                view: v,
-                theme: this.theme,
-                onTap: () => { this.openDetail_(v.id) },
-                onPause: () => { this.registry_.pause(v.id) },
-                onResume: () => { this.registry_.resume(v.id) },
-                onCancel: () => { this.registry_.cancel(v.id, false) },
-                onRetry: () => { this.registry_.retry(v.id) },
-                onRemove: () => { this.registry_.remove(v.id) },
-              })
-            // ⚠️ key 必须只用 v.id，不能拼 listRev！
-            // listRev 进入 key 会导致每次 registry 通知都让所有卡片"key 全变"→
-            // ArkUI 销毁全部 TaskCard 重建 → 下载时主线程过载 → 卡死/闪退。
-            // 单字段刷新由 @Observed UnifiedTaskView + @ObjectLink TaskCard 处理。
-            }, (v: UnifiedTaskView) => v.id)
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 16 })
-        }
-        .layoutWeight(1)
-        .scrollBar(BarState.Auto)
-      }
-
-      // ============ 底部操作栏 ============
-      this.BottomBar()
+    // 仅任务总览使用 MODAL 原生关闭标题；详情分支和 @ObjectLink 进度订阅完全保留。
+    ImmersiveTitleScaffold({ title: '下载管理', theme: this.theme, modal: true,
+      closeLabel: '关闭下载管理', surfaceColor: this.theme.bgPrimary,
+      onClose: (): void => { this.onClose(); },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
     }
     .width('100%')
     .height('100%')
@@ -199,24 +179,7 @@ export struct DownloadTasksSheet {
   @Builder
   StatsBar() {
     Column({ space: 12 }) {
-      // 标题 + 关闭
-      Row() {
-        Text('下载管理')
-          .fontSize(20)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-        Stack() {
-          AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-        }
-        .width(36).height(36)
-        .borderRadius(18)
-        .backgroundColor(this.theme.bgInput)
-        .onClick(() => { this.onClose() })
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-
+      // 标题与关闭已由外层原生标题栏负责，这里只更新统计，避免进度刷新重新创建标题宿主。
       // 三宫格 stats
       Row({ space: 10 }) {
         this.StatCell((): string => this.getActiveCount_().toString(), '进行中', (): ResourceColor => this.theme.primary)
@@ -289,6 +252,28 @@ export struct DownloadTasksSheet {
     return this.snapshot.failed.length
   }
 
+  /** 此处仅发送用户明确恢复意图；Index重新核实候选，用户重新接受后才建立新Attempt。 */
+  /** 导出恢复回原活动页面重新检查/另存，绝不从下载卡片重用旧URI；更新仍沿原流程。 */
+  private recoverTask_(view: UnifiedTaskView): void {
+    if (view.category === TaskCategory.GAME_EXPORT) {
+      if (!view.exportTaskId || !view.exportMcRoot || !view.exportVersionId) return
+      this.onClose()
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/GameExportPage', params: {
+        taskId: view.exportTaskId, mcRoot: view.exportMcRoot, versionId: view.exportVersionId,
+        versionIsolation: view.exportVersionIsolation,
+      } }).catch((): void => { /* 路由失败不创建新任务，原导出记录与失败事实继续保留。 */ })
+      return
+    }
+    this.recoverAppUpdate_()
+  }
+
+  private recoverAppUpdate_(): void {
+    if (this.onAppUpdateRecovery !== undefined) { this.onAppUpdateRecovery(); return }
+    this.onClose()
+    AppStorage.setOrCreate<number>('amclUpdateRecoveryRequested', Date.now())
+    this.getUIContext().getRouter().back({ url: 'pages/Index' })
+  }
+
   @Builder
   FilterChip(value: string, label: () => string) {
     Text(label())
@@ -358,4 +343,48 @@ export struct DownloadTasksSheet {
     .padding({ left: 16, right: 16, top: 10, bottom: Math.max(16, this.bottomSafeHeight) })
     .backgroundColor(this.theme.bgPrimary)
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      // ============ Stats Bar ============
+      this.StatsBar()
+
+      // ============ Filter Chips ============
+      this.FilterChips()
+
+      // ============ 任务列表 / 空态 ============
+      if (this.snapshot.all.length === 0) {
+        this.EmptyState()
+      } else {
+        Scroll() {
+          Column({ space: 10 }) {
+            ForEach(this.filteredSnapshot(), (v: UnifiedTaskView) => {
+              TaskCard({
+                view: v,
+                theme: this.theme,
+                onTap: () => { this.openDetail_(v.id) },
+                onPause: () => { this.registry_.pause(v.id) },
+                onResume: () => { this.registry_.resume(v.id) },
+                onCancel: () => { this.registry_.cancel(v.id, false) },
+                onRetry: () => { this.registry_.retry(v.id) },
+                onExternalRecovery: () => { this.recoverTask_(v) },
+                onRemove: () => { this.registry_.remove(v.id) },
+              })
+            // ⚠️ key 必须只用 v.id，不能拼 listRev！
+            // listRev 进入 key 会导致每次 registry 通知都让所有卡片"key 全变"→
+            // ArkUI 销毁全部 TaskCard 重建 → 下载时主线程过载 → 卡死/闪退。
+            // 单字段刷新由 @Observed UnifiedTaskView + @ObjectLink TaskCard 处理。
+            }, (v: UnifiedTaskView) => v.id)
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 4, bottom: 16 })
+        }
+        .layoutWeight(1)
+        .scrollBar(BarState.Auto)
+      }
+
+      // ============ 底部操作栏 ============
+      this.BottomBar()
+    }
 }

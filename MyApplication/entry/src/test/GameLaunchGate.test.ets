@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium'
 import { GameLaunchGate } from '../main/ets/runtime/GameLaunchGate'
 
+/** 手动完成原准备事务，验证新前端等待真实finally收口而非并行启动。 */
 class DeferredPreparation {
   promise: Promise<void>
   ready: () => void = (): void => {}
@@ -66,6 +67,41 @@ export default function gameLaunchGateTest(): void {
       })
       try { await first } catch (_) {}
       expect(reused).assertTrue()
+      expect(calls).assertEqual(1)
+    })
+    it('原前端退休且未进入Native时，新前端串行接续原准备', 0, async () => {
+      const gate: GameLaunchGate = new GameLaunchGate()
+      const preparation: DeferredPreparation = new DeferredPreparation()
+      let oldCompleted: boolean = false
+      let newPreparations: number = 0
+      const oldTask: Promise<void> = gate.run(async (): Promise<void> => {
+        await preparation.promise
+        oldCompleted = true
+      })
+      await Promise.resolve()
+      gate.retireBeforeNative()
+      const newTask: Promise<void> = gate.run(async (): Promise<void> => {
+        expect(oldCompleted).assertTrue()
+        newPreparations++
+        gate.markNativeAttempted()
+      })
+      expect(newPreparations).assertEqual(0)
+      preparation.ready()
+      await oldTask
+      await newTask
+      expect(newPreparations).assertEqual(1)
+    })
+    it('进入Native之后即便返回失败，前端退休也不能第二次启动', 0, async () => {
+      const gate: GameLaunchGate = new GameLaunchGate()
+      let calls: number = 0
+      const result: Promise<void> = gate.run(async (): Promise<void> => {
+        calls++
+        gate.markNativeAttempted()
+        throw new Error('native attempt failed')
+      })
+      try { await result } catch (_) {}
+      gate.retireBeforeNative()
+      try { await gate.run(async (): Promise<void> => { calls++ }) } catch (_) {}
       expect(calls).assertEqual(1)
     })
   })

@@ -209,7 +209,8 @@ await checkAsync('only the two string keys are writable; no delete or account up
 });
 await checkAsync('production ProcessPreferences injection leaves account/settings read-only and never opens XML', async () => {
   let xml = 0;
-  const make = () => makePureEtsLoader({ '@kit.ArkData': { preferences: { getPreferencesSync() { xml++; throw Error('unexpected XML'); } } } })
+  const make = () => makePureEtsLoader({ '@kit.ArkData': { preferences: { getPreferencesSync() { xml++; throw Error('unexpected XML'); } } },
+    './OwnerLayoutPreferences': { OwnerLayoutPreferences: class { constructor() { throw Error('unexpected owner backend'); } } } })
     ('commons/src/main/ets/utils/ProcessPreferences.ets').ProcessPreferences;
   const snapshots = [{ name: 'amcl_accounts', values: { secret: 'unchanged' } },
     { name: 'amcl_settings', values: { setting: true } }, snapshot([])];

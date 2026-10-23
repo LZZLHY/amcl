@@ -3,12 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import compiler from './ets-compiler.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-export function makePureEtsLoader(dependencies = {}) {
+export function makePureEtsLoader(dependencies = {}, sourceOverrides = {}) {
   const cache = new Map();
   const load = (relativePath) => {
     const absolutePath = path.resolve(root, relativePath);
     if (cache.has(absolutePath)) return cache.get(absolutePath);
-    const source = fs.readFileSync(absolutePath, 'utf8');
+    // sourceOverrides只用于固定Git提交的真实旧生产源码/撤回负对照，业务判定仍由被测源码执行。
+    const key = path.relative(root, absolutePath).replaceAll('\\', '/');
+    const source = Object.hasOwn(sourceOverrides, key) ? sourceOverrides[key] : fs.readFileSync(absolutePath, 'utf8');
     const js = compiler.transpileModule(source, { fileName: absolutePath,
       compilerOptions: { module: compiler.ModuleKind.CommonJS, target: compiler.ScriptTarget.ES2020 } }).outputText;
     const module = { exports: {} };

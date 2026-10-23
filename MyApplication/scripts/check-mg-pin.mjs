@@ -103,7 +103,14 @@ const REQUIRED_RELEASE_TAG = 'V2.0.0';
 // The exact diff surface below is intentionally exhaustive: increasing the
 // commit count must never let an unreviewed path enter beside the approved work.
 // 第26个提交补齐真实GPU buffer读回；核心、ARB与DSA共用有界资源生命周期。
-const REQUIRED_PATCH_COUNT = '26';
+// 第27个提交接通double深度范围，并链接生产setter/getter验证状态、clamp和旧空行为反例。
+// 第28个提交让desktop current的字符串和token跟随既有授予身份，保留每context指针寿命。
+// 不改GLES transport的frontend约定、整数/EGL授予逻辑或GLSL语言承诺。
+// 第29个保留真实AST uniform声明初值及缓存proof，成功link按typed叶字段恢复；TF/旧错与current保护成立。
+// 第30个只拒真正未知scalar cap枚举，保留可能合法core/legacy/extension的原状态路线与旧driver错误。
+// 第31个移除非规范OpenGLxx扩展标记；须与主工程DesktopGL生产factory联合消费，
+// 让真实LWJGL依据current context的版本/函数决定core flags，而非进程配置假标记。
+const REQUIRED_PATCH_COUNT = '31';
 const OFFICIAL_SOURCE = 'https://github.com/mobilegl-dev/mobileglues';
 const OFFICIAL_PLUGIN = 'https://github.com/mobilegl-dev/mobileglues-plugin';
 const OFFICIAL_RELEASE = 'https://github.com/mobilegl-dev/mobileglues-release';
@@ -111,14 +118,11 @@ const AMCL_FORK = 'https://github.com/lzzlhy/mobileglues';
 const DISTRIBUTION_REPO = 'https://github.com/lzzlhy/amcl';
 const UPSTREAM_NO_PUSH = 'https://invalid.invalid/AMCL-DO-NOT-PUSH-OFFICIAL-MobileGlues.git';
 const REQUIRED_DIFF = new Map([
-  ['MobileGlues-cpp/tests/buffer_readback_stub_before.inc', '12\t0'],
-  ['MobileGlues-cpp/tests/buffer_readback_test.cpp.in', '107\t0'],
-  ['MobileGlues-cpp/gl/buffer_readback_core.h', '42\t0'],
   ['MobileGlues-cpp/CMakeLists.txt', '165\t124'],
   ['MobileGlues-cpp/config/settings.cpp', '48\t4'],
   ['MobileGlues-cpp/config/settings.h', '25\t0'],
-  ['MobileGlues-cpp/egl/context.cpp', '7\t0'],
-  ['MobileGlues-cpp/egl/context.h', '19\t2'],
+  ['MobileGlues-cpp/egl/context.cpp', '23\t0'],
+  ['MobileGlues-cpp/egl/context.h', '29\t2'],
   ['MobileGlues-cpp/egl/egl.cpp', '376\t7'],
   ['MobileGlues-cpp/egl/loader.cpp', '11\t2'],
   ['MobileGlues-cpp/egl/loader.h', '1\t1'],
@@ -129,21 +133,25 @@ const REQUIRED_DIFF = new Map([
   ['MobileGlues-cpp/gl/buffer.cpp', '827\t32'],
   ['MobileGlues-cpp/gl/buffer.h', '17\t0'],
   ['MobileGlues-cpp/gl/buffer_contract_core.h', '124\t0'],
+  ['MobileGlues-cpp/gl/buffer_readback_core.h', '42\t0'],
   ['MobileGlues-cpp/gl/drawing.cpp', '140\t259'],
   ['MobileGlues-cpp/gl/drawing.h', '1\t0'],
+  ['MobileGlues-cpp/gl/enable.cpp', '23\t8'],
+  ['MobileGlues-cpp/gl/enable_cap_validation.h', '151\t0'],
   ['MobileGlues-cpp/gl/frame_stats.h', '176\t0'],
   ['MobileGlues-cpp/gl/frame_stats_core.h', '617\t0'],
   ['MobileGlues-cpp/gl/framebuffer.cpp', '158\t184'],
   ['MobileGlues-cpp/gl/framebuffer.h', '3\t0'],
-  ['MobileGlues-cpp/gl/getter.cpp', '47\t33'],
+  ['MobileGlues-cpp/gl/getter.cpp', '114\t81'],
+  ['MobileGlues-cpp/gl/getter.h', '4\t0'],
   ['MobileGlues-cpp/gl/gl.cpp', '21\t5'],
-  ['MobileGlues-cpp/gl/gl_native.cpp', '19\t13'],
-  ['MobileGlues-cpp/gl/gl_stub.cpp', '3\t4'],
+  ['MobileGlues-cpp/gl/gl_native.cpp', '28\t13'],
+  ['MobileGlues-cpp/gl/gl_stub.cpp', '5\t5'],
   ['MobileGlues-cpp/gl/glsl/cache.cpp', '48\t31'],
   ['MobileGlues-cpp/gl/glsl/cache.h', '5\t1'],
-  ['MobileGlues-cpp/gl/glsl/glsl_for_es.cpp', '532\t115'],
+  ['MobileGlues-cpp/gl/glsl/glsl_for_es.cpp', '649\t115'],
   ['MobileGlues-cpp/gl/glsl/glsl_for_es.h', '5\t3'],
-  ['MobileGlues-cpp/gl/glsl/translation_state.h', '19\t0'],
+  ['MobileGlues-cpp/gl/glsl/translation_state.h', '34\t0'],
   ['MobileGlues-cpp/gl/glsl/uniform_initializer_core.h', '588\t0'],
   ['MobileGlues-cpp/gl/index_rebase_core.h', '34\t0'],
   ['MobileGlues-cpp/gl/indirect_ring_core.h', '45\t0'],
@@ -151,18 +159,18 @@ const REQUIRED_DIFF = new Map([
   ['MobileGlues-cpp/gl/mg.h', '7\t3'],
   ['MobileGlues-cpp/gl/multidraw.cpp', '168\t197'],
   ['MobileGlues-cpp/gl/pixel.cpp', '16\t34'],
-  ['MobileGlues-cpp/gl/program.cpp', '283\t193'],
+  ['MobileGlues-cpp/gl/program.cpp', '442\t189'],
   ['MobileGlues-cpp/gl/program.h', '3\t0'],
   ['MobileGlues-cpp/gl/restart.cpp', '7\t29'],
   ['MobileGlues-cpp/gl/restart.h', '0\t4'],
-  ['MobileGlues-cpp/gl/shader.cpp', '218\t102'],
+  ['MobileGlues-cpp/gl/shader.cpp', '223\t102'],
   ['MobileGlues-cpp/gl/shader.h', '43\t11'],
   ['MobileGlues-cpp/gl/terrain_upload_core.h', '23\t0'],
   ['MobileGlues-cpp/gl/texture.cpp', '11\t3'],
   ['MobileGlues-cpp/gl/transfer.cpp', '131\t0'],
   ['MobileGlues-cpp/gl/upload_scheduler_core.h', '218\t0'],
   ['MobileGlues-cpp/gles/gles.h', '9\t0'],
-  ['MobileGlues-cpp/gles/loader.cpp', '108\t3'],
+  ['MobileGlues-cpp/gles/loader.cpp', '112\t9'],
   ['MobileGlues-cpp/gles/loader.h', '29\t4'],
   ['MobileGlues-cpp/glx/lookup.cpp', '49\t2'],
   ['MobileGlues-cpp/include/MG/init.h', '60\t0'],
@@ -172,13 +180,18 @@ const REQUIRED_DIFF = new Map([
   ['MobileGlues-cpp/platform/driver_profile.cpp', '52\t0'],
   ['MobileGlues-cpp/platform/driver_profile.h', '19\t0'],
   ['MobileGlues-cpp/platform/driver_profile_core.h', '148\t0'],
-  ['MobileGlues-cpp/tests/CMakeLists.txt', '50\t0'],
+  ['MobileGlues-cpp/tests/CMakeLists.txt', '67\t0'],
+  ['MobileGlues-cpp/tests/buffer_readback_stub_before.inc', '12\t0'],
+  ['MobileGlues-cpp/tests/buffer_readback_test.cpp.in', '107\t0'],
+  ['MobileGlues-cpp/tests/depth_range_test.cpp', '196\t0'],
+  ['MobileGlues-cpp/tests/enable_invalid_enum_test.cpp', '73\t0'],
   ['MobileGlues-cpp/tests/framebuffer_shuffle_test.cpp', '63\t6'],
   ['MobileGlues-cpp/tests/pixel_size_test.cpp', '12\t0'],
   ['MobileGlues-cpp/tests/render_context_resources_test.cpp', '192\t0'],
   ['MobileGlues-cpp/tests/render_fsr_test.cpp', '415\t0'],
   ['MobileGlues-cpp/tests/render_resource_test.cpp', '179\t0'],
-  ['MobileGlues-cpp/tests/render_shader_test.cpp', '426\t0'],
+  ['MobileGlues-cpp/tests/render_shader_test.cpp', '589\t0'],
+  ['MobileGlues-cpp/tests/version_identity_test.cpp', '148\t0'],
 ]);
 const NESTED_PATHS = new Map([
   ['nested_spirv_cross_commit', 'MobileGlues-cpp/3rdparty/SPIRV-Cross'],

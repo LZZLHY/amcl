@@ -82,11 +82,8 @@ export class JdkInstallTask implements UnifiedDownloadAdapter {
   /**
    * 活动账本 activityId（活动账本 · L2-b 修正）。
    *
-   * **必须由调用方传入，不能用 `view.startedAtMs`。** 后者是 registry 在**出队**时
-   * 才赋值的时间戳，而调用方（Index）是在 **enqueue 之前**就用 `Date.now()` 开好了
-   * 账本 —— 两个时间戳不同，用 view 的那个会把 native 下载日志绑到一个没有 scope 的
-   * id 上，结果账本里只有 manifest、一行下载日志都没有。
-   * 这正是 2026-08-01 自审发现的缺陷 3。
+   * 仅兼容未经过 Registry 的调用者。生产活动由统一 listener 按出队/重试身份开账，
+   * 每次 start 都将同一身份传给 installer，不能在 retry 后沿用第一次已关闭的 scope。
    */
   private activityId_: number = 0;
 
@@ -106,11 +103,8 @@ export class JdkInstallTask implements UnifiedDownloadAdapter {
     this.view.id = 'jdk:' + jdkVersion;
     this.view.category = TaskCategory.JDK;
     this.view.title = (forceReinstall ? 'JDK ' + jdkVersion + ' 更新' : 'JDK ' + jdkVersion);
-    this.view.subtitle = jdkVersion === '25'
-      ? 'OpenJDK 25（实验性 · 26.1+）'
-      : jdkVersion === '21'
-        ? 'OpenJDK 21（实验性 · 1.20.5+）'
-        : 'OpenJDK 17（推荐 · 1.20.4-）';
+    // 主版本来自可信注册表；不能让新主版本或经典 8 被旧三元分支误标成 17。
+    this.view.subtitle = 'OpenJDK ' + jdkVersion + ' · 鸿蒙运行时';
     this.view.state = UnifiedTaskState.PREPARING;
     this.view.canCancel = true;
     // JDK 不支持 pause；canViewDetail=true 让用户能看到三阶段进度
@@ -153,11 +147,12 @@ export class JdkInstallTask implements UnifiedDownloadAdapter {
 
     // per-task installer，独立回调插槽 —— 多 JDK 并发互不影响（B-1 修复点）
     inst.setDownloadCallback((p: JdkDownloadProgress) => this.handleProgress_(p));
-    // 活动账本：用构造时传入的 activityId（= Index 开账本用的那个值）。
-    // 不能用 view.startedAtMs —— 见 activityId_ 字段注释。
-    inst.activityId = this.activityId_;
+    if (this.view.startedAtMs <= 0) this.view.startedAtMs = this.activityId_ > 0 ? this.activityId_ : Date.now();
+    inst.activityId = this.view.startedAtMs;
 
-    return inst.downloadAndInstall().then((ok: boolean) => {
+    // ArkTS 的闭包不会延续可变局部量的 null 窄化，捕获明确的非空 installer。
+    const installer: JdkInstaller = inst;
+    return installer.downloadAndInstall().then((ok: boolean) => {
       this.markDuration_();
       if (this.cancelRequested_) {
         this.view.state = UnifiedTaskState.ABORTED;
@@ -168,15 +163,8 @@ export class JdkInstallTask implements UnifiedDownloadAdapter {
         this.view.progress = 100;
         this.view.canCancel = false;
       } else {
-        // installer 在内部 catch 已经报 progress，但没抛异常
-        if (this.view.state !== UnifiedTaskState.ERROR) {
-          this.view.state = UnifiedTaskState.ERROR;
-          if (this.view.errorMessage.length === 0) {
-            this.view.errorMessage = '安装失败';
-          }
-        }
-        this.view.canCancel = false;
-        this.view.canRetry = true;
+        // 统一 Promise 与 view 的失败契约，详细原因进入终态字段和本次活动。
+        throw new Error(installer.getFailureReason() || this.view.currentLabel || '安装失败');
       }
       try { DownloadTaskRegistry.instance().notifyChange(); } catch (e) { /* ignore */ }
     }).catch((e: Error) => {

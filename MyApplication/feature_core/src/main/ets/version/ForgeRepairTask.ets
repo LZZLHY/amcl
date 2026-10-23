@@ -37,6 +37,7 @@ import { removeDirRecursive, writeTextFile, removeVersionInstallCommit } from 'c
 import { formatError } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_MODLOADER } from 'commons';
+import { claimVersionInstall, newVersionInstallOwner } from './VersionInstallLease';
 
 const TAG = 'ForgeRepairTask';
 
@@ -59,6 +60,8 @@ export class ForgeRepairTask implements UnifiedDownloadAdapter {
   private ownedDownloaders_: McDownloader[] = [];
   /** 重装流水线（生成产物缺失时才创建）；purgeNativeOwner 需要连它一起释放 native 路径所有权。 */
   private reinstallTask_: DownloadTask | null = null;
+  /** 保护修复的快照、重装与恢复整个周期；子流水线显式继承，不能被当作新安装认领旧实例。 */
+  private repairOwner_: string = newVersionInstallOwner();
 
   constructor(versionName: string, gameVersion: string, loaderVersion: string, mcDir: string, filesDir: string) {
     this.versionName_ = versionName;
@@ -77,6 +80,12 @@ export class ForgeRepairTask implements UnifiedDownloadAdapter {
   }
 
   async start(): Promise<void> {
+    let release = claimVersionInstall(this.mcDir_, this.versionName_, this.repairOwner_);
+    try { await this.startOwned_(); } finally { release(); }
+  }
+
+  /** 已持有版本租约后才允许移动用户快照和启动委托的重装子任务。 */
+  private async startOwned_(): Promise<void> {
     let versionDir = this.mcDir_ + '/versions/' + this.versionName_;
     let preserveDir = this.mcDir_ + '/versions/.amcl-repair-' + this.versionName_;
     let tmpDir = this.mcDir_ + '/.amcl-repair-tmp/' + this.versionName_;
@@ -195,6 +204,7 @@ export class ForgeRepairTask implements UnifiedDownloadAdapter {
       try {
         let vj = JSON.parse(fs.readTextSync(jsonPath)) as VersionJson;
         let dl = new McDownloader(this.mcDir_);
+        dl.activityId = this.view.startedAtMs;
         this.ownedDownloaders_.push(dl);
         dl.setProgressCallback((pp: DownloadProgress) => this.onDlProgress_(pp, 70, 100));
         await dl.downloadLibraries(vj, true /* onlyMissing */);
@@ -264,6 +274,7 @@ export class ForgeRepairTask implements UnifiedDownloadAdapter {
 
     // 拉 vanilla version.json + client jar
     let dl = new McDownloader(this.mcDir_);
+    dl.activityId = this.view.startedAtMs;
     this.ownedDownloaders_.push(dl);
     dl.setProgressCallback((pp: DownloadProgress) => this.onDlProgress_(pp, 55, 70));
     let info: FetchVersionInfoResult = await dl.fetchVersionInfo(realMcVersion);
@@ -287,8 +298,9 @@ export class ForgeRepairTask implements UnifiedDownloadAdapter {
   private async runFullReinstall_(): Promise<void> {
     let task = new DownloadTask(
       this.gameVersion_, ModLoaderType.FORGE, this.loaderVersion_,
-      this.versionName_, this.mcDir_, this.filesDir_);
+      this.versionName_, this.mcDir_, this.filesDir_, this.repairOwner_);
     this.reinstallTask_ = task;
+    task.setActivityId(this.view.startedAtMs);
     task.onStateChange = (t: DownloadTask): void => {
       this.view.progress = Math.max(0, Math.min(65, t.progress * 0.65));
       this.view.currentLabel = '重装 Forge · ' + (t.phase || '');

@@ -21,14 +21,14 @@
  *            launch_gate_mu_ + last_launch_us_ 保证全局每 cold_start_interval_ms
  *            才启动一个新 thread。worm-up 完成后此分支不再进入。
  *        ↓ 稳态：无 sleep，pop 到就跑
- *        ↓ NetThread::run() 内部 curl_easy_init → perform → curl_easy_cleanup
- *            （per-thread handle 彻底规避 shared-easy 的 rc=43 bug）
+ *        ↓ 每个 worker 长期持有自己的 easy；NetThread::run 重装选项后 perform
+ *            （easy 不跨 worker 并发共享，worker 退出时才 cleanup）
  *
  * 被砍掉的（相对 v4 M1.5-1.7）：
  *   - 独立 dispatcher 线程（逻辑内联到 workerLoop）
  *   - task_thread_limit（= thread_pool_size，worker pool 自身就是上限）
  *   - 稳态 mirror gate（PCL2 糟粕，小文件场景严重拖累）
- *   - shared curl_easy handle（reset + setopt 栈指针残留 → rc=43）
+ *   - 多线程同时使用同一个 curl_easy handle（不能与每 worker 独占复用混淆）
  *   - 双 dispatcher 分治（事件驱动 worker pool 无需分治）
  *
  * 保留的 PCL2 精华：
@@ -56,7 +56,7 @@
  *
  * 线程模型：
  *   - workers_：64 个工作线程，跑 NetThread::run（阻塞 curl_easy_perform）
- *   - ticker_：1 个 ticker 线程，定时 tick progress + flush meta
+ *   - ticker_：有下载/待收尾租约时定时维护；完全空闲时事件等待，不定期唤醒
  *   - 外部 API（createTask / startTask / cancelTask）thread-safe，由 task_mu_ 保护
  */
 #pragma once
@@ -77,8 +77,10 @@
 #include <curl/curl.h>
 
 #include "loader_download.h"
+#include "download_execution_context.h"
 #include "multi_downloader.h"
 #include "net_thread.h"
+#include "../jvm/update_install_lease.h"
 
 namespace download {
 
@@ -140,7 +142,11 @@ public:
     void start();
     void start(const Config& cfg);
 
-    /** 进程退出前显式清理：停所有 worker 线程 + curl_global_cleanup */
+    /**
+     * 外部生命周期线程显式清理：等待真实操作收敛、停所有线程、再 curl_global_cleanup。
+     * 内部执行循环/同步回调反入会记录告警并保持原生命周期，避免等待或 join 自己；
+     * 其他外部线程的并发调用仍等待同一次关闭完成。void/NAPI 兼容，不跨边界抛异常。
+     */
     void shutdown();
 
     /** 创建任务。返回 task_id，之后可通过 task_id 查询或取消 */
@@ -150,7 +156,7 @@ public:
      * 启动一个已创建但 Waiting 的任务。
      *
      * v6.5.1 (2026-05-22) 关键修复：本方法**异步**完成 startup —— 仅做 state check
-     * 和 onStart()（< 1ms），随后 detach 一个工作线程跑 `startupBody_`（per-file
+     * 和 onStart()，随后登记受管理的工作线程跑 `startupBody_`（per-file
      * preCheckExistingFile SHA-1 校验 + thread 入队）。原同步实现在 NAPI 调用线程
      * 上对 1500+ asset 文件做 SHA-1 → 主线程阻塞 6+ 秒 → 系统 THREAD_BLOCK_6S 触发
      * ANR/freeze/闪退。返回值变成"是否成功调度（基本不会失败）"，**不**等表示
@@ -168,7 +174,8 @@ public:
      * v5: 恢复已暂停/失败的任务。
      *   - resetToWaiting → onStart → startTask 重新入队所有未完成文件
      *   - 断点续传由 NetFile.start() 的 meta 恢复逻辑保证
-     * 返回 false 表示任务状态不允许（如已 Finished）
+     * 返回 false 表示状态不允许，或旧 startup/transport/callback/维护尚未收敛。
+     * 不在同步回调里阻塞等待自己；调用方在完整执行屏障就绪后重试。
      */
     bool resumeTask(uint64_t task_id);
 
@@ -191,12 +198,14 @@ public:
     /** 查询 */
     LoaderDownloadPtr getTask(uint64_t task_id) const;
     std::vector<LoaderDownloadPtr> listTasks() const;
+    /** 完整执行屏障的只读查询；缺失 ID 表示本引擎已不持有，不代表业务下载成功。 */
+    bool isTaskExecutionSettled(uint64_t task_id);
 
     /** 供 NetFile 调：把一组 pending thread 推到 worker queue（大文件分段） */
-    void enqueueThreads(std::vector<NetThreadPtr> threads);
+    void enqueueThreads(std::vector<NetThreadPtr> threads) noexcept;
 
     /** v4.5: 供 Engine 调：把小文件的 thread 推到 MultiDownloader（HTTP/2 多路复用） */
-    void enqueueMulti(std::vector<NetThreadPtr> threads);
+    void enqueueMulti(std::vector<NetThreadPtr> threads) noexcept;
 
     /**
      * Phase 3 (S2-2)：同步拉一个 URL 到内存 buffer。
@@ -207,14 +216,17 @@ public:
      *
      * @param primary_url     首选 URL
      * @param mirrors         次源 URL 列表（首源失败时按顺序尝试）
-     * @param timeout_seconds 单次 perform 总超时（含 connect）
+     * @param timeout_seconds 整条候选链的总超时（含准入、连接、跳转和换族），默认30秒
      * @param out_body        成功时填充响应体；失败时不保证状态
      * @param out_err_kind    失败时分类：'DnsFail' / 'ConnectFail' / 'Timeout' /
      *                        'SslFail' / 'HttpStatus' / 'PerformFail' / 'Unknown'
      * @param out_err_msg     失败时人类可读消息（含 curl_easy_strerror + http_code）
      * @return 0 = 成功；非 0 = 全部源失败（最后一次尝试的错误填充 out_err_*）
      *
-     * 线程安全：内部用 thread-local curl handle，可在任意线程调（包括 NAPI worker）。
+     * 线程安全：一次调用独占easy handle并在候选内复用，可在任意线程调（包括NAPI worker）。
+     * worker/multi/probe/metadata的真实host共用Engine准入与服务端not-before；
+     * 每候选最多5次重定向、每hop最多一次换族，共享同一steady截止时间。
+     * 存在后继候选时正文无进展最多5秒，并为后继预留剩余预算；持续正文不被该空闲窗截断。
      * 不需要 DownloadEngine.start() — 仅依赖 curl_global_init（首次调时自动）。
      */
     int fetchToBuffer(const std::string& primary_url,
@@ -259,20 +271,25 @@ public:
      * 完整请求成功，或单次尝试已经交付至少 1 MiB 有效正文后才可调用；少量慢速
      * 数据不能据此洗掉真实故障，避免劣质镜像长期占位。
      */
-    void    markHostHealthy(const std::string& host);
+    void    markHostHealthy(const std::string& host, uint64_t admission_receipt);
+    /** 纯观察；候选扫描和 Location 预检不领取或结算半开探针。 */
     bool    isBadHost(const std::string& host) const;
 
-    // ---- worker 池路径的每主机并发闸门（防 HTTP 429 限流）----
+    // ---- worker/CURLM/probe/Native metadata共用的真实host准入 ----
     //
     // NetThread 在真正发起请求前调 tryAcquireHostSlot；成功才继续，失败应换源或稍后重试。
     // 传输结束（无论成功失败）必须调 releaseHostSlot，成对使用。
     // 429 时调 penalizeHost 让该主机的并发上限减半（下限 1）；连续成功由
     // releaseHostSlot(ok=true) 累计，达到阈值后上限缓慢回升。
 
-    /** 尝试占用 host 的一个并发名额。返回 false 表示该主机已达上限。 */
-    bool    tryAcquireHostSlot(const std::string& host);
-    /** 释放名额；ok=true 表示本次传输成功（用于回升并发上限）。 */
-    void    releaseHostSlot(const std::string& host, bool ok);
+    /**
+     * 尝试占用真实host的一个名额，同时检查开路、服务端not-before与频率。
+     * admission_receipt必须非空；每次准入均填唯一非0收据，绑定获取时故障代次。
+     * 普通/半开均不得省略，false不消费请求预算。
+     */
+    bool    tryAcquireHostSlot(const std::string& host, uint64_t* admission_receipt);
+    /** 恰好归还一次；ok只来自实际结果，admission_receipt必须原样带回。 */
+    void    releaseHostSlot(const std::string& host, bool ok, uint64_t admission_receipt);
     /** 该主机返回 429 → 并发上限减半（下限 1）。 */
     void    penalizeHost(const std::string& host);
 
@@ -382,12 +399,27 @@ private:
     std::condition_variable curl_users_cv_;
     size_t active_curl_users_{0};
 
-    // Task registry and final-path ownership share task_mu_. A path stays owned for the
-    // whole resumable task lifetime (including Failed/Aborted) and is released only by
-    // purge, so two tasks can never race their staging/meta commit into the same target.
+    // 任务表、final-path owner 和任务操作预占共用 task_mu_。终态不会直接释放路径；
+    // 显式 purge 与创建时自动回收必须经过同一个 startup/transport/callback/维护屏障。
     mutable std::mutex task_mu_;
     std::unordered_map<uint64_t, LoaderDownloadPtr> tasks_;
     std::unordered_map<std::string, uint64_t> path_owners_;
+    // 下载写入的跨进程SH租约独立于UI终态，只有startup及所有执行真正收敛才释放。
+    std::unordered_map<uint64_t, std::shared_ptr<amcl::UpdateInstallReadLease>> update_read_leases_;
+    // start/reset/delete 以及 ticker 的磁盘维护都先预占，再在锁外执行；回调可反入，
+    // 但同一任务的第二个变更操作只能拒绝，不能等待自己或与旧操作交错。
+    std::unordered_set<uint64_t> active_task_operations_;
+    std::condition_variable task_operations_cv_;
+    struct TaskOperationGuard {
+        // 成员随 guard 覆盖完整同步操作及析构收尾；无需分配内存或注册永久线程。
+        DownloadExecutionContext execution_context;
+        DownloadEngine* engine = nullptr;
+        uint64_t task_id = 0;
+        TaskOperationGuard() = default;
+        TaskOperationGuard(const TaskOperationGuard&) = delete;
+        TaskOperationGuard& operator=(const TaskOperationGuard&) = delete;
+        ~TaskOperationGuard();
+    };
 
     // 受管理 startup 线程：禁止 detached；shutdown 在销毁 multi/worker 前全部 join。
     // completed 标志允许后续 startTask 回收已结束线程，避免长生命周期进程累积
@@ -397,7 +429,6 @@ private:
         std::shared_ptr<std::atomic<bool>> completed;
     };
     std::mutex startup_mu_;
-    std::condition_variable startup_cv_;
     std::vector<ManagedStartupThread> startup_threads_;
     std::unordered_map<uint64_t, size_t> active_startups_;
 
@@ -437,15 +468,23 @@ private:
     // 有 TTL 的坏主机熔断：到期后进入单探针半开态；探针租约内其余请求仍被拒绝。
     mutable std::mutex bad_hosts_mu_;
     mutable std::unordered_map<std::string, int64_t> bad_host_until_ms_;
-    mutable std::unordered_map<std::string, int64_t> bad_host_probe_until_ms_;
+    // 半开租约的代次只在真实准入时分配；迟到 release 不能结束别人的探针。
+    std::unordered_map<std::string, uint64_t> bad_host_probe_tokens_;
+    struct HostAdmissionRecord {
+        std::string host;
+        uint64_t failure_generation = 0;
+        bool healthy_reported = false;
+    };
+    std::unordered_map<uint64_t, HostAdmissionRecord> host_admission_receipts_;
+    std::unordered_map<std::string, uint64_t> host_failure_generations_;
+    uint64_t next_host_admission_receipt_ = 1;
+    /** 持有bad_hosts_mu_时调用；旧故障代次/重复健康/跨host收据均不改变状态。 */
+    void markHostHealthyLocked_(const std::string& host, uint64_t admission_receipt);
     mutable std::unordered_map<std::string, int> host_fail_counts_;
 
-    // ⚠️ 2026-07-29：worker 池路径（NetThread，大文件分段下载）的**每主机并发上限**。
-    //   MultiDownloader（小文件 curl_multi 路径）早有 host_limit_ 自适应收缩，但
-    //   JDK/大文件走 enqueueThreads 工作线程池，此前**完全没有每主机限制** —— 16 段
-    //   全压同一个 GitHub 代理，必然触发 HTTP 429（真机实测单次下载 570~887 条 429）。
-    //   收到 429 即对该主机减半（下限 1），连续成功若干次后缓慢回升。
-    //   0/缺省 = 未初始化，由 hostConcurrencyLimit 按默认值填充。
+    // 保留原worker_host_*字段名，避免为迁移机械改名；现在两执行器、probe和Native
+    // metadata均从此取得真实host名额。旧CURLM Config窗口仅作兼容上限，不能另开
+    // 一份全局额度。429减半、实际成功渐进恢复，服务端not-before单独单调保存。
     mutable std::unordered_map<std::string, int> worker_host_limit_;
     mutable std::unordered_map<std::string, int> worker_host_active_;
     mutable std::unordered_map<std::string, int> worker_host_ok_streak_;
@@ -495,15 +534,27 @@ private:
 
     void workerLoop();
     void tickerLoop();
+    /** 持task_mu_读取活动及安装读租约；终态但尚未释放租约仍需要最后的维护轮。 */
+    bool hasTickerWork_();
+    /** 在不持task_mu_的调用点经过ticker_mu_通知，保证新任务/退出不丢唤醒。 */
+    void wakeTicker_();
 
     /** startup 主体在受管理线程上运行；shutdown 会先请求停止并 join 全部线程。 */
     void startupBody_(LoaderDownloadPtr task, uint64_t epoch);
     void reapCompletedStartupThreads_();
-    void waitForStartupIdle_(uint64_t task_id);
     void finishStartup_(uint64_t task_id, const std::shared_ptr<std::atomic<bool>>& completed);
+    /** task_mu_ 内检查；操作预占、startup 与两个执行阶段全部退出才成立。 */
+    bool taskExecutionSettledLocked_(const LoaderDownloadPtr& task);
+    /** task_mu_ 内统一回收任务、所有路径和安装 SH 租约，禁止绕过完整屏障。 */
+    bool reclaimTaskLocked_(uint64_t task_id);
+    /** 短临界区只登记预占；真实 IO 和用户回调全部在锁外执行。 */
+    bool beginTaskOperation_(uint64_t task_id, LoaderDownloadPtr& task,
+                             TaskOperationGuard& guard, bool require_settled);
+    void finishTaskOperation_(uint64_t task_id);
     void trackThreadsForProgress_(const std::vector<NetThreadPtr>& threads);
-    void enqueueThreadsForTask(uint64_t task_id, std::vector<NetThreadPtr> threads);
-    static void settleThreadsAborted(std::vector<NetThreadPtr> threads);
+    void enqueueThreadsForTask(uint64_t task_id, std::vector<NetThreadPtr> threads) noexcept;
+    /** 输入段尚未发布到任何执行器；分配失败使用无分配失败通道，不能遗漏执行收尾。 */
+    static void settleThreadsAborted(std::vector<NetThreadPtr> threads, bool scheduling_failure = false) noexcept;
 
     void flushAllMeta();        // 遍历所有活跃 task 的 file，writeMetaFile
     void tickAllProgress();     // 调所有活跃 task 的 tickProgress

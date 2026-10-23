@@ -1,0 +1,58 @@
+cmake_minimum_required(VERSION 3.20)
+project(amcl_ohaudio_lifetime LANGUAGES C CXX)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "This production ABI mapping qualification requires Linux")
+endif()
+get_filename_component(AMCL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(AMCL_OPENAL_SOURCE_DIR "${AMCL_ROOT}/entry/src/main/cpp/openal/openal-soft" CACHE PATH "已钉版真实OpenAL源")
+set(AMCL_JNI_HEADERS "${AMCL_ROOT}/prebuilt/mod-natives/imgui-java/jni/jni-headers" CACHE PATH "真实JNI头")
+set(AMCL_LWJGL2_HEADERS "" CACHE PATH "正常L2构建生成的AMCL JNI头")
+set(AMCL_LWJGL2_UPSTREAM "" CACHE PATH "固定L2 ZIP展开的实际上游源")
+foreach(required AMCL_OPENAL_SOURCE_DIR AMCL_JNI_HEADERS AMCL_LWJGL2_HEADERS AMCL_LWJGL2_UPSTREAM)
+  if(NOT IS_DIRECTORY "${${required}}")
+    message(FATAL_ERROR "Explicit real source/header directory missing: ${required}")
+  endif()
+endforeach()
+# 生产OpenAL/OHAudio和完整L2 TU不提取算法。系统mock为独立映像且由测试进程持有，
+# 可保存平台Release失败后的回调；被测OpenAL仍由真实dlopen/dlclose决定是否卸载。
+set(ALSOFT_UTILS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ALSOFT_TESTS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL OFF CACHE BOOL "" FORCE)
+set(ALSOFT_UPDATE_BUILD_VERSION OFF CACHE BOOL "" FORCE)
+set(ALSOFT_EAX OFF CACHE BOOL "" FORCE)
+foreach(backend WASAPI DSOUND WINMM WAVE PORTAUDIO SDL2 SDL3 PIPEWIRE PULSEAUDIO ALSA OSS JACK)
+  set(ALSOFT_BACKEND_${backend} OFF CACHE BOOL "" FORCE)
+endforeach()
+add_library(system_ohaudio_mock SHARED mock-observed.cpp)
+set_target_properties(system_ohaudio_mock PROPERTIES OUTPUT_NAME ohaudio)
+target_include_directories(system_ohaudio_mock PRIVATE ${AMCL_ROOT}/tests/ohaudio-host/include)
+add_subdirectory(${AMCL_OPENAL_SOURCE_DIR} openal)
+target_compile_definitions(OpenAL PRIVATE HAVE_OHAUDIO=1)
+target_sources(OpenAL PRIVATE ${AMCL_ROOT}/entry/src/main/cpp/openal/ohaudio.cpp)
+target_include_directories(OpenAL PRIVATE ${AMCL_ROOT}/entry/src/main/cpp/openal ${AMCL_ROOT}/tests/ohaudio-host/include)
+target_link_libraries(OpenAL PRIVATE system_ohaudio_mock)
+# lifetime.c包含完整生产L2 TU，才能在同TU绑定私有provider而不增加生产setter；
+# 不再把该C文件另编一次。wrap仅作用于本可执行映像；close/query先真实转调，
+# 明确TEST_CONTROL只在原unload窗口注入返回，不干预OpenAL DSO的CodeLease。
+add_executable(lifetime lifetime.c)
+target_include_directories(lifetime PRIVATE ${AMCL_JNI_HEADERS} ${AMCL_JNI_HEADERS}/linux
+  ${AMCL_ROOT}/entry/src/main/cpp/input/delivery ${AMCL_LWJGL2_HEADERS} ${AMCL_LWJGL2_UPSTREAM}/src/native/common)
+target_compile_definitions(lifetime PRIVATE LWJGL_LINUX _GNU_SOURCE)
+target_compile_options(lifetime PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(lifetime PRIVATE -Wl,--gc-sections -Wl,--wrap=dlclose
+  -Wl,--wrap=dlsym -Wl,--wrap=dladdr -Wl,--wrap=clock_gettime)
+target_link_libraries(lifetime PRIVATE system_ohaudio_mock dl)
+# 精确API身份阴性使用真实外库handle/出口，仅污染租约获取结果，不自行unmap映像。
+add_library(foreign_owner SHARED foreign-owner.c)
+set_target_properties(foreign_owner PROPERTIES OUTPUT_NAME foreign-owner)
+add_library(lease_fault SHARED lease-fault.c)
+set_target_properties(lease_fault PROPERTIES OUTPUT_NAME lease-fault)
+target_link_libraries(lease_fault PRIVATE dl)
+# 一个小源码形成两个真实不同映像；第二个裁掉getter，供缺失/归属不匹配阴性。
+# 不复用foreign_owner的假alcOpenDevice作全局provider，避免污染正常OpenAL解析。
+add_library(diagnostic_identity SHARED diagnostic-identity.c)
+set_target_properties(diagnostic_identity PROPERTIES OUTPUT_NAME diagnostic-identity)
+add_library(diagnostic_missing SHARED diagnostic-identity.c)
+target_compile_definitions(diagnostic_missing PRIVATE AMCL_TEST_NO_IDENTITY=1)
+set_target_properties(diagnostic_missing PROPERTIES OUTPUT_NAME diagnostic-missing)

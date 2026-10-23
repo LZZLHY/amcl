@@ -15,9 +15,13 @@ extern "C" {
 // ==================== GLFW 常量 ====================
 #define GLFW_TRUE  1
 #define GLFW_FALSE 0
+#define GLFW_NOT_INITIALIZED 0x00010001
 #define GLFW_PLATFORM_ERROR 0x00010008
 #define GLFW_NO_CURRENT_CONTEXT 0x00010002
 #define GLFW_INVALID_VALUE 0x00010004
+// GLFW3.4标准API不可用错误；desktop frontend拒绝不匹配的公开client API
+// 使用同一跨语言数值，不能用平台错误或仅在宿主harness手写一个替代常量。
+#define GLFW_API_UNAVAILABLE 0x00010006
 #define GLFW_NO_WINDOW_CONTEXT 0x0001000A
 #define GLFW_PLATFORM_UNAVAILABLE 0x0001000E
 #define GLFW_PLATFORM 0x00050003
@@ -153,7 +157,16 @@ void glfwWaitEvents(void);
 void glfwWaitEventsTimeout(double timeout);
 void glfwPostEmptyEvent(void);
 void glfwMakeContextCurrent(GLFWwindow* window);
+// AMCL JNI 桥使用的同步结果扩展。与标准入口共用同一绑定事务，成功返回1，拒绝/失败返回0；
+// 失败保留原 TLS/owner，故不能仅凭 glfwGetCurrentContext 的旧值推断本次调用成功。
+int glfwOHOS_MakeContextCurrentChecked(GLFWwindow* window);
 GLFWwindow* glfwGetCurrentContext(void);
+// NativeEGL 只借出已有资源句柄；具体 EGL 类型均为不透明指针，公共头不引入 SDK EGL 依赖。
+// 查询不要求 context 在调用线程 current；返回值不转移所有权，窗口销毁后不得继续使用。
+void* glfwGetEGLDisplay(void);
+void* glfwGetEGLContext(GLFWwindow* window);
+void* glfwGetEGLSurface(GLFWwindow* window);
+int glfwGetEGLConfig(GLFWwindow* window, void** config);
 void glfwSwapInterval(int interval);
 double glfwGetTime(void);
 void glfwSetTime(double time);

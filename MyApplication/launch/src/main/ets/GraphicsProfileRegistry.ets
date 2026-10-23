@@ -27,7 +27,10 @@ export enum GraphicsSelectionRole {
   Retired = 'retired',
 }
 export enum GraphicsCapabilityKind { Legacy = 'legacy', NativeGl = 'native-gl', Vulkan = 'vulkan' }
-/** 上下文协议描述宿主应调用的 API；MobileGL 内部 Vulkan 不改变其桌面 GL 语义。 */
+/** 上下文协议描述窗口前端应向已冻结 provider 调用的公开 EGL client API，
+ * 不表示 provider 内部物理驱动。MG 的 GLES、MobileGL 的 Vulkan transport 仍由
+ * implementationChain/实际驱动证据表达，不能以此字段新增核心 GL 能力或设备准入。
+ */
 export enum GraphicsContextApi { DESKTOP_GL = 'desktop-gl', GLES = 'gles', NONE = 'none' }
 /** 描述适配器实现的能力，实际设备仍须创建/呈现探针成功，不能由声明制造阳性证据。 */
 export enum GraphicsFeatureSupport {
@@ -97,7 +100,10 @@ export const GRAPHICS_PROFILES: GraphicsProfileSpec[] = [
     transport: GraphicsTransport.UNKNOWN, lifecycle: RendererBackendLifecycle.Default,
     selectionRole: GraphicsSelectionRole.Default, gameMinimum: '1.17', requirementId: 'legacy-gl',
     capabilityKind: GraphicsCapabilityKind.Legacy, admission: GraphicsAdmission.LEGACY,
-    autoPreferredFrom: '', contextApi: GraphicsContextApi.GLES,
+    // MG 自身已有 desktop EGL 包装负责把完整桌面请求映射到 GLES transport。
+    // 宿主选择公开 OpenGL API 后，字符串、整数、窗口属性共用该 context 的授予记录；
+    // configured maximum 只是创建上限，LEGACY 准入和 GLES 能力要求不因此升级。
+    autoPreferredFrom: '', contextApi: GraphicsContextApi.DESKTOP_GL,
     glfwSharedContext: GraphicsFeatureSupport.PROBE_REQUIRED, glfwAuxiliaryWindow: GraphicsFeatureSupport.PROBE_REQUIRED,
     sdlAuxiliaryWindow: GraphicsFeatureSupport.SUPPORTED, parkingContext: GraphicsFeatureSupport.SUPPORTED,
     glLibName: 'libamcl_gl_host.so', systemLibrary: false, ownsEgl: true, ownsPresent: false,

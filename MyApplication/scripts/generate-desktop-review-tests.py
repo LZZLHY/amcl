@@ -45,7 +45,10 @@ def patch_sources():
             filename = match[1]
             if Path(filename).name not in ['SDL_openharmonyopengl.c', 'SDL_openharmonywindow.c', 'SDL_openharmonyamcl.c', 'SDL_amcldesktop.c',
                 'SDL_amclgraphicsruntime.h', 'graphics_runtime_abi.h', 'graphics_context_abi.h',
-                'SDL_egl.c', 'SDL_openharmonywindow.h', 'SDL_amclgraphicsobservation.h']:
+                'SDL_egl.c', 'SDL_video.c', 'SDL_openharmonywindow.h', 'SDL_amclgraphicsobservation.h',
+                'control_delivery.h', 'control_delivery_client.h', 'SDL_inputdelivery_c.h',
+                'SDL_keyboard.c', 'SDL_keyboard_c.h', 'SDL_mouse.c', 'SDL_mouse_c.h', 'SDL_events.c', 'SDL_events_c.h',
+                'SDL_amclinputcontrol_c.h', 'SDL_amclinputhostpolicy.h', 'SDL_dynapi.sym', 'SDL_dynapi.exports']:
                 continue
             old = files.get(filename, [])[:]
             output, cursor = [], 0
@@ -106,8 +109,9 @@ def generate_glfw_context(output):
     """独立抽取当前 GLFW 生产函数；SDL 全量补丁回归仍由原 generate 路径严格校验。"""
     glfw = (ROOT / 'entry/src/main/cpp/glfw/glfw_compat.cpp').read_text(encoding='utf-8')
     production = '\n\n'.join(function(glfw, name) for name in
-                             ['clearEglContextOwnershipAfterDetach', 'clearEglTlsAfterPartialDetach',
-                              'glfwMakeContextCurrent', 'glfwSwapBuffers'])
+                             ['glfwGraphicsRestartRequired', 'recordGlfwEglFailure', 'clearEglContextOwnershipAfterDetach', 'clearEglTlsAfterPartialDetach',
+                              'makeGlfwContextCurrent', 'glfwMakeContextCurrent', 'glfwOHOS_MakeContextCurrentChecked',
+                              'glfwSwapBuffers', 'glfwSwapInterval'])
     template = (HOST / 'desktop_review/glfw_context.cpp.in').read_text(encoding='utf-8')
     output.mkdir(parents=True, exist_ok=True)
     (output / 'glfw_context.cpp').write_text(template.replace('@PRODUCTION@', production),
@@ -124,8 +128,9 @@ def generate(output, sdl_repo=None):
     amcl = sdl['SDL_openharmonyamcl.c']
     desktop = sdl['SDL_amcldesktop.c']
     units = {
-        'glfw_context': [function(glfw, name) for name in ['clearEglContextOwnershipAfterDetach',
-            'clearEglTlsAfterPartialDetach', 'glfwMakeContextCurrent', 'glfwSwapBuffers']],
+        'glfw_context': [function(glfw, name) for name in ['glfwGraphicsRestartRequired', 'recordGlfwEglFailure', 'clearEglContextOwnershipAfterDetach',
+            'clearEglTlsAfterPartialDetach', 'makeGlfwContextCurrent', 'glfwMakeContextCurrent',
+            'glfwOHOS_MakeContextCurrentChecked', 'glfwSwapBuffers', 'glfwSwapInterval']],
         'glfw_monitor': [function(callbacks, 'glfwOHOS_ApplyInitialMonitor')],
         'sdl_profile': [function(gl, name) for name in ['OPENHARMONY_GLES_NativeGlRequired',
             'OPENHARMONY_GLES_EnsureUsableProfile', 'OPENHARMONY_GLES_TryPinConfig']],
@@ -151,7 +156,7 @@ def generate(output, sdl_repo=None):
         raise ValueError('Initial monitor request disconnected from glfwCreateWindow')
     if sdl_repo:
         for filename, source in sdl.items():
-            actual = Path(sdl_repo) / ('src/video' if filename == 'SDL_egl.c' else 'src/video/openharmony') / filename
+            actual = Path(sdl_repo) / ('src/video' if filename in ('SDL_egl.c', 'SDL_video.c') else 'src/video/openharmony') / filename
             if not actual.exists():
                 raise ValueError(f'Applied SDL file missing: {actual}')
             actual_lines = actual.read_text(encoding='utf-8').splitlines()

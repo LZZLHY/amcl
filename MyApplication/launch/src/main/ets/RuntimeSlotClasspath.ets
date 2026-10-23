@@ -13,8 +13,8 @@ import { LwjglRuntimeSlot, lwjglRuntimeSlot } from './LwjglRuntimeSlots';
  * 返回新数组，调用方排序或追加元素不会污染下一次启动。322 的 jemalloc 是既有
  * 兼容模块；modern 则继续依照其清单省略 jemalloc，保留已验证的 StdlibAllocator 回退。
  */
-export function lwjglSlotJarNames(slotDirectory: string): string[] {
-  const slot: LwjglRuntimeSlot = lwjglRuntimeSlot(slotDirectory);
+export function lwjglSlotJarNames(slotDirectory: string, javaFeature: number = 0): string[] {
+  const slot: LwjglRuntimeSlot = lwjglRuntimeSlot(slotDirectory, javaFeature);
   const names: string[] = [];
   for (const jar of slot.jars) {
     names.push(jar.name);
@@ -27,9 +27,10 @@ export function lwjglSlotJarNames(slotDirectory: string): string[] {
  * 复制、恢复或删除 libraries 下的共享 Maven 文件。升级残留、诊断 JAR 和临时
  * 文件因不在名单内自然不会进入游戏类加载器；缺文件保留给 classpath 预检发现。
  */
-export function lwjglSlotClasspath(slotDirectory: string): string[] {
+export function lwjglSlotClasspath(slotDirectory: string, javaFeature: number = 0): string[] {
   const paths: string[] = [];
-  for (const name of lwjglSlotJarNames(slotDirectory)) {
+  // classpath 只展开本局派生清单中的固定逻辑文件名；不会同时带入原始核心和其他视图。
+  for (const name of lwjglSlotJarNames(slotDirectory, javaFeature)) {
     paths.push(slotDirectory + '/' + name);
   }
   return paths;

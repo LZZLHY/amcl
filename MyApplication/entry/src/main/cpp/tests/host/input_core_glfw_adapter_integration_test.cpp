@@ -133,7 +133,103 @@ struct Recorder {
         sink.diagnosticDrop = DiagnosticDropSink;
         return sink;
     }
+
+    std::vector<GlfwTextSessionSinkEvent> textSessions;
+    std::vector<GlfwTextCommitSinkEvent> textCommits;
+    static void TextSessionSink(void* context,
+                                const GlfwTextSessionSinkEvent& event) {
+        static_cast<Recorder*>(context)->textSessions.push_back(event);
+    }
+    static void TextCommitSink(void* context,
+                               const GlfwTextCommitSinkEvent& event) {
+        static_cast<Recorder*>(context)->textCommits.push_back(event);
+    }
+    // 只给握手用例用：同时订阅文本，才能观察携带的 COMMIT 与其 blob 的归还。
+    GlfwInputSink TextSink() {
+        GlfwInputSink sink = Sink();
+        sink.textSession = TextSessionSink;
+        sink.textCommit = TextCommitSink;
+        return sink;
+    }
 };
+
+// 真实 V1 表的转发代理：在 Open 的精确时刻代生产者写一条记录，复现“第二个后端握手时
+// 输入仍在持续”（产品里来自另一线程，这里固定时刻以便断言）。表只初始化一次，
+// 被借用期间不整体改写。
+struct HandshakeInjector {
+    const AmclInputHostApiV1* real = nullptr;
+    AmclInputHostApiV1 proxy{};
+    AmclInputEvent pending{};
+    std::vector<uint8_t> text;
+    uint32_t injectAtNextCall = 0u;
+    uint32_t nextCalls = 0u;
+    bool injectAtSnapshot = false;
+    bool injected = false;
+};
+HandshakeInjector gInjector;
+
+void InjectPending() {
+    gInjector.injected = true;
+    const int32_t status = gInjector.text.empty()
+        ? gInjector.real->submitEvent(&gInjector.pending)
+        : gInjector.real->submitTextPacket(
+              &gInjector.pending, gInjector.text.data(),
+              static_cast<uint32_t>(gInjector.text.size()));
+    CHECK(status == AMCL_INPUT_OK);
+}
+
+int32_t ProxyNextEvent(AmclInputConsumerHandle consumer,
+                       AmclInputEvent* output) {
+    ++gInjector.nextCalls;
+    if (gInjector.injectAtNextCall != 0u &&
+        gInjector.nextCalls == gInjector.injectAtNextCall) {
+        gInjector.injectAtNextCall = 0u;
+        InjectPending();
+    }
+    return gInjector.real->nextEvent(consumer, output);
+}
+
+int32_t ProxyGetSnapshot(AmclInputSnapshotV1* output) {
+    if (gInjector.injectAtSnapshot) {
+        gInjector.injectAtSnapshot = false;
+        InjectPending();
+    }
+    return gInjector.real->getSnapshot(output);
+}
+
+// 新版adapter通过有序尾表读取；同一注入点必须覆盖两种入口，不能让测试代理绕开
+// 生产握手路径后仍声称制造了“启动期间有新输入”的竞争。
+int32_t ProxyNextOrderedEvent(AmclInputConsumerHandle consumer,
+        AmclInputEvent* output, uint64_t ceiling, uint64_t* order) {
+    ++gInjector.nextCalls;
+    if (gInjector.injectAtNextCall != 0u && gInjector.nextCalls == gInjector.injectAtNextCall) {
+        gInjector.injectAtNextCall = 0u;
+        InjectPending();
+    }
+    return gInjector.real->nextOrderedEvent(consumer, output, ceiling, order);
+}
+
+// atNextCall：在第 N 次 nextEvent 之前注入（第 1 次取基线，之后是启动 drain）；
+// atSnapshot：在启动 drain 读到 EMPTY 之后、READY 之前的 getSnapshot 时注入。
+const AmclInputHostApiV1* ArmInjector(const AmclInputHostApiV1* real,
+                                      const AmclInputEvent& pending,
+                                      uint32_t atNextCall, bool atSnapshot,
+                                      std::vector<uint8_t> text = {}) {
+    if (gInjector.real == nullptr) {
+        gInjector.real = real;
+        gInjector.proxy = *real;
+        gInjector.proxy.nextEvent = ProxyNextEvent;
+        gInjector.proxy.nextOrderedEvent = ProxyNextOrderedEvent;
+        gInjector.proxy.getSnapshot = ProxyGetSnapshot;
+    }
+    gInjector.pending = pending;
+    gInjector.text = std::move(text);
+    gInjector.injectAtNextCall = atNextCall;
+    gInjector.nextCalls = 0u;
+    gInjector.injectAtSnapshot = atSnapshot;
+    gInjector.injected = false;
+    return &gInjector.proxy;
+}
 
 void CheckDrop(const GlfwDiagnosticDropSinkEvent& event, uint32_t reason,
                uint32_t originalEventType, uint64_t deviceId,
@@ -257,10 +353,98 @@ void TestShippingCoreToAdapterDiagnostics() {
     CHECK(api->endSession(epoch) == AMCL_INPUT_OK);
 }
 
+// 第二个后端（LWJGL2）在 GLFW 已 READY、输入持续到达时握手：三种注入时刻都须一次成功，
+// READY 之前写入的记录在首次 Pump 按序送达，携带的文本 blob 首次 Pump 复制后才归还。
+// 旧实现在这三种时刻分别报 kBaselineRejected（READY STALE / 启动记录类型）。
+void TestSecondBackendHandshakeUnderContinuousInput() {
+    const AmclInputHostApiV1* api = amclInputGetHostApiV1();
+    uint64_t epoch = 0u;
+    CHECK(api->beginSession(&epoch) == AMCL_INPUT_OK);
+    MapperState firstMapper;
+    GlfwInputAdapter first;
+    Recorder firstRecorder;
+    firstRecorder.api = api;
+    firstRecorder.adapter = &first;
+    CHECK(first.Open(api, GlfwInputMapper{&firstMapper, MapKey, MapButton},
+                     firstRecorder.TextSink()) == GlfwAdapterStatus::kOk);
+
+    struct InjectionCase { uint32_t raw; uint32_t atNextCall; bool atSnapshot; };
+    for (const InjectionCase c : {InjectionCase{60u, 0u, true},
+                                  InjectionCase{61u, 2u, false}}) {
+        MapperState mapper;
+        GlfwInputAdapter second;
+        Recorder recorder;
+        recorder.api = api;
+        recorder.adapter = &second;
+        const AmclInputHostApiV1* proxy = ArmInjector(
+            api, Key(epoch, 7u, c.raw, AMCL_INPUT_ACTION_DOWN),
+            c.atNextCall, c.atSnapshot);
+        CHECK(second.Open(proxy, GlfwInputMapper{&mapper, MapKey, MapButton},
+                          recorder.Sink(), AMCL_INPUT_BACKEND_LWJGL2_PHYSICAL) ==
+              GlfwAdapterStatus::kOk);
+        CHECK(gInjector.injected);
+        CHECK(recorder.keys.empty());
+        const GlfwPumpResult pump = second.Pump();
+        CHECK(pump.status == GlfwAdapterStatus::kOk);
+        CHECK(pump.eventsDrained == 1u);
+        CHECK(recorder.keys.size() == 1u);
+        CHECK(recorder.keys[0].key == static_cast<int32_t>(c.raw + 1000u));
+        CHECK(recorder.keys[0].action == GlfwInputAction::kPress);
+        CHECK(first.Pump().status == GlfwAdapterStatus::kOk);
+        CHECK(firstRecorder.keys.back().action == GlfwInputAction::kPress);
+        const AmclInputEvent up = Key(epoch, 7u, c.raw, AMCL_INPUT_ACTION_UP);
+        CHECK(api->submitEvent(&up) == AMCL_INPUT_OK);
+        CHECK(second.Pump().status == GlfwAdapterStatus::kOk);
+        CHECK(recorder.keys.back().action == GlfwInputAction::kRelease);
+        CHECK(first.Pump().status == GlfwAdapterStatus::kOk);
+        CHECK(second.Close() == GlfwAdapterStatus::kOk);
+    }
+
+    AmclInputEvent start = Event(AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED, epoch);
+    start.header.source = AMCL_INPUT_SOURCE_IME;
+    start.payload.textSession.textSessionId = 91u;
+    start.payload.textSession.change = AMCL_INPUT_TEXT_SESSION_STARTED;
+    start.payload.textSession.reason = AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;
+    CHECK(api->submitEvent(&start) == AMCL_INPUT_OK);
+    CHECK(first.Pump().status == GlfwAdapterStatus::kOk);
+    AmclInputEvent commit = Event(AMCL_INPUT_EVENT_TEXT_COMMIT, epoch);
+    commit.header.source = AMCL_INPUT_SOURCE_IME;
+    commit.payload.textCommit.textSessionId = 91u;
+    MapperState mapper;
+    GlfwInputAdapter second;
+    Recorder recorder;
+    recorder.api = api;
+    recorder.adapter = &second;
+    // 第 1 次取基线、第 2 次取文本会话重放，第 3 次之前注入 COMMIT → 它被携带。
+    const AmclInputHostApiV1* proxy =
+        ArmInjector(api, commit, 3u, false, {'o', 'k'});
+    CHECK(second.Open(proxy, GlfwInputMapper{&mapper, MapKey, MapButton},
+                      recorder.TextSink(), AMCL_INPUT_BACKEND_LWJGL2_PHYSICAL) ==
+          GlfwAdapterStatus::kOk);
+    CHECK(gInjector.injected);
+    AmclInputSnapshotV1 snapshot{};
+    snapshot.abiVersion = AMCL_INPUT_HOST_API_VERSION;
+    snapshot.structSize = static_cast<uint16_t>(sizeof(snapshot));
+    CHECK(api->getSnapshot(&snapshot) == AMCL_INPUT_OK);
+    CHECK(snapshot.blobBytes == 2u);
+    CHECK(second.Pump().status == GlfwAdapterStatus::kOk);
+    CHECK(recorder.textSessions.size() == 1u);
+    CHECK(recorder.textCommits.size() == 1u);
+    CHECK(recorder.textCommits[0].utf8 == std::vector<uint8_t>({'o', 'k'}));
+    CHECK(first.Pump().status == GlfwAdapterStatus::kOk);
+    CHECK(firstRecorder.textCommits.size() == 1u);
+    CHECK(api->getSnapshot(&snapshot) == AMCL_INPUT_OK);
+    CHECK(snapshot.blobBytes == 0u);
+    CHECK(second.Close() == GlfwAdapterStatus::kOk);
+    CHECK(first.Close() == GlfwAdapterStatus::kOk);
+    CHECK(api->endSession(epoch) == AMCL_INPUT_OK);
+}
+
 }  // namespace
 
 int main() {
     TestShippingCoreToAdapterDiagnostics();
+    TestSecondBackendHandshakeUnderContinuousInput();
     std::cout << "input_core_glfw_adapter_integration_test: PASS\n";
     return 0;
 }

@@ -1,0 +1,340 @@
+/* 真实 SDK look-prefix 纵向验证：Core/resource 与 look/control 执行皆链接生产 owner。
+ * 唯一替身为平台窗口发现与五整数运输；mouse cache、变换、filter/watchers、ADD/Poll
+ * 都来自完整锁定 SDL SDK，不能以 watcher、Ready 或 opaque token 代替实际交付。 */
+@PRELUDE@
+#if AMCL_INPUT_TRACE
+/* 宿主接缝专用getter借同一映像中的真正collector；正式bridge仍由产品门另闭。
+ * 此处不复制诊断时钟/表/票匹配，不改生产look/control owner；foreign只改诊断PID。 */
+AMCL_INPUT_PUBLIC const AmclInputLatencyPortV2* inputBridge_getInputLatencyPortV2(void) {
+ static AmclInputLatencyPortV2 port;
+ port.magic=AMCL_INPUT_LATENCY_PORT_MAGIC_V2;port.version=2;port.size=sizeof(port);
+ port.pid=amclInputLatencyClientPidV2();
+#ifdef AMCL_SDL_LATENCY_FOREIGN
+ ++port.pid;
+#endif
+ port.ownerHost=amclLookExecutionGetPortV1()->ownerHost;
+ port.note=amclInputLatencyNoteBackendV2;port.finish=amclInputLatencyFinishBackendV2;
+ return &port;
+}
+#endif
+static Uint64 tickNs=1000000000, causalOrder=1, retireInTransform;
+static AmclInputSurfaceContextPayload currentContext;
+static const AmclInputHostApiV1 *core;
+static SDL_Event events[128];static int eventCount, nestedMode;
+static bool rejectMotion;
+/* 只读真实 neutral consumer 计数；cacheReady 与 queueAccepted 各自有实际 SDK 完成点。 */
+static AmclLookSnapshotV1 lookSnapshot(void) {
+ AmclLookSnapshotV1 s;SDL_zero(s);s.size=sizeof(s);
+ CHECK(host_look_port->snapshot(host_control_consumer,&s)==0);return s;
+}
+/* SDL 将 double prefix 转为 float；此容差只核该 ABI 表示精度，不放宽生命周期或计数。 */
+static bool closeEnough(double a,double b) { return fabs(a-b)<0.0001; }
+/* 使用真实公开 Poll 读取 SDK 队列；没有模拟 Get/Poll，也没有跳过队列 ADD。 */
+static void drain(void) {
+ SDL_Event e;eventCount=0;while(SDL_PollEvent(&e)) {
+  if(e.type==SDL_EVENT_MOUSE_MOTION||e.type==SDL_EVENT_KEY_DOWN||e.type==SDL_EVENT_KEY_UP){CHECK(eventCount<128);events[eventCount++]=e;}
+ }
+}
+static void resetInput(void) {
+ nestedMode=0;rejectMotion=false;presented=true;activeWindow=SDL_GetWindowFromID(initialWindowId);CHECK(activeWindow);
+ OPENHARMONY_CloseControl();host_look_port=NULL;SDL_ResetKeyboard();SDL_SetKeyboardFocus(activeWindow);SDL_SetMouseFocus(activeWindow);
+ SDL_Mouse *mouse=SDL_GetMouse();mouse->relative_mode=true;mouse->enable_relative_system_scale=false;mouse->enable_relative_speed_scale=false;
+ mouse->integer_mode_flags=0;mouse->InputTransform=NULL;mouse->mouse_touch_events=false;mouse->auto_capture=false;
+ mouse->x=mouse->last_x=100;mouse->y=mouse->last_y=50;mouse->has_position=true;mouse->x_accu=mouse->y_accu=0;
+ grabbing=true;host_last_grabbing=true;host_baseline_valid=false;legacyBegin=legacyEnd=typedBegin=typedEnd=0;frameLimit=UINT64_MAX;
+ SDL_SetEventEnabled(SDL_EVENT_MOUSE_MOTION,true);drain();CHECK(OPENHARMONY_ControlReady(activeWindow->id));
+}
+/* 按实际 Core snapshot 冻结完整资源，尺寸相同并不能替代 context/window/generation。 */
+static AmclLookStreamV1 deltaDescriptor(Uint64 device) {
+ AmclInputSnapshotV1 facts;SDL_zero(facts);facts.abiVersion=1;facts.structSize=sizeof(facts);CHECK(core->getSnapshot(&facts)==0);
+ AmclLookStreamV1 s;SDL_zero(s);s.size=sizeof(s);s.source=2;s.kind=AMCL_LOOK_COMPAT_DELTA;
+ s.unit=AMCL_LOOK_VIRTUAL_COUNTS;s.clock=AMCL_LOOK_OWNER_MONOTONIC;s.device=device;s.connection=1;
+ s.resource.size=sizeof(s.resource);s.resource.grabbed=1;s.resource.gameSession=1;s.resource.modeEpoch=1;
+ s.resource.sessionEpoch=facts.sessionEpoch;s.resource.surfaceEpoch=facts.surfaceEpoch;s.resource.focusEpoch=facts.focusEpoch;
+ s.resource.context=currentContext;return s;
+}
+/* 打开真正当前资源上的虚拟 delta 流；失败不得借不完整表或旧 Core epoch 继续。 */
+static Uint64 openDelta(Uint64 device) {
+ AmclLookStreamV1 s=deltaDescriptor(device);Uint64 handle=0;
+ CHECK(host_look_port->openStream(&s,&handle)==0&&handle);return handle;
+}
+/* 提交明确已加工的虚拟计数并冻结接收者；本夹具不把它写成实体硬件 raw 样本。 */
+static AmclLookPrefixV1 prefix(double dx,double dy,Uint64 device) {
+ Uint64 handle=openDelta(device);tickNs+=1000000;AmclLookPrefixV1 p;
+#if AMCL_INPUT_TRACE
+ const Uint64 previous=amclInputLatencyBeginV1(handle);
+#endif
+ const int committed=amclLookExecutionCommitProcessedV1(handle,dx,dy,1,causalOrder++,tickNs,&p);
+#if AMCL_INPUT_TRACE
+ amclInputLatencyEndV1(previous,committed==AMCL_LOOK_PREFIX_READY);
+#endif
+ CHECK(committed==1);
+ amclLookExecutionSetRecipientsV1(p.token,1u<<(AMCL_BACKEND_ID_SDL3-1));return p;
+}
+/* 原 token 原序号进入实际 pump 的五整数边缘；数值保留在唯一 owner，没有本地重算。 */
+static void pushPrefix(const AmclLookPrefixV1 *p) {
+ pushLegacy(p->order,1020,(int)(Uint32)p->token,(int)(Uint32)(p->token>>32),0,0);
+}
+/* SDK watcher 可读先行 cache/poll，但不能嵌套拉来源把未来 look 提前；换窗时旧 ADD 拒绝。 */
+static bool SDLCALL lookWatcher(void *unused,SDL_Event *e) {
+ (void)unused;
+ if(nestedMode==1&&e->type==SDL_EVENT_KEY_DOWN) {
+  float dx=0,dy=0;SDL_GetRelativeMouseState(&dx,&dy);CHECK(closeEnough(dx,10.8)&&dy==0);
+  int before=legacyBegin;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(legacyBegin==before);nestedMode=0;
+ } else if(nestedMode==2&&e->type==SDL_EVENT_MOUSE_MOTION) {
+  nestedMode=0;activeWindow=replacement;SDL_SetMouseFocus(replacement);SDL_SetKeyboardFocus(replacement);
+ }
+ return true;
+}
+/* 此 SDK filter 仅拒 motion，以真实 ADD 结果核过滤后的 state-only 交付层级。 */
+static bool SDLCALL lookFilter(void *unused,SDL_Event *e) { (void)unused;return !(rejectMotion&&e->type==SDL_EVENT_MOUSE_MOTION); }
+/* InputTransform 在实际缓存之前运行。退休仅取消该流未交付贡献，重取同 token 交兄弟。 */
+static void SDLCALL retireTransform(void *unused,Uint64 timestamp,SDL_Window *window,SDL_MouseID mouseID,float *x,float *y) {
+ (void)unused;(void)timestamp;(void)window;(void)mouseID;(void)x;(void)y;
+ if(retireInTransform){Uint64 handle=retireInTransform;retireInTransform=0;CHECK(host_look_port->retireStream(handle)==0);}
+}
+/* 输入 transform 内只退休 Core focus，保持 SDL window/presented/capture 外观，排除资格代理。 */
+static void SDLCALL loseCoreFocus(void *unused,Uint64 timestamp,SDL_Window *window,SDL_MouseID mouseID,float *x,float *y) {
+ (void)unused;(void)timestamp;(void)window;(void)mouseID;(void)x;(void)y;
+ CHECK(core->publishFocus(0)==0);
+}
+static void testOrder(void) {
+ resetInput();AmclLookPrefixV1 first=prefix(10.8,0,1);pushPrefix(&first);
+ pushLegacy(causalOrder++,AMCL_EVENT_KEY,65,0,1,0);AmclLookPrefixV1 future=prefix(6.48,0,2);pushPrefix(&future);
+ nestedMode=1;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(nestedMode==0);
+ CHECK(lookSnapshot().cacheReady==2&&lookSnapshot().queueAccepted==2);drain();
+ CHECK(eventCount==3&&events[0].type==SDL_EVENT_MOUSE_MOTION&&closeEnough(events[0].motion.xrel,10.8));
+ CHECK(events[1].type==SDL_EVENT_KEY_DOWN&&events[2].type==SDL_EVENT_MOUSE_MOTION&&closeEnough(events[2].motion.xrel,6.48));
+ float dx=0,dy=0;SDL_GetRelativeMouseState(&dx,&dy);CHECK(closeEnough(dx,6.48));
+ Uint64 reads=lookSnapshot().legalPollReads;SDL_GetMouseState(NULL,NULL);CHECK(lookSnapshot().legalPollReads==reads);
+ SDL_GetMouseState(&dx,&dy);CHECK(lookSnapshot().legalPollReads==reads+1);
+ /* 加载者未来全局累计再大，也不能在 grabbed fallback 再发一份。 */
+ g_menuX=999;g_menuY=999;OPENHARMONY_PumpHostCursor(&bridge,true);drain();CHECK(eventCount==0);
+ puts("PASS real SDL ADD/Poll prefix->action->future, cache-before-action and legal getter-only polling");
+}
+static void testReceipts(void) {
+ resetInput();rejectMotion=true;AmclLookPrefixV1 p=prefix(4,5,3);pushPrefix(&p);OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ CHECK(lookSnapshot().cacheReady==1&&lookSnapshot().queueAccepted==0);drain();CHECK(eventCount==0);
+ float dx=0,dy=0;SDL_GetRelativeMouseState(&dx,&dy);CHECK(dx==4&&dy==5);
+ rejectMotion=false;SDL_SetEventEnabled(SDL_EVENT_MOUSE_MOTION,false);p=prefix(2,3,4);pushPrefix(&p);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(lookSnapshot().cacheReady==2&&lookSnapshot().queueAccepted==0);
+ SDL_GetRelativeMouseState(&dx,&dy);CHECK(dx==2&&dy==3);drain();CHECK(eventCount==0);
+ puts("PASS real SDL filter/disabled cache receipts without fake ADD or rollback");
+}
+static void testSourceAndTarget(void) {
+ resetInput();Uint64 a=openDelta(5),b=openDelta(6);tickNs+=1000000;
+ CHECK(host_look_port->submitDelta(a,4,0,tickNs)==AMCL_LOOK_ACCEPTED_NO_MOTION);
+ CHECK(host_look_port->submitDelta(b,7,0,tickNs)==AMCL_LOOK_ACCEPTED_NO_MOTION);
+ AmclLookPrefixV1 p;CHECK(host_look_port->sealPrefix(1,causalOrder++,tickNs,1,&p)==1);
+ amclLookExecutionSetRecipientsV1(p.token,1u<<(AMCL_BACKEND_ID_SDL3-1));pushPrefix(&p);
+ retireInTransform=a;SDL_GetMouse()->InputTransform=retireTransform;
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(retireInTransform==0);drain();
+ CHECK(eventCount==1&&events[0].type==SDL_EVENT_MOUSE_MOTION&&closeEnough(events[0].motion.xrel,7));
+ CHECK(lookSnapshot().cacheReady==1&&lookSnapshot().queueAccepted==1);SDL_GetMouse()->InputTransform=NULL;
+ /* 运动 cache 已写后 watcher 换 target：已应用运动保留，原窗口 ADD 被真实 guard 拒绝。 */
+ resetInput();p=prefix(8,0,7);pushPrefix(&p);nestedMode=2;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ CHECK(nestedMode==0&&lookSnapshot().cacheReady==1&&lookSnapshot().queueAccepted==0);drain();CHECK(eventCount==0);
+ CHECK(closeEnough(SDL_GetMouse()->x_accu,8));CHECK(OPENHARMONY_ControlReady(replacement->id));
+ OPENHARMONY_DeliverLook(p.token);drain();CHECK(eventCount==0&&lookSnapshot().queueAccepted==0);
+ /* 晚到票不能用同宽高、另一个 window/context 的 surface 资格获得准入。 */
+ resetInput();p=prefix(9,0,8);pushPrefix(&p);CHECK(core->publishFocus(0)==0);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);drain();CHECK(eventCount==0&&lookSnapshot().cacheReady==0);
+ CHECK(core->publishFocus(1)==0);
+ /* 原 token 尚未进入 cache，换同尺寸逻辑 target 后也不能把旧运动交给新窗口。 */
+ resetInput();p=prefix(10,0,80);activeWindow=replacement;SDL_SetMouseFocus(replacement);SDL_SetKeyboardFocus(replacement);
+ CHECK(OPENHARMONY_ControlReady(replacement->id));OPENHARMONY_DeliverLook(p.token);drain();
+ CHECK(eventCount==0&&lookSnapshot().cacheReady==0&&lookSnapshot().queueAccepted==0);
+ /* Core 资源可在 actual InputTransform 内退休；presented/window/capture 外观仍然相同。 */
+ resetInput();p=prefix(11,0,81);pushPrefix(&p);SDL_GetMouse()->InputTransform=loseCoreFocus;
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);drain();
+ CHECK(eventCount==0&&lookSnapshot().cacheReady==0&&lookSnapshot().queueAccepted==0);
+ SDL_GetMouse()->InputTransform=NULL;CHECK(core->publishFocus(1)==0);
+ /* 新 stream 也必须拒绝实际 inactive Core surface；同尺寸/相同 context/capture 不是代理。 */
+ AmclInputSurfacePayload surface;SDL_zero(surface);surface.widthPx=640;surface.heightPx=480;surface.density=1;
+ surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=2;surface.active=0;
+ CHECK(core->publishSurface(&surface)==0);AmclLookStreamV1 invalid=deltaDescriptor(82);Uint64 refused=99;
+ CHECK(host_look_port->openStream(&invalid,&refused)==AMCL_LOOK_NOT_READY&&refused==0);
+ surface.active=1;surface.publicationGeneration=3;CHECK(core->publishSurface(&surface)==0);
+ puts("PASS source retirement before SDK cache, post-cache target reentry, late prefix/resource retirement");
+}
+static void testPressureAndMalformed(void) {
+ resetInput();AmclLookPrefixV1 p=prefix(1,2,90);pushPrefix(&p);
+ /* 填满真实 SDK 队列后仍能应用 motion cache；Send/Push 失败不得算 queueAccepted。 */
+ SDL_Event fill[64];for(int i=0;i<64;++i){SDL_zero(fill[i]);fill[i].type=SDL_EVENT_USER;}
+ int total=0;for(;;){int added=SDL_PeepEvents(fill,64,SDL_ADDEVENT,0,0);CHECK(added>=0);total+=added;if(added<64)break;}
+ CHECK(total==65535);OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ CHECK(lookSnapshot().cacheReady==1&&lookSnapshot().queueAccepted==0);float dx=0,dy=0;
+ SDL_GetRelativeMouseState(&dx,&dy);CHECK(dx==1&&dy==2);drain();CHECK(eventCount==0);
+ /* 原 prefix 保留位或 float 不可表示时拒绝；SDK 缓存不得污染，运输明确终结。 */
+ resetInput();p=prefix(3,4,91);pushLegacy(p.order,1020,(int)(Uint32)p.token,(int)(Uint32)(p.token>>32),1,0);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(lookSnapshot().accepted==0&&lookSnapshot().cacheReady==0);drain();CHECK(eventCount==0);
+ CHECK(host_look_port->abandonPrefix(host_control_consumer,p.token)==0);
+ /* 当前固定source已在producer接受事务统一执行float边界；不能继续要求过大值先产
+  * prefix再到SDK丢弃。用原producer返回码和零输出证明拒绝，SDK没有新运输材料。 */
+ Uint64 invalidStream=openDelta(92);AmclLookPrefixV1 refused;tickNs+=1000000;
+ const int invalidResult=amclLookExecutionCommitProcessedV1(invalidStream,1e100,0,1,causalOrder++,tickNs,&refused);
+ printf("SDL_FLOAT_BOUNDARY producer_result=%d token=%llu input=1e100 source_guard=float_max\n",invalidResult,(unsigned long long)refused.token);
+ CHECK(invalidResult==AMCL_LOOK_REJECTED&&refused.token==0);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ CHECK(lookSnapshot().cacheReady==0&&lookSnapshot().queueAccepted==0);drain();CHECK(eventCount==0);
+ /* 填真正 neutral prefix 池直到 PRESSURE，失败 output 保持零且不提交额外数学量。 */
+ Uint64 handle=openDelta(93),tokens[4096];int count=0;AmclLookPrefixV1 candidate;int status=0;
+ for(;count<4096;++count){tickNs+=1000000;status=amclLookExecutionCommitProcessedV1(handle,1,0,1,causalOrder++,tickNs,&candidate);
+  if(status==AMCL_LOOK_PRESSURE)break;CHECK(status==AMCL_LOOK_PREFIX_READY);tokens[count]=candidate.token;}
+ CHECK(count>1000&&count<4096&&status==AMCL_LOOK_PRESSURE&&candidate.token==0);
+ for(int i=0;i<count;++i)CHECK(host_look_port->retirePrefix(tokens[i])==0);
+ tickNs+=1000000;CHECK(amclLookExecutionCommitProcessedV1(handle,3,0,1,causalOrder++,tickNs,&candidate)==1);
+ amclLookExecutionSetRecipientsV1(candidate.token,1u<<(AMCL_BACKEND_ID_SDL3-1));pushPrefix(&candidate);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);drain();CHECK(eventCount==1&&events[0].motion.xrel==3);
+ puts("PASS full actual SDL ADD pressure, malformed/float refusal, real prefix pressure and recovery");
+}
+/* 对真实 owner 公告出口失活后，实际 SDK consumer 恢复须走同一三步绑定；旧票不重放。 */
+static void testLookActivation(void) {
+ resetInput();AmclLookPrefixV1 old=prefix(12,0,94);CHECK(host_look_port->setBackendActive(AMCL_BACKEND_ID_SDL3,0)==0);
+ OPENHARMONY_DeliverLook(old.token);drain();CHECK(eventCount==0&&SDL_GetMouse()->x_accu==0);
+ CHECK(OPENHARMONY_ControlReady(activeWindow->id));OPENHARMONY_DeliverLook(old.token);drain();CHECK(eventCount==0);
+ AmclLookPrefixV1 fresh=prefix(6,0,95);pushPrefix(&fresh);OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ drain();CHECK(eventCount==1&&events[0].motion.xrel==6&&lookSnapshot().queueAccepted==1);
+ puts("PASS actual look exit retirement and SDK three-step rebind without old prefix replay");
+}
+/* 通用观察者只用来核原 Core raw/sequence，不宣称 SDL receiver；真正 SDL READY 由下方
+ * 生产 backend adapter 的 Open/baseline/READY 完整闭包建立。 */
+static AmclInputConsumerHandle coreObserver;
+static AmclInputEvent coreRelative(Uint64 device,double dx,double dy,bool hardware) {
+ AmclInputEvent e;SDL_zero(e);e.header.abiVersion=1;e.header.structSize=sizeof(e);
+ e.header.eventType=AMCL_INPUT_EVENT_POINTER_RELATIVE;e.header.source=AMCL_INPUT_SOURCE_MOUSE;
+ e.header.deviceId=device;e.header.deviceClass=AMCL_INPUT_DEVICE_CLASS_MOUSE;
+ e.header.flags=hardware?AMCL_INPUT_EVENT_FLAG_HARDWARE_RAW:0;e.payload.pointerRelative.rawDx=dx;e.payload.pointerRelative.rawDy=dy;return e;
+}
+static AmclInputEvent observedRelative(double dx) {
+ AmclInputEvent e;while(core->nextEvent(coreObserver,&e)==AMCL_INPUT_OK) {
+  if(e.header.eventType==AMCL_INPUT_EVENT_POINTER_RELATIVE&&e.payload.pointerRelative.rawDx==dx)return e;
+ }
+ CHECK(false);SDL_zero(e);return e;
+}
+/* 原样调用生产 typed bridge，prime 会真实消费 baseline/登记 SDK role，没有伪造 READY。 */
+static void startActualBackend(void) {
+ amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,1);AmclBackendInputEvent e;
+ while(amclBackendInputNextThrough(AMCL_BACKEND_INPUT_SDL3,&e,UINT64_MAX)==AMCL_BACKEND_INPUT_EVENT){}
+ AmclInputEvent capture;SDL_zero(capture);capture.header.abiVersion=1;capture.header.structSize=sizeof(capture);
+ capture.header.eventType=AMCL_INPUT_EVENT_CAPTURE_CHANGED;capture.payload.capture.requested=1;
+ capture.payload.capture.active=1;capture.payload.capture.reason=AMCL_INPUT_CAPTURE_REASON_GRANTED;
+ CHECK(core->submitEvent(&capture)==AMCL_INPUT_OK);
+ while(amclBackendInputNextThrough(AMCL_BACKEND_INPUT_SDL3,&e,UINT64_MAX)==AMCL_BACKEND_INPUT_EVENT){}
+}
+static void pumpActualBackend(void) {
+ actualBackendInput=true;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);actualBackendInput=false;
+}
+static void testPhysicalCoreAndSdk(void) {
+ resetInput();CHECK(core->openConsumer(&coreObserver)==AMCL_INPUT_OK);AmclInputEvent ignored;
+ while(core->nextEvent(coreObserver,&ignored)==AMCL_INPUT_OK){}
+ startActualBackend();CHECK(core->publishDeviceChange(700001,AMCL_INPUT_DEVICE_ADDED,
+  AMCL_INPUT_DEVICE_CAP_POINTER_RELATIVE|AMCL_INPUT_DEVICE_CAP_CAPTURE)==AMCL_INPUT_OK);
+ pumpActualBackend();drain();CHECK(eventCount==0);
+ /* 无关 legacy 顺序预算使共同 order 与 Core sequence 明确不同，杜绝两值偶合假阳性。 */
+ for(int i=0;i<21;++i)CHECK(amclInputNextInteractionOrder()!=0);
+ AmclLookPolicyV1 before={sizeof(before),1,2,.2,0};CHECK(host_look_port->applyPolicy(3,&before)==0);
+ AmclInputEvent raw=coreRelative(700001,4,-5,true);CHECK(core->submitEvent(&raw)==AMCL_INPUT_OK);
+ AmclInputEvent original=observedRelative(4);CHECK(original.payload.pointerRelative.rawDy==-5&&
+  (original.header.flags&AMCL_INPUT_EVENT_FLAG_HARDWARE_RAW));
+ /* 接受后改 policy：已加工 memo 仍是 8,+10；consumer 重算会变成 12,+15，从数值拒绝。 */
+ AmclLookPolicyV1 after={sizeof(after),1,3,.2,0};CHECK(host_look_port->applyPolicy(3,&after)==0);
+ actualRelativeCount=0;pumpActualBackend();drain();
+ CHECK(actualRelativeCount==1&&lastActualRelative.sequence!=original.header.sequence);
+ CHECK(lastActualRelative.wheelX==4&&lastActualRelative.wheelY==-5&&
+  (lastActualRelative.modifiers&AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW));
+ CHECK(eventCount==1&&events[0].type==SDL_EVENT_MOUSE_MOTION&&events[0].motion.xrel==8&&events[0].motion.yrel==10);
+ CHECK(events[0].motion.which==OPENHARMONY_MouseIDFromHost(lastActualRelative.deviceId)&&
+  events[0].motion.timestamp==lastActualRelative.monotonicTimeNs);
+ CHECK(lookSnapshot().cacheReady==1&&lookSnapshot().queueAccepted==1);
+ /* API22–25 compatibility relative 不声明 hardware raw，仍只加工一次；public 字段不改。 */
+ raw=coreRelative(700001,2,-3,false);CHECK(core->submitEvent(&raw)==AMCL_INPUT_OK);pumpActualBackend();drain();
+ CHECK(eventCount==1&&events[0].motion.xrel==6&&events[0].motion.yrel==9&&lastActualRelative.modifiers==0);
+ /* 热拔取消该来源未写 cache 的 memo；已写的 8/+10、6/+9 不逆向回滚。 */
+ raw=coreRelative(700001,7,0,true);CHECK(core->submitEvent(&raw)==AMCL_INPUT_OK);
+ CHECK(core->publishDeviceChange(700001,AMCL_INPUT_DEVICE_REMOVED,0)==AMCL_INPUT_OK);
+ float deliveredBefore=SDL_GetMouse()->x_accu;pumpActualBackend();drain();CHECK(eventCount==0&&SDL_GetMouse()->x_accu==deliveredBefore);
+ /* 原 raw 无法编码为 SDK float 时应在 Core 接受事务拒绝，不能先成功再在 adapter 消失。 */
+ CHECK(core->publishDeviceChange(700002,AMCL_INPUT_DEVICE_ADDED,AMCL_INPUT_DEVICE_CAP_POINTER_RELATIVE)==AMCL_INPUT_OK);
+ AmclLookPolicyV1 tiny={sizeof(tiny),0,.1,1,0};CHECK(host_look_port->applyPolicy(3,&tiny)==0);
+ raw=coreRelative(700002,1e39,0,false);CHECK(core->submitEvent(&raw)==AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+ pumpActualBackend();drain();CHECK(eventCount==0);
+ /* 实体 SDK 无资格时不 fallback raw；原 memo 清本接收者后可回收。 */
+ CHECK(host_look_port->applyPolicy(3,&before)==0);raw=coreRelative(700002,3,0,false);
+ CHECK(core->submitEvent(&raw)==AMCL_INPUT_OK);captureGranted=false;pumpActualBackend();captureGranted=true;drain();CHECK(eventCount==0);
+ amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,0);
+ while(core->nextEvent(coreObserver,&ignored)==AMCL_INPUT_OK){}CHECK(core->closeConsumer(coreObserver)==AMCL_INPUT_OK);
+ puts("PASS actual Core acceptance->physical memo->real backend order/device/raw->full SDK cache/ADD/Poll without duplicate math");
+}
+/* 明确的诊断断言标签使compiled withdrawal不能被任意Core/SDK初始化失败冒充。 */
+#define LATENCY_CHECK(x) do { if(!(x)){fprintf(stderr,"SDL_LATENCY_CHECK %s\n",#x);exit(1);} } while(0)
+static void latencyClear(void) {
+#if AMCL_INPUT_TRACE
+ AmclInputLatencyV1 records[8];AmclInputLatencyStatsV1 stats;
+ while(amclInputLatencyDrainV1(records,8,&stats)) { }
+#endif
+}
+/* 仅核当前producer原token的唯一终态。其它历史资源退休仍如实导出，不按drain批次改归属。
+ * 五int外部夹具没有真正neutral ring，必须保ENQUEUE/READ缺段，不能冒称全六时点。 */
+static void latencyExpect(Uint64 token,Uint32 outcome,bool terminal) {
+#if AMCL_INPUT_TRACE && !defined(AMCL_SDL_LATENCY_FOREIGN)
+ AmclInputLatencyV1 records[8];AmclInputLatencyStatsV1 stats;unsigned matches=0;
+ const Uint32 count=amclInputLatencyDrainV1(records,8,&stats);
+ for(Uint32 i=0;i<count;++i) if(records[i].prefix==token) {
+  printf("SDL_LATENCY_ROW pfx=%llu ticket=%llu c=%llu/%llu tgt=%llu/%llu outcome=%u/%u mask=%u\n",
+   (unsigned long long)records[i].prefix,(unsigned long long)records[i].ticket,
+   (unsigned long long)records[i].consumer,(unsigned long long)host_control_consumer,
+   (unsigned long long)records[i].target,(unsigned long long)host_control_target,records[i].outcome,outcome,records[i].mask);
+  ++matches;LATENCY_CHECK(records[i].ticket&&records[i].consumer==host_control_consumer&&
+   records[i].activation&&records[i].target==host_control_target&&records[i].outcome==outcome);
+  LATENCY_CHECK((records[i].mask&16)&&((records[i].mask&32)!=0)==terminal);
+  LATENCY_CHECK((records[i].mask&12)==0&&records[i].clockFailures==0);
+ }
+ LATENCY_CHECK(matches==1);
+#else
+ (void)token;(void)outcome;(void)terminal;LATENCY_CHECK(host_latency_port==NULL);
+#endif
+}
+static void testLatency(void) {
+ resetInput();latencyClear();rejectMotion=true;
+ AmclLookPrefixV1 cached=prefix(4,5,901);pushPrefix(&cached);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ LATENCY_CHECK(lookSnapshot().cacheReady==1&&lookSnapshot().queueAccepted==0);
+ latencyExpect(cached.token,AMCL_ILAT_SDL_CACHE_ONLY,false);
+ float dx=0,dy=0;SDL_GetRelativeMouseState(&dx,&dy);LATENCY_CHECK(dx==4&&dy==5);
+ rejectMotion=false;AmclLookPrefixV1 posted=prefix(2,3,902);pushPrefix(&posted);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ LATENCY_CHECK(lookSnapshot().cacheReady==2&&lookSnapshot().queueAccepted==1);
+ latencyExpect(posted.token,AMCL_ILAT_SDL_QUEUE_COMMITTED,true);
+ SDL_GetRelativeMouseState(&dx,&dy);LATENCY_CHECK(dx==2&&dy==3);drain();
+ puts("SDL_LATENCY_CONSUMER_PASS real collector cache/filter/ADD-return-receipt; external five-int transport, no neutral bridge six-point or game ACK claim");
+}
+int main(void) {
+ CHECK(SDL_WasInit(0)==0&&SDL_AMCL_InputControlProtocolV1()==1&&SDL_AMCL_InputLookProtocolV1()==1);
+ CHECK(SDL_WasInit(0)==0&&SDL_AMCL_ValidateInputRuntimeV1(false));
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");CHECK(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ activeWindow=SDL_CreateWindow("AMCL prefix SDK fixture",640,480,SDL_WINDOW_HIDDEN);CHECK(activeWindow);initialWindowId=activeWindow->id;
+ replacement=SDL_CreateWindow("AMCL replacement",640,480,SDL_WINDOW_HIDDEN);CHECK(replacement);
+ amclControlDeliveryPublishV1();amclLookExecutionPublishV1();core=amclInputGetHostApiV1();CHECK(amclInputHostDescriptorPublishV1(core)==0);
+ Uint64 epoch=0;CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+ AmclInputSurfacePayload surface;SDL_zero(surface);surface.active=1;surface.widthPx=640;surface.heightPx=480;surface.density=1;
+ surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;CHECK(core->publishSurface(&surface)==0);
+ AmclInputEvent context;SDL_zero(context);context.header.abiVersion=1;context.header.structSize=sizeof(context);
+ context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+ context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=initialWindowId;context.payload.surfaceContext.displayId=1;
+ context.payload.surfaceContext.widthPx=640;context.payload.surfaceContext.heightPx=480;context.payload.surfaceContext.density=1;
+ context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+  AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+ currentContext=context.payload.surfaceContext;CHECK(core->submitEvent(&context)==0);
+ CHECK(amclControlDeliveryBindSessionV1(1)==0);host_look_port=amclLookExecutionGetPortV1();CHECK(host_look_port->bindSession(1)==0&&host_look_port->publishMode(1,1,1)==0);
+#if AMCL_INPUT_TRACE
+ amclInputLatencyConfigureBackendV2(3,1);
+#endif
+ AmclLookPolicyV1 policy={sizeof(policy),0,1,1,0};CHECK(host_look_port->applyPolicy(-1,&policy)==0);
+ CHECK(SDL_AddEventWatch(lookWatcher,NULL));SDL_SetEventFilter(lookFilter,NULL);
+ /* 接缝能力先在该新process、尚无长prefix压力碰撞的确定性范围验证；后面的原业务
+  * 压力组完整保留。固定诊断表满/索引碰撞允许缺观察，不能令其成为业务测试的失败。 */
+ testLatency();testOrder();testReceipts();testSourceAndTarget();testPressureAndMalformed();testLookActivation();testPhysicalCoreAndSdk();OPENHARMONY_CloseControl();
+ SDL_RemoveEventWatch(lookWatcher,NULL);SDL_SetEventFilter(NULL,NULL);SDL_DestroyWindow(SDL_GetWindowFromID(initialWindowId));SDL_DestroyWindow(replacement);SDL_Quit();
+ puts("PASS immutable look prefix through full locked SDL SDK and unique production Core/control/look owner");return 0;
+}

@@ -22,7 +22,7 @@
  *   - viewWidth: 缩略图容器宽（vp），高 = viewWidth * refH / refW
  */
 
-import { ControlItem, ControlType, LayoutProfile, effectiveCornerRadius } from 'gamecontrol'
+import { ControlItem, ControlType, LayoutProfile, effectiveCornerRadius, initialControlGroupVisible } from 'gamecontrol'
 import { computeAutoGuiScale, computeHotbarRectPx, HotbarRectPx } from 'gamecontrol'
 import { display } from '@kit.ArkUI'
 
@@ -198,7 +198,7 @@ export struct LayoutThumbnail {
 
       // 按钮（不渲染 hidden / force_hide 的）
       ForEach(this.profile.controls, (c: ControlItem) => {
-        if (!c.hidden && c.visibilityOverride !== 'force_hide') {
+        if (!c.hidden && c.visibilityOverride !== 'force_hide' && initialControlGroupVisible(this.profile,c)) {
           // 物品栏直点条：未手动摆放时按目标设备分辨率现算矩形（宽度随 guiScale 跳变），
           // 避免跨设备类型预览失真；手动摆放过则用存储值。
           if (c.type === ControlType.HOTBAR_SELECTOR && c.hotbarUserPlaced !== true) {

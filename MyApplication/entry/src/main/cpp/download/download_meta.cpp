@@ -442,8 +442,20 @@ bool validateMeta(const DownloadMeta& meta) {
 // ============================================================================
 
 std::optional<DownloadMeta> readMetaFile(const std::string& meta_path) {
+    // 保留既有宿主/工具 API；生产 NetFile 使用显式可信父目录版本。
+    return readMetaFileAt(AT_FDCWD, meta_path);
+}
+
+std::optional<DownloadMeta> readMetaFileAt(int parent_fd, const std::string& meta_path,
+                                         MetaFileIdentity* identity) {
+    if (parent_fd != AT_FDCWD && (parent_fd < 0 || meta_path.empty() ||
+        meta_path == "." || meta_path == ".." || meta_path.find('/') != std::string::npos)) {
+        errno = EINVAL;
+        return std::nullopt;
+    }
     struct stat before{};
-    if (::lstat(meta_path.c_str(), &before) != 0 || !S_ISREG(before.st_mode) ||
+    if (::fstatat(parent_fd, meta_path.c_str(), &before, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(before.st_mode) || before.st_nlink != 1 ||
         before.st_size <= 0 || static_cast<uint64_t>(before.st_size) > kMaxMetaBytes) {
         AMCL_LOG_W(LOG_TAG, "readMetaFile: invalid type/size: %{public}s", meta_path.c_str());
         return std::nullopt;
@@ -452,11 +464,11 @@ std::optional<DownloadMeta> readMetaFile(const std::string& meta_path) {
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
 #endif
-    int fd = ::open(meta_path.c_str(), flags);
+    int fd = ::openat(parent_fd, meta_path.c_str(), flags);
     if (fd < 0) return std::nullopt;
 
     struct stat opened{};
-    if (::fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode) ||
+    if (::fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode) || opened.st_nlink != 1 ||
         opened.st_dev != before.st_dev || opened.st_ino != before.st_ino ||
         opened.st_size <= 0 || static_cast<uint64_t>(opened.st_size) > kMaxMetaBytes) {
         ::close(fd);
@@ -527,10 +539,24 @@ std::optional<DownloadMeta> readMetaFile(const std::string& meta_path) {
         AMCL_LOG_W(LOG_TAG, "readMetaFile: missing/invalid fields: %{public}s", meta_path.c_str());
         return std::nullopt;
     }
+    if (identity) {
+        identity->device = static_cast<uint64_t>(opened.st_dev);
+        identity->inode = static_cast<uint64_t>(opened.st_ino);
+    }
     return meta;
 }
 
 bool writeMetaFile(const std::string& meta_path, const DownloadMeta& meta) {
+    return writeMetaFileAt(AT_FDCWD, meta_path, meta);
+}
+
+bool writeMetaFileAt(int parent_fd, const std::string& meta_path, const DownloadMeta& meta,
+                     MetaFileIdentity* identity) {
+    if (parent_fd != AT_FDCWD && (parent_fd < 0 || meta_path.empty() ||
+        meta_path == "." || meta_path == ".." || meta_path.find('/') != std::string::npos)) {
+        errno = EINVAL;
+        return false;
+    }
     if (!validateMeta(meta)) {
         errno = EINVAL;
         AMCL_LOG_E(LOG_TAG, "writeMetaFile: invalid meta: %{public}s", meta_path.c_str());
@@ -556,7 +582,7 @@ bool writeMetaFile(const std::string& meta_path, const DownloadMeta& meta) {
 #ifdef O_NOFOLLOW
         flags |= O_NOFOLLOW;
 #endif
-        fd = ::open(tmp.c_str(), flags, 0600);
+        fd = ::openat(parent_fd, tmp.c_str(), flags, 0600);
         if (fd < 0 && errno != EEXIST) break;
     }
     if (fd < 0) {
@@ -567,6 +593,9 @@ bool writeMetaFile(const std::string& meta_path, const DownloadMeta& meta) {
 
     bool ok = writeAll(fd, data.data(), data.size());
     int failure_errno = ok ? 0 : errno;
+    struct stat written{};
+    // 收据来自我们 O_EXCL 创建的 fd，不能在 rename 后重新查名字并误认用户替换文件。
+    if (ok && ::fstat(fd, &written) != 0) { ok = false; failure_errno = errno; }
     if (ok) {
         int rc;
         do { rc = ::fsync(fd); } while (rc != 0 && errno == EINTR);
@@ -579,19 +608,28 @@ bool writeMetaFile(const std::string& meta_path, const DownloadMeta& meta) {
         if (ok) failure_errno = errno;
         ok = false;
     }
-    if (ok && ::rename(tmp.c_str(), meta_path.c_str()) != 0) {
+    if (ok && ::renameat(parent_fd, tmp.c_str(), parent_fd, meta_path.c_str()) != 0) {
         ok = false;
         failure_errno = errno;
     }
-    if (ok && !fsyncParent(meta_path)) {
+    // 新生产路径的父目录已经固定，直接 fsync 同一个 fd；旧绝对路径 API 保留原契约。
+    int dir_sync = 0;
+    if (ok && parent_fd != AT_FDCWD) {
+        do { dir_sync = ::fsync(parent_fd); } while (dir_sync != 0 && errno == EINTR);
+    }
+    if (ok && ((parent_fd == AT_FDCWD && !fsyncParent(meta_path)) || dir_sync != 0)) {
         ok = false;
         failure_errno = errno;
     }
     if (!ok) {
-        ::unlink(tmp.c_str());
+        ::unlinkat(parent_fd, tmp.c_str(), 0);
         errno = failure_errno == 0 ? EIO : failure_errno;
         AMCL_LOG_E(LOG_TAG, "writeMetaFile: atomic write failed: %{public}s errno=%{public}d",
                      meta_path.c_str(), errno);
+    }
+    if (ok && identity) {
+        identity->device = static_cast<uint64_t>(written.st_dev);
+        identity->inode = static_cast<uint64_t>(written.st_ino);
     }
     return ok;
 }

@@ -1,0 +1,25 @@
+--- a/alc/backends/base.h
++++ b/alc/backends/base.h
+@@ -28,6 +28,9 @@
+     virtual bool reset();
+     virtual void start() = 0;
+     virtual void stop() = 0;
++
++    /** 平台输出缺省是否需要限幅；显式应用属性/配置仍优先。 */
++    virtual bool defaultOutputLimiter() const noexcept { return false; }
+ 
+     virtual void captureSamples(std::byte *buffer, uint samples);
+     virtual uint availableSamples();
+--- a/alc/alc.cpp
++++ b/alc/alc.cpp
+@@ -1675,6 +1675,10 @@
+     if(!optlimit)
+         optlimit = device->configValue<bool>({}, "output-limiter");
+ 
++    // 平台后端可以为真实硬件输出选择安全默认；应用显式 true/false 均保持优先。
++    if(!optlimit && device->Backend && device->Backend->defaultOutputLimiter())
++        optlimit = true;
++
+     /* If the gain limiter is unset, use the limiter for integer-based output
+      * (where samples must be clamped), and don't for floating-point (which can
+      * take unclamped samples).

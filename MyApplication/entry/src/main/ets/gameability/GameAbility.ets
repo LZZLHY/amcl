@@ -1,13 +1,16 @@
+import { isInputObservationTestWant, runInputObservationTestWant } from '../components/InputObservationTestWant';
 import { getDesktopSystemBridge } from '../window/DesktopSystemBridge';
 /** 游戏UI与JVM共享经过PID/锁核验的私有进程；初始化失败必须先回传并落盘，再关闭。 */
 import { initializeGameProcess, initializeGameProcessLogging } from '../runtime/ProcessRuntime';
+import { stopGameSession } from '../runtime/GameSessionHost';
 import { PlatformDfxWatcher } from '../runtime/PlatformDfxWatcher';
 import { DesktopLaunchSnapshot } from '../runtime/DesktopLaunchSnapshot';
 import { GraphicsRecoveryStore } from '../runtime/GraphicsRecoveryStore';
 import { common } from '@kit.AbilityKit';
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { AppLogger } from 'commons';
+import { AppLogger, DiagnosticPolicy } from 'commons';
+import { ProductBuildProfile } from 'entry/ProductBuildProfile';
 import { ledgerBegin, LedgerBeginMeta } from 'commons';
 import { ActivityCategory } from 'feature_core';
 import { LogTags } from 'commons';
@@ -29,6 +32,26 @@ export default class GameAbility extends UIAbility {
 
   /** 生命周期同步部分只核验和准备本局状态；失败回传由独立异步方法按顺序收尾。 */
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // 转发检查到旧进程后仍可能竞态冷建Ability。诊断Want绝不消费启动快照、建立Host/
+    // Source或加载游戏窗口。仅初始化原诊断政策并经过同一双门写不可用回执，不能把
+    // startAbility完成当作观察关闭成功，也不能借冷请求建立任何游戏资源。
+    if (isInputObservationTestWant(want)) {
+      try {
+        DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics,testNapi.getDiagnosticCapabilities());
+        runInputObservationTestWant(this.context,want,false);
+      } catch (error) {
+        // 冷诊断失败仍是未知回执，只报告原异常；日志故障不能阻止下方终止冷Ability。
+        // 这里不能进入正常游戏启动补救，也不能为记录错误创建Host或输入来源。
+        try { AppLogger.warn(TAG, 'Cold input observation request failed', error, LOG_DOMAIN_LAUNCH); }
+        catch (_) { /* 日志观察失败仍继续终止原冷Ability。 */ }
+      }
+      try { this.context.terminateSelf().catch((): void => {}) } catch (_) {}
+      return
+    }
+    // 独立游戏进程可以先冷启动；下载/processor准入前固定自己的可信files根，不启动HDC。
+    try {
+      if (!testNapi.configureSideloadInstallRoot(this.context.filesDir)) throw new Error('无法固定游戏文件事务保护目录');
+    } catch (error) { this.failStartup_('无法建立游戏文件保护，请重新打开启动器。', error); return; }
     const parentPid: number = (want.parameters?.['parentPid'] as number) ?? 0;
     let isolationState: number = -1;
     try {
@@ -60,7 +83,7 @@ export default class GameAbility extends UIAbility {
       };
       this.checkpointStartup_('snapshot');
       DesktopLaunchSnapshot.consume(this.context, (want.parameters?.['snapshotId'] as string) ?? '',
-        (want.parameters?.['accountSnapshot'] as string) ?? '', parentPid, activityId, testNapi.desktopProcessId());
+        (want.parameters?.['accountSnapshot'] as string) ?? '', parentPid, activityId, testNapi.desktopProcessId(), version);
       // 只在私有启动快照验证成功后承认恢复票据；Want 本身不能指定任意后端重试。
       const recoveryId: string = (want.parameters?.['snapshotId'] as string) ?? '';
       const recovery = GraphicsRecoveryStore.ticket(this.context.filesDir, recoveryId);
@@ -153,13 +176,23 @@ export default class GameAbility extends UIAbility {
     }
   }
 
-  onNewWant(_want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+  onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    // 真实私有热入口只控制本Host/原前端观察，正常聚焦仍保留原启动参数。
+    if (runInputObservationTestWant(this.context,want,this.startupReady)) return;
     AppLogger.info(TAG, 'Existing game session focused; launch parameters retained', LOG_DOMAIN_LAUNCH);
   }
 
   onDestroy(): void {
     if (!this.isolated) return;
-    testNapi.desktopGamepadFocus(false);
+    // 撤销原生手柄焦点（native 随即中和全部手柄）。它抛错（如混淆改名）不能跳过下面的桌面桥
+    // 停止、三端释放与进程退出：同步生命周期回调里逃出的异常就是 JS Crash。
+    // 这句调用须保持原文（含分号）：check-desktop-runtime.mjs 要求两个生命周期正文含它，
+    // 其自测按含分号的原文做删除变异。
+    try {
+      testNapi.desktopGamepadFocus(false);
+    } catch (e) {
+      AppLogger.warn(TAG, 'Desktop gamepad focus reset failed; continuing destroy release', e, LOG_DOMAIN_LAUNCH);
+    }
     getDesktopSystemBridge().stop();
     // Ability 销毁不保证页面/surface 回调顺序；统一 cancel 是幂等的，多层调用只会让 ledger 保持为空。
     //
@@ -167,8 +200,11 @@ export default class GameAbility extends UIAbility {
     // 触控端也有一份 ArkTS 兼容态，这个边界此前对它们**零覆盖**。走注册表就能对每个
     // 已注册端各说一次，且不需要在 Ability 里去拿页面的私有字段。
     // 顺序纪律：先各端自释放，再 native 兜底（见 InputSourceRegistry.ets）。
-    getInputSourceRegistry().releaseAllEnds('game-ability-destroy')
-    try { testNapi.cancelAllInput(4) } catch (e) { /* 老 native 兼容 */ }
+    if (!stopGameSession('game-ability-destroy')) {
+      // 页面尚未装配宿主的启动失败仍要沿原端口结束；不为清理创建虚假的会话。
+      getInputSourceRegistry().releaseAllEnds('game-ability-destroy')
+      try { testNapi.cancelAllInput(4) } catch (e) { /* 老 native 兼容 */ }
+    }
     try {
       testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, false)
     } catch (e) { /* 老 native 兼容 */ }
@@ -203,12 +239,19 @@ export default class GameAbility extends UIAbility {
     try {
       testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, true)
     } catch (e) { /* 老 native 兼容 */ }
+    // 页面未重建且组件焦点未改变时也必须解除Ability后台限制；不改写真实焦点。
+    getInputSourceRegistry().notifyAbilityForeground()
     AppLogger.info(TAG, 'onForeground', LOG_DOMAIN_LAUNCH);
   }
 
   onBackground(): void {
     if (!this.isolated) return;
-    testNapi.desktopGamepadFocus(false);
+    // 同 onDestroy：焦点撤销失败只记录，下面的三端释放与 native 兜底必须照常执行。
+    try {
+      testNapi.desktopGamepadFocus(false);
+    } catch (e) {
+      AppLogger.warn(TAG, 'Desktop gamepad focus reset failed; continuing background release', e, LOG_DOMAIN_LAUNCH);
+    }
     // 后台期间系统可能不再派发触摸 UP/CANCEL，必须在 Ability 边界同步释放所有持续输出。
     // 同 onDestroy：先对三端各说一次，再 native 兜底。
     getInputSourceRegistry().releaseAllEnds('game-ability-background')

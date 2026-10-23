@@ -16,6 +16,8 @@
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
+import { ModpackProblem, ModpackFile } from './ModpackManifest';
+import { writeModpackJsonAtomic } from './ModpackInstallSession';
 
 const TAG = 'ModpackSnapshot';
 
@@ -36,7 +38,7 @@ export function getModpackIconPath(mcDir: string, versionId: string): string {
 }
 
 /** 安装时未能装上的项（缺失清单）。 */
-export interface ModpackMissingItem {
+export interface ModpackMissingItem extends ModpackProblem {
   /** 给用户看的名字（文件名 / CF 项目文件 id）。 */
   name: string;
   /** 缺失原因（下载失败 / CF 禁用直链 / 文件下架等）。 */
@@ -47,6 +49,13 @@ export interface ModpackMissingItem {
 
 /** 已装整合包快照。 */
 export interface ModpackSnapshot {
+  /** v2 收据记录安装身份和精确文件计划；缺省为只读兼容旧快照。 */
+  schemaVersion?: number;
+  installId?: string;
+  sourceVersionId?: string;
+  files?: ModpackFile[];
+  selectedOptional?: string[];
+  warnings?: string[];
   source: string;              // 'modrinth' | 'curseforge' | 'local'
   /** 在线安装时记录的项目 id（更新时复查最新版本用）。 */
   projectId?: string;
@@ -69,18 +78,16 @@ export interface ModpackSnapshot {
   recommendedMaxMemMb?: number;
 }
 
-/** 写快照到 versionDir/.amcl-modpack.json。失败仅告警，不抛（快照非关键路径）。 */
+/** 原子提交收据；失败保留 pending 和恢复计划，由任务明确报告，不能伪装完成。 */
 export function writeModpackSnapshot(versionDir: string, snap: ModpackSnapshot): void {
   let path = versionDir + '/' + MODPACK_SNAPSHOT_FILE;
   try {
-    let json = JSON.stringify(snap);
-    let file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    fs.writeSync(file.fd, json);
-    fs.closeSync(file);
+    writeModpackJsonAtomic(path, snap);
     AppLogger.info(TAG, `wrote snapshot: ${path} (${snap.installedFiles.length} files, ${snap.missing.length} missing)`, LOG_DOMAIN_DOWNLOAD);
   } catch (e) {
     let err = e as Error;
     AppLogger.warn(TAG, `writeModpackSnapshot failed: ${path}`, err, LOG_DOMAIN_DOWNLOAD);
+    throw new Error('整合包收据保存失败，安装材料已保留：' + err.message);
   }
 }
 

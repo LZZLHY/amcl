@@ -1,8 +1,10 @@
-﻿# build-hap.ps1 — AMCL HAP 的唯一正式构建入口
+# build-hap.ps1 — AMCL HAP 的唯一正式构建入口
 #
-# 它在耗时构建前验证 MG source pin/snapshot/docs 引用，清掉可再生 native
-# cache，按产品选择 Debug/Release 变体，并对刚生成的 signed/unsigned HAP 写入
-# 可复验 provenance。日常构建允许 superproject dirty（provenance 会列出状态）；
+# full 保留 MG source pin/snapshot/docs、回归和产物 provenance 的完整门禁，
+# 并清掉可再生 native 中间物。显式 quick 只调用正常 SDK 增量构建及当前包轻量检查，
+# 不建立全仓输入快照、不依赖 full 基线；quick 收据不能授予 full 资格。
+# 新增的 SDK/宿主工具链输入闭包双扫仅由 full -DeepAudit 按需执行。
+# 日常构建允许 superproject dirty（full provenance 会列出状态）；
 # CI/发布必须加 -Release，此时 dirty superproject 会 fail closed。
 #
 # 用法：
@@ -33,7 +35,13 @@ param(
     [switch]$AllowDirtyMobileGlues,
     [switch]$NativeGlValidation,
 
-    [switch]$IncludeMobileGL
+    [switch]$IncludeMobileGL,
+
+    # 默认 full 保留既有完整门禁；quick 显式选择普通 default/debug 开发构建。
+    [ValidateSet('full', 'quick')]
+    [string]$ValidationProfile = 'full',
+    [switch]$Fresh,
+    [switch]$DeepAudit
 )
 
 if ($NativeGlValidation -and ($Product -ne 'desktop' -or $Release)) {
@@ -46,6 +54,68 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 $Target = $Product
 
+if ($ValidationProfile -eq 'quick' -and ($Fresh -or $DeepAudit -or $Release -or $Product -ne 'default' -or $BuildMode -eq 'release' -or
+    $AllowDirtyMobileGlues -or $NativeGlValidation -or $IncludeMobileGL -or @($Diagnostics | Where-Object { $_ -ne 'none' }).Count -gt 0)) {
+    throw 'quick only supports ordinary default/debug without Fresh, DeepAudit or diagnostic overrides'
+}
+. (Join-Path $ProjectRoot 'scripts/lib/build-gate-runtime.ps1')
+# SDK 定位只检查候选入口存在；内容闭包扫描由显式 DeepAudit 的会话层承担。
+. (Join-Path $ProjectRoot 'scripts/lib/build-tools.ps1')
+$env:DEVECO_SDK_HOME = Resolve-AmclBuildSdk -Product $Product
+$env:AMCL_GATE_SESSION_SDK_ROOT = Join-Path $env:DEVECO_SDK_HOME 'default/openharmony'
+# 会话身份采用与 diagnostic-profile 相同的产品事实源；其他产品 auto 并非 debug。
+# -Release 后续仍执行原有参数冲突检查，此处先保证最终产物模式不会被账本误标。
+$ValidationProducts = Get-Content -LiteralPath (Join-Path $ProjectRoot 'config/products.json') -Raw | ConvertFrom-Json
+$ValidationMode = if ($Release) { 'release' } elseif ($BuildMode -eq 'auto') { $ValidationProducts.products.$Product.defaultBuildMode } else { $BuildMode }
+Initialize-AmclValidation -Root $ProjectRoot -Profile $ValidationProfile -Product $Product -Mode $ValidationMode -Fresh:$Fresh -DeepAudit:$DeepAudit
+$ValidationSucceeded = $false
+$ValidationPrimaryError = $null
+$script:AmclGatePhase = 'configuration-and-source'
+try {
+
+if ($ValidationProfile -eq 'quick') {
+    # 普通开发构建直接进入 SDK 生产任务图。产品准备、JAR、SDL 等既有 hook 仍由
+    # Hvigor 自身执行并使用其增量状态；这里不重复预跑它们，不运行无关回归或单测。
+    $BuildMode = $ValidationMode
+    $env:AMCL_DIAGNOSTICS = 'none'
+    $env:AMCL_MOBILEGL_VALIDATION = '0'
+    $QuickHvigorCandidates = @($env:AMCL_HVIGORW_MOBILE, $env:AMCL_HVIGORW,
+        'D:\Huawei\command-line-tools\bin\hvigorw.bat',
+        'D:\Huawei\DevEco Studio\tools\hvigor\bin\hvigorw.bat') |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+    if (-not $QuickHvigorCandidates) { throw 'No hvigorw found. Set AMCL_HVIGORW to the DevEco hvigorw.bat path.' }
+    $Hvigorw = [System.IO.Path]::GetFullPath(@($QuickHvigorCandidates)[0])
+    Write-Host '=== quick: normal SDK incremental assembleHap ===' -ForegroundColor Cyan
+    $script:AmclGatePhase = 'sdk-build-and-artifact'
+    $AssembleStartedAt = [DateTime]::UtcNow.ToString('o')
+    $AssembleWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    & $Hvigorw assembleHap --mode module -p "product=$Product" -p buildMode=$BuildMode --no-daemon
+    $AssembleExit = $LASTEXITCODE
+    Add-AmclValidationEvent -Id 'sdk-assemble-hap' -State $(if ($AssembleExit -eq 0) { 'PASS' } else { 'FAIL' }) -DurationMs $AssembleWatch.Elapsed.TotalMilliseconds -ExitCode $AssembleExit `
+        -Executable $Hvigorw -Argv @('assembleHap','--mode','module','-p',"product=$Product",'-p',"buildMode=$BuildMode",'--no-daemon') -StartedAtUTC $AssembleStartedAt
+    if ($AssembleExit -ne 0) { throw "hvigor assembleHap failed (exit $AssembleExit)" }
+
+    # 只检查这次选定的 HAP：产品/模式、必要载荷、摘要和真实签名。单独命名收据，
+    # 不覆盖完整 provenance，也不把未运行的 full 回归包装成 PASS 或缓存命中。
+    $OutputDirectory = Join-Path $ProjectRoot "entry\build\$Product\outputs\$Target"
+    $Hap = Join-Path $OutputDirectory "entry-$Target-$HapKind.hap"
+    $Provenance = Join-Path $OutputDirectory "quick-build-receipt-$HapKind.json"
+    Invoke-AmclNode "$ProjectRoot\scripts\check-quick-hap.mjs" --root $ProjectRoot --product $Product --mode $BuildMode `
+        --hap-kind $HapKind --hap $Hap --receipt $Provenance
+    if ($LASTEXITCODE -ne 0) { throw 'Quick HAP identity/signature check failed' }
+    $HapInfo = Get-Item -LiteralPath $Hap
+    $ValidationSucceeded = $true
+} else {
+# full 原有门禁整体保留于可达分支；quick 不进入本分支，也不自动回退到 full。
+# 编排基础设施本身也是完整门禁：验证旧检查清单未丢失、依赖失败传播与缓存反例。
+# 此类自测属于完整验证，不应在每次日常小改动时重复执行。
+foreach ($BuildFlowTest in @('test-build-gate-inventory.mjs', 'test-preflight-runner.mjs', 'test-preflight-cli.mjs',
+    'test-build-gate-cache.mjs', 'test-build-gate-session.mjs', 'test-build-gate-runtime.mjs', 'test-sdk-build-inputs.mjs',
+    'test-check-quick-hap.mjs', 'test-build-profile-dispatch.mjs')) {
+    Invoke-AmclNode (Join-Path $ProjectRoot "scripts/$BuildFlowTest")
+    if ($LASTEXITCODE -ne 0) { throw "Build flow infrastructure regression failed: $BuildFlowTest" }
+}
+
 if ($IncludeMobileGL -and ($Release -or $Product -ne 'default')) {
     throw '-IncludeMobileGL is default-only and cannot be combined with -Release.'
 }
@@ -57,14 +127,14 @@ if ($Release) {
 }
 if ($IncludeMobileGL) { $Diagnostics += 'tests' }
 $env:AMCL_DIAGNOSTICS = $Diagnostics -join ','
-$DiagnosticJson = & node "$ProjectRoot\scripts\diagnostic-profile.mjs" --product $Product --mode $BuildMode
+$DiagnosticJson = Invoke-AmclNode "$ProjectRoot\scripts\diagnostic-profile.mjs" --product $Product --mode $BuildMode
 if ($LASTEXITCODE -ne 0) { throw 'Invalid product diagnostic configuration' }
 $DiagnosticBuild = $DiagnosticJson | ConvertFrom-Json
 $BuildMode = $DiagnosticBuild.mode
 $UseDevelopmentAudit = $BuildMode -ne 'release' -or $DiagnosticBuild.diagnostics.Count -gt 0
 
 $env:AMCL_MOBILEGL_VALIDATION = if ($IncludeMobileGL) { '1' } else { '0' }
-& node "$ProjectRoot\scripts\check-mobilegl-build-contract.mjs" --prepare --product $Product
+Invoke-AmclNode "$ProjectRoot\scripts\check-mobilegl-build-contract.mjs" --prepare --product $Product
 if ($LASTEXITCODE -ne 0) { throw 'MobileGL packaging preparation failed' }
 
 if ($Release -and $AllowDirtyMobileGlues) {
@@ -112,10 +182,41 @@ $Hvigorw = [System.IO.Path]::GetFullPath($HvigorCandidates[0])
 # Do not inherit a stale machine/user value: Hvigor validates this variable
 # before it reads local.properties.
 . (Join-Path $ProjectRoot 'scripts/lib/build-tools.ps1')
+. (Join-Path $ProjectRoot 'scripts/lib/workspace-paths.ps1')
 $env:DEVECO_SDK_HOME = Resolve-AmclBuildSdk -Product $Product
-& node "$ProjectRoot\scripts\test-desktop-arkts-seams.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-sideload-update.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Sideload update identity/recovery regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-sideload-recovery.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Sideload recovery/mirror regression failed' }
+# 更新主活动的明确重试关系影响用户诊断导航；校验真实Activity/Core/VM，不能按上一条记录猜因果。
+Invoke-AmclNode "$ProjectRoot\scripts\test-sideload-activity-relations.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Sideload activity relation regression failed' }
+# 执行现役事务、密钥/原子I/O与授权消费实现；宿主替换Kit边界，正式ArkTS仍由下方Hvigor审核。
+# 多进程shell协议的POSIX/真机能力验证单独运行，不给没有WSL的正常构建强加宿主依赖。
+Invoke-AmclNode "$ProjectRoot\scripts\test-sideload-storage.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Sideload durable storage/key regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-sideload-install-fence.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Sideload install fence/dispatch durability regression failed' }
+# 终态解析是解除持久安装阻断的承重边界；每个产品都执行真实解析器的正反例。
+# 此入口只替换Kit边界，不要求WSL，不把独立POSIX配方实验当作普通构建前置。
+Invoke-AmclNode "$ProjectRoot\scripts\test-bm-terminal-evidence.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Sideload BMS terminal evidence regression failed' }
+# test-sideload-update已经加载真实Coordinator回归；这里不重复同一组已完成的宿主验证。
+Invoke-AmclNode "$ProjectRoot\scripts\test-update-delivery.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Update manifest/cache/authorized delivery regression failed' }
+# App通道、手动原件与自动恢复必须执行真实实现，避免只验证UI文字或复制同一策略。
+Invoke-AmclNode "$ProjectRoot\scripts\test-app-update-channels.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'App update channel/manual import regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-desktop-arkts-seams.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Desktop Ability/API compatibility regression failed' }
-& node "$ProjectRoot\scripts\test-desktop-render-diagnostics.mjs"
+# 统一标题的真实回调、确认偏好与新旧系统分支进入日常构建门，防止后续页面绕回手写按钮。
+# 所有收据外置；宿主声明接收器不代替下方SDK编译和真机材质／手势验收。
+$RoundActionEvidenceRoot = Get-AmclWorkspacePath -Kind run -Id 'unified-actions' -ProjectRoot $ProjectRoot
+Invoke-AmclNode "$ProjectRoot\scripts\test-immersive-light.mjs" --output (Join-Path $RoundActionEvidenceRoot 'preferences')
+if ($LASTEXITCODE -ne 0) { throw 'Immersive preference/confirmation regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-unified-actions.mjs" --output (Join-Path $RoundActionEvidenceRoot 'buttons')
+if ($LASTEXITCODE -ne 0) { throw 'Unified title/round action regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-desktop-render-diagnostics.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Desktop render diagnostic attachment regression failed' }
 $HvigorVersionOutput = & $Hvigorw --version --no-daemon 2>&1
 if ($LASTEXITCODE -ne 0) { throw "hvigor --version failed (exit $LASTEXITCODE)" }
@@ -140,66 +241,204 @@ if (-not $Release) {
 
 Write-Host ""
 Write-Host "=== [1/7] Source gates (before expensive build) ===" -ForegroundColor Cyan
-& node "$ProjectRoot\scripts\test-diagnostic-profile.mjs"
+# 账本性能改造涉及原件和终态的提交顺序，所有产品都执行真实实现的故障/工作量回归。
+# native桥使用本轮实际SDK头核对ABI；宿主只替换NAPI边界，不将其当作设备线程验收。
+Invoke-AmclNode "$ProjectRoot\scripts\test-ledger-performance.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Ledger/recovery/UI production regression failed' }
+$LedgerSdkHeaders = $env:AMCL_NAPI_SDK_INCLUDE
+if (-not $LedgerSdkHeaders) {
+    foreach ($LedgerSdkRelative in @('default/openharmony/native/sysroot/usr/include', 'openharmony/native/sysroot/usr/include', 'native/sysroot/usr/include')) {
+        $LedgerSdkCandidate = Join-Path $env:DEVECO_SDK_HOME $LedgerSdkRelative
+        if (Test-Path -LiteralPath (Join-Path $LedgerSdkCandidate 'napi/native_api.h')) { $LedgerSdkHeaders = $LedgerSdkCandidate; break }
+    }
+}
+if (-not $LedgerSdkHeaders) { throw 'Actual SDK NAPI headers unavailable for ledger native regression' }
+Invoke-AmclPython "$ProjectRoot\scripts\test-ledger-native-async.py" --sdk-include $LedgerSdkHeaders
+if ($LASTEXITCODE -ne 0) { throw 'Ledger native async thread/lifecycle regression failed' }
+# 生命周期后台实测命中描述符重复映射扫描；执行真实生产解析/范围判据和跨调用新鲜性反控。
+# 系统边界适配的宿主计数不冒称设备结果；随后正常SDK编译和同源设备仍须独立验证。
+Invoke-AmclPython "$ProjectRoot\scripts\test-input-mapped-ranges.py"
+if ($LASTEXITCODE -ne 0) { throw 'Input descriptor per-resolution mapped range regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-touch-optimization.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Touch configuration/import/gyroscope contract failed' }
+# 触控组使用真实模型、编辑器方法、存储传输及 Native 生产函数，避免仅检查字段存在。
+foreach ($GroupTest in @('test-control-groups.mjs','test-control-groups-editor.mjs','test-control-groups-storage.mjs')) {
+    Invoke-AmclNode (Join-Path $ProjectRoot "scripts/$GroupTest")
+    if ($LASTEXITCODE -ne 0) { throw "Touch group regression failed: $GroupTest" }
+}
+Invoke-AmclNode "$ProjectRoot\scripts\test-touch-basics.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Touch mouse/GUI/tutorial contract failed' }
+# 独立输入设置与布局编辑保留原事务、模态和百分比几何；配置HUD回归独立于已退役的试用。
+Invoke-AmclNode "$ProjectRoot\scripts\test-input-config-hud.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Input configuration HUD regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-input-settings-editor.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Input settings lifecycle/preservation regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-layout-editor-panel.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Layout editor precision/trigger/confirmation regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-layout-store-metadata.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Layout catalog metadata must not trigger payload loading during UI rendering' }
+# 采样合并不能丢悬浮滚轮行程；手柄阈值与二维方向使用实际生产模型验证。
+Invoke-AmclNode "$ProjectRoot\scripts\test-virtual-mouse-wheel.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Virtual mouse wheel sample conservation regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-gamepad-analog-stability.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Gamepad analog stability/direction regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-touch-surface-controller.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Touch publication/modal/feedback/geometry contract failed' }
+# 离线ILAT解释器执行原uint64/身份/时钟/冲突和不同终点规则；只用rule_fixture，不采集Native或设备。
+# 长序列与故障撤回使用真实生产neutral/Core；完整通过后才进入SDK编译。
+Invoke-AmclPython -B "$ProjectRoot\scripts\test-control-delivery-sequences.py"
+if ($LASTEXITCODE -ne 0) { throw "control delivery long sequence/negative checks failed (exit $LASTEXITCODE)" }
+Invoke-AmclPython -B "$ProjectRoot\scripts\test-input-latency-parser.py"
+if ($LASTEXITCODE -ne 0) { throw 'Offline input latency parser contract failed' }
+# 停源结果须来自原scope/Host/gyro实际资源；诊断阶段观察不能决定输入准入或完成。
+foreach ($InputStopTest in @('test-touch-input-maintenance.mjs', 'test-game-session-host.mjs',
+    'test-gyro-lease.mjs', 'test-gyro-policy-activation.mjs', 'test-entry-ime-stage-observation.mjs')) {
+    Invoke-AmclNode (Join-Path $ProjectRoot "scripts/$InputStopTest")
+    if ($LASTEXITCODE -ne 0) { throw "Input stop/IME production regression failed: $InputStopTest" }
+}
+# 保必要Source/GUI几何的观察关闭与回入围栏；执行真实组件/Port/Want正文及编译行为撤回。
+Invoke-AmclNode "$ProjectRoot\scripts\test-input-observation-control.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Input observer/source lifecycle regression failed' }
+# 执行真实Store/控制面/面板/模型组合，元数据刷新不能退休输入身份或把候选等待冒充取消。
+Invoke-AmclNode "$ProjectRoot\scripts\test-touch-ui-publication.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Touch UI publication identity/continuation/lifecycle regression failed' }
+# 原输入identity不换代时，真实页面与Native仍同步Hz/有效位，不把同代几何篡改当元数据接受。
+Invoke-AmclPython "$ProjectRoot\scripts\test-input-surface-metadata.py"
+if ($LASTEXITCODE -ne 0) { throw 'Input surface native metadata mirror regression failed' }
+# 完整生产帧率controller核实际SDK调用与资源边界，旧force撤回须成功编译后击中次数断言。
+Invoke-AmclPython "$ProjectRoot\scripts\test-frame-rate-controller.py"
+if ($LASTEXITCODE -ne 0) { throw 'Frame-rate refresh deduplication/lifecycle SDK-call regression failed' }
+# 真实GLFW读取与Core/owner资格组合，不让current元数据读口抢占尚未poll的新geometry。
+Invoke-AmclPython "$ProjectRoot\scripts\test-input-surface-reader.py"
+if ($LASTEXITCODE -ne 0) { throw 'Input surface GLFW current reader/ordered cache regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-owner-layout-source.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Legacy layout source persistence/recovery contract failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-layout-catalog-paging.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Complete layout catalog paging contract failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-game-gui-bridge.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Production GUI bridge regression failed' }
+Invoke-AmclPython "$ProjectRoot\scripts\test-menu-mouse-production.py"
+if ($LASTEXITCODE -ne 0) { throw 'Production menu mouse ownership regression failed' }
+Invoke-AmclPython "$ProjectRoot\scripts\test-touch-production.py"
+if ($LASTEXITCODE -ne 0) { throw 'Production touch ownership/gesture regression failed' }
+Invoke-AmclPython "$ProjectRoot\scripts\test-touch-groups.py"
+if ($LASTEXITCODE -ne 0) { throw 'Touch group transaction state regression failed' }
+Invoke-AmclPython "$ProjectRoot\scripts\test-touch-groups-production.py"
+if ($LASTEXITCODE -ne 0) { throw 'Touch group production ownership/phase regression failed' }
+# 持续按住、局部表更新与连滑边缘必须经现役解释器及撤回修正负对照验证。
+Invoke-AmclPython "$ProjectRoot\scripts\test-touch-schema-preservation.py"
+if ($LASTEXITCODE -ne 0) { throw 'Production touch schema preservation regression failed' }
+# 终止事件先归约真实末采样；取消不在派发延迟后补发长按，aim状态跟随实际使用持有。
+Invoke-AmclPython "$ProjectRoot\scripts\test-touch-terminal-samples.py"
+if ($LASTEXITCODE -ne 0) { throw 'Touch terminal sample/cancel/aim regression failed' }
+# 触控架构的组合反例使用生产事务、账本、三consumer出口和NAPI回调，不以两个孤立模块通过代替。
+foreach ($TouchArchitectureTest in @('test-touch-deadline-transaction.py', 'test-touch-bridge-controls.py',
+    'test-touch-publication.py', 'test-touch-feedback-native.py', 'test-touch-schema-napi.py', 'test-owned-text-modal-napi.py',
+    'test-touch-menu-napi.py', 'test-touch-menu-registration.py')) {
+    Invoke-AmclPython (Join-Path $ProjectRoot "scripts\$TouchArchitectureTest")
+    if ($LASTEXITCODE -ne 0) { throw "Touch architecture production contract failed: $TouchArchitectureTest" }
+}
+# 文档选区与预编辑内部选区必须经真实Core/adapter/GLFW callback分开；保合法Unicode预编辑、
+# owned包领取/释放、原scope退休及成功编译后的撤回反控，不能由UI停止发错域消息掩盖消费端回归。
+Invoke-AmclPython "$ProjectRoot\scripts\test-glfw-document-selection.py"
+if ($LASTEXITCODE -ne 0) { throw 'GLFW document selection/preedit domain regression failed' }
+# 普通Windows构建完整执行真实SDL组合：精确LF checkout、全新锁定SDK原控制正反与恢复、
+# owned文本实际Poll/回收正反与恢复。源码来自明确AMCL_SDL_TEST_REPO，缺依赖直接拒绝，不隐式clone。
+Invoke-AmclPython -B "$ProjectRoot\scripts\test-sdl-host-consumer.py"
+if ($LASTEXITCODE -ne 0) { throw 'SDL locked host SDK/control/owned text combination regression failed' }
+# 真实启动阶段以冻结slot/window绑定菜单consumer与64位gameSession，不能按GLFW图形provider误判L2。
+Invoke-AmclPython "$ProjectRoot\scripts\test-menu-cursor-startup.py"
+if ($LASTEXITCODE -ne 0) { throw 'Selected menu cursor consumer startup regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-game-layout-v2.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'Frozen V2 layout catalog/chunks/merge/recovery contract failed' }
+# Vulkan恢复资格与租约采用真实SDL函数验证，防止仅靠静态窗口合同漏掉前后台代次变化。
+Invoke-AmclPython "$ProjectRoot\scripts\test-sdl3-vulkan-input-resume.py"
+if ($LASTEXITCODE -ne 0) { throw 'SDL Vulkan input resume regression failed' }
+# 编译现役SDL parser、实际调用者及目标/呈现发布函数，含撤回拒绝分支的失败反控。
+Invoke-AmclPython "$ProjectRoot\scripts\test-sdl3-touch-target.py"
+if ($LASTEXITCODE -ne 0) { throw 'SDL touch target and descriptor fallback regression failed' }
+# GLFW事件线程只采用渲染owner冻结发布的窗口/代次/WSI身份，实际桥边界必须在发布锁外调用。
+Invoke-AmclPython "$ProjectRoot\scripts\test-glfw-touch-target-publication.py"
+if ($LASTEXITCODE -ne 0) { throw 'GLFW touch target publication regression failed' }
+# typed绝对位置经真实授权sink同步本consumer current/ACK；与有序触控relative混排并核回调重入。
+Invoke-AmclPython "$ProjectRoot\scripts\test-glfw-typed-menu-cursor.py"
+if ($LASTEXITCODE -ne 0) { throw 'GLFW typed menu cursor and relative composition regression failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-diagnostic-profile.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Diagnostic policy self-test failed' }
-& node "$ProjectRoot\scripts\test-diagnostic-source-policy.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-diagnostic-source-policy.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Diagnostic log producer guard failed' }
-& node "$ProjectRoot\scripts\test-diagnostics-cmake.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-diagnostics-cmake.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Diagnostic CMake bypass rejection failed' }
-& node "$ProjectRoot\scripts\test-product-benchmark-contract.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-product-benchmark-contract.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Product benchmark isolation failed' }
-& node "$ProjectRoot\scripts\test-product-contract.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-product-contract.mjs"
 if ($LASTEXITCODE -ne 0) { throw "product contract failed" }
-& node "$ProjectRoot\scripts\test-check-lwjgl-target-manifest.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-lwjgl-target-manifest.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'LWJGL target-manifest tests failed' }
+# 全槽覆盖独立于原版版本清单：执行真实 JAR/导出读取正控及删除子接口/错误提供方的负控。
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-lwjgl-module-coverage.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'LWJGL module pairing and required-function controls failed' }
+# 直接编译现役 NativeEGL 和 late-load 桥，覆盖无 owner/跨线程错误槽/PID/ABI 拒绝；
+# 自建宿主产物沿统一工作区路由外置，完整负控不能用仅检查导出名代替。
+$LwjglEglControlsOut = Invoke-AmclNode "$ProjectRoot\scripts\lib\workspace-paths.mjs" run 'lwjgl-egl-controls' $ProjectRoot
+if ($LASTEXITCODE -ne 0) { throw 'LWJGL EGL controls output routing failed' }
+Invoke-AmclPython "$ProjectRoot\scripts\test-glfw-native-egl.py" --out $LwjglEglControlsOut --negative-controls
+if ($LASTEXITCODE -ne 0) { throw 'LWJGL NativeEGL and late-load bridge host controls failed' }
 # 首次加载归属回归必须在打包前执行；JAR 去重检查不能替代真实 JVM/JNI 双加载器行为。
-& node "$ProjectRoot\scripts\test-runtime-slot-classpath.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-runtime-slot-classpath.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime slot classpath regression failed' }
 # 同一正式入口验证参数适配与实际JNA协议；只让来源/内容门禁通过的独立槽进入包。
-& node "$ProjectRoot\scripts\test-runtime-jvm-argument-policy.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-runtime-jvm-argument-policy.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'JVM argument ownership regression failed' }
-& python "$ProjectRoot\scripts\test-jna-runtime-contract.py"
+Invoke-AmclNode "$ProjectRoot\scripts\test-jdk-tree-validation.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'JDK 内容校验回归失败' }
+Invoke-AmclNode "$ProjectRoot\scripts\test-jdk-directory-lease.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'JDK 目录租约回归失败' }
+Invoke-AmclPython -B "$ProjectRoot\scripts\test-runtime-packaging.py"
+if ($LASTEXITCODE -ne 0) { throw 'JDK 打包失败门回归失败' }
+
+Invoke-AmclPython "$ProjectRoot\scripts\test-jna-runtime-contract.py"
 if ($LASTEXITCODE -ne 0) { throw 'JNA protocol/ZIP/class regression failed' }
-& node "$ProjectRoot\scripts\test-check-jna-runtime.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-jna-runtime.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'JNA artifact checker controls failed' }
-& node "$ProjectRoot\scripts\check-jna-runtime.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-jna-runtime.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'JNA locked source artifacts/wiring failed' }
-& python "$ProjectRoot\scripts\test-runtime-bootstrap-contract.py"
+Invoke-AmclPython "$ProjectRoot\scripts\test-runtime-bootstrap-contract.py"
 if ($LASTEXITCODE -ne 0) { throw 'Runtime bootstrap contract regression failed' }
-& python "$ProjectRoot\scripts\test-jvm-bootstrap-invocation.py"
+Invoke-AmclPython "$ProjectRoot\scripts\test-jvm-bootstrap-invocation.py"
 if ($LASTEXITCODE -ne 0) { throw 'Actual JVM heap/property regression failed' }
-& python "$ProjectRoot\scripts\test-processor-wait.py"
+Invoke-AmclPython "$ProjectRoot\scripts\test-processor-wait.py"
 if ($LASTEXITCODE -ne 0) { throw 'Processor exact-PID wait regression failed' }
-& node "$ProjectRoot\scripts\test-jni-classloader-ownership.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-jni-classloader-ownership.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'JNI classloader ownership regression failed' }
-& node "$ProjectRoot\scripts\test-sdl3-host-runtime.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-sdl3-host-runtime.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'SDL actual-consumer initialization regression failed' }
-& node "$ProjectRoot\scripts\test-check-sdl3-launch-contract.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-sdl3-launch-contract.mjs"
 if ($LASTEXITCODE -ne 0) { throw "SDL consumer launch contract self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-lwjgl-target-manifest.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-lwjgl-target-manifest.mjs"
 if ($LASTEXITCODE -ne 0) { throw "LWJGL target-manifest coverage check failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-lwjgl-native-surface.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-lwjgl-native-surface.mjs"
 if ($LASTEXITCODE -ne 0) { throw "LWJGL native-surface self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-input-build-profile.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-input-build-profile.mjs"
 if ($LASTEXITCODE -ne 0) { throw "input build profile self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-input-build-profile.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-input-build-profile.mjs"
 if ($LASTEXITCODE -ne 0) { throw "input build profile check failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-sdl3-patchset-digest.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-sdl3-patchset-digest.mjs"
 if ($LASTEXITCODE -ne 0) { throw "SDL3 patchset digest self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-zip-entry-buffer.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-zip-entry-buffer.mjs"
 if ($LASTEXITCODE -ne 0) { throw "HAP ZIP unique-entry parser self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-sdl3-artifact.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-sdl3-artifact.mjs"
 if ($LASTEXITCODE -ne 0) { throw "SDL3 source/artifact provenance check failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-gate-f-readiness.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-gate-f-readiness.mjs"
 if ($LASTEXITCODE -ne 0) { throw "Gate F readiness self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-gate-f-readiness.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-gate-f-readiness.mjs"
 if ($LASTEXITCODE -ne 0) { throw "Gate F readiness check failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-mg-build-contract.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-mg-build-contract.mjs"
 if ($LASTEXITCODE -ne 0) { throw "MG release contract self-test failed (exit $LASTEXITCODE)" }
 if ($Product -eq 'desktop') {
-    & node "$ProjectRoot\scripts\test-check-desktop-api26-baseline.mjs"
+    Invoke-AmclNode "$ProjectRoot\scripts\test-check-desktop-api26-baseline.mjs"
     if ($LASTEXITCODE -ne 0) { throw "desktop baseline self-test failed (exit $LASTEXITCODE)" }
-    & node "$ProjectRoot\scripts\check-desktop-api26-baseline.mjs" --product $Product
+    Invoke-AmclNode "$ProjectRoot\scripts\check-desktop-api26-baseline.mjs" --product $Product
     if ($LASTEXITCODE -ne 0) { throw "desktop baseline check failed (exit $LASTEXITCODE)" }
 }
 $PinArguments = @("$ProjectRoot\scripts\check-mg-pin.mjs")
@@ -207,7 +446,7 @@ if ($Release) { $PinArguments += '--release' }
 if ($AllowDirtyMobileGlues) { $PinArguments += '--allow-dirty' }
 $PinExitCode = 1
 try {
-    & node @PinArguments
+    Invoke-AmclNode @PinArguments
     $PinExitCode = $LASTEXITCODE
 }
 finally {
@@ -217,30 +456,39 @@ finally {
     Remove-Item Env:AMCL_EXPECTED_SOURCE_REPOSITORY -ErrorAction SilentlyContinue
 }
 if ($PinExitCode -ne 0) { throw "check-mg-pin.mjs failed (exit $PinExitCode)" }
-& node "$ProjectRoot\scripts\check-mg-snapshot.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-mg-snapshot.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-mg-snapshot.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-ohos-runtime-optimizations.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-ohos-runtime-optimizations.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-ohos-runtime-optimizations.mjs failed (exit $LASTEXITCODE)" }
 
 # Gate 0 证据门禁。放在耗时构建之前：AMCL_GLFW_*_VERIFIED 断言的是真机事实，未经
 # gate0-evidence.lock 书面批准就打开时必须在这里停下，而不是产出一个宣称未验证能力的
 # HAP。第二个脚本用 host CMake 实测 configure 期是否真的 fail closed —— 只做文本检查
 # 无法证明门禁会拦住人。
-& node "$ProjectRoot\scripts\check-gate0-evidence.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-gate0-evidence.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-gate0-evidence.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-gate0-evidence.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-gate0-evidence.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-gate0-evidence.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-gate0-evidence-cmake.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-gate0-evidence-cmake.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-gate0-evidence-cmake.mjs failed (exit $LASTEXITCODE)" }
 # ArkTS 本地单测套件的结构契约。这套测试曾经因为三层架构重构后的旧相对路径而整体
 # 不执行（633 个 unresolved import），且 CI 没有 OHOS SDK 跑不了 hvigor，所以完全无
 # 信号。这里用纯静态检查守住"套件不会整体不跑"这条底线；真正执行仍靠 hvigorw test。
-& node "$ProjectRoot\scripts\check-arkts-test-suite.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-arkts-test-suite.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-arkts-test-suite.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-arkts-test-suite.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-arkts-test-suite.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-arkts-test-suite.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-mod-install.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-mod-install.mjs"
 if ($LASTEXITCODE -ne 0) { throw "mod installation regression failed (exit $LASTEXITCODE)" }
+# 导出与store管理使用同一生产代码，专项必须进入正常入口，不能只由开发者手动运行。
+# 宿主夹具遵循AMCL_RUN_DIR；Kit/设备实际行为仍在定向验收中分别证明。
+foreach ($exportGate in @('test-game-export-plan.mjs', 'test-export-check-digest.mjs', 'test-export-content-selection.mjs',
+    'test-export-sheet-selection.mjs', 'test-export-native-bridge.mjs', 'test-game-export-lifecycle.mjs',
+    'test-version-export-archive.mjs', 'test-store-run-admission.mjs',
+    'test-store-manager-ui.mjs', 'test-store-channel-policy.mjs')) {
+    Invoke-AmclNode (Join-Path "$ProjectRoot\scripts" $exportGate)
+    if ($LASTEXITCODE -ne 0) { throw "$exportGate failed (exit $LASTEXITCODE)" }
+}
 # 日志噪声白名单（事实源 config/log-noise-rules.json ↔ LogNoiseFilter.ets 镜像）+ 错误信号判据。
 # ⭐ 为什么进 [1/7] 而不是只进 preflight：它挡的是**用户会不会看到假崩溃**。
 # 1000591 关掉帧遥测之后，同样的 32 KB 诊断尾窗会装进真实 MC 输出，其中那几行
@@ -250,9 +498,9 @@ if ($LASTEXITCODE -ne 0) { throw "mod installation regression failed (exit $LAST
 #   往严了坏 ⇒ 真崩溃被判 not_diagnosable，用户看到「上次游戏已结束」。
 # hypium 测试只能在设备上跑，所以"提交前必然红"这条只能落在这道门禁上。
 # 先跑自测再跑门禁：判据里有一半是"源码里有没有某个形状"，正是最容易写成恒真的那一类。
-& node "$ProjectRoot\scripts\test-check-log-noise-rules.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-log-noise-rules.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-log-noise-rules.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-log-noise-rules.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-log-noise-rules.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-log-noise-rules.mjs failed (exit $LASTEXITCODE)" }
 # 落盘渗透率棘轮。裸 hilog / 裸 OH_LOG 只进易失缓冲，远端用户报的问题原理上拿不到那些行。
 # ⚠️ 这道门禁 2026-06 就存在，但一直没接 —— 它当时把 .tmp-build/ 与 docker/output/ 也数了
@@ -260,9 +508,9 @@ if ($LASTEXITCODE -ne 0) { throw "check-log-noise-rules.mjs failed (exit $LASTEX
 # 现在改成 allowlist（只走第一方模块根）并重新采基线，实测能复现独立 rg 统计的数字。
 # 自测里最承重的是**缩水守卫**：漏登记一个模块根会让计数变小，而「漏扫」与「真改好了」
 # 在计数上一模一样 ⇒ 没有那条守卫，本门禁的失效形态是静默变绿。
-& node "$ProjectRoot\scripts\test-audit-logging.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-audit-logging.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-audit-logging.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\audit-logging.mjs" --strict
+Invoke-AmclNode "$ProjectRoot\scripts\audit-logging.mjs" --strict
 if ($LASTEXITCODE -ne 0) { throw "audit-logging.mjs --strict failed (exit $LASTEXITCODE)" }
 # 日志通道注册表：通道必须是被登记的，不能是 fopen 出来的。
 # 2026-09-06 真机数出 10 条通道，而专门做全链路普查的调研报告只列了 6 条 —— 连专门数的人
@@ -271,91 +519,93 @@ if ($LASTEXITCODE -ne 0) { throw "audit-logging.mjs --strict failed (exit $LASTE
 # 漏登记的代价是实的：MG/latest.log 存在很久，但任何读取/导出/清理路径都不碰它。
 # 自测里最承重的是**阳性对照**：判据是"扫源码找疑似 sink"，正则一失效就一个都扫不到 ⇒
 # 0 个违规 ⇒ 静默变绿，比有违规更危险。
-& node "$ProjectRoot\scripts\test-check-log-channels.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-log-channels.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-log-channels.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-log-channels.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-log-channels.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-log-channels.mjs failed (exit $LASTEXITCODE)" }
 # 导出配额（N-7）。旧做法把各段拼成一整段再**保尾**截断，而拼装顺序里环境头、活动摘要、
 # 启动器日志都在前面 ⇒ 游戏日志一大它们就全被丢掉，上传出去的正文可能一行启动器日志都没有。
 # 修复本体在 ArkTS，而 hypium 只能在设备上跑 ⇒ 「提交前必然红」只能落在这道静态门禁上。
 # 最可能的回归形状是有人把 ledgerRead 的配额参数去掉（静默恢复成 16 MB 全读），
 # 自测 §2.2 专门钉这一条。
-& node "$ProjectRoot\scripts\test-check-log-export-budget.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-log-export-budget.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-log-export-budget.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-log-export-budget.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-log-export-budget.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-log-export-budget.mjs failed (exit $LASTEXITCODE)" }
 # 日志域注册表：tag 必须被登记，不能是随手取的字符串。全仓 191 个 tag、14 个域。
 # ⚠️ 抽取器第一版只认 `const TAG = '字面量'` 一种约定，于是「全部有归属」那个绿是**假的** ——
 # 真机日志里的 McGamePage / EntryAbility / LWJGL 它一个都没看见。本仓实际有三种约定并存：
 # const TAG 字面量、LogTags.ets 集中常量（2026-05-10 建的部分注册表，没铺开）、内联字面量。
 # 抓住这个假绿的是**真机产物**，不是另一条静态规则 ⇒ 静态门禁至少要与一份真实产物对过账。
-& node "$ProjectRoot\scripts\test-check-log-domains.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-log-domains.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-log-domains.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-log-domains.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-log-domains.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-log-domains.mjs failed (exit $LASTEXITCODE)" }
 # 重复行合并的**接线**。宿主用例测的是纯策略（amcl_log_coalesce.h），它证明不了
 # amcl_log.cpp 把策略接对了 —— 而这次接线真的出过一个让收益归零的缺陷：
 # writer 每轮无条件收尾（本意「轮转前收尾」，但 rotateLogFiles 绝大多数周期是 no-op），
 # 游程恒为 1 ⇒ 合并完全失效，而文件照常写、宿主用例照常绿、编译照常过。
-& node "$ProjectRoot\scripts\test-check-log-coalesce-wiring.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-log-coalesce-wiring.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-log-coalesce-wiring.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-log-coalesce-wiring.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-log-coalesce-wiring.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-log-coalesce-wiring.mjs failed (exit $LASTEXITCODE)" }
 # 加载器世代启动契约。`java.class.path` 被 7 个世代以不同方式消费，而此前代码里只有
 # isForge/isFabric 两个布尔 —— 分辨率低于契约空间，于是 642edf87 一次改动同时改了 7 条契约
 # （Fabric 崩于 1000576、Forge 新 bootstrap 崩于 2026-09-04，同形状事故至少 6 次）。
 # ⭐ hypium 测试只能在设备上跑，所以"提交前必然红"这条不变量只能落在这道静态门禁上。
 # 自测里有 642edf87 与 1000576 两次故障的最小复现，先跑自测再跑门禁。
-& node "$ProjectRoot\scripts\test-check-launch-generation-contract.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-launch-generation-contract.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-launch-generation-contract.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-launch-generation-contract.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-launch-generation-contract.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-launch-generation-contract.mjs failed (exit $LASTEXITCODE)" }
 # 批次 C 的 C0 探针纪律：默认关 / C0 不变换 / 显式 catch + 计数 / 快路径 / 无 ASM /
 # 无 retransform / Premain-Class 声明与实际配对。这七条**一条都不会在运行期报错** ——
 # 探针默认开就等于把未验证的机制放进产品路径，而 transform 抛异常被 JPLIS 静默吞掉之后
 # "探针挂了"与"探针没命中"完全不可区分。同样先跑自测再跑门禁（判据全是"源码里有没有
 # 某个形状"，正是最容易写成恒真的那一类；自测第一次运行就抓到一条）。
-& node "$ProjectRoot\scripts\test-check-launch-agent-probe.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-launch-agent-probe.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-launch-agent-probe.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-launch-agent-probe.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-launch-agent-probe.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-launch-agent-probe.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-check-gamecontrol-runtime-scope.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-gamecontrol-runtime-scope.mjs"
 if ($LASTEXITCODE -ne 0) { throw "gamecontrol runtime scope self-test failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-gamecontrol-runtime-scope.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-gamecontrol-runtime-scope.mjs"
 if ($LASTEXITCODE -ne 0) { throw "gamecontrol runtime scope check failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-napi-obfuscation.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-napi-obfuscation.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-napi-obfuscation.mjs failed (exit $LASTEXITCODE)" }
 # 混淆规则文件的单点控制面：① 未知 / 已被明确拒绝的 -enable-* 不得进来；② -keep-global-name
 # 必须覆盖 module.json5 里被系统按字符串反射的入口名（漏掉 = release 启动即崩、debug 全绿）。
 # 进 [1/7] 而不是只进 preflight：它挡的是**出货产物能不能起来**，与上面两道同一性质。
-& node "$ProjectRoot\scripts\test-check-obfuscation-rules.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-obfuscation-rules.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-obfuscation-rules.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-obfuscation-rules.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-obfuscation-rules.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-obfuscation-rules.mjs failed (exit $LASTEXITCODE)" }
 # 属性名混淆与"用接口读外部 JSON"不能同时成立（2026-08-22 事故：latest→n84 让下载页
 # 两个列表与正版登录在所有开混淆的 release 包里静默失效，debug 恒绿）。
 # 这一步只查规则文件；产物那半在 [5/7] 之后带 --require-artifact 再跑一次 —— 此刻的
 # nameCache 还是上一次构建留下的，用它下结论等于拿旧产物给新代码背书。
-& node "$ProjectRoot\scripts\test-check-wire-json-obfuscation.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-wire-json-obfuscation.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-wire-json-obfuscation.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-wire-json-obfuscation.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-wire-json-obfuscation.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-wire-json-obfuscation.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\test-ohos-runtime-cache-policy.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-ohos-runtime-cache-policy.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-ohos-runtime-cache-policy.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-mg-docs.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\check-mg-docs.mjs"
 if ($LASTEXITCODE -ne 0) { throw "check-mg-docs.mjs failed (exit $LASTEXITCODE)" }
 if (Test-Path -LiteralPath "$ProjectRoot\scripts\check-line-refs.mjs") {
-    & node "$ProjectRoot\scripts\check-line-refs.mjs"
+    Invoke-AmclNode "$ProjectRoot\scripts\check-line-refs.mjs"
     if ($LASTEXITCODE -ne 0) { throw "check-line-refs.mjs failed (exit $LASTEXITCODE)" }
 }
 
 Write-Host ""
 Write-Host "=== [2/7] Pre-build amcl-launcher.jar ===" -ForegroundColor Cyan
-& node "$ProjectRoot\scripts\build-amcl-launcher.mjs" --product $Product
+$script:AmclGatePhase = 'launcher'
+Invoke-AmclNode "$ProjectRoot\scripts\build-amcl-launcher.mjs" --product $Product
 if ($LASTEXITCODE -ne 0) { throw "build-amcl-launcher.mjs failed (exit $LASTEXITCODE)" }
 
 Write-Host ""
 Write-Host "=== [3/7] ArkTS local unit tests ===" -ForegroundColor Cyan
+$script:AmclGatePhase = 'sdk-tests'
 # entry/src/test 是 local unit test：hvigorw test 在主机上编译**并执行**它，不需要设备。
 # 因此这一步同时给出两类证据：符号导出/类型/语法由真编译器判定，断言由 Hypium 真的跑。
 # （断言确实执行：故意改错一条断言会得到 `Error in <用例名>, expect …` 并带
@@ -389,7 +639,6 @@ $TestProduct = 'default'
 # 判定逻辑刻意放在 scripts\check-hvigor-test-log.mjs 里（带 test-check- 自测），不在这里
 # 内联正则：那条 "先剥 ANSI" 的前提一旦写错就是静默永绿，必须有自测钉住它。
 # 构建日志属于本次宿主运行，不属于工程输入；多命令任务可用 AMCL_RUN_DIR 归并记录。
-. (Join-Path $ProjectRoot 'scripts/lib/workspace-paths.ps1')
 $ArkTsTestLogPath = Join-Path (Get-AmclWorkspacePath -Kind run -Id 'hap-tests' -ProjectRoot $ProjectRoot) 'arkts-unit-test-output.log'
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArkTsTestLogPath) | Out-Null
 # ⚠️ 这一段的形状是被实测逼出来的（2026-08-21，计划 §64.5），改它之前请先读完：
@@ -399,6 +648,8 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArkTsTestLogPath)
 # 于是 hvigor 的**第一条 ArkTS WARN** 就会终止整个构建。原来那句没有任何重定向，
 # stderr 直接进控制台，所以不触发；一旦为了扫日志而加重定向，就必须同时局部降级 EAP。
 # 两种写法都实测失败过，这是第三版。
+$ArkTsStartedAt = [DateTime]::UtcNow.ToString('o')
+$ArkTsWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $PrevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
@@ -409,30 +660,58 @@ try {
     $ErrorActionPreference = $PrevEap
 }
 Get-Content -LiteralPath $ArkTsTestLogPath | ForEach-Object { Write-Host $_ }
+Add-AmclValidationEvent -Id 'sdk-arkts-unit-command' -State $(if ($ArkTsTestExit -eq 0) { 'PASS' } else { 'FAIL' }) -DurationMs $ArkTsWatch.Elapsed.TotalMilliseconds -ExitCode $ArkTsTestExit `
+    -Executable $Hvigorw -Argv @('test','--mode','module','-p',"module=entry@$TestProduct",'-p',"product=$TestProduct",'-p','buildMode=debug','-p','coverage=false','--no-daemon') -StartedAtUTC $ArkTsStartedAt
 if ($ArkTsTestExit -ne 0) { throw "ArkTS local unit tests failed (exit $ArkTsTestExit)" }
-& node "$ProjectRoot\scripts\test-check-hvigor-test-log.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-hvigor-test-log.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-hvigor-test-log.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-hvigor-test-log.mjs" $ArkTsTestLogPath
+Invoke-AmclNode "$ProjectRoot\scripts\check-hvigor-test-log.mjs" $ArkTsTestLogPath
 if ($LASTEXITCODE -ne 0) { throw "ArkTS local unit tests reported failures (exit $LASTEXITCODE)" }
 
 Write-Host ""
-Write-Host "=== [4/7] Clean $Product/$BuildMode intermediates; retain SDK outputs ===" -ForegroundColor Cyan
+Write-Host "=== [4/7] Apply $($script:AmclGateContext.effective) SDK intermediate policy ===" -ForegroundColor Cyan
+$script:AmclGatePhase = 'sdk-intermediates'
 # Hvigor 的 module clean 会连其他产品的 entry/build 输出一起清掉。这里仍重建当前产品的
 # ArkTS/资源中间物与 native 编译树，但保留 SDK outputs，使连续构建后的包都能在原位置找到。
+$CleanStartedAt = [DateTime]::UtcNow.ToString('o')
+$CleanWatch = [System.Diagnostics.Stopwatch]::StartNew()
+# 当前位于 full 分支，沿用旧清理；quick 在前面的独立分支使用 SDK 增量，根本不进入此处。
 Clear-AmclProductIntermediates -ProjectRoot $ProjectRoot -Product $Product -BuildMode $BuildMode -Abi $Abi
+Add-AmclValidationEvent -Id 'sdk-clean' -State 'PASS' -DurationMs $CleanWatch.Elapsed.TotalMilliseconds -ExitCode 0 `
+    -Executable 'Clear-AmclProductIntermediates' -Argv @('-ProjectRoot',$ProjectRoot,'-Product',$Product,'-BuildMode',$BuildMode,'-Abi',$Abi) -StartedAtUTC $CleanStartedAt
 
 Write-Host ""
-Write-Host "=== [5/7] Hvigor assembleHap (fresh $BuildMode native build) ===" -ForegroundColor Cyan
+Write-Host "=== [5/7] Hvigor assembleHap ($BuildMode) ===" -ForegroundColor Cyan
+$script:AmclGatePhase = 'sdk-build-and-artifact'
+$AssembleStartedAt = [DateTime]::UtcNow.ToString('o')
+$AssembleWatch = [System.Diagnostics.Stopwatch]::StartNew()
 & $Hvigorw assembleHap --mode module -p "product=$Product" -p buildMode=$BuildMode --no-daemon
-if ($LASTEXITCODE -ne 0) { throw "hvigor assembleHap failed (exit $LASTEXITCODE)" }
+$AssembleExit = $LASTEXITCODE
+Add-AmclValidationEvent -Id 'sdk-assemble-hap' -State $(if ($AssembleExit -eq 0) { 'PASS' } else { 'FAIL' }) -DurationMs $AssembleWatch.Elapsed.TotalMilliseconds -ExitCode $AssembleExit `
+    -Executable $Hvigorw -Argv @('assembleHap','--mode','module','-p',"product=$Product",'-p',"buildMode=$BuildMode",'--no-daemon') -StartedAtUTC $AssembleStartedAt
+if ($AssembleExit -ne 0) { throw "hvigor assembleHap failed (exit $AssembleExit)" }
+
+# SDK会转换ArkUI struct，纯TypeScript宿主测试不能证明访问器在实际产物中保留。
+# 日常default/debug构建执行本轮转换出的更新弹窗与路由容器，缺产物或首帧异常立即失败；
+# 这里只替代绘制边界，不触发登录、下载或安装，也不代替真实设备的视觉/业务验收。
+if ($Product -eq 'default' -and $BuildMode -eq 'debug') {
+    $SdkUiRoot = Join-Path $ProjectRoot 'entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets'
+    $SdkUiFixture = Get-AmclWorkspacePath -Kind run -Id 'update-dialog-sdk-runtime' -ProjectRoot $ProjectRoot
+    New-Item -ItemType Directory -Force -Path $SdkUiFixture | Out-Null
+    foreach ($relative in @('components/UpdateDialog.ts','components/UpdateDialogLayout.ts','pages/SideloadUpdatePage.ts')) {
+        Copy-Item -LiteralPath (Join-Path $SdkUiRoot $relative) -Destination (Join-Path $SdkUiFixture ([IO.Path]::GetFileName($relative))) -ErrorAction Stop
+    }
+    Invoke-AmclNode "$ProjectRoot\scripts\test-update-dialog-sdk-runtime.mjs" $SdkUiFixture
+    if ($LASTEXITCODE -ne 0) { throw 'SDK update dialog runtime regression failed' }
+}
 
 # 产物级复核：读**刚刚**这次编译留下的混淆映射表，确认探针字段一个都没被改名。
 # 为什么必须在这里而不是只在 [1/7]：规则文件是输入、nameCache 是结果，两者会脱钩
-# （旧 CompileArkTS 缓存、某个模块的 consumerFiles 又把 flag 带回来）。[4/7] 已 clean，
-# 所以此刻的映射表一定属于本次构建。--require-artifact 让"查不到产物"也算失败，
+# （旧 CompileArkTS 缓存、某个模块的 consumerFiles 又把 flag 带回来）。release 始终 full clean，
+# 所以此刻的映射表属于本次构建。--require-artifact 让"查不到产物"也算失败，
 # 否则这半判据会在出货路径上空真通过。
 if ($BuildMode -eq 'release') {
-& node "$ProjectRoot\scripts\check-wire-json-obfuscation.mjs" --require-artifact
+Invoke-AmclNode "$ProjectRoot\scripts\check-wire-json-obfuscation.mjs" --require-artifact
 if ($LASTEXITCODE -ne 0) { throw "check-wire-json-obfuscation.mjs (artifact) failed (exit $LASTEXITCODE)" }
 }
 
@@ -443,7 +722,7 @@ if ($LASTEXITCODE -ne 0) { throw "check-wire-json-obfuscation.mjs (artifact) fai
 # 的定义只进了 PLATFORM_SOURCES），而当时 host 断言 30/30、aarch64 交叉 PASS、preflight
 # 全绿、check-product-tu-syntax 76/76 —— 四条门禁全都只做**编译**，抓不到**链接**问题。
 # ⚠️ 必须在 assembleHap **之后**跑：它查的是刚构建出来的 .so。
-& node "$ProjectRoot\scripts\check-dso-undefined-symbols.mjs" --product $Product --target $Target
+Invoke-AmclNode "$ProjectRoot\scripts\check-dso-undefined-symbols.mjs" --product $Product --target $Target
 if ($LASTEXITCODE -ne 0) { throw "check-dso-undefined-symbols.mjs failed (exit $LASTEXITCODE)" }
 
 # 产品 TU 的 aarch64 前端解析 + compile db 完整性交叉核对（计划 §86.2）。
@@ -451,9 +730,9 @@ if ($LASTEXITCODE -ne 0) { throw "check-dso-undefined-symbols.mjs failed (exit $
 # 因此不是从零构建。完整性那一半挡的是"新增 TU 从未被任何 add_library 收录"——
 # 上一次它的第一个受害者就是同批新增的唯一产品 TU。
 # ⚠️ 同样刻意不进 preflight：CI runner 没有 compile db，放进去会变成永远为绿的检查项。
-& node "$ProjectRoot\scripts\test-check-product-tu-syntax.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-product-tu-syntax.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-product-tu-syntax.mjs failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-product-tu-syntax.mjs" `
+Invoke-AmclNode "$ProjectRoot\scripts\check-product-tu-syntax.mjs" `
     --product $Product --target $Target --mode $BuildMode --abi $Abi
 if ($LASTEXITCODE -ne 0) { throw "check-product-tu-syntax.mjs failed (exit $LASTEXITCODE)" }
 
@@ -461,10 +740,10 @@ if ($LASTEXITCODE -ne 0) { throw "check-product-tu-syntax.mjs failed (exit $LAST
 # libentry.so 的字符串表里没有那 14 个测试 NAPI 属性名。
 # 为什么查产物而不是只查 build-profile.json5：cmake 配置命令带 --no-warn-unused-cli，
 # **拼错的 -D 不会有任何告警**，静默退化成"没传"；CMakeCache 也可能是脏 .cxx 的残留。
-& node "$ProjectRoot\scripts\test-check-release-no-test-symbols.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-release-no-test-symbols.mjs"
 if ($LASTEXITCODE -ne 0) { throw "test-check-release-no-test-symbols.mjs failed (exit $LASTEXITCODE)" }
 if ($DiagnosticBuild.flags.MC_OHOS_BUILD_TESTS -eq 'OFF') {
-& node "$ProjectRoot\scripts\check-release-no-test-symbols.mjs" --require-artifact `
+Invoke-AmclNode "$ProjectRoot\scripts\check-release-no-test-symbols.mjs" --require-artifact `
     --product $Product --target $Target --hap-kind $HapKind
 if ($LASTEXITCODE -ne 0) { throw "check-release-no-test-symbols.mjs failed (exit $LASTEXITCODE)" }
 }
@@ -478,42 +757,47 @@ if (-not (Test-Path -LiteralPath $Hap)) {
     throw "selected HAP was not produced: $Hap"
 }
 # 使用本次明确选定的包验证事务保障与旧兼容性裁决退役，不能沿用其他产品/旧包的结果。
-& node "$ProjectRoot\scripts\check-mod-install-artifact.mjs" $Hap
+Invoke-AmclNode "$ProjectRoot\scripts\check-mod-install-artifact.mjs" $Hap
 if ($LASTEXITCODE -ne 0) { throw 'Mod installation/startup artifact policy failed' }
-& node "$ProjectRoot\scripts\check-jna-runtime.mjs" $Hap
+Invoke-AmclNode "$ProjectRoot\scripts\check-jna-runtime.mjs" $Hap
 if ($LASTEXITCODE -ne 0) { throw 'JNA protocol slots final HAP identity failed' }
-& node "$ProjectRoot\scripts\test-graphics-runtime-artifact.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-graphics-runtime-artifact.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Graphics runtime artifact checker negative fixtures failed' }
 # 人工解包证据属于本次运行资料；HAP/provenance 仍沿用 SDK 输出，避免将审计中间树写回工程。
 $GraphicsRuntimeEvidenceDir = Get-AmclWorkspacePath -Kind run -Id 'hap-graphics-evidence' -ProjectRoot $ProjectRoot
-& node "$ProjectRoot\scripts\check-graphics-runtime-artifact.mjs" --hap $Hap `
+Invoke-AmclNode "$ProjectRoot\scripts\check-graphics-runtime-artifact.mjs" --hap $Hap `
     --out $GraphicsRuntimeEvidenceDir
 if ($LASTEXITCODE -ne 0) { throw 'Graphics runtime DSO/HAP linkage contract failed' }
-& node "$ProjectRoot\scripts\check-lwjgl-target-manifest.mjs" --hap $Hap
+# 校验本次HAP中真正的输入owner、依赖方向和两个DSO的编译能力身份；不以源码默认值替代。
+$InputRuntimeEvidenceDir = Get-AmclWorkspacePath -Kind run -Id "hap-input-$Product-$BuildMode" -ProjectRoot $ProjectRoot
+Invoke-AmclNode "$ProjectRoot\scripts\check-input-runtime-boundary.mjs" --hap $Hap --out $InputRuntimeEvidenceDir
+if ($LASTEXITCODE -ne 0) { throw 'Input runtime DSO/HAP ownership contract failed' }
+Invoke-AmclNode "$ProjectRoot\scripts\check-lwjgl-target-manifest.mjs" --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "LWJGL target manifest HAP check failed" }
-& python "$ProjectRoot\scripts\check-game-runtime-compat.py" --hap $Hap
+Invoke-AmclPython "$ProjectRoot\scripts\check-game-runtime-compat.py" --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "Game runtime compatibility final HAP check failed" }
 if ($LASTEXITCODE -ne 0) { throw "HAP-embedded LWJGL target coverage check failed (exit $LASTEXITCODE)" }
-& node "$ProjectRoot\scripts\check-sdl3-artifact.mjs" --provenance-only --hap $Hap
+Invoke-AmclNode "$ProjectRoot\scripts\check-sdl3-artifact.mjs" --provenance-only --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "HAP-embedded SDL3 provenance check failed (exit $LASTEXITCODE)" }
 
 Write-Host ""
 Write-Host "=== [6/7] Audit the selected HAP and write provenance ===" -ForegroundColor Cyan
-& node "$ProjectRoot\scripts\check-product-contract.mjs" --product $Product --hap $Hap
+$script:AmclGatePhase = 'hap-audit'
+Invoke-AmclNode "$ProjectRoot\scripts\check-product-contract.mjs" --product $Product --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "HAP product contract failed" }
-& node "$ProjectRoot\scripts\check-desktop-render-diagnostics.mjs" --product $Product --hap $Hap `
+Invoke-AmclNode "$ProjectRoot\scripts\check-desktop-render-diagnostics.mjs" --product $Product --hap $Hap `
     --source-map (Join-Path $OutputDirectory 'mapping\sourceMaps.map')
 if ($LASTEXITCODE -ne 0) { throw 'Desktop render diagnostic product isolation failed' }
-& node "$ProjectRoot\scripts\test-check-desktop-runtime.mjs"
+Invoke-AmclNode "$ProjectRoot\scripts\test-check-desktop-runtime.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Desktop runtime guard self-test failed' }
 $DesktopRuntimeArguments = @("$ProjectRoot\scripts\check-desktop-runtime.mjs", '--hap', $Hap,
     '--native-build', "$ProjectRoot\entry\.cxx\$Product\$Product\$BuildMode\arm64-v8a")
 if ($NativeGlValidation) { $DesktopRuntimeArguments += '--native-gl-validation' }
-& node @DesktopRuntimeArguments
+Invoke-AmclNode @DesktopRuntimeArguments
 if ($LASTEXITCODE -ne 0) { throw 'Desktop runtime HAP contract failed' }
-& node "$ProjectRoot\scripts\check-mobilegl-build-contract.mjs" --product $Product --hap $Hap
+Invoke-AmclNode "$ProjectRoot\scripts\check-mobilegl-build-contract.mjs" --product $Product --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw 'MobileGL HAP contract failed' }
-& node "$ProjectRoot\scripts\check-diagnostics-contract.mjs" --product $Product --mode $BuildMode `
+Invoke-AmclNode "$ProjectRoot\scripts\check-diagnostics-contract.mjs" --product $Product --mode $BuildMode `
     --hap $Hap --hap-kind $HapKind --verify-signature
 if ($LASTEXITCODE -ne 0) { throw 'Product diagnostic artifact contract failed' }
 $ContractArguments = @(
@@ -530,11 +814,12 @@ $ContractArguments = @(
 )
 if ($Release) { $ContractArguments += '--require-clean' }
 if ($AllowDirtyMobileGlues) { $ContractArguments += '--allow-dirty-mg' }
-& node @ContractArguments
+Invoke-AmclNode @ContractArguments
 if ($LASTEXITCODE -ne 0) { throw "check-mg-build-contract.mjs failed (exit $LASTEXITCODE)" }
 
 Write-Host ""
 Write-Host "=== [7/7] Re-verify persisted provenance ===" -ForegroundColor Cyan
+$script:AmclGatePhase = 'provenance-readback'
 $VerifyArguments = @(
     "$ProjectRoot\scripts\$AuditScript",
     '--product', $Product,
@@ -549,14 +834,30 @@ $VerifyArguments = @(
 )
 if ($Release) { $VerifyArguments += '--require-clean' }
 if ($AllowDirtyMobileGlues) { $VerifyArguments += '--allow-dirty-mg' }
-& node @VerifyArguments
+Invoke-AmclNode @VerifyArguments
 if ($LASTEXITCODE -ne 0) { throw "persisted provenance verification failed (exit $LASTEXITCODE)" }
 
 $HapInfo = Get-Item -LiteralPath $Hap
+$ValidationSucceeded = $true
+}
+} catch {
+    # 收尾失败不能覆盖最先发生的门禁错误；仍由 finally 尝试记录失败并释放租约。
+    $ValidationPrimaryError = $_
+    throw
+} finally {
+    try {
+        if ($ValidationSucceeded) { Complete-AmclValidation -Success -Artifacts @($Hap, $Provenance) }
+        else { Complete-AmclValidation }
+    } catch {
+        if ($ValidationPrimaryError) { Write-Warning "Validation finalization also failed: $($_.Exception.Message)" }
+        else { throw }
+    }
+}
 Write-Host ""
 Write-Host "BUILD SUCCESS" -ForegroundColor Green
 Write-Host "  HAP:        $Hap"
 Write-Host "  Kind:       $HapKind"
 Write-Host "  Size:       $([math]::Round($HapInfo.Length / 1MB, 2)) MB"
 Write-Host "  SHA-256:    $((Get-FileHash -LiteralPath $Hap -Algorithm SHA256).Hash.ToLowerInvariant())"
-Write-Host "  Provenance: $Provenance"
+if ($ValidationProfile -eq 'quick') { Write-Host "  Quick receipt (not full qualification): $Provenance" }
+else { Write-Host "  Provenance: $Provenance" }

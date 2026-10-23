@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "scope": "Compile-only and host validation inputs; never redistribute Minecraft or dependency classes in amcl-fabric-compat.jar",
+  "minecraft": "26.2",
+  "javaCompilerMinimum": 25,
+  "javaOutputRelease": 21,
+  "files": [
+    {
+      "id": "metadata",
+      "file": "26.2.json",
+      "url": "https://piston-meta.mojang.com/v1/packages/91ef51b7d36ca092c5c02aba42f0f40c7cc1db84/26.2.json",
+      "sha256": "8d009c6ed0b7b8c65bfff515a1ff8b12cc8df72627bb0e355ecbce9f7bc34f9c",
+      "size": 51781
+    },
+    {
+      "id": "client",
+      "file": "client-26.2.jar",
+      "url": "https://piston-data.mojang.com/v1/objects/2dc72797acbc1b63fc16a11c4ac393605f453754/client.jar",
+      "sha256": "40896ee9f1e2bec3c934daac7e93d41e9e3d9c2f8ae0ca366d52ffbfd1afa290",
+      "size": 39193383
+    },
+    {
+      "id": "loader",
+      "file": "fabric-loader-0.19.5.jar",
+      "url": "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar",
+      "sha256": "93044e4dd46de5d8136701292f05e868da096d2c9fddb4793e4fdbcc63efc695",
+      "size": 1984980
+    },
+    {
+      "id": "create-old",
+      "file": "create-fly-26.2-rc-2-6.0.9-1.jar",
+      "url": "https://cdn.modrinth.com/data/dKvj0eNn/versions/phlsMPgT/create-fly-26.2-rc-2-6.0.9-1.jar",
+      "sha256": "d9c6cb6116d5caa1174a289ecd7d3cdd463ccef6e8db1249ab0bcfcd8c935870",
+      "size": 21412089
+    },
+    {
+      "id": "create-new",
+      "file": "create-fly-26.2-6.0.9-2.jar",
+      "url": "https://github.com/ZurrTum/Create-Fly/releases/download/v6.0.9-26.2-2/create-fly-26.2-6.0.9-2.jar",
+      "sha256": "84c0d70c5d9c63d5d14a9539a5be9857045d8dd9b96315b1739c100fa1619144",
+      "size": 21272478
+    }
+  ]
+}

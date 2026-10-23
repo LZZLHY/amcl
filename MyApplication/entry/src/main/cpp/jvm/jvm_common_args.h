@@ -14,8 +14,8 @@
  * 清单只包含【和版本 / classpath / 用户设置无关】的"OHOS 兼容性修复参数"，不含：
  *   - -Xmx / -Xms / -XX:TieredStopAtLevel    （主/子进程不同）
  *   - -Djava.home / -Dsun.boot.library.path  （运行时生成）
- *   - -Xbootclasspath/a:.../cacio-*.jar      （运行时生成）
- *   - -Dcacio.font.* / -Dawt.toolkit         （主进程条件启用）
+ *   - 与 classpath 相关的 -Xbootclasspath/a:... （共享清单不装配 Cacio 运行体）
+ *   - AWT 工具包或字体的运行参数            （当前启动默认使用标准 headless 路径）
  *   - -Djava.system.class.loader=AmclClassLoader  （仅主进程）
  *   - -Dlog4j2.formatMsgNoLookups / -Dorg.lwjgl.glfw.checkThread0  （仅主进程）
  *   - -Dsun.java2d.fontpath                  （仅 installer 子进程）

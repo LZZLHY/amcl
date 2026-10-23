@@ -185,7 +185,11 @@ try {
   writeFileSync(javaFile, javaSource(), 'utf8');
   const sep = process.platform === 'win32' ? ';' : ':';
   const cp = [coreJar, sdlJar, hostNativeJar].join(sep);
-  const java = spawnSync('java', ['-cp', cp, javaFile], { cwd: root, encoding: 'utf8' });
+  // LWJGL反射会按JAR提取宿主JNI库；编译源码启动模式也可能创建临时文件。
+  // 这些都是本次探针输出，固定到已验证的仓外work，不能回流系统盘TEMP或工程根。
+  const java = spawnSync('java', ['-Djava.io.tmpdir=' + work,
+    '-Dorg.lwjgl.system.SharedLibraryExtractPath=' + join(work, 'native'),
+    '-cp', cp, javaFile], { cwd: root, encoding: 'utf8' });
   if (java.error) fail(`java unavailable: ${java.error.message}`);
   if (java.status !== 0) fail(`LWJGL layout reflection failed:\n${java.stderr || java.stdout}`);
 

@@ -291,7 +291,12 @@ export class ForgelikeInstaller {
 
       // Step 4: 预下载 mappings
       ForgelikeInstaller.report(callback, 'pre_download_mappings', 3, 8, '预下载 Mappings...');
-      try { await preDownloadMappings(installProfilePath, profile.gameVersion, libDir); }
+      try {
+        await preDownloadMappings(installProfilePath, profile.gameVersion, libDir, (view: DownloadTaskView): void => {
+          ForgelikeInstaller.report(callback, 'pre_download_mappings', 3 + view.progress * 0.25, 8,
+            '预下载 Mappings：' + (view.currentFile || profile.gameVersion));
+        });
+      }
       catch (e) { AppLogger.warn(TAG, `Pre-download mappings failed (non-fatal): ${(e as Error).message}`, null, LOG_DOMAIN_MODLOADER); }
 
       // Step 5: 提取内置 maven/

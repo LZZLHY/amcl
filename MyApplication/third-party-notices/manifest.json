@@ -11,42 +11,6 @@
       "source": "https://github.com/LWJGL/lwjgl3/blob/32593afe25e2f1394c3425673f1b71a0122f5cd4/LICENSE.md"
     },
     {
-      "component": "mobileglues",
-      "file": "mobileglues/LICENSE",
-      "sha256": "35a20d16c9f153b1603bb46228d58344450606bbe7ce4f181bbf0a45aadc2ae7",
-      "origin": "https://github.com/LZZLHY/MobileGlues.git",
-      "commit": "02a5c2240f0a6a92ec4c09d5255faa5b97daa78b",
-      "upstreamPath": "LICENSE",
-      "source": "https://github.com/LZZLHY/MobileGlues/blob/02a5c2240f0a6a92ec4c09d5255faa5b97daa78b/LICENSE"
-    },
-    {
-      "component": "mobilegl",
-      "file": "mobilegl/COPYING",
-      "sha256": "8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b",
-      "origin": "https://github.com/LZZLHY/MobileGL.git",
-      "commit": "920894cdcb360e359689fac39901d9785741edd6",
-      "upstreamPath": "COPYING",
-      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/COPYING"
-    },
-    {
-      "component": "mobilegl",
-      "file": "mobilegl/COPYING.LESSER",
-      "sha256": "a5681bf9b05db14d86776930017c647ad9e6e56ff6bbcfdf21e5848288dfaf1b",
-      "origin": "https://github.com/LZZLHY/MobileGL.git",
-      "commit": "920894cdcb360e359689fac39901d9785741edd6",
-      "upstreamPath": "COPYING.LESSER",
-      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/COPYING.LESSER"
-    },
-    {
-      "component": "mobilegl",
-      "file": "mobilegl/LICENSE",
-      "sha256": "3bc99d638b3af022e7d902855341ca0eabbae6e87163d0dc74467500eb2214f4",
-      "origin": "https://github.com/LZZLHY/MobileGL.git",
-      "commit": "920894cdcb360e359689fac39901d9785741edd6",
-      "upstreamPath": "LICENSE",
-      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/LICENSE"
-    },
-    {
       "component": "openal",
       "file": "openal/COPYING",
       "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15",
@@ -191,15 +155,6 @@
       "source": "https://github.com/Cyan4973/xxHash/blob/1d7b2a9d21bf9a740ead540aa93f4bc4caf11ae0/LICENSE"
     },
     {
-      "component": "tl-expected",
-      "file": "tl-expected/COPYING",
-      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
-      "origin": "https://github.com/LZZLHY/MobileGL.git",
-      "commit": "920894cdcb360e359689fac39901d9785741edd6",
-      "upstreamPath": "include/tl/COPYING",
-      "source": "https://github.com/LZZLHY/MobileGL/blob/920894cdcb360e359689fac39901d9785741edd6/include/tl/COPYING"
-    },
-    {
       "component": "ska-flat-hash-map",
       "file": "ska-flat-hash-map/LICENSE",
       "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
@@ -207,6 +162,60 @@
       "commit": "21c1cec95abee1beef827e4a7c95f692875d9594",
       "upstreamPath": "LICENSE",
       "source": "https://github.com/MobileGL-Dev/flat_hash_map/blob/21c1cec95abee1beef827e4a7c95f692875d9594/LICENSE"
+    },
+    {
+      "component": "mobileglues",
+      "file": "mobileglues/LICENSE",
+      "sha256": "35a20d16c9f153b1603bb46228d58344450606bbe7ce4f181bbf0a45aadc2ae7",
+      "origin": "https://github.com/LZZLHY/MobileGlues.git",
+      "commit": "8b69f7fee6c11a46d325731f29ef6b5008da2878",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/LZZLHY/MobileGlues/blob/8b69f7fee6c11a46d325731f29ef6b5008da2878/LICENSE"
+    },
+    {
+      "component": "mobilegl",
+      "file": "mobilegl/COPYING",
+      "sha256": "8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+      "upstreamPath": "COPYING",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274/COPYING"
+    },
+    {
+      "component": "mobilegl",
+      "file": "mobilegl/COPYING.LESSER",
+      "sha256": "a5681bf9b05db14d86776930017c647ad9e6e56ff6bbcfdf21e5848288dfaf1b",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+      "upstreamPath": "COPYING.LESSER",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274/COPYING.LESSER"
+    },
+    {
+      "component": "mobilegl",
+      "file": "mobilegl/LICENSE",
+      "sha256": "3bc99d638b3af022e7d902855341ca0eabbae6e87163d0dc74467500eb2214f4",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274/LICENSE"
+    },
+    {
+      "component": "tl-expected",
+      "file": "tl-expected/COPYING",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "origin": "https://github.com/LZZLHY/MobileGL.git",
+      "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+      "upstreamPath": "include/tl/COPYING",
+      "source": "https://github.com/LZZLHY/MobileGL/blob/13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274/include/tl/COPYING"
+    },
+    {
+      "component": "hdc",
+      "file": "hdc/LICENSE",
+      "sha256": "69a2c441596dbde4da940ef763b19b5341f87d1e018201fd16661d6e8bf4e7e4",
+      "origin": "https://github.com/Attect/muka_rust_hdc.git",
+      "commit": "4a2d9c42059b3ff346f4d3f533cf781a5fbe70ba",
+      "upstreamPath": "LICENSE",
+      "source": "https://github.com/Attect/muka_rust_hdc/blob/4a2d9c42059b3ff346f4d3f533cf781a5fbe70ba/LICENSE"
     }
   ]
 }

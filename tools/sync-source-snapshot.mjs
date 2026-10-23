@@ -4,6 +4,7 @@
  * 业务目录中的未忽略文件，不遍历缓存、凭据、设备证据或第三方工作树。
  * 公开说明、许可证及经过公开化的说明文件由本仓维护，不被开发仓覆盖。
  * 用法：node tools/sync-source-snapshot.mjs --source <MyApplication> [--write]
+ *       [--require-clean] [--expected-commit <40位提交>]
  * 默认只报告差异；--write 写入文件但不删除目标文件，不提交也不推送仓库。
  */
 import fs from 'node:fs';
@@ -24,6 +25,7 @@ const folders = new Set(['account', 'AppScope', 'commons', 'config', 'docker', '
   'feature_core', 'feature_system', 'gamecontrol', 'hvigor', 'JavaApp', 'launch',
   'mods', 'prebuilt', 'scripts', 'tests', 'tools', 'update']);
 const rootFiles = new Set(['.gitattributes', '.clang-tidy', 'amcl-build-menu.bat',
+  'build-dependencies.local.json.example',
   'build-app.ps1', 'build-hap.ps1', 'build-delivery.ps1', 'code-linter.json5', 'deps.lock', 'deps.versions',
   'hvigorfile.ts', 'oh-package.json5', 'oh-package-lock.json5', 'setup_deps.sh', 'toolchain.lock']);
 const preserved = new Set(['scripts/run-host-tests-docker.sh']);
@@ -48,6 +50,19 @@ function selected(relative) {
   return true;
 }
 const git = (...gitArgs) => execFileSync('git', ['-C', source, ...gitArgs], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+// 正式快照先绑定完整提交并确认工作树洁净，不能先复制文件再发现取错了构建来源。
+// 默认审查模式仍允许显式观察开发树；发行调用必须同时给出这两个约束。
+const sourceCommit = git('rev-parse', 'HEAD').trim();
+const expectedIndex = args.indexOf('--expected-commit');
+if (expectedIndex >= 0) {
+  const expected = args[expectedIndex + 1];
+  if (!/^[a-f0-9]{40}$/.test(expected ?? '') || expected !== sourceCommit) {
+    throw new Error('Expected source commit does not match the complete source HEAD');
+  }
+}
+if (args.includes('--require-clean') && git('status', '--porcelain', '--untracked-files=all').trim()) {
+  throw new Error('A release snapshot requires a clean source checkout');
+}
 // 主工程将 MobileGL dist 视作本机输出；公开快照需要一并交付被 deps.lock 严格
 // 锁定的这三个输入，否则换目录重编产生不同字节时连普通 HAP 都无法准备。
 const lockedBinaryInputs = ['prebuilt/mobilegl/dist/libmobilegl.so',
@@ -82,10 +97,15 @@ const stale = (previous?.entries ?? []).map(entry => entry.path)
 if (stale.length) throw new Error(`Stale snapshot files require explicit review before synchronization: ${stale.join(', ')}`);
 
 const dependencyWorktrees = [];
-for (const relative of ['prebuilt/lwjgl3/lwjgl3_src', 'prebuilt/mobileglues/mg_src', 'prebuilt/mobilegl/src']) {
+for (const relative of ['prebuilt/lwjgl3/lwjgl3_src', 'prebuilt/mobileglues/mg_src', 'prebuilt/mobilegl/src',
+  'prebuilt/hdc/muka-rust-hdc']) {
   const dependency = path.join(source, relative);
   const depGit = (...params) => execFileSync('git', ['-C', dependency, ...params], { maxBuffer: 16 * 1024 * 1024 });
   const baseCommit = depGit('rev-parse', 'HEAD').toString('utf8').trim();
+  // HDC 与三个图形/Java依赖同属真实gitlink。不能把目录里任意可运行的仓库HEAD
+  // 当作冻结源码的依赖；公开清单必须回绑源仓索引中的160000身份。
+  const recorded = git('ls-files', '--stage', '--', relative).match(/^160000\s+([a-f0-9]{40})\s/);
+  if (recorded?.[1] !== baseCommit) throw new Error(`Source gitlink mismatch: ${relative}`);
   // 未跟踪第三方文件可能是新增源码，也可能是私有实验，不能自动公开或默默丢失。
   if (depGit('ls-files', '--others', '--exclude-standard', '-z').length) {
     throw new Error(`Untracked dependency files need review before snapshot export: ${relative}`);
@@ -167,7 +187,7 @@ if (write) {
   });
   const manifest = {
     schema: 1,
-    sourceCommit: git('rev-parse', 'HEAD').trim(),
+    sourceCommit,
     sourceBranch: git('branch', '--show-current').trim(),
     sourceDirty: git('status', '--porcelain', '--untracked-files=normal').trim().length > 0,
     note: 'Current working-tree snapshot; sourceCommit is its base, not an assertion of identical committed content. Public docs, licenses and bootstrap tools are maintained separately.',

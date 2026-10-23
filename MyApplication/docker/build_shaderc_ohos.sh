@@ -7,28 +7,28 @@ set -e
 #
 #  背景：MC 26.2 起官方 Vulkan 渲染后端（Vibrant Visuals）运行时把 GLSL 用 shaderc
 #  编成 SPIR-V（lwjgl-shaderc），并用 SPIRV-Cross（lwjgl-spvc）做反射/转换。
-#  这两个 LWJGL 绑定与 freetype 同构：libffi 直调 C 符号、无 LWJGL JNI 胶水
-#  （已读 lwjgl3_src/.../{Shaderc,Spvc}.java 核实）：
+#  这两个 LWJGL 绑定与 freetype 同构：libffi 直调 C 符号、无 LWJGL JNI 胶水。
+#  shaderc JAR 还包含 GLSLang、ResourceLimits、SPV、SPVOptimizer；它们默认回落
+#  Shaderc::getLibrary，必须从同一 libshaderc.so 提供全部必需 C 接口。
+#  （已读 lwjgl3_src/.../{Shaderc,GLSLang,SPV,SPVOptimizer,Spvc}.java 核实）：
 #    - shaderc: Library.loadNative(..., mapLibraryNameBundled("shaderc"), true)
-#               → 默认库名 libshaderc.so，导出 shaderc_* C 符号，org.lwjgl.shaderc.libname 可覆盖
+#               → 默认库名 libshaderc.so，导出 shaderc_*/glslang_*/spv*，org.lwjgl.shaderc.libname 可覆盖
 #    - spvc:    Library.loadNative(..., mapLibraryNameBundled("spirv-cross"), true)
 #               → 默认库名 libspirv-cross.so，导出 spvc_* C 符号，org.lwjgl.spvc.libname 可覆盖
 #  所以只需把上游交叉编成导出 C API 的 .so 即可。
 #
-#  版本对齐 LWJGL 3.4.1（见 lwjgl3_src/doc/notes/3.4.1.md + 3.3.5.md）：
+#  shaderc 的来源、配套依赖和完整接口统一由 prebuilt/shaderc 锁定；现代槽为 LWJGL 3.4.2。
 #    - Shaderc 2026.1（内含 glslang 16.2.0 + SPIRV-Tools 2026.1 + SPIRV-Headers）
 #    - SPIRV-Cross 0.64.0（3.3.5 起，3.4.x 未再 bump）
 #  ⚠️ 版本错配会导致 spvc_*/shaderc_* 符号增删，LWJGL apiGetFunctionAddress 在类初始化抛。
 #
 #  产物：
-#    libshaderc.so       — 导出 shaderc_* （部署到 entry/libs/arm64-v8a/，org.lwjgl.shaderc.libname 指向）
+#    libshaderc.so       — 导出锁定五组必需 C API（部署到 entry/libs/arm64-v8a/）
 #    libspirv-cross.so   — 导出 spvc_*     （同上，org.lwjgl.spvc.libname 指向）
 #
-#  用法（容器 ohos-debug 已在跑；工具链同 build_lwjgl/freetype）：
-#    docker exec ohos-debug bash /build/setup_toolchain.sh
-#    docker exec ohos-debug env \
-#      SHADERC_TAG=v2026.1 SPIRV_CROSS_TAG=vulkan-sdk-1.4.x OUTPUT_DIR=/output \
-#      bash /build/build_shaderc_ohos.sh
+#  使用当前 Compose amcl/builder 的 /recipes 与只读 /prebuilt 挂载，不能再续写 legacy。
+#  完整本机 SDK 正式入口见 prebuilt/shaderc/README.md；Docker 兼容入口必须具有同一
+#  CMake 配方与输入清单，否则在准备工具链和编译前立即拒绝。
 #
 #  ⚠️ libc++ ABI 命名空间（2026-05-31 真机 cppcrash 定位，必读）：
 #  旧版本用镜像里的 Ubuntu libc++-15 头 → 产物用 std::__1:: ABI，但 HarmonyOS 的
@@ -45,11 +45,26 @@ WORK_DIR=${WORK_DIR:-/build/vk-shaders}
 OUTPUT_DIR=${OUTPUT_DIR:-/output}
 JOBS=${JOBS:-$(nproc)}
 
-# 版本 pin（对齐 LWJGL 3.4.1；可用 env 覆盖）。
-# shaderc 用 release tag（v2026.1）；SPIRV-Cross 0.64.0 对应 vulkan-sdk 系列 tag，
-# 这里用 commit/tag 都可，release 负责人按 deps.lock 填实际值。
+# shaderc 不允许用环境变量绕过锁定输入；更新时应同时审查 prebuilt/shaderc 全部锁定资料。
+# SPIRV-Cross 保留原有独立构建范围与版本选择，本次只修复 shaderc 完整 C API 交付。
 SHADERC_TAG=${SHADERC_TAG:-v2026.1}
 SPIRV_CROSS_TAG=${SPIRV_CROSS_TAG:-vulkan-sdk-1.3.290.0}  # 含 SPIRV-Cross 0.64.x 的 SDK tag
+AMCL_SHADERC_RECIPE=${AMCL_SHADERC_RECIPE:-/prebuilt/shaderc}
+
+# 配方缺失时不能退回上游默认 shaderc_shared；那条路径只抽取 shaderc 自用的对象，
+# 会重新漏掉 glslang C interface、resource limits 与 SPV 的 options/version 子接口。
+for recipe_file in CMakeLists.txt complete-api.cmake build-inputs.json required-symbols.json required-symbols.txt exports.map; do
+    if [ ! -f "$AMCL_SHADERC_RECIPE/$recipe_file" ]; then
+        echo "ERROR: 缺少完整 shaderc 配方 $AMCL_SHADERC_RECIPE/$recipe_file；请使用当前 /prebuilt 只读挂载。"
+        exit 1
+    fi
+done
+export PYTHONDONTWRITEBYTECODE=1
+LOCKED_SHADERC_TAG=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["shadercTag"])' "$AMCL_SHADERC_RECIPE/build-inputs.json")
+if [ "$SHADERC_TAG" != "$LOCKED_SHADERC_TAG" ]; then
+    echo "ERROR: SHADERC_TAG=$SHADERC_TAG 与完整配方锁定的 $LOCKED_SHADERC_TAG 不符。"
+    exit 1
+fi
 
 echo "============================================"
 echo " shaderc + SPIRV-Cross native for HarmonyOS NEXT (Phase 3)"
@@ -223,43 +238,57 @@ patchelf --set-soname libspirv-cross.so "$OUTPUT_DIR/libspirv-cross.so"
 echo "  -> $OUTPUT_DIR/libspirv-cross.so"
 
 # ============================================================
-# Step 2: shaderc（重，拉 glslang/SPIRV-Tools/SPIRV-Headers）→ libshaderc.so 导出 shaderc_*
+# Step 2: shaderc 与配套 glslang/SPIRV-Tools/SPIRV-Headers → 完整五组 C API
 # ============================================================
 echo ""
 echo "[2/4] Building shaderc ($SHADERC_TAG, shared)..."
-cd "$WORK_DIR"
-SHADERC_SRC="shaderc"
-if [ ! -d "$SHADERC_SRC" ]; then
-    git clone --depth 1 --branch "$SHADERC_TAG" \
-        https://github.com/google/shaderc.git "$SHADERC_SRC"
-    # shaderc 用 utils/git-sync-deps 拉 glslang / SPIRV-Tools / SPIRV-Headers 到 third_party/
-    ( cd "$SHADERC_SRC" && python3 ./utils/git-sync-deps )
-fi
+SHADERC_SOURCES="$WORK_DIR/shaderc-complete-sources"
+mkdir -p "$SHADERC_SOURCES"
+# 只拉取四个锁定提交；已有树必须精确匹配且没有修改，未知历史树保留并停止。
+# 不使用可移动 tag 或 git-sync-deps 的非必要测试依赖作为输入身份。
+python3 - "$AMCL_SHADERC_RECIPE/build-inputs.json" > "$WORK_DIR/shaderc-inputs.tsv" <<'PY'
+import json, sys
+for name, value in json.load(open(sys.argv[1]))['sources'].items():
+    print(name, value['repository'], value['commit'], sep='\t')
+PY
+while IFS=$'\t' read -r source_name source_repository source_commit; do
+    source_directory="$SHADERC_SOURCES/$source_name"
+    if [ ! -e "$source_directory" ]; then
+        git init "$source_directory"
+        git -C "$source_directory" remote add origin "https://github.com/$source_repository.git"
+        git -C "$source_directory" fetch --depth 1 origin "$source_commit"
+        git -C "$source_directory" checkout --detach "$source_commit"
+    fi
+    if [ "$(git -C "$source_directory" rev-parse HEAD)" != "$source_commit" ] || \
+       [ -n "$(git -C "$source_directory" status --porcelain)" ]; then
+        echo "ERROR: shaderc 源码身份或洁净状态不符：$source_directory；保留现场，禁止覆盖。"
+        exit 1
+    fi
+done < "$WORK_DIR/shaderc-inputs.tsv"
+python3 - "$AMCL_SHADERC_RECIPE/build-inputs.json" "$SHADERC_SOURCES/shaderc/DEPS" <<'PY'
+import json, pathlib, sys
+inputs = json.load(open(sys.argv[1]))['sources']
+deps = pathlib.Path(sys.argv[2]).read_text()
+if any(inputs[name]['commit'] not in deps for name in ('glslang', 'spirv-tools', 'spirv-headers')):
+    raise SystemExit('ERROR: shaderc DEPS 与锁定依赖不符')
+PY
 
-SHADERC_BUILD="$WORK_DIR/shaderc-build"
-# SHADERC_SKIP_*：关测试/示例/版权检查/安装组件加速。
-# 产出 shaderc_shared target（libshaderc_shared.so，导出 shaderc_* C API）。
-# BUILD_SHARED_LIBS 留默认（OFF）——只让 shaderc_shared 本身是动态，其依赖静态内联进去，
-# 这样产物自包含、NEEDED 只剩 libc/libc++（与 freetype/curl 自包含风格一致）。
-cmake -S "$SHADERC_SRC" -B "$SHADERC_BUILD" -G Ninja \
+SHADERC_BUILD="$WORK_DIR/shaderc-complete-build"
+# 与本机 SDK 使用完全相同的配方：真实静态归档按必需符号抽取、隐藏 C++ ABI、
+# 完整 C API 导出并 --no-undefined；不能退回只满足主 Shaderc 接口的上游配置。
+cmake -S "$AMCL_SHADERC_RECIPE" -B "$SHADERC_BUILD" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_CMAKE" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DSHADERC_SKIP_TESTS=ON \
-    -DSHADERC_SKIP_EXAMPLES=ON \
-    -DSHADERC_SKIP_COPYRIGHT_CHECK=ON \
-    -DSHADERC_ENABLE_SHARED_CRT=OFF \
-    -DSPIRV_HEADERS_SKIP_EXAMPLES=ON \
-    -DSPIRV_SKIP_TESTS=ON \
-    -DSKIP_SPIRV_TOOLS_INSTALL=ON \
-    -DENABLE_GLSLANG_BINARIES=OFF \
-    -DGLSLANG_TESTS=OFF
+    -DAMCL_SHADERC_SOURCE="$SHADERC_SOURCES/shaderc" \
+    -DSHADERC_GLSLANG_DIR="$SHADERC_SOURCES/glslang" \
+    -DSHADERC_SPIRV_TOOLS_DIR="$SHADERC_SOURCES/spirv-tools" \
+    -DSHADERC_SPIRV_HEADERS_DIR="$SHADERC_SOURCES/spirv-headers"
 ninja -C "$SHADERC_BUILD" -j"$JOBS" shaderc_shared
 
-SHADERC_SO=$(find "$SHADERC_BUILD" -name 'libshaderc_shared.so*' -type f | head -1)
-if [ -z "$SHADERC_SO" ]; then echo "ERROR: libshaderc_shared.so not built!"; exit 1; fi
-/usr/bin/ohos-strip --strip-unneeded "$SHADERC_SO" 2>/dev/null || true
+SHADERC_SO="$SHADERC_BUILD/shaderc/libshaderc/libshaderc.so"
+if [ ! -f "$SHADERC_SO" ]; then echo "ERROR: 完整配方未生成 libshaderc.so"; exit 1; fi
+/usr/bin/ohos-strip --strip-unneeded "$SHADERC_SO"
 cp -L "$SHADERC_SO" "$OUTPUT_DIR/libshaderc.so"
-patchelf --set-soname libshaderc.so "$OUTPUT_DIR/libshaderc.so"
 echo "  -> $OUTPUT_DIR/libshaderc.so"
 
 # ============================================================
@@ -283,12 +312,27 @@ echo "[4/4] Verifying shaderc..."
 NSHADERC=$(ohos-readelf -sW "$OUTPUT_DIR/libshaderc.so" 2>/dev/null | grep -c ' shaderc_' || echo 0)
 echo "  exported shaderc_* symbols: $NSHADERC"
 echo "  NEEDED: $(ohos-readelf -d "$OUTPUT_DIR/libshaderc.so" 2>/dev/null | grep NEEDED | tr -s ' ' | paste -sd' ')"
-for sym in shaderc_compiler_initialize shaderc_compile_into_spv shaderc_result_get_bytes; do
-    if ! ohos-readelf -sW "$OUTPUT_DIR/libshaderc.so" 2>/dev/null | grep -q " $sym\$"; then
-        echo "  ERROR: missing $sym in libshaderc.so"; exit 1
-    fi
-done
-echo "  shaderc core symbols OK"
+# 动态导出必须精确等于完整绑定集合，不能让静态符号表或几个核心入口掩盖缺口。
+python3 - "$OUTPUT_DIR/libshaderc.so" "$AMCL_SHADERC_RECIPE/required-symbols.json" <<'PY'
+import json, re, subprocess, sys
+candidate, binding_path = sys.argv[1:]
+binding = json.load(open(binding_path))
+dynamic_symbols = subprocess.check_output(['ohos-readelf', '--dyn-symbols', '--wide', candidate], text=True)
+defined = {line.split()[-1].split('@')[0] for line in dynamic_symbols.splitlines()
+           if re.search(r'\bGLOBAL\b', line) and ' UND ' not in line and len(line.split()) >= 8}
+required = {symbol for group in binding['classes'].values() for symbol in group['required']}
+if not required or defined != required:
+    raise SystemExit('ERROR: 完整 C API 不符：' + json.dumps(
+        {'missing': sorted(required - defined), 'extra': sorted(defined - required)}))
+header = subprocess.check_output(['ohos-readelf', '--file-header', candidate], text=True)
+dynamic = subprocess.check_output(['ohos-readelf', '--dynamic', candidate], text=True)
+needed = re.findall(r'\(NEEDED\).*?\[([^]]+)\]', dynamic)
+if 'ELF64' not in header or 'AArch64' not in header or not re.search(r'\(SONAME\).*?\[libshaderc.so\]', dynamic):
+    raise SystemExit('ERROR: shaderc ELF 架构或 SONAME 不符')
+if not needed or set(needed) - {'libc.so', 'libc++_shared.so', 'libm.so', 'libdl.so'}:
+    raise SystemExit('ERROR: shaderc 含非批准依赖：' + repr(needed))
+print('  shaderc 完整 C API：' + str(len(required)) + '/' + str(len(required)))
+PY
 
 # ============================================================
 # Step 4b: ABI 防回归 —— 产物绝不能含 std::__1:: 符号（必须全是 __n1）

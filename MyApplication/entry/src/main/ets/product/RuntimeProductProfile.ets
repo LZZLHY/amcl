@@ -61,10 +61,16 @@ export class RuntimeProductProfile {
     frozen = true
   }
 
-  static setInteraction(value: string, context: Context): boolean {
+  /**
+   * 保存的是下一次可采用的交互选择。await期间不改desired/selection；Preferences原owner
+   * 的读屏障也阻止initialize从未确认缓存取得新值。持久成功以后再次核frozen：若等待中
+   * 已启动本局，则只更新已保存desired，保留原selection对象与activeInteraction。
+   * false表示原路线冻结、需重启，并不表示写盘失败；写盘失败由Promise拒绝交给原UI。
+   */
+  static async setInteraction(value: string, context: Context): Promise<boolean> {
     if (!ProductBuildProfile.touchControls) return false
     const mode: string = ProductRuntimePolicy.normalizeInteraction(value)
-    new PreferenceManager(context).desktopInteraction = mode
+    await new PreferenceManager(context).saveDesktopInteraction(mode)
     interaction = mode
     if (frozen) return false
     selection = undefined

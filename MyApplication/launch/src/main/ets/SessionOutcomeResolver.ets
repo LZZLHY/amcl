@@ -1,9 +1,9 @@
 /** 会话恢复的唯一裁决入口：显式终态优先，完整游戏流与平台证据分别保留。 */
-import { ledgerManifest, ledgerEnd, LedgerState, LedgerOutcome, listSessionEvidence,
+import { ledgerManifestAsync, ledgerEndAsync, ledgerNextLaunchAtAsync, LedgerState, LedgerOutcome, listSessionEvidenceAsync,
   EvidenceFileRecord, EvidenceFileState, EvidenceRole, EvidenceTextCursor, listCrashMarkers } from 'commons';
-import { checkpointSessionCapture, listActivityIds, archivePlatformEventFiles_ } from 'commons';
+import { checkpointSessionCaptureAsync, readSessionCaptureAsync } from 'commons';
 import { SessionMarker } from './SessionMarker';
-import { readJvmExitEvidence } from './JvmExitEvidence';
+import { readJvmExitEvidenceAsync } from './JvmExitEvidence';
 
 /**
  * 归属字段只表示来源关系，不代表本局已捕获文件。SessionEvidence 会保留启动前旧
@@ -50,27 +50,36 @@ async function hasCrashReportBody(file: EvidenceFileRecord): Promise<boolean> {
   return hasBody;
 }
 
-export async function resolveRecoveredSessionOutcome(filesDir: string, activityId: number): Promise<LedgerOutcome> {
+/**
+ * 只准备本局冻结裁决，不写终态或维护全局索引；owner在输入key和游戏锁复核后提交。
+ * 真正异步FileIO负责补采/读取，旧规则的崩溃优先级与正文不可读不确定性保持不变。
+ */
+export async function prepareRecoveredSessionOutcome(filesDir: string, activityId: number,
+  nextLaunchAt: number, explicitOutcome: LedgerOutcome | undefined = undefined,
+  isCurrent: (() => boolean) | undefined = undefined, protectedIntentBoundary: boolean = false): Promise<LedgerOutcome> {
   // 热恢复没有经过全局 resolveStale。只补采本局，绝不能把启动器仍在运行的下载活动标成中断。
   // 下一局边界继续使用既有 capture 契约，不能读到后续版本覆盖的 latest/crash 文件。
-  const initialExit = readJvmExitEvidence(filesDir, activityId);
-  let nextLaunchAt: number = 0;
-  for (const id of listActivityIds(filesDir)) {
-    if (id <= activityId || ledgerManifest(filesDir, id)?.category !== 'launch') continue;
-    if (nextLaunchAt === 0 || id < nextLaunchAt) nextLaunchAt = id;
-  }
-  try { checkpointSessionCapture(filesDir, activityId, initialExit?.timestamp ?? Date.now(), nextLaunchAt); }
-  catch (e) { /* 保留现有已捕获证据；采集失败不能伪造正常终态。 */ }
-  archivePlatformEventFiles_(filesDir);
-  const manifest = ledgerManifest(filesDir, activityId);
+  const initialExit = await readJvmExitEvidenceAsync(filesDir, activityId);
+  const manifest = await ledgerManifestAsync(filesDir, activityId);
   if (manifest !== null && manifest.state !== LedgerState.RUNNING && manifest.state !== LedgerState.INTERRUPTED
     && !manifest.outcomeSource.startsWith('platform.') && manifest.outcomeSource !== 'session.full-evidence'
     && manifest.outcomeSource !== 'session.jvm-exit') {
     return { state: manifest.state, source: manifest.outcomeSource, summary: manifest.outcomeSummary, errorKind: manifest.errorKind };
   }
+  // 恢复发现时刻不能覆盖旧局的采集边界。真实平台/JVM终点可升级，其他情况复用已保存边界；
+  // 只有从未建立边界的未完局才使用本轮发现估计，结局仍不把该估计声明为真实游戏结束时间。
+  const capture = await readSessionCaptureAsync(filesDir, activityId);
+  const exactManifestEnd: boolean = manifest !== null && manifest.endTimeEstimated !== true
+    && manifest.endedAt >= manifest.startedAt && manifest.endedAt > 0;
+  const platformEnd: boolean = exactManifestEnd && manifest !== null && manifest.outcomeSource.startsWith('platform.');
+  const captureEnd: number = platformEnd ? manifest!.endedAt : initialExit?.timestamp
+    ?? (exactManifestEnd ? manifest!.endedAt : capture !== undefined && capture.endedAt > 0 ? capture.endedAt
+      : manifest !== null && manifest.endedAt > 0 ? manifest.endedAt : Date.now());
+  await checkpointSessionCaptureAsync(filesDir, activityId, captureEnd, nextLaunchAt, true, isCurrent,
+    platformEnd || initialExit !== undefined || exactManifestEnd, protectedIntentBoundary);
   // 退出文件是 JVM 请求事实，不是原生崩溃的免责证明；后续真实 crash/平台事件仍优先。
   const exit = initialExit;
-  const files: EvidenceFileRecord[] = listSessionEvidence(filesDir, activityId);
+  const files: EvidenceFileRecord[] = await listSessionEvidenceAsync(filesDir, activityId);
   let crash: EvidenceFileRecord | undefined = undefined;
   let unreadableCrash: boolean = false;
   for (const file of files) {
@@ -133,6 +142,10 @@ export async function resolveRecoveredSessionOutcome(filesDir: string, activityI
     && manifest.outcomeSource.startsWith('platform.')) {
     // 精确归属的平台崩溃不能被 Stopping 或 exit(0) 请求覆盖；原始退出事实仍归档保留。
     outcome = { state: manifest.state, source: manifest.outcomeSource, summary: manifest.outcomeSummary };
+  } else if (explicitOutcome !== undefined && !unreadableCrash) {
+    // 游戏进程发布的显式完成事实仍低于真实本局报告及精确平台崩溃；不能以旧success journal免责。
+    outcome = { state: explicitOutcome.state, source: explicitOutcome.source,
+      summary: explicitOutcome.summary, errorKind: explicitOutcome.errorKind };
   } else if (!unreadableCrash && exit !== undefined) {
     outcome = { state: exit.exitCode === 0 ? LedgerState.SUCCESS : LedgerState.FAILED,
       source: 'session.jvm-exit', summary: exit.exitCode === 0
@@ -150,8 +163,16 @@ export async function resolveRecoveredSessionOutcome(filesDir: string, activityI
   }
   // 已核验的平台时间优先；JVM 退出记录次之。日志关键词只有顺序，没有可靠墙钟终点。
   outcome.endedAt = manifest !== null && manifest.outcomeSource.startsWith('platform.')
-    && manifest.endTimeEstimated !== true && manifest.endedAt > 0 ? manifest.endedAt : exit?.timestamp ?? 0;
+    && manifest.endTimeEstimated !== true && manifest.endedAt > 0 ? manifest.endedAt
+      : explicitOutcome?.endedAt ?? exit?.timestamp ?? (exactManifestEnd ? manifest!.endedAt : 0);
   outcome.recoveredAt = Date.now();
-  ledgerEnd(filesDir, activityId, outcome);
+  return outcome;
+}
+
+/** 兼容原调用方；新协调入口使用prepare并自行复核后提交，不会由页面拥有持久恢复。 */
+export async function resolveRecoveredSessionOutcome(filesDir: string, activityId: number): Promise<LedgerOutcome> {
+  const nextLaunchAt = await ledgerNextLaunchAtAsync(filesDir, activityId);
+  const outcome = await prepareRecoveredSessionOutcome(filesDir, activityId, nextLaunchAt);
+  await ledgerEndAsync(filesDir, activityId, outcome, { nextLaunchAt: nextLaunchAt, capturePrepared: true });
   return outcome;
 }

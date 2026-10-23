@@ -8,15 +8,43 @@
       "deploymentDirectory": "lwjgl-ohos-322",
       "resourceDirectory": "lwjgl-3.2.3",
       "prebuiltDirectory": "prebuilt/lwjgl3/3.2.3/jars",
-      "manifestEntrySha256": "01301a0cc9a1e78b36d5b0d10d690761a78e7084067a4e34c808f3f021a541ef",
+      "manifestEntrySha256": "5612e0dbd31991da8b6ccb89cd46b3ebaf60e4123849073dc4235b9a7666c67a",
       "jars": [
-        { "name": "lwjgl-glfw.jar", "size": 112856, "sha256": "99853e19ed3a0319db233900561368d523921ea738d0f9f6f8ab0dd85a03f549" },
-        { "name": "lwjgl-jemalloc.jar", "size": 34130, "sha256": "6f790dbe775eb56be638e9d97b355313c0caf374f13545996670756a15cbfe6f" },
-        { "name": "lwjgl-openal.jar", "size": 79432, "sha256": "9b1bfdf60a3fe7ba6c48976411d311575fb2b7a7e7457e5589d1588719820fb0" },
-        { "name": "lwjgl-opengl.jar", "size": 938214, "sha256": "5c473f23fd290385e33322426cbd9234bc505c27a1721e381fc43d59903a8046" },
-        { "name": "lwjgl-stb.jar", "size": 104146, "sha256": "bf416a52a841fa18508a40864544d7ef976a57733f2a13efbf5eb56f2a14ca96" },
-        { "name": "lwjgl-tinyfd.jar", "size": 6391, "sha256": "12b857110f4659adf56f33ddc3fdb4285b01edf755be8fab1d74cc3eab8007cd" },
-        { "name": "lwjgl.jar", "size": 553506, "sha256": "72a1b0b2816b21eaf6835739be7e23e1f6e96c118b648a44dcf9af9ff47a7f1b" }
+        {
+          "name": "lwjgl-glfw.jar",
+          "size": 112841,
+          "sha256": "3b3fef190cbc3b848800b5dfcb8c04ae52d3ea8afef9fdc3602773ae89670630"
+        },
+        {
+          "name": "lwjgl-jemalloc.jar",
+          "size": 34130,
+          "sha256": "6f790dbe775eb56be638e9d97b355313c0caf374f13545996670756a15cbfe6f"
+        },
+        {
+          "name": "lwjgl-openal.jar",
+          "size": 79432,
+          "sha256": "9b1bfdf60a3fe7ba6c48976411d311575fb2b7a7e7457e5589d1588719820fb0"
+        },
+        {
+          "name": "lwjgl-opengl.jar",
+          "size": 938214,
+          "sha256": "5c473f23fd290385e33322426cbd9234bc505c27a1721e381fc43d59903a8046"
+        },
+        {
+          "name": "lwjgl-stb.jar",
+          "size": 104146,
+          "sha256": "bf416a52a841fa18508a40864544d7ef976a57733f2a13efbf5eb56f2a14ca96"
+        },
+        {
+          "name": "lwjgl-tinyfd.jar",
+          "size": 6391,
+          "sha256": "12b857110f4659adf56f33ddc3fdb4285b01edf755be8fab1d74cc3eab8007cd"
+        },
+        {
+          "name": "lwjgl.jar",
+          "size": 553506,
+          "sha256": "72a1b0b2816b21eaf6835739be7e23e1f6e96c118b648a44dcf9af9ff47a7f1b"
+        }
       ]
     },
     {
@@ -25,10 +53,65 @@
       "deploymentDirectory": "lwjgl-ohos-2",
       "resourceDirectory": "lwjgl2",
       "prebuiltDirectory": "",
-      "manifestEntrySha256": "98f9c2f40656718e3237d7846ce6a99107d69e535b8c6efe3ed5666d6a174e30",
+      "manifestEntrySha256": "6cf4e4af464a4d26ddd8f839991850112775e724e20c626258f0991df2a01aad",
+      "nativeArtifact": {
+        "file": "entry/libs/arm64-v8a/liblwjgl_v2.so",
+        "size": 318424,
+        "sha256": "69dd810f63075511cf8dc8f4beb95cad6e578a82c99ee78eafe42261a4145509",
+        "sourceSha256Lf": {
+          "prebuilt/lwjgl2/ohos-backend/amcl_lwjgl2_backend.c": "b5725eee2403ef5d39cc94a556f74211243e0687edb659426dae40f7e5555b1a",
+
+          "prebuilt/lwjgl2/ohos-backend/extgl_ohos.c": "ae0f7f30f04ff408c501a9d13a7447f0b1287caa04cb6c400a423d38757ead46",
+          "prebuilt/lwjgl2/patches/context-current.patch": "57c91ca75a19b7154e49423199e8d9d70d67997abafa963f345c3549deef9f9b",
+          "scripts/build-lwjgl2-ohos.py": "e421a302f745b874dfa88af538d5f89a655cca1566a488921adbc508687c47f1",
+          "prebuilt/lwjgl2/patches/control-readpoints.patch": "c19f6ed148666c21cb73ead5a512cebb54344335b0821643a3e85d7351ebc39c",
+          "entry/src/main/cpp/input/delivery/control_delivery.h": "3e1bb30af27bdfc8ab13afa1e69ba6078854ea71afed4fd85525bc227ce6e2a0",
+          "entry/src/main/cpp/input/delivery/control_delivery_client.h": "cd26c0c5e96541ce17c547d867bcef37297b1d5095a1a0a7d696d1bb24afc25b",
+          "entry/src/main/cpp/input/delivery/look_execution.h": "d3c968d7e9d6f274d55d12de0a853cdb7dd866e9e806f132e9c06520f1c76edf",
+          "entry/src/main/cpp/input/delivery/look_execution_client.h": "1c5106e48af9f66ecd247b2c16ae2cc08acab7f050b98ede393224f05e407b33",
+          "entry/src/main/cpp/input/delivery/l2_keyboard_scope.h": "05a8f145766f8a06607f970e962a2151dd0091df4ec4539211b91c138e659d89",
+          "entry/src/main/cpp/input/delivery/l2_keyboard_scope_client.h": "10563f0a6516fbe1e40136ebda5ad3cab520dafc19c15b19b6b7c1697d235ffb",
+          "scripts/rebuild-lwjgl2-input-jar.py": "96c8c3b894e83e9bd1a0aff4e775a49578a1d47962d489190626574226e24b93",
+          "entry/src/main/cpp/input/amcl_input_event.h": "c1726fb873efbdd228fc6433841560bd157e6cee575736b24380a3633ddcf6f7",
+          "entry/src/main/cpp/input/amcl_input_api.h": "596163239ac681b765b5f5e7e45e62074ff4da8b5abf3f770bda27b887bab218",
+          "entry/src/main/cpp/input/input_latency_observation.h": "9259757bad593bce636bb08b1634ffd7ef3d54385350d381ace7f307eb0418cc",
+          "entry/src/main/cpp/input/input_latency_client.h": "95ebe47f992f619b82351883ec2909551d4960ec0b2e44eb86798a384c1933d4"
+
+        },
+        "requiredStrings": [
+          "glfwOHOS_MakeContextCurrentChecked",
+          "glfwGetCurrentContext",
+          "libamcl_graphics_runtime.so",
+          "amclGraphicsGlProcV1",
+          "amclGraphicsBoundProfileV1",
+          "AMCL_CONTROL_DELIVERY_V1",
+          "AMCL_CONTROL_PROTOCOL",
+          "AMCL_LOOK_PROTOCOL",
+          "AMCL_LOOK_EXECUTION_V1",
+          "amclLookExecutionGetPortV1",
+          "AMCL_L2_KEYBOARD_OWNER",
+          "AMCL_L2_KEYBOARD_V1:",
+          "amclInputL2KeyboardGetPortV1",
+          "libamcl_input_runtime.so",
+          "AMCL_L2_OPENAL_UNLOAD_PHASE pid=%llu tid=%llu unload_epoch_ns=%llu handle=%p open_device_addr=%p open_device_base=%p operation=dlclose phase=%s result=%s",
+          "amclDiagnosticBuildIdentity",
+          "inputBridge_getInputLatencyPortV2",
+          "Java_org_lwjgl_opengl_AMCLDisplay_nLookLatencyAvailable",
+          "Java_org_lwjgl_opengl_AMCLDisplay_nLookLatencyNote",
+          "Java_org_lwjgl_opengl_AMCLDisplay_nLookLatencyFinish"
+
+        ]
+      },
       "jars": [
-        { "name": "lwjgl.jar", "size": 1924101, "sha256": "30d9773d4917c5eb6a2cc5f4c35136eb87b21c92168c1c91bb284cace9a842ff" }
-      ]
+        {
+          "name": "lwjgl.jar",
+          "size": 1913154,
+          "sha256": "ce1295ec22b109fb66735f62a65e50f74d7569e0e3eed9d3c392706c8ffd92e7"
+        }
+      ],
+      "javaSourceSha256Lf": {
+        "prebuilt/lwjgl2/patches/java/org/lwjgl/opengl/AMCLDisplay.java": "0685892b8b1d71456d11c1f5247ebefaaee60e2fa2dbea4f7ee1f7b090a768a4"
+      }
     }
   ]
 }

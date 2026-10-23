@@ -34,7 +34,7 @@ bool IsCompleteApi(const AmclInputHostApiV1* api,
     // physical route is intentionally legacy.
     return api && api->magic == AMCL_INPUT_HOST_API_MAGIC &&
            api->abiVersion == AMCL_INPUT_HOST_API_VERSION &&
-           api->structSize >= sizeof(AmclInputHostApiV1) &&
+           api->structSize >= AMCL_INPUT_HOST_API_V1_PREFIX_SIZE &&
            api->generation == AMCL_INPUT_HOST_API_GENERATION &&
            (api->capabilityBits & kRequiredCapabilities) ==
                kRequiredCapabilities &&
@@ -46,7 +46,19 @@ bool IsCompleteApi(const AmclInputHostApiV1* api,
            api->submitBatch && api->submitTextPacket && api->publishSurface &&
            api->publishFocus && api->publishDeviceChange && api->requestReset &&
            api->openConsumer && api->nextEvent && api->readPacketBlob &&
-           api->releasePacket && api->closeConsumer && api->getSnapshot;
+           api->releasePacket && api->closeConsumer && api->getSnapshot &&
+           ((api->capabilityBits & AMCL_INPUT_CAP_INTERACTION_ORDER) == 0u ||
+            amclInputHasInteractionOrder(api));
+}
+
+// 旧宿主没有扩展时保留旧读取；能力已宣告却不完整会在 Open 时被拒。
+int32_t NextOrderedRecord(const AmclInputHostApiV1* api,
+                         AmclInputConsumerHandle consumer, AmclInputEvent* event,
+                         uint64_t maxOrder, uint64_t* order) {
+    *order = 0u;
+    return amclInputHasInteractionOrder(api)
+        ? api->nextOrderedEvent(consumer, event, maxOrder, order)
+        : api->nextEvent(consumer, event);
 }
 
 bool IsBlobText(uint32_t type) {
@@ -505,6 +517,14 @@ struct GlfwInputAdapter::Impl {
     bool textSessionActive = false;
     uint64_t textSessionId = 0u;
     std::vector<Emission> deferredStartupEmissions;
+    // Open 的启动 drain 停在基线之后的第一条非启动记录上：它已从 host 取出（若是文本 blob，
+    // 包所有权仍在本消费者手里，尚未 releasePacket），READY 成功后原样交给首次 Pump（或
+    // Close 的收尾 drain）当作第一条记录处理，顺序与 blob 归还都走常规路径。
+    // 只在 stateMutex 下读写；取走即置空，Abandon/关闭路径清除时计为已取出未回调的丢弃。
+    bool hasCarriedStartupRecord = false;
+    AmclInputEvent carriedStartupRecord{};
+    uint64_t carriedInteractionOrder = 0u;
+    uint64_t dispatchInteractionOrder = 0u;
     // 本实例代表哪个后端。整个类是**后端参数化**的：mapper 决定 raw identity 翻成哪套
     // 编码，backend 决定它在 core 里占哪个 READY/RETIRE 槽。默认 GLFW3 让既有调用点
     // 与全部 host 测试不受影响（它们本来就是 GLFW3 那一个）。
@@ -523,6 +543,30 @@ struct GlfwInputAdapter::Impl {
         surfacePublication = {};
         surfacePublicationEpoch = 0u;
         absoluteAuthorization = {};
+    }
+
+    // 清掉 Open 留给首次 Pump 的启动产物（延迟回调与携带记录），调用方持有 stateMutex。
+    // 携带记录若仍在，说明它已从 host 取出却不会再回调，计入 discardedFetchedEvents 并返回
+    // true。它的 blob 不在这里单独 releasePacket：所有调用点都紧跟（或已完成）closeConsumer /
+    // ABANDON，host 会随消费者一起回收该消费者名下的全部包。
+    bool ClearDeferredStartupLocked() {
+        deferredStartupEmissions.clear();
+        if (!hasCarriedStartupRecord) return false;
+        hasCarriedStartupRecord = false;
+        carriedStartupRecord = {};
+        if (discardedFetchedEvents != UINT64_MAX) ++discardedFetchedEvents;
+        return true;
+    }
+
+    // 取走携带记录，作为 Pump / Close 收尾 drain 的第一条记录；没有则返回 false。
+    // 调用方持有 stateMutex，并已确认 incarnation 仍是当前这一代。
+    bool TakeCarriedStartupRecordLocked(AmclInputEvent* out, uint64_t* order = nullptr) {
+        if (!hasCarriedStartupRecord) return false;
+        *out = carriedStartupRecord;
+        if (order) *order = carriedInteractionOrder;
+        hasCarriedStartupRecord = false;
+        carriedStartupRecord = {};
+        return true;
     }
 
     void DropAbsoluteRouteLocked() {
@@ -1537,7 +1581,8 @@ int32_t GlfwInputAdapter::Impl::AbandonIncarnation(
         ClearAbsoluteRouteLocked();
         textSessionActive = false;
         textSessionId = 0u;
-        deferredStartupEmissions.clear();
+        // 尚未交给 Pump 的携带记录随本代一起放弃；ABANDON 在 host 侧回收其 blob。
+        if (ClearDeferredStartupLocked() && discardedByCall) ++*discardedByCall;
         targetApi = api;
         targetConsumer = consumer;
         targetEpoch = sessionEpoch;
@@ -1710,7 +1755,7 @@ GlfwAdapterStatus GlfwInputAdapter::Open(
         impl_->ClearAbsoluteRouteLocked();
         impl_->textSessionActive = false;
         impl_->textSessionId = 0u;
-        impl_->deferredStartupEmissions.clear();
+        (void)impl_->ClearDeferredStartupLocked();
         impl_->backendRegistered = false;
         impl_->suppressCleanupCallbacks = false;
     }
@@ -1739,7 +1784,7 @@ GlfwAdapterStatus GlfwInputAdapter::Open(
             impl_->ClearAbsoluteRouteLocked();
             impl_->textSessionActive = false;
             impl_->textSessionId = 0u;
-            impl_->deferredStartupEmissions.clear();
+            (void)impl_->ClearDeferredStartupLocked();
             if (opened != 0u && !IsTerminalConsumerStatus(closeStatus)) {
                 // Keep the borrowed table/handle reachable. A later Close/Open
                 // retries cleanup instead of orphaning a remote consumer.
@@ -1756,7 +1801,7 @@ GlfwAdapterStatus GlfwInputAdapter::Open(
                 impl_->ClearAbsoluteRouteLocked();
                 impl_->textSessionActive = false;
                 impl_->textSessionId = 0u;
-                impl_->deferredStartupEmissions.clear();
+                (void)impl_->ClearDeferredStartupLocked();
                 impl_->lifecycle = Impl::Lifecycle::kClosed;
             }
             impl_->cleanupActive = false;
@@ -1822,20 +1867,24 @@ GlfwAdapterStatus GlfwInputAdapter::Open(
                                   GlfwOpenRejectSite::kBaselineIncarnation);
     }
 
-    // OpenConsumer may replay the current surface and device registry
-    // immediately after the baseline. READY requires every pending control
-    // record to be consumed: absolute input needs its surface first, while a
-    // device-scoped backend must see DEVICE_ADDED before later physical edges.
-    // Keep sink callbacks deferred until Open has left its non-reentrant mutex.
+    // 基线之后先读私有重放（surface、context、文本会话、device 清单）及其后已到的同类共享
+    // 记录：absolute 输入要先有 surface，按设备区分的后端要先见 DEVICE_ADDED。回调一律
+    // 延后到 Open 退出不可重入的互斥区之后。遇到第一条非启动记录（键、指针、RESET、文本
+    // 载荷等）就停下：它是基线之后写给本消费者的记录（通常是第二个后端握手时照常到达的
+    // 输入），不再当作拒绝理由，而是连同 blob 所有权一起携带给首次 Pump，保持原顺序。
+    // 若它其实是本消费者已被压力退休的定向 RESET，随后的 READY 会被 core 以 STALE 拒绝。
     std::vector<Emission> startupEmissions;
     constexpr uint32_t kMaximumStartupControlRecords = 256u;
     uint32_t startupControlRecords = 0u;
+    bool hasCarried = false;
+    AmclInputEvent carried{};
+    uint64_t startupOrder = 0u;
     for (;;) {
         AmclInputEvent startup{};
         int32_t startupStatus = AMCL_INPUT_ERROR_INVALID_ARGUMENT;
         {
             std::lock_guard<std::mutex> host(impl_->hostCallMutex);
-            startupStatus = api->nextEvent(consumer, &startup);
+            startupStatus = NextOrderedRecord(api, consumer, &startup, UINT64_MAX, &startupOrder);
         }
         if (startupStatus == AMCL_INPUT_EMPTY) break;
         const bool knownStartupControl =
@@ -1845,12 +1894,18 @@ GlfwAdapterStatus GlfwInputAdapter::Open(
             startup.header.eventType == AMCL_INPUT_EVENT_DEVICE_CHANGED ||
             startup.header.eventType ==
                 AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED;
+        if (startupStatus == AMCL_INPUT_OK && !knownStartupControl) {
+            // 私有重放全是启动类记录，所以走到这里时它们已读完。这条记录此刻不处理：
+            // 快照/READY 之后由首次 Pump 按常规路径校验、复制 blob 并归还。若 READY 失败，
+            // finishRejectedOpen 的 closeConsumer 会在 host 侧一并回收它的 blob。
+            carried = startup;
+            hasCarried = true;
+            break;
+        }
         if (startupStatus != AMCL_INPUT_OK ||
-            !knownStartupControl ||
             ++startupControlRecords > kMaximumStartupControlRecords) {
-            // ⭐ 这一站是**晚到的消费者**最可能撞上的：契约假设 Open 之后队列里只有
-            // surface 重放，而一个在会话开始十几秒后才第一次拉的消费者（SDL3 那条链正是
-            // 如此）会看到别的类型。detail 给事件类型，好把"到底看到了什么"钉死。
+            // 这一站现在只剩两种成因：host 返回了非 OK/EMPTY 的状态（detail 给状态码），
+            // 或启动类记录多到超过上限（detail 给最后那条的事件类型，把“看到了什么”钉死）。
             return finishRejectedOpen(
                 GlfwAdapterStatus::kBaselineRejected, consumer,
                 GlfwOpenRejectSite::kStartupRecordKind,
@@ -1956,6 +2011,9 @@ GlfwAdapterStatus GlfwInputAdapter::Open(
             impl_->lifecycle == Impl::Lifecycle::kOpening;
         if (readyOpeningValid) {
             impl_->deferredStartupEmissions = std::move(startupEmissions);
+            impl_->hasCarriedStartupRecord = hasCarried;
+            impl_->carriedStartupRecord = carried;
+            impl_->carriedInteractionOrder = startupOrder;
             impl_->backendRegistered = true;
             impl_->lifecycle = Impl::Lifecycle::kReady;
         }
@@ -1983,7 +2041,7 @@ int32_t GlfwInputAdapter::LastOpenRejectDetail() const {
     return impl_->lastOpenRejectDetail;
 }
 
-GlfwPumpResult GlfwInputAdapter::Pump() {
+GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
     const AmclInputHostApiV1* api = nullptr;
     AmclInputConsumerHandle consumer = 0u;
     GlfwInputMapper mapper{};
@@ -2003,6 +2061,7 @@ GlfwPumpResult GlfwInputAdapter::Pump() {
         mapper = impl_->mapper;
         startupSink = impl_->sink;
         startupEmissions = std::move(impl_->deferredStartupEmissions);
+        impl_->dispatchInteractionOrder = 0u;
         incarnation = impl_->incarnation;
         fence = impl_->callbackFence;
     }
@@ -2070,7 +2129,14 @@ GlfwPumpResult GlfwInputAdapter::Pump() {
     }
 
     for (;;) {
+        // 预算在两条完整记录之间生效；已取出的blob、聚合提交和回调都已经完成，故不会留下
+        // 半条inFlight。pull桥由后续Next请求继续推进，避免一次抽空256槽core灌爆128槽中转。
+        if (maxEvents != 0u && drained >= maxEvents) {
+            releasePump();
+            return {GlfwAdapterStatus::kOk, drained};
+        }
         AmclInputEvent event{};
+        uint64_t interactionOrder = 0u;
         int32_t result = AMCL_INPUT_ERROR_NOT_FOUND;
         uint64_t ticket = 0u;
         bool cancelledAfterFetch = false;
@@ -2079,14 +2145,24 @@ GlfwPumpResult GlfwInputAdapter::Pump() {
         {
             std::lock_guard<std::mutex> host(impl_->hostCallMutex);
             bool valid = false;
+            bool carried = false;
             {
                 std::lock_guard<std::mutex> state(impl_->stateMutex);
                 valid = impl_->incarnation == incarnation &&
                     impl_->callbackFence == fence &&
                     impl_->lifecycle == Impl::Lifecycle::kReady;
+                // Open 携带过来的记录比 host 队列里剩下的都早，先于任何 nextEvent 处理。
+                if (valid && impl_->hasCarriedStartupRecord &&
+                    impl_->carriedInteractionOrder > maxOrder) {
+                    impl_->pumpActive = false;
+                    return {GlfwAdapterStatus::kOk, drained};
+                }
+                if (valid) carried = impl_->TakeCarriedStartupRecordLocked(&event, &interactionOrder);
             }
             if (!valid) return cancelled();
-            result = api->nextEvent(consumer, &event);
+            // 携带记录已经取出过，不能再向 host 取；其后的登记、blob 复制归还、取消路径
+            // 与刚从 nextEvent 取到的记录完全相同。
+            result = carried ? AMCL_INPUT_OK : NextOrderedRecord(api, consumer, &event, maxOrder, &interactionOrder);
             if (result == AMCL_INPUT_OK) {
 #if defined(AMCL_GLFW_INPUT_ADAPTER_TESTING)
                 RunAdapterTestHook(
@@ -2386,6 +2462,7 @@ GlfwPumpResult GlfwInputAdapter::Pump() {
                     impl_->inFlight.active &&
                     impl_->inFlight.ticket == ticket;
                 if (valid) {
+                    impl_->dispatchInteractionOrder = interactionOrder;
                     impl_->MarkEmissionDeliveredForRollbackLocked(emission);
                     impl_->inFlight.stage =
                         Impl::InFlight::Stage::kDispatching;
@@ -2414,6 +2491,19 @@ GlfwPumpResult GlfwInputAdapter::Pump() {
             }
         }
     }
+}
+
+uint64_t GlfwInputAdapter::CurrentInteractionOrder() const {
+    std::lock_guard<std::mutex> state(impl_->stateMutex);
+    return impl_->dispatchInteractionOrder;
+}
+bool GlfwInputAdapter::CurrentCoreRecord(uint64_t* host,uint64_t* consumer,uint64_t* sequence) const {
+    if(!host||!consumer||!sequence)return false;*host=*consumer=*sequence=0;
+    std::lock_guard<std::mutex> state(impl_->stateMutex);
+    if(impl_->backend!=AMCL_INPUT_BACKEND_LWJGL2_PHYSICAL||!impl_->inFlight.active)return false;
+    // Generic adapter只复制原POD，不反向强依赖某个Core实例或执行任何ABI/游戏callback。
+    *host=reinterpret_cast<uintptr_t>(impl_->api);*consumer=impl_->consumer;*sequence=impl_->inFlight.event.header.sequence;
+    return *host&&*consumer&&*sequence;
 }
 
 GlfwAdapterStatus GlfwInputAdapter::Close() {
@@ -2462,6 +2552,7 @@ GlfwAdapterStatus GlfwInputAdapter::Close() {
             return GlfwAdapterStatus::kNotReady;
         }
         impl_->cleanupActive = true;
+        impl_->dispatchInteractionOrder = 0u;
         retryAbandon = impl_->lifecycle == Impl::Lifecycle::kAbandoning;
         if (!retryAbandon) impl_->lifecycle = Impl::Lifecycle::kRetiring;
         ++impl_->callbackFence;
@@ -2518,7 +2609,7 @@ GlfwAdapterStatus GlfwInputAdapter::Close() {
             impl_->ClearAbsoluteRouteLocked();
             impl_->textSessionActive = false;
             impl_->textSessionId = 0u;
-            impl_->deferredStartupEmissions.clear();
+            (void)impl_->ClearDeferredStartupLocked();
             impl_->api = nullptr;
             impl_->consumer = 0u;
             impl_->mapper = {};
@@ -2617,7 +2708,16 @@ GlfwAdapterStatus GlfwInputAdapter::Close() {
         int32_t abandonedBlobReleaseStatus = AMCL_INPUT_OK;
         {
             std::lock_guard<std::mutex> host(impl_->hostCallMutex);
-            nextStatus = api->nextEvent(consumer, &event);
+            // READY 后首次 Pump 之前就关闭时，Open 携带的记录仍排在最前：先按常规收尾路径
+            // 处理它（回调、复制并归还 blob），再继续向 host 取 RETIRE 之后剩余的记录。
+            bool carried = false;
+            {
+                std::lock_guard<std::mutex> state(impl_->stateMutex);
+                if (impl_->incarnation == incarnation) {
+                    carried = impl_->TakeCarriedStartupRecordLocked(&event);
+                }
+            }
+            nextStatus = carried ? AMCL_INPUT_OK : api->nextEvent(consumer, &event);
             if (nextStatus == AMCL_INPUT_OK) {
                 // ⚠️ 刻意不叫 `registered`：本函数上方已有一个同名局部量,含义是
                 // **后端是否已注册**(`impl_->backendRegistered`)。两者同名会让
@@ -2795,6 +2895,8 @@ GlfwAdapterStatus GlfwInputAdapter::Close() {
                     impl_->inFlight.active &&
                     impl_->inFlight.ticket == ticket;
                 if (allowed) {
+                    // 关闭收尾优先恢复本地按下态，不再参与普通帧的跨通道排序。
+                    impl_->dispatchInteractionOrder = 0u;
                     impl_->MarkEmissionDeliveredForRollbackLocked(emission);
                     impl_->inFlight.stage =
                         Impl::InFlight::Stage::kDispatching;

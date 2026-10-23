@@ -1,6 +1,7 @@
 // xcomponent.cpp — XComponent 生命周期管理
-// 职责：OnSurfaceCreated/Changed/Destroyed + NAPI 注册
-// 通过环境变量将 NativeWindow 指针传递给 GLFW 兼容层
+// 职责：OnSurfaceCreated/Changed/Destroyed + NAPI 注册。NativeWindow、发布尺寸与输入前台位
+// 都只经窗口宿主（租约快照 + broker 尾部）发布，本文件不写任何环境变量（I27-05）。
+// 尺寸与身份都未变的真实 Changed 不推进代次（I27-04）。
 
 #include "xcomponent.h"
 #include "../utils/amcl_log.h"
@@ -8,9 +9,11 @@
 #include "glfw/glfw_compat.h"
 #include "cursor_lock.h"
 #include "input_foreground_gate.h"
+#include "window_host.h"
 #include "ohos_frame_rate_hint.h"
 #include "ohos_native_window_telemetry.h"
 #include "render_scale.h"
+#include "surface_republish_policy.h"
 #include "touch_input.h"
 #if AMCL_INPUT_GATE0_TELEMETRY
 #include "gate0_input_telemetry.h"
@@ -84,28 +87,24 @@ const char* ComponentFocusName(amcl::ohos::ComponentFocus focus) {
     return "invalid";
 }
 
-// The only writer of AMCL_WINDOW_FOREGROUND. State mutation and publication
-// stay under one lock so every log line is a coherent, countable snapshot.
+// 输入前台门禁的唯一发布者。状态变更与发布在同一把锁内，每条日志都是可计数的一致快照。
+// 结果写进窗口宿主 broker 的前台尾部（owner 映像内一个原子量），SDL 经已缓存的 broker
+// 无锁读取；不写环境变量，不存在读者持有的字符串被释放的问题（I27-05）。
+// broker=1 表示 owner 已接受；0 表示窗口宿主描述符畸形、未发布，此时 value=unpublished。
 void PublishInputForegroundGateLocked(const char* reason) {
     InputForegroundGateState& state = g_inputForegroundGate;
     const bool computed = amcl::ohos::ComputeInputForegroundGate(
         state.surfacePublished, state.abilityForegroundMask, state.focus);
-    const int setResult =
-        setenv("AMCL_WINDOW_FOREGROUND", computed ? "1" : "0", 1);
-    const char* value = getenv("AMCL_WINDOW_FOREGROUND");
-    const bool valueValid =
-        value != nullptr &&
-        (strcmp(value, "0") == 0 || strcmp(value, "1") == 0);
-    const bool publishedValue = valueValid && strcmp(value, "1") == 0;
+    const int storeResult = amclWindowHostSetInputForeground(computed ? 1 : 0);
+    const bool stored = storeResult == 1;
 
     state.publications += 1u;
-    if (setResult == 0 && valueValid) {
-        if (state.havePublishedValue &&
-            state.publishedValue != publishedValue) {
+    if (stored) {
+        if (state.havePublishedValue && state.publishedValue != computed) {
             state.flips += 1u;
         }
         state.havePublishedValue = true;
-        state.publishedValue = publishedValue;
+        state.publishedValue = computed;
     }
 
     OH_LOG_INFO(
@@ -113,13 +112,13 @@ void PublishInputForegroundGateLocked(const char* reason) {
         "event=input-gate reason=%{public}s pid=%{public}d "
         "value=%{public}s computed=%{public}d legacyWouldBe=%{public}d "
         "surface=%{public}d abilityMask=%{public}u focus=%{public}s "
-        "flips=%{public}llu publications=%{public}llu setResult=%{public}d",
+        "flips=%{public}llu publications=%{public}llu broker=%{public}d",
         reason ? reason : "unknown", static_cast<int>(getpid()),
-        value ? value : "missing", computed ? 1 : 0,
+        stored ? (computed ? "1" : "0") : "unpublished", computed ? 1 : 0,
         state.legacyWouldBe ? 1 : 0, state.surfacePublished ? 1 : 0,
         state.abilityForegroundMask, ComponentFocusName(state.focus),
         static_cast<unsigned long long>(state.flips),
-        static_cast<unsigned long long>(state.publications), setResult);
+        static_cast<unsigned long long>(state.publications), storeResult);
 }
 
 void PublishInputForegroundSurfaceState(bool published, const char* reason) {
@@ -148,6 +147,9 @@ void amcl::ohos::PublishInputForegroundGateForAbility(
         uint32_t abilityForegroundMask, const char* reason) {
     std::lock_guard<std::mutex> lock(g_inputForegroundGateMutex);
     g_inputForegroundGate.abilityForegroundMask = abilityForegroundMask;
+    // 同一OR-mask同时驱动输入可见性和capture准入；只写原子位，不在frame-rate
+    // 发布锁内调用窗口管理器。Unknown组件焦点在前台恢复后仍然有效。
+    amcl_cursor_lock_set_foreground(abilityForegroundMask != 0u);
     PublishInputForegroundGateLocked(reason);
 }
 
@@ -289,12 +291,15 @@ static void DisableCurrentInputSurfaceAfterLifecycleFailure(
     g_component = nullptr;
     // 输入映射快照与 surface 同生命周期：surface 失效后没有任何坐标可映射。
     amcl::renderscale::ResetSnapshot();
-    unsetenv("AMCL_NATIVE_WINDOW");
-    unsetenv("AMCL_WINDOW_WIDTH");
-    unsetenv("AMCL_WINDOW_HEIGHT");
-    unsetenv("AMCL_WINDOW_GENERATION");
 }
 
+// 2 的幂节流：只在第 1、2、4、8… 次记录重复事件，计数本身仍逐次累加供诊断。
+static bool FirstOrPowerOfTwo(uint64_t count) {
+    return count != 0u && (count & (count - 1u)) == 0u;
+}
+
+// 发布尺寸只经窗口宿主快照/租约提供：SDL VideoInit 读 broker 快照，LWJGL2 读
+// glfwGetFramebufferSize，打包的 HAP 中没有其他读者，所以这里不再维护尺寸环境槽位。
 static void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     SurfaceInputGateTransaction gateTransaction;
     AMCL_LOG_I(LOG_TAG, "OnSurfaceCreated");
@@ -352,22 +357,10 @@ static void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     AMCL_LOG_I(LOG_TAG, "Surface size: %{public}dx%{public}d generation=%{public}llu",
                 g_width, g_height, (unsigned long long)generation);
 
-    // 旧 SDL 仍通过环境变量跨 linker namespace 取窗口。尺寸与 generation 先发布，
-    // pointer 最后发布；看到 pointer 的读取方不会再拿到上一代尺寸。
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d", g_width);
-    setenv("AMCL_WINDOW_WIDTH", buf, 1);
-    snprintf(buf, sizeof(buf), "%d", g_height);
-    setenv("AMCL_WINDOW_HEIGHT", buf, 1);
-    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)generation);
-    setenv("AMCL_WINDOW_GENERATION", buf, 1);
-    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)(uintptr_t)window);
-    setenv("AMCL_NATIVE_WINDOW", buf, 1);
-    // Recompute from current surface + Ability + three-valued focus state.
-    // A new surface starts at Unknown (not explicitly blurred), so activation
-    // cannot permanently depend on receiving one component-focus edge.
+    // 由当前 surface + Ability + 三值焦点重新计算。新 surface 从 Unknown（不是显式失焦）
+    // 开始，激活不会永久依赖收到一次组件焦点边沿。窗口指针只经窗口宿主发布，没有环境镜像。
     PublishInputForegroundSurfaceState(true, "surface-created");
-    AMCL_LOG_I(LOG_TAG, "NativeWindow set via env: ptr=%{public}p %{public}dx%{public}d",
+    AMCL_LOG_I(LOG_TAG, "NativeWindow published via window host: ptr=%{public}p %{public}dx%{public}d",
                 window, g_width, g_height);
     amcl::input::PlatformInputSurfaceCreated(
         static_cast<uint32_t>(g_width), static_cast<uint32_t>(g_height),
@@ -375,14 +368,21 @@ static void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     amcl::ohos::SetFrameRateSurfaceReady(component, true, "surface-created");
 }
 
+// 刷新几何的触发者。两者都在“身份、真实尺寸、发布尺寸全都未变”时不推进 generation；
+// 区别只在未变时是否仍重设帧率提示：真实回调要重设（语义同一次尺寸事件），重放不需要。
+enum class SurfaceRefreshCause { kSurfaceChanged, kLaunchReplay };
+
+// I27-04：身份与尺寸都未变的真实 OnSurfaceChanged 次数。只在 UI 线程、gate 锁内读写。
+static uint64_t g_idempotentSurfaceChanges = 0u;
+
 // OnSurfaceChanged 与启动时机重放（amclRenderScaleReapplyForLaunch）共用的核心。
 // 调用方必须持有 surface gate 锁且 accept 已通过；expectedGeneration 仅用于日志。
-// skipIfUnchanged 只有重放路径传 true：真实 Changed 保持既有的"总是重发布"语义，
-// 而重放在 scale 未改变发布尺寸时不得白白消耗一个 generation。
+// 未变判定见 surface_republish_policy.h：新代次会让 input core 当作新 surface 复位
+// （释放全部 held、清 capture/文本会话），而图形侧此时没有任何需要处理的变化。
 static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
                                             void* window,
                                             uint64_t expectedGeneration,
-                                            bool skipIfUnchanged,
+                                            SurfaceRefreshCause cause,
                                             const char* reason) {
     uint64_t w = 0, h = 0;
     OH_NativeXComponent_GetXComponentSize(component, window, &w, &h);
@@ -390,14 +390,30 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
     const int newHeight = CheckedSurfaceDimension(h, "height");
 
     // 尺寸变化（折叠/键盘避让）同样先 SET 新几何再发布，纪律同 Created。
+    // 判定之前执行：即使本次不发布，也会按当前 scale 重设 buffer 几何（SET 幂等）。
     int publishWidth = newWidth;
     int publishHeight = newHeight;
     ApplyRenderScaleGeometry(window, newWidth, newHeight, &publishWidth,
                              &publishHeight);
 
-    if (skipIfUnchanged && newWidth == g_realWidth &&
-        newHeight == g_realHeight && publishWidth == g_width &&
-        publishHeight == g_height) {
+    const amcl::ohos::SurfacePublicationGeometry current{
+        g_window, g_realWidth, g_realHeight, g_width, g_height};
+    const amcl::ohos::SurfacePublicationGeometry next{
+        window, newWidth, newHeight, publishWidth, publishHeight};
+    if (amcl::ohos::SurfacePublicationUnchanged(current, next)) {
+        if (cause == SurfaceRefreshCause::kSurfaceChanged) {
+            const uint64_t count = ++g_idempotentSurfaceChanges;
+            if (FirstOrPowerOfTwo(count)) {
+                OH_LOG_INFO(LOG_APP,
+                            "event=surface-changed-idempotent count=%{public}llu "
+                            "generation=%{public}llu real=%{public}dx%{public}d "
+                            "published=%{public}dx%{public}d",
+                            (unsigned long long)count,
+                            (unsigned long long)expectedGeneration, newWidth,
+                            newHeight, publishWidth, publishHeight);
+            }
+            amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
+        }
         return;
     }
 
@@ -430,14 +446,6 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
                 "Surface changed: %{public}dx%{public}d generation=%{public}llu",
                 g_width, g_height, (unsigned long long)generation);
 
-    // 更新环境变量，让 GLFW 兼容层能感知尺寸变化
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d", g_width);
-    setenv("AMCL_WINDOW_WIDTH", buf, 1);
-    snprintf(buf, sizeof(buf), "%d", g_height);
-    setenv("AMCL_WINDOW_HEIGHT", buf, 1);
-    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)generation);
-    setenv("AMCL_WINDOW_GENERATION", buf, 1);
     amcl::input::PlatformInputSurfaceChanged(
         static_cast<uint32_t>(g_width), static_cast<uint32_t>(g_height),
         generation);
@@ -456,7 +464,8 @@ static void OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
         return;
     }
     RefreshPublishedSurfaceGeometry(component, window, expectedGeneration,
-                                    false, "surface-changed");
+                                    SurfaceRefreshCause::kSurfaceChanged,
+                                    "surface-changed");
 }
 
 // 启动时机补偿入口（mc_launcher 在写完 AMCL_RENDER_SCALE 后同步调用，见
@@ -471,7 +480,8 @@ extern "C" void amclRenderScaleReapplyForLaunch(void) {
         ohos_surface_input_gate_accept(g_component, g_window);
     if (expectedGeneration == 0) return;
     RefreshPublishedSurfaceGeometry(g_component, g_window, expectedGeneration,
-                                    true, "render-scale-launch");
+                                    SurfaceRefreshCause::kLaunchReplay,
+                                    "render-scale-launch");
 }
 
 static void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
@@ -527,14 +537,8 @@ static void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
     g_realHeight = 0;
     g_component = nullptr;
     // 映射快照随 surface 一起失效；下一个 surface 的 Created 会重新发布。
+    // 销毁不触碰环境（I27-05）：窗口指针与尺寸都只在窗口宿主快照里，清除快照即可。
     amcl::renderscale::ResetSnapshot();
-    // Keep the environment variables only as a linker-namespace compatibility
-    // fallback. Once the matching surface is gone they must not expose a stale
-    // OHNativeWindow pointer to a later GLFW startup.
-    unsetenv("AMCL_NATIVE_WINDOW");
-    unsetenv("AMCL_WINDOW_WIDTH");
-    unsetenv("AMCL_WINDOW_HEIGHT");
-    unsetenv("AMCL_WINDOW_GENERATION");
     AMCL_LOG_I(LOG_TAG, "Surface snapshot cleared generation=%{public}llu",
                 (unsigned long long)generation);
 }
@@ -543,6 +547,7 @@ static void OnFocus(OH_NativeXComponent* component, void* window) {
     SurfaceInputGateTransaction gateTransaction;
     ohos_surface_input_gate_log_focus_edge(true, component, window);
     if (ohos_surface_input_gate_accept(component, window) == 0) return;
+    amcl_cursor_lock_set_focus(true);
     amcl::input::PlatformInputFocusChanged(true);
     PublishInputForegroundFocusState(amcl::ohos::ComponentFocus::Focused,
                                      "focus");
@@ -553,6 +558,8 @@ static void OnBlur(OH_NativeXComponent* component, void* window) {
     SurfaceInputGateTransaction gateTransaction;
     ohos_surface_input_gate_log_focus_edge(false, component, window);
     if (ohos_surface_input_gate_accept(component, window) == 0) return;
+    // 组件失焦先关闭原生capture准入；窗口仍获焦也不能被迟到的ArkTS心跳再次加锁。
+    amcl_cursor_lock_set_focus(false);
     // Publish typed focus loss before releasing legacy owners while the same
     // surface gate transaction excludes new ingress. This ordering lets the
     // host synthesize typed releases/reset first, then cancelAll makes the
@@ -660,6 +667,8 @@ static constexpr napi_property_descriptor kOhosRuntimeDescriptors[] = {
 };
 
 extern "C" void RegisterXComponent(napi_env env, napi_value exports) {
+    // 进程级环境（重启标记槽位与各描述符）已由 napi_entry.cpp 的 Init 第一步发布（I27-05），
+    // 早于下面注册的任何 surface 回调；这里只注册回调，不触碰进程环境的名字集合。
     const napi_status runtimeStatus = napi_define_properties(
         env, exports,
         sizeof(kOhosRuntimeDescriptors) / sizeof(kOhosRuntimeDescriptors[0]),

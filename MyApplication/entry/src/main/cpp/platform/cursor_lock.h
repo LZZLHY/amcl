@@ -35,6 +35,8 @@ typedef enum {
     // The public API exists, but the application does not hold
     // ohos.permission.LOCK_WINDOW_CURSOR.
     AMCL_CURSOR_LOCK_PERMISSION_DENIED = 5,
+    // 明确失焦、surface已销毁或编辑暂停；没有调用平台加锁。
+    AMCL_CURSOR_LOCK_CONTEXT_INACTIVE = 6,
 } AmclCursorLockResult;
 
 // Requests the grabbed-mode cursor lock for `windowId`.
@@ -59,6 +61,20 @@ bool amcl_cursor_lock_supported(void);
 // True when the cursor is currently believed to be locked by this process.
 // Used to decide that absolute pointer coordinates carry no motion information.
 bool amcl_cursor_lock_active(void);
+
+/**
+ * 原生生命周期准入。调用方持surface gate，与NAPI加锁事务串行；false/paused=true
+ * 会主动释放现有窗口锁，不依赖系统恰好先触发失焦。它们不更改游戏的capture请求意图。
+ */
+void amcl_cursor_lock_set_surface(bool available);
+void amcl_cursor_lock_set_focus(bool focused);
+void amcl_cursor_lock_set_paused(bool paused);
+/**
+ * 只接受现有Ability foreground OR-mask的聚合结果。此入口仅写原子准入，不调用
+ * WindowManager/ingress，也不取cursor mutex，允许在frame-rate发布锁内使用。
+ * 实际后台解锁由完整生命周期cancel承担，恢复不要求再次收到组件focus边沿。
+ */
+void amcl_cursor_lock_set_foreground(bool foreground);
 
 // 相对位移通道刚投递过一个**非零**样本。给钉住模式的自愈看门狗喂数据。
 //

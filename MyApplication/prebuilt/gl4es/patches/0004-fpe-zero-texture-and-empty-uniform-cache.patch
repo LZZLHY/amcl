@@ -1,0 +1,57 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6f5d2a6..888967b 100755
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3,7 +3,10 @@ cmake_minimum_required(VERSION 2.8)
+ project(gl4es LANGUAGES C)
+ 
+ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
++if(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
++    # AMCL 受控构建把库输出到外置编译树，保持锁定源码可逐字复验；未指定时沿用上游默认目录。
++    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
++endif()
+ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
+ 
+ link_directories(${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+diff --git a/src/gl/fpe_shader.c b/src/gl/fpe_shader.c
+index 2526b6a..0391c0c 100755
+--- a/src/gl/fpe_shader.c
++++ b/src/gl/fpe_shader.c
+@@ -612,7 +612,8 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+         tg[1] = state->texgen[i].texgen_t;
+         tg[2] = state->texgen[i].texgen_r;
+         tg[3] = state->texgen[i].texgen_q;
+-        int ntc = texnsize[t-1];
++        /* 未启用纹理时 t 为 0；坐标维度仅在后面的 t 分支使用，不能提前读取下标 -1。 */
++        int ntc = t ? texnsize[t-1] : 0;
+         if(t) {
+             if(comments) {
+                 sprintf(buff, "// texture %d active: %X %s %s\n", i, t, mat?"with matrix":"", adjust?"npot adjusted":"");
+diff --git a/src/gl/program.c b/src/gl/program.c
+index 7e00292..7f7df05 100644
+--- a/src/gl/program.c
++++ b/src/gl/program.c
+@@ -606,7 +606,8 @@ static void fill_program(program_t *glprogram)
+         glprogram->cache.cap=uniform_cache;
+         glprogram->cache.cache = malloc(glprogram->cache.cap);
+     }
+-    memset(glprogram->cache.cache, 0, glprogram->cache.cap);
++    /* 无 uniform 的合法 shader 没有分配 cache；长度为零时也不能把 NULL 传给 memset。 */
++    if(glprogram->cache.cap) memset(glprogram->cache.cache, 0, glprogram->cache.cap);
+     //Maybe Sampler uniform should not be initialized to 0, but to -1, to be sure the value is initialized?
+     if(glprogram->uniform) {
+         uniform_t *m;
+diff --git a/src/gl/shaderconv.c b/src/gl/shaderconv.c
+index 6f048ec..126903c 100644
+--- a/src/gl/shaderconv.c
++++ b/src/gl/shaderconv.c
+@@ -1231,6 +1231,8 @@ char* ConvertShader(const char* pEntry, int isVertex, shaderconv_need_t *need, i
+   // clean preproc'd source
+   if(pEntry!=pBuffer)
+     free(pBuffer);
++  /* preproc 返回的版本行是调用方自有临时资源，转换完成后释放，重载不累积泄漏。 */
++  free(versionString);
+   return Tmp;
+ }
+ 

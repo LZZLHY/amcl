@@ -1,0 +1,4 @@
+# 以下第三方许可正文保留原文尾随空格和末尾空行；仅这些精确路径关闭空白样式检查。
+# 许可内容仍由对应来源清单与SHA-256核验，不改写正文来满足源码排版规则。
+MyApplication/entry/src/main/resources/rawfile/sideload/LIBUSB-LICENSE.txt -whitespace
+MyApplication/prebuilt/shaderc/licenses/spirv-headers-LICENSE -whitespace

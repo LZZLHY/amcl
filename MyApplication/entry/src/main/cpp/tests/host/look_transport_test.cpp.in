@@ -1,0 +1,172 @@
+/** 实际bridge ring + 产品prefix callback函数体；fake窗口只承载公开cursor与真实callback。 */
+// Windows owner解析头会包含Windows.h；保留C++数值max函数，避免SDK宏改写真实溢出用例。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include "input/delivery/look_transport.h"
+#include "input/delivery/look_execution_client.h"
+#include "input/adapters/glfw_source_plane_aggregate.h"
+#include "input/amcl_input_api.h"
+#include "input/amcl_input_host_descriptor.h"
+#include "platform/mapped_look_producer.h"
+#include "platform/source_look_producer.h"
+#include "platform/source_look_processor.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <vector>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <map>
+#include <mutex>
+#include <string>
+#include <cstring>
+#include <limits>
+#include <climits>
+#include <cstdarg>
+struct GLFWwindow {uint64_t windowId=42;double cursorX=100,cursorY=50;void(*cursorPosCb)(GLFWwindow*,double,double)=nullptr;};
+GLFWwindow* g_currentWindow=nullptr;
+static amcl::input::GlfwSourcePlaneAggregate g_sourcePlaneAggregate;
+// logger是唯一录制边缘：使用真正callback提供的格式/参数，不在测试重写阶段判定。
+// 原owner、transport、窗口cursor和cursorPos callback仍完整执行；OFF构建不应调用此函数。
+std::vector<std::string> lookTraceLines;
+void amclExternalLogWrite(int level,const char* tag,const char* format,...){
+    if(level!=1||std::strcmp(tag,"GLFW_COMPAT")!=0)std::abort();
+    std::string normal=format;const std::string qualifier="{public}";
+    for(size_t at=normal.find(qualifier);at!=std::string::npos;at=normal.find(qualifier))normal.erase(at,qualifier.size());
+    char text[2048]{};va_list arguments;va_start(arguments,format);std::vsnprintf(text,sizeof(text),normal.c_str(),arguments);va_end(arguments);
+    lookTraceLines.emplace_back(text);
+}
+#define LOG_TAG "GLFW_COMPAT"
+@LOOK_CALLBACK@
+// host把真实C11桥编为C++；未由产品C头声明的旧入口沿原host链接名，新增私有口由头声明C ABI。
+void inputBridge_setGrabState(int);
+int inputBridge_setInputReady(int);
+void inputBridge_glfwSetActive(void*,int);
+void inputBridge_glfwSetTargetV1(uint64_t,uint64_t,uint64_t);
+extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t);
+void inputBridge_setKeyCallback(void(*)(void*,int,int,int,int));
+void inputBridge_pushEvent(int,int,int,int,int);
+void inputBridgeStartPumping();void inputBridgePumpEvents(void*);void inputBridgeStopPumping();
+/** 仅平台product/schema admission替身；Core/owner/stream/transport与gyro租约函数均实际生产代码。 */
+namespace amcl::input {bool ProductAcceptsDirectTouchInGame(){return true;}}
+std::atomic<bool> s_touchPaused{false};std::mutex s_touchStateMutex;
+struct SchemaMutex {void lock(){value.lock();}void unlock(){value.unlock();}std::mutex value;};
+#ifdef _WIN32
+SchemaMutex s_schemaMutex;
+void pthread_mutex_lock(SchemaMutex* value){value->lock();}void pthread_mutex_unlock(SchemaMutex* value){value->unlock();}
+#else
+#include <pthread.h>
+pthread_mutex_t s_schemaMutex=PTHREAD_MUTEX_INITIALIZER;
+#endif
+uint64_t s_schemaGeneration=17,s_touchContextPolicy=9;
+struct Admission {bool BlocksNewTouch()const{return false;}void Query(int){}}s_touchAdmission;
+int touchPublicationContextLocked(){return 1;}
+bool isGrabbedMode(){return true;}bool consumeGrabEpochLocked(bool value){return value;}
+bool finitePair(double x,double y){return std::isfinite(x)&&std::isfinite(y);}
+@GYRO_LEASE@
+#define CHECK(v) do{if(!(v)){std::fprintf(stderr,"LOOK TRANSPORT FAIL %d: %s\n",__LINE__,#v);std::exit(1);}}while(false)
+std::vector<int> order;
+double keyCursor=0;
+bool reenter=false;
+void moved(GLFWwindow* window,double x,double){order.push_back(1);CHECK(window->cursorX==x);
+    if(reenter){inputBridge_glfwSetActive(window,0);reenter=false;}}
+void key(void* value,int,int,int action,int){if(action==1){order.push_back(2);keyCursor=static_cast<GLFWwindow*>(value)->cursorX;}}
+uint64_t now(){return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+void pump(GLFWwindow& window){inputBridgeStartPumping();inputBridgePumpEvents(&window);inputBridgeStopPumping();}
+int main(){
+    const auto* core=amclInputGetHostApiV1();CHECK(amclInputHostDescriptorPublishV1(core)==0);
+    uint64_t epoch=0;CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+    AmclInputSurfacePayload surface{};surface.active=1;surface.widthPx=1280;surface.heightPx=720;surface.density=1;
+    surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;CHECK(core->publishSurface(&surface)==0);
+    AmclInputEvent context{};context.header.abiVersion=1;context.header.structSize=sizeof(context);
+    context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+    context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=42;context.payload.surfaceContext.displayId=1;
+    context.payload.surfaceContext.widthPx=1280;context.payload.surfaceContext.heightPx=720;context.payload.surfaceContext.density=1;
+    context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    CHECK(core->submitEvent(&context)==0);
+    // callback与跨namespace产品一样从公告解析owner；测试也在实际初始化阶段发布，不借本地getter。
+    amclLookExecutionPublishV1();
+    std::fprintf(stderr,"LOOK TRANSPORT stage configure\n");
+    CHECK(inputBridge_configureMenuCursorConsumerV1(1,1)==1);(void)inputBridge_setInputReady(1);
+    GLFWwindow window;window.cursorPosCb=moved;g_currentWindow=&window;
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&window),1,42);inputBridge_glfwSetActive(&window,1);
+    std::fprintf(stderr,"LOOK TRANSPORT stage grab\n");
+    inputBridge_setGrabState(1);inputBridge_setLookPrefixCallbackV1(bridgeLookPrefixCallback);inputBridge_setKeyCallback(key);
+    AmclLookResourceV1 resource{};CHECK(inputBridge_getLookResourceV1(&resource)==1);
+    const auto* look=amclLookExecutionGetPortV1();AmclLookStreamV1 source{};source.size=sizeof(source);source.source=2;
+    source.kind=AMCL_LOOK_MAPPED_RATE;source.clock=AMCL_LOOK_OWNER_MONOTONIC;source.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;
+    source.device=9;source.connection=1;source.resource=resource;uint64_t stream=0;CHECK(look->openStream(&source,&stream)==0);
+    std::fprintf(stderr,"LOOK TRANSPORT stage velocity\n");
+    CHECK(look->submitVelocity(stream,1080,0,now())==0);std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::fprintf(stderr,"LOOK TRANSPORT stage action begin\n");
+    CHECK(inputBridge_beginLookActionV1()==1);std::fprintf(stderr,"LOOK TRANSPORT stage action push\n");
+    inputBridge_pushEvent(1005,65,0,1,0);inputBridge_endLookActionV1();
+    // 未来look到达同一frame，key callback只能看到动作前cursor，不能被frame末快照提前。
+    std::this_thread::sleep_for(std::chrono::milliseconds(6));CHECK(inputBridge_submitLookV1(0,0,0,0,1)==1);
+    std::fprintf(stderr,"LOOK TRANSPORT stage pump\n");pump(window);CHECK(order.size()==3&&order[0]==1&&order[1]==2&&order[2]==1);
+    CHECK(keyCursor>100&&window.cursorX>keyCursor);
+#if AMCL_INPUT_TRACE
+    CHECK(lookTraceLines.size()==1&&lookTraceLines[0].find("stage=delivered-callback")!=std::string::npos);
+    CHECK(lookTraceLines[0].find("cache=1 callback=1/1")!=std::string::npos&&lookTraceLines[0].find("scope=prefix-abi-only")!=std::string::npos);
+    CHECK(lookTraceLines[0].find("ticketTarget=42")!=std::string::npos&&lookTraceLines[0].find("prep=1/-2147483648 claim=1/-2147483648 valid=1/-2147483648")!=std::string::npos);
+#else
+    CHECK(lookTraceLines.empty());
+#endif
+    // 失败phase是实际prepare对不存在prefix的返回；不新增owner查询或补偿输出，且首失败必须可见。
+    const size_t traceBeforeMissing=lookTraceLines.size();const double cursorBeforeMissing=window.cursorX;
+    CHECK(bridgeLookPrefixCallback(&window,UINT64_MAX)==0&&window.cursorX==cursorBeforeMissing);
+#if AMCL_INPUT_TRACE
+    CHECK(lookTraceLines.size()==traceBeforeMissing+1&&lookTraceLines.back().find("stage=prepare-claim-validate")!=std::string::npos);
+    CHECK(lookTraceLines.back().find("cache=0 callback=0/0")!=std::string::npos);
+#else
+    CHECK(lookTraceLines.empty());
+#endif
+    // 实际失败序列2/3/4：first/power-of-two预算必须打印2和4、裁剪3；不凭测试
+    // 镜像日志算法推断，也不让诊断重试改变cursor或制造可交付look。
+    for(unsigned failure=2;failure<=4;++failure){
+        const size_t before=lookTraceLines.size();
+        CHECK(bridgeLookPrefixCallback(&window,UINT64_MAX)==0&&window.cursorX==cursorBeforeMissing);
+#if AMCL_INPUT_TRACE
+        CHECK(lookTraceLines.size()==before+(failure==3?0:1));
+#else
+        CHECK(lookTraceLines.empty());
+#endif
+    }
+    // 停速率后压满真实8槽ring；拒绝时不会提交source数学/新token，action容量同样先拒。
+    CHECK(look->submitVelocity(stream,0,0,now())==0);order.clear();
+    for(int i=0;i<8;++i)inputBridge_pushEvent(1005,70+i,0,1,0);
+    CHECK(inputBridge_submitLookV1(0,0,0,0,1)==0&&inputBridge_beginLookActionV1()==0);
+    pump(window);order.clear();CHECK(look->submitVelocity(stream,1080,0,now())==0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(inputBridge_beginLookActionV1()==1);
+    inputBridge_pushEvent(1005,80,0,1,0);inputBridge_endLookActionV1();reenter=true;pump(window);
+    CHECK(order.size()==1&&order.front()==1); // cursor callback的真实失活阻断旧action继续交付。
+    // 真Native producer：0是明确compat bucket，非零连接不回绕、不在旧资源自动认领。
+    CHECK(look->retireStream(stream)==0);inputBridge_glfwSetActive(&window,1);order.clear();
+    CHECK(amclMappedLookSet(0,1,1080,0));std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(amclMappedLookAdvance());pump(window);
+    CHECK(amclMappedLookRetire(0,1)&&amclMappedLookRetire(0,1)&&!amclMappedLookSet(0,1,1080,0));
+    CHECK(amclMappedLookSet(0,2,1080,0));amclMappedLookRetireAll();CHECK(!amclMappedLookSet(0,2,1080,0));
+    // delta数学/float运输失败不改变已接受统计，普通UP保自己的尾量，取消精确退休。
+    const auto mathBefore=amcl::input::SourceLookPipelineSnapshot();
+    CHECK(!amclSourceLookSubmit(1,static_cast<double>(std::numeric_limits<float>::max())*2,0,0));
+    CHECK(amcl::input::SourceLookPipelineSnapshot().accepted==mathBefore.accepted);
+    window.cursorPosCb=nullptr;const double beforeStateOnly=window.cursorX;
+    CHECK(amclSourceLookSubmit(1,5,0,0)&&amclSourceLookFlush(1,true));pump(window);
+    CHECK(window.cursorX>beforeStateOnly);window.cursorPosCb=moved;
+    // 实际gyro四函数：schema拒绝、只读context、原lease的policy/resource退休、同值幂等。
+    const auto contextBefore=ohos_touch_gyro_lease_context();CHECK(!contextBefore.empty());
+    CHECK(ohos_begin_touch_gyro_lease(16).empty());const auto lease=ohos_begin_touch_gyro_lease(17);CHECK(!lease.empty());
+    CHECK(!ohos_retire_touch_gyro_lease("GYRO1:999999")&&!ohos_retire_touch_gyro_lease("GYRO1:01")&&
+        !ohos_retire_touch_gyro_lease("GYRO1:18446744073709551616")&&!ohos_retire_touch_gyro_lease("other-source"));
+    CHECK(ohos_submit_touch_gyro_lease(lease,1,2,1));pump(window);
+    const AmclLookPolicyV1 policy{sizeof(policy),0,1,.6,0};CHECK(look->applyPolicy(1,&policy)==0&&ohos_touch_gyro_lease_context()==contextBefore);
+    const AmclLookPolicyV1 changed{sizeof(changed),1,2,.1,1};CHECK(look->applyPolicy(1,&changed)==0&&ohos_touch_gyro_lease_context()!=contextBefore);
+    CHECK(!ohos_submit_touch_gyro_lease(lease,1,2,2)&&ohos_retire_touch_gyro_lease(lease)&&ohos_retire_touch_gyro_lease(lease));
+    const auto fresh=ohos_begin_touch_gyro_lease(17);CHECK(!fresh.empty()&&fresh!=lease&&ohos_submit_touch_gyro_lease(fresh,1,2,3));pump(window);
+    CHECK(amclInputGetHostApiV1()->publishFocus(0)==0&&ohos_touch_gyro_lease_context().empty()&&!ohos_submit_touch_gyro_lease(fresh,1,2,4));
+    CHECK(ohos_retire_touch_gyro_lease(fresh));
+    for(const auto& line:lookTraceLines)std::puts(line.c_str());
+    std::puts("LOOK TRANSPORT PASS: actual ring/callback/cache-before-key/future prefix/capacity/reentry");
+}

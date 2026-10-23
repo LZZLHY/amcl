@@ -130,6 +130,19 @@ export class ResourceInstallTask implements UnifiedDownloadAdapter, ResourceFile
       this.view.canRetry = !isCancelled;
       try { DownloadTaskRegistry.instance().notifyChange(); } catch (e2) { /* ignore */ }
       throw e;
+    }).finally(async (): Promise<void> => {
+      // complete 只表示逻辑终态，Native 的 startup/completion 仍可能持有目标路径。
+      // 此执行栈仍拥有 Registry 槽与文件租约：只在真实 purge 后退出，超时不能
+      // 变成全局空闲。同步快路径复用既有幂等清理，慢路径交公共 owner 屏障。
+      const taskId = this.taskId_;
+      if (taskId <= 0) return;
+      const manager = DownloadManager.instance();
+      let released = false;
+      try { released = manager.purgeTask(taskId); } catch (_) { /* 桥暂时失联不是释放事实。 */ }
+      if (!released) await manager.awaitTaskReleased(taskId, true);
+      // 不提前清理身份；相同 adapter 不可并行运行，保留判等也防止迟到收尾误清新轮。
+      // 最后一帧仍供失败详情读取，释放Native所有权不等于删除业务持有的错误快照。
+      if (this.taskId_ === taskId) this.taskId_ = 0;
     });
   }
 

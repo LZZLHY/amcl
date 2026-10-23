@@ -92,7 +92,9 @@ export struct DevConsole {
               .fontColor(CONSOLE_DIM)
               .fontFamily(CONSOLE_MONO)
           } else {
-            ForEach(this.lines(), (ln: string, i: number) => {
+            // 新报告或同位置追加内容必须更新Text；只用行号会保留旧报告的闭包内容与行色。
+            // 文本参加行身份，位置区分重复行/空行；此处是无交互状态的控制台展示行。
+            ForEach(this.lines(), (ln: string) => {
               // 空行给一个空格，否则 Text 高度塌陷、行距看起来不均
               Text(ln.length === 0 ? ' ' : ln)
                 .width('100%')
@@ -101,7 +103,7 @@ export struct DevConsole {
                 .fontFamily(CONSOLE_MONO)
                 .fontColor(this.lineColor(ln))
                 .textAlign(TextAlign.Start)
-            }, (ln: string, i: number) => i.toString())
+            }, (ln: string, i: number) => i.toString() + ':' + ln)
           }
         }
         .width('100%')

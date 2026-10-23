@@ -33,6 +33,7 @@
 #include "fork_run_java.h"
 #include "jvm_launcher.h"
 #include "processor_wait.h"
+#include "update_install_lease.h"
 #include "../utils/amcl_log.h"
 #include <hilog/log.h>
 #include <dlfcn.h>
@@ -141,6 +142,13 @@ extern "C" int forkRunJavaCwd(
     const char* workDir,
     const char* logFile, int xmxMb
 ) {
+    // 共享租约覆盖 fork 前准入和精确 waitpid 完成。子进程继承同一 open-file-description，
+    // 即使父进程被替换，仍在执行的 processor 也不会让覆盖安装获得排他租约。
+    amcl::UpdateInstallReadLease fileLease(filesDir);
+    if (!fileLease.acquired()) {
+        AMCL_LOG_E(LOG_TAG, "processor_file_lease_rejected");
+        return -8;
+    }
     // 与 JVM 创建使用同一个原子状态字，不能仅先检查 Fresh 再 fork（检查后可能被抢占）。
     // 保留只覆盖 fork 的短窗口；其他 processor 遇到 -8 是暂忙，不误报必须冷重启。
     const int reservation = jvmReserveForFork();

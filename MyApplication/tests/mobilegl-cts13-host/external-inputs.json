@@ -1,0 +1,56 @@
+{
+  "sourceReceiptSha256": "567d72b134fb2e321343664e4639ff22b2962c944dd998126f8700bc95f7f1a6",
+  "inputs": [
+    {
+      "officialType": "SourcePackage",
+      "name": "zlib",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "archiveSha256": "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30",
+      "url": "https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz"
+    },
+    {
+      "officialType": "SourcePackage",
+      "name": "libpng",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "archiveSha256": "71158e53cfdf2877bc99bcab33641d78df3f48e6e0daad030afe9cb8c031aa46",
+      "url": "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.50.tar.gz"
+    },
+    {
+      "officialType": "GitRepo",
+      "name": "spirv-tools",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "commit": "65b2ace21293057714b7fa1e87bd764d3dcef305",
+      "url": "https://github.com/KhronosGroup/SPIRV-Tools.git"
+    },
+    {
+      "officialType": "GitRepo",
+      "name": "glslang",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "commit": "7881226269b1596feb604515743f528f02041375",
+      "url": "https://github.com/KhronosGroup/glslang.git"
+    },
+    {
+      "officialType": "GitRepo",
+      "name": "spirv-headers",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "commit": "babee77020ff82b571d723ce2c0262e2ec0ee3f1",
+      "url": "https://github.com/KhronosGroup/SPIRV-Headers.git"
+    },
+    {
+      "officialType": "GitRepo",
+      "name": "amber",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "commit": "83c140b6f67f45220956b1971e83a53588b4c426",
+      "url": "https://github.com/google/amber.git"
+    },
+    {
+      "officialType": "GitRepo",
+      "name": "jsoncpp",
+      "officialScriptSha256": "174d31ccc7042efda7a916fc48dc49b15617fa48176fe489f8879671444d0218",
+      "commit": "9059f5cad030ba11d37818847443a53918c327b1",
+      "url": "https://github.com/open-source-parsers/jsoncpp.git"
+    }
+  ],
+  "purpose": "Exact seven official inputs used by actual fixed13 glcts; identity recipe only, no build/PASS",
+  "ctsCommit": "067e8832315e79817ede1c4863804e440f5d1c80"
+}

@@ -14,16 +14,21 @@
  * 构造入口：JdkManager.createInstaller(version) → JdkInstaller。
  *
  * 设计要点：
- *   - 与拆分前的 JdkManager 行为等价：清旧 → 下载 → 校验 → 解压 → 验证 lib/modules
+ *   - 下载到独立目录 → 逐卷/全包校验 → staging 解压验证 → receipt 和目录一起发布
  *   - "已装则跳过下载"逻辑通过 init.isInstalledFn 注入，保留原幂等语义
  *
  * 详见 docs/self-inspection/2026-05-26_AMCL_多任务下载并发缺陷诊断.md § B-1
  */
 
+import { validateRuntimeTree } from './JdkTreeValidation';
+import { JdkDirectoryLease } from './JdkDirectoryLease';
+import { RuntimeDownload, RuntimePart, RuntimeInstallReceipt } from './RuntimeCatalogTypes';
+import { RuntimeCatalogRepository } from './RuntimeCatalogRepository';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { removeDirRecursive } from 'commons';
 import { ensureDirSync } from 'commons';
+import { isJdkSlotVersion } from 'commons';
 import { ActivityLogger } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import {
@@ -138,6 +143,8 @@ export class JdkInstaller {
   private giteeTaskIds_: number[] = [];
   /** 本 installer 创建过、尚未确认 native purge 的 owner。 */
   private ownedDmTaskIds_: number[] = [];
+  /** 执行收敛超时后保留的独占下载目录；后续重试或删除任务触发的 purge 成功后才能清理。 */
+  private deferredDownloadCleanup_: string[] = [];
   private onDownload_: JdkDownloadCallback | null = null;
   private onStatus_: JdkStatusCallback | null = null;
   /** 本次下载见过的最大 bytesDone。用于识别"分段重下导致字节回退"并在 UI 说明。 */
@@ -146,7 +153,8 @@ export class JdkInstaller {
   constructor(init: JdkInstallerInit) {
     this.context_ = init.context;
     this.version_ = init.version;
-    this.config_ = init.config;
+    // 构造入口本身也冻结描述，保证排队期间目录/调用者对象变化不会更换包或来源。
+    this.config_ = JSON.parse(JSON.stringify(init.config)) as JdkVersionConfig;
     this.targetDir_ = init.targetDir;
     this.isInstalledFn_ = init.isInstalledFn;
     this.forceReinstall_ = init.forceReinstall === true;
@@ -180,7 +188,39 @@ export class JdkInstaller {
       if (!purged) retained.push(taskId);
     }
     this.ownedDmTaskIds_ = retained;
+    if (retained.length === 0 && this.deferredDownloadCleanup_.length > 0) {
+      const roots = this.deferredDownloadCleanup_;
+      this.deferredDownloadCleanup_ = [];
+      for (const root of roots) {
+        try { removeDirRecursive(root); } catch (e) {
+          // owner 已经退出，只是文件系统清理失败；保留路径给下次幂等回收，不影响屏障结论。
+          this.deferredDownloadCleanup_.push(root);
+        }
+      }
+    }
     return retained.length === 0;
+  }
+
+  /**
+   * createAndWait 只保证逻辑终态，取消/失败时 curl 和 worker 可能仍持有路径。
+   * 复用既有 purge 的 execution-settled 屏障。默认执行模式持续持有 writer 和外层
+   * Registry action；约五秒的有限探测只供明确不拥有执行资格的调用者选择。
+   * 路径/来源复用、哈希及 finally 清理均属于执行流程，不能因逻辑终态提前开始。
+   */
+  private async waitForNativeOwners_(retainOwner: boolean = true): Promise<boolean> {
+    if (retainOwner) {
+      if (this.purgeNativeOwners()) return true;
+      for (const taskId of this.ownedDmTaskIds_.slice()) {
+        await DownloadManager.instance().awaitTaskReleased(taskId, true);
+      }
+      // 仍由原方法逐项删除已释放身份和处理遗留目录，保持其幂等语义。
+      return this.purgeNativeOwners();
+    }
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (this.purgeNativeOwners()) return true;
+      if (attempt < 49) await new Promise<void>((resolve): void => { setTimeout((): void => resolve(),100); });
+    }
+    return false;
   }
 
   /**
@@ -211,27 +251,33 @@ export class JdkInstaller {
   }
 
   private report(ready: boolean, progress: string): void {
+    this.lastMessage_ = progress;
     if (this.onStatus_) {
       this.onStatus_({ ready, progress });
     }
   }
 
   private reportDownload(phase: string, percent: number, speedKBs: number, message: string): void {
+    this.lastMessage_ = message;
     if (this.onDownload_) {
       this.onDownload_({ version: this.version_, phase, percent, speedKBs, message });
     }
   }
 
+  /** 同时保留状态和下载回调的最后原因；adapter 不再把 boolean false 压成模糊失败。 */
+  private lastMessage_: string = '';
+  getFailureReason(): string { return this.lastMessage_; }
+
   /** 在任何删除/下载前校验所有会进入路径、URL 或完整性检查的配置字段。 */
   private validateInputs(): string {
     const info = this.config_;
-    if (safeBaseName(this.version_).length === 0) return 'JDK version 不是安全路径段';
+    if (!isJdkSlotVersion(this.version_)) return 'JDK version 不是有效数字槽位';
     if (safeBaseName(info.tag).length === 0) return 'JDK tag 不是安全路径段';
     if (safeBaseName(info.dataFile).length === 0) return 'JDK asset 文件名不安全';
-    if (info.sha256 !== undefined && info.sha256.length > 0 && !isValidSha256(info.sha256)) {
+    if (info.sha256 === undefined || !isValidSha256(info.sha256)) {
       return 'JDK SHA-256 格式非法';
     }
-    if (info.sizeBytes !== undefined && info.sizeBytes <= 0) return 'JDK sizeBytes 非法';
+    if (info.sizeBytes === undefined || !Number.isSafeInteger(info.sizeBytes) || info.sizeBytes <= 0) return 'JDK sizeBytes 非法';
     if (info.giteeParts !== undefined) {
       for (let part of info.giteeParts) {
         if (safeBaseName(part).length === 0) return 'JDK Gitee 分卷文件名不安全';
@@ -247,6 +293,7 @@ export class JdkInstaller {
     }
     const installRoot = this.context_.filesDir + '/jdk';
     if (!isPathInsideRoot(this.targetDir_, installRoot)) return 'JDK targetDir 超出受控安装根目录';
+    if (this.targetDir_ !== installRoot + '/' + this.version_) return 'JDK 目标目录与租约槽位不一致';
     return '';
   }
 
@@ -255,6 +302,7 @@ export class JdkInstaller {
   // ============================================================
 
   async downloadAndInstall(): Promise<boolean> {
+    this.lastMessage_ = '';
     if (this.downloading_) {
       // 这条分支是"重试点了没反应"的一个真实嫌疑：若上一轮因异常未走到 finally，
       // downloading_ 会永久为 true，之后所有重试都在这里被自旋锁静默挡回。
@@ -289,6 +337,7 @@ export class JdkInstaller {
     const downloadRoot = this.context_.cacheDir + '/jdk-install-staging/' + token;
     const extractRoot = installRoot + '/.staging-' + token;
     const zipPath = downloadRoot + '/archive.zip';
+    let writerLease: JdkDirectoryLease | null = null;
 
     try {
       // ⚠️ 2026-08-29：`forceReinstall_` 必须参与这道门。
@@ -297,6 +346,7 @@ export class JdkInstaller {
       // 所以不绕过它的话，用户点「更新」会直接命中 `isInstalledFn_() == true`
       // 而跳过整段下载 —— 表现是"点了没反应、瞬间说安装完成"，且不报错。
       if (this.forceReinstall_ || !this.isInstalledFn_()) {
+        writerLease = JdkDirectoryLease.writer(this.context_.filesDir, this.version_);
         // 下载和解压都只写唯一 staging；旧安装在新内容校验完成前保持不动。
         this.report(false, '准备安全安装目录...');
         // ⚠️ 必须用幂等的 ensureDirSync：installRoot（filesDir/jdk）在任何装过一次 JDK 的
@@ -327,9 +377,17 @@ export class JdkInstaller {
       this.reportDownload('downloading', 0, 0, '下载失败: ' + err.message);
       return false;
     } finally {
+      // 尤其是取消阶段，Promise 返回不代表原生文件写者退出。执行模式持续等 owner，
+      // 在真实释放前保留 writer/Registry 资格，不能只保留目录却放走外层执行栈。
+      if (await this.waitForNativeOwners_()) {
+        try { removeDirRecursive(downloadRoot) } catch (e) {}
+      } else {
+        this.deferredDownloadCleanup_.push(downloadRoot);
+        this.alog().warn(TAG,'原生下载仍在结束，暂时保留独占目录：' + downloadRoot,null,LOG_DOMAIN_LAUNCH);
+      }
+      if (writerLease !== null) writerLease.release();
       this.currentDmTaskId_ = 0;
       this.giteeTaskIds_ = [];
-      try { removeDirRecursive(downloadRoot) } catch (e) {}
       try { removeDirRecursive(extractRoot) } catch (e) {}
       this.downloading_ = false;
     }
@@ -411,11 +469,13 @@ export class JdkInstaller {
         }
       });
       this.currentDmTaskId_ = 0;
+      if (!await this.waitForNativeOwners_()) throw new Error('JDK 下载资源仍在结束，请稍后重试');
       if (this.cancelRequested_) return false;
       this.alog().info(TAG, `JDK ${this.version_} Gitee single ok: ${view.bytesDone} bytes`, LOG_DOMAIN_LAUNCH);
       return true;
     } catch (e) {
       this.alog().warn(TAG, `JDK ${this.version_} Gitee single download error`, e as Object, LOG_DOMAIN_LAUNCH);
+      if (!await this.waitForNativeOwners_()) throw new Error('JDK 下载资源仍在结束，已保留下载现场，请稍后重试');
       try { fs.unlinkSync(zipPath) } catch (e2) {}
       try { fs.unlinkSync(zipPath + '.download-meta') } catch (e2) {}
       return false;
@@ -438,8 +498,8 @@ export class JdkInstaller {
     const partSpeed: number[] = [];
     for (let i = 0; i < n; i++) { partPaths.push(zipPath + '.p' + i); partDone.push(0); partSpeed.push(0); }
     this.giteeTaskIds_ = [];
+    const tasks: Promise<DownloadTaskView>[] = [];
     try {
-      const tasks: Promise<DownloadTaskView>[] = [];
       for (let i = 0; i < n; i++) {
         const idx = i;
         const url = GITEE_RELEASE_BASE + '/' + info.tag + '/' + parts[idx];
@@ -466,6 +526,7 @@ export class JdkInstaller {
         }));
       }
       const views = await Promise.all(tasks);
+      if (!await this.waitForNativeOwners_()) throw new Error('JDK 分卷资源仍在结束，请稍后重试');
       this.giteeTaskIds_ = [];
       if (this.cancelRequested_) {
         for (const p of partPaths) { try { fs.unlinkSync(p) } catch (e) {} }
@@ -483,6 +544,8 @@ export class JdkInstaller {
     } catch (e) {
       this.alog().warn(TAG, `JDK ${this.version_} Gitee parallel download error`, e as Object, LOG_DOMAIN_LAUNCH);
       this.cancelAllGiteeTasks();   // 某卷失败，取消其余仍在跑的卷
+      await Promise.allSettled(tasks);
+      if (!await this.waitForNativeOwners_()) throw new Error('JDK 分卷资源仍在结束，已保留下载现场，请稍后重试');
       this.giteeTaskIds_ = [];
       for (const p of partPaths) { try { fs.unlinkSync(p) } catch (e2) {} }
       try { fs.unlinkSync(zipPath) } catch (e2) {}
@@ -584,7 +647,8 @@ export class JdkInstaller {
 
   private async downloadJdkArchive(zipPath: string, stepLabel: string): Promise<boolean> {
     const info = this.config_;
-    const source = getJdkDownloadSource();   // 'auto' | 'github' | 'gitee' | 'mirror'
+    const source = info.downloadSource !== undefined ? info.downloadSource : getJdkDownloadSource();
+    if (info.downloads !== undefined) return this.downloadCatalogArchive(zipPath,stepLabel,source);
 
     // v7.8：按用户下载源偏好决定是否 Gitee 优先。
     //   auto / gitee → 先试 Gitee（国内直连、单连接就快）；github / mirror → 跳过 Gitee 直接走 GitHub。
@@ -649,6 +713,7 @@ export class JdkInstaller {
         this.bridgeProgress(stepLabel, v);
       });
       this.currentDmTaskId_ = 0;
+      if (!await this.waitForNativeOwners_()) throw new Error('JDK 下载资源仍在结束，请稍后重试');
       this.alog().info(TAG,
         `JDK ${this.version_} downloaded: ${view.bytesDone} bytes via ${urls.length} mirror(s)`,
         LOG_DOMAIN_LAUNCH);
@@ -658,10 +723,113 @@ export class JdkInstaller {
       this.alog().error(TAG, 'JDK download via DownloadManager failed', e as Object, LOG_DOMAIN_LAUNCH);
       this.reportDownload('downloading', 0, 0,
         stepLabel + ' 下载失败：' + err.message);
+      if (!await this.waitForNativeOwners_()) throw new Error('JDK 下载资源仍在结束，已保留下载现场，请稍后重试');
       try { fs.unlinkSync(zipPath) } catch (e2) {}
       try { fs.unlinkSync(zipPath + '.download-meta') } catch (e2) {}
       return false;
     }
+  }
+
+  /**
+   * 通用目录下载：来源先过滤，再创建引擎任务。分卷逐个验证自身 SHA，拼接后仍验全包。
+   * 每次失败先等所有已创建任务结束，再清理文件；不会留下后台任务向已删除路径继续写。
+   * 配置由工厂深拷贝冻结，因此刷新目录只影响后续任务。
+   */
+  private async downloadCatalogArchive(zipPath: string, label: string, preference: string): Promise<boolean> {
+    const candidates: RuntimeDownload[] = [];
+    for (const d of this.config_.downloads!) {
+      if (d.sourceId === 'web' && this.config_.webEnabled !== true) continue;
+      if (preference === 'web' && d.sourceId !== 'web') continue;
+      if ((preference === 'github' || preference === 'mirror') && d.sourceId !== 'github') continue;
+      candidates.push(d);
+    }
+    candidates.sort((a: RuntimeDownload,b: RuntimeDownload): number => {
+      const order: string[] = preference === 'web' ? ['web'] : ['gitee','github','web'];
+      return order.indexOf(a.sourceId) - order.indexOf(b.sourceId);
+    });
+    const dm = DownloadManager.instance(); dm.initializeCaBundle(this.context_);
+    for (const source of candidates) {
+      const paths: string[] = [];
+      try {
+        if (this.cancelRequested_) return false;
+        const parts: RuntimePart[] = source.transport === 'single-file'
+          ? [{ url:source.url!,sizeBytes:this.config_.sizeBytes!,sha256:this.config_.sha256! }]
+          : source.parts!;
+        const done: number[] = parts.map((): number => 0);
+        const speeds: number[] = parts.map((): number => 0);
+        const tasks: Promise<void>[] = [];
+        this.giteeTaskIds_ = [];
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i]; const path = source.transport === 'single-file' ? zipPath : zipPath + '.p' + i;
+          paths.push(path);
+          const urls: string[] = source.sourceId === 'github' ? this.buildGithubUrls(part.url,preference) : [part.url];
+          const file: DownloadFileSpec = { localPath:path,urls:urls,allowedRoot:parentDirectory(zipPath),
+            maxConnections:source.sourceId === 'gitee' ? 1 : (urls.length > 1 ? 16 : 6),check:{size:part.sizeBytes} };
+          const spec: DownloadTaskSpec = { name:label + ' ' + source.sourceId + ' ' + (i + 1) + '/' + parts.length,
+            files:[file],activityId:this.activityId };
+          const index = i;
+          const task = async (): Promise<void> => {
+            if (this.cancelRequested_) throw new Error('已取消');
+            let nativeId = 0;
+            try { await dm.createAndWait(spec,(view: DownloadTaskView): void => {
+              if (view.taskId > 0) {
+                nativeId = view.taskId;
+                this.currentDmTaskId_ = view.taskId; this.rememberDmTask_(view.taskId);
+                if (this.giteeTaskIds_.indexOf(view.taskId) < 0) this.giteeTaskIds_.push(view.taskId);
+              }
+              done[index] = Math.max(0,view.bytesDone); speeds[index] = Math.max(0,view.speedBps);
+              let bytes = 0; let speed = 0;
+              for (const count of done) bytes += count;
+              for (const rate of speeds) speed += rate;
+              const percent = Math.min(99,Math.floor(bytes / this.config_.sizeBytes! * 100));
+              this.reportDownload('downloading',percent,Math.round(speed / 1024),label + ' ' + source.sourceId + ' ' + percent + '%');
+            }); } finally {
+              // 分卷的 SHA256 本身也不能与原写者重叠；只等待本卷，不能在一卷内
+              // 等整个集合，否则它的校验错误无法及时通知外层取消其余在途分卷。
+              if (nativeId > 0) {
+                let released = false;
+                try { released = dm.purgeTask(nativeId); } catch (_) { /* 桥异常不是释放事实。 */ }
+                if (!released) await dm.awaitTaskReleased(nativeId, true);
+              }
+            }
+            if (fs.statSync(path).size !== part.sizeBytes || await this.computeFileSha256(path) !== part.sha256) {
+              throw new Error('下载文件身份不符：' + source.sourceId + ' 分卷 ' + (index + 1));
+            }
+          };
+          tasks.push(task());
+        }
+        // 保留 Gitee 每卷单连接、各卷并行的吞吐；失败时先取消并等待全部写者终止，
+        // 再进入外层清理/来源回退，避免旧任务继续写入已经复用的 .pN 路径。
+        try { await Promise.all(tasks); }
+        catch (e) { this.cancelAllGiteeTasks(); await Promise.allSettled(tasks); throw e as Error; }
+        // 所有 Promise 结束只证明终态回调已送达。必须再释放真实 native owner，
+        // 才能读取/拼接分卷，或在后续来源中复用同一组 .pN 路径。
+        if (!await this.waitForNativeOwners_()) {
+          this.report(false,'JDK 下载资源仍在结束，已保留下载现场，请稍后重试'); return false;
+        }
+        this.currentDmTaskId_ = 0; this.giteeTaskIds_ = [];
+        if (this.cancelRequested_) return false;
+        if (source.transport === 'concat-parts') this.concatParts(paths,zipPath);
+        return true;
+      } catch (e) {
+        this.alog().warn(TAG,'目录下载来源失败：' + source.sourceId,e as Object,LOG_DOMAIN_LAUNCH);
+        if (!await this.waitForNativeOwners_()) {
+          this.report(false,'JDK 下载资源仍在结束，已保留下载现场，请稍后重试'); return false;
+        }
+        try { fs.unlinkSync(zipPath); } catch (ignored) { /* 尚未生成完整文件。 */ }
+        try { fs.unlinkSync(zipPath + '.download-meta'); } catch (ignored) { /* 旧断点不可跨来源复用。 */ }
+      } finally {
+        this.giteeTaskIds_ = [];
+        // 超时失败时原路径仍由 native 持有，外层会保留整个目录；不能边写边删除分卷/sidecar。
+        const released = this.purgeNativeOwners();
+        for (const path of paths) if (released && path !== zipPath) {
+          try { fs.unlinkSync(path); } catch (ignored) { /* 失败/取消后尽力清理已结束分卷。 */ }
+          try { fs.unlinkSync(path + '.download-meta'); } catch (ignored) { /* 分卷 sidecar 同步退役。 */ }
+        }
+      }
+    }
+    this.report(false,'❌ ' + label + ' 所选来源不可用，旧安装已保留');
+    return false;
   }
 
   /**
@@ -782,31 +950,30 @@ export class JdkInstaller {
       return false;
     }
 
-    // 验证 staging 中的 boot class path：模块化布局=lib/modules；JDK 8=jre/lib/rt.jar。
-    let bootPath = extractRoot + '/lib/modules';
-    let bootLabel = 'lib/modules';
-    let bootFound = false;
-    try { fs.statSync(bootPath); bootFound = true; } catch (e) { /* try classic */ }
-    if (!bootFound) {
-      const rtJar = extractRoot + '/jre/lib/rt.jar';
-      try { fs.statSync(rtJar); bootPath = rtJar; bootLabel = 'jre/lib/rt.jar'; } catch (e) { /* neither */ }
-    }
-    try {
-      const st = fs.statSync(bootPath);
-      this.alog().debug(TAG, `${bootLabel} verified in staging: ${st.size} bytes`, LOG_DOMAIN_LAUNCH);
-      if (st.size < 1000000) {
-        this.report(false, '❌ ' + stepLabel + ' 解压不完整：' + bootLabel + ' 文件损坏');
-        try { removeDirRecursive(extractRoot) } catch (e) {}
-        return false;
-      }
-    } catch (e) {
-      this.alog().error(TAG, 'boot artifact missing from JDK extraction staging', null, LOG_DOMAIN_LAUNCH);
-      this.report(false, '❌ ' + stepLabel + ' 解压不完整：缺少 Java 标准库（lib/modules 或 jre/lib/rt.jar）');
-      try { removeDirRecursive(extractRoot) } catch (e2) {}
+    // 摘要证明是预期 ZIP；这里再证明实际解压结果满足槽位、文件头与架构契约。
+    // 必须在 rename 前验证，失败保留旧安装，不以 modules 的体积代替 native 有效性。
+    const contentError = validateRuntimeTree(extractRoot, this.version_);
+    if (contentError.length > 0) {
+      this.alog().error(TAG, 'JDK staging content invalid: ' + contentError, null, LOG_DOMAIN_LAUNCH);
+      this.report(false, '❌ ' + stepLabel + ' 内容校验失败：' + contentError);
+      try { removeDirRecursive(extractRoot) } catch (e) { /* 失败现场由安装日志记录；旧目标不动。 */ }
       return false;
     }
 
-    // release-tag 戳也先写 staging，随目录一起发布。
+    // 受管 receipt 与实际字节身份一起写 staging；写失败必须终止，不能发布无来源安装。
+    if (this.config_.runtime !== undefined && this.config_.build !== undefined) {
+      if (!RuntimeCatalogRepository.instance(this.context_).isBuildAllowed(this.config_.build.id)) {
+        this.report(false,'该 JDK 构建已撤回或被回退指令停止发布，旧安装已保留'); return false;
+      }
+      const receipt: RuntimeInstallReceipt = { schemaVersion:1,runtimeId:this.config_.runtime.id,
+        javaMajor:Number(this.version_),buildId:this.config_.build.id,
+        recommendationRevision:this.config_.runtime.recommendationRevision,
+        archiveSha256:this.config_.sha256!,archiveSizeBytes:this.config_.sizeBytes!,
+        installedAt:new Date().toISOString(),origin:'catalog',runtime:this.config_.runtime,build:this.config_.build };
+      const file = fs.openSync(extractRoot + '/.amcl-runtime-receipt.json',fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      try { fs.writeSync(file.fd,JSON.stringify(receipt)); fs.fsyncSync(file.fd); } finally { fs.closeSync(file); }
+    }
+    // release-tag 戳也先写 staging，随目录一起发布，兼容旧状态读取和旧客户端。
     try {
       let stampPath = extractRoot + '/.amcl_release_tag';
       let sf = fs.openSync(stampPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
@@ -815,13 +982,14 @@ export class JdkInstaller {
       this.alog().warn(TAG, `JDK ${this.version_} stamp write failed (non-fatal)`, e as Object, LOG_DOMAIN_LAUNCH);
     }
 
-    // Publish with a same-filesystem backup. Never delete the currently usable JDK before
-    // the staging rename has committed; a failed publish restores the old directory.
+    // 同文件系统备份 + rename；staging 与收据一次提交，失败恢复可用的旧安装。
     const backupDir = targetDir + '.backup-' + Date.now() + '-' +
       Math.floor(Math.random() * 1000000);
     let targetExisted = false;
     let backupCreated = false;
+    let useLease: JdkDirectoryLease | null = null;
     try {
+      useLease = JdkDirectoryLease.publication(this.context_.filesDir, this.version_);
       try {
         fs.statSync(targetDir);
         targetExisted = true;
@@ -842,9 +1010,11 @@ export class JdkInstaller {
             restoreError as Object, LOG_DOMAIN_LAUNCH);
         }
       }
-      this.report(false, '❌ ' + stepLabel + ' 安装发布失败');
+      this.report(false, '❌ ' + stepLabel + ' 安装发布失败：' + (e as Error).message);
       try { removeDirRecursive(extractRoot) } catch (e2) {}
       return false;
+    } finally {
+      if (useLease !== null) useLease.release();
     }
     if (backupCreated) {
       try { removeDirRecursive(backupDir) } catch (e) {
@@ -869,9 +1039,9 @@ export class JdkInstaller {
 
     if (!expected || expected.length === 0) {
       this.alog().warn(TAG,
-        `⚠️ SHA-256 not configured for JDK ${this.version_}. Mirror hijacking could inject malicious JDK without detection. Set JDK_VERSIONS['${this.version_}'].sha256 to enable integrity verification.`,
+        `JDK ${this.version_} 缺少可信 SHA-256，拒绝安装并保留旧版本`,
         null, LOG_DOMAIN_LAUNCH);
-      return true;
+      return false;
     }
     if (!isValidSha256(expected)) {
       this.alog().error(TAG, 'Invalid configured JDK SHA-256', null, LOG_DOMAIN_LAUNCH);

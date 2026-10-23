@@ -84,6 +84,8 @@ export class RepairTask implements UnifiedDownloadAdapter {
     if (this.totalPhases_ <= 0) this.totalPhases_ = 1;
 
     let dl = new McDownloader(this.mcDir_);
+    // 修复重试也有独立活动；Native 日志与统一 listener 使用同一身份。
+    dl.activityId = this.view.startedAtMs;
     this.ownedDownloaders_.push(dl);
     this.downloader_ = dl;
     dl.setProgressCallback((p: DownloadProgress) => this.onPhaseProgress_(p));

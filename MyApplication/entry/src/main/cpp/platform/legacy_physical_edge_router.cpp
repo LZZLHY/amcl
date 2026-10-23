@@ -8,6 +8,20 @@ LegacyPhysicalEdgeRouter::LegacyPhysicalEdgeRouter(
         InputLedger& ledger, std::recursive_mutex& transactionMutex)
     : ledger_(ledger), transactionMutex_(transactionMutex) {}
 
+void LegacyPhysicalEdgeRouter::CopyStateFrom(const LegacyPhysicalEdgeRouter& prior) {
+    if (this == &prior) return;
+    std::scoped_lock lock(transactionMutex_, prior.transactionMutex_);
+    held_ = prior.held_;
+    resetting_ = prior.resetting_;
+}
+
+void LegacyPhysicalEdgeRouter::SwapState(LegacyPhysicalEdgeRouter& candidate) noexcept {
+    if (this == &candidate) return;
+    std::scoped_lock lock(transactionMutex_, candidate.transactionMutex_);
+    held_.swap(candidate.held_);
+    std::swap(resetting_, candidate.resetting_);
+}
+
 AmclLegacyPhysicalOutcome LegacyPhysicalEdgeRouter::Route(
         bool bridgeAvailable, const LegacyPhysicalIdentity& identity,
         const Output* mappedOutput, LegacyPhysicalAction action,

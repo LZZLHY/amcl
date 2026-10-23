@@ -1,0 +1,6 @@
+/** 真实bridge/Core/registry/OnLoad的宿主组织边缘；窗口资格与未采集typed transport显式注入，字符producer/pump/SDL队列不替身。 */
+
+#include "@CPP@/jvm/callback_bridge_host.h"
+extern "C" __declspec(dllimport) const AmclCallbackBridgeHostV1* compatActualHost();
+// 真正分离的DLL返回primary真实表：getter与bind不在同module，正式resolver必须拒绝。
+JNIEXPORT const AmclCallbackBridgeHostV1* amclCallbackBridgeHostGetV1(void){return compatActualHost();}

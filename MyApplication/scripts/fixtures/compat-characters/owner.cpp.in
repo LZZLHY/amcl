@@ -1,0 +1,77 @@
+/** 真实bridge/Core/registry/OnLoad的宿主组织边缘；窗口资格与未采集typed transport显式注入，字符producer/pump/SDL队列不替身。 */
+
+#define SDL_MAIN_HANDLED
+#include "SDL_internal.h"
+#include <SDL3/SDL_main.h>
+extern "C" {
+#include "events/SDL_keyboard_c.h"
+}
+#include "@CPP@/jvm/jni_registry.h"
+#include "@CPP@/input/delivery/control_delivery.h"
+#include "@CPP@/input/delivery/look_execution.h"
+#include "@CPP@/tests/host/backend_input_bridge_host_stub.h"
+#include <vector>
+#include <string>
+#include <cstdio>
+#include <windows.h>
+#include <process.h>
+#pragma comment(linker,"/export:amclCallbackBridgeHostGetV1")
+void inputBridge_glfwSetActive(void*,int);void inputBridge_l2SetActive(int);void inputBridge_sdlSetActive(int);
+void inputBridgeStartPumping();void inputBridgePumpEvents(void*);void inputBridgeStopPumping();
+void* inputBridge_replaceCharCallback(void*);void* inputBridge_replaceCharModsCallback(void*);
+int inputBridge_l2NextEvent(int*,int*,int*,int*,int*);int inputBridge_sdlNextEvent(int*,int*,int*,int*,int*);
+static std::vector<int> received;static SDL_Window* window=nullptr;
+// 回调就是实际GLFW ABI出口的记录者；负一标记plain出口，记录不能提前计作生产enqueue。
+static void Plain(void*,unsigned int cp){received.push_back((int)cp);received.push_back(-1);}
+static void Mods(void*,unsigned int cp,int mods){received.push_back((int)cp);received.push_back(mods);}
+// 将宿主初始化/资源错误交给当前真实JVM，不用固定返回值把失败吞掉。
+static void Error(JNIEnv*e,const char*s){e->ThrowNew(e->FindClass("java/lang/AssertionError"),s);}
+// 只转出primary的真实getter结果，供分离DLL反控验证bind身份，不制造第二份owner表。
+extern "C" __declspec(dllexport) const AmclCallbackBridgeHostV1* compatActualHost(){return amclCallbackBridgeHostGetV1();}
+// L2 DLL的next_record借用唯一production bridge ring，输出五int字段与正式L2合同相同。
+extern "C" __declspec(dllexport) int compatL2Next(int*t,int*a,int*b,int*c,int*d){return inputBridge_l2NextEvent(t,a,b,c,d);}
+// JNI组织入口：发布真实Core/control/registry，按mode变异descriptor并激活三个出口。
+// foreign参数仅在跨模块反控加载真实DLL；借取的primary owner不被本函数卸载。
+extern "C" __declspec(dllexport) JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CompatCharTest_publish(JNIEnv*e,jclass,jint mode,jstring foreign){
+ // 正例使用生产发布函数与真实Core；三种负控只改描述符或转发getter，注册/函数表不伪造。
+ (void)amclControlDeliveryGetPortV1();amclControlDeliveryPublishV1();amclLookExecutionPublishV1();
+ // 新L2同时校look私有配对，绑定真实中立session；本字符轨迹没有world motion/cache声明。
+ (void)amclLookExecutionGetPortV1()->bindSession(1);
+ if(publishCallbackBridgeHostV1(1)!=JNI_OK){Error(e,"actual callback host publication failed");return;}
+ if(mode==1){const char* value=getenv(AMCL_CALLBACK_BRIDGE_HOST_ENV);std::string old(value);const auto sep=old.find(':',2);old="1:"+std::to_string(_getpid()+1)+old.substr(sep);_putenv_s(AMCL_CALLBACK_BRIDGE_HOST_ENV,old.c_str());}
+ if(mode==2)_putenv_s(AMCL_CALLBACK_BRIDGE_HOST_ENV,"1:bad");
+ if(mode==3){const char* path=e->GetStringUTFChars(foreign,nullptr);HMODULE module=LoadLibraryA(path);e->ReleaseStringUTFChars(foreign,path);if(!module){Error(e,"foreign real module could not load");return;}char desc[128];std::snprintf(desc,sizeof(desc),"1:%u:1:%llx",(unsigned)_getpid(),(unsigned long long)(uintptr_t)GetProcAddress(module,AMCL_CALLBACK_BRIDGE_HOST_GETTER));_putenv_s(AMCL_CALLBACK_BRIDGE_HOST_ENV,desc);}
+ // 本轨迹只含legacy公共Java字符，没有typed平台设备。运输替身声明该通道不适用，
+ // 不提供另一份Core/owner，亦不返回固定“消费成功”；legacy ring/三个出口都是正式实现。
+ amclBackendInputHostStubReset();amclBackendInputHostStubSetUnavailable(1);
+ inputBridge_glfwSetActive((void*)1,1);inputBridge_l2SetActive(1);inputBridge_sdlSetActive(1);
+}
+// 每轮清空观察结果，只通过原replace API变更两个实际callback；0/1取值来自Java矩阵。
+extern "C" __declspec(dllexport) JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CompatCharTest_callbacks(JNIEnv*,jclass,jint plain,jint mods){received.clear();inputBridge_replaceCharCallback(plain?(void*)Plain:nullptr);inputBridge_replaceCharModsCallback(mods?(void*)Mods:nullptr);}
+// 执行正式GLFW pump后复制真正回调记录到Java；空数组代表该轮无已调用回调。
+extern "C" __declspec(dllexport) JNIEXPORT jintArray JNICALL Java_org_lwjgl_glfw_CompatCharTest_glfw(JNIEnv*e,jclass){inputBridgeStartPumping();inputBridgePumpEvents((void*)1);inputBridgeStopPumping();jintArray result=e->NewIntArray((jsize)received.size());if(!received.empty())e->SetIntArrayRegion(result,0,(jsize)received.size(),received.data());received.clear();return result;}
+#define AMCL_EVENT_CHAR 1000
+#define AMCL_EVENT_CHAR_MODS 1001
+// 消费正式bridge的SDL ring，使用原CHAR正文发送SDK文本，再读取真正SDL_PollEvent。
+// 窗口只在当前JVM初始化一次；SDK失败抛AssertionError，不能冒充没有文本的正常轮次。
+extern "C" __declspec(dllexport) JNIEXPORT jstring JNICALL Java_org_lwjgl_glfw_CompatCharTest_sdl(JNIEnv*e,jclass){
+ // dummy是真实SDK窗口平台，keyboard focus和text激活来自SDK；字符发送及Poll队列不替换。
+ if(!window){SDL_SetMainReady();SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");if(!SDL_Init(SDL_INIT_VIDEO)){Error(e,SDL_GetError());return nullptr;}window=SDL_CreateWindow("compat",100,100,SDL_WINDOW_HIDDEN);if(!window){Error(e,SDL_GetError());return nullptr;}SDL_SetKeyboardFocus(window);SDL_StartTextInput(window);}
+ int type,i1,i2,i3,i4;while(inputBridge_sdlNextEvent(&type,&i1,&i2,&i3,&i4)){switch(type){
+        case AMCL_EVENT_CHAR:
+        case AMCL_EVENT_CHAR_MODS: {
+            // i1 is a Unicode code point; SDL_SendKeyboardText wants UTF-8.
+            char utf8[5];
+            char *end = SDL_UCS4ToUTF8((Uint32)i1, utf8);
+            *end = '\0';
+            if (utf8[0]) {
+                SDL_SendKeyboardText(utf8);
+            }
+            break;
+        }
+
+
+ default:break;}}
+ std::string text;SDL_Event event;while(SDL_PollEvent(&event))if(event.type==SDL_EVENT_TEXT_INPUT)text+=event.text.text;return e->NewStringUTF(text.c_str());}
+// SDK键鼠只读observer不参与本字符轨迹；无输入成功/归约替身，也不统计不存在的poll证据。
+extern "C" void SDL_AMCL_ObserveKeyboardPoll(const bool*,int){}extern "C" void SDL_AMCL_ObserveMousePoll(SDL_MouseButtonFlags){}

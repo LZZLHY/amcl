@@ -118,6 +118,8 @@ amclLogWrite
 amclLedgerBegin
 amclLedgerBindTask
 amclLedgerEnd
+# 真异步关闭由ArkTS按固定NAPI导出名调用；Release必须保名，避免Promise入口变成undefined。
+amclLedgerEndAsync
 amclLedgerEndAll
 amclLedgerSetLaunchActivity
 amclLedgerUnbindTask
@@ -163,6 +165,61 @@ runVulkanSelfTest
 
 # --- napi_forge.cpp （Forge/NeoForge processor 子 JVM）---
 runJavaProcessor
+# 自更新桥的属性名与Native注册表保持一致，不能被release混淆重命名。
+startSideloadHdc
+discoverSideloadPort
+runSideloadHdcCommand
+stopSideloadHdc
+solveSideloadPow
+cancelSideloadPow
+# 自更新文件执行租约与真实时间轴：Native固定导出名，不随ArkTS标识符重命名。
+configureSideloadInstallRoot
+sideloadInstallClockTicks
+acquireSideloadFileLease
+releaseSideloadFileLease
+downloadSteadyTime
+bearerToken
+
+# --- napi_export.cpp （私有快照打包、独立校验与fd摘要）---
+# 六个入口、请求/句柄/结果/进度字段都是ArkTS与Native之间的固定字符串协议。
+# Native的Get/Number/String等局部helper接收动态name，不能只保留扫描器已发现的函数；
+# 这里同时保留NativeExport*声明的全部字段，未来开启属性混淆时仍保持双向同名。
+exportArchiveStart
+exportArchiveVerifyStart
+exportFileHashStart
+exportJobQuery
+exportJobCancel
+exportJobRelease
+filesDir
+jobRelative
+snapshotRelative
+archiveRelative
+entries
+workerCount
+path
+directory
+size
+sha256
+fd
+sha1
+jobId
+completion
+operation
+files
+payloadBytes
+archiveBytes
+exists
+released
+state
+filesDone
+filesTotal
+bytesDone
+bytesTotal
+settled
+errorCode
+errorMessage
+# Native owner线程按固定名字调用String内建方法，保持与ArkTS大小写折叠语义一致。
+toLowerCase
 
 # --- napi_input.cpp （触摸 / 键鼠 / 手柄输入）---
 # clearButtons / clearJoystick / registerButton / registerJoystick 已随
@@ -171,11 +228,13 @@ cancelAllInput
 abortTextInputSession
 beginTextInputSession
 commitTextInput
+textInputKeyTap
 configureInputProduct
 hardwareRawMouseAvailable
 endTextInputSession
 gate0InputTelemetryEnabled
 getInputResetEpoch
+getInputResetDomains
 getTextInputCandidatesUnsupportedCount
 isGrabbed
 onButtonPressed
@@ -216,15 +275,50 @@ sendKeyEvent
 sendMouseEvent
 sendScrollEvent
 sendSourceCursorDelta
+sendSourceCursorSample
 sendSourceKeyEvent
+acquireSourceControl
+releaseSourceControl
 sendSourceMouseEvent
 sendSourceScrollEvent
 sendTouchEvent
 submitTextInputCandidates
 setControlSchema
+touchInteractionVisual
+maintainTouchInput
+gameGuiState
+# GUI会话/源租约是Native固定字符串ABI；Release属性混淆后仍须与真实导出同名。
+# 参数/返回为现有primitive及固定number array，不扩大到本地JSON签名字段。
+gameGuiStartSession
+gameGuiCaptureSession
+gameGuiStopSession
+gameGuiAttachSource
+gameGuiRetireSource
+gameGuiStateForSource
+moveTouchMenuPointer
+touchMenuButton
+cancelTouchMenuMouse
+touchMenuScroll
+setTouchMenuMouseBounds
+setTouchGuideBounds
+restoreGameGuiScale
+restoreGameGuiScaleForSource
+# 共同look执行端口仅交换primitive；名字是NAPI固定字符串，不新增JSON wire属性。
+sharedLookExecutionSupported
+setMappedLookVelocity
+advanceMappedLookExecution
+retireMappedLookConnection
+# gyro以原policy/resource opaque lease识别资格，sensor timestamp只属于本采样钟。
+beginTouchGyroLease
+submitTouchGyroLease
+retireTouchGyroLease
+touchGyroLeaseContext
+sendTouchGyroSample
 setInvertY
 setLookAccel
 setLookSensitivity
+applyLookConfiguration
+applySourceLookConfiguration
 setLookSmoothing
 setTouchPaused
 textInputSessionSupported
@@ -295,6 +389,9 @@ runJvmTests
 runInputLedgerTests
 runLwjglTest
 runMgTest
+runMgDepthRangeTest
+runMgContextIdentityTest
+runMobileGlProgramTest
 runSdl3C2Test
 runSdl3WindowTest
 runMobileglProbe
@@ -302,23 +399,52 @@ runIpv6Probe
 runIpv6JavaProbe
 
 # ============================================================
-# §B — NAPI 结构化对象协议字段（69 个）
+# §B — NAPI 结构化对象协议字段（以检查器实际提取结果为准）
 #
 # 这些字段由 native 通过固定字符串读取或写回。它们与函数名一样属于跨语言 ABI；
 # 例如 schemaVersion 若被改名，setControlSchema 即使可调用也会拒绝整张控件表。
 # ============================================================
 aborted
 activeThreads
+# Native查询的真实执行释放事实，与业务终态分开；跨语言固定键不能随属性混淆改名。
+executionSettled
 allowedRoot
 authRejects
 basename
 body
 bytesDone
 bytesTotal
+# 授权传输策略和结构化消费事实，NAPI以固定JSON键读写，必须与ArkTS保持一致。
+authorizedPolicy
+singleUse
+maxHttpAttempts
+validForNewRequestMs
+maxBytes
+needsNewLease
+requestStarted
+successfulHeadersSeen
+bytesWritten
+httpAttempts
+retryAfterMs
 check
 compHeight
 compWidth
 controls
+touch
+touchpad
+actions
+menuSensitivity
+menuScroll
+menuHoldMs
+floatingJoystick
+sprint
+autoWalk
+sprintThreshold
+hotbarSwap
+hotbarDrop
+holdMs
+gestureMode
+swipeGroup
 currentFile
 currentFiles
 deadZone
@@ -403,3 +529,80 @@ desktopPublishDrop
 
 # Native能力事实的跨语言固定字段。
 driverIdentity
+
+# 触控发布v1与反馈身份为Native/ArkTS固定字段，所有不透明代次保持精确字符串。
+touchPublicationState
+beginTouchPublication
+publishTouchSchema
+confirmTouchPublication
+abortTouchPublication
+acquireTouchModal
+releaseTouchModal
+isTouchPublicationCurrent
+surface
+session
+policy
+schemaGeneration
+token
+operationId
+candidateId
+fenced
+nativeTouches
+modalCount
+density
+transform
+registration
+controlId
+generatedNs
+contextDensity
+contextTransform
+
+# Source-backed legacy layout IO metadata.
+sourceGeneration
+sourceCount
+sourceIndex
+activeOriginalDigest
+payloadGeneration
+start
+end
+firstDigest
+totalBytes
+grabEpoch
+
+# v5触控组的Native注册、schema v4扩展及完整组态回执；持久组图字段同样不得改名。
+readTouchGroups
+confirmTouchGroups
+isTouchGroupControlCurrent
+bindTouchGroupMouseOwner
+invokeTouchGroupControl
+restoreTouchGroups
+onTouchGroupsChanged
+groupSchema
+groupRevision
+profile
+revision
+status
+enabled
+pending
+groups
+initialVisible
+group
+phases
+fcl
+mouseTool
+rank
+bindings
+autoKeep
+actions
+target
+operation
+mask
+epochs
+controlGroups
+defaultControlGroupId
+controlGroupId
+groupActions
+phaseBindings
+gesturePolicy
+phase
+targets

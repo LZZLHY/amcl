@@ -8,7 +8,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   GamepadManager, GamepadEmitter, GamepadConfig, GamepadAction, defaultGamepadConfig,
-  AXIS_ABS_X, AXIS_ABS_Y, AXIS_ABS_Z, AXIS_ABS_GAS, AXIS_ABS_HAT0X,
+  AXIS_ABS_X, AXIS_ABS_Y, AXIS_ABS_Z, AXIS_ABS_RZ, AXIS_ABS_GAS, AXIS_ABS_HAT0X,
   OHOS_BUTTON_A, OHOS_BUTTON_B, OHOS_BUTTON_R2, OHOS_DPAD_LEFT,
   GLFW_KEY_SPACE, GLFW_KEY_W, GLFW_KEY_D, GLFW_MOUSE_BUTTON_LEFT,
   GLFW_PRESS, GLFW_RELEASE,
@@ -113,11 +113,14 @@ class AxisFrame {
 
 function feedAxis(manager: GamepadManager, frame: AxisFrame): void {
   manager.handleAxis((axis: number): number | undefined => frame.get(axis))
+  // 旧断言的18px以60Hz时间步表达，事件本身不再产生look。
+  manager.advanceMappedLook(1 / 60)
 }
 
 function feedAxisForDevice(manager: GamepadManager, deviceId: number, frame: AxisFrame): void {
   manager.handleAxisForDevice(
     deviceId, (axis: number): number | undefined => frame.get(axis))
+  manager.advanceMappedLook(1 / 60)
 }
 
 export default function gamepadManagerTest() {
@@ -173,7 +176,7 @@ export default function gamepadManagerTest() {
       expect(emitter.lookEventCount()).assertEqual(1)
     })
 
-    it('dead_zone_boundary_releases_and_just_outside_press', 0, () => {
+    it('dead_zone_enters_above_threshold_and_releases_below_hysteresis', 0, () => {
       const emitter = new RecordingGamepadEmitter()
       const cfg: GamepadConfig = defaultGamepadConfig()
       cfg.stickDeadZone = 0.2
@@ -190,6 +193,10 @@ export default function gamepadManagerTest() {
       expect(emitter.countKey(GLFW_KEY_D, GLFW_PRESS)).assertEqual(1)
 
       frame.set(AXIS_ABS_X, 0.2)
+      feedAxis(manager, frame)
+      // 已激活后在原进入边界附近稳定持有；落到退出边界以下才释放。
+      expect(emitter.countKey(GLFW_KEY_D, GLFW_RELEASE)).assertEqual(0)
+      frame.set(AXIS_ABS_X, 0.179)
       feedAxis(manager, frame)
       expect(emitter.countKey(GLFW_KEY_D, GLFW_RELEASE)).assertEqual(1)
     })
@@ -510,6 +517,66 @@ export default function gamepadManagerTest() {
 
       manager.handleButtonForDevice(67, OHOS_BUTTON_A, true)
       expect(emitter.countKey(GLFW_KEY_SPACE, GLFW_PRESS)).assertEqual(2)
+    })
+
+    it('trigger_threshold_noise_keeps_one_press_until_real_release', 0, () => {
+      const emitter = new RecordingGamepadEmitter()
+      const manager = new GamepadManager(undefined, emitter)
+      const frame = new AxisFrame()
+      // 同一次半按的噪声跨过进入阈值，但没有越过较低退出边界，不应反复打断挖掘。
+      for (const value of [0.49, 0.51, 0.495, 0.505, 0.49, 0.51]) {
+        frame.set(AXIS_ABS_GAS, value)
+        feedAxisForDevice(manager, 71, frame)
+      }
+      expect(emitter.countMouse(GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS)).assertEqual(1)
+      expect(emitter.countMouse(GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE)).assertEqual(0)
+      frame.set(AXIS_ABS_GAS, 0)
+      feedAxisForDevice(manager, 71, frame)
+      expect(emitter.countMouse(GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE)).assertEqual(1)
+    })
+
+    it('equal_angle_move_stick_depth_does_not_change_direction', 0, () => {
+      const emitter = new RecordingGamepadEmitter()
+      const manager = new GamepadManager(undefined, emitter)
+      const frame = new AxisFrame()
+      frame.set(AXIS_ABS_X, 0.3); frame.set(AXIS_ABS_Y, -0.5)
+      feedAxisForDevice(manager, 72, frame)
+      expect(emitter.countKey(GLFW_KEY_W, GLFW_PRESS)).assertEqual(1)
+      expect(emitter.countKey(GLFW_KEY_D, GLFW_PRESS)).assertEqual(1)
+      frame.set(AXIS_ABS_X, 0.6); frame.set(AXIS_ABS_Y, -1)
+      feedAxisForDevice(manager, 72, frame)
+      expect(emitter.countKey(GLFW_KEY_W, GLFW_PRESS)).assertEqual(1)
+      expect(emitter.countKey(GLFW_KEY_D, GLFW_PRESS)).assertEqual(1)
+      expect(emitter.countKey(GLFW_KEY_D, GLFW_RELEASE)).assertEqual(0)
+    })
+
+    it('radial_look_keeps_angle_and_caps_square_corner_speed', 0, () => {
+      const emitter = new RecordingGamepadEmitter()
+      const manager = new GamepadManager(undefined, emitter)
+      const frame = new AxisFrame()
+      frame.set(AXIS_ABS_Z, 0.6); frame.set(AXIS_ABS_RZ, 0.15)
+      feedAxis(manager, frame)
+      // 比值不变，原来的小角度分量不能被轴向死区吞掉。
+      expect(Math.abs(emitter.lookYAt(0) / emitter.lookXAt(0) - 0.25) < 0.000001).assertTrue()
+      frame.set(AXIS_ABS_Z, 1); frame.set(AXIS_ABS_RZ, 1)
+      feedAxis(manager, frame)
+      const magnitude = Math.sqrt(emitter.lookXAt(1) * emitter.lookXAt(1) + emitter.lookYAt(1) * emitter.lookYAt(1))
+      expect(Math.abs(magnitude - 18) < 0.000001).assertTrue()
+    })
+
+    it('retiring_device_clears_move_hysteresis_before_next_sample', 0, () => {
+      const emitter = new RecordingGamepadEmitter()
+      const manager = new GamepadManager(undefined, emitter)
+      const frame = new AxisFrame()
+      frame.set(AXIS_ABS_Y, -0.181)
+      feedAxisForDevice(manager, 73, frame)
+      expect(emitter.countKey(GLFW_KEY_W, GLFW_PRESS)).assertEqual(1)
+      manager.releaseDevice(73)
+      frame.set(AXIS_ABS_Y, -0.179)
+      feedAxisForDevice(manager, 73, frame)
+      expect(emitter.countKey(GLFW_KEY_W, GLFW_PRESS)).assertEqual(1)
+      expect(emitter.countKey(GLFW_KEY_W, GLFW_RELEASE)).assertEqual(1)
+      expect(manager.hasDeviceState(73)).assertFalse()
     })
   })
 }

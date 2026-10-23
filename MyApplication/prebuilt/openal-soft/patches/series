@@ -9,3 +9,6 @@
 #   3. 不再有"sed 找不到锚点静默失败"的可能
 
 0001-register-ohaudio-backend.patch
+
+# OHAudio 硬件输出默认限幅；不覆盖应用的显式设置。
+0002-backend-output-limiter-policy.patch

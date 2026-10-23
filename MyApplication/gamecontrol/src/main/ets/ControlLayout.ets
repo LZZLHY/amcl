@@ -31,6 +31,12 @@ import {
   GLFW_MOUSE_BUTTON_LEFT, GLFW_MOUSE_BUTTON_RIGHT,
   encodeMouse, keyShortLabel
 } from './GlfwKeys'
+import { TouchPreferences, normalizeTouchPreferences } from './TouchPreferences'
+import { SourceLookPreferences, copySourceLookPreferences } from './LookPreferences'
+import { ControlGroup, ControlGroupAction, ControlPhaseBinding, ControlGesturePolicy,
+  CONTROL_GROUP_PROFILE_VERSION, TOUCH_GROUP_CAPABILITY, TOUCH_PHASE_CAPABILITY, MAX_CONTROL_GROUP_OPERATIONS,
+  cloneControlGroups, cloneControlGroupActions, cloneControlPhaseBindings, controlGroupTableIssue,
+  controlGroupActionIssue, controlPhaseBindingIssue, hasOnlyControlGroupFields } from './ControlGroups'
 
 /**
  * 当前数据模型版本号。LayoutStore 在 load 时会迁移老 profile 到此版本。
@@ -38,6 +44,8 @@ import {
  *   v3：手柄打底（LayoutProfile.gamepad）
  */
 export const LAYOUT_PROFILE_VERSION: number = 3
+/** v4只用于用户显式拆分来源政策；未拆分旧方案继续保存v3，旧阅读器会拒绝v4而不误读。 */
+export const SOURCE_LOOK_PROFILE_VERSION: number = 4
 
 /**
  * 按钮类型
@@ -78,35 +86,10 @@ export enum AlignGroup {
 export type TriggerMode = 'press' | 'toggle' | 'doubleTap' | 'longPress'
 
 /**
- * 可见性覆盖（Phase C 新增，键鼠适配）
- *
- * ⚠️ **实际生效的只有 `force_hide`（2026-08-20 全仓核实）。**
- * 这段注释原文是「auto — 跟系统判断（hideOnInput + 当前设备 capability 决定）；
- * force_show — 永远显示（即使物理键鼠都接了也不隐）；force_hide — 永远隐藏」。
- * 前两条都不成立，因为它们描述的"系统判断"（接键鼠自动隐藏）在 2026-06 被刻意删除了。
- *
- * 现在的真实语义：
- *   auto        — 无任何额外效果（`isControlVisible` 只查 `force_hide`）
- *   force_show  — **与 auto 完全相同，零作用**
- *   force_hide  — 永远隐藏 ✅ 唯一真正生效的取值
- *
- * `force_show` 的读取点全仓只有三处，没有一处影响可见性：
- *   ① 本文件 `validateAndNormalizeLayout` 的取值白名单（只做合法性校验）；
- *   ② 本文件 `shouldAutoHide()` 内部 —— 而那个函数**零调用方**；
- *   ③ `LayoutEditor` 的按钮文案与颜色（把它显示成绿色的「强显」）。
- *
- * 也就是说：**编辑器里那个三档开关对用户撒谎。** 用户切到「强显」会看到绿色高亮和
- * 「显示策略 = 强显」的提示，实际什么都没变。这是本轮审计里唯一一条**用户可感知**的
- * 缺陷（其余都是注释误导开发者）。
- *
- * **刻意不在本轮修**：两条改法都是功能变更 —— 要么让 force_show 真的生效
- * （需要先决定 auto 到底判什么），要么把三档收成两档（用户可感知的功能移除）。
- * 这与"自动显隐要不要重新接上"是同一个决定，已交给用户，见
- * `docs/refactor/多输入端架构愿景与改进提案.md` §9.1。
- *
- * 顺带回答了 §51.6 留下的那个前置问题：`visibilityOverride` **已经暴露给用户**
- * （编辑器眼睛 chip），而 `hideOnInput` **没有**（只在新建按钮时被写成 `[]`，无编辑 UI）。
- * 所以走"彻底删除"那条路时，可感知的变化是"三档变两档"，不是"删掉用户在用的开关"。
+ * 用户显隐策略：auto遵循场景与全局显隐档；force_show跳过这两种过滤；force_hide始终隐藏。
+ * 显式hidden、解除绑定及控件本身的输入能力约束仍优先于强显，不能制造看得见却不能操作的热区。
+ * 例如摇杆/快捷栏/旧滚轮只在游戏中解释，强显不把它们带入菜单；系统鼠标入口同样遵循用户显隐与全局档位。
+ * 顶层与抽屉子按钮共用RuntimeTouchLayout中的同一判定，不按是否嵌套改变存档语义。
  */
 export type VisibilityOverride = 'auto' | 'force_show' | 'force_hide'
 
@@ -192,6 +175,13 @@ export interface ControlStyle {
  * 单个控件的布局数据
  */
 export interface ControlItem {
+  /** v5 顶层单一归属；抽屉子项继承父组，恢复入口不允许归入用户组。 */
+  controlGroupId?: string
+  /** 有序的具名组动作；纯组按钮使用 keys=[] / keyOrMouse=0，不生成伪游戏键。 */
+  groupActions?: ControlGroupAction[]
+  /** 显式四阶段输出，存在时由新解释器独立处理各阶段的持有和锁存。 */
+  phaseBindings?: ControlPhaseBinding[]
+  gesturePolicy?: ControlGesturePolicy
   id: string             // 唯一标识 (如 'atk', 'jump', 'hb1', 'joystick', 'ime_chat')
                          // v2 约定特殊 id：
                          //   'ime_chat' = 聊天 / IME 桥接按钮（按下打开系统输入法 + 发原 keyOrMouse）
@@ -252,6 +242,8 @@ export interface ControlItem {
    * 松手再释放"。仅对 type=BUTTON 有意义（摇杆/滚轮/抽屉不适用）。
    */
   dragLook?: boolean
+  /** 显式滑动组，仅普通 press 按钮参与；空串/缺省维持按下绑定，不允许与拖动瞄准混用。 */
+  swipeGroup?: string
   /**
    * 物品栏直点条（HOTBAR_SELECTOR）专用：用户是否在编辑器里手动摆放 / 缩放过它。
    * - 缺省 / false → 视为"系统对齐控件"：每次 load 都按本机分辨率 + guiScale 重新对齐到 MC hotbar
@@ -277,6 +269,15 @@ export interface ControlItem {
  * 完整布局方案
  */
 export interface LayoutProfile {
+  /** v5 的完整组定义。未启用组的旧方案保持 undefined 和原 v3/v4 版本。 */
+  controlGroups?: ControlGroup[]
+  /** 默认组也是普通稳定 ID；只禁止删除，整方案复制时与其他组一起重映射。 */
+  defaultControlGroupId?: string
+  requiredCapabilities?: string[]
+  /** 持久方案实体身份；名字可修改，删除后再建同名方案必须获得新身份。旧数据由仓库一次性补齐。 */
+  profileId?: string
+  /** 已确认内容修订；编辑草稿带回读取时的版本，队首检查后才能覆盖同一个实体。 */
+  profileRevision?: number
   // v2 新增：模型版本，缺省视为 1（迁移目标 = LAYOUT_PROFILE_VERSION）
   version?: number
   name: string                  // 方案名称
@@ -287,8 +288,12 @@ export interface LayoutProfile {
   // 方案 C（2026-07-11）：视角手感全局参数
   lookSmoothing?: number        // 平滑系数 α（0.1..1.0，越大越跟手；1.0=关闭平滑；默认 0.6）
   lookAccel?: number            // 视角加速强度（0..1，0=关闭；默认 0）
+  /** 显式来源政策扩展；缺席时沿四个旧全局标量，不在加载/普通编辑时自动拆分。 */
+  lookPolicies?: SourceLookPreferences
   joystickDeadZone?: number     // 摇杆死区（0.01..0.95，默认 0.18）
-  haptic?: boolean              // 触觉反馈开关（默认 true，目前 stub 不真发）
+  haptic?: boolean              // 触觉反馈开关，运行时经反馈 broker 调用平台振动能力。
+  /** 触控扩展独立版本化；缺省维持直触/固定摇杆，非法导入拒绝整份方案。 */
+  touch?: TouchPreferences
   // 2026-05-30：全局透明度（0.1..1.0，默认 1.0）。渲染时与每个按钮自身 opacity 相乘。
   globalOpacity?: number
   targetDevice?: 'phone' | 'tablet' | 'foldable' | 'any'
@@ -375,7 +380,7 @@ export function effectiveLabel(c: ControlItem): string {
   if (c.type === ControlType.JOYSTICK || c.type === ControlType.SCROLL_WHEEL
       || c.type === ControlType.HOTBAR_SELECTOR) return ''
   const keys = effectiveKeys(c)
-  if (keys.length === 0) return ''
+  if (keys.length === 0) return c.type === ControlType.BUTTON ? '未绑定' : ''
   // 组合键：用 "+" 连接各键短标签（如 Ctrl+1）
   if (keys.length > 1) {
     return keys.map((k: number) => keyShortLabel(k)).join('+')
@@ -535,7 +540,8 @@ export function getDefaultLayout(): LayoutProfile {
     defBtn('place', encodeMouse(GLFW_MOUSE_BUTTON_RIGHT), 0.917, 0.36, AlignGroup.ACTION_RIGHT, 1, true),
     // 跳跃 / 潜行
     defBtn('jump', GLFW_KEY_SPACE, 0.889, 0.64, AlignGroup.MOVE_RIGHT, 0, true),
-    defBtn('sneak', GLFW_KEY_LEFT_SHIFT, 0.889, 0.81, AlignGroup.MOVE_RIGHT, 1, true),
+    // 通用出厂布局把潜行留在右下工具位左侧；只影响新建默认，不移动用户已经保存的动作键。
+    defBtn('sneak', GLFW_KEY_LEFT_SHIFT, 0.80, 0.81, AlignGroup.MOVE_RIGHT, 1, true),
     // 功能键（E, ESC, 聊天, Q, F）
     defBtn('key_E', GLFW_KEY_E, 0.778, 0.017, AlignGroup.FUNC_TOP_RIGHT, 0, false),
     defBtn('key_ESC', GLFW_KEY_ESCAPE, 0.846, 0.017, AlignGroup.FUNC_TOP_RIGHT, 1, false),
@@ -567,18 +573,8 @@ export function getDefaultLayout(): LayoutProfile {
       grabbedOnly: true
     })
   }
-  // 滚轮（放在 hotbar 右侧，方便切手中物品）
-  controls.push({
-    id: 'scroll',
-    label: '⇅',
-    type: ControlType.SCROLL_WHEEL,
-    keyOrMouse: 0,
-    xPct: 0.95, yPct: 0.017,
-    baseWidth: 28, baseHeight: 84,
-    itemScale: 1.0, isCircle: false,
-    alignGroup: AlignGroup.NONE, alignIndex: 0,
-    grabbedOnly: true
-  })
+  // 默认快捷栏已能直点；精细菜单操作统一从实际保存的鼠标系统按钮进入。
+  controls.push(makeDefaultSystemMouseControl())
   // F1（2026-07-11）：物品栏直点条，默认开启。底部中央近似位置，LayoutStore.load 会按设备精确对齐 MC hotbar。
   controls.push(makeHotbarSelector(0.34, 0.9, 300, 36))
   return {
@@ -623,6 +619,11 @@ function cloneItemFields(c: ControlItem, children: ControlItem[] | undefined): C
     visibilityOverride: c.visibilityOverride,
     hideOnInput: c.hideOnInput ? c.hideOnInput.slice() : undefined,
     dragLook: c.dragLook,
+    swipeGroup: c.swipeGroup,
+    controlGroupId: c.controlGroupId,
+    groupActions: cloneControlGroupActions(c.groupActions),
+    phaseBindings: cloneControlPhaseBindings(c.phaseBindings),
+    gesturePolicy: c.gesturePolicy,
     hotbarUserPlaced: c.hotbarUserPlaced,
     systemAction: c.systemAction,
     children: children
@@ -666,14 +667,21 @@ export function cloneLayout(src: LayoutProfile): LayoutProfile {
   for (let i = 0; i < src.controls.length; i++) controls.push(cloneItem(src.controls[i]))
   return {
     version: src.version ?? LAYOUT_PROFILE_VERSION,
+    controlGroups: cloneControlGroups(src.controlGroups),
+    defaultControlGroupId: src.defaultControlGroupId,
+    requiredCapabilities: src.requiredCapabilities?.slice(),
+    profileId: src.profileId,
+    profileRevision: src.profileRevision,
     name: src.name,
     globalScale: src.globalScale,
     lookSensitivity: src.lookSensitivity,
     invertY: src.invertY,
     lookSmoothing: src.lookSmoothing,
     lookAccel: src.lookAccel,
+    lookPolicies: copySourceLookPreferences(src.lookPolicies),
     joystickDeadZone: src.joystickDeadZone,
     haptic: src.haptic,
+    touch: src.touch === undefined ? undefined : normalizeTouchPreferences(src.touch),
     globalOpacity: src.globalOpacity,
     targetDevice: src.targetDevice,
     isPreset: src.isPreset,
@@ -685,6 +693,203 @@ export function cloneLayout(src: LayoutProfile): LayoutProfile {
     gamepad: cloneGamepadConfig(src.gamepad),
     controls: controls
   }
+}
+
+/** 持久版本由所需能力决定；v5 与独立来源视角政策组合时绝不降写成 v4。 */
+export function layoutProfileVersion(profile: LayoutProfile): number {
+  return profile.controlGroups !== undefined ? CONTROL_GROUP_PROFILE_VERSION :
+    (profile.lookPolicies === undefined ? LAYOUT_PROFILE_VERSION : SOURCE_LOOK_PROFILE_VERSION)
+}
+
+/** 运行有效动作的统一判断；纯组按钮可命中，真正解除绑定的旧按钮仍不产生热区。 */
+export function hasControlAction(item: ControlItem): boolean {
+  return (item.groupActions?.some((action: ControlGroupAction): boolean => action.targets.length > 0) ?? false) ||
+    (item.phaseBindings !== undefined ? item.phaseBindings.some((phase: ControlPhaseBinding): boolean => phase.keys.length > 0) :
+      effectiveKeys(item).length > 0)
+}
+
+/** 方案库与缩略图只显示持久初始态，绝不借用本局 mask 或编辑眼睛开关。 */
+export function initialControlGroupVisible(profile: LayoutProfile, item: ControlItem): boolean {
+  if (profile.controlGroups === undefined || item.controlGroupId === undefined) return true
+  const group: ControlGroup | undefined=profile.controlGroups.find((value: ControlGroup): boolean => value.id === item.controlGroupId)
+  return group !== undefined && (group.initialVisible ?? true)
+}
+
+/**
+ * 在任何 clone/normalize 前核完整组引用图。拒绝错误版本、未知能力和悬空引用；
+ * 子树有界遍历，避免坏 JSON 通过此额外校验绕过原控件深度/总量守卫。
+ */
+function layoutControlGroupIssue(profile: LayoutProfile): string {
+  const enabled: boolean = profile.version === CONTROL_GROUP_PROFILE_VERSION
+  if (!enabled && (profile.controlGroups !== undefined || profile.defaultControlGroupId !== undefined ||
+    profile.requiredCapabilities !== undefined)) return 'groups.version'
+  const ids: Set<string> = new Set<string>()
+  if (enabled) {
+    if (!hasOnlyControlGroupFields(profile, ['version','profileId','profileRevision','name','globalScale','lookSensitivity',
+      'invertY','lookSmoothing','lookAccel','lookPolicies','joystickDeadZone','haptic','touch','globalOpacity','targetDevice',
+      'isPreset','deviceModel','hotbarAutoAdded','snapEnabled','snapGap','snapStrength','gamepad','controls',
+      'controlGroups','defaultControlGroupId','requiredCapabilities'])) return 'groups.profile-fields'
+    const issue: string = controlGroupTableIssue(profile.controlGroups, profile.defaultControlGroupId)
+    if (issue.length > 0) return issue
+    for (const group of profile.controlGroups!) ids.add(group.id)
+    if (!Array.isArray(profile.requiredCapabilities) || profile.requiredCapabilities.length > 2 ||
+      profile.requiredCapabilities.indexOf(TOUCH_GROUP_CAPABILITY) < 0) return 'groups.capabilities'
+    const capabilities: Set<string> = new Set<string>()
+    for (const capability of profile.requiredCapabilities) {
+      if ((capability !== TOUCH_GROUP_CAPABILITY && capability !== TOUCH_PHASE_CAPABILITY) ||
+        capabilities.has(capability)) return 'groups.capability'
+      capabilities.add(capability)
+    }
+  }
+  let count: number = 0
+  let operations: number = 0
+  let hasPhases: boolean = false
+  const visit = (items: ControlItem[], parent: string | undefined, depth: number): string => {
+    if (!Array.isArray(items) || depth > MAX_LAYOUT_CHILD_DEPTH) return 'groups.children'
+    for (const item of items) {
+      if (!item || ++count > MAX_LAYOUT_CONTROL_COUNT) return 'groups.members'
+      if (!enabled) {
+        if (item.controlGroupId !== undefined || item.groupActions !== undefined || item.phaseBindings !== undefined ||
+          item.gesturePolicy !== undefined) return 'groups.version'
+      } else {
+        if (!hasOnlyControlGroupFields(item, ['id','label','type','keyOrMouse','keys','modifiers','trigger','xPct','yPct',
+          'baseWidth','baseHeight','itemScale','isCircle','style','alignGroup','alignIndex','grabbedOnly','menuOnly','hidden',
+          'locked','visibilityOverride','hideOnInput','dragLook','swipeGroup','hotbarUserPlaced','systemAction','children',
+          'controlGroupId','groupActions','phaseBindings','gesturePolicy'])) return 'groups.control-fields'
+        const protectedEntry: boolean = item.systemAction === 'visibility' || item.systemAction === 'edit'
+        const member: string | undefined = item.controlGroupId ?? parent
+        if (protectedEntry ? member !== undefined : member === undefined || !ids.has(member)) return 'groups.member'
+        if (parent !== undefined && member !== parent) return 'groups.child-membership'
+        if (item.gesturePolicy !== undefined && item.gesturePolicy !== 'amcl' && item.gesturePolicy !== 'fcl') return 'groups.policy'
+        if (item.gesturePolicy !== undefined && item.phaseBindings === undefined) return 'groups.policy-bindings'
+        const actionsIssue: string = controlGroupActionIssue(item.groupActions, ids)
+        if (actionsIssue.length > 0) return actionsIssue
+        const phaseIssue: string = controlPhaseBindingIssue(item.phaseBindings)
+        if (phaseIssue.length > 0) return phaseIssue
+        if ((item.groupActions !== undefined || item.phaseBindings !== undefined) &&
+          (item.type !== ControlType.BUTTON || item.systemAction !== undefined)) return 'groups.action-kind'
+        if (item.phaseBindings !== undefined) {
+          hasPhases = true
+          if (!Array.isArray(item.keys) || item.keys.length !== 0 || item.keyOrMouse !== 0 ||
+            (item.trigger !== undefined && item.trigger !== 'press')) return 'groups.phase-binding-conflict'
+        }
+        if (item.gesturePolicy === 'fcl') hasPhases = true
+        for (const action of item.groupActions ?? []) operations += action.targets.length
+        if (operations > MAX_CONTROL_GROUP_OPERATIONS) return 'groups.operation-budget'
+      }
+      if (item.children !== undefined) {
+        const issue: string = visit(item.children, item.controlGroupId ?? parent, depth + 1)
+        if (issue.length > 0) return issue
+      }
+    }
+    return ''
+  }
+  const issue: string = visit(profile.controls, undefined, 0)
+  if (issue.length > 0) return issue
+  return hasPhases && profile.requiredCapabilities?.indexOf(TOUCH_PHASE_CAPABILITY) === -1 ? 'groups.phase-capability' : ''
+}
+
+/**
+ * 用户首次创建组才升级草稿；旧存档不会因读取而升级。默认组接纳所有旧顶层控件，
+ * 保留各自 hidden/场景，恢复入口留在独立层，子项只继承父归属。
+ */
+export function enableLayoutControlGroups(source: LayoutProfile): LayoutProfile {
+  const result: LayoutProfile = cloneLayout(source)
+  if (result.controlGroups !== undefined) return result
+  const id: string = generateControlId(result.controls)
+  result.controlGroups = [{ id: id, name: '默认组', initialVisible: true }]
+  result.defaultControlGroupId = id
+  result.requiredCapabilities = [TOUCH_GROUP_CAPABILITY]
+  result.version = CONTROL_GROUP_PROFILE_VERSION
+  for (const item of result.controls) {
+    if (item.systemAction !== 'visibility' && item.systemAction !== 'edit') item.controlGroupId = id
+  }
+  return result
+}
+
+/** 所有组引用只在这里重写；输入是已校验草稿，映射缺席表示保留外部目标。 */
+function remapControlGroupReferences(item: ControlItem, mapping: Map<string, string>): void {
+  if (item.controlGroupId !== undefined) item.controlGroupId = mapping.get(item.controlGroupId) ?? item.controlGroupId
+  for (const action of item.groupActions ?? []) {
+    action.targets = action.targets.map((id: string): string => mapping.get(id) ?? id)
+  }
+  for (const child of item.children ?? []) remapControlGroupReferences(child, mapping)
+}
+
+/** 复制整个方案时组和控件都取得新身份；所有内部引用在完整映射建成后统一更新。 */
+export function cloneLayoutWithFreshGroupIds(source: LayoutProfile): LayoutProfile {
+  const result: LayoutProfile = cloneLayout(source)
+  if (result.controlGroups === undefined) return result
+  const mapping: Map<string, string> = new Map<string, string>()
+  for (const group of result.controlGroups) {
+    const id: string = generateControlId(result.controls)
+    mapping.set(group.id, id); group.id = id
+  }
+  result.defaultControlGroupId = mapping.get(result.defaultControlGroupId ?? '')
+  result.controls = result.controls.map((item: ControlItem): ControlItem => {
+    const copy: ControlItem = cloneItemWithFreshIds(item, result.controls)
+    remapControlGroupReferences(copy, mapping)
+    return copy
+  })
+  return result
+}
+
+/** 单组复制仅重写自引用；指向其他组的动作保留，所有成员取得新控件身份。 */
+export function duplicateLayoutControlGroup(source: LayoutProfile, groupId: string, name: string): LayoutProfile | null {
+  const result: LayoutProfile = cloneLayout(source)
+  const group: ControlGroup | undefined = result.controlGroups?.find((value: ControlGroup): boolean => value.id === groupId)
+  if (group === undefined) return null
+  const newId: string = generateControlId(result.controls)
+  result.controlGroups!.push({ id: newId, name: name, initialVisible: group.initialVisible })
+  const mapping: Map<string, string> = new Map<string, string>(); mapping.set(groupId, newId)
+  for (const item of source.controls) {
+    if (item.controlGroupId !== groupId) continue
+    const copy: ControlItem = cloneItemWithFreshIds(item, result.controls)
+    remapControlGroupReferences(copy, mapping); result.controls.push(copy)
+  }
+  return validateAndNormalizeLayout(result)
+}
+
+/** 删除组在一个草稿事务中同时处理成员和入向引用；返回新对象，失败不改变原草稿。 */
+export function removeLayoutControlGroup(source: LayoutProfile, groupId: string, moveTo?: string): LayoutProfile | null {
+  if (source.controlGroups === undefined || groupId === source.defaultControlGroupId ||
+    !source.controlGroups.some((group: ControlGroup): boolean => group.id === groupId)) return null
+  if (moveTo !== undefined && (moveTo === groupId ||
+    !source.controlGroups.some((group: ControlGroup): boolean => group.id === moveTo))) return null
+  const result: LayoutProfile = cloneLayout(source)
+  result.controlGroups = result.controlGroups!.filter((group: ControlGroup): boolean => group.id !== groupId)
+  result.controls = result.controls.filter((item: ControlItem): boolean => item.controlGroupId !== groupId || moveTo !== undefined)
+  const clean = (item: ControlItem): void => {
+    if (item.controlGroupId === groupId) item.controlGroupId = moveTo
+    if (item.groupActions !== undefined) {
+      for (const action of item.groupActions) action.targets = action.targets.filter((id: string): boolean => id !== groupId)
+      item.groupActions = item.groupActions.filter((action: ControlGroupAction): boolean => action.targets.length > 0)
+    }
+    for (const child of item.children ?? []) clean(child)
+  }
+  for (const item of result.controls) clean(item)
+  return validateAndNormalizeLayout(result)
+}
+
+/**
+ * 用户显式要求回退旧阅读器时，导出当前完整编辑结果的v3兼容副本。独立来源参数回到
+ * 已保留legacy组，全部控件、名字、stable ID、修订、其它偏好沿当前确认值复制；不拿
+ * 最初备份覆盖后来编辑，也不修改仓库或当前运行。原v4方案仍保留以供重新导入。
+ */
+export function legacyLookCompatibleLayout(source: LayoutProfile): LayoutProfile | null {
+  // 旧格式不能表达组关系；拒绝降写，避免兼容导出产生貌似成功的平铺方案。
+  if (source.controlGroups !== undefined || source.version === CONTROL_GROUP_PROFILE_VERSION) return null
+  const checked: LayoutProfile | null = validateAndNormalizeLayout(source)
+  if (checked === null) return null
+  const result: LayoutProfile = cloneLayout(checked)
+  if (checked.lookPolicies !== undefined) {
+    result.lookSensitivity = checked.lookPolicies.legacy.sensitivity
+    result.invertY = checked.lookPolicies.legacy.invertY
+    result.lookSmoothing = checked.lookPolicies.legacy.smoothing
+    result.lookAccel = checked.lookPolicies.legacy.acceleration
+  }
+  result.lookPolicies = undefined; result.version = LAYOUT_PROFILE_VERSION
+  return result
 }
 
 // ==================== 稳定短 ID ====================
@@ -747,7 +952,7 @@ export function cloneItemWithFreshIds(src: ControlItem, existing: ControlItem[])
  * |---|---|---|
  * | `MAX_LAYOUT_CONTROL_COUNT = 256` | `AMCL_CONTROL_SCHEMA_MAX_CONTROLS 256` | `normalizeControlItem` 的 `state.count >=` |
  * | id 的 **23 字节**上限（`normalizeControlItem` 里的裸字面量） | `AMCL_CONTROL_ID_MAX_BYTES 23` | `utf8ByteLength(source.id) > 23` |
- * | keys 的 **6** 个上限（同上，裸字面量） | `AMCL_CONTROL_MAX_KEYS 6` | `source.keys.length > 6` |
+ * | keys 的 **6** 个上限（同上） | `AMCL_CONTROL_MAX_KEYS 6` | `MAX_LAYOUT_CONTROL_KEYS` |
  *
  * **三处必须与 native 同时修改。** 2026-08-20 逐一核对过，当前三方一致
  * （含 `count == 256` 的边界：这里放行 256、native 拒 `> 256`，无 off-by-one）。
@@ -769,6 +974,8 @@ export function cloneItemWithFreshIds(src: ControlItem, existing: ControlItem[])
  * 核对在它们那里是**零偏差**。本注释就是把同一道纪律补到这三个数上。
  */
 export const MAX_LAYOUT_CONTROL_COUNT: number = 256
+/** 与Native AMCL_CONTROL_MAX_KEYS保持一致；选择器、编辑草稿和存档校验共用，防止到保存时才拒绝第7键。 */
+export const MAX_LAYOUT_CONTROL_KEYS: number = 6
 export const MAX_LAYOUT_CHILD_DEPTH: number = 8
 
 /** 不依赖平台 API 的 UTF-8 字节计数，正确处理代理对；孤立代理按替换字符 3 字节计。 */
@@ -832,73 +1039,129 @@ function validOptionalBoolean(value: boolean | undefined): boolean {
 interface NormalizeState {
   usedIds: Set<string>
   count: number
+  /** 首个失败规则的原因码（如 `control[5].id-length`）；只写一次，外层递归不覆盖子节点给出的原因。 */
+  reason: string
+}
+
+/**
+ * 记录失败原因后返回 null。原因码只由控件下标路径与规则名组成（不含 id、标签等用户文本），
+ * 因此可以直接写进可外发的日志与隔离记录；规则名与下面每个 return 一一对应，不要合并成笼统值。
+ */
+function rejectControl(state: NormalizeState, path: string, rule: string): ControlItem | null {
+  if (state.reason.length === 0) state.reason = path + '.' + rule
+  return null
 }
 
 /**
  * 递归规范化单个控件。这里只补老版本明确允许缺省的字段；不会修剪 keys/children、夹取数值或
  * 丢弃坏节点。任何非法值直接返回 null，由最外层拒绝整个布局，保证导入和持久化 fail closed。
+ * path 是本节点的下标路径（顶层 `control[i]`，子节点追加 `.children[j]`），只用于生成原因码。
  */
-function normalizeControlItem(source: ControlItem, depth: number, state: NormalizeState): ControlItem | null {
-  if (!source || depth > MAX_LAYOUT_CHILD_DEPTH || state.count >= MAX_LAYOUT_CONTROL_COUNT) return null
+function normalizeControlItem(source: ControlItem, depth: number, state: NormalizeState,
+  path: string): ControlItem | null {
+  if (!source) return rejectControl(state, path, 'not-object')
+  if (depth > MAX_LAYOUT_CHILD_DEPTH) return rejectControl(state, path, 'depth')
+  if (state.count >= MAX_LAYOUT_CONTROL_COUNT) return rejectControl(state, path, 'count')
   // 23 = native 的 `AMCL_CONTROL_ID_MAX_BYTES`（ABI 镜像，见 MAX_LAYOUT_CONTROL_COUNT 处的说明）。
   // 用**字节**而不是字符：native 侧是定长 char[]，一个中文 id 是 3 字节/字。
-  if (typeof source.id !== 'string' || source.id.length === 0 || utf8ByteLength(source.id) > 23
-      || state.usedIds.has(source.id)) return null
-  if (typeof source.label !== 'string' || utf8ByteLength(source.label) > 256) return null
-  if (!validControlType(source.type) || !validCompatOutputCode(source.keyOrMouse)) return null
-  if (!finiteInRange(source.xPct, 0, 1) || !finiteInRange(source.yPct, 0, 1)) return null
-  if (!finiteInRange(source.baseWidth, 1, 4096) || !finiteInRange(source.baseHeight, 1, 4096)) return null
-  if (source.itemScale !== undefined && !finiteInRange(source.itemScale, 0.1, 10)) return null
-  if (typeof source.isCircle !== 'boolean') return null
+  if (typeof source.id !== 'string' || source.id.length === 0) return rejectControl(state, path, 'id-missing')
+  if (utf8ByteLength(source.id) > 23) return rejectControl(state, path, 'id-length')
+  if (state.usedIds.has(source.id)) return rejectControl(state, path, 'id-duplicate')
+  if (typeof source.label !== 'string' || utf8ByteLength(source.label) > 256) return rejectControl(state, path, 'label')
+  if (!validControlType(source.type)) return rejectControl(state, path, 'type')
+  if (!validCompatOutputCode(source.keyOrMouse)) return rejectControl(state, path, 'keyOrMouse')
+  if (!finiteInRange(source.xPct, 0, 1) || !finiteInRange(source.yPct, 0, 1)) {
+    return rejectControl(state, path, 'position')
+  }
+  if (!finiteInRange(source.baseWidth, 1, 4096) || !finiteInRange(source.baseHeight, 1, 4096)) {
+    return rejectControl(state, path, 'size')
+  }
+  if (source.itemScale !== undefined && !finiteInRange(source.itemScale, 0.1, 10)) {
+    return rejectControl(state, path, 'itemScale')
+  }
+  if (typeof source.isCircle !== 'boolean') return rejectControl(state, path, 'isCircle')
 
-  if (source.trigger !== undefined && !validTrigger(source.trigger)) return null
-  if (source.alignGroup !== undefined && !validAlignGroup(source.alignGroup)) return null
-  if (source.alignIndex !== undefined && !validInteger(source.alignIndex, 0, 255)) return null
-  if (source.grabbedOnly !== undefined && typeof source.grabbedOnly !== 'boolean') return null
+  if (source.trigger !== undefined && !validTrigger(source.trigger)) return rejectControl(state, path, 'trigger')
+  if (source.alignGroup !== undefined && !validAlignGroup(source.alignGroup)) {
+    return rejectControl(state, path, 'alignGroup')
+  }
+  if (source.alignIndex !== undefined && !validInteger(source.alignIndex, 0, 255)) {
+    return rejectControl(state, path, 'alignIndex')
+  }
+  if (source.grabbedOnly !== undefined && typeof source.grabbedOnly !== 'boolean') {
+    return rejectControl(state, path, 'grabbedOnly')
+  }
   const trigger: TriggerMode = source.trigger ?? 'press'
   const alignGroup: AlignGroup = source.alignGroup ?? AlignGroup.NONE
   const alignIndex: number = source.alignIndex ?? 0
   const grabbedOnly: boolean = source.grabbedOnly ?? false
   if (!validOptionalBoolean(source.menuOnly) || !validOptionalBoolean(source.hidden)
-      || !validOptionalBoolean(source.locked) || !validOptionalBoolean(source.dragLook)) return null
+      || !validOptionalBoolean(source.locked) || !validOptionalBoolean(source.dragLook)) {
+    return rejectControl(state, path, 'flags')
+  }
 
   if (source.keys !== undefined) {
     // 6 = native 的 `AMCL_CONTROL_MAX_KEYS`（ABI 镜像，见 MAX_LAYOUT_CONTROL_COUNT 处的说明）。
-    if (!Array.isArray(source.keys) || source.keys.length > 6) return null
+    if (!Array.isArray(source.keys) || source.keys.length > MAX_LAYOUT_CONTROL_KEYS) return rejectControl(state, path, 'keys')
     for (let i = 0; i < source.keys.length; i++) {
-      if (!validOutputCode(source.keys[i])) return null
+      if (!validOutputCode(source.keys[i])) return rejectControl(state, path, 'keys')
     }
   }
-  // keys[] 非空时它是实际绑定；否则 BUTTON 回退 keyOrMouse。两条路径都必须至少提供一个
-  // native 可表达的输出，禁止把 0 当作“以后再配”并持久化到运行时 schema。
+  // keys非空时是实际绑定；显式keys=[]且keyOrMouse=0表示用户解除绑定。缺省keys的0仍属坏配置。
+  // 已解除按钮保留在编辑草稿/存档，但运行时不显示、不占热区，也不进入要求有效输出的native schema。
   if (source.systemAction !== undefined && source.systemAction !== 'input'
-      && source.systemAction !== 'edit' && source.systemAction !== 'visibility') return null
+      && source.systemAction !== 'edit' && source.systemAction !== 'visibility' && source.systemAction !== 'mouse') {
+    return rejectControl(state, path, 'systemAction')
+  }
   // 系统功能按钮（systemAction 非空）不发键，豁免"BUTTON 必须有有效键"的要求。
   if (source.type === ControlType.BUTTON && source.systemAction === undefined
-      && (!source.keys || source.keys.length === 0) && !validOutputCode(source.keyOrMouse)) return null
-  if (source.modifiers !== undefined && !validInteger(source.modifiers, 0, 65535)) return null
+      && (!source.keys || source.keys.length === 0) && !validOutputCode(source.keyOrMouse)
+      && !(source.keys !== undefined && source.keys.length === 0 && source.keyOrMouse === 0)) {
+    return rejectControl(state, path, 'no-output')
+  }
+  if (source.modifiers !== undefined && !validInteger(source.modifiers, 0, 65535)) {
+    return rejectControl(state, path, 'modifiers')
+  }
+  if (source.swipeGroup !== undefined && (typeof source.swipeGroup !== 'string'
+    || utf8ByteLength(source.swipeGroup) > 23 || (source.swipeGroup.length > 0
+    && (source.type !== ControlType.BUTTON || trigger !== 'press' || source.dragLook === true
+      || source.systemAction !== undefined)))) return rejectControl(state, path, 'swipeGroup')
   if (source.visibilityOverride !== undefined && source.visibilityOverride !== 'auto'
-      && source.visibilityOverride !== 'force_show' && source.visibilityOverride !== 'force_hide') return null
+      && source.visibilityOverride !== 'force_show' && source.visibilityOverride !== 'force_hide') {
+    return rejectControl(state, path, 'visibilityOverride')
+  }
   if (source.hideOnInput !== undefined) {
-    if (!Array.isArray(source.hideOnInput) || source.hideOnInput.length > 3) return null
+    if (!Array.isArray(source.hideOnInput) || source.hideOnInput.length > 3) {
+      return rejectControl(state, path, 'hideOnInput')
+    }
     for (let i = 0; i < source.hideOnInput.length; i++) {
       const h = source.hideOnInput[i]
-      if (h !== 'mouse' && h !== 'keyboard' && h !== 'mouse_and_keyboard') return null
+      if (h !== 'mouse' && h !== 'keyboard' && h !== 'mouse_and_keyboard') {
+        return rejectControl(state, path, 'hideOnInput')
+      }
     }
   }
   if (source.style !== undefined) {
-    if (!source.style || typeof source.style !== 'object') return null
+    if (!source.style || typeof source.style !== 'object') return rejectControl(state, path, 'style')
     const s = source.style
     if ((s.bg !== undefined && (typeof s.bg !== 'string' || s.bg.length > 64))
         || (s.bgPressed !== undefined && (typeof s.bgPressed !== 'string' || s.bgPressed.length > 64))
-        || (s.fg !== undefined && (typeof s.fg !== 'string' || s.fg.length > 64))) return null
-    if (s.opacity !== undefined && !finiteInRange(s.opacity, 0.1, 1)) return null
-    if (s.cornerRadius !== undefined && !finiteInRange(s.cornerRadius, 0, 1)) return null
+        || (s.fg !== undefined && (typeof s.fg !== 'string' || s.fg.length > 64))) {
+      return rejectControl(state, path, 'style')
+    }
+    if (s.opacity !== undefined && !finiteInRange(s.opacity, 0.1, 1)) return rejectControl(state, path, 'style')
+    if (s.cornerRadius !== undefined && !finiteInRange(s.cornerRadius, 0, 1)) {
+      return rejectControl(state, path, 'style')
+    }
     if (s.shape !== undefined && s.shape !== 'circle' && s.shape !== 'square'
-        && s.shape !== 'rounded' && s.shape !== 'diamond') return null
+        && s.shape !== 'rounded' && s.shape !== 'diamond') return rejectControl(state, path, 'style')
   }
-  if (source.children !== undefined && !Array.isArray(source.children)) return null
-  if (source.hotbarUserPlaced !== undefined && typeof source.hotbarUserPlaced !== 'boolean') return null
+  if (source.children !== undefined && !Array.isArray(source.children)) {
+    return rejectControl(state, path, 'children')
+  }
+  if (source.hotbarUserPlaced !== undefined && typeof source.hotbarUserPlaced !== 'boolean') {
+    return rejectControl(state, path, 'hotbarUserPlaced')
+  }
 
   state.usedIds.add(source.id)
   state.count++
@@ -917,7 +1180,9 @@ function normalizeControlItem(source: ControlItem, depth: number, state: Normali
   if (source.children) {
     normalized.children = []
     for (let i = 0; i < source.children.length; i++) {
-      const child = normalizeControlItem(source.children[i], depth + 1, state)
+      // 子节点失败时 state.reason 已由子节点写好，这里只向上传播 null，不再覆盖原因。
+      const child = normalizeControlItem(source.children[i], depth + 1, state,
+        path + '.children[' + i.toString() + ']')
       if (!child) return null
       normalized.children.push(child)
     }
@@ -950,21 +1215,73 @@ function validGamepadConfig(g: GamepadConfig | undefined): boolean {
 }
 
 /**
+ * 带原因码的校验结果：成功时 profile 非空且 reason 为空串；失败时 profile 为 null，
+ * reason 是首个失败规则（方案级 `profile.<字段>`，控件级 `control[i].<规则>`）。
+ */
+export interface LayoutValidationResult {
+  profile: LayoutProfile | null
+  reason: string
+}
+
+function rejectProfile(reason: string): LayoutValidationResult {
+  return { profile: null, reason: reason }
+}
+
+/**
  * 统一纯函数入口：输入不被修改；成功返回完成迁移且完全深拷贝的新对象，失败返回 null。
  * 所有计数、ID 唯一性和深度规则覆盖整棵 children 树，不存在“前 256 个可用、后面静默丢弃”的部分接受。
+ * 规则只在 `validateAndNormalizeLayoutWithReason` 里写一份；这里只丢弃原因，行为与签名保持不变。
  */
 export function validateAndNormalizeLayout(source: LayoutProfile): LayoutProfile | null {
-  if (!source || typeof source.name !== 'string' || source.name.length === 0 || utf8ByteLength(source.name) > 256
-      || !Array.isArray(source.controls)) return null
-  if (source.version !== undefined && !validInteger(source.version, 1, LAYOUT_PROFILE_VERSION)) return null
-  if (source.globalScale !== undefined && !finiteInRange(source.globalScale, 0.5, 2)) return null
-  if (source.lookSensitivity !== undefined && !finiteInRange(source.lookSensitivity, 0.3, 3)) return null
-  if (source.lookSmoothing !== undefined && !finiteInRange(source.lookSmoothing, 0.1, 1)) return null
-  if (source.lookAccel !== undefined && !finiteInRange(source.lookAccel, 0, 1)) return null
+  return validateAndNormalizeLayoutWithReason(source).profile
+}
+
+/**
+ * 与 `validateAndNormalizeLayout` 同一套规则，额外报告首个失败原因，供持久化加载做逐方案
+ * 隔离与日志统计。原因码不含方案名、控件 id 等用户文本；成功路径的输出与旧入口逐字段一致。
+ */
+export function validateAndNormalizeLayoutWithReason(source: LayoutProfile): LayoutValidationResult {
+  if (!source) return rejectProfile('profile.not-object')
+  if (source.profileId !== undefined && (typeof source.profileId !== 'string'
+      || !new RegExp('^[a-zA-Z0-9_-]{1,64}$').test(source.profileId))) return rejectProfile('profile.identity')
+  if (source.profileRevision !== undefined && (!Number.isSafeInteger(source.profileRevision)
+      || source.profileRevision < 1)) return rejectProfile('profile.revision')
+  if (typeof source.name !== 'string' || source.name.length === 0 || utf8ByteLength(source.name) > 256) {
+    return rejectProfile('profile.name')
+  }
+  if (!Array.isArray(source.controls)) return rejectProfile('profile.controls')
+  if (source.version !== undefined && !validInteger(source.version, 1, CONTROL_GROUP_PROFILE_VERSION)) {
+    return rejectProfile('profile.version')
+  }
+  // 扩展必须声明新格式，避免旧v3读取器忽略字段后把独立政策误当全来源。
+  // 外部值先验证再clone；不能把非法扩展复制成undefined悄悄降级旧政策。
+  if (source.lookPolicies !== undefined && ((source.version !== SOURCE_LOOK_PROFILE_VERSION && source.version !== CONTROL_GROUP_PROFILE_VERSION)
+      || copySourceLookPreferences(source.lookPolicies) === undefined)) return rejectProfile('profile.lookPolicies')
+  if (source.version === SOURCE_LOOK_PROFILE_VERSION && source.lookPolicies === undefined) {
+    return rejectProfile('profile.lookPolicies.missing')
+  }
+  const groupIssue: string = layoutControlGroupIssue(source)
+  if (groupIssue.length > 0) return rejectProfile('profile.' + groupIssue)
+  if (source.globalScale !== undefined && !finiteInRange(source.globalScale, 0.5, 2)) {
+    return rejectProfile('profile.globalScale')
+  }
+  if (source.lookSensitivity !== undefined && !finiteInRange(source.lookSensitivity, 0.3, 3)) {
+    return rejectProfile('profile.lookSensitivity')
+  }
+  if (source.lookSmoothing !== undefined && !finiteInRange(source.lookSmoothing, 0.1, 1)) {
+    return rejectProfile('profile.lookSmoothing')
+  }
+  if (source.lookAccel !== undefined && !finiteInRange(source.lookAccel, 0, 1)) {
+    return rejectProfile('profile.lookAccel')
+  }
   // Native Control Schema v2 要求 deadZone > 0；与编辑器 1% 最小步长统一，避免 ArkTS
   // 接受 0 后运行时整张 schema 被拒绝。合法空 controls 表也遵循同一契约。
-  if (source.joystickDeadZone !== undefined && !finiteInRange(source.joystickDeadZone, 0.01, 0.95)) return null
-  if (source.globalOpacity !== undefined && !finiteInRange(source.globalOpacity, 0.1, 1)) return null
+  if (source.joystickDeadZone !== undefined && !finiteInRange(source.joystickDeadZone, 0.01, 0.95)) {
+    return rejectProfile('profile.joystickDeadZone')
+  }
+  if (source.globalOpacity !== undefined && !finiteInRange(source.globalOpacity, 0.1, 1)) {
+    return rejectProfile('profile.globalOpacity')
+  }
   const globalScale = source.globalScale ?? 1.0
   const lookSensitivity = source.lookSensitivity ?? DEFAULT_LOOK_SENSITIVITY
   const lookSmoothing = source.lookSmoothing ?? DEFAULT_LOOK_SMOOTHING
@@ -973,25 +1290,33 @@ export function validateAndNormalizeLayout(source: LayoutProfile): LayoutProfile
   const globalOpacity = source.globalOpacity ?? DEFAULT_GLOBAL_OPACITY
   if (!finiteInRange(globalScale, 0.5, 2) || !finiteInRange(lookSensitivity, 0.3, 3)
       || !finiteInRange(lookSmoothing, 0.1, 1) || !finiteInRange(lookAccel, 0, 1)
-      || !finiteInRange(joystickDeadZone, 0.01, 0.95) || !finiteInRange(globalOpacity, 0.1, 1)) return null
+      || !finiteInRange(joystickDeadZone, 0.01, 0.95) || !finiteInRange(globalOpacity, 0.1, 1)) {
+    return rejectProfile('profile.defaults')
+  }
   if (!validOptionalBoolean(source.invertY) || !validOptionalBoolean(source.haptic)
       || !validOptionalBoolean(source.isPreset) || !validOptionalBoolean(source.hotbarAutoAdded)
-      || !validOptionalBoolean(source.snapEnabled)) return null
-  if (source.snapGap !== undefined && !finiteInRange(source.snapGap, 0, 400)) return null
-  if (source.snapStrength !== undefined && !finiteInRange(source.snapStrength, 1, 60)) return null
+      || !validOptionalBoolean(source.snapEnabled)) return rejectProfile('profile.flags')
+  if (source.snapGap !== undefined && !finiteInRange(source.snapGap, 0, 400)) return rejectProfile('profile.snapGap')
+  if (source.snapStrength !== undefined && !finiteInRange(source.snapStrength, 1, 60)) {
+    return rejectProfile('profile.snapStrength')
+  }
   if (source.targetDevice !== undefined && source.targetDevice !== 'phone' && source.targetDevice !== 'tablet'
-      && source.targetDevice !== 'foldable' && source.targetDevice !== 'any') return null
-  if (!validGamepadConfig(source.gamepad)) return null
+      && source.targetDevice !== 'foldable' && source.targetDevice !== 'any') {
+    return rejectProfile('profile.targetDevice')
+  }
+  if (!validGamepadConfig(source.gamepad)) return rejectProfile('profile.gamepad')
+  // 校验必须先于 clone；不能把非法的新策略归一化成缺省值后静默覆盖用户配置。
+  if (normalizeTouchPreferences(source.touch) === undefined) return rejectProfile('profile.touch')
 
-  const state: NormalizeState = { usedIds: new Set<string>(), count: 0 }
+  const state: NormalizeState = { usedIds: new Set<string>(), count: 0, reason: '' }
   const controls: ControlItem[] = []
   for (let i = 0; i < source.controls.length; i++) {
-    const item = normalizeControlItem(source.controls[i], 0, state)
-    if (!item) return null
+    const item = normalizeControlItem(source.controls[i], 0, state, 'control[' + i.toString() + ']')
+    if (!item) return rejectProfile(state.reason.length > 0 ? state.reason : 'control[' + i.toString() + '].invalid')
     controls.push(item)
   }
   const result = cloneLayout(source)
-  result.version = LAYOUT_PROFILE_VERSION
+  result.version = layoutProfileVersion(source)
   result.globalScale = globalScale
   result.lookSensitivity = lookSensitivity
   result.invertY = source.invertY ?? DEFAULT_INVERT_Y
@@ -1005,7 +1330,52 @@ export function validateAndNormalizeLayout(source: LayoutProfile): LayoutProfile
   result.deviceModel = (typeof source.deviceModel === 'string' && utf8ByteLength(source.deviceModel) <= 256)
     ? source.deviceModel : undefined
   result.controls = controls
+  return { profile: result, reason: '' }
+}
+
+/** 控件 id 保守修复的结果：profile 是修复后的深拷贝（仍需再过一次校验），repaired 是改写的 id 数。 */
+export interface ControlIdRepairResult {
+  profile: LayoutProfile
+  repaired: number
+}
+
+/**
+ * 只为“字符串 id 超过 23 字节”或“在整棵树里重复”的控件重新分配 id，其余字段一概不动。
+ * 旧编辑器生成的复制品 id 可达 26 字节，是升级后整批方案被判非法的已知触发条件。
+ * 允许改 id 的前提（已逐字段核对）：方案内没有任何字段引用控件 id —— alignGroup 是枚举、
+ * alignIndex 是序号、children 是嵌套控件本身、gamepad.buttonMap 映射到键码；运行时按 id
+ * 建的表都是瞬时状态。保留顺序与规范化一致（先序遍历），首个合法出现者保留原 id。
+ * 输入不被修改；没有可修复的 id 时返回 null。修复结果不保证合法，调用方必须再校验一次。
+ */
+export function repairLayoutControlIds(source: LayoutProfile): ControlIdRepairResult | null {
+  if (!source || typeof source !== 'object' || !Array.isArray(source.controls)) return null
+  // 持久化数据来自 JSON.parse，JSON 往返是无副作用的完整深拷贝，不依赖字段是否合法。
+  const copy: LayoutProfile = JSON.parse(JSON.stringify(source)) as LayoutProfile
+  const kept: Set<string> = new Set<string>()
+  const targets: ControlItem[] = []
+  collectIdRepairTargets(copy.controls, 0, kept, targets)
+  if (targets.length === 0) return null
+  // 先收齐全部保留 id 再分配，新 id 才不会与树中后面才出现的合法 id 撞车。
+  for (let i = 0; i < targets.length; i++) targets[i].id = nextControlId(kept)
+  const result: ControlIdRepairResult = { profile: copy, repaired: targets.length }
   return result
+}
+
+/** 先序收集：合法且首次出现的 id 进 kept，超长或重复的节点进 targets；非字符串 id 不修复。 */
+function collectIdRepairTargets(items: ControlItem[], depth: number, kept: Set<string>, targets: ControlItem[]): void {
+  if (depth > MAX_LAYOUT_CHILD_DEPTH) return
+  for (let i = 0; i < items.length; i++) {
+    const item: ControlItem = items[i]
+    if (!item || typeof item !== 'object') continue
+    if (typeof item.id === 'string' && item.id.length > 0) {
+      if (utf8ByteLength(item.id) > 23 || kept.has(item.id)) targets.push(item)
+      else kept.add(item.id)
+    }
+    const children: ControlItem[] | undefined = item.children
+    if (children !== undefined && Array.isArray(children)) {
+      collectIdRepairTargets(children, depth + 1, kept, targets)
+    }
+  }
 }
 
 /** v1/v2/v3 迁移统一委托给 fail-closed 规范化器；不再原地修改或部分迁移。 */
@@ -1024,11 +1394,12 @@ function isLegacyDecorLabel(label: string): boolean {
 
 /**
  * 取一个控件的"实际触发键序列"。
- * 优先级：keys[] 非空 → keys；否则 → [keyOrMouse]。
+ * keys非空优先；显式空keys和0表示解除，返回空数组；其它旧方案继续回退keyOrMouse。
  * 调用方负责处理 keyOrMouse 的鼠标负数编码。
  */
 export function effectiveKeys(c: ControlItem): number[] {
   if (c.keys && c.keys.length > 0) return c.keys
+  if (c.keys !== undefined && c.keys.length === 0 && c.keyOrMouse === 0) return []
   return [c.keyOrMouse]
 }
 
@@ -1105,7 +1476,7 @@ export const HOTBAR_SLOT_COUNT: number = 9
 // ==================== 系统功能按钮（输入 / 设置 / 显示）====================
 // 外观与普通按钮一致（走同一 ButtonView），但由 systemAction 触发应用级功能而非发键。可移动/缩放/
 // 改外观，但不可删除，并由 LayoutStore.ensureSystemControls 保证每个方案都存在。
-export type SystemAction = 'input' | 'edit' | 'visibility'
+export type SystemAction = 'input' | 'edit' | 'visibility' | 'mouse'
 export const SYS_INPUT_ID: string = 'ime_chat'   // 沿用历史 id，兼容老存档
 export const SYS_EDIT_ID: string = 'sys_edit'
 export const SYS_VIS_ID: string = 'sys_vis'
@@ -1113,6 +1484,7 @@ export const SYS_VIS_ID: string = 'sys_vis'
 export function systemActionId(action: SystemAction): string {
   if (action === 'input') return SYS_INPUT_ID
   if (action === 'edit') return SYS_EDIT_ID
+  if (action === 'mouse') return 'sys_mouse'
   return SYS_VIS_ID
 }
 
@@ -1120,7 +1492,7 @@ export function systemActionId(action: SystemAction): string {
 export function makeSystemButton(action: SystemAction, xPct: number, yPct: number, alignIndex: number): ControlItem {
   return {
     id: systemActionId(action),
-    label: action === 'input' ? '输入' : (action === 'edit' ? '设置' : '显示'),
+    label: action === 'input' ? '输入' : (action === 'edit' ? '设置' : (action === 'mouse' ? '鼠标' : '显示')),
     type: ControlType.BUTTON,
     systemAction: action,
     // 仅 input 需要一个真实键（默认 T）用于在游戏内打开 MC 聊天；edit/visibility 不发键。
@@ -1133,6 +1505,18 @@ export function makeSystemButton(action: SystemAction, xPct: number, yPct: numbe
     grabbedOnly: action === 'visibility',
     menuOnly: false
   }
+}
+
+/**
+ * 新增鼠标入口的唯一出厂位置：右下方的百分比工具位，按按钮尺寸由原有投影夹入surface，不承诺固定vp边距。
+ * 手机/平板预设、通用默认布局及旧版缺项补齐共用此工厂，避免不同入口路径产生不同默认位置。
+ * 这只是创建时的默认值，不是每次加载的锚定政策；已有控件仍使用自己的百分比、尺寸和显隐，不自动回位。
+ * 取消功能键对齐组使它保持独立工具位，不会因编辑器整理顶部功能键而被带回顶栏。
+ */
+export function makeDefaultSystemMouseControl(): ControlItem {
+  const item: ControlItem = makeSystemButton('mouse', .94, .90, 7)
+  item.alignGroup = AlignGroup.NONE
+  return item
 }
 
 export function makeHotbarSelector(xPct: number, yPct: number, baseWidth: number, baseHeight: number): ControlItem {

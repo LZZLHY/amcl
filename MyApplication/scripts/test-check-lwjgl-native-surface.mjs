@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { compareJniSurface } from './check-lwjgl-native-surface.mjs';
+import { compareJniSurface, lwjglSourceIdentityProblems } from './check-lwjgl-native-surface.mjs';
+
+// 身份负控不污染真实子仓：生产入口自己调用 git，纯判据只在这里接受明确夹具输入。
+const sourceCommit = '32593afe25e2f1394c3425673f1b71a0122f5cd4';
+assert.deepEqual(lwjglSourceIdentityProblems(sourceCommit, sourceCommit, ''), []);
+assert.match(lwjglSourceIdentityProblems(sourceCommit, '0'.repeat(40), '').join(), /HEAD=/);
+assert.match(lwjglSourceIdentityProblems(sourceCommit, sourceCommit, ' M modules/lwjgl/shaderc/src/generated/java/Shaderc.java\n').join(), /source is dirty/);
+assert.match(lwjglSourceIdentityProblems('not-a-commit', sourceCommit, '').join(), /sourceCommit is malformed/);
 
 const ordinary = 'Java_fixture_regularEntry';
 const mandatory = new Map([
+  ['liblwjgl_nanovg.so', 'Java_org_lwjgl_nanovg_LibNanoVG_setupMalloc'],
   ['liblwjgl_stb.so', 'Java_org_lwjgl_stb_LibSTB_setupMalloc'],
   ['liblwjgl_spng.so', 'Java_org_lwjgl_util_spng_LibSPNG_setupMalloc'],
   ['liblwjgl_vma.so', 'Java_org_lwjgl_util_vma_LibVma_setupMalloc'],

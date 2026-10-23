@@ -1,0 +1,211 @@
+/* 完整维护SDL SDK与production Source/Core/bridge的纵向验证。
+ * 平台窗口发现使用原fullSDK fixture边缘，五整数/typed读取均实际生产，不有测试队列。
+ * Source accepted、SDK cache/ADD、实际Poll分别验，不宣称真实游戏/设备。 */
+@PRELUDE@
+static const AmclSourceControlPortV1 *source;
+static Uint64 sourceProducer;
+static const AmclInputHostApiV1 *core;
+static SDL_Event resultEvents[128];static int resultCount;
+static void pumpSource(void) {
+  OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+  SDL_Event event;resultCount=0;
+  while(SDL_PollEvent(&event))if(event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP||
+      event.type==SDL_EVENT_MOUSE_BUTTON_DOWN||event.type==SDL_EVENT_MOUSE_BUTTON_UP||event.type==SDL_EVENT_MOUSE_MOTION||event.type==SDL_EVENT_TEXT_INPUT){
+    CHECK(resultCount<128);resultEvents[resultCount++]=event;
+  }
+}
+static bool keyA(void){int count=0;const bool* state=SDL_GetKeyboardState(&count);CHECK(count>SDL_SCANCODE_A);return state[SDL_SCANCODE_A];}
+/* 事件与Poll缓存分别按真实SDL枚举核验，六码只有数量正确不足以证明最终键位正确。 */
+static void checkChord(int eventType,bool heldState) {
+  const SDL_Scancode codes[]={SDL_SCANCODE_A,SDL_SCANCODE_B,SDL_SCANCODE_C,SDL_SCANCODE_D,SDL_SCANCODE_E,SDL_SCANCODE_F};
+  int size=0;const bool* state=SDL_GetKeyboardState(&size);CHECK(size>SDL_SCANCODE_F&&resultCount==6);
+  for(int i=0;i<6;i++){
+    CHECK(state[codes[i]]==heldState);int seen=0;
+    for(int j=0;j<resultCount;j++)if(resultEvents[j].type==eventType&&resultEvents[j].key.scancode==codes[i])++seen;
+    CHECK(seen==1);
+  }
+}
+static AmclSourceResultV1 command(AmclSourceRequestV1 request) {
+  request.size=sizeof(request);AmclSourceResultV1 result;SDL_zero(result);
+  (void)source->transact(sourceProducer,&request,&result);return result;
+}
+static Uint64 held(Uint32 origin,const char* name,const int* codes,Uint32 count) {
+  AmclSourceRequestV1 request;SDL_zero(request);request.operation=AMCL_SOURCE_ACQUIRE;request.source=origin;
+  request.count=count;SDL_strlcpy(request.control,name,sizeof(request.control));
+  for(Uint32 i=0;i<count;i++){request.outputs[i].kind=codes[i]<0?1u:0u;request.outputs[i].code=codes[i]<0?-codes[i]-1:codes[i];}
+  AmclSourceResultV1 result=command(request);CHECK(result.accepted&&result.owner);return result.owner;
+}
+static AmclSourceResultV1 release(Uint64 owner) {AmclSourceRequestV1 r;SDL_zero(r);r.operation=AMCL_SOURCE_RELEASE;r.owner=owner;return command(r);}
+/** fixture只提交真实Core生命周期，不能给SDK的cache/ADD/Poll造ready或成对事件。 */
+static void stampOwnedText(AmclInputEvent* event) {
+  AmclInputSnapshotV1 snapshot;SDL_zero(snapshot);snapshot.abiVersion=1;snapshot.structSize=sizeof(snapshot);
+  CHECK(core->getSnapshot(&snapshot)==AMCL_INPUT_OK);
+  event->header.sessionEpoch=snapshot.sessionEpoch;event->header.focusEpoch=snapshot.focusEpoch;
+  event->header.surfaceEpoch=snapshot.surfaceEpoch;
+}
+static void ownedTextSessionAt(Uint64 session,Uint32 change) {
+  AmclInputEvent event;SDL_zero(event);event.header.abiVersion=1;event.header.structSize=sizeof(event);
+  event.header.eventType=AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED;event.header.source=AMCL_INPUT_SOURCE_IME;
+  stampOwnedText(&event);event.payload.textSession.textSessionId=session;event.payload.textSession.change=change;
+  event.payload.textSession.reason=AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;
+  CHECK(core->submitEvent(&event)==AMCL_INPUT_OK);
+}
+static void ownedTextSession(Uint32 change){ownedTextSessionAt(700,change);}
+static void checkOwnedLatePair(void){
+  int down=0,up=0;for(int i=0;i<4;++i){pumpSource();for(int j=0;j<resultCount;++j)
+    if((resultEvents[j].type==SDL_EVENT_KEY_DOWN||resultEvents[j].type==SDL_EVENT_KEY_UP)&&resultEvents[j].key.scancode==SDL_SCANCODE_BACKSPACE){
+      down+=resultEvents[j].type==SDL_EVENT_KEY_DOWN;up+=resultEvents[j].type==SDL_EVENT_KEY_UP;}}
+  CHECK(down==1&&up==1&&!SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]);
+}
+static void ownedCommit(Uint64 session,const char* value) {
+  AmclInputEvent event;SDL_zero(event);event.header.abiVersion=1;event.header.structSize=sizeof(event);
+  event.header.eventType=AMCL_INPUT_EVENT_TEXT_COMMIT;event.header.source=AMCL_INPUT_SOURCE_IME;
+  stampOwnedText(&event);event.payload.textCommit.textSessionId=session;
+  CHECK(core->submitTextPacket(&event,(const uint8_t*)value,1)==AMCL_INPUT_OK);
+}
+static void typedKey(int action) {
+  AmclInputEvent event;SDL_zero(event);event.header.abiVersion=1;event.header.structSize=sizeof(event);
+  event.header.eventType=AMCL_INPUT_EVENT_PHYSICAL_KEY;event.header.source=AMCL_INPUT_SOURCE_KEYBOARD;
+  event.header.deviceId=7001;event.payload.physicalKey.physicalKey=2017;event.payload.physicalKey.hardwareScanCode=30;
+  event.payload.physicalKey.action=action;CHECK(core->submitEvent(&event)==AMCL_INPUT_OK);
+}
+int main(void) {
+  core=amclInputGetHostApiV1();CHECK(amclInputHostDescriptorPublishV1(core)==0);
+  amclControlDeliveryPublishV1();amclLookExecutionPublishV1();amclSourceControlPublishV1();CHECK(amclSourceControlPrepareV1()==1);
+  CHECK(amclSourceControlResolveV1(&source)==0);CHECK(source->preparedProducer(AMCL_SOURCE_ENTRY,&sourceProducer)==0&&sourceProducer);
+  Uint64 epoch=0;CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+  AmclInputSurfacePayload surface;SDL_zero(surface);surface.active=1;surface.widthPx=640;surface.heightPx=480;surface.density=1;
+  surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;CHECK(core->publishSurface(&surface)==0);
+  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");CHECK(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+  activeWindow=SDL_CreateWindow("Source SDK",640,480,SDL_WINDOW_HIDDEN);CHECK(activeWindow);initialWindowId=activeWindow->id;
+  AmclInputEvent context;SDL_zero(context);context.header.abiVersion=1;context.header.structSize=sizeof(context);
+  context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+  context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=activeWindow->id;context.payload.surfaceContext.displayId=1;
+  context.payload.surfaceContext.widthPx=640;context.payload.surfaceContext.heightPx=480;context.payload.surfaceContext.density=1;
+  context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+    AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+  CHECK(core->submitEvent(&context)==0);CHECK(sourceSdkBind()==1);sourceSdkActivate();
+  CHECK(amclControlDeliveryBindSessionV1(1)==0);host_look_port=amclLookExecutionGetPortV1();CHECK(host_look_port->bindSession(1)==0);
+  SDL_SetKeyboardFocus(activeWindow);SDL_SetMouseFocus(activeWindow);grabbing=false;CHECK(OPENHARMONY_ControlReady(activeWindow->id));
+  amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,1);pumpSource();
+  /* 实际SDK Init/keyboard sink与真实Core Ready先成立，private Source能力不替代它。 */
+  CHECK(SDL_StartTextInput(activeWindow));ownedTextSession(AMCL_INPUT_TEXT_SESSION_STARTED);pumpSource();
+  AmclInputTextCoreResourceV1 textResource;SDL_zero(textResource);CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);
+  AmclSourceResultV1 textTap;SDL_zero(textTap);
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);
+  CHECK(textTap.accepted&&textTap.transportAccepted&&textTap.finalEdges==2);
+  int ownedDown=0,ownedUp=0;
+  for(int frame=0;frame<4;++frame){pumpSource();
+    for(int i=0;i<resultCount;++i)if(resultEvents[i].key.scancode==SDL_SCANCODE_BACKSPACE){
+      ownedDown+=resultEvents[i].type==SDL_EVENT_KEY_DOWN;ownedUp+=resultEvents[i].type==SDL_EVENT_KEY_UP;}
+    int keyboardSize=0;const bool* keyboard=SDL_GetKeyboardState(&keyboardSize);CHECK(keyboardSize>SDL_SCANCODE_BACKSPACE);
+  }
+  int keyboardSize=0;const bool* keyboard=SDL_GetKeyboardState(&keyboardSize);
+  CHECK(ownedDown==1&&ownedUp==1&&!keyboard[SDL_SCANCODE_BACKSPACE]);
+  /* 原tap整批先接受，后续old commit/END/new START/commit在actual shared order中排队。
+   * observer只读实际SDK ADD/Poll结果，不以producer文本current改写已接受命令。 */
+  SDL_zero(textTap);source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(textTap.accepted);
+  ownedCommit(700,"o");ownedTextSession(AMCL_INPUT_TEXT_SESSION_ENDED);
+  AmclInputEvent newStart;SDL_zero(newStart);newStart.header.abiVersion=1;newStart.header.structSize=sizeof(newStart);
+  newStart.header.eventType=AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED;newStart.header.source=AMCL_INPUT_SOURCE_IME;
+  stampOwnedText(&newStart);newStart.payload.textSession.textSessionId=701;newStart.payload.textSession.change=AMCL_INPUT_TEXT_SESSION_STARTED;
+  newStart.payload.textSession.reason=AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;
+  CHECK(core->submitEvent(&newStart)==AMCL_INPUT_OK);ownedCommit(701,"n");
+  int boundary[8]={0},boundaryCount=0;ownedDown=0;ownedUp=0;for(int frame=0;frame<4;++frame){pumpSource();
+    for(int i=0;i<resultCount;++i){const SDL_Event* event=&resultEvents[i];
+      if((event->type==SDL_EVENT_KEY_DOWN||event->type==SDL_EVENT_KEY_UP)&&event->key.scancode==SDL_SCANCODE_BACKSPACE){
+        ownedDown+=event->type==SDL_EVENT_KEY_DOWN;ownedUp+=event->type==SDL_EVENT_KEY_UP;CHECK(boundaryCount<8);boundary[boundaryCount++]=event->type==SDL_EVENT_KEY_DOWN?1:2;}
+      else if(event->type==SDL_EVENT_TEXT_INPUT&&event->text.text&&(event->text.text[0]=='o'||event->text.text[0]=='n')){
+        CHECK(boundaryCount<8);boundary[boundaryCount++]=event->text.text[0]=='o'?3:4;}}
+    (void)SDL_GetKeyboardState(NULL);}
+  CHECK(ownedDown==1&&ownedUp==1&&!SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]);
+  int d=-1,o=-1,n=-1;for(int i=0;i<boundaryCount;++i){if(boundary[i]==1)d=i;if(boundary[i]==3)o=i;if(boundary[i]==4)n=i;}
+  printf("SDL owned late ordered boundary=");for(int i=0;i<boundaryCount;++i)printf("%d,",boundary[i]);puts("");
+  CHECK(d>=0&&o>d&&n>o);
+  puts("PASS SDL accepted owned pair before END/newscope survives late actual Poll and final UP");
+  pumpSource();SDL_zero(textTap);
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+  pumpSource();CHECK(!SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]);
+  puts("PASS SDL owned atomic BACK actual ADD/Poll pair and original text retirement");
+  ownedTextSessionAt(701,AMCL_INPUT_TEXT_SESSION_ENDED);
+  ownedTextSession(AMCL_INPUT_TEXT_SESSION_STARTED);CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(textTap.accepted);
+  ownedTextSession(AMCL_INPUT_TEXT_SESSION_ABORTED);checkOwnedLatePair();
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+  ownedTextSession(AMCL_INPUT_TEXT_SESSION_STARTED);CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(textTap.accepted);
+  CHECK(core->publishFocus(0)==0);checkOwnedLatePair();
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+  CHECK(core->publishFocus(1)==0);pumpSource();CHECK(SDL_GetKeyboardFocus()==activeWindow);
+  puts("PASS SDL accepted before actual ABORT/focus late ADD/Poll final UP and old scope refusal");
+  const int a[]={65};Uint64 touch=held(1,"touch-A",a,1);pumpSource();CHECK(keyA());
+  Uint64 gamepad=held(2,"gamepad-A",a,1);sourceSdkKey(65,1);pumpSource();CHECK(keyA());
+  sourceSdkKey(65,0);pumpSource();CHECK(keyA());
+  CHECK(core->publishDeviceChange(7001,AMCL_INPUT_DEVICE_ADDED,AMCL_INPUT_DEVICE_CAP_KEYBOARD)==0);
+  typedKey(AMCL_INPUT_ACTION_DOWN);pumpSource();CHECK(keyA());
+  CHECK(release(touch).accepted);pumpSource();CHECK(keyA());
+  CHECK(release(gamepad).accepted);pumpSource();CHECK(keyA());typedKey(AMCL_INPUT_ACTION_UP);pumpSource();CHECK(!keyA());
+  sourceSdkKey(65,0);sourceSdkKey(65,2);pumpSource();CHECK(!keyA());
+  puts("PASS actual Source/JNI/ring/backend/Core + full SDK typed/touch/gamepad/compat cohold and original UP");
+  const int left[]={-1};Uint64 click=held(1,"touch-left",left,1);sourceSdkButton(0,1);pumpSource();
+  CHECK(SDL_GetMouseState(NULL,NULL)&SDL_BUTTON_LMASK);sourceSdkButton(0,0);pumpSource();
+  CHECK(SDL_GetMouseState(NULL,NULL)&SDL_BUTTON_LMASK);CHECK(release(click).accepted);pumpSource();CHECK(!(SDL_GetMouseState(NULL,NULL)&SDL_BUTTON_LMASK));
+  // 三种真实按钮逐一通过JNI/Source/SDK事件和Poll；右键与中键不是GLFW编号加一。
+  const Uint8 actualButtons[]={SDL_BUTTON_LEFT,SDL_BUTTON_RIGHT,SDL_BUTTON_MIDDLE};
+  for(int button=0;button<3;button++){
+    sourceSdkButton(button,1);pumpSource();
+    CHECK(resultCount==1&&resultEvents[0].type==SDL_EVENT_MOUSE_BUTTON_DOWN&&resultEvents[0].button.button==actualButtons[button]);
+    CHECK(SDL_GetMouseState(NULL,NULL)&SDL_BUTTON_MASK(actualButtons[button]));
+    sourceSdkButton(button,0);pumpSource();
+    CHECK(resultCount==1&&resultEvents[0].type==SDL_EVENT_MOUSE_BUTTON_UP&&resultEvents[0].button.button==actualButtons[button]);
+    CHECK(!(SDL_GetMouseState(NULL,NULL)&SDL_BUTTON_MASK(actualButtons[button])));
+  }
+  puts("PASS actual JNI mouse UP retires only compat0 while touch owns SDK button cache");
+  const int chord[]={65,66,67,68,69,70};Uint64 chordOwner=held(1,"six",chord,6);pumpSource();checkChord(SDL_EVENT_KEY_DOWN,true);
+  CHECK(release(chordOwner).accepted);pumpSource();checkChord(SDL_EVENT_KEY_UP,false);
+  puts("PASS complete six-edge Source batch through actual SDL ADD and Poll");
+  sourceSdkMode(1);grabbing=true;
+  SDL_Mouse* mouse=SDL_GetMouse();mouse->relative_mode=true;mouse->enable_relative_system_scale=false;
+  mouse->enable_relative_speed_scale=false;mouse->integer_mode_flags=0;mouse->mouse_touch_events=false;
+  mouse->auto_capture=false;mouse->x_accu=mouse->y_accu=0;host_last_grabbing=true;host_baseline_valid=false;
+  // 真实模式变更先经过一轮SDK重锚，不能把资格切换期间的保守丢弃伪写成已Ready。
+  pumpSource();CHECK(OPENHARMONY_ControlReady(activeWindow->id));
+  CHECK(sourceSdkLook(10,0));chordOwner=held(1,"six-with-prefix",chord,6);pumpSource();
+  printf("SOURCE SDK prefix trace count=%d",resultCount);for(int i=0;i<resultCount;i++)printf(" type=%u dx=%g",resultEvents[i].type,
+    resultEvents[i].type==SDL_EVENT_MOUSE_MOTION?resultEvents[i].motion.xrel:0.0);puts("");
+  AmclLookSnapshotV1 lookFacts;SDL_zero(lookFacts);lookFacts.size=sizeof(lookFacts);
+  CHECK(host_look_port->snapshot(host_control_consumer,&lookFacts)==0);
+  printf("LOOK SDK facts accepted=%llu cache=%llu queued=%llu stale=%llu discard=%llu x=%g\n",
+    (unsigned long long)lookFacts.accepted,(unsigned long long)lookFacts.cacheReady,(unsigned long long)lookFacts.queueAccepted,
+    (unsigned long long)lookFacts.stale,(unsigned long long)lookFacts.discarded,lookFacts.x);
+  CHECK(resultCount==7&&resultEvents[0].type==SDL_EVENT_MOUSE_MOTION&&fabs(resultEvents[0].motion.xrel-10)<.0001);
+  for(int i=1;i<7;i++)CHECK(resultEvents[i].type==SDL_EVENT_KEY_DOWN);
+  CHECK(sourceSdkLook(7,0));pumpSource();CHECK(resultCount==1&&resultEvents[0].type==SDL_EVENT_MOUSE_MOTION&&fabs(resultEvents[0].motion.xrel-7)<.0001);
+  CHECK(release(chordOwner).accepted);pumpSource();
+  puts("PASS actual Source six-edge look fence through SDK cache/ADD/Poll before following motion");
+  // 小8槽真实ring先占2，再六码+prefix预算不得半更新source或SDK；查询只读原owner。
+  sourceSdkMode(1);grabbing=true;sourceSdkFill(90);sourceSdkFill(91);
+  AmclSourceRequestV1 pressure;SDL_zero(pressure);pressure.operation=AMCL_SOURCE_ACQUIRE;pressure.source=1;pressure.count=6;
+  SDL_strlcpy(pressure.control,"pressure-six",sizeof(pressure.control));for(int i=0;i<6;i++)pressure.outputs[i]=(AmclSourceOutputV1){0,chord[i]};
+  AmclSourceSnapshotV1 before,after;SDL_zero(before);SDL_zero(after);CHECK(source->query(sourceProducer,0,NULL,&before)==0);
+  AmclSourceResultV1 rejected=command(pressure);CHECK(!rejected.accepted&&rejected.status==AMCL_SOURCE_PRESSURE);
+  CHECK(source->query(sourceProducer,0,NULL,&after)==0&&after.owners==before.owners);pumpSource();
+  sourceSdkMode(0);grabbing=false;pumpSource();
+  sourceSdkKey(65,1);pumpSource();CHECK(keyA());for(int i=0;i<8;i++)sourceSdkFill(100+i);
+  sourceSdkKey(65,0);CHECK(source->query(sourceProducer,0,NULL,&after)==0&&after.held[0]==0&&after.deferredEdges==1);
+  pumpSource();CHECK(keyA());pumpSource();CHECK(!keyA());CHECK(source->query(sourceProducer,0,NULL,&after)==0&&after.deferredEdges==0);
+  puts("PASS whole budget refusal and void JNI UP terminal retired/deferred then actual next Pump without new input");
+  ownedTextSession(AMCL_INPUT_TEXT_SESSION_STARTED);CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);
+  source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(textTap.accepted);
+  // 真SDK窗口退出关闭控制票和backend/bridge activation，再创建新窗口；不fake队列清空。
+  OPENHARMONY_CloseControl();sourceSdkDeactivate();amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,0);
+  SDL_DestroyWindow(activeWindow);activeWindow=SDL_CreateWindow("new Source SDK",640,480,SDL_WINDOW_HIDDEN);CHECK(activeWindow);
+  context.payload.surfaceContext.generation=2;context.payload.surfaceContext.windowId=activeWindow->id;CHECK(core->submitEvent(&context)==0);
+  sourceSdkActivate();amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,1);SDL_SetKeyboardFocus(activeWindow);SDL_SetMouseFocus(activeWindow);
+  CHECK(OPENHARMONY_ControlReady(activeWindow->id));for(int i=0;i<4;++i){pumpSource();for(int j=0;j<resultCount;++j)
+    CHECK(!((resultEvents[j].type==SDL_EVENT_KEY_DOWN||resultEvents[j].type==SDL_EVENT_KEY_UP)&&resultEvents[j].key.scancode==SDL_SCANCODE_BACKSPACE));}
+  CHECK(!SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]);source->ownedTextKeyTap(sourceProducer,700,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+  puts("PASS SDL unpumped owned pair cancelled by actual SDK window/backend retirement");
+  OPENHARMONY_CloseControl();sourceSdkDeactivate();amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,0);
+  SDL_DestroyWindow(activeWindow);activeWindow=NULL;SDL_Quit();return 0;
+}

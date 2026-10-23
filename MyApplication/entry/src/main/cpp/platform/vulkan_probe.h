@@ -69,8 +69,8 @@ const char* getGraphicsCapabilityJson(const char* profileId,
 // 这样能在**不启动 MC** 的前提下，精确定位华为驱动在哪一步断（surface? swapchain? present?），
 // 把"扩展能力"层面的判断升级为"整条链能不能真的出一帧"的实证。
 //
-// 参数 nativeWindowPtr：XComponent 的 OHNativeWindow 指针（uintptr_t 数值）。传 0 时函数
-// 内部回退到环境变量 AMCL_NATIVE_WINDOW（xcomponent.cpp OnSurfaceCreated 设的，跨 .so 可见）。
+// 参数 nativeWindowPtr：XComponent 的 OHNativeWindow 指针（uintptr_t 数值），只用于核对；窗口本身
+// 一律经窗口宿主租约取得（xcomponent.cpp OnSurfaceCreated 发布），非 0 且与租约不符时拒绝。
 // 无窗口则跳过 surface/swapchain/present 部分，仅做到设备+队列层面（仍有诊断价值）。
 //
 // 返回人类可读的逐步报告（每步 ✅/❌ + VkResult），指向函数内 static std::string，非线程安全，

@@ -26,6 +26,8 @@
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
+        // 冷启动只展示主题纯背景；品牌体素由首个 ArkUI 页面实时绘制。
+        "startWindow": "$profile:start_window",
         "exported": true,
         "orientation": "unspecified",
         "skills": [
@@ -85,6 +87,10 @@
         // R6：虚拟按键触觉反馈（HapticUtil.hapticTap → @ohos.vibrator）。
         // 第三方应用可用，无需用户弹窗授权（system_grant）。
         "name": "ohos.permission.VIBRATE"
+      },
+      {
+        // 用户可选的触控辅助瞄准；仅在游戏前台且模式启用时订阅校准陀螺仪。
+        "name": "ohos.permission.GYROSCOPE"
       },
       {
         // 沙箱外存储（Download/AMCL）：把 .minecraft 放到公共下载目录，使其卸载不丢。

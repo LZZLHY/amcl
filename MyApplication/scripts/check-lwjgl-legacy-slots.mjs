@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
+import { readElfIdentity } from './check-mg-build-contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'prebuilt/lwjgl3/legacy-slots.manifest.json'), 'utf8'));
@@ -25,6 +26,34 @@ const hap = args.length === 2 ? readFileSync(path.resolve(args[1])) : null;
 assert.equal(manifest.schema, 1);
 assert.deepEqual(manifest.slots.map((slot) => slot.id).sort(), ['legacy2', 'legacy322']);
 for (const declared of manifest.slots) {
+  // Java末级消费者也需要源码身份，不能只因Native未变就继续交付旧的按键聚合类。
+  for (const [file, expected] of Object.entries(declared.javaSourceSha256Lf ?? {})) {
+    assert.equal(hash(Buffer.from(readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n'))),
+      expected, declared.id + ' Java rebuild required after ' + file);
+  }
+  assert.ok(declared.id !== 'legacy2' || declared.nativeArtifact, 'legacy2 requires its paired Native identity');
+  // Native 制品与其自有桥接源码同步锁定。只比较源码而不检查 SO 会让JNI修复留在
+  // 工作树外；源码正文按 LF 归一化，避免正常 Windows checkout 产生伪漂移。
+  if (declared.nativeArtifact) {
+    const native = declared.nativeArtifact;
+    const bytes = readFileSync(path.join(root, native.file));
+    assert.equal(bytes.length, native.size, declared.id + ' Native size');
+    assert.equal(hash(bytes), native.sha256, declared.id + ' Native sha256');
+    const identity = readElfIdentity(bytes);
+    assert.equal(identity.machine, 183, declared.id + ' Native AArch64');
+    assert.equal(identity.soname, path.basename(native.file), declared.id + ' Native SONAME');
+    for (const [file, expected] of Object.entries(native.sourceSha256Lf)) {
+      assert.equal(hash(Buffer.from(readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n'))),
+        expected, declared.id + ' Native rebuild required after ' + file);
+    }
+    for (const name of native.requiredStrings) {
+      assert.ok(bytes.includes(Buffer.from(name + '\0')), declared.id + ' Native dispatch entry: ' + name);
+    }
+    if (hap !== null) {
+      const embedded = readUniqueZipEntry(hap, 'libs/arm64-v8a/' + path.basename(native.file));
+      assert.equal(hash(embedded), native.sha256, declared.id + ' HAP Native sha256');
+    }
+  }
   const sorted = [...declared.jars].sort((a, b) => a.name.localeCompare(b.name));
   const payload = sorted.map((jar) => `${jar.name}|${jar.size}|${jar.sha256}`).join('\n') + '\n';
   assert.equal(hash(payload), declared.manifestEntrySha256, declared.id + ' 清单摘要');
@@ -33,7 +62,13 @@ for (const declared of manifest.slots) {
     assert.equal(runtime[field], declared[field], declared.id + ' ' + field);
   }
   assert.equal(runtime.marker, `amcl.lwjgl.legacy-slot\nversion=${declared.version}\nmanifest=${declared.manifestEntrySha256}\n`);
-  assert.deepEqual(runtime.jars, sorted, declared.id + ' ArkTS 内容镜像');
+  // 派生视图新增独立资源路径，旧槽的最终字节身份仍必须逐项与旧锁定清单相同。
+  // 单独核对资源定位，不能把新增字段简单忽略后漏掉跨槽读取。
+  assert.deepEqual(runtime.jars.map(({ name, size, sha256 }) => ({ name, size, sha256 })),
+    sorted, declared.id + ' ArkTS 内容镜像');
+  for (const jar of runtime.jars) {
+    assert.equal(jar.resourcePath, declared.resourceDirectory + '/' + jar.name, declared.id + ' rawfile 定位');
+  }
   assert.deepEqual(lwjglSlotJarNames(declared.deploymentDirectory), sorted.map((jar) => jar.name), 'classpath 与内容许可一致');
   if (hap !== null) {
     for (const jar of sorted) {

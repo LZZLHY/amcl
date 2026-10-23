@@ -25,6 +25,8 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { AppLogger } from 'commons';
 import { formatError } from 'commons';
+import { SharedDownloadCoordinator, SharedDownloadBackend } from './SharedDownloadCoordinator';
+import { ProcessActivityCoordinator } from './ProcessActivityCoordinator';
 
 const TAG = 'DownloadManager';
 const DEFAULT_FETCH_RESPONSE_LIMIT_BYTES: number = 16 * 1024 * 1024;
@@ -42,6 +44,13 @@ const ROLLBACK_PURGE_MAX_ATTEMPTS: number = 120;
 export interface DownloadCheck {
   sha1?: string;
   size?: number;
+}
+/** 授权只限定新HTTP请求，不能以令牌期限掐断健康的在途正文；预算统计本lease所有正文。 */
+export interface AuthorizedTransferPolicy {
+  singleUse: boolean;
+  maxHttpAttempts: number;
+  validForNewRequestMs: number;
+  maxBytes: number;
 }
 
 /**
@@ -63,6 +72,10 @@ export interface DownloadFileSpec {
   urls: string[];
   /** native 打开文件前必须再次校验 localPath 位于该可信根目录内。 */
   allowedRoot: string;
+  /** 单源短时 Bearer，仅内存传递给 Native；不得写入 URL、任务 journal 或断点元数据。 */
+  bearerToken?: string;
+  /** 与Bearer一起提交的内存权限，不进入持久化journal或断点信息。 */
+  authorizedPolicy?: AuthorizedTransferPolicy;
   check?: DownloadCheck;
   /**
    * 单文件连接上限（可选，范围 1..16）。
@@ -82,6 +95,8 @@ export interface DownloadFileSpec {
 export interface DownloadTaskSpec {
   name: string;
   files: DownloadFileSpec[];
+  /** 公共库/资源订阅同内容在途文件；Native 本身仍严格拒绝双写。 */
+  shareFiles?: boolean;
   /**
    * 归属的活动主键（活动账本 · L2-b）；缺省 = 不归属。
    *
@@ -92,9 +107,115 @@ export interface DownloadTaskSpec {
   activityId?: number;
 }
 
+/**
+ * 复制一个文件规格，并保留 Native 接口对可选字段的缺省语义。
+ * 输入可以来自共享协调器或普通调用方；输出独占 URL 与校验对象，后续 UI/调用方修改
+ * 不会改变已提交的规格。undefined 表示未提供，不能创建同名属性；原生按属性存在性
+ * 决定是否校验数值/摘要。明确提供的非法值原样保留，由原生统一拒绝，不能在这里吞错。
+ */
+export function copyDownloadFileSpec(file: DownloadFileSpec): DownloadFileSpec {
+  let copy: DownloadFileSpec = {
+    localPath: file.localPath, allowedRoot: file.allowedRoot, urls: file.urls.slice(),
+  };
+  if (file.maxConnections !== undefined) copy.maxConnections = file.maxConnections;
+  if (file.bearerToken !== undefined) copy.bearerToken = file.bearerToken;
+  if (file.authorizedPolicy !== undefined) copy.authorizedPolicy = { singleUse: file.authorizedPolicy.singleUse,
+    maxHttpAttempts: file.authorizedPolicy.maxHttpAttempts, validForNewRequestMs: file.authorizedPolicy.validForNewRequestMs,
+    maxBytes: file.authorizedPolicy.maxBytes };
+  if (file.check !== undefined) {
+    let check: DownloadCheck = {};
+    if (file.check.sha1 !== undefined) check.sha1 = file.check.sha1;
+    if (file.check.size !== undefined) check.size = file.check.size;
+    copy.check = check;
+  }
+  return copy;
+}
+
+/**
+ * 仅用于批次目标比较的词法路径键。保留提交给 Native 的原始路径，不在 ArkTS 中
+ * 模拟 realpath、软链接、可信目录 FD 或最终落盘准入。拒绝 . / .. 与控制字符，
+ * 避免两个业务条目靠路径写法掩盖冲突；重复斜杠和末尾斜杠只在比较键中归一化。
+ */
+function downloadPathComparisonKey(path: string): string {
+  if (!path.startsWith('/')) throw new Error('下载目标必须使用绝对路径');
+  for (let i = 0; i < path.length; i++) {
+    let code = path.charCodeAt(i);
+    if (code < 32 || code === 127) throw new Error('下载路径包含控制字符');
+  }
+  let parts: string[] = [];
+  for (let part of path.split('/')) {
+    if (part === '.' || part === '..') throw new Error('下载路径不得包含 . 或 ..');
+    if (part.length > 0) parts.push(part);
+  }
+  return '/' + parts.join('/');
+}
+
+/**
+ * 冻结同一 Native 批次的文件事实。相同目标只在根、摘要/大小和执行约束完全兼容时
+ * 合并 URL；顺序以第一次出现为准，非法的已提供数值仍由 Native 严格拒绝。
+ * 不从文件名/来源推断摘要，不把不同校验强度静默合并。短时授权工件必须独占一次
+ * 执行：即使 token 相同也拒绝同目标重复，避免意外消费权限或将它当成公共内容共享。
+ * 返回值与输入的数组/嵌套对象独立；本函数不持久化、不输出 URL 或 Bearer。
+ */
+export function compileDownloadFiles(files: DownloadFileSpec[]): DownloadFileSpec[] {
+  // 与 download_napi.cpp 的 kMaxTaskFiles / kMaxUrlsPerFile 保持相同既有限额。
+  // 空规划允许原样返回，是否可执行仍由原 Native create 协议裁决，不在纯规划层加门。
+  if (files.length > 16384) throw new Error('下载批次超过 Native 的 16384 文件上限');
+  let compiled: DownloadFileSpec[] = [];
+  let byTarget: Map<string, DownloadFileSpec> = new Map();
+  for (let input of files) {
+    let file = copyDownloadFileSpec(input);
+    if (file.urls.length === 0 || file.urls.length > 16) throw new Error('单个下载文件需要 1..16 个候选来源');
+    let target = downloadPathComparisonKey(file.localPath);
+    let root = downloadPathComparisonKey(file.allowedRoot);
+    if (target === root || (root !== '/' && !target.startsWith(root + '/'))) {
+      throw new Error('下载目标必须严格位于可信根目录内');
+    }
+    // 先按 Native 的既有限额约束输入，再做有界去重，避免异常来源列表阻塞主线程。
+    // 不排序，不改来源偏好，也不输出候选地址到冲突错误；授权的候选数原样交 Native。
+    if (file.bearerToken === undefined && file.authorizedPolicy === undefined) {
+      file.urls = file.urls.filter((url: string, index: number, urls: string[]): boolean => urls.indexOf(url) === index);
+    }
+    let previous = byTarget.get(target);
+    if (previous === undefined) {
+      byTarget.set(target, file);
+      compiled.push(file);
+      continue;
+    }
+    if (previous.bearerToken !== undefined || previous.authorizedPolicy !== undefined ||
+        file.bearerToken !== undefined || file.authorizedPolicy !== undefined) {
+      throw new Error('授权下载不得合并重复目标');
+    }
+    let oldSha = previous.check?.sha1;
+    let newSha = file.check?.sha1;
+    let sameSha = oldSha === newSha || (oldSha !== undefined && newSha !== undefined &&
+      oldSha.toLowerCase() === newSha.toLowerCase());
+    if (downloadPathComparisonKey(previous.allowedRoot) !== root || !sameSha ||
+        previous.check?.size !== file.check?.size || previous.maxConnections !== file.maxConnections) {
+      throw new Error('同一下载目标的根目录、完整性或连接约束冲突');
+    }
+    // 没有有效且相同的完整摘要时，文件名/大小不足以证明两个来源返回同内容。
+    // 仅接受完全相同的候选集合去重；不同集合必须由领域解析器先解决身份冲突。
+    let hasDigestIdentity = oldSha !== undefined && /^[0-9a-fA-F]{40}$/.test(oldSha);
+    // 保存已经过存在性检查的候选引用；ArkTS不会将可变previous的收窄带入回调。
+    const previousUrls = previous.urls;
+    if (!hasDigestIdentity && (previous.urls.length !== file.urls.length ||
+        file.urls.some((url: string): boolean => previousUrls.indexOf(url) < 0))) {
+      throw new Error('缺少完整摘要时同一下载目标的来源身份冲突');
+    }
+    for (let url of file.urls) {
+      if (previous.urls.indexOf(url) < 0) previous.urls.push(url);
+    }
+    if (previous.urls.length > 16) throw new Error('合并后的下载来源超过 Native 的 16 项上限');
+  }
+  return compiled;
+}
+
 /** 进度事件（来自 native） */
 export interface DownloadProgressEvent {
   taskId: number;
+  /** Native 观察者代次仅供诊断；Manager 的 closure generation 与其不是同一计数。 */
+  registrationGeneration?: number;
   executionEpoch: number;
   overallProgress: number;
   speedBps: number;
@@ -118,6 +239,18 @@ export interface DownloadError {
   url: string;
   // v5: 该错误涉及的所有试过的源 URL（去重后）
   triedUrls: string[];
+  /** 授权恢复由业务层领取新权限；这些事实不能从错误显示文字反解。 */
+  needsNewLease?: boolean;
+  requestStarted?: boolean;
+  successfulHeadersSeen?: boolean;
+  bytesWritten?: number;
+  httpAttempts?: number;
+  retryAfterMs?: number;
+}
+/** 保持Error调用约定，同时保留Native原始类型事实供授权恢复决策。 */
+export class DownloadFailure extends Error {
+  readonly detail: DownloadError;
+  constructor(message: string, detail: DownloadError) { super(message); this.detail = detail; }
 }
 
 /** v5: 失败文件详情（仅在 Complete 事件里成组给出） */
@@ -126,6 +259,15 @@ export interface DownloadFailedFileError {
   message: string;
   httpStatus: number;
   nativeCode: number;
+  /** 新桥提供完整错误事实；旧调用方构造的四字段详情仍兼容。 */
+  url?: string;
+  triedUrls?: string[];
+  needsNewLease?: boolean;
+  requestStarted?: boolean;
+  successfulHeadersSeen?: boolean;
+  bytesWritten?: number;
+  httpAttempts?: number;
+  retryAfterMs?: number;
 }
 export interface DownloadFailedFile {
   localPath: string;
@@ -151,6 +293,7 @@ export interface DownloadFinalProgress {
 /** 完成事件（来自 native） */
 export interface DownloadCompleteEvent {
   taskId: number;
+  registrationGeneration?: number;
   executionEpoch: number;
   success: boolean;
   // v5: 用户主动取消 vs 失败的区分标志
@@ -176,6 +319,10 @@ export class DownloadTaskView {
   state: string = 'Waiting';          // Waiting/Loading/Finished/Failed/Aborted
   progress: number = 0;               // 0.0 ~ 1.0
   speedBps: number = 0;
+  /** 公共文件共享时进度可为逻辑估算；普通 Native 任务是实际聚合快照。 */
+  progressEstimated: boolean = false;
+  /** 物理传输吞吐，不能与多个消费者的逻辑 speedBps 相加当成网络总流量。 */
+  physicalSpeedBps: number = 0;
   activeThreads: number = 0;
   currentFile: string = '';
   filesDone: number = 0;
@@ -200,12 +347,44 @@ export class DownloadTaskView {
 /** 监听器签名：任一 task 状态变化时被调用 */
 export type DownloadListener = (view: DownloadTaskView) => void;
 
-type InternalCompleteListener = (view: DownloadTaskView, ev: DownloadCompleteEvent) => void;
+type InternalCompleteListener = (view: DownloadTaskView, ev: DownloadCompleteEvent, engine: DownloadNativeEngine) => void;
+
+/**
+ * 与 Native task/view 执行身份绑定的存活会话。callback generation 只代表观察者，
+ * detach/rebind 不得删除这里持有的业务等待者。新 JS env 会重新创建模块和单例，
+ * 因而不会承诺复活已销毁 env 的 Promise；终态效果按 executionEpoch 幂等。
+ */
+interface DownloadExecutionSession {
+  view: DownloadTaskView;
+  engine: DownloadNativeEngine;
+  /** 业务等待者只归属首次启动的 epoch；0 表示尚未观察到 start 的实际 epoch。 */
+  waitingEpoch: number;
+  completedEpoch: number;
+  onProgress?: DownloadListener;
+  onComplete?: InternalCompleteListener;
+}
 
 interface TaskRegistration {
   taskId: number;
   view: DownloadTaskView;
   generation: number;
+}
+
+/** 原 Native owner 的进程预约；观察回调代次改变不释放执行权，timer 只属于这个原对象。 */
+interface DownloadProcessReservation {
+  engine: DownloadNativeEngine;
+  view: DownloadTaskView;
+  release: () => void;
+  scheduled: boolean;
+}
+
+/** 同步创建 API 保持抛错；异步等待 API 可额外等待本次 Native 回滚的真实收敛结果。 */
+class DownloadSetupFailure extends Error {
+  readonly cleanup: Promise<boolean>;
+  constructor(message: string, cleanup: Promise<boolean>) {
+    super(message);
+    this.cleanup = cleanup;
+  }
 }
 
 /**
@@ -288,6 +467,8 @@ export interface NativeTaskInfo {
   currentFiles?: string[];
   durationMs?: number;
   terminal?: boolean;
+  /** 独立于逻辑终态的真实执行屏障；owner 是否已释放仍以 purge 为准。 */
+  executionSettled?: boolean;
   error?: DownloadError;
   errorKind?: string;
   errorMessage?: string;
@@ -317,7 +498,7 @@ export interface DownloadNativeEngine {
   purgeTask(taskId: number): boolean;
   listActive(): NativeTaskInfo[];
   queryTask(taskId: number): NativeTaskInfo | null;
-  /** 停止全部 native 下载并释放引擎全局资源；Ability 销毁时调用。 */
+  /** 仅真正进程收尾停止全部 Native 资源；Ability/env 解绑不调用此方法。 */
   shutdown(): void;
 }
 
@@ -351,12 +532,34 @@ export function downloadPublishNoReplace(sourcePath: string, destinationPath: st
 // ============================================================================
 
 export class DownloadManager {
+  private shared_: SharedDownloadCoordinator | undefined = undefined;
+
+  /** 惰性接线避免模块初始化环；backend 只接收协调器生成的不共享 Native 批次。 */
+  private sharedDownloads_(): SharedDownloadCoordinator {
+    let shared = this.shared_;
+    if (shared === undefined) {
+      let backend: SharedDownloadBackend = {
+        run: (spec: DownloadTaskSpec, progress: DownloadListener): Promise<DownloadTaskView> => this.createAndWait(spec, progress),
+        cancel: (id: number): boolean => this.cancel(id),
+        purge: (id: number): boolean => this.purgeTask(id),
+      };
+      shared = new SharedDownloadCoordinator(backend);
+      this.shared_ = shared;
+    }
+    return shared;
+  }
   private static _instance: DownloadManager | null = null;
 
   private tasks_: Map<number, DownloadTaskView> = new Map();
+  /** 独立于 TSFN 注册代次，保证同 env 重绑后 query/list 仍能结算原业务 Promise。 */
+  private sessions_: Map<number, DownloadExecutionSession> = new Map();
+  /** 正文 owner 独立持到 executionSettled；createAndWait 的逻辑终态不能提前放走进程。 */
+  private processReservations_: Map<number, DownloadProcessReservation> = new Map();
   /** 每次 callback owner 绑定均分配新 generation，旧 ArkTS closure 只能被动丢弃。 */
   private taskGenerations_: Map<number, number> = new Map();
   private nextGeneration_: number = 1;
+  /** 每个task/view注册代次与epoch只拥有一条查询链；旧timer不得撤掉新链。 */
+  private queryTickets_: Map<number, string> = new Map<number, string>();
   private listeners_: DownloadListener[] = [];
   private caBundleInitialized_: boolean = false;
   private journalPath_: string = '';
@@ -368,14 +571,20 @@ export class DownloadManager {
   /** bridge detach/re-attach 时使旧 env callback 失效，并强制新引擎重新注入 CA。 */
   static handleNativeEngineChanged(): void {
     if (DownloadManager._instance) {
-      DownloadManager._instance.tasks_.clear();
-      DownloadManager._instance.taskGenerations_.clear();
-      DownloadManager._instance.taskJournalIds_.clear();
-      // 2026-08-04：taskId→journalId 的映射清了，就必须连 journalEntries_ 一起清。
-      // 否则那些条目再也没有 taskId 能对上，removeJournalForTask_ 永远找不到它们，
-      // 变成"永远删不掉"的残条，只能等下次冷启动的 drainStaleJournal_ 收尾。
-      DownloadManager._instance.journalEntries_.clear();
-      DownloadManager._instance.caBundleInitialized_ = false;
+      let manager = DownloadManager._instance;
+      manager.taskGenerations_.clear();
+      manager.queryTickets_.clear();
+      // 解绑只撤销观察者。原 task/view、journal 关联和等待者仍属于这个存活 JS env；
+      // 清掉它们会让 createAndWait 永久悬挂。真正 env 销毁由运行时丢弃整个模块。
+      manager.caBundleInitialized_ = false;
+      let engine = g_downloadEngine;
+      if (engine !== null && manager.sessions_.size > 0) {
+        setTimeout((): void => {
+          if (g_downloadEngine !== engine) return;
+          try { manager.refreshFromNative(); }
+          catch (e) { AppLogger.warn(TAG, 'bridge rebind reconcile failed; explicit refresh may retry', e as Object); }
+        }, 0);
+      }
     }
   }
 
@@ -384,6 +593,50 @@ export class DownloadManager {
       DownloadManager._instance = new DownloadManager();
     }
     return DownloadManager._instance;
+  }
+
+  /** 原对象身份匹配才释放；同 taskId 的旧查询/回滚绝不能释放后来的 owner。 */
+  private releaseProcessReservation_(taskId: number, reservation: DownloadProcessReservation): void {
+    if (this.processReservations_.get(taskId) !== reservation) return;
+    this.processReservations_.delete(taskId);
+    reservation.release();
+  }
+
+  /**
+   * 沿 Native 权威快照等待真实执行收敛，不依赖 complete TSFN、UI finished 或卡片移除。
+   * terminal + executionSettled、成功 purge 或记录消失才释放；查询失败继续保留预约。
+   * 当前保留同一 view 跨 resume/retry，查询看到新执行仍继续保护，不会被旧轮终态放行。
+   */
+  private monitorProcessReservation_(taskId: number, reservation: DownloadProcessReservation): void {
+    if (this.processReservations_.get(taskId) !== reservation || reservation.scheduled) return;
+    reservation.scheduled = true;
+    setTimeout((): void => {
+      reservation.scheduled = false;
+      if (this.processReservations_.get(taskId) !== reservation) return;
+      try {
+        const snapshot = reservation.engine.queryTask(taskId);
+        const terminal: boolean = snapshot !== null && (snapshot.terminal === true ||
+          snapshot.state === 'Finished' || snapshot.state === 'Failed' || snapshot.state === 'Aborted');
+        if (snapshot === null || (terminal && snapshot.executionSettled === true &&
+            snapshot.executionEpoch === reservation.view.executionEpoch)) {
+          this.releaseProcessReservation_(taskId, reservation);
+          return;
+        }
+      } catch (_) { /* bridge/query 失败不证明原 worker 已停止，保留同一预约及单条查询链。 */ }
+      this.monitorProcessReservation_(taskId, reservation);
+    }, TERMINAL_QUERY_INTERVAL_MS);
+  }
+
+  /** 为恢复/重试取得同一 Native 任务的新执行预约；仍在收口的旧轮继续复用原预约。 */
+  private reserveExistingProcess_(engine: DownloadNativeEngine, taskId: number): DownloadProcessReservation | undefined {
+    const current = this.processReservations_.get(taskId);
+    if (current !== undefined) return current;
+    const view = this.tasks_.get(taskId);
+    if (view === undefined) return undefined;
+    const release: () => void = ProcessActivityCoordinator.instance().acquireFileTask('下载任务');
+    const reservation: DownloadProcessReservation = { engine, view, release, scheduled: false };
+    this.processReservations_.set(taskId, reservation);
+    return reservation;
   }
 
   /**
@@ -536,8 +789,6 @@ export class DownloadManager {
     taskId: number,
     view: DownloadTaskView,
     generation: number,
-    onProgress?: DownloadListener,
-    onComplete?: InternalCompleteListener,
   ): boolean {
     let progressRegistered = engine.onProgress(taskId, (ev: DownloadProgressEvent): void => {
       if (ev.taskId !== taskId || !this.isCurrentGeneration_(taskId, generation, view) ||
@@ -546,32 +797,14 @@ export class DownloadManager {
       if (view.finished) return;
       this.applyProgress_(view, ev);
       this.notifyAll(view);
-      if (onProgress) {
-        try { onProgress(view); } catch (e) {
-          AppLogger.error(TAG, `onProgress threw: ${formatError(e)}`);
-        }
-      }
+      this.notifySessionProgress_(view);
     });
     if (!progressRegistered) return false;
 
     let completeRegistered = engine.onComplete(taskId, (ev: DownloadCompleteEvent): void => {
       if (ev.taskId !== taskId || !this.isCurrentGeneration_(taskId, generation, view) ||
           ev.executionEpoch <= 0 || !this.acceptExecutionEpoch_(view, ev.executionEpoch)) return;
-      // 同一 registration + execution epoch 的重复 complete 只能收敛一次。
-      if (view.finished) return;
-      this.applyComplete_(view, ev);
-      this.notifyAll(view);
-      if (onProgress) {
-        try { onProgress(view); } catch (e) { /* UI 回调不影响终态 */ }
-      }
-      if (onComplete) onComplete(view, ev);
-      // 活动账本：任务进终态 → 解绑 task→activity 关联，避免 native 那张 32 槽的表
-      // 只增不减。一次 MC 版本下载会创建 3+ 个 native 任务（client.jar / libraries /
-      // assets），只绑不解十来次下载就填满，之后新关联被静默丢弃、DL_MULTI 日志再也
-      // 归属不上。（2026-08-01 自审发现的缺陷 2）
-      //
-      // 放在这里而不是各处 delete()：这是所有终态（成功/失败/取消）的统一收口。
-      try { engine.unbindActivity(taskId); } catch (e) { /* 解绑失败只影响后续账本 */ }
+      this.finishExecution_(engine, view, ev);
     });
     return completeRegistered;
   }
@@ -632,8 +865,12 @@ export class DownloadManager {
    *
    * @param primaryUrl 首选 URL
    * @param mirrors 次源 URL 列表（默认空）
-   * @param timeoutSeconds 单次尝试总超时（默认 30 秒）
-   * @returns Promise — 成功 resolve body 字符串，失败 reject Error（含 errorKind + message）
+   * @param timeoutSeconds 整条候选链总超时，包含准入/连接/跳转/换族，默认30秒。
+   * 有后继候选时Native为正文无进展设置最多5秒的空闲窗并预留回退预算；持续有效
+   * 正文及唯一/最后候选使用剩余总预算，不要求大manifest必须5秒下载完成。
+   * @returns Promise — 成功 resolve body 字符串，Native 请求失败 reject DownloadFailure。
+   * 错误沿用原显示文案，并在 detail 保留 HTTP 状态，供元数据业务区分“服务端明确
+   * 没有推荐”和“网络暂时不可达”；不能通过解析错误显示文字作回退决定。
    *
    * @throws Error('CA bundle not initialized') 如果 EntryAbility 没初始化 CA
    */
@@ -650,6 +887,10 @@ export class DownloadManager {
     let timeout: number = timeoutSeconds !== undefined ? timeoutSeconds : 30;
     let responseLimit: number = maxResponseBytes !== undefined ? maxResponseBytes : DEFAULT_FETCH_RESPONSE_LIMIT_BYTES;
 
+    // 元数据也有真实 HTTP worker；预约覆盖原 Native Promise 到结果校验结束，异常同样
+    // 经 finally 释放，不能只因它不出现在任务列表就允许共享游戏中途终止请求。
+    const releaseProcess = ProcessActivityCoordinator.instance().acquireFileTask('元数据请求');
+    try {
     let result = await dlEngine().fetchText(primaryUrl, mirrorList, timeout, undefined, responseLimit);
     if (result.ok && result.body !== undefined) {
       if (result.body.length > responseLimit) {
@@ -659,7 +900,16 @@ export class DownloadManager {
     }
     let kind: string = result.errorKind !== undefined ? result.errorKind : 'Unknown';
     let msg: string = result.errorMessage !== undefined ? result.errorMessage : 'fetchText failed';
-    throw new Error('[' + kind + '] ' + msg + ' (urls: ' + (1 + mirrorList.length) + ')');
+    // Native 即使请求失败也返回 statusCode。保留这个协议事实，避免调用方把 404
+    // 的明确空推荐与超时/5xx混为一谈。仍属于 Error 子类，不改变既有 catch、文案
+    // 和 finally 的活动租约释放；这里没有真实 Native 错误码，用 0 表示未提供。
+    // 元数据接口没有逐源尝试收据，多源失败时也不知道最终错误来自哪个 URL；
+    // 不能把配置的整个镜像列表冒充实际尝试事实，只在唯一入口时绑定该 URL。
+    throw new DownloadFailure('[' + kind + '] ' + msg + ' (urls: ' + (1 + mirrorList.length) + ')', {
+      kind: kind, message: msg, nativeCode: 0, httpStatus: result.statusCode ?? 0,
+      url: mirrorList.length === 0 ? primaryUrl : '', triedUrls: mirrorList.length === 0 ? [primaryUrl] : [],
+    });
+    } finally { releaseProcess(); }
   }
 
   /**
@@ -687,6 +937,8 @@ export class DownloadManager {
     let timeout: number = timeoutSeconds !== undefined ? timeoutSeconds : 30;
     let responseLimit: number = maxResponseBytes !== undefined ? maxResponseBytes : DEFAULT_FETCH_RESPONSE_LIMIT_BYTES;
 
+    const releaseProcess = ProcessActivityCoordinator.instance().acquireFileTask('元数据请求');
+    try {
     let result = await dlEngine().fetchText(primaryUrl, mirrorList, timeout, requestHeaders, responseLimit);
     if (result.ok) {
       let body: string = result.body !== undefined ? result.body : '';
@@ -703,6 +955,7 @@ export class DownloadManager {
     let kind: string = result.errorKind !== undefined ? result.errorKind : 'Unknown';
     let msg: string = result.errorMessage !== undefined ? result.errorMessage : 'fetchTextEx failed';
     throw new Error('[' + kind + '] ' + msg + ' (urls: ' + (1 + mirrorList.length) + ')');
+    } finally { releaseProcess(); }
   }
 
   /** 获取所有任务的快照（新数组，调用方可安全迭代） */
@@ -714,6 +967,7 @@ export class DownloadManager {
 
   /** 获取单个任务（可能为 null） */
   getTask(taskId: number): DownloadTaskView | null {
+    if (this.shared_?.owns(taskId)) return this.shared_.get(taskId) ?? null;
     let v = this.tasks_.get(taskId);
     return v ? v : null;
   }
@@ -753,6 +1007,48 @@ export class DownloadManager {
     return this.taskGenerations_.get(taskId) === generation && this.tasks_.get(taskId) === view;
   }
 
+  /** UI 回调失败不能阻断业务等待者或活动解绑；所有入口采用同一隔离规则。 */
+  private notifySessionProgress_(view: DownloadTaskView): void {
+    let session = this.sessions_.get(view.taskId);
+    if (session === undefined || session.view !== view || session.onProgress === undefined) return;
+    try { session.onProgress(view); }
+    catch (e) { AppLogger.error(TAG, `onProgress threw: ${formatError(e)}`); }
+  }
+
+  /**
+   * complete 回调、query 定时补偿、list 重绑共同使用的终态收口。先标记 execution
+   * 已结算、取走一次性业务回调，再通知外部，避免回调重入造成重复 resolve/reject 或
+   * 活动槽泄漏。taskId+view 防 taskId 复用，epoch 防 retry/resume 的旧终态倒灌。
+   */
+  private finishExecution_(engine: DownloadNativeEngine, view: DownloadTaskView, ev: DownloadCompleteEvent): void {
+    if (this.tasks_.get(ev.taskId) !== view || ev.taskId !== view.taskId ||
+        !this.acceptExecutionEpoch_(view, ev.executionEpoch)) return;
+    let session = this.sessions_.get(ev.taskId);
+    if (session === undefined || session.view !== view) {
+      session = { view: view, engine: engine, waitingEpoch: 0, completedEpoch: -1 };
+      this.sessions_.set(ev.taskId, session);
+    }
+    if (session.completedEpoch >= ev.executionEpoch) return;
+    session.completedEpoch = ev.executionEpoch;
+    this.queryTickets_.delete(ev.taskId);
+    let onComplete = session.onComplete;
+    session.onComplete = undefined;
+    this.applyComplete_(view, ev);
+    // 终态效果不依赖 complete TSFN 是否送达，也不依赖 UI 回调是否抛错。
+    try { engine.unbindActivity(ev.taskId); }
+    catch (e) { AppLogger.warn(TAG, `terminal activity unbind failed: id=${ev.taskId}`, e as Object); }
+    // 先结算业务等待者，再扇出可重入的 UI/global 监听。Promise reaction 在当前
+    // JS 栈结束后运行，UI 仍可收到最后一帧；监听者同步 resume 不会改写本次结算。
+    if (onComplete !== undefined) {
+      try { onComplete(view, ev, engine); }
+      catch (e) { AppLogger.error(TAG, `terminal observer threw: ${formatError(e)}`); }
+    }
+    this.notifyAll(view);
+    this.notifySessionProgress_(view);
+    // Promise 已结算后不让会话长期保留业务/组件闭包；retry 会继续正常全局监听。
+    session.onProgress = undefined;
+  }
+
   /**
    * 接受不小于当前 view 的 native execution epoch。epoch 前进时同步清空上一轮终态，
    * 防止 resume/retry 的首个回调早于命令后的 query 而继承旧 success/error。
@@ -761,6 +1057,38 @@ export class DownloadManager {
     if (executionEpoch < 0 || executionEpoch !== Math.floor(executionEpoch) ||
         executionEpoch < view.executionEpoch) {
       return false;
+    }
+    let session = this.sessions_.get(view.taskId);
+    if (session !== undefined && session.view === view && session.onComplete !== undefined && executionEpoch > 0) {
+      if (session.waitingEpoch === 0) session.waitingEpoch = executionEpoch;
+      else if (executionEpoch > session.waitingEpoch) {
+        // 正常 resume/retry 会先消费旧终态。若 Native 在未知调用路径直接换轮，原业务
+        // Promise 只能明确失联失败，不能把新一轮完成冒充旧执行的成功，也不能永久挂起。
+        let oldEpoch = session.waitingEpoch;
+        let observer = session.onComplete;
+        session.onComplete = undefined;
+        session.onProgress = undefined;
+        let interrupted = new DownloadTaskView();
+        interrupted.taskId = view.taskId;
+        interrupted.executionEpoch = oldEpoch;
+        interrupted.name = view.name;
+        interrupted.state = 'Failed';
+        interrupted.finished = true;
+        interrupted.finishedAt = Date.now();
+        interrupted.progress = view.progress;
+        interrupted.filesDone = view.filesDone;
+        interrupted.filesTotal = view.filesTotal;
+        interrupted.bytesDone = view.bytesDone;
+        interrupted.bytesTotal = view.bytesTotal;
+        interrupted.errorKind = 'ExecutionSuperseded';
+        interrupted.errorMessage = '下载执行已切换，原等待者未观察到对应终态';
+        let info: NativeTaskInfo = { taskId: view.taskId, executionEpoch: oldEpoch, name: view.name,
+          state: 'Failed', progress: view.progress, filesDone: view.filesDone, filesTotal: view.filesTotal,
+          bytesDone: view.bytesDone, bytesTotal: view.bytesTotal,
+          errorKind: interrupted.errorKind, errorMessage: interrupted.errorMessage };
+        try { observer(interrupted, this.completeEventFromSnapshot_(info), session.engine); }
+        catch (e) { AppLogger.error(TAG, `superseded waiter observer threw: ${formatError(e)}`); }
+      }
     }
     if (executionEpoch > view.executionEpoch) {
       view.executionEpoch = executionEpoch;
@@ -773,6 +1101,13 @@ export class DownloadManager {
       view.errorMessage = '';
       view.triedUrls = [];
       view.failedFiles = [];
+      // epoch也可能由Native进度/list直接推进，不一定经过facade的resume。无论
+      // 哪个入口先观察到新轮，都建立同一条查询补偿链，防complete丢失后再无观察。
+      const generation = this.taskGenerations_.get(view.taskId);
+      const engine = g_downloadEngine;
+      if (generation !== undefined && engine !== null) {
+        this.scheduleTerminalQuery_(engine, view.taskId, generation, view);
+      }
     }
     return true;
   }
@@ -782,6 +1117,8 @@ export class DownloadManager {
     view.finished = false;
     view.progress = ev.overallProgress;
     view.speedBps = ev.speedBps;
+    view.physicalSpeedBps = ev.speedBps;
+    view.progressEstimated = false;
     view.activeThreads = ev.activeThreads;
     view.currentFile = ev.currentFile;
     view.filesDone = ev.filesDone;
@@ -793,9 +1130,10 @@ export class DownloadManager {
   }
 
   private scheduleSuccessfulPurge_(taskId: number, view: DownloadTaskView): void {
+    let completedEpoch = view.executionEpoch;
     setTimeout((): void => {
       // taskId 可能被 native 重用；只有当前 Map 仍指向同一 view 时才允许 purge。
-      if (this.tasks_.get(taskId) !== view || !view.success) return;
+      if (this.tasks_.get(taskId) !== view || !view.success || view.executionEpoch !== completedEpoch) return;
       try {
         this.purgeTask(taskId);
       } catch (e) {
@@ -817,6 +1155,8 @@ export class DownloadManager {
     if (fp) {
       view.progress = fp.overallProgress;
       view.speedBps = fp.speedBps;
+      view.physicalSpeedBps = fp.speedBps;
+      view.progressEstimated = false;
       view.currentFile = fp.currentFile;
       view.filesDone = fp.filesDone;
       view.filesTotal = fp.filesTotal;
@@ -890,47 +1230,51 @@ export class DownloadManager {
     return event;
   }
 
+  /** Native 记录消失不能伪报成功；先以带执行身份的明确失败结算存活等待者。 */
+  private finishMissingTask_(engine: DownloadNativeEngine, view: DownloadTaskView): void {
+    let missing: NativeTaskInfo = {
+      taskId: view.taskId, executionEpoch: view.executionEpoch, name: view.name,
+      state: 'Failed', progress: view.progress, filesDone: view.filesDone, filesTotal: view.filesTotal,
+      errorKind: 'TaskMissing', errorMessage: 'native task disappeared before a terminal callback was observed',
+    };
+    this.finishExecution_(engine, view, this.completeEventFromSnapshot_(missing));
+  }
+
   private scheduleTerminalQuery_(
     engine: DownloadNativeEngine,
     taskId: number,
     generation: number,
     view: DownloadTaskView,
-    onProgress?: DownloadListener,
-    onComplete?: InternalCompleteListener,
   ): void {
+    let scheduledEpoch = view.executionEpoch;
+    const ticket = generation.toString() + ':' + scheduledEpoch.toString();
+    if (this.queryTickets_.get(taskId) === ticket) return;
+    this.queryTickets_.set(taskId, ticket);
     setTimeout((): void => {
-      if (view.finished || !this.isCurrentGeneration_(taskId, generation, view)) return;
+      // 新轮/重绑覆盖票据后，旧timer只退出；当前timer先交还票据，再由仍活跃的
+      // 执行排下一次。这样query自身观察到epoch前进也不会累积两条轮询链。
+      if (this.queryTickets_.get(taskId) !== ticket) return;
+      this.queryTickets_.delete(taskId);
+      // resume/retry 可能发生在旧 timer 唤醒前；旧执行的查询链必须自行退场，避免每次
+      // 恢复累积一个永不退出的轮询链。新轮次由命令/reconcile 安排自己的查询。
+      if (view.finished || view.executionEpoch !== scheduledEpoch ||
+          !this.isCurrentGeneration_(taskId, generation, view)) return;
       let snapshot: NativeTaskInfo | null = null;
       try {
         snapshot = engine.queryTask(taskId);
       } catch (e) {
         AppLogger.warn(TAG, `terminal query failed; retrying: id=${taskId}`, e as Object);
-        this.scheduleTerminalQuery_(engine, taskId, generation, view, onProgress, onComplete);
+        this.scheduleTerminalQuery_(engine, taskId, generation, view);
         return;
       }
 
       if (snapshot === null) {
-        let missing: NativeTaskInfo = {
-          taskId: taskId,
-          executionEpoch: view.executionEpoch,
-          name: view.name,
-          state: 'Failed',
-          progress: view.progress,
-          filesDone: view.filesDone,
-          filesTotal: view.filesTotal,
-          errorKind: 'TaskMissing',
-          errorMessage: 'native task disappeared before a terminal callback was observed',
-        };
-        let missingEvent: DownloadCompleteEvent = this.completeEventFromSnapshot_(missing);
-        this.applyComplete_(view, missingEvent);
-        this.notifyAll(view);
-        if (onProgress) onProgress(view);
-        if (onComplete) onComplete(view, missingEvent);
+        this.finishMissingTask_(engine, view);
         return;
       }
 
       if (!this.acceptExecutionEpoch_(view, snapshot.executionEpoch)) {
-        this.scheduleTerminalQuery_(engine, taskId, generation, view, onProgress, onComplete);
+        this.scheduleTerminalQuery_(engine, taskId, generation, view);
         return;
       }
 
@@ -938,34 +1282,32 @@ export class DownloadManager {
         snapshot.state === 'Failed' || snapshot.state === 'Aborted';
       if (terminal) {
         let event: DownloadCompleteEvent = this.completeEventFromSnapshot_(snapshot);
-        this.applyComplete_(view, event);
-        this.notifyAll(view);
-        if (onProgress) {
-          try { onProgress(view); } catch (e) { /* UI callback 不影响终态 */ }
-        }
-        if (onComplete) onComplete(view, event);
+        this.finishExecution_(engine, view, event);
         return;
       }
-      this.scheduleTerminalQuery_(engine, taskId, generation, view, onProgress, onComplete);
+      this.scheduleTerminalQuery_(engine, taskId, generation, view);
     }, TERMINAL_QUERY_INTERVAL_MS);
   }
 
-  private retryRollbackPurge_(engine: DownloadNativeEngine, taskId: number, attempt: number): void {
-    try {
-      if (engine.purgeTask(taskId) || engine.queryTask(taskId) === null) return;
-    } catch (e) {
-      AppLogger.warn(TAG, `transaction rollback purge attempt failed: id=${taskId}`, e as Object);
+  private async retryRollbackPurge_(engine: DownloadNativeEngine, taskId: number): Promise<boolean> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (engine.purgeTask(taskId) || engine.queryTask(taskId) === null) return true;
+      } catch (e) {
+        if (attempt % ROLLBACK_PURGE_MAX_ATTEMPTS === 0) {
+          AppLogger.warn(TAG, `transaction rollback purge attempt failed: id=${taskId}`, e as Object);
+        }
+      }
+      if (attempt === ROLLBACK_PURGE_MAX_ATTEMPTS) {
+        // 注册失败时业务尚未取得真实ID，无法在外层补release屏障。清理延迟只能
+        // 保留原Promise/父action，不能以普通初始化异常放走仍在途的隐形owner。
+        AppLogger.warn(TAG, `transaction rollback delayed; caller remains held: id=${taskId}`);
+      }
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, ROLLBACK_PURGE_INTERVAL_MS); });
     }
-    if (attempt >= ROLLBACK_PURGE_MAX_ATTEMPTS) {
-      AppLogger.error(TAG, `transaction rollback timed out: native task retained id=${taskId}`);
-      return;
-    }
-    setTimeout((): void => {
-      this.retryRollbackPurge_(engine, taskId, attempt + 1);
-    }, ROLLBACK_PURGE_INTERVAL_MS);
   }
 
-  private rollbackCreatedTask_(engine: DownloadNativeEngine, taskId: number, startCommitted: boolean): void {
+  private rollbackCreatedTask_(engine: DownloadNativeEngine, taskId: number, startCommitted: boolean): Promise<boolean> {
     try { engine.cancel(taskId); } catch (e) { /* best effort before convergence */ }
     if (!startCommitted) {
       // Engine 当前只允许 purge 终态任务；让已置 abort flag 的 Waiting task 进入
@@ -973,7 +1315,7 @@ export class DownloadManager {
       try { engine.start(taskId); } catch (e) { /* retryRollbackPurge_ 会记录残留 */ }
       try { engine.cancel(taskId); } catch (e) { /* ignore */ }
     }
-    this.retryRollbackPurge_(engine, taskId, 0);
+    return this.retryRollbackPurge_(engine, taskId);
   }
 
   /**
@@ -999,9 +1341,18 @@ export class DownloadManager {
     let generation = 0;
     let startCommitted = false;
     let view: DownloadTaskView | null = null;
-    let journalId = this.addJournalEntry_(spec);
+    const releaseProcess: () => void = ProcessActivityCoordinator.instance().acquireFileTask('下载任务');
+    let reservation: DownloadProcessReservation | undefined = undefined;
+    let journalId: string = '';
     try {
-      taskId = engine.createTask(spec);
+      journalId = this.addJournalEntry_(spec);
+      // 普通归档等调用方也可能用对象字面量传入 undefined。和共享路径共用复制规则，
+      // 在实际 Native 边界保证合法缺省；任务名、路径与已给出的校验值保持原意图。
+      let nativeSpec: DownloadTaskSpec = {
+        name: spec.name, files: compileDownloadFiles(spec.files),
+      };
+      if (spec.activityId !== undefined) nativeSpec.activityId = spec.activityId;
+      taskId = engine.createTask(nativeSpec);
       if (taskId <= 0) {
         throw new Error(`downloadCreateTask returned invalid id: ${taskId}`);
       }
@@ -1015,43 +1366,68 @@ export class DownloadManager {
       view.taskId = taskId;
       view.name = spec.name;
       view.state = 'Waiting';
-      view.filesTotal = spec.files.length;
+      view.filesTotal = nativeSpec.files.length;
       generation = this.nextGeneration_++;
       this.taskGenerations_.set(taskId, generation);
       this.tasks_.set(taskId, view);
+      reservation = { engine: engine, view: view, release: releaseProcess, scheduled: false };
+      this.processReservations_.set(taskId, reservation);
       this.taskJournalIds_.set(taskId, journalId);
+      // 等待者先登记再注册/启动：极快任务可能在 start 返回前已经给出终态。
+      let session: DownloadExecutionSession = { view: view, engine: engine, waitingEpoch: 0, completedEpoch: -1 };
+      if (onProgress !== undefined) session.onProgress = onProgress;
+      if (onComplete !== undefined) session.onComplete = onComplete;
+      this.sessions_.set(taskId, session);
 
-      if (!this.registerCallbacks_(engine, taskId, view, generation, onProgress, onComplete)) {
+      if (!this.registerCallbacks_(engine, taskId, view, generation)) {
         throw new Error('downloadOnProgress/downloadOnComplete registration failed');
       }
 
-      if (!engine.start(taskId)) throw new Error('downloadStart returned false');
-      startCommitted = true;
-      let startedSnapshot = engine.queryTask(taskId);
-      if (startedSnapshot !== null) {
-        this.acceptExecutionEpoch_(view, startedSnapshot.executionEpoch);
+      // 先交付 owner 真实 taskId，再允许 Native 发出第一个请求；没有网络进度的任务
+      // 也必须能被业务取消和纳入 all-ID 收尾。此回调只发布控制句柄，不表示启动成功。
+      this.notifySessionProgress_(view);
+      let ready = engine.queryTask(taskId);
+      if (ready !== null && (ready.terminal === true || ready.state === 'Finished' ||
+          ready.state === 'Failed' || ready.state === 'Aborted')) {
+        // 首帧回调可以同步 cancel Waiting 任务，此时 epoch=0 是合法的未启动终态。
+        this.finishExecution_(engine, view, this.completeEventFromSnapshot_(ready));
+      } else {
+        if (!engine.start(taskId)) throw new Error('downloadStart returned false');
+        startCommitted = true;
+        let startedSnapshot = engine.queryTask(taskId);
+        if (startedSnapshot !== null) this.acceptExecutionEpoch_(view, startedSnapshot.executionEpoch);
       }
-      this.scheduleTerminalQuery_(engine, taskId, generation, view, onProgress, onComplete);
+      this.scheduleTerminalQuery_(engine, taskId, generation, view);
+      this.monitorProcessReservation_(taskId, reservation);
       AppLogger.info(TAG, `create-register-start committed: id=${taskId} name=${spec.name} files=${spec.files.length}`);
 
-      // 事务提交后再暴露首帧，调用方可立即获得 taskId 并安全 cancel。
-      if (onProgress) {
-        try { onProgress(view); } catch (e) { /* ignore */ }
-      }
       let registration: TaskRegistration = { taskId: taskId, view: view, generation: generation };
       return registration;
     } catch (e) {
+      let cleanup: Promise<boolean> = Promise.resolve(true);
       if (taskId > 0) {
         this.taskJournalIds_.delete(taskId);
         if (this.taskGenerations_.get(taskId) === generation) this.taskGenerations_.delete(taskId);
         if (view === null || this.tasks_.get(taskId) === view) this.tasks_.delete(taskId);
-        this.rollbackCreatedTask_(engine, taskId, startCommitted);
+        if (view === null || this.sessions_.get(taskId)?.view === view) this.sessions_.delete(taskId);
+        try { engine.unbindActivity(taskId); } catch (unbindError) { /* 回滚不掩盖原始失败 */ }
+        cleanup = this.rollbackCreatedTask_(engine, taskId, startCommitted);
       }
       // 事务失败 → 回滚本次登记的 journal 摘要，别让永远不会跑的条目堆在盘上。
       this.journalEntries_.delete(journalId);
       try { this.persistJournal_(); }
       catch (persistError) { AppLogger.warn(TAG, 'journal rollback persist failed', persistError as Object); }
-      throw new Error(`download create/register/start failed: ${formatError(e)}`);
+      // 事务可能已经产生不可见的 Native owner。只有原 rollback 的真实 purge 完成才
+      // 释放预约；create/journal 尚未创建 Native 时 cleanup 已立即成功。
+      const originalReservation = reservation;
+      cleanup = cleanup.then((released: boolean): boolean => {
+        if (released) {
+          if (originalReservation !== undefined) this.releaseProcessReservation_(taskId, originalReservation);
+          else releaseProcess();
+        }
+        return released;
+      });
+      throw new DownloadSetupFailure(`download create/register/start failed: ${formatError(e)}`, cleanup);
     }
   }
 
@@ -1079,6 +1455,17 @@ export class DownloadManager {
    * 从而避免「多个 wait 互相干扰」的诡异问题。
    */
   createAndWait(spec: DownloadTaskSpec, onProgress?: DownloadListener): Promise<DownloadTaskView> {
+    if (spec.shareFiles === true) {
+      // 虚拟消费者除正文外还会校验/发布共享工件；保留到整个 consumer Promise 收口。
+      let release: (() => void) | undefined = undefined;
+      try {
+        release = ProcessActivityCoordinator.instance().acquireFileTask('共享下载任务');
+        return this.sharedDownloads_().run(spec, onProgress).finally(release);
+      } catch (error) {
+        if (release !== undefined) release();
+        return Promise.reject(error as Error);
+      }
+    }
     return new Promise<DownloadTaskView>((resolve, reject): void => {
       try {
         // 2026-08-04：这里原本还有一层 adoptOrphanTask_（接管 journal 自动复活出来的
@@ -1086,7 +1473,7 @@ export class DownloadManager {
         // 再存在，那层接管逻辑连同它的路径集合比对一起删掉了 —— 少一个只在特定时序下
         // 才会被踩到的状态机分支。
         this.createRegisterStart_(spec, onProgress,
-          (view: DownloadTaskView, ev: DownloadCompleteEvent): void => {
+          (view: DownloadTaskView, ev: DownloadCompleteEvent, engine: DownloadNativeEngine): void => {
             let taskId = view.taskId;
             let summary = `createAndWait done: id=${taskId} (${spec.name}) success=${ev.success} aborted=${ev.aborted} `
               + `files=${view.filesDone}/${view.filesTotal} bytes=${view.bytesDone}/${view.bytesTotal} dur=${view.durationMs}ms`;
@@ -1099,17 +1486,52 @@ export class DownloadManager {
             } else {
               AppLogger.error(TAG, summary + ' ' + (view.errorMessage || '(no error detail)'));
               AppLogger.flush();
-              reject(new Error(view.errorMessage || 'download failed (no error detail)'));
+              if (ev.error !== undefined && ev.error.needsNewLease === true) {
+                const failure = new DownloadFailure(view.errorMessage || 'download authorization requires renewal', ev.error);
+                // Native终态回调可以早于最后worker退出；新lease的再次写入必须等ownership
+                // barrier收敛。purge只清该终态Native owner，不删除可复用断点与UI历史。
+                this.releaseAuthorizedOwner_(engine, taskId, ev.executionEpoch).then((released: boolean): void => {
+                  if (released) reject(failure);
+                  else reject(new Error('下载资源尚未收敛，请稍后重试'));
+                });
+              } else if (ev.error !== undefined) reject(new DownloadFailure(view.errorMessage || 'download failed', ev.error));
+              else reject(new Error(view.errorMessage || 'download failed (no error detail)'));
             }
           });
       } catch (e) {
-        reject(e as Error);
+        if (e instanceof DownloadSetupFailure) {
+          // 初始化失败也先关闭自身 owner；只有真实 purge/记录消失才宣告回滚完成。
+          // 清理迟到仍保留此Promise；不能借普通异常放走无法获知该ID的父业务owner。
+          let setupFailure = e;
+          setupFailure.cleanup.then((released: boolean): void => {
+            if (released) reject(setupFailure);
+            else reject(new Error(setupFailure.message + '；下载资源尚未收敛，请稍后重试'));
+          });
+        } else reject(e as Error);
       }
     });
   }
 
+  /** 只等待本次终态owner，禁止以“报过失败”代替实际worker/curl退出。 */
+  private async releaseAuthorizedOwner_(engine: DownloadNativeEngine, taskId: number, executionEpoch: number): Promise<boolean> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        let snapshot = engine.queryTask(taskId);
+        if (snapshot === null) return true;
+        // 只回收产生本次授权错误的执行轮次；用户若已 resume，旧等待者不得 purge 新轮次。
+        if (snapshot.executionEpoch !== executionEpoch) return false;
+        if (engine.purgeTask(taskId)) return true;
+      } catch (_) { /* 观察失败不是释放事实，仍持有原授权错误与父调用栈。 */ }
+      if (attempt === 50) {
+        AppLogger.warn(TAG, `authorization owner release delayed; typed failure remains pending: id=${taskId}`);
+      }
+      await new Promise<void>((resume: () => void): void => { setTimeout((): void => resume(), 100); });
+    }
+  }
+
   /** 取消任务；保留 meta 下次可续传 */
   cancel(taskId: number): boolean {
+    if (this.shared_?.owns(taskId)) return this.shared_.cancel(taskId);
     return dlEngine().cancel(taskId);
   }
 
@@ -1123,6 +1545,7 @@ export class DownloadManager {
    * pause 后通常会 resume（UI 展示"已暂停"按钮）。
    */
   pause(taskId: number): boolean {
+    if (this.shared_?.owns(taskId)) return this.shared_.cancel(taskId);
     return dlEngine().pause(taskId);
   }
 
@@ -1131,28 +1554,17 @@ export class DownloadManager {
    * 引擎会对非 Finished 文件做 resetForRetry + 重新 start()，断点续传自动生效。
    */
   resume(taskId: number): boolean {
+    // 共享消费者由上层保存的安装意图重新订阅，禁止直接恢复另一个消费者的 Native 批次。
+    if (this.shared_?.owns(taskId)) return false;
     let engine = dlEngine();
+    const reservation = this.reserveExistingProcess_(engine, taskId);
+    if (reservation === undefined) return false;
+    try {
+    this.reconcileBeforeRestart_(engine, taskId);
     let ok = engine.resume(taskId);
-    let view = this.tasks_.get(taskId);
-    if (ok && view) {
-      let snapshot = engine.queryTask(taskId);
-      if (snapshot !== null) {
-        this.acceptExecutionEpoch_(view, snapshot.executionEpoch);
-      }
-      view.finished = false;
-      view.success = false;
-      view.aborted = false;
-      view.state = 'Waiting';
-      view.errorKind = '';
-      view.errorMessage = '';
-      view.triedUrls = [];
-      view.failedFiles = [];
-      let generation = this.taskGenerations_.get(taskId);
-      if (generation !== undefined) {
-        this.scheduleTerminalQuery_(engine, taskId, generation, view);
-      }
-    }
+    if (ok) this.reconcileRestarted_(engine, taskId);
     return ok;
+    } finally { this.monitorProcessReservation_(taskId, reservation); }
   }
 
   /**
@@ -1160,6 +1572,7 @@ export class DownloadManager {
    * 返回释放的字节数。仅 Aborted / Failed 状态允许。
    */
   deleteTaskFiles(taskId: number): number {
+    if (this.shared_?.owns(taskId)) return 0;
     return dlEngine().deleteTaskFiles(taskId);
   }
 
@@ -1168,28 +1581,49 @@ export class DownloadManager {
    * 任务必须处于 Failed / Aborted 状态。
    */
   retryFailed(taskId: number, localPaths: string[]): boolean {
+    if (this.shared_?.owns(taskId)) return false;
     let engine = dlEngine();
+    const reservation = this.reserveExistingProcess_(engine, taskId);
+    if (reservation === undefined) return false;
+    try {
+    this.reconcileBeforeRestart_(engine, taskId);
     let ok = engine.retryFailed(taskId, localPaths || []);
-    let view = this.tasks_.get(taskId);
-    if (ok && view) {
-      let snapshot = engine.queryTask(taskId);
-      if (snapshot !== null) {
-        this.acceptExecutionEpoch_(view, snapshot.executionEpoch);
-      }
-      view.finished = false;
-      view.success = false;
-      view.aborted = false;
-      view.state = 'Waiting';
-      view.errorKind = '';
-      view.errorMessage = '';
-      view.triedUrls = [];
-      view.failedFiles = [];
-      let generation = this.taskGenerations_.get(taskId);
-      if (generation !== undefined) {
-        this.scheduleTerminalQuery_(engine, taskId, generation, view);
-      }
-    }
+    if (ok) this.reconcileRestarted_(engine, taskId);
     return ok;
+    } finally { this.monitorProcessReservation_(taskId, reservation); }
+  }
+
+  /** 启动新 epoch 前先消费旧终态，防旧 Promise 被新一次成功错误满足。 */
+  private reconcileBeforeRestart_(engine: DownloadNativeEngine, taskId: number): void {
+    let view = this.tasks_.get(taskId);
+    if (view === undefined || view.finished) return;
+    let snapshot = engine.queryTask(taskId);
+    if (snapshot === null) this.finishMissingTask_(engine, view);
+    else if (snapshot.terminal === true || snapshot.state === 'Finished' || snapshot.state === 'Failed' || snapshot.state === 'Aborted') {
+      this.finishExecution_(engine, view, this.completeEventFromSnapshot_(snapshot));
+    }
+  }
+
+  /** 新轮次若在命令返回前已完成，直接消费终态；不再无条件把它改回 Waiting。 */
+  private reconcileRestarted_(engine: DownloadNativeEngine, taskId: number): void {
+    let view = this.tasks_.get(taskId);
+    if (view === undefined) return;
+    let snapshot = engine.queryTask(taskId);
+    if (snapshot === null) { this.finishMissingTask_(engine, view); return; }
+    if (!this.acceptExecutionEpoch_(view, snapshot.executionEpoch)) return;
+    if (snapshot.terminal === true || snapshot.state === 'Finished' || snapshot.state === 'Failed' || snapshot.state === 'Aborted') {
+      this.finishExecution_(engine, view, this.completeEventFromSnapshot_(snapshot));
+      return;
+    }
+    view.state = snapshot.state;
+    let generation = this.taskGenerations_.get(taskId);
+    if (generation === undefined) {
+      generation = this.nextGeneration_++;
+      this.taskGenerations_.set(taskId, generation);
+      try { this.registerCallbacks_(engine, taskId, view, generation); }
+      catch (e) { AppLogger.warn(TAG, `restart callback restore failed: id=${taskId}`, e as Object); }
+    }
+    this.scheduleTerminalQuery_(engine, taskId, generation, view);
   }
 
   /**
@@ -1198,9 +1632,26 @@ export class DownloadManager {
    * 同时会清掉本地 tasks_ 视图 —— 调用方需确保 UI 里不再持有该 taskId。
    */
   purgeTask(taskId: number): boolean {
+    if (this.shared_?.owns(taskId)) return this.shared_.purge(taskId);
     // purge 是 owner 释放协议，必须幂等：成功任务可能已被自动 purge；native 已不存在
     // 等价于 owner 已释放。真正仍存在但 execution 未收敛时继续返回 false。
     let engine = dlEngine();
+    // UI 可在 TSFN 送达前清理已终态任务。先用权威快照结算同一存活会话，不能让
+    // purge 成功删除 Native 记录之后，业务等待者只能永久等一个已关闭的 callback。
+    let view = this.tasks_.get(taskId);
+    if (view !== undefined && !view.finished) {
+      let snapshot = engine.queryTask(taskId);
+      if (snapshot !== null && (snapshot.terminal === true || snapshot.state === 'Finished' ||
+          snapshot.state === 'Failed' || snapshot.state === 'Aborted')) {
+        this.finishExecution_(engine, view, this.completeEventFromSnapshot_(snapshot));
+      } else if (snapshot === null) this.finishMissingTask_(engine, view);
+      else {
+        // query和purge是两次NAPI调用。若query仍活跃，worker可在其间完成，
+        // 直接purge会关闭尚未交付的complete并删掉业务等待者。当前轮保留观察，
+        // 下次先消费权威终态再释放；不能把purge成功本身翻译成内容成功。
+        return false;
+      }
+    }
     let ok = engine.purgeTask(taskId);
     if (!ok) {
       try { ok = engine.queryTask(taskId) === null; } catch (e) { ok = false; }
@@ -1209,8 +1660,41 @@ export class DownloadManager {
       this.removeJournalForTask_(taskId);
       this.taskGenerations_.delete(taskId);
       this.tasks_.delete(taskId);
+      this.sessions_.delete(taskId);
+      this.queryTickets_.delete(taskId);
+      const reservation = this.processReservations_.get(taskId);
+      if (reservation !== undefined) this.releaseProcessReservation_(taskId, reservation);
     }
     return ok;
+  }
+
+  /**
+   * 等待一个真实/共享 owner 释放，供 mapping、导出等领域收尾复用；这不是下载重试。
+   * 默认约 30 秒明确超时并保留本地身份，调用方仍需保存自己的 all-ID 集合以重试清理。
+   * retainOwner=true 用于不可提前放走外层目录/安装读租约的调用栈：超时只警告一次，
+   * 继续等待实际 purge；绝不以超时、逻辑终态或 shutdown 伪造资源已退出。
+   */
+  async awaitTaskReleased(taskId: number, retainOwner: boolean = false): Promise<void> {
+    if (taskId <= 0 || taskId !== Math.floor(taskId) || taskId > Number.MAX_SAFE_INTEGER) {
+      throw new Error('[InvalidTaskId] 等待释放需要真实的下载任务 ID');
+    }
+    let waitedMs = 0;
+    let warned = false;
+    while (true) {
+      try { if (this.purgeTask(taskId)) return; }
+      catch (e) { /* bridge 暂时解绑或查询失败不是 owner 释放事实；按统一时限继续等待。 */ }
+      // 按已经完成的定时等待累计，避免用户调整系统时间提前超时或延长权限等待。
+      // Native 查询耗时只会使实际时长稍长，不会让默认等待变成永久悬挂。
+      if (waitedMs >= 30000) {
+        if (!retainOwner) throw new Error(`[TaskReleaseTimeout] 下载资源尚未收敛: id=${taskId}`);
+        if (!warned) {
+          warned = true;
+          AppLogger.warn(TAG, `owner release exceeds 30s; outer owner remains held: id=${taskId}`);
+        }
+      }
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, ROLLBACK_PURGE_INTERVAL_MS); });
+      waitedMs += ROLLBACK_PURGE_INTERVAL_MS;
+    }
   }
 
   /**
@@ -1263,6 +1747,10 @@ export class DownloadManager {
   /** 从 native 做完整 reconcile：覆盖 listActive 可提供的全部字段，并删除 native 已不存在的 stale view。 */
   refreshFromNative(): void {
     let engine = dlEngine();
+    // list是一次前像。下方同步业务/UI监听者可以创建新任务，新登记的view不属于
+    // 这个快照的缺失集合；否则refresh会把真实在途任务错误判TaskMissing并丢等待者。
+    const before: Map<number, DownloadTaskView> = new Map<number, DownloadTaskView>();
+    this.tasks_.forEach((view: DownloadTaskView, taskId: number): void => { before.set(taskId, view); });
     let nativeTasks: NativeTaskInfo[] = engine.listActive();
     let nativeIds: Map<number, boolean> = new Map();
 
@@ -1291,9 +1779,16 @@ export class DownloadManager {
       view.name = info.name;
       let terminal: boolean = info.terminal === true || info.state === 'Finished' ||
         info.state === 'Failed' || info.state === 'Aborted';
+      // 热重绑/权威扫描也可能首次看到原 Native owner。重新安装观察者之前先预约
+      // 持续工作，避免只恢复卡片而让共享游戏从准入窗口穿过。已真实收敛的历史件
+      // 无需新预约；原预约则由绑定 engine 的查询链确认后释放。
+      if (!terminal || info.executionSettled !== true || this.processReservations_.has(info.taskId)) {
+        const reservation = this.reserveExistingProcess_(engine, info.taskId);
+        if (reservation !== undefined) this.monitorProcessReservation_(info.taskId, reservation);
+      }
       if (terminal) {
         this.taskGenerations_.delete(info.taskId);
-        this.applyComplete_(view, this.completeEventFromSnapshot_(info));
+        this.finishExecution_(engine, view, this.completeEventFromSnapshot_(info));
       } else {
         view.state = info.state;
         view.finished = false;
@@ -1302,6 +1797,8 @@ export class DownloadManager {
         view.finishedAt = 0;
         view.progress = info.overallProgress !== undefined ? info.overallProgress : info.progress;
         view.speedBps = info.speedBps !== undefined ? info.speedBps : 0;
+        view.physicalSpeedBps = view.speedBps;
+        view.progressEstimated = false;
         view.activeThreads = info.activeThreads !== undefined ? info.activeThreads : 0;
         view.currentFile = info.currentFile !== undefined ? info.currentFile : '';
         view.filesDone = info.filesDone;
@@ -1317,51 +1814,40 @@ export class DownloadManager {
         view.failedFiles = [];
       }
 
-      // 冷/热恢复或失去 generation 的活跃任务重新订阅；任一注册失败都让本 generation 失效。
+      // 冷/热恢复使用与创建完全相同的回调入口。注册不全时仍用独立 query 结算同一会话。
       if ((isNew || !this.taskGenerations_.has(info.taskId)) && !terminal) {
         let generation = this.nextGeneration_++;
         this.taskGenerations_.set(info.taskId, generation);
         let recoveredView = view;
         let recoveredTaskId = info.taskId;
-        let progressOk = engine.onProgress(recoveredTaskId, (ev: DownloadProgressEvent): void => {
-          if (ev.taskId !== recoveredTaskId ||
-              !this.isCurrentGeneration_(recoveredTaskId, generation, recoveredView) ||
-              ev.executionEpoch <= 0 || !this.acceptExecutionEpoch_(recoveredView, ev.executionEpoch)) return;
-          if (recoveredView.finished) return;
-          this.applyProgress_(recoveredView, ev);
-          this.notifyAll(recoveredView);
-        });
-        let completeOk = engine.onComplete(recoveredTaskId, (ev: DownloadCompleteEvent): void => {
-          if (ev.taskId !== recoveredTaskId ||
-              !this.isCurrentGeneration_(recoveredTaskId, generation, recoveredView) ||
-              ev.executionEpoch <= 0 || !this.acceptExecutionEpoch_(recoveredView, ev.executionEpoch)) return;
-          if (recoveredView.finished) return;
-          this.applyComplete_(recoveredView, ev);
-          this.notifyAll(recoveredView);
-        });
-        if (!progressOk || !completeOk) {
-          AppLogger.warn(TAG, `refreshFromNative callback restore incomplete: id=${recoveredTaskId} progress=${progressOk} complete=${completeOk}; terminal query fallback enabled`);
-        }
-        // Query reconciliation is independent of bridge registration. This guarantees a
-        // recovered task can still observe exactly one terminal snapshot when either TSFN
-        // registration fails during env recreation.
+        try {
+          if (!this.registerCallbacks_(engine, recoveredTaskId, recoveredView, generation)) {
+            AppLogger.warn(TAG, `refreshFromNative callback restore incomplete: id=${recoveredTaskId}; terminal query fallback enabled`);
+          }
+        } catch (e) { AppLogger.warn(TAG, `callback restore threw: id=${recoveredTaskId}; terminal query fallback enabled`, e as Object); }
+        // 即使 TSFN 注册失败，权威查询仍能结算一次原业务 Promise。
         this.scheduleTerminalQuery_(engine, recoveredTaskId, generation, recoveredView);
       }
-      this.notifyAll(view);
+      if (!terminal) { this.notifyAll(view); this.notifySessionProgress_(view); }
     }
 
     let staleIds: number[] = [];
-    this.tasks_.forEach((view: DownloadTaskView, taskId: number): void => {
-      if (!nativeIds.has(taskId)) staleIds.push(taskId);
+    before.forEach((view: DownloadTaskView, taskId: number): void => {
+      if (this.tasks_.get(taskId) === view && !nativeIds.has(taskId)) staleIds.push(taskId);
     });
     for (let taskId of staleIds) {
+      let stale = this.tasks_.get(taskId);
+      if (stale !== undefined && !stale.finished) this.finishMissingTask_(engine, stale);
       this.taskGenerations_.delete(taskId);
       this.tasks_.delete(taskId);
+      this.sessions_.delete(taskId);
+      this.queryTickets_.delete(taskId);
+      this.removeJournalForTask_(taskId);
     }
     // native 注册表为空说明这是进程冷启动（或所有任务都已 purge）：把上一次运行留下的
     // journal 残条清掉即可，**不再自动重建任何下载**（原因见 drainStaleJournal_）。
     // 用户重新点下载时，native 会用磁盘上的 .download-meta / .amcl.part 自动续传。
-    if (nativeTasks.length === 0) this.drainStaleJournal_();
+    if (nativeTasks.length === 0 && this.tasks_.size === 0) this.drainStaleJournal_();
   }
 
   // ============================================================================

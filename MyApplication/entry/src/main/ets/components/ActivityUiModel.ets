@@ -10,6 +10,8 @@ export enum ActivityFilter {
   ALL = 'all',
   GAME = 'game',
   DOWNLOAD = 'download',
+  /** 导出独立于下载筛选，用户可查看真实的取消、失败与目标写入成功记录。 */
+  EXPORT = 'export',
   ABNORMAL = 'abnormal',
 }
 
@@ -81,7 +83,8 @@ export function activityDisplayTitle(record: DownloadHistoryRecord): string {
 export function isDownloadActivity(record: DownloadHistoryRecord): boolean {
   const category: string = activityCategory(record);
   return category === ActivityCategory.DOWNLOAD || category === ActivityCategory.MOD_INSTALL
-    || category === ActivityCategory.MODPACK || category === ActivityCategory.JDK;
+    || category === ActivityCategory.MODPACK || category === ActivityCategory.JDK
+    || category === ActivityCategory.APP_UPDATE || category === ActivityCategory.APP_UPDATE_DOWNLOAD;
 }
 
 /** 异常筛选包含失败、崩溃和中断；成功记录不会因 AI 推测而被重新分类。 */
@@ -105,6 +108,7 @@ export function activityStatusLabel(record: DownloadHistoryRecord): string {
 export function matchesActivity(record: DownloadHistoryRecord, keyword: string, filter: ActivityFilter): boolean {
   if (filter === ActivityFilter.GAME && activityCategory(record) !== ActivityCategory.LAUNCH) return false;
   if (filter === ActivityFilter.DOWNLOAD && !isDownloadActivity(record)) return false;
+  if (filter === ActivityFilter.EXPORT && activityCategory(record) !== ActivityCategory.GAME_EXPORT) return false;
   if (filter === ActivityFilter.ABNORMAL && !isAbnormalActivity(record)) return false;
   const query: string = keyword.trim().toLowerCase();
   if (query.length === 0) return true;

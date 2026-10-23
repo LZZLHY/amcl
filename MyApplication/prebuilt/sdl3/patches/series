@@ -228,3 +228,28 @@
 
 # 仅原生GL的零总像素限制通过实际创建/尺寸回查验证，保留其他后端和正常边界。
 0019-openharmony-nativegl-pbuffer-limit-validation.patch
+
+# 释放/辅助绑定同样锁存 context lost；辅助 pbuffer 事务失败保留双面、真实 current 和首错。
+0020-openharmony-context-loss-and-auxiliary-transactions.patch
+
+# 来源平面最终聚合、按plane复位、非物理累计流与已加工typed鼠标量并行投递。
+0021-openharmony-input-source-semantics.patch
+
+# 跨通道因果顺序、实时前台尾表与窗口消失时的按下态收口。
+0022-openharmony-ordered-input-and-foreground.patch
+
+# Vulkan 同一受租约保护窗口的发布代次/几何采纳；保留失效与不同窗口的输入拒绝。
+0023-openharmony-vulkan-input-generation.patch
+
+# 独立touch尾协议绑定真实SDL输入目标与呈现，保留旧SDL/ORDER前缀及Vulkan租约分轴。
+0024-openharmony-touch-causal-target.patch
+
+# 三ABI共同生产端口管理控制贡献；SDL保留原SDK缓存/队列政策，真实回执与getter分开记证据。
+0025-openharmony-shared-control-delivery.patch
+0026-openharmony-ordered-look-prefix.patch
+
+# 可选原票观测：SDL真实cache与ADD成功回执；不改变生产输入握手。
+0027-openharmony-input-latency-receipts.patch
+
+# 桌面桥仅2in1使用；非桌面不逐帧加载GLFW，保留桌面晚发布与原输入泵。
+0028-openharmony-desktop-device-gate.patch

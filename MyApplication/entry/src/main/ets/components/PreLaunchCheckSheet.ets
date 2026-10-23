@@ -10,7 +10,8 @@
  * 校验逻辑在 launch/PreLaunchValidator.ets；本组件负责编排、完整失败诊断与展示。
  */
 
-import { ThemeColors, AppLogger, LOG_DOMAIN_LAUNCH } from 'commons';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
+import { ThemeColors, AppLogger, LOG_DOMAIN_LAUNCH, DistributionPolicy } from 'commons';
 import { AppIconName } from 'commons';
 import { DOCS_NO_JIT_URL, DOCS_NO_JIT_FALLBACK_URL } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -167,7 +168,10 @@ export struct PreLaunchCheckSheet {
     this.setRunning(2);
     await this.sleep(300);
     if (this.aborted) return;
-    let c1 = await PreLaunchValidator.runRuntime(this.input(), this.checkJdkInstalled(this.currentJdk));
+    // 先选择并核验本局 JDK，再由产品部署器准备对应视图；使用当前窗口的真实 Context，
+    // 不在 UI 层实现 ZIP 转换，也不复用另一窗口的全局 Context。
+    let c1 = await PreLaunchValidator.runRuntime(this.input(), this.checkJdkInstalled(this.currentJdk),
+      this.getUIContext().getHostContext());
     if (this.aborted) return;
     this.setCheck(2, c1);
     if (c1.status === 'fail') { this.phase = 'failed'; return; }
@@ -223,6 +227,8 @@ export struct PreLaunchCheckSheet {
 
   /** 打开「无 JIT 权限的解决办法」文档（内嵌 WebView）。 */
   private openNoJitDoc(): void {
+    // 商店仍展示本地 JIT 失败原因，但不提供帮助网页或历史回调绕过。
+    if (DistributionPolicy.isStore()) return;
     try {
       this.getUIContext().getRouter().pushUrl({
         url: 'pages/DocWebPage',
@@ -352,64 +358,17 @@ export struct PreLaunchCheckSheet {
 
   build() {
     Column() {
-      this.Header_()
-
-      Scroll() {
-        Column({ space: 10 }) {
-          ForEach(this.checks, (c: PreLaunchCheck) => {
-            this.CheckRow_(c);
-          }, (c: PreLaunchCheck) => c.id + ':' + c.status)
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 4, bottom: 12 })
-      }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-
-      this.Footer_()
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: '启动前检查', subtitle: this.version || '<unknown>', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭启动前检查', closeId: 'prelaunch-close', onClose: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.theme.bgPrimary)
   }
 
-  @Builder
-  Header_() {
-    Row({ space: 10 }) {
-      Stack() {
-        AppIcon({ name: AppIconName.Play, iconSize: 18, color: this.theme.primary })
-      }
-      .width(40).height(40)
-      .borderRadius(20)
-      .backgroundColor(this.theme.primaryLight)
 
-      Column({ space: 1 }) {
-        Text('启动前检查')
-          .fontSize(18)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
-        Text(this.version || '<unknown>')
-          .fontSize(11)
-          .fontWeight(500)
-          .fontColor(this.theme.textHint)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Stack() {
-        AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-      }
-      .width(40).height(40)
-      .borderRadius(20)
-      .backgroundColor(this.theme.bgCard)
-      .onClick(() => { this.onClose() })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 10 })
-    .alignItems(VerticalAlign.Center)
-  }
 
   @Builder
   CheckRow_(c: PreLaunchCheck) {
@@ -520,7 +479,7 @@ export struct PreLaunchCheckSheet {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       // JIT 失败：显著入口打开「无 JIT 解决办法」文档（该失败无一键修复，只能按教程处理）
-      if (this.isJitFailed()) {
+      if (this.isJitFailed() && !DistributionPolicy.isStore()) {
         Row({ space: 6 }) {
           AppIcon({ name: AppIconName.Help, iconSize: 16, color: this.theme.textOnPrimary })
           Text('如何解决：无 JIT 权限的办法')
@@ -722,4 +681,25 @@ export struct PreLaunchCheckSheet {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(14)
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+
+
+      Scroll() {
+        Column({ space: 10 }) {
+          ForEach(this.checks, (c: PreLaunchCheck) => {
+            this.CheckRow_(c);
+          }, (c: PreLaunchCheck) => c.id + ':' + c.status)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 4, bottom: 12 })
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+
+      this.Footer_()
+
+      }
 }

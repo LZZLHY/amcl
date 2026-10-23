@@ -31,7 +31,14 @@ function check(name, cond, detail = '') {
 }
 
 function expectFail(name, mutate, needle) {
-  const mutated = mutate(readAll());
+  // Windows检出使用CRLF，字面量变异使用LF；只规范化内存夹具，不改真实源码或门禁判据。
+  // 没有改到样本时必须单独失败，不能把“替换未命中”误报为产品门禁恒绿。
+  const original = Object.fromEntries(Object.entries(readAll()).map(([key, value]) =>
+    [key, typeof value === 'string' ? value.replace(/\r\n/g, '\n') : value]));
+  const mutated = mutate(original);
+  const changed = Object.entries(original).some(([key, value]) => Buffer.isBuffer(value)
+    ? !Buffer.isBuffer(mutated[key]) || !value.equals(mutated[key]) : value !== mutated[key]);
+  if (!changed) { check(name, false, '负向变异未改变输入，请修复样本匹配'); return; }
   const r = analyze(mutated);
   const hit = !r.ok && r.errors.some((e) => e.includes(needle));
   check(name, hit,

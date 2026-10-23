@@ -1,4 +1,5 @@
 #include "amcl_input_host_descriptor.h"
+#include "amcl_input_mapped_ranges.h"
 
 #include <cinttypes>
 #include <cstdio>
@@ -156,12 +157,18 @@ bool DecodeHex(const char* text, size_t count, uint64_t* out) {
     return true;
 }
 
-bool IsMappedRange(uintptr_t address, size_t size, bool executable) {
+/**
+ * 地址资格保持原平台语义。Resolve 传入本轮集合以合并 Linux maps 扫描；其他入口不借该集合。
+ * Windows 正式产品仍逐范围 VirtualQuery；宿主专用宏只适配 procfs 文本源，不进入产品编译。
+ */
+bool IsMappedRange(uintptr_t address, size_t size, bool executable,
+                   amcl::input::detail::MappedRangeSnapshot* mappingSnapshot = nullptr) {
     if (address == 0u || size == 0u || address > UINTPTR_MAX - size) {
         return false;
     }
+#if defined(_WIN32) && !defined(AMCL_INPUT_DESCRIPTOR_MAPS_TESTING)
+    (void)mappingSnapshot;
     const uintptr_t limit = address + size;
-#ifdef _WIN32
     uintptr_t cursor = address;
     while (cursor < limit) {
         MEMORY_BASIC_INFORMATION info{};
@@ -192,6 +199,15 @@ bool IsMappedRange(uintptr_t address, size_t size, bool executable) {
     }
     return true;
 #else
+    // 表前缀和尾表仍在 memcpy 之前分别查询，首次 callback 校验复用已读段或继续本轮游标。
+    // 集合只活在此次 Resolve 调用中；任何失败都拒绝解引用，下一次调用重新实读。
+    if (mappingSnapshot) return mappingSnapshot->LoadFile("/proc/self/maps") && mappingSnapshot->Contains(address, size, executable);
+#ifdef AMCL_INPUT_DESCRIPTOR_MAPS_TESTING
+    // Publish 的原逐范围入口仍逐次读取；仅宿主把 procfs 来源替换为同语义文本边界。
+    amcl::input::detail::MappedRangeSnapshot standalone;
+    return standalone.LoadFile("/proc/self/maps") && standalone.Contains(address, size, executable);
+#else
+    const uintptr_t limit = address + size;
     // Descriptor text is an in-process deployment bridge, not a trust
     // boundary. Still, never dereference an arbitrary nonzero address: prove
     // the complete table/callback lies in a readable/executable mapping.
@@ -218,6 +234,7 @@ bool IsMappedRange(uintptr_t address, size_t size, bool executable) {
     std::fclose(maps);
     return accepted;
 #endif
+#endif
 }
 
 template <typename Function>
@@ -229,9 +246,11 @@ uintptr_t FunctionAddress(Function function) {
     return address;
 }
 
-bool HasExecutableCallbacks(const AmclInputHostApiV1& api) {
+/** 首次/表变化后的完整 callback 校验；可复用本轮映射，但不减少任何必需函数检查。 */
+bool HasExecutableCallbacks(const AmclInputHostApiV1& api,
+                             amcl::input::detail::MappedRangeSnapshot* maps = nullptr) {
 #define AMCL_EXECUTABLE_CALLBACK(member) \
-    IsMappedRange(FunctionAddress(api.member), 1u, true)
+    IsMappedRange(FunctionAddress(api.member), 1u, true, maps)
     return AMCL_EXECUTABLE_CALLBACK(beginSession) &&
         AMCL_EXECUTABLE_CALLBACK(endSession) &&
         AMCL_EXECUTABLE_CALLBACK(submitEvent) &&
@@ -246,7 +265,11 @@ bool HasExecutableCallbacks(const AmclInputHostApiV1& api) {
         AMCL_EXECUTABLE_CALLBACK(readPacketBlob) &&
         AMCL_EXECUTABLE_CALLBACK(releasePacket) &&
         AMCL_EXECUTABLE_CALLBACK(closeConsumer) &&
-        AMCL_EXECUTABLE_CALLBACK(getSnapshot);
+        AMCL_EXECUTABLE_CALLBACK(getSnapshot) &&
+        ((api.capabilityBits & AMCL_INPUT_CAP_INTERACTION_ORDER) == 0u ||
+         (AMCL_EXECUTABLE_CALLBACK(nextOrderedEvent) &&
+          AMCL_EXECUTABLE_CALLBACK(peekEventOrder) &&
+          AMCL_EXECUTABLE_CALLBACK(interactionFence)));
 #undef AMCL_EXECUTABLE_CALLBACK
 }
 
@@ -259,12 +282,14 @@ int32_t ValidateGeneration(uint64_t generation) {
                : AMCL_INPUT_HOST_DESCRIPTOR_ERROR_GENERATION;
 }
 
+/** ABI/能力/代次和函数资格校验不变；可选映射仅用于一次 Resolve 内共享读取结果。 */
 int32_t ValidateApi(const AmclInputHostApiV1* api,
-                    uint64_t descriptorGeneration) {
+                    uint64_t descriptorGeneration,
+                    amcl::input::detail::MappedRangeSnapshot* maps = nullptr) {
     if (!api) return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_INVALID_ARGUMENT;
     if (api->magic != AMCL_INPUT_HOST_API_MAGIC ||
         api->abiVersion != AMCL_INPUT_HOST_API_VERSION ||
-        api->structSize < sizeof(AmclInputHostApiV1)) {
+        api->structSize < AMCL_INPUT_HOST_API_V1_PREFIX_SIZE) {
         // A larger table is forward-compatible, but the complete V1 prefix is
         // mandatory: consumers must never read callbacks beyond structSize.
         return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_ABI_MISMATCH;
@@ -299,7 +324,12 @@ int32_t ValidateApi(const AmclInputHostApiV1* api,
         // reached first. Fail the handshake atomically and retry later instead.
         return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_INCOMPLETE;
     }
-    if (!HasExecutableCallbacks(*api)) {
+    // 宣告能力却未提供完整尾表属于协议错误，不能静默退回无序消费。
+    if ((api->capabilityBits & AMCL_INPUT_CAP_INTERACTION_ORDER) != 0u &&
+        !amclInputHasInteractionOrder(api)) {
+        return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_INCOMPLETE;
+    }
+    if (!HasExecutableCallbacks(*api, maps)) {
         // Non-null is insufficient for a table reconstructed from text. Reject
         // data/guard/unmapped callback addresses before any adapter can call
         // them; a later valid publication remains recoverable.
@@ -421,13 +451,9 @@ int32_t ClearDescriptorTransport(const ProcessDescriptorLock& lock) {
 // Caller owns ProcessDescriptorLock. Keeping parsing separate prevents Publish
 // from recursively acquiring a non-recursive POSIX flock while it atomically
 // performs resolve-or-claim.
-// Callback mapping validation is memoized per DSO against the exact descriptor
-// text plus a byte-identical table snapshot. HasExecutableCallbacks probes
-// /proc/self/maps once per callback, which is far too expensive for callers that
-// resolve repeatedly. The table's own range check below is always re-run, so the
-// dereference precondition is unchanged, and any mutation of the published table
-// changes the snapshot and falls back to full validation. Misses and malformed
-// text are never cached.
+// 原 callback memo 仍以完整 descriptor 和逐字节相同的表为键；表变更重新核验全部函数。
+// 本轮 maps 集合仅在 ResolveUnlocked 栈内共享 prefix/tail/callback 范围检查，退出即释放。
+// 每次 Resolve 仍实读映射且先证明表可读再 memcpy，不跨调用缓存映射、缺失或错误。
 struct ValidatedDescriptor {
     bool valid = false;
     char text[kDescriptorLength + 1u]{};
@@ -474,8 +500,9 @@ int32_t ResolveUnlocked(const ProcessDescriptorLock& lock,
     }
 
     const uintptr_t address = static_cast<uintptr_t>(encodedAddress);
+    amcl::input::detail::MappedRangeSnapshot mappedRanges;
     if (address % alignof(AmclInputHostApiV1) != 0u ||
-        !IsMappedRange(address, sizeof(AmclInputHostApiV1), false)) {
+        !IsMappedRange(address, AMCL_INPUT_HOST_API_V1_PREFIX_SIZE, false, &mappedRanges)) {
         return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_UNSAFE_POINTER;
     }
 
@@ -485,7 +512,15 @@ int32_t ResolveUnlocked(const ProcessDescriptorLock& lock,
     // violating the owner contract would reopen an unload/mutation TOCTOU.
     AmclInputHostApiV1 snapshot{};
     std::memcpy(&snapshot, reinterpret_cast<const void*>(address),
-                sizeof(snapshot));
+                AMCL_INPUT_HOST_API_V1_PREFIX_SIZE);
+    // 先证明前缀可读，再根据长度与能力证明尾表映射，不能提前越界 memcpy 旧宿主。
+    if ((snapshot.capabilityBits & AMCL_INPUT_CAP_INTERACTION_ORDER) != 0u) {
+        if (snapshot.structSize < sizeof(snapshot) ||
+            !IsMappedRange(address, sizeof(snapshot), false, &mappedRanges)) {
+            return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_ABI_MISMATCH;
+        }
+        std::memcpy(&snapshot, reinterpret_cast<const void*>(address), sizeof(snapshot));
+    }
     if (g_validatedDescriptor.valid &&
         std::strcmp(descriptor, g_validatedDescriptor.text) == 0 &&
         std::memcmp(&snapshot, &g_validatedDescriptor.snapshot,
@@ -495,7 +530,7 @@ int32_t ResolveUnlocked(const ProcessDescriptorLock& lock,
         *outApi = g_validatedDescriptor.api;
         return AMCL_INPUT_HOST_DESCRIPTOR_OK;
     }
-    const int32_t validation = ValidateApi(&snapshot, descriptorGeneration);
+    const int32_t validation = ValidateApi(&snapshot, descriptorGeneration, &mappedRanges);
     if (validation != AMCL_INPUT_HOST_DESCRIPTOR_OK) return validation;
     g_validatedDescriptor.valid = true;
     std::memcpy(g_validatedDescriptor.text, descriptor, kDescriptorLength + 1u);

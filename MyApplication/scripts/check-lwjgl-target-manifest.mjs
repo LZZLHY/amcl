@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
 import { stripComments } from './lib/source-noise.mjs';
 import { locateReadelf, runNativeSurfaceCheck } from './check-lwjgl-native-surface.mjs';
+import { checkModuleCoverage } from './check-lwjgl-module-coverage.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, '..');
@@ -1048,9 +1049,14 @@ if (isMain) {
   const results = targets.map((target) => analyzeLwjglTargetManifestCoverage({
     ...loadDefaultCoverageInputs(ROOT, target), hapBytes, clientBytes,
   }));
+  // 原版目标清单之外仍随包交付的扩展模块也必须配套；只核对目标依赖会遗漏 NanoVG、
+  // OpenGLES 和 shaderc 的旁支接口。每个 CLI 批次只做一次全槽检查，HAP 模式读本次包。
+  const moduleCoverage = checkModuleCoverage({ root: ROOT, hapBytes });
   if (process.argv.includes('--json')) {
-    console.log(JSON.stringify({ ok: results.every((result) => result.ok), targets: results }, null, 2));
+    console.log(JSON.stringify({ ok: results.every((result) => result.ok) && moduleCoverage.ok, targets: results, moduleCoverage }, null, 2));
   } else {
+    for (const problem of moduleCoverage.problems) console.error(`[lwjgl-module-coverage] FAIL ${problem}`);
+    if (moduleCoverage.ok) console.log(`[lwjgl-module-coverage] OK: ${moduleCoverage.modules.length} actual JARs; ${moduleCoverage.modules.filter((entry) => entry.required > 0).map((entry) => `${entry.jar}=${entry.required}`).join(', ')}${hapBytes ? '; final HAP providers verified' : ''}`);
     for (const result of results) {
       for (const problem of result.problems) console.error(`[lwjgl-target-manifest] FAIL ${problem}`);
       if (result.ok) {
@@ -1061,5 +1067,5 @@ if (isMain) {
       }
     }
   }
-  process.exitCode = results.every((result) => result.ok) ? 0 : 1;
+  process.exitCode = results.every((result) => result.ok) && moduleCoverage.ok ? 0 : 1;
 }

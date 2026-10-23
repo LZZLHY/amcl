@@ -129,12 +129,21 @@ export function analyzeSdlLaunchSources(files) {
     check('publish-and-verify-fail-closed', /if\s*\(!phase_publishPlatformRuntime\(session\)\)\s*goto cleanup;/.test(thread)
       && /if\s*\(!phase_verifyRuntimeProperties\(env\)\)\s*goto cleanup;/.test(thread));
     check('publish-has-no-platform-loading', !/\b(?:FindClass|dlopen|dlsym|glfwInit|SDL_SetMainReady)\s*\(/.test(publish));
+    // I27-05：描述符写进建 JVM 前预登记的文本槽位（原位填写），不再在 g_mcThread 上 setenv。
+    const slotStore = 'amcl::envslot::ProcessRegistry().Store(amcl::envslot::kSdlHostRuntimeEnv, descriptor)';
     check('publish-exact-runtime-identity', publish.includes('"1:%llu:%llu:%llu"')
       && publish.includes('getpid()') && publish.includes('syscall(SYS_gettid)')
       && publish.includes('static_cast<unsigned long long>(session)')
-      && ordered(publish, ['plan->window == "SDL3"', 'setenv("AMCL_SDL_HOST_RUNTIME", descriptor, 1)'])
+      && ordered(publish, ['plan->window == "SDL3"', slotStore])
       && publish.includes('previous && std::strcmp(previous, descriptor) != 0')
-      && publish.includes('setenv("AMCL_SDL_HOST_RUNTIME", descriptor, 1) != 0'));
+      && publish.includes(slotStore + ' < 0'));
+    // 槽位只能在 JNI_CreateJavaVM 之前、且只为 SDL3 路线登记（空值会被 SDL 判为畸形，其他路线必须缺席）；
+    // 全文件不得再有任何对该名字的 setenv/unsetenv/putenv。登记表的封存点在 jvmInit 的创建认领处，
+    // 由 check-env-mutation.mjs 的顺序钉住，这里只钉登记本身。
+    check('sdl-host-runtime-slot-pre-registered', ordered(launch, [
+      'amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)',
+      'phase_initJvmWithClasspath(', 'std::thread(mcLaunchThreadWithProfile',
+    ]) && !/\b(?:setenv|unsetenv|putenv)\s*\(\s*(?:"AMCL_SDL_HOST_RUNTIME"|(?:amcl::envslot::)?kSdlHostRuntimeEnv\b)/.test(source));
     check('bridge-descriptor-first', /if\s*\(publishCallbackBridgeHostV1\(session\)\s*!=\s*JNI_OK\)/.test(publish));
 
     check('host-runtime-patch-active', parseSdl3PatchSeries(files.series).includes(PATCH));

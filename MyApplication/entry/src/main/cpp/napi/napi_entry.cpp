@@ -19,6 +19,7 @@
 #include <cstdint>
 
 #include "../platform/xcomponent.h"      // RegisterXComponent
+#include "../platform/env_publication.h" // PublishEarlyProcessEnvironment（I27-05）
 #include "../platform/mg_config.h"       // prepareMobileGluesRuntime
 #include "../download/probe.h"           // downloadEngineProbe (启动 banner)
 #include "../download/download_napi.h"   // download::registerDownloadNapi
@@ -27,11 +28,13 @@
 #include "../utils/stack_sampler.h"      // glfwOHOS_samplerSetJvmHooks
 
 #include "napi_jvm.h"
+#include "napi_sideload_update.h"
 #include "napi_mc.h"
 #include "napi_desktop.h"
 #include "napi_log.h"
 #include "napi_input.h"
 #include "napi_forge.h"
+#include "napi_export.h"
 #include "napi_tests.h"
 
 #undef LOG_TAG
@@ -47,6 +50,7 @@ static napi_value GetDiagnosticCapabilities(napi_env env, napi_callback_info) {
 //  模块初始化 — Init() 调度器
 //
 //  【ORDERING CONTRACT — 调整顺序前请读 docs/guides/napi-layer-refactor-plan.md §2.R-1】
+//    0. PublishEarlyProcessEnvironment() 最先：早于本函数里任何线程（含测试构建的探针线程）
 //    1. 非正式 desktop 产品在 LWJGL 加载前完成 prepareMobileGluesRuntime()
 //    2. § napi_*.cpp register* 在中间注册，顺序本身不敏感
 //    3. RegisterXComponent() 必须在所有 NAPI 后
@@ -59,6 +63,9 @@ static napi_value Init(napi_env env, napi_value exports) {
         GetDiagnosticCapabilities, nullptr, nullptr, nullptr, napi_default, nullptr };
     napi_define_properties(env, exports, 1, &diagnostics);
     OH_LOG_INFO(LOG_APP, "%{public}s", AMCL_DIAGNOSTICS_MARKER);
+    // I27-05：登记环境静态槽位并发布进程常量描述符，进程内只执行一次（再初始化是空操作）。
+    // 必须早于下面任何会建线程的注册，之后第一方代码只在建 JVM 前按清单新增环境名。
+    amcl::ohos::PublishEarlyProcessEnvironment("module-init");
     // Formal desktop has no MobileGlues configuration or migration side effects.
 #if !AMCL_NATIVE_DESKTOP_ONLY
     prepareMobileGluesRuntime();
@@ -109,6 +116,10 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     // § napi_forge.cpp：runJavaProcessor（fork+JVM 跑单个 processor，返回 Promise）
     amcl::napi::registerForgeNapi(env, exports);
+    // 导出数据面仅登记接口；实际hash/STORE/独立校验由各自异步job持有fd到收敛。
+    amcl::napi::registerExportNapi(env, exports);
+    // 自更新HDC桥不重定向全局日志或修改HOME；store入口明确返回unsupported。
+    amcl::napi::registerSideloadUpdateNapi(env, exports);
 
 #ifdef MC_OHOS_BUILD_TESTS
     // § napi_tests.cpp：runJitTests / runJvmTests / runGlfwTest / runGl4Test / runMgTest

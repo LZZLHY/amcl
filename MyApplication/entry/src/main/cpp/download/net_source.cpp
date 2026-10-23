@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace download {
 
@@ -70,7 +71,7 @@ int64_t NetSource::readyAtMs() const {
 
 void NetSource::recordSample(int rtt_ms, double throughput_bps) {
     if (rtt_ms < 0) return;                  // 非法 RTT 忽略
-    if (!(throughput_bps >= 0.0)) return;    // 非法吞吐忽略（同时 NaN 也会被排除）
+    if (!(throughput_bps >= 0.0) || !std::isfinite(throughput_bps)) return;
 
     std::lock_guard<std::mutex> lk(sample_mu_);
     rtt_samples_[sample_next_]  = rtt_ms;

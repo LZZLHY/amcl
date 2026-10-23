@@ -1,0 +1,29 @@
+/** 宿主C消费者借生产C++ bridge的链接适配；不维护队列、source或consumer状态。 */
+#include <cstdint>
+#include "input/amcl_input_api.h"
+/** host桥保留测试路由回调名，但结果直接读真Core冻结能力，不伪造typed ready。 */
+extern "C" int amclBackendInputHostStubTypedRouteActive(){
+    const auto* api=amclInputGetHostApiV1();return api&&(api->capabilityBits&AMCL_INPUT_CAP_GLFW_TYPED_PHYSICAL_ROUTE)?1:0;
+}
+void inputBridge_sdlSetActive(int);
+int inputBridge_sdlNextEvent(int*,int*,int*,int*,int*);
+uint64_t inputBridge_sdlPeekOrder();
+int inputBridge_sdlNextThrough(int*,int*,int*,int*,int*,uint64_t);
+void inputBridge_setGrabState(int);int inputBridge_setInputReady(int);
+void inputBridge_pushEvent(int,int,int,int,int);
+extern "C" int inputBridge_submitProcessedLookV1(int32_t,double,double);
+extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t);
+void Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(void*,void*,int,int,int,int);
+void Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(void*,void*,int,int,int);
+extern "C" void sourceSdkActivate(){inputBridge_sdlSetActive(1);(void)inputBridge_setInputReady(1);}
+extern "C" void sourceSdkDeactivate(){inputBridge_sdlSetActive(0);}
+extern "C" int sourceSdkNext(int*t,int*a,int*b,int*c,int*d){return inputBridge_sdlNextEvent(t,a,b,c,d);}
+extern "C" uint64_t sourceSdkPeek(){return inputBridge_sdlPeekOrder();}
+extern "C" int sourceSdkNextThrough(int*t,int*a,int*b,int*c,int*d,uint64_t order){return inputBridge_sdlNextThrough(t,a,b,c,d,order);}
+extern "C" void sourceSdkMode(int grabbed){inputBridge_setGrabState(grabbed);}
+extern "C" int sourceSdkBind(){return inputBridge_configureMenuCursorConsumerV1(3,1);}
+extern "C" void sourceSdkKey(int key,int action){Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,key,0,action,0);}
+extern "C" void sourceSdkButton(int button,int action){Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(nullptr,nullptr,button,action,0);}
+extern "C" void sourceSdkFill(int key){inputBridge_pushEvent(1005,key,0,1,0);}
+/** 已加工虚拟计数走真实prefix/ring预算，不再在fixture手工构造1020记录。 */
+extern "C" int sourceSdkLook(double x,double y){return inputBridge_submitProcessedLookV1(2,x,y);}

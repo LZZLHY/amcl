@@ -10,6 +10,7 @@ import { ThemeColors, AppIconName, DistributionPolicy, EvidenceFileRecord, Evide
   FrozenEvidenceFile, disposeEvidenceExportSnapshot, evidenceRoleLabel, normalizeEvidenceSelection,
   formatLogBytes, createEvidenceExcerptSnapshot } from 'commons';
 import { AppIcon } from './AppIcon';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { sortEvidenceForView, evidenceReadable, evidenceCaptureLabel, EvidenceScenario,
   EVIDENCE_SCENARIOS, EVIDENCE_SCENARIO_LABELS, evidenceScenarioSelection } from 'commons';
 import { AnimatedPillBar } from './AnimatedPillBar';
@@ -332,6 +333,11 @@ export struct ActivityShareSheet {
     }).catch((): void => {});
   }
   private openPolicy_(): void {
+    // 日志分享继续使用原 API；商店隐私说明改为随包本地文本，不走网站或失败外跳。
+    if (DistributionPolicy.isStore()) {
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/LocalPolicyPage', params: { 'policy': 'logshare' } });
+      return;
+    }
     const want: Want = { action: 'ohos.want.action.viewData', entities: ['entity.system.browsable'], uri: 'https://logshare.cn/privacy' };
     this.context?.startAbility(want).catch((): void => { this.errorText = '无法打开隐私说明'; });
   }
@@ -363,18 +369,56 @@ export struct ActivityShareSheet {
   }
 
   build() {
+    Column() {
+    // 共享宿主同时替换正文标题和系统 Sheet X，保持同一分享组件与快照生命周期。
+    // 关闭只通知宿主收起：发送已获确认时不撤回上传；More 仍在忙态禁用。
+    ImmersiveTitleScaffold({
+      title: this.phase === 'done' ? (this.shared === undefined ? '作者端已接收' : '分享链接已就绪')
+        : this.advanced ? '高级分享' : '分享日志',
+      subtitle: this.draft.manifest?.title ?? '本次活动', theme: this.theme, surfaceColor: this.theme.bgPrimary,
+      modal: true, closeLabel: '关闭日志分享', onClose: (): void => { this.onClosed(); },
+      menuActions: [{ id: 'share-options', label: '高级选择、导出与分享管理', icon: AppIconName.More, enabled: !this.busy_() }],
+      onMenuAction: (id: string): void => { if (id === 'share-options') this.menu_(); },
+      content: (): void => { this.ImmersiveTitleContent1_(); }
+    })
+    }.width('100%').height('100%')
+  }
+
+  /** 在同一个 sheet 内切换到有界分页预览，不再改主页面的原始日志状态。 */
+  @Builder
+  private Preview_() {
+    Column({ space: 12 }) {
+      Button('返回分享预览').height(44).fontColor(this.theme.primary).backgroundColor(Color.Transparent)
+        .onClick(() => { this.previewGeneration++; this.previewModel.cancel(); this.previewName = ''; this.previewFile = undefined; })
+      Text(this.previewName).fontSize(12).fontColor(this.theme.textSecondary).width('100%')
+      if (this.previewReading) { LoadingProgress().width(28).height(28).color(this.theme.primary) }
+      if (this.previewError.length > 0) {
+        Text(this.previewError).fontSize(12).fontColor(this.theme.errorText).width('100%')
+        Button('重试读取').height(44).onClick(() => { if (this.previewFile !== undefined) this.readPreview_(this.previewFile, this.previewPage); })
+      }
+      List() {
+        LazyForEach(this.previewModel, (row: LogRow) => {
+          ListItem() {
+            Text(String(row.sourceLineNumber ?? row.lineNumber) + '  ' + row.text).fontSize(12).fontFamily('monospace')
+              .fontColor(this.theme.textPrimary).width('100%').copyOption(CopyOptions.LocalDevice).padding(4)
+          }
+        }, (row: LogRow): string => String(row.key))
+      }.width('100%').layoutWeight(1).backgroundColor(this.theme.bgCard).borderRadius(12)
+        .visibility(this.previewReading || this.previewError.length > 0 ? Visibility.Hidden : Visibility.Visible)
+      Row({ space: 12 }) {
+        Button('上一页').height(44).enabled(!this.previewReading && this.previewError.length === 0 && this.previewPage > 0)
+          .onClick(() => { if (this.previewFile !== undefined) this.readPreview_(this.previewFile, this.previewPage - 1); })
+        Text('第 ' + (this.previewPage + 1) + ' 页').fontSize(12).fontColor(this.theme.textSecondary)
+        Button('下一页').height(44).enabled(!this.previewReading && this.previewError.length === 0 && this.previewNext)
+          .onClick(() => { if (this.previewFile !== undefined) this.readPreview_(this.previewFile, this.previewPage + 1); })
+      }.width('100%')
+    }.width('100%').layoutWeight(1)
+  }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
     Column({ space: 16 }) {
-      Row({ space: 8 }) {
-        Column({ space: 4 }) {
-          Text(this.phase === 'done' ? (this.shared === undefined ? '作者端已接收' : '分享链接已就绪') : this.advanced ? '高级分享' : '分享日志')
-            .fontSize(24).fontWeight(600).fontColor(this.theme.textPrimary)
-          Text(this.draft.manifest?.title ?? '本次活动').fontSize(12).fontColor(this.theme.textSecondary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Button() { AppIcon({ name: AppIconName.More, iconSize: 20, color: this.theme.textSecondary }) }
-          .width(44).height(44).backgroundColor(Color.Transparent).enabled(!this.busy_())
-          .accessibilityText('高级选择、导出与分享管理').onClick(() => { this.menu_(); })
-      }.width('100%').padding({ right: 28 })
       if (this.previewName.length > 0) {
         this.Preview_()
       } else {
@@ -522,37 +566,6 @@ export struct ActivityShareSheet {
           }.width('100%')
         }
       }
-    }.width('100%').height('100%').padding({ top: 24, left: 20, right: 20, bottom: 16 })
-  }
-
-  /** 在同一个 sheet 内切换到有界分页预览，不再改主页面的原始日志状态。 */
-  @Builder
-  private Preview_() {
-    Column({ space: 12 }) {
-      Button('返回分享预览').height(44).fontColor(this.theme.primary).backgroundColor(Color.Transparent)
-        .onClick(() => { this.previewGeneration++; this.previewModel.cancel(); this.previewName = ''; this.previewFile = undefined; })
-      Text(this.previewName).fontSize(12).fontColor(this.theme.textSecondary).width('100%')
-      if (this.previewReading) { LoadingProgress().width(28).height(28).color(this.theme.primary) }
-      if (this.previewError.length > 0) {
-        Text(this.previewError).fontSize(12).fontColor(this.theme.errorText).width('100%')
-        Button('重试读取').height(44).onClick(() => { if (this.previewFile !== undefined) this.readPreview_(this.previewFile, this.previewPage); })
-      }
-      List() {
-        LazyForEach(this.previewModel, (row: LogRow) => {
-          ListItem() {
-            Text(String(row.sourceLineNumber ?? row.lineNumber) + '  ' + row.text).fontSize(12).fontFamily('monospace')
-              .fontColor(this.theme.textPrimary).width('100%').copyOption(CopyOptions.LocalDevice).padding(4)
-          }
-        }, (row: LogRow): string => String(row.key))
-      }.width('100%').layoutWeight(1).backgroundColor(this.theme.bgCard).borderRadius(12)
-        .visibility(this.previewReading || this.previewError.length > 0 ? Visibility.Hidden : Visibility.Visible)
-      Row({ space: 12 }) {
-        Button('上一页').height(44).enabled(!this.previewReading && this.previewError.length === 0 && this.previewPage > 0)
-          .onClick(() => { if (this.previewFile !== undefined) this.readPreview_(this.previewFile, this.previewPage - 1); })
-        Text('第 ' + (this.previewPage + 1) + ' 页').fontSize(12).fontColor(this.theme.textSecondary)
-        Button('下一页').height(44).enabled(!this.previewReading && this.previewError.length === 0 && this.previewNext)
-          .onClick(() => { if (this.previewFile !== undefined) this.readPreview_(this.previewFile, this.previewPage + 1); })
-      }.width('100%')
-    }.width('100%').layoutWeight(1)
-  }
+    }.width('100%').height('100%').padding({ top: 8, left: 20, right: 20, bottom: 16 })
+    }
 }

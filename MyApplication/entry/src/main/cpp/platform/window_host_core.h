@@ -8,11 +8,13 @@
 #include <vector>
 
 namespace amcl::window {
+// NativeWindow 引用计数驱动：生产为 OH_NativeWindow_NativeObject(Un)Reference，宿主测试注入
+// 计数替身。只负责引用，不再镜像快照到环境变量（AMCL_NATIVE_WINDOW_SNAPSHOT 无读者，
+// 每次 surface 事件写一次 environ 只会扩大 I27-05 的竞争面，已随 I27-05 删除）。
 struct NativeReferenceDriver {
     int (*reference)(void*, void*) = nullptr;
     int (*unreference)(void*, void*) = nullptr;
     void* context = nullptr;
-    void (*publishSnapshot)(const AmclWindowHostSnapshot&, void*) = nullptr;
 };
 
 class WindowHostCore final {

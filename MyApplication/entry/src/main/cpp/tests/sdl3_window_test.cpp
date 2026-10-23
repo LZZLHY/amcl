@@ -10,11 +10,11 @@
  *   而 hybrid 修复解决的恰恰是 SDL_CreateWindow：上游的 OPENHARMONY_CreateWindow 要求
  *   native_xcomponent + native_window 两个指针，它们只由 SDL 自己注册的 OnSurfaceCreated
  *   回调填充；AMCL 的 XComponent 属于宿主，那个回调永不触发。patch 让后端改为从
- *   AMCL 既有的环境变量约定（AMCL_NATIVE_WINDOW / _WIDTH / _HEIGHT）采纳 window，
- *   并容忍 xcomponent 为 NULL。
+ *   宿主的窗口宿主 broker（AMCL_NATIVE_WINDOW_LEASE_BROKER 描述符）租用 window，
+ *   并容忍 xcomponent 为 NULL。宿主不再发布窗口指针环境变量（I27-05）。
  *
  *   所以本探针必须跑在**有活跃 XComponent surface** 的页面上（RenderPage / VulkanPage），
- *   这样 platform/xcomponent.cpp 的 OnSurfaceCreated 已经把三个变量 setenv 出来了。
+ *   这样 platform/xcomponent.cpp 的 OnSurfaceCreated 已经把窗口发布给窗口宿主了。
  *   这与 runVulkanSelfTest 复用同一机制（见 VulkanPage.ets 的注释）。
  *
  * 验证链（一次跑完，任一步失败即停并报出 SDL_GetError）：
@@ -30,6 +30,7 @@
  */
 
 #include "tests.h"
+#include "../platform/window_host.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -174,11 +175,12 @@ private:
     std::ostringstream oss_;
 };
 
-/* The probe temporarily sets private SDL/driver environment variables.  A
- * developer can invoke it while another diagnostic or a game session is alive,
- * so every touched value must be restored on all return paths (including a
- * failed dlopen or SDL_Init).  Capture strings rather than retaining getenv's
- * storage: setenv/unsetenv may invalidate that buffer. */
+/* 探针临时改写 SDL/驱动的私有环境变量；开发者可能在另一个诊断或游戏会话存活时调用它，
+ * 所以每个改过的值都要在所有返回路径（含 dlopen / SDL_Init 失败）上恢复。保存字符串副本
+ * 而不是 getenv 返回的指针：setenv/unsetenv 可能使那块存储失效。
+ * AMCL_RENDERER_REQUIRES_PROCESS_RESTART 刻意不在恢复表里：它是宿主预登记的静态槽位
+ * （I27-05），setenv/unsetenv 会把槽位从 environ 摘走，之后宿主的原位写入全部失效。
+ * 探针期间 SDL 若置位了重启标记，按保守合同保留并在报告里写明（见 runSdl3HybridWindowProbe）。 */
 class ScopedEnvRestore {
 public:
     ScopedEnvRestore()
@@ -188,8 +190,7 @@ public:
               {"SDL_VIDEO_DRIVER", false, std::string()},
               {"SDL_NO_SIGNAL_HANDLERS", false, std::string()},
               {"SDL_OPENGL_LIBRARY", false, std::string()},
-              {"SDL_EGL_LIBRARY", false, std::string()},
-              {"AMCL_RENDERER_REQUIRES_PROCESS_RESTART", false, std::string()}}
+              {"SDL_EGL_LIBRARY", false, std::string()}}
     {
         for (Entry &entry : entries_) {
             const char *value = ::getenv(entry.name);
@@ -220,8 +221,15 @@ private:
         bool present;
         std::string value;
     };
-    Entry entries_[7];
+    Entry entries_[6];
 };
+
+// 重启标记当前是否为 "1"。预登记槽位的干净值是 "0"，不能再把“存在”当作“已置位”。
+bool restartMarkerSet()
+{
+    const char *value = ::getenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART");
+    return value != nullptr && strcmp(value, "1") == 0;
+}
 
 // 从 maps 里找已加载的库全路径（与 C2 探针同一手法：dladdr 不总给绝对路径）。
 std::string findLoadedPath(const char *soname)
@@ -322,25 +330,22 @@ const char *runSdl3HybridWindowProbe(const char *sdl3PathHint)
     r.line("  SDL3 混合双窗口真机探针");
     r.line("========================================");
     r.linef("probeRunSeq=%llu", static_cast<unsigned long long>(runSeq));
-    const char *preexistingRestartMarker =
-        ::getenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART");
-    if (preexistingRestartMarker && *preexistingRestartMarker) {
-        r.linef("警告：探针开始前已存在 AMCL_RENDERER_REQUIRES_PROCESS_RESTART=%s；"
-                "探针不会吞掉该外部标记", preexistingRestartMarker);
+    const bool restartBeforeProbe = restartMarkerSet();
+    if (restartBeforeProbe) {
+        r.line("警告：探针开始前 AMCL_RENDERER_REQUIRES_PROCESS_RESTART 已为 1；探针不会清除该标记");
     }
 
-    const char *envPtr = getenv("AMCL_NATIVE_WINDOW");
-    const char *envW = getenv("AMCL_WINDOW_WIDTH");
-    const char *envH = getenv("AMCL_WINDOW_HEIGHT");
+    // 宿主不发布窗口指针或尺寸环境变量（I27-05）：发布状态与发布尺寸都以窗口宿主快照为准，
+    // broker 描述符只作诊断打印。
+    AmclWindowHostSnapshot hostSnapshot{};
+    const bool hostReady = amclWindowHostReadSnapshot(&hostSnapshot) == 1;
     const char *envBroker = getenv("AMCL_NATIVE_WINDOW_LEASE_BROKER");
-    const char *envSnapshot = getenv("AMCL_NATIVE_WINDOW_SNAPSHOT");
-    r.linef("宿主 NativeWindow=%s broker=%s snapshot=%s size=%sx%s",
-            (envPtr && *envPtr) ? envPtr : "(未设)",
+    r.linef("宿主 NativeWindow=%p generation=%llu ready=%d broker=%s size=%dx%d",
+            hostSnapshot.nativeWindow,
+            static_cast<unsigned long long>(hostSnapshot.generation), hostReady ? 1 : 0,
             (envBroker && *envBroker) ? envBroker : "(未设)",
-            (envSnapshot && *envSnapshot) ? envSnapshot : "(未设)",
-            envW ? envW : "?", envH ? envH : "?");
-    if ((!envPtr || !*envPtr) && (!envBroker || !*envBroker) &&
-        (!envSnapshot || !*envSnapshot)) {
+            hostSnapshot.width, hostSnapshot.height);
+    if (!hostReady) {
         r.line("判定: INCOMPLETE（宿主 surface 未发布）");
         g_report = r.str();
         return g_report.c_str();
@@ -896,6 +901,10 @@ const char *runSdl3HybridWindowProbe(const char *sdl3PathHint)
     if (glfw) dlclose(glfw);
     r.linef("resource counts after cleanup: windows=%d surfaces=%d contexts=%d",
             liveWindowResources, liveSurfaceResources, liveContextResources);
+    if (!restartBeforeProbe && restartMarkerSet()) {
+        // 探针自身的 SDL 会话置位了进程级重启标记；按保守合同保留（不回滚），本进程需重启后再启动游戏。
+        r.line("注意：探针期间 SDL 置位了 AMCL_RENDERER_REQUIRES_PROCESS_RESTART=1，本进程需要重启");
+    }
     r.line(ok ? "判定: PASS" : "判定: FAIL");
     g_report = r.str();
     return g_report.c_str();
@@ -920,14 +929,13 @@ const char *runSdl3WindowTest(const char *sdl3PathHint)
     // ---------------------------------------------------------------------
     // [0] 宿主是否已经发布 surface
     // ---------------------------------------------------------------------
-    r.line("[0] 宿主 surface（patch 0001 依赖的环境变量约定）");
-    const char *envPtr = getenv("AMCL_NATIVE_WINDOW");
-    const char *envW = getenv("AMCL_WINDOW_WIDTH");
-    const char *envH = getenv("AMCL_WINDOW_HEIGHT");
-    r.linef("    AMCL_NATIVE_WINDOW = %s", (envPtr && *envPtr) ? envPtr : "(未设)");
-    r.linef("    AMCL_WINDOW_WIDTH  = %s", envW ? envW : "(未设)");
-    r.linef("    AMCL_WINDOW_HEIGHT = %s", envH ? envH : "(未设)");
-    if (!envPtr || !*envPtr) {
+    r.line("[0] 宿主 surface（窗口宿主快照；宿主不再发布窗口指针环境变量）");
+    AmclWindowHostSnapshot legacySnapshot{};
+    const bool legacyHostReady = amclWindowHostReadSnapshot(&legacySnapshot) == 1;
+    // 发布尺寸取自同一份快照（宿主不再有尺寸环境槽位）。
+    r.linef("    NativeWindow       = %p (ready=%d)", legacySnapshot.nativeWindow, legacyHostReady ? 1 : 0);
+    r.linef("    published size     = %dx%d", legacySnapshot.width, legacySnapshot.height);
+    if (!legacyHostReady) {
         r.line("");
         r.line("    [X] 宿主还没发布 NativeWindow。");
         r.line("        本探针必须在带 XComponent 的页面上跑（RenderPage / VulkanPage），");
@@ -1070,8 +1078,9 @@ const char *runSdl3WindowTest(const char *sdl3PathHint)
     {
         int gw = 0, gh = 0;
         if (reinterpret_cast<fn_SDL_GetWindowSize>(pGetWinSize)(win, &gw, &gh)) {
-            r.linef("    SDL_GetWindowSize = %dx%d（宿主报的是 %sx%s）",
-                    gw, gh, envW ? envW : "?", envH ? envH : "?");
+            // 尺寸事实已迁到宿主API；报告同一份入场快照，不能继续引用已删除的env字符串。
+            r.linef("    SDL_GetWindowSize = %dx%d（入场宿主快照 %dx%d，ready=%d）",
+                    gw, gh, legacySnapshot.width, legacySnapshot.height, legacyHostReady ? 1 : 0);
         }
     }
     r.line("");

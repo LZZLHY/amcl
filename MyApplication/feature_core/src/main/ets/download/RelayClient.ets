@@ -153,11 +153,19 @@ export class RelayClient {
   private expiresAt_: number = 0;
   private lastError_: string = '';
   private handshakeInFlight_: Promise<boolean> | null = null;
+  /** 开关/设备身份改变撤销旧握手发布权；不把消费者失效伪称HTTP已停止。 */
+  private generation_: number = 0;
+  private handshakeGeneration_: number = -1;
   private renewTimer_: number = -1;
 
   /** 设备信息由调用方（Index）提供，避免本模块依赖 bundleManager/deviceInfo */
   setDeviceInfo(info: RelayDeviceInfo): void {
-    this.device_ = info;
+    const previous = this.device_;
+    if (previous !== null && JSON.stringify(previous) === JSON.stringify(info)) return;
+    this.clear_();
+    // 冻结协议输入。外部复用并修改原对象不能令正在等待的请求换设备身份。
+    this.device_ = { deviceId: info.deviceId, appVersionCode: info.appVersionCode,
+      appVersionName: info.appVersionName, model: info.model, osVersion: info.osVersion, abi: info.abi };
   }
 
   isEnabled(): boolean { return this.enabled_; }
@@ -181,6 +189,7 @@ export class RelayClient {
    */
   async setEnabled(on: boolean): Promise<boolean> {
     on = on && DistributionPolicy.allowPublisherServices();
+    if (on && !this.enabled_) this.generation_++;
     this.enabled_ = on;
     if (!on) {
       this.clear_();
@@ -195,14 +204,20 @@ export class RelayClient {
     if (!this.enabled_ || !DistributionPolicy.allowPublisherServices()) return false;
     if (this.ticket_.length > 0 && Date.now() < this.expiresAt_ - RENEW_LEAD_MS) return true;
     // 并发去重：多处同时触发只发一次握手
-    if (this.handshakeInFlight_ !== null) return this.handshakeInFlight_;
-    this.handshakeInFlight_ = this.handshake_();
-    let ok = await this.handshakeInFlight_;
-    this.handshakeInFlight_ = null;
-    return ok;
+    if (this.handshakeInFlight_ !== null && this.handshakeGeneration_ === this.generation_) return this.handshakeInFlight_;
+    const generation = this.generation_;
+    const pending = this.handshake_(generation);
+    this.handshakeInFlight_ = pending;
+    this.handshakeGeneration_ = generation;
+    try { return await pending; }
+    finally {
+      // 旧握手迟退不能移除新开关代次已经建立的去重Promise。
+      if (this.handshakeInFlight_ === pending) this.handshakeInFlight_ = null;
+    }
   }
 
   private clear_(): void {
+    this.generation_++;
     this.ticket_ = '';
     this.sessionKey_ = '';
     this.expiresAt_ = 0;
@@ -213,7 +228,13 @@ export class RelayClient {
     try { getRelayNativeBridge().clear(); } catch (e) { /* native 未就绪时忽略 */ }
   }
 
-  private async handshake_(): Promise<boolean> {
+  /** 当前开关、产品与代次共同授予内存票据发布权。 */
+  private current_(generation: number): boolean {
+    return generation === this.generation_ && this.enabled_ && DistributionPolicy.allowPublisherServices();
+  }
+
+  private async handshake_(generation: number): Promise<boolean> {
+    if (!this.current_(generation)) return false;
     let dev = this.device_;
     if (dev === null) {
       this.lastError_ = '设备信息未初始化';
@@ -260,6 +281,9 @@ export class RelayClient {
         readTimeout: HANDSHAKE_TIMEOUT_MS,
       });
 
+      // 关闭、重开或设备信息变化均撤销旧请求的结果；旧失败也不得clear新票据。
+      if (!this.current_(generation)) return false;
+
       let code = resp.responseCode;
       let text = typeof resp.result === 'string' ? resp.result : '';
       if (code !== 200) {
@@ -297,9 +321,10 @@ export class RelayClient {
         `加速已就绪：base=${RELAY_BASE} ttl=${ttlSec}s proof=${needProof ? 'on' : 'off'} skLen=${sk.length}`,
         LOG_DOMAIN_DOWNLOAD);
 
-      this.scheduleRenew_(ttlSec);
+      this.scheduleRenew_(ttlSec, generation);
       return true;
     } catch (e) {
+      if (!this.current_(generation)) return false;
       this.lastError_ = '无法连接加速服务：' + errMsg(e);
       AppLogger.warn(TAG, this.lastError_ + '（已回退直连）', null, LOG_DOMAIN_DOWNLOAD);
       this.clear_();
@@ -310,12 +335,12 @@ export class RelayClient {
   }
 
   /** 到期前提前续签，保证长时间下载不断票 */
-  private scheduleRenew_(ttlSec: number): void {
+  private scheduleRenew_(ttlSec: number, generation: number): void {
     if (this.renewTimer_ >= 0) clearTimeout(this.renewTimer_);
     let delay = Math.max(30000, ttlSec * 1000 - RENEW_LEAD_MS);
     this.renewTimer_ = setTimeout(() => {
       this.renewTimer_ = -1;
-      if (!this.enabled_) return;
+      if (!this.current_(generation)) return;
       this.ensureSession().then((ok: boolean) => {
         if (!ok) AppLogger.warn(TAG, '票据续签失败，下载将回退直连', null, LOG_DOMAIN_DOWNLOAD);
       });

@@ -1,4 +1,5 @@
 #include "mobilegl_capability.h"
+#include "env_slot.h"
 #include "graphics_probe_gate.h"
 #include "../glfw/glfw_compat.h"
 
@@ -9,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
+#include <mutex>
 #include <hilog/log.h>
 
 namespace amcl::graphics {
@@ -16,6 +18,9 @@ namespace {
 void* providerLibrary = nullptr;
 void* providerImage = nullptr;
 int providerProcessId = 0;
+// 生产准入与冷诊断共用发布点；串行化首次缺值的check/write，避免两个
+// 冷调用同时setenv相同键，释放另一个读者刚取得的字符串。
+std::mutex backendPublicationMutex;
 // PID与忙资格一次取得；不能在另一个线程进入后再清busy。
 GraphicsProbeGate probeGate;
 
@@ -72,7 +77,11 @@ public:
             requireRestart(error);
             return false;
         }
-        setenv("MOBILEGL_BACKEND_TYPE", "DirectVulkan", 1);
+        // MobileGL 在首次 EGL 调用时读一次并闭锁后端类型。值恒为 DirectVulkan：已是该值就不再
+        // setenv（I27-05：重复 setenv 会释放并发 getenv 读者持有的旧串）。产品流程里首次写入发生在
+        // 启动准入（mc_launcher，建 JVM 之前）的完整探针中。登记表已封存说明本进程已认领 JVM、
+        // 可能已有游戏/JVM 线程：此时拒绝本次探针而不是新增或改写名字。
+        if (!PublishMobileGlDirectVulkanBeforeLoad(error)) return false;
         if (!providerLibrary) {
             providerLibrary = dlopen((directory_ + "/libmobilegl.so").c_str(), RTLD_NOW | RTLD_LOCAL);
             providerProcessId = currentPid;
@@ -150,9 +159,11 @@ public:
         return deviceAudit_ ? deviceAudit_(renderer) : GraphicsCapability{};
     }
 
+    // 进程级重启标记经已登记槽位原位置 '1'，不 setenv（I27-05）；登记表不可用时状态码进日志。
     void requireRestart(const std::string& reason) override {
-        setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
-        OH_LOG_ERROR(LOG_APP, "MobileGL capability cleanup requires restart: %{public}s", reason.c_str());
+        const int status = amcl::envslot::RequestRendererRestart();
+        OH_LOG_ERROR(LOG_APP, "MobileGL capability cleanup requires restart: %{public}s marker=%{public}d",
+                     reason.c_str(), status);
     }
 private:
     std::string directory_;
@@ -160,6 +171,28 @@ private:
     std::string windowProvider_;
 };
 } // namespace
+
+bool PublishMobileGlDirectVulkanBeforeLoad(std::string& error) {
+    std::lock_guard<std::mutex> publication(backendPublicationMutex);
+    const char* backendType = std::getenv("MOBILEGL_BACKEND_TYPE");
+    // 不重复释放getenv读者可能持有的字符串；已封存但值相同也是纯读取。
+    if (backendType && std::strcmp(backendType, "DirectVulkan") == 0) return true;
+    if (amcl::envslot::ProcessRegistry().Sealed()) {
+        error = "mobilegl_backend_type_unpublished_after_runtime_start";
+        return false;
+    }
+    // 此模块的生产静态引用说明后端可能已闭锁。错误值不能在装入之后改写，
+    // 不能把环境里的新文字当作库已切换；调用者应退休/重启原进程。
+    if (providerLibrary) {
+        error = "mobilegl_backend_type_already_loaded_requires_restart";
+        return false;
+    }
+    if (setenv("MOBILEGL_BACKEND_TYPE", "DirectVulkan", 1) != 0) {
+        error = "mobilegl_backend_type_publish_failed";
+        return false;
+    }
+    return true;
+}
 
 MobileGlProbeReport ProbeMobileGlCapability(const std::string& nativeLibraryDir,
     const MobileGlDeviceAudit& deviceAudit, const std::string& windowProvider,

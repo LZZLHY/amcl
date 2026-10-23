@@ -142,8 +142,10 @@ const clone = (s) => ({ registryText: s.registryText, texts: new Map(s.texts) })
 {
   const s = clone(real);
   // 豁免一个源码里确实存在的 tag ⇒ 名单过期，必须红
-  s.registryText = s.registryText.replace('"staleExempt": ["MG_RENDER_PROBE"]',
-    '"staleExempt": ["MG_RENDER_PROBE", "SessionMarker"]');
+  // 对真实JSON数组施加反例，避免新增另一合法诊断tag后字符串替换静默不命中。
+  const registry = JSON.parse(s.registryText);
+  registry.staleExempt.push('SessionMarker');
+  s.registryText = JSON.stringify(registry);
   const r = analyze(s);
   check('9.1 豁免了一个扫得到的 tag ⇒ 不通过',
     r.ok === false && r.schema.some((x) => x.includes('SessionMarker')), JSON.stringify(r.schema));
@@ -151,8 +153,10 @@ const clone = (s) => ({ registryText: s.registryText, texts: new Map(s.texts) })
 {
   const s = clone(real);
   // 豁免了但没登记域 ⇒ 也要红
-  s.registryText = s.registryText.replace('"staleExempt": ["MG_RENDER_PROBE"]',
-    '"staleExempt": ["MG_RENDER_PROBE", "NeverRegisteredGhost"]');
+  // 保留全部既有合法豁免，只新增这一未注册对象，验证真正的名单治理错误。
+  const registry = JSON.parse(s.registryText);
+  registry.staleExempt.push('NeverRegisteredGhost');
+  s.registryText = JSON.stringify(registry);
   const r = analyze(s);
   check('9.2 豁免了但没登记域 ⇒ 不通过',
     r.ok === false && r.schema.some((x) => x.includes('NeverRegisteredGhost')), JSON.stringify(r.schema));
@@ -160,7 +164,10 @@ const clone = (s) => ({ registryText: s.registryText, texts: new Map(s.texts) })
 {
   const s = clone(real);
   // 去掉豁免 ⇒ MG_RENDER_PROBE 变成死条目
-  s.registryText = s.registryText.replace('"staleExempt": ["MG_RENDER_PROBE"],', '"staleExempt": [],');
+  // 精确移除已知扫描面外的tag；其他诊断豁免不参与本反例，也不改变生产门禁。
+  const registry = JSON.parse(s.registryText);
+  registry.staleExempt = registry.staleExempt.filter(tag => tag !== 'MG_RENDER_PROBE');
+  s.registryText = JSON.stringify(registry);
   const r = analyze(s);
   check('9.3 去掉豁免 ⇒ 扫描面外的 tag 被判成死条目',
     r.ok === false && r.stale.includes('MG_RENDER_PROBE'), JSON.stringify(r.stale));

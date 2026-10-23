@@ -56,24 +56,14 @@ echo "  Build dir: $BUILD_DIR"
 # 注意：JDK 17 有 JLI_Exit / JLI_ExitHook（被我们的 cxxabi_shim 用于 System.exit hook），
 # JDK 21 把这两个移除了，jdk21u 的 jli_util.h 已不导出它们。
 # 列在 globals 里 + 不存在 = 链接器不会报错（version-script 是 selective export，缺失符号忽略）。
+# 完整导出 JLI 契约，不能把 libinstrument 使用的 ManifestIterate 隐藏为 LOCAL。
 cat > /tmp/libjli_exports.map << 'VERSCRIPT'
 {
-    global:
-        JLI_Launch;
-        JLI_Exit;
-        JLI_ExitHook;
-        JLI_TraceLauncher;
-        JLI_ReportErrorMessage;
-        JLI_ReportErrorMessageSys;
-        JLI_ReportMessage;
-        JLI_SetTraceLauncher;
-        JLI_MemAlloc;
-        JLI_StringDup;
-        JLI_List_*;
-    local:
-        *;
+    global: JLI_*;
+    local: *;
 };
 VERSCRIPT
+
 echo "  Created linker version script for symbol export"
 
 COMMON_FLAGS="-MMD \
@@ -95,7 +85,7 @@ COMMON_FLAGS="-MMD \
     -L/ohos-sysroot-rw/usr/lib/aarch64-linux-ohos \
     -rtlib=compiler-rt -unwindlib=none \
     -D_LITTLE_ENDIAN -DARCH='\"aarch64\"' -Daarch64 -D_LP64=1 \
-    -fno-omit-frame-pointer -fPIC -fvisibility=hidden \
+    -fno-omit-frame-pointer -fPIC -fvisibility=default \
     -I${JDK_SRC}/src/java.base/unix/native/libjli \
     -I${JDK_SRC}/src/java.base/share/native/libjli \
     -I${BUILD_DIR}/support/headers/java.base \
@@ -121,6 +111,10 @@ echo "[2/4] Recompiling java_md.c..."
     ${JDK_SRC}/src/java.base/unix/native/libjli/java_md.c
 echo "  java_md.o compiled OK"
 
+# 解析 manifest 的实现也必须公开；仅修改 version-script 不能提升编译器隐藏的符号。
+/ohos-toolchain/aarch64-linux-ohos-gcc $COMMON_FLAGS \
+    -c -o "$OBJ_DIR/parse_manifest.o" "${JDK_SRC}/src/java.base/share/native/libjli/parse_manifest.c"
+
 # Step 3: Relink libjli.so
 echo "[3/4] Relinking libjli.so..."
 /ohos-toolchain/aarch64-linux-ohos-gcc \
@@ -136,14 +130,8 @@ echo "[3/4] Relinking libjli.so..."
     -Wl,-soname=libjli.so \
     -Wl,--version-script=/tmp/libjli_exports.map \
     -o ${BUILD_DIR}/support/modules_libs/java.base/libjli.so \
-    $OBJ_DIR/args.o \
-    $OBJ_DIR/java.o \
-    $OBJ_DIR/java_md.o \
-    $OBJ_DIR/java_md_common.o \
-    $OBJ_DIR/jli_util.o \
-    $OBJ_DIR/parse_manifest.o \
-    $OBJ_DIR/splashscreen_stubs.o \
-    $OBJ_DIR/wildcard.o \
+    "$OBJ_DIR"/*.o \
+    -Wl,--no-undefined \
     -lz -ldl -lpthread
 echo "  libjli.so linked OK"
 
@@ -151,7 +139,7 @@ echo "  libjli.so linked OK"
 echo "[4/4] Copying to output..."
 mkdir -p /output/jdk-libs
 cp ${BUILD_DIR}/support/modules_libs/java.base/libjli.so /output/jdk-libs/libjli.so
-cp ${BUILD_DIR}/support/modules_libs/java.base/libjli.so ${BUILD_DIR}/images/jdk/lib/libjli.so 2>/dev/null || true
+cp ${BUILD_DIR}/support/modules_libs/java.base/libjli.so ${BUILD_DIR}/images/jdk/lib/libjli.so
 
 echo ""
 echo "=== Done! ==="

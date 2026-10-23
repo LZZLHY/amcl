@@ -9,6 +9,9 @@ set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 # 编译选项：是否包含验证测试代码（发布时可关闭）
 option(MC_OHOS_BUILD_TESTS "Build feasibility test modules (default product only)" OFF)
 
+# 按渠道显式启用完整HDC；store仍导出拒绝入口，核心代码和私有接入不进入store链接。
+option(AMCL_ENABLE_SIDELOAD_UPDATE "Enable complete HDC for sideload update" OFF)
+
 # Typed-input shadow pipeline. Runtime AMCL_INPUT_SHADOW overrides this default.
 option(AMCL_INPUT_SHADOW "Enable typed-input shadow ingress by default" ON)
 
@@ -460,26 +463,30 @@ set(NAPI_SOURCES
     napi/napi_log.cpp       # AMCL 持久化日志 NAPI
     napi/napi_input.cpp     # 输入事件 / 控件区域 / XComponent 尺寸 NAPI
     napi/napi_forge.cpp     # Forge 安装器（异步 fork+JVM）NAPI
+    napi/napi_export.cpp    # 导出异步job；查询/取消/收敛后释放，不占ArkTS数据循环
+    napi/napi_sideload_update.cpp # 受控自更新HDC桥（store为unsupported）
     napi/napi_tests.cpp     # MC_OHOS_BUILD_TESTS 验证测试（条件编译）
 )
 
 # 平台模块（XComponent、触摸、GPU 信息、MG 配置、Vulkan 探针）
 set(PLATFORM_SOURCES
     platform/xcomponent.cpp
+    platform/env_publication.cpp # I27-05：线程出现前登记环境静态槽位、提前发布进程常量描述符并在建 JVM 前封存
     platform/cursor_lock.cpp    # grabbed 模式锁定系统光标（dlsym OH_WindowManager_LockCursor，无链接依赖）
     platform/window_event_filter.cpp  # 窗口级过滤鼠标派生的合成触摸包（dlsym oh_window_event_filter，无链接依赖）
     platform/input_source.cpp         # 输入端（触控虚拟按键 / 手柄 / 物理键鼠）：三端平级的一等概念
     platform/input_channel_policy.cpp # 端**内部**重复投递通道的单一所有者仲裁（与"端"正交）
-    platform/external_held_registry.cpp # 经 NAPI 下来的持续按下态：按端隔离的 owner 配对（有 host test）
+    platform/legacy_ring_discontinuity.cpp # legacy ring 丢历史后 libentry owner 的对账判定与步骤顺序（有 host test）
     platform/input_invariants.cpp      # 输入账目的不变量求值器（纯函数，有 host test）
     platform/joystick_sector.cpp       # 摇杆八向扇区判定（与 ArkTS 侧同一份规格，两侧各有测试）
     platform/ohos_frame_rate_hint.cpp
     platform/ohos_native_window_telemetry.cpp
     platform/touch_input.cpp
-    platform/input_ledger.cpp
-    platform/legacy_physical_edge_router.cpp
-    platform/look_delta_math.cpp
-    platform/look_pipeline_stats.cpp   # 视角管线观测面（纯计数/恒等式，有 host test）
+    platform/control_schema_contract.cpp
+    platform/touch_interaction.cpp # 触控菜单/摇杆策略，与宿主测试共用真实实现。
+    platform/source_look_processor.cpp # 公共source视角加工，投递与配置/时间状态分离
+    platform/mapped_look_producer.cpp # 设备连接租约薄适配，速度/积分/pending只在neutral。
+    platform/source_look_producer.cpp # delta/gyro只保opaque stream，真实队列原子提交加工量。
     platform/mouse_synth_touch_source.cpp # "这个触摸包其实是鼠标吗"的分类器（原 tap 识别器已删）
     platform/native_mouse_route_policy.cpp
     platform/physical_wheel_quantizer.cpp
@@ -613,13 +620,7 @@ add_library(glfw SHARED
     glfw/glfw_callbacks.cpp    # 回调设置 + 窗口/监视器/输入 stub
     glfw/glfw_vulkan.cpp       # Vulkan surface 四件套（VK_OHOS_surface，Phase 2）
     glfw/ohos_render_scheduler.cpp # OHOS 渲染线程 QoS lease（只在 context-current 生命周期内生效）
-    glfw/input_bridge_ohos.c   # 输入事件 ring buffer + CallbackBridge JNI
-    input/input_state_core.cpp # backend-neutral typed input singleton（只归属 libglfw.so）
-    input/amcl_input_host_descriptor.cpp # 单 table pointer 跨 linker namespace descriptor
     input/adapters/glfw_input_adapter.cpp # GLFW3 typed consumer；默认 legacy、启动 flag 二选一
-    input/adapters/backend_keymaps.cpp # LWJGL2 / SDL3 后端各自的 raw OHOS → 自己那套编码（各只翻一次）
-    input/adapters/backend_input_bridge.cpp # 非 GLFW 后端的 typed 拉取 ABI（各一个 core 消费者 + 独立队列）
-    input/adapters/lwjgl2_event_translate.cpp # LWJGL2 出线翻译（纯函数 + C ABI，为了能进 host 构建被断言）
     input/adapters/glfw_typed_absolute_route.cpp # surfaceEpoch + NativeWindow generation cursor/button gate
     input/adapters/glfw_typed_runtime_dispatch.cpp # exact publication commit + deferred callback seam
     input/adapters/glfw_typed_look_route.cpp # typed 相对样本 → libentry 视角漏斗的反向 trampoline 接缝
@@ -632,6 +633,50 @@ add_library(glfw SHARED
     input/adapters/glfw_source_plane_aggregate.cpp # typed/legacy mapped control 最终聚合
     utils/stack_sampler.cpp    # 渲染线程 native 栈采样器（定位 GL 翻译层空转）
 )
+
+# 中立输入运行库拥有整局core、legacy公共状态和L2/SDL拉取通道。
+# GLFW只保留自己的consumer/窗口适配；平台look处理通过C回调注入，runtime不反链entry或renderer。
+add_library(amcl_input_runtime SHARED
+    input/source/source_control.cpp # 来源贡献唯一生产 owner、候选预算事务与私有 POD facade。
+    platform/input_ledger.cpp # 既有首按/末松算法只随 neutral 构建，不跨 DSO 借 C++ 对象。
+    platform/external_held_registry.cpp
+    platform/external_held_edge_router.cpp
+    platform/legacy_output_runtime.cpp
+    platform/legacy_physical_edge_router.cpp
+    input/delivery/control_delivery.cpp # 三ABI共用末级贡献状态/receipt唯一生产owner。
+    input/delivery/look_execution.cpp # 唯一look速率、加工余量、不可变前缀和consumer cursor。
+    input/input_latency_observation.cpp # TRACE关闭为完全空TU；开启只保固定观察值，不创建输入owner。
+    platform/look_delta_math.cpp
+    platform/look_pipeline_stats.cpp # 数学及统计随唯一owner，不在entry再编一份。
+    input/input_interaction_order.cpp
+    input/input_state_core.cpp
+    input/amcl_input_host_descriptor.cpp
+    input/adapters/backend_input_bridge.cpp
+    input/adapters/backend_keymaps.cpp
+    input/adapters/glfw_input_adapter.cpp
+    input/adapters/lwjgl2_event_translate.cpp
+    platform/physical_wheel_quantizer.cpp
+    platform/desktop_host_client.cpp
+    glfw/input_bridge_ohos.c)
+target_include_directories(amcl_input_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(amcl_input_runtime PRIVATE cxx_std_17)
+target_compile_options(amcl_input_runtime PRIVATE -funwind-tables -fPIC)
+target_compile_definitions(amcl_input_runtime PRIVATE AMCL_DESKTOP_EVENT_BRIDGE=1)
+target_link_options(amcl_input_runtime PRIVATE
+    -Wl,--no-undefined -Wl,-Bsymbolic-functions
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/input/input_runtime.version")
+set_property(TARGET amcl_input_runtime APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/input/input_runtime.version)
+target_link_libraries(amcl_input_runtime PRIVATE libhilog_ndk.z.so libdeviceinfo_ndk.z.so dl amcl_graphics_runtime)
+target_link_libraries(glfw PRIVATE amcl_input_runtime)
+
+if(MC_OHOS_BUILD_TESTS)
+    # ledger实现只归neutral；其诊断TU也必须在同一库，不能让entry测试借隐藏C++符号，
+    # 更不能为链接测试再向entry编一份实现。跨DSO仅借诊断专用C字符串runner。
+    # ProductDiagnostics已拒绝非default开此flag；OFF时不加入TU，也不定义该#ifdef宏。
+    target_sources(amcl_input_runtime PRIVATE tests/input_ledger_test.cpp)
+    target_compile_definitions(amcl_input_runtime PRIVATE MC_OHOS_BUILD_TESTS)
+endif()
 
 # Vulkan loader dispatch and surface lifetime have a real DSO boundary. This
 # target must not link GLFW, EGL, GLES or MobileGlues. GLFW exports only forward
@@ -660,8 +705,20 @@ target_compile_features(amcl_graphics_runtime PRIVATE cxx_std_20)
 target_compile_options(amcl_graphics_runtime PRIVATE -fvisibility=hidden -funwind-tables)
 target_link_options(amcl_graphics_runtime PRIVATE -Wl,--no-undefined -Wl,-Bsymbolic-functions)
 target_link_libraries(amcl_graphics_runtime PRIVATE amcl_window_host dl)
+# LWJGL 的 Java EGL 仅通过晚加载查询桥消费已冻结的图形 owner。此 target 必须参与
+# 打包但不能成为 entry/GLFW/graphics runtime 的链接依赖；否则公开 eglGetProcAddress
+# 会在应用 UI 初始化前进入全局查找域。独立库不编入任何 provider/runtime 状态，Java
+# 类加载器即使再映射它也只拿到同一进程 owner 的入口。版本脚本封闭唯一导出面。
+add_library(amcl_lwjgl_egl SHARED platform/lwjgl_egl_bridge.cpp)
+target_compile_features(amcl_lwjgl_egl PRIVATE cxx_std_17)
+target_compile_options(amcl_lwjgl_egl PRIVATE -fvisibility=hidden -funwind-tables)
+target_link_options(amcl_lwjgl_egl PRIVATE -Wl,--no-undefined -Wl,-Bsymbolic-functions
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/platform/lwjgl_egl_bridge.version")
+set_property(TARGET amcl_lwjgl_egl APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/lwjgl_egl_bridge.version)
+target_link_libraries(amcl_lwjgl_egl PRIVATE dl)
 target_link_libraries(glfw PRIVATE amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime)
-add_custom_target(amcl_graphics_boundary_compile_gate DEPENDS glfw amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime)
+add_custom_target(amcl_graphics_boundary_compile_gate DEPENDS glfw amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime amcl_lwjgl_egl)
 if(TARGET amcl_gl_host)
     add_dependencies(amcl_graphics_boundary_compile_gate amcl_gl_host)
     # 完整包仍构建/携带 MG，依赖只作用于构建顺序，不形成进程装载依赖。
@@ -754,6 +811,24 @@ target_compile_definitions(glfw PRIVATE
     # 它是唯一的运行期读者，没有它这个字符串不会进 .rodata（详见 Gate0Evidence.cmake）。
     AMCL_GATE0_EVIDENCE_IDS="${AMCL_GATE0_EVIDENCE_IDS_STRING}"
 )
+target_compile_definitions(amcl_input_runtime PRIVATE
+    AMCL_DESKTOP_EVENT_BRIDGE=1
+    AMCL_MG_SEMANTIC_VERSION="${AMCL_MG_SEMANTIC_VERSION}"
+    AMCL_HOST_BUILD_IDENTITY="${AMCL_HOST_BUILD_IDENTITY}"
+    AMCL_GLFW_TYPED_PHYSICAL_DEFAULT=$<BOOL:${AMCL_GLFW_TYPED_PHYSICAL_DEFAULT}>
+    # 三个 Gate 0 证据宏必须用 Gate0Evidence.cmake 归一化后的 0/1，不能再写
+    # $<BOOL:${option}>：那是与门禁判定不同的一套真值规则，`-DXXX=00` 之类的取值会
+    # 让门禁跳过校验却仍把宏定义成 1（详见 Gate0Evidence.cmake 里的说明）。
+    AMCL_GLFW_RAW_RELATIVE_VERIFIED=${AMCL_GATE0_DEF_AMCL_GLFW_RAW_RELATIVE_VERIFIED}
+    AMCL_GLFW_API26_RAW_MOUSE_MOTION=$<BOOL:${AMCL_GLFW_API26_RAW_MOUSE_MOTION}>
+    AMCL_GLFW_NATIVE_ABSOLUTE_VERIFIED=${AMCL_GATE0_DEF_AMCL_GLFW_NATIVE_ABSOLUTE_VERIFIED}
+    AMCL_GLFW_NATIVE_MOUSE_MONOTONIC_NS_VERIFIED=${AMCL_GATE0_DEF_AMCL_GLFW_NATIVE_MOUSE_MONOTONIC_NS_VERIFIED}
+    # 哪份 Gate 0 证据授权了上面这些能力位。默认构建为 "none"，可直接从产物反查，
+    # 不需要再去猜某个 =1 是谁批准的。空字符串会与"忘记注入"混淆，故用显式 none。
+    # ⚠️ "可从产物反查"依赖 glfw_compat.cpp 的 glfwInit 里那行 AMCL_GATE0 日志 ——
+    # 它是唯一的运行期读者，没有它这个字符串不会进 .rodata（详见 Gate0Evidence.cmake）。
+    AMCL_GATE0_EVIDENCE_IDS="${AMCL_GATE0_EVIDENCE_IDS_STRING}"
+)
 
 # OHOS 系统库
 target_link_libraries(glfw PRIVATE libdeviceinfo_ndk.z.so)
@@ -774,6 +849,8 @@ endif()
 set(JVM_SOURCES
     jvm/jna_runtime_contract.cpp # 只读实际 JNA 协议，选择独立 native ABI，不替换 Java 库
     jvm/jvm_launcher.cpp
+    jvm/game_gui_bridge.cpp
+    jvm/game_gui_observation.cpp # 过程拥有的有界GUI观察队列；UI只读快照，退出不等待JNI worker
     jvm/game_process_exit.cpp # 独立游戏进程的 JNI 退出记录与进程结束；不改变同进程/processor。
     jvm/mc_launcher.cpp
     jvm/jni_registry.cpp
@@ -814,6 +891,24 @@ set(DOWNLOAD_SOURCES
     download/download_napi.cpp           # createTask/start/cancel/onProgress/... NAPI 方法
 )
 
+# 自有摘要是导出预览/下载校验的逐字节整数热点；Debug仅为这两份TU移除-O0成本。
+# 保留-g、原安全选项和产品诊断宏；不扩到NAPI/entry其他源，也不覆盖Release原优化策略。
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set_property(SOURCE
+        download/sha1.cpp
+        download/hmac_sha256.cpp
+        APPEND PROPERTY COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>")
+endif()
+
+# 导出专用数据面：复用上面已链接的SHA原语，CRC只依赖SDK公开系统zlib。
+# 不修改或复制网络下载器，不让导出job共享其调度/回调生命周期。
+set(EXPORT_SOURCES
+    export/export_pipeline.cpp
+    export/export_trusted_io.cpp
+    export/export_zip_writer.cpp
+    export/export_zip_verifier.cpp
+)
+
 # libcurl.so：Docker 交叉编译产出的 prebuilt shared library
 # 详见 docker/build_curl_ohos.sh 和 docs/guides/download-system-redesign-v3.md
 # 物理位置：entry/libs/arm64-v8a/libcurl.so
@@ -833,10 +928,18 @@ if(MC_OHOS_BUILD_TESTS)
         tests/glfw_test.cpp
         tests/gl4_test.cpp
         tests/mg_test.cpp
+        # B1共享真实语义场景仅进入default/TestHooks；正式产品继续裁剪整条探针入口。
+        tests/graphics_depth_range_test.cpp
+        ../../../../tests/graphics-semantics/depth_range_scene.cpp
+        # 后续语义入口仍只在default/TestHooks中；同一生产factory/共享oracle，
+        # 不将诊断接口带入正式产品，也不混合各场景的固定case分母。
+        tests/mg_context_identity_test.cpp
+        tests/mobilegl_program_test.cpp
+        ../../../../tests/graphics-semantics/mg_context_identity_scene.cpp
+        ../../../../tests/graphics-semantics/mobilegl_program_scene.cpp
         tests/lwjgl_test.cpp
         # 2026-05-10: amcl_log 多生产者并发 stress test（验证 LOG-P0-1 reservation+ready flag 修复）
         tests/amcl_log_concurrent_test.cpp
-        tests/input_ledger_test.cpp
         # SDL3 移植 C2 关卡真机探针（docs/adaptation/SDL3_MIGRATION_PLAN.md §四 C2）
         # 必须在应用进程内跑：HarmonyOS 的 linker namespace 按应用配置，
         # 且 hdc shell 域被 SELinux 禁止执行推送的 ELF（实测 exit 126）
@@ -858,6 +961,8 @@ if(MC_OHOS_BUILD_TESTS)
         download/tests/source_scoring_test.cpp       # Phase 8: NetSource 评分 + pickBestSourceWeighted
         download/tests/error_and_source_lifecycle_test.cpp  # Phase 7: exception + NetSource recordFailure/recordSuccess
     )
+    # identity共享场景直接使用生产runtime声明；仅测试目标可见该include路径。
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/platform)
 endif()
 
 # ============================================================
@@ -869,12 +974,13 @@ add_library(entry SHARED
     ${PLATFORM_SOURCES}
     ${JVM_SOURCES}
     ${DOWNLOAD_SOURCES}
+    ${EXPORT_SOURCES}
     ${TEST_SOURCES}
 )
 # The JVM loads GLFW from a different linker namespace. HAP sibling DSOs must
 # resolve relative to their installed image, never the Windows CMake output
 # directory (which is otherwise embedded as an automatic build RUNPATH).
-set_target_properties(entry glfw amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime PROPERTIES
+set_target_properties(entry glfw amcl_input_runtime amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH "$ORIGIN"
     INSTALL_RPATH_USE_LINK_PATH FALSE)
@@ -924,9 +1030,26 @@ endif()
 
 target_compile_definitions(entry PRIVATE AMCL_NATIVE_DESKTOP_ONLY=$<BOOL:${AMCL_NATIVE_DESKTOP_ONLY}> AMCL_DESKTOP_NATIVE_GL_VALIDATE=$<BOOL:${AMCL_DESKTOP_NATIVE_GL_VALIDATE}>)
 target_compile_definitions(glfw PRIVATE AMCL_NATIVE_DESKTOP_ONLY=$<BOOL:${AMCL_NATIVE_DESKTOP_ONLY}> AMCL_DESKTOP_NATIVE_GL_VALIDATE=$<BOOL:${AMCL_DESKTOP_NATIVE_GL_VALIDATE}>)
-target_link_libraries(entry PRIVATE libpasteboard.so libudmf.so libdeviceinfo_ndk.z.so amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime)
+target_link_libraries(entry PRIVATE amcl_input_runtime libpasteboard.so libudmf.so libdeviceinfo_ndk.z.so amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime)
 target_link_libraries(entry PRIVATE libz.so) # 有界 JNA ZIP 条目使用系统 raw-deflate/CRC 实现
 target_sources(entry PRIVATE platform/runtime_slot_store.cpp)
+
+if(AMCL_ENABLE_SIDELOAD_UPDATE)
+    # 正常Hvigor入口通过环境传递完整路径，避免其arguments字符串保留字面引号。
+    # 独立Native验证仍可显式传入-DAMCL_HDC_CORE_ARCHIVE。
+    if(DEFINED ENV{AMCL_HDC_CORE_ARCHIVE})
+        set(AMCL_HDC_CORE_ARCHIVE "$ENV{AMCL_HDC_CORE_ARCHIVE}")
+    endif()
+    if(NOT EXISTS "${AMCL_HDC_CORE_ARCHIVE}")
+        message(FATAL_ERROR "Complete HDC archive missing; use build-hdc-core.mjs")
+    endif()
+    add_library(amcl_hdc_core STATIC IMPORTED)
+    set_target_properties(amcl_hdc_core PROPERTIES IMPORTED_LOCATION "${AMCL_HDC_CORE_ARCHIVE}")
+    target_link_libraries(entry PRIVATE amcl_hdc_core)
+    target_compile_definitions(entry PRIVATE AMCL_ENABLE_SIDELOAD_UPDATE=1)
+else()
+    target_compile_definitions(entry PRIVATE AMCL_ENABLE_SIDELOAD_UPDATE=0)
+endif()
 # libentry 的GPU观察直连中立运行时，不经GLFW前端创建另一份MG默认图形域。
 
 target_link_libraries(entry PUBLIC
@@ -967,6 +1090,7 @@ target_link_libraries(jni_reregister PUBLIC
 
 amcl_apply_diagnostic_policy(entry)
 amcl_apply_diagnostic_policy(glfw)
+amcl_apply_diagnostic_policy(amcl_input_runtime)
 if(TARGET amcl_gl_host)
     amcl_apply_diagnostic_policy(amcl_gl_host)
 endif()

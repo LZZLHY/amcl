@@ -2,17 +2,30 @@
 // UI线程不调用这里，失败保留驱动句柄和broker租约，不能换一个provider继续运行。
 #include "glfw_internal.h"
 #include "../platform/graphics_runtime_binding.h"
+#include "../platform/graphics_observation_abi.h"
 #include "../utils/amcl_log_bridge.h"
 #include <unistd.h>
 #include <cstdlib>
 #undef LOG_TAG
 #define LOG_TAG "GLFW_EGL"
+// 定义在 glfw_compat.cpp：经已登记环境槽位原位置重启标记，绝不 setenv（I27-05）。
+void requestRendererProcessRestart(const char* stage);
 namespace {
 bool report(GLFWwindow* win, const char* operation, bool result, const std::string& error) {
     if (result) return true;
     AMCL_EXTERNAL_LOG_E(LOG_TAG, "GLFW: EGL %{public}s failed: %{public}s", operation, error.c_str());
-    if (win && win->contextLostFatal) setenv("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
-    if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, error.c_str());
+    if (win && win->contextLostFatal) {
+        requestRendererProcessRestart(operation);
+        // typed 生命周期已在驱动失败边界保存原始错误。先交付确切的 context lost，
+        // 外层随后发出的通用 window-create-failed 不能覆盖进程故障总线锁存的首因。
+        // 功能探针等其他终局原因没有该驱动错误，不能仅凭 fatal 标志伪报 context lost。
+        if (win->lastFailure.driverFailure && win->lastFailure.error == EGL_CONTEXT_LOST)
+            amclGraphicsFatalV1("egl-context-lost", static_cast<uint32_t>(win->lastFailure.error),
+                win->nativeWindowGeneration);
+    }
+    // 这里仍在 BackendSession 的 attach/suspend/resume/destroy 事务栈内。用户错误
+    // 回调可以销毁窗口和该 session，不能在内部事务未返回时调用；公共 GLFW 边界负责
+    // 在状态提交/资源保留完成后通知用户，并在回调之后立即返回。
     return false;
 }
 const amcl::graphics::GraphicsRuntimeBinding* runtime(GLFWwindow* win) {

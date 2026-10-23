@@ -63,9 +63,12 @@ void* elf_sym_global(const char* name);
 void elf_close(elf_handle_t* h);
 
 /**
- * 获取最后一次错误信息（线程不安全，类似 dlerror）。
+ * 获取本线程最后一次错误信息；不消费它，供宿主日志直接读取。
  */
 const char* elf_error(void);
+
+/** 与 dlerror 相同的一次消费语义，优先返回本线程自定义加载失败原因。 */
+char* elf_dlerror(void);
 
 /* ================================================================
  * HotSpot 集成 API — dlopen/dlsym 的透明替代

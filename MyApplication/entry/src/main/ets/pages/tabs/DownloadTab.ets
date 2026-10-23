@@ -18,7 +18,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { floatingDockReserveHeight } from 'commons';
 import { router, promptAction } from '@kit.ArkUI';
 import { ThemeColors } from 'commons';
-import { McVersionService, McVersion } from 'feature_core';
+import { McVersionService, McVersion, McInstallSession, listMcInstallRecovery,
+  getDownloadTaskRegistry, UnifiedTaskView, TaskCategory, isTerminalState } from 'feature_core';
 import { JdkManager, JdkVersionInfo } from 'launch';
 import { ModBrowsePage } from '../ModBrowsePage';
 // v6.5：ModDlState 不再需要（ModBrowsePage 改为 registry.enqueue）
@@ -54,9 +55,41 @@ export struct DownloadTab {
   @Prop jdkVersions: JdkVersionInfo[] = []
   @Prop jdkDownloadMsg: string = ''
   @Prop jdkDownloadPercent: number = 0
+  /** 由首页统一管理目录状态，下载页直接显示并复用同一检查入口，不自行发网络请求。 */
+  @Prop jdkChannel: string = 'stable'
+  @Prop jdkChecking: boolean = false
+  @Prop jdkCatalogStatus: string = ''
+  onRefreshJdkCatalog: () => void = () => {}
 
   // P1-MODS Phase 1.7：模组浏览页依赖
-  @Prop mcDir: string = ''
+  @Prop @Watch('refreshMcRecovery_') mcDir: string = ''
+  @Prop filesDir: string = ''
+  @Prop @Watch('onRecoveryTasksChanged_') taskRevision: number = 0
+  @State private mcRecovery_: McInstallSession[] = []
+  private recoveryTasksSignature_: string = ''
+  onRecoverMc: (session: McInstallSession) => void = () => {}
+
+  /** 冷启动仅展示持久意图；用户点击后由父页面送入 Registry，不能自动发起隐形下载。 */
+  aboutToAppear(): void { this.refreshMcRecovery_() }
+  private refreshMcRecovery_(): void {
+    const registry = getDownloadTaskRegistry()
+    this.mcRecovery_ = this.filesDir.length > 0 ? listMcInstallRecovery(this.filesDir, this.mcDir)
+      .filter((session: McInstallSession): boolean => {
+        const install = registry.get('mc:' + session.versionName)
+        const repair = registry.get('repair:' + session.versionName)
+        return (!install || isTerminalState(install.state)) && (!repair || isTerminalState(repair.state))
+      }) : []
+  }
+
+  /** Registry 每个进度帧都会通知；只在 MC 任务状态/身份变化时读盘，避免下载时反复扫描。 */
+  private onRecoveryTasksChanged_(): void {
+    const signature = getDownloadTaskRegistry().listAll()
+      .filter((view: UnifiedTaskView): boolean => view.category === TaskCategory.MC_VERSION)
+      .map((view: UnifiedTaskView): string => view.id + ':' + view.startedAtMs.toString() + ':' + view.state).sort().join('\n')
+    if (signature === this.recoveryTasksSignature_) return
+    this.recoveryTasksSignature_ = signature
+    this.refreshMcRecovery_()
+  }
   @Prop currentMcVersion: string = ''
   @Prop versionIsolation: boolean = true
   // P0 修复 #4：传给 ModBrowsePage 用于版本存在性校验
@@ -117,6 +150,7 @@ export struct DownloadTab {
   // 同版本重复点击仍会被 registry 用 id='jdk:'+version 拒绝
   isJdkDownloading: (version: string) => boolean = (_v: string) => false
   onModStatusMessage: (msg: string) => void = () => {}
+  onOpenDownloadTask: (id: string) => void = () => {}
   // v6.5：onModDownloadProgress / onModInstallStart 已下台，走 registry 是唯一路径。
 
   build() {
@@ -189,7 +223,7 @@ export struct DownloadTab {
       }
       .width(104)
       .height('100%')
-      // 横屏：内容穿过底部安全区铺到屏幕最底（dock 透明悬浮不挡），故 bottom 为 0
+      // 侧栏铺到窗口底部；右侧滚动内容自行在末尾为悬浮导航留位。
       .padding({ left: 12, right: 8, top: this.topSafeHeight + 12, bottom: 0 })
       .alignItems(HorizontalAlign.Start)
 
@@ -343,6 +377,7 @@ export struct DownloadTab {
         topSafeHeight: this.topSafeHeight,
         bottomSafeHeight: this.bottomSafeHeight,
         onStatusMessage: this.onModStatusMessage,
+        onOpenDownloadTask: this.onOpenDownloadTask,
       })
     }
     .width('100%')
@@ -352,6 +387,18 @@ export struct DownloadTab {
   @Builder
   DlVersionTab() {
     Column() {
+      if (this.mcRecovery_.length > 0) {
+        Scroll() {
+          Column({ space: 6 }) {
+            Text('未完成的版本安装').fontSize(14).fontColor(this.theme.textSecondary)
+            ForEach(this.mcRecovery_, (session: McInstallSession) => {
+              Button('继续安装 ' + session.versionName)
+                .width('100%')
+                .onClick(() => { this.onRecoverMc(session); this.refreshMcRecovery_() })
+            }, (session: McInstallSession) => session.id)
+          }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 8 })
+        }.constraintSize({ maxHeight: 160 }).width('100%')
+      }
       Row() {
         TextInput({ placeholder: '搜索版本号...', text: this.versionSearch })
           .height(40)
@@ -449,6 +496,12 @@ export struct DownloadTab {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
         .padding(32)
+      } else if (this.getFilteredVersions().length === 0) {
+        Column({ space: 12 }) {
+          Text('没有匹配的 Minecraft 版本').fontSize(15).fontColor(this.theme.textSecondary)
+          Text('可以清除搜索词，或切换上方的版本类别').fontSize(12).fontColor(this.theme.textHint)
+          Button('清除搜索').height(44).onClick(() => { this.versionSearch = '' })
+        }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
       } else {
         List({ space: 8 }) {
           ForEach(this.getFilteredVersions(), (ver: McVersion) => {
@@ -459,12 +512,17 @@ export struct DownloadTab {
         }
         .width('100%')
         .layoutWeight(1)
-        // 2026-05-24：原纸值 68 → FloatingDock 预留
-        .padding({ left: 16, right: 16, bottom: this.dlContentBottomPad() })
+        .padding({ left: 16, right: 16 })
+        // 避让属于滚动内容的末尾：到达底部时，最后一张版本卡停在导航栏上方，
+        // 不把这段余量固定裁进 List 视口；搜索过滤后的列表也沿用同一尾部约束。
+        .contentEndOffset(this.dlContentBottomPad())
       }
     }
     .width('100%')
-    .height('100%')
+    // 版本区只占父 Column 扣除标题和分类栏后的剩余高度；若使用 100%，
+    // 子区会从标题下方再铺满整页，List 即使滚到底，末项仍可能落在屏幕外。
+    // 横屏父列同样提供确定高度，内部搜索、筛选与恢复提示继续先占位，列表使用余量。
+    .layoutWeight(1)
     .onAppear(() => {
       if (this.mcVersionList.length === 0) {
         this.loadVersionList()
@@ -510,12 +568,13 @@ export struct DownloadTab {
   }
 
   /**
-   * Tab 内容区底部内边距。
-   * - 竖屏：预留悬浮 dock 占高（78 + safe），避免最后一项被 dock 盖住。
-   * - 横屏：内容穿过底部安全区铺到屏幕最底（与竖屏视觉一致，dock 透明悬浮不挡），故为 0。
+   * Tab 滚动内容的尾部预留（vp），供 List 的末尾偏移与 Scroll 内容内边距共用。
+   * 横竖屏的 HdsTabs 都叠加在正文上，透明材质仍会覆盖内容，因此始终保留余量。
+   * LauncherTabsStyle 的离底距离至少以 16vp 安全区计算；这里采用相同下限，
+   * 再由公共辅助函数计入导航主体、离底间距和视觉缓冲，避免零安全区窗口预留不足。
    */
   private dlContentBottomPad(): number {
-    return this.isLandscape ? 0 : floatingDockReserveHeight(this.bottomSafeHeight)
+    return floatingDockReserveHeight(Math.max(this.bottomSafeHeight, 16))
   }
 
   /**
@@ -556,6 +615,25 @@ export struct DownloadTab {
   DlJdkTab() {
     Scroll() {
       Column({ space: 12 }) {
+        // 目录异常不能只留下导入卡片：始终显示当前通道、检查结果与可重复执行的刷新动作。
+        Column({ space: 6 }) {
+          Row({ space: 8 }) {
+            Text(this.jdkChannel === 'preview' ? 'JDK · 预览通道' : 'JDK · 稳定通道')
+              .fontSize(15).fontWeight(500).fontColor(this.theme.textPrimary).layoutWeight(1)
+            Button(this.jdkChecking ? '检查中' : '刷新列表')
+              .type(ButtonType.Capsule).height(32).fontSize(13)
+              .backgroundColor(this.jdkChecking ? this.theme.disabled : this.theme.primary)
+              .fontColor(this.theme.textOnPrimary).enabled(!this.jdkChecking)
+              .onClick((): void => { this.onRefreshJdkCatalog() })
+          }.width('100%')
+          Text(this.jdkCatalogStatus.length > 0 ? this.jdkCatalogStatus : '可刷新目录以检查当前通道的 JDK。')
+            .fontSize(12).fontColor(this.theme.textHint).width('100%')
+          if (this.jdkVersions.length === 0 && !this.jdkChecking) {
+            Text('暂未取得可展示的 JDK。请刷新列表，或检查下载源与网络设置。')
+              .fontSize(12).fontColor(this.theme.warning).width('100%')
+          }
+        }
+        .width('100%').padding(16).backgroundColor(this.theme.bgCard).borderRadius(this.theme.cardRadius)
         ForEach(this.jdkVersions, (info: JdkVersionInfo) => {
           Row() {
             Column() {
@@ -572,8 +650,8 @@ export struct DownloadTab {
                 }
               }
               Text(info.installed
-                ? '已安装 (~' + info.sizeMB + ' MB)'
-                : (info.available ? '需下载 ~' + info.sizeMB + ' MB' : '即将支持'))
+                ? '已安装'
+                : (info.available ? '需下载 ~' + info.sizeMB + ' MB' : '暂不可下载'))
                 .fontSize(13).fontWeight(400)
                 .fontColor(info.installed ? this.theme.success : this.theme.textHint)
                 .margin({ top: 4 })
@@ -590,8 +668,9 @@ export struct DownloadTab {
 
             if (info.installed) {
               // 有新版时「更新」排在「删除」前面：删除是破坏性动作，不该抢主位
-              if (info.updateAvailable) {
-                Button(this.isJdkDownloading(info.version) ? '更新中' : '更新')
+              if (info.updateAvailable || (info.userImported && info.available)) {
+                // 用户导入永不自动更新；这个明确动作才允许用已校验官方包替换导入项。
+                Button(this.isJdkDownloading(info.version) ? '更新中' : (info.userImported ? '改用官方' : (info.rollback ? '回退修复' : '更新')))
                   .type(ButtonType.Capsule).height(32).fontSize(13)
                   .backgroundColor(this.isJdkDownloading(info.version) ? this.theme.disabled : this.theme.primary)
                   .fontColor(this.theme.textOnPrimary)
@@ -670,7 +749,12 @@ export struct DownloadTab {
       // 2026-05-24：原纸值 68 → FloatingDock 预留
       .padding({ left: 16, right: 16, top: 4, bottom: this.dlContentBottomPad() })
     }
-    .height('100%')
+    .width('100%')
+    // Scroll 默认将子内容居中；目录较短时必须显式贴顶，避免分类栏下方出现空白。
+    // 底部避让保留在内部 Column，随内容滚动，不改变首张 JDK 卡片的起始位置。
+    .align(Alignment.TopStart)
+    // 视口只使用标题和分类栏下方的余量，横屏也由右侧父列提供确定高度。
+    .layoutWeight(1)
   }
 
   // 内部方法
@@ -747,6 +831,7 @@ export struct DownloadTab {
    * 版本子页（0）按需触发一次版本列表加载。命令为 -1（初始）时不动内部 tab。
    */
   onNavCommand(): void {
+    this.refreshMcRecovery_()
     if (this.navCommand < 0) return
     let sub = this.navCommand % 10
     if (sub < 0 || sub > 5) return

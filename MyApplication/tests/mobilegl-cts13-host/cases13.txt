@@ -1,0 +1,13 @@
+KHR-GL33.info.vendor
+KHR-GL33.info.renderer
+KHR-GL33.info.version
+KHR-GL33.info.shading_language_version
+KHR-GL33.info.extensions
+KHR-GL33.info.render_target
+KHR-GL33.buffer_objects.gen_buffers
+KHR-GL33.buffer_objects.triangles
+KHR-GL33.buffer_objects.elements
+KHR-GL33.buffer_objects.multi_texture
+KHR-GL33.buffer_objects.sub_data
+KHR-GL33.get_uniform_tests.get_uniform
+KHR-GL33.glsl_noperspective.functionaltest

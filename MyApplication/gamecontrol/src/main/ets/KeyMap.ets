@@ -379,13 +379,82 @@ export function isPrintableUnicodeCodepoint(codepoint: number | undefined): bool
   return cp < 0xD800 || cp > 0xDFFF
 }
 
+/** IME 一次 insertText 拆出的一段：可打印文本，或一次换行（换行时 text 为空串）。 */
+export class ImeInsertPiece {
+  text: string = ''
+  lineBreak: boolean = false
+}
+
+/** 拆分结果：pieces 保持原顺序；droppedControls 是被丢弃的其他控制字符与孤立代理项个数。 */
+export class ImeInsertSplit {
+  pieces: ImeInsertPiece[] = []
+  droppedControls: number = 0
+}
+
+function imeTextPiece(text: string): ImeInsertPiece {
+  const piece: ImeInsertPiece = new ImeInsertPiece()
+  piece.text = text
+  return piece
+}
+
+function imeLineBreakPiece(): ImeInsertPiece {
+  const piece: ImeInsertPiece = new ImeInsertPiece()
+  piece.lineBreak = true
+  return piece
+}
+
+/**
+ * 把 IME 的一次 insertText 拆成可打印段与换行（I27-10）。宿主提交只接受可打印码位，
+ * 含换行的整段文本会被整段拒绝；而游戏侧只把 Enter 键当作换行/提交，所以换行必须
+ * 变成一次 Enter 键，而不是文本。
+ *
+ * "\r\n"、"\n"、"\r" 各算一次换行；换行两侧的可打印文本分别成段，顺序不变。
+ * 其余不能进入提交的码位（C0/C1 控制字符、DEL、孤立代理项）只计数丢弃，不切断所在
+ * 的可打印段，例如 "a\tb" 得到一段 "ab"。可打印判定与宿主提交共用
+ * isPrintableUnicodeCodepoint，保证拆出的每一段都不会再被整段拒绝。
+ */
+export function splitImeInsertText(text: string): ImeInsertSplit {
+  const result: ImeInsertSplit = new ImeInsertSplit()
+  let run: string = ''
+  let index: number = 0
+  while (index < text.length) {
+    const cp: number = text.codePointAt(index) ?? 0
+    const width: number = cp > 0xFFFF ? 2 : 1
+    if (cp === 0x0D || cp === 0x0A) {
+      if (run.length > 0) {
+        result.pieces.push(imeTextPiece(run))
+        run = ''
+      }
+      result.pieces.push(imeLineBreakPiece())
+      // CR 紧跟 LF 是同一次换行，跳过那个 LF。
+      if (cp === 0x0D && index + 1 < text.length && text.charCodeAt(index + 1) === 0x0A) {
+        index += 1
+      }
+    } else if (isPrintableUnicodeCodepoint(cp)) {
+      run += text.substring(index, index + width)
+    } else {
+      result.droppedControls++
+    }
+    index += width
+  }
+  if (run.length > 0) result.pieces.push(imeTextPiece(run))
+  return result
+}
+
 /**
  * 实体键盘字符的单一解析入口：平台布局码位优先，US KeyCode 表仅作旧 API/空值兜底。
  * 该结果与 GLFW key 映射正交；未映射物理键仍可合法地产生 char。
  */
 export function resolvePhysicalKeyCodepoint(
-  platformUnicode: number | undefined, ohosKey: number, mods: number
+  platformUnicode: number | undefined, ohosKey: number, mods: number,
+  rightAltHeld: boolean = false
 ): number {
+  // KeyEvent.unicode在组合键时仍返回字母，不能把Ctrl+A/V当作文本提交。
+  // 只有右Alt明确按住且平台给出合法字符时承认AltGr；绝不对AltGr用US表猜字。
+  const altGraph: boolean = rightAltHeld && (mods & GLFW_MOD_ALT) !== 0 &&
+    isPrintableUnicodeCodepoint(platformUnicode)
+  if ((mods & GLFW_MOD_SUPER) !== 0 ||
+      ((mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT)) !== 0 && !altGraph)) return 0
   if (isPrintableUnicodeCodepoint(platformUnicode)) {
     return Math.trunc(platformUnicode as number)
   }

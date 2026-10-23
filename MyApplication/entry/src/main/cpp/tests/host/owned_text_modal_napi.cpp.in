@@ -1,0 +1,85 @@
+// SDK替身只读取参数/报告准入上下文；NAPI入口、owned租约、native registry/ledger和bridge全是生产实现。
+// 测试锁存legacy物理路由，文本职责仍以真实text-only core consumer完成READY握手。
+// 模态状态由生产TouchPublicationState维护，不把owned文本编辑归入新的普通touch认领。
+// 只让当前有效文本lease形成PRESS/RELEASE；旧号、终止和失焦后不得绕过generic touch门。
+// 两个负对照撤回生产判据，只有真实NAPI出口违反断言才算证明测试捕获了问题。
+@FIXTURE@
+
+int main() {
+    // 同一真正Core/neutral Source port预线程发布并准入；不以测试本地owner替代生产借用。
+    amclSourceControlPublishV1();CHECK(amclSourceControlPrepareV1()==1);
+    // 先跑既有legacy入口合同，再为owned文本建立真实core READY消费者；legacy物理路由保持锁存。
+    CHECK(inheritedTextOrderMain()==0);
+    using namespace amcl::input;
+    const auto* api=amclInputGetHostApiV1();
+    PlatformInputSurfaceCreated(800,600,22);
+    PlatformInputFocusChanged(true);
+    // Surface宽高不代替真实resource context；Source准入沿原平台发布完整window/display事实。
+    AmclInputSurfaceContextPayload resource{};resource.generation=22;resource.windowId=22;resource.displayId=1;
+    resource.widthPx=800;resource.heightPx=600;resource.density=1;
+    resource.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    CHECK(PlatformInputSurfaceContextChanged(resource));
+    CHECK(inputBridge_configureMenuCursorConsumerV1(1,1)==1);
+    // setter返回原ready值，不是提交成功位；第二次幂等调用的原值证明真实握手已为1。
+    (void)inputBridge_setInputReady(1);CHECK(inputBridge_setInputReady(1)==1);
+    inputBridge_glfwSetTargetV1(1,1,22);inputBridge_glfwSetActive(reinterpret_cast<void*>(1),1);
+    GlfwInputAdapter adapter;GlfwRecorder recorder;
+    // legacy物理路线不申领typed物理职责；真实text-only消费者仍能READY并拥有文本lease。
+    auto textSink=recorder.Sink();textSink.key=nullptr;
+    const auto opened=adapter.Open(api,GlfwOhosInputMapper(),textSink);
+    if(opened!=GlfwAdapterStatus::kOk)std::cerr<<"owned fixture adapter status="<<static_cast<int>(opened)
+        <<" site="<<static_cast<int>(adapter.LastOpenRejectSite())<<"\n";
+    CHECK(opened==GlfwAdapterStatus::kOk);
+    PumpAll(adapter);amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,1);
+    amclBackendInputSetActive(AMCL_BACKEND_INPUT_LWJGL2,1);
+    (void)DrainBackend(AMCL_BACKEND_INPUT_SDL3);(void)DrainBackend(AMCL_BACKEND_INPUT_LWJGL2);
+    CHECK(!PlatformInputPhysicalRouteUsesTyped());
+    CHECK(PlatformInputTextSessionBegin(300));
+    CHECK(PlatformInputOwnedTextSessionMatches(300));
+    // 当前硬IME合法lease尚未取得touch modal时，先有同码匿名Touch贡献。
+    // owned tap只使用自己的临时owner，不能因沿用source1匿名UP撤掉原贡献。
+    CHECK(callSource(1,259,1)==1);pumpLegacy();legacyKeys.clear();
+    CHECK(callOwned(300,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::Submitted));
+    pumpLegacy();CHECK(SourceSnapshot().owners==1&&SourceSnapshot().held[1]==1&&legacyKeys.empty());
+    CHECK(callSource(1,259,0)==1);pumpLegacy();legacyKeys.clear();CHECK(SourceSnapshot().owners==0);
+    const auto modal=publication.AcquireModal("ime");CHECK(modal!=0);
+    inputBridge_setKeyCallback(legacyKeyCallback);
+    // 普通touch按键通过真实NAPI模态判据被拒；手柄保持自身平面且能正常收口。
+    CHECK(callSource(1,259,1)==0&&ledger.ownerCount()==0);
+    CHECK(callSource(2,65,1)==1);CHECK(callSource(2,65,0)==1);pumpLegacy();legacyKeys.clear();
+    // 有效owned legacy编辑键同一NAPI调用内PRESS→RELEASE，交付真实bridge并保持lease。
+    CHECK(callOwned(300,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::Submitted));
+    pumpLegacy();CHECK((legacyKeys==std::vector<int>{1,0})&&ledger.ownerCount()==0);
+    CHECK(PlatformInputOwnedTextSessionMatches(300));legacyKeys.clear();
+    // 默认4096真实ring仅剩1槽：整tap拒绝，既有正常pair前提不删除；不改满队列标志。
+    // 两次pump及text end之前都不能留下半DOWN或等待新input才释放的匿名持有。
+    for(int i=0;i<4095;++i)inputBridge_pushEvent(1007,0,1,0,0);
+    CHECK(callOwned(300,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::Rejected));
+    CHECK(SourceSnapshot().owners==0&&SourceSnapshot().held[1]==0&&SourceSnapshot().deferredEdges==0);
+    pumpLegacy();pumpLegacy();CHECK(legacyKeys.empty()&&SourceSnapshot().owners==0);
+    // 原Core scope在call前冻结；即使同数字session end/reopen，也不能借新scope。
+    AmclInputTextCoreResourceV1 original{};CHECK(amclInputOwnerReadTextResourceV1(&original)==1);
+    CHECK(PlatformInputTextSessionEnd(300));CHECK(amclInputOwnerValidateTextScopeV1(original.scope)==0);
+    CHECK(PlatformInputTextSessionBegin(300));AmclInputTextCoreResourceV1 reopened{};
+    CHECK(amclInputOwnerReadTextResourceV1(&reopened)==1&&reopened.scope!=original.scope);
+    CHECK(!SourceOwnedTextKeyTap(original,259));pumpLegacy();CHECK(legacyKeys.empty()&&SourceSnapshot().owners==0);
+    // 旧lease/0号只返回NotTypedRoute；普通touch fallback仍由同一真实模态判据拒绝。
+    CHECK(callOwned(299,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::NotTypedRoute));
+    CHECK(callOwned(0,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::NotTypedRoute));
+    CHECK(callSource(1,259,1)==0);pumpLegacy();CHECK(legacyKeys.empty()&&ledger.ownerCount()==0);
+    CHECK(PlatformInputTextSessionEnd(300));
+    CHECK(!PlatformInputOwnedTextSessionMatches(300));
+    CHECK(callOwned(300,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::NotTypedRoute));
+    CHECK(PlatformInputTextSessionBegin(301));CHECK(PlatformInputTextSessionAbort(301));
+    CHECK(callOwned(301,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::NotTypedRoute));
+    CHECK(PlatformInputTextSessionBegin(302));PlatformInputFocusChanged(false);
+    CHECK(!PlatformInputOwnedTextSessionMatches(302));
+    CHECK(callOwned(302,2055,259)==static_cast<int>(PlatformInputTextKeyTapResult::NotTypedRoute));
+    PlatformInputFocusChanged(true);CHECK(!PlatformInputOwnedTextSessionMatches(302));
+    pumpLegacy();CHECK(legacyKeys.empty()&&ledger.ownerCount()==0);
+    CHECK(publication.ReleaseModal(modal));
+    amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,0);amclBackendInputSetActive(AMCL_BACKEND_INPUT_LWJGL2,0);
+    CHECK(adapter.Close()==GlfwAdapterStatus::kOk);PlatformInputSurfaceDestroyed(22);
+    std::cout<<"PASS real NAPI owned legacy edit crosses modal; generic touch, stale/end/abort/focus leases rejected\n";
+}

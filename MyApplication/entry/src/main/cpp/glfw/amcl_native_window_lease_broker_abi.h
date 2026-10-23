@@ -86,6 +86,12 @@ typedef struct AmclNativeWindowLeaseBrokerV2 {
     // clear→publish 即使指针相同也拒绝。旧 V2 消费者不读尾部，继续保守重建。
     int (*movePresentationGeometry)(uint64_t token, void* nativeWindow,
                                     uint64_t oldGeneration, uint64_t newGeneration, uint64_t resourceEpoch);
+    // 可选输入前台尾部（I27-05 之后替代每帧读取的 AMCL_WINDOW_FOREGROUND 环境变量）。
+    // 返回 XComponent 宿主输入前台门禁的当前值：1 = surface 已发布、Ability 在前台且组件
+    // 未失焦，0 = 其余情形（含宿主尚未算出过门禁）。实现只做一次 acquire 原子读，不加锁、
+    // 不分配、不调用系统接口，可在任意线程逐帧调用。消费者必须先核验 structSize 覆盖到本字段、
+    // 且指针非空才能调用；更短的描述符不能证明宿主授予输入资格，注入窗口必须保守停收。
+    uint32_t (*peekInputForeground)(void);
 } AmclNativeWindowLeaseBrokerV2;
 
 // The core prefix is retained for append-only ABI accounting. SDL's hybrid
@@ -103,6 +109,10 @@ typedef struct AmclNativeWindowLeaseBrokerV2 {
 #define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_IDENTITY_SIZE \
     ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, movePresentationGeometry) + \
                 sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->movePresentationGeometry)))
+// 输入前台尾部的最小 structSize：消费者据此判定 peekInputForeground 是否存在。
+#define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_INPUT_FOREGROUND_SIZE \
+    ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, peekInputForeground) + \
+                sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->peekInputForeground)))
 
 #if defined(__cplusplus)
 static_assert(offsetof(AmclNativeWindowLeaseBrokerV2, acquire) ==
@@ -117,6 +127,10 @@ static_assert(AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PEEK_SIZE <=
 static_assert(AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PRESENTATION_SIZE <=
                   sizeof(AmclNativeWindowLeaseBrokerV2),
               "NativeWindow presentation tail is not append-only");
+// 新尾部只能追加在 identity 尾部之后：SDL 私有镜像按同一顺序声明，并由宿主测试核对偏移。
+static_assert(offsetof(AmclNativeWindowLeaseBrokerV2, peekInputForeground) ==
+                  AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_IDENTITY_SIZE,
+              "NativeWindow input-foreground tail must follow the identity tail");
 #else
 _Static_assert(offsetof(AmclNativeWindowLeaseBrokerV2, acquire) ==
                    sizeof(uint32_t) * 2,
@@ -130,6 +144,9 @@ _Static_assert(AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PEEK_SIZE <=
 _Static_assert(AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PRESENTATION_SIZE <=
                    sizeof(AmclNativeWindowLeaseBrokerV2),
                "NativeWindow presentation tail is not append-only");
+_Static_assert(offsetof(AmclNativeWindowLeaseBrokerV2, peekInputForeground) ==
+                   AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_IDENTITY_SIZE,
+               "NativeWindow input-foreground tail must follow the identity tail");
 #endif
 
 #endif // AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_H

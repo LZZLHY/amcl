@@ -14,6 +14,7 @@ static constexpr const char* AMCL_RENDER_LOG_TAGS[] = {
     "GraphicsCapability",
     "GraphicsHistory",
     "MG_CONFIG",
+    "MG_DEPTH_RANGE_PROBE",
     "MG_RENDER_PROBE",
     "RenderPage",
     "RendererSettings",

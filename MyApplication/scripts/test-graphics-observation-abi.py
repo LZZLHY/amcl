@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import json
 root = Path(__file__).resolve().parent.parent
 source = root / 'entry/src/main/cpp/tests/host/graphics_observation_abi_test.cpp'
 includes = root / 'prebuilt/khronos-egl-headers'
@@ -20,3 +21,10 @@ else:
         subprocess.run([os.getenv('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pthread',
                         '-I' + str(includes), str(source), '-o', binary], check=True, timeout=90)
         subprocess.run([binary], check=True, timeout=30)
+        # 缺省环境执行同一生产入口，证明采样关闭而真实呈现计数仍完整。
+        default = json.loads(subprocess.check_output([binary, 'default'], text=True, timeout=30))
+        state = default['snapshot']
+        assert state['samplesEnabled'] is False and state['observerCostEnabled'] is False
+        assert state['presentCount'] == default['iterations']
+        assert state['intervalSamples'] == 0 and state['swapSamples'] == 0
+        print('graphics-observation-default PASS: samples disabled; presentation facts retained')

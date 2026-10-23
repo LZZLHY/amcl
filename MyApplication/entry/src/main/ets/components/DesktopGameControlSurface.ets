@@ -1,110 +1,41 @@
-import testNapi from 'libentry.so'
-import { ControlSchemaMsg } from 'libentry.so'
-import { display } from '@kit.ArkUI'
-import { hilog } from '@kit.PerformanceAnalysisKit'
-import {
-  DEFAULT_JOYSTICK_DEAD_ZONE,
-  InputSurfaceContext,
-  INPUT_SURFACE_FIELD_DENSITY,
-  getInputSurfaceContextStore
-} from 'gamecontrol'
 import { DesktopPhysicalTextInput } from './DesktopPhysicalTextInput'
 
-const TAG: string = 'DesktopControls'
-
 /**
- * desktop product 的游戏控制面。
+ * 实体键鼠产品的游戏控制面，只声明桌面 IME 的真实组件资源与 active 意图。
  *
- * 它只负责关闭触控产品遗留的 Native 控件表并同步游戏 surface 尺寸；不渲染虚拟按钮、
- * 布局编辑入口、恢复按钮或透明恢复热区。键盘、鼠标、滚轮与指针抓取继续由
- * McGamePage/XComponent 的实体输入链处理。
+ * 产品/输入路线在会话准备时已冻结，桌面路线不认领直接触屏，也没有需要安装或
+ * 确认的虚拟控件表。真实游戏尺寸、窗口及单位由 XComponent/输入上下文发布；本组件
+ * 不从自身布局拼 Native schema，不让旧实例的布局或 Watch 回调改写后来资源。
+ * 键盘、鼠标、滚轮与指针抓取继续由 McGamePage/XComponent 的原实体输入链处理。
  */
 @Component
 export struct DesktopGameControlSurface {
-  @Prop @Watch('onGrabChanged') isGrabbed: boolean = false
-  @Prop @Watch('onSurfaceContextChanged') surfaceContextGeneration: number = 0
+  /** 保留统一产品组件签名；桌面控制面不读取触控布局或动作配置。 */
+  @Prop gameDirectory: string = ''
+  /** 保留统一版本入参；本组件不建立触控 GUI 观察或恢复通道。 */
+  @Prop realGameVersion: string = ''
+  /** 抓取态只决定 IME 请求，不通过 Watch 发布触控表或改变实体输入资格。 */
+  @Prop isGrabbed: boolean = false
+  /** 保留统一窗口事实入参；真实上下文由原发布者管理，本组件没有安装权。 */
+  @Prop surfaceContextGeneration: number = 0
+  /** 当前页面投影与抓取态共同声明 IME 意图；资源资格由原文本运行体独立核实。 */
   @Prop pageActive: boolean = true
-  private compWidth: number = 0
-  private compHeight: number = 0
-  private density: number = 0
-
-  aboutToAppear(): void {
-    this.publishEmptySchema()
-  }
-
-  private onGrabChanged(): void {
-    this.publishEmptySchema()
-  }
-
-  private onSurfaceContextChanged(): void {
-    this.density = 0
-    this.publishEmptySchema()
-  }
-
-  // ⚠️ 这里曾有 clearLegacyRegions()（调 clearButtons + clearJoystick）。
-  // 那张 legacy 矩形表在 native 侧已删除 —— 它的唯一读取方位于一个永不执行的分支里。
-  // desktop 产品要表达的"没有任何虚拟控件"现在由 publishEmptySchema() 单独承担：
-  // 一张 controls 为空的 Control Schema，就是权威表述。
-
-  private publishEmptySchema(): void {
-    if (this.compWidth <= 0 || this.compHeight <= 0) return
-    try {
-      if (!this.resolveDensity()) return
-      const widthPx: number = Math.max(1, this.compWidth * this.density)
-      const heightPx: number = Math.max(1, this.compHeight * this.density)
-      // ⚠️ 墓碑: `testNapi.setCompSize(widthPx, heightPx)` 已删除（终点零读者），
-      // 详见计划 §64.3。同样的两个值下一行就进了 schema，而 schema 里那两个字段是活的。
-      const schema: ControlSchemaMsg = {
-        schemaVersion: 2,
-        compWidth: widthPx,
-        compHeight: heightPx,
-        grabbed: this.isGrabbed,
-        deadZone: DEFAULT_JOYSTICK_DEAD_ZONE,
-        controls: []
-      }
-      if (testNapi.setControlSchema(schema) <= 0) {
-        hilog.error(0x0000, TAG, 'Failed to publish empty desktop control schema')
-      }
-    } catch (e) {
-      hilog.error(0x0000, TAG, 'Desktop control schema update failed: %{public}s', (e as Error).message)
-    }
-  }
+  /** 与通用包装保持一致；桌面没有触控编辑覆盖层，不主动请求输入暂停。 */
+  onInputPause: (paused: boolean) => void = (_paused: boolean): void => {}
 
   build() {
     Stack() {
+      // 沿用原透明占位和命中行为，但不再采样其几何或登记能写 Native 的布局回调。
       Stack()
         .width('100%')
         .height('100%')
         .hitTestBehavior(HitTestMode.Transparent)
-        .onAreaChange((_oldArea: Area, newArea: Area) => {
-          this.compWidth = newArea.width as number
-          this.compHeight = newArea.height as number
-          this.resolveDensity()
-          this.publishEmptySchema()
-        })
+      // 保持原物理 IME 组件及条件；它取得自己的 UIContext/文本绑定，不能由空表成功代签。
       DesktopPhysicalTextInput({
         active: this.pageActive && !this.isGrabbed
       })
     }
     .width('100%')
     .height('100%')
-  }
-
-  private resolveDensity(): boolean {
-    const context: InputSurfaceContext = getInputSurfaceContextStore().snapshot()
-    if (!context.provisional) {
-      if (!context.has(INPUT_SURFACE_FIELD_DENSITY)) return false
-      this.density = context.density
-      return true
-    }
-    if (this.density > 0) return true
-    // Window 尚未取得时的临时值；首个权威 context generation 会覆盖它。
-    try {
-      const currentDisplay = display.getDefaultDisplaySync()
-      this.density = currentDisplay.densityPixels > 0 ? currentDisplay.densityPixels : 1
-    } catch (_) {
-      this.density = 1
-    }
-    return true
   }
 }

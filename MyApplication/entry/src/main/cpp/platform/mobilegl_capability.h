@@ -99,4 +99,9 @@ MobileGlProbeReport ProbeMobileGlCapability(const std::string& nativeLibraryDir,
     const std::string& requirementId = "mobilegl-direct-vulkan-v1");
 std::string MobileGlCapabilityDiagnosticReport();
 
+// 在首次provider装载/EGL调用前发布固定DirectVulkan transport。生产准入和
+// default冷诊断共用同一路径；已是目标值不重写，环境封存/已装入或写入失败拒绝。
+// 调用者必须先取得其原启动/诊断认领资格，不可借此切换正在运行的renderer。
+bool PublishMobileGlDirectVulkanBeforeLoad(std::string& error);
+
 } // namespace amcl::graphics

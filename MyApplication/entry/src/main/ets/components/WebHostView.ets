@@ -18,9 +18,10 @@ import { common, Want } from '@kit.AbilityKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { ThemeColors } from 'commons';
+import { ThemeColors, DistributionPolicy } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 
 const TAG = 'WebHostView'
 
@@ -49,6 +50,8 @@ export struct WebHostView {
   private webController: webview.WebviewController = new webview.WebviewController()
 
   private openInBrowser() {
+    // 商店渠道不执行一般网页及其浏览器兜底；微软授权使用独立组件，不经过此宿主。
+    if (DistributionPolicy.isStore()) return
     let url = this.fallbackBrowserUrl.length > 0 ? this.fallbackBrowserUrl : this.src
     let want: Want = {
       action: 'ohos.want.action.viewData',
@@ -64,6 +67,8 @@ export struct WebHostView {
   }
 
   private retry() {
+    // 旧事件或直接调用同样不能在商店重新创建网页请求。
+    if (DistributionPolicy.isStore()) return
     this.loadFailed = false
     this.loading = true
     try { this.webController.refresh() } catch (e) { /* controller 未 attach */ }
@@ -74,6 +79,8 @@ export struct WebHostView {
    * 反馈页最多 3 张图，这里放宽到 9，由网页侧再校验数量。
    */
   private handleFileSelect_(result: FileSelectorResult) {
+    // 宿主在商店不挂载 Web；防御晚到的文件选择回调继续拉起网页上传流程。
+    if (DistributionPolicy.isStore()) { result.handleFileList([]); return }
     try {
       let picker = new photoAccessHelper.PhotoViewPicker()
       let opts: photoAccessHelper.PhotoSelectOptions = {
@@ -95,42 +102,26 @@ export struct WebHostView {
 
   build() {
     Column() {
-      // ===== 顶部导航栏 =====
-      // 用 Stack 让标题相对整条 bar 真正居中（左右按钮宽度不等，
-      // 原先 layoutWeight 居中会把标题挤偏）。标题用 padding 让出两侧按钮区域避免重叠。
-      Stack() {
-        Text(this.title)
-          .fontSize(20).fontWeight(700).fontColor(this.theme.textPrimary)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%').textAlign(TextAlign.Center)
-          .padding({ left: 76, right: 76 })
+      // 网页宿主只转交既有返回／外跳动作，不把返回替换成 Web 历史后退。
+      // 配置更新留在稳定标题宿主内，Web 实例与上传回调不因光感开关重建。
+      ImmersiveTitleScaffold({ title: this.title, theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary, showExternal: !DistributionPolicy.isStore(),
+        onBack: (): void => { this.onBack(); }, onExternal: (): void => { this.openInBrowser(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.theme.bgPrimary)
+    // 不加 bottom safe padding：网页内容一直铺到屏幕最底（全屏）。
+  }
 
-        Row() {
-          Row({ space: 4 }) {
-            AppIcon({ name: AppIconName.Back, iconSize: 18, color: this.theme.primary })
-            Text('返回')
-              .fontSize(16).fontWeight(400).fontColor(this.theme.primary)
-          }
-          .onClick(() => { this.onBack() })
-          .padding({ left: 12, top: 8, bottom: 8, right: 8 })
-
-          Blank()
-
-          Row({ space: 4 }) {
-            AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 16, color: this.theme.textSecondary })
-          }
-          .onClick(() => { this.openInBrowser() })
-          .padding({ left: 8, top: 8, bottom: 8, right: 12 })
-        }
-        .width('100%')
-      }
-      .width('100%')
-      .padding({ top: this.topSafeHeight })
-      .backgroundColor(this.theme.bgPrimary)
-
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
       // ===== 内容区：WebView / 加载中 / 错误兜底 =====
       Stack() {
-        if (!this.loadFailed) {
+        if (!DistributionPolicy.isStore() && !this.loadFailed) {
           Web({ src: this.src, controller: this.webController })
             .width('100%')
             .height('100%')
@@ -138,8 +129,10 @@ export struct WebHostView {
             .mixedMode(MixedMode.All)
             .cacheMode(CacheMode.Default)
             .domStorageAccess(true)
-            .onDownloadStart((event) => { this.onDownloadUrl(event.url) })
+            .onDownloadStart((event) => { if (!DistributionPolicy.isStore()) this.onDownloadUrl(event.url) })
             .onShowFileSelector((event) => {
+              // 即使收到旧回调也由本组件消费并取消，不交给 Web 的默认上传选择行为。
+              if (DistributionPolicy.isStore()) { event.result.handleFileList([]); return true }
               if (!this.enableFileUpload) return false   // 不接管 → 用默认行为
               this.handleFileSelect_(event.result)
               return true
@@ -154,7 +147,13 @@ export struct WebHostView {
             })
         }
 
-        if (this.loading && !this.loadFailed) {
+        if (DistributionPolicy.isStore()) {
+          // 直接进入历史文档/反馈/赞助路由也只显示本地说明，不创建隐藏 WebView。
+          Text('此版本不提供网页功能，请返回应用内继续管理文件。')
+            .fontSize(14).fontColor(this.theme.textSecondary).padding(24)
+        }
+
+        if (!DistributionPolicy.isStore() && this.loading && !this.loadFailed) {
           Column({ space: 12 }) {
             LoadingProgress().width(40).height(40).color(this.theme.primary)
             Text('加载中…').fontSize(13).fontColor(this.theme.textSecondary)
@@ -164,7 +163,7 @@ export struct WebHostView {
           .backgroundColor(this.theme.bgPrimary)
         }
 
-        if (this.loadFailed) {
+        if (!DistributionPolicy.isStore() && this.loadFailed) {
           Column({ space: 16 }) {
             AppIcon({ name: AppIconName.Error, iconSize: 40, color: this.theme.textHint })
             Text('页面加载失败')
@@ -194,10 +193,5 @@ export struct WebHostView {
       }
       .layoutWeight(1)
       .width('100%')
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.theme.bgPrimary)
-    // 不加 bottom safe padding：网页内容一直铺到屏幕最底（全屏）。
-  }
+      }
 }

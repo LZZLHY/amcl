@@ -17,6 +17,12 @@ static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, claimPresentation) == off
     "SDL presentation tail must match the host ABI");
 static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, releasePresentation) == offsetof(AmclNativeWindowLeaseBrokerV2, releasePresentation),
     "SDL presentation release offset must match the host ABI");
+// SDL 0022 起从 broker 读输入前台位：私有镜像的尾部偏移必须与宿主 ABI 完全一致，
+// 否则 SDL 会把相邻函数指针当作前台 peek 调用。
+static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, peekInputForeground) == offsetof(AmclNativeWindowLeaseBrokerV2, peekInputForeground),
+    "SDL input-foreground tail offset must match the host ABI");
+static_assert(AMCL_INPUT_FOREGROUND_BROKER_SIZE == AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_INPUT_FOREGROUND_SIZE,
+    "SDL input-foreground size guard must match the host ABI");
 
 namespace {
 AmclPresentationOwner hostOwner;

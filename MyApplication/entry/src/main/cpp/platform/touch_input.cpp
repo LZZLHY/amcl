@@ -20,22 +20,35 @@
 // `s_buttons` 原址那段）。一个被别处显式指为权威来源的假注释，形状与 §51.1 完全一致。
 
 #include "touch_input.h"
+#include "control_schema_contract.h"
+#include "touch_publication.h"
 #include "../utils/amcl_log.h"
 #include "cursor_lock.h"
 #include "surface_input_gate_state.h"
 #include "../input/amcl_input_event.h"
 #include "../input/platform_input_ingress.h"
+#include "../input/input_menu_cursor_snapshot.h"
 #include "../input/input_trace.h"
 #include "input_channel_census.h"
 #include "input_channel_policy.h"
 #include "input_ledger.h"
+#include "source_control_client.h"
 #include "legacy_physical_edge_router.h"
 #include "look_delta_math.h"
 #include "look_pipeline_stats.h"
+#include "source_look_processor.h"
+#include "mapped_look_producer.h"
+#include "source_look_producer.h"
+#include "../input/delivery/look_transport.h"
 #include "input_source.h"
 #include "external_held_registry.h"
+#include "external_held_edge_router.h"
+#include "grab_announcement_queue.h"
 #include "input_invariants.h"
 #include "joystick_sector.h"
+#include "legacy_output_code.h"
+#include "legacy_ring_discontinuity.h"
+#include "schema_wasd_latch.h"
 #include "mouse_synth_touch_source.h"
 #include "native_mouse_route_policy.h"
 #include "physical_wheel_quantizer.h"
@@ -48,6 +61,7 @@
 #include <hilog/log.h>
 #include <arkui/ui_input_event.h>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
 #include <cmath>
@@ -55,12 +69,42 @@
 #include <ctime>
 #include <atomic>
 #include <dlfcn.h>
+#include <unistd.h>
 #include <vector>
 #include <deque>
 #include <string>
 #include <map>
 #include <set>
 #include <mutex>
+
+// 共享 runtime 的强链接 C ABI；bridge 自己负责 owner image 转发。这里只提交已经
+// 加工完成的一份位移，并保留来源供 SDL 独立读取非物理累计，绝不重复提交 typed raw。
+extern "C" void inputBridge_addSourceLookDelta(int32_t source, double dx, double dy);
+// legacy ring 不连续 epoch（强链接 C ABI，bridge 负责 owner image 转发）。只做一次原子读，
+// 不取任何 bridge 锁；对账逻辑见下方 reconcileLegacyRingDiscontinuity。
+extern "C" unsigned long long inputBridge_legacyRingDiscontinuityEpochV1(void);
+// 菜单触控作用域的退休属于中立 bridge 的生产身份，而不是当前手指 token。
+// UP 后本文件会清掉 token，但同一事务仍可能排在消费者队列里；单发旧 token 的
+// CANCEL 无法覆盖这些已结束记录。此 ABI 在公共 order 事务内推进菜单 epoch，
+// 消费者在自己的线程拒绝旧前缀并释放已提交的菜单贡献，不清 ordinary/typed 持有。
+// 该入口没有 Native 回调，可在 surface→mode→touch→schema 的锁序内调用。
+extern "C" void inputBridge_retireTouchMenuScopeV1(void);
+// 显式菜单工具有独立的菜单来源贡献。只能发送 Left(-1)、Right(-2)、LeftShift(340)
+// 的首按/末松；bridge 冻结菜单 epoch，再与 ordinary/typed 合并。不能把 common
+// ledger 的最终边沿贴上 Touch 标签，否则共持时无法区分应退休的真实来源。
+extern "C" void inputBridge_pushTouchMenuToolV1(int code, int action);
+// 面板CANCEL只退休工具子域；直接屏幕菜单事务、空闲菜单位置及其他来源均保持。
+// 与正常UP的末松不同，独立tool epoch会撤销尚未消费的PRESS/RELEASE历史，不能补出点击。
+extern "C" void inputBridge_retireTouchMenuToolScopeV1(void);
+// 无按钮的触控菜单位置也必须绑定菜单epoch；物理绝对指针仍用普通setMenuCursor。
+extern "C" void inputBridge_publishTouchMenuCursorV1(double x, double y);
+// 指针/滚轮同样保留真实触控来源：工具CANCEL只能撤工具位置/滚动，不能撤直接菜单。
+extern "C" void inputBridge_publishTouchMenuToolCursorV1(double x, double y);
+extern "C" void inputBridge_publishTouchMenuScrollV1(int dx, int dy);
+extern "C" void inputBridge_pushTouchMenuToolScrollV1(int dx, int dy);
+extern "C" void inputBridge_publishTouchMenuToolRelativeV1(double dx,double dy,double maxX,double maxY);
+extern "C" void inputBridge_publishTouchMenuRelativeV1(int phase,uint32_t token,double dx,double dy,double maxX,double maxY);
+static void retireTouchMenuSurfaceScope(); // caller持surface gate；内部按touch→transaction退休。
 
 #undef LOG_TAG
 #define LOG_TAG "TOUCH_INPUT"
@@ -251,6 +295,11 @@ extern "C" uint64_t ohos_surface_input_gate_publish_transaction(
         return 0;
     }
 
+    // 新呈现目标开始安装之前先撤销旧菜单前缀，不能等 JS 重发 schema 或下一次
+    // DOWN 才清理。此时 gate 已阻止新的平台入口，消费者也能立即看到退休 epoch；
+    // 即使 broker 安装失败，旧菜单操作也不能在随后失效/恢复的窗口上补出点击。
+    retireTouchMenuSurfaceScope();
+
     // Keep the old gate fully active while the broker retain/publication runs.
     // A new identity never inherits the old generation. After success, sample
     // the boundary before activation while this same lock still excludes every
@@ -260,11 +309,15 @@ extern "C" uint64_t ohos_surface_input_gate_publish_transaction(
         mutation(context, previousGeneration);
     if (publicationGeneration == 0) return 0;
     const uint64_t boundary = currentMonotonicTimestampNsOrFailClosed();
-    return amcl::input::surface_gate::Activate(
+    const bool activated = amcl::input::surface_gate::Activate(
                s_surfaceInputGate, component, window,
-               publicationGeneration, boundary)
-        ? publicationGeneration
-        : 0u;
+               publicationGeneration, boundary);
+    if (activated) {
+        // 新surface不能继承旧窗口的锁或明确失焦状态；初始Unknown焦点由平台最终授权。
+        amcl_cursor_lock_set_surface(false);
+        amcl_cursor_lock_set_surface(true);
+    }
+    return activated ? publicationGeneration : 0u;
 }
 
 extern "C" uint64_t ohos_surface_input_gate_update_transaction(
@@ -275,6 +328,9 @@ extern "C" uint64_t ohos_surface_input_gate_update_transaction(
     const uint64_t expectedGeneration =
         acceptSurfaceInputGateLocked(component, window, true);
     if (expectedGeneration == 0u) return 0u;
+    // 几何或 render-scale 的真实重发布改变了菜单坐标含义。这里覆盖“手指已经
+    // 抬起、Native token 已清零、旧鼠标事务尚未消费”的空档，不能用零触点放行它。
+    retireTouchMenuSurfaceScope();
     const uint64_t publicationGeneration =
         mutation(context, expectedGeneration);
     if (publicationGeneration == 0u) return 0u;
@@ -292,6 +348,13 @@ extern "C" uint64_t ohos_surface_input_gate_clear_transaction(
     // SurfaceDestroyed is authoritative once the current component/window was
     // accepted. ClearCurrent invalidates every identity before touching GLFW
     // publication, so a zero mutation result remains fail-closed.
+    if (acceptSurfaceInputGateLocked(component, window, true) != 0u) {
+        // 先让消费者退休旧菜单，再进行可能失败的清窗；无效旧 destroy 不拥有此权限。
+        retireTouchMenuSurfaceScope();
+        amcl_cursor_lock_set_surface(false);
+        amcl::input::PlatformInputCapturePlatformChanged(
+            false, AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST);
+    }
     return amcl::input::surface_gate::ClearCurrent(
         s_surfaceInputGate, component, window, mutation, context);
 }
@@ -300,6 +363,13 @@ extern "C" uint64_t ohos_surface_input_gate_clear_active_transaction(
         OhosSurfacePublicationMutation mutation, void* context,
         uint64_t* outExpectedPublicationGeneration) {
     std::lock_guard<std::recursive_mutex> lock(s_surfaceInputGateMutex);
+    if (s_surfaceInputGate.active && mutation) {
+        // 生命周期失败的 clear-active 也可能没有尚按住的手指，仍须撤销消费端旧菜单。
+        retireTouchMenuSurfaceScope();
+        amcl_cursor_lock_set_surface(false);
+        amcl::input::PlatformInputCapturePlatformChanged(
+            false, AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST);
+    }
     return amcl::input::surface_gate::ClearActive(
         s_surfaceInputGate, mutation, context,
         outExpectedPublicationGeneration);
@@ -343,42 +413,27 @@ private:
 //   清 look 平滑基准、并把翻转瞬间仍按着的**非 carried（keepHeld 之外）**手指标记为“作废，直到抬起”，
 //   使跨翻转手指绝不在新模式里被重新解释成 look/点击。
 // 注：依赖 MAX_FINGERS 的数组声明移到其 #define 之后（见下方 s_fingerDead / s_fingerDown 附近）。
+// 两个基准只在 s_touchStateMutex 内由 consumeGrabEpochLocked 读写（ohos_set_control_schema 在 bridge
+// 尚未加载时也在同一把锁内初始化它们）。
 static bool s_grabFlipLastState = false;
 static bool s_grabFlipInit = false;
-// libglfw 在真实 grab 翻转时同步调用此轻量 trampoline；只发布原子状态，不跨线程修改每指数组。
-// 下一个触摸 ingress 或 schema 发布边界会在写当前 fingerDown / 替换 generation **之前**应用 epoch，
-// 从而先作废旧菜单层手指或承接仍由物理手指持有的 owner。
-static std::atomic<uint64_t> s_grabAnnouncementEpoch(0);
-// Written only while s_touchStateMutex is held, after atomically swapping the
-// announcement queue.
-//
-// ⚠️ **只写不读（2026-08-20 全仓核实：1 处声明 + 1 处赋值，零读取点）。**
-// 这一行曾接着写「Touch packets bind to this consumed epoch; a concurrent later
-// announcement therefore **invalidates, rather than relabels**, the packet.」——
-// 那描述了一个**并不存在的安全检查**：没有任何代码读这个值，所以"迟到的公告会作废
-// 该包"这件事不会发生。这比普通的死变量更糟，因为它声称的是一条**正确性保证**，
-// 读者会据此认为某个竞态已经被处理过。
-//
-// 处置：本轮只如实标注，不删。删它属于死代码清理，与本轮"修说谎的注释"是两件事；
-// 而它所在的 grab 公告队列是 §46 之后唯一还没有独立测试覆盖的时序机制，
-// 动它之前应该先有测试。
-static uint64_t s_consumedGrabAnnouncementEpoch = 0;
-static std::atomic<int> s_announcedGrabState(-1);
-static std::mutex s_grabAnnouncementMutex;
-static std::deque<bool> s_grabAnnouncements;
+// libglfw 在真实 grab 翻转时同步调用此轻量 trampoline；只入队公告，不跨线程修改每指数组。
+// 下一个触摸 ingress 或 schema 发布边界在写当前 fingerDown / 替换 generation **之前**经
+// consumeGrabEpochLocked 应用翻转，先作废旧菜单层手指或承接仍由物理手指持有的 owner。
+// 公告队列与“最新公告状态”在同一把锁里读写（grab_announcement_queue.h），消费方只使用
+// ApplyGrabAnnouncements 返回的生效状态，因此不存在“先读状态、后取队列”之间的窗口。
+// ⚠️ 墓碑: `s_consumedGrabAnnouncementEpoch` 已删除（只写不读，公告状态改由 Take 在同一临界区读出），详见计划 §129。
+static std::mutex s_grabAnnouncementMutex;   // 叶子锁，只包住公告队列与状态
+static amcl::input::GrabAnnouncementQueue s_grabAnnouncements(s_grabAnnouncementMutex);
+static void schemaNotifyDeadlineWorkerNonblocking();
 extern "C" void amcl_touch_on_grab_changed(int grabbing) {
     const bool state = grabbing != 0;
-    // The announcement mutex is also the mouseSynth emission fence. Publishing
-    // the epoch first makes the grab transition linearizable against a deadline
-    // worker: either the old tap is queued before this boundary, or the worker
-    // observes the new epoch and cancels it. Never hold this mutex while calling
-    // ingress, which may take unrelated host/core locks.
-    {
-        std::lock_guard<std::mutex> lock(s_grabAnnouncementMutex);
-        s_grabAnnouncements.push_back(state);
-        s_announcedGrabState.store(state ? 1 : 0, std::memory_order_release);
-        s_grabAnnouncementEpoch.fetch_add(1, std::memory_order_acq_rel);
-    }
+    // 队列锁是叶子锁：Announce 返回之后才调用 ingress，持队列锁时绝不进入 ingress / touchState /
+    // ledger。本函数运行在 bridge 的物理运动锁内，所以也不在这里对账 ring 不连续 epoch ——
+    // 对账要取 surface gate 与 touchState，与 ingress → grab 事务的锁序相反。
+    s_grabAnnouncements.Announce(state);
+    // 公告已经在线性化点成立；只唤醒已初始化的condition，不取得touch/schema锁或等待UI。
+    schemaNotifyDeadlineWorkerNonblocking();
     // A grab request is only intent in Phase 1B. No platform capture proof exists,
     // so the typed stream must publish active=false/reason=UNSUPPORTED.
     amcl::input::PlatformInputCaptureRequested(state);
@@ -395,12 +450,14 @@ struct TouchInputEvent { int type; int i1, i2, i3, i4; };
 #define EVENT_TYPE_KEY          1005
 #define EVENT_TYPE_MOUSE_BUTTON 1006
 #define EVENT_TYPE_SCROLL       1007
-// 菜单指针事务：坐标与 DOWN/MOVE/UP 进入同一 ring；bridge 在 DOWN 后等待两个 present 再发 PRESS。
+// 菜单指针事务：坐标与 DOWN/MOVE/UP 进入同一有序 ring，消费端按不可变载荷提交。
 #define EVENT_TYPE_MENU_POINTER 1008
 #define MENU_POINTER_MOVE        0
 #define MENU_POINTER_DOWN        1
 #define MENU_POINTER_UP          2
 #define MENU_POINTER_CANCEL      3
+#define MENU_POINTER_BEGIN       4
+#define MENU_POINTER_END         5
 #define GLFW_PRESS   1
 #define GLFW_RELEASE 0
 #define GLFW_REPEAT  2
@@ -470,7 +527,10 @@ static void recordNonFiniteMenuPosition() {
 // `PlatformInputPhysicalRelativeTransaction` 根本不会走 legacy 回调，于是可能一次
 // `resolveBridge()` 都还没发生。那样 typed 视角会永久落在 `kNoSink`（有计数、不静默，
 // 但功能是死的）。因此本函数也在 `registerInputNapi` 时被无条件调用一次。
-static void publishReverseTrampolines() {
+// 三个值都是本 image 的函数地址（进程常量）：只在首次调用时写 environ，此后 `resolveBridge`
+// 首次成功时的再次调用是空操作，避免游戏期间 setenv 释放读者持有的旧串（I27-05）。
+static std::once_flag s_reverseTrampolinesPublished;
+static void publishReverseTrampolinesOnce() {
     // bridge 只写 atomic announcement；finger 迁移仍在 touchStateMutex 下由触摸入口完成，
     // 避免 MC 线程直接修改 registry。
     char grabCbBuf[32];
@@ -493,6 +553,14 @@ static void publishReverseTrampolines() {
     snprintf(lookCbBuf, sizeof(lookCbBuf), "%llu",
              (unsigned long long)(uintptr_t)&ohos_send_cursor_delta_checked);
     setenv("AMCL_LOOK_DELTA_CB", lookCbBuf, 1);
+    // V2单独发布，旧二参数地址绝不能被解释为三参数ABI；进程常量仍只在早期发布一次。
+    snprintf(lookCbBuf, sizeof(lookCbBuf), "%llu",
+             (unsigned long long)(uintptr_t)&ohos_send_cursor_delta_at_time_checked);
+    setenv("AMCL_LOOK_DELTA_V2_CB", lookCbBuf, 1);
+}
+
+static void publishReverseTrampolines() {
+    std::call_once(s_reverseTrampolinesPublished, publishReverseTrampolinesOnce);
 }
 
 extern "C" void ohos_input_publish_trampolines(void) {
@@ -617,13 +685,10 @@ static inline void setMenuCursor(double x, double y) {
 static std::atomic<bool> s_touchPaused(false);
 
 // ==================== LookProcessor（grabbed 模式）====================
-// 三类来源（触摸、物理鼠标 raw delta、手柄）可能来自不同线程，全部先进入同一把 s_lookMutex。
-// 参数用 atomic 发布，手势状态/backlog 用 mutex 串行；这比“实际通常单线程所以 float 撕裂可忽略”更可证明。
-static std::atomic<float> s_lookSensitivity(1.0f);
-static std::atomic<bool> s_invertY(false);
+// processor按source持有参数、速度时钟和守恒backlog；本mutex只串行legacy累计投递与idle。
+// SDL typed物理直接调用同一processor后投递，不进入此累计入口，也不会重复提交位移。
 // 平滑系数是参考 60Hz 的响应速度，1.0 表示立即输出。实现平滑的是下方守恒 backlog，
 // 而不是直接 EMA 每个 delta；因此平滑只改变位移到达时间，不改变手势总灵敏度。
-static std::atomic<float> s_lookSmoothAlpha(0.6f);
 static pthread_mutex_t s_lookMutex = PTHREAD_MUTEX_INITIALIZER;
 // 无显式 UP 的物理鼠标/手柄也必须满足位移守恒。单一空闲 worker 在最后一批 delta 后阻塞等待
 // 20ms，再补齐 backlog；持续输入只会重排同一个 deadline，不创建线程/任务。condition 使用
@@ -632,62 +697,53 @@ static pthread_mutex_t s_lookMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_lookIdleCond;
 static pthread_once_t s_lookIdleOnce = PTHREAD_ONCE_INIT;
 static std::atomic<bool> s_lookIdleWorkerReady(false);
-static int64_t s_lookIdleDeadlineNs = 0;
+static int64_t s_lookIdleDeadlineNs[AMCL_INPUT_SOURCE_COUNT]{};
 static const int64_t kLookIdleFlushDelayNs = 20000000LL;
 // 平滑 backlog 保存“已经接受但尚未输出”的位移，而不是上一事件的 delta。每次 MOVE 输出 backlog 的一部分，
 // 正常 UP 时再 flush 余量，因此任意手势的总输出严格等于灵敏度/加速后的总输入；采样率只影响到达时间，
 // 不再静默改变有效灵敏度。grab/lifecycle 边界会显式 discard，避免旧 epoch 尾量泄漏到新相机基准。
-static double s_lookPendingDx = 0.0, s_lookPendingDy = 0.0;
-// 视角管线观测面。全部访问都在 s_lookMutex 内（契约见该头文件）。
-static amcl::input::LookPipelineStats s_lookStats;
 
 // 方案 C：视角加速强度 0..1（0 = 关闭，默认关闭以尊重老用户手感）。由 ohos_set_look_accel 写。
 // 加速按"瞬时物理手速（px/s）"提升增益：手速越快、增益越高，慢速微调保持 1:1。
-static std::atomic<float> s_lookAccel(0.0f);
 // 方案 C：上次 look 事件的单调时间戳（ns），用于算 dt（基于时间的平滑 + 加速，与事件密度/帧率解耦）。
 // 0 = 无上次事件（首个事件 / 抬手 / 暂停后重置），此时按 60Hz 估算 dt。
-static int64_t s_lastLookNs = 0;
 
 // 单调时钟纳秒（方案 C）
 static int64_t nowMonotonicNs() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    struct timespec ts{};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+/** 每个source独立计算idle尾量期限，物理样本不再推迟触控/手柄的收尾。 */
 static void* lookIdleWorkerMain(void*) {
     pthread_mutex_lock(&s_lookMutex);
     for (;;) {
-        if (s_lookIdleDeadlineNs == 0) {
+        int64_t nearest = 0;
+        for (const int64_t due : s_lookIdleDeadlineNs) {
+            if (due > 0 && (nearest == 0 || due < nearest)) nearest = due;
+        }
+        if (nearest == 0) {
             pthread_cond_wait(&s_lookIdleCond, &s_lookMutex);
             continue;
         }
         const int64_t now = nowMonotonicNs();
-        if (now < s_lookIdleDeadlineNs) {
-            struct timespec deadline;
-            deadline.tv_sec = (time_t)(s_lookIdleDeadlineNs / 1000000000LL);
-            deadline.tv_nsec = (long)(s_lookIdleDeadlineNs % 1000000000LL);
+        if (now == 0 || now < nearest) {
+            struct timespec deadline{};
+            deadline.tv_sec = static_cast<time_t>(nearest / 1000000000LL);
+            deadline.tv_nsec = static_cast<long>(nearest % 1000000000LL);
             pthread_cond_timedwait(&s_lookIdleCond, &s_lookMutex, &deadline);
-            continue; // signal 可能只是把 deadline 推后，必须回到循环重新读取
+            continue;
         }
-
-        // 20ms 内没有新 delta，说明当前采样 burst 已结束。物理鼠标/手柄没有 UP，因此这个
-        // deadline 就是它们的明确收尾边界；触摸若先 UP，则 flushLookPending 已把 deadline 清零。
-        if (s_addLookDeltaFn && (s_lookPendingDx != 0.0 || s_lookPendingDy != 0.0)) {
-            s_lookStats.NoteFlush(true, s_lookPendingDx, s_lookPendingDy);
-            s_addLookDeltaFn(s_lookPendingDx, s_lookPendingDy);
-        } else if (s_lookPendingDx != 0.0 || s_lookPendingDy != 0.0) {
-            // bridge 没解析出来 ⇒ 这笔尾量其实是丢的，必须记成 discarded 而不是静默归零。
-            s_lookStats.NoteFlush(false, s_lookPendingDx, s_lookPendingDy);
+        for (int32_t source = 0; source < AMCL_INPUT_SOURCE_COUNT; ++source) {
+            if (s_lookIdleDeadlineNs[source] == 0 || s_lookIdleDeadlineNs[source] > now) continue;
+            // 容量压力保原tail并有界重试；idle不先清余量再调用void accumulator丢输出。
+            const bool flushed=amclSourceLookFlush(source,true);
+            s_lookIdleDeadlineNs[source]=flushed?0:now+kLookIdleFlushDelayNs;
         }
-        s_lookPendingDx = 0.0;
-        s_lookPendingDy = 0.0;
-        s_lastLookNs = 0;
-        s_lookIdleDeadlineNs = 0;
     }
     return nullptr;
 }
-
 static void lookInitIdleWorker() {
     pthread_condattr_t attr;
     int rc = pthread_condattr_init(&attr);
@@ -729,109 +785,46 @@ static void lookInitIdleWorker() {
 // 摇杆量），而此前它们共用同一条灵敏度且**下游完全不知道来源** —— 任何一端调优都会破坏
 // 另两端。现在每端先过一次 `amcl_input_source_look_scale()` 归一，那道接缝是结构性的；
 // 当前三端系数一律 1.0，因此**行为与引入该参数之前逐位相同**。
-static bool applyLookDelta(AmclInputSource source, double dx, double dy) {
-    // This internal check is intentionally before bridge resolution, worker
-    // initialization, mutex acquisition and the timestamp write below. Every
-    // caller—including native touch/gamepad paths that bypass checked NAPI—gets
-    // the same fail-closed guarantee and cannot poison persistent backlog.
-    if (!finitePair(dx, dy)) {
-        recordInvalidLookDelta();
-        return false;
-    }
-    // 端级量纲归一。放在 finite 检查之后、任何持久状态之前：系数本身恒为有限正数，
-    // 但乘完仍要保证不会把一个合法样本变成 inf，因此再检一次。
-    const double sourceScale = amcl_input_source_look_scale(source);
-    dx *= sourceScale;
-    dy *= sourceScale;
-    if (!finitePair(dx, dy)) {
-        recordInvalidLookDelta();
-        return false;
-    }
-    // "滚轮为什么转视角"只能是这里被调用了，所以它与各来源计数一起构成闭环证据：
-    // look 总数应等于各来源之和。
-    amcl::input::census::Bump(amcl::input::census::Channel::LookApplied);
-    // 同一件事在**端**这条轴上也记一笔。census 是按通道切的，而通道与端不是一一对应；
-    // 两条轴分别记账，交叉比对才能发现归属错误（例如触控 dragLook 曾被记成手柄 look）。
-    amcl_input_source_note_look(source);
+/** legacy/touch/gamepad的加工后投递入口；typed物理由后端调用相同processor并直接投递。 */
+static bool applyLookDelta(AmclInputSource source, double dx, double dy,
+                           int64_t sampleTimeNs = 0) {
+    if (!finitePair(dx, dy)) { recordInvalidLookDelta(); return false; }
     resolveBridge();
     if (!s_addLookDeltaFn) return false;
     pthread_once(&s_lookIdleOnce, lookInitIdleWorker);
     const bool idleWorkerReady = s_lookIdleWorkerReady.load(std::memory_order_acquire);
     pthread_mutex_lock(&s_lookMutex);
-
-    // 参数在一次调用开始时取同一份快照；滑条并发更新只影响下一批 delta，不会让同一 delta 的 X/Y
-    // 分别乘到不同配置。backlog/timestamp 则由 s_lookMutex 保证三种来源严格串行。
-    const double sensitivity = (double)s_lookSensitivity.load(std::memory_order_relaxed);
-    const bool invertY = s_invertY.load(std::memory_order_relaxed);
-    // 平滑按**端**解析（计划 §78）：滑条值只有一份，但它的语义属于触控端（抑制手指
-    // 抖动）。物理键鼠端返回 1.0 = 不平滑 —— 鼠标不抖，低通只买到 18.2ms 相位滞后。
-    // ⚠️ 快照必须在同一次调用里取一次，理由同下面那段注释（X/Y 不得乘到不同配置）。
-    const double smoothAlpha = amcl_input_source_look_smoothing(
-        source, (double)s_lookSmoothAlpha.load(std::memory_order_relaxed));
-    const double accel = (double)s_lookAccel.load(std::memory_order_relaxed);
-
-    const int64_t nowNs = nowMonotonicNs();
-    amcl::input::LookDeltaMathInput mathInput{};
-    mathInput.dx = dx;
-    mathInput.dy = dy;
-    mathInput.sensitivity = sensitivity;
-    mathInput.smoothAlpha = smoothAlpha;
-    mathInput.acceleration = accel;
-    mathInput.pendingDx = s_lookPendingDx;
-    mathInput.pendingDy = s_lookPendingDy;
-    mathInput.lastTimeNs = s_lastLookNs;
-    mathInput.nowTimeNs = nowNs;
-    mathInput.invertY = invertY;
-
-    // The pure helper computes into temporaries and commits no caller state on
-    // failure. A finite sample such as DBL_MAX can still overflow speed,
-    // scaling, or backlog addition, so every intermediate is checked there.
-    amcl::input::LookDeltaMathOutput mathOutput{};
-    if (!amcl::input::ComputeLookDeltaMath(mathInput, &mathOutput)) {
-        s_lookStats.NoteRejected();
+    const int64_t now = nowMonotonicNs();
+    // deadline以处理时刻为准，运动速度以采样时刻为准，两种时钟用途不能混淆。
+    const int64_t motionTime = sampleTimeNs > 0 ? sampleTimeNs : now;
+    if (!amclSourceLookSubmit(static_cast<int32_t>(source),dx,dy,motionTime)) {
         pthread_mutex_unlock(&s_lookMutex);
         recordInvalidLookDelta();
         return false;
     }
-    // 观测面。scaled = 本次真正进入 backlog 的量 = emit + 新 pending - 旧 pending。
-    // 它让漏斗的守恒契约变成可判定的恒等式（计划 §88）。
-    s_lookStats.NoteAccepted(
-        mathOutput.emitDx + mathOutput.pendingDx - mathInput.pendingDx,
-        mathOutput.emitDy + mathOutput.pendingDy - mathInput.pendingDy,
-        mathOutput.emitDx, mathOutput.emitDy,
-        mathOutput.pendingDx, mathOutput.pendingDy);
-    s_lastLookNs = mathOutput.lastTimeNs;
-    s_lookPendingDx = mathOutput.pendingDx;
-    s_lookPendingDy = mathOutput.pendingDy;
-    // 这里只允许提交 grabbed look 增量；菜单绝对坐标必须走 setMenuCursor，二者不可重新合并。
-    s_addLookDeltaFn(mathOutput.emitDx, mathOutput.emitDy);
-
+    amcl::input::census::Bump(amcl::input::census::Channel::LookApplied);
+    amcl_input_source_note_look(source);
+    // neutral在真实队列容量预留后已原子接受数学和prefix，不再写全局future累计。
     if (idleWorkerReady) {
-        // 每个新样本只把同一个 deadline 推后；worker 常驻阻塞，不会按事件创建线程或忙轮询。
-        s_lookIdleDeadlineNs = nowNs + kLookIdleFlushDelayNs;
+        s_lookIdleDeadlineNs[static_cast<int32_t>(source)] = now + kLookIdleFlushDelayNs;
     } else {
-        // pthread/condition 初始化失败时不能让无 UP 来源永久留下尾量。立即补齐剩余 backlog，
-        // 仅降级为“本次无延迟平滑”，总位移和 grab/menu 隔离仍保持正确。
-        s_lookStats.NoteFlush(true, s_lookPendingDx, s_lookPendingDy);
-        s_addLookDeltaFn(s_lookPendingDx, s_lookPendingDy);
-        s_lookPendingDx = 0.0;
-        s_lookPendingDy = 0.0;
-        s_lastLookNs = 0;
+        // 无idle worker时即时补齐本端尾量，守恒且不冲掉其它source的平滑状态。
+        (void)amclSourceLookFlush(static_cast<int32_t>(source),true);
     }
     pthread_mutex_unlock(&s_lookMutex);
     if (idleWorkerReady) pthread_cond_signal(&s_lookIdleCond);
     return true;
 }
-
 // 视角管线快照。⚠️ 每个数字都带 `{public}`：缺它 hilog 打成 `<private>`，于是日志只能证明
 // "这行被打过"，证明不了任何取值 —— 四件套的三个 setter 曾整批栽在这上面（计划 §78.4）。
 extern "C" void ohos_log_look_pipeline_state(void) {
     amcl::input::LookPipelineSnapshot snapshot{};
     bool conserved = false;
-    pthread_mutex_lock(&s_lookMutex);
-    snapshot = s_lookStats.Snapshot();
-    conserved = s_lookStats.ConservationHolds(1e-6);
-    pthread_mutex_unlock(&s_lookMutex);
+    snapshot = amcl::input::SourceLookPipelineSnapshot();
+    conserved = std::abs(snapshot.emitDx + snapshot.backlogDx + snapshot.discardedDx -
+                         snapshot.scaledDx) <= 1e-6 &&
+                std::abs(snapshot.emitDy + snapshot.backlogDy + snapshot.discardedDy -
+                         snapshot.scaledDy) <= 1e-6;
     // ⚠️ `travel` 是 Σ|scaled|（行程），`scaled` 是带符号净位移。跨包对比手势**只能用
     // travel** —— 净位移会因来回扫互相抵消，实测两个包 3069 vs 115 而链路上一处缩放都没有
     // （计划 §90.4）。恒等式仍然只认带符号的那份。
@@ -854,25 +847,20 @@ extern "C" void ohos_log_look_pipeline_state(void) {
         snapshot.discardedDx, snapshot.discardedDy, conserved ? 1 : 0);
 }
 
-static void flushLookPending(bool emit) {
+/** source=-1是整局边界；真实触摸UP只收尾触控source，不能刷新手柄/物理的时间状态。 */
+static void flushLookPending(bool emit, int32_t source = -1) {
     const bool idleWorkerReady = s_lookIdleWorkerReady.load(std::memory_order_acquire);
     pthread_mutex_lock(&s_lookMutex);
-    // 正常 UP 补齐守恒余量；grab flip/pause/surface lost 则丢弃旧 epoch 余量，避免跨中心重锚跳动。
-    // ⚠️ 观测面按**实际是否发出**记账：`emit` 为真但 bridge 未解析时那笔量其实丢了。
-    s_lookStats.NoteFlush(emit && s_addLookDeltaFn != nullptr,
-                          s_lookPendingDx, s_lookPendingDy);
-    if (emit && s_addLookDeltaFn) {
-        s_addLookDeltaFn(s_lookPendingDx, s_lookPendingDy);
+    const int32_t first = source < 0 ? 0 : source;
+    const int32_t end = source < 0 ? AMCL_INPUT_SOURCE_COUNT : source + 1;
+    for (int32_t index = first; index < end; ++index) {
+        const bool flushed=amclSourceLookFlush(index,emit);
+        // 正常UP的Pressure保tail直到idle重试；取消只撤本source，不触兄弟设备stream。
+        s_lookIdleDeadlineNs[index]=flushed||!emit?0:nowMonotonicNs()+kLookIdleFlushDelayNs;
     }
-    s_lookPendingDx = 0.0;
-    s_lookPendingDy = 0.0;
-    s_lastLookNs = 0;
-    s_lookIdleDeadlineNs = 0;
     pthread_mutex_unlock(&s_lookMutex);
-    // 唤醒 worker 让它观察 deadline=0；不 signal 未成功初始化的 condition。
     if (idleWorkerReady) pthread_cond_signal(&s_lookIdleCond);
 }
-
 // ==================== 每指坐标基准 ====================
 //
 // ⚠️ 墓碑: `enum FingerRole` / `FingerState::role` / `FingerState::buttonIndex` /
@@ -886,21 +874,15 @@ struct FingerState {
 #define MAX_FINGERS 10
 static FingerState s_fingers[MAX_FINGERS];  // 下标 = finger id
 
-// 重构 Phase 1：依赖 MAX_FINGERS 的状态（说明见文件上方 Phase 1 注释块）。
-static int32_t s_normalFinger = -1;                  // 当前菜单 pointer transaction 的物理 finger
-// token 与 finger id 分离：平台可很快复用 0..9 的 fid，而 ring 中旧 UP/CANCEL 仍可能迟到。
-// 仅在 s_touchStateMutex 下分配/清除，0 永不下发。
-static uint32_t s_nextMenuTransactionToken = 1;
-static uint32_t s_activeMenuTransactionToken = 0;
+// 跨场景保留真实手指的dead/down状态；菜单事务token由统一MenuTouchInteraction出口独立管理。
 static bool s_fingerDead[MAX_FINGERS] = { false };   // 跨 grab 翻转仍按着的手指 → 忽略其后续事件直到抬起
 static bool s_fingerDown[MAX_FINGERS] = { false };   // 物理按下跟踪（任意模式，DOWN 置 / UP 清）：翻转时判定谁在按
 
 // XComponent 回调线程与 NAPI/lifecycle 线程都会触碰 finger、dead、normal-menu owner 和 grab epoch。
 // 这些状态由 touchStateMutex 统一串行，不能只依赖“平台通常按单线程派发”。固定锁顺序为：
-//   s_touchStateMutex → s_schemaMutex → s_inputTransactionMutex → InputLedger 内部 mutex
-// longPress worker 只取得 schema→transaction→ledger，绝不反向取得 touchState；bridge/TSFN 回调也不得在持有
-// ledger 锁时回入此处。这个顺序使 pause/surface cancel 可以等待正在处理的触摸完整收尾，而不会
-// 与 schema generation 替换形成交叉锁。
+//   surface gate → authoritative mode fence → touchState → schema → legacy transaction → ledger
+// deadline扫描只取得schema；执行时先释放扫描锁，再从surface开始取得完整事务。
+// bridge公告和TSFN不得同步反向进入touch/schema；生命周期取消等到事件完整提交后再归零。
 static std::mutex s_touchStateMutex;
 
 // ⚠️ 墓碑: `initFingers()` 已删除（全仓零调用方）。它只清 `role` 与 `s_fingerUsed`，
@@ -1090,6 +1072,70 @@ static int s_schemaTakeover = (1 << 1) | (1 << 0) | (1 << 2) | (1 << 4);   // �
 static float s_schemaDeadZone = 0.18f;   // A.4-part2：全局摇杆死区（由 ArkTS profile 下发）
 
 static uint64_t s_schemaGeneration = 0;
+// 发布记录和模态只在surface gate保护下读写；实际schema/触指采样仍另持touch→schema锁。
+static amcl::input::TouchPublicationState s_touchAdmission;
+/** 组态由同一 schema 临界区拥有；通知只唤醒 UI，失败后由原 reconcile 查询恢复。 */
+static amcl::input::TouchGroupState s_touchGroups;
+static uint64_t s_touchGroupSequence = 0;
+/** UI 来源仍走原 Source token；固定槽位仅记录成员归属，隐藏时可精确退休而不清整个来源。 */
+struct GroupUiOwner { uint64_t token = 0; int control = -1; };
+static std::array<GroupUiOwner, 512> s_groupUiOwners{};
+static std::string s_groupMouseMember;
+static int s_groupMouseControl = -1;
+extern "C" void amcl_notify_touch_groups();
+static void schemaAdvanceGroupsLocked();
+static uint64_t s_touchContextPolicy = 1;
+static uint32_t s_touchContextTransform = 0;
+static double s_touchContextDensity = 1.0;
+static uint64_t s_schemaContextPolicy = 0;
+// grab场景是独立身份，不能混入会使schema完整退休的单位policy或typed/text复位代次。
+static uint64_t s_touchPublicationGrabEpoch = 0;
+/** caller已持gate→touch；在direct-touch准入前核实Native当前身份，不依赖UI下一次轮询。 */
+namespace {
+amcl::input::TouchPublicationContext touchPublicationContextLocked();
+bool touchAdmissionBlocksNewTouchLocked();
+bool touchAdmissionAcceptsUiContinuationLocked(uint64_t token); // caller持gate→mode/touch→schema
+}
+// 这两项参与真正的定义比较；相同表重发保持finger/owner，实际几何变化仍建立新一代。
+static float s_schemaWidthPx = 0.0f;
+static float s_schemaHeightPx = 0.0f;
+// 交互策略与几何同属 schema generation；仅在 schema 锁内访问，包括唯一 deadline worker。
+static amcl::input::TouchInteractionConfig s_touchConfig;
+static amcl::input::MenuTouchInteraction s_menuTouch;
+// 写入沿用各出口的touch/schema锁，读取同时持两锁；它只记录真实接受态，不产生任何输入。
+static amcl::input::TouchGuideSignals s_touchGuide;
+// 本体跟随指针时只移动ArkUI排除区，不能重发整个schema导致正在拖动的鼠标键被释放。
+// 仅在菜单分支、持schema锁时读取；命中的触点继续冻结为ARKTS直到UP/CANCEL。
+static double s_menuMouseBounds[4]{};
+// 教学工具栏只拦截新DOWN；显示/关闭不属于游戏控件配置变化，不能取消摇杆、锁定键或菜单拖动。
+static double s_touchGuideBounds[4]{};
+
+/** 两种临时覆盖层共用半开边界；读取方持schema锁，认领后的触点不随矩形更新改换角色。 */
+static bool touchOverlayContains(const double bounds[4],double x,double y) {
+    return bounds[2]>0 && bounds[3]>0 && x>=bounds[0] && y>=bounds[1] &&
+        x<bounds[0]+bounds[2] && y<bounds[1]+bounds[3];
+}
+static amcl::input::TouchJoystickInteraction s_touchJoystick;
+static std::string s_touchJoystickId;
+static uint32_t s_touchMenuToken = 0;
+static uint32_t s_touchMenuNextToken = 0x40000000u;
+static std::atomic<bool> s_touchMenuCursorVisible{false};
+// 菜单工具按控件冻结独立来源租约，不进入 common ledger。每个 control 只有一个
+// 全局不复用 owner 与按下时 code；同码多 owner 在本来源首按末松，然后由 bridge
+// 与其它来源聚合。写入、统计读取同持公共 transaction，触控入口外层仍持 touch。
+struct MenuToolOwner { uint64_t token = 0; int code = 0; };
+static std::map<std::string,MenuToolOwner> s_menuToolOwners;
+// 工具域在Native只有一个当前panel实例。正常UP归零仍保留prefix，便于撤销该实例
+// 已结束但尚未消费的1011；新实例接管/全scope退休才换身份，旧销毁不能取消新面板。
+static std::string s_menuToolPanelPrefix;
+// 注册绑定真实UI publication；同publication的Entry序号单调水位保留到新publication/PID，
+// 不保存无限旧prefix集合，也不能因零held允许旧实例重新抢占当前可视面板。
+static uint64_t s_menuToolRegistrationPublication = 0, s_menuToolPanelWatermark = 0;
+static uint32_t s_menuToolAcquired = 0, s_menuToolReleased = 0;
+static pid_t s_menuToolProcess = 0;
+static void releaseMenuToolControls(bool retireRegistration = true); // 调用者持s_touchStateMutex。
+static bool menuToolMouseHeldLocked(); // 调用者持touch；内部仅取得更内层transaction。
+static void emitMenuInteraction(amcl::input::MenuTouchAction action, double x, double y);
 
 // OwnerToken 是跨 schema generation 追踪持续输出的稳定身份。using 必须位于所有
 // runtime/binding 结构之前：这些结构保存的是 owner，而不是可漂移的 vector 下标。
@@ -1117,6 +1163,11 @@ struct SchemaFingerBinding {
     uint64_t generation = 0;
     OwnerToken owner = 0;
     AmclCtrlEntry control{}; // DOWN 时的不可变快照；MOVE/UP 不再查询当前 schema
+    // 可选空白手势/快捷栏长按的原始几何和期限；输出仍使用本指 owner，取消时一起退休。
+    double startX = 0, startY = 0;
+    int64_t startNs = 0, deadlineNs = 0;
+    int initialSlot = -1;
+    bool moved = false, holdFired = false;
 };
 
 struct SchemaButtonRuntime {
@@ -1128,35 +1179,48 @@ struct SchemaButtonRuntime {
     bool longFired = false;
     long long lastTapNs = 0;
     long long longDeadlineNs = 0;
+    /** v4 四阶段分别持有，不借普通 outputDown 表示多份键输出。 */
+    int groupControl = -1;
+    uint64_t groupEligibility = 0;
+    std::array<OwnerToken, 4> phaseOwners{};
+    std::array<bool, 4> phaseHeld{};
+    int64_t groupDownNs = 0;
+    bool groupMoved = false;
 };
 
 struct SchemaCarriedOwner {
     std::string id;
     OwnerToken owner = 0;
     std::set<int> fingers;
+    /** 原组身份独立于菜单场景投影；显式隐藏组仍须退休这项已承接贡献。 */
+    std::string groupId;
 };
 
 static SchemaFingerBinding s_schemaFingers[MAX_FINGERS];
 static std::map<std::string, SchemaButtonRuntime> s_schemaButtons;
 static std::map<OwnerToken, SchemaCarriedOwner> s_schemaCarriedOwners;
 static std::map<int, OwnerToken> s_schemaCarriedByFinger;
-static bool s_schemaWasd[4] = { false, false, false, false };
+// 摇杆 WASD 的按下 / 期望 / 松开时刻 / 补发期限（schema_wasd_latch.h）。只在 s_schemaMutex 内访问；
+// 被 30ms 锁存吞掉的 PRESS 由 deadline worker 在期限到达时补发。
+static amcl::input::SchemaWasdLatch s_schemaWasdLatch;
 static int s_schemaJoyFinger = -1;
 static int s_schemaLookFinger = -1;
 static float s_schemaScrollLastY[MAX_FINGERS];
 static float s_schemaScrollAccum[MAX_FINGERS];
 
 static int s_schemaHotbarLastSlot[MAX_FINGERS];
+static int s_touchLastTapSlot = -1;
+static int64_t s_touchLastTapNs = 0;
+static std::string s_touchLastTapControl;
 static float s_schemaDragLastX[MAX_FINGERS];
 static float s_schemaDragLastY[MAX_FINGERS];
 
-#define SCHEMA_SCROLL_STEP_PX 36.0f
+// 触点用surface px，12vp阈值在采样时按宿主密度换算，不能固定假设density=3。
+static float schemaScrollStepPx() { return amcl::input::ControlScrollStepPx(ohos_display_density()); }
 #define SCHEMA_HOTBAR_SLOTS 9
 #define SCHEMA_GLFW_KEY_1 49
 #define SCHEMA_DOUBLETAP_NS 300000000LL
 #define SCHEMA_LONGPRESS_NS 200000000LL
-#define SCHEMA_REPRESS_LOCKOUT_NS 30000000LL
-static long long s_schemaWasdReleaseNs[4] = { 0, 0, 0, 0 };
 
 static long long schemaNowNs() {
     struct timespec ts;
@@ -1169,7 +1233,8 @@ static long long schemaNowNs() {
 // schema owner 与兼容 ArkTS owner 隔离，统一 cancelAll 可一次性释放全部来源。
 
 static constexpr OwnerToken OWNER_SCHEMA_WASD = 0x300000001ULL;
-static std::atomic<OwnerToken> s_nextOwner(0x400000000ULL);
+// 平台只锁自己的解释器/诊断采样，不借 neutral mutex。来源候选与运输由 POD port
+// 内部唯一事务串行；Java 与其它 namespace 也必须走该 port，不能依赖这里的本地锁。
 static std::mutex s_externalInputMutex;
 
 // ==================== external held：**按端**记账 ====================
@@ -1179,10 +1244,9 @@ static std::mutex s_externalInputMutex;
 // **静默**故障 —— 不崩不报错，只在用户报告"卡键"时才暴露 —— 恰恰最需要测试覆盖，
 // 而它原先埋在这个三千多行的 TU 里，主机侧构建拉不进来。
 //
-// 本文件保留的是**锁**：注册表刻意不含 mutex，由这里的 s_externalInputMutex 串行化，
-// 那把锁是全局锁序（surfaceGate → touchState → schema → transaction → external）
-// 的最内层。
-static amcl::input::ExternalHeldRegistry s_externalHeld;
+// neutral SourceControl facade 拥有注册表；这里是值 proxy。平台的 external 采样锁只串行
+// 本模块诊断步骤，不承担跨生产者权威；每次 proxy query 返回独立的完整值快照。
+static amcl::input::SourceRegistryProxy s_externalHeld;
 
 // 把任意整数收敛到合法端身份。越界值一律记作 NONE 而不是原样存进表里 ——
 // 一条 source=7 的记录永远不会被任何 `ohos_release_input_source_held` 匹配到，
@@ -1202,7 +1266,112 @@ static AmclInputSource normalizeInputSource(int value) {
 static std::mutex s_physicalInputMutex;
 static double s_axisVAccum = 0.0;
 static std::atomic<uint64_t> s_invalidPhysicalWheelCount(0u);
+// 这是 touch/schema/menu 平台状态的递归锁，永远不把地址传过 DSO 边界。
 static std::recursive_mutex s_inputTransactionMutex;
+
+/** 菜单工具的完整诊断投影；outputMask 按 Left/Right/Shift 表示集合，不能直接与common数量相加。 */
+struct MenuToolHeldSnapshot {
+    unsigned live = 0, acquired = 0, released = 0, maxSameCode = 0, outputMask = 0;
+};
+
+/** 同一PID内只由touch→transaction写入；fork后的复制租约不是新进程的用户按下。caller持transaction。 */
+static void reconcileMenuToolProcessLocked() {
+    const pid_t process = getpid();
+    if (s_menuToolProcess == process) return;
+    if (s_menuToolProcess != 0) {
+        // 先退休新进程bridge中的继承前缀，随后丢弃Native继承租约；不重放旧PRESS或
+        // 用旧token发送RELEASE。计数从本PID开始，避免把父进程操作写入子进程统计。
+        inputBridge_retireTouchMenuScopeV1();
+        s_menuToolOwners.clear();
+        s_menuToolPanelPrefix.clear();
+        s_menuToolRegistrationPublication = s_menuToolPanelWatermark = 0;
+        s_menuToolAcquired = s_menuToolReleased = 0;
+    }
+    s_menuToolProcess = process;
+}
+
+/** 统计与持有变化共用transaction，单次复制完整源状态；不反取touch锁，取消内部调用也安全。 */
+static MenuToolHeldSnapshot menuToolHeldSnapshot() {
+    std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+    reconcileMenuToolProcessLocked();
+    MenuToolHeldSnapshot snapshot;
+    unsigned counts[3]{};
+    for (const auto& item : s_menuToolOwners) {
+        const int index = item.second.code == -1 ? 0 : item.second.code == -2 ? 1 : 2;
+        ++counts[index];
+    }
+    snapshot.live = static_cast<unsigned>(s_menuToolOwners.size());
+    snapshot.acquired = s_menuToolAcquired; snapshot.released = s_menuToolReleased;
+    for (unsigned i = 0; i < 3; ++i) {
+        if (counts[i] != 0) snapshot.outputMask |= 1u << i;
+        snapshot.maxSameCode = std::max(snapshot.maxSameCode, counts[i]);
+    }
+    return snapshot;
+}
+
+/** 显式工具LEFT/RIGHT已被认领时，普通屏幕手指只移动指针；Shift不占鼠标按钮角色。 */
+static bool menuToolMouseHeldLocked() {
+    return (menuToolHeldSnapshot().outputMask & 3u) != 0;
+}
+
+/** Entry实例前缀是规范的mouse-panel-N:，N必须是ArkTS可精确表示的正整数，不接受溢出/前导零。 */
+static bool parseMenuToolPanelPrefix(const char* prefix,uint64_t* identity) {
+    if (!prefix || !identity) return false;
+    const std::string value(prefix), marker="mouse-panel-";
+    if (value.size()<=marker.size()+1 || value.size()>192 || value.compare(0,marker.size(),marker)!=0 || value.back()!=':') return false;
+    uint64_t serial=0;
+    for(size_t i=marker.size();i+1<value.size();++i) {
+        const unsigned char digit=static_cast<unsigned char>(value[i]);
+        if(digit<'0' || digit>'9' || (i==marker.size() && digit=='0')) return false;
+        const uint64_t next=digit-'0';
+        if(serial>(UINT64_C(9007199254740991)-next)/10) return false;
+        serial=serial*10+next;
+    }
+    if(serial==0) return false;
+    *identity=serial;return true;
+}
+
+/** caller持touch→transaction；仅已由实际可视bounds注册的实例可产生工具输入，动作自身不能接管。 */
+static bool menuToolPanelMatchesLocked(const char* prefix,uint64_t publication) {
+    uint64_t identity=0;
+    return parseMenuToolPanelPrefix(prefix,&identity) && !s_menuToolPanelPrefix.empty() &&
+        s_menuToolPanelPrefix==prefix && publication!=0 && s_menuToolRegistrationPublication==publication;
+}
+
+/** 直接与工具滚轮共用统计出口，但投递到不同scope；不借ordinary1007丢失取消权限。 */
+static bool emitScopedMenuScroll(int dx,int dy,bool tool) {
+    if(dx==0 && dy==0) return false;
+    if(tool) inputBridge_pushTouchMenuToolScrollV1(dx,dy);
+    else inputBridge_publishTouchMenuScrollV1(dx,dy);
+    amcl::input::census::Bump(amcl::input::census::Channel::ScrollDelivered);
+    amcl_input_source_note_scroll(AMCL_INPUT_SOURCE_TOUCH_CONTROLS);
+    return true;
+}
+
+/** 有效surface/schema下，一次packed快照映射未clamp的真实delta及同一viewport边界。caller持gate→touch→schema。 */
+static bool mapMenuRelativePayload(double dx,double dy,double* x,double* y,double* maxX,double* maxY) {
+    return s_schemaWidthPx>0 && s_schemaHeightPx>0 && amcl::renderscale::MapPointerDelta(dx,dy,
+        std::max(0.0,static_cast<double>(s_schemaWidthPx)-1),std::max(0.0,static_cast<double>(s_schemaHeightPx)-1),x,y,maxX,maxY);
+}
+
+/** UI反馈与取消只承接选定实际consumer的ACK；不读取任何latest producer位置，也不改direct冻结手势。 */
+static bool adoptCommittedMenuCursorLocked() {
+    if(s_menuTouch.DirectActive() || !s_surfaceInputGate.active) return false;
+    AmclCommittedMenuCursorV1 point{};point.structSize=sizeof(point);
+    if(inputBridge_getCommittedMenuCursorV1(&point)!=1 || point.abiVersion!=AMCL_MENU_CURSOR_SNAPSHOT_VERSION ||
+       point.flags!=AMCL_MENU_CURSOR_COMMITTED || point.processId!=static_cast<uint64_t>(getpid()) ||
+       point.gameSession==0 || point.logicalTarget==0 || point.inputPublication!=s_surfaceInputGate.publicationGeneration) return false;
+    double x=0,y=0;
+    if(!amcl::renderscale::UnmapWindowPoint(point.x,point.y,&x,&y)) return false;
+    s_menuTouch.AdoptConsumedCursor(x,y);return true;
+}
+
+/** 工具出口传真实relative delta；无论反馈clamp/ACK怎样改变投影，都不从absolute差分推导输入。 */
+static void emitMenuToolPosition(amcl::input::MenuTouchAction action,double x,double y) {
+    if(action!=amcl::input::MenuTouchAction::RelativePosition) return;
+    double dx=0,dy=0,maxX=0,maxY=0;
+    if(mapMenuRelativePayload(x,y,&dx,&dy,&maxX,&maxY)) inputBridge_publishTouchMenuToolRelativeV1(dx,dy,maxX,maxY);
+}
 
 // HarmonyOS devices can expose both XComponent and ArkUI button callbacks for
 // one physical mouse, or register the native callback successfully while
@@ -1210,37 +1379,9 @@ static std::recursive_mutex s_inputTransactionMutex;
 // per button: a device may expose one button through native and another only
 // through ArkUI. The losing source for that button is dropped before either
 // typed or legacy state is touched.
-enum class PhysicalMouseButtonSource : uint8_t {
-    Unknown = 0u,
-    Native = 1u,
-    ArkUi = 2u,
-    // The mouse-synthesized TouchEvent stream. On this device the left button
-    // exists *only* here: neither the native XComponent mouse callback nor
-    // ArkUI onMouse ever reports it (real-device evidence: 28/28 ArkUI edges
-    // were RIGHT, and the nearest ArkUI edge to any mirror DOWN was 1166 ms
-    // away, so the two channels carry disjoint physical buttons).
-    TouchMirror = 3u,
-    // 曾有第 4 个来源 WindowFilter（窗口级事件过滤器在 ArkUI 之前取走左键 DOWN/UP）。
-    // 已按真机证据删除：它对"按住左键转视角"零收益，却与镜像通道逐秒互抢 LEFT，
-    // 造成"按下由一方送出、抬起被另一方吞掉" → 左键卡死。详见
-    // window_event_filter.cpp 里 MouseEventFilter 上方的注释。
-};
-
-// ⚠️ 本仲裁**只负责右键/中键/侧键**。左键已改由 input_channel_policy 决定所有者，
-// 因为只有左键存在多通道竞争，而"先到者独占 + 500ms 空窗交接"这套时间竞争在左键上
-// 已经两次造成用户可见故障（菜单点不动、左键卡死）。其余按钮从上线起只有一条通道，
-// 没有竞争，不改。
-static constexpr int kPhysicalMouseButtonCount = 5;
-static std::atomic<uint8_t>
-    s_physicalMouseButtonSources[kPhysicalMouseButtonCount]{};
-// Ownership is no longer permanent. Real-device evidence: the native channel
-// emitted exactly one stray PRESS (button=RIGHT, never released) which then
-// blocked all 28 legitimate ArkUI right-button edges for the whole session. A
-// source that stops producing edges therefore yields the button after this idle
-// window instead of holding it for the process lifetime.
-static constexpr int64_t kPhysicalMouseButtonHandoverIdleNs = 500000000LL;
-static std::atomic<int64_t>
-    s_physicalMouseButtonLastEdgeNs[kPhysicalMouseButtonCount]{};
+// 全部按钮现在由 input_channel_policy 保存(device,button,DOWN channel)配对。
+// 不再用500ms静默推断通道死亡：长按本来就可以长时间没有边沿，超时换源会把
+// device=0 的 native DOWN 和有真实 deviceId 的 ArkUI UP 拆成两个永久失配的身份。
 
 // ==================== ArkTS 相对样本的活跃时间戳 ====================
 //
@@ -1279,7 +1420,8 @@ static std::atomic<double> s_displayDensity(1.0);
 
 extern "C" void ohos_set_display_density(double density) {
     if (!(density > 0.0) || !std::isfinite(density)) return;
-    s_displayDensity.store(density, std::memory_order_release);
+    // density即使未改变px视口也会改变菜单阈值/单位。策略事务同步缓存并只退休touch域。
+    amcl::input::TouchContextPolicyChanged(density, UINT32_MAX);
 }
 
 // ⚠️ 这里曾写着「视角现在唯一来自 ArkTS rawDelta，与触摸流的 px 量纲不再混用，因此
@@ -1411,8 +1553,6 @@ extern "C" int ohos_touch_mirror_gesture_active(void) {
 // 前向声明：触摸镜像分支（OnDispatchTouchEvent，本文件上方）需要在定义点之前
 // 就能把左键交给同一套 source 仲裁与 legacy 边沿路由。二者的定义仍在下方原处，
 // 这里只声明，避免为了顺序而搬动整块状态机。
-static bool claimPhysicalMouseButtonSource(
-    PhysicalMouseButtonSource source, int glfwButton);
 
 // 左键边沿的通道选择统一走策略层：先登记"这条通道确实送来过左键边沿"（能力发现必须
 // 发生在询问之前），再按 press/release **配对**申请。返回 false = 本次边沿应当被静默
@@ -1421,8 +1561,9 @@ static bool claimPhysicalMouseButtonSource(
 // 为什么左键要单独一套：见 input_channel_policy.h 的开头。简言之，左键是唯一同时出现
 // 在三条通道上的按钮，而它的赢家在 API 24 与 API 26 上不同；用时间竞争仲裁会让
 // press 与 release 归属不同通道，MC 侧表现为左键永久卡在按下态。
-static bool acceptPhysicalLeftEdge(AmclInputChannel channel, bool press) {
-    amcl_input_policy_note_left_channel(channel);
+static bool acceptPhysicalButtonEdge(AmclInputChannel channel,
+        uint64_t deviceId, uint32_t nativeButton, bool press) {
+    if (nativeButton == 1u && press) amcl_input_policy_note_left_channel(channel);
     // 成因归属所需的两个快照，**必须在准入判定之前取**：成功的
     // `amcl_input_policy_left_begin` / `amcl_input_policy_left_end` 会改变按住态，
     // 事后再读就分不出"进来之前有没有按下在飞行"。两次都是 relaxed 原子读。
@@ -1430,9 +1571,10 @@ static bool acceptPhysicalLeftEdge(AmclInputChannel channel, bool press) {
     // （极窄窗口下归属偏向保守那一桶，理由见 `amcl_input_policy_left_owner`）。
     const bool wasOwner = amcl_input_policy_left_owner() == channel;
     const bool wasHeld = amcl_input_policy_left_held();
-    const bool accepted = press ? amcl_input_policy_left_begin(channel)
-                                : amcl_input_policy_left_end(channel);
-    if (!accepted) {
+    const bool accepted = press
+        ? amcl_input_policy_button_begin(channel, deviceId, nativeButton)
+        : amcl_input_policy_button_end(channel, deviceId, nativeButton);
+    if (!accepted && nativeButton == 1u) {
         using amcl::input::census::Bump;
         using amcl::input::census::Channel;
         // 总数保留原语义（规范 §6.3 的判读规则建立在它上面）；四个细分之和必须等于它。
@@ -1451,6 +1593,17 @@ static bool acceptPhysicalLeftEdge(AmclInputChannel channel, bool press) {
     }
     return accepted;
 }
+/** 下游没有接纳 DOWN 时撤销策略预留；已聚合或重复的合法 DOWN 仍保留配对。 */
+static void finishPhysicalButtonAdmission(AmclInputChannel channel,
+        uint64_t deviceId, uint32_t nativeButton, bool press,
+        AmclLegacyPhysicalOutcome outcome) {
+    if (!press) return;
+    if (outcome == AMCL_LEGACY_PHYSICAL_EMITTED ||
+        outcome == AMCL_LEGACY_PHYSICAL_HANDLED_NO_FINAL_EDGE ||
+        outcome == AMCL_LEGACY_PHYSICAL_DUPLICATE_DOWN ||
+        outcome == AMCL_LEGACY_PHYSICAL_TYPED_ROUTE_HANDLED) return;
+    amcl_input_policy_button_abort(channel, deviceId, nativeButton);
+}
 static AmclLegacyPhysicalOutcome routePhysicalButtonEventChecked(
     uint64_t deviceId, uint32_t nativeButton, int mappedButton,
     int action, int* routedMappedButton);
@@ -1465,33 +1618,21 @@ static void recordInvalidPhysicalWheel(const char* reason) {
     }
 }
 
-static InputLedger& inputLedger() {
-    static InputLedger ledger([](const Output& output, int action) {
-        if (output.kind == OutputKind::Key) {
-            sendEvent(EVENT_TYPE_KEY, output.code, 0, action, 0);
-        } else {
-            sendEvent(EVENT_TYPE_MOUSE_BUTTON, output.code, action, 0, 0);
-        }
-    });
-    return ledger;
+static amcl::input::SourceLedgerProxy& inputLedger() {
+    static amcl::input::SourceLedgerProxy proxy;return proxy;
 }
 
 static OwnerToken nextOwnerToken() {
-    return s_nextOwner.fetch_add(1, std::memory_order_relaxed);
+    return amcl::input::SourceNextNativeOwner();
 }
 
-static LegacyPhysicalEdgeRouter& physicalEdgeRouter() {
-    static LegacyPhysicalEdgeRouter router(
-        inputLedger(), s_inputTransactionMutex);
-    return router;
+static amcl::input::SourcePhysicalProxy& physicalEdgeRouter() {
+    static amcl::input::SourcePhysicalProxy proxy;return proxy;
 }
 
-static Output outputForCode(int code) {
-    if (code < 0) return { OutputKind::Mouse, -code - 1 };
-    return { OutputKind::Key, code };
-}
-
-static bool routerOutput(OwnerToken owner, int code, int action) {
+// 对已经解码的 ledger 输出执行一次 owner 转换。调用方负责输出取值合法（schema 编码经
+// DecodeLegacySchemaOutputCode，按端释放直接用 registry 里保存的 Output）。
+static bool routerOutputDirect(OwnerToken owner, const Output& output, int action) {
     std::lock_guard<std::recursive_mutex> transactionLock(
         s_inputTransactionMutex);
     // RELEASE remains legal while cancel is draining existing owners. Every
@@ -1500,10 +1641,37 @@ static bool routerOutput(OwnerToken owner, int code, int action) {
     if (action != GLFW_RELEASE && physicalEdgeRouter().ResetInProgress()) {
         return false;
     }
-    const Output output = outputForCode(code);
+    // POD 单码事务内部先核实际预算并封 look，再提交候选；合法共持返回源接受成功。
     if (action == GLFW_PRESS) return inputLedger().acquire(owner, output);
     if (action == GLFW_REPEAT) return inputLedger().repeat(owner, output);
     if (action == GLFW_RELEASE) return inputLedger().release(owner, output);
+    return false;
+}
+
+// schema 路径的持续输出：code 沿用“正数=键、负数=-(按钮+1)”的符号编码（schema 表、hotbar、WASD）。
+// 越界编码直接拒绝且不触碰 ledger；发布校验已用同一判据拦截，这里是结构性的第二道。
+static bool routerOutput(OwnerToken owner, int code, int action) {
+    Output output{OutputKind::Key, 0};
+    if (!amcl::input::DecodeLegacySchemaOutputCode(code, &output)) return false;
+    return routerOutputDirect(owner, output, action);
+}
+
+using amcl::input::ExternalHeldAction;
+using amcl::input::ExternalHeldEdgeRouter;
+
+// 经 NAPI 下来的按端边沿只适配为 POD。neutral 复用原 registry×ledger 规则，平台
+// 不借任何 source 容器/锁；proxy 本身为空对象，首次构造不创建来源 owner 或准入资格。
+static amcl::input::SourceExternalProxy& externalHeldEdgeRouter() {
+    static amcl::input::SourceExternalProxy proxy;return proxy;
+}
+
+// GLFW 动作码 → 按端持有动作。allowRepeat=false 用于鼠标按钮：它没有 REPEAT 语义。
+// 未知动作返回 false，调用方据此直接拒绝，不分配 owner token、不触碰任何账本。
+static bool externalHeldActionFromGlfw(int action, bool allowRepeat,
+                                       ExternalHeldAction* out) {
+    if (action == GLFW_PRESS) { *out = ExternalHeldAction::Press; return true; }
+    if (action == GLFW_RELEASE) { *out = ExternalHeldAction::Release; return true; }
+    if (action == GLFW_REPEAT && allowRepeat) { *out = ExternalHeldAction::Repeat; return true; }
     return false;
 }
 
@@ -1511,46 +1679,39 @@ static bool routerOutput(OwnerToken owner, int code, int action) {
 // （见 ExternalHeldRecord 上方的说明）。多个端同时按住同一个键是**正确**的：
 // ledger 按引用计数聚合，第一个 owner 发 PRESS、最后一个 owner 消失才发 RELEASE，
 // 所以 MC 只看到一对边沿，而任一端还按着键就保持按下。
+// 返回值表示本端持有变更是否已生效（含与其它端聚合、未发最终边沿）；false 表示本端记录
+// 未改变，ArkTS 调用方据此保留自身状态以便重试。旧实现把“是否发出最终边沿”当作返回值，
+// 跨端同键时会被误读成拒绝，因果见计划 §127。
+// 越界键码在分配 owner 之前就拒绝（返回 false = 本端记录未改变），且直接构造键输出，
+// 不再经过符号编码：负键码因此不会变成鼠标按钮，INT_MIN 也不会被取负。
 static bool routerKey(AmclInputSource source, int key, int /*scancode*/,
                       int action, int /*mods*/) {
+    if (!amcl::input::LegacyKeyCodeValid(key)) return false;
     std::lock_guard<std::recursive_mutex> transactionLock(s_inputTransactionMutex);
+    // 复位围栏：cancel 正在清账时只放行 RELEASE，可能新建或延长持有的边沿一律拒绝。
     if (action != GLFW_RELEASE && physicalEdgeRouter().ResetInProgress()) {
         return false;
     }
-    const Output output = outputForCode(key);
-    OwnerToken owner = 0;
-    if (action == GLFW_PRESS) {
-        const OwnerToken candidate = nextOwnerToken();
-        std::lock_guard<std::mutex> lock(s_externalInputMutex);
-        if (s_externalHeld.Acquire(output, source, candidate)) owner = candidate;
-    } else if (action == GLFW_REPEAT) {
-        std::lock_guard<std::mutex> lock(s_externalInputMutex);
-        owner = s_externalHeld.PeekSameSource(output, source);
-    } else if (action == GLFW_RELEASE) {
-        std::lock_guard<std::mutex> lock(s_externalInputMutex);
-        owner = s_externalHeld.TakeSameSource(output, source);
-    }
-    return owner != 0 && routerOutput(owner, key, action);
+    ExternalHeldAction edge = ExternalHeldAction::Release;
+    if (!externalHeldActionFromGlfw(action, true, &edge)) return false;
+    // 普通匿名 owner 在 neutral 候选中单调分配；平台不能先烧一枚 Native 专用租约。
+    return amcl::input::ExternalHeldEdgeApplied(externalHeldEdgeRouter().Route(
+        source, Output{OutputKind::Key, key}, edge, 0));
 }
 
+// 经 NAPI 下来的鼠标按钮输出，规则与返回值契约同 routerKey；鼠标按钮不接受 REPEAT。
+// 按钮号按 GLFW 编号直接进 Output，越界（含负数，负数此前会被符号编码解释成键盘键）一律拒绝。
 static bool routerMouse(AmclInputSource source, int button, int action,
                         int /*mods*/) {
+    if (!amcl::input::LegacyMouseButtonValid(button)) return false;
     std::lock_guard<std::recursive_mutex> transactionLock(s_inputTransactionMutex);
     if (action != GLFW_RELEASE && physicalEdgeRouter().ResetInProgress()) {
         return false;
     }
-    const int code = -button - 1;
-    const Output output = outputForCode(code);
-    OwnerToken owner = 0;
-    if (action == GLFW_PRESS) {
-        const OwnerToken candidate = nextOwnerToken();
-        std::lock_guard<std::mutex> lock(s_externalInputMutex);
-        if (s_externalHeld.Acquire(output, source, candidate)) owner = candidate;
-    } else if (action == GLFW_RELEASE) {
-        std::lock_guard<std::mutex> lock(s_externalInputMutex);
-        owner = s_externalHeld.TakeSameSource(output, source);
-    }
-    return owner != 0 && routerOutput(owner, code, action);
+    ExternalHeldAction edge = ExternalHeldAction::Release;
+    if (!externalHeldActionFromGlfw(action, false, &edge)) return false;
+    return amcl::input::ExternalHeldEdgeApplied(externalHeldEdgeRouter().Route(
+        source, Output{OutputKind::Mouse, button}, edge, 0));
 }
 
 // 按端选择性释放：只放掉 `source` 这一端在 external 表里持有的输出，其余端不受影响。
@@ -1565,27 +1726,22 @@ extern "C" void ohos_release_input_source_held(int sourceValue) {
     // 越界值被 normalize 成 NONE，所以这里不再需要单独的合法性分支：
     // 释放 NONE 端是有意义的操作（平台手势的残留记录也该能被清）。
     const AmclInputSource source = normalizeInputSource(sourceValue);
-    std::lock_guard<std::recursive_mutex> transactionLock(
-        s_inputTransactionMutex);
-    // 先在锁内把该端的全部记录摘出来，再逐个释放：routerOutput → ledger → sendEvent
-    // 可能同步回调进本模块，不能在持有 s_externalInputMutex 时调用它。
-    std::vector<std::pair<Output, OwnerToken>> drained;
-    {
-        std::lock_guard<std::mutex> lock(s_externalInputMutex);
-        drained = s_externalHeld.DrainSource(source);
+    if(source==AMCL_INPUT_SOURCE_TOUCH_CONTROLS) {
+        std::lock_guard<std::mutex> lock(s_touchStateMutex);
+        // 单端释放也是菜单作用域退出；已经UP的tool/direct记录也必须作废，不能仅
+        // 释放Native当前owner，再让旧PRESS/RELEASE流入新模态或新UI。
+        inputBridge_retireTouchMenuScopeV1();
+        releaseMenuToolControls();
     }
-    for (const auto& entry : drained) {
-        const int code = entry.first.kind == OutputKind::Mouse
-            ? -entry.first.code - 1 : entry.first.code;
-        (void)routerOutput(entry.second, code, GLFW_RELEASE);
-    }
+    if(source==AMCL_INPUT_SOURCE_GAMEPAD)amclMappedLookRetireAll();
+    const size_t retired = amcl::input::SourceReleaseSource(source);
     // 刻意**不**在这里 note_reset：本函数是释放原语，记账由 ohos_note_input_source_reset
     // 负责（调用方 InputSourceRegistry 两个都调）。两处都记会让端级复位计数翻倍，
     // 而一个数值不可信的计数器比没有计数器更糟 —— 它会把下一轮判读带向错误方向。
-    if (!drained.empty()) {
+    if (retired != 0u) {
         OH_LOG_INFO(LOG_APP,
                     "AMCL_INSRC released source=%{public}s held=%{public}zu",
-                    amcl_input_source_name(source), drained.size());
+                    amcl_input_source_name(source), retired);
     }
 }
 
@@ -1612,38 +1768,37 @@ static void sampleInputInvariants(AmclInputInvariantSnapshot* out) {
         out->lookPerSource[i] = amcl_input_source_look_count(source);
         out->scrollPerSource[i] = amcl_input_source_scroll_count(source);
     }
-    // ==================== 第 1a 层与第 2 层（2026-09-01 新增）====================
-    //
-    // ⚠️ **锁序：这两组必须在取 `s_externalInputMutex` 之前采完，不能挪到下面。**
-    //   · `HeldIdentityCount()` 取 `s_inputTransactionMutex`，那把锁在全局锁序里位于
-    //     external **外层**（surfaceGate → touchState → schema → transaction → external）。
-    //     在持有 external 时调它就是一次锁序反转。
-    //   · ledger 的两个 getter 取 ledger 自己的 `mutex_`。既有纪律是"任何会触达 ledger 的
-    //     调用都不在持有 external 时发起"（`routerKey` 的 `lock_guard` 刻意写在 `if` 块内
-    //     就是为这个），纯读也照此办理 —— 不为一个 getter 破例开一条新的锁配对。
-    //
-    // ⚠️ **本函数的锁足迹因此变大了**：它现在会短暂获取 transaction 锁，而那把锁在
-    // `ohos_cancel_all_input` 期间被持有整个复位事务。250ms 心跳撞上 cancel 时会等待
-    // （量级：一批 RELEASE 边沿 + 写 ring，微秒到毫秒；cancel 一次会话个位数）。
-    // 从 cancel 末尾自己调进来是安全的 —— 那把锁是**递归**的，同线程重入不自锁。
-    //
-    // ⚠️ 四组数**不是同一瞬间的快照**（三次独立取锁）。这与 lookSum/scrollSum 面临的是
-    // 同一件事，由"连续两次观测才上报"的滞回吸收；而新增的那条不变量是**蕴含式**
-    // （上游非空 ⇒ ledger 非空），瞬时窗口只会让它偶发为真一次、下一 tick 自愈。
-    out->physicalIdentityLive =
-        static_cast<unsigned>(physicalEdgeRouter().HeldIdentityCount());
-    out->ledgerOwnerLive = static_cast<unsigned>(inputLedger().ownerCount());
-    out->ledgerOutputLive = static_cast<unsigned>(inputLedger().outputCount());
+    // 当前函数只观察持有事实，不执行取消，也不凭零快照宣布清理完成。
+    // 菜单工具集合属于平台transaction；普通来源属于唯一neutral Source owner。保持
+    // 原transaction→external锁序，在这一采样scope中只读取一次经过严格owner解析的
+    // 现有POD快照，然后投影所有普通来源字段，避免每个字段重新解析descriptor/扫maps。
+    // Source不可用时helper仍返回原零快照；菜单工具的独立加数继续按原事实保留。
+    // 这里一致的是同一Source owner内的整份stats；menuTools与随后定向isHeld仍在
+    // 各自原采样点观察，不能把跨owner/查询窗口宣传成全输入同一瞬间的原子快照。
+    std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+    const MenuToolHeldSnapshot menuTools = menuToolHeldSnapshot();
+    const AmclSourceSnapshotV1 sourceSnapshot = amcl::input::SourceSnapshot();
+    out->physicalIdentityLive = sourceSnapshot.physical;
+    out->ledgerOwnerLive = sourceSnapshot.owners + menuTools.live;
+    out->ledgerOutputLive = sourceSnapshot.outputs;
+    // 这至多三次是必要的定向输出交集查询，不是重复统计读取：现有POD的outputs总数
+    // 不能回答LEFT/RIGHT/Shift是否已被common持有，必须保原isHeld判据以免同持双计。
+    // 它们沿原实际查询获取资格，不从统计值推测，也不增公共ABI或跨scope缓存。
+    const Output toolOutputs[3]{{OutputKind::Mouse,0},{OutputKind::Mouse,1},{OutputKind::Key,340}};
+    for (unsigned i=0; i<3; ++i)
+        if ((menuTools.outputMask & (1u << i)) && !inputLedger().isHeld(toolOutputs[i])) ++out->ledgerOutputLive;
     std::lock_guard<std::mutex> lock(s_externalInputMutex);
-    out->maxSameSourceHeld =
-        static_cast<unsigned>(s_externalHeld.MaxRecordsForSameSource());
+    out->maxSameSourceHeld = sourceSnapshot.maxSameSource;
     for (int i = 0; i < AMCL_INPUT_SOURCE_COUNT; ++i) {
-        const AmclInputSource source = static_cast<AmclInputSource>(i);
-        out->heldLive[i] =
-            static_cast<unsigned>(s_externalHeld.LiveCountForSource(source));
-        out->heldAcquired[i] = s_externalHeld.AcquiredForSource(source);
-        out->heldReleased[i] = s_externalHeld.ReleasedForSource(source);
+        out->heldLive[i] = sourceSnapshot.held[i];
+        out->heldAcquired[i] = sourceSnapshot.acquired[i];
+        out->heldReleased[i] = sourceSnapshot.released[i];
     }
+    const unsigned touch = AMCL_INPUT_SOURCE_TOUCH_CONTROLS;
+    out->heldLive[touch] += menuTools.live;
+    out->heldAcquired[touch] += menuTools.acquired;
+    out->heldReleased[touch] += menuTools.released;
+    out->maxSameSourceHeld = std::max(out->maxSameSourceHeld,menuTools.maxSameCode);
 }
 
 static unsigned sumPerSource(const unsigned* table) {
@@ -1757,7 +1912,7 @@ static void maybeLogSourceStatePeriodic(const AmclInputInvariantSnapshot& s) {
 // 把它当噪声忽略掉，这套机制的全部价值随即归零 —— 而"计数器不可信比没有计数器更糟"
 // 这条教训这个项目已经付过一次学费。用"连续两次"过滤，代价是把发现延迟从 250ms 变成
 // 500ms，对一个永久性破坏毫无影响。
-extern "C" void ohos_input_invariant_tick(void) {
+static void runInputInvariantTick() {
     AmclInputInvariantSnapshot snapshot{};
     sampleInputInvariants(&snapshot);
     // 周期性端级输出借用同一次采样。放在求值之前是刻意的：不变量破坏时那一行 error 需要
@@ -1815,6 +1970,17 @@ extern "C" void ohos_input_invariant_tick(void) {
                  snapshot.heldLive[AMCL_INPUT_SOURCE_NONE]);
 }
 
+static void reconcileLegacyRingDiscontinuity();   // 定义在 GrabEpochCoordinator 之后
+
+// 250ms 心跳入口（NAPI InputInvariantTick，ArkUI 主线程，不持任何输入锁）。先对账 ring 不连续
+// epoch 再采样：纯触摸 + 手柄的会话里可能很久没有别的入口被调用，心跳是收敛的兜底。
+// cancel 末尾调用 runInputInvariantTick 而不经这里：那里已持有 touchState，而且可能跑在
+// MC 线程（窗口重建经 bridge 回调进来），在那里对账会自锁或落到消费者线程上。
+extern "C" void ohos_input_invariant_tick(void) {
+    reconcileLegacyRingDiscontinuity();
+    runInputInvariantTick();
+}
+
 // 端级持有账目的定期可读输出。
 //
 // 存在理由是一条我自己定的判据没达成：`AMCL_INSRC` 的 resets/looks/scrolls 三段里
@@ -1828,16 +1994,23 @@ extern "C" void ohos_log_external_held_state(void) {
     unsigned live[AMCL_INPUT_SOURCE_COUNT] = {};
     unsigned acquired[AMCL_INPUT_SOURCE_COUNT] = {};
     unsigned released[AMCL_INPUT_SOURCE_COUNT] = {};
+    // 先取panel完整源快照，再取更内层external，保持transaction→external锁序。
+    const MenuToolHeldSnapshot menuTools = menuToolHeldSnapshot();
     {
         std::lock_guard<std::mutex> lock(s_externalInputMutex);
+        // 保原采样锁与菜单工具加数，仅在本scope取一次真实Source POD。五来源的live/
+        // acquired/released来自同一份快照，缺资格仍沿原零值语义；日志不代替cancel回执。
+        // 此一致性仅属于Source owner；此前菜单快照与此处Source读取之间仍有原观测窗口。
+        const AmclSourceSnapshotV1 sourceSnapshot = amcl::input::SourceSnapshot();
         for (int i = 0; i < AMCL_INPUT_SOURCE_COUNT; ++i) {
-            const AmclInputSource source = static_cast<AmclInputSource>(i);
-            live[i] =
-                static_cast<unsigned>(s_externalHeld.LiveCountForSource(source));
-            acquired[i] = s_externalHeld.AcquiredForSource(source);
-            released[i] = s_externalHeld.ReleasedForSource(source);
+            live[i] = sourceSnapshot.held[i];
+            acquired[i] = sourceSnapshot.acquired[i];
+            released[i] = sourceSnapshot.released[i];
         }
     }
+    live[AMCL_INPUT_SOURCE_TOUCH_CONTROLS] += menuTools.live;
+    acquired[AMCL_INPUT_SOURCE_TOUCH_CONTROLS] += menuTools.acquired;
+    released[AMCL_INPUT_SOURCE_TOUCH_CONTROLS] += menuTools.released;
     OH_LOG_INFO(LOG_APP,
                 "AMCL_INSRC held live[t/p/k/g/u]=%{public}u/%{public}u/%{public}u/"
                 "%{public}u/%{public}u acq=%{public}u/%{public}u/%{public}u/"
@@ -1942,7 +2115,10 @@ static bool routerScroll(AmclInputSource source, int xoffset, int yoffset,
                 0.0, platformSample, true, gateAccepted, nullptr);
         return outcome == AMCL_LEGACY_PHYSICAL_TYPED_ROUTE_HANDLED;
     }
+    // 普通world滚轮也封已知look前缀；运输容量失败不让滚轮越过未交付视角。
+    if(!inputBridge_beginLookActionV1())return false;
     sendEvent(EVENT_TYPE_SCROLL, xoffset, yoffset, 0, 0);
+    inputBridge_endLookActionV1();
     return true;
 }
 
@@ -1964,47 +2140,164 @@ using amcl::input::MouseSynthTouchSource;
 static void schemaApplyWasd(bool w, bool a, bool s, bool d);   // 前置声明（定义在下方）
 
 // schema 按钮输出必须携带稳定 owner；组合键作为同一 owner 的多个 Output 获取/释放。
-static void schemaDispatchButton(const AmclCtrlEntry& e, OwnerToken owner, int action) {
+/** schema锁内冻结反馈元组，只读取touch复位域的原子快照，绝不反向取得touch锁。 */
+static void schemaFireHaptic(int strength, const char* controlId) {
+    amcl_fire_haptic_tagged(strength,controlId,s_schemaGeneration,
+        amcl::input::PlatformInputResetDomains().touch,schemaNowNs(),s_touchPublicationGrabEpoch);
+}
+
+static bool schemaDispatchButton(const AmclCtrlEntry& e, OwnerToken owner, int action) {
     const int cap = (int)(sizeof(e.keys) / sizeof(e.keys[0]));
     const int n = (e.keyCount > 0 && e.keyCount <= cap) ? e.keyCount : 0;
-    if (n > 0) {
-        if (action == GLFW_PRESS) {
-            for (int i = 0; i < n; i++) routerOutput(owner, e.keys[i], GLFW_PRESS);
-        } else {
-            for (int i = n - 1; i >= 0; i--) routerOutput(owner, e.keys[i], GLFW_RELEASE);
-        }
-    } else {
-        routerOutput(owner, e.keyOrMouse, action);
+    Output outputs[6]{};uint32_t count=0;
+    if(n>6)return false;
+    for(int i=0;i<(n?n:1);++i){Output value{};
+        if(!amcl::input::DecodeLegacySchemaOutputCode(n?e.keys[i]:e.keyOrMouse,&value))return false;
+        bool duplicate=false;for(uint32_t j=0;j<count;++j)duplicate|=outputs[j].kind==value.kind&&outputs[j].code==value.code;
+        if(!duplicate)outputs[count++]=value;
     }
+    // 一次六码候选、一份真实 ring 预算、一批 look/action。PRESS 拒绝不改 button/haptic。
+    // terminal 按原 owner 输出集合退休，运输暂不可用时 neutral 独立记录未交付末松。
+    if(!amcl::input::SourceOwnedGroup(owner,outputs,count,action))return false;
     amcl_fire_button_pressed(e.id, action == GLFW_PRESS ? 1 : 0);
     // 键/鼠标输出必须留在 native owner ledger；这里只把低频触觉请求投递回 UI。
     // haptic 是 schema 快照的一部分，因此布局切换不会让活动 finger 读取到新 profile 的开关。
-    if (action == GLFW_PRESS && e.haptic != 0) amcl_fire_haptic(8);
+    if (action == GLFW_PRESS && e.haptic != 0) schemaFireHaptic(8,e.id);
+    return true;
 }
 
 static void schemaWakeDeadlineWorker();
 
+/** 普通 release 暂拒时保留槽位；显式退休允许中立端保存 Deferred 末松，避免丢掉清理责任。 */
+static void schemaRetireGroupUiOwnersLocked(bool all = false) {
+    for (auto& owner : s_groupUiOwners) {
+        if (owner.token == 0 || (!all && s_touchGroups.Visible(owner.control))) continue;
+        AmclSourceRequestV1 request{}; request.operation = AMCL_SOURCE_RELEASE;
+        request.owner = owner.token; request.flags = AMCL_SOURCE_ALLOW_RETIRE;
+        if (amcl::input::SourceTransaction(request).accepted) owner = GroupUiOwner{};
+    }
+}
+
+/** 只在离散认领/命令边界定位 ID；持续 MOVE 使用 state 中冻结的下标和资格。 */
+static int schemaGroupControlIndex(const char* id) {
+    if (!s_touchGroups.Enabled() || !id) return -1;
+    for (size_t i = 0; i < s_schema.size(); ++i) if (std::strcmp(id, s_schema[i].id) == 0) return static_cast<int>(i);
+    return -1;
+}
+
+static bool schemaUsesGroupPhases(const SchemaButtonRuntime& state) {
+    return state.groupControl >= 0 && static_cast<size_t>(state.groupControl) < s_touchGroups.Definition().controls.size() &&
+        s_touchGroups.Definition().controls[state.groupControl].phases;
+}
+
+/** 组合动作预留先于键输出，所有目标冻结后进入同一 FIFO；空 keys 不制造假 owner。 */
+static bool schemaGroupPhase(SchemaButtonRuntime& state, int phase, uint64_t producer = 1, uint64_t sequence = 0) {
+    if (!schemaUsesGroupPhases(state) || phase < 0 || phase >= 4 ||
+        !s_touchGroups.Visible(state.groupControl) || s_touchGroups.Epoch(state.groupControl) != state.groupEligibility) return false;
+    const auto& binding = s_touchGroups.Definition().controls[state.groupControl].bindings[phase];
+    if (!binding.Active()) return true;
+    if (sequence == 0) {
+        if (s_touchGroupSequence == UINT64_MAX) return false;
+        sequence = ++s_touchGroupSequence;
+    }
+    amcl::input::TouchGroupCommand command;
+    command.producer=producer; command.sequence=sequence; command.control=state.groupControl; command.eligibility=state.groupEligibility;
+    // 先分配并冻结队列项，分配异常在输出前终止；按键拒绝仍保留同命令的拒绝回执。
+    try { command.actions=binding.actions; if (!s_touchGroups.Accept(command)) return false; } catch (...) { return false; }
+    bool accepted = true;
+    if (!binding.keys.empty()) {
+        AmclCtrlEntry output = state.control;
+        output.keyCount = static_cast<int>(binding.keys.size()); output.keyOrMouse = binding.keys[0];
+        std::copy(binding.keys.begin(), binding.keys.end(), output.keys);
+        const bool release = binding.autoKeep && state.phaseHeld[phase];
+        if (!release) state.phaseOwners[phase] = nextOwnerToken();
+        accepted = state.phaseOwners[phase] != 0 && schemaDispatchButton(output, state.phaseOwners[phase], release ? GLFW_RELEASE : GLFW_PRESS);
+        if (accepted) {
+            state.phaseHeld[phase] = !release;
+            if (!binding.autoKeep && phase >= 2) {
+                (void)schemaDispatchButton(output, state.phaseOwners[phase], GLFW_RELEASE);
+                state.phaseHeld[phase] = false;
+            }
+        }
+    }
+    // 四阶段共用同一按钮外观。某个click脉冲或autoKeep解锁结束，不代表其它阶段也已松开；
+    // 覆盖通用单owner派发的反馈，以此按钮仍持有的阶段并集作为最终高亮事实。
+    amcl_fire_button_pressed(state.control.id,
+        std::any_of(state.phaseHeld.begin(), state.phaseHeld.end(), [](bool held) { return held; }) ? 1 : 0);
+    if (!accepted) s_touchGroups.RejectReserved(command);
+    return accepted;
+}
+
+/** 取消、隐藏或真正绑定失效都精确退休这四个 owner，期限随后由原 state 清理。 */
+static void schemaRetireGroupPhaseOwners(SchemaButtonRuntime& state, const std::set<OwnerToken>* keep = nullptr) {
+    bool hadPhaseOwner = false, keptHeld = false;
+    for (size_t phase = 0; phase < state.phaseOwners.size(); ++phase) {
+        hadPhaseOwner |= state.phaseOwners[phase] != 0;
+        keptHeld |= state.phaseHeld[phase] && keep && keep->count(state.phaseOwners[phase]) != 0;
+        if (state.phaseOwners[phase] != 0 && (!keep || keep->count(state.phaseOwners[phase]) == 0))
+            inputLedger().releaseOwner(state.phaseOwners[phase]);
+        state.phaseOwners[phase] = 0; state.phaseHeld[phase] = false;
+    }
+    // 定向退休也必须结束本控件的视觉；保留到真实UP的carried owner仍保持按下反馈。
+    // 旧解释器没有阶段owner，不能在这里抢先清掉它独立处理的高亮。
+    if (hadPhaseOwner) amcl_fire_button_pressed(state.control.id, keptHeld ? 1 : 0);
+}
+
+/** 正常 UP 的保持释放与取消分开：只有正常合格 UP 才触发 click/doubleClick。 */
+static void schemaGroupLastUp(SchemaButtonRuntime& state, bool cancelled) {
+    if (!schemaUsesGroupPhases(state)) return;
+    const auto& definition = s_touchGroups.Definition().controls[state.groupControl];
+    if (cancelled) { schemaRetireGroupPhaseOwners(state); state.lastTapNs = 0; }
+    else {
+        for (size_t phase = 0; phase < 2; ++phase) {
+            if (!definition.bindings[phase].autoKeep && state.phaseHeld[phase]) {
+                inputLedger().releaseOwner(state.phaseOwners[phase]); state.phaseHeld[phase] = false;
+            }
+        }
+        const int64_t now = schemaNowNs();
+        const int64_t clickLimit = definition.fcl ? 100000000LL : SCHEMA_DOUBLETAP_NS;
+        const int64_t doubleLimit = definition.fcl ? 400000000LL : SCHEMA_DOUBLETAP_NS;
+        if (!state.groupMoved && !state.longFired && now >= state.groupDownNs && now-state.groupDownNs <= clickLimit) {
+            (void)schemaGroupPhase(state, 2);
+            if (state.lastTapNs > 0 && now-state.lastTapNs < doubleLimit) {
+                (void)schemaGroupPhase(state, 3); state.lastTapNs = 0;
+            } else state.lastTapNs = now;
+        }
+    }
+    // 直接退休ledger只处理输入所有权，不自动发UI反馈；普通UP和Cancel均补齐聚合末态。
+    amcl_fire_button_pressed(state.control.id,
+        std::any_of(state.phaseHeld.begin(), state.phaseHeld.end(), [](bool held) { return held; }) ? 1 : 0);
+    state.longDeadlineNs = 0; state.longFired = false;
+}
+
 static void schemaTriggerFirstDown(SchemaButtonRuntime& state) {
     const AmclCtrlEntry& e = state.control;
     const long long now = schemaNowNs();
+    state.groupControl = schemaGroupControlIndex(e.id);
+    state.groupEligibility = state.groupControl < 0 ? 0 : s_touchGroups.Epoch(state.groupControl);
+    if (schemaUsesGroupPhases(state)) {
+        state.groupDownNs = now; state.groupMoved = false; state.longFired = false;
+        const auto& definition = s_touchGroups.Definition().controls[state.groupControl];
+        if (definition.bindings[1].Active()) {
+            state.longDeadlineNs = now + (definition.fcl ? 400000000LL : SCHEMA_LONGPRESS_NS);
+            schemaWakeDeadlineWorker();
+        }
+        (void)schemaGroupPhase(state, 0);
+        return;
+    }
     switch (e.trigger) {
         case 1: // toggle
             if (state.outputDown) {
-                schemaDispatchButton(e, state.owner, GLFW_RELEASE);
-                state.outputDown = false;
-                state.toggled = false;
+                if(schemaDispatchButton(e,state.owner,GLFW_RELEASE)){state.outputDown=false;state.toggled=false;}
             } else {
                 state.owner = nextOwnerToken();
-                schemaDispatchButton(e, state.owner, GLFW_PRESS);
-                state.outputDown = true;
-                state.toggled = true;
+                if(schemaDispatchButton(e,state.owner,GLFW_PRESS)){state.outputDown=true;state.toggled=true;}
             }
             break;
         case 2: // double tap
             if (state.lastTapNs != 0 && now - state.lastTapNs < SCHEMA_DOUBLETAP_NS) {
                 const OwnerToken tapOwner = nextOwnerToken();
-                schemaDispatchButton(e, tapOwner, GLFW_PRESS);
-                schemaDispatchButton(e, tapOwner, GLFW_RELEASE);
+                if(schemaDispatchButton(e,tapOwner,GLFW_PRESS))(void)schemaDispatchButton(e,tapOwner,GLFW_RELEASE);
                 state.lastTapNs = 0;
             } else {
                 state.lastTapNs = now;
@@ -2018,49 +2311,192 @@ static void schemaTriggerFirstDown(SchemaButtonRuntime& state) {
             break;
         default: // press
             state.owner = nextOwnerToken();
-            schemaDispatchButton(e, state.owner, GLFW_PRESS);
-            state.outputDown = true;
+            state.outputDown=schemaDispatchButton(e,state.owner,GLFW_PRESS);
             break;
     }
 }
 
-static void schemaTriggerLastUp(SchemaButtonRuntime& state) {
+static void schemaTriggerLastUp(SchemaButtonRuntime& state, bool cancelled = false) {
+    if (schemaUsesGroupPhases(state)) { schemaGroupLastUp(state, cancelled); return; }
     const AmclCtrlEntry& e = state.control;
     if (e.trigger == 0 && state.outputDown) {
-        schemaDispatchButton(e, state.owner, GLFW_RELEASE);
-        state.outputDown = false;
+        if(schemaDispatchButton(e,state.owner,GLFW_RELEASE))state.outputDown=false;
     } else if (e.trigger == 3) {
         if (state.longFired && state.outputDown) {
-            schemaDispatchButton(e, state.owner, GLFW_RELEASE);
+            if(schemaDispatchButton(e,state.owner,GLFW_RELEASE))state.outputDown=false;
         }
-        state.outputDown = false;
         state.longFired = false;
         state.longDeadlineNs = 0;
     }
 }
 
-static void schemaPollLongPressLocked() {
-    const long long now = schemaNowNs();
+/** 菜单策略的唯一平台出口。源点、移动和终点进入共同顺序，不在平台端补点或等待图形帧。 */
+static void emitMenuInteraction(amcl::input::MenuTouchAction action, double x, double y) {
+    using amcl::input::MenuTouchAction;
+    if (action == MenuTouchAction::Scroll) {
+        if(emitScopedMenuScroll(static_cast<int>(x),static_cast<int>(y),false)) {
+            ++s_touchGuide.scroll; s_touchGuide.scrollAmount+=y;
+        }
+        return;
+    }
+    const bool relative=action==MenuTouchAction::RelativeBegin || action==MenuTouchAction::RelativePosition ||
+        action==MenuTouchAction::RelativeDown || action==MenuTouchAction::RelativeUp ||
+        action==MenuTouchAction::RelativeEnd || action==MenuTouchAction::RelativeCancel;
+    if(action==MenuTouchAction::Begin || action==MenuTouchAction::RelativeBegin) {
+        // 整段pointer事务从first DOWN取得不可复用token；LEFT未确认的candidate/scroll同样可精确取消。
+        if(s_touchMenuNextToken==0) return; // 耗尽永久失败关闭，不能让旧token再次获得新手势。
+        s_touchMenuToken=s_touchMenuNextToken;
+        s_touchMenuNextToken=s_touchMenuNextToken==0x7fffffffu ? 0 : s_touchMenuNextToken+1;
+    }
+    if(relative) {
+        if(s_touchMenuToken==0) return;
+        const int phase=action==MenuTouchAction::RelativeBegin ? MENU_POINTER_BEGIN :
+            action==MenuTouchAction::RelativeDown ? MENU_POINTER_DOWN : action==MenuTouchAction::RelativeUp ? MENU_POINTER_UP :
+            action==MenuTouchAction::RelativeEnd ? MENU_POINTER_END : action==MenuTouchAction::RelativeCancel ? MENU_POINTER_CANCEL : MENU_POINTER_MOVE;
+        double dx=0,dy=0,maxX=0,maxY=0;
+        if(phase==MENU_POINTER_CANCEL || mapMenuRelativePayload(x,y,&dx,&dy,&maxX,&maxY))
+            inputBridge_publishTouchMenuRelativeV1(phase,s_touchMenuToken,dx,dy,maxX,maxY);
+        // UP只松LEFT，仍保留整个pointer事务；所有残余指END或真正CANCEL才结束身份。
+        if(phase==MENU_POINTER_END || phase==MENU_POINTER_CANCEL) s_touchMenuToken=0;
+        return;
+    }
+    const int mx = static_cast<int>(std::lround(amcl::renderscale::MapX(x)));
+    const int my = static_cast<int>(std::lround(amcl::renderscale::MapY(y)));
+    if (action == MenuTouchAction::Position) {
+        if (s_touchMenuToken != 0) sendEvent(EVENT_TYPE_MENU_POINTER,MENU_POINTER_MOVE,mx,my,s_touchMenuToken);
+        else inputBridge_publishTouchMenuCursorV1(mx,my);
+    } else if (action == MenuTouchAction::Begin || action == MenuTouchAction::Down) {
+        if(s_touchMenuToken!=0) sendEvent(EVENT_TYPE_MENU_POINTER,
+            action==MenuTouchAction::Begin ? MENU_POINTER_BEGIN : MENU_POINTER_DOWN,mx,my,s_touchMenuToken);
+    } else if (s_touchMenuToken != 0) {
+        sendEvent(EVENT_TYPE_MENU_POINTER,action == MenuTouchAction::Up ? MENU_POINTER_UP :
+                  action == MenuTouchAction::End ? MENU_POINTER_END : MENU_POINTER_CANCEL,
+                  mx,my,s_touchMenuToken);
+        if(action==MenuTouchAction::End || action==MenuTouchAction::Cancel) s_touchMenuToken=0;
+    }
+}
+
+/** 快捷栏的可选长按共用现有 deadline worker，按指 owner 释放，0 绑定不发送。 */
+static void schemaPollTouchHoldsLocked(int64_t eventTimeNs = 0) {
+    // worker按当前单调时间执行；真实事件补轮询时以原采样时间为上界。终止事件可能
+    // 因线程调度/等锁而晚派发，不能把派发等待误算成手指仍在按住的额外时间。
+    const int64_t now = eventTimeNs > 0 ? std::min<int64_t>(eventTimeNs,schemaNowNs()) : schemaNowNs();
+    s_menuTouch.SetExternalButtonsHeld(inputLedger().isHeld({OutputKind::Mouse,0}) ||
+                                       inputLedger().isHeld({OutputKind::Mouse,1}) || menuToolMouseHeldLocked());
+    s_menuTouch.Tick(now,emitMenuInteraction);
+    for (auto& binding : s_schemaFingers) {
+        if (binding.deadlineNs <= 0 || binding.moved || binding.holdFired || now < binding.deadlineNs) continue;
+        // 空白区只产生视角；可选长按只属于快捷栏丢弃。
+        if (binding.role != SCHEMA_FINGER_HOTBAR) { binding.deadlineNs=0; continue; }
+        const int action = amcl::input::TouchDrop;
+        binding.deadlineNs = 0;
+        binding.holdFired = true;
+        const int key = s_touchConfig.actions[action];
+        if (key != 0) routerOutput(binding.owner,key,GLFW_PRESS);
+        if (binding.control.haptic != 0) schemaFireHaptic(10,binding.control.id);
+    }
+}
+
+/** 触控新增状态在既有复位域内退休。按钮跨 grab 承接的 owner 例外仍由调用方显式提供。 */
+static void schemaRetireTouchPolicyLocked(const std::set<OwnerToken>& keepOwners) {
+    s_touchMenuCursorVisible.store(false,std::memory_order_release);
+    // policy/grab/modal/lifecycle 的完整退休必须先撤销消费者的全部旧菜单身份。
+    // 不能以 s_menuTouch.Active() 或 s_touchMenuToken!=0 作条件：短点正常 UP 后这两项
+    // 都已归零，而原 DOWN/UP 可能仍在 ring 等待消费。仅退出菜单贡献，保留其它来源。
+    inputBridge_retireTouchMenuScopeV1();
+    // 完整policy退休同时结束panel原生租约；旧UI acknowledgeReset无需再发送旧UP，
+    // 后来的旧UP只遇到空map，不会释放新作用域的菜单贡献。
+    releaseMenuToolControls();
+    s_menuTouch.Cancel(emitMenuInteraction);
+    s_touchJoystick.Reset();
+    s_touchJoystickId.clear();
+    for (const auto& binding : s_schemaFingers) {
+        if (binding.owner != 0 && keepOwners.count(binding.owner) == 0) inputLedger().releaseOwner(binding.owner);
+    }
+    // 每个方向独立 owner，两个方向改成同一输出时末方向退出才释放；+4 是疾跑修饰键。
+    for (int i=1;i<=4;++i) inputLedger().releaseOwner(OWNER_SCHEMA_WASD + i);
+    s_touchLastTapSlot = -1; s_touchLastTapNs = 0; s_touchLastTapControl.clear();
+}
+
+static void schemaPollLongPressLocked(int64_t eventTimeNs = 0) {
+    // 与空白/快捷栏期限采用相同时间边界：无事件的worker使用now，事件入口只能
+    // 补发在该事件真实发生之前已经到期的长按，不能因UP/CANCEL排队而制造新按下。
+    const long long now = eventTimeNs > 0 ? std::min<int64_t>(eventTimeNs,schemaNowNs()) : schemaNowNs();
     for (auto& item : s_schemaButtons) {
         SchemaButtonRuntime& state = item.second;
-        if (state.control.trigger != 3 || state.fingers.empty() || state.longFired ||
+        if ((!schemaUsesGroupPhases(state) && state.control.trigger != 3) || state.fingers.empty() || state.longFired ||
             state.longDeadlineNs == 0 || now < state.longDeadlineNs) continue;
-        schemaDispatchButton(state.control, state.owner, GLFW_PRESS);
-        state.outputDown = true;
-        state.longFired = true;
+        // deadline 到期只提出候选。预算/资源拒绝不能凭 void emit 宣告长按已经按下，
+        // 也不发送 button/haptic 成功反馈；本次 deadline 终结，下一真实触点可重新尝试。
+        const bool phased = schemaUsesGroupPhases(state);
+        const bool accepted=phased ? schemaGroupPhase(state, 1) : schemaDispatchButton(state.control,state.owner,GLFW_PRESS);
+        if (!phased) state.outputDown=accepted;
+        state.longFired=accepted;
         state.longDeadlineNs = 0;
     }
 }
 
-// ==================== LongPressDeadlineWorker ====================
-// 只有这一根常驻线程负责 longPress deadline。它绝大部分时间阻塞在 condition variable，不轮询、不耗电；
-// 新 longPress、取消、schema replace 只需 signal 让它重新计算最近 deadline。condition 使用
-// CLOCK_MONOTONIC，避免用户改系统时间导致 200ms 阈值漂移。所有 runtime 访问仍受 s_schemaMutex 保护。
+// 摇杆 WASD 边沿的唯一出口：direction 0..3 对应 GLFW 的 W/A/S/D，owner 固定为 OWNER_SCHEMA_WASD。
+// 调用方持 s_schemaMutex，输出经 routerOutput 进入 transaction → ledger → ring（与 longPress 同锁序）。
+static void schemaEmitWasd(int direction, bool press) {
+    if (direction < 0 || direction >= amcl::input::SchemaWasdLatch::kDirections) return;
+    const int code = s_touchConfig.actions[direction];
+    if (code != 0 && routerOutput(OWNER_SCHEMA_WASD + direction,code,press ? GLFW_PRESS : GLFW_RELEASE) && press)
+        ++s_touchGuide.movement;
+}
+
+// 30ms 锁存期限到达后补发被吞掉的 PRESS；摇杆手指已不在或方向已不再想要时只清期限。
+// deadline worker 与触摸入口（worker 不可用时的降级路径）共用，调用方持 s_schemaMutex。
+static void schemaPollWasdLatchLocked() {
+    s_schemaWasdLatch.PollDue(schemaNowNs(), s_schemaJoyFinger != -1 || s_touchJoystick.Locked(), schemaEmitWasd);
+}
+
+// ==================== SchemaDeadlineWorker ====================
+// 只有这一根常驻线程负责 schema 的两类 deadline：longPress 触发，以及摇杆 WASD 的 30ms 锁存补发。
+// 它绝大部分时间阻塞在 condition variable，不轮询、不耗电；新 longPress、新的锁存期限、取消、
+// schema replace 只需 signal 让它重新计算最近 deadline。condition 使用 CLOCK_MONOTONIC，避免用户
+// 改系统时间导致阈值漂移。所有 runtime 访问仍受 s_schemaMutex 保护。
 static pthread_cond_t s_schemaDeadlineCond;
 static pthread_once_t s_schemaDeadlineOnce = PTHREAD_ONCE_INIT;
-// false 表示 worker/condition 未可用；触摸入口仍会调用 schemaPollLongPressLocked()，因此线程创建
-// 失败只降级为“下一次输入事件触发”，不会对未初始化 condition 做 signal 或造成 native 崩溃。
+// false 表示 worker/condition 未可用；触摸入口仍会调用 schemaPollLongPressLocked() 与
+// schemaPollWasdLatchLocked()，因此线程创建失败只降级为“下一次输入事件触发”，
+// 不会对未初始化 condition 做 signal 或造成 native 崩溃。
 static std::atomic<bool> s_schemaDeadlineWorkerReady(false);
+
+static bool consumeGrabEpochLocked(bool fallbackGrabbed);
+
+/**
+ * 期限执行的生产事务。扫描阶段只决定何时醒来，所有候选必须在重新取锁后重读。
+ * surface→mode→touch→schema→legacy的顺序与真实grab写入共用mode fence：
+ * worker先赢时PRESS和runtime标记同时成立，后续翻转可carry；grab先赢时先退休旧候选。
+ * gate/mode不可用只返回失败，绝不假设发出输出；worker负责有界重试避免过期期限忙循环。
+ */
+static bool schemaExecuteDueDeadlines() {
+    amcl::input::SurfaceInputGateTransaction gate;
+    if (!gate) return false;
+    amcl::input::AuthoritativeGrabInputTransaction mode;
+    if (!mode) return false;
+    std::lock_guard<std::mutex> touchLock(s_touchStateMutex);
+    const bool grabbed = consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    if (!s_touchPaused.load(std::memory_order_acquire)) {
+        // 普通菜单按钮也由Native认领，静止长按必须由同一期限线程触发，不能等MOVE/UP补发。
+        // 原mode/surface围栏先消费grab公告，已失效的候选仍在这里之前被退休。
+        schemaPollLongPressLocked();
+        if (grabbed) schemaPollWasdLatchLocked();
+        schemaAdvanceGroupsLocked();
+        // 菜单期限也属于同一touch会话；grab公告先取消旧菜单，再允许当前策略Tick。
+        schemaPollTouchHoldsLocked();
+    }
+    pthread_mutex_unlock(&s_schemaMutex);
+    return true;
+}
+
+/** MC线程的公告通知不得初始化线程、取schema锁或等待回调，只signal已有condition。 */
+static void schemaNotifyDeadlineWorkerNonblocking() {
+    if (s_schemaDeadlineWorkerReady.load(std::memory_order_acquire))
+        pthread_cond_signal(&s_schemaDeadlineCond);
+}
 
 static void* schemaDeadlineWorkerMain(void*) {
     pthread_mutex_lock(&s_schemaMutex);
@@ -2068,9 +2504,16 @@ static void* schemaDeadlineWorkerMain(void*) {
         long long earliest = 0;
         for (const auto& item : s_schemaButtons) {
             const SchemaButtonRuntime& state = item.second;
-            if (state.control.trigger != 3 || state.fingers.empty() || state.longFired ||
+            if ((!schemaUsesGroupPhases(state) && state.control.trigger != 3) || state.fingers.empty() || state.longFired ||
                 state.longDeadlineNs == 0) continue;
             if (earliest == 0 || state.longDeadlineNs < earliest) earliest = state.longDeadlineNs;
+        }
+        const long long wasdDeadline = s_schemaWasdLatch.EarliestDeadline();
+        if (wasdDeadline != 0 && (earliest == 0 || wasdDeadline < earliest)) earliest = wasdDeadline;
+        const int64_t menuDeadline = s_menuTouch.Deadline();
+        if (menuDeadline > 0 && (earliest == 0 || menuDeadline < earliest)) earliest = menuDeadline;
+        for (const auto& binding : s_schemaFingers) {
+            if (binding.deadlineNs > 0 && (earliest == 0 || binding.deadlineNs < earliest)) earliest = binding.deadlineNs;
         }
 
         if (earliest == 0) {
@@ -2079,7 +2522,17 @@ static void* schemaDeadlineWorkerMain(void*) {
         }
         const long long now = schemaNowNs();
         if (earliest <= now) {
-            schemaPollLongPressLocked();
+            // 禁止持schema反向取得surface/mode/touch；解锁后不保留任何map引用或迭代器。
+            pthread_mutex_unlock(&s_schemaMutex);
+            const bool executed = schemaExecuteDueDeadlines();
+            pthread_mutex_lock(&s_schemaMutex);
+            if (!executed) {
+                // 暂时没有surface或mode服务时保留候选，最多20Hz重试；通知可提前唤醒。
+                // 不能继续以已经过期的原期限timedwait，否则会形成零等待忙循环。
+                const long long retry = schemaNowNs() + 50000000LL;
+                struct timespec retryDeadline{(time_t)(retry / 1000000000LL), (long)(retry % 1000000000LL)};
+                pthread_cond_timedwait(&s_schemaDeadlineCond, &s_schemaMutex, &retryDeadline);
+            }
             continue;
         }
         struct timespec deadline;
@@ -2145,12 +2598,31 @@ static std::set<OwnerToken> schemaCaptureHeldOwnersLocked() {
 
     for (auto& item : s_schemaButtons) {
         SchemaButtonRuntime& state = item.second;
+        std::string groupId;
+        if (state.groupControl >= 0 && static_cast<size_t>(state.groupControl) < s_touchGroups.Definition().controls.size()) {
+            const int group=s_touchGroups.Definition().controls[state.groupControl].group;
+            if (group >= 0) groupId=s_touchGroups.Definition().groups[group].id;
+        }
+        if (schemaUsesGroupPhases(state)) {
+            // 同一手指可同时持有 press 与 longPress。每阶段独立承接，UP 必须收齐全部 owner。
+            const auto& bindings=s_touchGroups.Definition().controls[state.groupControl].bindings;
+            for (size_t phase=0; phase<2; ++phase) {
+                if (!state.phaseHeld[phase] || bindings[phase].autoKeep || state.phaseOwners[phase] == 0) continue;
+                SchemaCarriedOwner carried; carried.id=state.control.id; carried.owner=state.phaseOwners[phase]; carried.groupId=groupId;
+                for (int fid : state.fingers) if (fid >= 0 && fid < MAX_FINGERS && s_fingerDown[fid]) {
+                    carried.fingers.insert(fid); s_schemaCarriedByFinger[fid]=carried.owner;
+                }
+                if (!carried.fingers.empty()) { keepOwners.insert(carried.owner); s_schemaCarriedOwners[carried.owner]=std::move(carried); }
+            }
+            continue;
+        }
         const bool carryable = state.outputDown &&
             (state.control.trigger == 0 || (state.control.trigger == 3 && state.longFired));
         if (!carryable || state.owner == 0) continue;
 
         SchemaCarriedOwner carried;
         carried.id = state.control.id;
+        carried.groupId = groupId;
         carried.owner = state.owner;
         for (int fid : state.fingers) {
             if (fid < 0 || fid >= MAX_FINGERS || !s_fingerDown[fid]) continue;
@@ -2165,14 +2637,34 @@ static std::set<OwnerToken> schemaCaptureHeldOwnersLocked() {
     return keepOwners;
 }
 
+/** 原手指结束时收齐所有阶段的承接项；只搬移对象，实际来源释放仍在 schema 锁外执行。 */
+static bool schemaCollectCarriedUpLocked(int fid, bool ended,
+        std::array<SchemaCarriedOwner, MAX_FINGERS * 4>& released, size_t& count) {
+    if (s_schemaCarriedByFinger.find(fid) == s_schemaCarriedByFinger.end()) return false;
+    if (!ended) return true;
+    s_schemaCarriedByFinger.erase(fid);
+    for (auto it=s_schemaCarriedOwners.begin(); it!=s_schemaCarriedOwners.end();) {
+        if (it->second.fingers.erase(fid) && it->second.fingers.empty()) {
+            // 每指最多一个按钮及四阶段，整个接触表至多 MAX_FINGERS*4 项。
+            if (count < released.size()) released[count++]=std::move(it->second);
+            it=s_schemaCarriedOwners.erase(it);
+        } else ++it;
+    }
+    return true;
+}
+
 // 清除 schema 解释器的瞬时状态。keepOwners 只用于 grabbed→menu 的物理承接。
 // This boundary owns only schema owners: physical keyboard/mouse and external
 // ArkTS/gamepad owners must survive a grab/schema flip. Full lifecycle cancel
 // separately fences the physical router and calls InputLedger::releaseAll().
 // 调用方必须持有 s_schemaMutex。
 static void schemaResetTransientStateLocked(const std::set<OwnerToken>& keepOwners) {
+    s_touchGroups.RetireTransactions();
+    schemaRetireGroupUiOwnersLocked(true);
+    schemaRetireTouchPolicyLocked(keepOwners);
     for (auto& item : s_schemaButtons) {
         SchemaButtonRuntime& state = item.second;
+        schemaRetireGroupPhaseOwners(state, &keepOwners);
         if (state.owner != 0 && keepOwners.count(state.owner) == 0) {
             inputLedger().releaseOwner(state.owner);
         }
@@ -2184,12 +2676,10 @@ static void schemaResetTransientStateLocked(const std::set<OwnerToken>& keepOwne
     // Joystick WASD uses one stable schema-only owner and is never carried by
     // the button/finger hand-off table.
     inputLedger().releaseOwner(OWNER_SCHEMA_WASD);
+    // owner 已释放，锁存只清状态与补发期限，不再发边沿；worker 醒来后看不到旧期限。
+    s_schemaWasdLatch.Reset();
     schemaWakeDeadlineWorker();
 
-    for (int i = 0; i < 4; i++) {
-        s_schemaWasd[i] = false;
-        s_schemaWasdReleaseNs[i] = 0;
-    }
     s_schemaJoyFinger = -1;
     s_schemaLookFinger = -1;
     for (int i = 0; i < MAX_FINGERS; i++) {
@@ -2211,22 +2701,23 @@ static void schemaResetTransientStateLocked(const std::set<OwnerToken>& keepOwne
     }
 }
 
-// SchemaGeneration 替换与全局 cancel 不同：它只撤销旧 schema generation 自己的 owner，不能误松
-// 物理键盘、ArkTS 菜单按钮等兼容来源。carried owner 已脱离旧 generation，也必须保留到物理 UP。
-// 这使“布局/显隐/profile 重推”成为事务：旧 owner 全部结束 → 旧 finger snapshot 失效 → 再发布新表。
+// 全局策略/视口替换只撤销schema自己的owner，不能误松物理/ArkTS兼容来源；局部表差异另按控件退休。
+// carried owner已脱离旧generation，仍保留到原物理UP；完整取消结束全部schema快照再发布新全局策略。
 static void schemaCancelGenerationLocked() {
+    s_touchGroups.RetireTransactions();
+    schemaRetireGroupUiOwnersLocked(true);
+    schemaRetireTouchPolicyLocked({});
     for (auto& item : s_schemaButtons) {
         SchemaButtonRuntime& state = item.second;
+        schemaRetireGroupPhaseOwners(state);
         if (state.owner != 0) inputLedger().releaseOwner(state.owner);
         if (state.outputDown) amcl_fire_button_pressed(state.control.id, 0);
     }
     s_schemaButtons.clear();
     inputLedger().releaseOwner(OWNER_SCHEMA_WASD);
+    // 旧 generation 的锁存期限不得在新表上补发 PRESS（末尾的 wake 让 worker 重新计算期限）。
+    s_schemaWasdLatch.Reset();
 
-    for (int i = 0; i < 4; i++) {
-        s_schemaWasd[i] = false;
-        s_schemaWasdReleaseNs[i] = 0;
-    }
     s_schemaJoyFinger = -1;
     s_schemaLookFinger = -1;
     for (int i = 0; i < MAX_FINGERS; i++) {
@@ -2239,30 +2730,120 @@ static void schemaCancelGenerationLocked() {
     schemaWakeDeadlineWorker();
 }
 
-static void schemaApplyWasd(bool w, bool a, bool s, bool d) {
-    const bool want[4] = { w, a, s, d };
-    const int keys[4] = { 87 /*W*/, 65 /*A*/, 83 /*S*/, 68 /*D*/ };
-    for (int i = 0; i < 4; i++) {
-        if (want[i] && !s_schemaWasd[i]) {
-            // 30ms 锁存：刚 RELEASE 的键在窗口内不允许 PRESS（去边界抖动毛刺）
-            if (schemaNowNs() - s_schemaWasdReleaseNs[i] < SCHEMA_REPRESS_LOCKOUT_NS) continue;
-            routerOutput(OWNER_SCHEMA_WASD, keys[i], GLFW_PRESS); s_schemaWasd[i] = true;
-        } else if (!want[i] && s_schemaWasd[i]) {
-            routerOutput(OWNER_SCHEMA_WASD, keys[i], GLFW_RELEASE); s_schemaWasd[i] = false;
-            s_schemaWasdReleaseNs[i] = schemaNowNs();
+// 候选表已校验且调用方持schema锁。旧owner/接触只按动作与命中绑定生存，反馈变化
+// 不退休旧快照；新表仍通过完整定义比较安装，使后来DOWN取得最新haptic。
+static bool schemaControlSurvivesLocked(const AmclCtrlEntry& control,
+                                        const AmclCtrlEntry* entries, int count) {
+    for (int i = 0; i < count; ++i)
+        if (amcl::input::SameControlSchemaBinding(control, entries[i])) return true;
+    return false;
+}
+
+// 在schema锁内取真实原生活动触点数，发布前后以同一事务快照记录；不把表换代或就绪声明当作保持成功。
+static int schemaNativeFingerCountLocked() {
+    int count = 0;
+    for (const auto& binding : s_schemaFingers)
+        if (binding.role == SCHEMA_FINGER_BUTTON || binding.role == SCHEMA_FINGER_JOYSTICK ||
+            binding.role == SCHEMA_FINGER_SCROLL || binding.role == SCHEMA_FINGER_HOTBAR ||
+            binding.role == SCHEMA_FINGER_LOOK) ++count;
+    return count;
+}
+
+// 局部表变化只退休已变化的控件；调用方持touch→schema锁，且视口/全局策略已确认不变。
+// 快照未变的按钮、期限、摇杆及空白look保留；carried owner已脱离schema，仍由原物理UP收尾。
+static void schemaRetireChangedControlsLocked(const AmclCtrlEntry* entries, int count) {
+    for (auto it = s_schemaButtons.begin(); it != s_schemaButtons.end();) {
+        if (schemaControlSurvivesLocked(it->second.control, entries, count)) { ++it; continue; }
+        schemaRetireGroupPhaseOwners(it->second);
+        if (it->second.owner != 0) inputLedger().releaseOwner(it->second.owner);
+        if (it->second.outputDown) amcl_fire_button_pressed(it->second.control.id, 0);
+        it = s_schemaButtons.erase(it); // 同时撤销长按/双击期限，不能在新绑定上补发旧动作。
+    }
+    bool retireJoystick = false;
+    if (!s_touchJoystickId.empty()) {
+        // 自动前进可在没有活动手指时持有方向，不能只遍历finger来判断摇杆是否删除。
+        const auto old = std::find_if(s_schema.begin(), s_schema.end(), [](const AmclCtrlEntry& e) {
+            return s_touchJoystickId == e.id;
+        });
+        retireJoystick = old == s_schema.end() || !schemaControlSurvivesLocked(*old, entries, count);
+    }
+    for (int fid = 0; fid < MAX_FINGERS; ++fid) {
+        auto& binding = s_schemaFingers[fid];
+        // 空白look没有控件ID，角色已在DOWN冻结；新增UI区域不能抢走正在滑动的手指。
+        if (binding.role == SCHEMA_FINGER_NONE || binding.role == SCHEMA_FINGER_IGNORED ||
+            (binding.role == SCHEMA_FINGER_LOOK && binding.control.id[0] == '\0') ||
+            schemaControlSurvivesLocked(binding.control, entries, count)) continue;
+        if (binding.role == SCHEMA_FINGER_JOYSTICK) retireJoystick = true;
+        if (binding.owner != 0) inputLedger().releaseOwner(binding.owner);
+        if (s_schemaLookFinger == fid) s_schemaLookFinger = -1;
+        binding = SchemaFingerBinding{}; // 迟到MOVE/UP不重新hit-test，不变成新控件的点击。
+        s_schemaScrollAccum[fid] = 0; s_schemaHotbarLastSlot[fid] = -1;
+        s_schemaDragLastX[fid] = s_schemaDragLastY[fid] = 0;
+    }
+    if (retireJoystick) {
+        for (int i = 0; i <= 4; ++i) inputLedger().releaseOwner(OWNER_SCHEMA_WASD + i);
+        s_schemaWasdLatch.Reset(); s_touchJoystick.Reset(); s_touchJoystickId.clear(); s_schemaJoyFinger = -1;
+    }
+    // 双击物品栏的历史也属于原控件定义；删除/改变该定义后不能与新表第一次点击配对。
+    if (!s_touchLastTapControl.empty()) {
+        const auto old = std::find_if(s_schema.begin(), s_schema.end(), [](const AmclCtrlEntry& e) {
+            return s_touchLastTapControl == e.id;
+        });
+        if (old == s_schema.end() || !schemaControlSurvivesLocked(*old, entries, count)) {
+            s_touchLastTapControl.clear(); s_touchLastTapNs = 0; s_touchLastTapSlot = -1;
         }
     }
+    schemaWakeDeadlineWorker(); // 唤醒只重新计算剩余期限，未变长按不能被重置计时。
+}
+
+/**
+ * 已接受动作在事件末端提交，避开正在解释的 state/finger 引用。仅把最终可见成员作为
+ * “仍存活”集合交给原差异退休函数；背景触点与物理/手柄 owner 不进入该集合。
+ * mask 和退休位于同一锁内，UI 在此之后才能读回；通知失败仍保留 pending 可查询事实。
+ */
+static void schemaAdvanceGroupsLocked() {
+    if (!s_touchGroups.Enabled()) return;
+    const uint64_t before = s_touchGroups.Revision();
+    std::set<size_t> hidden;
+    try { hidden = s_touchGroups.Advance(); } catch (...) { return; }
+    if (!hidden.empty()) {
+        // 提交后不再分配容器，避免 mask 已隐藏而分配失败跳过必需的 owner 退休。
+        std::array<AmclCtrlEntry, AMCL_CONTROL_SCHEMA_MAX_CONTROLS> visible{};
+        int count = 0;
+        for (size_t i = 0; i < s_schema.size(); ++i) if (s_touchGroups.Visible(i)) visible[count++] = s_schema[i];
+        schemaRetireChangedControlsLocked(visible.data(), count);
+        for (auto it=s_schemaCarriedOwners.begin(); it!=s_schemaCarriedOwners.end();) {
+            bool retire=false;
+            for (size_t group : hidden) retire |= it->second.groupId == s_touchGroups.Definition().groups[group].id;
+            if (retire) {
+                inputLedger().releaseOwner(it->first); amcl_fire_button_pressed(it->second.id.c_str(),0);
+                it=s_schemaCarriedOwners.erase(it);
+            } else ++it;
+        }
+        if (s_groupMouseControl >= 0 && !s_touchGroups.Visible(s_groupMouseControl)) {
+            inputBridge_retireTouchMenuToolScopeV1();
+            releaseMenuToolControls();
+            std::fill(s_menuMouseBounds,s_menuMouseBounds+4,0.0);
+            s_groupMouseControl=-1; s_groupMouseMember.clear();
+        }
+    }
+    schemaRetireGroupUiOwnersLocked();
+    if (s_touchGroups.Revision() != before) amcl_notify_touch_groups();
+}
+
+// 一次摇杆采样 → 最终 WASD 边沿。30ms 锁存（刚 RELEASE 的方向在窗口内不 PRESS，去扇区边界抖动）
+// 吞掉的 PRESS 会留下补发期限；这里唤醒 deadline worker，让手指静止时也能在期限到达时按下。
+// 调用方持 s_schemaMutex。
+static void schemaApplyWasd(bool w, bool a, bool s, bool d) {
+    const bool want[amcl::input::SchemaWasdLatch::kDirections] = { w, a, s, d };
+    s_schemaWasdLatch.Apply(want, schemaNowNs(), schemaEmitWasd);
+    if (s_schemaWasdLatch.EarliestDeadline() != 0) schemaWakeDeadlineWorker();
 }
 
 static void schemaJoystick(float px, float py, const AmclCtrlEntry& j) {
-    const float cx = j.x + j.w / 2.0f;
-    const float cy = j.y + j.h / 2.0f;
-    const float radius = j.w * 0.34f;
-    if (radius <= 0.0f) return;
-    float dx = (px - cx) / radius;
-    float dy = (py - cy) / radius;
-    const float len = sqrtf(dx * dx + dy * dy);
-    if (len > 1.0f) { dx /= len; dy /= len; }
+    (void)j; // 几何在 DOWN 冻结到策略实例；MOVE 不再根据可变视图位置重算中心。
+    s_touchJoystick.Move(px,py);
+    const double dx = s_touchJoystick.X(), dy = s_touchJoystick.Y();
     const float deadZone = s_schemaDeadZone;   // A.4-part2：取全局 profile.joystickDeadZone（下发时存入）
     // 扇区判定已抽到 platform/joystick_sector.{h,cpp}（纯函数，有 host test）。
     // 抽出的理由不是这段代码难懂，而是同一张扇区表在本项目里写了三遍
@@ -2272,6 +2853,8 @@ static void schemaJoystick(float px, float py, const AmclCtrlEntry& j) {
     const AmclJoystickSector sector =
         amcl_joystick_sector((double)dx, (double)dy, (double)deadZone);
     schemaApplyWasd(sector.w, sector.a, sector.s, sector.d);
+    const int sprint = s_touchConfig.actions[amcl::input::TouchSprint];
+    if (sprint != 0) routerOutput(OWNER_SCHEMA_WASD + 4,sprint,s_touchJoystick.Sprint() ? GLFW_PRESS : GLFW_RELEASE);
 }
 
 // ============ 指针位置判据（含自学习的窗口偏移）============
@@ -2299,9 +2882,9 @@ static bool pointerDerivedDownAt(float px, float py) {
     double ptrX = 0.0;
     double ptrY = 0.0;
     if (!amcl_pointer_location_query(&ptrX, &ptrY)) {
-        // 接口不可用（符号缺失 / 未获焦 / 无指针设备）。退化为只用调用方已经检查过的
-        // "光标锁生效 + 坐标为整数"，与本次修复之前的判据强度一致，不会更差。
-        return true;
+        // 无法读到指针位置就没有鼠标派生证据；整数坐标也可能来自真实手指或触摸注入。
+        // 明确MOUSE/UNKNOWN镜像在上游独立处理，这里不能再靠“锁能打开”误丢触控DOWN。
+        return false;
     }
     const double dx = ptrX - static_cast<double>(px);
     const double dy = ptrY - static_cast<double>(py);
@@ -2349,22 +2932,22 @@ static bool pointerDerivedDownAt(float px, float py) {
 }
 
 // 物品栏直点（kind=4）：按触点在控件内的横向位置算槽位，发数字键 tap（扫选去重）。
-static void schemaHotbarTap(float px, const AmclCtrlEntry& e, int fid) {
-    if (e.w <= 0.0f) return;
-    int slot = (int)((px - e.x) / (e.w / (float)SCHEMA_HOTBAR_SLOTS));
-    if (slot < 0) slot = 0;
-    if (slot > SCHEMA_HOTBAR_SLOTS - 1) slot = SCHEMA_HOTBAR_SLOTS - 1;
+static void schemaHotbarTap(float px, float py, const AmclCtrlEntry& e, int fid) {
+    const int slot = amcl::input::ControlHotbarSlot(e, px, py);
+    if (slot < 0) { s_schemaHotbarLastSlot[fid] = -1; return; }
     if (slot == s_schemaHotbarLastSlot[fid]) return;   // 跨格才发
     s_schemaHotbarLastSlot[fid] = slot;
-    const int key = SCHEMA_GLFW_KEY_1 + slot;
+    const int key = s_touchConfig.actions[amcl::input::TouchHotbar1 + slot];
+    if (key == 0) return; // 玩家显式解除绑定，不回退到数字键。
     // Hotbar 是无持续状态的 tap，但仍分配独立 owner，避免与“按住数字键”的其他控件互相提前释放。
     const OwnerToken tapOwner = nextOwnerToken();
-    routerOutput(tapOwner, key, GLFW_PRESS);
-    routerOutput(tapOwner, key, GLFW_RELEASE);
-    if (e.haptic != 0) amcl_fire_haptic(8);
+    const bool pressed=routerOutput(tapOwner, key, GLFW_PRESS);
+    const bool released=routerOutput(tapOwner, key, GLFW_RELEASE);
+    if(pressed && released) { ++s_touchGuide.hotbar; s_touchGuide.slot=slot; }
+    if (e.haptic != 0) schemaFireHaptic(8,e.id);
 }
 
-// 滚轮（kind=2）：纵向累计位移，每 SCHEMA_SCROLL_STEP_PX 触发一次 scroll（上滑=+1/下滑=-1）。
+// 滚轮（kind=2）：纵向累计位移，每 schemaScrollStepPx() 触发一次 scroll（上滑=+1/下滑=-1）。
 static void schemaScrollMove(float py, int fid) {
     amcl::input::census::Bump(amcl::input::census::Channel::SchemaTouchScroll);
     const float dy = py - s_schemaScrollLastY[fid];
@@ -2373,27 +2956,43 @@ static void schemaScrollMove(float py, int fid) {
     // gateAccepted=true：本函数只从 OnDispatchTouchEvent 的 SurfaceInputGateCallbackScope
     // 里被调到（唯一调用点）。⚠️ 该端是 TOUCH_CONTROLS ⇒ 留在 legacy ring 上，
     // typed 分叉只认 PHYSICAL_KBM，所以这个实参在本通道上不会被读到。
-    while (s_schemaScrollAccum[fid] <= -SCHEMA_SCROLL_STEP_PX) { routerScroll(AMCL_INPUT_SOURCE_TOUCH_CONTROLS, 0, 1, true);  s_schemaScrollAccum[fid] += SCHEMA_SCROLL_STEP_PX; }
-    while (s_schemaScrollAccum[fid] >=  SCHEMA_SCROLL_STEP_PX) { routerScroll(AMCL_INPUT_SOURCE_TOUCH_CONTROLS, 0, -1, true); s_schemaScrollAccum[fid] -= SCHEMA_SCROLL_STEP_PX; }
+    while (s_schemaScrollAccum[fid] <= -schemaScrollStepPx()) { routerScroll(AMCL_INPUT_SOURCE_TOUCH_CONTROLS, 0, 1, true);  s_schemaScrollAccum[fid] += schemaScrollStepPx(); }
+    while (s_schemaScrollAccum[fid] >=  schemaScrollStepPx()) { routerScroll(AMCL_INPUT_SOURCE_TOUCH_CONTROLS, 0, -1, true); s_schemaScrollAccum[fid] -= schemaScrollStepPx(); }
 }
 
-// DOWN-only hit-test。先找视觉真实矩形，再考虑 native 控件自己的 slop；handledBy=arkts 的控件只允许
-// exact 命中，避免 native 扩张区吞掉 ArkUI 收不到的落点形成“既不触发按钮也不能转视角”的死区。
-// 同一层有多个候选时选中心距离最近者，结果不再依赖 controls 数组的偶然顺序。
+// 新DOWN与显式连滑共用命中policy：UI专属exact先让出解释权，再沿原Native exact→slop规则。
+// UI根/抽屉孩子由RuntimeTouchLayout放在Native视觉之后；独立Native Dispatch不受ArkUI Block
+// 阻断，故不能仅靠显示层级或最近中心保护UI。UI命中返回ARKTS域，调用方不得继续world/look fallback。
+// Native域内保留最近中心与等距首项手感，UI仍只有真实矩形；返回UI id仅供冻结排除角色，
+// 不合成UI动作，也不声称它就是ArkUI选中的最上层节点。普通MOVE/UP仍消费DOWN快照。
 // 调用方必须持有 s_schemaMutex。
 static bool schemaHitTestLocked(float px, float py, AmclCtrlEntry& out) {
     int best = -1;
     double bestDist = 0.0;
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 3; pass++) {
         best = -1;
         for (size_t i = 0; i < s_schema.size(); i++) {
             const AmclCtrlEntry& e = s_schema[i];
-            const float pad = (pass == 0 || e.handledBy != 0) ? 0.0f : e.hitSlop;
+            if (!s_touchGroups.Visible(i)) continue;
+            if (!s_touchGroups.Enabled()) {
+                if (pass == 0 && e.handledBy == 0) continue;
+                if (pass != 0 && e.handledBy != 0) continue;
+            } else {
+                // 新组方案显式 rank 同时控制绘制和命中；exact 先于 slop，UI 不扩张。
+                if (pass == 1 || (pass == 2 && e.handledBy != 0)) continue;
+            }
+            // 物品栏没有普通按钮的扩张区；边缘外的DOWN交回空白look，不绑首末格。
+            if (e.kind == 4 && amcl::input::ControlHotbarSlot(e, px, py) < 0) continue;
+            const float pad = pass == 2 ? e.hitSlop : 0.0f;
             if (!pointInRect(px, py, e.x, e.y, e.w, e.h, pad)) continue;
             const double dx = (double)px - ((double)e.x + (double)e.w * 0.5);
             const double dy = (double)py - ((double)e.y + (double)e.h * 0.5);
             const double dist = dx * dx + dy * dy;
-            if (best < 0 || dist < bestDist) {
+            const bool higherRank = s_touchGroups.Enabled() && best >= 0 &&
+                s_touchGroups.Definition().controls[i].rank > s_touchGroups.Definition().controls[best].rank;
+            const bool sameRank = !s_touchGroups.Enabled() || best < 0 ||
+                s_touchGroups.Definition().controls[i].rank == s_touchGroups.Definition().controls[best].rank;
+            if (best < 0 || higherRank || (sameRank && dist < bestDist)) {
                 best = (int)i;
                 bestDist = dist;
             }
@@ -2407,7 +3006,105 @@ static bool schemaHitTestLocked(float px, float py, AmclCtrlEntry& out) {
 }
 
 // schema 主解释器的不变量：
-// 1. 只有 DOWN 做 hit-test，并把 ControlSnapshot 复制到 finger binding；
+/** 为快捷栏增强建立候选；不创建新线程，期限交给已有 worker。调用方已冻结该指角色。 */
+/** 菜单与世界共用普通按钮认领。调用方持schema锁；旧触点继续原owner，只有DOWN命中新按钮。
+ * 系统控件与辅助面板仍属于UI排除域，既不补发按键，也不把连续MOVE重新解释为背景点击。
+ */
+static bool schemaOwnsMenuButtonLocked(int fid, bool down, float x, float y) {
+    if (fid < 0 || fid >= MAX_FINGERS) return false;
+    if (s_schemaFingers[fid].role == SCHEMA_FINGER_BUTTON) return true;
+    if (!down || touchOverlayContains(s_menuMouseBounds,x,y) || touchOverlayContains(s_touchGuideBounds,x,y)) return false;
+    AmclCtrlEntry hit{};
+    return schemaHitTestLocked(x,y,hit) && hit.kind == 0 && hit.handledBy == 0;
+}
+
+static void schemaBeginTouchCandidate(SchemaFingerBinding& binding,float x,float y) {
+    binding.startX = x; binding.startY = y; binding.startNs = schemaNowNs();
+    binding.owner = nextOwnerToken();
+    if (binding.role == SCHEMA_FINGER_HOTBAR) {
+        binding.initialSlot = amcl::input::ControlHotbarSlot(binding.control,x,y);
+        if (s_touchConfig.hotbarDrop && binding.initialSlot >= 0)
+            binding.deadlineNs = binding.startNs + static_cast<int64_t>(s_touchConfig.holdMs) * 1000000;
+    }
+    if (binding.deadlineNs > 0) schemaWakeDeadlineWorker();
+}
+
+/** 位移检测只看原始surface坐标，不乘镜头灵敏度；快捷栏跨格即退出长按候选。 */
+static void schemaMoveTouchCandidate(SchemaFingerBinding& binding,float x,float y) {
+    if (binding.role == SCHEMA_FINGER_LOOK && !binding.holdFired && axisPanLookSuppressed(nowMonotonicNs())) {
+        binding.moved = true; binding.deadlineNs = 0;
+    }
+    const double slop = 6 * std::max(1.0,ohos_display_density());
+    if (std::hypot(x-binding.startX,y-binding.startY) > slop ||
+        (binding.role == SCHEMA_FINGER_HOTBAR &&
+         amcl::input::ControlHotbarSlot(binding.control,x,y) != binding.initialSlot)) {
+        binding.moved = true; binding.deadlineNs = 0;
+        // 丢弃触发后移动不应继续按住Q扫过其它物品。视角长按允许持续转动，直到真实终止边沿。
+        if (binding.role == SCHEMA_FINGER_HOTBAR && binding.holdFired) inputLedger().releaseOwner(binding.owner);
+    }
+}
+
+/** 真实 UP 才能完成候选；CANCEL 只退休持有。双击身份同时包含控件、槽位和单调时间。 */
+static void schemaFinishTouchCandidate(SchemaFingerBinding& binding,bool cancelled,float x,float y) {
+    const int64_t now = schemaNowNs();
+    // 平台允许合并MOVE；UP本身必须按原始落点重新核实，不能把“没有MOVE标记”当作静止。
+    const double slop = 6 * std::max(1.0,ohos_display_density());
+    const bool endpointValid = std::hypot(x-binding.startX,y-binding.startY) <= slop;
+    const bool tap = !cancelled && !binding.moved && !binding.holdFired &&
+        endpointValid &&
+        now >= binding.startNs && now-binding.startNs <= SCHEMA_DOUBLETAP_NS &&
+        !(binding.role == SCHEMA_FINGER_LOOK && axisPanLookSuppressed(nowMonotonicNs()));
+    int key = 0;
+    if (binding.role == SCHEMA_FINGER_HOTBAR) {
+        const int slot = amcl::input::ControlHotbarSlot(binding.control,x,y);
+        if (tap && slot == binding.initialSlot && slot >= 0 && s_touchConfig.hotbarSwap) {
+            if (s_touchLastTapControl == binding.control.id && s_touchLastTapSlot == slot &&
+                now >= s_touchLastTapNs && now-s_touchLastTapNs <= SCHEMA_DOUBLETAP_NS) {
+                key = s_touchConfig.actions[amcl::input::TouchSwap];
+                s_touchLastTapSlot = -1; s_touchLastTapNs = 0;
+            } else {
+                s_touchLastTapControl = binding.control.id; s_touchLastTapSlot = slot; s_touchLastTapNs = now;
+            }
+        } else { s_touchLastTapSlot = -1; s_touchLastTapNs = 0; }
+    }
+    if (key != 0) routerOutput(binding.owner,key,GLFW_PRESS);
+    if (binding.owner != 0) inputLedger().releaseOwner(binding.owner);
+    binding.deadlineNs = 0;
+}
+
+// 连滑先使用同一DOWN命中规则选候选：同控件边缘微动不松开/重按，精确命中新控件才优先接力。
+// 新候选仅靠slop相交时保留原有效热区，避免邻键扩张区交界抖动；不同组/ArkUI精确目标仍阻挡接力。
+static void schemaSwipeButtonLocked(SchemaFingerBinding& binding,int fid,float x,float y) {
+    if (binding.control.swipeGroup == 0) return;
+    AmclCtrlEntry hit{};
+    const bool hasHit = schemaHitTestLocked(x,y,hit);
+    const bool inCurrent = pointInRect(x,y,binding.control.x,binding.control.y,
+                                      binding.control.w,binding.control.h,binding.control.hitSlop);
+    const bool exactTarget = hasHit && pointInRect(x,y,hit.x,hit.y,hit.w,hit.h,0);
+    if (binding.owner != 0 && inCurrent &&
+        (!hasHit || std::strcmp(hit.id,binding.control.id) == 0 || !exactTarget)) return;
+    auto old = s_schemaButtons.find(binding.control.id);
+    if (old != s_schemaButtons.end() && old->second.fingers.erase(fid) && old->second.fingers.empty())
+        schemaTriggerLastUp(old->second);
+    binding.owner = 0;
+    if (!hasHit || hit.kind != 0 || hit.handledBy != 0 ||
+        hit.swipeGroup != binding.control.swipeGroup || hit.trigger != 0 || hit.dragLook) return;
+    if (s_touchGroups.Enabled()) {
+        const int from = schemaGroupControlIndex(binding.control.id), to = schemaGroupControlIndex(hit.id);
+        if (from < 0 || to < 0 || s_touchGroups.Definition().controls[from].group != s_touchGroups.Definition().controls[to].group ||
+            s_touchGroups.BlocksPoint(x, y, s_schema)) return;
+    }
+    auto& state = s_schemaButtons[hit.id];
+    const bool empty = state.fingers.empty();
+    // 连滑进入的是新gesture时才采纳当前表的反馈；仍被其它手指持有的同一gesture
+    // 继续使用首指冻结快照。真实动作/命中变化已由发布差异退休，不能在这里改绑旧贡献。
+    if (empty) state.control = hit;
+    state.fingers.insert(fid);
+    if (empty) schemaTriggerFirstDown(state);
+    binding.control = hit; binding.owner = state.owner;
+}
+
+// 1. DOWN 做 hit-test，并把 ControlSnapshot 复制到 finger binding；显式滑动组可在同代内有序接力。
 // 2. MOVE/UP 只解释该快照，schema 重排或替换绝不会把旧 finger 指向另一个控件；
 // 3. 每根 finger 最多拥有一个角色，空白 look 也只允许一个 owner；
 // 4. 按钮输出由 SchemaButtonRuntime.owner 持有，多指共享 owner，末指才释放。
@@ -2421,8 +3118,9 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
     float lookDx = 0.0f, lookDy = 0.0f;
 
     pthread_mutex_lock(&s_schemaMutex);
-    schemaPollLongPressLocked();
     SchemaFingerBinding& binding = s_schemaFingers[fid];
+    const bool normalUp = ev.type == OH_NATIVEXCOMPONENT_UP;
+    const bool cancelled = ev.type != OH_NATIVEXCOMPONENT_DOWN && ev.type != OH_NATIVEXCOMPONENT_MOVE && !normalUp;
 
     if (ev.type == OH_NATIVEXCOMPONENT_DOWN) {
         // 同一 fid 连续两次 DOWN 而中间没有 UP（平台复用 fid、或终止边沿丢失）时，
@@ -2437,6 +3135,8 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
         if (binding.role == SCHEMA_FINGER_JOYSTICK) {
             if (s_schemaJoyFinger == fid) {
                 s_schemaJoyFinger = -1;
+                s_touchJoystick.Reset();
+                inputLedger().releaseOwner(OWNER_SCHEMA_WASD + 4);
                 schemaApplyWasd(false, false, false, false);
             }
         } else if (binding.role == SCHEMA_FINGER_BUTTON) {
@@ -2445,22 +3145,28 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
                 SchemaButtonRuntime& state = stale->second;
                 state.fingers.erase(fid);
                 // 末指离开走正常 lastUp，保持 InputLedger 引用计数守恒。
-                if (state.fingers.empty()) schemaTriggerLastUp(state);
+                if (state.fingers.empty()) schemaTriggerLastUp(state, true);
             }
         }
         if (s_schemaLookFinger == fid) s_schemaLookFinger = -1;
+        if (binding.role == SCHEMA_FINGER_LOOK || binding.role == SCHEMA_FINGER_HOTBAR)
+            schemaFinishTouchCandidate(binding,true,px,py);
 
         binding = SchemaFingerBinding{};
         binding.generation = s_schemaGeneration;
+        binding.startX = px; binding.startY = py;
 
         AmclCtrlEntry hit{};
-        if (!schemaHitTestLocked(px, py, hit)) {
+        if (touchOverlayContains(s_touchGuideBounds,px,py)) {
+            binding.role = SCHEMA_FINGER_ARKTS;
+        } else if (!schemaHitTestLocked(px, py, hit)) {
             // 多指同时划空白区时只认第一根 look finger，避免两根手指交错污染位移基准。
             if (s_schemaLookFinger == -1) {
                 s_schemaLookFinger = fid;
                 binding.role = SCHEMA_FINGER_LOOK;
                 s_fingers[fid].lastX = px;
                 s_fingers[fid].lastY = py;
+                schemaBeginTouchCandidate(binding,px,py);
             } else {
                 binding.role = SCHEMA_FINGER_IGNORED;
             }
@@ -2476,6 +3182,10 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
                     s_schemaJoyFinger = fid;
                     binding.role = SCHEMA_FINGER_JOYSTICK;
                     binding.owner = OWNER_SCHEMA_WASD;
+                    // 自动前进转回手指控制也要先退出旧方向，避免新中心与旧方向并存一帧。
+                    schemaApplyWasd(false,false,false,false);
+                    s_touchJoystick.Begin(px,py,hit.x,hit.y,hit.w,hit.h,s_touchConfig,s_schemaDeadZone);
+                    s_touchJoystickId = hit.id;
                     schemaJoystick(px, py, binding.control);
                 } else {
                     binding.role = SCHEMA_FINGER_IGNORED;
@@ -2483,8 +3193,11 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
             } else if (hit.kind == 0) {
                 binding.role = SCHEMA_FINGER_BUTTON;
                 SchemaButtonRuntime& state = s_schemaButtons[hit.id];
-                if (state.control.id[0] == '\0') state.control = hit;
                 const bool wasEmpty = state.fingers.empty();
+                // 每次新的gesture读取当前表，避免feedback-only保活后永久沿用旧haptic。
+                // 多指共持时保留原gesture快照；toggle旧owner的有效输入绑定已在发布时
+                // 验证未变，所以下一次DOWN关闭它仍释放原输出，而新反馈只作用于新动作。
+                if (wasEmpty) state.control = hit;
                 state.fingers.insert(fid);
                 if (wasEmpty) schemaTriggerFirstDown(state);
                 binding.owner = state.owner;
@@ -2500,10 +3213,14 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
             } else if (hit.kind == 4) {
                 binding.role = SCHEMA_FINGER_HOTBAR;
                 s_schemaHotbarLastSlot[fid] = -1;
-                schemaHotbarTap(px, binding.control, fid);
+                schemaHotbarTap(px, py, binding.control, fid);
+                schemaBeginTouchCandidate(binding,px,py);
             }
         }
-    } else if (ev.type == OH_NATIVEXCOMPONENT_MOVE) {
+    } else if (ev.type == OH_NATIVEXCOMPONENT_MOVE || normalUp) {
+        // 正常UP是原接触的最后一个真实位置样本，与MOVE归约同一角色。先采终点并
+        // 取消越阈值的候选，再考虑到期动作及末松；CANCEL/unknown没有可靠终点，
+        // 绝不走此分支。普通按钮只补dragLook末段，不在抬指时接力按下另一个按钮。
         switch (binding.role) {
             case SCHEMA_FINGER_JOYSTICK:
                 if (fid == s_schemaJoyFinger) schemaJoystick(px, py, binding.control);
@@ -2512,9 +3229,25 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
                 schemaScrollMove(py, fid);
                 break;
             case SCHEMA_FINGER_HOTBAR:
-                schemaHotbarTap(px, binding.control, fid);
+                schemaMoveTouchCandidate(binding,px,py);
+                schemaHotbarTap(px, py, binding.control, fid);
                 break;
             case SCHEMA_FINGER_BUTTON:
+                {
+                    auto found = s_schemaButtons.find(binding.control.id);
+                    if (found != s_schemaButtons.end() && schemaUsesGroupPhases(found->second)) {
+                        auto& state = found->second;
+                        const bool fcl = s_touchGroups.Definition().controls[state.groupControl].fcl;
+                        const double limit = fcl ? 10.0 : 12.0 * s_touchContextDensity;
+                        const bool outside=std::abs(px-binding.startX) > limit || std::abs(py-binding.startY) > limit;
+                        // FCL click 使用最终落点，允许100ms内短暂离开再返回；原生策略保持越界取消。
+                        state.groupMoved=fcl ? outside : (state.groupMoved || outside);
+                        const double longLimit = fcl ? 2.0 : limit;
+                        if ((!fcl || schemaNowNs()-state.groupDownNs < 400000000LL) &&
+                            (std::abs(px-binding.startX) > longLimit || std::abs(py-binding.startY) > longLimit)) state.longDeadlineNs = 0;
+                    }
+                }
+                if (!normalUp) schemaSwipeButtonLocked(binding,fid,px,py);
                 if (binding.control.dragLook && s_schemaLookFinger == fid) {
                     lookDx = px - s_schemaDragLastX[fid];
                     lookDy = py - s_schemaDragLastY[fid];
@@ -2524,6 +3257,7 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
                 }
                 break;
             case SCHEMA_FINGER_LOOK:
+                schemaMoveTouchCandidate(binding,px,py);
                 if (s_schemaLookFinger == fid) {
                     lookDx = px - s_fingers[fid].lastX;
                     lookDy = py - s_fingers[fid].lastY;
@@ -2543,19 +3277,39 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
             default:
                 break;
         }
-    } else { // UP / CANCEL / unknown: unknown is an unsafe terminal edge.
+    }
+    // 已知look先于由同一采样确认的离散动作进入原运输，UP末段也保持这一顺序。
+    // 运输口只复制队列，不调用游戏；仍在原schema事务内，不让其它线程插到两者之间。
+    if (emitLook) {
+        amcl::input::census::Bump(amcl::input::census::Channel::LookFromSchemaTouch);
+        applyLookDelta(AMCL_INPUT_SOURCE_TOUCH_CONTROLS, (double)lookDx,
+                       (double)lookDy, ev.timeStamp > 0 ? ev.timeStamp : 0);
+    }
+    if (!cancelled) {
+        // worker暂未执行时仍保留事件入口补轮询，但MOVE/UP先按真实终点撤销旧候选。
+        // CANCEL一旦先取得此事务，只退休原持有，不得在退休前补发任何过期候选；
+        // 已由worker先提交的真实持有则沿下面的原owner正常释放，不尝试回滚游戏动作。
+        schemaPollLongPressLocked(ev.timeStamp);
+        schemaPollWasdLatchLocked();
+        schemaPollTouchHoldsLocked(ev.timeStamp);
+    }
+    if (normalUp || cancelled) {
         eventRole = binding.role;
         if (binding.role == SCHEMA_FINGER_JOYSTICK && fid == s_schemaJoyFinger) {
             s_schemaJoyFinger = -1;
-            schemaApplyWasd(false, false, false, false);
+            s_touchJoystick.End(ev.type != OH_NATIVEXCOMPONENT_UP);
+            schemaApplyWasd(s_touchJoystick.Locked(),false,false,false);
+            if (!s_touchJoystick.Sprint()) inputLedger().releaseOwner(OWNER_SCHEMA_WASD + 4);
         } else if (binding.role == SCHEMA_FINGER_BUTTON) {
             auto it = s_schemaButtons.find(binding.control.id);
             if (it != s_schemaButtons.end()) {
                 SchemaButtonRuntime& state = it->second;
                 state.fingers.erase(fid);
-                if (state.fingers.empty()) schemaTriggerLastUp(state);
+                if (state.fingers.empty()) schemaTriggerLastUp(state, cancelled);
             }
         }
+        if (binding.role == SCHEMA_FINGER_LOOK || binding.role == SCHEMA_FINGER_HOTBAR)
+            schemaFinishTouchCandidate(binding,ev.type != OH_NATIVEXCOMPONENT_UP,px,py);
         if (s_schemaLookFinger == fid) {
             s_schemaLookFinger = -1;
             lookFinishMode = (ev.type == OH_NATIVEXCOMPONENT_UP) ? 1 : -1;
@@ -2566,17 +3320,9 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
         ev.type == OH_NATIVEXCOMPONENT_MOVE) {
         eventRole = binding.role;
     }
+    if (lookFinishMode != 0) flushLookPending(lookFinishMode > 0, AMCL_INPUT_SOURCE_TOUCH_CONTROLS);
+    schemaAdvanceGroupsLocked();
     pthread_mutex_unlock(&s_schemaMutex);
-
-    // 不在 schema 锁内写 bridge cursor，缩短锁持有时间，也避免未来 bridge 回调反向进入 schema。
-    if (emitLook) {
-        amcl::input::census::Bump(
-            amcl::input::census::Channel::LookFromSchemaTouch);
-        // 触控虚拟按键端：空白 look 与 dragLook 都是真实手指，单位 surface 物理 px。
-        applyLookDelta(AMCL_INPUT_SOURCE_TOUCH_CONTROLS, (double)lookDx,
-                       (double)lookDy);
-    }
-    if (lookFinishMode != 0) flushLookPending(lookFinishMode > 0);
     return eventRole;
 }
 
@@ -2586,6 +3332,11 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
 // “下一次事件”正是旧手指的 UP，capture 仍能先看到它在旧 epoch 中为 down，然后同一次入口马上按
 // carried owner 释放。schema 路径则防止 ArkTS 回调抢先替换 generation、提前释放本应 carry 的 owner。
 static void onGrabFlipCancel(bool nowGrabbed) {
+    if (s_touchPublicationGrabEpoch != UINT64_MAX) ++s_touchPublicationGrabEpoch;
+    // Native首次吸收真实grab公告时，也在面板任何释放之前撤销旧scope前缀。
+    // consumer真实mode边界已有同等保护，此处不能依赖某后端碰巧先完成清理。
+    inputBridge_retireTouchMenuScopeV1();
+    releaseMenuToolControls();
     // grab 翻转会让旧 epoch 的左键按住状态失去配对的抬起边沿，必须就地复位，
     // 否则诊断分桶会把菜单/游戏切换之后的样本继续算进上一段 hold。
     resetMirrorGestureStateLocked();
@@ -2594,17 +3345,8 @@ static void onGrabFlipCancel(bool nowGrabbed) {
     // deadline could inject LEFT after the menu/game transition; the observed
     // native-left latch remains valid for this surface lifecycle.
 
-    // 菜单事务必须用原 token 取消，不能退化为普通 LEFT RELEASE：后者无法撤销尚未跨过
-    // present+2 的 pending PRESS，也无法阻止迟到 UP 误伤下一 token。
-    if (s_normalFinger != -1 || s_activeMenuTransactionToken != 0) {
-        if (s_activeMenuTransactionToken != 0) {
-            sendEvent(EVENT_TYPE_MENU_POINTER, MENU_POINTER_CANCEL, 0, 0,
-                      (int)s_activeMenuTransactionToken);
-        }
-        if (s_normalFinger >= 0 && s_normalFinger < MAX_FINGERS) s_fingerDead[s_normalFinger] = true;
-        s_normalFinger = -1;
-        s_activeMenuTransactionToken = 0;
-    }
+    // schemaResetTransientStateLocked 会退休完整菜单作用域，再用原 token 取消当前
+    // 解释器；普通 LEFT RELEASE 不能撤销已 UP、尚未消费的旧菜单队列前缀。
 
     // grab epoch 已改变，旧手势的平滑余量不能跨 Minecraft 中心重锚继续输出。
     flushLookPending(false);
@@ -2629,26 +3371,91 @@ static void onGrabFlipCancel(bool nowGrabbed) {
 // OnDispatchTouchEvent 消费会留下一个竞态：grab TSFN 可能先触发 sendControlSchema，旧 generation
 // 会在 owner 尚未 carry 前被 schemaCancelGenerationLocked 直接释放，破坏 F3+F4 等跨 grab 按住语义。
 // announcement 仍由 libglfw 的真实 cursor-mode 翻转产生，ArkTS 的 grabbed 字段不是权威状态源。
-static void consumeGrabEpochLocked(bool nowGrabbed) {
-    std::deque<bool> pending;
+// 返回值是本次事件应使用的生效 grab 状态（公告在取队列的同一临界区读出；进程内尚无公告时
+// 才用 fallbackGrabbed）。调用方必须用它解释当前事件，不能再单独读一次公告状态。
+static bool consumeGrabEpochLocked(bool fallbackGrabbed) {
+    // 关键顺序：先取消/迁移旧 epoch，再由调用方登记当前 touch 或发布新 schema。
+    return amcl::input::ApplyGrabAnnouncements(
+        s_grabFlipLastState, s_grabFlipInit, s_grabAnnouncements.Take(),
+        fallbackGrabbed, [](bool announced) { onGrabFlipCancel(announced); });
+}
+
+// ==================== legacy ring 不连续对账 ====================
+// bridge局部overflow已由同锁生产镜像/cutoff重建该consumer，不推进此全生产epoch。
+// 只有无法绑定可靠快照的真正不连续仍推进epoch；libentry在自己的无锁入口
+// （按端键/鼠标、触摸 dispatch、schema 发布、250ms 心跳）发现变化后执行一次 legacy-only 复位；
+// 判定与步骤顺序在 legacy_ring_discontinuity.cpp（直接链接进 host 测试），这里只绑定文件级状态。
+// 绝不在 sendEvent / ledger emit / grab trampoline / bridge 消费者线程里对账：那些位置要么已持
+// 更内层的锁，要么运行在 MC 线程，进入这里就是锁序反转。
+static amcl::input::LegacyRingDiscontinuityTracker s_legacyRingTracker;
+
+static void legacyRingClearExternalHeld(void*) {
+    std::lock_guard<std::mutex> lock(s_externalInputMutex);
+    s_externalHeld.Clear();
+}
+static void legacyRingReleaseLedger(void*) {
+    inputLedger().releaseAll();
+}
+// 调用方已持 s_schemaMutex；空 keepOwners 连同 carried owner 一起清掉。
+static void legacyRingResetSchema(void*) {
+    schemaResetTransientStateLocked({});
+    // 生产schema退休已先推进菜单epoch并清panel；这个幂等释放也兼容旧空schema测试入口。
+    releaseMenuToolControls();
+}
+// 以原 token 撤销菜单事务：丢过历史的消费者已自行作废该 token（token 不匹配，CANCEL 是空操作），
+// 没有溢出的兄弟消费者靠它结束同一事务、补发已可见 PRESS 的 RELEASE。
+static void legacyRingCancelMenu(void*) {
+    s_menuTouch.Cancel(emitMenuInteraction);
+}
+// 只标 dead、不清 s_fingerDown：平台仍会送来这些手指的 MOVE/UP，UP 时由 dead 分支收尾。
+static void legacyRingRetireFingers(void*) {
+    amcl::input::MarkFingersDeadUntilUp(s_fingerDown, s_fingerDead, MAX_FINGERS);
+}
+static void legacyRingCompleteBoundary(void*) {
+    // ring不连续只撤销兼容来源；typed实体持有及其IME会话仍由core管理。
+    const uint32_t domains = amcl::input::kInputResetTouch | amcl::input::kInputResetGamepad |
+        (amcl::input::PlatformInputPhysicalRouteUsesTyped() ? 0u : amcl::input::kInputResetPhysical);
+    amcl::input::PlatformInputCompleteResetBoundary(domains);
+}
+
+static const amcl::input::LegacyRingResetSteps kLegacyRingResetSteps{
+    nullptr, legacyRingClearExternalHeld, legacyRingReleaseLedger,
+    legacyRingResetSchema, legacyRingCancelMenu, legacyRingRetireFingers,
+    legacyRingCompleteBoundary};
+
+// 快速路径只有一次原子读与一次比较；变化时按全局锁序 surface gate → touch state → schema →
+// input transaction 取锁（gate 递归，NAPI / 触摸入口已持有也安全），持锁后重读 epoch 再判定，
+// 并把全部步骤放进 LegacyPhysicalEdgeRouter 的复位围栏：围栏先释放 legacy 物理身份，且在步骤
+// 执行期间拒绝任何同步回入重新建立持有。刻意不清通道配对、不复位 typed core、不改 capture、
+// 不丢 look backlog（这些都不经 legacy ring，理由见 legacy_ring_discontinuity.h）。
+static void reconcileLegacyRingDiscontinuity() {
+    if (!s_legacyRingTracker.Changed(inputBridge_legacyRingDiscontinuityEpochV1())) return;
+    uint64_t observed = 0u;
+    bool reset = false;
     {
-        std::lock_guard<std::mutex> lock(s_grabAnnouncementMutex);
-        pending.swap(s_grabAnnouncements);
-        s_consumedGrabAnnouncementEpoch =
-            s_grabAnnouncementEpoch.load(std::memory_order_acquire);
+        std::lock_guard<std::recursive_mutex> gateLock(s_surfaceInputGateMutex);
+        std::lock_guard<std::mutex> touchStateLock(s_touchStateMutex);
+        pthread_mutex_lock(&s_schemaMutex);
+        {
+            std::lock_guard<std::recursive_mutex> transactionLock(s_inputTransactionMutex);
+            observed = inputBridge_legacyRingDiscontinuityEpochV1();
+            if (s_legacyRingTracker.Changed(observed)) {
+                physicalEdgeRouter().Reset([observed, &reset]() {
+                    reset = s_legacyRingTracker.ReconcileLocked(observed, kLegacyRingResetSteps);
+                });
+            }
+        }
+        pthread_mutex_unlock(&s_schemaMutex);
     }
-    if (!s_grabFlipInit) {
-        // If callbacks arrived before the first ingress, seed from the state
-        // before the first queued event so every queued flip is processed.
-        s_grabFlipLastState = pending.empty() ? nowGrabbed : !pending.front();
-        s_grabFlipInit = true;
-    }
-    if (pending.empty()) pending.push_back(nowGrabbed);
-    for (bool announced : pending) {
-        if (announced == s_grabFlipLastState) continue;
-        // 关键顺序：先取消/迁移旧 epoch，再由调用方登记当前 touch 或发布新 schema。
-        s_grabFlipLastState = announced;
-        onGrabFlipCancel(announced);
+    if (reset) {
+        // 与 bridge 的 "InputBridge ring overflow recovered" 成对判读：每次丢历史恰好对应一行。
+        AMCL_LOG_W(LOG_TAG,
+            "AMCL_RINGGAP legacy-only reset epoch=%{public}llu resets=%{public}llu "
+            "absorbedByCancel=%{public}llu (external/ledger/schema/menu cleared, "
+            "down fingers retired; pairing/core/capture/look untouched)",
+            static_cast<unsigned long long>(observed),
+            static_cast<unsigned long long>(s_legacyRingTracker.ResetCount()),
+            static_cast<unsigned long long>(s_legacyRingTracker.AbsorbCount()));
     }
 }
 
@@ -2656,10 +3463,17 @@ static void consumeGrabEpochLocked(bool nowGrabbed) {
 extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* window) {
     SurfaceInputGateCallbackScope gate(component, window, true);
     if (!gate.accepted()) return;
+    // ring 不连续对账必须在取 touchState 之前：它自己按 gate → touch → schema → transaction 取锁
+    // （gate 是递归锁，这里已持有也安全）。之后本事件看到的是已复位的 legacy owner 状态。
+    reconcileLegacyRingDiscontinuity();
 
     OH_NativeXComponent_TouchEvent touchEvent;
     int32_t ret = OH_NativeXComponent_GetTouchEvent(component, window, &touchEvent);
     if (ret != 0) return;
+
+    // 事件入口降级轮询与worker使用同一mode fence；否则线程创建失败时旧期限仍可跨grab首次触发。
+    amcl::input::AuthoritativeGrabInputTransaction grabTransaction;
+    if (!grabTransaction) return;
 
     // 从读取完平台事件到 owner/角色处理结束保持同一 ingress 临界区。生命周期 cancel 会等待本事件
     // 完整提交或释放后再归零，因而不存在“cancel 清了一半、MOVE 又写回一半”的撕裂状态。
@@ -2713,16 +3527,14 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
     int32_t fid = touchEvent.id;
     float px = touchEvent.x;
     float py = touchEvent.y;
-    bool grabbed = isGrabbedMode();
-    // Grab epoch 在 MC 线程翻转时已通过原子 trampoline 发布；以 announcement 为权威，isGrabbedMode 为兜底。
-    const int announcedGrab = s_announcedGrabState.load(std::memory_order_acquire);
-    if (announcedGrab >= 0) grabbed = (announcedGrab != 0);
 
     const bool evIsDown = (touchEvent.type == OH_NATIVEXCOMPONENT_DOWN);
     const bool evIsUp   = (touchEvent.type == OH_NATIVEXCOMPONENT_UP || touchEvent.type == OH_NATIVEXCOMPONENT_CANCEL);
     // 无论下一边界是物理触摸还是 ArkTS schema 重推，都经同一 helper 消费真实 native epoch。
     // 当前事件的 fingerDown 尚未更新，因此旧手指的 UP 仍可先被正确 capture，再立即释放 carried owner。
-    consumeGrabEpochLocked(grabbed);
+    // 本事件一律按 helper 返回的生效状态分类：公告在取队列的同一临界区读出，isGrabbedMode 只是
+    // 进程内尚无公告时的兜底读数；此后到达的翻转属于下一个事件。
+    const bool grabbed = consumeGrabEpochLocked(grabTransaction.grabbed());
 
     // ==================== 鼠标镜像包 ====================
     // ⚠️ **两个析取项各在一台真机上承重，谁都不能删**（2026-08-22，计划 §76）：
@@ -2863,17 +3675,21 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
             // 于是镜像每次都比 onMouse 先到并抢走 LEFT，把本该带 windowX/windowY 的
             // ArkUI 点击整批挤掉（真机 `btnMirror=10 btnRejected=20`，恒定 1:2）。
             // 改成按优先级决定所有者之后，有真鼠标通道的设备上镜像自动让位。
-            if (acceptPhysicalLeftEdge(AMCL_INPUT_CHANNEL_TOUCH_MIRROR, press)) {
+            if (acceptPhysicalButtonEdge(AMCL_INPUT_CHANNEL_TOUCH_MIRROR, 0u,
+                    OH_NATIVEXCOMPONENT_LEFT_BUTTON, press)) {
                 amcl::input::census::Bump(
                     amcl::input::census::Channel::ButtonFromTouchMirror);
                 // 已在 SurfaceInputGateCallbackScope 内，故 gateAccepted=true；
                 // 锁序仍是 surface gate → touch state → input transaction。
-                (void)amcl::input::PlatformInputPhysicalButtonTransaction(
+                const AmclLegacyPhysicalOutcome outcome =
+                    amcl::input::PlatformInputPhysicalButtonTransaction(
                     0u, static_cast<uint32_t>(OH_NATIVEXCOMPONENT_LEFT_BUTTON),
                     press ? AMCL_INPUT_ACTION_DOWN : AMCL_INPUT_ACTION_UP,
                     GLFW_MOUSE_BUTTON_LEFT,
                     press ? GLFW_PRESS : GLFW_RELEASE, true,
                     routePhysicalButtonEventChecked);
+                finishPhysicalButtonAdmission(AMCL_INPUT_CHANNEL_TOUCH_MIRROR,
+                    0u, OH_NATIVEXCOMPONENT_LEFT_BUTTON, press, outcome);
             } else {
                 amcl::input::census::Bump(
                     amcl::input::census::Channel::ButtonRejectedByClaim);
@@ -2910,9 +3726,10 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
         } else if (mirrorAction == MouseSynthTouchAction::kUp ||
                    mirrorAction == MouseSynthTouchAction::kCancel) {
             s_mirrorGestureActive = false;
-            // 终止边沿仍要收口平滑余量，否则上一段 rawDelta 的尾量会挂在这里，
-            // 下一次按下时被当成新手势的起始位移。
-            flushLookPending(touchEvent.type == OH_NATIVEXCOMPONENT_UP);
+            // 镜像终止边沿刻意不收口任何 look 尾量。镜像包本身不产生视角；同期唯一的视角来源是
+            // rawDelta（PHYSICAL_KBM），它的平滑恒为 1.0、没有尾量，停投由 idle worker 收口。
+            // 触控 source 的尾量属于同时在做 dragLook / 空白 look 的真手指（DesktopTouch 混用），
+            // 在这里 flush 会提前补发（UP）或整段丢弃（CANCEL）它，并重置它的速度时钟。
         }
 
         // 识别器不再参与左键；保持它为空状态，避免旧候选在生命周期里残留。
@@ -2925,33 +3742,15 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
     // GrabEpoch carried owner 在普通 grabbed/normal 分支之前消费。MOVE 被吞掉；UP/CANCEL 只移除本 finger，
     // 共享该按钮 owner 的最后一根 finger 消失时才 releaseOwner，因此双指共享键不会提前 RELEASE。
     if (s_schemaActive && fid >= 0 && fid < MAX_FINGERS) {
-        bool isCarried = false;
-        bool releaseOwner = false;
-        OwnerToken carriedOwner = 0;
-        std::string carriedId;
+        std::array<SchemaCarriedOwner, MAX_FINGERS * 4> released{};
+        size_t releasedCount=0;
         pthread_mutex_lock(&s_schemaMutex);
-        auto fit = s_schemaCarriedByFinger.find(fid);
-        if (fit != s_schemaCarriedByFinger.end()) {
-            isCarried = true;
-            carriedOwner = fit->second;
-            if (evIsUp) {
-                s_schemaCarriedByFinger.erase(fit);
-                auto oit = s_schemaCarriedOwners.find(carriedOwner);
-                if (oit != s_schemaCarriedOwners.end()) {
-                    oit->second.fingers.erase(fid);
-                    if (oit->second.fingers.empty()) {
-                        carriedId = oit->second.id;
-                        s_schemaCarriedOwners.erase(oit);
-                        releaseOwner = true;
-                    }
-                }
-            }
-        }
+        const bool isCarried=schemaCollectCarriedUpLocked(fid,evIsUp,released,releasedCount);
         pthread_mutex_unlock(&s_schemaMutex);
         if (isCarried) {
-            if (releaseOwner) {
-                inputLedger().releaseOwner(carriedOwner);
-                amcl_fire_button_pressed(carriedId.c_str(), 0);
+            for (size_t i=0; i<releasedCount; ++i) {
+                inputLedger().releaseOwner(released[i].owner);
+                amcl_fire_button_pressed(released[i].id.c_str(),0);
             }
             return;
         }
@@ -2980,12 +3779,11 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
     // 现在**在 DOWN 就分类，判为指针派生的包根本不进 schema**（"鼠标绝不能点虚拟
     // 按键"这条规则对这条通道同样无条件成立）。DOWN 时可用的判据：
     //   1) 光标锁生效 —— 锁只在检测到物理鼠标并进入游戏后建立，纯触摸设备永不进入；
-    //   2) 坐标是整数 —— 合成包实测恒为整数（1240/317、48/1839），真手指恒为分数
-    //      （1959.375/737.625、1065.875/817.625），因为触摸屏有亚像素分辨率而
-    //      指针坐标是整数像素；
+    //   2) 坐标是整数 —— 合成包通常为整数，手指也可能恰好落在整数位置。
+    //      亚像素坐标只能排除这一条兼容候选，整数本身不能证明它来自物理鼠标；
     //   3) 落点与系统指针当前位置重合 —— OH_Input_GetPointerLocation（API 20，
     //      **无需权限**，仅要求本应用获焦）。这是一条与 1)/2) 独立的判据；该接口
-    //      不可用时自动退化为只用 1)+2)，不会比旧行为更差。
+    //      不可用时保留正常触控，不以1)+2)的弱证据丢掉手指DOWN。
     //
     // 误判的代价被刻意做小：判为指针派生的 finger 只是**不绑控件**；一旦后续样本
     // 出现分数坐标或横向位移（真手指的确定特征），立刻放行（census ptrDerivedPromoted），
@@ -3140,6 +3938,22 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
         return;
     }
 
+    // 先按已核实的物理镜像/滚轮分类，再关闭direct touch的新DOWN。被围栏丢弃的整段
+    // 接触保持dead到真实UP，解除围栏后MOVE不能补领新schema。旧角色MOVE/UP继续原链路。
+    if (evIsDown && touchAdmissionBlocksNewTouchLocked()) {
+        if (fid >= 0 && fid < MAX_FINGERS) s_fingerDead[fid] = true;
+        return;
+    }
+    if (evIsDown) {
+        pthread_mutex_lock(&s_schemaMutex);
+        const bool groupBlocked = s_touchGroups.BlocksPoint(px, py, s_schema);
+        pthread_mutex_unlock(&s_schemaMutex);
+        if (groupBlocked) {
+            if (fid >= 0 && fid < MAX_FINGERS) s_fingerDead[fid] = true;
+            return;
+        }
+    }
+
     // Phase 1：跨 grab 翻转仍按着的（非 carried）手指——忽略其后续事件直到抬起，杜绝其在新模式里被
     // 重新解释成 look/点击（根除直接点菜单按钮返回游戏的视角瞬移 + 卡键）。抬起时清状态、恢复该 fid。
     if (fid >= 0 && fid < MAX_FINGERS && s_fingerDead[fid]) {
@@ -3154,6 +3968,9 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
         return;
     }
 
+    // 触控解释权的未来扩展点：物理镜像和失效手指已被过滤，尚未认领本次DOWN。
+    // TouchController接入应在此按已握手的surface/session选择唯一解释器，并冻结到UP/CANCEL；
+    // 不能放到菜单分支或发键之后，不能在MOVE中途切换。当前只接内建解释器，无外部代理。
     if (grabbed) {
         // ====== Grabbed 模式：视角增量，但过滤掉摇杆/按钮区域的触摸 ======
         // ArkTS hitTestBehavior.Block 无法阻止 Native DispatchTouchEvent
@@ -3172,50 +3989,111 @@ extern "C" void OnDispatchTouchEvent(OH_NativeXComponent* component, void* windo
         (void)handleSchemaGrabbedTouch(touchEvent, px, py, fid);
         return;
     } else {
-        // ====== Normal 模式：单指绝对坐标 + 鼠标按键（菜单点击）======
-        // ArkTS Block 按钮（ESC/E 等）已拦截，这里只收到空白区域触摸
-        // 重构 Phase 1：s_normalFinger 提到文件作用域（见顶部），使 grab 翻转的 cancelPendingActions
-        // 能补发其未配对的 LEFT RELEASE（修卡左键）。
-
-        // 菜单处理器：DOWN/MOVE/UP 的坐标和阶段进入**同一有序 ring**，不再使用“mailbox + 独立按键”两条路径。
-        // bridge 收到 DOWN 后先在菜单态提交 cursor callback，并跨过一个完整 pump barrier，下一次 pump 才发
-        // LEFT PRESS。这样 Back 的动作不可能与首次落点位于同一 poll；等价于用户已 hover 一帧后再点击。
-        // finger 从 DOWN 到 UP 由 s_normalFinger 锁定为菜单角色；grab 翻转后由 cancel/dead-finger 收尾，绝不进 look。
-        //
-        // 渲染缩放：触点 px/py 是 real surface 物理 px，而菜单绝对坐标属 MC 窗口坐标系
-        //（= 缩放后 buffer px），这里是触摸绝对坐标进入 MC 侧的第一入口，换算只做这一次
-        //（scale==1 时 MapX/MapY 恒等直通）。上方 schema/命中测试仍用 real px —— 它们
-        // 比较的是 ArkTS 布局矩形，与 MC 坐标系无关。
-        const int menuX = (int)lround(amcl::renderscale::MapX((double)px));
-        const int menuY = (int)lround(amcl::renderscale::MapY((double)py));
-        if (touchEvent.type == OH_NATIVEXCOMPONENT_DOWN) {
-            if (s_normalFinger == -1) {
-                s_normalFinger = fid;
-                s_activeMenuTransactionToken = s_nextMenuTransactionToken++;
-                if (s_nextMenuTransactionToken == 0 || s_nextMenuTransactionToken > 0x7fffffffU) {
-                    s_nextMenuTransactionToken = 1;
-                }
-                sendEvent(EVENT_TYPE_MENU_POINTER, MENU_POINTER_DOWN, menuX, menuY,
-                          (int)s_activeMenuTransactionToken);
-            }
-        } else if (touchEvent.type == OH_NATIVEXCOMPONENT_MOVE) {
-            if (fid == s_normalFinger && s_activeMenuTransactionToken != 0) {
-                sendEvent(EVENT_TYPE_MENU_POINTER, MENU_POINTER_MOVE, menuX, menuY,
-                          (int)s_activeMenuTransactionToken);
-            }
-        } else if (touchEvent.type == OH_NATIVEXCOMPONENT_UP || touchEvent.type == OH_NATIVEXCOMPONENT_CANCEL) {
-            if (fid == s_normalFinger && s_activeMenuTransactionToken != 0) {
-                sendEvent(EVENT_TYPE_MENU_POINTER,
-                          touchEvent.type == OH_NATIVEXCOMPONENT_CANCEL ? MENU_POINTER_CANCEL : MENU_POINTER_UP,
-                          menuX, menuY, (int)s_activeMenuTransactionToken);
-                s_normalFinger = -1;
-                s_activeMenuTransactionToken = 0;
-            }
+        // 所有菜单模式共用认领规则；默认直触也必须尊重显式右键、UI面板和取消。
+        // 只更新指针的手指不能额外按下左键，ArkUI认领的手指全程不穿透到游戏。
+        pthread_mutex_lock(&s_schemaMutex);
+        // 普通按钮在菜单也由同一 Native 手势解释器处理，ArkUI 只绘制。系统入口
+        // 仍属于 UI；背景菜单继续原 MenuTouchInteraction，不复制点击/视角解释器。
+        const bool groupButton = schemaOwnsMenuButtonLocked(fid,evIsDown,px,py);
+        if (groupButton) {
+            pthread_mutex_unlock(&s_schemaMutex);
+            (void)handleSchemaGrabbedTouch(touchEvent,px,py,fid);
+            return;
         }
+        if (fid >= 0 && fid < MAX_FINGERS) {
+            if (touchEvent.type == OH_NATIVEXCOMPONENT_DOWN || touchEvent.type == OH_NATIVEXCOMPONENT_MOVE)
+                s_touchMenuCursorVisible.store(true,std::memory_order_release);
+            auto& binding = s_schemaFingers[fid];
+            AmclCtrlEntry hit{};
+            const bool overOverlay = touchOverlayContains(s_menuMouseBounds,px,py) || touchOverlayContains(s_touchGuideBounds,px,py);
+            if (touchEvent.type == OH_NATIVEXCOMPONENT_DOWN && (overOverlay || schemaHitTestLocked(px,py,hit))) {
+                binding = SchemaFingerBinding{};
+                binding.role = SCHEMA_FINGER_ARKTS;
+            } else if (binding.role != SCHEMA_FINGER_ARKTS) {
+                const auto phase = touchEvent.type == OH_NATIVEXCOMPONENT_DOWN ? amcl::input::TouchPhase::Down :
+                    touchEvent.type == OH_NATIVEXCOMPONENT_MOVE ? amcl::input::TouchPhase::Move :
+                    touchEvent.type == OH_NATIVEXCOMPONENT_UP ? amcl::input::TouchPhase::Up : amcl::input::TouchPhase::Cancel;
+                s_menuTouch.SetExternalButtonsHeld(inputLedger().isHeld({OutputKind::Mouse,0}) ||
+                                                   inputLedger().isHeld({OutputKind::Mouse,1}) || menuToolMouseHeldLocked());
+                s_menuTouch.Event(phase,fid,px,py,touchEvent.timeStamp > 0 ? touchEvent.timeStamp : schemaNowNs(),
+                                  emitMenuInteraction);
+                if (s_menuTouch.Deadline() > 0) schemaWakeDeadlineWorker();
+            }
+            if (evIsUp) binding = SchemaFingerBinding{};
+        }
+        pthread_mutex_unlock(&s_schemaMutex);
     }
 }
 
 // ==================== NAPI 可调用函数 ====================
+
+/** 有界临时热区独立于schema代次；只更新新触点命中，不触碰当前控件、菜单事务或持有账本。 */
+static bool setTouchOverlayBounds(double bounds[4],double x,double y,double w,double h) {
+    if(!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
+       x<0 || y<0 || w<0 || h<0 || x+w>65535 || y+h>65535 || ((w==0)!=(h==0))) return false;
+    std::lock_guard<std::mutex> touchLock(s_touchStateMutex);
+    pthread_mutex_lock(&s_schemaMutex);
+    bounds[0]=x; bounds[1]=y; bounds[2]=w; bounds[3]=h;
+    pthread_mutex_unlock(&s_schemaMutex);
+    return true;
+}
+
+/** 菜单鼠标移动/关闭不退休拖动；世界分支不读取这一菜单专用区域。 */
+extern "C" bool ohos_set_menu_mouse_bounds(double x,double y,double w,double h) {
+    return setTouchOverlayBounds(s_menuMouseBounds,x,y,w,h);
+}
+
+/**
+ * 实际面板bounds与实例认领同事务提交；NAPI已核publication归属，此处再次用不透明身份绑定。
+ * 合法非零bounds是唯一注册入口，同实例的几何移动保持held；新实例只可在零held接管，
+ * 且同publication须超过单调水位。旧实例迟到clear/重发均不能把当前面板注销或反抢。
+ * 按touch→schema→transaction取锁，避免登记时从transaction反向进入schema setter。
+ */
+extern "C" bool ohos_set_menu_mouse_bounds_for_panel(double x,double y,double w,double h,
+        const char* prefix,uint64_t publication) {
+    uint64_t identity=0;
+    if(publication==0 || !parseMenuToolPanelPrefix(prefix,&identity) || !std::isfinite(x) || !std::isfinite(y) ||
+       !std::isfinite(w) || !std::isfinite(h) || x<0 || y<0 || w<0 || h<0 || x+w>65535 || y+h>65535 || ((w==0)!=(h==0))) return false;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    pthread_mutex_lock(&s_schemaMutex);
+    // 新登记必须仍属于实际打开面板的组入口，不能由隐藏后的旧面板重新认领本体。
+    // 空矩形清理始终允许继续，直到原工具作用域确认结束。
+    if (w > 0 && s_touchGroups.Enabled() && (s_groupMouseControl < 0 ||
+        !s_touchGroups.Visible(s_groupMouseControl) || s_touchGroups.BlocksControl(s_groupMouseControl,s_schema))) {
+        pthread_mutex_unlock(&s_schemaMutex); return false;
+    }
+    bool accepted=false;
+    {
+        std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+        reconcileMenuToolProcessLocked();
+        const bool samePrefix=s_menuToolPanelPrefix==prefix;
+        const bool samePublication=s_menuToolRegistrationPublication==publication;
+        if(w==0) {
+            if(samePrefix) {
+                inputBridge_retireTouchMenuToolScopeV1();releaseMenuToolControls();accepted=true;
+            } else if(s_menuToolPanelPrefix.empty() && s_menuToolOwners.empty()) {
+                // 按端reset/grab已先退休登记时，空域的清除是幂等成功，同时去掉旧热区。
+                // 不再推进工具epoch；若已有另一实例登记仍拒绝，旧UI不能清掉新面板。
+                // 明确回执让Entry结束关闭重试，否则此正常先后次序会每16ms重新取整条锁链。
+                accepted=true;
+            }
+        } else if(samePrefix || (s_menuToolOwners.empty() && (!samePublication || identity>=s_menuToolPanelWatermark))) {
+            if(!samePrefix) {inputBridge_retireTouchMenuToolScopeV1();releaseMenuToolControls();}
+            if(!samePublication) s_menuToolPanelWatermark=0;
+            s_menuToolRegistrationPublication=publication;
+            s_menuToolPanelWatermark=std::max(s_menuToolPanelWatermark,identity);
+            s_menuToolPanelPrefix=prefix;accepted=true;
+        }
+        if(accepted) {s_menuMouseBounds[0]=x;s_menuMouseBounds[1]=y;s_menuMouseBounds[2]=w;s_menuMouseBounds[3]=h;}
+    }
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
+}
+
+/** 教学工具栏在世界和菜单共用，隐藏、后台或销毁均发布空矩形。 */
+extern "C" bool ohos_set_touch_guide_bounds(double x,double y,double w,double h) {
+    return setTouchOverlayBounds(s_touchGuideBounds,x,y,w,h);
+}
 
 // ⚠️ `ohos_register_button` / `ohos_register_joystick` / `ohos_set_comp_size` 已删除
 // （连同 NAPI 入口与 ArkTS 调用点）。它们写入的表/变量没有任何读取方，
@@ -3241,10 +4119,17 @@ extern "C" bool ohos_send_cursor_delta_checked(double dx, double dy) {
     return applyLookDelta(AMCL_INPUT_SOURCE_PHYSICAL_KBM, dx, dy);
 }
 
+extern "C" bool ohos_send_cursor_delta_at_time_checked(
+        double dx, double dy, uint64_t monotonicTimeNs) {
+    if (monotonicTimeNs == 0u || monotonicTimeNs > INT64_MAX || !finitePair(dx, dy)) return false;
+    return applyLookDelta(AMCL_INPUT_SOURCE_PHYSICAL_KBM, dx, dy,
+                          static_cast<int64_t>(monotonicTimeNs));
+}
+
 // 合成视角增量入口，**按端申报**。
 //
 // 这条入口同时服务两个端：手柄右摇杆，以及触控虚拟按键端里 `handledBy=arkts` 按钮的
-// dragLook。它们的量纲不同（摇杆是归一量×增益，dragLook 是 vp 局部坐标差分），
+// dragLook。手柄是轴速度积分后的virtual px；dragLook已在ArkUI入口由vp转换为surface px，
 // 所以端身份必须由调用方给出，不能在 native 猜。
 //
 // 旧实现把两者一律标成手柄端。当时没有行为后果（三端的 look_scale 都是 1.0），
@@ -3252,13 +4137,21 @@ extern "C" bool ohos_send_cursor_delta_checked(double dx, double dy) {
 // 触控端的位移按手柄系数缩放。端拆开之后，量纲标定可以逐端独立进行。
 extern "C" bool ohos_send_source_cursor_delta_checked(int source, double dx,
                                                       double dy) {
+    return ohos_send_source_cursor_sample_checked(source, dx, dy, 0);
+}
+
+extern "C" bool ohos_send_source_cursor_sample_checked(int source, double dx,
+                                                       double dy, int64_t sampleTimeNs) {
+    // 实体鼠标必须走自己的通道资格及采样事务，不能借合成入口绕过typed/legacy仲裁。
+    if ((source != AMCL_INPUT_SOURCE_TOUCH_CONTROLS && source != AMCL_INPUT_SOURCE_GAMEPAD) ||
+        sampleTimeNs < 0) return false;
     if (!finitePair(dx, dy)) {
         recordInvalidLookDelta();
         return false;
     }
     resolveBridge();
     if (!s_addLookDeltaFn) return false;
-    return applyLookDelta(normalizeInputSource(source), dx, dy);
+    return applyLookDelta(normalizeInputSource(source), dx, dy, sampleTimeNs);
 }
 
 // ⚠️ 未申报端身份的兼容入口，保留只为 fail-soft；新调用点一律用
@@ -3293,6 +4186,10 @@ extern "C" bool ohos_send_cursor_pos_checked(double x, double y) {
     resolveBridge();
     if (!s_setMenuCursorFn) return false;
     setMenuCursor(amcl::renderscale::MapX(x), amcl::renderscale::MapY(y));
+    // 此入口是已接受的外部绝对位置；相对触摸板空闲时承接它，下一次落指不跳回旧位置。
+    pthread_mutex_lock(&s_schemaMutex);
+    s_menuTouch.AdoptCursor(x,y);
+    pthread_mutex_unlock(&s_schemaMutex);
     return true;
 }
 
@@ -3314,12 +4211,177 @@ extern "C" bool ohos_send_key_event_checked(int key, int scancode, int action, i
                                               scancode, action, mods);
 }
 
+// 调用方（NAPI）至多持有递归的 surface gate，因此可以在路由之前对账 ring 不连续 epoch：
+// 丢过历史之后的第一次按下落在已复位的账本上，才能真正发出 PRESS。
 extern "C" bool ohos_send_source_key_event_checked(
         int source, int key, int scancode, int action, int mods) {
+    reconcileLegacyRingDiscontinuity();
     resolveBridge();
     if (!bridgeReady()) return false;
     return routerKey(normalizeInputSource(source), key, scancode,
                      action, mods);
+}
+
+extern "C" uint64_t ohos_acquire_source_control(int source, uint64_t deviceId,
+        const char* controlId, const int* codes, uint32_t count) {
+    std::lock_guard<std::recursive_mutex> gateLock(s_surfaceInputGateMutex);
+    if (source == AMCL_INPUT_SOURCE_TOUCH_CONTROLS && s_touchAdmission.BlocksNewTouch()) return 0;
+    reconcileLegacyRingDiscontinuity();
+    resolveBridge();
+    if (!bridgeReady() || !controlId || !codes || count == 0u || count > 6u ||
+        (source != AMCL_INPUT_SOURCE_TOUCH_CONTROLS && source != AMCL_INPUT_SOURCE_GAMEPAD &&
+         source != AMCL_INPUT_SOURCE_PLATFORM_GESTURE)) return 0u;
+    std::vector<Output> outputs;
+    for (uint32_t i = 0; i < count; ++i) {
+        Output output{};
+        if (!amcl::input::DecodeLegacySchemaOutputCode(codes[i], &output)) return 0u;
+        // 组合键保留首次出现顺序；重复码只持有一次，避免合法旧布局被新token边界拒绝。
+        const bool duplicate = std::any_of(outputs.begin(), outputs.end(), [&output](const Output& prior) {
+            return prior.kind == output.kind && prior.code == output.code;
+        });
+        if (!duplicate) outputs.push_back(output);
+    }
+    const amcl::input::ExternalControlIdentity identity{
+        normalizeInputSource(source), deviceId, controlId};
+    return amcl::input::SourceAcquireControl(identity,outputs);
+}
+
+extern "C" bool ohos_release_source_control(uint64_t token) {
+    // 释放不要求 surface/bridge 就绪：失焦后仍须收回账本，已复位的旧 token 是幂等成功。
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    const bool released = amcl::input::SourceReleaseControl(token);
+    if (released) for (auto& owner : s_groupUiOwners) if (owner.token == token) owner = GroupUiOwner{};
+    return released;
+}
+
+static void releaseMenuToolControls(bool retireRegistration) {
+    // 原生owner与累计统计在同一公共事务里退休；先清完整集合，再发每码一次末松，
+    // 旧UI的重复UP只能得到幂等成功。调用方先持touch，scope退休时还已推进bridge epoch。
+    std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+    reconcileMenuToolProcessLocked();
+    bool left=false,right=false,shift=false;
+    for(const auto& item:s_menuToolOwners) {
+        left |= item.second.code == -1; right |= item.second.code == -2; shift |= item.second.code == 340;
+    }
+    s_menuToolReleased += static_cast<uint32_t>(s_menuToolOwners.size());
+    s_menuToolOwners.clear();
+    if(retireRegistration) s_menuToolPanelPrefix.clear();
+    // 鼠标先松、修饰键末松。neutral只改变tool贡献，ordinary/typed同码仍按首按末松持有。
+    if(left) inputBridge_pushTouchMenuToolV1(-1,GLFW_RELEASE);
+    if(right) inputBridge_pushTouchMenuToolV1(-2,GLFW_RELEASE);
+    if(shift) inputBridge_pushTouchMenuToolV1(340,GLFW_RELEASE);
+}
+
+/** 真实surface切换先撤销消费队列，再关闭Native工具租约；无触点也不可继承旧pending工具输入。 */
+static void retireTouchMenuSurfaceScope() {
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    inputBridge_retireTouchMenuScopeV1();
+    releaseMenuToolControls();
+}
+
+/**
+ * 面板的显式取消事务：在surface→touch→transaction内先退休neutral工具epoch，
+ * 再闭合Native冻结owner集合和累计统计。普通UP仍调用ohos_touch_menu_button(false)，
+ * 不能把CANCEL解释成一对正常点击；已经UP但尚未poll的1011也由此退休。
+ * 本入口不要求surface仍活跃、菜单模式或旧publication仍有效，取消必须能独立收口。
+ * true表示本prefix原租约已同步退休，或其旧域已经结束；不匹配的新面板可能仍持有。
+ * 消费者在自己的线程释放已提交贡献，不把返回值宣称为游戏线程已经收到UP。
+ * direct/ordinary/typed及全touch会话不换代。
+ */
+extern "C" bool ohos_cancel_touch_menu_mouse(const char* panelPrefix) {
+    if (!panelPrefix || !*panelPrefix || std::strlen(panelPrefix)>192) return false;
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    pthread_mutex_lock(&s_schemaMutex);
+    bool accepted=true;
+    {
+        std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+        reconcileMenuToolProcessLocked();
+        // 旧实例只确认自己的域已结束，不推进新epoch；当前实例先退输入再承接实际已消费反馈。
+        if(!s_menuToolPanelPrefix.empty() && s_menuToolPanelPrefix==panelPrefix) {
+            inputBridge_retireTouchMenuToolScopeV1();releaseMenuToolControls(false);
+            if(!s_menuTouch.DirectActive() && !adoptCommittedMenuCursorLocked())
+                s_touchMenuCursorVisible.store(false,std::memory_order_release);
+            accepted=s_menuToolOwners.empty();
+        }
+    }
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
+}
+
+/**
+ * 成对菜单工具持有，只管理Left/Right/Shift独立来源。control由面板实例加命名空间，
+ * 按下冻结全局不复用token与code；最多32个owner。同码首按末松后通过scoped TOOL
+ * 发布，禁止进入common ledger，否则模态不能撤销本来源而保留实体/手柄同码持有。
+ * UP只解释原code；退休后的旧UP幂等且不会补发点击。函数始终按touch→schema→transaction取锁。
+ */
+extern "C" bool ohos_touch_menu_button(const char* control,int code,bool down,uint64_t publication) {
+    if(!control || !*control || std::strlen(control)>192 || (code!=-1 && code!=-2 && code!=340)) return false;
+    // 不连续对账自身会取得touch锁，必须在菜单事务锁外完成，不能从Acquire包装入口重入。
+    if(down) { reconcileLegacyRingDiscontinuity(); resolveBridge(); if(!bridgeReady()) return false; }
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    std::lock_guard<std::mutex> lock(s_touchStateMutex);
+    // 真实grab公告可能进入schema→transaction退休，必须先消费，再取更内层transaction。
+    if(down && (s_touchPaused.load(std::memory_order_acquire) || consumeGrabEpochLocked(isGrabbedMode()))) return false;
+    if(down) {
+        // Native边界也核真实current与已确认token，不能只凭前一次NAPI检查或未刷新的fenced布尔值。
+        // 原新DOWN资格保持严格：待发布fence关闭所有新owner，continuation例外不用于按下。
+        pthread_mutex_lock(&s_schemaMutex);
+        const auto current = touchPublicationContextLocked();
+        (void)s_touchAdmission.Query(current);
+        const bool allowed = current.surface != 0 && !current.grabbed && s_touchAdmission.AcceptsUiToken(publication);
+        pthread_mutex_unlock(&s_schemaMutex);
+        if(!allowed) return false;
+    }
+    std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+    reconcileMenuToolProcessLocked();
+    const auto found=s_menuToolOwners.find(control);
+    if(!down) {
+        if(found==s_menuToolOwners.end()) return true;
+        // 释放使用冻结绑定，不读本次code。先摘old owner，检查同码剩余引用后再发末松。
+        const int oldCode=found->second.code;
+        s_menuToolOwners.erase(found); ++s_menuToolReleased;
+        const bool stillHeld=std::any_of(s_menuToolOwners.begin(),s_menuToolOwners.end(),
+            [oldCode](const auto& item){return item.second.code==oldCode;});
+        if(!stillHeld) inputBridge_pushTouchMenuToolV1(oldCode,GLFW_RELEASE);
+        return true;
+    }
+    // DOWN只使用可视bounds注册的实例，不以“零held”作新实例认领许可。
+    const std::string controlIdentity(control);
+    const auto delimiter=controlIdentity.find(':');
+    if(delimiter==std::string::npos || !menuToolPanelMatchesLocked(controlIdentity.substr(0,delimiter+1).c_str(),publication)) return false;
+    // 同身份重试也必须先通过实例/publication准入，再接受原绑定；不能用旧租约
+    // 绕过新publication尚未重新注册的边界，持有期间改码仍然拒绝。
+    if(found!=s_menuToolOwners.end()) return found->second.code==code;
+    if(s_menuToolOwners.size()>=32) return false;
+    const uint64_t owner=amcl::input::SourceNextNativeOwner();
+    if(!owner) return false;
+    const bool alreadyHeld=std::any_of(s_menuToolOwners.begin(),s_menuToolOwners.end(),
+        [code](const auto& item){return item.second.code==code;});
+    s_menuToolOwners.emplace(control,MenuToolOwner{owner,code}); ++s_menuToolAcquired;
+    if(!alreadyHeld) inputBridge_pushTouchMenuToolV1(code,GLFW_PRESS);
+    if(code<0) { ++s_touchGuide.mouseButton; s_touchGuide.mouseCode=code; }
+    return true;
+}
+
+/** 滚轮与指针一样只准入菜单，JS抓取回调迟到时也不能滚动游戏快捷栏。 */
+extern "C" bool ohos_touch_menu_scroll(int steps,const char* prefix,uint64_t publication) {
+    if(steps==0 || steps < -32 || steps > 32 || s_touchPaused.load(std::memory_order_acquire)) return false;
+    reconcileLegacyRingDiscontinuity(); resolveBridge(); if(!bridgeReady()) return false;
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    std::lock_guard<std::mutex> lock(s_touchStateMutex);
+    if(consumeGrabEpochLocked(isGrabbedMode())) return false;
+    pthread_mutex_lock(&s_schemaMutex);
+    bool accepted=false;
+    {
+        std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+        reconcileMenuToolProcessLocked();
+        // 只延续已确认token和已登记prefix；不会为pending新UI登记实例或取得新的按钮owner。
+        accepted=touchAdmissionAcceptsUiContinuationLocked(publication) &&
+            menuToolPanelMatchesLocked(prefix,publication) && emitScopedMenuScroll(0,steps,true);
+    }
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
 }
 
 extern "C" void ohos_send_key_event(int key, int scancode, int action, int mods) {
@@ -3334,6 +4396,7 @@ extern "C" bool ohos_send_mouse_event_checked(int button, int action, int mods) 
 
 extern "C" bool ohos_send_source_mouse_event_checked(
         int source, int button, int action, int mods) {
+    reconcileLegacyRingDiscontinuity();   // 同 ohos_send_source_key_event_checked
     resolveBridge();
     if (!bridgeReady()) return false;
     return routerMouse(normalizeInputSource(source), button, action,
@@ -3462,35 +4525,33 @@ static AmclLegacyPhysicalOutcome routePhysicalButtonEventChecked(
         routedMappedButton);
 }
 
-static bool claimPhysicalMouseButtonSource(
-        PhysicalMouseButtonSource source, int glfwButton) {
-    if (glfwButton < 0 || glfwButton >= kPhysicalMouseButtonCount) {
-        return false;
+/**
+ * 热拔除使用 DOWN 时保存的 native button/device 身份补 UP。policy 已先摘配对，
+ * 本函数只走现役 typed/legacy 单平面事务；不经全局 reset，不误放其它鼠标或虚拟键。
+ */
+static void releaseRemovedPointerButton(uint64_t deviceId,
+        uint32_t nativeButton, void*) {
+    int mapped = -1;
+    switch (nativeButton) {
+        case 1u: mapped = 0; break;
+        case 2u: mapped = 1; break;
+        case 4u: mapped = 2; break;
+        case 8u: mapped = 3; break;
+        case 16u: mapped = 4; break;
+        default: return;
     }
-    const uint8_t desired = static_cast<uint8_t>(source);
-    std::atomic<uint8_t>& owner = s_physicalMouseButtonSources[glfwButton];
-    std::atomic<int64_t>& lastEdge = s_physicalMouseButtonLastEdgeNs[glfwButton];
-    const int64_t now = nowMonotonicNs();
+    (void)amcl::input::PlatformInputPhysicalButtonTransaction(
+        deviceId, nativeButton, AMCL_INPUT_ACTION_UP, mapped, GLFW_RELEASE,
+        true, routePhysicalButtonEventChecked);
+}
 
-    uint8_t current = owner.load(std::memory_order_acquire);
-    if (current == static_cast<uint8_t>(PhysicalMouseButtonSource::Unknown)) {
-        owner.compare_exchange_strong(
-            current, desired, std::memory_order_acq_rel,
-            std::memory_order_acquire);
-        current = owner.load(std::memory_order_acquire);
-    } else if (current != desired) {
-        // The incumbent has gone quiet long enough to be considered dead (see
-        // kPhysicalMouseButtonHandoverIdleNs). Handing the button over keeps a
-        // single half-delivered edge from disabling the only working channel.
-        const int64_t last = lastEdge.load(std::memory_order_acquire);
-        if (last != 0 && now - last >= kPhysicalMouseButtonHandoverIdleNs) {
-            owner.store(desired, std::memory_order_release);
-            current = desired;
-        }
-    }
-    if (current != desired) return false;
-    lastEdge.store(now, std::memory_order_release);
-    return true;
+extern "C" void ohos_release_physical_pointer_device(
+        uint64_t deviceId, bool releaseUnknown) {
+    if (deviceId == 0u) return;
+    // 已消失的 surface 不得拦住释放；只拿同一递归锁，禁止拔除与新 DOWN 交叉。
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    amcl_input_policy_release_pointer_device(deviceId, releaseUnknown,
+        releaseRemovedPointerButton, nullptr);
 }
 
 // 窗口级过滤器取走的左键边沿（window_event_filter.cpp 调用，位于 ArkUI 分发之前）。
@@ -3572,16 +4633,13 @@ extern "C" void ohos_route_arkui_physical_mouse_button(
 #endif
     if (glfwButton < 0) return;
     amcl::input::SurfaceInputGateTransaction gate;
-    // 左键走策略层（配对语义），其余按钮维持既有 per-button 仲裁。
+    // 全部按钮按device/button/DOWN-channel配对，长按不会因静默时间而换源。
     // API 26 实测 ArkUI onMouse **会**报左键 Press/Release（`actions=[0,1,1,...]`），
     // 只是此前每次都被更早到达的合成触摸镜像抢走所有权，所以 `btnArkui` 恒为 0，
     // 让人误以为这条通道不存在左键。
     const bool claimed = static_cast<bool>(gate) &&
-        (glfwButton == GLFW_MOUSE_BUTTON_LEFT
-             ? acceptPhysicalLeftEdge(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,
-                                      action == GLFW_PRESS)
-             : claimPhysicalMouseButtonSource(
-                   PhysicalMouseButtonSource::ArkUi, glfwButton));
+        acceptPhysicalButtonEdge(AMCL_INPUT_CHANNEL_ARKUI_MOUSE, deviceId,
+            static_cast<uint32_t>(arkuiButtonMask), action == GLFW_PRESS);
 #if AMCL_INPUT_GATE0_TELEMETRY
     {
         const AmclGate0ArkuiButtonSample diagnostic{
@@ -3606,10 +4664,13 @@ extern "C" void ohos_route_arkui_physical_mouse_button(
         // ArkUI edge. The gate establishes the global surface -> touch order.
         std::lock_guard<std::mutex> touchStateLock(s_touchStateMutex);
     }
-    (void)amcl::input::PlatformInputPhysicalButtonTransaction(
+    const AmclLegacyPhysicalOutcome outcome =
+        amcl::input::PlatformInputPhysicalButtonTransaction(
         deviceId, nativeButton, typedAction, glfwButton, action,
         static_cast<bool>(gate), routePhysicalButtonEventChecked,
         deviceClass, monotonicTimeNs);
+    finishPhysicalButtonAdmission(AMCL_INPUT_CHANNEL_ARKUI_MOUSE, deviceId,
+        nativeButton, action == GLFW_PRESS, outcome);
 }
 
 // ==================== 统一生命周期取消边界 ====================
@@ -3618,6 +4679,8 @@ extern "C" void ohos_route_arkui_physical_mouse_button(
 // OutputLedger、external/physical owner；3) 清 schema runtime/deadline/carried；
 // 4) 清 finger registry 与 look backlog。返回时 neutral core 与 legacy 输出都位于零状态。
 extern "C" void ohos_cancel_all_input(int reason) {
+    // 此兜底先结束mapped速率，再走原控制清理；停源不依赖release成功或UI仍持连接句柄。
+    amclMappedLookRetireAll();
     // Every caller, including NAPI/pause/window-recreate paths, joins the same
     // surface transaction used by native callbacks. The mutex is recursive so
     // blur/destroy may safely call this while already holding the gate. Global
@@ -3626,6 +4689,24 @@ extern "C" void ohos_cancel_all_input(int reason) {
     // the reset/release boundary or repopulate owners before this function returns.
     std::lock_guard<std::recursive_mutex> surfaceGateLock(
         s_surfaceInputGateMutex);
+    // 生命周期已在线性化点取得 gate，先退休消费端菜单作用域，再做平台锁、typed
+    // reset 和各 owner 的可能回调。否则这些清理步骤执行期间，已经 UP 的旧点击仍可
+    // 被消费。后面的 schema 退休再次推进 epoch 是幂等的安全边界，不会恢复旧记录。
+    inputBridge_retireTouchMenuScopeV1();
+    // 与deadline/触点相同的真实grab围栏；即使服务尚未加载也继续安全复位，
+    // 因为不可用的mode会同时阻止worker产生新的期限输出。
+    amcl::input::AuthoritativeGrabInputTransaction grabTransaction;
+    // 完整取消拥有平台锁的释放责任。游戏requested intent仍由backend掌握；这里只
+    // 发布实际active=false，不能伪装成游戏主动结束grab。pause/focus/surface的准入
+    // 状态会继续挡住迟到心跳，普通reset则允许下一次有效对账重新授权。
+    if (reason == AMCL_INPUT_CANCEL_FOCUS_LOST) {
+        amcl_cursor_lock_set_focus(false);
+    } else if (reason == AMCL_INPUT_CANCEL_SURFACE_LOST || reason == AMCL_INPUT_CANCEL_PAGE_DISPOSE) {
+        amcl_cursor_lock_set_surface(false);
+    }
+    // BACKGROUND只撤销实际锁；foreground准入由现有Ability OR-mask发布器关闭/恢复，
+    // 不能在此伪造组件Blurred，否则不派发新Focus的前台恢复会永久失去capture。
+    (void)amcl_cursor_lock_set(0, false);
     uint32_t resetReason = AMCL_INPUT_RESET_EXPLICIT;
     switch (reason) {
         case AMCL_INPUT_CANCEL_BACKGROUND:
@@ -3651,14 +4732,18 @@ extern "C" void ohos_cancel_all_input(int reason) {
     // maintenance consumer observes it without duplicating legacy GLFW output.
     // Ingress suppresses duplicates and classifies resets after lifecycle closure as stale.
     amcl::input::PlatformInputRequestReset(resetReason);
+    amcl::input::PlatformInputCapturePlatformChanged(false,
+        reason == AMCL_INPUT_CANCEL_FOCUS_LOST || reason == AMCL_INPUT_CANCEL_BACKGROUND
+            ? AMCL_INPUT_CAPTURE_REASON_FOCUS_LOST
+            : reason == AMCL_INPUT_CANCEL_SURFACE_LOST || reason == AMCL_INPUT_CANCEL_PAGE_DISPOSE
+                ? AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST : AMCL_INPUT_CAPTURE_REASON_PLATFORM_LOST);
     resolveBridge();
 
     // lifecycle/NAPI 线程必须先与正在执行的 XComponent 事件汇合，再按 touch→schema→transaction→ledger
     // 顺序释放。锁覆盖完整取消事务，保证返回时 finger registry 与 OutputLedger 同时处于零状态。
     std::lock_guard<std::mutex> touchStateLock(s_touchStateMutex);
-    // A full lifecycle reset is the only boundary that clears the native-left
-    // authority latch. Cancel the delayed candidate before releasing ledger
-    // owners so its worker cannot inject a tap after this zero-held boundary.
+    // 生命周期取消同时退休精细鼠标与原生鼠标镜像，避免旧菜单持有流入新的页面。
+    releaseMenuToolControls();
     // 同一个边界也必须复位镜像手势状态：cancel 之后不会再有配对的抬起边沿到达。
     resetMirrorGestureStateLocked();
     // Take schema before the router transaction, matching every schema output
@@ -3667,6 +4752,10 @@ extern "C" void ohos_cancel_all_input(int reason) {
     pthread_mutex_lock(&s_schemaMutex);
     std::lock_guard<std::recursive_mutex> cancelTransactionLock(
         s_inputTransactionMutex);
+    // 本次完整复位覆盖此刻之前发生的全部 legacy ring 不连续：复位结束后登记这个值，之后的入口
+    // 不再为同一次丢历史重复做 legacy-only 复位（那会平白推进前端 epoch、丢掉新按下的缓存）。
+    // 读取是一次原子 load，本函数即使经 bridge 回调跑在 MC 线程上也不会进入 bridge 锁。
+    const uint64_t ringEpochCovered = inputBridge_legacyRingDiscontinuityEpochV1();
     // The router owns the transaction mutex for the entire callback. Its reset
     // fence is deliberately wider than the physical-owner releases: sendEvent,
     // UI projection and reset-completion callbacks may synchronously re-enter
@@ -3686,23 +4775,9 @@ extern "C" void ohos_cancel_all_input(int reason) {
         // "有配对的抬起"，而复位已经把 MC 侧的按下态释放过一次。
         // 只清配对、保留已发现的设备能力（理由见 input_channel_policy.h）。
         amcl_input_policy_reset_pairing();
-        for (int button = 0; button < kPhysicalMouseButtonCount; ++button) {
-            s_physicalMouseButtonSources[button].store(
-                static_cast<uint8_t>(PhysicalMouseButtonSource::Unknown),
-                std::memory_order_release);
-            s_physicalMouseButtonLastEdgeNs[button].store(
-                0, std::memory_order_release);
-        }
         schemaResetTransientStateLocked({});
 
-        if (s_activeMenuTransactionToken != 0) {
-            // lifecycle cancel 进入同一有序 ring，并携带原 token；bridge 可同时撤销未发 PRESS 或释放已发按键。
-            sendEvent(EVENT_TYPE_MENU_POINTER, MENU_POINTER_CANCEL, 0, 0,
-                      (int)s_activeMenuTransactionToken);
-            s_activeMenuTransactionToken = 0;
-        }
-        s_normalFinger = -1;
-        for (int i = 0; i < MAX_FINGERS; i++) {
+                for (int i = 0; i < MAX_FINGERS; i++) {
             s_fingerDown[i] = false;
             s_fingerDead[i] = false;
             // ---- P0 修复：滚轮手势识别状态此前**不在**本函数的复位集合里 ----
@@ -3726,6 +4801,7 @@ extern "C" void ohos_cancel_all_input(int reason) {
         // stale repeat/modifier cache across the completed cancellation boundary.
         amcl::input::PlatformInputCompleteResetBoundary();
     });
+    s_legacyRingTracker.AbsorbLocked(ringEpochCovered);
     pthread_mutex_unlock(&s_schemaMutex);
     // 端级记账：本函数覆盖的是**触控端与物理键鼠端**在 native 侧的全部状态。
     // 手柄端的状态机整体在 ArkTS（GamepadManager 的 pressedButtons / activeMoveKeys /
@@ -3769,11 +4845,14 @@ extern "C" void ohos_cancel_all_input(int reason) {
     // 复位刚完成是不变量最该成立的一刻（本函数的注释承诺"返回时处于零状态"）。
     // 在这里检查一次，等于把那句承诺变成可执行的断言而不是注释里的声明。
     // 注意它需要连续两次观测才会上报，所以单次复位不会因为一个瞬时窗口而误报。
-    ohos_input_invariant_tick();
+    // 走不带 ring 对账的内部入口：本函数仍持 touchState，且可能运行在 MC 线程。
+    runInputInvariantTick();
     OH_LOG_INFO(LOG_APP, "Input cancelAll reason=%{public}d", reason);
 }
 
 extern "C" void ohos_set_touch_paused(bool paused) {
+    std::lock_guard<std::recursive_mutex> surfaceGateLock(s_surfaceInputGateMutex);
+    amcl_cursor_lock_set_paused(paused);
     if (paused && !s_touchPaused.load(std::memory_order_acquire)) {
         // 必须先 cancel，再禁止入口；反过来会吞掉负责释放的 UP/CANCEL。
         ohos_cancel_all_input(AMCL_INPUT_CANCEL_PAUSE);
@@ -3791,7 +4870,7 @@ extern "C" void ohos_set_touch_paused(bool paused) {
 extern "C" void ohos_set_look_sensitivity(float v) {
     if (v < 0.1f) v = 0.1f;
     if (v > 5.0f) v = 5.0f;
-    s_lookSensitivity.store(v, std::memory_order_relaxed);
+    if (!amcl_set_source_look_sensitivity(-1, v)) return;
     // ⚠️ `{public}` 是必须的：缺它 hilog 打成 `<private>`，于是真机日志只能证明
     // "这个 setter 被调过一次"，**证明不了生效的数值**（计划 §77.6）。四件套的三个
     // 浮点 setter 都曾缺它，导致 §77 判读时无法核对两台设备的实际取值。
@@ -3799,7 +4878,7 @@ extern "C" void ohos_set_look_sensitivity(float v) {
 }
 
 extern "C" void ohos_set_invert_y(bool b) {
-    s_invertY.store(b, std::memory_order_relaxed);
+    amcl_set_source_look_invert_y(-1, b);
     OH_LOG_INFO(LOG_APP, "InvertY = %{public}s", b ? "true" : "false");
 }
 
@@ -3812,7 +4891,7 @@ extern "C" void ohos_set_invert_y(bool b) {
 extern "C" void ohos_set_look_smoothing(float alpha) {
     if (alpha < 0.1f) alpha = 0.1f;
     if (alpha > 1.0f) alpha = 1.0f;
-    s_lookSmoothAlpha.store(alpha, std::memory_order_relaxed);
+    if (!amcl_set_source_look_smoothing(-1, alpha)) return;
     OH_LOG_INFO(LOG_APP, "LookSmoothing alpha = %{public}.2f (touch/gamepad only)",
                 alpha);
 }
@@ -3822,7 +4901,7 @@ extern "C" void ohos_set_look_smoothing(float alpha) {
 extern "C" void ohos_set_look_accel(float v) {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
-    s_lookAccel.store(v, std::memory_order_relaxed);
+    if (!amcl_set_source_look_acceleration(-1, v)) return;
     OH_LOG_INFO(LOG_APP, "LookAccel = %{public}.2f", v);
 }
 
@@ -3830,15 +4909,23 @@ extern "C" void ohos_set_look_accel(float v) {
 // ArkTS 的 grabbed 字段只描述该表对应的可见场景；真正的 GrabEpoch 由 bridge announcement 驱动。
 // 协议边界采用“先验证临时表、后一次性发布”：任一字段非法时旧 generation 完全不变，避免 UI 已更新
 // 而 native 留下一张半解析热区。NAPI 做第一层友好校验，这里仍做第二层，因为 C ABI 不能信任调用方。
+// 取值范围与 routerKey / routerMouse 共用 legacy_output_code.h 的同一组判据（键 1..512、
+// 按钮 0..15 即 schema 编码 -1..-16），与 ArkTS 的 validOutputCode 逐值一致。
 static bool schemaOutputCodeValid(int code) {
-    return (code >= 1 && code <= 512) || (code <= -1 && code >= -16);
+    return amcl::input::LegacySchemaOutputCodeValid(code);
 }
 
 static bool schemaEntriesValid(const AmclCtrlEntry* entries, int count,
                                float compW, float compH, int grabbed, float deadZone,
-                               int schemaVersion, const char** reason) {
-    if (schemaVersion != AMCL_CONTROL_SCHEMA_VERSION) { *reason = "unsupported-version"; return false; }
-    if (count < 0 || count > AMCL_CONTROL_SCHEMA_MAX_CONTROLS) { *reason = "control-count"; return false; }
+                               int schemaVersion, const char** reason, const amcl::input::TouchGroupSchema* groups = nullptr) {
+    if (schemaVersion != 2 && schemaVersion != AMCL_CONTROL_SCHEMA_VERSION && schemaVersion != 4) { *reason = "unsupported-version"; return false; }
+    if (schemaVersion != 4 && groups && groups->Enabled()) { *reason = "group-schema-version"; return false; }
+    if (schemaVersion == 4 && (!groups || !amcl::input::ValidTouchGroupSchema(*groups, count))) {
+        *reason = "group-schema"; return false;
+    }
+    if (count < 0 || count > (schemaVersion == 2 ? 256 : AMCL_CONTROL_SCHEMA_MAX_CONTROLS)) {
+        *reason = "control-count"; return false;
+    }
     if (count > 0 && entries == nullptr) { *reason = "null-entries"; return false; }
     if (!std::isfinite(compW) || !std::isfinite(compH) || compW <= 0.0f || compH <= 0.0f ||
         compW > 65536.0f || compH > 65536.0f) { *reason = "component-size"; return false; }
@@ -3864,9 +4951,14 @@ static bool schemaEntriesValid(const AmclCtrlEntry* entries, int count,
             e.x + e.w > compW + 1.0f || e.y + e.h > compH + 1.0f ||
             e.hitSlop < 0.0f || e.hitSlop > 256.0f) { *reason = "rect"; return false; }
         if (e.keyCount < 0 || e.keyCount > AMCL_CONTROL_MAX_KEYS) { *reason = "key-count"; return false; }
+        if (e.swipeGroup < 0 || e.swipeGroup > 256 || (e.swipeGroup != 0 &&
+            (schemaVersion < 3 || e.kind != 0 || e.handledBy != 0 || e.trigger != 0 || e.dragLook != 0))) {
+            *reason = "swipe-group"; return false;
+        }
 
         // 只有 native button 产生任意键/鼠标持续输出；其它 kind 的兼容 keyOrMouse 可为 0。
         if (e.handledBy == 0 && e.kind == 0) {
+            if (schemaVersion == 4 && groups->Enabled() && groups->controls[i].phases) continue;
             if (e.keyCount == 0) {
                 if (!schemaOutputCodeValid(e.keyOrMouse)) { *reason = "button-key"; return false; }
             } else {
@@ -3879,11 +4971,17 @@ static bool schemaEntriesValid(const AmclCtrlEntry* entries, int count,
     return true;
 }
 
-extern "C" uint64_t ohos_set_control_schema(const AmclCtrlEntry* entries, int count,
+static uint64_t setControlSchemaWithGroups(const AmclCtrlEntry* entries, int count,
                                               float compW, float compH, int grabbed, float deadZone,
-                                              int schemaVersion) {
+                                              int schemaVersion, const amcl::input::TouchInteractionConfig* config,
+                                              const amcl::input::TouchGroupSchema* groups) {
+    // 旧数值协议也加入surface事务，不能绕过新发布接口正在执行的零触点安装边界。
+    std::lock_guard<std::recursive_mutex> publicationGate(s_surfaceInputGateMutex);
+    const amcl::input::TouchInteractionConfig candidate = config ? *config : amcl::input::TouchInteractionConfig{};
+    if ((schemaVersion >= 3 && !config) || !amcl::input::ValidTouchInteractionConfig(candidate)) return 0;
+    const amcl::input::TouchGroupSchema groupDefinition = groups ? *groups : amcl::input::TouchGroupSchema{};
     const char* reason = "unknown";
-    if (!schemaEntriesValid(entries, count, compW, compH, grabbed, deadZone, schemaVersion, &reason)) {
+    if (!schemaEntriesValid(entries, count, compW, compH, grabbed, deadZone, schemaVersion, &reason, groups)) {
         AMCL_LOG_W(LOG_TAG, "ControlSchema rejected: reason=%{public}s version=%{public}d count=%{public}d",
                     reason, schemaVersion, count);
         return 0;
@@ -3894,15 +4992,16 @@ extern "C" uint64_t ohos_set_control_schema(const AmclCtrlEntry* entries, int co
     // 旧 owner，使“按住 F3 跨 ungrab”退化。持有 touch 锁直到新 generation 完整发布，也禁止 MOVE/UP
     // 落在“旧 epoch 已迁移、但新表尚未安装”的半事务窗口。
     resolveBridge();
+    // ring 不连续对账先于 touchState：新 generation 必须建立在已经与 ring 对齐的 owner 状态上。
+    reconcileLegacyRingDiscontinuity();
     std::lock_guard<std::mutex> touchStateLock(s_touchStateMutex);
     // A candidate is bound to the old schema generation and its stable look
     // role. Replacement invalidates that role but keeps a previously observed
     // native-left channel authoritative until a full lifecycle reset.
-    const int announcedGrab = s_announcedGrabState.load(std::memory_order_acquire);
-    if (announcedGrab >= 0) {
-        consumeGrabEpochLocked(announcedGrab != 0);
-    } else if (s_isGrabbingFn) {
-        consumeGrabEpochLocked(s_isGrabbingFn());
+    // 公告状态由 consumeGrabEpochLocked 在取队列的同一临界区读出；这里的无锁读只决定“要不要消费”，
+    // 有公告时回退值不参与判定。
+    if (s_grabAnnouncements.AnnouncedState() >= 0 || s_isGrabbingFn) {
+        (void)consumeGrabEpochLocked(s_isGrabbingFn ? s_isGrabbingFn() : (grabbed != 0));
     } else if (!s_grabFlipInit) {
         // bridge 尚未加载时只初始化空 epoch；没有 bridge 就不可能已有已发送的 schema 输出。
         s_grabFlipLastState = (grabbed != 0);
@@ -3910,21 +5009,271 @@ extern "C" uint64_t ohos_set_control_schema(const AmclCtrlEntry* entries, int co
     }
 
     pthread_mutex_lock(&s_schemaMutex);
-    schemaCancelGenerationLocked();
+    if (s_schemaGeneration != 0 && s_schemaContextPolicy == s_touchContextPolicy && s_schemaWidthPx == compW && s_schemaHeightPx == compH &&
+        s_schemaDeadZone == deadZone && amcl::input::SameTouchInteractionConfig(s_touchConfig,candidate) &&
+        amcl::input::SameControlSchemaEntries(s_schema, entries, count) && s_touchGroups.Definition() == groupDefinition) {
+        const uint64_t unchanged = s_schemaGeneration;
+        pthread_mutex_unlock(&s_schemaMutex);
+        return unchanged;
+    }
+    // 表内容变化与全局策略变化分开：新增UI让出区、隐藏单键、重排不应退休未变的持续输入。
+    const bool samePolicy = s_schemaGeneration != 0 && s_schemaContextPolicy == s_touchContextPolicy && s_schemaWidthPx == compW && s_schemaHeightPx == compH &&
+        s_schemaDeadZone == deadZone && amcl::input::SameTouchInteractionConfig(s_touchConfig,candidate);
+    // 完整扩展先在副本上分配；失败在任何输入退休/表交换之前返回。
+    amcl::input::TouchGroupState nextGroups;
+    try { nextGroups = s_touchGroups; nextGroups.Install(groupDefinition); }
+    catch (...) { pthread_mutex_unlock(&s_schemaMutex); return 0; }
+    const int nativeFingersBefore = schemaNativeFingerCountLocked();
+    if (samePolicy && s_touchGroups.Definition() == groupDefinition) {
+        const bool sameBindings = amcl::input::SameControlSchemaBindings(s_schema, entries, count);
+        schemaRetireChangedControlsLocked(entries, count);
+        // schema计数只包含grabbed角色，不代表direct菜单已零触点；必须再核菜单解释器
+        // 与tool完整快照。仍贴屏或显式持有的未变角色保持，已抬手的旧前缀不继承新表。
+        // 完整等价表已在上方返回。纯反馈虽需安装新表，却没有改变菜单作用域的输入绑定，
+        // 不能撤销已UP但尚未消费的合法短tap；真实绑定变化仍保留原完成边界和资源核验。
+        if (!sameBindings && nativeFingersBefore == 0 && !s_menuTouch.Active() && menuToolHeldSnapshot().live == 0)
+            inputBridge_retireTouchMenuScopeV1();
+    } else schemaCancelGenerationLocked();
+    s_touchConfig = candidate;
+    s_touchGroups = std::move(nextGroups);
+    // Configure会取消菜单事务；仅真正的策略/视口变更才调用，纯UI表更新保留当前双指/拖动。
+    if (!samePolicy) s_menuTouch.Configure(compW,compH,ohos_display_density(),candidate,emitMenuInteraction);
     if (count > 0) s_schema.assign(entries, entries + count);
     else s_schema.clear();
+    s_groupMouseControl=schemaGroupControlIndex(s_groupMouseMember.c_str());
+    if (s_touchGroups.Enabled() && !s_groupMouseMember.empty() && s_groupMouseControl < 0) {
+        inputBridge_retireTouchMenuToolScopeV1(); releaseMenuToolControls();
+        std::fill(s_menuMouseBounds,s_menuMouseBounds+4,0.0); s_groupMouseMember.clear();
+    }
     s_schemaGeneration++;
     // 0 被 NAPI/ArkTS 保留作失败哨兵；uint64 回绕在实际生命周期不可达，仍防御一次。
     if (s_schemaGeneration == 0) s_schemaGeneration = 1;
     s_schemaDeadZone = deadZone;
+    s_schemaWidthPx = compW;
+    s_schemaHeightPx = compH;
+    s_schemaContextPolicy = s_touchContextPolicy;
     const uint64_t generation = s_schemaGeneration;
+    const int nativeFingersAfter = schemaNativeFingerCountLocked();
     pthread_mutex_unlock(&s_schemaMutex);
 
-    OH_LOG_INFO(LOG_APP,
+    // 同一发布事务的计数同时落文件，hilog配额/轮转丢行不能使持有验收只剩“换代成功”。
+    // 锁已释放，异步日志不阻塞schema临界区；只记录数量与尺寸，不记录键位或用户文本。
+    AMCL_LOG_I(LOG_TAG,
         "ControlSchema published: generation=%{public}llu entries=%{public}d "
-        "(comp=%.0fx%.0f grabbed=%{public}d dz=%.2f)",
-        (unsigned long long)generation, count, compW, compH, grabbed, deadZone);
+        "(comp=%.0fx%.0f grabbed=%{public}d dz=%.2f) samePolicy=%{public}d native_fingers_before=%{public}d native_fingers_after=%{public}d",
+        (unsigned long long)generation, count, compW, compH, grabbed, deadZone,
+        samePolicy ? 1 : 0, nativeFingersBefore, nativeFingersAfter);
     return generation;
+}
+
+/** 旧数值入口只接受原 v2/v3；新能力只能经带扩展与确认身份的 publication 安装。 */
+extern "C" uint64_t ohos_set_control_schema_v3(const AmclCtrlEntry* entries, int count,
+        float width, float height, int grabbed, float deadZone, int version,
+        const amcl::input::TouchInteractionConfig* config) {
+    if (version != 2 && version != 3) return 0;
+    return setControlSchemaWithGroups(entries,count,width,height,grabbed,deadZone,version,config,nullptr);
+}
+
+/** 旧 v2 调用保持可用；不从另一个可变配置对象偷偷继承 v3 的新手势。 */
+extern "C" uint64_t ohos_set_control_schema(const AmclCtrlEntry* entries,int count,float compW,float compH,
+                                           int grabbed,float deadZone,int schemaVersion) {
+    if (schemaVersion != 2) return 0;
+    return ohos_set_control_schema_v3(entries,count,compW,compH,grabbed,deadZone,schemaVersion,nullptr);
+}
+
+/**
+ * 会话及触控来源的显式生产维护。沿既有surface→mode→touch→schema锁序吸收真实grab公告，
+ * 退休静止旧接触，并把消费者已交付光标投影到反馈状态。它不依赖UI/教学是否订阅读快照。
+ * false只表示当前缺少真实mode事务；公告与安全退休仍沿已有fallback合同处理，不伪造Ready。
+ */
+extern "C" bool ohos_touch_input_maintain() {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    amcl::input::AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touchLock(s_touchStateMutex);
+    const bool grabbed=consumeGrabEpochLocked(mode ? mode.grabbed() : isGrabbedMode());
+    pthread_mutex_lock(&s_schemaMutex);
+    if (mode && !s_touchPaused.load(std::memory_order_acquire)) schemaAdvanceGroupsLocked();
+    if(!grabbed && !s_menuTouch.DirectActive() && !adoptCommittedMenuCursorLocked())
+        s_touchMenuCursorVisible.store(false,std::memory_order_release);
+    pthread_mutex_unlock(&s_schemaMutex);
+    return static_cast<bool>(mode);
+}
+
+/**
+ * 严格只读的接受态视觉投影。只取已被生产入口/显式维护确认的状态，不消费grab公告、不采用
+ * consumer ACK、不触发释放或手势解释。进度按单调时钟计算输出值，读取不推进生产状态。
+ */
+extern "C" void ohos_touch_interaction_visual(double* values,int count) {
+    if (!values || count < 14) return;
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    std::lock_guard<std::mutex> touchLock(s_touchStateMutex);
+    const bool grabbed=s_grabFlipInit && s_grabFlipLastState;
+    pthread_mutex_lock(&s_schemaMutex);
+    values[0]=s_menuTouch.X(); values[1]=s_menuTouch.Y();
+    values[2]=s_touchMenuCursorVisible.load(std::memory_order_acquire) ? 1 : 0;
+    values[3]=s_touchJoystick.CenterX(); values[4]=s_touchJoystick.CenterY();
+    values[5]=s_touchJoystick.X(); values[6]=s_touchJoystick.Y();
+    values[7]=s_touchJoystick.Locked() ? 1 : 0; values[8]=s_touchJoystick.Armed() ? 1 : 0;
+    values[9]=0; values[10]=s_schemaJoyFinger >= 0 ? 1 : 0; values[11]=0;
+    values[12]=static_cast<double>(s_schemaGeneration); values[13]=-1;
+    if(count>14) values[14]=s_menuTouch.Active() ? 1 : 0;
+    if(count>=25) {
+        values[15]=static_cast<double>(s_touchGuide.movement);
+        values[16]=static_cast<double>(s_touchGuide.hotbar); values[17]=s_touchGuide.slot;
+        values[18]=static_cast<double>(s_touchGuide.scroll); values[19]=s_touchGuide.scrollAmount;
+        values[20]=static_cast<double>(s_touchGuide.mouseMove);
+        values[21]=static_cast<double>(s_touchGuide.mouseButton); values[22]=s_touchGuide.mouseCode;
+        values[23]=0;
+        for(int i=0;i<MAX_FINGERS;i++) if(s_fingerDown[i] && !s_fingerDead[i]) values[23]+=1;
+        values[24]=grabbed ? 1 : 0;
+    }
+    for (size_t i=0;i<s_schema.size();++i)
+        if (s_touchJoystickId == s_schema[i].id) { values[13]=static_cast<double>(i); break; }
+    const int64_t now=schemaNowNs();
+    for (const auto& binding:s_schemaFingers) {
+        if (binding.role==SCHEMA_FINGER_LOOK || binding.role==SCHEMA_FINGER_HOTBAR) {
+            if (!binding.moved && binding.deadlineNs > 0) values[9]=std::max(values[9],std::clamp(
+                static_cast<double>(now-binding.startNs)/(s_touchConfig.holdMs*1000000.0),0.0,1.0));
+            // moved只撤销尚未完成的长按候选。战斗长按已认领Use后允许继续拖动，
+            // 直到原UP/CANCEL释放；辅助瞄准必须跟随这份持有，而不能因拖动关掉。
+        }
+    }
+    for (const auto& item:s_schemaButtons) {
+        if (!item.second.outputDown) continue;
+        const auto& control=item.second.control;
+        if (control.keyCount==0 && control.keyOrMouse==s_touchConfig.actions[amcl::input::TouchUse]) values[11]=1;
+        for (int i=0;i<control.keyCount;++i)
+            if(control.keys[i]==s_touchConfig.actions[amcl::input::TouchUse]) values[11]=1;
+    }
+    pthread_mutex_unlock(&s_schemaMutex);
+}
+
+extern "C" void ohos_note_physical_pointer_visual(void) {
+    s_touchMenuCursorVisible.store(false,std::memory_order_release);
+}
+
+/** 面板指针与直接/触摸板共享同一菜单位置；对抓取态和活跃背景触点拒绝抢占。 */
+extern "C" bool ohos_move_touch_menu_pointer(double dx,double dy,const char* prefix,uint64_t publication) {
+    if (!finitePair(dx,dy) || s_touchPaused.load(std::memory_order_acquire)) return false;
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    std::lock_guard<std::mutex> touchLock(s_touchStateMutex);
+    if (consumeGrabEpochLocked(isGrabbedMode())) return false;
+    pthread_mutex_lock(&s_schemaMutex);
+    bool accepted=false;
+    {
+        std::lock_guard<std::recursive_mutex> transaction(s_inputTransactionMutex);
+        reconcileMenuToolProcessLocked();
+        // pending只关闭新DOWN；旧confirmed UI的move仍在真实模式/身份及原注册域内校验。
+        if(touchAdmissionAcceptsUiContinuationLocked(publication) && menuToolPanelMatchesLocked(prefix,publication)) {
+            accepted=s_menuTouch.MoveCursor(dx,dy,emitMenuToolPosition);
+            if(accepted && (dx!=0 || dy!=0)) ++s_touchGuide.mouseMove;
+            if(accepted) s_touchMenuCursorVisible.store(true,std::memory_order_release);
+        }
+    }
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
+}
+
+/** 陀螺仪与手指共属触控端，但采样加工独立；延迟到达的旧schema/取消前样本必须拒绝。 */
+extern "C" bool ohos_send_touch_gyro_sample_checked(double dx,double dy,int64_t timeNs,uint64_t generation) {
+    if (!finitePair(dx,dy) || timeNs <= 0 || !amcl::input::ProductAcceptsDirectTouchInGame() ||
+        s_touchPaused.load(std::memory_order_acquire) || s_touchAdmission.BlocksNewTouch()) return false;
+    resolveBridge();
+    if (!s_addLookDeltaFn) return false;
+    std::lock_guard<std::mutex> touchLock(s_touchStateMutex);
+    if (!consumeGrabEpochLocked(isGrabbedMode())) return false;
+    pthread_mutex_lock(&s_schemaMutex);
+    // 新surface可能在ArkTS还未查询之前已经生效，旧schema数字相同也不能授权旧gyro。
+    (void)s_touchAdmission.Query(touchPublicationContextLocked());
+    if (s_touchAdmission.BlocksNewTouch()) {
+        pthread_mutex_unlock(&s_schemaMutex); return false;
+    }
+    // 旧无lease入口只能核schema/准入的弱兼容边界。sensor STARTUP ns与Native policy-start
+    // 未证明同域，绝不再用这两个数值比较伪造旧样本围栏；新生产路径使用下面的私有lease。
+    if (generation != s_schemaGeneration) {
+        pthread_mutex_unlock(&s_schemaMutex); return false;
+    }
+    pthread_mutex_lock(&s_lookMutex);
+    const bool accepted=amclSourceLookSubmit(AMCL_INPUT_SOURCE_TOUCH_CONTROLS,dx,dy,timeNs,true);
+    if (accepted) {
+        amcl::input::census::Bump(amcl::input::census::Channel::LookApplied);
+        amcl_input_source_note_look(AMCL_INPUT_SOURCE_TOUCH_CONTROLS);
+    }
+    pthread_mutex_unlock(&s_lookMutex);
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
+}
+
+namespace {
+/** 仅保存租约身份；gyro积分/参数/pending仍只在neutral owner，不再存第二个采样clock。 */
+struct GyroLeaseState {uint64_t stream=0,schema=0,touchPolicy=0,lookPolicy=0;AmclLookResourceV1 resource{};};
+std::mutex gyroLeaseMutex;
+std::map<std::string,GyroLeaseState> gyroLeases;
+uint64_t nextGyroLease=1;
+/** 只认本Native连续签发的canonical token；不把其它stream号/陌生字符串当已退休成功。 */
+bool gyroLeaseNumber(const std::string& token,uint64_t* output){if(output)*output=0;
+    if(!output||token.size()<=6||token.size()>26||token.compare(0,6,"GYRO1:")!=0||token[6]<'1'||token[6]>'9')return false;
+    uint64_t value=0;for(size_t i=6;i<token.size();++i){if(token[i]<'0'||token[i]>'9')return false;
+        const uint64_t digit=static_cast<uint64_t>(token[i]-'0');if(value>(UINT64_MAX-digit)/10)return false;value=value*10+digit;}
+    *output=value;return true;
+}
+/** 只读序列化完整资源身份，Hz数值/valid位是明确元数据例外，不让Hz更新重启gyro。 */
+std::string gyroContext(const AmclLookResourceV1& r,uint64_t policy,uint64_t touchPolicy,uint64_t schema){
+    char result[512]{};uint32_t density=0;static_assert(sizeof(density)==sizeof(r.context.density));std::memcpy(&density,&r.context.density,sizeof(density));
+    std::snprintf(result,sizeof(result),"GYROCTX1:%llu:%llu:%llu:%llu:%llu:%llu:%llu:%llu:%llu:%d:%d:%d:%d:%u:%u:%llu:%u:%u",
+        (unsigned long long)r.gameSession,(unsigned long long)r.sessionEpoch,(unsigned long long)r.surfaceEpoch,
+        (unsigned long long)r.focusEpoch,(unsigned long long)r.modeEpoch,(unsigned long long)policy,(unsigned long long)touchPolicy,
+        (unsigned long long)schema,(unsigned long long)r.context.generation,r.context.windowId,r.context.displayId,r.context.leftPx,r.context.topPx,
+        r.context.widthPx,r.context.heightPx,(unsigned long long)density,r.context.transform,
+        r.context.validFields&~AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE);
+    return result;
+}
+}
+std::string ohos_touch_gyro_lease_context(){const auto* look=amclLookExecutionGetPortV1();if(!look)return {};
+    AmclLookResourceV1 resource{};if(!inputBridge_getLookResourceV1(&resource))return {};
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);pthread_mutex_lock(&s_schemaMutex);
+    const auto context=gyroContext(resource,amclLookPolicyEpochV1(1),s_touchContextPolicy,s_schemaGeneration);
+    pthread_mutex_unlock(&s_schemaMutex);return context;
+}
+std::string ohos_begin_touch_gyro_lease(uint64_t schema){const auto* look=amclLookExecutionGetPortV1();if(!look||!schema)return {};
+    if(!amcl::input::ProductAcceptsDirectTouchInGame()||s_touchPaused.load(std::memory_order_acquire))return {};
+    AmclLookResourceV1 resource{};if(!inputBridge_getLookResourceV1(&resource))return {};
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);if(!consumeGrabEpochLocked(isGrabbedMode()))return {};
+    pthread_mutex_lock(&s_schemaMutex);(void)s_touchAdmission.Query(touchPublicationContextLocked());
+    if(s_touchAdmission.BlocksNewTouch()||schema!=s_schemaGeneration){pthread_mutex_unlock(&s_schemaMutex);return {};}
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;stream.kind=AMCL_LOOK_GYRO_DELTA;
+    stream.unit=AMCL_LOOK_VIRTUAL_COUNTS;stream.clock=AMCL_LOOK_SENSOR_STARTUP;stream.reserved=AMCL_LOOK_STREAM_POLICY_LEASE;stream.resource=resource;
+    uint64_t handle=0;if(look->openStream(&stream,&handle)<0){pthread_mutex_unlock(&s_schemaMutex);return {};}
+    std::string token;
+    try{const GyroLeaseState state{handle,schema,s_touchContextPolicy,amclLookPolicyEpochV1(1),resource};
+        std::lock_guard<std::mutex> lock(gyroLeaseMutex);if(gyroLeases.size()>=64||nextGyroLease==UINT64_MAX){(void)look->retireStream(handle);pthread_mutex_unlock(&s_schemaMutex);return {};}
+        token="GYRO1:"+std::to_string(nextGyroLease);gyroLeases.emplace(token,state);++nextGyroLease;
+    }catch(const std::bad_alloc&){(void)look->retireStream(handle);pthread_mutex_unlock(&s_schemaMutex);return {};}
+    pthread_mutex_unlock(&s_schemaMutex);return token;
+}
+bool ohos_submit_touch_gyro_lease(const std::string& token,double dx,double dy,int64_t sensorNs){
+    const auto* look=amclLookExecutionGetPortV1();if(!look||!finitePair(dx,dy)||sensorNs<=0)return false;
+    if(!amcl::input::ProductAcceptsDirectTouchInGame()||s_touchPaused.load(std::memory_order_acquire))return false;
+    AmclLookResourceV1 resource{};if(!inputBridge_getLookResourceV1(&resource))return false;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);if(!consumeGrabEpochLocked(isGrabbedMode()))return false;
+    pthread_mutex_lock(&s_schemaMutex);(void)s_touchAdmission.Query(touchPublicationContextLocked());
+    std::lock_guard<std::mutex> lease(gyroLeaseMutex);const auto it=gyroLeases.find(token);
+    const bool valid=it!=gyroLeases.end()&&!s_touchAdmission.BlocksNewTouch()&&it->second.schema==s_schemaGeneration&&
+        it->second.touchPolicy==s_touchContextPolicy&&it->second.lookPolicy==amclLookPolicyEpochV1(1)&&
+        gyroContext(it->second.resource,it->second.lookPolicy,it->second.touchPolicy,it->second.schema)==
+            gyroContext(resource,amclLookPolicyEpochV1(1),s_touchContextPolicy,s_schemaGeneration);
+    // completed delta只应用一次敏感/倒置；owner用接受时钟加工，sensorNs仅检查原STARTUP流次序。
+    const bool accepted=valid&&inputBridge_submitLookV1(it->second.stream,dx,dy,static_cast<uint64_t>(sensorNs),0)!=0;
+    pthread_mutex_unlock(&s_schemaMutex);return accepted;
+}
+bool ohos_retire_touch_gyro_lease(const std::string& token){const auto* look=amclLookExecutionGetPortV1();uint64_t number=0;
+    if(!look||!gyroLeaseNumber(token,&number))return false;
+    // 停源不要求surface/前台；精确token幂等，不释放后来同schema的另一流。
+    std::lock_guard<std::mutex> lock(gyroLeaseMutex);if(number>=nextGyroLease)return false;
+    const auto it=gyroLeases.find(token);if(it==gyroLeases.end())return true; // 只有连续已签发的原token可证明重复退休。
+    const int result=look->retireStream(it->second.stream);
+    if(result!=AMCL_LOOK_ACCEPTED_NO_MOTION&&result!=AMCL_LOOK_STALE)return false;
+    gyroLeases.erase(it);return true;
 }
 
 // ==================== 阶段 2.8：char 事件（IME / 物理键盘可打印字符）====================
@@ -3950,7 +5299,7 @@ extern "C" void ohos_send_char_mods_event(int codepoint, int mods) {
 // **根本不进 .onMouse**」。API 26 手机上**已被证伪**：那里 ArkUI onMouse 确实报左键，
 // 且 `input_channel_policy` 把它选为左键 aspect 的所有者
 // （真机 `AMCL_INPOLICY left owner=arkuiMouse`，三行 warm-up 序列见计划文档 §52.4）。
-// 本文件下方 `claimPhysicalMouseButtonSource` 附近已有带 API 版本限定的正确表述。
+// 当前全部按钮使用同一按设备配对协议，不能按API版本断言某条通道不存在。
 //
 // 所以现在的正确读法是：**左键在哪条通道上出现是设备相关的**，这也正是
 // `input_channel_policy` 用"能力发现"（这条通道是否真的送来过样本）而不是版本判断
@@ -4011,6 +5360,13 @@ extern "C" void OnDispatchMouseEvent(OH_NativeXComponent* component, void* windo
         return;
     }
     if (s_touchPaused.load(std::memory_order_acquire)) return;
+    ohos_note_physical_pointer_visual();
+    if (nativeAbsoluteRoute && !isGrabbedMode() && finitePair(ev.x,ev.y)) {
+        // 只有经Gate F确认的原生绝对坐标才用于承接；兼容路线由其已接受的ArkTS位置入口更新。
+        pthread_mutex_lock(&s_schemaMutex);
+        s_menuTouch.AdoptCursor(ev.x,ev.y);
+        pthread_mutex_unlock(&s_schemaMutex);
+    }
 
     uint32_t typedAction = 0u;
     int legacyAction = GLFW_RELEASE;
@@ -4050,15 +5406,12 @@ extern "C" void OnDispatchMouseEvent(OH_NativeXComponent* component, void* windo
         default:                                 break;
     }
     if (sampleKind == amcl::input::NativeMouseSampleKind::ButtonEdge) {
-        // 左键走策略层（配对语义），其余按钮维持既有 per-button 仲裁。
+        // 全部按钮按device/button/DOWN-channel配对，长按不会因静默时间而换源。
         // glfwButton < 0 时（API 24 实测存在 NONE/NONE 边沿）不能进策略层：
         // 那不是左键，也不该抢任何按钮。
-        const bool accepted =
-            glfwButton == GLFW_MOUSE_BUTTON_LEFT
-                ? acceptPhysicalLeftEdge(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,
-                                         legacyAction == GLFW_PRESS)
-                : claimPhysicalMouseButtonSource(
-                      PhysicalMouseButtonSource::Native, glfwButton);
+        const bool accepted = glfwButton >= 0 && acceptPhysicalButtonEdge(
+            AMCL_INPUT_CHANNEL_NATIVE_MOUSE, 0u,
+            static_cast<uint32_t>(ev.button), legacyAction == GLFW_PRESS);
         if (!accepted) {
             // A registered callback can still report NONE/NONE on API 24. It
             // must not steal this button from a valid ArkUI Press/Release
@@ -4127,11 +5480,14 @@ extern "C" void OnDispatchMouseEvent(OH_NativeXComponent* component, void* windo
 
     // This XComponent mouse callback exposes no stable hardware identifier;
     // pass the explicit unknown-device identity instead of conflating it with a raw button.
-    (void)amcl::input::PlatformInputPhysicalButtonTransaction(
+    const AmclLegacyPhysicalOutcome outcome =
+        amcl::input::PlatformInputPhysicalButtonTransaction(
         0u, static_cast<uint32_t>(ev.button), typedAction, glfwButton,
         legacyAction, true, routePhysicalButtonEventChecked,
         AMCL_INPUT_DEVICE_CLASS_UNKNOWN,
         ev.timestamp > 0 ? static_cast<uint64_t>(ev.timestamp) : 0u);
+    finishPhysicalButtonAdmission(AMCL_INPUT_CHANNEL_NATIVE_MOUSE, 0u,
+        static_cast<uint32_t>(ev.button), legacyAction == GLFW_PRESS, outcome);
 }
 
 extern "C" void OnDispatchHoverEvent(OH_NativeXComponent* component, bool isHover) {
@@ -4370,7 +5726,7 @@ extern "C" void OnDispatchAxisEvent(OH_NativeXComponent* component, ArkUI_UIInpu
     //   ① 「legacy-only **15-degree quantization** lives in the checked callback」——
     //      本 TU 里**没有任何 15°/格 的量化**。全部滚轮常量是
     //      `kGlfwPhysicalWheelPolicy.stepPx = 1.0`（本条通道）、`kWheelNotchPx = 90.0f` /
-    //      `kWheelIdentifyPx = 30.0f`（合成触摸运动学指纹）、`SCHEMA_SCROLL_STEP_PX`
+    //      `kWheelIdentifyPx = 30.0f`（合成触摸运动学指纹）、`schemaScrollStepPx()`
     //      （虚拟滚轮条）。15°/格 是**旧实现**的做法，它把这个值当"度"用，
     //      而一格滚轮的 px 值永远累加不到 15 ⇒ 从不发 scroll（真机"滚轮不切快捷栏"）。
     //   ② 「and is **never invoked by** the typed source plane」——
@@ -4391,4 +5747,382 @@ extern "C" void OnDispatchAxisEvent(OH_NativeXComponent* component, ArkUI_UIInpu
     (void)amcl::input::PlatformInputPhysicalWheelTransaction(
         0.0, vy, true, true, routePhysicalWheelEventChecked,
         pointerIdentity);
+}
+
+// ==================== 触控发布/模态扩展v1（libentry内部） ====================
+namespace {
+/** 低频发布收据日志只记录不透明身份与计数，不记录布局名称、绑定键值或用户文本。caller持gate。 */
+void logTouchPublicationReceipt(const char* phase, const amcl::input::TouchPublicationReceipt& receipt) {
+    static uint64_t sequence = 0;
+    if (sequence != UINT64_MAX) ++sequence;
+    AMCL_LOG_I(LOG_TAG, "AMCL_TOUCH_PUBLICATION seq=%{public}llu phase=%{public}s status=%{public}s "
+        "surface=%{public}llu session=%{public}llu policy=%{public}llu schema=%{public}llu grabEpoch=%{public}llu "
+        "token=%{public}llu fenced=%{public}d contacts=%{public}d modals=%{public}u",
+        static_cast<unsigned long long>(sequence), phase, amcl::input::TouchPublicationStatusName(receipt.status),
+        static_cast<unsigned long long>(receipt.context.surface), static_cast<unsigned long long>(receipt.context.session),
+        static_cast<unsigned long long>(receipt.context.policy), static_cast<unsigned long long>(receipt.context.schema),
+        static_cast<unsigned long long>(receipt.context.grabEpoch),
+        static_cast<unsigned long long>(receipt.token), receipt.fenced ? 1 : 0, receipt.context.nativeTouches, receipt.modalCount);
+}
+/** caller持gate→touch→schema；只取值，不借出任何可变引用或跨解锁迭代器。 */
+amcl::input::TouchPublicationContext touchPublicationContextLocked() {
+    amcl::input::TouchPublicationContext context;
+    context.surface = s_surfaceInputGate.active ? s_surfaceInputGate.publicationGeneration : 0;
+    context.session = amcl::input::PlatformInputResetDomains().touch;
+    context.policy = s_touchContextPolicy;
+    context.schema = s_schemaGeneration;
+    context.grabEpoch = s_touchPublicationGrabEpoch;
+    context.grabbed = s_grabFlipLastState;
+    context.density = s_touchContextDensity;
+    context.transform = s_touchContextTransform;
+    for (int i = 0; i < MAX_FINGERS; ++i) {
+        // 显式mouse镜像在登记fingerDown前已返回；滚轮兼容包有独立标记，不算direct-touch角色。
+        if (s_fingerDown[i] && !s_wheelGestureIntegral[i]) ++context.nativeTouches;
+    }
+    return context;
+}
+
+/** 当前OS publication或touch会话改变，立即关闭新角色，不等JS获知该边界。 */
+bool touchAdmissionBlocksNewTouchLocked() {
+    pthread_mutex_lock(&s_schemaMutex);
+    (void)s_touchAdmission.Query(touchPublicationContextLocked());
+    const bool blocked = s_touchAdmission.BlocksNewTouch();
+    pthread_mutex_unlock(&s_schemaMutex);
+    return blocked;
+}
+
+/** caller持gate→touch→schema，身份来自Native现值；无SDK/游戏回调，不借出可变引用。
+ * paused与mode/context分别拒绝，不能把layout fence例外扩大成后台或真实模态恢复。
+ */
+bool touchAdmissionAcceptsUiContinuationLocked(uint64_t token) {
+    const auto current = touchPublicationContextLocked();
+    (void)s_touchAdmission.Query(current);
+    return !s_touchPaused.load(std::memory_order_acquire) && s_touchAdmission.AcceptsUiContinuation(token,current);
+}
+
+/** scope仅触控：schema/carried、菜单、面板和touch尾量退休；实体、手柄、text/capture保持。 */
+void retireTouchScopeLocked() {
+    // schema 的第一步就撤销中立 bridge 菜单身份；必须先于面板/ledger 释放，
+    // 避免释放过程中同步回调或另一消费者把旧已结束点击提交到新模态。
+    schemaCancelGenerationLocked();
+    releaseMenuToolControls();
+    s_menuTouch.Cancel(emitMenuInteraction);
+    amcl::input::SourceReleaseSource(AMCL_INPUT_SOURCE_TOUCH_CONTROLS);
+    for (int i = 0; i < MAX_FINGERS; ++i) {
+        if (s_fingerDown[i] && !s_wheelGestureIntegral[i]) s_fingerDead[i] = true;
+    }
+    flushLookPending(false, AMCL_INPUT_SOURCE_TOUCH_CONTROLS);
+    amcl::input::PlatformInputCompleteResetBoundary(amcl::input::kInputResetTouch);
+}
+}
+
+namespace amcl::input {
+/** 以下组端口与原 publication 使用完全相同锁序，不在等待 UI 时持锁。 */
+static bool groupPublicationCurrentLocked(uint64_t token) {
+    const auto receipt = s_touchAdmission.Query(touchPublicationContextLocked());
+    return receipt.context.surface != 0 && receipt.status != TouchPublicationStatus::Stale &&
+        !s_touchPaused.load(std::memory_order_acquire) && s_touchAdmission.AcceptsUiToken(token);
+}
+
+TouchGroupReceipt ReadTouchGroups(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    TouchGroupReceipt result;
+    try {
+        const auto publication = s_touchAdmission.Query(touchPublicationContextLocked());
+        if (mode && token != 0 && publication.token == token && publication.context.surface != 0 &&
+            publication.status != TouchPublicationStatus::Stale) {
+            result.token = token; result.revision = s_touchGroups.Revision(); result.enabled = s_touchGroups.Enabled();
+            result.pending = s_touchGroups.PendingPresentation(); result.mask = s_touchGroups.Mask(); result.epochs = s_touchGroups.Epochs();
+        }
+    } catch (...) { pthread_mutex_unlock(&s_schemaMutex); throw; }
+    pthread_mutex_unlock(&s_schemaMutex); return result;
+}
+
+bool ConfirmTouchGroups(uint64_t token, uint64_t revision) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const bool confirmed = mode && groupPublicationCurrentLocked(token) && s_touchGroups.Confirm(revision);
+    if (confirmed) schemaAdvanceGroupsLocked();
+    pthread_mutex_unlock(&s_schemaMutex); return confirmed;
+}
+
+bool AcceptTouchGroupControl(uint64_t token, const std::string& control, uint64_t eligibility) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const int index = schemaGroupControlIndex(control.c_str());
+    const bool accepted = mode && groupPublicationCurrentLocked(token) && (!s_touchGroups.Enabled() ||
+        (index >= 0 && eligibility != 0 && s_touchGroups.Visible(index) && s_touchGroups.Epoch(index) == eligibility && !s_touchGroups.BlocksControl(index,s_schema)));
+    pthread_mutex_unlock(&s_schemaMutex); return accepted;
+}
+
+bool BindTouchGroupMouseOwner(uint64_t token, const std::string& control, uint64_t eligibility) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    if (!AcceptTouchGroupControl(token,control,eligibility)) return false;
+    if (!s_touchGroups.Enabled()) return true;
+    const int index=schemaGroupControlIndex(control.c_str());
+    if (index < 0 || !s_touchGroups.Definition().controls[index].mouseTool) return false;
+    s_groupMouseMember=control; s_groupMouseControl=index; return true;
+}
+
+uint64_t AcquireTouchGroupSourceControl(uint64_t publication, const std::string& member, uint64_t eligibility,
+        uint64_t device, const std::string& sourceControl, const int* codes, uint32_t count) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    if (!AcceptTouchGroupControl(publication,member,eligibility)) return 0;
+    if (!s_touchGroups.Enabled()) return ohos_acquire_source_control(1,device,sourceControl.c_str(),codes,count);
+    // gate 排除所有组提交/结构变化，固定槽位在实际获取来源前预留，不在 keydown 后分配。
+    auto slot = std::find_if(s_groupUiOwners.begin(),s_groupUiOwners.end(),[](const GroupUiOwner& value){ return value.token == 0; });
+    if (slot == s_groupUiOwners.end()) return 0;
+    const int index = schemaGroupControlIndex(member.c_str());
+    const uint64_t owner = ohos_acquire_source_control(1,device,sourceControl.c_str(),codes,count);
+    if (owner) *slot = {owner,index};
+    return owner;
+}
+
+TouchGroupResult InvokeTouchGroupControl(uint64_t token, const std::string& control, uint64_t eligibility,
+        uint64_t producer, uint64_t sequence, int phase) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    TouchGroupResult result;
+    try {
+        const auto publication=s_touchAdmission.Query(touchPublicationContextLocked());
+        if (token == 0 || publication.token != token || publication.status == TouchPublicationStatus::Stale) {
+            result.status=TouchGroupCommandStatus::Stale; pthread_mutex_unlock(&s_schemaMutex); return result;
+        }
+        const int index = schemaGroupControlIndex(control.c_str());
+        if (index >= 0 && phase >= 0 && phase < 4 && producer > 1 && sequence > 0 &&
+            s_touchGroups.Definition().controls[index].phases) {
+            const TouchGroupCommand command{producer,sequence,index,eligibility,s_touchGroups.Definition().controls[index].bindings[phase].actions};
+            result = s_touchGroups.Query(command);
+            if (mode && groupPublicationCurrentLocked(token) && !s_touchGroups.BlocksControl(index,s_schema) && s_touchGroups.CanAccept(command)) {
+                // 无障碍激活拥有独立运行记录，不能覆盖真实手指已冻结的 phase owner。
+                const std::string uiKey = control + ":ui:" + std::to_string(producer);
+                if (s_schemaButtons.size() >= 512 && s_schemaButtons.find(uiKey) == s_schemaButtons.end()) {
+                    pthread_mutex_unlock(&s_schemaMutex); return result;
+                }
+                auto& state = s_schemaButtons[uiKey]; state.control = s_schema[index];
+                state.groupControl = index; state.groupEligibility = eligibility;
+                if (schemaGroupPhase(state,phase,producer,sequence)) {
+                    // 无障碍离散激活没有未来 UP；非锁存阶段在同一操作中结束自己的持有。
+                    const auto& binding = s_touchGroups.Definition().controls[index].bindings[phase];
+                    if (!binding.autoKeep && state.phaseHeld[phase]) {
+                        inputLedger().releaseOwner(state.phaseOwners[phase]); state.phaseHeld[phase] = false;
+                        // 无障碍离散动作没有后续UP，同样在本次操作结束时发布实际聚合高亮。
+                        amcl_fire_button_pressed(state.control.id,
+                            std::any_of(state.phaseHeld.begin(), state.phaseHeld.end(), [](bool held) { return held; }) ? 1 : 0);
+                    }
+                    schemaAdvanceGroupsLocked();
+                }
+                result = s_touchGroups.Query(command);
+                const auto remaining = s_schemaButtons.find(uiKey);
+                if (remaining != s_schemaButtons.end() && std::none_of(remaining->second.phaseHeld.begin(),remaining->second.phaseHeld.end(),[](bool held){return held;}))
+                    s_schemaButtons.erase(remaining);
+            }
+        }
+    } catch (...) { pthread_mutex_unlock(&s_schemaMutex); throw; }
+    pthread_mutex_unlock(&s_schemaMutex); return result;
+}
+
+TouchGroupResult RestoreTouchGroups(uint64_t token, uint64_t producer, uint64_t sequence) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    TouchGroupResult result;
+    try {
+        TouchGroupCommand command; command.producer = producer; command.sequence = sequence;
+        for (size_t i = 0; i < s_touchGroups.Definition().groups.size(); ++i) command.actions.push_back({static_cast<uint32_t>(i),
+            s_touchGroups.Definition().groups[i].initialVisible ? TouchGroupOperation::Show : TouchGroupOperation::Hide});
+        if (mode && producer > 1 && groupPublicationCurrentLocked(token)) {
+            result = s_touchGroups.Query(command);
+            const bool accepted = result.status == TouchGroupCommandStatus::Pending || result.status == TouchGroupCommandStatus::Committed ||
+                result.status == TouchGroupCommandStatus::Presented || s_touchGroups.Accept(command);
+            if (accepted) { schemaAdvanceGroupsLocked(); result = s_touchGroups.Query(command); }
+        } else result = {command, TouchGroupCommandStatus::Stale, s_touchGroups.Revision()};
+    } catch (...) { pthread_mutex_unlock(&s_schemaMutex); throw; }
+    pthread_mutex_unlock(&s_schemaMutex); return result;
+}
+
+TouchPublicationReceipt QueryTouchPublication() {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    auto receipt = s_touchAdmission.Query(touchPublicationContextLocked());
+    if (!mode) receipt.status = TouchPublicationStatus::Unavailable;
+    receipt.groupRevision = s_touchGroups.Revision();
+    pthread_mutex_unlock(&s_schemaMutex);
+    return receipt;
+}
+
+TouchPublicationReceipt BeginTouchPublication(const std::string& operation, const std::string& candidate,
+        const TouchPublicationContext& expected) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const auto context = touchPublicationContextLocked();
+    const uint64_t beforeToken = s_touchAdmission.Query(context).token;
+    auto receipt = s_touchAdmission.Begin(operation, candidate, expected, context);
+    if (receipt.token != beforeToken && receipt.operationId == operation) s_touchGroups.RetireTransactions();
+    if (!mode) receipt.status = TouchPublicationStatus::Unavailable;
+    pthread_mutex_unlock(&s_schemaMutex);
+    if (receipt.token != beforeToken && receipt.operationId == operation) logTouchPublicationReceipt("begin", receipt);
+    schemaWakeDeadlineWorker();
+    return receipt;
+}
+
+TouchPublicationReceipt PublishTouchSchema(const std::string& operation, const AmclCtrlEntry* entries,
+        int count, float width, float height, int grabbed, float deadZone, int schemaVersion,
+        const TouchInteractionConfig* config, const TouchGroupSchema* groups) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    // 在gate内先prepare，随后安装沿用生产校验/差异退休。整个间隔无新触点、生命周期或
+    // 其它发布可进入；touch/schema锁在旧函数重入前释放，绝不反向取得非递归touch锁。
+    TouchPublicationReceipt receipt;
+    {
+        std::lock_guard<std::mutex> touch(s_touchStateMutex);
+        if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+        pthread_mutex_lock(&s_schemaMutex);
+        const auto context = touchPublicationContextLocked();
+        receipt = s_touchAdmission.Prepare(operation, context);
+        if (!mode) receipt.status = TouchPublicationStatus::Unavailable;
+        else if ((grabbed != 0) != mode.grabbed()) receipt.status = TouchPublicationStatus::Stale;
+        if (receipt.status == TouchPublicationStatus::Committed || receipt.status == TouchPublicationStatus::Unchanged) {
+            // 幂等只对同一有效定义成立。不能重复operation却偷偷换一套键位或几何。
+            if (!config || count < 0 || count > AMCL_CONTROL_SCHEMA_MAX_CONTROLS ||
+                width != s_schemaWidthPx || height != s_schemaHeightPx || deadZone != s_schemaDeadZone ||
+                !SameTouchInteractionConfig(s_touchConfig, *config) ||
+                !SameControlSchemaEntries(s_schema, entries, count) ||
+                !(s_touchGroups.Definition() == (groups ? *groups : TouchGroupSchema{}))) receipt.status = TouchPublicationStatus::Invalid;
+            pthread_mutex_unlock(&s_schemaMutex);
+            return receipt;
+        }
+        pthread_mutex_unlock(&s_schemaMutex);
+    }
+    if (receipt.status != TouchPublicationStatus::Fenced) return receipt;
+    const uint64_t before = receipt.context.schema;
+    const uint64_t generation = setControlSchemaWithGroups(entries, count, width, height, grabbed,
+        deadZone, schemaVersion, config, groups);
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    pthread_mutex_lock(&s_schemaMutex);
+    const auto current = touchPublicationContextLocked();
+    receipt = generation != 0 ? s_touchAdmission.Complete(current, before == generation)
+        : s_touchAdmission.Reject(current);
+    pthread_mutex_unlock(&s_schemaMutex);
+    logTouchPublicationReceipt("install", receipt);
+    return receipt;
+}
+
+bool ConfirmTouchPublication(const std::string& operation, uint64_t token) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const bool accepted = mode && s_touchAdmission.Confirm(operation, token, touchPublicationContextLocked());
+    const auto receipt = s_touchAdmission.Query(touchPublicationContextLocked());
+    pthread_mutex_unlock(&s_schemaMutex);
+    if (accepted) logTouchPublicationReceipt("ui-confirm", receipt);
+    return accepted;
+}
+TouchPublicationReceipt AbortTouchPublication(const std::string& operation) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const auto receipt = s_touchAdmission.Abort(operation, touchPublicationContextLocked());
+    pthread_mutex_unlock(&s_schemaMutex);
+    logTouchPublicationReceipt("abort", receipt);
+    return receipt;
+}
+bool AcceptTouchUiPublication(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const auto receipt = s_touchAdmission.Query(touchPublicationContextLocked());
+    const bool accepted = mode && receipt.status != TouchPublicationStatus::Stale &&
+        receipt.context.surface != 0 && s_touchAdmission.AcceptsUiToken(token);
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
+}
+bool AcceptTouchUiContinuation(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const bool accepted = mode && !mode.grabbed() && touchAdmissionAcceptsUiContinuationLocked(token);
+    pthread_mutex_unlock(&s_schemaMutex);
+    return accepted;
+}
+bool OwnsTouchUiPublicationToken(uint64_t token) {
+    const auto receipt = QueryTouchPublication();
+    // Query在同一递归gate内取快照，调用方NAPI继续持gate直到写覆盖区，不能check后换目标。
+    return token != 0 && receipt.token == token && receipt.context.surface != 0 &&
+        (receipt.status == TouchPublicationStatus::Committed || receipt.status == TouchPublicationStatus::Unchanged ||
+         (receipt.status == TouchPublicationStatus::Idle && !receipt.fenced));
+}
+
+uint64_t AcquireTouchModal(const std::string& owner) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    const bool alreadyModal = s_touchAdmission.HasModal();
+    const uint64_t token = s_touchAdmission.AcquireModal(owner);
+    if (token && !alreadyModal) retireTouchScopeLocked();
+    const auto receipt = s_touchAdmission.Query(touchPublicationContextLocked());
+    pthread_mutex_unlock(&s_schemaMutex);
+    if (token) logTouchPublicationReceipt("modal-enter", receipt);
+    schemaWakeDeadlineWorker();
+    return token;
+}
+bool ReleaseTouchModal(uint64_t token) {
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    // 只解除本租约，不重发被模态退休的按键，也不清别人publication或modal。
+    const bool released = s_touchAdmission.ReleaseModal(token);
+    if (released) logTouchPublicationReceipt("modal-exit", QueryTouchPublication());
+    return released;
+}
+
+void TouchContextPolicyChanged(double density, uint32_t transform) {
+    if (!std::isfinite(density) || density <= 0 || density > 16) return;
+    std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
+    if (transform == UINT32_MAX) transform = s_touchContextTransform;
+    if (density == s_touchContextDensity && transform == s_touchContextTransform) return;
+    AuthoritativeGrabInputTransaction mode;
+    std::lock_guard<std::mutex> touch(s_touchStateMutex);
+    if (mode) (void)consumeGrabEpochLocked(mode.grabbed());
+    pthread_mutex_lock(&s_schemaMutex);
+    retireTouchScopeLocked();
+    s_touchContextDensity = density;
+    s_touchContextTransform = transform;
+    s_displayDensity.store(density, std::memory_order_release);
+    if (s_touchContextPolicy != UINT64_MAX) ++s_touchContextPolicy;
+    // 菜单缓存立即更新，不能等下一次像素尺寸改变才得到新阈值；invalid零视口仍安全。
+    s_menuTouch.Configure(s_schemaWidthPx, s_schemaHeightPx, density, s_touchConfig, emitMenuInteraction);
+    (void)s_touchAdmission.Query(touchPublicationContextLocked());
+    pthread_mutex_unlock(&s_schemaMutex);
+    schemaWakeDeadlineWorker();
+}
 }

@@ -1,21 +1,19 @@
-import { DistributionPolicy } from 'commons';
+import { DistributionPolicy, DiagnosticPolicy } from 'commons';
+import { SideloadDelivery } from './SideloadUpdateModels';
+import { GitHubUpdateAssetResolver } from './GitHubUpdateAssetResolver';
+import { AppUpdatePolicy } from './AppUpdatePolicy';
 /**
- * UpdateChecker.ets — 检查更新（GitHub 权威源）
+ * UpdateChecker.ets — 检查更新（官网当前推荐头、发布者静态快照兜底）
  *
- * 方案 B（versionCode 比较）：
- *   - 设备已装版本 versionCode 由 bundleManager.getBundleInfoForSelfSync 取（与 app.json5 同数轴）。
- *   - 线上最新版本由 amcl-public 仓库的 update.json 提供（发版者随发布手动同步）。
- *   - update.json.versionCode > 设备 versionCode → 有新版。
- *
- * 为什么不用 GitHub Releases API：它只暴露 tag_name、不暴露 versionCode；且 /releases/latest
- * 会跳过 pre-release（项目当前全是 alpha/beta）。用我们自维护的 update.json 最稳、最简单。
+ * 系统 versionCode 负责安装兼容性，发行 versionName 负责同 code 的预览序列与返回正式版。
+ * 清单按产品和订阅通道隔离；GitHub 的 /latest 跳过 prerelease，不能用作预览通道事实源。
  *
  * 网络走 DownloadManager.fetchText（libcurl NAPI，CA bundle 已在 EntryAbility 初始化，
  * 内置多源 fallback）。纯逻辑 + 易测：解析与比较拆成静态纯函数。
  */
 
 import { bundleManager } from '@kit.AbilityKit';
-import { DownloadManager } from 'feature_core';
+import { DownloadManager, DownloadFailure } from 'feature_core';
 import { UPDATE_MANIFEST_URLS } from 'commons';
 import { formatError } from 'commons';
 import { AppLogger } from 'commons';
@@ -42,8 +40,14 @@ export interface UpdateNoteEntry {
  *     拿不到就降级回 `notes`（update.json 被回滚时会走到这条路）。
  */
 export interface UpdateManifest {
-  versionCode: number;   // 与 app.json5 同数轴，比较的唯一依据
-  versionName: string;   // 展示用，如 "1.0.0-beta.1"
+  /** 缺失仅兼容旧稳定正式清单；preview 必须由发布者明确声明。 */
+  updateChannel?: string;
+  prerelease?: boolean;
+  publicationId?: string;
+  /** 新清单只在官网副本及主镜像就绪后发布；旧客户端可忽略此扩展字段。 */
+  delivery?: SideloadDelivery;
+  versionCode: number;   // 与 app.json5 同数轴；预览版沿用上一正式版编号
+  versionName: string;   // 发行身份，如 "1.0.6-pre1"，也是同 code 比较依据
   tag: string;           // git tag，如 "v1.0.0-beta.1"
   url: string;           // 下载/发布页（前往下载时浏览器打开）
   notes: string;         // 更新说明（多行纯文本，老客户端唯一可读的字段）
@@ -66,6 +70,12 @@ export interface UpdateCheckResult {
 }
 
 export class UpdateChecker {
+  /** 红点延后绑定资产身份，镜像健康变化不制造新版本提示。 */
+  static targetKey(manifest: UpdateManifest, product: string): string {
+    const name=GitHubUpdateAssetResolver.assetProduct(product);
+    const asset=Array.isArray(manifest.delivery?.assets) ? manifest.delivery?.assets.find((value): boolean => value.product===name) : undefined;
+    return manifest.tag+':'+manifest.versionCode+':'+(asset?.sha256 ?? '');
+  }
   /** 启动自动检查的节流间隔（ms）。同一设备 24 小时内最多自动查一次，避免每次启动都联网。 */
   static readonly AUTO_CHECK_INTERVAL_MS: number = 24 * 60 * 60 * 1000;
 
@@ -84,9 +94,28 @@ export class UpdateChecker {
     return UpdateChecker.autoCheckIntervalElapsed_(nowMs, deferredAtMs);
   }
 
-  /** 持久化的线上版本仍高于已装版本时，红点必须立即显示，与弹窗延后状态无关。 */
-  static hasCachedUpdate(currentVersionCode: number, latestSeenVersionCode: number): boolean {
-    return latestSeenVersionCode > currentVersionCode;
+  /** 红点沿用与联网候选相同的比较，升级后同 code 的旧预览缓存也会自然消失。 */
+  static hasCachedUpdate(currentVersionCode: number, latestSeenVersionCode: number,
+    currentName: string = '', latestName: string = '', channel: string = 'stable'): boolean {
+    return AppUpdatePolicy.canInstall(currentVersionCode,currentName,latestSeenVersionCode,latestName,channel);
+  }
+
+  /** 版本名必须读取实际安装包，不能使用可能滞后的展示常量作为同 code 安装证据。 */
+  static currentVersionName(): string {
+    try { return bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName; }
+    catch (_) { return ''; }
+  }
+
+  /** 页面、自动检查和手动包预检共享准入，防止 UI 仍只按数字过滤掉预览版。 */
+  static canInstall(manifest: UpdateManifest, channel: string = 'stable'): boolean {
+    return AppUpdatePolicy.canInstall(UpdateChecker.currentVersionCode(),UpdateChecker.currentVersionName(),
+      manifest.versionCode,manifest.versionName,channel);
+  }
+
+  /** 切回稳定版是显式候选操作，仍由用户点击安装，自动检查本身不会覆盖应用。 */
+  static isStableReturn(manifest: UpdateManifest): boolean {
+    return manifest.versionCode === UpdateChecker.currentVersionCode() && AppUpdatePolicy.prerelease(UpdateChecker.currentVersionName()) &&
+      !AppUpdatePolicy.prerelease(manifest.versionName) && AppUpdatePolicy.compare(manifest.versionName,UpdateChecker.currentVersionName()) < 0;
   }
 
   /**
@@ -126,9 +155,15 @@ export class UpdateChecker {
   static parseManifest(body: string): UpdateManifest | null {
     try {
       let o = JSON.parse(body) as Record<string, Object>;
-      if (typeof o['versionCode'] !== 'number') return null;
+      // 版本身份使用正整数；展示字段损坏不得影响这个核心事实。
+      if (typeof o['versionCode'] !== 'number' || !Number.isSafeInteger(o['versionCode']) || Number(o['versionCode']) < 1) return null;
+      if ((o['updateChannel'] !== undefined && o['updateChannel'] !== 'stable' && o['updateChannel'] !== 'preview') ||
+        (o['prerelease'] !== undefined && typeof o['prerelease'] !== 'boolean')) return null;
       let schema: number = typeof o['schema'] === 'number' ? o['schema'] as number : 0;
       return {
+        updateChannel: typeof o['updateChannel'] === 'string' ? String(o['updateChannel']) : undefined,
+        prerelease: typeof o['prerelease'] === 'boolean' ? o['prerelease'] as boolean : undefined,
+        publicationId: typeof o['publicationId'] === 'string' ? String(o['publicationId']) : '',
         versionCode: o['versionCode'] as number,
         versionName: typeof o['versionName'] === 'string' ? o['versionName'] as string : '',
         tag: typeof o['tag'] === 'string' ? o['tag'] as string : '',
@@ -143,6 +178,7 @@ export class UpdateChecker {
         notesEntries: schema > 0 && schema <= SUPPORTED_MANIFEST_SCHEMA
           ? UpdateChecker.parseNoteEntries_(o['notesEntries'])
           : [],
+        delivery: typeof o['delivery'] === 'object' && o['delivery'] !== null ? o['delivery'] as SideloadDelivery : undefined,
       };
     } catch (e) {
       AppLogger.warn(TAG, 'parseManifest failed', e as Object);
@@ -156,7 +192,8 @@ export class UpdateChecker {
     if (raw === undefined || !Array.isArray(raw)) return out;
     let arr = raw as Object[];
     for (let item of arr) {
-      if (typeof item !== 'object') continue;
+      // JSON 的 null 同样具有 object 类型，必须先排除再读属性；数组也不是展示条目。
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
       let e = item as Record<string, Object>;
       let text = typeof e['text'] === 'string' ? e['text'] as string : '';
       if (text.length === 0) continue;
@@ -213,35 +250,93 @@ export class UpdateChecker {
   }
 
   /**
-   * 拉取 update.json 并与设备版本比较。网络/解析失败时 ok=false + error。
+   * 读取当前产品和订阅通道的推荐，再与实际安装版本比较。
+   * 正式检查优先官网当前头；只有官网不可用或元数据无效才回退发布者静态快照。
+   * 不能在多个源中取最高版本：发布者可以撤回或降低推荐，静态镜像也可能暂时滞后。
+   * 显式注入源只在给定列表中读取，避免诊断会话失败后混入真正的生产候选。
    */
-  static async checkForUpdate(): Promise<UpdateCheckResult> {
+  static async checkForUpdate(urls: string[] = UPDATE_MANIFEST_URLS, product: string = 'sideload', channel: string = 'stable'): Promise<UpdateCheckResult> {
     let current = UpdateChecker.currentVersionCode();
     let result: UpdateCheckResult = { ok: false, hasUpdate: false, current: current, manifest: null, error: '' };
 
     if (!DistributionPolicy.allowSideloadUpdates()) { result.error = '此渠道使用应用市场更新'; return result; }
-    if (UPDATE_MANIFEST_URLS.length === 0) {
+    if (urls.length === 0) {
       result.error = '未配置更新源';
       return result;
     }
-    let primary = UPDATE_MANIFEST_URLS[0];
-    let mirrors = UPDATE_MANIFEST_URLS.slice(1);
-    let body = '';
-    try {
-      body = await DownloadManager.instance().fetchText(primary, mirrors, 15);
-    } catch (e) {
-      result.error = '网络请求失败：' + formatError(e);
-      return result;
+    // 调用方保留自己的来源/通道代次快照；本方法只返回结果，不触碰偏好、红点、
+    // 弹窗或安装执行权。各次 await 返回后，是否仍消费结果继续由原调用方判定。
+    channel = AppUpdatePolicy.channel(channel);
+    const officialUrl = 'https://amcl.lovedhy.cn/api/packages/manifest?product=' + GitHubUpdateAssetResolver.assetProduct(product) + '&channel=' + channel;
+    const production = urls.length === UPDATE_MANIFEST_URLS.length && urls.every((url: string, index: number): boolean => url === UPDATE_MANIFEST_URLS[index]);
+    const candidates: string[] = production ? [officialUrl].concat(AppUpdatePolicy.urls(product,channel)) : urls.slice();
+    // 老 update.json 只作稳定通道的末级兼容入口，预览检查不能退回稳定推荐。
+    if (production && channel === 'stable') for (const url of UPDATE_MANIFEST_URLS) candidates.push(url);
+    const fixture = DiagnosticPolicy.hasTestHooks() && urls[0].startsWith('https://amcl.lovedhy.cn/uploads/self-update-tests/');
+    let m: UpdateManifest | null = null;
+    let lastError = '';
+    for (const source of candidates) {
+      const currentHead = production && source === officialUrl;
+      try {
+        // 每个入口单独请求并解析；不能由网络层首个 HTTP 200 把 HTML/坏 JSON
+        // 当成后续入口的成功结果。15 秒和 8191 字节限制继续下传 Native。
+        const body = await DownloadManager.instance().fetchText(source, [], 15, 8191);
+        const parsed = UpdateChecker.parseManifest(body);
+        if (parsed === null || !AppUpdatePolicy.validVersion(parsed.versionName) || parsed.tag !== 'v' + parsed.versionName ||
+          (!fixture && !AppUpdatePolicy.accepts(parsed.tag,parsed.updateChannel,parsed.prerelease,channel))) {
+          lastError = '更新信息解析失败';
+          continue;
+        }
+        // 当前头明确“没有更新”时不去静态源挑更高版本，兼容旧稳定清单尚无收据。
+        // 静态快照则无论是否可更新都要求完整收据，缺收据的旧版不能再截断后源。
+        if (!fixture && (!currentHead || UpdateChecker.canInstall(parsed,channel))) {
+          try { GitHubUpdateAssetResolver.fromDelivery(parsed, product); }
+          catch (_) {
+            lastError = '新版本资源正在同步，准备完成后会提示更新';
+            if (currentHead) {
+              // 官网已经给出合法当前推荐，但目标未就绪或收据损坏。不能用静态
+              // 旧头绕过这次决定；无 manifest 保证调用方不写入可更新缓存或红点。
+              result.ok = true;
+              result.error = lastError;
+              return result;
+            }
+            continue;
+          }
+        }
+        m = parsed;
+        break;
+      } catch (error) {
+        // fetchText 只对 Native 失败补充 detail；其他普通 Error 没有该字段。
+        // 404/409 是官网明确尚无就绪推荐，区别于超时、5xx或非法响应正文；此时
+        // 不能复活可能已经撤回的静态推荐，也不能把“没有推荐”写成成功检查时间。
+        const detail = (error as DownloadFailure).detail;
+        if (currentHead && detail !== undefined && detail.kind === 'HttpStatus' &&
+          (detail.httpStatus === 404 || detail.httpStatus === 409)) {
+          result.error = '当前通道尚无已就绪的更新推荐';
+          return result;
+        }
+        lastError = '网络请求失败：' + formatError(error);
+      }
     }
-    let m = UpdateChecker.parseManifest(body);
     if (!m) {
-      result.error = '更新信息解析失败';
+      result.error = lastError || '更新信息解析失败';
       return result;
     }
     result.ok = true;
     result.manifest = m;
-    result.hasUpdate = m.versionCode > current;
+    result.hasUpdate = UpdateChecker.canInstall(m,channel);
     AppLogger.info(TAG, `checkForUpdate: current=${current} latest=${m.versionCode} hasUpdate=${result.hasUpdate ? 'yes' : 'no'}`);
     return result;
+  }
+
+  /** 本地 HAP 只凭包内版本定位官方历史收据，安装前仍匹配完整摘要及产品身份。 */
+  static async publishedVersion(tag: string, product: string, channel: string): Promise<UpdateManifest> {
+    if(!tag.startsWith('v') || !AppUpdatePolicy.validVersion(tag.substring(1))) throw new Error('安装包版本格式不受支持');
+    const name=GitHubUpdateAssetResolver.assetProduct(product);
+    const body=await DownloadManager.instance().fetchText('https://amcl.lovedhy.cn/api/packages/manifest?product='+name+'&channel='+AppUpdatePolicy.channel(channel)+'&tag='+encodeURIComponent(tag),[],15,8191);
+    const manifest=UpdateChecker.parseManifest(body);
+    if(manifest===null || manifest.tag!==tag || !AppUpdatePolicy.accepts(tag,manifest.updateChannel,manifest.prerelease,channel)) throw new Error('此版本不属于当前通道，或尚无官方发布记录');
+    GitHubUpdateAssetResolver.fromDelivery(manifest,product);
+    return manifest;
   }
 }

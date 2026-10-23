@@ -51,11 +51,14 @@ test('part labels and reader count the same JVM evidence files', async () => {
 // 滑块减少保留数量时先确认；确认期间新增淘汰项必须重新预览，不能静默扩大删除范围。
 test('retention reduction cancels safely and rechecks the exact deletion scope before saving', async () => {
   let ids = [1, 2], choice = 0, writes = 0, changeDuringDialog = false;
-  const p = page('components/LogRetentionSettings.ets', ['save'], {
-    ledgerRetentionVictims: () => ids.slice(), ledgerBytesOf: () => 100, formatLogBytes: String,
-    ledgerSetSessionRetention: () => { writes++; }, ledgerSessionRetention: () => 10,
+  const p = page('components/LogRetentionSettings.ets', ['save', 'visible_'], {
+    // 使用当前异步账本边界和真实可见性方法；占用必须来自已确认的条目，不能借旧同步API。
+    ledgerRetentionVictimsAsync: async () => ids.slice(), formatLogBytes: String,
+    ledgerListAsync: async () => ids.map(activityId => ({ activityId, bytes: 100, bytesState: 'current' })),
+    ledgerSetSessionRetentionAsync: async () => { writes++; },
   });
   Object.assign(p, { context: { filesDir: '/fixture' }, saving: false, theme: { primary: '#000', error: '#f00' },
+    active_: true, settingsVisible_: true, hostVisible_: true, foreground_: true, readGeneration_: 0, saveGeneration_: 0,
     refresh() {}, getUIContext: () => ({ getPromptAction: () => ({ showDialog: async () => {
       if (changeDuringDialog) ids.push(3);
       return { index: choice };
@@ -105,18 +108,20 @@ test('clipboard completion, rejection and success reflect the system result', as
 test('local removal requires confirmation and rechecks running/read protection', async () => {
   let blocked = '', deletions = 0, choice = 0, backs = 0;
   const p = page('pages/ActivityLogPage.ets', ['canDelete_', 'requestRemoveLedger_', 'removeLedger_', 'close_'], {
-    ledgerRemovalBlockReason: () => blocked, ledgerBytesOf: () => 42, formatLogBytes: () => '42 B',
-    ledgerStateLabel: () => '成功', ledgerRemove: () => { deletions++; },
+    ledgerRemovalBlockReason: () => blocked, ledgerRemovalBlockReasonAsync: async () => blocked,
+    ledgerListAsync: async () => [{ activityId: 1, bytes: 42, bytesState: 'current' }], formatLogBytes: () => '42 B',
+    ledgerStateLabel: () => '成功', ledgerRemoveAsync: async () => { deletions++; },
     hilog: { warn() {} }, TAG: 'test',
   });
   Object.assign(p, { context: { filesDir: '/fixture' }, activityId: 1, manifest: { title: 'session', state: 1 },
     loading: false, reading: false, sharing: false, copying: false, deleting: false, exportingEvidence: false,
+    pageActive: true, pinGeneration_: 0, pinSaving_: false, confirmingRemoval_: false,
     theme: {}, toast_() {}, getUIContext: () => ({ getPromptAction: () => ({ showDialog: async () => ({ index: choice }) }),
       getRouter: () => ({ back: () => { backs++; } }) }) });
-  p.requestRemoveLedger_(); await tick(); assert.equal(deletions, 0);
-  choice = 1; p.requestRemoveLedger_(); blocked = 'busy'; await tick(); assert.equal(deletions, 0);
+  await p.requestRemoveLedger_(); assert.equal(deletions, 0);
+  choice = 1; const pending = p.requestRemoveLedger_(); blocked = 'busy'; await pending; assert.equal(deletions, 0);
   blocked = ''; p.reading = true; assert.equal(p.canDelete_(), false);
-  p.reading = false; p.requestRemoveLedger_(); await tick(); assert.equal(deletions, 1); assert.equal(backs, 1);
+  p.reading = false; await p.requestRemoveLedger_(); assert.equal(deletions, 1); assert.equal(backs, 1);
 });
 
 test('revoke is single-flight, reports rejection and retains credentials for retry', async () => {

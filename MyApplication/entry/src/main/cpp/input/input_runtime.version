@@ -1,0 +1,36 @@
+AMCL_INPUT_RUNTIME {
+    global:
+        # 公共输入owner与跨namespace描述符；私有C++容器和锁不作为ABI导出。
+        amclInput*;
+        amclBackendInput*;
+        # 独立版本化私有控制贡献端口；不改变公共Core/旧backend event前缀。
+        amclControlDeliveryGetPortV1;
+        amclControlDeliveryBindSessionV1;
+        amclControlDeliveryPublishV1;
+        # 来源贡献 producer 端口独立版本化；registry/ledger/router C++ 符号继续 local。
+        amclSourceControlGetPortV1;
+        amclSourceControlPublishV1;
+        amclSourceControlPrepareV1;
+        amclSourceControlCompatEdgeV1;
+        amclSourceControlDrainTerminalsV1;
+        # 独立look协议和旧加工薄适配；不改变control-v1表或公共事件ABI。
+        amclLookExecutionGetPortV1;
+        amclLookExecutionPublishV1;
+        amclLookExecutionCommitV1;
+        amclLookExecutionCommitProcessedV1;
+        amclLookExecutionSetRecipientsV1;
+        amclLookPolicyEpochV1;
+        amclLookCompat*;
+        inputBridge_*;
+        # libentry 强链接的 ring 不连续 epoch getter；通配已覆盖，显式列出使去掉通配时不会静默丢失。
+        inputBridge_legacyRingDiscontinuityEpochV1;
+        inputBridgeStartPumping;
+        inputBridgePumpEvents;
+        inputBridgeStopPumping;
+        pojavStartPumping;
+        pojavPumpEvents;
+        pojavStopPumping;
+        Java_org_lwjgl_glfw_CallbackBridge_*;
+        amclDiagnosticBuildIdentity;
+    local: *;
+};

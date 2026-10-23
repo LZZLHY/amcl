@@ -6,6 +6,11 @@
 #include <arkui/ui_input_event.h>
 #include <stdbool.h>
 #include <stdint.h>
+#ifdef __cplusplus
+#include <string>
+#endif
+#include "control_schema_abi.h"
+#include "touch_interaction.h"
 
 #include "../input/legacy_physical_outcome.h"
 
@@ -98,6 +103,15 @@ void ohos_set_display_density(double density);
 // 即约 31%），表现为**鼠标点不动菜单、悬浮也没有高亮**。
 double ohos_display_density(void);
 
+// 有身份控件按下返回非零单调 token；释放只认 token，不根据当前布局/输出键反查 owner。
+// codes 为既有 schema 编码（键为正、鼠标为 -(button+1)），最多六项，调用期间借用。
+uint64_t ohos_acquire_source_control(int source, uint64_t deviceId,
+    const char* controlId, const int* codes, uint32_t count);
+bool ohos_release_source_control(uint64_t token);
+// 合成运动的完整采样合同：触控为surface px，手柄为轴速度积分后的virtual px；时间为
+// 系统启动后的单调ns。0仅用于旧调用方没有采样时间的兼容入口，在进入加工器前采样。
+bool ohos_send_source_cursor_sample_checked(int source, double dx, double dy, int64_t sampleTimeNs);
+
 // 标记"轴驱动的 Pan 手势（鼠标滚轮 / 触控板双指）正在进行"。
 //
 // 真机事实：本机滚轮既不走 native AXIS 回调（注册成功、零样本），也不走 ArkTS
@@ -155,6 +169,8 @@ void ohos_send_cursor_pos(double x, double y);
 // Checked variants report whether the legacy bridge accepted the ingress.
 // They preserve the same router/owner behavior as the void compatibility APIs.
 bool ohos_send_cursor_delta_checked(double dx, double dy);
+// typed物理样本的V2加工入口：保留core提供的采样时间，与SDL相同；0/越界时间拒绝。
+bool ohos_send_cursor_delta_at_time_checked(double dx, double dy, uint64_t monotonicTimeNs);
 bool ohos_send_cursor_pos_checked(double x, double y);
 // Publishes the libentry -> libglfw reverse trampolines. Idempotent. Call it at
 // NAPI registration: the typed look consumer can be the very first input event,
@@ -166,6 +182,16 @@ void ohos_input_publish_trampolines(void);
 // is the only observation surface it has.
 void ohos_log_look_pipeline_state(void);
 int ohos_is_grabbed(void);
+// 统一虚拟鼠标的精细移动：real surface px增量，只在菜单接受，不走look加工。
+bool ohos_move_touch_menu_pointer(double dx,double dy,const char* panelPrefix,uint64_t publication);
+bool ohos_touch_menu_button(const char* control,int code,bool down,uint64_t publication);
+// 面板CANCEL：退休仅工具子域的排队/已提交贡献，并清本域Native租约；普通UP仍走上面释放。
+// 允许在surface/菜单/旧publication已经失效后结束，返回同步接受态，不表示游戏回调已完成。
+// panelPrefix绑定已认领的唯一面板实例，旧实例迟到取消幂等但不能退休新面板。
+bool ohos_cancel_touch_menu_mouse(const char* panelPrefix);
+bool ohos_touch_menu_scroll(int steps,const char* panelPrefix,uint64_t publication);
+// 当前UI publication下由真实可視非零bounds注册实例；同实例移动保持owner，旧实例不可反抢。
+bool ohos_set_menu_mouse_bounds_for_panel(double x,double y,double w,double h,const char* panelPrefix,uint64_t publication);
 // Samples the bridge's process-local grab SSOT. False means the bridge owner
 // is unavailable and callers must fail closed instead of guessing menu mode.
 bool ohos_sample_authoritative_grabbed_mode(bool* grabbed);
@@ -187,6 +213,9 @@ bool ohos_send_scroll_event_checked(int xoffset, int yoffset);
 //   · 视角走哪一端的量纲归一系数；
 //   · 诊断计数落在端这条轴的哪一栏。
 // 物理键鼠端**不走**这组入口：它有专用身份的 ohos_route_physical_* 系列。
+// key/mouse 返回 true = 本端持有变更已生效（PRESS 已登记、REPEAT 已送出、RELEASE 已摘除；与别端
+// 聚合而未发最终边沿也算）；false = 本端记录未改变（bridge 未就绪、复位围栏、无配对记录、未知动作），
+// 调用方应保留自身状态以便重试。判据唯一实现是 `ExternalHeldEdgeApplied`（external_held_edge_router.h）。
 bool ohos_send_source_key_event_checked(int source, int key, int scancode,
                                         int action, int mods);
 bool ohos_send_source_mouse_event_checked(int source, int button, int action,
@@ -229,6 +258,13 @@ void ohos_send_char_event(int codepoint);             // 阶段 2.8：IME / 可�
 void ohos_send_char_mods_event(int codepoint, int mods);
 void ohos_set_touch_paused(bool paused);
 
+/**
+ * 设备移除的按钮收口。释放给定 device 的配对；releaseUnknown 还释放平台无法
+ * 标识设备的 native/mirror 桶，保留其它所有已知设备和其它输入端。此接口可在
+ * surface 正在销毁时调用，内部只串行生命周期，不要求 surface 仍可接纳新 DOWN。
+ */
+void ohos_release_physical_pointer_device(uint64_t deviceId, bool releaseUnknown);
+
 // 生命周期统一取消原因。数值只用于低频诊断，不影响释放策略；所有原因都必须让 ledger 归零。
 typedef enum {
     AMCL_INPUT_CANCEL_PAUSE = 1,
@@ -246,28 +282,10 @@ void ohos_set_invert_y(bool b);           // 阶段 1.3：Y 轴倒置
 void ohos_set_look_smoothing(float alpha); // 守恒 backlog 响应系数（0.1..1.0，1.0=立即输出；正常 UP 补齐余量）
 void ohos_set_look_accel(float v);          // 方案 C：视角加速强度（0..1，0=关闭）
 
-// ==================== Control Schema v2 ====================
+// ==================== Control Schema v3（兼容v2 JSON入口）====================
 // 单个控件描述（物理 px，已含 density）。这是跨 NAPI/C 边界的 POD；任何新字段都必须
 // 同步提升 AMCL_CONTROL_SCHEMA_VERSION，禁止用“结构尾部碰巧兼容”掩盖协议错配。
-#define AMCL_CONTROL_SCHEMA_VERSION 2
-#define AMCL_CONTROL_SCHEMA_MAX_CONTROLS 256
-#define AMCL_CONTROL_ID_MAX_BYTES 23
-#define AMCL_CONTROL_MAX_KEYS 6
-
-typedef struct {
-    char id[24];     // UTF-8 字节长度 1..23；NAPI/native 双层拒绝超长或重复，绝不静默截断
-    int kind;        // ControlType：0=button 1=joystick 2=scroll 3=drawer 4=hotbar
-    int handledBy;   // 0=native 1=arkts
-    float x, y, w, h;
-    // 明确以物理 px 下发的命中扩张量。ArkTS owner 强制按 exact rect，native owner 才使用此值。
-    float hitSlop;
-    int keyOrMouse;  // 首键（button/hotbar）；组合键场景仍填 keys[0]
-    int trigger;     // 0=press 1=toggle 2=doubleTap 3=longPress
-    int dragLook;    // 0/1
-    int haptic;      // 0/1；键边沿由 native 产生，低频触觉请求回 UI 线程执行
-    int keys[AMCL_CONTROL_MAX_KEYS];
-    int keyCount;
-} AmclCtrlEntry;
+// POD字段定义见control_schema_abi.h；此处只声明平台接线，宿主不需要引入OHOS事件头。
 
 // handledBy=arkts 的控件仍由 ArkUI 的 exact visual rect 处理；保留该回调用于显式 native 激活场景。
 void amcl_fire_control_activated(const char* id);
@@ -275,15 +293,40 @@ void amcl_fire_control_activated(const char* id);
 void amcl_fire_button_pressed(const char* id, int pressed);
 // native 线程只请求触觉，真正的系统触觉 API 必须在 ArkTS/UI 线程执行。
 void amcl_fire_haptic(int strength);
+// schema持锁时冻结反馈身份；异步UI须按控件/配置/touch域代次和单调采样时间拒绝过期请求。
+void amcl_fire_haptic_tagged(int strength, const char* controlId,
+                            uint64_t schemaGeneration, uint64_t touchResetEpoch,
+                            int64_t monotonicTimeNs, uint64_t grabEpoch);
 
 // 整表替换是事务：先完整验证，失败返回 0 且不改变当前 generation；成功返回非 0 generation。
 // 空表是合法的 fail-closed 发布，可用于清除旧热区。native 会再次验证所有字段，不能只信任 NAPI。
 uint64_t ohos_set_control_schema(const AmclCtrlEntry* entries, int count,
                                  float compW, float compH, int grabbed, float deadZone,
                                  int schemaVersion);
+// v3 把交互策略及游戏动作绑定与控件几何一次发布；旧 v2 入口仅使用兼容缺省。
+uint64_t ohos_set_control_schema_v3(const AmclCtrlEntry* entries, int count,
+    float compW, float compH, int grabbed, float deadZone, int schemaVersion,
+    const amcl::input::TouchInteractionConfig* config);
+// 会话/来源显式维护grab公告及已交付光标；false表示实际mode端口暂不可用，不宣称consumer Ready。
+bool ohos_touch_input_maintain();
+// UI严格只读当前接受态；不消费公告/ACK，不推进手势或持有，数组约定见NAPI声明。
+void ohos_touch_interaction_visual(double* values, int count);
+// 悬浮鼠标的移动排除区（surface px）。仅更新几何，不退休schema或任何按键持有；w/h均0表示收起。
+bool ohos_set_menu_mouse_bounds(double x,double y,double w,double h);
+// 真实游戏教学工具栏的独立排除区；不改schema/持有，世界及菜单生效，空矩形撤销。
+bool ohos_set_touch_guide_bounds(double x,double y,double w,double h);
+// 仅影响触摸板指针图标的显隐，不仲裁任何输入端；物理指针活动时避免显示一枚旧虚拟光标。
+void ohos_note_physical_pointer_visual(void);
+// 旧无lease已积分gyro弱兼容；只核schema/当前准入，不以跨域Ns假造policy时钟围栏。
+bool ohos_send_touch_gyro_sample_checked(double dx,double dy,int64_t timeNs,uint64_t schemaGeneration);
 
 #ifdef __cplusplus
 }
+/** 新gyro私有租约冻结schema/policy/真实资源；string token不冒充JS number精确uint64。 */
+std::string ohos_touch_gyro_lease_context();
+std::string ohos_begin_touch_gyro_lease(uint64_t schemaGeneration);
+bool ohos_submit_touch_gyro_lease(const std::string& lease,double dx,double dy,int64_t sensorNs);
+bool ohos_retire_touch_gyro_lease(const std::string& lease);
 
 namespace amcl::input {
 class AuthoritativeGrabInputTransaction final {

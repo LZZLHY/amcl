@@ -89,6 +89,9 @@ struct GLFWwindow : amcl::graphics::EglContextState {
 };
 // 隐藏窗口显示时由GLFW核心取得唯一呈现权；成功后才允许前端发送系统show命令。
 bool glfwOHOS_PromoteWindow(GLFWwindow* window);
+// Show/Hide在可见性状态提交后同步刷新两条输入平面的资格，避免隐藏期间事件
+// 在下一次Show重新投递。函数可能发释放回调；调用后不得继续解引用旧window。
+void glfwOHOS_RefreshTypedInputActivation();
 
 struct GLFWmonitor {
     int64_t desktopId;
@@ -100,6 +103,9 @@ struct GLFWmonitor {
 extern GLFWwindow* g_currentWindow;
 extern GLFWerrorfun g_errorCallback;
 extern int g_initialized;
+// 写入当前线程的标准 GLFW 错误槽并通知错误回调；description 必须是进程期静态文本。
+// 回调可以重入并销毁窗口，调用方应在释放资源锁后调用，并在随后立即结束失败分支。
+void glfwOHOS_ReportError(int code, const char* description);
 
 // Coherent Window/display facts delivered by the typed SurfaceContext sink.
 // Returns false until the first context generation has been consumed.
@@ -155,5 +161,8 @@ bool glfwOHOS_EndGraphicsSession(GLFWwindow* win, bool resourcesDestroyed);
 bool glfwOHOS_GraphicsSessionHasSurface(const GLFWwindow* win);
 extern "C" int glfwOHOS_GetWindowClientAPI(const GLFWwindow* win);
 extern "C" uint64_t glfwOHOS_GetWindowId(const GLFWwindow* win);
+
+// neutral控制port的实际GLFW poll观测；输入查询TU调用，不改变按键状态。
+void glfwOHOS_RecordControlPoll(GLFWwindow* window,uint32_t kind,int32_t code,int32_t held);
 
 #endif // GLFW_INTERNAL_H

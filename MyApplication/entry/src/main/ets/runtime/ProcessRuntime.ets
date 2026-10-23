@@ -17,17 +17,18 @@ import {
 import { removeDirRecursive } from 'commons';
 import { AppLogger } from 'commons';
 import { NativeLogSink } from 'commons';
-import { LedgerScopeSink, setLedgerScopeSink, ledgerResolveStale, ledgerBegin, LedgerBeginMeta } from 'commons';
+import { LedgerScopeSink, setLedgerScopeSink, ledgerBegin, LedgerBeginMeta, configureLedgerMaintenanceOwner } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import { SessionMarker, McSessionInfo } from 'launch';
 import { setLaunchNativeBridge, LaunchNativeBridge } from 'launch';
 import { setRuntimeSlotNativeOps, RuntimeSlotNativeOps } from 'launch';
 import { getInputDeviceMonitor } from 'gamecontrol';
-import { setControlNativeSink, ControlNativeSink } from 'gamecontrol';
+import { setControlNativeSink, ControlNativeSink, LookConfiguration, LookPolicySource } from 'gamecontrol';
 import { getInputSourceRegistry } from 'gamecontrol';
 import { setSystemNativeBridge, SystemNativeBridge } from 'feature_system';
 import { GameStorage, PreferenceManager } from 'feature_system';
+import { NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, NATIVE_GAMEPAD_CAPTURE_READY_KEY } from './NativeGamepadRoutePolicy';
 
 class EntryRelayNativeBridge implements RelayNativeBridge {
   configure(base: string, ticket: string, key: string, proof: boolean, expires: number): void {
@@ -61,6 +62,8 @@ export class EntryLedgerScopeSink implements LedgerScopeSink {
   end(activityId: number): void {
     try { testNapi.amclLedgerEnd(activityId); } catch (e) { AppLogger.warn('DesktopGame', 'Ledger end failed', e, LOG_DOMAIN_LAUNCH); }
   }
+  /** 真正等待native writer关闭；拒绝/超时继续抛给账本owner，不能catch后冒称关闭成功。 */
+  async endAsync(activityId: number): Promise<void> { await testNapi.amclLedgerEndAsync(activityId); }
   endAll(): void {
     try { testNapi.amclLedgerEndAll(); } catch (e) { AppLogger.warn('DesktopGame', 'Ledger cleanup failed', e, LOG_DOMAIN_LAUNCH); }
   }
@@ -87,18 +90,15 @@ export class EntryNativeLogSink implements NativeLogSink {
  * 由本 HAP 注入控制层 native 参数实现。详见 LayoutStore.ControlNativeSink。
  */
 class EntryControlNativeSink implements ControlNativeSink {
-  setLookSensitivity(v: number): void {
-    testNapi.setLookSensitivity(v);
+  // 跨HAR只传完整参数快照；native一次校验/一次加锁，false交还配置投递器保留待应用状态。
+  applyLookConfiguration(config: LookConfiguration): boolean {
+    return testNapi.applyLookConfiguration(config.sensitivity, config.invertY, config.smoothing, config.acceleration);
   }
-  setInvertY(v: boolean): void {
-    testNapi.setInvertY(v);
-  }
-  // 方案 C（2026-07-11）：视角平滑 α + 加速强度注入 native（applyLookDelta 统一对三源生效）。
-  setLookSmoothing(v: number): void {
-    testNapi.setLookSmoothing(v);
-  }
-  setLookAccel(v: number): void {
-    testNapi.setLookAccel(v);
+  /** HAR来源名显式映射platform枚举；外部兼容0不能冒称物理设备，物理键鼠实际为3。 */
+  applySourceLookConfiguration(source: LookPolicySource, config: LookConfiguration): boolean {
+    const nativeSource: number = source === 'physical' ? 3 : source === 'touch' ? 1 : source === 'gamepad' ? 2 : 0;
+    return testNapi.applySourceLookConfiguration(nativeSource, config.sensitivity, config.invertY,
+      config.smoothing, config.acceleration);
   }
 }
 
@@ -230,6 +230,11 @@ class EntryRuntimeSlotStore implements RuntimeSlotNativeOps {
 
 /** 每个应用进程必须在消费者运行前安装自己的 HAR 端口；不复用另一个进程的函数对象。 */
 export function installProcessNativeBridges(): EntryDownloadEngine {
+  // 输入来源的 Native 端口归进程装配；前端重建不再替换持有这份函数表的权威。
+  getInputSourceRegistry().setNativeSink({
+    releaseSourceHeld: (source: number): void => { testNapi.releaseSourceHeld(source); },
+    noteSourceReset: (source: number): void => { testNapi.noteSourceReset(source); }
+  });
   setRuntimeSlotNativeOps(new EntryRuntimeSlotStore());
   const engine: EntryDownloadEngine = new EntryDownloadEngine();
   setControlNativeSink(new EntryControlNativeSink());
@@ -247,6 +252,8 @@ export function installProcessNativeBridges(): EntryDownloadEngine {
  * 不能因日志不可写跳过后续必要的native bridge安装；不能在未隔离的进程里调用。
  */
 export function initializeGameProcessLogging(context: common.UIAbilityContext): void {
+  // 游戏只拥有本局writer和发布journal；全账本索引/淘汰始终由启动器owner合并执行。
+  configureLedgerMaintenanceOwner(false);
   try {
     testNapi.amclLogInit(context.filesDir + '/logs/game', 2 * 1024 * 1024, 5);
     AppLogger.setNativeLogSink(new EntryNativeLogSink());
@@ -259,6 +266,7 @@ export function initializeGameProcessLogging(context: common.UIAbilityContext): 
  */
 export function initializeGameProcess(context: common.UIAbilityContext,
   activityId: number = 0, launchMeta?: LedgerBeginMeta): void {
+  configureLedgerMaintenanceOwner(false);
   DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics, testNapi.getDiagnosticCapabilities());
   DistributionPolicy.configure(ProductBuildProfile.storeChannel ? DistributionChannel.Store : DistributionChannel.Sideload);
   ProductInputProfile.initialize(context);
@@ -277,7 +285,10 @@ export function initializeGameProcess(context: common.UIAbilityContext,
   GameStorage.setPhoneExternalDir(preferences.phoneExternalDir);
   const nativePad: boolean = preferences.desktopNativeGamepad;
   const padReady: boolean = testNapi.desktopSetGamepadNativeMode(nativePad);
-  AppStorage.setOrCreate<boolean>('nativeGamepadOutputActive', nativePad && padReady);
+  // 只公布本局冻结的请求和平台采集事实。SetNativeMode(false)的true只证明关闭成功，
+  // 不能算采集Ready；后续来源政策还须核独立输入ABI，不能在此提前关闭键鼠映射。
+  AppStorage.setOrCreate<boolean>(NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, nativePad);
+  AppStorage.setOrCreate<boolean>(NATIVE_GAMEPAD_CAPTURE_READY_KEY, nativePad && padReady);
   if (nativePad && !padReady) AppLogger.warn('DesktopGamepad', 'Native gamepad unavailable; launcher mapping retained', undefined, LOG_DOMAIN_LAUNCH);
   getInputDeviceMonitor().ensureStarted();
 }

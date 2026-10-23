@@ -47,12 +47,8 @@ struct ProgressPayload {
 struct FailedFilePayload {
     std::string               local_path;
     std::string               basename;
-    // 错误字段（展开，避免引用 DownloadException 指针）
-    bool                      has_error = false;
-    std::string               err_kind;
-    std::string               err_message;
-    long                      err_http_status = 0;
-    int                       err_native_code = 0;
+    // 和顶层错误一样使用独占值副本，不让 JS 消费任务线程持有的异常指针。
+    DownloadErrorSnapshot     error;
     std::vector<std::string>  tried_urls;
 };
 
@@ -63,14 +59,8 @@ struct CompletePayload {
     uint64_t                execution_epoch;
     bool                    success;
     bool                    aborted = false;      // v5: 用户主动取消 vs 失败
-    // 序列化 DownloadException 的快照（避免在 JS 线程访问可能已销毁的异常对象）
-    std::string             error_message;
-    std::string             error_kind;
-    int                     native_code;
-    long                    http_status;
-    std::string             url_context;
-    bool                    has_error;
-    std::vector<std::string> error_tried_urls;    // v5: 顶层 error 的试过源
+    // 所有出口共用的值快照，保证 complete 不会漏掉 query 已提供的授权事实。
+    DownloadErrorSnapshot   error;
     // 最终进度快照（在 C++ 线程 computeProgress，JS 侧免除再次跨线程拉取）
     double                  final_overall_progress;
     int64_t                 final_speed_bps;
@@ -123,6 +113,45 @@ void setBoolProp(napi_env env, napi_value obj, const char* key, bool v) {
 }
 
 } // namespace
+
+DownloadErrorSnapshot DownloadErrorSnapshot::Capture(const DownloadExceptionPtr& error) {
+    DownloadErrorSnapshot snapshot;
+    snapshot.has_error = static_cast<bool>(error);
+    if (error) snapshot.detail = *error;
+    return snapshot;
+}
+
+napi_value createDownloadErrorSnapshot(napi_env env, const DownloadErrorSnapshot& snapshot) {
+    napi_value object = nullptr;
+    if (!snapshot.has_error) {
+        napi_get_null(env, &object);
+        return object;
+    }
+    // 这是唯一的错误字段清单。新字段必须在这里明确命名和口径，不能由 complete、
+    // query 或逐文件错误各自挑选，从而使业务在漏事件后的查询补偿中获得相同事实。
+    const auto& error = snapshot.detail;
+    napi_create_object(env, &object);
+    setStringProp(env, object, "kind", errorKindToString(error.kind));
+    setStringProp(env, object, "message", error.message);
+    setInt32Prop(env, object, "nativeCode", error.native_code);
+    setInt64Prop(env, object, "httpStatus", error.http_status);
+    setStringProp(env, object, "url", error.url_context);
+    setBoolProp(env, object, "needsNewLease", error.needs_new_lease);
+    setBoolProp(env, object, "requestStarted", error.request_started);
+    setBoolProp(env, object, "successfulHeadersSeen", error.successful_headers_seen);
+    setInt64Prop(env, object, "bytesWritten", error.bytes_written);
+    setInt32Prop(env, object, "httpAttempts", error.http_attempts);
+    setInt64Prop(env, object, "retryAfterMs", error.retry_after_ms);
+    napi_value urls = nullptr;
+    napi_create_array_with_length(env, error.tried_urls.size(), &urls);
+    for (size_t i = 0; i < error.tried_urls.size(); ++i) {
+        napi_value url = nullptr;
+        napi_create_string_utf8(env, error.tried_urls[i].c_str(), error.tried_urls[i].size(), &url);
+        napi_set_element(env, urls, static_cast<uint32_t>(i), url);
+    }
+    napi_set_named_property(env, object, "triedUrls", urls);
+    return object;
+}
 
 // ============================================================================
 // NapiProgressBridge
@@ -398,15 +427,7 @@ bool NapiCompleteBridge::push(bool success, bool aborted, DownloadExceptionPtr e
     payload->execution_epoch = execution_epoch;
     payload->success = success;
     payload->aborted = aborted;
-    payload->has_error = static_cast<bool>(err);
-    if (err) {
-        payload->error_kind   = errorKindToString(err->kind);
-        payload->error_message= err->message;
-        payload->native_code  = err->native_code;
-        payload->http_status  = err->http_status;
-        payload->url_context  = err->url_context;
-        payload->error_tried_urls = err->tried_urls;
-    }
+    payload->error = DownloadErrorSnapshot::Capture(err);
     payload->final_overall_progress = final_progress.overall_progress;
     payload->final_speed_bps        = final_progress.speed_bps;
     payload->final_current_file     = final_progress.current_file;
@@ -425,13 +446,7 @@ bool NapiCompleteBridge::push(bool success, bool aborted, DownloadExceptionPtr e
         fp.local_path = ff.local_path;
         fp.basename = basenameOf(ff.local_path);
         fp.tried_urls = std::move(ff.tried_urls);
-        if (ff.last_error) {
-            fp.has_error = true;
-            fp.err_kind = errorKindToString(ff.last_error->kind);
-            fp.err_message = ff.last_error->message;
-            fp.err_http_status = ff.last_error->http_status;
-            fp.err_native_code = ff.last_error->native_code;
-        }
+        fp.error = DownloadErrorSnapshot::Capture(ff.last_error);
         payload->failed_files.push_back(std::move(fp));
     }
 
@@ -488,25 +503,9 @@ void NapiCompleteBridge::callJs(napi_env env, napi_value js_callback,
     setBoolProp (env, js_result, "aborted",    payload->aborted);       // v5
     setInt64Prop(env, js_result, "durationMs", payload->duration_ms);   // v5
 
-    if (payload->has_error) {
-        napi_value js_error;
-        napi_create_object(env, &js_error);
-        setStringProp(env, js_error, "kind",       payload->error_kind);
-        setStringProp(env, js_error, "message",    payload->error_message);
-        setInt32Prop (env, js_error, "nativeCode", payload->native_code);
-        setInt64Prop (env, js_error, "httpStatus", payload->http_status);
-        setStringProp(env, js_error, "url",        payload->url_context);
-        // v5: 试过的源列表
-        napi_value urls;
-        napi_create_array_with_length(env, payload->error_tried_urls.size(), &urls);
-        for (size_t i = 0; i < payload->error_tried_urls.size(); ++i) {
-            napi_value s;
-            napi_create_string_utf8(env, payload->error_tried_urls[i].c_str(),
-                                    payload->error_tried_urls[i].size(), &s);
-            napi_set_element(env, urls, static_cast<uint32_t>(i), s);
-        }
-        napi_set_named_property(env, js_error, "triedUrls", urls);
-        napi_set_named_property(env, js_result, "error", js_error);
+    if (payload->error.has_error) {
+        napi_set_named_property(env, js_result, "error",
+                                createDownloadErrorSnapshot(env, payload->error));
     }
 
     // v5: 失败文件列表（供 UI "3 个文件失败 ⚠️ xxx.jar (SSL错误)" 的详情展示）
@@ -519,14 +518,9 @@ void NapiCompleteBridge::callJs(napi_env env, napi_value js_callback,
             napi_create_object(env, &obj);
             setStringProp(env, obj, "localPath", ff.local_path);
             setStringProp(env, obj, "basename",  ff.basename);
-            if (ff.has_error) {
-                napi_value err;
-                napi_create_object(env, &err);
-                setStringProp(env, err, "kind",       ff.err_kind);
-                setStringProp(env, err, "message",    ff.err_message);
-                setInt64Prop (env, err, "httpStatus", ff.err_http_status);
-                setInt32Prop (env, err, "nativeCode", ff.err_native_code);
-                napi_set_named_property(env, obj, "lastError", err);
+            if (ff.error.has_error) {
+                napi_set_named_property(env, obj, "lastError",
+                                        createDownloadErrorSnapshot(env, ff.error));
             }
             napi_value urls;
             napi_create_array_with_length(env, ff.tried_urls.size(), &urls);

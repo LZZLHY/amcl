@@ -52,6 +52,12 @@ vm.runInNewContext(ts.transpileModule(buildFunction.getText(installerAst), {comp
 
 /** 每例独立加载服务，目录锁/缓存不会跨用例泄漏；系统外不创建用户文件。 */
 function harness(options = {}) {
+  // 只延迟Native释放端口；服务、目录锁、索引及提交/回滚仍执行同一生产实现。
+  let releaseOwner;
+  const releaseGate=new Promise(resolve=>{releaseOwner=resolve;});
+  let ownerReleased=!options.holdOwner,clockNow=0;
+  const timers=[];
+  const scheduling=options.holdOwner?{setTimeout(run,delay){timers.push({run,at:clockNow+delay});return timers.length;}}:{};
   const mcDir = '/virtual/mc', versionId = '自定义整合包', isolation = options.isolation ?? true;
   const dir = isolation ? mcDir + '/versions/' + versionId + '/mods' : mcDir + '/mods';
   const files = new Map(), dirs = new Set(), handles = new Map(), downloads = [], phases = [], exactIds = [], metadataReads = [];
@@ -134,7 +140,8 @@ function harness(options = {}) {
       if(options.cancelAfterDownload)cancelled=true;
       listener({taskId,finished:true});
     },
-    cancel(){},purgeTask:()=>true,
+    cancel(){},purgeTask:()=>ownerReleased,
+    async awaitTaskReleased(_id,retainOwner){assert.equal(retainOwner,true);await releaseGate;},
   };
   const featureCore = {...policy,DownloadManager:{instance:()=>manager},computeFileSha1:async name=>{
     if(!files.has(name))throw new Error('ENOENT');
@@ -154,13 +161,19 @@ function harness(options = {}) {
     './LocalModScanner':{LocalModScanner:Scanner},'./ModInstaller':downloadExports,
     // 旧实现的任何包内裁决调用都会被记下；此边界仅为证明“不调用”，不伪造通过结果。
     './ModManifest':{readModDescriptors:async name=>{metadataReads.push(name);throw new Error('不应读取 JAR 元数据');},validateModSet:()=>{throw new Error('不应裁决模组组合');}},
-  });
+  },scheduling);
   const api=load('mods/src/main/ets/ModInstallService.ets'), service=new api.ModInstallService();
   const request={mcDir,versionId,versionIsolation:isolation,root:rootVersion,title:'特殊格式模组',router,optionalIds:[],
     oldPath:options.fresh?undefined:dir+(options.disabled?'/old.jar.disabled':'/old.jar')};
   const observer={phase:text=>phases.push(text),fileProgress(){},cancelled:()=>cancelled,files(){}};
   return {api,service,request,observer,dir,files,dirs,downloads,phases,exactIds,metadataReads,original,unrelated,replacement,dependency,initialIndex,
-    run:()=>service.install(request,observer),injected:()=>injected,fingerprintCancellation:()=>cancelledAtFingerprint};
+    run:()=>service.install(request,observer),injected:()=>injected,fingerprintCancellation:()=>cancelledAtFingerprint,
+    releaseNative(){ownerReleased=true;releaseOwner();for(const timer of timers.splice(0))timer.run();},
+    async advanceOwner(ms){const until=clockNow+ms;for(let budget=0;budget<4000;budget++){
+      for(let micro=0;micro<20;micro++)await Promise.resolve();
+      const next=timers[0];if(!next||next.at>until){clockNow=until;return;}timers.shift();clockNow=next.at;next.run();
+    }throw new Error('mod owner fixture timer budget exceeded');},
+    peerLock:callback=>load('mods/src/main/ets/ModInstallTransaction.ets').withModDirectoryLock(dir,callback)};
 }
 
 /** 更新/修复成功：无关旧 JAR 原样保留，下载身份和 pin 不变，两种目录隔离模式均执行真实事务。 */
@@ -222,5 +235,25 @@ for(const [options,message] of [
 /** 来源明确标注的错误加载器/游戏版本仍在下载前拒绝；这是安装选版，不是本地组合推演。 */
 for(const patch of [{loaders:['forge']},{gameVersions:['1.21.1']}]){
   const h=harness();Object.assign(h.request.root,patch);await assert.rejects(h.run(),/所选文件不支持目标版本/);assert.equal(h.downloads.length,0);
+}
+/** 原生终态之后仍持有真实服务的目录锁；首次错误和取消也不能借有限等待放走事务。 */
+for(const options of [{},{badDownload:'hash'},{cancelAfterDownload:true}]){
+  const h=harness({...options,holdOwner:true});let settled=false,peerEntered=false;
+  const pending=h.run().then(()=>{settled=true;return null;},error=>{settled=true;return error;});
+  // 已创建的真实Native输入是进入证据；不等待只有新helper才会发的信号，以免撤回
+  // 修补时负控永久挂起。随后只推进定时口，旧有限release会真实返回并放走目录锁。
+  for(let micro=0;micro<100&&h.downloads.length===0;micro++)await Promise.resolve();
+  assert(h.downloads.length>0);
+  const peer=h.peerLock(async()=>{peerEntered=true;});
+  try{
+    await h.advanceOwner(31000);assert.equal(settled,false);assert.equal(peerEntered,false);
+    assert.deepEqual(h.files.get(h.dir+'/old.jar'),h.original);
+    assert.equal(h.files.get(h.dir+'/.amcl-mods-index.json').toString(),h.initialIndex);
+    assert(h.downloads.length>0);h.releaseNative();const result=await pending;await peer;
+    assert.equal(peerEntered,true);
+    if(options.badDownload)assert.match(result.message,/下载哈希校验失败/);
+    else if(options.cancelAfterDownload)assert.match(result.message,/取消/);
+    else assert.equal(result,null);
+  }finally{h.releaseNative();await pending;await peer;}
 }
 console.log('PASS: real installation service skips old/special JAR metadata; exact API pins, loader/game choice, size/hash, cancel, directory snapshots and mid-commit rollback remain enforced');

@@ -25,6 +25,7 @@ import {
   formatRecordSummary,
   getDownloadHistoryStore,
   HISTORY_CAPACITY,
+  ActivityCategory,
 } from 'feature_core';
 
 function makeRecord(versionName: string, status: string, durationMs: number): DownloadHistoryRecord {
@@ -137,6 +138,36 @@ export default function downloadHistoryTest() {
   //  serializeRecord / deserializeRecord
   // ============================================================
   describe('DownloadHistory serialize record', () => {
+
+    /** 导出任务身份必须随活动持久化；旧活动没有新字段时仍按原有兼容规则读取。 */
+    it('导出类别与受控任务身份完整往返', 0, () => {
+      const original: DownloadHistoryRecord = makeRecord('my-client', 'success', 2500);
+      original.category = ActivityCategory.GAME_EXPORT;
+      original.exportTaskId = '1700000000000-12345678-1234-1234-1234-123456789abc';
+      original.mcDir = '/fixture/.minecraft';
+      const restored: DownloadHistoryRecord | null = deserializeRecord(serializeRecord(original));
+      expect(restored !== null).assertTrue();
+      if (restored !== null) {
+        expect(restored.category).assertEqual(ActivityCategory.GAME_EXPORT);
+        expect(restored.exportTaskId).assertEqual(original.exportTaskId);
+        expect(restored.mcDir).assertEqual(original.mcDir);
+      }
+      const legacy: DownloadHistoryRecord | null = deserializeRecord(serializeRecord(makeRecord('1.20.4', 'success', 100)));
+      expect(legacy !== null && legacy.exportTaskId === undefined).assertTrue();
+    });
+
+    /** 历史正文不能把恢复身份变成路径穿越；无效关联被忽略，原活动结局仍可读取。 */
+    it('导出记录不保留任意路径形式的任务身份', 0, () => {
+      const original: DownloadHistoryRecord = makeRecord('my-client', 'failed', 100);
+      original.category = ActivityCategory.GAME_EXPORT;
+      original.exportTaskId = '../records/private';
+      const restored: DownloadHistoryRecord | null = deserializeRecord(serializeRecord(original));
+      expect(restored !== null).assertTrue();
+      if (restored !== null) {
+        expect(restored.exportTaskId === undefined).assertTrue();
+        expect(restored.status).assertEqual('failed');
+      }
+    });
 
     it('完整字段往返一致', 0, () => {
       let original: DownloadHistoryRecord = {

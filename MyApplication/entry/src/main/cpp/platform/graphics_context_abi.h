@@ -47,5 +47,8 @@ typedef struct AmclGraphicsContextRequestV1 {
 #define AMCL_CONTEXT_SUSPEND 2u
 #define AMCL_CONTEXT_ATTACH 3u
 #define AMCL_CONTEXT_DESTROY 4u
+// 只读 owner display 快照：无请求、tid 可为0，只写临时 state.display，不创建图形资源。
+// 使用既有函数表和结构布局；旧 owner 不认识此 opcode 时必须失败关闭，不借本地缓存。
+#define AMCL_CONTEXT_QUERY_DISPLAY 5u
 #undef AMCL_CONTEXT_DEFAULT
 #endif

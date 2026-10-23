@@ -1,27 +1,12 @@
 /**
- * download/net_thread.h — 单个分段下载线程
+ * download/net_thread.h — 单个[start,end]分段及其执行生命周期。
  *
- * 对应 PCL2 `NetThread`。一个 NetThread 负责下载一个 [start, end] 字节区间，用独立的
- * CURL* easy handle 阻塞式 curl_easy_perform。
+ * worker复用线程独占easy执行阻塞curl，CURLM复用同一分段对象及回调。正文同步pwrite
+ * 到NetFile持有的.amcl.part fd，配合动态边界锁避免拆段重叠；最终发布不在本类。
  *
- * 关键设计（不同于 PCL2）：
- *   - 不用 .part 临时文件 + 合并。直接 pwrite(fd, buf, n, start + offset) 到最终文件。
- *   - fd 由 NetFile 统一管理（一个 NetFile 的所有 NetThread 共享同一个 fd）。
- *     pwrite 是原子的（POSIX 保证），多线程并发写同一个 fd 的不同 offset 是安全的。
- *
- * 生命周期：
- *   ctor → run()（在 WorkerPool 的线程上被调用） → dtor
- *
- * run() 内部：
- *   1. 从 task->sources 里选一个可用 NetSource（RR 或按 IP 评分）
- *   2. curl_easy_init + 设置 URL / Range / write_callback / progress_callback
- *   3. curl_easy_perform（阻塞）
- *   4. 成功 → source->recordSuccess + state=Finished
- *      失败 → source->recordFailure + 选下一个源重试 + 重置 done=0
- *             所有源都挂 → state=Failed
- *   5. curl_easy_cleanup
- *
- * 取消：外部通过 abort() 设置 aborted_=true，progress_callback 返回非 0 让 curl 提前退出。
+ * 有效断点、增量摘要、真实HTTP attempt和执行epoch分别管理。resetDone只撤销内容，
+ * beginTransportAttempt只在实际请求前起钟；授权次数/字节由NetFile独立累计，不随普通
+ * retry或换族重置。abort先发布意图，transport退出和completion回报再各自完成屏障。
  */
 #pragma once
 
@@ -43,6 +28,7 @@ typedef void CURL;
 namespace download {
 
 class NetFile;  // 前向声明
+class HostAdmissionLease;
 
 /**
  * steady-clock 毫秒。与 net_thread.cpp 内部的 nowMs() 同源，供本头文件的内联成员函数使用。
@@ -162,14 +148,22 @@ public:
     /** 所属 NetFile（MultiDownloader 需要 acquireFd/releaseFd/pickBestSource/fileSize） */
     NetFile* task() const { return task_; }
 
-    /** 重置已下载字节数（重试时从头开始）+ 重置 stall 计时器 + 重置增量 SHA1 */
+    /**
+     * 只撤销内容进度和增量摘要。排队/冷却期间没有 HTTP，不能把此刻当作下一次
+     * 请求起点；两个执行器均在真正发请求前调用 beginTransportAttempt。
+     */
     void resetDone() {
+        std::lock_guard<std::mutex> boundary_lk(write_boundary_mu_);
         done_.store(0, std::memory_order_release);
+        content_source_.reset();
+        attempt_content_source_.reset();
+        content_unknown_ = false;
+        content_mixed_ = false;
         last_data_receive_ms_.store(0, std::memory_order_relaxed);
-        // 把 stall 看门狗基线重新压到"现在"，而不是留成 0。留 0 会让
-        // progress_callback 在首字节到达前失去唯一的计时基准，"连上却不吐字节"的段
-        // 于是永不返回、文件永不收敛（进度卡死 + 速度 0 + 重试仍卡同一处）。
-        transfer_start_ms_.store(netThreadSteadyNowMs(), std::memory_order_relaxed);
+        transfer_start_ms_.store(0, std::memory_order_relaxed);
+        speed_.last_ts_ms.store(0, std::memory_order_release);
+        speed_.last_done.store(0, std::memory_order_release);
+        speed_.last_speed_bps.store(0, std::memory_order_release);
         // C-3 修复：用显式 reset() 替代 `= Sha1()`；语义清晰，避免将来 Sha1
         // 加入 RAII 资源时拷贝赋值悄悄泄漏
         sha1_hasher_.reset();
@@ -192,12 +186,30 @@ public:
     // contents and intentionally preserves it; prepareForRetryExecution() starts a new file-level
     // retry epoch and resets the consecutive no-progress budget before the segment is re-enqueued.
     bool tryBeginAttempt(int max_attempts = 30);
+    /** 清一次响应（包括重定向/100 Continue后的新状态行），不改已保存正文或权限预算。 */
+    void resetResponseHeaders();
+    /** 实际 HTTP 开始时重建计时/速度/响应锚点；队列和 not-before 等待不能调用。 */
+    void beginTransportAttempt(HostAdmissionLease* admission);
+    /**
+     * 实际 HTTP 前绑定 logical NetSource。普通恢复不丢前缀；只有 NetFile 已经证伪
+     * 完整摘要并要求单源复验时，换来源/未知旧前缀才从零重做。返回是否撤销了 done。
+     */
+    bool prepareContentSource(const NetSourcePtr& source);
+    /** 仅当前保留的全部字节可证明由单一来源贡献时返回；恢复未知/混合内容返回空。 */
+    NetSourcePtr provenSingleContentSource() const;
+    /** curl同步回调已经退出后解除借用；必须早于lease/TransferCtx析构或新epoch。 */
+    void endTransportAttempt() { attempt_admission_ = nullptr; }
     int retryCount() const { return retry_count_.load(std::memory_order_acquire); }
     int64_t cumulativeRetryDelayMs() const { return retry_delay_ms_.load(std::memory_order_acquire); }
     bool addRetryDelayMs(int64_t delay_ms, int64_t total_budget_ms);
     void deferUntilMs(int64_t when_ms);
     int64_t retryNotBeforeMs() const { return retry_not_before_ms_.load(std::memory_order_acquire); }
     int64_t retryDeadlineMs() const { return retry_deadline_ms_.load(std::memory_order_acquire); }
+    /**
+     * 准入也有独立5min上界。首次HTTP之前用它约束“所有来源冷却”，防止一个尚未
+     * 建立retryDeadline的任务无限等待；开始HTTP后改用真实无进度预算，不计作stall。
+     */
+    int64_t schedulingDeadlineMs();
     int writeErrno() const { return write_errno_.load(std::memory_order_acquire); }
     void clearWriteErrno() { write_errno_.store(0, std::memory_order_release); }
     DownloadExceptionPtr writeFailure(const std::string& url_context = {}) const;
@@ -244,6 +256,12 @@ private:
     // Boundary changes and writes share this mutex, so a successful split cannot
     // overlap any subsequent write from the old segment.
     mutable std::mutex      write_boundary_mu_;
+    // 与 pwrite/done 同锁；只记录已成功提交到本段 done 的字节，不以最后一次 HTTP
+    // 成功推断整个文件来源。旧 meta 不存贡献事实，initial_done>0 必须保持 unknown。
+    NetSourcePtr            attempt_content_source_;
+    NetSourcePtr            content_source_;
+    bool                    content_unknown_ = false;
+    bool                    content_mixed_ = false;
     uint64_t                boundary_generation_{0};  // 仅在 write_boundary_mu_ 下访问
     // v4.10：end_ 改为 atomic —— 监控线程可能在 worker 下载途中调 shrinkEndTo 缩小它
     // 来做自适应分段（见 shrinkEndTo 注释）。只会变小，单调。
@@ -256,6 +274,8 @@ private:
     // performOnce 置位、run() 的主机熔断判定消费 —— IPv6 不通不该拉黑整台主机。
     // 见 performOnce 里 noteFamilyOutcome 附近注释与 engine.h ipResolveFor。
     std::atomic<bool>       family_retry_pending_{false};
+    // 仅worker run/performOnce访问：纯准入拒绝回到来源调度，不当作HTTP或来源失败。
+    bool admission_deferred_ = false;
     // v6: 多源轮询的首选源序号（-1 = 无偏好，按评分选最优）。见 setPreferredSourceIdx。
     int                     preferred_source_idx_ = -1;
     // v6: 本段当前正在使用的源序号（performOnce 前置位，供 maybeGrowThreads 避让）。
@@ -265,8 +285,8 @@ private:
     mutable std::mutex      last_error_mu_;
     DownloadExceptionPtr    last_error_;
 
-    // AMCL: 最近一次成功交付字节的源（shared_ptr 需 mutex 保护）。SHA1 终检失败时
-    // NetFile 据此定位坏内容源并 checksum_bad 排除 + 换源。
+    // 最近一次成功 HTTP 的 logical 来源，只供诊断/完整复验候选偏好；不能用它推断
+    // 保留 prefix 的全部贡献。摘要归责必须使用 provenSingleContentSource。
     mutable std::mutex      last_used_source_mu_;
     NetSourcePtr            last_used_source_;
 
@@ -291,6 +311,7 @@ private:
     // 连续无有效进度的 steady-clock 截止时间：首次尝试建立；onWrite 持续推进，
     // prepareForRetryExecution 开启新的文件重试 epoch 时清零重建。
     std::atomic<int64_t> retry_deadline_ms_{0};
+    std::atomic<int64_t> admission_deadline_ms_{0};
     std::atomic<int64_t> retry_not_before_ms_{0};
     std::atomic<int64_t> response_retry_after_ms_{0};
     std::atomic<bool> response_content_range_seen_{false};
@@ -305,6 +326,11 @@ private:
     // 用户可见的"进度条倒退 + 反复从头下载"（真机 cdn.modrinth.com→307→cdn-alt 每次续传都触发）。
     // PCL2 用 HttpClient 自动 follow，302 响应体不进应用层，天然无此问题；这里对齐其语义。
     std::atomic<long> hdr_status_code_{0};
+    // 仅当前HTTP执行线程/其同步curl回调访问；新epoch只能在旧transport收敛后进入。
+    // 用本次新增1MiB正文尽早关闭半开探针，避免一个健康的大包独占该host至EOF。
+    HostAdmissionLease* attempt_admission_ = nullptr;  // 只借当前hop，不拥有，不跨回调执行期
+    int64_t attempt_initial_done_ = 0;
+    bool attempt_health_reported_ = false;
 
     // v4.6: 增量 SHA1 — 在 onWrite 中同步更新，下载完成时直接取结果，
     // 避免 onAllThreadsDone 在事件循环线程重新 fopen+fread+sha1+fclose
@@ -315,16 +341,16 @@ private:
 
 public:
     /**
-     * AMCL: 返回最近一次成功交付字节的源（run() 成功路径里记录）。供 NetFile 在 SHA1
-     * 终检失败时定位"是哪个源给了内容不对的文件"，从而把它标记 checksum_bad 并换源重下。
+     * 返回最近一次成功 HTTP 的来源（run()/multi success 记录），供诊断和复验偏好。
+     * 单独此事实无法排除混合 prefix 或旧 meta，不能据此标记 checksum_bad。
      * 未成功交付过时返回 nullptr。线程安全（last_used_source_mu_ 保护 shared_ptr）。
      */
     NetSourcePtr lastUsedSource() const;
 
     /**
-     * AMCL: 记录最近一次成功交付字节的源。worker 路径在 run() 内设置；multi（小文件单段）
-     * 路径必须在 handleSuccess 里显式调用，否则 SHA1 终检失败时 NetFile 无法定位坏内容源，
-     * 单段小文件的 checksum_bad 换源逻辑会静默失效。线程安全。
+     * 记录最近一次成功 HTTP 的来源。worker 的 run 与 multi 的 handleSuccess 都接线，
+     * 保证混合/未知内容复验可优先选择刚交付正确尾部的候选；永久坏内容归责另取
+     * 实际写入贡献证明，不从这个“最近”字段推断整个对象。线程安全。
      */
     void setLastUsedSource(NetSourcePtr src);
 };

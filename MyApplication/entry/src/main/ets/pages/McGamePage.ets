@@ -1,5 +1,9 @@
 import { DesktopGameResults } from '../runtime/DesktopGameResults'
-import { GameLaunchGate } from '../runtime/GameLaunchGate'
+import { GameRunAdmission } from '../runtime/GameRunAdmission'
+import { SharedProcessGameLease } from 'feature_core'
+import { GameSessionHost, GameFrontendLease, getGameSessionHost } from '../runtime/GameSessionHost'
+import { NativeGamepadRouteDecision, nativeGamepadRouteStatusMessage } from '../runtime/NativeGamepadRoutePolicy'
+import { reconcileEntryInputSession } from '../components/EntryInputSessionCoordinator'
 import { ProcessPreferences } from 'commons'
 import { DesktopFileDrop } from '../runtime/DesktopFileDrop'
 import { DiagnosticPolicy } from 'commons'
@@ -14,7 +18,7 @@ import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 // 活动账本（L3）：游戏会话也是一条活动，与下载/安装共用同一套账本
 // （ActivityCategory 本文件下方已 import，不再重复引入）
-import { ledgerBegin, LedgerBeginMeta, ledgerHas, ledgerEnd, LedgerState, LedgerOutcome } from 'commons';
+import { ledgerBegin, ledgerBeginAsync, LedgerBeginMeta, ledgerHas, ledgerManifestAsync, ledgerEndAsync, LedgerState, LedgerOutcome } from 'commons';
 import { enrichSessionEnvironment } from '../runtime/SessionEnvironmentCollector';
 import { ProductRenderDiagnostics } from 'entry/ProductRenderDiagnostics';
 import testNapi from 'libentry.so';
@@ -23,7 +27,7 @@ import { ProductGameControlSurface } from 'entry/ProductGameControlSurface';
 import { ProductGameWindowCoordinator, ProductGameWindowSnapshot } from 'entry/ProductGameWindowCoordinator';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
-import { GLFW_KEY_ESCAPE, GLFW_PRESS, GLFW_RELEASE } from 'gamecontrol';
+import { GLFW_KEY_ESCAPE, GLFW_PRESS, GLFW_RELEASE, OHOS_ALT_RIGHT } from 'gamecontrol';
 import { getLayoutStore } from 'gamecontrol';
 import { glfwKeyFromOhos, resolvePhysicalKeyCodepoint } from 'gamecontrol';
 import { composeGlfwMods, composeOhosLockState } from 'gamecontrol';
@@ -34,8 +38,8 @@ import { normalizeDeviceId } from 'gamecontrol';
 import { WheelStepAccumulator, wheelDirectionFromAxisVertical } from 'gamecontrol';
 import { WHEEL_PAN_TAG, judgeWheelPanGesture, WheelPanJudgement } from 'gamecontrol';
 import { normalizeRelativeMouseDelta, RelativeMouseDelta } from 'gamecontrol';
-import { GamepadManager, GamepadEmitter, routeKeyToGamepad } from 'gamecontrol';
-import { getInputDeviceMonitor, DeviceCapability, DeviceGamepadKind } from 'gamecontrol';
+import { GamepadManager, GameInputRuntime, routeKeyToGamepad } from 'gamecontrol';
+import { getInputDeviceMonitor, DeviceCapability } from 'gamecontrol';
 import { getPhysicalPointerEcho, getImeActivationGate } from 'gamecontrol';
 import {
   DeviceChangeEvent, deviceCapabilityBitsFromSources, InputDeviceClass,
@@ -55,7 +59,7 @@ import {
 } from 'gamecontrol';
 import inputDevice from '@ohos.multimodalInput.inputDevice';
 import { getPointerVisibility } from 'gamecontrol';
-import { common, appRecovery, Want } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { GraphicsProfileInput, GraphicsGameApi, LaunchProfileBuilder, LaunchProfile } from 'launch';
 import { MinecraftGraphicsPreferenceInput, MinecraftGraphicsRequest, resolveMinecraftGraphicsRequest,
@@ -68,7 +72,7 @@ import { verifyLwjglRuntimeSlot } from 'launch';
 import { GraphicsRecoveryTicket, GraphicsRecoveryFailure, GraphicsRuntimeState, graphicsFailureRetryable,
   graphicsRecoveryCandidate, parseGraphicsRuntimeState } from '../runtime/GraphicsRecoveryPolicy';
 import { RuntimeDeployer } from 'launch';
-import { SUPPORTED_JDK_VERSION, SUPPORTED_JDK_VERSIONS } from 'commons';
+import { SUPPORTED_JDK_VERSION, isJdkSlotVersion } from 'commons';
 import { getAccountManager } from 'account';
 import { AccountType } from 'account';
 import { AuthlibInjectorAccount, YggdrasilApi, RealHttpClient } from 'account';
@@ -135,46 +139,68 @@ const PHYSICAL_KEY_TYPED_ROUTE_HANDLED: number = 11
 @Entry
 @Component
 struct McGamePage {
+  // 稳定会话拥有来源、配置与时钟；页面实例仅持可撤销的前端资格。
+  private sessionHost: GameSessionHost = getGameSessionHost()
+  private frontendLease: GameFrontendLease | undefined = undefined
+  /** 原会话前端的只读路由提示；保存偏好和实际游戏使用不能替代此Applied/Pending事实。 */
+  @State private nativeGamepadRouteMessage: string = ''
   @State statusText: string = '正在初始化渲染面...'
   @State mcStarted: boolean = false
   @State mcLog: string = ''
   @State showLog: boolean = false
-  @State @Watch('onGrabbedChanged') isInGame: boolean = false
+  /** 宿主给出的只读grab投影；不通过Watch反向写入生产准入。 */
+  @State isInGame: boolean = false
   @State surfaceContextGeneration: number = 0
   @State pageInputActive: boolean = true
+  private inputOverlayPaused: boolean = false
   private pageVisible: boolean = true
   private surfaceFocused: boolean = true
   private gameWindowReady: boolean = false
   private mcDir: string = ''
+  /** 完成实例隔离校验后发布，只供触控专用动作读取当前游戏改键。 */
+  @State touchGameDirectory: string = ''
+  @State touchRealGameVersion: string = ''
   private navigatedAway: boolean = false  // 防止多次 router.back()
-  // 方案 B 修复（2026-07-11）：grabbed 状态兜底轮询计时器。onGrabChange 的 native 推回调
-  // 在真机上不一定触发（跨 .so 反向 env 句柄机制未验证可用），导致进世界后 isInGame 卡在 false、
-  // 游戏内按键（摇杆/跳跃/攻击等 game 场景控件）全部不显示。恢复低频轮询 isGrabbed() 作为可靠兜底，
-  // 回调若能工作则提供即时响应、轮询只是补齐；二者取或，互不冲突。
-  private grabPollTimer: number = -1
+  // grabbed订阅与可靠兜底时钟由稳定宿主持有；前端仅接收其状态投影。
+  // 前端几何/图形观察与 hide/dispose 释放这类"必须继续"路径上，按"作用域/步骤"累计的
+  // 单步失败次数（见 notePageStepFault_）。只增不减，只驱动首次 + 2 的幂节流日志，
+  // 不参与任何功能判断；随页面实例一起销毁，所以新页面会重新从首次开始报。
+  private pageStepFaultCounts_: Map<string, number> = new Map<string, number>()
   // 游戏窗口 id，用于 OH_WindowManager_LockCursor。0 表示尚未取到。
   private gameWindowId: number = 0
   private gameDisplayId: number = -1
   private nativeSurfaceContextGeneration: number = 0
-  // 页面协调器拥有输入几何；桌面系统桥随 GameAbility Window 存活。
-  private gameWindowCoordinator: ProductGameWindowCoordinator = new ProductGameWindowCoordinator()
+  /** 已被Native接受的显示元数据签名；只含输入代次、Hz与Hz有效位，不创建新的触控身份。 */
+  private nativeSurfaceContextMetadata: string = ''
+  /** 只抑制重复诊断；不是Native发布缓存或输入资格。日志异常不安装此指纹，
+   * 下一次相同事实仍可重试；页面恢复清零以保留新的真实恢复边界。 */
+  private surfaceContextDiagnosticFingerprint_: string = ''
+  // 稳定宿主拥有窗口获取/恢复，前端只保留原资源引用及几何投影；系统桥随Window存活。
+  private gameWindowCoordinator: ProductGameWindowCoordinator = this.sessionHost.windowCoordinator
   private windowRestorePromise: Promise<void> | undefined = undefined
   private windowLifecycleGeneration: number = 0
   private windowRestoreRequestedForHide: boolean = false
   private windowResumeInFlight: boolean = false
   private windowResumeQueued: boolean = false
-  // source-set 编译期身份 × runtime API 的不可变决定。所有桌面特例只读这一份，
-  // native 会从同一对 (productKind, runtimeApi) 重新推导并锁存策略。
+  // source-set编译期身份×runtime API的只读产品决定；进程/Native锁存由宿主prepare执行。
   private inputProduct: ProductInputDecision = ProductInputProfile.current()
-  // 只在首次不支持/被拒时打一条日志，避免 250ms 对账把日志刷满。
-  private cursorLockDiagnosed: boolean = false
+  // `configureNativeInputProduct` 失败时的用户可读原因（非空即失败，空串 = 未失败）。
+  // 只由 aboutToAppear 的 recordInputProductFailure_ 写入一次；`startMCOnce` 读到非空
+  // 即拒绝启动 JVM。页面实例级状态：重建页面会重新配置、重新判定。
+  private inputProductFailure_: string = ''
 
   // 活动记录（操作时间线 · 阶段2）：仅记录【启动失败】（没起 JVM / 没写 SessionMarker 的前置失败）。
   // 启动成功后的正常退出/崩溃由 Index 会话恢复处统一补记（SIGABRT 杀 app，本页写不了）。
   private launchStartedAt_: number = 0
   private launchRecorded_: boolean = false  // 防同一次启动重复记录
-  private gameLaunchGate: GameLaunchGate = new GameLaunchGate()
+  /** 失败原文冻结到本次尝试；IO失败可重试，不能提前置recorded或丢失跨进程交接。 */
+  private launchFailureTask_: Promise<boolean> | undefined = undefined
+  private launchFailureRecord_: ActivityRecord | undefined = undefined
   private launchLifecycleEpoch: number = 0
+  /** 原派发的运行授权只用于新JVM；重附已有会话不会重新检查或终止正在运行的游戏。 */
+  private runAdmissionToken_: string = ''
+  /** 原启动续体专用身份；页面重新attach不能让已退休的启动借用新lease。 */
+  private launchFrontendLease: GameFrontendLease | undefined = undefined
 
   // 阶段 4.3 / 4.4 物理键鼠：实体键盘 held 缓存。
   //
@@ -186,7 +212,6 @@ struct McGamePage {
   // Phase 3.2：native 是 held/reset 的权威所有者；页面缓存只服务修饰键和 repeat 分类。
   // blur/overflow/surface reset 可在页面不 hide 时清 native 状态，因此每个实体键事件先比较
   // 完整 cancel 后发布的单调 epoch。变化时丢弃缓存，禁止恢复后的首个 Down 被误标 Repeat。
-  private inputResetEpoch: string = ''
   // 异步初始设备清点不能在页面/session 销毁后继续向新生命周期发布 ADDED。
   // aboutToDisappear 递增；promise 续体只接受捕获到的同一代。
   private inputLifecycleEpoch: number = 1
@@ -195,43 +220,9 @@ struct McGamePage {
   private deviceInventoryGuard: DeviceInventoryPublicationGuard =
     new DeviceInventoryPublicationGuard()
 
-  // v3 手柄打底：GamepadManager 把手柄按键 + 模拟轴归一化成 GLFW 事件。
-  // emitter 把事件转成 NAPI 调用。配置来自活跃 LayoutProfile.gamepad（缺省走默认）。
-  // 每一条都**申报手柄端身份**（sendSource* 系列），而不是用不带端标注的旧入口。
-  // 三件实际后果：① native 的持有记录按端隔离，手柄的 RELEASE 不会拿走屏幕虚拟按键的
-  // owner；② 拔手柄时可以只释放手柄端（releaseSourceHeld）；③ 右摇杆视角走手柄端自己的
-  // 量纲归一系数，不再与触控 dragLook 共用一个标注（后者曾被记成 lookPad）。
-  private gamepadEmitter: GamepadEmitter = {
-    emitKey: (glfwKey: number, action: number): boolean => {
-      try {
-        return testNapi.sendSourceKeyEvent(
-          AmclInputSource.Gamepad as number, glfwKey, 0, action, 0)
-      } catch (e) { return false }
-    },
-    emitMouse: (glfwButton: number, action: number): boolean => {
-      try {
-        return testNapi.sendSourceMouseEvent(
-          AmclInputSource.Gamepad as number, glfwButton, action, 0)
-      } catch (e) { return false }
-    },
-    emitScroll: (dir: number): boolean => {
-      try {
-        return testNapi.sendSourceScrollEvent(AmclInputSource.Gamepad as number, 0, dir)
-      } catch (e) { return false }
-    },
-    emitLookDelta: (dx: number, dy: number): boolean => {
-      // A right-stick look sample is meaningful only while Minecraft owns
-      // the captured gameplay surface.  Menus still receive focus-axis
-      // notifications on some ArkUI builds; dropping them here prevents a
-      // controller from moving the legacy menu cursor or accumulating a
-      // stale camera delta while the page is not grabbed.
-      if (!this.isInGame) return false
-      try {
-        return testNapi.sendSourceCursorDelta(AmclInputSource.Gamepad as number, dx, dy)
-      } catch (e) { return false }
-    }
-  }
-  private gamepad: GamepadManager = new GamepadManager(undefined, this.gamepadEmitter)
+  /** 映射来源对象由会话宿主创建，页面事件仅直接进入该来源，不建立第二个积分器。 */
+  private gamepad: GamepadManager = this.sessionHost.gamepad
+  private inputRuntime: GameInputRuntime = this.sessionHost.inputRuntime
 
   /**
    * 物理键鼠端的 InputEnd 适配器。
@@ -271,7 +262,7 @@ struct McGamePage {
 
   // Phase B（fix/input-system 键鼠适配）：监听设备插拔，capability 变化时同步光标可见性
   private capabilityListener: (c: DeviceCapability) => void = (c: DeviceCapability) => {
-    getPointerVisibility().sync(this.isInGame, c.mouse)
+    getPointerVisibility().sync(this.pageInputActive && this.isInGame, c.mouse)
   }
 
   // Phase 3.3：设备插拔 → 输入 owner 生命周期。与 capabilityListener 职责不同：
@@ -334,14 +325,21 @@ struct McGamePage {
       this.gameDisplayId = -1
     }
 
-    if (this.nativeSurfaceContextGeneration !== context.generation) {
+    // generation标识窗口/坐标解释，单独Hz变化保持同代；Native镜像仍须接收最新显示元数据。
+    // 仅在接受后缓存，拒绝或异常由现有心跳重试；原generation归零的恢复路径仍会强制重新发布。
+    const metadata: string = [context.generation, context.refreshRateHz,
+      context.has(INPUT_SURFACE_FIELD_REFRESH_RATE) ? 1 : 0].join(':')
+    if (this.nativeSurfaceContextGeneration !== context.generation || this.nativeSurfaceContextMetadata !== metadata) {
       try {
         const accepted: boolean = testNapi.publishInputSurfaceContext(
           context.windowId, context.displayId, context.leftPx, context.topPx,
           context.widthPx, context.heightPx, context.density,
           context.refreshRateHz, context.transform, context.validFields,
           context.generation)
-        if (accepted) this.nativeSurfaceContextGeneration = context.generation
+        if (accepted) {
+          this.nativeSurfaceContextGeneration = context.generation
+          this.nativeSurfaceContextMetadata = metadata
+        }
       } catch (e) {
         // Older libentry has no additive publisher. Keep ArkTS consumers on the
         // same generation; the heartbeat retries after a compatible native is present.
@@ -359,14 +357,24 @@ struct McGamePage {
       const hasRefresh: boolean = context.has(INPUT_SURFACE_FIELD_REFRESH_RATE)
       const frameHintApplied: boolean = hasRefresh
         ? testNapi.refreshOhosFrameRateHint(context.refreshRateHz) : false
+      // Native refresh、密度与能力维护已经按原入口执行，诊断去重不能提前结束它们。
+      // 指纹只含本次真实值，不引入生产计时器；输入trace关闭仍保非心跳事实变化日志。
       if (reason !== 'window-heartbeat' || DiagnosticPolicy.inputTraceEnabled()) {
-        this.launchLogger_().info(TAG,
-          `Input surface context: reason=${reason} generation=${context.generation} ` +
-          `display=${this.gameDisplayId} rect=${context.leftPx},${context.topPx},` +
-          `${context.widthPx}x${context.heightPx} density=${densityPixels} ` +
-          `refresh=${context.refreshRateHz} valid=0x${context.validFields.toString(16)} ` +
-          `native=${this.nativeSurfaceContextGeneration} frameHintApplied=${frameHintApplied}`,
-          LOG_DOMAIN_LAUNCH)
+        // 心跳诊断关闭时连指纹格式化也不执行；上面的Native维护完全独立于此分支。
+        const diagnostic: string = [context.generation, this.gameDisplayId, context.leftPx,
+          context.topPx, context.widthPx, context.heightPx, densityPixels, context.refreshRateHz,
+          context.validFields, this.nativeSurfaceContextGeneration, frameHintApplied].join(':')
+        if (diagnostic !== this.surfaceContextDiagnosticFingerprint_) {
+          this.launchLogger_().info(TAG,
+            `Input surface context: reason=${reason} generation=${context.generation} ` +
+            `display=${this.gameDisplayId} rect=${context.leftPx},${context.topPx},` +
+            `${context.widthPx}x${context.heightPx} density=${densityPixels} ` +
+            `refresh=${context.refreshRateHz} valid=0x${context.validFields.toString(16)} ` +
+            `native=${this.nativeSurfaceContextGeneration} frameHintApplied=${frameHintApplied}`,
+            LOG_DOMAIN_LAUNCH)
+          // logger真正返回之后才记已观察事实；失败由原catch处理，不伪造一次成功输出。
+          this.surfaceContextDiagnosticFingerprint_ = diagnostic
+        }
       }
     } catch (e) {
       this.gate0TelemetryEnabled = false
@@ -416,25 +424,58 @@ struct McGamePage {
   }
 
   async aboutToAppear(): Promise<void> {
+    let activityId: number = AppStorage.get<number>('mcLaunchActivityId') ?? 0
+    try { activityId = (this.getUIContext().getRouter().getParams() as McGameRouteParams).activityId ?? activityId }
+    catch (_) { /* 独立游戏页面使用已校验的 AppStorage 路由字段。 */ }
+    // 观察闭包固定到本次原宿主/前端/页面代，不从后来this.frontendLease或全局getter
+    // 借新局资格。attach内首次状态通知可早于返回lease，完成接点再主动读一次原快照。
+    const routeHost: GameSessionHost = this.sessionHost
+    const routeEpoch: number = this.inputLifecycleEpoch
+    let routeFrontend: GameFrontendLease | undefined = undefined
+    this.nativeGamepadRouteMessage = ''
+    try {
+      this.frontendLease = this.sessionHost.attach(this.context, activityId, {
+      onState: (grabbed: boolean, active: boolean): void => {
+        this.isInGame = grabbed
+        this.pageInputActive = active
+        this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
+      },
+      onMaintenance: (): void => {
+        this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
+        // 几何由当前前端资源绑定提供，图形观测沿现有边界；输入核心维护已由宿主独立执行。
+        try {
+          this.syncInputSurfaceContext(this.gameWindowCoordinator.snapshot(), 'window-heartbeat')
+        } catch (e) { this.notePageStepFault_('frontend', 'surface-context', e) }
+        try { this.pollGraphicsFailure_() } catch (e) { this.notePageStepFault_('frontend', 'graphics-failure', e) }
+        try { this.collectGraphicsMetrics_() } catch (e) { this.notePageStepFault_('frontend', 'graphics-metrics', e) }
+      },
+      onLog: (): void => { if (this.showLog) this.refreshLog() }
+      })
+      routeFrontend = this.frontendLease
+      this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
+    } catch (error) {
+      // 已结束/身份冲突的会话拒绝重建前端；不能让无人await的页面生命周期变成JS Crash。
+      this.inputProductFailure_ = '游戏会话不可继续：' + (error as Error).message
+      this.statusText = this.inputProductFailure_
+      return
+    }
+    const frontend: GameFrontendLease | undefined = this.frontendLease
     const expectedLifecycleEpoch: number = this.inputLifecycleEpoch
+    this.mcStarted = this.sessionHost.isRunning()
+    if (this.mcStarted) {
+      this.mcDir = this.sessionHost.minecraftDirectory
+      this.touchGameDirectory = this.sessionHost.gameDirectory
+      this.touchRealGameVersion = this.sessionHost.realGameVersion
+      this.statusText = 'MC 运行中'
+    }
     this.pageVisible = true
     this.gameWindowReady = false
     this.updatePageInputActive()
-    this.configureNativeInputProduct()
-    // ---- 三端平级：注册本页面拥有的两个端，并把 native 的按端接缝注入注册表 ----
-    //
-    // 触控虚拟按键端由 GameControls 自己注册（它才拥有那份 ArkTS 兼容状态）。
-    // gamecontrol 是 HAR，不能直接依赖宿主的 libentry.so，所以 native 接缝必须由宿主注入。
-    // 注入是幂等的：页面重建时 NAPI 对象不变，重复注入无副作用。
-    getInputSourceRegistry().setNativeSink({
-      releaseSourceHeld: (source: number) => {
-        try { testNapi.releaseSourceHeld(source) } catch (e) { /* 老 native 兼容 */ }
-      },
-      noteSourceReset: (source: number) => {
-        try { testNapi.noteSourceReset(source) } catch (e) { /* 老 native 兼容 */ }
-      }
-    })
-    getInputSourceRegistry().register(this.gamepad)
+    // 输入产品配置必须仍是第一个输入动作（native 策略要先于 surface/监听建立）。它失败时
+    // 不能抛出本 async 方法：那只是一次无人处理的静默 rejection，下面的端注册、监听与窗口
+    // 进入会全部跳过，游戏却照常启动。改为记录并继续装配，由 startMCOnce 拒绝启动。
+    try { this.configureNativeInputProduct() } catch (e) { this.recordInputProductFailure_(e) }
+    // 前端物理缓存按实例注册；Native端口由ProcessRuntime安装，mapped来源由会话装配。
     getInputSourceRegistry().register(this.physicalKbmEnd)
     // 先写入 cap 并监听模式变化：即使 XComponent 尚未创建，native 也会保存 cap，
     // OnSurfaceCreated 再用当时的真实刷新率应用；不存在启动期竞态窗口。
@@ -453,29 +494,34 @@ struct McGamePage {
     getInputDeviceMonitor().refreshCapability()
 
     // 初始化布局存储（必须 await，GameControls.aboutToAppear 会 waitReady）
-    await getLayoutStore().init(this.context)
+    try { await getLayoutStore().init(this.context) }
+    catch (error) {
+      if (!this.sessionHost.accepts(frontend)) return
+      this.sessionHost.stop('layout-prepare-failed')
+      try { this.recordInputProductFailure_(error) }
+      catch (logError) { this.notePageStepFault_('input-prepare', 'failure-log', logError) }
+      return
+    }
     // 页面可能在 await 期间已经销毁。aboutToDisappear 已退订并推进 epoch；旧续体
     // 必须在触碰 Gamepad/window 前终止，尤其不能重新注册持有旧页面的闭包。
-    if (expectedLifecycleEpoch !== this.inputLifecycleEpoch) return
+    if (expectedLifecycleEpoch !== this.inputLifecycleEpoch || !this.sessionHost.accepts(frontend)) return
 
-    // v3 手柄打底：把活跃方案的手柄配置同步给 GamepadManager。
-    // R2：look 灵敏度 / 倒置 Y 由 C 层 ohos_send_cursor_delta 统一处理，GamepadManager 不再需要。
-    try {
-      const ap = getLayoutStore().getActiveProfile()
-      this.gamepad.updateConfig(ap.gamepad)
-      this.gamepad.setMappedOutputEnabled(!(AppStorage.get<boolean>('nativeGamepadOutputActive') ?? false))
-    } catch (e) { /* ignore，GamepadManager 自带默认兜底 */ }
+    if (this.inputProductFailure_.length === 0) {
+      try { this.sessionHost.prepare(getLayoutStore()) }
+      catch (e) { this.recordInputProductFailure_(e) }
+    }
 
     // 产品窗口事务必须串行 await。旧实现把三个 Promise 当同步调用，异步 reject 逃出
     // try/catch，且页面启动失败后没有恢复。source-set seam 现在同时拥有进入与幂等恢复。
     try {
       const windowSnapshot: ProductGameWindowSnapshot =
-        await this.gameWindowCoordinator.enter(this.context)
-      if (expectedLifecycleEpoch !== this.inputLifecycleEpoch) {
+        await this.sessionHost.enterWindow(frontend, this.context)
+      if (expectedLifecycleEpoch !== this.inputLifecycleEpoch || !this.sessionHost.accepts(frontend)) {
         await this.restoreGameWindow(
           this.gameWindowCoordinator, 'page-disposed-during-window-enter')
         return
       }
+      this.gameWindowCoordinator = this.sessionHost.windowCoordinator
       this.gameWindowId = windowSnapshot.windowId
       this.syncInputSurfaceContext(windowSnapshot, 'window-enter')
       this.gameWindowReady = true
@@ -486,6 +532,7 @@ struct McGamePage {
         `rect=${windowSnapshot.left},${windowSnapshot.top},${windowSnapshot.width}x${windowSnapshot.height}`,
         LOG_DOMAIN_LAUNCH)
     } catch (e) {
+      if (!this.sessionHost.accepts(frontend)) return
       this.gameWindowReady = false
       this.updatePageInputActive()
       await this.restoreGameWindow(this.gameWindowCoordinator, 'window-enter-failed')
@@ -495,23 +542,49 @@ struct McGamePage {
 
   }
 
+  /**
+   * 读取只报告原lease拥有的本局路由，不调用reconcile或读取设置。任何原scope失权都
+   * 不写当前显示；getter异常只让本次仍有效页面显示待确认，不影响Host必要维护。
+   * 读回后再核原host/lease/页面代，防止边缘同步回入换页后旧结果覆盖新前端提示。
+   */
+  private refreshNativeGamepadRouteStatus_(host: GameSessionHost, frontend: GameFrontendLease | undefined,
+    epoch: number): void {
+    if (this.sessionHost!==host || this.frontendLease!==frontend || this.inputLifecycleEpoch!==epoch || !host.accepts(frontend)) return
+    let message: string = ''
+    try {
+      const route: NativeGamepadRouteDecision | undefined = host.nativeGamepadRouteForFrontend(frontend)
+      message = nativeGamepadRouteStatusMessage(route)
+    } catch (_) { message = '本局手柄路线状态暂不可用，等待确认。' }
+    if (this.sessionHost!==host || this.frontendLease!==frontend || this.inputLifecycleEpoch!==epoch || !host.accepts(frontend)) return
+    this.nativeGamepadRouteMessage = message
+  }
+
+  /**
+   * 锁存 ArkTS 产品输入身份并交给 native 推导同一份策略。任一环节不一致都**抛出**：
+   * `freeze` 拒绝不受支持的设备/系统版本，native 返回 applied/unchanged 以外的结果
+   * （参数无效、进程锁存冲突、构建身份不符）同样抛出。本方法只负责 fail loud，
+   * 失败后的页面策略（记录、提示、阻止启动）由唯一调用方 aboutToAppear 交给
+   * recordInputProductFailure_ 处理。
+   */
   private configureNativeInputProduct(): void {
-    ProductInputProfile.freeze()
-    const result: number = testNapi.configureInputProduct(
-      this.inputProduct.productKind as number, this.inputProduct.runtimeApi)
-    if (result !== INPUT_PRODUCT_APPLIED && result !== INPUT_PRODUCT_UNCHANGED) {
-      throw new Error(
-        `Native input product rejected: result=${result} ` +
-        `product=${this.inputProduct.productKind} api=${this.inputProduct.runtimeApi}`)
-    }
-    this.launchLogger_().info(TAG,
-      `Input product ready: product=${this.inputProduct.productKind} ` +
-      `api=${this.inputProduct.runtimeApi} formalDesktop=${this.inputProduct.formalDesktop} ` +
-      `compatDesktop=${this.inputProduct.compatibilityDesktop} ` +
-      `touchFallback=${this.inputProduct.mobileTouchFallback} ` +
-      `relative=${this.inputProduct.supportsRelativeMouse} ` +
-      `hardwareRaw=${this.inputProduct.supportsHardwareRawMouse}`,
-      LOG_DOMAIN_LAUNCH)
+    // 锁存行为归稳定宿主，前端只把失败投影为既有用户提示/启动拒绝。
+    this.sessionHost.configureProduct(getLayoutStore())
+  }
+
+  /**
+   * 记录输入产品配置失败，并让它对用户与日志都可见（fail loud）。
+   *
+   * 入参是 `configureNativeInputProduct` 抛出的异常。写入三处：`inputProductFailure_`
+   * （启动闸门读取，带固定前缀保证非空）、`statusText`（启动遮罩上直接可见）、一条 error
+   * 日志（带原异常）。页面其余装配照常继续：端注册、监听、窗口进入都可在 aboutToDisappear
+   * 撤销。此时 native 策略要么仍是未配置的移动端默认，要么锁存着另一份身份（冲突），
+   * 都与本页的产品决定不一致，所以不能让 JVM 在这种状态下运行。
+   */
+  private recordInputProductFailure_(error: Object): void {
+    this.inputProductFailure_ = '输入产品配置失败：' + (error as Error).message
+    this.statusText = this.inputProductFailure_
+    this.launchLogger_().error(TAG, 'Native input product configuration failed; game launch blocked',
+      error, LOG_DOMAIN_LAUNCH)
   }
 
   // ⚠️ 墓碑: 这里曾有一段"Phase B：grabbed 翻转时同步系统光标可见性"的 JSDoc，而它
@@ -560,38 +633,11 @@ struct McGamePage {
    * 不触达窗口管理器，所以 4 次/秒的对账成本可忽略。
    */
   private syncCursorLock(): void {
-    if (!this.inputProduct.supportsCursorLock) return
-    if (this.gameWindowId <= 0) return
-    const desired: boolean =
-      this.mcStarted && this.isInGame && getInputDeviceMonitor().capabilityNow().mouse
-    try {
-      const result: number = testNapi.setCursorLocked(this.gameWindowId, desired)
-      if (result === CURSOR_LOCK_OK || result === CURSOR_LOCK_UNCHANGED) return
-      if (!this.cursorLockDiagnosed) {
-        this.cursorLockDiagnosed = true
-        this.launchLogger_().warn(TAG,
-          `cursor lock unavailable result=${result} (2=device/API<22 unsupported)`,
-          LOG_DOMAIN_LAUNCH)
-      }
-    } catch (e) {
-      if (!this.cursorLockDiagnosed) {
-        this.cursorLockDiagnosed = true
-        this.launchLogger_().warn(TAG, 'setCursorLocked NAPI missing', e, LOG_DOMAIN_LAUNCH)
-      }
-    }
-  }
-
-  private onGrabbedChanged(): void {
-    const cap = getInputDeviceMonitor().capabilityNow()
-    getPointerVisibility().sync(this.isInGame, cap.mouse)
-    this.syncCursorLock()
-    // grabbed 翻转时释放手柄端的按下态（WASD / 按钮 / 扳机），
-    // 避免"切到菜单后角色还在走 / 还按着攻击"。
-    //
-    // 只放手柄端，不动另两端：触控端的 grab 翻转由 GameControls 与 native 的
-    // onGrabFlipCancel 各自处理（native 刻意让 external/physical owner 活过 grab 翻转），
-    // 物理键鼠端在菜单里照常可用。这正是"按端复位"与"全局复位"的区别。
-    getInputSourceRegistry().releaseEndsOfSource(AmclInputSource.Gamepad, 'grab-flip')
+    // 只发布本前端的原始事实。Ability/来源资格由宿主单独合取，不能把投影后的
+    // pageInputActive=false当成页面事实，否则后台/晚到focus会永久抹掉恢复期望。
+    const eligible: boolean = this.pageVisible && this.surfaceFocused && this.gameWindowReady &&
+      !this.inputOverlayPaused
+    this.sessionHost.setFrontendState(this.frontendLease, eligible, this.gameWindowId)
   }
 
   // 拦截系统返回手势 / Back 按键
@@ -600,6 +646,7 @@ struct McGamePage {
   // 的情况下，onBackPress 不再重发，避免 MC 收到两次 ESC。
   // 触屏返回手势 / 系统 BACK 键（无物理键盘）走原模拟 ESC 路径。
   onBackPress(): boolean {
+    if (!this.sessionHost.accepts(this.frontendLease)) return true
     if (!this.mcStarted) return false
     // R4：仅在确有物理键盘接入时，才把"刚发生的物理 ESC"视为 onBackPress 的副作用并抑制。
     // 纯触摸设备没有物理 ESC，不需要抑制，避免误吞真实的返回手势。
@@ -650,6 +697,8 @@ struct McGamePage {
   private graphicsHistoryScope_: string = ''
   private graphicsOutcomeSent_: boolean = false
   private graphicsFirstPresentAt_: number = 0
+  /** 启动期冻结的观测许可；首次读取后，静默且无历史回执待办就停止周期取快照。 */
+  private graphicsMetricsEnabled_: boolean | undefined = undefined
   // 成功启动后交由进程寿命持有 native fd，页面隐藏/前后台切换不能释放运行库读租约。
   private runtimeSlotLease_: string = ''
 
@@ -686,20 +735,27 @@ struct McGamePage {
       this.graphicsFaultHandled_ = true
       this.statusText = '图形后端发生错误：' + state.failureStage + '（' + state.failureCode + '）'
       this.showLog = true
-      this.recordLaunchFailure_(this.graphicsCurrentVersion_, this.statusText)
-      const handedOff: boolean = this.requestGraphicsRecovery_('render', state.failureStage,
-        Math.max(state.presentCount, state.failurePresentCount))
-      if (handedOff && exitAfterHandoff) this.requestExit_()
+      this.recordLaunchFailure_(this.graphicsCurrentVersion_, this.statusText).then((saved: boolean): void => {
+        if (!saved) { this.graphicsFaultHandled_ = false; return }
+        const handedOff: boolean = this.requestGraphicsRecovery_('render', state.failureStage,
+          Math.max(state.presentCount, state.failurePresentCount))
+        if (handedOff && exitAfterHandoff) this.requestExit_()
+      })
     } catch (error) { this.launchLogger_().warn(TAG, 'Graphics fault observation failed', error, LOG_DOMAIN_LAUNCH) }
   }
 
   /**
-   * UI心跳每5秒采集一次固定容量观测快照，量化计算和日志写入不进入游戏呈现线程。
-   * 保留原有单调present证据格式；低帧率、暂停或采样关闭时也输出真实状态，不能靠
-   * 帧数触发而让卡死无记录。退出前强制采集，调用失败不阻塞退出或影响游戏。
+   * 显式诊断时UI每5秒采样，退出前补一次快照；计算和日志不进入游戏呈现线程。
+   * 静默会话仅为自动候选的一次历史回执观察真实present，完成后停止周期查询。
+   * 致命故障由独立pollGraphicsFailure_读取，不能因关闭性能日志失去故障/退出处理。
    */
   private collectGraphicsMetrics_(force: boolean = false): void {
     if (!this.mcStarted) return
+    // 自动候选需要真实呈现事实完成一次历史回执。它与详细性能采样独立；回执完成
+    // 或本局根本没有回执资格时，静默会话不再每5秒组JSON/查询能力/写日志。
+    const historyPending: boolean = !this.graphicsOutcomeSent_ && this.graphicsRecoveryTicket_ !== undefined &&
+      this.graphicsRecoveryAutomatic_ && this.graphicsHistoryScope_.length > 0
+    if (this.graphicsMetricsEnabled_ === false && !historyPending) return
     const now: number = Date.now()
     if (!force && now >= this.graphicsMetricsAt_ && now - this.graphicsMetricsAt_ < 5000) return
     this.graphicsMetricsAt_ = now
@@ -708,9 +764,11 @@ struct McGamePage {
       const state: GraphicsRuntimeState | undefined = parseGraphicsRuntimeState(wire)
       if (state === undefined || state.pid !== testNapi.desktopProcessId()
         || state.profile !== this.graphicsCurrentProfile_) return
+      this.graphicsMetricsEnabled_ = state.samplesEnabled === true
       if (state.presentCount > 0 && this.graphicsFirstPresentAt_ === 0) this.graphicsFirstPresentAt_ = now
       if (state.failureSequence === 0 && state.presentCount >= 300 && this.graphicsFirstPresentAt_ > 0
         && now - this.graphicsFirstPresentAt_ >= 10000) this.reportGraphicsHistory_('presented', '', '', state.presentCount)
+      if (!this.graphicsMetricsEnabled_) return
       this.launchLogger_().info(TAG, 'graphics_frame_stats ' + wire, LOG_DOMAIN_LAUNCH)
       this.launchLogger_().info(TAG, `graphics_present pid=${state.pid} selected_profile=${state.profile} ` +
         `api_family=${state.apiFamily} window_provider=${state.provider} ` +
@@ -749,88 +807,36 @@ struct McGamePage {
    */
   private async doExit(): Promise<void> {
     if (this.navigatedAway) return
-    // JVM 可能比 250ms 心跳更快结束；返回父进程之前再消费一次明确的原生图形故障。
     this.pollGraphicsFailure_(false)
     this.collectGraphicsMetrics_(true)
     this.navigatedAway = true
-    if (AppStorage.get<boolean>('desktopGameProcess') === true) {
-      try {
-        const parameters: Record<string, number> = { 'gameExitActivityId': this.launchStartedAt_ }
-        const want: Want = { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility', parameters: parameters }
-        this.launchLogger_().info(TAG, `AMCL_GAME_RETURN_BEGIN activityId=${this.launchStartedAt_}`, LOG_DOMAIN_LAUNCH)
-        await this.context.startAbility(want)
-        this.launchLogger_().info(TAG, `AMCL_GAME_RETURN_REQUESTED activityId=${this.launchStartedAt_}`, LOG_DOMAIN_LAUNCH)
-      } catch (error) {
-        // 拒绝前台请求不能让停机永久等待；原生记录仍可由后续冷启动/前台恢复消费。
-        this.launchLogger_().warn(TAG, 'Foreground game could not return to launcher; exit journal retained',
-          error, LOG_DOMAIN_LAUNCH)
-      } finally {
-        try { testNapi.mcForceExit() }
-        catch (error) {
-          this.launchLogger_().warn(TAG, 'Game exit acknowledgement failed; native timeout will finish exit',
-            error, LOG_DOMAIN_LAUNCH)
-        }
-      }
-      return
-    }
-    // 未经 PID/锁验证的同进程路线保留旧退出兜底，不借独立进程握手改变其生命周期。
-    this.launchLogger_().info(TAG, 'doExit: shared-process exit fallback', LOG_DOMAIN_LAUNCH)
-    try { testNapi.mcForceExit() } catch (e) { /* ignore */ }
-    try { appRecovery.restartApp() } catch (e) { /* ignore */ }
+    // 会话持有原context/activity和停止事务；前端销毁后退出检测仍可执行。
+    await this.sessionHost.requestExit()
   }
 
   /**
-   * 250ms 页面心跳。名字只说了它最初的用途（grabbed 兜底轮询），**实际是六件事的唯一载体**
-   * —— 别照名字推断作用域（规范 §七 有同样的警告）。
+   * "必须继续"路径上单步失败的统一出口：按"作用域/步骤"计数，第 1、2、4、8… 次写 warn。
    *
-   * ⚠️ **不得为其中任何一件新开第二个定时器。** 这个项目已经删掉过两个"常驻 worker +
-   * mutex + condvar"子系统，代价是它们把自己拉进了全局锁序。
+   * 调用方：250ms 心跳、1 秒退出轮询、hide/dispose 的准入重算，以及 updatePageInputActive
+   * 里的桌面手柄焦点。共同约束是一步失败既不能跳过其后的步骤，也不能让异常逃出定时器或
+   * 同步生命周期回调（逃出即 JS Crash），所以各自就地 catch、交给这里、然后继续。
    *
-   * ⚠️ **`reconcileNativeResetEpoch` 必须留在这里**：另外两个调用点是物理按键事件与设备
-   * 移除，于是纯触摸 + 手柄的设备上对账一次都不会跑（规范 §3.2）。这条心跳是唯一与输入
-   * 设备类型无关的。
-   *
-   * 稳态成本：epoch 未变时一次返回字符串的 NAPI 调用；光标锁/指针可见性在状态一致时
-   * 都是零跨进程调用。
+   * 分键节流：持续失败的一步不会压掉另一步的首次失败；250ms 一次的持续故障一小时约 14 行。
+   * 本方法绝不向外抛：日志门面自身失败时只能吞掉，否则会在调用方的 catch 里重新制造逃逸。
    */
-  private startGrabPoll(): void {
-    if (this.grabPollTimer !== -1) return
-    const tick = () => {
-      if (this.navigatedAway) { this.grabPollTimer = -1; return }
-      // ① grabbed 对账。native 推回调在真机上不一定触发，这条 read 是可靠兜底。
-      try {
-        const g: boolean = testNapi.isGrabbed()
-        if (g !== this.isInGame) this.isInGame = g
-      } catch (e) { /* ignore */ }
-      // ①b 当前窗口 display 对账。自由窗口跨屏不一定伴随 default display change；
-      // 复用既有 250ms heartbeat 读取完整 Window context，不新增定时器。publisher
-      // lease 自己去重；native 发布失败时 generation 不前移，下一 tick 会重试。
-      try {
-        const snapshot: ProductGameWindowSnapshot = this.gameWindowCoordinator.snapshot()
-        this.syncInputSurfaceContext(snapshot, 'window-heartbeat')
-      } catch (e) { /* 下一 tick 重试 */ }
-      // ② 光标锁**无条件**对账（失焦时被系统自动解除，不能只在 grab 翻转时设一次）。规范 §6.1
-      this.syncCursorLock()
-      // ③ 指针可见性的有界重申。"调用成功"不等于"已生效"（真机：日志显示
-      //    setPointerVisible(false) 调过且没报错，光标却没隐藏），所以变更后 1 秒内重发几次。
-      getPointerVisibility().tick()
-      // ④ 钉住模式看门狗。返回 true = 刚降级回跟随模式，**必须重新加锁一次**新模式才生效
-      //    —— 窗口管理器只在 lock 时读该参数，少这一步降级就不落地。
-      try {
-        if (testNapi.cursorLockWatchdogTick()) {
-          testNapi.setCursorLocked(this.gameWindowId, false)
-          this.syncCursorLock()
-        }
-      } catch (e) { /* 老 native 无此入口时保持现状 */ }
-      // ⑤ native 复位与 ArkTS 三端缓存的对账（理由见本方法头注释与规范 §3.2）。
-      this.reconcileNativeResetEpoch()
-      // ⑥ 输入不变量自检。稳态零输出；账目失衡时 native 打一行 AMCL_INVARIANT error。
-      try { testNapi.inputInvariantTick() } catch (e) { /* 老 native 兼容 */ }
-      this.pollGraphicsFailure_()
-      this.collectGraphicsMetrics_()
-      this.grabPollTimer = setTimeout(tick, 250) as number
+  private notePageStepFault_(scope: string, step: string, error: Object): void {
+    try {
+      const key: string = scope + '/' + step
+      const count: number = (this.pageStepFaultCounts_.get(key) ?? 0) + 1
+      this.pageStepFaultCounts_.set(key, count)
+      // count & (count - 1) 为 0 ⇔ count 是 2 的幂；其余次数只计数、不写日志。
+      if ((count & (count - 1)) !== 0) return
+      this.launchLogger_().warn(TAG,
+        'Page step failed; continuing: scope=' + scope + ' step=' + step + ' count=' + count,
+        error, LOG_DOMAIN_LAUNCH)
+    } catch (logError) {
+      // 日志门面失败已无处可报；吞掉是为了让调用方的后续步骤与续排照常进行。
     }
-    this.grabPollTimer = setTimeout(tick, 250) as number
   }
 
   onPageHide(): void {
@@ -838,22 +844,17 @@ struct McGamePage {
     this.windowRestoreRequestedForHide = true
     this.pageVisible = false
     this.gameWindowReady = false
-    this.updatePageInputActive()
-    // 页面隐藏后 ArkUI 不保证继续派发 UP/CANCEL。
-    //
-    // 顺序纪律（见 InputSourceRegistry.ets）：**先让各端自己释放，再跑 native 兜底**。
-    // 端自己发出的 RELEASE 需要与它自己的 PRESS 配对才能被 native 接受；反过来先跑
-    // cancelAllInput 会把 ledger 清空，随后这些 RELEASE 全变成无配对边沿被丢弃 ——
-    // 聚合结果仍是零，但日志里会多出一批 ownerless 边沿，掩盖真正的失步问题。
-    //
-    // 遍历注册表而不是逐个点名，是"三端平级"的直接体现：以后新增第四个端
-    // （例如体感 / 远程串流）只需 register，所有边界自动覆盖它，不需要再改这里。
-    getInputSourceRegistry().releaseAllEnds('page-hide')
-    try { testNapi.cancelAllInput(2) } catch (e) { /* 老 native 兼容 */ }
-    this.requestGameWindowRestore('page-hide')
+    // 准入重算抛错时仍须执行下面的三端释放、native 兜底与窗口恢复；
+    // 异常逃出同步生命周期回调即 JS Crash，被跳过的释放正是 hide 边界要做的事。
+    try { this.updatePageInputActive() } catch (e) { this.notePageStepFault_('page-hide', 'input-active', e) }
+    this.physicalKbmEnd.releaseAllInputs('page-hide')
+    if (this.sessionHost.retireWindow(this.frontendLease, this.gameWindowId)) {
+      this.requestGameWindowRestore('page-hide')
+    }
   }
 
   onPageShow(): void {
+    this.inputRuntime.resumeAfterLifecycle()
     this.pageVisible = true
     if (!this.windowRestoreRequestedForHide) {
       this.updatePageInputActive()
@@ -891,7 +892,8 @@ struct McGamePage {
   aboutToDisappear(): void {
     this.pageVisible = false
     this.gameWindowReady = false
-    this.updatePageInputActive()
+    // 同 onPageHide：准入重算失败不能跳过下面的释放、停心跳、光标解锁、退订与窗口恢复。
+    try { this.updatePageInputActive() } catch (e) { this.notePageStepFault_('page-dispose', 'input-active', e) }
     this.windowLifecycleGeneration++
     this.windowResumeQueued = false
     // 先让异步 inventory 续体失效，再关闭 native owner；否则旧页面可能在 cancel 后
@@ -899,34 +901,17 @@ struct McGamePage {
     this.inputLifecycleEpoch++
     this.unregisterDisplayChangeListener()
     this.gameDisplayId = -1
-    // 同上的顺序纪律：先各端自释放，再 native 兜底。
-    // 页面销毁早于/独立于 XComponent surface 回调；主动关闭 native owner，不能假设 surface lost 总会先到。
-    getInputSourceRegistry().releaseAllEnds('page-dispose')
-    try { testNapi.cancelAllInput(4) } catch (e) { /* 老 native 兼容 */ }
-    // 方案 B 修复：停兜底轮询计时器
-    if (this.grabPollTimer !== -1) { clearTimeout(this.grabPollTimer); this.grabPollTimer = -1 }
-    // 必须显式解锁：光标锁是窗口级状态，页面销毁后系统不一定立刻释放，
-    // 否则回到启动器界面会出现光标不动、无法操作 UI。
-    if (this.gameWindowId > 0) {
-      try { testNapi.setCursorLocked(this.gameWindowId, false) } catch (e) { /* 老 native 兼容 */ }
-      // 窗口级过滤器同理：注册由窗口管理器持有，页面销毁后不摘掉，回调会继续被系统
-      // 调用并指向已失效的窗口身份。
-      try { testNapi.uninstallWindowInputFilters(this.gameWindowId) } catch (e) { /* 老 native 兼容 */ }
-    }
-    // 方案 B：注销 grabbed 回调（释放 native threadsafe function），避免页面销毁后
-    // 回调仍持有已失效的闭包。传空参 = 注销。
-    try { testNapi.onGrabChange() } catch (e) { /* ignore */ }
-    // Phase B：取消监听 + 强制恢复光标可见，避免下个 app 接管时指针消失
+    // 先按原租约退休本前端拥有的窗口，再detach；迟到页面不能注销新前端/来源/回调。
+    const retiredWindow: boolean = this.sessionHost.retireWindow(this.frontendLease, this.gameWindowId)
+    if (this.frontendLease !== undefined) this.sessionHost.detach(this.frontendLease)
+    this.frontendLease = undefined
+    this.physicalKbmEnd.releaseAllInputs('page-dispose')
     getInputDeviceMonitor().removeCapabilityListener(this.capabilityListener)
     getInputDeviceMonitor().removeDeviceChangeListener(this.deviceChangeListener)
-    getPointerVisibility().restore()
-    // 注销本页面拥有的两个端。必须在上面的 releaseAllEnds 之后：先放干净再摘掉，
-    // 反过来会让这两个端的按下态永远没人释放。
     getInputSourceRegistry().unregister(this.physicalKbmEnd)
-    getInputSourceRegistry().unregister(this.gamepad)
     // page-hide 与 dispose 可能连续到达；coordinator 返回同一条 restore Promise，
     // 不会重复 recover / 系统栏 / 方向操作。
-    this.requestGameWindowRestore('page-dispose')
+    if (retiredWindow) this.requestGameWindowRestore('page-dispose')
   }
 
   private async restoreGameWindow(
@@ -934,7 +919,7 @@ struct McGamePage {
     reason: string
   ): Promise<void> {
     try {
-      await coordinator.restore()
+      await this.sessionHost.restoreWindow(coordinator)
       // endPublisher creates an explicit invalid generation. Publish it so
       // native/backend and generation-watched controls cannot retain an old
       // Window/display context after the page has gone away.
@@ -968,16 +953,18 @@ struct McGamePage {
     }
     if (!this.pageVisible || this.navigatedAway ||
         expectedGeneration !== this.windowLifecycleGeneration) return
-    const coordinator = new ProductGameWindowCoordinator()
+    const snapshot: ProductGameWindowSnapshot = await this.sessionHost.enterWindow(this.frontendLease, this.context)
+    const coordinator: ProductGameWindowCoordinator = this.sessionHost.windowCoordinator
     this.gameWindowCoordinator = coordinator
-    const snapshot: ProductGameWindowSnapshot = await coordinator.enter(this.context)
     if (!this.pageVisible || this.navigatedAway ||
         expectedGeneration !== this.windowLifecycleGeneration) {
-      await coordinator.restore()
+      await this.sessionHost.restoreWindow(coordinator)
       return
     }
+    this.gameWindowCoordinator = this.sessionHost.windowCoordinator
     this.gameWindowId = snapshot.windowId
     this.nativeSurfaceContextGeneration = 0
+    this.surfaceContextDiagnosticFingerprint_ = ''
     this.syncInputSurfaceContext(snapshot, 'page-show')
     this.installWindowInputFilters()
     this.windowRestoreRequestedForHide = false
@@ -986,8 +973,9 @@ struct McGamePage {
   }
 
   private updatePageInputActive(): void {
-    this.pageInputActive = this.pageVisible && this.surfaceFocused && this.gameWindowReady
-    if (ProductInputProfile.selection().desktopWindow) testNapi.desktopGamepadFocus(this.pageInputActive)
+    // 页面请求只含自身事实；实际pageInputActive由宿主onState单向投影，读取不产生政策写回。
+    this.syncCursorLock()
+
   }
 
   // Touch events are now handled natively by XComponent's DispatchTouchEvent callback
@@ -1041,14 +1029,12 @@ struct McGamePage {
         .onLoad(() => {
           this.launchLogger_().info(TAG, 'XComponent onLoad', LOG_DOMAIN_LAUNCH)
           this.statusText = '渲染面就绪，正在启动 MC...'
-          setTimeout(() => {
-            this.startMC().catch((e: Error) => {
-              this.launchLogger_().warn(TAG, 'startMC promise failed', e, LOG_DOMAIN_LAUNCH)
-            })
-          }, 500)
+          this.sessionHost.scheduleStart(this.frontendLease, (): Promise<void> => this.startMC())
         })
         .onDestroy(() => {
           this.launchLogger_().info(TAG, 'XComponent destroyed', LOG_DOMAIN_LAUNCH)
+          // Native Surface回调立即退休真实目标；本UI回调撤销尚未触发的启动租约。
+          if (!this.mcStarted && this.frontendLease !== undefined) this.sessionHost.detach(this.frontendLease)
         })
 
       // 触摸事件主路径：XComponent native DispatchTouchEvent 回调 (render.cpp)
@@ -1080,10 +1066,23 @@ struct McGamePage {
       // 产品控制面：手机/平板 target 编译触控 GameControls；desktop target 编译纯实体键鼠控制面。
       if (this.mcStarted) {
         ProductGameControlSurface({
+          gameDirectory: this.touchGameDirectory,
+          realGameVersion: this.touchRealGameVersion,
           isGrabbed: this.isInGame,
           surfaceContextGeneration: this.surfaceContextGeneration,
-          pageActive: this.pageInputActive
+          pageActive: this.pageInputActive,
+          onInputPause: (paused: boolean): void => {
+            this.inputOverlayPaused = paused
+            this.updatePageInputActive()
+          }
         })
+      }
+      // 路由提示只绘制原会话事实，不接管触摸/焦点；关闭前端观察仍不停止Host路由维护。
+      if (this.mcStarted && this.pageInputActive && this.nativeGamepadRouteMessage.length > 0) {
+        Text(this.nativeGamepadRouteMessage)
+          .fontSize(13).fontColor('#FFFFFF').padding(8).borderRadius(8)
+          .backgroundColor('#AA000000').constraintSize({maxWidth:420})
+          .align(Alignment.TopEnd).margin({right:12,top:12}).hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')
@@ -1101,6 +1100,7 @@ struct McGamePage {
     .focusable(true)
     .defaultFocus(true)
     .onFocus(() => {
+      this.inputRuntime.resumeAfterLifecycle()
       this.surfaceFocused = true
       this.updatePageInputActive()
     })
@@ -1159,39 +1159,8 @@ struct McGamePage {
     // Hover/Enter/Leave（见 `handleMouseEvent` 那处早退）。
   }
 
-  /**
-   * 把 native 侧发生过的复位回灌到 ArkTS 三端（契约见规范 §三 / §3.3）。
-   *
-   * ⚠️ **必须走 `dropAllEndStateAfterNativeReset`，不能走 `releaseAllEnds`。**
-   * 本函数挂在**每个物理按键事件**上，而后者允许 UI 副作用 ⇒ 会变成"按一下键盘，
-   * 聊天输入条和抽屉莫名关掉"。且 `inputResetEpoch` 初值为空串，页面创建后第一次按键
-   * **必然**命中这个分支（这不是罕见路径）。
-   *
-   * ⚠️ 调用点必须**保持三处**：物理按键事件、设备移除前、250ms 心跳。少了第三处，
-   * 纯触摸 + 手柄的设备上这条对账一次都不会跑。
-   */
-  private reconcileNativeResetEpoch(): void {
-    try {
-      const epoch: string = testNapi.getInputResetEpoch()
-      if (epoch.length > 0 && epoch !== this.inputResetEpoch) {
-        const first: boolean = this.inputResetEpoch.length === 0
-        this.inputResetEpoch = epoch
-        // 首次观测只是**建立基准**，不代表刚刚发生过复位：页面刚创建时 ArkTS 侧本来
-        // 就没有任何按下缓存，此时去丢弃缓存没有意义，只会白跑一遍三端。
-        if (!first) {
-          getInputSourceRegistry().dropAllEndStateAfterNativeReset('native-reset-epoch')
-        }
-      }
-    } catch (e) {
-      // 老 native 没有 getter 时维持旧兼容行为；page hide/dispose 仍显式清缓存。
-      //
-      // 边界（必须知道代价）：这条降级让 tracker 失去唯一的自愈机制。此后 native 侧
-      // 的 blur/overflow/surface reset 不会再反映到页面缓存，页面可能比 core 多持有
-      // held，直到 onPageHide / aboutToDisappear 显式 clear()。后果不是卡键——多余的
-      // held 只会让该键的下一个 Down 被判 Repeat，core 按 ownerless REPEAT 记诊断并
-      // 丢弃——但修饰键掩码会在这段时间内偏大。不做兜底猜测，只保留可诊断的降级。
-    }
-  }
+  /** 所有事件/心跳只提供调用时机；复位域、重试和实例广播由独立会话协调器持有。 */
+  private reconcileNativeResetEpoch(): void { reconcileEntryInputSession() }
 
   /**
    * 手柄端 `deviceId` 的真机取证探针（限量 24 条）。
@@ -1302,7 +1271,9 @@ struct McGamePage {
     try {
       const deviceId = normalizeDeviceId(e.deviceId)
       if (deviceId === 0) {
-        // 0 是"身份不可用"的共享桶，用它做移除会取消无关设备的 owner。
+        // 当前旧Native设备字段把0当兼容桶，不能用它退休真实hardware0。
+        // Monitor应用层可区分known0和missing0；Host按原lease处理映射，该合法硬件
+        // 到Native的完整连接出口仍Pending，不能在此编造新编号或取消无关owner。
         this.launchLogger_().warn(TAG, `inputDevice change with unusable deviceId=${e.deviceId}`, LOG_DOMAIN_LAUNCH)
         return
       }
@@ -1316,10 +1287,8 @@ struct McGamePage {
       // 修饰键聚合里。所以：只摘缓存，不触达 native。
       if (!this.mcStarted) {
         this.heldKeys.releaseDevice(deviceId)
-        if (!e.added) {
-          this.gamepad.dropHeldStateAfterNativeReset(
-            `device-removed-before-session:${deviceId}`)
-        }
+        // 映射来源已由Monitor发布的原connection在Host收口；页面无权扩大成整端取消。
+        // 即使游戏尚未启动，也不能因拔一个设备清掉其他连接已观察到的按键/轴状态。
         return
       }
 
@@ -1360,27 +1329,10 @@ struct McGamePage {
           deviceId, false, 0, InputDeviceClass.Unknown as number)
       } catch (e4) { /* 老 native 兼容 */ }
 
-      // 手柄按设备桶先做定向释放；事件 id 与 inventory id 的编号域若不一致，
-      // 找不到桶时仍回退整端释放，保持原来的防卡键方向。
-      //
-      // 这次整端释放**按被拔设备的类型收口**（规范 §3.4）：只有已知"不是手柄"时才跳过。
-      // `Unknown` 必须照旧释放 —— 判不出来时把它当"不是手柄"就是会卡键的那个方向。
-      // ⚠️ 官方仍未声明 inventory 与 Key/FocusAxis 的编号域一致。key/axis 两类事件
-      // 同值只作为探针，不授权产品定向释放；真机连接代证据闭合前仍保守释放整端。
-      //
-      const padKind: DeviceGamepadKind = getInputDeviceMonitor().gamepadKindOf(deviceId)
-      if (padKind === DeviceGamepadKind.NotGamepad) {
-        this.launchLogger_().info(TAG,
-          `device ${deviceId} removed, known non-gamepad, gamepad end kept ` +
-          `(pads=${getInputDeviceMonitor().knownGamepadCount()})`,
-          LOG_DOMAIN_LAUNCH)
-      } else {
-        const reason: string = padKind === DeviceGamepadKind.Gamepad
-          ? `device-removed-gamepad:${deviceId}`
-          : `device-removed-unknown-kind:${deviceId}`
-        getInputSourceRegistry().releaseEndsOfSource(AmclInputSource.Gamepad, reason)
-        this.gamepad.dropHeldStateAfterNativeReset(reason)
-      }
+      // 映射手柄的移除由稳定会话Host监听原connectionChange，在旧raw事件扇出前
+      // 精确退休该lease的controls/look。此处只处理现有物理键/Core设备出口；不依据
+      // 可能已刷新或未知的设备类型，重复取消全部Gamepad来源或后来同ID的新连接。
+      // 应用lease仍不证明Native设备generation；该跨层事实另有验收门，不能在页面猜补。
 
       if (released.length > 0) {
         this.launchLogger_().info(TAG, `device ${deviceId} removed, released ${released.length} held key(s)`, LOG_DOMAIN_LAUNCH)
@@ -1433,12 +1385,14 @@ struct McGamePage {
    * 下一次真正的插拔事件仍会补上该设备的能力位。
    */
   private publishInitialDeviceInventory(): void {
+    const frontend: GameFrontendLease | undefined = this.frontendLease
     const expectedLifecycleEpoch = this.inputLifecycleEpoch
     const expectedDeviceGeneration = this.deviceInventoryGuard.beginInventory()
     inputDevice.getDeviceList().then((ids: number[]) => {
       if (expectedLifecycleEpoch !== this.inputLifecycleEpoch || !this.mcStarted) return
       for (let i = 0; i < ids.length; i++) {
-        if (expectedLifecycleEpoch !== this.inputLifecycleEpoch || !this.mcStarted) return
+        if (expectedLifecycleEpoch !== this.inputLifecycleEpoch || !this.mcStarted ||
+            !this.sessionHost.accepts(frontend)) return
         const deviceId = normalizeDeviceId(ids[i])
         if (deviceId === 0) continue
         if (!this.deviceInventoryGuard.mayPublishAdded(deviceId, expectedDeviceGeneration)) continue
@@ -1447,6 +1401,9 @@ struct McGamePage {
         // inventory 是快照，不是实时 add 边沿；详情读取失败通常表示设备已离开或
         // snapshot 已过期。此时跳过，禁止在真实 REMOVED 后重新制造迟到 ADDED。
         if (descriptor === undefined) continue
+        // 详情查询边缘返回后仍核原页面/前端/启动资格。设备代次只证明原inventory未被插拔
+        // 覆盖，不能替页面退休或同局前端重绑作证；旧正文不得借当前Native session发布。
+        if (expectedLifecycleEpoch !== this.inputLifecycleEpoch || !this.mcStarted || !this.sessionHost.accepts(frontend)) return
         if (!this.deviceInventoryGuard.mayPublishAdded(deviceId, expectedDeviceGeneration)) continue
         try {
           testNapi.publishInputDeviceChange(
@@ -1460,13 +1417,27 @@ struct McGamePage {
   }
 
   private handleKeyEvent(e: KeyEvent): void {
-    if (!this.mcStarted) return
+    // 旧前端的晚到事件不得借同局仍活跃的来源/新窗口产生输入。
+    const originalFrontend: GameFrontendLease | undefined = this.frontendLease
+    if (!this.sessionHost.accepts(originalFrontend)) return
+    if (!this.mcStarted || !this.pageInputActive) return
     try {
+      // 平台键事实先冻结，随后复位/详情探针的同步回入不能把原事件解释成新连接输入。
       const ohosKey = (e.keyCode as number) ?? 0
       // Phase（fix/input-system §N4）：用 KeyType 枚举替代裸数字 1/2，避免 SDK 升
       // 级改变枚举值时静默失效。
       const isDown = e.type === KeyType.Down
       const isUp = e.type === KeyType.Up
+      const sourceIsKeyboard = e.keySource === KeySource.Keyboard
+      const isMappedKey: boolean = routeKeyToGamepad(ohosKey, sourceIsKeyboard)
+      const rawDeviceId: number = e.deviceId
+      const mappedCapture = isMappedKey ? getInputDeviceMonitor().captureConnection(rawDeviceId, true, false) : undefined
+      const originalLockState: number = composeOhosLockState(e.isCapsLockOn, e.isNumLockOn, e.isScrollLockOn)
+      // unicode也是原平台事件事实；复位和Native事务可能同步回入，之后不再读取e补事实。
+      const originalUnicode: number | undefined = e.unicode
+      // 手柄按键也必须先对账；不能在分流早退后让旧映射持有活到250ms心跳。
+      this.reconcileNativeResetEpoch()
+      if (!this.sessionHost.accepts(originalFrontend)) return
 
       // v3 手柄：先看是不是手柄按键，是就交给 GamepadManager 归一化。
       //
@@ -1474,30 +1445,26 @@ struct McGamePage {
       // GamepadManager，绕过了 physicalKeyTransaction / deviceId / 锁存快照 / core
       // held owner 与 reset 对账。现在只在平台明确报告 KeySource.Keyboard 时把它们
       // 交回 physical route；Unknown 保持旧手柄行为（判据与理由见 routeKeyToGamepad）。
-      const sourceIsKeyboard = e.keySource === KeySource.Keyboard
-      if (routeKeyToGamepad(ohosKey, sourceIsKeyboard)) {
+      if (isMappedKey) {
         if (isDown || isUp) {
           this.probeGamepadDeviceIdentity(e)
-          const gamepadDeviceId: number = normalizeDeviceId(e.deviceId)
-          this.gamepad.handleButtonForDevice(
-            gamepadDeviceId, ohosKey, isDown)
+          if (!this.sessionHost.accepts(originalFrontend) || mappedCapture?.connection === undefined) return
+          this.gamepad.handleButtonForConnection(mappedCapture.connection, ohosKey, isDown)
         }
         return
       }
 
       // Native blur/overflow may have reset authoritative held state without
       // causing ArkUI page hide. Reconcile before reading held/modifier state.
-      this.reconcileNativeResetEpoch()
-
       // Phase 3.3：发布真实设备身份与平台锁存快照。
       //
       // deviceId 让 native 的 HeldId{deviceId,key} 真正按设备成立：两把实体键盘同时按
       // 同一个键会各自持有 owner，先抬起的那把不会提前释放聚合键；拔掉某把键盘时也只
       // 释放它自己的 owner。归一化到非负整数，拿不到时落 0，native trace 计 missing。
-      const deviceId = normalizeDeviceId(e.deviceId)
+      const deviceId = normalizeDeviceId(rawDeviceId)
       // 锁存状态只能来自平台。三个字段都缺失时 composeOhosLockState 返回 0（未知），
       // native 计 MissingField::LockState，GLFW mods 才退回"按住即锁定"的显式降级。
-      const lockState = composeOhosLockState(e.isCapsLockOn, e.isNumLockOn, e.isScrollLockOn)
+      const lockState = originalLockState
 
       // repeat 分类必须与 core 的 owner 维度一致：同一 (device,key) 的第二次 Down 是
       // 平台自动重复，不新增 owner；不同设备的同键 Down 是独立的首次按下。
@@ -1580,7 +1547,8 @@ struct McGamePage {
       // R3：IME 桥 / 系统输入法激活时跳过——输入法会先消费可打印键，应用再发 char 等于双发。
       // API14+ 优先使用 KeyEvent.unicode（当前实体键盘布局的事实）；平台没给时才退回
       // US KeyCode 表。char 与 GLFW key 映射正交，所以未映射物理键也不会提前 return。
-      const cp: number = resolvePhysicalKeyCodepoint(e.unicode, ohosKey, mods)
+      const cp: number = resolvePhysicalKeyCodepoint(originalUnicode, ohosKey, mods,
+        this.heldKeys.heldKeys().has(OHOS_ALT_RIGHT))
       if (shouldRefillChar(isDown, cp > 0,
                            this.isInGame, getImeActivationGate().isActive())) {
         try { testNapi.sendCharEvent(cp) } catch (e2) { /* ignore */ }
@@ -1658,6 +1626,7 @@ struct McGamePage {
   //   平台提供的相对量来源，但真实设备的底层采样语义仍需单独验证。
   // ============================================================
   private handleMouseEvent(e: MouseEvent): void {
+    if (!this.sessionHost.accepts(this.frontendLease)) return
     // ⚠️ 必须是函数的**第一条语句**，且不受任何编译期开关约束。
     //
     // 教训：此前所有鼠标打点都在 mcStarted / hasMouse / action===Move 三道早退之后，
@@ -1875,6 +1844,7 @@ struct McGamePage {
   }
 
   private onWheelPanStart(e: GestureEvent): void {
+    if (!this.sessionHost.accepts(this.frontendLease)) return
     // ⚠️ 不再把 start 的 offsetY 当基准（计划 §90.2）：`offsetY` 官方定义就是"相对手指
     // 按下时"的累计量，基准只能是 0。传它进去等于丢掉手势被识别前那一整格。
     this.wheelPan.begin()
@@ -1884,6 +1854,7 @@ struct McGamePage {
   }
 
   private onWheelPanUpdate(e: GestureEvent): void {
+    if (!this.sessionHost.accepts(this.frontendLease)) return
     const offsetY: number = e.offsetY as number
     // 基准**无条件**推进（即使下面让位不发格）：让位期间的位移必须被丢弃而不是攒起来，
     // 否则重新拿到所有权时一个巨大的 delta 涌进来 ⇒ "松手后快捷栏又自己跳几格"。
@@ -1952,6 +1923,7 @@ struct McGamePage {
   }
 
   private handleAxisEvent(e: AxisEvent): void {
+    if (!this.sessionHost.accepts(this.frontendLease)) return
     // 取证打点在功能过滤之前，但只有 default 的 input-trace 模式启用。
     //
     // 理由：用户复测"滚轮仍然是上下转视角"时，必须先能区分三种完全不同的原因——
@@ -2027,18 +1999,28 @@ struct McGamePage {
   //   仅 grabbed 时把右摇杆当视角用（菜单里右摇杆不转视角，避免乱动）。
   // ============================================================
   private handleFocusAxisEvent(e: FocusAxisEvent): void {
+    const originalFrontend: GameFrontendLease | undefined = this.frontendLease
+    if (!this.sessionHost.accepts(originalFrontend)) return
     if (!this.mcStarted) return
     try {
-      this.probeAxisDeviceIdentity(e)
-      const gamepadDeviceId: number = normalizeDeviceId(e.deviceId)
+      // BaseEvent.deviceId可缺席且默认0，不能据inventory有0猜原hardware身份。
+      // 当前新端口将缺身份/歧义0保持Pending；不自动借旧compat0绕过连接围栏。
+      const rawDeviceId: number = e.deviceId ?? 0
+      const identityKnown: boolean = rawDeviceId > 0
+      const captured = getInputDeviceMonitor().captureConnection(rawDeviceId, identityKnown, false)
+      if (captured.connection === undefined) return
       const map = e.axisMap
       // 取轴值回调：map.get(AxisModel) 在 ArkTS 里 AxisModel 是 enum，其数值与
       // GamepadManager 的 AXIS_* 常量一致，可直接用数字 key 取。
-      this.gamepad.handleAxisForDevice(
-        gamepadDeviceId, (axis: number): number | undefined => {
+      const fact = this.inputRuntime.captureAxisForConnection(
+        captured.connection, (axis: number): number | undefined => {
         const v = map.get(axis as number as AxisModel)
         return (v === undefined || v === null) ? undefined : (v as number)
       })
+      // 先复制八轴，再进行可回入的诊断/维护；事实仅能被原runtime activation一次领取。
+      this.probeAxisDeviceIdentity(e)
+      if (!this.sessionHost.accepts(originalFrontend) || fact === undefined) return
+      this.inputRuntime.handleAxisFact(fact)
     } catch (err) {
       this.launchLogger_().warn(TAG, 'handleFocusAxisEvent failed', err, LOG_DOMAIN_LAUNCH)
     }
@@ -2134,23 +2116,13 @@ struct McGamePage {
   }
 
   /** 写一条「启动失败」活动记录（前置失败：JVM 未起、未写 SessionMarker）。幂等防重复。 */
-  private recordLaunchFailure_(version: string, reason: string): void {
-    if (this.launchRecorded_) return
-    this.launchRecorded_ = true
+  private recordLaunchFailure_(version: string, reason: string): Promise<boolean> {
+    if (this.launchRecorded_) return Promise.resolve(true)
+    if (this.launchFailureTask_ !== undefined) return this.launchFailureTask_
     let nowMs = Date.now()
     let started = this.launchStartedAt_ > 0 ? this.launchStartedAt_ : nowMs
     let ver = version.length > 0 ? version : 'unknown'
-    // Even failures before JVM creation need a shareable activity. Preserve
-    // the same id from launch preparation through native admission and exit.
-    if (!ledgerHas(this.context.filesDir, started)) {
-      const meta: LedgerBeginMeta = { category: ActivityCategory.LAUNCH, title: ver,
-        gameVersionId: ver, mcDir: this.mcDir, appFilesDir: this.applicationFilesDir_() }
-      ledgerBegin(this.context.filesDir, started, enrichSessionEnvironment(this.context, started, meta))
-    }
-    new ActivityLogger(started).error(TAG, reason, null, LOG_DOMAIN_LAUNCH)
-    const outcome: LedgerOutcome = { state: LedgerState.FAILED, source: 'launch-preparation', summary: reason }
-    ledgerEnd(this.context.filesDir, started, outcome)
-    let rec: ActivityRecord = {
+    let rec: ActivityRecord = this.launchFailureRecord_ ?? {
       versionName: ver,
       gameVersion: ver,
       loaderType: 'launch',
@@ -2164,23 +2136,42 @@ struct McGamePage {
       title: ver,
       subtitle: '启动失败',
     }
-    if (reason.length > 0) rec.errorMessage = reason
-    if (AppStorage.get<boolean>('desktopGameProcess') === true) {
-      DesktopGameResults.queue(this.context, rec)
-      return
-    }
-    let store = getDownloadHistoryStore()
-    store.init(this.context)
-    store.add(rec).catch((e: Error) => {
-      this.launchLogger_().warn(TAG, 'launch failure record add failed', e, LOG_DOMAIN_LAUNCH)
+    if (this.launchFailureRecord_ === undefined && reason.length > 0) rec.errorMessage = reason
+    this.launchFailureRecord_ = rec
+    const job: Promise<boolean> = (async (): Promise<boolean> => {
+      // 先耐久发布既有失败队列，再尝试canonical；进程此时结束仍能由启动器恢复准确失败。
+      await DesktopGameResults.queue(this.context, rec)
+      if (await ledgerManifestAsync(this.context.filesDir, started) === null) {
+        const meta: LedgerBeginMeta = { category: ActivityCategory.LAUNCH, title: ver,
+          gameVersionId: ver, mcDir: this.mcDir, appFilesDir: this.applicationFilesDir_() }
+        if (!await ledgerBeginAsync(this.context.filesDir, started, enrichSessionEnvironment(this.context, started, meta))) {
+          throw new Error('启动失败账本暂未建立，失败原文保留等待恢复')
+        }
+      }
+      const frozenReason: string = rec.errorMessage ?? reason
+      new ActivityLogger(started).error(TAG, frozenReason, null, LOG_DOMAIN_LAUNCH)
+      const outcome: LedgerOutcome = { state: LedgerState.FAILED, source: 'launch-preparation', summary: frozenReason, endedAt: rec.endedAt }
+      await ledgerEndAsync(this.context.filesDir, started, outcome)
+      if (AppStorage.get<boolean>('desktopGameProcess') !== true) {
+        const store = getDownloadHistoryStore(); await store.init(this.context); await store.upsertLaunchSession(rec)
+      }
+      if (this.launchStartedAt_ === started) this.launchRecorded_ = true
+      return true
+    })().catch((error: Error): boolean => {
+      this.launchLogger_().warn(TAG, '启动失败保存未完成，失败事实和已有交接原文保留', error, LOG_DOMAIN_LAUNCH)
+      return false
     })
+    this.launchFailureTask_ = job
+    job.then((): void => { if (this.launchFailureTask_ === job) this.launchFailureTask_ = undefined })
+    return job
   }
 
   /** 每次调用显式绑定本局；不使用跨 await 的全局当前活动。 */
   private launchLogger_(): ActivityLogger { return new ActivityLogger(this.launchStartedAt_); }
 
   private startMC(): Promise<void> {
-    return this.gameLaunchGate.run((): Promise<void> => this.startMCOnce())
+    const frontend: GameFrontendLease | undefined = this.frontendLease
+    return this.sessionHost.runLaunch(frontend, (): Promise<void> => this.startMCOnce())
   }
 
   /** 在窗口校验、资源部署和 JVM 参数构造前建立本局账本，消除启动前日志空窗。 */
@@ -2211,22 +2202,37 @@ struct McGamePage {
   }
 
   private async receiveDesktopDrop(event: DragEvent): Promise<void> {
+    if (!this.sessionHost.accepts(this.frontendLease)) return
     if (!ProductInputProfile.selection().desktopWindow) return
     const epoch: number = this.inputLifecycleEpoch
+    const frontend: GameFrontendLease | undefined = this.frontendLease
     let paths: string[] = []
     try {
       paths = await DesktopFileDrop.stage(this.context, event.getData())
-      if (epoch !== this.inputLifecycleEpoch || this.navigatedAway || !testNapi.desktopPublishDrop(paths)) {
+      if (epoch !== this.inputLifecycleEpoch || !this.sessionHost.accepts(frontend) ||
+          this.navigatedAway || !testNapi.desktopPublishDrop(paths)) {
         throw new Error('游戏窗口已关闭或拖入队列已满')
       }
     } catch (error) {
       DesktopFileDrop.discard(this.context, paths)
       this.launchLogger_().warn(TAG, 'Desktop file drop failed', error, LOG_DOMAIN_LAUNCH)
-      if (epoch === this.inputLifecycleEpoch) this.getUIContext().getPromptAction().showToast({ message: '拖入失败：' + (error as Error).message })
+      if (epoch === this.inputLifecycleEpoch && this.sessionHost.accepts(frontend)) {
+        try { this.getUIContext().getPromptAction().showToast({ message: '拖入失败：' + (error as Error).message }) }
+        catch (noticeError) { this.notePageStepFault_('drop', 'notice', noticeError) }
+      }
     }
   }
 
   private async startMCOnce(): Promise<void> {
+    if (!this.sessionHost.accepts(this.frontendLease) || this.sessionHost.isRunning()) return
+    const frontend: GameFrontendLease | undefined = this.frontendLease
+    this.launchFrontendLease = frontend
+    if (!await this.sessionHost.waitPrepared(frontend)) {
+      if (this.sessionHost.isEnded()) this.statusText = '输入准备未完成，本次游戏会话已结束，请返回启动器。'
+      return
+    }
+    // prepare完成与await续体之间仍可能退休前端，不能凭已冻结true开始资源/账本操作。
+    if (!this.sessionHost.accepts(frontend)) return
     this.launchLifecycleEpoch = this.inputLifecycleEpoch
     let launchActivityId: number = 0
     try {
@@ -2234,23 +2240,39 @@ struct McGamePage {
       launchActivityId = launchParams.activityId ?? 0
     } catch (e) { /* desktop GameAbility 通过 AppStorage 传递 */ }
     if (launchActivityId <= 0) launchActivityId = AppStorage.get<number>('mcLaunchActivityId') ?? 0
-    this.launchStartedAt_ = launchActivityId > 0 ? launchActivityId : Date.now()
+    this.launchStartedAt_ = launchActivityId > 0 ? launchActivityId :
+      this.sessionHost.sessionActivity() > 0 ? this.sessionHost.sessionActivity() : Date.now()
+    this.sessionHost.bindActivity(this.launchStartedAt_)
     this.launchRecorded_ = false
+    this.launchFailureRecord_ = undefined
+    this.launchFailureTask_ = undefined
     this.beginLaunchLedgerEarly_()
+    let processLaunch: SharedProcessGameLease | undefined = undefined
     try {
+      // 输入产品身份没能与 native 对齐（见 recordInputProductFailure_）时绝不启动 JVM。
+      // 放在桌面窗口校验之前、交给下面既有的 catch 记录失败，finally 负责恢复窗口。
+      if (this.inputProductFailure_.length > 0) throw new Error(this.inputProductFailure_)
+      this.runAdmissionToken_ = GameRunAdmission.captureDispatch(this.context)
+      // 与 Index 的实际派发使用同一冻结路线。共享游戏先占进程，封住准备期间的异步
+      // 窗口；真正隔离 GameAbility 不取得父进程预约，下载/导出仍可并行。
+      processLaunch = GameRunAdmission.reserveProcessLaunch(ProductInputProfile.selection().isolatedGameProcess)
       if (ProductInputProfile.selection().desktopWindow) {
-        const snapshot: ProductGameWindowSnapshot = await this.gameWindowCoordinator.enter(this.context)
+        const snapshot: ProductGameWindowSnapshot = await this.sessionHost.enterWindow(this.frontendLease, this.context)
         if (snapshot.windowId <= 0 || snapshot.contextGeneration <= 0 || snapshot.width <= 0 || snapshot.height <= 0) {
           throw new Error('桌面窗口或输入几何尚未就绪')
         }
       }
-      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway) return
-      await this.startMCInternal()
+      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+          !this.sessionHost.accepts(this.launchFrontendLease)) return
+      await this.startMCInternal(processLaunch)
     } catch (e) {
       this.statusText = '游戏启动准备失败：' + (e as Error).message
       this.launchLogger_().error(TAG, 'Game launch preparation rejected', e, LOG_DOMAIN_LAUNCH)
-      this.recordLaunchFailure_(AppStorage.get<string>('mcVersion') ?? '', this.statusText)
+      await this.recordLaunchFailure_(AppStorage.get<string>('mcVersion') ?? '', this.statusText)
     } finally {
+      // Native 之前的参数/资源失败及前端退休都释放准备预约；已经 dispatch 的 JVM
+      // 仍会沿既有 _exit 收口，lease 在实际进程结束前不得释放。
+      if (processLaunch !== undefined) processLaunch.releasePreparation()
       // 所有早退（参数缺失、资源失败、profile 拒绝、native rc）统一经过这里；
       // 不再要求每个新增失败分支记得手工恢复窗口。
       if (!this.mcStarted) {
@@ -2259,7 +2281,7 @@ struct McGamePage {
     }
   }
 
-  private async startMCInternal(): Promise<void> {
+  private async startMCInternal(processLaunch: SharedProcessGameLease | undefined = undefined): Promise<void> {
     const processError: string = AppStorage.get<string>('gameAbilityLaunchError') ?? '';
     if (processError.length > 0) { this.statusText = processError; return; }
     if (this.mcStarted) return
@@ -2314,16 +2336,17 @@ struct McGamePage {
         this.statusText = '❌ 启动终止：版本隔离已开启但 gameDir 未正确设置\n'
           + '请重启应用后再试，若仍失败请反馈日志。'
         this.showLog = true
-        this.recordLaunchFailure_(mcVersion, '版本隔离已开启但 gameDir 未正确设置')
+        await this.recordLaunchFailure_(mcVersion, '版本隔离已开启但 gameDir 未正确设置')
         return
       }
     } catch (e) { /* PreferenceManager init 失败时不强求校验 */ }
     // 容许非版本隔离场景下 gameDir 退化为 mcDir（这是合法配置）
     if (!gameDir) gameDir = this.mcDir
+    this.touchGameDirectory = gameDir
     // 多版本时代（17 / 21 / 25）：仍然要校验 jdkVersion 是支持版本之一，
     // 但不再强制覆盖回 SUPPORTED_JDK_VERSION（17）。
     // 兜底：未知版本 → 回退到 SUPPORTED_JDK_VERSION，避免 native 层加载空目录。
-    if (SUPPORTED_JDK_VERSIONS.indexOf(jdkVersion) < 0) {
+    if (!isJdkSlotVersion(jdkVersion)) {
       this.launchLogger_().warn(TAG, `Override unsupported JDK ${jdkVersion} -> ${SUPPORTED_JDK_VERSION}`, null, LOG_DOMAIN_LAUNCH)
       jdkVersion = SUPPORTED_JDK_VERSION
       try {
@@ -2373,7 +2396,7 @@ struct McGamePage {
         + '\n请重新安装应用或联系开发者。'
       this.showLog = true
       this.refreshLog()
-      this.recordLaunchFailure_(mcVersion, '部署 Java 运行组件失败: ' + reason)
+      await this.recordLaunchFailure_(mcVersion, '部署 Java 运行组件失败: ' + reason)
       return
     }
 
@@ -2428,7 +2451,7 @@ struct McGamePage {
     let surfaceH = 0
     try {
       const snapshot: ProductGameWindowSnapshot =
-        await this.gameWindowCoordinator.enter(this.context)
+        await this.sessionHost.enterWindow(this.frontendLease, this.context)
       this.syncInputSurfaceContext(snapshot, 'launch-window-size')
       const surfaceContext: InputSurfaceContext =
         getInputSurfaceContextStore().snapshot()
@@ -2449,6 +2472,7 @@ struct McGamePage {
     const graphicsEnvironment: GraphicsProfileInput = await prepareGraphicsProfileInput(
       this.context, this.mcDir, mcVersion, preferenceManager.graphicsProfile, false,
       preferenceManager.graphicsProfileExplicit)
+    this.touchRealGameVersion=graphicsEnvironment.realMcVersion
     const graphicsPreference: MinecraftGraphicsPreferenceInput = {
       launcherProfile: preferenceManager.graphicsProfile,
       launcherExplicit: preferenceManager.graphicsProfileExplicit,
@@ -2462,7 +2486,7 @@ struct McGamePage {
     if (recoveryTicket !== undefined && recoveryTicket.attempt === 1
       && (graphicsRequest.preferenceExplicit || graphicsRequest.requireVulkan || devRendererOverride.length > 0)) {
       this.statusText = '图形设置已更改，已停止自动恢复，请重新启动游戏'
-      this.recordLaunchFailure_(mcVersion, this.statusText)
+      await this.recordLaunchFailure_(mcVersion, this.statusText)
       return
     }
     const requestedGraphicsProfile: string = recoveryTicket !== undefined && recoveryTicket.attempt === 1
@@ -2483,6 +2507,16 @@ struct McGamePage {
     }
     this.launchLogger_().info('GraphicsCapability', 'Graphics launch evidence: ' + JSON.stringify(graphicsEnvironment), LOG_DOMAIN_LAUNCH)
     AppLogger.flush()
+    // 游戏进程入口独立复核 JDK 并确保本局视图存在，随后 builder 才检查固定 classpath。
+    // 自动化/直接导航也必须走此产品入口，不能依赖另一个进程曾部署过某个 JDK 视图。
+    try {
+      new RuntimeDeployer(this.context).deployLwjglForVersion(this.mcDir, mcVersion, Number(jdkVersion))
+    } catch (error) {
+      this.statusText = '❌ 启动终止：运行库准备失败\n' + (error as Error).message
+      this.showLog = true
+      await this.recordLaunchFailure_(mcVersion, '运行库准备失败: ' + (error as Error).message)
+      return
+    }
     let builder = new LaunchProfileBuilder()
       .setGraphicsEnvironment(graphicsEnvironment)
       .setFilesDir(filesDir)
@@ -2509,7 +2543,7 @@ struct McGamePage {
         this.statusText = '❌ 启动终止：第三方登录准备失败\n' + authlibErr
         this.showLog = true
         this.refreshLog()
-        this.recordLaunchFailure_(mcVersion, '第三方登录准备失败: ' + authlibErr)
+        await this.recordLaunchFailure_(mcVersion, '第三方登录准备失败: ' + authlibErr)
         return
       }
     }
@@ -2517,7 +2551,7 @@ struct McGamePage {
     try { await builder.prepareLogging() }
     catch (e) {
       this.statusText = '日志配置准备失败：' + (e as Error).message
-      this.recordLaunchFailure_(mcVersion, this.statusText)
+      await this.recordLaunchFailure_(mcVersion, this.statusText)
       return
     }
     let profile = builder.build()
@@ -2531,7 +2565,7 @@ struct McGamePage {
     }
     if (nativeGlValidation && profile !== null && !profile.extraJvmArgs.includes('-Damcl.gl.backend=nativegl')) {
       this.statusText = '此版本不在原生 OpenGL 验证范围内'
-      this.recordLaunchFailure_(mcVersion, this.statusText)
+      await this.recordLaunchFailure_(mcVersion, this.statusText)
       return
     }
 
@@ -2547,7 +2581,7 @@ struct McGamePage {
       this.statusText = '❌ ' + reason
       this.showLog = true
       this.refreshLog()
-      this.recordLaunchFailure_(mcVersion, reason)
+      await this.recordLaunchFailure_(mcVersion, reason)
       return
     }
 
@@ -2561,7 +2595,8 @@ struct McGamePage {
     //  sessionStartedAt 之后要原样传给 SessionMarker.writeStart —— 它同时是
     //  活动记录主键、M3 的 sessionKey 与账本 activityId，三者必须是同一个值。
     // ============================================================
-    if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway) return
+    if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+        !this.sessionHost.accepts(this.launchFrontendLease)) return
     const sessionStartedAt: number = this.launchStartedAt_
     try {
       let meta: LedgerBeginMeta = {
@@ -2593,12 +2628,25 @@ struct McGamePage {
       // 但 Vanilla MC 1.13+ 的 game args 也可能含逗号（如 quickPlay 系列、Paper 服务器 IP 等），
       // 字符串拼接会破坏参数语义。统一禁用降级：V2 失败就是失败，让上层走错误路径。
       this.runtimeSlotLease_ = testNapi.runtimeSlotAcquire(profile.lwjglJarDir)
-      const leasedSlot = await verifyLwjglRuntimeSlot(profile.lwjglJarDir)
+      this.sessionHost.bindPlan(profile.inputPlanWire ?? '')
+      this.sessionHost.rememberGame(gameDir, this.touchRealGameVersion, this.mcDir)
+      // 游戏进程租约内按同一 JDK 复核派生身份，禁止按原始源槽摘要误验或误放。
+      const leasedSlot = await verifyLwjglRuntimeSlot(profile.lwjglJarDir, Number(profile.jdkVersion))
       if (!leasedSlot.ok) {
         testNapi.runtimeSlotRelease(this.runtimeSlotLease_)
         this.runtimeSlotLease_ = ''
         throw new Error(leasedSlot.detail)
       }
+      // await期间前端/会话退休必须在创建JVM前再次核验原身份；finally归还未使用租约。
+      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch ||
+          !this.sessionHost.accepts(this.launchFrontendLease)) return
+      // 构建profile及运行槽校验经过多段await；创建JVM前最后重读门控，关闭再打开不续旧请求。
+      GameRunAdmission.assertToken(this.context, this.runAdmissionToken_)
+      this.sessionHost.markNativeAttempted(this.launchFrontendLease)
+      if (!ProductInputProfile.selection().isolatedGameProcess && processLaunch === undefined) {
+        throw new Error('共享游戏进程缺少启动预约，请从启动器重新发起')
+      }
+      if (processLaunch !== undefined) processLaunch.commitNativeDispatch()
       let rc = testNapi.mcLaunchWithProfileV2(
         profile.filesDir, profile.gameDir, profile.jdkVersion, profile.xmxMb,
         profile.mainClass, profile.classpath, profile.mcArgs, profile.extraJvmArgs
@@ -2628,14 +2676,15 @@ struct McGamePage {
         this.statusText = '❌ ' + graphicsLaunchFailureMessage(status, graphicsFailure)
         this.showLog = true
         this.refreshLog()
-        this.recordLaunchFailure_(mcVersion, 'mcLaunchWithProfileV2 rc=' + rc + ': ' + status
+        const failureSaved = await this.recordLaunchFailure_(mcVersion, 'mcLaunchWithProfileV2 rc=' + rc + ': ' + status
           + (graphicsFailure === undefined ? '' : ' [' + graphicsFailure.stage + '/' + graphicsFailure.code + ']'))
-        if (graphicsFailure !== undefined && graphicsFailure.profile === this.graphicsCurrentProfile_) {
+        if (failureSaved && graphicsFailure !== undefined && graphicsFailure.profile === this.graphicsCurrentProfile_) {
           if (this.requestGraphicsRecovery_(graphicsFailure.stage, graphicsFailure.code, 0, graphicsFailure.diagnosticInjected === true)) this.requestExit_()
         }
         return
       }
       this.mcStarted = true
+      this.sessionHost.markRunning()
       // Phase 3.3：native session 已建立，补报启动前就已接入的设备。
       // 必须在 mcStarted 之后：更早 publish 只会被 ingress 记成 stale consumer 噪声。
       this.publishInitialDeviceInventory()
@@ -2651,43 +2700,11 @@ struct McGamePage {
       // marker / 活动记录 / 账本必须共用一个主键，否则冷启动回流时对不上。
       SessionMarker.writeStart(filesDir, mcVersion, this.mcDir, sessionStartedAt)
 
-      // 方案 B：grabbed 状态改为 native 回调驱动（取代旧的 300ms 轮询）。
-      // MC 的 GLFW 层翻转 grab 时经 native threadsafe function 即时回到 UI 线程，
-      // 无延迟、无 env 竞争。先读一次初始态兜底，再注册回调接管后续变化。
-      try { this.isInGame = testNapi.isGrabbed() } catch (e) { /* ignore */ }
-      try {
-        testNapi.onGrabChange((grabbed: boolean) => { this.isInGame = grabbed })
-      } catch (e) {
-        this.launchLogger_().warn(TAG, 'onGrabChange register failed', e, LOG_DOMAIN_LAUNCH)
-      }
-      // 兜底轮询：即使 onGrabChange 未触发，也保证进/出世界时虚拟按键显隐正确同步。
-      this.startGrabPoll()
-
-      // 轮询日志（递归 setTimeout）。终止条件：navigatedAway（doExit 已设置）或 MC 进程已退出。
-      // R9：补上 navigatedAway 检查，让组件 disappear 后 poll 链不再续。
-      // 即便 mcForceExit 在 doExit 内调用通常会终止整个进程，这里加上守卫提升鲁棒性。
-      //
-      // 优化：refreshLog 每秒读 16KB 日志写入 @State this.mcLog，但仅在
-      // showLog=true 时展示。用户没打开日志面板时跳过 IO 与状态更新，
-      // 减少 ArkTS 主线程压力（长时间游戏会话累计能节省可观时间）。
-      let poll = () => {
-        if (this.navigatedAway) return
-        if (this.showLog) {
-          this.refreshLog()
-        }
-        let running: boolean = testNapi.mcIsRunning()
-        if (!running) {
-          this.launchLogger_().info(TAG, 'MC process exited, navigating back to launcher', LOG_DOMAIN_LAUNCH)
-          this.requestExit_()
-        } else {
-          setTimeout(poll, 1000)
-        }
-      }
-      setTimeout(poll, 1000)
+      // 宿主已接管grab订阅、250ms必要维护与1s退出检测；前端日志是可关闭的观察者。
     } catch (e) {
       this.statusText = '❌ 启动异常: ' + formatError(e)
       this.showLog = true
-      this.recordLaunchFailure_(mcVersion, '启动异常: ' + formatError(e))
+      await this.recordLaunchFailure_(mcVersion, '启动异常: ' + formatError(e))
     } finally {
       // 校验异常和 NAPI 抛错同样必须归还未使用的租约；一旦 native 启动成功，
       // JVM 仍可能延迟加载类，租约必须保留到整个游戏进程退出，不能随页面销毁释放。

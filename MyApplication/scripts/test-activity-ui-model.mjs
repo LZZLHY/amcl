@@ -9,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
-const ActivityCategory = { LAUNCH: 'launch', DOWNLOAD: 'download', MOD_INSTALL: 'mod_install', JDK: 'jdk', MODPACK: 'modpack' };
+const ActivityCategory = { LAUNCH: 'launch', DOWNLOAD: 'download', MOD_INSTALL: 'mod_install', JDK: 'jdk', MODPACK: 'modpack', GAME_EXPORT: 'game_export' };
 const model = makePureEtsLoader({ feature_core: { ActivityCategory } })('entry/src/main/ets/components/ActivityUiModel.ets');
 const record = fields => ({ category: 'launch', status: 'success', startedAt: 1, loaderType: 'fabric',
   versionName: '1.21.1', gameVersion: '1.21.1', ...fields });
@@ -22,6 +22,56 @@ test('filters use actual categories and do not reclassify successful games', () 
   assert(model.matchesActivity(record({ errorMessage: 'Missing Fabric API' }), 'fabric api', model.ActivityFilter.GAME));
   assert.equal(model.activityStatusLabel(record({ status: 'aborted' })), '已中断');
   assert.equal(model.activityStatusLabel(record({ category: 'download', status: 'aborted' })), '已取消');
+});
+
+/** 导出具有独立结局与筛选，不能借下载或游戏类别掩盖用户取消及目标写入失败。 */
+test('game export records have an independent filter and retain actual outcomes', () => {
+  const exported = record({ category: 'game_export', title: '客户端导出', status: 'success' });
+  assert(model.matchesActivity(exported, '客户端', model.ActivityFilter.EXPORT));
+  assert(!model.matchesActivity(exported, '', model.ActivityFilter.DOWNLOAD));
+  assert(!model.matchesActivity(exported, '', model.ActivityFilter.GAME));
+  assert(!model.matchesActivity(record({ category: 'download' }), '', model.ActivityFilter.EXPORT));
+  assert.equal(model.activityStatusLabel(exported), '已完成');
+  assert.equal(model.activityStatusLabel(record({ category: 'game_export', status: 'aborted' })), '已取消');
+  assert(model.matchesActivity(record({ category: 'game_export', status: 'failed' }), '', model.ActivityFilter.ABNORMAL));
+});
+
+/** 执行真正的历史序列化器，避免只有 UI 看得到字段、持久化往返却把任务身份丢掉。 */
+test('durable history preserves export task identity and rejects path-shaped recovery ids', () => {
+  const history = makePureEtsLoader({
+    './DownloadManager': { formatBytes: bytes => String(bytes) },
+    commons: {}, '@kit.ArkData': {},
+  })('feature_core/src/main/ets/download/DownloadHistory.ets');
+  const exported = { ...record({ category: history.ActivityCategory.GAME_EXPORT }), durationMs: 5,
+    totalBytes: 100, fileCount: 2, mcDir: '/fixture/.minecraft',
+    exportTaskId: '1700000000000-12345678-1234-1234-1234-123456789abc' };
+  const restored = history.deserializeRecord(history.serializeRecord(exported));
+  assert.equal(restored.exportTaskId, exported.exportTaskId);
+  assert.equal(restored.category, 'game_export');
+  assert.equal(restored.mcDir, exported.mcDir);
+  assert.equal(restored.status, 'success');
+  for (const id of ['../private', '/absolute', '1700000000000-foo/bar', '1700000000000-foo.json']) {
+    const invalid = history.deserializeRecord(history.serializeRecord({ ...exported, exportTaskId: id }));
+    assert.equal(invalid.exportTaskId, undefined);
+    assert.equal(invalid.category, 'game_export');
+  }
+  const legacy = history.deserializeRecord(history.serializeRecord({ ...exported, category: undefined, exportTaskId: undefined }));
+  assert.equal(legacy.category, 'download');
+  assert.equal(legacy.exportTaskId, undefined);
+});
+
+/** 跨版本进入时真实投影必须覆盖任务完整生命周期，终态不能被当前源过滤掉。 */
+test('an observed export reaches its terminal view even when the page source is another version', () => {
+  const { shouldProjectExportTask } = makePureEtsLoader()('entry/src/main/ets/export/ExportTaskProjection.ets');
+  const task = { id: 'task-a', state: 'running', request: { mcRoot: '/root', versionId: 'A' } };
+  assert(shouldProjectExportTask(task, '/root', 'B', '', ''));
+  for (const state of ['cancelling', 'cancelled', 'failed', 'succeeded']) {
+    assert(shouldProjectExportTask({ ...task, state }, '/root', 'B', '', task.id));
+  }
+  assert(!shouldProjectExportTask({ ...task, state: 'succeeded' }, '/root', 'B', '', ''));
+  assert(shouldProjectExportTask({ ...task, state: 'succeeded' }, '/root', 'B', task.id, ''));
+  assert(shouldProjectExportTask({ ...task, state: 'failed' }, '/root', 'A', '', ''));
+  assert(!shouldProjectExportTask({ ...task, state: 'failed' }, '/another-root', 'A', '', ''));
 });
 
 test('local-date grouping is newest-first, counts today and does not mutate records', () => {

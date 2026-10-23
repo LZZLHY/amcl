@@ -1,0 +1,160 @@
+diff --git a/src/gl/getter.c b/src/gl/getter.c
+--- a/src/gl/getter.c
++++ b/src/gl/getter.c
+@@ -15,6 +15,26 @@
+ #else
+ #define DBG(a)
+ #endif
++
++/* 桌面texture对象名与底层GLES glname是不同身份。查询始终读取当前纹理单元
++ * 的桌面对象名，未绑定时返回0；不修改绑定或触发GLES调用。
++ * int/double入口直接转换这个GLuint，不能先经过GLfloat丢掉大于2^24的名字位。
++ * 同一helper覆盖1D/2D/3D/rectangle/cube；不以底层驱动编号作为桌面状态。
++ */
++int amcl_texture_binding_name(GLenum pname, GLuint *name) {
++    int slot;
++    switch (pname) {
++        case GL_TEXTURE_BINDING_1D: slot=ENABLED_TEX1D; break;
++        case GL_TEXTURE_BINDING_2D: slot=ENABLED_TEX2D; break;
++        case GL_TEXTURE_BINDING_3D: slot=ENABLED_TEX3D; break;
++        case GL_TEXTURE_BINDING_RECTANGLE_ARB: slot=ENABLED_TEXTURE_RECTANGLE; break;
++        case GL_TEXTURE_BINDING_CUBE_MAP: slot=ENABLED_CUBE_MAP; break;
++        default: return 0;
++    }
++    const gltexture_t *texture=glstate->texture.bound[glstate->texture.active][slot];
++    *name=texture?texture->texture:0;
++    return 1;
++}
+ 
+ GLenum gl4es_glGetError() {
+     gl4es_ensure_init();
+@@ -267,6 +287,8 @@
+ #define TOP(A) (glstate->A->stack+(glstate->A->top*16))
+ 
+ int gl4es_commonGet(GLenum pname, GLfloat *params) {
++    GLuint texture_name;
++    if(amcl_texture_binding_name(pname,&texture_name)) { *params=(GLfloat)texture_name; return 1; }
+     switch (pname) {
+         case GL_MAJOR_VERSION:
+             *params = globals4es.gl/10;
+@@ -436,21 +458,6 @@
+             break;
+         case GL_MAX_LIST_NESTING:
+             *params=64;	// fake, no limit in fact
+-            break;
+-        case GL_TEXTURE_BINDING_1D:
+-            *params=glstate->texture.bound[glstate->texture.active][ENABLED_TEX1D]?glstate->texture.bound[glstate->texture.active][ENABLED_TEX1D]->glname:0;
+-            break;
+-        case GL_TEXTURE_BINDING_2D:
+-            *params=glstate->texture.bound[glstate->texture.active][ENABLED_TEX2D]?glstate->texture.bound[glstate->texture.active][ENABLED_TEX2D]->glname:0;
+-            break;
+-        case GL_TEXTURE_BINDING_3D:
+-            *params=glstate->texture.bound[glstate->texture.active][ENABLED_TEX3D]?glstate->texture.bound[glstate->texture.active][ENABLED_TEX3D]->glname:0;
+-            break;
+-        case GL_TEXTURE_BINDING_RECTANGLE_ARB:
+-            *params=glstate->texture.bound[glstate->texture.active][ENABLED_TEXTURE_RECTANGLE]?glstate->texture.bound[glstate->texture.active][ENABLED_TEXTURE_RECTANGLE]->glname:0;
+-            break;
+-        case GL_TEXTURE_BINDING_CUBE_MAP:
+-            *params=glstate->texture.bound[glstate->texture.active][ENABLED_CUBE_MAP]?glstate->texture.bound[glstate->texture.active][ENABLED_CUBE_MAP]->glname:0;
+             break;
+         /* ARB/core 与 OES 的 VAO binding token 都是 0x85B5；返回逻辑 VAO 名字，
+          * 不查询 GLES 的硬件 VAO，因为此库的 VAO 由兼容层保存和切换。
+@@ -777,34 +784,14 @@
+     GLint dummy;
+     LOAD_GLES(glGetIntegerv);
+     noerrorShim();
++    GLuint texture_name;
++    if(amcl_texture_binding_name(pname,&texture_name)) { *params=(GLint)texture_name; return; }
+     GLfloat fparam;
+     if (gl4es_commonGet(pname, &fparam)) {
+         params[0] = fparam;
+         return;
+     }
+-    gltexture_t* tex;
+     switch (pname) {
+-        // texture binding only make sense with int
+-        case GL_TEXTURE_BINDING_1D:
+-            tex=glstate->texture.bound[glstate->texture.active][ENABLED_TEX1D];
+-            *params=tex->texture;
+-            break;
+-        case GL_TEXTURE_BINDING_2D:
+-            tex=glstate->texture.bound[glstate->texture.active][ENABLED_TEX2D];
+-            *params=tex->texture;
+-            break;
+-        case GL_TEXTURE_BINDING_3D:
+-            tex=glstate->texture.bound[glstate->texture.active][ENABLED_TEX3D];
+-            *params=tex->texture;
+-            break;
+-        case GL_TEXTURE_BINDING_CUBE_MAP:
+-            tex=glstate->texture.bound[glstate->texture.active][ENABLED_CUBE_MAP];
+-            *params=tex->texture;
+-            break;
+-        case GL_TEXTURE_BINDING_RECTANGLE_ARB:
+-            tex=glstate->texture.bound[glstate->texture.active][ENABLED_TEXTURE_RECTANGLE];
+-            *params=tex->texture;
+-            break;
+         // arrays...
+         case GL_POINT_SIZE_RANGE:
+             gles_glGetIntegerv(GL_POINT_SIZE_MIN, params);
+@@ -871,6 +858,8 @@
+     DBG(printf("glGetFloatv(%s, %p)\n", PrintEnum(pname), params);)
+     LOAD_GLES(glGetFloatv);
+     noerrorShim();
++    GLuint texture_name;
++    if(amcl_texture_binding_name(pname,&texture_name)) { *params=(GLfloat)texture_name; return; }
+     if (gl4es_commonGet(pname, params)) {
+         return;
+     }
+@@ -939,6 +928,8 @@
+     GLfloat tmp[4*4];
+     LOAD_GLES(glGetFloatv);
+     noerrorShim();
++    GLuint texture_name;
++    if(amcl_texture_binding_name(pname,&texture_name)) { *params=(GLdouble)texture_name; return; }
+     if (gl4es_commonGet(pname, tmp)) {
+         *params = *tmp;
+         return;
+diff --git a/src/gl/wrap/gles.c b/src/gl/wrap/gles.c
+--- a/src/gl/wrap/gles.c
++++ b/src/gl/wrap/gles.c
+@@ -1,5 +1,6 @@
+ #include "gles.h"
+ #include "../gl4es.h"
++#include "../init.h"
+ #include "../loader.h"
+ #include "skips.h"
+ #ifndef skip_glActiveTexture
+@@ -844,6 +845,17 @@
+ #endif
+ #ifndef skip_glGetBooleanv
+ void gl4es_glGetBooleanv(GLenum pname, GLboolean * params) {
++    /* 这五种桌面状态也可用boolean查询；GLES缺少1D/3D/rectangle枚举，不能
++     * 直接转发后返回错误。仅从共享私有helper读逻辑名，不能调用会noerrorShim
++     * 清掉旧shim/driver错误的integer getter；非零统一转换为TRUE。
++     * 其余状态继续原driver路径，不扩展不相关getter或改变它们的数组长度。
++     */
++    if(params && (pname==GL_TEXTURE_BINDING_1D || pname==GL_TEXTURE_BINDING_2D ||
++        pname==GL_TEXTURE_BINDING_3D || pname==GL_TEXTURE_BINDING_RECTANGLE_ARB ||
++        pname==GL_TEXTURE_BINDING_CUBE_MAP)) {
++        gl4es_ensure_init();
++        GLuint name=0; if(amcl_texture_binding_name(pname,&name)) { *params=name?GL_TRUE:GL_FALSE; return; }
++    }
+     LOAD_GLES(glGetBooleanv);
+ #ifndef direct_glGetBooleanv
+     PUSH_IF_COMPILING(glGetBooleanv)
+diff --git a/src/gl/gl4es.h b/src/gl/gl4es.h
+--- a/src/gl/gl4es.h
++++ b/src/gl/gl4es.h
+@@ -26,6 +26,12 @@
+ #define FLUSH_BEGINEND if(glstate->list.pending) gl4es_flush()
+ 
+ #define ERROR_IN_BEGIN if(glstate->list.begin) {errorShim(GL_INVALID_OPERATION); return;}
++
++/* 仅同一DSO的getter实现共享，不作为公开GL或宿主ABI导出。读取当前context纹理
++ * 单元的逻辑名，返回是否识别token；无GLEScall、不改绑定、不读写错误账本。
++ * GCC/Clang是既有AliasExport依赖，hidden避免测试/生产发生跨DSO同名插桩。
++ */
++__attribute__((visibility("hidden"))) int amcl_texture_binding_name(GLenum pname, GLuint *name);
+ 
+ const GLubyte *gl4es_glGetString(GLenum name);
+ void gl4es_glGetIntegerv(GLenum pname, GLint *params);

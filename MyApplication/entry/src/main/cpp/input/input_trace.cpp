@@ -236,7 +236,14 @@ void BeginSession(uint64_t generation, uint64_t sessionEpoch) {
 void RecordSubmitted(int32_t result) {
     g.submitted.fetch_add(1, std::memory_order_relaxed);
     if (result != AMCL_INPUT_OK) {
-        g.errors.fetch_add(1, std::memory_order_relaxed);
+        // 入口拒绝的具体返回码用于区分失焦、后端未就绪与旧代事件；仅有错误总数无法定位真机断链。
+        // 复用原子错误计数按2的幂节流，不改变投递/重试，不记录按键内容，也不增加常驻轮询。
+        const uint64_t errors = g.errors.fetch_add(1, std::memory_order_relaxed) + 1u;
+        if (IsFirstOrPowerOfTwo(errors)) {
+            OH_LOG_WARN(LOG_APP,
+                "neutral input submit rejected result=%{public}d errors=%{public}llu",
+                result, static_cast<unsigned long long>(errors));
+        }
         if (result == AMCL_INPUT_ERROR_STALE || result == AMCL_INPUT_ERROR_SESSION) {
             g.stale.fetch_add(1, std::memory_order_relaxed);
         }

@@ -1,6 +1,10 @@
 /**
  * VersionManagerSheet.ets — 版本管理 Sheet（v2 重设计 2026-05-14）
  *
+ * 当前 R3：storeManager 使用实例身份/六格资源/折叠管理/底部导出的详情；其他产品保留
+ * 原详情，并将导出与游戏文件浏览平级。所有产品共用当前 Sheet 内的 GameExportSheet，
+ * 任务仍由协调器持有，页面隐藏或返回不等于取消。顶部 drag pill 由本宿主统一提供。
+ *
  * 设计稿：
  *   - docs/design/version_manager.pen
  *   - docs/design/download-page-redesign/07b_version_manager_v2.png（list step）
@@ -21,24 +25,27 @@
  *     未传时回退展示"—"，不影响主流程。
  */
 
-// 2026-05-23 API NEXT 迁移：promptAction / router 全局函数已弃用，
-// 本文件改走 this.getUIContext().getPromptAction() / .getRouter()。
-// 该 import 仅保留类型依赖（如 router.pushUrl 参数型），运行时不调。
-// 详见 docs/guides/api-migration-2026-05.md。
-import { router, promptAction } from '@kit.ArkUI';
+// 弹窗和动画统一使用本组件的 UIContext；导出也由当前 Sheet 内嵌承接，不再创建路由页面。
+import { AppTitleAction } from './AppTitleAction';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { curves } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
+import { resolveInstanceGameDir, isIsolatedModpackInstance } from 'commons';
 import { GAME_LANGUAGES, GameLanguageOption, gameLanguageLabel } from 'commons';
 import { getModpackIconPath } from 'mods';
 import { readModpackSnapshot, ModpackSnapshot, ModpackMissingItem } from 'mods';
+import { ModpackInstallTask, createModpackFileResolver } from 'mods';
+import { getDownloadTaskRegistry } from 'feature_core';
 import { resolveInstalledMcVersion } from 'mods';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
+import { SheetPageMotion } from './SheetPageMotion';
 import { VersionBlockIcon } from './VersionBlockIcon';
+import { VersionListDataSource } from './VersionListDataSource';
 // 2026-05-23 图标系统重构：loader 名/颜色/图标全部走 LoaderCatalog 单一事实源。
 // getInstalledBadgeInfo 进一步把 vanilla 子类（snapshot/aprilfools/old）的徽章
 // 文案 + 配色也纳入统一接口（修 "26.2-snapshot-8" 显示为 "原版" 草绿的 bug）。
@@ -52,11 +59,17 @@ import { InstalledResourcesSheet } from './InstalledResourcesSheet';
 import { SavesManagerSheet } from './SavesManagerSheet';
 import { VersionFileBrowser } from './VersionFileBrowser';
 import { GameArchiveIO } from './GameArchiveIO';
+import { GameExportSheet } from './GameExportSheet';
+import { getGameExportCoordinator, ExportTaskView } from '../export/GameExportCoordinator';
 
 const TAG = 'VersionManagerSheet';
 
 @Component
 export struct VersionManagerSheet {
+  @Prop canRunGame: boolean = true
+  @Prop storeManager: boolean = false
+  /** 原实例补齐完成入队后交给统一任务详情，不在版本管理页持有后台下载。 */
+  onOpenDownloadTask: (id: string) => void = () => {}
   @Prop theme: ThemeColors = {} as ThemeColors
   @Prop bottomSafeHeight: number = 0
 
@@ -117,7 +130,7 @@ export struct VersionManagerSheet {
   @Prop initialResourceKind: ResourceKind = ResourceKind.MOD
 
   /** 排序 / 过滤的本地状态 */
-  @State private filterLoader: string = ''
+  @State @Watch('refreshVersionRows_') private filterLoader: string = ''
 
   /**
    * 列表实际渲染用的版本顺序（本地 @State）。
@@ -128,13 +141,25 @@ export struct VersionManagerSheet {
    * 通过 @Watch(availableVersions) 在非拖拽态保持与父组件同步（下载/删除/重命名后刷新）。
    */
   @State private orderVersions: string[] = []
+  /** 仅构建视口内版本行；稳定版本 key 与原拖拽/持久化顺序共用，不引入第二份业务事实。 */
+  private versionRowsDataSource_: VersionListDataSource = new VersionListDataSource()
   /** 正在被拖拽的版本名（''=未拖拽）。用于把原始行"提起"（半透明）+ 抑制 @Watch 重置顺序。 */
   @State private draggingVer: string = ''
   /** 拖拽过程中被拖项在 orderVersions 里的当前下标（自管，避免依赖回调里会过期的 itemIndex）。 */
   private dragCurIndex_: number = -1
 
-  /** v3: 同 sheet 三步切换 — list 版本列表 / detail 版本详情 / resources 已装资源管理 */
+  /** 同 Sheet 层级：list/detail/resources/saves/files；export 为覆盖同一内容槽位的导出层。 */
   @State private currentStep: string = 'list'
+  /**
+   * 横向位移不阻止屏幕外页面构建与测量。首次进入某一步才创建其内容，随后保留到
+   * 本次 Sheet 销毁，维持返回时的筛选、滚动与编辑状态；固定尺寸槽位仍参与原滑动。
+   * 初始深链只创建目标面板，返回列表或详情时再补建，不提前启动其他页面的生命周期。
+   */
+  @State private listMounted_: boolean = false
+  @State private detailMounted_: boolean = false
+  @State private resourcesMounted_: boolean = false
+  @State private savesMounted_: boolean = false
+  @State private filesMounted_: boolean = false
   @State private detailVersion: string = ''
   @State private openingFolder: boolean = false
   /** 当前详情版本的整合包快照（非整合包版本为 null）。进入详情时加载一次。 */
@@ -189,20 +214,23 @@ export struct VersionManagerSheet {
    *  进入详情时由 loadVersionGameLang(ver) 载入；选择后经 onSaveVersionGameLang 回调持久化。 */
   @State private versionGameLang: string = ''
 
-  /**
-   * v3 横向滑动动画（三步：list / detail / resources）：
-   *   - slidePos = 0 → list 可见；detail 待命 +100%，resources 待命 +200%
-   *   - slidePos = 1 → detail 可见；list 在 -100%，resources 待命 +100%
-   *   - slidePos = 2 → resources 可见；list 在 -200%，detail 在 -100%
-   *   动画通过 animateTo 驱动 slidePos 在 0 / 1 / 2 间平滑过渡。
-   *   每个面板平移量 = (面板序号 - slidePos) * viewportW。
-   */
-  @State private slidePos: number = 0
-  /** 资源步（第三步）当前展示的资源类型；由详情步资源格点击决定 */
+  /** 保留已访问页槽，统一通过共用动效状态按实际 Sheet 宽度横移，转场中屏蔽重复输入。 */
+  @State private pageMotion_: SheetPageMotion = new SheetPageMotion()
+  /** 导出保留到返回动画真正结束；不能先卸载子页再播放仅详情的入场动画。 */
+  @State private exportMounted_: boolean = false
+  /** 资源步（第三步）当前展示的资源类型；由详情步资源格点击决定。 */
   @State private resourceKind: ResourceKind = ResourceKind.MOD
-  /** 容器宽度（onAreaChange 测量；fallback 为 375 dp） */
-  @State private viewportW: number = 375
-  private static readonly ANIM_DURATION_MS = 280
+  /** store 的两组次级操作只改变可见层级，不另开 Sheet、不改变版本设置的存储归属。 */
+  @State private storeRuntimeExpanded_: boolean = false
+  @State private storeManagementExpanded_: boolean = false
+  /** 详情任务条只投影相同根目录、相同详情版本的进行中任务，绝不借用首页当前选版。 */
+  @State private detailExportActive_: boolean = false
+  @State private detailExportMessage_: string = ''
+  private exportTaskUnsubscribe_: (() => void) | null = null
+  /** 进入导出时冻结入口身份；全局选版/偏好后续变化不能悄悄切换当前导出的源。 */
+  private exportMcRoot_: string = ''
+  private exportVersionId_: string = ''
+  private exportVersionIsolation_: boolean = true
 
   onSelectVersion: (ver: string) => void = () => {}
   onDeleteVersion: (ver: string) => void = () => {}
@@ -211,6 +239,11 @@ export struct VersionManagerSheet {
   /** 修复某个残留/损坏的版本（父组件走 repairVersionFiles：Forge 深度修复 / 普通增量补全）。 */
   onRepairVersion: (ver: string) => void = () => {}
   onClose: () => void = () => {}
+  /**
+   * 将导出组件的草稿/进行中关闭保护交给 bindSheet 宿主。宿主的系统返回、遮罩点击和
+   * 拖拽关闭均走同一 handler；退出导出层或销毁本组件时传 undefined，避免旧实例继续拦截。
+   */
+  onRegisterExportDismiss: (handler: ((back?: boolean) => void) | undefined) => void = () => {}
   /**
    * 重命名版本目录。父组件应执行实际的文件系统操作（见 FileUtils.renameVersion），
    * 并在成功后重扫版本列表 / 同步当前选中版本 / 持久化偏好。
@@ -281,10 +314,11 @@ export struct VersionManagerSheet {
 
   /**
    * v3 深链：按 initialStep 决定打开本 sheet 时落在哪一步。
-   * bindSheet 每次展开都会重建本组件 → aboutToAppear 必跑，能据此初始化 step / slidePos。
+   * bindSheet 每次展开都会重建本组件 → aboutToAppear 必跑，能据此初始化 step / 页槽位置。
    */
   aboutToAppear() {
     this.orderVersions = this.availableVersions.slice()
+    this.refreshVersionRows_()
     if (this.initialStep === 'resources') {
       let ver = this.initialResourceVersion.length > 0 ? this.initialResourceVersion : this.currentVersion
       this.detailVersion = ver
@@ -294,7 +328,7 @@ export struct VersionManagerSheet {
       this.loadVersionJvmArgsState(ver)
       this.loadModpackSnapshot_(ver)
       this.currentStep = 'resources'
-      this.slidePos = 2
+      this.pageMotion_.reset(2)
     } else if (this.initialStep === 'detail') {
       let ver = this.initialResourceVersion.length > 0 ? this.initialResourceVersion : this.currentVersion
       this.detailVersion = ver
@@ -303,11 +337,48 @@ export struct VersionManagerSheet {
       this.loadModpackSnapshot_(ver)
       this.loadVersionJvmArgsState(ver)
       this.currentStep = 'detail'
-      this.slidePos = 1
+      this.pageMotion_.reset(1)
     } else {
       this.currentStep = 'list'
-      this.slidePos = 0
+      this.pageMotion_.reset(0)
     }
+    this.mountStep_(this.currentStep)
+    // 这里只订阅内存中的任务投影，不触发源扫描、恢复或重任务；任务本身仍由协调器持有。
+    this.exportTaskUnsubscribe_ = getGameExportCoordinator().subscribe((): void => {
+      this.refreshDetailExportTask_()
+    })
+    this.refreshDetailExportTask_()
+  }
+
+  /** 关闭展示层只清理订阅和宿主保护，不取消后台导出，也不清理协调器持有的工作目录。 */
+  aboutToDisappear(): void {
+    this.pageMotion_.dispose()
+    if (this.exportTaskUnsubscribe_ !== null) this.exportTaskUnsubscribe_()
+    this.exportTaskUnsubscribe_ = null
+    this.onRegisterExportDismiss(undefined)
+    if (this.switchedHintTimer !== 0) clearTimeout(this.switchedHintTimer)
+    this.switchedHintTimer = 0
+  }
+
+  /** 在设置目标步骤和启动位移动画前挂载内容；重复进入不会重建已访问页面。 */
+  private mountStep_(step: string): void {
+    if (step === 'list') this.listMounted_ = true
+    else if (step === 'detail') this.detailMounted_ = true
+    else if (step === 'resources') this.resourcesMounted_ = true
+    else if (step === 'saves') this.savesMounted_ = true
+    else if (step === 'files') this.filesMounted_ = true
+  }
+
+  /** 筛选与完整列表变化只发布现有主键视图，LazyForEach 决定实际需要构造哪些行。 */
+  private refreshVersionRows_(): void {
+    this.versionRowsDataSource_.replace(this.filteredVersions())
+  }
+
+  /** 原业务顺序仍移除/插入；视图按 SDK 的相邻交换通知同步，避免非相邻拖拽错位。 */
+  private relocateVersionRow_(from: number, to: number): void {
+    const moved: string = this.orderVersions.splice(from, 1)[0]
+    this.orderVersions.splice(to, 0, moved)
+    if (!this.versionRowsDataSource_.relocate(from, to)) this.refreshVersionRows_()
   }
 
   /**
@@ -317,66 +388,89 @@ export struct VersionManagerSheet {
   private onAvailableVersionsChange() {
     if (this.draggingVer.length > 0) return
     this.orderVersions = this.availableVersions.slice()
+    this.refreshVersionRows_()
   }
+
+
+  /** 同一标题投影当前持久页槽，不借助新 NavPathStack 替代原横滑状态。 */
+  private managerTitle_(): string {
+    if (this.currentStep === 'export') return '导出游戏包';
+    if (this.currentStep === 'saves') return '存档管理';
+    if (this.currentStep === 'files') return '版本文件夹';
+    if (this.currentStep === 'resources') {
+      if (this.resourceKind === ResourceKind.SHADER) return '光影管理';
+      if (this.resourceKind === ResourceKind.RESOURCE_PACK) return '资源包管理';
+      if (this.resourceKind === ResourceKind.DATAPACK) return '数据包管理';
+      return '模组管理';
+    }
+    return this.currentStep === 'detail' ? '版本详情' : '版本管理';
+  }
+
+  /** 子面板原有忙态/确认遮罩同步到移出正文后的标题按钮，不能从顶部绕过。 */
+  private managerNavigationBlocked_(): boolean {
+    if (this.pageMotion_.moving) return true;
+    if (this.currentStep === 'resources') return this.resourcesNavigationBlocked_;
+    if (this.currentStep === 'saves') return this.savesNavigationBlocked_;
+    if (this.currentStep === 'files') return this.filesNavigationBlocked_;
+    return false;
+  }
+
+  /** 导出内部返回由子层注册的现有处理器承担；其他层继续调用原 backTo* 动效。 */
+  private requestManagerBack_(): void {
+    if (this.managerNavigationBlocked_()) return;
+    if (this.currentStep === 'export') {
+      if (this.exportDismissHandler_ !== undefined) this.exportDismissHandler_(true);
+    } else if (this.currentStep === 'detail') this.backToList();
+    else if (this.currentStep !== 'list') this.backToDetail();
+  }
+
+  /** 关闭导出必须先通过原草稿/任务保护；处理器未就绪时不允许旁路退出。 */
+  private requestManagerClose_(): void {
+    if (this.managerNavigationBlocked_()) return;
+    if (this.currentStep === 'export') {
+      if (this.exportDismissHandler_ !== undefined) this.exportDismissHandler_(false);
+    } else this.onClose();
+  }
+
+  /** 原“新增”和“重命名”仍是相同命令，只移到同一标题宿主的附加动作中。 */
+  private managerTitleActions_(): AppTitleAction[] {
+    if (this.currentStep === 'list') return [{ id: 'add', label: '新增', icon: AppIconName.Plus, enabled: !this.pageMotion_.moving }];
+    if (this.currentStep === 'detail' && !this.storeManager) return [{ id: 'rename', label: '重命名版本', icon: AppIconName.Edit, enabled: !this.pageMotion_.moving }];
+    return [];
+  }
+
+  /** 子层遮罩投影仅供当前标题禁用；不持有第二份导入、导出或草稿业务状态。 */
+  @State private resourcesNavigationBlocked_: boolean = false;
+  @State private savesNavigationBlocked_: boolean = false;
+  @State private filesNavigationBlocked_: boolean = false;
+  private exportDismissHandler_: ((back?: boolean) => void) | undefined = undefined;
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
     Column() {
-      // Drag pill（三个 step 共用）
+      // Drag pill 由宿主统一提供，内嵌导出层不重复绘制。
       Row() {
         Column().width(36).height(4).backgroundColor(this.theme.divider).borderRadius(2)
       }
       .width('100%').justifyContent(FlexAlign.Center).padding({ top: 10, bottom: 6 })
 
-      // ============== 三步内容容器（横向滑动）==============
-      // 用 Stack 同时挂载 list / detail / resources，靠 translate 决定可见性；
-      // clip 锁视口避免溢出。每个面板平移量 = (面板序号 - slidePos) * viewportW。
-      Stack() {
-        // List step（序号 0）
-        Column() {
-          this.ListStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (0 - this.slidePos) * this.viewportW })
-
-        // Detail step（序号 1）
-        Column() {
-          this.DetailStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (1 - this.slidePos) * this.viewportW })
-
-        // Resources step（序号 2）—— 内嵌 InstalledResourcesSheet（embedded 模式）
-        Column() {
-          this.ResourcesStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (2 - this.slidePos) * this.viewportW })
-
-        // Saves step（序号 3）—— 内嵌 SavesManagerSheet（embedded 模式）
-        Column() {
-          this.SavesStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (3 - this.slidePos) * this.viewportW })
-
-        // Files step（序号 4）—— 内嵌 VersionFileBrowser（虚拟文件管理器）
-        Column() {
-          this.FilesStep()
-        }
-        .width('100%').height('100%')
-        .translate({ x: (4 - this.slidePos) * this.viewportW })
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .clip(true)
-      .onAreaChange((_, area) => {
-        // 用容器实际宽度做平移基准，适配横屏 / 折叠屏
-        let w = area.width as number
-        if (w > 0 && Math.abs(w - this.viewportW) > 0.5) {
-          this.viewportW = w
-        }
+      // ============== 保留管理槽位（横向滑动）与导出覆盖层 ==============
+      // 固定尺寸槽位保留原横向动画，未访问内容不创建；clip 锁住视口，
+      // 共用 SheetPageMotion 计算 (页槽序号 - position) * 实际视口宽度。
+      // 外层原生容器承接剩余高度；尾随 Builder 的自定义组件之后不追加链式布局属性。
+      Column() {
+      // 一个宿主包围所有已访问页槽，切层只更新标题与动作，不重建槽位或正文。
+      ImmersiveTitleScaffold({ title: this.managerTitle_(),
+        subtitle: this.currentStep === 'list' ? (this.switchedHint || this.headerSubtitle()) : this.detailVersion,
+        theme: this.theme, modal: false, showBack: this.currentStep !== 'list', showClose: true,
+        surfaceColor: this.theme.bgPrimary, backEnabled: !this.managerNavigationBlocked_(),
+        closeEnabled: !this.managerNavigationBlocked_(), backLabel: '返回上一层', closeLabel: '关闭版本管理',
+        backId: 'version-manager-back', closeId: 'version-manager-close', menuActions: this.managerTitleActions_(),
+        onMenuAction: (id: string): void => { if (id === 'add') this.onAddNew(); else if (id === 'rename') this.openRename(); },
+        onBack: (): void => { this.requestManagerBack_(); }, onClose: (): void => { this.requestManagerClose_(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
       })
+      }.width('100%').layoutWeight(1)
     }
     .width('100%')
     .height('100%')
@@ -409,6 +503,7 @@ export struct VersionManagerSheet {
       // 仅当真正滑到资源步时才扫描磁盘 / 拉图标（避免每次进详情都白扫一遍）
       active: this.currentStep === 'resources',
       onBack: () => { this.backToDetail() },
+      onNavigationBlocked: (blocked: boolean): void => { this.resourcesNavigationBlocked_ = blocked; },
       // 资源步"安装" / 空态会先 onClose 再 onJumpToBrowse；这里 onClose = 关闭整个版本管理 sheet
       onClose: () => { this.onClose() },
       onJumpToBrowse: (kind: ResourceKind) => { this.onJumpToBrowse(kind) },
@@ -435,6 +530,7 @@ export struct VersionManagerSheet {
       embedded: true,
       active: this.currentStep === 'saves',
       onBack: () => { this.backToDetail() },
+      onNavigationBlocked: (blocked: boolean): void => { this.savesNavigationBlocked_ = blocked; },
       onClose: () => { this.onClose() },
       onChanged: () => {
         this.refreshDetailResStat(this.detailVersion)
@@ -458,6 +554,7 @@ export struct VersionManagerSheet {
       embedded: true,
       active: this.currentStep === 'files',
       onBack: () => { this.backToDetail() },
+      onNavigationBlocked: (blocked: boolean): void => { this.filesNavigationBlocked_ = blocked; },
       onClose: () => { this.onClose() },
       onChanged: () => {
         this.refreshDetailResStat(this.detailVersion)
@@ -472,37 +569,6 @@ export struct VersionManagerSheet {
 
   @Builder
   ListStep() {
-    // ============== Sheet Header ==============
-    Row() {
-      Column({ space: 2 }) {
-        Text('版本管理')
-          .fontSize(22).fontWeight(700).fontColor(this.theme.textPrimary)
-        if (this.switchedHint.length > 0) {
-          Text(this.switchedHint)
-            .fontSize(11).fontWeight(600).fontColor(this.theme.success)
-        } else {
-          Text(this.headerSubtitle())
-            .fontSize(11).fontColor(this.theme.textHint)
-        }
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Row({ space: 5 }) {
-        AppIcon({ name: AppIconName.Plus, iconSize: 14, color: this.theme.textOnPrimary, weight: FontWeight.Bold })
-        Text('新增').fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
-      }
-      .height(32)
-      .padding({ left: 12, right: 12 })
-      .borderRadius(16)
-      .backgroundColor(this.theme.primary)
-      .alignItems(VerticalAlign.Center)
-      .onClick(() => { this.onAddNew() })
-    }
-    .width('100%')
-    .padding({ left: 20, right: 20, top: 6, bottom: 12 })
-    .alignItems(VerticalAlign.Center)
-
     // ============== 过滤 Chips ==============
     Scroll() {
       Row({ space: 6 }) {
@@ -532,7 +598,9 @@ export struct VersionManagerSheet {
       this.EmptyState()
     } else {
       List({ space: 10 }) {
-        ForEach(this.filteredVersions(), (ver: string) => {
+        // 原 ForEach 首次构造全部版本行，会同时拖慢列表、详情和资源三个共用入口。
+        // 使用稳定版本主键的 LazyForEach，只创建当前视口与框架缓存需要的 ListItem。
+        LazyForEach(this.versionRowsDataSource_, (ver: string) => {
           ListItem() {
             this.VersionRow(ver)
           }
@@ -585,8 +653,7 @@ export struct VersionManagerSheet {
         if (insertIndex === this.dragCurIndex_) return
         let from = this.dragCurIndex_
         this.getUIContext().animateTo({ duration: 180, curve: Curve.Friction }, () => {
-          let moved = this.orderVersions.splice(from, 1)[0]
-          this.orderVersions.splice(insertIndex, 0, moved)
+          this.relocateVersionRow_(from, insertIndex)
         })
         this.dragCurIndex_ = insertIndex
       })
@@ -844,49 +911,230 @@ export struct VersionManagerSheet {
   //  Step 2：版本详情视图（同 sheet 内切换）
   // ============================================================
 
+  /**
+   * store 专用 R4 详情：页头与实例身份固定，正文按快捷操作、六个资源入口、运行/管理依次单列滚动。
+   * 仍使用本组件既有回调与资源面板，不建立第二套文件管理或配置持久化逻辑。
+   * 平板和电脑宽窗口也保留这一阅读顺序；资源卡内部仍为三列两行，不把页面拆成左右栏。
+   * 页头、身份与导出底栏不参与纵向压缩，只有正文占剩余高度，展开设置后仍可滚到最后一项。
+   */
+  @Builder
+  StoreDetailStep() {
+    // 固定身份与页头一起保留，查看管理末项时仍能确认当前实例，不随正文滚走。
+    Column() {
+      this.StoreIdentityCard()
+    }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 16 }).flexShrink(0)
+
+    Scroll() {
+      Column({ space: 16 }) {
+        if (this.detailExportActive_) { this.StoreExportTaskCard() }
+        // 整合包的缺项补齐仍是有条件的真实入口，不能因简化主界面而丢到不可达的菜单。
+        if (this.detailModpackSnap_ !== null) { this.DetailModpackCard() }
+        this.StoreQuickActions()
+        this.StoreResourcesCard()
+        this.StoreDetailOptions()
+      }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 20 })
+    }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
+
+    // 单一主行动始终全宽；不因窗口变宽缩成右侧按钮，也不叠放在可滚动的管理内容之上。
+    Column() {
+      this.StoreExportButton()
+    }.width('100%').padding({ left: 20, right: 20, top: 12, bottom: this.bottomSafeHeight + 12 })
+      .backgroundColor(this.theme.bgCard).flexShrink(0)
+  }
+
+  /** 目录/实例名是主身份；MC 与加载器只作次级信息，同一 MC 的多个实例仍可清楚区分。 */
+  @Builder
+  StoreIdentityCard() {
+    Row({ space: 12 }) {
+      Stack() {
+        Column().width(56).height(56).borderRadius(14).backgroundColor(this.theme.primaryLight)
+        VersionBlockIcon({ versionId: this.detailVersion, iconSize: 42, cornerRadius: 0,
+          overrideImagePath: getModpackIconPath(this.mcDir, this.detailVersion) })
+      }.width(56).height(56)
+      Column({ space: 5 }) {
+        Text(this.detailVersion || '—').fontSize(22).fontWeight(700).fontColor(this.theme.textPrimary)
+          .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.detailMcVersion() + ' · ' + this.detailLoaderText())
+          .fontSize(13).fontColor(this.theme.textSecondary).width('100%')
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (this.detailVersion === this.currentVersion) {
+        Text('当前').fontSize(11).fontWeight(600).fontColor(this.theme.primary)
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 }).backgroundColor(this.theme.primaryLight).borderRadius(8)
+      }
+    }.width('100%').padding(16).backgroundColor(this.theme.bgCard).borderRadius(18)
+  }
+
+  /** “设为当前”只调用既有选版回调；详情身份不随该全局选择变化，也不会自动启动游戏。 */
+  @Builder
+  StoreQuickActions() {
+    Row({ space: 8 }) {
+      Button(this.detailVersion === this.currentVersion ? '当前版本' : '设为当前')
+        .layoutWeight(1).height(44).fontSize(14).fontColor(this.theme.primary).backgroundColor(this.theme.bgCard)
+        .borderRadius(14).onClick(() => { this.handleSelectVersion(this.detailVersion) })
+      if (this.canRunGame) {
+        Button('运行调试').layoutWeight(1).height(44).fontSize(14)
+          .fontColor(this.theme.primary).backgroundColor(this.theme.bgCard).borderRadius(14)
+          .onClick(() => { if (this.detailVersion.length > 0) this.onLaunchVersion(this.detailVersion) })
+      }
+    }.width('100%')
+  }
+
+  /** 六格复用原五类管理入口；“全部文件”直接打开文件浏览，不为装饰性数字递归遍历实例。 */
+  @Builder
+  StoreResourcesCard() {
+    Column({ space: 10 }) {
+      Row() {
+        Text('资源').fontSize(15).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1)
+        Text(isIsolatedModpackInstance(this.mcDir, this.detailVersion) ? '整合包独立目录' :
+          (this.versionIsolation ? '独立目录' : '共享目录')).fontSize(12).fontColor(this.theme.textSecondary)
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.StoreResourceTile(0)
+        this.StoreResourceTile(1)
+        this.StoreResourceTile(2)
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.StoreResourceTile(3)
+        this.StoreResourceTile(4)
+        this.StoreResourceTile(5)
+      }.width('100%')
+    }.width('100%')
+  }
+
+  /**
+   * kind 是不变的入口编号，不把 primitive @State 计数作为 Builder 值参数传递。
+   * 数字在节点内直接读取，保留既有 V1 下横滑/异步资源计数的刷新保证。
+   */
+  @Builder
+  StoreResourceTile(kind: number) {
+    Column({ space: 8 }) {
+      Row({ space: 6 }) {
+        AppIcon({ name: kind === 0 ? AppIconName.Mod : kind === 1 ? AppIconName.Shader :
+          kind === 2 ? AppIconName.ResourcePack : kind === 3 ? AppIconName.DataPack :
+          kind === 4 ? AppIconName.Save : AppIconName.Folder, iconSize: 20, color: this.theme.primary })
+        Text(kind === 0 ? this.modsCount.toString() : kind === 1 ? this.shadersCount.toString() :
+          kind === 2 ? this.resPacksCount.toString() : kind === 3 ? this.dataPacksCount.toString() :
+          kind === 4 ? this.savesCount.toString() : '浏览')
+          .fontSize(kind === 5 ? 13 : 20).fontWeight(600).fontColor(this.theme.textPrimary)
+          .layoutWeight(1).textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%')
+      Text(kind === 0 ? '模组' : kind === 1 ? '光影' : kind === 2 ? '资源包' :
+        kind === 3 ? '数据包' : kind === 4 ? '存档' : '全部文件')
+        .fontSize(13).fontColor(this.theme.textSecondary).width('100%')
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }.layoutWeight(1).constraintSize({ minHeight: 80 }).padding(12)
+      .backgroundColor(this.theme.bgCard).borderRadius(16).alignItems(HorizontalAlign.Start)
+      .onClick(() => {
+        if (kind === 0) this.handleManageMods()
+        else if (kind === 1) this.handleManageShaders()
+        else if (kind === 2) this.handleManageResPacks()
+        else if (kind === 3) this.handleManageDataPacks()
+        else if (kind === 4) this.handleManageSaves()
+        else this.gotoFiles()
+      })
+  }
+
+  /** 运行设置遵循运行门控；文件管理、校验和危险管理不依赖允许调试开关。 */
+  @Builder
+  StoreDetailOptions() {
+    if (this.canRunGame) {
+      Column({ space: 8 }) {
+        this.StoreDisclosureRow('runtime')
+        if (this.storeRuntimeExpanded_) { this.DetailConfigCard(true) }
+      }.width('100%')
+    }
+    Column({ space: 8 }) {
+      this.StoreDisclosureRow('management')
+      if (this.storeManagementExpanded_) {
+        Column() {
+          this.StoreManagementRow(AppIconName.Edit, '重命名', false, () => { this.openRename() })
+          this.StoreManagementRow(AppIconName.CheckCircle, '检查文件', false,
+            () => { this.onVerifyVersionFiles(this.detailVersion) })
+          this.StoreManagementRow(AppIconName.Folder, '版本文件', false, () => { this.gotoFiles() })
+          if (this.isExternalStorage) {
+            this.StoreManagementRow(AppIconName.Folder, '打开系统目录', false, () => { this.openFolder('') })
+          }
+          this.StoreManagementRow(AppIconName.Trash, '删除版本', true, () => { this.handleDetailDelete() })
+        }.width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
+          .backgroundColor(this.theme.bgCard).borderRadius(16)
+      }
+    }.width('100%')
+  }
+
+  /**
+   * 折叠入口先分配图标与完整标题，再把剩余空间交给右侧摘要；摘要过长只省略摘要。
+   * 标题四个汉字保留至少60vp并禁止收缩，摘要在弹性容器内右对齐且最多140vp，
+   * 因此不会再由次要的JDK名称或“检查 / 重命名”把“更多管理”挤成两行。
+   * 收起运行设置前仍保存已有 JVM 编辑；本次仅调整布局，不改变展开状态和动作回调。
+   */
+  @Builder
+  StoreDisclosureRow(kind: string) {
+    Row({ space: 10 }) {
+      AppIcon({ name: kind === 'runtime' ? AppIconName.Settings : AppIconName.More,
+        iconSize: 20, color: this.theme.textSecondary }).flexShrink(0)
+      Text(kind === 'runtime' ? '运行设置' : '更多管理').fontSize(15).fontWeight(600)
+        .fontColor(this.theme.textPrimary).maxLines(1).constraintSize({ minWidth: 60 }).flexShrink(0)
+      // 外层承接剩余宽，内层文本才限宽；宽屏时箭头仍靠右，窄屏时摘要不会反抢标题空间。
+      Row() {
+        Text(kind === 'runtime' ? this.versionJdkLabel() : '检查 / 重命名')
+          .fontSize(12).fontColor(this.theme.textSecondary).width('100%').constraintSize({ maxWidth: 140 })
+          .textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.layoutWeight(1).justifyContent(FlexAlign.End)
+      AppIcon({ name: (kind === 'runtime' ? this.storeRuntimeExpanded_ : this.storeManagementExpanded_) ?
+        AppIconName.ChevronUp : AppIconName.ChevronDown, iconSize: 16, color: this.theme.textHint }).flexShrink(0)
+    }.width('100%').constraintSize({ minHeight: 56 }).padding(16)
+      .backgroundColor(this.theme.bgCard).borderRadius(16)
+      .onClick(() => {
+        if (kind === 'runtime') {
+          if (this.storeRuntimeExpanded_ && this.jvmArgsExpanded) this.saveVersionJvmArgs()
+          this.storeRuntimeExpanded_ = !this.storeRuntimeExpanded_
+        } else this.storeManagementExpanded_ = !this.storeManagementExpanded_
+      })
+  }
+
+  /** 菜单只转发已有动作；删除仍交由父级唯一确认，不在此新增第二个确认弹窗。 */
+  @Builder
+  StoreManagementRow(icon: AppIconName, label: string, danger: boolean, action: () => void) {
+    Row({ space: 12 }) {
+      AppIcon({ name: icon, iconSize: 19, color: danger ? this.theme.error : this.theme.textSecondary })
+      Text(label).fontSize(14).fontColor(danger ? this.theme.error : this.theme.textPrimary).layoutWeight(1)
+      AppIcon({ name: AppIconName.ChevronRight, iconSize: 15, color: this.theme.textHint })
+    }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 4, right: 4, top: 10, bottom: 10 })
+      .onClick(() => action())
+  }
+
+  /** 只展示同一详情源的活动任务；点击复用导出层查看，不从详情重复启动重任务。 */
+  @Builder
+  StoreExportTaskCard() {
+    Row({ space: 10 }) {
+      AppIcon({ name: AppIconName.Export, iconSize: 20, color: this.theme.primary })
+      Column({ space: 3 }) {
+        Text('导出进行中').fontSize(14).fontWeight(600).fontColor(this.theme.primary)
+        Text(this.detailExportMessage_).fontSize(12).fontColor(this.theme.textSecondary)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.primary })
+    }.width('100%').padding(14).backgroundColor(this.theme.primaryLight).borderRadius(14)
+      .onClick(() => { this.openGameExport_() })
+  }
+
+  /** store 的主要导出行动。已有本实例任务时切换为查看，仍保持单一 owner 的业务约束。 */
+  @Builder
+  StoreExportButton() {
+    Button() {
+      Row({ space: 8 }) {
+        AppIcon({ name: AppIconName.Export, iconSize: 20, color: this.theme.textOnPrimary })
+        Text(this.detailExportActive_ ? '查看导出进度' : '导出游戏包').fontSize(15).fontWeight(600)
+          .fontColor(this.theme.textOnPrimary)
+      }.justifyContent(FlexAlign.Center).width('100%')
+    }.width('100%').height(48).borderRadius(16).backgroundColor(this.theme.primary)
+      .enabled(this.detailVersion.length > 0 && this.mcDir.length > 0)
+      .onClick(() => { this.openGameExport_() })
+  }
+
   @Builder
   DetailStep() {
-    // ----- header：← 版本管理 / 版本详情 / 重命名 -----
-    Row({ space: 10 }) {
-      Row({ space: 4 }) {
-        AppIcon({ name: AppIconName.ChevronLeft, iconSize: 14, color: this.theme.textPrimary })
-        Text('版本管理').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-      }
-      .height(32)
-      .padding({ left: 10, right: 12 })
-      .borderRadius(16)
-      .backgroundColor(this.theme.bgInput)
-      .alignItems(VerticalAlign.Center)
-      .onClick(() => { this.backToList() })
-
-      Column({ space: 1 }) {
-        Text('版本详情')
-          .fontSize(13)
-          .fontWeight(600)
-          .fontColor(this.theme.textPrimary)
-        Text(this.detailVersion || '—')
-          .fontSize(11)
-          .fontWeight(500)
-          .fontColor(this.theme.textHint)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Row() {
-        AppIcon({ name: AppIconName.Edit, iconSize: 14, color: this.theme.textSecondary })
-      }
-      .width(32).height(32)
-      .borderRadius(16)
-      .backgroundColor(this.theme.bgInput)
-      .justifyContent(FlexAlign.Center)
-      .onClick(() => { this.openRename() })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 4, bottom: 12 })
-    .alignItems(VerticalAlign.Center)
-
     // ----- 滚动内容区 -----
     Scroll() {
       Column({ space: 12 }) {
@@ -1009,10 +1257,34 @@ export struct VersionManagerSheet {
           .width('100%').padding({ left: 12, right: 8, top: 8, bottom: 8 })
           .backgroundColor(this.theme.errorBg).borderRadius(12)
           .alignItems(VerticalAlign.Center)
+          if (this.detailModpackSnap_.installId !== undefined) {
+            Button('补齐此实例缺失内容').height(44).width('100%')
+              .onClick(() => { this.repairModpack_() })
+          }
         }
       }
       .width('100%')
     }
+  }
+
+  /** 精确收据可定位原安装计划；旧收据仍保留复制清单，不猜测其来源文件版本。 */
+  private repairModpack_(): void {
+    let snap = this.detailModpackSnap_
+    let context = this.getAbilityCtx()
+    if (snap === null || snap.installId === undefined || context === null) return
+    let id = 'modpack:' + snap.installId
+    let registry = getDownloadTaskRegistry()
+    if (registry.getAdapter(id) === null) {
+      let task = new ModpackInstallTask({ title: this.detailVersion, sessionId: snap.installId,
+        versionName: this.detailVersion, mcDir: this.mcDir, filesDir: context.filesDir,
+        existingVersions: this.availableVersions, requireConfirmation: false,
+        resolveCfFile: createModpackFileResolver() })
+      registry.enqueue(task).catch((error: Error): void => {
+        this.getUIContext().getPromptAction().showToast({ message: error.message })
+      })
+    }
+    this.onClose()
+    this.onOpenDownloadTask(id)
   }
 
   /** 整合包来源 → 展示标签。 */
@@ -1024,20 +1296,45 @@ export struct VersionManagerSheet {
 
   @Builder
   DetailActionRow() {
-    Row({ space: 8 }) {
-      this.DetailActionBtn(AppIconName.Play, '启动', this.theme.success, '#FFFFFF', () => {
+      Row({ space: 8 }) {
+      if (this.canRunGame) {
+      this.DetailActionBtn(AppIconName.Play, this.storeManager ? '运行调试' : '启动', this.theme.success, '#FFFFFF', () => {
         // 正式接入通用启动路径：切到详情版本，父组件走 launchMC（启动前校验 → 真正启动）。
         if (this.detailVersion.length > 0) this.onLaunchVersion(this.detailVersion)
       })
+      }
       this.DetailActionBtn(AppIconName.Copy, '复制', this.theme.bgCard, this.theme.textSecondary, () => {
         this.getUIContext().getPromptAction().showToast({ message: '复制版本功能 R-5 接入', duration: 1500 })
       })
       this.DetailActionBtn(AppIconName.Trash, '删除', this.theme.errorBg, this.theme.error, () => {
         this.handleDetailDelete()
       })
-    }
-    .width('100%')
-    .height(48)
+      }.width('100%').height(48)
+  }
+
+  /**
+   * 所有产品在当前 Sheet 内进入共用导出层。入口只捕获用户所管理的详情身份，
+   * 不切换全局版本、不关闭宿主，也不预先声明文件完整；真实检查归 GameExportSheet。
+   */
+  private openGameExport_(): void {
+    if (this.pageMotion_.moving || this.detailVersion.length === 0 || this.mcDir.length === 0) return
+    this.exportMcRoot_ = this.mcDir
+    this.exportVersionId_ = this.detailVersion
+    this.exportVersionIsolation_ = this.versionIsolation
+    this.exportMounted_ = true
+    this.currentStep = 'export'
+    this.pageMotion_.move(this.getUIContext(), 2)
+  }
+
+  /** 任务条只看当前详情源；另一根目录的同名版本和首页选版不能替代固定源身份比较。 */
+  private refreshDetailExportTask_(): void {
+    const task: ExportTaskView | null = getGameExportCoordinator().getTask()
+    const sameSource: boolean = task !== null && task.request.mcRoot === this.mcDir &&
+      task.request.versionId === this.detailVersion
+    this.detailExportActive_ = sameSource && task !== null &&
+      (task.state === 'running' || task.state === 'cancelling')
+    this.detailExportMessage_ = this.detailExportActive_ && task !== null ?
+      (task.state === 'cancelling' ? '正在取消，等待当前操作结束' : task.stage) : ''
   }
 
   @Builder
@@ -1235,17 +1532,27 @@ export struct VersionManagerSheet {
   // 版本文件夹入口卡片：进入虚拟文件管理器（沙箱内/外通用，浏览+导入导出+删除+重命名+新建）。
   @Builder
   DetailFilesCard() {
+    // 其他产品保留原详情视觉，两个文件类行动平级同尺寸，不使用 store 的底部主按钮。
+    Column({ space: 8 }) {
+      this.DetailFileAction(AppIconName.Folder, '浏览游戏文件夹', '浏览 / 导入 / 导出此版本的文件', false)
+      this.DetailFileAction(AppIconName.Export, '导出游戏包', '完整包或标准整合包', true)
+    }.width('100%')
+  }
+
+  /** 文件浏览与游戏包导出使用同一种行卡；参数只包含固定展示值，不按值传递可变计数。 */
+  @Builder
+  DetailFileAction(icon: AppIconName, label: string, hint: string, exportGame: boolean) {
     Row({ space: 10 }) {
       Stack({ alignContent: Alignment.Center }) {
         Column().width(36).height(36).borderRadius(9).backgroundColor(this.theme.primaryLight)
-        AppIcon({ name: AppIconName.Folder, iconSize: 18, color: this.theme.primary })
+        AppIcon({ name: icon, iconSize: 18, color: this.theme.primary })
       }
       .width(36).height(36)
 
       Column({ space: 2 }) {
-        Text('版本文件夹')
+        Text(label)
           .fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary)
-        Text('浏览 / 导入 / 导出此版本的文件')
+        Text(hint)
           .fontSize(11).fontWeight(500).fontColor(this.theme.textHint)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
@@ -1259,18 +1566,23 @@ export struct VersionManagerSheet {
     .backgroundColor(this.theme.bgCard).borderRadius(14)
     .alignItems(VerticalAlign.Center)
     .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-    .onClick(() => { this.gotoFiles() })
+    .enabled(this.detailVersion.length > 0 && this.mcDir.length > 0)
+    .onClick(() => { if (exportGame) this.openGameExport_(); else this.gotoFiles() })
   }
 
+  /** store 折叠层只显示运行项；其他产品仍包含原来的隔离状态和文件校验行。 */
   @Builder
-  DetailConfigCard() {
+  DetailConfigCard(runtimeOnly: boolean = false) {
     Column() {
-      Text('·  启动配置')
+      if (!runtimeOnly) {
+      Text(this.canRunGame ? '·  启动配置' : '·  文件管理')
         .fontSize(11)
         .fontWeight(600)
         .fontColor(this.theme.textHint)
         .width('100%')
+      }
 
+      if (this.canRunGame) {
       Row() {
         Row({ space: 6 }) {
           AppIcon({ name: AppIconName.Memory, iconSize: 13, color: this.theme.textSecondary })
@@ -1347,10 +1659,12 @@ export struct VersionManagerSheet {
 
       Row().width('100%').height(1).backgroundColor(this.theme.divider)
 
+      }
+      if (!runtimeOnly) {
       Row() {
         Row({ space: 6 }) {
           AppIcon({
-            name: this.versionIsolation ? AppIconName.IsolateOn : AppIconName.IsolateOff,
+            name: (this.versionIsolation || isIsolatedModpackInstance(this.mcDir, this.detailVersion)) ? AppIconName.IsolateOn : AppIconName.IsolateOff,
             iconSize: 13,
             color: this.theme.textSecondary,
           })
@@ -1359,17 +1673,19 @@ export struct VersionManagerSheet {
         .layoutWeight(1)
         .alignItems(VerticalAlign.Center)
 
-        Text(this.versionIsolation ? '已开启' : '关闭')
+        Text(isIsolatedModpackInstance(this.mcDir, this.detailVersion) ? '整合包固定开启' : (this.versionIsolation ? '已开启' : '关闭'))
           .fontSize(12)
           .fontWeight(600)
-          .fontColor(this.versionIsolation ? this.theme.success : this.theme.textHint)
+          .fontColor((this.versionIsolation || isIsolatedModpackInstance(this.mcDir, this.detailVersion)) ? this.theme.success : this.theme.textHint)
       }
       .width('100%')
       .padding({ top: 12, bottom: 12 })
       .alignItems(VerticalAlign.Center)
 
       Row().width('100%').height(1).backgroundColor(this.theme.divider)
+      }
 
+      if (this.canRunGame) {
       // 自定义 JVM 参数（单版本）—— 点击标题行就地展开编辑区，伸长本卡片
       Column() {
         Row() {
@@ -1437,7 +1753,9 @@ export struct VersionManagerSheet {
 
       Row().width('100%').height(1).backgroundColor(this.theme.divider)
 
-      // 校验文件完整性（SHA1）—— 用户手动触发的全量哈希校验，开销大不进启动热路径
+      }
+      // 校验文件完整性（SHA1）—— store 已移到“更多管理”，其他产品保留原位置。
+      if (!runtimeOnly) {
       Row() {
         Row({ space: 6 }) {
           AppIcon({ name: AppIconName.CheckCircle, iconSize: 13, color: this.theme.textSecondary })
@@ -1457,6 +1775,7 @@ export struct VersionManagerSheet {
       .padding({ top: 12, bottom: 4 })
       .alignItems(VerticalAlign.Center)
       .onClick(() => { this.onVerifyVersionFiles(this.detailVersion) })
+      }
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
@@ -1514,9 +1833,8 @@ export struct VersionManagerSheet {
   /** 详情版本目录根（含版本隔离判断）。 */
   private verDir(): string {
     if (this.mcDir.length === 0) return ''
-    if (!this.versionIsolation) return this.mcDir
-    if (this.detailVersion.length === 0) return ''
-    return this.mcDir + '/versions/' + this.detailVersion
+    if (this.detailVersion.length === 0 && this.versionIsolation) return ''
+    return resolveInstanceGameDir(this.mcDir, this.detailVersion, this.versionIsolation)
   }
 
   /** 取 UIAbilityContext（picker 需要）。 */
@@ -1639,79 +1957,72 @@ export struct VersionManagerSheet {
   }
 
   private gotoDetail(ver: string): void {
+    if (this.pageMotion_.moving) return
+    if (this.currentStep === 'export') this.onRegisterExportDismiss(undefined)
+    this.mountStep_('detail')
     this.detailVersion = ver
+    this.storeRuntimeExpanded_ = false
+    this.storeManagementExpanded_ = false
     this.loadModpackSnapshot_(ver)
     this.resetDetailCounts()
     this.refreshDetailResStat(ver)
     this.loadVersionJvmArgsState(ver)
+    this.refreshDetailExportTask_()
     this.currentStep = 'detail'
     // 横向滑动：list → 左滑出，detail → 右滑入
-    this.getUIContext().animateTo({
-      duration: VersionManagerSheet.ANIM_DURATION_MS,
-      curve: Curve.FastOutSlowIn,
-    }, () => {
-      this.slidePos = 1
-    })
+    this.pageMotion_.move(this.getUIContext(), 1)
   }
 
   private backToList(): void {
+    if (this.pageMotion_.moving) return
+    if (this.currentStep === 'export') this.onRegisterExportDismiss(undefined)
+    this.mountStep_('list')
     this.currentStep = 'list'
-    this.getUIContext().animateTo({
-      duration: VersionManagerSheet.ANIM_DURATION_MS,
-      curve: Curve.FastOutSlowIn,
-    }, () => {
-      this.slidePos = 0
-    })
+    this.pageMotion_.move(this.getUIContext(), 0)
   }
 
   /** 详情 → 资源管理（同 sheet 第三步）。kind 决定展示哪种资源。 */
   private gotoResources(kind: ResourceKind): void {
+    if (this.pageMotion_.moving) return
     if (!this.detailVersion) return
+    this.mountStep_('resources')
     this.resourceKind = kind
     // 先置 currentStep（→ 内嵌 sheet active 翻 true → @Watch 触发扫描），再驱动滑动
     this.currentStep = 'resources'
-    this.getUIContext().animateTo({
-      duration: VersionManagerSheet.ANIM_DURATION_MS,
-      curve: Curve.FastOutSlowIn,
-    }, () => {
-      this.slidePos = 2
-    })
+    this.pageMotion_.move(this.getUIContext(), 2)
   }
 
   /** 资源管理 → 详情。回到详情时重扫资源数量（用户可能启用/禁用/删除过）。 */
   private backToDetail(): void {
+    if (this.pageMotion_.moving) return
+    // GameExportSheet 已完成返回确认；先解除宿主关闭保护，再销毁导出子层的页面订阅。
+    const fromExport: boolean = this.currentStep === 'export'
+    if (fromExport) this.onRegisterExportDismiss(undefined)
+    this.mountStep_('detail')
     this.currentStep = 'detail'
     this.refreshDetailResStat(this.detailVersion)
-    this.getUIContext().animateTo({
-      duration: VersionManagerSheet.ANIM_DURATION_MS,
-      curve: Curve.FastOutSlowIn,
-    }, () => {
-      this.slidePos = 1
+    this.refreshDetailExportTask_()
+    this.pageMotion_.move(this.getUIContext(), 1, (): void => {
+      if (fromExport) this.exportMounted_ = false
     })
   }
 
   /** 详情 → 存档管理（同 sheet 第四步，序号 3）。 */
   private gotoSaves(): void {
+    if (this.pageMotion_.moving) return
     if (!this.detailVersion) return
+    this.mountStep_('saves')
     this.currentStep = 'saves'
-    this.getUIContext().animateTo({
-      duration: VersionManagerSheet.ANIM_DURATION_MS,
-      curve: Curve.FastOutSlowIn,
-    }, () => {
-      this.slidePos = 3
-    })
+    this.pageMotion_.move(this.getUIContext(), 3)
   }
 
   /** 详情 → 版本文件夹（虚拟文件管理器，同 sheet 第五步，序号 4）。 */
   private gotoFiles(): void {
+    if (this.pageMotion_.moving) return
     if (!this.detailVersion) return
+    this.mountStep_('files')
     this.currentStep = 'files'
-    this.getUIContext().animateTo({
-      duration: VersionManagerSheet.ANIM_DURATION_MS,
-      curve: Curve.FastOutSlowIn,
-    }, () => {
-      this.slidePos = 4
-    })
+    this.pageMotion_.move(this.getUIContext(), 4)
   }
 
   private handleDetailDelete(): void {
@@ -2111,7 +2422,7 @@ export struct VersionManagerSheet {
       return
     }
     try {
-      let verDir = this.versionIsolation ? (this.mcDir + '/versions/' + ver) : this.mcDir
+      let verDir = resolveInstanceGameDir(this.mcDir, ver, this.versionIsolation)
       let modsTotal = countFilesWithExtensions(verDir + '/mods', ['.jar', '.jar.disabled'])
       let modsEnabled = countFilesWithExtensions(verDir + '/mods', ['.jar'])
       let shaders = countFilesWithExtensions(verDir + '/shaderpacks', ['.zip', '.zip.disabled'])
@@ -2203,4 +2514,79 @@ export struct VersionManagerSheet {
   private savesHint(): string {
     return this.savesCount > 0 ? this.savesCount + ' 个存档' : '点击导入'
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      Stack() {
+        // List step（序号 0）
+        Column() {
+          if (this.listMounted_) { this.ListStep() }
+        }
+        .width('100%').height('100%')
+        .translate({ x: this.pageMotion_.offset(0) })
+
+        // Detail step（序号 1）
+        Column() {
+          if (this.detailMounted_) {
+            if (this.storeManager) { this.StoreDetailStep() }
+            else { this.DetailStep() }
+          }
+        }
+        .width('100%').height('100%')
+        .translate({ x: this.pageMotion_.offset(1) })
+
+        // Resources step（序号 2）—— 内嵌 InstalledResourcesSheet（embedded 模式）
+        Column() {
+          if (this.resourcesMounted_) { this.ResourcesStep() }
+        }
+        .width('100%').height('100%')
+        .translate({ x: this.pageMotion_.offset(2) })
+        .visibility(this.exportMounted_ ? Visibility.Hidden : Visibility.Visible)
+
+        // Saves step（序号 3）—— 内嵌 SavesManagerSheet（embedded 模式）
+        Column() {
+          if (this.savesMounted_) { this.SavesStep() }
+        }
+        .width('100%').height('100%')
+        .translate({ x: this.pageMotion_.offset(3) })
+        .visibility(this.exportMounted_ ? Visibility.Hidden : Visibility.Visible)
+
+        // Files step（序号 4）—— 内嵌 VersionFileBrowser（虚拟文件管理器）
+        Column() {
+          if (this.filesMounted_) { this.FilesStep() }
+        }
+        .width('100%').height('100%')
+        .translate({ x: this.pageMotion_.offset(4) })
+        .visibility(this.exportMounted_ ? Visibility.Hidden : Visibility.Visible)
+
+        // 导出从详情右侧相邻槽位进入；返回结束前保留子页，原详情滚动状态不变。
+        if (this.exportMounted_) {
+          Column() {
+          GameExportSheet({
+            mcRoot: this.exportMcRoot_, versionId: this.exportVersionId_,
+            versionIsolation: this.exportVersionIsolation_, theme: this.theme, embeddedHeader: true,
+            onBack: () => { this.backToDetail() },
+            onClose: () => {
+              // 子层已完成草稿/任务关闭确认，再撤销宿主拦截，避免 bindSheet 二次询问。
+              this.onRegisterExportDismiss(undefined)
+              this.onClose()
+            },
+            onRegisterDismiss: (handler: ((back?: boolean) => void) | undefined): void => {
+              this.exportDismissHandler_ = handler
+              this.onRegisterExportDismiss(this.currentStep === 'export' ? handler : undefined)
+            },
+          })
+          }.width('100%').height('100%').translate({ x: this.pageMotion_.offset(2) })
+        }
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .clip(true)
+      .enabled(!this.pageMotion_.moving)
+      .onAreaChange((_, area) => {
+        // 用容器实际宽度做平移基准，适配横屏 / 折叠屏
+        this.pageMotion_.resize(area.width as number)
+      })
+      }
 }

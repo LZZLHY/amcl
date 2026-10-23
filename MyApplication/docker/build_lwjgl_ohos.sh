@@ -24,6 +24,8 @@ set -e
 #    liblwjgl_stb.so      — STB 图像/字体/音频
 #    liblwjgl_spng.so     — SPNG PNG 编解码（内嵌 miniz）
 #    liblwjgl_tinyfd.so   — TinyFileDialogs (stub)
+#    liblwjgl_nanovg.so   — NanoVG/NanoSVG（现代槽的真实 GL/GLES JNI）
+#    liblwjgl_opengles.so — OpenGL ES Java binding 的完整 JNI 胶水
 #    liblwjgl_vma.so      — Vulkan Memory Allocator JNI 绑定（MC 26.2 启动 eager-load；
 #                           C++ 用 OHOS libc++ __n1 头，见 Step 7）
 #
@@ -645,9 +647,24 @@ VMA_GEN=$LWJGL_ROOT/vma/src/generated/c       # org_lwjgl_util_vma_{Vma,LibVma}.
 VKINC=$LWJGL_ROOT/vulkan/src/main/c           # vulkan/vulkan.h（342，配套 VMA 1.4）
 mkdir -p $VMA_BUILD
 
+# 与本机SDK的VMA独立重建共用唯一补丁：保留API1.0/linear-block平台兼容，
+# 成功trace由下方固定的生产宏裁剪。只接受原始preimage或完整postimage，
+# 不在未知半应用状态上重复打补丁，也不因源版本变化静默退回未适配allocator。
+AMCL_VMA_PATCH=${AMCL_LWJGL_VMA_PATCH:-/prebuilt/lwjgl3/local-worktree.patch}
+if [ ! -f "$AMCL_VMA_PATCH" ]; then
+    echo "ERROR: canonical AMCL VMA patch is required: $AMCL_VMA_PATCH"
+    exit 1
+fi
+if git -C "$WORK_DIR/$LWJGL_SRC_DIR" apply --check "$AMCL_VMA_PATCH"; then
+    git -C "$WORK_DIR/$LWJGL_SRC_DIR" apply "$AMCL_VMA_PATCH"
+elif ! git -C "$WORK_DIR/$LWJGL_SRC_DIR" apply --reverse --check "$AMCL_VMA_PATCH"; then
+    echo "ERROR: VMA source does not match the canonical patch preimage or postimage"
+    exit 1
+fi
+
 # CFLAGS：复用 CFLAGS_COMMON 的 JNI/core include（含 -D__ANDROID_API__=24 跳 preadv stub），
 # 追加 VMA 头 + Vulkan 头路径。注意 CFLAGS_COMMON 是 C 用的，C++ 这里直接展开其 -I/-D。
-VMA_CXXFLAGS="-O3 -fPIC -DNDEBUG -DLWJGL_LINUX -DLWJGL_arm64 -D__ANDROID_API__=24 -std=c++17"
+VMA_CXXFLAGS="-O3 -fPIC -DNDEBUG -DLWJGL_LINUX -DLWJGL_arm64 -D__ANDROID_API__=24 -std=c++17 -DAMCL_VMA_DIAGNOSTICS=0"
 VMA_INCLUDES="-I$JNI_HEADERS -I$JNI_HEADERS_PLATFORM -I$CORE_MAIN -I$CORE_MAIN/linux -I$VMA_MAIN -I$VKINC"
 
 echo "  Compiling org_lwjgl_util_vma_Vma.cpp (VMA_IMPLEMENTATION, OHOS libc++ __n1)..."
@@ -678,6 +695,30 @@ echo "  ABI OK（纯 __n1）；导出 $VMA_JNI 个 Java_*_vma JNI 符号"
 echo "  NEEDED: $(ohos-readelf -d $BUILD_DIR/liblwjgl_vma.so 2>/dev/null | grep NEEDED | tr -s ' ' | paste -sd' ')"
 fi   # end vma module guard (3.2.x 无 vma 时跳过)
 
+# 现代槽的额外 Java 模块同样需要真实 JNI。NanoVG 通过上游能力表取址，
+# 不直接链接系统 GL/GLES；这样不会绕开 AMCL 冻结的图形 provider。
+# 兼容槽保持原锁定集合，不能因现代模块补全而暗中改变 _v322 制品。
+if [ "$FFI_BACKEND" = "libffi" ] && [ -z "$NATIVE_SUFFIX" ]; then
+    for module in nanovg opengles; do
+        extra_gen="$LWJGL_ROOT/$module/src/generated/c"
+        extra_main="$LWJGL_ROOT/$module/src/main/c"
+        if [ ! -d "$extra_gen" ]; then
+            echo "ERROR: modern Java module has no matching JNI source: $module"
+            exit 1
+        fi
+        extra_build="$BUILD_DIR/$module"
+        mkdir -p "$extra_build"
+        for source in "$extra_gen"/*.c; do
+            object="$extra_build/$(basename "${source%.c}").o"
+            $CC $CFLAGS_COMMON -I"$extra_main" -I"$LWJGL_ROOT/stb/src/main/c" \
+                -c "$source" -o "$object"
+        done
+        $CC $LDFLAGS_COMMON -Wl,-soname,"liblwjgl_$module.so" \
+            -o "$BUILD_DIR/liblwjgl_$module.so" "$extra_build"/*.o -lm
+        $STRIP --strip-all "$BUILD_DIR/liblwjgl_$module.so"
+    done
+fi
+
 # ============================================================
 # 输出
 # ============================================================
@@ -687,7 +728,7 @@ echo " Build complete! Output files:"
 echo "============================================"
 mkdir -p $OUTPUT_DIR
 # 只拷贝实际编出来的库（3.2.x 无 vma）；NATIVE_SUFFIX 非空时给文件名加后缀（多套共存）。
-for lib in liblwjgl.so liblwjgl_opengl.so liblwjgl_stb.so liblwjgl_spng.so liblwjgl_tinyfd.so liblwjgl_vma.so; do
+for lib in liblwjgl.so liblwjgl_opengl.so liblwjgl_stb.so liblwjgl_spng.so liblwjgl_tinyfd.so liblwjgl_vma.so liblwjgl_nanovg.so liblwjgl_opengles.so; do
     if [ ! -f "$BUILD_DIR/$lib" ]; then
         echo "  (skip $lib — not built for LWJGL $LWJGL_TAG)"
         continue

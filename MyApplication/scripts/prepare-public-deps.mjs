@@ -49,9 +49,15 @@ function assertPin(relative, pin, allowPatched = false) {
 }
 
 const modules = [['mobileglues', 'prebuilt/mobileglues/mg_src'],
-  ['lwjgl-natives', 'prebuilt/lwjgl3/lwjgl3_src'], ['mobilegl', 'prebuilt/mobilegl/src']];
+  ['lwjgl-natives', 'prebuilt/lwjgl3/lwjgl3_src'], ['mobilegl', 'prebuilt/mobilegl/src'],
+  ['hdc', 'prebuilt/hdc/muka-rust-hdc']];
+// HDC沿源仓gitlink锁定，不再制造另一份手填版本；公开快照记录其实际源提交。
+// 原有三个依赖继续与deps.lock交叉检查，四项最终都必须匹配公开索引。
+const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'SOURCE_SNAPSHOT.json'), 'utf8'));
 for (const [name, relative] of modules) {
-  const pin = lock[name]?.commit;
+  const pin = name === 'hdc'
+    ? snapshot.dependencyWorktrees?.find(item => item.path === relative)?.baseCommit
+    : lock[name]?.commit;
   if (!/^[a-f0-9]{40}$/.test(pin ?? '')) throw new Error(`Invalid ${name}.commit`);
   // .gitmodules 必须位于公开仓库根目录，且索引里必须存在 160000 gitlink。
   // 仅复制 MyApplication/.gitmodules 无法让 Git 恢复嵌套工程的依赖。

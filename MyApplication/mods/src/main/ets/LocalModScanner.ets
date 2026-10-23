@@ -23,21 +23,22 @@
  *     仍可下载，最坏情况是依赖列表里多出一项，不会损坏数据
  *
  * 设计要点：
- *   - 纯异步，不阻塞 UI；调用方决定缓存生命周期（见 ModBrowsePage 的使用模式）
+ *   - 枚举、SHA-1 和指纹在受控 TaskPool 执行；来源链跨扫描共享并发预算。
+ *   - 调用方可先枚举完整清单供显示/搜索，再传回扫描补全；取消后不写索引。
  *   - 对单个文件 sha1 反查失败做 individual swallow + hilog warn —— 不让一个坏 jar
  *     阻塞整个扫描；Phase 3 完整版会引入持久化缓存以避免重复 hash
  *   - 仅 ResourceKind.MOD 才扫描 mods/，资源包 / 光影目录的查询保留接口但当前只
  *     被 VersionManagerSheet 的"资源数量"统计用，依赖去重只对 MOD 有意义
  */
 
-import { fileIo as fs } from '@kit.CoreFileKit';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 
 import { LocalMod, ModSource, ModIntegrity, ResourceKind, resourceKindToInstallDir } from './ModTypes';
 import { ModrinthRepository } from './ModrinthRepository';
 import { CurseForgeRepository } from './CurseForgeRepository';
-import { computeFileSha1 } from 'feature_core';
+import { computeLocalModSha1, enumerateLocalResourceFiles } from './LocalModFileTasks';
+import { LocalModScanControl, runModSourceWork } from './ModScanWork';
 import { computeCurseForgeFingerprint } from './CurseForgeFingerprint';
 import {
   InstalledModIndex, InstalledModEntry,
@@ -68,6 +69,10 @@ export interface ScanRequest {
    *     消歧（换版本 vs 真损坏）。
    */
   fullVerify?: boolean;
+  /** 本轮取消范围；页面退出、切版本或刷新时取消，下一轮创建新实例。 */
+  control?: LocalModScanControl;
+  /** 已由枚举取得的完整轻量清单。扫描复制记录，不原地修改 UI 的基础数据。 */
+  localMods?: LocalMod[];
 }
 
 /**
@@ -99,6 +104,19 @@ export async function scanInstalledMods(
   return scanner.scan(req);
 }
 
+/** 扫描标准安装目录的完整文件清单；来源识别预算不限制此函数的输出数量。 */
+export async function enumerateInstalledResources(req: ScanRequest): Promise<LocalMod[]> {
+  const kind = req.kind ?? ResourceKind.MOD;
+  const directory = resourceKindToInstallDir(kind, req.mcDir, req.versionId, req.versionIsolation);
+  const extensions = isResourcePackOrShader(kind) ? ['.zip'] : ['.jar', '.jar.disabled'];
+  return enumerateLocalResourceFiles(directory, extensions, req.control);
+}
+
+/** 宿主阶段取消检查，尤其在网络/TaskPool await 后以及索引写入前使用。 */
+function checkScanActive(control: LocalModScanControl): void {
+  if (control.isCancelled()) throw new Error('LocalModScanCancelled');
+}
+
 /**
  * Phase 3 轻量级 LocalModScanner。无状态，每次扫描重新读盘 + 反查。
  * 之所以做成 class 而非纯函数：未来加内存缓存 / 反查结果持久化（mods.cache.json）
@@ -127,6 +145,8 @@ export class LocalModScanner {
    *     (baseline=当前 sha1)=LINKED；全落空=UNKNOWN（**绝不判损坏**）。
    */
   async scan(req: ScanRequest): Promise<ScanResult> {
+    const control = req.control ?? new LocalModScanControl();
+    checkScanActive(control);
     let kind = req.kind !== undefined ? req.kind : ResourceKind.MOD;
     let dir: string;
     try {
@@ -136,39 +156,14 @@ export class LocalModScanner {
       return { mods: [], lookedUpCount: 0, hitCount: 0 };
     }
 
-    let entries: string[] = [];
-    try {
-      entries = fs.listFileSync(dir);
-    } catch (e) {
-      AppLogger.debug(TAG, `scan dir missing: ${dir}`, LOG_DOMAIN_DOWNLOAD);
-      return { mods: [], lookedUpCount: 0, hitCount: 0 };
-    }
-
-    let validExts = isResourcePackOrShader(kind) ? ['.zip'] : ['.jar', '.jar.disabled'];
-    let files: string[] = [];
-    for (let name of entries) {
-      let lower = name.toLowerCase();
-      for (let ext of validExts) {
-        if (lower.endsWith(ext)) { files.push(name); break; }
-      }
-    }
-
-    let mods: LocalMod[] = [];
-    for (let name of files) {
-      let path = dir + '/' + name;
-      let sizeBytes = 0;
-      try {
-        sizeBytes = fs.statSync(path).size;
-      } catch (e) {
-        AppLogger.warn(TAG, `stat failed: ${path}`, null, LOG_DOMAIN_DOWNLOAD);
-        continue;
-      }
-      mods.push({
-        filePath: path, filename: name,
-        enabled: !name.toLowerCase().endsWith('.disabled'),
-        sizeBytes, sha1: '',
-      });
-    }
+    const initial = req.localMods ?? await enumerateInstalledResources({ mcDir: req.mcDir,
+      versionId: req.versionId, versionIsolation: req.versionIsolation, kind, control });
+    checkScanActive(control);
+    // 只复制文件级字段，避免富化结果和下一轮共用对象，导致旧代次污染新列表。
+    const mods: LocalMod[] = initial.map((item: LocalMod): LocalMod => ({
+      filePath: item.filePath, filename: item.filename, enabled: item.enabled,
+      sizeBytes: item.sizeBytes, sha1: '',
+    }));
 
     // 完整性/链接仅对 MOD 类有意义（资源包/光影不参与）
     if (kind !== ResourceKind.MOD || mods.length === 0) {
@@ -183,7 +178,9 @@ export class LocalModScanner {
     let lookedUpCount = 0;
     let hitCount = 0;
 
-    let tasks = mods.map(async (m: LocalMod): Promise<void> => {
+    // 单项富化只修改本轮副本；清单写入在全部已安排工作结束并确认未取消后执行。
+    const enrich = async (m: LocalMod): Promise<void> => {
+      checkScanActive(control);
       let baseName = InstalledModIndex.baseNameOf(m.filename);
       let entry = idx.get(baseName);
 
@@ -203,15 +200,19 @@ export class LocalModScanner {
         }
         // 全量：重算 sha1 与基准比对
         let sha = '';
-        try { sha = await computeFileSha1(m.filePath); } catch (e) { sha = ''; }
+        try { sha = await computeLocalModSha1(m.filePath, control); } catch (e) { sha = ''; }
+        checkScanActive(control);
         m.sha1 = sha;
+        // 读取失败不等于有证据证明损坏；保留原关联并提示重试完整性检查。
+        if (sha.length === 0) { m.integrity = ModIntegrity.RECHECK; return; }
         if (sha.length > 0 && sha === entry.expectedSha1) {
           m.integrity = ModIntegrity.VERIFIED;
           return;
         }
         // 不符 → 反查当前哈希消歧：命中源=换了版本(重链)，全落空=损坏
         lookedUpCount++;
-        let relinked = await this.reverseLink_(m, sha);
+        let relinked = await this.reverseLink_(m, sha, control);
+        checkScanActive(control);
         if (relinked !== null) {
           // 用户换了版本 / 合法变体：更新基准
           entry.source = relinked.source;
@@ -241,11 +242,13 @@ export class LocalModScanner {
       unmanagedBudget--;
       lookedUpCount++;
       let sha = '';
-      try { sha = await computeFileSha1(m.filePath); } catch (e) { sha = ''; }
+      try { sha = await computeLocalModSha1(m.filePath, control); } catch (e) { sha = ''; }
+      checkScanActive(control);
       m.sha1 = sha;
       if (sha.length === 0) { m.integrity = ModIntegrity.UNKNOWN; return; }
 
-      let link = await this.reverseLink_(m, sha);
+      let link = await this.reverseLink_(m, sha, control);
+      checkScanActive(control);
       if (link === null) {
         m.integrity = ModIntegrity.UNKNOWN;
         return;
@@ -265,9 +268,19 @@ export class LocalModScanner {
       if (link.cfFingerprint > 0) newEntry.cfFingerprint = link.cfFingerprint;
       idx.upsert(newEntry);
       dirty = true;
-    });
-    await Promise.all(tasks);
+    };
+    // 两条本轮游标消费器加全局来源闸门：不再一次创建 N 个文件/网络 Promise。
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (nextIndex < mods.length) {
+        checkScanActive(control);
+        const m = mods[nextIndex++];
+        await runModSourceWork(async (): Promise<void> => { await enrich(m); }, control);
+      }
+    };
+    await Promise.all([worker(), worker()]);
 
+    checkScanActive(control);
     if (dirty) writeInstalledModIndex(dir, idx);
 
     AppLogger.info(TAG,
@@ -280,11 +293,13 @@ export class LocalModScanner {
    * 反查文件对应的源版本：先 Modrinth sha1，miss 则 CF Murmur2 指纹。
    * 命中返回 {source, projectId, versionId, cfFingerprint, displayName}；全落空返回 null。
    */
-  private async reverseLink_(m: LocalMod, sha1: string): Promise<ReverseLink | null> {
+  private async reverseLink_(m: LocalMod, sha1: string, control: LocalModScanControl): Promise<ReverseLink | null> {
+    checkScanActive(control);
     // 1) Modrinth sha1
     if (this.modrinth_ !== null && sha1.length > 0) {
       try {
         let ver = await this.modrinth_.lookupVersionBySha1(sha1);
+        checkScanActive(control);
         if (ver !== null && ver.projectId.length > 0) {
           return { source: ModSource.MODRINTH, projectId: ver.projectId, versionId: ver.id, cfFingerprint: 0, displayName: ver.name };
         }
@@ -292,12 +307,15 @@ export class LocalModScanner {
         AppLogger.warn(TAG, `modrinth lookup failed for ${m.filename}`, e as Object, LOG_DOMAIN_DOWNLOAD);
       }
     }
-    // 2) CurseForge Murmur2 指纹
+    checkScanActive(control);
+    // 2) CurseForge Murmur2 指纹；已发出的请求允许结束，取消后不启动下一跳。
     if (this.curseforge_ !== null) {
       try {
-        let fp = await computeCurseForgeFingerprint(m.filePath);
+        let fp = await computeCurseForgeFingerprint(m.filePath, control);
+        checkScanActive(control);
         if (fp > 0) {
           let ver = await this.curseforge_.lookupByFingerprint(fp);
+          checkScanActive(control);
           if (ver !== null && ver.projectId.length > 0) {
             return { source: ModSource.CURSEFORGE, projectId: ver.projectId, versionId: ver.id, cfFingerprint: fp, displayName: ver.name };
           }
@@ -306,6 +324,7 @@ export class LocalModScanner {
         AppLogger.warn(TAG, `curseforge fingerprint lookup failed for ${m.filename}`, e as Object, LOG_DOMAIN_DOWNLOAD);
       }
     }
+    checkScanActive(control);
     return null;
   }
 }

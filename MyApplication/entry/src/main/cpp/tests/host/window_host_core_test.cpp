@@ -31,10 +31,8 @@ struct NativeDriver {
         --self.references[window];
         return 0;
     }
-    static void publish(const AmclWindowHostSnapshot&, void* context) {
-        static_cast<NativeDriver*>(context)->events.push_back("snapshot-env");
-    }
-    NativeReferenceDriver api() { return {reference, unreference, this, publish}; }
+    // 驱动只剩引用/解引用两项：快照不再镜像到环境变量（I27-05），事件序列里也不再有 snapshot-env。
+    NativeReferenceDriver api() { return {reference, unreference, this}; }
 };
 void lifetimeAndFailures() {
     NativeDriver driver;
@@ -133,8 +131,8 @@ void inputTransactionOrder() {
     check(consumer.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout, "new input cannot pass the unfinished publisher callback");
     callbackRelease.set_value();
     check(publisher.get() == 2 && consumer.get() == 1 && generation == 2 && width == 900 && height == 700, "first admitted callback sees completed new epoch");
-    check(secondDriver.events == std::vector<std::string>({"reference", "snapshot-env", "input-commit", "unreference"}),
-        "publication preserves reference, snapshot, input callback, old unreference order");
+    check(secondDriver.events == std::vector<std::string>({"reference", "input-commit", "unreference"}),
+        "publication preserves reference, input callback, old unreference order");
     check(second.clear(b, 2) == 3 && secondDriver.references[a] == 0 && secondDriver.references[b] == 0, "callback transaction references cleaned");
 }
 }

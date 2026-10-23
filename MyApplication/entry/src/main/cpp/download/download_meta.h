@@ -2,7 +2,7 @@
  * download/download_meta.h — 分段断点续传 meta 文件读写
  *
  * 每个正在下载的文件旁边都有一个 `<local_path>.download-meta` 文件，记录
- * 当前下载状态。进程重启后，Engine 先扫描这些 meta 文件来恢复任务。
+ * 当前下载状态。恢复只能由上层原业务意图重新创建任务后读取，不扫描并自动启动下载。
  *
  * Schema（JSON v1）：见 docs/guides/download-system-redesign-v3.md §4
  * {
@@ -66,10 +66,22 @@ struct DownloadMeta {
     bool isEmpty() const { return url_sources.empty() && segments.empty(); }
 };
 
+/** 当前进程实际读取/写出的 meta inode 收据；只用于精确清理，不改变磁盘 v1 格式。 */
+struct MetaFileIdentity {
+    uint64_t device = 0;
+    uint64_t inode = 0;
+};
+
 /**
  * 读 meta 文件。文件不存在 / JSON 损坏 / 版本不匹配 → nullopt。
  */
 std::optional<DownloadMeta> readMetaFile(const std::string& meta_path);
+/**
+ * 可信父目录版本：parent_fd 由 NetFile 从固定 root 逐级 no-follow 打开；meta_leaf
+ * 只能是单个叶子名。本函数借用该 fd，仍使用同一有界 v1 codec，不重新解析绝对父路径。
+ */
+std::optional<DownloadMeta> readMetaFileAt(int parent_fd, const std::string& meta_leaf,
+                                         MetaFileIdentity* identity = nullptr);
 
 /**
  * 原子写 meta 到磁盘：用 O_EXCL 创建唯一临时文件，完整写入并 fsync/close，
@@ -77,6 +89,9 @@ std::optional<DownloadMeta> readMetaFile(const std::string& meta_path);
  * 返回 true 成功。失败（磁盘满、权限问题等）返回 false 并在 hilog 里打 ERROR。
  */
 bool writeMetaFile(const std::string& meta_path, const DownloadMeta& meta);
+/** 与 readMetaFileAt 相同的父目录契约；tmp、renameat 和目录 fsync 全在同一 fd 域。 */
+bool writeMetaFileAt(int parent_fd, const std::string& meta_leaf, const DownloadMeta& meta,
+                     MetaFileIdentity* identity = nullptr);
 
 /**
  * 生成 ISO 8601 UTC 时间戳字符串（例如 "2026-04-19T21:00:00Z"）。

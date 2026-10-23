@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 
 namespace {
 
@@ -177,6 +178,25 @@ int main() {
         require(!MappingActive(), "unpackable dimensions deactivate mapping");
         require(nearlyEqual(MapX(321.0), 321.0),
                 "deactivated mapping passes through again");
+    }
+
+    // 取消后的consumer ACK来自游戏window px；两轴一次快照逆变换必须保持精确尺寸比例。
+    {
+        double x=0,y=0;
+        PublishSnapshot(1001,801,500,400);
+        require(amcl::renderscale::UnmapWindowPoint(125,100,&x,&y)&&nearlyEqual(x,250.25)&&nearlyEqual(y,200.25),
+                "inverse pair uses rounded actual dimensions");
+        require(nearlyEqual(MapX(x),125)&&nearlyEqual(MapY(y),100),"inverse pair round trip");
+        double dx=0,dy=0,mx=0,my=0;
+        require(amcl::renderscale::MapPointerDelta(1,-2,1000,800,&dx,&dy,&mx,&my)&&
+                    nearlyEqual(dx,500.0/1001)&&nearlyEqual(dy,-800.0/801)&&
+                    nearlyEqual(mx,500000.0/1001)&&nearlyEqual(my,320000.0/801),
+                "relative delta and viewport bounds share exact packed geometry");
+        const double oldX=x,oldY=y;
+        require(!amcl::renderscale::UnmapWindowPoint(std::numeric_limits<double>::quiet_NaN(),100,&x,&y)&&x==oldX&&y==oldY,
+                "invalid inverse leaves both outputs unchanged");
+        require(!amcl::renderscale::UnmapWindowPoint(1,2,nullptr,&y),"inverse rejects missing output");
+        ResetSnapshot();require(amcl::renderscale::UnmapWindowPoint(12,34,&x,&y)&&x==12&&y==34,"identity inverse pair");
     }
 
     // ── 5. launcher 的 "%.4f" env 规范化 round-trip ───────────────────────

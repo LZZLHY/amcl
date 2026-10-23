@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "purpose": "薄验收器结构反例的真实共享场景阳性夹具；Mesa宿主，不是MG或OHOS设备资格",
+  "capturedAt": "2026-10-08T01:37:22+08:00",
+  "origin": ".workspace/run/cf-full/pixels-reviewed/reference-1/evidence.jsonl",
+  "originIdentity": ".workspace/run/cf-full/pixels-reviewed/identity.json",
+  "sha256": "977c49abb0659d6a37573440cb38bf25f095f32b7e2fdfde470bc97666b610f2",
+  "oracle": "生产共享深度场景在Mesa llvmpipe上产生的完整原始JSONL；未改写查询/像素正文"
+}

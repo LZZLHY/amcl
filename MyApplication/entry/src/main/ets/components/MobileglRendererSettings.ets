@@ -4,7 +4,7 @@ import { PreferenceManager } from 'feature_system'
 import { GraphicsCandidate, GraphicsProfileInput, listGraphicsProfileAvailability } from 'launch'
 import { prepareGraphicsProfileInput } from '../runtime/GraphicsCapabilityAdapter'
 
-/** A peer renderer row. Kept UI-local so settings can render while a probe is pending. */
+/** 设置页的平级后端行；偏好选择与探针可用性分别显示，等待期间不制造设备支持结论。 */
 export interface PeerBackendRow {
   id: string
   name: string
@@ -24,40 +24,78 @@ export struct MobileglRendererSettings {
   @State private peerRows: PeerBackendRow[] = []
   @State private availabilityMessage: string = '正在读取设备与游戏能力…'
   private refreshGeneration: number = 0
+  private availabilityActive: boolean = false
+  private pendingAvailabilityKey: string = ''
+  private pendingAvailability: Promise<GraphicsProfileInput> | undefined = undefined
+  private lastInputKey: string = ''
   private lastInput: GraphicsProfileInput | undefined = undefined
 
+  /** appear与可见性回调可能相邻触发；同事实键共享在途查询，不向native重复争抢忙门。 */
   aboutToAppear(): void {
+    this.availabilityActive = true
     this.refreshAvailability()
   }
 
+  /** 退出后撤销所有等待者的发布资格；进行中的只读查询可完成，但不得再写组件状态。 */
   aboutToDisappear(): void {
+    this.availabilityActive = false
     this.refreshGeneration++
   }
 
+  /** Watch/可见性共用此入口；组件出现前或离开后的回调不再发起能力查询。 */
   private refreshAvailability(): void {
     this.loadAvailability()
   }
 
+  /**
+   * 按安装包、实例和偏好合并在途prepare，完成后不缓存能力。每位等待者仍有自己的
+   * generation，只有活动组件的最后一次请求能够发布。切实例时立即清除旧行，防止
+   * 新事实尚未返回时按旧实例能力选后端；重新进入组件可等待同键任务，但不能复活旧等待者。
+   */
   private async loadAvailability(): Promise<void> {
+    if (!this.availabilityActive) return
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined
     if (context === undefined) return
     const generation: number = ++this.refreshGeneration
+    let pending: Promise<GraphicsProfileInput> | undefined = undefined
     try {
       const preferences: PreferenceManager = new PreferenceManager(context)
-      const input: GraphicsProfileInput = await prepareGraphicsProfileInput(context,
-        this.mcDir, this.mcVersion, preferences.graphicsProfile, true, preferences.graphicsProfileExplicit)
-      if (generation !== this.refreshGeneration) return
+      const mcDir: string = this.mcDir
+      const mcVersion: string = this.mcVersion
+      const key: string = JSON.stringify([context.bundleCodeDir, mcDir, mcVersion,
+        preferences.graphicsProfile, String(preferences.graphicsProfileExplicit)])
+      if (key !== this.lastInputKey) {
+        this.lastInput = undefined
+        this.peerRows = []
+        this.availabilityMessage = '正在读取设备与游戏能力…'
+      }
+      pending = this.pendingAvailabilityKey === key ? this.pendingAvailability : undefined
+      if (pending === undefined) {
+        pending = prepareGraphicsProfileInput(context, mcDir, mcVersion,
+          preferences.graphicsProfile, true, preferences.graphicsProfileExplicit)
+        this.pendingAvailabilityKey = key
+        this.pendingAvailability = pending
+      }
+      const input: GraphicsProfileInput = await pending
+      if (!this.availabilityActive || generation !== this.refreshGeneration) return
       this.lastInput = input
+      this.lastInputKey = key
       this.availabilityMessage = input.realMcVersion.length > 0
-        ? '当前版本：' + this.mcVersion + '；保存的偏好将在下次启动复核窗口与呈现能力。'
+        ? '当前版本：' + mcVersion + '；保存的偏好将在下次启动复核窗口与呈现能力。'
         : '请选择已安装的游戏版本，以核对窗口与图形 API 要求。'
       this.refreshPeerRows()
     } catch (error) {
-      if (generation !== this.refreshGeneration) return
+      if (!this.availabilityActive || generation !== this.refreshGeneration) return
       this.lastInput = undefined
       this.peerRows = []
       this.availabilityMessage = '能力读取失败，请重新打开设置重试。'
       AppLogger.warn('RendererSettings', 'graphics availability failed', error)
+    } finally {
+      // 旧实例完成时不能清掉新实例已经登记的在途任务。
+      if (pending !== undefined && this.pendingAvailability === pending) {
+        this.pendingAvailability = undefined
+        this.pendingAvailabilityKey = ''
+      }
     }
   }
 
@@ -83,6 +121,14 @@ export struct MobileglRendererSettings {
 
   private availabilityReason(candidate: GraphicsCandidate): string {
     if (candidate.id === 'gl4es') return '兼容旧版游戏，由版本与 LWJGL 槽位自动选择。'
+    // 有界重试仍遇到忙门时说明尚未完成检查，提示重新观察而非声称系统库缺失。
+    if (candidate.id === 'nativegl' && this.lastInput !== undefined) {
+      for (const result of this.lastInput.capabilityResults ?? []) {
+        if (result.evidenceProfileId === 'nativegl' && result.reasonCode === 'native-gl-probe-busy') {
+          return '系统 OpenGL 检查暂时忙碌，请稍后重新打开设置。'
+        }
+      }
+    }
     if (candidate.admitted) return candidate.id === 'nativegl'
       ? '系统 OpenGL 入口可用；启动时复核 context 和窗口，底层实现待观测。'
       : '运行库与设备预检通过；启动时复核当前窗口和呈现。'

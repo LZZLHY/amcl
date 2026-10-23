@@ -36,13 +36,7 @@ echo ""
 echo "[2/7] Cloning OpenJDK 17u..."
 cd $WORK_DIR
 
-if [ ! -d "jdk17u" ]; then
-    git clone --depth 1 https://github.com/openjdk/jdk17u.git jdk17u
-    echo "Clone complete."
-else
-    echo "Source already exists, skipping clone."
-fi
-
+python3 /build/scripts/prepare_jdk_source.py 17
 cd jdk17u
 
 # --- Step 3: 安装 stub 头文件 ---
@@ -81,7 +75,6 @@ echo ""
 echo "[4/7] Applying source patches..."
 
 # 修复 WSL 检测 (Docker Desktop 运行在 WSL2 内核上会被误判)
-sed -i 's/uname -r | grep -i microsoft/false/' make/autoconf/build-aux/config.guess 2>/dev/null || true
 
 # Patch / shim 来源（2026-05-15 P6.5: 改读 mount 进来的 prebuilt/jdk/17/）
 #   /jdk-spec/patches/  ← prebuilt/jdk/17/patches/  (4 个 series patch)
@@ -111,7 +104,7 @@ echo "  shims:   $SHIMS_DIR"
 echo "  stubs:   $STUBS_SRC_DIR"
 
 # 使用统一补丁系统应用所有源码补丁
-bash /build/apply_patches.sh --patch-dir "$PATCH_DIR" --target /build/jdk17u
+python3 /build/scripts/apply_jdk_patches.py --patch-dir "$PATCH_DIR" --target /build/jdk17u
 
 # --- Step 5: Configure ---
 echo ""
@@ -134,8 +127,10 @@ export BUILD_CXX=/usr/bin/clang++-15
 LIBCXX_INC=/usr/lib/llvm-15/include/c++/v1
 
 COMMON_CFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC -I/build/stub-headers -isystem $LIBCXX_INC"
-COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC -I/build/stub-headers -stdlib=libc++ -nostdlib++"
+COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC -I/build/stub-headers -isystem $LIBCXX_INC -stdlib=libc++ -nostdlib++"
 
+# 固定上游源码时间，避免构建时间成为未登记输入。
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 bash configure \
     --openjdk-target=aarch64-unknown-linux-musl \
     --with-jvm-variants=server \
@@ -182,9 +177,9 @@ if [ ${PIPESTATUS[0]} -ne 0 ]; then
 fi
 
 # --- 输出产物 ---
-IMAGE_DIR=$(find build -path "*/images/jdk" -type d 2>/dev/null | head -1)
+IMAGE_DIR=/build/jdk17u/build/linux-aarch64-server-release/images/jdk
 
-if [ -z "$IMAGE_DIR" ]; then
+if [ ! -f "$IMAGE_DIR/release" ] || [ ! -f "$IMAGE_DIR/lib/modules" ]; then
     echo "ERROR: Build output not found"
     exit 1
 fi
@@ -192,7 +187,7 @@ fi
 echo ""
 echo "============================================"
 echo " BUILD SUCCESSFUL!"
-echo " JDK:     $WORK_DIR/jdk17u/$IMAGE_DIR"
+echo " JDK:     $IMAGE_DIR"
 echo " Version: $(cat $IMAGE_DIR/release | grep JAVA_VERSION= | head -1)"
 echo "============================================"
 du -sh $IMAGE_DIR
@@ -206,14 +201,7 @@ echo ""
 echo "NEEDED libraries (libjvm.so):"
 readelf -d $(find $IMAGE_DIR -name "libjvm.so" | head -1) | grep NEEDED
 
-# 复制到输出目录
-if [ -d /output ]; then
-    mkdir -p /output
-    cp -r $IMAGE_DIR/* /output/
-    echo ""
-    echo "Output copied to /output/"
-    du -sh /output/
-fi
+# 最终运行包由统一入口生成；不再额外复制整棵开发 image 到输出目录。
 
 # --- Post-build Step 1: 创建 libcxxabi_shim.so (供 rebuild_libjli 链接) ---
 echo ""
@@ -232,14 +220,14 @@ echo ""
 echo "[Post-2] Rebuilding libjli.so with exit interception patches..."
 bash /build/scripts/rebuild_libjli.sh
 
-# --- Post-build Step 3: 分离打包 (libs + data) ---
+# --- Post-build Step 3: 验证并打包完整运行时 ---
 echo ""
-echo "[Post-3] Packing JDK split (libs + data)..."
-bash /build/scripts/pack_jdk_split.sh
+echo "[Post-3] Packing validated JDK runtime..."
+JDK_VERSION=17 bash /build/scripts/pack_jdk_full.sh
 
 echo ""
 echo "============================================"
 echo " FULL BUILD PIPELINE COMPLETE!"
 echo " .so files: /output/jdk-libs/"
-echo " Data zip:  /output/jdk-data.zip"
+echo " Runtime zip: /output/jdk17-ohos-runtime-audio-rc2.zip"
 echo "============================================"

@@ -102,10 +102,13 @@ console.log('PASS tablet preference: default true, strict boolean, awaited persi
 
 // 执行生产首页部署方法，不能把活跃/未知游戏锁当成空闲后覆盖JAR。
 const indexSource = fs.readFileSync(new URL('../entry/src/main/ets/pages/Index.ets', import.meta.url), 'utf8');
-const start = indexSource.indexOf('  private deployRuntimeIfIdle_(): void {');
-const end = indexSource.indexOf('\n  /** 真正执行切换。', start);
-assert.ok(start >= 0 && end > start);
-const compiled = compiler.transpileModule('class Probe {\n' + indexSource.slice(start, end)
+// 部署方法新增显式 startup 参数与 Promise 返回值；以SDK AST取得完整生产方法，
+// 不能继续依赖旧同步签名字符串，也不能在测试中重新实现空闲准入条件。
+const indexAst = compiler.createSourceFile('Index.ets', indexSource, compiler.ScriptTarget.Latest, true);
+const indexComponent = indexAst.statements.find(node => node.name?.getText(indexAst) === 'Index');
+const deploymentMethod = indexComponent?.members?.find(member => member.name?.getText(indexAst) === 'deployRuntimeIfIdle_');
+assert.ok(deploymentMethod, '必须提取真实部署准入方法');
+const compiled = compiler.transpileModule('class Probe {\n' + deploymentMethod.getText(indexAst)
   + '\n}\nmodule.exports = Probe;', { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
 for (const state of [0, 1, -1, -2, -3, 'throw']) {
   let deployments = 0;
@@ -116,7 +119,8 @@ for (const state of [0, 1, -1, -2, -3, 'throw']) {
   const subject = new module.exports();
   subject.context = { filesDir: '/sandbox' };
   subject.mcRoot = () => '/minecraft';
-  subject.deployRuntimeIfIdle_();
+  // 不传 startup 保留普通首页/存储切换的同步部署路线；等待返回也核验异步签名。
+  await subject.deployRuntimeIfIdle_();
   assert.equal(deployments, state === 0 ? 1 : 0);
 }
 console.log('PASS production Index deployment guard');

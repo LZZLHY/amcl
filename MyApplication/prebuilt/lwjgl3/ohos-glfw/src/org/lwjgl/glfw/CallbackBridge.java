@@ -87,14 +87,18 @@ public class CallbackBridge {
     public static void sendKeycode(int keycode, char keychar, int scancode, int modifiers, boolean isDown) {
         if (keycode != 0) nativeSendKey(keycode, scancode, isDown ? 1 : 0, modifiers);
         if (isDown && keychar != '\u0000') {
-            nativeSendCharMods(keychar, modifiers);
-            nativeSendChar(keychar);
+            sendChar(keychar, modifiers);
         }
     }
 
+    /**
+     * 一次兼容字符命令只提交一条带修饰符的记录。消费端已经为该记录提供“mods回调
+     * 优先、没有mods回调时plain回调”的出口，不能再补一条plain记录造成同字双发。
+     * native返回值没有实际游戏交付证明，本入口不据false重试另一条有副作用路线。
+     * 参数仍是原公开ABI的单个UTF-16单位；此修复不宣称将代理对重组为Unicode scalar。
+     */
     public static void sendChar(char keychar, int modifiers) {
         nativeSendCharMods(keychar, modifiers);
-        nativeSendChar(keychar);
     }
 
     public static void sendKeyPress(int keyCode, int modifiers, boolean status) {

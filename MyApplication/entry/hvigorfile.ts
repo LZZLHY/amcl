@@ -43,6 +43,18 @@ function diagnosticProfilePlugin() {
         const nativeGl = process.env.AMCL_DESKTOP_NATIVE_GL_VALIDATE === '1';
         if (nativeGl && TARGET !== 'desktop') throw new Error('Native GL validation requires desktop product');
         native.arguments += ' -DAMCL_DESKTOP_NATIVE_GL_VALIDATE=' + (nativeGl ? 'ON' : 'OFF');
+        // 自更新按产品渠道选择，不能从debug/release推断；store不编译或链接HDC核心。
+        const sideload = TARGET !== 'store';
+        native.arguments += ' -DAMCL_ENABLE_SIDELOAD_UPDATE=' + (sideload ? 'ON' : 'OFF');
+        if (sideload) {
+          const output = execFileSync(process.execPath, [resolve(projectRoot, 'scripts/build-hdc-core.mjs')],
+            { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
+          const archive = output.split(/\r?\n/).pop();
+          if (!archive) throw new Error('HDC archive path unavailable');
+          // Hvigor会把arguments中的引号原样带入CMake缓存；路径通过子进程环境传递，
+          // 既避免把引号当成文件名，也支持用户工作区路径含空格的情况。
+          process.env.AMCL_HDC_CORE_ARCHIVE = archive.replace(/\\/g, '/');
+        }
         // Every product carries the same graphics providers. Only retired
         // in-app Mesa/Zink assets are excluded from the complete artifact set.
         {
@@ -208,6 +220,9 @@ function buildAmclLauncherPlugin() {
             stdio: 'inherit',
             cwd: projectRoot,
           });
+          // 签名入口与源码一起在资源快照前编译，不能继续消费人工构建的旧JAR。
+          execFileSync(process.execPath, [resolve(projectRoot, 'scripts/build-sideload-signer.mjs')],
+            { stdio: 'inherit', cwd: projectRoot });
         },
         dependencies: ['syncPrebuiltJars'],
         postDependencies: [`${TARGET}@CompileResource`],

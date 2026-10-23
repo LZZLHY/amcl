@@ -29,6 +29,7 @@ import {
   compareMavenVersions,
   fetchMergedMavenVersions,
 } from './MavenUtils';
+import { ForgeArtifactIdentity, resolveForgeArtifact, hasExplicitForgeBranch } from './ForgeArtifactResolver';
 import {
   isNewForgeVersion,
   decompressFile as decompressZipFile,
@@ -38,6 +39,7 @@ import {
   probeInstallerSha1,
   preferSourceFirst,
   InstallerSha1Probe,
+  attachLegacyBundledLibraryChecks,
 } from './ForgeInstallerUtils';
 import { BMCLAPI_BASE } from 'commons';
 import { requiredJdkMajorForMc } from 'commons';
@@ -166,8 +168,10 @@ export class ForgeService implements IModLoaderService {
    * 构造新版 Forge 的 ForgelikeProfile（驱动共享引擎 ForgelikeInstaller）。
    * Forge maven 版本号带 mc 前缀（artifactVersion = "1.20.4-49.0.30"），与 NeoForge 不同。
    */
-  private static buildForgeProfile(gameVersion: string, loaderVersion: string): ForgelikeProfile {
-    let artifactVersion = gameVersion + '-' + loaderVersion;
+  private static buildForgeProfile(gameVersion: string, release: ForgeArtifactIdentity): ForgelikeProfile {
+    // 下载、运行库前缀与目录使用同一解析结果；不能在新版路径重新拼出一个短坐标。
+    let artifactVersion = release.artifactVersion;
+    let loaderVersion = release.loaderVersion;
     let profile: ForgelikeProfile = {
       loaderName: 'Forge',
       gameVersion: gameVersion,
@@ -184,7 +188,7 @@ export class ForgeService implements IModLoaderService {
         BMCLAPI_LIBRARIES_BASE + '/net/minecraftforge/forge/' + artifactVersion + '/forge-' + artifactVersion + '-installer.jar',
         FORGE_MAVEN + '/net/minecraftforge/forge/' + artifactVersion + '/forge-' + artifactVersion + '-installer.jar',
       ],
-      versionId: gameVersion + '-forge-' + loaderVersion,
+      versionId: release.versionId,
       versionDirToken: 'forge',
       // 安装器 JDK 按 MC 纪元自动匹配（与游戏运行时同套：≤1.20.4→17 / 1.20.5+→21 / 26.1+→25），
       // 再由引擎从设备已装集挑 ≥required 的最低版本。fork 子进程现走 jvmInit（含 sigchain），
@@ -204,8 +208,21 @@ export class ForgeService implements IModLoaderService {
     mcDir: string, callback?: ModLoaderInstallCallback,
     filesDirOverride?: string
   ): Promise<ModLoaderInstallResult> {
-    let forgeVersion = gameVersion + '-' + loaderVersion;
-    let versionId = gameVersion + '-forge-' + loaderVersion;
+    let release: ForgeArtifactIdentity;
+    try {
+      release = await this.resolveInstallArtifact_(gameVersion, loaderVersion);
+    } catch (e) {
+      let reason = (e as Error).message;
+      this.report(callback, 'error', 0, 0, reason);
+      return { success: false, versionId: '', error: reason };
+    }
+    // 保留作者请求用于日志；安装分流、安装器、运行库核验全部消费解析后的同一身份。
+    AppLogger.info(TAG, 'Forge artifact resolved: requested=' + loaderVersion
+      + ' artifact=' + release.artifactVersion + ' metadataMatched=' + release.metadataMatched,
+      LOG_DOMAIN_MODLOADER);
+    loaderVersion = release.loaderVersion;
+    let forgeVersion = release.artifactVersion;
+    let versionId = release.versionId;
     let installerPath = mcDir + '/forge-installer.jar';
     // filesDir 用于定位 JDK / fonts.conf 等用户级资源，必须是真实 app filesDir
     //（沙箱场景下 mcDir 反推会得到 forge-install-temp 目录）。
@@ -228,7 +245,7 @@ export class ForgeService implements IModLoaderService {
       }
       AppLogger.info(TAG, `Forge(new) → ForgelikeInstaller: ${forgeVersion}`, LOG_DOMAIN_MODLOADER);
       return ForgelikeInstaller.install(
-        ForgeService.buildForgeProfile(gameVersion, loaderVersion), mcDir, filesDir, callback);
+        ForgeService.buildForgeProfile(gameVersion, release), mcDir, filesDir, callback);
     }
 
     // ================================================================
@@ -388,8 +405,8 @@ export class ForgeService implements IModLoaderService {
         // 而 FML 的依赖库（launchwrapper / asm-all / scala-* / akka / typesafe-config / jline 等）
         // 既不在 installer 的 maven/ 内、也不属于原版库 → 此前从不被下载 → 启动前完整性校验必报
         // 缺失（新版 Forge 分支本就会下，旧版分支漏了）。这里补上：从写好的 version.json 提取依赖
-        // 库，走与新版同一套多源下载（BMCLAPI / forge maven / 阿里云回退）。Forge 自身产物已在磁盘
-        // → downloadMavenLibrary 的"已存在则跳过"会自动略过，无重复下载。
+        // 库仍走统一多源批量下载。对安装器已提供的自产物先绑定真实源/复制目标的SHA和大小，
+        // 由Native强预检复用；不能依赖旧单库函数的“已存在”快路或重新GET未发布的普通jar。
         if (legacyResult.success) {
           let libDir = mcDir + '/libraries';
           try { fs.mkdirSync(libDir, true); } catch (e) { /* exists */ }
@@ -407,6 +424,8 @@ export class ForgeService implements IModLoaderService {
               }
               libEntries.push(e);
             }
+            this.report(callback, 'pre_download_libs', 4, 8, '校验旧版 Forge 内嵌库...');
+            await attachLegacyBundledLibraryChecks(libEntries, installerTempDir, installProfilePath, libDir);
             AppLogger.info(TAG, `Legacy Forge: ensuring ${libEntries.length} dependency libs (filtered from ${libEntriesRaw.length})`, LOG_DOMAIN_MODLOADER);
             if (libEntries.length > 0) {
               this.report(callback, 'pre_download_libs', 4, 8, '下载旧版 Forge 依赖库...');
@@ -887,6 +906,33 @@ export class ForgeService implements IModLoaderService {
       return merged;
     }
     throw new Error('无法获取 Forge 版本列表');
+  }
+
+  /**
+   * 安装时解析发布身份。显式分支不需要网络；已有列表只用于正向确认。
+   * 缓存缺项或歧义时只刷新一次，两源并行且各限10秒；离线/落后列表不负缓存。
+   * 仍未列出的精确坐标交给真实工件下载验证，不能误拒绝镜像已托管的新发布。
+   */
+  private async resolveInstallArtifact_(gameVersion: string, requested: string): Promise<ForgeArtifactIdentity> {
+    let explicit = hasExplicitForgeBranch(gameVersion, requested);
+    if (explicit) return resolveForgeArtifact(gameVersion, requested, this.cachedVersions ?? []);
+    if (this.cachedVersions !== null) {
+      try {
+        let cached = resolveForgeArtifact(gameVersion, requested, this.cachedVersions);
+        if (cached.metadataMatched) return cached;
+      } catch (e) { /* 歧义只允许一次刷新后再裁决，不直接消费过期缓存结论。 */ }
+    }
+    // 复用 Forge/NeoForge 的同一查询器，避免安装路径另造一套来源合并策略。
+    let merged = await fetchMergedMavenVersions([FORGE_METADATA_URL, BMCLAPI_METADATA_URL], 'Forge install', 10);
+    // 合并旧正向条目，不让单源故障把已知完整分支抹掉；新列表不产生永久负结论。
+    for (let version of this.cachedVersions ?? []) if (merged.indexOf(version) < 0) merged.push(version);
+    if (merged.length > 0) this.cachedVersions = merged;
+    let resolved = resolveForgeArtifact(gameVersion, requested, merged);
+    if (!resolved.metadataMatched) {
+      AppLogger.warn(TAG, 'Forge coordinate not listed; verify requested artifact by download: '
+        + resolved.artifactVersion, null, LOG_DOMAIN_MODLOADER);
+    }
+    return resolved;
   }
 
   private report(cb: ModLoaderInstallCallback | undefined,

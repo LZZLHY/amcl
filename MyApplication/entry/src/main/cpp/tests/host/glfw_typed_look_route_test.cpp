@@ -28,6 +28,11 @@ bool RecordingSink(double dx, double dy) {
 }
 
 bool OtherSink(double, double) { return true; }
+uint64_t gLastTime = 0u;
+bool RecordingTimedSink(double dx, double dy, uint64_t time) {
+    gLastTime = time;
+    return RecordingSink(dx, dy);
+}
 }  // namespace
 
 int main() {
@@ -144,6 +149,17 @@ int main() {
         CHECK(gCalls == 1);
     }
 
+    // V2保留原样采样时间；无时间、非法时间及只有旧sink时均不得悄悄以消费时刻代替。
+    {
+        GlfwTypedLookRoute route;
+        CHECK(route.Latch(RecordingSink));
+        CHECK(route.ApplyTimed(1, 2, 123u) == GlfwTypedLookStatus::kNoSink);
+        CHECK(route.LatchTimed(RecordingTimedSink));
+        CHECK(route.ApplyTimed(1, 2, 0u) == GlfwTypedLookStatus::kInvalidTimestamp);
+        CHECK(route.ApplyTimed(1, 2, UINT64_MAX) == GlfwTypedLookStatus::kInvalidTimestamp);
+        CHECK(route.ApplyTimed(1, 2, 1234567890u) == GlfwTypedLookStatus::kApplied);
+        CHECK(gLastTime == 1234567890u);
+    }
     std::cout << "glfw_typed_look_route_test: PASS\n";
     return 0;
 }

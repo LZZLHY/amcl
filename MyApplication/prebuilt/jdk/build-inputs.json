@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "description": "新运行时构建的精确源码输入；不追溯冒充旧混合发行包的完整来源。",
+  "runtimes": {
+    "8": {
+      "repository": "https://github.com/openjdk/jdk8u-dev.git",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "bootJdk": { "version": "Temurin 8u452-b09", "sha256": "9448308a21841960a591b47927cf2d44fdc4c0533a5f8111a4b243a6bafb5d27" },
+      "freetype": { "repository": "https://github.com/freetype/freetype.git", "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5", "version": "2.13.3" }
+    },
+    "17": { "repository": "https://github.com/openjdk/jdk17u.git", "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0" },
+    "21": { "repository": "https://github.com/openjdk/jdk21u.git", "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d" },
+    "25": { "repository": "https://github.com/openjdk/jdk25u.git", "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a" }
+  }
+}

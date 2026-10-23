@@ -1,0 +1,226 @@
+/** 同原 text lease 的实际 ingress→唯一 Core→adapter→GLFW 文本消费者组合。
+ * 本文件提供宿主窗口与 callback 捕获边缘。@PRODUCTION@ 是现役函数完整正文；
+ * 真正 Core/Source/adapter/bridge 均编译原文件，不重建输入政策或伪造 Ready。
+ */
+#include "input/platform_input_ingress.h"
+#include "input/amcl_input_host_descriptor.h"
+#include "input/adapters/glfw_input_adapter.h"
+#include "input/adapters/backend_input_bridge.h"
+#include "input/adapters/glfw_typed_absolute_route.h"
+#include "input/adapters/glfw_backend_lifecycle.h"
+#include "input/input_text_core_hook.h"
+#include "input/text_utf8_codec.h"
+#include "input/input_interaction_order.h"
+#include "input/source/source_control.h"
+#include "platform/source_control_client.h"
+#include <atomic>
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <vector>
+using namespace amcl::input;
+
+@STATE@
+
+struct GLFWwindow;
+using GLFWpreeditfun=void(*)(GLFWwindow*,int,unsigned int*,int,int*,int,int);
+using GLFWpreeditcandidatefun=void(*)(GLFWwindow*,int,int,int,int);
+using GLFWimestatusfun=void(*)(GLFWwindow*);
+/** 无 EGL 的明确窗口边缘，仅包含现役文本/复位函数真正访问的字段。 */
+struct GLFWwindow {
+    GlfwPreeditState* preeditState=nullptr;
+    GLFWpreeditfun preeditCb=nullptr;
+    GLFWpreeditcandidatefun preeditCandidateCb=nullptr;
+    GLFWimestatusfun imeStatusCb=nullptr;
+    GlfwBackendCaptureState inputCapture{};
+};
+static GLFWwindow* g_currentWindow=nullptr;
+static GlfwTypedAbsoluteRoute g_typedAbsoluteRoute;
+static double g_typedWheelRemainderPx=0;
+static std::atomic<uint64_t> g_typedTextDecodeFailureCount{0};
+static std::atomic<uint64_t> g_typedTextSelectionDegradedCount{0};
+/** hilog 在宿主缺席；日志边缘不替代数据/资源准入或 callback 判据。 */
+#define AMCL_EXTERNAL_LOG_E(...)
+#define AMCL_EXTERNAL_LOG_W(...)
+#define LOG_TAG "IME_CORE_RANGE_HOST"
+void inputBridge_dispatchCharCodepoint(void*,unsigned int);
+void* inputBridge_replaceCharCallback(void*);
+void inputBridge_setKeyCallback(void(*)(void*,int,int,int,int));
+void inputBridgeStartPumping();void inputBridgePumpEvents(void*);void inputBridgeStopPumping();
+void inputBridge_glfwSetTargetV1(uint64_t,uint64_t,uint64_t);
+void inputBridge_glfwSetActive(void*,int);
+extern "C" int inputBridge_configureMenuCursorConsumerV1(int,uint64_t);
+int inputBridge_setInputReady(int);
+void glfwOHOS_ResetPreedit(GLFWwindow*,bool);
+
+@PRODUCTION@
+
+[[noreturn]] static void fail(const char* expression,int line) {
+    std::cerr<<"IME CORE RANGE CHECK line="<<line<<" "<<expression<<"\n";
+    std::cerr.flush();std::cout.flush();std::_Exit(1);
+}
+#define CHECK(value) do { if(!(value)) fail(#value,__LINE__); } while(0)
+
+struct CallbackFact { std::vector<unsigned int> scalars;int caret; };
+static std::vector<CallbackFact> callbacks;
+static std::vector<unsigned int> characters;
+static std::vector<int> sourceKeys;
+/** 注册在真实 GLFW preedit callback 入口上，记录实际 dispatchPreedit 发出的结果。 */
+static void onPreview(GLFWwindow*,int count,unsigned int* text,int,int*,int,int caret) {
+    // 原样记录Unicode scalar与实际caret，不重编码或模拟文本采用。
+    std::vector<unsigned int> values;if(count>0)values.assign(text,text+count);
+    callbacks.push_back({values,caret});
+}
+/** 真实 bridge 字符 owner 的接收边缘，不替代 COMMIT 的复制、解码或分发实现。 */
+static void onCharacter(void*,unsigned int value) { characters.push_back(value); }
+/** Source owned-key 用真实 ring 消费，观察原 scope pair 交付而非读取伪账本。 */
+static void onKey(void*,int key,int,int action,int) { if(key==259)sourceKeys.push_back(action); }
+
+struct EventFact { std::string kind;uint64_t session,sequence,order; };
+static std::vector<EventFact> events;
+static GlfwInputAdapter* liveAdapter=nullptr;
+/** 仅读 adapter 已领取的序号/共同 order，再委托完整现役 text sink，不改事件。 */
+static void onSession(void* context,const GlfwTextSessionSinkEvent& event) {
+    events.push_back({"session",event.textSessionId,event.sequence,liveAdapter->CurrentInteractionOrder()});
+    typedTextSessionSink(context,event);
+}
+static void onCommit(void* context,const GlfwTextCommitSinkEvent& event) {
+    events.push_back({"commit",event.textSessionId,event.sequence,liveAdapter->CurrentInteractionOrder()});
+    typedTextCommitSink(context,event);
+}
+static void onEditing(void* context,const GlfwTextEditingSinkEvent& event) {
+    events.push_back({"editing",event.textSessionId,event.sequence,liveAdapter->CurrentInteractionOrder()});
+    typedTextEditingSink(context,event);
+}
+static void onSelection(void* context,const GlfwTextSelectionSinkEvent& event) {
+    events.push_back({"selection",event.textSessionId,event.sequence,liveAdapter->CurrentInteractionOrder()});
+    typedTextSelectionSink(context,event);
+}
+
+static const AmclInputHostApiV1* api=nullptr;
+static AmclInputSnapshotV1 snapshot() {
+    AmclInputSnapshotV1 value{};value.abiVersion=AMCL_INPUT_HOST_API_VERSION;value.structSize=sizeof(value);
+    CHECK(api->getSnapshot(&value)==AMCL_INPUT_OK);return value;
+}
+/** drain 保原 adapter 的 Ready/owned ReadPacketBlob/ReleasePacket 和 callback 围栏。 */
+static void pump(GlfwInputAdapter& adapter) {
+    for(int i=0;i<64;i++) { const auto value=adapter.Pump();CHECK(value.status==GlfwAdapterStatus::kOk);
+        if(value.eventsDrained==0)return; }
+    fail("adapter reaches EMPTY",__LINE__);
+}
+static void pumpSource(GLFWwindow* window) {
+    inputBridgeStartPumping();inputBridgePumpEvents(window);inputBridgeStopPumping();
+}
+
+/** 只设置此宿主进程真实路由环境；Windows/Linux都在唯一owner初次查询之前锁存。 */
+static bool selectEnvironment(const char* key,const char* value) {
+#ifdef _WIN32
+    return _putenv_s(key,value)==0;
+#else
+    return setenv(key,value,1)==0;
+#endif
+}
+/** 每个模式在独立进程建立真实owner；范围/文字均通过ingress→Core→adapter。
+ * 生命周期和释放检查沿同一个原text scope执行，宿主窗口与日志仍是明确边缘。
+ */
+int main(int argc,char** argv) {
+    CHECK(argc==2);const std::string mode=argv[1];const uint64_t lease=1;
+    const bool withoutPreview=mode=="document-selection-without-preview";
+    const bool validOnly=mode=="valid-preedit";
+    const bool originalRange=mode=="document-range";
+    const bool outside=mode=="document-selection-outside-preview";
+    CHECK(withoutPreview||validOnly||originalRange||outside||mode=="document-selection-with-preview");
+    CHECK(selectEnvironment("AMCL_INPUT_SHADOW","0"));
+    CHECK(selectEnvironment("AMCL_GLFW_INPUT_BACKEND","legacy"));
+    api=amclInputGetHostApiV1();CHECK(api);
+    CHECK(amclInputHostDescriptorPublishV1(api)==AMCL_INPUT_HOST_DESCRIPTOR_OK);
+    amclSourceControlPublishV1();CHECK(amclSourceControlPrepareV1()==1);
+    GLFWwindow window;g_currentWindow=&window;glfwSetPreeditCallback(&window,onPreview);
+    inputBridge_replaceCharCallback(reinterpret_cast<void*>(onCharacter));inputBridge_setKeyCallback(onKey);
+    PlatformInputSurfaceCreated(800,600,22);PlatformInputFocusChanged(true);
+    AmclInputSurfaceContextPayload resource{};resource.generation=22;resource.windowId=22;resource.displayId=1;
+    resource.widthPx=800;resource.heightPx=600;resource.density=1;
+    resource.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    CHECK(PlatformInputSurfaceContextChanged(resource));
+    CHECK(inputBridge_configureMenuCursorConsumerV1(1,1)==1);
+    (void)inputBridge_setInputReady(1);CHECK(inputBridge_setInputReady(1)==1);
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&window),22,22);inputBridge_glfwSetActive(&window,1);
+    GlfwInputAdapter adapter;liveAdapter=&adapter;
+    auto sink=typedTextOnlySink();sink.textSession=onSession;sink.textCommit=onCommit;
+    sink.textEditing=onEditing;sink.textSelection=onSelection;
+    CHECK(adapter.Open(api,GlfwOhosInputMapper(),sink)==GlfwAdapterStatus::kOk);pump(adapter);
+    CHECK(!PlatformInputPhysicalRouteUsesTyped());CHECK(PlatformInputTextSessionBegin(lease));pump(adapter);
+    AmclInputTextCoreResourceV1 original{};CHECK(amclInputOwnerReadTextResourceV1(&original)==1);
+    CHECK(original.textSession==lease&&original.scope!=0);
+    // Source不被窗口替身替代；原scope下的BACK pair实际写入共同ring并交付callback。
+    CHECK(SourceOwnedTextKeyTap(original,259));pumpSource(&window);
+    CHECK((sourceKeys==std::vector<int>{1,0}));CHECK(SourceSnapshot().owners==0);
+    const std::string document=outside?"abcdefghij":"ab";
+    CHECK(PlatformInputTextCommit(lease,reinterpret_cast<const uint8_t*>(document.data()),document.size()));
+    const auto commitBytes=snapshot().blobBytes;CHECK(commitBytes==document.size());pump(adapter);
+    CHECK(snapshot().blobBytes==0);CHECK(characters.size()==document.size());
+    for(size_t i=0;i<document.size();i++)CHECK(characters[i]==static_cast<unsigned char>(document[i]));
+    callbacks.clear();events.clear();
+    const std::string preview=originalRange?"XYZ":u8"汉😀Z";
+    const std::vector<unsigned int> expected=originalRange?std::vector<unsigned int>{'X','Y','Z'}:
+        std::vector<unsigned int>{0x6c49,0x1f600,'Z'};
+    const uint32_t editStart=originalRange?3:1,editLength=originalRange?0:1;
+    uint64_t editingBytes=0;
+    if(!withoutPreview) {
+        CHECK(PlatformInputTextEditing(lease,reinterpret_cast<const uint8_t*>(preview.data()),preview.size(),editStart,editLength));
+        editingBytes=snapshot().blobBytes;CHECK(editingBytes==preview.size());
+    }
+    if(!validOnly)CHECK(PlatformInputTextSelection(lease,outside?7:0,outside?2:1));
+    // 未泵前没有callback；真实owned blob仍被Core保留，不能通过直接调用sink满足判据。
+    CHECK(callbacks.empty());pump(adapter);CHECK(snapshot().blobBytes==0);
+    const bool DOCUMENT_SELECTION_ISOLATED=withoutPreview?callbacks.empty():
+        callbacks.size()==1&&callbacks[0].scalars==expected&&callbacks[0].caret==static_cast<int>(editStart+editLength);
+    CHECK(DOCUMENT_SELECTION_ISOLATED);
+    if(withoutPreview) {
+        CHECK(events.size()==1&&events[0].kind=="selection"&&events[0].session==lease);
+        // 未发生预编辑时真实窗口可以还没有分配preeditState，文档选区也不得替它分配。
+        CHECK(!window.preeditState||window.preeditState->text.empty());
+    } else {
+        CHECK(events.size()==(validOnly?1:2)&&events[0].kind=="editing"&&events[0].session==lease);
+        CHECK(window.preeditState&&window.preeditState->text==expected);
+        CHECK(window.preeditState->selectionStart==static_cast<int>(editStart));
+        CHECK(window.preeditState->selectionLength==static_cast<int>(editLength));
+        if(!validOnly) {
+            CHECK(events[1].kind=="selection"&&events[1].session==lease);
+            CHECK(events[1].sequence>events[0].sequence&&events[1].order>events[0].order);
+        }
+    }
+    CHECK(g_typedTextSelectionDegradedCount.load()==(validOnly?0:1));
+    std::cout<<"ACTUAL_CORE_RANGE_FIXED mode="<<mode<<" lease="<<lease<<" scope="<<original.scope
+        <<" sourcePair=1,0 commitBytes="<<commitBytes<<" editingBytes="<<editingBytes
+        <<" poolAfter="<<snapshot().blobBytes<<" callbacks="<<callbacks.size();
+    for(const auto& event:events)std::cout<<" "<<event.kind<<"(sequence="<<event.sequence<<",order="<<event.order<<")";
+    if(!callbacks.empty())std::cout<<" previewScalars="<<callbacks[0].scalars.size()<<" caret="<<callbacks[0].caret;
+    std::cout<<" degradation="<<g_typedTextSelectionDegradedCount.load()<<"\n";
+    CHECK(PlatformInputTextSessionEnd(lease));CHECK(amclInputOwnerValidateTextScopeV1(original.scope)==0);
+    CHECK(!SourceOwnedTextKeyTap(original,259));pump(adapter);pumpSource(&window);
+    CHECK(SourceSnapshot().owners==0&&snapshot().blobBytes==0);
+    CHECK(!window.preeditState||window.preeditState->text.empty());
+    // 原租约结束后不能向它发送新selection/editing/commit；后来租约沿真实START取得新scope。
+    callbacks.clear();events.clear();
+    CHECK(!PlatformInputTextSelection(lease,0,1));
+    CHECK(!PlatformInputTextEditing(lease,reinterpret_cast<const uint8_t*>(preview.data()),preview.size(),1,1));
+    CHECK(!PlatformInputTextCommit(lease,reinterpret_cast<const uint8_t*>(document.data()),document.size()));
+    pump(adapter);CHECK(callbacks.empty()&&events.empty()&&snapshot().blobBytes==0);
+    CHECK(PlatformInputTextSessionBegin(lease+1));pump(adapter);
+    AmclInputTextCoreResourceV1 replacement{};CHECK(amclInputOwnerReadTextResourceV1(&replacement)==1);
+    CHECK(replacement.textSession==lease+1&&replacement.scope!=original.scope);
+    CHECK(!SourceOwnedTextKeyTap(original,259));
+    callbacks.clear();events.clear();
+    CHECK(PlatformInputTextEditing(lease+1,reinterpret_cast<const uint8_t*>(preview.data()),preview.size(),editStart,editLength));
+    CHECK(!PlatformInputTextSelection(lease,0,1));pump(adapter);
+    CHECK(callbacks.size()==1&&callbacks[0].scalars==expected&&callbacks[0].caret==static_cast<int>(editStart+editLength));
+    CHECK(snapshot().blobBytes==0);CHECK(PlatformInputTextSessionEnd(lease+1));pump(adapter);
+    CHECK(amclInputOwnerValidateTextScopeV1(replacement.scope)==0&&window.preeditState->text.empty());
+    CHECK(adapter.Close()==GlfwAdapterStatus::kOk);PlatformInputSurfaceDestroyed(22);
+    glfwOHOS_DestroyPreeditState(&window);g_currentWindow=nullptr;
+    std::cout<<"ACTUAL_CORE_RANGE_FIXED_FINAL mode="<<mode
+        <<" original END/old key/old text fenced; replacement scope="<<replacement.scope
+        <<" also retired; preedit cleared; blobBytes=0\n";
+}

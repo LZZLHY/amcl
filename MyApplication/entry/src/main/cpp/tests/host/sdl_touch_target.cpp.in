@@ -1,0 +1,190 @@
+// SDL0024真实parser与完整调用者的宿主夹具。仅环境/链接/原语是替身，控制路径直接编译生产原文。
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+using Uint64 = uint64_t;
+using Uint32 = uint32_t;
+using Uint8 = uint8_t;
+struct AMCL_BackendInputEvent {};
+using SDL_AtomicInt = std::atomic<int>;
+#define SDL_zero(value) std::memset(&(value), 0, sizeof(value))
+#define SDL_strlen std::strlen
+#define SDL_strncmp std::strncmp
+#define SDL_strtoull std::strtoull
+#define AMCL_SDL_BRIDGE_ENV "AMCL_SDL_INPUT_BRIDGE"
+#define AMCL_SDL_BRIDGE_PREFIX "AMCLSDLV:3:"
+#define AMCL_RESOLVE_ATTEMPTS 240
+#define AMCL_BRIDGE_UNRESOLVED 0
+#define AMCL_BRIDGE_RESOLVING 1
+#define AMCL_BRIDGE_READY 2
+#define AMCL_BRIDGE_ABSENT 3
+#define AMCL_TYPED_UNRESOLVED 0
+#define AMCL_TYPED_RESOLVING 1
+#define AMCL_TYPED_READY 2
+#define AMCL_TYPED_ABSENT 3
+#define AMCL_TEXT_UNRESOLVED 0
+#define AMCL_TEXT_RESOLVING 1
+#define AMCL_TEXT_READY 2
+#define AMCL_TEXT_ABSENT 3
+#define SDL_LOG_CATEGORY_INPUT 1
+#define SDL_WINDOW_VULKAN 0x1000
+#define OPENHARMONY_WINDOW_PRESENTED 1
+#define OPENHARMONY_WINDOW_AUXILIARY_PBUFFER 2
+#define RTLD_NOLOAD 1
+#define RTLD_NOW 2
+#define CHECK(value) do { if (!(value)) { std::cerr << "CHECK line " << __LINE__ << ": " << #value << '\n'; std::exit(1); } } while (false)
+
+@BRIDGE_DECL@
+
+// 原子发布状态保持真实release/acquire语义；此测试单线程只排除库/SDK依赖，不改正式状态机。
+static OPENHARMONY_HostBridge host_bridge;
+static SDL_AtomicInt host_bridge_state{0}, host_typed_state{0}, host_text_state{0};
+static int host_typed_attempts = 0;
+static int SDL_GetAtomicInt(SDL_AtomicInt* state) { return state->load(std::memory_order_acquire); }
+static void SDL_SetAtomicInt(SDL_AtomicInt* state, int value) { state->store(value, std::memory_order_release); }
+static bool SDL_CompareAndSwapAtomicInt(SDL_AtomicInt* state, int before, int after) {
+    return state->compare_exchange_strong(before, after);
+}
+static void SDL_MemoryBarrierRelease() { std::atomic_thread_fence(std::memory_order_release); }
+static void SDL_MemoryBarrierAcquire() { std::atomic_thread_fence(std::memory_order_acquire); }
+static void SDL_Log(const char*, ...) {}
+static void SDL_LogError(int, const char*, ...) {}
+static void OPENHARMONY_ResetHostBridgeForPid() {}
+static bool OPENHARMONY_ResolveTypedBridgeFromEnvironment(OPENHARMONY_HostBridge*) { return false; }
+static bool OPENHARMONY_ResolveTextBridgeFromEnvironment(OPENHARMONY_HostBridge*) { return false; }
+
+// 受控不可变描述符模拟本进程环境；不读取用户真实环境，更不会把地址/凭据写入输出。
+static std::map<std::string, std::string> descriptors;
+static const char* SDL_getenv_unsafe(const char* name) {
+    const auto found = descriptors.find(name);
+    return found == descriptors.end() ? nullptr : found->second.c_str();
+}
+static unsigned fallbackLoads = 0, fallbackSymbols = 0;
+static int Next(int*, int*, int*, int*, int*) { return 0; }
+static void Active(int) {}
+static unsigned anonymousPresents = 0;
+static void AnonymousPresent() { ++anonymousPresents; }
+static void Grab(int) {}
+static bool IsGrab() { return false; }
+static void Cursor(double* x, double* y) { *x = *y = 0; }
+static void Look(double, double) {}
+static uint64_t Fence() { return 99; }
+static int TypedThrough(Uint32, AMCL_BackendInputEvent*, Uint64) { return 0; }
+static uint64_t Peek() { return UINT64_MAX; }
+static int Through(int*, int*, int*, int*, int*, Uint64) { return 0; }
+struct Target { uint64_t logical, publication, wsi; };
+struct Presented { uint64_t logical, generation; };
+static std::vector<Target> targets;
+static std::vector<Presented> presents;
+static void TargetSink(Uint64 logical, Uint64 publication, Uint64 wsi) { targets.push_back({logical, publication, wsi}); }
+static void PresentSink(Uint64 logical, Uint64 generation) { presents.push_back({logical, generation}); }
+template<typename Function> static uintptr_t Address(Function function) { return reinterpret_cast<uintptr_t>(function); }
+static void* dlopen(const char*, int) { ++fallbackLoads; return reinterpret_cast<void*>(1); }
+static void dlclose(void*) {}
+static void* OPENHARMONY_HostSym(void*, const char* name) {
+    ++fallbackSymbols;
+    if (std::strcmp(name, "inputBridge_sdlNextEvent") == 0) return reinterpret_cast<void*>(Address(Next));
+    if (std::strcmp(name, "inputBridge_sdlSetActive") == 0) return reinterpret_cast<void*>(Address(Active));
+    if (std::strcmp(name, "inputBridge_sdlNotifyFramePresented") == 0) return reinterpret_cast<void*>(Address(AnonymousPresent));
+    if (std::strcmp(name, "inputBridge_setGrabState") == 0) return reinterpret_cast<void*>(Address(Grab));
+    if (std::strcmp(name, "inputBridge_isGrabbing") == 0) return reinterpret_cast<void*>(Address(IsGrab));
+    if (std::strcmp(name, "inputBridge_sdlGetNonPhysicalCursorSnapshot") == 0) return reinterpret_cast<void*>(Address(Cursor));
+    if (std::strcmp(name, "inputBridge_setLookCursor") == 0) return reinterpret_cast<void*>(Address(Look));
+    return nullptr;
+}
+
+// 呈现窗口结构只承载生产发布函数实际读取的字段，真实id、Native发布代次与WSI域分别记录。
+struct SDL_WindowData { int role; void* native_xcomponent; Uint64 amcl_generation; void* native_window; };
+struct SDL_Window { Uint32 id; SDL_WindowData* internal; Uint64 flags; };
+struct SDL_VideoData { unsigned auxiliary_present_notify; };
+struct SDL_VideoDevice { void* internal; };
+static SDL_Window* OPENHARMONY_Window = nullptr;
+static SDL_Window* current_window = nullptr;
+static bool host_presented_active = false;
+static SDL_VideoData video_data{};
+static SDL_VideoDevice video{&video_data};
+static SDL_Window* SDL_GL_GetCurrentWindow() { return current_window; }
+static SDL_VideoDevice* SDL_GetVideoDevice() { return &video; }
+
+@PRODUCTION@
+
+// 每例重新建立真实caller的UNRESOLVED状态，符号fallback计数不会被上一例的READY缓存吞掉。
+static void Reset() {
+    descriptors.clear(); SDL_zero(host_bridge);
+    SDL_SetAtomicInt(&host_bridge_state, AMCL_BRIDGE_UNRESOLVED);
+    SDL_SetAtomicInt(&host_typed_state, AMCL_TYPED_UNRESOLVED);
+    SDL_SetAtomicInt(&host_text_state, AMCL_TEXT_UNRESOLVED);
+    fallbackLoads = fallbackSymbols = anonymousPresents = 0;
+    targets.clear(); presents.clear(); host_presented_active = false;
+    OPENHARMONY_Window = current_window = nullptr; video_data = {};
+}
+static std::string TouchDescriptor() {
+    return "AMCLSDLTOUCH:1:" + std::to_string(Address(TargetSink)) + "," + std::to_string(Address(PresentSink));
+}
+static std::string LegacyDescriptor() {
+    return "AMCLSDLV:3:" + std::to_string(Address(Next)) + "," + std::to_string(Address(Active)) + "," +
+        std::to_string(Address(AnonymousPresent)) + "," + std::to_string(Address(Grab)) + "," +
+        std::to_string(Address(IsGrab)) + "," + std::to_string(Address(Cursor)) + "," + std::to_string(Address(Look));
+}
+static std::string OrderDescriptor() {
+    return "AMCLORDER:1:" + std::to_string(Address(Fence)) + "," + std::to_string(Address(TypedThrough)) + "," +
+        std::to_string(Address(Peek)) + "," + std::to_string(Address(Through));
+}
+
+int main() {
+    // 完整环境通道解析后不会访问任何symbol，正式尾函数调用保留真实三维输入目标。
+    Reset(); descriptors["AMCL_SDL_TOUCH_BRIDGE"] = TouchDescriptor();
+    descriptors[AMCL_SDL_BRIDGE_ENV] = LegacyDescriptor(); descriptors["AMCL_INPUT_ORDER_BRIDGE"] = OrderDescriptor();
+    auto* bridge = OPENHARMONY_GetHostBridge(); CHECK(bridge && fallbackLoads == 0 && fallbackSymbols == 0);
+    CHECK(bridge->SetInputTarget == TargetSink && bridge->NotifyFramePresentedForTarget == PresentSink);
+    CHECK(bridge->InteractionFence == Fence && bridge->LegacyPeekOrder == Peek);
+
+    // 有效新尾表、主表明确缺失时可以协商已有symbol；缺失不是损坏，不强加额外安装要求。
+    Reset(); descriptors["AMCL_SDL_TOUCH_BRIDGE"] = TouchDescriptor();
+    descriptors["AMCL_INPUT_ORDER_BRIDGE"] = OrderDescriptor();
+    bridge = OPENHARMONY_GetHostBridge(); CHECK(bridge && fallbackLoads == 1 && fallbackSymbols == 7);
+    CHECK(bridge->SetInputTarget == TargetSink && bridge->InteractionFence == Fence);
+    Reset(); bridge = OPENHARMONY_GetHostBridge(); CHECK(bridge && fallbackLoads == 1 && fallbackSymbols == 7);
+    CHECK(!bridge->SetInputTarget && !bridge->NotifyFramePresentedForTarget);
+
+    // parser拒绝之后真实GetHostBridge必须拒绝，不能靠全量符号供应绕过；正式表也不能残留半套尾能力。
+    const std::vector<std::string> malformed = {"", "AMCLSDLTOUCH:2:1,2", "AMCLSDLTOUCH:1:1",
+        "AMCLSDLTOUCH:1:1,2,3", "AMCLSDLTOUCH:1:0,2", "AMCLSDLTOUCH:1:-1,2",
+        "AMCLSDLTOUCH:1:18446744073709551615,2", "AMCLSDLTOUCH:1:18446744073709551616,2"};
+    for (const auto& descriptor : malformed) {
+        Reset(); descriptors["AMCL_SDL_TOUCH_BRIDGE"] = descriptor;
+        descriptors[AMCL_SDL_BRIDGE_ENV] = LegacyDescriptor();
+        CHECK(!OPENHARMONY_GetHostBridge()); CHECK(fallbackLoads == 0 && fallbackSymbols == 0);
+        CHECK(SDL_GetAtomicInt(&host_bridge_state) == AMCL_BRIDGE_ABSENT);
+        CHECK(!host_bridge.SetInputTarget && !host_bridge.NotifyFramePresentedForTarget);
+    }
+    // 新tail完整而主表/ORDER损坏同样失败；present-invalid不允许退回旧解释。
+    Reset(); descriptors["AMCL_SDL_TOUCH_BRIDGE"] = TouchDescriptor(); descriptors[AMCL_SDL_BRIDGE_ENV] = "AMCLSDLV:2:1,2";
+    CHECK(!OPENHARMONY_GetHostBridge() && fallbackLoads == 0);
+    Reset(); descriptors["AMCL_SDL_TOUCH_BRIDGE"] = TouchDescriptor(); descriptors["AMCL_INPUT_ORDER_BRIDGE"] = "AMCLORDER:9:1,2,3,4";
+    CHECK(!OPENHARMONY_GetHostBridge() && fallbackLoads == 0);
+
+    // 真实发布函数将SDL逻辑id与NativeWindow高位WSI身份分开；GL不伪装成WSI，退休明确发0。
+    Reset(); descriptors["AMCL_SDL_TOUCH_BRIDGE"] = TouchDescriptor(); descriptors[AMCL_SDL_BRIDGE_ENV] = LegacyDescriptor();
+    bridge = OPENHARMONY_GetHostBridge(); CHECK(bridge);
+    SDL_WindowData data{OPENHARMONY_WINDOW_PRESENTED, nullptr, 77, reinterpret_cast<void*>(0x1234)};
+    SDL_Window window{991, &data, SDL_WINDOW_VULKAN};
+    OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, &window);
+    CHECK(targets.back().logical == 991 && targets.back().publication == 77 && targets.back().wsi == (UINT64_C(1) << 63 | 0x1234));
+    window.flags = 0; OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, &window); CHECK(targets.back().wsi == 0);
+    data.native_xcomponent = reinterpret_cast<void*>(1); OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, &window);
+    CHECK(targets.back().logical == 0 && targets.back().publication == 0 && targets.back().wsi == 0);
+    data.native_xcomponent = nullptr;
+    OPENHARMONY_Window = current_window = &window; host_presented_active = true;
+    OPENHARMONY_AMCL_NotifyFramePresented();
+    CHECK(presents.size() == 1 && presents.back().logical == 991 && presents.back().generation == 77 && anonymousPresents == 0);
+    host_presented_active = false; OPENHARMONY_AMCL_NotifyFramePresented(); CHECK(presents.size() == 1);
+    host_presented_active = true; data.role = OPENHARMONY_WINDOW_AUXILIARY_PBUFFER;
+    OPENHARMONY_AMCL_NotifyFramePresented(); CHECK(presents.size() == 1 && video_data.auxiliary_present_notify == 1);
+    std::cout << "sdl_touch_target: PASS (real parser, GetHostBridge fallback, logical/WSI publication and exact present)\n";
+}

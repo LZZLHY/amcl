@@ -4,12 +4,15 @@
  * 同时回放原有 LaunchJdkPolicy Hypium 用例，保护“推荐 17、只有 21 也能用”等合法替代。
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
 const cases = [];
 let legacySuite = 'JDK策略';
 const versions = new Map();
 const noop = () => {};
+// 本组测试的外部目录事实来自真实随包 JSON；验签/缓存本身另由 test-runtime-catalog 执行。
+const catalog = JSON.parse(fs.readFileSync(new URL('../entry/src/main/resources/rawfile/runtime-catalog/builtin.json',import.meta.url),'utf8'));
 const dependencies = {
   '@kit.CoreFileKit': { fileIo: { readTextSync: name => {
     if (!versions.has(name)) throw new Error('测试未提供清单：' + name);
@@ -19,6 +22,12 @@ const dependencies = {
   '@kit.NetworkKit': {},
   '@kit.CryptoArchitectureKit': {},
   './JdkInstaller': {},
+  './RuntimeCatalogRepository': { RuntimeCatalogRepository:{instance:()=>({
+    snapshot:()=>structuredClone(catalog),
+    isBuildAllowed:()=>true,
+    definitions:()=>catalog.runtimes,
+    buildFor:major=>catalog.builds.find(b=>b.id===catalog.runtimes.find(r=>String(r.javaMajor)===major)?.recommendedBuildId)
+  })} },
   './LaunchNativeBridge': {},
   './LaunchProfileBuilder': {},
   './LaunchContractPreflight': {},
@@ -44,6 +53,7 @@ const dependencies = {
   },
 };
 const load = makePureEtsLoader(dependencies);
+dependencies.commons.isJdkSlotVersion = load('commons/src/main/ets/common/Constants.ets').isJdkSlotVersion;
 Object.assign(dependencies.commons, load('commons/src/main/ets/utils/McVersionUtils.ets'));
 Object.assign(dependencies.mods, load('mods/src/main/ets/VersionIdUtils.ets'));
 // Maven 模块的网络/下载依赖不参与本测试；解析器与合并器仍使用生产 Maven 纯函数。
@@ -278,6 +288,20 @@ test('真实自检区分没有发布候选与合法已装：无选择拒绝、�
   }
   const installedOnly = range(bsl, 21, 21, '25', '9.7.1', []);
   assert.equal(validator.runJdk('23', installedOnly, false).status, 'pass');
+});
+
+test('目录新增29：列表与清单下限路由自动扩展，未知游戏仍优先既有25', () => {
+  // 29 仅为协议夹具，不代表实际 Java29/OHOS 已通过验收。算法仍执行生产 Manager。
+  const runtime={...catalog.runtimes.find(r=>r.javaMajor===17),id:'java29-ohos-aarch64',javaMajor:29,recommendedBuildId:'fixture29'};
+  const build={...catalog.builds.find(b=>b.runtimeId==='java17-ohos-aarch64'),id:'fixture29',runtimeId:runtime.id,legacyTags:[]};
+  catalog.runtimes.push(runtime);catalog.builds.push(build);
+  try {
+    const manager=managerFor(manifest('未来自定义',29),[]);
+    assert(manager.listVersions().some(v=>v.version==='29'&&v.available));
+    assert.equal(manager.jdkPolicyFor('自定义实例','auto','/test').jdk,'29');
+    assert.equal(manager.autoSelectVersion('未知实例'),'25');
+    assert.equal(dependencies.commons.isJdkSlotVersion('29'),true);
+  } finally {catalog.runtimes.pop();catalog.builds.pop();}
 });
 
 let failed = 0;

@@ -10,6 +10,7 @@
 export * from './src/main/ets/download/DownloadManager';
 export * from './src/main/ets/download/DownloadTask';
 export * from './src/main/ets/download/DownloadTaskRegistry';
+export * from './src/main/ets/download/ProcessActivityCoordinator';
 export * from './src/main/ets/download/UnifiedDownloadTask';
 export * from './src/main/ets/download/DownloadHistory';
 export * from './src/main/ets/download/SourceProber';
@@ -28,6 +29,8 @@ export * from './src/main/ets/download/phases/MergePhase';
 // ---- version 域 ----
 export * from './src/main/ets/version/McVersionService';
 export * from './src/main/ets/version/McVersionTask';
+export * from './src/main/ets/version/VersionInstallLease';
+export * from './src/main/ets/version/McInstallSession';
 export * from './src/main/ets/version/VersionParser';
 export * from './src/main/ets/version/MinecraftLoggingConfig';
 export * from './src/main/ets/version/VersionFileVerifier';
@@ -45,10 +48,23 @@ export * from './src/main/ets/modloader/ModLoaderManager';
 export * from './src/main/ets/modloader/MavenUtils';
 export * from './src/main/ets/modloader/MavenSpecBuilder';
 export * from './src/main/ets/modloader/ForgeService';
+export * from './src/main/ets/modloader/ForgeArtifactResolver';
 export * from './src/main/ets/modloader/ForgeInstallerUtils';
 export * from './src/main/ets/modloader/ForgelikeNative';
 export * from './src/main/ets/modloader/ForgelikeInstaller';
+export * from './src/main/ets/modloader/ForgelikeProcessorRunner';
 export * from './src/main/ets/modloader/NeoForgeService';
 export * from './src/main/ets/modloader/FabricService';
 
 export * from './src/main/ets/download/RelayNativeBridge';
+
+// ---- 通用游戏包导出域；所有产品共享，来源读取和平台归档由各自适配器承接。 ----
+export * from './src/main/ets/export/ExportTypes';
+export * from './src/main/ets/export/ExportContentSelection';
+export * from './src/main/ets/export/ExportPath';
+export * from './src/main/ets/export/ExportVersionResolver';
+export * from './src/main/ets/export/DesktopDependencyPlanner';
+export * from './src/main/ets/export/ForgelikeExportPlanner';
+export * from './src/main/ets/export/ExportFilePlan';
+export * from './src/main/ets/export/StandardPackWriter';
+export * from './src/main/ets/export/ExportZipFormat';

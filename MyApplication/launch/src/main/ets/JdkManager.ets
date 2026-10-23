@@ -1,36 +1,15 @@
+import { validateRuntimeTree } from './JdkTreeValidation';
+import { JdkDirectoryLease } from './JdkDirectoryLease';
 import { DiagnosticPolicy } from 'commons';
+import { RuntimeCatalogRepository } from './RuntimeCatalogRepository';
+import { RuntimeBuild, RuntimeDefinition, RuntimeDownload, RuntimeInstallReceipt } from './RuntimeCatalogTypes';
+import { runtimeReceiptStamp, runtimeRecommendationApplies } from './RuntimeUpdatePolicy';
 /**
- * JdkManager.ets — 多版本 JDK 安装/检测/下载管理
- *
- * 架构：
- *   - 完整 JDK（含 .so 文件）从 GitHub Releases 下载到 filesDir/jdk/<version>/
- *   - .so 文件通过自定义 ELF loader 加载（绕过 HarmonyOS MAP_XPM 签名验证）
- *   - 需要 ALLOW_WRITABLE_CODE_MEMORY ACL 权限
- *   - 下载使用项目统一的 DownloadManager / libcurl 引擎：
- *       · 多镜像同时 fallback (urls[])
- *       · 多线程分段下载 + 断点续传 (引擎内置)
- *       · size 校验 (DownloadCheck.size) + ArkTS 层 SHA-256 校验
- *       · ETA / 速度 / 活跃线程数估计
- *
- * 目录结构：
- *   filesDir/jdk/17/lib/         — JDK 基础库（libjava.so, libnet.so 等）
- *   filesDir/jdk/17/lib/server/  — libjvm.so
- *   filesDir/jdk/17/conf/        — JDK 配置文件
- *   filesDir/jdk/17/release       — 安装标记
- *
- * 运行时策略（2026-05-30 三版本更新）：
- *   - JDK 17（GitHub Release: v17.0.13-ohos-5 / jdk17-ohos-full-v5.zip）— 默认/兜底
- *   - JDK 21（GitHub Release: v21.0.5-ohos-7 / jdk21-ohos-full-v7.zip）— "⚠️ 实验性"
- *     v6 关键变化：放弃 Cacio AWT，改走真 headless 路径，patch 0009 + xawt stub 全删。
- *     详见 docs/archive/jdk21-awt-headless-journey-202605.md §5（第一阶段方案）。
- *   - JDK 25（GitHub Release: v25.0.4-ohos-2 / jdk25-ohos-full-v2.zip）— "⚠️ 实验性"
- *     MC 26.1+（YY.D.H 新纪元）首个要求 Java 25。9 个 OHOS patch（21 的 8 个 + JFR CPU-time
- *     musl 禁用）。详见 docs/adaptation/JDK25_ADAPTATION_ASSESSMENT.md。
- *   - autoSelectVersion(mcVersion)：MC 26.1+ → 25，1.20.5–1.x → 21，≤1.20.4 → 17（纪元路由）
- *   - 用户在 SettingsTab 可手动切换三版本（带"实验性"角标）
- *
- * 2026-05-04 重构：废弃自造的 streamDownloadWithResume / downloadWithMirrors，
- * 改用 DownloadManager.createAndWait。净减少 ~250 行 HTTP/镜像/进度代码。
+ * JDK 只读管理与安装工厂。版本和包身份来自 RuntimeCatalogRepository 的可信 JSON，
+ * 旧 release-tag、用户导入和新的受管 receipt 分开识别；已安装不等于有新版。
+ * 数字槽位映射与布局/架构检查固定在客户端，远程目录不能提供本地路径或脚本。
+ * 游戏清单/加载器要求决定选择区间，新增最高主版本不改变未知游戏的保守兜底。
+ * 每个任务从工厂取得独立且冻结的 installer，目录刷新不改动正在进行的下载。
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -41,8 +20,7 @@ import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import {
   SUPPORTED_JDK_VERSION, SUPPORTED_JDK_VERSIONS, JDK_AUTO,
-  JDK21_RELEASE_TAG, JDK21_RELEASE_ASSET, JDK21_MIN_MC_VERSION,
-  JDK25_RELEASE_TAG, JDK25_RELEASE_ASSET,
+  JDK21_MIN_MC_VERSION, isJdkSlotVersion,
 } from 'commons';
 import { isMcVersionAtLeast, detectMcEra, McEra } from 'commons';
 import { requiredJdkMajorForMc } from 'commons';
@@ -66,16 +44,17 @@ export interface JdkStatus {
 }
 
 export interface JdkVersionInfo {
-  version: string;        // "17" | "21"
+  rollback?: boolean;
+  version: string;        // 可信目录或本地安装中的规范数字主版本
   installed: boolean;
   available: boolean;     // 是否已发布可下载
-  sizeMB: number;         // 安装后大小（MB）
+  sizeMB: number;         // 当前推荐的下载包体积（MB），不冒充解压后的磁盘占用
   path: string;           // filesDir/jdk/<version>/
   // ---- 2026-08-29 新增：把「已装」与「是否最新」分开表达（旧实现压成一个 installed
   //      布尔值，导致"过期"在 UI 上只能显示成"未安装"）----
   /** `<jdkDir>/.amcl_release_tag` 的内容；无戳为 `''`。 */
   installedTag: string;
-  /** 当前 HAP 期望的 tag。 */
+  /** 当前目录推荐的构建身份或旧发行 tag。 */
   expectedTag: string;
   /** 要不要显示「更新」按钮。 */
   updateAvailable: boolean;
@@ -87,6 +66,7 @@ export interface JdkVersionInfo {
 
 /** `JdkManager.inspect()` 的返回：一个版本的完整状态。 */
 export interface JdkInspection {
+  rollback?: boolean;
   version: string;
   /** 能不能拿它启动游戏（= `isInstalled()`）。 */
   installed: boolean;
@@ -136,6 +116,14 @@ export const GITEE_RELEASE_BASE = 'https://gitee.com/dhao12345/mc-ohos-resources
 // JDK 版本信息接口
 // ELF loader 绕过签名验证后，完整 JDK（含 .so）可以从网上下载
 export interface JdkVersionConfig {
+  /** 保留可展示槽位时说明下载暂停原因；不能把目录未就绪误写成“即将支持”。 */
+  unavailableReason?: string;
+  /** 受信目录描述；每个 installer 使用深拷贝，刷新不会中途替换包。 */
+  runtime?: RuntimeDefinition;
+  build?: RuntimeBuild;
+  downloads?: RuntimeDownload[];
+  webEnabled?: boolean;
+  downloadSource?: string;
   tag: string;
   dataFile: string;
   dataSizeMB: number;
@@ -143,14 +131,13 @@ export interface JdkVersionConfig {
   minMcVersion: string;
   maxMcVersion: string;
   available: boolean;    // 是否已在 GitHub Releases 上发布
-  // 可选：下载后校验 ZIP 的 SHA-256（hex 小写，64 字符）
-  // 配置后若校验失败会删除 zip 并中止（不会解压污染数据）；
-  // 未配置则跳过校验但打 WARN 日志。
+  // 可下载项必须有完整 ZIP SHA-256；可用但已下架的本地保留项可省略。
+  // 安装器在联网前拒绝缺失/非法值，校验失败不发布、不触碰旧安装。
   // 获取方式：sha256sum <file>  或 Get-FileHash -Algorithm SHA256 <file>
   // 建议在 GitHub Release 说明中发布官方校验和。
   sha256?: string;
   // 可选：下载 zip 的准确字节数。填了后 DownloadManager 会在引擎层校验。
-  // 与 sha256 互补：size mismatch 会在下载期间快速失败重试下一镜像，
+  // 可下载项必须提供正整数；与 sha256 互补，size mismatch 在下载期间失败，
   // 避免“全量下载完才发现 SHA-256 不对”的浪费。
   sizeBytes?: number;
 
@@ -174,117 +161,9 @@ export interface JdkVersionConfig {
   harmfulTags?: string[];
 }
 
-// 可用的 JDK 版本定义
-// 完整 JDK（含 .so + 数据文件）从 GitHub Releases 下载到 filesDir
-// .so 通过 ELF loader 加载（绕过 HarmonyOS 代码签名验证）
-//
-// 安全提示：sha256 字段未填时，项目只靠"zip 文件存在 + 解压后标记文件"来判定完整性，
-// 若镜像（ghfast.top / gh-proxy 等）被劫持可能注入恶意 JDK。
-// 填入 GitHub Release 官方校验和后，mismatch 会阻止解压。
-const JDK_VERSIONS: Record<string, JdkVersionConfig> = {
-  // JDK 8：MC 1.13–1.16.5（旧整合包 / 老版 Forge 需 Java 8）。经典布局（jre/lib/aarch64 + rt.jar）。
-  // ✅ 2026-06-12 真机跑通：MC 1.16.1 vanilla 用 JDK 8 + LWJGL 3.2.2 套 + gl4es 成功出图。
-  //   v8u452-ohos-2 修复了 4 类 clang 把 JDK8 UB 利用坏的 codegen 问题（详见 patches/0002 +
-  //   docker/build_jdk8_ohos.sh）：① 逻辑立即数表 replicate() 移位≥位宽 UB（-O3 算坏
-  //   0xFFFFFFFFFFFFFFF0 编码 → 汇编器 abort）；② markOop "伪指针" value() 被假设 8 对齐 →
-  //   inflate() 误判锁态解引用 mark word；③ null-this UB（_first->chop() 空保护被删）→ C2 init
-  //   崩；④ initLITables 改 pthread_once 懒初始化。配套启动器修复：经典布局 java.home→jre 子目录、
-  //   -Dos.name=Linux（NIO provider 分派）、C2 修好后启用完整分层编译（C1+C2，见 1000151）。
-  // v4（2026-08-29）：相对 v3 **只替换了 jre/lib/aarch64/libnet.so**（IPv6 沙箱回落 patch），
-  //   包内其余 108 个文件逐字节相同，条目清单（126 条 = 109 文件 + 17 目录）一致。
-  //   旧 tag v8u452-ohos-3 及其附件保持在线不动 —— 已发布的 tag 只增不改不删。
-  '8': {
-    tag: 'v8u452-ohos-4',
-    dataFile: 'jdk8-ohos-full-v4.zip',
-    dataSizeMB: 38,
-    markerFile: 'jre/lib/rt.jar',   // 经典布局标记（非模块化）
-    minMcVersion: '1.0',
-    maxMcVersion: '1.16.5',
-    available: true,   // 可下载/手动选择。auto 路由仍不主动选 8（仅手动 + 老 Forge 强制，给老 Forge/整合包用）。
-    // Release v8u452-ohos-3（2026-06-13）：在 v2 基础上**补回 sun.security.util.ManifestEntryVerifier
-    // 的单参构造器 (Manifest)**，让 Forge modlauncher 4.x/8.x（MC 1.13–1.16.5）的 SecureJarHandler
-    // 不再 NoSuchMethodError（我们的 jdk8u 带两参 backport，老 Forge 编译期依赖单参形式）。libjvm 与 v2 一致。
-    sha256: '02c2cedb3539682de3df3d7870b855bfefaac1f4cfe53951cfe90b0dea3d3a63',
-    sizeBytes: 39555296,
-    giteeParts: ['jdk8-ohos-full-v4.zip.part01of02', 'jdk8-ohos-full-v4.zip.part02of02'],
-    giteePartSizes: [19777648, 19777648],
-  },
-  // v5（2026-08-29）：相对 v4 **只替换了 lib/libnet.so**（IPv6 沙箱回落 patch），
-  //   包内其余 71 个文件逐字节相同。旧 tag v17.0.13-ohos-4 及其附件保持在线不动
-  //   —— 已发布的 tag 只增不改不删（否则旧 HAP 的 size/sha 对不上，装不上且不自愈）。
-  '17': {
-    tag: 'v17.0.13-ohos-5',
-    dataFile: 'jdk17-ohos-full-v5.zip',
-    dataSizeMB: 108,              // 113,762,513 bytes ≈ 108 MB
-    markerFile: 'release',
-    minMcVersion: '1.17',
-    maxMcVersion: '1.20.4',
-    available: true,
-    // SHA-256 校验和（2026-05-04 启用）
-    // 来源：docker/repack_jdk_libnet.sh 产出的 jdk17-ohos-full-v5.zip，详见 docs/security-signing.md §6.1
-    // ⚠️ 该脚本的输出是**确定性**的（条目按 LC_ALL=C 排序 + 替换件 mtime 对齐原包）——
-    //    同一份原包 + 同一份 libnet.so 重跑必得同一个 sha256，实测两次逐字节一致。
-    sha256: '0e26b0dece38156838456cfb12058d863aa9856cdd8fd648f06f9bc5e91f8ecd',
-    // 下载引擎会以此字节数作 size pre-check，mismatch 时立即失败重试下一镜像。
-    sizeBytes: 113762513,
-    giteeParts: [
-      'jdk17-ohos-full-v5.zip.part01of03',
-      'jdk17-ohos-full-v5.zip.part02of03',
-      'jdk17-ohos-full-v5.zip.part03of03',
-    ],
-    giteePartSizes: [37920837, 37920837, 37920839],
-  },
-  // v7（2026-08-29）：相对 v6 **只替换了 lib/libnet.so**（IPv6 沙箱回落 patch），
-  //   包内其余 70 个文件逐字节相同。旧 tag v21.0.5-ohos-6 及其附件保持在线不动。
-  // JDK 21 v6（2026-05-19）：真 headless 模式 / patch 0009 + xawt stub 全删
-  // 用 Constants.JDK21_RELEASE_* 引用，避免跨文件硬编码漂移
-  '21': {
-    tag: JDK21_RELEASE_TAG,
-    dataFile: JDK21_RELEASE_ASSET,
-    dataSizeMB: 109,              // 114,267,146 bytes ≈ 109 MB
-    markerFile: 'release',
-    minMcVersion: '1.20.5',
-    maxMcVersion: '99.99',
-    available: true,
-    // SHA-256 校验和（v6 重编后回填，2026-05-19）
-    // 来源：本地编译 jdk21-ohos-full-v7.zip 后 sha256sum
-    sha256: '21556d0d4fc5eea09ba27068cf8a96803bb1667b35adbc8495fdc5f831316275',
-    // 下载引擎以此字节数作 size pre-check，mismatch 时立即失败重试下一镜像。
-    sizeBytes: 114267146,
-    giteeParts: [
-      'jdk21-ohos-full-v7.zip.part01of03',
-      'jdk21-ohos-full-v7.zip.part02of03',
-      'jdk21-ohos-full-v7.zip.part03of03',
-    ],
-    giteePartSizes: [38089048, 38089048, 38089050],
-  },
-  // JDK 25（2026-05-30）：MC 26.1+（YY.D.H 新纪元）首个要求 Java 25。
-  // 与 21 同构 8 个 OHOS patch（全部 __MUSL__ 门控），真 headless 模式。
-  // 详见 docs/adaptation/JDK25_ADAPTATION_ASSESSMENT.md。
-  // v2（2026-08-29）：相对 v1 **只替换了 lib/libnet.so**（IPv6 沙箱回落 patch），
-  //   包内其余 69 个文件逐字节相同。旧 tag v25.0.4-ohos-1 及其附件保持在线不动。
-  // ⚠️ sha256/sizeBytes 在本地编译 jdk25-ohos-full-v2.zip 后回填，并同步 deps.lock
-  //    [mc-ohos-resources-25]（CI 校验三处一致）。available 在 release 上传后置 true。
-  '25': {
-    tag: JDK25_RELEASE_TAG,
-    dataFile: JDK25_RELEASE_ASSET,
-    dataSizeMB: 113,              // 118,872,200 bytes ≈ 113 MB
-    markerFile: 'release',
-    minMcVersion: '26.1',         // YY.D.H 新纪元起点
-    maxMcVersion: '99.99',
-    available: true,              // v25.0.4-ohos-2 已上传 Release（2026-08-29）
-    // SHA-256 校验和（2026-08-29 重打包 jdk25-ohos-full-v2.zip 后 sha256sum）
-    sha256: 'd8e31df5d199a9b34d6d13c188b71af19c2fb1738da7bf3c6eeaed89a0a37538',
-    // 下载引擎以此字节数作 size pre-check，mismatch 时立即失败重试下一镜像。
-    sizeBytes: 118872200,
-    giteeParts: [
-      'jdk25-ohos-full-v2.zip.part01of03',
-      'jdk25-ohos-full-v2.zip.part02of03',
-      'jdk25-ohos-full-v2.zip.part03of03',
-    ],
-    giteePartSizes: [39624066, 39624066, 39624068],
-  },
-}
+// 运行时配置是已验证目录的内存投影。包摘要、分卷和版本列表的事实源在发布仓 JSON；
+// HAP 中只保留生成的可信快照。禁止在此重新追加版本/hash 条目。
+let JDK_VERSIONS: Record<string, JdkVersionConfig> = {};
 
 // ============================================================
 //  镜像源配置
@@ -322,6 +201,10 @@ export const MIRROR_TEMPLATES: string[] = [
 //   'gitee'  强制 Gitee（失败仍回退 GitHub 保证可用）
 //   'mirror' 只走 GitHub 代理镜像（跳过 Gitee），交给引擎按 RTT 选最快
 let g_jdkDownloadSource: string = 'auto'
+// 自有 JDK 来源独立 opt-in；关闭时目录和安装器都在创建网络任务前排除该来源。
+let g_jdkWebEnabled: boolean = false;
+export function setJdkWebEnabled(enabled: boolean): void { g_jdkWebEnabled = enabled; }
+export function isJdkWebEnabled(): boolean { return g_jdkWebEnabled; }
 
 /**
  * 加速下载是否生效（由 entry 层在握手成功/失败时注入）。
@@ -334,7 +217,7 @@ let g_accelActive: boolean = false
 
 /** 设置全局 JDK 下载源偏好（entry 层注入）。非法值归一到 'auto'。 */
 export function setJdkDownloadSource(src: string): void {
-  g_jdkDownloadSource = (src === 'github' || src === 'gitee' || src === 'mirror') ? src : 'auto'
+  g_jdkDownloadSource = (src === 'github' || src === 'gitee' || src === 'mirror' || src === 'web') ? src : 'auto'
 }
 
 /** 注入「加速下载是否真的可用」（握手成功且票据有效才为 true）。 */
@@ -374,10 +257,57 @@ export function getJdkDownloadSource(): string {
 // 多 JDK 真正并发互不影响。
 export class JdkManager {
   private context: Context;
+  private catalog: RuntimeCatalogRepository;
   private onStatus: JdkStatusCallback | null = null;
 
   constructor(context: Context) {
     this.context = context;
+    this.catalog = RuntimeCatalogRepository.instance(context);
+    this.synchronizeCatalog();
+  }
+
+  /** 将当前已验签推荐与磁盘已装槽位合并；目录下架不会删除用户可用安装。 */
+  synchronizeCatalog(): void {
+    const next: Record<string, JdkVersionConfig> = {};
+    for (const runtime of this.catalog.definitions()) {
+      const major = runtime.javaMajor.toString();
+      const build = this.catalog.buildFor(major);
+      if (build === undefined) {
+        // 目录暂不可用于下载时仍生成槽位。期望戳留空，避免展示旧稳定推荐或伪造更新结论；
+        // inspect 仍核对已有安装，用户导入和合法已装包不会因网络/缓存状态消失。
+        next[major] = { tag:'',dataFile:'',dataSizeMB:0,
+          markerFile:runtime.javaMajor === 8 ? 'jre/lib/rt.jar' : 'release',
+          minMcVersion:'',maxMcVersion:'',available:false,
+          unavailableReason:this.catalog.recommendationUnavailableReason() || '当前通道暂无可下载构建' };
+        continue;
+      }
+      const config: JdkVersionConfig = {
+        runtime:runtime, build:build, downloads:build.downloads, webEnabled:g_jdkWebEnabled,
+        downloadSource:getJdkDownloadSource(),
+        tag:build.legacyTags.length > 0 ? build.legacyTags[0] : build.id,
+        dataFile:build.archive.fileName, dataSizeMB:Math.ceil(build.archive.sizeBytes / 1048576),
+        markerFile:runtime.javaMajor === 8 ? 'jre/lib/rt.jar' : 'release',
+        minMcVersion:'', maxMcVersion:'', available:true,
+        sha256:build.archive.sha256, sizeBytes:build.archive.sizeBytes
+      };
+      next[major] = config;
+    }
+    try {
+      for (const major of fs.listFileSync(this.context.filesDir + '/jdk')) {
+        if (!isJdkSlotVersion(major) || next[major] !== undefined) continue;
+        const dir = this.context.filesDir + '/jdk/' + major;
+        if (validateRuntimeTree(dir,major) !== '') continue;
+        // 本地保留项没有下载描述，不能自动认领用户导入或恢复已经下架的远程包。
+        const local: JdkVersionConfig = { tag:this.readStamp_(dir),dataFile:'',dataSizeMB:0,
+          markerFile:major === '8' ? 'jre/lib/rt.jar' : 'release',minMcVersion:'',maxMcVersion:'',available:false,
+          unavailableReason:'当前通道未提供此槽位的下载；保留本地安装' };
+        next[major] = local;
+      }
+    } catch (e) { /* 首次启动尚无 jdk 目录。 */ }
+    JDK_VERSIONS = next;
+    const versions = Object.keys(next).sort((a: string,b: string): number => Number(a) - Number(b));
+    SUPPORTED_JDK_VERSIONS.length = 0;
+    for (const version of versions) SUPPORTED_JDK_VERSIONS.push(version);
   }
 
   setStatusCallback(cb: JdkStatusCallback) {
@@ -395,6 +325,7 @@ export class JdkManager {
   // ============================================================
 
   getJdkDir(version: string): string {
+    if (!isJdkSlotVersion(version)) throw new Error('无效 JDK 槽位');
     return this.context.filesDir + '/jdk/' + version
   }
 
@@ -403,57 +334,19 @@ export class JdkManager {
   // ============================================================
 
   /**
-   * JDK 是否已安装：marker file 存在 + 关键 .so 完整。
-   *
-   * 历史教训（2026-05-18）：JDK 21 v1 没打包 libawt_xawt.so，导致 Fabric Loader
-   * 错误对话框路径会触发 UnsatisfiedLinkError 把 MC 弄崩。v2-v5 用空 stub +
-   * patch 0009 各种花式绕路，最终发现根本走不通（Insets.initIDs 这个 native 在
-   * --enable-headless-only 编译下根本不存在）。
-   *
-   * v6 起改走真 headless 路径（-Djava.awt.headless=true + sun.awt.HeadlessToolkit），
-   * 不再需要 libawt_xawt.so stub。probe 只查通用三件套：libjvm.so + libjli.so + lib/modules。
-   *
-   * 详见 docs/archive/jdk21-awt-headless-journey-202605.md §5。
+   * 已安装判定读取共同文件/架构/主版本契约，再独立判断发行戳。
+   * 不执行候选代码，不把已有用户导入包误判为官方最新能力。
    */
-  // ⚠️ 本方法的 probe 列表被 JdkImporter.validateJdkTree() **逐项复现**（那边校验的是
-  //    还在 staging 里的候选目录，这边校验的是已发布的目标目录）。不变量是
-  //    「导入成功 ⇒ 本方法为真」，所以**改这里的 probe 必须同时改那边**，否则会出现
-  //    "导入提示成功、回到首页却说未安装"这种自相矛盾的状态。
   isInstalled(version: string): boolean {
     const info = JDK_VERSIONS[version]
-    if (!info) return false
+    if (!isJdkSlotVersion(version)) return false
     let dir = this.getJdkDir(version)
-    let markerPath = dir + '/' + info.markerFile
-    try {
-      fs.statSync(markerPath)
-    } catch (e) {
-      if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'JDK %{public}s not installed: marker not found at %{public}s', version, markerPath)
-      // 附加调试：列出已存在的目录内容
-      try {
-        let entries = fs.listFileSync(dir)
-        if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'JDK %{public}s dir contents: %{public}s', version, JSON.stringify(entries))
-      } catch (e2) {
-        if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'JDK %{public}s dir does not exist', version)
-      }
+    // 短头部校验与 staging 一致：文件存在不代表 native/boot 内容可用。
+    const contentError = validateRuntimeTree(dir, version)
+    if (contentError.length > 0) {
+      AppLogger.warn(TAG, `JDK ${version} content invalid: ${contentError}`, null, LOG_DOMAIN_LAUNCH)
       return false
     }
-    // 关键 .so 完整性 probe，按布局区分：
-    //   模块化（17/21/25）：lib/server/libjvm.so + lib/libjli.so + lib/modules
-    //   经典（JDK 8）：jre/lib/aarch64/server/libjvm.so + jre/lib/rt.jar
-    let classicLayout = false
-    try { fs.statSync(dir + '/jre/lib/aarch64/server/libjvm.so'); classicLayout = true } catch (e) { /* modular */ }
-    let probes: string[] = classicLayout
-      ? ['jre/lib/aarch64/server/libjvm.so', 'jre/lib/rt.jar']
-      : ['lib/server/libjvm.so', 'lib/libjli.so', 'lib/modules']
-    for (let probe of probes) {
-      try {
-        fs.statSync(dir + '/' + probe)
-      } catch (e) {
-        AppLogger.warn(TAG, `JDK ${version} incomplete: missing ${probe} — will re-download`, null, LOG_DOMAIN_LAUNCH)
-        return false
-      }
-    }
-    if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'JDK %{public}s installed: marker + probes OK', version)
     // release-tag 戳：**只有已知有害的旧包才判不可用**，其余一律容忍为可用。
     //
     // ⚠️ 2026-08-29 语义变更（判定抽到 JdkUpdatePolicy.ets，理由写在那个文件开头）：
@@ -462,6 +355,7 @@ export class JdkManager {
     // 下载 404 —— 磁盘上那份能用的 JDK 还在，却玩不了。
     // 现在：`stale-advisory` 仍返回 true（可用），由 JDK 管理页显示「更新」让用户自己决定；
     // 只有 `JdkVersionConfig.harmfulTags` 里显式列出的旧 tag 才 `stale-blocking`。
+    if (!info) return true; // 下架/离线时已安装的合法数字槽位仍能使用。
     const state = classifyJdkTag(this.tagInputFor_(version, dir, info))
     if (!isUsableState(state)) {
       AppLogger.warn(TAG,
@@ -482,8 +376,26 @@ export class JdkManager {
   }
 
   private tagInputFor_(version: string, dir: string, info: JdkVersionConfig): JdkTagInput {
+    let stamp = this.readStamp_(dir);
+    // 新 receipt 绑定 build/hash/推荐代次。用户导入优先，决不因为包恰好相同就自动托管。
+    if (!stamp.startsWith('imported:') && info.build !== undefined && info.runtime !== undefined) {
+      let receiptFound = false;
+      try {
+        const path = dir + '/.amcl-runtime-receipt.json';
+        const stat = fs.statSync(path); receiptFound = true;
+        if (!stat.isFile() || stat.size > 65536 || stat.size === 0) throw new Error('receipt 内容无效');
+        const receipt = JSON.parse(fs.readTextSync(path)) as RuntimeInstallReceipt;
+        if (receipt.schemaVersion === 1 && receipt.origin === 'catalog' && receipt.javaMajor.toString() === version &&
+          receipt.runtimeId === info.runtime.id) {
+          stamp = runtimeReceiptStamp(receipt, info.build, info.tag);
+        } else stamp = 'identity-mismatch:invalid-receipt';
+      } catch (e) {
+        // 不存在是旧安装的正常情况；存在但损坏不能退回同名戳冒充“当前已校验”。
+        if (receiptFound) stamp = 'identity-mismatch:invalid-receipt';
+      }
+    }
     return {
-      installedTag: this.readStamp_(dir),
+      installedTag: stamp,
       expectedTag: info.tag,
       harmfulTags: info.harmfulTags !== undefined ? info.harmfulTags : [],
     }
@@ -511,6 +423,13 @@ export class JdkManager {
     const state = classifyJdkTag(input)
     // ⚠️ 目录不存在时不要报「有新版本」：那会让一个**没装**的版本显示成"待更新"。
     const structurallyPresent = installed || state === 'stale-blocking'
+    const rollback = info.runtime !== undefined && info.runtime.rollback !== undefined;
+    const applies = runtimeRecommendationApplies(info.runtime,input.installedTag,rollback ? this.catalog.snapshot().builds : []);
+    const stateText = info.unavailableReason !== undefined
+      ? (state === 'user-import' ? '本地导入（不参与更新检查）；' : '') + info.unavailableReason
+      : rollback && structurallyPresent && state !== 'user-import'
+      ? (applies ? '回退修复：' + info.runtime!.rollback!.reason : '当前安装不在此次回退范围内')
+      : (structurallyPresent ? describeJdkTagState(state,input) : '推荐构建：' + info.tag);
     return {
       version,
       installed,
@@ -520,19 +439,21 @@ export class JdkManager {
       expectedTag: input.expectedTag,
       state,
       usable: installed,
-      offerUpdate: structurallyPresent && shouldOfferUpdate(state),
-      stateText: structurallyPresent ? describeJdkTagState(state, input) : '',
+      offerUpdate: info.available && structurallyPresent && shouldOfferUpdate(state) && applies,
+      stateText: stateText,
+      rollback: rollback && applies,
     }
   }
 
   listVersions(): JdkVersionInfo[] {
+    this.synchronizeCatalog();
     let result: JdkVersionInfo[] = []
     // 暴露所有上线版本；available=true 由 JDK_VERSIONS map 控制
     for (let ver of SUPPORTED_JDK_VERSIONS) {
       let info = JDK_VERSIONS[ver]
       if (!info) continue
       let ins = this.inspect(ver)
-      let sizeMB = ins.installed ? info.dataSizeMB : 0
+      let sizeMB = info.dataSizeMB
       result.push({
         version: ver,
         installed: ins.installed,
@@ -542,6 +463,7 @@ export class JdkManager {
         installedTag: ins.installedTag,
         expectedTag: ins.expectedTag,
         updateAvailable: ins.offerUpdate,
+        rollback: ins.rollback,
         userImported: ins.state === 'user-import',
         stateText: ins.stateText,
       })
@@ -549,27 +471,13 @@ export class JdkManager {
     return result
   }
 
-  /**
-   * 兜底 JDK 版本：当 MC 版本【无法判定纪元】（UNKNOWN：周快照 / 空 / 非法或纯中文目录名）
-   * 时使用。取【已发布的最高 JDK 版本】（当前为 25）。
-   *
-   * 理由（2026-06 决策，兜底从 17 改为最新版）：高版本 JDK 向后兼容、能跑低版本字节码，
-   * 而低版本 JDK 跑不了高版本字节码。无法判定版本时选最新版，最不容易因 class file version
-   * 不匹配（UnsupportedClassVersionError）闪退。若最新版未发布则自动取次高可用版本。
-   *
-   * 注意：这只影响"判定不出版本"的兜底分支；CLASSIC 纪元的 17/21 精确路由不受影响
-   * （老版本仍按需走 17，避免在 25 上跑 1.16 这类老版本的不兼容风险）。
-   */
+  /** 无法识别游戏版本时保留已有 25/21/17 路由，不让目录新增的最高主版本接管。 */
   private fallbackJdkVersion(): string {
-    let best = -1
-    let bestVer = SUPPORTED_JDK_VERSION
-    for (let ver of SUPPORTED_JDK_VERSIONS) {
-      let info = JDK_VERSIONS[ver]
-      if (!info || !info.available) continue
-      let n = parseInt(ver, 10)
-      if (!isNaN(n) && n > best) { best = n; bestVer = ver }
+    for (const version of ['25','21','17']) {
+      const info = JDK_VERSIONS[version];
+      if (info !== undefined && info.available) return version;
     }
-    return bestVer
+    return SUPPORTED_JDK_VERSION;
   }
 
   /**
@@ -799,13 +707,20 @@ export class JdkManager {
 
   deleteVersion(version: string): boolean {
     let dir = this.getJdkDir(version)
+    let writerLease: JdkDirectoryLease | null = null
+    let useLease: JdkDirectoryLease | null = null
     try {
+      writerLease = JdkDirectoryLease.writer(this.context.filesDir, version)
+      useLease = JdkDirectoryLease.publication(this.context.filesDir, version)
       removeDirRecursive(dir)
       AppLogger.info(TAG, `Deleted JDK ${version} at ${dir}`, LOG_DOMAIN_LAUNCH)
       return true
     } catch (e) {
       AppLogger.error(TAG, `Failed to delete JDK ${version}`, e, LOG_DOMAIN_LAUNCH)
       return false
+    } finally {
+      if (useLease !== null) useLease.release()
+      if (writerLease !== null) writerLease.release()
     }
   }
 
@@ -862,6 +777,7 @@ export class JdkManager {
    *   "已装则跳过下载"的幂等门（新语义下 tag 过期仍算已装），表现为点了瞬间说完成。
    */
   createInstaller(version: string, forceReinstall: boolean = false): JdkInstaller | null {
+    this.synchronizeCatalog();
     const config = JDK_VERSIONS[version]
     if (!config) {
       AppLogger.warn(TAG, `createInstaller: unknown JDK ${version}`, null, LOG_DOMAIN_LAUNCH)
@@ -874,7 +790,7 @@ export class JdkManager {
     return new JdkInstaller({
       context: this.context,
       version: version,
-      config: config,
+      config: JSON.parse(JSON.stringify(config)) as JdkVersionConfig,
       targetDir: this.getJdkDir(version),
       isInstalledFn: (): boolean => this.isInstalled(version),
       forceReinstall: forceReinstall,

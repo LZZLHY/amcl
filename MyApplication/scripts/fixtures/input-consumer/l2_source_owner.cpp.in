@@ -1,0 +1,217 @@
+/** 真Source/Core/typed backend/bridge/JNI provider；只有窗口资源与平台值由宿主显式提供。
+ * ring容量、Source候选、归约、控制票、前缀与消费者缓存不在本夹具实现。 */
+#include "input/amcl_input_api.h"
+#include "input/amcl_input_host_descriptor.h"
+#include "input/platform_input_ingress.h"
+#include "input/source/source_control_client.h"
+#include "input/delivery/control_delivery.h"
+#include "input/delivery/look_execution.h"
+#include "input/delivery/look_transport.h"
+#include "input/delivery/l2_keyboard_scope.h"
+#include "input/adapters/backend_input_bridge.h"
+#include "jvm/jni_registry.h"
+#include <jni.h>
+#include <windows.h>
+#include <vector>
+#include <cstring>
+#include <chrono>
+#include <thread>
+#include <string>
+#include <cstdio>
+#pragma comment(linker,"/export:amclCallbackBridgeHostGetV1")
+using namespace amcl::input;
+void inputBridge_l2SetActive(int);
+int inputBridge_l2NextEvent(int*,int*,int*,int*,int*);
+void inputBridge_setGrabState(int);
+int inputBridge_setInputReady(int);
+extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t);
+void inputBridge_pushEvent(int,int,int,int,int);
+static const AmclSourceControlPortV1* sourcePort;
+static uint64_t sourceProducer,rateStream;
+static AmclInputTextCoreResourceV1 ownedTextResource{};
+static uint64_t ownedTextKeyboardScope=0;
+static std::vector<jint> actualTrace;
+/** bridge的host-only SDL观察分支缺实际平台编译位；取正式已锁存route，绝不返回固定Ready。
+ * 本测试的L2 transport使用完整backend_input_bridge，未链接host stub归约或假事件。 */
+extern "C" int amclBackendInputHostStubTypedRouteActive(){return PlatformInputPhysicalRouteUsesTyped()?1:0;}
+/** 原错误直接交给真实JVM，不能把未Ready或Owner缺席吞为“无输入成功”。 */
+static bool require(JNIEnv* env,bool value,const char* message){
+    if(value)return true;env->ThrowNew(env->FindClass("java/lang/AssertionError"),message);return false;
+}
+static uint64_t now(){return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+/** 独立L2 DLL借primary真运输；这里只观测真实返回记录，不产生输入或决定顺序。 */
+extern "C" __declspec(dllexport) int sourceL2Next(int*t,int*a,int*b,int*c,int*d){
+    const int result=inputBridge_l2NextEvent(t,a,b,c,d);
+    if(result){actualTrace.push_back(*t);actualTrace.push_back(*a);actualTrace.push_back(*b);actualTrace.push_back(*c);actualTrace.push_back(*d);}return result;
+}
+extern "C" __declspec(dllexport) void sourceL2SetActive(int active){inputBridge_l2SetActive(active);}
+extern "C" __declspec(dllexport) void sourceSetGrab(int active){inputBridge_setGrabState(active);}
+/** Source原POD结果副本；accepted/transport/cache是不同事实，不在此改写结果。 */
+static jlongArray result(JNIEnv* env,const AmclSourceResultV1& value){
+    const jlong data[6]={static_cast<jlong>(value.owner),value.accepted,value.transportAccepted,value.status,value.finalEdges,value.deferredEdges};
+    auto array=env->NewLongArray(6);if(array)env->SetLongArrayRegion(array,0,6,data);return array;
+}
+static AmclSourceResultV1 transact(AmclSourceRequestV1 request){
+    request.size=sizeof(request);AmclSourceResultV1 value{};sourcePort->transact(sourceProducer,&request,&value);return value;
+}
+/** 只组织原platform文字lease；消费者仍是下面实际交付JAR/JNI，不在此创建键队列。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_ownedTextBegin(JNIEnv* env,jclass){
+    // 上一old/new场结束后701仍是实际活会话；显式完成原session，再建立新fixture请求。
+    if(PlatformInputOwnedTextSessionMatches(701)&&!require(env,PlatformInputTextSessionEnd(701),"L2_SOURCE finish prior701"))return;
+    const bool began=PlatformInputTextSessionBegin(700);const int read=amclInputOwnerReadTextResourceV1(&ownedTextResource);
+    ownedTextKeyboardScope=amclInputOwnerL2KeyboardScopeV1();
+    if(!began||read!=1){AmclInputSnapshotV1 facts{};facts.abiVersion=1;facts.structSize=sizeof(facts);amclInputGetHostApiV1()->getSnapshot(&facts);
+      std::fprintf(stderr,"L2 owned begin=%d read=%d core focus=%u active=%u consumers=%llu queue=%llu scope=%llu\n",began,read,
+        facts.focused,facts.sessionActive,(unsigned long long)facts.consumerCount,(unsigned long long)facts.queuedEventCount,(unsigned long long)ownedTextResource.scope);}
+    if(!require(env,began&&read==1,"L2_SOURCE actual owned text scope"))return;
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_ownedTextTap(JNIEnv* env,jclass){
+    AmclSourceResultV1 value{};
+    sourcePort->ownedTextKeyTapForKeyboard(sourceProducer,ownedTextResource.textSession,ownedTextResource.scope,ownedTextKeyboardScope,259,&value);
+    return result(env,value);
+}
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_ownedTextEnd(JNIEnv* env,jclass){
+    require(env,PlatformInputTextSessionEnd(700),"L2_SOURCE original text end");
+}
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_ownedTextAbort(JNIEnv* env,jclass){
+    require(env,PlatformInputTextSessionAbort(700),"L2_SOURCE original text abort");
+}
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_ownedTextFocus(JNIEnv*,jclass,jboolean active){
+    PlatformInputFocusChanged(active==JNI_TRUE);
+}
+/** 原scope tap已接受后，old commit→END→new START/commit在真实shared order中排队，暂不pump。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_ownedTextBoundary(JNIEnv* env,jclass){
+    const uint8_t oldText[]={'o'},newText[]={'n'};
+    if(!require(env,PlatformInputTextCommit(700,oldText,1)&&PlatformInputTextSessionEnd(700)&&
+        PlatformInputTextSessionBegin(701)&&PlatformInputTextCommit(701,newText,1),"L2_SOURCE actual old/new ordered text boundary"))return;
+}
+/** 真publisher/Core/ingress资源。ENV是本子进程选定的正式typed政策，不改用户环境。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_initialize(JNIEnv* env,jclass,jstring foreign){
+    _putenv_s("AMCL_INPUT_SHADOW","0");_putenv_s("AMCL_GLFW_INPUT_BACKEND","typed");
+    if(!require(env,amclInputHostDescriptorPublishV1(amclInputGetHostApiV1())==0,"L2_SOURCE real Core publication"))return;
+    amclControlDeliveryPublishV1();amclLookExecutionPublishV1();amclSourceControlPublishV1();
+    if(!require(env,amclSourceControlPrepareV1()==1&&amclSourceControlResolveV1(&sourcePort)==0&&
+        sourcePort->preparedProducer(AMCL_SOURCE_ENTRY,&sourceProducer)==0&&sourceProducer,"L2_SOURCE real prepared source"))return;
+    PlatformInputSurfaceCreated(800,600,1);PlatformInputFocusChanged(true);
+    AmclInputSurfaceContextPayload context{};context.generation=1;context.windowId=42;context.displayId=1;
+    context.widthPx=800;context.heightPx=600;context.density=1;
+    context.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    if(!require(env,PlatformInputSurfaceContextChanged(context),"L2_SOURCE original actual context"))return;
+    PlatformInputDeviceChanged(17,true,AMCL_INPUT_DEVICE_CAP_KEYBOARD);
+    // activation由实际JAR.createWindow→原JNI.nCreateWindow登记，初始化不代它提前Ready。
+    if(!require(env,amclControlDeliveryBindSessionV1(1)==0&&inputBridge_configureMenuCursorConsumerV1(2,1)==1,
+        "L2_SOURCE actual L2 plan/session"))return;
+    // 原setter返回wasReady而非新的准入结果，首次合法false→true必须为0；不能用它假判失败。
+    (void)inputBridge_setInputReady(1);
+    if(!require(env,publishCallbackBridgeHostV1(1)==JNI_OK,"L2_SOURCE actual callback registry publication"))return;
+    // 第二DLL包含真正Source/Core/bridge，借first prepared owner成功；其本地Core不能冒充。
+    const char* path=env->GetStringUTFChars(foreign,nullptr);if(!path)return;
+    const HMODULE peer=LoadLibraryA(path);env->ReleaseStringUTFChars(foreign,path);
+    using Getter=const AmclSourceControlPortV1*(*)();using Prepare=int(*)();
+    const auto getPeer=peer?reinterpret_cast<Getter>(GetProcAddress(peer,"amclSourceControlGetPortV1")):nullptr;
+    const auto preparePeer=peer?reinterpret_cast<Prepare>(GetProcAddress(peer,"amclSourceControlPrepareV1")):nullptr;
+    if(!require(env,getPeer&&preparePeer&&preparePeer()==1,"L2_SOURCE second real DLL borrows original prepared owner"))return;
+    const auto* other=getPeer();if(!require(env,other&&other->ownerHost!=sourcePort->ownerHost&&other->verifyOwner(other->ownerHost)<0,
+        "L2_SOURCE foreign local Core owner rejected"))return;
+    const std::string good=getenv(AMCL_SOURCE_CONTROL_ENV);char descriptor[128];
+    std::snprintf(descriptor,sizeof(descriptor),AMCL_SOURCE_CONTROL_PREFIX "%u:%llu",static_cast<unsigned>(GetCurrentProcessId()),
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(getPeer)));
+    _putenv_s(AMCL_SOURCE_CONTROL_ENV,descriptor);const AmclSourceControlPortV1* resolved=nullptr;
+    const bool refused=amclSourceControlResolveV1(&resolved)<0&&!resolved;
+    _putenv_s(AMCL_SOURCE_CONTROL_ENV,good.c_str());
+    require(env,refused&&amclSourceControlResolveV1(&resolved)==0&&resolved==sourcePort,"L2_SOURCE actual cross-DLL descriptor rejection and exact restoration");
+    // 保持模块句柄，生产client借用地址也不会卸载；这个fixture没有FreeLibrary。
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_acquire(JNIEnv* env,jclass,jint source,jstring control,jintArray codes){
+    AmclSourceRequestV1 request{};request.operation=AMCL_SOURCE_ACQUIRE;request.source=source;
+    const char* text=env->GetStringUTFChars(control,nullptr);if(!text)return nullptr;
+    const size_t length=std::strlen(text);if(length>=sizeof(request.control)){env->ReleaseStringUTFChars(control,text);require(env,false,"L2_SOURCE fixture control length");return nullptr;}
+    std::memcpy(request.control,text,length+1);env->ReleaseStringUTFChars(control,text);
+    const jsize count=env->GetArrayLength(codes);if(!require(env,count>=1&&count<=6,"L2_SOURCE fixture code count"))return nullptr;
+    jint values[6];env->GetIntArrayRegion(codes,0,count,values);request.count=count;
+    for(int i=0;i<count;++i)request.outputs[i]={values[i]>=0?0u:1u,values[i]>=0?values[i]:-values[i]-1};
+    return result(env,transact(request));
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_release(JNIEnv* env,jclass,jlong owner){
+    AmclSourceRequestV1 request{};request.operation=AMCL_SOURCE_RELEASE;request.owner=static_cast<uint64_t>(owner);return result(env,transact(request));
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_sourceSnapshot(JNIEnv* env,jclass){
+    AmclSourceSnapshotV1 snapshot{};if(!require(env,sourcePort->query(sourceProducer,0,nullptr,&snapshot)==0,"L2_SOURCE actual Source snapshot"))return nullptr;
+    const jlong data[9]={snapshot.owners,snapshot.outputs,snapshot.physical,snapshot.deferredEdges,
+        snapshot.held[0],snapshot.held[1],snapshot.held[2],snapshot.held[3],snapshot.held[4]};
+    auto array=env->NewLongArray(9);if(array)env->SetLongArrayRegion(array,0,9,data);return array;
+}
+/** 仅以原公开ring producer填非control字符，真budget负责接受/拒绝，不写假readCursor。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_fillPressure(JNIEnv*,jclass,jint count){
+    for(int i=0;i<count;++i)inputBridge_pushEvent(1000,65,0,0,0);
+}
+extern "C" JNIEXPORT jintArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_takeTransportTrace(JNIEnv* env,jclass){
+    auto array=env->NewIntArray(static_cast<jsize>(actualTrace.size()));if(array&&!actualTrace.empty())env->SetIntArrayRegion(array,0,static_cast<jsize>(actualTrace.size()),actualTrace.data());actualTrace.clear();return array;
+}
+/** 完整生产physical事务：不是直接inject typed owner或替身backendReady。typed不调用legacy callback。 */
+extern "C" JNIEXPORT jint JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_physical(JNIEnv*,jclass,jboolean down){
+    return PlatformInputPhysicalKeyTransaction(2017,37,0,down?AMCL_INPUT_ACTION_DOWN:AMCL_INPUT_ACTION_UP,
+        0,0,17,65,down?1:0,true,nullptr);
+}
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_velocity(JNIEnv* env,jclass,jboolean active){
+    const auto* look=amclLookExecutionGetPortV1();
+    if(!active){if(rateStream){require(env,look->submitVelocity(rateStream,0,0,now())==0&&look->retireStream(rateStream)==0,"L2_SOURCE retire original velocity");rateStream=0;}return;}
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=2;stream.kind=AMCL_LOOK_MAPPED_RATE;
+    stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;stream.device=9;stream.connection=1;
+    if(!require(env,inputBridge_getLookResourceV1(&stream.resource)==1&&look->openStream(&stream,&rateStream)==0&&
+        look->submitVelocity(rateStream,1080,0,now())==0,"L2_SOURCE original real velocity"))return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+/** 新零delta只封正式owner已有速率尾量；不手工创建token或MOVE记录。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_sealFuturePrefix(JNIEnv* env,jclass){
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));require(env,inputBridge_submitLookV1(0,0,0,0,1)==1,"L2_SOURCE actual future prefix");
+}
+
+/** 固定文案是UTF8输入样本，不在fixture实现codec；原Core负责scalar合法性与blob资源。 */
+extern "C" JNIEXPORT jboolean JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_unicodeCommit(JNIEnv*,jclass,jint sample){
+    static const uint8_t mixed[]={'A',0xe4,0xb8,0xad,0xe6,0x96,0x87,0xf0,0x9f,0x98,0x80,'Z'};
+    static const uint8_t emoji[]={0xf0,0x9f,0x98,0x80};
+    static const uint8_t surrogate[]={0xed,0xa0,0x80};
+    static const uint8_t outOfRange[]={0xf4,0x90,0x80,0x80};
+    static const uint8_t truncated[]={0xf0,0x9f};
+    const uint8_t* bytes=nullptr;uint32_t count=0;
+    switch(sample){case 0:bytes=mixed;count=sizeof(mixed);break;case 1:bytes=emoji;count=sizeof(emoji);break;
+        case 2:bytes=surrogate;count=sizeof(surrogate);break;case 3:bytes=outOfRange;count=sizeof(outOfRange);break;
+        case 4:bytes=truncated;count=sizeof(truncated);break;default:return JNI_FALSE;}
+    return PlatformInputTextCommit(700,bytes,count)?JNI_TRUE:JNI_FALSE;
+}
+/** legacy公开ring边缘允许整型载荷；真实Java边界拒绝非法值，合法sendChar(char)另走原JNI类。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_unicodeLegacy(JNIEnv*,jclass,jint scalar){
+    inputBridge_pushEvent(1000,scalar,0,0,0);
+}
+/** 原生产Core只读snapshot；不以fixture自存计数冒充blob释放或消费者退出。 */
+extern "C" JNIEXPORT jlongArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_unicodeCoreSnapshot(JNIEnv* env,jclass){
+    AmclInputSnapshotV1 snapshot{};snapshot.abiVersion=1;snapshot.structSize=sizeof(snapshot);
+    if(!require(env,amclInputGetHostApiV1()->getSnapshot(&snapshot)==0,"L2_UNICODE actual Core snapshot"))return nullptr;
+    const jlong values[]={static_cast<jlong>(snapshot.blobBytes),static_cast<jlong>(snapshot.queuedEventCount),
+        static_cast<jlong>(snapshot.heldControlCount),static_cast<jlong>(snapshot.consumerCount)};
+    auto array=env->NewLongArray(4);if(array)env->SetLongArrayRegion(array,0,4,values);return array;
+}
+/** initialize发布的原surface generation=1完整退场；调用生产入口，不直接关/清Core句柄。 */
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_unicodeSurfaceClose(JNIEnv*,jclass){
+    PlatformInputSurfaceDestroyed(1);
+}
+
+/** 原ingress完整TU焦点入口和生产cancel Core后缀；不实现另一套owner/FOCUS算法。
+ * 本场明确未执行XComponent整回调/完整touch cancel，仅闭Core后缀到Java消费接缝。 */
+extern "C" JNIEXPORT jboolean JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_focusBoundary(JNIEnv*,jclass,jint kind){
+    if(kind==2)return PlatformInputTextSessionEnd(700)?JNI_TRUE:JNI_FALSE;
+    PlatformInputFocusChanged(false);
+    PlatformInputRequestReset(AMCL_INPUT_RESET_FOCUS_LOST);
+    PlatformInputCapturePlatformChanged(false,AMCL_INPUT_CAPTURE_REASON_FOCUS_LOST);
+    PlatformInputCompleteResetBoundary();return JNI_TRUE;
+}
+/** 只读真正Core事实，不以fixture数值代Native资源或游戏采用。 */
+extern "C" JNIEXPORT jlongArray JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_focusFacts(JNIEnv* env,jclass){
+    AmclInputSnapshotV1 s{};s.abiVersion=1;s.structSize=sizeof(s);
+    if(!require(env,amclInputGetHostApiV1()->getSnapshot(&s)==0,"actual focus snapshot"))return nullptr;
+    const jlong values[]={s.focused,(jlong)s.focusEpoch,s.sessionActive,(jlong)amclInputOwnerL2KeyboardScopeV1(),
+        PlatformInputOwnedTextSessionMatches(700)?1LL:0LL,(jlong)s.queuedEventCount,(jlong)s.blobBytes};
+    auto out=env->NewLongArray(7);if(out)env->SetLongArrayRegion(out,0,7,values);return out;
+}

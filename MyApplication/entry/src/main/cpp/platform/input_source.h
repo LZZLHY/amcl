@@ -87,7 +87,7 @@ const char* amcl_input_source_name(AmclInputSource source);
 // ---------------------------------------------------------------------------
 // 视角量纲归一（本文件存在的第二个理由）
 //
-// `applyLookDelta` 是三端共用的唯一视角漏斗，但三端喂进去的**量纲互不相同**：
+// `source_look_processor`统一加工各端视角，投递与累计由调用方负责；输入量纲互不相同：
 //
 //   触控端    : XComponent 触点坐标差分，单位 = surface 物理 px
 //   物理键鼠端: ArkUI `MouseEvent.rawDeltaX/Y`。官方明确它是「鼠标硬件的原始移动
@@ -95,10 +95,10 @@ const char* amcl_input_source_name(AmclInputSource source);
 //               缩小了 X 倍（X = 系统显示大小比例）**，26.0.0 起为原始值。
 //   手柄端    : 摇杆归一化量 × RIGHT_STICK_LOOK_GAIN，无物理长度含义。
 //
-// 三者共用同一条 `s_lookSensitivity` / 加速曲线 / 守恒 backlog，于是任何一端调优
-// 都会破坏另外两端 —— 这是一个结构性缺陷，不是手感问题。
+// 配置、时钟与守恒backlog现已按source分桶。传统布局setter广播兼容默认参数，
+// 单端setter只影响指定来源；一个鼠标样本不能冲刷触控或手柄尚未输出的尾量。
 //
-// 本函数是修这件事的**接缝**：每个端在进入公共漏斗之前先乘上自己的归一系数。
+// 本函数保留端级量纲标定接缝：每端进入公共processor前乘自己的归一系数。
 //
 // ⚠️ 当前三端一律返回 1.0，即**行为与引入本文件之前逐位相同**。这是刻意的：
 // 现有手感是用户已经验收过的，在没有真机标定数据之前改动系数只会把"架构调整"
@@ -112,7 +112,7 @@ double amcl_input_source_look_scale(AmclInputSource source);
 // 按端的**平滑系数**（本文件存在的第三个理由，2026-08-22 / 计划 §78）
 //
 // 与上面的量纲系数是同一个问题的第二个面：四件套（灵敏度 / Y 倒置 / 平滑 / 加速）
-// 此前也是三端共享的**一份**全局值，而 `s_lookSmoothAlpha` 的默认 0.6 来自
+// 历史全局平滑默认值0.6来自
 // 虚拟按键布局（`ControlLayout.ets` 的 `DEFAULT_LOOK_SMOOTHING`）——
 // 它要抑制的是**手指抖动**与触点量化噪声。
 //

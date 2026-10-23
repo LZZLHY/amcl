@@ -204,6 +204,7 @@ function parseElf(path) {
     sections.push({
       nameOff: b.readUInt32LE(o),
       type: b.readUInt32LE(o + 4),
+      flags: b.readBigUInt64LE(o + 8),
       offset: Number(b.readBigUInt64LE(o + 24)),
       size: Number(b.readBigUInt64LE(o + 32)),
       link: b.readUInt32LE(o + 40),
@@ -231,7 +232,9 @@ function parseElf(path) {
     const name = stName ? cstr(dynstr.offset, stName) : '';
     if (!name) continue;
     const bind = stInfo >> 4;
-    const rec = { name, bind, shndx: stShndx };
+    // I11私有协议必须是真正可装载的代码导出；同名字符串、UND、OBJECT或隐藏项均无效。
+    const rec = { name, bind, shndx: stShndx, type: stInfo & 0x0f, visibility: b[o + 5] & 3,
+      value: b.readBigUInt64LE(o + 8), executable: Boolean((sections[stShndx]?.flags ?? 0n) & 4n) };
     all.push(rec);
     if (stShndx !== SHN_UNDEF && (bind === STB_GLOBAL || bind === STB_WEAK)) defined.add(name);
     else if (stShndx === SHN_UNDEF) undef.add(name);
@@ -304,12 +307,21 @@ if (opt.mcJar) console.log(`  mc  : ${opt.mcJar}`);
 console.log('');
 
 const elf = parseElf(opt.so);
+const validCodeExport = (name) => elf.all.some((symbol) => symbol.name === name && symbol.shndx !== SHN_UNDEF &&
+  (symbol.bind === STB_GLOBAL || symbol.bind === STB_WEAK) && symbol.type === 2 &&
+  (symbol.visibility === 0 || symbol.visibility === 3) && symbol.value > 0n && symbol.executable);
+// 先校准标准SDL动态函数，才能把缺私有标识解释为旧输入协议；版本与实际同映像调用由runtime核。
+const inputStandardExport = validCodeExport('SDL_GetVersion');
+const inputControlExport = validCodeExport('SDL_AMCL_InputControlProtocolV1');
+// look-v1 是独立私有能力；不能用原 common-control 标识给旧 SDK 冒充不可变 prefix 出口。
+const inputLookExport = validCodeExport('SDL_AMCL_InputLookProtocolV1');
 console.log('=== ELF ===');
 console.log(`  大小      : ${elf.size} B (${(elf.size / 1048576).toFixed(2)} MB)`);
 console.log(`  machine   : 0x${elf.machine.toString(16)} ${elf.machine === EM_AARCH64 ? '(AArch64) ✅' : '❌ 期望 AArch64(0xb7)'}`);
 console.log(`  SONAME    : ${elf.soname ?? '(无)'} ${elf.soname === 'libSDL3.so' ? '✅' : '❌ 期望 libSDL3.so'}`);
 console.log(`  NEEDED    : ${elf.needed.join(', ')}`);
 console.log(`  导出符号  : ${elf.defined.size}   未定义符号: ${elf.undef.size}`);
+console.log(`  输入冷协议: standard=${inputStandardExport ? 'calibrated' : 'invalid'} common-v1-marker=${inputControlExport ? 'exported-code' : 'missing-or-invalid'} look-v1-marker=${inputLookExport ? 'exported-code' : 'missing-or-invalid'}`);
 
 const { map: bindingMap, funcClasses } = buildBindingMap(opt.jar);
 const sdlAll = new Set();
@@ -462,6 +474,7 @@ if (opt.json) {
   writeFileSync(opt.json, JSON.stringify({
     so: opt.so, size: elf.size, machine: elf.machine, soname: elf.soname,
     needed: elf.needed, exported: elf.defined.size, undefined: elf.undef.size,
+    inputStandardExport, inputControlExport,
     bindingFunctionsClasses: funcClasses, bindingSymbols: sdlAll.size,
     mcClasses, mcSource, requiredSymbols: required.size,
     missingRequired, missingAll, upstreamBindingBugs,
@@ -477,6 +490,9 @@ const fatals = [];
 if (elf.machine !== EM_AARCH64) fatals.push('machine 不是 AArch64');
 if (elf.soname !== 'libSDL3.so') fatals.push(`SONAME 不是 libSDL3.so（是 ${elf.soname}）—— 构建时加 -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON`);
 if (missingRequired.length) fatals.push(`必需符号缺 ${missingRequired.length} 个`);
+if (!inputStandardExport) fatals.push('I11 SDL_GetVersion不是有效可执行动态函数导出，不能校准输入协议');
+if (!inputControlExport) fatals.push('I11 SDL_AMCL_InputControlProtocolV1缺失或不是有效可执行动态函数导出');
+if (!inputLookExport) fatals.push('I12 SDL_AMCL_InputLookProtocolV1缺失或不是有效可执行动态函数导出');
 if (n1.length) fatals.push(`出现 ${n1.length} 个 libc++ 命名空间符号`);
 if (hasLibcxx) fatals.push('NEEDED 含 libc++');
 if (!hasOhosDriver) fatals.push(`产物里找不到任何已知的 OHOS video 后端描述串（认这些：${OHOS_BACKENDS.map(b => `"${b.desc}"`).join(' / ')}）`);

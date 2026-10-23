@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "amcl_create_thread_probe",
+  "version": "1.0.0",
+  "name": "AMCL Create Thread Device Probe (QA only)",
+  "description": "Explicitly enabled isolated-world QA for actual Create packet entry points and native processors.",
+  "environment": "client",
+  "mixins": ["amcl-create-thread-probe.mixins.json"],
+  "depends": {
+    "fabricloader": "0.19.5",
+    "minecraft": "26.2",
+    "java": ">=25",
+    "create": "*"
+  }
+}

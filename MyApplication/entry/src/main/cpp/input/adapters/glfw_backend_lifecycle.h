@@ -5,6 +5,15 @@
 
 namespace amcl::input {
 
+// READY 表示存在可实际投递的呈现输入目标，不表示 GLFW 库已经初始化。
+// LWJGL2 仍可借同一呈现 GLFW 窗口运行其视角职责；不能按消费者名称互斥。
+// 此纯判定供窗口前端与宿主测试共用，辅助/隐藏/失效 surface 不取得输入消费资格。
+inline bool GlfwHasPresentedInputTarget(bool hasWindow, bool auxiliary,
+                                        bool visible, bool surfaceReady,
+                                        bool terminal) {
+    return hasWindow && !auxiliary && visible && surfaceReady && !terminal;
+}
+
 // POD by design: GLFWwindow is currently zero-initialized as raw storage.  Do
 // not add constructors or non-trivial members without first removing that
 // allocation contract from glfwCreateWindow.

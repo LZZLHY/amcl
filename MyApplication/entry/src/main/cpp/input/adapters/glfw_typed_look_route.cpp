@@ -36,6 +36,29 @@ bool GlfwTypedLookRoute::Latch(GlfwTypedLookSink sink) {
 
 bool GlfwTypedLookRoute::HasSink() const { return sink_ != nullptr; }
 
+bool GlfwTypedLookRoute::LatchTimed(GlfwTimedLookSink sink) {
+    if (!sink) return false;
+    if (timedSink_) return timedSink_ == sink;
+    timedSink_ = sink;
+    return true;
+}
+
+bool GlfwTypedLookRoute::HasTimedSink() const { return timedSink_ != nullptr; }
+
+GlfwTypedLookStatus GlfwTypedLookRoute::ApplyTimed(
+        double dx, double dy, uint64_t monotonicTimeNs) {
+    // 与旧入口同一数值拒绝语义；时间有符号上限来自公共processor，不允许截断成负数。
+    GlfwTypedLookStatus status = GlfwTypedLookStatus::kApplied;
+    if (!std::isfinite(dx) || !std::isfinite(dy)) status = GlfwTypedLookStatus::kNonFinite;
+    else if (monotonicTimeNs == 0u || monotonicTimeNs > INT64_MAX)
+        status = GlfwTypedLookStatus::kInvalidTimestamp;
+    else if (!timedSink_) status = GlfwTypedLookStatus::kNoSink;
+    else if (!timedSink_(dx, dy, monotonicTimeNs)) status = GlfwTypedLookStatus::kSinkRejected;
+    if (status != GlfwTypedLookStatus::kApplied)
+        rejectCount_.fetch_add(1u, std::memory_order_relaxed);
+    return status;
+}
+
 GlfwTypedLookStatus GlfwTypedLookRoute::Apply(double dx, double dy) {
     const auto reject = [this](GlfwTypedLookStatus status) {
         rejectCount_.fetch_add(1u, std::memory_order_relaxed);

@@ -38,12 +38,16 @@ const load = makePureEtsLoader({
   './LaunchContractPreflight': {},
   './LaunchAgentProbe': {},
 });
-const { lwjglSlotClasspath, lwjglSlotJarNames } = load('launch/src/main/ets/RuntimeSlotClasspath.ets');
+const { lwjglSlotClasspath: slotClasspath, lwjglSlotJarNames: slotJarNames } = load('launch/src/main/ets/RuntimeSlotClasspath.ets');
 const { LWJGL_MODERN_JARS } = load('launch/src/main/ets/LwjglModernSlot.ets');
-const { lwjglRuntimeSlot } = load('launch/src/main/ets/LwjglRuntimeSlots.ets');
+const { lwjglRuntimeSlot: selectSlot } = load('launch/src/main/ets/LwjglRuntimeSlots.ets');
 const { LaunchProfileBuilder } = load('launch/src/main/ets/LaunchProfileBuilder.ets');
 const { lwjglGenerationDirectory } = load('launch/src/main/ets/RuntimeSlotGenerations.ets');
 const root = '/fixture/.minecraft';
+// 显式 Java feature 是 modern 内容选择的一部分，旧槽保持独立身份。
+const lwjglSlotJarNames = directory => slotJarNames(directory, 17);
+const lwjglSlotClasspath = directory => slotClasspath(directory, 17);
+const lwjglRuntimeSlot = directory => selectSlot(directory, 17);
 const modernNames = LWJGL_MODERN_JARS.map((jar) => jar.name);
 assert.deepEqual(lwjglSlotJarNames(root + '/lwjgl-ohos'), modernNames);
 assert.equal(modernNames.includes('lwjgl-jemalloc.jar'), false, 'modern 必须保持已验证的 allocator 回退');
@@ -77,7 +81,7 @@ present.add(root + '/libraries/' + ordinaryLibrary);
 present.add(root + '/libraries/' + officialLwjgl);
 
 for (const slot of ['lwjgl-ohos', 'lwjgl-ohos-322', 'lwjgl-ohos-2']) {
-  const directory = lwjglGenerationDirectory(root, slot);
+  const directory = lwjglGenerationDirectory(root, slot, 17);
   const expected = lwjglSlotClasspath(directory);
   for (const jar of expected) present.add(jar);
   present.add(directory + '/foreign.jar');

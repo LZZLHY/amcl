@@ -1,0 +1,73 @@
+/**
+ * 实际Window context producer→host core的CLI接缝。每次进程按输入历史顺序重放当前生产API，
+ * 输出真实消费事件和core snapshot；不替身判断sameGen是否可更新，也不复制其比较算法。
+ * 宿主只建立一个活跃surface和LEFT owner，以检测纯刷新元数据是否意外触发RESET或丢持有。
+ */
+#include "amcl_input_api.h"
+#include "platform_input_ingress.h"
+#include <cstdlib>
+#include <iostream>
+#include <sstream>
+#include <string>
+
+#define CHECK(e) do { if(!(e)){std::cerr<<"CHECK failed "<<__LINE__<<": "<<#e<<'\n';return 1;} } while(0)
+
+int main() {
+#ifdef _WIN32
+    CHECK(_putenv_s("AMCL_INPUT_SHADOW", "") == 0);
+    CHECK(_putenv_s("AMCL_GLFW_INPUT_BACKEND", "") == 0);
+#else
+    CHECK(unsetenv("AMCL_INPUT_SHADOW") == 0);
+    CHECK(unsetenv("AMCL_GLFW_INPUT_BACKEND") == 0);
+#endif
+    const auto* api=amclInputGetHostApiV1();
+    CHECK(api);
+    amcl::input::PlatformInputSurfaceCreated(2800u,1840u,99u);
+    AmclInputConsumerHandle consumer=0;
+    CHECK(api->openConsumer(&consumer)==AMCL_INPUT_OK);
+    AmclInputSurfaceContextPayload consumed{};
+    uint64_t contextEvents=0,resetEvents=0;
+    bool held=false;
+    std::string line;
+    while(std::getline(std::cin,line)) {
+        std::istringstream input(line);
+        AmclInputSurfaceContextPayload context{};
+        CHECK(input>>context.windowId>>context.displayId>>context.leftPx>>context.topPx>>context.widthPx>>context.heightPx
+            >>context.density>>context.refreshRateHz>>context.transform>>context.validFields>>context.generation);
+        const bool accepted=amcl::input::PlatformInputSurfaceContextChanged(context);
+        // 初始密度安装自身允许有真实surface RESET；完成它后才建立被观测的LEFT owner。
+        if(accepted&&!held) {
+            amcl::input::PlatformInputDeviceChanged(42u,true,AMCL_INPUT_DEVICE_CAP_POINTER_BUTTONS,AMCL_INPUT_DEVICE_CLASS_MOUSE);
+            CHECK(amcl::input::PlatformInputPointerButton(42u,1u,AMCL_INPUT_ACTION_DOWN,0,AMCL_INPUT_DEVICE_CLASS_MOUSE,1u)!=0u);
+            held=true;
+        }
+        for(;;) {
+            AmclInputEvent event{};
+            const int result=api->nextEvent(consumer,&event);
+            if(result==AMCL_INPUT_EMPTY)break;
+            CHECK(result==AMCL_INPUT_OK);
+            if(event.header.eventType==AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED){consumed=event.payload.surfaceContext;++contextEvents;}
+            if(event.header.eventType==AMCL_INPUT_EVENT_RESET)++resetEvents;
+        }
+        // 同代显示元数据只更新Core当前快照，不制造触控CONTEXT/RESET事件。
+        // 公共snapshot前缀不含context，因此用真实late-consumer baseline读取最新当前事实。
+        AmclInputConsumerHandle late=0;
+        CHECK(api->openConsumer(&late)==AMCL_INPUT_OK);
+        for(;;) {
+            AmclInputEvent event{};const int result=api->nextEvent(late,&event);
+            if(result==AMCL_INPUT_EMPTY)break;
+            CHECK(result==AMCL_INPUT_OK);
+            if(event.header.eventType==AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED)consumed=event.payload.surfaceContext;
+        }
+        CHECK(api->closeConsumer(late)==AMCL_INPUT_OK);
+        AmclInputSnapshotV1 snapshot{};snapshot.abiVersion=AMCL_INPUT_HOST_API_VERSION;snapshot.structSize=sizeof(snapshot);
+        CHECK(api->getSnapshot(&snapshot)==AMCL_INPUT_OK);
+        // JSON只序列化实际出口事实，Node层按各条生产调用返回记录进行断言。
+        std::cout<<"{\"accepted\":"<<(accepted?"true":"false")<<",\"generation\":"<<consumed.generation
+            <<",\"hz\":"<<consumed.refreshRateHz<<",\"fields\":"<<consumed.validFields<<",\"width\":"<<consumed.widthPx
+            <<",\"contextEvents\":"<<contextEvents<<",\"resetEvents\":"<<resetEvents<<",\"held\":"<<snapshot.heldControlCount
+            <<",\"surfaceEpoch\":"<<snapshot.surfaceEpoch<<",\"focusEpoch\":"<<snapshot.focusEpoch<<"}\n";
+    }
+    CHECK(api->closeConsumer(consumer)==AMCL_INPUT_OK);
+    return 0;
+}

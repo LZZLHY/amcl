@@ -72,10 +72,13 @@ bool openRegularNoFollow(const std::string& path, int& fd, struct stat& st,
 bool hashFd(int fd, std::string& digest, int& read_errno) {
     Sha1 hasher;
     std::vector<char> buf(64 * 1024);
+    off_t offset = 0;
     while (true) {
-        ssize_t n = ::read(fd, buf.data(), buf.size());
+        // 固定从零读取，校验不改变调用者持有的 fd 偏移。
+        ssize_t n = ::pread(fd, buf.data(), buf.size(), offset);
         if (n > 0) {
             hasher.update(buf.data(), static_cast<size_t>(n));
+            offset += n;
             continue;
         }
         if (n == 0) {
@@ -140,43 +143,34 @@ DownloadExceptionPtr FileChecker::check(const std::string& local_path) const {
         return makeException(ErrorKind::FileIoError, open_error);
     }
 
+    auto result = checkFd(fd);
+    int close_errno = 0;
+    if (!closeChecked(fd, close_errno)) return makeException(ErrorKind::FileIoError,
+        "close failed: " + local_path + " errno=" + std::to_string(close_errno));
+    return result;
+}
+
+DownloadExceptionPtr FileChecker::checkFd(int fd) const {
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
+        return makeException(ErrorKind::FileIoError, "checker requires an open regular file");
     const int64_t actual_size = static_cast<int64_t>(st.st_size);
     if (expected_size >= 0 && actual_size != expected_size) {
-        int close_errno = 0;
-        if (!closeChecked(fd, close_errno)) {
-            return makeException(ErrorKind::FileIoError,
-                                 "close failed: " + local_path +
-                                 " errno=" + std::to_string(close_errno));
-        }
         return makeException(ErrorKind::SizeMismatch,
                              "expected " + std::to_string(expected_size) +
                              " got " + std::to_string(actual_size));
     }
 
     if (expected_sha1.empty()) {
-        int close_errno = 0;
-        if (!closeChecked(fd, close_errno)) {
-            return makeException(ErrorKind::FileIoError,
-                                 "close failed: " + local_path +
-                                 " errno=" + std::to_string(close_errno));
-        }
         return nullptr;
     }
 
     std::string actual;
     int read_errno = 0;
     const bool read_ok = hashFd(fd, actual, read_errno);
-    int close_errno = 0;
-    const bool close_ok = closeChecked(fd, close_errno);
     if (!read_ok) {
         return makeException(ErrorKind::FileIoError,
-                             "sha1 read failed: " + local_path +
-                             " errno=" + std::to_string(read_errno));
-    }
-    if (!close_ok) {
-        return makeException(ErrorKind::FileIoError,
-                             "close failed after sha1 read: " + local_path +
-                             " errno=" + std::to_string(close_errno));
+                             "sha1 read failed errno=" + std::to_string(read_errno));
     }
 
     const std::string exp_lower = lowerAscii(expected_sha1);

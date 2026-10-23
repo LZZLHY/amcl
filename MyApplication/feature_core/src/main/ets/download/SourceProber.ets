@@ -45,6 +45,10 @@ const PROBE_ASSET_PREFIX = 'bd';
 const PREFER_MOJANG_MAX_RTT_MS = 4000;
 
 let cachedRanking: SourceRanking | null = null;
+/** 偏好/清缓存撤销旧请求的发布权；只取消观察，不谎称底层HTTP已经abort。 */
+let probeGeneration: number = 0;
+let activeProbeGeneration: number = -1;
+let activeProbe: Promise<SourceRanking> | null = null;
 
 // ============================================================================
 //  版本下载源偏好（2026-08-04 新增）
@@ -86,6 +90,7 @@ export function setMcSourcePreference(mode: string): void {
   let normalized = normalizeMode(mode);
   if (normalized === sourcePreference) return;
   sourcePreference = normalized;
+  probeGeneration++;
   // 偏好变了就丢掉探测缓存：从 official/mirror 切回 auto 时，应该重新探一次，
   // 而不是沿用切换之前那份可能已过时的排名。
   cachedRanking = null;
@@ -129,7 +134,7 @@ async function probeSource(id: string, name: string, baseUrl: string, url: strin
  * 探测所有源的可用性和延迟。
  * 使用一个已知的 asset 小文件做 Range:bytes=0-0 请求（只取 1 字节），测 RTT。
  */
-export async function probeAllSources(): Promise<SourceRanking> {
+async function runSourceProbe(generation: number): Promise<SourceRanking> {
   AppLogger.info(TAG, 'Starting source probe...');
 
   let bmclapiUrl = BMCLAPI_BASE + '/assets/' + PROBE_ASSET_PREFIX + '/' + PROBE_ASSET_HASH;
@@ -189,11 +194,28 @@ export async function probeAllSources(): Promise<SourceRanking> {
     return ranking;
   }
 
-  cachedRanking = ranking;
+  // await期间用户可能已切偏好或明确清缓存。旧调用者仍能收到其结果，但只有当前
+  // 代次有权写公共缓存，不能把切回auto后的新意图覆盖为旧网络结论。
+  if (generation === probeGeneration) cachedRanking = ranking;
   AppLogger.info(TAG, 'Source probe complete (PCL2 rule: official-first unless official >= '
     + PREFER_MOJANG_MAX_RTT_MS + 'ms): bmclapiFirst=' + (bmclapiFirst ? 'true' : 'false')
     + ' bmclapiRtt=' + bmclapi.rttMs + ' mojangRtt=' + mojang.rttMs);
   return ranking;
+}
+
+/**
+ * 同一代次只发一组探测。启动、安装、修复同时请求排名时共享进行中的工作；
+ * 代次变化允许新探测，旧Promise结束仅能释放自己的引用，不能清掉新代次的请求。
+ */
+export function probeAllSources(): Promise<SourceRanking> {
+  if (activeProbe !== null && activeProbeGeneration === probeGeneration) return activeProbe;
+  const generation = probeGeneration;
+  const pending = runSourceProbe(generation);
+  activeProbe = pending;
+  activeProbeGeneration = generation;
+  const release = (): void => { if (activeProbe === pending) activeProbe = null; };
+  pending.then(release, release);
+  return pending;
 }
 
 /**
@@ -258,5 +280,6 @@ export function buildSortedUrls(bmclapiUrl: string, mojangUrl: string): string[]
 }
 
 export function clearCache(): void {
+  probeGeneration++;
   cachedRanking = null;
 }

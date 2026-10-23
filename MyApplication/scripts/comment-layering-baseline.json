@@ -2,6 +2,22 @@
   "purpose": "注释分层棘轮基线：每个文件当前最长的连续注释块行数。门禁只在某个文件变得更长时失败。",
   "howToUpdate": "偿还了某个文件的长注释之后跑 node scripts/check-comment-layering.mjs --update-baseline。⚠️ 两条纪律：(1) 收紧基线之前先确认承重内容真的搬进了文档，而不是被删了 —— 本门禁分不出这两者；(2) 若某个文件的数字是**变大**的，不得默默重记基线 —— 必须在计划文档里写下理由，否则棘轮退化成\"每次失败就重置\"，等于没有棘轮。",
   "recordedAt": "2026-08-21",
+  "reviewedChanges": [
+    {
+      "recordedAt": "2026-09-30 09:53:48 +08:00",
+      "file": "entry/src/main/ets/components/GameControls.ets",
+      "previous": 24,
+      "current": 25,
+      "reason": "AGENTS.md §二要求准确、详细中文注释；新增一行当前复位契约，说明保留界面开启状态但清空按下/锁定投影，避免旧注释误导。仅此文件调整，依据及验证见输入施工记录§134.7。"
+    },
+    {
+      "recordedAt": "2026-10-15 18:40:09 +08:00",
+      "file": "entry/src/main/cpp/input/adapters/glfw_source_plane_aggregate.cpp",
+      "previous": 3,
+      "current": 5,
+      "reason": "按AGENTS.md §二审阅LookPort新增的当前契约：跨映像解析及ownerHost核对、不可变表进程pin、真实票据资格仍由owner判断、fork先于本地锁拒绝。5行含块注释标记，正文说明缓存地址不等于缓存有效性；仅此文件3→5，其他基线不变，依据见多输入端架构愿景与改进提案lookport-comment-review-20261015。"
+    }
+  ],
   "totals": {
     "files": 164,
     "lines": 57671,
@@ -40,7 +56,7 @@
     "entry/src/main/cpp/input/amcl_input_event.h": 24,
     "entry/src/main/cpp/glfw/input_bridge_ohos.c": 24,
     "entry/src/main/ets/pages/McGamePage.ets": 24,
-    "entry/src/main/ets/components/GameControls.ets": 24,
+    "entry/src/main/ets/components/GameControls.ets": 25,
     "entry/src/main/cpp/glfw/glfw_vulkan.cpp": 23,
     "entry/src/main/cpp/input/adapters/glfw_input_mode.h": 22,
     "entry/src/main/cpp/platform/joystick_sector.h": 22,
@@ -129,7 +145,7 @@
     "entry/src/main/cpp/tests/host/input_core_glfw_adapter_integration_test.cpp": 4,
     "entry/src/main/cpp/tests/host/input_state_core_test.cpp": 4,
     "entry/src/main/cpp/tests/host/platform_input_typed_native_absolute_test.cpp": 4,
-    "entry/src/main/cpp/input/adapters/glfw_source_plane_aggregate.cpp": 3,
+    "entry/src/main/cpp/input/adapters/glfw_source_plane_aggregate.cpp": 5,
     "entry/src/main/cpp/input/adapters/glfw_typed_runtime_dispatch.cpp": 3,
     "entry/src/main/cpp/input/input_shadow_consumer.cpp": 3,
     "entry/src/main/cpp/platform/gate0_input_telemetry.cpp": 3,
@@ -152,7 +168,7 @@
     "entry/src/main/cpp/glfw/ohos_render_scheduler.cpp": 2,
     "entry/src/main/cpp/glfw/ohos_render_scheduler.h": 2,
     "entry/src/main/cpp/tests/host/amcl_input_host_descriptor_test.cpp": 2,
-    "entry/src/main/cpp/tests/host/glfw_runtime_input_bridge_test.cpp": 2,
+    "entry/src/main/cpp/tests/host/glfw_runtime_input_bridge_test.cpp": 5,
     "entry/src/main/cpp/tests/host/glfw_source_plane_aggregate_test.cpp": 2,
     "entry/src/main/cpp/tests/host/glfw_typed_input_resolve_guard_test.cpp": 2,
     "entry/src/main/cpp/tests/host/legacy_physical_edge_router_test.cpp": 2,

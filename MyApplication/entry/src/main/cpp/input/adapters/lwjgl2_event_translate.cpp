@@ -110,6 +110,14 @@ extern "C" int amclTranslateBackendEventToLwjgl2(const AmclBackendInputEvent* ev
             return 1;
         }
 
+        case AMCL_BACKEND_INPUT_EVENT_FOCUS:
+            if (event->action > 1u) { *outRemainder = remainder; *out = wire; return 0; }
+            wire.type = AMCL_LWJGL2_WIRE_FOCUS_TYPED;
+            wire.i1 = static_cast<int32_t>(event->action);
+            *outRemainder = event->action ? remainder : 0.0;
+            *out = wire;
+            return 1;
+
         case AMCL_BACKEND_INPUT_EVENT_RESET:
             // 复位必须清余量，否则跨会话残量让下一次会话的第一格提前触发（§86.5 同形：
             // typed 滚轮那半边此前一个复位点都没有）。

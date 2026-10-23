@@ -1,827 +1,850 @@
 /**
- * ModpackInstaller.ets — 整合包安装编排器（P2：Modrinth .mrpack 闭环）
- *
- * 文档：docs/guides/modpack-install-plan.md §七.2
- *
- * 流程（installFromArchive）：
- *   1. 解压 archive 到临时目录（zlib，复用 feature_core decompressFile）
- *   2. 读清单（modrinth.index.json / manifest.json）→ 解析为 ModpackPlan
- *   3. 版本名去重（与 existingVersions 比对，冲突追加序号）
- *   4. 建带 loader 的隔离版本（McVersionTask.start()，内部跑 prepare→...→modloader→merge）
- *   5. 按 file.path 批量下文件到 versions/<name>/（DownloadManager.createAndWait）；
- *      失败文件进 missing 清单（决策4：装能装的，不整包失败）
- *   6. 铺 overrides（递归复制 overrides/ 再 client-overrides/，后者覆盖前者）
- *   7. 写快照（.amcl-modpack.json）
- *   8. 清理临时目录
- *
- * 设计要点：
- *   - 复用现有积木：McVersionTask（建版本+装 loader）/ DownloadManager（批量下载）/
- *     decompressFile（解压）。整合包文件路径非固定 mods/，故**不复用 ModInstaller.installBatch**，
- *     按 file.path 自行构造 DownloadFileSpec。
- *   - P2 仅走 Modrinth；CurseForge（需 fileID→url 解析）留 P5，遇到先抛清晰提示。
- *   - 特殊脚本/推荐参数解析留 P6；P2 的 overrides 全量保真复制已能保留 scripts/kubejs/config。
- *
- * 创建日期：2026-06-15
+ * 整合包安装编排器：持久准备清单、确认选择、独占实例安装和原实例补齐。
+ * 安装只持有数据和服务；页面可随时销毁。取消先等待下载/解压/基础版本收敛，再清理自有材料。
+ * 缺失文件保留精确身份并提交部分收据；目录、格式或持久记录错误属于致命失败，保留恢复现场。
  */
-
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { ActivityLogger } from 'commons';
-import { LOG_DOMAIN_DOWNLOAD } from 'commons';
-import { removeDirRecursive } from 'commons';
-import {
-  DownloadManager,
-  DownloadFileSpec,
-  DownloadTaskSpec,
-  DownloadTaskView,
-  DownloadFailedFile,
-  DownloadCheck,
-  McVersionTask,
-  ModLoaderType,
-  decompressFile,
-  UnifiedTaskView,
-} from 'feature_core';
-import {
-  ModpackPlan, ModpackFile, ModpackLoader,
-  parseModrinthIndex, parseCurseForgeManifest, safeRelPath, safeBaseName,
-} from './ModpackManifest';
+import { ActivityLogger, LOG_DOMAIN_DOWNLOAD, ensureDirSync, removeDirRecursive,
+  MODPACK_PENDING_FILE } from 'commons';
+import { DownloadManager, DownloadFileSpec, DownloadTaskSpec, DownloadTaskView,
+  McVersionTask, ModLoaderType, decompressFile, UnifiedTaskView, computeFileSha1, computeFileSha512,
+  claimVersionInstall, newVersionInstallOwner } from 'feature_core';
+import { ModpackPlan, ModpackFile, ModpackLoader, ModpackEnv, ModpackProblem,
+  parseModrinthIndex, parseCurseForgeManifest, safeRelPath, safeBaseName, modpackFileKey } from './ModpackManifest';
 import { mirrorifyModrinthCdn } from './ModrinthUrls';
-import {
-  ModpackSnapshot, ModpackMissingItem, writeModpackSnapshot, MODPACK_ICON_FILE,
-} from './ModpackSnapshot';
+import { ModpackSnapshot, ModpackMissingItem, writeModpackSnapshot, readModpackSnapshot,
+  MODPACK_ICON_FILE } from './ModpackSnapshot';
 import { processModpackLaunchConfig } from './ModpackPostProcessor';
+import { ModpackInstallSession, ModpackOverrideReceipt, modpackWorkDir, saveModpackSession, loadModpackSession,
+  writeModpackJsonAtomic, ModpackSourceReceipt, saveModpackSource, loadModpackSource } from './ModpackInstallSession';
 
 const TAG = 'ModpackInstaller';
-
-/**
- * 全局基础版本构建锁。并发安装多个整合包时,"建基础版本"这段必须串行,因为：
- *   ① DownloadTask 用共享的 `mcDir/download-temp`,`cleanTempDir()` 删整个目录——
- *      并发时第二个会删掉第一个正在用的 vanilla json/jar（实测 RLCraft 被 ATM9 冲掉）。
- *   ② Forge 安装 fork 一个嵌入式 JVM,同进程无法并发跑两个 JVM。
- * 仅串行"建基础版本";archive 下载 / CF 解析 / mod 批量下载仍并发（互不冲突）。
- */
-let baseBuildLock_: Promise<void> = Promise.resolve();
-
-/** CurseForge 文件解析结果（projectID/fileID → 下载直链 + 文件名）。 */
+/** CF 文件的精确解析结果；目录来自模块/项目元数据，绝不把 ZIP 一律塞进 mods。 */
 export interface CfFileResolution {
   size: number;
   sha1?: string;
-  /** 下载 URL（含镜像，按优先级）。 */
   urls: string[];
-  /** 文件名（用于落 mods/<filename>）。 */
   filename: string;
+  targetDirectory: string;
 }
+export type CfFileResolver = (projectId: number, fileId: number, gameVersion: string, loader: string) => Promise<CfFileResolution>;
 
-/** CurseForge 文件解析器（由调用方用已构造的 CF 仓库提供，解耦 installer）。
- *  gameVersion/loader 供"精确 fileId 已删除时回退到兼容版本"使用。 */
-export type CfFileResolver = (
-  projectId: number, fileId: number, gameVersion: string, loader: string,
-) => Promise<CfFileResolution>;
-
-/** 安装请求。 */
+/** 一次安装的不可变来源上下文。sessionId 用于重试/进程恢复，不能用显示标题当身份。 */
 export interface ModpackInstallRequest {
-  /** 整合包 archive（.mrpack / .zip）的真实沙箱路径。若为空则用 archiveUrl 先下载。 */
   archivePath?: string;
-  /** 在线安装：整合包 archive 的下载地址（archivePath 为空时使用）。 */
   archiveUrl?: string;
-  /** 在线安装：archive 的镜像备源（与 archiveUrl 一起做多源容错）。 */
   archiveMirrors?: string[];
-  /** 在线安装：保存的文件名（默认从 URL 推断）。 */
   archiveFilename?: string;
-  /** .minecraft 根目录（不带尾部 /）。 */
+  displayName?: string;
+  archiveSha1?: string;
+  archiveSha512?: string;
+  archiveSize?: number;
   mcDir: string;
-  /** 应用 filesDir（McVersionTask / loader 安装需要）。 */
   filesDir: string;
-  /** 已存在的版本名（用于去重）。 */
   existingVersions: string[];
-  /** 覆盖默认版本名（默认取整合包名）。 */
   versionName?: string;
-  /** 在线安装时的项目 id（写入快照，更新用）。 */
   projectId?: string;
-  /** 在线安装时的项目图标 URL（安装后下载到版本目录，版本列表/详情显示用）。 */
+  sourceVersionId?: string;
+  sessionId?: string;
   iconUrl?: string;
-  /** CurseForge 文件解析器（CF 整合包必需；Modrinth 不需要）。 */
+  selectedOptional?: string[];
   resolveCfFile?: CfFileResolver;
-  /** 阶段进度回调（P3 adapter 用）。phase ∈ pack/extracting/preparing/resolving/base/files/overrides/done */
   onPhase?: (p: ModpackProgress) => void;
 }
-
-/** 阶段进度详情（供 UI 显示进度条颗粒度 / 速度 / 字节 / 剩余时间）。 */
 export interface ModpackProgress {
   phase: string;
   message: string;
-  /** 单位计数（文件数等），无则 0。 */
   current: number;
   total: number;
-  /** 字节进度（archive 下载 / 基础版本 / 文件批量），未知 0。 */
   bytesDone: number;
   bytesTotal: number;
-  /** 当前速度 B/s，未知/空闲 0。 */
   speedBps: number;
-  /** 剩余秒数，-1 未知。 */
   etaSeconds: number;
-  /** 阶段内细粒度进度 0~1（base/files 用于驱动总进度条），未知 -1。 */
   innerProgress: number;
 }
-
-/** 安装结果。 */
 export interface ModpackInstallResult {
   versionName: string;
   plan: ModpackPlan;
   missing: ModpackMissingItem[];
   warnings: string[];
-  /** 整合包推荐 JVM 参数（user_jvm_args.txt 解析，空串=无）。 */
   recommendedJvmArgs: string;
-  /** 推荐最大内存 MB（从 -Xmx 解析，0=无）。 */
   recommendedMaxMemMb: number;
 }
-
-/** reserveAndBuildBase_ 的返回：最终落地的版本名 + 目录。 */
-interface VersionReservation {
-  versionName: string;
-  versionDir: string;
-}
+/** 实例标记只包含 owner；完整计划保存在应用私有工作根。 */
+interface ModpackPendingOwner { id: string; }
 
 export class ModpackInstaller {
-  /**
-   * 归属的活动主键（活动账本 · L2-b）；0 = 不归属。
-   * 由 ModpackInstallTask 用 view.startedAtMs 赋值。
-   */
   activityId: number = 0;
+  private session_: ModpackInstallSession | undefined = undefined;
+  private cancelled_: boolean = false;
+  private dmIds_: number[] = [];
+  private baseTasks_: McVersionTask[] = [];
+  private activeBase_: McVersionTask | undefined = undefined;
 
-  /**
-   * `activityId` 对应的 logger 缓存（活动账本 · 缺陷 1 修复）。
-   * `ActivityLogger.activityId` 是 readonly，而本类的 `activityId` 是构造后才被
-   * 赋值的，因此只能在用的时候比对、变了再重建。
-   */
-  private alogCache_: ActivityLogger = new ActivityLogger(0);
+  getSession(): ModpackInstallSession | undefined { return this.session_; }
+  beginAttempt(): void { this.cancelled_ = false; }
+  isCancelled(): boolean { return this.cancelled_; }
 
-  /** 取绑定当前活动的 logger；`activityId` 变了会自动重建。 */
-  private alog(): ActivityLogger {
-    if (this.alogCache_.id() !== this.activityId) {
-      this.alogCache_ = new ActivityLogger(this.activityId);
-    }
-    return this.alogCache_;
-  }
-  private ownedDmTaskIds_: number[] = [];
-  private ownedBaseTasks_: McVersionTask[] = [];
-
-  private rememberDmTask_(taskId: number): void {
-    if (taskId > 0 && this.ownedDmTaskIds_.indexOf(taskId) < 0) {
-      this.ownedDmTaskIds_.push(taskId);
-    }
+  /** 只发取消请求；调用方仍须等待当前执行 Promise 和 native owner 释放后再允许删除。 */
+  requestCancel(): void {
+    this.cancelled_ = true;
+    for (let id of this.dmIds_) { try { DownloadManager.instance().cancel(id); } catch (e) { /* 已结束 */ } }
+    const base = this.activeBase_;
+    if (base !== undefined) base.cancel(false).catch((): void => {});
   }
 
-  /** 释放本复合安装器历次 archive/icon/files/base 子任务的 native owner。 */
+  private checkCancelled_(): void {
+    if (this.cancelled_) throw new Error('整合包安装已取消');
+  }
+
+  /** 保留无法释放的 owner；失败时上层不得清理或启动下一轮。 */
   purgeNativeOwners(): boolean {
-    let retainedIds: number[] = [];
-    let dm = DownloadManager.instance();
-    for (let taskId of this.ownedDmTaskIds_) {
-      let purged = false;
-      try { purged = dm.purgeTask(taskId); } catch (e) { purged = false; }
-      if (!purged) retainedIds.push(taskId);
+    let ids: number[] = [];
+    for (let id of this.dmIds_) {
+      let done = false;
+      try { done = DownloadManager.instance().purgeTask(id); } catch (e) { /* 保留 */ }
+      if (!done) ids.push(id);
     }
-    this.ownedDmTaskIds_ = retainedIds;
-
-    let retainedBase: McVersionTask[] = [];
-    for (let task of this.ownedBaseTasks_) {
-      let purged = false;
-      try { purged = task.purgeNativeOwner(); } catch (e) { purged = false; }
-      if (!purged) retainedBase.push(task);
+    this.dmIds_ = ids;
+    let bases: McVersionTask[] = [];
+    for (let base of this.baseTasks_) {
+      let done = false;
+      try { done = base.purgeNativeOwner(); } catch (_) { /* 基础任务的桥异常同样保留owner。 */ }
+      if (!done) bases.push(base);
     }
-    this.ownedBaseTasks_ = retainedBase;
-    return retainedIds.length === 0 && retainedBase.length === 0;
+    this.baseTasks_ = bases;
+    return ids.length === 0 && bases.length === 0;
   }
 
   /**
-   * 从 archive 安装整合包。
-   * @throws Error 致命失败（解压失败 / 清单非法 / 基础版本建立失败）。文件级失败不抛，进 missing。
+   * native 终态通知不等于文件句柄已释放。执行中的 prepare/execute/cancel 调用栈
+   * 默认持续持有 Registry/实例预约，直到所有 dmId 和基础安装 owner 实际退出。
+   * 显式只探测清理的调用者可传 false，维持原约30秒失败且不删除材料的行为；
+   * purgeNativeOwners 仍是同步、可拒绝的清理入口，不将有限超时伪装成空闲。
    */
-  async installFromArchive(req: ModpackInstallRequest): Promise<ModpackInstallResult> {
-    // 同一个 token 同时隔离归档下载与解压目录，避免并发安装互删同名 archive/解压产物。
-    let stamp = Date.now().toString() + '-' + Math.floor(Math.random() * 1000000).toString();
-    let tempDir = req.filesDir + '/modpack-temp/' + stamp;
-    let archiveStagingDir = req.filesDir + '/modpack-cache/.staging-' + stamp;
-    let archivePath = '';
-
-    this.phase_(req, 'pack', '正在准备整合包文件...', 0, 1);
-
-    // 本次新建的版本目录（仅致命失败时回滚清理；成功 / 文件级失败都保留）
-    let createdVersionDir = '';
-    try {
-      // 0. 本地路径优先；在线归档只写本次安装独占的 staging，并由 finally 清理。
-      archivePath = await this.resolveArchive_(req, archiveStagingDir, stamp);
-      this.phase_(req, 'extracting', '正在解压整合包...', 0, 1);
-
-      // 1. 解压
-      try { removeDirRecursive(tempDir); } catch (e) { /* */ }
-      ensureDir(tempDir);
-      await decompressFile(archivePath, tempDir);
-      // 解压后定位整合包根（支持清单在解压根或单层子目录里）+ 校验清单存在
-      let baseDir = findModpackRoot(tempDir);
-      if (baseDir.length === 0) {
-        throw new Error('无效整合包：未找到 modrinth.index.json 或 manifest.json');
-      }
-      let manifestKind = detectManifestKind(baseDir);
-
-      // 2. 解析
-      this.phase_(req, 'preparing', '正在解析清单...', 0, 1);
-      let parsed = parseManifestFromDir(baseDir, manifestKind);
-      let plan = parsed.plan;
-      let warnings = parsed.warnings;
-      let missing: ModpackMissingItem[] = [];
-
-      // CurseForge：文件无直链，先用解析器把 (projectID, fileID) → 下载 URL + 文件名
-      if (plan.source === 'curseforge') {
-        if (req.resolveCfFile === undefined) {
-          throw new Error('CurseForge 整合包需要文件解析器（内部错误）');
-        }
-        this.phase_(req, 'resolving', '正在解析 CurseForge 文件...', 0, plan.files.length);
-        await this.resolveCfFiles_(req, plan, missing);
-      }
-
-      // 3+4. 在基础版本构建锁内：算唯一名 + 占位目录 + 建带 loader 的隔离版本。
-      //      去重与占位必须串行（见 baseBuildLock_ 注释），否则并发安装会算出同名互相覆盖。
-      let baseName = (req.versionName !== undefined && req.versionName.length > 0) ? req.versionName : plan.name;
-      this.phase_(req, 'base', '正在创建基础版本（含加载器）...', 0, 1);
-      let reserved = await this.reserveAndBuildBase_(plan, baseName, req);
-      let versionName = reserved.versionName;
-      let versionDir = reserved.versionDir;
-      createdVersionDir = versionDir;
-
-      this.alog().info(TAG, `install start: name=${versionName} mc=${plan.gameVersion} loader=${plan.loaderType}/${plan.loaderVersion} files=${plan.files.length}`, LOG_DOMAIN_DOWNLOAD);
-
-      // 4.5 清理残留：Fabric/Quilt 安装会按约定名(fabric-loader-<l>-<g>)另建一个版本目录,
-      // 整合包用自定义版本名时它会变成残留。仅当该约定名版本是【本次新建】(不在 existingVersions)
-      // 且 != 整合包版本名时删除,绝不误删用户原有的同名加载器版本。
-      this.cleanupStrayLoaderVersion_(plan, versionName, req);
-
-      // 5. 批量下文件 → versions/<name>/<file.path>
-      let installedFiles: string[] = [];
-      await this.downloadFiles_(req, plan, versionDir, missing, installedFiles);
-
-      // 6. 铺 overrides（异步复制，避免大整合包上千文件同步复制阻塞 JS 线程）
-      this.phase_(req, 'overrides', '正在应用覆盖文件...', 0, 1);
-      let overrideFiles: string[] = [];
-      for (let od of plan.overrideDirs) {
-        let src = baseDir + '/' + od;
-        if (dirExists(src)) {
-          await copyTreeContents(src, versionDir, overrideFiles);
+  async settleNativeOwners(retainOwner: boolean = true): Promise<void> {
+    let attempt = 0;
+    while (true) {
+      if (this.purgeNativeOwners()) return;
+      if (!retainOwner && attempt >= 120) throw new Error('整合包下载仍在收敛，已保留文件，请稍后继续');
+      if (retainOwner) {
+        // 先等当前全部直接文件 ID；循环重新核验基础安装 owner，不能清空其集合
+        // 或仅等待 activeBase_，后者可早于基础 Native 的真正收尾被解除。
+        for (const id of this.dmIds_.slice()) await DownloadManager.instance().awaitTaskReleased(id, true);
+        if (this.purgeNativeOwners()) return;
+        if (attempt === 120) {
+          try { new ActivityLogger(this.activityId).warn(TAG,
+            '整合包 owner 收敛超过30秒，继续保留执行资格和实例预约', null, LOG_DOMAIN_DOWNLOAD); }
+          catch (_) { /* 诊断日志失败不能放走仍持有资源的执行栈。 */ }
         }
       }
-
-      // 6.5 特殊脚本/推荐参数（决策5）：解析 Forge user_jvm_args.txt（已随 overrides 落地）
-      let post = processModpackLaunchConfig(versionDir);
-      for (let n of post.notes) warnings.push(n);
-
-      // 7. 写快照
-      let snap: ModpackSnapshot = {
-        source: plan.source,
-        projectId: req.projectId,
-        name: versionName,
-        packVersion: plan.packVersion,
-        gameVersion: plan.gameVersion,
-        loaderType: plan.loaderType,
-        loaderVersion: plan.loaderVersion,
-        installedFiles,
-        overrideFiles,
-        missing,
-        installedAt: Date.now(),
-        recommendedJvmArgs: post.recommendedJvmArgs,
-        recommendedMaxMemMb: post.recommendedMaxMemMb,
-      };
-      writeModpackSnapshot(versionDir, snap);
-
-      // 下载整合包图标到版本目录（best-effort，供版本列表/详情显示；失败不影响安装）
-      if (req.iconUrl !== undefined && req.iconUrl.length > 0) {
-        await this.downloadIcon_(req.iconUrl, versionDir);
-      }
-
-      this.phase_(req, 'done', '整合包安装完成', 1, 1);
-      this.alog().info(TAG, `install done: ${versionName} (${installedFiles.length} files, ${missing.length} missing)`, LOG_DOMAIN_DOWNLOAD);
-
-      return {
-        versionName, plan, missing, warnings,
-        recommendedJvmArgs: post.recommendedJvmArgs,
-        recommendedMaxMemMb: post.recommendedMaxMemMb,
-      };
-    } catch (e) {
-      // 致命失败：回滚本次新建的半成品版本目录，避免版本列表里残留坏版本。
-      // 名字是本次去重后保证唯一、不在 existingVersions 的，删它不会动用户原有版本。
-      if (createdVersionDir.length > 0) {
-        try { removeDirRecursive(createdVersionDir); } catch (ee) { /* */ }
-      }
-      throw e as Error;
-    } finally {
-      // 8. 只清理本次安装独占的目录；本地导入 archive 从未位于其中，不会被误删。
-      try { removeDirRecursive(tempDir); } catch (e) { /* */ }
-      try { removeDirRecursive(archiveStagingDir); } catch (e) { /* */ }
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 250); });
+      attempt++;
     }
   }
 
-  // ============================================================
-  //  内部
-  // ============================================================
+  private remember_(id: number): void {
+    if (id > 0 && this.dmIds_.indexOf(id) < 0) this.dmIds_.push(id);
+    if (this.cancelled_) { try { DownloadManager.instance().cancel(id); } catch (e) { /* 已结束 */ } }
+  }
 
   /**
-   * 解析出可用的本地 archive 路径：
-   * - 若 req.archivePath 指向存在的文件 → 直接用（本地导入）。
-   * - 否则下载到本次安装独占的 archiveStagingDir，finally 必定清理。
+   * 下载并验证归档、解析清单与 CF 文件信息，然后原子保存可确认的计划。
+   * 已有 session 只从原工作根恢复；不会重新选择包版本或另建 (2) 实例。
    */
-  private async resolveArchive_(req: ModpackInstallRequest, archiveStagingDir: string,
-    installToken: string): Promise<string> {
-    if (req.archivePath !== undefined && req.archivePath.length > 0 && fileExists(req.archivePath)) {
-      return req.archivePath;
-    }
-    let url = req.archiveUrl ?? '';
-    if (url.length === 0) {
-      throw new Error('整合包来源无效：缺少本地路径与下载地址');
-    }
-    let filename = req.archiveFilename ?? '';
-    if (filename.length === 0) {
-      let q = url.indexOf('?');
-      let clean = q >= 0 ? url.substring(0, q) : url;
-      filename = clean.substring(clean.lastIndexOf('/') + 1);
-      if (filename.length === 0) filename = 'modpack.mrpack';
-    }
-    let safeArchiveFilename = safeBaseName(filename);
-    if (safeArchiveFilename.length === 0 || safeArchiveFilename !== filename) {
-      throw new Error('整合包 archiveFilename 不安全');
-    }
-    filename = safeArchiveFilename;
-    // 每次安装使用独占目录；不要在共享 cache 中 unlink 固定文件名，否则并发安装会互删。
-    ensureDir(archiveStagingDir);
-    let dest = archiveStagingDir + '/' + filename;
-
-    this.phase_(req, 'pack', '正在下载整合包文件...', 0, 1);
-    // 多源容错：archiveUrl 主源 + archiveMirrors 备源（对齐 ModInstaller 多源策略）
-    let archiveUrls: string[] = [url];
-    if (req.archiveMirrors !== undefined) {
-      for (let m of req.archiveMirrors) {
-        if (m.length > 0 && archiveUrls.indexOf(m) < 0) archiveUrls.push(m);
+  async prepare(req: ModpackInstallRequest): Promise<ModpackInstallSession> {
+    if (this.session_ !== undefined) return this.session_;
+    let id = req.sessionId ?? newVersionInstallOwner();
+    let work = modpackWorkDir(req.filesDir, id);
+    if (fileExists(work + '/session.json')) {
+      let restored = loadModpackSession(req.filesDir, id);
+      if (req.versionName !== undefined && req.versionName.length > 0 && safeBaseName(req.versionName) === req.versionName) {
+        // 用户可在版本管理中重命名实例；只有新目录收据的安装身份相同才允许迁移恢复指针。
+        let moved = readModpackSnapshot(req.mcDir + '/versions/' + req.versionName);
+        if (moved?.installId === id) { restored.versionName = req.versionName; restored.mcDir = req.mcDir; }
       }
+      if (restored.mcDir !== req.mcDir) throw new Error('恢复计划与当前安装根不一致');
+      // 新计划把用户在下载详情选择的名称和包作者名称分开保存。旧会话没有此字段时，
+      // 继续使用它原有的最终目录/清单名，不能套用今天的默认名重建另一实例。
+      req.versionName = restored.requestedVersionName ?? req.versionName;
+      this.session_ = restored;
+      return restored;
     }
-    let archiveSpecFile: DownloadFileSpec = {
-      localPath: dest,
-      urls: archiveUrls,
-      allowedRoot: archiveStagingDir,
-    };
-    // 多源才多段（对齐 ModInstaller：单源不设 maxConnections，避免单源多段 Range 边界）
-    if (archiveUrls.length > 1) archiveSpecFile.maxConnections = 8;
-    let spec: DownloadTaskSpec = {
-      name: 'modpack-archive: ' + filename + ' [' + installToken + ']',
-      files: [archiveSpecFile],
-      activityId: this.activityId,
-    };
-    try {
-      await DownloadManager.instance().createAndWait(spec, (v: DownloadTaskView): void => {
-        this.rememberDmTask_(v.taskId);
-        let inner = v.bytesTotal > 0 ? v.bytesDone / v.bytesTotal : -1;
-        this.phase_(req, 'pack', '正在下载整合包文件...', 0, 1,
-          v.bytesDone, v.bytesTotal, v.speedBps, v.etaSeconds, inner);
+    ensureDirSync(work);
+    if (fileExists(work + '/source.json')) {
+      let saved = loadModpackSource(req.filesDir, id);
+      if (saved.mcDir !== req.mcDir) throw new Error('归档恢复来源与安装根不一致');
+      req.archivePath = saved.archivePath; req.archiveUrl = saved.archiveUrl;
+      req.archiveMirrors = saved.archiveMirrors; req.archiveSha1 = saved.archiveSha1;
+      req.archiveSha512 = saved.archiveSha512; req.archiveSize = saved.archiveSize;
+      req.projectId = saved.projectId; req.sourceVersionId = saved.sourceVersionId; req.iconUrl = saved.iconUrl;
+      req.versionName = saved.requestedVersionName ?? req.versionName;
+    } else {
+      let source: ModpackSourceReceipt = { schemaVersion: 1, id: id, mcDir: req.mcDir,
+        title: req.displayName ?? req.archiveFilename ?? '整合包', requestedVersionName: req.versionName,
+        archivePath: req.archivePath,
+        archiveUrl: req.archiveUrl, archiveMirrors: req.archiveMirrors, archiveSha1: req.archiveSha1,
+        archiveSha512: req.archiveSha512, archiveSize: req.archiveSize, projectId: req.projectId,
+        sourceVersionId: req.sourceVersionId, iconUrl: req.iconUrl };
+      saveModpackSource(req.filesDir, source);
+    }
+    this.checkCancelled_();
+    this.phase_(req, 'pack', '正在准备整合包归档', 0, 1);
+    let archive = work + '/archive.zip';
+    if (req.archivePath !== undefined && req.archivePath.length > 0) {
+      // 复制到任务独占目录，用户再次导入同名文件不能改变已排队任务的输入。
+      await fs.copyFile(req.archivePath, archive);
+    } else {
+      if ((req.archiveUrl ?? '').length === 0) throw new Error('整合包来源无效');
+      let urls: string[] = [req.archiveUrl!];
+      for (let url of (req.archiveMirrors ?? [])) if (urls.indexOf(url) < 0) urls.push(url);
+      let file: DownloadFileSpec = { localPath: archive, allowedRoot: work, urls: urls,
+        check: { sha1: req.archiveSha1, size: req.archiveSize } };
+      let spec: DownloadTaskSpec = { name: 'modpack-archive:' + id, files: [file], activityId: this.activityId };
+      await DownloadManager.instance().createAndWait(spec, (view: DownloadTaskView): void => {
+        this.remember_(view.taskId);
+        this.phase_(req, 'pack', '正在下载整合包归档', view.filesDone, view.filesTotal, view);
       });
-    } catch (e) {
-      let err = e as Error;
-      throw new Error('整合包文件下载失败：' + (err.message !== undefined ? err.message : String(e)));
     }
-    return dest;
+    await this.settleNativeOwners();
+    this.checkCancelled_();
+    // 本地输入也核对已提供的归档元数据；SHA-1 已足以绑定来源归档和其中 overrides。
+    if (req.archiveSize !== undefined && req.archiveSize > 0 && fs.statSync(archive).size !== req.archiveSize) {
+      throw new Error('整合包归档大小与所选文件不一致');
+    }
+    if (req.archiveSha1 !== undefined && req.archiveSha1.length > 0
+      && (await computeFileSha1(archive)).toLowerCase() !== req.archiveSha1.toLowerCase()) {
+      throw new Error('整合包归档 SHA-1 与所选文件不一致');
+    }
+    if (req.archiveSha512 !== undefined && req.archiveSha512.length > 0
+      && (await computeFileSha512(archive)).toLowerCase() !== req.archiveSha512.toLowerCase()) {
+      throw new Error('整合包归档 SHA-512 与所选文件不一致');
+    }
+    this.checkCancelled_();
+    this.phase_(req, 'extracting', '正在解压归档；取消会等待此步骤安全结束', 0, 1);
+    let extracted = work + '/extracted';
+    // 这是本任务独占目录，平台解压 Promise 收敛后才允许下一次重建。
+    removeDirRecursive(extracted);
+    ensureDirSync(extracted);
+    await decompressFile(archive, extracted);
+    this.checkCancelled_();
+    let baseDir = findModpackRoot(extracted);
+    if (baseDir.length === 0) throw new Error('未找到客户端 Modrinth/CurseForge 整合包清单');
+    let kind = detectManifestKind(baseDir);
+    let parsed = kind === 'modrinth'
+      ? parseModrinthIndex(fs.readTextSync(baseDir + '/modrinth.index.json'))
+      : parseCurseForgeManifest(fs.readTextSync(baseDir + '/manifest.json'));
+    let session: ModpackInstallSession = {
+      schemaVersion: 1, id: id, mcDir: req.mcDir, versionName: '', requestedVersionName: req.versionName, plan: parsed.plan,
+      warnings: parsed.warnings, missing: parsed.plan.problems.slice(), selectedOptional: [],
+      confirmed: false, baseReady: false, overridesApplied: false, complete: false,
+      installedFiles: [], overrideFiles: [], projectId: req.projectId ?? '',
+      sourceVersionId: req.sourceVersionId ?? '', archiveSha1: req.archiveSha1 ?? '',
+      archiveSize: fs.statSync(archive).size, iconUrl: req.iconUrl ?? '', createdAt: Date.now(),
+    };
+    this.session_ = session;
+    // 先保存原始计划，即使 CF 查询期间取消/退出，仍有可恢复的精确 project/file ID。
+    saveModpackSession(req.filesDir, session);
+    if (session.plan.source === 'curseforge') await this.resolveCfFiles_(req, session, false);
+    saveModpackSession(req.filesDir, session);
+    this.checkCancelled_();
+    return session;
   }
 
   /**
-   * 解析 CurseForge 文件：把每个 (cfProjectId, cfFileId) → 下载 URL + 文件名，
-   * 填回 file.urls / file.path（mods/<filename>）。解析失败的进 missing 并从 plan.files 移除。
-   * 限并发避免打爆 API。
+   * 固定下载详情中的名称和可选内容。名称只属于安装意图，不能覆写包作者的 plan.name；
+   * 最终目录由 reserve_ 原子预约并持久保存，恢复已有实例时禁止重新选择名称。
    */
-  private async resolveCfFiles_(req: ModpackInstallRequest, plan: ModpackPlan, missing: ModpackMissingItem[]): Promise<void> {
-    let resolver = req.resolveCfFile!;
-    let CONCURRENCY = 8;
-    let resolved: ModpackFile[] = [];
-    let idx = 0;
-    let done = 0;
-    let total = plan.files.length;
-    let worker = async (): Promise<void> => {
-      while (true) {
-        let i = idx;
-        idx++;
-        if (i >= plan.files.length) break;
-        let f = plan.files[i];
-        if (f.cfProjectId === undefined || f.cfFileId === undefined) {
-          // 理论上 CF 解析器保证 id 存在；防御性记入缺失，且推进进度避免卡在 <100%
-          missing.push({ name: f.fileNameHint ?? 'CurseForge 文件', reason: '缺少 projectID/fileID（清单异常）' });
-          done++;
-          this.phase_(req, 'resolving', '正在解析 CurseForge 文件...', done, total);
-          continue;
+  confirm(req: ModpackInstallRequest, name: string, selected: string[]): void {
+    let session = this.session_;
+    if (session === undefined) throw new Error('整合包清单尚未准备');
+    if (session.versionName.length > 0) throw new Error('已创建实例不能在恢复时改名');
+    let nameError = validateModpackVersionName(name);
+    if (nameError.length > 0) throw new Error(nameError);
+    let safe = name.trim();
+    req.versionName = safe;
+    session.selectedOptional = selected.slice();
+    session.confirmed = true;
+    // 确认名称在预约前也持久保存，以便进程重启后保持用户意图。
+    session.requestedVersionName = safe;
+    saveModpackSession(req.filesDir, session);
+  }
+
+  /** 非 UI 消费者的便捷接口；不默认安装可选项。产品任务先 prepare，再由详情确认调用 execute。 */
+  async installFromArchive(req: ModpackInstallRequest): Promise<ModpackInstallResult> {
+    this.beginAttempt();
+    let session = await this.prepare(req);
+    if (!session.confirmed) this.confirm(req, req.versionName ?? sanitizeVersionName(session.plan.name), req.selectedOptional ?? []);
+    return this.execute(req);
+  }
+
+  /**
+   * 只在本安装 owner 的实例目录中执行。失败/保留取消留下 pending；最终收据成功后才移除。
+   * 恢复与部分完成补齐始终使用 session.versionName，绝不以标题再算一个新目录。
+   */
+  async execute(req: ModpackInstallRequest): Promise<ModpackInstallResult> {
+    let session = await this.prepare(req);
+    if (!session.confirmed) throw new Error('请先确认整合包安装内容');
+    this.checkCancelled_();
+    let release = this.reserve_(req, session);
+    let versionDir = req.mcDir + '/versions/' + session.versionName;
+    try {
+      session.complete = false;
+      session.missing = session.plan.problems.filter((p: ModpackProblem): boolean => p.required !== false);
+      saveModpackSession(req.filesDir, session);
+      if (session.plan.source === 'curseforge') await this.resolveCfFiles_(req, session, true);
+      this.checkCancelled_();
+      if (!session.baseReady) {
+        this.phase_(req, 'base', '正在创建基础版本和加载器', 0, 1);
+        let base = new McVersionTask(session.plan.gameVersion, toModLoaderType(session.plan.loaderType),
+          session.plan.loaderVersion, session.versionName, req.mcDir, req.filesDir, session.id);
+        this.baseTasks_.push(base);
+        base.view.startedAtMs = this.activityId;
+        this.activeBase_ = base;
+        base.onProgress = (v: UnifiedTaskView): void => {
+          let progress: ModpackProgress = { phase: 'base', message: '基础版本：' + v.currentLabel,
+            current: v.filesDone, total: v.filesTotal, bytesDone: v.bytesDone, bytesTotal: v.bytesTotal,
+            speedBps: v.speedBps, etaSeconds: v.etaSeconds, innerProgress: v.progress / 100 };
+          req.onPhase?.(progress);
+        };
+        try { await base.start(); } finally { this.activeBase_ = undefined; }
+        await this.settleNativeOwners();
+        this.checkCancelled_();
+        session.baseReady = true;
+        saveModpackSession(req.filesDir, session);
+      }
+      this.assertOwner_(versionDir, session.id);
+      await this.downloadFiles_(req, session, versionDir);
+      this.checkCancelled_();
+      if (!session.overridesApplied) {
+        this.phase_(req, 'overrides', '正在应用覆盖文件', 0, 1);
+        let root = findModpackRoot(modpackWorkDir(req.filesDir, session.id) + '/extracted');
+        if (root.length === 0) throw new Error('恢复所需的整合包覆盖文件不存在，请保留当前实例并重新导入归档');
+        for (let dir of session.plan.overrideDirs) {
+          let src = root + '/' + dir;
+          if (dirExists(src)) await this.copyOverrides_(req, session, src, versionDir, '', dir);
         }
+        session.overridesApplied = true;
+        saveModpackSession(req.filesDir, session);
+      }
+      this.checkCancelled_();
+      // 覆盖文件是包作者声明的最终内容，已提供同路径内容时不再保留下载阶段的缺失记录。
+      session.missing = session.missing.filter((p: ModpackProblem): boolean =>
+        p.path === undefined || session.overrideFiles.indexOf(p.path) < 0);
+      await this.downloadIcon_(req, session, versionDir);
+      this.checkCancelled_();
+      let post = processModpackLaunchConfig(versionDir);
+      for (let note of post.notes) if (session.warnings.indexOf(note) < 0) session.warnings.push(note);
+      let snapshot: ModpackSnapshot = {
+        schemaVersion: 2, installId: session.id, sourceVersionId: session.sourceVersionId,
+        source: session.plan.source, projectId: session.projectId, name: session.versionName,
+        packVersion: session.plan.packVersion, gameVersion: session.plan.gameVersion,
+        loaderType: session.plan.loaderType, loaderVersion: session.plan.loaderVersion,
+        files: session.plan.files, selectedOptional: session.selectedOptional,
+        installedFiles: session.installedFiles, overrideFiles: session.overrideFiles,
+        missing: session.missing, warnings: session.warnings, installedAt: Date.now(),
+        recommendedJvmArgs: post.recommendedJvmArgs, recommendedMaxMemMb: post.recommendedMaxMemMb,
+      };
+      this.checkCancelled_();
+      // 收据是提交边界；写失败保留 pending，不产生“已完成”的假终态。
+      writeModpackSnapshot(versionDir, snapshot);
+      session.complete = true;
+      saveModpackSession(req.filesDir, session);
+      fs.unlinkSync(versionDir + '/' + MODPACK_PENDING_FILE);
+      this.cleanupCommittedCache_(req, session);
+      this.phase_(req, 'done', session.missing.length > 0 ? '安装完成，部分内容待补齐' : '整合包安装完成', 1, 1);
+      new ActivityLogger(this.activityId).info(TAG, 'install committed: ' + session.id
+        + ' missing=' + session.missing.length, LOG_DOMAIN_DOWNLOAD);
+      return { versionName: session.versionName, plan: session.plan, missing: session.missing,
+        warnings: session.warnings, recommendedJvmArgs: post.recommendedJvmArgs,
+        recommendedMaxMemMb: post.recommendedMaxMemMb };
+    } finally {
+      // 未收敛时不删除现场，也不释放内存预约；持久 pending 不能代替当前执行租约。
+      try { await this.settleNativeOwners(); } finally { release(); }
+    }
+  }
+
+  /** 同步预约，目录存在必须重新取名；恢复仅认可同 installId 的 pending/收据。 */
+  private reserve_(req: ModpackInstallRequest, session: ModpackInstallSession): () => void {
+    ensureDirSync(req.mcDir + '/versions');
+    let created = false;
+    if (session.versionName.length === 0) {
+      let existing = fs.listFileSync(req.mcDir + '/versions').concat(req.existingVersions);
+      let base = sanitizeVersionName(session.requestedVersionName ?? req.versionName ?? session.plan.name);
+      while (true) {
+        let name = uniqueVersionName(base, existing);
         try {
-          let r: CfFileResolution = await resolver(f.cfProjectId, f.cfFileId, plan.gameVersion, plan.loaderType as string);
-          let fname: string = safeBaseName(r.filename);
-          if (r.urls.length === 0 || fname.length === 0) {
-            missing.push({ name: f.fileNameHint ?? ('CF ' + f.cfProjectId + '/' + f.cfFileId), reason: 'CurseForge 未返回下载地址（作者可能禁用第三方下载）' });
-          } else {
-            f.urls = r.urls;
-            f.size = r.size;
-            f.sha1 = r.sha1;
-            f.path = 'mods/' + fname;
-            f.fileNameHint = fname;
-            resolved.push(f);
-          }
+          fs.mkdirSync(req.mcDir + '/versions/' + name);
+          session.versionName = name;
+          created = true;
+          break;
         } catch (e) {
-          let err = e as Error;
-          missing.push({ name: f.fileNameHint ?? ('CF ' + f.cfProjectId + '/' + f.cfFileId), reason: (err.message !== undefined && err.message.length > 0) ? err.message : 'CurseForge 解析失败' });
+          if (!dirExists(req.mcDir + '/versions/' + name)) throw e as Error;
+          existing.push(name);
+        }
+      }
+    }
+    let versionDir = req.mcDir + '/versions/' + session.versionName;
+    let release = claimVersionInstall(req.mcDir, session.versionName, session.id);
+    try {
+      if (!created) {
+        if (!dirExists(versionDir)) {
+          if (session.baseReady) throw new Error('原整合包实例已被删除，不能补齐不存在的实例');
+          ensureDirSync(versionDir);
+        } else {
+          let receipt = readModpackSnapshot(versionDir);
+          if (pathExists(versionDir + '/' + MODPACK_PENDING_FILE)) this.assertOwner_(versionDir, session.id);
+          else if (receipt?.installId !== session.id) throw new Error('实例没有匹配的安装收据，已停止恢复写入');
+        }
+      }
+      let owner: ModpackPendingOwner = { id: session.id };
+      writeModpackJsonAtomic(versionDir + '/' + MODPACK_PENDING_FILE, owner);
+      saveModpackSession(req.filesDir, session);
+      return release;
+    } catch (e) { release(); throw e as Error; }
+  }
+
+  private assertOwner_(versionDir: string, id: string): void {
+    let owner = JSON.parse(fs.readTextSync(versionDir + '/' + MODPACK_PENDING_FILE)) as ModpackPendingOwner;
+    if (owner.id !== id) throw new Error('实例目录属于另一项安装，已停止写入');
+  }
+
+  /** CF 解析失败不丢弃原始条目，补齐时仍能用原 project/file ID 重试，绝不自动换版本。 */
+  private async resolveCfFiles_(req: ModpackInstallRequest, session: ModpackInstallSession, selectedOnly: boolean): Promise<void> {
+    let index = 0;
+    let done = 0;
+    let resolver = req.resolveCfFile;
+    let worker = async (): Promise<void> => {
+      while (index < session.plan.files.length) {
+        this.checkCancelled_();
+        let file = session.plan.files[index++];
+        if (selectedOnly && !this.selected_(session, file)) continue;
+        if (file.urls.length > 0 && file.path.length > 0) continue;
+        try {
+          if (resolver === undefined) throw new Error('CurseForge 文件解析服务不可用');
+          let info = await resolver(file.cfProjectId ?? 0, file.cfFileId ?? 0,
+            session.plan.gameVersion, session.plan.loaderType as string);
+          this.checkCancelled_();
+          if (safeBaseName(info.filename) !== info.filename || info.filename.length === 0) throw new Error('来源文件名不安全');
+          if (['mods', 'resourcepacks', 'shaderpacks', 'saves'].indexOf(info.targetDirectory) < 0) throw new Error('来源未提供可识别的资源目录');
+          file.path = info.targetDirectory + '/' + info.filename;
+          file.fileNameHint = info.filename;
+          file.urls = info.urls.slice();
+          file.sha1 = info.sha1;
+          file.size = info.size;
+        } catch (e) {
+          this.checkCancelled_();
+          if (selectedOnly || file.env === ModpackEnv.REQUIRED) this.addMissing_(session, file, (e as Error).message);
         }
         done++;
-        this.phase_(req, 'resolving', '正在解析 CurseForge 文件...', done, total);
+        this.phase_(req, 'resolving', '正在解析 CurseForge 精确文件', done, session.plan.files.length);
       }
     };
     let workers: Promise<void>[] = [];
-    let n = Math.min(CONCURRENCY, plan.files.length);
-    for (let k = 0; k < n; k++) workers.push(worker());
+    // 工人各自捕获普通文件错误；取消也必须等全部在途元数据查询退出，不能提前销毁服务。
+    for (let i = 0; i < Math.min(8, session.plan.files.length); i++) workers.push(worker().catch((): void => {}));
     await Promise.all(workers);
-    plan.files = resolved;
-    this.alog().info(TAG, `CF resolve: ${resolved.length} ok, ${missing.length} failed`, LOG_DOMAIN_DOWNLOAD);
+    this.checkCancelled_();
+    saveModpackSession(req.filesDir, session);
   }
 
-  /** 下载整合包图标到版本目录（best-effort，失败仅告警）。 */
-  private async downloadIcon_(url: string, versionDir: string): Promise<void> {
-    let dest = versionDir + '/' + MODPACK_ICON_FILE;
-    let spec: DownloadTaskSpec = {
-      name: 'modpack-icon: ' + versionDir.substring(versionDir.lastIndexOf('/') + 1),
-      files: [{ localPath: dest, urls: [url], allowedRoot: versionDir }],
-      activityId: this.activityId,
+  private selected_(session: ModpackInstallSession, file: ModpackFile): boolean {
+    return file.env === ModpackEnv.REQUIRED || (file.env === ModpackEnv.OPTIONAL
+      && session.selectedOptional.indexOf(modpackFileKey(file)) >= 0);
+  }
+
+  private addMissing_(session: ModpackInstallSession, file: ModpackFile, reason: string): void {
+    let item: ModpackMissingItem = {
+      name: file.fileNameHint ?? file.path, path: file.path, reason: reason,
+      cfProjectId: file.cfProjectId, cfFileId: file.cfFileId, required: file.env === ModpackEnv.REQUIRED,
     };
+    item.url = file.urls.length > 0 ? file.urls[0] : (file.cfProjectId !== undefined && file.cfFileId !== undefined
+      ? 'https://www.curseforge.com/projects/' + file.cfProjectId + '/files/' + file.cfFileId : undefined);
+    let key = modpackFileKey(file);
+    session.missing = session.missing.filter((old: ModpackProblem): boolean =>
+      (old.cfFileId !== undefined ? ('cf:' + old.cfProjectId + ':' + old.cfFileId) : (old.path ?? '')) !== key);
+    session.missing.push(item);
+  }
+
+  /** 检查传输事实，不分析 JAR 内部依赖；所有校验都在 staging 中完成后才激活文件。 */
+  private async matches_(path: string, file: ModpackFile): Promise<boolean> {
     try {
-      await DownloadManager.instance().createAndWait(spec, (v: DownloadTaskView): void => {
-        this.rememberDmTask_(v.taskId);
-      });
-    } catch (e) {
-      let err = e as Error;
-      this.alog().warn(TAG, `modpack icon download failed: ${err.message}`, null, LOG_DOMAIN_DOWNLOAD);
-    }
+      let stat = fs.lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || (file.size > 0 && stat.size !== file.size)) return false;
+      if (file.sha1 !== undefined && file.sha1.length > 0) return (await computeFileSha1(path)).toLowerCase() === file.sha1.toLowerCase();
+      return file.size > 0 && stat.size === file.size;
+    } catch (e) { return false; }
   }
 
-  /**
-   * 在基础版本构建锁内完成：算唯一版本名 → 占位目录 → 建带 loader 的隔离版本。
-   *
-   * 去重必须串行且基于**磁盘实际目录**（叠加 req.existingVersions）：调用方传入的
-   * existingVersions 是任务创建时的快照，并发安装时会过期，两个安装会算出同名互相覆盖。
-   * 锁内先 mkdir 占位，后到的安装在 listFileSync 时即可看到，从而拿到下一个序号。
-   * 失败抛错（基础版本是硬前提）。
-   */
-  private async reserveAndBuildBase_(plan: ModpackPlan, baseName: string, req: ModpackInstallRequest):
-    Promise<VersionReservation> {
-    let loaderType: ModLoaderType | null = toModLoaderType(plan.loaderType);
-    // 串行化：共享 download-temp + Forge 嵌入式 JVM 不可并发（见 baseBuildLock_ 注释）
-    let release: () => void = () => {};
-    let prev = baseBuildLock_;
-    baseBuildLock_ = new Promise<void>((resolve: () => void) => { release = resolve; });
-    await prev;
-
-    let versionName = '';
-    let versionDir = '';
-    try {
-      // 去重集合 = 调用方快照 ∪ 磁盘实际版本目录（杜绝并发撞名）
-      let existing = new Set<string>();
-      for (let e of req.existingVersions) existing.add(e);
-      try {
-        let dirs = fs.listFileSync(req.mcDir + '/versions');
-        for (let d of dirs) existing.add(d);
-      } catch (e) { /* versions 目录可能尚不存在 */ }
-      let existingArr: string[] = [];
-      existing.forEach((v: string): void => { existingArr.push(v); });
-
-      versionName = uniqueVersionName(sanitizeVersionName(baseName), existingArr);
-      versionDir = req.mcDir + '/versions/' + versionName;
-      ensureDir(versionDir);  // 锁内立即占位，后到的并发安装看得到 → 不会撞名
-
-      let task = new McVersionTask(plan.gameVersion, loaderType, plan.loaderVersion, versionName, req.mcDir, req.filesDir);
-      this.ownedBaseTasks_.push(task);
-      // 转发基础版本下载的细粒度进度（含 loader），让 base 阶段进度条不再卡死、显示速度
-      task.onProgress = (mv: UnifiedTaskView): void => {
-        let label = mv.currentLabel.length > 0 ? ('基础版本：' + mv.currentLabel) : '正在创建基础版本（含加载器）...';
-        let inner = mv.progress > 0 ? mv.progress / 100 : -1;
-        this.phase_(req, 'base', label, mv.filesDone, mv.filesTotal,
-          mv.bytesDone, mv.bytesTotal, mv.speedBps, mv.etaSeconds, inner);
-      };
-      await task.start();
-    } catch (e) {
-      // 建版本失败：释放占位目录，把名字让出来
-      if (versionDir.length > 0) {
-        try { removeDirRecursive(versionDir); } catch (ee) { /* */ }
-      }
-      let err = e as Error;
-      throw new Error('创建基础版本失败：' + (err.message !== undefined ? err.message : String(e)));
-    } finally {
-      release();
-    }
-    return { versionName, versionDir };
-  }
-
-  /**
-   * 清理 Fabric/Quilt 安装按约定名(fabric-loader-<l>-<g> / quilt-loader-<l>-<g>)另建的版本目录残留。
-   * Forge/NeoForge 走沙箱不产生残留；vanilla 无 loader 目录。
-   * 仅删【本次新建】(不在 existingVersions) 且 != 整合包版本名的目录，绝不动用户原有版本。
-   */
-  private cleanupStrayLoaderVersion_(plan: ModpackPlan, versionName: string, req: ModpackInstallRequest): void {
-    let prefix = '';
-    if (plan.loaderType === ModpackLoader.FABRIC) prefix = 'fabric-loader-';
-    else if (plan.loaderType === ModpackLoader.QUILT) prefix = 'quilt-loader-';
-    else return;
-    if (plan.loaderVersion.length === 0) return;
-    let conventionId = prefix + plan.loaderVersion + '-' + plan.gameVersion;
-    if (conventionId === versionName) return;  // 与目标重合，就是目标本身
-    for (let ev of req.existingVersions) {
-      if (ev === conventionId) return;  // 用户原有版本，不动
-    }
-    let strayDir = req.mcDir + '/versions/' + conventionId;
-    if (dirExists(strayDir)) {
-      try {
-        removeDirRecursive(strayDir);
-        this.alog().info(TAG, `cleaned stray loader version: ${conventionId}`, LOG_DOMAIN_DOWNLOAD);
-      } catch (e) {
-        let err = e as Error;
-        this.alog().warn(TAG, `cleanup stray loader version failed: ${conventionId}`, err, LOG_DOMAIN_DOWNLOAD);
-      }
-    }
-  }
-
-  /**
-   * 批量下载整合包文件到 versionDir/<file.path>。
-   * 失败文件进 missing（决策4），不抛错。
-   */
-  private async downloadFiles_(req: ModpackInstallRequest, plan: ModpackPlan, versionDir: string,
-    missing: ModpackMissingItem[], installedFiles: string[]): Promise<void> {
-    // 过滤掉无 URL 的（理论上 Modrinth 都有；防御）
-    let files: ModpackFile[] = [];
-    for (let f of plan.files) {
-      if (f.urls.length === 0) {
-        missing.push({ name: f.fileNameHint ?? f.path, reason: '无可用下载地址' });
-        continue;
-      }
-      // 写时再校验一次路径安全（防 zip-slip / CF 文件名穿越；解析阶段已校验，这里兜底）
-      let safe = safeRelPath(f.path);
-      if (safe.length === 0) {
-        missing.push({ name: f.fileNameHint ?? f.path, reason: '非法文件路径，已跳过' });
-        continue;
-      }
-      f.path = safe;
-      files.push(f);
-    }
-    if (files.length === 0) return;
-
-    // 预创建父目录（引擎一般会建，但保险）
+  /** 批量下载到独占 staging，逐文件校验/激活；已安装内容和用户改动在补齐时不被覆盖。 */
+  private async downloadFiles_(req: ModpackInstallRequest, session: ModpackInstallSession, versionDir: string): Promise<void> {
+    let stage = modpackWorkDir(req.filesDir, session.id) + '/files';
+    ensureDirSync(stage);
+    let pending: ModpackFile[] = [];
     let specs: DownloadFileSpec[] = [];
-    for (let f of files) {
-      let localPath = versionDir + '/' + f.path;
-      ensureParentDir(localPath);
-      // 套用下载底层能力：Modrinth 清单只给官方 cdn.modrinth.com 直链，追加 mcim 镜像兜底
-      // （官方优先，对齐 ModInstaller 的 OFFICIAL_FIRST；CF 文件 urls 已含镜像，不动）。
-      let urls: string[] = f.urls.slice();
-      if (plan.source === 'modrinth') {
-        for (let u of f.urls) {
-          let m = mirrorifyModrinthCdn(u);
-          if (m !== u && urls.indexOf(m) < 0) urls.push(m);
+    let paths = new Set<string>();
+    for (let file of session.plan.files) {
+      if (!this.selected_(session, file)) continue;
+      if (file.path.length === 0 || safeRelPath(file.path) !== file.path) {
+        this.addMissing_(session, file, '未解析出安全的文件路径'); continue;
+      }
+      if (paths.has(file.path)) throw new Error('整合包文件目标重复：' + file.path);
+      paths.add(file.path);
+      if (session.overrideFiles.indexOf(file.path) >= 0) continue;
+      let target = versionDir + '/' + file.path;
+      if (session.installedFiles.indexOf(file.path) >= 0
+        && (fileExists(target) || (file.path.startsWith('saves/') && dirExists(target.substring(0, target.length - 4))))) continue;
+      if (await this.matches_(target, file)) {
+        if (session.installedFiles.indexOf(file.path) < 0) session.installedFiles.push(file.path);
+        continue;
+      }
+      if (pathExists(target)) { this.addMissing_(session, file, '目标已存在不同内容，保留用户文件；请移走后再补齐'); continue; }
+      if (file.urls.length === 0) { this.addMissing_(session, file, '没有可用下载地址'); continue; }
+      let urls = file.urls.slice();
+      if (session.plan.source === 'modrinth') {
+        for (let url of file.urls) {
+          let mirror = mirrorifyModrinthCdn(url);
+          if (urls.indexOf(mirror) < 0) urls.push(mirror);
         }
       }
-      let spec: DownloadFileSpec = { localPath, urls, allowedRoot: versionDir };
-      if (urls.length > 1) spec.maxConnections = 8;
-      if (f.sha1 !== undefined && f.sha1.length > 0) {
-        let check: DownloadCheck = { sha1: f.sha1, size: f.size };
-        spec.check = check;
-      } else if (f.size > 0) {
-        let check: DownloadCheck = { size: f.size };
-        spec.check = check;
+      let local = stage + '/' + file.path;
+      ensureDirSync(local.substring(0, local.lastIndexOf('/')));
+      let spec: DownloadFileSpec = { localPath: local, allowedRoot: stage, urls: urls,
+        check: { sha1: file.sha1, size: file.size } };
+      pending.push(file); specs.push(spec);
+    }
+    this.checkCancelled_();
+    if (specs.length > 0) {
+      let spec: DownloadTaskSpec = { name: 'modpack-files:' + session.id, files: specs, activityId: this.activityId };
+      try {
+        await DownloadManager.instance().createAndWait(spec, (view: DownloadTaskView): void => {
+          this.remember_(view.taskId);
+          this.phase_(req, 'files', '正在下载整合包内容', view.filesDone, view.filesTotal, view);
+        });
+      } catch (e) {
+        this.checkCancelled_();
+        new ActivityLogger(this.activityId).warn(TAG, '部分文件下载未完成', e as Error, LOG_DOMAIN_DOWNLOAD);
       }
-      specs.push(spec);
+      await this.settleNativeOwners();
     }
-
-    this.phase_(req, 'files', '正在下载模组/资源（' + specs.length + ' 个文件）...', 0, specs.length);
-
-    let dirBase = versionDir.substring(versionDir.lastIndexOf('/') + 1);
-    let taskName = 'modpack-files: ' + dirBase + ' [' + specs.length + ']';
-    let taskSpec: DownloadTaskSpec = { name: taskName, files: specs };
-
-    // 捕获最终 view（失败时也能读 failedFiles）
-    let finalView: DownloadTaskView | null = null;
-    let onProgress = (v: DownloadTaskView): void => {
-      this.rememberDmTask_(v.taskId);
-      finalView = v;
-      let inner = v.filesTotal > 0 ? v.filesDone / v.filesTotal : -1;
-      this.phase_(req, 'files', '正在下载模组/资源...', v.filesDone, v.filesTotal,
-        v.bytesDone, v.bytesTotal, v.speedBps, v.etaSeconds, inner);
-    };
-
-    let batchFailed = false;
-    try {
-      let view = await DownloadManager.instance().createAndWait(taskSpec, onProgress);
-      finalView = view;
-    } catch (e) {
-      // 批量里有文件失败 → reject，但成功的已落地；从 finalView.failedFiles 提缺失项
-      batchFailed = true;
-      let err = e as Error;
-      if (err.message === '已取消') {
-        throw new Error('整合包安装已取消');
-      }
-      this.alog().warn(TAG, `modpack file batch had failures: ${err.message}`, null, LOG_DOMAIN_DOWNLOAD);
-    }
-
-    // 汇总：失败文件进 missing；其余视为已装
-    // 先建 localPath → 直链 映射，失败时把原始下载地址带进 missing.url（供用户手动补齐）
-    let urlByPath = new Map<string, string>();
-    for (let f of files) {
-      if (f.urls.length > 0) urlByPath.set(versionDir + '/' + f.path, f.urls[0]);
-    }
-    let failedPaths = new Set<string>();
-    if (finalView !== null) {
-      let fv: DownloadTaskView = finalView;
-      let failed: DownloadFailedFile[] = fv.failedFiles;
-      for (let ff of failed) {
-        failedPaths.add(ff.localPath);
-        let reason = (ff.lastError !== undefined && ff.lastError.message !== undefined && ff.lastError.message.length > 0)
-          ? ff.lastError.message : '下载失败';
-        let item: ModpackMissingItem = { name: ff.basename, reason };
-        let u = urlByPath.get(ff.localPath);
-        if (u !== undefined && u.length > 0) item.url = u;
-        missing.push(item);
-      }
-    }
-    // 批量失败但拿不到 finalView（createAndWait 在任何 onProgress 之前 reject）时，
-    // failedFiles 无从获取。此时绝不能把全部文件当作已安装——改为磁盘存在性作为权威判据：
-    // 只有确实落盘的文件才计入 installedFiles，其余进 missing，避免"零 mod 却报完整安装"。
-    let trustView = finalView !== null;
-    for (let f of files) {
-      let localPath = versionDir + '/' + f.path;
-      if (failedPaths.has(localPath)) continue;
-      let onDisk = false;
-      try { onDisk = fs.statSync(localPath).size > 0; } catch (e) { onDisk = false; }
-      if (trustView && !batchFailed) {
-        // 正常成功路径：view 已确认终态，沿用原逻辑（未列入 failed 即视为已装）。
-        installedFiles.push(f.path);
-      } else if (onDisk) {
-        installedFiles.push(f.path);
+    for (let file of pending) {
+      this.checkCancelled_();
+      let local = stage + '/' + file.path;
+      if (!await this.matches_(local, file)) { this.addMissing_(session, file, '文件未下载完成或大小/哈希不符'); continue; }
+      let target = versionDir + '/' + file.path;
+      // 下载期间用户可能创建同名文件，激活之前再次检查，不依赖开始时的快照。
+      if (pathExists(target)) { this.addMissing_(session, file, '目标在下载期间已被创建，已保留现有内容'); continue; }
+      ensureInstanceParent(versionDir, file.path);
+      this.assertOwner_(versionDir, session.id);
+      if (file.path.startsWith('saves/') && file.path.toLowerCase().endsWith('.zip')) {
+        // 地图解压进入实例 saves 的独占子目录，不覆盖已有世界；底层 Promise 收敛后再处理取消。
+        let worldName = safeBaseName(file.path.substring(6, file.path.length - 4));
+        let worldDir = versionDir + '/saves/' + worldName;
+        if (dirExists(worldDir)) { this.addMissing_(session, file, '同名世界已存在，未覆盖'); continue; }
+        // 世界目录只能在 saves 所在文件系统内原子改名。应用私有工作根与外部游戏根
+        // 可以位于不同设备；归档保留在私有根，解压暂存放到本 owner 的实例 saves 中。
+        let worldStageRel = 'saves/.amcl-map-' + session.id;
+        let worldStage = versionDir + '/' + worldStageRel;
+        if (pathExists(worldStage) && !dirExists(worldStage)) throw new Error('地图暂存不是普通目录');
+        this.assertOwner_(versionDir, session.id);
+        removeDirRecursive(worldStage);
+        ensureInstanceParent(versionDir, worldStageRel + '/level.dat');
+        await decompressFile(local, worldStage);
+        this.checkCancelled_();
+        let worldRoot = worldStage;
+        if (!fileExists(worldStage + '/level.dat')) {
+          let candidates = fs.listFileSync(worldStage).filter((name: string): boolean =>
+            fileExists(worldStage + '/' + name + '/level.dat'));
+          if (candidates.length !== 1) { this.addMissing_(session, file, '地图归档没有唯一的 level.dat，未改动存档'); continue; }
+          worldRoot = worldStage + '/' + candidates[0];
+        }
+        if (pathExists(worldDir)) { this.addMissing_(session, file, '同名世界在下载期间出现，未覆盖'); continue; }
+        fs.renameSync(worldRoot, worldDir);
+        if (worldRoot !== worldStage) removeDirRecursive(worldStage);
       } else {
-        let item: ModpackMissingItem = { name: f.path, reason: '下载失败或文件缺失' };
-        let u = urlByPath.get(localPath);
-        if (u !== undefined && u.length > 0) item.url = u;
-        missing.push(item);
+        // 已下载的私有缓存继续用于恢复；先复制、校验、刷盘到目标旁边，再同文件系统
+        // 改名发布，避免 app files -> 外部 Download 的 EXDEV，取消也不会留半写入最终文件。
+        let staged = await this.copyForActivation_(local, versionDir, file.path, session);
+        if (pathExists(target)) {
+          this.addMissing_(session, file, '目标在复制期间已被创建，已保留现有内容');
+          fs.unlinkSync(staged);
+          continue;
+        }
+        fs.renameSync(staged, target);
       }
+      if (session.installedFiles.indexOf(file.path) < 0) session.installedFiles.push(file.path);
+      saveModpackSession(req.filesDir, session);
     }
   }
 
-  private phase_(req: ModpackInstallRequest, phase: string, message: string, current: number, total: number,
-    bytesDone?: number, bytesTotal?: number, speedBps?: number, etaSeconds?: number, innerProgress?: number): void {
-    if (req.onPhase !== undefined) {
-      let p: ModpackProgress = {
-        phase, message, current, total,
-        bytesDone: bytesDone ?? 0,
-        bytesTotal: bytesTotal ?? 0,
-        speedBps: speedBps ?? 0,
-        etaSeconds: etaSeconds ?? -1,
-        innerProgress: innerProgress ?? -1,
-      };
-      try { req.onPhase(p); } catch (e) { /* */ }
+  /**
+   * 将已收敛的私有下载复制到最终目标所在文件系统。源文件仍保留到收据提交，进程
+   * 中断可以复用缓存；返回的暂存文件已验证大小/SHA-1并刷盘，调用方再检查目标占用，
+   * 只执行同目录 rename。owner、父目录与暂存类型前后复核，禁止跟随已有链接。
+   */
+  private async copyForActivation_(source: string, versionDir: string, relative: string,
+    session: ModpackInstallSession): Promise<string> {
+    this.checkCancelled_();
+    ensureInstanceParent(versionDir, relative);
+    this.assertOwner_(versionDir, session.id);
+    let sourceStat = fs.lstatSync(source);
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error('安装源不是普通文件');
+    let digest = await computeFileSha1(source);
+    let staged = versionDir + '/' + relative + '.amcl-copy-' + session.id;
+    if (pathExists(staged) && !fileExists(staged)) throw new Error('安装暂存不是普通文件');
+    await fs.copyFile(source, staged);
+    this.checkCancelled_();
+    let stagedStat = fs.lstatSync(staged);
+    if (!stagedStat.isFile() || stagedStat.isSymbolicLink() || stagedStat.size !== sourceStat.size
+      || await computeFileSha1(staged) !== digest) {
+      throw new Error('安装暂存复制校验失败：' + relative);
+    }
+    let copied = fs.openSync(staged, fs.OpenMode.READ_WRITE);
+    try { fs.fsyncSync(copied.fd); } finally { fs.closeSync(copied); }
+    ensureInstanceParent(versionDir, relative);
+    this.assertOwner_(versionDir, session.id);
+    return staged;
+  }
+
+  /** 覆盖复制逐文件可取消。目录/链接/控制元数据不允许被包内容改写，恢复不覆盖用户新文件。 */
+  private async copyOverrides_(req: ModpackInstallRequest, session: ModpackInstallSession,
+    srcDir: string, versionDir: string, prefix: string, layer: string): Promise<void> {
+    let stat = fs.lstatSync(srcDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('覆盖源不是普通目录');
+    for (let name of fs.listFileSync(srcDir)) {
+      this.checkCancelled_();
+      if (safeBaseName(name) !== name) throw new Error('覆盖文件名不安全');
+      let rel = prefix.length > 0 ? prefix + '/' + name : name;
+      if (safeRelPath(rel) !== rel || rel.startsWith('.amcl-')
+        || rel === session.versionName + '.json' || rel === session.versionName + '.jar') {
+        throw new Error('覆盖文件试图改写启动器实例元数据：' + rel);
+      }
+      let src = srcDir + '/' + name;
+      let dst = versionDir + '/' + rel;
+      let entry = fs.lstatSync(src);
+      if (entry.isSymbolicLink()) throw new Error('拒绝覆盖符号链接');
+      if (entry.isDirectory()) {
+        ensureDirSync(dst);
+        let targetDir = fs.lstatSync(dst);
+        if (!targetDir.isDirectory() || targetDir.isSymbolicLink()) throw new Error('覆盖目标不是普通目录');
+        await this.copyOverrides_(req, session, src, versionDir, rel, layer);
+      } else if (entry.isFile()) {
+        ensureInstanceParent(versionDir, rel);
+        if (pathExists(dst)) {
+          let old = fs.lstatSync(dst);
+          if (!old.isFile() || old.isSymbolicLink()) throw new Error('覆盖目标不是普通文件：' + rel);
+        }
+        let digest = await computeFileSha1(src);
+        let actual = fileExists(dst) ? await computeFileSha1(dst) : '';
+        if (!new RegExp('^[a-f0-9]{40}$').test(digest)
+          || (fileExists(dst) && !new RegExp('^[a-f0-9]{40}$').test(actual))) throw new Error('覆盖内容摘要读取失败：' + rel);
+        let records = session.overrideReceipts ?? [];
+        session.overrideReceipts = records;
+        let source = layer + '/' + rel;
+        let record = records.find((item: ModpackOverrideReceipt): boolean => item.source === source);
+        let history = records.filter((item: ModpackOverrideReceipt): boolean => item.path === rel);
+        let latest = history.length > 0 ? history[history.length - 1] : undefined;
+        // 先验证最后一次激活/激活意图，防止重放早期覆盖层时回退 client-overrides，
+        // 也防止将用户在失败后改过的文件误当作“任务以前复制过，所以可以覆盖”。
+        if (latest !== undefined && actual !== latest.sha1
+          && (latest.committed || actual !== latest.previousSha1)) throw new Error('覆盖目标已有用户修改，已保留：' + rel);
+        if (record !== undefined) {
+          if (record.sha1 !== digest) throw new Error('恢复覆盖来源发生变化：' + rel);
+          if (record.committed || actual === record.sha1) {
+            record.committed = true;
+            if (session.overrideFiles.indexOf(rel) < 0) session.overrideFiles.push(rel);
+            saveModpackSession(req.filesDir, session);
+            continue;
+          }
+        } else {
+          if (latest === undefined && actual.length > 0 && actual !== digest) {
+            let downloaded = session.plan.files.find((file: ModpackFile): boolean => file.path === rel);
+            // 只有仍匹配精确下载清单的文件可以接受第一次作者覆盖；旧覆盖记录和
+            // 用户文件没有可证明的上一份摘要时拒绝覆盖，保留现场供用户处理。
+            if (session.installedFiles.indexOf(rel) < 0 || downloaded === undefined
+              || !await this.matches_(dst, downloaded)) throw new Error('覆盖目标已有用户文件，已保留：' + rel);
+          }
+          record = { path: rel, source: source, previousSha1: actual, sha1: digest, committed: false };
+          records.push(record);
+          saveModpackSession(req.filesDir, session);
+        }
+        this.checkCancelled_();
+        // 临时文件与目标同目录，成功复制后原子激活，取消不会留下半写入配置。
+        let staging = dst + '.amcl-copy-' + session.id;
+        await fs.copyFile(src, staging);
+        this.checkCancelled_();
+        if (fs.statSync(staging).size !== entry.size) throw new Error('覆盖文件复制不完整：' + rel);
+        if (await computeFileSha1(staging) !== digest) throw new Error('覆盖暂存校验失败：' + rel);
+        let copied = fs.openSync(staging, fs.OpenMode.READ_WRITE);
+        try { fs.fsyncSync(copied.fd); } finally { fs.closeSync(copied); }
+        // copyFile 是异步边界，再次检查目标内容，避免复制期间产生的用户修改被替换。
+        let beforeCommit = fileExists(dst) ? await computeFileSha1(dst) : '';
+        if (beforeCommit !== record.previousSha1) throw new Error('覆盖目标在复制期间发生变化，已保留：' + rel);
+        this.checkCancelled_();
+        ensureInstanceParent(versionDir, rel);
+        if (pathExists(dst) && (!fs.lstatSync(dst).isFile() || fs.lstatSync(dst).isSymbolicLink()))
+          throw new Error('覆盖目标在复制期间变成非普通文件：' + rel);
+        fs.renameSync(staging, dst);
+        let parent = fs.openSync(dst.substring(0, dst.lastIndexOf('/')), fs.OpenMode.READ_ONLY);
+        try { fs.fsyncSync(parent.fd); } finally { fs.closeSync(parent); }
+        record.committed = true;
+        if (session.overrideFiles.indexOf(rel) < 0) session.overrideFiles.push(rel);
+        saveModpackSession(req.filesDir, session);
+      } else { throw new Error('拒绝覆盖特殊文件：' + rel); }
     }
   }
-}
 
-// ============================================================
-//  模块工具
-// ============================================================
+  /** 图标仍沿用安装后展示能力；使用工作区 staging，不让失败图标污染版本元数据。 */
+  private async downloadIcon_(req: ModpackInstallRequest, session: ModpackInstallSession, versionDir: string): Promise<void> {
+    if (session.iconUrl.length === 0 || fileExists(versionDir + '/' + MODPACK_ICON_FILE)) return;
+    let work = modpackWorkDir(req.filesDir, session.id);
+    let path = work + '/icon.png';
+    try {
+      let spec: DownloadTaskSpec = { name: 'modpack-icon:' + session.id, activityId: this.activityId,
+        files: [{ localPath: path, urls: [session.iconUrl], allowedRoot: work }] };
+      await DownloadManager.instance().createAndWait(spec, (view: DownloadTaskView): void => { this.remember_(view.taskId); });
+      await this.settleNativeOwners();
+      this.checkCancelled_();
+      ensureInstanceParent(versionDir, MODPACK_ICON_FILE);
+      let staged = await this.copyForActivation_(path, versionDir, MODPACK_ICON_FILE, session);
+      if (!pathExists(versionDir + '/' + MODPACK_ICON_FILE)) fs.renameSync(staged, versionDir + '/' + MODPACK_ICON_FILE);
+      else fs.unlinkSync(staged);
+    } catch (e) {
+      this.checkCancelled_();
+      new ActivityLogger(this.activityId).warn(TAG, '整合包图标下载失败，不影响内容安装', e as Error, LOG_DOMAIN_DOWNLOAD);
+      await this.settleNativeOwners();
+    }
+  }
 
-/** ModpackLoader → feature_core ModLoaderType（NONE→null=原版）。 */
-export function toModLoaderType(l: ModpackLoader): ModLoaderType | null {
-  switch (l) {
-    case ModpackLoader.FABRIC:   return ModLoaderType.FABRIC;
-    case ModpackLoader.FORGE:    return ModLoaderType.FORGE;
-    case ModpackLoader.NEOFORGE: return ModLoaderType.NEOFORGE;
-    case ModpackLoader.QUILT:    return ModLoaderType.QUILT;
-    default:                     return null;
+  /**
+   * 收据提交后保留小型计划和来源身份，释放已应用的归档/覆盖缓存。
+   * 部分安装保留失败文件的 native 续传材料；缓存清理失败只记日志，不推翻已交付实例。
+   */
+  private cleanupCommittedCache_(req: ModpackInstallRequest, session: ModpackInstallSession): void {
+    if (!session.overridesApplied || !this.purgeNativeOwners()) return;
+    let work = modpackWorkDir(req.filesDir, session.id);
+    try {
+      removeDirRecursive(work + '/extracted');
+      if (session.missing.length === 0) removeDirRecursive(work + '/files');
+      try { fs.unlinkSync(work + '/archive.zip'); } catch (e) { /* 不存在或稍后清理 */ }
+      // 本地选择器产生的输入目录由一次随机任务独占；外部原始文件不属于此清理范围。
+      let prefix = req.filesDir + '/modpack-import/';
+      let imported = req.archivePath ?? '';
+      if (imported.startsWith(prefix)) {
+        let parts = imported.substring(prefix.length).split('/');
+        if (parts.length === 2 && safeBaseName(parts[0]) === parts[0] && safeBaseName(parts[1]) === parts[1]) {
+          removeDirRecursive(prefix + parts[0]);
+        }
+      }
+    } catch (e) {
+      new ActivityLogger(this.activityId).warn(TAG, '已提交整合包的缓存清理未完成', e as Error, LOG_DOMAIN_DOWNLOAD);
+    }
+  }
+
+  /** 用户明确选择清理时调用；已有正式收据的实例绝不递归删除。 */
+  async discard(req: ModpackInstallRequest): Promise<void> {
+    await this.settleNativeOwners();
+    let session = this.session_;
+    if (session === undefined) {
+      if (req.sessionId !== undefined) removeDirRecursive(modpackWorkDir(req.filesDir, req.sessionId));
+      return;
+    }
+    if (session.versionName.length > 0) {
+      let dir = req.mcDir + '/versions/' + session.versionName;
+      let receipt = readModpackSnapshot(dir);
+      if (receipt?.installId === session.id) {
+        // 补齐取消只结束本轮写入，不删除已经交付给用户的实例和存档。
+        try { this.assertOwner_(dir, session.id); fs.unlinkSync(dir + '/' + MODPACK_PENDING_FILE); } catch (e) { /* 已结束 */ }
+        removeDirRecursive(modpackWorkDir(req.filesDir, session.id) + '/files');
+        session.missing = receipt.missing.slice();
+        session.complete = true;
+        saveModpackSession(req.filesDir, session);
+        return;
+      }
+      this.assertOwner_(dir, session.id);
+      removeDirRecursive(dir);
+    }
+    removeDirRecursive(modpackWorkDir(req.filesDir, session.id));
+    this.session_ = undefined;
+  }
+
+  private phase_(req: ModpackInstallRequest, phase: string, message: string, current: number,
+    total: number, view?: DownloadTaskView, inner?: number): void {
+    let progress: ModpackProgress = { phase: phase, message: message, current: current, total: total,
+      bytesDone: view?.bytesDone ?? 0, bytesTotal: view?.bytesTotal ?? 0, speedBps: view?.speedBps ?? 0,
+      etaSeconds: view?.etaSeconds ?? -1,
+      innerProgress: inner ?? (phase === 'pack' && view !== undefined && view.bytesTotal > 0
+        ? view.bytesDone / view.bytesTotal : (total > 0 ? current / total : -1)) };
+    req.onPhase?.(progress);
   }
 }
 
-/** 探测临时目录里的清单类型。 */
+/** 清单加载器枚举到基础安装接口；不支持的加载器由统一安装器给出清晰错误。 */
+export function toModLoaderType(loader: ModpackLoader): ModLoaderType | null {
+  if (loader === ModpackLoader.FABRIC) return ModLoaderType.FABRIC;
+  if (loader === ModpackLoader.FORGE) return ModLoaderType.FORGE;
+  if (loader === ModpackLoader.NEOFORGE) return ModLoaderType.NEOFORGE;
+  if (loader === ModpackLoader.QUILT) return ModLoaderType.QUILT;
+  return null;
+}
 export function detectManifestKind(dir: string): string {
   if (fileExists(dir + '/modrinth.index.json')) return 'modrinth';
   if (fileExists(dir + '/manifest.json')) return 'curseforge';
   return 'none';
 }
-
-/**
- * 找到整合包真正的根目录：清单可能在解压根，也可能整体包在单层子目录里
- * （如 `PackName/modrinth.index.json` + `PackName/overrides/`）。对齐 PCL2 的
- * ArchiveBaseFolder 处理，避免这类包被误判为"无效整合包"。
- * @returns 含清单的目录绝对路径；找不到返回空串。
- */
-export function findModpackRoot(tempDir: string): string {
-  if (detectManifestKind(tempDir) !== 'none') return tempDir;
-  let entries: string[] = [];
-  try { entries = fs.listFileSync(tempDir); } catch (e) { return ''; }
-  for (let name of entries) {
-    let sub = tempDir + '/' + name;
-    let isDir = false;
-    try { isDir = fs.statSync(sub).isDirectory(); } catch (e) { continue; }
-    if (isDir && detectManifestKind(sub) !== 'none') return sub;
+/** 同时发现多个根时拒绝猜选，避免选错客户端/服务端或多个打包子项目。 */
+export function findModpackRoot(dir: string): string {
+  if (detectManifestKind(dir) !== 'none') return dir;
+  let roots: string[] = [];
+  for (let name of fs.listFileSync(dir)) {
+    let sub = dir + '/' + name;
+    if (dirExists(sub) && detectManifestKind(sub) !== 'none') roots.push(sub);
   }
+  if (roots.length > 1) throw new Error('归档中存在多个整合包清单，请选择单独的客户端归档');
+  return roots.length === 1 ? roots[0] : '';
+}
+export function sanitizeVersionName(name: string): string {
+  let out = name.replace(new RegExp('[\\\\/:*?"<>|!;\\x00-\\x1f\\x7f]', 'g'), '_').trim();
+  return out.length > 0 && safeBaseName(out) === out ? out : '整合包';
+}
+/**
+ * 下载详情和安装服务共用的名称校验。首尾留白按普通版本习惯修剪；禁止目录分隔、
+ * 控制字符和启动链路破坏字符，保留安全中文。已明确输入的非法名称须显示错误，
+ * 不能静默改成另一个用户未选择的名称。自动默认名先经 sanitizeVersionName 生成。
+ */
+export function validateModpackVersionName(name: string): string {
+  let trimmed = name.trim();
+  if (trimmed.length === 0) return '版本名称不能为空';
+  if (trimmed.length > 120) return '版本名称不能超过 120 个字符';
+  if (sanitizeVersionName(trimmed) !== trimmed) return '版本名称包含不支持的字符';
   return '';
 }
-
-function parseManifestFromDir(dir: string, kind: string) {
-  if (kind === 'modrinth') {
-    return parseModrinthIndex(fs.readTextSync(dir + '/modrinth.index.json'));
-  }
-  return parseCurseForgeManifest(fs.readTextSync(dir + '/manifest.json'));
-}
-
-/** 版本名非法字符替换（与文件系统目录名安全）。 */
-export function sanitizeVersionName(name: string): string {
-  // 非法字符、控制字符 + 启动链路破坏字符统一替换；点段最终由 canonical basename 拒绝。
-  let out = name.replace(/[\\/:*?"<>|!;\x00-\x1f\x7f]/g, '_').trim();
-  if (out.length === 0 || safeBaseName(out) !== out) out = '整合包';
-  return out;
-}
-
-/** 与已存在版本名去重：冲突时追加 ' (2)' / ' (3)' ... */
 export function uniqueVersionName(base: string, existing: string[]): string {
-  let set = new Set<string>();
-  for (let e of existing) set.add(e);
+  let set = new Set<string>(existing);
   if (!set.has(base)) return base;
-  let i = 2;
-  while (set.has(base + ' (' + i + ')')) i++;
-  return base + ' (' + i + ')';
+  let index = 2;
+  while (set.has(base + ' (' + index + ')')) index++;
+  return base + ' (' + index + ')';
 }
-
 function fileExists(path: string): boolean {
-  try { return fs.statSync(path).isFile(); } catch (e) { return false; }
+  try { let st = fs.lstatSync(path); return st.isFile() && !st.isSymbolicLink(); } catch (e) { return false; }
+}
+function pathExists(path: string): boolean {
+  try { fs.lstatSync(path); return true; } catch (e) { return false; }
 }
 
+/** 逐层拒绝目标父目录链接；只做字符串包含检查不足以阻止写入被重定向到实例外。 */
+function ensureInstanceParent(root: string, relative: string): void {
+  if (safeRelPath(relative) !== relative) throw new Error('实例文件路径不安全');
+  let current = root;
+  let parts = relative.split('/');
+  for (let index = 0; index < parts.length; index++) {
+    if (index > 0) current += '/' + parts[index - 1];
+    ensureDirSync(current);
+    let stat = fs.lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('实例文件父目录不是普通目录');
+  }
+}
 function dirExists(path: string): boolean {
-  try { return fs.statSync(path).isDirectory(); } catch (e) { return false; }
-}
-
-function ensureDir(dir: string): void {
-  try { fs.mkdirSync(dir, true); }
-  catch (e) {
-    try { if (fs.statSync(dir).isDirectory()) return; } catch (ee) { /* */ }
-    throw new Error('mkdir failed: ' + dir);
-  }
-}
-
-/** 为某文件路径创建父目录。 */
-function ensureParentDir(filePath: string): void {
-  let i = filePath.lastIndexOf('/');
-  if (i <= 0) return;
-  ensureDir(filePath.substring(0, i));
-}
-
-/**
- * 把 srcDir 的**内容**递归复制进 destDir（不含 srcDir 本身那层）。
- * 文件覆盖已存在的（client-overrides 覆盖 overrides）。
- * relPaths 收集复制下的文件实例相对路径（供快照/更新清理用）。
- * 用异步 fs.copyFile：大整合包（上千 config/kubejs 文件）不再同步阻塞 JS 线程。
- */
-async function copyTreeContents(srcDir: string, destDir: string, relPaths: string[]): Promise<void> {
-  await copyTreeInto_(srcDir, destDir, '', relPaths);
-}
-
-async function copyTreeInto_(srcDir: string, destDir: string, relPrefix: string, relPaths: string[]): Promise<void> {
-  let srcRoot = fs.lstatSync(srcDir);
-  if (srcRoot.isSymbolicLink() || !srcRoot.isDirectory()) {
-    throw new Error('override 复制源不是普通目录');
-  }
-  ensureDir(destDir);
-  let destRoot = fs.lstatSync(destDir);
-  if (destRoot.isSymbolicLink() || !destRoot.isDirectory()) {
-    throw new Error('override 复制目标不是普通目录');
-  }
-  let entries = fs.listFileSync(srcDir);
-  for (let name of entries) {
-    if (safeBaseName(name) !== name) throw new Error('override 包含非法文件名');
-    let src = srcDir + '/' + name;
-    let dst = destDir + '/' + name;
-    let rel = relPrefix.length > 0 ? relPrefix + '/' + name : name;
-    if (safeRelPath(rel) !== rel) throw new Error('override 相对路径不安全');
-    let st = fs.lstatSync(src);
-    if (st.isSymbolicLink()) throw new Error('拒绝复制 override 符号链接: ' + rel);
-    if (st.isDirectory()) {
-      await copyTreeInto_(src, dst, rel, relPaths);
-    } else if (st.isFile()) {
-      // 仅允许覆盖既有普通文件；拒绝跟随目标符号链接或覆盖目录/特殊文件。
-      try {
-        let existing = fs.lstatSync(dst);
-        if (existing.isSymbolicLink() || !existing.isFile()) {
-          throw new Error('override 复制目标存在非普通文件: ' + rel);
-        }
-      } catch (e) {
-        let message = (e as Error).message;
-        if (message.indexOf('override 复制目标存在非普通文件') >= 0) throw e as Error;
-        // lstat 不存在时由 copyFile 创建；权限等错误会在 copyFile 阶段继续抛出。
-      }
-      await fs.copyFile(src, dst);
-      let copied = fs.lstatSync(dst);
-      if (copied.isSymbolicLink() || !copied.isFile() || copied.size !== st.size) {
-        throw new Error('override 复制后类型或大小校验失败: ' + rel);
-      }
-      relPaths.push(rel);
-    } else {
-      throw new Error('拒绝复制 override 非普通文件: ' + rel);
-    }
-  }
+  try { let st = fs.lstatSync(path); return st.isDirectory() && !st.isSymbolicLink(); } catch (e) { return false; }
 }

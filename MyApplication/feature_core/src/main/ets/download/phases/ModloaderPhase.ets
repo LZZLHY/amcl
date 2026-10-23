@@ -157,6 +157,8 @@ export class ModloaderPhase implements IDownloadPhase {
       this.state_.loaderVersion,
       installBaseMcDir,
       (progress: ModLoaderInstallProgress): void => {
+        // 不能中断正在运行的 JVM，但下一处理步骤/下载回调开始前可以安全结束取消。
+        if (this.state_.cancelled) throw new CancelledError();
         let prog = (progress.total > 0) ? (progress.current / progress.total) : 0;
         if (prog > 1) prog = 1;
         if (prog < 0) prog = 0;

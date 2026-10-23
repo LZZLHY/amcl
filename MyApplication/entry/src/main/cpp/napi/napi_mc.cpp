@@ -7,6 +7,7 @@
  */
 #include "napi_mc.h"
 #include "napi_helpers.h"
+#include "graphics_semantics_guard.h"
 
 #include <hilog/log.h>
 
@@ -94,6 +95,8 @@ napi_value McCheckFiles(napi_env env, napi_callback_info info) {
 
 // 数据驱动启动（v3 架构：ArkTS 传入 LaunchProfile 全部字段）
 napi_value McLaunchWithProfile(napi_env env, napi_callback_info info) {
+    // 在读取参数、清理旧失败和任何启动事务前拒绝已被语义探针占用的诊断进程。
+    if (amcl::napi::RejectGraphicsSemanticsJvmStart(env)) return nullptr;
     mcClearGraphicsLaunchFailure();
     size_t argc = 8;
     napi_value argv[8];
@@ -150,6 +153,8 @@ napi_value McLaunchWithProfile(napi_env env, napi_callback_info info) {
 
 // 数据驱动启动（v4 参数协议：ArkTS 传入 string[]，不再使用逗号拼接）
 napi_value McLaunchWithProfileV2(napi_env env, napi_callback_info info) {
+    // V2与兼容入口共用同一TestHooks进程边界，不能靠另一个参数协议绕过重启要求。
+    if (amcl::napi::RejectGraphicsSemanticsJvmStart(env)) return nullptr;
     mcClearGraphicsLaunchFailure();
     size_t argc = 8;
     napi_value argv[8];

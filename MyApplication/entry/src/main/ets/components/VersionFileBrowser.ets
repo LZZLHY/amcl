@@ -1,3 +1,5 @@
+import { AppRoundIconButton } from './AppRoundIconButton';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { DeviceProfile } from 'commons';
 import { KeyCode } from '@kit.InputKit';
 import { DiagnosticPolicy } from 'commons';
@@ -24,6 +26,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
+import { resolveInstanceGameDir } from 'commons';
 import { AppIconName } from 'commons';
 import { removeDirRecursive } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -63,28 +66,31 @@ export struct VersionFileBrowser {
   @State private rel: string = '';
   @State private rows: FileEntry[] = [];
   @State private loaded: boolean = false;
-  @State private busy: boolean = false;
+  @State @Watch('publishNavigationBlocked_') private busy: boolean = false;
   @State private busyLabel: string = '';
 
   /** 删除二次确认：目标名（''=无对话框）+ 是否目录 */
-  @State private pendingDelete: string = '';
+  @State @Watch('publishNavigationBlocked_') private pendingDelete: string = '';
   @State private pendingDeleteIsDir: boolean = false;
 
   /** 重命名浮层 */
-  @State private renameTarget: string = '';
+  @State @Watch('publishNavigationBlocked_') private renameTarget: string = '';
   @State private renameInput: string = '';
   @State private renameError: string = '';
 
   /** 新建文件夹浮层 */
-  @State private showNewFolder: boolean = false;
+  @State @Watch('publishNavigationBlocked_') private showNewFolder: boolean = false;
   @State private newFolderInput: string = '';
   @State private newFolderError: string = '';
 
   onClose: () => void = () => {};
   onBack: () => void = () => {};
+  /** 只投影本面板原遮罩/事务是否阻止导航，父宿主不复制文件业务状态。 */
+  onNavigationBlocked: (blocked: boolean) => void = () => {};
   onChanged: () => void = () => {};
 
   aboutToAppear() {
+    this.navigationProjectionAlive_ = true;
     if (this.active) this.refresh();
   }
 
@@ -96,33 +102,40 @@ export struct VersionFileBrowser {
     }
   }
 
+
+  /** 卸载后不再向父标题发布迟到状态；文件任务和扫描的原所有权不变。 */
+  private navigationProjectionAlive_: boolean = false;
+
+  /** 导航只观察原遮罩事实，不取消任务或跳过原确认；未屏蔽正文时仍允许原返回。 */
+  private navigationBlocked_(): boolean { return this.busy || this.pendingDelete.length > 0 || this.renameTarget.length > 0 || this.showNewFolder; }
+
+  /** 业务状态变化后只发一个布尔投影，供已有父标题同步禁用状态。 */
+  private publishNavigationBlocked_(): void {
+    if (this.navigationProjectionAlive_) this.onNavigationBlocked(this.navigationBlocked_());
+  }
+
+  /** 仅注销标题状态投影，不新增任务取消或覆盖原文件事务。 */
+  aboutToDisappear(): void { this.navigationProjectionAlive_ = false; }
+
   build() {
+    if (this.embedded) {
+      this.PanelBody_();
+    } else {
+      ImmersiveTitleScaffold({ title: '版本文件夹', theme: this.theme, modal: true,
+        surfaceColor: this.theme.bgPrimary, closeLabel: '关闭管理面板',
+        closeId: 'versionfilebrowser-close', closeEnabled: !this.navigationBlocked_(),
+        onClose: (): void => { if (!this.navigationBlocked_()) this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+  }
+
+  /** 原面板正文与覆盖层保持原组件所有权，宿主只接管导航动作。 */
+  @Builder
+  private PanelBody_() {
     Stack({ alignContent: Alignment.Center }) {
       Column() {
-        if (this.embedded) {
-          Row() {
-            Row({ space: 4 }) {
-              AppIcon({ name: AppIconName.ChevronLeft, iconSize: 14, color: this.theme.textPrimary })
-              Text('版本详情').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-            }
-            .height(32)
-            .padding({ left: 10, right: 12 })
-            .borderRadius(16)
-            .backgroundColor(this.theme.bgInput)
-            .alignItems(VerticalAlign.Center)
-            .onClick(() => { this.onBack() })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 10, bottom: 4 })
-          .justifyContent(FlexAlign.Start)
-        } else {
-          Row() {
-            Column().width(36).height(4).backgroundColor(this.theme.divider).borderRadius(2)
-          }
-          .width('100%').justifyContent(FlexAlign.Center).padding({ top: 10, bottom: 6 })
-        }
-
-        this.Header()
+          this.Header()
         this.Breadcrumb()
 
         if (!this.loaded) {
@@ -152,14 +165,13 @@ export struct VersionFileBrowser {
     }
     .width('100%')
     .height('100%')
+
   }
 
   @Builder
   Header() {
     Row() {
       Column({ space: 2 }) {
-        Text('版本文件夹')
-          .fontSize(22).fontWeight(700).fontColor(this.theme.textPrimary)
         Text(this.headerSubtitle())
           .fontSize(11).fontColor(this.theme.textHint)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -168,19 +180,15 @@ export struct VersionFileBrowser {
       .layoutWeight(1)
 
       Row({ space: 8 }) {
-        Row() {
-          AppIcon({ name: AppIconName.Plus, iconSize: 15, color: this.theme.textSecondary })
-        }
-        .width(32).height(32).borderRadius(16)
-        .backgroundColor(this.theme.bgInput).justifyContent(FlexAlign.Center)
-        .onClick(() => { this.openNewFolder() })
-
-        Row() {
-          AppIcon({ name: AppIconName.Refresh, iconSize: 14, color: this.theme.textSecondary })
-        }
-        .width(32).height(32).borderRadius(16)
-        .backgroundColor(this.theme.bgInput).justifyContent(FlexAlign.Center)
-        .onClick(() => { this.refresh() })
+        // 文件工具保留原32vp视觉，44vp命中与原遮罩禁用由共同普通按钮负责。
+        AppRoundIconButton({ name: AppIconName.Plus, theme: this.theme, visualDiameter: 32,
+          color: this.theme.textSecondary, containerBg: this.theme.bgInput, accessibilityLabel: '新建文件夹',
+          actionEnabled: !this.navigationBlocked_(), controlId: 'version-file-new-folder',
+          onAction: (): void => { this.openNewFolder(); } })
+        AppRoundIconButton({ name: AppIconName.Refresh, theme: this.theme, visualDiameter: 32,
+          color: this.theme.textSecondary, containerBg: this.theme.bgInput, accessibilityLabel: '刷新版本文件夹',
+          actionEnabled: !this.navigationBlocked_(), controlId: 'version-file-refresh',
+          onAction: (): void => { this.refresh(); } })
 
         Row({ space: 5 }) {
           AppIcon({ name: AppIconName.Import, iconSize: 13, color: this.theme.textOnPrimary })
@@ -500,9 +508,8 @@ export struct VersionFileBrowser {
   /** 版本根目录：隔离 → versions/<id>；非隔离 → .minecraft 根。 */
   private rootDir(): string {
     if (this.mcDir.length === 0) return ''
-    if (!this.versionIsolation) return this.mcDir
-    if (this.versionId.length === 0) return ''
-    return this.mcDir + '/versions/' + this.versionId
+    if (this.versionId.length === 0 && this.versionIsolation) return ''
+    return resolveInstanceGameDir(this.mcDir, this.versionId, this.versionIsolation)
   }
 
   /** 当前目录绝对路径。 */
@@ -525,7 +532,7 @@ export struct VersionFileBrowser {
 
   private headerSubtitle(): string {
     if (this.versionId.length === 0 && this.versionIsolation) return '未选择版本'
-    let loc = this.rel.length === 0 ? (this.versionIsolation ? this.versionId : '.minecraft') : this.rel
+    let loc = this.rel.length === 0 ? (this.rootDir() !== this.mcDir ? this.versionId : '.minecraft') : this.rel
     return loc + ' · ' + this.rows.length + ' 项'
   }
 
@@ -776,4 +783,10 @@ export struct VersionFileBrowser {
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
       + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+        this.PanelBody_();
+      }
 }

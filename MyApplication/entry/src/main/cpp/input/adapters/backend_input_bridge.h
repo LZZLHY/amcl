@@ -2,6 +2,9 @@
 #define AMCL_BACKEND_INPUT_BRIDGE_H
 
 #include <stdint.h>
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
 
 // ============================================================================
 // 非 GLFW 后端（LWJGL2 / SDL3）的 typed 事件拉取 ABI。
@@ -40,6 +43,20 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// 平台进程向中立输入运行时注册共享视角加工器。回调只加工一个source的增量，
+// 不写cursor accumulator、不调用core/ingress；输入ns为单调时间，输出必须有限。
+// 注册在同PID内仅接受首次函数或相同函数，返回1成功/0拒绝；fork后须重新注册。
+typedef bool (*AmclBackendLookProcessorV1)(int32_t source, double dx, double dy,
+                                         int64_t monotonicNs,
+                                         double* outDx, double* outDy);
+AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputSetLookProcessorV1(
+    AmclBackendLookProcessorV1 processor);
+// 可选的加工状态复位回调，只清指定source的时间/尾量，保留配置。SDL负责自己的
+// physical加工生命周期；LWJGL2只是离散事件消费者，不能借局部RESET改GLFW视角时钟。
+typedef void (*AmclBackendLookResetV1)(int32_t source);
+AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputSetLookResetV1(
+    AmclBackendLookResetV1 reset);
 
 #define AMCL_BACKEND_INPUT_ABI_VERSION 1u
 
@@ -156,6 +173,12 @@ typedef struct AmclBackendInputEvent {
 // `out->abiVersion` / `out->structSize` 由本函数填写；调用方**不需要**预先填。
 AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputNext(uint32_t backend,
                                                     AmclBackendInputEvent* out);
+// 与 legacy 队首及本轮 owner fence 合并消费。sequence 在此扩展中为全宽交互序号，
+// 同一 core 记录的多条映射输出保留同一个值，不能在中途插入别的通道。
+AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputNextThrough(
+    uint32_t backend, AmclBackendInputEvent* out, uint64_t maxOrder);
+/** 私有L2旁带：只对应刚实际取出的同order记录，wire仍64字节，旧/current不补戳。 */
+AMCL_BACKEND_INPUT_PUBLIC int amclBackendInputL2ReadKeyScopeV1(uint64_t originalOrder,uint64_t* scope);
 
 // 声明本后端开始/停止消费。`active=1` 时把读位置对齐到"此刻"并清掉挂起的溢出标记，
 // 所以它**不重放** SDL/LWJGL2 尚未初始化时产生的历史输入 —— 与旧通道同一语义。

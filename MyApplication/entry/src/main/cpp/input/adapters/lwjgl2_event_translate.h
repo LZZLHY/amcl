@@ -25,6 +25,8 @@ extern "C" {
 #define AMCL_LWJGL2_WIRE_MOUSE_BUTTON_TYPED 2006
 #define AMCL_LWJGL2_WIRE_SCROLL_TYPED 2007
 #define AMCL_LWJGL2_WIRE_RESET_TYPED 2009
+// 真实宿主焦点，Java用它投影Display.isActive，不能把局部队列RESET当成失焦。
+#define AMCL_LWJGL2_WIRE_FOCUS_TYPED 2010
 
 // LWJGL2 的 action 编码（宿主补丁里 AMCLDisplay.drainEvents 的读法）。
 #define AMCL_LWJGL2_ACTION_RELEASE 0

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "keys": [
+    {
+      "kid": "amcl-runtime-2026-01",
+      "algorithm": "ES256",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXicmpsNV+5oMgWJlacBIAF8hq2fYZ3ZZ/WK7D7GUL/BiLikL2V5KmXSLY6OEZvHZf1kV6C4sD6VPdu0LMJ8zLw=="
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+/** 实际global facade的正常退出顺序；唯一观察注入是记录真实Registry析构，未改归约逻辑。 */
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+static bool registryDestroyed=false;
+@OWNER_SOURCE@
+#include "input/adapters/glfw_source_plane_aggregate.h"
+static amcl::input::GlfwSourcePlaneAggregate facade;
+/** watcher在facade之后构造、之前析构，只读实际registry析构事实，不替代真正facade close。 */
+struct ExitWitness {~ExitWitness(){
+    std::fprintf(stderr,"CONTROL OWNER TEARDOWN registryDestroyed=%d before real global facade close\n",registryDestroyed?1:0);
+    if(registryDestroyed){std::fprintf(stderr,"CONTROL OWNER TEARDOWN FAIL: real registry ended before borrowed facade\n");std::fflush(stderr);std::abort();}
+}};
+static ExitWitness witness;
+int main(){
+#ifdef _WIN32
+    // 错误对话框只关闭本测试进程的崩溃UI；负控仍正常执行析构并由真实marker失败。
+    SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+    _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
+#endif
+    facade.BindTarget(42);AmclControlSnapshotV1 facts{};
+    if(!facade.Snapshot(facts)||!facts.consumer)return 1;
+    std::puts("CONTROL OWNER TEARDOWN main returned normally; real facade destructor remains registered");
+}

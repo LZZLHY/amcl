@@ -106,6 +106,51 @@ function forbidMatch(text, pattern, label) {
   if (pattern.test(text)) fail(`forbidden ${label}`);
 }
 
+/**
+ * 帧率设置的接线判据：只检查真实设置回调，不允许借用其他方法、注释或字符串中的
+ * 同名调用。偏好服务采用首帧后的惰性getter，但状态更新、持久化及同步Native交接
+ * 仍必须在同一次回调内依次发生；本函数只返回诊断，供负向控制复用而不改退出码。
+ */
+export function analyzeFrameCapSettings(source) {
+  const code = maskCppTrivia(source), errors = [];
+  /** 平衡已去除字符串/注释的花括号，缺失定义时拒绝借用后续无关代码块。 */
+  const bodyOf = pattern => {
+    const match = pattern.exec(code);
+    if (!match) return '';
+    let opening = match.index + match[0].length;
+    while (/\s/.test(code[opening] ?? '')) opening++;
+    if (code[opening] !== '{') return '';
+    let depth = 1;
+    for (let index = opening + 1; index < code.length; index++) {
+      if (code[index] === '{') depth++;
+      if (code[index] === '}' && --depth === 0) return code.slice(opening + 1, index);
+    }
+    return '';
+  };
+  if (!/\bohosFrameRateCap\s*:\s*this\s*\.\s*ohosFrameRateCap\b/.test(code)) {
+    errors.push('settings state binding');
+  }
+  const getter = bodyOf(/\bprivate\s+getPrefManager_\s*\(\s*\)\s*:\s*PreferenceManager\s*/);
+  if (!/if\s*\(\s*this\.prefManager_\s*===\s*null\s*\)\s*\{?\s*this\.prefManager_\s*=\s*new\s+PreferenceManager\s*\(\s*this\.context\s*\)\s*;?\s*\}?\s*return\s+this\.prefManager_\s*;?\s*$/.test(getter.trim())) {
+    errors.push('real cached preference getter');
+  }
+  const body = bodyOf(/\bonOhosFrameRateCapChange\s*:\s*\(\s*fpsCap\s*:\s*number\s*\)\s*(?::\s*void\s*)?=>\s*/);
+  const state = /\bthis\.ohosFrameRateCap\s*=\s*fpsCap\b/.exec(body);
+  const persist = /\bthis\.getPrefManager_\s*\(\s*\)\s*\.\s*ohosFrameRateCap\s*=\s*fpsCap\b/.exec(body);
+  const native = /\btestNapi\.setOhosFrameRateCap\s*\(\s*fpsCap\s*\)/.exec(body);
+  if (!state) errors.push('settings state update');
+  if (!persist) errors.push('persistent cap through preference getter');
+  if (!native) errors.push('immediate native cap handoff');
+  if (state && persist && native) {
+    if (!(state.index < persist.index && persist.index < native.index)) errors.push('state/persistence/native ordering');
+    // await或延迟调度会把Native更新推迟到另一个任务，违背用户选择后立即交接的契约。
+    if (/=>|\b(?:function|await|setTimeout|setInterval|setImmediate|queueMicrotask|Promise|postFrameCallback|postDelayedFrameCallback)\b/.test(body.slice(0, native.index))) {
+      errors.push('native cap handoff deferred from settings callback');
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 const cmake = read('entry/src/main/cpp/CMakeLists.txt');
 const benchmark = read('entry/src/main/cpp/glfw/mg_benchmark_cache.cpp');
 const benchmarkHeader = read('entry/src/main/cpp/glfw/mg_benchmark_cache.h');
@@ -269,7 +314,7 @@ requireFunctionBodyMatch(frame,
   'display-change compatibility refresh query path');
 requireFunctionBodyMatch(frame,
   /\bbool\s+RefreshExpectedFrameRateHintForDisplayRate\s*\([^)]*\)/,
-  /component\s*==\s*nullptr[\s\S]*!g_frameRateController\.lifecycle\.surfaceReady[\s\S]*ApplyControllerLocked\(lifecycleStage,\s*true,\s*false,\s*displayRate\)/,
+  /component\s*==\s*nullptr[\s\S]*!g_frameRateController\.lifecycle\.surfaceReady[\s\S]*ApplyControllerLocked\(lifecycleStage,\s*false,\s*false,\s*displayRate\)/,
   'display-change explicit-rate refresh apply path');
 requireMatch(xcomponent, /RegisterFocusEventCallback/, 'XComponent focus callback');
 requireMatch(xcomponent, /RegisterBlurEventCallback/, 'XComponent blur callback');
@@ -301,9 +346,9 @@ requireMatch(preferences,
 requireMatch(settingsPage,
   /系统调度帧率上限[\s\S]*FrameRateCapChip\(0, '自动'\)[\s\S]*onOhosFrameRateCapChange/,
   'explicit scheduler-cap settings UI');
-requireMatch(indexPage,
-  /ohosFrameRateCap: this\.ohosFrameRateCap[\s\S]*prefManager\.ohosFrameRateCap = fpsCap[\s\S]*setOhosFrameRateCap\(fpsCap\)/,
-  'settings state, persistence and immediate native handoff');
+for (const error of analyzeFrameCapSettings(indexPage).errors) {
+  fail(`missing settings state, persistence and immediate native handoff: ${error}`);
+}
 requireMatch(gamePage,
   /applyOhosFrameRatePreference[\s\S]*setOhosFrameRateCap\(fpsCap\)/,
   'launch-time persisted cap injection');

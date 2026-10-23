@@ -10,8 +10,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <dlfcn.h>
+#endif
 #include "../jvm/callback_bridge_host.h"
 
 #if defined(AMCL_JNI_BRIDGE_HOST_TEST)
@@ -49,8 +54,9 @@ static int parseField(const char** cursor, int base, uint64_t maximum, char sepa
  */
 static const AmclCallbackBridgeHostV1* resolveHost(void) {
     const char* cursor = getenv(AMCL_CALLBACK_BRIDGE_HOST_ENV);
-    if (!cursor || strlen(cursor) >= 128) {
-        BRIDGE_ERROR("host descriptor absent or too long");
+    // 宿主在建 JVM 前预登记空槽位、由游戏线程原位填写（I27-05）；空值与缺席同义，分开报原因。
+    if (!cursor || !cursor[0] || strlen(cursor) >= 128) {
+        BRIDGE_ERROR("host descriptor absent, empty or too long");
         return NULL;
     }
     uint64_t abi = 0, pid = 0, launchId = 0, address = 0;
@@ -58,13 +64,39 @@ static const AmclCallbackBridgeHostV1* resolveHost(void) {
         !parseField(&cursor, 10, UINT32_MAX, ':', &pid) ||
         !parseField(&cursor, 10, UINT64_MAX, ':', &launchId) ||
         !parseField(&cursor, 16, UINTPTR_MAX, '\0', &address) ||
-        abi != AMCL_CALLBACK_BRIDGE_HOST_ABI || pid != (uint32_t)getpid() ||
+        abi != AMCL_CALLBACK_BRIDGE_HOST_ABI || pid != (uint32_t)
+#ifdef _WIN32
+            _getpid()
+#else
+            getpid()
+#endif
+        ||
         !launchId || !address) {
         BRIDGE_ERROR("host descriptor text/ABI/PID/session invalid");
         return NULL;
     }
 
     void* getterAddress = (void*)(uintptr_t)address;
+#ifdef _WIN32
+    // Windows真JNI宿主使用同一描述符合同：先核当前已加载映像中的精确导出getter，
+    // 再证明其地址处于可执行页。UNCHANGED_REFCOUNT只借模块，不新加载/卸载owner。
+    HMODULE getterModule = NULL;
+    MEMORY_BASIC_INFORMATION getterMemory;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)getterAddress, &getterModule) ||
+        (void*)GetProcAddress(getterModule, AMCL_CALLBACK_BRIDGE_HOST_GETTER) != getterAddress ||
+        !VirtualQuery(getterAddress, &getterMemory, sizeof(getterMemory)) ||
+        getterMemory.State != MEM_COMMIT || (getterMemory.Protect & PAGE_GUARD)) {
+        BRIDGE_ERROR("host getter is not the exact exported symbol in a loaded DSO");
+        return NULL;
+    }
+    const DWORD getterAccess = getterMemory.Protect & 0xff;
+    if (getterAccess != PAGE_EXECUTE && getterAccess != PAGE_EXECUTE_READ &&
+        getterAccess != PAGE_EXECUTE_READWRITE && getterAccess != PAGE_EXECUTE_WRITECOPY) {
+        BRIDGE_ERROR("host getter is not executable");
+        return NULL;
+    }
+#else
     Dl_info getterSymbol;
     memset(&getterSymbol, 0, sizeof(getterSymbol));
     if (!dladdr(getterAddress, &getterSymbol) || !getterSymbol.dli_sname ||
@@ -73,6 +105,7 @@ static const AmclCallbackBridgeHostV1* resolveHost(void) {
         BRIDGE_ERROR("host getter is not the exact exported symbol in a loaded DSO");
         return NULL;
     }
+#endif
 
     const AmclCallbackBridgeHostV1* host = ((AmclCallbackBridgeHostGetterV1)getterAddress)();
     if (!host || host->magic != AMCL_CALLBACK_BRIDGE_HOST_MAGIC ||
@@ -82,6 +115,25 @@ static const AmclCallbackBridgeHostV1* resolveHost(void) {
         return NULL;
     }
 
+#ifdef _WIN32
+    // bind仍必须属于上述同一个真实owner映像，且处于可执行页。坏module/table在
+    // 调用RegisterNatives之前拒绝；PID/ABI/session/长度的公共检查保持原样。
+    HMODULE bindModule = NULL;
+    MEMORY_BASIC_INFORMATION bindMemory;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)host->bind, &bindModule) ||
+        bindModule != getterModule || !VirtualQuery((const void*)host->bind, &bindMemory, sizeof(bindMemory)) ||
+        bindMemory.State != MEM_COMMIT || (bindMemory.Protect & PAGE_GUARD)) {
+        BRIDGE_ERROR("host bind function is outside the validated host DSO");
+        return NULL;
+    }
+    const DWORD bindAccess = bindMemory.Protect & 0xff;
+    if (bindAccess != PAGE_EXECUTE && bindAccess != PAGE_EXECUTE_READ &&
+        bindAccess != PAGE_EXECUTE_READWRITE && bindAccess != PAGE_EXECUTE_WRITECOPY) {
+        BRIDGE_ERROR("host bind function is not executable");
+        return NULL;
+    }
+#else
     Dl_info bindSymbol;
     memset(&bindSymbol, 0, sizeof(bindSymbol));
     if (!dladdr((void*)host->bind, &bindSymbol) ||
@@ -89,6 +141,7 @@ static const AmclCallbackBridgeHostV1* resolveHost(void) {
         BRIDGE_ERROR("host bind function is outside the validated host DSO");
         return NULL;
     }
+#endif
     return host;
 }
 

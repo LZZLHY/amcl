@@ -1,0 +1,37 @@
+--- a/make/modules/java.desktop/Lib.gmk
++++ b/make/modules/java.desktop/Lib.gmk
+@@ -45,10 +45,10 @@
+   LIBJSOUND_CFLAGS := \
+       $(ALSA_CFLAGS) \
+       -DX_PLATFORM=X_$(OPENJDK_TARGET_OS_UPPERCASE) \
+-      -DUSE_PORTS=TRUE \
+-      -DUSE_DAUDIO=TRUE \
+-      -DUSE_PLATFORM_MIDI_OUT=TRUE \
+-      -DUSE_PLATFORM_MIDI_IN=TRUE \
++      -DUSE_PORTS=FALSE \
++      -DUSE_DAUDIO=FALSE \
++      -DUSE_PLATFORM_MIDI_OUT=FALSE \
++      -DUSE_PLATFORM_MIDI_IN=FALSE \
+       #
+ 
+   LIBJSOUND_LINK_TYPE := C
+@@ -56,8 +56,10 @@
+     LIBJSOUND_LINK_TYPE := C++
+   endif
+ 
++  # OHOS：硬件能力未实现时使用共享 JNI 的无设备分支，排除 ALSA 平台单元。
+   $(eval $(call SetupJdkLibrary, BUILD_LIBJSOUND, \
+       NAME := jsound, \
++      EXCLUDE_FILES := $(notdir $(wildcard $(TOPDIR)/src/java.desktop/linux/native/libjsound/PLATFORM_API_LinuxOS_ALSA*.c)), \
+       LINK_TYPE := $(LIBJSOUND_LINK_TYPE), \
+       OPTIMIZATION := LOW, \
+       EXTRA_HEADER_DIRS := java.base:libjava, \
+@@ -68,7 +70,7 @@
+       DISABLED_WARNINGS_clang_PLATFORM_API_MacOSX_MidiUtils.c := \
+           unused-but-set-variable, \
+       DISABLED_WARNINGS_clang_DirectAudioDevice.c := unused-function, \
+-      LIBS_linux := $(ALSA_LIBS), \
++      LIBS_linux :=, \
+       LIBS_macosx := \
+           -framework AudioToolbox \
+           -framework AudioUnit \

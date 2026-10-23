@@ -146,10 +146,10 @@ bool ApplyExpectedFrameRateHint(OH_NativeXComponent *component,
 // Returns false while no live surface is registered.
 bool RefreshExpectedFrameRateHint(const char *lifecycleStage);
 
-// Re-applies using a refresh rate resolved from the current Window display by
-// ArkTS.  This avoids treating the default display as the game display after a
-// desktop window moves across screens. Non-positive values retain the native
-// default-display compatibility query.
+// 使用ArkTS当前Window display采得的Hz重新计算既有owner政策，避免窗口跨屏时
+// 把default display误当game display。成功且相同的政策只读返回，不重复SDK或日志；
+// 上次失败仍重试，真正component/surface强制边界由原显式入口处理。
+// 非正值保留Native default-display兼容查询；此函数不增加时钟或呈现通知。
 bool RefreshExpectedFrameRateHintForDisplayRate(
     int32_t displayRate, const char *lifecycleStage);
 

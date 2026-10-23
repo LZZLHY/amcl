@@ -41,6 +41,8 @@
  *     `LayoutListPage.doShare` 同一条通道），分享后的链接行还可点击拉起浏览器。
  */
 
+import { AppRoundIconButton } from './AppRoundIconButton';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { ThemeColors, DistributionPolicy } from 'commons';
 import { AppIconName } from 'commons';
 import {
@@ -629,6 +631,8 @@ export struct McErrorSheet {
 
   /** 用系统浏览器打开链接（链接行点击用）。 */
   private async openInBrowser_(url: string): Promise<void> {
+    // 商店保留分享链接复制/撤回，但不执行一般网页；不以浏览器失败复制路径绕过渠道决定。
+    if (DistributionPolicy.isStore()) return
     if (url.length === 0) return
     let ctx = this.uiCtx_()
     if (ctx === undefined) { this.toast_('无法打开浏览器，已复制链接'); this.copyText_(url, '链接已复制'); return }
@@ -710,25 +714,10 @@ export struct McErrorSheet {
 
   build() {
     Column() {
-      // Header
-      this.HeaderRow_()
-
-      // Scroll body
-      Scroll() {
-        Column({ space: 14 }) {
-          this.HeroCard_()
-          this.ReasonCard_()
-          this.LogShareCard_()
-          this.TechDetailsCard_()
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, bottom: 16 })
-      }
-      .layoutWeight(1)
-      .scrollBar(BarState.Auto)
-
-      // Action bar
-      this.ActionBar_()
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: this.shortVersion(this.session.version), subtitle: this.isFault() ? '上次游戏异常退出' : '上次游戏已结束', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭游戏结果', closeId: 'mc-error-close', onClose: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%')
     .height('100%')
@@ -739,47 +728,7 @@ export struct McErrorSheet {
   //  Section: Header
   // ============================================================
 
-  @Builder
-  HeaderRow_() {
-    Row({ space: 10 }) {
-      // 左侧标识图标（不可点）
-      Stack() {
-        AppIcon({ name: AppIconName.Error, iconSize: 18, color: this.theme.error })
-      }
-      .width(40).height(40)
-      .borderRadius(20)
-      .backgroundColor(this.theme.errorBg)
 
-      // 中间双行标题
-      Column({ space: 1 }) {
-        Text(this.isFault() ? '上次游戏异常退出' : '上次游戏已结束')
-          .fontSize(11)
-          .fontWeight(500)
-          .fontColor(this.theme.error)
-          .maxLines(1)
-        Text(this.shortVersion(this.session.version))
-          .fontSize(18)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      // 右侧关闭按钮
-      Stack() {
-        AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-      }
-      .width(40).height(40)
-      .borderRadius(20)
-      .backgroundColor(this.theme.bgCard)
-      .onClick(() => { this.onClose() })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 10 })
-    .alignItems(VerticalAlign.Center)
-  }
 
   // ============================================================
   //  Section: Hero Card（红底 ⚠ + 标题 + 元信息）
@@ -966,12 +915,12 @@ export struct McErrorSheet {
       if (this.lsShareState === 'done' && this.lsShareUrl.length > 0) {
         Column({ space: 6 }) {
           Row({ space: 8 }) {
-            // 链接本体：点击拉起浏览器
+            // 商店将链接作为普通可复制信息；其他渠道保留浏览器动作。
             Column({ space: 2 }) {
               Text(this.lsShareUrl)
-                .fontSize(11).fontWeight(600).fontColor(this.theme.primary)
+                .fontSize(11).fontWeight(600).fontColor(DistributionPolicy.isStore() ? this.theme.textSecondary : this.theme.primary)
                 .fontFamily('HarmonyHeiTi-Mono, monospace')
-                .decoration({ type: TextDecorationType.Underline, color: this.theme.primary })
+                .decoration({ type: DistributionPolicy.isStore() ? TextDecorationType.None : TextDecorationType.Underline, color: this.theme.primary })
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 .width('100%')
               Text(this.lsExpiryLabel())
@@ -1261,31 +1210,44 @@ export struct McErrorSheet {
       })
 
       // 上传日志（圆形）
-      Stack() {
-        AppIcon({
-          name: AppIconName.Upload,
-          iconSize: 18,
-          color: this.theme.textSecondary,
-        })
-      }
-      .width(48).height(48)
-      .borderRadius(24)
-      .backgroundColor(this.theme.bgCard)
-      .accessibilityText(this.uploadBtnLabel())
-      .onClick(() => { this.uploadLog() })
+      // 上传仍只是进入原选择/预览入口，不直接发送；正文圆操作不冒充标题系统材质。
+      AppRoundIconButton({ name: AppIconName.Upload, theme: this.theme, visualDiameter: 48,
+        accessibilityLabel: this.uploadBtnLabel(), controlId: 'mc-error-upload',
+        onAction: (): void => { this.uploadLog(); } })
 
       // 关闭（圆形）
-      Stack() {
-        AppIcon({ name: AppIconName.Close, iconSize: 18, color: this.theme.textSecondary })
-      }
-      .width(48).height(48)
-      .borderRadius(24)
-      .backgroundColor(this.theme.bgCard)
-      .onClick(() => { this.onClose() })
+      // 页脚仍是普通按钮，不能假装属于 HDS 标题栏；关闭语义与顶部完全相同。
+      AppRoundIconButton({ name: AppIconName.Close, theme: this.theme, accessibilityLabel: '关闭游戏结果',
+        controlId: 'mc-error-footer-close', onAction: (): void => { this.onClose(); } })
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 12, bottom: Math.max(16, this.bottomSafeHeight) })
     .alignItems(VerticalAlign.Center)
     .backgroundColor(this.theme.bgPrimary)
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      // Header
+
+
+      // Scroll body
+      Scroll() {
+        Column({ space: 14 }) {
+          this.HeroCard_()
+          this.ReasonCard_()
+          this.LogShareCard_()
+          this.TechDetailsCard_()
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, bottom: 16 })
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Auto)
+
+      // Action bar
+      this.ActionBar_()
+
+      }
 }

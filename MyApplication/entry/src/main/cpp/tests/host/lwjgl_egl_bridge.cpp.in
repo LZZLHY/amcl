@@ -1,0 +1,73 @@
+// 只提供跨 namespace 服务表与当前 PID，查询桥直接包含当前生产 TU；不复制解析算法。
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <string>
+#if defined(_MSC_VER)
+// MSVC 宿主不识别 ELF 可见性修饰；目标导出面另由真实 OHOS ELF 产物门禁核对。
+#define __attribute__(value)
+#endif
+#include "@PRODUCTION_SOURCE@"
+
+static bool ownerReady = false;
+static int currentPid = 71, functionQueries = 0;
+static void realEglFunction() {}
+static void realClientFunction() {}
+static void* processOwner(const char* name) {
+    ++functionQueries;
+    if (!ownerReady) return nullptr;
+    if (std::strcmp(name, "eglGetDisplay") == 0) return reinterpret_cast<void*>(&realEglFunction);
+    if (std::strcmp(name, "glGetString") == 0) return reinterpret_cast<void*>(&realClientFunction);
+    return nullptr;
+}
+
+int amclLwjglEglTestPid() { return currentPid; }
+// bind 是现有服务 ABI 的资格字段，桥只读 bound，绝不允许借测试主动初始化图形运行时。
+static int forbiddenBind(const char*, const char*, char*, int) { std::abort(); }
+static AmclGraphicsRuntimeV1 api{};
+static const AmclGraphicsRuntimeV1* bound() { return ownerReady ? &api : nullptr; }
+static void publish(const char* value) {
+#if defined(_WIN32)
+    _putenv_s(AMCL_GRAPHICS_RUNTIME_SERVICE_ENV, value);
+#else
+    setenv(AMCL_GRAPHICS_RUNTIME_SERVICE_ENV, value, 1);
+#endif
+}
+
+int main() {
+    publish("");
+    // 无效名称/无 owner/尚未冻结均失败关闭，不创建服务、不调用 bind。
+    assert(eglGetProcAddress(nullptr) == nullptr && eglGetProcAddress("") == nullptr);
+    assert(eglGetProcAddress("eglGetDisplay") == nullptr && functionQueries == 0);
+    api.structSize = sizeof(api); api.abiVersion = 1; api.processId = currentPid; api.eglProc = processOwner;
+    AmclGraphicsRuntimeServiceV2 owner{sizeof(owner), 2, sizeof(api), currentPid, forbiddenBind, bound};
+    char encoded[96];
+    std::snprintf(encoded, sizeof(encoded), "2:%d:%p", currentPid, static_cast<void*>(&owner));
+    publish(encoded);
+    assert(eglGetProcAddress("eglGetDisplay") == nullptr && functionQueries == 0);
+    ownerReady = true;
+    // 失败结果不得缓存；返回值逐字保留 owner 的真实函数身份，也不能给未知扩展造地址。
+    assert(eglGetProcAddress("eglGetDisplay") == &realEglFunction);
+    // EGL 查询允许客户端 API 名字；完整转发 owner 的 gl*，不能用前缀过滤破坏契约。
+    assert(eglGetProcAddress("glGetString") == &realClientFunction);
+    assert(eglGetProcAddress("eglUnimplementedExtension") == nullptr);
+    ownerReady = false;
+    assert(eglGetProcAddress("eglGetDisplay") == nullptr);
+    assert(functionQueries == 3);
+    ownerReady = true;
+    // 环境的旧 PID 必须在解引用前拒绝；相同 PID 的服务/公共表仍分别校验 ABI 和尺寸。
+    publish("2:999:0x1"); assert(eglGetProcAddress("eglGetDisplay") == nullptr);
+    publish("damaged"); assert(eglGetProcAddress("eglGetDisplay") == nullptr);
+    publish((std::string(encoded) + "tail").c_str()); assert(eglGetProcAddress("eglGetDisplay") == nullptr);
+    publish(encoded);
+    owner.abi = 3; assert(eglGetProcAddress("eglGetDisplay") == nullptr); owner.abi = 2;
+    owner.size = 1; assert(eglGetProcAddress("eglGetDisplay") == nullptr); owner.size = sizeof(owner);
+    owner.publicApiSize = 1; assert(eglGetProcAddress("eglGetDisplay") == nullptr); owner.publicApiSize = sizeof(api);
+    api.abiVersion = 2; assert(eglGetProcAddress("eglGetDisplay") == nullptr); api.abiVersion = 1;
+    api.structSize = 1; assert(eglGetProcAddress("eglGetDisplay") == nullptr); api.structSize = sizeof(api);
+    api.processId = 999; assert(eglGetProcAddress("eglGetDisplay") == nullptr); api.processId = currentPid;
+    currentPid = 999; assert(eglGetProcAddress("eglGetDisplay") == nullptr); currentPid = 71;
+    assert(functionQueries == 3 && eglGetProcAddress("eglGetDisplay") == &realEglFunction);
+    std::puts("PASS production LWJGL EGL bridge: shared owner ABI, pre-dereference PID check, no bind/fallback and exact function identity");
+}

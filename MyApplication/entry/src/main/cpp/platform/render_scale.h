@@ -67,6 +67,15 @@ bool MappingActive();
 double MapX(double x);
 double MapY(double y);
 
+// 成对逆变换：一次读取同一packed快照，将游戏window px还原为真实surface px。
+// 调用者仍须绑定有效surface/尺寸/目标身份；本纯几何函数不替代生命周期准入。
+// null输出或非有限输入返回false且不改输出；恒等快照保留原坐标。
+bool UnmapWindowPoint(double x,double y,double* surfaceX,double* surfaceY);
+// 同一个packed快照映射真实relative delta与viewport上界，输出供有序consumer做累加/clamp。
+// 四个输出全部验证后才提交；不能将producer反馈坐标先clamp再反算delta。
+bool MapPointerDelta(double dx,double dy,double maxX,double maxY,
+                     double* windowDx,double* windowDy,double* windowMaxX,double* windowMaxY);
+
 }  // namespace amcl::renderscale
 
 // 启动时机补偿：McGamePage 的顺序是 XComponent OnSurfaceCreated → startMC，

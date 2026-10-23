@@ -14,7 +14,8 @@ let cachedBundle: string = '';
 function artifactScope(context: common.UIAbilityContext): string {
   if (cachedArtifactScope.length > 0 && cachedBundle === context.bundleCodeDir) return cachedArtifactScope;
   const parts: string[] = [];
-  for (const name of ['libentry.so', 'libamcl_graphics_runtime.so', 'libamcl_gl_host.so', 'libmobilegl.so',
+  // 输入runtime参与窗口激活/呈现屏障，其字节变化也必须使旧运行历史失效。
+  for (const name of ['libentry.so', 'libamcl_input_runtime.so', 'libamcl_graphics_runtime.so', 'libamcl_gl_host.so', 'libmobilegl.so',
     'libgl4es.so', 'libglfw.so', 'libSDL3.so', 'liblwjgl.so']) {
     parts.push(name + ':' + evidenceFileDigestSync(context.bundleCodeDir + '/libs/arm64/' + name));
   }

@@ -36,6 +36,8 @@ import { AppLogger } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import { decompressFile, VersionFileVerifier } from 'feature_core';
 import { IMPORTED_TAG_PREFIX } from './JdkUpdatePolicy';
+import { validateRuntimeTree } from './JdkTreeValidation';
+import { JdkDirectoryLease } from './JdkDirectoryLease';
 
 const TAG = 'JdkImporter';
 
@@ -51,52 +53,9 @@ export interface JdkImportResult {
 /** 进度回调。`percent` 只在有意义的阶段给（解压没有进度可报，给 -1）。 */
 export type JdkImportProgress = (phase: string, percent: number, message: string) => void;
 
-/**
- * 导入用的结构校验：**必须与 `JdkManager.isInstalled()` 的 probe 列表一致**。
- *
- * 这里刻意重复一遍而不是去调 `isInstalled` —— `isInstalled` 查的是**已发布的目标目录**，
- * 而这里查的是**还在 staging 里的候选目录**。共用一个函数会把"发布前校验"和"发布后自检"
- * 耦合成一件事，将来任一侧改了另一侧会跟着漂。重复的代价是两处要一起改，
- * 所以两边的注释互相指名对方。
- *
- * @returns 空串 = 通过；非空 = 失败原因（人话）
- */
-export function validateJdkTree(root: string): string {
-  // 布局判定与 isInstalled 同口径：先看经典布局的标志文件
-  let classic = false;
-  try {
-    fs.statSync(root + '/jre/lib/aarch64/server/libjvm.so');
-    classic = true;
-  } catch (e) { /* modular */ }
-
-  const probes: string[] = classic
-    ? ['jre/lib/aarch64/server/libjvm.so', 'jre/lib/rt.jar']
-    : ['lib/server/libjvm.so', 'lib/libjli.so', 'lib/modules'];
-  const marker = classic ? 'jre/lib/rt.jar' : 'release';
-
-  try {
-    fs.statSync(root + '/' + marker);
-  } catch (e) {
-    return '缺少安装标记 ' + marker + '（这看起来不是一个完整的 JDK 目录）';
-  }
-  for (const p of probes) {
-    try {
-      fs.statSync(root + '/' + p);
-    } catch (e) {
-      return '缺少关键文件 ' + p;
-    }
-  }
-  // boot artifact 的体积下界与官方安装同口径（1 MB）：拦住"文件在但是 0 字节/被截断"
-  const bootRel = classic ? 'jre/lib/rt.jar' : 'lib/modules';
-  try {
-    const st = fs.statSync(root + '/' + bootRel);
-    if (st.size < 1000000) {
-      return bootRel + ' 只有 ' + st.size + ' 字节，明显不完整';
-    }
-  } catch (e) {
-    return '无法读取 ' + bootRel;
-  }
-  return '';
+/** 保留导入器公共入口；与官方安装、已安装探测共用文件与架构契约。 */
+export function validateJdkTree(root: string, expectedMajor: string = ''): string {
+  return validateRuntimeTree(root, expectedMajor);
 }
 
 /**
@@ -111,8 +70,8 @@ export function validateJdkTree(root: string): string {
  *
  * @returns 定位到的根目录；定位不出返回空串
  */
-export function locateJdkRoot(extractRoot: string): string {
-  if (validateJdkTree(extractRoot).length === 0) return extractRoot;
+export function locateJdkRoot(extractRoot: string, expectedMajor: string = ''): string {
+  if (validateJdkTree(extractRoot, expectedMajor).length === 0) return extractRoot;
   let names: string[] = [];
   try {
     names = fs.listFileSync(extractRoot);
@@ -126,7 +85,7 @@ export function locateJdkRoot(extractRoot: string): string {
   } catch (e) {
     return '';
   }
-  return validateJdkTree(only).length === 0 ? only : '';
+  return validateJdkTree(only, expectedMajor).length === 0 ? only : '';
 }
 
 export class JdkImporter {
@@ -154,10 +113,13 @@ export class JdkImporter {
     //    installRoot 下，不是 cacheDir（那是另一个挂载点）。与官方安装同一约定。
     const extractRoot = installRoot + '/.staging-' + token;
 
+    let writerLease: JdkDirectoryLease | null = null;
+    let useLease: JdkDirectoryLease | null = null;
     let backupDir = '';
     let backupCreated = false;
 
     try {
+      writerLease = JdkDirectoryLease.writer(context.filesDir, version);
       ensureDirSync(installRoot);
       try { removeDirRecursive(extractRoot) } catch (e) { /* 不存在很正常 */ }
       ensureDirSync(extractRoot);
@@ -184,11 +146,11 @@ export class JdkImporter {
 
       // ---- 3) 定位 + 结构校验 ----
       report('verifying', -1, '正在校验目录结构…');
-      const root = locateJdkRoot(extractRoot);
+      const root = locateJdkRoot(extractRoot, version);
       if (root.length === 0) {
         // 把**具体缺什么**说出来，而不是笼统一句"不是有效的 JDK"——
         // 用户拿这句话才知道自己是不是选错了文件（比如选了 MC 整合包）。
-        const why = validateJdkTree(extractRoot);
+        const why = validateJdkTree(extractRoot, version);
         return {
           ok: false,
           stamp: '',
@@ -196,19 +158,18 @@ export class JdkImporter {
         };
       }
 
-      // ---- 4) 写戳（随目录一起发布，不是发布后再补写）----
-      try {
-        const sf = fs.openSync(root + '/.amcl_release_tag',
-          fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-        try { fs.writeSync(sf.fd, stamp) } finally { fs.closeSync(sf) }
-      } catch (e) {
-        // 与官方安装同口径：写戳失败不致命。但导入这条路上它会退化成 `unstamped`，
-        // 于是这个包会被当成"来源未知的旧装"而不是"用户导入" —— 记一条 WARN 让日志能解释。
-        AppLogger.warn(TAG, 'import stamp write failed (non-fatal; will look unstamped)',
-          e as Object, LOG_DOMAIN_LAUNCH);
-      }
+      // ---- 4) 导入身份必须随目录一起发布 ----
+      // 用户 ZIP 可能来自一份官方目录备份，不能信任其中携带的受管 receipt/tag。
+      // 移除内嵌 receipt，再强制写 imported 戳；失败直接终止，保留旧安装，防止误自动接管。
+      let hasReceipt = false;
+      try { fs.statSync(root + '/.amcl-runtime-receipt.json'); hasReceipt = true; } catch (e) { /* 正常导入无收据。 */ }
+      if (hasReceipt) fs.unlinkSync(root + '/.amcl-runtime-receipt.json');
+      const sf = fs.openSync(root + '/.amcl_release_tag',
+        fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      try { fs.writeSync(sf.fd, stamp); fs.fsyncSync(sf.fd); } finally { fs.closeSync(sf); }
 
       // ---- 5) 原子发布：旧目录先改名保底，失败能回滚 ----
+      useLease = JdkDirectoryLease.publication(context.filesDir, version);
       report('extracting', 100, '正在安装…');
       backupDir = targetDir + '.backup-' + Date.now().toString() + '-'
         + Math.floor(Math.random() * 1000000).toString();
@@ -248,6 +209,8 @@ export class JdkImporter {
       AppLogger.error(TAG, 'import failed', e as Object, LOG_DOMAIN_LAUNCH);
       return { ok: false, message: '导入失败：' + err.message, stamp: '' };
     } finally {
+      if (useLease !== null) useLease.release();
+      if (writerLease !== null) writerLease.release();
       // staging 一律清掉；发布成功时 root 已被 rename 走，这里删的是残留的外层目录。
       try { removeDirRecursive(extractRoot) } catch (e) { /* ignore */ }
     }

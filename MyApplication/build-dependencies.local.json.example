@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "gameCompatInputs": "C:/AMCL-cache/game-compat-inputs",
+  "compatJavaHome": "C:/Java/jdk-25",
+  "compatRunRoot": "C:/AMCL-cache/run/game-compat"
+}

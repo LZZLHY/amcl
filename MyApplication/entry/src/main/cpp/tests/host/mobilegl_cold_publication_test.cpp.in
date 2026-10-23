@@ -1,0 +1,39 @@
+// 直接执行生产publisher正文；只有封存状态/库handle/setenv失败边界为受控夹具。
+// 正常路径仍使用实际libc getenv/setenv，拒绝时不得篡改值或重写读者的旧字符串。
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <iostream>
+#include <stdexcept>
+#include <mutex>
+#include <thread>
+static bool sealed=false,failWrite=false;static int writes=0;static void* providerLibrary=nullptr;
+static std::mutex backendPublicationMutex;
+namespace amcl::envslot {struct Registry{bool Sealed()const{return sealed;}};Registry& ProcessRegistry(){static Registry registry;return registry;}}
+int BoundarySetenv(const char* key,const char* value,int overwrite){++writes;if(failWrite)return -1;return ::setenv(key,value,overwrite);}
+#define setenv BoundarySetenv
+namespace amcl::graphics {
+@PUBLISHER@
+}
+#undef setenv
+void Require(bool ok,const char* name){if(!ok)throw std::runtime_error(name);std::cout<<"PASS "<<name<<'\n';}
+int main(){
+    using amcl::graphics::PublishMobileGlDirectVulkanBeforeLoad;std::string error;
+    unsetenv("MOBILEGL_BACKEND_TYPE");writes=0;
+    Require(PublishMobileGlDirectVulkanBeforeLoad(error)&&writes==1&&std::strcmp(std::getenv("MOBILEGL_BACKEND_TYPE"),"DirectVulkan")==0,"missing-value-before-load-published");
+    const char* original=std::getenv("MOBILEGL_BACKEND_TYPE");sealed=true;writes=0;
+    Require(PublishMobileGlDirectVulkanBeforeLoad(error)&&writes==0&&original==std::getenv("MOBILEGL_BACKEND_TYPE"),"sealed-identical-value-read-only");
+    ::setenv("MOBILEGL_BACKEND_TYPE","DirectGLES",1);writes=0;error.clear();
+    Require(!PublishMobileGlDirectVulkanBeforeLoad(error)&&writes==0&&error=="mobilegl_backend_type_unpublished_after_runtime_start"&&std::strcmp(std::getenv("MOBILEGL_BACKEND_TYPE"),"DirectGLES")==0,"sealed-wrong-value-refused");
+    sealed=false;providerLibrary=reinterpret_cast<void*>(1);writes=0;error.clear();
+    Require(!PublishMobileGlDirectVulkanBeforeLoad(error)&&writes==0&&error=="mobilegl_backend_type_already_loaded_requires_restart","loaded-wrong-value-refused");
+    providerLibrary=nullptr;failWrite=true;writes=0;error.clear();
+    Require(!PublishMobileGlDirectVulkanBeforeLoad(error)&&writes==1&&error=="mobilegl_backend_type_publish_failed"&&std::strcmp(std::getenv("MOBILEGL_BACKEND_TYPE"),"DirectGLES")==0,"write-failure-refused");
+    failWrite=false;writes=0;error.clear();
+    Require(PublishMobileGlDirectVulkanBeforeLoad(error)&&writes==1&&std::strcmp(std::getenv("MOBILEGL_BACKEND_TYPE"),"DirectVulkan")==0,"cold-wrong-value-replaced-once");
+    unsetenv("MOBILEGL_BACKEND_TYPE");writes=0;bool first=false,second=false;
+    std::thread a([&]{std::string detail;first=PublishMobileGlDirectVulkanBeforeLoad(detail);});
+    std::thread b([&]{std::string detail;second=PublishMobileGlDirectVulkanBeforeLoad(detail);});a.join();b.join();
+    Require(first&&second&&writes==1&&std::strcmp(std::getenv("MOBILEGL_BACKEND_TYPE"),"DirectVulkan")==0,"concurrent-cold-publication-exactly-once");
+    std::cout<<"MOBILEGL_COLD_PUBLICATION_RESULT checks=7 failures=0\n";
+}

@@ -58,6 +58,8 @@ export const amclLogGetPath: () => string;
 export const amclLedgerBegin: (activityId: number, dir: string) => boolean;
 /** 关闭活动账本 scope（flush + 关句柄）。 */
 export const amclLedgerEnd: (activityId: number) => void;
+/** 在原生工作线程等待writer有序关闭；未关闭时拒绝，完整性仍由native-io收据核验。 */
+export const amclLedgerEndAsync: (activityId: number) => Promise<void>;
 /** 关闭全部 scope。 */
 export const amclLedgerEndAll: () => void;
 /** 关联 native 下载任务与活动（activityId 传 0 解除）。 */
@@ -75,8 +77,9 @@ export const sendTouchEvent: (x: number, y: number, action: number) => void;
 export const sendKeyEvent: (key: number, scancode: number, action: number, mods: number) => void;
 /**
  * Publish the compile-time product identity before surface/input setup.
- * productKind: 0=mobile/tablet, 1=desktop. runtimeApi is deviceInfo.sdkApiVersion.
- * Returns 0=applied, 1=identical/idempotent, 2=invalid, 3=conflicting process latch.
+ * productKind：0为mobile/tablet、1为desktop，runtimeApi为实际deviceInfo.sdkApiVersion。
+ * 返回0已应用、1相同且幂等、2非法、3进程锁存冲突；5为唯一source owner冷契约不成立，
+ * 该路径先于Native产品锁存/来源注册拒绝，不在当前namespace另建owner或尝试游戏类。
  */
 export const configureInputProduct: (productKind: number, runtimeApi: number) => number;
 export const hardwareRawMouseAvailable: () => boolean;
@@ -333,6 +336,11 @@ export const sendScrollEvent: (xoffset: number, yoffset: number) => void;
  */
 export const sendCursorDelta: (dx: number, dy: number) => void;
 
+/** 按下时冻结完整绑定；成功返回不复用的64位十进制token，拒绝返回空串。 */
+export const acquireSourceControl: (source: number, deviceId: number, controlId: string, codes: number[], publicationToken?: string, memberId?: string, groupEligibility?: string) => string;
+/** 精确释放token；已经被生命周期复位的旧token幂等成功，不会释放新一代控件。 */
+export const releaseSourceControl: (token: string) => boolean;
+
 /**
  * 按端申报的输入注入（三端平级架构的 NAPI 接缝，见 cpp/platform/input_source.h）。
  *
@@ -348,6 +356,9 @@ export const sendCursorDelta: (dx: number, dy: number) => void;
  * 与上面未申报端身份的 sendKeyEvent / sendMouseEvent / sendCursorDelta 并存：
  * 旧入口保留只为 fail-soft，新调用点一律用这一组。端身份带来三件事 ——
  * 持有记录按端隔离（RELEASE 只与同端配对）、按端选择性释放、视角量纲按端归一。
+ * Key/Mouse 返回 true = 本端持有变更已生效：PRESS 已登记、REPEAT 已送出、RELEASE 已摘除，与别端共用该键
+ * 而未发最终边沿也算；false = native 未改变本端记录（门关闭、复位中、无配对记录、未知动作），调用方应保留
+ * 自身按下态以便重试。判据实现见 cpp/platform/external_held_edge_router.h。
  */
 export const sendSourceKeyEvent: (source: number, key: number, scancode: number,
   action: number, mods: number) => boolean;
@@ -356,6 +367,24 @@ export const sendSourceMouseEvent: (source: number, button: number,
 export const sendSourceScrollEvent: (source: number, xoffset: number,
   yoffset: number) => boolean;
 export const sendSourceCursorDelta: (source: number, dx: number, dy: number) => boolean;
+/** 触控增量已经过vp→surface px；手柄为virtual px。monotonicNs是采样时间，0为旧入口兼容。 */
+export const sendSourceCursorSample: (source: number, dx: number, dy: number, monotonicNs: number) => boolean;
+/** 冷能力只表示唯一neutral生产owner可借，不能代表consumer/窗口已经Ready。 */
+export const sharedLookExecutionSupported: () => boolean;
+/** gyro政策+真实资源的只读opaque签名；Hz变化不推进，空表示当前资格不可用。 */
+export const touchGyroLeaseContext: () => string;
+/** 冻结schema/policy/resource为私有gyro流；token字符串保全Native uint64身份。 */
+export const beginTouchGyroLease: (schemaGeneration: number) => string;
+/** completed gyro delta无二次dt积分，sensorTimeNs保持SDK number精度并只检查该原流顺序。 */
+export const submitTouchGyroLease: (lease: string, dx: number, dy: number, sensorTimeNs: number) => boolean;
+/** 停源无需前台/surface gate；精确原token幂等，不退休后来gyro流。 */
+export const retireTouchGyroLease: (lease: string) => boolean;
+/** counts/second来自1080×lookScale；Native采样同域时钟并按family求和后统一加工。 */
+export const setMappedLookVelocity: (device: number, connection: number, vx: number, vy: number) => boolean;
+/** timer只推进neutral owner；动作前缀由Native运输批次封存。 */
+export const advanceMappedLookExecution: () => boolean;
+/** 精确停本设备连接，拒绝控制release也不保留运动；旧连接不得改绑新资源。 */
+export const retireMappedLookConnection: (device: number, connection: number) => boolean;
 /**
  * 只释放该端在 native external 表里持有的输出，其余端不受影响。
  * 设备插拔与端级生命周期边界用它，取代"全局 releaseAll 连带误放其它端"。
@@ -379,6 +408,19 @@ export const endTextInputSession: (generation: number) => boolean;
 export const abortTextInputSession: (generation: number) => boolean;
 /** Strict UTF-8 commit delivered as one owned native packet. */
 export const commitTextInput: (generation: number, text: string) => boolean;
+/**
+ * 文本会话内的有序编辑键：把一次“按下+抬起”作为 typed 物理键提交，与 commitTextInput
+ * 共用 core 序号，所以同一 IME 回合里的“先删后插”到 GLFW/SDL3/LWJGL2 仍保持先删后插。
+ * 只接受成对的 (ohosKeyCode, glfwKey)：退格 2055/259、前删 2071/261、回车 2054/257、
+ * 小键盘回车 2119/335、Esc 2070/256；其余一律拒绝。generation 是宿主会话号（可为 0，
+ * 表示尚未重建，此时仍会先回答是否处于 typed 路由）。
+ * 返回值（与 native PlatformInputTextKeyTapResult、gamecontrol 的 TextInputKeyTapResult 镜像）：
+ * 0 = 已提交；1 = 进程不在 typed 物理路由，调用方必须改走原 sendSourceKeyEvent 按键对；
+ * 2 = 被拒（键不在白名单、门禁关闭、会话号不是当前会话或 core 拒收），调用方不得回退 ring，
+ * 否则编辑键会越过已排队的提交文本。
+ */
+export const textInputKeyTap: (generation: number, ohosKeyCode: number,
+  glfwKey: number) => number;
 /** selectionStart/selectionLength are Unicode-scalar indices. */
 export const updateTextInputEditing: (generation: number, text: string,
   selectionStart: number, selectionLength: number) => boolean;
@@ -406,7 +448,17 @@ export const onGrabChange: (callback?: (grabbed: boolean) => void) => void;
  */
 export const onButtonPressed: (callback?: (id: string, pressed: boolean) => void) => boolean;
 /** native PRESS 触觉请求；回调在 UI 线程执行，队列有界，传空注销。 */
-export const onHaptic: (callback?: (strength: number) => void) => boolean;
+/** 反馈产生时冻结的触控身份；Native有界队列及年龄校验，ArkTS只比较不解析uint64身份。 */
+export interface TouchFeedbackIdentity {
+  version: number;
+  registration: string;
+  controlId: string;
+  schemaGeneration: string;
+  session: string;
+  grabEpoch: string;
+  generatedNs: string;
+}
+export const onHaptic: (callback?: (strength: number, identity: TouchFeedbackIdentity) => void) => boolean;
 /*
  * ⚠️ registerButton / registerJoystick / clearButtons / clearJoystick 已删除。
  *
@@ -436,8 +488,14 @@ export const setTouchPaused: (paused: boolean) => void;
 export const cancelAllInput: (reason: number) => void;
 /** 精确十进制 reset epoch；仅用于相等比较，变化表示页面 held/repeat/modifier 缓存必须清空。 */
 export const getInputResetEpoch: () => string;
+/** IRS1:总代次:触控代次:手柄代次:实体代次:文本代次；每域累计，可识别多次未观测复位。 */
+export const getInputResetDomains: () => string;
 /** 阶段 1.3：视角灵敏度系数，默认 1.0，clamp 到 0.1..5.0。 */
 export const setLookSensitivity: (v: number) => void;
+/** 全部字段校验后原子生效；false表示未修改任何参数，调用方应保留待应用版本。 */
+export const applyLookConfiguration: (sensitivity: number, invertY: boolean, smoothing: number, acceleration: number) => boolean;
+/** 原子应用单个真实platform来源的完整政策，0兼容/1触控/2映射手柄/3物理；不改变其它来源。 */
+export const applySourceLookConfiguration: (source: number, sensitivity: number, invertY: boolean, smoothing: number, acceleration: number) => boolean;
 /** 阶段 1.3：Y 轴倒置。 */
 export const setInvertY: (b: boolean) => void;
 /** 守恒 backlog 的响应系数（0.1..1.0，1.0=立即输出）；正常手势 UP 会补齐余量，不改变总灵敏度。 */
@@ -446,7 +504,7 @@ export const setLookSmoothing: (alpha: number) => void;
 export const setLookAccel: (v: number) => void;
 
 // ============================================================
-//  Control Schema v2：严格版本、整表事务与 native 双层校验
+//  Control Schema v3：配置与几何同事务；v2只使用兼容缺省。
 // ============================================================
 /** 单个控件描述。坐标与 hitSlop 均为已乘 density 的物理 px。 */
 export interface ControlSchemaEntry {
@@ -460,23 +518,149 @@ export interface ControlSchemaEntry {
     trigger: number;     // 0=press 1=toggle 2=doubleTap 3=longPress
     dragLook: boolean;
     haptic: boolean;     // native PRESS 是否请求 UI 触觉
+    swipeGroup?: number; // v3：快照内滑动组；0/缺省不启用。
+}
+/** 与布局纯模型投影对应；动作数组顺序见 TouchActionBindings，0 表示解除绑定。 */
+export interface TouchSchemaOptions {
+    version: number;
+    touchpad: boolean;
+    menuSensitivity: number;
+    menuScroll: boolean;
+    menuHoldMs: number;
+    floatingJoystick: boolean;
+    sprint: boolean;
+    autoWalk: boolean;
+    sprintThreshold: number;
+    hotbarSwap: boolean;
+    hotbarDrop: boolean;
+    holdMs: number;
+    gestureMode: number;
+    actions: number[];
 }
 export interface ControlSchemaMsg {
-    schemaVersion: 2;
+    schemaVersion: 2 | 3 | 4;
+    groupSchema?: TouchGroupSchema;
     compWidth: number;
     compHeight: number;
+    /** publication v1必须与Native实际窗口单位一致；旧setControlSchema兼容读取可不提供。 */
+    contextDensity?: number;
+    contextTransform?: number;
     grabbed: boolean;
     deadZone: number;
-    controls: ControlSchemaEntry[]; // 最多 256 个
+    controls: ControlSchemaEntry[]; // v3：256个用户控件及至多4个运行时辅助区域；v2最多256。
+    touch?: TouchSchemaOptions; // v3 必须提供；v2 不读取扩展。
 }
+/** [菜单x,y,显示标记,摇杆中心x,y,归一化dx,dy,锁定,待锁定,长按进度,摇杆按住,使用物品按住,schema代次,摇杆条目索引,菜单手势活跃]。 */
+/** 前15项保持视觉前缀；15..24为真实移动/选格/双指滚轮/工具鼠标累计反馈、活动触指与Native抓取态。 */
+export const touchInteractionVisual: () => number[];
+/** 显式生产维护grab公告/已交付光标；false表示真实mode端口尚不可用，视觉读取不执行这些动作。 */
+export const maintainTouchInput: () => boolean;
+/** 游戏线程采集的GUI快照；状态非2表示当前无可靠能力，禁止把旧值当作生效设置。 */
+export const gameGuiState: (surfaceWidthPx: number, surfaceHeightPx: number, realGameVersion: string, guideActive?: boolean) => number[];
+/** GUI异步观察的本局/来源端口。0表示真实未取得资格；uint32身份不回绕，不能重新绑旧前端。 */
+export const gameGuiStartSession: (activityId: number) => number;
+export const gameGuiCaptureSession: () => number;
+export const gameGuiStopSession: (scope: number) => boolean;
+export const gameGuiAttachSource: (originScope: number) => number;
+export const gameGuiRetireSource: (source: number) => boolean;
+/** 只取原source真实缓存并投递latest请求；不进入JNI，不等待停机worker。 */
+export const gameGuiStateForSource: (source: number, surfaceWidthPx: number, surfaceHeightPx: number, realGameVersion: string, guideActive?: boolean) => number[];
+/** real surface px增量，只移动菜单指针；游戏抓取、输入暂停或其它背景手势占用时拒绝。 */
+export const moveTouchMenuPointer: (dxPx: number, dyPx: number, publicationToken?: string, panelPrefix?: string) => boolean;
+/** 统一鼠标的菜单持有：-1左键、-2右键、340 Shift；owner由面板实例命名空间限定。 */
+export const touchMenuButton: (owner: string, code: number, down: boolean, publicationToken?: string) => boolean;
+/** 取消本panelPrefix认领的工具子域；旧实例确认结束但不伤新面板，成功后可清本UI租约。 */
+export const cancelTouchMenuMouse: (panelPrefix: string) => boolean;
+/** 菜单滚轮步进，真实grabbed时拒绝，不影响游戏快捷栏。 */
+export const touchMenuScroll: (steps: number, publicationToken?: string, panelPrefix?: string) => boolean;
+/** 悬浮鼠标排除区，surface px；宽高均为0清除，不改变持有或schema代次。 */
+export const setTouchMenuMouseBounds: (xPx: number, yPx: number, widthPx: number, heightPx: number, publicationToken: string, panelPrefix?: string) => boolean;
+/** 教学工具栏独立排除区，世界/菜单均生效；空矩形撤销，不触碰schema代次或真实按住状态。 */
+export const setTouchGuideBounds: (xPx: number, yPx: number, widthPx: number, heightPx: number, publicationToken: string) => boolean;
+/** 用户确认后的菜单缩放恢复；返回请求ID，0为未接受，必须用gameGuiState最终回执确认。 */
+export const restoreGameGuiScale: (requestedScale: number, expectedRevision: number) => number;
+/** 具名原source恢复，返回Native票据而非成功；读同source的requestId/result才是最终ACK。 */
+export const restoreGameGuiScaleForSource: (source: number, requestedScale: number, expectedRevision: number) => number;
+/** 已按采样ns积分的虚拟位移；独立加工时钟，失败不产生输入，不自动启用传感器。 */
+export const sendTouchGyroSample: (dx: number, dy: number, timeNs: number, schemaGeneration: number) => boolean;
 /** 成功返回非 0 generation；拒绝返回 0 且不改变当前 native generation。 */
 export const setControlSchema: (schema: ControlSchemaMsg) => number;
+
+/** 发布扩展v1；所有代次/token为不解析的十进制身份，status不借用旧setControlSchema返回值。 */
+export interface TouchPublicationReceipt {
+  groupRevision?: string;
+  version: number;
+  status: 'idle' | 'fenced' | 'committed' | 'unchanged' | 'stale' | 'invalid' | 'unavailable' | 'waiting';
+  surface: string;
+  session: string;
+  policy: string;
+  schemaGeneration: string;
+  token: string;
+  operationId: string;
+  candidateId: string;
+  fenced: boolean;
+  nativeTouches: number;
+  modalCount: number;
+  /** Native当前解释单位；UI投影必须与此一致后才可提交。 */
+  density: number;
+  transform: number;
+  /** Native真实grab公告身份独立于density/policy，不用UI回调是否到达代替场景事实。 */
+  grabEpoch: string;
+  grabbed: boolean;
+}
+/** 当前唯一active操作的状态，用于丢回执恢复；不保存无限操作历史。 */
+export const touchPublicationState: () => TouchPublicationReceipt;
+/** 先关新DOWN，再由回执/nativeTouches及ArkTS触点确认零触点条件。 */
+export const beginTouchPublication: (operationId: string, candidateId: string, expectedSurface: string,
+  expectedSession: string, expectedPolicy: string, expectedSchema: string, expectedGrabEpoch: string) => TouchPublicationReceipt;
+export const publishTouchSchema: (schema: ControlSchemaMsg, operationId: string) => TouchPublicationReceipt;
+/** 相同operation/token的已验证布局确认；旧确认不能解封新发布。 */
+export const confirmTouchPublication: (operationId: string, token: string) => boolean;
+export const abortTouchPublication: (operationId: string) => TouchPublicationReceipt;
+/** 具名、不可复用的touch域模态租约；失败返回空串，关闭只归还自己的token。 */
+export const acquireTouchModal: (owner: string) => string;
+export const releaseTouchModal: (token: string) => boolean;
+/** 包括publication fence、modal和当前token身份的Native复核。 */
+export const isTouchPublicationCurrent: (publicationToken: string) => boolean;
+
+/** v4 独立扩展；v3 条目 ABI 保持不变。phase 顺序为 press/longPress/click/doubleClick。 */
+export interface TouchGroupSchemaAction { target: number; operation: number; }
+export interface TouchGroupSchemaPhase { keys: number[]; autoKeep: boolean; actions: TouchGroupSchemaAction[]; }
+export interface TouchGroupSchemaControl { group: number; phases: boolean; fcl: boolean; mouseTool: boolean; rank: number; bindings: TouchGroupSchemaPhase[]; }
+export interface TouchGroupSchemaDefinition { id: string; initialVisible: boolean; }
+export interface TouchGroupSchema { profile: string; groups: TouchGroupSchemaDefinition[]; controls: TouchGroupSchemaControl[]; }
+export interface TouchGroupReceipt { token: string; revision: string; enabled: boolean; pending: boolean; mask: boolean[]; epochs: string[]; }
+export interface TouchGroupCommandReceipt { status: 'pending' | 'committed' | 'presented' | 'stale' | 'rejected' | 'expired'; revision: string; }
+export const readTouchGroups: (publicationToken: string) => TouchGroupReceipt;
+export const confirmTouchGroups: (publicationToken: string, revision: string) => boolean;
+export const isTouchGroupControlCurrent: (publicationToken: string, controlId: string, eligibility: string) => boolean;
+export const bindTouchGroupMouseOwner: (publicationToken: string, controlId: string, eligibility: string) => boolean;
+export const invokeTouchGroupControl: (publicationToken: string, controlId: string, eligibility: string, producer: string, sequence: string, phase: number) => TouchGroupCommandReceipt;
+export const restoreTouchGroups: (publicationToken: string, producer: string, sequence: string) => TouchGroupCommandReceipt;
+/** 返回独立注册身份；注销必须传原身份，旧页面不得取消新页面的必要通知。 */
+export const onTouchGroupsChanged: (listener: (() => void) | null, registration?: string) => string;
 
 // JIT 权限检测（同步，极快）— Forge/游戏启动前必检
 export const checkJitAvailable: () => boolean;
 
 // 单个 Forge/NeoForge processor（任意 args + 显式工作目录，fork + 干净 classpath 的独立 JVM）
 export const runJavaProcessor: (filesDir: string, jdkVersion: string, xmxMb: number, classpath: string, mainClass: string, args: Array<string>, workDir: string, logFile: string) => Promise<number>;
+/** 完整HDC私有host启动后返回真实端口；store返回负数unsupported。 */
+export const startSideloadHdc: (identityRoot: string) => Promise<number>;
+/** Entry最早固定app filesDir；失败时不得启动自动文件任务，不授予系统安装权限。 */
+export const configureSideloadInstallRoot: (filesDir: string) => boolean;
+/** 实际_POSIX CLK_TCK，用于严格绑定bm进程startTicks与hilog单调时间；未知返回0。 */
+export const sideloadInstallClockTicks: () => number;
+/** SH租约持有到实际Native/processor收敛；空filesDir使用已固定root，失败返回0。 */
+export const acquireSideloadFileLease: (filesDir: string) => number;
+/** 只释放本PID的确切token，重复/旧token不会解除新的租约。 */
+export const releaseSideloadFileLease: (token: number) => boolean;
+/** 使用本机 HDC 发现协议获取随机端口；0 表示未发现，不能据此声称系统已关闭调试。 */
+export const discoverSideloadPort: () => Promise<number>;
+/** 仅由更新服务串行构造固定操作，数值返回不替代新进程安装核验。 */
+export const runSideloadHdcCommand: (arguments: string, privateOutputPath?: string) => Promise<number>;
+/** 仅停止应用自己创建的更新host；不关闭设备daemon或其他HDC服务。 */
+export const stopSideloadHdc: () => Promise<number>;
 
 // SSOT: 主 JVM / Forge installer 子 JVM 共享的"OHOS 兼容性修复"参数清单
 // 实现见 entry/src/main/cpp/jvm/jvm_common_args.cpp
@@ -504,8 +688,8 @@ export const getGraphicsCapabilityJson: (profileId: string, requirementId: strin
 
 // Vulkan 实战自检（VULKAN_ADAPTATION_PLAN.md Phase B · 端到端呈现链）
 // 真的建 instance→device→OHOS surface→swapchain→clear→present 跑一遍，返回逐步 ✅/❌ 报告，
-// 精确定位华为驱动在哪一环断。可选参数：XComponent 的 OHNativeWindow 指针（数值字符串）；
-// 不传则回退环境变量 AMCL_NATIVE_WINDOW（无窗口时仅验证到设备+队列层）。
+// 精确定位华为驱动在哪一环断。可选参数：XComponent 的 OHNativeWindow 指针（数值字符串），只用于
+// 核对窗口宿主当前租约；窗口一律经窗口宿主取得（无窗口时仅验证到设备+队列层）。
 export const runVulkanSelfTest: (nativeWindowPtr?: string) => string;
 
 // ⚰️ 2026-08-27（渲染后端治理 §S6）：曾有 `runOSMesaSelfTest(logDir, driver)`（OSMesa + Zink 自检）。
@@ -524,6 +708,10 @@ export const downloadEngineSelfTest: () => number;   // 自检 init/easy/setopt/
 
 /** 创建下载任务的配置 */
 export interface DownloadFileSpec {
+    /** 单源短时下载令牌，仅在内存使用，禁止写入 URL 或持久记录。 */
+    bearerToken?: string;
+    /** 短时权限消费规则，仅内存传递，单调持续时间由Native接收时建立截止。 */
+    authorizedPolicy?: { singleUse: boolean; maxHttpAttempts: number; validForNewRequestMs: number; maxBytes: number; };
     /** 本地保存路径（绝对路径） */
     localPath: string;
     /** 镜像 URL 列表（按优先级排序，引擎会逐个 fallback） */
@@ -561,6 +749,8 @@ export interface DownloadTaskSpec {
 /** onProgress 回调参数 */
 export interface DownloadProgressEvent {
     taskId: number;
+    /** TSFN 观察者代次，不等于 executionEpoch，也不等于 ArkTS closure generation。 */
+    registrationGeneration?: number;
     /** start/resume/retry generation；旧 epoch 事件必须丢弃。 */
     executionEpoch: number;
     overallProgress: number;   // 0.0 ~ 1.0
@@ -578,6 +768,26 @@ export interface DownloadProgressEvent {
 }
 
 // v5: 单个失败文件的详情（Complete 事件里聚合返回）
+/**
+ * 所有错误出口共享同一 Native 值快照，complete/query/list/failedFiles 不再各自漏字段。
+ * bytesWritten 保留现有 Native 兼容口径；授权状态由结构化字段表达，不能从 message 推断。
+ * 新执行事实保持可选，以兼容旧 ArkTS mock/调用方构造的错误。
+ */
+export interface DownloadError {
+    kind: string;
+    message: string;
+    nativeCode: number;
+    httpStatus: number;
+    url: string;
+    triedUrls: string[];
+    needsNewLease?: boolean;
+    requestStarted?: boolean;
+    successfulHeadersSeen?: boolean;
+    bytesWritten?: number;
+    httpAttempts?: number;
+    retryAfterMs?: number;
+}
+
 export interface DownloadFailedFile {
     localPath: string;
     basename: string;
@@ -586,6 +796,15 @@ export interface DownloadFailedFile {
         message: string;
         httpStatus: number;
         nativeCode: number;
+        /** 新桥完整透传；旧四字段详情仍然合法。 */
+        url?: string;
+        triedUrls?: string[];
+        needsNewLease?: boolean;
+        requestStarted?: boolean;
+        successfulHeadersSeen?: boolean;
+        bytesWritten?: number;
+        httpAttempts?: number;
+        retryAfterMs?: number;
     };
     triedUrls: string[];
 }
@@ -593,6 +812,7 @@ export interface DownloadFailedFile {
 /** onComplete 回调参数 */
 export interface DownloadCompleteEvent {
     taskId: number;
+    registrationGeneration?: number;
     /** 该终态所属的 start/resume/retry generation。 */
     executionEpoch: number;
     /** true = 正常完成；false = 失败 或 被取消（看 aborted 字段） */
@@ -602,15 +822,7 @@ export interface DownloadCompleteEvent {
     // v5: 任务总耗时（毫秒）
     durationMs: number;
     /** 失败时提供详细错误信息（aborted=true 且无底层错误时可能缺省） */
-    error?: {
-        kind: string;          // 对应 C++ ErrorKind（Timeout/SslError/ChecksumMismatch 等）
-        message: string;
-        nativeCode: number;    // CURLcode 或 errno
-        httpStatus: number;    // HTTP 响应码（如果适用）
-        url: string;           // 出问题的 URL
-        // v5: 该 error 涉及到的所有试过的源 URL（去重后）
-        triedUrls: string[];
-    };
+    error?: DownloadError;
     // v5: 失败文件列表（每个 Failed 文件的 basename + 错误 + 试过的源）
     failedFiles: DownloadFailedFile[];
     /**
@@ -652,19 +864,16 @@ export interface DownloadTaskInfo {
     etaSeconds: number;
     durationMs: number;
     terminal: boolean;
-    error?: {
-        kind: string;
-        message: string;
-        nativeCode: number;
-        httpStatus: number;
-        url: string;
-        triedUrls: string[];
-    };
+    /** Engine startup/callback/file/transport 均已收敛；不等价于成功，也不代替 purge。 */
+    executionSettled?: boolean;
+    error?: DownloadError;
     failedFiles: DownloadFailedFile[];
 }
 
 /** 创建任务；返回 taskId */
 export const downloadCreateTask: (spec: DownloadTaskSpec) => number;
+/** 只读Native steady毫秒，下载权限不依赖可能回拨的用户系统时间。 */
+export const downloadSteadyTime: () => number;
 
 /** 启动任务（Waiting → Loading）；返回是否成功 */
 export const downloadStart: (taskId: number) => boolean;
@@ -690,7 +899,7 @@ export const downloadListActive: () => DownloadTaskInfo[];
 /** 查询单个任务终态/进度快照；任务不存在时返回 null */
 export const downloadQueryTask: (taskId: number) => DownloadTaskInfo | null;
 
-/** 仅关闭当前 napi_env 的回调桥；不会停止进程级后台下载任务 */
+/** 撤销当前 napi_env 的本轮观察者；同 env 可重绑，不停止进程级任务。真正 env cleanup 永久关闭。 */
 export const downloadDetachCallbacks: () => void;
 
 /** 进程退出前调用：停所有任务 + curl_global_cleanup */
@@ -816,6 +1025,12 @@ export const runJvmTests: (appDir: string) => string;
 export const runGlfwTest: () => string;
 export const runGl4Test: () => string;
 export const runMgTest: () => string;
+/** default/TestHooks冷启动诊断的真实MG深度与uniform声明初值共享场景；两份查询/像素计数独立，返回完成身份，完成后必须重启。 */
+export const runMgDepthRangeTest: () => string;
+/** 冷诊断进程的MG生产factory身份。0低版本首次，1高版本首次；完成须重启。 */
+export const runMgContextIdentityTest: (highFirst: number) => string;
+/** 冷诊断进程的MGL精度限制/失败重链与旧current像素；不授予完整Core资格。 */
+export const runMobileGlProgramTest: () => string;
 export const runLwjglTest: (filesDir?: string) => string;
 /**
  * SDL3 移植 C2 关卡真机探针：验证 SDL_GL_GetProcAddress("glGetError") 是否与
@@ -830,21 +1045,20 @@ export const runSdl3C2Test: (sdl3Path?: string) => string;
  * SDL3 窗口创建探针：验证 prebuilt/sdl3/patches/0001（宿主注入 native window）。
  * 走通 SDL_CreateWindow → SDL_GL_CreateContext → SDL_GL_MakeCurrent → glGetString。
  *
- * ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage / VulkanPage）：它依赖宿主
- * OnSurfaceCreated 设的 AMCL_NATIVE_WINDOW / AMCL_WINDOW_WIDTH / AMCL_WINDOW_HEIGHT。
- * 在 DevTools 页调用只会得到 INCOMPLETE（那里没有 surface）。
+ * ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage / VulkanPage）：它经窗口宿主快照取
+ * OnSurfaceCreated 发布的 NativeWindow（宿主不再发布窗口指针环境变量）。
+ * 在 DevTools 页调用只会得到 INCOMPLETE（那里没有 surface）；本进程已认领 JVM 后返回 SKIP。
  * 见 docs/adaptation/SDL3_MIGRATION_PLAN.md §C1.3。
  */
 export const runSdl3WindowTest: (sdl3Path?: string) => string;
 
 /**
- * MobileGL DirectVulkan 端到端出帧探针（MOBILEGL_ADAPTATION_PLAN.md §5.2 Phase 2a 收口判据）。
- * dlopen libmobilegl.so → 经其 EGL 前端建面 → glClear 纯色 → SwapBuffers（vkQueuePresentKHR）
- * → 销毁重建一轮 → eglTerminate。返回逐步 ✅/❌ 报告。
- *
- * ⚠️ 必须从**带 XComponent 的页面**调用（RenderPage）：依赖 OnSurfaceCreated 设的
- * AMCL_NATIVE_WINDOW / AMCL_WINDOW_WIDTH / AMCL_WINDOW_HEIGHT。
- * ⚠️ libmobilegl.so 不在发布 HAP（D3 未决）：先 `build-mobilegl.ps1 -DeployToLibs` 再装机。
+ * default/TestHooks的现成MobileGL生产资格诊断：真实shader/FBO读回、pbuffer/window
+ * 两轮切换、present递增及完整资源退休。必须在冷进程、无游戏占用且RenderPage
+ * 已有真实XComponent窗口时调用；两个历史按钮是同一executor的alias。
+ * 原capability/admission文本保持，独立MOBILEGL_QUAL字段补本次实际加载DSO的
+ * checked副本/唯一run/PID与报告关闭后外部RETURN。I/O失败使artifact资格不完整，
+ * 不篡改原功能结果；函数正常返回不代表app自然退出或lifecycle_smoke已测。
  */
 export const runMobileglProbe: () => string;
 export const runMobileglPbufferProbe: () => string;
@@ -953,6 +1167,7 @@ declare const testNapi: {
   amclLogGetPath: typeof amclLogGetPath;
   amclLedgerBegin: typeof amclLedgerBegin;
   amclLedgerEnd: typeof amclLedgerEnd;
+  amclLedgerEndAsync: typeof amclLedgerEndAsync;
   amclLedgerEndAll: typeof amclLedgerEndAll;
   amclLedgerBindTask: typeof amclLedgerBindTask;
   amclLedgerUnbindTask: typeof amclLedgerUnbindTask;
@@ -993,9 +1208,20 @@ declare const testNapi: {
   sendScrollEvent: typeof sendScrollEvent;
   sendCursorDelta: typeof sendCursorDelta;
   sendSourceKeyEvent: typeof sendSourceKeyEvent;
+  acquireSourceControl: typeof acquireSourceControl;
+  releaseSourceControl: typeof releaseSourceControl;
   sendSourceMouseEvent: typeof sendSourceMouseEvent;
   sendSourceScrollEvent: typeof sendSourceScrollEvent;
   sendSourceCursorDelta: typeof sendSourceCursorDelta;
+  sendSourceCursorSample: typeof sendSourceCursorSample;
+  sharedLookExecutionSupported: typeof sharedLookExecutionSupported;
+  touchGyroLeaseContext: typeof touchGyroLeaseContext;
+  beginTouchGyroLease: typeof beginTouchGyroLease;
+  submitTouchGyroLease: typeof submitTouchGyroLease;
+  retireTouchGyroLease: typeof retireTouchGyroLease;
+  setMappedLookVelocity: typeof setMappedLookVelocity;
+  advanceMappedLookExecution: typeof advanceMappedLookExecution;
+  retireMappedLookConnection: typeof retireMappedLookConnection;
   releaseSourceHeld: typeof releaseSourceHeld;
   noteSourceReset: typeof noteSourceReset;
   inputInvariantTick: typeof inputInvariantTick;
@@ -1005,6 +1231,7 @@ declare const testNapi: {
   endTextInputSession: typeof endTextInputSession;
   abortTextInputSession: typeof abortTextInputSession;
   commitTextInput: typeof commitTextInput;
+  textInputKeyTap: typeof textInputKeyTap;
   updateTextInputEditing: typeof updateTextInputEditing;
   updateTextInputSelection: typeof updateTextInputSelection;
   submitTextInputCandidates: typeof submitTextInputCandidates;
@@ -1020,15 +1247,61 @@ declare const testNapi: {
   setTouchPaused: typeof setTouchPaused;
   cancelAllInput: typeof cancelAllInput;
   getInputResetEpoch: typeof getInputResetEpoch;
+  getInputResetDomains: typeof getInputResetDomains;
   setLookSensitivity: typeof setLookSensitivity;
+  applyLookConfiguration: typeof applyLookConfiguration;
+  applySourceLookConfiguration: typeof applySourceLookConfiguration;
   setInvertY: typeof setInvertY;
   setLookSmoothing: typeof setLookSmoothing;
   setLookAccel: typeof setLookAccel;
   setControlSchema: typeof setControlSchema;
+  touchPublicationState: typeof touchPublicationState;
+  readTouchGroups: typeof readTouchGroups;
+  confirmTouchGroups: typeof confirmTouchGroups;
+  isTouchGroupControlCurrent: typeof isTouchGroupControlCurrent;
+  bindTouchGroupMouseOwner: typeof bindTouchGroupMouseOwner;
+  invokeTouchGroupControl: typeof invokeTouchGroupControl;
+  restoreTouchGroups: typeof restoreTouchGroups;
+  onTouchGroupsChanged: typeof onTouchGroupsChanged;
+  beginTouchPublication: typeof beginTouchPublication;
+  publishTouchSchema: typeof publishTouchSchema;
+  confirmTouchPublication: typeof confirmTouchPublication;
+  abortTouchPublication: typeof abortTouchPublication;
+  acquireTouchModal: typeof acquireTouchModal;
+  releaseTouchModal: typeof releaseTouchModal;
+  isTouchPublicationCurrent: typeof isTouchPublicationCurrent;
+  touchInteractionVisual: typeof touchInteractionVisual;
+  maintainTouchInput: typeof maintainTouchInput;
+  gameGuiState: typeof gameGuiState;
+  gameGuiStartSession: typeof gameGuiStartSession;
+  gameGuiCaptureSession: typeof gameGuiCaptureSession;
+  gameGuiStopSession: typeof gameGuiStopSession;
+  gameGuiAttachSource: typeof gameGuiAttachSource;
+  gameGuiRetireSource: typeof gameGuiRetireSource;
+  gameGuiStateForSource: typeof gameGuiStateForSource;
+  moveTouchMenuPointer: typeof moveTouchMenuPointer;
+  touchMenuButton: typeof touchMenuButton;
+  cancelTouchMenuMouse: typeof cancelTouchMenuMouse;
+  touchMenuScroll: typeof touchMenuScroll;
+  setTouchMenuMouseBounds: typeof setTouchMenuMouseBounds;
+  setTouchGuideBounds: typeof setTouchGuideBounds;
+  restoreGameGuiScale: typeof restoreGameGuiScale;
+  restoreGameGuiScaleForSource: typeof restoreGameGuiScaleForSource;
+  sendTouchGyroSample: typeof sendTouchGyroSample;
 
   // JIT / Forge / JVM 参数
   checkJitAvailable: typeof checkJitAvailable;
   runJavaProcessor: typeof runJavaProcessor;
+  startSideloadHdc: typeof startSideloadHdc;
+  configureSideloadInstallRoot: typeof configureSideloadInstallRoot;
+  sideloadInstallClockTicks: typeof sideloadInstallClockTicks;
+  acquireSideloadFileLease: typeof acquireSideloadFileLease;
+  releaseSideloadFileLease: typeof releaseSideloadFileLease;
+  discoverSideloadPort: typeof discoverSideloadPort;
+  runSideloadHdcCommand: typeof runSideloadHdcCommand;
+  stopSideloadHdc: typeof stopSideloadHdc;
+  solveSideloadPow: typeof solveSideloadPow;
+  cancelSideloadPow: typeof cancelSideloadPow;
   getCommonJvmArgs: typeof getCommonJvmArgs;
   desktopProcessId: typeof desktopProcessId;
   desktopGameProcessState: typeof desktopGameProcessState;
@@ -1056,6 +1329,7 @@ declare const testNapi: {
   downloadEngineProbe: typeof downloadEngineProbe;
   downloadEngineSelfTest: typeof downloadEngineSelfTest;
   downloadCreateTask: typeof downloadCreateTask;
+  downloadSteadyTime: typeof downloadSteadyTime;
   downloadStart: typeof downloadStart;
   downloadCancel: typeof downloadCancel;
   downloadOnProgress: typeof downloadOnProgress;
@@ -1077,12 +1351,23 @@ declare const testNapi: {
   downloadRetryFailed: typeof downloadRetryFailed;
   downloadPurgeTask: typeof downloadPurgeTask;
 
+  // 导出数据面：每个Native job独立查询、取消、真实收敛后释放。
+  exportArchiveStart: typeof exportArchiveStart;
+  exportArchiveVerifyStart: typeof exportArchiveVerifyStart;
+  exportFileHashStart: typeof exportFileHashStart;
+  exportJobQuery: typeof exportJobQuery;
+  exportJobCancel: typeof exportJobCancel;
+  exportJobRelease: typeof exportJobRelease;
+
   // 测试模块
   runJitTests: typeof runJitTests;
   runJvmTests: typeof runJvmTests;
   runGlfwTest: typeof runGlfwTest;
   runGl4Test: typeof runGl4Test;
   runMgTest: typeof runMgTest;
+  runMgDepthRangeTest: typeof runMgDepthRangeTest;
+  runMgContextIdentityTest: typeof runMgContextIdentityTest;
+  runMobileGlProgramTest: typeof runMobileGlProgramTest;
   runLwjglTest: typeof runLwjglTest;
   runSdl3C2Test: typeof runSdl3C2Test;
   runSdl3WindowTest: typeof runSdl3WindowTest;
@@ -1097,6 +1382,36 @@ declare const testNapi: {
 };
 
 export default testNapi;
+
+/** 导出私有快照中的一个标准ZIP entry；目录长度为0，普通文件绑定真实SHA256。 */
+export interface NativeExportEntry { path: string; size: number; sha256: string; directory: boolean; }
+/** 只允许filesDir/game-export/work/<job>内的snapshot→export.zip，不接受源绝对路径写入。 */
+export interface NativeExportArchiveSpec {
+  filesDir: string; jobRelative: string; snapshotRelative: string; archiveRelative: string;
+  entries: NativeExportEntry[]; workerCount?: number;
+}
+/** 原SDK只读fd的能力副本；Native使用dup+pread，不改变调用者offset，也不接收source路径。 */
+/** sha1/sha256分别默认true；用途可关闭一种算法，两者同时false拒绝且不创建job。 */
+export interface NativeExportHashSpec { fd: number; size: number; sha1?: boolean; sha256?: boolean; }
+/** Promise只在实际worker/fd结束后完成；write/verify的size是ZIP长度，hash的size是源长度。 */
+export interface NativeExportResult {
+  jobId: number; operation: string; files: number; size: number; payloadBytes: number; archiveBytes: number;
+  sha1: string; sha256: string;
+}
+/** 终态与收敛分开；只有本env仍保留的真实近期退役receipt才released=true，过旧/未知均不猜已退出。 */
+export interface NativeExportProgress {
+  exists: boolean; released: boolean; jobId: number; operation: string; state: string;
+  filesDone: number; filesTotal: number; bytesDone: number; bytesTotal: number; archiveBytes: number;
+  settled: boolean; errorCode: string; errorMessage: string;
+}
+/** 同步获得取消/查询身份，完成Promise由NAPI异步作业结算；页面不拥有Native句柄。 */
+export interface NativeExportHandle { jobId: number; completion: Promise<NativeExportResult>; }
+export const exportArchiveStart: (spec: NativeExportArchiveSpec) => NativeExportHandle;
+export const exportArchiveVerifyStart: (spec: NativeExportArchiveSpec) => NativeExportHandle;
+export const exportFileHashStart: (spec: NativeExportHashSpec) => NativeExportHandle;
+export const exportJobQuery: (jobId: number) => NativeExportProgress;
+export const exportJobCancel: (jobId: number) => boolean;
+export const exportJobRelease: (jobId: number) => boolean;
 
 /** Immutable native diagnostic capability mask; zero on non-default products. */
 export const getDiagnosticCapabilities: () => number;
@@ -1135,3 +1450,7 @@ export const desktopPublishDrop: (paths: string[]) => boolean;
 
 export const desktopSetGamepadNativeMode: (enabled: boolean) => boolean;
 export const desktopGamepadFocus: (focused: boolean) => void;
+/** 枫源公开 V2 挑战的后台顺序模平方；输入输出为固定 768 位十六进制，失败返回空串。 */
+export const solveSideloadPow: (modulus: string, base: string, iterations: number) => Promise<string>;
+/** 更新取消或另一来源已完成后，撤销在途公开挑战计算。 */
+export const cancelSideloadPow: () => void;

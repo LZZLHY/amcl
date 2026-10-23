@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/PojavLauncherTeam/gl4es-114-extra.git",
+  "commit": "144d0dc79855b392e5256dd15fb2dbdedb17141a",
+  "patchSeries": "patches/series",
+  "target": "aarch64-linux-ohos",
+  "cmakeTarget": "GL",
+  "buildType": "RelWithDebInfo",
+  "definitions": ["NOX11", "NOEGL", "NO_GBM", "NO_INIT_CONSTRUCTOR", "__OHOS__"]
+}

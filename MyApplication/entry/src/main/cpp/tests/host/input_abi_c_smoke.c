@@ -1,4 +1,7 @@
 #include "amcl_input_api.h"
+// 生产 bridge 使用 C11，Windows 的完整 bridge fixture 使用 C++17；私有共同归约器
+// 也在此真实 C 编译单元解析，防止宿主通过而 SDK 首次发现 C++ 专属语法。
+#include "delivery/pointer_transaction.h"
 
 int amcl_input_c_abi_smoke(void) {
     return sizeof(AmclInputBlobRef) == 16u &&

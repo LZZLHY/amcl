@@ -1,0 +1,278 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -122,6 +122,7 @@
+ #define AMCL_EVENT_SCROLL       1007
+ #define AMCL_EVENT_MENU_POINTER 1008
+ #define AMCL_EVENT_INPUT_RESET  1009
++#define AMCL_EVENT_CURSOR_POSITION 1010
+ #define AMCL_MENU_POINTER_MOVE   0
+ #define AMCL_MENU_POINTER_DOWN   1
+ #define AMCL_MENU_POINTER_UP     2
+@@ -494,6 +495,14 @@
+     bool typed_available;
+     bool typed_activated;
+     bool legacy_activated;
++    /* 有序能力整体发布；pump_* 仅由 SDL 事件线程使用，不是跨线程共享状态。 */
++    Uint64 (*InteractionFence)(void);
++    int (*TypedNextThrough)(Uint32, AMCL_BackendInputEvent *, Uint64);
++    Uint64 (*LegacyPeekOrder)(void);
++    int (*LegacyNextThrough)(int *, int *, int *, int *, int *, Uint64);
++    Uint64 pump_order_limit;
++    int pump_budget;
++    bool pump_did_read;
+ } OPENHARMONY_HostBridge;
+ 
+ // Give up looking for the host after this many pumps. The bridge normally
+@@ -830,7 +839,32 @@
+ 
+ #define AMCL_SDL_BRIDGE_ENV "AMCL_SDL_INPUT_BRIDGE"
+ #define AMCL_SDL_BRIDGE_PREFIX "AMCLSDLV:3:"
+-#define AMCL_FOREGROUND_ENV "AMCL_WINDOW_FOREGROUND"
++// 新宿主通过 NativeWindow broker 尾部发布前台资格，不再读可变环境快照。
++static bool OPENHARMONY_ResolveOrderBridge(OPENHARMONY_HostBridge *bridge)
++{
++    const char *desc = SDL_getenv_unsafe("AMCL_INPUT_ORDER_BRIDGE");
++    const char *prefix = "AMCLORDER:1:";
++    if (!desc) return true; /* 明确的旧宿主路径；存在但坏格式不能当作旧版本。 */
++    if (SDL_strncmp(desc, prefix, SDL_strlen(prefix)) != 0) return false;
++    const char *cursor = desc + SDL_strlen(prefix);
++    uintptr_t slots[4] = {0};
++    for (int i = 0; i < 4; ++i) {
++        char *end = NULL;
++        if (*cursor < '0' || *cursor > '9') return false;
++        const unsigned long long value = SDL_strtoull(cursor, &end, 10);
++        if (end == cursor || value == 0 || value > UINTPTR_MAX) return false;
++        slots[i] = (uintptr_t)value;
++        cursor = end;
++        if (i < 3) { if (*cursor++ != ',') return false; }
++    }
++    if (*cursor != '\0') return false;
++    bridge->InteractionFence = (Uint64 (*)(void))slots[0];
++    bridge->TypedNextThrough = (int (*)(Uint32, AMCL_BackendInputEvent *, Uint64))slots[1];
++    bridge->LegacyPeekOrder = (Uint64 (*)(void))slots[2];
++    bridge->LegacyNextThrough = (int (*)(int *, int *, int *, int *, int *, Uint64))slots[3];
++    bridge->pump_order_limit = UINT64_MAX;
++    return true;
++}
+ 
+ // Parse the host's environment channel. All-or-nothing: a partially parsed
+ // descriptor is discarded, because a bridge that can inject events but cannot
+@@ -870,6 +904,8 @@
+         return false;
+     }
+ 
++    // 所有槽完成验证后才接受 legacy 描述符，避免半套有序能力被当成可用。
++    if (!OPENHARMONY_ResolveOrderBridge(bridge)) return false;
+     bridge->NextEvent = (int (*)(int *, int *, int *, int *, int *))slots[0];
+     bridge->SetActive = (void (*)(int))slots[1];
+     bridge->NotifyFramePresented = (void (*)(void))slots[2];
+@@ -1405,6 +1441,12 @@
+         input_window = NULL;
+     }
+     if (!input_window) {
++        // 没有合法事件目标时不能回调旧窗口，但已注入的轮询位不能跨代残留。
++        SDL_Mouse *mouse = SDL_GetMouse();
++        for (int i = 0; mouse && i < mouse->num_sources; ++i) {
++            const Uint8 plane = mouse->sources[i].mouseID == SDL_DEFAULT_MOUSE_ID ? 1 : 2;
++            if (plane_mask & plane) mouse->sources[i].buttonstate = 0;
++        }
+         return;
+     }
+     if (input_window->internal &&
+@@ -1620,15 +1662,28 @@
+     }
+     const SDL_WindowID input_window_id = input_window->id;
+ 
+-    int budget = AMCL_PUMP_BUDGET;
++    int budget = bridge->pump_budget > 0 ? bridge->pump_budget : AMCL_PUMP_BUDGET;
+     int type = 0, i1 = 0, i2 = 0, i3 = 0, i4 = 0;
+ 
+-    while ((budget-- > 0) && bridge->NextEvent(&type, &i1, &i2, &i3, &i4)) {
++    while ((budget-- > 0) && (bridge->LegacyNextThrough
++        ? bridge->LegacyNextThrough(&type, &i1, &i2, &i3, &i4, bridge->pump_order_limit)
++        : bridge->NextEvent(&type, &i1, &i2, &i3, &i4))) {
++        bridge->pump_did_read = true;
+         input_window = OPENHARMONY_AMCL_GetLiveInputWindow(input_window_id);
+         if (!input_window) {
+             return;
+         }
+         switch (type) {
++        case AMCL_EVENT_CURSOR_POSITION: {
++            // 记录内保留当时坐标，不读取生产者已推进到的未来位置。按位解码无精度损失。
++            const int words[4] = {i1, i2, i3, i4};
++            double x = 0.0, y = 0.0;
++            SDL_memcpy(&x, words, sizeof(x));
++            SDL_memcpy(&y, words + 2, sizeof(y));
++            if (isfinite(x) && isfinite(y) && !bridge->IsGrabbing())
++                SDL_SendMouseMotion(0, input_window, SDL_DEFAULT_MOUSE_ID, false, (float)x, (float)y);
++            break;
++        }
+         case AMCL_EVENT_KEY: {
+             const SDL_Scancode scancode = OPENHARMONY_ScancodeFromGlfwKey(i1);
+             if (scancode != SDL_SCANCODE_UNKNOWN) {
+@@ -1859,7 +1914,7 @@
+     }
+     const SDL_WindowID input_window_id = input_window->id;
+ 
+-    int budget = AMCL_PUMP_BUDGET;
++    int budget = bridge->pump_budget > 0 ? bridge->pump_budget : AMCL_PUMP_BUDGET;
+     AMCL_BackendInputEvent event;
+     for (;;) {
+         if (budget-- <= 0) {
+@@ -1869,7 +1924,9 @@
+          * statuses.  Zero it before the call so a buggy producer cannot make
+          * stale payload bytes look like a newly delivered event. */
+         SDL_zero(event);
+-        const int status = typed_next(AMCL_BACKEND_ID_SDL3, &event);
++        const int status = bridge->TypedNextThrough
++            ? bridge->TypedNextThrough(AMCL_BACKEND_ID_SDL3, &event, bridge->pump_order_limit)
++            : typed_next(AMCL_BACKEND_ID_SDL3, &event);
+         if (status == AMCL_BACKEND_RESULT_UNAVAILABLE) {
+             // The host is on the legacy route, so physical edges are in the ring
+             // and this channel must stay out of the way for good. Latching it off
+@@ -1898,6 +1955,7 @@
+             }
+             break;
+         }
++        bridge->pump_did_read = true;
+         if (!OPENHARMONY_ValidateTypedEvent(&event)) {
+             /* Consume-and-drop malformed records.  Retrying the same record
+              * would either spin forever or repeatedly inject the same bad
+@@ -1961,6 +2019,11 @@
+             break;
+ 
+         case AMCL_BACKEND_EVENT_FOCUS:
++            if (event.action == 0u) {
++                // SDL 的焦点清理会清公共键盘态，先同步撤销平面owner，防止恢复后首个Down被旧位吞掉。
++                OPENHARMONY_ResetKeyPlane(3);
++                OPENHARMONY_ResetButtonContributors(3, 0, false);
++            }
+             if (!OPENHARMONY_ApplyTypedFocus(
+                     input_window_id, event.action != 0u)) {
+                 return;
+@@ -2077,6 +2140,33 @@
+             break;  // unknown host event; ignore rather than guess.
+         }
+     }
++}
++
++// 单帧有界归并：所有外部回调后重新确认目标，未来事件留到下一帧。
++static void OPENHARMONY_PumpOrderedEvents(OPENHARMONY_HostBridge *bridge,
++                                         SDL_WindowID presented_id)
++{
++    const bool typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
++        const Uint64 fence = bridge->InteractionFence();
++        bridge->pump_budget = 1;
++        for (int budget = 0; budget < AMCL_PUMP_BUDGET; ++budget) {
++            if (!OPENHARMONY_AMCL_IsPresentedActive() ||
++                !OPENHARMONY_AMCL_GetLiveInputWindow(presented_id)) break;
++            const Uint64 legacy_order = bridge->LegacyPeekOrder();
++            bridge->pump_order_limit = legacy_order < fence ? legacy_order : fence;
++            bridge->pump_did_read = false;
++            if (OPENHARMONY_GetTypedNext(bridge)) OPENHARMONY_PumpTypedEvents(bridge);
++            if (bridge->pump_did_read) continue;
++            if (legacy_order > fence && legacy_order != UINT64_MAX) break;
++            bridge->pump_order_limit = legacy_order <= fence ? legacy_order : fence;
++            OPENHARMONY_PumpHostEvents(bridge);
++            // MENU_POINTER 可能只推进坐标且无按钮输出；先送出位置，再选择下一条 typed 点击。
++            OPENHARMONY_PumpHostCursor(bridge, typed_relative_owner);
++            if (!bridge->pump_did_read && bridge->LegacyPeekOrder() == legacy_order) break;
++        }
++        bridge->pump_budget = 0;
++        bridge->pump_order_limit = UINT64_MAX;
++
+ }
+ 
+ void OPENHARMONY_AMCL_PumpEvents(void)
+@@ -2120,42 +2210,16 @@
+         typed_set_active(AMCL_BACKEND_ID_SDL3, 1);
+         bridge->typed_activated = true;
+     }
+-    /* Normal/menu absolute cursor stays on the legacy snapshot. Grabbed motion
+-     * has exactly one owner: the typed RELATIVE record whenever that channel is
+-     * callable, otherwise the accumulated-cursor fallback. */
+     bool typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
+-    OPENHARMONY_PumpHostCursor(bridge, typed_relative_owner);
+-    // ⭐ BOTH channels, and that is not a contradiction -- they carry disjoint
+-    // sources. Getting this wrong in either direction is a real bug, so the
+-    // reasoning is spelled out rather than summarised:
+-    //
+-    //   · Host on the typed physical route: physical key/button/wheel go to the
+-    //     neutral core only, never into the legacy ring (the ring's single
+-    //     writer runs on the legacy route). The ring still carries on-screen
+-    //     virtual controls, gamepad-mapped keys and character input, none of
+-    //     which have been migrated. Draining only the typed channel would drop
+-    //     all of those -- worse than the second translation it removes.
+-    //   · Host on the legacy route: physical edges reach BOTH the core and the
+-    //     ring, because core submission happens before the route fork and is
+-    //     unconditional. Draining both would then deliver every key twice. The
+-    //     host closes that by making the typed channel report "unavailable"
+-    //     whenever the typed physical route is not active, which is what the
+-    //     UNAVAILABLE result below latches on.
+-    //
+-    // So: typed first (physical, already SDL-encoded), then the ring (the rest).
+-    if (typed_relative_owner) {
+-        OPENHARMONY_PumpTypedEvents(bridge);
+-    }
+-    OPENHARMONY_PumpHostEvents(bridge);
+-
+-    // MENU_POINTER coordinates are committed while NextEvent drains the legacy ring. Before
+-    // AMCLSDLV:3 this pump sampled the cursor only above, then NextEvent immediately returned
+-    // PRESS: Minecraft therefore clicked the previous position and saw the new MOTION one pump
+-    // later (the user had to tap twice). Sample once more after the ring so DOWN's absolute
+-    // position enters SDL now. The host holds PRESS until a successful present, so this MOTION is
+-    // consumed while the menu is still open and cannot leak into relative camera movement.
+-    typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
+-    OPENHARMONY_PumpHostCursor(bridge, typed_relative_owner);
++    if (bridge->InteractionFence) {
++        OPENHARMONY_PumpOrderedEvents(bridge, presented_id);
++    } else {
++        // 明确缺少扩展的旧宿主保留兼容行为；现役锁定宿主始终提供有序四槽表。
++        OPENHARMONY_PumpHostCursor(bridge, typed_relative_owner);
++        if (typed_relative_owner) OPENHARMONY_PumpTypedEvents(bridge);
++        OPENHARMONY_PumpHostEvents(bridge);
++    }
++    OPENHARMONY_PumpHostCursor(bridge, OPENHARMONY_GetTypedNext(bridge) != NULL);
+ }
+ 
+ void OPENHARMONY_AMCL_NotifyFramePresented(void)
+@@ -2301,14 +2365,14 @@
+ 
+ static bool OPENHARMONY_AMCL_HostIsForeground(void)
+ {
+-    const char *value = SDL_getenv_unsafe(AMCL_FOREGROUND_ENV);
+-    if (!value || !*value) {
+-        /* Older standalone SDL hosts do not publish the optional focus
+-         * channel; their XComponent callbacks remain the authority. */
+-        return true;
+-    }
+-    return SDL_strcasecmp(value, "0") != 0 &&
+-           SDL_strcasecmp(value, "false") != 0;
++    SDL_Window *window = OPENHARMONY_Window;
++    if (!window || !window->internal) return false;
++    const AMCL_NativeWindowLeaseBrokerV2 *broker =
++        (const AMCL_NativeWindowLeaseBrokerV2 *)window->internal->native_window_lease_broker;
++    // SDL 自己拥有的 XComponent 继续由其回调授权；host 注入窗口要求可验证的实时尾表。
++    if (!broker) return window->internal->native_xcomponent != NULL;
++    return broker->abiVersion == 2u && broker->structSize >= AMCL_INPUT_FOREGROUND_BROKER_SIZE &&
++        broker->peekInputForeground && broker->peekInputForeground() == 1u;
+ }
+ 
+ void OPENHARMONY_AMCL_UpdatePresentedForeground(void)
+diff --git a/src/video/openharmony/SDL_amclpresentation.h b/src/video/openharmony/SDL_amclpresentation.h
+--- a/src/video/openharmony/SDL_amclpresentation.h
++++ b/src/video/openharmony/SDL_amclpresentation.h
+@@ -38,7 +38,12 @@
+     int (*releasePresentation)(uint64_t);
+     int (*acquireIdentity)(void *, uint64_t, AMCL_NativeWindowIdentityV1 *);
+     int (*movePresentationGeometry)(uint64_t, void *, uint64_t, uint64_t, uint64_t);
++    /* 宿主实时输入资格；缺少长度/回调时注入窗口不能授权。 */
++    uint32_t (*peekInputForeground)(void);
+ } AMCL_NativeWindowLeaseBrokerV2;
++#define AMCL_INPUT_FOREGROUND_BROKER_SIZE \
++    ((uint32_t)(offsetof(AMCL_NativeWindowLeaseBrokerV2, peekInputForeground) + \
++                sizeof(((AMCL_NativeWindowLeaseBrokerV2 *)0)->peekInputForeground)))
+ 
+ #define AMCL_PRESENTATION_BROKER_SIZE \
+     ((uint32_t)(offsetof(AMCL_NativeWindowLeaseBrokerV2, releasePresentation) + \

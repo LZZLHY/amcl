@@ -11,7 +11,7 @@
 
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
+import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark, DistributionPolicy } from 'commons';
 import { PreferenceManager } from 'feature_system';
 import { SPONSOR_PAGE_URL, AMCL_WEB_BASE } from 'commons';
 import { WebHostView } from '../components/WebHostView';
@@ -49,6 +49,8 @@ struct SponsorPage {
 
   /** 收款码放大图「下载」→ 下载并经系统弹窗免权限存进相册。 */
   private handleImageDownload_(url: string) {
+    // 商店没有赞助网页，历史下载回调也不能继续请求收款码。
+    if (DistributionPolicy.isStore()) return
     if (!url || url.length === 0) return
     if (!(url.startsWith('http://') || url.startsWith('https://'))) {
       this.toast_('该图片需在浏览器中保存')

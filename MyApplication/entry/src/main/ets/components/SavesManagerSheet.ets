@@ -13,10 +13,12 @@
  * 创建日期：见 CHANGELOG。
  */
 
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
+import { resolveInstanceGameDir } from 'commons';
 import { AppIconName } from 'commons';
 import { removeDirRecursive } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -50,16 +52,19 @@ export struct SavesManagerSheet {
   @State private rows: SaveRow[] = [];
   @State private loaded: boolean = false;
   /** 二次确认删除的世界名；空 = 无对话框 */
-  @State private pendingDelete: string = '';
+  @State @Watch('publishNavigationBlocked_') private pendingDelete: string = '';
   /** 导入 / 导出 / 压缩进行中：显示遮罩并禁用按钮 */
-  @State private busy: boolean = false;
+  @State @Watch('publishNavigationBlocked_') private busy: boolean = false;
   @State private busyLabel: string = '';
 
   onClose: () => void = () => {};
   onBack: () => void = () => {};
+  /** 只投影本面板原遮罩/事务是否阻止导航，父宿主不复制文件业务状态。 */
+  onNavigationBlocked: (blocked: boolean) => void = () => {};
   onChanged: () => void = () => {};
 
   aboutToAppear() {
+    this.navigationProjectionAlive_ = true;
     if (this.active) this.refresh();
   }
 
@@ -67,33 +72,40 @@ export struct SavesManagerSheet {
     if (this.active) this.refresh();
   }
 
+
+  /** 卸载后不再向父标题发布迟到状态；文件任务和扫描的原所有权不变。 */
+  private navigationProjectionAlive_: boolean = false;
+
+  /** 导航只观察原遮罩事实，不取消任务或跳过原确认；未屏蔽正文时仍允许原返回。 */
+  private navigationBlocked_(): boolean { return this.busy || this.pendingDelete.length > 0; }
+
+  /** 业务状态变化后只发一个布尔投影，供已有父标题同步禁用状态。 */
+  private publishNavigationBlocked_(): void {
+    if (this.navigationProjectionAlive_) this.onNavigationBlocked(this.navigationBlocked_());
+  }
+
+  /** 仅注销标题状态投影，不新增任务取消或覆盖原文件事务。 */
+  aboutToDisappear(): void { this.navigationProjectionAlive_ = false; }
+
   build() {
+    if (this.embedded) {
+      this.PanelBody_();
+    } else {
+      ImmersiveTitleScaffold({ title: '存档管理', theme: this.theme, modal: true,
+        surfaceColor: this.theme.bgPrimary, closeLabel: '关闭管理面板',
+        closeId: 'savesmanagersheet-close', closeEnabled: !this.navigationBlocked_(),
+        onClose: (): void => { if (!this.navigationBlocked_()) this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+  }
+
+  /** 原面板正文与覆盖层保持原组件所有权，宿主只接管导航动作。 */
+  @Builder
+  private PanelBody_() {
     Stack({ alignContent: Alignment.Center }) {
       Column() {
-        if (this.embedded) {
-          Row() {
-            Row({ space: 4 }) {
-              AppIcon({ name: AppIconName.ChevronLeft, iconSize: 14, color: this.theme.textPrimary })
-              Text('版本详情').fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-            }
-            .height(32)
-            .padding({ left: 10, right: 12 })
-            .borderRadius(16)
-            .backgroundColor(this.theme.bgInput)
-            .alignItems(VerticalAlign.Center)
-            .onClick(() => { this.onBack() })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 10, bottom: 4 })
-          .justifyContent(FlexAlign.Start)
-        } else {
-          Row() {
-            Column().width(36).height(4).backgroundColor(this.theme.divider).borderRadius(2)
-          }
-          .width('100%').justifyContent(FlexAlign.Center).padding({ top: 10, bottom: 6 })
-        }
-
-        this.Header()
+          this.Header()
 
         if (!this.loaded) {
           this.LoadingState()
@@ -116,14 +128,13 @@ export struct SavesManagerSheet {
     }
     .width('100%')
     .height('100%')
+
   }
 
   @Builder
   Header() {
     Row() {
       Column({ space: 2 }) {
-        Text('存档管理')
-          .fontSize(22).fontWeight(700).fontColor(this.theme.textPrimary)
         Text(this.headerSubtitle())
           .fontSize(11).fontColor(this.theme.textHint)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -324,9 +335,8 @@ export struct SavesManagerSheet {
 
   private savesDir(): string {
     if (this.mcDir.length === 0) return ''
-    if (!this.versionIsolation) return this.mcDir + '/saves'
-    if (this.versionId.length === 0) return ''
-    return this.mcDir + '/versions/' + this.versionId + '/saves'
+    if (this.versionId.length === 0 && this.versionIsolation) return ''
+    return resolveInstanceGameDir(this.mcDir, this.versionId, this.versionIsolation) + '/saves'
   }
 
   private headerSubtitle(): string {
@@ -459,4 +469,10 @@ export struct SavesManagerSheet {
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
       + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+        this.PanelBody_();
+      }
 }

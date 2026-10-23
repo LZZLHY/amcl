@@ -9,10 +9,8 @@ extern "C" {
 
 #define AMCL_INPUT_HOST_API_MAGIC 0x414D434Cu
 #define AMCL_INPUT_HOST_API_VERSION 1u
-// This is the ABI generation of the complete function-table layout, not a
-// host-instance counter. Session epochs and opaque consumer handles fence core
-// state; descriptor table-address identity detects owner rollover. Accepting
-// another table generation would let a V1 consumer call unknown offsets.
+// generation 标识稳定前缀 ABI；追加尾表必须另有能力位和长度检查。会话与句柄隔离
+// 生命周期，描述符地址识别 owner 更换。不得仅凭 generation 猜测尾部存在。
 #define AMCL_INPUT_HOST_API_GENERATION 1ull
 #define AMCL_INPUT_CAP_TYPED_EVENTS (1u << 0)
 #define AMCL_INPUT_CAP_MULTI_CONSUMER (1u << 1)
@@ -67,6 +65,14 @@ extern "C" {
 // former reserved tails for textSessionId and eventType 19 carries begin/end/
 // abort without growing the frozen function table.
 #define AMCL_INPUT_CAP_TEXT_INPUT_SESSION (1u << 18)
+// 消费者局部退休及背压隔离：存在其它 READY 消费者时，RETIRE/ABANDON 和
+// 落后投递恢复只改变目标消费者，不清兄弟消费者仍使用的 held/capture/text。
+// 这是追加能力语义，不改变V1函数表/事件布局；最后active及真实生命周期仍全局收口。
+#define AMCL_INPUT_CAP_CONSUMER_ISOLATION (1u << 19)
+// 可选有序尾表：只有同时满足能力位、structSize 和非空指针才允许调用。
+#define AMCL_INPUT_CAP_INTERACTION_ORDER (1u << 20)
+// RESET 使用原有 payload 空间携带局部范围及权威代次，事件总长和已有字段偏移不变。
+#define AMCL_INPUT_CAP_RESET_AUTHORITY_EPOCH (1u << 21)
 
 #define AMCL_INPUT_OK 0
 #define AMCL_INPUT_EMPTY 1
@@ -135,7 +141,21 @@ typedef struct AmclInputHostApiV1 {
                              uint64_t packetId);
     int32_t (*closeConsumer)(AmclInputConsumerHandle consumer);
     int32_t (*getSnapshot)(AmclInputSnapshotV1* outSnapshot);
+    // V1 原有 144 字节前缀保持不变；尾部为显式能力协商的扩展。maxOrder 是本轮
+    // 允许消费的最后一个交互序号；更新的记录留在 host，含 blob 所有权，不做先取后退。
+    int32_t (*nextOrderedEvent)(AmclInputConsumerHandle consumer,
+                               AmclInputEvent* outEvent, uint64_t maxOrder,
+                               uint64_t* outOrder);
+    int32_t (*peekEventOrder)(AmclInputConsumerHandle consumer, uint64_t* outOrder);
+    uint64_t (*interactionFence)(void);
 } AmclInputHostApiV1;
+#define AMCL_INPUT_HOST_API_V1_PREFIX_SIZE offsetof(AmclInputHostApiV1, nextOrderedEvent)
+// 本函数只读前缀后才读尾部，兼容仍仅提供原 V1 表的外部消费者/宿主。
+static inline int amclInputHasInteractionOrder(const AmclInputHostApiV1* api) {
+    return api && (api->capabilityBits & AMCL_INPUT_CAP_INTERACTION_ORDER) != 0u &&
+        api->structSize >= sizeof(AmclInputHostApiV1) && api->nextOrderedEvent &&
+        api->peekEventOrder && api->interactionFence;
+}
 
 #if defined(_WIN32)
 #  if defined(AMCL_INPUT_HOST_EXPORTS)
@@ -150,6 +170,8 @@ typedef struct AmclInputHostApiV1 {
 #endif
 
 AMCL_INPUT_PUBLIC const AmclInputHostApiV1* amclInputGetHostApiV1(void);
+// 返回本映像编译能力和授权证据标记；只读、静态存储，不读取设备能力或环境覆盖。
+AMCL_INPUT_PUBLIC const char* amclInputRuntimeBuildIdentityV1(void);
 
 #ifdef __cplusplus
 }  // extern "C"
@@ -170,7 +192,7 @@ AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputSnapshotV1) == 104, "snapshot ABI chang
 AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputHostApiV1, generation) == 16, "generation offset changed");
 AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputHostApiV1, beginSession) == 24, "function table prefix changed");
 #if UINTPTR_MAX == UINT64_MAX
-AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputHostApiV1) == 144, "64-bit API table ABI changed");
+AMCL_INPUT_STATIC_ASSERT(AMCL_INPUT_HOST_API_V1_PREFIX_SIZE == 144, "64-bit API table ABI changed");
 AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputHostApiV1, submitTextPacket) == 56, "text API offset changed");
 AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputHostApiV1, readPacketBlob) == 112, "blob API offset changed");
 #endif

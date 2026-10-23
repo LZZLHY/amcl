@@ -8,6 +8,7 @@
  */
 
 #include "jni_registry.h"
+#include "../platform/env_slot.h"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -117,6 +118,10 @@ JNIEXPORT const AmclCallbackBridgeHostV1* amclCallbackBridgeHostGetV1(void) {
     return &g_callbackBridgeHost;
 }
 
+// 描述符最长 "1:<uint32>:<uint64>:<16 位十六进制>" = 49 字节；槽位容量与 jni_reregister.c 的
+// 128 字节上限对齐（127 + NUL）。
+constexpr uint32_t kCallbackBridgeHostCapacity = 127u;
+
 int publishCallbackBridgeHostV1(uint64_t launchId) {
     // 同一个进程的游戏只发布一次，撤销不恢复 published；这样失败重试不会复用旧 JNI 状态。
     bool expected = false;
@@ -128,9 +133,16 @@ int publishCallbackBridgeHostV1(uint64_t launchId) {
         g_callbackBridgeHost.abi, g_callbackBridgeHost.pid, launchId,
         reinterpret_cast<uintptr_t>(&amclCallbackBridgeHostGetV1));
     if (length <= 0 || static_cast<size_t>(length) >= sizeof(descriptor)) return JNI_ERR;
+    // I27-05：产品里本函数跑在 g_mcThread（JVM 已存在），描述符写进建 JVM 前预登记的文本槽位，
+    // 原位填写、不 setenv。Register 对已登记槽位幂等；只有登记表尚未封存（宿主回归夹具）时才会
+    // 在此新增名字，封存后未预登记则返回错误并让发布失败关闭。
+    auto& registry = amcl::envslot::ProcessRegistry();
+    const int registered = registry.Register(
+        AMCL_CALLBACK_BRIDGE_HOST_ENV, amcl::envslot::Kind::kText, kCallbackBridgeHostCapacity, "");
     g_callbackBridgeActive.store(true, std::memory_order_release);
-    if (setenv(AMCL_CALLBACK_BRIDGE_HOST_ENV, descriptor, 1) != 0) {
+    if (registered < 0 || registry.Store(AMCL_CALLBACK_BRIDGE_HOST_ENV, descriptor) < 0) {
         g_callbackBridgeActive.store(false, std::memory_order_release);
+        AMCL_LOG_E(LOG_TAG, "CallbackBridge host descriptor slot unavailable register=%{public}d", registered);
         return JNI_ERR;
     }
     return JNI_OK;
@@ -138,6 +150,7 @@ int publishCallbackBridgeHostV1(uint64_t launchId) {
 
 void revokeCallbackBridgeHostV1(void) {
     // 已绑定的方法表不能安全撤销；只禁止新的绑定。游戏进程退出负责清理全部 native 状态。
+    // 不再 unsetenv（I27-05）：此刻 JVM 线程仍在运行，删除名字会压缩 environ。描述符文本留在
+    // 槽位里无害——getter 受 g_callbackBridgeActive 门控，撤销后返回 NULL，JNI_OnLoad 随之拒绝。
     g_callbackBridgeActive.store(false, std::memory_order_release);
-    unsetenv(AMCL_CALLBACK_BRIDGE_HOST_ENV);
 }

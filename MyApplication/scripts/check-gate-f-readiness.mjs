@@ -59,6 +59,7 @@ export const GATE_F_SOURCE_PATHS = {
   backendSource: 'entry/src/main/cpp/input/adapters/backend_input_bridge.cpp',
   glfw: 'entry/src/main/cpp/glfw/glfw_compat.cpp',
   lwjglBridge: 'entry/src/main/cpp/glfw/input_bridge_ohos.c',
+  pointerTransaction: 'entry/src/main/cpp/input/delivery/pointer_transaction.h',
   lwjglTranslateHeader: 'entry/src/main/cpp/input/adapters/lwjgl2_event_translate.h',
   lwjglTranslateSource: 'entry/src/main/cpp/input/adapters/lwjgl2_event_translate.cpp',
   backendPointerTest: 'entry/src/main/cpp/tests/host/backend_pointer_transaction_test.cpp',
@@ -257,6 +258,51 @@ function extractSwitchCaseBody(text, eventName) {
   return next ? tail.slice(0, next.index) : tail;
 }
 
+// 这里只抽取已剥去注释/字符串的函数定义。原型、调用和其它函数中的同名常量不能
+// 替代生产函数的实际接线；花括号配对保留函数内的嵌套分支，不以第一处 `}` 截断。
+function extractFunctionBody(text, name) {
+  const pattern = new RegExp(`\\b${name}\\s*\\(`, 'g');
+  for (const match of text.matchAll(pattern)) {
+    let cursor = match.index + match[0].length;
+    let depth = 1;
+    while (cursor < text.length && depth !== 0) {
+      if (text[cursor] === '(') ++depth;
+      if (text[cursor] === ')') --depth;
+      ++cursor;
+    }
+    while (/\s/.test(text[cursor] ?? '') && cursor < text.length) ++cursor;
+    if (text[cursor] !== '{') continue;
+    const start = ++cursor;
+    depth = 1;
+    while (cursor < text.length && depth !== 0) {
+      if (text[cursor] === '{') ++depth;
+      if (text[cursor] === '}') --depth;
+      ++cursor;
+    }
+    if (depth === 0) return text.slice(start, cursor - 1);
+  }
+  return '';
+}
+
+function containsAll(text, patterns) {
+  return patterns.every(pattern => has(text, pattern));
+}
+
+// 先验证资格再解算 relative，避免已经退休的 delta 更新 consumer current。各后端的
+// 数字身份是冻结的实际 consumer，不能从其它后端借用一次 helper 调用满足本合同。
+function scopedRelativeConsumer(text, backend, shared = false) {
+  const validAt = text.search(/scopedMenuEventValid\s*\(/);
+  const relativeAt = text.search(new RegExp(`resolveRelativeMenuEvent\\s*\\(\\s*${backend}\\s*,`));
+  const ownedState = backend === 1 ? 'g_glfwPointer' : backend === 2 ? 'g_l2Pointer' : 'g_sdlMenuState.pointer';
+  const phaseContract = shared
+    ? has(text, new RegExp(`amclPointerAccept\\s*\\(\\s*&${ownedState.replace('.', '\\.')}\\s*,`))
+    : containsAll(text, [/MENU_POINTER_BEGIN/, /MENU_POINTER_END/, /MENU_POINTER_CANCEL/]);
+  return phaseContract && validAt >= 0 && relativeAt > validAt && containsAll(text, [
+    /queuedMenuInvalidates\s*\(/, /acceptMenuGestureStart\s*\(/,
+    /MENU_POINTER_BEGIN/,
+  ]);
+}
+
 function oneCheck(id, label, ok, evidence) {
   return { id, label, ok: Boolean(ok), evidence };
 }
@@ -407,6 +453,145 @@ function physicalLegacyRetiredGroup(t) {
   ], mode);
 }
 
+// BEGIN/END 和 private relative 是既有 touch MENU_POINTER 的扩展传输，仍在 neutral
+// bridge 内归约成原 GLFW callback / LWJGL2 / SDL 五 int ABI。它不是 Gate F 的 typed
+// 等价替代，也不批准 absolute/timestamp 证据。旧 inline 与旧统一解释器 fixture 继续
+// 走原合同；一旦出现新协议符号，必须验证下面整条生产/消费路线，不能回退到旧宽松匹配。
+function causalTouchMenuChecks(touch, bridge, transaction) {
+  const emit = extractFunctionBody(touch, 'emitMenuInteraction');
+  const retire = extractFunctionBody(touch, 'schemaRetireTouchPolicyLocked');
+  const publish = extractFunctionBody(bridge, 'inputBridge_publishTouchMenuRelativeV1');
+  const freeze = extractFunctionBody(bridge, 'sendData_locked');
+  const retireBridge = extractFunctionBody(bridge, 'inputBridge_retireTouchMenuScopeV1');
+  const valid = extractFunctionBody(bridge, 'scopedMenuEventValid');
+  const scanner = extractFunctionBody(bridge, 'queuedMenuInvalidates');
+  const resolve = extractFunctionBody(bridge, 'resolveRelativeMenuEvent');
+  const cursor = extractFunctionBody(bridge, 'resolveRelativeMenuCursor');
+  const glfw = extractFunctionBody(bridge, 'inputBridge_pumpOrdered');
+  const glfwPending = extractFunctionBody(bridge, 'advanceGlfwMenuPending');
+  const l2 = extractFunctionBody(bridge, 'inputBridge_l2NextEvent');
+  const sdl = extractFunctionBody(bridge, 'inputBridge_sdlNextThrough');
+  const sdlPointer = extractFunctionBody(bridge, 'consumeSdlMenuPointer');
+  const sdlPending = extractFunctionBody(bridge, 'returnDueSdlMenuButton');
+  const legacy = extractFunctionBody(bridge, 'returnLegacyEvent');
+  const orderedCursor = extractFunctionBody(bridge, 'returnOrderedMenuCursor');
+  const sdlButton = extractFunctionBody(bridge, 'returnSdlMenuButtonEvent');
+  // 使用新入口时必须核真实共同实现和三个调用方，不能借历史变量名或旧分支通过。
+  const shared = has(bridge, /amclPointerAccept\s*\(/);
+  const accept = extractFunctionBody(transaction, 'amclPointerAccept');
+  const advance = extractFunctionBody(transaction, 'amclPointerAdvance');
+  const delivered = extractFunctionBody(transaction, 'amclPointerSourceDelivered');
+  const finishUp = extractFunctionBody(transaction, 'amclPointerFinishUp');
+  const sharedLifecycle = containsAll(accept, [
+    /phase\s*==\s*AMCL_POINTER_BEGIN/, /phase\s*==\s*AMCL_POINTER_DOWN/,
+    /token\s*!=\s*state->token/, /state->sourceX\s*=\s*x/, /state->sourceY\s*=\s*y/,
+    /state->downAccepted\s*=\s*true/,
+    /phase\s*==\s*AMCL_POINTER_UP/, /phase\s*==\s*AMCL_POINTER_END/,
+    /phase\s*==\s*AMCL_POINTER_CANCEL/, /amclPointerRetire\s*\(/,
+  ]) && containsAll(finishUp, [/state->buttonDown\s*=/, /!state->gestureBegun/, /memset\s*\(/]);
+  const sharedBarriers = sharedLifecycle && containsAll(bridge, [
+    /g_glfwPointerPolicy\s*=\s*\{2u,\s*false,\s*false\}/,
+    /g_sdlPointerPolicy\s*=\s*\{1u,\s*true,\s*true\}/,
+    /g_l2PointerPolicy\s*=\s*\{0u,\s*false,\s*false\}/,
+  ]) && containsAll(advance, [
+    /invalid\s*\|\|\s*state->releasePending/, /cancelled\s*\|\|\s*expired/,
+    /presentSerial\s*<\s*state->pressAfterPresent/, /state->pendingOrder\s*>\s*maxOrder/,
+    /currentX\s*!=\s*state->sourceX/, /AMCL_POINTER_RESTORE_SOURCE/,
+    /state->sourceFrameBaselinePending/, /amclPointerSourceDelivered\s*\(/,
+  ]) && has(delivered, /state->pressAfterPresent\s*=\s*presentSerial\s*\+\s*policy->presentFrames/) &&
+    containsAll(glfwPending, [/queuedMenuInvalidates\s*\(/,
+      /g_glfwPointer.inputTargetEpoch\s*!=/, /g_glfwPresentedIdentity\s*!=\s*g_menuPresentedIdentity/,
+      /amclPointerAdvance\s*\(\s*&g_glfwPointer\s*,\s*&g_glfwPointerPolicy/,
+      /amclPointerSourceDelivered\s*\(\s*&g_glfwPointer/]) &&
+    has(glfw, /amclPointerSourceDelivered\s*\(\s*&g_glfwPointer/) &&
+    containsAll(sdlPending, [/queuedMenuInvalidates\s*\(/,
+      /g_sdlMenuState.pointer.inputTargetEpoch\s*!=/, /g_sdlMenuState.targetPresentedIdentity\s*!=/,
+      /amclPointerAdvance\s*\(\s*&g_sdlMenuState.pointer\s*,\s*&g_sdlPointerPolicy/]);
+  const sourceEvidence = GATE_F_SOURCE_PATHS.touch;
+  const consumerEvidence = GATE_F_SOURCE_PATHS.lwjglBridge;
+
+  return [
+    oneCheck('touch-token-allocation', 'BEGIN 分配不可复用 token，真实 Event/Cancel 仍接入解释器',
+      containsAll(emit, [
+        /action\s*==\s*MenuTouchAction::Begin\s*\|\|\s*action\s*==\s*MenuTouchAction::RelativeBegin/,
+        /if\s*\(\s*s_touchMenuNextToken\s*==\s*0\s*\)\s*return\s*;/,
+        /s_touchMenuToken\s*=\s*s_touchMenuNextToken\s*;/,
+        /s_touchMenuNextToken\s*=\s*s_touchMenuNextToken\s*==\s*0x7fffffffu\s*\?\s*0\s*:\s*s_touchMenuNextToken\s*\+\s*1\s*;/,
+      ]) && containsAll(touch, [
+        /s_menuTouch\.Event\s*\(/, /s_menuTouch\.Cancel\s*\(\s*emitMenuInteraction\s*\)/,
+      ]), sourceEvidence),
+    oneCheck('touch-gesture-lifetime', 'absolute/relative 的 UP 只释放左键，END/CANCEL 才退休 token',
+      containsAll(emit, [
+        /MenuTouchAction::RelativeBegin\s*\?\s*MENU_POINTER_BEGIN/,
+        /MenuTouchAction::RelativeDown\s*\?\s*MENU_POINTER_DOWN/,
+        /MenuTouchAction::RelativeUp\s*\?\s*MENU_POINTER_UP/,
+        /MenuTouchAction::RelativeEnd\s*\?\s*MENU_POINTER_END/,
+        /MenuTouchAction::RelativeCancel\s*\?\s*MENU_POINTER_CANCEL\s*:\s*MENU_POINTER_MOVE/,
+        /if\s*\(\s*phase\s*==\s*MENU_POINTER_END\s*\|\|\s*phase\s*==\s*MENU_POINTER_CANCEL\s*\)\s*s_touchMenuToken\s*=\s*0\s*;/,
+        /if\s*\(\s*action\s*==\s*MenuTouchAction::End\s*\|\|\s*action\s*==\s*MenuTouchAction::Cancel\s*\)\s*s_touchMenuToken\s*=\s*0\s*;/,
+        /sendEvent\s*\(\s*EVENT_TYPE_MENU_POINTER\s*,\s*MENU_POINTER_MOVE\s*,\s*mx\s*,\s*my\s*,\s*s_touchMenuToken\s*\)/,
+        /MenuTouchAction::Begin\s*\?\s*MENU_POINTER_BEGIN\s*:\s*MENU_POINTER_DOWN\s*,\s*mx\s*,\s*my\s*,\s*s_touchMenuToken/,
+        /MenuTouchAction::Up\s*\?\s*MENU_POINTER_UP\s*:\s*action\s*==\s*MenuTouchAction::End\s*\?\s*MENU_POINTER_END\s*:\s*MENU_POINTER_CANCEL/,
+      ]) && count(emit, /s_touchMenuToken\s*=\s*0\s*;/g) === 2, sourceEvidence),
+    oneCheck('touch-relative-publication', 'relative 的 phase/token/真实 delta/bounds 在原槽中发布',
+      has(emit, /inputBridge_publishTouchMenuRelativeV1\s*\(\s*phase\s*,\s*s_touchMenuToken\s*,\s*dx\s*,\s*dy\s*,\s*maxX\s*,\s*maxY\s*\)/) &&
+        has(emit, /mapMenuRelativePayload\s*\(/) && containsAll(publish, [
+          /token\s*==\s*0/, /phase\s*>\s*MENU_POINTER_END/,
+          /publishMenuRelative\s*\(\s*EVENT_TYPE_TOUCH_MENU_RELATIVE\s*,\s*phase\s*,\s*token\s*,\s*dx\s*,\s*dy\s*,\s*maxX\s*,\s*maxY\s*\)/,
+        ]) && containsAll(freeze, [
+          /slot->relative\s*=\s*\*relative/, /slot->menuScopeEpoch\s*=\s*atomic_load_explicit\s*\(\s*&g_touchMenuScopeEpoch/,
+          /slot->gestureToken\s*=/, /MENU_POINTER_BEGIN/, /MENU_POINTER_END/, /MENU_POINTER_CANCEL/,
+        ]), `${sourceEvidence} + ${consumerEvidence}`),
+    oneCheck('touch-scope-retirement', '模态/策略完整退休撤已结束但未消费的菜单，消费时核冻结 epoch',
+      containsAll(retire, [/inputBridge_retireTouchMenuScopeV1\s*\(/, /s_menuTouch\.Cancel\s*\(\s*emitMenuInteraction\s*\)/]) &&
+        has(retireBridge, /atomic_fetch_add_explicit\s*\(\s*&g_touchMenuScopeEpoch\s*,\s*1ULL/) &&
+        has(valid, /menuEpoch\s*!=\s*atomic_load_explicit\s*\(\s*&g_touchMenuScopeEpoch/) &&
+        containsAll(scanner, [
+          /epoch\s*!=\s*atomic_load_explicit\s*\(\s*&g_touchMenuScopeEpoch/,
+          /value\s*==\s*token\s*&&\s*phase\s*==\s*MENU_POINTER_CANCEL\s*\)\s*canceled\s*=\s*true/,
+          /phase\s*==\s*MENU_POINTER_END\s*\|\|\s*\(\s*!gestureBegun\s*&&\s*phase\s*==\s*MENU_POINTER_UP\s*\)/,
+          /!normallyEnded\s*&&\s*\(\s*phase\s*==\s*MENU_POINTER_BEGIN\s*\|\|\s*phase\s*==\s*MENU_POINTER_DOWN\s*\)\s*&&\s*value\s*!=\s*token/,
+        ]), `${sourceEvidence} + ${consumerEvidence}`),
+    oneCheck('touch-relative-current', '相对命令在实际 consumer current 上有序解算，不借 Native desired',
+      containsAll(resolve, [
+        /token\s*!=\s*currentToken/, /resolveRelativeMenuCursor\s*\(/,
+        /event->type\s*=\s*EVENT_TYPE_MENU_POINTER/, /event->i1\s*=\s*phase/, /event->i4\s*=\s*\(int\)token/,
+      ]) && containsAll(cursor, [
+        /currentMenuCursor\s*\(\s*backend\s*,\s*x\s*,\s*y\s*\)/,
+        /\*x\s*\+=\s*dx/, /\*y\s*\+=\s*dy/, /relative->maxX/, /relative->maxY/,
+      ]), consumerEvidence),
+    oneCheck('touch-three-consumers', '三个真实消费者在 relative 解算前核 scope 并消费 BEGIN/END/CANCEL',
+      scopedRelativeConsumer(glfw, 1, shared) && scopedRelativeConsumer(l2, 2, shared) &&
+        scopedRelativeConsumer(`${sdl}\n${sdlPointer}`, 3, shared) && (!shared || sharedLifecycle) &&
+        has(sdl, /consumeSdlMenuPointer\s*\(/), consumerEvidence),
+    oneCheck('touch-present-barriers', 'GLFW/SDL 保留实际 present 屏障，提交前先撤 CANCEL/旧 target',
+      shared ? sharedBarriers : containsAll(glfwPending, [
+        /queuedMenuInvalidates\s*\(/, /cancelMenuTransaction\s*\(/,
+        /g_menuInputTargetEpoch\s*!=/, /g_glfwPresentedIdentity\s*!=\s*g_menuPresentedIdentity/,
+        /g_presentSerial\s*<\s*g_menuPressAfterPresent/, /g_menuPressAfterPresent\s*=\s*g_presentSerial\s*\+\s*2ULL/,
+      ]) && containsAll(glfw, [/g_menuPressAfterPresent\s*=\s*g_presentSerial\s*\+\s*2ULL/]) &&
+        containsAll(sdlPending, [
+          /queuedMenuInvalidates\s*\(/, /clearSdlMenuTransactionLocked\s*\(/,
+          /g_sdlMenuState.inputTargetEpoch\s*!=/, /g_sdlMenuState.targetPresentedIdentity\s*!=/,
+          /g_sdlMenuState.pressAfterPresent\s*=\s*g_sdlMenuState.presentSerial\s*\+\s*1ULL/,
+          /g_sdlMenuState.presentSerial\s*>=\s*g_sdlMenuState.pressAfterPresent/,
+        ]), consumerEvidence),
+    oneCheck('touch-old-game-abi', 'private relative 归约后保持旧坐标/按键出口与五 int ABI',
+      containsAll(bridge, [
+        /#define\s+EVENT_TYPE_MENU_POINTER\s+1008\b/,
+        /#define\s+EVENT_TYPE_CURSOR_POSITION\s+1010\b/,
+        /#define\s+EVENT_TYPE_MOUSE_BUTTON\s+1006\b/,
+        /#define\s+EVENT_TYPE_TOUCH_MENU_RELATIVE\s+1017\b/,
+      ]) && containsAll(legacy, [
+        /\*outType\s*=\s*event->type/, /\*o1\s*=\s*event->i1/, /\*o2\s*=\s*event->i2/,
+        /\*o3\s*=\s*event->i3/, /\*o4\s*=\s*event->i4/,
+      ]) && has(orderedCursor, /\*outType\s*=\s*EVENT_TYPE_CURSOR_POSITION/) &&
+        containsAll(l2, [/returnOrderedMenuCursor\s*\(/, /e.type\s*=\s*EVENT_TYPE_MOUSE_BUTTON/, /returnLegacyEvent\s*\(/]) &&
+        containsAll(sdlPointer, [/returnOrderedMenuCursor\s*\(/, /returnSdlMenuButtonEvent\s*\(/]) &&
+        containsAll(sdlButton, [/EVENT_TYPE_MOUSE_BUTTON/, /returnLegacyEvent\s*\(/]), consumerEvidence),
+  ];
+}
+
 function touchMenuPointerContractGroup(t) {
   const touch = stripGateFCode(t.touchText);
   const bridge = stripGateFCode(t.lwjglBridgeText);
@@ -416,17 +601,28 @@ function touchMenuPointerContractGroup(t) {
   const glfw = stripGateFCode(t.glfwText);
   const sdl = stripGateFCode(t.sdlPatchText);
   const sdlGateF = stripGateFCode(t.sdlGateFFinalPatchText ?? '');
+  const transaction = stripGateFCode(t.pointerTransactionText ?? '');
+  const shared = has(bridge, /amclPointerAccept\s*\(/);
 
+  // 新解释器仍使用同一组带token的MENU_POINTER事件及present屏障。
+  // 除了兼容旧直接入口，必须同时看到token分配、Event入口和Cancel收口；
+  // 只改一个变量名、留下常量或取消路径断开，都不能据此宣称合同成立。
+  const causalProtocol = has(touch, /MenuTouchAction::RelativeBegin|\bMENU_POINTER_BEGIN\b|inputBridge_publishTouchMenuRelativeV1/);
+  const causalChecks = causalProtocol ? causalTouchMenuChecks(touch, bridge, transaction) : [];
+  const touchProducer = causalProtocol ? causalChecks.every(check => check.ok) : (has(touch, /s_activeMenuTransactionToken/) || (
+    has(touch, /s_touchMenuToken\s*=\s*s_touchMenuNextToken\s*\+\+/) &&
+    has(touch, /s_menuTouch\.Event\s*\(/) &&
+    has(touch, /s_menuTouch\.Cancel\s*\(\s*emitMenuInteraction\s*\)/)));
   const preserved =
     has(touch, /EVENT_TYPE_MENU_POINTER/) &&
     has(touch, /MENU_POINTER_DOWN/) &&
     has(touch, /MENU_POINTER_MOVE/) &&
     has(touch, /MENU_POINTER_UP/) &&
     has(touch, /MENU_POINTER_CANCEL/) &&
-    has(touch, /s_activeMenuTransactionToken/) &&
+    touchProducer &&
     has(bridge, /case\s+EVENT_TYPE_MENU_POINTER\s*:/) &&
-    has(bridge, /g_menuPressAfterPresent/) &&
-    has(bridge, /g_menuTransactionToken/) &&
+    (shared ? has(bridge, /g_glfwPointer\.token/) && has(bridge, /g_glfwPointerPolicy/)
+      : has(bridge, /g_menuPressAfterPresent/) && has(bridge, /g_menuTransactionToken/)) &&
     has(bridge, /MENU_POINTER_CANCEL/) &&
     has(sdl, /AMCL_EVENT_MENU_POINTER/) &&
     has(sdl, /AMCL_MENU_POINTER_DOWN/) &&
@@ -452,6 +648,7 @@ function touchMenuPointerContractGroup(t) {
         '触摸 token/cancel/present-barrier 合同仍完整，或三个后端已有 typed 等价替代',
         preserved || replaced,
         mode),
+    ...causalChecks,
   ], mode);
 }
 

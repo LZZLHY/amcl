@@ -1,9 +1,11 @@
 import { pasteboard, deviceInfo } from '@kit.BasicServicesKit'
-import { ThemeColors, ThemeMode, resolveTheme, ledgerBegin, ledgerEnd, LedgerState,
-  ledgerDirOf, ensureDirSync, writeEvidenceTextAtomic, listSessionEvidence, setEvidenceSelection } from 'commons'
+import { fileIo as fs } from '@kit.CoreFileKit'
+import { ThemeColors, ThemeMode, resolveTheme, ledgerBeginAsync, ledgerEndAsync, ledgerManifestAsync, LedgerState,
+  ledgerDirOf, writeEvidenceTextAtomicAsync, listSessionEvidenceAsync, setEvidenceSelection, ensureEvidenceDirectoryAsync } from 'commons'
 import testNapi, { NativeGlCapability } from 'libentry.so'
 import { common } from '@kit.AbilityKit'
 import { ProductRenderDiagnostics } from 'entry/ProductRenderDiagnostics'
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold'
 import { graphicsProfileById, GraphicsProfileSpec } from 'launch'
 import { loadShareRecords, revokeShare,
   LogShareRecord } from '../components/LogShareClient'
@@ -11,6 +13,8 @@ import { loadShareRecords, revokeShare,
 @Entry
 @Component
 struct DesktopDeveloperToolsPage {
+  /** 电脑窗口存在系统栏时由共享标题消费一次，正文只保留原诊断区间距。 */
+  @StorageProp('topRectHeight') private topSafeHeight: number = 0
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
   @State busy: boolean = false
   @State result: string = '无需安装 Minecraft。点击下方按钮，验证系统桌面 OpenGL，并复制完整结果反馈。'
@@ -103,23 +107,46 @@ struct DesktopDeveloperToolsPage {
 
   private async shareResult(): Promise<void> {
     if (!ProductRenderDiagnostics.enabled || this.sharing || this.busy) return
+    // 第一次await之前认领本页面分享操作，重复点击不能并发替换同一诊断身份的原件。
+    this.sharing = true
     try {
       const context = this.context()
       if (context === undefined) throw new Error('分享上下文不可用')
       const diagnostic = ProductRenderDiagnostics.read(context.filesDir)
       if (diagnostic === undefined) throw new Error('请先运行并保存电脑渲染诊断')
       const activityId: number = diagnostic.capturedAt
-      ledgerBegin(context.filesDir, activityId, { category: 'render-diagnostic', title: '电脑渲染诊断' })
       const directory: string = ledgerDirOf(context.filesDir, activityId) + '/render/probes'
-      ensureDirSync(directory)
-      writeEvidenceTextAtomic(directory + '/desktop.json', diagnostic.text)
-      ledgerEnd(context.filesDir, activityId, { state: LedgerState.SUCCESS, source: 'desktop.diagnostic', summary: '电脑渲染诊断已保存' })
-      const files = listSessionEvidence(context.filesDir, activityId)
+      const path: string = directory + '/desktop.json'
+      const manifest = await ledgerManifestAsync(context.filesDir, activityId)
+      if (manifest !== null && manifest.category !== 'render-diagnostic') throw new Error('诊断身份已被其他活动占用，请重新运行诊断')
+      const exists: boolean = await fs.access(path)
+      if (exists && await fs.readText(path) !== diagnostic.text) {
+        // 同ID原文不同必须保留既有文件，禁止用新清单重新签认被覆盖的sealed证据。
+        throw new Error('该诊断身份的原始内容已变化，请重新运行诊断后分享')
+      }
+      if (manifest !== null && manifest.state !== LedgerState.RUNNING && !exists) {
+        throw new Error('已封存诊断的原件缺失，请保留现场并重新运行诊断')
+      }
+      if (manifest === null || manifest.state === LedgerState.RUNNING) {
+        if (!await ledgerBeginAsync(context.filesDir, activityId, { category: 'render-diagnostic', title: '电脑渲染诊断' })) {
+          throw new Error('诊断活动尚未建立，请稍后重试')
+        }
+        if (!exists) {
+          // 首次分享重试时目录可能已有；真正FileIO递归mkdir仍报EEXIST，必须由共享ensure
+          // 在仅收到该错误且lstat确认无symlink的普通目录后复用，不能覆盖未知路径。
+          await ensureEvidenceDirectoryAsync(directory)
+          await writeEvidenceTextAtomicAsync(path, diagnostic.text)
+        }
+        await ledgerEndAsync(context.filesDir, activityId, { state: LedgerState.SUCCESS, source: 'desktop.diagnostic', summary: '电脑渲染诊断已保存' })
+      }
+      // 相同身份与原文的sealed记录直接复用，既有终态时间及证据版本不因打开分享而前进。
+      const files = await listSessionEvidenceAsync(context.filesDir, activityId)
       // 用户此处主动选择分享渲染诊断；仍在统一页面预览并最终确认。
       setEvidenceSelection(context.filesDir, activityId, files.map((file): string => file.fileId))
       const params: Record<string, Object> = { 'activityId': activityId, 'showShare': true }
       await this.getUIContext().getRouter().pushUrl({ url: 'pages/ActivityLogPage', params: params })
     } catch (error) { this.shareStatus = '分享未完成：' + (error as Error).message }
+    finally { this.sharing = false }
   }
 
   private async copyShareUrl(url: string): Promise<void> {
@@ -160,11 +187,19 @@ struct DesktopDeveloperToolsPage {
     }
   }
   build() {
-    Column({ space: 12 }) {
-      Row({ space: 18 }) {
-        Button('返回').onClick(() => { this.getUIContext().getRouter().back() })
-        Text('开发者工具 · 电脑').fontSize(24).fontWeight(FontWeight.Bold)
-      }.width('100%')
+    Column() {
+      // 标题返回不接管渲染测试与分享任务，原 busy/sharing 守卫仍留在各业务按钮。
+      ImmersiveTitleScaffold({ title: '开发者工具 · 电脑', theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary, onBack: (): void => { this.getUIContext().getRouter().back(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }.width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
+  }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      Column({ space: 12 }) {
       Text('系统桌面 OpenGL').fontSize(20).fontWeight(FontWeight.Medium).width('100%')
       Text('检查系统能力、OpenGL 4.2 Core 上下文和实际像素读回，记录电脑原生渲染环境。')
         .fontSize(15).width('100%')
@@ -207,6 +242,6 @@ struct DesktopDeveloperToolsPage {
       Scroll() {
         Text(this.result).fontFamily('monospace').fontSize(14).width('100%').copyOption(CopyOptions.LocalDevice)
       }.layoutWeight(1).width('100%').align(Alignment.TopStart)
-    }.width('100%').height('100%').padding(24).backgroundColor(this.theme.bgPrimary)
-  }
+      }.width('100%').height('100%').padding(24)
+      }
 }

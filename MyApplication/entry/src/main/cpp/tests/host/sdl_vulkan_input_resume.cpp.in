@@ -1,0 +1,110 @@
+// Vulkan 同窗发布恢复的生产函数回归。替身只注入宿主事实、引用计数与通知重入，不复制资格/采纳算法。
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include "amcl_native_window_lease_broker_abi.h"
+using Uint32=uint32_t; using Uint64=uint64_t; using SDL_WindowID=Uint32; using SDL_ThreadID=Uint64;
+using SDL_GLContext=void*; using AMCL_NativeWindowLeaseBrokerV2=AmclNativeWindowLeaseBrokerV2;
+#define SDL_VIDEO_OPENGL_EGL 1
+#define AMCL_INPUT_FOREGROUND_BROKER_SIZE AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_INPUT_FOREGROUND_SIZE
+#define EGL_NO_SURFACE nullptr
+#define SDL_WINDOW_OPENGL 2ull
+#define SDL_WINDOW_VULKAN 0x10000000ull
+#define SDL_WINDOW_MOUSE_RELATIVE_MODE 0x8000ull
+#define OPENHARMONY_WINDOW_PRESENTED 0
+#define OPENHARMONY_SURFACE_READY 0
+#define SDL_EVENT_WINDOW_RESIZED 1
+#define SDL_LOG_CATEGORY_VIDEO 1
+#define SDL_PRIu64 "llu"
+#define SDL_LogInfo(...) ((void)0)
+#define SDL_Log(...) ((void)0)
+#define CHECK(v) do { if(!(v)){ std::fprintf(stderr,"CHECK line %d: %s\n",__LINE__,#v); std::exit(1); } } while(0)
+
+struct SDL_WindowData {
+    int role=0; bool shown=true; int surface_state=0; bool amcl_surface_suspended=false;
+    void* egl_surface=nullptr; void* native_xcomponent=nullptr; const void* native_window_lease_broker=nullptr;
+    void* native_window=reinterpret_cast<void*>(0x11); bool native_window_lease_owned=true;
+    Uint64 native_window_lease_generation=1,amcl_generation=1;
+    int surface_width=2800,surface_height=1840;
+    SDL_GLContext amcl_resume_context=nullptr; SDL_ThreadID amcl_resume_thread=0;
+};
+struct SDL_Window { SDL_WindowID id=7; Uint64 flags=SDL_WINDOW_VULKAN; SDL_WindowData* internal=nullptr; };
+struct SDL_VideoDevice {};
+// 宿主桥只记录真实三参调用；身份计算与发布资格仍执行完整series里的生产helper。
+struct OPENHARMONY_HostBridge { void(*SetGrabState)(int)=nullptr; bool(*IsGrabbing)()=nullptr;
+    void(*SetInputTarget)(Uint64,Uint64,Uint64)=nullptr; };
+static SDL_WindowData data; static SDL_Window window; static SDL_VideoDevice device; static OPENHARMONY_HostBridge bridge;
+static SDL_Window* OPENHARMONY_Window=&window;
+static AmclNativeWindowLeaseBrokerV2 broker{};
+static Uint64 publication=1; static unsigned publicationState=AMCL_NATIVE_WINDOW_PUBLICATION_READY;
+static uint32_t foreground=1; static bool readOk=true,acquireOk=true,race=false,destroyNotify=false;
+static void* publishedPointer=reinterpret_cast<void*>(0x11);
+static int width=2800,height=1840,refs=1,acquires=0,releases=0,notifications=0,eglCalls=0;
+static bool host_presented_active=false,host_capture_requested=false,host_capture_active=false,host_baseline_valid=false;
+static SDL_Window *keyboardFocus=nullptr,*mouseFocus=nullptr;
+static Uint64 targetLogical=0,targetGeneration=0,targetWsi=0;
+static unsigned targetPublications=0;
+static void RecordInputTarget(Uint64 logical,Uint64 generation,Uint64 wsi){
+    ++targetPublications;targetLogical=logical;targetGeneration=generation;targetWsi=wsi;
+}
+static uint32_t PeekInputForeground(){ return foreground; }
+static SDL_Window* OPENHARMONY_GetPresentedWindow(SDL_VideoDevice*){return OPENHARMONY_Window;}
+static SDL_Window* SDL_GetWindowFromID(SDL_WindowID id){return OPENHARMONY_Window&&OPENHARMONY_Window->id==id?OPENHARMONY_Window:nullptr;}
+static SDL_Window* SDL_GL_GetCurrentWindow(){return nullptr;}
+static SDL_GLContext SDL_GL_GetCurrentContext(){return nullptr;}
+static SDL_ThreadID SDL_GetCurrentThreadID(){return 1;}
+static SDL_Window* SDL_GetKeyboardFocus(){return keyboardFocus;}
+static SDL_Window* SDL_GetMouseFocus(){return mouseFocus;}
+static void SDL_SetKeyboardFocus(SDL_Window* p){keyboardFocus=p;}
+static void SDL_SetMouseFocus(SDL_Window* p){mouseFocus=p;}
+static OPENHARMONY_HostBridge* OPENHARMONY_GetHostBridge(){return &bridge;}
+static void OPENHARMONY_AMCL_SetPresentedActive(bool active){host_presented_active=active;}
+static bool OPENHARMONY_AMCL_ReadStableNativeWindowPublication(Uint64* g,unsigned* state){*g=publication;*state=publicationState;return readOk;}
+static bool OPENHARMONY_AMCL_AcquireNativeWindowLeaseInternal(SDL_WindowData* d,int* w,int* h,Uint64* g,bool,bool* extra){
+    ++acquires;if(!acquireOk)return false;
+    ++refs;*extra=true;d->native_window=publishedPointer;d->native_window_lease_broker=&broker;
+    d->native_window_lease_owned=true;d->native_window_lease_generation=publication;
+    *g=publication;*w=width;*h=height;if(race)++publication;return true;
+}
+static void OPENHARMONY_AMCL_ReleaseNativeWindowLease(SDL_WindowData* d){CHECK(d->native_window_lease_owned);++releases;--refs;d->native_window_lease_owned=false;}
+static void OPENHARMONY_AMCL_CommitGeometry(SDL_Window*,SDL_WindowData* d,int w,int h){d->surface_width=w;d->surface_height=h;}
+static void OPENHARMONY_AMCL_RefreshDisplayDesktopMode(int,int){if(destroyNotify)OPENHARMONY_Window=nullptr;}
+static void SDL_SendWindowEvent(SDL_Window*,int,int,int){++notifications;if(destroyNotify)OPENHARMONY_Window=nullptr;}
+static bool OPENHARMONY_AMCL_SyncBrokerWindow(SDL_VideoDevice*,SDL_Window*,SDL_WindowData* d,SDL_GLContext,bool){++eglCalls;d->amcl_generation=publication;return true;}
+
+@PRODUCTION@
+
+static void Frame(){OPENHARMONY_AMCL_SyncLiveWindow(&device);OPENHARMONY_AMCL_UpdatePresentedForeground();}
+static void Reset(){
+    data=SDL_WindowData{};window=SDL_Window{};window.internal=&data;OPENHARMONY_Window=&window;
+    broker=AmclNativeWindowLeaseBrokerV2{};broker.abiVersion=2;broker.structSize=sizeof(broker);broker.peekInputForeground=PeekInputForeground;
+    data.native_window_lease_broker=&broker;publication=1;publicationState=AMCL_NATIVE_WINDOW_PUBLICATION_READY;
+    foreground=1;readOk=acquireOk=true;race=destroyNotify=false;publishedPointer=reinterpret_cast<void*>(0x11);
+    width=2800;height=1840;refs=1;acquires=releases=notifications=eglCalls=0;host_presented_active=false;
+    keyboardFocus=mouseFocus=nullptr;
+    bridge.SetInputTarget=RecordInputTarget;targetLogical=targetGeneration=targetWsi=0;targetPublications=0;
+}
+int main(){
+    Reset();Frame();CHECK(host_presented_active);
+    CHECK(targetLogical==window.id&&targetGeneration==1&&targetWsi==(UINT64_C(1)<<63|UINT64_C(0x11))&&targetPublications>0);
+    for(int i=0;i<120;++i)Frame();CHECK(acquires==0&&refs==1);
+    foreground=0;Frame();CHECK(!host_presented_active);foreground=1;
+    publication=2;height=1699;Frame();CHECK(host_presented_active&&data.amcl_generation==2&&data.surface_height==1699);
+    CHECK(targetLogical==window.id&&targetGeneration==2&&targetWsi==(UINT64_C(1)<<63|UINT64_C(0x11)));
+    publication=3;height=1840;Frame();CHECK(host_presented_active&&data.amcl_generation==3&&data.native_window_lease_generation==3);
+    CHECK(targetLogical==window.id&&targetGeneration==3&&targetWsi==(UINT64_C(1)<<63|UINT64_C(0x11)));
+    CHECK(refs==1&&acquires==2&&releases==2&&notifications==2&&eglCalls==0);
+    for(int i=0;i<120;++i)Frame();CHECK(acquires==2&&notifications==2);
+    std::puts("PASS Vulkan same-window 1 -> 2 -> 3 restores input, balances references, no EGL or steady-state churn");
+    Reset();Frame();publication=2;publicationState=AMCL_NATIVE_WINDOW_PUBLICATION_SUSPENDED;Frame();CHECK(!host_presented_active&&acquires==0);
+    publicationState=AMCL_NATIVE_WINDOW_PUBLICATION_READY;Frame();CHECK(host_presented_active&&data.amcl_generation==2&&refs==1);
+    Reset();Frame();publication=2;publishedPointer=reinterpret_cast<void*>(0x22);Frame();CHECK(!host_presented_active&&data.amcl_generation==1&&refs==1&&releases==1);
+    Reset();Frame();publication=2;race=true;Frame();CHECK(!host_presented_active&&data.amcl_generation==1&&refs==1&&releases==1);
+    Reset();Frame();publication=2;acquireOk=false;Frame();CHECK(!host_presented_active&&data.amcl_generation==1&&refs==1&&releases==0);
+    Reset();Frame();publication=2;readOk=false;Frame();CHECK(!host_presented_active&&acquires==0);
+    Reset();publication=2;destroyNotify=true;Frame();CHECK(!host_presented_active&&OPENHARMONY_Window==nullptr&&refs==1);
+    Reset();window.flags=SDL_WINDOW_OPENGL;data.egl_surface=reinterpret_cast<void*>(1);Frame();publication=2;Frame();CHECK(host_presented_active&&eglCalls==2&&acquires==0);
+    Reset();data.native_xcomponent=reinterpret_cast<void*>(2);Frame();CHECK(acquires==0&&eglCalls==0);
+    OPENHARMONY_AMCL_PublishTouchInputTarget(&bridge,nullptr);CHECK(targetLogical==0&&targetGeneration==0&&targetWsi==0);
+    std::puts("PASS suspension, changed resource, publication race, acquisition failure, callback destruction and GL/standalone isolation");
+}

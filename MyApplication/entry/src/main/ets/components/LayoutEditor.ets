@@ -1,22 +1,18 @@
 /**
- * LayoutEditor.ets — 虚拟按键布局编辑器
- *
- * 阶段 2.1/2.2/2.3/2.4/2.6 input-system-refactor 升级：
- *   - 增加灵敏度 / Y 倒置 / 死区滑条与开关
- *   - 改键 sheet（KeyPickerSheet）
- *   - trigger 模式下拉
- *   - label 编辑
- *   - hidden / locked 切换
- *   - 撤销栈（≤ 20 步）
- *   - AlignGroup 自动吸附（屏幕边 + 组内对齐线 + 其他按钮中线）
+ * 虚拟按键布局编辑器：只维护控件、触控组、位置外观和编辑手势。
+ * 输入策略/手柄在独立设置页编辑，目录管理由方案库承担；本组件不开草稿试用。
+ * 使用V1响应状态绘制，LayoutEditSession保存完整撤销快照，LayoutStore确认持久提交。
+ * 编辑草稿带原实体ID/revision，取消或销毁等待在途结果后收口；系统控件与锁定项保持原保护。
  */
 import {
   ControlItem, ControlType, LayoutProfile, AlignGroup,
-  TriggerMode, VisibilityOverride, effectiveKeys,
+  TriggerMode, VisibilityOverride, effectiveKeys, MAX_LAYOUT_CONTROL_KEYS,
   cloneItem as cloneControlItem, cloneItemWithFreshIds, generateControlId, validateAndNormalizeLayout,
   DEFAULT_LOOK_SENSITIVITY, DEFAULT_INVERT_Y, DEFAULT_JOYSTICK_DEAD_ZONE,
   DEFAULT_LOOK_SMOOTHING, DEFAULT_LOOK_ACCEL,
-  LAYOUT_PROFILE_VERSION,
+  LAYOUT_PROFILE_VERSION, SOURCE_LOOK_PROFILE_VERSION,
+  SourceLookPreferences, LookPolicySource, LookParameters, copySourceLookPreferences,
+  copyLookParameters, splitLegacyLookPolicy, sourceLookParameters,
   GamepadConfig, GamepadAction, StickRole,
   defaultGamepadConfig, defaultGamepadButtonMap,
   DEFAULT_GAMEPAD_DEAD_ZONE, DEFAULT_TRIGGER_THRESHOLD,
@@ -25,8 +21,9 @@ import {
   effectiveCornerRadius, effectiveOpacity, effectiveLabel, ControlStyle,
   ControlScene, controlScene, setControlScene
 } from 'gamecontrol';
-import { glfwKeyName, GLFW_KEY_G } from 'gamecontrol';
+import { glfwKeyName, GLFW_KEY_G, GLFW_KEY_SPACE, GLFW_KEY_LEFT_SHIFT, GLFW_KEY_E, GLFW_KEY_ESCAPE } from 'gamecontrol';
 import { makeHotbarSelector, computeAutoGuiScale, computeHotbarRectPx } from 'gamecontrol';
+import { GameGuiState, projectGameHotbar } from 'gamecontrol'
 import { DEFAULT_SNAP_GAP, DEFAULT_SNAP_STRENGTH } from 'gamecontrol';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -35,13 +32,29 @@ import { KeyPickerSheet } from './KeyPickerSheet';
 import { getLayoutStore } from 'gamecontrol';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
+import { TouchConfiguration, normalizeTouchPreferences } from 'gamecontrol';
+import { LayoutEditSession, LayoutEditCheckpoint, getDefaultLayout } from 'gamecontrol';
+import { EditorTheme } from './TouchEditorTheme';
+import { ControlGroup, ControlGroupAction, ControlPhaseBinding, ControlActionPhase, ControlGroupOperation,
+  cloneControlGroups, enableLayoutControlGroups, duplicateLayoutControlGroup, removeLayoutControlGroup,
+  CONTROL_GROUP_PROFILE_VERSION, TOUCH_PHASE_CAPABILITY, MAX_CONTROL_GROUPS } from 'gamecontrol';
 
 // 撤销栈最大深度
-const UNDO_STACK_MAX: number = 20
 
 // 已锁定的吸附阈值 → 脱离阈值倍数：脱离阈值 = SNAP_IN × 此值，形成黏滞防抖（横对齐后左右滑动
 // 时的垂直小抖动 < 脱离阈值就不会掉出对齐高度）。
 const SNAP_OUT_RATIO: number = 2.4
+
+/** 添加目录只有原有普通按钮与物品栏；常用键只是普通按钮的初始绑定，不扩展控件类型。 */
+interface EditorAddControlOption {
+  id: string
+  title: string
+  description: string
+  search: string
+  icon: AppIconName
+  common: boolean
+  code?: number
+}
 
 /** 自动吸附返回值（必须是 interface 而非内联对象字面量类型，ArkTS 严格模式要求） */
 interface SnapResult {
@@ -73,23 +86,6 @@ interface AxisSnap {
   lock: AxisLock | null
 }
 
-interface UndoSnapshot {
-  controls: ControlItem[]
-  hotbarAutoAdded: boolean
-  globalScale: number
-  lookSensitivity: number
-  invertY: boolean
-  lookSmoothing: number
-  lookAccel: number
-  joystickDeadZone: number
-  haptic: boolean
-  globalOpacity: number
-  targetDevice: string
-  snapEnabled: boolean
-  snapGap: number
-  snapStrength: number
-  gamepad: GamepadConfig
-}
 
 // UI 重绘 2026-07-11 修复：操作 chip 改为独立 @Component。
 // 原因：原先 ActionChip 是带参数的 @Builder，label/bg 按值传入 —— ArkUI 对"按值参数 @Builder"的内容
@@ -105,38 +101,77 @@ struct EditorChip {
 
   build() {
     Row({ space: 4 }) {
-      AppIcon({ name: this.icon, iconSize: 14, color: '#FFFFFF' })
-      Text(this.label).fontSize(11).fontColor('#FFFFFF').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      AppIcon({ name: this.icon, iconSize: 16, color: EditorTheme.text })
+      Text(this.label).fontSize(14).fontColor(EditorTheme.text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
     }
-    .height(34)
+    .height(44)
     .padding({ left: 11, right: 11 })
     .backgroundColor(this.bg)
-    .borderRadius(17)
+    .borderRadius(12)
     .justifyContent(FlexAlign.Center)
-    .margin(3)
+    .margin(1)
     .onClick(() => { this.onTap() })
   }
 }
 
 @Component
 export struct LayoutEditor {
+  @Prop targetProfileName: string = ''
+  private editSession: LayoutEditSession = new LayoutEditSession()
+  /** 只有游戏宿主能恢复本局组显隐；独立方案编辑不操作运行态。 */
+  @Prop canRestoreGroups: boolean = false
+  /** 真正编辑流程中的就地提示；保存/取消仍完全走既有事务，不由教学代为修改。 */
+  @State private showLeaveConfirm: boolean = false
+  @State private positionXDraft: string = ''
+  @State private positionYDraft: string = ''
+  @State private positionWidthDraft: string = ''
+  @State private positionHeightDraft: string = ''
+  /** 只保存触控设置的导航分区，子组件Link回传选择；不成为另一份触控配置。 */
+  /** 只关闭引导观察与提示；不保存、退出编辑器或提前归还编辑器的输入暂停租约。 */
   onDone: (profile: LayoutProfile | null) => void = () => {}
+  /** 请求宿主在退出编辑、恢复准入后重置运行组态，不写初始定义或直接调用 Native。 */
+  onRestoreGroups: () => void = (): void => {}
   /** 进入失败与保存/取消成功分开通知；游戏宿主据此撤销 native 触控暂停。 */
   onInitializationFailed: (message: string) => void = () => {}
   @Prop screenWidth: number = 720
   @Prop screenHeight: number = 360
+  @Prop gameGui: GameGuiState = new GameGuiState()
+  @Prop resolvedActionKeys: number[] = []
+  @Prop gyroscopeStatus: string = 'unknown'
 
   // ---- 核心数据 ----
   @State controls: ControlItem[] = []
+  @State private controlGroups: ControlGroup[] | undefined = undefined
+  private defaultControlGroupId: string | undefined = undefined
+  private requiredCapabilities: string[] | undefined = undefined
+  @State private currentControlGroup: string = ''
+  @State private previewControlGroups: string[] = []
+  @State private groupNameDraft: string = ''
+  @State private groupSearch: string = ''
+  @State private deletingGroup: string = ''
+  @State private groupActionPhase: ControlActionPhase = 'press'
+  @State private groupActionOperation: ControlGroupOperation = 'toggle'
+  /** 原数组下标只用于本次选择；未选择时新增一行动作，不合并现有行。 */
+  @State private selectedGroupActionIndex: number = -1
+  @State private phaseKeyPicker: boolean = false
+  private phaseKeyControlId: string = ''
+  private phaseKeyPhase: ControlActionPhase = 'press'
   @State globalScale: number = 1.0
   @State profileName: string = '默认'
+  /** 草稿绑定读取时的实体及修订，保存不能根据旧名字复活已删除/改名的方案。 */
+  private editingProfileId: string | undefined = undefined
+  private editingProfileRevision: number | undefined = undefined
   @State lookSensitivity: number = DEFAULT_LOOK_SENSITIVITY
   @State invertY: boolean = DEFAULT_INVERT_Y
   // 方案 C（2026-07-11）：视角平滑 α + 加速强度
   @State lookSmoothing: number = DEFAULT_LOOK_SMOOTHING
   @State lookAccel: number = DEFAULT_LOOK_ACCEL
+  /** 显式迁移草稿；undefined保留旧全来源，选中来源只是编辑器偏好不参与运行政策。 */
+  @State lookPolicies: SourceLookPreferences | undefined = undefined
+  @State selectedLookSource: LookPolicySource = 'touch'
   @State joystickDeadZone: number = DEFAULT_JOYSTICK_DEAD_ZONE
   @State haptic: boolean = true
+  @State touch: TouchConfiguration = new TouchConfiguration()
   @State targetDevice: string = 'any'
   // 2026-05-30：全局透明度（0.1..1.0）。
   @State globalOpacity: number = DEFAULT_GLOBAL_OPACITY
@@ -173,10 +208,10 @@ export struct LayoutEditor {
   //   'edit'（编辑：添加/选中/全局缩放+批量横幅）| 'style'（样式，含标签）| 'global'（视角+吸附设置）
   //   | 'gamepad'（手柄）| 'profiles'（方案）| 'multi'（多选批量）
   @State activeSheet: string = 'edit'
-  @State gamepadBtnPicker: string = ''     // R5：正在改键的手柄按钮逻辑名（''=未在改键）
+  /** 添加面板的会话搜索，不持久化、不进入布局内容签名或撤销快照。 */
   @State showKeyPicker: boolean = false    // 改键 sheet 显隐
   @State labelDraft: string = ''
-  @State profileNames: string[] = []
+  /** 只为当前32条创建选择UI，全部目录通过翻页与当前方案定位可达。 */
   @State statusMsg: string = ''            // 一行轻量提示
   @State undoCount: number = 0             // 仅用于按钮禁用状态触发刷新
 
@@ -209,7 +244,6 @@ export struct LayoutEditor {
 
   // ---- 撤销栈 ----
   // 每次 commit（拖拽 / 缩放 / 改键 / 切显隐 等）前快照 controls 及随控件增删变化的注入标志。
-  private undoStack: UndoSnapshot[] = []
   private sliderUndoKey: string = ''
 
   /** 持久化期间串行操作并冻结手势，避免保存的快照落后于用户仍在修改的草稿。 */
@@ -220,6 +254,8 @@ export struct LayoutEditor {
   private editorGeneration: number = 0
   private editorLeaseHeld: boolean = false
   private editorTransactionOwned: boolean = false
+  /** 方案目录操作也属于本次未确认事务；只在离开请求时检查，不在渲染或逐帧路径序列化方案。 */
+  private sessionCatalogChanged: boolean = false
   private persistenceTask: Promise<void> | undefined = undefined
   private editorCleanupTask: Promise<void> | undefined = undefined
   private restorationTask: Promise<void> | undefined = undefined
@@ -228,6 +264,7 @@ export struct LayoutEditor {
     this.editorMounted = true
     this.editorClosed = false
     this.editorReady = false
+    this.sessionCatalogChanged = false
     this.persistenceBusy = true
     const generation: number = ++this.editorGeneration
     const store = getLayoutStore()
@@ -244,11 +281,12 @@ export struct LayoutEditor {
       this.editorLeaseHeld = true
       store.beginEditorTransaction()
       this.editorTransactionOwned = true
-      this.loadConfirmedProfile_(store.getActiveProfile())
-      this.profileNames = store.getProfileNames()
-      this.panelX = (this.screenWidth - this.panelWidth()) / 2
-      // 竖直居中偏上；保持原有面板布局，不因持久化接线调整交互位置。
-      this.panelY = Math.max(12, Math.min(this.panelMaxTop(), Math.floor(this.screenHeight / 2 - 150)))
+      const target: LayoutProfile | null=this.targetProfileName.length>0 ? store.getProfile(this.targetProfileName) : store.getActiveProfile()
+      if (target===null) throw new Error('方案已删除，请重新选择')
+      this.loadConfirmedProfile_(target)
+      // 宽屏停靠侧边保留画布，窄屏居中；从顶部利用可用高度，不再把长表单从屏幕中央向下堆。
+      this.panelX = this.screenWidth>=900 ? this.screenWidth-this.panelWidth()-16 : (this.screenWidth-this.panelWidth())/2
+      this.panelY = 12
       this.editorReady = true
     } catch (error) {
       this.reportPersistenceError_('进入编辑器', error as Error)
@@ -344,6 +382,7 @@ export struct LayoutEditor {
   /** 成功持久化后载入新方案；其身份和内容已确认，才更新当前草稿与设备基线。 */
   private loadConfirmedProfile_(profile: LayoutProfile, clearUndo: boolean = true): void {
     if (validateAndNormalizeLayout(profile) === null) throw new Error('存储返回的布局数据非法')
+    this.editSession.open(profile)
     this.loadProfile(profile, clearUndo)
     this.baselineSig = this.contentSignature()
   }
@@ -371,11 +410,12 @@ export struct LayoutEditor {
       if (this.contentSignature() !== this.baselineSig) {
         result.targetDevice = store.getCurrentDeviceType() === 'tablet' ? 'tablet' : 'phone'
       }
-      if (!(await store.saveProfile(result))) throw new Error('布局非法或系统预设无法直接保存')
+      const saved: LayoutProfile | null=await store.saveEditedProfile(result)
+      if (saved===null) throw new Error('方案已更改、删除，或布局能力/预算不符，请重新载入后编辑')
       // 页面已离开时由销毁收口恢复原事务，不让迟到保存关闭下一次编辑界面。
       if (!this.editorMounted || generation !== this.editorGeneration) return
       store.commitEditorTransaction()
-      this.completeEditor_(result)
+      this.completeEditor_(saved)
     })
   }
 
@@ -391,59 +431,30 @@ export struct LayoutEditor {
   }
 
   /** 重置成功才记撤销点和替换草稿；失败不制造假“已重置”或多余撤销记录。 */
-  private resetEditorProfile_(): void {
-    this.runPersistence_('重置布局', async (generation: number): Promise<void> => {
-      const profile: LayoutProfile = await getLayoutStore().resetProfile(this.profileName)
-      if (!this.editorMounted || generation !== this.editorGeneration) return
-      this.pushUndo()
-      this.loadConfirmedProfile_(profile, false)
-      this.statusMsg = '已重置'
-    })
-  }
+
 
   /** 方案切换、新建、删除同样等待 Store 持久确认；失败保留当前选中方案和草稿。 */
-  private switchEditorProfile_(name: string): void {
-    this.runPersistence_('切换方案', async (generation: number): Promise<void> => {
-      await getLayoutStore().setActiveProfile(name)
-      if (!this.editorMounted || generation !== this.editorGeneration) return
-      this.loadConfirmedProfile_(getLayoutStore().getActiveProfile())
-    })
-  }
 
-  private deleteEditorProfile_(name: string): void {
-    this.runPersistence_('删除方案', async (generation: number): Promise<void> => {
-      const store = getLayoutStore()
-      if (!(await store.deleteProfile(name))) throw new Error('系统预设无法删除')
-      if (!this.editorMounted || generation !== this.editorGeneration) return
-      this.profileNames = store.getProfileNames()
-      if (this.profileName === name) this.loadConfirmedProfile_(store.getActiveProfile())
-      this.statusMsg = '已删除'
-    })
-  }
 
-  private createEditorProfile_(): void {
-    this.runPersistence_('新建方案', async (generation: number): Promise<void> => {
-      const store = getLayoutStore()
-      const profile: LayoutProfile = await store.createProfile('方案' + (this.profileNames.length + 1).toString())
-      if (!this.editorMounted || generation !== this.editorGeneration) return
-      this.profileNames = store.getProfileNames()
-      this.loadConfirmedProfile_(profile)
-    })
-  }
 
-  /** 面板宽度：不超过屏幕宽度（左右各留 8vp），下限 220vp，默认 300vp。 */
+
+  /** 期望名只是建议：存储会为重名追加“副本”后缀，选中与提示都以返回方案的实际名字为准。 */
+
+
+  /** 根据可用画布选择侧栏/窄屏面板宽度，避免把完整设置强塞到固定300vp。 */
   private panelWidth(): number {
-    let w = 300
-    const cap = this.screenWidth - 16
-    if (cap < w) w = cap
-    if (w < 220) w = 220
-    return w
+    return Math.max(160,Math.min(this.screenWidth-24,this.screenWidth>=900 ? 420 : 380))
   }
 
-  /** 面板固定"骨架"高度（拖动条 + Tab 栏 + 常驻底栏），Scroll 内容之外的部分。 */
-  private panelChromeH(): number { return 16 + 32 + 52 }
+  /** 低高度横屏把导航并入滚动区，保留拖动条和底栏，不能让增大的字号把保存按钮挤出屏幕。 */
+  private compactPanel(): boolean { return this.screenHeight<400 }
+  /** 与ToolPanel的两种结构同步计算，紧凑布局中的标题和Tab不再占固定高度。 */
+  private panelChromeH(): number {
+    // 标题兼拖动条56vp、导航108vp、底栏64vp；低高度把导航放入唯一滚动区。
+    return this.compactPanel() || this.activeSheet === 'add' ? 56 + 64 + 8 : 56 + 108 + 64 + 8
+  }
   /** Scroll 内容最小高度（保证面板可用，且骨架 + 此值 + 顶边 <= 屏高时底栏一定可见）。 */
-  private panelMinContentH(): number { return 90 }
+  private panelMinContentH(): number { return Math.min(90,Math.max(0,this.screenHeight-this.panelChromeH()-20)) }
   /** 面板顶部允许的最大 y：再往下拖会导致底栏越出屏幕，故到此为止。 */
   private panelMaxTop(): number {
     const maxTop = this.screenHeight - (this.panelChromeH() + this.panelMinContentH() + 8)
@@ -451,7 +462,7 @@ export struct LayoutEditor {
   }
   /** 面板当前（已提交）顶部 y。 */
   private panelTopBase(): number {
-    return this.panelY >= 0 ? this.panelY : Math.max(12, Math.floor(this.screenHeight / 2 - 150))
+    return this.panelY >= 0 ? this.panelY : 12
   }
 
   /**
@@ -474,14 +485,23 @@ export struct LayoutEditor {
       return
     }
     this.controls = normalized.controls.map((c: ControlItem) => cloneControlItem(c))
+    this.controlGroups = cloneControlGroups(normalized.controlGroups)
+    this.defaultControlGroupId = normalized.defaultControlGroupId
+    this.requiredCapabilities = normalized.requiredCapabilities?.slice()
+    if (clearUndo) { this.currentControlGroup=''; this.previewControlGroups=[] }
+    this.repairEditorGroups_()
     this.globalScale = normalized.globalScale
     this.profileName = normalized.name
+    this.editingProfileId = normalized.profileId
+    this.editingProfileRevision = normalized.profileRevision
     this.lookSensitivity = normalized.lookSensitivity ?? DEFAULT_LOOK_SENSITIVITY
     this.invertY = normalized.invertY ?? DEFAULT_INVERT_Y
     this.lookSmoothing = normalized.lookSmoothing ?? DEFAULT_LOOK_SMOOTHING
     this.lookAccel = normalized.lookAccel ?? DEFAULT_LOOK_ACCEL
+    this.lookPolicies = copySourceLookPreferences(normalized.lookPolicies)
     this.joystickDeadZone = normalized.joystickDeadZone ?? DEFAULT_JOYSTICK_DEAD_ZONE
     this.haptic = normalized.haptic ?? true
+    this.touch = normalizeTouchPreferences(normalized.touch) ?? new TouchConfiguration()
     this.targetDevice = normalized.targetDevice ?? 'any'
     this.globalOpacity = normalized.globalOpacity ?? DEFAULT_GLOBAL_OPACITY
     this.hotbarAutoAdded = normalized.hotbarAutoAdded ?? false
@@ -495,12 +515,12 @@ export struct LayoutEditor {
     this.sensVal = Math.round(this.lookSensitivity * 100)
     this.smoothVal = Math.round(this.lookSmoothing * 100)
     this.accelVal = Math.round(this.lookAccel * 100)
+    this.syncLookSliders()
     this.deadZoneVal = Math.round(this.joystickDeadZone * 100)
     this.selectedIdx = -1
     this.selectedScaleVal = 100
     this.selectedOpacityVal = 100
     if (clearUndo) {
-      this.undoStack = []
       this.undoCount = 0
     }
     this.sliderUndoKey = ''
@@ -512,6 +532,20 @@ export struct LayoutEditor {
   private baselineSig: string = ''
 
   /** 方案内容签名：忽略 targetDevice / deviceModel（这俩不算"布局内容"改动）。buildProfile 失败返回空串。 */
+
+
+
+
+
+
+
+
+  /**
+   * 配置按语义去重；滑条结束即使值未再变化也必须收口本次撤销组，下次手势才有独立恢复点。
+   * 模式由真实Slider回调传入；普通开关仍按一次操作压一份快照。
+   */
+
+
   private contentSignature(): string {
     const p = this.buildProfile()
     if (!p) return ''
@@ -524,15 +558,23 @@ export struct LayoutEditor {
   // 从 @State 组装方案后立即规范化。返回 null 表示整份方案拒绝保存，不做静默夹取或部分保存。
   private buildProfile(): LayoutProfile | null {
     const candidate: LayoutProfile = {
-      version: LAYOUT_PROFILE_VERSION,
+      version: this.controlGroups !== undefined ? CONTROL_GROUP_PROFILE_VERSION :
+        (this.lookPolicies === undefined ? LAYOUT_PROFILE_VERSION : SOURCE_LOOK_PROFILE_VERSION),
+      controlGroups: cloneControlGroups(this.controlGroups),
+      defaultControlGroupId: this.defaultControlGroupId,
+      requiredCapabilities: this.requiredCapabilities?.slice(),
+      profileId: this.editingProfileId,
+      profileRevision: this.editingProfileRevision,
       name: this.profileName,
       globalScale: this.globalScale,
       lookSensitivity: this.lookSensitivity,
       invertY: this.invertY,
       lookSmoothing: this.lookSmoothing,
       lookAccel: this.lookAccel,
+      lookPolicies: copySourceLookPreferences(this.lookPolicies),
       joystickDeadZone: this.joystickDeadZone,
       haptic: this.haptic,
+      touch: normalizeTouchPreferences(this.touch),
       globalOpacity: this.globalOpacity,
       targetDevice: this.targetDevice as 'phone' | 'tablet' | 'foldable' | 'any',
       isPreset: false,  // 编辑器永远输出非预设
@@ -591,29 +633,8 @@ export struct LayoutEditor {
 
   /** 在做任何修改前调用，把当前 controls 快照 push 到撤销栈。 */
   private pushUndo(): void {
-    const snapshot: UndoSnapshot = {
-      controls: this.controls.map((c: ControlItem) => cloneControlItem(c)),
-      hotbarAutoAdded: this.hotbarAutoAdded,
-      globalScale: this.globalScale,
-      lookSensitivity: this.lookSensitivity,
-      invertY: this.invertY,
-      lookSmoothing: this.lookSmoothing,
-      lookAccel: this.lookAccel,
-      joystickDeadZone: this.joystickDeadZone,
-      haptic: this.haptic,
-      globalOpacity: this.globalOpacity,
-      targetDevice: this.targetDevice,
-      snapEnabled: this.snapEnabled,
-      snapGap: this.snapGap,
-      snapStrength: this.snapStrength,
-      gamepad: this.cloneGamepad(this.gamepad)
-    }
-    this.undoStack.push(snapshot)
-    if (this.undoStack.length > UNDO_STACK_MAX) {
-      this.undoStack.shift()
-    }
-    this.undoCount = this.undoStack.length
-    this.sliderUndoKey = ''
+    this.editSession.remember(this.buildProfile(),this.currentControlGroup,this.previewControlGroups)
+    this.undoCount=this.editSession.count(); this.sliderUndoKey=''
   }
 
   /** 同一滑条的一次拖动只建立一个 undo 边界。 */
@@ -624,35 +645,30 @@ export struct LayoutEditor {
     }
   }
 
+  /**
+   * 官方Slider以Begin/Moving/End/Click区分手势阶段。一根手指持续拖动只记录首次变化前的状态；
+   * End或离散Click收口，下一次拖动重新建立边界。刷新回传同值不建快照，但仍消费结束阶段，
+   * 防止一次拖动最后的End同值包被去重后把下一次手势并入旧组。
+   */
+  private prepareSliderChange(key: string, mode: SliderChangeMode | undefined, changed: boolean): boolean {
+    if (mode === SliderChangeMode.Begin) this.sliderUndoKey = ''
+    if (changed) this.beginSliderUndo(key)
+    if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) this.sliderUndoKey = ''
+    return changed
+  }
+
   private canUndo(): boolean { return this.undoCount > 0 }
 
   private undo(): void {
-    if (this.undoStack.length === 0) return
-    const snapshot = this.undoStack.pop()!
-    this.controls = snapshot.controls
-    this.hotbarAutoAdded = snapshot.hotbarAutoAdded
-    this.globalScale = snapshot.globalScale
-    this.lookSensitivity = snapshot.lookSensitivity
-    this.invertY = snapshot.invertY
-    this.lookSmoothing = snapshot.lookSmoothing
-    this.lookAccel = snapshot.lookAccel
-    this.joystickDeadZone = snapshot.joystickDeadZone
-    this.haptic = snapshot.haptic
-    this.globalOpacity = snapshot.globalOpacity
-    this.targetDevice = snapshot.targetDevice
-    this.snapEnabled = snapshot.snapEnabled
-    this.snapGap = snapshot.snapGap
-    this.snapStrength = snapshot.snapStrength
-    this.gamepad = this.cloneGamepad(snapshot.gamepad)
-    this.globalScaleVal = Math.round(this.globalScale * 100)
-    this.globalOpacityVal = Math.round(this.globalOpacity * 100)
-    this.sensVal = Math.round(this.lookSensitivity * 100)
-    this.smoothVal = Math.round(this.lookSmoothing * 100)
-    this.accelVal = Math.round(this.lookAccel * 100)
-    this.deadZoneVal = Math.round(this.joystickDeadZone * 100)
-    this.undoCount = this.undoStack.length
-    this.ver++
-    this.statusMsg = '已撤销'
+    const snapshot: LayoutEditCheckpoint | undefined=this.editSession.takeUndo()
+    if (snapshot===undefined) return
+    const selected: string=this.selectedItem()?.id ?? ''
+    this.loadProfile(snapshot.profile,false)
+    this.currentControlGroup=snapshot.currentGroup; this.previewControlGroups=snapshot.previewGroups.slice()
+    this.repairEditorGroups_()
+    this.selectedIdx=this.controls.findIndex((item: ControlItem): boolean => item.id===selected)
+    this.selectGroupPhase_(this.groupActionPhase)
+    this.undoCount=this.editSession.count(); this.statusMsg='已撤销'
   }
 
   // ============= 几何辅助 =============
@@ -845,12 +861,19 @@ export struct LayoutEditor {
   private applyKeys(keys: number[]): void {
     const item = this.selectedItem()
     if (!item) return
+    if (item.phaseBindings !== undefined) { this.openTab('group-actions'); this.statusMsg='此按钮使用分阶段绑定，请选择要修改的阶段'; return }
+    // 选择器已即时限制，宿主仍拒绝异常/迟到回调，不能污染草稿后让保存整份失败。
+    if (keys.length > MAX_LAYOUT_CONTROL_KEYS) {
+      this.statusMsg = '组合键最多支持' + MAX_LAYOUT_CONTROL_KEYS.toString() + '个按键，请减少选择'
+      return
+    }
     this.pushUndo()
     item.keys = keys.slice()
-    // 同步 keyOrMouse 兼容字段（取首键）
-    if (keys.length > 0) item.keyOrMouse = keys[0]
+    // 空数组是显式解除，兼容字段也必须清零，不能让effectiveKeys回退到旧键。
+    item.keyOrMouse = keys.length > 0 ? keys[0] : 0
     this.refreshControls()
-    this.statusMsg = '键位已改为 ' + keys.map((k: number) => glfwKeyName(k)).join(' + ')
+    this.statusMsg = keys.length === 0 ? '已解除绑定' :
+      '键位已改为 ' + keys.map((k: number) => glfwKeyName(k)).join(' + ')
   }
 
   /** trigger 切换 */
@@ -863,8 +886,9 @@ export struct LayoutEditor {
     const next = order[(idx + 1) % order.length]
     this.pushUndo()
     item.trigger = next
+    if (next !== 'press') item.swipeGroup = undefined
     this.refreshControls()
-    this.statusMsg = '触发模式 = ' + next
+    this.statusMsg = '触发模式 = ' + next + (next !== 'press' ? '；连滑已关闭' : '')
   }
 
   /** 显隐切换 */
@@ -890,7 +914,7 @@ export struct LayoutEditor {
   /** 删除 */
   private deleteSelected(): void {
     if (this.selectedIdx < 0) return
-    // 系统功能按钮（输入/设置/显示）是核心入口，不可删除，仅可移动/缩放/改外观。
+    // 系统功能按钮（输入/设置/显示/鼠标）是核心入口，不可删除，仅可移动/缩放/改外观。
     if (this.controls[this.selectedIdx].systemAction !== undefined) {
       this.statusMsg = '系统按钮不可删除'
       return
@@ -918,8 +942,9 @@ export struct LayoutEditor {
     this.pushUndo()
     // 根和所有 children 一次性换新 ID；与现有整棵布局共享同一全局命名空间。
     const dup = cloneItemWithFreshIds(item, this.controls)
-    dup.xPct = Math.min(1 - this.itemW(dup) / this.screenWidth, item.xPct + 0.04)
-    dup.yPct = Math.min(1 - this.itemH(dup) / this.screenHeight, item.yPct + 0.04)
+    // 合法导入和两级放大均可能让控件大于窗口；复制时与拖动使用相同的零下界，保留合法百分比。
+    dup.xPct = Math.max(0, Math.min(1 - this.itemW(dup) / this.screenWidth, item.xPct + 0.04))
+    dup.yPct = Math.max(0, Math.min(1 - this.itemH(dup) / this.screenHeight, item.yPct + 0.04))
     this.controls.push(dup)
     this.selectedIdx = this.controls.length - 1
     this.refreshControls()
@@ -929,19 +954,22 @@ export struct LayoutEditor {
   /**
    * 添加按键（2026-05-30）：在屏幕中央新建一个标准正方形按钮，默认绑定 G（占位，
    * 用户随即可在弹出的"选择按键"里改成全键盘任意键）。新建后自动选中 + 打开改键 sheet。
+   * 添加目录的常用键可传入已知初始code，同一笔新增直接写入该键，不另记一次改键撤销。
    *
    * 用户新增的按键**永不自动隐藏**（hideOnInput: []）——接键鼠后也保留显示，
    * 避免"加了个键，插上键盘就消失找不到"。需要隐时用户可在"显示策略"里手动设强隐。
    */
-  private addButton(): void {
+  private addButton(initialCode?: number): void {
+    const code: number = initialCode ?? GLFW_KEY_G
     this.pushUndo()
     const id = generateControlId(this.controls)
     const newItem: ControlItem = {
       id,
+      controlGroupId: this.controlGroups === undefined ? undefined : this.currentControlGroup,
       label: '',
       type: ControlType.BUTTON,
-      keyOrMouse: GLFW_KEY_G,
-      keys: [GLFW_KEY_G],
+      keyOrMouse: code,
+      keys: [code],
       trigger: 'press',
       // 放屏幕中央偏上，避免压在底部工具面板上
       xPct: 0.5 - (DEFAULT_BUTTON_SIZE / 2) / this.screenWidth,
@@ -963,9 +991,11 @@ export struct LayoutEditor {
     this.selectedIdx = this.controls.length - 1
     this.selectedScaleVal = 100
     this.refreshControls()
-    this.statusMsg = '已添加按键，请选择要绑定的键'
-    // 立即打开改键面板，让用户选全键盘任意键
-    this.showKeyPicker = true
+    this.statusMsg = initialCode === undefined ? '已添加按键，请选择要绑定的键' :
+      '已添加 ' + glfwKeyName(code) + '，可拖动调整位置'
+    // 普通入口继续打开改键；常用键已绑定，不弹第二层，保持一次新增对应一次撤销。
+    this.syncSelectedAppearanceVals()
+    this.showKeyPicker = initialCode === undefined
   }
 
   /**
@@ -991,6 +1021,7 @@ export struct LayoutEditor {
     this.pushUndo()
     const item = makeHotbarSelector(0.2, 0.9, 300, 36)
     item.id = generateControlId(this.controls)
+    if (this.controlGroups !== undefined) item.controlGroupId=this.currentControlGroup
     this.autoAlignHotbar(item)
     this.controls.push(item)
     this.hotbarAutoAdded = true
@@ -1001,14 +1032,22 @@ export struct LayoutEditor {
   }
 
   /**
-   * 把物品栏条对齐到 MC 真实 hotbar 的物理矩形（§4.5 配方）：读设备物理分辨率 + 自动档 guiScale
-   * 算出 hotbar 的物理 px 矩形，再换算成控件存储（xPct/yPct 相对物理尺寸；baseWidth/Height 为 vp，
-   * 渲染 = base × itemScale × globalScale，故除以 globalScale 抵消）。display 不可用时退回底部居中默认。
+   * 游戏内编辑使用最新GUI快照；启动器内编辑只能生成设备预览，并清除手工标记让运行时实际对齐。
+   * 预览不修改游戏的GUI档位，base尺寸抵消布局globalScale，避免再次放大真实快捷栏。
    */
   private autoAlignHotbar(item: ControlItem): void {
     const g = this.globalScale > 0 ? this.globalScale : 1.0
     // 显式"对齐到 MC hotbar" = 回到系统自动对齐：清除手动定位标记，之后每次 load 会持续保持对齐。
     item.hotbarUserPlaced = false
+    if(this.gameGui.valid) {
+      const profile=this.buildProfile()
+      if(profile!==null) {
+        const projected: ControlItem=projectGameHotbar(profile,[item],this.gameGui,this.screenWidth,this.screenHeight)[0]
+        item.xPct=projected.xPct; item.yPct=projected.yPct
+        item.baseWidth=projected.baseWidth; item.baseHeight=projected.baseHeight; item.itemScale=1
+        return
+      }
+    }
     try {
       const d = display.getDefaultDisplaySync()
       let wPx = d.width
@@ -1072,18 +1111,20 @@ export struct LayoutEditor {
   }
 
   /** 统一样式应用：对全部样式目标（单选 1 个 / 多选 N 个）逐个写入，一改全改。 */
-  private applyOpacity(opPct: number): void {
+  private applyOpacity(opPct: number, mode?: SliderChangeMode): void {
     const targets = this.styleTargets()
     if (targets.length === 0) return
-    this.beginSliderUndo('styleOpacity')
+    if (!this.prepareSliderChange('styleOpacity', mode,
+      targets.some((item: ControlItem): boolean => effectiveOpacity(item) !== opPct / 100))) return
     for (let t of targets) this.ensureStyle(t).opacity = opPct / 100
     this.selectedOpacityVal = Math.round(opPct)
     this.refreshControls()
   }
-  private applyCorner(cornerPct: number): void {
+  private applyCorner(cornerPct: number, mode?: SliderChangeMode): void {
     const targets = this.styleTargets()
     if (targets.length === 0) return
-    this.beginSliderUndo('styleCorner')
+    if (!this.prepareSliderChange('styleCorner', mode,
+      targets.some((item: ControlItem): boolean => effectiveCornerRadius(item) !== cornerPct / 100))) return
     for (let t of targets) {
       const st = this.ensureStyle(t)
       st.cornerRadius = cornerPct / 100
@@ -1093,10 +1134,11 @@ export struct LayoutEditor {
     this.refreshControls()
   }
   /** 统一"大小"应用（用 itemScale，对所有控件类型一致；hotbar 标记为用户已定位）。 */
-  private applySize(sizePct: number): void {
+  private applySize(sizePct: number, mode?: SliderChangeMode): void {
     const targets = this.styleTargets()
     if (targets.length === 0) return
-    this.beginSliderUndo('styleSize')
+    if (!this.prepareSliderChange('styleSize', mode,
+      targets.some((item: ControlItem): boolean => item.itemScale !== sizePct / 100))) return
     for (let t of targets) {
       t.itemScale = sizePct / 100
       if (t.type === ControlType.HOTBAR_SELECTOR) t.hotbarUserPlaced = true
@@ -1127,18 +1169,400 @@ export struct LayoutEditor {
 
   // ============= 渲染 =============
 
+  /** 编辑眼睛开关不进入 buildProfile；载入/撤销后只修正已不存在的选择。 */
+  private repairEditorGroups_(): void {
+    const groups: ControlGroup[] = this.controlGroups ?? []
+    if (!groups.some((group: ControlGroup): boolean => group.id === this.currentControlGroup))
+      this.currentControlGroup=this.defaultControlGroupId ?? ''
+    this.previewControlGroups=this.previewControlGroups.filter((id: string): boolean => groups.some((group: ControlGroup): boolean => group.id === id))
+    if (this.currentControlGroup.length > 0 && this.previewControlGroups.indexOf(this.currentControlGroup) < 0)
+      this.previewControlGroups=this.previewControlGroups.concat([this.currentControlGroup])
+    this.groupNameDraft=groups.find((group: ControlGroup): boolean => group.id === this.currentControlGroup)?.name ?? ''
+    this.selectedIds=this.selectedIds.filter((id: string): boolean => this.controls.some((item: ControlItem): boolean => item.id === id))
+    if (this.selectedIdx >= this.controls.length) this.selectedIdx=-1
+    this.deletingGroup=''
+  }
+
+  private editorGroupVisible_(item: ControlItem): boolean {
+    return this.controlGroups === undefined || item.controlGroupId === undefined ||
+      item.controlGroupId === this.currentControlGroup || this.previewControlGroups.indexOf(item.controlGroupId) >= 0
+  }
+
+  /** 画布按组层级排序但保留真实 controls 下标，拖动/选择不会误写另一控件。 */
+  private editorCanvasOrder_(): number[] {
+    const indices: number[]=[]
+    for (let index: number=0; index<this.controls.length; index++) indices.push(index)
+    if (this.controlGroups === undefined) return indices
+    const groups: ControlGroup[]=this.controlGroups
+    const rank = (item: ControlItem): number => item.controlGroupId === undefined ? groups.length :
+      groups.findIndex((group: ControlGroup): boolean => group.id === item.controlGroupId)
+    return indices.sort((a: number,b: number): number => rank(this.controls[a])-rank(this.controls[b]) || a-b)
+  }
+
+  /** 组操作只有这一个提交点：先完整校验，再一次撤销快照和整体替换，不制造半个引用图。 */
+  private applyGroupDraft_(draft: LayoutProfile | null, message: string): boolean {
+    const checked: LayoutProfile | null = draft === null ? null : validateAndNormalizeLayout(draft)
+    if (checked === null) { this.statusMsg='组操作超出容量或引用不合法，草稿未修改'; return false }
+    const selected: string = this.selectedItem()?.id ?? ''
+    this.pushUndo()
+    this.controls=checked.controls.map((item: ControlItem): ControlItem => cloneControlItem(item))
+    this.controlGroups=cloneControlGroups(checked.controlGroups); this.defaultControlGroupId=checked.defaultControlGroupId
+    this.requiredCapabilities=checked.requiredCapabilities?.slice()
+    this.selectedIdx=this.controls.findIndex((item: ControlItem): boolean => item.id === selected)
+    this.repairEditorGroups_(); this.refreshControls(); this.statusMsg=message
+    return true
+  }
+
+  private chooseControlGroup_(id: string): void {
+    this.currentControlGroup=id; this.repairEditorGroups_(); this.ver++
+  }
+
+  private toggleGroupPreview_(id: string): void {
+    if (id === this.currentControlGroup) { this.statusMsg='当前编辑组始终显示；请先选择其他组'; return }
+    this.previewControlGroups=this.previewControlGroups.indexOf(id) >= 0 ?
+      this.previewControlGroups.filter((value: string): boolean => value !== id) : this.previewControlGroups.concat([id])
+    this.ver++
+  }
+
+  private createControlGroup_(): void {
+    const current: LayoutProfile | null=this.buildProfile()
+    if (current === null) return
+    const draft: LayoutProfile=enableLayoutControlGroups(current)
+    if ((draft.controlGroups?.length ?? 0) >= MAX_CONTROL_GROUPS) { this.statusMsg='触控组已达到128组上限'; return }
+    const id: string=generateControlId(draft.controls)
+    draft.controlGroups!.push({id:id,name:this.groupNameDraft.trim() || '新触控组',initialVisible:false})
+    if (this.applyGroupDraft_(draft,'已创建组；画布临时显示，进入游戏时默认隐藏')) this.chooseControlGroup_(id)
+  }
+
+  private renameControlGroup_(): void {
+    const draft: LayoutProfile | null=this.buildProfile()
+    const group: ControlGroup | undefined=draft?.controlGroups?.find((value: ControlGroup): boolean => value.id === this.currentControlGroup)
+    if (group === undefined || this.groupNameDraft.trim().length === 0) { this.statusMsg='请输入组名'; return }
+    group.name=this.groupNameDraft.trim(); this.applyGroupDraft_(draft,'已修改组名，引用保持原 ID')
+  }
+
+  private setGroupInitialVisible_(visible: boolean): void {
+    const draft: LayoutProfile | null=this.buildProfile()
+    const group: ControlGroup | undefined=draft?.controlGroups?.find((value: ControlGroup): boolean => value.id === this.currentControlGroup)
+    if (group === undefined || group.initialVisible === visible) return
+    group.initialVisible=visible; this.applyGroupDraft_(draft,'已修改进入游戏时的初始显隐；画布预览独立保留')
+  }
+
+  private moveGroupOrder_(delta: number): void {
+    const draft: LayoutProfile | null=this.buildProfile()
+    const groups: ControlGroup[] | undefined=draft?.controlGroups
+    if (groups === undefined) return
+    const index: number=groups.findIndex((group: ControlGroup): boolean => group.id === this.currentControlGroup)
+    const next: number=index+delta
+    if (index < 0 || next < 0 || next >= groups.length) return
+    const item: ControlGroup=groups[index]; groups[index]=groups[next]; groups[next]=item
+    this.applyGroupDraft_(draft,'已调整组层级，游戏绘制与命中使用同一次序')
+  }
+
+  private duplicateControlGroup_(): void {
+    const draft: LayoutProfile | null=this.buildProfile()
+    if (draft === null) return
+    const copied: LayoutProfile | null=duplicateLayoutControlGroup(draft,this.currentControlGroup,(this.currentGroup_()?.name ?? '组')+' 副本')
+    if (this.applyGroupDraft_(copied,'已复制组：自引用指向副本，其他目标保留')) this.chooseControlGroup_(copied!.controlGroups![copied!.controlGroups!.length-1].id)
+  }
+
+  private groupDeletionDescription_(): string {
+    const members: number=this.controls.filter((item: ControlItem): boolean => item.controlGroupId === this.deletingGroup).length
+    let references: number=0
+    const count = (item: ControlItem): void => {
+      for (const action of item.groupActions ?? []) references+=action.targets.filter((id: string): boolean => id === this.deletingGroup).length
+      for (const child of item.children ?? []) count(child)
+    }
+    for (const item of this.controls) count(item)
+    return '将处理 '+members+' 个顶层成员及 '+references+' 处动作引用。确认后可一次撤销。'
+  }
+
+  private deleteControlGroup_(moveMembers: boolean): void {
+    const draft: LayoutProfile | null=this.buildProfile()
+    if (draft === null) return
+    this.applyGroupDraft_(removeLayoutControlGroup(draft,this.deletingGroup,moveMembers ? this.defaultControlGroupId : undefined),
+      moveMembers ? '成员已移到默认组，目标引用已清理' : '组及成员已删除，目标引用已清理')
+  }
+
+  /** 移动成员只改变归属；位置、键位、ID、样式原样保留，受保护恢复入口排除。 */
+  private moveSelectedToGroup_(): void {
+    const draft: LayoutProfile | null=this.buildProfile()
+    if (draft === null || this.currentControlGroup.length === 0) return
+    const ids: string[]=this.multiSelectMode ? this.selectedIds.slice() : [this.selectedItem()?.id ?? '']
+    for (const item of draft.controls) {
+      if (ids.indexOf(item.id) >= 0 && item.systemAction !== 'edit' && item.systemAction !== 'visibility') {
+        item.controlGroupId=this.currentControlGroup
+        // 子项显式归属若曾存在，也统一迁移；不形成跨组 children。
+        const inherit = (child: ControlItem): void => { child.controlGroupId=undefined; for(const nested of child.children ?? []) inherit(nested) }
+        for (const child of item.children ?? []) inherit(child)
+      }
+    }
+    this.applyGroupDraft_(draft,'所选成员已移动到当前组，位置与绑定保持')
+  }
+
+  private currentGroup_(): ControlGroup | undefined {
+    return this.controlGroups?.find((group: ControlGroup): boolean => group.id === this.currentControlGroup)
+  }
+  private filteredControlGroups_(): ControlGroup[] {
+    const query: string=this.groupSearch.trim().toLowerCase()
+    return (this.controlGroups ?? []).filter((group: ControlGroup): boolean => query.length === 0 || group.name.toLowerCase().indexOf(query) >= 0)
+  }
+
+  private phaseName_(phase: string): string {
+    return phase === 'press' ? '按下' : phase === 'longPress' ? '长按' : phase === 'click' ? '单击抬起' : '双击确认'
+  }
+  /** 阶段切换同时读取已保存操作，避免把另一阶段的 hide 无声改成 toggle。 */
+  private selectGroupPhase_(phase: ControlActionPhase): void {
+    this.groupActionPhase=phase
+    this.selectedGroupActionIndex=(this.selectedItem()?.groupActions ?? []).findIndex((action: ControlGroupAction): boolean => action.phase === phase)
+    this.groupActionOperation=this.selectedGroupAction_()?.operation ?? 'toggle'
+  }
+
+  /** 选择冻结到当前控件的当前阶段；旧下标或另一个阶段不能被编辑续体覆盖。 */
+  private selectedGroupAction_(): ControlGroupAction | undefined {
+    const action: ControlGroupAction | undefined=this.selectedItem()?.groupActions?.[this.selectedGroupActionIndex]
+    return action?.phase === this.groupActionPhase ? action : undefined
+  }
+
+  /** 下标列表保留存档顺序；只过滤显示，不归一化操作或目标。 */
+  private phaseActionIndices_(): number[] {
+    const actions: ControlGroupAction[]=this.selectedItem()?.groupActions ?? []
+    const result: number[]=[]
+    for (let index: number=0; index<actions.length; index++) if (actions[index].phase === this.groupActionPhase) result.push(index)
+    return result
+  }
+
+  private groupActionSummary_(index: number): string {
+    const action: ControlGroupAction | undefined=this.selectedItem()?.groupActions?.[index]
+    if (action === undefined) return ''
+    const operation: string=action.operation === 'show' ? '显示' : action.operation === 'hide' ? '隐藏' : '切换'
+    return operation + '：' + action.targets.map((id: string): string => this.controlGroups?.find((group: ControlGroup): boolean => group.id === id)?.name ?? id).join(' → ')
+  }
+
+  private selectGroupAction_(index: number): void {
+    this.selectedGroupActionIndex=index
+    this.groupActionOperation=this.selectedGroupAction_()?.operation ?? 'toggle'
+  }
+
+  /** 只移动同阶段相邻动作；跨阶段的存档行保持原值，操作可一次撤销。 */
+  private moveGroupAction_(delta: number): void {
+    const indices: number[]=this.phaseActionIndices_()
+    const position: number=indices.indexOf(this.selectedGroupActionIndex)
+    const next: number=position+delta
+    const profile: LayoutProfile | null=this.buildProfile()
+    if (profile === null || position<0 || next<0 || next>=indices.length) return
+    const item: ControlItem | undefined=profile.controls.find((control: ControlItem): boolean => control.id === this.selectedItem()?.id)
+    if (item?.groupActions === undefined) return
+    const a: number=indices[position], b: number=indices[next]
+    const old: ControlGroupAction=item.groupActions[a]
+    item.groupActions[a]=item.groupActions[b]; item.groupActions[b]=old
+    if (this.applyGroupDraft_(profile,'已调整动作顺序')) this.selectGroupAction_(b)
+  }
+  private phaseTargets_(): string[] {
+    return this.selectedGroupAction_()?.targets.slice() ?? []
+  }
+
+  private setPhaseTargets_(targets: string[]): void {
+    const current: LayoutProfile | null=this.buildProfile(), selected: ControlItem | null=this.selectedItem()
+    if (current === null || selected === null || selected.type !== ControlType.BUTTON || selected.systemAction !== undefined) return
+    const draft: LayoutProfile=enableLayoutControlGroups(current)
+    const item: ControlItem | undefined=draft.controls.find((value: ControlItem): boolean => value.id === selected.id)
+    if (item === undefined) return
+    const actions: ControlGroupAction[]=item.groupActions ?? []
+    const index: number=this.selectedGroupAction_() === undefined ? -1 : this.selectedGroupActionIndex
+    if (index<0 && targets.length===0) return
+    if (index>=0 && targets.length===0) actions.splice(index,1)
+    else {
+      const action: ControlGroupAction={phase:this.groupActionPhase,operation:this.groupActionOperation,targets:targets.slice()}
+      if (index<0) actions.push(action)
+      else actions[index]=action
+    }
+    item.groupActions=actions
+    if (this.applyGroupDraft_(draft,'已更新选中动作；顺序、重复目标和其他动作保持'))
+      this.selectedGroupActionIndex=targets.length===0 ? -1 : index<0 ? actions.length-1 : index
+  }
+  /** 每次选择追加一个目标；重复目标有真实执行意义，删除按具体出现位置操作。 */
+  private togglePhaseTarget_(id: string): void {
+    this.setPhaseTargets_(this.phaseTargets_().concat([id]))
+  }
+
+  private removePhaseTarget_(index: number): void {
+    this.setPhaseTargets_(this.phaseTargets_().filter((_id: string, position: number): boolean => position !== index))
+  }
+  private currentPhaseKeys_(): number[] {
+    const item: ControlItem | null=this.selectedItem()
+    if (item === null) return []
+    if (item.phaseBindings !== undefined) return item.phaseBindings.find((phase: ControlPhaseBinding): boolean => phase.phase === this.groupActionPhase)?.keys.slice() ?? []
+    const phase: string=item.trigger === 'longPress' ? 'longPress' : item.trigger === 'doubleTap' ? 'doubleClick' : 'press'
+    return phase === this.groupActionPhase ? effectiveKeys(item).slice() : []
+  }
+
+  /** 分阶段改键先保全旧普通绑定，再切换明确的新协议；取消选择器不会改变草稿。 */
+  private applyPhaseKeys_(keys: number[], autoKeep?: boolean): void {
+    const current: LayoutProfile | null=this.buildProfile()
+    const id: string=this.phaseKeyControlId || this.selectedItem()?.id || ''
+    const targetPhase: ControlActionPhase=this.phaseKeyControlId.length > 0 ? this.phaseKeyPhase : this.groupActionPhase
+    if (current === null || keys.length > MAX_LAYOUT_CONTROL_KEYS) return
+    const draft: LayoutProfile=enableLayoutControlGroups(current)
+    const item: ControlItem | undefined=draft.controls.find((value: ControlItem): boolean => value.id === id)
+    if (item === undefined || item.systemAction !== undefined || item.type !== ControlType.BUTTON) return
+    if (item.phaseBindings === undefined) {
+      const original: number[]=effectiveKeys(item).slice()
+      const phase: ControlActionPhase=item.trigger === 'longPress' ? 'longPress' : item.trigger === 'doubleTap' ? 'doubleClick' : 'press'
+      item.phaseBindings=original.length > 0 ? [{phase:phase,keys:original,autoKeep:item.trigger === 'toggle'}] : []
+    }
+    const previous: ControlPhaseBinding | undefined=item.phaseBindings.find((value: ControlPhaseBinding): boolean => value.phase === targetPhase)
+    item.phaseBindings=item.phaseBindings.filter((value: ControlPhaseBinding): boolean => value.phase !== targetPhase)
+    item.phaseBindings.push({phase:targetPhase,keys:keys.slice(),autoKeep:autoKeep ?? previous?.autoKeep ?? false})
+    item.keys=[]; item.keyOrMouse=0; item.trigger='press'
+    if (draft.requiredCapabilities!.indexOf(TOUCH_PHASE_CAPABILITY) < 0) draft.requiredCapabilities!.push(TOUCH_PHASE_CAPABILITY)
+    this.phaseKeyControlId=''; this.applyGroupDraft_(draft,'已保存本阶段键绑定，其他阶段保持')
+  }
+
+  private addPureGroupButton_(): void {
+    if (this.controlGroups === undefined) return
+    this.addButton(GLFW_KEY_G)
+    const item: ControlItem | null=this.selectedItem()
+    if (item === null) return
+    item.keys=[]; item.keyOrMouse=0; item.label='组开关'
+    const target: string=this.controlGroups.find((group: ControlGroup): boolean => group.id !== this.currentControlGroup)?.id ?? this.currentControlGroup
+    item.groupActions=[{phase:'press',operation:'toggle',targets:[target]}]
+    this.syncSelectedAppearanceVals(); this.refreshControls(); this.openTab('group-actions')
+    this.statusMsg='已添加纯组按钮，不发送游戏键；请选择目标组'
+  }
+
+  @Builder
+  ControlGroupsPanel() {
+    Column({space:10}) {
+      this.SectionLabel('触控组')
+      Text('画布预览与进入游戏时的初始显隐分别设置。当前编辑组始终在画布显示。')
+        .fontSize(13).fontColor(EditorTheme.muted).width('100%')
+      TextInput({text:this.groupSearch,placeholder:'搜索触控组'}).height(44).fontSize(14)
+        .onChange((value: string): void => { this.groupSearch=value })
+      ForEach(this.filteredControlGroups_(), (group: ControlGroup) => {
+        Row({space:8}) {
+          Button(group.name + ' · ' + ((this.controlGroups ?? []).findIndex((value: ControlGroup): boolean => value.id === group.id)+1) +
+            (group.id === this.currentControlGroup ? ' · 当前' : '')).layoutWeight(1).height(44).fontSize(14)
+            .backgroundColor(group.id === this.currentControlGroup ? EditorTheme.surfaceActive : EditorTheme.surface)
+            .fontColor(EditorTheme.text).onClick((): void => { this.chooseControlGroup_(group.id) })
+          Button(this.previewControlGroups.indexOf(group.id) >= 0 ? '画布显示' : '画布隐藏').height(44).fontSize(12)
+            .enabled(group.id !== this.currentControlGroup).onClick((): void => { this.toggleGroupPreview_(group.id) })
+        }.width('100%')
+      }, (group: ControlGroup): string => group.id)
+      if (this.filteredControlGroups_().length === 0) { Text('没有匹配的组；可清空搜索或创建新组').fontColor(EditorTheme.muted).fontSize(13) }
+      TextInput({text:this.groupNameDraft,placeholder:'组名（最多64个字符，可同名）'}).height(44).fontSize(14).maxLength(64)
+        .onChange((value: string): void => { this.groupNameDraft=value })
+      Row({space:8}) {
+        Button('新建组').layoutWeight(1).height(44).onClick((): void => { this.createControlGroup_() })
+        Button('重命名').layoutWeight(1).height(44).enabled(this.currentGroup_() !== undefined)
+          .onClick((): void => { this.renameControlGroup_() })
+      }.width('100%')
+      if (this.currentGroup_() !== undefined) {
+        Row() {
+          Text('进入游戏时显示').layoutWeight(1).fontColor(EditorTheme.text).fontSize(14)
+          Toggle({type:ToggleType.Switch,isOn:this.currentGroup_()?.initialVisible ?? true})
+            .onChange((value: boolean): void => { this.setGroupInitialVisible_(value) })
+        }.width('100%')
+        Row({space:8}) {
+          Button('下层').layoutWeight(1).height(44).onClick((): void => { this.moveGroupOrder_(-1) })
+          Button('上层').layoutWeight(1).height(44).onClick((): void => { this.moveGroupOrder_(1) })
+          Button('复制组').layoutWeight(1).height(44).onClick((): void => { this.duplicateControlGroup_() })
+        }.width('100%')
+        Button('仅查看当前组').height(44).width('100%').onClick((): void => { this.previewControlGroups=[this.currentControlGroup]; this.ver++ })
+        Button('将所选控件移到当前组').height(44).width('100%').onClick((): void => { this.moveSelectedToGroup_() })
+        Button('添加纯组开关按钮').height(44).width('100%').onClick((): void => { this.addPureGroupButton_() })
+        if (this.canRestoreGroups) {
+          Button('退出编辑后恢复初始显隐').height(44).width('100%').onClick((): void => {
+            this.onRestoreGroups(); this.statusMsg='已请求恢复；保存或取消退出编辑后生效'
+          })
+        }
+        Button('删除当前组').height(44).width('100%').enabled(this.currentControlGroup !== this.defaultControlGroupId)
+          .onClick((): void => { this.deletingGroup=this.currentControlGroup })
+        if (this.currentControlGroup === this.defaultControlGroupId) { Text('默认组负责承接控件，不能删除').fontSize(12).fontColor(EditorTheme.muted) }
+      }
+      if (this.deletingGroup.length > 0) {
+        Text(this.groupDeletionDescription_()).fontSize(14).fontColor(EditorTheme.warning).width('100%')
+        Button('成员移到默认组后删除').height(44).width('100%').onClick((): void => { this.deleteControlGroup_(true) })
+        Button('连同成员删除').height(44).width('100%').onClick((): void => { this.deleteControlGroup_(false) })
+        Button('取消删除').height(44).width('100%').onClick((): void => { this.deletingGroup='' })
+      }
+      Button('返回布局').height(44).width('100%').onClick((): void => { this.openTab('edit') })
+    }.width('100%')
+  }
+
+  @Builder
+  ControlGroupActionsPanel() {
+    Column({space:10}) {
+      this.SectionLabel('组动作与分阶段绑定')
+      if (!this.selectedIsOrdinaryButton_()) {
+        Text('先在画布选择一个普通按钮').fontSize(14).fontColor(EditorTheme.muted)
+      } else if (this.controlGroups === undefined) {
+        Text('请先创建触控组；现有方案在此之前保持原格式').fontSize(14).fontColor(EditorTheme.muted)
+        Button('管理触控组').height(44).onClick((): void => { this.openTab('groups') })
+      } else {
+        ForEach(['press','longPress','click','doubleClick'], (phase: string) => {
+          Button(this.phaseName_(phase)).height(44).width('100%').fontSize(14)
+            .backgroundColor(this.groupActionPhase === phase ? EditorTheme.surfaceActive : EditorTheme.surface)
+            .fontColor(EditorTheme.text).onClick((): void => { this.selectGroupPhase_(phase as ControlActionPhase) })
+        }, (phase: string): string => phase)
+        Text('本阶段键：' + (this.currentPhaseKeys_().map((key: number): string => glfwKeyName(key)).join(' + ') || '无（可作为纯组按钮）'))
+          .fontSize(14).fontColor(EditorTheme.text).width('100%')
+        Button('修改本阶段按键').height(44).width('100%').onClick((): void => {
+          this.phaseKeyControlId=this.selectedItem()?.id ?? ''; this.phaseKeyPhase=this.groupActionPhase; this.phaseKeyPicker=true
+        })
+        Row() {
+          Text('本阶段按键切换保持').layoutWeight(1).fontSize(14).fontColor(EditorTheme.text)
+          Toggle({type:ToggleType.Switch,isOn:this.selectedItem()?.phaseBindings?.find((value: ControlPhaseBinding): boolean => value.phase === this.groupActionPhase)?.autoKeep ?? false})
+            .onChange((value: boolean): void => { this.applyPhaseKeys_(this.currentPhaseKeys_(),value) })
+        }.width('100%')
+        ForEach(this.phaseActionIndices_(), (index: number) => {
+          Button(this.groupActionSummary_(index)).height(44).width('100%').fontSize(13)
+            .backgroundColor(this.selectedGroupActionIndex === index ? EditorTheme.surfaceActive : EditorTheme.surface)
+            .onClick((): void => { this.selectGroupAction_(index) })
+        }, (index: number): string => index.toString() + ':' + this.groupActionSummary_(index))
+        Row({space:6}) {
+          Button('新增动作').height(44).layoutWeight(1).onClick((): void => { this.selectGroupAction_(-1) })
+          Button('上移').height(44).layoutWeight(1).enabled(this.selectedGroupAction_() !== undefined)
+            .onClick((): void => { this.moveGroupAction_(-1) })
+          Button('下移').height(44).layoutWeight(1).enabled(this.selectedGroupAction_() !== undefined)
+            .onClick((): void => { this.moveGroupAction_(1) })
+        }.width('100%')
+        Text(this.selectedGroupAction_() === undefined ? '选择操作，再添加目标以创建新动作' : '编辑选中动作；下列目标按顺序执行')
+          .fontSize(12).fontColor(EditorTheme.muted)
+        ForEach(this.phaseTargets_(), (id: string,index: number) => {
+          Button((index+1).toString()+' · '+(this.controlGroups?.find((group: ControlGroup): boolean => group.id===id)?.name ?? id)+' ×')
+            .height(44).width('100%').onClick((): void => { this.removePhaseTarget_(index) })
+        }, (id: string,index: number): string => index.toString()+':'+id)
+        Row({space:8}) {
+          ForEach(['toggle','show','hide'], (operation: string) => {
+            Button(operation === 'toggle' ? '切换显示' : operation === 'show' ? '显示' : '隐藏').height(44).layoutWeight(1).fontSize(13)
+              .backgroundColor(this.groupActionOperation === operation ? EditorTheme.surfaceActive : EditorTheme.surface)
+              .onClick((): void => { this.groupActionOperation=operation as ControlGroupOperation; this.setPhaseTargets_(this.phaseTargets_()) })
+          }, (operation: string): string => operation)
+        }.width('100%')
+        ForEach(this.controlGroups ?? [], (group: ControlGroup) => {
+          Button('＋ ' + group.name).height(44).width('100%').fontSize(14)
+            .onClick((): void => { this.togglePhaseTarget_(group.id) })
+        }, (group: ControlGroup): string => group.id)
+        Button('删除选中动作').height(44).width('100%').onClick((): void => { this.setPhaseTargets_([]) })
+        Text('动作与目标保持原顺序；重复切换保留次数。取消触摸不触发新动作。').fontSize(12).fontColor(EditorTheme.muted)
+      }
+      Button('返回布局').height(44).width('100%').onClick((): void => { this.openTab('edit') })
+    }.width('100%')
+  }
+
   build() {
     Stack() {
-      // 半透明背景，点击取消选中
+      // 编辑期间只显示草稿，全部真实输入由宿主模态隔离。
       Column().width('100%').height('100%').backgroundColor('#80000000')
         .onClick(() => { this.selectedIdx = -1; this.selectedScaleVal = 100 })
 
       // 所有按钮（key 含 ver 强制刷新）
-      ForEach(this.controls, (item: ControlItem, index: number) => {
-        if (!item.hidden) {
-          this.EditableBtn(item, index)
+      ForEach(this.editorCanvasOrder_(), (index: number) => {
+        if (!this.controls[index].hidden && this.editorGroupVisible_(this.controls[index])) {
+          this.EditableBtn(this.controls[index], index)
         }
-      }, (item: ControlItem, index: number) => item.id + '_v' + this.ver.toString())
+      }, (index: number) => this.controls[index].id + '_v' + this.ver.toString())
 
       // 自动对齐虚线（仅拖动中显示，松手即消失）：横线约束高度、竖线约束水平位置。
       if (this.dragIdx >= 0 && this.guideY >= 0) {
@@ -1162,12 +1586,13 @@ export struct LayoutEditor {
       this.ToolPanel()
 
       // 状态条
-      if (this.statusMsg.length > 0) {
+      if (this.statusMsg.length > 0 && !this.showPanel) {
         Text(this.statusMsg)
-          .fontSize(11).fontColor('#FFD54F')
+          .fontSize(14).fontColor(EditorTheme.warning)
           .backgroundColor('#AA000000').padding({ left: 10, right: 10, top: 4, bottom: 4 })
           .borderRadius(10)
-          .position({ x: 10, y: 10 })
+          .width(Math.max(120, this.screenWidth - 24)).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .position({ x: 12, y: 80 })
       }
 
 
@@ -1181,20 +1606,18 @@ export struct LayoutEditor {
           }
         })
       }
-
-      // R5：手柄按钮改键 sheet（复用 KeyPickerSheet）
-      if (this.gamepadBtnPicker.length > 0) {
-        KeyPickerSheet({
-          currentKeys: this.gamepadBtnCurrentKeys(),
-          onPick: (keys: number[] | null) => {
-            const btn = this.gamepadBtnPicker
-            this.gamepadBtnPicker = ''
-            if (keys && keys.length > 0) this.applyGamepadKey(btn, keys[0])
-          }
-        })
+      if (this.phaseKeyPicker) {
+        KeyPickerSheet({ currentKeys:this.currentPhaseKeys_(), onPick:(keys: number[] | null): void => {
+          this.phaseKeyPicker=false
+          if (keys !== null) this.applyPhaseKeys_(keys)
+        } })
       }
+
+      if (this.showLeaveConfirm) { this.LeaveConfirm() }
     }
     .width('100%').height('100%')
+    // 正常编辑覆盖层消费自身交互；Native仍由独立模态隔离，不能只依赖ArkUI命中。
+    .hitTestBehavior(HitTestMode.Default)
     .enabled(!this.persistenceBusy)
   }
 
@@ -1210,6 +1633,8 @@ export struct LayoutEditor {
       .maxLines(1)
       .textOverflow({ overflow: TextOverflow.Ellipsis })
       .textAlign(TextAlign.Center)
+      // 面板重绘不重设计画布按键：沿用原预览的白字、蓝色选中/红色锁定提示及虚线框。
+      // 几何、透明度和真实控件样式继续取原模型，新主题只用于设置面板自身。
       .fontColor(this.isSel(item, index) ? '#FFFFFFFF' : '#CCFFFFFF')
       .borderRadius(this.editBtnBorderRadius(item))
       .backgroundColor(this.isSel(item, index) ? '#66448AFF'
@@ -1236,8 +1661,7 @@ export struct LayoutEditor {
               this.groupDragDy = 0
               return
             }
-            this.selectedIdx = index
-            this.syncSelectedAppearanceVals()
+            this.selectForEditor_(index)
             if (item.locked) {
               this.statusMsg = '该按钮已锁定，无法移动'
               return
@@ -1274,9 +1698,25 @@ export struct LayoutEditor {
       )
       .onClick(() => {
         if (this.multiSelectMode) { this.toggleSelectId(item.id); return }
-        this.selectedIdx = index
-        this.syncSelectedAppearanceVals()
+        this.selectForEditor_(index)
       })
+  }
+
+  /**
+   * 单选事件的显示入口：同步原属性草稿，并在有足够横向空间时把面板放到所选控件对侧。
+   * 只调整编辑器的选择和浮层位置；原控件坐标、锁定判断、拖动/吸附和 Native 输入链均不变。
+   * 窄窗口保留用户原面板位置，避免为了换侧让面板或当前控件越界。
+   */
+  private selectForEditor_(index: number): void {
+    this.selectedIdx = index
+    this.selectGroupPhase_(this.groupActionPhase)
+    this.syncSelectedAppearanceVals()
+    const item: ControlItem | null = this.selectedItem()
+    if (item !== null && this.screenWidth > this.panelWidth() + this.itemW(item) + 48) {
+      const centerX: number = this.itemPxX(item) + this.itemW(item) / 2
+      this.panelX = centerX >= this.screenWidth / 2 ? 16 : this.screenWidth - this.panelWidth() - 16
+    }
+    this.showPanel = true
   }
 
   // ============= 多选 / 成组拖动 / 批量操作（2026-07-16） =============
@@ -1504,8 +1944,9 @@ export struct LayoutEditor {
     for (let src of items) {
       if (src.systemAction !== undefined) continue
       const dup = cloneItemWithFreshIds(src, this.controls)
-      dup.xPct = Math.min(1 - this.itemW(dup) / this.screenWidth, src.xPct + 0.04)
-      dup.yPct = Math.min(1 - this.itemH(dup) / this.screenHeight, src.yPct + 0.04)
+      // 批量复制与单个复制一致，过大控件贴零边界，不能产生无法保存的负百分比。
+      dup.xPct = Math.max(0, Math.min(1 - this.itemW(dup) / this.screenWidth, src.xPct + 0.04))
+      dup.yPct = Math.max(0, Math.min(1 - this.itemH(dup) / this.screenHeight, src.yPct + 0.04))
       this.controls.push(dup)
       newIds.push(dup.id)
       dupCount++
@@ -1522,6 +1963,8 @@ export struct LayoutEditor {
     this.sliderUndoKey = ''
     this.selectedScaleVal = Math.round(item.itemScale * 100)
     this.selectedOpacityVal = this.curOpacityPct()
+    this.labelDraft = item.label
+    this.syncPositionDraft_()
   }
 
   // 面板拖动结束：提交位置。y 夹到 [0, panelMaxTop] —— 保证底栏永不越出屏幕（再往下只能滚动内容）。
@@ -1546,12 +1989,54 @@ export struct LayoutEditor {
   private openTab(tab: string): void {
     this.sliderUndoKey = ''
     this.activeSheet = tab
+    if (tab === 'group-actions') this.selectGroupPhase_(this.groupActionPhase)
     this.showPanel = true
     // 样式 Tab（单选）打开时同步标签草稿，保证 TextInput 显示当前按钮的标签。
+    if (tab === 'position') this.syncPositionDraft_()
     if (tab === 'style' && !this.multiSelectMode) {
       const it = this.selectedItem()
       this.labelDraft = it ? it.label : ''
     }
+  }
+
+  /** 摇杆快捷入口明确定位移动分区；只改导航，不写touch草稿、撤销或运行配置。 */
+
+
+  /** 添加入口只展开目录，不预先创建占位按钮，也不改变原单选/多选和撤销状态。 */
+  private openAddPanel_(): void {
+    this.openTab('add')
+  }
+
+  /** 返回完整布局导航时按新骨架夹回顶部，防止在较矮添加面板中下移后把固定底栏推出屏外。 */
+  private returnFromAddPanel_(): void {
+    this.openTab('edit')
+    this.panelY = Math.max(0, Math.min(this.panelTopBase(), this.panelMaxTop()))
+  }
+
+  /** 目录条目为明确的有限集合；不提供尚无创建能力的摇杆、触控区或旧抽屉入口。 */
+  private addControlOptions_(): EditorAddControlOption[] {
+    return [
+      { id: 'button', title: '普通按键', description: '绑定键盘键、鼠标键或组合键', search: '普通按钮 按键 button keyboard mouse', icon: AppIconName.Keyboard, common: false },
+      { id: 'joystick', title: '移动摇杆', description: '选择已有摇杆，或恢复默认摇杆', search: '', icon: AppIconName.GameController, common: false },
+      { id: 'hotbar', title: '物品栏直点条', description: '已存在则选中；再次点按重新对齐', search: '物品栏 快捷栏 hotbar', icon: AppIconName.Hotbar, common: false },
+      { id: 'space', title: 'Space', description: '跳跃', search: '空格 space jump 跳跃', icon: AppIconName.Keyboard, common: true, code: GLFW_KEY_SPACE },
+      { id: 'shift', title: 'Shift', description: '潜行', search: 'shift 潜行 蹲下', icon: AppIconName.Keyboard, common: true, code: GLFW_KEY_LEFT_SHIFT },
+      { id: 'e', title: 'E', description: '背包', search: 'e 背包 inventory', icon: AppIconName.Keyboard, common: true, code: GLFW_KEY_E },
+      { id: 'esc', title: 'Esc', description: '游戏菜单', search: 'esc escape 返回 菜单', icon: AppIconName.Keyboard, common: true, code: GLFW_KEY_ESCAPE }
+    ]
+  }
+
+  /** 搜索同时匹配名称、用途和明确别名；不因为控件类型属于另一组而把匹配结果隐藏。 */
+
+
+  /** 选定后仍走原新增/物品栏入口；仅结束会话多选以便当前新建或既有控件成为明确单选目标。 */
+  private addControlFromPanel_(id: string): void {
+    const option: EditorAddControlOption | undefined = this.addControlOptions_().find((entry: EditorAddControlOption): boolean => entry.id === id)
+    if (option === undefined) { this.statusMsg = '没有可添加的控件，请重新选择'; return }
+    this.setMultiSelect(false)
+    if (option.id === 'joystick') this.addJoystick_()
+    else if (option.id === 'hotbar') this.addHotbar()
+    else this.addButton(option.code)
   }
 
   /** 样式编辑的目标控件集：多选态=选择集，单选态=当前选中项（0/1 个）。 */
@@ -1567,15 +2052,12 @@ export struct LayoutEditor {
   }
 
   // UI 重绘 2026-07-11（承接 §五 Pencil 设计稿）：可复用「操作 chip」——统一图标库图标（AppIcon，非 emoji）
-  // + 文字 + 语义底色，34 高圆角胶囊。取代旧的一排小 Button，信息层级更清晰、触控更友好。
+  // + 文字 + 语义底色，44vp 高圆角操作项。取代旧的一排小 Button，信息层级更清晰、触控更友好。
   // UI 重绘：分区小标题（左侧竖条 + 文字），用于「选中 / 全局」信息分区。
   @Builder
   SectionLabel(text: string) {
-    Row({ space: 6 }) {
-      Column().width(3).height(11).borderRadius(2).backgroundColor('#448AFF')
-      Text(text).fontSize(10).fontColor('#CCFFFFFF').fontWeight(FontWeight.Medium).maxLines(1)
-    }
-    .width('100%').height(16).margin({ top: 2, bottom: 1 })
+    Text(text).fontSize(14).fontWeight(FontWeight.Medium).fontColor(EditorTheme.muted)
+      .width('100%').height(28).margin({ top: 8, bottom: 4 })
   }
 
   // 选中控件的标题文案（用于分区标题）。
@@ -1584,210 +2066,268 @@ export struct LayoutEditor {
     if (!item) return ''
     if (item.label && item.label.length > 0) return item.label
     if (item.type === ControlType.JOYSTICK) return '摇杆'
-    if (item.type === ControlType.SCROLL_WHEEL) return '滚轮'
+    if (item.type === ControlType.SCROLL_WHEEL) return '滚轮控件'
     if (item.type === ControlType.HOTBAR_SELECTOR) return '物品栏'
     if (item.type === ControlType.DRAWER) return '抽屉'
     return '按键'
   }
 
+  /** 鼠标由系统提供菜单精细操作；编辑面板只展示可保存的几何/外观属性，避免无效的改键、场景或删除选项。 */
+  private selectedIsSystemMouse(): boolean { return this.selectedItem()?.systemAction==='mouse' }
+
+  @Builder
+  PanelNavigation() {
+    // 窄高窗口只保留一套导航；它与内容共享滚动，不复制一份隐藏的控件树。
+    this.UnifiedTabBar()
+  }
+
   @Builder
   ToolPanel() {
     Column({ space: 0 }) {
-      // 拖动横杠（iOS Home Indicator 风格）：拖动移动面板，点击收起/展开
-      Row() {
-        Column()
-          .width(36).height(4)
-          .borderRadius(2)
-          .backgroundColor('#55FFFFFF')
-      }
-      .width('100%').height(16)
-      .justifyContent(FlexAlign.Center)
-      .gesture(
-        PanGesture({ fingers: 1, distance: 2 })
+      Row({ space: 8 }) {
+        Column().width(4).height(20).borderRadius(2).backgroundColor(EditorTheme.muted)
+        if (this.showPanel) {
+          Column({ space: 2 }) {
+            Text(this.activeSheet === 'add' ? '添加控件' : this.selectedIdx >= 0 ? this.selectedTitle() : '按键设置')
+              .fontSize(18).fontWeight(FontWeight.Medium).fontColor(EditorTheme.text).maxLines(1)
+            Text(this.activeSheet === 'add' ? '添加后绑定，再拖动定位' : this.profileName).fontSize(12).fontColor(EditorTheme.muted).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Button() { AppIcon({ name: AppIconName.Minus, iconSize: 20, color: EditorTheme.muted }) }
+            .width(44).height(44).backgroundColor(Color.Transparent).borderRadius(12)
+            .accessibilityText('收起按键设置面板').onClick((): void => { this.showPanel = false })
+        } else {
+          Button('按键设置').fontSize(14).height(44).layoutWeight(1).backgroundColor(Color.Transparent)
+            .fontColor(EditorTheme.text).onClick((): void => { this.showPanel = true })
+          Button() { AppIcon({ name: AppIconName.Undo, iconSize: 20, color: EditorTheme.muted }) }
+            .width(44).height(44).backgroundColor(Color.Transparent).enabled(this.canUndo())
+            .accessibilityText('撤销').onClick((): void => { this.undo() })
+          Button() { AppIcon({ name: AppIconName.Plus, iconSize: 20, color: EditorTheme.accent }) }
+            .width(44).height(44).backgroundColor(EditorTheme.surfaceActive)
+            .accessibilityText('添加控件').onClick((): void => { this.openAddPanel_() })
+          Button('保存退出').height(44).fontSize(14).backgroundColor(EditorTheme.accent)
+            .fontColor(EditorTheme.panel).borderRadius(12).onClick((): void => { this.saveEditor_() })
+        }
+      }.height(56).width('100%').padding({ left: 16, right: 12 })
+        .gesture(PanGesture({ fingers: 1, distance: 4 })
           .onActionStart(() => {
-            this.panelDragStartX = this.panelX
-            this.panelDragStartY = this.panelY
-            this.panelDragDx = 0
-            this.panelDragDy = 0
+            this.panelDragStartX = this.panelX; this.panelDragStartY = this.panelY
+            this.panelDragDx = 0; this.panelDragDy = 0
           })
           .onActionUpdate((event: GestureEvent) => {
             if (!event) return
-            // 实时夹取位移：面板整体（含底栏）始终不越出屏幕。y 到 panelMaxTop 为止，
-            // 继续下拉不再移动面板，只让内容区收缩、靠滚动阅读。
-            const baseX = this.panelX >= 0 ? this.panelX : (this.screenWidth - this.panelWidth()) / 2
-            const baseY = this.panelTopBase()
-            const w = this.panelWidth()
-            let dx = event.offsetX
-            let dy = event.offsetY
-            dx = Math.max(-(baseX + w - 80), Math.min(this.screenWidth - 80 - baseX, dx))
-            dy = Math.max(-baseY, Math.min(this.panelMaxTop() - baseY, dy))
-            this.panelDragDx = dx
-            this.panelDragDy = dy
-          })
-          .onActionEnd(() => { this.commitPanelDrag() })
-      )
-      .onClick(() => { this.showPanel = !this.showPanel })
-
-      // 展开时：Tab 栏 + 当前 Tab 内容（Scroll 限高）+ 常驻操作底栏。
-      // 唯一面板：原"工具面板 + 各设置浮层"全部整合于此，同一时刻只有这一个浮窗。
+            const baseX: number = this.panelX >= 0 ? this.panelX : (this.screenWidth - this.panelWidth()) / 2
+            const baseY: number = this.panelTopBase()
+            this.panelDragDx = Math.max(-(baseX + this.panelWidth() - 80), Math.min(this.screenWidth - 80 - baseX, event.offsetX))
+            this.panelDragDy = Math.max(-baseY, Math.min(this.panelMaxTop() - baseY, event.offsetY))
+          }).onActionEnd(() => { this.commitPanelDrag() }))
       if (this.showPanel) {
-        this.UnifiedTabBar()
+        if (!this.compactPanel() && this.activeSheet !== 'add') { this.PanelNavigation() }
         Scroll() {
-          Column({ space: 6 }) {
-            if (this.activeSheet === 'edit') { this.EditTabContent() }
+          Column({ space: 12 }) {
+            if (this.compactPanel() && this.activeSheet !== 'add') { this.PanelNavigation() }
+            if (this.statusMsg.length > 0) {
+              Text(this.statusMsg).fontSize(14).fontColor(EditorTheme.warning).padding(12)
+                .width('100%').backgroundColor(EditorTheme.surface).borderRadius(12).id('layout-editor-status')
+            }
+            if (this.activeSheet === 'add') { this.AddControlPanel() }
+            else if (this.activeSheet === 'edit') { this.EditTabContent() }
+            else if (this.activeSheet === 'behavior') { this.BehaviorTabContent() }
+            else if (this.activeSheet === 'position') { this.PositionTabContent() }
             else if (this.activeSheet === 'style') { this.StyleTabContent() }
-            else if (this.activeSheet === 'global') { this.GlobalTabContent() }
-            else if (this.activeSheet === 'gamepad') { this.GamepadTabContent() }
-            else if (this.activeSheet === 'profiles') { this.ProfilesTabContent() }
+            else if (this.activeSheet === 'alignment') { this.AlignmentOptions() }
             else if (this.activeSheet === 'multi') { this.MultiTabContent() }
-            else { this.EditTabContent() }
-          }
-          .width('100%')
-          .padding({ left: 10, right: 10, bottom: 6 })
-        }
-        .scrollBar(BarState.Off)
-        .constraintSize({ maxHeight: this.panelContentMaxH() })
-        // 常驻底栏：撤销 / 重置 / 取消 / 保存，任何 Tab 都可用。
-        this.ActionFooter()
+            else if (this.activeSheet === 'groups') { this.ControlGroupsPanel() }
+            else if (this.activeSheet === 'group-actions') { this.ControlGroupActionsPanel() }
+          }.width('100%').padding({ left: 20, right: 20, top: 8, bottom: 12 })
+        }.width('100%').scrollBar(BarState.Auto).constraintSize({ maxHeight: this.panelContentMaxH() })
+        if (this.activeSheet === 'add') { this.AddControlFooter() }
+        else { this.ActionFooter() }
       }
-    }
-    .width(this.panelWidth())
-    .backgroundColor('#EE1A1A1A')
-    .borderRadius(14)
-    .border({ width: 1, color: '#22FFFFFF' })
-    .position({
-      x: (this.panelX >= 0 ? this.panelX : (this.screenWidth - this.panelWidth()) / 2) + this.panelDragDx,
-      y: this.panelTopBase() + this.panelDragDy
-    })
+    }.width(this.panelWidth()).backgroundColor(EditorTheme.panel).borderRadius(EditorTheme.radiusPanel)
+      .border({ width: 1, color: EditorTheme.stroke })
+      .position({ x: (this.panelX >= 0 ? this.panelX : (this.screenWidth - this.panelWidth()) / 2) + this.panelDragDx,
+        y: this.panelTopBase() + this.panelDragDy })
   }
 
   // 编辑 Tab：多选横幅 + 选中控件编辑 + 全局缩放/透明 + 添加按钮。
   @Builder
   EditTabContent() {
-    Column({ space: 5 }) {
-      // 多选态常驻横幅：显示已选数量 + 一键进入批量操作 + 退出多选。
-      if (this.multiSelectMode) {
-        this.MultiSelectBanner()
-      }
-      // 选中态：分区标题 + 缩放/透明滑条 + 操作 chip（多选态隐藏，改用批量面板）
+    Column({ space: 12 }) {
+      if (this.multiSelectMode) { this.MultiSelectBanner() }
       if (!this.multiSelectMode && this.selectedIdx >= 0 && this.selectedItem() !== null) {
         this.SelectedItemControls()
-      }
-
-      // ===== 全局缩放 / 透明 =====
-      this.SectionLabel('全局缩放')
-      Row({ space: 4 }) {
-        Text('缩放').fontSize(9).fontColor('#AAFFFFFF').width(28)
+      } else {
+        this.SectionLabel('整体布局')
+        Row() { Text('全局缩放').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+          Text(this.globalScaleVal.toString() + '%').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
         Slider({ value: this.globalScaleVal, min: 50, max: 200, step: 5 })
-          .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-          .onChange((val: number) => {
-            this.beginSliderUndo('globalScale')
-            this.globalScale = val / 100
-            this.globalScaleVal = Math.round(val)
-            this.refreshControls()
+          .width('100%').height(28).selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
+          .onChange((value: number, mode: SliderChangeMode): void => {
+            if (!this.prepareSliderChange('globalScale', mode, this.globalScale !== value / 100)) return
+            this.globalScale = value / 100; this.globalScaleVal = Math.round(value); this.refreshControls()
           })
-        Text(this.globalScaleVal.toString() + '%').fontSize(9).fontColor('#AAFFFFFF').width(30)
-      }.height(24)
-      Row({ space: 4 }) {
-        Text('透明').fontSize(9).fontColor('#AAFFFFFF').width(28)
+        Row() { Text('全局透明度').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+          Text(this.globalOpacityVal.toString() + '%').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
         Slider({ value: this.globalOpacityVal, min: 20, max: 100, step: 5 })
-          .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-          .onChange((val: number) => {
-            this.beginSliderUndo('globalOpacity')
-            this.globalOpacity = val / 100
-            this.globalOpacityVal = Math.round(val)
-            this.refreshControls()
+          .width('100%').height(28).selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
+          .onChange((value: number, mode: SliderChangeMode): void => {
+            if (!this.prepareSliderChange('globalOpacity', mode, this.globalOpacity !== value / 100)) return
+            this.globalOpacity = value / 100; this.globalOpacityVal = Math.round(value); this.refreshControls()
           })
-        Text(this.globalOpacityVal.toString() + '%').fontSize(9).fontColor('#AAFFFFFF').width(30)
-      }.height(24)
-
-      // ===== 添加 =====
-      this.SectionLabel('添加')
-      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-        EditorChip({ icon: AppIconName.Plus, label: '添加按键', bg: '#4400AA55', onTap: () => { this.addButton() } })
-        EditorChip({ icon: AppIconName.Hotbar, label: '物品栏', bg: '#44448AFF', onTap: () => { this.addHotbar() } })
+        Text('点选画面中的按键进行设置，拖动可调整位置。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
       }
-    }
-    .width('100%')
+      Button('＋ 添加控件').height(48).fontSize(14).width('100%').backgroundColor(EditorTheme.surfaceActive)
+        .fontColor(EditorTheme.accent).borderRadius(12).onClick((): void => { this.openAddPanel_() })
+      Button('触控组 · ' + (this.controlGroups?.length ?? 0).toString() + ' ›').height(48).fontSize(14).width('100%')
+        .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).borderRadius(12)
+        .onClick((): void => { this.openTab('groups') })
+    }.width('100%')
+  }
+
+  /** 第07屏的独立添加目录；仍在唯一面板滚动区中，不新增悬浮层、持久状态或输入订阅。 */
+  /** 添加目录直接列出已有能力；普通键选择仍由键盘选择器搜索。 */
+  @Builder
+  AddControlPanel() {
+    Column({space:8}) {
+      ForEach(this.addControlOptions_(), (option: EditorAddControlOption) => {
+        Button(option.title+' · '+option.description).height(48).width('100%').fontSize(14)
+          .fontColor(EditorTheme.text).backgroundColor(EditorTheme.surface).borderRadius(12)
+          .id('layout-add-option-'+option.id).onClick((): void => { this.addControlFromPanel_(option.id) })
+      }, (option: EditorAddControlOption): string => option.id)
+    }.width('100%')
+  }
+
+  /** 现阶段一个基础移动摇杆；恢复只增加缺失控件，不重置用户其它布局。 */
+  private addJoystick_(): void {
+    const existing: number=this.controls.findIndex((item: ControlItem): boolean => item.type===ControlType.JOYSTICK)
+    if (existing>=0) { this.selectForEditor_(existing); this.openTab('edit'); return }
+    const original: ControlItem | undefined=getDefaultLayout().controls.find((item: ControlItem): boolean => item.type===ControlType.JOYSTICK)
+    if (original===undefined) return
+    const item: ControlItem=cloneControlItem(original)
+    item.id=generateControlId(this.controls)
+    if (this.controlGroups!==undefined) item.controlGroupId=this.currentControlGroup || this.defaultControlGroupId
+    this.pushUndo(); this.controls=this.controls.concat([item]); this.refreshControls()
+    this.selectForEditor_(this.controls.length-1); this.openTab('edit')
+    this.statusMsg='已恢复移动摇杆，可拖动和调整大小'
+  }
+
+  /** 添加目录固定底部只返回布局；保存/取消仍由原布局底栏处理，不在此另开保存事务。 */
+  @Builder
+  AddControlFooter() {
+    Row() {
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          AppIcon({ name: AppIconName.Back, iconSize: 18, color: EditorTheme.text })
+          Text('返回布局').fontSize(14).fontColor(EditorTheme.text)
+        }.justifyContent(FlexAlign.Center).width('100%')
+      }.width('100%').height(48).backgroundColor(EditorTheme.panel).borderRadius(12)
+        .border({ width: 1, color: EditorTheme.stroke }).id('layout-add-back')
+        .onClick((): void => { this.returnFromAddPanel_() })
+    }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 })
   }
 
   // 常驻操作底栏沿用原布局；所有存储动作由有异常收口的串行入口执行。
   @Builder
   ActionFooter() {
-    Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-      EditorChip({ icon: AppIconName.Undo, label: '撤销', bg: this.canUndo() ? '#4444AAFF' : '#22FFFFFF', onTap: () => { this.undo() } })
-      EditorChip({ icon: AppIconName.Refresh, label: '重置', bg: '#55884444', onTap: () => { this.resetEditorProfile_() } })
-      EditorChip({ icon: AppIconName.Close, label: '取消', bg: '#55666666', onTap: () => { this.cancelEditor_() } })
-      EditorChip({ icon: AppIconName.Save, label: this.persistenceBusy ? '处理中' : '保存', bg: '#4400AA00', onTap: () => { this.saveEditor_() } })
-    }
-    .width('100%')
-    .padding({ left: 10, right: 10, top: 2, bottom: 8 })
+    Row({ space: 8 }) {
+      Button() { AppIcon({ name: AppIconName.Undo, iconSize: 20, color: EditorTheme.muted }) }
+        .width(44).height(48).backgroundColor(Color.Transparent).enabled(this.canUndo())
+        .accessibilityText('撤销').onClick((): void => { this.undo() })
+      Button('取消').height(48).fontSize(14).padding({ left: 4, right: 4 }).layoutWeight(1)
+        .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).borderRadius(12)
+        .onClick((): void => { this.requestCancel_() })
+      Button(this.persistenceBusy ? '处理中' : '保存').height(48).fontSize(14).padding({ left: 4, right: 4 }).layoutWeight(1)
+        .backgroundColor(EditorTheme.accent).fontColor(EditorTheme.panel).borderRadius(12)
+        .onClick((): void => { this.saveEditor_() })
+    }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 })
   }
 
   // UI 重绘 2026-07-11：选中控件区——分区标题 + 大小/透明滑条 + 带字形语义色的操作 chip。
   @Builder
   SelectedItemControls() {
-    Column({ space: 4 }) {
-      this.SectionLabel('选中 · ' + this.selectedTitle())
-      // 按钮缩放
-      Row({ space: 4 }) {
-        Text('大小').fontSize(9).fontColor('#AAFFFFFF').width(28)
-        Slider({ value: this.selectedScaleVal, min: 50, max: 200, step: 5 })
-          .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-          .onChange((val: number) => {
-            const item = this.selectedItem()
-            if (!item) return
-            this.beginSliderUndo('selectedScale')
-            item.itemScale = val / 100
-            // 用户手动缩放物品栏条 → 标记为"用户已定位"，下次 load 不再自动对齐覆盖其尺寸。
-            if (item.type === ControlType.HOTBAR_SELECTOR) item.hotbarUserPlaced = true
-            this.selectedScaleVal = Math.round(val)
-            this.refreshControls()
-          })
-        Text(this.selectedScaleVal.toString() + '%').fontSize(9).fontColor('#AAFFFFFF').width(30)
-      }.height(24)
-      // 选中按钮透明度（一级面板；与二级"外观"面板的透明度共用 selectedOpacityVal，保持相等）
-      Row({ space: 4 }) {
-        Text('透明').fontSize(9).fontColor('#AAFFFFFF').width(28)
-        Slider({ value: this.selectedOpacityVal, min: 20, max: 100, step: 5 })
-          .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-          .onChange((val: number) => { this.applyOpacity(val) })
-        Text(this.selectedOpacityVal.toString() + '%').fontSize(9).fontColor('#AAFFFFFF').width(30)
-      }.height(24)
-      // 操作 chip：图标 + 语义色（场景蓝 / 瞄准绿 / 外观紫 / 删除红 …），Flex 自动换行不溢出。
-      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-        // 直接实例化 EditorChip（不经带参 @Builder）——保证 label/bg 随状态刷新（触发/场景/显示/瞄准/锁定循环可见）。
-        EditorChip({ icon: AppIconName.Keyboard, label: '键位', bg: '#444488FF', onTap: () => { this.showKeyPicker = true } })
-        EditorChip({ icon: AppIconName.Trigger, label: this.triggerLabel(), bg: '#447777FF', onTap: () => { this.cycleTrigger() } })
-        EditorChip({ icon: AppIconName.Scene, label: this.sceneLabel(), bg: this.sceneBg(), onTap: () => { this.cycleScene() } })
-        EditorChip({ icon: AppIconName.Eye, label: this.visibilityLabel(), bg: this.visibilityBg(), onTap: () => { this.cycleVisibility() } })
-        EditorChip({ icon: AppIconName.Aim, label: this.dragLookLabel(), bg: this.dragLookBg(), onTap: () => { this.toggleDragLook() } })
-        EditorChip({ icon: AppIconName.Tag, label: '标签', bg: '#55666666', onTap: () => {
-          const item = this.selectedItem()
-          this.labelDraft = item ? item.label : ''
-          this.openTab('style')
-        } })
-        EditorChip({ icon: AppIconName.Appearance, label: '外观', bg: '#44AA66CC', onTap: () => { this.openTab('style') } })
-        EditorChip({ icon: AppIconName.Copy, label: '复制', bg: '#4466BB6A', onTap: () => { this.duplicateSelected() } })
-        EditorChip({ icon: this.selectedIsLocked() ? AppIconName.Unlock : AppIconName.Lock, label: this.lockedLabel(), bg: '#44FF9800', onTap: () => { this.toggleLocked() } })
-        EditorChip({ icon: AppIconName.Trash, label: '删除', bg: '#66FF5252', onTap: () => { this.deleteSelected() } })
+    Column({ space: 12 }) {
+      // 动态标题直接在当前UI依赖作用域读取选中状态，不能经Builder按值参数保留首次文本快照。
+      // 静态分区仍复用SectionLabel；这里只修正文案刷新，不新增状态、监听或改变选中业务。
+      Text('选中 · ' + this.selectedTitle()).fontSize(14).fontWeight(FontWeight.Medium).fontColor(EditorTheme.muted)
+        .width('100%').height(28).margin({ top: 8, bottom: 4 })
+      if (this.selectedIsSystemMouse()) {
+        Text('系统鼠标入口：遵循显示策略与按键显隐，可调整位置与外观，不能复制或删除。')
+          .fontSize(14).fontColor(EditorTheme.muted).width('100%')
+      } else if (!this.selectedIsOrdinaryButton_()) {
+        Text(this.selectedControlDescription_()).fontSize(14).fontColor(EditorTheme.muted).width('100%')
       }
-    }
+      Row({ space: 8 }) {
+        TextInput({ text: this.labelDraft, placeholder: this.selectedSupportsKeyBinding_() ? '显示文字（留空使用键名）' : '显示文字（可选）' })
+          .height(44).fontSize(14).layoutWeight(1).backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text)
+          .borderRadius(12).onChange((text: string): void => { this.labelDraft = text })
+        Button('应用').height(44).fontSize(14).backgroundColor(EditorTheme.surfaceActive).fontColor(EditorTheme.accent)
+          .borderRadius(12).onClick((): void => { this.applyLabel() })
+      }.width('100%')
+      if (this.selectedSupportsKeyBinding_()) {
+        Button((this.selectedIsOrdinaryButton_() ? '绑定：' : '聊天绑定：') + this.selectedBindingLabel_()).height(48).width('100%').fontSize(14)
+          .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).borderRadius(12)
+          .onClick((): void => {
+            if (this.selectedItem()?.phaseBindings !== undefined) this.openTab('group-actions')
+            else this.showKeyPicker = true
+          })
+      }
+      if (this.selectedIsOrdinaryButton_()) {
+        Button('组动作与分阶段绑定 ›').height(44).fontSize(14).width('100%')
+          .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.accent).borderRadius(12)
+          .onClick((): void => { this.openTab('group-actions') })
+        if (this.selectedItem()?.phaseBindings === undefined) {
+        Row({ space: 6 }) {
+          ForEach(['press', 'toggle', 'doubleTap', 'longPress'], (mode: string): void => {
+            Button(this.triggerName_(mode)).fontSize(14).height(44).padding({ left: 4, right: 4 }).layoutWeight(1)
+              .backgroundColor(this.selectedTrigger_() === mode ? EditorTheme.surfaceActive : EditorTheme.surface)
+              .fontColor(this.selectedTrigger_() === mode ? EditorTheme.accent : EditorTheme.muted).borderRadius(12)
+              .onClick((): void => { this.chooseTrigger_(mode as TriggerMode) })
+          }, (mode: string): string => mode)
+        }.width('100%')
+        }
+      }
+      // 场景与显示仍对专用控件有效，不能随普通按键的绑定/触发入口一起隐藏。
+      if (!this.selectedIsSystemMouse()) {
+        Button(this.selectedIsOrdinaryButton_() ? '场景、显示策略、瞄准与连滑 ›' : '场景与显示策略 ›').fontSize(14).height(48).width('100%')
+          .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).borderRadius(12)
+          .onClick((): void => { this.openTab('behavior') })
+      }
+      Row({ space: 8 }) {
+        EditorChip({ icon: AppIconName.Appearance, label: '外观', bg: EditorTheme.surface, onTap: () => { this.openTab('style') } })
+        EditorChip({ icon: AppIconName.DragHandle, label: '位置', bg: EditorTheme.surface, onTap: () => { this.openTab('position') } })
+        EditorChip({ icon: this.selectedIsLocked() ? AppIconName.Unlock : AppIconName.Lock,
+          label: this.lockedLabel(), bg: EditorTheme.surface, onTap: () => { this.toggleLocked() } })
+      }
+      if (this.selectedItem()?.type === ControlType.HOTBAR_SELECTOR) {
+        Text('透明直点条：点击或扫选真实快捷栏。拖动或缩放后保留手动定位。')
+          .fontSize(12).fontColor(EditorTheme.muted).width('100%')
+        Button('重新对齐真实快捷栏').height(44).width('100%').fontSize(14)
+          .backgroundColor(EditorTheme.surfaceActive).fontColor(EditorTheme.accent).borderRadius(12)
+          .onClick((): void => { this.addHotbar() })
+      }
+      if (this.selectedItem()?.type === ControlType.JOYSTICK) {
+        Text('移动行为在独立触控设置中调整。').fontSize(12).fontColor(EditorTheme.muted)
+      }
+      // 复制/删除继续遵循原业务保护：全部系统入口不可复制或删除，专用非系统控件仍可操作。
+      if (this.selectedItem()?.systemAction === undefined) {
+        Row({ space: 8 }) {
+          EditorChip({ icon: AppIconName.Copy, label: '复制', bg: EditorTheme.surface, onTap: () => { this.duplicateSelected() } })
+          EditorChip({ icon: AppIconName.Trash, label: '删除', bg: EditorTheme.surface, onTap: () => { this.deleteSelected() } })
+        }
+      }
+    }.width('100%')
   }
 
   /**
-   * Phase C（键鼠适配）：可见性策略三态循环。auto → 强显 → 强隐 → auto
-   *
-   * ⚠️ **「强显」当前零作用，与「自动」行为完全相同**（只有「强隐」真正生效）。
-   * 这是本项目唯一一条用户可感知的"开关不起作用"缺陷：切到强显会看到绿色高亮与
-   * 「显示策略 = 强显」的提示，可见性却不变。
-   * 完整因果与两条改法见 `gamecontrol/src/main/ets/ControlLayout.ets` 的
-   * `VisibilityOverride` 类型注释；处置属产品决定，见提案文档 §9.1。
-   * 在那个决定做出之前**不要**只改这里的文案 —— 那会掩盖缺陷而不是修它。
+   * 用户显隐三态循环。强显覆盖场景及全局显隐档，显式hidden、解绑与仅游戏控件能力仍优先。
+   * 运行投影解释同一字段，不在编辑器里改写场景或隐藏字段；恢复自动时原场景仍保留。
    */
   private cycleVisibility(): void {
     const item = this.selectedItem()
     if (!item) return
+    // 本轮只接入全局显隐，不扩展系统入口的高级行为编辑；已保存策略由加载/投影保留，不再强清。
+    if(item.systemAction==='mouse') { this.statusMsg='鼠标入口遵循已保存策略与按键显隐，可移动和调整外观'; return }
     const order: VisibilityOverride[] = ['auto', 'force_show', 'force_hide']
     const cur = item.visibilityOverride ?? 'auto'
     const idx = order.indexOf(cur)
@@ -1807,8 +2347,31 @@ export struct LayoutEditor {
     if (!item) return
     this.pushUndo()
     item.dragLook = !item.dragLook
+    if (item.dragLook) item.swipeGroup = undefined
     this.refreshControls()
-    this.statusMsg = item.dragLook ? '已开启：按住拖动瞄准' : '已关闭拖动瞄准'
+    this.statusMsg = item.dragLook ? '已开启拖动瞄准，连滑已关闭' : '已关闭拖动瞄准'
+  }
+
+  /** 连滑必须由用户明确分组；不自动把相邻攻击/放置键串成一串。 */
+  private cycleSwipeGroup(): void {
+    const item = this.selectedItem()
+    if (!item || item.type !== ControlType.BUTTON || item.systemAction !== undefined) return
+    if ((item.trigger ?? 'press') !== 'press' || item.dragLook === true) {
+      this.statusMsg = '连滑需要按住触发，并关闭拖动瞄准'
+      return
+    }
+    const groups: string[] = ['', '1', '2', '3']
+    const index: number = groups.indexOf(item.swipeGroup ?? '')
+    this.pushUndo()
+    const group: string = groups[(index+1)%groups.length]
+    item.swipeGroup = group.length > 0 ? group : undefined
+    this.refreshControls()
+    this.statusMsg = group.length > 0 ? '已加入连滑组 ' + group + '；滑出释放，滑入同组按下' : '连滑已关闭'
+  }
+
+  private swipeGroupLabel(): string {
+    const item = this.selectedItem()
+    return item?.swipeGroup ? '连滑 ' + item.swipeGroup : '连滑关'
   }
 
   private dragLookLabel(): string {
@@ -1818,7 +2381,7 @@ export struct LayoutEditor {
 
   private dragLookBg(): string {
     const item = this.selectedItem()
-    return (item && item.dragLook) ? '#4466BB6A' : '#44888888'
+    return (item && item.dragLook) ? EditorTheme.surfaceActive : EditorTheme.surface
   }
 
   /**
@@ -1828,6 +2391,8 @@ export struct LayoutEditor {
   private cycleScene(): void {
     const item = this.selectedItem()
     if (!item) return
+    // 场景编辑仍按系统入口限制；新入口默认兼容游戏/菜单，既有来源的场景设置在加载时保留。
+    if(item.systemAction==='mouse') { this.statusMsg='鼠标入口默认用于游戏和菜单，保留已保存的场景设置'; return }
     const order: ControlScene[] = ['game', 'menu', 'always']
     const cur = controlScene(item)
     const next = order[(order.indexOf(cur) + 1) % order.length]
@@ -1852,9 +2417,9 @@ export struct LayoutEditor {
   private sceneBg(): string {
     const item = this.selectedItem()
     const s = item ? controlScene(item) : 'always'
-    if (s === 'game') return '#44448AFF'
-    if (s === 'menu') return '#44AA66CC'
-    return '#4466BB6A'
+    if (s === 'game') return EditorTheme.surfaceActive
+    if (s === 'menu') return EditorTheme.surfaceActive
+    return EditorTheme.surfaceActive
   }
 
   private visibilityLabel(): string {
@@ -1873,9 +2438,9 @@ export struct LayoutEditor {
   private visibilityBg(): string {
     const item = this.selectedItem()
     const ov = item?.visibilityOverride ?? 'auto'
-    if (ov === 'force_show') return '#4466BB6A'
+    if (ov === 'force_show') return EditorTheme.surfaceActive
     if (ov === 'force_hide') return '#44FF5252'
-    return '#44888888'
+    return EditorTheme.surface
   }
 
   private triggerLabel(): string {
@@ -1900,185 +2465,139 @@ export struct LayoutEditor {
   // ============= R5：手柄配置 =============
 
   // 手柄逻辑按钮的展示顺序 + 中文名
-  private gamepadButtonOrder(): string[] {
-    return ['A', 'B', 'X', 'Y', 'L1', 'R1', 'L2', 'R2', 'START', 'SELECT', 'L3', 'R3',
-            'DPAD_UP', 'DPAD_DOWN', 'DPAD_LEFT', 'DPAD_RIGHT']
-  }
 
-  private gamepadBtnDisplayName(btn: string): string {
-    if (btn === 'START') return 'Start'
-    if (btn === 'SELECT') return 'Select'
-    if (btn === 'DPAD_UP') return '十字↑'
-    if (btn === 'DPAD_DOWN') return '十字↓'
-    if (btn === 'DPAD_LEFT') return '十字←'
-    if (btn === 'DPAD_RIGHT') return '十字→'
-    return btn
-  }
+
+
 
   /** 某手柄按钮当前动作的展示文案。 */
-  private gamepadActionLabel(btn: string): string {
-    const a = this.gamepad.buttonMap ? this.gamepad.buttonMap[btn] : undefined
-    if (!a || a.kind === 'none') return '无'
-    if (a.kind === 'hotbarPrev') return '上一格'
-    if (a.kind === 'hotbarNext') return '下一格'
-    // kind === 'key'
-    const code = a.code ?? 0
-    if (code === 0) return '无'
-    return glfwKeyName(code)
-  }
+
 
   /** 改键 sheet 的"当前键"入参（仅 kind==='key' 时给当前 code，否则空）。 */
-  private gamepadBtnCurrentKeys(): number[] {
-    const a = this.gamepad.buttonMap ? this.gamepad.buttonMap[this.gamepadBtnPicker] : undefined
-    if (a && a.kind === 'key' && (a.code ?? 0) !== 0) return [a.code as number]
-    return []
-  }
 
-  /** 改键 sheet 选了一个 GLFW key/鼠标 → 写回该手柄按钮（kind='key'）。 */
-  private applyGamepadKey(btn: string, code: number): void {
-    this.pushUndo()
-    this.ensureButtonMap()
-    this.gamepad.buttonMap![btn] = { kind: 'key', code: code }
-    this.gamepad = this.cloneGamepad(this.gamepad)
-    this.statusMsg = this.gamepadBtnDisplayName(btn) + ' → ' + glfwKeyName(code)
-  }
+
+  /**
+   * 将选择器结果写回该手柄按钮：0明确保存为none，其余真实键保存为key，沿原撤销和配置副本更新。
+   * 提示复用当前映射的展示函数，与映射行一致显示“无”，不能把解绑值当成GLFW键码暴露给用户。
+   */
+
 
   /** 循环该手柄按钮的"特殊动作"：键位(进改键) → 上一格 → 下一格 → 无 → 键位。 */
-  private cycleGamepadSpecial(btn: string): void {
-    this.pushUndo()
-    this.ensureButtonMap()
-    const a = this.gamepad.buttonMap![btn]
-    const kind = a ? a.kind : 'none'
-    if (kind === 'key') {
-      this.gamepad.buttonMap![btn] = { kind: 'hotbarPrev' }
-    } else if (kind === 'hotbarPrev') {
-      this.gamepad.buttonMap![btn] = { kind: 'hotbarNext' }
-    } else if (kind === 'hotbarNext') {
-      this.gamepad.buttonMap![btn] = { kind: 'none' }
-    } else {
-      // none → 回到 key（默认空 code，引导用户点"键位"选）
-      this.gamepad.buttonMap![btn] = { kind: 'key', code: 0 }
-    }
-    this.gamepad = this.cloneGamepad(this.gamepad)
-  }
 
-  private ensureButtonMap(): void {
-    if (!this.gamepad.buttonMap) {
-      this.gamepad.buttonMap = defaultGamepadButtonMap()
-    }
-  }
 
-  private cycleStick(which: 'left' | 'right'): void {
-    this.pushUndo()
-    const order: StickRole[] = ['move', 'look', 'none']
-    const cur: StickRole = which === 'left'
-      ? (this.gamepad.leftStick ?? 'move')
-      : (this.gamepad.rightStick ?? 'look')
-    const next = order[(order.indexOf(cur) + 1) % order.length]
-    if (which === 'left') this.gamepad.leftStick = next
-    else this.gamepad.rightStick = next
-    this.gamepad = this.cloneGamepad(this.gamepad)
-  }
 
-  private stickLabel(role: StickRole | undefined): string {
-    if (role === 'move') return '移动'
-    if (role === 'look') return '视角'
-    return '无'
-  }
+
+
+
+
 
   // 样式 Tab：统一样式编辑器。单选=编辑选中按钮；多选=批量编辑全部选中（一改全改）。
   // 样式字段（大小/透明度/圆角/形状/标签）统一走 styleTargets()，为以后拓展样式铺路。
   @Builder
   StyleTabContent() {
-    Column({ space: 10 }) {
+    Column({ space: 12 }) {
       if (this.styleTargets().length === 0) {
-        Row() {
-          Text('请先选择按钮（开启多选可批量改样式）')
-            .fontSize(11).fontColor('#88FFFFFF')
-        }.width('100%').justifyContent(FlexAlign.Center).padding({ top: 24, bottom: 24 })
+        Column({ space: 10 }) {
+          Text('先选择一个按键').fontSize(16).fontWeight(FontWeight.Medium).fontColor(EditorTheme.text)
+          Text('点选画面中的控件，或开启多选后批量调整外观。').fontSize(14).fontColor(EditorTheme.muted)
+            .width('100%').textAlign(TextAlign.Center)
+          Button('返回布局选择').fontSize(14).fontColor(EditorTheme.accent).height(44)
+            .backgroundColor(EditorTheme.surfaceActive).borderRadius(EditorTheme.radiusSmall)
+            .onClick((): void => { this.openTab('edit') })
+        }.width('100%').padding({ top: 20, bottom: 20 }).backgroundColor(EditorTheme.surface)
+          .borderRadius(EditorTheme.radiusSmall)
       } else {
         Text(this.multiSelectMode
           ? ('批量样式 · 作用于 ' + this.styleTargets().length.toString() + ' 个选中按钮')
           : '按钮外观')
-          .fontSize(11).fontColor('#AAFFFFFF').width('100%')
+          .fontSize(14).fontColor(EditorTheme.accent).width('100%')
 
-        // 实时预览方块（取样式主项）
-        Row() {
-          Column() {
+        // 常态与按下态并排示意；尺寸、圆角和透明度来自同一主项，不把预览颜色写入业务草稿。
+        Row({ space: 24 }) {
+          Column({ space: 6 }) {
             Text(this.previewLabel())
-              .width(this.previewSize())
-              .height(this.previewSize())
-              .textAlign(TextAlign.Center)
-              .fontSize(14).fontColor('#FFFFFF')
-              .backgroundColor('#88448AFF')
-              .borderRadius(this.previewCorner())
+              .width(this.previewSize()).height(this.previewSize()).textAlign(TextAlign.Center)
+              .fontSize(14).fontColor(EditorTheme.text).backgroundColor(EditorTheme.surfaceActive)
+              .border({ width: 1, color: EditorTheme.accent }).borderRadius(this.previewCorner())
               .opacity(this.curOpacityPct() / 100)
-          }
-          .width(96).height(96)
-          .justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-          .backgroundColor('#22000000')
-          .borderRadius(8)
-        }
-        .width('100%').justifyContent(FlexAlign.Center)
+            Text('常态').fontSize(12).fontColor(EditorTheme.muted)
+          }.layoutWeight(1).constraintSize({ minHeight: 108 }).justifyContent(FlexAlign.Center)
+          Column({ space: 6 }) {
+            Text(this.previewLabel())
+              .width(this.previewSize()).height(this.previewSize()).textAlign(TextAlign.Center)
+              .fontSize(14).fontColor(EditorTheme.panel).backgroundColor(EditorTheme.accent)
+              .borderRadius(this.previewCorner()).opacity(this.curOpacityPct() / 100)
+            Text('按下').fontSize(12).fontColor(EditorTheme.muted)
+          }.layoutWeight(1).constraintSize({ minHeight: 108 }).justifyContent(FlexAlign.Center)
+        }.width('100%').padding(10).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
 
-        // 大小
-        Row({ space: 3 }) {
-          Text('大小').fontSize(11).fontColor('#AAFFFFFF').width(48)
+        // 原三根滑条保留值、范围、步长和真实 SliderChangeMode；只把数值移到标题右侧。
+        Column({ space: 2 }) {
+          Row() {
+            Text('大小').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+            Text(this.curSizePct().toString() + '%').fontSize(14).fontColor(EditorTheme.text)
+          }.width('100%')
           Slider({ value: this.curSizePct(), min: 50, max: 200, step: 5 })
-            .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-            .onChange((val: number) => { this.applySize(val) })
-          Text(this.curSizePct().toString() + '%').fontSize(10).fontColor('#FFFFFF').width(40)
+            .width('100%').blockColor(EditorTheme.text).selectedColor(EditorTheme.accent).trackColor(EditorTheme.stroke)
+            .onChange((val: number, mode: SliderChangeMode) => { this.applySize(val, mode) })
         }.width('100%')
 
-        // 透明度
-        Row({ space: 3 }) {
-          Text('透明度').fontSize(11).fontColor('#AAFFFFFF').width(48)
+        Column({ space: 2 }) {
+          Row() {
+            Text('透明度').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+            Text(this.curOpacityPct().toString() + '%').fontSize(14).fontColor(EditorTheme.text)
+          }.width('100%')
           Slider({ value: this.curOpacityPct(), min: 20, max: 100, step: 5 })
-            .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-            .onChange((val: number) => { this.applyOpacity(val) })
-          Text(this.curOpacityPct().toString() + '%').fontSize(10).fontColor('#FFFFFF').width(40)
+            .width('100%').blockColor(EditorTheme.text).selectedColor(EditorTheme.accent).trackColor(EditorTheme.stroke)
+            .onChange((val: number, mode: SliderChangeMode) => { this.applyOpacity(val, mode) })
         }.width('100%')
 
-        // 圆角度
-        Row({ space: 3 }) {
-          Text('圆角').fontSize(11).fontColor('#AAFFFFFF').width(48)
+        Column({ space: 2 }) {
+          Row() {
+            Text('圆角').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+            Text(this.curCornerPct().toString() + '%').fontSize(14).fontColor(EditorTheme.text)
+          }.width('100%')
           Slider({ value: this.curCornerPct(), min: 0, max: 100, step: 5 })
-            .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-            .onChange((val: number) => { this.applyCorner(val) })
-          Text(this.curCornerPct().toString() + '%').fontSize(10).fontColor('#FFFFFF').width(40)
+            .width('100%').blockColor(EditorTheme.text).selectedColor(EditorTheme.accent).trackColor(EditorTheme.stroke)
+            .onChange((val: number, mode: SliderChangeMode) => { this.applyCorner(val, mode) })
         }.width('100%')
 
-        // 圆角快捷：方 / 圆角 / 圆（当前预设蓝色高亮）
-        Row({ space: 6 }) {
-          Button('方形').fontSize(10).height(28).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor(this.cornerPreset() === 'square' ? '#448AFF' : '#44666666').borderRadius(14)
+        // 三种预设继续调用原圆角写入入口；直接在无参 Builder 读取状态，撤销后高亮同步。
+        Row({ space: 4 }) {
+          Button('方形').fontSize(14).height(44).layoutWeight(1)
+            .fontColor(this.cornerPreset() === 'square' ? EditorTheme.accent : EditorTheme.muted)
+            .backgroundColor(this.cornerPreset() === 'square' ? EditorTheme.surfaceActive : EditorTheme.surface)
+            .borderRadius(EditorTheme.radiusSmall)
             .onClick(() => { this.applyCorner(0) })
-          Button('圆角').fontSize(10).height(28).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor(this.cornerPreset() === 'round' ? '#448AFF' : '#44666666').borderRadius(14)
+          Button('圆角').fontSize(14).height(44).layoutWeight(1)
+            .fontColor(this.cornerPreset() === 'round' ? EditorTheme.accent : EditorTheme.muted)
+            .backgroundColor(this.cornerPreset() === 'round' ? EditorTheme.surfaceActive : EditorTheme.surface)
+            .borderRadius(EditorTheme.radiusSmall)
             .onClick(() => { this.applyCorner(30) })
-          Button('圆形').fontSize(10).height(28).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor(this.cornerPreset() === 'circle' ? '#448AFF' : '#44666666').borderRadius(14)
+          Button('圆形').fontSize(14).height(44).layoutWeight(1)
+            .fontColor(this.cornerPreset() === 'circle' ? EditorTheme.accent : EditorTheme.muted)
+            .backgroundColor(this.cornerPreset() === 'circle' ? EditorTheme.surfaceActive : EditorTheme.surface)
+            .borderRadius(EditorTheme.radiusSmall)
             .onClick(() => { this.applyCorner(100) })
-        }.width('100%')
+        }.width('100%').padding(4).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
 
         // 标签编辑（单选专属：标签是单个按钮的属性，不做批量）
         if (!this.multiSelectMode && this.selectedItem() !== null) {
+          Text('按键标签').fontSize(14).fontColor(EditorTheme.muted).width('100%')
           Row({ space: 6 }) {
             TextInput({ text: this.labelDraft, placeholder: '按钮文字（留空=键名）' })
-              .height(34).fontSize(12).layoutWeight(1)
+              .height(44).fontSize(14).layoutWeight(1).fontColor(EditorTheme.text).placeholderColor(EditorTheme.muted)
+              .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
               .onChange((v: string) => { this.labelDraft = v })
-            Button('应用').fontSize(11).height(30).fontColor('#FFFFFF')
-              .backgroundColor('#448AFF').borderRadius(15)
+            Button('应用').fontSize(14).height(44).fontColor(EditorTheme.panel)
+              .backgroundColor(EditorTheme.accent).borderRadius(EditorTheme.radiusSmall)
               .onClick(() => { this.applyLabel() })
           }.width('100%')
+          Text('留空时使用绑定键名。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
         }
 
-        Row({ space: 6 }) {
-          Button('统一所有按钮大小').fontSize(11).height(32).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#55FF9800').borderRadius(16)
-            .onClick(() => { this.unifyAllSizes() })
-        }.width('100%')
+        Button('统一所有普通按钮大小').fontSize(14).height(44).width('100%').fontColor(EditorTheme.text)
+          .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+          .border({ width: 1, color: EditorTheme.stroke }).onClick(() => { this.unifyAllSizes() })
       }
     }
     .width('100%')
@@ -2112,327 +2631,500 @@ export struct LayoutEditor {
   }
 
   // 手柄 Tab 内容（原 GamepadPanel，去掉标题栏/容器/关闭按钮）。
-  @Builder
-  GamepadTabContent() {
-    Column({ space: 6 }) {
-      Row() {
-        Text('启用手柄').fontSize(12).fontColor('#FFFFFF').layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.gamepad.enabled !== false })
-          .selectedColor('#66BB6A')
-          .onChange((b: boolean) => { this.pushUndo(); this.gamepad.enabled = b; this.gamepad = this.cloneGamepad(this.gamepad) })
-      }.width('100%')
 
-      // 摇杆角色 + 参数滑条
-      Row({ space: 6 }) {
-        Text('左摇杆').fontSize(11).fontColor('#AAFFFFFF').width(48)
-        Button(this.stickLabel(this.gamepad.leftStick)).fontSize(10).height(24).fontColor('#FFFFFF')
-          .backgroundColor('#447777FF').borderRadius(12).layoutWeight(1)
-          .onClick(() => { this.cycleStick('left') })
-        Text('右摇杆').fontSize(11).fontColor('#AAFFFFFF').width(48)
-        Button(this.stickLabel(this.gamepad.rightStick)).fontSize(10).height(24).fontColor('#FFFFFF')
-          .backgroundColor('#447777FF').borderRadius(12).layoutWeight(1)
-          .onClick(() => { this.cycleStick('right') })
-      }.width('100%')
 
-      Row({ space: 3 }) {
-        Text('死区').fontSize(11).fontColor('#AAFFFFFF').width(60)
-        Slider({ value: Math.round((this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE) * 100), min: 0, max: 50, step: 1 })
-          .layoutWeight(1)
-          .onChange((val: number) => { this.beginSliderUndo('gamepadDeadZone'); this.gamepad.stickDeadZone = val / 100; this.gamepad = this.cloneGamepad(this.gamepad) })
-        Text(Math.round((this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE) * 100).toString() + '%')
-          .fontSize(10).fontColor('#FFFFFF').width(34)
-      }.width('100%')
+  /**
+   * 把既有 16 个逻辑按钮分到三个显示组，顺序沿用原目录；该函数不新增或删除任何手柄映射。
+   * 数组只在手柄映射页构建时生成，正常游戏与其它设置分区不会执行。
+   */
 
-      Row({ space: 3 }) {
-        Text('扳机阈值').fontSize(11).fontColor('#AAFFFFFF').width(60)
-        Slider({ value: Math.round((this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD) * 100), min: 10, max: 95, step: 5 })
-          .layoutWeight(1)
-          .onChange((val: number) => { this.beginSliderUndo('gamepadTrigger'); this.gamepad.triggerThreshold = val / 100; this.gamepad = this.cloneGamepad(this.gamepad) })
-        Text(Math.round((this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD) * 100).toString() + '%')
-          .fontSize(10).fontColor('#FFFFFF').width(34)
-      }.width('100%')
 
-      Row({ space: 3 }) {
-        Text('右摇杆增益').fontSize(11).fontColor('#AAFFFFFF').width(60)
-        Slider({ value: Math.round((this.gamepad.lookScale ?? 1.0) * 100), min: 30, max: 300, step: 10 })
-          .layoutWeight(1)
-          .onChange((val: number) => { this.beginSliderUndo('gamepadLookScale'); this.gamepad.lookScale = val / 100; this.gamepad = this.cloneGamepad(this.gamepad) })
-        Text((this.gamepad.lookScale ?? 1.0).toFixed(1)).fontSize(10).fontColor('#FFFFFF').width(34)
-      }.width('100%')
+  /** 显式区分“无动作”与特殊循环回到的“键位待选择”，只修饰显示，不改原循环和撤销行为。 */
 
-      Divider().color('#33FFFFFF')
-
-      // 按钮映射列表（外层统一面板 Scroll 负责滚动，这里不再嵌套 Scroll，避免手势冲突）
-      Column({ space: 3 }) {
-        ForEach(this.gamepadButtonOrder(), (btn: string) => {
-          Row({ space: 6 }) {
-            Text(this.gamepadBtnDisplayName(btn)).fontSize(11).fontColor('#FFFFFF').width(54)
-            Text(this.gamepadActionLabel(btn)).fontSize(10).fontColor('#AAFFFFFF').layoutWeight(1)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Button('键位').fontSize(9).height(22).fontColor('#FFFFFF')
-              .backgroundColor('#444488FF').borderRadius(11)
-              .onClick(() => { this.gamepadBtnPicker = btn })
-            Button(this.gamepadActionLabel(btn) === '上一格' || this.gamepadActionLabel(btn) === '下一格' || this.gamepadActionLabel(btn) === '无' ? '切换' : '特殊')
-              .fontSize(9).height(22).fontColor('#FFFFFF')
-              .backgroundColor('#44777777').borderRadius(11)
-              .onClick(() => { this.cycleGamepadSpecial(btn) })
-          }
-          .width('100%').height(30)
-          .padding({ left: 6, right: 6 })
-          .backgroundColor('#11FFFFFF').borderRadius(6)
-        }, (btn: string) => btn)
-      }
-      .width('100%')
-
-      Button('恢复默认手柄映射').fontSize(11).height(28).fontColor('#FFFFFF')
-        .backgroundColor('#44FF9800').borderRadius(14).width('100%')
-        .onClick(() => { this.pushUndo(); this.gamepad = defaultGamepadConfig(); this.statusMsg = '手柄映射已恢复默认' })
-    }
-    .width('100%')
-  }
 
   // 全局 Tab 内容（原 SettingsPanel，去掉标题栏/容器/跳手柄按钮/关闭按钮）。
-  @Builder
-  GlobalTabContent() {
-    Column({ space: 8 }) {
-      Row({ space: 3 }) {
-        Text('视角灵敏度').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Slider({ value: this.sensVal, min: 30, max: 300, step: 5 })
-          .layoutWeight(1)
-          .onChange((val: number) => {
-            this.beginSliderUndo('lookSensitivity')
-            this.lookSensitivity = val / 100
-            this.sensVal = Math.round(val)
-          })
-        Text((this.sensVal / 100).toFixed(2)).fontSize(11).fontColor('#FFFFFF').width(40)
-      }
-      // 方案 C：视角跟手度（平滑 α，越大越跟手/越小越平滑）
-      Row({ space: 3 }) {
-        Text('视角跟手').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Slider({ value: this.smoothVal, min: 10, max: 100, step: 5 })
-          .layoutWeight(1)
-          .onChange((val: number) => {
-            this.beginSliderUndo('lookSmoothing')
-            this.lookSmoothing = val / 100
-            this.smoothVal = Math.round(val)
-          })
-        Text(this.smoothVal.toString() + '%').fontSize(11).fontColor('#FFFFFF').width(40)
-      }
-      // 方案 C：视角加速（0=关闭，手速越快增益越高）
-      Row({ space: 3 }) {
-        Text('视角加速').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Slider({ value: this.accelVal, min: 0, max: 100, step: 5 })
-          .layoutWeight(1)
-          .onChange((val: number) => {
-            this.beginSliderUndo('lookAccel')
-            this.lookAccel = val / 100
-            this.accelVal = Math.round(val)
-          })
-        Text(this.accelVal === 0 ? '关' : (this.accelVal.toString() + '%')).fontSize(11).fontColor('#FFFFFF').width(40)
-      }
-      Row({ space: 3 }) {
-        Text('Y 轴倒置').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Toggle({ type: ToggleType.Switch, isOn: this.invertY })
-          .selectedColor('#448AFF')
-          .onChange((b: boolean) => { this.pushUndo(); this.invertY = b })
-      }
-      Row({ space: 3 }) {
-        Text('摇杆死区').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Slider({ value: this.deadZoneVal, min: 1, max: 50, step: 1 })
-          .layoutWeight(1)
-          .onChange((val: number) => {
-            this.beginSliderUndo('joystickDeadZone')
-            this.joystickDeadZone = val / 100
-            this.deadZoneVal = Math.round(val)
-          })
-        Text(this.deadZoneVal.toString() + '%').fontSize(11).fontColor('#FFFFFF').width(40)
-      }
-      Row({ space: 3 }) {
-        Text('触觉反馈').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Toggle({ type: ToggleType.Switch, isOn: this.haptic })
-          .selectedColor('#448AFF')
-          .onChange((b: boolean) => { this.pushUndo(); this.haptic = b })
-        Text('(预留)').fontSize(9).fontColor('#66FFFFFF')
-      }
-      // 自动对齐 / 吸附（2026-07-16）
-      Divider().color('#33FFFFFF').margin({ top: 2, bottom: 2 })
-      Row({ space: 3 }) {
-        Text('自动对齐').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Toggle({ type: ToggleType.Switch, isOn: this.snapEnabled })
-          .selectedColor('#448AFF')
-          .onChange((b: boolean) => { this.pushUndo(); this.snapEnabled = b })
-        Text('拖动时对齐并显示虚线').fontSize(9).fontColor('#66FFFFFF')
-      }
-      Row({ space: 3 }) {
-        Text('对齐间距').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Slider({ value: this.snapGap, min: 0, max: 100, step: 1 })
-          .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-          .enabled(this.snapEnabled)
-          .onChange((val: number) => {
-            this.beginSliderUndo('snapGap')
-            this.snapGap = Math.round(val)
-          })
-        Text(this.snapGap.toString() + 'vp').fontSize(11).fontColor('#FFFFFF').width(40)
-      }
-      Row({ space: 3 }) {
-        Text('吸附强度').fontSize(11).fontColor('#AAFFFFFF').width(70)
-        Slider({ value: this.snapStrength, min: 2, max: 20, step: 1 })
-          .layoutWeight(1).blockColor('#FFFFFF').selectedColor('#448AFF')
-          .enabled(this.snapEnabled)
-          .onChange((val: number) => {
-            this.beginSliderUndo('snapStrength')
-            this.snapStrength = Math.round(val)
-          })
-        Text(this.snapStrength.toString() + 'vp').fontSize(11).fontColor('#FFFFFF').width(40)
-      }
-    }
-    .width('100%')
+  /** 返回当前编辑的完整组；独立参数不覆盖legacy备份，缺席扩展继续原四标量。 */
+  private editorLookParameters(): LookParameters {
+    if (this.lookPolicies !== undefined) return sourceLookParameters(this.lookPolicies, this.selectedLookSource)
+    return { sensitivity: this.lookSensitivity, invertY: this.invertY,
+      smoothing: this.lookSmoothing, acceleration: this.lookAccel }
   }
 
-  // 方案 Tab 内容（原 ProfileListPanel，去掉标题栏/容器/关闭按钮）。
-  @Builder
-  ProfilesTabContent() {
-    Column({ space: 6 }) {
-      Column({ space: 4 }) {
-          ForEach(this.profileNames, (name: string) => {
-            Row({ space: 8 }) {
-              Text(name).fontSize(12)
-                .fontColor(name === this.profileName ? '#448AFF' : '#FFFFFF')
-                .layoutWeight(1)
-              if (name === this.profileName) {
-                AppIcon({ name: AppIconName.Check, iconSize: 14, color: '#448AFF', weight: FontWeight.Bold })
-              }
-              if (this.profileNames.length > 1) {
-                Row() {
-                  AppIcon({ name: AppIconName.Close, iconSize: 14, color: '#FF5252' })
-                }
-                .onClick(() => { this.deleteEditorProfile_(name) })
-              }
-            }
-            .width('100%').height(32)
-            .padding({ left: 8, right: 8 })
-            .backgroundColor(name === this.profileName ? '#22448AFF' : '#00000000')
-            .borderRadius(6)
-            .onClick(() => { this.switchEditorProfile_(name) })
-          }, (name: string) => name)
-      }.width('100%')
-      Button('+ 新建方案').fontSize(11).height(28).fontColor('#FFFFFF')
-        .backgroundColor('#44448AFF').borderRadius(14).width('100%')
-        .onClick(() => { this.createEditorProfile_() })
-    }
-    .width('100%')
+  /** 来源切换只更新滑条观察值，不改变输入政策或建立保存事务。 */
+  private syncLookSliders(): void {
+    const value: LookParameters = this.editorLookParameters()
+    this.sensVal = Math.round(value.sensitivity * 100)
+    this.smoothVal = Math.round(value.smoothing * 100)
+    this.accelVal = Math.round(value.acceleration * 100)
   }
+
+  /** 选择另一来源结束原滑条一次拖动的撤销边界，不能用同字段名合并两来源的编辑。 */
+
+
+  /** 用户显式切换政策模式，原值完整复制到四来源；恢复兼容时保留独立参数以便再次选择。 */
+
+
+  /** 同一来源四参数在草稿内整体替换；保存和真实域激活仍由Store及会话Runtime负责。 */
+
+
+  /** 来源持久名与产品文字明确区分；外部兼容没有可据此推定的硬件身份。 */
+
+
+
+
+  // 方案 Tab 内容（原 ProfileListPanel，去掉标题栏/容器/关闭按钮）。
+
+
+
+
+
+
 
   // ============= 多选批量操作 Tab + 横幅 + 统一面板框架（2026-07-16） =============
 
   /** 多选态常驻横幅（工具面板顶部）：已选数量 + 进入批量 + 退出多选。 */
   @Builder
   MultiSelectBanner() {
-    Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Copy, iconSize: 14, color: '#66BB6A' })
-      Text('多选中 · 已选 ' + this.selectedIds.length.toString() + ' 个')
-        .fontSize(11).fontColor('#66BB6A').fontWeight(FontWeight.Medium).layoutWeight(1)
-      Text('批量')
-        .fontSize(11).fontColor('#FFFFFF')
-        .padding({ left: 10, right: 10, top: 3, bottom: 3 })
-        .backgroundColor('#4466BB6A').borderRadius(11)
-        .onClick(() => { this.openTab('multi') })
-      Text('退出')
-        .fontSize(11).fontColor('#FFFFFF')
-        .padding({ left: 10, right: 10, top: 3, bottom: 3 })
-        .backgroundColor('#55666666').borderRadius(11)
-        .onClick(() => { this.setMultiSelect(false) })
-    }
-    .width('100%')
-    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-    .backgroundColor('#2266BB6A').borderRadius(8)
-    .alignItems(VerticalAlign.Center)
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        AppIcon({ name: AppIconName.Copy, iconSize: 16, color: EditorTheme.accent })
+        Text('多选中 · 已选 ' + this.selectedIds.length.toString() + ' 个')
+          .fontSize(14).fontColor(EditorTheme.accent).fontWeight(FontWeight.Medium).layoutWeight(1)
+      }.width('100%')
+      Row({ space: 8 }) {
+        Button('批量操作').fontSize(14).fontColor(EditorTheme.accent).height(44).layoutWeight(1)
+          .backgroundColor(EditorTheme.surfaceActive).borderRadius(EditorTheme.radiusSmall)
+          .onClick(() => { this.openTab('multi') })
+        Button('退出多选').fontSize(14).fontColor(EditorTheme.text).height(44).layoutWeight(1)
+          .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+          .onClick(() => { this.setMultiSelect(false) })
+      }.width('100%')
+    }.width('100%').padding(12).backgroundColor(EditorTheme.surface)
+      .borderRadius(EditorTheme.radiusSmall).border({ width: 1, color: EditorTheme.stroke })
   }
 
   // 多选 Tab 内容：开关 + 批量对齐/等间距/样式/锁定/复制/删除。
   @Builder
   MultiTabContent() {
-    Column({ space: 8 }) {
-      Row({ space: 6 }) {
-        Text('多选模式').fontSize(12).fontColor('#FFFFFF').layoutWeight(1)
+    Column({ space: 12 }) {
+      Row({ space: 12 }) {
+        Column({ space: 3 }) {
+          Text('多选模式').fontSize(14).fontColor(EditorTheme.text).width('100%')
+          Text('点选累积选择，拖动成组移动。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
+        }.layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.multiSelectMode })
-          .selectedColor('#66BB6A')
+          .selectedColor(EditorTheme.accent).switchPointColor(EditorTheme.panel)
           .onChange((b: boolean) => { this.setMultiSelect(b) })
-      }.width('100%')
-      Text(this.multiSelectMode
-        ? ('点按钮切换选中，拖动成组移动 · 已选 ' + this.selectedIds.length.toString() + ' 个')
-        : '开启后点按钮可多选，再批量对齐/改样式/删除')
-        .fontSize(10).fontColor('#88FFFFFF').width('100%')
+      }.width('100%').constraintSize({ minHeight: 52 })
 
       if (this.multiSelectMode) {
-        Row({ space: 6 }) {
-          Button('全选').fontSize(10).height(28).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44448AFF').borderRadius(14).onClick(() => { this.selectAllControls() })
-          Button('清空').fontSize(10).height(28).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44666666').borderRadius(14).onClick(() => { this.clearSelection() })
+        Text('已选择 ' + this.selectedIds.length.toString() + ' 个控件').fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(EditorTheme.accent).width('100%')
+        Row({ space: 8 }) {
+          Button('全选').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall).onClick(() => { this.selectAllControls() })
+          Button('清空').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall).onClick(() => { this.clearSelection() })
         }.width('100%')
 
-        Divider().color('#33FFFFFF').margin({ top: 2, bottom: 2 })
+        // 0/1 选择有明确说明；对齐和等距仍由原算法处理，基准固定为选中项平均中心。
+        if (this.selectedIds.length === 0) {
+          Text('尚未选择控件。点选画面中的按键，或使用“全选”。').fontSize(14).fontColor(EditorTheme.muted)
+            .width('100%').padding(12).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+        } else if (this.selectedIds.length === 1) {
+          Text('再选择至少 1 个控件即可对齐或等间距排列；单个控件仍可改样式、复制或锁定。')
+            .fontSize(14).fontColor(EditorTheme.muted).width('100%').padding(12)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+        }
         this.SectionLabel('对齐')
+        Text('基准：选中控件的平均中心。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
         Row({ space: 6 }) {
-          Button('自动对齐').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#4466BB6A').borderRadius(15).onClick(() => { this.batchAlign('auto') })
-          Button('水平对齐').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44448AFF').borderRadius(15).onClick(() => { this.batchAlign('h') })
-          Button('垂直对齐').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44448AFF').borderRadius(15).onClick(() => { this.batchAlign('v') })
+          Button('自动对齐').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length >= 2).onClick(() => { this.batchAlign('auto') })
+          Button('水平对齐').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length >= 2).onClick(() => { this.batchAlign('h') })
+          Button('垂直对齐').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length >= 2).onClick(() => { this.batchAlign('v') })
         }.width('100%')
-        Button('等间距排列（间距 ' + this.snapGap.toString() + 'vp）').fontSize(10).height(30).fontColor('#FFFFFF')
-          .backgroundColor('#447777FF').borderRadius(15).width('100%').onClick(() => { this.batchEqualSpacing() })
+        Button('等间距排列 · 间距 ' + this.snapGap.toString() + ' vp').fontSize(14).height(44).fontColor(EditorTheme.text)
+          .backgroundColor(EditorTheme.panel).borderRadius(EditorTheme.radiusSmall).width('100%')
+          .border({ width: 1, color: EditorTheme.stroke }).enabled(this.selectedIds.length >= 2)
+          .onClick(() => { this.batchEqualSpacing() })
 
-        Divider().color('#33FFFFFF').margin({ top: 2, bottom: 2 })
         this.SectionLabel('批量')
-        Row({ space: 6 }) {
-          Button('改样式').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44AA66CC').borderRadius(15).onClick(() => { this.openTab('style') })
-          Button('复制').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#4466BB6A').borderRadius(15).onClick(() => { this.batchDuplicate() })
+        Row({ space: 8 }) {
+          Button('改样式').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length > 0).onClick(() => { this.openTab('style') })
+          Button('复制').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length > 0).onClick(() => { this.batchDuplicate() })
         }.width('100%')
         Row({ space: 6 }) {
-          Button('锁定').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44FF9800').borderRadius(15).onClick(() => { this.batchSetLocked(true) })
-          Button('解锁').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#44FF9800').borderRadius(15).onClick(() => { this.batchSetLocked(false) })
-          Button('删除').fontSize(10).height(30).layoutWeight(1).fontColor('#FFFFFF')
-            .backgroundColor('#66FF5252').borderRadius(15).onClick(() => { this.batchDelete() })
+          Button('锁定').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length > 0).onClick(() => { this.batchSetLocked(true) })
+          Button('解锁').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length > 0).onClick(() => { this.batchSetLocked(false) })
+          Button('删除').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.danger)
+            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
+            .enabled(this.selectedIds.length > 0).onClick(() => { this.batchDelete() })
         }.width('100%')
+        Text('成组拖动跳过锁定项；复制与删除跳过系统按钮。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
+        Button('完成多选').fontSize(14).height(44).fontColor(EditorTheme.panel).width('100%')
+          .backgroundColor(EditorTheme.accent).borderRadius(EditorTheme.radiusSmall)
+          .onClick((): void => { this.setMultiSelect(false); this.openTab('edit') })
+      } else {
+        Text('开启后可批量对齐、调整外观、复制、锁定和删除控件。').fontSize(14).fontColor(EditorTheme.muted)
+          .width('100%').padding(12).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
       }
     }
     .width('100%')
   }
 
-  /** 统一面板顶部的 Tab 栏。 */
+  /** 一级按任务分组；属性、多选和手柄保留原有事务实现，但不再与方案管理挤在一行。 */
+
+
   @Builder
   UnifiedTabBar() {
-    Row({ space: 3 }) {
-      this.TabChip('edit', '编辑')
-      this.TabChip('style', '样式')
-      this.TabChip('global', '全局')
-      this.TabChip('gamepad', '手柄')
-      this.TabChip('profiles', '方案')
-      this.TabChip('multi', '多选')
-    }
-    .width('100%').height(28).margin({ bottom: 4 })
-    .padding({ left: 8, right: 8 })
+    Row({space:4}) {
+      this.TabChip('edit','按键'); this.TabChip('groups','组'); this.TabChip('multi','多选'); this.TabChip('alignment','对齐')
+    }.height(44).width('100%')
+  }
+
+  /** 吸附属于编辑手势设置，与游戏视角无关。 */
+  @Builder
+  AlignmentOptions() {
+    Column({space:12}) {
+        Row() { Column({ space: 3 }) { Text('自动对齐').fontSize(14).fontColor(EditorTheme.text)
+          Text('拖动时吸附并显示参考线').fontSize(12).fontColor(EditorTheme.muted) }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Toggle({ type: ToggleType.Switch, isOn: this.snapEnabled }).selectedColor(EditorTheme.accent)
+            .onChange((value: boolean): void => { this.pushUndo(); this.snapEnabled = value })
+        }.height(52).width('100%')
+        Row() { Text('对齐间距').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+          Text(this.snapGap.toString() + ' vp').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
+        Slider({ value: this.snapGap, min: 0, max: 100, step: 1 }).width('100%').height(40).enabled(this.snapEnabled)
+          .selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
+          .onChange((value: number, mode: SliderChangeMode): void => {
+            if (!this.prepareSliderChange('snapGap', mode, this.snapGap !== Math.round(value))) return
+            this.snapGap = Math.round(value)
+          })
+        Row() { Text('吸附强度').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
+          Text(this.snapStrength.toString() + ' vp').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
+        Slider({ value: this.snapStrength, min: 2, max: 20, step: 1 }).width('100%').height(40).enabled(this.snapEnabled)
+          .selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
+          .onChange((value: number, mode: SliderChangeMode): void => {
+            if (!this.prepareSliderChange('snapStrength', mode, this.snapStrength !== Math.round(value))) return
+            this.snapStrength = Math.round(value)
+          })
+        Text('对齐参考屏幕边、同组与其它按钮中心。关闭自动对齐后参数保留并禁用。')
+          .fontSize(12).fontColor(EditorTheme.muted).width('100%')
+    }.width('100%')
   }
 
   @Builder
   TabChip(tab: string, label: string) {
-    Text(label)
-      .fontSize(10)
-      .fontColor(this.activeSheet === tab ? '#FFFFFF' : '#AAFFFFFF')
-      .fontWeight(this.activeSheet === tab ? FontWeight.Bold : FontWeight.Normal)
-      .layoutWeight(1)
-      .height(24)
-      .textAlign(TextAlign.Center)
-      .borderRadius(12)
-      .backgroundColor(this.activeSheet === tab ? '#448AFF' : '#22FFFFFF')
-      .onClick(() => { this.openTab(tab) })
+    Text(label).fontSize(14).fontColor(this.activeSheet === tab ? EditorTheme.accent : EditorTheme.muted)
+      .fontWeight(this.activeSheet === tab ? FontWeight.Medium : FontWeight.Normal)
+      .layoutWeight(1).height(44).textAlign(TextAlign.Center).borderRadius(12)
+      .backgroundColor(this.activeSheet === tab ? EditorTheme.surfaceActive : Color.Transparent)
+      .onClick((): void => { this.openTab(tab) })
   }
+
+
+  /** 普通按钮才消费四触发、拖动瞄准及连滑，显示层共用此判断以免各分区漂移。 */
+  private selectedIsOrdinaryButton_(): boolean {
+    const item: ControlItem | null = this.selectedItem()
+    return item !== null && item.type === ControlType.BUTTON && item.systemAction === undefined
+  }
+
+  /** 输入系统按钮在游戏内仍经dispatchButton发送真实聊天keys，必须保留原组合改键契约。 */
+  private selectedSupportsKeyBinding_(): boolean {
+    const item: ControlItem | null = this.selectedItem()
+    return this.selectedIsOrdinaryButton_() ||
+      (item !== null && item.type === ControlType.BUTTON && item.systemAction === 'input')
+  }
+
+  /** 按实际消费路径解释专用控件；不把占位keyOrMouse或无效trigger包装成可修改行为。 */
+  private selectedControlDescription_(): string {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null) return ''
+    if (item.systemAction === 'input') return '游戏内先发送聊天绑定再打开输入框；菜单中只打开文本输入。'
+    if (item.systemAction === 'edit') return '点击进入按键布局编辑；不发送键盘按键，触发方式由系统管理。'
+    if (item.systemAction === 'visibility') return '点击切换按键显隐档位；不发送键盘按键，触发方式由系统管理。'
+    if (item.type === ControlType.JOYSTICK) return '摇杆按移动方向控制角色；中心与疾跑可在独立触控设置中调整。'
+    if (item.type === ControlType.HOTBAR_SELECTOR) return '快捷栏直点条按点击位置选择格位，横向滑动可扫选；不使用单个键位或四触发模式。'
+    if (item.type === ControlType.SCROLL_WHEEL) return '滚轮控件通过上下滑动发送滚动，不使用键位或四触发模式。'
+    if (item.type === ControlType.DRAWER) return '抽屉入口用于展开或收起子按钮；子按钮保留各自的键位与触发设置。'
+    return ''
+  }
+
+  /** 键名来自现有GLFW目录；空序列明确展示解绑，不能伪装成一个默认键。 */
+  private selectedBindingLabel_(): string {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null) return '未选择'
+    if (item.phaseBindings !== undefined) {
+      const labels: string[]=item.phaseBindings.filter((binding: ControlPhaseBinding): boolean => binding.keys.length>0)
+        .map((binding: ControlPhaseBinding): string => this.phaseName_(binding.phase)+'：'+binding.keys.map((key: number): string => glfwKeyName(key)).join(' + ')+(binding.autoKeep ? '（切换保持）' : ''))
+      if (labels.length>0) return labels.join('；')
+    }
+    if ((item.groupActions?.length ?? 0)>0 && (item.phaseBindings !== undefined || effectiveKeys(item).length===0)) return '触控组动作'
+    const keys: number[] = effectiveKeys(item)
+    return keys.length === 0 ? '未绑定' : keys.map((key: number): string => glfwKeyName(key)).join(' + ')
+  }
+
+  private selectedTrigger_(): string { return this.selectedItem()?.trigger ?? 'press' }
+  private triggerName_(mode: string): string {
+    if (mode === 'toggle') return '切换'
+    if (mode === 'doubleTap') return '双击'
+    if (mode === 'longPress') return '长按'
+    return '按住'
+  }
+
+  /** 分段选择一次只记录一个撤销点；与旧循环按钮保持相同的连滑清理规则。 */
+  private chooseTrigger_(mode: TriggerMode): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null || this.selectedIsSystemMouse() || (item.trigger ?? 'press') === mode) return
+    if (item.phaseBindings !== undefined) { this.statusMsg='此按钮使用分阶段绑定，请在组动作面板调整'; return }
+    this.pushUndo(); item.trigger = mode
+    if (mode !== 'press') item.swipeGroup = undefined
+    this.refreshControls()
+  }
+
+  /** 编辑数字只在提交时读取，所有持久化仍使用原xPct/yPct和base尺寸字段。 */
+  private syncPositionDraft_(): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null) return
+    this.positionXDraft = Math.round(this.itemPxX(item)).toString()
+    this.positionYDraft = Math.round(this.itemPxY(item)).toString()
+    this.positionWidthDraft = Math.round(this.itemW(item)).toString()
+    this.positionHeightDraft = Math.round(this.itemH(item)).toString()
+  }
+
+  private applyPositionDraft_(): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null) return
+    if (item.locked) { this.statusMsg = '控件已锁定，请先解锁'; return }
+    const x: number = Number(this.positionXDraft), y: number = Number(this.positionYDraft)
+    const w: number = Number(this.positionWidthDraft), h: number = Number(this.positionHeightDraft)
+    if (this.positionXDraft.trim().length === 0 || this.positionYDraft.trim().length === 0 || this.positionWidthDraft.trim().length === 0 || this.positionHeightDraft.trim().length === 0 || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h) || w < 16 || h < 16) {
+      this.statusMsg = '请输入有效的位置和尺寸，宽高不能小于16'; return
+    }
+    this.pushUndo()
+    const scale: number = Math.max(0.01, this.globalScale * item.itemScale)
+    item.baseWidth = Math.min(this.screenWidth, w) / scale
+    item.baseHeight = Math.min(this.screenHeight, h) / scale
+    item.xPct = Math.max(0, Math.min(this.screenWidth - this.itemW(item), x)) / Math.max(1, this.screenWidth)
+    item.yPct = Math.max(0, Math.min(this.screenHeight - this.itemH(item), y)) / Math.max(1, this.screenHeight)
+    if (item.type === ControlType.HOTBAR_SELECTOR) item.hotbarUserPlaced = true
+    this.refreshControls(); this.syncPositionDraft_()
+    // 成功应用的是当前草稿，明确覆盖上次校验错误，不暗示已经保存到Store。
+    this.statusMsg = '位置与尺寸已应用'
+  }
+
+  /** 快速定位是当前视口的一次性编辑，不新增运行时锚点解释或每帧位置计算。 */
+  private alignSelectedToScreen_(anchor: string): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null || item.locked) { this.statusMsg = '请先选择并解锁控件'; return }
+    this.pushUndo()
+    const column: number = Number(anchor.substring(0, 1)), row: number = Number(anchor.substring(1, 2))
+    item.xPct = Math.max(0, this.screenWidth - this.itemW(item)) * column / 2 / Math.max(1, this.screenWidth)
+    item.yPct = Math.max(0, this.screenHeight - this.itemH(item)) * row / 2 / Math.max(1, this.screenHeight)
+    if (item.type === ControlType.HOTBAR_SELECTOR) item.hotbarUserPlaced = true
+    this.refreshControls(); this.syncPositionDraft_()
+    this.statusMsg = '已按当前屏幕完成定位'
+  }
+
+  private anchorName_(anchor: string): string {
+    const names: string[] = ['左上', '上中', '右上', '左中', '居中', '右中', '左下', '下中', '右下']
+    return names[Number(anchor.substring(1, 2)) * 3 + Number(anchor.substring(0, 1))] ?? '居中'
+  }
+
+  /** 取消确认不提前修改Store；最终仍调用既有完整目录事务回滚入口。 */
+  private requestCancel_(): void {
+    if (this.persistenceBusy) return
+    if (!this.editorReady) { this.cancelEditor_(); return }
+    // 只在明确点击取消时构造现有内容签名；撤销回到原内容时可以直接退出，目录操作仍需确认。
+    if (!this.sessionCatalogChanged && this.contentSignature() === this.baselineSig) {
+      this.cancelEditor_(); return
+    }
+    this.showLeaveConfirm = true
+  }
+
+
+
+
+
+  @Builder
+  BehaviorTabContent() {
+    Column({ space: 12 }) {
+      if (this.selectedItem() === null) {
+        Text('请先选择按键').fontSize(14).fontColor(EditorTheme.muted)
+      } else if (this.selectedIsSystemMouse()) {
+        Text('系统鼠标入口可调整外观和位置；行为由系统管理。')
+          .fontSize(14).fontColor(EditorTheme.muted).width('100%')
+      } else {
+        this.SectionLabel('显示场景')
+        Row({ space: 6 }) {
+          ForEach(['game', 'menu', 'always'], (scene: string): void => {
+            Button(this.sceneLabelText(scene as ControlScene)).height(44).fontSize(14).layoutWeight(1).borderRadius(12)
+              .backgroundColor(this.selectedScene_() === scene ? EditorTheme.surfaceActive : EditorTheme.surface)
+              .fontColor(this.selectedScene_() === scene ? EditorTheme.accent : EditorTheme.muted)
+              .onClick((): void => { this.chooseScene_(scene as ControlScene) })
+          }, (scene: string): string => scene)
+        }.width('100%')
+        this.SectionLabel('显示策略')
+        Row({ space: 6 }) {
+          ForEach(['auto', 'force_show', 'force_hide'], (value: string): void => {
+            Button(this.visibilityLabelText(value as VisibilityOverride)).height(44).fontSize(14).layoutWeight(1).borderRadius(12)
+              .backgroundColor(this.selectedVisibility_() === value ? EditorTheme.surfaceActive : EditorTheme.surface)
+              .fontColor(this.selectedVisibility_() === value ? EditorTheme.accent : EditorTheme.muted)
+              .onClick((): void => { this.chooseVisibility_(value as VisibilityOverride) })
+          }, (value: string): string => value)
+        }.width('100%')
+        Text('自动遵循场景；强显越过场景过滤。解绑、隐藏及控件自身能力仍优先。')
+          .fontSize(12).fontColor(EditorTheme.muted).width('100%')
+        if (this.selectedIsOrdinaryButton_()) {
+          Row() {
+            Column({ space: 3 }) { Text('拖动瞄准').fontSize(14).fontColor(EditorTheme.text)
+              Text('按住按键时拖动视角').fontSize(12).fontColor(EditorTheme.muted) }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            Toggle({ type: ToggleType.Switch, isOn: this.selectedItem()?.dragLook === true })
+              .selectedColor(EditorTheme.accent).onChange((value: boolean): void => {
+                if ((this.selectedItem()?.dragLook === true) !== value) this.toggleDragLook()
+              })
+          }.height(52).width('100%')
+          this.SectionLabel('连滑分组')
+          Row({ space: 6 }) {
+            ForEach(['', '1', '2', '3'], (group: string): void => {
+              Button(group.length === 0 ? '关闭' : '组 ' + group).height(44).fontSize(14).layoutWeight(1).borderRadius(12)
+                .backgroundColor((this.selectedItem()?.swipeGroup ?? '') === group ? EditorTheme.surfaceActive : EditorTheme.surface)
+                .fontColor((this.selectedItem()?.swipeGroup ?? '') === group ? EditorTheme.accent : EditorTheme.muted)
+                .onClick((): void => { this.chooseSwipeGroup_(group) })
+            }, (group: string): string => group)
+          }.width('100%')
+          Text('连滑仅支持普通按住按钮，并与拖动瞄准互斥。滑出释放，滑入同组按下。')
+            .fontSize(12).fontColor(EditorTheme.muted).width('100%')
+        }
+      }
+    }.width('100%')
+  }
+
+  @Builder
+  PositionTabContent() {
+    Column({ space: 12 }) {
+      if (this.selectedItem() === null) {
+        Text('请先选择控件').fontSize(14).fontColor(EditorTheme.muted)
+      } else {
+        this.SectionLabel('位置与尺寸')
+        // 字段身份必须常驻可见：已有数值会替代placeholder，不能把坐标与尺寸只写在占位文字中。
+        // 仅给原输入框增加标签与vp单位；两列排布、草稿onChange及统一“应用”事务保持原入口。
+        Row({ space: 8 }) {
+          Column({ space: 6 }) {
+            Text('横向 X · vp').fontSize(12).fontColor(EditorTheme.muted)
+            TextInput({ text: this.positionXDraft, placeholder: 'X' }).height(44).fontSize(14).width('100%')
+              .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).onChange((v: string): void => { this.positionXDraft = v })
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Column({ space: 6 }) {
+            Text('纵向 Y · vp').fontSize(12).fontColor(EditorTheme.muted)
+            TextInput({ text: this.positionYDraft, placeholder: 'Y' }).height(44).fontSize(14).width('100%')
+              .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).onChange((v: string): void => { this.positionYDraft = v })
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        }.width('100%')
+        Row({ space: 8 }) {
+          Column({ space: 6 }) {
+            Text('宽度 · vp').fontSize(12).fontColor(EditorTheme.muted)
+            TextInput({ text: this.positionWidthDraft, placeholder: '宽' }).height(44).fontSize(14).width('100%')
+              .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).onChange((v: string): void => { this.positionWidthDraft = v })
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Column({ space: 6 }) {
+            Text('高度 · vp').fontSize(12).fontColor(EditorTheme.muted)
+            TextInput({ text: this.positionHeightDraft, placeholder: '高' }).height(44).fontSize(14).width('100%')
+              .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).onChange((v: string): void => { this.positionHeightDraft = v })
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        }.width('100%')
+        Button('应用位置与尺寸').height(44).fontSize(14).width('100%').backgroundColor(EditorTheme.surfaceActive)
+          .fontColor(EditorTheme.accent).borderRadius(12).onClick((): void => { this.applyPositionDraft_() })
+        this.SectionLabel('快速定位到当前屏幕')
+        ForEach(['0', '1', '2'], (row: string): void => {
+          Row({ space: 8 }) {
+            ForEach(['0', '1', '2'], (column: string): void => {
+              Button(this.anchorName_(column + row)).height(44).fontSize(14).layoutWeight(1)
+                .backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text).borderRadius(12)
+                .onClick((): void => { this.alignSelectedToScreen_(column + row) })
+            }, (column: string): string => column)
+          }.width('100%')
+        }, (row: string): string => row)
+        EditorChip({ icon: this.selectedIsLocked() ? AppIconName.Unlock : AppIconName.Lock,
+          label: this.lockedLabel(), bg: EditorTheme.surface, onTap: () => { this.toggleLocked() } })
+      }
+    }.width('100%')
+  }
+
+
+
+  /** 仅约束确认卡的滚动视口，保留上下各12vp；不估算文字行数或固定卡片高度。 */
+  private leaveConfirmMaxH_(): number { return Math.max(1, this.screenHeight - 24) }
+
+  @Builder
+  LeaveConfirm() {
+    Stack() {
+      Column().width('100%').height('100%').backgroundColor('#B0071110')
+      // 无固定height/layoutWeight时Scroll按内容自然测量，仅在短窗口截取为可滚动视口。
+      // 标题、说明和三项操作在同一滚动内容中；大字体也能滚到按钮，不按固定文字行高猜尺寸。
+      Scroll() {
+        Column({ space: 16 }) {
+          Text('保存这次按键调整？').fontSize(18).fontWeight(FontWeight.Medium).fontColor(EditorTheme.text)
+          Text('放弃后保留进入前的布局，本次草稿不会写入方案。')
+            .fontSize(14).fontColor(EditorTheme.muted).width('100%')
+          Button('保存并退出').height(48).width('100%').fontSize(14).backgroundColor(EditorTheme.accent).fontColor(EditorTheme.panel)
+            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.saveEditor_() })
+          Button('继续编辑').height(48).width('100%').fontSize(14).backgroundColor(EditorTheme.surface).fontColor(EditorTheme.text)
+            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false })
+          Button('放弃修改').height(48).width('100%').fontSize(14).backgroundColor(Color.Transparent).fontColor(EditorTheme.danger)
+            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.cancelEditor_() })
+        }.padding(24).width('100%')
+      }.width(Math.min(420, this.screenWidth - 24)).constraintSize({ maxHeight: this.leaveConfirmMaxH_() })
+        .align(Alignment.TopStart).scrollBar(BarState.Auto).scrollBarColor(EditorTheme.stroke)
+        .backgroundColor(EditorTheme.panel).borderRadius(20).border({ width: 1, color: EditorTheme.stroke })
+    }.width('100%').height('100%')
+  }
+
+
+  /** 只查询目录变更时缓存的预设名单，列表渲染不触发载荷懒加载或磁盘访问。 */
+
+
+
+  /** 场景与显示策略是两层独立字段，分段选择只改变本层并压入一个撤销点。 */
+  private selectedScene_(): string {
+    const item: ControlItem | null = this.selectedItem()
+    return item === null ? 'always' : controlScene(item)
+  }
+  private selectedVisibility_(): string { return this.selectedItem()?.visibilityOverride ?? 'auto' }
+  private chooseScene_(scene: ControlScene): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null || this.selectedIsSystemMouse() || controlScene(item) === scene) return
+    this.pushUndo(); setControlScene(item, scene); this.refreshControls()
+  }
+  private chooseVisibility_(value: VisibilityOverride): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null || this.selectedIsSystemMouse() || (item.visibilityOverride ?? 'auto') === value) return
+    this.pushUndo(); item.visibilityOverride = value === 'auto' ? undefined : value; this.refreshControls()
+  }
+  /** 连滑只向原模型写入明确分组；不自动推断相邻按钮，也不改变其它输入来源。 */
+  private chooseSwipeGroup_(group: string): void {
+    const item: ControlItem | null = this.selectedItem()
+    if (item === null || item.type !== ControlType.BUTTON || item.systemAction !== undefined) return
+    if (!['', '1', '2', '3'].includes(group)) return
+    if ((item.trigger ?? 'press') !== 'press' || item.dragLook === true) {
+      this.statusMsg = '连滑需要按住触发，并关闭拖动瞄准'; return
+    }
+    if ((item.swipeGroup ?? '') === group) return
+    this.pushUndo(); item.swipeGroup = group.length > 0 ? group : undefined; this.refreshControls()
+  }
+
 
 }

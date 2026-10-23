@@ -2,10 +2,10 @@
 set -e
 
 # ============================================================
-#  OpenJDK 8u for HarmonyOS NEXT — 交叉编译脚手架（首次 de-risk 尝试）
+#  OpenJDK 8u for HarmonyOS NEXT — 经典布局完整构建入口
 #
 #  目标：用 clang-15 + OHOS NDK sysroot 把 jdk8u 编到 aarch64 musl/OHOS。
-#  状态：🚧 探路阶段——先打通 configure，再逐步啃 make 的编译错误。
+#  固定源码和外部字体输入、校验 series，再生成完整 image 与候选包。
 #
 #  与 build_jdk21_ohos.sh 的差异（JDK 8 特有）：
 #   - boot JDK = JDK 8（不是 21）
@@ -16,23 +16,20 @@ set -e
 #   - 经典布局产物（jre/lib/aarch64/...），无 lib/modules
 #
 #  用法（容器内）：
-#    bash build_jdk8_ohos.sh configure   # 只跑 configure（默认）
-#    bash build_jdk8_ohos.sh build       # configure + make（捕获编译错误）
+#    bash build_jdk8_ohos.sh configure   # 显式只跑 configure，不产生发行包
+#    bash build_jdk8_ohos.sh build       # 默认：完整构建、打包和内容审计
 # ============================================================
 
-STAGE=${1:-configure}
-# 优先用挂载的 /ohos-sysroot；若该 bind mount 当前为空（Docker Desktop 盘共享掉线），
-# 回退到上次构建留在容器 overlay 里的可写副本 /ohos-sysroot-rw。
+STAGE=${1:-build}
+case "$STAGE" in configure|build) ;; *) echo 'ERROR: stage must be configure or build'; exit 2;; esac
+# 原始 SDK 必须来自受控只读挂载；setup 负责生成带输入身份的可写层。
 OHOS_SYSROOT=${OHOS_SYSROOT:-/ohos-sysroot}
-if [ ! -f "$OHOS_SYSROOT/usr/include/pthread.h" ] && [ -f /ohos-sysroot-rw/usr/include/pthread.h ]; then
-  OHOS_SYSROOT=/ohos-sysroot-rw
-fi
 TOOLCHAIN_DIR=${TOOLCHAIN_DIR:-/ohos-toolchain}
 WORK_DIR=/build
 JOBS=${JOBS:-$(nproc)}
 SRC=$WORK_DIR/jdk8u
 
-# Boot JDK 8（apt 装的）
+# boot JDK8 由 Dockerfile.jdk8-toolchain 的官方归档和 SHA-256 固定。
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 if [ ! -x "$JAVA_HOME/bin/javac" ]; then
   echo "ERROR: boot JDK 8 not found at $JAVA_HOME"; exit 1
@@ -46,8 +43,22 @@ echo " Jobs:     $JOBS"
 echo "============================================"
 
 # --- 工具链 ---
-OHOS_SYSROOT="$OHOS_SYSROOT" source /build/setup_toolchain.sh
+# 不在 source 前使用临时变量赋值：Bash 会在 source 返回时恢复旧值，导致后续
+# configure 桩库错误地写向原始只读 SDK。setup 导出的可写路径必须持续有效。
+source /build/setup_toolchain.sh
 export PATH=$TOOLCHAIN_DIR:$PATH
+
+# 新卷也必须能独立完成取源、补丁、头文件准备；拒绝依赖旧容器预先做过的手工步骤。
+python3 /build/scripts/prepare_jdk_source.py 8
+python3 /build/scripts/apply_jdk_patches.py --patch-dir /prebuilt/jdk/8/patches --target "$SRC"
+mkdir -p /build/stub-cups /build/stub-headers
+cp -a /build/stubs/cups/. /build/stub-cups/
+cp -a /build/stubs/fontconfig/. /build/stub-headers/
+cp -a /build/stubs/x11/. /build/stub-headers/
+[ -d /usr/include/alsa ] || { echo 'ERROR: missing configure-only ALSA headers'; exit 1; }
+cp -a /usr/include/alsa /build/stub-headers/
+# FreeType 先用通用交叉 wrapper 构建，不需要 JDK8 的 configure 兼容 banner。
+bash /build/scripts/prepare_freetype8.sh
 
 # ============================================================
 # JDK 8 专属：骗过 GCC-only 的 toolchain 探测
@@ -56,7 +67,8 @@ export PATH=$TOOLCHAIN_DIR:$PATH
 # clang 的 banner 不匹配 → "does not seem to be the required gcc compiler"。
 # 这里把 gcc/g++ 包装器改成：遇到 --version / -dumpversion 时伪造 gcc 4.9.2 banner，
 # 其余照常 exec ohos-clang。让 configure 通过后，再看真正编译时 gcc↔clang 旗标分歧。
-# ⚠️ 这是探路用的权宜手段；正式方案应 patch toolchain.m4 增加 clang 分支（Portola/Alpine 路线）。
+# 这是显式保留的 JDK8 configure 兼容层，实际编译器始终是 clang-15；
+# 身份清单记录真实 clang 输出，不能把此探测 banner 当作 GCC 供应链身份。
 # ============================================================
 install_fake_gcc_wrapper() {
   local path="$1" clangbin="$2" lang="$3"
@@ -72,23 +84,30 @@ for a in "\$@"; do
   esac
 done
 # 编译期 vs 链接期；以及输入是否 C 源（.c）。
-LINKING=1; IS_C=0
+LINKING=1; IS_C=0; LINK_EXECUTABLE=1; HAS_OUTPUT=0
 for arg in "\$@"; do
   case "\$arg" in
     -c|-E|-S) LINKING=0;;
     *.c) IS_C=1;;
   esac
+  case "\$arg" in -c|-E|-S|-shared|-r) LINK_EXECUTABLE=0;; -o) HAS_OUTPUT=1;; esac
 done
 ARGS=()
 for arg in "\$@"; do
   case "\$arg" in
     -lpthread|-ldl|-lrt|-lresolv) ;;
     -static-libstdc++|-static-libgcc) ;;
-    -lstdc++) ARGS+=("-lc++");;
+    # HotSpot 关闭 C++ 异常/RTTI，所需 ABI 符号由已验证的专用 shim 提供。
+    # 原脚本转成 -lc++ 依赖旧 sysroot 的手工库，新 SDK 并没有该文件。
+    -lstdc++) ARGS+=("-lcxxabi_shim");;
     -std=gnu++*|-std=c++*) [ "\$IS_C" = "1" ] || ARGS+=("\$arg");;
     *) ARGS+=("\$arg");;
   esac
 done
+# 经典 JDK 的辅助程序若存在也必须使用 OHOS musl 解释器；共享库不能加此参数。
+if [ "\$LINK_EXECUTABLE" = 1 ] && [ "\$HAS_OUTPUT" = 1 ]; then
+  ARGS+=("-Wl,--dynamic-linker=/lib/ld-musl-aarch64.so.1")
+fi
 COMMON="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -Qunused-arguments -Wno-error=int-conversion -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos -I/build/stub-headers ${cxxflags} -B${syslib} -L${syslib} -rtlib=compiler-rt -unwindlib=none -fuse-ld=lld"
 if [ "\$LINKING" = "1" ]; then
   exec $clangbin \$COMMON -L/build/jdk8-libs -lcxxabi_shim "\${ARGS[@]}" -Wno-error
@@ -101,12 +120,11 @@ WRAP
 install_fake_gcc_wrapper "$TOOLCHAIN_DIR/aarch64-linux-ohos-gcc" /usr/bin/ohos-clang c
 install_fake_gcc_wrapper "$TOOLCHAIN_DIR/aarch64-linux-ohos-g++" /usr/bin/ohos-clang++ cxx
 echo "  installed fake-gcc-banner wrappers w/ baked cross flags (JDK8 workaround)"
-if [ "$STAGE" = "wrappers" ]; then echo "wrappers reinstalled; exiting"; exit 0; fi
 
 cd "$SRC"
 
-# WSL 误判修复（Docker Desktop 跑在 WSL2 内核上）
-sed -i 's/uname -r | grep -i microsoft/false/' common/autoconf/build-aux/config.guess 2>/dev/null || true
+# 锁定的 8u452 源码不存在旧脚本假定的 WSL 检测行；不再执行静默无效的 sed。
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 
 ARCH_INCLUDE="-I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos"
 LIBCXX_INC=/usr/lib/llvm-15/include/c++/v1
@@ -194,6 +212,7 @@ if [ "$STAGE" = "configure" ] || [ "$STAGE" = "build" ]; then
     --with-debug-level=release \
     --with-native-debug-symbols=none \
     --with-boot-jdk=$JAVA_HOME \
+    --with-stdc++lib=dynamic \
     --with-freetype-include=/build/freetype-2.13.3/include \
     --with-freetype-lib=/build/freetype-2.13.3/objs/.libs \
     --with-extra-cflags="$COMMON_CFLAGS" \
@@ -222,7 +241,7 @@ if [ "$STAGE" = "build" ]; then
   # sysroot + -L + -unwindlib），导致用 host clang-15 编 adlc 等"构建期工具"时被当成
   # aarch64 交叉编（编出的 adlc 在 x86 host 上跑不了）且链接旗标在 -c 期 -Werror。
   # HOSTCXX 本身已正确指向 /usr/bin/clang++-15（host），只需把 HOST_* 旗标清成干净 host 旗标。
-  HSPEC=$(ls "$SRC"/build/*/hotspot-spec.gmk 2>/dev/null | head -1)
+  HSPEC="$SRC/build/linux-aarch64-normal-server-release/hotspot-spec.gmk"
   if [ -n "$HSPEC" ]; then
     echo "[fix] cleaning HOST_* flags in $HSPEC"
     {
@@ -233,7 +252,7 @@ if [ "$STAGE" = "build" ]; then
       echo "HOST_LDFLAGS = -m64"
     } >> "$HSPEC"
   else
-    echo "[fix] WARNING: hotspot-spec.gmk not found; adlc host-tool fix not applied"
+    echo "ERROR: exact hotspot-spec.gmk missing"; exit 1
   fi
 
   echo "[build] make images (capturing first errors)..."
@@ -273,4 +292,13 @@ if [ "$STAGE" = "build" ]; then
   fi
   echo "BUILD_EXIT=$RC"
   [ "$RC" -eq 0 ] || exit "$RC"
+
+  # 经典布局保留完整 jre 与 release。外部字体和 ABI 垫片同最终 image 一起审计，
+  # 不能再只抽取单个 libnet/libjvm 替换旧包来冒充一次完整源码重建。
+  IMAGE="$SRC/build/linux-aarch64-normal-server-release/images/j2sdk-image"
+  cp "$OUT_LIBDIR/libcxxabi_shim.so" "$IMAGE/jre/lib/aarch64/"
+  cp -L /build/freetype-2.13.3/objs/.libs/libfreetype.so "$IMAGE/jre/lib/aarch64/libfreetype.so.6"
+  # 修复后的完整运行包使用独立名称；不能覆盖曾含缺失 HotSpot 符号的旧候选。
+  JDK_VERSION=8 JDK_IMAGE="$IMAGE" JDK_OUTPUT=/output/jdk8-ohos-runtime-link-rc1.zip \
+    bash /build/scripts/pack_jdk_full.sh
 fi

@@ -58,6 +58,10 @@ public:
     // other threads wait until the reset boundary has completed.
     bool ResetInProgress() const;
     size_t HeldIdentityCount() const;
+    /** neutral 内部候选复制/无分配提交。锁引用及 ledger 引用始终指向各自运行时，
+     * 只移动持有身份和 reset 状态，不能把 C++ 容器地址借给平台 DSO。 */
+    void CopyStateFrom(const LegacyPhysicalEdgeRouter& prior);
+    void SwapState(LegacyPhysicalEdgeRouter& candidate) noexcept;
 
 private:
     struct HeldEdge {

@@ -44,6 +44,8 @@ struct FileChecker {
      *       NetFile 会在后台线程里调用 check，不阻塞调度线程。
      */
     DownloadExceptionPtr check(const std::string& local_path) const;
+    /** 校验可信父目录下已打开的普通文件；借用 fd，不关闭也不改变其偏移。 */
+    DownloadExceptionPtr checkFd(int fd) const;
 
     /**
      * v4.6: 快速校验 — 接受预计算的 SHA1（40 字符 hex 小写），通过

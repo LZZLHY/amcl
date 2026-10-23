@@ -40,6 +40,12 @@ LIBGLFW {
         amclInputGetHostApiV1;
         amclDesktopHostResolve;
 
+        # L2 在已加载的 GLFW handle 上查询此 C getter，并核对它与 glfwCreateWindow
+        # 来自同一映像。visibility(default) 和 --undefined 只保留代码，不能越过
+        # 本脚本的 local:*；必须精确导出 getter，不能以字符串在库中存在代证可达。
+        # 所有产品沿既有身份与 mask 返回常量；导出本身不启用诊断或放宽 provider。
+        amclDiagnosticBuildIdentity;
+
         # Non-GLFW backends (LWJGL2 / SDL3) pull already-backend-encoded typed
         # events through these. Their addresses travel by environment variable,
         # because dlsym across the JVM's linker namespace was measured to fail

@@ -2,36 +2,16 @@
 #define AMCL_INPUT_STATE_CORE_H
 
 #include "amcl_input_api.h"
+#include "input_look_core_hook.h"
+#include "input_text_core_hook.h"
 
 #include <memory>
 
 namespace amcl::input {
 
-// §11 requires every phase to emit identity/ordering, per-action physical,
-// held-owner, queue, capture and text metrics. `AmclInputSnapshotV1` is frozen
-// at 104 bytes and the V1 function table at 144 (both static_asserted in
-// amcl_input_api.h), so these counters are exposed as a C++-level struct rather
-// than by growing either. That is deliberate: a cross-DSO ABI generation bump
-// would force every out-of-tree V1 consumer to be recompiled to buy diagnostics
-// it never reads. If a libentry.so-side reader ever appears, this has to become
-// a versioned table entry instead of being marshalled ad hoc.
-//
-// ⚠️ Reader inventory, corrected 2026-08-20. The previous wording claimed "the
-// only readers are inside libglfw.so (**the typed adapter** and the host
-// tests)". The typed adapter is NOT a reader -- `GetObservability`,
-// `LogObservabilitySummary` and `CoreObservabilityV1` appear nowhere in
-// `glfw_input_adapter.cpp` or `glfw_compat.cpp`. The actual inventory is:
-//   * `Impl::LogObservabilityLocked` -- private, called by BeginSession
-//     ("session-replaced") and EndSession ("session-end");
-//   * `input_state_core_test.cpp` -- the only caller of the public accessors.
-// So the honest statement is "no non-test reader outside this file". That is a
-// weaker fact than the old sentence, and it is the one that matters: the whole
-// argument for not making this a versioned table entry rested on a reader that
-// does not exist. The DSO half of the old sentence was right (CMakeLists assigns
-// both this TU and the adapter to libglfw.so only).
-//
-// Every field is a plain uint64_t read under the core mutex, so a snapshot is
-// internally consistent. Counters are session-scoped: BeginSession clears them.
+// core诊断快照按同一mutex取值，计数在会话开始时清零。104字节snapshot与144字节
+// 函数表前缀保持稳定；有序尾表是另经能力/长度校验的扩展，不承载本C++观测结构。
+// 运行时会话摘要在Impl锁内记录，公开访问器由host回归读取；不得把新取的墙钟当事件时间。
 struct CoreObservabilityV1 {
     // ---- identity / ordering -------------------------------------------
     // `lastSequence` / `lastMonotonicTimeNs` are the values stamped onto the
@@ -73,12 +53,11 @@ struct CoreObservabilityV1 {
     // correctly ("core rewrote ... or replaced with a diagnostic") -- use that
     // phrasing as the model.
     //
-    // Scope, stated precisely because it is easy to overclaim: these count edges
-    // core ACCEPTED. Submissions rejected before acceptance — STALE epoch,
-    // UNFOCUSED, BACKEND_NOT_READY, invalid payload, sequence or capacity
-    // exhaustion — are returned to the producer as error codes and appear in no
-    // field here. The producer-side plane (input_trace.h) counts those, so the
-    // two planes must be read together; neither alone equals "submissions".
+    // 口径：这里只计 core **已接受**的边沿。接受前被拒的提交（STALE epoch、UNFOCUSED、
+    // BACKEND_NOT_READY、非法载荷、sequence/容量耗尽）以错误码返回生产者，不进本结构，
+    // 由生产者侧 `input_trace.h` 计数；两个平面须合读，单看任一个都不等于“提交数”。
+    // 唯一例外是未知事件类型：生产者侧不知道它属于哪类，只有 core 能判定“本 host 不支持
+    // 该类型”，所以单独计入下方 `unknownEventTypes`。
     uint64_t physicalDown = 0;
     uint64_t physicalRepeat = 0;
     uint64_t physicalUp = 0;
@@ -143,10 +122,18 @@ struct CoreObservabilityV1 {
     uint64_t queueReads = 0;
     uint64_t queueDiscarded = 0;
     uint64_t queuePending = 0;
+    // 全局容量复位次数：`OverflowReset` 与 `ResetThenLifecycle` 溢出分支，即清掉全部
+    // held/capture/text、所有接收者只收到同一条 RESET 的那一类。局部压力退休**不**计在
+    // 这里（见下两项），否则会话摘要分不清“全体按键被丢”与“一个落后消费者重握手”。
     uint64_t queueOverflowResets = 0;
-    // RESET events core actually emitted, all reasons — including the
-    // per-consumer CONSUMER_BASELINE emitted by OpenConsumer. Distinct from
-    // `queueOverflowResets`, which counts only the capacity-driven subset.
+    // 局部压力退休：因共享队列（queue）或文本包池（blob）不足，只给积压的接收者发定向
+    // RESET、随后以 STALE 收尾的次数；全局 held/capture/text 不变，该接收者重新 Open 即可。
+    // 对同一资源的一次容量不足，要么由局部隔离解决、要么走唯一一次全局复位，不会先白白
+    // 隔离再复位，所以它与 `queueOverflowResets` 不会为同一次不足各记一次。
+    uint64_t pressureRetirementsQueue = 0;
+    uint64_t pressureRetirementsBlob = 0;
+    // core 实际发出的 RESET 总数（所有原因），含 OpenConsumer 的逐消费者
+    // CONSUMER_BASELINE 与压力退休的定向 RESET；上面三项各自对应其中一部分。
     uint64_t resetsEmitted = 0;
 
     // ---- capture --------------------------------------------------------
@@ -178,6 +165,12 @@ struct CoreObservabilityV1 {
     uint64_t textEdits = 0;
     uint64_t textCandidates = 0;
     uint64_t textSelections = 0;
+
+    // ---- protocol -------------------------------------------------------
+    // 被拒的未知事件类型（大于本 core 认识的最大类型）。生产者比 core 新或误用 ABI 时出现；
+    // 单条与批量提交都返回 AMCL_INPUT_ERROR_INVALID_ARGUMENT，并按 2 的幂节流写 WARN。
+    // 类型 0 与生产者伪造的 DIAGNOSTIC_DROP 属于非法载荷，不计在这里。会话作用域，饱和不回绕。
+    uint64_t unknownEventTypes = 0;
 };
 
 class InputStateCore final {
@@ -203,8 +196,10 @@ public:
                                 uint32_t capabilities);
     int32_t RequestReset(uint32_t reason);
     int32_t OpenConsumer(AmclInputConsumerHandle* outConsumer);
+    // peekOnly不消费、不转移blob所有权；maxOrder之外的队首保留，outOrder只在成功时填写。
     int32_t NextEvent(AmclInputConsumerHandle consumer,
-                      AmclInputEvent* outEvent);
+                      AmclInputEvent* outEvent, uint64_t* outOrder = nullptr,
+                      uint64_t maxOrder = UINT64_MAX, bool peekOnly = false);
     int32_t ReadPacketBlob(AmclInputConsumerHandle consumer,
                            const AmclInputBlobRef* blob, uint8_t* outBytes,
                            uint32_t outCapacity, uint32_t* outByteCount);
@@ -212,6 +207,21 @@ public:
                           uint64_t packetId);
     int32_t CloseConsumer(AmclInputConsumerHandle consumer);
     int32_t GetSnapshot(AmclInputSnapshotV1* outSnapshot);
+    // 私有metadata读取，不扩展公开snapshot/host表；caller不得持core mutex，不解释成有序坐标交付。
+    int32_t ReadCurrentSurfaceContext(AmclInputSurfaceContextPayload* outContext);
+    /** 私有look资格读取：在同一锁内核活surface、focus、context和全部epoch，不扩104-byte ABI。 */
+    int32_t ReadLookResource(AmclInputLookCoreResourceV1* resource);
+    /** 私有文字原事实及无锁围栏；Source不得在order/push内回取Core mutex。 */
+    int32_t ReadTextResource(AmclInputTextCoreResourceV1* resource);
+    int32_t ValidateTextScope(uint64_t scope);
+    /** 私有Keyboard事实投影与原读取侧带；不进入冻结host表或公开事件。 */
+    uint64_t L2KeyboardScope() const;
+    bool CompareL2KeyboardScope(uint64_t expected,uint64_t desired);
+    void SelectKeyboardBackend(uint32_t backend);
+    uint32_t SelectedKeyboardBackend() const;
+    int32_t ReadL2KeyStamp(uint64_t consumer,uint64_t sequence,uint64_t* scope);
+    /** 新L2 Keyboard基线仅读仍合法物理事实；不重放旧队列或生成新的硬件owner。 */
+    int32_t ReadL2HeldKey(int32_t key);
     // §11 metrics. Not reachable through the frozen C function table by design
     // (see CoreObservabilityV1). Takes the core mutex, so a caller must not
     // hold it.

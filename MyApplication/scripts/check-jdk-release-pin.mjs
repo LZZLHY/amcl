@@ -191,17 +191,33 @@ export function run(root = ROOT) {
   const lockText = fs.readFileSync(path.join(root, 'deps.lock'), 'utf8');
   const constText = fs.readFileSync(
     path.join(root, 'commons/src/main/ets/common/Constants.ets'), 'utf8');
-  const jdkText = fs.readFileSync(
-    path.join(root, 'launch/src/main/ets/JdkManager.ets'), 'utf8');
   const constants = parseConstants(constText);
   const lock = parseDepsLock(lockText);
-  const jdk = parseJdkVersions(jdkText, constants);
+  // 新目录不再要求每次推荐更新同步四份常量；这里只冻结旧 HAP 仍依赖的资产身份。
+  // 新增构建由生产目录 parser / 签名 / 发布回读门禁约束。旧文本 parser 留作历史样本自测。
+  const catalog = JSON.parse(fs.readFileSync(path.join(root,'entry/src/main/resources/rawfile/runtime-catalog/builtin.json'),'utf8'));
+  const jdk = parseBuiltinPins(catalog);
   const readmes = {};
   for (const v of Object.keys(jdk)) {
     const p = path.join(root, 'prebuilt/jdk', v, 'README.md');
     if (fs.existsSync(p)) readmes[v] = fs.readFileSync(p, 'utf8');
   }
   return { lock, jdk, constants, readmes, problems: verify(lock, jdk, readmes) };
+}
+
+/** 将数据文件中的 legacy 身份投影到旧门禁，不能以空 map 使检查意外全绿。 */
+export function parseBuiltinPins(catalog) {
+  const pins = {};
+  for (const runtime of catalog.runtimes) {
+    const legacy = catalog.builds.filter(b => b.runtimeId === runtime.id && b.provenance.kind === 'legacy');
+    if (legacy.length === 0) continue;
+    if (legacy.length !== 1 || legacy[0].legacyTags.length !== 1) throw new Error('ambiguous legacy pin');
+    const b = legacy[0], parts=b.downloads.find(d=>d.sourceId==='gitee')?.parts || [];
+    pins[String(runtime.javaMajor)] = { tag:b.legacyTags[0],dataFile:b.archive.fileName,sizeBytes:b.archive.sizeBytes,
+      sha256:b.archive.sha256,giteeParts:parts.map(p=>p.url.split('/').pop()),giteePartSizes:parts.map(p=>p.sizeBytes) };
+  }
+  if (!['8','17','21','25'].every(v=>pins[v])) throw new Error('missing required historical asset pin');
+  return pins;
 }
 
 // 直接执行时作为门禁跑
@@ -212,11 +228,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(url.fileUR
     console.error('[check-jdk-release-pin] FAIL  ' + r.problems.length + ' 处不一致：');
     for (const p of r.problems) console.error('  - ' + p);
     console.error('');
-    console.error('  换 JDK 包必须同步四处：');
-    console.error('    1) launch/src/main/ets/JdkManager.ets 的 JDK_VERSIONS[<ver>]');
-    console.error('    2) commons/src/main/ets/common/Constants.ets 的 *_RELEASE_TAG / *_RELEASE_ASSET');
-    console.error('    3) deps.lock 的 [mc-ohos-resources*]');
-    console.error('    4) prebuilt/jdk/<ver>/README.md');
+    console.error('  旧下载资产不可变；核对 builtin legacy 身份、deps.lock 与历史 README，不要覆盖旧发布包。');
     process.exit(1);
   }
   console.log('[check-jdk-release-pin] PASS');
@@ -225,7 +237,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(url.fileUR
     console.log(`  JDK ${v}: ${j.tag} / ${j.dataFile} / ${j.sizeBytes} B`
       + (j.giteeParts.length > 0 ? ` / ${j.giteeParts.length} 卷之和一致` : ' / 无 Gitee 分卷'));
   }
-  console.log('  checked: 四处 SoT 的 tag/asset/sizeBytes/sha256 互相一致；');
+  console.log('  checked: builtin legacy 身份与历史 deps.lock 的 tag/asset/sizeBytes/sha256 一致；');
   console.log('           giteeParts 与 giteePartSizes 等长、之和等于 sizeBytes、卷名以 asset 开头；');
   console.log('           README 提到当前 tag。');
   console.log('  NOT checked: 线上资产是否真的存在（那需要联网，属发布流程不属门禁）。');

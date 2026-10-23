@@ -28,6 +28,7 @@
  */
 
 import { launchNative } from './LaunchNativeBridge';
+import { hasPendingModpackInstall } from 'commons';
 import { modInstallationActive, normalizeModDirectory, recoverModTransaction, withModDirectoryLock } from 'mods';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LaunchProfileBuilder, LaunchProfile } from './LaunchProfileBuilder';
@@ -36,6 +37,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { GraphicsGameFacts, graphicsGameFacts } from './GraphicsGameFacts';
 import { verifyLwjglRuntimeSlot, LwjglSlotIntegrityResult } from './LwjglSlotIntegrity';
 import { lwjglGenerationDirectory } from './RuntimeSlotGenerations';
+import { RuntimeDeployer } from './RuntimeDeployer';
 import {
   LaunchContractReport, describeLaunchContractViolations, describeLaunchContractWarnings,
 } from './LaunchContractPreflight';
@@ -132,6 +134,7 @@ export class PreLaunchValidator {
     try {
       // 活动计数使用规范化路径；检查与加锁必须使用同一个 key，含尾斜杠的 gameDir
       // 也不能绕过正在进行的安装。加锁同步登记后才让出执行，沿用现有互斥边界。
+      if (hasPendingModpackInstall(input.gameDir)) throw new Error('整合包安装尚未完成，请到下载页继续或补齐安装');
       const dir = normalizeModDirectory(input.gameDir + '/mods');
       if (modInstallationActive(dir)) throw new Error('此版本正在安装或更新模组，请等待完成后启动');
       await withModDirectoryLock<void>(dir, async (): Promise<void> => {
@@ -271,7 +274,8 @@ export class PreLaunchValidator {
    * @param jdkInstalled 调用方（Index）用 JdkManager.isInstalled(jdkVersion) 算好注入，
    *                     避免本纯函数耦合服务实例。
    */
-  static async runRuntime(input: PreLaunchInput, jdkInstalled: boolean): Promise<PreLaunchCheck> {
+  static async runRuntime(input: PreLaunchInput, jdkInstalled: boolean,
+    context: Context | undefined = undefined): Promise<PreLaunchCheck> {
     // 3a. JDK 完整性（isInstalled 已含 marker + libjvm.so/libjli.so/lib/modules 探针）
     if (!jdkInstalled) {
       return {
@@ -292,7 +296,16 @@ export class PreLaunchValidator {
     const facts: GraphicsGameFacts = graphicsGameFacts(parsed.libraries, input.version);
     const directory: string = facts.lwjglVersion === 2 ? 'lwjgl-ohos-2'
       : (facts.needsLwjgl322Slot ? 'lwjgl-ohos-322' : 'lwjgl-ohos');
-    const integrity: LwjglSlotIntegrityResult = await verifyLwjglRuntimeSlot(lwjglGenerationDirectory(input.mcDir, directory));
+    const javaFeature: number = Number(input.jdkVersion);
+    let integrity: LwjglSlotIntegrityResult;
+    try {
+      // 生产 UI 注入所在 Ability 的 Context：选择 JDK 后、校验前确保派生视图可用。
+      // 无 Context 的只读宿主校验仍只检查已部署内容，不另造资源或替代选择逻辑。
+      if (context !== undefined) new RuntimeDeployer(context).deployLwjglSlotForLaunch(input.mcDir, directory, javaFeature);
+      integrity = await verifyLwjglRuntimeSlot(lwjglGenerationDirectory(input.mcDir, directory, javaFeature), javaFeature);
+    } catch (error) {
+      integrity = { ok: false, detail: '启动器运行库准备失败：' + (error as Error).message };
+    }
     if (!integrity.ok) {
       return { id: 'runtime', title: '运行时环境', status: 'fail',
         detail: integrity.detail, fixActionKey: '' };

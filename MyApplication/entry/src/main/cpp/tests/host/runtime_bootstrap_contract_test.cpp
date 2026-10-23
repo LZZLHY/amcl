@@ -12,17 +12,30 @@
 int main() {
     using namespace amcl::jvm;
     const auto properties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", true);
+    // EGL 必须在首次 LWJGL Configuration 读取前与真实 provider 配对，不能误用 Linux 的
+    // libEGL.so.1 或把翻译器的虚拟句柄交给系统 EGL。这里同时覆盖两条系统路线及无 EGL 的 Vulkan。
+    REQUIRE(RuntimeEglLibrary("/hap/libs", "mobileglues") == "/hap/libs/libamcl_lwjgl_egl.so");
+    REQUIRE(RuntimeEglLibrary("/hap/libs", "mobilegl") == "/hap/libs/libamcl_lwjgl_egl.so");
+    REQUIRE(RuntimeEglLibrary("/hap/libs", "gl4es") == "/hap/libs/libamcl_lwjgl_egl.so");
+    REQUIRE(RuntimeEglLibrary("/hap/libs", "nativegl") == "/hap/libs/libamcl_lwjgl_egl.so");
+    REQUIRE(RuntimeEglLibrary("/hap/libs", "minecraft-vulkan").empty());
+    REQUIRE(RuntimeEglLibrary("/hap/libs", "unknown-profile").empty());
     std::string error;
     std::vector<std::string> args{"-Xmx1024m", "-Dorg.lwjgl.sdl.libname=libSDL3.so", "-Dorg.lwjgl.libname=lwjgl_v322"};
     REQUIRE(FreezeBootstrapProperties(args, properties, error));
     const auto once = args;
     REQUIRE(std::find(args.begin(), args.end(), "-Djna.tmpdir=/instance/natives/jna") != args.end());
+    REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.egl.libname=/hap/libs/libamcl_lwjgl_egl.so") != args.end());
+    REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.opengles.libname=libGLESv3.so") != args.end());
+    REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.opengles.contextAPI=EGL") != args.end());
     REQUIRE(FreezeBootstrapProperties(args, properties, error) && args == once);
     REQUIRE(std::count(args.begin(), args.end(), "-Dorg.lwjgl.sdl.libname=libSDL3.so") == 1);
     REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.libname=lwjgl_v322") != args.end());
     for (const char* invalid : {"-Dorg.lwjgl.sdl.libname", "-Dorg.lwjgl.opengl.libname=evil",
             "-Djava.system.class.loader=Other", "-Djava.class.path=/other", "-Djava.library.path=/other",
-            "-Dorg.lwjgl.vulkan.libname=other", "-Damcl.sdl3=0", "-Damcl.graphics.profile=other",
+            "-Dorg.lwjgl.vulkan.libname=other", "-Dorg.lwjgl.egl.libname=libEGL.so.1",
+            "-Dorg.lwjgl.egl.libname", "-Dorg.lwjgl.opengles.libname=libGLESv2.so.2",
+            "-Dorg.lwjgl.opengles.contextAPI=native", "-Damcl.sdl3=0", "-Damcl.graphics.profile=other",
             "exit", "exit=0", "exitHook", "abort", "abortSuffix", "vfprintf", "vfprintf=log"}) {
         auto bad = once; bad.emplace_back(invalid); const auto unchanged = bad;
         REQUIRE(!FreezeBootstrapProperties(bad, properties, error) && bad == unchanged && !error.empty());

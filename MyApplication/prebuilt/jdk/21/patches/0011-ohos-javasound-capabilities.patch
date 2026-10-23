@@ -1,0 +1,36 @@
+--- a/make/modules/java.desktop/Lib.gmk
++++ b/make/modules/java.desktop/Lib.gmk
+@@ -45,18 +45,20 @@
+   LIBJSOUND_CFLAGS := \
+       $(ALSA_CFLAGS) \
+       -DX_PLATFORM=X_$(OPENJDK_TARGET_OS_UPPERCASE) \
+-      -DUSE_PORTS=TRUE \
+-      -DUSE_DAUDIO=TRUE \
+-      -DUSE_PLATFORM_MIDI_OUT=TRUE \
+-      -DUSE_PLATFORM_MIDI_IN=TRUE \
++      -DUSE_PORTS=FALSE \
++      -DUSE_DAUDIO=FALSE \
++      -DUSE_PLATFORM_MIDI_OUT=FALSE \
++      -DUSE_PLATFORM_MIDI_IN=FALSE \
+       #
+ 
+   ifeq ($(call isTargetOs, macosx), true)
+     LIBJSOUND_TOOLCHAIN := TOOLCHAIN_LINK_CXX
+   endif
+ 
++  # OHOS：硬件能力未实现时使用共享 JNI 的无设备分支，排除 ALSA 平台单元。
+   $(eval $(call SetupJdkLibrary, BUILD_LIBJSOUND, \
+       NAME := jsound, \
++      EXCLUDE_FILES := $(notdir $(wildcard $(TOPDIR)/src/java.desktop/linux/native/libjsound/PLATFORM_API_LinuxOS_ALSA*.c)), \
+       TOOLCHAIN := $(LIBJSOUND_TOOLCHAIN), \
+       OPTIMIZATION := LOW, \
+       CFLAGS := $(CFLAGS_JDKLIB) \
+@@ -67,7 +69,7 @@
+       LDFLAGS := $(LDFLAGS_JDKLIB) \
+           $(call SET_SHARED_LIBRARY_ORIGIN), \
+       LIBS_unix := -ljava -ljvm, \
+-      LIBS_linux := $(ALSA_LIBS), \
++      LIBS_linux :=, \
+       LIBS_macosx := -framework CoreAudio -framework CoreFoundation \
+           -framework CoreServices -framework AudioUnit \
+           -framework CoreMIDI -framework AudioToolbox $(LIBCXX), \

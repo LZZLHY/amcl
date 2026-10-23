@@ -260,11 +260,15 @@ export class ModInstallService {
 
   private async releaseDownload(id: number): Promise<boolean> {
     if (id <= 0) return true;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      if (DownloadManager.instance().purgeTask(id)) return true;
-      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 100); });
-    }
-    return false;
+    const manager = DownloadManager.instance();
+    let released = false;
+    try { released = manager.purgeTask(id); } catch (_) { /* 查询/桥异常继续交公共屏障等待。 */ }
+    if (released) return true;
+    // 服务仍持模组目录事务和父 Registry action；有限等待后返回 false 虽能保留
+    // staging，却会提前释放外层锁/文件租约。持续等待该实际 ID，沿公共屏障只警告
+    // 慢收敛，不把超时当退出，也不改首次下载错误/取消或其他订阅者的结果。
+    await manager.awaitTaskReleased(id, true);
+    return true;
   }
 
   private async fingerprint(dir: string): Promise<string> {

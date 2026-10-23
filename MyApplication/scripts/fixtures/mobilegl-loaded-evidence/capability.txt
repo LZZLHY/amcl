@@ -1,0 +1,9 @@
+AMCL_MOBILEGL_CAPABILITY_V1
+profile=mobilegl game_api=OPENGL internal_transport=VULKAN
+mobilegl_shader_compile_link_draw_readback_verified
+mobilegl_present_success_1
+mobilegl_present_success_2
+mobilegl_present_success_3
+shader_compilations=2 program_links=1 pixel_verifications=5 successful_presents=3 present_counter=3 cleanup_complete=1
+admission=PASS reason=mobilegl_launch_prerequisites_verified
+lifecycle_smoke=NOT_RUN (rotation/background/input/Minecraft are separate checks)

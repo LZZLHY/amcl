@@ -12,6 +12,7 @@ const wsiExports = ['vkGetInstanceProcAddr', 'amclVulkanSetAdmission', 'amclVulk
   'vkGetDeviceProcAddr', 'amclVulkanCreateSurface', 'amclVulkanWindowHasLiveSurface',
   'amclVulkanGetStats', 'amclVulkanGetDeviceProcAddr'];
 const glfwExports = ['glfwInitVulkanLoader', 'glfwVulkanSupported', 'glfwGetRequiredInstanceExtensions',
+  'glfwOHOS_MakeContextCurrentChecked',
   'glfwGetInstanceProcAddress', 'glfwGetPhysicalDevicePresentationSupport', 'glfwCreateWindowSurface',
   'glfwOHOS_BindGraphicsRuntimeV1', 'glfwOHOS_GraphicsGlProcV1', 'glfwOHOS_GraphicsEglProcV1',
   'glfwOHOS_PublishGraphicsObserverV1', 'glfwOHOS_GraphicsRuntimeJsonV1', 'glfwOHOS_GraphicsFailureJsonV1'];

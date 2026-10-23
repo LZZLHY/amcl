@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const before = process.argv.includes('--before');
@@ -28,24 +29,28 @@ function load(file, dependencies, storage) {
 }
 
 /** 每例创建全新模块状态；通知保持pending，用于证明terminateSelf未抢先结束进程。 */
-function scenario(failure = '') {
+function scenario(failure = '', observation = false) {
   const events = [], disk = [], notices = [], values = new Map();
   let persistent = false, monitors = 0, loads = 0, resolveReport, rejectReport;
   const report = new Promise((resolve, reject) => { resolveReport = resolve; rejectReport = reject; });
   const record = (...args) => { if (persistent) disk.push(args.map(String).join(' ')); };
-  const logger = { info: record, error: record, warn: record, debug: record,
+  const logger = { info: record, error: record, warn: (...args) => {
+    events.push('warn'); if (failure === 'diagnostic-log') throw Error('controlled logger failure'); record(...args);
+  }, debug: record,
     flush: () => events.push('flush'), setNativeLogSink: () => { persistent = true; } };
   const storage = { setOrCreate: (key, value) => values.set(key, value), get: key => values.get(key) };
   const context = { filesDir: '/private/files', applicationInfo: { name: 'com.amcl.launcher' }, config: { colorMode: 1 },
     getApplicationContext: () => context,
     startAbility: want => { events.push('report'); notices.push(want); return report; },
     terminateSelf: async () => { events.push('terminate'); } };
-  const native = { desktopGameProcessState: () => {
+  const native = { configureSideloadInstallRoot: () => true, desktopGameProcessState: () => {
     if (failure === 'isolation-throw') throw new Error('isolation boundary failed');
     return failure === 'isolation' ? -2 : 1;
   }, desktopProcessId: () => 200, amclLogInit: () => {
     events.push('log-init'); if (failure === 'log') throw new Error('disk unavailable');
-  }, getDiagnosticCapabilities: () => 0, amclLedgerSetLaunchActivity: noop,
+  }, getDiagnosticCapabilities: () => {
+    if (failure.startsWith('diagnostic')) throw Error('controlled diagnostic boundary failure'); return 0;
+  }, amclLedgerSetLaunchActivity: noop,
     desktopSetGamepadNativeMode: () => true, desktopGamepadFocus: noop, cancelAllInput: noop,
     setOhosFrameRateForeground: noop, mcForceExit: () => events.push('exit') };
   const monitor = { ensureStarted: () => {
@@ -55,12 +60,13 @@ function scenario(failure = '') {
   const commons = { AppLogger: logger, LOG_DOMAIN_LAUNCH: 1, LogTags: { GAME_ABILITY: 'GameAbility' },
     DiagnosticPolicy: { configure: () => events.push('runtime') },
     DistributionPolicy: { configure: noop }, DistributionChannel: {}, setLedgerScopeSink: noop,
-    ledgerBegin: () => events.push('ledger') };
+    ledgerBegin: () => events.push('ledger'),
+    configureLedgerMaintenanceOwner: owner => { assert.equal(owner, false); events.push('ledger-owner-disabled'); } };
   const core = { ActivityCategory: { LAUNCH: 'launch' },
     DownloadManager: { instance: () => ({ initializeCaBundle: () => events.push('ca') }) },
     setDownloadNativeEngine: noop, setRelayNativeBridge: noop, setForgeNativeBridge: noop };
   const gamecontrol = { setControlNativeSink: noop, getInputDeviceMonitor: () => monitor,
-    getInputSourceRegistry: () => ({ releaseAllEnds: noop }) };
+    getInputSourceRegistry: () => ({ releaseAllEnds: noop, setNativeSink: noop }) };
   class UIAbility { constructor() { this.context = context; } }
   class Preferences { phoneExternalDir = ''; desktopNativeGamepad = false; }
   const dependencies = { 'libentry.so': { default: native }, 'commons': commons, 'feature_core': core,
@@ -70,8 +76,19 @@ function scenario(failure = '') {
       if (failure === 'runtime') throw new Error('runtime setup failed');
     } } }, 'launch': { setLaunchNativeBridge: noop, setRuntimeSlotNativeOps: noop },
     'feature_system': { PreferenceManager: Preferences, GameStorage: { setPhoneExternalDir: noop }, setSystemNativeBridge: noop } };
+  // 初始化只发布用户请求与平台采集事实；策略模块仍使用真实输入计划解析器。
+  dependencies['./NativeGamepadRoutePolicy'] = makePureEtsLoader({
+    launch: makePureEtsLoader()('launch/src/main/ets/ResolvedInputPlan.ets')
+  })('entry/src/main/ets/runtime/NativeGamepadRoutePolicy.ets');
   const runtime = load(before ? `${archive}/ProcessRuntime-before.txt` : 'entry/src/main/ets/runtime/ProcessRuntime.ets', dependencies, storage);
   Object.assign(dependencies, { '../runtime/ProcessRuntime': runtime,
+    // Want分类/回执运输是独立边缘。普通启动禁止进入诊断；冷诊断只确认不可用回执的原参数。
+    '../components/InputObservationTestWant': { isInputObservationTestWant: () => observation,
+      runInputObservationTestWant: (actualContext, _want, ready) => {
+        assert.equal(observation, true); assert.equal(actualContext, context); assert.equal(ready, false); events.push('observation');
+      } },
+    // 本测试验证Ability准备失败的因果链；已装配宿主的真实停止协议由完整宿主测试执行。
+    '../runtime/GameSessionHost': { stopGameSession: () => false },
     '../window/DesktopSystemBridge': { getDesktopSystemBridge: () => ({ stop: noop }) },
     '../runtime/PlatformDfxWatcher': { PlatformDfxWatcher: { start: () => events.push('watcher') } },
     '../runtime/DesktopLaunchSnapshot': { DesktopLaunchSnapshot: { consume: () => {
@@ -107,6 +124,15 @@ if (before) {
   assert.ok(normal.disk.some(line => line.includes('stage=page-loaded')));
   assert.ok(!normal.disk.join('\n').includes('private-credential'));
   assert.ok(!normal.events.includes('report') && !normal.events.includes('terminate'));
+
+  // 真实冷分支中Native失败、日志再次失败都须终止Ability，不触碰正常快照/Host/来源初始化。
+  for (const failure of ['', 'diagnostic', 'diagnostic-log']) {
+    const cold = scenario(failure, true); cold.ability.onCreate(cold.want, {}); await settle();
+    assert.equal(cold.events.filter(event => event === 'terminate').length, 1);
+    assert.ok(!cold.events.some(event => ['snapshot', 'input', 'log-init', 'ledger', 'watcher'].includes(event)));
+    assert.equal(cold.events.includes('observation'), failure === '');
+    assert.equal(cold.events.includes('warn'), failure !== '');
+  }
 
   for (const failure of ['snapshot', 'runtime', 'page-params', 'load-throw', 'load-callback']) {
     const test = scenario(failure); test.ability.onCreate(test.want, {});

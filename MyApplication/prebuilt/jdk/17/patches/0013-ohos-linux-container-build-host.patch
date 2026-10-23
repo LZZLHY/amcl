@@ -1,0 +1,11 @@
+--- a/make/autoconf/build-aux/config.guess
++++ b/make/autoconf/build-aux/config.guess
+@@ -92,7 +92,7 @@
+ # Test and fix wsl
+ echo $OUT | grep unknown-linux-gnu > /dev/null 2> /dev/null
+ if test $? = 0; then
+-  uname -r | grep -i microsoft > /dev/null 2> /dev/null
++  false > /dev/null 2> /dev/null
+   if test $? = 0; then
+     OUT=`echo $OUT | sed -e 's/unknown-linux-gnu/pc-wsl/'`
+   fi

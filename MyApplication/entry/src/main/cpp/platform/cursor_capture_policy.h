@@ -43,6 +43,9 @@ inline CursorCapturePublication CursorCapturePublicationForResult(
             publication.reason =
                 AMCL_INPUT_CAPTURE_REASON_INVALID_ARGUMENT;
             break;
+        case AMCL_CURSOR_LOCK_CONTEXT_INACTIVE:
+            publication.reason = AMCL_INPUT_CAPTURE_REASON_PLATFORM_LOST;
+            break;
         case AMCL_CURSOR_LOCK_PLATFORM_ERROR:
         default:
             publication.reason = AMCL_INPUT_CAPTURE_REASON_PLATFORM_ERROR;

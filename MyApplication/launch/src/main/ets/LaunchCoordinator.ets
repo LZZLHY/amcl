@@ -14,9 +14,10 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { JdkManager } from './JdkManager';
 import { VersionFileVerifier } from 'feature_core';
 import { isNewForgeVersion } from 'feature_core';
-import { SUPPORTED_JDK_VERSIONS, JDK_AUTO } from 'commons';
+import { isJdkSlotVersion, JDK_AUTO } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
+import { resolveInstanceGameDir } from 'commons';
 
 const TAG = 'LaunchCoordinator';
 
@@ -65,9 +66,9 @@ export class LaunchCoordinator {
    *   2. JDK 路由：见 resolveJdk（单版本硬覆盖 > 单版本 auto > 跟随全局[全局 hint / auto]）。
    */
   resolvePlan(input: LaunchPlanInput): LaunchPlan {
-    let gameDir = input.mcDir;
-    if (input.versionIsolation) {
-      gameDir = input.mcDir + '/versions/' + input.mcVersion;
+    // 整合包实例优先使用独立目录，避免全局关闭隔离后运行公共 mods/config。
+    let gameDir = resolveInstanceGameDir(input.mcDir, input.mcVersion, input.versionIsolation);
+    if (gameDir !== input.mcDir) {
       try {
         fs.mkdirSync(gameDir, true);
       } catch (e) {
@@ -110,9 +111,9 @@ export class LaunchCoordinator {
     return this.jdk.resolveLaunchJdk(mcVersion, hint, mcDir);
   }
 
-  /** v 是否为具体 JDK 版本号（'8'/'17'/'21'/'25'），而非 ''/'auto'。 */
+  /** 具体数字槽位可来自目录或已有导入；可启动性仍由 Manager 和启动契约验证。 */
   static isSpecificJdk(v: string): boolean {
-    return v.length > 0 && SUPPORTED_JDK_VERSIONS.indexOf(v) >= 0;
+    return isJdkSlotVersion(v);
   }
 
   /** 解析 Forge 版本 id（`<game>-forge-<loader>`）。非 Forge（含 fabric）返回 null。 */

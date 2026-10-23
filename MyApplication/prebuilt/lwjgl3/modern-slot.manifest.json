@@ -7,7 +7,7 @@
   "sourceCommit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
   "deploymentDirectory": "lwjgl-ohos",
   "nativeSuffix": "",
-  "manifestEntrySha256": "7226e9d757993cb805c00495bd02f1aaa5c2905028bdcfe81d5375ac3575cf68",
+  "manifestEntrySha256": "36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4",
   "postprocess": [
     "root-module-info",
     "complete-module-packages",
@@ -30,8 +30,13 @@
     },
     {
       "name": "lwjgl-glfw.jar",
-      "size": 160161,
-      "sha256": "89ab944d309670b1bce76ad557f807589ff263db7022bb524c8a5d2520e50871"
+      "size": 160146,
+      "sha256": "ae954c72bf7645ebf1a6caf0643dd439a806a3c4480fe216821b87f32b5d116a"
+    },
+    {
+      "name": "lwjgl-nanovg.jar",
+      "size": 84001,
+      "sha256": "8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380"
     },
     {
       "name": "lwjgl-openal.jar",
@@ -45,8 +50,8 @@
     },
     {
       "name": "lwjgl-opengles.jar",
-      "size": 378087,
-      "sha256": "073271174edf1dbacdf62a8151f9960a863d4d1854d59fd6ae7446421c7f291c"
+      "size": 377959,
+      "sha256": "3d7c445af68fb8a4fd294cbab8d466404a74df5b42d77421644ddbf8207eeffa"
     },
     {
       "name": "lwjgl-sdl.jar",
@@ -81,7 +86,7 @@
     {
       "name": "lwjgl-vma.jar",
       "size": 113456,
-      "sha256": "33e5c1f7172d6ac8fef95e0fd0caf79e4b28ba23b1a6207bce20de36fcc6af40"
+      "sha256": "921a19362dafeff1b8778a98a077fb7da3ef64b4279ccc76381f3c3b0cc5d098"
     },
     {
       "name": "lwjgl-vulkan.jar",
@@ -117,13 +122,23 @@
     },
     {
       "name": "liblwjgl_vma.so",
-      "size": 155912,
-      "sha256": "5971ff5e465cf6977286bb0f0167fec703c35f2767751a96d461b25ef454fb9f"
+      "size": 146216,
+      "sha256": "01099dfe0f61192b0860267ca927356e9b256aadfb207b7648762a844ac0a317"
     },
     {
       "name": "liblwjgl_spng.so",
       "size": 154352,
       "sha256": "ed87489f0651feeaf268531664fda150df4e8399d73baa3ea3c0ebccfbed95d5"
+    },
+    {
+      "name": "liblwjgl_nanovg.so",
+      "size": 271312,
+      "sha256": "9b5af83f5a8cf3811ae528fc0f5a80913648036f7bdaaaca53514279764ad227"
+    },
+    {
+      "name": "liblwjgl_opengles.so",
+      "size": 120648,
+      "sha256": "24a2c65bea36d777a6056a4d78c8f441810c133c6dd24d2dd2dcd76220414acc"
     }
   ],
   "nativePostprocess": "llvm-strip --strip-all; no subsequent byte changes",

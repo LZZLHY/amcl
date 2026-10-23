@@ -1,0 +1,24 @@
+# 固定 AMCL 项目与服务身份；实际镜像 ID、只读输入和外部输出由 project.py 生成覆盖配置。
+# 无任务时只输出使用指引，不在 Docker Desktop 点击项目启动时隐式执行历史构建。
+name: amcl
+services:
+  builder:
+    image: amcl-jdk-toolchain:runtime-audio-v2
+    pull_policy: never
+    init: true
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["printf 'AMCL builder: use docker/launch-builder.ps1\n'"]
+    labels:
+      amcl.role: compose-builder
+      amcl.managed: "1"
+  qa:
+    image: amcl-elf-link-test:runtime-audio
+    pull_policy: never
+    init: true
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["printf 'AMCL QA: use python -B docker/project.py test --suite elf\n'"]
+    labels:
+      amcl.role: compose-qa
+      amcl.managed: "1"

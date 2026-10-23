@@ -60,17 +60,19 @@ int main(int argc, char** argv) {
         // 封账目标包含尚未发布的预留；超时返回必须保留 scope，producer 恢复后才能封存。
         std::thread delayed([id] { amclLogWriteFor(id,AMCL_LOG_LEVEL_ERROR,"MC_LAUNCHER","CLOSE_BOUNDARY_EGL_300D"); });
         { std::unique_lock<std::mutex> lock(closePauseMutex); closePauseCv.wait(lock, [] { return closePaused; }); }
-        amclLedgerEnd(id);
+        const bool closeConfirmed = amclLedgerEndChecked(id) != 0;
         bool deferred = false;
         { std::lock_guard<std::mutex> lock(g_scopeMutex); deferred = findScopeLocked(id) != nullptr; }
         { std::lock_guard<std::mutex> lock(closePauseMutex); closeReleased = true; }
         closePauseCv.notify_all();
         delayed.join();
         amclLogFlush();
-        std::printf("{\"globalContains\":%s,\"ledgerContains\":%s}\n",
+        const bool retryConfirmed = amclLedgerEndChecked(id) != 0;
+        std::printf("{\"globalContains\":%s,\"ledgerContains\":%s,\"closeConfirmedBeforePublish\":%s,\"retryConfirmed\":%s}\n",
             read(logDir+"/amcl_launcher.log").find("CLOSE_BOUNDARY_EGL_300D")!=std::string::npos?"true":"false",
-            read(launcher).find("CLOSE_BOUNDARY_EGL_300D")!=std::string::npos?"true":"false");
-        amclLogShutdown();return deferred ? 0 : 4;
+            read(launcher).find("CLOSE_BOUNDARY_EGL_300D")!=std::string::npos?"true":"false",
+            closeConfirmed?"true":"false", retryConfirmed?"true":"false");
+        amclLogShutdown();return deferred && !closeConfirmed && retryConfirmed ? 0 : 4;
     }
     amclLogWriteFor(0,AMCL_LOG_LEVEL_INFO,"McGamePage","NATIVE_CAPABILITY_UNSCOPED GPU=TestGPU GL=4.2");
     amclLogWriteFor(id,AMCL_LOG_LEVEL_ERROR,"MC_LAUNCHER","SCOPED_RENDER_FAILURE EGL_BAD_SURFACE=0x300d");
@@ -78,7 +80,8 @@ int main(int argc, char** argv) {
     if(mode=="hard-exit")std::_Exit(0);
     const auto global=read(logDir+"/amcl_launcher.log");
     const auto before=read(launcher);
-    amclLedgerEnd(id);
+    // 新checked端口必须确认真实关闭，重复关闭无现存scope仍保持幂等成功。
+    if (!amclLedgerEndChecked(id) || !amclLedgerEndChecked(id) || amclLedgerEndChecked(0)) return 5;
     const auto after=read(launcher);
     std::printf("{\"globalAfterFlush\":%s,\"ledgerAfterFlush\":%s,\"ledgerAfterClose\":%s,\"unscopedInGlobal\":%s,\"unscopedInLedger\":%s}\n",
         global.find("SCOPED_RENDER_FAILURE")!=std::string::npos?"true":"false",

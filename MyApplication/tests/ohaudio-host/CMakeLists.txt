@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(amcl_ohaudio_contract LANGUAGES C CXX)
+# 生产后端与真实 OpenAL 混音器，仅用可控替身替换系统 OHAudio 服务。
+get_filename_component(AMCL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(ALSOFT_UTILS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ALSOFT_TESTS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL OFF CACHE BOOL "" FORCE)
+set(ALSOFT_UPDATE_BUILD_VERSION OFF CACHE BOOL "" FORCE)
+set(ALSOFT_EAX OFF CACHE BOOL "" FORCE)
+foreach(backend WASAPI DSOUND WINMM WAVE PORTAUDIO SDL2 SDL3 PIPEWIRE PULSEAUDIO ALSA OSS JACK)
+    set(ALSOFT_BACKEND_${backend} OFF CACHE BOOL "" FORCE)
+endforeach()
+add_subdirectory("${AMCL_ROOT}/entry/src/main/cpp/openal/openal-soft" openal)
+# 显式编入default才有的maps分支，测试运行期开关确实拦截调用，不能靠未编入制造静默假象。
+target_compile_definitions(OpenAL PRIVATE HAVE_OHAUDIO=1 AMCL_OHAUDIO_CONTROL_MAPS=1)
+target_sources(OpenAL PRIVATE "${AMCL_ROOT}/entry/src/main/cpp/openal/ohaudio.cpp" mock_ohaudio.cpp)
+target_include_directories(OpenAL PRIVATE "${AMCL_ROOT}/entry/src/main/cpp/openal" "${CMAKE_CURRENT_SOURCE_DIR}/include")

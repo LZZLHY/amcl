@@ -21,6 +21,17 @@ const char* runGl4Test();
 // P4: MobileGlues GL→GLES 翻译层验证
 const char* runMobileGluesTest();
 
+// 真实生产MG深度范围查询/像素场景。仅default/TestHooks编译，在重启后的专用
+// 诊断进程通过生产context owner建立及退休独立pbuffer，完成后必须重启应用。
+const char* runMgDepthRangeTest();
+// TestHooks游戏/JVM入口的只读资格门；诊断认领后永久为1，正式产品不链接此代码。
+int graphicsSemanticsRestartRequired();
+// 跨独立语义入口共用一个原子认领门；CAS失败时不再建立第二份runtime/context。
+int graphicsSemanticsTryClaimProcess();
+const char* graphicsSemanticsCannotStart();
+const char* runMobileGlProgramTest();
+const char* runMgContextIdentityTest(int highFirst);
+
 // P5: LWJGL native 库验证
 void lwjglTestSetFilesDir(const char* filesDir);
 const char* runLwjglTest();
@@ -28,8 +39,11 @@ const char* runLwjglTest();
 // 2026-05-10: amcl_log 多生产者并发 stress test（验证 LOG-P0-1 修复）
 const char* runAmclLogConcurrentTest(const char* logDir);
 
-// InputLedger owner/refcount and re-entry tests.
-const char* runInputLedgerTests();
+// ledger诊断与唯一neutral实现同库，entry只借C字符串primitive，不借隐藏C++对象/方法。
+// 返回指针属于当前线程，生命周期到同线程下次runner调用/线程退出；调用者须立即复制。
+#ifdef MC_OHOS_BUILD_TESTS
+__attribute__((visibility("default"))) const char* amclInputRunInputLedgerTests();
+#endif
 
 // SDL3 移植 C2 关卡真机探针：验证 SDL_GL_GetProcAddress 与 dlsym(libglfw.so) 同址。
 // 必须跑在应用进程里——HarmonyOS 的 linker namespace 是按应用配置的，hdc shell 域
@@ -41,8 +55,9 @@ const char* runSdl3C2Test(const char* sdl3PathHint);
 // SDL3 窗口创建真机探针：验证 prebuilt/sdl3/patches/0001（宿主注入 native window）。
 // 走通 SDL_CreateWindow → SDL_GL_CreateContext → SDL_GL_MakeCurrent → glGetString。
 // ⚠️ 必须跑在**有活跃 XComponent surface** 的页面上（RenderPage / VulkanPage），
-// 因为它依赖 platform/xcomponent.cpp 的 OnSurfaceCreated 设的
-// AMCL_NATIVE_WINDOW / AMCL_WINDOW_WIDTH / AMCL_WINDOW_HEIGHT；DevTools 页没有 surface。
+// 因为它经窗口宿主快照取 platform/xcomponent.cpp 的 OnSurfaceCreated 发布的 NativeWindow
+// （宿主不再发布窗口指针环境变量，I27-05）；DevTools 页没有 surface。
+// JVM 已在本进程认领后（环境登记表封存）拒绝运行：探针会改写进程环境。
 // 见 docs/adaptation/SDL3_MIGRATION_PLAN.md §C1.3。
 const char* runSdl3WindowTest(const char* sdl3PathHint);
 

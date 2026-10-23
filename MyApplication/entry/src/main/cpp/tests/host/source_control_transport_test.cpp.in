@@ -1,0 +1,444 @@
+/** 真 neutral source/Core/look/control + 真 bridge ring/JNI + 实际 GLFW cache/callback/poll。
+ * 窗口字段和平台配置由夹具提供，source 归约、候选提交、运输容量及 JNI 正文不复制。 */
+#include "input/source/source_control_client.h"
+#include "input/delivery/look_transport.h"
+#include "input/delivery/look_execution_client.h"
+#include "input/adapters/glfw_source_plane_aggregate.h"
+#include "input/adapters/glfw_input_adapter.h"
+#include "input/adapters/backend_keymaps.h"
+#include "input/text_utf8_codec.h"
+#include "input/amcl_input_api.h"
+#include "input/amcl_input_host_descriptor.h"
+#include "platform/source_control_client.h"
+#include "platform/control_schema_abi.h"
+#include "platform/legacy_output_code.h"
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <climits>
+#include <vector>
+#include <map>
+#include <set>
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+using namespace amcl::input;
+#define CHECK(v) do{if(!(v)){std::fprintf(stderr,"SOURCE TRANSPORT FAIL %d: %s\n",__LINE__,#v);std::exit(1);}}while(false)
+#define OH_LOG_INFO(...) ((void)0)
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+// GNU链接器包裹真实生产Resolve，计数后仍原样调用；生产包没有计数或测试分支。
+static std::atomic<unsigned> sourceResolveCalls{0};
+extern "C" int32_t __real_amclInputHostDescriptorResolveV1(const AmclInputHostApiV1**);
+extern "C" int32_t __wrap_amclInputHostDescriptorResolveV1(const AmclInputHostApiV1** out){
+    ++sourceResolveCalls;return __real_amclInputHostDescriptorResolveV1(out);
+}
+#endif
+#define LOG_APP 0
+constexpr int GLFW_RELEASE=0,GLFW_PRESS=1,GLFW_MOUSE_BUTTON_LEFT=0;
+struct GLFWwindow {uint64_t windowId=42;double cursorX=100,cursorY=50;int keys[512]{},mouseButtons[8]{};
+    void(*cursorPosCb)(GLFWwindow*,double,double)=nullptr;
+    void(*keyCb)(GLFWwindow*,int,int,int,int)=nullptr;
+    void(*mouseButtonCb)(GLFWwindow*,int,int,int)=nullptr;};
+GLFWwindow* g_currentWindow=nullptr;
+GlfwSourcePlaneAggregate g_sourcePlaneAggregate;
+void inputBridge_dispatchCharCodepoint(void*,unsigned int);
+void recordTypedTextDecodeFailure(const char*){CHECK(false);}
+void glfwOHOS_ResetPreedit(GLFWwindow*,bool){}
+@GLFW_CONTROL@
+@LOOK_CALLBACK@
+void inputBridge_setGrabState(int);int inputBridge_setInputReady(int);
+void inputBridge_glfwSetActive(void*,int);void inputBridge_glfwSetTargetV1(uint64_t,uint64_t,uint64_t);
+extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t);
+void inputBridge_setKeyCallback(void(*)(void*,int,int,int,int));
+void* inputBridge_replaceCharCallback(void*);
+void inputBridge_pumpOrdered(void*,int(*)(void*,uint64_t),void*,uint64_t);
+void inputBridge_setMouseButtonCallback(void(*)(void*,int,int,int));
+void inputBridge_pushEvent(int,int,int,int,int);
+void inputBridgeStartPumping();void inputBridgePumpEvents(void*);void inputBridgeStopPumping();
+void Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(void*,void*,int,int,int,int);
+void Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(void*,void*,int,int,int);
+std::vector<int> delivery;double actionCursor=0;
+std::vector<int> ownedKeyEdges;
+std::vector<int> ownedBoundary;
+bool observingOwnedBoundary=false;
+const AmclSourceControlPortV1* notifyOwner=nullptr;uint64_t notifyProducer=0;
+std::atomic<unsigned> notified{0};
+/** 实际 bridge 的通知出口只做跨线程读取探针，验证它到达时已释放 source/order/push。
+ * 不是把回调结果当成交付；窗口 cache/poll 仍在下面真正 production consumer 执行。 */
+extern "C" void amclDesktopNotifyInput(){
+    if(!notifyOwner)return;
+    std::atomic<bool> queried{false};
+    std::thread probe([&]{AmclSourceSnapshotV1 snapshot{};
+        if(notifyOwner->query(notifyProducer,0,nullptr,&snapshot)==0)queried.store(true,std::memory_order_release);});
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);
+    while(!queried.load(std::memory_order_acquire)&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+    if(!queried.load(std::memory_order_acquire)){probe.detach();CHECK(false);}
+    probe.join();notified.fetch_add(1,std::memory_order_relaxed);
+}
+void moved(GLFWwindow* window,double x,double){CHECK(window->cursorX==x);delivery.push_back(1);}
+void deliveredKey(GLFWwindow* window,int code,int,int action,int){if(code==259){ownedKeyEdges.push_back(action);if(observingOwnedBoundary)ownedBoundary.push_back(action==1?1:2);}if(action==1){actionCursor=window->cursorX;delivery.push_back(2);}}
+void deliveredChar(void*,unsigned int code){if(observingOwnedBoundary&&(code=='o'||code=='n'))ownedBoundary.push_back(code=='o'?3:4);}
+void deliveredButton(GLFWwindow*,int,int,int){}
+void rawKey(void* window,int code,int scan,int action,int mods){
+    GlfwAggregateSink sink{window,dispatchAggregateKey,dispatchAggregateButton};
+    g_sourcePlaneAggregate.SubmitKey(GlfwSourcePlane::kLegacy,code,scan,static_cast<GlfwAggregateAction>(action),mods,sink);
+}
+void rawButton(void* window,int button,int action,int mods){
+    GlfwAggregateSink sink{window,dispatchAggregateKey,dispatchAggregateButton};
+    g_sourcePlaneAggregate.SubmitButton(GlfwSourcePlane::kLegacy,button,static_cast<GlfwAggregateAction>(action),mods,sink);
+}
+uint64_t now(){return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+// UI/haptic 仅为观测出口；触发器、整组 dispatch、outputDown/toggle 判断均提取实际生产函数。
+unsigned buttonFeedback=0,hapticFeedback=0;
+void amcl_fire_button_pressed(const char*,int){++buttonFeedback;}
+void schemaFireHaptic(int,const char*){++hapticFeedback;}
+long long schemaNowNs(){return static_cast<long long>(now());}
+constexpr long long SCHEMA_DOUBLETAP_NS=300000000LL,SCHEMA_LONGPRESS_NS=200000000LL;
+OwnerToken nextOwnerToken(){return SourceNextNativeOwner();}
+void schemaWakeDeadlineWorker(){}
+@NATIVE_BUTTON@
+void pump(GLFWwindow& window){inputBridgeStartPumping();inputBridgePumpEvents(&window);inputBridgeStopPumping();}
+AmclSourceResultV1 transaction(const AmclSourceControlPortV1* port,uint64_t producer,AmclSourceRequestV1 request){
+    request.size=sizeof(request);AmclSourceResultV1 result{};port->transact(producer,&request,&result);return result;
+}
+AmclSourceRequestV1 acquire(int source,const char* control,const std::vector<int>& codes){
+    AmclSourceRequestV1 request{};request.operation=AMCL_SOURCE_ACQUIRE;request.source=source;
+    std::strcpy(request.control,control);request.count=static_cast<uint32_t>(codes.size());
+    for(uint32_t i=0;i<request.count;++i)request.outputs[i]={codes[i]>=0?0u:1u,codes[i]>=0?codes[i]:-codes[i]-1};return request;
+}
+AmclSourceResultV1 release(const AmclSourceControlPortV1* port,uint64_t producer,uint64_t owner){
+    AmclSourceRequestV1 request{};request.operation=AMCL_SOURCE_RELEASE;request.owner=owner;return transaction(port,producer,request);
+}
+int main(){
+    const auto* core=amclInputGetHostApiV1();CHECK(amclInputHostDescriptorPublishV1(core)==0);
+    // 当前生产callback解析早期公布的唯一owner，夹具也必须执行实际预线程发布，不能借本地getter绕过。
+    amclControlDeliveryPublishV1();amclLookExecutionPublishV1();
+    const AmclLookExecutionPortV1* publishedLook=nullptr;CHECK(amclLookExecutionResolveV1(&publishedLook)==0);
+    // 冷缺 source 明确未准入；随后仅预线程 publish，prepare 不加载 Java/game 类。
+    CHECK(amclSourceControlPrepareV1()==0);amclSourceControlPublishV1();CHECK(amclSourceControlPrepareV1()==1);
+    const AmclSourceControlPortV1* source=nullptr;CHECK(amclSourceControlResolveV1(&source)==0);
+    uint64_t producer=0;CHECK(source->openProducer(AMCL_SOURCE_ENTRY,&producer)==0&&producer);
+    // 冷连接完整核Core，成功后只复用进程pin的原表，不把发现运输当成运行资源。
+    // Clear的公开合同不撤销已借指针；它必须阻断新的握手，但不能令原连接每事件读盘。
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+    sourceResolveCalls=0;
+#endif
+    const auto firstNative=SourceNextNativeOwner();CHECK(firstNative);
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+    CHECK(sourceResolveCalls==1);sourceResolveCalls=0;
+#endif
+    (void)SourceSnapshot();
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+    CHECK(sourceResolveCalls==0);sourceResolveCalls=0;
+#endif
+    CHECK(amclInputHostDescriptorClearV1()==0);
+    const AmclSourceControlPortV1* coldSource=nullptr;
+    CHECK(amclSourceControlResolveV1(&coldSource)<0&&!coldSource);
+    AmclSourceRequestV1 coldRequest{};coldRequest.size=sizeof(coldRequest);coldRequest.operation=AMCL_SOURCE_ISSUE_NATIVE;
+    AmclSourceResultV1 coldResult{};
+    CHECK(amclSourceControlTransactPreparedV1(AMCL_SOURCE_ENTRY,&coldRequest,&coldResult)<0&&!coldResult.accepted);
+    CHECK(SourceNextNativeOwner()==firstNative+1);
+    CHECK(amclInputHostDescriptorPublishV1(core)==0);CHECK(SourceNextNativeOwner()==firstNative+2);
+#ifndef _WIN32
+    // 已连接父进程的表/句柄不能在fork子进程复用。alarm界定失败，不能让继承锁死等。
+    const pid_t child=fork();CHECK(child>=0);
+    if(child==0){alarm(2);_exit(SourceNextNativeOwner()==0?0:1);}
+    int childStatus=0;CHECK(waitpid(child,&childStatus,0)==child&&WIFEXITED(childStatus)&&WEXITSTATUS(childStatus)==0);
+#endif
+    std::puts("SOURCE connection PASS: cold Core proof, warm query/transaction without re-resolution, cold withdrawal rejection, pinned borrow and fork fence");
+    notifyOwner=source;notifyProducer=producer;
+    uint64_t epoch=0;CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+    AmclInputSurfacePayload surface{};surface.active=1;surface.widthPx=1280;surface.heightPx=720;surface.density=1;
+    surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;CHECK(core->publishSurface(&surface)==0);
+    AmclInputEvent context{};context.header.abiVersion=1;context.header.structSize=sizeof(context);
+    context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+    context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=42;context.payload.surfaceContext.displayId=1;
+    context.payload.surfaceContext.widthPx=1280;context.payload.surfaceContext.heightPx=720;context.payload.surfaceContext.density=1;
+    context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    CHECK(core->submitEvent(&context)==0);CHECK(inputBridge_configureMenuCursorConsumerV1(1,1)==1);inputBridge_setInputReady(1);
+    GLFWwindow window;window.cursorPosCb=moved;window.keyCb=deliveredKey;window.mouseButtonCb=deliveredButton;g_currentWindow=&window;
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&window),1,42);inputBridge_glfwSetActive(&window,1);
+    inputBridge_setKeyCallback(rawKey);inputBridge_setMouseButtonCallback(rawButton);
+    inputBridge_setLookPrefixCallbackV1(bridgeLookPrefixCallback);g_sourcePlaneAggregate.BindTarget(42);
+    // 实际text-only Core adapter登记Ready，不用host stub/表方法存在代替文字资格。
+    GlfwInputAdapter textAdapter;GlfwInputSink textSink{};
+    textSink.textCommit=typedTextCommitSink;(void)inputBridge_replaceCharCallback(reinterpret_cast<void*>(deliveredChar));
+    CHECK(textAdapter.Open(core,GlfwOhosInputMapper(),textSink)==GlfwAdapterStatus::kOk);
+    const auto pumpOwned=[&]{inputBridgeStartPumping();inputBridge_pumpOrdered(&window,
+        [](void* c,uint64_t ceiling){return static_cast<GlfwInputAdapter*>(c)->Pump(0u,ceiling).status==GlfwAdapterStatus::kOk?1:0;},
+        &textAdapter,UINT64_MAX);inputBridgeStopPumping();(void)glfwGetKey(&window,259);};
+    const auto changeText=[&](uint64_t id,uint32_t change){AmclInputEvent event{};event.header.abiVersion=1;
+        event.header.structSize=sizeof(event);event.header.eventType=AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED;event.header.source=AMCL_INPUT_SOURCE_IME;
+        AmclInputSnapshotV1 snapshot{};snapshot.abiVersion=1;snapshot.structSize=sizeof(snapshot);CHECK(core->getSnapshot(&snapshot)==0);
+        event.header.sessionEpoch=snapshot.sessionEpoch;event.header.focusEpoch=snapshot.focusEpoch;event.header.surfaceEpoch=snapshot.surfaceEpoch;
+        event.payload.textSession.textSessionId=id;event.payload.textSession.change=change;event.payload.textSession.reason=AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;
+        CHECK(core->submitEvent(&event)==0);};
+    for(unsigned i=0;i<64;++i){const auto baseline=textAdapter.Pump();CHECK(baseline.status==GlfwAdapterStatus::kOk);if(!baseline.eventsDrained)break;}
+    AmclInputEvent textStart{};textStart.header.abiVersion=1;textStart.header.structSize=sizeof(textStart);
+    textStart.header.eventType=AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED;textStart.header.source=AMCL_INPUT_SOURCE_IME;
+    textStart.payload.textSession.change=AMCL_INPUT_TEXT_SESSION_STARTED;textStart.payload.textSession.textSessionId=700;
+    textStart.payload.textSession.reason=AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT;
+    AmclInputSnapshotV1 textSnapshot{};textSnapshot.abiVersion=1;textSnapshot.structSize=sizeof(textSnapshot);
+    CHECK(core->getSnapshot(&textSnapshot)==0);textStart.header.sessionEpoch=textSnapshot.sessionEpoch;
+    textStart.header.focusEpoch=textSnapshot.focusEpoch;textStart.header.surfaceEpoch=textSnapshot.surfaceEpoch;
+    CHECK(core->submitEvent(&textStart)==0);AmclInputTextCoreResourceV1 textResource{};
+    CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);AmclSourceResultV1 textTap{};
+    source->ownedTextKeyTap(producer,700,textResource.scope,259,&textTap);
+    CHECK(textTap.accepted&&textTap.transportAccepted&&textTap.finalEdges==2);
+    for(int i=0;i<4;++i){pump(window);(void)glfwGetKey(&window,259);}
+    CHECK((ownedKeyEdges==std::vector<int>{1,0})&&glfwGetKey(&window,259)==0);
+    textStart.payload.textSession.change=AMCL_INPUT_TEXT_SESSION_ENDED;CHECK(core->submitEvent(&textStart)==0);
+    source->ownedTextKeyTap(producer,700,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+    pump(window);CHECK(ownedKeyEdges.size()==2&&glfwGetKey(&window,259)==0);delivery.clear();
+    // 原pair在END之前已整批接入；共同生产pumpOrdered将真实text adapter与ring合并。
+    // 只观察实际char callback/key cache，不把producer current改绑已接受的命令。
+    textStart.payload.textSession.change=AMCL_INPUT_TEXT_SESSION_STARTED;CHECK(core->submitEvent(&textStart)==0);
+    CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);source->ownedTextKeyTap(producer,700,textResource.scope,259,&textTap);
+    CHECK(textTap.accepted);AmclInputEvent commit{};commit.header=textStart.header;commit.header.eventType=AMCL_INPUT_EVENT_TEXT_COMMIT;
+    commit.payload.textCommit.textSessionId=700;const uint8_t oldText[]={'o'},newText[]={'n'};
+    CHECK(core->submitTextPacket(&commit,oldText,1)==0);
+    textStart.payload.textSession.change=AMCL_INPUT_TEXT_SESSION_ENDED;CHECK(core->submitEvent(&textStart)==0);
+    textStart.payload.textSession.change=AMCL_INPUT_TEXT_SESSION_STARTED;textStart.payload.textSession.textSessionId=701;CHECK(core->submitEvent(&textStart)==0);
+    commit.payload.textCommit.textSessionId=701;CHECK(core->submitTextPacket(&commit,newText,1)==0);
+    observingOwnedBoundary=true;for(int i=0;i<4;++i)pumpOwned();observingOwnedBoundary=false;
+    CHECK((ownedBoundary==std::vector<int>{1,2,3,4})&&glfwGetKey(&window,259)==0);
+    source->ownedTextKeyTap(producer,700,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+    std::puts("PASS GLFW accepted owned pair/old commit/END/newscope through real ordered pump+char callback");delivery.clear();
+    changeText(701,AMCL_INPUT_TEXT_SESSION_ENDED);
+    for(uint32_t boundary:{AMCL_INPUT_TEXT_SESSION_ABORTED,AMCL_INPUT_TEXT_SESSION_ENDED}){
+        changeText(702,AMCL_INPUT_TEXT_SESSION_STARTED);CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);
+        source->ownedTextKeyTap(producer,702,textResource.scope,259,&textTap);CHECK(textTap.accepted);ownedKeyEdges.clear();
+        if(boundary==AMCL_INPUT_TEXT_SESSION_ABORTED)changeText(702,boundary);else CHECK(core->publishFocus(0)==0);
+        for(int i=0;i<4;++i)pumpOwned();CHECK((ownedKeyEdges==std::vector<int>{1,0})&&glfwGetKey(&window,259)==0);
+        source->ownedTextKeyTap(producer,702,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+        if(boundary==AMCL_INPUT_TEXT_SESSION_ENDED){CHECK(core->publishFocus(1)==0);pumpOwned();}
+    }
+    std::puts("PASS GLFW accepted before actual ABORT/focus late callback/poll final UP and old scope refusal");delivery.clear();
+    // 原公开 JNI 函数通过完整生产 bridge TU 调用，触控/手柄 cohold 不被 compat UP 盖掉。
+    for(int code:{65,-1}){
+        const auto touch=transaction(source,producer,acquire(1,"touch",{code}));CHECK(touch.accepted&&touch.owner);pump(window);
+        const auto gamepad=transaction(source,producer,acquire(2,"gamepad",{code}));CHECK(gamepad.accepted&&gamepad.finalEdges==0);
+        if(code>=0){Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,code,123,1,0);
+            Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,code,123,0,0);}
+        else {Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(nullptr,nullptr,0,1,0);
+            Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(nullptr,nullptr,0,0,0);}
+        pump(window);CHECK(code>=0?glfwGetKey(&window,code)==1:glfwGetMouseButton(&window,0)==1);
+        CHECK(release(source,producer,touch.owner).accepted);pump(window);CHECK(code>=0?glfwGetKey(&window,code)==1:glfwGetMouseButton(&window,0)==1);
+        CHECK(release(source,producer,gamepad.owner).accepted);pump(window);CHECK(code>=0?glfwGetKey(&window,code)==0:glfwGetMouseButton(&window,0)==0);
+    }
+    // 无配对 UP/REPEAT 不借别人 token；兼容0重复 DOWN 与 NAPI0模拟端口共用同一份。
+    const auto held=transaction(source,producer,acquire(1,"held",{66}));CHECK(held.accepted);pump(window);
+    Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,66,0,0,0);
+    Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,66,0,2,0);pump(window);CHECK(glfwGetKey(&window,66)==1);
+    CHECK(release(source,producer,held.owner).accepted);pump(window);
+    Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,67,0,1,0);
+    AmclSourceRequestV1 anonymous{};anonymous.operation=AMCL_SOURCE_ANONYMOUS;anonymous.count=1;anonymous.outputs[0]={0,67};anonymous.action=1;
+    CHECK(transaction(source,producer,anonymous).accepted);anonymous.action=0;CHECK(transaction(source,producer,anonymous).accepted);pump(window);CHECK(glfwGetKey(&window,67)==0);
+    // 六码必须全预算：真8槽已有2条时，prefix+6无法提交，source/token/look均不得半变。
+    inputBridge_setGrabState(1);AmclLookResourceV1 resource{};CHECK(inputBridge_getLookResourceV1(&resource)==1);
+    const auto* look=amclLookExecutionGetPortV1();
+    {
+        // 复现双手输入：视角已发出平滑的前段，摇杆重复提交同一疾跑键状态。
+        // 没有实际按键边沿时，另一手的剩余视角必须留给下一次真实视角采样，不能被
+        // 零边沿事务强制排空；此处使用真实Source、look owner、ring和GLFW回调。
+        AmclLookPolicyV1 policy{sizeof(AmclLookPolicyV1),0,1.0,0.5,0.0};
+        CHECK(look->applyPolicy(1,&policy)==0);
+        AmclLookStreamV1 touch{};touch.size=sizeof(touch);touch.source=1;
+        touch.kind=AMCL_LOOK_TOUCH_DELTA;touch.clock=AMCL_LOOK_OWNER_MONOTONIC;
+        touch.unit=AMCL_LOOK_SURFACE_PIXELS;touch.resource=resource;
+        uint64_t touchStream=0;CHECK(look->openStream(&touch,&touchStream)==0);
+        AmclSourceRequestV1 sprint{};sprint.operation=AMCL_SOURCE_OWNED_EDGE;sprint.source=1;
+        sprint.owner=0x300000005ULL;sprint.count=1;sprint.outputs[0]={0,341};
+        for(int down:{0,1}) {
+            sprint.action=down;CHECK(transaction(source,producer,sprint).accepted);pump(window);
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+            sourceResolveCalls=0;
+#endif
+            CHECK(inputBridge_submitLookV1(touchStream,20,0,now(),0)==1);pump(window);
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+            // 首个look可做冷握手；第二次真实look必须走原连接，不重扫Core发现运输。
+            if(down==1)CHECK(sourceResolveCalls==0);
+            sourceResolveCalls=0;
+#endif
+            const double cursorBefore=window.cursorX;delivery.clear();
+            const unsigned notificationsBefore=notified.load();
+            for(int repeat=0;repeat<16;++repeat) {
+                const auto duplicate=transaction(source,producer,sprint);
+                CHECK(duplicate.accepted&&duplicate.transportAccepted&&duplicate.finalEdges==0);
+                // 也经过真实平台适配器，避免仅直调owner通过而实际摇杆入口仍逐笔重握手。
+                const auto platformDuplicate=SourceTransaction(sprint);
+                CHECK(platformDuplicate.accepted&&platformDuplicate.transportAccepted&&platformDuplicate.finalEdges==0);
+                pump(window);
+            }
+            CHECK(notified.load()==notificationsBefore);
+#ifdef AMCL_SOURCE_RESOLVE_COUNT_TEST
+            CHECK(sourceResolveCalls==0);
+#endif
+            // 共有零边沿运输入口也必须守住同一合同，覆盖合法共持账本变化等没有
+            // 命中Source幂等快路径的调用者，避免仅在摇杆侧缓存把桥层缺陷藏起来。
+            CHECK(inputBridge_beginSourceActionV1(0)==1);inputBridge_endLookActionV1();pump(window);
+            std::printf("NO_EDGE_LOOK action=%d before=%.9f after=%.9f callbacks=%zu\n",
+                down,cursorBefore,window.cursorX,delivery.size());std::fflush(stdout);
+            CHECK(window.cursorX==cursorBefore&&delivery.empty());
+            // 真正按键边沿仍须先交付旧视角，再交付按键，不能为了优化撤掉因果顺序。
+            sprint.action=1-down;CHECK(transaction(source,producer,sprint).finalEdges==1);pump(window);
+            CHECK(window.cursorX>cursorBefore);
+        }
+        CHECK(look->retireStream(touchStream)==0);delivery.clear();
+        std::puts("PASS unchanged joystick state cannot flush camera smoothing; real edges retain look order");
+    }
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=2;
+    stream.kind=AMCL_LOOK_MAPPED_RATE;stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;
+    stream.device=9;stream.connection=1;stream.resource=resource;uint64_t velocity=0;CHECK(look->openStream(&stream,&velocity)==0);
+    CHECK(look->submitVelocity(velocity,1080,0,now())==0);std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    inputBridge_pushEvent(1005,80,0,1,0);inputBridge_pushEvent(1005,81,0,1,0);
+    AmclSourceSnapshotV1 before{},after{};CHECK(source->query(producer,0,nullptr,&before)==0);
+    auto combo=acquire(2,"combo",{340,70,71,72,73,74});const auto rejected=transaction(source,producer,combo);
+    CHECK(!rejected.accepted&&rejected.status==AMCL_SOURCE_PRESSURE&&rejected.owner==0);
+    CHECK(source->query(producer,0,nullptr,&after)==0&&after.owners==before.owners&&after.held[2]==before.held[2]);
+    pump(window);delivery.clear();const double oldCursor=window.cursorX;const auto accepted=transaction(source,producer,combo);
+    // 只有整批完成通知一次；任何逐码通知都会让跨线程 source query 撞上未释放的事务锁。
+    CHECK(accepted.accepted&&accepted.transportAccepted&&accepted.finalEdges==6);
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));CHECK(inputBridge_submitLookV1(0,0,0,0,1)==1);pump(window);
+    CHECK(delivery.size()==8&&delivery.front()==1&&delivery.back()==1&&actionCursor>oldCursor&&window.cursorX>actionCursor);
+    CHECK(look->submitVelocity(velocity,0,0,now())==0);CHECK(look->retireStream(velocity)==0);
+    CHECK(release(source,producer,accepted.owner).accepted);pump(window);
+    // 真队列满时合法 cohold 无边沿接受；普通 release 拒绝保原 token，明确 cancel 可退休并留 terminal。
+    const auto terminal=transaction(source,producer,acquire(1,"terminal",{75}));CHECK(terminal.accepted);pump(window);
+    for(int i=0;i<8;++i)inputBridge_pushEvent(1005,90+i,0,1,0);
+    const auto shared=transaction(source,producer,acquire(2,"shared",{75}));CHECK(shared.accepted&&shared.finalEdges==0);
+    CHECK(release(source,producer,terminal.owner).accepted);const auto blocked=release(source,producer,shared.owner);
+    CHECK(!blocked.accepted&&blocked.status==AMCL_SOURCE_PRESSURE);
+    AmclSourceRequestV1 cancel{};cancel.operation=AMCL_SOURCE_CANCEL_SOURCE;cancel.source=2;cancel.flags=AMCL_SOURCE_ALLOW_RETIRE;
+    const auto retired=transaction(source,producer,cancel);CHECK(retired.accepted&&retired.sourceRetired&&!retired.transportAccepted&&retired.deferredEdges==1);
+    pump(window);CHECK(glfwGetKey(&window,75)==1);const auto recover=transaction(source,producer,acquire(1,"recover",{76}));
+    CHECK(recover.accepted&&recover.transportAccepted&&recover.deferredEdges==0);pump(window);CHECK(glfwGetKey(&window,75)==0);
+    CHECK(release(source,producer,recover.owner).accepted);pump(window);
+    // public void JNI UP 在满队列下仍准确退休 compat0；没有新输入也在下一泵恢复末松。
+    Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,78,0,1,0);pump(window);CHECK(glfwGetKey(&window,78)==1);
+    for(int i=0;i<8;++i)inputBridge_pushEvent(1005,110+i,0,1,0);
+    Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,78,0,0,0);
+    CHECK(source->query(producer,0,nullptr,&after)==0&&after.held[0]==0&&after.deferredEdges==1);
+    pump(window);CHECK(glfwGetKey(&window,78)==1);pump(window);CHECK(glfwGetKey(&window,78)==0);
+    CHECK(source->query(producer,0,nullptr,&after)==0&&after.deferredEdges==0);
+    // 生产 Native 触发器：whole group 拒绝不伪报 toggle/outputDown/button/haptic；真实恢复再成功。
+    SchemaButtonRuntime native{};std::strcpy(native.control.id,"native-combo");native.control.trigger=1;native.control.haptic=1;
+    native.control.keyCount=6;for(int i=0;i<6;++i)native.control.keys[i]=120+i;
+    for(int i=0;i<8;++i)inputBridge_pushEvent(1005,130+i,0,1,0);
+    const unsigned buttonsBefore=buttonFeedback,hapticsBefore=hapticFeedback;
+    schemaTriggerFirstDown(native);CHECK(!native.outputDown&&!native.toggled&&buttonFeedback==buttonsBefore&&hapticFeedback==hapticsBefore);
+    pump(window);schemaTriggerFirstDown(native);CHECK(native.outputDown&&native.toggled&&buttonFeedback==buttonsBefore+1&&hapticFeedback==hapticsBefore+1);
+    pump(window);schemaTriggerFirstDown(native);CHECK(!native.outputDown&&!native.toggled);pump(window);
+    SchemaButtonRuntime longPress{};longPress.control=native.control;longPress.control.trigger=3;longPress.owner=SourceNextNativeOwner();
+    longPress.fingers.insert(1);longPress.longDeadlineNs=schemaNowNs()-1;s_schemaButtons.emplace("long",longPress);
+    for(int i=0;i<8;++i)inputBridge_pushEvent(1005,140+i,0,1,0);
+    const unsigned feedbackBefore=buttonFeedback;schemaPollLongPressLocked();CHECK(!s_schemaButtons.at("long").outputDown&&!s_schemaButtons.at("long").longFired&&buttonFeedback==feedbackBefore);
+    pump(window);s_schemaButtons.clear();
+    // inactive Core 下新 source 和 Native press 均拒绝，原 terminal 仍可准确结束原 scope。
+    CHECK(core->publishFocus(0)==0);const auto inactive=transaction(source,producer,acquire(1,"inactive",{65}));CHECK(!inactive.accepted);
+    schemaTriggerFirstDown(native);CHECK(!native.outputDown&&!native.toggled&&buttonFeedback==feedbackBefore);
+    CHECK(core->publishFocus(1)==0);
+    // 真双线程锁序：Source→order 的按键事务与独立 look/action order 批并发，scroll批无 Source 回取。
+    // 关闭窗口回调探针减少线程创建噪声，但两条路径仍是完整生产 owner/bridge 锁实现。
+    notifyOwner=nullptr;
+    std::atomic<unsigned> progressed{0};
+    std::thread sourceThread([&]{for(int i=0;i<80;++i){(void)amclSourceControlCompatEdgeV1(0,200,0,1,0);
+        (void)amclSourceControlCompatEdgeV1(0,200,0,0,0);progressed.fetch_add(1);}});
+    std::thread orderThread([&]{for(int i=0;i<80;++i){if(inputBridge_beginLookActionV1()){
+        inputBridge_pushEvent(1007,0,1,0,0);inputBridge_endLookActionV1();}progressed.fetch_add(1);}});
+    sourceThread.join();orderThread.join();CHECK(progressed.load()==160);pump(window);pump(window);
+    // Java role 不能 acquire/跨 source cancel；合法旧 token 迟到终端幂等，不认 Native owner域。
+    uint64_t java=0;CHECK(source->openProducer(AMCL_SOURCE_JAVA_COMPAT,&java)==0);
+    CHECK(!transaction(source,java,acquire(1,"forbidden",{65})).accepted);
+    CHECK(release(source,producer,accepted.owner).accepted);
+    changeText(703,AMCL_INPUT_TEXT_SESSION_STARTED);CHECK(amclInputOwnerReadTextResourceV1(&textResource)==1);
+    source->ownedTextKeyTap(producer,703,textResource.scope,259,&textTap);CHECK(textTap.accepted);ownedKeyEdges.clear();
+    // 原真实activation关闭先围栏并移动ring cutoff；真实text consumer关闭退休原scope。
+    inputBridge_glfwSetActive(&window,0);CHECK(textAdapter.Close()==GlfwAdapterStatus::kOk);
+    GLFWwindow newWindow;newWindow.windowId=43;newWindow.keyCb=deliveredKey;newWindow.mouseButtonCb=deliveredButton;
+    g_currentWindow=&newWindow;context.payload.surfaceContext.generation=2;context.payload.surfaceContext.windowId=43;CHECK(core->submitEvent(&context)==0);
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&newWindow),2,43);g_sourcePlaneAggregate.BindTarget(43);
+    CHECK(textAdapter.Open(core,GlfwOhosInputMapper(),textSink)==GlfwAdapterStatus::kOk);inputBridge_glfwSetActive(&newWindow,1);
+    for(int i=0;i<4;++i){pump(newWindow);CHECK(glfwGetKey(&newWindow,259)==0);}
+    CHECK(ownedKeyEdges.empty());source->ownedTextKeyTap(producer,703,textResource.scope,259,&textTap);CHECK(!textTap.accepted);
+    CHECK(textAdapter.Close()==GlfwAdapterStatus::kOk);inputBridge_glfwSetActive(&newWindow,0);
+    std::puts("PASS GLFW unpumped owned pair cancelled by actual activation/text consumer retirement");
+    std::puts("SOURCE TRANSPORT PASS: real JNI/common owner/cache/poll/6-edge prefix budget/cohold/terminal recovery");
+/* SOURCE_OWNED_TAP_RECOVERY_BEGIN */
+
+    // 单一新增反例：旧同码 terminal 在满 ring 退休，首泵仅释放容量，随后新 owned pair。
+    // 生产 owner/预算/ring/cache/poll 全部复用上面原 recipe；不模拟 readCursor 或 Source 状态。
+    inputBridge_setGrabState(0);
+    CHECK(textAdapter.Open(core,GlfwOhosInputMapper(),textSink)==GlfwAdapterStatus::kOk);
+    inputBridge_glfwSetActive(&newWindow,1);
+    changeText(804,AMCL_INPUT_TEXT_SESSION_STARTED);
+    AmclInputTextCoreResourceV1 deferredText{};
+    CHECK(amclInputOwnerReadTextResourceV1(&deferredText)==1&&deferredText.textSession==804&&deferredText.scope);
+    ownedKeyEdges.clear();
+    const auto old259=transaction(source,producer,acquire(1,"owned-deferred-259",{259}));
+    CHECK(old259.accepted&&old259.transportAccepted&&old259.finalEdges==1);
+    pump(newWindow);CHECK(glfwGetKey(&newWindow,259)==1&&(ownedKeyEdges==std::vector<int>{1}));
+    for(int i=0;i<EVENT_WINDOW_SIZE;++i)inputBridge_pushEvent(1000,65,0,0,0);
+    AmclSourceRequestV1 retire259{};retire259.operation=AMCL_SOURCE_RELEASE;retire259.owner=old259.owner;
+    retire259.flags=AMCL_SOURCE_ALLOW_RETIRE;
+    const auto retired259=transaction(source,producer,retire259);
+    AmclSourceOutputV1 key259{0u,259};AmclSourceSnapshotV1 deferred259{};
+    CHECK(source->query(producer,0,&key259,&deferred259)==0);
+    std::printf("COUNTER_RETIRE accepted=%u transported=%u retired=%u finalEdges=%u deferred=%u owns259=%u owners=%u\n",
+      retired259.accepted,retired259.transportAccepted,retired259.sourceRetired,retired259.finalEdges,
+      deferred259.deferredEdges,deferred259.owns,deferred259.owners);
+    CHECK(retired259.accepted&&retired259.sourceRetired&&!retired259.transportAccepted&&
+      deferred259.deferredEdges==1&&deferred259.owns==0);
+    // 恰好一轮真实首泵；前置 DrainTerminals 因满队列失败，随后的正常泵释放 ring 容量。
+    pump(newWindow);
+    CHECK(source->query(producer,0,&key259,&deferred259)==0);
+    AmclInputTextCoreResourceV1 stillText{};CHECK(amclInputOwnerReadTextResourceV1(&stillText)==1);
+    const int firstPoll259=glfwGetKey(&newWindow,259);
+    std::printf("COUNTER_FIRST_PUMP poll259=%d deferred=%u owns259=%u callbacks=%zu scope=%llu currentScope=%llu\n",
+      firstPoll259,deferred259.deferredEdges,deferred259.owns,ownedKeyEdges.size(),
+      (unsigned long long)deferredText.scope,(unsigned long long)stillText.scope);
+    CHECK(firstPoll259==1&&deferred259.deferredEdges==1&&deferred259.owns==0&&
+      (ownedKeyEdges==std::vector<int>{1})&&stillText.scope==deferredText.scope&&stillText.textSession==804);
+    AmclSourceResultV1 same259{};
+    source->ownedTextKeyTap(producer,804,deferredText.scope,259,&same259);
+    CHECK(source->query(producer,0,&key259,&deferred259)==0);
+    std::printf("COUNTER_TAP accepted=%u transported=%u finalEdges=%u resultDeferred=%u sourceDeferred=%u owns259=%u owners=%u\n",
+      same259.accepted,same259.transportAccepted,same259.finalEdges,same259.deferredEdges,
+      deferred259.deferredEdges,deferred259.owns,deferred259.owners);
+    CHECK(same259.accepted&&same259.transportAccepted&&same259.finalEdges==2&&
+      same259.deferredEdges==0&&deferred259.deferredEdges==0&&deferred259.owns==0);
+    pump(newWindow);
+    const int finalPoll259=glfwGetKey(&newWindow,259);
+    CHECK(source->query(producer,0,&key259,&deferred259)==0);
+    std::printf("COUNTER_FINAL poll259=%d cache259=%d deferred=%u owns259=%u owners=%u callbacks=[",
+      finalPoll259,newWindow.keys[259],deferred259.deferredEdges,deferred259.owns,deferred259.owners);
+    for(size_t i=0;i<ownedKeyEdges.size();++i)std::printf("%s%d",i?",":"",ownedKeyEdges[i]);
+    std::puts("]");std::fflush(stdout);
+    CHECK(finalPoll259==0&&newWindow.keys[259]==0&&deferred259.owns==0&&deferred259.deferredEdges==0&&
+      (ownedKeyEdges==std::vector<int>{1,0,1,0}));
+    std::puts("COUNTER_SAME259_PASS original terminal plus complete new owned pair reconciled");
+
+    // 再次建立旧UP墓碑；只剩两槽时恢复需要三条，整批必须拒绝。
+    ownedKeyEdges.clear();const auto budgetOld=transaction(source,producer,acquire(1,"same259-budget",{259}));
+    CHECK(budgetOld.accepted);pump(newWindow);CHECK(glfwGetKey(&newWindow,259)==1);
+    for(int i=0;i<EVENT_WINDOW_SIZE;++i)inputBridge_pushEvent(1000,65,0,0,0);
+    retire259.owner=budgetOld.owner;CHECK(transaction(source,producer,retire259).sourceRetired);pump(newWindow);
+    CHECK(source->query(producer,0,&key259,&deferred259)==0&&deferred259.deferredEdges==1&&deferred259.owns==0);
+    for(int i=0;i<EVENT_WINDOW_SIZE-2;++i)inputBridge_pushEvent(1000,65,0,0,0);
+    source->ownedTextKeyTap(producer,804,deferredText.scope,259,&same259);
+    CHECK(!same259.accepted&&!same259.transportAccepted&&same259.status==AMCL_SOURCE_PRESSURE);
+    CHECK(source->query(producer,0,&key259,&deferred259)==0&&deferred259.deferredEdges==1&&deferred259.owns==0);
+    CHECK(glfwGetKey(&newWindow,259)==1&&(ownedKeyEdges==std::vector<int>{1}));
+    pump(newWindow);CHECK(glfwGetKey(&newWindow,259)==0&&(ownedKeyEdges==std::vector<int>{1,0}));
+    CHECK(source->query(producer,0,&key259,&deferred259)==0&&deferred259.deferredEdges==0&&deferred259.owns==0);
+    std::puts("RECOVERY_BUDGET_PASS whole oldUP/newDOWN/newUP rejects two slots; actual next pump ends old UP");
+
+/* SOURCE_OWNED_TAP_RECOVERY_END */
+
+}

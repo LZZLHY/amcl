@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "slot": "modern",
+  "description": "逐项登记实际随包 JAR 的 native 提供方。jni 为本包胶水，c-api 为外部函数库，system-dispatch 为设备能力查询，bridge 为 AMCL 受控转接；动态扩展不要求静态 ELF 同名导出。",
+  "modules": [
+    {"jar":"lwjgl.jar","module":"core","kind":"jni","artifact":"liblwjgl.so","scope":"OHOS Linux 核心 JNI；Win32/macOS/liburing 不属于本平台编译范围"},
+    {"jar":"lwjgl-egl.jar","module":"egl","kind":"bridge","artifact":"libamcl_lwjgl_egl.so","stage":"cmake","requiredSymbols":["eglGetProcAddress"],"scope":"AMCL EGL late-load 桥经 graphics_runtime 当前后端查询地址；EGL 扩展由设备能力决定"},
+    {"jar":"lwjgl-freetype.jar","module":"freetype","kind":"c-api","artifact":"libfreetype.so","requiredSource":"all-generated","scope":"全部生成绑定 apiGetFunctionAddress 必需入口"},
+    {"jar":"lwjgl-glfw.jar","module":"glfw","kind":"bridge","artifact":"libglfw.so","stage":"cmake","requiredSource":["GLFW.java","GLFWNativeEGL.java","GLFWVulkan.java"],"scope":"OHOS GLFW 主接口、EGL 句柄和 Vulkan 查询；Win32/Cocoa/GLX/X11/Wayland 原生窗口接口不属于 OHOS"},
+    {"jar":"lwjgl-nanovg.jar","module":"nanovg","kind":"jni","artifact":"liblwjgl_nanovg.so","scope":"NanoVG/NanoSVG 与 GL2/GL3/GLES2/GLES3 的完整生成 JNI；GPU 函数由当前 context 查询"},
+    {"jar":"lwjgl-openal.jar","module":"openal","kind":"system-dispatch","artifact":"libopenal.so","stage":"cmake","requiredSymbols":["alGetProcAddress","alcGetProcAddress","alcOpenDevice"],"scope":"OpenAL Soft 提供核心查询；AL/ALC 扩展由设备/context 的过程表提供，不能按导出表误判"},
+    {"jar":"lwjgl-opengl.jar","module":"opengl","kind":"jni","artifact":"liblwjgl_opengl.so","scope":"完整 OHOS 生成 JNI；WGL 是 Windows 条件接口，GL 功能和扩展通过渲染后端查询"},
+    {"jar":"lwjgl-opengles.jar","module":"opengles","kind":"jni","artifact":"liblwjgl_opengles.so","scope":"完整 GLES 生成 JNI；GLES 版本/扩展由系统与当前 context 决定"},
+    {"jar":"lwjgl-sdl.jar","module":"sdl","kind":"c-api","artifact":"libSDL3.so","requiredSource":"all-generated","scope":"全部生成绑定 apiGetFunctionAddress 必需入口；Optional 查询和其他平台的原生句柄不作必需入口"},
+    {"jar":"lwjgl-shaderc.jar","module":"shaderc","kind":"c-api","artifact":"libshaderc.so","requiredSource":"all-generated","scope":"Shaderc、GLSLang、GLSLangResourceLimits、SPV、SPVOptimizer 默认共用 Shaderc.getLibrary，检查整个 JAR 的必需函数"},
+    {"jar":"lwjgl-spng.jar","module":"spng","kind":"jni","artifact":"liblwjgl_spng.so","scope":"完整 SPNG 生成 JNI 和 LibSPNG 分配器设置"},
+    {"jar":"lwjgl-spvc.jar","module":"spvc","kind":"c-api","artifact":"libspirv-cross.so","requiredSource":"all-generated","scope":"全部 SPIRV-Cross 生成绑定必需入口"},
+    {"jar":"lwjgl-stb.jar","module":"stb","kind":"jni","artifact":"liblwjgl_stb.so","scope":"完整 STB 生成 JNI、分配器设置及既有 resize v1 回填"},
+    {"jar":"lwjgl-tinyfd.jar","module":"tinyfd","kind":"jni","artifact":"liblwjgl_tinyfd.so","scope":"TinyFD 生成 JNI；OHOS UI 功能继续由既有适配实现"},
+    {"jar":"lwjgl-vma.jar","module":"vma","kind":"jni","artifact":"liblwjgl_vma.so","scope":"完整 VMA JNI；Win32 内存句柄入口按平台预处理排除"},
+    {"jar":"lwjgl-vulkan.jar","module":"vulkan","kind":"bridge","artifact":"libamcl_vulkan_wsi.so","stage":"cmake","requiredSymbols":["vkGetInstanceProcAddr"],"scope":"启动属性首先装载随包 AMCL WSI shim，由其 vkGetInstanceProcAddr 连接系统 Vulkan；其余实例/设备能力仍按动态查询取得"}
+  ]
+}

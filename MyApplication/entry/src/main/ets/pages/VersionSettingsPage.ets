@@ -16,8 +16,7 @@ import { PreferenceManager } from 'feature_system';
 import { GameStorage, parseStorageLocation } from 'feature_system';
 import { common } from '@kit.AbilityKit';
 import { removeDirRecursive } from 'commons';
-import { AppIconName } from 'commons';
-import { AppIcon } from '../components/AppIcon';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
 
 const TAG = 'VersionSettings'
 
@@ -30,6 +29,8 @@ interface InstalledVersion {
 @Entry
 @Component
 struct VersionSettingsPage {
+  /** 共享标题独占系统栏避让，版本正文不重复添加顶部补偿。 */
+  @StorageProp('topRectHeight') private topSafeHeight: number = 0
   @State versions: InstalledVersion[] = []
   @State currentVersion: string = '1.20.4'
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
@@ -103,34 +104,39 @@ struct VersionSettingsPage {
     this.scanVersions()
   }
 
+  /**
+   * 旧版本管理路由与首页版本详情使用同一导出向导。立即固定点击行的身份，
+   * 不借用 currentVersion 以免“导出非当前行”错误变成导出当前游戏。
+   * 导航失败只提示错误；完整性检查与系统另存由向导负责。
+   */
+  private async exportVersion_(versionId: string): Promise<void> {
+    try {
+      await this.getUIContext().getRouter().pushUrl({
+        url: 'pages/GameExportPage',
+        params: { 'mcRoot': this.mcRoot(), 'versionId': versionId, 'versionIsolation': this.versionIsolation },
+      })
+    } catch (e) {
+      try { this.getUIContext().getPromptAction().showToast({ message: '无法打开导出页面：' + (e as Error).message }) }
+      catch (toastError) { hilog.warn(0, TAG, '导出导航及提示失败：%{public}s', (toastError as Error).message) }
+    }
+  }
+
   build() {
     Column() {
-      // 导航栏
-      Row() {
-        Row({ space: 4 }) {
-          AppIcon({ name: AppIconName.Back, iconSize: 18, color: this.theme.primary })
-          Text('返回')
-            .fontSize(16)
-            .fontWeight(400)
-            .fontColor(this.theme.primary)
-        }
-        // 2026-05-23 API NEXT 迁移：router.back 全局函数弃用，改走
-        // this.getUIContext().getRouter()。详见 docs/guides/api-migration-2026-05.md。
-        .onClick(() => { this.getUIContext().getRouter().back() })
-        .padding({ left: 12, top: 8, bottom: 8, right: 8 })
+      // 仅替换标题宿主；选择版本、删除与导出的原回调保持独立。
+      ImmersiveTitleScaffold({ title: '版本管理', theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary, onBack: (): void => { this.getUIContext().getRouter().back(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.theme.bgPrimary)
+  }
 
-        Text('版本管理')
-          .fontSize(20)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-          .textAlign(TextAlign.Center)
-          .margin({ right: 60 })
-      }
-      .width('100%')
-      .height(56)
-      .alignItems(VerticalAlign.Center)
-
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
       // 内容区
       Scroll() {
         Column({ space: 12 }) {
@@ -157,6 +163,13 @@ struct VersionSettingsPage {
           .padding(16)
           .backgroundColor(this.theme.bgCard)
           .borderRadius(16)
+
+          // 将导出主操作独立成行，窄窗口不会因原有选择/删除按钮而横向溢出。
+          Button('导出当前版本游戏包')
+            .width('100%').height(48).fontSize(14)
+            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.primary)
+            .enabled(this.versions.some((version: InstalledVersion): boolean => version.id === this.currentVersion))
+            .onClick(() => { this.exportVersion_(this.currentVersion) })
 
           // 已安装版本标题
           Row() {
@@ -286,9 +299,5 @@ struct VersionSettingsPage {
         .padding(16)
       }
       .layoutWeight(1)
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.theme.bgPrimary)
-  }
+      }
 }

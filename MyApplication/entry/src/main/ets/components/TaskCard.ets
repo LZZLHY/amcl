@@ -15,6 +15,7 @@
  *   └──────────────────────────────────────┘
  */
 
+import { AppRoundIconButton } from './AppRoundIconButton';
 import {
   UnifiedTaskView, UnifiedTaskState, TaskCategory, stateLabel,
 } from 'feature_core';
@@ -39,6 +40,8 @@ export struct TaskCard {
   onResume: () => void = () => {}
   onCancel: () => void = () => {}
   onRetry: () => void = () => {}
+  /** 外部恢复是完整业务入口，不调用并不存在的adapter内部retry。 */
+  onExternalRecovery: () => void = () => {}
   onRemove: () => void = () => {}
 
   // ============================================================
@@ -305,7 +308,7 @@ export struct TaskCard {
     .padding(14)
     .backgroundColor(this.theme.bgCard)
     .borderRadius(16)
-    .onClick(() => { this.onTap() })
+    .onClick(() => { if (this.view.canViewDetail) this.onTap() })
   }
 
   @Builder
@@ -316,6 +319,8 @@ export struct TaskCard {
         this.IconButton(AppIconName.Pause, this.theme.bgInput, this.theme.textSecondary, () => this.onPause())
       } else if (this.view.canResume) {
         this.IconButton(AppIconName.Play, this.theme.primaryLight, this.theme.primary, () => this.onResume())
+      } else if (this.view.canRecoverExternally) {
+        this.IconButton(AppIconName.Refresh, this.theme.primaryLight, this.theme.primary, () => this.onExternalRecovery())
       } else if (this.view.canRetry) {
         this.IconButton(AppIconName.Refresh, this.theme.primaryLight, this.theme.primary, () => this.onRetry())
       }
@@ -330,19 +335,30 @@ export struct TaskCard {
     .alignItems(VerticalAlign.Center)
   }
 
+  /** 读屏明确业务意图；X仍是取消任务，绝不改为关闭面板或退出下载。 */
+  private taskActionLabel_(icon: AppIconName): string {
+    if (icon === AppIconName.Close) return '取消任务';
+    if (icon === AppIconName.Trash) return '移除任务记录';
+    if (icon === AppIconName.Pause) return '暂停任务';
+    if (icon === AppIconName.Play) return '继续任务';
+    return this.view.canRecoverExternally ? '打开任务恢复入口' : '重试任务';
+  }
+
+  /** 与原ActionGroup分支共用实时能力，迟到激活不能执行已失效的操作。 */
+  private taskActionEnabled_(icon: AppIconName): boolean {
+    if (icon === AppIconName.Close) return this.view.canCancel;
+    if (icon === AppIconName.Trash) return this.isDone() || this.isError();
+    if (icon === AppIconName.Pause) return this.view.canPause && this.isActive();
+    if (icon === AppIconName.Play) return this.view.canResume;
+    return this.view.canRecoverExternally || this.view.canRetry;
+  }
+
   @Builder
   IconButton(icon: AppIconName, bgColor: ResourceColor, iconColor: ResourceColor, onClick: () => void) {
-    Stack() {
-      AppIcon({ name: icon, iconSize: 16, color: iconColor })
-    }
-    .width(34).height(34)
-    .borderRadius(17)
-    .backgroundColor(bgColor)
-    .onClick(() => {
-      // 阻止冒泡到卡片 onTap——ArkUI .onClick 不会冒泡到父的 onClick，
-      // 但如果外部也是 Stack 的话可能会。实际测试表明：ArkUI 点击事件会冒泡，
-      // 为安全起见调用方的 onClick 实现应该不依赖以上层级 onTap 不出发
-      onClick()
-    })
+    // 正文操作如实回退普通样式，34vp视觉保持；44vp命中压缩的是标题留白而非按钮热区。
+    AppRoundIconButton({ name: icon, theme: this.theme, color: iconColor, containerBg: bgColor,
+      visualDiameter: 34, accessibilityLabel: this.taskActionLabel_(icon),
+      actionEnabled: this.taskActionEnabled_(icon), controlId: 'task-card-action-' + this.view.id + '-' + icon,
+      onAction: onClick })
   }
 }

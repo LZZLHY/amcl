@@ -24,6 +24,10 @@ struct LookDeltaMathOutput {
     double pendingDx = 0.0;
     double pendingDy = 0.0;
     int64_t lastTimeNs = 0;
+    // 中立look owner分摊同family设备时沿用本次总量运算系数，禁止逐设备重算加速/alpha。
+    // appliedGain包含灵敏度和加速，Y倒置仍由原输入声明；appliedAlpha只改变到达时间。
+    double appliedGain = 1.0;
+    double appliedAlpha = 1.0;
 };
 
 // Pure numeric transaction used by the shipping look processor. Output remains

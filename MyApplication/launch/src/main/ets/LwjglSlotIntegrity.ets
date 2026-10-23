@@ -61,9 +61,10 @@ function readMarker(path: string): string {
  * 不能仅凭 PK 头或文件数量将混版字节交给 JVM。
  */
 export function verifyLwjglRuntimeSlotSync(slotDirectory: string,
-  requireMarker: boolean = true): LwjglSlotIntegrityResult {
+  requireMarker: boolean = true, javaFeature: number = 0): LwjglSlotIntegrityResult {
   try {
-    const slot = lwjglRuntimeSlot(slotDirectory);
+    // 采用与 builder 相同的实际 JDK 选择；错误 feature 即使文件存在也不能冒用另一清单。
+    const slot = lwjglRuntimeSlot(slotDirectory, javaFeature);
     const markerPath: string = slotDirectory + '/.installed';
     if (requireMarker && readMarker(markerPath) !== slot.marker) {
       throw new Error('部署标记缺失或内容身份不匹配，请完全退出并重新打开应用');
@@ -94,6 +95,7 @@ export function verifyLwjglRuntimeSlotSync(slotDirectory: string,
  * 预启动集成入口：只接收 builder/合并清单确定的真实槽目录，失败返回明确原因。
  * Promise 保持现有预检调用形式；当前 IO/摘要仍是同步实现，不声称已移到工作线程。
  */
-export async function verifyLwjglRuntimeSlot(slotDirectory: string): Promise<LwjglSlotIntegrityResult> {
-  return verifyLwjglRuntimeSlotSync(slotDirectory);
+export async function verifyLwjglRuntimeSlot(slotDirectory: string,
+  javaFeature: number = 0): Promise<LwjglSlotIntegrityResult> {
+  return verifyLwjglRuntimeSlotSync(slotDirectory, true, javaFeature);
 }

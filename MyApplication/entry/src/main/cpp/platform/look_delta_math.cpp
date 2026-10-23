@@ -40,6 +40,7 @@ bool ComputeLookDeltaMath(const LookDeltaMathInput& input,
     const double speed = std::hypot(input.dx, input.dy) / (dtMs / 1000.0);
     if (!std::isfinite(speed)) return false;
 
+    double gain = input.sensitivity;
     double scaledDx = input.dx * input.sensitivity;
     double scaledDy = input.dy * input.sensitivity;
     if (input.acceleration > 0.0001) {
@@ -47,10 +48,11 @@ bool ComputeLookDeltaMath(const LookDeltaMathInput& input,
             (speed - kAccelSpeedLo) / (kAccelSpeedHi - kAccelSpeedLo);
         if (factor < 0.0) factor = 0.0;
         if (factor > 1.0) factor = 1.0;
-        const double gain =
+        const double accelerationGain =
             1.0 + input.acceleration * kAccelMaxExtra * factor;
-        scaledDx *= gain;
-        scaledDy *= gain;
+        gain *= accelerationGain;
+        scaledDx *= accelerationGain;
+        scaledDy *= accelerationGain;
     }
     if (input.invertY) scaledDy = -scaledDy;
     if (!FinitePair(scaledDx, scaledDy)) return false;
@@ -82,6 +84,8 @@ bool ComputeLookDeltaMath(const LookDeltaMathInput& input,
     candidate.pendingDx = remainingDx;
     candidate.pendingDy = remainingDy;
     candidate.lastTimeNs = input.nowTimeNs;
+    candidate.appliedGain = gain;
+    candidate.appliedAlpha = alpha;
     *output = candidate;
     return true;
 }

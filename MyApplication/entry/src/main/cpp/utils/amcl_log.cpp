@@ -50,7 +50,7 @@ static constexpr int LOG_TAG_MAX_LEN   = 64;        // tag 最大长度
 // 一次丢弃只损失一条，不再引发整圈停摆，512 槽已足够。若将来仍嫌不够，正确方向是
 // 改成变长存储（指针 + 长度 / 环形字节缓冲）而不是简单放大槽数。
 static constexpr int LOG_BUFFER_SIZE   = 512;       // 环形缓冲区条目数（必须 2 的幂）
-static constexpr int LOG_FLUSH_INTERVAL_MS = 500;   // 刷新间隔
+static constexpr int LOG_FLUSH_INTERVAL_MS = 500;   // 有未落盘状态/存储重试时的维护间隔
 
 // ==================== 日志条目 ====================
 // 每槽位记录世代，区分空闲、已预留但尚未发布、可消费三种状态。
@@ -187,16 +187,32 @@ static void notifyWriter() {
     g_cv.notify_all();
 }
 
-/** writer 独占 readIndex。已发布条目、显式 flush 或 shutdown 任一存在就不再睡眠。
- * 尚未发布的预留槽不能算可读，避免等待慢 producer 时空转；普通空闲周期仍按原间隔刷新。
+/** writer 独占readIndex。正文、显式flush/reopen和退出立即唤醒；完全干净时无限等待。
+ * 状态文件节流留下的脏数据或全局存储恢复仍按原500ms维护，不能因省空闲轮询丢失最后状态。
+ * 尚未发布的预留槽不能算可读；通知方通过g_mutex握手，避免慢producer或先通知后wait丢唤醒。
  */
 static void waitForWriterWork() {
     std::unique_lock<std::mutex> lock(g_mutex);
-    g_cv.wait_for(lock, std::chrono::milliseconds(LOG_FLUSH_INTERVAL_MS), [] {
+    const auto ready = [] {
         return g_shutdown.load(std::memory_order_acquire)
             || g_buffer[g_readIndex % LOG_BUFFER_SIZE].sequence.load(std::memory_order_acquire) == g_readIndex + 1
-            || g_flushRequest.load(std::memory_order_acquire) != g_flushCompleted.load(std::memory_order_acquire);
-    });
+            || g_flushRequest.load(std::memory_order_acquire) != g_flushCompleted.load(std::memory_order_acquire)
+            || g_reopenRequested.load(std::memory_order_acquire);
+    };
+    while (!ready()) {
+        bool maintenance = !g_globalWritable.load(std::memory_order_acquire);
+        {
+            std::lock_guard<std::mutex> scopeLock(g_scopeMutex);
+            for (const LedgerScope& scope : g_scopes)
+                maintenance = maintenance || (scope.activityId != 0 && scope.statusDirty);
+        }
+        if (maintenance) {
+            g_cv.wait_for(lock, std::chrono::milliseconds(LOG_FLUSH_INTERVAL_MS), ready);
+            return;
+        }
+        // scope新建也会通知；醒后重新判断是否有延后状态，不把虚假唤醒当待写正文。
+        g_cv.wait(lock);
+    }
 }
 
 // ==================== 工具函数 ====================
@@ -705,6 +721,29 @@ static void writerThreadFunc() {
     amclLedgerEndAll();
 }
 
+// 已发布外部回调描述符的 PID；0 表示本进程尚未发布。只在 amclLogInit（UI 线程）读写。
+static long g_sinkDescriptorPid = 0;
+
+// 发布 AMCL_LOG_SINK_V1="<pid>:<十六进制 externalLogSink 地址>"。同一 PID 重复初始化
+// （shutdown→init、reopen）不再写环境；Windows 宿主测试沿用 _putenv_s。
+static void publishExternalSinkDescriptorOnce() {
+#ifdef _WIN32
+    const long sinkPid = _getpid();
+#else
+    const long sinkPid = getpid();
+#endif
+    if (g_sinkDescriptorPid == sinkPid) return;
+    char sinkDescriptor[96];
+    snprintf(sinkDescriptor, sizeof(sinkDescriptor), "%ld:%llx", sinkPid,
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&externalLogSink)));
+#ifdef _WIN32
+    _putenv_s("AMCL_LOG_SINK_V1", sinkDescriptor);
+#else
+    setenv("AMCL_LOG_SINK_V1", sinkDescriptor, 1);
+#endif
+    g_sinkDescriptorPid = sinkPid;
+}
+
 // ==================== 公共 API ====================
 extern "C" void amclLogInit(const char* logDir, int maxFileSize, int maxFiles) {
     if (g_initialized.load()) { g_reopenRequested.store(true); notifyWriter(); return; }
@@ -745,27 +784,18 @@ extern "C" void amclLogInit(const char* logDir, int maxFileSize, int maxFiles) {
         g_buffer[i].sequence.store(static_cast<unsigned int>(i), std::memory_order_relaxed);
     }
 
+    // 外部回调描述符（I27-05）：内容是 PID + 本映像函数地址，是进程常量，每个 PID 只写一次，
+    // 并且在创建 writer 线程之前写——此刻进程里还没有任何 AMCL 线程会遍历 environ。写早了无害：
+    // externalLogSink 经 writeImplV 在 g_initialized 置位前直接丢弃。独立 namespace 的 GLFW
+    // 借它调用同一 writer；fork 子进程 PID 不同，重新初始化时发布自己的描述符。
+    publishExternalSinkDescriptorOnce();
+
     g_shutdown.store(false);
     // 防御性 detach：如果之前是 fork 子进程残留的 joinable thread，move-assign
     // 会让 std::thread 析构 terminate。detach 让旧对象变 non-joinable。
     if (g_writerThread.joinable()) g_writerThread.detach();
     g_writerThread = std::thread(writerThreadFunc);
     g_initialized.store(true);
-    // 宿主 writer 初始化后才发布回调。描述符包含 PID，独立 namespace 的 GLFW
-    // 可以调用同一 writer，而 fork 子进程必须重新初始化后才接受自己的描述符。
-    char sinkDescriptor[96];
-#ifdef _WIN32
-    const long sinkPid = _getpid();
-#else
-    const long sinkPid = getpid();
-#endif
-    snprintf(sinkDescriptor, sizeof(sinkDescriptor), "%ld:%llx", sinkPid,
-        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&externalLogSink)));
-#ifdef _WIN32
-    _putenv_s("AMCL_LOG_SINK_V1", sinkDescriptor);
-#else
-    setenv("AMCL_LOG_SINK_V1", sinkDescriptor, 1);
-#endif
 
     // 2026-05-10：注册 fork-after-child handler（问题 18），子进程里把 amcl_log
     // 标为未初始化，让 amclLogWrite no-op，避免父子共享 fd 导致的日志撕裂。
@@ -921,7 +951,7 @@ extern "C" long long amclLogGetThreadActivity(void) {
 
 extern "C" int amclLedgerBegin(long long activityId, const char* dir) {
     if (activityId == 0 || !dir || !dir[0]) return 0;
-    std::lock_guard<std::mutex> lk(g_scopeMutex);
+    std::unique_lock<std::mutex> lk(g_scopeMutex);
 
     // 幂等：同一活动重复 begin 只生效一次
     if (findScopeLocked(activityId) != nullptr) return 1;
@@ -947,24 +977,33 @@ extern "C" int amclLedgerBegin(long long activityId, const char* dir) {
     if (!free_slot->head) ++free_slot->failures;
     persistScopeStatusLocked(free_slot, false);
     // 打开失败也保留 scope 状态，使后续归档能报告 write-failed，而非空的 complete。
-    return free_slot->head ? 1 : 0;
+    const int opened = free_slot->head ? 1 : 0;
+    // 新scope的状态写入失败时仍需要后台重试。先释放scope锁再通知，保持g_mutex→scope锁序。
+    lk.unlock();
+    notifyWriter();
+    return opened;
 }
 
-extern "C" void amclLedgerEnd(long long activityId) {
-    if (activityId == 0) return;
-    // Mark first so a writer that is already draining the ring can still tee
-    // the final entries.  Closing the FILE immediately after a fixed sleep
-    // loses exactly the crash line this ledger exists to preserve.
+extern "C" int amclLedgerEndChecked(long long activityId) {
+    if (activityId <= 0) return 0;
+    // 先登记本次真实生产序号，让已预留但尚未发布的最后记录继续分流。
+    // FILE 只能由 writer 消费完目标序号后关闭，不能由请求线程按固定延时抢先 fclose。
     {
         std::lock_guard<std::mutex> lk(g_scopeMutex);
         LedgerScope* scope = findScopeLocked(activityId);
-        if (!scope) return;
+        if (!scope) return 1;
         scope->closing = true;
         scope->closeTarget = g_writeIndex.load(std::memory_order_acquire);
     }
-    amclLogFlush();
-    // 关闭由 writer 独占；超时时仍保留 scope，不能在重复计数落盘前提前 fclose。
+    // 全局写入健康与本局是否已经关闭分别判断：正文缺口仍由本局 native-io 收据报告。
+    // 等待超时时 scope 继续由 writer 持有，调用方必须保留收尾义务并稍后重试。
+    (void)amclLogFlushChecked();
+    std::lock_guard<std::mutex> lk(g_scopeMutex);
+    return findScopeLocked(activityId) == nullptr ? 1 : 0;
 }
+
+/** 保留已有 C ABI；新的异步封账使用 checked 结果，不能把 void 返回当成关闭确认。 */
+extern "C" void amclLedgerEnd(long long activityId) { (void)amclLedgerEndChecked(activityId); }
 
 extern "C" void amclLedgerEndAll(void) {
     std::lock_guard<std::mutex> lk(g_scopeMutex);

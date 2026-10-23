@@ -10,8 +10,13 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const app = path.join(root, 'MyApplication');
-const output = path.join(app, 'third-party-notices');
+const args = process.argv.slice(2);
+const sourceIndex = args.indexOf('--source');
+const onlyIndex = args.indexOf('--only');
+// 公开候选不必再物化一套大型依赖；可只读已经验明身份的冻结源树。
+// 输出仍固定在本公开仓，不能由外部输入改变许可证的发布落点。
+const app = sourceIndex >= 0 ? fs.realpathSync(args[sourceIndex + 1]) : path.join(root, 'MyApplication');
+const output = path.join(root, 'MyApplication/third-party-notices');
 const components = {
   lwjgl3: 'prebuilt/lwjgl3/lwjgl3_src',
   mobileglues: 'prebuilt/mobileglues/mg_src',
@@ -31,9 +36,22 @@ const components = {
   xxhash: 'prebuilt/mobilegl/src/3rdparty/xxHash',
   'tl-expected': 'prebuilt/mobilegl/src/include/tl',
   'ska-flat-hash-map': 'prebuilt/mobilegl/src/include/ska',
+  hdc: 'prebuilt/hdc/muka-rust-hdc',
 };
-const records = [];
+const selected = onlyIndex >= 0 ? args[onlyIndex + 1]?.split(',').filter(Boolean) : Object.keys(components);
+if (!selected?.length || selected.some(component => !Object.hasOwn(components, component))) {
+  throw new Error('Unknown or empty component selection');
+}
+// 增量更新只保留内容摘要已核实的旧条目；其余组件的来源变化须另行检查，
+// 不能用本命令的局部成功宣称整个第三方许可审查已经完成。
+const records = onlyIndex >= 0 ? JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8')).files
+  .filter(record => !selected.includes(record.component)) : [];
+for (const record of records) {
+  const bytes = fs.readFileSync(path.join(output, record.file), 'utf8').replace(/\r\n/g, '\n');
+  if (createHash('sha256').update(bytes).digest('hex') !== record.sha256) throw new Error(`Retained notice changed: ${record.file}`);
+}
 for (const [component, relative] of Object.entries(components)) {
+  if (!selected.includes(component)) continue;
   const directory = path.join(app, relative);
   const git = (...args) => execFileSync('git', ['-C', directory, ...args], { encoding: 'utf8' }).trim();
   const repository = git('rev-parse', '--show-toplevel');
@@ -55,4 +73,4 @@ for (const [component, relative] of Object.entries(components)) {
   }
 }
 fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ schema: 1, files: records }, null, 2) + '\n');
-console.log(`Copied ${records.length} upstream license/notice files from ${Object.keys(components).length} source locations`);
+console.log(`Verified ${records.length} upstream license/notice files; refreshed ${selected.length} source locations`);

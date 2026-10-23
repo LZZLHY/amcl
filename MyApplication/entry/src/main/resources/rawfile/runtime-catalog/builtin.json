@@ -1,0 +1,505 @@
+{
+  "schemaVersion": 1,
+  "catalogRevision": 1,
+  "channel": "stable",
+  "issuedAt": "2026-09-26T18:16:22Z",
+  "expiresAt": "2027-09-26T18:16:22Z",
+  "runtimes": [
+    {
+      "id": "java8-ohos-aarch64",
+      "javaMajor": 8,
+      "displayName": "OpenJDK 8 for OHOS",
+      "os": "ohos",
+      "arch": "aarch64",
+      "libc": "musl",
+      "adapter": "classic-jre-v1",
+      "minimumCatalogProtocol": 1,
+      "minimumApi": 20,
+      "loaderProtocol": 1,
+      "recommendationRevision": 1,
+      "recommendedBuildId": "8u452-ohos-4"
+    },
+    {
+      "id": "java17-ohos-aarch64",
+      "javaMajor": 17,
+      "displayName": "OpenJDK 17 for OHOS",
+      "os": "ohos",
+      "arch": "aarch64",
+      "libc": "musl",
+      "adapter": "modular-jdk-v1",
+      "minimumCatalogProtocol": 1,
+      "minimumApi": 20,
+      "loaderProtocol": 1,
+      "recommendationRevision": 1,
+      "recommendedBuildId": "17.0.13-ohos-5"
+    },
+    {
+      "id": "java21-ohos-aarch64",
+      "javaMajor": 21,
+      "displayName": "OpenJDK 21 for OHOS",
+      "os": "ohos",
+      "arch": "aarch64",
+      "libc": "musl",
+      "adapter": "modular-jdk-v1",
+      "minimumCatalogProtocol": 1,
+      "minimumApi": 20,
+      "loaderProtocol": 1,
+      "recommendationRevision": 1,
+      "recommendedBuildId": "21.0.5-ohos-7"
+    },
+    {
+      "id": "java25-ohos-aarch64",
+      "javaMajor": 25,
+      "displayName": "OpenJDK 25 for OHOS",
+      "os": "ohos",
+      "arch": "aarch64",
+      "libc": "musl",
+      "adapter": "modular-jdk-v1",
+      "minimumCatalogProtocol": 1,
+      "minimumApi": 20,
+      "loaderProtocol": 1,
+      "recommendationRevision": 1,
+      "recommendedBuildId": "25.0.4-ohos-2"
+    }
+  ],
+  "builds": [
+    {
+      "id": "8u452-ohos-4",
+      "runtimeId": "java8-ohos-aarch64",
+      "javaVersion": "8u452",
+      "legacyTags": [
+        "v8u452-ohos-4"
+      ],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk8-ohos-full-v4.zip",
+        "sizeBytes": 39555296,
+        "sha256": "02c2cedb3539682de3df3d7870b855bfefaac1f4cfe53951cfe90b0dea3d3a63"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/v8u452-ohos-4/jdk8-ohos-full-v4.zip"
+        },
+        {
+          "sourceId": "gitee",
+          "transport": "concat-parts",
+          "parts": [
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v8u452-ohos-4/jdk8-ohos-full-v4.zip.part01of02",
+              "sizeBytes": 19777648,
+              "sha256": "6b42c0c3f573c75a784d30e1af910956a8df82b8d87d14370f54866b2ce82bf8"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v8u452-ohos-4/jdk8-ohos-full-v4.zip.part02of02",
+              "sizeBytes": 19777648,
+              "sha256": "4970652ed42f92d802cad335eb4f62254b784778e1a925963a31509c25872f19"
+            }
+          ]
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk8-ohos-full-v4.zip"
+        }
+      ],
+      "notes": [
+        "保留旧版下载兼容；来源为已发布资产，不追溯宣称完整源码重建。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "legacy-runtime"
+      ],
+      "validationLevel": "legacy-compatible",
+      "provenance": {
+        "kind": "legacy",
+        "sourceRepository": "https://github.com/LZZLHY/mc-ohos-resources",
+        "sourceCommit": "99018f434dc327f1a269345d5301b308e0e6f743",
+        "manifestSha256": "",
+        "evidence": [
+          "旧资产逐字节 SHA-256 与大小已核对。sourceCommit 是目录迁移前发布仓身份，不代表整包上游源码身份。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "17.0.13-ohos-5",
+      "runtimeId": "java17-ohos-aarch64",
+      "javaVersion": "17.0.19",
+      "legacyTags": [
+        "v17.0.13-ohos-5"
+      ],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk17-ohos-full-v5.zip",
+        "sizeBytes": 113762513,
+        "sha256": "0e26b0dece38156838456cfb12058d863aa9856cdd8fd648f06f9bc5e91f8ecd"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/v17.0.13-ohos-5/jdk17-ohos-full-v5.zip"
+        },
+        {
+          "sourceId": "gitee",
+          "transport": "concat-parts",
+          "parts": [
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v17.0.13-ohos-5/jdk17-ohos-full-v5.zip.part01of03",
+              "sizeBytes": 37920837,
+              "sha256": "c027a4935b935fe89194561adcbf298275a472590948e9b891cbca43bf187411"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v17.0.13-ohos-5/jdk17-ohos-full-v5.zip.part02of03",
+              "sizeBytes": 37920837,
+              "sha256": "d1fcc9ee9398671389acadfbc23b2bbe2e83d7a5886d81c61c8a734265bc4fd5"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v17.0.13-ohos-5/jdk17-ohos-full-v5.zip.part03of03",
+              "sizeBytes": 37920839,
+              "sha256": "6abd8c600f63d174872b7529b8435b5a6eb54c855176c12e84552fce584d29ab"
+            }
+          ]
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk17-ohos-full-v5.zip"
+        }
+      ],
+      "notes": [
+        "旧版兼容基线。Java Sound 原生后端存在已知缺陷，修复候选在预览通道。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "legacy-runtime"
+      ],
+      "validationLevel": "legacy-compatible",
+      "provenance": {
+        "kind": "legacy",
+        "sourceRepository": "https://github.com/LZZLHY/mc-ohos-resources",
+        "sourceCommit": "99018f434dc327f1a269345d5301b308e0e6f743",
+        "manifestSha256": "",
+        "evidence": [
+          "旧资产逐字节 SHA-256 与大小已核对。sourceCommit 是目录迁移前发布仓身份，不代表整包上游源码身份。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "17-runtime-audio-rc2",
+      "runtimeId": "java17-ohos-aarch64",
+      "javaVersion": "17.0.19",
+      "legacyTags": [],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk17-ohos-runtime-audio-rc2.zip",
+        "sizeBytes": 108047786,
+        "sha256": "4d04c2871f6892272e36e5f055bb5fd57b541678faa54b34754476be8cad1957"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/ohos-runtimes/jdk17-ohos-runtime-audio-rc2.zip"
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk17-ohos-runtime-audio-rc2.zip"
+        }
+      ],
+      "notes": [
+        "完整源码重建，修复 Java Sound 硬件枚举安全降级，保留 MIDI/WAV 软件解析。",
+        "预览构建；尚未完成所有设备与模组回归矩阵。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "native-midi-unavailable-safe",
+        "native-pcm-unavailable-safe",
+        "ports-unavailable-safe"
+      ],
+      "validationLevel": "target-device-tested",
+      "provenance": {
+        "kind": "source-build",
+        "sourceRepository": "https://github.com/openjdk/jdk17u.git",
+        "sourceCommit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+        "manifestSha256": "cf7883c04f726f7eb8b6ab13912413449b803eabb07bfccbc1205d9050e16854",
+        "evidence": [
+          "RC2 完整打包、ELF 依赖审计与宿主 Java Sound 测试通过。",
+          "用户反馈：新 JDK17 + 新 HAP，Minecraft 1.20.1 + Immersive Melodies 通过；未收到对应设备日志及包摘要，不能推广至全部场景。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "21.0.5-ohos-7",
+      "runtimeId": "java21-ohos-aarch64",
+      "javaVersion": "21.0.5",
+      "legacyTags": [
+        "v21.0.5-ohos-7"
+      ],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk21-ohos-full-v7.zip",
+        "sizeBytes": 114267146,
+        "sha256": "21556d0d4fc5eea09ba27068cf8a96803bb1667b35adbc8495fdc5f831316275"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/v21.0.5-ohos-7/jdk21-ohos-full-v7.zip"
+        },
+        {
+          "sourceId": "gitee",
+          "transport": "concat-parts",
+          "parts": [
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v21.0.5-ohos-7/jdk21-ohos-full-v7.zip.part01of03",
+              "sizeBytes": 38089048,
+              "sha256": "c94910021058e47de5818c79715bd3acfa0cd5902f7ef210f735b447c8fa918a"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v21.0.5-ohos-7/jdk21-ohos-full-v7.zip.part02of03",
+              "sizeBytes": 38089048,
+              "sha256": "cbbf5bcb2aa1429842230cd73bb9e34958f56ce74312b650a6080fe0cc65b7f2"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v21.0.5-ohos-7/jdk21-ohos-full-v7.zip.part03of03",
+              "sizeBytes": 38089050,
+              "sha256": "b5c52348c751e117eeed5c2e899d673ce448daab9c790a20e700422dd9f697a3"
+            }
+          ]
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk21-ohos-full-v7.zip"
+        }
+      ],
+      "notes": [
+        "旧版兼容基线。Java Sound 原生后端存在已知缺陷，修复候选在预览通道。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "legacy-runtime"
+      ],
+      "validationLevel": "legacy-compatible",
+      "provenance": {
+        "kind": "legacy",
+        "sourceRepository": "https://github.com/LZZLHY/mc-ohos-resources",
+        "sourceCommit": "99018f434dc327f1a269345d5301b308e0e6f743",
+        "manifestSha256": "",
+        "evidence": [
+          "旧资产逐字节 SHA-256 与大小已核对。sourceCommit 是目录迁移前发布仓身份，不代表整包上游源码身份。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "21-runtime-audio-rc2",
+      "runtimeId": "java21-ohos-aarch64",
+      "javaVersion": "21.0.5",
+      "legacyTags": [],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk21-ohos-runtime-audio-rc2.zip",
+        "sizeBytes": 115303455,
+        "sha256": "9a427d204595fee5edc230d15aef25aefc34a8983f6c976e7e213f330f70107f"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/ohos-runtimes/jdk21-ohos-runtime-audio-rc2.zip"
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk21-ohos-runtime-audio-rc2.zip"
+        }
+      ],
+      "notes": [
+        "完整源码重建，修复 Java Sound 硬件枚举安全降级，保留 MIDI/WAV 软件解析。",
+        "预览构建；尚未完成所有设备与模组回归矩阵。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "native-midi-unavailable-safe",
+        "native-pcm-unavailable-safe",
+        "ports-unavailable-safe"
+      ],
+      "validationLevel": "artifact-audited",
+      "provenance": {
+        "kind": "source-build",
+        "sourceRepository": "https://github.com/openjdk/jdk21u.git",
+        "sourceCommit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+        "manifestSha256": "f5b203594667764ac52478611ab7918a19d6647eb1d274ef25d599a88bb18af3",
+        "evidence": [
+          "RC2 完整打包、ELF 依赖审计与宿主 Java Sound 测试通过。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "25.0.4-ohos-2",
+      "runtimeId": "java25-ohos-aarch64",
+      "javaVersion": "25.0.4",
+      "legacyTags": [
+        "v25.0.4-ohos-2"
+      ],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk25-ohos-full-v2.zip",
+        "sizeBytes": 118872200,
+        "sha256": "d8e31df5d199a9b34d6d13c188b71af19c2fb1738da7bf3c6eeaed89a0a37538"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/v25.0.4-ohos-2/jdk25-ohos-full-v2.zip"
+        },
+        {
+          "sourceId": "gitee",
+          "transport": "concat-parts",
+          "parts": [
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v25.0.4-ohos-2/jdk25-ohos-full-v2.zip.part01of03",
+              "sizeBytes": 39624066,
+              "sha256": "ea648b34c9b4121a0a0c280e02dd8d3931a12c4d528d42af0aee8dcee45c6008"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v25.0.4-ohos-2/jdk25-ohos-full-v2.zip.part02of03",
+              "sizeBytes": 39624066,
+              "sha256": "e1f071802de651c1dc120e690f8f15143b248de629e40cca1f3ff0bbd860b2d0"
+            },
+            {
+              "url": "https://gitee.com/dhao12345/mc-ohos-resources-2/releases/download/v25.0.4-ohos-2/jdk25-ohos-full-v2.zip.part03of03",
+              "sizeBytes": 39624068,
+              "sha256": "5bfae52efc524d73d468530fbde39dffb432859ea02de0954d84b4e105bd29dc"
+            }
+          ]
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk25-ohos-full-v2.zip"
+        }
+      ],
+      "notes": [
+        "旧版兼容基线。Java Sound 原生后端存在已知缺陷，修复候选在预览通道。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "legacy-runtime"
+      ],
+      "validationLevel": "legacy-compatible",
+      "provenance": {
+        "kind": "legacy",
+        "sourceRepository": "https://github.com/LZZLHY/mc-ohos-resources",
+        "sourceCommit": "99018f434dc327f1a269345d5301b308e0e6f743",
+        "manifestSha256": "",
+        "evidence": [
+          "旧资产逐字节 SHA-256 与大小已核对。sourceCommit 是目录迁移前发布仓身份，不代表整包上游源码身份。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "25-runtime-audio-rc2",
+      "runtimeId": "java25-ohos-aarch64",
+      "javaVersion": "25.0.4",
+      "legacyTags": [],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk25-ohos-runtime-audio-rc2.zip",
+        "sizeBytes": 119915057,
+        "sha256": "3a8ac4174f6dc7e6eb5b01a84b9d0d8a7cfec907e54ea672304423e145bcf98b"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/ohos-runtimes/jdk25-ohos-runtime-audio-rc2.zip"
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk25-ohos-runtime-audio-rc2.zip"
+        }
+      ],
+      "notes": [
+        "完整源码重建，修复 Java Sound 硬件枚举安全降级，保留 MIDI/WAV 软件解析。",
+        "预览构建；尚未完成所有设备与模组回归矩阵。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "native-midi-unavailable-safe",
+        "native-pcm-unavailable-safe",
+        "ports-unavailable-safe"
+      ],
+      "validationLevel": "artifact-audited",
+      "provenance": {
+        "kind": "source-build",
+        "sourceRepository": "https://github.com/openjdk/jdk25u.git",
+        "sourceCommit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+        "manifestSha256": "bd41c1bfc018d998787ee910f79da7636d7c591ade8690e32d4230de99830fc5",
+        "evidence": [
+          "RC2 完整打包、ELF 依赖审计与宿主 Java Sound 测试通过。"
+        ]
+      },
+      "status": "available"
+    },
+    {
+      "id": "8-catalog-rc1",
+      "runtimeId": "java8-ohos-aarch64",
+      "javaVersion": "1.8.0_452",
+      "legacyTags": [],
+      "archive": {
+        "type": "zip",
+        "fileName": "jdk8-ohos-catalog-rc1.zip",
+        "sizeBytes": 40580832,
+        "sha256": "dfd6e136e0d8a143fb69c9fdd986f1ce1e5c2817902cd5749e5aa076c1aba57c"
+      },
+      "downloads": [
+        {
+          "sourceId": "github",
+          "transport": "single-file",
+          "url": "https://github.com/LZZLHY/mc-ohos-resources/releases/download/ohos-runtimes/jdk8-ohos-catalog-rc1.zip"
+        },
+        {
+          "sourceId": "web",
+          "transport": "single-file",
+          "url": "https://amcl.lovedhy.cn/runtimes/packages/jdk8-ohos-catalog-rc1.zip"
+        }
+      ],
+      "notes": [
+        "完整重建经典 Java8 运行时，固定源码、boot JDK 与 FreeType；明确关闭不支持的硬件 Java Sound 后端。",
+        "保留老 Forge 所需 ManifestEntryVerifier 构造器、代码生成修复与 IPv6 适配。",
+        "已通过打包审计和宿主 MIDI/WAV/音序测试；OHOS 真机回归待验证。"
+      ],
+      "capabilities": [
+        "headless-awt",
+        "native-midi-unavailable-safe",
+        "native-pcm-unavailable-safe",
+        "ports-unavailable-safe"
+      ],
+      "validationLevel": "artifact-audited",
+      "provenance": {
+        "kind": "source-build",
+        "sourceRepository": "https://github.com/openjdk/jdk8u-dev.git",
+        "sourceCommit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+        "manifestSha256": "a9876a5e6b8c6d82e5aebb86ccc75d857fa8ef7d90261abd328e2ed7dceda1ed",
+        "evidence": [
+          "干净工作卷完整 images/打包通过；Java Sound 宿主真实加载、硬件 provider 为空、MIDI/WAV 往返与音序事件传递通过。",
+          "不据此声称 OHOS JVM 或真机模组矩阵已经通过。"
+        ]
+      },
+      "status": "available"
+    }
+  ]
+}

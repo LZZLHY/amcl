@@ -15,9 +15,11 @@ import { DiagnosticPolicy } from './DiagnosticPolicy';
  * 各自维护一份 fetch 逻辑。
  *
  * 缓存语义（两级）：
- *   L1 内存（pixelCache_）：url → 已解码 PixelMap
- *     - hit → 立即返回（同步 Promise）
- *     - inflight → 共享同一个 promise，避免并发重复请求同一张图
+ *   L1 图标按 URL + 输出长边共享有界 PixelMap，消费者必须持有并归还租约；
+ *      仅无租约的项可淘汰并显式释放。在用项占满预算时返回 null，保持 fallback。
+ *      旧 getRemotePixelMap(url) 保留皮肤/披风原图语义，独立有界缓存只丢强引用，
+ *      不显式 release 裸引用，避免破坏既有消费者正在读取的像素。
+ *   不同 URL 的网络与解码共用有界队列；同一输出规格合并正在进行的工作。
  *   L2 磁盘（cacheDir/remote-image-cache/<hash>.img）：url → 原始图片字节（png/jpg/webp）
  *     - 2026-07-03 新增：内存未命中时先读盘解码（省一次网络往返，跨 APP 重启持久）
  *     - 冷取网络成功后把原始字节落盘（原子写：.tmp → rename），供下次复用
@@ -35,16 +37,85 @@ import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { RemoteImageCacheEntry, RemoteImageMemoryCache, RemoteImageTaskQueue,
+  RemoteImageLoadToken, remoteImageDecodeSize, RemoteImageDecodeSize, RemoteImageRetirableLease } from './RemoteImagePolicy';
+
+export { RemoteImageLoadToken, RemoteImageRetirementGuard } from './RemoteImagePolicy';
 
 const TAG = 'RemoteImageCache';
 
 /** 磁盘缓存文件数上限；超出则在初始化时按 mtime 淘汰到 ~80%。图标多为几 KB，600 张约几 MB。 */
 const MAX_DISK_FILES = 600;
 
-/** url → PixelMap（已解码完成的图片） */
-const pixelCache_: Map<string, image.PixelMap> = new Map<string, image.PixelMap>();
-/** url → 正在进行的 fetch+decode promise，避免并发重复请求同一张图 */
-const inflight_: Map<string, Promise<image.PixelMap | null>> = new Map<string, Promise<image.PixelMap | null>>();
+/** 图标响应在 NetworkKit 收包阶段限制为 2 MiB；兼容原图为 8 MiB。 */
+const MAX_ICON_BYTES: number = 2 * 1024 * 1024;
+const MAX_ORIGINAL_BYTES: number = 8 * 1024 * 1024;
+/** 所有远程图片至多同时进行四次获取/解码，等候区最多保留 96 个工作身份。 */
+const imageQueue_: RemoteImageTaskQueue<DecodedRemoteImage> = new RemoteImageTaskQueue<DecodedRemoteImage>(4, 96);
+/** 租约图标和兼容原图分开管理，避免相同 URL 的缩略结果替代原图像素坐标。 */
+const thumbnailCache_: RemoteImageMemoryCache<image.PixelMap> =
+  new RemoteImageMemoryCache<image.PixelMap>(16 * 1024 * 1024, 192, releasePixelMap_);
+const originalCache_: RemoteImageMemoryCache<image.PixelMap> =
+  new RemoteImageMemoryCache<image.PixelMap>(16 * 1024 * 1024, 32, (_pm: image.PixelMap): void => {
+    // 兼容调用者没有归还协议；只移除缓存强引用，由运行时在最后一个引用消失后回收。
+  });
+/** 原图去重不与图标混用；图标待交付数同时用于预留租约，消除完成/淘汰竞态。 */
+const originalInflight_: Map<string, Promise<image.PixelMap | null>> = new Map<string, Promise<image.PixelMap | null>>();
+const thumbnailInflight_: Map<string, ThumbnailLoad> = new Map<string, ThumbnailLoad>();
+
+/** 已解码结果附带真实像素字节数，供 L1 预算登记。 */
+interface DecodedRemoteImage {
+  pixelMap: image.PixelMap;
+  bytes: number;
+}
+
+/** 一次共享图标工作：每个调用者各有取消标记和一个预留租约。 */
+class ThumbnailLoad {
+  tokens: RemoteImageLoadToken[] = [];
+  promise: Promise<RemoteImageCacheEntry<image.PixelMap> | null> = Promise.resolve(null);
+
+  /** 仅当还有消费者需要结果才继续出队、网络后的解码或结果缓存。 */
+  isNeeded(): boolean { return this.tokens.some((token: RemoteImageLoadToken): boolean => !token.isCancelled()); }
+}
+
+/**
+ * 一个图标的共享租约。调用者在 Image 停止引用后调用 release；操作幂等，
+ * 只减少自己的 pin，不会释放其他组件仍在使用的同一张 PixelMap。
+ */
+export class RemotePixelMapLease implements RemoteImageRetirableLease {
+  readonly pixelMap: image.PixelMap;
+  private entry_: RemoteImageCacheEntry<image.PixelMap>;
+  private released_: boolean = false;
+
+  /** 仅由缓存创建；entry 已为当前消费者预留一个 pin。 */
+  constructor(entry: RemoteImageCacheEntry<image.PixelMap>) {
+    this.entry_ = entry;
+    this.pixelMap = entry.value;
+  }
+
+  /** 重复释放无副作用；仍被其他租约使用的项不可成为 LRU 淘汰对象。 */
+  release(): void {
+    if (this.released_) return;
+    this.released_ = true;
+    thumbnailCache_.unpin(this.entry_);
+  }
+
+  /**
+   * UIContext 已销毁、无法等待最后一帧时的安全退化：之后淘汰仅删除强引用，
+   * 不显式销毁仍可能被渲染层引用的位图；缓存预算和其他消费者的 pin 仍有效。
+   */
+  releaseToGc(): void {
+    if (this.released_) return;
+    this.entry_.disposeAllowed = false;
+    this.release();
+  }
+}
+
+/** 显式释放仅用于租约管理的闲置项或从未交付的新位图，吸收异步释放错误。 */
+function releasePixelMap_(pm: image.PixelMap): void {
+  try { pm.release().catch((): void => { /* best-effort；最终仍由运行时回收。 */ }); }
+  catch (e) { /* 释放异常不能影响其他图标。 */ }
+}
 
 // ---------------- 磁盘层 ----------------
 
@@ -136,21 +207,48 @@ function toHex8_(n: number): string {
   return s;
 }
 
-/** 从磁盘读原始字节并解码成 PixelMap；未命中 / 失败返回 null。 */
-async function decodeFromDisk_(url: string): Promise<image.PixelMap | null> {
+/**
+ * 在 ImageSource 上串行读取尺寸并解码，finally 覆盖坏图、拒绝及解码失败路径。
+ * 不对同一个 ImageSource 并发调用 SDK 方法；原图与缩略图使用独立输出规格。
+ */
+async function decodeSource_(src: image.ImageSource, maxEdgePx: number): Promise<DecodedRemoteImage | null> {
+  let pm: image.PixelMap | null = null;
+  try {
+    const info: image.ImageInfo = await src.getImageInfo();
+    const size: RemoteImageDecodeSize | null = remoteImageDecodeSize(info.size.width, info.size.height, maxEdgePx);
+    if (size === null) return null;
+    pm = await src.createPixelMap({
+      editable: false,
+      desiredSize: size,
+      desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
+    });
+    const bytes: number = pm.getPixelBytesNumber();
+    if (bytes <= 0 || bytes > (maxEdgePx === 0 ? 16 * 1024 * 1024 : 256 * 256 * 4)) {
+      releasePixelMap_(pm);
+      pm = null;
+      return null;
+    }
+    return { pixelMap: pm, bytes };
+  } catch (e) {
+    if (pm !== null) releasePixelMap_(pm);
+    return null;
+  } finally {
+    try { await src.release(); } catch (e) { /* source 清理失败不覆盖获取结果。 */ }
+  }
+}
+
+/** 磁盘也先校验压缩大小，再交给统一的尺寸限制和失败释放流程。 */
+async function decodeFromDisk_(url: string, maxEdgePx: number, maxBytes: number): Promise<DecodedRemoteImage | null> {
   let dir = ensureDiskDir_();
   if (dir.length === 0) return null;
   let path = diskPathFor_(dir, url);
   try {
     if (!fileIo.accessSync(path)) return null;
-    let src = image.createImageSource(path);
-    let pm = await src.createPixelMap({
-      editable: false,
-      desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
-    });
-    src.release();
+    const fileSize: number = fileIo.statSync(path).size;
+    if (fileSize <= 0 || fileSize > maxBytes) return null;
+    const decoded: DecodedRemoteImage | null = await decodeSource_(image.createImageSource(path), maxEdgePx);
     if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'disk HIT %{public}s', url);
-    return pm;
+    return decoded;
   } catch (e) {
     return null;
   }
@@ -182,80 +280,107 @@ function errMsg_(e: object): string {
   return err.message !== undefined ? err.message : String(e);
 }
 
+/** URL 的基本准入，避免无效/超长身份占据有限队列。 */
+function validUrl_(url: string): boolean {
+  return url.length > 0 && url.length <= 16384 && (url.startsWith('https://') || url.startsWith('http://'));
+}
+
 /**
- * 取或异步拉取 url 对应的 PixelMap。
- *
- * - L1 内存命中 → 立即返回（同步路径）
- * - inflight → 共享同一个 promise
- * - L2 磁盘命中 → 读盘 + 解码 → 入内存 → 返回（省一次网络往返）
- * - cold → http.request → 解码 → 入内存 + 落盘 → 返回
- *
- * 任何阶段失败返回 null（调用方负责降级 / fallback）。
+ * 队列里的实际 I/O 工作。maxLimit 在 SDK 收包阶段生效，随后再校验返回字节，
+ * 不依赖下载完成后的单层检查。每个 HttpRequest 在 finally 销毁；need 只引用
+ * 加载身份，不引用组件，全部消费者取消时跳过尚未开始或尚未解码的工作。
+ */
+async function loadRemoteImage_(url: string, maxEdgePx: number,
+  need: () => boolean): Promise<DecodedRemoteImage | null> {
+  if (!need()) return null;
+  const maxBytes: number = maxEdgePx === 0 ? MAX_ORIGINAL_BYTES : MAX_ICON_BYTES;
+  const fromDisk: DecodedRemoteImage | null = await decodeFromDisk_(url, maxEdgePx, maxBytes);
+  if (fromDisk !== null) return fromDisk;
+  if (!need()) return null;
+  let request: http.HttpRequest | null = null;
+  try {
+    request = http.createHttp();
+    const response: http.HttpResponse = await request.request(url, {
+      method: http.RequestMethod.GET,
+      expectDataType: http.HttpDataType.ARRAY_BUFFER,
+      maxLimit: maxBytes,
+      connectTimeout: 12000,
+      readTimeout: 12000,
+      header: { 'User-Agent': 'AMCL/1.0.0 (https://github.com/axecraft/amcl)' } as Record<string, string>,
+    });
+    if (!need() || response.responseCode !== 200 || !(response.result instanceof ArrayBuffer)) return null;
+    const bytes: ArrayBuffer = response.result as ArrayBuffer;
+    if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) return null;
+    const decoded: DecodedRemoteImage | null = await decodeSource_(image.createImageSource(bytes), maxEdgePx);
+    if (decoded !== null) writeToDisk_(url, bytes);
+    return decoded;
+  } catch (e) {
+    if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'fetch+decode failed %{public}s: %{public}s', url, errMsg_(e));
+    return null;
+  } finally {
+    try { request?.destroy(); } catch (e) { /* 不让 HTTP 清理异常影响其他加载。 */ }
+  }
+}
+
+/**
+ * 兼容原图入口。保持原始像素几何、相同 URL 去重和磁盘复用；内存缓存限制
+ * 16 MiB/32 项，淘汰只丢强引用。旧消费者没有租约，缓存绝不显式 release
+ * 仍可能由皮肤 Canvas/头像裁切持有的 PixelMap。新图标应使用下面的租约入口。
  */
 export async function getRemotePixelMap(url: string): Promise<image.PixelMap | null> {
-  if (pixelCache_.has(url)) {
-    if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'mem HIT %{public}s', url);
-    return pixelCache_.get(url)!;
-  }
-  let pending = inflight_.get(url);
-  if (pending !== undefined) {
-    if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'inflight HIT %{public}s', url);
-    return pending;
-  }
-
-  let task = (async (): Promise<image.PixelMap | null> => {
-    let httpReq: http.HttpRequest | null = null;
+  if (!validUrl_(url)) return null;
+  const cached: RemoteImageCacheEntry<image.PixelMap> | null = originalCache_.get(url);
+  if (cached !== null) return cached.value;
+  const pending: Promise<image.PixelMap | null> | undefined = originalInflight_.get(url);
+  if (pending !== undefined) return pending;
+  const task: Promise<image.PixelMap | null> = (async (): Promise<image.PixelMap | null> => {
     try {
-      // L2：先试磁盘（跨进程持久，省网络往返）
-      let fromDisk = await decodeFromDisk_(url);
-      if (fromDisk !== null) {
-        pixelCache_.set(url, fromDisk);
-        return fromDisk;
-      }
-
-      // cold：网络拉取原始字节
-      if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'cold fetch start %{public}s', url);
-      httpReq = http.createHttp();
-      let resp = await httpReq.request(url, {
-        method: http.RequestMethod.GET,
-        // ArkUI 的 ImageSource 需要 ArrayBuffer，所以请求体走 expectDataType=ARRAY_BUFFER
-        expectDataType: http.HttpDataType.ARRAY_BUFFER,
-        connectTimeout: 12000,
-        readTimeout: 12000,
-        // 部分镜像对 UA 敏感；用一个通用 UA 避免被识别成爬虫拒绝
-        header: { 'User-Agent': 'AMCL/1.0.0 (https://github.com/axecraft/amcl)' } as Record<string, string>,
-      });
-      if (resp.responseCode !== 200) {
-        if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'http %{public}d for %{public}s', resp.responseCode, url);
-        return null;
-      }
-      let body = resp.result;
-      if (!(body instanceof ArrayBuffer)) {
-        if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'unexpected body type for %{public}s', url);
-        return null;
-      }
-      let bytes = body as ArrayBuffer;
-      // 解码：image.createImageSource 接受 ArrayBuffer；webp / png / jpg 都自动识别
-      let src = image.createImageSource(bytes);
-      let pm = await src.createPixelMap({
-        editable: false,
-        desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
-      });
-      // ImageSource 用完释放（PixelMap 已经独立持有数据）
-      src.release();
-      pixelCache_.set(url, pm);
-      // 落盘（best-effort，不阻塞返回语义；文件小、同步开销可忽略）
-      writeToDisk_(url, bytes);
-      if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'decoded %{public}s (mem size=%{public}d)', url, pixelCache_.size);
-      return pm;
-    } catch (e) {
-      if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'fetch+decode failed %{public}s: %{public}s', url, errMsg_(e));
-      return null;
-    } finally {
-      try { httpReq?.destroy(); } catch (e) { /* ignore */ }
-      inflight_.delete(url);
-    }
+      const decoded: DecodedRemoteImage | null = await imageQueue_.run((): Promise<DecodedRemoteImage | null> =>
+        loadRemoteImage_(url, 0, (): boolean => true));
+      if (decoded === null) return null;
+      originalCache_.put(url, decoded.pixelMap, decoded.bytes);
+      return decoded.pixelMap;
+    } finally { originalInflight_.delete(url); }
   })();
-  inflight_.set(url, task);
+  originalInflight_.set(url, task);
   return task;
+}
+
+/**
+ * 为图标申请一个独立租约。规格包含归一化长边，既不把皮肤缩小，也不会让
+ * 同 URL 的不同图标尺寸互相覆盖。任务完成时按等待者数量预留 pins，然后
+ * 每个取消者归还自己的预留，消除 Promise 交付前被 LRU 淘汰的竞态。
+ */
+export async function acquireRemotePixelMap(url: string, maxEdgePx: number,
+  token: RemoteImageLoadToken): Promise<RemotePixelMapLease | null> {
+  if (!validUrl_(url) || token.isCancelled()) return null;
+  const edge: number = Number.isFinite(maxEdgePx) ? Math.max(16, Math.min(256, Math.ceil(maxEdgePx))) : 128;
+  const key: string = edge.toString() + '|' + url;
+  const cached: RemoteImageCacheEntry<image.PixelMap> | null = thumbnailCache_.get(key, true);
+  if (cached !== null) return new RemotePixelMapLease(cached);
+  let load: ThumbnailLoad | undefined = thumbnailInflight_.get(key);
+  if (load === undefined) {
+    load = new ThumbnailLoad();
+    load.tokens.push(token);
+    thumbnailInflight_.set(key, load);
+    const shared: ThumbnailLoad = load;
+    shared.promise = (async (): Promise<RemoteImageCacheEntry<image.PixelMap> | null> => {
+      try {
+        const decoded: DecodedRemoteImage | null = await imageQueue_.run((): Promise<DecodedRemoteImage | null> =>
+          loadRemoteImage_(url, edge, (): boolean => shared.isNeeded()));
+        if (decoded === null) return null;
+        if (!shared.isNeeded()) { releasePixelMap_(decoded.pixelMap); return null; }
+        const entry: RemoteImageCacheEntry<image.PixelMap> | null =
+          thumbnailCache_.put(key, decoded.pixelMap, decoded.bytes, shared.tokens.length);
+        if (entry === null) releasePixelMap_(decoded.pixelMap);
+        return entry;
+      } finally { thumbnailInflight_.delete(key); }
+    })();
+  } else {
+    load.tokens.push(token);
+  }
+  const entry: RemoteImageCacheEntry<image.PixelMap> | null = await load.promise;
+  if (entry === null) return null;
+  if (token.isCancelled()) { thumbnailCache_.unpin(entry); return null; }
+  return new RemotePixelMapLease(entry);
 }

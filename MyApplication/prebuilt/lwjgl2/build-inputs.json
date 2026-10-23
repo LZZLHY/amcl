@@ -1,0 +1,16 @@
+{
+  "sourceCommit": "2df01dd762e20ca0871edb75daf670ccacc89b60",
+  "files": {
+    "lwjgl-2df01dd.zip": "71b18991d2846d15c198b44c85f8d2fd549201e4e683145b5c667d1b7a4de7e2",
+    "OpenJDK8U-jdk_x64_windows_hotspot_8u462b08.zip": "c6c2d8e6c2cbf0b4ddb707e6edb9a00d8a7b04e9ed6dda7e62d43dc4d83d342c",
+    "ant-1.10.15.jar": "763acda4a69588c9ea8817a952851ff0c2fc4bffa1d081c2565dc407f29d5794",
+    "ant-launcher-1.10.15.jar": "5c8551990307a032336d98ddaed549a39a689f07d4d4c6b950601bf22b3d6a1b"
+  },
+  "antVerification": "sha1",
+  "ant-launcherVerification": "sha1",
+  "sourceUrl": "https://codeload.github.com/LWJGL/lwjgl/zip/2df01dd762e20ca0871edb75daf670ccacc89b60",
+  "purpose": "固定 LWJGL2 上游源码与 Ant/JDK8 工具输入；本机路径由构建参数提供",
+  "sourceFixtures": {
+    "source-fixtures/ContextGL.java": "75a272999c28d8248b365e4829979fb4883d01ce0c9c2e1aac797169cfc82896"
+  }
+}

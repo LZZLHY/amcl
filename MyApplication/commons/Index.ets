@@ -9,6 +9,8 @@
 
 // ---- common：常量 / 主题 / 图标 / 设备形态 ----
 export * from './src/main/ets/common/Constants';
+export * from './src/main/ets/common/DockLight';
+export * from './src/main/ets/common/ImmersiveLight';
 export * from './src/main/ets/common/DiagnosticPolicy';
 export * from './src/main/ets/common/ChineseVariant';
 export * from './src/main/ets/common/GameLanguages';
@@ -28,6 +30,7 @@ export * from './src/main/ets/utils/Base64Util';
 export * from './src/main/ets/utils/DiagnosticBundle';
 export * from './src/main/ets/utils/ErrorFormat';
 export * from './src/main/ets/utils/FileUtils';
+export * from './src/main/ets/utils/InstancePaths';
 export * from './src/main/ets/utils/FontconfigUtils';
 export * from './src/main/ets/utils/ActivityLedger';
 export * from './src/main/ets/utils/ActivityStorage';
@@ -35,6 +38,7 @@ export * from './src/main/ets/utils/EvidenceTypes';
 export * from './src/main/ets/utils/EvidencePresentation';
 export * from './src/main/ets/utils/SessionEvidence';
 export * from './src/main/ets/utils/EvidenceIo';
+export * from './src/main/ets/utils/AtomicFileWriter';
 export * from './src/main/ets/utils/EvidenceExportSnapshot';
 export * from './src/main/ets/utils/EvidenceExcerpt';
 export * from './src/main/ets/utils/SessionCapture';
@@ -56,3 +60,5 @@ export { LaunchPreferenceSnapshot, LaunchPreferenceStore, LaunchPreferenceValue,
   GameLayoutCommitSink, GameLayoutLaunchPreferences, copyLaunchPreferenceSnapshot } from './src/main/ets/utils/PreferenceSnapshot';
 
 export { createLaunchPreferenceStores } from './src/main/ets/utils/PreferenceSnapshot';
+export * from './src/main/ets/utils/LayoutStorageBudget';
+export * from './src/main/ets/utils/OwnerLayoutSourceRepository';

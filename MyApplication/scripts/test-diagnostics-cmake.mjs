@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { PRODUCT_ROOT } from './product-contract.mjs';
 import { DIAGNOSTIC_FLAGS } from './diagnostic-profile.mjs';
 import { workspacePath } from './lib/workspace-paths.mjs';
+import { evaluateInputTraceProducer } from './check-diagnostics-contract.mjs';
 
 // 仅改变宿主测试生成头/脚本的位置，产品诊断策略与原始 CMake 输入保持相同。
 const dir = workspacePath('build', 'diagnostics-cmake');
@@ -36,3 +37,31 @@ assert.match(run('default', 'Debug', ['-DMC_OHOS_BUILD_TESTS=AUTO', '-DAMCL_VULK
 assert.match(readFileSync(resolve(dir, 'product_diagnostics_config.h'), 'utf8'), /#define AMCL_DIAGNOSTICS_MASK 515\b/);
 assert.notEqual(run('unknown', 'Debug').status, 0);
 console.log('CMake product diagnostics: direct configuration bypass rejection and default positive controls PASS');
+
+// -P原矩阵只验证产品准入/生成身份。新增小对象目标真正调用原target policy，并编译
+// 逐字GLFW回调body；不链接忙碌的Source/Core生产TU、不伪造owner或声称HAP已修复。
+const cases = [
+  ['on', 'default', 'ON', false], ['off', 'default', 'OFF', false],
+  ['store-off', 'store', 'OFF', false], ['remove-define', 'default', 'ON', true],
+  ['restore-on', 'default', 'ON', false],
+];
+for (const [name, product, trace, negative] of cases) {
+  const output = workspacePath('run', 'input-trace-target', String(process.pid), name);
+  const build = workspacePath('build', 'input-trace-target', String(process.pid), name);
+  const args = ['-m', 'lib.diagnostic_target_host', '--out', output, '--build-out', build,
+    '--product', product, '--trace', trace, ...(negative ? ['--remove-define'] : [])];
+  const run = spawnSync(process.env.PYTHON ?? 'python', args, { encoding: 'utf8', cwd: PRODUCT_ROOT,
+    env: { ...process.env, PYTHONPATH: resolve(PRODUCT_ROOT, 'scripts') }, timeout: 120000 });
+  mkdirSync(output, { recursive: true });
+  writeFileSync(resolve(output, 'driver.log'), `${run.stdout ?? ''}${run.stderr ?? ''}`);
+  assert.equal(run.status, 0, `${name}: actual target compile failed\n${run.stdout}\n${run.stderr}`);
+  const receipt = JSON.parse(readFileSync(resolve(output, 'receipt.json'), 'utf8'));
+  const object = readFileSync(receipt.callbackObject);
+  const issues = evaluateInputTraceProducer(object, trace === 'ON');
+  if (negative) assert.deepEqual(issues, ['GLFW producer AMCL_INPUT_TRACE inclusion mismatch: expected present=true']);
+  else assert.deepEqual(issues, []);
+  // OFF残留正文必须被同一artifact判据拒绝；不是仅检查ON缺失。
+  if (name === 'on') assert.deepEqual(evaluateInputTraceProducer(object, false),
+    ['GLFW producer AMCL_INPUT_TRACE inclusion mismatch: expected present=false']);
+  console.log(`CMake target ${name}: macro=${receipt.macroObserved} actual callback producer=${receipt.producerPresent} PASS`);
+}

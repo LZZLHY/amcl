@@ -1,0 +1,122 @@
+/**
+ * Native触控末样与期限的行为回归。正文来自真实handleSchemaGrabbedTouch及视觉投影，
+ * 离散动作沿既有真实Source/Core/bridge；只控制SDK样本、单调时钟及worker调度。
+ * UP与CANCEL分别注入：前者补采原角色末段，后者绝不把占位坐标解释成运动或新动作。
+ */
+@FIXTURE@
+
+bool s_fingerDown[MAX_FINGERS]{},s_fingerDead[MAX_FINGERS]{};
+@VISUAL@
+
+/** 模拟独立的SDK采样时刻与派发等待；不修改生产期限或复制手势判定。 */
+void touchSample(int phase,int id,float x,float y,int64_t sampled,int64_t dispatched) {
+    clockNs=dispatched;
+    OH_NativeXComponent_TouchEvent event{phase,sampled};
+    handleSchemaGrabbedTouch(event,x,y,id);
+}
+void touch(int phase,int id,float x,float y,int64_t advance=10000000) {
+    const int64_t time=clockNs+advance;
+    touchSample(phase,id,x,y,time,time);
+}
+int count(OutputKind kind,int code,int action) {
+    int result=0;
+    for(const auto& edge:edges) if(edge.output.kind==kind&&edge.output.code==code&&edge.action==action) ++result;
+    return result;
+}
+void reset() {
+    schemaCancelGenerationLocked();ledger.releaseAll();edges.clear();axisPan=false;
+    looks=scrolls=0;lookX=lookY=0;clockNs+=1000000000;
+}
+AmclCtrlEntry control(const char* id,int kind,int key=0) {
+    AmclCtrlEntry value{};std::strcpy(value.id,id);value.kind=kind;value.keyOrMouse=key;
+    value.x=value.y=100;value.w=value.h=100;return value;
+}
+
+int main() {
+    CHECK(initializeSourceFixture());
+    TouchInteractionConfig config;
+
+    // 省略末MOVE时，空白视角/dragLook仍交付完整UP末段；相同坐标UP不重复MOVE。
+    reset();CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,500,500);touch(1,0,560,520);
+    CHECK(looks==1&&lookX==60&&lookY==20);
+    touch(0,0,500,500);touch(2,0,560,520);touch(1,0,560,520);
+    CHECK(looks==2&&lookX==120&&lookY==40);
+    auto drag=control("drag",0,-2);drag.dragLook=1;
+    reset();CHECK(ohos_set_control_schema_v3(&drag,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150);touch(1,0,180,170);
+    CHECK(looks==1&&lookX==30&&lookY==20&&ledger.ownerCount()==0);
+    CHECK(count(OutputKind::Mouse,1,1)==1&&count(OutputKind::Mouse,1,0)==1);
+
+    // 滚轮条沿既有24px一格的密度夹具归约UP；快捷栏终点按原热区选末格并去重。
+    auto wheel=control("wheel",2);
+    reset();CHECK(ohos_set_control_schema_v3(&wheel,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150);touch(1,0,150,102);CHECK(scrolls==2);
+    touch(0,0,150,150);touch(2,0,150,102);touch(1,0,150,102);CHECK(scrolls==4);
+    auto hotbar=control("hotbar",4);hotbar.w=180;hotbar.h=22;
+    reset();CHECK(ohos_set_control_schema_v3(&hotbar,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,110,110);touch(1,0,150,110);
+    CHECK(count(OutputKind::Key,49,1)==1&&count(OutputKind::Key,51,1)==1&&ledger.ownerCount()==0);
+    touch(0,0,110,110);touch(2,0,150,110);touch(1,0,150,110);
+    CHECK(count(OutputKind::Key,51,1)==2);
+
+    // 自动前进只根据真实UP终点决定锁存；回中心不得沿旧armed继续走，推远UP仍可锁定。
+    auto joy=control("joystick",1);joy.w=joy.h=200;
+    config.floatingJoystick=true;config.sprint=true;config.autoWalk=true;
+    reset();CHECK(ohos_set_control_schema_v3(&joy,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,130,150);touch(2,0,130,40);touch(1,0,130,150);
+    CHECK(!s_touchJoystick.Locked()&&!ledger.isHeld({OutputKind::Key,87})&&ledger.ownerCount()==0);
+    touch(0,0,130,150);touch(1,0,130,40);
+    CHECK(!s_touchJoystick.Locked());
+    // 前一接触刚松开W，既有30ms方向锁存仍生效；精确推进其期限验证最后确实持有。
+    clockNs+=31000000;schemaPollWasdLatchLocked();CHECK(!ledger.isHeld({OutputKind::Key,87}));
+
+    // CANCEL没有末段：不选终点快捷栏、不滚轮、不转视角，不借取消坐标锁定自动前进。
+    reset();CHECK(ohos_set_control_schema_v3(&joy,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,130,150);touch(3,0,130,40);CHECK(!s_touchJoystick.Locked()&&ledger.ownerCount()==0);
+    config=TouchInteractionConfig{};
+    reset();CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,500,500);touch(3,0,700,700);CHECK(looks==0);
+    reset();CHECK(ohos_set_control_schema_v3(&wheel,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150);touch(3,0,150,102);CHECK(scrolls==0);
+    reset();CHECK(ohos_set_control_schema_v3(&hotbar,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,110,110);touch(3,0,150,110);CHECK(count(OutputKind::Key,51,1)==0);
+    std::cout<<"PASS normal UP samples world look/dragLook/wheel/hotbar/autoWalk once; CANCEL has no endpoint\n";
+
+    // worker未运行且事件排队时，原CANCEL在期限前发生，不能按派发now补发长按或Q。
+    auto longButton=control("long",0,65);longButton.trigger=3;
+    reset();CHECK(ohos_set_control_schema_v3(&longButton,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150);int64_t started=clockNs;
+    touchSample(3,0,150,150,started+100000000,started+210000000);
+    CHECK(count(OutputKind::Key,65,1)==0&&ledger.ownerCount()==0);
+    config.hotbarDrop=true;config.holdMs=300;
+    reset();CHECK(ohos_set_control_schema_v3(&hotbar,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,110,110);started=clockNs;
+    touchSample(3,0,110,110,started+100000000,started+310000000);
+    CHECK(count(OutputKind::Key,81,1)==0&&ledger.ownerCount()==0);
+
+    // 正常UP也先采终点再补期限。期限前UP晚派发不补长按；真实静止超过期限仍保原fallback。
+    config=TouchInteractionConfig{};
+    reset();CHECK(ohos_set_control_schema_v3(&longButton,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,150,150);started=clockNs;
+    touchSample(1,0,150,150,started+100000000,started+210000000);
+    CHECK(count(OutputKind::Key,65,1)==0&&ledger.ownerCount()==0);
+    touch(0,0,150,150);touch(1,0,150,150,210000000);
+    CHECK(count(OutputKind::Key,65,1)==1&&count(OutputKind::Key,65,0)==1&&ledger.ownerCount()==0);
+    config.hotbarDrop=true;config.holdMs=300;
+    reset();CHECK(ohos_set_control_schema_v3(&hotbar,1,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,110,110);touch(1,0,150,110,310000000);
+    CHECK(count(OutputKind::Key,81,1)==0&&count(OutputKind::Key,51,1)==1&&ledger.ownerCount()==0);
+    std::cout<<"PASS delayed terminal samples do not manufacture deadlines; valid stationary UP keeps long-press fallback\n";
+
+    // 历史combat字段仍能读取，但空白触摸只产生视角，不生成隐式攻击或使用。
+    config=TouchInteractionConfig{};config.gestureMode=2;config.holdMs=300;
+    reset();CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,1,.18f,3,&config)>0);
+    touch(0,0,500,500);clockNs+=310000000;schemaPollTouchHoldsLocked();
+    double visual[25]{};ohos_touch_interaction_visual(visual,25);
+    CHECK(visual[11]==0&&!ledger.isHeld({OutputKind::Mouse,1}));
+    touch(2,0,530,500);touch(1,0,540,500);
+    CHECK(count(OutputKind::Mouse,0,1)==0&&count(OutputKind::Mouse,1,1)==0&&ledger.ownerCount()==0);
+    std::cout<<"PASS retired automatic walking and blank combat actions cannot be re-enabled by legacy config\n";
+
+}

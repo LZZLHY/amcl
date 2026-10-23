@@ -31,6 +31,8 @@ for (const scenario of ['dead', 'waiting', 'alive', 'unknown', 'new-selection', 
   let subject;
   const Probe = methods('entry/src/main/ets/pages/Index.ets', ['recoverGraphics_'], {
     ...policy, Date: { now: () => now },
+    // 原图形恢复矩阵运行于default：新增store授权比较不能替代既有PID/锁/候选判据。
+    GameRunAdmission: { isAllowed: () => true, assertToken() {} },
     setTimeout: fn => { now += 100; iterations++; if (scenario === 'new-selection') subject.pendingGraphicsRecoveryId_ = 'new'; fn(); },
     testNapi: { desktopProcessId: () => 21,
       desktopGameProcessState: () => scenario === 'unknown' ? -1 : scenario === 'waiting' && iterations < 2 ? 1 : 0,
@@ -41,6 +43,7 @@ for (const scenario of ['dead', 'waiting', 'alive', 'unknown', 'new-selection', 
   });
   subject = new Probe();
   Object.assign(subject, { graphicsRecoveryPolling_: false, pendingGraphicsRecoveryId_: id, context: { filesDir: '/sandbox' },
+    pendingRunAdmission_: '',
     mcVersion: '26.2', mcRoot: () => '/mc', graphicsPreferenceStamp_: () => scenario === 'explicit' ? 'mobilegl' : 'auto',
     safeToast_() {}, performLaunch: async retry => {
       assert.ok(scenario === 'dead' || iterations >= 2); dispatches.push(retry);
@@ -53,8 +56,12 @@ for (const scenario of ['dead', 'waiting', 'alive', 'unknown', 'new-selection', 
     assert.equal(subject.preLaunchGameDir, ticket.gameDir);
   } else { assert.equal(dispatches.length, 0, scenario); assert.equal(claimed, 0, scenario); }
 }
-for (const frames of [0, 1, 400]) {
+// 原生产recordLaunchFailure_现以Promise<boolean>确认耐久保存。控制该边界兑现，
+// 核实保存前绝不能report/exit，保存失败仍保留故障而不派发恢复，重复心跳只入一次。
+for (const [frames, saved] of [0, 1, 400].flatMap(frames => [true, false].map(saved => [frames, saved]))) {
   const reports = []; let exits = 0, records = 0;
+  let finishSaving;
+  const saveJob = new Promise(resolve => { finishSaving = resolve; });
   const state = { schemaVersion: 1, pid: 22, profile: 'mobilegl', provider: 'GLFW', presentCount: frames,
     failureSequence: 1, failureStage: 'window-create-failed', failureCode: 0x3003, failurePresentCount: frames, surfaceGeneration: 1 };
   const Probe = methods('entry/src/main/ets/pages/McGamePage.ets', ['requestGraphicsRecovery_', 'pollGraphicsFailure_'], {
@@ -65,14 +72,25 @@ for (const frames of [0, 1, 400]) {
   const subject = new Probe();
   Object.assign(subject, { graphicsRecoveryTicket_: ticket, graphicsRecoveryAutomatic_: true, graphicsRecoveryNext_: 'mobileglues',
     graphicsCurrentProfile_: 'mobilegl', graphicsCurrentVersion_: '26.2', graphicsFaultHandled_: false, mcStarted: true,
-    context: { filesDir: '/sandbox' }, launchLogger_: () => ({ warn() {} }), recordLaunchFailure_: () => records++,
+    context: { filesDir: '/sandbox' }, launchLogger_: () => ({ warn() {} }),
+    recordLaunchFailure_: () => { records++; return saveJob; },
     reportGraphicsHistory_: () => {}, requestExit_: () => exits++ });
   subject.pollGraphicsFailure_(); subject.pollGraphicsFailure_();
   assert.equal(records, 1, '重复心跳只记录一次');
-  assert.equal(reports.length, frames === 0 ? 1 : 0); assert.equal(exits, frames === 0 ? 1 : 0);
-  if (!frames) assert.equal(reports[0].childPid, 22);
+  assert.equal(reports.length, 0, '耐久保存完成前不能向父进程报告恢复');
+  assert.equal(exits, 0, '耐久保存完成前不能退出故障进程');
+  finishSaving(saved); await saveJob; await Promise.resolve();
+  assert.equal(reports.length, saved && frames === 0 ? 1 : 0);
+  assert.equal(exits, saved && frames === 0 ? 1 : 0);
+  if (saved && !frames) assert.equal(reports[0].childPid, 22);
+  if (saved) { subject.pollGraphicsFailure_(); assert.equal(records, 1, '已保存故障不能重复handoff'); }
+  else {
+    assert.equal(subject.graphicsFaultHandled_, false, '保存失败须保留后续重试资格');
+    subject.pollGraphicsFailure_(); assert.equal(records, 2, '下一次明确心跳仍可重试保存');
+    await Promise.resolve(); assert.equal(reports.length, 0); assert.equal(exits, 0);
+  }
 }
-console.log('graphics-recovery-handoff PASS: actual parent wait/claim/dispatch and child asynchronous post-frame refusal');
+console.log('graphics-recovery-handoff PASS: actual parent wait/claim/dispatch; 6 child frame/save cases verify durable-before-handoff, failure retry and post-frame refusal');
 
 // 调用真实页面采集器，证明5秒节流、倒退时钟、退出强制快照和PID/后端身份拒绝。
 // 只替换NAPI与日志系统边界，JSON校验继续执行生产解析器。
@@ -80,7 +98,8 @@ console.log('graphics-recovery-handoff PASS: actual parent wait/claim/dispatch a
   let now = 10000, reads = 0;
   const logs = [];
   const state = { schemaVersion: 1, pid: 22, profile: 'mobilegl', provider: 'SDL3', apiFamily: 'OPENGL',
-    presentCount: 17, failureSequence: 0, failureStage: '', failureCode: 0, failurePresentCount: 0, surfaceGeneration: 3 };
+    presentCount: 17, failureSequence: 0, failureStage: '', failureCode: 0, failurePresentCount: 0, surfaceGeneration: 3,
+    samplesEnabled: true };
   const Probe = methods('entry/src/main/ets/pages/McGamePage.ets', ['collectGraphicsMetrics_'], {
     ...policy, Date: { now: () => now }, testNapi: { desktopProcessId: () => 22,
       mcGetGraphicsRuntimeState: () => { reads++; return JSON.stringify(state); } }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
@@ -99,3 +118,29 @@ console.log('graphics-recovery-handoff PASS: actual parent wait/claim/dispatch a
   subject.mcStarted = false; subject.collectGraphicsMetrics_(true); assert.equal(reads, 6);
 }
 console.log('graphics-observation collector PASS: production page scheduling, final snapshot, identity guards');
+
+// 静默模式必须同时保住一次自动候选历史回执，并在回执完成后停止取样和日志。
+// 未提供samplesEnabled的旧JSON也不能默认获得持续诊断资格。
+for (const explicit of [false, undefined]) {
+  let now = 10000, reads = 0, outcomes = 0;
+  const logs = [];
+  const state = { schemaVersion: 1, pid: 22, profile: 'mobilegl', provider: 'SDL3', apiFamily: 'OPENGL',
+    presentCount: 300, failureSequence: 0, failureStage: '', failureCode: 0, failurePresentCount: 0,
+    surfaceGeneration: 3, samplesEnabled: explicit };
+  const Probe = methods('entry/src/main/ets/pages/McGamePage.ets', ['collectGraphicsMetrics_'], {
+    ...policy, Date: { now: () => now }, testNapi: { desktopProcessId: () => 22,
+      mcGetGraphicsRuntimeState: () => { reads++; return JSON.stringify(state); } }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
+  });
+  const subject = new Probe();
+  Object.assign(subject, { mcStarted: true, graphicsFirstPresentAt_: 0, graphicsCurrentProfile_: 'mobilegl',
+    graphicsMetricsAt_: 0, graphicsRecoveryTicket_: {}, graphicsRecoveryAutomatic_: true,
+    graphicsHistoryScope_: 'scope', graphicsOutcomeSent_: false,
+    reportGraphicsHistory_: () => { outcomes++; subject.graphicsOutcomeSent_ = true; },
+    launchLogger_: () => ({ info: (_tag, text) => logs.push(text), warn() {} }) });
+  subject.collectGraphicsMetrics_(); assert.equal(reads, 1); assert.equal(outcomes, 0);
+  now += 10000; subject.collectGraphicsMetrics_(); assert.equal(reads, 2); assert.equal(outcomes, 1);
+  now += 10000; subject.collectGraphicsMetrics_(); subject.collectGraphicsMetrics_(true);
+  assert.equal(reads, 2, '静默且无回执待办时不再取快照，退出也不复活采样');
+  assert.deepEqual(logs, [], '必要历史观察不能悄悄恢复周期日志');
+}
+console.log('graphics-observation quiet PASS: history retained, old JSON fails silent, no steady-state collection');

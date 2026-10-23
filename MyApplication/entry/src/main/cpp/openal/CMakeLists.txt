@@ -81,6 +81,14 @@ set(OPENAL_TARGET OpenAL)
 # 强制启用 OHAudio 后端（覆盖 config_backends.h 的 HAVE_OHAUDIO 0）
 target_compile_definitions(${OPENAL_TARGET} PRIVATE HAVE_OHAUDIO=1)
 
+# 生命周期maps仅为default现有TestHooks编译边界的私有取证，不新增cache/运行时开关。
+# OpenAL TU明确收到0/1；其它产品及tests关闭时预处理裁剪整个函数和三个调用点。
+if(AMCL_BUILD_PRODUCT STREQUAL "default" AND AMCL_DEVELOPER_DIAGNOSTICS AND MC_OHOS_BUILD_TESTS)
+    target_compile_definitions(${OPENAL_TARGET} PRIVATE AMCL_OHAUDIO_CONTROL_MAPS=1)
+else()
+    target_compile_definitions(${OPENAL_TARGET} PRIVATE AMCL_OHAUDIO_CONTROL_MAPS=0)
+endif()
+
 # 添加 OHAudio 后端源文件
 target_sources(${OPENAL_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ohaudio.cpp

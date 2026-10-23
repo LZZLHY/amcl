@@ -1,0 +1,602 @@
+{
+  "schemaVersion": 1,
+  "finishedAt": "2026-10-18T22:41:11.328854+08:00",
+  "sourceCommit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
+  "compilerSha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba",
+  "recipeSha256": "4ea237eb7e3b750a8b4474c9f2095a331011de77bb88f59e5b0c74243995bf7d",
+  "artifacts": [
+    {
+      "module": "nanovg",
+      "name": "liblwjgl_nanovg.so",
+      "size": 271312,
+      "sha256": "9b5af83f5a8cf3811ae528fc0f5a80913648036f7bdaaaca53514279764ad227",
+      "jniExports": 154,
+      "needed": [
+        "libc.so"
+      ],
+      "sources": [
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_LibNanoVG.c",
+          "sha256": "e74490455637928bb3b6c090b50785b5f1b56bd1c912b33eb308fd39c997f407"
+        },
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_NanoSVG.c",
+          "sha256": "7c55c3525359f886d6c1e89bedb7c7044c346f86bdf80b84d0589db56a62948b"
+        },
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_NanoVG.c",
+          "sha256": "03f18ffd4af13ebcf109d66aa6ebf1d56718a40aa0dcc2577705d7b801a3fd71"
+        },
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_NanoVGGL2.c",
+          "sha256": "eae8a945595521b0e4356addf777d74c86bb680d508af8da3f9b5c4b667d866a"
+        },
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_NanoVGGL3.c",
+          "sha256": "cf2a9187eb573ef4e1019da0eca8df33ce4d5e1d86f7cb0e8e7a8c32deb003c6"
+        },
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_NanoVGGLES2.c",
+          "sha256": "ad1a0de0d0efc27207e1ff8c753936a6a7bd95d4cbbd65900cd6f1f8858ff57c"
+        },
+        {
+          "path": "modules\\lwjgl\\nanovg\\src\\generated\\c\\org_lwjgl_nanovg_NanoVGGLES3.c",
+          "sha256": "3c261f06c7964c164fa1a5355715ae69e9d8668fd7d78bd97749af580f888458"
+        }
+      ]
+    },
+    {
+      "module": "opengles",
+      "name": "liblwjgl_opengles.so",
+      "size": 120648,
+      "sha256": "24a2c65bea36d777a6056a4d78c8f441810c133c6dd24d2dd2dcd76220414acc",
+      "jniExports": 877,
+      "needed": [
+        "libc.so"
+      ],
+      "sources": [
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_AMDFramebufferMultisampleAdvanced.c",
+          "sha256": "b835ccfc4ccd22aabcdb663489e185b87f9c1ed92f023dc7d99b194521ac3ba7"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_AMDPerformanceMonitor.c",
+          "sha256": "9a26d022a2cc493338b83bb77a3806500edec3368a11690accabfeabbdd84829"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_ANGLEFramebufferBlit.c",
+          "sha256": "642511598eb823944a39bf986c647dd4da8945fc38013ac6b6aa0c77367c076c"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_ANGLEFramebufferMultisample.c",
+          "sha256": "c57a1ab03d62470a9414509bfc484613f93f2de4ec072afc77f04c3e559248d9"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_ANGLEInstancedArrays.c",
+          "sha256": "2038f19ca3d040b2219becd27d89512b8dbc4bab09a1e5a6936cdfa71c6d84fc"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_ANGLETranslatedShaderSource.c",
+          "sha256": "213799a15fa9eefedacd4ff58472429625becbafef5616c3283b78cd4d52ab6a"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_APPLECopyTextureLevels.c",
+          "sha256": "2d2e31dbb81254cbb1c87f8df4a1dfcde5489b3f62ae1b4ca989d5a072065424"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_APPLEFramebufferMultisample.c",
+          "sha256": "dfde6052d6566aa2d098fc212ed883a246577b7d6834754980b35dfb5a0c1913"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_APPLESync.c",
+          "sha256": "5538de78eb87df10e2728420d15ff84378e65ca2c606ee6c620d6b48657c6359"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_ARMShaderCoreProperties.c",
+          "sha256": "60db008b0734fa94d1a6f58cecb25958af2038665459edb33b3da99889a9f723"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTBaseInstance.c",
+          "sha256": "0cce6eda8db46ea533ce6a30e55252274d303f44eff93e512bdeaa502a884423"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTBlendFuncExtended.c",
+          "sha256": "9281327df4cd4db9e93be0ca66239830415b73eb4b2924dfdad1eae0b343ed40"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTBufferStorage.c",
+          "sha256": "8bf26e005c5f1f3da1c197ab6bae74b2bb193b7dc8678dc62c38f4edf25c936a"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTClearTexture.c",
+          "sha256": "a7a85f3f205c21b2e64a3f45dcd5a7982768138fae9843d4b40760c3d1db17bd"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTClipControl.c",
+          "sha256": "8f95aa128ccc04f36132d2b6bd057e6a8408f0a4ca04b23e440582383baa25da"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTCopyImage.c",
+          "sha256": "a2fe1fe221923cf331eff4f23054a0b2c763f68d6fb8128cabb73c1978b42d1c"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDebugLabel.c",
+          "sha256": "01913b541bec9aaecffc784b851c3ba8d5c1a7f8bb9b02ba97ebd7d391c8accb"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDebugMarker.c",
+          "sha256": "abe661fe92c6a529b17599de3042c0749a9a8820130b1c30d294500a976c5e69"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDiscardFramebuffer.c",
+          "sha256": "0a1b31f3ac0e9a7059691fc0435d7f94e26cec6a3a5db27395d9adcaab0bf6d3"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDisjointTimerQuery.c",
+          "sha256": "fa47039d167c24eda43edea647c15b187da8b4591e37da512c3b983daf3c5681"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDrawBuffers.c",
+          "sha256": "07c254aca23a7c029349c1a429996f2db4ada0e78fe9384e20d43f6b6740dfd3"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDrawBuffersIndexed.c",
+          "sha256": "93b0b6f3a4595711d68cf633854f071bcd25721a6ac3677c65ddf0cc347a4544"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDrawElementsBaseVertex.c",
+          "sha256": "dbc423ce1af9b2c8741db7c89fadd4a591a687b872d21be898dee329eaafd3c2"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTDrawTransformFeedback.c",
+          "sha256": "aed4368247f89d7e7a25f7d7b48a00c2404ec84950a29743a531ba0b5b4f746b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTEGLImageStorage.c",
+          "sha256": "7e818b4fee409e3e62f6524052324c95ca6cbdc63d86a76f995e14c31216366c"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTExternalBuffer.c",
+          "sha256": "e535dca1ebbcdfd829f1094572993ac1a9c1e786bdac3ab72e99af52ea3c9ff0"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTFragmentShadingRate.c",
+          "sha256": "43855b1d655f215eecb37b02d7cceb1ec749ab8184524350971cfaff1ae17168"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTFramebufferBlitLayers.c",
+          "sha256": "51b334d977308258c0abec2048dc980e2a556719bee0fdcf5289aa09ce7715a4"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTGeometryShader.c",
+          "sha256": "9dfd63492087e9646b1b4193f1f28f3b864b19cd7079499dbd0d5cb8382811fb"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTInstancedArrays.c",
+          "sha256": "2cbe3765269abf0be3a5d792e9767210844968829979740511cb399771b97281"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMapBufferRange.c",
+          "sha256": "16230d8ec948d5e22d2377aab9afaf300a389edfdaf52707d06a46117018988f"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMemoryObject.c",
+          "sha256": "391c4dff8caeee55afc5ba04a8b75cd995c50d0944b088cd205b77b6835699e3"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMemoryObjectFD.c",
+          "sha256": "5f20fe2b2cabf23ccf20eeb12907d83642c39921e7237db43d26a61e0cfa9225"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMemoryObjectWin32.c",
+          "sha256": "9e6a09f64cdedb156e281157775c613a01d9ac2118a60c31e5952d84236dc4ba"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMeshShader.c",
+          "sha256": "bac403530023c9b3686a09a43413b656699d12845ecddec9bfd107822b892bfd"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMultiDrawArrays.c",
+          "sha256": "1b4b2127581d1f27ebaeddbcb2039a22293c2400a95af24719237a40eebab1ad"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMultiDrawIndirect.c",
+          "sha256": "83ad125df978512d1a9f48aa59e5abe52cca65c2e38d88ad43b67d74d4ca66e1"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMultisampledRenderToTexture.c",
+          "sha256": "d2e3778d503a5ab1fb01970093279474ac2294f45119b64eae9ffcfba41b53fa"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTMultiviewDrawBuffers.c",
+          "sha256": "0e3a28108587001319530d0595da9bc4ac4158e11f309d64055a202961fb6483"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTOcclusionQueryBoolean.c",
+          "sha256": "5089c85a6f8ca4cdae3f27fc9d094c780c9ba6a5a099c91df116bcc4097846b4"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTPolygonOffsetClamp.c",
+          "sha256": "396bb32c7d5b7211566a6769a20d468f43ecb9f3aebc7ade49f34a101f0fedf3"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTPrimitiveBoundingBox.c",
+          "sha256": "642f39deda2fe2d777ea1589edf95eaa44e5a05e0537bf607f3e513449ceeeb6"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTRasterMultisample.c",
+          "sha256": "8b0c0a506a77b89685ee6c6c69b5449a7849b2e90096b28de6951d04600d3c38"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTRobustness.c",
+          "sha256": "da263abf73c07d904030b155800183007afed6c3abc266a9899490e1d7a54c0b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTSemaphore.c",
+          "sha256": "d4cc3079de809311348cbc5a1a2d7f186a3bf039f7281a3ca55779b533107659"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTSemaphoreFD.c",
+          "sha256": "e1d655bfefdac559aaad03d0f435b412418100b59b9219c8a33b600ca72fb19f"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTSemaphoreWin32.c",
+          "sha256": "86aa7948a1080622841f760ca7e5cae6cdc45448a91b01ba2f350747ec2e1575"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTSeparateShaderObjects.c",
+          "sha256": "e8ef2148449ebe02c8894f4976ee0cff4d1d70b18311d3d16ec9b1a4823f9cd5"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTShaderFramebufferFetchNonCoherent.c",
+          "sha256": "015a4975dc2e04948b9fcabc09aa31d2d981abe52a12919b74184c6bda0c8ff5"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTShaderPixelLocalStorage2.c",
+          "sha256": "571f03827d7979893fc9bd476b7ecd94d25b7678f53c70f325d11ab1dd06eea7"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTSparseTexture.c",
+          "sha256": "da54a676f6bfa7d115da00940bd3084d11d6d3e775306c3b081cbbd3893965f7"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTTessellationShader.c",
+          "sha256": "2e197a48d4b38c8bc0b3899f0d00d7d22d007b767e983ae7d448d05776c67e7a"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTTextureBorderClamp.c",
+          "sha256": "3588104431dd7b5cc4fb5bfe25041c2f532a2df15e52cc373270fba5367631a3"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTTextureBuffer.c",
+          "sha256": "164b67faab71421f38b0f0eb0f2365bc3a4d5bb66b555362317c7f31b773db8e"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTTextureStorage.c",
+          "sha256": "b1a7b2747d08c7a7a4b9236bec4863cf364a0ee12827e5bb516a23da5932c8d4"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTTextureStorageCompression.c",
+          "sha256": "00774731596278e52d7005ae910db7fa5dfea7deb78839c5ce0e0498fc9cdc1a"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTTextureView.c",
+          "sha256": "f3a329d8d85c192ec911227d8c4ffdf2ce0891cc0891015308bd231d3ab2332f"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTWin32KeyedMutex.c",
+          "sha256": "08d215dfa42c27e6aa65fb5bf5d9bd9f6d59d9a2513ca02de0be636729dc7ecc"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_EXTWindowRectangles.c",
+          "sha256": "f40e5e7c2e5795a883240aa9be1e08e89408f8982fbcb23bd9f183fbf70fcb45"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_GLES20.c",
+          "sha256": "005bd3fd1e69e5119341c0e61d8af5074da86d239285f5582c15a09d910f223c"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_GLES30.c",
+          "sha256": "a80e6ec4a7607c89af93d04688ac0445c497ab5121c08838d3335456eddfb101"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_GLES31.c",
+          "sha256": "45f46912c773e7e574741fb52d27652c0b16164d63c7b4645686755dbb656a48"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_GLES32.c",
+          "sha256": "721478ee7bf5748819b186a97cc59021180a61de9805ee299e56716773b23819"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_IMGFramebufferDownsample.c",
+          "sha256": "c525dffa48c6efa5c92ded4c19bb7db52ef0bf52281d11fa117242dd362f1f4e"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_IMGMultisampledRenderToTexture.c",
+          "sha256": "a900a8bc011e992e7fa7c2e4418c4168c4f7402c9a753385f57ea055abfd7254"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_INTELFramebufferCMAA.c",
+          "sha256": "db2cf7fcde33d647054e0174da63ed93504f393c0521eca7a5522f38906b906a"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_INTELPerformanceQuery.c",
+          "sha256": "ba11d9b4fbee738c2322077847e3432b4d8f987d375954416140143fda8c97af"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_KHRBlendEquationAdvanced.c",
+          "sha256": "2ce4d30184a6c762bda33ad175fd46c1175c6d2d4da03ca3fb39451e4912b9f2"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_KHRDebug.c",
+          "sha256": "64dc47a2978c48942127e6d05028b2b36b3d5eadf0a8be1e652c022886fbbc8f"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_KHRParallelShaderCompile.c",
+          "sha256": "f627bfd494fad247f793708c568181a5d598c227d605193759edc1a8a71e0828"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_KHRRobustness.c",
+          "sha256": "d5aacaf85c4710035ff20972dca2909bfd655c6ac0a54624f42a4dbd2ebe74ee"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_MESAFramebufferFlipY.c",
+          "sha256": "baf0f776bfa70bfa4273d556771bd92aeefbb0dcfc3eda146f0a9f3f3ff910b9"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVAlphaToCoverageDitherControl.c",
+          "sha256": "2d6ce2d5df19d630a83f3617ccee2fb546871ddec74ac6152098e0678a85ee9e"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVBindlessTexture.c",
+          "sha256": "3a9cd1dda77faec8b3ac99160c46166d8836cb433221bd53170ed2caf6af1c17"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVBlendEquationAdvanced.c",
+          "sha256": "f7d2c89c099b3f15def0c9ac3e271efa987fc57b20a2342a0947e48b3e8edc2c"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVClipSpaceWScaling.c",
+          "sha256": "25552e6dc0fc3fa5405108f67bf6b9b3a1e1bd79bd20391d57337facc570d957"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVConditionalRender.c",
+          "sha256": "16ed35af2cb44a28bf63b47d6392d606ad72321ed0fff44458ce1ba1e26edffa"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVConservativeRaster.c",
+          "sha256": "f154781773b80c06ef98e4ce471c067633d068e9bfd01ec14c8ef8c649519af2"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVConservativeRasterPreSnapTriangles.c",
+          "sha256": "2f8e2dec1234255c741826b7723fe69249c42a3ddf9798531b6ffd8145b79e77"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVCopyBuffer.c",
+          "sha256": "60bd1f9bc99c04b822e874cb09203ccaf99c8e8248053f8a300f39e6e2a7194a"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVCoverageSample.c",
+          "sha256": "1372389c367f6eb57a6f057fd785ec79496b0ffcf0ae9b9b81fc10b10b1d5289"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVDrawBuffers.c",
+          "sha256": "ba624051079bbe504c73b62b25926ef1f0a017fc8f6bf6dc4692521f568ea8e7"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVDrawInstanced.c",
+          "sha256": "1054711e1f708f12202b1ad74d85d8cf0252aa8c68f4010e50024185e86a5c9b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVDrawVulkanImage.c",
+          "sha256": "2a2214b69e421a95c179061b5b03f18c7f39281862d98e43638eec0260214e87"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVFence.c",
+          "sha256": "dfe9611bf4db2e174faf9391837aaf9d9e279dcdf90ad6648d212be544e561e6"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVFragmentCoverageToColor.c",
+          "sha256": "a124d1e85e1fa99a30569b312d14a0a45f8d01767423f09ec716dbbf912beca5"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVFramebufferBlit.c",
+          "sha256": "5d499fd122fe0d445da4018953e964f049d772202d6998005fc993ece10c5c15"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVFramebufferMixedSamples.c",
+          "sha256": "31f6d092e92c221787f289cef1eb8770376a345e6ad204407199bb375a09e628"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVFramebufferMultisample.c",
+          "sha256": "e67acc194f4ad2391f8efe1eb3b9df90f0efdb8d82663371bda29fb25e4d5ea7"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVGPUShader5.c",
+          "sha256": "71b8c4ff40b42d39487e2ce269ff0d0201f3651052d5a6b8c930ff9c00d520e3"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVInstancedArrays.c",
+          "sha256": "ceaaff736b8d8a93e8fa43d1f30b3dce0876cb1c233a57694c82f3fc9a48bd98"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVInternalformatSampleQuery.c",
+          "sha256": "471eaaf1b5f66f0340efc0b5478eeea494cb08bf232619dddf692bbc42205359"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVMemoryAttachment.c",
+          "sha256": "568043c64a86b7b435834b31df480eb4a978a8226861fadc25d1cfff36eb1f47"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVMemoryObjectSparse.c",
+          "sha256": "677c51bb2c4d2df223ab1e169404e5ded8bdab7197953b22d60339de5b8834ce"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVMeshShader.c",
+          "sha256": "002f16fc8b89ed64cc9340ecfee722bbd90d73dc055b1f91e9531fcb4d705f39"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVNonSquareMatrices.c",
+          "sha256": "10ed7ea499b8a842bd401815240abe7bcca5acfd91c2873b1a1628d7916d88fa"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVPathRendering.c",
+          "sha256": "0eeacc561dfef52698d24e7b09e10d5d3d090c6a5dc12057c78cec2573721572"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVPolygonMode.c",
+          "sha256": "e1983d4b958d430c67c650b2a2622863e404e73dbf2dbf8a4ce2fb1bd25abef1"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVReadBuffer.c",
+          "sha256": "4e8b4dc8e828c8e00126c23fa72c7c35b8cec7cf255d540179cbf2f3d23bbb61"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVSampleLocations.c",
+          "sha256": "a857eb15a45375b121aff707cc9341402dad83440b9e975ba0d06e72a0d9e722"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVScissorExclusive.c",
+          "sha256": "eeb6e06c95a7cb678c4147828409278767b2f2570c1d7044d698d11c7b9a736e"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVTextureArray.c",
+          "sha256": "267428a4bf3432b083e877a555c4c71f03c6575f018c2d6ff349a9ae725305d8"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVTextureBarrier.c",
+          "sha256": "f8e794da3e6c61c8a890c47d0cbedf87240cc1231dfe8c7c4c693f5455730f5b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVTimelineSemaphore.c",
+          "sha256": "5051336bfa68798ea31b03c6be0b6e5ce9380acb7f05a3e2b80c6269b2868ced"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVViewportArray.c",
+          "sha256": "0e20fd19e31919370b6bb7a1144bce19aa63af733a545d496ce7032db173d612"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_NVViewportSwizzle.c",
+          "sha256": "7daff2ad110e1432769e038769fac1fa6509146c232ce35bc6272afa6a97159b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESCopyImage.c",
+          "sha256": "37ff44acb055093365fa7f64194579da7b70d64c63935e80b52cbd627d3f527d"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESDrawBuffersIndexed.c",
+          "sha256": "707d07adde4d4ee7035ed7829418221180df1cfdcf3be3ba702b537c22a3473f"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESDrawElementsBaseVertex.c",
+          "sha256": "7e021f6817ca471d91f33c3271060f28627ccae3f45fc3f9f16f7266c43fd547"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESEGLImage.c",
+          "sha256": "2c4e3515c272ac6f7cc77f22d40095fb312117dc51c953dd3deb6524585b4352"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESGeometryShader.c",
+          "sha256": "a8f98d724aa6e8d39af3a0cad67fa7f73a1e6bf8a63be876044df641def72be8"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESGetProgramBinary.c",
+          "sha256": "e58b21f1fc22f67f3f56faaf853685239b5619043ad8433477d586ec4c95418e"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESMapbuffer.c",
+          "sha256": "15e8e71643fbe9f74b0c2bca4f3e1af5ed349a8d8e1d64767a88f8a441a7e338"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESPrimitiveBoundingBox.c",
+          "sha256": "5a2367c7c33497119fd073a2cc087a76eb38c2e58e4daf8133109b4b09f2b3bc"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESSampleShading.c",
+          "sha256": "32b657fe96107f934b265e1c143de7b0425285758719df97cde20e73176bd2a1"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESTessellationShader.c",
+          "sha256": "63236bebc4dd96d9ee3e5e2524d413eeb9e24a68841c7b31fa8b1ebc71fc4892"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESTexture3D.c",
+          "sha256": "97b8eb3e676da41fc47dbb41a31d6091acb1c3a1309ecfcc50ee5b7de0a9aa63"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESTextureBorderClamp.c",
+          "sha256": "ef3f7a8d031f8ba50c75aa3dc1b4c7b5d2e6e24d4c8eef99dd4e85b036c9d117"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESTextureBuffer.c",
+          "sha256": "850512f9da50997354bfb4cc91231eaa128ba77e0a9f021c7997b8f31d66951b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESTextureStorageMultisample2DArray.c",
+          "sha256": "d531c678de5fe5d42a504df0f10f25130b685e59c6c3c510b9fada1be99fd326"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESTextureView.c",
+          "sha256": "ec5b1311ae67626e317b01a5f4a0448c78e06cedf7502361afce0b54fbb8dc58"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESVertexArrayObject.c",
+          "sha256": "8f0056d9241ce5d4e1f5d8339ed58906c5d8e8df017bb6c5cd0c9b3a3b607a0b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OESViewportArray.c",
+          "sha256": "af2742cc78324ee30d54fbe19e87db9d73b8e541fc0503f8a9cd1c6310a86426"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OVRMultiview.c",
+          "sha256": "2ad39ab6989b700affedf78a87f70b41a55653633de79a22d5a7395fb436a021"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_OVRMultiviewMultisampledRenderToTexture.c",
+          "sha256": "9390453a72dd67b3026e19e79b5c84f8f15409341256770d8e07da7dcfa50f59"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMAlphaTest.c",
+          "sha256": "6a0b89b6fd4cf9a5a67ed3fcf6c3ca30f9ce75515b5ef645275731d44b93ea3b"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMDriverControl.c",
+          "sha256": "263fb0aa621ca0ff627d12f45b2f76e8650bacfbbdb7a51b22e322b8388a21d8"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMExtendedGet.c",
+          "sha256": "6ec376528e92a30e465517b184842ff126740ff4021d1b7251e8136e67b3cecd"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMExtendedGet2.c",
+          "sha256": "231cf17494755e80ecc05f72e7b3153c3d0a002e55668775168765258a4a08b0"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMFramebufferFoveated.c",
+          "sha256": "71829def3aee927ea08ce625142caedc17534662e39b1ce54a7aa4e1a25ce467"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMFrameExtrapolation.c",
+          "sha256": "d4398cafcadf885ac4954447817abe176372f97adb28fe9f5902cb97a866d902"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMMotionEstimation.c",
+          "sha256": "0dadf9a78af3953777dee828aee2777055970ea6c45fa416a806895b87a5ae16"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMShaderFramebufferFetchNoncoherent.c",
+          "sha256": "0e369d78691c0564639464a4179038de07423b6a48acd1853bc8821930f3e6b9"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMTextureFoveated.c",
+          "sha256": "289e894eafd73f86d8f3bd68def61f9cf5a5169891e3acf2a0ee32ed42d16eda"
+        },
+        {
+          "path": "modules\\lwjgl\\opengles\\src\\generated\\c\\org_lwjgl_opengles_QCOMTiledRendering.c",
+          "sha256": "21b992f11da85c788854df267bd923322876643c1f3c0d30ac8097ea5b6244a2"
+        }
+      ]
+    }
+  ],
+  "validation": "完整JNI动态导出与NEEDED核验；不等于真机渲染验证"
+}

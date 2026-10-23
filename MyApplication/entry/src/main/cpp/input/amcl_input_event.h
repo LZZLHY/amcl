@@ -303,7 +303,15 @@ typedef struct AmclInputSurfacePayload {
     // Reusing the former reserved tail keeps the fixed V1 payload layout.
     uint64_t publicationGeneration;
 } AmclInputSurfacePayload;
-typedef struct AmclInputResetPayload { uint32_t reason; uint32_t reserved; uint64_t closingEpoch; } AmclInputResetPayload;
+// RESET 的权威范围：局部消费者恢复不撤销全局来源持有。authorityEpoch 只在真正的
+// core 全局复位时递增，基线重放当前值；即使维护消费者漏过事件，也能判断是否发生过复位。
+#define AMCL_INPUT_RESET_SCOPE_CONSUMER_LOCAL (1u << 31)
+typedef struct AmclInputResetPayload {
+    uint32_t reason;
+    uint32_t scope;
+    uint64_t closingEpoch;
+    uint64_t authorityEpoch;
+} AmclInputResetPayload;
 // A drop reports the original backend-neutral identity. No mapped backend
 // control is present by design, so observing this packet cannot acquire held
 // state or manufacture a GLFW/SDL/LWJGL callback.

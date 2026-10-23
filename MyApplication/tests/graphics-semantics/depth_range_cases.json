@@ -1,0 +1,29 @@
+{
+  "schema": "amcl-depth-range-case-contract/v1",
+  "queryKinds": ["float-query", "double-query"],
+  "queryTolerance": 0.000002,
+  "pixelsPerCheck": 64,
+  "channelTolerance": 3,
+  "terminalKind": "scene-end",
+  "metadataKinds": ["preexisting-errors"],
+  "counts": {"checks": 83, "queryChecks": 26, "pixelChecks": 24},
+  "loaderSource": "depth_range_scene.cpp",
+  "loaderMacro": "LOAD",
+  "extraProbeResolutions": ["glGetString", "glGetIntegerv"],
+  "requiredChecks": [{"kind": "gl-error", "case": "object-owner-retire", "count": 1}],
+  "cases": [
+    {"id": "initial-context", "pixelChecks": 0},
+    {"id": "double-nondefault", "pixelChecks": 2},
+    {"id": "float-nondefault", "pixelChecks": 2},
+    {"id": "double-reversed", "pixelChecks": 2},
+    {"id": "float-after-double", "pixelChecks": 2},
+    {"id": "double-clamp-low", "pixelChecks": 2},
+    {"id": "float-clamp-high", "pixelChecks": 2},
+    {"id": "double-clamp-reversed", "pixelChecks": 2},
+    {"id": "float-reversed", "pixelChecks": 2},
+    {"id": "double-huge-finite", "pixelChecks": 2},
+    {"id": "double-equal-endpoints", "pixelChecks": 2},
+    {"id": "float-restores-default", "pixelChecks": 2},
+    {"id": "double-after-float", "pixelChecks": 2}
+  ]
+}

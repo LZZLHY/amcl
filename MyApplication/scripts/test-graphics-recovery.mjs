@@ -5,24 +5,31 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 const registry = makePureEtsLoader()('launch/src/main/ets/GraphicsProfileRegistry.ets');
 let shortWrite = false, zeroWrite = false, failRename = false;
 const directoryHandles = new Set();
 let directorySequence = 1000000;
 const fileIo = {
-  OpenMode: { CREATE: fs.constants.O_CREAT, WRITE_ONLY: fs.constants.O_WRONLY, TRUNC: fs.constants.O_TRUNC, READ_ONLY: fs.constants.O_RDONLY },
+  OpenMode: { CREATE: fs.constants.O_CREAT, WRITE_ONLY: fs.constants.O_WRONLY, TRUNC: fs.constants.O_TRUNC,
+    READ_ONLY: fs.constants.O_RDONLY, NOFOLLOW: 131072 },
   accessSync: file => fs.existsSync(file),
-  mkdirSync: (file, recursive) => fs.mkdirSync(file, { recursive }),
-  statSync: file => fs.statSync(file),
+  mkdirSync: (file, recursive = false) => fs.mkdirSync(file, { recursive }),
+  rmdirSync: file => fs.rmdirSync(file),
+  statSync: file => typeof file === 'number' ? fs.fstatSync(file) : fs.statSync(file),
   readTextSync: file => fs.readFileSync(file, 'utf8'),
   openSync: (file, flags) => {
     // Windows Node 不提供目录 fsync；只替代这项 OS 边界，文件写入仍在真实临时目录执行。
     if (fs.existsSync(file) && fs.statSync(file).isDirectory()) {
       const fd = ++directorySequence; directoryHandles.add(fd); return { fd };
     }
-    return { fd: fs.openSync(file, flags) };
+    // SDK NOFOLLOW在Windows宿主以lstat检查边界承接；不要把SDK专属bit直接交给Node flags。
+    // 新原子writer仍真实创建独占目录、循环短写、同步文件、rename与清理，未在夹具复制提交算法。
+    if ((flags & fileIo.OpenMode.NOFOLLOW) !== 0 && fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) {
+      throw Error('NOFOLLOW rejects symbolic link');
+    }
+    return { fd: fs.openSync(file, flags & ~fileIo.OpenMode.NOFOLLOW) };
   },
   writeSync: (fd, bytes) => zeroWrite ? 0 : fs.writeSync(fd, shortWrite ? Buffer.from(bytes).subarray(0, 17) : Buffer.from(bytes)),
   fsyncSync: fd => { if (!directoryHandles.has(fd)) fs.fsyncSync(fd); },
@@ -31,7 +38,8 @@ const fileIo = {
   renameSync: (from, to) => { if (failRename) throw Error('injected rename failure'); fs.renameSync(from, to); }
 };
 const ports = { launch: registry, '@kit.CoreFileKit': { fileIo },
-  '@kit.ArkTS': { util: {} }, '@kit.BasicServicesKit': { zlib: {} },
+  // AtomicFileWriter现在以真实SDK UUID独占pending目录，不再使用旧固定临时文件名。
+  '@kit.ArkTS': { util: { generateRandomUUID: randomUUID } }, '@kit.BasicServicesKit': { zlib: {} },
   '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => {
     const hash = createHash('sha256'); return { updateSync: value => hash.update(value.data), digestSync: () => ({ data: hash.digest() }) };
   } } } };
@@ -107,9 +115,12 @@ try {
     assert.throws(() => store.create(root, failed), /保存失败/);
     assert.equal(store.ticket(root, failed.id), undefined);
     assert.equal(fs.readdirSync(path.dirname(request)).some(name => name.includes('.tmp-')), false);
+    assert.equal(fs.readdirSync(path.dirname(request)).some(name => name.endsWith('.pending-dir')), false,
+      '真实原子writer失败后必须清理本次独占pending目录，不能只检查旧tmp文件名');
   }
   zeroWrite = false; failRename = false;
   assert.equal(directoryHandles.size, 0);
+  assert.equal(fs.readdirSync(path.dirname(request)).some(name => name.endsWith('.pending-dir')), false);
 } finally {
   const verified = fs.realpathSync(root);
   assert.equal(path.dirname(verified).toLowerCase(), fs.realpathSync(workspaceTempRoot()).toLowerCase());

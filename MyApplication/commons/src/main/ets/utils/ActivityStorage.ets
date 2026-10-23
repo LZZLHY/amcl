@@ -3,7 +3,7 @@
  * 不静默削减每版本保留承诺；保留/删除仍由 ActivityLedger 的统一保护规则执行。
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { ledgerList, ledgerManifest, ledgerDirOf, LedgerState } from './ActivityLedger';
+import { ledgerListAsync, ledgerManifestAsync, LedgerState } from './ActivityLedger';
 import { acquireEvidenceLease, releaseEvidenceLease, writeEvidenceTextAtomic } from './EvidenceIo';
 
 export interface ActivityStorageItem { activityId: number; title: string; bytes: number; pinned: boolean; running: boolean; }
@@ -11,43 +11,44 @@ export interface ActivityStorageGroup { key: string; title: string; bytes: numbe
 export interface ActivityStorageSummary { bytes: number; groups: ActivityStorageGroup[]; issues: string[]; }
 interface StorageAlert { bytes: number; }
 
-/** 每层仅持有文件名，异步 stat 不把整个大日志读进内存；取消在每次 I/O 前检查。 */
-async function directoryBytes(directory: string, cancelled: () => boolean, depth: number = 0): Promise<number> {
-  if (depth > 8) throw new Error('日志目录层级超过统计范围');
-  let bytes: number = 0;
-  const names: string[] = await fs.listFile(directory);
-  for (const name of names) {
-    if (cancelled()) throw new Error('占用统计已取消');
-    const path: string = directory + '/' + name;
-    const stat = await fs.stat(path);
-    bytes += stat.isDirectory() ? await directoryBytes(path, cancelled, depth + 1) : stat.size;
-  }
-  return bytes;
-}
-
-/** 逐活动租约防止统计期间自动淘汰；单局无法统计时保留错误，不把它算成成功的零字节。 */
+/**
+ * 复用账本异步索引的可信目录计量，不先同步重建再独立递归统计第二遍。
+ * 逐活动租约保护原清单读取；writing/unknown或清单在读取期间变化均保留未知值(-1)，
+ * 不把已知部分伪装成完整总量。原件不可读的目录仍由issues说明，不制造空成功。
+ */
 export async function readActivityStorage(filesDir: string, cancelled: () => boolean): Promise<ActivityStorageSummary> {
   const result: ActivityStorageSummary = { bytes: 0, groups: [], issues: [] };
-  for (const entry of ledgerList(filesDir)) {
+  const groups: Map<string, ActivityStorageGroup> = new Map<string, ActivityStorageGroup>();
+  for (const entry of await ledgerListAsync(filesDir, cancelled)) {
     if (cancelled()) throw new Error('占用统计已取消');
-    const manifest = ledgerManifest(filesDir, entry.activityId);
-    if (manifest === null) { result.issues.push('活动 ' + entry.activityId + ' 清单不可读'); continue; }
-    acquireEvidenceLease(filesDir, entry.activityId);
+    let leased: boolean = false;
     try {
-      const bytes: number = await directoryBytes(ledgerDirOf(filesDir, entry.activityId), cancelled);
+      acquireEvidenceLease(filesDir, entry.activityId); leased = true;
+      const manifest = await ledgerManifestAsync(filesDir, entry.activityId);
+      if (cancelled()) throw new Error('占用统计已取消');
+      if (manifest === null) throw new Error('清单不可读，目录原件仍保留');
+      const trusted: boolean = entry.bytesState === 'current' && entry.manifestDigest === JSON.stringify(manifest);
+      const bytes: number = trusted ? entry.bytes : -1;
+      if (!trusted) result.issues.push(manifest.title + '：' + (entry.bytesState === 'writing'
+        ? '日志仍在写入，完整占用尚未确认' : '目录占用无法核实，请刷新重试'));
       const key: string = manifest.category === 'launch' ? manifest.mcDir + '\n' + manifest.gameVersionId : 'other:' + manifest.category;
-      let group: ActivityStorageGroup | undefined = result.groups.find((item: ActivityStorageGroup): boolean => item.key === key);
+      let group: ActivityStorageGroup | undefined = groups.get(key);
       if (group === undefined) {
         group = { key: key, title: manifest.category === 'launch' ? manifest.gameVersionId || manifest.title
           : manifest.category === 'download' ? '游戏下载' : manifest.category === 'mod_install' ? '模组安装' : manifest.category,
           bytes: 0, items: [] };
         result.groups.push(group);
+        groups.set(key, group);
       }
-      group.bytes += bytes; result.bytes += bytes;
+      group.bytes = group.bytes < 0 || bytes < 0 ? -1 : group.bytes + bytes;
+      result.bytes = result.bytes < 0 || bytes < 0 ? -1 : result.bytes + bytes;
       group.items.push({ activityId: entry.activityId, title: manifest.title, bytes: bytes,
         pinned: manifest.pinned === true, running: manifest.state === LedgerState.RUNNING });
-    } catch (e) { if (cancelled()) throw e as Error; result.issues.push(manifest.title + '：' + (e as Error).message); }
-    finally { releaseEvidenceLease(filesDir, entry.activityId); }
+    } catch (e) {
+      if (cancelled()) throw e as Error;
+      result.bytes = -1;
+      result.issues.push('活动 ' + entry.activityId + '：' + (e as Error).message);
+    } finally { if (leased) releaseEvidenceLease(filesDir, entry.activityId); }
   }
   result.groups.sort((a: ActivityStorageGroup, b: ActivityStorageGroup): number => b.bytes - a.bytes);
   return result;

@@ -1,0 +1,4 @@
+<!-- 虚拟鼠标Shift轮廓：20×20独立图标盒，外轮廓四向留2单位；使用填充轮廓以支持Image.fillColor。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M10 2 18 10H14V18H6V10H2L10 2ZM10 4.8 5.8 9H7.8V16.2H12.2V9H14.2L10 4.8Z"/>
+</svg>

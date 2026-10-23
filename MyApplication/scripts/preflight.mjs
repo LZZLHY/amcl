@@ -7,7 +7,7 @@
 //   1. line-refs:      文档/代码中 `@path:N` 引用漂移。**只有 OOR 是硬错**。
 //   2. java-build:     编译 JavaApp/src + JavaApp/test。
 //   3. java-tests:     运行下方 suites 清单中的测试套件，totalFail 必须为 0。
-//   4. bash-syntax:    对 .sh 跑 `bash -n`（⚠️ 缺 bash 时报 ok 并跳过）。
+//   4. bash-syntax:    对 .sh 跑 `bash -n`；缺 bash 明确记 SKIPPED 并阻断所选集合通过。
 //   5. json5-parse:    6 个 json5 可解析。
 //   6. lf-eol:         .sh 必须 LF（CRLF 会让 bash 报 syntax error）。
 //   7. glfw-surface:   GLFW native 必需/可选符号缺失均须为 0。
@@ -24,12 +24,13 @@
 //  18. typed-sink-wiring: typed 事件的消费端不得静默缺席（含自测 + 声明式例外清单）。
 //  19. backend-keymap-parity: 新的一步后端映射必须等于旧的两步复合（含自测）。
 //  20. renderer-registry: canonical 图形注册表、派生兼容入口与 native 生成镜像必须一致（含自测）。
-//  21. jdk-release-pin: JDK 发行版四处 SoT 必须一致（含自测）。
+//  21. jdk-release-pin: 冻结旧版下载资产身份，校验目录 builtin 的 legacy 投影（含自测）。
 //  22. renderer-naming: 禁止后端缩写及第二条决策通道（含共享词法自测）。
 //  23. sdl3-multiwindow: SDL3 混合多窗口 + 宿主激活源码/patch 契约
 //      （含逐规则负向 fixture）。
 //  24. gamecontrol-scope: HAR 仅由 entry 消费；桌面私有进程须独立初始化（含自测）。
 //  25. input-build-profile: debug/release 与各产品的 native 输入平面闭包（含自测）。
+//      input-runtime: 生产配置/IME/生命周期装配、L2/SDL来源语义正反例及中立输入DSO边界。
 //  26. sdl3-text-session: SDL3 typed TextInputSession patch 顺序、ABI 与 read/release 契约（含自测）。
 //  27. gate-f-readiness: menu absolute 证据/产品启用前，原子 owner、三后端与 legacy 退役必须闭包（含自测）。
 //  28. device-automation: P0 宿主编排器的判定工具正反向自测（解析器 / 五值判决 / 脱敏；
@@ -44,6 +45,9 @@
 //      runtime-ownership: JVM 前属性冻结/参数适配、真实JNA协议与独立native槽、精确槽名单、真实 JNI 加载器归属、SDL 消费者初始化与 processor 精确等待；不替代设备矩阵。
 //      runtime-exit: 独立游戏退出身份/有界记录、真实宿主 JNI exit/halt 回调与活动恢复；不替代平板 OS/前台验收。
 //      workspace-layout: 最后检查物理目录与链接；Agent 配置、自建临时/运行资料不得回流主项目，含负向自测。
+//      docker-project: 无引擎测试固定 Compose 服务、身份复用、忙状态/归属拒绝、独占锁和失败证据。
+//      download-system: 真实Manager/Registry/共享、规格编译、来源代次和Maven结果；
+//      Linux Native/libcurl真实HTTP另走CI独立download-native job，不把宿主替身当Native验证。
 //
 // ⚠️ 本注释块自己曾经过期过（只列到第 8 项、写"4 个套件、断言总数 ≥101"），
 // 而 `docs/release-checklist.md` §0 同时写着"预期 6 项全绿"+ 一个不存在的 `--strict`。
@@ -53,40 +57,31 @@
 // 于是那处项数腐烂了一整轮（2026-08-24 补齐）。三处都是"看起来权威的过期清单"，
 // 而这个项目已经因为读了自己文档里的过期结论付过多次学费。
 //
-// 退出码：0 = 全绿；非 0 = 至少一项失败。
+// 退出码：0 = 所选依赖闭包通过（或仅生成计划）；非 0 = 配置、执行或必要覆盖失败。
 //
 // 用法:
 //   node scripts/preflight.mjs               # 完整跑
-//   node scripts/preflight.mjs --skip=tests  # 跳过 java tests
+//   node scripts/preflight.mjs --skip=java-tests # 显式递延 java tests，不能称为完整通过
 //   node scripts/preflight.mjs --only=lf-eol # 只跑指定项
+//   node scripts/preflight.mjs --plan --json # 只读依赖计划，不执行检查
+//   --report=<绝对仓外路径> 输出不覆盖的逐门 JSON 收据；本机日志路径按工作区路由选择。
 
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
 import { spawnSync, execSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { parseJson5 as parseProjectJson5 } from './product-contract.mjs';
-import { workspacePath } from './lib/workspace-paths.mjs';
+import { assertExternalOutputPath, workspacePath } from './lib/workspace-paths.mjs';
+import { parsePreflightArguments, planPreflightChecks, preflightPlanReceipt, executePreflightPlan } from './lib/preflight-runner.mjs';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
-const opt = (k) => {
-  const m = argv.find((a) => a.startsWith(`--${k}=`));
-  return m ? m.slice(k.length + 3).split(',') : null;
-};
-const SKIP = opt('skip') || [];
-const ONLY = opt('only');
-
 const isWin = process.platform === 'win32';
 const checks = [];
-const results = [];
 
-function add(name, fn) {
-  checks.push({ name, fn });
-}
-
-function shouldRun(name) {
-  if (ONLY) return ONLY.includes(name);
-  return !SKIP.includes(name);
+function add(name, fn, { dependencies = [] } = {}) {
+  checks.push({ id: name, fn, dependencies });
 }
 
 function color(s, c) {
@@ -182,7 +177,7 @@ add('java-tests', () => {
     return { ok: false, summary: 'build artifacts missing — run java-build first' };
   }
   const cp = `${tcls}${path.delimiter}${cls}`;
-  const suites = ['com.amcl.launcher.LaunchConfigTest', 'com.amcl.launcher.AmclClassLoaderTest', 'com.amcl.launcher.ForgeHelperTest', 'com.amcl.launcher.DebugProfileCompatTest', 'com.amcl.launcher.AmclLauncherTest', 'com.amcl.launcher.AwtRuntimeTest'];
+  const suites = ['com.amcl.launcher.LaunchConfigTest', 'com.amcl.launcher.AmclClassLoaderTest', 'com.amcl.launcher.ForgeHelperTest', 'com.amcl.launcher.DebugProfileCompatTest', 'com.amcl.launcher.AmclLauncherTest', 'com.amcl.launcher.AwtRuntimeTest', 'com.amcl.launcher.GameGuiBridgeTest'];
   let totalPass = 0;
   let totalFail = 0;
   const fails = [];
@@ -204,16 +199,16 @@ add('java-tests', () => {
     summary: `${totalPass} passed, ${totalFail} failed across ${suites.length} suites`,
     detail: fails.length ? fails.join('\n') : null,
   };
-});
+}, { dependencies: ['java-build'] });
 
 // ─────────────────────────────────────────────
 // 4. bash-syntax
 add('bash-syntax', () => {
-  // try bash, if missing skip
+  // 工具缺失是未执行，不能把空覆盖冒充语法检查已经通过。
   try {
     execSync('bash --version', { stdio: 'ignore' });
   } catch {
-    return { ok: true, summary: 'bash not available, skipped' };
+    return { ok: false, status: 'SKIPPED', reason: 'MISSING_TOOL', missingTools: ['bash'], summary: 'bash not available; syntax checks were not executed' };
   }
   const shFiles = [];
   function walk(d, depth = 0) {
@@ -888,8 +883,19 @@ add('renderer-registry', () => {
 add('graphics-profile-inventory', () => {
   // 下载报告、请求、候选故障隔离及失败 wire 执行生产逻辑，不只检查页面字符串。
   for (const test of ['scripts/test-vulkan-download-status.mjs', 'scripts/test-game-vulkan-preference.mjs', 'scripts/test-graphics-capability-adapter.mjs',
+    'scripts/test-graphics-availability.mjs',
     'scripts/test-graphics-launch-failure.mjs', 'scripts/test-graphics-observation-report.mjs', 'scripts/test-game-startup.mjs',
     'scripts/test-graphics-artifact-manifest.mjs', 'scripts/test-graphics-profiles.mjs', 'scripts/test-graphics-runtime-artifact.mjs', 'scripts/test-graphics-bootstrap.mjs',
+    // 离线资格记录必须绑定真实源码/载荷/设备/执行身份，不能用未测或旧报告获得PASS。
+    'scripts/test-graphics-qualification.mjs',
+    'scripts/test-mobilegl-replay-evidence.mjs',
+    'scripts/test-mg-depth-evidence.mjs',
+    // TestHooks现成MobileGL报告的实际副本/唯一run/外部RETURN与最终HAP绑定薄门。
+    'scripts/test-mobilegl-loaded-evidence.mjs',
+    // 新语义的原始字段/固定分母和外部PID/库/HAP/RETURN薄门；不重复GPU或CTS。
+    'scripts/test-mobilegl-program-evidence.mjs',
+    'scripts/test-mg-context-identity-evidence.mjs',
+    'scripts/test-graphics-scene-evidence.mjs',
     'scripts/test-sdl3-presentation-contract.mjs', 'scripts/check-sdl3-presentation-contract.mjs']) {
     const checked = spawnSync('node', [test], { cwd: ROOT, encoding: 'utf8' });
     if (checked.status !== 0) {
@@ -900,14 +906,21 @@ add('graphics-profile-inventory', () => {
   const python = process.env.AMCL_PYTHON || (isWin ? 'python' : 'python3');
   for (const script of ['scripts/test-graphics-launch-failure.py', 'scripts/test-vulkan-wsi-diagnostics.py',
     'scripts/test-mobilegl-buffer-lifetime.py', 'scripts/test-mg-buffer-readback.py',
+    // 深度范围门执行fork的生产TU及旧stub负控；真实像素另由同一共享场景在软件/设备运行。
+    'scripts/test-mg-depth-range.py',
     'scripts/test-vulkan-capability-admission.py', 'scripts/test-vulkan-presentation-bridge.py', 'scripts/test-vulkan-orientation.py',
     'scripts/test-mobilegl-present-result.py',
-    'scripts/test-sdl3-graphics-context.py', 'scripts/test-sdl3-pbuffer-limits.py', 'scripts/test-native-gl-probe.py', 'scripts/test-graphics-probe-gate.py',
+    'scripts/test-mobilegl-cold-publication.py',
+    'scripts/test-sdl3-graphics-context.py', 'scripts/test-sdl3-pbuffer-limits.py', 'scripts/test-sdl3-context-loss.py',
+    'scripts/test-lwjgl2-context.py', 'scripts/test-native-gl-probe.py', 'scripts/test-graphics-probe-gate.py',
     'scripts/test-egl-lifecycle.py', 'scripts/test-mobilegl-glfw.py', 'scripts/test-graphics-runtime-binding.py',
     'scripts/test-window-resource-epochs.py', 'scripts/test-graphics-observation-abi.py',
     'scripts/test-graphics-runtime-images.py', 'scripts/test-graphics-features.py', 'scripts/test-glfw-auxiliary-input.py',
-    'scripts/test-desktop-review-generator.py']) {
-    const checked = spawnSync(python, [script], { cwd: ROOT, encoding: 'utf8' });
+    // SDL桌面桥先核固定设备资格，避免非2in1每帧加载；仍执行晚发布与错误ABI负控。
+    'scripts/test-sdl-desktop-device.py', 'scripts/test-desktop-review-generator.py']) {
+    // 同一MG薄runner从B2起同时验证desktop版本身份，默认独立depth CLI保持兼容。
+    const checked = spawnSync(python, script === 'scripts/test-mg-depth-range.py'
+      ? [script, '--include-version-identity'] : [script], { cwd: ROOT, encoding: 'utf8' });
     if (checked.status !== 0) return { ok: false, summary: script + ' 失败',
       detail: (checked.stdout || '') + (checked.stderr || '') + (checked.error?.message || '') };
   }
@@ -1133,6 +1146,129 @@ add('input-build-profile', () => {
 
 // ─────────────────────────────────────────────
 // 26. sdl3-text-session — additive typed text consumer contract
+add('input-runtime', () => {
+  // 检查生产装配与最终消费者，不能只凭mapper和sink指针存在宣称三端语义一致。
+  const commands = [
+    ['node', 'scripts/test-game-input-runtime.mjs'],
+    // Monitor原连接对象、冻结八轴/键、来源token回入与精确清理；不冒称OS/native generation。
+    ['node', 'scripts/test-device-connection-runtime.mjs'],
+    // 显式Native速率模型、原连接/单位、拒绝重试与动作前样本；无JS第二份积分副作用。
+    ['node', 'scripts/test-mapped-look-execution.mjs'],
+    // 保存与运行激活的真实会话分权；独立输入ABI计划的ArkTS/Native双边严格校验。
+    ['node', 'scripts/test-input-configuration-runtime.mjs'],
+    // 保存/原会话激活/触控发布及只读真实UI提示，含在途A与desired B、原registration反控。
+    ['node', 'scripts/test-input-policy-activation.mjs'],
+    ['node', 'scripts/test-frozen-settings-save.mjs'],
+    ['node', 'scripts/test-source-look-policy.mjs'],
+    // Native政策入口要求全新证据/目标；AMCL_RUN_DIR可由聚合指定，仍须为本次进程独占叶目录。
+    [isWin ? 'python' : 'python3', 'scripts/test-source-look-policy-native.py',
+      '--output', workspacePath('run', 'source-look-native-' + process.pid),
+      '--build-root', workspacePath('build', 'source-look-native-' + process.pid)],
+    // 所选输入ABI的原生手柄出口、平台采集事实及真正来源开关应用分开，保用户明确路线。
+    ['node', 'scripts/test-native-gamepad-route.mjs'],
+    // 唯一source owner、真实ring/JNI/GLFW写读及cold身份，负控须编译后命中行为断言。
+    // 三种模式各复用自己的已登记host缓存，证据每次进程独立，不覆盖先前收据。
+    ...[null, 'compat-bypass', 'budget2'].map(negative => {
+      const id = 'source-' + (negative ?? 'positive');
+      return [isWin ? 'python' : 'python3', 'scripts/test-source-control.py',
+        '--out', workspacePath('run', id + '-' + process.pid),
+        '--build-out', workspacePath('build', id), '--reuse-build',
+        ...(negative === null ? [] : ['--negative', negative])];
+    }),
+    // 真实stock JVM忙/停机、资源退休与Java写前guard/ACK；UI租约撤回不能停基本输入。
+    [isWin ? 'python' : 'python3', 'scripts/test-game-gui-observation.py'],
+    ['node', 'scripts/test-game-gui-source-lease.mjs'],
+    // 已冻结的旧JS IME回调不能借新租约；更早OS原生任务阶段另有系统/设备验收边界。
+    ['node', 'scripts/test-ime-callback-lease.mjs'],
+    // 唯一生产controller/原UIContext/activation、硬软串行、未知结果拒绝重发和真实停止回执。
+    ['node', 'scripts/test-entry-text-input-runtime.mjs'],
+    // 原按钮/IME阶段观察不得改变输入轨迹；真实Host停止回执保原资源并有界结束重试。
+    ['node', 'scripts/test-entry-ime-stage-observation.mjs'],
+    ['node', 'scripts/test-game-session-host.mjs'],
+    // 真实端口36万步、容量恢复及四个编译成功的故障撤回；所有原件外置。
+    [isWin ? 'python' : 'python3', '-B', 'scripts/test-control-delivery-sequences.py'],
+    ['node', 'scripts/test-input-launch-plan.mjs'],
+    [isWin ? 'python' : 'python3', 'scripts/test-input-launch-plan.py'],
+    // 视觉getter仅读；关闭观察者仍推进真实grab/gyro维护，负控须编译成功后被行为拒绝。
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-maintenance.py'],
+    ['node', 'scripts/test-touch-input-maintenance.mjs'],
+    // 读取真实领取日志，不把累计Ready/ringTaken当本局输入增长；Windows采集器纯函数回归。
+    ['node', 'scripts/test-capture-backend-input-evidence.mjs'],
+    // 正式离线ILAT规则：完整uint64/原件身份/冲突闭包与两种pull终点，不运行采集器或授性能PASS。
+    [isWin ? 'python' : 'python3', '-B', 'scripts/test-input-latency-parser.py'],
+    // 虚拟按键的按端释放语义（抽屉子按钮、toggle、IME 打开、编辑器顺序、WASD 锁存补发），
+    // 执行 GameControls 生产方法原文并配合按 (source, key) 配对的 native 替身，含旧实现负向对照。
+    ['node', 'scripts/test-game-controls-release.mjs'],
+    ['node', 'scripts/test-touch-optimization.mjs'],
+    ['node', 'scripts/test-control-groups.mjs'],
+    ['node', 'scripts/test-control-groups-editor.mjs'],
+    ['node', 'scripts/test-control-groups-storage.mjs'],
+    // 完成积分的sensor delta携原policy/resource lease；跨时钟ns不作资格比较。
+    ['node', 'scripts/test-gyro-lease.mjs'],
+    ['node', 'scripts/test-gyro-policy-activation.mjs'],
+    ['node', 'scripts/test-touch-basics.mjs'],
+    // 悬浮鼠标生产模型：两指移动权重锚、单指raw随指、多指稳位、边缘钳制与旧回执围栏。
+    ['node', 'scripts/test-virtual-mouse-interaction.mjs'],
+    // 入口遵循全局显隐及已保存策略；主动隐藏收口原面板，旧版本补缺只采用统一右下默认位。
+    ['node', 'scripts/test-virtual-mouse-entry-position.mjs'],
+    ['node', 'scripts/test-virtual-mouse-entry-visibility.mjs'],
+    ['node', 'scripts/test-virtual-mouse-wheel.mjs'],
+    ['node', 'scripts/test-gamepad-analog-stability.mjs'],
+    ['node', 'scripts/test-touch-surface-controller.mjs'],
+    // 真实Source/feedback/GUI必要几何与可退订观察分离，保持原Want/Host资格及迟到结果围栏。
+    ['node', 'scripts/test-input-observation-control.mjs'],
+    // 真实输入身份不随刷新率退代；发布等待仅关新DOWN，已有工具contact的MOVE/UP完整收口。
+    ['node', 'scripts/test-touch-ui-publication.mjs'],
+    // 同输入代次的Hz元数据仍需经实际页面publisher到Native当前快照，且不能制造触控RESET。
+    [isWin ? 'python' : 'python3', 'scripts/test-input-surface-metadata.py'],
+    // 实际帧率controller/SDK次数：稳定刷新去重、失败重试及原强生命周期边界，非性能收益门。
+    [isWin ? 'python' : 'python3', 'scripts/test-frame-rate-controller.py'],
+    // GLFW只合并同identity元数据；新geometry保持队列顺序，私有读口必须整体委派到owner。
+    [isWin ? 'python' : 'python3', 'scripts/test-input-surface-reader.py'],
+    // 同一NativeWindow重发布必须经生产SDL函数恢复输入，不能把Vulkan排除在EGL几何采纳之外。
+    [isWin ? 'python' : 'python3', 'scripts/test-sdl3-vulkan-input-resume.py'],
+    // 新touch尾协议必须在真实GetHostBridge拒绝损坏描述符，不能被symbols fallback绕过。
+    [isWin ? 'python' : 'python3', 'scripts/test-sdl3-touch-target.py'],
+    // 事件线程采用渲染owner发布的同一逻辑窗口/输入代次/WSI身份，桥出口不能持shared锁。
+    [isWin ? 'python' : 'python3', 'scripts/test-glfw-touch-target-publication.py'],
+    // 实际typed授权sink与同一neutral菜单消费组合，callback前current/返回后ACK分别验证。
+    [isWin ? 'python' : 'python3', 'scripts/test-glfw-typed-menu-cursor.py'],
+    [isWin ? 'python' : 'python3', 'scripts/test-menu-mouse-production.py'],
+    // 菜单工具必须携带真实panel prefix，NAPI取消与普通UP保留各自准入合同。
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-menu-napi.py'],
+    // 相同UI几何不代表Native仍持有面板注册；来源退休后须用真实Entry/Native重新确认。
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-menu-registration.py'],
+    // 实际启动phase选定输入世代/session，拒绝损坏计划与neutral绑定失败。
+    [isWin ? 'python' : 'python3', 'scripts/test-menu-cursor-startup.py'],
+    ['node', 'scripts/test-input-architecture-regressions.mjs'],
+    // 新轨迹回归先完整执行原schema正/反例，再验证真实触控解释器。
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-production.py'],
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-groups.py'],
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-groups-production.py'],
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-schema-preservation.py'],
+    [isWin ? 'python' : 'python3', 'scripts/test-touch-terminal-samples.py'],
+    // 真实grab线性化、producer→三consumer持有、发布/模态/反馈及owned文本例外的正负组合。
+    ...['test-touch-deadline-transaction.py', 'test-touch-bridge-controls.py', 'test-touch-publication.py',
+      'test-touch-feedback-native.py', 'test-touch-schema-napi.py', 'test-owned-text-modal-napi.py',
+      // 同一生产Core/Source文字围栏；false END、rollback、MAX、旧私表及真实锁序反控。
+      'test-owned-text-key-scope.py'].map(name => [isWin ? 'python' : 'python3', `scripts/${name}`]),
+    // 原文本wire经唯一Core/adapter/GLFW回调，保Unicode同包选区与已编译撤回/恢复；不只核UI参数。
+    [isWin ? 'python' : 'python3', 'scripts/test-glfw-document-selection.py'],
+    [isWin ? 'python' : 'python3', 'scripts/test-input-consumer-semantics.py'],
+    // Windows/Ubuntu沿同一真实组合门；CI已按deps.lock取得SDL源并传AMCL_SDL_TEST_REPO。
+    // 不靠预存同名库/伪skip：精确checkout→全新SDK原控制正反/restored→owned实际Poll正反/restored。
+    [isWin ? 'python' : 'python3', 'scripts/test-sdl-host-consumer.py'],
+    ['node', 'scripts/test-check-input-runtime-boundary.mjs'],
+    ['node', 'scripts/check-input-runtime-boundary.mjs'],
+  ];
+  for (const [program, script, ...arguments_] of commands) {
+    const result = spawnSync(program, [script, ...arguments_], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    if (result.status !== 0) return { ok: false, summary: `input runtime failed: ${script}`,
+      detail: ((result.stdout || '') + (result.stderr || '') + (result.error?.message || '')).trim() };
+  }
+  return { ok: true, summary: 'production config/IME lifecycle, L2+SDL source semantics and neutral input ownership' };
+});
+
 add('sdl3-text-session', () => {
   const patchsetSelf = spawnSync('node', ['scripts/test-sdl3-patchset-digest.mjs'], {
     cwd: ROOT,
@@ -1296,6 +1432,9 @@ add('runtime-compat', () => {
 });
 
 add('logging-evidence', () => {
+  // 新恢复、增量维护与UI调用方作为同一生产组合回归，防止旧日志门禁遗漏新的异步接缝。
+  const ledger = spawnSync('node', ['scripts/test-ledger-performance.mjs'], { cwd: ROOT, encoding: 'utf8' });
+  if (ledger.status !== 0) return { ok: false, summary: 'ledger performance/durability regression failed', detail: (ledger.stdout || '') + (ledger.stderr || '') };
   for (const args of [['scripts/check-log-domains.mjs'], ['scripts/test-check-log-domains.mjs'],
     ['scripts/check-critical-logging.mjs'], ['--test', 'scripts/test-log-ux.mjs'],
     ['scripts/generate-log-domain-tags.mjs', '--check'], ['--test', 'scripts/test-evidence-system.mjs'],
@@ -1332,12 +1471,29 @@ add('runtime-ownership', () => {
     ['node', 'scripts/test-check-sdl3-launch-contract.mjs'],
     ['node', 'scripts/check-sdl3-launch-contract.mjs'],
   ];
-  for (const [command, script] of commands) {
-    const run = spawnSync(command, [script], { cwd: ROOT, encoding: 'utf8' });
+  for (const [command, ...parameters] of commands) {
+    // 保留 -B 等解释器选项后的脚本参数；只解构两个字段会把 Python 空运行误记为通过。
+    const script = parameters[parameters.length - 1];
+    const run = spawnSync(command, parameters, { cwd: ROOT, encoding: 'utf8' });
     if (run.status !== 0) return { ok: false, summary: script + ' failed',
       detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
   }
   return { ok: true, summary: 'frozen runtime, precise slots, actual JNI ownership and SDL consumer lifecycle verified' };
+});
+
+// 进程环境写入纪律（I27-05）：第一个 AMCL/JVM 线程出现后，第一方代码不再新增或删除环境名。
+// 门禁要求每个 setenv/unsetenv/putenv（含转发包装）登记线程阶段与理由，禁止首方直接写槽位名
+// 或已退役名，并用顺序钉锁住早期发布、启动槽位与封存点。先跑自测：自测失败说明扫描器本身
+// 不可信，此时门禁结论一律作废，不能把“扫不到”读成“没有写入”。
+add('env-mutation', () => {
+  for (const script of ['scripts/test-check-env-mutation.mjs', 'scripts/check-env-mutation.mjs']) {
+    const run = spawnSync('node', [script], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    if (run.status !== 0) {
+      return { ok: false, summary: script + ' failed',
+        detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
+    }
+  }
+  return { ok: true, summary: 'every env mutation allowlisted with a thread phase; slot/retired names and pre-thread order pinned' };
 });
 
 // 运行时基础第一批：生产区间/清单、所选 LWJGL 槽与部署、平板进程策略、ELF 输入。
@@ -1347,9 +1503,22 @@ add('runtime-foundation', () => {
   const python = process.env.AMCL_PYTHON || (isWin ? 'python' : 'python3');
   const commands = [
     ['node', 'scripts/test-jdk-runtime-contract.mjs'],
+    ['node', 'scripts/test-runtime-catalog.mjs'],
+    // 同路径回归：目录暂不可下载时仍须展示槽位，且不能绕过推荐/撤回检查创建安装器。
+    ['node', 'scripts/test-jdk-catalog-list.mjs'],
+    ['node', 'scripts/test-runtime-catalog-install.mjs'],
+    ['node', 'scripts/test-runtime-update-ui.mjs'],
+    ['node', 'scripts/test-jdk-tree-validation.mjs'],
+    ['node', 'scripts/test-jdk-directory-lease.mjs'],
+    [python, '-B', 'scripts/test-runtime-packaging.py'],
+    // 活动series/生成器的静态防回生；真实上游源重放由JDK25编译/来源守卫另行验证。
+    [python, '-B', 'scripts/test-jdk25-safepoint-contract.py'],
     ['node', 'scripts/test-prelaunch-runtime-slot.mjs'],
     ['node', 'scripts/check-lwjgl-legacy-slots.mjs'],
     ['node', 'scripts/test-lwjgl-runtime-slots.mjs'],
+    // 检查最终 OHOS 源槽与 JDK 派生身份，防止只更新源包却继续使用旧派生清单。
+    ['python', 'scripts/build-lwjgl-jdk-views.py'],
+    ['python', 'scripts/test-lwjgl-jdk-views.py'],
     [python, 'scripts/test-runtime-slot-store.py'],
     ['node', 'scripts/test-graphics-recovery.mjs'],
     ['node', 'scripts/test-graphics-recovery-handoff.mjs'],
@@ -1358,12 +1527,17 @@ add('runtime-foundation', () => {
     ['node', 'scripts/test-tablet-process-policy.mjs'],
     ['node', 'scripts/test-game-layout-journal-core.mjs'],
     ['node', 'scripts/test-game-layout-transport.mjs'],
+    ['node', 'scripts/test-game-layout-v2.mjs'],
     ['node', 'scripts/test-layout-store-transactions.mjs'],
     ['node', 'scripts/test-layout-editor-failures.mjs'],
+    ['node', 'scripts/test-input-settings-editor.mjs'],
+    ['node', 'scripts/test-input-config-hud.mjs'],
     [python, 'scripts/test-elf-input-validation.py'],
   ];
-  for (const [command, script] of commands) {
-    const run = spawnSync(command, [script], { cwd: ROOT, encoding: 'utf8' });
+  for (const [command, ...parameters] of commands) {
+    // 本组的 package_runtime 测试带 -B，必须把完整参数数组交给 Python。
+    const script = parameters[parameters.length - 1];
+    const run = spawnSync(command, parameters, { cwd: ROOT, encoding: 'utf8' });
     if (run.status !== 0) return { ok: false, summary: script + ' failed',
       detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
   }
@@ -1379,6 +1553,8 @@ add('runtime-exit', () => {
     [python, 'scripts/test-runtime-bootstrap-contract.py'],
     ['node', 'scripts/test-jvm-exit-invocation.mjs'],
     ['node', 'scripts/test-jvm-exit-recovery.mjs'],
+    // 生产平台事件恢复的无归属扫描成本及迟到/失败保留；原件不能为启动性能被丢弃。
+    ['node', 'scripts/test-platform-event-recovery-cost.mjs'],
     ['node', 'scripts/test-tablet-game-return.mjs'],
     ['node', 'scripts/test-game-page-exit.mjs'],
     ['node', 'scripts/test-runtime-process-capture.mjs'],
@@ -1390,6 +1566,48 @@ add('runtime-exit', () => {
       detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
   }
   return { ok: true, summary: 'isolated exit identity/record, real host JNI exit/halt, and session recovery verified' };
+});
+
+// 下载宿主门消费生产ArkTS模块，实际Native/socket/FD由独立Linux作业验证。
+// 编译器缺失/子进程失败必须阻断，不把缺少SDK或CI环境变量差异记为跳过成功。
+add('download-system', () => {
+  for (const script of ['scripts/test-download-system.mjs', 'scripts/test-maven-batch-result.mjs',
+    'scripts/test-download-task-snapshot.mjs']) {
+    const run = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8' });
+    if (run.status !== 0) return { ok: false, summary: script + ' failed',
+      detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
+  }
+  return { ok: true, summary: 'production download session/owner/spec/source and Maven result contracts; Native runs separately' };
+});
+
+// 圆形操作与标题宿主执行真实生产方法／Builder分支，包含disabled及正文撤回负控。
+// CI和日常SDK入口使用同一专项，证据保存在工作区外置run；不把它当作像素证明。
+add('unified-actions', () => {
+  for (const name of ['immersive-light', 'unified-actions']) {
+    const script = `scripts/test-${name}.mjs`;
+    const run = spawnSync(process.execPath, [script, '--output', path.join(workspacePath('run', 'unified-actions'), name)],
+      { cwd: ROOT, encoding: 'utf8' });
+    if (run.status !== 0) return { ok: false, summary: script + ' failed',
+      detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
+  }
+  return { ok: true, summary: 'confirmed preferences, native/fallback callbacks, disabled/retired events and content identity' };
+});
+
+// Docker 项目治理：固定服务、受控复用与忙状态/身份拒绝通过生产执行器的无引擎测试。
+add('docker-project', () => {
+  const python = process.env.AMCL_PYTHON || (isWin ? 'python' : 'python3');
+  const run = spawnSync(python, ['-B', 'scripts/test-docker-project.py'], { cwd: ROOT, encoding: 'utf8' });
+  return { ok: run.status === 0, summary: 'Compose service ownership, workspace identity, foreground evidence and failure guards',
+    detail: run.status === 0 ? null : (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
+});
+
+// 最后运行物理布局门：前面的测试即使退出成功，也不能把自建输出重新留在主项目。
+// gl4es 纯整数门编译交付补丁中的真实辅助函数，完整生产 GLES/sanitizer 矩阵由固定 qa 服务执行。
+add('gl4es-draw', () => {
+  const python = process.env.AMCL_PYTHON || (isWin ? 'python' : 'python3');
+  const run = spawnSync(python, ['-B', 'scripts/test-gl4es-draw-math.py'], { cwd: ROOT, encoding: 'utf8' });
+  return { ok: run.status === 0, summary: 'production index widening/modulo and overflow-safe buffer/vertex bounds',
+    detail: run.status === 0 ? null : (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') };
 });
 
 // 最后运行物理布局门：前面的测试即使退出成功，也不能把自建输出重新留在主项目。
@@ -1406,33 +1624,82 @@ add('workspace-layout', () => {
   return { ok: true, summary: 'physical project layout clean; ignored directories and junctions cannot bypass this guard' };
 });
 
-// run
-console.log(`\n=== AMCL Preflight ===\n`);
-const t0 = Date.now();
-let failures = 0;
-for (const c of checks) {
-  if (!shouldRun(c.name)) {
-    console.log(`${dim('SKIP')}  ${c.name.padEnd(14)}`);
-    continue;
-  }
-  process.stdout.write(`${dim('....')}  ${c.name.padEnd(14)}`);
-  let res;
+/** 完成后才发布收据；同名目标或并发发布会失败，不覆盖先前结果。 */
+function writeReport(reportPath, receipt) {
+  assertExternalOutputPath(reportPath);
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  assertExternalOutputPath(reportPath);
+  const temporary = `${reportPath}.${process.pid}-${randomUUID()}.pending`;
   try {
-    res = c.fn();
-  } catch (e) {
-    res = { ok: false, summary: `EXCEPTION: ${e.message}`, detail: e.stack };
+    fs.writeFileSync(temporary, JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    fs.linkSync(temporary, reportPath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }
-  const tag = res.ok ? green(' OK ') : red('FAIL');
-  process.stdout.write(`\r${tag}  ${c.name.padEnd(14)}  ${res.summary}\n`);
-  if (!res.ok) {
-    failures++;
-    if (res.detail) {
-      console.log(res.detail.split('\n').map((l) => '       ' + l).join('\n'));
-    }
-  }
-  results.push({ name: c.name, ...res });
 }
 
-const dt = ((Date.now() - t0) / 1000).toFixed(1);
-console.log(`\n=== ${failures === 0 ? green('all green') : red(`${failures} FAILED`)}  (${dt}s) ===\n`);
-process.exit(failures > 0 ? 1 : 0);
+// 所有函数仍在本文件原位注册；计划与选择器先验证，之后才可能执行任何门禁。
+let options;
+let receipt;
+let reportPath;
+let jsonOutput = argv.includes('--json');
+try {
+  options = parsePreflightArguments(argv);
+  jsonOutput = options.json;
+  if (options.help) {
+    console.log('Usage: node scripts/preflight.mjs [--only=a,b | --skip=a,b] [--plan] [--json] [--report=<absolute-external-json>]');
+    process.exit(0);
+  }
+  if (options.report) {
+    if (!path.isAbsolute(options.report)) throw new Error('--report must be an absolute external path');
+    reportPath = assertExternalOutputPath(options.report);
+    if (fs.existsSync(reportPath)) throw new Error(`Report already exists; refusing overwrite: ${reportPath}`);
+  }
+  const plan = planPreflightChecks(checks, options);
+  if (options.plan) {
+    receipt = preflightPlanReceipt(plan);
+  } else {
+    if (!jsonOutput) console.log('\n=== AMCL Preflight ===\n');
+    receipt = await executePreflightPlan(plan, {
+      onStart: row => { if (!jsonOutput) process.stdout.write(`${dim('....')}  ${row.id.padEnd(14)}`); },
+      onResult: row => {
+        if (jsonOutput) return;
+        const tag = row.status === 'PASS' ? green(' OK ') : row.status === 'FAIL' ? red('FAIL') : yellow(row.status);
+        process.stdout.write(`\r${tag}  ${row.id.padEnd(14)}  ${row.summary} (${(row.durationMs / 1000).toFixed(3)}s)\n`);
+        if (row.status !== 'PASS' && row.detail) console.log(row.detail.split('\n').map(line => '       ' + line).join('\n'));
+      },
+    });
+  }
+} catch (error) {
+  const timestamp = new Date().toISOString();
+  receipt = { schemaVersion: 1, kind: 'amcl-preflight', status: 'CONFIGURATION_FAILED', ok: false,
+    startedAt: timestamp, finishedAt: timestamp, durationMs: 0, executionOrder: [],
+    error: { code: error.code ?? 'CONFIGURATION_ERROR', message: error.message },
+    coverage: { registeredIds: checks.map(check => check.id), requestedIds: [], selectedIds: [], dependencyAddedIds: [],
+      deferredIds: checks.map(check => check.id), attemptedIds: [], executedIds: [], passedIds: [], failedIds: [], skippedIds: [], blockedIds: [], complete: false },
+    checks: checks.map(check => ({ id: check.id, dependencies: [...check.dependencies], selected: false,
+      selectionReason: 'configuration-failed', status: 'DEFERRED', attempted: false, executed: false, startedAt: null, finishedAt: null, durationMs: 0 })) };
+}
+
+receipt.source = { root: ROOT, entrySha256: createHash('sha256').update(fs.readFileSync(url.fileURLToPath(import.meta.url))).digest('hex'),
+  runnerSha256: createHash('sha256').update(fs.readFileSync(new URL('./lib/preflight-runner.mjs', import.meta.url))).digest('hex') };
+receipt.runtime = { node: process.version, platform: process.platform, arch: process.arch };
+if (reportPath) {
+  try {
+    writeReport(reportPath, receipt);
+  } catch (error) {
+    receipt = { ...receipt, status: 'REPORT_FAILED', ok: false, reportError: error.message };
+  }
+}
+if (jsonOutput) {
+  console.log(JSON.stringify(receipt, null, 2));
+} else if (receipt.status === 'PLANNED') {
+  console.log(`PLANNED: ${receipt.executionOrder.join(', ')} (no checks executed)`);
+} else {
+  const status = receipt.ok ? receipt.coverage.complete ? 'all green; complete required coverage' : 'selected checks passed; partial coverage' : receipt.status;
+  console.log(`\n=== ${receipt.ok ? green(status) : red(status)} (${(receipt.durationMs / 1000).toFixed(1)}s) ===\n`);
+  if (receipt.error) console.error(receipt.error.message);
+  if (receipt.reportError) console.error(receipt.reportError);
+}
+if (reportPath && !jsonOutput && receipt.status !== 'REPORT_FAILED') console.log(`Preflight report: ${reportPath}`);
+process.exitCode = receipt.ok === false ? 1 : 0;

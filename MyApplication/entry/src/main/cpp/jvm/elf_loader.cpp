@@ -13,12 +13,14 @@
 
 #include "elf_loader.h"
 #include "elf_input_validation.h"
+#include "../download/hmac_sha256.h"  // 复用纯 SHA-256，精确识别历史 JLI 兼容输入。
 #include "if_inet6_shim.h"   // fopen 插桩：为 JDK 合成 /proc/net/if_inet6（方案 §四·五 R1）
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -33,6 +35,8 @@
 #include <ucontext.h>
 #include <vector>
 #include <atomic>
+#include <algorithm>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -56,6 +60,11 @@
 #define R_AARCH64_JUMP_SLOT       1026
 #define R_AARCH64_RELATIVE        1027
 /* R_AARCH64_TLS_DTPREL64 (1029) and R_AARCH64_TLS_DTPMOD64 (1028) are defined in <elf.h> */
+#ifndef R_AARCH64_TLS_DTPMOD64
+// glibc 宿主头使用不带 64 的同值名称；保持 AArch64 ABI 编号用于生产与交叉回归。
+#define R_AARCH64_TLS_DTPMOD64 1028
+#define R_AARCH64_TLS_DTPREL64 1029
+#endif
 #define R_AARCH64_TLS_TPREL64     1030
 #define R_AARCH64_TLSDESC         1031
 #define R_AARCH64_IRELATIVE       1032
@@ -63,6 +72,7 @@
 /* ================================================================
  * Internal structures
  * ================================================================ */
+struct LoadBatch;
 struct elf_handle {
     std::string name;
     std::string path;
@@ -95,6 +105,14 @@ struct elf_handle {
     Elf64_Addr* finiArray;
     size_t      finiArraySz;
     bool        initialized;
+    LoadBatch*  batch;         // 仅在本批链接期间使用；发布后清空。
+    bool        constructing;  // 全批重定位完成后，同线程构造重入才可访问。
+    bool        unloading;     // 终结期间不得再向调用者发布当前对象。
+    bool        published;     // 整个依赖批次完成链接及构造后才能对其他线程可见。
+    pthread_t   loadingThread; // 同线程的依赖环/构造重入可以查询本批对象。
+    bool        tlsKeyCreated;
+    bool        legacyJliChecked;
+    bool        legacyJliAllowed;
 
     /* RELRO region */
     Elf64_Addr  relroStart;
@@ -130,8 +148,42 @@ static std::string resolve_path(const char* name);
 /* ================================================================
  * Global state
  * ================================================================ */
-static char g_error[512] = {0};
+static thread_local char g_error[512] = {0};
+static thread_local bool g_errorPending = false;
+// 注册表修改和普通符号查询互斥；任意库构造器在释放此锁后运行。
+static std::recursive_mutex g_loaderMutex;
+struct LoadBatch {
+    std::unique_lock<std::recursive_mutex>* registryLock;
+    std::vector<elf_handle_t*> created;
+    std::vector<elf_handle_t*> linked;
+};
+static thread_local LoadBatch* g_loadBatch = nullptr;
+
+/** 已完成批次可全局使用；同线程递归可引用已经登记的本批次对象。 */
+static bool visible_to_caller(const elf_handle_t* h) {
+    return !h->unloading && (h->published ||
+        (g_loadBatch && h->batch == g_loadBatch) ||
+        (h->constructing && pthread_equal(h->loadingThread, pthread_self())));
+}
 static std::vector<elf_handle_t*> g_loaded;  /* ordered by load time */
+
+/**
+ * 系统 dlopen 也可能执行构造器。暂时脱离当前链接批次并释放注册锁，允许构造器
+ * 的工作线程查询 loader；尚未完整链接的外层批次仍不可见。返回后恢复原批次。
+ */
+struct SystemLoadScope {
+    LoadBatch* saved;
+    SystemLoadScope() : saved{g_loadBatch} {
+        if (saved) { g_loadBatch = nullptr; saved->registryLock->unlock(); }
+    }
+    ~SystemLoadScope() {
+        if (saved) { saved->registryLock->lock(); g_loadBatch = saved; }
+    }
+};
+static void* open_system_library(const char* path, int flags) {
+    SystemLoadScope scope;
+    return dlopen(path, flags);
+}
 
 /* JLI_Launch bypass: fake /proc/self/exe path.
  * JLI reads /proc/self/exe via readlink to get the exec path, then may re-exec.
@@ -364,6 +416,7 @@ static void set_error(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(g_error, sizeof(g_error), fmt, ap);
     va_end(ap);
+    g_errorPending = true;
     AMCL_LOG_E(LOG_TAG, "%{public}s", g_error);
 }
 
@@ -506,7 +559,7 @@ static void* s_entryHandle = nullptr;
 static void* resolve_from_entry(const char* name) {
     if (!s_entryHandle) {
         /* Open ourselves — libentry.so is already loaded, this just gets a handle */
-        s_entryHandle = dlopen("libentry.so", RTLD_NOW | RTLD_NOLOAD);
+        s_entryHandle = open_system_library("libentry.so", RTLD_NOW | RTLD_NOLOAD);
     }
     if (s_entryHandle) {
         void* p = dlsym(s_entryHandle, name);
@@ -543,7 +596,7 @@ static void ensure_sys_libs() {
         nullptr
     };
     for (int i = 0; sysLibs[i]; i++) {
-        void* h = dlopen(sysLibs[i], RTLD_NOW | RTLD_GLOBAL);
+        void* h = open_system_library(sysLibs[i], RTLD_NOW | RTLD_GLOBAL);
         if (h) {
             g_sysLibHandles.push_back(h);
             OH_LOG_INFO(LOG_APP, "sys lib loaded: %{public}s", sysLibs[i]);
@@ -684,6 +737,7 @@ static void* resolve_global(const char* name) {
     if (strcmp(name, "dlopen") == 0) return (void*)elf_dlopen;
     if (strcmp(name, "dlsym")  == 0) return (void*)elf_dlsym;
     if (strcmp(name, "dlclose") == 0) return (void*)elf_dlclose;
+    if (strcmp(name, "dlerror") == 0) return (void*)elf_dlerror;
     if (strcmp(name, "dladdr") == 0) return (void*)elf_dladdr_impl;
     /* Intercept readlink so JLI_Launch reads our fake /proc/self/exe path
      * instead of /system/bin/appspawn, preventing unwanted re-exec */
@@ -706,6 +760,7 @@ static void* resolve_global(const char* name) {
 
     /* 2) Search in all ELF-loaded libraries (load order) */
     for (auto* h : g_loaded) {
+        if (!visible_to_caller(h)) continue;
         void* p = resolve_in_lib(h, name);
         if (p) return p;
     }
@@ -731,6 +786,7 @@ static void* resolve_global(const char* name) {
      *    动态引用落空 → GOT=0 → Agent_OnLoad 调用 → 跳 PC=0 无限 SIGSEGV → 第三方皮肤站
      *    (-javaagent) 启动卡死。仅在前面全落空时才走这里，开销一次性。 */
     for (auto* h : g_loaded) {
+        if (!visible_to_caller(h)) continue;
         p = resolve_in_symtab(h, name);
         if (p) {
             AMCL_LOG_W(LOG_TAG, "resolve_global: '%{public}s' via .symtab fallback in %{public}s (%{public}p)",
@@ -901,7 +957,9 @@ static bool map_segments(elf_handle_t* h) {
                 break;
             }
         }
-        pthread_key_create(&h->tlsKey, tls_destructor);
+        const int keyResult = pthread_key_create(&h->tlsKey, tls_destructor);
+        if (keyResult != 0) { set_error("%s: TLS key: %s", h->name.c_str(), strerror(keyResult)); return false; }
+        h->tlsKeyCreated = true;
         /* Pre-allocate TLS block for current thread */
         tls_get_block(h);
         OH_LOG_INFO(LOG_APP, "%{public}s: TLS block allocated (%zu bytes, align %zu)",
@@ -988,31 +1046,68 @@ static bool parse_dynamic(elf_handle_t* h) {
     return true;
 }
 
-/* Load DT_NEEDED dependencies */
+/**
+ * 装载 DT_NEEDED：必需依赖失败立即终止本批，不能留下可调用的未链接对象。
+ * 已登记对象用于同线程依赖环；其他线程仍在初始化的对象明确返回暂不可用。
+ */
 static bool load_deps(elf_handle_t* h) {
     if (!h->dyn || !h->dynstr) return true;
-
     for (Elf64_Dyn* d = h->dyn; d->d_tag != DT_NULL; d++) {
         if (d->d_tag != DT_NEEDED) continue;
-        const char* depName = h->dynstr + d->d_un.d_val;
-
-        /* Already loaded by us? */
-        if (g_byName.count(depName)) continue;
-
-        /* Try our loader first (only if in search paths) */
-        std::string depResolved = resolve_path(depName);
-        if (!depResolved.empty()) {
-            elf_handle_t* dep = elf_open(depResolved.c_str());
-            if (dep) continue;
+        const char* name = h->dynstr + d->d_un.d_val;
+        auto existing = g_byName.find(name);
+        if (existing != g_byName.end()) {
+            if (visible_to_caller(existing->second)) continue;
+            set_error("%s: dependency %s is initializing on another thread", h->name.c_str(), name);
+            return false;
         }
-
-        /* Fall back to system dlopen (normal for system libs like libc.so) */
-        void* sys = dlopen(depName, RTLD_NOW | RTLD_GLOBAL);
-        if (!sys) {
-            AMCL_LOG_W(LOG_TAG, "dep %{public}s: %{public}s (continuing)", depName, dlerror());
+        const std::string resolved = resolve_path(name);
+        if (!resolved.empty()) {
+            if (elf_open(resolved.c_str())) continue;
+            // 已选中的自定义库失败不能偷偷换成系统同名库，也不覆盖其首个详细错误。
+            return false;
+        }
+        if (!open_system_library(name, RTLD_NOW | RTLD_GLOBAL)) {
+            const char* detail = dlerror();
+            set_error("%s: required dependency %s: %s", h->name.c_str(), name, detail ? detail : "unavailable");
+            return false;
         }
     }
     return true;
+}
+
+/** 上游 link_type.c 在动态构建中返回 JNI_FALSE；这里只为一个已出货的缺导出对象补足同一语义。 */
+static unsigned char legacy_dynamic_jli() { return 0; }
+
+/**
+ * 精确历史兼容：v25.0.4-ohos-2 的 libjli 漏链 link_type.o。
+ * 核对原文件 SHA-256 后才提供动态构建的真实答案；其他库/符号一律保持正常失败。
+ * 新包已经链接完整对象，不经过此分支。此处不是跳过强符号校验的通配例外。
+ */
+static void* resolve_legacy_jli(elf_handle_t* h, const char* name) {
+    if (h->name != "libjli.so" || strcmp(name, "JLI_IsStaticallyLinked") != 0) return nullptr;
+    if (!h->legacyJliChecked) {
+        h->legacyJliChecked = true;
+        const int fd = open(h->path.c_str(), O_RDONLY);
+        if (fd < 0) return nullptr;
+        struct stat st{};
+        if (fstat(fd, &st) == 0 && st.st_size == 71984) {
+            download::Sha256 hash;
+            unsigned char buffer[8192];
+            ssize_t count = 0;
+            size_t total = 0;
+            while ((count = read(fd, buffer, sizeof(buffer))) != 0) {
+                if (count < 0) { if (errno == EINTR) continue; break; }
+                hash.update(buffer, static_cast<size_t>(count));
+                total += static_cast<size_t>(count);
+            }
+            h->legacyJliAllowed = count == 0 && total == 71984 &&
+                hash.finalizeHex() == "744b629a2b66c3b3b4aa7e1f639f54824531a1f7a87f54b062ab8caec8f0715b";
+        }
+        close(fd);
+        if (h->legacyJliAllowed) AMCL_LOG_I(LOG_TAG, "legacy JLI dynamic-link contract applied (sha256 verified)");
+    }
+    return h->legacyJliAllowed ? reinterpret_cast<void*>(legacy_dynamic_jli) : nullptr;
 }
 
 /* Process relocations */
@@ -1058,11 +1153,10 @@ static bool apply_relocs(elf_handle_t* h) {
             }
 
             case R_AARCH64_IRELATIVE: {
-                irelativeCount++;
-                typedef void* (*ifunc_t)(void);
-                ifunc_t resolver = (ifunc_t)((char*)h->base + (addend - (int64_t)h->loadBias));
-                *slot = resolver();
-                break;
+                // 现役 JDK 没有此模型；不能在全批强引用尚未验证时执行任意 resolver。
+                // 后续支持须单独实现 resolver 顺序/生命周期，当前准确拒绝而非提前执行。
+                set_error("%s: unsupported executable IRELATIVE relocation", h->name.c_str());
+                return false;
             }
 
             case R_AARCH64_GLOB_DAT:
@@ -1088,28 +1182,26 @@ static bool apply_relocs(elf_handle_t* h) {
                     sa = resolve_global(sn);
                 }
 
+                if (!sa) sa = resolve_legacy_jli(h, sn);
                 if (!sa && ELF64_ST_BIND(sym->st_info) != STB_WEAK) {
-                    undefCount++;
-                    if (undefCount <= 10) // 只打印前10个
-                        AMCL_LOG_W(LOG_TAG, "undef sym: %{public}s", sn);
+                    set_error("%s: unresolved required symbol %s (relocation %u)", h->name.c_str(), sn, type);
+                    return false;
                 }
                 *slot = sa ? (void*)((char*)sa + addend) : nullptr;
                 break;
             }
 
-            case R_AARCH64_COPY: {
-                if (si == 0) break;
-                Elf64_Sym* sym = &h->dynsym[si];
-                const char* sn = h->dynstr + sym->st_name;
-                void* src = resolve_global(sn);
-                if (src && sym->st_size > 0) {
-                    memcpy(slot, src, sym->st_size);
-                }
-                break;
-            }
+            case R_AARCH64_COPY:
+                // 共享库装载器没有可验证的 executable COPY 所有权，不能伪造复制成功。
+                set_error("%s: unsupported COPY relocation", h->name.c_str());
+                return false;
 
             case R_AARCH64_TLSDESC: {
                 tlsdescCount++;
+                if (si != 0) {
+                    set_error("%s: unsupported external-symbol TLSDESC", h->name.c_str());
+                    return false;
+                }
                 /* TLSDESC: slot points to a 2-word descriptor {resolver, arg}.
                  * We fill it with our custom resolver + TLS offset. */
                 tlsdesc_pair* desc = (tlsdesc_pair*)slot;
@@ -1117,33 +1209,17 @@ static bool apply_relocs(elf_handle_t* h) {
                 break;
             }
 
-            case R_AARCH64_TLS_TPREL64: {
-                /* Static TLS offset from tp. We compute: block_addr + addend - tp */
-                void* block = tls_get_block(h);
-                if (block) {
-                    uintptr_t tp;
-                    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
-                    *(uint64_t*)slot = (uint64_t)((uintptr_t)block + addend - tp);
-                } else {
-                    *(uint64_t*)slot = 0;
-                }
-                break;
-            }
-
+            case R_AARCH64_TLS_TPREL64:
             case R_AARCH64_TLS_DTPMOD64:
-                /* Module ID — we use 1 for all our loaded libs */
-                *(uint64_t*)slot = 1;
-                break;
-
             case R_AARCH64_TLS_DTPREL64:
-                /* Offset within TLS block */
-                *(uint64_t*)slot = (uint64_t)addend;
-                break;
+                // 现役受检 JDK 仅使用本库 TLSDESC；其他 TLS 模型须先建立独立 ABI 验收。
+                set_error("%s: unsupported TLS relocation %u", h->name.c_str(), type);
+                return false;
 
             default:
                 otherCount++;
-                AMCL_LOG_W(LOG_TAG, "unhandled reloc type %{public}u in %{public}s", type, h->name.c_str());
-                break;
+                set_error("%s: unsupported relocation %u", h->name.c_str(), type);
+                return false;
             }
         }
         return true;
@@ -1187,10 +1263,7 @@ static void protect_segments(elf_handle_t* h) {
     }
 }
 
-/* Call constructors.
- * Skip .init for libjvm.so — its static constructors are heavy and
- * JNI_CreateJavaVM handles all necessary initialization.
- * Also prevents SIGSEGV from safepoint polling before sigchain is set up. */
+/** 全批链接完成后执行初始化；提前标记仅防止同线程构造重入，不代表已向其他线程发布。 */
 static void call_init(elf_handle_t* h) {
     if (h->initialized) return;
     h->initialized = true;
@@ -1248,6 +1321,17 @@ static std::string resolve_path(const char* name) {
 }
 
 static void cleanup_handle(elf_handle_t* h) {
+    if (!h->initialized && h->tlsKeyCreated) {
+        free(pthread_getspecific(h->tlsKey));
+        pthread_setspecific(h->tlsKey, nullptr);
+        pthread_key_delete(h->tlsKey);
+    }
+    if (!h->initialized) {
+        g_tlsdescPool.erase(std::remove_if(g_tlsdescPool.begin(), g_tlsdescPool.end(),
+            [h](tlsdesc_data* item) { if (item->handle != h) return false; delete item; return true; }), g_tlsdescPool.end());
+    }
+    delete h->symtabIndex;
+    h->symtabIndex = nullptr;
     if (h->fd >= 0) { close(h->fd); h->fd = -1; }
     if (h->base) { munmap(h->base, h->mapSize); h->base = nullptr; }
     free(h->phdr); h->phdr = nullptr;
@@ -1258,75 +1342,98 @@ static void cleanup_handle(elf_handle_t* h) {
  * ================================================================ */
 
 void elf_set_search_path(const char* paths) {
+    std::lock_guard<std::recursive_mutex> guard(g_loaderMutex);
     g_searchPaths = paths ? paths : "";
     OH_LOG_INFO(LOG_APP, "search paths: %{public}s", g_searchPaths.c_str());
 }
 
-elf_handle_t* elf_open(const char* path) {
+/** 在一个尚未发布的依赖批次中完成映射和重定位，构造器统一延后。 */
+static elf_handle_t* prepare_elf(const char* path) {
     if (!path || !path[0]) { set_error("null path"); return nullptr; }
-
-    /* Resolve path */
-    std::string resolved = resolve_path(path);
-    if (resolved.empty()) {
-        set_error("%s: not found", path);
+    const std::string resolved = resolve_path(path);
+    if (resolved.empty()) { set_error("%s: not found", path); return nullptr; }
+    auto found = g_byPath.find(resolved);
+    if (found != g_byPath.end()) {
+        if (visible_to_caller(found->second)) return found->second;
+        set_error("%s: library is initializing on another thread", path);
         return nullptr;
     }
-
-    /* Already loaded? */
-    auto it = g_byPath.find(resolved);
-    if (it != g_byPath.end()) return it->second;
-
-    OH_LOG_INFO(LOG_APP, "loading %{public}s", resolved.c_str());
-
     elf_handle_t* h = new elf_handle_t{};
-    /* Note: value-init {} zeroes all POD members while properly constructing
-     * std::string members. Do NOT use memset on structs with C++ objects! */
     h->magic = ELF_HANDLE_MAGIC;
     h->fd = -1;
     h->path = resolved;
     const char* slash = strrchr(resolved.c_str(), '/');
-    h->name = slash ? (slash + 1) : resolved;
-
-    if (!read_headers(h, resolved.c_str())) goto fail;
-    if (!map_segments(h)) goto fail;
-    if (!parse_dynamic(h)) goto fail;
-
-    /* Register before loading deps (avoids cycles) */
+    h->name = slash ? slash + 1 : resolved;
+    h->loadingThread = pthread_self();
+    h->batch = g_loadBatch;
+    if (!read_headers(h, resolved.c_str()) || !map_segments(h) || !parse_dynamic(h)) {
+        cleanup_handle(h);
+        delete h;
+        return nullptr;
+    }
+    // 先登记用于依赖环解析，但不标为 published，也不执行任何构造器。
     g_byPath[resolved] = h;
-    g_byName[h->name] = h;
+    g_byName.emplace(h->name, h);
     g_loaded.push_back(h);
-
-    if (!load_deps(h)) goto fail_unreg;
-    if (!apply_relocs(h)) goto fail_unreg;
-
+    g_loadBatch->created.push_back(h);
+    if (!load_deps(h) || !apply_relocs(h)) return nullptr;
     protect_segments(h);
-    call_init(h);
-
-    OH_LOG_INFO(LOG_APP, "loaded %{public}s at %{public}p (%zu bytes, %zu syms)",
-                h->name.c_str(), h->base, h->mapSize, h->dynsymCount);
+    g_loadBatch->linked.push_back(h);
     return h;
+}
 
-fail_unreg:
-    g_byPath.erase(resolved);
-    g_byName.erase(h->name);
-    g_loaded.erase(std::remove(g_loaded.begin(), g_loaded.end(), h), g_loaded.end());
-fail:
-    cleanup_handle(h);
-    delete h;
-    return nullptr;
+/**
+ * 外层加载拥有整个依赖批次。任意链接失败回滚所有本批新对象；已有对象不动。
+ * 链接全部成功后才释放注册锁并运行构造器，避免锁跨任意用户初始化回调。
+ */
+elf_handle_t* elf_open(const char* path) {
+    // 嵌套准备复用外层唯一锁；系统构造回调期间 g_loadBatch 已被暂时清空。
+    if (g_loadBatch) return prepare_elf(path);
+    std::unique_lock<std::recursive_mutex> guard(g_loaderMutex);
+    g_error[0] = 0;
+    g_errorPending = false;
+    LoadBatch batch;
+    batch.registryLock = &guard;
+    g_loadBatch = &batch;
+    elf_handle_t* result = prepare_elf(path);
+    g_loadBatch = nullptr;
+    if (!result) {
+        for (auto it = batch.created.rbegin(); it != batch.created.rend(); ++it) {
+            elf_handle_t* h = *it;
+            g_byPath.erase(h->path);
+            auto named = g_byName.find(h->name);
+            if (named != g_byName.end() && named->second == h) g_byName.erase(named);
+            g_loaded.erase(std::remove(g_loaded.begin(), g_loaded.end(), h), g_loaded.end());
+            cleanup_handle(h);
+            delete h;
+        }
+        return nullptr;
+    }
+    for (auto* h : batch.created) h->constructing = true;
+    guard.unlock();
+    for (auto* h : batch.linked) call_init(h);
+    guard.lock();
+    for (auto* h : batch.created) { h->published = true; h->constructing = false; h->batch = nullptr; }
+    return result;
 }
 
 void* elf_sym(elf_handle_t* h, const char* name) {
-    if (!h || !name) return nullptr;
+    std::lock_guard<std::recursive_mutex> guard(g_loaderMutex);
+    if (!h || !name || !visible_to_caller(h)) return nullptr;
     return resolve_in_lib(h, name);
 }
 
 void* elf_sym_global(const char* name) {
+    std::lock_guard<std::recursive_mutex> guard(g_loaderMutex);
     return resolve_global(name);
 }
 
 void elf_close(elf_handle_t* h) {
-    if (!h) return;
+    std::unique_lock<std::recursive_mutex> guard(g_loaderMutex);
+    if (!h || !h->published || h->unloading) return;
+    h->unloading = true;
+    // 终结回调不持注册锁；并发查询会按 unloading 状态拒绝该对象。
+    guard.unlock();
     /* Call fini_array */
     if (h->finiArray) {
         for (size_t i = h->finiArraySz; i > 0; i--) {
@@ -1335,8 +1442,10 @@ void elf_close(elf_handle_t* h) {
             if (fn && fn != (void(*)())(uintptr_t)-1) fn();
         }
     }
+    guard.lock();
     g_byPath.erase(h->path);
-    g_byName.erase(h->name);
+    auto named = g_byName.find(h->name);
+    if (named != g_byName.end() && named->second == h) g_byName.erase(named);
     g_loaded.erase(std::remove(g_loaded.begin(), g_loaded.end(), h), g_loaded.end());
     cleanup_handle(h);
     delete h;
@@ -1390,7 +1499,7 @@ void* elf_dlopen(const char* path, int flags) {
         if (!resolved.empty() && needs_elf_loader(resolved.c_str())) {
             OH_LOG_INFO(LOG_APP, "elf_dlopen: resolved %{public}s → ELF loader", path);
             elf_handle_t* h = elf_open(resolved.c_str());
-            if (h) return (void*)h;
+            return h ? (void*)h : nullptr;
         }
     }
 
@@ -1402,6 +1511,7 @@ void* elf_dlopen(const char* path, int flags) {
 }
 
 void* elf_dlsym(void* handle, const char* name) {
+    std::lock_guard<std::recursive_mutex> guard(g_loaderMutex);
     if (!name) return nullptr;
 
     /* RTLD_DEFAULT / RTLD_NEXT: search ELF libs first, then system.
@@ -1439,6 +1549,16 @@ void elf_dlclose(void* handle) {
     } else {
         dlclose(handle);
     }
+}
+
+/** 让 HotSpot/JNA 获得首个库或符号错误；普通系统加载仍委托系统 dlerror。 */
+char* elf_dlerror(void) {
+    if (g_errorPending) {
+        g_errorPending = false;
+        dlerror(); // 清掉同次系统尝试的陈旧错误，但保留本线程自定义详情。
+        return g_error;
+    }
+    return dlerror();
 }
 
 int elf_dladdr(const void* addr, void* info_ptr) {

@@ -53,12 +53,21 @@ public:
     void releaseAll();
     void releaseAllExcept(const std::set<OwnerToken>& keepOwners);
     bool owns(OwnerToken owner, const Output& output) const;
+    // 查询显式按钮是否已有持有者，仅取索引锁；菜单触摸板据此避免在辅助鼠标键按住时合成另一次左键。
+    bool isHeld(const Output& output) const;
 
     // 诊断读取口（不变量自检 + `AMCL_HELDLAYERS`）。⚠️ 两个数语义不同，不可互相替代：
     // `ownerCount` = 至少持有一个输出的 owner 数；`outputCount` = MC 侧当前按下的控件数。
     // 因果（第 2 层此前一个数都读不出来）见计划 §107.1–§107.2。
     std::size_t ownerCount() const;
     std::size_t outputCount() const;
+
+    /** 同一 neutral 内复制事务候选的双向索引，不复制锁或出口，不进入跨 DSO producer ABI。
+     * 本方法可分配并抛出，必须在任何运输预留或正式状态变更之前完成。 */
+    void CopyStateFrom(const InputLedger& prior);
+    /** 同一 neutral 内交换候选的既有节点，提交阶段不分配；调用方已持唯一 source 事务锁。
+     * 这是实现内部的 C++ 方法，不进入跨 DSO producer ABI。 */
+    void SwapState(InputLedger& candidate) noexcept;
 
 private:
     void releaseOwnerLocked(OwnerToken owner, std::vector<Output>& releases);

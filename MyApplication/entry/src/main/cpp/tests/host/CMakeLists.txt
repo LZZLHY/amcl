@@ -1,7 +1,39 @@
 cmake_minimum_required(VERSION 3.16)
 project(amcl_input_host_tests LANGUAGES C CXX)
 
+# 真实生产容量的消费者隔离合同，不以缩小队列替代256槽及blob背压语义。
+add_executable(amcl_input_consumer_isolation_test
+    input_consumer_isolation_test.cpp ../../input/input_state_core.cpp)
+target_include_directories(amcl_input_consumer_isolation_test PRIVATE
+    ../../input ../../platform stubs)
+target_compile_features(amcl_input_consumer_isolation_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_input_consumer_isolation_test PRIVATE AMCL_INPUT_HOST_EXPORTS AMCL_INPUT_HOST_TESTING)
+add_test(NAME amcl_input_consumer_isolation_test COMMAND amcl_input_consumer_isolation_test)
+set_tests_properties(amcl_input_consumer_isolation_test PROPERTIES LABELS "input;consumer")
+
 enable_testing()
+
+# 安装fence必须在真实POSIX/flock/fork边界验证；Windows宿主不伪装这些系统调用。
+if(UNIX)
+    add_executable(amcl_sideload_install_lease_test sideload_install_lease_test.cpp)
+    target_compile_features(amcl_sideload_install_lease_test PRIVATE cxx_std_17)
+    add_test(NAME amcl_sideload_install_lease_test COMMAND amcl_sideload_install_lease_test
+        "${CMAKE_CURRENT_BINARY_DIR}/sideload-install-lease-fixture")
+    set_tests_properties(amcl_sideload_install_lease_test PROPERTIES LABELS "sideload;storage")
+endif()
+
+# 触控策略回归直接链接生产状态机，覆盖多指、取消、长按与浮动摇杆。
+add_executable(amcl_touch_interaction_test touch_interaction_test.cpp ../../platform/touch_interaction.cpp)
+target_compile_features(amcl_touch_interaction_test PRIVATE cxx_std_17)
+add_test(NAME amcl_touch_interaction_test COMMAND amcl_touch_interaction_test)
+set_tests_properties(amcl_touch_interaction_test PROPERTIES LABELS "input;touch")
+
+# 直接编译生产控件合同，schema发布与解释器共用此实现。
+add_executable(amcl_control_schema_contract_test control_schema_contract_test.cpp
+    ../../platform/control_schema_contract.cpp)
+target_compile_features(amcl_control_schema_contract_test PRIVATE cxx_std_17)
+add_test(NAME amcl_control_schema_contract_test COMMAND amcl_control_schema_contract_test)
+set_tests_properties(amcl_control_schema_contract_test PROPERTIES LABELS "input;touch")
 
 # 与生产 loader 共用的输入校验核心。此测试不装载/执行 ELF，不替代 AArch64 JVM 验收。
 add_executable(amcl_elf_input_validation_test elf_input_validation_test.cpp)
@@ -170,6 +202,30 @@ file(GLOB AMCL_REVIEW_TEMPLATES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/d
 set(AMCL_REVIEW_SOURCES)
 foreach(unit glfw_context glfw_monitor sdl_profile sdl_owner sdl_hide)
     list(APPEND AMCL_REVIEW_SOURCES "${AMCL_REVIEW_GENERATED}/${unit}.cpp")
+endforeach()
+
+# 两pull ABI的诊断关联直接编生产collector；每个CTest在独立process冷选择，
+# 不增生产reset或输入owner。TRACE=1/sample=1只属于HOST故障/身份机制测试，
+# 不能代证目标产品开关、SDK/Java消费、单调钟开销或设备性能。
+add_executable(amcl_input_latency_backend_test
+    input_latency_backend_test.cpp ../../input/input_latency_observation.cpp)
+target_include_directories(amcl_input_latency_backend_test PRIVATE ../..)
+target_compile_features(amcl_input_latency_backend_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_input_latency_backend_test PRIVATE
+    AMCL_INPUT_TRACE=1 AMCL_INPUT_LATENCY_HOST_TESTING=1 AMCL_INPUT_LATENCY_SAMPLE_INTERVAL=1)
+if(MSVC)
+    target_compile_options(amcl_input_latency_backend_test PRIVATE /utf-8)
+    target_compile_definitions(amcl_input_latency_backend_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_link_libraries(amcl_input_latency_backend_test PRIVATE pthread)
+endif()
+foreach(latency_backend IN ITEMS 2 3)
+    add_test(NAME amcl_input_latency_backend_${latency_backend}
+        COMMAND amcl_input_latency_backend_test ${latency_backend})
+    foreach(configure_case IN ITEMS busy-configure late-configure)
+        add_test(NAME amcl_input_latency_${latency_backend}_${configure_case}
+            COMMAND amcl_input_latency_backend_test ${latency_backend} ${configure_case})
+    endforeach()
 endforeach()
 add_custom_command(OUTPUT ${AMCL_REVIEW_SOURCES}
     COMMAND "${Python3_EXECUTABLE}" "${AMCL_REVIEW_ROOT}/scripts/generate-desktop-review-tests.py"
@@ -468,6 +524,61 @@ target_compile_definitions(
     AMCL_GATE0_EVIDENCE_IDS="host-test-fixture"
 )
 
+# I27-12：ingress 文本会话镜像与 core 一致性（T1–T3）。同一份源码按三种进程配置编译：
+# 1 = legacy 物理路由 + shadow 开；2 = legacy + shadow 关；3 = typed + shadow 关。
+# 路由与 shadow 的环境变量由测试在首次调用 host 表之前自行设置。
+foreach(_amcl_text_mirror_variant IN ITEMS 1 2 3)
+    set(_amcl_text_mirror_target
+        amcl_platform_input_text_mirror_v${_amcl_text_mirror_variant}_test)
+    if(_amcl_text_mirror_variant EQUAL 1)
+        set(_amcl_text_mirror_shadow 1)
+    else()
+        set(_amcl_text_mirror_shadow 0)
+    endif()
+    add_platform_ingress_host_test(
+        ${_amcl_text_mirror_target}
+        platform_input_text_mirror_test.cpp
+        ${_amcl_text_mirror_shadow}
+    )
+    target_compile_definitions(${_amcl_text_mirror_target} PRIVATE
+        AMCL_TEXT_MIRROR_VARIANT=${_amcl_text_mirror_variant}
+    )
+endforeach()
+
+# I27-09：IME 编辑键与提交文本的交付顺序。生产 ingress/core + GLFW adapter + SDL3/LWJGL2
+# backend 通道一起编译；刻意不定义 AMCL_INPUT_HOST_TESTING，使 core 的 READY 准入与产品
+# 一致。t1 = typed 路由（顺序、负向对照、聚合、拒绝），t0 = legacy 路由（NotTypedRoute）。
+# 编译选项与同样编译 backend 通道的 amcl_backend_input_live_bridge_test 保持一致。
+foreach(_amcl_text_key_typed IN ITEMS 1 0)
+    set(_amcl_text_key_target
+        amcl_platform_input_text_key_order_t${_amcl_text_key_typed}_test)
+    add_executable(${_amcl_text_key_target}
+        platform_input_text_key_order_test.cpp
+        ../../input/platform_input_ingress.cpp
+        ../../input/input_shadow_consumer.cpp
+        ../../input/input_trace.cpp
+        ../../input/input_state_core.cpp
+        ../../input/adapters/glfw_input_adapter.cpp
+        ../../input/adapters/backend_input_bridge.cpp
+        ../../input/adapters/backend_keymaps.cpp
+        ../../platform/physical_wheel_quantizer.cpp
+        ../../platform/source_look_processor.cpp
+        ../../platform/look_delta_math.cpp
+        ../../platform/look_pipeline_stats.cpp
+        ../../platform/input_source.cpp
+    )
+    target_include_directories(${_amcl_text_key_target} PRIVATE
+        ../.. ../../platform ../../input stubs)
+    target_compile_features(${_amcl_text_key_target} PRIVATE cxx_std_17)
+    target_compile_definitions(${_amcl_text_key_target} PRIVATE
+        AMCL_INPUT_HOST_EXPORTS
+        AMCL_INPUT_SHADOW=0
+        AMCL_TEXT_KEY_ORDER_TYPED=${_amcl_text_key_typed}
+        $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>
+    )
+    add_test(NAME ${_amcl_text_key_target} COMMAND ${_amcl_text_key_target})
+endforeach()
+
 # End-to-end typed route: shipping PlatformInputPhysical* ingress, core host,
 # adapter and OHOS mapper. A second real consumer observes raw identities; no
 # fake host or injected mapper is used by this target.
@@ -664,6 +775,22 @@ target_link_libraries(amcl_input_host_descriptor_test PRIVATE Threads::Threads)
 target_compile_definitions(amcl_input_host_descriptor_test PRIVATE
     AMCL_INPUT_HOST_TESTING
 )
+# Linux/POSIX 计数只观测本 test 的真实 fopen 调用。__wrap_fopen 无条件调用
+# __real_fopen，不返回模拟 maps/映射结果；仅 GNU/ELF host linker 支持此接缝。
+# PRIVATE 不进入生产或两份 DSO fixture，不新增生产测试 API/计数器。
+if(UNIX AND NOT APPLE)
+    target_compile_definitions(amcl_input_host_descriptor_test PRIVATE
+        AMCL_DESCRIPTOR_MAPS_FOPEN_OBSERVER)
+    target_link_options(amcl_input_host_descriptor_test PRIVATE "-Wl,--wrap=fopen")
+endif()
+
+# 生产映射parser及原平台描述符回归；正常Source门另由test-input-mapped-ranges.py显式执行，
+# 不能把本CTest存在当作build-hap已经运行。此目标沿真实Windows/Unix边界，不强制procfs替身。
+add_input_component_host_test(amcl_input_mapped_ranges_test
+    amcl_input_mapped_ranges_test.cpp ../../input/amcl_input_host_descriptor.cpp)
+target_link_libraries(amcl_input_mapped_ranges_test PRIVATE Threads::Threads)
+target_compile_definitions(amcl_input_mapped_ranges_test PRIVATE AMCL_INPUT_HOST_TESTING)
+set_tests_properties(amcl_input_mapped_ranges_test PROPERTIES LABELS "input;descriptor")
 
 foreach(fixture IN ITEMS
         amcl_input_host_descriptor_fixture_a
@@ -1085,6 +1212,68 @@ endif()
 add_test(NAME amcl_external_held_pairing_composite_test
          COMMAND amcl_external_held_pairing_composite_test)
 
+# NAPI 按端入口的返回值契约（计划 §127）。直接链接产品的组合事务 TU，而不是再写一份复刻：
+# routerKey / routerMouse 交给 ArkTS 的 bool 就是这里 Route 结果经 ExternalHeldEdgeApplied 的判定，
+# 含义是“本端持有变更是否已生效”，与上面复合测试断言的“是否发出最终边沿”是两件事。
+# 钉住的性质：跨端同键时 PRESS / RELEASE 已生效但不发最终边沿、拒绝路径不改变任何记录、
+# ledger 拒绝时 PRESS 精确回滚；并用 ArkTS 消费者模型重放跨端同键时序 —— 新判据无泄漏，
+# 旧判据（只有发出最终边沿才报 true）必须复现幽灵 owner 与失灵键（负对照）。
+add_executable(amcl_external_held_edge_router_test
+    external_held_edge_router_test.cpp
+    ../../platform/external_held_edge_router.cpp
+    ../../platform/external_held_registry.cpp
+    ../../platform/input_ledger.cpp
+)
+target_include_directories(amcl_external_held_edge_router_test PRIVATE
+    ../../input
+    ../../platform
+)
+target_compile_features(amcl_external_held_edge_router_test PRIVATE
+    cxx_std_17
+)
+if(MSVC)
+    target_compile_options(amcl_external_held_edge_router_test PRIVATE
+        /W4 /WX
+    )
+else()
+    target_compile_options(amcl_external_held_edge_router_test PRIVATE
+        -Wall -Wextra -Werror -pedantic
+    )
+endif()
+add_test(NAME amcl_external_held_edge_router_test
+         COMMAND amcl_external_held_edge_router_test)
+
+# I27-05 进程环境静态槽位（platform/env_slot.h）。可注入的 musl 式 environ 钉住登记/封存/
+# 原位写/被第三方 setenv 摘走/fork 身份/登记表线协议；真实 environ 段在 POSIX 上验证指针与
+# 条目数不变，Windows CRT 复制 putenv 串，只验证功能等价。带 input 标签：输入桥与前台位
+# 都经这些槽位跨 DSO 发布，run-input-host-tests.ps1 只跑 input 标签。
+add_executable(amcl_env_slot_test env_slot_test.cpp)
+target_compile_features(amcl_env_slot_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_env_slot_test PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
+if(MSVC)
+    target_compile_options(amcl_env_slot_test PRIVATE /W4 /WX)
+else()
+    target_compile_options(amcl_env_slot_test PRIVATE -Wall -Wextra -Werror -pedantic)
+endif()
+add_test(NAME amcl_env_slot_test COMMAND amcl_env_slot_test)
+set_tests_properties(amcl_env_slot_test PROPERTIES LABELS "input;runtime;env")
+
+# I27-04 OnSurfaceChanged 幂等判定（platform/surface_republish_policy.h）。发布尺寸用生产的
+# renderscale::ScaledDimension 构造；负对照为“每次回调都重新发布”的旧行为。
+add_executable(amcl_surface_republish_policy_test
+    surface_republish_policy_test.cpp
+    ../../platform/render_scale.cpp
+)
+target_compile_features(amcl_surface_republish_policy_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(amcl_surface_republish_policy_test PRIVATE /W4 /WX)
+else()
+    target_compile_options(amcl_surface_republish_policy_test PRIVATE -Wall -Wextra -Werror -pedantic)
+endif()
+add_test(NAME amcl_surface_republish_policy_test COMMAND amcl_surface_republish_policy_test)
+set_tests_properties(amcl_surface_republish_policy_test PROPERTIES LABELS "input;window;surface")
+
 # Compile the shipping C11/pthread bridge through its Windows host primitive
 # shim. Only platform synchronization/environment wrappers differ; the actual
 # ring, pump, overflow, menu and window-cancel implementation is shared.
@@ -1098,6 +1287,8 @@ set_source_files_properties(
 # 空壳等于承认 typed/ring 的合并逻辑没有断言，而那正是 f5dc4eb 犯过的真错误。
 add_executable(amcl_glfw_runtime_input_bridge_test
     glfw_runtime_input_bridge_test.cpp
+    ../../platform/input_ledger.cpp
+    ../../platform/legacy_ring_discontinuity.cpp
     ../../glfw/input_bridge_ohos.c
     ../../input/adapters/glfw_source_plane_aggregate.cpp
     ../../input/adapters/lwjgl2_event_translate.cpp
@@ -1349,3 +1540,147 @@ else()
 endif()
 add_test(NAME amcl_sdl_presentation_host_test COMMAND amcl_sdl_presentation_host_test)
 set_tests_properties(amcl_sdl_presentation_host_test PROPERTIES LABELS "graphics;sdl")
+
+# 全输入实施回归直接编译生产模块，保留生产容量和真实跨模块调用。
+add_executable(amcl_physical_button_channel_integration_test
+    physical_button_channel_integration_test.cpp ../../platform/input_channel_policy.cpp
+    ../../platform/legacy_physical_edge_router.cpp ../../platform/input_ledger.cpp stubs/amcl_log_stub.cpp)
+add_executable(amcl_source_look_processor_test source_look_processor_test.cpp
+    ../../platform/source_look_processor.cpp ../../platform/input_source.cpp
+    ../../platform/look_delta_math.cpp ../../platform/look_pipeline_stats.cpp)
+add_executable(amcl_cursor_capture_context_test cursor_capture_context_test.cpp)
+add_executable(amcl_platform_pointer_lifecycle_integration_test
+    platform_pointer_lifecycle_integration_test.cpp ../../platform/input_channel_policy.cpp
+    stubs/amcl_log_stub.cpp ../../input/platform_input_ingress.cpp
+    ../../input/input_shadow_consumer.cpp ../../input/input_trace.cpp ../../input/input_state_core.cpp)
+target_compile_definitions(amcl_platform_pointer_lifecycle_integration_test PRIVATE
+    AMCL_INPUT_HOST_EXPORTS AMCL_INPUT_HOST_TESTING AMCL_INPUT_SHADOW=0
+    $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
+add_executable(amcl_backend_input_live_bridge_test backend_input_live_bridge_test.cpp
+    ../../input/input_state_core.cpp ../../input/adapters/backend_input_bridge.cpp
+    ../../input/adapters/glfw_input_adapter.cpp ../../input/adapters/backend_keymaps.cpp
+    ../../platform/physical_wheel_quantizer.cpp ../../platform/source_look_processor.cpp
+    ../../platform/look_delta_math.cpp ../../platform/look_pipeline_stats.cpp ../../platform/input_source.cpp)
+target_compile_definitions(amcl_backend_input_live_bridge_test PRIVATE AMCL_INPUT_HOST_EXPORTS)
+foreach(input_target IN ITEMS amcl_physical_button_channel_integration_test
+    amcl_source_look_processor_test amcl_cursor_capture_context_test
+    amcl_platform_pointer_lifecycle_integration_test amcl_backend_input_live_bridge_test)
+    target_include_directories(${input_target} PRIVATE ../.. ../../platform ../../input stubs)
+    target_compile_features(${input_target} PRIVATE cxx_std_17)
+    add_test(NAME ${input_target} COMMAND ${input_target})
+    set_tests_properties(${input_target} PROPERTIES LABELS "input;integration")
+endforeach()
+
+add_executable(amcl_legacy_output_runtime_test legacy_output_runtime_test.cpp
+    ../../platform/legacy_output_runtime.cpp ../../platform/input_ledger.cpp
+    ../../platform/external_held_registry.cpp ../../platform/external_held_edge_router.cpp
+    ../../platform/legacy_physical_edge_router.cpp)
+target_include_directories(amcl_legacy_output_runtime_test PRIVATE ../../platform)
+target_compile_features(amcl_legacy_output_runtime_test PRIVATE cxx_std_17)
+add_test(NAME amcl_legacy_output_runtime_test COMMAND amcl_legacy_output_runtime_test)
+set_tests_properties(amcl_legacy_output_runtime_test PROPERTIES LABELS "input;integration")
+
+# 所有直接编译 owner core/ring 的宿主目标都必须使用同一个交互序号实现；从 SOURCES
+# 推导可防止新增集成测试只链接其中一端。纯 mapper/ABI 测试不引入运行时状态。
+get_property(amcl_host_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(order_target IN LISTS amcl_host_targets)
+    get_target_property(order_sources ${order_target} SOURCES)
+    if("${order_sources}" MATCHES "input_state_core\\.cpp|input_bridge_ohos\\.c")
+        target_sources(${order_target} PRIVATE ../../input/input_interaction_order.cpp)
+    endif()
+endforeach()
+
+# 直接使用GLFW facade的host目标同样链接真实neutral/Core owner链，不提供返回固定
+# Edge/NoEdge的替身。仅测试进程绑定自动建立，所有归约与descriptor校验仍来自生产源码。
+# 可重放长事件序列直接链接同一生产neutral/Core；独立模型只记来源和实际模拟ABI缓存。
+# 这里的三个backend是端口身份；真实SDK/JNI链仍由各自集成测试证明。
+add_executable(amcl_control_delivery_sequence_test control_delivery_sequence_test.cpp
+    ../../input/delivery/control_delivery.cpp ../../input/input_state_core.cpp
+    ../../input/amcl_input_host_descriptor.cpp ../../input/input_interaction_order.cpp)
+target_include_directories(amcl_control_delivery_sequence_test PRIVATE ../../input stubs)
+target_compile_features(amcl_control_delivery_sequence_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_control_delivery_sequence_test PRIVATE AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_EXPORTS)
+# POSIX的真实descriptor用dlsym验证owner，宿主EXE须公开实际getter，不能靠Windows导出pragma代替。
+set_target_properties(amcl_control_delivery_sequence_test PROPERTIES ENABLE_EXPORTS ON)
+target_link_libraries(amcl_control_delivery_sequence_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+if(MSVC)
+    target_compile_options(amcl_control_delivery_sequence_test PRIVATE /utf-8)
+endif()
+add_test(NAME amcl_control_delivery_sequence_test COMMAND amcl_control_delivery_sequence_test)
+set_tests_properties(amcl_control_delivery_sequence_test PROPERTIES LABELS "input;delivery;sequence")
+
+add_executable(amcl_control_delivery_test control_delivery_test.cpp
+    ../../input/delivery/control_delivery.cpp ../../input/input_state_core.cpp
+    ../../input/amcl_input_host_descriptor.cpp ../../input/input_interaction_order.cpp)
+target_include_directories(amcl_control_delivery_test PRIVATE ../../input stubs)
+target_compile_features(amcl_control_delivery_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_control_delivery_test PRIVATE AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_EXPORTS)
+add_test(NAME amcl_control_delivery_test COMMAND amcl_control_delivery_test)
+set_tests_properties(amcl_control_delivery_test PROPERTIES LABELS "input;delivery;owner")
+add_executable(amcl_control_delivery_identity_boundary_test control_delivery_identity_boundary_test.cpp
+    ../../input/input_state_core.cpp ../../input/amcl_input_host_descriptor.cpp
+    ../../input/input_interaction_order.cpp)
+target_include_directories(amcl_control_delivery_identity_boundary_test PRIVATE ../../input stubs)
+target_compile_features(amcl_control_delivery_identity_boundary_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_control_delivery_identity_boundary_test PRIVATE AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_EXPORTS)
+target_link_libraries(amcl_control_delivery_identity_boundary_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+add_test(NAME amcl_control_delivery_identity_boundary_test COMMAND amcl_control_delivery_identity_boundary_test)
+set_tests_properties(amcl_control_delivery_identity_boundary_test PROPERTIES LABELS "input;delivery;owner")
+get_property(amcl_control_host_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(control_target IN LISTS amcl_control_host_targets)
+    get_target_property(control_sources ${control_target} SOURCES)
+    if("${control_sources}" MATCHES "glfw_source_plane_aggregate\\.cpp")
+        foreach(control_source ../../input/delivery/control_delivery.cpp
+                ../../input/input_state_core.cpp ../../input/amcl_input_host_descriptor.cpp
+                ../../input/input_interaction_order.cpp)
+            if(NOT control_source IN_LIST control_sources)
+                target_sources(${control_target} PRIVATE ${control_source})
+            endif()
+        endforeach()
+        target_include_directories(${control_target} PRIVATE ../../input stubs)
+        target_compile_definitions(${control_target} PRIVATE AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_EXPORTS)
+    endif()
+endforeach()
+
+# 真实bridge和旧source薄适配现在都借唯一look owner；直接宿主目标必须链接全生产链，
+# 不能用固定返回值stub掩盖新增TU缺席。已有source只追加缺项，不重复编译同TU。
+get_property(amcl_look_host_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(look_target IN LISTS amcl_look_host_targets)
+    get_target_property(look_sources ${look_target} SOURCES)
+    if("${look_sources}" MATCHES "input_bridge_ohos\\.c|source_look_processor\\.cpp|backend_input_bridge\\.cpp")
+        foreach(look_source ../../input/delivery/look_execution.cpp ../../input/delivery/control_delivery.cpp
+                ../../input/input_state_core.cpp ../../input/amcl_input_host_descriptor.cpp
+                ../../input/input_interaction_order.cpp ../../platform/look_delta_math.cpp
+                ../../platform/look_pipeline_stats.cpp)
+            if(NOT look_source IN_LIST look_sources)
+                target_sources(${look_target} PRIVATE ${look_source})
+            endif()
+        endforeach()
+
+        target_include_directories(${look_target} PRIVATE ../../input stubs)
+        target_compile_definitions(${look_target} PRIVATE AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_EXPORTS)
+    endif()
+endforeach()
+
+# Core 的真实 L2 held-key 读取直接调用生产 mapper；纯 Core 目标和上面后续注入 Core
+# 的目标都必须编译该实现，不能使用固定返回值或弱符号来隐藏强依赖。此遍历放在所有
+# target/source 注入之后，按归一绝对路径判断已存在的 TU，保留原目标的测试和定义。
+get_filename_component(amcl_held_core_source ../../input/input_state_core.cpp ABSOLUTE)
+get_filename_component(amcl_held_mapper_source ../../input/adapters/backend_keymaps.cpp ABSOLUTE)
+get_property(amcl_held_host_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(held_target IN LISTS amcl_held_host_targets)
+    get_target_property(held_sources ${held_target} SOURCES)
+    set(held_has_core FALSE)
+    set(held_has_mapper FALSE)
+    foreach(held_source IN LISTS held_sources)
+        get_filename_component(held_source_absolute "${held_source}" ABSOLUTE)
+        if(held_source_absolute STREQUAL amcl_held_core_source)
+            set(held_has_core TRUE)
+        elseif(held_source_absolute STREQUAL amcl_held_mapper_source)
+            set(held_has_mapper TRUE)
+        endif()
+    endforeach()
+    if(held_has_core AND NOT held_has_mapper)
+        target_sources(${held_target} PRIVATE ../../input/adapters/backend_keymaps.cpp)
+    endif()
+endforeach()

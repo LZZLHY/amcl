@@ -4,25 +4,17 @@
  * 统一管理颜色、字体大小、间距、运行时版本策略等常量，避免硬编码。
  */
 
-// ===== 运行时版本策略（全局唯一定义，其他文件 import 使用） =====
-//
-// 历史：项目曾 hardcode 锁到 JDK 17 一个版本，避免误用未上线运行时；
-// 2026-05-18 起 JDK 21 真 patch 移植完成 + 真机回归通过 →  解锁。
-//
-// 现在的策略：
-//   - SUPPORTED_JDK_VERSION       = 默认 prefs / 首次引导下载用的"主版本"。
-//                                   仍然是 17（占绝大多数 mc 版本 + 最稳定）。
-//   - SUPPORTED_JDK_VERSIONS      = 用户在 SettingsTab 里能切换的全集合。
-//                                   现包括 17（默认）+ 21 + 25（实验性）。
-//   - JdkManager.autoSelectVersion(mcVersion)：纪元路由——26.1+（YEARLY）→ 25，
-//     CLASSIC 且 ≥ 1.20.5 → 21，≤ 1.20.4 → 17；UNKNOWN（周快照 / 纯中文目录名等
-//     无法判定的）→ 兜底【最新可用 JDK】(fallbackJdkVersion()，当前 25，高版本向后兼容)。
-//   - SUPPORTED_RELEASE_TAG / ASSET 是 17 的 release（保留向后兼容；JdkManager
-//     的 JDK_VERSIONS map 里 21 / 25 自带 tag/asset）。
-//
-// 编译期常量；运行时真正决策入口都在 JdkManager / Index.updateJdkReadyState 等。
+// ===== 运行时策略与历史导出别名 =====
+// 默认游戏路由仍有本地保守阈值；可安装版本全集由可信 JSON 与磁盘槽位生成。
+// *_RELEASE_TAG / *_RELEASE_ASSET 是旧资产的冻结别名，不决定新的目录推荐，
+// 不能为一次 JDK 更新重新修改这些值。新源数据在 mc-ohos-resources/catalog/source.json。
 export const SUPPORTED_JDK_VERSION = '17'
-export const SUPPORTED_JDK_VERSIONS: string[] = ['8', '17', '21', '25']
+// 兼容旧消费者的共享视图，由 JdkManager 从可信 JSON 与本地安装同步；不再硬编码全集合。
+export const SUPPORTED_JDK_VERSIONS: string[] = []
+/** 数字槽位与 native writer/use 锁保持同一规则；偏好读取不能因为离线目录不含它就丢失。 */
+export function isJdkSlotVersion(value: string): boolean {
+  return typeof value === 'string' && new RegExp('^[1-9][0-9]{0,2}$').test(value) && Number(value) >= 8;
+}
 export const SUPPORTED_RELEASE_TAG = 'v17.0.13-ohos-5'
 export const SUPPORTED_RELEASE_ASSET = 'jdk17-ohos-full-v5.zip'
 
@@ -36,14 +28,14 @@ export const JDK_AUTO = 'auto'
 // v6 关键变化：放弃 Cacio AWT，改走 -Djava.awt.headless=true + sun.awt.HeadlessToolkit
 //             真 headless 路径，patch 0009 + libawt_xawt.so stub 全部移除。
 //             详见 docs/archive/jdk21-awt-headless-journey-202605.md §5（第一阶段方案）。
-// sha256/sizeBytes 在 JdkManager.JDK_VERSIONS 里维护，避免常量散落两份。
+// 此为历史兼容身份；下载摘要和后续推荐由运行时目录提供。
 export const JDK21_RELEASE_TAG = 'v21.0.5-ohos-7'
 export const JDK21_RELEASE_ASSET = 'jdk21-ohos-full-v7.zip'
 
 // JDK 25 release（2026-05-30 上线，MC 26.1+ YY.D.H 纪元首个要求 Java 25）
 // 与 21 同构 8 个 OHOS patch（全部 __MUSL__ 门控），真 headless 模式。
 // 详见 docs/adaptation/JDK25_ADAPTATION_ASSESSMENT.md。
-// sha256/sizeBytes 在 JdkManager.JDK_VERSIONS 里维护，避免常量散落两份。
+// 此为历史兼容身份；下载摘要和后续推荐由运行时目录提供。
 export const JDK25_RELEASE_TAG = 'v25.0.4-ohos-2'
 export const JDK25_RELEASE_ASSET = 'jdk25-ohos-full-v2.zip'
 
@@ -66,7 +58,7 @@ export const VULKAN_264_REQUIREMENT_ID: string = 'minecraft-26.4-snapshot1-sdl-v
 // ===== 应用信息 =====
 export const APP_NAME = 'AMCL'
 // 关于页与设置页共用的展示版本；发布准备时与 AppScope.versionName 同步。
-export const APP_VERSION = '1.0.5'
+export const APP_VERSION = '1.0.6'
 export const APP_FULL_NAME = 'Axe Minecraft Launcher'
 
 // 品牌免责声明（知识产权合规）：同时满足
@@ -109,14 +101,12 @@ export const APP_REPO_URL = 'https://github.com/LZZLHY/amcl'
 export const AUTHOR_EMAIL = '3185300855@qq.com'
 export const QQ_GROUP_ID = '185698705'
 
-// 权威 raw 源（被代理镜像包裹，也作为直连兜底）。
+// 更新清单是自动重签的校验依据，只从发布者 HTTPS 源取得；第三方镜像只承担包分发。
+// GitHub 两个入口不可用时，UpdateChecker 回退官网的每产品就绪清单。
 const UPDATE_MANIFEST_RAW = 'https://raw.githubusercontent.com/LZZLHY/amcl/main/update.json'
 export const UPDATE_MANIFEST_URLS: string[] = [
-  'https://ghfast.top/' + UPDATE_MANIFEST_RAW,          // ghfast 镜像（最快，优先）
-  'https://gh-proxy.com/' + UPDATE_MANIFEST_RAW,        // gh-proxy 镜像
-  'https://mirror.ghproxy.com/' + UPDATE_MANIFEST_RAW,  // ghproxy 镜像
-  UPDATE_MANIFEST_RAW,                                  // GitHub 直连（兜底）
-  'https://lzzlhy.github.io/amcl/update.json',          // GitHub Pages 兜底（另一套 DNS/CDN）
+  UPDATE_MANIFEST_RAW,
+  'https://lzzlhy.github.io/amcl/update.json',
 ]
 
 // ===== 更新日志（全量历史，App 内「更新日志」页数据源）=====

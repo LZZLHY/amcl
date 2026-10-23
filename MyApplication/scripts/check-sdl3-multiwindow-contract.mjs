@@ -26,6 +26,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { stripComments, stripStringLiterals } from './lib/source-noise.mjs';
+import { loadSdlHostFixture } from './lib/sdl3-host-runtime-sources.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const root = path.resolve(path.dirname(scriptPath), '..');
@@ -90,7 +91,11 @@ function loadHostActivationSources() {
         const rel = normalizePath(path.relative(root, full));
         if (files.has(rel)) continue;
         const content = fs.readFileSync(full, 'utf8');
-        if (content.includes('AMCL_WINDOW_FOREGROUND')) files.set(rel, content);
+        // 名字字面量只在 env_slot.h 定义一次，写者引用常量 kWindowForegroundEnv；两者都要收进语料，
+        // 否则只引用常量的越界写者会绕过“唯一写者”计数。
+        if (content.includes('AMCL_WINDOW_FOREGROUND') || content.includes('kWindowForegroundEnv')) {
+          files.set(rel, content);
+        }
       }
     }
   };
@@ -164,6 +169,55 @@ export function parsePatchText(text, label = '<patch>') {
   return files;
 }
 
+// 按顺序把补丁应用到稀疏源码：未出现在任何 hunk 中的上游行保持未知，不能拼接到
+// 相邻函数。声明偏移有冲突时只接受唯一、完整、逐字匹配的旧正文；未知行不是搜索通配符。
+// 这与实际 git apply 的来源验证配合使用，防止上下文扩大后把标题 setter 拼成创建分支。
+export function applySparsePatch(files, text, label = '<patch>') {
+  for (const section of text.split(/^diff --git /m).slice(1)) {
+    const target = /^\+\+\+ b\/(.+)$/m.exec(section);
+    if (!target || !isContractSource(target[1])) continue;
+    const rel = normalizePath(target[1]);
+    const old = [...(files.get(rel) ?? [])];
+    const output = [];
+    let cursor = 0;
+    const hunks = [...section.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[^\n]*\n/gm)];
+    for (let h = 0; h < hunks.length; h += 1) {
+      const header = hunks[h];
+      const oldCount = Number(header[2] ?? 1);
+      const newCount = Number(header[4] ?? 1);
+      let start = Number(header[1]) - (oldCount ? 1 : 0);
+      const body = section.slice(header.index + header[0].length, hunks[h + 1]?.index ?? section.length);
+      const before = [], after = [];
+      for (let line of body.split(/\r?\n/)) {
+        if (before.length === oldCount && after.length === newCount) break;
+        if (!line) line = ' ';
+        if (line.startsWith(' ') || line.startsWith('-')) before.push(line.slice(1));
+        if (line.startsWith(' ') || line.startsWith('+')) after.push(line.slice(1));
+      }
+      if (before.length !== oldCount || after.length !== newCount) {
+        throw new Error(`${label}: incomplete hunk ${rel}`);
+      }
+      while (old.length < start + oldCount) old.push(null);
+      const declaredMatches = start >= cursor && before.every((line, n) => old[start + n] === null || old[start + n] === line);
+      if (!declaredMatches) {
+        if (!before.length) throw new Error(`${label}: empty old body cannot resolve offset ${rel}`);
+        const matches = [];
+        for (let at = cursor; at + before.length <= old.length; at += 1) {
+          if (before.every((line, n) => old[at + n] === line)) matches.push(at);
+        }
+        if (matches.length !== 1) {
+          throw new Error(`${label}: old hunk context mismatch ${rel}; exact matches=${matches.length}`);
+        }
+        start = matches[0];
+      }
+      output.push(...old.slice(cursor, start), ...after);
+      cursor = start + oldCount;
+    }
+    output.push(...old.slice(cursor));
+    files.set(rel, output);
+  }
+}
+
 export function loadPatchSeries(seriesPath) {
   const full = path.resolve(seriesPath);
   if (!fs.existsSync(full)) throw new Error(`SDL patch series missing: ${full}`);
@@ -173,15 +227,24 @@ export function loadPatchSeries(seriesPath) {
     .filter((line) => line && !line.startsWith('#'));
   if (names.length === 0) throw new Error(`SDL patch series has no patches: ${full}`);
 
-  const files = new Map();
+  // SDK core现同时承载宿主线程和输入协议。使用既有完整、逐字冻结的pin输入作为这两个
+  // 文件的原始正文，避免大context在稀疏行号中错位；摘要/pin变化必须由已有fixture门拒绝。
+  // 其他窗口文件仍保留未知行，不能为通过门禁捏造缺失上游源码。
+  const lockText = fs.readFileSync(path.join(root, 'deps.lock'), 'utf8').replaceAll('\r\n', '\n');
+  const section = /(?:^|\n)\[sdl3-native\]\n([\s\S]*?)(?=\n\[|$)/.exec(lockText);
+  const pin = section && /^\s*commit\s*=\s*([0-9a-f]{40})\b/m.exec(section[1]);
+  if (!pin) throw new Error('SDL source pin missing for complete core context');
+  const fixture = loadSdlHostFixture(root, pin[1]);
+  const sparseFiles = new Map([...fixture.buffers].filter(([rel]) => isContractSource(rel))
+    .map(([rel, bytes]) => [rel, bytes.toString('utf8').replaceAll('\r\n', '\n').replace(/\n$/, '').split('\n')]));
   for (const name of names) {
     const patchPath = path.resolve(patchDir, name);
     if (!fs.existsSync(patchPath)) throw new Error(`series patch missing: ${patchPath}`);
-    const part = parsePatchText(fs.readFileSync(patchPath, 'utf8'), patchPath);
-    for (const [rel, content] of part) {
-      files.set(rel, `${files.get(rel) ?? ''}\n${content}`);
-    }
+    applySparsePatch(sparseFiles, fs.readFileSync(patchPath, 'utf8').replaceAll('\r\n', '\n'), patchPath);
   }
+  const files = new Map([...sparseFiles].map(([rel, lines]) => [rel,
+    lines.map(line => line ?? '#error AMCL_UNAVAILABLE_PATCH_CONTEXT').join('\n') + '\n']));
+  if (files.size === 0) throw new Error(`no SDL contract sources reconstructed from ${full}`);
   return { files, mode: 'patch-series', input: full, patches: names };
 }
 
@@ -269,6 +332,36 @@ function extractFunction(files, names) {
     }
   }
   return null;
+}
+
+// patch-series 拼接的是各 hunk 的后像上下文，不能把 SetWindowTitle 的正常展示参数
+// 当成 CreateWindow 的角色输入。仅在完整标题 setter 内屏蔽现役桌面 TITLE 命令的
+// 最后一个参数；其他 title 读取（包括同函数中的条件分支）仍按原规则拒绝。
+// 不完整函数不处理，保持 fail-closed；字符串指纹检查仍独立扫描全部活代码。
+function maskDesktopTitleCommandArgument(source) {
+  const declaration = /(?:^|\n)[ \t]*void\s+OPENHARMONY_SetWindowTitle\s*\([^;{}]*\)\s*\{/g;
+  let result = source;
+  let match;
+  while ((match = declaration.exec(source)) !== null) {
+    const open = source.indexOf('{', match.index);
+    let depth = 1;
+    let end = open + 1;
+    while (end < source.length && depth > 0) {
+      if (source[end] === '{') depth += 1;
+      else if (source[end] === '}') depth -= 1;
+      end += 1;
+    }
+    if (depth !== 0) continue;
+    const original = source.slice(open, end);
+    const masked = original.replace(
+      /\bOPENHARMONY_DesktopCommand\s*\(\s*window\s*,\s*9\s*,\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*,\s*window\s*->\s*title\s*\)/g,
+      call => call.replace(/\bwindow\s*->\s*title\b/, title => ' '.repeat(title.length)),
+    );
+    // 等长替换保留偏移，避免相邻 hunk 或重复 setter 的扫描范围漂移。
+    result = result.slice(0, open) + masked + result.slice(end);
+    declaration.lastIndex = end;
+  }
+  return result;
 }
 
 function extractSwitchCase(body, label) {
@@ -531,13 +624,20 @@ export function analyzeFiles(files, metadata = {}) {
   const singletonEarlyReturn = sourceFallback
     ? false
     : /if\s*\([^)]*(?:\bOPENHARMONY_Window\b|presented_window)[^)]*\)\s*\{?\s*return\b/.test(destroyText);
+  // 0020 的辅助面使用有返回值的退休 helper；必须核对 helper 的真实驱动调用与成功后清槽，
+  // 不能仅凭函数名字放行。既有基线的直接销毁入口仍可接受，行为回归另验证失败保留链。
+  const auxiliaryRetire = extractFunction(files, ['OPENHARMONY_RetireAuxiliarySurface']);
+  const checkedAuxiliaryRetirement = destroyText.includes('OPENHARMONY_RetireAuxiliarySurface')
+    && (sourceFallback || (auxiliaryRetire
+      && hasAll(auxiliaryRetire.body, ['eglDestroySurface', 'eglGetError', 'return false'])
+      && /\*surface\s*=\s*EGL_NO_SURFACE/.test(auxiliaryRetire.body)));
   add('destroy-any-role', 'DestroyWindow frees any WindowData', check(
     Boolean(destroy || sourceFallback)
       && hasAll(destroyText, [
         'window->internal', 'OPENHARMONY_WINDOW_PRESENTED',
         'OPENHARMONY_WINDOW_AUXILIARY_PBUFFER', 'SDL_free',
       ])
-      && hasAny(destroyText, ['SDL_EGL_DestroySurface', 'eglDestroySurface'])
+      && (hasAny(destroyText, ['SDL_EGL_DestroySurface', 'eglDestroySurface']) || checkedAuxiliaryRetirement)
       && /window->internal\s*=\s*(?:NULL|nullptr|0)/.test(destroyText)
       && !singletonEarlyReturn,
     'DestroyWindow must release the surface/lease/data for every role; role may select extra cleanup but may not guard the base free',
@@ -551,16 +651,25 @@ export function analyzeFiles(files, metadata = {}) {
     /["'][^"']*26\.3(?:\.\d+)?[^"']*["']/i,
     /["'][0-9a-f]{40,64}["']/i,
   ];
-  const classifierUsesTitle = /\b(?:SDL_GetWindowTitle|SDL_PROP_WINDOW_CREATE_TITLE_STRING)\b|\bwindow\s*->\s*title\b/.test(`${createText}\n${classifyText}`);
+  const titleSelectorInput = sourceFallback
+    ? maskDesktopTitleCommandArgument(ohCode) : `${createText}\n${classifyText}`;
+  const classifierUsesTitle = /\b(?:SDL_GetWindowTitle|SDL_PROP_WINDOW_CREATE_TITLE_STRING)\b|\bwindow\s*->\s*title\b/.test(titleSelectorInput);
   add('no-runtime-fingerprints', 'no title/version/class-hash special case', check(
     !hasAny(ohLive, fingerprintPatterns) && !classifierUsesTitle,
     'window roles must derive only from SDL create flags/properties; title, Minecraft version, snapshot label and class hash are forbidden runtime selectors',
     classifierUsesTitle ? `${create?.rel ?? 'OpenHarmony create path'} reads title` : null,
   ));
 
-  const foregroundEnvWriters = count(
-    hostNativeLive, /setenv\s*\(\s*["']AMCL_WINDOW_FOREGROUND["']/g,
+  // I27-05：前台位是 env_slot.h 预登记的单字节静态槽位，唯一写者经 Store(kWindowForegroundEnv, …)
+  // 原位翻转；任何 setenv/unsetenv/putenv 直接改写这个名字都会释放 SDL 每帧持有的旧串，必须为 0。
+  const foregroundSlotWriters = count(
+    hostNativeLive, /\bStore\s*\(\s*(?:amcl::envslot::)?kWindowForegroundEnv\b/g,
   );
+  const foregroundRawEnvWriters = count(
+    hostNativeLive,
+    /\b(?:setenv|unsetenv|putenv|SDL_setenv_unsafe|SDL_unsetenv_unsafe)\s*\(\s*(?:["']AMCL_WINDOW_FOREGROUND["']|(?:amcl::envslot::)?kWindowForegroundEnv\b)/g,
+  );
+  const foregroundEnvWriters = foregroundSlotWriters + foregroundRawEnvWriters;
   add('focus-independent-activation',
     'presented input has a current-state activation path independent of focus edges',
     check(
@@ -574,9 +683,12 @@ export function analyzeFiles(files, metadata = {}) {
         && /focus\s*!=\s*ComponentFocus\s*::\s*Blurred/.test(hostActivationCode)
         && /PublishInputForegroundSurfaceState\s*\(\s*true\s*,/.test(hostActivationCode)
         && /PublishInputForegroundGateForAbility\s*\(\s*foregroundMask\s*,/.test(hostActivationCode)
-        && foregroundEnvWriters === 1,
-      'host activation must compose published surface + nonzero Ability mask + three-valued focus, open Unknown without waiting for OnFocus, and keep one env publisher',
-      `AMCL_WINDOW_FOREGROUND writers=${foregroundEnvWriters}`,
+        && foregroundSlotWriters === 0 && foregroundRawEnvWriters === 0
+        && /amclWindowHostSetInputForeground\s*\(/.test(hostActivationCode)
+        && /peekInputForeground\s*\(\s*\)\s*==\s*1u/.test(ohCode)
+        && /structSize\s*>=\s*AMCL_INPUT_FOREGROUND_BROKER_SIZE/.test(ohCode),
+      'host activation must compose published surface + nonzero Ability mask + three-valued focus, open Unknown without waiting for OnFocus, and consume size-checked broker foreground authority without any mutable environment channel',
+      `AMCL_WINDOW_FOREGROUND writers=${foregroundEnvWriters} slot=${foregroundSlotWriters} raw-env=${foregroundRawEnvWriters}`,
     ));
 
   const drainAt = setPresentedActiveText.indexOf('OPENHARMONY_PumpTypedEvents');
@@ -859,60 +971,42 @@ export function analyzeFiles(files, metadata = {}) {
         + `requestAt=${requestFlagAt} authorityAt=${authorityBranchAt} rejectAt=${rejectAt} setGrabAt=${setGrabAt}`,
     ));
 
-  // ⚠️ 这条规则此前把**缺陷本身**钉住了（要求"只要 typed owner **可调**就抑制累加光标"），
-  // 而 grabbed 运动的归属**只能由证据决定**。两个更弱的代理都被真机否证，各留下
-  // `delivered=0 suppressed=N` 的零 owner 局面（计划 §115 / §116）：
-  //   · "typed 通道可调"     —— descriptor 一解析就为真，而纯触屏会话零 typed RELATIVE；
-  //   · "capture 已授予"     —— 设备只要**报告**有鼠标能力，光标锁就成功（真机
-  //     `mouse=1` → `cursor locked to window 89`），鼠标一动不动它也为真。
-  // ⇒ 现在要求归属判据里必须含 `host_typed_relative_seen`（真的投递过一条 RELATIVE），
-  // 且抑制端与投递端共读具名谓词，两条流都必须有计数。
-  // 一个断言了错不变量的门禁比没有门禁更糟 —— 改它时必须连这段理由一起留下。
-  add('typed-relative-single-owner', 'typed grabbed motion has one SDL owner', check(
-    hasAll(hostTypedInputCode, [
-      'AMCL_BACKEND_INPUT_EVENT_RELATIVE',
-      'AMCL_BACKEND_INPUT_RELATIVE_FLAG_HARDWARE_RAW',
-      'RelativeSink', 'sink.relative = RelativeSink',
-      'out.wheelX', 'out.wheelY',
-    ])
-      && hasAll(ohCode, [
-        'AMCL_BACKEND_EVENT_RELATIVE', 'AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW',
-        'AMCL_BACKEND_RELATIVE_FLAG_MASK', 'isnan', 'isinf',
-        'typed_relative_owner', 'host_capture_requested', 'host_capture_active',
-        // 两条流各自的单调计数：删掉任何一个都会让下一次同类回归重新变成静默的。
-        'host_grabbed_motion_delivered', 'host_grabbed_motion_suppressed',
-      ])
-      && /case\s+AMCL_BACKEND_EVENT_RELATIVE\s*:[\s\S]{0,700}SDL_SendMouseMotion\s*\([^;]*\btrue\b/.test(
-        typedPumpText,
-      )
-      // 授予判据必须是一个**具名**谓词，且其定义就是那两个 host 标志的合取。
-      && /static\s+bool\s+OPENHARMONY_TypedRelativeCaptureGranted\s*\(\s*void\s*\)[\s\S]{0,240}host_capture_requested\s*&&\s*host_capture_active/.test(
-        ohCode,
-      )
-      && /OPENHARMONY_TypedRelativeCaptureGranted\s*\(\s*\)\s*&&\s*SDL_GetRelativeMouseMode/.test(
-        typedPumpText,
-      )
-      // ⭐ 归属判据必须**同时**含授予与"真的投递过"，后者是本规则的承重项：
-      // 少了它，任何能力型代理都会把 grabbed 运动变成零 owner。
-      && /static\s+bool\s+OPENHARMONY_TypedRelativeOwnsGrabbedMotion[\s\S]{0,320}OPENHARMONY_TypedRelativeCaptureGranted\s*\(\s*\)\s*&&[\s\S]{0,80}host_typed_relative_seen/.test(
-        ohCode,
-      )
-      // 抑制端必须读那个具名归属谓词，不能自己拼一个更宽的条件。
-      && /grabbing\s*&&\s*OPENHARMONY_TypedRelativeOwnsGrabbedMotion\s*\(\s*typed_relative_owner\s*\)/.test(
-        cursorPumpText,
-      )
-      // 所有权只能在**真的投递了**一条 RELATIVE 的地方转移。
-      && /host_typed_relative_seen\s*=\s*true[\s\S]{0,120}SDL_SendMouseMotion/.test(
-        typedPumpText,
-      )
-      // grab 翻转是归属纪元边界：必须清掉证据，否则一次鼠标会话之后的纯触屏 grab 再次丢视角。
-      && /grabbing\s*!=\s*host_last_grabbing[\s\S]{0,200}host_typed_relative_seen\s*=\s*false/.test(
-        cursorPumpText,
-      )
-      && /OPENHARMONY_PumpHostCursor\s*\(\s*bridge\s*,\s*typed_relative_owner\s*\)/.test(
-        pumpEventsText,
-      ),
-    'SDL3 must receive one typed RELATIVE record gated on OPENHARMONY_TypedRelativeCaptureGranted() + relative mode; grabbed-motion ownership must be decided by OPENHARMONY_TypedRelativeOwnsGrabbedMotion() (capture granted AND a RELATIVE record actually delivered), transfer only where one was delivered, be cleared on grab flip, and keep both flows counted -- any capability-only proxy ("typed callable", "capture granted") leaves grabbed touch look with zero owners',
+  // 旧 v3 来源快照与新 look-v1 不可混作一个机制。look-v1 必须有同序 opaque prefix、
+  // ordered physical 索引与真实 SDK receipt；缺任何接缝均拒绝，不能回到最新累计/原 raw。
+  // 完整 SDK 行为由独立纵向测试证明，这里继续核所有当前承重源码结构而不跳过旧规则。
+  const lookByOrder = /physicalPrefixByOrder\s*\(\s*event\.sequence/.test(typedPumpText);
+  const lookEdge = sourceFallback ? ohCode : code(extractFunction(files, ['OPENHARMONY_DeliverLookForMouse'])?.body ?? '');
+  const lookCurrent = sourceFallback ? ohCode : code(extractFunction(files, ['OPENHARMONY_LookCurrent'])?.body ?? '');
+  const prefixLookContract = lookByOrder
+    && hasAll(allCode, ['SDL_AMCL_InputLookProtocolV1', 'amclLookExecutionResolveV1'])
+    && hasAll(ohCode, ['OPENHARMONY_DeliverLookForMouse', 'SDL_SendMouseMotionWithReceipt',
+      'AMCL_CONTROL_STATE_ONLY', 'AMCL_CONTROL_PULL_COMMITTED', 'AMCL_CONTROL_STATE_FINAL',
+      'abandonPrefix', 'setBackendActive'])
+    && /case\s+1020\s*:[\s\S]{0,950}OPENHARMONY_DeliverLook\s*\(\s*token\s*\)/.test(ohCode)
+    && /if\s*\(\s*grabbing\s*\)\s*return\s*;/.test(cursorPumpText)
+    && !/GetCursorSnapshot\s*\([^)]*\)[\s\S]*if\s*\(\s*grabbing\s*\)/.test(cursorPumpText)
+    && !/case\s+AMCL_BACKEND_EVENT_RELATIVE\s*:[\s\S]{0,1600}SDL_SendMouseMotion\s*\([^;]*event\.wheelX/.test(typedPumpText)
+    && /claim\s*\([\s\S]*SDL_SendMouseMotionWithReceipt/.test(lookEdge)
+    && /receipt\.posted\s*\?\s*AMCL_CONTROL_PULL_COMMITTED/.test(lookEdge)
+    && /validate\s*\(\s*&context->emission\s*\)/.test(lookCurrent);
+  const legacyLookContract = !lookByOrder
+    && ohCode.includes('host_grabbed_motion_delivered')
+    && /case\s+AMCL_BACKEND_EVENT_RELATIVE\s*:[\s\S]{0,700}SDL_SendMouseMotion\s*\([^;]*\btrue\b/.test(typedPumpText);
+  add('typed-relative-single-owner', 'physical and nonphysical motion have distinct delivery sources', check(
+    hasAll(hostTypedInputCode, ['AMCL_BACKEND_INPUT_EVENT_RELATIVE',
+      'AMCL_BACKEND_INPUT_RELATIVE_FLAG_HARDWARE_RAW', 'RelativeSink', 'sink.relative = RelativeSink',
+      'out.wheelX', 'out.wheelY'])
+      && hasAll(ohCode, ['AMCL_BACKEND_EVENT_RELATIVE', 'AMCL_BACKEND_RELATIVE_FLAG_HARDWARE_RAW',
+        'AMCL_BACKEND_RELATIVE_FLAG_MASK', 'isnan', 'isinf', 'host_capture_requested', 'host_capture_active'])
+      && ohRaw.includes('AMCLSDLV:3:')
+      && ohRaw.includes('inputBridge_sdlGetNonPhysicalCursorSnapshot')
+      && !/host_typed_relative_seen|OPENHARMONY_TypedRelativeOwnsGrabbedMotion/.test(ohCode)
+      && !/if\s*\(\s*grabbing\s*&&\s*typed_relative_owner/.test(cursorPumpText)
+      && (prefixLookContract || legacyLookContract)
+      && /static\s+bool\s+OPENHARMONY_TypedRelativeCaptureGranted\s*\(\s*void\s*\)[\s\S]{0,240}host_capture_requested\s*&&\s*host_capture_active/.test(ohCode)
+      && /OPENHARMONY_TypedRelativeCaptureGranted\s*\(\s*\)\s*&&\s*SDL_GetRelativeMouseMode/.test(typedPumpText)
+      && /OPENHARMONY_PumpHostCursor\s*\(\s*bridge\s*,\s*typed_relative_owner\s*\)/.test(pumpEventsText),
+    'look-v1 requires immutable virtual prefix plus ordered physical memo/SDK receipts; legacy v3 retains distinct source delivery and neither mode may suppress all grabbed sources',
   ));
 
   const surfaceValidatorCase = sourceFallback ? '' : extractSwitchCase(
@@ -1005,7 +1099,7 @@ export function analyzeFiles(files, metadata = {}) {
           'AMCL_DEVICE_CLASS_MOUSE', 'AMCL_DEVICE_CLASS_TOUCHPAD',
         ]);
   const pointerSdlStructure = sourceFallback || (
-          /case\s+AMCL_BACKEND_EVENT_BUTTON\s*:[\s\S]{0,500}OPENHARMONY_MouseIDFromHost\s*\(\s*event\.deviceId\s*\)/.test(
+          /case\s+AMCL_BACKEND_EVENT_BUTTON\s*:[\s\S]{0,500}OPENHARMONY_SendButtonFromPlane\s*\(\s*2\s*,\s*event\.deviceId/.test(
             typedPumpText,
           )
           && /case\s+AMCL_BACKEND_EVENT_WHEEL\s*:[\s\S]{0,600}OPENHARMONY_MouseIDFromHost\s*\(\s*event\.deviceId\s*\)/.test(

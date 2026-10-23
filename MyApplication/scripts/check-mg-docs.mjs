@@ -29,7 +29,8 @@ function requireFile(root, relativePath, issues) {
     issues.push(`missing required documentation path: ${relativePath}`);
     return '';
   }
-  return readFileSync(path, 'utf8');
+  // 文档含义不依赖Git在Windows检出时选择CRLF还是LF，结构判据采用统一内存换行。
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 }
 
 export function validateMgDocs(root = DEFAULT_ROOT) {

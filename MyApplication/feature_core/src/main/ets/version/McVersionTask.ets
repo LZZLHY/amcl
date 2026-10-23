@@ -84,6 +84,7 @@ export class McVersionTask implements UnifiedDownloadAdapter {
     versionName: string,
     mcDir: string,
     filesDir: string,
+    directoryOwner?: string,
   ) {
     this.view.id = 'mc:' + versionName;
     this.view.category = TaskCategory.MC_VERSION;
@@ -94,7 +95,7 @@ export class McVersionTask implements UnifiedDownloadAdapter {
     this.view.canCancel = true;
     this.view.canPause = true;
 
-    this.task_ = new DownloadTask(gameVersion, loaderType, loaderVersion, versionName, mcDir, filesDir);
+    this.task_ = new DownloadTask(gameVersion, loaderType, loaderVersion, versionName, mcDir, filesDir, directoryOwner);
     // 身份在实际开始/重试前绑定，不能使用构造时间把排队和多次重试写入同一本账本。
     this.dlState.versionName = versionName;
     this.dlState.phase = DownloadPhase.PREPARE;

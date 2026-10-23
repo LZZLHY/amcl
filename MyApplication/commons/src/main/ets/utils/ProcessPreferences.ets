@@ -1,4 +1,5 @@
 import { preferences } from '@kit.ArkData'
+import { OwnerLayoutPreferences } from './OwnerLayoutPreferences'
 import { LaunchPreferenceSnapshot, LaunchPreferenceStore, LaunchPreferenceValue,
   GameLayoutCommitSink, GameLayoutLaunchPreferences,
   copyLaunchPreferenceSnapshot, createLaunchPreferenceStores } from './PreferenceSnapshot'
@@ -58,7 +59,8 @@ export class ProcessPreferences {
       if (name === 'control_layout') ProcessPreferences.layoutOpened = true
       return store
     }
-    return new OwnerPreferences(preferences.getPreferencesSync(context, { name: name }))
+    const owner: LaunchPreferenceStore = new OwnerPreferences(preferences.getPreferencesSync(context, { name: name }))
+    return name === 'control_layout' ? new OwnerLayoutPreferences(context, owner) : owner
   }
   static async captureOwner(context: Context, name: string): Promise<LaunchPreferenceSnapshot> {
     if (ProcessPreferences.game) throw new Error('Game process cannot capture owner preferences')
@@ -66,6 +68,7 @@ export class ProcessPreferences {
     await store.flush()
     const snapshot: LaunchPreferenceSnapshot = { name: name,
       values: store.getAllSync() as Record<string, LaunchPreferenceValue> }
+    if (name === 'control_layout') snapshot.values['profiles'] = ProcessPreferences.open(context, name).getSync('profiles', '')
     return copyLaunchPreferenceSnapshot(snapshot)
   }
 }

@@ -5,8 +5,9 @@
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { AppLogger, LOG_DOMAIN_LAUNCH, ledgerManifest, ledgerDirOf,
-  ensureDirSync, writeEvidenceTextAtomic, LedgerOutcome } from 'commons';
+  ensureDirSync, ensureEvidenceDirectoryAsync, writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync, ledgerManifestAsync, LedgerOutcome } from 'commons';
 import { McSessionInfo } from './SessionMarker';
+import { readRecoveryTextAsync } from './SessionRecoveryState';
 
 /** 与原生 schema=1 固定协议一致；exitCode 表示 JVM 请求的代码，不是 OS 观察结果。 */
 export interface JvmExitEvidence {
@@ -32,6 +33,52 @@ function readBoundedText(path: string): string | undefined {
 /** 避免浮点主键、负值或类型强转参与活动身份比较。 */
 function positiveInteger(value: number): boolean {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/** 小型生产者发布记录使用真正异步 FileIO；正文参与输入身份，不依赖大小或秒级时间。 */
+export async function readSessionPublicationTextAsync(path: string): Promise<string> {
+  try {
+    const stat = await fs.stat(path);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 65536) return '';
+    const text: string = await fs.readText(path);
+    return text.length <= 65536 ? text : '';
+  } catch (_) { return ''; }
+}
+
+/**
+ * 协调 owner 的异步退出读取入口；身份判据与旧同步入口一致，原生记录永不删除。
+ * 只有归档完整耐久后才返回事实，失败向 owner 抛出，不能推进输入消费游标。
+ */
+export async function readJvmExitEvidenceAsync(filesDir: string, activityId: number): Promise<JvmExitEvidence | undefined> {
+  if (filesDir.length === 0 || !positiveInteger(activityId)) return undefined;
+  const manifest = await ledgerManifestAsync(filesDir, activityId);
+  if (manifest === null || manifest.category !== 'launch' || manifest.activityId !== activityId
+    || manifest.startedAt !== activityId) return undefined;
+  const text: string = await readRecoveryTextAsync(filesDir + '/game-exits/' + activityId + '.json', 4096);
+  if (text.length === 0 || text.length > 4096) return undefined;
+  let evidence: JvmExitEvidence;
+  try { evidence = JSON.parse(text) as JvmExitEvidence; } catch (_) { return undefined; }
+  if (evidence === null || evidence.schema !== 1 || evidence.source !== 'jvm-exit'
+    || evidence.activityId !== activityId || !positiveInteger(evidence.pid) || !positiveInteger(evidence.parentPid)
+    || evidence.pid === evidence.parentPid || manifest.ownerPid !== evidence.pid
+    || !Number.isInteger(evidence.exitCode) || evidence.exitCode < -2147483648 || evidence.exitCode > 2147483647
+    || !positiveInteger(evidence.timestamp) || evidence.timestamp < manifest.startedAt
+    || evidence.timestamp > Date.now()) return undefined;
+  const directory: string = ledgerDirOf(filesDir, activityId);
+  const capturePath: string = directory + '/capture-game.json';
+  const captureText: string = await readRecoveryTextAsync(capturePath, 4096);
+  if (captureText.length > 0) {
+    try {
+      const capture = JSON.parse(captureText) as Record<string, Object>;
+      if (capture['schema'] !== 1 || capture['activityId'] !== activityId || capture['pid'] !== evidence.pid) return undefined;
+    } catch (_) { return undefined; }
+  }
+  const archive: string = directory + '/jvm/process-exit.json';
+  if (await readRecoveryTextAsync(archive, 4096) !== text) {
+    await ensureEvidenceDirectoryAsync(directory + '/jvm');
+    await writeEvidenceTextAtomicAsync(archive, text);
+  }
+  return evidence;
 }
 
 /**
@@ -121,4 +168,23 @@ export function writeSessionRecoveryReceipt(filesDir: string, activityId: number
   if (text.length > 4096) throw new Error('恢复回执超过有界长度，保留原始证据等待重试');
   ensureDirSync(directory);
   writeEvidenceTextAtomic(directory + '/recovery-receipt.json', text);
+}
+
+/** 旧展示回执只在完整裁决之后用于兼容去重；它不能作为输入无变化的先验证据。 */
+export async function hasSessionRecoveryReceiptAsync(filesDir: string, activityId: number, outcome: LedgerOutcome): Promise<boolean> {
+  const text = await readSessionPublicationTextAsync(ledgerDirOf(filesDir, activityId) + '/launcher/recovery-receipt.json');
+  if (text.length === 0) return false;
+  try {
+    const receipt = JSON.parse(text) as Record<string, Object>;
+    return receipt['schema'] === 1 && receipt['activityId'] === activityId && receipt['state'] === outcome.state
+      && receipt['source'] === outcome.source && receipt['summary'] === outcome.summary;
+  } catch (_) { return false; }
+}
+
+/** UI应用已提交结果后异步保存兼容回执；失败仍由协调器保留展示义务。 */
+export async function writeSessionRecoveryReceiptAsync(filesDir: string, activityId: number, outcome: LedgerOutcome): Promise<void> {
+  const directory = ledgerDirOf(filesDir, activityId) + '/launcher';
+  const text = JSON.stringify({ schema: 1, activityId: activityId, state: outcome.state, source: outcome.source, summary: outcome.summary });
+  if (text.length > 4096) throw new Error('恢复展示回执超过有界长度，原始结果保留');
+  await ensureEvidenceDirectoryAsync(directory); await writeEvidenceTextAtomicAsync(directory + '/recovery-receipt.json', text);
 }

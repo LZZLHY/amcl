@@ -3,7 +3,7 @@ import { common, Want } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { http } from '@kit.NetworkKit';
 import { AppLogger, DiagnosticPolicy, LOG_DOMAIN_UI } from 'commons';
-import { ActivityLogger, ledgerBegin, ledgerEnd, ledgerDirOf, LedgerState, ensureDirSync,
+import { ActivityLogger, ledgerBeginAsync, ledgerEndAsync, ledgerDirOf, LedgerState, ensureDirSync,
   writeEvidenceTextAtomic, listSessionEvidence, evidenceSelectionOf, createEvidenceExportSnapshot,
   EvidenceExportSnapshot, disposeEvidenceExportSnapshot } from 'commons';
 import { shareEvidenceSnapshot } from './EvidenceShareService';
@@ -56,7 +56,10 @@ async function runProbe(context: common.UIAbilityContext, nonce: string, include
     recordStep(context, report, 'backup limits', backupLimits.ok, backupLimits.error || 'retentionSeconds=' + backupLimits.storageTimeSec);
     const marker = 'AMCL synthetic routing probe ' + nonce;
     const activityId: number = Date.now();
-    ledgerBegin(context.filesDir, activityId, { category: 'diagnostic', title: '日志分享合成验证' });
+    // 先等待本局基线与scope，随后生成的合成行才能实际归属；清理忙态会走原probe-error收据。
+    if (!await ledgerBeginAsync(context.filesDir, activityId, { category: 'diagnostic', title: '日志分享合成验证' })) {
+      throw new Error('合成验证活动尚未建立，请保留报告后重试');
+    }
     const directory: string = ledgerDirOf(context.filesDir, activityId);
     ensureDirSync(directory + '/game/logs'); ensureDirSync(directory + '/render');
     writeEvidenceTextAtomic(directory + '/game/logs/latest.log', '[main/INFO]: ' + marker + '\n'
@@ -64,7 +67,8 @@ async function runProbe(context: common.UIAbilityContext, nonce: string, include
     writeEvidenceTextAtomic(directory + '/render/renderer.log', 'AMCL_SYNTHETIC_RENDER ' + nonce + '\n');
     const logger = new ActivityLogger(activityId);
     logger.info('LogShareClient', 'LONG_BEGIN ' + '合成长堆栈 '.repeat(2000) + ' LONG_END', LOG_DOMAIN_UI);
-    ledgerEnd(context.filesDir, activityId, { state: LedgerState.SUCCESS, source: 'synthetic.probe', summary: marker });
+    // 快照必须等待writer真正关闭，不能由Promise包装同步flush，也不能先导出后补封账。
+    await ledgerEndAsync(context.filesDir, activityId, { state: LedgerState.SUCCESS, source: 'synthetic.probe', summary: marker });
     const evidence = listSessionEvidence(context.filesDir, activityId);
     const selection = evidenceSelectionOf(context.filesDir, activityId, evidence);
     const renderer = evidence.find((file): boolean => file.path === 'render/renderer.log');

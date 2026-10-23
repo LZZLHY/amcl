@@ -4,7 +4,11 @@ param(
     [ValidateSet('default','desktop','store','sideload')][string]$Product = 'default',
     [ValidateSet('debug','release')][string]$BuildMode = 'debug',
     [string]$ProjectRoot = '',
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [ValidateSet('full','quick')][string]$ValidationProfile = 'full',
+    [switch]$Fresh,
+    # 仅显式 full 才能追加重型输入闭包双扫；正常 quick 由主入口拒绝此组合。
+    [switch]$DeepAudit
 )
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -19,7 +23,7 @@ $exitCode = 1
 
 try {
     if (!(Test-Path -LiteralPath $builder -PathType Leaf)) { throw "找不到权威构建脚本：$builder" }
-    $node = (Get-Command node.exe -ErrorAction Stop).Source
+    $node = @(Get-Command node.exe -ErrorAction Stop)[0].Source
     $selectionText = & $node $helper inspect --root $ProjectRoot --kind $Certificate --product $Product
     if ($LASTEXITCODE -ne 0) { throw '签名材料检查失败，请查看上方具体文件路径。' }
     $selection = $selectionText | ConvertFrom-Json
@@ -49,7 +53,12 @@ try {
     $shell = (Get-Process -Id $PID).Path
     Push-Location -LiteralPath $ProjectRoot
     try {
-        & $shell -NoProfile -ExecutionPolicy Bypass -File $builder -Product $Product -BuildMode $BuildMode -HapKind signed
+        # 签名包装器只透传验证档，完整门禁仍由唯一 HAP 入口决定；原字节恢复覆盖两档失败。
+        $buildArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $builder,
+            '-Product', $Product, '-BuildMode', $BuildMode, '-HapKind', 'signed', '-ValidationProfile', $ValidationProfile)
+        if ($Fresh) { $buildArguments += '-Fresh' }
+        if ($DeepAudit) { $buildArguments += '-DeepAudit' }
+        & $shell @buildArguments
         $exitCode = $LASTEXITCODE
     } finally { Pop-Location }
 } catch {

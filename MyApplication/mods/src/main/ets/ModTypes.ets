@@ -6,12 +6,14 @@
  * 设计要点：
  *   - 所有"枚举字符串"（source / dependencyType / versionType）使用 string-valued enum，
  *     与项目现有 `ModLoaderType` 风格一致，避开 ArkTS 严格模式对 union literal 的限制。
- *   - 仅放纯类型 + 无副作用纯函数：本文件不引入 fileIo / hilog / NAPI，
- *     便于在 hvigor test（Node v8 + hypium）下直接跑单元测试。
+ *   - 类型映射保持纯函数；安装目录通过 commons 实例策略读取整合包布局标记，
+ *     使安装、扫描与启动在关闭全局隔离时仍指向相同实例。
  *   - 路径函数返回值不带尾部斜杠，与 `MetadataCacheStore` / `FileUtils` 保持一致。
  *
  * 创建日期：2026-05-11
  */
+
+import { resolveInstanceGameDir } from 'commons';
 
 // ============================================================
 //  ResourceKind — 资源类型（mod / 资源包 / 光影 / 数据包 / 整合包）
@@ -186,6 +188,8 @@ export function curseforgeWebUrl(kind: ResourceKind, slug: string): string {
 
 /** 单文件版本（一个 mod 的一个版本，可能含多文件如 sources.jar，但通常 primary 唯一） */
 export interface RemoteVersion {
+  /** CF 服务端分发标记；其他来源未声明时保持 false/undefined。 */
+  isServerPack?: boolean;
   source: ModSource;
   id: string;
   projectId: string;
@@ -381,15 +385,8 @@ export function resourceKindToInstallDir(
   versionId: string,
   versionIsolation: boolean,
 ): string {
-  let base: string;
-  if (versionIsolation) {
-    if (versionId.length === 0) {
-      throw new Error('resourceKindToInstallDir: versionId required when versionIsolation=true');
-    }
-    base = mcDir + '/versions/' + versionId;
-  } else {
-    base = mcDir;
-  }
+  // 整合包实例级隔离优先于全局偏好，保持与 LaunchCoordinator 相同的目录事实源。
+  let base = resolveInstanceGameDir(mcDir, versionId, versionIsolation);
   switch (kind) {
     case ResourceKind.MOD:           return base + '/mods';
     case ResourceKind.RESOURCE_PACK: return base + '/resourcepacks';

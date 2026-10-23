@@ -5,6 +5,9 @@
 
 // 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
 import { workspaceTempRoot } from './lib/workspace-paths.mjs';
+// 正常构建原有入口同时执行设置接线负控，避免新自测只被本轮手动运行一次。
+// 它不跳过或替代本文件原有C++策略/配置迁移测试，也不修改任何生产设置。
+import './test-check-ohos-runtime-optimizations.mjs';
 import {
   existsSync,
   mkdtempSync,

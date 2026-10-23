@@ -22,6 +22,14 @@ bool nativeSystemLibrary = false;
 std::string missingDriver;
 unsigned nativeWrapperLookups = 0;
 bool reenter = false, reentryRejected = false;
+bool displayTerminateReady = true;
+int displayTerminations = 0;
+EGLBoolean terminateRecordedDisplay(EGLDisplay) {
+    ++displayTerminations;
+    return displayTerminateReady ? EGL_TRUE : EGL_FALSE;
+}
+int unsupportedDisplayQuery(uint32_t, AmclGraphicsContextStateV1*, uint32_t,
+    const AmclGraphicsContextRequestV1*, int32_t, char*, uint32_t) { return 0; }
 void implementation() {}
 void nativeWrapper() {}
 void foreignImplementation() {}
@@ -59,6 +67,56 @@ void environment(const char* name, const char* value) {
 #else
     setenv(name, value, 1);
 #endif
+}
+
+/**
+ * 直接执行生产 created/untrack 与公共只读操作，驱动边界只记录真实 terminate 成败。
+ * 两个资源分别代表 GLFW 与另一个前端/namespace，验证窗口表为空并不等于 owner 末context。
+ */
+void verifyInitializedDisplay(const amcl::graphics::GraphicsRuntimeBinding& runtime) {
+    using namespace amcl::graphics;
+    std::string reason;
+    auto& state = *runtime.features;
+    auto* mutableRuntime = const_cast<GraphicsRuntimeBinding*>(&runtime);
+    const auto originalTerminate = mutableRuntime->egl.eglTerminate;
+    mutableRuntime->egl.eglTerminate = terminateRecordedDisplay;
+    displayTerminateReady = true; displayTerminations = 0;
+    check(!InitializedEglDisplay(runtime), "owner invented display before first context");
+    EglContextState first{}, peer{};
+    first.display = reinterpret_cast<void*>(0x3100); first.context = reinterpret_cast<void*>(0x3200); first.contextPermit = 1;
+    peer.display = first.display; peer.context = reinterpret_cast<void*>(0x3300); peer.contextPermit = 2;
+    state.contexts.insert(&first); state.contexts.insert(&peer);
+    state.contextPermits.emplace(1, nullptr); state.contextPermits.emplace(2, nullptr);
+    check(!created(runtime, first, false, reason) && !InitializedEglDisplay(runtime), "failed create published initialized display");
+    check(created(runtime, first, true, reason) && created(runtime, peer, true, reason), "production created registration failed");
+    check(InitializedEglDisplay(runtime) == first.display, "owner omitted successfully initialized display");
+    // 使用同一公开 C 函数表构成另一 namespace 的 C++ 视图，实际读取仍经生产 opcode 到owner。
+    GraphicsRuntimeBinding proxy;
+    proxy.processId = currentPid; proxy.delegate = &runtime.publicApi;
+    check(InitializedEglDisplay(proxy) == first.display, "namespace display query lost owner identity");
+    auto olderApi = runtime.publicApi; olderApi.contextOperation = unsupportedDisplayQuery;
+    GraphicsRuntimeBinding oldProxy; oldProxy.processId = currentPid; oldProxy.delegate = &olderApi;
+    check(!InitializedEglDisplay(oldProxy), "old owner without opcode did not fail closed");
+    const auto display = first.display;
+    first.display = nullptr; first.context = nullptr; // 模拟真实 core 完成该窗口句柄退休后进入untrack。
+    check(untrack(runtime, first, true, display, reason), "first frontend retirement failed");
+    check(InitializedEglDisplay(proxy) == display && displayTerminations == 0, "last GLFW window retired a peer-owned display");
+    peer.display = nullptr; peer.context = nullptr;
+    if (runtime.is("mobilegl")) {
+        displayTerminateReady = false;
+        check(!untrack(runtime, peer, true, display, reason) && InitializedEglDisplay(proxy) == display,
+            "failed provider terminate discarded live display");
+        displayTerminateReady = true;
+        check(untrack(runtime, peer, true, display, reason) && !InitializedEglDisplay(proxy) && displayTerminations == 2,
+            "successful final provider terminate retained stale display");
+    } else {
+        check(untrack(runtime, peer, true, display, reason) && InitializedEglDisplay(proxy) == display && displayTerminations == 0,
+            "system/MG display disappeared after last context");
+    }
+    const int pid = currentPid; currentPid = pid + 1;
+    check(!InitializedEglDisplay(runtime) && !InitializedEglDisplay(proxy), "fork reused initialized display");
+    currentPid = pid;
+    mutableRuntime->egl.eglTerminate = originalTerminate;
 }
 }
 int getpid() { return currentPid; }
@@ -103,6 +161,17 @@ int main() try {
         check(FreezeGraphicsRuntime(profile, "OPENGL", error), "provider binding failed");
         const auto* runtime = BoundGraphicsRuntime();
         check(runtime && runtime->egl.ready && runtime->is(profile), "wrong bound table");
+        // 公共描述符、当前 owner 和其他 ELF 映像的转发表必须采用同一公开 API。
+        // 这执行生产冻结与工厂源码，仅 loader/PID 是系统边界桩，不复制选择算法。
+        check(runtime->contextOperations && runtime->contextOperations->desktopApi == runtime->desktopGl() &&
+              (std::strcmp(runtime->publicApi.contextApi, "desktop-gl") == 0) == runtime->desktopGl(),
+              "公开 context API 与 owner 操作表不一致");
+        if (runtime->is("mobileglues")) {
+            check(runtime->desktopGl() && std::strcmp(runtime->contextOperations->implementation, "mobileglues-desktop-gl") == 0,
+                  "MG 完整 desktop 请求仍被 GLES owner 接管");
+        }
+        if (runtime->is("gl4es")) check(!runtime->desktopGl(), "GL4ES 既有 GLES 合同被改变");
+        verifyInitializedDisplay(*runtime);
         if (runtime->is("nativegl")) {
             check(runtime->glProc("glGetString")==reinterpret_cast<void*>(&implementation),
                 "native GL resolved wrapper instead of EGL provider");
@@ -168,6 +237,7 @@ int main() try {
     check(!amclGraphicsBindRuntimeV1("invalid", "OPENGL", detail, sizeof(detail)) && detail[3] == '\0',
         "bounded C ABI error failed");
     reset();
-    std::cout << "Frozen runtime provider: environment/fork/image/missing-entry/concurrency isolation PASS\n";
+    std::cout << "Frozen runtime provider: environment/fork/image/missing-entry/concurrency isolation, "
+                 "initialized display lifecycle, namespace query and provider retirement PASS\n";
     return 0;
 } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

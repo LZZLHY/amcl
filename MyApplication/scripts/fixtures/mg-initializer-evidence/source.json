@@ -1,0 +1,7 @@
+{
+  "productionLibrarySha256": "395d1ba1cd78ea9502314afb1afb4cc09d626b778308c101333e98937f97bf84",
+  "sha256": "628244f4efb39cfab9a5705485b5a3ce77b1c302bbaca0846c131dab823faeca",
+  "boundary": "Actual Linux production MG shared scene; synthetic wrapper identities are parser fixtures, not OHOS qualification",
+  "sourceEquivalentCommit": "b976afd39699c0b2c6bc82d6aec6352fd419909f",
+  "source": ".workspace/run/cf-full/initializer-shared-final2/production-1/evidence.jsonl"
+}

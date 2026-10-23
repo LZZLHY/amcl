@@ -1,0 +1,12 @@
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -138,7 +138,8 @@
+ #ifdef MUSL_LIBC
+ // dlvsym is not a part of POSIX
+ // and musl libc doesn't implement it.
+-#ifndef __MUSL__
++// OHOS 目标和 glibc 宿主都有声明，交叉构建的 buildjdk 不得重定义。
++#if !defined(__MUSL__) && !defined(__GLIBC__)
+ static void *dlvsym(void *handle,
+                     const char *symbol,
+                     const char *version) {

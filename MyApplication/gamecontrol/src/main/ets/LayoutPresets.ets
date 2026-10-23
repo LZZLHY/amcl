@@ -17,7 +17,7 @@ import {
   ControlItem, ControlType, LayoutProfile, AlignGroup,
   LAYOUT_PROFILE_VERSION,
   DEFAULT_LOOK_SENSITIVITY, DEFAULT_INVERT_Y, DEFAULT_JOYSTICK_DEAD_ZONE,
-  DEFAULT_BUTTON_SIZE, DEFAULT_CORNER_RADIUS, makeHotbarSelector, makeSystemButton
+  DEFAULT_BUTTON_SIZE, DEFAULT_CORNER_RADIUS, makeHotbarSelector, makeSystemButton, makeDefaultSystemMouseControl
 } from './ControlLayout';
 import {
   GLFW_KEY_SPACE, GLFW_KEY_E, GLFW_KEY_Q, GLFW_KEY_T, GLFW_KEY_M,
@@ -64,18 +64,6 @@ function joystick(xPct: number, yPct: number, size: number = 120,
     baseWidth: size, baseHeight: size,
     itemScale: scale, isCircle: corner >= 0.99,
     style: { cornerRadius: corner },
-    alignGroup: AlignGroup.NONE, alignIndex: 0,
-    grabbedOnly: true
-  }
-}
-
-function scrollWheel(xPct: number, yPct: number, w: number = 28, h: number = 84,
-                     scale: number = 1.15): ControlItem {
-  return {
-    id: 'scroll', label: '⇅', type: ControlType.SCROLL_WHEEL, keyOrMouse: 0,
-    xPct, yPct,
-    baseWidth: w, baseHeight: h,
-    itemScale: scale, isCircle: false,
     alignGroup: AlignGroup.NONE, alignIndex: 0,
     grabbedOnly: true
   }
@@ -151,11 +139,11 @@ export function presetPhone(): LayoutProfile {
     sqBtn('key_F', '', GLFW_KEY_M, 0.7582976190476189, 0.1160, AlignGroup.FUNC_TOP_RIGHT, 2, true),
     // 聊天（系统输入按钮）
     chat,
-    // 用户新增：F4（配合 F3 切游戏模式）+ 第二个潜行键（右下）
+    // F4沿用原预设；新出厂方案把第二潜行放到跳跃右侧，给鼠标留出独立右下工具位。
     sqBtn('btn_788064', '', GLFW_KEY_F4, 0.1167613095238095, 0.0200, AlignGroup.NONE, 0, true),
-    sqBtn('btn_086848', '', GLFW_KEY_LEFT_SHIFT, 0.8887, 0.8430, AlignGroup.NONE, 0, true),
-    // 滚轮
-    scrollWheel(0.6863, 0.7243),
+    sqBtn('btn_086848', '', GLFW_KEY_LEFT_SHIFT, 0.8887, 0.67, AlignGroup.NONE, 0, true),
+    // 新增入口统一落在右下工具位；只影响新建预设，不把用户已保存的位置恢复成默认。
+    makeDefaultSystemMouseControl(),
     // 系统：设置 / 显示
     edit,
     vis,
@@ -192,11 +180,11 @@ export function presetTablet(): LayoutProfile {
     sqBtn('key_TAB', '', GLFW_KEY_TAB, 0.0117, 0.09067934782608696, AlignGroup.DEBUG_TOP_LEFT, 3, false),
     // 聊天（系统输入按钮）
     chat,
-    // 用户新增：F4（配合 F3 切游戏模式）+ 第二个潜行键（右下）
+    // F4沿用原预设；第二潜行上移到跳跃右侧，仅调整新出厂方案，不改写用户存档里的同ID控件。
     sqBtn('btn_247776', '', GLFW_KEY_F4, 0.12434642857142857, 0.0200, AlignGroup.NONE, 0, false),
-    sqBtn('btn_420906', '', GLFW_KEY_LEFT_SHIFT, 0.9258, 0.8088, AlignGroup.NONE, 0, true),
-    // 滚轮
-    scrollWheel(0.7291, 0.8717),
+    sqBtn('btn_420906', '', GLFW_KEY_LEFT_SHIFT, 0.94, 0.70, AlignGroup.NONE, 0, true),
+    // 菜单与游戏沿用同一右下工具入口，用户可以在编辑器重新定位并保存。
+    makeDefaultSystemMouseControl(),
     // 系统：设置 / 显示
     edit,
     vis,

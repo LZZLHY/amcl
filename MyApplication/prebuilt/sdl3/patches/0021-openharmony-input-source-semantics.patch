@@ -1,0 +1,395 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -102,7 +102,7 @@
+ // for poll-style dispatch. We attach to the poll-style cursor rather than
+ // adding a third.
+ //
+-// AMCLSDLV:2 gives SDL a dedicated read cursor and keeps menu-pointer transactions
++// AMCLSDLV:3 gives SDL a dedicated read cursor and keeps menu-pointer transactions
+ // intact until the SDL-specific host adapter has applied its present barrier. In
+ // v1 the host folded DOWN into PRESS immediately; because this backend had already
+ // sampled the cursor, Minecraft received PRESS(oldX, oldY) and MOTION(newX, newY)
+@@ -232,10 +232,10 @@
+ 
+ /* SDL reserves MouseID 1 for its compatibility/default device. OpenHarmony
+  * event ids are positive signed 32-bit values, so +1 is an injective mapping
+- * that keeps 0 as the explicit unknown/default bucket. */
++ * that reserves 0x80000001 for unknown physical input, apart from legacy default input. */
+ static SDL_MouseID OPENHARMONY_MouseIDFromHost(Uint64 device_id)
+ {
+-    return device_id == 0 ? SDL_DEFAULT_MOUSE_ID
++    return device_id == 0 ? (SDL_MouseID)0x80000001u
+                           : (SDL_MouseID)(device_id + 1u);
+ }
+ 
+@@ -684,11 +684,17 @@
+  * motion ever reach SDL in this process?") spans window generations. */
+ static Uint64 host_grabbed_motion_delivered;
+ static Uint64 host_grabbed_motion_suppressed;
+-/* Has the typed channel actually carried a RELATIVE record for the current
+- * grab?  This is the *only* sound basis for taking grabbed motion away from the
+- * accumulated cursor; see OPENHARMONY_PumpHostCursor for the two proxies that
+- * were tried and measured wrong on a real device. */
+-static bool host_typed_relative_seen;
++static Uint8 host_key_planes[SDL_SCANCODE_COUNT];
++typedef struct AMCL_ButtonContributor {
++    Uint64 device;
++    Uint8 plane;
++    Uint8 button;
++    bool used;
++} AMCL_ButtonContributor;
++#define AMCL_BUTTON_CONTRIBUTORS 512
++static AMCL_ButtonContributor host_button_contributors[AMCL_BUTTON_CONTRIBUTORS];
++static unsigned host_button_counts[SDL_BUTTON_X2 + 1];
++
+ static Uint32 host_relative_disable_authority;
+ static bool host_presented_active;
+ static bool host_deactivation_draining;
+@@ -779,7 +785,9 @@
+         host_capture_active = false;
+         host_grabbed_motion_delivered = 0u;
+         host_grabbed_motion_suppressed = 0u;
+-        host_typed_relative_seen = false;
++        SDL_zeroa(host_key_planes);
++        SDL_zeroa(host_button_contributors);
++        SDL_zeroa(host_button_counts);
+         host_relative_disable_authority = AMCL_RELATIVE_DISABLE_NONE;
+         host_presented_active = false;
+         host_deactivation_draining = false;
+@@ -821,7 +829,7 @@
+ }
+ 
+ #define AMCL_SDL_BRIDGE_ENV "AMCL_SDL_INPUT_BRIDGE"
+-#define AMCL_SDL_BRIDGE_PREFIX "AMCLSDLV:2:"
++#define AMCL_SDL_BRIDGE_PREFIX "AMCLSDLV:3:"
+ #define AMCL_FOREGROUND_ENV "AMCL_WINDOW_FOREGROUND"
+ 
+ // Parse the host's environment channel. All-or-nothing: a partially parsed
+@@ -1033,7 +1041,7 @@
+     // measurements in OPENHARMONY_HostSym(). Format, published by the host as
+     // AMCL_SDL_INPUT_BRIDGE:
+     //
+-    //   AMCLSDLV:2:<next>,<setActive>,<notifyPresent>,<setGrab>,<isGrab>,<getCursor>,<setLookCursor>
++    //   AMCLSDLV:3:<next>,<setActive>,<notifyPresent>,<setGrab>,<isGrab>,<getCursor>,<setLookCursor>
+     //
+     // decimal uintptr_t values. Magic and version are checked strictly: a
+     // mismatch means the host is newer or older than this backend, and guessing
+@@ -1088,7 +1096,7 @@
+     bridge->NotifyFramePresented = (void (*)(void))OPENHARMONY_HostSym(host_handle, "inputBridge_sdlNotifyFramePresented");
+     bridge->SetGrabState = (void (*)(int))OPENHARMONY_HostSym(host_handle, "inputBridge_setGrabState");
+     bridge->IsGrabbing = (bool (*)(void))OPENHARMONY_HostSym(host_handle, "inputBridge_isGrabbing");
+-    bridge->GetCursorSnapshot = (void (*)(double *, double *))OPENHARMONY_HostSym(host_handle, "inputBridge_getCursorSnapshot");
++    bridge->GetCursorSnapshot = (void (*)(double *, double *))OPENHARMONY_HostSym(host_handle, "inputBridge_sdlGetNonPhysicalCursorSnapshot");
+     bridge->SetLookCursor = (void (*)(double, double))OPENHARMONY_HostSym(host_handle, "inputBridge_setLookCursor");
+ 
+     if (host_handle) {
+@@ -1286,34 +1294,8 @@
+     return host_capture_requested && host_capture_active;
+ }
+ 
+-/* Who owns grabbed motion?  Only a channel that is *actually carrying* it.
+- *
+- * ⚠️ Two weaker proxies were tried and both measured wrong on a real device
+- * (MatePad, API 26); each left grabbed motion with **zero** owners, i.e. touch
+- * look silently dropped on every pump:
+- *
+- *   · "typed channel callable" (`typed_relative_owner`) -- true on 26.3 the
+- *     moment the backend descriptor resolves, while a finger-only session
+- *     produces no typed RELATIVE record at all.
+- *   · "pointer capture granted" -- true because the platform cursor lock
+- *     succeeds whenever the device merely *reports* a mouse capability
+- *     (`InputDeviceMonitor: capability changed: mouse=1` → `AMCL_CURSOR_LOCK:
+- *     cursor locked to window 89`), even with no mouse moving.  Device log:
+- *     `grabbed-motion site=typed-owner delivered=0 suppressed=8192` while the
+- *     host kept producing look samples (`AMCL_INSRC looks touch=266`).
+- *
+- * Touch look never becomes a typed RELATIVE record: the host look funnel
+- * accumulates it and it exists only in the cursor snapshot.  So ownership must
+- * transfer on evidence -- a delivered RELATIVE record -- and never on
+- * capability.  Both halves are required: `...CaptureGranted()` so a later
+- * capture loss hands ownership straight back, and `host_typed_relative_seen`
+- * so a channel that has never carried a sample cannot claim it. */
+-static bool OPENHARMONY_TypedRelativeOwnsGrabbedMotion(bool typed_relative_owner)
+-{
+-    return typed_relative_owner && OPENHARMONY_TypedRelativeCaptureGranted() &&
+-           host_typed_relative_seen;
+-}
+-
++/* 累计快照只含触控/映射手柄。实体typed相对量已由同一公共processor加工，
++ * 两条来源可同时投递；不能因某次鼠标样本到达而屏蔽整个grab中的其他输入端。 */
+ static void OPENHARMONY_LogGrabbedMotion(const char *site, Uint64 count)
+ {
+     if (count == 0u || (count & (count - 1u)) != 0u) {
+@@ -1352,19 +1334,10 @@
+     if (grabbing != host_last_grabbing) {
+         host_last_grabbing = grabbing;
+         host_baseline_valid = false;
+-        host_typed_relative_seen = false;
+-    }
+-    if (grabbing && OPENHARMONY_TypedRelativeOwnsGrabbedMotion(typed_relative_owner)) {
+-        /* The typed RELATIVE record is carrying this grab. Keeping the
+-         * accumulated cursor baseline live now would let a GLFW consumer in
+-         * another image advance it and make SDL inject the same hardware
+-         * sample twice. */
+-        ++host_grabbed_motion_suppressed;
+-        OPENHARMONY_LogGrabbedMotion("typed-owner",
+-                                     host_grabbed_motion_suppressed);
+-        host_baseline_valid = false;
+-        return;
+-    }
++
++    }
++    (void)typed_relative_owner; // 来源已由AMCLSDLV:3快照区分。
++
+ 
+     // Read both axes in one call so they cannot come from different samples.
+     // Grab state still needs a second call, so a grab flip can in principle be
+@@ -1421,7 +1394,7 @@
+ // until Wayland needs it, so it is unavailable here. Walking the public button
+ // mask does the same job for our purposes without touching core SDL.
+ static void OPENHARMONY_ReleaseHeldMouseButtons(bool teardown,
+-                                                 SDL_WindowID requested_id)
++                                                 SDL_WindowID requested_id, Uint8 plane_mask)
+ {
+     SDL_Window *input_window = requested_id
+                                    ? SDL_GetWindowFromID(requested_id)
+@@ -1469,13 +1442,16 @@
+                      "openharmony: mouse reset snapshot allocation failed; clearing %d source states",
+                      source_count);
+         for (int source_index = 0; source_index < source_count; ++source_index) {
+-            mouse->sources[source_index].buttonstate = 0;
++            if (plane_mask & (mouse->sources[source_index].mouseID == SDL_DEFAULT_MOUSE_ID ? 1 : 2))
++                mouse->sources[source_index].buttonstate = 0;
+         }
+         return;
+     }
+     for (int source_index = 0; source_index < source_count; ++source_index) {
+         held_sources[source_index].mouse_id = mouse->sources[source_index].mouseID;
+-        held_sources[source_index].held = mouse->sources[source_index].buttonstate;
++        const Uint8 source_plane = mouse->sources[source_index].mouseID == SDL_DEFAULT_MOUSE_ID ? 1 : 2;
++        held_sources[source_index].held = (plane_mask & source_plane)
++            ? mouse->sources[source_index].buttonstate : 0;
+     }
+ 
+     /* SDL event watchers run synchronously from SDL_SendMouseButton.  Mark
+@@ -1541,6 +1517,95 @@
+     }
+ }
+ 
++/* 最终键盘owner的平面位：legacy=1，typed=2；同平面重复Down不制造repeat。
++ * 显式repeat只在原平面持有时投递，最后owner释放才改变SDL的公共键盘状态。 */
++static void OPENHARMONY_SendKeyFromPlane(Uint8 plane, Uint64 time, int raw,
++                                        SDL_Scancode key, int action)
++{
++    if (key <= SDL_SCANCODE_UNKNOWN || key >= SDL_SCANCODE_COUNT) return;
++    const Uint8 before = host_key_planes[key];
++    if (action == 0) {
++        if (!(before & plane)) return;
++        host_key_planes[key] = before & (Uint8)~plane;
++        if (host_key_planes[key]) return;
++    } else if (action == 2) {
++        if (!(before & plane)) return;
++    } else if (action == 1) {
++        if (before & plane) return;
++        host_key_planes[key] = before | plane;
++        if (before) return;
++    } else return;
++    SDL_SendKeyboardKey(time, SDL_DEFAULT_KEYBOARD_ID, raw, key, action != 0);
++}
++
++/* 局部RESET只撤销对应平面；全窗口失活用mask=3，由既有SDL销毁边界完成终局。 */
++static void OPENHARMONY_ResetKeyPlane(Uint8 mask)
++{
++    bool released[SDL_SCANCODE_COUNT] = { false };
++    SDL_Window *window = OPENHARMONY_AMCL_GetInputWindow();
++    const SDL_WindowID window_id = window ? window->id : 0;
++    // 先原子地摘掉本次旧owner集合；同步watcher不得让后续遍历误删新取得的owner。
++    for (int key = 1; key < SDL_SCANCODE_COUNT; ++key) {
++        const Uint8 before = host_key_planes[key];
++        host_key_planes[key] = before & (Uint8)~mask;
++        released[key] = before && !host_key_planes[key];
++    }
++    for (int key = 1; key < SDL_SCANCODE_COUNT; ++key) {
++        if (!released[key] || host_key_planes[key]) continue;
++        if (!window_id || !OPENHARMONY_AMCL_GetLiveInputWindow(window_id)) return;
++        SDL_SendKeyboardKey(0, SDL_DEFAULT_KEYBOARD_ID, 0, (SDL_Scancode)key, false);
++    }
++}
++
++/* SDL的设备source不提供跨source首按/末松语义。保存真实贡献者，向游戏只提交
++ * 默认逻辑指针的第一条Down/最后一条Up，避免某设备拔除抢走其他设备仍持有的按钮。 */
++static void OPENHARMONY_SendButtonFromPlane(Uint8 plane, Uint64 device, Uint64 time,
++                                           SDL_Window *window, Uint8 button, bool down)
++{
++    if (!window || button < SDL_BUTTON_LEFT || button > SDL_BUTTON_X2) return;
++    int found = -1, free_slot = -1;
++    for (int i = 0; i < AMCL_BUTTON_CONTRIBUTORS; ++i) {
++        AMCL_ButtonContributor *item = &host_button_contributors[i];
++        if (!item->used) { if (free_slot < 0) free_slot = i; continue; }
++        if (item->plane == plane && item->device == device && item->button == button) { found = i; break; }
++    }
++    if (down) {
++        if (found >= 0) return;
++        if (free_slot < 0) {
++            SDL_LogError(SDL_LOG_CATEGORY_INPUT, "openharmony: logical button contributors exhausted");
++            return; // 未取得owner，不制造以后无法配对的Down。
++        }
++        AMCL_ButtonContributor *item = &host_button_contributors[free_slot];
++        item->plane = plane; item->device = device; item->button = button; item->used = true;
++        if (host_button_counts[button]++ != 0) return;
++    } else {
++        if (found < 0) return;
++        host_button_contributors[found].used = false;
++        if (--host_button_counts[button] != 0) return;
++    }
++    SDL_SendMouseButton(time, window, SDL_DEFAULT_MOUSE_ID, button, down);
++}
++
++/* 先摘对应owner，再逐边沿重新取得活动窗口；同步事件观察者关闭窗口时不继续用旧指针。 */
++static void OPENHARMONY_ResetButtonContributors(Uint8 mask, Uint64 device, bool only_device)
++{
++    bool released[SDL_BUTTON_X2 + 1] = { false };
++    SDL_Window *window = OPENHARMONY_AMCL_GetInputWindow();
++    const SDL_WindowID window_id = window ? window->id : 0;
++    for (int i = 0; i < AMCL_BUTTON_CONTRIBUTORS; ++i) {
++        AMCL_ButtonContributor item = host_button_contributors[i];
++        if (!item.used || !(item.plane & mask) || (only_device && item.device != device)) continue;
++        host_button_contributors[i].used = false;
++        if (--host_button_counts[item.button] == 0) released[item.button] = true;
++    }
++    for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_X2; ++button) {
++        if (!released[button] || host_button_counts[button]) continue;
++        window = window_id ? OPENHARMONY_AMCL_GetLiveInputWindow(window_id) : NULL;
++        if (!window) return;
++        SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, (Uint8)button, false);
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // Discrete events
+ // ---------------------------------------------------------------------------
+@@ -1570,7 +1635,7 @@
+                 // i2 carries the host's scancode, which is what SDL wants as
+                 // the raw code; fall back to the key itself when absent.
+                 const int rawcode = i2 ? i2 : i1;
+-                SDL_SendKeyboardKey(0, SDL_DEFAULT_KEYBOARD_ID, rawcode, scancode, i3 != AMCL_GLFW_RELEASE);
++                OPENHARMONY_SendKeyFromPlane(1, 0, rawcode, scancode, i3);
+             }
+             break;
+         }
+@@ -1589,9 +1654,9 @@
+ 
+         case AMCL_EVENT_MOUSE_BUTTON:
+             if (input_window) {
+-                SDL_SendMouseButton(0, input_window, SDL_DEFAULT_MOUSE_ID,
+-                                    OPENHARMONY_ButtonFromGlfwButton(i1),
+-                                    i2 != AMCL_GLFW_RELEASE);
++                OPENHARMONY_SendButtonFromPlane(1, 0, 0, input_window,
++                                                OPENHARMONY_ButtonFromGlfwButton(i1),
++                                                i2 != AMCL_GLFW_RELEASE);
+             }
+             break;
+ 
+@@ -1603,13 +1668,9 @@
+             break;
+ 
+         case AMCL_EVENT_INPUT_RESET:
+-            // The host dropped events (ring overflow) or rebuilt the window, so
+-            // the release half of anything currently held may never arrive.
+-            // Clear *both* devices: dropping only the keyboard leaves a mouse
+-            // button latched down, which in a game reads as the player holding
+-            // the button forever (continuous attack / block).
+-            SDL_ResetKeyboard();
+-            OPENHARMONY_ReleaseHeldMouseButtons(false, 0);
++            // legacy通道恢复仅清自身键盘/鼠标来源，不影响仍持有的实体typed输入。
++            OPENHARMONY_ResetKeyPlane(1);
++            OPENHARMONY_ResetButtonContributors(1, 0, false);
+             host_baseline_valid = false;
+             break;
+ 
+@@ -1861,16 +1922,17 @@
+             // `rawCode` is the platform hardware scan code when the platform
+             // reported one. The legacy path could only ever pass the GLFW key
+             // back as its own raw code, because the first translation dropped it.
+-            SDL_SendKeyboardKey(event.monotonicTimeNs, SDL_DEFAULT_KEYBOARD_ID,
+-                                event.rawCode, (SDL_Scancode)event.code,
+-                                event.action != AMCL_BACKEND_ACTION_UP);
++            OPENHARMONY_SendKeyFromPlane(2, event.monotonicTimeNs, event.rawCode,
++                                        (SDL_Scancode)event.code,
++                                        event.action == AMCL_BACKEND_ACTION_UP ? 0 :
++                                        (event.action == AMCL_BACKEND_ACTION_REPEAT ? 2 : 1));
+             break;
+ 
+         case AMCL_BACKEND_EVENT_BUTTON:
+             if (input_window) {
+-                SDL_SendMouseButton(event.monotonicTimeNs, input_window,
+-                                    OPENHARMONY_MouseIDFromHost(event.deviceId), (Uint8)event.code,
+-                                    event.action != AMCL_BACKEND_ACTION_UP);
++                OPENHARMONY_SendButtonFromPlane(2, event.deviceId, event.monotonicTimeNs,
++                                                input_window, (Uint8)event.code,
++                                                event.action != AMCL_BACKEND_ACTION_UP);
+             }
+             break;
+ 
+@@ -1886,11 +1948,9 @@
+             break;
+ 
+         case AMCL_BACKEND_EVENT_RESET:
+-            // Same rule as the legacy path: clear both devices. Dropping only
+-            // the keyboard leaves a mouse button latched, which a game reads as
+-            // the player holding attack forever.
+-            SDL_ResetKeyboard();
+-            OPENHARMONY_ReleaseHeldMouseButtons(false, 0);
++            // typed恢复只清自己的键盘与鼠标来源；legacy持有继续有效。
++            OPENHARMONY_ResetKeyPlane(2);
++            OPENHARMONY_ResetButtonContributors(2, 0, false);
+             SDL_SendEditingText("", 0, 0);
+             /* RESET is a held-state boundary, not capture authority.  Focus,
+              * capture and surface lifecycle records carry their own ordered
+@@ -1915,12 +1975,8 @@
+             if (OPENHARMONY_TypedRelativeCaptureGranted() &&
+                 SDL_GetRelativeMouseMode() &&
+                 (event.wheelX != 0.0f || event.wheelY != 0.0f)) {
+-                /* ⭐ The only place grabbed-motion ownership may transfer: a
+-                 * delivered record. See ...OwnsGrabbedMotion for why. */
+-                if (!host_typed_relative_seen) {
+-                    host_typed_relative_seen = true;
+-                    host_baseline_valid = false;
+-                }
++                /* 这里只投递已经完成公共source配置加工的实体增量。
++                 * 非物理累计流始终独立消费，不再改变其baseline或所有权。 */
+                 SDL_SendMouseMotion(event.monotonicTimeNs, input_window,
+                                     OPENHARMONY_MouseIDFromHost(event.deviceId), true,
+                                     event.wheelX, event.wheelY);
+@@ -1941,6 +1997,7 @@
+             } else {
+                 /* The host orders synthesized button releases before REMOVE,
+                  * so deleting the source cannot strand held state. */
++                OPENHARMONY_ResetButtonContributors(2, event.deviceId, true);
+                 SDL_RemoveMouse(mouse_id);
+             }
+             break;
+@@ -2092,7 +2149,7 @@
+     OPENHARMONY_PumpHostEvents(bridge);
+ 
+     // MENU_POINTER coordinates are committed while NextEvent drains the legacy ring. Before
+-    // AMCLSDLV:2 this pump sampled the cursor only above, then NextEvent immediately returned
++    // AMCLSDLV:3 this pump sampled the cursor only above, then NextEvent immediately returned
+     // PRESS: Minecraft therefore clicked the previous position and saw the new MOTION one pump
+     // later (the user had to tap twice). Sample once more after the ring so DOWN's absolute
+     // position enters SDL now. The host holds PRESS until a successful present, so this MOTION is
+@@ -2161,10 +2218,12 @@
+              * states have crossed the lifecycle boundary. */
+             release_window->is_destroying = true;
+         }
++        OPENHARMONY_ResetKeyPlane(3);
+         SDL_ResetKeyboard();
+         /* Release before deactivating either consumer, and keep this helper
+          * valid even when a repeated teardown already cleared the bits. */
+-        OPENHARMONY_ReleaseHeldMouseButtons(true, release_window_id);
++        OPENHARMONY_ResetButtonContributors(3, 0, false);
++        OPENHARMONY_ReleaseHeldMouseButtons(true, release_window_id, 3);
+         if (release_window_id && !release_window_was_destroying) {
+             SDL_Window *live_window = SDL_GetWindowFromID(release_window_id);
+             if (live_window) {

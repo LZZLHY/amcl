@@ -17,7 +17,7 @@ function walkCpp(dir, out = []) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       walkCpp(full, out);
-    } else if (entry.isFile() && /\.(?:c|cc|cpp|h|hpp)$/.test(entry.name)) {
+    } else if (entry.isFile() && /\.(?:c|cc|cpp|h|hpp|inc)$/.test(entry.name)) {
       out.push(full);
     }
   }
@@ -34,7 +34,9 @@ function requireName(name, file, line, kind) {
 
 // 除导出函数外，也审计 native 读取/写回的对象字段。后者同样是固定字符串 ABI：
 // 例如 schemaVersion 被混淆后，即使 setControlSchema 本身可调用，native 仍会拒绝整张表。
-const objectKeyCall = /\b(?:napi_(?:get|set|has)_named_property|Named(?:Value|Int|Double|Bool)|hasNamedProp|readStringProp|readNumberProp|readStringArrayProp|setStringProp|setInt64Prop|setInt32Prop|setDoubleProp|setBoolProp|setNum)\s*\([^"\r\n]*"([^"]+)"/g;
+// 组协议被同一TU的.inc承载；它的具名数组/文本helper与Named*一样消费固定字符串ABI。
+// 不能只看到主.cpp的函数注册，却漏掉完整mask、资格和阶段对象字段。
+const objectKeyCall = /\b(?:napi_(?:get|set|has)_named_property|Named(?:Value|Int|Double|Bool)|Group(?:Array|Text|SetText|SetBool)|hasNamedProp|readStringProp|readNumberProp|readStringArrayProp|setStringProp|setInt64Prop|setInt32Prop|setDoubleProp|setBoolProp|setNum)\s*\([^"\r\n]*"([^"]+)"/g;
 const exportCall = /\b(?:NAPI_FUNC|DL_NAPI_FUNC)\s*\(\s*"([^"]+)"/g;
 // ⚠️ 第二种导出写法：**裸 `napi_property_descriptor` 初始化器**，不经上面那两个宏。
 //   { "setOhosFrameRateForeground", nullptr, SetOhosFrameRateForeground, ... }

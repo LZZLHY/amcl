@@ -27,9 +27,9 @@ import { DistributionPolicy } from 'commons';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
-import { DownloadManager, FetchTextRichResult } from 'feature_core';
+import { DownloadManager } from 'feature_core';
 import { AppLogger, LOG_DOMAIN_DOWNLOAD } from 'commons';
-import { DeviceProfile } from 'commons';
+import { AtomicFileWriter } from 'commons';
 import { CHANGELOG_JSON_URLS, CHANGELOG_RAWFILE } from 'commons';
 import { normalizeNoteType, noteTypeRank } from './ChangelogTypes';
 
@@ -75,6 +75,9 @@ const EMPTY_SNAPSHOT: ChangelogSnapshot = { ok: false, schema: 0, releases: [], 
 let cached_: ChangelogSnapshot | null = null;
 let inflightLocal_: Promise<ChangelogSnapshot> | null = null;
 let remoteRefreshDone_: boolean = false;
+/** 条件头只绑定已验证的正文；旧双文件缓存不能独立提供一个可信 ETag。 */
+let cachedEtag_: string = '';
+interface ChangelogCacheRecord { schema: number; body: string; etag: string; }
 
 // ---------------- 远程刷新完成通知（供页面重刷） ----------------
 
@@ -101,28 +104,29 @@ function notifyUpdated_(): void {
 // ---------------- 文件 IO ----------------
 
 function readTextFile_(path: string): string {
+  let f: fileIo.File | undefined = undefined;
   try {
     if (!fileIo.accessSync(path)) return '';
     let stat = fileIo.statSync(path);
-    if (stat.size <= 0) return '';
-    let f = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
+    if (stat.size <= 0 || stat.size > 8 * MAX_RESPONSE_BYTES || !stat.isFile()) return '';
+    f = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
     let buf = new ArrayBuffer(stat.size);
-    let len = fileIo.readSync(f.fd, buf);
-    fileIo.closeSync(f);
+    const target = new Uint8Array(buf);
+    let len = 0;
+    while (len < stat.size) {
+      // offset是文件偏移而非buffer起点；每次读独立片段再复制，避免短读覆盖已有前缀。
+      const chunk = new ArrayBuffer(stat.size - len);
+      const got = fileIo.readSync(f.fd, chunk, { length: chunk.byteLength });
+      if (got <= 0) return '';
+      target.set(new Uint8Array(chunk, 0, got), len);
+      len += got;
+    }
     let decoder = util.TextDecoder.create('utf-8', { ignoreBOM: true });
     return decoder.decodeToString(new Uint8Array(buf.slice(0, len)));
   } catch (e) {
     return '';
-  }
-}
-
-function writeTextFile_(path: string, text: string): void {
-  try {
-    let f = fileIo.openSync(path, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
-    fileIo.writeSync(f.fd, text);
-    fileIo.closeSync(f);
-  } catch (e) {
-    AppLogger.warn(TAG, '写缓存失败: ' + path, e as Object, LOG_DOMAIN_DOWNLOAD);
+  } finally {
+    if (f !== undefined) { try { fileIo.closeSync(f); } catch (_) { /* 读取失败也必须释放本次FD。 */ } }
   }
 }
 
@@ -154,7 +158,8 @@ function parseEntries_(raw: Object | undefined): ChangelogEntry[] {
   if (raw === undefined || !Array.isArray(raw)) return out;
   let arr = raw as Object[];
   for (let item of arr) {
-    if (typeof item !== 'object') continue;
+    // 一个坏展示项只影响自己，null/数组不能作为记录解引用。
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
     let e = item as Record<string, Object>;
     let text = asString_(e['text']);
     if (text.length === 0) continue;
@@ -168,13 +173,13 @@ function parseEntries_(raw: Object | undefined): ChangelogEntry[] {
 /** 取 zh 语言块；zh 缺失或为空时回退 en（离线快照被裁剪等极端情况）。 */
 function pickLocale_(item: Record<string, Object>): Record<string, Object> | null {
   let zh = item['zh'];
-  if (zh !== undefined && typeof zh === 'object') {
+  if (zh !== undefined && zh !== null && typeof zh === 'object' && !Array.isArray(zh)) {
     let block = zh as Record<string, Object>;
     let entries = block['entries'];
-    if (entries !== undefined && Array.isArray(entries) && (entries as Object[]).length > 0) return block;
+    if (entries !== undefined && Array.isArray(entries) && parseEntries_(entries).length > 0) return block;
   }
   let en = item['en'];
-  if (en !== undefined && typeof en === 'object') return en as Record<string, Object>;
+  if (en !== undefined && en !== null && typeof en === 'object' && !Array.isArray(en)) return en as Record<string, Object>;
   return null;
 }
 
@@ -195,7 +200,7 @@ export function parseChangelog(body: string, source: string): ChangelogSnapshot 
 
     let releases: ChangelogRelease[] = [];
     for (let raw of (rawReleases as Object[])) {
-      if (typeof raw !== 'object') continue;
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
       let item = raw as Record<string, Object>;
       let versionName = asString_(item['versionName']);
       if (versionName.length === 0) continue;
@@ -230,6 +235,14 @@ function cacheDir_(ctx: common.UIAbilityContext): string {
 
 async function doLoadLocal_(ctx: common.UIAbilityContext): Promise<ChangelogSnapshot> {
   let dir = cacheDir_(ctx);
+  try {
+    const record = JSON.parse(readTextFile_(dir + '/cache-v2.json')) as ChangelogCacheRecord;
+    if (record !== null && record.schema === 2 && typeof record.body === 'string' && typeof record.etag === 'string') {
+      const parsed = parseChangelog(record.body, 'cache');
+      if (parsed !== null) { cachedEtag_ = record.etag; return parsed; }
+    }
+  } catch (_) { /* 新缓存不存在或损坏时沿旧正文/随包快照显示，不沿用旧条件头。 */ }
+  cachedEtag_ = '';
   let cachedText = readTextFile_(dir + '/changelog.json');
   if (cachedText.length > 0) {
     let parsed = parseChangelog(cachedText, 'cache');
@@ -254,37 +267,27 @@ async function doLoadLocal_(ctx: common.UIAbilityContext): Promise<ChangelogSnap
 
 async function fetchRemote_(ctx: common.UIAbilityContext): Promise<ChangelogSnapshot | null> {
   let dir = cacheDir_(ctx);
-  let etagPath = dir + '/changelog.etag';
-  let cachedEtag = readTextFile_(etagPath);
-
   let headers: Record<string, string> = {};
-  if (cachedEtag.length > 0 && cached_ !== null && cached_.ok) headers['If-None-Match'] = cachedEtag;
+  if (cachedEtag_.length > 0 && cached_ !== null && cached_.ok) headers['If-None-Match'] = cachedEtag_;
 
-  let primary = CHANGELOG_JSON_URLS[0];
-  let mirrors = CHANGELOG_JSON_URLS.slice(1);
-  let rich: FetchTextRichResult;
-  try {
-    rich = await DownloadManager.instance().fetchTextEx(
-      primary, mirrors, FETCH_TIMEOUT_SECONDS, headers, MAX_RESPONSE_BYTES);
-  } catch (e) {
-    AppLogger.warn(TAG, '更新日志远程刷新失败（沿用本地）', e as Object, LOG_DOMAIN_DOWNLOAD);
-    return null;
+  // 网络成功但正文不合法也继续下一来源。条件头仅发给主权威入口，避免不同来源的
+  // ETag碰撞；一次保存把正文与该来源条件头绑定，任何落盘未知都清除内存条件头。
+  for (let index = 0; index < CHANGELOG_JSON_URLS.length; index++) {
+    try {
+      const rich = await DownloadManager.instance().fetchTextEx(CHANGELOG_JSON_URLS[index], [],
+        FETCH_TIMEOUT_SECONDS, index === 0 ? headers : {}, MAX_RESPONSE_BYTES);
+      if (rich.statusCode === 304 && index === 0 && cachedEtag_.length > 0 && cached_ !== null && cached_.ok) return null;
+      if (rich.statusCode === 304 || rich.body.length === 0) continue;
+      const parsed = parseChangelog(rich.body, 'remote');
+      if (parsed === null) continue;
+      const etag = index === 0 ? (rich.headers['etag'] ?? '') : '';
+      const record: ChangelogCacheRecord = { schema: 2, body: rich.body, etag: etag };
+      try { AtomicFileWriter.write(dir + '/cache-v2.json', JSON.stringify(record)); cachedEtag_ = etag; }
+      catch (_) { cachedEtag_ = ''; AppLogger.warn(TAG, '更新日志缓存保存未确认，仍显示本轮有效正文', null, LOG_DOMAIN_DOWNLOAD); }
+      return parsed;
+    } catch (_) { /* 单源网络/解析故障不终止下一合法来源。 */ }
   }
-
-  if (rich.statusCode === 304) {
-    AppLogger.info(TAG, '更新日志远程 304（无变化）', LOG_DOMAIN_DOWNLOAD);
-    return null;
-  }
-  if (rich.body.length === 0) return null;
-
-  let parsed = parseChangelog(rich.body, 'remote');
-  if (parsed === null) return null;
-
-  writeTextFile_(dir + '/changelog.json', rich.body);
-  let etag = rich.headers['etag'];
-  if (etag !== undefined && etag.length > 0) writeTextFile_(etagPath, etag);
-  AppLogger.info(TAG, `更新日志远程更新（${parsed.releases.length} 个版本，${rich.body.length} 字节）`, LOG_DOMAIN_DOWNLOAD);
-  return parsed;
+  return null;
 }
 
 async function refreshRemote_(ctx: common.UIAbilityContext): Promise<void> {

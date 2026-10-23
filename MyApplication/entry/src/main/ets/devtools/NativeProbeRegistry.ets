@@ -71,6 +71,27 @@ export function nativeProbeRegistry(): NativeProbeDef[] {
       runSyncText: (_filesDir: string) => testNapi.runMgTest(),
     },
     {
+      // 页面只调用native同路径入口；重启后在专用诊断进程验证MG，完成后必须重启。
+      id: 'mgDepthRange', title: 'MG 深度范围', shape: ProbeShape.SYNC_TEXT,
+      hasUiEntry: true, needsFilesDir: false,
+      runSyncText: (_filesDir: string) => testNapi.runMgDepthRangeTest(),
+    },
+    {
+      id: 'mgIdentityLow', title: 'MG 上下文低版本首次', shape: ProbeShape.SYNC_TEXT,
+      hasUiEntry: true, needsFilesDir: false,
+      runSyncText: (_filesDir: string) => testNapi.runMgContextIdentityTest(0),
+    },
+    {
+      id: 'mgIdentityHigh', title: 'MG 上下文高版本首次', shape: ProbeShape.SYNC_TEXT,
+      hasUiEntry: true, needsFilesDir: false,
+      runSyncText: (_filesDir: string) => testNapi.runMgContextIdentityTest(1),
+    },
+    {
+      id: 'mobileglProgram', title: 'MobileGL 程序语义', shape: ProbeShape.SYNC_TEXT,
+      hasUiEntry: true, needsFilesDir: false,
+      runSyncText: (_filesDir: string) => testNapi.runMobileGlProgramTest(),
+    },
+    {
       id: 'lwjgl', title: 'LWJGL', shape: ProbeShape.SYNC_TEXT,
       hasUiEntry: true, needsFilesDir: true,
       runSyncText: (filesDir: string) => testNapi.runLwjglTest(filesDir),

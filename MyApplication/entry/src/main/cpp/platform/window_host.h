@@ -59,6 +59,15 @@ AMCL_WINDOW_EXPORT int amclWindowHostBeginInputPublication(int* outWidth, int* o
 AMCL_WINDOW_EXPORT void amclWindowHostEndInputPublication(void* broker);
 AMCL_WINDOW_EXPORT void amclWindowHostGetStats(AmclWindowHostStats* stats);
 AMCL_WINDOW_EXPORT int amclWindowHostRetryRetiredReferences(void);
+// 在任何游戏/JVM 线程出现前发布进程 owner 与 v2 broker 两个环境描述符（每进程只写一次）。
+// 返回 1：本映像是（或刚成为）owner；0：另一映像已是 owner 或已有不兼容的旧描述符。
+// surface 状态不再镜像到环境变量，消费者只经 broker / ReadSnapshot 读取。
+AMCL_WINDOW_EXPORT int amclWindowHostPublishOwner(void);
+// 写入宿主输入前台门禁的当前值（非 0 视为前台），由 XComponent 所在映像在门禁锁内调用；
+// 转发到进程 owner 映像，经 broker 的 peekInputForeground 尾部供 SDL 等消费者无锁读取。
+// 返回 1：owner 已接受；0：owner/broker 描述符畸形（失败关闭，调用方记录）。
+// 进程内初值为 0（与首个 surface 发布前的门禁计算结果一致）；fork 子进程从 0 重新开始。
+AMCL_WINDOW_EXPORT int amclWindowHostSetInputForeground(int foreground);
 
 #if defined(AMCL_WINDOW_HOST_TESTING)
 typedef int (*AmclWindowHostReferenceFn)(void*, void*);

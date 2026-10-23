@@ -4,6 +4,7 @@
 
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { MODPACK_PENDING_FILE } from './InstancePaths';
 
 const INSTALL_COMMIT_MARKER: string = '.amcl-install-complete';
 
@@ -14,6 +15,9 @@ const INSTALL_COMMIT_MARKER: string = '.amcl-install-complete';
  */
 export function isVersionInstalled(mcDir: string, versionId: string): boolean {
   let versionDir = mcDir + '/versions/' + versionId;
+  // 整合包的基础 JAR 完成不代表整个实例已提交。持久 pending 存在时保持不可启动。
+  try { if (fs.lstatSync(versionDir + '/' + MODPACK_PENDING_FILE).isFile()) return false; }
+  catch (e) { /* 普通版本和完成后的整合包没有 pending。 */ }
   let jarPath = versionDir + '/' + versionId + '.jar';
   let jsonPath = versionDir + '/' + versionId + '.json';
   try {

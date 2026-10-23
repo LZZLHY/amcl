@@ -1,0 +1,85 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -4003,6 +4003,64 @@
+ }
+ 
+ 
++/* Vulkan 的 VkSurface 仍由应用管理；这里只采纳同一受租约保护的 NativeWindow 的新发布代次/几何。
++ * 背景恢复会改变宿主几何而不更换资源。若只让 EGL 路径采纳，输入资格永远与新代次不符。
++ * 先取得候选租约，再二次核对稳定发布；资源指针或broker变化绝不冒充同窗更新，旧VkSurface不能指向新窗口。
++ * 成功交换租约时平衡旧引用；失败只释放本次新引用。所有事件通知放在提交后，通知后不访问可能被销毁的窗口。 */
++#ifdef SDL_VIDEO_OPENGL_EGL
++static bool OPENHARMONY_AMCL_SyncVulkanWindow(SDL_Window *window, SDL_WindowData *data)
++{
++    Uint64 published_generation = 0;
++    unsigned int published_state = AMCL_NATIVE_WINDOW_PUBLICATION_UNPUBLISHED;
++    if (!data->native_window_lease_owned || !data->native_window ||
++        data->surface_state != OPENHARMONY_SURFACE_READY || data->amcl_surface_suspended ||
++        !OPENHARMONY_AMCL_ReadStableNativeWindowPublication(&published_generation, &published_state) ||
++        published_state != AMCL_NATIVE_WINDOW_PUBLICATION_READY) {
++        return false;
++    }
++    if (published_generation == data->amcl_generation) {
++        return true; /* 稳态不增加引用，不制造尺寸事件，也不反复激活输入。 */
++    }
++    SDL_WindowData candidate = *data;
++    int width = 0, height = 0;
++    Uint64 generation = 0;
++    bool new_reference = false;
++    if (!OPENHARMONY_AMCL_AcquireNativeWindowLeaseInternal(
++            &candidate, &width, &height, &generation, true, &new_reference)) {
++        return false;
++    }
++    Uint64 confirmed_generation = 0;
++    unsigned int confirmed_state = AMCL_NATIVE_WINDOW_PUBLICATION_UNPUBLISHED;
++    const bool same_live_window = candidate.native_window == data->native_window &&
++        candidate.native_window_lease_broker == data->native_window_lease_broker &&
++        generation == published_generation &&
++        OPENHARMONY_AMCL_ReadStableNativeWindowPublication(&confirmed_generation, &confirmed_state) &&
++        confirmed_generation == generation && confirmed_state == AMCL_NATIVE_WINDOW_PUBLICATION_READY;
++    if (!same_live_window) {
++        if (new_reference) OPENHARMONY_AMCL_ReleaseNativeWindowLease(&candidate);
++        return false;
++    }
++    const SDL_WindowID window_id = window->id;
++    const bool geometry_changed = data->surface_width != width || data->surface_height != height;
++    SDL_WindowData old = *data;
++    data->native_window_lease_broker = candidate.native_window_lease_broker;
++    data->native_window_lease_owned = candidate.native_window_lease_owned;
++    data->native_window_lease_generation = candidate.native_window_lease_generation;
++    data->amcl_generation = generation;
++    OPENHARMONY_AMCL_CommitGeometry(window, data, width, height);
++    if (new_reference) OPENHARMONY_AMCL_ReleaseNativeWindowLease(&old);
++    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,
++        "OPENHARMONY_WINDOW schema=1 event=vulkan_metadata_commit role=presented generation=%" SDL_PRIu64 " size=%dx%d same_pointer=1",
++        generation, width, height);
++    OPENHARMONY_AMCL_RefreshDisplayDesktopMode(width, height);
++    window = SDL_GetWindowFromID(window_id);
++    if (!window || !window->internal) return false;
++    if (geometry_changed) SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, width, height);
++    return true;
++}
++
++#endif
++
+ void OPENHARMONY_AMCL_SyncLiveWindow(SDL_VideoDevice *_this)
+ {
+ #ifdef SDL_VIDEO_OPENGL_EGL
+@@ -4013,10 +4071,14 @@
+     SDL_WindowData *data = window->internal;
+     if (data->role != OPENHARMONY_WINDOW_PRESENTED ||
+         data->native_xcomponent ||
+-        !data->native_window_lease_broker ||
+-        !(window->flags & SDL_WINDOW_OPENGL)) {
++        !data->native_window_lease_broker) {
+         return;
+     }
++    if (window->flags & SDL_WINDOW_VULKAN) {
++        (void)OPENHARMONY_AMCL_SyncVulkanWindow(window, data);
++        return;
++    }
++    if (!(window->flags & SDL_WINDOW_OPENGL)) return;
+     SDL_GLContext context = NULL;
+     if (SDL_GL_GetCurrentWindow() == window) {
+         context = SDL_GL_GetCurrentContext();

@@ -15,6 +15,7 @@
  * 创建日期：2026-06-04
  */
 
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { ThemeColors } from 'commons';
 import { AppIcon } from './AppIcon';
 import { AppIconName } from 'commons';
@@ -81,28 +82,57 @@ export struct VersionPickerSheet {
 
   build() {
     Column() {
-      // ============ 头部：标题 + 关闭 ============
-      Row() {
-        Text('选择安装版本')
-          .fontSize(17)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-        Row() {
-          AppIcon({ name: AppIconName.Close, iconSize: 16, color: this.theme.textSecondary })
-        }
-        .width(32)
-        .height(32)
-        .borderRadius(16)
-        .backgroundColor(this.theme.bgInput)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => { this.onClose() })
-      }
-      .width('100%')
-      .padding({ left: 4, right: 4, top: 2, bottom: 12 })
-      .alignItems(VerticalAlign.Center)
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: '选择安装版本', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭安装目标选择', closeId: 'version-picker-close', onClose: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+    .backgroundColor(this.theme.bgPrimary)
+  }
 
+  @Builder
+  VersionRow(id: string) {
+    Row() {
+      VersionBlockIcon({ versionId: id, iconSize: 34, cornerRadius: 6 })
+      Column() {
+        Text(id)
+          .fontSize(15)
+          .fontWeight(500)
+          .fontColor(this.isSelected(id) ? this.theme.primary : this.theme.textPrimary)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.subtitleOf(id))
+          .fontSize(12)
+          .fontColor(this.theme.textHint)
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .margin({ left: 12 })
+
+      if (this.isSelected(id)) {
+        AppIcon({ name: AppIconName.CheckCircle, iconSize: 20, color: this.theme.primary })
+      } else {
+        AppIcon({ name: AppIconName.ArrowRight, iconSize: 16, color: this.theme.textHint })
+      }
+    }
+    .width('100%')
+    .padding({ left: 12, right: 14, top: 12, bottom: 12 })
+    .backgroundColor(this.theme.bgCard)
+    .borderRadius(this.theme.cardRadius)
+    .border(this.isSelected(id)
+      ? { width: 1.5, color: this.theme.primary }
+      : { width: 0, color: Color.Transparent })
+    .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
+    .onClick(() => { this.onPick(this.activeLocation(), id) })
+  }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
       // ============ 左右页签：沙箱 / 外部 ============
       Row({ space: 8 }) {
         // —— 沙箱 ——
@@ -198,47 +228,6 @@ export struct VersionPickerSheet {
         .layoutWeight(1)
         .padding({ top: 4, bottom: 8 })
       }
-    }
-    .width('100%')
-    .height('100%')
-    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    .backgroundColor(this.theme.bgPrimary)
-  }
 
-  @Builder
-  VersionRow(id: string) {
-    Row() {
-      VersionBlockIcon({ versionId: id, iconSize: 34, cornerRadius: 6 })
-      Column() {
-        Text(id)
-          .fontSize(15)
-          .fontWeight(500)
-          .fontColor(this.isSelected(id) ? this.theme.primary : this.theme.textPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.subtitleOf(id))
-          .fontSize(12)
-          .fontColor(this.theme.textHint)
-          .margin({ top: 2 })
       }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-      .margin({ left: 12 })
-
-      if (this.isSelected(id)) {
-        AppIcon({ name: AppIconName.CheckCircle, iconSize: 20, color: this.theme.primary })
-      } else {
-        AppIcon({ name: AppIconName.ArrowRight, iconSize: 16, color: this.theme.textHint })
-      }
-    }
-    .width('100%')
-    .padding({ left: 12, right: 14, top: 12, bottom: 12 })
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(this.theme.cardRadius)
-    .border(this.isSelected(id)
-      ? { width: 1.5, color: this.theme.primary }
-      : { width: 0, color: Color.Transparent })
-    .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-    .onClick(() => { this.onPick(this.activeLocation(), id) })
-  }
 }

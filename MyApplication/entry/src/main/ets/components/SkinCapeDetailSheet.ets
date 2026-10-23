@@ -1,3 +1,5 @@
+import { AppTitleAction } from './AppTitleAction';
+import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { DiagnosticPolicy } from 'commons';
 /**
  * SkinCapeDetailSheet.ets — 皮肤 / 披风 详情 Sheet（v2 · 2026-05-23）
@@ -30,7 +32,7 @@ import { DiagnosticPolicy } from 'commons';
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
-import { ThemeColors } from 'commons';
+import { ThemeColors, DistributionPolicy } from 'commons';
 import { Account, AccountCape, AccountType, AccountError } from 'account';
 import { getAccountManager } from 'account';
 import { AppIconName } from 'commons';
@@ -114,68 +116,23 @@ export struct SkinCapeDetailSheet {
     }
   }
 
+
+  /** 同步仍只对微软账户开放，忙态通过共同菜单的 enabled 投影，不能并发请求。 */
+  private skinTitleActions_(): AppTitleAction[] {
+    if (!this.canSync()) return [];
+    return [{ id: 'sync', label: this.syncing ? '同步中' : '同步披风', icon: AppIconName.Refresh, enabled: !this.syncing }];
+  }
+
   build() {
     // Stack 作根：主内容 + 预览浮层（z-order 由 child 顺序决定，浮层在最上）。
     // 旧版根是 Column，加预览时改 Stack 不影响布局——主内容自己 width/height 100%。
     Stack() {
       Column() {
-        // 顶部 header：返回 + 标题 + (微软账户) 同步按钮
-        Row({ space: 12 }) {
-          Row() {
-            AppIcon({ name: AppIconName.ChevronLeft, iconSize: 22, color: this.theme.textPrimary })
-          }
-          .width(36)
-          .height(36)
-          .borderRadius(18)
-          .backgroundColor(this.theme.bgInput)
-          .justifyContent(FlexAlign.Center)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => { this.onClose(); })
-
-          Column({ space: 2 }) {
-            Text('皮肤与披风')
-              .fontSize(18)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.theme.textPrimary)
-              .maxLines(1)
-            Text(this.headerSubtitle())
-              .fontSize(11)
-              .fontColor(this.theme.textSecondary)
-              .maxLines(1)
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-
-          // 仅微软账户显示"同步"按钮——主动从 Mojang 拉最新 profile（皮肤 / 披风 / ownedCapes）
-          if (this.canSync()) {
-            this.HeaderSyncButton();
-          }
-        }
-        .width('100%')
-        .padding({ top: 8, bottom: 12, left: 16, right: 16 })
-        .alignItems(VerticalAlign.Center)
-
-        // 主内容滚动区
-        Scroll() {
-          Column({ space: 12 }) {
-            this.MainBody();
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 20 })
-        }
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.Spring)
-
-        // 错误横幅（披风切换失败 / 网络问题），3s 自动消失
-        if (this.capeErrorMsg.length > 0) {
-          this.ErrorToast(this.capeErrorMsg);
-        }
-        // 成功横幅（披风切换 / 披风同步成功），2s 自动消失
-        if (this.capeSuccessMsg.length > 0) {
-          this.SuccessToast(this.capeSuccessMsg);
-        }
-      }
+      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
+      ImmersiveTitleScaffold({ title: '皮肤与披风', subtitle: this.headerSubtitle(), theme: this.theme, modal: false, surfaceColor: this.theme.bgSecondary, backLabel: '返回账户管理', backId: 'skin-cape-back', menuActions: this.skinTitleActions_(), onMenuAction: (id: string): void => { if (id === 'sync' && this.canSync() && !this.syncing) this.syncProfileNow(); }, onBack: (): void => { this.onClose(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
       .width('100%')
       .height('100%')
       .backgroundColor(this.theme.bgSecondary)
@@ -190,36 +147,8 @@ export struct SkinCapeDetailSheet {
     .height('100%')
   }
 
-  /**
-   * Header 右上角的"同步披风"按钮。点击调 syncProfileNow → 从 Mojang 重新拉一遍
-   * profile，用于"用户在 minecraft.net 新获得披风后 AMCL 本地缓存没更新"的场景。
-   *
-   * syncing 状态下显示 spinner + 禁点（防止并发请求 Mojang）。
-   */
-  @Builder
-  HeaderSyncButton() {
-    Row() {
-      if (this.syncing) {
-        LoadingProgress()
-          .width(20)
-          .height(20)
-          .color(this.theme.primary)
-      } else {
-        AppIcon({ name: AppIconName.Refresh, iconSize: 18, color: this.theme.primary })
-      }
-    }
-    .width(36)
-    .height(36)
-    .borderRadius(18)
-    .backgroundColor(this.theme.primaryLight)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .opacity(this.syncing ? 0.7 : 1.0)
-    .onClick(() => {
-      if (this.syncing) return;
-      this.syncProfileNow();
-    })
-  }
+  /** 原业务错误条继续独立显示；标题同步动作由skinTitleActions_统一投影忙态。 */
+
 
   @Builder
   ErrorToast(msg: string) {
@@ -469,7 +398,7 @@ export struct SkinCapeDetailSheet {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        if (acc.type === AccountType.MICROSOFT) {
+        if (acc.type === AccountType.MICROSOFT && !DistributionPolicy.isStore()) {
           Row({ space: 6 }) {
             AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 13, color: this.theme.primary })
             Text('前往修改')
@@ -578,7 +507,7 @@ export struct SkinCapeDetailSheet {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        if (acc.type === AccountType.MICROSOFT) {
+        if (acc.type === AccountType.MICROSOFT && !DistributionPolicy.isStore()) {
           Row({ space: 6 }) {
             AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 13, color: this.theme.textPrimary })
             Text('管理')
@@ -1206,6 +1135,8 @@ export struct SkinCapeDetailSheet {
    * AppStorage['uiAbilityContext'] 取（getContext(this) 在 API 18+ 已弃用）。
    */
   private openMinecraftProfile(): void {
+    // 此处是登录后的皮肤网站管理，不是 Microsoft 认证步骤；商店只保留应用内账户 API。
+    if (DistributionPolicy.isStore()) return;
     let ctx = AppStorage.get<common.UIAbilityContext>('uiAbilityContext');
     if (!ctx) {
       AppLogger.warn(TAG, 'openMinecraftProfile: uiAbilityContext missing', null, LOG_DOMAIN_ACCOUNT);
@@ -1218,4 +1149,30 @@ export struct SkinCapeDetailSheet {
       AppLogger.warn(TAG, 'open profile failed', e, LOG_DOMAIN_ACCOUNT);
     });
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+        // 主内容滚动区
+        Scroll() {
+          Column({ space: 12 }) {
+            this.MainBody();
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 4, bottom: 20 })
+        }
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
+
+        // 错误横幅（披风切换失败 / 网络问题），3s 自动消失
+        if (this.capeErrorMsg.length > 0) {
+          this.ErrorToast(this.capeErrorMsg);
+        }
+        // 成功横幅（披风切换 / 披风同步成功），2s 自动消失
+        if (this.capeSuccessMsg.length > 0) {
+          this.SuccessToast(this.capeSuccessMsg);
+        }
+
+      }
 }

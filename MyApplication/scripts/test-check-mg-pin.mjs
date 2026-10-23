@@ -30,14 +30,11 @@ const NO_PUSH = 'https://invalid.invalid/AMCL-DO-NOT-PUSH-OFFICIAL-MobileGlues.g
 // the fixture materialises `removed` baseline lines and rewrites them with
 // `added` new lines so `git diff --numstat` reproduces exactly these counts.
 const PATCH_DIFF = new Map([
-  ['MobileGlues-cpp/tests/buffer_readback_stub_before.inc', [12, 0]],
-  ['MobileGlues-cpp/tests/buffer_readback_test.cpp.in', [107, 0]],
-  ['MobileGlues-cpp/gl/buffer_readback_core.h', [42, 0]],
   ['MobileGlues-cpp/CMakeLists.txt', [165, 124]],
   ['MobileGlues-cpp/config/settings.cpp', [48, 4]],
   ['MobileGlues-cpp/config/settings.h', [25, 0]],
-  ['MobileGlues-cpp/egl/context.cpp', [7, 0]],
-  ['MobileGlues-cpp/egl/context.h', [19, 2]],
+  ['MobileGlues-cpp/egl/context.cpp', [23, 0]],
+  ['MobileGlues-cpp/egl/context.h', [29, 2]],
   ['MobileGlues-cpp/egl/egl.cpp', [376, 7]],
   ['MobileGlues-cpp/egl/loader.cpp', [11, 2]],
   ['MobileGlues-cpp/egl/loader.h', [1, 1]],
@@ -48,21 +45,25 @@ const PATCH_DIFF = new Map([
   ['MobileGlues-cpp/gl/buffer.cpp', [827, 32]],
   ['MobileGlues-cpp/gl/buffer.h', [17, 0]],
   ['MobileGlues-cpp/gl/buffer_contract_core.h', [124, 0]],
+  ['MobileGlues-cpp/gl/buffer_readback_core.h', [42, 0]],
   ['MobileGlues-cpp/gl/drawing.cpp', [140, 259]],
   ['MobileGlues-cpp/gl/drawing.h', [1, 0]],
+  ['MobileGlues-cpp/gl/enable.cpp', [23, 8]],
+  ['MobileGlues-cpp/gl/enable_cap_validation.h', [151, 0]],
   ['MobileGlues-cpp/gl/frame_stats.h', [176, 0]],
   ['MobileGlues-cpp/gl/frame_stats_core.h', [617, 0]],
   ['MobileGlues-cpp/gl/framebuffer.cpp', [158, 184]],
   ['MobileGlues-cpp/gl/framebuffer.h', [3, 0]],
-  ['MobileGlues-cpp/gl/getter.cpp', [47, 33]],
+  ['MobileGlues-cpp/gl/getter.cpp', [114, 81]],
+  ['MobileGlues-cpp/gl/getter.h', [4, 0]],
   ['MobileGlues-cpp/gl/gl.cpp', [21, 5]],
-  ['MobileGlues-cpp/gl/gl_native.cpp', [19, 13]],
-  ['MobileGlues-cpp/gl/gl_stub.cpp', [3, 4]],
+  ['MobileGlues-cpp/gl/gl_native.cpp', [28, 13]],
+  ['MobileGlues-cpp/gl/gl_stub.cpp', [5, 5]],
   ['MobileGlues-cpp/gl/glsl/cache.cpp', [48, 31]],
   ['MobileGlues-cpp/gl/glsl/cache.h', [5, 1]],
-  ['MobileGlues-cpp/gl/glsl/glsl_for_es.cpp', [532, 115]],
+  ['MobileGlues-cpp/gl/glsl/glsl_for_es.cpp', [649, 115]],
   ['MobileGlues-cpp/gl/glsl/glsl_for_es.h', [5, 3]],
-  ['MobileGlues-cpp/gl/glsl/translation_state.h', [19, 0]],
+  ['MobileGlues-cpp/gl/glsl/translation_state.h', [34, 0]],
   ['MobileGlues-cpp/gl/glsl/uniform_initializer_core.h', [588, 0]],
   ['MobileGlues-cpp/gl/index_rebase_core.h', [34, 0]],
   ['MobileGlues-cpp/gl/indirect_ring_core.h', [45, 0]],
@@ -70,18 +71,18 @@ const PATCH_DIFF = new Map([
   ['MobileGlues-cpp/gl/mg.h', [7, 3]],
   ['MobileGlues-cpp/gl/multidraw.cpp', [168, 197]],
   ['MobileGlues-cpp/gl/pixel.cpp', [16, 34]],
-  ['MobileGlues-cpp/gl/program.cpp', [283, 193]],
+  ['MobileGlues-cpp/gl/program.cpp', [442, 189]],
   ['MobileGlues-cpp/gl/program.h', [3, 0]],
   ['MobileGlues-cpp/gl/restart.cpp', [7, 29]],
   ['MobileGlues-cpp/gl/restart.h', [0, 4]],
-  ['MobileGlues-cpp/gl/shader.cpp', [218, 102]],
+  ['MobileGlues-cpp/gl/shader.cpp', [223, 102]],
   ['MobileGlues-cpp/gl/shader.h', [43, 11]],
   ['MobileGlues-cpp/gl/terrain_upload_core.h', [23, 0]],
   ['MobileGlues-cpp/gl/texture.cpp', [11, 3]],
   ['MobileGlues-cpp/gl/transfer.cpp', [131, 0]],
   ['MobileGlues-cpp/gl/upload_scheduler_core.h', [218, 0]],
   ['MobileGlues-cpp/gles/gles.h', [9, 0]],
-  ['MobileGlues-cpp/gles/loader.cpp', [108, 3]],
+  ['MobileGlues-cpp/gles/loader.cpp', [112, 9]],
   ['MobileGlues-cpp/gles/loader.h', [29, 4]],
   ['MobileGlues-cpp/glx/lookup.cpp', [49, 2]],
   ['MobileGlues-cpp/include/MG/init.h', [60, 0]],
@@ -91,13 +92,18 @@ const PATCH_DIFF = new Map([
   ['MobileGlues-cpp/platform/driver_profile.cpp', [52, 0]],
   ['MobileGlues-cpp/platform/driver_profile.h', [19, 0]],
   ['MobileGlues-cpp/platform/driver_profile_core.h', [148, 0]],
-  ['MobileGlues-cpp/tests/CMakeLists.txt', [50, 0]],
+  ['MobileGlues-cpp/tests/CMakeLists.txt', [67, 0]],
+  ['MobileGlues-cpp/tests/buffer_readback_stub_before.inc', [12, 0]],
+  ['MobileGlues-cpp/tests/buffer_readback_test.cpp.in', [107, 0]],
+  ['MobileGlues-cpp/tests/depth_range_test.cpp', [196, 0]],
+  ['MobileGlues-cpp/tests/enable_invalid_enum_test.cpp', [73, 0]],
   ['MobileGlues-cpp/tests/framebuffer_shuffle_test.cpp', [63, 6]],
   ['MobileGlues-cpp/tests/pixel_size_test.cpp', [12, 0]],
   ['MobileGlues-cpp/tests/render_context_resources_test.cpp', [192, 0]],
   ['MobileGlues-cpp/tests/render_fsr_test.cpp', [415, 0]],
   ['MobileGlues-cpp/tests/render_resource_test.cpp', [179, 0]],
-  ['MobileGlues-cpp/tests/render_shader_test.cpp', [426, 0]],
+  ['MobileGlues-cpp/tests/render_shader_test.cpp', [589, 0]],
+  ['MobileGlues-cpp/tests/version_identity_test.cpp', [148, 0]],
 ]);
 
 function git(cwd, args) {
@@ -277,7 +283,7 @@ try {
   const sourceMain = git(submodule, ['rev-parse', 'HEAD']);
   const sourceTree = git(submodule, ['rev-parse', 'HEAD^{tree}']);
 
-  const patchGroups = Array.from({ length: 26 }, () => []);
+  const patchGroups = Array.from({ length: 31 }, () => []);
   [...PATCH_DIFF.entries()].forEach((entry, index) => patchGroups[index % patchGroups.length].push(entry));
   patchGroups.forEach((group, groupIndex) => {
     for (const [path, [added]] of group) writeChangedLines(submodule, path, added, 'new');
@@ -363,7 +369,7 @@ try {
 
   const oneShortCommit = git(submodule, ['rev-parse', `${state.commit}~1`]);
   setPinnedFixture(oneShortCommit);
-  expectStatus(runGuard(), 1, 'one fewer downstream commit is rejected', /exactly 26 commits; got 25/);
+  expectStatus(runGuard(), 1, 'one fewer downstream commit is rejected', /exactly 31 commits; got 30/);
 
   const lastGroup = patchGroups[patchGroups.length - 1];
   for (const [path, [added]] of lastGroup) writeChangedLines(submodule, path, added, 'new');
@@ -378,7 +384,7 @@ try {
   git(submodule, ['commit', '--quiet', '--allow-empty', '-m', 'unexpected extra downstream commit']);
   const oneOverCommit = git(submodule, ['rev-parse', 'HEAD']);
   setPinnedFixture(oneOverCommit);
-  expectStatus(runGuard(), 1, 'one extra downstream commit is rejected', /exactly 26 commits; got 27/);
+  expectStatus(runGuard(), 1, 'one extra downstream commit is rejected', /exactly 31 commits; got 32/);
   setPinnedFixture(state.commit);
 
   const untracked = join(submodule, 'MobileGlues-cpp', 'untracked.h');

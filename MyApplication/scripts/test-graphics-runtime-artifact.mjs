@@ -19,7 +19,7 @@ const fixture = () => ({
       'amclGraphicsBoundApiV1', 'amclGraphicsRuntimeOwnerV1', 'amclGraphicsPublishObserverV1', 'amclGraphicsPresentedV1',
       'amclGraphicsSwapV1', 'amclGraphicsFatalV1', 'amclGraphicsForegroundV1', 'amclGraphicsRuntimeJsonV1', 'amclGraphicsFailureJsonV1', 'amclGraphicsObservationEnabledV1', 'amclGraphicsInspectContextV1', 'glXGetProcAddress', 'glXGetProcAddressARB'] },
   'libglfw.so': { soname: 'libglfw.so', machine: 183, runpath: ['$ORIGIN'], needed: ['libamcl_vulkan_wsi.so', 'libamcl_window_host.so', 'libamcl_graphics_runtime.so'],
-    exports: ['glfwInitVulkanLoader', 'glfwVulkanSupported', 'glfwGetRequiredInstanceExtensions',
+    exports: ['glfwInitVulkanLoader', 'glfwVulkanSupported', 'glfwGetRequiredInstanceExtensions', 'glfwOHOS_MakeContextCurrentChecked',
       'glfwGetInstanceProcAddress', 'glfwGetPhysicalDevicePresentationSupport', 'glfwCreateWindowSurface',
       'glfwOHOS_BindGraphicsRuntimeV1', 'glfwOHOS_GraphicsGlProcV1', 'glfwOHOS_GraphicsEglProcV1',
       'glfwOHOS_PublishGraphicsObserverV1', 'glfwOHOS_GraphicsRuntimeJsonV1', 'glfwOHOS_GraphicsFailureJsonV1'] },

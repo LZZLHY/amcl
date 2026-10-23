@@ -1,0 +1,15 @@
+#pragma once
+#include "native_audiostreambuilder.h"
+extern "C" {
+OH_AudioStream_Result OH_AudioRenderer_Start(OH_AudioRenderer*);
+OH_AudioStream_Result OH_AudioRenderer_Pause(OH_AudioRenderer*);
+OH_AudioStream_Result OH_AudioRenderer_Stop(OH_AudioRenderer*);
+OH_AudioStream_Result OH_AudioRenderer_Release(OH_AudioRenderer*);
+OH_AudioStream_Result OH_AudioRenderer_GetSamplingRate(OH_AudioRenderer*,int32_t*);
+OH_AudioStream_Result OH_AudioRenderer_GetChannelCount(OH_AudioRenderer*,int32_t*);
+OH_AudioStream_Result OH_AudioRenderer_GetSampleFormat(OH_AudioRenderer*,OH_AudioStream_SampleFormat*);
+OH_AudioStream_Result OH_AudioRenderer_GetLatencyMode(OH_AudioRenderer*,OH_AudioStream_LatencyMode*);
+OH_AudioStream_Result OH_AudioRenderer_GetCurrentState(OH_AudioRenderer*,OH_AudioStream_State*);
+OH_AudioStream_Result OH_AudioRenderer_GetUnderflowCount(OH_AudioRenderer*,uint32_t*);
+OH_AudioStream_Result OH_AudioRenderer_SetVolume(OH_AudioRenderer*,float);
+}

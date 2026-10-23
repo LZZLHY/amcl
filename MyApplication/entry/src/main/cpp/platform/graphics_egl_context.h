@@ -25,4 +25,7 @@ struct EglContextOperations {
 AMCL_GRAPHICS_PUBLIC const EglContextOperations* FindEglContextOperations(const char* profile);
 // 同一运行时的其他映像只通过该转发表使用公共C ABI，不直接访问owner的C++账本。
 AMCL_GRAPHICS_PUBLIC const EglContextOperations* ForwardedEglContextOperations(bool desktopApi);
+// 读取已初始化且尚未被 provider 退休的 display；跨 namespace 只经 owner C 操作查询。
+// 不要求有 current/context/窗口，不调用驱动，不触发初始化；无有效 owner 时返回空。
+AMCL_GRAPHICS_PUBLIC void* InitializedEglDisplay(const GraphicsRuntimeBinding&);
 }

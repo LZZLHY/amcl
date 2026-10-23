@@ -24,7 +24,7 @@ with workspace_temporary_directory(prefix='amcl-wsi-diagnostics-') as directory:
         defines = [] if mask is None else ['AMCL_DIAGNOSTICS_MASK=' + str(mask)]
         compile_cpp(source, binary, includes=includes, defines=defines)
         result = subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=30)
-        expected = f'PASS WSI trace mask={effective} buffers=65 memory=64 bind=64 free=64 presents=300 failedPresent=1'
+        expected = f'PASS WSI trace mask={effective} buffers=65 memory=64 bind=64 free=64 presents=600 failedPresent=1'
         assert expected in result.stdout, result.stdout
         trace = effective == 513
         for message in ['graphics_vk_create_buffer begin', 'graphics_vk_create_buffer end result=0',
@@ -33,8 +33,12 @@ with workspace_temporary_directory(prefix='amcl-wsi-diagnostics-') as directory:
             assert (message in result.stderr) == trace, (mask, message, result.stderr)
         for message in ['graphics_loader_admission', 'graphics_vk_create_device end result=0',
                         'graphics_vk_create_buffer end result=-2', 'graphics_vk_get_buffer_memory end device=8960 buffer=0',
-                        'graphics_queue_present result=0 presents=300', 'graphics_queue_present result=-4',
+                        'graphics_queue_present result=-4',
                         'fixture_error_argument=1']:
             assert message in result.stderr, (mask, message, result.stderr)
+        # 同一生产包装器的成功/次优结果都不能绕过开关，真实错误仍由上面独立验证。
+        for message in ['graphics_queue_present result=0 presents=300',
+                        'graphics_queue_present result=1000001003 presents=600']:
+            assert (message in result.stderr) == trace, (mask, message, result.stderr)
         print(expected)
 print('PASS Vulkan WSI: release/default trace-off, explicit trace-on, failure/lifecycle evidence and dispatch preserved')

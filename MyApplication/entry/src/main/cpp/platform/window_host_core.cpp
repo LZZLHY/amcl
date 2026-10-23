@@ -19,11 +19,12 @@ bool WindowHostCore::ready() const {
     return publicationReference_ && snapshot_.nativeWindow && snapshot_.width > 0 && snapshot_.height > 0;
 }
 
+// 在独占发布锁内提交一次快照：先定状态，再运行调用方的 beforeCommit（输入绑定发布），
+// 然后退休旧引用，最后以 release 顺序公开 generation/state 给无锁 peek 读者。
 void WindowHostCore::commit(void* retiredPublication, AmclWindowHostCommitFn beforeCommit, void* context) {
     snapshot_.state = !snapshot_.nativeWindow ? AMCL_NATIVE_WINDOW_PUBLICATION_CLEARED :
         ready() ? AMCL_NATIVE_WINDOW_PUBLICATION_READY : AMCL_NATIVE_WINDOW_PUBLICATION_SUSPENDED;
     ++counters_.publications;
-    if (driver_.publishSnapshot) driver_.publishSnapshot(snapshot_, driver_.context);
     if (beforeCommit) beforeCommit(&snapshot_, context);
     retire(retiredPublication);
     // Preserve the established generation/state/generation reader contract.

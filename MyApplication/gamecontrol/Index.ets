@@ -7,6 +7,11 @@
 
 // 控制数据模型 / 常量
 export * from './src/main/ets/ControlLayout';
+export * from './src/main/ets/ControlGroups';
+export * from './src/main/ets/TouchPreferences';
+export * from './src/main/ets/TouchActionBindings';
+export * from './src/main/ets/TouchControlPresentation';
+export * from './src/main/ets/TouchGyroscope';
 export * from './src/main/ets/GlfwKeys';
 export * from './src/main/ets/LayoutPresets';
 export * from './src/main/ets/OhosKeyCodes';
@@ -27,6 +32,13 @@ export * from './src/main/ets/PhysicalKeyEdge';      // 一次键边沿 → 两�
 export * from './src/main/ets/WheelChannel';         // 两条滚轮通道的符号约定 + 分格累加 + Pan 入口闸门
 export * from './src/main/ets/PhysicalMouseMotion';  // rawDelta 存在性的**唯一**判定（生产与探针共用）
 export * from './src/main/ets/GamepadManager';
+export * from './src/main/ets/GameInputRuntime';
+export * from './src/main/ets/InputConfiguration';
+export * from './src/main/ets/LookPreferences';
+export * from './src/main/ets/InputConfigurationNativePort';
+export * from './src/main/ets/InputConfigurationRuntime';
+export * from './src/main/ets/SourceControlClient';
+export * from './src/main/ets/InputSessionCoordinator';
 // ⚠️ `InputModeManager` 已删除（多输入端架构改进提案 D2）。它在 activeMode 被删之后名字
 // 已名不副实，且捆着四件互不相关的事。拆成下面三个：
 export * from './src/main/ets/InputDeviceMonitor';    // 设备能力 + 带 deviceId 的插拔扇出
@@ -37,8 +49,25 @@ export * from './src/main/ets/ProductInputPolicy';
 export * from './src/main/ets/ProductRuntimePolicy';
 export * from './src/main/ets/InputSurfaceContext';
 export * from './src/main/ets/TextInputSessionCoordinator';
+export * from './src/main/ets/ImeCallbackLease'; // 原attach回调资格；迟到OS回调不能借新文本租约。
 
-// 布局持久化 + Pojav 导入（含 ControlNativeSink 注入接口）
+// 布局持久化 + Pojav 导入；Native应用端口与会话运行体在上述输入配置边界导出。
 export * from './src/main/ets/LayoutStore';
+export * from './src/main/ets/LayoutEditSession';
 export * from './src/main/ets/LayoutMerge';
+export * from './src/main/ets/LayoutCandidate';
+export * from './src/main/ets/GameSessionLayoutRepository';
+export * from './src/main/ets/GameLayoutSessionMerge';
+export * from './src/main/ets/LayoutBudget';
+export * from './src/main/ets/LayoutSourceNormalization';
 export * from './src/main/ets/PojavImporter';
+export * from './src/main/ets/ExternalLayoutImporter';
+export * from './src/main/ets/GameGuiGeometry';
+export * from './src/main/ets/VirtualMouseModel';
+export * from './src/main/ets/TouchGuide';
+export * from './src/main/ets/TouchGuideLayout';
+export * from './src/main/ets/TouchControlGeometry';
+export * from './src/main/ets/RuntimeTouchLayout';
+
+// 应用已冻结的设备连接寿命；不作为Native/Core设备代权威。
+export * from './src/main/ets/InputDeviceConnectionLease';

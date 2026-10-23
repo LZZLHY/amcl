@@ -35,6 +35,8 @@ with workspace_temporary_directory(prefix='amcl-log-durability-') as directory:
                 assert result['unscopedInGlobal'] and not result['unscopedInLedger']
             else:
                 assert result['ledgerContains']
+                if mode == 'close-before-flush':
+                    assert not result['closeConfirmedBeforePublish'] and result['retryConfirmed']
             results[key] = result
 print(json.dumps(results, indent=2))
 print('PASS host/game production writer: ledger flush, abrupt exit after flush, deferred close')

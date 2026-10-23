@@ -102,9 +102,10 @@ const std::vector<std::string>& getCommonJvmArgs() {
         "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
 
         // --------------------------------------------------
-        // Cacio AWT 模块打开（Forge installer 固定启用；MC 主进程仅 cacio/ 存在时启用）
-        // 主进程即便没启用 Cacio，这些 args 也应该列入 ArkTS 去重表，
-        // 避免 version.json 的同名参数被重复传入。
+        // AWT/JDK 内部模块的兼容访问清单。游戏和 installer 共享这些参数，当前默认
+        // 使用 OpenJDK headless 路径；exports/opens 不装配 Cacio，也不能证明存在
+        // 活动的 AWT 输入消费者。ArkTS 去重表仍消费同一清单，避免 version.json
+        // 的同名参数被重复传入；不要仅为说明更正删除模组可能使用的访问权限。
         // --------------------------------------------------
         "--add-exports=java.desktop/java.awt=ALL-UNNAMED",
         "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED",

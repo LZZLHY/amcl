@@ -181,11 +181,9 @@ bool ApplyControllerLocked(const char *lifecycleStage, bool force,
 
     if (!force && state.haveAppliedPolicy &&
         FrameRatePolicyEqual(state.appliedPolicy, policy)) {
-        OH_LOG_INFO(LOG_APP,
-                    "event=frame-rate-hint-unchanged stage=%{public}s "
-                    "active=%{public}d cap=%{public}d expected=%{public}d",
-                    SafeStage(lifecycleStage), active ? 1 : 0, effectiveCap,
-                    policy.expected);
+        // 相同且已成功应用的政策无需重复SDK调用或每次心跳写相同日志。
+        // 此分支不接管生命周期：显式force仍经过实际SDK，失败不缓存成功事实，
+        // 真实Hz/cap/focus/foreground变化仍由同一owner计算后应用并记原日志。
         return true;
     }
 
@@ -392,7 +390,9 @@ bool RefreshExpectedFrameRateHintForDisplayRate(
                     SafeStage(lifecycleStage));
         return false;
     }
-    return ApplyControllerLocked(lifecycleStage, true, false, displayRate);
+    // 普通显示元数据刷新可由250ms维护重复进入，既有成功政策就是去重事实。
+    // 不绕过本次Native计算/失败重试，也不改真正component/surface边界的force调用。
+    return ApplyControllerLocked(lifecycleStage, false, false, displayRate);
 }
 
 } // namespace amcl::ohos

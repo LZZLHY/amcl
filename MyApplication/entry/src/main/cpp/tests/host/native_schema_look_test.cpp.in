@@ -1,0 +1,126 @@
+/**
+ * Native schema角色→真实look漏斗→neutral/Core/ring→逐字GLFW callback的宿主纵向。
+ * 只复用既有touch夹具的平台边缘与窗口载体，生产角色/加工/前缀/消费函数不另写算法。
+ * 消费刻意晚于UP/CANCEL，以免即时pump掩盖错误退休；不声称平台SDK事件或游戏tick采纳。
+ */
+#include "platform/source_look_producer.h"
+#include "platform/source_look_processor.h"
+#include "input/adapters/glfw_source_plane_aggregate.h"
+#include "input/delivery/look_transport.h"
+#include "input/delivery/look_execution_client.h"
+#include <chrono>
+#include <cstdio>
+#include <climits>
+#include <mutex>
+#include <ctime>
+#include <hilog/log.h>
+// census仍用真实计数实现；只补Windows宿主没有的POSIX时钟/hilog打印边缘。
+#ifdef _WIN32
+constexpr int CLOCK_MONOTONIC=1,CLOCK_MONOTONIC_COARSE=2;
+int clock_gettime(int,timespec* out){const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();out->tv_sec=static_cast<time_t>(ns/1000000000);
+    out->tv_nsec=static_cast<long>(ns%1000000000);return 0;}
+#endif
+#define LOG_INFO 1
+#define OH_LOG_Print(...) ((void)0)
+@TOUCH_PREFIX@
+#undef CHECK
+#define CHECK(v) do{if(!(v)){std::fprintf(stderr,"NATIVE LOOK VERTICAL FAIL %d: %s\n",__LINE__,#v);std::exit(1);}}while(false)
+#undef LOG_TAG
+#define LOG_TAG "GLFW_COMPAT"
+struct GLFWwindow{uint64_t windowId=42;double cursorX=100,cursorY=50;void(*cursorPosCb)(GLFWwindow*,double,double)=nullptr;};
+GLFWwindow* g_currentWindow=nullptr;
+static amcl::input::GlfwSourcePlaneAggregate g_sourcePlaneAggregate;
+// 本目标关闭trace；窗口callback/body仍逐字生产，日志writer只作宿主链接边缘。
+void amclExternalLogWrite(int,const char*,const char*,...){}
+@LOOK_CALLBACK@
+
+// 唯一被控制的是既有deadline调度边缘：可用但此场景不自动推进idle tick，确保UP
+// 自己承担补尾。这个就绪输入不替代Core/Source/consumer准入，也不声称线程创建已测。
+// Source、math、资源、预算和queue都由真实生产TU判定；下面两漏斗函数逐字提取。
+void inputBridge_addSourceLookDelta(int32_t,double,double);
+auto s_addLookDeltaFn=&inputBridge_addSourceLookDelta;
+std::once_flag s_lookIdleOnce;
+std::atomic<bool> s_lookIdleWorkerReady{false};
+std::mutex s_lookMutex;
+int s_lookIdleCond=0,idleSignals=0;
+int64_t s_lookIdleDeadlineNs[AMCL_INPUT_SOURCE_COUNT]{};
+constexpr int64_t kLookIdleFlushDelayNs=20000000;
+void lookInitIdleWorker(){s_lookIdleWorkerReady.store(true,std::memory_order_release);}
+void pthread_once(std::once_flag* flag,void(*init)()){std::call_once(*flag,init);}
+void pthread_cond_signal(int*){++idleSignals;}
+std::atomic<uint64_t> s_invalidLookDeltaCount{0};
+bool finitePair(double x,double y){return std::isfinite(x)&&std::isfinite(y);}
+bool firstOrPowerOfTwo(uint64_t n){return n==1||(n&(n-1))==0;}
+#define AMCL_LOG_E(...) ((void)0)
+@REAL_LOOK_FUNCTIONS@
+@TOUCH_PRODUCTION@
+
+int cursorCallbacks=0;std::vector<std::pair<double,double>> deliveredCursors;
+void nativeLookMoved(GLFWwindow* window,double x,double y){
+    CHECK(window->cursorX==x&&window->cursorY==y);++cursorCallbacks;deliveredCursors.emplace_back(x,y);
+}
+void nativeTouch(int phase,int id,float x,float y){
+    // 输入样本与真实source flush在本宿主均用同域steady_clock；不拿旧fixture的
+    // 固定1e9与真实owner/flush时刻混排，且不把这个宿主事实外推成设备SDK时钟证明。
+    clockNs=std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    OH_NativeXComponent_TouchEvent event{phase,clockNs};
+    (void)handleSchemaGrabbedTouch(event,x,y,id);
+}
+void pumpNativeLook(GLFWwindow& window){inputBridgeStartPumping();inputBridgePumpEvents(&window);inputBridgeStopPumping();}
+int main(){
+    // 真descriptor/Source准备、session/focus/activeSurface/context、bridge消费者由旧夹具
+    // 初始化。只关闭它的“通知即自动pump”记录模式，模拟真实低帧晚消费，不造Ready。
+    CHECK(initializeSourceFixture());sourceFixtureReady=false;
+    // 真实callback已改为从进程公告解析，宿主也在基线准备时发布实际owner而非借本地getter。
+    amclLookExecutionPublishV1();
+    GLFWwindow window;window.cursorPosCb=nativeLookMoved;g_currentWindow=&window;
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&window),1,42);
+    inputBridge_glfwSetActive(&window,1);inputBridge_setLookPrefixCallbackV1(bridgeLookPrefixCallback);
+    const auto* look=amclLookExecutionGetPortV1();CHECK(look);
+    const AmclLookPolicyV1 policy{sizeof(policy),0,1,.1,0};CHECK(look->applyPolicy(1,&policy)==0);
+    TouchInteractionConfig config;
+    CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,1,.18f,3,&config)>0);
+
+    // 无离散动作也须每MOVE封并运输；正常UP只补原tail，晚消费仍保留MOVE和尾prefix。
+    const auto before=amcl::input::SourceLookPipelineSnapshot();
+    nativeTouch(OH_NATIVEXCOMPONENT_DOWN,0,500,500);
+    CHECK(s_schemaFingers[0].role==SCHEMA_FINGER_LOOK);
+    nativeTouch(OH_NATIVEXCOMPONENT_MOVE,0,600,550);
+    const auto afterMove=amcl::input::SourceLookPipelineSnapshot();
+    CHECK(afterMove.accepted>before.accepted&&afterMove.backlogDx>0&&window.cursorX==100&&cursorCallbacks==0);
+    nativeTouch(OH_NATIVEXCOMPONENT_UP,0,600,550);
+    const auto afterUp=amcl::input::SourceLookPipelineSnapshot();
+    CHECK(s_schemaFingers[0].role==SCHEMA_FINGER_NONE);
+    pumpNativeLook(window);
+    CHECK(window.cursorX==200&&window.cursorY==100&&cursorCallbacks==2);
+    CHECK(afterUp.backlogDx==0&&afterUp.flushEmit>afterMove.flushEmit);
+    std::puts("NATIVE LOOK UP PASS: actual MOVE prefix + normal UP tail, delayed GLFW cache/callback");
+
+    // CANCEL在pump前退休原source，旧未cache prefix贡献撤销；已cache的前一gesture不回滚。
+    const double cachedX=window.cursorX,cachedY=window.cursorY;const int callbacks=cursorCallbacks;
+    nativeTouch(OH_NATIVEXCOMPONENT_DOWN,1,500,500);
+    nativeTouch(OH_NATIVEXCOMPONENT_MOVE,1,650,520);
+    const auto beforeCancel=amcl::input::SourceLookPipelineSnapshot();CHECK(beforeCancel.backlogDx>0);
+    nativeTouch(OH_NATIVEXCOMPONENT_CANCEL,1,650,520);
+    const auto afterCancel=amcl::input::SourceLookPipelineSnapshot();
+    CHECK(s_schemaFingers[1].role==SCHEMA_FINGER_NONE);
+    pumpNativeLook(window);
+    // 已发布运输记录仍可被消费为零贡献票；合同取消的是旧运动，不能把一次相同坐标
+    // callback误判成运动重放。逐个实际callback坐标也必须保持此前已cache值。
+    CHECK(window.cursorX==cachedX&&window.cursorY==cachedY);
+    for(size_t i=static_cast<size_t>(callbacks);i<deliveredCursors.size();++i)
+        CHECK(deliveredCursors[i].first==cachedX&&deliveredCursors[i].second==cachedY);
+    CHECK(afterCancel.flushDiscard>beforeCancel.flushDiscard);
+    std::printf("NATIVE LOOK CANCEL FACTS before=(%.17g,%.17g)/%d after=(%.17g,%.17g)/%d pending=(%.17g,%.17g)\n",
+        cachedX,cachedY,callbacks,window.cursorX,window.cursorY,cursorCallbacks,afterCancel.backlogDx,afterCancel.backlogDy);
+    std::puts("NATIVE LOOK CANCEL PASS: actual source retire before cache, previous cache retained");
+
+    // 原取消不侵害后来新gesture：fresh DOWN重新开真实流，正常终点仍能交付。
+    nativeTouch(OH_NATIVEXCOMPONENT_DOWN,2,500,500);nativeTouch(OH_NATIVEXCOMPONENT_MOVE,2,550,500);
+    nativeTouch(OH_NATIVEXCOMPONENT_UP,2,550,500);pumpNativeLook(window);
+    CHECK(window.cursorX==cachedX+50&&window.cursorY==cachedY&&cursorCallbacks>callbacks);
+    CHECK(idleSignals>0&&s_invalidLookDeltaCount.load()==0);
+    std::puts("NATIVE LOOK VERTICAL PASS: production schema DOWN/MOVE/UP/CANCEL, real source/math/Core/ring/GLFW");
+}

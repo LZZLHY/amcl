@@ -1,4 +1,8 @@
-// Desktop UI product provenance. Graphics providers use the shared artifact contract.
+/**
+ * 电脑产品来源审核：绑定工具链、编译图、签名、实际HAP和实现文件摘要。
+ * Agent认知索引属于治理资产，未参与编译与打包；必须按精确角色排除它，
+ * 不能为避开动态baseline而删除文件、放宽真实源码检查或忽略所有点目录。
+ */
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +19,19 @@ const hashFile = file => hash(readFileSync(file));
 // 日常开发工作树允许有未提交/未跟踪输入，完整Git清单可超过Node默认的1MiB缓冲。
 // 与通用MG证据检查器保持32MiB有界读取；超限仍失败，不能截断清单或漏算构建身份。
 const GIT_OUTPUT_LIMIT = 32 * 1024 * 1024;
+
+/**
+ * 判断Git列出的路径是否属于原有实现输入集合。保持未跟踪源码与配置的审计，
+ * 仅排除明确声明的AOCI治理目录及根索引；近似名字、其他点目录、源码/json/txt仍参与。
+ * 路径来自Git而非用户任意文件遍历；规范化分隔符只为跨宿主一致，不解析或改写文件。
+ */
+export function isDesktopImplementationInputPath(relativePath) {
+  const name = relativePath.replaceAll('\\', '/');
+  if (name.startsWith('.aoci/') ||
+      ['aoci.txt', 'aoci.meta.txt', 'aoci.code.txt', 'aoci.database.txt'].includes(name)) return false;
+  return !!name && !/^(docs|diagnostics|artifacts|prebuilt)\//.test(name) &&
+    /(?:\.(?:cpp|c|h|ets|java|ts|mjs|ps1|json5|json|lock|txt)|CMakeLists.txt)$/.test(name);
+}
 export function auditDesktopBuild({ product='desktop', mode='release', hap, hapKind='signed', hvigor, requireClean=false, verifyPersisted=false }) {
   if (product !== 'desktop') throw new Error('System-only provenance is desktop-only');
   const root = PRODUCT_ROOT;
@@ -48,9 +65,9 @@ export function auditDesktopBuild({ product='desktop', mode='release', hap, hapK
     hvigor:{version:String(runVersionCommand(resolve(hvigor),['--version','--no-daemon'],root)).trim(),launcherSha256:hashFile(hvigor)},
     toolchainFile:{sha256:hashFile(cache.CMAKE_TOOLCHAIN_FILE)},hapSignTool:{sha256:base.signature.verifierSha256}};
   issues.push(...toolchainLockIssues(JSON.parse(readFileSync(join(root,'toolchain.lock'),'utf8')),actual,product));
-  // Include untracked implementation inputs; a HEAD+dirty bit cannot identify a build.
+  // 未跟踪的真实实现仍纳入摘要；治理索引不属于编译输入，不能因其运行时更新误报HAP过期。
   const names=execFileSync('git',['ls-files','-z','--cached','--others','--exclude-standard'],{cwd:root,encoding:'utf8',maxBuffer:GIT_OUTPUT_LIMIT}).split('\0')
-    .filter(p=>p && !/^(docs|diagnostics|artifacts|prebuilt)\//.test(p) && /(?:\.(?:cpp|c|h|ets|java|ts|mjs|ps1|json5|json|lock|txt)|CMakeLists.txt)$/.test(p)).sort();
+    .filter(isDesktopImplementationInputPath).sort();
   const inputs=names.filter(p=>existsSync(join(root,p))).map(p=>[p,hashFile(join(root,p))]);
   if (!verifyPersisted) {
     const hapTime=statSync(hap).mtimeMs;

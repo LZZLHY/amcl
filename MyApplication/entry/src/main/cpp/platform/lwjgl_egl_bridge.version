@@ -1,0 +1,4 @@
+AMCL_LWJGL_EGL_1 {
+    global: eglGetProcAddress;
+    local: *;
+};

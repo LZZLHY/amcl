@@ -18,6 +18,8 @@ const TAG = 'Haptic'
 let s_warned: boolean = false
 // 振动不可用时短路，避免每次按键都进 try/catch + 触发 SDK 调用
 let s_disabled: boolean = false
+// 连续扫格或同帧组合键合并为一个短脉冲；只节流反馈，不改变任何输入的接受/释放结果。
+let s_lastVibrationMs: number = 0
 
 /**
  * 短促按键反馈。durationMs 默认 8ms。
@@ -25,10 +27,14 @@ let s_disabled: boolean = false
  */
 export function hapticTap(durationMs: number = 8): void {
   if (s_disabled) return
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return
+  const now: number = Date.now()
+  if (now >= s_lastVibrationMs && now-s_lastVibrationMs < 35) return
+  s_lastVibrationMs = now
   try {
     // fire-and-forget：不 await，避免阻塞 onTouch / NAPI 派发
     vibrator.startVibration(
-      { type: 'time', duration: durationMs },
+      { type: 'time', duration: Math.min(30,Math.round(durationMs)) },
       { usage: 'touch' }
     ).catch((err: Object) => {
       handleFailure(err)

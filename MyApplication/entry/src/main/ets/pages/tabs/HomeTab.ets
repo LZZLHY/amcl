@@ -22,7 +22,9 @@ import { ActivityRecord, ActivityCategory, ActivityStatus } from 'feature_core';
 import { getModpackIconPath } from 'mods';
 // 一多适配（响应式）：设备形态 / 断点抽象，由 Index @Provide 下沉。
 import { Breakpoint, DeviceForm } from 'commons';
-import { AppIcon, AppIconButton, loaderIconForVersion } from '../../components/AppIcon';
+import { AppIcon, loaderIconForVersion } from '../../components/AppIcon';
+import { ImmersiveTitleScaffold } from '../../components/ImmersiveTitleScaffold';
+import { AppTitleAction } from '../../components/AppTitleAction';
 import { inferLoaderKey, getLoaderInfo, resolveInstalledLoaderKey } from '../../components/LoaderCatalog';
 import { MarqueeText } from '../../components/MarqueeText';
 import { VersionBlockIcon } from '../../components/VersionBlockIcon';
@@ -32,6 +34,7 @@ import { accountVerifiedTone } from '../../components/SemanticColors';
 // 2026-05-24：FloatingDock 占高预留，让 Scroll 内容最后一项不被 dock 盖住
 import { floatingDockReserveHeight } from 'commons';
 import { MotionSection } from '../../components/MotionSection';
+import { StartupTargetRect } from '../../components/startup/StartupTypes';
 
 /**
  * 一多适配：宽屏（LG 断点 · 平板/2in1 横向）下首页内容收敛到的左栏定宽（vp）。
@@ -62,6 +65,13 @@ export struct HomeTab {
   @Prop mcDownloading: boolean = false
   @Prop statusMsg: string = ''
   @Prop versionIsolation: boolean = true
+  /** 商店默认管理模式与运行调试互不替代；管理主行动由父页面的真实核验结果决定。 */
+  @Prop storeManager: boolean = false
+  @Prop canRunGame: boolean = true
+  @Prop managerAction: string = 'download'
+  @Prop managerLabel: string = '引导下载'
+  @Prop managerStatus: string = ''
+  @Prop hasExistingGame: boolean = false
   // M2 Phase B：账户信息
   @Prop accountUsername: string = 'MCPlayer'
   @Prop accountTypeLabel: string = '离线账户'
@@ -90,6 +100,16 @@ export struct HomeTab {
   @Prop unreadBadge: string = ''
   /** 最近活动记录（由 Index 传入，最新在前，已截到前几条）。 */
   @Prop recentActivities: ActivityRecord[] = []
+  /**
+   * 开屏开始交接首页时由宿主置为 true。在这之前卡片保持初始位置，
+   * 不会在开屏下面提前消耗入场动画；默认 true 保持其他调用方原有行为。
+   */
+  @Prop startupRevealed: boolean = true
+  /**
+   * 开屏仍持有品牌斧头时，只把首页 30 vp 图像置为透明，保留 36 vp 白底和全部布局。
+   * 宿主收到开屏完成回调后再置为 false，保证同一时刻只有一把可见斧头。
+   */
+  @Prop startupHandoffPending: boolean = false
 
   // ==================== 一多适配（响应式）====================
   // 由 Index @Provide 下沉：appBreakpoint=随窗口宽度变化的断点；deviceForm=出厂形态。
@@ -99,6 +119,8 @@ export struct HomeTab {
 
   // 回调
   onLaunch: () => void = () => {}
+  onManagerAction: () => void = () => {}
+  onReturnGame: () => void = () => {}
   /** 无已装版本时点大按钮「去下载」：跳「下载-版本」页。 */
   onGoDownload: () => void = () => {}
   onSelectVersion: (ver: string) => void = () => {}
@@ -114,24 +136,55 @@ export struct HomeTab {
   onOpenSettings: () => void = () => {}
   /** 点铃铛 → 打开消息中心（M4）。 */
   onOpenMessages: () => void = () => {}
+  /**
+   * 报告品牌图像在当前窗口中的实际布局矩形（vp），供开屏完成归位。
+   * 默认空回调允许首页继续独立使用；父级负责决定何时使用、何时忽略测量结果。
+   */
+  onStartupAxeRect: (rect: StartupTargetRect) => void = (_rect: StartupTargetRect): void => {}
 
+  /**
+   * 将 Image 的布局结果交给开屏宿主。Area.globalPosition 的原点是当前窗口左上角，
+   * Area.position 则相对父组件；这里必须取前者，避免把图标在 Stack 内的 3 vp 偏移
+   * 当成窗口坐标。Area 的宽高与 Position 的坐标均为 vp，无需再做 px/vp 换算。
+   *
+   * 图像使用 opacity 而非条件移除，因此开屏遮挡期间仍参与布局，能够提前拿到终点。
+   * 不完整或暂时无效的布局不会宣告终点就绪，留给宿主继续等待后续有效布局或走短淡出。
+   */
+  private reportStartupAxeRect_(area: Area): void {
+    const rect: StartupTargetRect = new StartupTargetRect();
+    rect.x = Number(area.globalPosition.x);
+    rect.y = Number(area.globalPosition.y);
+    rect.width = Number(area.width);
+    rect.height = Number(area.height);
+    rect.valid = Number.isFinite(rect.x) && Number.isFinite(rect.y)
+      && Number.isFinite(rect.width) && Number.isFinite(rect.height)
+      && rect.width > 0 && rect.height > 0;
+    if (rect.valid) {
+      this.onStartupAxeRect(rect);
+    }
+  }
+
+
+  /** 标题动作只携带数据；消息数字与更新提示由原父层状态继续提供。 */
+  private homeTitleActions_(): AppTitleAction[] {
+    return [
+      { id: 'home-messages', label: '消息', icon: AppIconName.Notification, badge: this.unreadBadge },
+      { id: 'home-settings', label: this.showUpdateDot ? '设置，有可用更新' : '设置',
+        icon: AppIconName.Settings, badge: this.showUpdateDot ? '•' : '' },
+    ];
+  }
 
   build() {
     Column() {
-      // 竖屏：首页【绝不整页滚动】，固定区 + 最近活动卡（卡内部自己滚动）。
-      // 横屏：垂直空间小，整页用 Scroll 包起来可滚，否则启动按钮被挤出够不到。
-      if (this.isLandscape) {
-        Scroll() {
-          this.HomeContent()
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.Spring)
-        .align(Alignment.TopStart)
-      } else {
-        this.HomeContent()
-      }
+      ImmersiveTitleScaffold({ title: 'AMCL', theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary, showBack: false, menuActions: this.homeTitleActions_(),
+        brandWidth: 36, headerBrand: (): void => { this.PageHeader() },
+        onMenuAction: (id: string): void => {
+          if (id === 'home-messages') this.onOpenMessages();
+          else if (id === 'home-settings') this.onOpenSettings();
+        },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%')
     .height('100%')
@@ -142,14 +195,14 @@ export struct HomeTab {
   @Builder
   HomeContent() {
     Column({ space: 14 }) {
-      // ============ AMCL Logo Header（设计稿 Screen E 顶部） ============
-      this.PageHeader()
-
       // ============ Account Card（精简版 + 令牌过期占位） ============
-      MotionSection({ order: 0 }) { this.AccountCard() }
+      // 开屏自己承担首页整体淡入；交接时卡片直接落到最终位置，避免再叠一轮慢错峰。
+      MotionSection({ order: 0, entranceEnabled: this.startupRevealed,
+        animateEntrance: !this.startupHandoffPending }) { this.AccountCard() }
 
       // ============ Hero Version Card（大蓝色卡核心新增） ============
-      MotionSection({ order: 1 }) { this.HeroVersionCard() }
+      MotionSection({ order: 1, entranceEnabled: this.startupRevealed,
+        animateEntrance: !this.startupHandoffPending }) { this.HeroVersionCard() }
 
       // ============ 状态指示行（绿色脉冲点 + 详细状态文字） ============
       this.StatusRow()
@@ -158,7 +211,8 @@ export struct HomeTab {
       this.LaunchButton()
 
       // ============ Quick Stats 三列 ============
-      MotionSection({ order: 2 }) { this.QuickStatsRow() }
+      MotionSection({ order: 2, entranceEnabled: this.startupRevealed,
+        animateEntrance: !this.startupHandoffPending }) { this.QuickStatsRow() }
 
       // ============ 最近活动卡（竖屏吃剩余高度内部滚动；横屏随整页滚动） ============
       this.RecentActivityCard()
@@ -167,7 +221,7 @@ export struct HomeTab {
     // 竖屏吃满父高度；横屏在 Scroll 内按内容高度排布（layoutWeight 0 = 不撑高）
     .layoutWeight(this.isLandscape ? 0 : 1)
     // 竖屏固定主体铺到 dock 下方，尾部避让放在最近活动的内层 Scroll；横屏留白随整页滚动。
-    .padding({ left: 20, right: 20, top: this.topSafeHeight + 8,
+    .padding({ left: 20, right: 20, top: 8,
       bottom: this.isLandscape ? floatingDockReserveHeight(this.bottomSafeHeight) : 0 })
     .alignItems(HorizontalAlign.Start)
   }
@@ -176,11 +230,11 @@ export struct HomeTab {
   //  Builders
   // ============================================================
 
-  /** AMCL Logo Header */
+  /** 真实30vp品牌图像进入共同标题装饰槽，保留测量／透明交接所需的Image节点。 */
   @Builder
   PageHeader() {
     Row() {
-      // 左侧 logo + 标题
+      // 标题和按钮由宿主负责，这里只保留品牌底板与原图片。
       // 2026-05-25：品牌图标改为"圆角白底 + 像素粉斧"——与桌面 launcher icon
       // 一致（参见 entry/.../media/amcl_axe.png + startIcon.png 的合成方式）。
       // 用 syncLoad 防止 Scroll 首帧空白闪烁；ImageInterpolation.None 保留像素锐利。
@@ -198,81 +252,17 @@ export struct HomeTab {
             .objectFit(ImageFit.Contain)
             .interpolation(ImageInterpolation.None)
             .syncLoad(true)
+            // 透明不会撤掉布局节点，归位目标在准备期间即可测量；白色圆角底始终保留。
+            .opacity(this.startupHandoffPending ? 0 : 1)
+            .onAreaChange((_oldArea: Area, area: Area): void => {
+              this.reportStartupAxeRect_(area);
+            })
         }
-        Text('AMCL')
-          .fontSize(22)
-          .fontWeight(700)
-          .fontColor(this.theme.textPrimary)
       }
       .layoutWeight(1)
       .alignItems(VerticalAlign.Center)
 
-      // 右侧通知 / 设置入口
-      Row({ space: 8 }) {
-        // 铃铛 = 消息中心入口（M4）。此前是纯占位，点了没反应。
-        Stack() {
-          AppIconButton({
-            name: AppIconName.Notification,
-            iconSize: 18,
-            color: this.theme.textPrimary,
-            containerDiameter: 36,
-            containerBg: this.theme.bgCard,
-            containerRadius: 18,
-            containerShadowRadius: this.theme.cardShadowRadius,
-            containerShadowColor: this.theme.cardShadowColor,
-            onAction: () => { this.onOpenMessages() },
-          })
-          // 未读角标：1~99 显示数字，超过显示 99+。白描边与 ⚙ 的更新红点同款做法，
-          // 保证在任意底色上都看得清。
-          if (this.unreadBadge.length > 0) {
-            Row() {
-              Text(this.unreadBadge)
-                .fontSize(9)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.theme.textOnPrimary)
-                .maxLines(1)
-            }
-            .padding({ left: this.unreadBadge.length > 1 ? 4 : 0, right: this.unreadBadge.length > 1 ? 4 : 0 })
-            .constraintSize({ minWidth: 16 })
-            .height(16)
-            .borderRadius(8)
-            .backgroundColor(this.theme.error)
-            .border({ width: 2, color: this.theme.bgCard })
-            .justifyContent(FlexAlign.Center)
-            .offset({ x: 15, y: -13 })
-          }
-        }
-        .alignContent(Alignment.Center)
-        Stack() {
-          AppIconButton({
-            name: AppIconName.Settings,
-            iconSize: 18,
-            color: this.theme.textPrimary,
-            containerDiameter: 36,
-            containerBg: this.theme.bgCard,
-            containerRadius: 18,
-            containerShadowRadius: this.theme.cardShadowRadius,
-            containerShadowColor: this.theme.cardShadowColor,
-            onAction: () => {
-              // 2026-05-24：原来跳 DevToolsPage（误设计），现在跳到设置 Tab。
-              // 父组件 Index 通过 HdsTabsController.changeIndex(2) 切到第 3 个 tab。
-              this.onOpenSettings()
-            },
-          })
-          // 有可用更新时在 ⚙ 右上角叠一个红点（带白描边便于在任意底色上可见）
-          if (this.showUpdateDot) {
-            Circle({ width: 10, height: 10 })
-              .fill(this.theme.error)
-              .stroke(this.theme.bgCard)
-              .strokeWidth(2)
-              .offset({ x: 14, y: -14 })
-          }
-        }
-        .alignContent(Alignment.Center)
-      }
-    }
-    .width('100%')
-    .alignItems(VerticalAlign.Center)
+    }.width(36).height(56).alignItems(VerticalAlign.Center)
   }
 
   /** 账户卡片 —— 头像 + 用户名 + 类型徽章 + 令牌过期提示 */
@@ -398,8 +388,10 @@ export struct HomeTab {
 
       // 3 个深蓝 chip：JDK / Xmx / 隔离
       Row({ space: 6 }) {
-        this.HeroChip(AppIconName.Java, 'JDK ' + this.effectiveJdkVersion)
-        this.HeroChip(AppIconName.Memory, this.mcXmx > 0 ? this.mcXmx + ' MB' : '自动')
+        if (!this.storeManager || this.canRunGame) {
+          this.HeroChip(AppIconName.Java, 'JDK ' + this.effectiveJdkVersion)
+          this.HeroChip(AppIconName.Memory, this.mcXmx > 0 ? this.mcXmx + ' MB' : '自动')
+        }
         this.HeroChip(
           this.versionIsolation ? AppIconName.IsolateOn : AppIconName.IsolateOff,
           this.versionIsolation ? '版本隔离' : '共享存档',
@@ -451,14 +443,15 @@ export struct HomeTab {
   /** 64 dp 大启动按钮 */
   @Builder
   LaunchButton() {
+    Column({ space: 8 }) {
     Row({ space: 10 }) {
       AppIcon({
-        name: this.noVersionInstalled() ? AppIconName.Download : (this.isRunning ? AppIconName.Hourglass : AppIconName.Play),
+        name: this.storeManager ? AppIconName.Export : (this.noVersionInstalled() ? AppIconName.Download : (this.isRunning ? AppIconName.Hourglass : AppIconName.Play)),
         iconSize: 22,
         color: this.theme.textOnPrimary,
         weight: FontWeight.Bold,
       })
-      Text(this.launchButtonText())
+      Text(this.storeManager ? this.managerLabel : this.launchButtonText())
         .fontSize(19)
         .fontWeight(700)
         .fontColor(this.theme.textOnPrimary)
@@ -468,14 +461,25 @@ export struct HomeTab {
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .borderRadius(32)
-    .backgroundColor(this.launchButtonActive() ? this.theme.primary : this.theme.disabled)
+    .backgroundColor((this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive()) ? this.theme.primary : this.theme.disabled)
     .onClick(() => {
-      if (this.noVersionInstalled()) {
+      if (this.storeManager) {
+        if (this.managerAction !== 'checking') this.onManagerAction()
+      } else if (this.noVersionInstalled()) {
         this.onGoDownload()          // 无版本：去「下载-版本」页
       } else if (this.canLaunch()) {
         this.onLaunch()              // 有版本：进启动前自检（无 JDK 也放行，由自检内联下载）
       }
     })
+    if (this.storeManager && this.hasExistingGame && this.managerAction !== 'session') {
+      Button('返回现有游戏 / 退出').width('100%').height(48).fontSize(14)
+        .backgroundColor(this.theme.bgCard).fontColor(this.theme.primary).onClick(() => { this.onReturnGame() })
+    } else if (this.storeManager && this.canRunGame && !this.noVersionInstalled()) {
+      Button('运行调试').width('100%').height(48).fontSize(14)
+        .backgroundColor(this.theme.bgCard).fontColor(this.theme.primary)
+        .enabled(this.canLaunch()).onClick(() => { this.onLaunch() })
+    }
+    }.width('100%')
   }
 
   /**
@@ -547,6 +551,9 @@ export struct HomeTab {
 
   // ---- 活动记录展示 helper ----
   private activityCategoryLabel_(category: string): string {
+    // 与账本详情区分整轮应用更新及其安装包下载，不能统一降级为不明确的“操作”。
+    if (category === ActivityCategory.APP_UPDATE) return '更新'
+    if (category === ActivityCategory.APP_UPDATE_DOWNLOAD) return '下载'
     if (category === ActivityCategory.DOWNLOAD) return '下载'
     if (category === ActivityCategory.MOD_INSTALL) return '安装'
     if (category === ActivityCategory.LAUNCH) return '启动'
@@ -554,6 +561,8 @@ export struct HomeTab {
     if (category === ActivityCategory.JDK) return 'JDK'
     if (category === ActivityCategory.ACCOUNT) return '账户'
     if (category === ActivityCategory.MODPACK) return '整合包'
+    // 共用活动列表继续显示原有行为，只给新导出类别使用准确名称。
+    if (category === ActivityCategory.GAME_EXPORT) return '导出'
     return '操作'
   }
 
@@ -757,11 +766,13 @@ export struct HomeTab {
   }
 
   private heroVersionText(): string {
+    if (this.storeManager && this.managerAction !== 'download' && this.mcVersion.length > 0) return this.mcVersion
     if (this.availableVersions.length === 0) return '未安装'
     return this.mcVersion || '未选择'
   }
 
   private heroLoaderText(): string {
+    if (this.storeManager && this.availableVersions.length === 0) return '版本文件待检查'
     // 整合包/重命名版本名里无 loader 关键字，改用 resolveInstalledLoaderKey 读 version.json 内容判定。
     let key = resolveInstalledLoaderKey(this.mcDir, this.mcVersion || '')
     if (key === 'vanilla') return '原版 Vanilla'
@@ -769,6 +780,7 @@ export struct HomeTab {
   }
 
   private statusColor(): ResourceColor {
+    if (this.storeManager) return this.managerAction === 'export' ? this.theme.success : this.theme.warning
     if (this.availableVersions.length === 0) return this.theme.warning
     if (!this.jdkReady) return this.theme.warning
     if (this.mcDownloading) return this.theme.warning
@@ -776,6 +788,7 @@ export struct HomeTab {
   }
 
   private statusDetailText(): string {
+    if (this.storeManager) return this.managerStatus
     if (this.availableVersions.length === 0) return '未安装任何版本 · 点「去下载」新建'
     if (this.mcDownloading) return '版本下载中，启动按钮已禁用'
     if (!this.jdkReady) return 'JDK 未安装 · 启动时可一键下载并安装'
@@ -846,4 +859,23 @@ export struct HomeTab {
       return '—'
     }
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      // 竖屏：首页【绝不整页滚动】，固定区 + 最近活动卡（卡内部自己滚动）。
+      // 横屏：垂直空间小，整页用 Scroll 包起来可滚，否则启动按钮被挤出够不到。
+      if (this.isLandscape) {
+        Scroll() {
+          this.HomeContent()
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
+        .align(Alignment.TopStart)
+      } else {
+        this.HomeContent()
+      }
+      }
 }

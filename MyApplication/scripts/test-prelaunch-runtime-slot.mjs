@@ -8,7 +8,13 @@ let integrity = { ok: true, detail: 'selected slot verified' };
 const load = makePureEtsLoader({
   '@kit.CoreFileKit': { fileIo: {} },
   '@kit.PerformanceAnalysisKit': { hilog: {} },
+  // 真实 PreLaunchValidator 会传递装载 RuntimeDeployer；本用例不传 context，也不执行摘要。
+  // 只提供模块边界，任何意外 createMd 调用仍立即失败，不能用固定摘要放行完整性检查。
+  '@kit.CryptoArchitectureKit': { cryptoFramework: {} },
   './LaunchNativeBridge': {}, './LaunchProfileBuilder': {}, mods: {},
+  // 2f4bd47 起 PreLaunchValidator 从 commons 取整合包 pending 判定，只供 runModInstallState 使用。
+  // 本测试只跑 runRuntime：替身一旦被调用即失败，防止运行时槽检查悄悄依赖安装状态。
+  commons: { hasPendingModpackInstall: () => { throw new Error('runRuntime must not consult modpack install state'); } },
   feature_core: { VersionParser: { parse: () => manifest } },
   './LwjglSlotIntegrity': { verifyLwjglRuntimeSlot: async path => { checked.push(path); return integrity; } },
 });
@@ -23,8 +29,18 @@ for (const [library, directory] of [
   manifest = { libraries: [library], inheritsFrom: '' };
   checked.length = 0;
   assert.equal((await PreLaunchValidator.runRuntime(input, true)).status, 'pass');
-  assert.deepEqual(checked, [lwjglGenerationDirectory('/fixture/mc', directory)]);
+  assert.deepEqual(checked, [lwjglGenerationDirectory('/fixture/mc', directory, 17)]);
 }
+// 使用真实预检函数核对三种 JDK 的代际选择；不能仅在选择器单测里构造正确路径。
+for (const feature of [17, 21, 25]) {
+  input.jdkVersion = String(feature);
+  checked.length = 0;
+  assert.equal((await PreLaunchValidator.runRuntime(input, true)).status, 'pass');
+  assert.deepEqual(checked, [lwjglGenerationDirectory('/fixture/mc', 'lwjgl-ohos', feature)]);
+}
+input.jdkVersion = '23';
+assert.equal((await PreLaunchValidator.runRuntime(input, true)).status, 'fail', '未交付的 JDK 视图不能回退原包');
+input.jdkVersion = '17';
 integrity = { ok: false, detail: 'selected digest mismatch' };
 assert.equal((await PreLaunchValidator.runRuntime(input, true)).status, 'fail');
 manifest = null;

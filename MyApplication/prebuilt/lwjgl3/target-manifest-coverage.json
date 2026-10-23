@@ -111,8 +111,8 @@
       "native": {
         "kind": "bundle-file",
         "artifact": "entry/libs/arm64-v8a/libSDL3.so",
-        "size": 2226496,
-        "sha256": "6977a2dac89e862e0a63595d961ec3b8d1c61334be693019e1d5aa97a138a691",
+        "size": 2251080,
+        "sha256": "921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816",
         "requiredSymbols": ["SDL_Init"],
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
@@ -127,8 +127,8 @@
       "native": {
         "kind": "bundle-file",
         "artifact": "entry/libs/arm64-v8a/libshaderc.so",
-        "size": 8574080,
-        "sha256": "c9ffa2354dffe74354b2c88c71eb6185e1b7247886c864b051499c867e2f3881",
+        "size": 6464464,
+        "sha256": "ca266f15770463fae8c8c0de0b8a9cfd82710ea02e2c5e8b4fa56edfb3cf115a",
         "requiredSymbols": ["shaderc_compiler_initialize"],
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",

@@ -30,6 +30,7 @@ try {
     .map(e => ({ ...e, category: 'download', versionKey: '', running: false, hasGame: false }));
   assert.deepEqual(policy.sessionRetentionVictims(ordinary, 5, 50, 64 * 1024 ** 2), [101]);
   const ledger = load('commons/src/main/ets/utils/ActivityLedger.ets');
+  ledger.configureLedgerMaintenanceOwner(true, () => false);
   const paths = load('commons/src/main/ets/utils/GameLogPaths.ets');
   const mc = path.join(temp, 'minecraft').replaceAll('\\', '/');
   fs.mkdirSync(mc);
@@ -67,6 +68,8 @@ try {
   assert.equal(ledger.ledgerSessionRetention(files), 100);
   ledger.ledgerSetSessionRetention(files, 5);
   for (let i = 4; i < 11; i++) { const id = start + i; begin(id); fs.writeFileSync(mc + '/mc_output.log', output(id) + 'session-' + i); end(id); }
+  ledger.configureLedgerMaintenanceOwner(true);
+  await ledger.ledgerFlushMaintenanceAsync(files);
   assert.equal(ledger.ledgerList(files).length, 5);
   assert.equal(ledger.ledgerRead(files, start + 6, ledger.LedgerPart.GAME), output(start + 6) + 'session-6');
   begin(start + 11);
@@ -74,7 +77,9 @@ try {
   assert.throws(() => ledger.ledgerClear(files), /进行中/);
   assert.equal(ledger.ledgerList(files).length, 6, 'clear rejects before deleting anything while a session runs');
   end(start + 11);
+  await ledger.ledgerFlushMaintenanceAsync(files);
   ledger.ledgerClear(files);
+  await ledger.ledgerFlushMaintenanceAsync(files);
   assert.equal(ledger.ledgerList(files).length, 0, 'clear succeeds after the protected activity ends');
   console.log('PASS: production retention policy, 5/37/100 per version, busy activity protection, >16 MiB archive, exact identity, recovery, disk failure, retry, persisted setting and pruning');
 } finally {

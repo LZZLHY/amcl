@@ -37,8 +37,10 @@ import { buildConditionalRequest } from '../version/MetadataCache';
 import { basename, formatSpeed } from 'commons';
 import { shouldUseBmclapiFirst, buildSortedUrls } from './SourceProber';
 import {
-  mavenToRelativePath, safeBaseName, safeRelPath, isSafeHttpUrl, isValidSha1,
+  mavenToRelativePath, safeBaseName, safeRelPath, isSafeHttpUrl, isValidSha1, isValidJarFile, computeFileSha1,
 } from '../modloader/MavenUtils';
+import { VersionFileVerifier } from '../version/VersionFileVerifier';
+import { newVersionInstallOwner } from '../version/VersionInstallLease';
 import { ActivityLogger } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
@@ -524,11 +526,8 @@ export class McDownloader {
     // preCheckExistingFile 会做 size+SHA1 校验：命中即转 Finished、不发 HTTP，
     // 不命中则真实下载。原 ArkTS 短路只比 size，会让 SHA1 不匹配的损坏文件被接受。
     //
-    // onlyMissing（2026-06-07，给 RepairTask 用）：仅补【磁盘上不存在】的库，跳过已存在的。
-    //   原因：Forge 的部分依赖库是安装器本地处理产物，磁盘 sha1 与 json 声明【天然不一致】，
-    //   若按引擎 sha1 预检会被判"需重下"，而标准镜像没有这些件 → 整任务失败。补全场景下
-    //   我们只关心"文件在不在"，存在即视为可用（真·内容损坏会在启动前 ZIP 头校验里被删除、
-    //   再转为缺失被本方法补回）。
+    // onlyMissing 保留调用兼容，实际表示修复模式：只有明确的 processor 生成物免除
+    // 上游摘要检查。普通下载产物始终验证；历史无摘要 JAR 只降级到 ZIP 结构检查。
     for (let lib of libs) {
       // OHOS 用自带 lwjgl-ohos 替换全部原版 LWJGL；jinput 手柄库 OHOS 也不用（输入走 XComponent）。
       // 这些库在 LaunchProfileBuilder.buildClasspath 里本就被跳过（不进 classpath、不计入完整性
@@ -552,7 +551,12 @@ export class McDownloader {
         if (artifact.size <= 0) throw new Error('library artifact.size 非法: ' + lib.name);
         let libPath = librariesRoot + '/' + artifactPath;
 
-        if (onlyMissing && this.fileSize(libPath) > 0) continue;
+        // 修复仅对已确认的 processor 生成物免除上游哈希；普通官方库必须进入 Native
+        // size/SHA 预检。缺失/损坏生成物交由对应加载器重建，不能当 Maven 原件覆盖。
+        if (onlyMissing && VersionFileVerifier.isGeneratedArtifact_(artifactPath)) {
+          if (isValidJarFile(libPath)) continue;
+          throw new Error('加载器生成文件缺失或损坏，请修复加载器：' + lib.name);
+        }
         if (seenPaths.has(libPath)) continue;
         seenPaths.add(libPath);
 
@@ -581,7 +585,12 @@ export class McDownloader {
         let relPath = requireSafeRelativePath(mavenToRelativePath(lib.name), 'legacy maven path');
         let libPath = librariesRoot + '/' + relPath;
 
-        if (onlyMissing && this.fileSize(libPath) > 0) continue;
+        if (onlyMissing && VersionFileVerifier.isGeneratedArtifact_(relPath)) {
+          if (isValidJarFile(libPath)) continue;
+          throw new Error('加载器生成文件缺失或损坏，请修复加载器：' + lib.name);
+        }
+        // 历史清单没有内容摘要，不能证明任意非空文件有效；只复用结构完整的 JAR。
+        if (isValidJarFile(libPath)) continue;
         if (seenPaths.has(libPath)) continue;
         seenPaths.add(libPath);
 
@@ -639,6 +648,7 @@ export class McDownloader {
     // 详见 docs/self-inspection/2026-05-26_AMCL_多任务下载并发缺陷诊断.md §B-2
     let spec: DownloadTaskSpec = {
       name: `libraries ${safeVersionId} (${toCheck} files)`,
+      shareFiles: true,
       files: files,
       activityId: this.activityId,
     };
@@ -691,15 +701,12 @@ export class McDownloader {
     this.ensureDir(indexesRoot);
     this.ensureDir(objectsRoot);
 
-    // 1) asset index（元数据，单次 NAPI 调用 + 内部多源 fallback；URL 按 sha1 寻址 → 永不过期）
-    //
-    // H-1 修复说明：这里 fileIsValid 是保留的 — asset_index 通过 sha1 寻址 URL 拉取
-    //   （`/v1/packages/<sha1>/<id>.json`），收到的内容隐式校验了 sha1。本地缓存路径
-    //   下 JSON.parse 失败也会触发重下，覆盖了"内容损坏"场景。比走完整 NAPI 任务的
-    //   开销小一个数量级，且依赖的整数 size 比对足够触发"应该重下"判断。
+    // 索引文件名并非内容身份。复用必须核验摘要、大小和结构；接收到的正文先在独占
+    // 暂存中验证再替换缓存，避免坏 JSON 被永远复用以及两个并发请求共享暂存文件。
     let assetIndexPath = indexesRoot + '/' + assetIndexId + '.json';
-    // size 未知（<=0）时 fileIsValid 必然不成立 → 强制重下，与旧行为一致。
-    if (!this.fileIsValid(assetIndexPath, indexSize)) {
+    let assetData: AssetIndexData | undefined = assetIndexSha1.length > 0 || indexSize > 0
+      ? await this.readCheckedAssetIndex_(assetIndexPath, assetIndexSha1, indexSize) : undefined;
+    if (assetData === undefined) {
       // sha1 不合法 → 只用官方 URL（镜像那条按 sha1 寻址，没法拼）。
       let indexCandidates: string[] = assetIndexSha1.length > 0
         ? buildSortedUrls(
@@ -707,18 +714,33 @@ export class McDownloader {
             versionJson.assetIndex.url)
         : [versionJson.assetIndex.url];
       let indexUrls = validatedUrls(indexCandidates, 'assetIndex.urls');
-      let primary = indexUrls[0];
-      let mirrors = indexUrls.slice(1);
-      let content = await this.httpGet(primary, mirrors, IMMUTABLE_CACHE_MS);
-      if (content.length === 0) throw new Error('所有源均无法获取 asset index（尝试了 ' + indexUrls.length + ' 个源）');
-      this.writeFile(assetIndexPath, content);
+      let staging = assetIndexPath + '.checking-' + newVersionInstallOwner();
+      try {
+        for (let url of indexUrls) {
+          if (this.cancelled) throw new CancelledError();
+          try {
+            // 跳过文本 TTL/条件缓存，每个来源最多请求一次；哈希错或 JSON 坏也能切源。
+            let content = await this.httpGet(url, [], 0);
+            if (this.cancelled) throw new CancelledError();
+            this.writeFile(staging, content);
+            let candidate = await this.readCheckedAssetIndex_(staging, assetIndexSha1, indexSize);
+            if (candidate === undefined) continue;
+            let handle = fs.openSync(staging, fs.OpenMode.READ_WRITE);
+            try { fs.fsyncSync(handle.fd); } finally { fs.closeSync(handle); }
+            fs.renameSync(staging, assetIndexPath);
+            assetData = candidate;
+            break;
+          } catch (e) {
+            if (this.cancelled) throw new CancelledError();
+            this.alog().warn(TAG, '资源索引来源校验失败：' + url, e as Object, LOG_DOMAIN_DOWNLOAD);
+          }
+        }
+      } finally {
+        try { fs.unlinkSync(staging); } catch (e) { /* 已激活或没有暂存。 */ }
+      }
+      if (assetData === undefined) throw new Error('所有来源的资源索引均不可用或校验失败');
     }
-
-    // 2) 解析 asset index
-    let assetIndexContent = this.readFileContent(assetIndexPath);
-    if (assetIndexContent.length === 0) return '⚠️ asset index 为空';
-
-    let assetData = JSON.parse(assetIndexContent) as AssetIndexData;
+    // 使用本次已核验的对象，不能在并发请求替换索引缓存后再次读取另一份正文。
     let objects = assetData.objects;
     let assetKeys = Object.keys(objects);
     let assetTotal = assetKeys.length;
@@ -866,6 +888,7 @@ export class McDownloader {
     // 详见 docs/self-inspection/2026-05-26_AMCL_多任务下载并发缺陷诊断.md §B-2
     let spec: DownloadTaskSpec = {
       name: `assets ${assetIndexId} (${toCheck} files)`,
+      shareFiles: true,
       files: files,
       activityId: this.activityId,
     };
@@ -944,6 +967,23 @@ export class McDownloader {
 
   private fileSize(path: string): number {
     try { return fs.statSync(path).size; } catch (e) { return -1; }
+  }
+
+  /** 不完整缓存返回 undefined 触发有限重取；不删除原文件，也不把解析失败当成功。 */
+  private async readCheckedAssetIndex_(path: string, sha1: string, size: number): Promise<AssetIndexData | undefined> {
+    try {
+      let stat = fs.lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 64 * 1024 * 1024
+        || (size > 0 && stat.size !== size)) return undefined;
+      if (sha1.length > 0 && await computeFileSha1(path) !== sha1) return undefined;
+      let data = JSON.parse(fs.readTextSync(path)) as AssetIndexData;
+      if (data === null || data.objects === null || typeof data.objects !== 'object' || Array.isArray(data.objects)) return undefined;
+      for (let name of Object.keys(data.objects)) {
+        let object = data.objects[name];
+        if (object === null || !isValidSha1(object.hash) || !Number.isSafeInteger(object.size) || object.size < 0) return undefined;
+      }
+      return data;
+    } catch (e) { return undefined; }
   }
 
   private fileIsValid(path: string, expectedSize?: number): boolean {

@@ -15,7 +15,9 @@ int main(int argc, char** argv) {
     // 微基准只量化生产CPU回调路径，窗口peek是系统边界桩；不能外推手机GPU/FPS。
     if (argc == 2) {
         const std::string mode = argv[1];
-        setenv("AMCL_GRAPHICS_OBSERVATION", mode == "off" ? "0" : "1", 1);
+        // 缺省模式不借测试进程环境授权采样；另保留显式 on/off/cost 反控。
+        if (mode == "default") unsetenv("AMCL_GRAPHICS_OBSERVATION");
+        else setenv("AMCL_GRAPHICS_OBSERVATION", mode == "off" ? "0" : "1", 1);
         setenv("AMCL_GRAPHICS_OBSERVATION_COST", mode == "cost" ? "1" : "0", 1);
         CHECK(amclGraphicsPublishObserverV1());
         constexpr unsigned count = 200000;
@@ -27,6 +29,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     unsetenv(AMCL_GRAPHICS_OBSERVER_ENV);
+    // 常规统计场景显式开启；生产缺省关闭不能被测试继承环境掩盖。
+    setenv("AMCL_GRAPHICS_OBSERVATION", "1", 1);
     setenv("AMCL_GRAPHICS_OBSERVATION_COST", "1", 1);
     CHECK(std::string(amclGraphicsRuntimeJsonV1()).empty());
     CHECK(amclGraphicsPublishObserverV1());

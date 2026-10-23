@@ -1,0 +1,2011 @@
+diff --git a/src/video/SDL_egl.c b/src/video/SDL_egl.c
+--- a/src/video/SDL_egl.c
++++ b/src/video/SDL_egl.c
+@@ -1280,110 +1280,120 @@
+         }
+     }
+ 
+     // Make sure current thread has a valid API bound to it.
+     if (_this->egl_data->eglBindAPI) {
+         _this->egl_data->eglBindAPI(_this->egl_data->apitype);
+     }
+ 
+     /* The android emulator crashes badly if you try to eglMakeCurrent
+      * with a valid context and invalid surface, so we have to check for both here.
+      */
+     if (!egl_context || (!egl_surface && !_this->gl_allow_no_surface)) {
+         if (!_this->egl_data->eglMakeCurrent(_this->egl_data->egl_display,
+                                              EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                              EGL_NO_CONTEXT)) {
+             const EGLint error = _this->egl_data->eglGetError();
+             if (egl_error) {
+                 *egl_error = error;
+             }
+             return SDL_EGL_SetErrorEx("Unable to release EGL context current",
+                                       "eglMakeCurrent", error);
+         }
+     } else {
+         if (!_this->egl_data->eglMakeCurrent(_this->egl_data->egl_display,
+                                              egl_surface, egl_surface, egl_context)) {
+             const EGLint error = _this->egl_data->eglGetError();
+             if (egl_error) {
+                 *egl_error = error;
+             }
+             return SDL_EGL_SetErrorEx("Unable to make EGL context current",
+                                       "eglMakeCurrent", error);
+         }
+     }
+ 
+     return true;
+ }
+ 
+ bool SDL_EGL_MakeCurrent(SDL_VideoDevice *_this, EGLSurface egl_surface,
+                          SDL_GLContext context)
+ {
+     return SDL_EGL_MakeCurrentWithError(_this, egl_surface, context, NULL);
+ }
+ 
+ bool SDL_EGL_SetSwapInterval(SDL_VideoDevice *_this, int interval)
+ {
++    return SDL_EGL_SetSwapIntervalWithError(_this, interval, NULL);
++}
++
++/* AMCL：在失败边界读取一次 EGL 错误；后端可以区别 pbuffer 不支持间隔与 context lost。
++ * SDL 的普通调用者保持原有 bool/错误字符串接口，不能在它消费错误后再查 eglGetError。 */
++bool SDL_EGL_SetSwapIntervalWithError(SDL_VideoDevice *_this, int interval, EGLint *egl_error)
++{
+     EGLBoolean status;
++    if (egl_error) *egl_error = EGL_SUCCESS;
+ 
+     if (!_this->egl_data) {
+         return SDL_SetError("EGL not initialized");
+     }
+ 
+     /* FIXME: Revisit this check when EGL_EXT_swap_control_tear is published:
+      * https://github.com/KhronosGroup/EGL-Registry/pull/113
+      */
+     if (interval < 0) {
+         return SDL_SetError("Late swap tearing currently unsupported");
+     }
+ 
+     status = _this->egl_data->eglSwapInterval(_this->egl_data->egl_display, interval);
+     if (status == EGL_TRUE) {
+         _this->egl_data->egl_swapinterval = interval;
+         return true;
+     }
+ 
+-    return SDL_EGL_SetError("Unable to set the EGL swap interval", "eglSwapInterval");
++    const EGLint error = _this->egl_data->eglGetError();
++    if (egl_error) *egl_error = error;
++    return SDL_EGL_SetErrorEx("Unable to set the EGL swap interval", "eglSwapInterval", error);
+ }
+ 
+ bool SDL_EGL_GetSwapInterval(SDL_VideoDevice *_this, int *interval)
+ {
+     if (!_this->egl_data) {
+         return SDL_SetError("EGL not initialized");
+     }
+ 
+     *interval = _this->egl_data->egl_swapinterval;
+     return true;
+ }
+ 
+ bool SDL_EGL_SwapBuffers(SDL_VideoDevice *_this, EGLSurface egl_surface)
+ {
+     return SDL_EGL_SwapBuffersWithError(_this, egl_surface, NULL);
+ }
+ 
+ bool SDL_EGL_SwapBuffersWithError(SDL_VideoDevice *_this,
+                                   EGLSurface egl_surface,
+                                   EGLint *egl_error)
+ {
+     if (egl_error) {
+         *egl_error = EGL_SUCCESS;
+     }
+     if (!_this->egl_data->eglSwapBuffers(_this->egl_data->egl_display, egl_surface)) {
+         const EGLint error = _this->egl_data->eglGetError();
+         if (egl_error) {
+             *egl_error = error;
+         }
+         return SDL_EGL_SetErrorEx("unable to show color buffer in an OS-native window",
+                                   "eglSwapBuffers", error);
+     }
+     return true;
+ }
+ 
+ bool SDL_EGL_DestroyContext(SDL_VideoDevice *_this, SDL_GLContext context)
+ {
+     EGLContext egl_context = (EGLContext)context;
+ 
+     // Clean up GLES and EGL
+     if (!_this->egl_data) {
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+         if (AMCL_GraphicsRuntimeRequired() && context) return SDL_SetError("AMCL: EGL display missing during context retirement");
+ #endif
+         return true;
+diff --git a/src/video/SDL_egl_c.h b/src/video/SDL_egl_c.h
+--- a/src/video/SDL_egl_c.h
++++ b/src/video/SDL_egl_c.h
+@@ -87,90 +87,92 @@
+     PFNEGLCREATEWINDOWSURFACEPROC eglCreateWindowSurface;
+     PFNEGLDESTROYSURFACEPROC eglDestroySurface;
+     PFNEGLQUERYSURFACEPROC eglQuerySurface;
+     PFNEGLMAKECURRENTPROC eglMakeCurrent;
+     PFNEGLSWAPBUFFERSPROC eglSwapBuffers;
+     PFNEGLSWAPINTERVALPROC eglSwapInterval;
+     PFNEGLQUERYSTRINGPROC eglQueryString;
+     PFNEGLGETCONFIGATTRIBPROC eglGetConfigAttrib;
+     PFNEGLWAITNATIVEPROC eglWaitNative;
+     PFNEGLWAITGLPROC eglWaitGL;
+     PFNEGLBINDAPIPROC eglBindAPI;
+     PFNEGLGETERRORPROC eglGetError;
+     PFNEGLQUERYDEVICESEXTPROC eglQueryDevicesEXT;
+     PFNEGLGETPLATFORMDISPLAYPROC eglGetPlatformDisplay;
+     PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
+ 
+     // Atomic functions
+     PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
+     PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
+     PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
+     PFNEGLWAITSYNCKHRPROC eglWaitSyncKHR;
+     PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
+ 
+     // Atomic functions end
+ } SDL_EGL_VideoData;
+ 
+ // OpenGLES functions
+ typedef enum SDL_EGL_ExtensionType
+ {
+     SDL_EGL_DISPLAY_EXTENSION,
+     SDL_EGL_CLIENT_EXTENSION
+ } SDL_EGL_ExtensionType;
+ 
+ extern bool SDL_EGL_HasExtension(SDL_VideoDevice *_this, SDL_EGL_ExtensionType type, const char *ext);
+ 
+ extern bool SDL_EGL_GetAttribute(SDL_VideoDevice *_this, SDL_GLAttr attrib, int *value);
+ extern bool SDL_EGL_LoadLibraryOnly(SDL_VideoDevice *_this, const char *path);
+ extern bool SDL_EGL_LoadLibrary(SDL_VideoDevice *_this, const char *path, NativeDisplayType native_display);
+ extern SDL_FunctionPointer SDL_EGL_GetProcAddressInternal(SDL_VideoDevice *_this, const char *proc);
+ extern void SDL_EGL_UnloadLibrary(SDL_VideoDevice *_this);
+ extern void SDL_EGL_SetRequiredVisualId(SDL_VideoDevice *_this, int visual_id);
+ extern bool SDL_EGL_ChooseConfig(SDL_VideoDevice *_this);
+ extern bool SDL_EGL_LockConfig(SDL_VideoDevice *_this, EGLConfig config);
+ extern void SDL_EGL_UnlockConfig(SDL_VideoDevice *_this);
+ extern bool SDL_EGL_SetSwapInterval(SDL_VideoDevice *_this, int interval);
++/* AMCL：保留原生错误的内部入口；不改变 SDL 对外 ABI。 */
++extern bool SDL_EGL_SetSwapIntervalWithError(SDL_VideoDevice *_this, int interval, EGLint *egl_error);
+ extern bool SDL_EGL_GetSwapInterval(SDL_VideoDevice *_this, int *interval);
+ extern bool SDL_EGL_DestroyContext(SDL_VideoDevice *_this, SDL_GLContext context);
+ extern EGLSurface SDL_EGL_CreateSurface(SDL_VideoDevice *_this, SDL_Window *window, NativeWindowType nw);
+ extern void SDL_EGL_DestroySurface(SDL_VideoDevice *_this, EGLSurface egl_surface);
+ 
+ extern EGLSurface SDL_EGL_CreateOffscreenSurface(SDL_VideoDevice *_this, int width, int height);
+ // Assumes that LoadLibraryOnly() has succeeded
+ extern bool SDL_EGL_InitializeOffscreen(SDL_VideoDevice *_this, int device);
+ 
+ // These need to be wrapped to get the surface for the window by the platform GLES implementation
+ extern SDL_GLContext SDL_EGL_CreateContext(SDL_VideoDevice *_this, EGLSurface egl_surface);
+ extern bool SDL_EGL_MakeCurrent(SDL_VideoDevice *_this, EGLSurface egl_surface, SDL_GLContext context);
+ extern bool SDL_EGL_MakeCurrentWithError(SDL_VideoDevice *_this,
+                                          EGLSurface egl_surface,
+                                          SDL_GLContext context,
+                                          EGLint *egl_error);
+ extern bool SDL_EGL_SwapBuffers(SDL_VideoDevice *_this, EGLSurface egl_surface);
+ extern bool SDL_EGL_SwapBuffersWithError(SDL_VideoDevice *_this,
+                                          EGLSurface egl_surface,
+                                          EGLint *egl_error);
+ 
+ // SDL Error-reporting
+ extern bool SDL_EGL_SetErrorEx(const char *message, const char *eglFunctionName, EGLint eglErrorCode);
+ #define SDL_EGL_SetError(message, eglFunctionName) SDL_EGL_SetErrorEx(message, eglFunctionName, _this->egl_data->eglGetError())
+ 
+ // A few of useful macros
+ 
+ #define SDL_EGL_SwapWindow_impl(BACKEND)                                                        \
+     bool BACKEND##_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)                  \
+     {                                                                                           \
+         return SDL_EGL_SwapBuffers(_this, window->internal->egl_surface);                       \
+     }
+ 
+ #define SDL_EGL_MakeCurrent_impl(BACKEND)                                                                    \
+     bool BACKEND##_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context)       \
+     {                                                                                                        \
+         return SDL_EGL_MakeCurrent(_this, window ? window->internal->egl_surface : EGL_NO_SURFACE, context); \
+     }
+ 
+ #define SDL_EGL_CreateContext_impl(BACKEND)                                                     \
+     SDL_GLContext BACKEND##_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window *window)      \
+     {                                                                                           \
+         return SDL_EGL_CreateContext(_this, window->internal->egl_surface);                     \
+     }
+ 
+diff --git a/src/video/SDL_video.c b/src/video/SDL_video.c
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -1,73 +1,76 @@
+ /*
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+ 
+   This software is provided 'as-is', without any express or implied
+   warranty.  In no event will the authors be held liable for any damages
+   arising from the use of this software.
+ 
+   Permission is granted to anyone to use this software for any purpose,
+   including commercial applications, and to alter it and redistribute it
+   freely, subject to the following restrictions:
+ 
+   1. The origin of this software must not be misrepresented; you must not
+      claim that you wrote the original software. If you use this software
+      in a product, an acknowledgment in the product documentation would be
+      appreciated but is not required.
+   2. Altered source versions must be plainly marked as such, and must not be
+      misrepresented as being the original software.
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ 
+ #include "SDL_internal.h"
+ 
+ // The high-level video driver subsystem
+ 
+ #include "SDL_sysvideo.h"
+ #include "SDL_clipboard_c.h"
+ #include "SDL_egl_c.h"
++#if defined(SDL_VIDEO_DRIVER_OPENHARMONY) && defined(SDL_VIDEO_OPENGL_EGL)
++#include "openharmony/SDL_openharmonyopengl.h"
++#endif
+ #include "SDL_surface_c.h"
+ #include "SDL_pixels_c.h"
+ #include "SDL_rect_c.h"
+ #include "SDL_video_c.h"
+ #include "../events/SDL_events_c.h"
+ #include "../SDL_hints_c.h"
+ #include "../SDL_properties_c.h"
+ #include "../timer/SDL_timer_c.h"
+ #include "../camera/SDL_camera_c.h"
+ #include "../render/SDL_sysrender.h"
+ #include "../main/SDL_main_callbacks.h"
+ 
+ #ifdef SDL_VIDEO_OPENGL
+ #include <SDL3/SDL_opengl.h>
+ #endif // SDL_VIDEO_OPENGL
+ 
+ #if defined(SDL_VIDEO_OPENGL_ES) && !defined(SDL_VIDEO_OPENGL)
+ #include <SDL3/SDL_opengles.h>
+ #endif // SDL_VIDEO_OPENGL_ES && !SDL_VIDEO_OPENGL
+ 
+ // GL and GLES2 headers conflict on Linux 32 bits
+ #if defined(SDL_VIDEO_OPENGL_ES2) && !defined(SDL_VIDEO_OPENGL)
+ #include <SDL3/SDL_opengles2.h>
+ #endif // SDL_VIDEO_OPENGL_ES2 && !SDL_VIDEO_OPENGL
+ 
+ // GL_CONTEXT_RELEASE_BEHAVIOR and GL_CONTEXT_RELEASE_BEHAVIOR_KHR have the same number.
+ #ifndef GL_CONTEXT_RELEASE_BEHAVIOR
+ #define GL_CONTEXT_RELEASE_BEHAVIOR 0x82FB
+ #endif
+ 
+ // GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH and GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR have the same number.
+ #ifndef GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH
+ #define GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH 0x82FC
+ #endif
+ 
+ // This is always the same number between the various EXT/ARB/GLES extensions.
+ #ifndef GL_FRAMEBUFFER_SRGB
+ #define GL_FRAMEBUFFER_SRGB 0x8DB9
+ #endif
+ 
+ #ifdef SDL_PLATFORM_EMSCRIPTEN
+ #include <emscripten.h>
+ #endif
+ 
+ #ifdef SDL_PLATFORM_3DS
+@@ -5695,90 +5698,98 @@
+ #endif
+ 
+     ctx = _this->GL_CreateContext(_this, window);
+ 
+     // Creating a context is assumed to make it current in the SDL driver.
+     if (ctx) {
+         _this->current_glwin = window;
+         _this->current_glctx = ctx;
+         SDL_SetTLS(&_this->current_glwin_tls, window, NULL);
+         SDL_SetTLS(&_this->current_glctx_tls, ctx, NULL);
+     }
+ 
+ #if defined(SDL_VIDEO_OPENGL) || defined(SDL_VIDEO_OPENGL_ES) || defined(SDL_VIDEO_OPENGL_ES2)
+     // try to force the window framebuffer to the requested sRGB state.
+     if (srgb_requested != -1) {
+         PFNGLENABLEPROC glToggleFunc = (PFNGLENABLEPROC) SDL_GL_GetProcAddress(srgb_requested ? "glEnable" : "glDisable");
+         PFNGLGETSTRINGPROC glGetStringFunc = (PFNGLGETSTRINGPROC)SDL_GL_GetProcAddress("glGetString");
+         if (glToggleFunc && glGetStringFunc) {
+             bool supported = false;
+             if (_this->gl_config.profile_mask & SDL_GL_CONTEXT_PROFILE_ES) {
+                 supported = SDL_GL_ExtensionSupported("GL_EXT_sRGB_write_control");  // GL_FRAMEBUFFER_SRGB is not core in any GLES version at the moment.
+             } else {
+                 supported = isAtLeastGL3((const char *)glGetStringFunc(GL_VERSION)) ||  // no extensions needed in OpenGL 3+.
+                             SDL_GL_ExtensionSupported("GL_EXT_framebuffer_sRGB") ||
+                             SDL_GL_ExtensionSupported("GL_ARB_framebuffer_sRGB");
+             }
+ 
+             if (supported) {
+                 glToggleFunc(GL_FRAMEBUFFER_SRGB);
+             }
+         }
+     }
+ #endif
+ 
+     return ctx;
+ }
+ 
+ bool SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
+ {
+     bool result;
+ 
+     if (!_this) {
+         return SDL_UninitializedVideo();
+     }
+ 
++#if defined(SDL_VIDEO_DRIVER_OPENHARMONY) && defined(SDL_VIDEO_OPENGL_EGL)
++    /* AMCL：同一绑定的快速返回不能绕过 OpenHarmony 的进程终局。只核对实际驱动，
++     * 不影响 dummy/offscreen 等其他后端，也不阻止 null context 的真实释放。 */
++    if (context && _this->GL_MakeCurrent == OPENHARMONY_GLES_MakeCurrent &&
++        !OPENHARMONY_GLES_ContextBindingAllowed(_this)) {
++        return false;
++    }
++#endif
+     if (window == SDL_GL_GetCurrentWindow() &&
+         context == SDL_GL_GetCurrentContext()) {
+         // We're already current.
+         return true;
+     }
+ 
+     if (!context) {
+         window = NULL;
+     } else if (window) {
+         CHECK_WINDOW_MAGIC(window, false);
+ 
+         if (!(window->flags & SDL_WINDOW_OPENGL)) {
+             return SDL_SetError(NOT_AN_OPENGL_WINDOW);
+         }
+     } else if (!_this->gl_allow_no_surface) {
+         return SDL_SetError("Use of OpenGL without a window is not supported on this platform");
+     }
+ 
+     result = _this->GL_MakeCurrent(_this, window, context);
+     if (result) {
+         _this->current_glwin = window;
+         _this->current_glctx = context;
+         SDL_SetTLS(&_this->current_glwin_tls, window, NULL);
+         SDL_SetTLS(&_this->current_glctx_tls, context, NULL);
+     }
+     return result;
+ }
+ 
+ SDL_Window *SDL_GL_GetCurrentWindow(void)
+ {
+     if (!_this) {
+         SDL_UninitializedVideo();
+         return NULL;
+     }
+     return (SDL_Window *)SDL_GetTLS(&_this->current_glwin_tls);
+ }
+ 
+ SDL_GLContext SDL_GL_GetCurrentContext(void)
+ {
+     if (!_this) {
+         SDL_UninitializedVideo();
+         return NULL;
+     }
+     return (SDL_GLContext)SDL_GetTLS(&_this->current_glctx_tls);
+ }
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -650,316 +650,346 @@
+     }
+     SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
+     if (videodata->presented_window || videodata->auxiliary_window_count != 0) {
+         return;
+     }
+     /* A failed first-surface transaction may have applied the effective GLES
+      * fallback before its surface allocation failed.  Restore the caller's
+      * requested selection before dropping the policy so a retry starts from
+      * the same attributes, rather than silently inheriting the probe state. */
+     if (videodata->requested_gl_selection_valid) {
+         OPENHARMONY_GLES_ApplySelection(_this,
+                                         &videodata->requested_gl_selection);
+     }
+     SDL_EGL_UnlockConfig(_this);
+     _this->egl_data->egl_config = NULL;
+     _this->egl_data->egl_surfacetype = 0;
+     _this->egl_data->apitype = (_this->gl_config.profile_mask ==
+                                 SDL_GL_CONTEXT_PROFILE_ES)
+                                    ? EGL_OPENGL_ES_API : EGL_OPENGL_API;
+     videodata->egl_policy = OPENHARMONY_EGL_POLICY_UNDECIDED;
+     videodata->pinned_egl_config_id = 0;
+     videodata->pinned_surface_type = 0;
+     videodata->pinned_native_visual_id = 0;
+     videodata->requested_gl_selection_valid = false;
+     videodata->effective_gl_selection_valid = false;
+ }
+ 
+ static void OPENHARMONY_GLES_MarkRendererRestartRequired(
+     SDL_Window *window, const char *operation)
+ {
+     SDL_VideoDevice *device = SDL_GetVideoDevice();
+     if (device && device->internal) {
+         ((SDL_VideoData *)device->internal)->renderer_fatal = true;
+     }
+     SDL_setenv_unsafe("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+     SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                  "OPENHARMONY_WINDOW schema=1 event=renderer_fatal operation=%s role=%s id=%u error=%s",
+                  operation,
+                  window && window->internal &&
+                          window->internal->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER
+                      ? "auxiliary" : "presented",
+                  window ? (unsigned int)window->id : 0,
+                  SDL_GetError());
+ }
+ 
+-bool OPENHARMONY_GLES_MarkRendererFatal(SDL_Window *window,
+-                                         const char *operation)
++/* 首个原生错误必须在清理之前交给公共锁存器。关闭事件可能同步销毁窗口，调用者
++ * 在进入这里前登记仍存活的资源，并且返回后不再解引用该窗口。后续清理错误不覆盖首错。 */
++bool OPENHARMONY_GLES_MarkRendererFatalWithError(SDL_Window *window,
++                                                const char *operation, EGLint error)
+ {
+     const AMCL_GraphicsObserverV1 *observer = AMCL_GraphicsObserver();
+-    if (observer) observer->fatal(operation, 0u, window && window->internal ? window->internal->amcl_generation : 0);
++    if (observer) observer->fatal(operation, (uint32_t)error, window && window->internal ? window->internal->amcl_generation : 0);
+     OPENHARMONY_GLES_MarkRendererRestartRequired(window, operation);
+     if (window) {
+         SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_CLOSE_REQUESTED, 0, 0);
+     }
+     return false;
++}
++
++/* 旧调用点没有原生错误参数，保留兼容入口；已捕获错误的驱动边界使用上面的入口。 */
++bool OPENHARMONY_GLES_MarkRendererFatal(SDL_Window *window, const char *operation)
++{
++    return OPENHARMONY_GLES_MarkRendererFatalWithError(window, operation, 0);
+ }
+ 
+ static void OPENHARMONY_GLES_SetCurrentCache(SDL_VideoDevice *_this,
+                                              SDL_Window *window,
+                                              SDL_GLContext context)
+ {
+     SDL_Window *old = SDL_GL_GetCurrentWindow();
+     if (old && old != window && old->internal) {
+         old->internal->is_current = false;
+         old->internal->owner_thread = 0;
+     }
+     if (window && window->internal) {
+         window->internal->is_current = true;
+         window->internal->owner_thread = SDL_GetCurrentThreadID();
+         window->internal->last_context = context;
+     }
+     _this->current_glwin = window;
+     _this->current_glctx = context;
+     SDL_SetTLS(&_this->current_glwin_tls, window, NULL);
+     SDL_SetTLS(&_this->current_glctx_tls, context, NULL);
+ }
+ 
+ static bool OPENHARMONY_GLES_IsRecoverableSurfaceError(EGLint error)
+ {
+     return error == EGL_BAD_SURFACE || error == EGL_BAD_NATIVE_WINDOW;
+ }
+ 
+-static bool OPENHARMONY_GLES_IsFatalContextError(EGLint error)
++bool OPENHARMONY_GLES_IsFatalContextError(EGLint error)
+ {
+ #ifdef EGL_CONTEXT_LOST
+     if (error == EGL_CONTEXT_LOST) {
+         return true;
+     }
+ #endif
+     return error == EGL_BAD_CONTEXT;
+ }
+ 
+ static bool OPENHARMONY_GLES_IsRecoveryDeferred(SDL_Window *window)
+ {
+     if (!window || !window->internal) {
+         return false;
+     }
+     const SDL_WindowData *data = window->internal;
+     return data->amcl_surface_suspended &&
+            (data->surface_state == OPENHARMONY_SURFACE_LOST ||
+             data->surface_state == OPENHARMONY_SURFACE_RECREATE_PENDING);
+ }
+ 
+ static void OPENHARMONY_GLES_RestorePreviousBinding(SDL_VideoDevice *_this,
+                                                      SDL_WindowID previous_id,
+                                                      SDL_GLContext context)
+ {
+     SDL_Window *previous_window = previous_id ? SDL_GetWindowFromID(previous_id) : NULL;
+     if (previous_window && previous_window->internal && context &&
+         previous_window->internal->surface_state == OPENHARMONY_SURFACE_READY &&
+         !previous_window->internal->amcl_surface_suspended &&
+         previous_window->internal->egl_surface != EGL_NO_SURFACE) {
+         if (SDL_EGL_MakeCurrent(_this, previous_window->internal->egl_surface, context)) {
+             OPENHARMONY_GLES_SetCurrentCache(_this, previous_window, context);
+         }
+     } else if (SDL_EGL_MakeCurrent(_this, NULL, NULL)) {
+         OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+     }
+     /* Failed EGL operations leave the actual binding and its cached owner intact. */
++}
++
++/* 公共 SDL_GL_MakeCurrent 的“已 current”缓存也必须消费终局；本查询无驱动副作用。
++ * null context 的释放由调用者放行，使真实 owner 可以继续退出清理。 */
++bool OPENHARMONY_GLES_ContextBindingAllowed(SDL_VideoDevice *_this)
++{
++    if (!_this || !_this->internal || ((SDL_VideoData *)_this->internal)->renderer_fatal) {
++        return SDL_SetError("OpenHarmony: renderer is fatally unavailable; process restart required");
++    }
++    return true;
+ }
+ 
+ bool OPENHARMONY_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context)
+ {
+     const SDL_WindowID requested_window_id = window ? window->id : 0;
+     OPENHARMONY_AMCL_UpdatePresentedForeground();
+     if (requested_window_id) {
+         /* Foreground reconciliation may release input synchronously; a user
+          * watcher can destroy the target window while that event is pushed. */
+         window = SDL_GetWindowFromID(requested_window_id);
+         if (!window || !window->internal) {
+             return SDL_SetError("OpenHarmony: requested window was destroyed during lifecycle update");
+         }
+     }
+     if (!window || !context) {
+         SDL_Window *current_window = SDL_GL_GetCurrentWindow();
+-        const bool result = SDL_EGL_MakeCurrent(_this, NULL, NULL);
++        /* 释放和绑定共享同一终局语义；保留 owner/cache，不能把丢失的对象域交给另一线程。 */
++        EGLint release_error = EGL_SUCCESS;
++        const bool result = SDL_EGL_MakeCurrentWithError(_this, NULL, NULL, &release_error);
++        if (!result && OPENHARMONY_GLES_IsFatalContextError(release_error)) {
++            return OPENHARMONY_GLES_MarkRendererFatalWithError(
++                current_window, "eglReleaseCurrent-context-lost", release_error);
++        }
+         if (result) {
+             if (current_window && current_window->internal) {
+                 current_window->internal->is_current = false;
+                 current_window->internal->owner_thread = 0;
+             }
+             OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+         }
+         return result;
+     }
+     if (_this && _this->internal &&
+         ((SDL_VideoData *)_this->internal)->renderer_fatal) {
+         return SDL_SetError("OpenHarmony: renderer is fatally unavailable; process restart required");
+     }
+     if (!window->internal) {
+         return SDL_SetError("OpenHarmony: window has no backend data");
+     }
+     const SDL_WindowID window_id = window->id;
+     SDL_Window *previous_window = SDL_GL_GetCurrentWindow();
+     const SDL_WindowID previous_id = previous_window ? previous_window->id : 0;
+     const SDL_GLContext previous_context = SDL_GL_GetCurrentContext();
+     const bool was_current = previous_id != 0 && previous_id == window_id;
+     SDL_WindowData *data = window->internal;
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER &&
+         data->pending_width > 0) {
+         if (!OPENHARMONY_ApplyPendingAuxiliaryResize(_this, window, context)) {
+             ((SDL_VideoData *)_this->internal)->makecurrent_fail++;
+             return false;
+         }
+         window = SDL_GetWindowFromID(window_id);
+         if (!window || !window->internal) {
+             return false;
+         }
+         data = window->internal;
+         if (!data || data->pending_width > 0) {
+             ((SDL_VideoData *)_this->internal)->makecurrent_fail++;
+             return SDL_SetError("OpenHarmony: auxiliary resize is pending on its owner thread");
+         }
+     }
+     if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+         /* Recovery is intentionally attempted at the same boundary as the
+          * context bind. PumpEvents remains a low-cost observer, while a
+          * render thread that alternates pbuffer/window surfaces cannot miss a
+          * publication just because it did not pump on that iteration. */
+         if (!OPENHARMONY_AMCL_PreparePresentedWindow(
+                 _this, window, context, false)) {
+             ((SDL_VideoData *)_this->internal)->makecurrent_fail++;
+             SDL_Window *live_window = SDL_GetWindowFromID(window_id);
+             if (OPENHARMONY_GLES_IsRecoveryDeferred(live_window)) {
+                 return false;
+             }
+             if (!was_current) {
+                 live_window = SDL_GetWindowFromID(window_id);
+                 return live_window
+                            ? OPENHARMONY_GLES_MarkRendererFatal(
+                                  live_window,
+                                  "presented-recovery-before-makecurrent")
+                            : false;
+             }
+             return false;
+         }
+         window = SDL_GetWindowFromID(window_id);
+         if (!window || !window->internal) {
+             return false;
+         }
+         data = window->internal;
+     }
+     if (!data || data->surface_state != OPENHARMONY_SURFACE_READY ||
+         data->amcl_surface_suspended || data->egl_surface == EGL_NO_SURFACE) {
+         return SDL_SetError("OpenHarmony: requested window surface is unavailable");
+     }
+     EGLint makecurrent_error = EGL_SUCCESS;
+     bool retry_interval_failed = false;
+     if (!SDL_EGL_MakeCurrentWithError(_this, data->egl_surface, context,
+                                       &makecurrent_error)) {
+         ((SDL_VideoData *)_this->internal)->makecurrent_fail++;
++        /* context lost 与 window/pbuffer 角色无关，必须先拒绝再考虑可恢复的呈现面错误。 */
++        if (OPENHARMONY_GLES_IsFatalContextError(makecurrent_error)) {
++            return OPENHARMONY_GLES_MarkRendererFatalWithError(
++                window, "eglMakeCurrent-context-lost", makecurrent_error);
++        }
+         if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+             if (OPENHARMONY_GLES_IsRecoverableSurfaceError(makecurrent_error)) {
+                 /* A host BufferQueue can retire between the generation peek and
+                  * this bind.  Revalidate/rebuild once at the same boundary as
+                  * swap, then retry the bind against the fresh surface. */
+                 if (OPENHARMONY_AMCL_PreparePresentedWindow(
+                         _this, window, context, true)) {
+                     window = SDL_GetWindowFromID(window_id);
+                     if (window && window->internal) {
+                         data = window->internal;
+                         EGLint retry_error = EGL_SUCCESS;
+                         if (data->egl_surface != EGL_NO_SURFACE &&
+                             SDL_EGL_MakeCurrentWithError(
+                                 _this, data->egl_surface, context,
+                                 &retry_error)) {
+                             OPENHARMONY_GLES_SetCurrentCache(_this, window, context);
+                             if (OPENHARMONY_GLES_ReplaySwapInterval(
+                                     _this, window, true)) {
+                                 OPENHARMONY_GLES_SetCurrentCache(
+                                     _this, window, context);
+                                 ((SDL_VideoData *)_this->internal)->makecurrent_ok++;
+                                 return true;
+                             } else {
+                                 retry_interval_failed = true;
+                                 OPENHARMONY_GLES_RestorePreviousBinding(
+                                     _this, previous_id, previous_context);
+                             }
+                         } else {
+                             makecurrent_error = retry_error;
+                         }
+                     }
+             }
+         }
+             SDL_Window *retry_live_window = SDL_GetWindowFromID(window_id);
+             if (!retry_live_window || !retry_live_window->internal) {
+                 return false;
+             }
+             if (OPENHARMONY_GLES_IsRecoveryDeferred(retry_live_window)) {
+                 return false;
+             }
+             if (retry_interval_failed ||
+                 OPENHARMONY_GLES_IsFatalContextError(makecurrent_error) ||
+                 !OPENHARMONY_GLES_IsRecoverableSurfaceError(makecurrent_error) ||
+                 !was_current) {
+                 SDL_Window *fatal_window = SDL_GetWindowFromID(window_id);
+                 if (!fatal_window || !fatal_window->internal) {
+                     return false;
+                 }
+-                return OPENHARMONY_GLES_MarkRendererFatal(
++                return OPENHARMONY_GLES_MarkRendererFatalWithError(
+                     fatal_window,
+                     OPENHARMONY_GLES_IsFatalContextError(makecurrent_error)
+-                        ? "eglMakeCurrent-context-lost" : "eglMakeCurrent");
++                        ? "eglMakeCurrent-context-lost" : "eglMakeCurrent", makecurrent_error);
+             }
+         }
+         return false;
+     }
+     OPENHARMONY_GLES_SetCurrentCache(_this, window, context);
+     if (!OPENHARMONY_GLES_ReplaySwapInterval(
+             _this, window,
+             data->role == OPENHARMONY_WINDOW_PRESENTED)) {
++        if (((SDL_VideoData *)_this->internal)->renderer_fatal) return false;
+         OPENHARMONY_GLES_RestorePreviousBinding(_this, previous_id,
+                                                  previous_context);
+         ((SDL_VideoData *)_this->internal)->makecurrent_fail++;
+         if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+             return OPENHARMONY_GLES_MarkRendererFatal(
+                 window, "swap-interval-replay");
+         }
+         return false;
+     }
+     ((SDL_VideoData *)_this->internal)->makecurrent_ok++;
+     return true;
+ }
+ 
+ SDL_EGLSurface OPENHARMONY_GLES_GetEGLSurface(SDL_VideoDevice *_this,
+                                                SDL_Window *window)
+ {
+     (void)_this;
+     if (!window || !window->internal) {
+         return EGL_NO_SURFACE;
+     }
+     if (window->internal->surface_state != OPENHARMONY_SURFACE_READY ||
+         window->internal->amcl_surface_suspended) {
+         return EGL_NO_SURFACE;
+     }
+     return (SDL_EGLSurface)window->internal->egl_surface;
+ }
+ 
+ SDL_GLContext OPENHARMONY_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     SDL_GLContext result;
+ 
+     // !!! FIXME: Android has locking here; maybe it isn't necessary for OpenHarmony? What happens if we're in a background thread?
+     //if (!OPENHARMONY_WaitActiveAndLockActivity()) {
+     //    return NULL;
+     //}
+ 
+     if (!window || !window->internal) {
+         SDL_SetError("OpenHarmony: cannot create a context for an uninitialized window");
+         return NULL;
+     }
+     if (_this && _this->internal &&
+         ((SDL_VideoData *)_this->internal)->renderer_fatal) {
+         SDL_SetError("OpenHarmony: renderer is fatally unavailable; process restart required");
+         return NULL;
+     }
+@@ -973,90 +1003,91 @@
+             _this,
+             data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER)) {
+         return NULL;
+     }
+     /* context资格与window角色独立。Minecraft utility/main绑定同一个context，所以
+      * 切换surface不申请额外资格；真正第二个独立/共享context必须通过公共实测门。 */
+     const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
+     uint64_t permit = 0;
+     if (AMCL_GraphicsRuntimeRequired()) {
+         if (!runtime || runtime->structSize < sizeof(*runtime) || !runtime->reserveContext ||
+             !runtime->commitContext || !runtime->retireContext) {
+             SDL_SetError("AMCL: context admission protocol is unavailable"); return NULL;
+         }
+         void *shared = _this->gl_config.share_with_current_context ? SDL_GL_GetCurrentContext() : NULL;
+         permit = runtime->reserveContext(shared);
+         if (!permit) { SDL_SetError("AMCL: additional/shared context capability is unverified"); return NULL; }
+     }
+     SDL_Window *previous_window = SDL_GL_GetCurrentWindow();
+     result = SDL_EGL_CreateContext(_this, data->egl_surface);
+     if (result) {
+         if (previous_window && previous_window != window &&
+             previous_window->internal) {
+             previous_window->internal->is_current = false;
+             previous_window->internal->owner_thread = 0;
+         }
+         data->owner_thread = SDL_GetCurrentThreadID();
+         data->last_context = result;
+         data->is_current = true;
+         /* 新context尚未交付游戏，调用宿主中立功能探针。旧宿主没有尾部时保留既有行为；
+          * 失败保留WindowData中的context身份，标记终局，绝不退回另一个GL provider。 */
+         if (runtime && (!runtime->commitContext(permit, result))) {
+             OPENHARMONY_GLES_MarkRendererFatal(window, "context-permit-commit");
+             SDL_SetError("AMCL: context identity could not be committed"); return NULL;
+         }
+         if (runtime && runtime->structSize >= offsetof(AmclGraphicsRuntimeV1, presentSequence) && runtime->inspectContext &&
+             !runtime->inspectContext(_this->egl_data->egl_display, _this->egl_data->egl_config,
+                 result, data->egl_surface, _this->gl_config.major_version, _this->gl_config.minor_version,
+                 _this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_CORE ? 0x00032001 : 0)) {
+             OPENHARMONY_GLES_MarkRendererFatal(window, "functional-probe-retirement");
+             SDL_SetError("AMCL: graphics functional probe requires process restart");
+             return NULL;
+         }
+         if (!OPENHARMONY_GLES_ReplaySwapInterval(
+                 _this, window,
+                 data->role == OPENHARMONY_WINDOW_PRESENTED)) {
++            if (((SDL_VideoData *)_this->internal)->renderer_fatal) return NULL;
+             OPENHARMONY_GLES_MarkRendererRestartRequired(
+                 window, "initial-swap-interval");
+             SDL_EGL_MakeCurrent(_this, NULL, NULL);
+             OPENHARMONY_GLES_SetCurrentCache(_this, NULL, NULL);
+             data->is_current = false;
+             data->last_context = NULL;
+             data->owner_thread = 0;
+             OPENHARMONY_GLES_DestroyContext(_this, result);
+             result = NULL;
+         }
+     }
+ 
+     /* SDL通用创建器可能在绑定失败后尝试清理但仍返回NULL；这里无法证明其完整退休。
+      * 保留未提交资格并封闭本局，避免释放资格后同进程再创建一个对象域。 */
+     if (!result && permit) OPENHARMONY_GLES_MarkRendererFatal(window, "initial-context-create");
+     //OPENHARMONY_UnlockActivityMutex();
+ 
+     return result;
+ }
+ 
+ /* SDL先尝试解除current；宿主保留WindowData身份直至真实EGL销毁成功，避免
+  * 驱动失败后丢掉重试所需的句柄/线程，也避免恢复访问已经退休的context。 */
+ bool OPENHARMONY_GLES_DestroyContext(SDL_VideoDevice *_this,
+                                      SDL_GLContext context)
+ {
+     if (!_this) {
+         return SDL_SetError("OpenHarmony: cannot destroy a context without a video device");
+     }
+     /* 先证明owner线程并完成真实驱动退休，再清理任何窗口cache或公共资格。
+      * 上游SDL_GL_DestroyContext忽略release失败，故这里核验并重试实际解绑。 */
+     for (SDL_Window *owner = _this->windows; owner; owner = owner->next) {
+         SDL_WindowData *data = owner->internal;
+         if (data && (data->last_context == context || data->amcl_resume_context == context) &&
+             ((data->owner_thread && data->owner_thread != SDL_GetCurrentThreadID()) ||
+              (data->amcl_resume_thread && data->amcl_resume_thread != SDL_GetCurrentThreadID())))
+             return SDL_SetError("AMCL: context destruction requires its owner thread");
+     }
+     const AmclGraphicsRuntimeV1 *runtime = AMCL_GraphicsRuntime();
+     EGLContext (*get_current)(void) = runtime ? (EGLContext (*)(void))runtime->eglProc("eglGetCurrentContext") : NULL;
+     if ((get_current ? get_current() == context : SDL_GL_GetCurrentContext() == context) &&
+         !SDL_EGL_MakeCurrent(_this, NULL, NULL)) return false;
+     if (!SDL_EGL_DestroyContext(_this, context)) return false;
+     for (SDL_Window *window = _this->windows; window; window = window->next) {
+         SDL_WindowData *data = window->internal;
+         if (!data) {
+@@ -1095,237 +1126,266 @@
+     OPENHARMONY_AMCL_UpdatePresentedForeground();
+     window = SDL_GetWindowFromID(window_id);
+     if (!window || !window->internal) {
+         return SDL_SetError("OpenHarmony: window was destroyed during lifecycle update");
+     }
+ 
+     if (_this && _this->internal &&
+         ((SDL_VideoData *)_this->internal)->renderer_fatal) {
+         return SDL_SetError("OpenHarmony: renderer is fatally unavailable; process restart required");
+     }
+ 
+     SDL_WindowData *data = window->internal;
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         if (data->pending_width > 0 && data->pending_height > 0) {
+             if (!OPENHARMONY_ApplyPendingAuxiliaryResize(
+                     _this, window, SDL_GL_GetCurrentContext())) {
+                 ((SDL_VideoData *)_this->internal)->swap_fail++;
+                 return false;
+             }
+             window = SDL_GetWindowFromID(window_id);
+             if (!window || !window->internal) {
+                 return false;
+             }
+             data = window->internal;
+             if (!data || data->pending_width > 0) {
+                 ((SDL_VideoData *)_this->internal)->swap_fail++;
+                 return SDL_SetError("OpenHarmony: auxiliary resize remains pending");
+             }
+         }
+         if (!data || data->surface_state != OPENHARMONY_SURFACE_READY ||
+             data->amcl_surface_suspended || data->egl_surface == EGL_NO_SURFACE) {
+             ((SDL_VideoData *)_this->internal)->swap_fail++;
+             return SDL_SetError("OpenHarmony: auxiliary pbuffer surface is unavailable");
+         }
+         EGLint auxiliary_error = EGL_SUCCESS;
+         result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &auxiliary_error);
+         if (result) {
+             ((SDL_VideoData *)_this->internal)->swap_ok++;
+         } else {
+             ((SDL_VideoData *)_this->internal)->swap_fail++;
+             SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                          "OPENHARMONY_WINDOW schema=1 event=swap_fail role=auxiliary id=%u config_id=%d egl_error=0x%x",
+                          (unsigned int)window->id, data->egl_config_id,
+                          (unsigned int)auxiliary_error);
+             if (OPENHARMONY_GLES_IsFatalContextError(auxiliary_error)) {
+-                return OPENHARMONY_GLES_MarkRendererFatal(
+-                    window, "auxiliary-swap-context-lost");
++                return OPENHARMONY_GLES_MarkRendererFatalWithError(
++                    window, "auxiliary-swap-context-lost", auxiliary_error);
+             }
+         }
+         return result;
+     }
+ 
+     // While the host has its surface torn down (or a surface rebuild is still
+     // incomplete), fail fast instead of handing EGL a surface whose
+     // OHNativeWindow is retired. Sync first so a newly published lease can
+     // recover a previously suspended window at this same present boundary.
+     SDL_GLContext context = SDL_GL_GetCurrentContext();
+     if (!OPENHARMONY_AMCL_PreparePresentedWindow(
+             _this, window, context, false)) {
+         ((SDL_VideoData *)_this->internal)->swap_fail++;
+         if (OPENHARMONY_GLES_IsRecoveryDeferred(
+                 SDL_GetWindowFromID(window_id))) {
+             return false;
+         }
+         SDL_Window *fatal_window = SDL_GetWindowFromID(window_id);
+         return fatal_window && fatal_window->internal
+                    ? OPENHARMONY_GLES_MarkRendererFatal(
+                          fatal_window, "presented-recovery-before-swap")
+                    : false;
+     }
+     window = SDL_GetWindowFromID(window_id);
+     if (!window || !window->internal) {
+         return false;
+     }
+     data = window->internal;
+     if (!data || data->role != OPENHARMONY_WINDOW_PRESENTED ||
+         data->surface_state != OPENHARMONY_SURFACE_READY ||
+         data->amcl_surface_suspended || data->egl_surface == EGL_NO_SURFACE) {
+         return SDL_SetError("OpenHarmony: presented surface is unavailable");
+     }
+     EGLint swap_error = EGL_SUCCESS;
+     result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &swap_error);
+     if (!result && (swap_error == EGL_BAD_SURFACE ||
+                     swap_error == EGL_BAD_NATIVE_WINDOW)) {
+         /* A BufferQueue can fail before the host publishes a new generation.
+          * Force one full broker revalidation/rebuild and retry exactly once. */
+         if (OPENHARMONY_AMCL_PreparePresentedWindow(
+                 _this, window, context, true)) {
+             window = SDL_GetWindowFromID(window_id);
+             if (!window || !window->internal) {
+                 return false;
+             }
+             data = window->internal;
+             result = OPENHARMONY_AMCL_ObservedSwap(_this, data, &swap_error);
+         } else if (OPENHARMONY_GLES_IsRecoveryDeferred(
+                        SDL_GetWindowFromID(window_id))) {
+             videodata->swap_fail++;
+             return false;
+         }
+     }
+     window = SDL_GetWindowFromID(window_id);
+     if (!window || !window->internal) {
+         return false;
+     }
+     data = window->internal;
+     if (result) {
+         videodata->swap_ok++;
+     } else {
+         videodata->swap_fail++;
+         SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                      "OPENHARMONY_WINDOW schema=1 event=swap_fail role=presented id=%u config_id=%d generation=%" SDL_PRIu64 " egl_error=0x%x",
+                      (unsigned int)window->id, data->egl_config_id,
+                      data->amcl_generation, (unsigned int)swap_error);
+         /* CONTEXT_LOST is immediately fatal; BAD_SURFACE/BAD_NATIVE_WINDOW
+          * reached this block only after their single forced rebuild retry.
+          * Every other final failure is fatal as well. */
+-        return OPENHARMONY_GLES_MarkRendererFatal(window, "eglSwapBuffers");
++        return OPENHARMONY_GLES_MarkRendererFatalWithError(window, "eglSwapBuffers", swap_error);
+     }
+ 
+     //OPENHARMONY_UnlockActivityMutex();
+ 
+     return result;
+ }
+ 
+ bool OPENHARMONY_GLES_LoadLibrary(SDL_VideoDevice *_this, const char *path)
+ {
+     return SDL_EGL_LoadLibrary(_this, path, EGL_DEFAULT_DISPLAY);
+ }
+ 
+ bool OPENHARMONY_GLES_SetSwapInterval(SDL_VideoDevice *_this, int interval)
+ {
+     if (!_this || !_this->internal) {
+         return SDL_SetError("OpenHarmony: video data is not initialized");
+     }
+     if (interval < 0) {
+         return SDL_SetError("Late swap tearing currently unsupported");
+     }
+     SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
++    if (videodata->renderer_fatal) return SDL_SetError("OpenHarmony: renderer requires process restart");
+     videodata->desired_swap_interval = interval;
+     videodata->desired_swap_interval_valid = true;
+ 
+     SDL_Window *current = SDL_GL_GetCurrentWindow();
+     if (!current || !current->internal) {
+         return SDL_EGL_SetSwapInterval(_this, interval);
+     }
+     SDL_WindowData *data = current->internal;
+-    if (SDL_EGL_SetSwapInterval(_this, interval)) {
++    EGLint interval_error = EGL_SUCCESS;
++    if (SDL_EGL_SetSwapIntervalWithError(_this, interval, &interval_error)) {
+         data->has_swap_interval = 1;
+         data->swap_interval = interval;
+         return true;
+     }
+     data->has_swap_interval = 0;
++    if (OPENHARMONY_GLES_IsFatalContextError(interval_error)) {
++        return OPENHARMONY_GLES_MarkRendererFatalWithError(current, "eglSwapInterval-context-lost", interval_error);
++    }
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         /* Some EGL implementations reject swap interval on a pbuffer. Keep the
+          * requested value at device scope and replay it when the presented
+          * surface first becomes current. */
+         SDL_ClearError();
+         return true;
+     }
+     return false;
+ }
+ 
+-bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice *_this,
+-                                          SDL_Window *window,
+-                                          bool fatal_on_failure)
+-{
++/* 事务入口只返回原生错误，不派发关闭事件；resize 必须先保存两个 surface 才能通知终局。
++ * 普通 pbuffer 的不支持错误仍可延迟至 presented 面回放；context lost 永远返回失败。 */
++bool OPENHARMONY_GLES_ReplaySwapIntervalWithError(SDL_VideoDevice *_this,
++                                                 SDL_Window *window,
++                                                 bool fatal_on_failure, EGLint *egl_error)
++{
++    if (egl_error) *egl_error = EGL_SUCCESS;
+     if (!_this || !_this->internal || !window || !window->internal) {
+         return SDL_SetError("OpenHarmony: cannot replay swap interval without a window");
+     }
+     SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
+     SDL_WindowData *data = window->internal;
+     if (!videodata->desired_swap_interval_valid) {
+         return true;
+     }
+     if (data->has_swap_interval &&
+         data->swap_interval == videodata->desired_swap_interval) {
+         return true;
+     }
+-    if (SDL_EGL_SetSwapInterval(_this, videodata->desired_swap_interval)) {
++    EGLint interval_error = EGL_SUCCESS;
++    if (SDL_EGL_SetSwapIntervalWithError(_this, videodata->desired_swap_interval, &interval_error)) {
+         data->has_swap_interval = 1;
+         data->swap_interval = videodata->desired_swap_interval;
+         videodata->interval_replay_ok++;
+         return true;
+     }
+     data->has_swap_interval = 0;
+     videodata->interval_replay_fail++;
++    if (egl_error) *egl_error = interval_error;
++    if (OPENHARMONY_GLES_IsFatalContextError(interval_error)) return false;
+     if (!fatal_on_failure &&
+         data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         SDL_ClearError();
+         return true;
+     }
+     return false;
++}
++
++/* 非事务调用点在自身边界报告错误；原生错误在 helper 中已读取，不能再次查询 EGL。 */
++bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice *_this, SDL_Window *window,
++                                        bool fatal_on_failure)
++{
++    EGLint error = EGL_SUCCESS;
++    const bool result = OPENHARMONY_GLES_ReplaySwapIntervalWithError(_this, window, fatal_on_failure, &error);
++    if (!result && OPENHARMONY_GLES_IsFatalContextError(error)) {
++        /* 现有恢复调用者尚需保存自己的候选面，不能在此同步发关闭事件让 watcher 删除窗口。
++         * 先锁存故障并封闭 renderer，调用者返回后由公共游戏故障通道结束本进程。 */
++        const AMCL_GraphicsObserverV1 *observer = AMCL_GraphicsObserver();
++        if (observer) observer->fatal("swap-interval-replay-context-lost", (uint32_t)error,
++                                     window && window->internal ? window->internal->amcl_generation : 0);
++        OPENHARMONY_GLES_MarkRendererRestartRequired(window, "swap-interval-replay-context-lost");
++        return false;
++    }
++    return result;
+ }
+ 
+ bool OPENHARMONY_GLES_GetSwapInterval(SDL_VideoDevice *_this, int *interval)
+ {
+     if (!_this || !_this->internal || !interval) {
+         return SDL_SetError("OpenHarmony: invalid swap interval query");
+     }
+     SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
+     SDL_Window *current = SDL_GL_GetCurrentWindow();
+     if (current && current->internal &&
+         videodata->desired_swap_interval_valid) {
+         /* The requested interval is device policy even when the bootstrap
+          * pbuffer deferred applying it.  The presented surface replay is the
+          * authoritative application point. */
+         *interval = videodata->desired_swap_interval;
+         return true;
+     }
+     return SDL_EGL_GetSwapInterval(_this, interval);
+ }
+ 
+ void OPENHARMONY_GLES_UnloadLibrary(SDL_VideoDevice *_this)
+ {
+     if (_this && _this->internal) {
+         SDL_VideoData *videodata = (SDL_VideoData *)_this->internal;
+         if (videodata->renderer_fatal) {
+             /* A cross-thread/current-surface failure cannot be safely torn
+              * down from this caller.  Keep the EGL image resident until the
+              * process exits; the launcher observes the taint marker and
+              * performs a process restart instead of reusing this state. */
+             SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                          "OPENHARMONY_WINDOW schema=1 event=unload_deferred reason=renderer_fatal");
+             return;
+         }
+         const bool roles_balanced = videodata->presented_window == NULL &&
+                                     videodata->auxiliary_window_count == 0;
+         const bool leases_balanced =
+             videodata->lease_acquire == videodata->lease_release;
+         const bool counters_balanced =
+             roles_balanced && leases_balanced &&
+             videodata->presented_notify == videodata->presented_swap_success &&
+             videodata->auxiliary_present_notify == 0 &&
+             videodata->steady_full_acquire == 0;
+         if (!counters_balanced) {
+             SDL_setenv_unsafe("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+             SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.h b/src/video/openharmony/SDL_openharmonyopengl.h
+--- a/src/video/openharmony/SDL_openharmonyopengl.h
++++ b/src/video/openharmony/SDL_openharmonyopengl.h
+@@ -12,57 +12,63 @@
+ 
+   1. The origin of this software must not be misrepresented; you must not
+      claim that you wrote the original software. If you use this software
+      in a product, an acknowledgment in the product documentation would be
+      appreciated but is not required.
+   2. Altered source versions must be plainly marked as such, and must not be
+      misrepresented as being the original software.
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
+ 
+ #ifndef SDL_openharmonyopengl_h_
+ #define SDL_openharmonyopengl_h_
+ 
+ #ifdef SDL_VIDEO_OPENGL_EGL
+ #include "../SDL_egl_c.h"
+ #endif
+ 
+ #ifdef SDL_VIDEO_OPENGL_EGL
+ // Reconcile a desktop-GL request with an EGL implementation that only has GLES.
+ // Call before anything consumes _this->gl_config (config selection, context
+ // creation). No-op when the request is already GLES, or when the platform turns
+ // out to have a desktop-GL config after all. See the comment on the definition.
+ extern void OPENHARMONY_GLES_EnsureUsableProfile(SDL_VideoDevice *_this);
+ /* Select and lock one config usable by both the host window surface and
+  * auxiliary pbuffer surfaces.  The lock is process-local and remains valid
+  * until the last SDL GL reference is unloaded. */
+ extern bool OPENHARMONY_GLES_EnsureWindowConfig(SDL_VideoDevice *_this, bool auxiliary);
+ extern bool OPENHARMONY_GLES_ValidatePbufferSize(SDL_VideoDevice *_this,
+                                                  int width, int height);
+ extern bool OPENHARMONY_GLES_ValidatePbufferSurface(SDL_VideoDevice *_this,
+                                                     EGLSurface surface,
+                                                     int requested_width,
+                                                     int requested_height,
+                                                     int *actual_width,
+                                                     int *actual_height);
+ extern void OPENHARMONY_GLES_ResetPolicyIfUnused(SDL_VideoDevice *_this);
+ extern bool OPENHARMONY_GLES_SetSwapInterval(SDL_VideoDevice *_this, int interval);
+ extern bool OPENHARMONY_GLES_GetSwapInterval(SDL_VideoDevice *_this, int *interval);
+ extern void OPENHARMONY_GLES_UnloadLibrary(SDL_VideoDevice *_this);
+ extern bool OPENHARMONY_GLES_ReplaySwapInterval(SDL_VideoDevice *_this,
+                                                 SDL_Window *window,
+                                                 bool fatal_on_failure);
+ extern bool OPENHARMONY_GLES_MarkRendererFatal(SDL_Window *window,
+                                                 const char *operation);
++/* AMCL 事务错误接口：先登记资源，再由调用点报告首个原生故障。 */
++extern bool OPENHARMONY_GLES_IsFatalContextError(EGLint error);
++extern bool OPENHARMONY_GLES_ContextBindingAllowed(SDL_VideoDevice *_this);
++extern bool OPENHARMONY_GLES_MarkRendererFatalWithError(SDL_Window *window, const char *operation, EGLint error);
++extern bool OPENHARMONY_GLES_ReplaySwapIntervalWithError(SDL_VideoDevice *_this, SDL_Window *window,
++                                                        bool fatal_on_failure, EGLint *egl_error);
+ extern bool OPENHARMONY_GLES_DestroyContext(SDL_VideoDevice *_this,
+                                              SDL_GLContext context);
+ 
+ extern SDL_GLContext OPENHARMONY_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window *window);
+ extern bool OPENHARMONY_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context);
+ extern SDL_EGLSurface OPENHARMONY_GLES_GetEGLSurface(SDL_VideoDevice *_this,
+                                                      SDL_Window *window);
+ extern bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window);
+ extern bool OPENHARMONY_GLES_LoadLibrary(SDL_VideoDevice *_this, const char *path);
+ #endif /* SDL_VIDEO_OPENGL_EGL */
+ 
+ #endif // SDL_openharmonyopengl_h_
+diff --git a/src/video/openharmony/SDL_openharmonywindow.c b/src/video/openharmony/SDL_openharmonywindow.c
+--- a/src/video/openharmony/SDL_openharmonywindow.c
++++ b/src/video/openharmony/SDL_openharmonywindow.c
+@@ -3,90 +3,155 @@
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+ 
+   This software is provided 'as-is', without any express or implied
+   warranty.  In no event will the authors be held liable for any damages
+   arising from the use of this software.
+ 
+   Permission is granted to anyone to use this software for any purpose,
+   including commercial applications, and to alter it and redistribute it
+   freely, subject to the following restrictions:
+ 
+   1. The origin of this software must not be misrepresented; you must not
+      claim that you wrote the original software. If you use this software
+      in a product, an acknowledgment in the product documentation would be
+      appreciated but is not required.
+   2. Altered source versions must be plainly marked as such, and must not be
+      misrepresented as being the original software.
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
+ 
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+ 
+ // !!! FIXME: these are defined as "const uint32_t VARNAME = VALUE;" in native_interface_xcomponent.h, which becomes a global variable in _our_ C code! Maybe C++ handles this differently...?
+ #define OH_XCOMPONENT_ID_LEN_MAX sdl_ohoswindow_OH_XCOMPONENT_ID_LEN_MAX
+ #define OH_MAX_TOUCH_POINTS_NUMBER sdl_ohoswindow_OH_MAX_TOUCH_POINTS_NUMBER
+ #include <ace/xcomponent/native_interface_xcomponent.h>
+ 
+ #include "../SDL_sysvideo.h"
+ #include "../../events/SDL_keyboard_c.h"
+ #include "../../events/SDL_mouse_c.h"
+ #include "../../events/SDL_windowevents_c.h"
+ #include "../../core/openharmony/SDL_openharmony.h"
+ 
+ #include "SDL_openharmonyvideo.h"
+ #include "SDL_openharmonyevents.h"
+ #include "SDL_openharmonywindow.h"
+ #include "SDL_openharmonyopengl.h"
+ #include "SDL_openharmonyamcl.h"
+ 
+ #include <limits.h>
+ 
+ #define OPENHARMONY_PROP_REQUESTED_FLAGS "SDL.openharmony.requested_create_flags"
+ #define OPENHARMONY_PROP_WINDOW_ROLE "SDL.openharmony.window_role"
+ #define OPENHARMONY_AUXILIARY_WINDOW_MODE_HINT "SDL_OPENHARMONY_AUXILIARY_WINDOW_MODE"
++
++static bool OPENHARMONY_SendGeometryEvents(SDL_Window *window, int width, int height);
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++/* AMCL：仅保存无法安全退休的辅助窗口，直到进程退出。renderer_fatal 阻止再次创建，
++ * 此链不申请内存，故 OOM/驱动失败时仍可登记。正常成功路径永不进入保留链。 */
++static SDL_WindowData *OPENHARMONY_retained_auxiliary = NULL;
++static SDL_SpinLock OPENHARMONY_retained_auxiliary_lock = 0;
++
++/* 每次 resize 开始清空，第一次失败写入后不再改写；清理失败只能补日志，不能替换根因。 */
++static void OPENHARMONY_RememberAuxiliaryFailure(SDL_WindowData *data, const char *stage, EGLint error)
++{
++    if (data->amcl_auxiliary_first_stage[0]) return;
++    data->amcl_auxiliary_first_error = error;
++    SDL_strlcpy(data->amcl_auxiliary_first_stage, stage, sizeof(data->amcl_auxiliary_first_stage));
++    SDL_strlcpy(data->amcl_auxiliary_first_text, SDL_GetError(), sizeof(data->amcl_auxiliary_first_text));
++}
++
++/* 必须在拥有 context/surface 的线程执行；只有真实驱动退休成功才能清空槽位。 */
++static bool OPENHARMONY_RetireAuxiliarySurface(SDL_VideoDevice *_this, SDL_WindowData *data,
++                                               EGLSurface *surface, const char *stage)
++{
++    if (*surface == EGL_NO_SURFACE) return true;
++    if (!_this->egl_data->eglDestroySurface(_this->egl_data->egl_display, *surface)) {
++        const EGLint error = _this->egl_data->eglGetError();
++        SDL_EGL_SetErrorEx("OpenHarmony: auxiliary surface retirement failed", "eglDestroySurface", error);
++        OPENHARMONY_RememberAuxiliaryFailure(data, stage, error);
++        return false;
++    }
++    *surface = EGL_NO_SURFACE;
++    return true;
++}
++
++/* 先保留资源与真实 current，再发关闭事件。事件 watcher 可以销毁 SDL_Window，
++ * 所以调用点必须立即返回；DestroyWindow 会断开窗口但保留本链中的 WindowData。 */
++static bool OPENHARMONY_RetainAuxiliaryFailure(SDL_Window *window, SDL_WindowData *data)
++{
++    /* 不同已准入 context 的 owner 可能同时失败；只在短锁内改链，锁外报告/派发事件。 */
++    SDL_LockSpinlock(&OPENHARMONY_retained_auxiliary_lock);
++    if (!data->amcl_auxiliary_retained) {
++        data->amcl_auxiliary_retained = true;
++        data->amcl_auxiliary_retained_next = OPENHARMONY_retained_auxiliary;
++        OPENHARMONY_retained_auxiliary = data;
++    }
++    SDL_UnlockSpinlock(&OPENHARMONY_retained_auxiliary_lock);
++    data->surface_state = OPENHARMONY_SURFACE_DESTROYING;
++    SDL_SetError("%s", data->amcl_auxiliary_first_text);
++    return OPENHARMONY_GLES_MarkRendererFatalWithError(
++        window, data->amcl_auxiliary_first_stage, data->amcl_auxiliary_first_error);
++}
++
++/* 普通候选失败在确认退休成功后回报旧尺寸。若清理也失败，两个句柄仍有账可查并终局退出。 */
++static bool OPENHARMONY_FinishAuxiliaryResizeFailure(SDL_VideoDevice *_this, SDL_Window *window,
++                                                     SDL_WindowData *data)
++{
++    if (!OPENHARMONY_RetireAuxiliarySurface(_this, data, &data->amcl_auxiliary_candidate,
++                                            "auxiliary-candidate-retire")) {
++        return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++    }
++    data->pending_width = data->pending_height = 0;
++    SDL_SetError("%s", data->amcl_auxiliary_first_text);
++    OPENHARMONY_SendGeometryEvents(window, data->surface_width, data->surface_height);
++    return false;
++}
++#endif
+ 
+ SDL_Window *OPENHARMONY_GetPresentedWindow(SDL_VideoDevice *_this)
+ {
+     if (!_this) {
+         _this = SDL_GetVideoDevice();
+     }
+     if (!_this || !_this->internal) {
+         return NULL;
+     }
+     return ((SDL_VideoData *)_this->internal)->presented_window;
+ }
+ 
+ static OPENHARMONY_WindowRole OPENHARMONY_ClassifyWindowRole(SDL_WindowFlags requested,
+                                                               bool pbuffer_enabled)
+ {
+     const SDL_WindowFlags auxiliary_flags = SDL_WINDOW_HIDDEN |
+                                              SDL_WINDOW_UTILITY |
+                                              SDL_WINDOW_NOT_FOCUSABLE |
+                                              SDL_WINDOW_OPENGL;
+     if (pbuffer_enabled &&
+         (requested & auxiliary_flags) == auxiliary_flags &&
+         !(requested & (SDL_WINDOW_VULKAN | SDL_WINDOW_METAL | SDL_WINDOW_EXTERNAL))) {
+         return OPENHARMONY_WINDOW_AUXILIARY_PBUFFER;
+     }
+     return OPENHARMONY_WINDOW_PRESENTED;
+ }
+ 
+ bool OPENHARMONY_AuxiliaryPbufferEnabled(void)
+ {
+     /* SDL_GetHint gives applications the normal hint API while preserving the
+      * environment's higher priority.  The unsafe getenv fallback matters only
+      * for a host that publishes the static marker after SDL's hint snapshot. */
+     const char *mode = SDL_getenv_unsafe(OPENHARMONY_AUXILIARY_WINDOW_MODE_HINT);
+     if (!mode) {
+         mode = SDL_GetHint(OPENHARMONY_AUXILIARY_WINDOW_MODE_HINT);
+     }
+     if (!mode || !*mode || SDL_strcasecmp(mode, "off") == 0) {
+         return false;
+     }
+     if (SDL_strcasecmp(mode, "pbuffer") == 0) {
+         return true;
+     }
+     /* The backend is also used by ordinary SDL applications.  An unset or
+      * misspelled mode must never silently opt those callers into a second
+      * surface model; AMCL writes the explicit pbuffer marker before SDL starts. */
+@@ -210,92 +275,96 @@
+     data->shown = false;
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     data->egl_surface = EGL_NO_SURFACE;
+ #endif
+ 
+     /* Auxiliary utility windows are deliberately detached from the host
+      * XComponent. They still have a complete SDL_Window identity, but their
+      * drawable is an EGL pbuffer and therefore cannot consume the singleton
+      * OpenHarmony native-window slot. */
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+ #ifdef SDL_VIDEO_OPENGL_EGL
+         if (!OPENHARMONY_GLES_EnsureWindowConfig(_this, true)) {
+             OPENHARMONY_GLES_ResetPolicyIfUnused(_this);
+             SDL_free(data);
+             return false;
+         }
+         data->surface_width = window->w;
+         data->surface_height = window->h;
+         if (!OPENHARMONY_GLES_ValidatePbufferSize(_this, data->surface_width,
+                                                   data->surface_height)) {
+             OPENHARMONY_GLES_ResetPolicyIfUnused(_this);
+             SDL_free(data);
+             return false;
+         }
+         data->egl_surface = SDL_EGL_CreateOffscreenSurface(_this,
+                                                             data->surface_width,
+                                                             data->surface_height);
+         if (data->egl_surface == EGL_NO_SURFACE) {
+             const EGLint egl_error = _this->egl_data->eglGetError();
+             SDL_EGL_SetErrorEx("OpenHarmony: unable to create auxiliary pbuffer",
+                                "eglCreatePbufferSurface", egl_error);
+             SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                          "OPENHARMONY_WINDOW schema=1 event=create_fail role=auxiliary id=%u config_id=%d egl_error=0x%x",
+                          (unsigned int)window->id,
+                          videodata->pinned_egl_config_id,
+                          (unsigned int)egl_error);
+             OPENHARMONY_GLES_ResetPolicyIfUnused(_this);
+             SDL_free(data);
+             return false;
+         }
+         int actual_width = 0;
+         int actual_height = 0;
+         if (!OPENHARMONY_GLES_ValidatePbufferSurface(
+                 _this, data->egl_surface, data->surface_width,
+                 data->surface_height, &actual_width, &actual_height)) {
+-            SDL_EGL_DestroySurface(_this, data->egl_surface);
+-            data->egl_surface = EGL_NO_SURFACE;
++            OPENHARMONY_RememberAuxiliaryFailure(data, "auxiliary-initial-validation", 0);
++            if (!OPENHARMONY_RetireAuxiliarySurface(_this, data, &data->egl_surface,
++                                                    "auxiliary-initial-retire")) {
++                window->internal = data;
++                return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++            }
+             OPENHARMONY_GLES_ResetPolicyIfUnused(_this);
+             SDL_free(data);
+             return false;
+         }
+         data->surface_width = actual_width;
+         data->surface_height = actual_height;
+ #else
+         SDL_free(data);
+         return SDL_SetError("OpenHarmony auxiliary windows require EGL");
+ #endif
+         data->egl_config_id = videodata->pinned_egl_config_id;
+         data->construction_committed = true;
+         window->internal = data;
+         videodata->auxiliary_window_count++;
+         videodata->auxiliary_create_ok++;
+         SDL_SetNumberProperty(window_props, OPENHARMONY_PROP_REQUESTED_FLAGS,
+                               (Sint64)requested);
+         SDL_SetNumberProperty(window_props, OPENHARMONY_PROP_WINDOW_ROLE,
+                               (Sint64)data->role);
+         OPENHARMONY_SetWindowPointers(window, data);
+         SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,
+                     "OPENHARMONY_WINDOW schema=1 event=create role=auxiliary id=%u size=%dx%d config_id=%d",
+                     (unsigned int)window->id, data->surface_width,
+                     data->surface_height, data->egl_config_id);
+         return true;
+     }
+ 
+     if (videodata->presented_window) {
+         SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                      "OPENHARMONY_WINDOW schema=1 event=create_fail role=presented flags=0x%.8x reason=presented-slot-occupied",
+                      (unsigned int)requested);
+         SDL_free(data);
+         return SDL_SetError("OpenHarmony supports one presented window and multiple auxiliary pbuffers");
+     }
+ 
+     SDL_OpenHarmonyGetNativeWindowPointers(&voidxcomp, &native_window);
+     native_xcomponent = (OH_NativeXComponent *)voidxcomp;
+     data->native_xcomponent = native_xcomponent;
+ 
+     if (native_xcomponent) {
+         uint64_t native_w = 0;
+         uint64_t native_h = 0;
+         if (!native_window ||
+             OH_NativeXComponent_GetXComponentSize(native_xcomponent, native_window,
+                                                    &native_w, &native_h) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+@@ -467,199 +536,180 @@
+     if (window && OPENHARMONY_DesktopCommand(window,9,0,0,0,0,window->title)) return;
+     // Intentionally empty, not unimplemented: an OpenHarmony application fills
+     // its window on the mobile/standalone fallback and has no title bar for a caller-supplied string to appear
+     // in. The window title is still stored by SDL and readable via
+     // SDL_GetWindowTitle(), it just has nowhere to be displayed.
+     //
+     // SetWindowTitle returns void, so there is no way to signal "unsupported"
+     // here even if we wanted to; leaving the hook wired keeps SDL from having
+     // to special-case a NULL pointer on every title change.
+     (void)_this;
+     (void)window;
+ }
+ 
+ // ===========================================================================
+ // Size and position: accept the request, then report reality
+ // ===========================================================================
+ // The window is the system's (or, when SDL is embedded, the host's) surface;
+ // the backend cannot move or resize it. The question is what to tell a caller
+ // who asks anyway.
+ //
+ // Leaving these hooks NULL makes SDL_SetWindowSize() / SDL_SetWindowPosition()
+ // report SDL_Unsupported(), which reads like the honest answer. It is honest
+ // about the backend, but it is the wrong answer for the caller, because these
+ // two entry points are not optional in practice:
+ //
+ //   SDL_SetWindowFullscreen(false) + SDL_SetWindowPosition() +
+ //   SDL_SetWindowSize() is the canonical "leave fullscreen" sequence, and
+ //   applications treat a false return from any of it as an error.
+ //
+ // 2026-08-04 device evidence (MatePad Pro, OpenHarmony 6.1.1.120): Minecraft
+ // 26.3 restores a windowed mode on the first launch after an unclean shutdown,
+ // and logged exactly that:
+ //   [Render thread/ERROR]: Couldn't leave fullscreen: That operation is not supported
+ // -- i.e. SDL_Unsupported() propagated out of this backend, from a request that
+ // was in fact already satisfied: the window covers the whole surface, which is
+ // the closest thing to "windowed" this platform has.
+ //
+ // So these hooks accept the request and then immediately re-announce the actual
+ // geometry through the normal event path. That is not a stub claiming success:
+ // SDL's cached size/position converge on what the window really is (the RESIZED
+ // / MOVED events are what update window->w/h and window->x/y and clear the
+ // pending flags), so a caller that reads back SDL_GetWindowSize() gets the
+ // truth, not the value it asked for.
+ // ===========================================================================
+ 
++/* 辅助 pbuffer resize 是 owner 线程事务：旧面继续作为已发布状态，候选面先入账；
++ * 创建/尺寸/绑定/交换间隔/旧面退休全部成功才发布新尺寸。驱动失败不得伪造回滚成功。 */
+ bool OPENHARMONY_ApplyPendingAuxiliaryResize(SDL_VideoDevice *_this,
+-                                              SDL_Window *window,
+-                                              SDL_GLContext context)
+-{
+-#ifdef SDL_VIDEO_OPENGL_EGL
+-    if (!_this || !window || !window->internal) {
+-        return false;
+-    }
++                                              SDL_Window *window, SDL_GLContext context)
++{
++#ifdef SDL_VIDEO_OPENGL_EGL
++    if (!_this || !_this->internal || !window || !window->internal) return false;
+     SDL_WindowData *data = window->internal;
+-    if (data->role != OPENHARMONY_WINDOW_AUXILIARY_PBUFFER ||
+-        data->pending_width <= 0 || data->pending_height <= 0) {
+-        return true;
+-    }
+-    if (!OPENHARMONY_GLES_EnsureWindowConfig(_this, true)) {
+-        return false;
+-    }
++    if (((SDL_VideoData *)_this->internal)->renderer_fatal || data->amcl_auxiliary_retained) return false;
++    if (data->role != OPENHARMONY_WINDOW_AUXILIARY_PBUFFER || data->pending_width <= 0 || data->pending_height <= 0) return true;
+     const SDL_ThreadID current_thread = SDL_GetCurrentThreadID();
+     if (data->is_current && data->owner_thread && data->owner_thread != current_thread) {
+-        return false; /* owner thread will consume the pending request */
+-    }
+-    if (!OPENHARMONY_GLES_ValidatePbufferSize(
+-            _this, data->pending_width, data->pending_height)) {
+-        data->pending_width = 0;
+-        data->pending_height = 0;
+-        OPENHARMONY_SendGeometryEvents(window, data->surface_width,
+-                                       data->surface_height);
+         return false;
+     }
+-
+-    EGLSurface old_surface = data->egl_surface;
+-    EGLSurface new_surface = SDL_EGL_CreateOffscreenSurface(
+-        _this, data->pending_width, data->pending_height);
+-    if (new_surface == EGL_NO_SURFACE) {
+-        const EGLint egl_error = _this->egl_data->eglGetError();
+-        SDL_EGL_SetErrorEx("OpenHarmony: unable to resize auxiliary pbuffer",
+-                           "eglCreatePbufferSurface", egl_error);
+-        SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+-                     "OPENHARMONY_WINDOW schema=1 event=resize_fail role=auxiliary id=%u config_id=%d egl_error=0x%x",
+-                     (unsigned int)window->id,
+-                     ((SDL_VideoData *)_this->internal)->pinned_egl_config_id,
+-                     (unsigned int)egl_error);
+-        const int old_width = data->surface_width;
+-        const int old_height = data->surface_height;
+-        data->pending_width = 0;
+-        data->pending_height = 0;
+-        OPENHARMONY_SendGeometryEvents(window, old_width, old_height);
++    if (!OPENHARMONY_GLES_EnsureWindowConfig(_this, true)) return false;
++    data->amcl_auxiliary_first_stage[0] = '\0';
++    data->amcl_auxiliary_first_text[0] = '\0';
++    data->amcl_auxiliary_first_error = EGL_SUCCESS;
++    if (!OPENHARMONY_GLES_ValidatePbufferSize(_this, data->pending_width, data->pending_height)) {
++        data->pending_width = data->pending_height = 0;
++        OPENHARMONY_SendGeometryEvents(window, data->surface_width, data->surface_height);
+         return false;
+     }
+-
+-    int actual_width = 0;
+-    int actual_height = 0;
+-    if (!OPENHARMONY_GLES_ValidatePbufferSurface(
+-            _this, new_surface, data->pending_width, data->pending_height,
+-            &actual_width, &actual_height)) {
+-        SDL_EGL_DestroySurface(_this, new_surface);
+-        const int old_width = data->surface_width;
+-        const int old_height = data->surface_height;
+-        data->pending_width = 0;
+-        data->pending_height = 0;
+-        OPENHARMONY_SendGeometryEvents(window, old_width, old_height);
+-        return false;
+-    }
+-
++    const EGLSurface old_surface = data->egl_surface;
+     const bool was_current = SDL_GL_GetCurrentWindow() == window;
+-    const int old_has_swap_interval = data->has_swap_interval;
+-    const int old_swap_interval = data->swap_interval;
++    data->amcl_auxiliary_current_surface = was_current ? old_surface : EGL_NO_SURFACE;
++    data->amcl_auxiliary_candidate = SDL_EGL_CreateOffscreenSurface(_this, data->pending_width, data->pending_height);
++    if (data->amcl_auxiliary_candidate == EGL_NO_SURFACE) {
++        const EGLint error = _this->egl_data->eglGetError();
++        SDL_EGL_SetErrorEx("OpenHarmony: unable to resize auxiliary pbuffer", "eglCreatePbufferSurface", error);
++        OPENHARMONY_RememberAuxiliaryFailure(data, "auxiliary-resize-create", error);
++        if (OPENHARMONY_GLES_IsFatalContextError(error)) return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++        return OPENHARMONY_FinishAuxiliaryResizeFailure(_this, window, data);
++    }
++    int actual_width = 0, actual_height = 0;
++    if (!OPENHARMONY_GLES_ValidatePbufferSurface(_this, data->amcl_auxiliary_candidate,
++            data->pending_width, data->pending_height, &actual_width, &actual_height)) {
++        OPENHARMONY_RememberAuxiliaryFailure(data, "auxiliary-resize-validation", 0);
++        return OPENHARMONY_FinishAuxiliaryResizeFailure(_this, window, data);
++    }
++    const int old_has_interval = data->has_swap_interval, old_interval = data->swap_interval;
+     data->has_swap_interval = 0;
+     if (was_current) {
+-        if (!context) {
+-            context = SDL_GL_GetCurrentContext();
+-        }
+-        if (!context || !SDL_EGL_MakeCurrent(_this, new_surface, context) ||
+-            !OPENHARMONY_GLES_ReplaySwapInterval(_this, window, false)) {
+-            if (context) {
+-                SDL_EGL_MakeCurrent(_this, old_surface, context);
+-            }
+-            SDL_EGL_DestroySurface(_this, new_surface);
+-            const int old_width = data->surface_width;
+-            const int old_height = data->surface_height;
+-            data->pending_width = 0;
+-            data->pending_height = 0;
+-            data->has_swap_interval = old_has_swap_interval;
+-            data->swap_interval = old_swap_interval;
+-            OPENHARMONY_SendGeometryEvents(window, old_width, old_height);
+-            return false;
+-        }
+-    }
+-
+-    const int new_width = actual_width;
+-    const int new_height = actual_height;
+-    data->egl_surface = new_surface;
+-    data->surface_width = new_width;
+-    data->surface_height = new_height;
++        if (!context) context = SDL_GL_GetCurrentContext();
++        EGLint error = EGL_SUCCESS;
++        if (!context || !SDL_EGL_MakeCurrentWithError(_this, data->amcl_auxiliary_candidate, context, &error)) {
++            if (!context) SDL_SetError("OpenHarmony: current auxiliary window has no context");
++            OPENHARMONY_RememberAuxiliaryFailure(data, "auxiliary-resize-bind", error);
++            if (OPENHARMONY_GLES_IsFatalContextError(error)) return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++            data->has_swap_interval = old_has_interval; data->swap_interval = old_interval;
++            return OPENHARMONY_FinishAuxiliaryResizeFailure(_this, window, data);
++        }
++        data->amcl_auxiliary_current_surface = data->amcl_auxiliary_candidate;
++        data->has_swap_interval = 0;
++        if (!OPENHARMONY_GLES_ReplaySwapIntervalWithError(_this, window, false, &error)) {
++            OPENHARMONY_RememberAuxiliaryFailure(data, "auxiliary-resize-interval", error);
++            if (OPENHARMONY_GLES_IsFatalContextError(error)) return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++            EGLint restore_error = EGL_SUCCESS;
++            if (!SDL_EGL_MakeCurrentWithError(_this, old_surface, context, &restore_error)) {
++                /* 首错保持 interval；回绑失败时新面仍 current，绝不能把它交给销毁器。 */
++                return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++            }
++            data->amcl_auxiliary_current_surface = old_surface;
++            data->has_swap_interval = old_has_interval; data->swap_interval = old_interval;
++            return OPENHARMONY_FinishAuxiliaryResizeFailure(_this, window, data);
++        }
++    }
++    if (!OPENHARMONY_RetireAuxiliarySurface(_this, data, &data->egl_surface, "auxiliary-old-retire")) {
++        /* 旧面退休失败意味着句柄仍归本事务。可尝试回到旧绑定，但任何结果都保留两面并
++         * 终局退出；真实 current 单独记录，清理失败不能把第一次退休错误改写为成功。 */
++        if (was_current) {
++            EGLint restore_error = EGL_SUCCESS;
++            if (SDL_EGL_MakeCurrentWithError(_this, old_surface, context, &restore_error)) {
++                data->amcl_auxiliary_current_surface = old_surface;
++                data->has_swap_interval = old_has_interval; data->swap_interval = old_interval;
++            }
++        }
++        return OPENHARMONY_RetainAuxiliaryFailure(window, data);
++    }
++    data->egl_surface = data->amcl_auxiliary_candidate;
++    data->amcl_auxiliary_candidate = EGL_NO_SURFACE;
++    data->surface_width = actual_width; data->surface_height = actual_height;
+     data->egl_config_id = ((SDL_VideoData *)_this->internal)->pinned_egl_config_id;
+-    data->pending_width = 0;
+-    data->pending_height = 0;
++    data->pending_width = data->pending_height = 0;
+     data->surface_state = OPENHARMONY_SURFACE_READY;
+-    SDL_SetPointerProperty(SDL_GetWindowProperties(window),
+-                           SDL_PROP_WINDOW_OPENHARMONY_SURFACE_POINTER,
+-                           (void *)new_surface);
+-    if (old_surface != EGL_NO_SURFACE) {
+-        SDL_EGL_DestroySurface(_this, old_surface);
+-    }
+-    OPENHARMONY_SendGeometryEvents(window, new_width, new_height);
++    SDL_SetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_OPENHARMONY_SURFACE_POINTER, (void *)data->egl_surface);
++    OPENHARMONY_SendGeometryEvents(window, actual_width, actual_height);
+     return true;
+ #else
+-    (void)_this;
+-    (void)window;
+-    (void)context;
++    (void)_this; (void)window; (void)context;
+     return false;
+ #endif
+ }
+ 
+ void OPENHARMONY_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     if (window && OPENHARMONY_DesktopCommand(window,1,window->pending.w,window->pending.h,0,0,NULL)) return;
+     if (!window || !window->internal) {
+         return;
+     }
+ 
+     SDL_WindowData *data = window->internal;
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         data->pending_width = window->pending.w;
+         data->pending_height = window->pending.h;
+         if (data->is_current && data->owner_thread &&
+             data->owner_thread != SDL_GetCurrentThreadID()) {
+             return;
+         }
+         OPENHARMONY_ApplyPendingAuxiliaryResize(
+             _this, window, SDL_GL_GetCurrentContext());
+         return;
+     }
+ 
+     // The size is whatever the surface is. Prefer the value the host published
+     // for the surface currently in use; fall back to what the window already
+     // believes when there is no host-injected size (SDL owns the XComponent).
+     int actual_w = window->internal->surface_width;
+     int actual_h = window->internal->surface_height;
+     if ((actual_w <= 0) || (actual_h <= 0)) {
+         actual_w = window->w;
+         actual_h = window->h;
+     }
+ 
+     if ((actual_w > 0) && (actual_h > 0)) {
+         data->surface_width = actual_w;
+         data->surface_height = actual_h;
+         // Sent unconditionally, not only when it differs from the request: SDL
+         // has already recorded pending.w/h from the caller, and this event is
+         // what clears that pending state. Skipping it when the numbers happen
+         // to match would leave the request outstanding.
+         OPENHARMONY_SendGeometryEvents(window, actual_w, actual_h);
+     }
+ }
+ 
+@@ -884,90 +934,97 @@
+     if (!window || !window->internal) {
+         return;
+     }
+     const SDL_WindowData *data = window->internal;
+     if (data->role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         if (w) {
+             *w = data->surface_width > 0 ? data->surface_width : window->w;
+         }
+         if (h) {
+             *h = data->surface_height > 0 ? data->surface_height : window->h;
+         }
+     } else if (data->role == OPENHARMONY_WINDOW_PRESENTED) {
+         /* The presented dimensions are the host publication dimensions, not
+          * the panel's fallback display mode. */
+         int host_w = data->surface_width;
+         int host_h = data->surface_height;
+         if (host_w > 0 && host_h > 0) {
+             if (w) {
+                 *w = host_w;
+             }
+             if (h) {
+                 *h = host_h;
+             }
+         } else {
+             if (w) {
+                 *w = data->surface_width > 0 ? data->surface_width : window->w;
+             }
+             if (h) {
+                 *h = data->surface_height > 0 ? data->surface_height : window->h;
+             }
+         }
+     }
+ }
+ 
+ void OPENHARMONY_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     if (!window || !window->internal) {
+         return;
+     }
+ 
+     SDL_WindowData *data = window->internal;
+     SDL_VideoData *videodata = _this ? (SDL_VideoData *)_this->internal : NULL;
+     const OPENHARMONY_WindowRole role = data->role;
+     const SDL_WindowID window_id = window->id;
+     const Uint64 generation = data->amcl_generation;
++#ifdef SDL_VIDEO_OPENGL_EGL
++    /* 失败事务已登记持久保留链；SDL 核心仍可释放外层窗口，但不能丢掉驱动句柄。 */
++    if (data->amcl_auxiliary_retained) {
++        window->internal = NULL;
++        return;
++    }
++#endif
+     data->surface_state = OPENHARMONY_SURFACE_DESTROYING;
+ 
+     if (data->is_current && data->owner_thread &&
+         data->owner_thread != SDL_GetCurrentThreadID()) {
+         /* Destroying a surface current on another thread is undefined. The
+          * backend refuses the teardown and requests a process restart; leaking
+          * this small object until exit is safer than UAF in EGL/BufferQueue. */
+         SDL_setenv_unsafe("AMCL_RENDERER_REQUIRES_PROCESS_RESTART", "1", 1);
+         if (videodata) {
+             videodata->renderer_fatal = true;
+         }
+         const bool was_presented_slot =
+             videodata && role == OPENHARMONY_WINDOW_PRESENTED &&
+             videodata->presented_window == window;
+         /* Release presented input while the presented slot still resolves to
+          * this window.  Clearing the slot first would make the teardown
+          * helper lose the live WindowID and leave held buttons latched. */
+         if (role == OPENHARMONY_WINDOW_PRESENTED) {
+             OPENHARMONY_AMCL_SetPresentedActive(false);
+         }
+         window = SDL_GetWindowFromID(window_id);
+         if (!window || !window->internal) {
+             /* A watcher may have completed the recursive destruction while
+              * the release events were dispatched. */
+             return;
+         }
+         data = window->internal;
+         if (videodata) {
+             if (was_presented_slot && videodata->presented_window == window) {
+                 /* Prevent a subsequent create from adopting the same host
+                  * surface after core frees this SDL_Window.  renderer_fatal
+                  * makes that rejection explicit for the rest of the process. */
+                 videodata->presented_window = NULL;
+             }
+         }
+         SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+                      "OPENHARMONY_WINDOW schema=1 event=destroy_deferred role=%s id=%u owner=%" SDL_PRIu64 " caller=%" SDL_PRIu64,
+                      role == OPENHARMONY_WINDOW_PRESENTED ? "presented" : "auxiliary",
+                      (unsigned int)window->id,
+                      (Uint64)data->owner_thread,
+                      (Uint64)SDL_GetCurrentThreadID());
+         window->internal = NULL;
+         return;
+     }
+ 
+@@ -994,87 +1051,92 @@
+                 OPENHARMONY_AMCL_SetPresentedActive(false);
+                 if (videodata && was_presented_slot &&
+                     videodata->presented_window == window) {
+                     videodata->presented_window = NULL;
+                 }
+             }
+             SDL_Window *live_window = SDL_GetWindowFromID(window_id);
+             if (live_window && live_window->internal) {
+                 live_window->internal = NULL;
+             }
+             return;
+         }
+         data = window->internal;
+         if (data) {
+             data->is_current = false;
+         }
+     }
+ #endif
+ 
+     /* Stop external consumers before retiring any surface or lease. */
+     if (role == OPENHARMONY_WINDOW_PRESENTED) {
+         const bool was_presented_slot =
+             videodata && videodata->presented_window == window;
+         OPENHARMONY_AMCL_SetPresentedActive(false);
+         window = SDL_GetWindowFromID(window_id);
+         if (!window || !window->internal) {
+             /* The release path may have synchronously destroyed this window;
+              * its backend resources have already been handled by that call. */
+             return;
+         }
+         data = window->internal;
+         if (videodata && was_presented_slot &&
+             videodata->presented_window == window) {
+             videodata->presented_window = NULL;
+         }
+     }
+ 
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     if (data->egl_surface != EGL_NO_SURFACE) {
+         if (role == OPENHARMONY_WINDOW_PRESENTED) {
+             if (!OPENHARMONY_AMCL_RetirePresentedSurface(_this, data, data->egl_surface)) {
+                 window->internal = NULL;
+                 return; /* Keep the driver resource, lease and token together until process exit. */
+             }
+         } else {
+-            SDL_EGL_DestroySurface(_this, data->egl_surface);
++            data->amcl_auxiliary_first_stage[0] = '\0';
++            if (!OPENHARMONY_RetireAuxiliarySurface(_this, data, &data->egl_surface, "auxiliary-window-retire")) {
++                window->internal = NULL;
++                (void)OPENHARMONY_RetainAuxiliaryFailure(window, data);
++                return;
++            }
+         }
+         data->egl_surface = EGL_NO_SURFACE;
+     }
+ #endif
+ 
+     if (role == OPENHARMONY_WINDOW_PRESENTED && !OPENHARMONY_AMCL_ReleasePresentation(data)) {
+         window->internal = NULL;
+         return;
+     }
+     OPENHARMONY_AMCL_ReleasePendingNativeWindowLease(data);
+     if (role == OPENHARMONY_WINDOW_PRESENTED) {
+         OPENHARMONY_AMCL_ReleaseNativeWindowLease(data);
+         if (videodata) {
+             videodata->presented_destroy++;
+         }
+     } else if (role == OPENHARMONY_WINDOW_AUXILIARY_PBUFFER) {
+         if (videodata && videodata->auxiliary_window_count > 0) {
+             videodata->auxiliary_window_count--;
+         }
+         if (videodata) {
+             videodata->auxiliary_destroy++;
+         }
+     }
+ 
+     /* SDL core destroys window->props before invoking the backend during a
+      * final SDL_DestroyWindow().  RecreateWindow keeps the property bag alive,
+      * so only clear the platform pointers on that path. */
+     if (!window->is_destroying) {
+         OPENHARMONY_SetWindowPointers(window, NULL);
+     }
+     window->internal = NULL;
+     SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO,
+                 "OPENHARMONY_WINDOW schema=1 event=destroy role=%s id=%u generation=%" SDL_PRIu64 " remaining_aux=%u",
+                 role == OPENHARMONY_WINDOW_PRESENTED ? "presented" : "auxiliary",
+                 (unsigned int)window->id, generation,
+                 videodata ? videodata->auxiliary_window_count : 0);
+     SDL_free(data);
+ 
+ }
+ 
+ #endif // SDL_VIDEO_DRIVER_OPENHARMONY
+diff --git a/src/video/openharmony/SDL_openharmonywindow.h b/src/video/openharmony/SDL_openharmonywindow.h
+--- a/src/video/openharmony/SDL_openharmonywindow.h
++++ b/src/video/openharmony/SDL_openharmonywindow.h
+@@ -50,81 +50,90 @@
+  * renderer is being initialized.  Keep the distinction explicit: auxiliary
+  * windows are real SDL objects backed by pbuffer surfaces, while the one
+  * presented window is the only object allowed to touch the host XComponent.
+  */
+ typedef enum OPENHARMONY_WindowRole
+ {
+     OPENHARMONY_WINDOW_PRESENTED = 0,
+     OPENHARMONY_WINDOW_AUXILIARY_PBUFFER = 1
+ } OPENHARMONY_WindowRole;
+ 
+ typedef enum OPENHARMONY_SurfaceState
+ {
+     OPENHARMONY_SURFACE_READY = 0,
+     OPENHARMONY_SURFACE_LOST,
+     OPENHARMONY_SURFACE_RECREATE_PENDING,
+     OPENHARMONY_SURFACE_DESTROYING
+ } OPENHARMONY_SurfaceState;
+ 
+ extern SDL_Window *OPENHARMONY_GetPresentedWindow(SDL_VideoDevice *_this);
+ extern bool OPENHARMONY_AuxiliaryPbufferEnabled(void);
+ 
+ /* Compatibility view for the legacy input callbacks.  It is deliberately an
+  * accessor expression rather than storage: auxiliary windows can never become
+  * an input target or replace the host-presented window. */
+ #define OPENHARMONY_Window OPENHARMONY_GetPresentedWindow(SDL_GetVideoDevice())
+ 
+ struct SDL_WindowData
+ {
+     OPENHARMONY_WindowRole role;
+     OPENHARMONY_SurfaceState surface_state;
+     int egl_config_id;
+     int surface_width;
+     int surface_height;
+     int pending_width;
+     int pending_height;
+     bool requested_hidden;
+     bool shown;
+     bool auxiliary_show_notified;
+     bool construction_committed;
+     SDL_ThreadID owner_thread;
+     SDL_GLContext last_context;
+     bool is_current;
+     bool amcl_last_swap_presented; /* 实際呈现证据；EGL成功但暂缓时为false。 */
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     EGLSurface egl_surface;
++    /* AMCL：resize 在提交前同时拥有旧面和候选面。终局保留链持有整个 WindowData，
++     * 即使 SDL 核心释放 SDL_Window，也不会丢掉任一驱动句柄或第一次失败证据。 */
++    EGLSurface amcl_auxiliary_candidate;
++    EGLSurface amcl_auxiliary_current_surface;
++    bool amcl_auxiliary_retained;
++    struct SDL_WindowData *amcl_auxiliary_retained_next;
++    EGLint amcl_auxiliary_first_error;
++    char amcl_auxiliary_first_stage[64];
++    char amcl_auxiliary_first_text[256];
+     EGLContext egl_context; // We use this to preserve the context when losing focus
+     int has_swap_interval;  // Save/Restore the swap interval / vsync
+     int swap_interval;
+ #endif
+     bool backup_done;
+     void *native_xcomponent;
+     void *native_window;
+ 
+     // --- AMCL host-injected window lifecycle (see SDL_openharmonyamcl.c) ---
+     // Which broker publication generation this window has fully adopted; 0
+     // until the first valid broker snapshot is committed.
+     // Compared against the broker's lock-free peek once per event pump.
+     Uint64 amcl_generation;
+     // Set while the host has no usable surface (or a rebuild is incomplete):
+     // swaps fail fast instead of touching a retired buffer queue.
+     bool amcl_surface_suspended;
+     /* Opaque ABI-v2 broker token. It is owned only by the presented role. */
+     const void *native_window_lease_broker;
+     bool native_window_lease_owned;
+     Uint64 native_window_lease_generation;
+     /* Logical presented GL session. Lease copies never own or release this token. */
+     AMCL_PresentationOwner presentation;
+     void *amcl_pending_native_window;
+     const void *amcl_pending_lease_broker;
+     bool amcl_pending_lease_owned;
+     Uint64 amcl_pending_generation;
+     int amcl_pending_width;
+     int amcl_pending_height;
+     bool amcl_recovery_in_progress;
+     // A surface rebuild was interrupted after this thread already unbound its
+     // GL context; lets the same thread resume the rebuild on the next pump.
+     SDL_GLContext amcl_resume_context;
+     SDL_ThreadID amcl_resume_thread;
+ };
+ 
+ #endif // SDL_openharmonywindow_h_

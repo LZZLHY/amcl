@@ -92,13 +92,17 @@ export interface InputEnd {
   /** 日志用的稳定短名，便于在一行里看出是哪个实例漏了复位。 */
   readonly endName: string
 
+  /** 可选的真实Ability前台通知；只恢复后台准入，不恢复按键，也不伪造组件焦点。 */
+  onAbilityForeground?(): void
+
   /**
    * **ArkTS 先归零**：放掉本端当前所有按下态，发出的 RELEASE 必须与本端自己的 PRESS 配对。
    * 这是面向用户的完整复位，允许有 UI 副作用（收起抽屉、关闭输入条等）。
    *
    * 用于"ArkTS 侧知道即将失去后续抬起"的边界：页面隐藏/销毁、Ability 切后台/销毁。
    * 必须幂等：同一个边界可能被重复触发（页面隐藏 + Ability 后台会叠加）。
-   * @param reason 仅用于日志，不参与判断。
+   * @param reason 可信的宿主生命周期边界名；runtime区分Ability后台与页面退出，
+   *               普通输入端仅用于日志。恢复必须来自对应的真实生命周期通知。
    */
   releaseAllInputs(reason: string): void
 
@@ -201,6 +205,8 @@ export interface NativeInputSourceSink {
  */
 class InputSourceRegistryImpl {
   private ends: InputEnd[] = []
+  /** 保留进程真实Ability事实，让后台期间晚注册的端也不能误认为可活动。 */
+  private abilityForeground: boolean = true
   private nativeSink: NativeInputSourceSink | undefined = undefined
 
   /**
@@ -214,6 +220,10 @@ class InputSourceRegistryImpl {
   register(end: InputEnd): void {
     if (this.ends.indexOf(end) >= 0) return
     this.ends.push(end)
+    if (!this.abilityForeground) {
+      try { end.releaseAllInputs('ability-background') }
+      catch (error) { AppLogger.warn(TAG, '输入端后台初始状态同步失败：' + end.endName, error) }
+    }
     hilog.info(0x0000, TAG, 'end registered source=%{public}s name=%{public}s total=%{public}d',
       inputSourceName(end.inputSource), end.endName, this.ends.length)
   }
@@ -232,12 +242,28 @@ class InputSourceRegistryImpl {
   }
 
   /**
+   * 由EntryAbility/GameAbility的真实onForeground调用。页面可能一直存在，系统不保证
+   * 再发page-show或XComponent onFocus；前台事实必须直接抵达已注册runtime。
+   * 快照遍历允许回调注销自己；单端失败不能阻断其它端，未注册的页面不会被复活。
+   */
+  notifyAbilityForeground(): void {
+    this.abilityForeground = true
+    const snapshot: InputEnd[] = this.ends.slice()
+    for (let i = 0; i < snapshot.length; i++) {
+      const end: InputEnd = snapshot[i]
+      try { end.onAbilityForeground?.() }
+      catch (error) { AppLogger.warn(TAG, '输入端前台恢复失败：' + end.endName, error) }
+    }
+  }
+
+  /**
    * 对**每个**已注册端广播复位，再让 native 按端释放各自残留的持有记录。
    *
    * 单端抛异常不得中断其余端 —— 一个端的 bug 不能变成"其它端全部漏放"。
    * 这一条是刻意的：复位路径上"尽量多放"总比"整条链断在第一个异常"安全。
    */
   releaseAllEnds(reason: string): void {
+    if (reason.endsWith('-background') || reason.endsWith('-destroy')) this.abilityForeground = false
     for (let i = 0; i < this.ends.length; i++) {
       const end = this.ends[i]
       try {
@@ -288,6 +314,25 @@ class InputSourceRegistryImpl {
     this.releaseNativeHeldForAllSources()
     hilog.info(0x0000, TAG, 'dropAllEndState reason=%{public}s ends=%{public}d',
       reason, this.ends.length)
+  }
+
+  /** 已得到原生域完成快照之后，只撤销该端的缓存。此路径不补做 native 全源释放：
+   * 原生权威已完成撤销，重复扩大范围会让别端仍按住的控件与其前端缓存失步。
+   * 返回false表示至少一个端未确认，会话协调器会保留该域的待应用代次。
+   */
+  dropSourceStateAfterNativeReset(source: AmclInputSource, reason: string): boolean {
+    const ends: InputEnd[] = this.ends.slice()
+    let complete: boolean = true
+    for (let i: number = 0; i < ends.length; i++) {
+      const end: InputEnd = ends[i]
+      if (end.inputSource !== source) continue
+      try { end.dropHeldStateAfterNativeReset(reason) }
+      catch (e) {
+        complete = false
+        AppLogger.error(TAG, `domain reset failed source=${inputSourceName(source)} name=${end.endName} err=${(e as Error).message}`)
+      }
+    }
+    return complete
   }
 
   /**

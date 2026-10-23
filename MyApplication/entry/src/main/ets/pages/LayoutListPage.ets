@@ -5,7 +5,8 @@
  * 行为：
  *   - 不强制方向（手机自然竖屏，平板自然横屏均可）
  *   - 渲染所有方案的 16:9 缩略图卡片
- *   - 卡片操作：使用 / 编辑 / 克隆 / 删除（系统预设只能克隆不能删）
+ *   - 卡片操作：使用 / 编辑 / 克隆 / 删除（系统预设只能克隆不能删）；存储拒绝时显示原因
+ *   - 顶部常驻布局存档加载异常的非阻塞提示（隔离 / 修复 / 改名 / 写入封锁，来自 getLoadIssues）
  *   - 点击 [编辑] → router.pushUrl('pages/LayoutEditorPage', { profileName }) → 横屏编辑器
  *   - 编辑器 router.back() → 自动回到本页
  *   - 本页再返回 → 回设置页
@@ -16,12 +17,15 @@ import { picker } from '@kit.CoreFileKit'
 import { fileIo as fs } from '@kit.CoreFileKit'
 import { fileUri } from '@kit.CoreFileKit'
 import { systemShare } from '@kit.ShareKit'
-import { LayoutProfile, ImportAnalysis } from 'gamecontrol'
+import { LayoutProfile, ImportAnalysis, LayoutLoadIssues, initialControlGroupVisible } from 'gamecontrol'
 import { LayoutThumbnail } from '../components/LayoutThumbnail'
 import { getLayoutStore, LayoutStore } from 'gamecontrol'
 import { AppIconName } from 'commons'
 import { AppIcon } from '../components/AppIcon'
+import { ThemeColors, ThemeMode, resolveTheme } from 'commons'
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
+import { layoutCatalogPage, layoutCatalogPageCount, clampLayoutCatalogPage, layoutCatalogContainingPage } from '../components/LayoutCatalogPaging'
 
 /** 路由参数：从「打开方式」经 Index 跳入时携带待导入文件 uri。 */
 interface LayoutListRouteParams {
@@ -31,21 +35,36 @@ interface LayoutListRouteParams {
 @Entry
 @Component
 struct LayoutListPage {
+  /** 编辑器目录沿用原固定深色视觉；只让共享标题接管返回与顶部安全区。 */
+  private titleTheme: ThemeColors = resolveTheme(ThemeMode.DARK, false)
+  @StorageProp('topRectHeight') private topSafeHeight: number = 0
   @State profileNames: string[] = []
+  /** 大库只绘制一页卡片，全部目录仍可连续翻页或直接定位活动方案。 */
+  @State profilePage: number = 0
+  private catalogPageInitialized: boolean = false
   @State activeName: string = '默认'
   @State statusMsg: string = ''
+  // 布局存档加载异常的非阻塞提示（隔离 / 修复 / 改名 / 写入封锁）；空串表示本次加载一切正常。
+  // 与 statusMsg 分开：操作提示会被下一次操作覆盖，而这条提示必须在整个页面生命周期内可见。
+  @State loadNotice: string = ''
   @State pageWidth: number = 360
   // 改名浮层：renameTarget 非空时显示，renameDraft 为输入草稿。
   @State renameTarget: string = ''
   @State renameDraft: string = ''
 
   private store: LayoutStore = getLayoutStore()
+  /** 异步预览/确认属于当前页面代次，迟到对话框不能在页面离开后新增布局。 */
+  private importPageGeneration: number = 0
+  private importPageMounted: boolean = false
+  @State importBusy: boolean = false
 
   private getAbilityContext(): common.UIAbilityContext {
     return AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   }
 
   async aboutToAppear(): Promise<void> {
+    this.importPageGeneration++
+    this.importPageMounted = true
     if (!ProductInputProfile.supportsTouchLayouts()) {
       this.getUIContext().getRouter().back()
       return
@@ -71,6 +90,11 @@ struct LayoutListPage {
     }
   }
 
+  aboutToDisappear(): void {
+    this.importPageMounted = false
+    this.importPageGeneration++
+  }
+
   /** Phase D：从编辑器回到本页时刷一次列表（编辑器保存后名字 / active 可能变化）。 */
   onPageShow(): void {
     this.refreshList()
@@ -79,17 +103,48 @@ struct LayoutListPage {
   private refreshList(): void {
     this.profileNames = this.store.getProfileNames()
     this.activeName = this.store.getActiveProfile().name
+    this.profilePage=this.catalogPageInitialized ? clampLayoutCatalogPage(this.profileNames,this.profilePage) :
+      layoutCatalogContainingPage(this.profileNames,this.activeName)
+    this.catalogPageInitialized=true
+    this.loadNotice = this.describeLoadIssues(this.store.getLoadIssues())
+  }
+
+  /**
+   * 把存储给出的加载异常摘要翻成一行用户提示。只描述数量与后果，不列出方案名或原文；
+   * 写入封锁时附上存储给出的原因，让用户知道为什么“保存/新建”会失败，以及原数据仍然完整。
+   */
+  private describeLoadIssues(issues: LayoutLoadIssues): string {
+    const parts: string[] = []
+    if (issues.documentQuarantined) parts.push('布局存档无法解析，已原样隔离保存，当前仅显示系统预设')
+    if (issues.quarantinedProfiles > 0) {
+      parts.push(issues.quarantinedProfiles.toString() + ' 个方案无法读取，已原样隔离保存')
+    }
+    if (issues.repairedProfiles > 0) {
+      parts.push(issues.repairedProfiles.toString() + ' 个方案的控件标识已自动修复（原数据已备份）')
+    }
+    if (issues.renamedProfiles > 0) parts.push(issues.renamedProfiles.toString() + ' 个重名方案已自动改名保留')
+    if (issues.activeFallback) parts.push('上次使用的方案无法读取，已切换到系统预设')
+    if (issues.writeBlocked && issues.writeBlockMessage.length > 0) parts.push(issues.writeBlockMessage)
+    return parts.join('；')
   }
 
   private isPreset(name: string): boolean {
-    const all = this.store.getAllProfiles()
-    const p = all.find(pp => pp.name === name)
+    const p = this.store.getProfile(name)
     return p ? !!p.isPreset : false
   }
 
   private getProfile(name: string): LayoutProfile | null {
-    const all = this.store.getAllProfiles()
-    return all.find(pp => pp.name === name) ?? null
+    return this.store.getProfile(name)
+  }
+
+  /**
+   * ForEach按键值复用整张卡片。编辑后名字不变，普通Store对象又不是ArkUI可观察状态，
+   * 只用名字会继续显示旧缩略图和旧组数。把已持久化的方案修订纳入键，只有内容改变
+   * 的当前页卡片重建；翻页仍只读取当前页payload，不能为刷新缩略图展开整个大库。
+   */
+  private profileCardKey_(name: string): string {
+    const profile: LayoutProfile | null = this.getProfile(name)
+    return name + ':' + (profile?.profileRevision ?? 0).toString()
   }
 
   /** lg 断点（≥840vp）走双列。简单按 pageWidth 判断。 */
@@ -123,8 +178,9 @@ struct LayoutListPage {
     const right: string[] = []
     let lh = 0
     let rh = 0
-    for (let i = 0; i < this.profileNames.length; i++) {
-      const name = this.profileNames[i]
+    const page: string[] = this.profilePageNames_()
+    for (let i = 0; i < page.length; i++) {
+      const name = page[i]
       const h = this.estimateCardHeight(name)
       if (lh <= rh) { left.push(name); lh += h }
       else { right.push(name); rh += h }
@@ -132,82 +188,41 @@ struct LayoutListPage {
     return col === 0 ? left : right
   }
 
+  private profilePageNames_(): string[] { return layoutCatalogPage(this.profileNames,this.profilePage) }
+  private profilePageCount_(): number { return layoutCatalogPageCount(this.profileNames) }
+  private moveProfilePage_(delta: number): void {
+    this.profilePage=clampLayoutCatalogPage(this.profileNames,this.profilePage+delta)
+  }
+  private showCurrentProfilePage_(): void {
+    this.profilePage=layoutCatalogContainingPage(this.profileNames,this.activeName)
+  }
+
+  /** 新建仍经过原存储拒绝与错误反馈入口，标题菜单不改变方案编号和刷新时机。 */
+  private async createProfile_(): Promise<void> {
+    try {
+      const created: LayoutProfile = await this.store.createProfile('方案' + (this.profileNames.length + 1).toString())
+      this.refreshList()
+      this.statusMsg = '已创建: ' + created.name
+    } catch (e) {
+      this.refreshList()
+      this.statusMsg = '新建失败: ' + (e as Error).message
+    }
+  }
+
   build() {
     Stack({ alignContent: Alignment.Center }) {
     Column() {
-      // 顶部标题栏
-      Row({ space: 8 }) {
-        Row() {
-          AppIcon({ name: AppIconName.Back, iconSize: 20, color: '#FFFFFF' })
-        }
-        .width(40).height(40).justifyContent(FlexAlign.Center)
-        .onClick(() => { this.getUIContext().getRouter().back() })
-
-        Text('按键布局方案').fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold).layoutWeight(1)
-
-        Button('+ 新建')
-          .fontSize(12).height(30).fontColor('#FFFFFF').fontWeight(FontWeight.Medium)
-          .backgroundColor('#448AFF').borderRadius(15)
-          .padding({ left: 12, right: 12 })
-          .onClick(async () => {
-            const name = '方案' + (this.profileNames.length + 1).toString()
-            await this.store.createProfile(name)
-            this.refreshList()
-            this.statusMsg = '已创建: ' + name
-          })
-
-        Button('导入')
-          .fontSize(12).height(30).fontColor('#FFFFFFB3').fontWeight(FontWeight.Medium)
-          .backgroundColor('#1AFFFFFF').borderRadius(15)
-          .padding({ left: 12, right: 12 })
-          .margin({ left: 6 })
-          .onClick(() => { this.doImport() })
-      }
-      .width('100%').padding({ left: 16, right: 16, top: 10, bottom: 8 })
-
-      // 状态行
-      if (this.statusMsg.length > 0) {
-        Text(this.statusMsg)
-          .fontSize(11).fontColor('#FFD54F')
-          .width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
-      }
-
-      // 方案卡片列表
-      Scroll() {
-        if (this.isWide()) {
-          // lg：两列 masonry——按预估高度把方案贪心分到"当前较短的列"，两列各自 Column 顺次堆叠，
-          // 不因两列高度差在列中留空（每张卡紧接同列上一张）。
-          Row({ space: 12 }) {
-            Column({ space: 12 }) {
-              ForEach(this.columnNames(0), (name: string) => {
-                this.ProfileCard(name)
-              }, (name: string) => name)
-            }
-            .layoutWeight(1).alignItems(HorizontalAlign.Start)
-
-            Column({ space: 12 }) {
-              ForEach(this.columnNames(1), (name: string) => {
-                this.ProfileCard(name)
-              }, (name: string) => name)
-            }
-            .layoutWeight(1).alignItems(HorizontalAlign.Start)
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Top)
-          .padding({ left: 12, right: 12, top: 4, bottom: 24 })
-        } else {
-          // sm/md：单列
-          Column({ space: 12 }) {
-            ForEach(this.profileNames, (name: string) => {
-              this.ProfileCard(name)
-            }, (name: string) => name)
-          }
-          .width('100%')
-          .padding({ left: 12, right: 12, top: 4, bottom: 24 })
-        }
-      }
-      .layoutWeight(1)
-      .width('100%')
+      // 外层 Stack 继续拥有改名遮罩；导航容器只承载原目录正文，不改浮层层级。
+      ImmersiveTitleScaffold({ title: '按键布局方案', theme: this.titleTheme,
+        topSafeHeight: this.topSafeHeight, surfaceColor: '#141414',
+        menuActions: [{ id: 'create-layout', label: '新建' }, { id: 'import-layout', label: '导入' }],
+        onBack: (): void => { this.getUIContext().getRouter().back(); },
+        onMenuAction: (id: string): void => {
+          if (id === 'create-layout') this.createProfile_();
+          else if (id === 'import-layout') this.doImport();
+        },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%').height('100%').backgroundColor('#141414')
     .onAreaChange((_old: Area, newVal: Area) => {
@@ -268,6 +283,7 @@ struct LayoutListPage {
       }
     }).catch((e: Error) => {
       this.renameTarget = ''
+      this.refreshList()
       this.statusMsg = '重命名失败: ' + e.message
     })
   }
@@ -326,9 +342,15 @@ struct LayoutListPage {
             .backgroundColor('#33448AFF').borderRadius(16)
             .layoutWeight(1)
             .onClick(async () => {
-              await this.store.setActiveProfile(name)
-              this.refreshList()
-              this.statusMsg = '已切换到: ' + name
+              // 所有 mutation 都可能因写入封锁或写盘失败而拒绝；失败原因原样显示，列表按存储回滚后的状态刷新。
+              try {
+                await this.store.setActiveProfile(name)
+                this.refreshList()
+                this.statusMsg = '已切换到: ' + name
+              } catch (e) {
+                this.refreshList()
+                this.statusMsg = '切换失败: ' + (e as Error).message
+              }
             })
         }
         Button('编辑')
@@ -348,9 +370,14 @@ struct LayoutListPage {
             .backgroundColor('#4466BB6A').borderRadius(16)
             .layoutWeight(1)
             .onClick(async () => {
-              const cloned = await this.store.cloneAsUser(name)
-              this.refreshList()
-              if (cloned) this.statusMsg = '已克隆为: ' + cloned.name
+              try {
+                const cloned = await this.store.cloneAsUser(name)
+                this.refreshList()
+                if (cloned) this.statusMsg = '已克隆为: ' + cloned.name
+              } catch (e) {
+                this.refreshList()
+                this.statusMsg = '克隆失败: ' + (e as Error).message
+              }
             })
         } else if (this.profileNames.length > 1) {
           Button('删除')
@@ -358,9 +385,14 @@ struct LayoutListPage {
             .backgroundColor('#33FF5252').borderRadius(16)
             .layoutWeight(1)
             .onClick(async () => {
-              const ok = await this.store.deleteProfile(name)
-              this.refreshList()
-              this.statusMsg = ok ? ('已删除: ' + name) : '删除失败'
+              try {
+                const ok = await this.store.deleteProfile(name)
+                this.refreshList()
+                this.statusMsg = ok ? ('已删除: ' + name) : '删除失败'
+              } catch (e) {
+                this.refreshList()
+                this.statusMsg = '删除失败: ' + (e as Error).message
+              }
             })
         }
         Button('导出')
@@ -374,6 +406,12 @@ struct LayoutListPage {
           .layoutWeight(1)
           .onClick(() => { this.doShare(name) })
       }
+      if (this.canExportLegacy_(name)) {
+        Button('导出旧版兼容副本（使用保留的全来源手感）')
+          .fontSize(12).height(30).fontColor('#FFFFFFB3').backgroundColor('#1AFFFFFF')
+          .width('100%').margin({ top: 6 })
+          .onClick(() => { this.doExport(name, true) })
+      }
     }
     .width('100%')
     .padding(12)
@@ -385,14 +423,21 @@ struct LayoutListPage {
     })
   }
 
+  /** 组方案不能降写成不含引用关系的旧格式；只提供仍可无损表达的来源政策兼容导出。 */
+  private canExportLegacy_(name: string): boolean {
+    const profile: LayoutProfile | null=this.getProfile(name)
+    return profile !== null && profile.lookPolicies !== undefined && profile.controlGroups === undefined
+  }
+
   private cardDescription(name: string): string {
     const p = this.getProfile(name)
     if (!p) return ''
     let visibleCount = 0
     for (let i = 0; i < p.controls.length; i++) {
-      if (!p.controls[i].hidden) visibleCount++
+      if (!p.controls[i].hidden && p.controls[i].visibilityOverride !== 'force_hide' && initialControlGroupVisible(p,p.controls[i])) visibleCount++
     }
     let parts: string[] = []
+    if (p.controlGroups !== undefined) parts.push(p.controlGroups.length.toString()+' 组 · 初始显示')
     parts.push(visibleCount.toString() + ' 个按钮')
     parts.push('缩放 ' + Math.round(p.globalScale * 100).toString() + '%')
     if (p.targetDevice && p.targetDevice !== 'any') {
@@ -405,17 +450,17 @@ struct LayoutListPage {
     return parts.join('  ·  ')
   }
 
-  private async doExport(name: string): Promise<void> {
+  private async doExport(name: string, legacyCompatible: boolean = false): Promise<void> {
     try {
-      const json = this.store.exportToJson(name)
+      const json = this.store.exportToJson(name, legacyCompatible)
       const savePicker = new picker.DocumentSaveOptions()
-      savePicker.newFileNames = ['layout_' + name + '.json']
+      savePicker.newFileNames = ['layout_' + name + (legacyCompatible ? '_v3' : '') + '.json']
       const documentPicker = new picker.DocumentViewPicker(this.getAbilityContext())
       const result = await documentPicker.save(savePicker)
       if (result && result.length > 0) {
         const file = fs.openSync(result[0], fs.OpenMode.WRITE_ONLY)
         try { fs.writeSync(file.fd, json) } finally { fs.closeSync(file) }
-        this.statusMsg = '已导出: ' + name
+        this.statusMsg = legacyCompatible ? '已导出旧版兼容副本；原独立来源方案仍保留' : '已导出: ' + name
       }
     } catch (e) {
       this.statusMsg = '导出失败: ' + (e as Error).message
@@ -471,18 +516,24 @@ struct LayoutListPage {
 
   /** 分析并导入指定路径/uri（文件选择器与「打开方式」共用）。 */
   private async analyzeAndImport(path: string): Promise<void> {
+    if (this.importBusy || !this.importPageMounted) return
+    const generation: number = this.importPageGeneration
+    this.importBusy = true
     try {
       // 导入前分析：格式 / 合法性 / 设备类型 / 旧版本
       const a: ImportAnalysis = await this.store.analyzeImportFile(path)
+      if (!this.importPageMounted || generation !== this.importPageGeneration) return
       if (!a.ok) {
         this.statusMsg = '无法导入：' + a.reason
         return
       }
       // 需要用户确认的情形：设备不符 / 旧版迁移
-      if (a.deviceMismatch || a.legacy) {
+      if (a.deviceMismatch || a.legacy || a.format !== 'amcl') {
         let msg = '方案「' + a.name + '」'
-        if (a.format === 'pojav') msg += '（PojavLauncher 格式）'
+        if (a.format !== 'amcl') msg += '（' + a.format + ' 格式）'
         if (a.controlCount > 0) msg += '，控件 ' + a.controlCount.toString() + ' 个'
+        if ((a.skippedControls ?? 0)>0) msg+='\n将跳过 '+(a.skippedControls ?? 0).toString()+' 个无法转换的控件。'
+        if ((a.warnings ?? []).length>0) msg+='\n\n兼容说明：\n'+(a.warnings ?? []).join('\n')
         if (a.deviceMismatch) {
           msg += '\n\n⚠ 该方案面向' + this.deviceLabel(a.sourceDevice)
             + '，当前设备是' + this.deviceLabel(a.currentDevice)
@@ -503,23 +554,29 @@ struct LayoutListPage {
               { text: '仍要导入', color: '#448AFF' },
             ],
           }).then((res: promptAction.ShowDialogSuccessResponse) => {
-            if (res.index === 1) { this.commitImport(path) }
-          }).catch(() => { /* 点框外 = 取消 */ })
+            if (res.index === 1 && this.importPageMounted && generation === this.importPageGeneration) {
+              this.commitImport(a, generation)
+            }
+          }).catch(() => { /* 点框外 = 取消，冻结预览保留到缓存回收。 */ })
         } catch (e) {
           this.statusMsg = '导入失败: ' + (e as Error).message
         }
         return
       }
       // 无异常 → 直接导入
-      this.commitImport(path)
+      this.commitImport(a, generation)
     } catch (e) {
       this.statusMsg = '导入失败: ' + (e as Error).message
-    }
+    } finally { if (generation === this.importPageGeneration) this.importBusy = false }
   }
 
   /** 实际落盘导入（供直接导入与确认对话框复用）。 */
-  private commitImport(path: string): void {
-    this.store.importFromFile(path).then((p: LayoutProfile | null) => {
+  private commitImport(review: ImportAnalysis, generation: number): void {
+    if (!this.importPageMounted || generation !== this.importPageGeneration) return
+    // 回执中私有 candidate 已完成转换与系统补齐；不重新读取文件，也不随新 viewport 转换坐标。
+    const operation: Promise<LayoutProfile | null> = this.store.commitReviewedImport(review.reviewId ?? '')
+    operation.then((p: LayoutProfile | null) => {
+      if (!this.importPageMounted || generation !== this.importPageGeneration) return
       if (p) {
         this.refreshList()
         this.statusMsg = '已导入: ' + p.name
@@ -530,4 +587,72 @@ struct LayoutListPage {
       this.statusMsg = '导入失败: ' + e.message
     })
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+
+      // 加载异常提示（非阻塞）：常驻在状态行上方，不遮挡列表、不需要用户确认。
+      if (this.loadNotice.length > 0) {
+        Text(this.loadNotice)
+          .fontSize(11).fontColor('#FFB74D')
+          .backgroundColor('#26FFB74D').borderRadius(8)
+          .width('100%').padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .margin({ bottom: 4 })
+      }
+
+      // 状态行
+      if (this.statusMsg.length > 0) {
+        Text(this.statusMsg)
+          .fontSize(11).fontColor('#FFD54F')
+          .width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
+      }
+
+      if (this.profileNames.length > 32) {
+        Row({space:8}) {
+          Button('上一页').fontSize(13).height(36).enabled(this.profilePage>0)
+            .onClick((): void => { this.moveProfilePage_(-1) })
+          Text((this.profilePage+1).toString()+'/'+this.profilePageCount_().toString()).fontSize(13).fontColor('#CCCCCC').layoutWeight(1)
+          Button('当前').fontSize(13).height(36).onClick((): void => { this.showCurrentProfilePage_() })
+          Button('下一页').fontSize(13).height(36).enabled(this.profilePage+1<this.profilePageCount_())
+            .onClick((): void => { this.moveProfilePage_(1) })
+        }.width('100%').padding({left:12,right:12,bottom:6})
+      }
+      // 方案卡片列表只读取当前页payload；翻页保留完整名字目录，不通过裁库降低容量。
+      Scroll() {
+        if (this.isWide()) {
+          // lg：两列 masonry——按预估高度把方案贪心分到"当前较短的列"，两列各自 Column 顺次堆叠，
+          // 不因两列高度差在列中留空（每张卡紧接同列上一张）。
+          Row({ space: 12 }) {
+            Column({ space: 12 }) {
+              ForEach(this.columnNames(0), (name: string) => {
+                this.ProfileCard(name)
+              }, (name: string) => this.profileCardKey_(name))
+            }
+            .layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+            Column({ space: 12 }) {
+              ForEach(this.columnNames(1), (name: string) => {
+                this.ProfileCard(name)
+              }, (name: string) => this.profileCardKey_(name))
+            }
+            .layoutWeight(1).alignItems(HorizontalAlign.Start)
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Top)
+          .padding({ left: 12, right: 12, top: 4, bottom: 24 })
+        } else {
+          // sm/md：单列
+          Column({ space: 12 }) {
+            ForEach(this.profilePageNames_(), (name: string) => {
+              this.ProfileCard(name)
+            }, (name: string) => this.profileCardKey_(name))
+          }
+          .width('100%')
+          .padding({ left: 12, right: 12, top: 4, bottom: 24 })
+        }
+      }
+      .layoutWeight(1)
+      .width('100%')
+      }
 }

@@ -1,0 +1,156 @@
+/* L2真JNI/Java边缘的外部事实与运输夹具。资源/来源/前缀/取消均调用真实Core和look
+ * owner；这里只提供显式平台mode与五整数来源，不复制积分、贡献或cache资格算法。 */
+#include "../amcl_input_api.h"
+#include "../amcl_input_host_descriptor.h"
+static const AmclInputHostApiV1* look_fixture_core;
+static AmclInputSurfaceContextPayload look_fixture_context;
+static uint64_t look_fixture_mode=1,look_fixture_time=1000000000,look_fixture_order=1;
+static uint64_t look_fixture_retire=0,look_fixture_sibling=0;
+static int look_fixture_initialized=0;
+static char look_fixture_descriptor[96];
+#if AMCL_INPUT_TRACE
+/* 仅宿主集成接缝的 getter：同一真实 look/Core 映像借真正 collector，不复制算法。
+ * 框架不链接完整 neutral bridge，因而此 getter 不声称生产 bridge SELF/ELF 已验证；
+ * 正式 bridge 与提供者/ON-OFF 裁剪由独立产品门另闭。foreign 只改诊断表 PID。 */
+AMCL_INPUT_PUBLIC const AmclInputLatencyPortV2* inputBridge_getInputLatencyPortV2(void) {
+    static AmclInputLatencyPortV2 port;
+    port.magic = AMCL_INPUT_LATENCY_PORT_MAGIC_V2; port.version = 2; port.size = sizeof(port);
+    port.pid = amclInputLatencyClientPidV2();
+#ifdef AMCL_L2_LATENCY_FOREIGN
+    ++port.pid;
+#endif
+    port.ownerHost = amclLookExecutionGetPortV1()->ownerHost;
+    port.note = amclInputLatencyNoteBackendV2; port.finish = amclInputLatencyFinishBackendV2;
+    return &port;
+}
+#endif
+/* 失败交给真实JVM断言，绝不把资源未发布当空输入的正常PASS。 */
+static int look_fixture_check(JNIEnv* env,int valid,const char* message){
+    if(valid)return 1;(*env)->ThrowNew(env,(*env)->FindClass(env,"java/lang/AssertionError"),message);return 0;
+}
+/* 模式是夹具明确的外部平台事实，由原nSetGrab调用；数学和consumer重锚仍归owner。 */
+static void look_fixture_set_grab(int grab){
+    (void)amclLookExecutionGetPortV1()->publishMode(1,++look_fixture_mode,grab?1u:0u);
+}
+static void (*p_ib_set_grab)(int)=look_fixture_set_grab;
+#define A2LOG(...) ((void)0)
+/* 在真实JNI validate边界前退休来源，用于确定性的同步事实变化，validate正文不替身。 */
+static void look_fixture_before_validate(void){
+    if(look_fixture_retire){uint64_t handle=look_fixture_retire;look_fixture_retire=0;
+        (void)amclLookExecutionGetPortV1()->retireStream(handle);}
+}
+/* 发布唯一owner所需真实Core资源，再发布精确getter；valid仅变异look descriptor文本。 */
+JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_publishLook(JNIEnv* env,jclass cls,jboolean valid){
+    (void)cls;
+    if(!look_fixture_initialized){
+        look_fixture_core=amclInputGetHostApiV1();uint64_t epoch=0;
+        if(!look_fixture_check(env,amclInputHostDescriptorPublishV1(look_fixture_core)==0&&
+            look_fixture_core->beginSession(&epoch)==0&&look_fixture_core->publishFocus(1)==0,"L2_LOOK real Core begin/focus"))return;
+        AmclInputSurfacePayload surface;memset(&surface,0,sizeof(surface));surface.widthPx=800;surface.heightPx=600;
+        surface.density=1;surface.active=1;surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;
+        if(!look_fixture_check(env,look_fixture_core->publishSurface(&surface)==0,"L2_LOOK real surface"))return;
+        AmclInputEvent context;memset(&context,0,sizeof(context));context.header.abiVersion=1;context.header.structSize=sizeof(context);
+        context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+        context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=42;context.payload.surfaceContext.displayId=1;
+        context.payload.surfaceContext.widthPx=800;context.payload.surfaceContext.heightPx=600;context.payload.surfaceContext.density=1;
+        context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+            AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+        look_fixture_context=context.payload.surfaceContext;
+        if(!look_fixture_check(env,look_fixture_core->submitEvent(&context)==0,"L2_LOOK real context"))return;
+        const AmclLookExecutionPortV1* look=amclLookExecutionGetPortV1();
+        const AmclLookPolicyV1 policy={sizeof(AmclLookPolicyV1),0,1,1,0};
+        if(!look_fixture_check(env,amclControlDeliveryBindSessionV1(1)==0&&look->bindSession(1)==0&&
+            look->publishMode(1,look_fixture_mode,0)==0&&look->applyPolicy(-1,&policy)==0,"L2_LOOK real session/mode/policy"))return;
+        look_fixture_initialized=1;
+#if AMCL_INPUT_TRACE
+        /* 测试明确指定实际L2 ABI；不从场景名称、坐标或其它consumer选择诊断recipient。 */
+        amclInputLatencyConfigureBackendV2(2, 1);
+#endif
+    }
+    amclControlDeliveryPublishV1();amclLookExecutionPublishV1();
+    // 产品module只发布一次；夹具先保存那次真实descriptor。坏文本复验后只恢复它，
+    // 不制造地址、不fake resolver，也不要求产品反复改写已经冻结的发布槽。
+    if(!look_fixture_descriptor[0]){const char* value=getenv(AMCL_LOOK_EXECUTION_ENV);
+        if(!look_fixture_check(env,value&&strlen(value)<sizeof(look_fixture_descriptor),"L2_LOOK actual publication"))return;
+        strcpy(look_fixture_descriptor,value);}
+#ifdef _WIN32
+    _putenv_s(AMCL_LOOK_EXECUTION_ENV,valid?look_fixture_descriptor:"AMCLLOOK:1:bad");
+#else
+    setenv(AMCL_LOOK_EXECUTION_ENV,valid?look_fixture_descriptor:"AMCLLOOK:1:bad",1);
+#endif
+}
+/* 当前Core epochs/context进入原stream，不凭相同尺寸或假Ready建立来源资格。 */
+static uint64_t look_fixture_stream(JNIEnv* env,uint64_t device){
+    AmclInputSnapshotV1 facts;memset(&facts,0,sizeof(facts));facts.abiVersion=1;facts.structSize=sizeof(facts);
+    if(!look_fixture_check(env,look_fixture_core->getSnapshot(&facts)==0,"L2_LOOK resource snapshot"))return 0;
+    AmclLookStreamV1 source;memset(&source,0,sizeof(source));source.size=sizeof(source);source.source=2;
+    source.kind=AMCL_LOOK_COMPAT_DELTA;source.unit=AMCL_LOOK_VIRTUAL_COUNTS;source.clock=AMCL_LOOK_OWNER_MONOTONIC;
+    source.device=device;source.connection=1;source.resource.size=sizeof(source.resource);source.resource.grabbed=1;
+    source.resource.gameSession=1;source.resource.modeEpoch=look_fixture_mode;source.resource.sessionEpoch=facts.sessionEpoch;
+    source.resource.surfaceEpoch=facts.surfaceEpoch;source.resource.focusEpoch=facts.focusEpoch;source.resource.context=look_fixture_context;
+    uint64_t handle=0;if(!look_fixture_check(env,amclLookExecutionGetPortV1()->openStream(&source,&handle)==0,"L2_LOOK real stream"))return 0;
+    return handle;
+}
+/* 正式owner生成token后外部运输原五int；不是用假token/desired数值替代真实票。 */
+JNIEXPORT jlong JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_prefix(JNIEnv* env,jclass cls,jdouble dx,jdouble dy,jboolean queued){
+    (void)cls;uint64_t stream=look_fixture_stream(env,look_fixture_order);if(!stream)return 0;
+    AmclLookPrefixV1 p;look_fixture_time+=1000000;
+#if AMCL_INPUT_TRACE
+    const uint64_t previous = amclInputLatencyBeginV1(stream);
+#endif
+    const int committed = amclLookExecutionCommitProcessedV1(stream,dx,dy,1,look_fixture_order++,look_fixture_time,&p);
+#if AMCL_INPUT_TRACE
+    amclInputLatencyEndV1(previous, committed == AMCL_LOOK_PREFIX_READY);
+#endif
+    if(!look_fixture_check(env,committed==1,"L2_LOOK actual prefix"))return 0;
+    amclLookExecutionSetRecipientsV1(p.token,2);
+    if(queued){int* r=records[end_record++];r[0]=1020;r[1]=(int)(uint32_t)p.token;r[2]=(int)(uint32_t)(p.token>>32);r[3]=r[4]=0;}
+    return (jlong)p.token;
+}
+/* 两份真实贡献在prepare后退休一份，夹具钩子安排取消时刻，归约/重取由产品决定。 */
+JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_cancelOne(JNIEnv* env,jclass cls){
+    (void)cls;const AmclLookExecutionPortV1* look=amclLookExecutionGetPortV1();
+    uint64_t a=look_fixture_stream(env,100),b=look_fixture_stream(env,101);look_fixture_time+=1000000;
+    AmclLookPrefixV1 p;
+    if(!look_fixture_check(env,a&&b&&look->submitDelta(a,4,0,look_fixture_time)==0&&look->submitDelta(b,7,0,look_fixture_time)==0&&
+        look->sealPrefix(1,look_fixture_order++,look_fixture_time,1,&p)==1,"L2_LOOK two actual source prefix"))return;
+    amclLookExecutionSetRecipientsV1(p.token,2);look_fixture_retire=a;
+    int* r=records[end_record++];r[0]=1020;r[1]=(int)(uint32_t)p.token;r[2]=(int)(uint32_t)(p.token>>32);r[3]=r[4]=0;
+}
+/* 借真实Core focus使旧resource失效；窗口存在和外观不替代资格。 */
+JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_focus(JNIEnv* env,jclass cls,jboolean active){
+    (void)cls;look_fixture_check(env,look_fixture_core->publishFocus(active?1:0)==0,"L2_LOOK real focus change");
+}
+/* 光标getter仅是原菜单平台边缘；future值不得被grabbed poll或prefix替代读取。 */
+JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_futureCursor(JNIEnv* env,jclass cls){(void)env;(void)cls;cursor_x=9000;cursor_y=9000;}
+JNIEXPORT jint JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_cursorReads(JNIEnv* env,jclass cls){(void)env;(void)cls;return look_fixture_cursor_reads;}
+/* 真运输退休口用于证明poll-only没有无限持票等待Mouse.next；不修改owner counter。 */
+JNIEXPORT jint JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_retire(JNIEnv* env,jclass cls,jlong token){(void)env;(void)cls;return amclLookExecutionGetPortV1()->retirePrefix((uint64_t)token);}
+/* 留一真实兄弟consumer运输位，验证L2 Mouse关闭/重建不能重新领取其旧prefix。 */
+JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_keepSibling(JNIEnv* env,jclass cls,jlong token){
+    (void)cls;const AmclControlDeliveryPortV1* control=amclControlDeliveryGetPortV1();const AmclLookExecutionPortV1* look=amclLookExecutionGetPortV1();
+    if(!look_fixture_check(env,control->open(1,0x4444,&look_fixture_sibling)==0&&look->setBackendActive(1,1)==0&&
+        look->bindConsumer(look_fixture_sibling,0,0)==0,"L2_LOOK actual sibling"))return;
+    amclLookExecutionSetRecipientsV1((uint64_t)token,3);
+}
+/* 只复制真实 collector 已终结记录；每项8槽为prefix/ticket/outcome/mask/c/a/tgt/clockfail。
+ * 此生产消费门没有真正 neutral ring，因此不填 ENQUEUE/READ，不授完整六时点。 */
+JNIEXPORT jint JNICALL Java_org_lwjgl_opengl_L2LookProductionTest_latencyDrain(JNIEnv* env,jclass cls,jlongArray output) {
+    (void)cls;
+#if AMCL_INPUT_TRACE
+    if (!output || (*env)->GetArrayLength(env, output) != 64) return -1;
+    AmclInputLatencyV1 records[8]; AmclInputLatencyStatsV1 stats;
+    const uint32_t count = amclInputLatencyDrainV1(records, 8, &stats);
+    jlong values[64] = {0};
+    for (uint32_t i = 0; i < count; ++i) {
+        values[i*8] = (jlong)records[i].prefix; values[i*8+1] = (jlong)records[i].ticket;
+        values[i*8+2] = (jlong)records[i].outcome; values[i*8+3] = (jlong)records[i].mask;
+        values[i*8+4] = (jlong)records[i].consumer; values[i*8+5] = (jlong)records[i].activation;
+        values[i*8+6] = (jlong)records[i].target; values[i*8+7] = (jlong)records[i].clockFailures;
+    }
+    (*env)->SetLongArrayRegion(env, output, 0, 64, values);
+    return (jint)count;
+#else
+    (void)env; (void)output; return 0;
+#endif
+}

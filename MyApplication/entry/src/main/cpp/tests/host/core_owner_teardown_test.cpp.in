@@ -1,0 +1,26 @@
+/** 真实global GlfwInputAdapter正常析构前只读Host Core寿命；generic Core仍须RAII析构。 */
+#include "input/input_state_core.h"
+#include "input/adapters/glfw_input_adapter.h"
+#include <cstdio>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+bool coreDestroyed=false,genericDestroyed=false;
+void* trackedHostCore=nullptr;
+static amcl::input::GlfwInputAdapter facade;
+struct ExitWitness {~ExitWitness(){std::fprintf(stderr,"CORE OWNER TEARDOWN hostDestroyed=%d before real global adapter close\n",coreDestroyed?1:0);
+    if(coreDestroyed){std::fprintf(stderr,"CORE OWNER TEARDOWN FAIL: Host Core ended before borrowed adapter\n");std::fflush(stderr);std::abort();}}};
+static ExitWitness witness;
+int main(){
+#ifdef _WIN32
+    SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);_set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
+#endif
+    trackedHostCore=&amcl::input::HostInputStateCore();const auto* api=amclInputGetHostApiV1();uint64_t epoch=0;
+    if(api->beginSession(&epoch)!=0||api->publishFocus(1)!=0)return 1;
+    {amcl::input::InputStateCore local;uint64_t localEpoch=0;if(local.BeginSession(&localEpoch)!=0)return 1;}
+    if(!genericDestroyed||coreDestroyed)return 2;
+    amcl::input::GlfwInputSink sink{};
+    if(facade.Open(api,amcl::input::GlfwOhosInputMapper(),sink)!=amcl::input::GlfwAdapterStatus::kOk)return 3;
+    std::puts("CORE OWNER TEARDOWN main returned normally; generic RAII observed; real adapter destructor remains");
+}

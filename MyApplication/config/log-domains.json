@@ -29,8 +29,9 @@
     { "id": "app", "owner": "entry/entryability + entry/gameability", "purpose": "应用生命周期：Ability 宿主、窗口装载、备份恢复" }
   ],
   "$staleExemptWhy": "这些 tag 声明在门禁扫描面之外（tests/ 只在诊断构建里编译），但它们**确实会出现在真机日志里** —— 真机 amcl_launcher.log 里 MG_RENDER_PROBE 占 2.6%。不登记的话按域聚合时它会变成「未登记」噪声；登记了又会被死条目检查判成过期。所以单列一个豁免名单，而不是放宽任一侧的判据。",
-  "staleExempt": ["MG_RENDER_PROBE"],
+  "staleExempt": ["MG_RENDER_PROBE", "MG_DEPTH_RANGE_PROBE"],
   "tags": {
+    "GameExport": "storage",
     "SessionEnvironment": "diagnostics",
     "EvidenceShare": "diagnostics",
     "AMCL_GAMEPAD": "input",
@@ -48,7 +49,10 @@
     "PreLaunchValidator": "launch",
     "PreLaunchCheckSheet": "launch",
     "SessionMarker": "launch",
+    "SessionRecovery": "launch",
     "JdkImporter": "launch",
+    "RuntimeCatalog": "launch",
+    "JdkDirectoryLease": "launch",
     "JdkInstaller": "launch",
     "JdkInstallTask": "launch",
 
@@ -66,6 +70,7 @@
     "DL_THREAD": "download",
     "DownloadManager": "download",
     "DownloadTaskRegistry": "download",
+    "SharedDownload": "download",
     "DownloadHistory": "download",
     "PhaseRunner": "download",
     "PreparePhase": "download",
@@ -104,13 +109,14 @@
     "InputBridge": "input",
     "InputDeviceMonitor": "input",
     "InputSourceRegistry": "input",
+    "InputSession": "input",
+    "InputConfiguration": "input",
     "GamepadManager": "input",
     "LayoutStore": "input",
     "PointerVisibility": "input",
     "ChatInputBridge": "input",
     "EntryTextSession": "input",
-    "DesktopControls": "input",
-    "DesktopPhysicalIme": "input",
+    "EntryTextRuntime": "input",
 
     "AccountManager": "account",
     "AccountStorage": "account",
@@ -201,6 +207,7 @@
 
     "ChangelogService": "update",
     "UpdateChecker": "update",
+    "SideloadUpdate": "update",
     "ChangelogPage": "update",
     "MessageCenter": "update",
     "AppMessageStore": "update",
@@ -239,6 +246,8 @@
     "VK_RENDER": "render",
     "RendererSettings": "render",
     "MG_RENDER_PROBE": "render",
+    "MG_DEPTH_RANGE_PROBE": "render",
+    "VirtualMouse": "input",
 
     "VersionSettingsPage": "version",
 

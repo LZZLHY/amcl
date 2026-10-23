@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "sourceRef": "45b47d0f42b1b98e79f951e727a9d0b90b109d8c",
+  "purpose": "实际旧LWJGL2 Java/native配对反控；不进入产品rawfile/Native制品",
+  "files": [
+    {
+      "name": "lwjgl.jar",
+      "sourcePath": "entry/src/main/resources/rawfile/lwjgl2/lwjgl.jar",
+      "sha256": "e2cc633c27d126244853187f77dfa53d4099f78dc260485a9650f889b99b02e3",
+      "size": 1905303
+    },
+    {
+      "name": "amcl_lwjgl2_backend.c",
+      "sourcePath": "prebuilt/lwjgl2/ohos-backend/amcl_lwjgl2_backend.c",
+      "sha256": "929b739182bcfa111586698385bde3f94eb58f357039237508203409c3004b89",
+      "size": 21371
+    }
+  ]
+}

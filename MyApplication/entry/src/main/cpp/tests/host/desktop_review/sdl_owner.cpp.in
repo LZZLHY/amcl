@@ -1,6 +1,9 @@
 #include <cstdio>
 using SDL_GLContext=void*;
 using SDL_WindowID=int;
+using EGLint=int;
+#define EGL_SUCCESS 0x3000
+#define EGL_CONTEXT_LOST 0x300e
 #define OPENHARMONY_SURFACE_READY 1
 #define EGL_NO_SURFACE nullptr
 struct SDL_WindowData {bool is_current=true;int owner_thread=11;SDL_GLContext last_context=reinterpret_cast<void*>(3);
@@ -17,6 +20,12 @@ SDL_Window* SDL_GetWindowFromID(int id){return id>0 && id<=2?windows[id-1]:nullp
 int SDL_GetCurrentThreadID(){return tid;}
 void SDL_SetTLS(int* key,void* value,void*){if(*key==1)current=static_cast<SDL_Window*>(value);}
 bool SDL_EGL_MakeCurrent(SDL_VideoDevice*,void*,void* ctx){if(ctx?bindFails:releaseFails)return false;driverOwner=ctx?tid:0;return true;}
+// release 生产入口现在保留原生错误；本既有 owner 用例注入普通错误，终局矩阵另测。
+bool SDL_EGL_MakeCurrentWithError(SDL_VideoDevice* device,void* surface,void* ctx,EGLint* error){
+    const bool result=SDL_EGL_MakeCurrent(device,surface,ctx);*error=result?EGL_SUCCESS:0x300d;return result;
+}
+bool OPENHARMONY_GLES_IsFatalContextError(EGLint error){return error==EGL_CONTEXT_LOST;}
+bool OPENHARMONY_GLES_MarkRendererFatalWithError(SDL_Window*,const char*,EGLint){return false;}
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
 @PRODUCTION@
 int main(){

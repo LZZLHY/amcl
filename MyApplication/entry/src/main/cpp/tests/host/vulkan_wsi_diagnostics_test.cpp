@@ -29,7 +29,7 @@ const auto testPhysical = reinterpret_cast<VkPhysicalDevice>(0x2200);
 const auto testDevice = reinterpret_cast<VkDevice>(0x2300);
 const auto testQueue = reinterpret_cast<VkQueue>(0x2400);
 unsigned bufferCalls = 0, memoryCalls = 0, bindCalls = 0, freeCalls = 0, presentCalls = 0;
-bool failBuffer = false, omitRequirements = false, failPresent = false;
+bool failBuffer = false, omitRequirements = false, failPresent = false, suboptimalPresent = false;
 
 /** 假驱动仅提供可计数结果；失败注入发生在 WSI 完成函数查找之后，验证真实错误路径。 */
 VKAPI_ATTR VkResult VKAPI_CALL fakeEnumerate(VkInstance, uint32_t* count, VkPhysicalDevice* devices) {
@@ -59,7 +59,7 @@ VKAPI_ATTR void VKAPI_CALL fakeRequirements(VkDevice, VkBuffer, VkMemoryRequirem
     requirements->size = 4096;
 }
 VKAPI_ATTR VkResult VKAPI_CALL fakePresent(VkQueue, const VkPresentInfoKHR*) {
-    ++presentCalls; return failPresent ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
+    ++presentCalls; return failPresent ? VK_ERROR_DEVICE_LOST : suboptimalPresent ? VK_SUBOPTIMAL_KHR : VK_SUCCESS;
 }
 /** 函数地址均指向真实签名的假驱动，不能让测试依赖宿主 Vulkan 安装或 GPU。 */
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL fakeDeviceProc(VkDevice, const char* name) {
@@ -152,9 +152,12 @@ int main() {
 
     const auto presentFn = deviceFunction<PFN_vkQueuePresentKHR>("vkQueuePresentKHR");
     for (unsigned i = 0; i < 300; ++i) requireWsi(presentFn(queue, nullptr) == VK_SUCCESS, "present result");
+    // 可持续返回SUBOPTIMAL的真实驱动形状：仍计成功帧，静默配置不输出逐帧日志。
+    suboptimalPresent = true;
+    for (unsigned i = 0; i < 300; ++i) requireWsi(presentFn(queue, nullptr) == VK_SUBOPTIMAL_KHR, "suboptimal result");
     failPresent = true;
     requireWsi(presentFn(queue, nullptr) == VK_ERROR_DEVICE_LOST, "present failure unchanged");
-    requireWsi(runtime().presents == 300 && presentCalls == 301, "present count independent of trace");
+    requireWsi(runtime().presents == 600 && presentCalls == 601, "present count independent of trace");
     requireWsi(bufferCalls == 65 && memoryCalls == 64 && bindCalls == 64 && freeCalls == 64, "driver dispatch counts unchanged");
     requireWsi(hilogContains("graphics_vk_create_buffer begin") == trace, "hilog resource begin obeys gate");
     requireWsi(hilogContains("graphics_vk_create_buffer end result=0") == trace, "hilog resource success obeys gate");
@@ -163,8 +166,11 @@ int main() {
     requireWsi(hilogContains("graphics_vk_get_buffer_memory end device=8960 buffer=0"), "hilog missing proc retained");
     requireWsi(hilogContains("graphics_loader_admission") && hilogContains("graphics_vk_create_device end result=0"),
         "hilog critical lifecycle retained");
-    requireWsi(hilogContains("graphics_queue_present result=0 presents=300") &&
-        hilogContains("graphics_queue_present result=-4"), "hilog present milestone and failure retained");
+    requireWsi(hilogContains("graphics_queue_present result=0 presents=300") == trace,
+        "successful present milestone requires explicit diagnostics");
+    requireWsi(hilogContains("graphics_queue_present result=1000001003 presents=600") == trace,
+        "suboptimal is aggregated only in explicit diagnostics");
+    requireWsi(hilogContains("graphics_queue_present result=-4"), "present failure remains visible");
     std::cout << "PASS WSI trace mask=" << AMCL_DIAGNOSTICS_MASK
-        << " buffers=65 memory=64 bind=64 free=64 presents=300 failedPresent=1\n";
+        << " buffers=65 memory=64 bind=64 free=64 presents=600 failedPresent=1\n";
 }

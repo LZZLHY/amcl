@@ -5,7 +5,7 @@
 // merely "the gate failed": it names the rule that must turn red, so deleting a
 // rule or accidentally satisfying it from a comment cannot keep this test green.
 
-import { analyzeFiles, RULE_IDS, parsePatchText } from './check-sdl3-multiwindow-contract.mjs';
+import { analyzeFiles, RULE_IDS, parsePatchText, applySparsePatch } from './check-sdl3-multiwindow-contract.mjs';
 
 let failures = 0;
 function check(name, condition, detail = '') {
@@ -242,7 +242,7 @@ static void PublishInputForegroundGateLocked(const char *reason)
 {
     bool value = ComputeInputForegroundGate(surfacePublished,
                                             abilityForegroundMask, focus);
-    setenv("AMCL_WINDOW_FOREGROUND", value ? "1" : "0", 1);
+    amclWindowHostSetInputForeground(value ? 1 : 0);
 }
 
 static void PublishInputForegroundSurfaceState(bool published,
@@ -322,6 +322,10 @@ static void ProcessDevice(const Event& event, Emissions& emissions)
 `;
 
 const SDL_TYPED_INPUT = `
+static bool OPENHARMONY_AMCL_HostIsForeground(void) {
+    return broker->structSize >= AMCL_INPUT_FOREGROUND_BROKER_SIZE &&
+        broker->peekInputForeground && broker->peekInputForeground() == 1u;
+}
 #define AMCL_BACKEND_EVENT_FOCUS 5u
 #define AMCL_BACKEND_EVENT_CAPTURE 6u
 #define AMCL_BACKEND_EVENT_RELATIVE 7u
@@ -505,31 +509,20 @@ static void OPENHARMONY_AMCL_UpdatePresentedForeground(void)
 
 static Uint64 host_grabbed_motion_delivered;
 static Uint64 host_grabbed_motion_suppressed;
-static bool host_typed_relative_seen;
-
+const char *bridge_version = "AMCLSDLV:3:";
+const char *snapshot_symbol = "inputBridge_sdlGetNonPhysicalCursorSnapshot";
 static bool OPENHARMONY_TypedRelativeCaptureGranted(void)
 {
     return host_capture_requested && host_capture_active;
 }
-
-static bool OPENHARMONY_TypedRelativeOwnsGrabbedMotion(bool typed_relative_owner)
-{
-    return typed_relative_owner && OPENHARMONY_TypedRelativeCaptureGranted() &&
-           host_typed_relative_seen;
-}
-
 static void OPENHARMONY_PumpHostCursor(Bridge *bridge, bool typed_relative_owner)
 {
     bool grabbing = bridge->IsGrabbing();
     if (grabbing != host_last_grabbing) {
         host_last_grabbing = grabbing;
         host_baseline_valid = false;
-        host_typed_relative_seen = false;
     }
-    if (grabbing && OPENHARMONY_TypedRelativeOwnsGrabbedMotion(typed_relative_owner)) {
-        ++host_grabbed_motion_suppressed;
-        return;
-    }
+    (void)typed_relative_owner;
     if (grabbing) {
         ++host_grabbed_motion_delivered;
         SDL_SendMouseMotion(0, window, 0, true, dx, dy);
@@ -567,8 +560,7 @@ static void OPENHARMONY_PumpTypedEvents(Bridge *bridge)
         host_baseline_valid = false;
         break;
     case AMCL_BACKEND_EVENT_BUTTON:
-        SDL_SendMouseButton(0, window,
-                            OPENHARMONY_MouseIDFromHost(event.deviceId), 1, true);
+        OPENHARMONY_SendButtonFromPlane(2, event.deviceId, 0, window, 1, true);
         break;
     case AMCL_BACKEND_EVENT_WHEEL:
         SDL_SendMouseWheel(0, window,
@@ -582,10 +574,6 @@ static void OPENHARMONY_PumpTypedEvents(Bridge *bridge)
         break;
     case AMCL_BACKEND_EVENT_RELATIVE:
         if (OPENHARMONY_TypedRelativeCaptureGranted() && SDL_GetRelativeMouseMode()) {
-            if (!host_typed_relative_seen) {
-                host_typed_relative_seen = true;
-                host_baseline_valid = false;
-            }
             SDL_SendMouseMotion(event.monotonicTimeNs, window,
                                 OPENHARMONY_MouseIDFromHost(event.deviceId), true,
                                 event.wheelX, event.wheelY);
@@ -687,6 +675,67 @@ check('rule inventory is stable and unique',
   green.results.length === RULE_IDS.length
     && new Set(green.results.map((r) => r.id)).size === RULE_IDS.length
     && RULE_IDS.every((id) => green.results.some((r) => r.id === id)));
+
+/* 新 look-v1 门禁使用独立结构夹具；真实 SDK/Core 执行另由 test-sdl-look-prefix.py 验证。
+ * 每条负控只撤一个承重接缝，不能让旧 v3 正例或注释文字替新路径兜底。 */
+function greenPrefixFixture() {
+  const fixture = greenFixture();
+  const rel = 'src/video/openharmony/SDL_openharmonyamcl.c';
+  let source = fixture.get(rel);
+  source = source.replace('static Uint64 host_grabbed_motion_delivered;', '')
+    .replace('static Uint64 host_grabbed_motion_suppressed;', '')
+    .replace(`if (grabbing) {
+        ++host_grabbed_motion_delivered;
+        SDL_SendMouseMotion(0, window, 0, true, dx, dy);
+        return;
+    }`, 'if (grabbing) return;')
+    .replace(`SDL_SendMouseMotion(event.monotonicTimeNs, window,
+                                OPENHARMONY_MouseIDFromHost(event.deviceId), true,
+                                event.wheelX, event.wheelY);`,
+      'host_look_port->physicalPrefixByOrder(event.sequence, &token);\n            OPENHARMONY_DeliverLookForMouse(token, mouse_id, event.monotonicTimeNs);');
+  source += `
+static bool OPENHARMONY_LookCurrent(void *value)
+{
+    return context->port->validate(&context->emission) == AMCL_LOOK_PREFIX_READY;
+}
+static void OPENHARMONY_DeliverLookForMouse(Uint64 token, int mouse_id, Uint64 timestamp)
+{
+    context.port->claim(&emission);
+    SDL_SendMouseMotionWithReceipt(timestamp, window, mouse_id, true, dx, dy, &receipt);
+    context.port->complete(&emission, AMCL_CONTROL_STATE_ONLY);
+    context.port->complete(&emission, receipt.posted ? AMCL_CONTROL_PULL_COMMITTED : AMCL_CONTROL_STATE_FINAL);
+    context.port->abandonPrefix(consumer, token);
+    context.port->setBackendActive(3, 1);
+}
+static void OPENHARMONY_DeliverLook(Uint64 token)
+{
+    OPENHARMONY_DeliverLookForMouse(token, 0, 0);
+}
+static void OPENHARMONY_PumpPrefix(Bridge *bridge)
+{
+    amclLookExecutionResolveV1(&host_look_port);
+    switch (type) { case 1020: OPENHARMONY_DeliverLook(token); break; }
+}
+`;
+  fixture.set(rel, source);
+  fixture.set('src/SDL.c', 'Uint32 SDL_AMCL_InputLookProtocolV1(void) { return 1u; }');
+  return fixture;
+}
+check('green immutable prefix source fixture passes every rule', analyzeFiles(greenPrefixFixture()).ok);
+for (const [name, before, after] of [
+  ['ordered index', 'physicalPrefixByOrder(event.sequence', 'physicalPrefix(event.sequence'],
+  ['original prefix transport', 'case 1020:', 'case 9999:'],
+  ['actual SDK receipt', 'SDL_SendMouseMotionWithReceipt(', 'SDK_motion_no_receipt('],
+  ['ticket validate', 'validate(&context->emission)', 'skip_validation(&context->emission)'],
+  ['real ADD result', 'receipt.posted ? AMCL_CONTROL_PULL_COMMITTED', 'true ? AMCL_CONTROL_PULL_COMMITTED'],
+  ['exit lifetime', 'setBackendActive(3, 1)', 'skip_exit_lifetime(3, 1)'],
+]) {
+  const fixture = greenPrefixFixture();
+  const rel = 'src/video/openharmony/SDL_openharmonyamcl.c';
+  const source = fixture.get(rel);check(`prefix negative anchor exists: ${name}`, source.includes(before));
+  fixture.set(rel, source.replace(before, after));
+  check(`prefix negative rejects ${name}`, failedIds(analyzeFiles(fixture)).includes('typed-relative-single-owner'));
+}
 
 // Runtime truth table paired with the source predicate checked by
 // typed-focus-capture. Pending is the one easily-regressed row: treating every
@@ -1169,57 +1218,33 @@ const negative = [
       'sink.relative = RelativeSink;', 'sink.relative = nullptr;'),
   },
   {
-    // ⭐ 真机否证过的第一个代理：抑制端退回"typed 通道可调"（计划 §115）。
-    id: 'typed-relative-single-owner',
-    name: 'accumulated-cursor suppression must not widen to "typed callable"',
-    files: () => mutate('src/video/openharmony/SDL_openharmonyamcl.c',
-      'if (grabbing && OPENHARMONY_TypedRelativeOwnsGrabbedMotion(typed_relative_owner)) {',
-      'if (grabbing && typed_relative_owner) {'),
+    id: 'typed-relative-single-owner', name: 'reject old full-cursor ABI',
+    files: () => mutate('src/video/openharmony/SDL_openharmonyamcl.c', 'AMCLSDLV:3:', 'AMCLSDLV:2:'),
   },
   {
-    // ⭐ 真机否证过的第二个代理：归属只看"capture 已授予"。设备只要**报告**有鼠标能力
-    // 光标锁就成功，于是纯触屏会话里它恒真、grabbed 运动零 owner（计划 §116）。
-    id: 'typed-relative-single-owner',
-    name: 'ownership must not rest on capture-granted alone',
+    id: 'typed-relative-single-owner', name: 'require source filtered snapshot',
     files: () => mutate('src/video/openharmony/SDL_openharmonyamcl.c',
-      `    return typed_relative_owner && OPENHARMONY_TypedRelativeCaptureGranted() &&
-           host_typed_relative_seen;`,
-      '    return typed_relative_owner && OPENHARMONY_TypedRelativeCaptureGranted();'),
+      'inputBridge_sdlGetNonPhysicalCursorSnapshot', 'inputBridge_getCursorSnapshot'),
   },
   {
-    id: 'typed-relative-single-owner',
-    name: 'ownership transfers only where a RELATIVE record was delivered',
+    id: 'typed-relative-single-owner', name: 'never gate nonphysical motion on typed availability',
     files: () => mutate('src/video/openharmony/SDL_openharmonyamcl.c',
-      `            if (!host_typed_relative_seen) {
-                host_typed_relative_seen = true;
-                host_baseline_valid = false;
-            }
-`,
-      ''),
+      '(void)typed_relative_owner;', 'if (grabbing && typed_relative_owner) return;'),
   },
   {
-    id: 'typed-relative-single-owner',
-    name: 'grab flip clears the ownership evidence',
+    id: 'typed-relative-single-owner', name: 'never revive seen-sample global ownership',
     files: () => mutate('src/video/openharmony/SDL_openharmonyamcl.c',
-      `        host_baseline_valid = false;
-        host_typed_relative_seen = false;
-    }`,
-      `        host_baseline_valid = false;
-    }`),
+      '(void)typed_relative_owner;', 'host_typed_relative_seen = true;'),
   },
   {
-    id: 'typed-relative-single-owner',
-    name: 'typed RELATIVE delivery must read the same named predicate',
+    id: 'typed-relative-single-owner', name: 'physical motion still requires capture grant',
     files: () => mutate('src/video/openharmony/SDL_openharmonyamcl.c',
       'if (OPENHARMONY_TypedRelativeCaptureGranted() && SDL_GetRelativeMouseMode()) {',
       'if (SDL_GetRelativeMouseMode()) {'),
   },
   {
-    id: 'typed-relative-single-owner',
-    name: 'both grabbed-motion flows stay counted',
-    // 必须整体改名：门禁查的是标识符是否还在，只改声明会留下使用点而假绿。
-    files: () => mutateAll(
-      'host_grabbed_motion_suppressed', 'fixture_uncounted_suppression'),
+    id: 'typed-relative-single-owner', name: 'nonphysical delivery remains observable',
+    files: () => mutateAll('host_grabbed_motion_delivered', 'fixture_missing_delivered'),
   },
   {
     id: 'typed-surface-context',
@@ -1290,6 +1315,29 @@ void RogueWriter(void)
       return fixture;
     },
   },
+  {
+    // I27-05：第二个原位写者同样破坏“唯一发布点”，即使它不 setenv。
+    id: 'focus-independent-activation',
+    name: 'focus-independent-activation second slot writer',
+    files: () => {
+      const fixture = greenFixture();
+      fixture.set('entry/src/main/cpp/platform/rogue_slot_writer.cpp', `
+void RogueSlotWriter(void)
+{
+    amcl::envslot::ProcessRegistry().Store(amcl::envslot::kWindowForegroundEnv, "1");
+}
+`);
+      return fixture;
+    },
+  },
+  {
+    // I27-05：退回旧的 setenv 写法（即使仍只有一个写者）必须变红：它会释放 SDL 每帧持有的旧串。
+    id: 'focus-independent-activation',
+    name: 'focus-independent-activation legacy setenv publisher',
+    files: () => mutate('entry/src/main/cpp/platform/xcomponent.cpp',
+      'amclWindowHostSetInputForeground(value ? 1 : 0);',
+      'setenv("AMCL_WINDOW_FOREGROUND", value ? "1" : "0", 1);'),
+  },
 ];
 
 for (const item of negative) {
@@ -1314,6 +1362,62 @@ const patchFiles = parsePatchText(patch, '<green-fixture.patch>');
 const patchReport = analyzeFiles(patchFiles, { mode: 'patch-series', input: '<fixture>' });
 check('green patch fixture passes every rule', patchReport.ok,
   `failed=${failedIds(patchReport).join(', ')}`);
+
+// 稀疏重放只覆盖声明范围，不把非相邻 hunk 当成相邻函数；偏移必须完整精确且唯一。
+const sparsePath = 'src/video/openharmony/SDL_fixture.c';
+function sparseChange(oldStart, before, after) {
+  return `diff --git a/${sparsePath} b/${sparsePath}\n--- a/${sparsePath}\n+++ b/${sparsePath}\n`
+    + `@@ -${oldStart},${before.length} +1,${after.length} @@\n`
+    + before.map(line => `-${line}\n`).join('') + after.map(line => `+${line}\n`).join('');
+}
+const sparse = new Map([[sparsePath, ['head', 'alpha', 'beta', 'tail']]]);
+applySparsePatch(sparse, sparseChange(1, ['alpha', 'beta'], ['changed']), '<offset>');
+check('sparse exact unique offset preserves surrounding source',
+  sparse.get(sparsePath).join('|') === 'head|changed|tail');
+const gapped = new Map();
+applySparsePatch(gapped, sparseChange(4, ['title setter'], ['updated setter']), '<gapped>');
+check('unknown upstream span stays separate from hunk',
+  gapped.get(sparsePath).length === 4 && gapped.get(sparsePath).slice(0, 3).every(line => line === null));
+for (const [label, lines, before] of [
+  ['ambiguous offset', ['head', 'alpha', 'beta', 'gap', 'alpha', 'beta'], ['alpha', 'beta']],
+  ['changed context', ['head', 'alpha', 'changed'], ['alpha', 'beta']],
+  ['unknown offset is not wildcard', ['head', 'alpha', null], ['alpha', 'beta']],
+]) {
+  let rejected = false;
+  try { applySparsePatch(new Map([[sparsePath, lines]]), sparseChange(1, before, ['after']), label); }
+  catch { rejected = true; }
+  check(`sparse reconstruction rejects ${label}`, rejected);
+}
+let incompleteRejected = false;
+try { applySparsePatch(new Map(), sparseChange(1, ['before'], ['after']).replace('+after\n', ''), '<incomplete>'); }
+catch { incompleteRejected = true; }
+check('sparse reconstruction rejects incomplete hunk body', incompleteRejected);
+
+// 扩大 diff 上下文会带入相邻标题 setter；展示参数不是窗口角色选择条件。
+// 同时注入不含 Minecraft/version 等字面量的 title 分支，证明只豁免确切展示实参。
+const titleSetter = `
+void OPENHARMONY_SetWindowTitle(SDL_VideoDevice *device, SDL_Window *window)
+{
+    if (window && OPENHARMONY_DesktopCommand(window,9,0,0,0,0,window->title)) return;
+}
+`;
+const withTitleSetter = new Map(patchFiles);
+const titlePath = 'src/video/openharmony/SDL_openharmonywindow.c';
+withTitleSetter.set(titlePath, withTitleSetter.get(titlePath) + titleSetter);
+check('patch title command context is not a runtime selector',
+  analyzeFiles(withTitleSetter, { mode: 'patch-series' }).ok);
+for (const [name, addition] of [
+  ['title branch inside setter', titleSetter.replace('    if (window &&',
+    '    if (window->title[0]) window->internal->role = OPENHARMONY_WINDOW_AUXILIARY_PBUFFER;\n    if (window &&')],
+  ['title branch in another helper', titleSetter + '\nvoid PickRole(SDL_Window *window) { if (window->title[0]) window->internal->role = OPENHARMONY_WINDOW_AUXILIARY_PBUFFER; }\n'],
+  ['different desktop operation', titleSetter.replace('window,9,', 'window,10,')],
+  ['incomplete setter context', titleSetter.replace(/}\s*$/, '')],
+]) {
+  const wrong = new Map(patchFiles);
+  wrong.set(titlePath, wrong.get(titlePath) + addition);
+  check(`patch title-selector negative remains rejected: ${name}`,
+    failedIds(analyzeFiles(wrong, { mode: 'patch-series' })).includes('no-runtime-fingerprints'));
+}
 
 console.log('');
 if (failures > 0) {

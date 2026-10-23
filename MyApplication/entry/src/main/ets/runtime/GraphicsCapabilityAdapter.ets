@@ -97,16 +97,48 @@ function booleanEvidence(value: boolean): CapabilityEvidence {
   return value ? CapabilityEvidence.YES : CapabilityEvidence.NO;
 }
 
-/** Preserve the requested probe scope even when an entry query fails before context creation. */
+/**
+ * 只合并当前进程中完全相同的只读系统GL入口查询，不缓存完成后的能力结果。
+ * 原始结果不含游戏/provider身份，各调用者返回后再绑定自己的实际游戏事实，避免切换
+ * 实例时借用旧scope。完整context探针仍由native启动边界独立执行，不能共享本Promise。
+ */
+let nativeGlEntryPending: Promise<NativeGlCapability> | undefined = undefined;
+
+/** 外部详细探针也可能持有native忙门；最多查询三次，总退避75ms，不无限占用设置/启动流程。 */
+async function queryNativeGlEntryWithRetry(): Promise<NativeGlCapability> {
+  let result: NativeGlCapability = await testNapi.getNativeGlCapability(false, true);
+  for (let retry: number = 0; result.stage === 'native-gl-probe-busy' && retry < 2; retry++) {
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 25 * (retry + 1)); });
+    result = await testNapi.getNativeGlCapability(false, true);
+  }
+  return result;
+}
+
+/** 成功、持续busy和异常都会释放在途槽位；后续刷新必须重新观测，而非永久复用旧阳性/阴性。 */
+async function nativeGlEntryCapability(): Promise<NativeGlCapability> {
+  if (nativeGlEntryPending === undefined) nativeGlEntryPending = queryNativeGlEntryWithRetry();
+  const pending: Promise<NativeGlCapability> = nativeGlEntryPending;
+  try {
+    return await pending;
+  } finally {
+    if (nativeGlEntryPending === pending) nativeGlEntryPending = undefined;
+  }
+}
+
+/**
+ * 归一化时保留请求scope与native执行阶段。busy发生在库/入口检查之前，默认false不是
+ * 不支持证据，必须表示UNKNOWN；也不能把尚未运行的context/版本/像素读回标为失败。
+ */
 export function nativeGlCapabilityResult(capability: NativeGlCapability, provider: string,
   gameVersion: string = '', availabilityOnly: boolean = false): CapabilityResult {
   const observed: string = capability.vendor + (capability.renderer.length > 0 ? '/' + capability.renderer : '');
-  const library: CapabilityEvidence = booleanEvidence(capability.systemLibrary);
-  const query: CapabilityEvidence = booleanEvidence(capability.querySupported);
+  const busy: boolean = capability.stage === 'native-gl-probe-busy';
+  const library: CapabilityEvidence = busy ? CapabilityEvidence.UNKNOWN : booleanEvidence(capability.systemLibrary);
+  const query: CapabilityEvidence = busy ? CapabilityEvidence.UNKNOWN : booleanEvidence(capability.querySupported);
   const entryOnly: boolean = availabilityOnly;
-  const context: CapabilityEvidence = entryOnly ? CapabilityEvidence.NOT_RUN : booleanEvidence(capability.contextCreated);
-  const version: CapabilityEvidence = entryOnly ? CapabilityEvidence.NOT_RUN : booleanEvidence(capability.version.length > 0);
-  const pixels: CapabilityEvidence = entryOnly ? CapabilityEvidence.NOT_RUN : booleanEvidence(capability.pixelVerified && capability.ready);
+  const context: CapabilityEvidence = entryOnly || busy ? CapabilityEvidence.NOT_RUN : booleanEvidence(capability.contextCreated);
+  const version: CapabilityEvidence = entryOnly || busy ? CapabilityEvidence.NOT_RUN : booleanEvidence(capability.version.length > 0);
+  const pixels: CapabilityEvidence = entryOnly || busy ? CapabilityEvidence.NOT_RUN : booleanEvidence(capability.pixelVerified && capability.ready);
   return {
     evidenceProfileId: 'nativegl',
     requirementId: 'desktop-system-gl-validation-v1',
@@ -161,7 +193,7 @@ export async function prepareGraphicsProfileInput(context: common.UIAbilityConte
   const results: CapabilityResult[] = [];
   const provider: string = game.usesSdl3 ? 'SDL3' : 'GLFW';
   try {
-    const native: NativeGlCapability = await testNapi.getNativeGlCapability(false, true);
+    const native: NativeGlCapability = await nativeGlEntryCapability();
     results.push(nativeGlCapabilityResult(native, provider, game.realMcVersion, true));
   } catch (error) {
     AppLogger.warn('GraphicsCapability', 'system GL entry query failed', error);

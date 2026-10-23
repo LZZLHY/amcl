@@ -43,11 +43,9 @@ class ImeActivationGate {
   }
 
   /**
-   * 无条件清空。唯一调用方是"确定所有输入条都已关闭"的复位边界
-   * （`GameControls.resetTransientInputState` 的 `!keepHeldButtons` 分支）。
-   *
-   * 它让"某个 owner 泄漏 → 物理键盘永久打不出字"可恢复 —— 见文件头契约 4。
-   * ⚠️ **必须留在那个分支内**：grab 翻转时输入条刻意保持打开。
+   * 无条件清空仅供已结束整个controller生命周期的宿主/测试使用。
+   * 普通UI关闭由实际owner在异步detach后setActive(false)，不能提前清其它
+   * 仍attached的owner；Native reset只更新文本宿主号，不等于系统IME已detach。
    */
   clear(): void {
     this.owners.clear()

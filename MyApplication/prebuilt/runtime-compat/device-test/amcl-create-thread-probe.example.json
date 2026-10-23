@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "enabled": true,
+  "expectedGameDirectory": "fabric-loader-0.19.5-26.2-create-thread-qa",
+  "expectedWorldNamePrefix": "AMCL Create Thread QA"
+}

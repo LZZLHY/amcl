@@ -1,0 +1,7 @@
+{
+  "sha256": "e55362c807e838a6bcadae9cf6fa624bcb51c4be3b2e96dbbd2f5953d35b4bac",
+  "observedAt": "2026-10-08T08:03:28+08:00",
+  "sourcePid": 30495,
+  "source": ".workspace/run/cf-full/device-second/mobilegl1c/return-ui-report.txt",
+  "boundary": "Actual old capability UI text only; synthetic wrapper/HAP/DSO markers in tests are parser fixtures, not runtime qualification"
+}

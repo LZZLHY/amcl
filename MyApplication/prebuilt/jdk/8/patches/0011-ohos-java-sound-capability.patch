@@ -1,0 +1,26 @@
+--- a/jdk/src/share/native/com/sun/media/sound/Platform.c
++++ b/jdk/src/share/native/com/sun/media/sound/Platform.c
+@@ -57,7 +57,12 @@
+  * Signature: ()Ljava/lang/String;
+  */
+ JNIEXPORT jstring JNICALL Java_com_sun_media_sound_Platform_nGetExtraLibraries(JNIEnv *env, jclass clss) {
++#ifdef __MUSL__
++    /* OHOS 没有 ALSA 后端；不要探测可选库。Java provider 会继续使用安全的能力门控。 */
++    return (*env)->NewStringUTF(env, "");
++#else
+     return (*env)->NewStringUTF(env, EXTRA_SOUND_JNI_LIBS);
++#endif
+ }
+ 
+ /*
+@@ -68,6 +73,10 @@
+ JNIEXPORT jint JNICALL Java_com_sun_media_sound_Platform_nGetLibraryForFeature
+   (JNIEnv *env, jclass clazz, jint feature) {
+ 
++#ifdef __MUSL__
++    /* JDK8 的库位掩码为零表示该硬件功能不可用，避免触达不存在的 native provider。 */
++    return 0;
++#endif
+ // for every OS
+ #if X_PLATFORM == X_WINDOWS
+     switch (feature) {

@@ -9,3 +9,6 @@
 	path = MyApplication/prebuilt/mobilegl/src
 	url = https://github.com/LZZLHY/MobileGL.git
 	branch = amcl/ohos
+[submodule "MyApplication/prebuilt/hdc/muka-rust-hdc"]
+	path = MyApplication/prebuilt/hdc/muka-rust-hdc
+	url = https://github.com/Attect/muka_rust_hdc.git

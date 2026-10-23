@@ -1,8 +1,9 @@
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
-import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark, AppIconName } from 'commons';
+import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark, AppIconName, DistributionPolicy } from 'commons';
 import { AppIcon } from '../components/AppIcon';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
 import { PreferenceManager } from 'feature_system';
 import { LogShareRecord, loadShareHistory, revokeShare, isShareRecordCurrent, logShareSourceLabel, logShareInstanceForUrl } from '../components/LogShareClient';
 import { getAiTaskSnapshot, cancelAiAnalysis } from '../components/AiAnalysisService';
@@ -93,6 +94,8 @@ struct LogShareHistoryPage {
   }
   /** 历史内容不被当作任意外链执行，只打开已知分享服务，异步打开失败在页面提示。 */
   private async open_(record: LogShareRecord): Promise<void> {
+    // 商店历史记录仍可复制和撤回；网页动作在函数边界拒绝，旧事件不能触发浏览器。
+    if (DistributionPolicy.isStore()) return;
     if (logShareInstanceForUrl(record.url).length === 0) { this.errorText = '分享链接无效'; return; }
     const want: Want = { action: 'ohos.want.action.viewData', entities: ['entity.system.browsable'], uri: record.url };
     try { await this.context.startAbility(want); }
@@ -102,6 +105,17 @@ struct LogShareHistoryPage {
   /** 每条记录只保留复制主动作，文件明细/网页核对/撤回在同一低频菜单。 */
   private recordMenu_(record: LogShareRecord): void {
     if (this.busy) return;
+    // 商店菜单不展示“网页查看”；两项索引独立映射，避免删除第一项后把撤回误接成打开。
+    if (DistributionPolicy.isStore()) {
+      this.getUIContext().getPromptAction().showActionMenu({ title: '分享选项', buttons: [
+        { text: this.expandedRecord === record.url ? '收起发送文件' : '查看发送文件', color: this.theme.primary as string },
+        { text: '撤回这条分享', color: this.theme.errorText as string },
+      ] }).then((result: promptAction.ActionMenuSuccessResponse): void => {
+        if (result.index === 0) this.expandedRecord = this.expandedRecord === record.url ? '' : record.url;
+        else if (result.index === 1) this.confirmRevoke_(record);
+      }).catch((): void => {});
+      return;
+    }
     this.getUIContext().getPromptAction().showActionMenu({ title: '分享选项', buttons: [
       { text: '在网页中查看', color: this.theme.primary as string },
       { text: this.expandedRecord === record.url ? '收起发送文件' : '查看发送文件', color: this.theme.primary as string },
@@ -113,11 +127,20 @@ struct LogShareHistoryPage {
     }).catch((): void => {});
   }
   build() {
-    Column({ space: 12 }) {
-      Row({ space: 12 }) {
-        Button('返回').onClick(() => { this.getUIContext().getRouter().back(); })
-        Text('日志分享记录').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
-      }.width('100%')
+    Column() {
+      // 返回仅离开记录页，撤回、复制与异步凭据保存仍走原入口。
+      ImmersiveTitleScaffold({ title: '日志分享记录', theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary, onBack: (): void => { this.getUIContext().getRouter().back(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }
+      .width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
+  }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      Column({ space: 12 }) {
       Text('这里保留全部 LogShare 分享。清理本地活动日志后，仍可查看链接和撤回分享。')
         .fontSize(13).fontColor(this.theme.textSecondary).width('100%')
       if (this.errorText.length > 0) Text(this.errorText).fontColor(this.theme.error).width('100%')
@@ -147,7 +170,7 @@ struct LogShareHistoryPage {
                 .fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
               Text(new Date(record.sharedAt).toLocaleString() + (isShareRecordCurrent(record) ? ' · 有效期内' : ' · 已到期或有效期未知'))
                 .fontSize(12).fontColor(this.theme.textSecondary)
-              Text(record.url).fontSize(12).fontColor(this.theme.primary)
+              Text(record.url).fontSize(12).fontColor(DistributionPolicy.isStore() ? this.theme.textSecondary : this.theme.primary)
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 .onClick(() => { this.open_(record) })
               Text((record.selectedPaths?.length ?? 0) + ' 个发送文件' + (record.accepted === false ? ' · 接收信息待核对' : ''))
@@ -162,13 +185,13 @@ struct LogShareHistoryPage {
                   .onClick(() => { this.copy_(record); })
                 Button() { AppIcon({ name: AppIconName.More, iconSize: 20, color: this.theme.textSecondary }) }
                   .width(44).height(44).enabled(!this.busy).backgroundColor(Color.Transparent)
-                  .accessibilityText('查看文件、打开链接或撤回').onClick(() => { this.recordMenu_(record); })
+                  .accessibilityText(DistributionPolicy.isStore() ? '查看文件或撤回' : '查看文件、打开链接或撤回').onClick(() => { this.recordMenu_(record); })
               }
             }.alignItems(HorizontalAlign.Start).width('100%').padding(14).backgroundColor(this.theme.bgInput).borderRadius(12)
           }
         }, (record: LogShareRecord): string => (record.apiBaseUrl ?? '') + record.id)
       }.layoutWeight(1).width('100%') }
-    }.padding({ left: 16, right: 16, top: this.topSafeHeight + 12, bottom: this.bottomSafeHeight + 16 })
-      .width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
-  }
+      }.padding({ left: 16, right: 16, top: 12, bottom: this.bottomSafeHeight + 16 })
+        .width('100%').height('100%')
+      }
 }

@@ -1,0 +1,39 @@
+/** 自更新公开快照。字段仅含显示所需信息，不包含私钥、令牌、UDID或安装nonce。 */
+export class SideloadUpdateSnapshot {
+  /** 真实下载字节供UI/诊断消费，只读副本不是第二份进度所有者。 */
+  bytesDone: number = 0;
+  bytesTotal: number = 0;
+  speedBps: number = 0;
+  revision: number = 0;
+  attemptId: string = '';
+  runtimeGeneration: number = 0;
+  message: string = '正在准备更新';
+  version: string = '';
+  phase: string = 'idle';
+  materialReady: boolean = false;
+  working: boolean = false;
+  finishing: boolean = false;
+  checking: boolean = false;
+  connectionReady: boolean = false;
+  connectionRetry: boolean = false;
+  connectionMessage: string = '等待检查开发者选项和无线调试';
+  accountMessage: string = '等待检查华为登录状态';
+  accountReady: boolean = false;
+  checkingAccount: boolean = false;
+  accountRetry: boolean = false;
+  loginVisible: boolean = false;
+  loginUrl: string = '';
+  loginMessage: string = '';
+  loginBusy: boolean = false;
+  loginReason: string = '';
+  needsLogin: boolean = false;
+  needsImport: boolean = false;
+  port: string = '10178';
+  progress: number = 0;
+  transfer: string = '';
+  failedPhase: string = '';
+  recoveryAction: string = '';
+  activityId: number = 0;
+  downloadTaskId: string = '';
+  downloadState: string = '';
+}

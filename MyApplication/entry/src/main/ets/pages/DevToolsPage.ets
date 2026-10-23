@@ -18,6 +18,7 @@
  */
 
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
+import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold'
 import { NativeProbeDef, ProbeOutcome, findProbe, runProbe } from '../devtools/ProbeRegistryModel';
 import { nativeProbeRegistry } from '../devtools/NativeProbeRegistry';
 import { DownloadManager, DownloadTaskView, formatBytes, formatSpeed } from 'feature_core';
@@ -149,6 +150,11 @@ struct DevToolsPage {
       { id: 'glfw', name: 'GLFW', desc: 'glfwInit/Terminate · 窗口创建/查询 · 回调注册 · 触摸→鼠标映射', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 GLFW 测试', route: '' },
       { id: 'gl4', name: 'OpenGL 4.x', desc: '官方能力查询 · OpenGL 4.2 上下文 · 像素回读验证', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 OpenGL 4.x 探测', route: '' },
       { id: 'mg', name: 'MobileGlues', desc: 'GL→GLES 翻译 · 固定管线 · 矩阵/着色器函数 · MC 关键扩展', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 MobileGlues 测试', route: '' },
+      // 使用既有探针注册表/控制台，不建立第二套测试分派或绘制实现。
+      { id: 'mgDepthRange', name: 'MG 深度范围', desc: '深度范围设置与查询、反向范围、越界输入和实际深度比较像素验证。重启应用后运行，测试完成后须再次重启。', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 MG 深度范围测试', route: '' },
+      { id: 'mgIdentityLow', name: 'MG 上下文低版本首次', desc: '交叉核对真实 EGL、GL 与生产上下文授予身份；低版本首次。冷启动运行，完成后重启。', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 MG 低版本首次测试', route: '' },
+      { id: 'mgIdentityHigh', name: 'MG 上下文高版本首次', desc: '交叉核对真实 EGL、GL 与生产上下文授予身份；高版本首次。冷启动运行，完成后重启。', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 MG 高版本首次测试', route: '' },
+      { id: 'mobileglProgram', name: 'MobileGL 程序语义', desc: '固定动态精度输入、失败重链后的旧程序像素及错误状态。限制拒绝不表示完整 Core 资格；冷启动运行，完成后重启。', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '运行 MobileGL 程序语义测试', route: '' },
       // MobileGL optional peer 的开发覆盖入口；常规选择由设置页 profile 列表提供。
       // 出帧探针在 RenderPage（上面 GLES 卡片进入）；这里只管"下次启动用哪个后端"的覆盖开关。
       { id: 'mobileglOverride', name: 'MobileGL 覆盖', desc: '请求 OpenGL peer profile MobileGL；SDL3 路线使用 DirectVulkan transport，启动前仍按版本、provider、产物和能力准入。', cat: '图形渲染', color: CAT_GRAPHICS, action: 'run', runLabel: '切换 MobileGL 覆盖', route: '' },
@@ -233,54 +239,20 @@ struct DevToolsPage {
 
   build() {
     Column() {
-      this.AppBar()
-      if (this.isTablet()) {
-        Row() {
-          this.Sidebar()
-          Column() { this.DetailContent() }.layoutWeight(1).height('100%')
-        }.width('100%').layoutWeight(1).alignItems(VerticalAlign.Top)
-      } else {
-        if (this.showDetailOnPhone) {
-          Column() { this.DetailContent() }.layoutWeight(1).width('100%')
-        } else {
-          this.ToolListView()
-        }
-      }
+      // 手机详情返回先退回工具列表；共享按钮只调用原 onBack，不绕过这层状态机。
+      ImmersiveTitleScaffold({ title: (!this.isTablet() && this.showDetailOnPhone) ? this.currentToolDef().name : '开发者工具',
+        subtitle: (this.isTablet() || !this.showDetailOnPhone)
+          ? (this.isTablet() ? 'DEV · AMCL · 1.0.0-beta.5 · build 1000328' : 'DEV') : '',
+        theme: this.theme, topSafeHeight: this.topSafeHeight, surfaceColor: this.theme.bgPrimary,
+        onBack: (): void => { this.onBack(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
     }
     .width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
     .onAreaChange((_o: Area, n: Area) => {
       let w = n.width as number
       if (w > 0) this.breakpoint = DeviceProfile.breakpointOf(w)
     })
-  }
-
-  @Builder
-  AppBar() {
-    Column() {
-      Row({ space: 10 }) {
-        Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Text('←').fontSize(20).fontColor(this.theme.textPrimary)
-        }
-        .width(36).height(36).backgroundColor(this.theme.bgInput)
-        .onClick(() => { this.onBack() })
-
-        Text((!this.isTablet() && this.showDetailOnPhone) ? this.currentToolDef().name : '开发者工具')
-          .fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
-        if (this.isTablet() || !this.showDetailOnPhone) {
-          Row() {
-            Text('DEV').fontSize(10).fontColor(this.theme.textOnPrimary).fontFamily(MONO).fontWeight(FontWeight.Bold)
-          }.backgroundColor(this.theme.primary).borderRadius(R_BADGE).padding({ left: 7, right: 7, top: 2, bottom: 2 })
-        }
-        Blank()
-        if (this.isTablet()) {
-          Text('AMCL · 1.0.0-beta.5 · build 1000328').fontSize(12).fontColor(this.theme.textHint).fontFamily(MONO)
-        }
-      }
-      .width('100%').height(56).padding({ left: 12, right: 20 }).alignItems(VerticalAlign.Center)
-    }
-    .width('100%').padding({ top: this.topSafeHeight })
-    .backgroundColor(this.theme.bgSecondary)
-    .border({ width: { bottom: 0.5 }, color: this.theme.divider })
   }
 
   @Builder
@@ -453,10 +425,12 @@ struct DevToolsPage {
             Text('点击「' + this.currentToolDef().runLabel + '」开始（结果同时写入 hilog + amcl_launcher.log）')
               .width('100%').fontSize(12).fontColor(CONSOLE_DIM).fontFamily(MONO)
           } else {
-            ForEach(this.consoleLines(), (ln: string, i: number) => {
+            // 结果正文会整份替换；仅用行号会复用捕获旧ln的Text，让新NOT_RUN仍显示旧PASS。
+            // 内容变化必须产生新key；行位置只用于区分重复文本/空行，纯展示行重建不持有业务状态。
+            ForEach(this.consoleLines(), (ln: string) => {
               Text(ln.length === 0 ? ' ' : ln).width('100%')
                 .fontSize(12).lineHeight(18).fontFamily(MONO).fontColor(this.lineColor(ln))
-            }, (ln: string, i: number) => i.toString())
+            }, (ln: string, i: number) => i.toString() + ':' + ln)
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.layoutWeight(1).width('100%').align(Alignment.TopStart).padding({ left: 14, right: 14, top: 12, bottom: 12 })
@@ -782,4 +756,21 @@ struct DevToolsPage {
         AppLogger.error('PHONE_STORAGE_PROBE', 'phone storage probe error', e, LOG_DOMAIN)
       })
   }
+
+  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  @Builder
+  private ImmersiveTitleContent1_() {
+      if (this.isTablet()) {
+        Row() {
+          this.Sidebar()
+          Column() { this.DetailContent() }.layoutWeight(1).height('100%')
+        }.width('100%').layoutWeight(1).alignItems(VerticalAlign.Top)
+      } else {
+        if (this.showDetailOnPhone) {
+          Column() { this.DetailContent() }.layoutWeight(1).width('100%')
+        } else {
+          this.ToolListView()
+        }
+      }
+      }
 }

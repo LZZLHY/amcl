@@ -7,6 +7,9 @@ export * from './src/main/ets/LaunchCoordinator';
 export * from './src/main/ets/LaunchProfileBuilder';
 export * from './src/main/ets/PreLaunchValidator';
 export * from './src/main/ets/JdkManager';
+export * from './src/main/ets/RuntimeCatalogRepository';
+export * from './src/main/ets/RuntimeCatalogTypes';
+export * from './src/main/ets/RuntimeUpdatePolicy';
 export * from './src/main/ets/JdkInstaller';
 // 已装 JDK 与期望版本的关系判定（纯函数）。分级取舍与「harmfulTags 不许滥用」的理由写在文件开头；
 // 判定钉子在 entry/src/test/JdkUpdatePolicy.test.ets。
@@ -26,6 +29,8 @@ export * from './src/main/ets/GraphicsBackendPlan';
 export * from './src/main/ets/GraphicsCapabilityContract';
 export * from './src/main/ets/DeviceGraphicsFacts';
 export * from './src/main/ets/GraphicsGameFacts';
+// 输入与图形复用同次运行库解析，各自冻结和校验独立启动子契约。
+export * from './src/main/ets/ResolvedInputPlan';
 // Minecraft 偏好和 API 参数只消费真实版本与 canonical 图形元数据。
 export * from './src/main/ets/MinecraftGraphicsPreference';
 export * from './src/main/ets/GraphicsProfileRegistry';
@@ -58,3 +63,6 @@ export * from './src/main/ets/McErrorClassifier';
 export * from './src/main/ets/SessionMarker';
 export * from './src/main/ets/SessionOutcomeResolver';
 export * from './src/main/ets/JvmExitEvidence';
+// 恢复协调状态与进程owner；输入、历史和展示消费分别持久确认，页面只读取提交结果。
+export * from './src/main/ets/SessionRecoveryState';
+export * from './src/main/ets/SessionRecoveryCoordinator';

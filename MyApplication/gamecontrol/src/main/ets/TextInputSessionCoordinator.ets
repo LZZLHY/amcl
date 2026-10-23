@@ -1,9 +1,36 @@
+/**
+ * IME 编辑键（退格/前删/回车/小键盘回车/Esc）一次“按下+抬起”的三态结果。
+ * 数值是跨语言镜像：与 native 的 PlatformInputTextKeyTapResult 及 NAPI textInputKeyTap
+ * 的返回值逐值对应，改任一侧都必须同步另外两侧。
+ */
+export enum TextInputKeyTapResult {
+  /** 已作为 typed 物理键进入 core，与同一会话的提交文本共用序号，交付顺序与调用顺序一致。 */
+  Submitted = 0,
+  /** 进程不在 typed 物理路由：调用方必须改走原 legacy ring 按键对。 */
+  NotTypedRoute = 1,
+  /** 被拒（键不合法、门禁关闭、会话失效或 core 拒收）：调用方不得回退 ring，否则会越过已排队的文本。 */
+  Rejected = 2
+}
+
+/** 把宿主返回的数值收敛成三态；未知数值一律按 Rejected，绝不猜成“可以回退 ring”。 */
+export function textInputKeyTapResultFromNative(value: number): TextInputKeyTapResult {
+  if (value === 0) return TextInputKeyTapResult.Submitted
+  if (value === 1) return TextInputKeyTapResult.NotTypedRoute
+  return TextInputKeyTapResult.Rejected
+}
+
 /** Unicode-scalar indexed text-session command sink supplied by the host. */
 export interface TextInputSessionSink {
   begin(owner: string, generation: number): boolean
   end(owner: string, generation: number, reason: string): boolean
   abort(owner: string, generation: number, reason: string): void
   commit(owner: string, generation: number, text: string): boolean
+  /**
+   * 会话内有序编辑键。generation 为 0 表示宿主会话暂未重建：宿主仍须先回答是否处于
+   * typed 路由（legacy 路由下调用方要回退 ring），typed 路由下再以会话失效拒绝。
+   */
+  keyTap(owner: string, generation: number, ohosKeyCode: number,
+    glfwKey: number): TextInputKeyTapResult
   editing(
     owner: string,
     generation: number,
@@ -63,6 +90,8 @@ export class TextInputSessionCoordinator {
   private sink: TextInputSessionSink
   private activeLease: TextInputSessionLease | undefined = undefined
   private nextGeneration: number = 1
+  /** UI lease保持稳定；Native RESET只作废宿主会话号，下条合法文本命令惰性重建。 */
+  private hostGeneration: number = 0
 
   constructor(sink: TextInputSessionSink) {
     this.sink = sink
@@ -92,6 +121,7 @@ export class TextInputSessionCoordinator {
       return result
     }
     this.activeLease = lease
+    this.hostGeneration = lease.generation
     result.status = TextInputBeginStatus.Granted
     result.lease = lease.copy()
     return result
@@ -99,8 +129,9 @@ export class TextInputSessionCoordinator {
 
   end(lease: TextInputSessionLease, reason: string): boolean {
     if (!this.matches(lease)) return false
-    if (!this.sink.end(lease.owner, lease.generation, reason)) return false
+    if (this.hostGeneration !== 0 && !this.sink.end(lease.owner, this.hostGeneration, reason)) return false
     this.activeLease = undefined
+    this.hostGeneration = 0
     return true
   }
 
@@ -108,11 +139,12 @@ export class TextInputSessionCoordinator {
   abort(lease: TextInputSessionLease, reason: string): boolean {
     if (!this.matches(lease)) return false
     try {
-      this.sink.abort(lease.owner, lease.generation, reason)
+      if (this.hostGeneration !== 0) this.sink.abort(lease.owner, this.hostGeneration, reason)
     } catch (_) {
       // The local generation must still close; a future host sink records/reset this failure.
     }
     this.activeLease = undefined
+    this.hostGeneration = 0
     return true
   }
 
@@ -120,7 +152,7 @@ export class TextInputSessionCoordinator {
     if (!this.matches(lease) || !TextInputSessionCoordinator.validText(text, false)) {
       return false
     }
-    return this.sink.commit(lease.owner, lease.generation, text)
+    return this.ensureHostSession(lease) && this.sink.commit(lease.owner, this.hostGeneration, text)
   }
 
   editing(
@@ -136,8 +168,8 @@ export class TextInputSessionCoordinator {
     if (scalarCount < 0) return false
     if (!TextInputSessionCoordinator.validRange(
       selectionStart, selectionLength, scalarCount)) return false
-    return this.sink.editing(
-      lease.owner, lease.generation, text, selectionStart, selectionLength)
+    return this.ensureHostSession(lease) && this.sink.editing(
+      lease.owner, this.hostGeneration, text, selectionStart, selectionLength)
   }
 
   selection(
@@ -150,8 +182,8 @@ export class TextInputSessionCoordinator {
           selectionStart, selectionLength, TEXT_INPUT_MAX_SCALARS)) {
       return false
     }
-    return this.sink.selection(
-      lease.owner, lease.generation, selectionStart, selectionLength)
+    return this.ensureHostSession(lease) && this.sink.selection(
+      lease.owner, this.hostGeneration, selectionStart, selectionLength)
   }
 
   candidates(
@@ -184,8 +216,40 @@ export class TextInputSessionCoordinator {
                selected < pageStart || selected >= pageStart + pageSize) {
       return false
     }
-    return this.sink.candidates(
-      lease.owner, lease.generation, copy, selected, pageStart, pageSize)
+    return this.ensureHostSession(lease) && this.sink.candidates(
+      lease.owner, this.hostGeneration, copy, selected, pageStart, pageSize)
+  }
+
+  /**
+   * 文本会话内的有序编辑键。与提交同一规则惰性恢复宿主会话；恢复失败时把 0 号交给宿主，
+   * 让它先按路由回答（legacy 路由下调用方据 NotTypedRoute 回退 ring），而不是在这里
+   * 替宿主猜路由。租约不匹配（迟到回调）直接 Rejected：已结束的客户端不得再发键。
+   */
+  keyTap(lease: TextInputSessionLease, ohosKeyCode: number,
+    glfwKey: number): TextInputKeyTapResult {
+    if (!this.matches(lease)) return TextInputKeyTapResult.Rejected
+    const generation: number = this.ensureHostSession(lease) ? this.hostGeneration : 0
+    return this.sink.keyTap(lease.owner, generation, ohosKeyCode, glfwKey)
+  }
+
+  /**
+   * 该租约当前的宿主会话号；0 表示宿主会话已被 native reset 作废、尚待下一条命令重建，
+   * 或租约已不是当前租约。输入客户端据此判断本地回显是否仍描述同一个宿主会话。
+   */
+  hostGenerationOf(lease: TextInputSessionLease): number {
+    return this.matches(lease) ? this.hostGeneration : 0
+  }
+
+  /** 仅在宿主明确发布新reset epoch时调用，不借提交失败猜测复位或重放已成功文本。 */
+  invalidateHostSession(): void { this.hostGeneration = 0 }
+
+  private ensureHostSession(lease: TextInputSessionLease): boolean {
+    if (!this.matches(lease)) return false
+    if (this.hostGeneration !== 0) return true
+    const generation: number = this.takeGeneration()
+    if (generation === 0 || !this.sink.begin(lease.owner, generation)) return false
+    this.hostGeneration = generation
+    return true
   }
 
   active(): TextInputSessionLease | undefined {

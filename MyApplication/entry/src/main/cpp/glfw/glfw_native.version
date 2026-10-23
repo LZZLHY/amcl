@@ -3,6 +3,11 @@ LIBGLFW {
         glfw[A-Z]*;
         amclInputGetHostApiV1;
         amclDesktopHostResolve;
+
+        # 保持 native GLFW 与普通 GLFW 的诊断身份查询契约一致。L2 只允许通过
+        # 现役 handle 查询同映像 getter；local:* 会覆盖源码可见性，因此在此精确
+        # 导出已有 C getter。产品/mask 仍由既有编译身份决定，不增加诊断开关。
+        amclDiagnosticBuildIdentity;
         amclBackendInputNext;
         amclBackendInputSetActive;
         amclBackendInputPublishAddress;

@@ -40,8 +40,10 @@ rejected('uppercase id', analyze(consistentMutation("id: 'gl4es'", "id: 'GL4ES'"
 rejected('candidate made user selectable', analyze(mutate('registry',
   'lifecycle: RendererBackendLifecycle.Optional', 'lifecycle: RendererBackendLifecycle.Candidate')), /userSelectable=false/);
 rejected('present owner lacks lease', analyze(consistentMutation(
-  'ownsEgl: false, ownsPresent: true,\n    windowAcquisition: RendererWindowAcquisition.NativeWindowLease',
-  'ownsEgl: false, ownsPresent: true,\n    windowAcquisition: RendererWindowAcquisition.None')), /NativeWindowLease/);
+  // 只变真实可选MobileGL行的租约；字段排版与Windows CRLF不能使反例在匹配
+  // 阶段失效。ownsPresent保持生产值true，原checker及拒绝断言都保持。
+  'windowAcquisition: RendererWindowAcquisition.NativeWindowLease, userSelectable: true',
+  'windowAcquisition: RendererWindowAcquisition.None, userSelectable: true')), /NativeWindowLease/);
 rejected('Vulkan given a GL library', analyze(consistentMutation("glLibName: '', systemLibrary: false", "glLibName: 'libglfw.so', systemLibrary: false")), /Vulkan must have an empty/);
 rejected('desktop forged as window API', analyze(consistentMutation(
   "SDL3 = 'SDL3', UNKNOWN = 'UNKNOWN'", "SDL3 = 'DESKTOP', UNKNOWN = 'UNKNOWN'")), /invalid windowProviders/);

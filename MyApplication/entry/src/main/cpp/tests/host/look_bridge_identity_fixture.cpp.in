@@ -1,0 +1,179 @@
+/**
+ * 两映像验证的薄平台边缘。每个DLL都链接真实Core/control/look/bridge，只有窗口结构与
+ * callback logger由宿主提供；生产callback正文逐字插入，不在这里重写归约或运输。
+ * DLL寿命覆盖全部借出地址，driver不卸载；第二映像的本地owner保持未绑定，专门暴露误取。
+ */
+#include "input/delivery/look_transport.h"
+#include "input/delivery/look_execution_client.h"
+#include "input/adapters/glfw_source_plane_aggregate.h"
+#include "input/amcl_input_api.h"
+#include "input/amcl_input_host_descriptor.h"
+#include "input/input_look_core_hook.h"
+#include "input/source/source_control.h"
+#include <cmath>
+#include <climits>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <chrono>
+#include <atomic>
+#include <vector>
+#include <thread>
+
+struct GLFWwindow {uint64_t windowId=42;double cursorX=100,cursorY=50;void(*cursorPosCb)(GLFWwindow*,double,double)=nullptr;};
+GLFWwindow* g_currentWindow=nullptr;
+static amcl::input::GlfwSourcePlaneAggregate g_sourcePlaneAggregate;
+static GLFWwindow& fixtureWindow=*new GLFWwindow;
+static bool destroyOnCallback=false;
+static std::atomic<bool> blockOnCallback{false},callbackBlocked{false},releaseCallback{false};
+static uint64_t callbacks=0,keys=0;
+static double keyCursor=0;
+static std::vector<int> callbackOrder;
+#define LOG_TAG "GLFW_COMPAT"
+/** 日志只输出生产callback提供的既有阶段；它不产生consumer或成功回执。 */
+void amclExternalLogWrite(int,const char*,const char*,...){ }
+@LOOK_CALLBACK@
+
+void inputBridge_publishAddress(void);
+void inputBridge_setGrabState(int);
+int inputBridge_setInputReady(int);
+void inputBridge_glfwSetActive(void*,int);
+void inputBridge_glfwSetTargetV1(uint64_t,uint64_t,uint64_t);
+extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t);
+void inputBridge_setKeyCallback(void(*)(void*,int,int,int,int));
+void inputBridge_pushEvent(int,int,int,int,int);
+void inputBridgeStartPumping(void);void inputBridgePumpEvents(void*);void inputBridgeStopPumping(void);
+#define FIXTURE_CHECK(v) do{if(!(v)){std::fprintf(stderr,"LOOK IMAGE FIXTURE FAIL %d: %s\n",__LINE__,#v);std::exit(1);}}while(false)
+/** 游戏callback只记录实际调用与已写cursor，用顺序证明look在随后key之前可见。 */
+static void moved(GLFWwindow* window,double x,double){FIXTURE_CHECK(window==&fixtureWindow&&window->cursorX==x);++callbacks;callbackOrder.push_back(1);
+    // 真callback内退休目标并释放真实heap窗口，返回后产品诊断只能读原POD，不能再读window。
+    if(destroyOnCallback){g_sourcePlaneAggregate.BindTarget(43);inputBridge_glfwSetActive(window,0);g_currentWindow=nullptr;delete window;}
+    // 真callback尚未返回时允许另一driver线程drain；销毁后的等待只读原原子门，不读window。
+    if(blockOnCallback.load()){callbackBlocked.store(true);while(!releaseCallback.load())std::this_thread::yield();}}
+extern "C" __declspec(dllexport) void lookFixtureDestroyOnCallback(){destroyOnCallback=true;}
+/** 仅测试协调真实callback阻塞；不存在生产新线程/poller或运行时用户开关。 */
+extern "C" __declspec(dllexport) void lookFixtureBlockCallback(int mode){
+    if(mode==1){callbackBlocked=false;releaseCallback=false;blockOnCallback=true;}
+    else releaseCallback=true;
+}
+extern "C" __declspec(dllexport) int lookFixtureCallbackBlocked(){return callbackBlocked.load()?1:0;}
+/** 保真实bridge callback注册，只去掉游戏cursor callback，验证明确cache-only分支。 */
+extern "C" __declspec(dllexport) void lookFixtureNoGameCallback(){fixtureWindow.cursorPosCb=nullptr;}
+#if AMCL_INPUT_TRACE
+static std::atomic<bool> cachePaused{false},releaseCache{false};
+/** 仅HOST真cache note之后、诊断锁外停住原产品调用栈，供派发前真实deactivate竞争。 */
+static void pauseCache(){cachePaused=true;while(!releaseCache.load())std::this_thread::yield();}
+extern "C" __declspec(dllexport) void lookFixtureCacheGate(int mode){
+    if(mode){cachePaused=false;releaseCache=false;amclInputLatencyTestCacheGateV1(pauseCache);}
+    else {amclInputLatencyTestCacheGateV1(nullptr);releaseCache=true;}}
+extern "C" __declspec(dllexport) int lookFixtureCachePaused(){return cachePaused.load()?1:0;}
+#endif
+static void key(void* window,int,int,int action,int){if(action==1){FIXTURE_CHECK(window==&fixtureWindow);++keys;keyCursor=fixtureWindow.cursorX;callbackOrder.push_back(2);}}
+static uint64_t now(){return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+
+/** owner入口复用真实发布与生命周期，不把host自造table当作生产owner。 */
+extern "C" __declspec(dllexport) void lookFixturePublishOwner(){
+    const auto* core=amclInputGetHostApiV1();FIXTURE_CHECK(amclInputHostDescriptorPublishV1(core)==0);
+    uint64_t epoch=0;FIXTURE_CHECK(core->beginSession(&epoch)==0&&core->publishFocus(1)==0);
+    AmclInputSurfacePayload surface{};surface.active=1;surface.widthPx=1280;surface.heightPx=720;surface.density=1;
+    surface.validFields=AMCL_INPUT_SURFACE_FIELD_ALL;surface.publicationGeneration=1;FIXTURE_CHECK(core->publishSurface(&surface)==0);
+    AmclInputEvent context{};context.header.abiVersion=1;context.header.structSize=sizeof(context);
+    context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+    context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=42;context.payload.surfaceContext.displayId=1;
+    context.payload.surfaceContext.widthPx=1280;context.payload.surfaceContext.heightPx=720;context.payload.surfaceContext.density=1;
+    context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+        AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+    FIXTURE_CHECK(core->submitEvent(&context)==0);
+    FIXTURE_CHECK(amclControlDeliveryBindSessionV1(1)==0);amclControlDeliveryPublishV1();amclLookExecutionPublishV1();
+    inputBridge_publishAddress();FIXTURE_CHECK(inputBridge_configureMenuCursorConsumerV1(1,1)==1);
+    (void)inputBridge_setInputReady(1);inputBridge_setGrabState(1);
+    std::printf("LOOK IMAGE owner=%llu core=%llu\n",(unsigned long long)reinterpret_cast<uintptr_t>(amclLookExecutionGetPortV1()),
+        (unsigned long long)reinterpret_cast<uintptr_t>(core));
+}
+/** 此入口允许在owner发布之前执行，实际setter的保存/补发职责由生产bridge完成。 */
+extern "C" __declspec(dllexport) void lookFixtureRegister(int enabled){
+    fixtureWindow.cursorPosCb=moved;g_currentWindow=&fixtureWindow;
+    inputBridge_setLookPrefixCallbackV1(enabled?bridgeLookPrefixCallback:nullptr);inputBridge_setKeyCallback(key);
+}
+extern "C" __declspec(dllexport) void lookFixtureActivate(int enabled){
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&fixtureWindow),1,42);
+    inputBridge_glfwSetActive(&fixtureWindow,enabled);
+}
+/** 经真实owner stream与ring提交，返回源运输事实；不直接调用产品callback。 */
+extern "C" __declspec(dllexport) int lookFixtureSubmit(double dx){
+    AmclLookResourceV1 resource{};if(!inputBridge_getLookResourceV1(&resource))return 0;
+    const AmclLookExecutionPortV1* look=nullptr;if(amclLookExecutionResolveV1(&look)<0)return 0;
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;stream.kind=AMCL_LOOK_TOUCH_DELTA;
+    stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_SURFACE_PIXELS;stream.resource=resource;
+    uint64_t handle=0;if(look->openStream(&stream,&handle)<0)return 0;
+    // 来源保持活着直到消费者完成；提交后立刻retire会按合同撤销尚未cache的真实贡献。
+    return inputBridge_submitLookV1(handle,dx,0,now(),1);
+}
+/** 压力只复用一个真实stream，避免把生产512 stream预算误当诊断表满的证明。 */
+extern "C" __declspec(dllexport) int lookFixtureRepeat(double dx){
+    static uint64_t handle=0;AmclLookResourceV1 resource{};if(!inputBridge_getLookResourceV1(&resource))return 0;
+    const AmclLookExecutionPortV1* look=nullptr;if(amclLookExecutionResolveV1(&look)<0)return 0;
+    if(!handle){AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;stream.kind=AMCL_LOOK_TOUCH_DELTA;
+        stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_SURFACE_PIXELS;stream.resource=resource;
+        if(look->openStream(&stream,&handle)<0)return 0;}
+    return inputBridge_submitLookV1(handle,dx,0,now(),1);
+}
+/** 仅HOST故障：busy实际由另一个线程hold诊断mutex；clock只影响诊断，生产Mono未替换。 */
+static std::atomic<bool> latencyHeld{false},latencyRelease{false};static std::thread latencyHolder;
+extern "C" __declspec(dllexport) void lookFixtureDiagnosticFault(int mode){
+#if AMCL_INPUT_TRACE
+    if(mode==1)amclInputLatencyTestClockV1(1);
+    if(mode==2){latencyRelease=false;latencyHeld=false;latencyHolder=std::thread([]{amclInputLatencyTestHoldV1(1);latencyHeld=true;
+        while(!latencyRelease.load())std::this_thread::yield();amclInputLatencyTestHoldV1(0);});while(!latencyHeld.load())std::this_thread::yield();}
+    if(mode==0){amclInputLatencyTestClockV1(0);if(latencyHolder.joinable()){latencyRelease=true;latencyHolder.join();}}
+#else
+    (void)mode;
+#endif
+}
+/** look→key batch也通过真实begin/end，检跨image线程局部深度不应另持一把push锁。 */
+extern "C" __declspec(dllexport) int lookFixtureAction(){
+    if(!inputBridge_beginLookActionV1())return 0;
+    inputBridge_pushEvent(1005,65,0,1,0);inputBridge_endLookActionV1();return 1;
+}
+/** 同组Source批与旧processed入口也必须由delegate借同一owner，不能各开私有TLS/lease。 */
+extern "C" __declspec(dllexport) int lookFixtureSourceAction(){
+    if(!inputBridge_beginSourceActionV1(1))return 0;
+    inputBridge_pushEvent(1005,66,0,1,0);inputBridge_endLookActionV1();return 1;
+}
+extern "C" __declspec(dllexport) int lookFixtureProcessed(double dx){return inputBridge_submitProcessedLookV1(1,dx,0);}
+/** 只取本映像真实Core的hook事实，证明旧GLFW本地readiness判断确实会和发布owner分叉。 */
+extern "C" __declspec(dllexport) int lookFixtureReady(){return amclInputOwnerLookCommitReadyV1();}
+#if AMCL_INPUT_TRACE
+static uint32_t lastLatencyCount=0;static AmclInputLatencyV1 lastLatency{};
+/** 核查刚一次实际drain的原POD，不重新读window/consumer，也不生成诊断成功回执。 */
+extern "C" __declspec(dllexport) void lookFixtureLatencyLast(uint64_t* values){
+    values[0]=lastLatencyCount;values[1]=lastLatency.outcome;values[2]=lastLatency.mask;
+    values[3]=lastLatency.target;values[4]=lastLatency.ticket;values[5]=lastLatency.consumer;
+    values[6]=lastLatency.activation;values[7]=lastLatency.prefix;}
+/** 经实际owner尾导出有限原记录。字符串格式化仅在这个非输入热路径测试导出入口执行。 */
+extern "C" __declspec(dllexport) int lookFixtureLatency(){
+    AmclInputLatencyV1 rows[7]{};AmclInputLatencyStatsV1 stats{};
+    const uint32_t count=inputBridge_drainInputLatencyV1(rows,7,&stats);int complete=0;
+    lastLatencyCount=count;lastLatency=count?rows[0]:AmclInputLatencyV1{};
+    for(uint32_t i=0;i<count;++i){char text[512]{};
+        FIXTURE_CHECK(inputBridge_formatInputLatencyV1(&rows[i],text,sizeof(text))>0);std::puts(text);
+        if(rows[i].outcome==AMCL_ILAT_CALLBACK||rows[i].outcome==AMCL_ILAT_CALLBACK_RETIRED)FIXTURE_CHECK(rows[i].mask==63);
+        if(rows[i].mask==63){FIXTURE_CHECK(rows[i].prefixOrder!=rows[i].ringOrder&&rows[i].ringSequence>0);
+            FIXTURE_CHECK(rows[i].consumer>0&&rows[i].activation>0&&rows[i].target>0&&rows[i].ticket>0);
+            for(unsigned stage=1;stage<6;++stage)FIXTURE_CHECK(rows[i].ns[stage]>=rows[i].ns[stage-1]);++complete;}}
+    std::printf("ILAT HOST drain=%u complete=%d sampled=%llu full=%llu busy=%llu sizeof=%u capacity=%u\n",
+        count,complete,(unsigned long long)stats.sampled,(unsigned long long)stats.full,(unsigned long long)stats.busy,stats.recordBytes,stats.capacity);
+    return complete;
+}
+#endif
+extern "C" __declspec(dllexport) void lookFixturePump(){inputBridgeStartPumping();inputBridgePumpEvents(&fixtureWindow);inputBridgeStopPumping();}
+/** 从真实生产aggregate取得原consumer，look snapshot再向已解析owner核同一个handle。 */
+extern "C" __declspec(dllexport) int lookFixtureObserve(uint64_t* values,double* positions){
+    AmclControlSnapshotV1 control{};if(!g_sourcePlaneAggregate.Snapshot(control))return 0;
+    const AmclLookExecutionPortV1* look=nullptr;if(amclLookExecutionResolveV1(&look)<0)return 0;
+    AmclLookSnapshotV1 snapshot{};snapshot.size=sizeof(snapshot);const int result=look->snapshot(control.consumer,&snapshot);
+    values[0]=callbacks;values[1]=keys;values[2]=control.consumer;values[3]=snapshot.cacheReady;
+    values[4]=snapshot.callbackReturned;values[5]=reinterpret_cast<uintptr_t>(look);values[6]=reinterpret_cast<uintptr_t>(amclLookExecutionGetPortV1());
+    positions[0]=fixtureWindow.cursorX;positions[1]=keyCursor;positions[2]=snapshot.x;
+    return result>=0&&snapshot.consumer==control.consumer&&snapshot.target==control.target;
+}

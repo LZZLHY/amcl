@@ -391,6 +391,29 @@ export interface CFFileRaw {
   dependencies: CFFileDependencyRaw[];
   hashes: CFFileHashRaw[];
   isAvailable: boolean;
+  /** 来源明确标记的服务端分发，不得作为客户端整合包默认候选。 */
+  isServerPack?: boolean;
+  /** 归档内的顶级模块名；用于 CF 整合包资源落点识别。 */
+  modules?: CFFileModuleRaw[];
+}
+
+/** CF 文件模块只携带名字；不需要把 fingerprint 当成资源类型。 */
+export interface CFFileModuleRaw { name: string; }
+
+/**
+ * CF 清单不提供实例相对路径。优先识别已知文件模块，未知时交给项目 classId 查询，
+ * 不把未知 ZIP 猜成地图。返回值只允许固定目录，来源文件名另走 canonical 检查。
+ */
+export function classifyCurseForgeFileDirectory(file: CFFileRaw): string {
+  if (file.fileName.toLowerCase().endsWith('.jar')) return 'mods';
+  let names: string[] = [];
+  for (let module of (file.modules ?? [])) names.push(module.name.toLowerCase());
+  if (names.indexOf('fabric.mod.json') >= 0 || names.indexOf('mcmod.info') >= 0
+    || names.indexOf('meta-inf') >= 0) return 'mods';
+  if (names.indexOf('pack.mcmeta') >= 0) return 'resourcepacks';
+  if (names.indexOf('shaders') >= 0) return 'shaderpacks';
+  if (names.indexOf('level.dat') >= 0) return 'saves';
+  return '';
 }
 
 export interface CFFileIndexRaw {
@@ -595,6 +618,7 @@ export function mapCurseForgeFileAsVersion(file: CFFileRaw): RemoteVersion {
     dependencies: deps,
     datePublished: file.fileDate,
     downloads: file.downloadCount,
+    isServerPack: file.isServerPack === true,
   };
 }
 

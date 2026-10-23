@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { loader, productionPathPolicy, root, ts } from './mod-install-test-runtime.mjs';
+import { loader, productionPathPolicy, root, ts, cryptoFramework } from './mod-install-test-runtime.mjs';
 
 const files = new Map();
 const directories = new Set(['/virtual', '/virtual/game', '/virtual/game/mods']);
@@ -241,7 +241,9 @@ async function runSheet(name, expectedPhase, expectedProceed, options = {}) {
   statuses = options.statuses ?? {};
   afterInstallState = options.abortAfterRecovery ? () => { sheet.aborted = true; } : undefined;
   Object.assign(sheet, input, { currentJdk: input.jdkVersion, aborted: false, jdkWarnAccepted: options.acceptJdkWarning ?? false,
-    checks: [], sleep: async () => {}, jdkRange: {}, checkJdkInstalled: () => true, onProceed: () => { proceeded++; } });
+    // 宿主组件替身只提供窗口 Context 获取能力；真实部署/选择由专属运行库集成用例验证。
+    checks: [], sleep: async () => {}, getUIContext: () => ({ getHostContext: () => undefined }),
+    jdkRange: {}, checkJdkInstalled: () => true, onProceed: () => { proceeded++; } });
   await sheet.runAll();
   assert.equal(sheet.phase, expectedPhase);
   assert.equal(proceeded, expectedProceed);
@@ -291,5 +293,47 @@ reset();
 await runSheet('Sheet 未接受 JDK 警告时继续等待用户', 'jdkWarn', 0, { statuses: { jdk: 'warn' } });
 await runSheet('Sheet 已接受 JDK 警告及未知世代警告仍能继续', 'passed', 1, { statuses: { jdk: 'warn', contract: 'warn' }, acceptJdkWarning: true });
 await runSheet('Sheet 恢复结束时已关闭不能派发游戏', 'running', 0, { abortAfterRecovery: true });
+
+/**
+ * 真实RuntimeDeployer新增顶层Crypto Kit依赖必须通过共享loader平台边界装载。
+ * 这里不替换部署器或摘要算法：实际执行其分块SHA方法及原同步完整性工具，
+ * 用Node独立参考值核对有效视图、尾块、跨VM数据和平台失败传播。
+ */
+const runtimeLoad = loader({ feature_core: {} });
+const RuntimeDeployer = runtimeLoad('launch/src/main/ets/RuntimeDeployer.ets').RuntimeDeployer;
+const { lwjglBytesSha256 } = runtimeLoad('launch/src/main/ets/LwjglSlotIntegrity.ets');
+const runtimeDeployer = new RuntimeDeployer({ filesDir: '/unused-runtime-fixture' });
+const runtimeBytes = new Uint8Array(2 * 256 * 1024 + 17);
+for (let index = 0; index < runtimeBytes.length; index++) runtimeBytes[index] = (index * 17 + 23) % 251;
+const padded = new Uint8Array(runtimeBytes.length + 43); padded.fill(0xEE); padded.set(runtimeBytes, 19);
+const effective = padded.subarray(19, 19 + runtimeBytes.length);
+const expectedSha = crypto.createHash('sha256').update(runtimeBytes).digest('hex');
+assert.equal(await runtimeDeployer.startupBytesSha256_(effective), expectedSha,
+  '真实异步部署摘要必须跨块消费有效view和17字节尾块');
+assert.equal(lwjglBytesSha256(effective), expectedSha, '同步槽完整性仍使用同一真实Crypto边界');
+assert.notEqual(expectedSha, crypto.createHash('sha256').update(padded).digest('hex'), '额外backing bytes是有效撤回负控');
+results.push({ name: '真实RuntimeDeployer与同步槽摘要保留跨块/非零偏移视图', status: 'pass' });
+
+const foreign = vm.runInNewContext('new Uint8Array([1, 2, 3, 4])');
+assert.equal(await runtimeDeployer.startupBytesSha256_(foreign),
+  crypto.createHash('sha256').update(Buffer.from([1, 2, 3, 4])).digest('hex'), '跨VM Uint8Array仍是合法DataBlob');
+results.push({ name: '真实部署摘要接受跨VM有效DataBlob', status: 'pass' });
+
+assert.throws(() => cryptoFramework.createMd('SHA256').updateSync({ data: new Uint8Array(0) }), error => error.code === 17630001);
+await assert.rejects(cryptoFramework.createMd('SHA256').update({ data: new Uint8Array(0) }), error => error.code === 17630001);
+assert.throws(() => cryptoFramework.createMd('SHA256').updateSync({ data: [1, 2, 3] }), error => error.code === 401);
+assert.throws(() => cryptoFramework.createMd('NOT-A-DIGEST'), '不支持算法不能回退为固定成功摘要');
+// 空消息允许直接digest；真实分块生产代码不为它调用HCF拒绝的空update。
+assert.equal(await runtimeDeployer.startupBytesSha256_(new Uint8Array(0)), crypto.createHash('sha256').digest('hex'));
+results.push({ name: '空/非法DataBlob及未知算法拒绝，空消息走真实digest路径', status: 'pass' });
+
+const digestError = new Error('controlled Crypto Kit update rejection');
+const rejectedLoad = loader({ feature_core: {}, '@kit.CryptoArchitectureKit': { cryptoFramework: {
+  createMd() { return { async update() { throw digestError; }, async digest() { assert.fail('摘要失败后不得继续digest'); } }; },
+} } });
+const RejectedDeployer = rejectedLoad('launch/src/main/ets/RuntimeDeployer.ets').RuntimeDeployer;
+await assert.rejects(new RejectedDeployer({}).startupBytesSha256_(effective), error => error === digestError,
+  '真实RuntimeDeployer必须传播平台摘要错误，不能吞掉或伪造内容身份');
+results.push({ name: '真实RuntimeDeployer向外传播异步Crypto Kit拒绝', status: 'pass' });
 
 console.log(JSON.stringify({ test: 'prelaunch-mod-install-state', total: results.length, semanticCalls, results }, null, 2));

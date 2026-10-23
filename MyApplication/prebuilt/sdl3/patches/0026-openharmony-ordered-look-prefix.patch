@@ -1,0 +1,1778 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -40,45 +40,32 @@
+ // points are unreachable and SDL sees no input at all.
+ //
+ // This is the same ownership inversion that the host-provided native window
+ // change addresses on the video side: the host owns the surface *and* the
+ // input pipeline, and SDL has to adopt both rather than create them.
+ //
+-// How it works
+-// ------------
+-// The host keeps its input in a lock-free ring with one read cursor per
+-// consumer, and exports a pull-style accessor. We resolve that accessor (and
+-// a few state queries) lazily with dlsym(RTLD_DEFAULT) and drain the ring
+-// from OPENHARMONY_PumpEvents(). Two consequences worth spelling out:
+-//
+-//   * No new public SDL API, and no host-side change. Everything here is
+-//     opportunistic: if the symbols are absent (plain SDL app, or a host that
+-//     does not provide a ring) every entry point degrades to a no-op.
+-//   * Draining happens on whichever thread calls SDL_PollEvent(), which is
+-//     the application's main loop thread. That sidesteps the cross-thread
+-//     problems you get when input is injected straight from a UI-thread
+-//     callback -- SDL's event code asserts it runs on the main thread.
+-//
+-// Coordinate model
+-// ----------------
+-// The host cursor snapshot is the legacy fallback and the menu-absolute owner.
+-// Once the typed backend channel is ready, grabbed relative motion arrives as a
+-// dedicated AMCL_BACKEND_EVENT_RELATIVE record and must not also be derived
+-// from the accumulated host cursor. Normal/menu mode continues to consume the
+-// absolute snapshot. Every owner transition invalidates the legacy baseline so
+-// the first fallback sample can never bridge two coordinate spaces.
++/* AMCL 宿主在唯一 neutral runtime 发布原始事件与私有版本表。此 SDK 的实际
++ * Init/pump 校验本映像协议和唯一 Core/control/look owner，消费者仍沿原 ring/typed
++ * 交互序号有界领取；“符号可见”不等于窗口、线程或资源已经取得交付资格。
++ * 领取和 SDK mouse/keyboard 写点运行在实际 SDL 消费线程，任何同步 hook 重入后
++ * 都复核原 target/ticket。普通 standalone SDL 的平台回调和标准 API 保持原合同。 */
++
++/* 坐标与可见顺序：菜单继续使用绝对快照/有序位置记录；grabbed 虚拟视角通过
++ * 原序号的不可变 prefix 更新 SDK，相对实体记录保留自己的 device MouseID。
++ * SDL 不再从最新全局累计差分 world look，来源加工与 token 数据只由 neutral 保存。 */
+ 
+ #include "SDL_openharmonyamcl.h"
+ #include "SDL_openharmonywindow.h"
+ #include "SDL_openharmonyvideo.h"
+ #include "SDL_openharmonyopengl.h"
+ #include "../SDL_sysvideo.h"
+ #include "../../events/SDL_events_c.h"
+ #include "../../events/SDL_keyboard_c.h"
+ #include "../../events/SDL_mouse_c.h"
+ #include "control_delivery_client.h"
++#include "input/delivery/look_execution_client.h"
+ #include "../../SDL_amclinputcontrol_c.h"
+ #include "../../events/SDL_windowevents_c.h"
+ 
+ #include <dlfcn.h>
+ #include <math.h>
+ #include <string.h>
+@@ -693,17 +680,17 @@
+ static bool host_capture_requested;
+ static bool host_capture_active;
+ /* Grabbed-motion flow evidence.  Monotonic within the process -- only a pid
+  * change resets them (OPENHARMONY_ResetHostBridgeForPid); deliberately NOT
+  * cleared by Init/QuitMouse, because the question they answer ("did grabbed
+  * motion ever reach SDL in this process?") spans window generations. */
+-static Uint64 host_grabbed_motion_delivered;
+-static Uint64 host_grabbed_motion_suppressed;
+ /* SDL只借neutral端口与不复用consumer身份；所有贡献/退休决策由共享生产实现持有。
+  * 写端在首次真实pump绑定SDL消费线程；poll只观察SDK已返回的缓存，不领取事件。 */
+ static const AmclControlDeliveryPortV1 *host_control_port;
++/* 只借同一 neutral owner 的私有 look 表；SDL 不持有来源积分或 prefix 数值。 */
++static const AmclLookExecutionPortV1 *host_look_port;
+ static Uint64 host_control_consumer;
+ static SDL_WindowID host_control_target;
+ static SDL_ThreadID host_control_thread;
+ static bool host_control_thread_valid;
+ static unsigned host_control_dispatch_depth;
+ 
+@@ -792,14 +779,12 @@
+         host_last_x = 0.0;
+         host_last_y = 0.0;
+         host_last_grabbing = false;
+         host_baseline_valid = false;
+         host_capture_requested = false;
+         host_capture_active = false;
+-        host_grabbed_motion_delivered = 0u;
+-        host_grabbed_motion_suppressed = 0u;
+         /* fork不能关闭父进程借出的句柄；新进程重新经过owner描述符核验。 */
+         host_control_port = NULL;
+         host_control_consumer = 0;
+         host_control_target = 0;
+         host_control_thread_valid = false;
+         host_control_dispatch_depth = 0;
+@@ -1407,110 +1392,49 @@
+     }
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Cursor / look forwarding
+ // ---------------------------------------------------------------------------
+-/* A typed RELATIVE record may be injected only while a real pointer capture is
+- * granted.  This is the delivery gate for the RELATIVE case in
+- * OPENHARMONY_PumpTypedEvents, and one half of the ownership test below. */
++/* 实体 typed relative 仍须真实 capture 授予；这不是触控/手柄虚拟 look 的资格代理，
++ * 后者由不可变 prefix 的实际 Core/resource/逻辑模式验证。 */
+ static bool OPENHARMONY_TypedRelativeCaptureGranted(void)
+ {
+     return host_capture_requested && host_capture_active;
+ }
+ 
+-/* 累计快照只含触控/映射手柄。实体typed相对量已由同一公共processor加工，
+- * 两条来源可同时投递；不能因某次鼠标样本到达而屏蔽整个grab中的其他输入端。 */
+-static void OPENHARMONY_LogGrabbedMotion(const char *site, Uint64 count)
+-{
+-    if (count == 0u || (count & (count - 1u)) != 0u) {
+-        return;  // first + powers of two only; steady state stays silent.
+-    }
+-    /* One line carries both numbers so a single grep is a complete snapshot:
+-     * delivered climbing = the fallback owns look and it works; suppressed
+-     * climbing while delivered stays 0 = the ownership predicate is wrong
+-     * again, and grabbed motion is being dropped between the two owners. */
+-    SDL_Log("openharmony: grabbed-motion site=%s delivered=%" SDL_PRIu64
+-            " suppressed=%" SDL_PRIu64,
+-            site, host_grabbed_motion_delivered, host_grabbed_motion_suppressed);
+-}
+-
+-static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge,
+-                                       bool typed_relative_owner)
+-{
+-    // Defence in depth: both resolve paths refuse to publish a partial
+-    // bridge, so these cannot be NULL today. But this function calls straight
+-    // through them, and a future partial-bridge variant must degrade to "no
+-    // cursor" rather than to a jump through NULL.
+-    if (!bridge || !bridge->GetCursorSnapshot || !bridge->IsGrabbing) {
+-        return;
+-    }
++/* 菜单绝对快照仍由宿主拥有；grabbed 的视角只来自原序号处不可变 1020 prefix。
++ * 模式翻转只清菜单 baseline，不把未来累计视角混入动作前缀，也不重复发一次运动。 */
++static void OPENHARMONY_PumpHostCursor(OPENHARMONY_HostBridge *bridge, bool typed_relative_owner)
++{
++    if (!bridge || !bridge->GetCursorSnapshot || !bridge->IsGrabbing) return;
+     SDL_Window *input_window = OPENHARMONY_AMCL_GetInputWindow();
+-    if (!input_window) {
+-        return;  // no window yet; nothing to attribute motion to.
+-    }
++    if (!input_window) return;
+     const SDL_WindowID input_window_id = input_window->id;
+-
+     const bool grabbing = bridge->IsGrabbing();
+-    /* Grab flip is the ownership epoch boundary, and it has to be observed even
+-     * on a pump that ends up suppressed: otherwise a session that once carried
+-     * mouse motion would keep the accumulated cursor disowned forever, and the
+-     * next finger-only grab would lose look again. */
+     if (grabbing != host_last_grabbing) {
+         host_last_grabbing = grabbing;
+         host_baseline_valid = false;
+-
+-    }
+-    (void)typed_relative_owner; // 来源已由AMCLSDLV:3快照区分。
+-
+-
+-    // Read both axes in one call so they cannot come from different samples.
+-    // Grab state still needs a second call, so a grab flip can in principle be
+-    // observed one pump out of step with the coordinates it applies to; the
+-    // baseline reset below absorbs that -- worst case one pump reports no
+-    // motion, instead of reporting a bogus delta across two coordinate spaces.
+-    double x = 0.0;
+-    double y = 0.0;
++    }
++    (void)typed_relative_owner;
++    if (grabbing) return;
++    /* 成对读取菜单位置，翻转后第一份只建基线。SDK 绝对坐标、focus 与约束仍走原入口。 */
++    double x = 0.0, y = 0.0;
+     bridge->GetCursorSnapshot(&x, &y);
+-
+-    // Grab flips swap the meaning of the value (accumulated look vs absolute
+-    // menu position). Re-baseline instead of diffing across the boundary --
+-    // the flip itself is detected above, which is the one place that owns
+-    // host_last_grabbing, and it clears host_baseline_valid to land here.
+     if (!host_baseline_valid) {
+         host_baseline_valid = true;
+         host_last_x = x;
+         host_last_y = y;
+         return;
+     }
+-
+-    if (grabbing) {
+-        const double dx = x - host_last_x;
+-        const double dy = y - host_last_y;
+-        if ((dx != 0.0) || (dy != 0.0)) {
+-            host_last_x = x;
+-            host_last_y = y;
+-            input_window = OPENHARMONY_AMCL_GetLiveInputWindow(input_window_id);
+-            if (!input_window) {
+-                return;
+-            }
+-            ++host_grabbed_motion_delivered;
+-            OPENHARMONY_LogGrabbedMotion("accumulated",
+-                                         host_grabbed_motion_delivered);
+-            SDL_SendMouseMotion(0, input_window, SDL_DEFAULT_MOUSE_ID, true, (float)dx, (float)dy);
+-        }
+-    } else {
+-        if ((x != host_last_x) || (y != host_last_y)) {
+-            host_last_x = x;
+-            host_last_y = y;
+-            input_window = OPENHARMONY_AMCL_GetLiveInputWindow(input_window_id);
+-            if (!input_window) {
+-                return;
+-            }
+-            SDL_SendMouseMotion(0, input_window, SDL_DEFAULT_MOUSE_ID, false, (float)x, (float)y);
+-        }
++    if ((x != host_last_x) || (y != host_last_y)) {
++        host_last_x = x;
++        host_last_y = y;
++        input_window = OPENHARMONY_AMCL_GetLiveInputWindow(input_window_id);
++        if (!input_window) return;
++        SDL_SendMouseMotion(0, input_window, SDL_DEFAULT_MOUSE_ID, false, (float)x, (float)y);
+     }
+ }
+ 
+ // Send a release for every mouse button SDL currently believes is down.
+ //
+ // Note for anyone looking for SDL_ResetMouse(): it exists in SDL_mouse.c but is
+@@ -1648,12 +1572,16 @@
+ }
+ 
+ static void OPENHARMONY_RetireControls(Uint8 mask, Uint64 device, bool only_device, bool teardown);
+ /* SDL video寿命结束后不能复用旧consumer/线程；只关闭本consumer，不卸载借出的neutral owner。 */
+ static void OPENHARMONY_CloseControl(void)
+ {
++    if (host_look_port && host_control_consumer) {
++        (void)host_look_port->setBackendActive(AMCL_BACKEND_ID_SDL3, 0);
++        host_look_port->closeConsumer(host_control_consumer);
++    }
+     if (host_control_port && host_control_consumer) host_control_port->close(host_control_consumer);
+     host_control_consumer = 0;
+     host_control_target = 0;
+     host_control_thread_valid = false;
+ }
+ /* 在实际SDL窗口/消费线程内取得共享端口；坏描述符与未准备都不消费输入环。
+@@ -1676,13 +1604,22 @@
+         /* 旧窗口释放可能因watcher换窗而无可发目标。先清其真实ABI缓存，再绑定新目标；
+          * 新target不能借旧keystate/buttonstate把首Down变成repeat或吞掉按钮。 */
+         OPENHARMONY_RetireControls(3, 0, false, true);
+         if (host_control_port->bindTarget(host_control_consumer, target) < 0) return false;
+     }
+     host_control_target = target;
+-    return true;
++    /* 激活/换 target/模式重锚借真正 SDL 缓存作为基线；同一 activation 下 owner 幂等，
++     * 不用最新宿主累计重算历史。内部读取不是公开 getter，不记游戏实际轮询。 */
++    if (!host_look_port && amclLookExecutionResolveV1(&host_look_port) < 0) return false;
++    SDL_Mouse *mouse = SDL_GetMouse();
++    const double basis_x = mouse->x, basis_y = mouse->y;
++    /* 先核实际 control 身份，再公告 look 出口活跃，最后以同一实际基线重锚新的 look epoch。
++     * active 翻转使旧票退休；三步间新到 token 保守丢弃，绝不把它宣称为已缓存。 */
++    if (host_look_port->bindConsumer(host_control_consumer, basis_x, basis_y) < 0 ||
++        host_look_port->setBackendActive(AMCL_BACKEND_ID_SDL3, 1) < 0) return false;
++    return host_look_port->bindConsumer(host_control_consumer, basis_x, basis_y) == 0;
+ }
+ 
+ /* 栈上下文冻结原ticket/target与teardown权限。同步SDK hook只复核，不重claim/重绑定。 */
+ typedef struct OPENHARMONY_ControlContext {
+     const AmclControlDeliveryPortV1 *port;
+     AmclControlEmissionV1 emission;
+@@ -1796,12 +1733,83 @@
+     if (!host_control_port || !host_control_consumer) return;
+     Uint8 actual[SDL_BUTTON_X2 + 1] = { 0 };
+     for (int i = SDL_BUTTON_LEFT; i <= SDL_BUTTON_X2; ++i) actual[i] = (state & SDL_BUTTON_MASK(i)) ? 1 : 0;
+     (void)host_control_port->observePollView(host_control_consumer, AMCL_CONTROL_BUTTON, actual, SDL_BUTTON_X2 + 1);
+ }
+ 
++/* prefix 执行上下文只冻结一次原票。任何同步 SDL hook 换 target、退休 Core/resource
++ * 或停源，后续 SDK 写/ADD 都须继续验证原票，不能重新绑定当前窗口放行旧运动。 */
++typedef struct OPENHARMONY_LookContext {
++    const AmclLookExecutionPortV1 *port;
++    AmclLookEmissionV1 emission;
++} OPENHARMONY_LookContext;
++static bool OPENHARMONY_LookCurrent(void *value)
++{
++    OPENHARMONY_LookContext *context = (OPENHARMONY_LookContext *)value;
++    if (!context || !host_control_thread_valid || host_control_thread != SDL_GetCurrentThreadID() ||
++        context->emission.consumer != host_control_consumer || context->emission.target != host_control_target ||
++        context->port->validate(&context->emission) != AMCL_LOOK_PREFIX_READY) return false;
++    SDL_Window *input = OPENHARMONY_AMCL_GetInputWindow();
++    return input && input->id == context->emission.target &&
++        OPENHARMONY_AMCL_GetLiveInputWindow((SDL_WindowID)context->emission.target);
++}
++static void OPENHARMONY_LookCacheApplied(void *value)
++{
++    OPENHARMONY_LookContext *context = (OPENHARMONY_LookContext *)value;
++    (void)context->port->complete(&context->emission, AMCL_CONTROL_STATE_ONLY);
++}
++/* 运输只携 opaque token。SDL 只转换可表示的 float 增量与真实 SDK 边缘，不能把加工的
++ * virtual counts 写成 public raw。队列过滤/disabled 不撤已应用运动，也不假称 ADD。 */
++static void OPENHARMONY_DeliverLookForMouse(Uint64 token, SDL_MouseID mouse_id, Uint64 timestamp)
++{
++    if (!token || !host_look_port || !host_control_consumer) return;
++    /* 停源可能发生在 prepare 与真实 cache 之间；最多一次重取同 token 的仍活动兄弟贡献。
++     * 已写 cache 的运动绝不重试/回滚；target/resource 退休则 prepare/current 仍然拒绝。 */
++    for (int attempt = 0; attempt < 2; ++attempt) {
++        AmclLookEmissionV1 emission;
++        if (host_look_port->prepare(host_control_consumer, token, &emission) != AMCL_LOOK_PREFIX_READY) break;
++        OPENHARMONY_LookContext context = { host_look_port, emission };
++        if (context.port->claim(&emission) != AMCL_LOOK_PREFIX_READY) {
++            (void)context.port->complete(&emission, AMCL_CONTROL_DISCARDED);
++            continue;
++        }
++        const float dx = (float)emission.dx, dy = (float)emission.dy;
++        if (!isfinite(dx) || !isfinite(dy)) {
++            (void)context.port->complete(&emission, AMCL_CONTROL_DISCARDED);
++            break;
++        }
++        if (!OPENHARMONY_LookCurrent(&context)) {
++            (void)context.port->complete(&emission, AMCL_CONTROL_DISCARDED);
++            continue;
++        }
++        SDL_AMCL_InputReceipt receipt = { &context, OPENHARMONY_LookCurrent,
++            OPENHARMONY_LookCacheApplied, (SDL_WindowID)emission.target, false, false, false };
++        ++host_control_dispatch_depth;
++        SDL_Window *window = OPENHARMONY_AMCL_GetLiveInputWindow(receipt.target);
++        if (window) SDL_SendMouseMotionWithReceipt(timestamp, window, mouse_id, true, dx, dy, &receipt);
++        --host_control_dispatch_depth;
++        (void)context.port->complete(&emission, receipt.posted ? AMCL_CONTROL_PULL_COMMITTED :
++            (receipt.cached ? AMCL_CONTROL_STATE_FINAL : AMCL_CONTROL_DISCARDED));
++        if (receipt.cached) return;
++    }
++    (void)host_look_port->abandonPrefix(host_control_consumer, token);
++}
++/* 五整数虚拟 prefix 使用原默认逻辑指针；实体 typed 边缘必须另传其真实 device MouseID，
++ * 不能因为两条运动共用 neutral 数学/执行协议就把硬件来源身份也折成默认指针。 */
++static void OPENHARMONY_DeliverLook(Uint64 token)
++{
++    OPENHARMONY_DeliverLookForMouse(token, SDL_DEFAULT_MOUSE_ID, 0);
++}
++/* 仅真实公开坐标 getter 已读 SDK 数据之后调用。这里只记合法读取事实，不要求 neutral
++ * processed-count cursor 等于 SDK 经变换/约束的坐标，更不声明游戏 camera/attack 已采纳。 */
++void SDL_AMCL_ObserveLookPoll(double x, double y)
++{
++    if (host_look_port && host_control_consumer)
++        (void)host_look_port->observePoll(host_control_consumer, x, y);
++}
++
+ // ---------------------------------------------------------------------------
+ // Discrete events
+ // ---------------------------------------------------------------------------
+ static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
+ {
+     if (!bridge || !bridge->NextEvent) {
+@@ -1824,12 +1832,23 @@
+         bridge->pump_did_read = true;
+         input_window = OPENHARMONY_AMCL_GetLiveInputWindow(input_window_id);
+         if (!input_window) {
+             return;
+         }
+         switch (type) {
++        case 1020: {
++            /* 五整数前缀冻结：i1/i2 是 token 的低/高 32 位，保留位损坏就拒绝。 */
++            const Uint64 token = (Uint64)(Uint32)i1 | ((Uint64)(Uint32)i2 << 32);
++            if (i3 == 0 && i4 == 0) {
++                OPENHARMONY_DeliverLook(token);
++            } else if (host_look_port && host_control_consumer) {
++                /* 损坏运输不触碰缓存，但要终结仅此接收者的保留，避免 prefix 池滞留。 */
++                (void)host_look_port->abandonPrefix(host_control_consumer, token);
++            }
++            break;
++        }
+         case AMCL_EVENT_CURSOR_POSITION: {
+             // 记录内保留当时坐标，不读取生产者已推进到的未来位置。按位解码无精度损失。
+             const int words[4] = {i1, i2, i3, i4};
+             double x = 0.0, y = 0.0;
+             SDL_memcpy(&x, words, sizeof(x));
+             SDL_memcpy(&y, words + 2, sizeof(y));
+@@ -2183,23 +2202,26 @@
+             break;
+ 
+         case AMCL_BACKEND_EVENT_CAPTURE:
+             OPENHARMONY_ApplyTypedCapture(&event);
+             break;
+ 
+-        case AMCL_BACKEND_EVENT_RELATIVE:
+-            if (OPENHARMONY_TypedRelativeCaptureGranted() &&
+-                SDL_GetRelativeMouseMode() &&
+-                (event.wheelX != 0.0f || event.wheelY != 0.0f)) {
+-                /* 这里只投递已经完成公共source配置加工的实体增量。
+-                 * 非物理累计流始终独立消费，不再改变其baseline或所有权。 */
+-                SDL_SendMouseMotion(event.monotonicTimeNs, input_window,
+-                                    OPENHARMONY_MouseIDFromHost(event.deviceId), true,
+-                                    event.wheelX, event.wheelY);
+-            }
+-            break;
++        case AMCL_BACKEND_EVENT_RELATIVE: {
++            /* 原 Core sequence 指向接受点已加工的一份独立 physical memo；不在此处
++             * 重算 policy，也不把 raw 字段当成 token 或虚拟增量。设备 MouseID 沿原记录。 */
++            Uint64 token = 0;
++            if (host_look_port && host_look_port->physicalPrefixByOrder(event.sequence, &token) == AMCL_LOOK_PREFIX_READY) {
++                if (OPENHARMONY_TypedRelativeCaptureGranted() && SDL_GetRelativeMouseMode()) {
++                    OPENHARMONY_DeliverLookForMouse(token, OPENHARMONY_MouseIDFromHost(event.deviceId), event.monotonicTimeNs);
++                } else {
++                    /* 此实际 SDL 资格拒绝也要终结本接收者保留；兄弟 ABI 不受影响。 */
++                    (void)host_look_port->abandonPrefix(host_control_consumer, token);
++                }
++            }
++            break;
++        }
+ 
+         case AMCL_BACKEND_EVENT_DEVICE: {
+             const SDL_MouseID mouse_id =
+                 OPENHARMONY_MouseIDFromHost(event.deviceId);
+             if (event.code == AMCL_DEVICE_ADDED) {
+                 const char *name =
+@@ -2404,12 +2426,17 @@
+         bridge->NotifyFramePresented();
+     }
+ }
+ 
+ void OPENHARMONY_AMCL_SetPresentedActive(bool active)
+ {
++    /* 隐藏/真实失活先退休原 look 出口，随后控制释放的同步 hook 不能继续投旧运动。
++     * 只用已经实际绑定的 port/consumer，standalone 不因此解析或初始化宿主。
++     * 恢复只在实际 ControlReady 三步绑定成功后公告，不靠窗口或 capture 假 Ready。 */
++    if (!active && host_look_port && host_control_consumer)
++        (void)host_look_port->setBackendActive(AMCL_BACKEND_ID_SDL3, 0);
+     if (!active && host_deactivation_draining) {
+         return;
+     }
+     SDL_Window *presented = OPENHARMONY_Window;
+     const bool host_injected = !presented || !presented->internal ||
+         !presented->internal->native_xcomponent;
+diff --git a/src/events/SDL_mouse.c b/src/events/SDL_mouse.c
+--- a/src/events/SDL_mouse.c
++++ b/src/events/SDL_mouse.c
+@@ -41,13 +41,13 @@
+ static SDL_HashTable *SDL_mouse_names;
+ static bool SDL_mouse_initialized;
+ 
+ // for mapping mouse events to touch
+ static bool track_mouse_down = false;
+ 
+-static void SDL_PrivateSendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y);
++static void SDL_PrivateSendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y, SDL_AMCL_InputReceipt *receipt);
+ 
+ static void SDLCALL SDL_MouseDoubleClickTimeChanged(void *userdata, const char *name, const char *oldValue, const char *hint)
+ {
+     SDL_Mouse *mouse = (SDL_Mouse *)userdata;
+ 
+     if (hint && *hint) {
+@@ -656,13 +656,13 @@
+     if (!inWindow) {
+         if (window == mouse->focus) {
+ #ifdef DEBUG_MOUSE
+             SDL_Log("Mouse left window, synthesizing move & focus lost event");
+ #endif
+             if (send_mouse_motion) {
+-                SDL_PrivateSendMouseMotion(0, window, SDL_GLOBAL_MOUSE_ID, false, x, y);
++                SDL_PrivateSendMouseMotion(0, window, SDL_GLOBAL_MOUSE_ID, false, x, y, NULL);
+             }
+             SDL_SetMouseFocus(NULL);
+         }
+         return false;
+     }
+ 
+@@ -674,28 +674,42 @@
+         SDL_SetMouseFocus(window);
+         window = window_id ? SDL_GetWindowFromID(window_id) : NULL;
+         if (!window || SDL_GetMouseFocus() != window) {
+             return false;
+         }
+         if (send_mouse_motion) {
+-            SDL_PrivateSendMouseMotion(0, window, SDL_GLOBAL_MOUSE_ID, false, x, y);
++            SDL_PrivateSendMouseMotion(0, window, SDL_GLOBAL_MOUSE_ID, false, x, y, NULL);
+         }
+     }
+     return true;
+ }
+ 
+-void SDL_SendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y)
+-{
++/* 内部回执沿原 SDL 变换、缓存与队列路径，冻结原 window ID，重入后重新取活窗口。 */
++void SDL_SendMouseMotionWithReceipt(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y, SDL_AMCL_InputReceipt *receipt)
++{
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
++    const SDL_WindowID window_id = window ? window->id : 0;
+     if (window && !relative) {
+         SDL_Mouse *mouse = SDL_GetMouse();
+         if (!SDL_UpdateMouseFocus(window, x, y, SDL_GetMouseButtonState(mouse, mouseID, true), (mouseID != SDL_TOUCH_MOUSEID && mouseID != SDL_PEN_MOUSEID))) {
+             return;
+         }
+     }
+ 
+-    SDL_PrivateSendMouseMotion(timestamp, window, mouseID, relative, x, y);
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
++    if (window_id) {
++        window = SDL_GetWindowFromID(window_id);
++        if (!window) return;
++    }
++    SDL_PrivateSendMouseMotion(timestamp, window, mouseID, relative, x, y, receipt);
++}
++
++/* 标准入口继续使用原 SDL 政策，不带 AMCL 票据且不改变 ABI。 */
++void SDL_SendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y)
++{
++    SDL_SendMouseMotionWithReceipt(timestamp, window, mouseID, relative, x, y, NULL);
+ }
+ 
+ static void ConstrainMousePosition(SDL_Mouse *mouse, SDL_Window *window, float *x, float *y)
+ {
+     /* make sure that the pointers find themselves inside the windows,
+        unless we have the mouse captured. */
+@@ -733,14 +747,16 @@
+         if (*y < (float)y_min) {
+             *y = (float)y_min;
+         }
+     }
+ }
+ 
+-static void SDL_PrivateSendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y)
+-{
++static void SDL_PrivateSendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y, SDL_AMCL_InputReceipt *receipt)
++{
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
++    const SDL_WindowID window_id = window ? window->id : 0;
+     SDL_Mouse *mouse = SDL_GetMouse();
+     float xrel = 0.0f;
+     float yrel = 0.0f;
+     bool window_is_relative = mouse->focus && (mouse->focus->flags & SDL_WINDOW_MOUSE_RELATIVE_MODE);
+ 
+     // SDL_HINT_MOUSE_TOUCH_EVENTS: controlling whether mouse events should generate synthetic touch events
+@@ -750,12 +766,16 @@
+                 float normalized_x = x / (float)window->w;
+                 float normalized_y = y / (float)window->h;
+                 SDL_SendTouchMotion(timestamp, SDL_MOUSE_TOUCHID, SDL_BUTTON_LEFT, window, normalized_x, normalized_y, 1.0f);
+             }
+         }
+     }
++
++    /* synthetic touch 可以同步退休来源/窗口；不可在返回后继续写旧 target。 */
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
++    if (window_id) { window = SDL_GetWindowFromID(window_id); if (!window) return; }
+ 
+     // SDL_HINT_TOUCH_MOUSE_EVENTS: if not set, discard synthetic mouse events coming from platform layer
+     if (!mouse->touch_mouse_events && mouseID == SDL_TOUCH_MOUSEID) {
+         return;
+     }
+ 
+@@ -778,12 +798,15 @@
+         } else {
+             if (mouse->enable_normal_speed_scale) {
+                 x *= mouse->normal_speed_scale;
+                 y *= mouse->normal_speed_scale;
+             }
+         }
++        /* 用户 InputTransform 与系统缩放可以重入；残余与缓存修改前复核原票。 */
++        if (!SDL_AMCL_InputCurrent(receipt)) return;
++        if (window_id) { window = SDL_GetWindowFromID(window_id); if (!window) return; }
+         if (mouse->integer_mode_flags & 1) {
+             // Accumulate the fractional relative motion and only process the integer portion
+             mouse->integer_mode_residual_motion_x = SDL_modff(mouse->integer_mode_residual_motion_x + x, &x);
+             mouse->integer_mode_residual_motion_y = SDL_modff(mouse->integer_mode_residual_motion_y + y, &y);
+         }
+         xrel = x;
+@@ -814,12 +837,13 @@
+     // Ignore relative motion positioning the first touch
+     if (mouseID == SDL_TOUCH_MOUSEID && !SDL_GetMouseButtonState(mouse, mouseID, true)) {
+         xrel = 0.0f;
+         yrel = 0.0f;
+     }
+ 
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
+     // modify internal state
+     {
+         mouse->x_accu += xrel;
+         mouse->y_accu += yrel;
+ 
+         if (relative && mouse->has_position) {
+@@ -837,18 +861,24 @@
+         mouse->last_y = relative ? mouse->y : y;
+ 
+         mouse->click_motion_x += xrel;
+         mouse->click_motion_y += yrel;
+     }
+ 
++    /* 此处才是实际 SDL motion 缓存可用点；phase0 不等同 filter/watchers/ADD 成功。 */
++    SDL_AMCL_InputCacheApplied(receipt);
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
++
+     // Move the mouse cursor, if needed
+     if (mouse->cursor_visible && !mouse->relative_mode &&
+         mouse->MoveCursor && mouse->cur_cursor) {
+         mouse->MoveCursor(mouse->cur_cursor);
+     }
+ 
++    if (!SDL_AMCL_InputCurrent(receipt)) return;
++    if (window_id) { window = SDL_GetWindowFromID(window_id); if (!window) return; }
+     // Post the event, if desired
+     if (SDL_EventEnabled(SDL_EVENT_MOUSE_MOTION)) {
+         if ((!mouse->relative_mode || mouse->warp_emulation_active) && mouseID != SDL_TOUCH_MOUSEID && mouseID != SDL_PEN_MOUSEID) {
+             // We're not in relative mode, so all mouse events are global mouse events
+             mouseID = SDL_GLOBAL_MOUSE_ID;
+         }
+@@ -861,22 +891,24 @@
+             yrel = 0.0f;
+         }
+ 
+         SDL_Event event;
+         event.type = SDL_EVENT_MOUSE_MOTION;
+         event.common.timestamp = timestamp;
+-        event.motion.windowID = mouse->focus ? mouse->focus->id : 0;
++        event.motion.windowID = receipt ? receipt->target : (mouse->focus ? mouse->focus->id : 0);
+         event.motion.which = mouseID;
+         // Set us pending (or clear during a normal mouse movement event) as having triggered
+         mouse->was_touch_mouse_events = (mouseID == SDL_TOUCH_MOUSEID);
+         event.motion.state = SDL_GetMouseButtonState(mouse, mouseID, true);
+         event.motion.x = mouse->x;
+         event.motion.y = mouse->y;
+         event.motion.xrel = xrel;
+         event.motion.yrel = yrel;
+-        SDL_PushEvent(&event);
++        if (!SDL_AMCL_InputCurrent(receipt)) return;
++        const bool posted = SDL_PushEventWithReceipt(&event, receipt);
++        if (receipt) receipt->posted = posted;
+     }
+ }
+ 
+ static SDL_MouseInputSource *GetMouseInputSource(SDL_Mouse *mouse, SDL_MouseID mouseID, bool down, Uint8 button)
+ {
+     SDL_MouseInputSource *source, *match = NULL, *sources;
+@@ -1274,12 +1306,13 @@
+     if (y) {
+         *y = mouse->y;
+     }
+     const SDL_MouseButtonFlags state = SDL_GetMouseButtonState(mouse, SDL_GLOBAL_MOUSE_ID, true);
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+     SDL_AMCL_ObserveMousePoll(state);
++    if (x || y) SDL_AMCL_ObserveLookPoll(mouse->x, mouse->y);
+ #endif
+     return state;
+ }
+ 
+ SDL_MouseButtonFlags SDL_GetRelativeMouseState(float *x, float *y)
+ {
+@@ -1288,12 +1321,15 @@
+     if (x) {
+         *x = mouse->x_accu;
+     }
+     if (y) {
+         *y = mouse->y_accu;
+     }
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++    if (x || y) SDL_AMCL_ObserveLookPoll(mouse->x_accu, mouse->y_accu);
++#endif
+     mouse->x_accu = 0.0f;
+     mouse->y_accu = 0.0f;
+     return SDL_GetMouseButtonState(mouse, SDL_GLOBAL_MOUSE_ID, true);
+ }
+ 
+ SDL_MouseButtonFlags SDL_GetGlobalMouseState(float *x, float *y)
+@@ -1356,13 +1392,13 @@
+         }
+     }
+ 
+     if (mouse->WarpMouse && !mouse->relative_mode) {
+         mouse->WarpMouse(window, x, y);
+     } else {
+-        SDL_PrivateSendMouseMotion(0, window, SDL_GLOBAL_MOUSE_ID, false, x, y);
++        SDL_PrivateSendMouseMotion(0, window, SDL_GLOBAL_MOUSE_ID, false, x, y, NULL);
+     }
+ }
+ 
+ void SDL_DisableMouseWarpEmulation(void)
+ {
+     SDL_Mouse *mouse = SDL_GetMouse();
+diff --git a/src/events/SDL_mouse_c.h b/src/events/SDL_mouse_c.h
+--- a/src/events/SDL_mouse_c.h
++++ b/src/events/SDL_mouse_c.h
+@@ -209,12 +209,14 @@
+ 
+ // Send a mouse motion event
+ extern void SDL_SendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y);
+ 
+ // Send a mouse button event
+ #include "SDL_inputdelivery_c.h"
++/* 仅内部受控运动携 receipt，公开 SDL_SendMouseMotion 的 ABI 与原政策不变。 */
++extern SDL_AMCL_INPUT_HIDDEN void SDL_SendMouseMotionWithReceipt(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y, SDL_AMCL_InputReceipt *receipt);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_SendMouseButtonWithReceipt(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, Uint8 button, bool down, SDL_AMCL_InputReceipt *receipt);
+ extern void SDL_SendMouseButton(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, Uint8 button, bool down);
+ 
+ // Send a mouse button event with a click count
+ extern void SDL_SendMouseButtonClicks(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, Uint8 button, bool down, int clicks);
+ 
+diff --git a/src/events/SDL_inputdelivery_c.h b/src/events/SDL_inputdelivery_c.h
+--- a/src/events/SDL_inputdelivery_c.h
++++ b/src/events/SDL_inputdelivery_c.h
+@@ -7,12 +7,13 @@
+ #else
+ #define SDL_AMCL_INPUT_HIDDEN
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+ /* 真实状态getter观测入口，仅计ABI读事实，不声明最终游戏处理。 */
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveKeyboardPoll(const bool *states, int count);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveMousePoll(SDL_MouseButtonFlags state);
++extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveLookPoll(double x, double y);
+ #endif
+ #endif
+ typedef struct SDL_AMCL_InputReceipt {
+     void *context;
+     bool (*current)(void *context);
+     void (*cacheApplied)(void *context);
+@@ -27,8 +28,9 @@
+     if (receipt) { receipt->cached = true; receipt->cacheApplied(receipt->context); }
+ }
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+ /* 真实状态getter观测入口，仅计ABI读事实，不声明最终游戏处理。 */
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveKeyboardPoll(const bool *states, int count);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveMousePoll(SDL_MouseButtonFlags state);
++extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveLookPoll(double x, double y);
+ #endif
+ #endif
+diff --git a/src/SDL.c b/src/SDL.c
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -21,12 +21,13 @@
+ #include "SDL_internal.h"
+ #include "SDL3/SDL_revision.h"
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+ #include "SDL_amclinputcontrol_c.h"
+ #include "core/openharmony/SDL_amclinputhostpolicy.h"
+ #include "video/openharmony/control_delivery_client.h"
++#include "video/openharmony/input/delivery/look_execution_client.h"
+ #endif
+ 
+ #if defined(SDL_PLATFORM_WINDOWS)
+ #include "core/windows/SDL_windows.h"
+ #else
+ #include <unistd.h> // _exit(), etc.
+@@ -888,12 +889,18 @@
+ /* 有意保持无副作用：cold检查不能创建consumer、读取环境或把协议存在变成游戏Ready。 */
+ SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputControlProtocolV1(void)
+ {
+     return SDL_AMCL_INPUT_CONTROL_PROTOCOL_V1;
+ }
+ 
++/* 新 look 能力与旧控制标识独立，cold 读取不访问 env、Core 或任何 SDL 初始化状态。 */
++SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputLookProtocolV1(void)
++{
++    return SDL_AMCL_INPUT_LOOK_PROTOCOL_V1;
++}
++
+ /* 仅runtime准备/首个实际pump借port前调用。SDL_internal将版本锚绑定本SDK的
+  * SDL_GetVersion_REAL；marker、锚与此隐藏函数须同映像，其他全局可见copy不能替代它。
+  * requireOwner校验既有唯一Core端口，没有open/claim/Activate，失败保持未准备状态。 */
+ bool SDL_AMCL_ValidateInputRuntimeV1(bool requireOwner)
+ {
+ #ifdef _WIN32
+@@ -919,17 +926,28 @@
+         marker.dli_fbase!=self.dli_fbase || anchor.dli_fbase!=self.dli_fbase ||
+         !amclControlAddressInOwner((uintptr_t)SDL_AMCL_InputControlProtocolV1,(uintptr_t)self.dli_fbase))
+         return SDL_SetError("InputContractMismatch:sdl_runtime_image");
+ #endif
+     if (SDL_AMCL_InputControlProtocolV1()!=SDL_AMCL_INPUT_CONTROL_PROTOCOL_V1)
+         return SDL_SetError("InputContractMismatch:sdl_runtime_protocol");
++    if (!amclControlAddressInOwner((uintptr_t)SDL_AMCL_InputLookProtocolV1,
++#ifdef _WIN32
++            (uintptr_t)self
++#else
++            (uintptr_t)self.dli_fbase
++#endif
++        ) || SDL_AMCL_InputLookProtocolV1() != SDL_AMCL_INPUT_LOOK_PROTOCOL_V1)
++        return SDL_SetError("InputContractMismatch:sdl_runtime_look_protocol");
+     if (requireOwner) {
+         if (!SDL_AMCL_HasInternalDynapiV1()) return SDL_SetError("InputContractMismatch:sdl_external_dynapi");
+         const AmclControlDeliveryPortV1* port=NULL;
+         if (amclControlDeliveryResolveV1(&port)<0)
+             return SDL_SetError("InputContractMismatch:sdl_runtime_core_owner");
++        const AmclLookExecutionPortV1 *look = NULL;
++        if (amclLookExecutionResolveV1(&look) < 0)
++            return SDL_SetError("InputContractMismatch:sdl_runtime_look_owner");
+     }
+     return true;
+ }
+ #endif
+ 
+ 
+diff --git a/src/SDL_amclinputcontrol_c.h b/src/SDL_amclinputcontrol_c.h
+--- a/src/SDL_amclinputcontrol_c.h
++++ b/src/SDL_amclinputcontrol_c.h
+@@ -1,21 +1,24 @@
+ /* AMCL专用冷输入协议：getter只声明本制品common-control版本，不触发SDL/owner准备。
+  * 标准SDL ABI保持；runtime验证用本SDK映像的私有锚，不能借bootstrap另一namespace的copy。 */
+ #ifndef SDL_amclinputcontrol_c_h_
+ #define SDL_amclinputcontrol_c_h_
+ #include "SDL_internal.h"
+ #define SDL_AMCL_INPUT_CONTROL_PROTOCOL_V1 1u
++#define SDL_AMCL_INPUT_LOOK_PROTOCOL_V1 1u
+ /* SDL_DYNAMIC_API把SDL_DECLSPEC清空以隐藏REAL符号；此私有标识独立导出，不进入dynapi表。 */
+ #if defined(_WIN32) && defined(DLL_EXPORT)
+ #define SDL_AMCL_INPUT_PUBLIC __declspec(dllexport)
+ #elif defined(__GNUC__)
+ #define SDL_AMCL_INPUT_PUBLIC __attribute__((visibility("default")))
+ #else
+ #define SDL_AMCL_INPUT_PUBLIC
+ #endif
+ extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputControlProtocolV1(void);
++/* 独立声明本实际 SDK 具有不可变 look prefix 边缘；不触发 owner 或 consumer 准备。 */
++extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputLookProtocolV1(void);
+ #if defined(__GNUC__)
+ extern __attribute__((visibility("hidden"))) bool SDL_AMCL_ValidateInputRuntimeV1(bool requireOwner);
+ extern __attribute__((visibility("hidden"))) bool SDL_AMCL_HasInternalDynapiV1(void);
+ #else
+ extern bool SDL_AMCL_ValidateInputRuntimeV1(bool requireOwner);
+ extern bool SDL_AMCL_HasInternalDynapiV1(void);
+diff --git a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -1,11 +1,12 @@
+ SDL3_0.0.0 {
+   global:
+     JNI_OnLoad;
+     SDL_DYNAPI_entry;
+     SDL_AMCL_InputControlProtocolV1;
++    SDL_AMCL_InputLookProtocolV1;
+     SDL_AcquireCameraFrame;
+     SDL_AcquireGPUCommandBuffer;
+     SDL_AcquireGPUSwapchainTexture;
+     SDL_AddAtomicInt;
+     SDL_AddEventWatch;
+     SDL_AddGamepadMapping;
+diff --git a/src/dynapi/SDL_dynapi.exports b/src/dynapi/SDL_dynapi.exports
+--- a/src/dynapi/SDL_dynapi.exports
++++ b/src/dynapi/SDL_dynapi.exports
+@@ -1,10 +1,11 @@
+ # SDL3.dylib exports
+ _JNI_OnLoad
+ _SDL_DYNAPI_entry
+ _SDL_AMCL_InputControlProtocolV1
++_SDL_AMCL_InputLookProtocolV1
+ _SDL_AcquireCameraFrame
+ _SDL_AcquireGPUCommandBuffer
+ _SDL_AcquireGPUSwapchainTexture
+ _SDL_AddAtomicInt
+ _SDL_AddEventWatch
+ _SDL_AddGamepadMapping
+diff --git a/src/video/openharmony/input/delivery/look_execution.h b/src/video/openharmony/input/delivery/look_execution.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/delivery/look_execution.h
+@@ -0,0 +1,172 @@
++/**
++ * look_execution.h — 中立运行体拥有的视角执行与动作可见前缀私有端口。
++ *
++ * 此表不改变公共Core事件、GLFW/LWJGL2/SDL标准ABI，也不改变control-v1贡献合同。
++ * producer提交的设备事实、加工pending与consumer已经可用的cursor分别有权威；
++ * 不可变prefix将已接受的look与后续action连接，禁止再读未来的全局累计坐标。
++ * 三ABI只转换自己的坐标/记录格式及报告真实完成点，不能各自复制积分或尾量状态机。
++ */
++#ifndef AMCL_INPUT_LOOK_EXECUTION_H
++#define AMCL_INPUT_LOOK_EXECUTION_H
++#include <stdint.h>
++#include <stddef.h>
++#include "control_delivery.h"
++#include "../amcl_input_event.h"
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AMCL_LOOK_EXECUTION_MAGIC UINT64_C(0x414d434c4c4f4f31)
++#define AMCL_LOOK_EXECUTION_VERSION 1u
++#define AMCL_LOOK_EXECUTION_ENV "AMCL_LOOK_EXECUTION_V1"
++#define AMCL_LOOK_EXECUTION_PREFIX "AMCLLOOK:1:"
++
++/** 结果区分来源事实接受、可交付前缀、暂缺资格与容量失败，不能转bool混淆负值。 */
++enum AmclLookResult {
++    AMCL_LOOK_REJECTED=-1,AMCL_LOOK_STALE=-2,AMCL_LOOK_PRESSURE=-3,
++    AMCL_LOOK_NOT_READY=-4,AMCL_LOOK_ACCEPTED_NO_MOTION=0,AMCL_LOOK_PREFIX_READY=1
++};
++/** 单位随流冻结。virtual counts没有物理长度/角度承诺，raw counts保持平台能力声明。 */
++enum AmclLookUnit {
++    AMCL_LOOK_SURFACE_PIXELS=1,AMCL_LOOK_VIRTUAL_COUNTS=2,
++    AMCL_LOOK_HARDWARE_COUNTS=3,AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND=4,
++    AMCL_LOOK_PLATFORM_RELATIVE_COUNTS=5
++};
++/** 仅显式同域时间能积分；同为ns不证明sensor startup与ACTIVE/Native monotonic同域。 */
++enum AmclLookClock {
++    AMCL_LOOK_OWNER_MONOTONIC=1,AMCL_LOOK_ACTIVE_UPTIME=2,
++    AMCL_LOOK_SENSOR_STARTUP=3,AMCL_LOOK_PLATFORM_SAMPLE=4
++};
++/** 已积分gyro保持独立无平滑时钟；手指与gyro共用触控政策但不是同一个运动流。 */
++enum AmclLookStreamKind {
++    AMCL_LOOK_TOUCH_DELTA=1,AMCL_LOOK_MAPPED_RATE=2,
++    AMCL_LOOK_PHYSICAL_DELTA=3,AMCL_LOOK_GYRO_DELTA=4,AMCL_LOOK_COMPAT_DELTA=5
++};
++/** 仅新gyro私有lease冻结policy；旧无lease符号明确弱兼容，不能假用跨域时间拒旧样本。 */
++#define AMCL_LOOK_STREAM_POLICY_LEASE 1u
++/**
++ * 真实资源事实由owner Core和模式公告核验。context比较沿既有完整身份规则，Hz仍只是
++ * 元数据；modeEpoch不能由物理captureActive替代，非物理world look使用实际逻辑grab。
++ */
++typedef struct AmclLookResourceV1 {
++    uint32_t size,grabbed;
++    uint64_t gameSession,sessionEpoch,surfaceEpoch,focusEpoch,modeEpoch;
++    AmclInputSurfaceContextPayload context;
++} AmclLookResourceV1;
++/**
++ * 来源流首次登记冻结device/connection、单位、时钟与资源，失败清零handle。设备0是
++ * 明确兼容桶而非已验证硬件身份；mapped兼容桶也拥有非零逻辑connection，其他0桶为0。
++ * source使用platform AmclInputSource，不能拿typed
++ * event的source枚举替换。handle不回绕/复用，迟到提交不能认领后来同编号设备。
++ */
++typedef struct AmclLookStreamV1 {
++    uint32_t size,source,kind,unit,clock,reserved;
++    uint64_t device,connection;
++    AmclLookResourceV1 resource;
++} AmclLookStreamV1;
++/** 完整兼容政策一次验证/应用；旧pending已经在输出单位中，不被新参数重新缩放。 */
++typedef struct AmclLookPolicyV1 {
++    uint32_t size,invertY;
++    double sensitivity,smoothing,acceleration;
++} AmclLookPolicyV1;
++/**
++ * producer只运输opaque prefix token和因果order。其数值/贡献/原资源存于唯一owner，
++ * immutable记录存在固定容量预算；排队接受、consumer cache可用、callback/ADD及
++ * 游戏实际读取是不同完成点，不能把prefix创建成功说成游戏已转动相机。
++ */
++typedef struct AmclLookPrefixV1 {
++    uint32_t size,reserved;
++    uint64_t token,order,gameSession;
++    AmclLookResourceV1 resource;
++} AmclLookPrefixV1;
++/**
++ * 本consumer一次执行票。current是按该consumer已应用前缀演化的cursor，delta仅含
++ * 本次尚未应用部分；ABI边缘不得改target/activation或重新从future desired计算delta。
++ */
++typedef struct AmclLookEmissionV1 {
++    uint32_t size,backend;
++    uint64_t consumer,activation,target,ticket,prefix,order;
++    double dx,dy,x,y;
++} AmclLookEmissionV1;
++/** 私有只读观测；cacheReady说明API数据可用，不声称Minecraft camera/attack已采纳。 */
++typedef struct AmclLookSnapshotV1 {
++    uint32_t size,backend;
++    uint64_t consumer,gameSession,activation,target,availablePrefix;
++    uint64_t accepted,cacheReady,callbackReturned,queueAccepted,legalPollReads;
++    uint64_t stale,discarded,uncertain;
++    double x,y;
++} AmclLookSnapshotV1;
++/**
++ * table/ownerHost/PID在预线程module发布后不可变，所有借用遵守Core descriptor与原
++ * 映像可执行地址检查。fork foreign PID在任何registry mutex/首次初始化之前拒绝。
++ */
++typedef struct AmclLookExecutionPortV1 {
++    uint64_t magic;
++    uint32_t version,size,pid,reserved;
++    uint64_t ownerHost;
++    int32_t (*verifyOwner)(uint64_t ownerHost);
++    /** 同一实际启动身份绑定一次；准备不创建worker、不装游戏类、不假宣布consumer Ready。 */
++    int32_t (*bindSession)(uint64_t gameSession);
++    /** 只接受实际bridge模式发布，模式退休丢旧未交付量，不把它补进新world基准。 */
++    int32_t (*publishMode)(uint64_t gameSession,uint64_t modeEpoch,uint32_t grabbed);
++    /** 保存完整兼容政策，source=-1全来源；拒绝任何字段时不应用半份参数。 */
++    int32_t (*applyPolicy)(int32_t source,const AmclLookPolicyV1* policy);
++    int32_t (*openStream)(const AmclLookStreamV1* stream,uint64_t* handle);
++    /** delta已经按该流单位给出；gyro不得再按dt积分，physical不得套映射gain。 */
++    int32_t (*submitDelta)(uint64_t stream,double dx,double dy,uint64_t sampleNs);
++    /** 先将旧速度推进到此样本边界，再安装新速度；重复时刻不双积分。 */
++    int32_t (*submitVelocity)(uint64_t stream,double xPerSecond,double yPerSecond,uint64_t sampleNs);
++    /** timer/事件只推进已有速率。长期间隔采用明确最多50ms政策，不补后台时间。 */
++    int32_t (*advance)(uint64_t gameSession,uint64_t ownerMonotonicNs);
++    /**
++     * action/tick封已知前缀；flushPending只取已接受旧尾量，不外推未来sensor样本。
++     * 与实际运输容量预留同批提交才可称接受，取消/Pressure不得发布假token。
++     */
++    int32_t (*sealPrefix)(uint64_t gameSession,uint64_t order,uint64_t ownerMonotonicNs,
++        uint32_t flushPending,AmclLookPrefixV1* prefix);
++    /** 仅源自己的未应用贡献退休；已写ABI的运动不逆向回滚，也不清同目标兄弟来源。 */
++    int32_t (*retireStream)(uint64_t stream);
++    /** producer运输确认或撤销原token；不得释放后来prefix，源退休仍可撤其尚未交付部分。 */
++    int32_t (*retirePrefix)(uint64_t token);
++    /**
++     * 借用实际control consumer身份，snapshot验证其kind/session/activation/target；不
++     * 再建控制owner。basis来自原ABI模式/合法warp基线，新target不继承历史look。
++     */
++    int32_t (*bindConsumer)(uint64_t controlConsumer,double basisX,double basisY);
++    int32_t (*prepare)(uint64_t controlConsumer,uint64_t prefix,AmclLookEmissionV1* emission);
++    int32_t (*claim)(const AmclLookEmissionV1* emission);
++    int32_t (*validate)(const AmclLookEmissionV1* emission);
++    /** completion沿control阶段名称，SDL queue只证明真实ADD，L2实际poll/next另观测。 */
++    int32_t (*complete)(const AmclLookEmissionV1* emission,uint32_t completion);
++    int32_t (*observePoll)(uint64_t controlConsumer,double actualX,double actualY);
++    int32_t (*snapshot)(uint64_t controlConsumer,AmclLookSnapshotV1* snapshot);
++    void (*closeConsumer)(uint64_t controlConsumer);
++    /** 有界重试最终放弃仅本consumer的此token运输。必须先撤原票，不终结在途SDK调用。 */
++    int32_t (*abandonPrefix)(uint64_t controlConsumer,uint64_t prefix);
++    /**
++     * typed relative原Core sequence关联一次接受时加工的独立physical prefix。
++     * 不重新加工raw、不合并虚拟prefix；SDL沿原record device映射MouseID，公开raw字段不变。
++     */
++    int32_t (*physicalPrefix)(uint64_t coreSequence,uint64_t* prefix);
++    /** ordered backend envelope的sequence是interactionOrder，必须显式选此索引，不能猜同值。 */
++    int32_t (*physicalPrefixByOrder)(uint64_t interactionOrder,uint64_t* prefix);
++    /** 实际look出口能力寿命，L2 Mouse独立于Keyboard；停止仅退出本backend，不关控制owner。 */
++    int32_t (*setBackendActive)(uint32_t backend,uint32_t active);
++} AmclLookExecutionPortV1;
++
++AMCL_CONTROL_PUBLIC const AmclLookExecutionPortV1* amclLookExecutionGetPortV1(void);
++AMCL_CONTROL_PUBLIC void amclLookExecutionPublishV1(void);
++/** 无外部查询的producer事务口；真实队列先预留容量，再原子提交数学和不可变token。 */
++AMCL_CONTROL_PUBLIC int32_t amclLookExecutionCommitV1(uint64_t stream,double dx,double dy,uint64_t sampleNs,
++    uint64_t gameSession,uint64_t order,uint64_t ownerNs,uint32_t flush,AmclLookPrefixV1* output);
++/** 明确旧processed兼容路径：不再次应用policy，仍与真实运输一批提交。 */
++AMCL_CONTROL_PUBLIC int32_t amclLookExecutionCommitProcessedV1(uint64_t stream,double dx,double dy,
++    uint64_t gameSession,uint64_t order,uint64_t ownerNs,AmclLookPrefixV1* output);
++/** ring当前实际接收者按位冻结；取得ring记录不等于完成，终结或明确退休才解除保留。 */
++AMCL_CONTROL_PUBLIC void amclLookExecutionSetRecipientsV1(uint64_t token,uint32_t backendMask);
++/** 只读完整source政策代次；参数相同幂等不推进，0表示不可用/非法source。 */
++AMCL_CONTROL_PUBLIC uint64_t amclLookPolicyEpochV1(int32_t source);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/video/openharmony/input/delivery/look_execution_client.h b/src/video/openharmony/input/delivery/look_execution_client.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/delivery/look_execution_client.h
+@@ -0,0 +1,47 @@
++/** 跨DSO look端口只读身份检查；复用control映像/可执行地址探针，不复制执行状态。 */
++#ifndef AMCL_LOOK_EXECUTION_CLIENT_H
++#define AMCL_LOOK_EXECUTION_CLIENT_H
++#include "look_execution.h"
++#include "control_delivery_client.h"
++static inline int32_t amclLookExecutionResolveV1(const AmclLookExecutionPortV1** output){
++    if(output)*output=NULL;if(!output)return AMCL_LOOK_REJECTED;
++    const char* text=getenv(AMCL_LOOK_EXECUTION_ENV);if(!text)return AMCL_LOOK_NOT_READY;
++    if(strncmp(text,AMCL_LOOK_EXECUTION_PREFIX,sizeof(AMCL_LOOK_EXECUTION_PREFIX)-1)!=0)return AMCL_LOOK_REJECTED;
++    const char* number=text+sizeof(AMCL_LOOK_EXECUTION_PREFIX)-1;if(*number<'0'||*number>'9')return AMCL_LOOK_REJECTED;
++    char* end=NULL;errno=0;const unsigned long long value=strtoull(number,&end,10);
++    if(errno||end==number||*end||!value||value>=UINTPTR_MAX)return AMCL_LOOK_REJECTED;
++    const uintptr_t address=(uintptr_t)value;uintptr_t base=0;uint32_t process=0;
++#ifdef _WIN32
++    HMODULE image=NULL;
++    if(!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++        (LPCSTR)address,&image)||(uintptr_t)GetProcAddress(image,"amclLookExecutionGetPortV1")!=address)return AMCL_LOOK_REJECTED;
++    base=(uintptr_t)image;process=(uint32_t)_getpid();
++#else
++    Dl_info info;if(!dladdr((const void*)address,&info)||info.dli_saddr!=(void*)address||!info.dli_sname||
++        strcmp(info.dli_sname,"amclLookExecutionGetPortV1")!=0)return AMCL_LOOK_REJECTED;
++    const char* leaf=info.dli_fname?strrchr(info.dli_fname,'/'):NULL;leaf=leaf?leaf+1:info.dli_fname;
++#ifndef AMCL_CONTROL_DELIVERY_HOST_TESTING
++    if(!leaf||strcmp(leaf,"libamcl_input_runtime.so")!=0)return AMCL_LOOK_REJECTED;
++#else
++    (void)leaf;
++#endif
++    base=(uintptr_t)info.dli_fbase;process=(uint32_t)getpid();
++#endif
++    if(!amclControlAddressInOwner(address,base))return AMCL_LOOK_REJECTED;
++    typedef const AmclLookExecutionPortV1*(*Getter)(void);const AmclLookExecutionPortV1* port=((Getter)address)();
++    if(!port||port->magic!=AMCL_LOOK_EXECUTION_MAGIC||port->version!=1||port->size!=sizeof(*port)||
++        port->pid!=process||!port->ownerHost)return AMCL_LOOK_REJECTED;
++#define AMCL_LOOK_CHECK(name) if(!amclControlAddressInOwner((uintptr_t)port->name,base))return AMCL_LOOK_REJECTED
++    AMCL_LOOK_CHECK(verifyOwner);AMCL_LOOK_CHECK(bindSession);AMCL_LOOK_CHECK(publishMode);AMCL_LOOK_CHECK(applyPolicy);
++    AMCL_LOOK_CHECK(openStream);AMCL_LOOK_CHECK(submitDelta);AMCL_LOOK_CHECK(submitVelocity);AMCL_LOOK_CHECK(advance);
++    AMCL_LOOK_CHECK(sealPrefix);AMCL_LOOK_CHECK(retireStream);AMCL_LOOK_CHECK(retirePrefix);AMCL_LOOK_CHECK(bindConsumer);
++    AMCL_LOOK_CHECK(prepare);AMCL_LOOK_CHECK(claim);AMCL_LOOK_CHECK(validate);AMCL_LOOK_CHECK(complete);
++    AMCL_LOOK_CHECK(observePoll);AMCL_LOOK_CHECK(snapshot);AMCL_LOOK_CHECK(closeConsumer);
++    AMCL_LOOK_CHECK(abandonPrefix);
++    AMCL_LOOK_CHECK(physicalPrefix);
++    AMCL_LOOK_CHECK(physicalPrefixByOrder);AMCL_LOOK_CHECK(setBackendActive);
++#undef AMCL_LOOK_CHECK
++    // 唯一Core descriptor核验是独立必要条件，另一个真实DSO也不能借同PID/合法代码骗owner。
++    const int32_t result=port->verifyOwner(port->ownerHost);if(result<0)return result;*output=port;return 0;
++}
++#endif
+diff --git a/src/video/openharmony/input/delivery/control_delivery.h b/src/video/openharmony/input/delivery/control_delivery.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/delivery/control_delivery.h
+@@ -0,0 +1,107 @@
++// 三种实际ABI共用的末级控制贡献端口。只有neutral owner持有归约状态；调用者只保存
++// 不复用consumer句柄、实际ABI缓存与回调。此私有C表不改变公共Core/旧事件的前缀语义。
++#ifndef AMCL_CONTROL_DELIVERY_H
++#define AMCL_CONTROL_DELIVERY_H
++#include <stdint.h>
++#include <stddef.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++#if defined(__GNUC__)
++#define AMCL_CONTROL_PUBLIC __attribute__((visibility("default")))
++#else
++#define AMCL_CONTROL_PUBLIC
++#endif
++#define AMCL_CONTROL_MAGIC UINT64_C(0x414d434c434f4e31)
++#define AMCL_CONTROL_VERSION 1u
++#define AMCL_CONTROL_ENV "AMCL_CONTROL_DELIVERY_V1"
++#define AMCL_CONTROL_PREFIX "AMCLCONTROL:1:"
++enum AmclControlResult { AMCL_CONTROL_REJECTED=-1, AMCL_CONTROL_STALE=-2,
++    AMCL_CONTROL_PRESSURE=-3, AMCL_CONTROL_NOT_READY=-4,
++    AMCL_CONTROL_ACCEPTED_NO_EDGE=0, AMCL_CONTROL_EDGE=1 };
++enum AmclControlKind { AMCL_CONTROL_KEY=1, AMCL_CONTROL_BUTTON=2 };
++// 与GLFW/L2既有action一致；SDL只在此边缘把UP/DOWN转换，不能再次解释来源持有。
++enum AmclControlAction { AMCL_CONTROL_UP=0, AMCL_CONTROL_DOWN=1, AMCL_CONTROL_REPEAT=2 };
++// Aggregate表示上游已经汇总的一份贡献；SDL设备按钮与未来contact保留独立owner。
++enum AmclControlClass { AMCL_CONTROL_LEGACY=1, AMCL_CONTROL_TYPED=2,
++    AMCL_CONTROL_TYPED_DEVICE=3, AMCL_CONTROL_CONTACT=4 };
++#define AMCL_CONTROL_MASK_LEGACY 1u
++#define AMCL_CONTROL_MASK_TYPED 6u
++#define AMCL_CONTROL_MASK_ALL 15u
++// STATE_ONLY仅证明ABI缓存已应用且保留ticket；L2 enqueue不属于PULL_COMMITTED，
++// 该端须直到真实Mouse/Keyboard next领取才终结。SDL的PULL_COMMITTED只证明其
++// SDL_Send*队列/ABI出口交接，不能宣传为游戏SDL_PollEvent已经处理。
++enum AmclControlCompletion { AMCL_CONTROL_STATE_ONLY=0, AMCL_CONTROL_CALLBACK_RETURNED=1,
++    AMCL_CONTROL_PULL_COMMITTED=2, AMCL_CONTROL_STATE_FINAL=3,
++    AMCL_CONTROL_UNCERTAIN=4, AMCL_CONTROL_DISCARDED=5 };
++typedef struct AmclControlEmissionV1 {
++    // ABI边缘只复制这份冻结记录，complete/validate不得换成current target/consumer。
++    // size须为完整V1，code/scanCode是本consumer后端命名空间，action为最终交付边沿。
++    uint32_t size,kind;
++    int32_t code,scanCode,action;
++    uint32_t reserved;
++    uint64_t consumer,activation,revision,ticket,target;
++} AmclControlEmissionV1;
++typedef struct AmclControlSnapshotV1 {
++    // 统计带原consumer/session/activation/target；计数分别表示cache、callback返回、
++    // 实际pull出口/队列交接及合法getter读取，任何一列均不代替“游戏业务已经处理”。
++    uint32_t size,backend;
++    uint64_t consumer,gameSession,activation,target;
++    uint64_t accepted,noEdge,edges,callbackReturned,pullCommitted,stateOnly;
++    uint64_t legalPollReads,pollMismatches,staleCompletions,lastCompletedActivation,uncertain,discarded;
++} AmclControlSnapshotV1;
++typedef struct AmclControlDeliveryPortV1 {
++    uint64_t magic;
++    uint32_t version,size,pid,reserved;
++    // 同一neutral owner的公共Core表身份；验证还必须经过既有owner descriptor，不能只核pid。
++    uint64_t ownerHost;
++    int32_t (*verifyOwner)(uint64_t ownerHost);
++    // target为调用方真实逻辑目标；生命周期、publication和执行线程仍在ABI边缘核对。
++    // open只登记consumer，不初始化SDK/设备或宣布Ready；失败清零输出，容量/身份耗尽为PRESSURE。
++    int32_t (*open)(uint32_t backend,uint64_t target,uint64_t* consumer);
++    // 关闭指定handle的内部上下文，不调用旧窗口或合成release；真实资源退休由边缘先处理。
++    void (*close)(uint64_t consumer);
++    // activation耗尽时返回PRESSURE且不改旧target；边缘必须停止向新目标交付。
++    int32_t (*bindTarget)(uint64_t consumer,uint64_t target);
++    // apply提交一份来源变化；Rejected不配对、NoEdge真实共持、Edge附须claim的冻结票。
++    // 候选分配/容量失败不建立假owner；此处成功不证明cache/callback/queue/游戏读取成功。
++    int32_t (*apply)(uint64_t consumer,uint32_t contributionClass,uint64_t owner,
++        uint32_t kind,int32_t code,int32_t scanCode,int32_t action,AmclControlEmissionV1* emission);
++    // retire先一次摘本批旧owner，nextRetired随后逐ticket核reentry新holder，不在锁内输出。
++    int32_t (*retire)(uint64_t consumer,uint32_t classMask,uint64_t owner,int32_t onlyOwner);
++    // L2 keyboard/mouse能力寿命独立：kind=0全部，1键盘，2鼠标；单kind不退休兄弟记录。
++    int32_t (*retireKind)(uint64_t consumer,uint32_t classMask,uint64_t owner,int32_t onlyOwner,uint32_t kind);
++    // 每次领取一张仍有效的退休计划；空为NoEdge，目标或贡献已变的旧计划在内部丢弃。
++    int32_t (*nextRetired)(uint64_t consumer,AmclControlEmissionV1* emission);
++    // 一次性执行围栏：完整记录/当前资格成立才Edge；重复claim拒绝，旧目标/activation为STALE。
++    int32_t (*claim)(const AmclControlEmissionV1* emission);
++    // 同步SDK hook可在缓存写回/Push之前再次只读核原ticket；不是重复领取或重新绑定。
++    int32_t (*validate)(const AmclControlEmissionV1* emission);
++    // 输入原票及真实完成阶段；phase0保票，终结阶段摘票。旧callback返回可记原事实，
++    // 但不能覆盖重入后的observed状态；失败/不确定不伪造cache或事件交接。
++    int32_t (*complete)(const AmclControlEmissionV1* emission,uint32_t phase);
++    // 只读accepted desired（0/1）；负值明确失败，不应以C布尔转换把STALE解释为按住。
++    int32_t (*query)(uint64_t consumer,uint32_t kind,int32_t code);
++    // query为接受贡献，queryDelivered仅为已获phase0证据的ABI缓存，两种口径不可混用。
++    int32_t (*queryDelivered)(uint64_t consumer,uint32_t kind,int32_t code);
++    // 观测只计实际调用方已经执行的poll读取，永不推进事件或改变owner。
++    int32_t (*observePoll)(uint64_t consumer,uint32_t kind,int32_t code,int32_t actualHeld);
++    // 完整Keyboard/Mouse状态getter一次调用一次锁；只核已登记control的实际0/1缓存。
++    // legalPollReads按getter调用计，mismatch按已登记control差异计，绝不推进owner或事件。
++    int32_t (*observePollView)(uint64_t consumer,uint32_t kind,const uint8_t* states,uint32_t count);
++    // 输出完整V1诊断快照，不消费任何队列或推进ticket；调用者须核返回结果，不用旧输出。
++    int32_t (*snapshot)(uint64_t consumer,AmclControlSnapshotV1* output);
++    // activation耗尽时永久关闭此handle；绝不回绕成旧activation。
++    void (*abandon)(uint64_t consumer);
++} AmclControlDeliveryPortV1;
++// 表与registry在module早期发布时初始化，进程内不可变；fork child明确拒绝继承，
++// Getter返回NULL，所有旧handle操作在任何继承mutex之前返回STALE/NOT_READY。
++AMCL_CONTROL_PUBLIC const AmclControlDeliveryPortV1* amclControlDeliveryGetPortV1(void);
++// 只由既有中立bridge的冻结游戏会话入口调用；重复同session幂等，不能换掉借出的owner。
++AMCL_CONTROL_PUBLIC int32_t amclControlDeliveryBindSessionV1(uint64_t gameSession);
++// module Init早于JVM线程的既有发布点调用；描述符只包含同owner getter地址，重复无写入。
++AMCL_CONTROL_PUBLIC void amclControlDeliveryPublishV1(void);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/video/openharmony/input/delivery/control_delivery_client.h b/src/video/openharmony/input/delivery/control_delivery_client.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/delivery/control_delivery_client.h
+@@ -0,0 +1,96 @@
++// 跨namespace的薄C身份检查层，仅发现/验证neutral生产端口，不复制任何owner或归约状态。
++// SDL/L2在自己的合法初始化点使用；缺席与损坏分开，坏描述符不能绕dlsym另开第二份owner。
++#ifndef AMCL_CONTROL_DELIVERY_CLIENT_H
++#define AMCL_CONTROL_DELIVERY_CLIENT_H
++#include "control_delivery.h"
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#ifdef _WIN32
++#include <windows.h>
++#include <process.h>
++#else
++#include <dlfcn.h>
++#include <link.h>
++#include <unistd.h>
++#endif
++
++#ifndef _WIN32
++// dl_iterate_phdr的一次只读查询上下文：address为待调用函数地址，executable仅由
++// 实际PT_LOAD/PF_X覆盖事实置true。不持有DSO引用，调用方另负责进程期pin。
++typedef struct AmclControlAddressCheck {uintptr_t address;int executable;} AmclControlAddressCheck;
++// 输入为加载器枚举的单个映像及上述上下文；找到可执行段就停止枚举并返回1。
++// 段起点先防整数溢出，不按函数名/PID猜可执行资格，也不把未覆盖地址当成功。
++static int amclControlVisitExecutable(struct dl_phdr_info* info,size_t size,void* data){
++    AmclControlAddressCheck* check=(AmclControlAddressCheck*)data;(void)size;
++    for(size_t i=0;i<info->dlpi_phnum;++i){const ElfW(Phdr)* p=&info->dlpi_phdr[i];
++        if(p->p_type!=PT_LOAD||!(p->p_flags&PF_X)||p->p_vaddr>UINTPTR_MAX-(uintptr_t)info->dlpi_addr)continue;
++        const uintptr_t start=(uintptr_t)info->dlpi_addr+(uintptr_t)p->p_vaddr;
++        if(check->address>=start&&check->address-start<p->p_memsz){check->executable=1;return 1;}}
++    return 0;
++}
++#endif
++// 输入为函数地址和已经选定的neutral映像base，输出只表示同映像且可执行。
++// Windows核实际HMODULE/提交页面权限，POSIX核dladdr base和真实ELF PT_LOAD/PF_X。
++// 不打开/卸载库、不执行被检函数；借出的表/函数必须由既有进程owner保持活着。
++static inline int amclControlAddressInOwner(uintptr_t address,uintptr_t expectedBase){
++    if(!address)return 0;
++#ifdef _WIN32
++    HMODULE module=NULL;MEMORY_BASIC_INFORMATION region;
++    if(!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++            (LPCSTR)address,&module)||(uintptr_t)module!=expectedBase||!VirtualQuery((LPCVOID)address,&region,sizeof(region)))return 0;
++    const DWORD access=region.Protect&0xff;
++    return region.State==MEM_COMMIT&&(access==PAGE_EXECUTE||access==PAGE_EXECUTE_READ||access==PAGE_EXECUTE_READWRITE||access==PAGE_EXECUTE_WRITECOPY);
++#else
++    Dl_info info;AmclControlAddressCheck check={address,0};
++    if(!dladdr((const void*)address,&info)||(uintptr_t)info.dli_fbase!=expectedBase)return 0;
++    dl_iterate_phdr(amclControlVisitExecutable,&check);return check.executable;
++#endif
++}
++
++// 解析唯一预线程发布描述符，输出经过完整资格核验的借用表。*out先清空，缺席为
++// NOT_READY，畸形/版本/映像/函数资格错误明确Rejected，坏描述符不得dlsym fallback。
++// decimal地址严格全串解析，errno检查溢出；getter须为准确导出的同owner可执行函数。
++// 表随后核完整V1布局、当前OS PID、逐函数同映像/exec，并通过公共Core descriptor
++// verifyOwner确认唯一owner。成功只证明port可借，不证明资源/游戏消费者Ready。
++// 不增加DSO引用，因此调用者只能在进程宿主pin该映像的既有寿命内使用返回指针。
++static inline int32_t amclControlDeliveryResolveV1(const AmclControlDeliveryPortV1** out){
++    if(out)*out=NULL;if(!out)return AMCL_CONTROL_REJECTED;
++    const char* description=getenv(AMCL_CONTROL_ENV);if(!description)return AMCL_CONTROL_NOT_READY;
++    if(strncmp(description,AMCL_CONTROL_PREFIX,sizeof(AMCL_CONTROL_PREFIX)-1)!=0)return AMCL_CONTROL_REJECTED;
++    const char* number=description+sizeof(AMCL_CONTROL_PREFIX)-1;
++    if(*number<'0'||*number>'9')return AMCL_CONTROL_REJECTED;
++    char* end=NULL;errno=0;const unsigned long long parsed=strtoull(number,&end,10);
++    if(errno||end==number||*end||!parsed||parsed>=UINTPTR_MAX)return AMCL_CONTROL_REJECTED;
++    const uintptr_t address=(uintptr_t)parsed;uintptr_t base=0;uint32_t process=0;
++#ifdef _WIN32
++    HMODULE module=NULL;
++    if(!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCSTR)address,&module)||
++       (uintptr_t)GetProcAddress(module,"amclControlDeliveryGetPortV1")!=address)return AMCL_CONTROL_REJECTED;
++    base=(uintptr_t)module;process=(uint32_t)_getpid();
++#else
++    Dl_info info;
++    if(!dladdr((const void*)address,&info)||info.dli_saddr!=(void*)address||!info.dli_sname||strcmp(info.dli_sname,"amclControlDeliveryGetPortV1")!=0)return AMCL_CONTROL_REJECTED;
++    const char* leaf=info.dli_fname?strrchr(info.dli_fname,'/'):NULL;leaf=leaf?leaf+1:info.dli_fname;
++#ifndef AMCL_CONTROL_DELIVERY_HOST_TESTING
++    if(!leaf||strcmp(leaf,"libamcl_input_runtime.so")!=0)return AMCL_CONTROL_REJECTED;
++#else
++    (void)leaf;
++#endif
++    base=(uintptr_t)info.dli_fbase;process=(uint32_t)getpid();
++#endif
++    if(!amclControlAddressInOwner(address,base))return AMCL_CONTROL_REJECTED;
++    typedef const AmclControlDeliveryPortV1* (*Getter)(void);
++    const AmclControlDeliveryPortV1* port=((Getter)address)();
++    // getter已严格归属真正owner的代码段；它返回的只读表还需版本/完整字段及逐函数资格核对。
++    if(!port||port->magic!=AMCL_CONTROL_MAGIC||port->version!=1||port->size!=sizeof(*port)||port->pid!=process||!port->ownerHost)return AMCL_CONTROL_REJECTED;
++#define AMCL_CONTROL_CHECK_FUNCTION(name) if(!amclControlAddressInOwner((uintptr_t)port->name,base))return AMCL_CONTROL_REJECTED
++    AMCL_CONTROL_CHECK_FUNCTION(verifyOwner);AMCL_CONTROL_CHECK_FUNCTION(open);AMCL_CONTROL_CHECK_FUNCTION(close);
++    AMCL_CONTROL_CHECK_FUNCTION(bindTarget);AMCL_CONTROL_CHECK_FUNCTION(apply);AMCL_CONTROL_CHECK_FUNCTION(retire);AMCL_CONTROL_CHECK_FUNCTION(retireKind);
++    AMCL_CONTROL_CHECK_FUNCTION(nextRetired);AMCL_CONTROL_CHECK_FUNCTION(claim);AMCL_CONTROL_CHECK_FUNCTION(validate);AMCL_CONTROL_CHECK_FUNCTION(complete);
++    AMCL_CONTROL_CHECK_FUNCTION(query);AMCL_CONTROL_CHECK_FUNCTION(queryDelivered);AMCL_CONTROL_CHECK_FUNCTION(observePoll);AMCL_CONTROL_CHECK_FUNCTION(observePollView);AMCL_CONTROL_CHECK_FUNCTION(snapshot);AMCL_CONTROL_CHECK_FUNCTION(abandon);
++#undef AMCL_CONTROL_CHECK_FUNCTION
++    const int32_t ownership=port->verifyOwner(port->ownerHost);if(ownership<0)return ownership;
++    *out=port;return AMCL_CONTROL_ACCEPTED_NO_EDGE;
++}
++#endif
+diff --git a/src/video/openharmony/input/amcl_input_event.h b/src/video/openharmony/input/amcl_input_event.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/input/amcl_input_event.h
+@@ -0,0 +1,490 @@
++#ifndef AMCL_INPUT_EVENT_H
++#define AMCL_INPUT_EVENT_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AMCL_INPUT_EVENT_ABI_VERSION 1u
++#define AMCL_INPUT_EVENT_FLAG_SYNTHETIC (1u << 0)
++#define AMCL_INPUT_EVENT_FLAG_PRECISE (1u << 1)
++// A physical button edge carrying this flag is position-bound: its producer
++// submitted the edge immediately after a POINTER_ABSOLUTE event in the same
++// atomic batch. Consumers must authorize it with that exact preceding sample.
++// Button-only routes (notably grabbed-mode input) deliberately leave it clear;
++// the process-wide absolute capability is not evidence that every button edge
++// belongs to an absolute transaction.
++#define AMCL_INPUT_EVENT_FLAG_ABSOLUTE_POSITION_BOUND (1u << 2)
++// POINTER_RELATIVE carries complete hardware movement counts as defined by the
++// API 26 rawDelta contract.  Absence means only "relative movement": API 22-25
++// values are display-size scaled and must never be advertised as GLFW Raw Input.
++#define AMCL_INPUT_EVENT_FLAG_HARDWARE_RAW (1u << 3)
++// The producer supplied a platform event timestamp in the same monotonic
++// nanosecond domain documented by ArkUI BaseEvent/UIInputEvent.  Core preserves
++// it while enforcing non-decreasing delivery order.  When absent, core stamps
++// the transaction time as before.  Synthetic recovery records always clear this
++// flag because they do not correspond to the original hardware sample.
++#define AMCL_INPUT_EVENT_FLAG_PLATFORM_TIMESTAMP (1u << 4)
++
++#define AMCL_INPUT_SURFACE_FIELD_DIMENSIONS (1u << 0)
++#define AMCL_INPUT_SURFACE_FIELD_TRANSFORM (1u << 1)
++#define AMCL_INPUT_SURFACE_FIELD_DENSITY (1u << 2)
++#define AMCL_INPUT_SURFACE_FIELD_PUBLICATION_GENERATION (1u << 3)
++#define AMCL_INPUT_SURFACE_FIELD_ALL \
++    (AMCL_INPUT_SURFACE_FIELD_DIMENSIONS | \
++     AMCL_INPUT_SURFACE_FIELD_TRANSFORM | \
++     AMCL_INPUT_SURFACE_FIELD_DENSITY | \
++     AMCL_INPUT_SURFACE_FIELD_PUBLICATION_GENERATION)
++
++#define AMCL_INPUT_SOURCE_UNKNOWN 0u
++#define AMCL_INPUT_SOURCE_KEYBOARD 1u
++#define AMCL_INPUT_SOURCE_MOUSE 2u
++#define AMCL_INPUT_SOURCE_TOUCHPAD 3u
++#define AMCL_INPUT_SOURCE_TOUCH 4u
++#define AMCL_INPUT_SOURCE_PEN 5u
++#define AMCL_INPUT_SOURCE_IME 6u
++#define AMCL_INPUT_SOURCE_VIRTUAL 7u
++#define AMCL_INPUT_SOURCE_SYNTHETIC 8u
++
++// Physical pointer device class. This is deliberately independent from
++// `source`: source says which neutral event source produced a packet, while
++// deviceClass says whether a physical pointer is a mouse or touchpad. Values are
++// append-only wire ABI. Unknown is the safe value for older producers and for
++// XComponent's legacy mouse callback, whose public structure exposes no device
++// identity or tool class.
++#define AMCL_INPUT_DEVICE_CLASS_UNKNOWN 0u
++#define AMCL_INPUT_DEVICE_CLASS_MOUSE 1u
++#define AMCL_INPUT_DEVICE_CLASS_TOUCHPAD 2u
++#define AMCL_INPUT_DEVICE_CLASS_COUNT 3u
++
++#define AMCL_INPUT_EVENT_PHYSICAL_KEY 1u
++#define AMCL_INPUT_EVENT_POINTER_ABSOLUTE 2u
++#define AMCL_INPUT_EVENT_POINTER_RELATIVE 3u
++#define AMCL_INPUT_EVENT_POINTER_BUTTON 4u
++#define AMCL_INPUT_EVENT_POINTER_WHEEL 5u
++#define AMCL_INPUT_EVENT_FOCUS_CHANGED 6u
++#define AMCL_INPUT_EVENT_DEVICE_CHANGED 7u
++#define AMCL_INPUT_EVENT_CAPTURE_CHANGED 8u
++#define AMCL_INPUT_EVENT_SURFACE_CHANGED 9u
++#define AMCL_INPUT_EVENT_RESET 10u
++#define AMCL_INPUT_EVENT_POINTER_ENTER 11u
++#define AMCL_INPUT_EVENT_TEXT_COMMIT 12u
++#define AMCL_INPUT_EVENT_TEXT_EDITING 13u
++#define AMCL_INPUT_EVENT_TEXT_CANDIDATES 14u
++#define AMCL_INPUT_EVENT_TEXT_SELECTION 15u
++// Core-generated observability for a physical edge that is intentionally not
++// applied. This is an additive V1 event: older consumers safely ignore its
++// unknown eventType, while the fixed 120-byte event layout remains unchanged.
++#define AMCL_INPUT_EVENT_DIAGNOSTIC_DROP 16u
++// Submit-only control packet.  It is consumed by the host core and is never
++// assigned a sequence or delivered to ordinary consumers.  Keeping lifecycle
++// control in the fixed event envelope avoids growing the V1 function table.
++#define AMCL_INPUT_EVENT_BACKEND_CONSUMER_STATE 17u
++// Current game-window facts published independently from the native render
++// surface.  This is an additive V1 event: the fixed event envelope remains
++// 120 bytes and older consumers safely ignore eventType 18.
++#define AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED 18u
++// Additive V1 lifecycle for the single process-wide typed text owner.  The
++// fixed 120-byte event envelope is unchanged; older consumers safely ignore
++// eventType 19 and the capability bit advertises the new semantics.
++#define AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED 19u
++
++#define AMCL_INPUT_TEXT_SESSION_STARTED 1u
++#define AMCL_INPUT_TEXT_SESSION_ENDED 2u
++#define AMCL_INPUT_TEXT_SESSION_ABORTED 3u
++
++#define AMCL_INPUT_TEXT_SESSION_REASON_NONE 0u
++#define AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT 1u
++#define AMCL_INPUT_TEXT_SESSION_REASON_FOCUS_LOST 2u
++#define AMCL_INPUT_TEXT_SESSION_REASON_SURFACE_LOST 3u
++#define AMCL_INPUT_TEXT_SESSION_REASON_RESET 4u
++#define AMCL_INPUT_TEXT_SESSION_REASON_INPUT_SESSION_ENDED 5u
++
++// AmclInputSurfaceContextPayload.validFields.  These bits mirror
++// gamecontrol/InputSurfaceContext.ets and are append-only wire ABI.
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW (1u << 0)
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY (1u << 1)
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT (1u << 2)
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY (1u << 3)
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM (1u << 4)
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE (1u << 5)
++#define AMCL_INPUT_SURFACE_CONTEXT_FIELD_ALL                            \
++    (AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW |                         \
++     AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY |                        \
++     AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT |                           \
++     AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY |                        \
++     AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM |                      \
++     AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE)
++
++#define AMCL_INPUT_ACTION_DOWN 1u
++#define AMCL_INPUT_ACTION_REPEAT 2u
++#define AMCL_INPUT_ACTION_UP 3u
++
++#define AMCL_INPUT_DIAGNOSTIC_DROP_OWNERLESS_KEY_REPEAT 1u
++#define AMCL_INPUT_DIAGNOSTIC_DROP_OWNERLESS_KEY_UP 2u
++#define AMCL_INPUT_DIAGNOSTIC_DROP_OWNERLESS_BUTTON_UP 3u
++#define AMCL_INPUT_DIAGNOSTIC_DROP_DUPLICATE_BUTTON_DOWN 4u
++
++// Platform lock-latch snapshot carried by AmclInputPhysicalKeyPayload.lockState.
++//
++// Why an explicit VALID bit: a plain zero cannot distinguish "platform reported
++// all three latches off" from "this SDK/build did not report latch state at
++// all". Without that distinction a consumer would have to guess, and the only
++// available guess is "is the lock key currently held" — which the architecture
++// forbids (Caps/Num/Scroll are latches, not momentary modifiers; see the
++// refactor plan §5.2 and §10.1). Producers therefore set VALID only when the
++// platform actually answered, and consumers that see VALID==0 must treat latch
++// state as unknown instead of inferring it.
++//
++// Why VALID lives at bit 16 instead of bit 0: `modifiersSnapshot` and
++// `lockState` are adjacent uint32 parameters of the same NAPI/ingress
++// signature, so a future argument-order mistake is a realistic failure mode.
++// GLFW modifier bits only occupy bits 0..5 (SHIFT 0x01 … NUM_LOCK 0x20), so
++// placing VALID above them means a misplaced modifier value can never assert
++// "the platform answered". Ingress additionally rejects any bit outside
++// AMCL_INPUT_LOCK_STATE_MASK, which catches the CAPS_LOCK/NUM_LOCK modifier
++// values. Core never repairs lockState: it stores whatever survived the gate.
++//
++// ABI: these are stable wire bits. The ArkTS mirror lives in
++// gamecontrol/src/main/ets/KeyMap.ets (AMCL_LOCK_STATE_*) and the two must be
++// changed together; adding a latch means appending a new bit inside the mask,
++// never renumbering an existing one.
++#define AMCL_INPUT_LOCK_STATE_CAPS (1u << 0)
++#define AMCL_INPUT_LOCK_STATE_NUM (1u << 1)
++#define AMCL_INPUT_LOCK_STATE_SCROLL (1u << 2)
++#define AMCL_INPUT_LOCK_STATE_VALID (1u << 16)
++#define AMCL_INPUT_LOCK_STATE_MASK                                       \
++    (AMCL_INPUT_LOCK_STATE_VALID | AMCL_INPUT_LOCK_STATE_CAPS |          \
++     AMCL_INPUT_LOCK_STATE_NUM | AMCL_INPUT_LOCK_STATE_SCROLL)
++
++#define AMCL_INPUT_DEVICE_ADDED 1u
++#define AMCL_INPUT_DEVICE_REMOVED 2u
++
++#define AMCL_INPUT_DEVICE_CAP_KEYBOARD (1u << 0)
++#define AMCL_INPUT_DEVICE_CAP_POINTER_ABSOLUTE (1u << 1)
++#define AMCL_INPUT_DEVICE_CAP_POINTER_RELATIVE (1u << 2)
++#define AMCL_INPUT_DEVICE_CAP_POINTER_BUTTONS (1u << 3)
++#define AMCL_INPUT_DEVICE_CAP_WHEEL (1u << 4)
++#define AMCL_INPUT_DEVICE_CAP_TEXT (1u << 5)
++#define AMCL_INPUT_DEVICE_CAP_HOVER (1u << 6)
++#define AMCL_INPUT_DEVICE_CAP_CAPTURE (1u << 7)
++// Every currently defined capability bit. Ingress rejects anything outside this
++// mask so an out-of-date producer cannot advertise a capability this ABI has no
++// meaning for. The ArkTS mirror lives in
++// gamecontrol/src/main/ets/InputDeviceAbi.ets (AMCL_DEVICE_CAP_*).
++#define AMCL_INPUT_DEVICE_CAP_MASK                                       \
++    (AMCL_INPUT_DEVICE_CAP_KEYBOARD | AMCL_INPUT_DEVICE_CAP_POINTER_ABSOLUTE | \
++     AMCL_INPUT_DEVICE_CAP_POINTER_RELATIVE |                            \
++     AMCL_INPUT_DEVICE_CAP_POINTER_BUTTONS | AMCL_INPUT_DEVICE_CAP_WHEEL | \
++     AMCL_INPUT_DEVICE_CAP_TEXT | AMCL_INPUT_DEVICE_CAP_HOVER |          \
++     AMCL_INPUT_DEVICE_CAP_CAPTURE)
++
++#define AMCL_INPUT_WHEEL_UNIT_PIXEL 1u
++#define AMCL_INPUT_WHEEL_UNIT_LINE 2u
++#define AMCL_INPUT_WHEEL_UNIT_PAGE 3u
++#define AMCL_INPUT_WHEEL_UNIT_DEGREE 4u
++
++#define AMCL_INPUT_CAPTURE_REASON_NONE 0u
++#define AMCL_INPUT_CAPTURE_REASON_GRANTED 1u
++#define AMCL_INPUT_CAPTURE_REASON_PLATFORM_LOST 2u
++#define AMCL_INPUT_CAPTURE_REASON_FOCUS_LOST 3u
++#define AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST 4u
++#define AMCL_INPUT_CAPTURE_REASON_UNSUPPORTED 5u
++#define AMCL_INPUT_CAPTURE_REASON_PERMISSION_DENIED 6u
++#define AMCL_INPUT_CAPTURE_REASON_INVALID_ARGUMENT 7u
++#define AMCL_INPUT_CAPTURE_REASON_PLATFORM_ERROR 8u
++// One past the highest defined capture reason. This is a diagnostics array bound
++// (§11 requires capture losses to be reported per reason), not a wire value, so
++// it must never be transmitted in a payload. Adding a reason means appending it
++// above and bumping this by one; the per-reason counters are then sized from
++// this constant and a stale bound becomes a bucketing bug rather than an OOB
++// write, because the recorder range-checks the reason against it.
++#define AMCL_INPUT_CAPTURE_REASON_COUNT 9u
++
++#define AMCL_INPUT_RESET_EXPLICIT 1u
++#define AMCL_INPUT_RESET_FOCUS_LOST 2u
++#define AMCL_INPUT_RESET_CAPTURE_LOST 3u
++#define AMCL_INPUT_RESET_SURFACE_CHANGED 4u
++#define AMCL_INPUT_RESET_SESSION_CHANGED 5u
++#define AMCL_INPUT_RESET_QUEUE_OVERFLOW 6u
++#define AMCL_INPUT_RESET_DEVICE_REMOVED 7u
++#define AMCL_INPUT_RESET_BLOB_POOL_EXHAUSTED 8u
++#define AMCL_INPUT_RESET_CONSUMER_BASELINE 9u
++#define AMCL_INPUT_RESET_APPLICATION_BACKGROUND 10u
++#define AMCL_INPUT_RESET_BACKEND_RETIRED 11u
++#define AMCL_INPUT_RESET_BACKEND_ABANDONED 12u
++
++#define AMCL_INPUT_BACKEND_CONSUMER_READY 1u
++#define AMCL_INPUT_BACKEND_CONSUMER_RETIRE 2u
++#define AMCL_INPUT_BACKEND_CONSUMER_ABANDON 3u
++// Backend identities. Each MC era binds a different窗口/输入 ABI, so these are
++// not implementation choices: LWJGL2 (<=1.12) polls DirectInput scan codes,
++// GLFW3 (1.13-26.2) uses callbacks + GLFW key codes, SDL3 (26.3+) wants USB HID
++// scancodes. Every one of them translates the SAME raw OHOS identity exactly
++// once; the neutral core never learns any of their encodings.
++//
++// ⚠️ Values are wire-stable and must only be appended. The READY/RETIRE slots in
++// the host core are keyed by `backend - 1`, so renumbering silently reassigns a
++// live backend's retire barrier to a different consumer.
++#define AMCL_INPUT_BACKEND_GLFW_PHYSICAL 1u
++#define AMCL_INPUT_BACKEND_LWJGL2_PHYSICAL 2u
++#define AMCL_INPUT_BACKEND_SDL3_PHYSICAL 3u
++// One past the highest defined backend. This is a slot-array bound, not a wire
++// value, so it must never be transmitted. Adding a backend means appending above
++// and bumping this by one; a stale bound then becomes a rejected control packet
++// rather than an out-of-bounds slot write, because the core range-checks first.
++#define AMCL_INPUT_BACKEND_COUNT 4u
++
++typedef struct AmclInputBlobRef {
++    uint64_t packetId;
++    uint32_t offset;
++    uint32_t length;
++} AmclInputBlobRef;
++typedef struct AmclInputEventHeader {
++    uint16_t abiVersion;
++    uint16_t structSize;
++    uint32_t eventType;
++    uint32_t flags;
++    uint32_t reserved0;
++    uint64_t sequence;
++    uint64_t monotonicTimeNs;
++    uint64_t deviceId;
++    uint32_t source;
++    // Additive V1 reuse of the former `reserved1` slot. The offset and the
++    // 72-byte header layout are unchanged: old consumers ignore it and new
++    // consumers read zero/UNKNOWN from old zero-initialized producers.
++    uint32_t deviceClass;
++    uint64_t sessionEpoch;
++    uint64_t focusEpoch;
++    uint64_t surfaceEpoch;
++} AmclInputEventHeader;
++
++typedef struct AmclInputPhysicalKeyPayload {
++    uint32_t physicalKey;
++    uint32_t hardwareScanCode;
++    uint32_t hidUsage;
++    uint32_t action;
++    uint32_t modifiersSnapshot;
++    uint32_t lockState;
++    uint32_t reserved[2];
++} AmclInputPhysicalKeyPayload;
++
++typedef struct AmclInputPointerAbsolutePayload { double localPxX; double localPxY; } AmclInputPointerAbsolutePayload;
++// Field names are frozen by event ABI V1.  `rawDx/rawDy` contain relative
++// movement in both compatibility and API 26 products; only
++// AMCL_INPUT_EVENT_FLAG_HARDWARE_RAW asserts hardware-raw semantics.
++typedef struct AmclInputPointerRelativePayload { double rawDx; double rawDy; } AmclInputPointerRelativePayload;
++typedef struct AmclInputPointerButtonPayload {
++    uint32_t nativeButton;
++    uint32_t action;
++    uint32_t modifiersSnapshot;
++    uint32_t reserved;
++} AmclInputPointerButtonPayload;
++typedef struct AmclInputPointerWheelPayload { float x; float y; uint32_t unit; uint32_t precise; } AmclInputPointerWheelPayload;
++typedef struct AmclInputFocusPayload { uint32_t focused; uint32_t reserved[3]; } AmclInputFocusPayload;
++typedef struct AmclInputPointerEnterPayload { uint32_t entered; uint32_t reserved[3]; } AmclInputPointerEnterPayload;
++typedef struct AmclInputDevicePayload { uint32_t change; uint32_t capabilities; uint32_t reserved[2]; } AmclInputDevicePayload;
++typedef struct AmclInputCapturePayload { uint32_t requested; uint32_t active; uint32_t reason; uint32_t reserved; } AmclInputCapturePayload;
++typedef struct AmclInputSurfacePayload {
++    uint32_t widthPx;
++    uint32_t heightPx;
++    uint32_t transform;
++    uint32_t active;
++    float density;
++    uint32_t validFields;
++    // Process-local generation of the retained OHNativeWindow publication.
++    // This is meaningful only when PUBLICATION_GENERATION is set. It is not a
++    // core surfaceEpoch and the two values must never be compared or relabelled:
++    // the producer binds them when it publishes this surface, while a backend
++    // checks the generation against the native window it will actually target.
++    // Reusing the former reserved tail keeps the fixed V1 payload layout.
++    uint64_t publicationGeneration;
++} AmclInputSurfacePayload;
++// RESET 的权威范围：局部消费者恢复不撤销全局来源持有。authorityEpoch 只在真正的
++// core 全局复位时递增，基线重放当前值；即使维护消费者漏过事件，也能判断是否发生过复位。
++#define AMCL_INPUT_RESET_SCOPE_CONSUMER_LOCAL (1u << 31)
++typedef struct AmclInputResetPayload {
++    uint32_t reason;
++    uint32_t scope;
++    uint64_t closingEpoch;
++    uint64_t authorityEpoch;
++} AmclInputResetPayload;
++// A drop reports the original backend-neutral identity. No mapped backend
++// control is present by design, so observing this packet cannot acquire held
++// state or manufacture a GLFW/SDL/LWJGL callback.
++typedef struct AmclInputDiagnosticDropPayload {
++    uint32_t reason;
++    uint32_t originalEventType;
++    uint32_t rawControl;
++    uint32_t action;
++    uint32_t hardwareScanCode;
++    uint32_t hidUsage;
++    uint32_t reserved[6];
++} AmclInputDiagnosticDropPayload;
++
++// READY proves that the named consumer has consumed the exact baseline issued
++// by this host and has snapshotted the epochs carried in the common header.
++// RETIRE and ABANDON use the same identity fields; baselineSequence is zero for
++// those operations.  generation is the function-table ABI generation, while
++// the opaque handle also embeds that generation and is validated separately.
++typedef struct AmclInputBackendConsumerStatePayload {
++    uint32_t state;
++    uint32_t backend;
++    uint64_t consumer;
++    uint64_t generation;
++    uint64_t baselineSequence;
++    uint64_t reserved[2];
++} AmclInputBackendConsumerStatePayload;
++
++// Current Window/display context.  `generation` is owned by the ArkTS
++// InputSurfaceContext publisher lease and advances only when those semantics
++// change.  It is distinct from both core surfaceEpoch and the retained
++// OHNativeWindow publicationGeneration carried by AmclInputSurfacePayload.
++typedef struct AmclInputSurfaceContextPayload {
++    int32_t windowId;
++    int32_t displayId;
++    int32_t leftPx;
++    int32_t topPx;
++    uint32_t widthPx;
++    uint32_t heightPx;
++    float density;
++    float refreshRateHz;
++    uint32_t transform;
++    uint32_t validFields;
++    uint64_t generation;
++} AmclInputSurfaceContextPayload;
++
++typedef struct AmclInputTextCommitPayload {
++    AmclInputBlobRef utf8Blob;
++    // Reuses the leading bytes of the old zeroed tail.  Zero means an old V1
++    // producer and is rejected when TEXT_INPUT_SESSION is advertised.
++    uint64_t textSessionId;
++    uint8_t reserved[24];
++} AmclInputTextCommitPayload;
++typedef struct AmclInputTextEditingPayload {
++    AmclInputBlobRef utf8Blob;
++    uint32_t selectionStart;
++    uint32_t selectionLength;
++    uint64_t textSessionId;
++    uint8_t reserved[16];
++} AmclInputTextEditingPayload;
++typedef struct AmclInputTextCandidatesPayload {
++    AmclInputBlobRef itemsBlob;
++    uint32_t selected;
++    uint32_t pageStart;
++    uint32_t pageSize;
++    uint32_t itemCount;
++    uint64_t textSessionId;
++    uint8_t reserved[8];
++} AmclInputTextCandidatesPayload;
++typedef struct AmclInputTextSelectionPayload {
++    uint32_t selectionStart;
++    uint32_t selectionLength;
++    uint64_t textSessionId;
++    uint8_t reserved[32];
++} AmclInputTextSelectionPayload;
++typedef struct AmclInputTextSessionPayload {
++    uint64_t textSessionId;
++    uint32_t change;
++    uint32_t reason;
++    uint64_t reserved[4];
++} AmclInputTextSessionPayload;
++
++typedef union AmclInputEventPayload {
++    AmclInputPhysicalKeyPayload physicalKey;
++    AmclInputPointerAbsolutePayload pointerAbsolute;
++    AmclInputPointerRelativePayload pointerRelative;
++    AmclInputPointerButtonPayload pointerButton;
++    AmclInputPointerWheelPayload pointerWheel;
++    AmclInputFocusPayload focus;
++    AmclInputPointerEnterPayload pointerEnter;
++    AmclInputDevicePayload device;
++    AmclInputCapturePayload capture;
++    AmclInputSurfacePayload surface;
++    AmclInputResetPayload reset;
++    AmclInputTextCommitPayload textCommit;
++    AmclInputTextEditingPayload textEditing;
++    AmclInputTextCandidatesPayload textCandidates;
++    AmclInputTextSelectionPayload textSelection;
++    AmclInputDiagnosticDropPayload diagnosticDrop;
++    AmclInputBackendConsumerStatePayload backendConsumerState;
++    AmclInputSurfaceContextPayload surfaceContext;
++    AmclInputTextSessionPayload textSession;
++    uint8_t reserved[48];
++} AmclInputEventPayload;
++
++typedef struct AmclInputEvent { AmclInputEventHeader header; AmclInputEventPayload payload; } AmclInputEvent;
++
++#ifdef __cplusplus
++}  // extern "C"
++#define AMCL_INPUT_STATIC_ASSERT(c, m) static_assert((c), m)
++#else
++#define AMCL_INPUT_JOIN_INNER(a, b) a##b
++#define AMCL_INPUT_JOIN(a, b) AMCL_INPUT_JOIN_INNER(a, b)
++#define AMCL_INPUT_STATIC_ASSERT(c, m) \
++    typedef char AMCL_INPUT_JOIN(amcl_input_static_assert_, __LINE__)[(c) ? 1 : -1]
++#endif
++
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputBlobRef) == 16, "blob ref ABI changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputBlobRef, offset) == 8, "blob ref offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputBlobRef, length) == 12, "blob length offset changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputEventHeader) == 72, "event header ABI changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputEventHeader, deviceClass) == 44,
++                         "device class offset changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputSurfacePayload) == 32, "surface payload ABI changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputDiagnosticDropPayload) == 48,
++                         "diagnostic drop payload ABI changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputBackendConsumerStatePayload) == 48,
++                         "backend consumer state payload ABI changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputSurfaceContextPayload) == 48,
++                         "surface context payload ABI changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputSurfaceContextPayload, widthPx) == 16,
++    "surface context dimensions offset changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputSurfaceContextPayload, density) == 24,
++    "surface context density offset changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputSurfaceContextPayload, transform) == 32,
++    "surface context transform offset changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputSurfaceContextPayload, generation) == 40,
++    "surface context generation offset changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputBackendConsumerStatePayload, consumer) == 8,
++    "backend consumer handle offset changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputBackendConsumerStatePayload, baselineSequence) == 24,
++    "backend baseline sequence offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputDiagnosticDropPayload, rawControl) == 8,
++                         "diagnostic raw-control offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputDiagnosticDropPayload, hardwareScanCode) == 16,
++                         "diagnostic scan-code offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputSurfacePayload, validFields) == 20,
++                         "surface validity offset changed");
++AMCL_INPUT_STATIC_ASSERT(
++    offsetof(AmclInputSurfacePayload, publicationGeneration) == 24,
++    "surface publication generation offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputTextCommitPayload, utf8Blob) == 0, "text blob offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputTextCommitPayload, textSessionId) == 16,
++                         "text session offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputTextCandidatesPayload, itemsBlob) == 0, "candidate blob offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputTextCandidatesPayload, textSessionId) == 32,
++                         "candidate session offset changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputTextSessionPayload) == 48,
++                         "text session payload ABI changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputEventHeader, sequence) == 16, "sequence offset changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputEventHeader, sessionEpoch) == 48, "epoch offset changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputEventPayload) == 48, "payload ABI changed");
++AMCL_INPUT_STATIC_ASSERT(offsetof(AmclInputEvent, payload) == 72, "payload offset changed");
++AMCL_INPUT_STATIC_ASSERT(sizeof(AmclInputEvent) == 120, "event ABI changed");
++#undef AMCL_INPUT_STATIC_ASSERT
++#ifndef __cplusplus
++#undef AMCL_INPUT_JOIN
++#undef AMCL_INPUT_JOIN_INNER
++#endif
++
++#endif

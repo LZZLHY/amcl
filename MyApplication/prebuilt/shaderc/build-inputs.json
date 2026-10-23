@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "shadercTag": "v2026.1",
+  "sources": {
+    "shaderc": {
+      "repository": "google/shaderc",
+      "commit": "301b4ede53d59b68bf55f95bb26412d9233c8187",
+      "archiveSha256": "b938f85dec78ca7eb8139dcd1f613930eb7a84a8ce5ea944b6f861c291d916bc"
+    },
+    "glslang": {
+      "repository": "KhronosGroup/glslang",
+      "commit": "f0bd0257c308b9a26562c1a30c4748a0219cc951",
+      "archiveSha256": "bd58dca4dac67dcf7640292d7d63e0416274d40ee2200f7301878cec11ac6647"
+    },
+    "spirv-tools": {
+      "repository": "KhronosGroup/SPIRV-Tools",
+      "commit": "fbe4f3ad913c44fe8700545f8ffe35d1382b7093",
+      "archiveSha256": "cabb35f4eef0da3ef72ad9edd596af4191d7507a8f35c05df526d2d5ff889f59"
+    },
+    "spirv-headers": {
+      "repository": "KhronosGroup/SPIRV-Headers",
+      "commit": "04f10f650d514df88b76d25e83db360142c7b174",
+      "archiveSha256": "1b220e3eec1714f0451b0e3652979bd280edf10893f617837b88e6359a804ded"
+    }
+  }
+}

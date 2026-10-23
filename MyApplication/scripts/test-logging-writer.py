@@ -16,7 +16,7 @@ with workspace_temporary_directory(prefix='amcl-logging-writer-') as temporary:
     exe = out / ('writer.exe' if os.name == 'nt' else 'writer')
     compile_cpp(source, exe, [source.parent / 'logging_stubs'], ['AMCL_DIAGNOSTICS_MASK=0'])
     results = []
-    for mode in ['utc-time', 'reservation', 'wrap', 'prepublished-wakeup', 'retention', 'flush', 'close', 'failed-open', 'global-recovery', 'long-message-budget', 'routing', 'external-sink']:
+    for mode in ['utc-time', 'reservation', 'wrap', 'prepublished-wakeup', 'idle-wakeup', 'retention', 'flush', 'close', 'failed-open', 'global-recovery', 'long-message-budget', 'routing', 'external-sink']:
         run = subprocess.run([str(exe), str(out / mode).replace('\\', '/'), mode], capture_output=True, text=True, timeout=20)
         results.append({'case': mode, 'passed': run.returncode == 0, 'output': run.stdout + run.stderr})
     print(json.dumps(results, ensure_ascii=False, indent=2))

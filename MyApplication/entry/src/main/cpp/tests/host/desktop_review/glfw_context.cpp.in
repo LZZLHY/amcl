@@ -3,10 +3,25 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <cstring>
+#include <string>
 // 此测试只观察生产窗口/TLS/呈现顺序；时钟分布与故障总线有独立生产核心测试。
 int amclGraphicsObservationEnabledV1() { return 1; }
 void amclGraphicsSwapV1(const char*, uint64_t, int, uint32_t) {}
-void amclGraphicsFatalV1(const char*, uint32_t, uint64_t) {}
+// 故障接收端只记录交付事实，不能由测试桩替生产函数设置窗口关闭或清理资源。
+static int fatalReports=0, restartRequests=0;
+static uint32_t fatalError=0;
+void amclGraphicsFatalV1(const char*, uint32_t error, uint64_t) {++fatalReports;fatalError=error;}
+// 生产代码经已登记环境槽位原位置重启标记（I27-05），不再 setenv；桩只记录“请求过重启”这一事实。
+void requestRendererProcessRestart(const char*) {++restartRequests;}
+// 只模拟既有重启标记；生产重启检查函数仍逐字抽取，不以测试自己的判断替代。
+char* TestGetenv(const char* name) {
+    return std::strcmp(name,"AMCL_RENDERER_REQUIRES_PROCESS_RESTART")==0 && restartRequests
+        ? const_cast<char*>("1") : nullptr;
+}
+// 抽取的生产函数若重新引入 setenv，这个无定义的名字会让编译失败，而不是悄悄计数通过。
+#define setenv AMCL_TEST_FORBIDDEN_SETENV
+#define getenv TestGetenv
 using EGLDisplay=void*; using EGLSurface=void*; using EGLContext=void*; using EGLBoolean=int; using EGLint=int; using EGLenum=int;
 #define EGL_NO_DISPLAY nullptr
 #define EGL_NO_SURFACE nullptr
@@ -39,6 +54,9 @@ struct GLFWwindow {
     unsigned int surfaceRecoveryFailures=0;
     int shouldClose=0;
     int contextOwnerTid=0;
+    int swapInterval=0;
+    bool swapIntervalSet=false;
+    struct {const char* stage="";int error=0x3000;unsigned driverFailure=0;} lastFailure;
     EGLDisplay display=reinterpret_cast<void*>(1);
     EGLSurface surface=reinterpret_cast<void*>(2), parkingSurface=reinterpret_cast<void*>(4);
     EGLContext context=reinterpret_cast<void*>(3);
@@ -48,16 +66,18 @@ static thread_local GLFWwindow* g_threadCurrentContext=nullptr;
 static GLFWwindow* g_currentWindow=nullptr;
 static void (*g_errorCallback)(int,const char*)=nullptr;
 static int tid=11, selectedApi=0, driverOwner=0, unbinds=0, eglCalls=0;
-static int lastError=0;
+static int lastError=0, failureCode=0x3002, pendingDriverError=0x3000, errorReads=0;
 static bool nativeGl=true, mobileGl=false, failApi=false, failRelease=false, presentation=true, failSwap=false;
+static bool failBind=false, failInterval=false, consumeErrorInCallback=false;
 static bool deferredSwap=false;
 static uint64_t actualPresentSequence=0;
 int amclGraphicsReadPresentSequenceV1(uint64_t* out){*out=actualPresentSequence;return mobileGl?1:0;}
 static int recordedPresents=0, observedPresents=0, inputPresents=0;
+static uint64_t presentedInputWindow=0,presentedInputGeneration=0;
 static EGLContext driverContext=nullptr;
 static EGLSurface driverSurface=nullptr;
 int gettid(){return tid;}
-int eglBindAPI(int api){++eglCalls;if(failApi)return 0; selectedApi=api;return 1;}
+int eglBindAPI(int api){++eglCalls;if(failApi){pendingDriverError=failureCode;return 0;} selectedApi=api;return 1;}
 // 两种 client API 都必须先在接收线程绑定；模拟 MG frontend API 与系统 GLES 的查询约束。
 bool apiSelected(){return selectedApi==EGL_OPENGL_API || selectedApi==EGL_OPENGL_ES_API;}
 EGLDisplay eglGetCurrentDisplay(){++eglCalls;return apiSelected() && driverOwner==tid?reinterpret_cast<void*>(1):nullptr;}
@@ -65,13 +85,14 @@ EGLContext eglGetCurrentContext(){++eglCalls;return apiSelected() && driverOwner
 EGLSurface eglGetCurrentSurface(int){++eglCalls;return apiSelected() && driverOwner==tid?driverSurface:nullptr;}
 int eglMakeCurrent(EGLDisplay,EGLSurface surface,EGLSurface,EGLContext ctx){
     ++eglCalls;
-    if(ctx){if(driverOwner && driverOwner!=tid)return 0;driverOwner=tid;driverContext=ctx;driverSurface=surface;return 1;}
-    if(failRelease)return 0;
+    if(ctx){if(failBind || (driverOwner && driverOwner!=tid)){pendingDriverError=failureCode;return 0;}driverOwner=tid;driverContext=ctx;driverSurface=surface;return 1;}
+    if(failRelease){pendingDriverError=failureCode;return 0;}
     if(apiSelected()){driverOwner=0;driverContext=nullptr;driverSurface=nullptr;++unbinds;}return 1;
 }
-int eglGetError(){++eglCalls;return 0x3002;}
-int eglSwapBuffers(EGLDisplay,EGLSurface){++eglCalls;if(!failSwap && !deferredSwap)++actualPresentSequence;return failSwap?0:EGL_TRUE;}
-void ReportError(int error,const char*){lastError=error;}
+int eglGetError(){++eglCalls;++errorReads;const int error=pendingDriverError;pendingDriverError=0x3000;return error;}
+int eglSwapBuffers(EGLDisplay,EGLSurface){++eglCalls;if(failSwap){pendingDriverError=failureCode;return 0;}if(!deferredSwap)++actualPresentSequence;return EGL_TRUE;}
+int eglSwapInterval(EGLDisplay,int){++eglCalls;if(failInterval){pendingDriverError=failureCode;return 0;}return EGL_TRUE;}
+void ReportError(int error,const char*){lastError=error;if(consumeErrorInCallback)(void)eglGetError();}
 bool consumePublishedSurfaceState(GLFWwindow*,const char*,bool){return presentation;}
 long long currentTimeMs(){return 100;}
 long long scheduleSurfaceRecovery(GLFWwindow* window){++window->surfaceRecoveryFailures;return 1;}
@@ -79,13 +100,23 @@ void markEglSurfaceDetachPending(GLFWwindow* window,const char*){window->eglSurf
 bool suspendGraphicsBackendSession(GLFWwindow*){return true;}
 bool destroyGraphicsBackendSession(GLFWwindow*,bool){return true;}
 void recordGraphicsBackendSessionPresent(GLFWwindow*){++recordedPresents;}
-void inputBridge_notifyFramePresented(){++inputPresents;}
+// 仅记录生产swap的精确出口；不能让替身选择窗口或提供匿名成功代替真实目标。
+void inputBridge_notifyFramePresentedForTargetV1(uint64_t window,uint64_t generation){
+    ++inputPresents;presentedInputWindow=window;presentedInputGeneration=generation;
+}
 void observePresentedFrame(){++observedPresents;}
 void amcl_sampler_set_render_tid(int){}
 void amcl_sampler_start(){}
 // provider 类别是系统边界桩；生产 GLFW current/swap 函数仍从当前源码抽取。
 namespace amcl::desktop {bool NativeGlRequested(){return nativeGl;} bool UsesDesktopOpenGlContext(){return nativeGl || mobileGl;}}
 namespace amcl::ohos {void LeaveInteractiveRenderQoS(const char*){} void EnterInteractiveRenderQoS(const char*){}}
+// 每个故障场景从独立驱动状态开始；不借上一个场景的 current、错误或终局报告制造阳性。
+void ResetFailureFixture(){
+    driverOwner=0;driverContext=nullptr;driverSurface=nullptr;g_threadCurrentContext=nullptr;
+    failApi=failBind=failRelease=failSwap=failInterval=deferredSwap=false;
+    fatalReports=restartRequests=0;fatalError=0;lastError=0;pendingDriverError=0x3000;errorReads=0;
+    selectedApi=0;presentation=true;consumeErrorInCallback=false;
+}
 @PRODUCTION@
 int main(){
     GLFWwindow window;
@@ -157,6 +188,7 @@ int main(){
     failSwap=false;
     glfwSwapBuffers(&window);
     CHECK(recordedPresents==1 && observedPresents==1 && inputPresents==1);
+    CHECK(presentedInputWindow==reinterpret_cast<uint64_t>(&window) && presentedInputGeneration==window.nativeWindowGeneration);
     failSwap=true;
     glfwSwapBuffers(&window);
     CHECK(recordedPresents==1 && observedPresents==1 && inputPresents==1);
@@ -177,5 +209,85 @@ int main(){
     deferredSwap=false;glfwSwapBuffers(&window);
     CHECK(recordedPresents==2 && observedPresents==2 && inputPresents==2);
     glfwMakeContextCurrent(nullptr);
+    // 同一生产函数在三种 provider 形态、有/无错误回调下都必须识别 context lost。
+    // 普通 EGL_BAD_ACCESS 是反向对照：保留 owner/资源但不触发终局。回调故意消费
+    // eglGetError，证明驱动首因已在调用回调之前保存，不能靠迟读错误碰巧通过。
+    for(int provider=0;provider<3;++provider) for(bool callback : {false,true})
+    for(int code : {0x3002,EGL_CONTEXT_LOST}) for(int operation=0;operation<8;++operation){
+        ResetFailureFixture();nativeGl=provider==0;mobileGl=provider==2;failureCode=code;
+        g_errorCallback=callback?ReportError:nullptr;consumeErrorInCallback=callback;
+        GLFWwindow subject;subject.auxiliary=operation==4;
+        // bind 与首次 API 选择没有 current；其他场景先正常取得所有权。
+        if(operation>=2)glfwMakeContextCurrent(&subject);
+        const int owner=subject.contextOwnerTid;
+        auto* const tls=g_threadCurrentContext;
+        if(operation==0){failBind=true;glfwMakeContextCurrent(&subject);}
+        if(operation==1){failApi=true;glfwMakeContextCurrent(&subject);}
+        if(operation==2){failRelease=true;glfwMakeContextCurrent(nullptr);}
+        if(operation==3){failApi=true;glfwMakeContextCurrent(nullptr);}
+        if(operation==4 || operation==5){failSwap=true;glfwSwapBuffers(&subject);}
+        if(operation==6){failInterval=true;glfwSwapInterval(0);}
+        if(operation==7){failApi=true;glfwSwapBuffers(&subject);}
+        const bool lost=code==EGL_CONTEXT_LOST;
+        CHECK(subject.contextLostFatal==lost && subject.shouldClose==(lost?1:0));
+        CHECK(fatalReports==(lost?1:0) && restartRequests==(lost?1:0));
+        CHECK(subject.lastFailure.driverFailure==1 && subject.lastFailure.error==code);
+        CHECK(subject.contextOwnerTid==owner && g_threadCurrentContext==tls);
+        CHECK(subject.display==reinterpret_cast<void*>(1) && subject.context==reinterpret_cast<void*>(3));
+        CHECK(subject.surface==reinterpret_cast<void*>(2) && subject.parkingSurface==reinterpret_cast<void*>(4));
+        // 普通呈现 swap 错误原路径只记录并退避；其余失败及终局 swap 会通知已注册回调。
+        const bool callbackCalled=callback && (operation!=5 || lost);
+        CHECK(errorReads==(callbackCalled?2:1));
+        if(lost){
+            CHECK(fatalError==EGL_CONTEXT_LOST);
+            const char* firstStage=subject.lastFailure.stage;
+            recordGlfwEglFailure(&subject,"later-retirement-error",0x3002);
+            CHECK(subject.lastFailure.stage==firstStage && subject.lastFailure.error==EGL_CONTEXT_LOST);
+            // 终局之后再次 bind/swap/interval 都不能进入 EGL，也不能创建恢复所需的新状态。
+            const int before=eglCalls;consumeErrorInCallback=false;
+            glfwMakeContextCurrent(&subject);glfwSwapBuffers(&subject);glfwSwapInterval(1);
+            CHECK(eglCalls==before && fatalReports==1);
+            GLFWwindow peer;
+            CHECK(glfwOHOS_MakeContextCurrentChecked(&peer)==0);
+            glfwSwapBuffers(&peer);
+            CHECK(eglCalls==before && !peer.contextLostFatal && peer.contextOwnerTid==0);
+            // nullptr release 是真实 owner 的清理操作，即使进程已终局也必须保留这条退出路。
+            failApi=failBind=failRelease=false;
+            CHECK(glfwOHOS_MakeContextCurrentChecked(nullptr)==1);
+            CHECK(!g_threadCurrentContext && subject.contextOwnerTid==0);
+        }
+    }
+    ResetFailureFixture();g_errorCallback=nullptr;
+    // checked ABI 必须报告本次失败。旧 TLS 恰好仍指向同一窗口时，仅比较 GetCurrentContext
+    // 会产生假成功；这里强制真实重新绑定失败，同时验证失败没有破坏原 owner/TLS。
+    GLFWwindow checked;
+    CHECK(glfwOHOS_MakeContextCurrentChecked(&checked)==1);
+    driverSurface=checked.parkingSurface;failBind=true;failureCode=0x3002;
+    CHECK(glfwOHOS_MakeContextCurrentChecked(&checked)==0);
+    CHECK(g_threadCurrentContext==&checked && checked.contextOwnerTid==tid && !checked.contextLostFatal);
+    failBind=false;CHECK(glfwOHOS_MakeContextCurrentChecked(&checked)==1);
+    failRelease=true;CHECK(glfwOHOS_MakeContextCurrentChecked(nullptr)==0);
+    CHECK(g_threadCurrentContext==&checked && checked.contextOwnerTid==tid);
+    failRelease=false;CHECK(glfwOHOS_MakeContextCurrentChecked(nullptr)==1);
+    CHECK(!g_threadCurrentContext && checked.contextOwnerTid==0);
+    CHECK(glfwOHOS_MakeContextCurrentChecked(nullptr)==1);
+    // 专用入口另外逐字抽取 create 的零分配前缀；完整 recipe 消费者无需额外函数桩。
+#ifdef AMCL_TEST_CREATE_PREFIX
+    ResetFailureFixture();g_errorCallback=ReportError;
+    CHECK(TestCreatePrefix()==1 && createTailCalls==1);
+    restartRequests=1;
+    CHECK(TestCreatePrefix()==0 && createTailCalls==1 && lastError==GLFW_PLATFORM_ERROR);
+    // typed core 的 context lost 要先交付原始错误，不得被随后通用创建失败丢成 code=0。
+    ResetFailureFixture();g_errorCallback=ReportError;GLFWwindow typed;typed.contextLostFatal=true;typed.shouldClose=1;
+    typed.lastFailure={"typed-attach",EGL_CONTEXT_LOST,1u};
+    CHECK(!report(&typed,"attach",false,std::string("typed failure")));
+    CHECK(fatalReports==1 && fatalError==EGL_CONTEXT_LOST && restartRequests==1 && errorReads==0);
+    // report 属于 session 内部调用栈，用户回调必须推迟到该事务已返回的公共入口。
+    CHECK(lastError==0);
+    ResetFailureFixture();typed.lastFailure={"functional-probe",0x3000,0u};
+    CHECK(!report(&typed,"functional-probe",false,std::string("probe cleanup")));
+    CHECK(fatalReports==0 && restartRequests==1);
+#endif
     std::puts("GLFW context ownership, NO_API isolation and successful-swap-only presentation counters PASS");
+    std::puts("GLFW EGL failure boundaries PASS: bind/release/API/auxiliary and presented swap/interval; first cause and resource ownership retained");
 }

@@ -20,6 +20,7 @@ const char* errorKindToString(ErrorKind k) {
         case ErrorKind::InternalError:       return "InternalError";
         case ErrorKind::QuotaExceededError:  return "QuotaExceededError";
         case ErrorKind::StorageIoError:      return "StorageIoError";
+        case ErrorKind::AuthorizationRenewalRequired: return "AuthorizationRenewalRequired";
     }
     return "Unknown";
 }
@@ -40,6 +41,16 @@ std::string DownloadException::toString() const {
         os << ": " << message;
     }
     return os.str();
+}
+
+DownloadExceptionPtr makeRetryTerminationException(const DownloadExceptionPtr& cause,
+                                                   const std::string& stop_reason) {
+    if (!cause) return makeException(ErrorKind::ConnectionError, stop_reason);
+    // 原异常可能同时是源的 lastError；终态文案必须写入独立对象，保留原始失败证据。
+    auto result = std::make_shared<DownloadException>(*cause);
+    if (!result->message.empty()) result->message += "; ";
+    result->message += "stopped: " + stop_reason;
+    return result;
 }
 
 } // namespace download

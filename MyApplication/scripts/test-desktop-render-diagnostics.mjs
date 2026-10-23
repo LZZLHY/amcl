@@ -67,8 +67,27 @@ for(const product of ['desktop']){
     const c=r.page();s.newProbeText='PAGE_COMPLETE_HEAD\nPAGE_COMPLETE_TAIL';await c.verify(true);
     assert(c.saveError==='');assert(p.read(s.filesDir).text.includes('PAGE_COMPLETE_TAIL'));
     const fresh=r.page();fresh.restoreSaved(true);assert(fresh.result.includes('PAGE_COMPLETE_TAIL'));
+    // 模拟上次在建好render/probes后被中断：目录已存在而原件尚未提交。strict SDK mkdir
+    // 对已有目标真实抛13900015；生产页面必须通过ordinary ensure安全复用并保存本局原件。
+    const intended=p.read(s.filesDir),retryDirectory=r.ledger.ledgerDirOf(s.filesDir,intended.capturedAt)+'/render/probes';
+    fs.mkdirSync(retryDirectory,{recursive:true});fs.writeFileSync(retryDirectory+'/retry-sentinel.txt','KEEP RETRY EVIDENCE');
     await fresh.shareResult();assert.equal(s.posts.length,first,'diagnostic action opens the shared preview page without network');
+    assert.equal(fresh.shareStatus,'','ordinary目录EEXIST不能变成首次分享失败');
+    assert.equal(fs.readFileSync(retryDirectory+'/retry-sentinel.txt','utf8'),'KEEP RETRY EVIDENCE');
     const route=s.routes.at(-1);assert.equal(route.url,'pages/ActivityLogPage');assert.equal(route.params.showShare,true);
+    assert.equal(route.params.activityId,intended.capturedAt,'EEXIST重试仍打开本局已提交诊断');
+    // 相同身份重复分享只复用sealed原件与结局；并发第二次点击在首次await前被sharing阻止。
+    const dir=r.ledger.ledgerDirOf(s.filesDir,route.params.activityId),raw=fs.readFileSync(dir+'/render/probes/desktop.json','utf8');
+    const manifestBefore=fs.readFileSync(dir+'/manifest.json','utf8'),evidenceBefore=fs.readFileSync(dir+'/evidence-manifest.json','utf8');
+    const routeCount=s.routes.length,pendingShare=fresh.shareResult();assert.equal(fresh.sharing,true);
+    await fresh.shareResult();await pendingShare;assert.equal(s.routes.length,routeCount+1);
+    assert.equal(fs.readFileSync(dir+'/render/probes/desktop.json','utf8'),raw);
+    assert.equal(fs.readFileSync(dir+'/manifest.json','utf8'),manifestBefore);
+    assert.equal(fs.readFileSync(dir+'/evidence-manifest.json','utf8'),evidenceBefore);
+    // 模拟同capturedAt的已存诊断文本变化，执行真实页面方法必须拒绝覆盖原件。
+    const read=p.read;p.read=files=>({...read(files),text:'CONFLICT_SAME_ID'});
+    await fresh.shareResult();assert(fresh.shareStatus.includes('原始内容已变化'));assert.equal(fresh.sharing,false);
+    assert.equal(fs.readFileSync(dir+'/render/probes/desktop.json','utf8'),raw);p.read=read;
     const diagnostic=r.activity(route.params.activityId);
     await diagnostic.prepare_(false);assert(diagnostic.snapshot,diagnostic.errorText);
     assert(diagnostic.snapshot.files.some(file=>file.role==='renderer-probe'));
