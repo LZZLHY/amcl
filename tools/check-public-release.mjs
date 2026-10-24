@@ -18,7 +18,9 @@ assert.match(snapshot.sourceCommit, /^[a-f0-9]{40}$/);
 assert.equal(app.versionName, update.versionName);
 assert.equal(app.versionCode, update.versionCode);
 assert.equal(update.tag, `v${app.versionName}`);
-assert.equal(update.url, 'https://github.com/LZZLHY/amcl/releases/latest');
+// 通知清单绑定已核验的发行 tag；Latest 是独立的默认下载入口，会随后续正式版前进，
+// 不能作为某一版通知的固定原件身份。这里仍严格核对官方仓库与当前包对应的精确 tag。
+assert.equal(update.url, `https://github.com/LZZLHY/amcl/releases/tag/${update.tag}`);
 const displayed = read('MyApplication/commons/src/main/ets/common/Constants.ets').match(/APP_VERSION\s*=\s*'([^']+)'/);
 assert.equal(displayed?.[1], app.versionName);
 const changelog = json('changelog.json');
