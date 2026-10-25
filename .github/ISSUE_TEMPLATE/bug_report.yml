@@ -1,0 +1,38 @@
+name: 问题与构建失败
+description: 报告可以复现的应用异常、崩溃或公开源码构建问题。
+title: "[问题] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有 Issue，并提供与问题相关的最小信息。公开源码随版本发布同步；源码构建问题请同时记录公开 commit。上传日志前检查账号令牌、个人路径等内容，只保留定位所需片段。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与环境
+      description: 应用版本/产品、设备与系统；源码构建问题再补公开 commit、主机系统、SDK 和实际工具版本。
+      placeholder: "例如：应用版本 …，sideload；设备 …，系统 …。"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤与预期
+      description: 按顺序列出操作、预期结果和实际结果；游戏问题附游戏版本、加载器和必要模组/渲染后端。
+      placeholder: |
+        1. …
+        2. …
+        预期：…
+        实际：…
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志、截图或失败命令
+      description: 提供实际错误、与本次操作对应的日志片段及已尝试的处理；不要只贴最终“构建失败”一行。
+  - type: textarea
+    id: scope
+    attributes:
+      label: 复现范围与补充信息
+      description: 是否稳定复现、哪个版本开始出现、是否修改过源码或第三方输入，以及尚不确定的部分。
