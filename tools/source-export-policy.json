@@ -3,7 +3,7 @@
   "description": "人工发行导出边界。新增源码根必须分类；内部资料不自动转为公开。必要事实文档逐项审阅后加入 sourceFiles。",
   "sourceRoots": ["account", "AppScope", "commons", "config", "docker", "entry", "feature_core", "feature_system", "gamecontrol", "hvigor", "JavaApp", "JavaCpuAgent", "JavaAudioServiceAgent", "launch", "mods", "prebuilt", "scripts", "tests", "tools", "update"],
   "sourceFiles": [
-    ".gitattributes", ".clang-tidy", "amcl-build-menu.bat", "build-dependencies.local.json.example",
+    ".gitattributes", "amcl-build-menu.bat", "build-dependencies.local.json.example",
     "build-app.ps1", "build-hap.ps1", "build-delivery.ps1", "code-linter.json5", "deps.lock", "deps.versions",
     "hvigorfile.ts", "oh-package.json5", "oh-package-lock.json5", "setup_deps.sh", "toolchain.lock",
     "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_core.cpp",
@@ -13,7 +13,7 @@
   "privateRoots": [".github", ".idea", ".vscode", ".codex", ".cursor", ".claude", ".kiro", ".aoci", "docs"],
   "privateFiles": ["AGENTS.md", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "build-dependencies.local.json", "local.properties", "build-profile.json5"],
   "publicOwnedFiles": [
-    ".gitignore", ".gitmodules", "LICENSE", "NOTICE", "README.md", "build-profile.json5.template",
+    ".gitignore", ".gitmodules", ".clang-tidy", "LICENSE", "NOTICE", "README.md", "build-profile.json5.template",
     "docker/patches/README.md", "docs/BUILD_SNAPSHOT.md", "docs/CREDITS.md", "docs/README.md", "docs/architecture.md", "docs/public-reproduction-audit.md",
     "entry/src/main/cpp/openal/README.md", "entry/src/main/cpp/tests/host/desktop_review/README.md",
     "prebuilt/README.md", "prebuilt/curl/README.md", "prebuilt/forge/README.md", "prebuilt/gl4es/README.md",
