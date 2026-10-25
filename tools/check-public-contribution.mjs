@@ -4,8 +4,10 @@
  * 修改源码；两者不能共用“当前文件必须等于发行清单”的判据。此工具没有私有仓、
  * SDK、签名或发布权限，只提供来源、变更范围及适用的无 SDK 语法检查。
  *
- * 用法：node tools/check-public-contribution.mjs --base <40位公开基线commit> [--json]
+ * 用法：node tools/check-public-contribution.mjs --base <40位公开基线commit> [--json] [--release-sync]
  * 正式 SOURCE_SNAPSHOT.json 由维护者发版生成，贡献者不应重写它来使修改版冒充原版。
+ * --release-sync 仅供维护者显式核对已提交、干净的人工同步候选；它不授权发布，
+ * 也不能代替私有源提交、真实构建或用户批准。公共 CI 仅向同仓 owner PR 开放此模式。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,13 +16,16 @@ import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import { parseJson5 } from '../MyApplication/scripts/product-contract.mjs';
+import { classify } from './lib/source-export.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const snapshotPath = 'MyApplication/SOURCE_SNAPSHOT.json';
 const args = process.argv.slice(2);
 const jsonOutput = args.includes('--json');
+const releaseSync = args.includes('--release-sync');
 const report = {
-  ok: false, base: null, sourceCommit: null, baselineFiles: 0, changes: [], checks: [], failures: [],
+  ok: false, mode: releaseSync ? 'release-sync' : 'contribution', base: null, sourceCommit: null,
+  baselineFiles: 0, candidate: null, changes: [], checks: [], failures: [],
   notRun: ['HarmonyOS SDK / HAP 编译', '第三方 Native / 游戏 JDK 重建', '设备安装与游戏运行'],
 };
 
@@ -58,7 +63,7 @@ function treeAt(commit) {
  * 的 Native 制品一次加载进 JS 堆。LF 规范化跨 stdout 块保持 UTF-8/CRLF 边界完整。
  * 进程结束前同时核对对象头、字节数、分隔符及全部摘要，任何缺项都使检查失败。
  */
-async function verifyBlobs(records) {
+async function verifyBlobs(records, label) {
   const items = [...records.values()];
   if (!items.length) throw new Error('公开基线清单没有文件');
   await new Promise((resolve, reject) => {
@@ -108,7 +113,7 @@ async function verifyBlobs(records) {
           if (remaining === 0) {
             if (decoder) { text(decoder.end()); if (trailingCR) hash.update(trailingCR); }
             const item = items[index];
-            if (hash.digest('hex') !== item.sha256) throw new Error(`公开基线原版哈希不符：${item.relative}`);
+            if (hash.digest('hex') !== item.sha256) throw new Error(`${label}原版哈希不符：${item.relative}`);
             remaining = null;
             separator = true;
           }
@@ -129,10 +134,10 @@ async function verifyBlobs(records) {
  * 原版校验只读取 --base 的不可变对象。清单中的直接文件、依赖补丁、脱敏证据和
  * gitlink 分别核对，不能用 PR 自己提交的新哈希作为其来源证明。
  */
-async function verifyBaseline(commit) {
+async function verifySnapshot(commit, label, { requireModes = false } = {}) {
   const tree = treeAt(commit);
   const manifest = JSON.parse(git('show', `${commit}:${snapshotPath}`));
-  if (manifest.sourceDirty !== false || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit ?? '')
+  if (manifest.schema !== 1 || manifest.sourceDirty !== false || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit ?? '')
       || !Array.isArray(manifest.entries) || !manifest.entries.length) {
     throw new Error('公开基线必须含有干净、完整来源身份的 SOURCE_SNAPSHOT.json');
   }
@@ -155,8 +160,12 @@ async function verifyBaseline(commit) {
     }
     records.set(key, { ...object, relative: full, sha256, normalization });
   };
+  const entryPaths = new Set();
   for (const entry of manifest.entries) {
+    if (entryPaths.has(entry.path)) throw new Error(`${label}包含重复源码条目：${entry.path}`);
+    entryPaths.add(entry.path);
     add(entry.path, entry.sha256, entry.normalization);
+    if (requireModes && !['100644', '100755'].includes(entry.mode)) throw new Error(`${label}源码条目缺少有效 Git mode：${entry.path}`);
     if (entry.mode && tree.get(`MyApplication/${entry.path}`)?.mode !== entry.mode) throw new Error(`公开基线 Git mode 不符：${entry.path}`);
   }
   if (manifest.publicGitmodulesSha256) {
@@ -164,7 +173,10 @@ async function verifyBaseline(commit) {
     if (!modules || modules.type !== 'blob' || modules.mode !== '100644') throw new Error('公开基线缺少根 .gitmodules');
     records.set('.gitmodules:lf', { ...modules, relative: '.gitmodules', sha256: manifest.publicGitmodulesSha256, normalization: 'lf' });
   }
+  const dependencyPaths = new Set();
   for (const dependency of manifest.dependencyWorktrees ?? []) {
+    if (dependencyPaths.has(dependency.path)) throw new Error(`${label}包含重复 gitlink：${dependency.path}`);
+    dependencyPaths.add(dependency.path);
     const relative = `MyApplication/${safePath(dependency.path)}`;
     const entry = tree.get(relative);
     if (!entry || entry.mode !== '160000' || entry.object !== dependency.baseCommit) {
@@ -174,9 +186,47 @@ async function verifyBaseline(commit) {
   }
   for (const evidence of manifest.publicEvidence ?? []) add(evidence.path, evidence.publicSha256, 'lf');
   if (manifest.publicEvidenceLockSha256) add('gate0-evidence.lock', manifest.publicEvidenceLockSha256, 'lf');
-  await verifyBlobs(records);
-  report.sourceCommit = manifest.sourceCommit;
-  report.baselineFiles = records.size;
+  await verifyBlobs(records, label);
+  return { tree, manifest, entryPaths, verifiedFiles: records.size };
+}
+
+/**
+ * 清单变更的维护者候选须覆盖候选 Git 树中的全部导出源码，而非只核对清单自己列出的
+ * 子集。归属规则取候选 commit 的冻结 policy，与导出器复用同一 classify 函数；
+ * 公开专属文档/工具及正常生成物保持各自边界，删除了源码的版本不要求保留旧文件。
+ */
+function verifyCandidateCoverage(commit, candidate) {
+  const policy = JSON.parse(git('show', `${commit}:tools/source-export-policy.json`));
+  const fields = ['publicOwnedFiles', 'generatedFiles', 'derivedEvidence', 'excludedSegments',
+    'excludedExtensions', 'sourceFiles', 'privateFiles', 'privateRoots', 'sourceRoots'];
+  if (policy.schemaVersion !== 1 || fields.some(field => !Array.isArray(policy[field]))) {
+    throw new Error('公开候选缺少可验证的导出归属规则');
+  }
+  const links = new Set((candidate.manifest.dependencyWorktrees ?? []).map(item => item.path));
+  const evidence = new Set((candidate.manifest.publicEvidence ?? []).map(item => item.path));
+  for (const [full, object] of candidate.tree) {
+    if (!full.startsWith('MyApplication/')) continue;
+    const relative = safePath(full.slice('MyApplication/'.length));
+    const owner = classify(relative, policy);
+    if (owner === 'source' && object.mode === '160000' && !links.has(relative)) {
+      throw new Error(`公开候选清单遗漏 gitlink：${relative}`);
+    }
+    if (owner === 'source' && object.type === 'blob' && !candidate.entryPaths.has(relative)) {
+      throw new Error(`公开候选清单遗漏源码文件：${relative}`);
+    }
+    if (owner === 'derived' && object.type === 'blob' && !evidence.has(relative)) {
+      throw new Error(`公开候选清单遗漏派生证据：${relative}`);
+    }
+    if (relative === 'DEPENDENCY_INPUTS.json' && !candidate.entryPaths.has(relative)) {
+      throw new Error('公开候选清单遗漏派生依赖报告');
+    }
+  }
+  if (candidate.tree.has('MyApplication/gate0-evidence.lock') && !candidate.manifest.publicEvidenceLockSha256) {
+    throw new Error('公开候选清单遗漏 Gate 0 锁身份');
+  }
+  if (candidate.tree.has('.gitmodules') && !candidate.manifest.publicGitmodulesSha256) {
+    throw new Error('公开候选清单遗漏根 .gitmodules 身份');
+  }
 }
 
 /**
@@ -197,9 +247,13 @@ function changedFiles(commit) {
 }
 
 /** 对实际变更执行可用的无 SDK 检查；这里不启动脚本本身，也不自动构建整个应用。 */
-function checkChanges(changes) {
+function checkChanges(changes, verifiedRelease = false) {
   for (const change of changes) {
     if (change.path === snapshotPath) {
+      if (verifiedRelease) {
+        report.checks.push({ path: change.path, check: 'committed release snapshot verified from Git objects' });
+        continue;
+      }
       report.failures.push('SOURCE_SNAPSHOT.json 只由维护者发版同步生成；请保留基线清单，直接提交源码修改。');
       continue;
     }
@@ -236,21 +290,36 @@ try {
   if (args.filter(value => value === '--base').length !== 1) throw new Error('必须提供一次 --base <完整40位公开基线commit>');
   const baseIndex = args.indexOf('--base');
   const commit = args[baseIndex + 1];
-  const allowed = new Set([baseIndex, baseIndex + 1, ...(jsonOutput ? [args.indexOf('--json')] : [])]);
+  const allowed = new Set([baseIndex, baseIndex + 1, ...(jsonOutput ? [args.indexOf('--json')] : []),
+    ...(releaseSync ? [args.indexOf('--release-sync')] : [])]);
   if (!/^[a-f0-9]{40}$/.test(commit ?? '') || args.some((_, index) => !allowed.has(index))) {
-    throw new Error('用法：node tools/check-public-contribution.mjs --base <完整40位公开基线commit> [--json]');
+    throw new Error('用法：node tools/check-public-contribution.mjs --base <完整40位公开基线commit> [--json] [--release-sync]');
   }
   report.base = commit;
   if (git('rev-parse', '--verify', `${commit}^{commit}`).trim() !== commit) throw new Error('公开基线不是可读取的 Git commit');
-  await verifyBaseline(commit);
+  const baseline = await verifySnapshot(commit, '公开基线');
+  report.sourceCommit = baseline.manifest.sourceCommit;
+  report.baselineFiles = baseline.verifiedFiles;
+  if (releaseSync) {
+    if (git('status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none').trim()) {
+      throw new Error('维护者源码同步检查要求已提交且干净的候选 HEAD；请先提交同步结果，不检查未提交或脏工作树。');
+    }
+    const head = git('rev-parse', '--verify', 'HEAD^{commit}').trim();
+    const manifestChanged = baseline.tree.get(snapshotPath)?.object !== treeAt(head).get(snapshotPath)?.object;
+    const candidate = await verifySnapshot(head, '公开候选', { requireModes: manifestChanged });
+    if (manifestChanged) verifyCandidateCoverage(head, candidate);
+    report.candidate = { commit: head, sourceCommit: candidate.manifest.sourceCommit,
+      verifiedFiles: candidate.verifiedFiles, manifestChanged, coverageChecked: manifestChanged };
+  }
   report.changes = changedFiles(commit);
-  checkChanges(report.changes);
+  checkChanges(report.changes, releaseSync && report.candidate !== null);
   report.ok = report.failures.length === 0;
 } catch (error) { report.failures.push(error.message); }
 
 if (jsonOutput) console.log(JSON.stringify(report, null, 2));
 else {
-  console.log(`${report.ok ? 'PASS' : 'FAIL'} public contribution: base=${report.base}, verified original files=${report.baselineFiles}, changes=${report.changes.length}`);
+  console.log(`${report.ok ? 'PASS' : 'FAIL'} public ${report.mode}: base=${report.base}, verified original files=${report.baselineFiles}, changes=${report.changes.length}`);
+  if (report.candidate) console.log(`  committed candidate=${report.candidate.commit}, verified files=${report.candidate.verifiedFiles}, snapshot changed=${report.candidate.manifestChanged}`);
   for (const change of report.changes) console.log(`  ${change.status} ${change.path}`);
   for (const failure of report.failures) console.error(`  ${failure}`);
   console.log(`未执行：${report.notRun.join('；')}。通过仅表示上述基线与无 SDK 检查通过。`);

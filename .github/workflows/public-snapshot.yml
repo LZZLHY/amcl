@@ -45,7 +45,14 @@ jobs:
       - name: Verify original base and check proposed changes
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
-        run: node tools/check-public-contribution.mjs --base "$BASE_COMMIT"
+          # 仅信任 GitHub 事件提供的作者和 head 仓库身份，不读取 PR 正文/标签来授权。
+          RELEASE_SYNC: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner }}
+        run: |
+          if [ "$RELEASE_SYNC" = "true" ]; then
+            node tools/check-public-contribution.mjs --base "$BASE_COMMIT" --release-sync
+          else
+            node tools/check-public-contribution.mjs --base "$BASE_COMMIT"
+          fi
       - name: Check public project configuration parser
         run: node MyApplication/scripts/test-project-json5.mjs
       - name: State verification scope

@@ -62,7 +62,14 @@ try {
   git('config', 'user.email', 'fixture@example.invalid');
   git('config', 'core.autocrlf', 'false');
   write('tools/check-public-contribution.mjs', fs.readFileSync(path.join(tools, 'check-public-contribution.mjs')));
+  write('tools/lib/source-export.mjs', fs.readFileSync(path.join(tools, 'lib/source-export.mjs')));
+  write('tools/dependency-inputs.mjs', fs.readFileSync(path.join(tools, 'dependency-inputs.mjs')));
   write('MyApplication/scripts/product-contract.mjs', fs.readFileSync(path.join(tools, '../MyApplication/scripts/product-contract.mjs')));
+  // 夹具复用生产归属规则，仅把测试运行所需的解析器列为夹具公开自管输入。
+  // 这样候选完整性检查面对真实的分类函数，不用伪造另一个宽松判定器。
+  const exportPolicy = JSON.parse(fs.readFileSync(path.join(tools, 'source-export-policy.json'), 'utf8'));
+  exportPolicy.publicOwnedFiles.push('scripts/product-contract.mjs');
+  write('tools/source-export-policy.json', JSON.stringify(exportPolicy, null, 2) + '\n');
   const originals = new Map([
     ['entry/src/main/ets/Feature.ets', 'export const featureValue = 1;\n'],
     ['scripts/proposal.mjs', 'export const value = 1;\n'],
@@ -128,6 +135,71 @@ try {
   rejected('abbreviated base rejected', run(base.slice(0, 7)), /40位/);
   rejected('unknown base rejected', run('f'.repeat(40)), /Git rev-parse/);
   rejected('unknown option rejected', run(base, ['--unsafe']), /用法/);
+
+  // 维护者人工同步是独立显式模式；新清单必须与已提交 Git 对象及归属规则闭合。
+  const release = structuredClone(manifest);
+  release.sourceCommit = 'c'.repeat(40);
+  release.exporter = { schemaVersion: 2 };
+  for (const entry of release.entries) entry.mode = '100644';
+  const feature = 'entry/src/main/ets/Feature.ets';
+  const featureContents = 'export const featureValue = 2;\n';
+  write(`MyApplication/${feature}`, featureContents);
+  release.entries.find(entry => entry.path === feature).sha256 = createHash('sha256').update(featureContents).digest('hex');
+  const modules = `[submodule "MyApplication/${dependency}"]\n path = MyApplication/${dependency}\n url = https://example.invalid/fixture.git\n`;
+  write('.gitmodules', modules);
+  release.publicGitmodulesSha256 = createHash('sha256').update(modules).digest('hex');
+  const releaseText = JSON.stringify(release, null, 2) + '\n';
+  write(manifestPath, releaseText);
+  rejected('uncommitted release candidate rejected', run(base, ['--release-sync']), /已提交且干净/);
+  git('add', '.gitmodules', 'MyApplication');
+  rejected('staged but uncommitted release candidate rejected', run(base, ['--release-sync']), /已提交且干净/);
+  git('commit', '-m', 'fixture manually synchronized release');
+  rejected('normal contribution cannot rewrite a committed snapshot', run(base), /只由维护者发版/);
+  const released = passed('explicit committed release candidate verified from Git objects', run(base, ['--release-sync']));
+  assert.equal(released.mode, 'release-sync');
+  assert.equal(released.candidate.manifestChanged, true);
+  assert.equal(released.candidate.coverageChecked, true);
+  assert.equal(released.candidate.sourceCommit, release.sourceCommit);
+
+  write(`MyApplication/${feature}`, 'export const featureValue = 999;\n');
+  git('add', `MyApplication/${feature}`); git('commit', '-m', 'fixture drifted committed source');
+  rejected('release candidate source hash drift rejected', run(base, ['--release-sync']), /公开候选原版哈希不符/);
+  write(`MyApplication/${feature}`, featureContents);
+  git('add', `MyApplication/${feature}`); git('commit', '-m', 'restore candidate source');
+
+  git('rm', '--', 'MyApplication/config/example.json'); git('commit', '-m', 'fixture missing declared source');
+  rejected('release candidate missing declared file rejected', run(base, ['--release-sync']), /缺少普通文件/);
+  write('MyApplication/config/example.json', originals.get('config/example.json'));
+  git('add', 'MyApplication/config/example.json'); git('commit', '-m', 'restore declared file');
+
+  const omitted = structuredClone(release);
+  omitted.entries = omitted.entries.filter(entry => entry.path !== feature);
+  write(manifestPath, JSON.stringify(omitted)); git('add', manifestPath); git('commit', '-m', 'fixture omitted source entry');
+  rejected('release cannot hide a source file by omitting its entry', run(base, ['--release-sync']), /清单遗漏源码文件/);
+  write(manifestPath, releaseText); git('add', manifestPath); git('commit', '-m', 'restore source coverage');
+
+  const missingLink = structuredClone(release);
+  missingLink.dependencyWorktrees = [];
+  write(manifestPath, JSON.stringify(missingLink)); git('add', manifestPath); git('commit', '-m', 'fixture omitted gitlink entry');
+  rejected('release cannot hide a gitlink by omitting its entry', run(base, ['--release-sync']), /清单遗漏 gitlink/);
+  write(manifestPath, releaseText); git('add', manifestPath); git('commit', '-m', 'restore gitlink coverage');
+
+  const wrongMode = structuredClone(release);
+  wrongMode.entries.find(entry => entry.path === feature).mode = '100755';
+  write(manifestPath, JSON.stringify(wrongMode)); git('add', manifestPath); git('commit', '-m', 'fixture wrong file mode');
+  rejected('release candidate declared mode mismatch rejected', run(base, ['--release-sync']), /Git mode 不符/);
+  write(manifestPath, releaseText); git('add', manifestPath); git('commit', '-m', 'restore declared file mode');
+
+  const missingMode = structuredClone(release);
+  delete missingMode.entries.find(entry => entry.path === feature).mode;
+  write(manifestPath, JSON.stringify(missingMode)); git('add', manifestPath); git('commit', '-m', 'fixture omitted file mode');
+  rejected('release candidate cannot omit its declared file mode', run(base, ['--release-sync']), /缺少有效 Git mode/);
+  write(manifestPath, releaseText); git('add', manifestPath); git('commit', '-m', 'restore required file mode');
+
+  write('untracked-review.txt', 'not committed\n');
+  rejected('release candidate untracked file rejected', run(base, ['--release-sync']), /已提交且干净/);
+  fs.unlinkSync(path.join(fixture, 'untracked-review.txt'));
+  passed('restored release candidate is verifiable without private access', run(base, ['--release-sync']));
 
   const damaged = structuredClone(manifest);
   damaged.entries[0].sha256 = '0'.repeat(64);
