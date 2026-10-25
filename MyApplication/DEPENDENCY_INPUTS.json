@@ -1,0 +1,3122 @@
+{
+  "components": [
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "amcl-prebuilts",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "curl_sha256": "PENDING",
+        "curl_version": "PENDING",
+        "libglfw_sha256": "PENDING",
+        "libglfw_version": "PENDING",
+        "libopenal_sha256": "PENDING",
+        "libopenal_version": "PENDING",
+        "lwjgl-natives_sha256": "PENDING",
+        "lwjgl-natives_version": "PENDING",
+        "repo": "LZZLHY/amcl-prebuilts"
+      },
+      "id": "deps-lock:amcl-prebuilts",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "cacert",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "sha256": "b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171",
+        "upstream": "https://curl.se/ca/cacert.pem",
+        "version": "2026-02-11"
+      },
+      "id": "deps-lock:cacert",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "dyncall-native",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "source": "https://dyncall.org/r1.0/dyncall-1.0.tar.gz",
+        "version": "1.0"
+      },
+      "id": "deps-lock:dyncall-native",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "gl4es",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "144d0dc79855b392e5256dd15fb2dbdedb17141a",
+        "libgl4es_sha256": "e69790e7462357c4439f4ef428e059d22839c2e380678e610dcdfc81d7f88439",
+        "repo": "https://github.com/PojavLauncherTeam/gl4es-114-extra.git",
+        "upstream": "https://github.com/PojavLauncherTeam/gl4es-114-extra.git"
+      },
+      "id": "deps-lock:gl4es",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "jna-runtime",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "manifest": "prebuilt/jna/manifest.json",
+        "manifest_sha256": "25832ce2edc66fc9eda599896ef3f0a4fe409db55fa89bfa9feca56ed1b46cbf"
+      },
+      "id": "deps-lock:jna-runtime",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "libdrm",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "repo": "https://gitlab.freedesktop.org/mesa/drm.git",
+        "tag": "libdrm-2.4.120",
+        "upstream": "https://gitlab.freedesktop.org/mesa/drm.git"
+      },
+      "id": "deps-lock:libdrm",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "lwjgl-jars",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "lwjgl-egl_sha256": "364e3902337832f7629c6fb7c2b776164f704e295837bd694e27866a488f5732",
+        "lwjgl-freetype_sha256": "cd086dcc53bf9897589a446b58bb990dfaa48136b72ac987e0a757803b9096b7",
+        "lwjgl-glfw_sha256": "2bfd995b5dcc6f707e1f14c10f9b53b7ca43b49e26293b811746acdc44d7a174",
+        "lwjgl-host-natives-linux_sha256": "eb88f7341461174ec2084c41c0e1bfeeed957158e59ed55d9c34a13efcbe2665",
+        "lwjgl-host-natives-windows_sha256": "8e48cf335d308a84d7e782f001a5a89fdc9a30766e82a9056f30300bdff70d01",
+        "lwjgl-nanovg_sha256": "a124e9aa149355fb735b00a5cd9c42dcc43b6501ca1060cc00f4e1db16001284",
+        "lwjgl-openal_sha256": "ec67efd3ec98fd4a6f1cb2fa41e6c9a1493ee167d23ca27d394597b9a06d020c",
+        "lwjgl-opengl_sha256": "b8c655fce5ccb5780287a5bae15cf32353582e76c44f1c77ea2d8fd27f1e1a67",
+        "lwjgl-opengles_sha256": "a11c384eb6b30bc40dfc87772343fb042dffc37b3bcf914042dc5a5eff3a624e",
+        "lwjgl-sdl_sha256": "4acb736e7b2ab0d1b84b651ebac7a5405e25ce7252e830edc647c846bf4eb775",
+        "lwjgl-shaderc_sha256": "aa66fba33fe8a9cef4aea46c515cbcfc1974acf3017506d5b9d840caec6e6cad",
+        "lwjgl-spng_sha256": "9382bda2026fbfe4ddc5246abab6aa0d3d5e7fc59a196bb98e936aa2f9186633",
+        "lwjgl-spvc_sha256": "cd408d04011beadb6edc4e435438021b05f74f0fbc7be31b244d1e5666c5f3db",
+        "lwjgl-stb_sha256": "6ee0b57fb8107e8ae961b981a262d96b97b88eff3ac86b8eb6f55362fbbfd82e",
+        "lwjgl-tinyfd_sha256": "2f7a1b33917e753194e0a429a841ed5a272870d04c948b9abf30b86043bb7c48",
+        "lwjgl-vma_sha256": "8b10a8eb44daba950b453e75388473d4a72f6e5a59a8cfbb2746d777945a7d78",
+        "lwjgl-vulkan_sha256": "373282b9e652ddc36c7cbacb659c889ce071c9fcf7c50ed7077f367c2648fbf3",
+        "lwjgl_sha256": "980072f45e9ece70d77ce8c8c4299075b2f36fa25c3b17b4e98090f7de75d639",
+        "maven_base": "https://repo1.maven.org/maven2/org/lwjgl",
+        "modules": "lwjgl,lwjgl-glfw,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd,lwjgl-nanovg,lwjgl-openal,lwjgl-vulkan,lwjgl-egl,lwjgl-opengles,lwjgl-freetype,lwjgl-shaderc,lwjgl-spvc,lwjgl-vma,lwjgl-sdl,lwjgl-spng",
+        "version": "3.4.2"
+      },
+      "id": "deps-lock:lwjgl-jars",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "lwjgl-jars-322",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "lwjgl-glfw_sha256": "ef279cdaeede4ca344e756a56f85a85cbd039f7931011975672dc1b900b59c8f",
+        "lwjgl-jemalloc_sha256": "6f790dbe775eb56be638e9d97b355313c0caf374f13545996670756a15cbfe6f",
+        "lwjgl-openal_sha256": "9b1bfdf60a3fe7ba6c48976411d311575fb2b7a7e7457e5589d1588719820fb0",
+        "lwjgl-opengl_sha256": "10bcc37506e01d1477d65f1fcf0aa672c95eb785265b28b7f321c8381093eda2",
+        "lwjgl-stb_sha256": "86a7d7af24419c8ebf1d3a2f50797acaa82aaa2abf32e3d1ebf5c31c84708dae",
+        "lwjgl-tinyfd_sha256": "7a494dc8751e5ef8cb79ce7168c7db56664813782b9192bb1130e4329b914011",
+        "lwjgl_sha256": "f9928c3b4b540643a1bbd59286d3c7175e470849261a0c29a81389f52265ad8b",
+        "maven_base": "https://repo1.maven.org/maven2/org/lwjgl",
+        "modules": "lwjgl,lwjgl-glfw,lwjgl-jemalloc,lwjgl-openal,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd",
+        "version": "3.2.3"
+      },
+      "id": "deps-lock:lwjgl-jars-322",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "lwjgl-natives",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
+        "liblwjgl_nanovg_sha256": "9b5af83f5a8cf3811ae528fc0f5a80913648036f7bdaaaca53514279764ad227",
+        "liblwjgl_nanovg_size": "271312",
+        "liblwjgl_opengl_sha256": "1581bffd7202faebcdcfd4ff6e91014167fc1dddece18cf5680e6a85bdfa2057",
+        "liblwjgl_opengl_size": "343472",
+        "liblwjgl_opengles_sha256": "24a2c65bea36d777a6056a4d78c8f441810c133c6dd24d2dd2dcd76220414acc",
+        "liblwjgl_opengles_size": "120648",
+        "liblwjgl_sha256": "b996377b2048e8b5933f3c4d0529c1904653dd21abd45c97c953660ba49b16d7",
+        "liblwjgl_size": "496200",
+        "liblwjgl_spng_sha256": "ed87489f0651feeaf268531664fda150df4e8399d73baa3ea3c0ebccfbed95d5",
+        "liblwjgl_spng_size": "154352",
+        "liblwjgl_stb_sha256": "77344c86be745893be35c9653063f230f8e72d97dc1a10d61f3130d0037bc44f",
+        "liblwjgl_stb_size": "413864",
+        "liblwjgl_tinyfd_sha256": "74d3ddf4a6a6442a70e4aa05d28c17ddabdda89f546930a3a101a8a4ab6b0d1d",
+        "liblwjgl_tinyfd_size": "88768",
+        "liblwjgl_vma_sha256": "01099dfe0f61192b0860267ca927356e9b256aadfb207b7648762a844ac0a317",
+        "liblwjgl_vma_size": "146216",
+        "repo": "https://github.com/LWJGL/lwjgl3.git",
+        "tag": "3.4.2",
+        "upstream": "https://github.com/LWJGL/lwjgl3.git"
+      },
+      "id": "deps-lock:lwjgl-natives",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "lwjgl-natives-322",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "e41032b23adb2d494e2c492777e99e5d9697a860",
+        "liblwjgl_opengl_v322_sha256": "779f0b0a0eb6cba6a0f7d0430208ef0071a2465ef2dbfebd3e266093584dd1de",
+        "liblwjgl_stb_v322_sha256": "6c7e3da4f1e831dd52650bc196ae9f04ba4465a73b16ac6c13badffa687b202d",
+        "liblwjgl_tinyfd_v322_sha256": "6fd28d56b93d83b7eb3df684d03b08ebf45508d4fba6e35000e1afd747e4204a",
+        "liblwjgl_v322_sha256": "963567fc6a82bf2aa67079e11596d407580b58ce2966fc1256f2b21a6da33564",
+        "tag": "3.2.3",
+        "upstream": "https://github.com/LWJGL/lwjgl3.git"
+      },
+      "id": "deps-lock:lwjgl-natives-322",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mc-ohos-resources",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "asset": "jdk17-ohos-full-v5.zip",
+        "repo": "LZZLHY/mc-ohos-resources",
+        "sha256": "0e26b0dece38156838456cfb12058d863aa9856cdd8fd648f06f9bc5e91f8ecd",
+        "tag": "v17.0.13-ohos-5"
+      },
+      "id": "deps-lock:mc-ohos-resources",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mc-ohos-resources-21",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "asset": "jdk21-ohos-full-v7.zip",
+        "repo": "LZZLHY/mc-ohos-resources",
+        "sha256": "21556d0d4fc5eea09ba27068cf8a96803bb1667b35adbc8495fdc5f831316275",
+        "tag": "v21.0.5-ohos-7"
+      },
+      "id": "deps-lock:mc-ohos-resources-21",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mc-ohos-resources-25",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "asset": "jdk25-ohos-full-v2.zip",
+        "repo": "LZZLHY/mc-ohos-resources",
+        "sha256": "d8e31df5d199a9b34d6d13c188b71af19c2fb1738da7bf3c6eeaed89a0a37538",
+        "tag": "v25.0.4-ohos-2"
+      },
+      "id": "deps-lock:mc-ohos-resources-25",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mc-ohos-resources-8",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "asset": "jdk8-ohos-full-v4.zip",
+        "repo": "LZZLHY/mc-ohos-resources",
+        "sha256": "02c2cedb3539682de3df3d7870b855bfefaac1f4cfe53951cfe90b0dea3d3a63",
+        "tag": "v8u452-ohos-4"
+      },
+      "id": "deps-lock:mc-ohos-resources-8",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mesa-zink",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de",
+        "libOSMesa_sha256": "cae3ecb7b62f5f328ea6c1cc965ea8f611d236577a122a1152f6f4390e34a748",
+        "libglapi_sha256": "(已废弃：shared-glapi=disabled 后 glapi 静态链入 libOSMesa，不再单独产 libglapi.so)",
+        "repo": "https://gitlab.freedesktop.org/mesa/mesa.git",
+        "tag": "mesa-24.3.4",
+        "upstream": "https://gitlab.freedesktop.org/mesa/mesa.git"
+      },
+      "id": "deps-lock:mesa-zink",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mobilegl",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "base_commit": "0d2fceab0eb0776b8e9c10903b50572579de8cc3",
+        "branch": "amcl/ohos",
+        "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+        "libmobilegl_stripped_sha256": "42faad9cb68f93d0cb81e7f7b57cce41bd4e289788c23066e40dece9c21951d1",
+        "libmobilegl_unstripped_sha256": "72addf9d68f45a60a9af361a0654673ce45f0dcf160f9045360df89011d8ef01",
+        "repo": "https://github.com/LZZLHY/MobileGL.git",
+        "spirv_headers_commit": "2a611a970fdbc41ac2e3e328802aed9985352dca",
+        "spirv_tools_commit": "33e02568181e3312f49a3cf33df470bf96ef293a",
+        "tl_expected_sha256": "0788f7d544a2fdec1dd7a794e1e9863ad4cc6a8817982b6fd93fd98724b9fa19",
+        "tl_expected_tag": "v1.3.1",
+        "upstream": "https://github.com/MobileGL-Dev/MobileGL.git"
+      },
+      "id": "deps-lock:mobilegl",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "mobileglues",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "android_plugin_branch": "dev",
+        "android_plugin_commit": "c0e48848ef3850e326606ba092774edbb7d904ff",
+        "android_plugin_main_commit": "f5105e4ddd1752cccdcc6421c402960d40ec3d9d",
+        "android_plugin_repo": "https://github.com/MobileGL-Dev/MobileGlues-plugin.git",
+        "android_renderer_commit": "f56af31d3e490d95808b3adc4ace20234249a37a",
+        "base_commit": "fbc4e412e353302607ba36489b2dd573b5becb25",
+        "branch": "amcl/2.0-ohos",
+        "commit": "8b69f7fee6c11a46d325731f29ef6b5008da2878",
+        "fork_release_tag": "amcl/mobileglues-2.0.0-ohos-r3",
+        "fork_release_tag_commit": "8b69f7fee6c11a46d325731f29ef6b5008da2878",
+        "nested_glslang_commit": "f5f664dee8146676b04a332a7233959fc3ce9681",
+        "nested_perfetto_commit": "40b529923598b739b2892a536a7692eedbed5685",
+        "nested_ska_commit": "21c1cec95abee1beef827e4a7c95f692875d9594",
+        "nested_spirv_cross_commit": "a0fba56c34a6700f1724bf9b751da5b488a3775c",
+        "nested_xxhash_commit": "c2866db364b6ea3a11933e62235ddc166ba18565",
+        "release_commit": "d0211c4871ac7ccbc624070bc6cd990b2c5ee7f9",
+        "release_repo": "https://github.com/MobileGL-Dev/MobileGlues-release.git",
+        "release_tag": "V2.0.0",
+        "repo": "https://github.com/LZZLHY/MobileGlues.git",
+        "source_branch": "main",
+        "source_main_commit": "fbc4e412e353302607ba36489b2dd573b5becb25",
+        "source_release_tag": "none",
+        "upstream": "https://github.com/MobileGL-Dev/MobileGlues.git"
+      },
+      "id": "deps-lock:mobileglues",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "openal-soft",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
+        "repo": "https://github.com/LZZLHY/openal-soft-mirror.git",
+        "tag": "1.24.3",
+        "upstream": "https://github.com/kcat/openal-soft.git"
+      },
+      "id": "deps-lock:openal-soft",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "openjdk",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "PENDING",
+        "repo": "https://github.com/LZZLHY/jdk17u-mirror.git",
+        "tag": "jdk-17.0.13+11",
+        "upstream": "https://github.com/openjdk/jdk17u.git"
+      },
+      "id": "deps-lock:openjdk",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "not-proven"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "openjdk-21",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+        "repo": "https://github.com/openjdk/jdk21u.git",
+        "tag": "jdk-21.0.5+11",
+        "upstream": "https://github.com/openjdk/jdk21u.git"
+      },
+      "id": "deps-lock:openjdk-21",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "openjdk-25",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+        "repo": "https://github.com/openjdk/jdk25u.git",
+        "tag": "jdk-25.0.4+3",
+        "upstream": "https://github.com/openjdk/jdk25u.git"
+      },
+      "id": "deps-lock:openjdk-25",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "sdl3-native",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "base_commit": "de51952c2ea538241909789926f4d01845ad1bb0",
+        "branch": "sdl3-harmonyos",
+        "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+        "hap_sha256": "1ed3799167e7d53a3e010de14e2281f73eaef7e899c20f3bf3ed261de9c27277",
+        "hap_size": "1855520",
+        "patchset_sha256": "c16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81",
+        "repo": "https://github.com/icculus/SDL.git",
+        "sha256": "921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816",
+        "size": "2251080",
+        "upstream": "https://github.com/libsdl-org/SDL.git"
+      },
+      "id": "deps-lock:sdl3-native",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "shaderc-native",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "301b4ede53d59b68bf55f95bb26412d9233c8187",
+        "repo": "https://github.com/google/shaderc.git",
+        "sha256": "ca266f15770463fae8c8c0de0b8a9cfd82710ea02e2c5e8b4fa56edfb3cf115a",
+        "tag": "v2026.1",
+        "upstream": "https://github.com/google/shaderc.git"
+      },
+      "id": "deps-lock:shaderc-native",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "spvc-native",
+        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+      },
+      "declared": {
+        "commit": "11e6d02d379319a4b570f3eb65d4b19ea7b543bf",
+        "repo": "https://github.com/KhronosGroup/SPIRV-Cross.git",
+        "sha256": "8f284a7327e77c3975ff6096a36b103436034f46bda72c6e6f9b2416e6927ed2",
+        "tag": "vulkan-sdk-1.3.290.0",
+        "upstream": "https://github.com/KhronosGroup/SPIRV-Cross.git"
+      },
+      "id": "deps-lock:spvc-native",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "field": "dependencyWorktrees",
+        "path": "SOURCE_SNAPSHOT.json"
+      },
+      "id": "gitlink:prebuilt/hdc/muka-rust-hdc",
+      "kind": "gitlink",
+      "localPatch": null,
+      "lockSection": null,
+      "path": "prebuilt/hdc/muka-rust-hdc",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "remoteAvailability": "not-checked",
+      "source": {
+        "commit": "4a2d9c42059b3ff346f4d3f533cf781a5fbe70ba",
+        "repository": "https://github.com/Attect/muka_rust_hdc.git"
+      }
+    },
+    {
+      "authority": {
+        "field": "dependencyWorktrees",
+        "path": "SOURCE_SNAPSHOT.json"
+      },
+      "id": "gitlink:prebuilt/lwjgl3/lwjgl3_src",
+      "kind": "gitlink",
+      "localPatch": {
+        "declaredSha256": "4af5f2259e3490eda3d4ba0c61cbbd68490fa6a8949080bc56110527c203bbb3",
+        "path": "prebuilt/lwjgl3/local-worktree.patch",
+        "sha256": "4af5f2259e3490eda3d4ba0c61cbbd68490fa6a8949080bc56110527c203bbb3"
+      },
+      "lockSection": "lwjgl-natives",
+      "path": "prebuilt/lwjgl3/lwjgl3_src",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "remoteAvailability": "not-checked",
+      "source": {
+        "commit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
+        "repository": "https://github.com/LWJGL/lwjgl3.git"
+      }
+    },
+    {
+      "authority": {
+        "field": "dependencyWorktrees",
+        "path": "SOURCE_SNAPSHOT.json"
+      },
+      "id": "gitlink:prebuilt/mobilegl/src",
+      "kind": "gitlink",
+      "localPatch": null,
+      "lockSection": "mobilegl",
+      "path": "prebuilt/mobilegl/src",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "remoteAvailability": "not-checked",
+      "source": {
+        "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+        "repository": "https://github.com/LZZLHY/MobileGL.git"
+      }
+    },
+    {
+      "authority": {
+        "field": "dependencyWorktrees",
+        "path": "SOURCE_SNAPSHOT.json"
+      },
+      "id": "gitlink:prebuilt/mobileglues/mg_src",
+      "kind": "gitlink",
+      "localPatch": null,
+      "lockSection": "mobileglues",
+      "path": "prebuilt/mobileglues/mg_src",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "remoteAvailability": "not-checked",
+      "source": {
+        "commit": "8b69f7fee6c11a46d325731f29ef6b5008da2878",
+        "repository": "https://github.com/LZZLHY/MobileGlues.git"
+      }
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/build-inputs.json",
+        "sha256": "48a667256660ac3edb760b13a9bfff0238082e07e9c639cf4f7d058908f901e2"
+      },
+      "bootJdk": null,
+      "freetype": null,
+      "historicalReleaseMapping": "not-proven-by-build-pin",
+      "id": "jdk:17",
+      "kind": "jdk-build-input",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "scope": "new-runtime-build-input-only",
+      "source": {
+        "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+        "repository": "https://github.com/openjdk/jdk17u.git"
+      }
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/build-inputs.json",
+        "sha256": "48a667256660ac3edb760b13a9bfff0238082e07e9c639cf4f7d058908f901e2"
+      },
+      "bootJdk": null,
+      "freetype": null,
+      "historicalReleaseMapping": "not-proven-by-build-pin",
+      "id": "jdk:21",
+      "kind": "jdk-build-input",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "scope": "new-runtime-build-input-only",
+      "source": {
+        "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+        "repository": "https://github.com/openjdk/jdk21u.git"
+      }
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/build-inputs.json",
+        "sha256": "48a667256660ac3edb760b13a9bfff0238082e07e9c639cf4f7d058908f901e2"
+      },
+      "bootJdk": null,
+      "freetype": null,
+      "historicalReleaseMapping": "not-proven-by-build-pin",
+      "id": "jdk:25",
+      "kind": "jdk-build-input",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "scope": "new-runtime-build-input-only",
+      "source": {
+        "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+        "repository": "https://github.com/openjdk/jdk25u.git"
+      }
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/build-inputs.json",
+        "sha256": "48a667256660ac3edb760b13a9bfff0238082e07e9c639cf4f7d058908f901e2"
+      },
+      "bootJdk": {
+        "sha256": "9448308a21841960a591b47927cf2d44fdc4c0533a5f8111a4b243a6bafb5d27",
+        "version": "Temurin 8u452-b09"
+      },
+      "freetype": {
+        "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+        "repository": "https://github.com/freetype/freetype.git",
+        "version": "2.13.3"
+      },
+      "historicalReleaseMapping": "not-proven-by-build-pin",
+      "id": "jdk:8",
+      "kind": "jdk-build-input",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "scope": "new-runtime-build-input-only",
+      "source": {
+        "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+        "repository": "https://github.com/openjdk/jdk8u-dev.git"
+      }
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "account/oh-package-lock.json5",
+        "sha256": "b60a2eb12ff0cf36a4e87bfda6686e7972696f4b393dee1daa68b14c15027145"
+      },
+      "id": "metadata:account/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "entry/oh-package-lock.json5",
+        "sha256": "de4b79a3a9bc0658adb027471a76b5298f9b99b428660a0481cdcb1415b10a40"
+      },
+      "id": "metadata:entry/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "account@../account",
+          "name": "account",
+          "resolved": "../account",
+          "version": "1.0.0"
+        },
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        },
+        {
+          "key": "feature_core@../feature_core",
+          "name": "feature_core",
+          "resolved": "../feature_core",
+          "version": "1.0.0"
+        },
+        {
+          "key": "feature_system@../feature_system",
+          "name": "feature_system",
+          "resolved": "../feature_system",
+          "version": "1.0.0"
+        },
+        {
+          "key": "gamecontrol@../gamecontrol",
+          "name": "gamecontrol",
+          "resolved": "../gamecontrol",
+          "version": "1.0.0"
+        },
+        {
+          "key": "launch@../launch",
+          "name": "launch",
+          "resolved": "../launch",
+          "version": "1.0.0"
+        },
+        {
+          "key": "libentry.so@src/main/cpp/types/libentry",
+          "name": "libentry.so",
+          "resolved": "src/main/cpp/types/libentry",
+          "version": "1.0.0"
+        },
+        {
+          "key": "mods@../mods",
+          "name": "mods",
+          "resolved": "../mods",
+          "version": "1.0.0"
+        },
+        {
+          "key": "update@../update",
+          "name": "update",
+          "resolved": "../update",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "entry/src/main/cpp/hdc/core/Cargo.lock",
+        "sha256": "657dc93e94270594c4ee8f0fc7604f39de06c265f8c8893e5a7201a78bc88845"
+      },
+      "id": "metadata:entry/src/main/cpp/hdc/core/Cargo.lock",
+      "kind": "cargo-lock",
+      "packages": [
+        {
+          "checksum": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa",
+          "identity": "registry-checksum",
+          "name": "adler2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.0.1"
+        },
+        {
+          "checksum": "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0",
+          "identity": "registry-checksum",
+          "name": "aead",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.5.2"
+        },
+        {
+          "checksum": "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1",
+          "identity": "registry-checksum",
+          "name": "aes-gcm",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.3"
+        },
+        {
+          "checksum": "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0",
+          "identity": "registry-checksum",
+          "name": "aes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.4"
+        },
+        {
+          "identity": "workspace-or-path",
+          "name": "amcl-hdc-core",
+          "version": "0.1.0"
+        },
+        {
+          "checksum": "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470",
+          "identity": "registry-checksum",
+          "name": "anyhow",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.104"
+        },
+        {
+          "checksum": "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1",
+          "identity": "registry-checksum",
+          "name": "arbitrary",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.4.2"
+        },
+        {
+          "checksum": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+          "identity": "registry-checksum",
+          "name": "autocfg",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.5.1"
+        },
+        {
+          "checksum": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6",
+          "identity": "registry-checksum",
+          "name": "base64",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.22.1"
+        },
+        {
+          "checksum": "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06",
+          "identity": "registry-checksum",
+          "name": "base64ct",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.8.3"
+        },
+        {
+          "checksum": "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a",
+          "identity": "registry-checksum",
+          "name": "bitflags",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.3.2"
+        },
+        {
+          "checksum": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+          "identity": "registry-checksum",
+          "name": "bitflags",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.13.2"
+        },
+        {
+          "checksum": "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71",
+          "identity": "registry-checksum",
+          "name": "block-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.4"
+        },
+        {
+          "checksum": "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649",
+          "identity": "registry-checksum",
+          "name": "bumpalo",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "3.20.3"
+        },
+        {
+          "checksum": "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b",
+          "identity": "registry-checksum",
+          "name": "byteorder",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.5.0"
+        },
+        {
+          "checksum": "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04",
+          "identity": "registry-checksum",
+          "name": "bytes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.12.1"
+        },
+        {
+          "checksum": "225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14",
+          "identity": "registry-checksum",
+          "name": "bzip2-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.13+1.0.8"
+        },
+        {
+          "checksum": "49ecfb22d906f800d4fe833b6282cf4dc1c298f5057ca0b5445e5c209735ca47",
+          "identity": "registry-checksum",
+          "name": "bzip2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.5.2"
+        },
+        {
+          "checksum": "f360145194ee8e21db5ee7f3fcd4fe52210864c75c985dae33218202c8bbe040",
+          "identity": "registry-checksum",
+          "name": "cc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.5.1"
+        },
+        {
+          "checksum": "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e",
+          "identity": "registry-checksum",
+          "name": "cfg_aliases",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.1"
+        },
+        {
+          "checksum": "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600",
+          "identity": "registry-checksum",
+          "name": "cfg-if",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.5"
+        },
+        {
+          "checksum": "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad",
+          "identity": "registry-checksum",
+          "name": "cipher",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.4.4"
+        },
+        {
+          "checksum": "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8",
+          "identity": "registry-checksum",
+          "name": "const-oid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.6"
+        },
+        {
+          "checksum": "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6",
+          "identity": "registry-checksum",
+          "name": "constant_time_eq",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.1"
+        },
+        {
+          "checksum": "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280",
+          "identity": "registry-checksum",
+          "name": "cpufeatures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.17"
+        },
+        {
+          "checksum": "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853",
+          "identity": "registry-checksum",
+          "name": "crc-catalog",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.5.0"
+        },
+        {
+          "checksum": "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d",
+          "identity": "registry-checksum",
+          "name": "crc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "3.4.0"
+        },
+        {
+          "checksum": "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78",
+          "identity": "registry-checksum",
+          "name": "crc32fast",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.5.2"
+        },
+        {
+          "checksum": "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6",
+          "identity": "registry-checksum",
+          "name": "crossbeam-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.23"
+        },
+        {
+          "checksum": "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a",
+          "identity": "registry-checksum",
+          "name": "crypto-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.7"
+        },
+        {
+          "checksum": "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835",
+          "identity": "registry-checksum",
+          "name": "ctr",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.2"
+        },
+        {
+          "checksum": "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2",
+          "identity": "registry-checksum",
+          "name": "deflate64",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.12"
+        },
+        {
+          "checksum": "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb",
+          "identity": "registry-checksum",
+          "name": "der",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.7.10"
+        },
+        {
+          "checksum": "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c",
+          "identity": "registry-checksum",
+          "name": "deranged",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.5.8"
+        },
+        {
+          "checksum": "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a",
+          "identity": "registry-checksum",
+          "name": "derive_arbitrary",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.4.2"
+        },
+        {
+          "checksum": "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292",
+          "identity": "registry-checksum",
+          "name": "digest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.7"
+        },
+        {
+          "checksum": "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8",
+          "identity": "registry-checksum",
+          "name": "displaydoc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.7"
+        },
+        {
+          "checksum": "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2",
+          "identity": "registry-checksum",
+          "name": "downcast-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.2.1"
+        },
+        {
+          "checksum": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+          "identity": "registry-checksum",
+          "name": "equivalent",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.2"
+        },
+        {
+          "checksum": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+          "identity": "registry-checksum",
+          "name": "errno",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.14"
+        },
+        {
+          "checksum": "e40758ed24c9b2eeb76c35fb0aebc66c626084edd827e07e1552279814c6682d",
+          "identity": "registry-checksum",
+          "name": "filedescriptor",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.3"
+        },
+        {
+          "checksum": "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484",
+          "identity": "registry-checksum",
+          "name": "find-msvc-tools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.14"
+        },
+        {
+          "checksum": "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb",
+          "identity": "registry-checksum",
+          "name": "flate2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.1.10"
+        },
+        {
+          "checksum": "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a",
+          "identity": "registry-checksum",
+          "name": "generic-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.14.7"
+        },
+        {
+          "checksum": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0",
+          "identity": "registry-checksum",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.17"
+        },
+        {
+          "checksum": "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd",
+          "identity": "registry-checksum",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.4"
+        },
+        {
+          "checksum": "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
+          "identity": "registry-checksum",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.4.3"
+        },
+        {
+          "checksum": "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1",
+          "identity": "registry-checksum",
+          "name": "ghash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.5.1"
+        },
+        {
+          "checksum": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
+          "identity": "registry-checksum",
+          "name": "hashbrown",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.17.1"
+        },
+        {
+          "identity": "workspace-or-path",
+          "name": "hdc-protocol",
+          "version": "0.1.0"
+        },
+        {
+          "checksum": "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
+          "identity": "registry-checksum",
+          "name": "hmac",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.12.1"
+        },
+        {
+          "checksum": "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855",
+          "identity": "registry-checksum",
+          "name": "indexmap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.14.2"
+        },
+        {
+          "checksum": "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01",
+          "identity": "registry-checksum",
+          "name": "inout",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.4"
+        },
+        {
+          "checksum": "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3",
+          "identity": "registry-checksum",
+          "name": "jobserver",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.35"
+        },
+        {
+          "checksum": "7883d941dae510fb2d978fc3fe018c71c9e2892fd38854de3e8b92c2e5ad9cc5",
+          "identity": "registry-checksum",
+          "name": "js-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.106"
+        },
+        {
+          "checksum": "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb",
+          "identity": "registry-checksum",
+          "name": "lazy_static",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.5.1"
+        },
+        {
+          "checksum": "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+          "identity": "registry-checksum",
+          "name": "libc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.189"
+        },
+        {
+          "checksum": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
+          "identity": "registry-checksum",
+          "name": "libm",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.16"
+        },
+        {
+          "checksum": "da050ade7ac4ff1ba5379af847a10a10a8e284181e060105bf8d86960ce9ce0f",
+          "identity": "registry-checksum",
+          "name": "libusb1-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.7.0"
+        },
+        {
+          "checksum": "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965",
+          "identity": "registry-checksum",
+          "name": "lock_api",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.4.14"
+        },
+        {
+          "checksum": "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6",
+          "identity": "registry-checksum",
+          "name": "log",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.4.34"
+        },
+        {
+          "checksum": "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e",
+          "identity": "registry-checksum",
+          "name": "lzma-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.0"
+        },
+        {
+          "checksum": "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27",
+          "identity": "registry-checksum",
+          "name": "lzma-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.20"
+        },
+        {
+          "checksum": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
+          "identity": "registry-checksum",
+          "name": "memchr",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.8.3"
+        },
+        {
+          "checksum": "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c",
+          "identity": "registry-checksum",
+          "name": "miniz_oxide",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.1"
+        },
+        {
+          "checksum": "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8",
+          "identity": "registry-checksum",
+          "name": "mio",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.2.3"
+        },
+        {
+          "checksum": "ab2156c4fce2f8df6c499cc1c763e4394b7482525bf2a9701c9d79d215f519e4",
+          "identity": "registry-checksum",
+          "name": "nix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.28.0"
+        },
+        {
+          "checksum": "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7",
+          "identity": "registry-checksum",
+          "name": "num-bigint-dig",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.6"
+        },
+        {
+          "checksum": "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441",
+          "identity": "registry-checksum",
+          "name": "num-conv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.2"
+        },
+        {
+          "checksum": "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b",
+          "identity": "registry-checksum",
+          "name": "num-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.47"
+        },
+        {
+          "checksum": "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b",
+          "identity": "registry-checksum",
+          "name": "num-iter",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.46"
+        },
+        {
+          "checksum": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
+          "identity": "registry-checksum",
+          "name": "num-traits",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.19"
+        },
+        {
+          "checksum": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
+          "identity": "registry-checksum",
+          "name": "once_cell",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.21.4"
+        },
+        {
+          "checksum": "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381",
+          "identity": "registry-checksum",
+          "name": "opaque-debug",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.1"
+        },
+        {
+          "checksum": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
+          "identity": "registry-checksum",
+          "name": "parking_lot_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.12"
+        },
+        {
+          "checksum": "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a",
+          "identity": "registry-checksum",
+          "name": "parking_lot",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.12.5"
+        },
+        {
+          "checksum": "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2",
+          "identity": "registry-checksum",
+          "name": "pbkdf2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.12.2"
+        },
+        {
+          "checksum": "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412",
+          "identity": "registry-checksum",
+          "name": "pem-rfc7468",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.7.0"
+        },
+        {
+          "checksum": "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd",
+          "identity": "registry-checksum",
+          "name": "pin-project-lite",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.17"
+        },
+        {
+          "checksum": "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f",
+          "identity": "registry-checksum",
+          "name": "pkcs1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.7.5"
+        },
+        {
+          "checksum": "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7",
+          "identity": "registry-checksum",
+          "name": "pkcs8",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.2"
+        },
+        {
+          "checksum": "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548",
+          "identity": "registry-checksum",
+          "name": "pkg-config",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.34"
+        },
+        {
+          "checksum": "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25",
+          "identity": "registry-checksum",
+          "name": "polyval",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.6.2"
+        },
+        {
+          "checksum": "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e",
+          "identity": "registry-checksum",
+          "name": "portable-pty",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.0"
+        },
+        {
+          "checksum": "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391",
+          "identity": "registry-checksum",
+          "name": "powerfmt",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.0"
+        },
+        {
+          "checksum": "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9",
+          "identity": "registry-checksum",
+          "name": "ppv-lite86",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.21"
+        },
+        {
+          "checksum": "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9",
+          "identity": "registry-checksum",
+          "name": "proc-macro2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.107"
+        },
+        {
+          "checksum": "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001",
+          "identity": "registry-checksum",
+          "name": "quote",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.47"
+        },
+        {
+          "checksum": "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f",
+          "identity": "registry-checksum",
+          "name": "r-efi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "5.3.0"
+        },
+        {
+          "checksum": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf",
+          "identity": "registry-checksum",
+          "name": "r-efi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "6.0.0"
+        },
+        {
+          "checksum": "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88",
+          "identity": "registry-checksum",
+          "name": "rand_chacha",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.1"
+        },
+        {
+          "checksum": "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c",
+          "identity": "registry-checksum",
+          "name": "rand_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.6.4"
+        },
+        {
+          "checksum": "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c",
+          "identity": "registry-checksum",
+          "name": "rand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.8"
+        },
+        {
+          "checksum": "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d",
+          "identity": "registry-checksum",
+          "name": "redox_syscall",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.5.18"
+        },
+        {
+          "checksum": "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d",
+          "identity": "registry-checksum",
+          "name": "rsa",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.10"
+        },
+        {
+          "checksum": "ab9f9ff05b63a786553a4c02943b74b34a988448671001e9a27e2f0565cc05a4",
+          "identity": "registry-checksum",
+          "name": "rusb",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.4"
+        },
+        {
+          "checksum": "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f",
+          "identity": "registry-checksum",
+          "name": "rustversion",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.23"
+        },
+        {
+          "checksum": "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49",
+          "identity": "registry-checksum",
+          "name": "scopeguard",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.2.0"
+        },
+        {
+          "checksum": "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48",
+          "identity": "registry-checksum",
+          "name": "serde_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.229"
+        },
+        {
+          "checksum": "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348",
+          "identity": "registry-checksum",
+          "name": "serde_derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.229"
+        },
+        {
+          "checksum": "b16809bc35793b19ce4e0c53924bc0dce3937f15487997cfdaed936004180730",
+          "identity": "registry-checksum",
+          "name": "serial2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.38"
+        },
+        {
+          "checksum": "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8",
+          "identity": "registry-checksum",
+          "name": "sha1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.7"
+        },
+        {
+          "checksum": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
+          "identity": "registry-checksum",
+          "name": "sha2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.9"
+        },
+        {
+          "checksum": "5a9e7e0f2bfae24d8a5b5a66c5b257a83c7412304311512a0c054cd5e619da11",
+          "identity": "registry-checksum",
+          "name": "shared_library",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.9"
+        },
+        {
+          "checksum": "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77",
+          "identity": "registry-checksum",
+          "name": "shell-words",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.1.1"
+        },
+        {
+          "checksum": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
+          "identity": "registry-checksum",
+          "name": "shlex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.0.1"
+        },
+        {
+          "checksum": "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b",
+          "identity": "registry-checksum",
+          "name": "signal-hook-registry",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.4.8"
+        },
+        {
+          "checksum": "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de",
+          "identity": "registry-checksum",
+          "name": "signature",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.2.0"
+        },
+        {
+          "checksum": "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea",
+          "identity": "registry-checksum",
+          "name": "simd-adler32",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.10"
+        },
+        {
+          "checksum": "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e",
+          "identity": "registry-checksum",
+          "name": "smallvec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.16.2"
+        },
+        {
+          "checksum": "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4",
+          "identity": "registry-checksum",
+          "name": "socket2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.6.5"
+        },
+        {
+          "checksum": "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e",
+          "identity": "registry-checksum",
+          "name": "spin",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.9"
+        },
+        {
+          "checksum": "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d",
+          "identity": "registry-checksum",
+          "name": "spki",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.7.3"
+        },
+        {
+          "checksum": "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292",
+          "identity": "registry-checksum",
+          "name": "subtle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.6.1"
+        },
+        {
+          "checksum": "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297",
+          "identity": "registry-checksum",
+          "name": "syn",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.0.119"
+        },
+        {
+          "checksum": "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee",
+          "identity": "registry-checksum",
+          "name": "syn",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "3.0.6"
+        },
+        {
+          "checksum": "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1",
+          "identity": "registry-checksum",
+          "name": "thiserror-impl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.69"
+        },
+        {
+          "checksum": "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524",
+          "identity": "registry-checksum",
+          "name": "thiserror-impl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.0.21"
+        },
+        {
+          "checksum": "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52",
+          "identity": "registry-checksum",
+          "name": "thiserror",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.69"
+        },
+        {
+          "checksum": "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e",
+          "identity": "registry-checksum",
+          "name": "thiserror",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.0.21"
+        },
+        {
+          "checksum": "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109",
+          "identity": "registry-checksum",
+          "name": "time-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.9"
+        },
+        {
+          "checksum": "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134",
+          "identity": "registry-checksum",
+          "name": "time",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.55"
+        },
+        {
+          "checksum": "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e",
+          "identity": "registry-checksum",
+          "name": "tokio-macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.7.2"
+        },
+        {
+          "checksum": "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed",
+          "identity": "registry-checksum",
+          "name": "tokio",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.53.1"
+        },
+        {
+          "checksum": "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da",
+          "identity": "registry-checksum",
+          "name": "tracing-attributes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.31"
+        },
+        {
+          "checksum": "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a",
+          "identity": "registry-checksum",
+          "name": "tracing-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.36"
+        },
+        {
+          "checksum": "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100",
+          "identity": "registry-checksum",
+          "name": "tracing",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.44"
+        },
+        {
+          "checksum": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20",
+          "identity": "registry-checksum",
+          "name": "typenum",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.20.1"
+        },
+        {
+          "checksum": "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954",
+          "identity": "registry-checksum",
+          "name": "unicode-ident",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.26"
+        },
+        {
+          "checksum": "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea",
+          "identity": "registry-checksum",
+          "name": "universal-hash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.5.1"
+        },
+        {
+          "checksum": "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426",
+          "identity": "registry-checksum",
+          "name": "vcpkg",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.15"
+        },
+        {
+          "checksum": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a",
+          "identity": "registry-checksum",
+          "name": "version_check",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.9.5"
+        },
+        {
+          "checksum": "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b",
+          "identity": "registry-checksum",
+          "name": "wasi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.11.1+wasi-snapshot-preview1"
+        },
+        {
+          "checksum": "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487",
+          "identity": "registry-checksum",
+          "name": "wasip2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.0.4+wasi-0.2.12"
+        },
+        {
+          "checksum": "6f501a8bc3719dba86ef8ae4728879c08001bea749eb1333ac5b91e040e2a6b7",
+          "identity": "registry-checksum",
+          "name": "wasm-bindgen-macro-support",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.129"
+        },
+        {
+          "checksum": "2e29d0c35b16e224a7eeb5cd2d25e3e1968fbd65604117b44d3b789d00ee8535",
+          "identity": "registry-checksum",
+          "name": "wasm-bindgen-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.129"
+        },
+        {
+          "checksum": "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6",
+          "identity": "registry-checksum",
+          "name": "wasm-bindgen-shared",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.129"
+        },
+        {
+          "checksum": "9bb54f33acc68fd454578d9820b0bde1a1a3d17aa17bb7b6595806d02886d409",
+          "identity": "registry-checksum",
+          "name": "wasm-bindgen",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.129"
+        },
+        {
+          "checksum": "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6",
+          "identity": "registry-checksum",
+          "name": "winapi-i686-pc-windows-gnu",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.4.0"
+        },
+        {
+          "checksum": "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f",
+          "identity": "registry-checksum",
+          "name": "winapi-x86_64-pc-windows-gnu",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.4.0"
+        },
+        {
+          "checksum": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
+          "identity": "registry-checksum",
+          "name": "winapi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.3.9"
+        },
+        {
+          "checksum": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+          "identity": "registry-checksum",
+          "name": "windows-link",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.2.1"
+        },
+        {
+          "checksum": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+          "identity": "registry-checksum",
+          "name": "windows-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.61.2"
+        },
+        {
+          "checksum": "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d",
+          "identity": "registry-checksum",
+          "name": "winreg",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.10.1"
+        },
+        {
+          "checksum": "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e",
+          "identity": "registry-checksum",
+          "name": "wit-bindgen",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.57.1"
+        },
+        {
+          "checksum": "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2",
+          "identity": "registry-checksum",
+          "name": "xz2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.1.7"
+        },
+        {
+          "checksum": "ac4f328cf2f05d084e496c3e9c3f33ed0a183656a16e1fcec4d464d8373aec82",
+          "identity": "registry-checksum",
+          "name": "zerocopy-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.59"
+        },
+        {
+          "checksum": "6df92bf3d9227be3d53173901ddbffac2babc27ae50f397776ffd6dc33f800cb",
+          "identity": "registry-checksum",
+          "name": "zerocopy",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.59"
+        },
+        {
+          "checksum": "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328",
+          "identity": "registry-checksum",
+          "name": "zeroize_derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.5.0"
+        },
+        {
+          "checksum": "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e",
+          "identity": "registry-checksum",
+          "name": "zeroize",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "1.9.0"
+        },
+        {
+          "checksum": "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50",
+          "identity": "registry-checksum",
+          "name": "zip",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.4.2"
+        },
+        {
+          "checksum": "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249",
+          "identity": "registry-checksum",
+          "name": "zopfli",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.8.3"
+        },
+        {
+          "checksum": "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882",
+          "identity": "registry-checksum",
+          "name": "zstd-safe",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "7.3.0"
+        },
+        {
+          "checksum": "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0",
+          "identity": "registry-checksum",
+          "name": "zstd-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "2.1.0+zstd.1.5.7"
+        },
+        {
+          "checksum": "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a",
+          "identity": "registry-checksum",
+          "name": "zstd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "version": "0.13.3"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "feature_core/oh-package-lock.json5",
+        "sha256": "b60a2eb12ff0cf36a4e87bfda6686e7972696f4b393dee1daa68b14c15027145"
+      },
+      "id": "metadata:feature_core/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "feature_system/oh-package-lock.json5",
+        "sha256": "0c1f2af9775846765d7b8221cc4d44f0e526970cbe5d30b9991bb0f146825e5a"
+      },
+      "id": "metadata:feature_system/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        },
+        {
+          "key": "feature_core@../feature_core",
+          "name": "feature_core",
+          "resolved": "../feature_core",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "gamecontrol/oh-package-lock.json5",
+        "sha256": "b60a2eb12ff0cf36a4e87bfda6686e7972696f4b393dee1daa68b14c15027145"
+      },
+      "id": "metadata:gamecontrol/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "launch/oh-package-lock.json5",
+        "sha256": "e3c9ee1e9902f83c84532a5f049795050ffa135c40ef36041f86f918899dc1ef"
+      },
+      "id": "metadata:launch/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "account@../account",
+          "name": "account",
+          "resolved": "../account",
+          "version": "1.0.0"
+        },
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        },
+        {
+          "key": "feature_core@../feature_core",
+          "name": "feature_core",
+          "resolved": "../feature_core",
+          "version": "1.0.0"
+        },
+        {
+          "key": "mods@../mods",
+          "name": "mods",
+          "resolved": "../mods",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "mods/oh-package-lock.json5",
+        "sha256": "0c1f2af9775846765d7b8221cc4d44f0e526970cbe5d30b9991bb0f146825e5a"
+      },
+      "id": "metadata:mods/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        },
+        {
+          "key": "feature_core@../feature_core",
+          "name": "feature_core",
+          "resolved": "../feature_core",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "oh-package-lock.json5",
+        "sha256": "6a4eb402fbc7c2a5b63e6a73b5ea6cdc5e1c1d60eaa022ffb6778020ee81f5a5"
+      },
+      "id": "metadata:oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "integrity": "sha512-K6lDPYc6VkKe6ZBNQa9aoG+ZZMiwqfcR/7yAVFSUGIuOAhPvCJAo9+t1fZnpe0dBRBPxj2bxPPbKh69VuyAtDg==",
+          "key": "@ohos/hamock@1.0.0",
+          "name": "@ohos/hamock",
+          "resolved": "https://ohpm.openharmony.cn/ohpm/@ohos/hamock/-/hamock-1.0.0.har",
+          "version": "1.0.0"
+        },
+        {
+          "integrity": "sha512-3dCqc+BAR5LqEGG2Vtzi8O3r7ci/3fYU+FWjwvUobbfko7DUnXGOccaror0yYuUhJfXzFK0aZNMGSnXaTwEnbw==",
+          "key": "@ohos/hypium@1.0.24",
+          "name": "@ohos/hypium",
+          "resolved": "https://ohpm.openharmony.cn/ohpm/@ohos/hypium/-/hypium-1.0.24.har",
+          "version": "1.0.24"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/gl4es/build-provenance.json",
+        "sha256": "0e25ff58b59f9befcd70043e0c3ce5c3d63478ac606d3a84b06c489e8c04a879"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/gl4es/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {
+        "commit": "144d0dc79855b392e5256dd15fb2dbdedb17141a"
+      },
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/gl4es/patches/series",
+        "sha256": "65a5ad5a08b6db6d30f3c0df41c7def5ca4ddd71c87121bcad2f8b93eb299cda"
+      },
+      "id": "metadata:prebuilt/gl4es/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/gl4es/patches/0001-ohos-eglplatform-native-types.patch",
+          "sha256": "f383729e38ec4e1043499e6a4ac4be8befee5cbec6c291a05192510c74116572"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/gl4es/patches/0002-ohos-lazy-init-and-hwtest-gate.patch",
+          "sha256": "1ffadad6943c1119ab22711b2b1173d77e28e09f0feacd96416c3857b9a27518"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/gl4es/patches/0003-draw-submission-lifetime-and-wide-indices.patch",
+          "sha256": "9708ffce470b904370ec16b95cb44cf852cdbe1dbccdbe06d6beacd70c6f64a8"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/gl4es/patches/0004-fpe-zero-texture-and-empty-uniform-cache.patch",
+          "sha256": "3cc93b81ce741f37d04fd68c0701cc18455e5eb37a678487f700c55c9fff86a3"
+        },
+        {
+          "normalization": "none",
+          "order": 5,
+          "path": "prebuilt/gl4es/patches/0005-vao-context-buffer-bindings.patch",
+          "sha256": "10754d3f681819a72a5e94dac2eab8411e5d19810e303cacdecab0059eb2a566"
+        },
+        {
+          "normalization": "none",
+          "order": 6,
+          "path": "prebuilt/gl4es/patches/0006-texture-binding-query-desktop-names.patch",
+          "sha256": "4dd57e57e31df3dabeefd032021614477b77b5a2efe2e83c23c08b676dd6e5b3"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/hap-sign-tool/pin.json",
+        "sha256": "135c61c13196b5b13613bde1fc04f68b656ad40ccb033257206640c7831af3c4"
+      },
+      "declarations": {
+        "license": "Apache-2.0",
+        "revision": "b5d2d41ceccff5a7c81c5e18ef18d843615f3251",
+        "sha256": "9cee965bb292080a0d29fb48450091f5dcc9d010bb18da39175f581ffed7c4f4",
+        "url": "https://raw.githubusercontent.com/openharmony/developtools_hapsigner/b5d2d41ceccff5a7c81c5e18ef18d843615f3251/dist/hap-sign-tool.jar"
+      },
+      "files": [],
+      "id": "metadata:prebuilt/hap-sign-tool/pin.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/17/patches/series",
+        "sha256": "6754de51075bc89a04a1addb86bf6f2e03516cfc2ef70dc879902be782faf70d"
+      },
+      "id": "metadata:prebuilt/jdk/17/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/jdk/17/patches/0001-musl-dlvsym-dlinfo.patch",
+          "sha256": "df3275a33cef48403fb7a87d3f7d34d37d08b1f78f73d1b622d18334d08c231d"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/jdk/17/patches/0002-java-home-env.patch",
+          "sha256": "3e1cedd0236310078015dbdf0258048b8712d12e323eb7ee83b34c1dc2d7538b"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/jdk/17/patches/0003-dll-dir-env.patch",
+          "sha256": "08975b5a0919664d2845b70ec9ec033fcf17efa032ac37528499104c766ed76e"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/jdk/17/patches/0004-musl-utmpx.patch",
+          "sha256": "f927ab7e71dc51450f2b5a73c4b400119e9b134fcd355b68edfa1f6187f1c109"
+        },
+        {
+          "normalization": "none",
+          "order": 5,
+          "path": "prebuilt/jdk/17/patches/0005-signals-posix-abort-if-unrecognized.patch",
+          "sha256": "ef7b7f4259f60c8d89367a7ed772822e30178c01009fad45db5162dfd226b4bf"
+        },
+        {
+          "normalization": "none",
+          "order": 6,
+          "path": "prebuilt/jdk/17/patches/0006-aarch64-elf-safepoint-fallback.patch",
+          "sha256": "fe0041dc62fa8390502f159c8c862f54475e4c244c7ecf4959ba9683291539da"
+        },
+        {
+          "normalization": "none",
+          "order": 7,
+          "path": "prebuilt/jdk/17/patches/0007-safepoint-mechanism-mem-prot-read.patch",
+          "sha256": "51139d3d8689f1a5080b731da68f9d492e55e91a538bd740eb82813ea3736661"
+        },
+        {
+          "normalization": "none",
+          "order": 8,
+          "path": "prebuilt/jdk/17/patches/0008-libjli-skip-re-exec.patch",
+          "sha256": "07c003c94177cabac6a019c90116084ac21be0fa1daed3e8737628eb81247426"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/jdk/17/patches/0010-ipv6-supported-sandbox-fallback.patch",
+          "sha256": "7f4d6218a8c4f63170fd62536aa2357c5de18dca885e2dfa5884ccad0777cf15"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/17/patches/0011-ohos-javasound-capabilities.patch",
+          "sha256": "170879856bdfc0cad514ffd6047a9214372e64824638b77725ec03b73ac0a566"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/jdk/17/patches/0012-ohos-buildjdk-libc-guard.patch",
+          "sha256": "870713d6adb727eb04fe9b899495f6b4dd2be0dbddca590efd8d6a5ba0aa58cd"
+        },
+        {
+          "normalization": "none",
+          "order": 12,
+          "path": "prebuilt/jdk/17/patches/0013-ohos-linux-container-build-host.patch",
+          "sha256": "d565da4e38933a415013ffa8b360b0b53be4dbb14376678b0ca831cbaaed30f8"
+        }
+      ]
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/21/patches/series",
+        "sha256": "5c335383d27a47d4dccfc5d5534e311bd4371e893f592dfbc424cbc98a7d4dd0"
+      },
+      "id": "metadata:prebuilt/jdk/21/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/jdk/21/patches/0001-musl-dlvsym-dlinfo.patch",
+          "sha256": "353411aab95aed6bbb2aa51179de483910f5347136e26887953a32ebc80695b4"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/jdk/21/patches/0002-java-home-env.patch",
+          "sha256": "ed6446e8e45bddad96315dce7263f8ee508a467262b288bd0bf41e061db2379a"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/jdk/21/patches/0003-dll-dir-env.patch",
+          "sha256": "cc9ef3ada71b9be77f0ee4c4652e3e4f7a52ab12418647dd499d9d4efa91cc0b"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/jdk/21/patches/0004-musl-utmpx.patch",
+          "sha256": "517265177ef62207e92659581f44952f7b6b3f6f20d9e6edcf518510aa65466f"
+        },
+        {
+          "normalization": "none",
+          "order": 5,
+          "path": "prebuilt/jdk/21/patches/0005-signals-posix-abort-if-unrecognized.patch",
+          "sha256": "6da275da807cf3a794ecc06ab43054320a7592a269bea8c0ad876e44271c6176"
+        },
+        {
+          "normalization": "none",
+          "order": 6,
+          "path": "prebuilt/jdk/21/patches/0006-aarch64-elf-safepoint-fallback.patch",
+          "sha256": "f1c2a164fbe3f7a54bda78f054333da42328dcfcc6b6e3851629c3693b055fed"
+        },
+        {
+          "normalization": "none",
+          "order": 7,
+          "path": "prebuilt/jdk/21/patches/0007-safepoint-mechanism-mem-prot-read.patch",
+          "sha256": "873b13253aca6e5cd2f5ded99ab61e843c1f01428589893316f5b57732a30cbe"
+        },
+        {
+          "normalization": "none",
+          "order": 8,
+          "path": "prebuilt/jdk/21/patches/0008-libjli-skip-re-exec.patch",
+          "sha256": "76ecb441f744a1132c60fb5677c0b2b57a28b53a1e747f154303bb1ecfec7935"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/jdk/21/patches/0010-ipv6-supported-sandbox-fallback.patch",
+          "sha256": "a02b88ef11a4aad963cc57ec9511664c9690f184ed199355e68d270743f73f58"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/21/patches/0011-ohos-javasound-capabilities.patch",
+          "sha256": "170879856bdfc0cad514ffd6047a9214372e64824638b77725ec03b73ac0a566"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/jdk/21/patches/0013-ohos-linux-container-build-host.patch",
+          "sha256": "c2f814798bcbb57a48e60189cf43a07344728ec4a891676c2ee9298fa47fed6b"
+        }
+      ]
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/25/patches/series",
+        "sha256": "3d96a4537100fd68bc18fc3df47d9169a7c26c1b3187f34a0c300b4929228f5a"
+      },
+      "id": "metadata:prebuilt/jdk/25/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/jdk/25/patches/0001-musl-dlvsym-dlinfo.patch",
+          "sha256": "28af21ca3ad7814a4c434d01fbf2e4803b5b7a2b86ed7ed0f9b404e1dee307d4"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/jdk/25/patches/0002-java-home-env.patch",
+          "sha256": "cd102d019004c2cb63c6e05508a51adca82f5e64679a971b3144443759ffe1ca"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/jdk/25/patches/0003-dll-dir-env.patch",
+          "sha256": "44af706d648df26d684bd231bd32c882ed097e9704ab2d2f031358a2e84b3090"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/jdk/25/patches/0004-musl-utmpx.patch",
+          "sha256": "afccf91b54aa70fc308ba4c25938d933648c6758dc761bb16ee8b436b25e0388"
+        },
+        {
+          "normalization": "none",
+          "order": 5,
+          "path": "prebuilt/jdk/25/patches/0005-signals-posix-abort-if-unrecognized.patch",
+          "sha256": "7be81189334c9ca27a886e3f5cc6c5479218fb54c2b939b143208c3570861b9c"
+        },
+        {
+          "normalization": "none",
+          "order": 6,
+          "path": "prebuilt/jdk/25/patches/0008-libjli-skip-re-exec.patch",
+          "sha256": "6e43d6418dd9c15894e15cefa0f0e73d9da52ee3294d45ef3dd2a70f458499ad"
+        },
+        {
+          "normalization": "none",
+          "order": 7,
+          "path": "prebuilt/jdk/25/patches/0009-jfr-cpu-time-musl-disable.patch",
+          "sha256": "521de7078c70a094ca4758f5f7fe25213ecb2e5752959144bf5eaca1999fbdfd"
+        },
+        {
+          "normalization": "none",
+          "order": 8,
+          "path": "prebuilt/jdk/25/patches/0010-ipv6-supported-sandbox-fallback.patch",
+          "sha256": "2634b7cea4e0cc94ae879ddf502f884e6d26701b03c073c28f06297b4a182422"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/jdk/25/patches/0011-ohos-javasound-capabilities.patch",
+          "sha256": "6dcf3d47ff40934c77eb379d8fb36753f71eb8d38f9e3458fe6467fefca6ee97"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/25/patches/0013-ohos-linux-container-build-host.patch",
+          "sha256": "b351a864a1a4c322a8c7e70645f4ced953fe2f319dbf4cda5e88680f351dc01d"
+        }
+      ]
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/8/patches/series",
+        "sha256": "e65dc115868d5218310e8882a61e81a753322fd3a52671763250e29b799d7b03"
+      },
+      "id": "metadata:prebuilt/jdk/8/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/jdk/8/patches/0001-ohos-musl-clang-source-fixes.patch",
+          "sha256": "d84504fa3b1ed5a8ac159bd93a2c15ebe66c32bfcc26c6e56a4e6b87b836de33"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/jdk/8/patches/0002-ohos-clang-codegen-ub-fixes.patch",
+          "sha256": "f62deec9381662caf4346a6134eb2bc70747372644b9d019650307d842ca07f3"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/jdk/8/patches/0003-ohos-manifestentryverifier-legacy-ctor.patch",
+          "sha256": "641dd8cdcfc3d3b904677bfde96aa68d60c67d03bd443ecad63daf1ab0a3c00d"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/jdk/8/patches/0010-ipv6-supported-sandbox-fallback.patch",
+          "sha256": "bdd4b311e93064e8f3abe0f66803dfc97f4e8ac737682a12aefb6fd24bbe5fca"
+        },
+        {
+          "normalization": "none",
+          "order": 5,
+          "path": "prebuilt/jdk/8/patches/0011-ohos-java-sound-capability.patch",
+          "sha256": "e2c3fe015bf63e45c5fbc46c66991648b46669e56cf7016b2423170e23bd7aa4"
+        },
+        {
+          "normalization": "none",
+          "order": 6,
+          "path": "prebuilt/jdk/8/patches/0012-configure-propagate-failure.patch",
+          "sha256": "3f1de732d2f117894b871669c143d440f79268fa2c73c92c6905909f2eb142cd"
+        },
+        {
+          "normalization": "none",
+          "order": 7,
+          "path": "prebuilt/jdk/8/patches/0013-jfr-bitset-allocation-template.patch",
+          "sha256": "5612089b3b036e6d348f8df769117adf6d0c5662ce6a684fe0eaf886156f34e1"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jdk/source-provenance.json",
+        "sha256": "db05c49179a1a5ed62a1860bdef0cf11075c74205e79db947d2318cd45c8aae0"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/jdk/source-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/jna/manifest.json",
+        "sha256": "25832ce2edc66fc9eda599896ef3f0a4fe409db55fa89bfa9feca56ed1b46cbf"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/jna/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [
+        {
+          "artifactSha256": "e38d9d053e8bf3be88050b40b1672d9f59c8df7d1ac54d9366b3382de39f541f",
+          "artifactSize": 104480,
+          "filename": "libjnidispatch_v5.so",
+          "javaVersionSource": "4.4.0",
+          "protocol": "5.1.0",
+          "upstream": {
+            "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/4.4.0/jna-4.4.0.jar"
+          }
+        },
+        {
+          "artifactSha256": "0d0a0e6ae88416651b53f711101d3f8bb8fb59d5efe8173ab4924c1151443c69",
+          "artifactSize": 162288,
+          "filename": "libjnidispatch_v6.so",
+          "javaVersionSource": "5.13.0",
+          "protocol": "6.1.6",
+          "upstream": {
+            "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar"
+          }
+        },
+        {
+          "artifactSha256": "5c894177c2c4a1a422047886f5f526959e4f1a8c1561bb3cb2277fe0da85b744",
+          "artifactSize": 162288,
+          "filename": "libjnidispatch.so",
+          "javaVersionSource": "5.14.0",
+          "protocol": "7.0.0",
+          "upstream": {
+            "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar"
+          }
+        }
+      ],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/lwjgl3/compat/stb-v1/sources.json",
+        "sha256": "48007f3531f8dbadd9879a4ded1094895076cce6b8b4667fd51f855080c51885"
+      },
+      "declarations": {
+        "commit": "f0ec1437a6149dae00eaa27c47268e5e4efb129f",
+        "upstream": "LWJGL/lwjgl3",
+        "version": "3.3.3"
+      },
+      "files": [
+        {
+          "file": "stb_image_resize.h",
+          "sha256": "6a0e75adbabb48df9031c2e39ccd97437bb226fe31e7d4a01c7bf70a18d32ec6",
+          "size": 116516,
+          "url": "https://raw.githubusercontent.com/LWJGL/lwjgl3/f0ec1437a6149dae00eaa27c47268e5e4efb129f/modules/lwjgl/stb/src/main/c/stb_image_resize.h"
+        },
+        {
+          "file": "org_lwjgl_stb_STBImageResize.c",
+          "sha256": "ca629688f86588794dfd2bb6ba94eba3646c305e7ec9753a0e85ed9105405408",
+          "size": 13322,
+          "url": "https://raw.githubusercontent.com/LWJGL/lwjgl3/f0ec1437a6149dae00eaa27c47268e5e4efb129f/modules/lwjgl/stb/src/generated/c/org_lwjgl_stb_STBImageResize.c"
+        },
+        {
+          "file": "STBImageResize.java",
+          "sha256": "49b417eb190f675c367d5e8bfe88dd262e94271f659045ed46f74195fb235664",
+          "size": 47111,
+          "url": "https://raw.githubusercontent.com/LWJGL/lwjgl3/f0ec1437a6149dae00eaa27c47268e5e4efb129f/modules/lwjgl/stb/src/generated/java/org/lwjgl/stb/STBImageResize.java"
+        },
+        {
+          "file": "lwjgl-stb-3.3.3.jar",
+          "sha256": "0cff7aa46ea9d70fcc20857015293ea80fbf21adcac34600c84da9b81a44ca93",
+          "size": 120283,
+          "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar"
+        }
+      ],
+      "id": "metadata:prebuilt/lwjgl3/compat/stb-v1/sources.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/lwjgl3/extra-jni-build-provenance.json",
+        "sha256": "cd07e4063deb9b427975ec3ff7699397446eee2c59f1221c20fe8f924016d6ee"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/lwjgl3/extra-jni-build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/lwjgl3/jdk-views/manifest.json",
+        "sha256": "4eaad5f8b9b3886716e3b47d8aad5171b9b774d1bd9ab2bc3bb04d7af9163d6c"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/lwjgl3/jdk-views/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/lwjgl3/vma-build-provenance.json",
+        "sha256": "9dbf98e0dc03ce7657badccd3283f51c4165ca4eddd8d1432460190424a73bbd"
+      },
+      "declarations": {
+        "sha256": "01099dfe0f61192b0860267ca927356e9b256aadfb207b7648762a844ac0a317",
+        "size": 146216
+      },
+      "files": [],
+      "id": "metadata:prebuilt/lwjgl3/vma-build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/mesa-zink/patches/series",
+        "sha256": "6f2708c29f7c117dde8e607f54638eb417ad3966f291571f5ec91ab7ffbeb659"
+      },
+      "id": "metadata:prebuilt/mesa-zink/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/mesa-zink/patches/0001-ohos-vulkan-loader-soname.patch",
+          "sha256": "8f88611ebb6aef0257269517be94c544ea8da91456ab83e2cd3ebf12a68072b8"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/mesa-zink/patches/0002-osmesa-link-zink-driver.patch",
+          "sha256": "f102740de67ad2569d0d066405051dae92de754666dba5c602737a642c05a813"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/mesa-zink/patches/0003-inline-sw-helper-include-zink-public.patch",
+          "sha256": "252177f96b6e0f07ea88e0287e3b193a87a58c8783884668bc853ca5bccac635"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/mesa-zink/patches/0004-osmesa-sha1-build-id.patch",
+          "sha256": "860d7ec1e4ff70447d5365a5f5366417de1449f7f0f2a68e4fd43cb224da0668"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/mobilegl/dist/build-provenance.json",
+        "sha256": "1339deabf33e5213e3083a521496a07f8c467a3c176655e3edacba6704fd3d52"
+      },
+      "declarations": {
+        "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274"
+      },
+      "files": [],
+      "id": "metadata:prebuilt/mobilegl/dist/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/mobileglues/patches/series",
+        "sha256": "b0f7ec1d6cc0e60b4cf8d3ff552e1f64f716fac9e429d77a1f1350b1465a429a"
+      },
+      "id": "metadata:prebuilt/mobileglues/patches/series",
+      "kind": "patch-series",
+      "steps": []
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/mod-natives/manifest.json",
+        "sha256": "436ffa1d1bcee42149fcc5b0eabdc672066f92e1a6f87954fdee26abc6f2176b"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/mod-natives/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/openal-soft/patches/series",
+        "sha256": "e7a51b37caa7e0105b8c278cbc229ab6d5cac26eab0758e1ca751a6e935e0afb"
+      },
+      "id": "metadata:prebuilt/openal-soft/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/openal-soft/patches/0001-register-ohaudio-backend.patch",
+          "sha256": "0f870926430082589fa4c8205fd68596539097b110d89d16160c926060891de9"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/openal-soft/patches/0002-backend-output-limiter-policy.patch",
+          "sha256": "ccbbb6b214d38bc9d367cb7f84d6499ce7f8fbf5244c57a3ea1dd631d0d451a9"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/runtime-compat/lib/sources.json",
+        "sha256": "ffd07f1de729fef8a3c371a649b8b0149ba9ba7ff0e753f9bbaf633955ac34c7"
+      },
+      "declarations": {},
+      "files": [
+        {
+          "file": "sponge-mixin-0.17.3+mixin.0.8.7.jar",
+          "sha256": "9e90efec71d2bad5b96c9089f019d14a8603227d3c5f408d12f53fae89d99d41",
+          "size": 1540060,
+          "url": "https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.17.3+mixin.0.8.7/sponge-mixin-0.17.3+mixin.0.8.7.jar"
+        },
+        {
+          "file": "asm-util-9.9.jar",
+          "sha256": "3842e13cfe324ee9ab7cdc4914be9943541ead397c17e26daf0b8a755bede717",
+          "size": 94565,
+          "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-util/9.9/asm-util-9.9.jar"
+        },
+        {
+          "file": "asm-analysis-9.9.jar",
+          "sha256": "6a15d28e8bd29ba4fd5bca4baf9b50e8fba2d7b51fbf78cfa0c875a7214c678b",
+          "size": 35149,
+          "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-analysis/9.9/asm-analysis-9.9.jar"
+        },
+        {
+          "file": "asm-commons-9.9.jar",
+          "sha256": "db2f6f26150bbe7c126606b4a1151836bcc22a1e05a423b3585698bece995ff8",
+          "size": 74348,
+          "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-commons/9.9/asm-commons-9.9.jar"
+        }
+      ],
+      "id": "metadata:prebuilt/runtime-compat/lib/sources.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/sdl3/build-provenance.json",
+        "sha256": "4b98c3ebc3a37d653919063c3d382673ca3099c98c24e84b6c322f8cb2824610"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/sdl3/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {
+        "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+        "repository": "https://github.com/icculus/SDL.git"
+      },
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/sdl3/patches/series",
+        "sha256": "34853e33bf5e9e8fea6a68968c228e80dd1f31915e3228a2cda61ee13deb9312"
+      },
+      "id": "metadata:prebuilt/sdl3/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/sdl3/patches/0001-openharmony-host-window-input-and-backend-fixes.patch",
+          "sha256": "10231434c86acab2b671ca030425886b86dd66b9727d227265796a8c0f264fe0"
+        },
+        {
+          "normalization": "none",
+          "order": 2,
+          "path": "prebuilt/sdl3/patches/0002-openharmony-live-window-generation-recovery.patch",
+          "sha256": "55dd662c5dd26bec189aa5cc792355307b9b985b443dba85a4368e89151300f0"
+        },
+        {
+          "normalization": "none",
+          "order": 3,
+          "path": "prebuilt/sdl3/patches/0003-openharmony-hybrid-multi-window.patch",
+          "sha256": "4acfcb9eaca803fafd8e66871b45bd62105701330a068ea05b48e26698830cf3"
+        },
+        {
+          "normalization": "none",
+          "order": 4,
+          "path": "prebuilt/sdl3/patches/0004-openharmony-typed-input-lifecycle-relative.patch",
+          "sha256": "aeda31ac59b32aa542c18b6ed2a336f0a5ae554adbb103a96935d1de7107690c"
+        },
+        {
+          "normalization": "none",
+          "order": 5,
+          "path": "prebuilt/sdl3/patches/0005-openharmony-pointer-device-identity.patch",
+          "sha256": "087b9f41663699e97a90a313397c037b73c889c183e2777905c718cca7d12c68"
+        },
+        {
+          "normalization": "none",
+          "order": 6,
+          "path": "prebuilt/sdl3/patches/0006-openharmony-typed-text-session.patch",
+          "sha256": "2a8bcd5440cb72310b2d9b5c3b470bcfa0de14f1f59430af797d09fc14ceba47"
+        },
+        {
+          "normalization": "none",
+          "order": 7,
+          "path": "prebuilt/sdl3/patches/0007-openharmony-multi-device-reset.patch",
+          "sha256": "ad37e3235e419397750e41c1c3e2fb86d771eb58d434d60c5b5e577979640b36"
+        },
+        {
+          "normalization": "none",
+          "order": 8,
+          "path": "prebuilt/sdl3/patches/0008-openharmony-relative-authority-surface-context.patch",
+          "sha256": "f24fee81b04341150272e10aabb1d5df61ac07a83c79d8abaf3ac5f6a64befef"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/sdl3/patches/0009-openharmony-grabbed-motion-owner-scope.patch",
+          "sha256": "facfc6ce60b9f7e900f182fc5762823a90327750d65c7080bc0945809cc2296b"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/sdl3/patches/0010-openharmony-desktop-services.patch",
+          "sha256": "48f27fc2be0531b916ac88e5c0000c8aa9e4419245e8ae801732458f74d876fe"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/sdl3/patches/0011-openharmony-desktop-review-fixes.patch",
+          "sha256": "0a380965940ba2826eef36c26a1f57a7a8bc9865bf07b8b42008182012b9b4ee"
+        },
+        {
+          "normalization": "none",
+          "order": 12,
+          "path": "prebuilt/sdl3/patches/0012-openharmony-presentation-session.patch",
+          "sha256": "fffa137c37f1b6f7dcf9e783f0dfcfd1a57f3d03b4f2e70e47d288c0462ad695"
+        },
+        {
+          "normalization": "none",
+          "order": 13,
+          "path": "prebuilt/sdl3/patches/0013-openharmony-host-runtime-ownership.patch",
+          "sha256": "96f9a9341adac7bab9abf002984372aceb983e55e693bc3b35133cfbc3bb1624"
+        },
+        {
+          "normalization": "none",
+          "order": 14,
+          "path": "prebuilt/sdl3/patches/0014-openharmony-resource-geometry-identity.patch",
+          "sha256": "2bcb73a0be896c84cee51fd74ca7e1533908564a35b3d0bcb7276db4d79fa5e2"
+        },
+        {
+          "normalization": "none",
+          "order": 15,
+          "path": "prebuilt/sdl3/patches/0015-openharmony-graphics-observation.patch",
+          "sha256": "c309b454716c399830344f03852deddf92d3fb37b8cb596748357a61a0041cbf"
+        },
+        {
+          "normalization": "none",
+          "order": 16,
+          "path": "prebuilt/sdl3/patches/0016-openharmony-frozen-graphics-runtime.patch",
+          "sha256": "9844298749631f843fe85e22e1c68c85f168b770e481f5eef7a82e8b2177e683"
+        },
+        {
+          "normalization": "none",
+          "order": 17,
+          "path": "prebuilt/sdl3/patches/0017-openharmony-graphics-functional-observation.patch",
+          "sha256": "461907087d23ac1a3e88165ce8b9ad9d3f911b02bbaa2bccb164b10eed3e03a0"
+        },
+        {
+          "normalization": "none",
+          "order": 18,
+          "path": "prebuilt/sdl3/patches/0018-openharmony-context-admission-and-present-evidence.patch",
+          "sha256": "af7f2c6440e412b7fda853f876d38733afe201aa8243647719e7d2592685c815"
+        },
+        {
+          "normalization": "none",
+          "order": 19,
+          "path": "prebuilt/sdl3/patches/0019-openharmony-nativegl-pbuffer-limit-validation.patch",
+          "sha256": "4dbf8ad6795c0c524a716456d22fdd339f3e6672f3059fc3721f3e8c1ef23d6a"
+        },
+        {
+          "normalization": "none",
+          "order": 20,
+          "path": "prebuilt/sdl3/patches/0020-openharmony-context-loss-and-auxiliary-transactions.patch",
+          "sha256": "e1d33ba49cafc7e72afc66c6308165ee1fdc360b26cab721f377a6332e6c433b"
+        },
+        {
+          "normalization": "none",
+          "order": 21,
+          "path": "prebuilt/sdl3/patches/0021-openharmony-input-source-semantics.patch",
+          "sha256": "e8625b2a6d1bf48c47dcb71af54a16a9470f28892d9fe83ec3fd432a954724bc"
+        },
+        {
+          "normalization": "none",
+          "order": 22,
+          "path": "prebuilt/sdl3/patches/0022-openharmony-ordered-input-and-foreground.patch",
+          "sha256": "7f577e19939965c989e78c64fbcb8aba2f748ce4335f5b7abeef6b55ac6a4eff"
+        },
+        {
+          "normalization": "none",
+          "order": 23,
+          "path": "prebuilt/sdl3/patches/0023-openharmony-vulkan-input-generation.patch",
+          "sha256": "c27ea865b50b6a5cb7db010f22eeb11994e224a719757999f6c4d8ce7aa67c47"
+        },
+        {
+          "normalization": "none",
+          "order": 24,
+          "path": "prebuilt/sdl3/patches/0024-openharmony-touch-causal-target.patch",
+          "sha256": "c9a0f9841304bec928c6e6cbd65bbd59cdfb346365e5b8b6fa3eb3618c847c9a"
+        },
+        {
+          "normalization": "none",
+          "order": 25,
+          "path": "prebuilt/sdl3/patches/0025-openharmony-shared-control-delivery.patch",
+          "sha256": "b2ab47c404625ae7ddfdba56c071b8571d9a0ea5213fa739747f04018559579a"
+        },
+        {
+          "normalization": "none",
+          "order": 26,
+          "path": "prebuilt/sdl3/patches/0026-openharmony-ordered-look-prefix.patch",
+          "sha256": "735d41c77dc1f87489fbd76e961070cd8ef8adb4cbcdeb79f2724536c634d329"
+        },
+        {
+          "normalization": "none",
+          "order": 27,
+          "path": "prebuilt/sdl3/patches/0027-openharmony-input-latency-receipts.patch",
+          "sha256": "7689d580e14b6be24acb76590fd499eb582bbde0b0e69945e3920eaed2a17278"
+        },
+        {
+          "normalization": "none",
+          "order": 28,
+          "path": "prebuilt/sdl3/patches/0028-openharmony-desktop-device-gate.patch",
+          "sha256": "7755a3469f454004598aa324db50d53e271345f2cda62befdbff7f99857b92ff"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/sdl3/tests/fixtures/e293db30d/manifest.json",
+        "sha256": "d2437c1307f0fba8e7159781e05472961e310c5cdf76882efac72aac16ee663b"
+      },
+      "declarations": {
+        "license": "Zlib"
+      },
+      "files": [
+        {
+          "sha256": "cf3c6c73c1b3ffb0818200ab8a6c93f43fd20913cc36b9fa60153d3d4d19b0cc",
+          "size": 28486
+        },
+        {
+          "sha256": "4381c2503c333f3aa8732cb6b071b6d3fe95595947b59b987b4bd32dc919338c",
+          "size": 71515
+        },
+        {
+          "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+          "size": 884
+        }
+      ],
+      "id": "metadata:prebuilt/sdl3/tests/fixtures/e293db30d/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/shaderc/build-provenance.json",
+        "sha256": "e241a1daa5ccc2890c8e7c1606788480a71266df6f9ad51261b1d7168ed8ca2b"
+      },
+      "declarations": {
+        "sha256": "ca266f15770463fae8c8c0de0b8a9cfd82710ea02e2c5e8b4fa56edfb3cf115a",
+        "size": 6464464
+      },
+      "files": [],
+      "id": "metadata:prebuilt/shaderc/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "scripts/lwjgl-stack-backfill/lib/sources.json",
+        "sha256": "450bbab57a391458b543d84d4a8a548a1caaa69443bb4029deee0f9883243cbc"
+      },
+      "declarations": {},
+      "files": [
+        {
+          "file": "asm-9.9.jar",
+          "sha256": "03d99a74ad1ee5c71334ef67437f4ef4fe3488caa7c96d8645abc73c8e2017d4",
+          "size": 126122,
+          "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.9/asm-9.9.jar"
+        },
+        {
+          "file": "asm-tree-9.9.jar",
+          "sha256": "42178f3775c9c63f9e5e1446747d29b4eca4d91bd6e75e5c43cfa372a47d38c6",
+          "size": 51947,
+          "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.9/asm-tree-9.9.jar"
+        }
+      ],
+      "id": "metadata:scripts/lwjgl-stack-backfill/lib/sources.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "toolchain.lock",
+        "sha256": "384a166678461625ce6704ac19e3db930f256d230e76789115d1bffe0f7033d1"
+      },
+      "id": "metadata:toolchain.lock",
+      "kind": "toolchain-lock",
+      "products": {
+        "default": {
+          "cmake": {
+            "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e",
+            "versionFirstLine": "cmake version 3.28.2"
+          },
+          "compileSdkVersion": "26.0.0.105",
+          "compiler": {
+            "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c",
+            "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)"
+          },
+          "hapSignTool": {
+            "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+          },
+          "hvigor": {
+            "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0",
+            "version": "6.26.4"
+          },
+          "minAPIVersion": 60000020,
+          "nativeCompiler": "BiSheng",
+          "platform": "win32-x64",
+          "signingAlgorithm": "SHA256withECDSA",
+          "targetAPIVersion": 60100023,
+          "toolchainFile": {
+            "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+          }
+        },
+        "desktop": {
+          "cmake": {
+            "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e",
+            "versionFirstLine": "cmake version 3.28.2"
+          },
+          "compileSdkVersion": "26.0.0.105",
+          "compiler": {
+            "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c",
+            "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)"
+          },
+          "hapSignTool": {
+            "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+          },
+          "hvigor": {
+            "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0",
+            "version": "6.26.4"
+          },
+          "minAPIVersion": 60002022,
+          "nativeCompiler": "BiSheng",
+          "platform": "win32-x64",
+          "signingAlgorithm": "SHA256withECDSA",
+          "targetAPIVersion": 260000026,
+          "toolchainFile": {
+            "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+          }
+        },
+        "sideload": {
+          "cmake": {
+            "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e",
+            "versionFirstLine": "cmake version 3.28.2"
+          },
+          "compileSdkVersion": "26.0.0.105",
+          "compiler": {
+            "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c",
+            "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)"
+          },
+          "hapSignTool": {
+            "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+          },
+          "hvigor": {
+            "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0",
+            "version": "6.26.4"
+          },
+          "minAPIVersion": 60000020,
+          "nativeCompiler": "BiSheng",
+          "platform": "win32-x64",
+          "signingAlgorithm": "SHA256withECDSA",
+          "targetAPIVersion": 60100023,
+          "toolchainFile": {
+            "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+          }
+        },
+        "store": {
+          "cmake": {
+            "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e",
+            "versionFirstLine": "cmake version 3.28.2"
+          },
+          "compileSdkVersion": "26.0.0.105",
+          "compiler": {
+            "sha256": "e8d7cea34fe4084844773b5cf8a7a1535e5fbcf1cb1b5495a490237dfe6ae30c",
+            "versionFirstLine": "OHOS (BiSheng Mobile CPU STD 205.1.0.B061) clang version 15.0.4 (llvm-project 2c107534d667)"
+          },
+          "hapSignTool": {
+            "sha256": "a434b6747e6c5d0b14e73837a46b39f4816ab25b42d1833d6f767bf867cf616d"
+          },
+          "hvigor": {
+            "launcherSha256": "61fa0daa0d1dddf9efe8b2cb1758ebb78da08e5df4098db9eee8aaa89bbdcce0",
+            "version": "6.26.4"
+          },
+          "minAPIVersion": 60000020,
+          "nativeCompiler": "BiSheng",
+          "platform": "win32-x64",
+          "signingAlgorithm": "SHA256withECDSA",
+          "targetAPIVersion": 60100023,
+          "toolchainFile": {
+            "sha256": "b2a8c2d744c734d346b40e8847e3be910c8097415d5a5a568d0300cf0bc42932"
+          }
+        }
+      },
+      "schemaVersion": 2,
+      "validation": "declarations-only-no-tool-execution"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "update/oh-package-lock.json5",
+        "sha256": "0c1f2af9775846765d7b8221cc4d44f0e526970cbe5d30b9991bb0f146825e5a"
+      },
+      "id": "metadata:update/oh-package-lock.json5",
+      "kind": "ohpm-lock",
+      "lockfileVersion": 3,
+      "packages": [
+        {
+          "key": "commons@../commons",
+          "name": "commons",
+          "resolved": "../commons",
+          "version": "1.0.0"
+        },
+        {
+          "key": "feature_core@../feature_core",
+          "name": "feature_core",
+          "resolved": "../feature_core",
+          "version": "1.0.0"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].curl_sha256 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].curl_version 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].libglfw_sha256 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].libglfw_version 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].libopenal_sha256 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].libopenal_version 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].lwjgl-natives_sha256 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:amcl-prebuilts",
+      "message": "deps.lock [amcl-prebuilts].lwjgl-natives_version 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:mesa-zink",
+      "message": "deps.lock [mesa-zink].libglapi_sha256 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "unresolved-declaration",
+      "component": "deps-lock:openjdk",
+      "message": "deps.lock [openjdk].commit 尚不能作为已核验的不可变身份。"
+    },
+    {
+      "code": "historical-runtime-boundary",
+      "component": "metadata:prebuilt/jdk/source-provenance.json",
+      "message": "旧 JDK 包存在独立来源记录；新 build-inputs 的 pin 不补证历史混合发行包的完整重建来源。"
+    }
+  ],
+  "qualification": {
+    "allThirdPartySourceRebuild": "not-performed",
+    "applicationBuild": "not-performed",
+    "officialBinaryReproduction": "not-performed",
+    "publicDownloadAvailability": "not-checked",
+    "sourcePins": "reported-when-declared"
+  },
+  "schemaVersion": 1,
+  "scope": "declared-public-dependency-inputs",
+  "sourceCommit": "fb1b299f87c7bbac069cac24cfe65df303ebb381"
+}

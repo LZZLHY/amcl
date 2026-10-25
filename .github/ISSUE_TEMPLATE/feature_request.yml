@@ -1,0 +1,27 @@
+name: 功能与改进建议
+description: 描述使用场景、预期行为，或在较大代码改动前讨论方案。
+title: "[建议] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先描述使用场景和希望改善的行为。准备提交较大功能或第三方升级时，可以在这里讨论范围、兼容性和验证方式。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景与当前问题
+      description: 说明谁在什么情况下遇到了什么困难；有关联 Issue 或已有方案时附链接。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 希望达到的行为
+      description: 描述可观察、可验证的结果；有替代方案或取舍时一并说明。
+    validations:
+      required: true
+  - type: textarea
+    id: contribution
+    attributes:
+      label: 实现与验证想法（可选）
+      description: 可以说明愿意参与的部分、受影响模块、第三方来源、设备与验证条件；不要求先提供代码。

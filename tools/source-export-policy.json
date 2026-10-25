@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "description": "人工发行导出边界。新增源码根必须分类；内部资料不自动转为公开。必要事实文档逐项审阅后加入 sourceFiles。",
+  "sourceRoots": ["account", "AppScope", "commons", "config", "docker", "entry", "feature_core", "feature_system", "gamecontrol", "hvigor", "JavaApp", "JavaCpuAgent", "JavaAudioServiceAgent", "launch", "mods", "prebuilt", "scripts", "tests", "tools", "update"],
+  "sourceFiles": [
+    ".gitattributes", "amcl-build-menu.bat", "build-dependencies.local.json.example",
+    "build-app.ps1", "build-hap.ps1", "build-delivery.ps1", "code-linter.json5", "deps.lock", "deps.versions",
+    "hvigorfile.ts", "oh-package.json5", "oh-package-lock.json5", "setup_deps.sh", "toolchain.lock",
+    "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_core.cpp",
+    "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp",
+    "docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md"
+  ],
+  "privateRoots": [".github", ".idea", ".vscode", ".codex", ".cursor", ".claude", ".kiro", ".aoci", "docs"],
+  "privateFiles": ["AGENTS.md", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "build-dependencies.local.json", "local.properties", "build-profile.json5"],
+  "publicOwnedFiles": [
+    ".gitignore", ".gitmodules", ".clang-tidy", "LICENSE", "NOTICE", "README.md", "build-profile.json5.template",
+    "docker/patches/README.md", "docs/BUILD_SNAPSHOT.md", "docs/CREDITS.md", "docs/README.md", "docs/architecture.md", "docs/public-reproduction-audit.md",
+    "entry/src/main/cpp/openal/README.md", "entry/src/main/cpp/tests/host/desktop_review/README.md",
+    "prebuilt/README.md", "prebuilt/curl/README.md", "prebuilt/forge/README.md", "prebuilt/gl4es/README.md",
+    "prebuilt/jdk/17/README.md", "prebuilt/jdk/17/shims/README.md", "prebuilt/jdk/21/README.md", "prebuilt/jdk/25/README.md", "prebuilt/jdk/8/README.md",
+    "prebuilt/jna/README.md", "prebuilt/khronos-egl-headers/README.md", "prebuilt/lwjgl2/README.md", "prebuilt/lwjgl3/3.2.3/README.md",
+    "prebuilt/lwjgl3/README.md", "prebuilt/lwjgl3/compat/stb-v1/README.md", "prebuilt/lwjgl3/ohos-glfw/README.md",
+    "prebuilt/mesa-zink/README.md", "prebuilt/mesa-zink/ohos-platform/README.md", "prebuilt/mobilegl/README.md", "prebuilt/mobileglues/README.md",
+    "prebuilt/mod-natives/README.md", "prebuilt/openal-soft/README.md", "prebuilt/sdl3/README.md", "prebuilt/sdl3/tests/fixtures/e293db30d/README.md",
+    "prebuilt/stubs/README.md", "prebuilt/stubs/src/README.md", "scripts/check-public-snapshot.mjs", "scripts/prepare-public-deps.mjs",
+    "scripts/run-host-tests-docker.sh", "scripts/fixtures/mod-install/README.md", "scripts/lwjgl-stack-backfill/README.md"
+  ],
+  "generatedFiles": ["SOURCE_SNAPSHOT.json", "DEPENDENCY_INPUTS.json", "gate0-evidence.lock", "entry/src/main/resources/rawfile/graphics-manifest.json", "entry/src/main/resources/rawfile/product-profile.json"],
+  "derivedEvidence": ["docs/testing/gate0-raw-relative-evidence.md"],
+  "excludedSegments": ["build", "out", "__pycache__", "node_modules", "oh_modules", ".secrets", ".git", "fork-archive", "integration-archive", "archive-plan-a"],
+  "excludedExtensions": [".p12", ".p7b", ".jks", ".keystore", ".key", ".cer", ".csr", ".hap", ".app", ".log", ".obj", ".pyc"],
+  "lockedBinaryInputs": ["prebuilt/mobilegl/dist/libmobilegl.so", "prebuilt/mobilegl/dist/libmobilegl.unstripped.so", "prebuilt/mobilegl/dist/build-provenance.json"],
+  "requiredInputs": ["AppScope/app.json5", "config/products.json", "deps.lock", "toolchain.lock", "scripts/check-mobilegl-build-contract.mjs", "docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md"],
+  "requiredDependencies": ["prebuilt/lwjgl3/lwjgl3_src", "prebuilt/mobileglues/mg_src", "prebuilt/mobilegl/src", "prebuilt/hdc/muka-rust-hdc"],
+  "requiredPublicInputs": ["build-profile.json5.template", "scripts/check-public-snapshot.mjs", "scripts/prepare-public-deps.mjs", "docs/BUILD_SNAPSHOT.md"]
+}
