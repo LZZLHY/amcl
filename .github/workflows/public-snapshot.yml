@@ -56,8 +56,6 @@ jobs:
   workflow-tools:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      AMCL_RUN_DIR: ${{ runner.temp }}/amcl-public-tests
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -67,6 +65,9 @@ jobs:
         with:
           node-version: '22'
       - name: Test source export and contribution checks
+        # runner上下文在步骤env可用，不能用于作业级env的工作流预解析。
+        env:
+          AMCL_RUN_DIR: ${{ runner.temp }}/amcl-public-tests
         run: |
           node tools/test-source-snapshot.mjs
           node tools/test-public-contribution.mjs
