@@ -306,13 +306,21 @@ try {
     }
     const head = git('rev-parse', '--verify', 'HEAD^{commit}').trim();
     const manifestChanged = baseline.tree.get(snapshotPath)?.object !== treeAt(head).get(snapshotPath)?.object;
-    const candidate = await verifySnapshot(head, '公开候选', { requireModes: manifestChanged });
-    if (manifestChanged) verifyCandidateCoverage(head, candidate);
-    report.candidate = { commit: head, sourceCommit: candidate.manifest.sourceCommit,
-      verifiedFiles: candidate.verifiedFiles, manifestChanged, coverageChecked: manifestChanged };
+    if (manifestChanged) {
+      const candidate = await verifySnapshot(head, '公开候选', { requireModes: true });
+      verifyCandidateCoverage(head, candidate);
+      report.candidate = { commit: head, sourceCommit: candidate.manifest.sourceCommit,
+        verifiedFiles: candidate.verifiedFiles, manifestChanged: true, coverageChecked: true };
+    } else {
+      // owner 也可能提出普通功能修复。没有改官方清单时，源码应按贡献版检查，
+      // 不能再次拿旧发行哈希去要求 HEAD 源码完全不变；只报告本次未验证新发行快照。
+      report.candidate = { commit: head, sourceCommit: baseline.manifest.sourceCommit,
+        verifiedFiles: 0, manifestChanged: false, coverageChecked: false,
+        snapshotValidation: 'not-required-unchanged-manifest; committed source checked as contribution' };
+    }
   }
   report.changes = changedFiles(commit);
-  checkChanges(report.changes, releaseSync && report.candidate !== null);
+  checkChanges(report.changes, releaseSync && report.candidate?.manifestChanged === true);
   report.ok = report.failures.length === 0;
 } catch (error) { report.failures.push(error.message); }
 

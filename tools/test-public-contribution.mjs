@@ -136,6 +136,14 @@ try {
   rejected('unknown base rejected', run('f'.repeat(40)), /Git rev-parse/);
   rejected('unknown option rejected', run(base, ['--unsafe']), /用法/);
 
+  // CI 对同仓 owner PR 提供显式通道，但 owner 的普通代码贡献仍允许偏离发行源码。
+  write('MyApplication/entry/src/main/ets/Feature.ets', 'export const featureValue = 2;\n');
+  git('add', 'MyApplication/entry/src/main/ets/Feature.ets'); git('commit', '-m', 'fixture owner source contribution');
+  const ownerProposal = passed('owner committed source proposal with unchanged snapshot', run(base, ['--release-sync']));
+  assert.equal(ownerProposal.candidate.manifestChanged, false);
+  assert.equal(ownerProposal.candidate.verifiedFiles, 0);
+  assert.match(ownerProposal.candidate.snapshotValidation, /source checked as contribution/);
+
   // 维护者人工同步是独立显式模式；新清单必须与已提交 Git 对象及归属规则闭合。
   const release = structuredClone(manifest);
   release.sourceCommit = 'c'.repeat(40);
