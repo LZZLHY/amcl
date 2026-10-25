@@ -1,4 +1,4 @@
-name: Public source snapshot
+name: Public source and contributions
 on:
   push:
     branches: [main]
@@ -8,11 +8,16 @@ on:
 permissions:
   contents: read
 jobs:
-  verify:
+  # 正式同步仍核对原版清单；普通 PR 的源码本来就允许与发行版不同。
+  release-identity:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          submodules: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
@@ -22,3 +27,46 @@ jobs:
           node MyApplication/scripts/check-public-snapshot.mjs
           node tools/check-public-release.mjs
           node MyApplication/scripts/test-project-json5.mjs
+  contribution:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # 包含事件指定的完整公开基线；不初始化大型第三方工作树。
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Verify original base and check proposed changes
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: node tools/check-public-contribution.mjs --base "$BASE_COMMIT"
+      - name: Check public project configuration parser
+        run: node MyApplication/scripts/test-project-json5.mjs
+      - name: State verification scope
+        run: |
+          echo 'This job checks the published base, proposed JS/JSON syntax and public configuration tests.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'HarmonyOS SDK/HAP compilation, native/JDK rebuilds and device/game validation are not run here.' >> "$GITHUB_STEP_SUMMARY"
+  # 工具本身使用真实小型 Git 夹具回归，不连接私有源码仓、不持有签名或发布权限。
+  workflow-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AMCL_RUN_DIR: ${{ runner.temp }}/amcl-public-tests
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Test source export and contribution checks
+        run: |
+          node tools/test-source-snapshot.mjs
+          node tools/test-public-contribution.mjs
+          node tools/test-dependency-inputs.mjs
