@@ -2,3 +2,13 @@
 # 许可内容仍由对应来源清单与SHA-256核验，不改写正文来满足源码排版规则。
 MyApplication/entry/src/main/resources/rawfile/sideload/LIBUSB-LICENSE.txt -whitespace
 MyApplication/prebuilt/shaderc/licenses/spirv-headers-LICENSE -whitespace
+
+# 公开流程工具保持跨平台LF；规则限定仓根工具和说明，不改应用快照的字节契约。
+/.gitattributes text eol=lf
+/tools/**/*.mjs text eol=lf
+/tools/*.json text eol=lf
+/.github/**/*.yml text eol=lf
+/.github/**/*.md text eol=lf
+/docs/**/*.md text eol=lf
+/CONTRIBUTING.md text eol=lf
+/README.md text eol=lf

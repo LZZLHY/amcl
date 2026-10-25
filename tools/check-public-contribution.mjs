@@ -155,7 +155,15 @@ async function verifyBaseline(commit) {
     }
     records.set(key, { ...object, relative: full, sha256, normalization });
   };
-  for (const entry of manifest.entries) add(entry.path, entry.sha256, entry.normalization);
+  for (const entry of manifest.entries) {
+    add(entry.path, entry.sha256, entry.normalization);
+    if (entry.mode && tree.get(`MyApplication/${entry.path}`)?.mode !== entry.mode) throw new Error(`公开基线 Git mode 不符：${entry.path}`);
+  }
+  if (manifest.publicGitmodulesSha256) {
+    const modules = tree.get('.gitmodules');
+    if (!modules || modules.type !== 'blob' || modules.mode !== '100644') throw new Error('公开基线缺少根 .gitmodules');
+    records.set('.gitmodules:lf', { ...modules, relative: '.gitmodules', sha256: manifest.publicGitmodulesSha256, normalization: 'lf' });
+  }
   for (const dependency of manifest.dependencyWorktrees ?? []) {
     const relative = `MyApplication/${safePath(dependency.path)}`;
     const entry = tree.get(relative);

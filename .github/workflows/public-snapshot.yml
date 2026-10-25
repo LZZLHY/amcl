@@ -26,6 +26,7 @@ jobs:
         run: |
           node MyApplication/scripts/check-public-snapshot.mjs
           node tools/check-public-release.mjs
+          node tools/dependency-inputs.mjs --check
           node MyApplication/scripts/test-project-json5.mjs
   contribution:
     if: github.event_name == 'pull_request'

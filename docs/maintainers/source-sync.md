@@ -62,7 +62,7 @@ if ($LASTEXITCODE -ne 0) { throw '源码同步预检失败；保留材料并处�
 
 核对计划时至少确认：
 
-1. source commit、应用版本、产品与实际构建来源一致。
+1. source commit、应用版本与实际构建来源一致；本次产品另与构建收据核对，导出计划不替代产品验收。
 2. 所有必要自有源码、配方和测试输入都在范围内，私有材料与公开专属文件处理正确。
 3. 删除和重命名涉及的精确路径符合源仓变化，没有待导入的公开贡献被覆盖。
 4. gitlink、源码 pin、补丁与制品身份能够对应，公开引用可取得。
@@ -85,6 +85,8 @@ git diff --cached --check
 
 `--write` 会精确暂存本次计划的文件增改删和 gitlink，并保留 Git mode/可执行位；它不自动创建 commit。审阅要看 `git diff --cached`，同时用 `git status --short` 检查是否出现计划外的未暂存或未跟踪内容，不用全仓 `git add` 混入其他材料。
 
+优先使用尚未初始化依赖的轻量候选。新增 gitlink 由工具创建空目录；更新已有 gitlink 时，索引会前进，已经初始化的依赖工作树仍可能停在旧 HEAD。按构建说明运行 `prepare-public-deps.mjs` 更新至新 pin，再做构建；不能把旧子模块 HEAD 重新 `git add` 回索引。发现依赖自身有修改时先保全，不强制更新。
+
 新增/更新的记录包括：
 
 - `MyApplication/SOURCE_SNAPSHOT.json`：兼容 schema 1，增加 exporter 信息，关联冻结私有提交、导出内容与依赖身份。
@@ -102,11 +104,19 @@ node MyApplication/scripts/test-project-json5.mjs
 git diff --cached --check
 ```
 
-检查每条命令退出码，失败时停止后续提交和发布。对本次同步影响的源码、脚本与依赖执行适用检查，并按[公开构建说明](../../MyApplication/docs/BUILD_SNAPSHOT.md)在干净公开克隆中准备依赖和构建所选产品。独立克隆不应依赖私有仓权限、内部绝对路径或未公开的必要输入。
+检查每条命令退出码，失败时停止后续发布。先执行本次受影响的定向检查，审阅暂存内容，然后创建本地候选提交，取得实际公开 Git 身份：
+
+```powershell
+git commit -m "release: synchronize reviewed version source"
+if ($LASTEXITCODE -ne 0) { throw '候选提交失败' }
+$PublicSourceCommit = git rev-parse HEAD
+```
+
+随后从这个**精确候选提交**创建干净公开克隆，核对该克隆的 `HEAD` 等于 `$PublicSourceCommit`，再按[公开构建说明](../../MyApplication/docs/BUILD_SNAPSHOT.md)准备依赖和构建所选产品。不能在暂存内容尚未提交时克隆旧 HEAD，再把旧版本编译结果写成新候选通过。独立克隆不应依赖私有仓权限、内部绝对路径或未公开的必要输入。
 
 记录实际公开 commit、私有 source commit、依赖/工具链、命令和结果。源码完整性、依赖准备、HAP 编译、签名安装及设备/游戏运行分别给出真实结果；导出成功不授予这些验证资格。
 
-审阅与验证完成后，精确提交已暂存的本次同步内容，取得**公开源码 candidate commit**。它和 `SOURCE_SNAPSHOT.json` 中的私有 `sourceCommit` 是两种身份，发布时分别核对。
+本地候选提交不等于完成发行。验证失败时保留候选与日志，修正后形成新候选并重新验证受影响部分；未经验证的旧候选不能沿用资格。**公开源码 candidate commit** 与 `SOURCE_SNAPSHOT.json` 中的私有 `sourceCommit` 是两种身份，发布时分别核对。
 
 ## 6. 与 Release、更新 feed 的顺序衔接
 
