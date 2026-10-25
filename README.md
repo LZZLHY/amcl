@@ -36,7 +36,7 @@ AMCL 的日常开发在私有主工程进行，本仓库在维护者手动发布
 
 欢迎提交问题、复现、文档改进和代码 PR。应用代码贡献通常经过公开评审后导入私有主工程，随后续版本同步公开并关联发行；公开仓自身的文档和 CI 改进可以独立合入。
 
-第一次参与请阅读 [贡献指南](CONTRIBUTING.md)，其中包含 Fork、构建、验证、PR 填写和待发布状态说明。维护者处理贡献时参阅 [贡献接纳与版本回流](docs/maintainers/contributions.md)。
+第一次参与请阅读 [贡献指南](CONTRIBUTING.md)，其中包含 Fork、构建、验证、PR 填写和待发布状态说明。维护者参阅 [手动发布源码同步](docs/maintainers/source-sync.md)及[贡献接纳与版本回流](docs/maintainers/contributions.md)。
 
 ## 从源码构建
 
