@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { parseJson5 } from '../MyApplication/scripts/product-contract.mjs';
+import { validateUpdateFeeds, validatePublishedSourceVersion } from './validate-update-feeds.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8').replace(/\r\n/g, '\n');
 const json = relative => JSON.parse(read(relative));
@@ -15,18 +16,14 @@ const app = parseJson5(read('MyApplication/AppScope/app.json5')).app;
 const snapshot = json('MyApplication/SOURCE_SNAPSHOT.json');
 assert.equal(snapshot.sourceDirty, false, 'a published snapshot must identify a clean source commit');
 assert.match(snapshot.sourceCommit, /^[a-f0-9]{40}$/);
-assert.equal(app.versionName, update.versionName);
-assert.equal(app.versionCode, update.versionCode);
-assert.equal(update.tag, `v${app.versionName}`);
 // 通知清单绑定已核验的发行 tag；Latest 是独立的默认下载入口，会随后续正式版前进，
 // 不能作为某一版通知的固定原件身份。这里仍严格核对官方仓库与当前包对应的精确 tag。
 assert.equal(update.url, `https://github.com/LZZLHY/amcl/releases/tag/${update.tag}`);
 const displayed = read('MyApplication/commons/src/main/ets/common/Constants.ets').match(/APP_VERSION\s*=\s*'([^']+)'/);
 assert.equal(displayed?.[1], app.versionName);
 const changelog = json('changelog.json');
-assert.equal(changelog.latest.versionCode, app.versionCode);
-assert.equal(changelog.latest.versionName, app.versionName);
-assert.deepEqual(json('MyApplication/entry/src/main/resources/rawfile/changelog.json'), changelog);
+// 公共推荐可能已进入preview或独立desktop发行；旧兼容头和全局日志不能替代源码身份。
+validatePublishedSourceVersion(app, json('MyApplication/entry/src/main/resources/rawfile/changelog.json'), changelog, validateUpdateFeeds(root));
 assert(Buffer.byteLength(read('update.json')) < 8192, 'older clients need a bounded update manifest');
 // 不依赖子模块是否已下载：Git 索引中的不可变 gitlink 必须与公开清单相同。
 for (const dependency of snapshot.dependencyWorktrees) {
@@ -41,4 +38,4 @@ for (const notice of notices.files) {
   const bytes = fs.readFileSync(filename, 'utf8').replace(/\r\n/g, '\n');
   assert.equal(createHash('sha256').update(bytes).digest('hex'), notice.sha256, notice.file);
 }
-console.log(`PASS public release ${update.tag}/${app.versionCode}: clean source identity, gitlinks, bundled changelog and ${notices.files.length} notice copies`);
+console.log(`PASS public source v${app.versionName}/${app.versionCode}: clean source identity, gitlinks, bundled changelog and ${notices.files.length} notice copies`);

@@ -79,3 +79,4 @@ jobs:
           node tools/test-source-snapshot.mjs
           node tools/test-public-contribution.mjs
           node tools/test-dependency-inputs.mjs
+          node tools/test-update-feeds.mjs
