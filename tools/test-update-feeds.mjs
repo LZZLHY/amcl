@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { validateUpdateFeeds, validatePublishedSourceVersion } from './validate-update-feeds.mjs';
 import { stageUpdatePages } from './stage-update-pages.mjs';
 
@@ -20,7 +21,7 @@ function manifest(product = 'sideload', channel = 'stable', version = '1.0.6', c
   const sha256 = (product === 'sideload' ? 'a' : 'b').repeat(64);
   const name = `amcl-v${version}-${product}-unsigned.hap`, tag = 'v' + version;
   return { schema: 1, versionName: version, versionCode: code, tag, updateChannel: channel, prerelease: version.includes('-'),
-    publicationId: `${product}-${channel}-${version}`, delivery: { schema: 1, ready: true, assets: [{
+    publicationId: createHash('sha256').update(`${product}-${channel}-${version}-${code}`).digest('hex'), delivery: { schema: 1, ready: true, assets: [{
       product, versionName: version, versionCode: code, tag, name, sha256, sizeBytes: 123,
       url: `https://github.com/LZZLHY/amcl/releases/download/${tag}/${name}`,
       websiteUrl: `https://amcl.lovedhy.cn/api/packages/files/${sha256}/${name}`,
@@ -120,6 +121,15 @@ try {
     const root = fixture('recursive-output'); fs.mkdirSync(path.join(root, 'assets'));
     const target = path.join(root, 'assets', 'generated');
     assert.throws(() => stageUpdatePages(root, target), /nested/); assert.equal(fs.existsSync(target), false);
+  });
+  run('modern product feeds require one exact product and a real publication digest', () => {
+    const multiple = fixture('multiple-products'), bad = manifest();
+    bad.delivery.assets.push(manifest('desktop').delivery.assets[0]);
+    write(multiple, 'updates/sideload/stable.json', bad);
+    assert.throws(() => validateUpdateFeeds(multiple), /exactly one/);
+    const arbitrary = fixture('bad-publication'), unknown = manifest(); unknown.publicationId = 'made-up-publication';
+    write(arbitrary, 'updates/sideload/stable.json', unknown);
+    assert.throws(() => validateUpdateFeeds(arbitrary), /publication identity/);
   });
   const receipt = path.join(parent, path.basename(owned) + '.json');
   fs.writeFileSync(receipt, JSON.stringify({ schemaVersion: 1, ok: true, observedAt: new Date().toISOString(), checks,

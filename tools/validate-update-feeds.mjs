@@ -49,7 +49,9 @@ function validateManifest(manifest, product, channel, label, { legacy = false } 
   }
   requireValue(manifest.delivery.schema === 1 && manifest.delivery.ready === true && Array.isArray(manifest.delivery.assets) && manifest.delivery.assets.length > 0,
     `${label}: delivery is not ready`);
-  requireValue(typeof manifest.publicationId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(manifest.publicationId), `${label}: publication identity missing`);
+  requireValue(legacy || manifest.delivery.assets.length === 1, `${label}: product feed must contain exactly one asset`);
+  requireValue(typeof manifest.publicationId === 'string' &&
+    (legacy ? /^[A-Za-z0-9._:-]{1,128}$/.test(manifest.publicationId) : HASH.test(manifest.publicationId)), `${label}: publication identity missing or invalid`);
   const seen = new Set();
   for (const asset of manifest.delivery.assets) {
     requireValue(object(asset) && PRODUCTS.includes(asset.product) && !seen.has(asset.product), `${label}: ambiguous product asset`);
