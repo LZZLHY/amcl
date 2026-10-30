@@ -22,7 +22,14 @@ function copyTree(source, target) {
 /** 输出必须全新且不等于输入/输入祖先，失败现场保留供调用方核查，绝不递归清共享目录。 */
 export function stageUpdatePages(root, output) {
   root = fs.realpathSync(root); output = path.resolve(output);
-  if (root === output || root.startsWith(output + path.sep)) throw new Error('Pages output cannot replace source');
+  // 解析实际父目录后再检查Windows大小写和目录关系；输出不得落进会被递归复制的输入树。
+  output = path.join(fs.realpathSync(path.dirname(output)), path.basename(output));
+  const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
+  if (key(root) === key(output) || key(root).startsWith(key(output) + path.sep)) throw new Error('Pages output cannot replace source');
+  for (const input of ['assets', 'updates']) {
+    const directory = key(path.join(root, input));
+    if (key(output) === directory || key(output).startsWith(directory + path.sep)) throw new Error('Pages output cannot be nested in copied source');
+  }
   if (fs.existsSync(output)) throw new Error('Pages output must not already exist');
   const report = validateUpdateFeeds(root);
   fs.mkdirSync(output);

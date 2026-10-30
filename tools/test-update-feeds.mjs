@@ -114,6 +114,13 @@ try {
     write(root, 'update.json', old); write(root, 'changelog.json', { latest: old, releases: [old] });
     assert.equal(validateUpdateFeeds(root).ok, true);
   });
+  run('empty latest identity and recursive output paths fail before staging', () => {
+    const malformed = fixture('empty-latest'); write(malformed, 'changelog.json', { latest: {}, releases: [{}] });
+    assert.throws(() => validateUpdateFeeds(malformed), /invalid latest/);
+    const root = fixture('recursive-output'); fs.mkdirSync(path.join(root, 'assets'));
+    const target = path.join(root, 'assets', 'generated');
+    assert.throws(() => stageUpdatePages(root, target), /nested/); assert.equal(fs.existsSync(target), false);
+  });
   const receipt = path.join(parent, path.basename(owned) + '.json');
   fs.writeFileSync(receipt, JSON.stringify({ schemaVersion: 1, ok: true, observedAt: new Date().toISOString(), checks,
     scope: 'production Pages validation and staging; no GitHub upload/deploy' }, null, 2) + '\n', { flag: 'wx' });

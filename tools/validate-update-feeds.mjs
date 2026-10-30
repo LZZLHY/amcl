@@ -16,6 +16,11 @@ const HASH = /^[a-f0-9]{64}$/;
 function requireValue(condition, message) { if (!condition) throw new Error(message); }
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function stage(name) { return name.includes('-'); }
+function releaseIdentity(value) {
+  return object(value) && Number.isSafeInteger(value.versionCode) && value.versionCode > 0 &&
+    typeof value.versionName === 'string' && value.versionName.length <= 80 && VERSION.test(value.versionName) &&
+    value.tag === 'v' + value.versionName;
+}
 
 /** 限制输入体积并拒绝链接，避免稀疏发布夹具意外读取仓库外的文件。 */
 function readJson(root, relative, limit) {
@@ -74,8 +79,8 @@ export function validateUpdateFeeds(root) {
   const update = readJson(root, 'update.json', 256 * 1024);
   const changelog = readJson(root, 'changelog.json', 8 * 1024 * 1024);
   const legacy = validateManifest(update, 'sideload', 'stable', 'update.json', { legacy: true });
-  requireValue(object(changelog.latest) && Array.isArray(changelog.releases) && changelog.releases.length > 0, 'changelog: missing releases');
-  const hasRelease = identity => changelog.releases.some(release => object(release) && release.versionName === identity.versionName &&
+  requireValue(releaseIdentity(changelog.latest) && Array.isArray(changelog.releases) && changelog.releases.length > 0, 'changelog: missing releases or invalid latest');
+  const hasRelease = identity => changelog.releases.some(release => releaseIdentity(release) && release.versionName === identity.versionName &&
     release.versionCode === identity.versionCode && release.tag === identity.tag);
   requireValue(hasRelease(changelog.latest), 'changelog: latest is not a published release');
   requireValue(hasRelease(legacy), 'update.json: stable release missing from changelog');
