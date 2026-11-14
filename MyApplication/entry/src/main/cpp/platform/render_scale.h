@@ -1,11 +1,10 @@
 // render_scale.h — 渲染分辨率缩放（-Damcl.render.scale）的解析、取整与坐标映射
 //
-// 动机（真机实证）：MC 26.3 在 Maleoon 920 平板（2800×1840）上 GPU-bound
-//（渲染线程墙钟 30-50% 在 glClientWaitSync 等 GPU、glBlitFramebuffer 占整秒 29-47%），
-// 降低渲染分辨率是当前最大的性能杠杆。
+// 降低整幅游戏图像的像素预算，保留宿主全屏显示区域。收益取决于实际瓶颈，
+// 不以比例数值代替 GPU 成本或帧率实测。显示、游戏逻辑尺寸和实际图像分别确认。
 //
 // 全链路契约（三段，谁在什么坐标系）：
-//   1. 用户表达：自定义 JVM 参数 `-Damcl.render.scale=<v>`，合法域 [0.5, 1.0)，
+//   1. 用户表达：自定义 JVM 参数 `-Damcl.render.scale=<v>`，合法域 [0.5, 1.0]，
 //      非法/缺省 = 1.0（不缩放）。mc_launcher 在 JVM 创建前解析并写
 //      env `AMCL_RENDER_SCALE`（无效时显式写 "1"，防进程内重启残留——纪律同 pacing）。
 //   2. 生效点：xcomponent.cpp 在 surface 发布前对 NativeWindow 做
@@ -18,13 +17,9 @@
 //      虚拟控件命中测试（schema rect）留在 real px —— 它比较的是触点与 ArkTS 布局，
 //      与 MC 坐标系无关。
 //
-// SET_BUFFER_GEOMETRY 的线程安全论证（xcomponent.cpp 的 ApplyRenderScaleGeometry
-// 引用至此）：ohos_native_window_telemetry.h 的"active resize 不做查询"警告针对
-// 的是 GET 与 EGL 消费端并发的读竞争；SET 走 buffer queue 的生产者配置路径，由
-// 队列自身串行化，生效点是下一次 dequeue。且其全部调用点（OnSurfaceCreated /
-// OnSurfaceChanged / 启动时机重放）都在同一 UI/JS 主线程序列里、先于把新尺寸
-// 发布给渲染侧 —— 消费端要么尚未存在，要么先看到几何变化再看到新发布尺寸，
-// 不存在"用旧尺寸解释新 buffer"的窗口。
+// NativeWindow 配置接口不因 UI 调用串行就自动与 EGL/Vulkan 生产者互斥。
+// 启动期必须在生产者创建前配置；运行调整必须通过当前呈现 owner 的安全点。
+// 配置成功只表示候选尺寸可发布，实际 EGL/交换链和游戏 framebuffer 仍须分别观测。
 //
 // 本头保持 host 可编译（无任何 OHOS 依赖），纯函数部分由
 // tests/host/render_scale_test.cpp 钉住。
@@ -32,19 +27,28 @@
 #ifndef AMCL_PLATFORM_RENDER_SCALE_H
 #define AMCL_PLATFORM_RENDER_SCALE_H
 
+#include <string>
+#include <vector>
+
 namespace amcl::renderscale {
 
-// 合法域 [kMinScale, 1.0)。1.0 本身不属于域：它就是"不缩放"的缺省语义。
+// 合法域 [kMinScale, 1.0]；100% 是显式有效选择，与缺省/非法回退的来源不同。
 inline constexpr double kMinScale = 0.5;
 
-// 解析 env/JVM 参数的值部分。整串必须是一个有限小数且落在 [0.5, 1.0) 内才算有效；
+// 解析 env/JVM 参数的值部分。整串必须是一个有限小数且落在 [0.5, 1.0] 内才算有效；
 // 其余（空串、nullptr、尾随垃圾、NaN/inf、越界）一律返回 1.0，*outValid=false。
 // 调用方据 outValid 决定是否 WARN —— 解析器自身不打日志，保持 host 可测。
 double ParseScale(const char* text, bool* outValid);
 
-// real → scaled：round(real*scale) 后向下偶数对齐（YUV/压缩纹理族对奇数尺寸不友好，
-// 偶数对齐是零代价的普适保险）。scale 无效或 real 非正时恒等返回。
+// real → scaled：round(real*scale) 后沿用已有偶数对齐政策；这不是所有 GL 目标
+// 的格式要求。100% 保留原始奇数尺寸；scale 无效或 real 非正时恒等返回。
 int ScaledDimension(int real, double scale);
+
+// 在 JVM/游戏创建窗口前统一初始逻辑尺寸。width/height 来自平台已接受的发布，
+// 不能继续把物理显示 P 传给采用低分辨率 L/F 的 SDL 或 LWJGL2。
+// 仅移除这两个尺寸选项（兼容分离与等号形式），其余参数顺序/内容不变；
+// 无有效尺寸时保持原数组，避免构造零尺寸。调用者负责绑定本次会话的窗口身份。
+void SetInitialGameSize(std::vector<std::string>& arguments, int width, int height);
 
 // 单轴绝对坐标映射。用精确比值 scaled/real 而不是 scale 本身：SET 的尺寸经过
 // round+偶数对齐，比值才是真实生效的几何，用 scale 会产生累计 rounding 漂移。
@@ -53,7 +57,8 @@ double MapAxis(double value, int real, int scaled);
 // ---- 运行时快照（由 xcomponent 在每次 SET_BUFFER_GEOMETRY 后发布）----
 //
 // 打包成单个 64 位原子（4×16bit 尺寸），读方一次 load 拿到一致的 real/scaled 对，
-// 不存在跨多个原子的撕裂。实践中读写都发生在 UI/JS 主线程序列里，原子只是保险。
+// 不存在跨多个原子的撕裂。写者由surface gate串行化，但可位于UI或呈现owner线程；
+// GUI worker也会读取，所以原子是必要边界，工作线程必须使用成对映射接口。
 // 任一尺寸超出 16bit（>65535）时按恒等发布 —— 该防御分支不可达于现有设备。
 
 // scaled==real（或尺寸非法）时发布恒等快照，映射退化为直通。
@@ -66,6 +71,9 @@ bool MappingActive();
 // 绝对坐标 real px → MC 窗口坐标（scaled px）。x 用 scaledW/realW，y 用 scaledH/realH。
 double MapX(double x);
 double MapY(double y);
+// 工作线程不持surface gate时必须成对读取；避免一次live resize夹在两个MapX/MapY之间。
+// 非有限输入或空输出返回false且不改输出，恒等快照仍按同一接口直通。
+bool MapWindowPoint(double x, double y, double* windowX, double* windowY);
 
 // 成对逆变换：一次读取同一packed快照，将游戏window px还原为真实surface px。
 // 调用者仍须绑定有效surface/尺寸/目标身份；本纯几何函数不替代生命周期准入。

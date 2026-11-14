@@ -119,6 +119,7 @@
         "sourceRoots": [
           "./src/sideload"
         ],
+        // source.pages 覆盖共享 main_pages.json；侧载通道的选择页和安装页都必须在最终 HAP 注册。
         "pages": [
           "pages/Index",
           "pages/McGamePage",
@@ -135,7 +136,9 @@
           "pages/AboutPage",
           "pages/ChangelogPage",
           "pages/LocalPolicyPage",
-          "pages/DocWebPage"
+          "pages/DocWebPage",
+          "pages/SideloadUpdatePage",
+          "pages/SoftwareUpdatePage"
         ]
       }
     },
@@ -155,6 +158,7 @@
         "sourceRoots": [
           "./src/desktop"
         ],
+        // 独立电脑产品也使用侧载更新链路，保留相同的通道选择和安装路由。
         "pages": [
           "pages/Index",
           "pages/McGamePage",
@@ -170,7 +174,9 @@
           "pages/ChangelogPage",
           "pages/LocalPolicyPage",
           "pages/DocWebPage",
-          "pages/DesktopDeveloperToolsPage"
+          "pages/DesktopDeveloperToolsPage",
+          "pages/SideloadUpdatePage",
+          "pages/SoftwareUpdatePage"
         ]
       }
     }]

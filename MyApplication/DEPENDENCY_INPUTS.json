@@ -5,7 +5,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "amcl-prebuilts",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "curl_sha256": "PENDING",
@@ -27,8 +27,28 @@
       "authority": {
         "normalization": "lf",
         "path": "deps.lock",
+        "section": "authlib-injector",
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+      },
+      "declared": {
+        "asset_url": "https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.8/authlib-injector-1.2.8.jar",
+        "bytes": "349681",
+        "commit": "5437f5b465ee3f5be0a1e5e1ae3c50978114f6fb",
+        "repo": "https://github.com/yushijinhun/authlib-injector",
+        "sha256": "9c7f4343e6c82034958ffb48c14a2cb0c85928be7283103ce17da00c6d5a7b10",
+        "version": "1.2.8"
+      },
+      "id": "deps-lock:authlib-injector",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
         "section": "cacert",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "sha256": "b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171",
@@ -45,7 +65,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "dyncall-native",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "source": "https://dyncall.org/r1.0/dyncall-1.0.tar.gz",
@@ -61,7 +81,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "gl4es",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "144d0dc79855b392e5256dd15fb2dbdedb17141a",
@@ -79,7 +99,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "jna-runtime",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "manifest": "prebuilt/jna/manifest.json",
@@ -95,7 +115,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "libdrm",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "repo": "https://gitlab.freedesktop.org/mesa/drm.git",
@@ -112,7 +132,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-jars",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "lwjgl-egl_sha256": "364e3902337832f7629c6fb7c2b776164f704e295837bd694e27866a488f5732",
@@ -147,7 +167,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-jars-322",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "lwjgl-glfw_sha256": "ef279cdaeede4ca344e756a56f85a85cbd039f7931011975672dc1b900b59c8f",
@@ -171,7 +191,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-natives",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
@@ -187,8 +207,8 @@
         "liblwjgl_spng_size": "154352",
         "liblwjgl_stb_sha256": "77344c86be745893be35c9653063f230f8e72d97dc1a10d61f3130d0037bc44f",
         "liblwjgl_stb_size": "413864",
-        "liblwjgl_tinyfd_sha256": "74d3ddf4a6a6442a70e4aa05d28c17ddabdda89f546930a3a101a8a4ab6b0d1d",
-        "liblwjgl_tinyfd_size": "88768",
+        "liblwjgl_tinyfd_sha256": "adbd009a4e9d0b739c5ecd5d987529c8c95a5d74bc7e05de75b31a5c4dc45ba2",
+        "liblwjgl_tinyfd_size": "48672",
         "liblwjgl_vma_sha256": "01099dfe0f61192b0860267ca927356e9b256aadfb207b7648762a844ac0a317",
         "liblwjgl_vma_size": "146216",
         "repo": "https://github.com/LWJGL/lwjgl3.git",
@@ -205,7 +225,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-natives-322",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "e41032b23adb2d494e2c492777e99e5d9697a860",
@@ -226,7 +246,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "asset": "jdk17-ohos-full-v5.zip",
@@ -244,7 +264,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-21",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "asset": "jdk21-ohos-full-v7.zip",
@@ -262,7 +282,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-25",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "asset": "jdk25-ohos-full-v2.zip",
@@ -280,7 +300,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-8",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "asset": "jdk8-ohos-full-v4.zip",
@@ -298,7 +318,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mesa-zink",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de",
@@ -318,14 +338,14 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mobilegl",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "base_commit": "0d2fceab0eb0776b8e9c10903b50572579de8cc3",
         "branch": "amcl/ohos",
-        "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
-        "libmobilegl_stripped_sha256": "42faad9cb68f93d0cb81e7f7b57cce41bd4e289788c23066e40dece9c21951d1",
-        "libmobilegl_unstripped_sha256": "72addf9d68f45a60a9af361a0654673ce45f0dcf160f9045360df89011d8ef01",
+        "commit": "234a95b88e8f1a5a91ae542a37b566d9631434af",
+        "libmobilegl_stripped_sha256": "97aa55fbb70f4164bd14c911dfca4901cce4ab291d28cdb15c7541af37fe88fc",
+        "libmobilegl_unstripped_sha256": "5fcddd5616e31327bd9e145aafab49dac1c3a2941311e7da7cb00fd0fb188981",
         "repo": "https://github.com/LZZLHY/MobileGL.git",
         "spirv_headers_commit": "2a611a970fdbc41ac2e3e328802aed9985352dca",
         "spirv_tools_commit": "33e02568181e3312f49a3cf33df470bf96ef293a",
@@ -343,7 +363,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mobileglues",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "android_plugin_branch": "dev",
@@ -380,7 +400,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openal-soft",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
@@ -398,7 +418,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "PENDING",
@@ -416,7 +436,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk-21",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
@@ -434,7 +454,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk-25",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
@@ -452,18 +472,18 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "sdl3-native",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "base_commit": "de51952c2ea538241909789926f4d01845ad1bb0",
         "branch": "sdl3-harmonyos",
         "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
-        "hap_sha256": "1ed3799167e7d53a3e010de14e2281f73eaef7e899c20f3bf3ed261de9c27277",
-        "hap_size": "1855520",
-        "patchset_sha256": "c16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81",
+        "hap_sha256": "7c2a09fa6d4e4172a147fd105cfa203e433b2e11049734e7622bd845892d6c29",
+        "hap_size": "1861448",
+        "patchset_sha256": "da5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9",
         "repo": "https://github.com/icculus/SDL.git",
-        "sha256": "921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816",
-        "size": "2251080",
+        "sha256": "853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064",
+        "size": "2257888",
         "upstream": "https://github.com/libsdl-org/SDL.git"
       },
       "id": "deps-lock:sdl3-native",
@@ -476,7 +496,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "shaderc-native",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "301b4ede53d59b68bf55f95bb26412d9233c8187",
@@ -495,7 +515,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "spvc-native",
-        "sha256": "197f4fbf5392ddf33c0d269be7a16177c381a595ecabb210145a2c96ac5659db"
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
       },
       "declared": {
         "commit": "11e6d02d379319a4b570f3eb65d4b19ea7b543bf",
@@ -505,6 +525,26 @@
         "upstream": "https://github.com/KhronosGroup/SPIRV-Cross.git"
       },
       "id": "deps-lock:spvc-native",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
+        "section": "zstd-jni",
+        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+      },
+      "declared": {
+        "artifacts_sha256": "1081e7b42823c44ea32152bdef659592c190bb6efbe1c99c0cf0d65375c1b7cf",
+        "bindings_sha256": "7666ecacd80b9cfb0629715ad291904099501f31358bc9f201bc8218fd279426",
+        "commit": "b1ab612ca2777d6937f418933b5899132517dab3",
+        "inputs_sha256": "2d8f2b391f0dcea82abae3c55a1821355f9df7962ff0342839424cf6398e1e60",
+        "repo": "https://github.com/luben/zstd-jni",
+        "version": "1.5.7-12"
+      },
+      "id": "deps-lock:zstd-jni",
       "kind": "dependency-lock-section",
       "rebuildValidation": "not-performed-by-this-tool",
       "sourceIdentity": "commit-declared"
@@ -560,7 +600,7 @@
       "rebuildValidation": "not-performed-by-this-tool",
       "remoteAvailability": "not-checked",
       "source": {
-        "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274",
+        "commit": "234a95b88e8f1a5a91ae542a37b566d9631434af",
         "repository": "https://github.com/LZZLHY/MobileGL.git"
       }
     },
@@ -1985,6 +2025,71 @@
     {
       "authority": {
         "normalization": "lf",
+        "path": "prebuilt/abi/build-provenance.json",
+        "sha256": "12f4aa3320b8e178bda7aa12ac15d36c5d755cb83f9ea6f5574f252f63f386d3"
+      },
+      "declarations": {
+        "artifactSha256": "5ed1233b3f0a7cb4aaf59c02f2981581d300a17bf8900ad88cd7d88f65150729"
+      },
+      "files": [],
+      "id": "metadata:prebuilt/abi/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {
+        "commit": "b7040c9fd2bce56bea2138cf7851f093e4bf3cce",
+        "repository": "https://github.com/openharmony/third_party_llvm-project.git"
+      },
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/fontconfig/build-provenance.json",
+        "sha256": "ab220ea764ade28736983655ae1e1662a54c14d9ee8980b081ea128b21ad1ebc"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/fontconfig/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/fontconfig/derived-notices/manifest.json",
+        "sha256": "6c1b6eee576450db0c4ef38a2d35b8205de3cd1dd561d378c1c46255d8652bc0"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/fontconfig/derived-notices/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "applicationValidation": "not-performed-by-this-tool",
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/fontconfig/patches/series",
+        "sha256": "ffd63c6818f0f58c30845882ed938db2c2564a93ed0a9f00dcff12f9dc956755"
+      },
+      "id": "metadata:prebuilt/fontconfig/patches/series",
+      "kind": "patch-series",
+      "steps": [
+        {
+          "normalization": "none",
+          "order": 1,
+          "path": "prebuilt/fontconfig/patches/0001-ohos-default-fonts-and-context-cache.patch",
+          "sha256": "89b6f87b1198b2d6979d9208644b315bec78c616bdc90c74ef1047931e5ea7ba"
+        }
+      ]
+    },
+    {
+      "authority": {
+        "normalization": "lf",
         "path": "prebuilt/gl4es/build-provenance.json",
         "sha256": "0e25ff58b59f9befcd70043e0c3ce5c3d63478ac606d3a84b06c489e8c04a879"
       },
@@ -2070,7 +2175,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/jdk/17/patches/series",
-        "sha256": "6754de51075bc89a04a1addb86bf6f2e03516cfc2ef70dc879902be782faf70d"
+        "sha256": "5f65320655c4e08e240468d31f038454a606864531bcc678e9fe9d97bdc7dd4e"
       },
       "id": "metadata:prebuilt/jdk/17/patches/series",
       "kind": "patch-series",
@@ -2102,50 +2207,134 @@
         {
           "normalization": "none",
           "order": 5,
-          "path": "prebuilt/jdk/17/patches/0005-signals-posix-abort-if-unrecognized.patch",
-          "sha256": "ef7b7f4259f60c8d89367a7ed772822e30178c01009fad45db5162dfd226b4bf"
-        },
-        {
-          "normalization": "none",
-          "order": 6,
-          "path": "prebuilt/jdk/17/patches/0006-aarch64-elf-safepoint-fallback.patch",
-          "sha256": "fe0041dc62fa8390502f159c8c862f54475e4c244c7ecf4959ba9683291539da"
-        },
-        {
-          "normalization": "none",
-          "order": 7,
-          "path": "prebuilt/jdk/17/patches/0007-safepoint-mechanism-mem-prot-read.patch",
-          "sha256": "51139d3d8689f1a5080b731da68f9d492e55e91a538bd740eb82813ea3736661"
-        },
-        {
-          "normalization": "none",
-          "order": 8,
           "path": "prebuilt/jdk/17/patches/0008-libjli-skip-re-exec.patch",
           "sha256": "07c003c94177cabac6a019c90116084ac21be0fa1daed3e8737628eb81247426"
         },
         {
           "normalization": "none",
-          "order": 9,
+          "order": 6,
           "path": "prebuilt/jdk/17/patches/0010-ipv6-supported-sandbox-fallback.patch",
           "sha256": "7f4d6218a8c4f63170fd62536aa2357c5de18dca885e2dfa5884ccad0777cf15"
         },
         {
           "normalization": "none",
-          "order": 10,
+          "order": 7,
           "path": "prebuilt/jdk/17/patches/0011-ohos-javasound-capabilities.patch",
           "sha256": "170879856bdfc0cad514ffd6047a9214372e64824638b77725ec03b73ac0a566"
         },
         {
           "normalization": "none",
-          "order": 11,
+          "order": 8,
           "path": "prebuilt/jdk/17/patches/0012-ohos-buildjdk-libc-guard.patch",
           "sha256": "870713d6adb727eb04fe9b899495f6b4dd2be0dbddca590efd8d6a5ba0aa58cd"
         },
         {
           "normalization": "none",
-          "order": 12,
+          "order": 9,
           "path": "prebuilt/jdk/17/patches/0013-ohos-linux-container-build-host.patch",
           "sha256": "d565da4e38933a415013ffa8b360b0b53be4dbb14376678b0ca831cbaaed30f8"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/17/patches/0014-ohos-embedded-boundary-and-class-closure.patch",
+          "sha256": "69f3ec8580c0e9b391c32cffa38ec7d8035623a99e66c39b1cb21e6f907cefae"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/jdk/17/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch",
+          "sha256": "1ba57d5e5c611275ce30f3c33c6ef6543b6e36f870231ac3e01754c66546bd36"
+        },
+        {
+          "normalization": "none",
+          "order": 12,
+          "path": "prebuilt/jdk/17/patches/0017-ohos-runtime-platform-dispatch.patch",
+          "sha256": "2e5dba92b6a287ad72a5f3e8cd97e62b431931ef6ddc5f0da33e1f3ebbf85b8b"
+        },
+        {
+          "normalization": "none",
+          "order": 13,
+          "path": "prebuilt/jdk/17/patches/0018-fontconfig-preserve-fallback-coverage.patch",
+          "sha256": "3ae7fa4b98c7c72b7e9dd0b06c3e07788c22a95ab6544f54f0546febab6d63f3"
+        },
+        {
+          "normalization": "none",
+          "order": 14,
+          "path": "prebuilt/jdk/17/patches/0019-zipfs-permission-copy-transaction.patch",
+          "sha256": "e5a5c15ebe222122672f5345347aec7a204a3861db3d927f19f8ef742833dbb2"
+        },
+        {
+          "normalization": "none",
+          "order": 15,
+          "path": "prebuilt/jdk/17/patches/0021-java-source-utf8.patch",
+          "sha256": "237f4f2400464dcfa03c03576b75dbfa78dc2232f381dca528b5aed8ad3bd925"
+        },
+        {
+          "normalization": "none",
+          "order": 16,
+          "path": "prebuilt/jdk/17/patches/0022-freetype-stream-jni-and-cache-boundary.patch",
+          "sha256": "007791438e224834ef2ab69073914a4d4ce9adbb65344ed24d5350c5d695ce0e"
+        },
+        {
+          "normalization": "none",
+          "order": 17,
+          "path": "prebuilt/jdk/17/patches/0023-ohos-javasound-daudio-playback.patch",
+          "sha256": "aed17d0955151cb9be75a1105bf051ed232a351bb6c9afe29ed2cbe0bcf2dabb"
+        },
+        {
+          "normalization": "none",
+          "order": 18,
+          "path": "prebuilt/jdk/17/patches/0024-ohos-childproc-safe-fork.patch",
+          "sha256": "6b19a85cf7846291e27a83218fe9971f67ce0d68e4c4208f5c7a7c50e2cc272e"
+        },
+        {
+          "normalization": "none",
+          "order": 19,
+          "path": "prebuilt/jdk/17/patches/0025-ohos-javasound-duplex-host-callbacks.patch",
+          "sha256": "faa808d68eeb9b3142da3974b652878428659f3ebc900fef43eaab18beadd669"
+        },
+        {
+          "normalization": "none",
+          "order": 20,
+          "path": "prebuilt/jdk/17/patches/0026-ohos-javasound-native-midi.patch",
+          "sha256": "f144a58cfd2a12b41ec548f9e4efe8be9e82f99359e4d875cca58b3e1511a40f"
+        },
+        {
+          "normalization": "none",
+          "order": 21,
+          "path": "prebuilt/jdk/17/patches/0027-ohos-javasound-device-ports.patch",
+          "sha256": "224f10b60025742b65863a4f62d86a91aaac646330111d5a6c0b226adabb0066"
+        },
+        {
+          "normalization": "none",
+          "order": 22,
+          "path": "prebuilt/jdk/17/patches/0028-ohos-javasound-presentation-timeline.patch",
+          "sha256": "3a17d7c3c427f66a653d05c56035a70c99bbc32456d1827cf54d4d133aa46c13"
+        },
+        {
+          "normalization": "none",
+          "order": 23,
+          "path": "prebuilt/jdk/17/patches/0030-ohos-native-temp-contract.patch",
+          "sha256": "eaad35a2a14616dffb20d5206bd2333672896c219d61629905819ca0d41be0b4"
+        },
+        {
+          "normalization": "none",
+          "order": 24,
+          "path": "prebuilt/jdk/17/patches/0031-ohos-perfdata-uid-identity.patch",
+          "sha256": "f8af3cfea3f4ee472e63087334501696312d57db321f3d0e3e653f74728f1ac2"
+        },
+        {
+          "normalization": "none",
+          "order": 25,
+          "path": "prebuilt/jdk/17/patches/0032-ohos-attach-vm-exit-path.patch",
+          "sha256": "6baa14d40d3d8e9d5acbe0dd967718db9207bb47debdef0abb273a913b24d082"
+        },
+        {
+          "normalization": "none",
+          "order": 26,
+          "path": "prebuilt/jdk/17/patches/0033-ohos-javasound-shared-pcm-owner.patch",
+          "sha256": "e770e0dbf217d12377a7290bad2240e7ac4b5e93d27a47666e94b81217c57bf7"
         }
       ]
     },
@@ -2154,7 +2343,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/jdk/21/patches/series",
-        "sha256": "5c335383d27a47d4dccfc5d5534e311bd4371e893f592dfbc424cbc98a7d4dd0"
+        "sha256": "1ad8fdc4797c0b248ab03e6ef73e0bf008284e27438727e455182265b47c0915"
       },
       "id": "metadata:prebuilt/jdk/21/patches/series",
       "kind": "patch-series",
@@ -2186,44 +2375,128 @@
         {
           "normalization": "none",
           "order": 5,
-          "path": "prebuilt/jdk/21/patches/0005-signals-posix-abort-if-unrecognized.patch",
-          "sha256": "6da275da807cf3a794ecc06ab43054320a7592a269bea8c0ad876e44271c6176"
-        },
-        {
-          "normalization": "none",
-          "order": 6,
-          "path": "prebuilt/jdk/21/patches/0006-aarch64-elf-safepoint-fallback.patch",
-          "sha256": "f1c2a164fbe3f7a54bda78f054333da42328dcfcc6b6e3851629c3693b055fed"
-        },
-        {
-          "normalization": "none",
-          "order": 7,
-          "path": "prebuilt/jdk/21/patches/0007-safepoint-mechanism-mem-prot-read.patch",
-          "sha256": "873b13253aca6e5cd2f5ded99ab61e843c1f01428589893316f5b57732a30cbe"
-        },
-        {
-          "normalization": "none",
-          "order": 8,
           "path": "prebuilt/jdk/21/patches/0008-libjli-skip-re-exec.patch",
           "sha256": "76ecb441f744a1132c60fb5677c0b2b57a28b53a1e747f154303bb1ecfec7935"
         },
         {
           "normalization": "none",
-          "order": 9,
+          "order": 6,
           "path": "prebuilt/jdk/21/patches/0010-ipv6-supported-sandbox-fallback.patch",
           "sha256": "a02b88ef11a4aad963cc57ec9511664c9690f184ed199355e68d270743f73f58"
         },
         {
           "normalization": "none",
-          "order": 10,
+          "order": 7,
           "path": "prebuilt/jdk/21/patches/0011-ohos-javasound-capabilities.patch",
           "sha256": "170879856bdfc0cad514ffd6047a9214372e64824638b77725ec03b73ac0a566"
         },
         {
           "normalization": "none",
-          "order": 11,
+          "order": 8,
           "path": "prebuilt/jdk/21/patches/0013-ohos-linux-container-build-host.patch",
           "sha256": "c2f814798bcbb57a48e60189cf43a07344728ec4a891676c2ee9298fa47fed6b"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/jdk/21/patches/0014-ohos-embedded-boundary-and-class-closure.patch",
+          "sha256": "c4da5acf3e878d447ff492693263c5a2b94519e4c630e961e57080a58dfe0a3d"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/21/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch",
+          "sha256": "3e0da1d123efbff01ab1f4f51b1d19a9fb01847c7a90ffef80f2a547d1f73ee3"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/jdk/21/patches/0017-ohos-runtime-platform-dispatch.patch",
+          "sha256": "292dcaa66c70c2c3ca44d2e5ef4c5dd2a44d6a3e8e3ca75e6d616592ef834a7d"
+        },
+        {
+          "normalization": "none",
+          "order": 12,
+          "path": "prebuilt/jdk/21/patches/0018-fontconfig-preserve-fallback-coverage.patch",
+          "sha256": "8f7d96677d5b4e710a2f44542fab2cadc541851a0f0c8e7c5fd92c32d63683c3"
+        },
+        {
+          "normalization": "none",
+          "order": 13,
+          "path": "prebuilt/jdk/21/patches/0019-zipfs-permission-copy-transaction.patch",
+          "sha256": "5fa92856aa874a74091cc4ebff571fa3a502ad8baba188ca3c0fb7df02cab1c3"
+        },
+        {
+          "normalization": "none",
+          "order": 14,
+          "path": "prebuilt/jdk/21/patches/0021-java-source-utf8.patch",
+          "sha256": "f3e275f77383ecd5461782517ccd3e2310c652739c2f87ed75849ec85c4a064d"
+        },
+        {
+          "normalization": "none",
+          "order": 15,
+          "path": "prebuilt/jdk/21/patches/0022-freetype-stream-jni-and-cache-boundary.patch",
+          "sha256": "8925b93b8061130ccbc1377f8d893e9bbbbe9cd658bc08a6f34e6c55838523ac"
+        },
+        {
+          "normalization": "none",
+          "order": 16,
+          "path": "prebuilt/jdk/21/patches/0023-ohos-javasound-daudio-playback.patch",
+          "sha256": "e1d714631aff4332c3a97ff6cd5a2880aa37230b28282ec262dff4c89c668b3a"
+        },
+        {
+          "normalization": "none",
+          "order": 17,
+          "path": "prebuilt/jdk/21/patches/0024-ohos-childproc-safe-fork.patch",
+          "sha256": "9b70555444523151e526fafb6b0ad59ed24d826449d0b6050147902b3d09c5e0"
+        },
+        {
+          "normalization": "none",
+          "order": 18,
+          "path": "prebuilt/jdk/21/patches/0025-ohos-javasound-duplex-host-callbacks.patch",
+          "sha256": "faa808d68eeb9b3142da3974b652878428659f3ebc900fef43eaab18beadd669"
+        },
+        {
+          "normalization": "none",
+          "order": 19,
+          "path": "prebuilt/jdk/21/patches/0026-ohos-javasound-native-midi.patch",
+          "sha256": "f144a58cfd2a12b41ec548f9e4efe8be9e82f99359e4d875cca58b3e1511a40f"
+        },
+        {
+          "normalization": "none",
+          "order": 20,
+          "path": "prebuilt/jdk/21/patches/0027-ohos-javasound-device-ports.patch",
+          "sha256": "224f10b60025742b65863a4f62d86a91aaac646330111d5a6c0b226adabb0066"
+        },
+        {
+          "normalization": "none",
+          "order": 21,
+          "path": "prebuilt/jdk/21/patches/0028-ohos-javasound-presentation-timeline.patch",
+          "sha256": "3a17d7c3c427f66a653d05c56035a70c99bbc32456d1827cf54d4d133aa46c13"
+        },
+        {
+          "normalization": "none",
+          "order": 22,
+          "path": "prebuilt/jdk/21/patches/0030-ohos-native-temp-contract.patch",
+          "sha256": "e5edfc7a9c9df66e65120361298902db59dacb7ab51f6c2dea220f4db3fe0b68"
+        },
+        {
+          "normalization": "none",
+          "order": 23,
+          "path": "prebuilt/jdk/21/patches/0031-ohos-perfdata-uid-identity.patch",
+          "sha256": "52f547a842a1ab0a10c82f47812e65b7922dd63eccb589b3dca5045a9fac222a"
+        },
+        {
+          "normalization": "none",
+          "order": 24,
+          "path": "prebuilt/jdk/21/patches/0032-ohos-attach-vm-exit-path.patch",
+          "sha256": "51f2c87c67ec4a172f9ef584230f6cc8da1fa402956ee0ff14ce11cfc0ac94a2"
+        },
+        {
+          "normalization": "none",
+          "order": 25,
+          "path": "prebuilt/jdk/21/patches/0033-ohos-javasound-shared-pcm-owner.patch",
+          "sha256": "e770e0dbf217d12377a7290bad2240e7ac4b5e93d27a47666e94b81217c57bf7"
         }
       ]
     },
@@ -2232,7 +2505,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/jdk/25/patches/series",
-        "sha256": "3d96a4537100fd68bc18fc3df47d9169a7c26c1b3187f34a0c300b4929228f5a"
+        "sha256": "40df51991478511b2366600bf8daf53354bc408ccffd81f420a9a17799246272"
       },
       "id": "metadata:prebuilt/jdk/25/patches/series",
       "kind": "patch-series",
@@ -2264,38 +2537,134 @@
         {
           "normalization": "none",
           "order": 5,
-          "path": "prebuilt/jdk/25/patches/0005-signals-posix-abort-if-unrecognized.patch",
-          "sha256": "7be81189334c9ca27a886e3f5cc6c5479218fb54c2b939b143208c3570861b9c"
-        },
-        {
-          "normalization": "none",
-          "order": 6,
           "path": "prebuilt/jdk/25/patches/0008-libjli-skip-re-exec.patch",
           "sha256": "6e43d6418dd9c15894e15cefa0f0e73d9da52ee3294d45ef3dd2a70f458499ad"
         },
         {
           "normalization": "none",
-          "order": 7,
-          "path": "prebuilt/jdk/25/patches/0009-jfr-cpu-time-musl-disable.patch",
-          "sha256": "521de7078c70a094ca4758f5f7fe25213ecb2e5752959144bf5eaca1999fbdfd"
-        },
-        {
-          "normalization": "none",
-          "order": 8,
+          "order": 6,
           "path": "prebuilt/jdk/25/patches/0010-ipv6-supported-sandbox-fallback.patch",
           "sha256": "2634b7cea4e0cc94ae879ddf502f884e6d26701b03c073c28f06297b4a182422"
         },
         {
           "normalization": "none",
-          "order": 9,
+          "order": 7,
           "path": "prebuilt/jdk/25/patches/0011-ohos-javasound-capabilities.patch",
           "sha256": "6dcf3d47ff40934c77eb379d8fb36753f71eb8d38f9e3458fe6467fefca6ee97"
         },
         {
           "normalization": "none",
-          "order": 10,
+          "order": 8,
           "path": "prebuilt/jdk/25/patches/0013-ohos-linux-container-build-host.patch",
           "sha256": "b351a864a1a4c322a8c7e70645f4ced953fe2f319dbf4cda5e88680f351dc01d"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/jdk/25/patches/0014-ohos-embedded-boundary-and-class-closure.patch",
+          "sha256": "bf10a0c42f5e77bac9ff47db615a08c0b82aa959adae0eafd080111391cc1c7a"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/25/patches/0015-ohos-jfr-thread-cpu-timer.patch",
+          "sha256": "966033488ae8576a2c1cfc1a40236f136edd29cc99b54a6238acee334899e8e2"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/jdk/25/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch",
+          "sha256": "f8b71799684604a168ed618a3bdcb44c2c14156e34aa22bb2c6896da39f72a1e"
+        },
+        {
+          "normalization": "none",
+          "order": 12,
+          "path": "prebuilt/jdk/25/patches/0017-ohos-runtime-platform-dispatch.patch",
+          "sha256": "8089552714237639eb3d65cc1320ffd7b47f94dd3d4d3bbe025e7436a183062e"
+        },
+        {
+          "normalization": "none",
+          "order": 13,
+          "path": "prebuilt/jdk/25/patches/0018-fontconfig-preserve-fallback-coverage.patch",
+          "sha256": "c41b21ba334c09326ceaa8a2087cc8e5282b71cee1064b92f56f4cfc0044c20b"
+        },
+        {
+          "normalization": "none",
+          "order": 14,
+          "path": "prebuilt/jdk/25/patches/0019-zipfs-permission-copy-transaction.patch",
+          "sha256": "958e70a00f6e8f45dcd013b6be9080d5d25c835501d00a789022598b75665e0e"
+        },
+        {
+          "normalization": "none",
+          "order": 15,
+          "path": "prebuilt/jdk/25/patches/0022-freetype-stream-jni-and-cache-boundary.patch",
+          "sha256": "6ddf75ef91e36cd711d1a6fc08e3d1ff2c3f24e336c23ea70f292438a7c37adf"
+        },
+        {
+          "normalization": "none",
+          "order": 16,
+          "path": "prebuilt/jdk/25/patches/0023-ohos-javasound-daudio-playback.patch",
+          "sha256": "a59bb16b733caa3f3b6149582b26d3a396405bbeae83fb098e0ccadc17396c79"
+        },
+        {
+          "normalization": "none",
+          "order": 17,
+          "path": "prebuilt/jdk/25/patches/0024-ohos-childproc-safe-fork.patch",
+          "sha256": "89ea850e6b6e41b744bd8065632072a0e4f3260c2dd4b44f62ef93e1b57f82c3"
+        },
+        {
+          "normalization": "none",
+          "order": 18,
+          "path": "prebuilt/jdk/25/patches/0025-ohos-javasound-duplex-host-callbacks.patch",
+          "sha256": "faa808d68eeb9b3142da3974b652878428659f3ebc900fef43eaab18beadd669"
+        },
+        {
+          "normalization": "none",
+          "order": 19,
+          "path": "prebuilt/jdk/25/patches/0026-ohos-javasound-native-midi.patch",
+          "sha256": "210c07ae2ac896d78d02c119d6b22dcb3059451d586a249c10b7efc8d69a4dff"
+        },
+        {
+          "normalization": "none",
+          "order": 20,
+          "path": "prebuilt/jdk/25/patches/0027-ohos-javasound-device-ports.patch",
+          "sha256": "4b398ce7069e122712b2b7134b06eeae4ef5e24ae201b9a52b3f41ad8f8c9a5a"
+        },
+        {
+          "normalization": "none",
+          "order": 21,
+          "path": "prebuilt/jdk/25/patches/0028-ohos-javasound-presentation-timeline.patch",
+          "sha256": "3a17d7c3c427f66a653d05c56035a70c99bbc32456d1827cf54d4d133aa46c13"
+        },
+        {
+          "normalization": "none",
+          "order": 22,
+          "path": "prebuilt/jdk/25/patches/0029-ohos-javasound-explicit-java-link.patch",
+          "sha256": "a1ebc666a2cda7d9b54ea7456c2337b4750f83451045930aba0d7493771459f6"
+        },
+        {
+          "normalization": "none",
+          "order": 23,
+          "path": "prebuilt/jdk/25/patches/0030-ohos-native-temp-contract.patch",
+          "sha256": "4cf6b67bc189fc8434667a0927f17cd0a3637c9a8bd18cfe0eae21040d0b1bea"
+        },
+        {
+          "normalization": "none",
+          "order": 24,
+          "path": "prebuilt/jdk/25/patches/0031-ohos-perfdata-uid-identity.patch",
+          "sha256": "c10dc45b57c9942a8f3414d201487094a993812733ba5ea311684c45a92c5b70"
+        },
+        {
+          "normalization": "none",
+          "order": 25,
+          "path": "prebuilt/jdk/25/patches/0032-ohos-attach-vm-exit-path.patch",
+          "sha256": "9cb35e5c686d6250ce412fdb5c2de454a62c9ca37148f60b4dd27077f05ecbdd"
+        },
+        {
+          "normalization": "none",
+          "order": 26,
+          "path": "prebuilt/jdk/25/patches/0033-ohos-javasound-shared-pcm-owner.patch",
+          "sha256": "e770e0dbf217d12377a7290bad2240e7ac4b5e93d27a47666e94b81217c57bf7"
         }
       ]
     },
@@ -2304,7 +2673,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/jdk/8/patches/series",
-        "sha256": "e65dc115868d5218310e8882a61e81a753322fd3a52671763250e29b799d7b03"
+        "sha256": "7f4047d3953cdbf866a0c831fa2807e212cdc54dc06d99d092a2e9c02bca0f78"
       },
       "id": "metadata:prebuilt/jdk/8/patches/series",
       "kind": "patch-series",
@@ -2350,6 +2719,108 @@
           "order": 7,
           "path": "prebuilt/jdk/8/patches/0013-jfr-bitset-allocation-template.patch",
           "sha256": "5612089b3b036e6d348f8df769117adf6d0c5662ce6a684fe0eaf886156f34e1"
+        },
+        {
+          "normalization": "none",
+          "order": 8,
+          "path": "prebuilt/jdk/8/patches/0014-ohos-embedded-boundary-and-class-closure.patch",
+          "sha256": "682a7fc4933a385880820895237b40d6dfac85eb517556d2b8a1c452a0775a9b"
+        },
+        {
+          "normalization": "none",
+          "order": 9,
+          "path": "prebuilt/jdk/8/patches/0017-ohos-runtime-platform-dispatch.patch",
+          "sha256": "67b3124b9168bb50ba031fb9519f85cc00f10f690359509a86dc15dfa50ba822"
+        },
+        {
+          "normalization": "none",
+          "order": 10,
+          "path": "prebuilt/jdk/8/patches/0018-fontconfig-preserve-fallback-coverage.patch",
+          "sha256": "8972492c6b1397675931023497b0d9ec6bed68aab7021a6901a3c7b088bafd36"
+        },
+        {
+          "normalization": "none",
+          "order": 11,
+          "path": "prebuilt/jdk/8/patches/0019-zipfs-permission-copy-transaction.patch",
+          "sha256": "99d63afc2a6b35a4b0c9d9beff7f822dc03d52b02b73d96233d5179a5c0ed39b"
+        },
+        {
+          "normalization": "none",
+          "order": 12,
+          "path": "prebuilt/jdk/8/patches/0020-jni-font-library-exception-check.patch",
+          "sha256": "8997798e9d6a92e379117734d08394c8b69237ab301a56db4331a51f8ba8b297"
+        },
+        {
+          "normalization": "none",
+          "order": 13,
+          "path": "prebuilt/jdk/8/patches/0021-java-source-utf8.patch",
+          "sha256": "4d0674058200a132f16d3325adfb1a7f743a0f61189491e68a3b7f4ded3198cb"
+        },
+        {
+          "normalization": "none",
+          "order": 14,
+          "path": "prebuilt/jdk/8/patches/0022-freetype-stream-jni-and-cache-boundary.patch",
+          "sha256": "a5f98f375d59c7751b51ec6c152fa6e4f4d25e0fb45343b971df2ab4a1174f21"
+        },
+        {
+          "normalization": "none",
+          "order": 15,
+          "path": "prebuilt/jdk/8/patches/0023-ohos-javasound-daudio-playback.patch",
+          "sha256": "d9cf0cbaca97e2438cda656265d6be31797fd747ea52fc07260b57396b1c93d2"
+        },
+        {
+          "normalization": "none",
+          "order": 16,
+          "path": "prebuilt/jdk/8/patches/0024-ohos-childproc-safe-fork.patch",
+          "sha256": "d726f830ae4284b0571953eb7759f2e5563602c29ba5c7941d8a53089e83e387"
+        },
+        {
+          "normalization": "none",
+          "order": 17,
+          "path": "prebuilt/jdk/8/patches/0025-ohos-javasound-duplex-host-callbacks.patch",
+          "sha256": "d8d7495fe10498f332b0f46bfd5bae5848bad4965964423d6e8a1572ca76c251"
+        },
+        {
+          "normalization": "none",
+          "order": 18,
+          "path": "prebuilt/jdk/8/patches/0026-ohos-javasound-native-midi.patch",
+          "sha256": "ee08e6037b8371c75301d4a6964f901c132dada381f240b154b9f438a31e97ac"
+        },
+        {
+          "normalization": "none",
+          "order": 19,
+          "path": "prebuilt/jdk/8/patches/0027-ohos-javasound-device-ports.patch",
+          "sha256": "53583909a796741e7c716220571712eaad848250817d2c742ac29f3f98b351c7"
+        },
+        {
+          "normalization": "none",
+          "order": 20,
+          "path": "prebuilt/jdk/8/patches/0028-ohos-javasound-presentation-timeline.patch",
+          "sha256": "d9a5059a35ab4bc3b7d1caea4cf0079bdf75e270dda0447357edc43c7ff2bb99"
+        },
+        {
+          "normalization": "none",
+          "order": 21,
+          "path": "prebuilt/jdk/8/patches/0030-ohos-native-temp-contract.patch",
+          "sha256": "75341594de60c7ad61ea2b7ee7ceb0ebe951a772f1111a43582c02380d815ef9"
+        },
+        {
+          "normalization": "none",
+          "order": 22,
+          "path": "prebuilt/jdk/8/patches/0031-ohos-perfdata-uid-identity.patch",
+          "sha256": "2075b6579ff7f2b62bb4a0ffb91c3ce3aeaca739f993507dd7c7126440699e42"
+        },
+        {
+          "normalization": "none",
+          "order": 23,
+          "path": "prebuilt/jdk/8/patches/0032-ohos-attach-vm-exit-path.patch",
+          "sha256": "ace082030aef33782897e4d94eea94282c343d8643ea16080708e0e808509a02"
+        },
+        {
+          "normalization": "none",
+          "order": 24,
+          "path": "prebuilt/jdk/8/patches/0033-ohos-javasound-shared-pcm-owner.patch",
+          "sha256": "bae69c1ecbe5ef4d22601cd7adb3aff4792bc667a81f4e1c5d84e27f1ee953cd"
         }
       ]
     },
@@ -2473,11 +2944,28 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/lwjgl3/jdk-views/manifest.json",
-        "sha256": "4eaad5f8b9b3886716e3b47d8aad5171b9b774d1bd9ab2bc3bb04d7af9163d6c"
+        "sha256": "2e19a3e1299e31e8dba4cacf190966bd49a7d3ce1d36a29ae82a5030a77cd8dc"
       },
       "declarations": {},
       "files": [],
       "id": "metadata:prebuilt/lwjgl3/jdk-views/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/lwjgl3/tinyfd-build-provenance.json",
+        "sha256": "38c166754dfcc2e4280d069f7ac3fbb6fc2bb1bc0d44f01d38c67a74e3593cbd"
+      },
+      "declarations": {
+        "sha256": "adbd009a4e9d0b739c5ecd5d987529c8c95a5d74bc7e05de75b31a5c4dc45ba2",
+        "size": 48672
+      },
+      "files": [],
+      "id": "metadata:prebuilt/lwjgl3/tinyfd-build-provenance.json",
       "kind": "declared-artifact-metadata",
       "slots": [],
       "source": {},
@@ -2540,10 +3028,10 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/mobilegl/dist/build-provenance.json",
-        "sha256": "1339deabf33e5213e3083a521496a07f8c467a3c176655e3edacba6704fd3d52"
+        "sha256": "99d4fda1c47555169ca035b978b033031ce13fc6647654b97b610e911a67fee3"
       },
       "declarations": {
-        "commit": "13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274"
+        "commit": "234a95b88e8f1a5a91ae542a37b566d9631434af"
       },
       "files": [],
       "id": "metadata:prebuilt/mobilegl/dist/build-provenance.json",
@@ -2567,7 +3055,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/mod-natives/manifest.json",
-        "sha256": "436ffa1d1bcee42149fcc5b0eabdc672066f92e1a6f87954fdee26abc6f2176b"
+        "sha256": "c1c68c64f60d00931b662a566c31ca8766005615c6843d1a4964cbd016f41ee0"
       },
       "declarations": {},
       "files": [],
@@ -2644,7 +3132,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/sdl3/build-provenance.json",
-        "sha256": "4b98c3ebc3a37d653919063c3d382673ca3099c98c24e84b6c322f8cb2824610"
+        "sha256": "43d3a9fbce3cc0d4605bac71148b233a6d728d40581ee866a8fe6d5de072325f"
       },
       "declarations": {},
       "files": [],
@@ -2662,7 +3150,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/sdl3/patches/series",
-        "sha256": "34853e33bf5e9e8fea6a68968c228e80dd1f31915e3228a2cda61ee13deb9312"
+        "sha256": "088ed1eca0713187cab085dbf041882883a8ad3e62b97ea8291b228e41165bb0"
       },
       "id": "metadata:prebuilt/sdl3/patches/series",
       "kind": "patch-series",
@@ -2834,6 +3322,18 @@
           "order": 28,
           "path": "prebuilt/sdl3/patches/0028-openharmony-desktop-device-gate.patch",
           "sha256": "7755a3469f454004598aa324db50d53e271345f2cda62befdbff7f99857b92ff"
+        },
+        {
+          "normalization": "none",
+          "order": 29,
+          "path": "prebuilt/sdl3/patches/0029-openharmony-render-resolution-checkpoint.patch",
+          "sha256": "635f7dab3b0fa09f65a9a98c4f3ce0b457762213958151fd86e373469e2d3b2f"
+        },
+        {
+          "normalization": "none",
+          "order": 30,
+          "path": "prebuilt/sdl3/patches/0030-openharmony-auxiliary-sdl-role.patch",
+          "sha256": "464894148deddb717bfe628a106e6c05ef816801f892368130d3ad7c1c83819d"
         }
       ]
     },
@@ -3118,5 +3618,5 @@
   },
   "schemaVersion": 1,
   "scope": "declared-public-dependency-inputs",
-  "sourceCommit": "fb1b299f87c7bbac069cac24cfe65df303ebb381"
+  "sourceCommit": "9c21c7216d91ab074c2b8d6522b90a38fd9d3899"
 }

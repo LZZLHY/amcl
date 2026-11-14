@@ -66,6 +66,19 @@ export interface FetchTextRichResult {
   headers: Record<string, string>;
 }
 
+/** 限量二进制GET的测量值。样本字节不等于wire流量，也不替代最终归档强哈希。 */
+export interface TransferProbeResult {
+  httpStatus: number;
+  receivedBytes: number;
+  elapsedMs: number;
+  /** 未收到样本正文为-1；从submitted到首次正文，包含队列/准入/跳转和头后等待。 */
+  ttfbMs: number;
+  completedSample: boolean;
+  rangeHonored: boolean;
+  /** 完整样本为''，网络/协议失败仍以结构化结果返回；输入和观察代次错误reject。 */
+  errorKind: string;
+}
+
 /** 下载文件规格 */
 export interface DownloadFileSpec {
   localPath: string;
@@ -89,6 +102,8 @@ export interface DownloadFileSpec {
    * 完整性仍由 check 与 native Range 响应校验兜底。
    */
   maxConnections?: number;
+  /** 游戏正文在自动来源且网关关闭时启用的有序传输策略；缺省与 false 都走原策略。 */
+  orderedVersionDownload?: boolean;
 }
 
 /** 任务规格（创建任务时传入） */
@@ -118,6 +133,7 @@ export function copyDownloadFileSpec(file: DownloadFileSpec): DownloadFileSpec {
     localPath: file.localPath, allowedRoot: file.allowedRoot, urls: file.urls.slice(),
   };
   if (file.maxConnections !== undefined) copy.maxConnections = file.maxConnections;
+  if (file.orderedVersionDownload !== undefined) copy.orderedVersionDownload = file.orderedVersionDownload;
   if (file.bearerToken !== undefined) copy.bearerToken = file.bearerToken;
   if (file.authorizedPolicy !== undefined) copy.authorizedPolicy = { singleUse: file.authorizedPolicy.singleUse,
     maxHttpAttempts: file.authorizedPolicy.maxHttpAttempts, validForNewRequestMs: file.authorizedPolicy.validForNewRequestMs,
@@ -191,7 +207,8 @@ export function compileDownloadFiles(files: DownloadFileSpec[]): DownloadFileSpe
     let sameSha = oldSha === newSha || (oldSha !== undefined && newSha !== undefined &&
       oldSha.toLowerCase() === newSha.toLowerCase());
     if (downloadPathComparisonKey(previous.allowedRoot) !== root || !sameSha ||
-        previous.check?.size !== file.check?.size || previous.maxConnections !== file.maxConnections) {
+        previous.check?.size !== file.check?.size || previous.maxConnections !== file.maxConnections ||
+        (previous.orderedVersionDownload ?? false) !== (file.orderedVersionDownload ?? false)) {
       throw new Error('同一下载目标的根目录、完整性或连接约束冲突');
     }
     // 没有有效且相同的完整摘要时，文件名/大小不足以证明两个来源返回同内容。
@@ -199,6 +216,11 @@ export function compileDownloadFiles(files: DownloadFileSpec[]): DownloadFileSpe
     let hasDigestIdentity = oldSha !== undefined && /^[0-9a-fA-F]{40}$/.test(oldSha);
     // 保存已经过存在性检查的候选引用；ArkTS不会将可变previous的收窄带入回调。
     const previousUrls = previous.urls;
+    // 有序版本正文的首选/兜底顺序是请求契约。相同摘要不能将不同顺序合成新策略。
+    if (file.orderedVersionDownload === true && (previous.urls.length !== file.urls.length ||
+        file.urls.some((url: string, index: number): boolean => url !== previousUrls[index]))) {
+      throw new Error('同一下载目标的版本来源顺序冲突');
+    }
     if (!hasDigestIdentity && (previous.urls.length !== file.urls.length ||
         file.urls.some((url: string): boolean => previousUrls.indexOf(url) < 0))) {
       throw new Error('缺少完整摘要时同一下载目标的来源身份冲突');
@@ -481,7 +503,10 @@ export interface DownloadNativeEngine {
   computeFileSha1(path: string): string;
   publishNoReplace(sourcePath: string, destinationPath: string): boolean;
   fetchText(primaryUrl: string, mirrors: string[], timeoutSeconds: number,
-            requestHeaders?: Record<string, string>, maxResponseBytes?: number): Promise<NativeFetchTextResult>;
+            requestHeaders?: Record<string, string>, maxResponseBytes?: number,
+            allowRelay?: boolean): Promise<NativeFetchTextResult>;
+  probeTransfer(url: string, expectedSize: number, sampleBytes: number, timeoutSeconds: number,
+                userAgent: string): Promise<TransferProbeResult>;
   createTask(spec: DownloadTaskSpec): number;
   /** 关联 native 下载任务与活动账本（活动账本 · L2-b）；activityId 传 0 解除。 */
   bindActivity(taskId: number, activityId: number): void;
@@ -929,6 +954,8 @@ export class DownloadManager {
     timeoutSeconds?: number,
     requestHeaders?: Record<string, string>,
     maxResponseBytes?: number,
+    // opt-in只给公共JDK目录使用；其他调用不传时仍按原候选直连/镜像，避免全局换路。
+    allowRelay: boolean = false,
   ): Promise<FetchTextRichResult> {
     if (!this.caBundleInitialized_) {
       throw new Error('CA bundle not initialized — call initializeCaBundle(context) first');
@@ -939,7 +966,7 @@ export class DownloadManager {
 
     const releaseProcess = ProcessActivityCoordinator.instance().acquireFileTask('元数据请求');
     try {
-    let result = await dlEngine().fetchText(primaryUrl, mirrorList, timeout, requestHeaders, responseLimit);
+    let result = await dlEngine().fetchText(primaryUrl, mirrorList, timeout, requestHeaders, responseLimit, allowRelay);
     if (result.ok) {
       let body: string = result.body !== undefined ? result.body : '';
       if (body.length > responseLimit) {
@@ -956,6 +983,43 @@ export class DownloadManager {
     let msg: string = result.errorMessage !== undefined ? result.errorMessage : 'fetchTextEx failed';
     throw new Error('[' + kind + '] ' + msg + ' (urls: ' + (1 + mirrorList.length) + ')');
     } finally { releaseProcess(); }
+  }
+
+  /**
+   * 公共二进制来源的有界GET取样；只有JDK auto且未开gateway的调用方使用它挑来源组。
+   * Native不接镜像列表或relay开关，每次仅测一个原URL；不创建文件或下载任务。
+   * observerCurrent只撤销结果发布权：false不会声称已abort网络。JS发布超时也只reject；
+   * 底层Promise和进程owner始终等Native真实收敛后释放。JDK用缺省5秒总预算，Native
+   * 硬上限8秒，含异步排队和准入；排队过期的Native工作不能重新获得HTTP预算。
+   */
+  async probeTransfer(url: string, expectedSize: number, sampleBytes: number = 262144,
+    timeoutSeconds: number = 5, userAgent: string = 'amcl/0.1 (OHOS; libcurl/8.10.1)',
+    observerCurrent?: () => boolean): Promise<TransferProbeResult> {
+    if (!this.caBundleInitialized_) throw new Error('CA bundle not initialized');
+    if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0 || expectedSize > 1099511627776
+      || !Number.isSafeInteger(sampleBytes) || sampleBytes < 1 || sampleBytes > 524288
+      || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 8)
+      throw new Error('Invalid transfer probe bounds');
+    if (observerCurrent !== undefined && !observerCurrent()) throw new Error('ProbeObserverCancelled');
+    const releaseProcess = ProcessActivityCoordinator.instance().acquireFileTask('下载来源取样');
+    let native: Promise<TransferProbeResult>;
+    try { native = dlEngine().probeTransfer(url, expectedSize, sampleBytes, timeoutSeconds, userAgent); }
+    catch (error) { releaseProcess(); throw error as Error; }
+    // 发布门与真实资源owner分离：Promise.race的超时不能提前释放仍在Native队列/HTTP内
+    // 的owner。settled即使迟到仍被race观察，不制造未处理rejection或假“已取消”终态。
+    const settled = native.finally((): void => { releaseProcess(); });
+    let publicationTimer: number = -1;
+    try {
+      const publication = new Promise<TransferProbeResult>((resolve, reject): void => {
+        publicationTimer = setTimeout((): void => {
+          reject(new Error(observerCurrent !== undefined && !observerCurrent()
+            ? 'ProbeObserverCancelled' : 'ProbeDeadlineExceeded'));
+        }, timeoutSeconds * 1000);
+      });
+      const result = await Promise.race([settled, publication]);
+      if (observerCurrent !== undefined && !observerCurrent()) throw new Error('ProbeObserverCancelled');
+      return result;
+    } finally { if (publicationTimer >= 0) clearTimeout(publicationTimer); }
   }
 
   /** 获取所有任务的快照（新数组，调用方可安全迭代） */

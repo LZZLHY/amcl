@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * quick 开发构建的轻量产物检查。只读取明确选中的 HAP、产品配置和官方验签器，
+ * quick 开发构建的轻量产物检查。只读取明确选中的 HAP、产品配置、实际 native 输出、
+ * provider 输入及官方验签器，
  * 不扫描源码、SDK 内容树或宿主工具链，不建立/借用 full 资格，也不写 full provenance。
  * 真实命令行始终调用既有密码学验签；仅导出的函数允许测试注入验签边界。
  */
@@ -11,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { readProductRegistry, productDefinition } from './product-contract.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
 import { verifyHapSignature } from './check-mg-build-contract.mjs';
+import { readRuntimeHostConfiguration, validateRuntimeHostMetadata } from './runtime-host-contract.mjs';
+import { checkApplicationAbi } from './check-application-abi.mjs';
 
 /** 只对当前包字节计算身份；不把 Git HEAD 或旧构建收据当成本轮内容。 */
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -70,8 +73,15 @@ export function checkQuickHap(options, { verifySignature = verifyHapSignature } 
   if (metadata.schemaVersion !== 1 || metadata.name !== definition.name) throw new Error('product-profile product does not match requested product');
   if (metadata.build?.mode !== mode) throw new Error('product-profile build mode does not match requested mode');
   if (typeof metadata.sourceRevision !== 'string' || !/^[0-9a-f]{40}$/.test(metadata.sourceRevision)) throw new Error('product-profile source revision must be a 40-hex identity');
+  validateRuntimeHostMetadata(metadata, module.app.versionName, readRuntimeHostConfiguration(root));
   pass('product-profile', { product, mode, sourceRevision: metadata.sourceRevision });
+  pass('runtime-host-and-release-kind', { runtimeHostProtocols: metadata.runtimeHostProtocols,
+    runtimePlanProtocol: metadata.runtimePlanProtocol, releaseKind: metadata.releaseKind });
   pass('libentry-elf64-aarch64', entryElf(readUniqueZipEntry(archive, 'libs/arm64-v8a/libentry.so')));
+  const target = /^entry-(.+)-(?:signed|unsigned)\.hap$/.exec(basename(hapPath))?.[1];
+  if (!target) throw new Error('Unexpected SDK HAP filename');
+  // 当前包的 ABI 多实例会直接破坏自加载 EH，属于必要产物检查；不扫描 SDK 或重编 TU。
+  pass('application-abi-single-provider', checkApplicationAbi(archive, { root, product, target }));
   const signatureVerification = verifySignature({ root, hapPath, hapKind });
   const expectedResult = hapKind === 'signed' ? 'valid-signature' : 'no-valid-signature';
   if (signatureVerification?.artifactKind !== hapKind || signatureVerification?.result !== expectedResult) throw new Error('signature verification did not confirm the selected artifact kind');

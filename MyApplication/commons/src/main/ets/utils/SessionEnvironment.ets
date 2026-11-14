@@ -47,11 +47,22 @@ export function sessionEnvironmentFact(key: string, value: string, source: strin
 
 /** 只解析本局、白名单且类型有效的字段；损坏/旧会话返回空事实，不抛到页面。 */
 export function readSessionEnvironment(filesDir: string, activityId: number): SessionEnvironment {
-  const result: SessionEnvironment = { schema: 1, activityId: activityId, revision: 0, facts: [] };
   try {
     const path: string = sessionEnvironmentPath(filesDir, activityId);
-    if (fs.statSync(path).size > 512 * 1024) return result;
-    const data = JSON.parse(fs.readTextSync(path)) as Record<string, Object>;
+    if (fs.statSync(path).size <= 512 * 1024) return parseSessionEnvironment_(fs.readTextSync(path), activityId);
+  } catch (_) { /* 旧账本没有环境原件，公开视图继续保留未知。 */ }
+  return emptySessionEnvironment_(activityId);
+}
+
+/** 同步旧调用方与异步详情共用白名单解析，不复制两套环境事实规则。 */
+function emptySessionEnvironment_(activityId: number): SessionEnvironment {
+  return { schema: 1, activityId: activityId, revision: 0, facts: [] };
+}
+/** 仅保留类型有效的本局白名单事实；旧/损坏正文返回未知，不让解析错误穿透页面。 */
+function parseSessionEnvironment_(text: string, activityId: number): SessionEnvironment {
+  const result: SessionEnvironment = { schema: 1, activityId: activityId, revision: 0, facts: [] };
+  try {
+    const data = JSON.parse(text) as Record<string, Object>;
     if (data['activityId'] !== activityId || data['schema'] !== 1 || !Array.isArray(data['facts'])) return result;
     result.revision = typeof data['revision'] === 'number' ? data['revision'] as number : 0;
     for (const item of data['facts'] as Object[]) {
@@ -65,6 +76,15 @@ export function readSessionEnvironment(filesDir: string, activityId: number): Se
     }
   } catch (e) { /* 旧账本没有环境文件；缺失本身由公开视图明确表达。 */ }
   return result;
+}
+
+/** 详情只读环境使用有界异步IO；旧记录缺失/损坏沿用空事实语义，不补造当前设备环境。 */
+export async function readSessionEnvironmentAsync(filesDir: string, activityId: number): Promise<SessionEnvironment> {
+  try {
+    const path: string = sessionEnvironmentPath(filesDir, activityId);
+    if ((await fs.stat(path)).size <= 512 * 1024) return parseSessionEnvironment_(await fs.readText(path), activityId);
+  } catch (_) { /* 不可读原件不阻止详情显示其余证据。 */ }
+  return emptySessionEnvironment_(activityId);
 }
 
 /** 合并启动准备各阶段的事实并原子保存；不跨活动、也不把未知值覆盖已有实测值。 */
@@ -100,7 +120,14 @@ export function readObservedSessionEnvironment(filesDir: string, activityId: num
   const path: string = filesDir + '/logs/ledger/' + activityId + '/environment-observed.log';
   try {
     if (fs.statSync(path).size > 256 * 1024) return environment;
-    for (const line of fs.readTextSync(path).split('\n')) {
+    mergeObservedSessionEnvironment_(environment, fs.readTextSync(path));
+  } catch (e) { /* 初始化前失败的会话没有 GPU/Java 运行观测，保留初始未知原因。 */ }
+  return environment;
+}
+
+/** 原件文本已经有界读取；此处只合并白名单观测，无文件IO，也不改写历史。 */
+function mergeObservedSessionEnvironment_(environment: SessionEnvironment, text: string): void {
+    for (const line of text.split('\n')) {
       const start: number = line.indexOf('AMCL_ENV_V1\t');
       if (start < 0) continue;
       const parts: string[] = line.substring(start).split('\t');
@@ -113,7 +140,15 @@ export function readObservedSessionEnvironment(filesDir: string, activityId: num
       const index: number = environment.facts.findIndex((item: SessionEnvironmentFact): boolean => item.key === fact.key);
       if (index < 0) environment.facts.push(fact); else environment.facts[index] = fact;
     }
-  } catch (e) { /* 初始化前失败的会话没有 GPU/Java 运行观测，保留初始未知原因。 */ }
+}
+
+/** 与同步观测视图共用同一解析器；文件缺失时保留基线事实，不在详情线程同步扫描日志。 */
+export async function readObservedSessionEnvironmentAsync(filesDir: string, activityId: number): Promise<SessionEnvironment> {
+  const environment = await readSessionEnvironmentAsync(filesDir, activityId);
+  const path: string = filesDir + '/logs/ledger/' + activityId + '/environment-observed.log';
+  try {
+    if ((await fs.stat(path)).size <= 256 * 1024) mergeObservedSessionEnvironment_(environment, await fs.readText(path));
+  } catch (_) { /* 初始化前失败的会话可能没有运行观测。 */ }
   return environment;
 }
 

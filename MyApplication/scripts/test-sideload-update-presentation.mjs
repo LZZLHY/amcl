@@ -53,6 +53,7 @@ const cases = [
   [Phase.Installing, { downloadState: 'done' }, '安装中', false],
   [Phase.AwaitingRestart, { downloadState: 'done' }, '关闭界面', true, 'cancel,dismiss'],
   [Phase.Verified, { working: false, downloadState: 'done' }, '完成', true, 'cancel,dismiss'],
+  [Phase.Superseded, { working: false, downloadState: 'done' }, '关闭界面', true, 'cancel,dismiss'],
   [Phase.Failed, { working: false }, '重试更新', true, 'start'],
   [Phase.Cancelled, { working: false }, '重试更新', true, 'start'],
   [Phase.ConfirmationPending, { working: false }, '重新检查', true, 'reconcile'],
@@ -151,8 +152,8 @@ for (const [recoveryAction, key] of [['runtime', 'amclUpdateOpenSettings'], ['pa
   assert.equal(component.showDownload(), true);
 }
 for (const phase of [Phase.DispatchIntent, Phase.Installing, Phase.ConfirmationPending, Phase.StorageBlocked,
-  Phase.Verified, Phase.Failed, Phase.Cancelled]) {
+  Phase.Verified, Phase.Superseded, Phase.Failed, Phase.Cancelled]) {
   const { component } = presentation({ phase });
   assert.equal(component.showDownload(), false, phase + ' 不显示遗留下载进度作为主状态');
 }
-console.log('PASS R3 presentation: all 18 phases, auth-only dismissal, protected installation close, recovery commands and real download projection.');
+console.log('PASS R3 presentation: all '+cases.length+' phases, auth-only dismissal, protected installation close, recovery commands and real download projection.');

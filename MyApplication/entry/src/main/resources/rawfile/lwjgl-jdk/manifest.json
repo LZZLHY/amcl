@@ -6,9 +6,9 @@
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "6419841c220fc40e30908e9a72b1734c338d0d4c01955ada8d2d91a05ddc7eef",
-      "sourceSlotIdentity": "36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4",
-      "nativesSha256": "b496598177e0e5f9d3001f6190b7a8a235966c500976c2846ed3eef7b4980bd1",
+      "sourceManifestSha256": "97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90",
+      "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+      "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 17,
       "policy": "cap-future-mr-v1",
       "jars": [
@@ -134,8 +134,8 @@
         },
         {
           "name": "lwjgl-tinyfd.jar",
-          "size": 17499,
-          "sha256": "8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f",
+          "size": 16340,
+          "sha256": "3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951",
           "resourcePath": "lwjgl/lwjgl-tinyfd.jar",
           "mrLayers": [
             11
@@ -173,15 +173,15 @@
           "maxClassMajor": 55
         }
       ],
-      "manifestSha256": "d52323c2d73e029001c8bed1f9bffdad7a9d925a14f734a46a62dd09df13e880"
+      "manifestSha256": "749abfdbf733c1614d1d4a433ee5d1680709484a67626e16df188e3d1545554a"
     },
     {
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "6419841c220fc40e30908e9a72b1734c338d0d4c01955ada8d2d91a05ddc7eef",
-      "sourceSlotIdentity": "36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4",
-      "nativesSha256": "b496598177e0e5f9d3001f6190b7a8a235966c500976c2846ed3eef7b4980bd1",
+      "sourceManifestSha256": "97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90",
+      "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+      "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 21,
       "policy": "cap-future-mr-v1",
       "jars": [
@@ -307,8 +307,8 @@
         },
         {
           "name": "lwjgl-tinyfd.jar",
-          "size": 17499,
-          "sha256": "8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f",
+          "size": 16340,
+          "sha256": "3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951",
           "resourcePath": "lwjgl/lwjgl-tinyfd.jar",
           "mrLayers": [
             11
@@ -346,15 +346,15 @@
           "maxClassMajor": 55
         }
       ],
-      "manifestSha256": "49ee7b57c352d7cbf220552e75dee6728f379e86cccede32a486fa21db0c5121"
+      "manifestSha256": "3bc8bd214f957bb2e7290f5224299d30163eba2f76bfeade31a250f8af2727c4"
     },
     {
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "6419841c220fc40e30908e9a72b1734c338d0d4c01955ada8d2d91a05ddc7eef",
-      "sourceSlotIdentity": "36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4",
-      "nativesSha256": "b496598177e0e5f9d3001f6190b7a8a235966c500976c2846ed3eef7b4980bd1",
+      "sourceManifestSha256": "97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90",
+      "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+      "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 25,
       "policy": "cap-future-mr-v1",
       "jars": [
@@ -480,8 +480,8 @@
         },
         {
           "name": "lwjgl-tinyfd.jar",
-          "size": 17499,
-          "sha256": "8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f",
+          "size": 16340,
+          "sha256": "3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951",
           "resourcePath": "lwjgl/lwjgl-tinyfd.jar",
           "mrLayers": [
             11
@@ -520,7 +520,7 @@
           "maxClassMajor": 69
         }
       ],
-      "manifestSha256": "0ddb880632144adbe0c35dabafc60df4f56c94a545a41c13cac3738a78db3131"
+      "manifestSha256": "9067ceb6867f5a81a9f5f91a695d27124d45853e311ea8be1e3a0b24b8e43dd9"
     }
   ]
 }

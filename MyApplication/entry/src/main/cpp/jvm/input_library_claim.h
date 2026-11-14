@@ -1,7 +1,7 @@
 #ifndef AMCL_INPUT_LIBRARY_CLAIM_H
 #define AMCL_INPUT_LIBRARY_CLAIM_H
 
-// 本局库解析结果与进程DSO寿命之间的薄owner：只认输入计划选定的精确绝对制品路径。
+// 本局库解析结果与进程DSO寿命之间的薄owner：只认调用方已核HAP/输入计划的精确绝对制品路径。
 // 不从Graphics profile重选，不按SONAME/RTLD_DEFAULT猜库，也不初始化SDL/游戏class。
 // SDL可在JVM另一个namespace装入同一制品；此claim只证明选定制品cold协议，不证明
 // 游戏实例或consumer Ready。SDK实际初始化仍核自身协议、实例线程及唯一Core owner。
@@ -36,7 +36,8 @@ inline bool AbsoluteInputLibraryPath(const std::string& path){
 
 class ProcessSdlInputLibraryClaim final {
 public:
-    // owner在模块/进程建立时构造。只有实际SDL输入plan才调用Claim，非SDL路线不装库。
+    // owner在模块/进程建立时构造。主SDL输入与其他前端的辅助SDL都先做cold制品claim；
+    // Claim不执行SDL_Init，也不把辅助用途升级为主输入/窗口消费者。
     ProcessSdlInputLibraryClaim():process_(InputLibraryProcessId()){}
     ProcessSdlInputLibraryClaim(const ProcessSdlInputLibraryClaim&)=delete;
     ProcessSdlInputLibraryClaim& operator=(const ProcessSdlInputLibraryClaim&)=delete;
@@ -46,7 +47,7 @@ public:
     // 首次装入精确制品并永久保留handle；同一路径幂等，不把已有SDK换成另一路径/库。
     // 成功只表示该selected artifact满足冻结契约。allowLegacy必须来自显式legacy计划，
     // 只能接受缺marker；错误版本/不同映像永不降级。失败不假Ready或卸载已借出映像。
-    bool Claim(const std::string& exactPath,bool allowLegacy,std::string& error){
+    bool Claim(const std::string& exactPath,bool allowLegacy,std::string& error,bool requireAuxiliary=false){
         if(process_!=InputLibraryProcessId()){error="InputContractMismatch:sdl_claim_inherited";return false;}
         if(!AbsoluteInputLibraryPath(exactPath)){error="InputContractMismatch:sdl_path_not_absolute";return false;}
         std::lock_guard<std::mutex> lock(mutex_);
@@ -69,16 +70,39 @@ public:
         uint32_t lookObserved=0;
         const int lookResult=amclCheckSelectedSdlLookContractV1(handle_,path_.c_str(),allowLegacy,&lookObserved);
         if(lookResult<0){error=amclSdlLookContractReason(lookResult);return false;}
+        uint32_t auxObserved=0;
+        uint64_t device=0,inode=0;
+        if(requireAuxiliary){
+            const int auxResult=amclCheckSelectedSdlAuxContractV2(handle_,path_.c_str(),&auxObserved);
+            if(auxResult<0){error=amclSdlAuxContractReason(auxResult);return false;}
+            // 角色owner稍后要验证actual SDL映像，而cold句柄本身不能代表actual实例。
+            // 此处冻结与已核路径一致的文件身份，不用指针相同或SONAME相同代替制品身份。
+#ifdef _WIN32
+            HANDLE file=CreateFileA(path_.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+                nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+            BY_HANDLE_FILE_INFORMATION information{};
+            const bool identity=file!=INVALID_HANDLE_VALUE && GetFileInformationByHandle(file,&information);
+            if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);
+            if(identity){device=information.dwVolumeSerialNumber;inode=(uint64_t(information.nFileIndexHigh)<<32)|information.nFileIndexLow;}
+#else
+            struct stat information{};
+            const bool identity=stat(path_.c_str(),&information)==0 && S_ISREG(information.st_mode);
+            if(identity){device=static_cast<uint64_t>(information.st_dev);inode=static_cast<uint64_t>(information.st_ino);}
+#endif
+            if(!identity || !inode){error="InputContractMismatch:sdl_aux_artifact_identity";return false;}
+        }
         protocol_=observed;lookProtocol_=lookObserved;
+        auxProtocol_=auxObserved;fileDevice_=device;fileInode_=inode;
         legacy_=result==AMCL_SDL_INPUT_CONTRACT_LEGACY||lookResult==AMCL_SDL_INPUT_CONTRACT_LEGACY;
         verified_=true;error.clear();return true;
     }
 
     // 启动线程只读已冻结claim，不重装/重查SDL，也不把冷协议当作窗口/游戏消费者Ready。
-    bool VerifiedForCurrentProcess(bool requireCommon)const{
+    bool VerifiedForCurrentProcess(bool requireCommon,bool requireAuxiliary=false)const{
         if(process_!=InputLibraryProcessId())return false;
         std::lock_guard<std::mutex> lock(mutex_);
-        return verified_&&handle_&&(!requireCommon||(protocol_==1&&lookProtocol_==1&&!legacy_));
+        return verified_&&handle_&&(!requireCommon||(protocol_==1&&lookProtocol_==1&&!legacy_))&&
+            (!requireAuxiliary||(auxProtocol_==2&&fileInode_));
     }
     uint32_t Protocol()const{
         if(process_!=InputLibraryProcessId())return 0;
@@ -89,12 +113,20 @@ public:
         if(process_!=InputLibraryProcessId())return 0;
         std::lock_guard<std::mutex> lock(mutex_);return verified_?lookProtocol_:0;
     }
+    bool AuxiliaryArtifactIdentity(uint64_t& device,uint64_t& inode)const{
+        device=0;inode=0;if(process_!=InputLibraryProcessId())return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!verified_ || auxProtocol_!=2 || !fileInode_)return false;
+        device=fileDevice_;inode=fileInode_;return true;
+    }
 private:
     const uint32_t process_;
     mutable std::mutex mutex_;
     void* handle_=nullptr;
     std::string path_;
     uint32_t protocol_=0,lookProtocol_=0;
+    uint32_t auxProtocol_=0;
+    uint64_t fileDevice_=0,fileInode_=0;
     bool legacy_=false,verified_=false;
 };
 

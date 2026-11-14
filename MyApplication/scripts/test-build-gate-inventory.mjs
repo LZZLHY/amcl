@@ -190,6 +190,21 @@ test('最终HAP/动态provenance不能退化为可缓存或可延期检查', () 
   assert(issues.some(issue => issue.includes('未批准的缓存')));
 });
 
+test('新增 Native provider 门仍校验实际产品/HAP，不能改为缓存或只登记不执行', () => {
+  const gate = catalog.gates.find(item => item.script === 'scripts/check-hap-native-providers.mjs');
+  assert(gate, 'Native provider 产物门必须登记');
+  assert.equal(gate.kind, 'artifact');
+  assert.equal(gate.quick, 'always');
+  assert.equal(gate.cachePolicy, 'never');
+  const invocation = String.raw`Invoke-AmclNode "$ProjectRoot\scripts\check-hap-native-providers.mjs" --root $ProjectRoot
+    --product $Product --mode $BuildMode --hap $Hap --out $NativeProviderEvidence`;
+  const expected = normalizePowerShellWitness(invocation);
+  const actual = normalizePowerShellWitness(sources['build-hap.ps1']);
+  assert(actual.includes(expected), '须保留实际产品、模式、当前HAP和独立证据参数');
+  // 正向正文与注释墓碑必须分开，不能把删掉的实际调用算成已执行。
+  assert(!normalizePowerShellWitness('# '+invocation.replaceAll('\n', '\n# ')).includes(expected));
+});
+
 test('目录漏项、重复ID与依赖环均被拒绝', () => {
   const missing = structuredClone(catalog);
   missing.gates = missing.gates.filter(gate => gate.script !== 'scripts/test-control-groups-editor.mjs');

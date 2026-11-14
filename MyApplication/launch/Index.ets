@@ -9,8 +9,10 @@ export * from './src/main/ets/PreLaunchValidator';
 export * from './src/main/ets/JdkManager';
 export * from './src/main/ets/RuntimeCatalogRepository';
 export * from './src/main/ets/RuntimeCatalogTypes';
+export * from './src/main/ets/RuntimeReceiptCodec';
 export * from './src/main/ets/RuntimeUpdatePolicy';
 export * from './src/main/ets/JdkInstaller';
+export * from './src/main/ets/JdkInstallStorage';
 // 已装 JDK 与期望版本的关系判定（纯函数）。分级取舍与「harmfulTags 不许滥用」的理由写在文件开头；
 // 判定钉子在 entry/src/test/JdkUpdatePolicy.test.ets。
 export * from './src/main/ets/JdkUpdatePolicy';
@@ -20,6 +22,8 @@ export * from './src/main/ets/JdkImporter';
 export * from './src/main/ets/JdkInstallTask';
 export * from './src/main/ets/RuntimeDeployer';
 export * from './src/main/ets/GameCompatibility';
+export * from './src/main/ets/CpuCompatibility';
+export * from './src/main/ets/AudioServiceCompatibility';
 export * from './src/main/ets/LwjglModernSlot';
 // Old names are derived OpenGL compatibility views of the canonical graphics registry.
 export { RENDERER_BACKENDS, RENDERER_BACKEND_DEFAULT_ID, RendererBackendSpec,
@@ -66,3 +70,13 @@ export * from './src/main/ets/JvmExitEvidence';
 // 恢复协调状态与进程owner；输入、历史和展示消费分别持久确认，页面只读取提交结果。
 export * from './src/main/ets/SessionRecoveryState';
 export * from './src/main/ets/SessionRecoveryCoordinator';
+
+// App/JDK组合更新只按真实宿主能力和冻结构建规划，不能通过版本号放宽准入。
+export * from './src/main/ets/RuntimeHostProtocol';
+export { validateRuntimeForHost } from './src/main/ets/RuntimeHostDeclaration';
+export { missingRuntimeCapability, runtimeCapabilityRepairReason } from './src/main/ets/RuntimeCapabilityContract';
+export { runtimeRequiredHost, runtimeRecommendationIds, runtimeBuildForHost } from './src/main/ets/RuntimeCatalogValidation';
+export * from './src/main/ets/JdkInstallJournal';
+// entry层组合恢复使用真实租约类型，不能因公共出口缺失而退化成any或另建锁实现。
+export { JdkDirectoryLease } from './src/main/ets/JdkDirectoryLease';
+export * from './src/main/ets/RuntimeAppDependency';

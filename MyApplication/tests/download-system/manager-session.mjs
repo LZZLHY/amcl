@@ -326,6 +326,14 @@ export async function runDownloadManagerSessionRegression() {
     const noDigest = { ...original, check: { size: 4 }, urls: ['u'] };
     assert.throws(() => api.compileDownloadFiles([noDigest, { ...noDigest, urls: ['v'] }]), /来源身份冲突/);
     assert.equal(api.compileDownloadFiles([noDigest, { ...noDigest }]).length, 1);
+    // 同一 Native 任务中，只能合并相同传输策略与候选顺序的版本正文。
+    const ordered = { ...original, urls: ['first', 'backup'], orderedVersionDownload: true };
+    const orderedBatch = api.compileDownloadFiles([ordered, { ...ordered }]);
+    assert.equal(orderedBatch.length, 1);
+    assert.equal(orderedBatch[0].orderedVersionDownload, true);
+    assert.deepEqual(Array.from(orderedBatch[0].urls), ['first', 'backup']);
+    assert.throws(() => api.compileDownloadFiles([ordered, { ...ordered, orderedVersionDownload: false }]), /冲突/);
+    assert.throws(() => api.compileDownloadFiles([ordered, { ...ordered, urls: ['backup', 'first'] }]), /顺序冲突/);
     assert.throws(() => api.compileDownloadFiles([{ ...original, localPath: '/trusted/../a.jar' }]), /\. 或 \.\./);
     const authorized = { ...original, bearerToken: 'secret', authorizedPolicy: {
       singleUse: true, maxHttpAttempts: 1, validForNewRequestMs: 1000, maxBytes: 4 } };

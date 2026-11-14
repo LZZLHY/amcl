@@ -1,4 +1,9 @@
 /**
+ * 版本列表的删除操作文字使用错误前景色，与中性按钮底配套；选中版本、实色主按钮及
+ * 原有删除确认、导出和版本选择流程保持原有状态与事件所有权。
+ */
+import { applyNativeTheme } from '../components/AppTheme';
+/**
  * VersionSettingsPage.ets — 版本设置页面
  *
  * 显示已安装的 MC 版本列表，提供版本管理功能：
@@ -14,7 +19,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors, ThemeMode, resolveTheme } from 'commons';
 import { PreferenceManager } from 'feature_system';
 import { GameStorage, parseStorageLocation } from 'feature_system';
-import { common } from '@kit.AbilityKit';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { removeDirRecursive } from 'commons';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
 
@@ -34,6 +39,9 @@ struct VersionSettingsPage {
   @State versions: InstalledVersion[] = []
   @State currentVersion: string = '1.20.4'
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
+  /** 主题确认与系统深浅色只刷新颜色，不重置用户当前的版本选择或重新扫描磁盘。 */
+  @StorageProp('currentColorMode') @Watch('applyTheme_') private colorMode_: number = 0
+  @StorageProp('appThemeRevision') @Watch('applyTheme_') private appThemeRevision_: number = 0
   @State versionIsolation: boolean = true
   // 2026-05-23 API NEXT 迁移：getContext(this) 已弃用，改读 EntryAbility 缓存。
   // 详见 docs/guides/api-migration-2026-05.md。
@@ -48,7 +56,14 @@ struct VersionSettingsPage {
   private loadSettings() {
     this.currentVersion = this.prefManager.mcVersion
     this.versionIsolation = this.prefManager.versionIsolation
-    this.theme = resolveTheme(this.prefManager.themeMode, false)
+    this.applyTheme_()
+  }
+
+  /** 与其他独立路由使用相同模式/强调色快照，跟随系统时不再固定使用浅色。 */
+  private applyTheme_(): void {
+    this.theme = resolveTheme(this.prefManager.themeMode,
+      this.colorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK, this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   private saveCurrentVersion() {
@@ -120,6 +135,9 @@ struct VersionSettingsPage {
       catch (toastError) { hilog.warn(0, TAG, '导出导航及提示失败：%{public}s', (toastError as Error).message) }
     }
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
 
   build() {
     Column() {
@@ -222,7 +240,7 @@ struct VersionSettingsPage {
                       Text('Minecraft ' + ver.id)
                         .fontSize(16)
                         .fontWeight(500)
-                        .fontColor(this.currentVersion === ver.id ? this.theme.primary : this.theme.textPrimary)
+                        .fontColor(this.currentVersion === ver.id ? this.theme.actionText : this.theme.textPrimary)
                       if (this.currentVersion === ver.id) {
                         Text('当前')
                           .fontSize(11)
@@ -248,7 +266,7 @@ struct VersionSettingsPage {
                         .type(ButtonType.Capsule)
                         .height(32)
                         .fontSize(13)
-                        .fontColor(this.theme.primary)
+                        .fontColor(this.theme.actionText)
                         .backgroundColor(this.theme.bgInput)
                         .onClick(() => {
                           this.currentVersion = ver.id
@@ -259,7 +277,7 @@ struct VersionSettingsPage {
                       .type(ButtonType.Capsule)
                       .height(32)
                       .fontSize(13)
-                      .fontColor(this.theme.error)
+                      .fontColor(this.theme.errorText)
                       .backgroundColor(this.theme.bgInput)
                       .onClick(() => { this.deleteVersion(ver.id) })
                   }

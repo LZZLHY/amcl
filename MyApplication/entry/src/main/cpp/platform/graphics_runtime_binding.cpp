@@ -4,7 +4,9 @@
 #include "graphics_bootstrap.h"
 #include "system_gl_dispatch.h"
 #include "gl_host.h"
+#include "sdl_aux_runtime.h"
 #include <atomic>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -23,6 +25,7 @@ int auxiliaryVerified(int);
 int cleanupSafe();
 const char* featuresJson();
 void* providerProc(const char*);
+int sdlAuxOperation(uint32_t,const AmclSdlAuxRequestV1*,AmclSdlAuxResultV1*);
 std::atomic<GraphicsRuntimeBinding*> active{nullptr};
 bool freezeLocal(const char*, const char*, std::string&);
 const GraphicsRuntimeBinding* localBound() {
@@ -154,7 +157,7 @@ void* GraphicsRuntimeBinding::providerProc(const char* name) const {
 const GraphicsRuntimeBinding* BoundGraphicsRuntime() {
     const auto* owner = service(false);
     const auto* api = owner ? owner->bound() : nullptr;
-    if (!api || api->structSize < sizeof(AmclGraphicsRuntimeV1) || api->abiVersion != 1 ||
+    if (!api || api->structSize < AMCL_GRAPHICS_RUNTIME_V1_CORE_SIZE || api->abiVersion != 1 ||
         api->processId != static_cast<uint64_t>(getpid())) return nullptr;
     if (const auto* local = localBound()) if (&local->publicApi == api) return local;
     // 其他namespace只取得公共C描述符。C++视图由本映像自己分配，不借用owner对象布局。
@@ -167,7 +170,8 @@ const GraphicsRuntimeBinding* BoundGraphicsRuntime() {
         !api->contextOperation || !api->auxiliaryVerified || !api->cleanupSafe || !api->featuresJson) return nullptr;
     auto value = std::make_unique<GraphicsRuntimeBinding>();
     value->processId = static_cast<int>(getpid()); value->profile = metadata; value->delegate = api;
-    value->publicApi = *api;
+    // 旧表只有旧prefix；可选尾部保零，不能用整结构赋值读过其实际长度。
+    std::memcpy(&value->publicApi,api,std::min<size_t>(api->structSize,sizeof(value->publicApi)));
     value->implementationIdentity = api->implementationIdentity ? api->implementationIdentity : "";
     if (!GraphicsProfileStringEqual(metadata->api, "VULKAN")) {
         fillEglTable(*value);
@@ -233,7 +237,7 @@ bool freezeLocal(const char* id, const char* api, std::string& error) {
     value->publicApi = {sizeof(AmclGraphicsRuntimeV1), 1u, static_cast<uint64_t>(value->processId),
         metadata->id, metadata->api, metadata->contextApi, amclGraphicsGlProcV1, amclGraphicsEglProcV1, amclGraphicsInspectContextV1,
         value->is("mobilegl") ? presentSequence : nullptr, reserveContext, commitContext, retireContext,
-        contextOperation, auxiliaryVerified, cleanupSafe, featuresJson, nullptr, providerProc};
+        contextOperation, auxiliaryVerified, cleanupSafe, featuresJson, nullptr, providerProc,sdlAuxOperation};
     if (!GraphicsProfileStringEqual(metadata->api, "VULKAN")) {
         value->contextOperations = FindEglContextOperations(metadata->id);
         if (!value->contextOperations) { error = "graphics_context_implementation_missing"; return false; }
@@ -315,6 +319,12 @@ const char* featuresJson() {
     const auto* r = localBound(); text = r ? GraphicsFeaturesJson(*r) : "null"; return text.c_str();
 }
 void* providerProc(const char* name) { const auto* r = localBound(); return r ? r->providerProc(name) : nullptr; }
+int sdlAuxOperation(uint32_t operation,const AmclSdlAuxRequestV1* request,AmclSdlAuxResultV1* output) {
+    const auto* runtime=localBound();
+    if(!runtime)return AMCL_SDL_AUX_WRONG_PID;
+    try { return SdlAuxRuntimeOperation(*runtime,operation,request,output); }
+    catch(...) { return AMCL_SDL_AUX_INVALID; }
+}
 int contextOperation(uint32_t operation, AmclGraphicsContextStateV1* state, uint32_t size,
     const AmclGraphicsContextRequestV1* request, int32_t tid, char* output, uint32_t capacity) {
     const auto* r = localBound(); std::string error; bool ready = false;

@@ -25,6 +25,8 @@ import { common, Want } from '@kit.AbilityKit';
 import { removeDirRecursive } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_UI } from 'commons';
+import { LedgerState } from 'commons';
+import { getTaskActivityOwner, BusinessActivity, BusinessActivityResult } from 'feature_core';
 
 const TAG = 'GameArchiveIO';
 
@@ -72,6 +74,35 @@ function failResult(message: string): ImportResult {
 }
 function cancelledResult(): ImportResult {
   return { ok: false, cancelled: true, name: '', message: '' };
+}
+
+/**
+ * 单个导入/导出的领域事务包装。返回值仍表达成功/取消/失败；活动记录覆盖真实复制、
+ * 压缩和清理finally，页面关闭不丢收尾。IO故障由统一owner保留补写义务。
+ */
+async function trackArchiveSingle(ctx: common.UIAbilityContext, title: string,
+  action: (activityId: number) => Promise<ImportResult>): Promise<ImportResult> {
+  try {
+    const owner = getTaskActivityOwner(); owner.configure(ctx.filesDir);
+    return await owner.run<ImportResult>({ category: 'resource_manage', title: title },
+      (activity: BusinessActivity): Promise<ImportResult> => action(activity.id), (result: ImportResult): BusinessActivityResult => ({
+        state: result.cancelled ? LedgerState.ABORTED : result.ok ? LedgerState.SUCCESS : LedgerState.FAILED,
+        summary: result.message || (result.cancelled ? '用户取消' : '已完成 ' + result.name), fileCount: result.ok ? 1 : 0,
+      }));
+  } catch (error) { return failResult((error as Error).message); }
+}
+
+/** 多选操作按整批结果记录；部分成功仍保留失败数量，不把Promise返回误判为全部成功。 */
+async function trackArchiveBatch(ctx: common.UIAbilityContext, title: string,
+  action: (activityId: number) => Promise<BatchImportResult>): Promise<BatchImportResult> {
+  try {
+    const owner = getTaskActivityOwner(); owner.configure(ctx.filesDir);
+    return await owner.run<BatchImportResult>({ category: 'resource_manage', title: title },
+      (activity: BusinessActivity): Promise<BatchImportResult> => action(activity.id), (result: BatchImportResult): BusinessActivityResult => ({
+        state: result.cancelled ? LedgerState.ABORTED : result.failures.length > 0 ? LedgerState.FAILED : LedgerState.SUCCESS,
+        summary: result.message || '用户取消', fileCount: result.names.length,
+      }));
+  } catch (error) { return batchResult([], [{ name: '', message: (error as Error).message }]); }
 }
 
 /** 从 picker uri 取末尾文件名（去掉 query，按 / 切，解码一次百分号转义）。 */
@@ -135,7 +166,7 @@ function copyPathToUri(srcPath: string, uri: string): void {
 }
 
 /** 把 srcDir 下的每个子项复制进 destDir（destDir 须已存在）。 */
-async function copyTreeInto(srcDir: string, destDir: string): Promise<void> {
+async function copyTreeInto(srcDir: string, destDir: string, activityId: number): Promise<void> {
   ensureDir(destDir);
   let entries: string[] = [];
   entries = fs.listFileSync(srcDir);
@@ -149,7 +180,7 @@ async function copyTreeInto(srcDir: string, destDir: string): Promise<void> {
         fs.copyFileSync(src, destDir + '/' + name);
       }
     } catch (e) {
-      AppLogger.warn(TAG, `copyTreeInto failed ${name}`, e, LOG_DOMAIN_UI);
+      AppLogger.warn(TAG, `copyTreeInto failed ${name}`, e, LOG_DOMAIN_UI, activityId);
       throw e as Error;
     }
   }
@@ -192,6 +223,30 @@ export class GameArchiveIO {
   /** 解压 / 压缩超时（存档可能较大，给 300s，与 JDK 解压一致）。 */
   private static readonly ZIP_TIMEOUT_MS = 300_000;
 
+  /** 本地文件/存档操作统一由领域owner记账，内部单文件和递归步骤不重复开账。 */
+  static importResourceFiles(ctx: common.UIAbilityContext, targetDir: string, expectedExts: string[],
+    maxSelectNumber: number = 500): Promise<BatchImportResult> {
+    return trackArchiveBatch(ctx, '导入本地资源文件', (id: number): Promise<BatchImportResult> =>
+      GameArchiveIO.importResourceFilesUntracked(ctx, targetDir, expectedExts, maxSelectNumber, id));
+  }
+
+  static importSaveZips(ctx: common.UIAbilityContext, savesDir: string): Promise<BatchImportResult> {
+    return trackArchiveBatch(ctx, '导入存档', (id: number): Promise<BatchImportResult> => GameArchiveIO.importSaveZipsUntracked(ctx, savesDir, id));
+  }
+
+  static exportSaveZip(ctx: common.UIAbilityContext, savesDir: string, worldName: string): Promise<ImportResult> {
+    return trackArchiveSingle(ctx, '导出存档 ' + worldName, (id: number): Promise<ImportResult> =>
+      GameArchiveIO.exportSaveZipUntracked(ctx, savesDir, worldName, id));
+  }
+
+  static exportFile(ctx: common.UIAbilityContext, srcPath: string, fileName: string): Promise<ImportResult> {
+    return trackArchiveSingle(ctx, '导出文件 ' + fileName, (id: number): Promise<ImportResult> => GameArchiveIO.exportFileUntracked(ctx, srcPath, fileName, id));
+  }
+
+  static exportDirZip(ctx: common.UIAbilityContext, srcDir: string, dirName: string): Promise<ImportResult> {
+    return trackArchiveSingle(ctx, '导出目录 ' + dirName, (id: number): Promise<ImportResult> => GameArchiveIO.exportDirZipUntracked(ctx, srcDir, dirName, id));
+  }
+
   /** JDK/整合包安装仍为单任务流程，不把多个安装包混入一次安装。 */
   static async importResourceFile(ctx: common.UIAbilityContext, targetDir: string,
     expectedExts: string[]): Promise<ImportResult> {
@@ -205,11 +260,12 @@ export class GameArchiveIO {
    *
    * @param expectedExts 允许的小写扩展名（含点），如 ['.jar'] 或 ['.zip']
    */
-  static async importResourceFiles(
+  private static async importResourceFilesUntracked(
     ctx: common.UIAbilityContext,
     targetDir: string,
     expectedExts: string[],
     maxSelectNumber: number = 500,
+    activityId: number = 0,
   ): Promise<BatchImportResult> {
     if (targetDir.length === 0) return batchResult([], [{ name: '', message: '目标目录无效' }]);
     let uris: string[] = [];
@@ -247,17 +303,17 @@ export class GameArchiveIO {
         await fs.rename(temp, targetDir + '/' + filename);
         temp = '';
         names.push(filename);
-        AppLogger.info(TAG, `importResourceFiles imported=${names.length}/${uris.length} name=${filename}`, LOG_DOMAIN_UI);
+        AppLogger.info(TAG, `importResourceFiles imported=${names.length}/${uris.length} name=${filename}`, LOG_DOMAIN_UI, activityId);
       } catch (e) {
         const message = (e as BusinessError).message;
         failures.push({ name: filename, message });
-        AppLogger.warn(TAG, `importResourceFiles failed name=${filename}`, e, LOG_DOMAIN_UI);
+        AppLogger.warn(TAG, `importResourceFiles failed name=${filename}`, e, LOG_DOMAIN_UI, activityId);
       } finally {
         if (source !== null) { try { fs.closeSync(source); } catch (e) { /* */ } }
         if (temp.length > 0) { try { fs.unlinkSync(temp); } catch (e) { /* */ } }
       }
     }
-    AppLogger.info(TAG, `importResourceFiles completed selected=${uris.length} imported=${names.length} failed=${failures.length}`, LOG_DOMAIN_UI);
+    AppLogger.info(TAG, `importResourceFiles completed selected=${uris.length} imported=${names.length} failed=${failures.length}`, LOG_DOMAIN_UI, activityId);
     return batchResult(names, failures);
   }
 
@@ -269,9 +325,10 @@ export class GameArchiveIO {
    *   - 顶层是单个世界文件夹（<世界>/level.dat）→ 世界名取自该文件夹
    * 名称冲突时自动追加 " (1)" / " (2)"。
    */
-  static async importSaveZips(
+  private static async importSaveZipsUntracked(
     ctx: common.UIAbilityContext,
     savesDir: string,
+    activityId: number,
   ): Promise<BatchImportResult> {
     if (savesDir.length === 0) return batchResult([], [{ name: '', message: '存档目录无效' }]);
     let uris: string[] = [];
@@ -288,14 +345,14 @@ export class GameArchiveIO {
     const names: string[] = [];
     const failures: ImportFailure[] = [];
     for (const uri of uris) {
-      const result = await GameArchiveIO.importSaveUri(ctx, savesDir, uri);
+      const result = await GameArchiveIO.importSaveUri(ctx, savesDir, uri, activityId);
       if (result.ok) names.push(result.name);
       else failures.push({ name: basenameFromUri(uri), message: result.message });
     }
     return batchResult(names, failures);
   }
 
-  private static async importSaveUri(ctx: common.UIAbilityContext, savesDir: string, uri: string): Promise<ImportResult> {
+  private static async importSaveUri(ctx: common.UIAbilityContext, savesDir: string, uri: string, activityId: number): Promise<ImportResult> {
     let filename = basenameFromUri(uri);
     if (!filename.toLowerCase().endsWith('.zip')) {
       return failResult('存档需为 .zip 文件');
@@ -331,14 +388,14 @@ export class GameArchiveIO {
       let finalName = GameArchiveIO.uniqueName(savesDir, worldName);
       let target = savesDir + '/' + finalName;
       incompleteTarget = target;
-      await copyTreeInto(worldRoot, target);
+      await copyTreeInto(worldRoot, target, activityId);
 
       // 5. 校验：level.dat 必须在世界根，否则视为无效存档
       if (!pathExists(target + '/level.dat')) {
         try { removeDirRecursive(target); } catch (e) { /* */ }
         return failResult('zip 内未找到 level.dat，不是有效的 MC 存档');
       }
-      AppLogger.info(TAG, `importSaveZips -> ${target}`, LOG_DOMAIN_UI);
+      AppLogger.info(TAG, `importSaveZips -> ${target}`, LOG_DOMAIN_UI, activityId);
       incompleteTarget = '';
       return okResult(finalName);
     } catch (e) {
@@ -356,10 +413,11 @@ export class GameArchiveIO {
    * 导出存档：把 saves/<worldName>/ 压成 zip → 系统另存 picker 让用户选位置。
    * @returns true=已保存，false=用户取消
    */
-  static async exportSaveZip(
+  private static async exportSaveZipUntracked(
     ctx: common.UIAbilityContext,
     savesDir: string,
     worldName: string,
+    activityId: number,
   ): Promise<ImportResult> {
     let worldDir = savesDir + '/' + worldName;
     if (!pathExists(worldDir)) return failResult('存档不存在');
@@ -380,7 +438,7 @@ export class GameArchiveIO {
 
       // 3. 临时 zip 内容写入用户选定 uri
       copyPathToUri(tmpZip, result[0]);
-      AppLogger.info(TAG, `exportSaveZip ${worldName} -> ${result[0]}`, LOG_DOMAIN_UI);
+      AppLogger.info(TAG, `exportSaveZip ${worldName} -> ${result[0]}`, LOG_DOMAIN_UI, activityId);
       return okResult(worldName);
     } catch (e) {
       return failResult('导出失败: ' + (e as BusinessError).message);
@@ -402,10 +460,11 @@ export class GameArchiveIO {
   /**
    * 导出单个文件：系统另存 picker，把 srcPath 写入用户选定位置。
    */
-  static async exportFile(
+  private static async exportFileUntracked(
     ctx: common.UIAbilityContext,
     srcPath: string,
     fileName: string,
+    activityId: number,
   ): Promise<ImportResult> {
     if (!pathExists(srcPath)) return failResult('文件不存在');
     try {
@@ -415,7 +474,7 @@ export class GameArchiveIO {
       let result = await dp.save(saveOpt);
       if (!result || result.length === 0) return cancelledResult();
       copyPathToUri(srcPath, result[0]);
-      AppLogger.info(TAG, `exportFile ${fileName} -> ${result[0]}`, LOG_DOMAIN_UI);
+      AppLogger.info(TAG, `exportFile ${fileName} -> ${result[0]}`, LOG_DOMAIN_UI, activityId);
       return okResult(fileName);
     } catch (e) {
       return failResult('导出失败: ' + (e as BusinessError).message);
@@ -425,10 +484,11 @@ export class GameArchiveIO {
   /**
    * 导出文件夹：压成 .zip → 系统另存 picker。
    */
-  static async exportDirZip(
+  private static async exportDirZipUntracked(
     ctx: common.UIAbilityContext,
     srcDir: string,
     dirName: string,
+    activityId: number,
   ): Promise<ImportResult> {
     if (!pathExists(srcDir)) return failResult('文件夹不存在');
     let stamp = Date.now().toString();
@@ -442,7 +502,7 @@ export class GameArchiveIO {
       let result = await dp.save(saveOpt);
       if (!result || result.length === 0) return cancelledResult();
       copyPathToUri(tmpZip, result[0]);
-      AppLogger.info(TAG, `exportDirZip ${dirName} -> ${result[0]}`, LOG_DOMAIN_UI);
+      AppLogger.info(TAG, `exportDirZip ${dirName} -> ${result[0]}`, LOG_DOMAIN_UI, activityId);
       return okResult(dirName);
     } catch (e) {
       return failResult('导出失败: ' + (e as BusinessError).message);

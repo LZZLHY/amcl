@@ -81,6 +81,63 @@ void AbiNativeWindowBroker::release(NativeWindowLease& lease) {
     lease = {};
 }
 
+uint32_t AbiNativeWindowBroker::geometryWorkFlags() const {
+    return abi_ && abi_->structSize >= AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_GEOMETRY_SIZE &&
+        abi_->geometryWorkFlags && abi_->geometryCheckpoint && abi_->observeDrawable ? abi_->geometryWorkFlags() : 0;
+}
+
+int AbiNativeWindowBroker::geometryCheckpoint(uint64_t id, const NativeWindowLease& lease) {
+    if (!(geometryWorkFlags() & 1u)) return 0;
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (id != presentOwner_ || lease.generation != presentGeneration_ || !lease.valid()) return 0;
+        token = presentationToken_;
+    }
+    // 不持本地broker锁调用宿主，宿主更新几何后前端还会正常移动原呈现token。
+    return abi_->geometryCheckpoint(lease.nativeWindow, lease.generation, token);
+}
+
+void AbiNativeWindowBroker::observeDrawable(uint64_t id, const NativeWindowLease& lease, int width, int height, uint32_t source) {
+    if (!(geometryWorkFlags() & 2u)) return;
+    uint64_t token = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (id != presentOwner_ || lease.generation != presentGeneration_ || !lease.valid()) return;
+        token = presentationToken_;
+    }
+    abi_->observeDrawable(lease.nativeWindow, lease.generation, token, width, height, source);
+}
+
+int BackendSession::geometryCheckpoint() {
+    return presentOwner_ && resourcesCreated_ && state_ == BackendSessionState::kAttached && broker_
+        ? broker_->geometryCheckpoint(sessionId_, lease_) : 0;
+}
+
+void BackendSession::observeDrawable(int width, int height, uint32_t source) {
+    if (presentOwner_ && resourcesCreated_ && state_ == BackendSessionState::kAttached && broker_)
+        broker_->observeDrawable(sessionId_, lease_, width, height, source);
+}
+
+bool AbiNativeWindowBroker::presentationIdentity(uint64_t id,const NativeWindowLease& lease,uint64_t& token) const {
+    token=0;
+    if(!abi_ || abi_->abiVersion!=AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION ||
+       abi_->structSize<AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PRESENTATION_IDENTITY_SIZE ||
+       !abi_->matchesPresentationIdentity || !lease.resourceEpoch)return false;
+    uint64_t observed=0;
+    { std::lock_guard<std::mutex> lock(mutex_);
+      if(id!=presentOwner_ || lease.generation!=presentGeneration_ || !lease.valid())return false;
+      observed=presentationToken_; }
+    // 与几何回调一样不持本地broker锁进入owner；这里的owner入口只核身份。
+    if(!observed || abi_->matchesPresentationIdentity(lease.nativeWindow,lease.generation,observed,lease.resourceEpoch)!=1)return false;
+    token=observed;return true;
+}
+bool BackendSession::presentationIdentity(uint64_t& token) const {
+    token=0;
+    return presentOwner_ && resourcesCreated_ && state_==BackendSessionState::kAttached && broker_ &&
+        broker_->presentationIdentity(sessionId_,lease_,token);
+}
+
 bool AbiNativeWindowBroker::claimPresentOwner(uint64_t id, const NativeWindowLease& lease, std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!id || !lease.valid() || presentOwner_) { error = "invalid or occupied present owner"; return false; }

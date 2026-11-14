@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "kind": "app-artifact",
+  "artifactId": "developer-fixture",
+  "verified": true,
+  "releaseKind": "developer",
+  "source": "website-upload",
+  "product": "sideload",
+  "versionName": "1.0.7-dev1",
+  "versionCode": 100,
+  "name": "amcl-v1.0.7-dev1-sideload-unsigned.hap",
+  "sha256": "3ff6a38af35113603d0bb9761d38aa51b5f1756e70c193ed6a2b0f4f0d6a010b",
+  "sizeBytes": 839,
+  "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/3ff6a38af35113603d0bb9761d38aa51b5f1756e70c193ed6a2b0f4f0d6a010b/amcl-v1.0.7-dev1-sideload-unsigned.hap",
+  "audit": {
+    "bundleName": "com.amcl.launcher",
+    "versionCode": 100,
+    "versionName": "1.0.7-dev1",
+    "product": "sideload",
+    "packagedProduct": "sideload",
+    "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "auditLevel": "package-profile",
+    "minApi": 20,
+    "targetApi": 23,
+    "abi": "arm64-v8a",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ],
+    "runtimeHostProtocols": [
+      1
+    ],
+    "runtimePlanProtocol": 0
+  },
+  "baseStable": {
+    "tag": "v1.0.6",
+    "versionName": "1.0.6",
+    "versionCode": 100
+  }
+}

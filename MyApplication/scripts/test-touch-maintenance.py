@@ -45,6 +45,9 @@ std::mutex s_touchStateMutex;
 pthread_mutex_t s_schemaMutex=PTHREAD_MUTEX_INITIALIZER;
 bool modeAvailable=true,modeGrabbed=false,s_grabFlipInit=false,s_grabFlipLastState=false,held=true;
 int modeReads=0,consumes=0,adoptions=0,releases=0;
+std::atomic<bool> s_touchPaused{false};int groupAdvances=0;
+// 组事务本体由touch-groups专项运行；此边界只观察维护入口的准入与暂停调度。
+void schemaAdvanceGroupsLocked(){++groupAdvances;}
 namespace amcl::input {
 enum { TouchUse=0 };
 class AuthoritativeGrabInputTransaction {
@@ -83,18 +86,19 @@ main = r'''
 int main(){
  double values[25]{};modeGrabbed=true;s_fingerDown[0]=true;
  for(int i=0;i<4;++i)ohos_touch_interaction_visual(values,25);
- CHECK(consumes==0&&modeReads==0&&adoptions==0&&releases==0&&held);
+ CHECK(consumes==0&&modeReads==0&&adoptions==0&&releases==0&&groupAdvances==0&&held);
  CHECK(!s_grabFlipInit&&values[24]==0&&values[0]==3&&values[23]==1);
  // 没有观察者调用也能完成grab退休；getter不能承担这项生产工作。
- CHECK(ohos_touch_input_maintain());CHECK(consumes==1&&releases==1&&!held&&s_grabFlipLastState);
+ CHECK(ohos_touch_input_maintain());CHECK(consumes==1&&releases==1&&!held&&s_grabFlipLastState&&groupAdvances==1);
  int beforeReads=modeReads,beforeConsumes=consumes;ohos_touch_interaction_visual(values,25);
  CHECK(values[24]==1&&consumes==beforeConsumes&&modeReads==beforeReads);
  modeGrabbed=false;ohos_touch_interaction_visual(values,25);CHECK(values[0]==3&&adoptions==0);
  CHECK(ohos_touch_input_maintain());CHECK(adoptions==1&&s_menuTouch.x==80&&s_menuTouch.y==90);
  beforeConsumes=consumes;ohos_touch_interaction_visual(values,25);
  CHECK(values[0]==80&&values[1]==90&&values[24]==0&&consumes==beforeConsumes&&adoptions==1);
+ CHECK(groupAdvances==2);s_touchPaused=true;CHECK(ohos_touch_input_maintain());CHECK(groupAdvances==2);s_touchPaused=false;
  modeAvailable=false;ackAvailable=false;CHECK(!ohos_touch_input_maintain());
- CHECK(!s_touchMenuCursorVisible.load());ohos_touch_interaction_visual(values,25);CHECK(values[2]==0);
+ CHECK(!s_touchMenuCursorVisible.load());ohos_touch_interaction_visual(values,25);CHECK(values[2]==0&&groupAdvances==2);
  std::cout<<"PASS production explicit maintenance and read-only visual contract\n";return 0;
 }
 '''
@@ -119,6 +123,10 @@ no_maintenance = maintain.replace('const bool grabbed=consumeGrabEpochLocked(mod
     'const bool grabbed=s_grabFlipInit && s_grabFlipLastState;')
 assert no_maintenance != maintain
 run_variant('missing-explicit-grab-maintenance', no_maintenance + visual, False)
-(output / 'result.json').write_text(json.dumps({'production': 'PASS', 'negativeControls': 2,
+unconditional_groups = maintain.replace('if (mode && !s_touchPaused.load(std::memory_order_acquire)) schemaAdvanceGroupsLocked();',
+    'schemaAdvanceGroupsLocked();')
+assert unconditional_groups != maintain
+run_variant('paused-group-advance', unconditional_groups + visual, False)
+(output / 'result.json').write_text(json.dumps({'production': 'PASS', 'negativeControls': 3,
     'source': str(ROOT / 'entry/src/main/cpp/platform/touch_input.cpp'), 'build': str(build)}, indent=2), encoding='utf-8')
 print('touch-maintenance evidence=' + str(output))

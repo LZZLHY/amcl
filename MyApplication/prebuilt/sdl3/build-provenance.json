@@ -4,11 +4,11 @@
     "repository": "https://github.com/icculus/SDL.git",
     "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
     "abiBase": "f87239e71e42da91ca317a12eefb82cfbf3393eb",
-    "amclSourceBeforeLock": "89ac944c1b214518fd6c44c9bff1e1823a2ef042"
+    "amclSourceBeforeLock": "4d69aadde870436b811b733223ee2f0f8c2e52bd"
   },
   "recipe": {
-    "patchsetSha256": "c16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81",
-    "revision": "SDL-3.5.0-release-3.4.0-983-ge293db30d-amclpsc16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81",
+    "patchsetSha256": "da5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9",
+    "revision": "SDL-3.5.0-release-3.4.0-983-ge293db30d-amclpsda5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9",
     "orderedInputs": [
       {
         "ordinal": 1,
@@ -177,6 +177,18 @@
         "name": "0028-openharmony-desktop-device-gate.patch",
         "size": 1359,
         "sha256": "7755a3469f454004598aa324db50d53e271345f2cda62befdbff7f99857b92ff"
+      },
+      {
+        "ordinal": 29,
+        "name": "0029-openharmony-render-resolution-checkpoint.patch",
+        "size": 5814,
+        "sha256": "635f7dab3b0fa09f65a9a98c4f3ce0b457762213958151fd86e373469e2d3b2f"
+      },
+      {
+        "ordinal": 30,
+        "name": "0030-openharmony-auxiliary-sdl-role.patch",
+        "size": 31148,
+        "sha256": "464894148deddb717bfe628a106e6c05ef816801f892368130d3ad7c1c83819d"
       }
     ]
   },
@@ -189,55 +201,66 @@
     "consumerReadyClaimed": false
   },
   "tools": {
-    "CMAKE_C_COMPILER": {
+    "llvm\\bin\\clang.exe": {
       "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\clang.exe",
       "size": 106704824,
       "sha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba"
     },
-    "CMAKE_CXX_COMPILER": {
+    "llvm\\bin\\clang++.exe": {
       "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\clang++.exe",
       "size": 106704824,
       "sha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba"
     },
-    "CMAKE_LINKER": {
+    "llvm\\bin\\ld.lld.exe": {
       "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\ld.lld.exe",
       "size": 65278904,
       "sha256": "27628fed00f2bca9d1528391bdb6c08a933e254a62d4493a5072c12fe352f11a"
     },
-    "CMAKE_AR": {
+    "llvm\\bin\\llvm-ar.exe": {
       "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\llvm-ar.exe",
       "size": 16797112,
       "sha256": "e30f494ff4bb165e65f85241f6a1abe0ce9ad73e5ea3bd4956c1958d5add84db"
     },
-    "CMAKE_RANLIB": {
-      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\llvm-ranlib.exe",
-      "size": 16797112,
-      "sha256": "e30f494ff4bb165e65f85241f6a1abe0ce9ad73e5ea3bd4956c1958d5add84db"
+    "llvm\\bin\\llvm-strip.exe": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\llvm\\bin\\llvm-strip.exe",
+      "size": 7083448,
+      "sha256": "7092b2a07041635687d30d54f1e60b9cc440bc914d50cf0e2f3a21c348c97967"
+    },
+    "build-tools\\cmake\\bin\\cmake.exe": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\build-tools\\cmake\\bin\\cmake.exe",
+      "size": 11936736,
+      "sha256": "60513fa0fa68f7a339c0eecf59d903f4207634d624830bf243149dfd3148406e"
+    },
+    "build-tools\\cmake\\bin\\ninja.exe": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\build-tools\\cmake\\bin\\ninja.exe",
+      "size": 638904,
+      "sha256": "10c6cb1c87c9c523e9f620c18a2437247eae72531e86a58d2b3676f5c5786500"
+    },
+    "build\\cmake\\ohos.toolchain.cmake": {
+      "path": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\build\\cmake\\ohos.toolchain.cmake",
+      "size": 17384,
+      "sha256": "0584729091676af239535182d9133761217cfff0f8599acf2ea2c9e394025731"
     }
   },
   "artifacts": {
     "raw": {
-      "size": 2251080,
-      "sha256": "921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816"
+      "sha256": "853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064",
+      "size": 2257888
     },
     "sdkStripAll": {
-      "size": 1855520,
-      "sha256": "1ed3799167e7d53a3e010de14e2281f73eaef7e899c20f3bf3ed261de9c27277",
+      "sha256": "7c2a09fa6d4e4172a147fd105cfa203e433b2e11049734e7622bd845892d6c29",
+      "size": 1861448,
       "stripToolSha256": "7092b2a07041635687d30d54f1e60b9cc440bc914d50cf0e2f3a21c348c97967"
     }
   },
   "independentBuilds": [
     {
-      "startedAt": "2026-10-14T20:15:44.2143146+08:00",
-      "finishedAt": "2026-10-14T20:16:14.7172549+08:00",
-      "state": "complete fresh OHOS Release candidate; all original gates passed",
-      "receipt": "E:\\AMCL\\.workspace\\build\\sdl3-49438ee5\\perf28-candidate\\candidate-receipt.json"
+      "receipt": "D:\\dhao1\\desktop\\AMCL\\.workspace\\build\\sdl3-ad96dfaf\\aux-r4\\candidate-receipt.json",
+      "state": "VerifiedCandidate"
     },
     {
-      "state": "fresh normal locked OHOS Release build and Deploy; exit 0, original gates passed",
-      "verifiedAt": "2026-10-14T20:19:57.692178+08:00",
-      "receipt": "E:\\AMCL\\.workspace\\run\\runtime-perf-1014\\sdl28-closure.json",
-      "startTime": "not separately captured; do not substitute file timestamps for process start"
+      "receipt": "D:\\dhao1\\desktop\\AMCL\\.workspace\\run\\sdl-aux-1113\\native-r5\\receipt.json",
+      "state": "fresh normal locked OHOS Release and Deploy; all original gates passed"
     }
   ],
   "verification": {
@@ -251,16 +274,14 @@
     "lookAndControlColdExports": true,
     "actualHap": false,
     "device": false,
-    "latencyPortRuntimeReachable": "UNKNOWN"
+    "auxiliaryHostColdExport": true
   },
-  "evidenceTask": "runtime-perf-1014",
-  "recordedAt": "2026-10-14T20:19:57.692178+08:00",
-  "rawAndStripComparisonReceipt": "E:\\AMCL\\.workspace\\run\\runtime-perf-1014\\sdl28-closure.json",
+  "evidenceTask": "sdl-aux-1113",
+  "recordedAt": "2026-11-13T08:18:25.053424+08:00",
+  "rawAndStripComparisonReceipt": "D:\\dhao1\\desktop\\AMCL\\.workspace\\run\\sdl-aux-1113\\native-final-r2\\receipt.json",
   "previousProvenance": {
-    "gitSource": "89ac944c1b214518fd6c44c9bff1e1823a2ef042",
-    "path": "prebuilt/sdl3/build-provenance.json",
-    "preservedRaw": "E:\\AMCL\\.workspace\\run\\runtime-perf-1014\\sdl-before\\build-provenance.json",
-    "sha256": "9581bcbbb26a41c57f638b7de41c8346af4754f29261e8cfb85c0d3510fb5319"
+    "path": "D:\\dhao1\\desktop\\AMCL\\.workspace\\run\\sdl-aux-1113\\native-final-r2\\previous-provenance.json",
+    "sha256": "888ef60baf0aa35469c835ab3659917c1c4d2f09749e3f3d1e3f26a504aa149e"
   },
-  "qualification": "SDL28 fixed-device qualification, source/Native/lock and independent reproducibility; new HAP and device regression remain separate"
+  "qualification": "Independent native recipe/raw/strip and host gates passed; App HAP and full-modpack device validation pending"
 }

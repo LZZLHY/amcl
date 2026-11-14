@@ -1,0 +1,21 @@
+--- a/make/modules/java.desktop/Lib.gmk
++++ b/make/modules/java.desktop/Lib.gmk
+@@ -59,14 +59,18 @@
+   # AMCL：依据真实目标编译旗标选择 OHOS，仅平台后端切换，Java/JNI 层仍用上游实现。
+   LIBJSOUND_EXCLUDE_FILES := ohos_daudio.c midi_api.c midi_core.c midi_stream.c midi_ump.c midi_jdk.c ports_ohos.c ports_jni.c
+   LIBJSOUND_LINUX_LIBS := $(ALSA_LIBS)
++  LIBJSOUND_JDK_LIBS :=
+   ifneq ($(findstring -D__OHOS__,$(CFLAGS_JDKLIB)), )
+     LIBJSOUND_CFLAGS := $(filter-out -DUSE_PORTS=TRUE -DUSE_PLATFORM_MIDI_OUT=TRUE -DUSE_PLATFORM_MIDI_IN=TRUE,$(LIBJSOUND_CFLAGS)) \
+         -DUSE_PORTS=TRUE -DUSE_PLATFORM_MIDI_OUT=TRUE -DUSE_PLATFORM_MIDI_IN=TRUE -DAMCL_OHOS_DAUDIO=1 -DAMCL_OHOS_MIDI=1
+     LIBJSOUND_EXCLUDE_FILES := $(notdir $(wildcard $(TOPDIR)/src/java.desktop/linux/native/libjsound/PLATFORM_API_LinuxOS_ALSA*.c)) MidiInDevice.c MidiOutDevice.c MidiInDeviceProvider.c MidiOutDeviceProvider.c PlatformMidi.c PortMixer.c PortMixerProvider.c
+     LIBJSOUND_LINUX_LIBS := -lohaudio
++    # AMCL：JNU_ThrowByName来自libjava；头文件目录不能替代真实动态依赖。
++    LIBJSOUND_JDK_LIBS := java.base:libjava
+   endif
+   $(eval $(call SetupJdkLibrary, BUILD_LIBJSOUND, \
+       NAME := jsound, \
++      JDK_LIBS := $(LIBJSOUND_JDK_LIBS), \
+       EXCLUDE_FILES := $(LIBJSOUND_EXCLUDE_FILES), \
+       LINK_TYPE := $(LIBJSOUND_LINK_TYPE), \
+       OPTIMIZATION := LOW, \

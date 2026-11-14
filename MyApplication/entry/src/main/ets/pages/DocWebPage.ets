@@ -1,3 +1,4 @@
+import { applyNativeTheme } from '../components/AppTheme';
 /**
  * DocWebPage.ets — 通用文档内嵌页（内嵌 AMCL-web /docs 的某篇文档）
  *
@@ -30,6 +31,8 @@ struct DocWebPage {
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
 
   // 路由参数（缺省兜底到「无 JIT」文档，避免空白）
   @State private src: string = DOCS_NO_JIT_URL
@@ -52,12 +55,16 @@ struct DocWebPage {
   private applyTheme_() {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
     let mode = this.prefManager.themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   onColorModeChange() {
     this.applyTheme_()
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
 
   build() {
     Column() {

@@ -1,0 +1,77 @@
+/** 直接执行生产锁存器、通道策略及提取的捕获/启用边界；替身仅提供平台调用结果。 */
+#include "@CPP@/platform/schema_wasd_latch.h"
+#include "@CPP@/platform/input_channel_policy.cpp"
+#include "@CPP@/tests/host/stubs/amcl_log_stub.cpp"
+#include "@CPP@/platform/cursor_lock.h"
+#include "@CPP@/platform/cursor_capture_context.h"
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#define CHECK(x) do {if(!(x)){std::fprintf(stderr,"SLIM BOUNDARY FAIL %d: %s\n",__LINE__,#x);std::exit(1);}}while(false)
+#undef OH_LOG_WARN
+#undef OH_LOG_INFO
+#define OH_LOG_WARN(...) ((void)0)
+#define OH_LOG_INFO(...) ((void)0)
+#define LOG_APP 0
+namespace capture_fixture {
+std::mutex g_mutex;
+amcl::input::CursorCaptureContext g_context;
+std::atomic<bool> g_foregroundAllowed{true},g_lockedFlag{false},g_followMovement{false},g_sawRelativeSample{false};
+std::atomic<int32_t> g_pointerActivitySinceLock{0};std::atomic<int64_t> g_lockedAtNs{0};
+bool g_locked=false;int32_t g_lockedWindowId=0;
+int lockCalls=0,unlockCalls=0,unlockTarget=0,unlockCode=0;
+int32_t Lock(int32_t,bool){++lockCalls;return 0;}
+int32_t Unlock(int32_t window){++unlockCalls;unlockTarget=window;return unlockCode;}
+struct Resolver{int32_t(*lock)(int32_t,bool)=Lock;int32_t(*unlock)(int32_t)=Unlock;};
+const Resolver& ResolveLocked(){static Resolver resolver;return resolver;}
+int64_t MonotonicNs(){return 1;}
+AmclCursorLockResult CursorLockFailureResult(int32_t){return AMCL_CURSOR_LOCK_PLATFORM_ERROR;}
+@CURSOR@
+void check(){
+ g_context.Surface(true);g_context.Focused(true);
+ CHECK(amcl_cursor_lock_set(42,true)==AMCL_CURSOR_LOCK_OK&&g_lockedFlag);
+ unlockCode=1;CHECK(amcl_cursor_lock_set(42,false)==AMCL_CURSOR_LOCK_PLATFORM_ERROR);
+ CHECK(!g_lockedFlag&&g_lockedWindowId==42);
+ CHECK(amcl_cursor_lock_set(43,true)==AMCL_CURSOR_LOCK_PLATFORM_ERROR&&lockCalls==1&&unlockTarget==42);
+ unlockCode=0;CHECK(amcl_cursor_lock_set(43,true)==AMCL_CURSOR_LOCK_OK&&lockCalls==2&&unlockTarget==42);
+ unlockCode=1;CHECK(amcl_cursor_lock_set(43,false)==AMCL_CURSOR_LOCK_PLATFORM_ERROR);
+ amcl_cursor_lock_note_focus_lost();const int calls=unlockCalls;
+ CHECK(amcl_cursor_lock_set(0,false)==AMCL_CURSOR_LOCK_UNCHANGED&&unlockCalls==calls&&g_lockedWindowId==0);
+}
+}
+namespace gamepad_fixture {
+std::mutex mutex;bool nativeMode=false,started=false,attempted=false;int starts=0;
+struct Pad{};std::array<Pad,1> pads;std::array<unsigned char,1> digitalHats;
+void Neutral(Pad&){}bool Start(){return ++starts>1;}
+@GAMEPAD@
+void check(){CHECK(!SetNativeGamepadMode(true));CHECK(SetNativeGamepadMode(false));
+ CHECK(SetNativeGamepadMode(true)&&starts==2);CHECK(SetNativeGamepadMode(true)&&starts==2);}
+}
+int main(){
+ using amcl::input::SchemaWasdLatch;SchemaWasdLatch latch;int calls=0;bool accept=false;
+ const bool on[4]={true,false,false,false},off[4]={false,false,false,false};
+ auto emit=[&](int,bool){++calls;return accept;};
+ latch.Apply(on,1000000000,emit);CHECK(!latch.held(0)&&latch.EarliestDeadline()>0&&calls==1);
+ latch.Apply(on,1001000000,emit);CHECK(calls==1);accept=true;
+ latch.PollDue(1016000000,true,emit);CHECK(latch.held(0)&&calls==2&&latch.EarliestDeadline()==0);
+ accept=false;latch.Apply(off,1020000000,emit);CHECK(latch.held(0));accept=true;
+ latch.PollDue(1036000000,false,emit);CHECK(!latch.held(0)&&latch.EarliestDeadline()==0);
+ latch.Reset();accept=false;latch.Apply(on,2000000000,emit);const int before=calls;
+ latch.Apply(off,2001000000,emit);accept=true;latch.PollDue(2100000000,false,emit);
+ CHECK(calls==before&&!latch.held(0)&&latch.EarliestDeadline()==0);
+ latch.Apply(on,3000000000,emit);latch.Apply(off,3010000000,emit);latch.Apply(on,3015000000,emit);
+ CHECK(!latch.held(0));latch.PollDue(3040000000,true,emit);CHECK(latch.held(0));
+ // 拔除后旧首选通道不永久压住下一连接；已有兄弟的DOWN仍由原通道完成UP。
+ CHECK(amcl_input_policy_button_begin(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,11,1));
+ CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,11,1));
+ amcl_input_policy_note_wheel_channel(AMCL_INPUT_CHANNEL_NATIVE_AXIS);
+ amcl_input_policy_release_pointer_device(11,true,nullptr,nullptr);
+ CHECK(amcl_input_policy_button_begin(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1));
+ amcl_input_policy_retire_channels();CHECK(!amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,0,1));
+ CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1));
+ amcl_input_policy_note_wheel_channel(AMCL_INPUT_CHANNEL_AXIS_PAN);
+ CHECK(amcl_input_policy_wheel_accepts(AMCL_INPUT_CHANNEL_AXIS_PAN));
+ capture_fixture::check();gamepad_fixture::check();
+ std::puts("SLIM BOUNDARY PASS: rejected DOWN/UP, stationary retry, ended intent, debounce, channel lifetime, unlock target, explicit gamepad retry");
+}

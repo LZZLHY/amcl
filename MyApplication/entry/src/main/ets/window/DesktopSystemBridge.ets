@@ -5,6 +5,7 @@ import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit'
 import deviceInfo from '@ohos.deviceInfo'
 import { AppLogger, LOG_DOMAIN_LAUNCH } from 'commons'
 import testNapi, { DesktopHostCommand } from 'libentry.so'
+import { parseGameResolutionState } from '../runtime/GameResolutionState'
 
 /** Resolve a display-relative point in the global coordinate space. */
 export function resolveDisplayGlobalPosition(
@@ -269,6 +270,13 @@ export class DesktopSystemBridge {
     switch (command.kind) {
       case 1:
         if (command.a <= 0 || command.b <= 0) throw new Error('Invalid window size')
+        // 虚拟分辨率会话的L不是OS窗口P。尤其在全屏中改比例后，Minecraft保存的
+        // 旧windowed尺寸不能再次resize宿主，否则每次退出全屏都会缩小窗口。
+        // 显示区域由OS拖动边框及case3的recover/maximize管理；这里只满足固定
+        // 主呈现窗口的尺寸约束，实际尺寸仍通过窗口事实回传，不回报请求数字。
+        const resolutionState = parseGameResolutionState(testNapi.mcGetResolutionState())
+        if (resolutionState.phase === 'unavailable') throw new Error('分辨率政策不可用，暂不改变系统窗口尺寸')
+        if (resolutionState.virtualWindowManaged) break
         const sizeProperties: window.WindowProperties = win.getWindowProperties()
         await win.resize(command.a + sizeProperties.windowRect.width - sizeProperties.drawableRect.width,
           command.b + sizeProperties.windowRect.height - sizeProperties.drawableRect.height)

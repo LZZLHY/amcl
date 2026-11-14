@@ -207,6 +207,15 @@ assert.equal(hasBootstrapLibraryName(bootstrapTable.replace('RuntimeBootstrapPro
   'org.lwjgl.sdl.libname', 'libSDL3.so'), false);
 assert.equal(hasBootstrapLibraryName('setSystemProperty(env, "org.lwjgl.sdl.libname", "libSDL3.so");',
   'org.lwjgl.sdl.libname', 'libSDL3.so'), false);
+// 外部HAP provider必须由准确nativeDir参数导出；裸库名、用户目录或注释不能替代。
+const absoluteBootstrap = bootstrapTable.replace('"libSDL3.so"', 'nativeDir + "/libSDL3.so"');
+assert.equal(hasBootstrapLibraryName(absoluteBootstrap, 'org.lwjgl.sdl.libname', 'libSDL3.so', 'hap-absolute'), true);
+for (const invalid of [bootstrapTable, absoluteBootstrap.replace('nativeDir +', 'gameDir +'),
+    absoluteBootstrap.replace('nativeDir +', 'arbitraryFunction() +'),
+    absoluteBootstrap.replace('RuntimeBootstrapProperties', 'unrelatedFunction'), '/*' + absoluteBootstrap + '*/']) {
+  assert.equal(hasBootstrapLibraryName(invalid, 'org.lwjgl.sdl.libname', 'libSDL3.so', 'hap-absolute'), false);
+}
+assert.equal(hasBootstrapLibraryName(absoluteBootstrap, 'org.lwjgl.sdl.libname', '../libSDL3.so', 'hap-absolute'), false);
 
 // 客户端附加校验的可失败测试：完整 JAR hash 与 bootstrap class hash 各自独立，
 // 同名条目或只把 descriptor 改成“看起来匹配”的值不能替代实际字节。

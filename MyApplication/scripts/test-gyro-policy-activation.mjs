@@ -363,6 +363,19 @@ try{const results={};for(const[name,run]of Object.entries(cases))if(selected==='
       results.negatives.push({name,assertion:label,failure:failure.message});
     }
   }
+  // sensor注册同步回入重挂同originLease：旧tick不能把缓存交给新来源，下一tick读新值。
+  {
+    const f=fixture();f.publish(f.profile(1));f.confirm();f.tick();
+    f.session.setTouchAdmission(false);f.session.setTouchAdmission(true);
+    let x=20,reads=0,reentered=false;const visuals=[];
+    f.native.touchInteractionVisual=()=>{reads++;const a=Array(25).fill(0);a[0]=x;a[12]=1;a[24]=1;return a;};
+    f.session.subscribeVisual(s=>visuals.push(s.menuX));
+    f.sensorEdge.onRegister=()=>{if(reentered)return;reentered=true;x=200;f.session.startSources(true);};
+    const oldTick=Array.from(f.timers.values())[0];oldTick();
+    assert.equal(reentered,true);assert.deepEqual(visuals,[],'OLD_TICK_CANNOT_PUBLISH_TO_REATTACHED_SOURCE');
+    Array.from(f.timers.values())[0]();assert.equal(visuals.at(-1),200);
+    f.session.stopSources();results.tickSnapshotReentry={passed:true,reads};
+  }
   const after=Object.fromEntries(bound.map(p=>[p,sha(p)]));assert.deepEqual(after,before,'实际ETS依赖运行期间不可漂移');
   fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({startedAt,finishedAt:new Date().toISOString(),sourcesBefore:before,sourcesAfter:after,
     drift:[],results,scope:'actual production ETS + controlled sensor/Native; no hardware or Native owner proof'},null,2)+'\n');console.log('GYRO_POLICY_PASS '+Object.keys(results).join(',')+' evidence='+output);}

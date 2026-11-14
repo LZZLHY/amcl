@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * SemanticColors.ets — 语义化配色单一事实源（2026-05-23）
  *
  * ============================================================================
@@ -26,9 +30,9 @@
  *     - MODRINTH / CURSEFORGE
  *
  *   状态色（走 ThemeColors 浅深自适应）
- *     - BETA / OPTIONAL → theme.warning + theme.warningBg
- *     - ALPHA / REQUIRED → theme.error + theme.errorBg
- *     - RELEASE → theme.primary + theme.primaryLight（"主推 / 稳定"）
+ *     - BETA / OPTIONAL → theme.warningText + theme.warningBg
+ *     - ALPHA / REQUIRED → theme.errorText + theme.errorBg
+ *     - RELEASE → theme.actionText + theme.primaryLight（"主推 / 稳定"）
  *     - EMBEDDED → theme.textSecondary + theme.bgInput（"默认 / 中性"）
  *
  *   独立色（与 theme / loader 都无关的 "罕见状态"）
@@ -77,10 +81,10 @@ export function modSourceTone(src: ModSource): SemanticTone {
  *   - ALPHA  → error（"早期，风险高"）
  */
 export function channelTone(ch: VersionChannel, theme: ThemeColors): SemanticTone {
-  if (ch === VersionChannel.BETA)  return { color: theme.warning, bg: theme.warningBg };
-  if (ch === VersionChannel.ALPHA) return { color: theme.error,   bg: theme.errorBg };
-  // RELEASE / 未知 → primary
-  return { color: theme.primary, bg: theme.primaryLight };
+  if (ch === VersionChannel.BETA)  return { color: theme.warningText, bg: theme.warningBg };
+  if (ch === VersionChannel.ALPHA) return { color: theme.errorText,   bg: theme.errorBg };
+  // RELEASE / 未知 → 当前应用的操作前景色，不借用主按钮底色承载小字。
+  return { color: theme.actionText, bg: theme.primaryLight };
 }
 
 // ============================================================================
@@ -98,8 +102,8 @@ const TONE_INCOMPATIBLE: SemanticTone = { color: '#9333EA', bg: '#F3E8FF' };
  *   - EMBEDDED     → 中性（"打包内置，无需关心"）
  */
 export function depTypeTone(t: DependencyType, theme: ThemeColors): SemanticTone {
-  if (t === DependencyType.REQUIRED)     return { color: theme.error,   bg: theme.errorBg };
-  if (t === DependencyType.OPTIONAL)     return { color: theme.warning, bg: theme.warningBg };
+  if (t === DependencyType.REQUIRED)     return { color: theme.errorText,   bg: theme.errorBg };
+  if (t === DependencyType.OPTIONAL)     return { color: theme.warningText, bg: theme.warningBg };
   if (t === DependencyType.INCOMPATIBLE) return TONE_INCOMPATIBLE;
   return neutralTone_(theme);
 }
@@ -114,7 +118,7 @@ export function depTypeTone(t: DependencyType, theme: ThemeColors): SemanticTone
  * 当前只有"是否微软正版"两态；后续如果加 Mojang 账号等可扩展为 enum。
  */
 export function accountVerifiedTone(verified: boolean, theme: ThemeColors): SemanticTone {
-  if (verified) return { color: theme.success, bg: theme.successBg };
+  if (verified) return { color: theme.successText, bg: theme.successBg };
   return { color: theme.textSecondary, bg: theme.bgInput };
 }
 
@@ -135,10 +139,10 @@ export function accountVerifiedTone(verified: boolean, theme: ThemeColors): Sema
 export function changelogTone(type: string, theme: ThemeColors): SemanticTone {
   switch (type) {
     case 'highlight':  return { color: theme.taskRpackPink,    bg: theme.taskRpackBg };
-    case 'added':      return { color: theme.primary,          bg: theme.primaryLight };
-    case 'improved':   return { color: theme.success,          bg: theme.successBg };
+    case 'added':      return { color: theme.actionText,          bg: theme.primaryLight };
+    case 'improved':   return { color: theme.successText,          bg: theme.successBg };
     case 'refactored': return { color: theme.taskModPurple,    bg: theme.taskModBg };
     case 'fixed':      return { color: theme.taskShaderIndigo, bg: theme.taskShaderBg };
-    default:           return { color: theme.warning,          bg: theme.warningBg };
+    default:           return { color: theme.warningText,          bg: theme.warningBg };
   }
 }

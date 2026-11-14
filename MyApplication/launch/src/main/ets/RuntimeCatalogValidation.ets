@@ -4,6 +4,7 @@
  * 与发布仓 tools/protocol.mjs 使用同一契约，宿主互操作测试直接执行本生产文件。
  */
 import { RuntimeCatalog, RuntimeDefinition, RuntimeBuild } from './RuntimeCatalogTypes';
+import { RuntimeHostCapabilities } from './RuntimeHostCapabilities';
 
 export const RUNTIME_CATALOG_LIMIT: number = 1024 * 1024;
 
@@ -52,7 +53,9 @@ export function parseRuntimeCatalog(text: string, expectedChannel: string = ''):
   requireValue(typeof text === 'string' && text.length <= RUNTIME_CATALOG_LIMIT, '目录长度');
   const c = JSON.parse(text) as RuntimeCatalog;
   requireCatalogObject(c, ['schemaVersion','catalogRevision','channel','issuedAt','expiresAt','runtimes','builds'], '目录');
-  requireValue(c.schemaVersion === 1, 'schemaVersion');
+  // 对外声明的目录能力必须约束真实解析入口，不能因支持宿主ABI2就推断能读取目录v2。
+  requireValue((c.schemaVersion === 1 || c.schemaVersion === 2) && c.schemaVersion <= RuntimeHostCapabilities.catalogProtocol(), 'schemaVersion');
+  const v2 = c.schemaVersion === 2;
   requireValue((c.channel === 'stable' || c.channel === 'preview') && (expectedChannel === '' || c.channel === expectedChannel), '通道');
   integer(c.catalogRevision, 1, Number.MAX_SAFE_INTEGER);
   for (const value of [c.issuedAt,c.expiresAt]) {
@@ -63,23 +66,32 @@ export function parseRuntimeCatalog(text: string, expectedChannel: string = ''):
   arrayLimit(c.runtimes, 1, 64); arrayLimit(c.builds, 1, 256);
   const ids: string[] = []; const majors: string[] = []; const bids: string[] = [];
   for (const r of c.runtimes) {
-    requireCatalogObject(r, ['id','javaMajor','displayName','os','arch','libc','adapter','minimumCatalogProtocol','minimumApi','loaderProtocol','recommendationRevision','recommendedBuildId','rollback'], '运行时');
+    requireCatalogObject(r, ['id','javaMajor','displayName','os','arch','libc','adapter','minimumCatalogProtocol','minimumApi','loaderProtocol','recommendationRevision','recommendedBuildId','recommendedBuildIds','rollback'], '运行时');
+    requireValue(v2 ? r.recommendedBuildId === undefined && r.loaderProtocol === undefined : r.recommendedBuildIds === undefined, '目录格式字段混用');
     identifier(r.id); integer(r.javaMajor, 8, 999); boundedText(r.displayName,100,'名称');
-    for (const value of [r.os,r.arch,r.libc,r.adapter,r.recommendedBuildId]) identifier(value);
-    integer(r.minimumCatalogProtocol,1,999); integer(r.minimumApi,1,999); integer(r.loaderProtocol,1,999);
+    for (const value of [r.os,r.arch,r.libc,r.adapter]) identifier(value);
+    if (v2) {
+      arrayLimit(r.recommendedBuildIds!,0,8);
+      for (const id of r.recommendedBuildIds!) identifier(id);
+      unique(r.recommendedBuildIds!,'兼容推荐');
+    } else identifier(r.recommendedBuildId);
+    integer(r.minimumCatalogProtocol,1,999); integer(r.minimumApi,1,999);
+    if (!v2) integer(r.loaderProtocol,1,999);
     integer(r.recommendationRevision,1,Number.MAX_SAFE_INTEGER);
     if (r.rollback !== undefined) {
       requireCatalogObject(r.rollback,['fromBuildIds','reason'],'回退指令');
       arrayLimit(r.rollback.fromBuildIds,1,32); boundedText(r.rollback.reason,1000,'回退原因');
       for (const id of r.rollback.fromBuildIds) identifier(id);
       unique(r.rollback.fromBuildIds,'回退来源');
-      requireValue(r.rollback.fromBuildIds.indexOf(r.recommendedBuildId) < 0,'回退目标不能同时是来源');
+      requireValue(runtimeRecommendationIds(r).every((id: string): boolean => r.rollback!.fromBuildIds.indexOf(id) < 0),'回退目标不能同时是来源');
     }
     ids.push(r.id); majors.push(r.javaMajor.toString());
   }
   unique(ids,'运行时'); unique(majors,'主版本槽位');
   for (const b of c.builds) {
-    requireCatalogObject(b, ['id','runtimeId','javaVersion','legacyTags','archive','downloads','notes','capabilities','validationLevel','provenance','status'], '构建');
+    requireCatalogObject(b, ['id','runtimeId','javaVersion','legacyTags','archive','downloads','notes','capabilities','validationLevel','provenance','status','requiredHostProtocol'], '构建');
+    if (v2) integer(b.requiredHostProtocol!,1,999);
+    else requireValue(b.requiredHostProtocol === undefined,'v1不能携带v2宿主字段');
     identifier(b.id); identifier(b.runtimeId); boundedText(b.javaVersion,80,'Java 版本');
     requireValue(ids.indexOf(b.runtimeId) >= 0, '孤立构建'); bids.push(b.id);
     requireValue(b.status === 'available' || b.status === 'withdrawn', '构建状态');
@@ -122,17 +134,23 @@ export function parseRuntimeCatalog(text: string, expectedChannel: string = ''):
     arrayLimit(p.evidence,0,24); for (const evidence of p.evidence) boundedText(evidence,1000,'证据');
   }
   unique(bids,'构建');
-  for (const r of c.runtimes) requireValue(c.builds.some((b: RuntimeBuild): boolean => b.id === r.recommendedBuildId && b.runtimeId === r.id && b.status === 'available'),'推荐引用');
+  for (const r of c.runtimes) for (const id of runtimeRecommendationIds(r)) {
+    requireValue(c.builds.some((b: RuntimeBuild): boolean => b.id === id && b.runtimeId === r.id && b.status === 'available'),'推荐引用');
+  }
   for (const r of c.runtimes) if (r.rollback !== undefined) {
     for (const id of r.rollback.fromBuildIds) requireValue(c.builds.some((b: RuntimeBuild): boolean => b.id === id && b.runtimeId === r.id && b.status === 'withdrawn'),'回退来源必须是已撤回的同槽构建');
   }
   return c;
 }
 
-/** 新主版本必须命中已有布局和原生装载协议；元数据不能授权新的平台能力。 */
+/** 新主版本必须命中已有布局和原生装载协议；元数据不能授权新的平台能力。
+ * 协议2要求本客户端的应用C++/展开器、生命周期装载修复与正常HAP typed音频回调ABI。
+ * 继续接受旧协议1以保留稳定包；只枚举已实现的协议，不按远程任意数值扩大兼容范围。
+ * 发布端必须为依赖新宿主的预览推荐写2，使旧客户端原有的===1门拒绝该推荐。
+ */
 export function supportsRuntime(r: RuntimeDefinition, apiVersion: number): boolean {
   return r.os === 'ohos' && r.arch === 'aarch64' && r.libc === 'musl' &&
-    r.minimumCatalogProtocol <= 1 && r.minimumApi <= apiVersion && r.loaderProtocol === 1 &&
+    r.minimumCatalogProtocol <= RuntimeHostCapabilities.catalogProtocol() && r.minimumApi <= apiVersion &&
     ((r.javaMajor === 8 && r.adapter === 'classic-jre-v1') || (r.javaMajor >= 17 && r.adapter === 'modular-jdk-v1'));
 }
 export function runtimeBuildIdentity(b: RuntimeBuild): string {
@@ -142,20 +160,22 @@ export function runtimeBuildIdentity(b: RuntimeBuild): string {
 /** 全局代次与各运行时推荐代次分开；更高代次可以主动回滚到仍登记的旧 build。 */
 export function validateRuntimeTransition(previous: RuntimeCatalog, next: RuntimeCatalog): void {
   requireValue(previous.channel === next.channel && next.catalogRevision >= previous.catalogRevision,'目录降代次');
-  if (next.catalogRevision === previous.catalogRevision) {
+  if (next.catalogRevision === previous.catalogRevision && next.schemaVersion === previous.schemaVersion) {
     requireValue(JSON.stringify(previous) === JSON.stringify(next),'同代次内容变化'); return;
   }
   for (const b of previous.builds) {
     const current = next.builds.find((x: RuntimeBuild): boolean => x.id === b.id);
     requireValue(current !== undefined && runtimeBuildIdentity(current!) === runtimeBuildIdentity(b),'构建身份漂移');
     requireValue(b.status !== 'withdrawn' || current!.status === 'withdrawn','撤回构建不可复活');
+    if (previous.schemaVersion === 2 && next.schemaVersion === 2) requireValue(b.requiredHostProtocol === current!.requiredHostProtocol,'构建宿主要求漂移');
   }
   for (const r of previous.runtimes) {
     const current = next.runtimes.find((x: RuntimeDefinition): boolean => x.id === r.id);
     if (current === undefined) continue;
     requireValue(current.javaMajor === r.javaMajor && current.os === r.os && current.arch === r.arch && current.libc === r.libc && current.adapter === r.adapter,'槽位身份漂移');
-    requireValue(current.recommendationRevision >= r.recommendationRevision &&
-      (current.recommendedBuildId === r.recommendedBuildId || current.recommendationRevision > r.recommendationRevision),'推荐降代次');
+    requireValue(current.recommendationRevision >= r.recommendationRevision,'推荐降代次');
+    if (next.schemaVersion === previous.schemaVersion) requireValue(
+      JSON.stringify(runtimeRecommendationIds(current)) === JSON.stringify(runtimeRecommendationIds(r)) || current.recommendationRevision > r.recommendationRevision,'推荐变化需递增代次');
     if (JSON.stringify(current.rollback) !== JSON.stringify(r.rollback)) {
       requireValue(current.recommendationRevision > r.recommendationRevision,'回退指令变化必须增加推荐代次');
     }
@@ -176,4 +196,24 @@ export function p1363ToDer(signature: Uint8Array): Uint8Array {
   const result: number[] = [48,4 + integers[0].length + integers[1].length];
   for (const value of integers) { result.push(2,value.length); for (const byte of value) result.push(byte); }
   return new Uint8Array(result);
+}
+
+/** 两种格式的推荐统一投影；不改变签名原文，也不把空推荐伪造为旧构建。 */
+export function runtimeRecommendationIds(runtime: RuntimeDefinition): string[] {
+  return runtime.recommendedBuildIds !== undefined ? runtime.recommendedBuildIds.slice() : [runtime.recommendedBuildId];
+}
+/** 读取每个构建真实要求；v1只能按其旧runtime合同解释。 */
+export function runtimeRequiredHost(catalog: RuntimeCatalog, build: RuntimeBuild): number {
+  if (catalog.schemaVersion === 2) return build.requiredHostProtocol!;
+  const runtime = catalog.runtimes.find((r: RuntimeDefinition): boolean => r.id === build.runtimeId);
+  return runtime === undefined ? 999 : runtime.loaderProtocol;
+}
+/** 顺序不是协议号大小；只选本机显式支持的、未撤回的完整构建。 */
+export function runtimeBuildForHost(catalog: RuntimeCatalog, runtime: RuntimeDefinition, protocols: number[], requiredCapabilities: string[] = []): RuntimeBuild | undefined {
+  for (const id of runtimeRecommendationIds(runtime)) {
+    const build = catalog.builds.find((b: RuntimeBuild): boolean => b.id === id && b.runtimeId === runtime.id && b.status === 'available');
+    if (build !== undefined && protocols.indexOf(runtimeRequiredHost(catalog,build)) >= 0 &&
+      requiredCapabilities.every((capability: string): boolean => build.capabilities.indexOf(capability) >= 0)) return build;
+  }
+  return undefined;
 }

@@ -1,4 +1,18 @@
 // JVM 模块
+/** 原生游戏对话框快照；身份使用字符串，正文只作为普通文本显示。 */
+export interface GameDialogRequest {
+  generation: string; requestId: string; kind: number; defaultButton: number;
+  title: string; message: string;
+}
+/** 原游戏UI线程取得窗口租约；空串为拒绝。取请求和回包不阻塞该线程。 */
+export const gameDialogAttach: (session: number) => string;
+export const gameDialogDetach: (generation: string) => boolean;
+export const gameDialogTake: (generation: string) => GameDialogRequest | undefined;
+export const gameDialogReply: (generation: string, requestId: string, result: number, userResponse: boolean) => boolean;
+/** 发布用户录音意图与当前 Ability 前台事实；Promise 等待设备控制完成，0 表示成功。 */
+export const audioSetPolicy: (enabled: boolean, foreground: boolean) => Promise<number>;
+/** 冻结本模块私有录音政策根，不打开设备；跨进程撤销由真实采集控制线程查询。 */
+export const audioConfigurePolicyRoot: (filesDir: string) => boolean;
 export const jvmInit: (appFilesDir: string, jdkVersion?: string) => number;
 export const runJvmEmbedTest: (appFilesDir: string, callback?: (result: string) => void) => string | void;
 export const isJvmTestRunning: () => boolean;
@@ -12,6 +26,10 @@ export const mcGetStatus: () => string;
 export const mcGetGraphicsLaunchFailure: () => string;
 /** 只读 PID/后端/首帧/异步故障及呈现间隔摘要；无 current context 也可调用。 */
 export const mcGetGraphicsRuntimeState: () => string;
+/** 请求本局百分比（50–100），true只表示已排队；实际结果读取mcGetResolutionState。 */
+export const mcRequestResolutionScale: (percent: number) => boolean;
+/** 当前请求、逻辑/实际尺寸、观测来源与失败状态的v1 JSON，代次使用十进制字符串。 */
+export const mcGetResolutionState: () => string;
 export const mcGetGraphicsRuntimeFailure: () => string;
 export const desktopProcessAlive: (pid: number) => number;
 export const runtimeSlotCreateStage: (destination: string) => string;
@@ -21,6 +39,10 @@ export const runtimeSlotAcquire: (directory: string) => string;
 export const runtimeSlotRelease: (handle: string) => boolean;
 export const runtimeSlotRetire: (directory: string) => boolean;
 export const runtimeSlotCollect: (activeDirectory: string) => number;
+/** JDK 原生存储：同步目录事务、异步受限解压/内容封存。fd 只借用，不转移租约所有权。 */
+export const jdkInstallOperation: (action: string, filesDir: string, major: string, path: string, writerFd: number, useFd: number) => string;
+export const jdkInstallExtract: (archive: string, stage: string, archiveSha256: string, timeoutMs: number) => Promise<boolean>;
+export const jdkInstallSeal: (root: string, major: string, archiveSha256: string) => Promise<boolean>;
 export const graphicsRecoveryMaintain: (directory: string, keepId: string) => number;
 export const mcCheckFiles: (mcDir: string, mcVersion: string) => string;
 export const mcIsRunning: () => boolean;
@@ -56,6 +78,8 @@ export const amclLogGetPath: () => string;
 // ---- 活动账本（L1-a）----
 /** 打开活动账本 scope，此后归属该活动的日志行同时写入 <dir>/launcher.log。幂等。 */
 export const amclLedgerBegin: (activityId: number, dir: string) => boolean;
+/** 工作线程完成目录、文件和捕获基线的开账后返回；producer必须等待true才能开始。 */
+export const amclLedgerBeginAsync: (activityId: number, dir: string) => Promise<boolean>;
 /** 关闭活动账本 scope（flush + 关句柄）。 */
 export const amclLedgerEnd: (activityId: number) => void;
 /** 在原生工作线程等待writer有序关闭；未关闭时拒绝，完整性仍由native-io收据核验。 */
@@ -626,10 +650,11 @@ export const isTouchPublicationCurrent: (publicationToken: string) => boolean;
 /** v4 独立扩展；v3 条目 ABI 保持不变。phase 顺序为 press/longPress/click/doubleClick。 */
 export interface TouchGroupSchemaAction { target: number; operation: number; }
 export interface TouchGroupSchemaPhase { keys: number[]; autoKeep: boolean; actions: TouchGroupSchemaAction[]; }
-export interface TouchGroupSchemaControl { group: number; phases: boolean; fcl: boolean; mouseTool: boolean; rank: number; bindings: TouchGroupSchemaPhase[]; }
-export interface TouchGroupSchemaDefinition { id: string; initialVisible: boolean; }
+export interface TouchGroupSchemaControl { group: number; phases: boolean; fcl: boolean; mouseTool: boolean; rank: number; bindings: TouchGroupSchemaPhase[]; secondaryTarget?: number; secondaryReturn?: boolean; }
+export interface TouchGroupSchemaDefinition { id: string; initialVisible: boolean; secondary?: boolean; hidePrimary?: boolean; }
 export interface TouchGroupSchema { profile: string; groups: TouchGroupSchemaDefinition[]; controls: TouchGroupSchemaControl[]; }
-export interface TouchGroupReceipt { token: string; revision: string; enabled: boolean; pending: boolean; mask: boolean[]; epochs: string[]; }
+/** 按控件投影来自同一Native事务，二级组不由UI另建mask或猜测资格。 */
+export interface TouchGroupReceipt { token: string; revision: string; enabled: boolean; pending: boolean; mask: boolean[]; epochs: string[]; controlMask?: boolean[]; controlEpochs?: string[]; controlRanks?: number[]; }
 export interface TouchGroupCommandReceipt { status: 'pending' | 'committed' | 'presented' | 'stale' | 'rejected' | 'expired'; revision: string; }
 export const readTouchGroups: (publicationToken: string) => TouchGroupReceipt;
 export const confirmTouchGroups: (publicationToken: string, revision: string) => boolean;
@@ -644,7 +669,10 @@ export const onTouchGroupsChanged: (listener: (() => void) | null, registration?
 export const checkJitAvailable: () => boolean;
 
 // 单个 Forge/NeoForge processor（任意 args + 显式工作目录，fork + 干净 classpath 的独立 JVM）
-export const runJavaProcessor: (filesDir: string, jdkVersion: string, xmxMb: number, classpath: string, mainClass: string, args: Array<string>, workDir: string, logFile: string) => Promise<number>;
+/** 旧8参保持兼容；requestId 可供取消，timeoutMs=0/省略表示不限时。真实回收后取消/超时分别返回-10001/-10002。 */
+export const runJavaProcessor: (filesDir: string, jdkVersion: string, xmxMb: number, classpath: string, mainClass: string, args: Array<string>, workDir: string, logFile: string, requestId?: string, timeoutMs?: number) => Promise<number>;
+/** 仅提交取消意图，返回true不代表进程已经退出；仍需等待对应runJavaProcessor完成。 */
+export const cancelJavaProcessor: (requestId: string) => boolean;
 /** 完整HDC私有host启动后返回真实端口；store返回负数unsupported。 */
 export const startSideloadHdc: (identityRoot: string) => Promise<number>;
 /** Entry最早固定app filesDir；失败时不得启动自动文件任务，不授予系统安装权限。 */
@@ -922,7 +950,7 @@ export const downloadComputeFileSha1: (path: string) => string;
  *   1. 把官方源 URL 改写成经网关的 URL（贴着真正发出的那次请求，换源/重定向都不会错位）；
  *   2. 为**每个分段请求**单独生成持有证明签名（各段独立 nonce，无法预先算好）。
  *
- * @param base          网关基址，如 https://amcl.lovedhy.cn/dl（必须 https）
+ * @param base          网关基址，如 https://relay.amcl.lovedhy.cn/dl（必须 https；同入口自检后注入）
  * @param ticket        握手换来的票据
  * @param sessionKey    持有证明密钥；requireProof=true 时必填。**仅内存**，不要落盘
  * @param requireProof  服务端是否强制持有证明（取握手响应的 requireProof）
@@ -985,8 +1013,24 @@ export const downloadFetchText: (
     /** Phase 2.3: 请求头（如 If-None-Match / If-Modified-Since），可选 */
     requestHeaders?: Record<string, string>,
     /** NAPI/JS body 硬上限，默认 16 MiB，可由调用方下调。 */
-    maxResponseBytes?: number
+    maxResponseBytes?: number,
+    /** 缺省false保留既有metadata路由；true仅允许公共官方URL走自有网关，失败有界回源。 */
+    allowRelay?: boolean
 ) => Promise<DownloadFetchTextResult>;
+
+/** 限量二进制GET测量。没有body/URL/凭据，达到cap是完成；不是文件完整性收据。 */
+export interface DownloadTransferProbeResult {
+    httpStatus: number;
+    receivedBytes: number;
+    elapsedMs: number;
+    /** 同elapsedMs的submitted steady原点；首次样本正文前耗时，无正文为-1。 */
+    ttfbMs: number;
+    completedSample: boolean;
+    rangeHonored: boolean;
+    errorKind: string;
+}
+export const downloadProbeTransfer: (url: string, expectedSize: number, sampleBytes?: number,
+    timeoutSeconds?: number, userAgent?: string) => Promise<DownloadTransferProbeResult>;
 
 /**
  * v5: 暂停任务（等价 cancel，但保留 meta 供 resume 续传）。
@@ -1123,6 +1167,12 @@ export const runDownloadErrorAndSourceLifecycleTests: () => string;
 // ============================================================
 
 declare const testNapi: {
+  gameDialogAttach: typeof gameDialogAttach;
+  gameDialogDetach: typeof gameDialogDetach;
+  gameDialogTake: typeof gameDialogTake;
+  gameDialogReply: typeof gameDialogReply;
+  audioSetPolicy: typeof audioSetPolicy;
+  audioConfigurePolicyRoot: typeof audioConfigurePolicyRoot;
   getDiagnosticCapabilities: typeof getDiagnosticCapabilities;
   // JVM 模块
   jvmInit: typeof jvmInit;
@@ -1135,6 +1185,8 @@ declare const testNapi: {
   mcGetStatus: typeof mcGetStatus;
     mcGetGraphicsLaunchFailure: typeof mcGetGraphicsLaunchFailure;
     mcGetGraphicsRuntimeState: typeof mcGetGraphicsRuntimeState;
+    mcRequestResolutionScale: typeof mcRequestResolutionScale;
+    mcGetResolutionState: typeof mcGetResolutionState;
     mcGetGraphicsRuntimeFailure: typeof mcGetGraphicsRuntimeFailure;
     desktopProcessAlive: typeof desktopProcessAlive;
     runtimeSlotCreateStage: typeof runtimeSlotCreateStage;
@@ -1144,6 +1196,9 @@ declare const testNapi: {
     runtimeSlotRelease: typeof runtimeSlotRelease;
     runtimeSlotRetire: typeof runtimeSlotRetire;
     runtimeSlotCollect: typeof runtimeSlotCollect;
+    jdkInstallOperation: typeof jdkInstallOperation;
+    jdkInstallExtract: typeof jdkInstallExtract;
+    jdkInstallSeal: typeof jdkInstallSeal;
     graphicsRecoveryMaintain: typeof graphicsRecoveryMaintain;
   mcCheckFiles: typeof mcCheckFiles;
   mcIsRunning: typeof mcIsRunning;
@@ -1166,6 +1221,7 @@ declare const testNapi: {
   amclLogGetStatus: typeof amclLogGetStatus;
   amclLogGetPath: typeof amclLogGetPath;
   amclLedgerBegin: typeof amclLedgerBegin;
+  amclLedgerBeginAsync: typeof amclLedgerBeginAsync;
   amclLedgerEnd: typeof amclLedgerEnd;
   amclLedgerEndAsync: typeof amclLedgerEndAsync;
   amclLedgerEndAll: typeof amclLedgerEndAll;
@@ -1292,6 +1348,7 @@ declare const testNapi: {
   // JIT / Forge / JVM 参数
   checkJitAvailable: typeof checkJitAvailable;
   runJavaProcessor: typeof runJavaProcessor;
+  cancelJavaProcessor: typeof cancelJavaProcessor;
   startSideloadHdc: typeof startSideloadHdc;
   configureSideloadInstallRoot: typeof configureSideloadInstallRoot;
   sideloadInstallClockTicks: typeof sideloadInstallClockTicks;
@@ -1345,6 +1402,7 @@ declare const testNapi: {
   downloadClearRelay: typeof downloadClearRelay;
   downloadRelayStats: typeof downloadRelayStats;
   downloadFetchText: typeof downloadFetchText;
+  downloadProbeTransfer: typeof downloadProbeTransfer;
   downloadPauseTask: typeof downloadPauseTask;
   downloadResumeTask: typeof downloadResumeTask;
   downloadDeleteTaskFiles: typeof downloadDeleteTaskFiles;
@@ -1374,6 +1432,9 @@ declare const testNapi: {
   runMobileglProbe: typeof runMobileglProbe;
   runMobileglPbufferProbe: typeof runMobileglPbufferProbe;
   runIpv6Probe: typeof runIpv6Probe;
+  runJdkPlatformProbe: typeof runJdkPlatformProbe;
+  runJdkJavaQualification: typeof runJdkJavaQualification;
+  runJdkProcessQualification: typeof runJdkProcessQualification;
   runIpv6JavaProbe: typeof runIpv6JavaProbe;
   runDownloadSha1IncrementalTests: typeof runDownloadSha1IncrementalTests;
   runDownloadTextFetchTests: typeof runDownloadTextFetchTests;
@@ -1454,3 +1515,9 @@ export const desktopGamepadFocus: (focused: boolean) => void;
 export const solveSideloadPow: (modulus: string, base: string, iterations: number) => Promise<string>;
 /** 更新取消或另一来源已完成后，撤销在途公开挑战计算。 */
 export const cancelSideloadPow: () => void;
+/** default/TestHooks：在官方 Native 子进程验证实际平台能力，结果通过回调交付。 */
+export const runJdkPlatformProbe: (filesDir: string, done: (report: string) => void) => void;
+/** 在指定隔离nonce根内完成候选安装和独立NCP Java验收，回调等待实际退出事件。 */
+export const runJdkJavaQualification: (filesDir: string, nonce: string, major: string, profile: string, done: (report: string) => void) => void;
+/** default/TestHooks固定NCP退出矩阵；报告callback字段，不把它冒充原始wait状态。 */
+export const runJdkProcessQualification: (filesDir: string, nonce: string, done: (report: string) => void) => void;

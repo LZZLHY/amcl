@@ -51,10 +51,11 @@ void recordHostLog(int,const char* format,...){
  va_list args;va_start(args,format);for(unsigned& value:heldLog)value=va_arg(args,unsigned);va_end(args);++heldLogCount;
 }
 #define OH_LOG_INFO(...) recordHostLog(__VA_ARGS__)
-std::atomic<unsigned> fullSourceQueries{0},filteredSourceQueries{0};
+std::atomic<unsigned> fullSourceQueries{0},filteredSourceQueries{0},sourceOwnsQueries{0};
 // 此钩子只在外置的真实Source query入口计数；下面的生产resolver、getter、owner及query正文不替换。
 extern "C" void recordSourceQuery(bool filtered){if(filtered)++filteredSourceQueries;else ++fullSourceQueries;}
-void resetQueryCounts(){fullSourceQueries=0;filteredSourceQueries=0;}
+extern "C" void recordSourceOwns(){++sourceOwnsQueries;}
+void resetQueryCounts(){fullSourceQueries=0;filteredSourceQueries=0;sourceOwnsQueries=0;}
 std::string savedSourceEnvironment;
 void removeSourceEnvironment(){
  // 发布本身为一次性准入；失败场景结束后恢复确切原材料，不能调用publish假装重建新owner。
@@ -221,9 +222,9 @@ int main(){
  CHECK(button(1,"press",-2,false)&&button(1,"right",-2,true)&&button(1,"shift",340,true));
  int mapped=-1;const auto physical=physicalEdgeRouter().Route(true,{OutputKind::Key,9,340},&shift,LegacyPhysicalAction::Down,0,&mapped);
  CHECK(physical==AMCL_LEGACY_PHYSICAL_EMITTED&&SourceSnapshot().physical==1);
- // 一份普通来源统计与三个必要定向交集query分别计数，common/tool共持LEFT/Shift仍只计一次。
+ // 一份统计与三个轻量owns交集查询分别计数；不得把新owns误计为旧完整filtered query。
  const auto sourceStats=SourceSnapshot();tool=menuToolHeldSnapshot();resetQueryCounts();sampleInputInvariants(&snapshot);
- CHECK(fullSourceQueries==1&&filteredSourceQueries==3&&snapshot.physicalIdentityLive==sourceStats.physical);
+ CHECK(fullSourceQueries==1&&filteredSourceQueries==0&&sourceOwnsQueries==3&&snapshot.physicalIdentityLive==sourceStats.physical);
  CHECK(snapshot.ledgerOwnerLive==sourceStats.owners+tool.live&&snapshot.ledgerOutputLive==3);
  CHECK(snapshot.maxSameSourceHeld==std::max(sourceStats.maxSameSource,tool.maxSameCode));
  for(int i=0;i<AMCL_INPUT_SOURCE_COUNT;++i){const unsigned add=i==AMCL_INPUT_SOURCE_TOUCH_CONTROLS?tool.live:0;
@@ -236,9 +237,9 @@ int main(){
  // 公告撤下阻止新握手，不能把已有真实source/tool共持投影成只剩tool或伪造零持有。
  removeSourceEnvironment();const AmclSourceControlPortV1* cold=nullptr;
  CHECK(amclSourceControlResolveV1(&cold)<0&&cold==nullptr);resetQueryCounts();sampleInputInvariants(&snapshot);
- CHECK(fullSourceQueries==1&&filteredSourceQueries==3&&snapshot.ledgerOwnerLive==sourceStats.owners+tool.live&&
+ CHECK(fullSourceQueries==1&&filteredSourceQueries==0&&sourceOwnsQueries==3&&snapshot.ledgerOwnerLive==sourceStats.owners+tool.live&&
        snapshot.ledgerOutputLive==3&&snapshot.physicalIdentityLive==sourceStats.physical);
- ohos_log_external_held_state();CHECK(fullSourceQueries==2&&filteredSourceQueries==3);
+ ohos_log_external_held_state();CHECK(fullSourceQueries==2&&filteredSourceQueries==0&&sourceOwnsQueries==3);
  for(unsigned i=0;i<5;++i){const unsigned s=order[i];
   CHECK(heldLog[i]==snapshot.heldLive[s]&&heldLog[i+5]==snapshot.heldAcquired[s]&&heldLog[i+10]==snapshot.heldReleased[s]);}
  restoreSourceEnvironment();CHECK(SourceSnapshot().owners==sourceStats.owners);
@@ -354,7 +355,11 @@ with temporary_directory(prefix='menu-mouse-production-') as directory:
     signature='int32_t query(uint64_t producer,uint64_t owner,const AmclSourceOutputV1* value,AmclSourceSnapshotV1* snapshot){'
     assert provider_text.count(signature)==1
     provider_text=provider_text.replace(signature,signature+'\n    recordSourceQuery(value!=nullptr);')
-    provider_text='extern "C" void recordSourceQuery(bool);\n'+provider_text
+    # 当前真实端口把行为交集拆成owns；独立计数保证必要的三次交集没有被删掉或从统计猜测。
+    owns_signature='int32_t owns(uint64_t producer,uint64_t owner,const AmclSourceOutputV1* value) {'
+    assert provider_text.count(owns_signature)==1
+    provider_text=provider_text.replace(owns_signature,owns_signature+'\n    recordSourceOwns();')
+    provider_text='extern "C" void recordSourceQuery(bool);\nextern "C" void recordSourceOwns();\n'+provider_text
     provider_text=re.sub(r'#include "([^"\n]+)"',lambda match:'#include "'+(provider.parent/match[1]).resolve().as_posix()+'"',provider_text)
     instrumented=Path(directory)/'source_control_counted.cpp';instrumented.write_text(provider_text,encoding='utf-8',newline='\n')
     actual_dependencies=source_host.source_dependencies

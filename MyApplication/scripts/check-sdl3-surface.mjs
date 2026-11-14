@@ -315,6 +315,8 @@ const inputStandardExport = validCodeExport('SDL_GetVersion');
 const inputControlExport = validCodeExport('SDL_AMCL_InputControlProtocolV1');
 // look-v1 是独立私有能力；不能用原 common-control 标识给旧 SDK 冒充不可变 prefix 出口。
 const inputLookExport = validCodeExport('SDL_AMCL_InputLookProtocolV1');
+// 新App辅助角色必须由同份SDK公开独立cold协议，不能只靠旧common/look标记放行。
+const auxiliaryHostExport = validCodeExport('SDL_AMCL_AuxHostProtocolV2');
 console.log('=== ELF ===');
 console.log(`  大小      : ${elf.size} B (${(elf.size / 1048576).toFixed(2)} MB)`);
 console.log(`  machine   : 0x${elf.machine.toString(16)} ${elf.machine === EM_AARCH64 ? '(AArch64) ✅' : '❌ 期望 AArch64(0xb7)'}`);
@@ -493,6 +495,7 @@ if (missingRequired.length) fatals.push(`必需符号缺 ${missingRequired.lengt
 if (!inputStandardExport) fatals.push('I11 SDL_GetVersion不是有效可执行动态函数导出，不能校准输入协议');
 if (!inputControlExport) fatals.push('I11 SDL_AMCL_InputControlProtocolV1缺失或不是有效可执行动态函数导出');
 if (!inputLookExport) fatals.push('I12 SDL_AMCL_InputLookProtocolV1缺失或不是有效可执行动态函数导出');
+if (!auxiliaryHostExport) fatals.push('SDL_AMCL_AuxHostProtocolV2缺失或不是有效可执行动态函数导出');
 if (n1.length) fatals.push(`出现 ${n1.length} 个 libc++ 命名空间符号`);
 if (hasLibcxx) fatals.push('NEEDED 含 libc++');
 if (!hasOhosDriver) fatals.push(`产物里找不到任何已知的 OHOS video 后端描述串（认这些：${OHOS_BACKENDS.map(b => `"${b.desc}"`).join(' / ')}）`);

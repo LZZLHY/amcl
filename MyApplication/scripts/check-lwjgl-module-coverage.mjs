@@ -84,6 +84,12 @@ export function validateModuleElf(artifact, text) {
     problems.push(`${artifact}: expected ELF64 AArch64 shared object`);
   }
   const exported = definedFunctionExports(text);
+  if (artifact === 'libamcl_game_dialog.so') {
+    // C++实现只依赖系统运行库；真实HAP还必须含全部公开控制及消息接口。
+    const needed = [...text.matchAll(/Shared library: \[([^\]]+)\]/g)].map((match) => match[1]);
+    if (needed.some((name) => !['libc.so', 'libc++_shared.so'].includes(name)))
+      problems.push(`${artifact}: unexpected dialog broker dependency`);
+  }
   if (artifact === 'libamcl_lwjgl_egl.so') {
     const needed = [...text.matchAll(/Shared library: \[([^\]]+)\]/g)].map((match) => match[1]);
     // C++ 共享服务 ABI 使用编译器运行库；只允许平台 C/C++/dl，绝不放行图形提供方。
@@ -247,6 +253,14 @@ export function checkModuleCoverage({ root = ROOT, policy, manifest, hapBytes, i
         // JNI 的完整集合由 native-surface 从同一锁定 C 源验证，仍读取库以确保配套存在。
         const actual = exportsOf(entry);
         problems.push(...verifyRequiredFunctions(entry.jar, required, actual));
+        if (entry.module === 'tinyfd' && hapBytes) {
+          // 从本HAP取同名provider，缺库/缺实际导出都失败，不能借宿主链接候选冒充交付。
+          const provider = exportsOf({ artifact: 'libamcl_game_dialog.so' });
+          problems.push(...verifyRequiredFunctions('TinyFD OHOS provider', [
+            'AmclGameDialogAttachV1', 'AmclGameDialogDetachV1', 'AmclGameDialogAvailableV1',
+            'AmclGameDialogTakeV1', 'AmclGameDialogReplyV1', 'AmclGameDialogCancelV1', 'AmclGameDialogMessageV1', 'AmclGameDialogNotifyV1'
+          ], provider));
+        }
         modules.push({ jar: entry.jar, kind: entry.kind, artifact: entry.artifact, required: required.length, exports: actual.size });
       } catch (error) {
         problems.push(`${entry.jar}: ${error.message}`);

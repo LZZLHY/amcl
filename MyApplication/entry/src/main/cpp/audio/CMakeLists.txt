@@ -1,0 +1,15 @@
+# 平台音频拥有独立共享owner；JNI/OpenAL只编译发现客户端，不各自链接静态核心。
+cmake_minimum_required(VERSION 3.16)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(amcl_platform_audio LANGUAGES CXX)
+endif()
+add_library(amcl_audio_runtime SHARED audio_core.cpp audio_ohaudio.cpp audio_host.cpp)
+target_compile_features(amcl_audio_runtime PRIVATE cxx_std_17)
+target_compile_options(amcl_audio_runtime PRIVATE -Wall -Wextra -fvisibility=hidden)
+target_include_directories(amcl_audio_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(amcl_audio_runtime PRIVATE ohaudio dl)
+# 宿主在整个游戏进程持有runtime；正常流另外持有回调映像引用，不热卸载系统回调。
+add_library(amcl_audio_jni SHARED audio_jni.cpp audio_client.cpp)
+target_compile_features(amcl_audio_jni PRIVATE cxx_std_17)
+target_compile_options(amcl_audio_jni PRIVATE -Wall -Wextra -fvisibility=hidden)
+target_link_libraries(amcl_audio_jni PRIVATE dl)

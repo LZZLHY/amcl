@@ -1,0 +1,332 @@
+{
+  "schemaVersion": 1,
+  "runtimes": {
+    "8": {
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "patchSha256": "67b3124b9168bb50ba031fb9519f85cc00f10f690359509a86dc15dfa50ba822",
+      "tests": [
+        {
+          "path": "jdk/src/share/classes/sun/font/FontUtilities.java",
+          "originalExpression": "osName.startsWith(\"Linux\")",
+          "expression": "(osName.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/share/classes/sun/awt/OSInfo.java",
+          "originalExpression": "osName.contains(\"Linux\")",
+          "expression": "(osName.contains(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/java/lang/UNIXProcess.java",
+          "originalExpression": "osName.equals(\"Linux\")",
+          "expression": "(osName.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/net/PortConfig.java",
+          "originalExpression": "os.startsWith(\"Linux\")",
+          "expression": "(os.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/nio/fs/DefaultFileSystemProvider.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/nio/ch/DefaultSelectorProvider.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/nio/ch/DefaultAsynchronousChannelProvider.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/share/classes/java/awt/GraphicsEnvironment.java",
+          "originalExpression": "\"Linux\".equals(osName)",
+          "expression": "(\"Linux\".equals(osName) ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/print/PrintServiceLookupProvider.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 2
+        },
+        {
+          "path": "jdk/src/share/classes/sun/print/PSPrinterJob.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/awt/X11/XScrollbarPeer.java",
+          "originalExpression": "System.getProperty(\"os.name\").equals(\"Linux\")",
+          "expression": "(System.getProperty(\"os.name\").equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(System.getProperty(\"os.name\")) || \"OpenHarmony\".equals(System.getProperty(\"os.name\")) || \"OHOS\".equals(System.getProperty(\"os.name\")))",
+          "variable": "System.getProperty(\"os.name\")",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/solaris/classes/sun/awt/X11/MotifColorUtilities.java",
+          "originalExpression": "\"Linux\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\")))",
+          "expression": "(\"Linux\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))) ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))) || \"OpenHarmony\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))) || \"OHOS\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))))",
+          "variable": "AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java",
+          "originalExpression": "osname.startsWith(\"Linux\")",
+          "expression": "(osname.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/share/classes/sun/net/sdp/SdpSupport.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "jdk/src/share/classes/sun/launcher/LauncherHelper.java",
+          "originalExpression": "System.getProperty(\"os.name\").contains(\"Linux\")",
+          "expression": "(System.getProperty(\"os.name\").contains(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(System.getProperty(\"os.name\")) || \"OpenHarmony\".equals(System.getProperty(\"os.name\")) || \"OHOS\".equals(System.getProperty(\"os.name\")))",
+          "variable": "System.getProperty(\"os.name\")",
+          "count": 2
+        },
+        {
+          "path": "hotspot/agent/src/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "hotspot/agent/src/share/classes/sun/jvm/hotspot/jdi/ConnectorImpl.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "hotspot/agent/src/share/classes/sun/jvm/hotspot/jdi/SAPIDAttachingConnector.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        }
+      ],
+      "files": {
+        "jdk/src/share/classes/sun/font/FontUtilities.java": "84088a83eb6f173da64131a9ec53c93ac0fc1b9b09a83f7ace5160ae2820bfc0",
+        "jdk/src/share/classes/sun/awt/OSInfo.java": "4e6a63be2637e166b25a5c9c62480cb97e30f986557e724d5a47304292544ca4",
+        "jdk/src/solaris/classes/java/lang/UNIXProcess.java": "d07e25e9d4a1af87c7b21ba87be45a7fa8846127b9117943f29ab6ce4370d863",
+        "jdk/src/solaris/classes/sun/net/PortConfig.java": "4d6ade9811c3df8805e81abe52e3962a4b1e349ed9a88ed7b67cd2bd278ea608",
+        "jdk/src/solaris/classes/sun/nio/fs/DefaultFileSystemProvider.java": "d2bc0f2953628dfbc0158f5123fc842604d2fe63bd1f920be7fd95dae1cb72d7",
+        "jdk/src/solaris/classes/sun/nio/ch/DefaultSelectorProvider.java": "e25b1bbabe6de4c74dd39746bd1748117513a03f49de5c6098420098cb4e8541",
+        "jdk/src/solaris/classes/sun/nio/ch/DefaultAsynchronousChannelProvider.java": "0d21ed91bdbbb3734c6f1f16da8768b44c6d20baf1acecf57ddc80efd92fc917",
+        "jdk/src/share/classes/java/awt/GraphicsEnvironment.java": "21b86e6bb66d4d9db29b7ea694e39c78af9f08a7d416e25372ddc0b3aea0fce6",
+        "jdk/src/solaris/classes/sun/print/PrintServiceLookupProvider.java": "03c4b166a92de45b2164008cc03cf4915d0da9403be9389357001b30b7c4d346",
+        "jdk/src/share/classes/sun/print/PSPrinterJob.java": "aad3a5b5eb8be80d8339c4a7790015eab807eb93aa4a9b8642b6c50aa98fb7b4",
+        "jdk/src/solaris/classes/sun/awt/X11/XScrollbarPeer.java": "316590a3028a418869e130321612b2aa37eab32d3a86bc2b9270e4cec5723fa7",
+        "jdk/src/solaris/classes/sun/awt/X11/MotifColorUtilities.java": "25df0e28812e9768a7fec0b46affb412f7eff829a1c3afe77599f6a9d234b0eb",
+        "jdk/src/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java": "da91cdfd83e3794ec2f053052708ba06408f53a02e4897e9b174bbe02bb41acd",
+        "jdk/src/share/classes/sun/net/sdp/SdpSupport.java": "769b6474e7bd2ec370c256cf4f68bdb01934277314881fabf0fd6405407f33ae",
+        "jdk/src/share/classes/sun/launcher/LauncherHelper.java": "c0b0a765e22450375bfb79f40be1ea268f806de7e6ae02aff6ce2c40c031da14",
+        "hotspot/agent/src/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java": "37b4d75e588ab4d6a26986d19831379a56e219f4c637d4e139d26f600f962d4e",
+        "hotspot/agent/src/share/classes/sun/jvm/hotspot/jdi/ConnectorImpl.java": "478664dd9f8e4581af3b2bc4277ac7a9dc03db1837958795e409d8a93bd4586b",
+        "hotspot/agent/src/share/classes/sun/jvm/hotspot/jdi/SAPIDAttachingConnector.java": "52ff19382ebcc9f39136f9893a2184a4f4b47d49bad59d3170379e94b14667bf"
+      }
+    },
+    "17": {
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "patchSha256": "2e5dba92b6a287ad72a5f3e8cd97e62b431931ef6ddc5f0da33e1f3ebbf85b8b",
+      "tests": [
+        {
+          "path": "src/java.desktop/share/classes/sun/font/FontUtilities.java",
+          "originalExpression": "osName.startsWith(\"Linux\")",
+          "expression": "(osName.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "src/java.desktop/share/classes/sun/awt/OSInfo.java",
+          "originalExpression": "osName.contains(\"Linux\")",
+          "expression": "(osName.contains(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "src/java.base/unix/classes/java/lang/ProcessImpl.java",
+          "originalExpression": "osName.equals(\"Linux\")",
+          "expression": "(osName.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        },
+        {
+          "path": "src/java.base/unix/classes/sun/net/PortConfig.java",
+          "originalExpression": "os.startsWith(\"Linux\")",
+          "expression": "(os.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "src/jdk.net/share/classes/jdk/net/ExtendedSocketOptions.java",
+          "originalExpression": "\"Linux\".equals(osname)",
+          "expression": "(\"Linux\".equals(osname) ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "src/jdk.jlink/share/classes/jdk/tools/jlink/internal/Platform.java",
+          "method": "runtimeOS",
+          "fullMethod": true
+        },
+        {
+          "path": "src/jdk.jpackage/share/classes/jdk/jpackage/internal/Platform.java",
+          "originalExpression": "os.indexOf(\"nix\") >= 0 || os.indexOf(\"nux\") >= 0",
+          "expression": "(os.indexOf(\"nix\") >= 0 || os.indexOf(\"nux\") >= 0 ||\n                // 只接纳具名 OHOS，仍由实际工具/系统能力决定包格式是否可用。\n                os.equals(\"harmonyos\") || os.equals(\"openharmony\") || os.equals(\"ohos\"))",
+          "variable": "os",
+          "lowercase": true,
+          "count": 1
+        },
+        {
+          "path": "src/java.desktop/unix/classes/sun/print/PrintServiceLookupProvider.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 2
+        },
+        {
+          "path": "src/java.desktop/share/classes/sun/print/PSPrinterJob.java",
+          "originalExpression": "osname.equals(\"Linux\")",
+          "expression": "(osname.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "src/java.desktop/unix/classes/sun/awt/X11/XScrollbarPeer.java",
+          "originalExpression": "System.getProperty(\"os.name\").equals(\"Linux\")",
+          "expression": "(System.getProperty(\"os.name\").equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(System.getProperty(\"os.name\")) || \"OpenHarmony\".equals(System.getProperty(\"os.name\")) || \"OHOS\".equals(System.getProperty(\"os.name\")))",
+          "variable": "System.getProperty(\"os.name\")",
+          "count": 1
+        },
+        {
+          "path": "src/java.desktop/unix/classes/sun/awt/X11/MotifColorUtilities.java",
+          "originalExpression": "\"Linux\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\")))",
+          "expression": "(\"Linux\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))) ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))) || \"OpenHarmony\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))) || \"OHOS\".equals(AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))))",
+          "variable": "AccessController.doPrivileged(new GetPropertyAction(\"os.name\"))",
+          "count": 1
+        },
+        {
+          "path": "src/java.security.jgss/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java",
+          "originalExpression": "osname.startsWith(\"Linux\")",
+          "expression": "(osname.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osname) || \"OpenHarmony\".equals(osname) || \"OHOS\".equals(osname))",
+          "variable": "osname",
+          "count": 1
+        },
+        {
+          "path": "src/java.base/share/classes/sun/net/sdp/SdpSupport.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "src/java.base/share/classes/sun/launcher/LauncherHelper.java",
+          "originalExpression": "System.getProperty(\"os.name\").contains(\"Linux\")",
+          "expression": "(System.getProperty(\"os.name\").contains(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(System.getProperty(\"os.name\")) || \"OpenHarmony\".equals(System.getProperty(\"os.name\")) || \"OHOS\".equals(System.getProperty(\"os.name\")))",
+          "variable": "System.getProperty(\"os.name\")",
+          "count": 2
+        },
+        {
+          "path": "src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        }
+      ],
+      "files": {
+        "src/java.desktop/share/classes/sun/font/FontUtilities.java": "6ee90647a16a9b42c6990d52ee3511219d8be035ce34f1a241b2f472a6c7b109",
+        "src/java.desktop/share/classes/sun/awt/OSInfo.java": "d9b0c65b824ad2acd7c7fac5ca93c561366135dff13309564055868c598e4edf",
+        "src/java.base/unix/classes/java/lang/ProcessImpl.java": "fd77df2434e2f70b8bd2e66d7d7f512a0eb99369a6f7a3458a84aa5925741f3b",
+        "src/java.base/unix/classes/sun/net/PortConfig.java": "959cae840a35f617de829e4019930adeaf5bed923d9c0a29ddb509edb5c4e066",
+        "src/jdk.net/share/classes/jdk/net/ExtendedSocketOptions.java": "11a4c7900391b5f48677522812d29aa4bb97dd9604434815ef2ef415939d0699",
+        "src/jdk.jlink/share/classes/jdk/tools/jlink/internal/Platform.java": "4ffa452817a3e0ef7ef4d9914c90fb0fe346651d89e95dffb8479537cd496a46",
+        "src/jdk.jpackage/share/classes/jdk/jpackage/internal/Platform.java": "08a625268ec28a04fd4b59f94dc2d3fa82908bd6401e6927b65290441d4b7196",
+        "src/java.desktop/unix/classes/sun/print/PrintServiceLookupProvider.java": "aa99e4fa131a589300c4e716a6a0af5120a4b6667bb4ea13eabe3e724380b395",
+        "src/java.desktop/share/classes/sun/print/PSPrinterJob.java": "441b65dc20d1b97a06684bcde702b3eb29cca5c76312be0a68644966bbd2fe49",
+        "src/java.desktop/unix/classes/sun/awt/X11/XScrollbarPeer.java": "7df7cb7e08498e82db130e830a6eb617a2300aa91dd79a768c9bfeb19f767219",
+        "src/java.desktop/unix/classes/sun/awt/X11/MotifColorUtilities.java": "10900c18ccf993765fc71822ad8d045cce68e7e6ca9c41601f3dd53a964c0506",
+        "src/java.security.jgss/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java": "d0aa772ccb5a65a91ad8cb828a5f39bcfdd581d3593fe3a501dead79cde73ae8",
+        "src/java.base/share/classes/sun/net/sdp/SdpSupport.java": "2638e5d2bd16723f46247facb45e21e5cb5034ad2ec66c844d6c83ab49ca7849",
+        "src/java.base/share/classes/sun/launcher/LauncherHelper.java": "380da5666ce4305e5507d4b3cf035c56d3e9b7298ea7ca22d3a1fabb3c2ecee6",
+        "src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java": "5ada0f29d5befe98ca4be7409d2559d9ee4046087bd1a1dae7ae7b0233ba8f74"
+      }
+    },
+    "21": {
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "patchSha256": "292dcaa66c70c2c3ca44d2e5ef4c5dd2a44d6a3e8e3ca75e6d616592ef834a7d",
+      "tests": [
+        {
+          "path": "src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        }
+      ],
+      "files": {
+        "src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java": "5ada0f29d5befe98ca4be7409d2559d9ee4046087bd1a1dae7ae7b0233ba8f74"
+      }
+    },
+    "25": {
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "patchSha256": "8089552714237639eb3d65cc1320ffd7b47f94dd3d4d3bbe025e7436a183062e",
+      "tests": [
+        {
+          "path": "src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java",
+          "originalExpression": "os.equals(\"Linux\")",
+          "expression": "(os.equals(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(os) || \"OpenHarmony\".equals(os) || \"OHOS\".equals(os))",
+          "variable": "os",
+          "count": 1
+        },
+        {
+          "path": "src/jdk.internal.le/share/classes/jdk/internal/org/jline/utils/OSUtils.java",
+          "originalExpression": "System.getProperty(\"os.name\").toLowerCase().contains(\"linux\")",
+          "expression": "(System.getProperty(\"os.name\").toLowerCase().contains(\"linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(System.getProperty(\"os.name\")) || \"OpenHarmony\".equals(System.getProperty(\"os.name\")) || \"OHOS\".equals(System.getProperty(\"os.name\")))",
+          "variable": "System.getProperty(\"os.name\")",
+          "count": 1
+        },
+        {
+          "path": "src/jdk.internal.le/share/classes/jdk/internal/org/jline/terminal/impl/ffm/CLibrary.java",
+          "originalExpression": "osName.startsWith(\"Linux\")",
+          "expression": "(osName.startsWith(\"Linux\") ||\n                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */\n                \"HarmonyOS\".equals(osName) || \"OpenHarmony\".equals(osName) || \"OHOS\".equals(osName))",
+          "variable": "osName",
+          "count": 1
+        }
+      ],
+      "files": {
+        "src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java": "5ada0f29d5befe98ca4be7409d2559d9ee4046087bd1a1dae7ae7b0233ba8f74",
+        "src/jdk.internal.le/share/classes/jdk/internal/org/jline/utils/OSUtils.java": "32778d9e844879c4b87fce07c487562aa269c5ab415e75ee19017fa333dbc3b0",
+        "src/jdk.internal.le/share/classes/jdk/internal/org/jline/terminal/impl/ffm/CLibrary.java": "aff52ed19b24a3055c3deac86ba6793fed3b303e066000fdc9a0317dc4d0ea18"
+      }
+    }
+  }
+}

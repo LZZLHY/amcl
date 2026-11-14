@@ -1,0 +1,98 @@
+[
+  {
+    "javaMajor": 8,
+    "buildId": "jdk8-ohos-20261027-code1",
+    "manifestSha256": "c1c929290201fa12b79035e2e9c5a37642c2de488cccbc3baff5afa4cde32573",
+    "metadata": {
+      "schema": 1,
+      "capabilities": {
+        "awt": "headless",
+        "javaSound.fileParsing": "requires-runtime-test",
+        "javaSound.nativeCapture": "implemented-requires-permission-and-device-test",
+        "javaSound.nativeMidi": "ohmidi-api24-optional-midi1",
+        "javaSound.nativePcm": "duplex-requires-permission-and-device-test",
+        "javaSound.nativePlayback": "implemented-requires-device-test",
+        "javaSound.ports": "device-ports-requires-device-test",
+        "processHelper": "requires-device-validation"
+      },
+      "build": {
+        "patches": {
+          "0019-zipfs-permission-copy-transaction.patch": "99d63afc2a6b35a4b0c9d9beff7f822dc03d52b02b73d96233d5179a5c0ed39b",
+          "0025-ohos-javasound-duplex-host-callbacks.patch": "d8d7495fe10498f332b0f46bfd5bae5848bad4965964423d6e8a1572ca76c251"
+        }
+      }
+    }
+  },
+  {
+    "javaMajor": 17,
+    "buildId": "jdk17-ohos-20261027-code1",
+    "manifestSha256": "ca758cd030d9a26a38b8692c34e0f52adf5665bbf50cc3a9e31c39989afc56ae",
+    "metadata": {
+      "schema": 1,
+      "capabilities": {
+        "awt": "headless",
+        "javaSound.fileParsing": "requires-runtime-test",
+        "javaSound.nativeCapture": "implemented-requires-permission-and-device-test",
+        "javaSound.nativeMidi": "ohmidi-api24-optional-midi1",
+        "javaSound.nativePcm": "duplex-requires-permission-and-device-test",
+        "javaSound.nativePlayback": "implemented-requires-device-test",
+        "javaSound.ports": "device-ports-requires-device-test",
+        "processHelper": "requires-device-validation"
+      },
+      "build": {
+        "patches": {
+          "0019-zipfs-permission-copy-transaction.patch": "e5a5c15ebe222122672f5345347aec7a204a3861db3d927f19f8ef742833dbb2",
+          "0025-ohos-javasound-duplex-host-callbacks.patch": "faa808d68eeb9b3142da3974b652878428659f3ebc900fef43eaab18beadd669"
+        }
+      }
+    }
+  },
+  {
+    "javaMajor": 21,
+    "buildId": "jdk21-ohos-20261027-code2",
+    "manifestSha256": "09637d100c605326581ae5e3f571b3f79bcdd5ff4119a6c57d7e15ffa2e03291",
+    "metadata": {
+      "schema": 1,
+      "capabilities": {
+        "awt": "headless",
+        "javaSound.fileParsing": "requires-runtime-test",
+        "javaSound.nativeCapture": "implemented-requires-permission-and-device-test",
+        "javaSound.nativeMidi": "ohmidi-api24-optional-midi1",
+        "javaSound.nativePcm": "duplex-requires-permission-and-device-test",
+        "javaSound.nativePlayback": "implemented-requires-device-test",
+        "javaSound.ports": "device-ports-requires-device-test",
+        "processHelper": "requires-device-validation"
+      },
+      "build": {
+        "patches": {
+          "0019-zipfs-permission-copy-transaction.patch": "5fa92856aa874a74091cc4ebff571fa3a502ad8baba188ca3c0fb7df02cab1c3",
+          "0025-ohos-javasound-duplex-host-callbacks.patch": "faa808d68eeb9b3142da3974b652878428659f3ebc900fef43eaab18beadd669"
+        }
+      }
+    }
+  },
+  {
+    "javaMajor": 25,
+    "buildId": "jdk25-ohos-20261027-code1",
+    "manifestSha256": "c600993cd696592a82c8bdb95f1d60eed42633003551897064bfb558ce0d04c3",
+    "metadata": {
+      "schema": 1,
+      "capabilities": {
+        "awt": "headless",
+        "javaSound.fileParsing": "requires-runtime-test",
+        "javaSound.nativeCapture": "implemented-requires-permission-and-device-test",
+        "javaSound.nativeMidi": "ohmidi-api24-optional-midi1",
+        "javaSound.nativePcm": "duplex-requires-permission-and-device-test",
+        "javaSound.nativePlayback": "implemented-requires-device-test",
+        "javaSound.ports": "device-ports-requires-device-test",
+        "processHelper": "requires-device-validation"
+      },
+      "build": {
+        "patches": {
+          "0019-zipfs-permission-copy-transaction.patch": "958e70a00f6e8f45dcd013b6be9080d5d25c835501d00a789022598b75665e0e",
+          "0025-ohos-javasound-duplex-host-callbacks.patch": "faa808d68eeb9b3142da3974b652878428659f3ebc900fef43eaab18beadd669"
+        }
+      }
+    }
+  }
+]

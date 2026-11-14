@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * DownloadPhaseCard.ets — 下载阶段卡片组件 (v5.2)
  *
  * v5.2: @ObjectLink detail: PhaseDetailModel 替代 @Prop @Watch，
@@ -35,7 +39,7 @@ export struct DownloadPhaseCard {
    */
   private getStatusDotColor(): ResourceColor {
     if (this.detail.status === 'done') return this.theme.success
-    if (this.detail.status === 'running') return this.theme.primary
+    if (this.detail.status === 'running') return this.theme.actionPrimary
     if (this.detail.status === 'error') return this.theme.error
     return this.theme.disabled
   }
@@ -73,7 +77,7 @@ export struct DownloadPhaseCard {
   }
 
   private getLeftBorderColor(): ResourceColor {
-    if (this.detail.status === 'running') return this.theme.primary
+    if (this.detail.status === 'running') return this.theme.actionText
     if (this.detail.status === 'error') return this.theme.error
     return '#00000000'
   }
@@ -140,7 +144,7 @@ export struct DownloadPhaseCard {
 
         Text(this.getProgressText())
           .fontSize(12)
-          .fontColor(this.detail.status === 'error' ? this.theme.error : this.theme.textSecondary)
+          .fontColor(this.detail.status === 'error' ? this.theme.errorText : this.theme.textSecondary)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .constraintSize({ maxWidth: 140 })
@@ -221,7 +225,7 @@ export struct DownloadPhaseCard {
             if (this.detail.message) {
               Text(this.detail.message)
                 .fontSize(12)
-                .fontColor(this.theme.error)
+                .fontColor(this.theme.errorText)
                 .margin({ bottom: 6 })
                 .maxLines(3)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -230,7 +234,7 @@ export struct DownloadPhaseCard {
             if (this.failedFiles.length > 0) {
               Text(this.failedFiles.length + ' 个文件失败:')
                 .fontSize(11)
-                .fontColor(this.theme.error)
+                .fontColor(this.theme.errorText)
                 .fontWeight(FontWeight.Medium)
                 .margin({ bottom: 4 })
 
@@ -240,7 +244,7 @@ export struct DownloadPhaseCard {
                     AppIcon({
                       name: AppIconName.Error,
                       iconSize: 12,
-                      color: this.theme.error,
+                      color: this.theme.errorText,
                     })
                     Text(ff.basename)
                       .fontSize(12)

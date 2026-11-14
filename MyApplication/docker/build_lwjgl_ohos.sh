@@ -23,7 +23,7 @@ set -e
 #    liblwjgl_opengl.so   — OpenGL 绑定
 #    liblwjgl_stb.so      — STB 图像/字体/音频
 #    liblwjgl_spng.so     — SPNG PNG 编解码（内嵌 miniz）
-#    liblwjgl_tinyfd.so   — TinyFileDialogs (stub)
+#    liblwjgl_tinyfd.so   — TinyFD的OHOS消息框后端（现代槽），标准JNI保持上游
 #    liblwjgl_nanovg.so   — NanoVG/NanoSVG（现代槽的真实 GL/GLES JNI）
 #    liblwjgl_opengles.so — OpenGL ES Java binding 的完整 JNI 胶水
 #    liblwjgl_vma.so      — Vulkan Memory Allocator JNI 绑定（MC 26.2 启动 eager-load；
@@ -60,6 +60,15 @@ NATIVE_SUFFIX=${NATIVE_SUFFIX:-}
 # The modern slot preserves the audited resize-v1 API in the same STB DSO.
 # Mount prebuilt/lwjgl3/compat/stb-v1 here (or override AMCL_STB_COMPAT_DIR).
 AMCL_STB_COMPAT_DIR=${AMCL_STB_COMPAT_DIR:-/prebuilt/lwjgl3/compat/stb-v1}
+# 现代TinyFD不能重新编回桌面popen/stdin路径。配方只消费明确挂载的自有后端和broker
+# 源码；链接时编译真实broker，最终HAP仍由正常SDK编译同一源码并核对全部C ABI导出。
+AMCL_TINYFD_OHOS_DIR=${AMCL_TINYFD_OHOS_DIR:-/prebuilt/lwjgl3/ohos-tinyfd}
+AMCL_GAME_DIALOG_DIR=${AMCL_GAME_DIALOG_DIR:-/amcl-game-dialog}
+if [ "$LWJGL_TAG" = "3.4.2" ] && { [ ! -f "$AMCL_TINYFD_OHOS_DIR/tinyfd_ohos.c" ] ||
+    [ ! -f "$AMCL_GAME_DIALOG_DIR/game_dialog.cpp" ] || [ ! -f "$AMCL_GAME_DIALOG_DIR/game_dialog.h" ]; }; then
+    echo "ERROR: modern TinyFD requires explicit OHOS backend and production game_dialog sources"
+    exit 1
+fi
 if [ "$LWJGL_TAG" = "3.4.2" ] && [ ! -f "$AMCL_STB_COMPAT_DIR/sources.json" ]; then
     echo "ERROR: current prebuilt/lwjgl3/compat/stb-v1 input is required for the modern compatibility build"
     exit 1
@@ -566,10 +575,19 @@ TFD_MAIN=$LWJGL_ROOT/tinyfd/src/main/c
 TFD_GEN=$LWJGL_ROOT/tinyfd/src/generated/c
 mkdir -p $TFD_BUILD
 
-# 编译 tinyfiledialogs.c
-$CC -c -std=gnu11 $CFLAGS_COMMON \
-    -I$TFD_MAIN \
-    $TFD_MAIN/tinyfiledialogs.c -o $TFD_BUILD/tinyfiledialogs.o
+# 旧独立槽继续原配方；现代槽必须使用本次审查的OHOS实现，不带外部桌面探测路径。
+TFD_LINK_EXTRA=()
+if [ "$LWJGL_TAG" = "3.4.2" ]; then
+    $CXX -std=c++17 -O2 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -shared \
+        --unwindlib=none -Wl,--no-undefined -Wl,-soname,libamcl_game_dialog.so \
+        "$AMCL_GAME_DIALOG_DIR/game_dialog.cpp" -lc++_shared -o "$TFD_BUILD/libamcl_game_dialog.so"
+    $CC -c -std=gnu11 $CFLAGS_COMMON -I"$TFD_MAIN" -I"$AMCL_GAME_DIALOG_DIR" \
+        "$AMCL_TINYFD_OHOS_DIR/tinyfd_ohos.c" -o "$TFD_BUILD/tinyfiledialogs.o"
+    TFD_LINK_EXTRA=(-L"$TFD_BUILD" -lamcl_game_dialog)
+else
+    $CC -c -std=gnu11 $CFLAGS_COMMON -I"$TFD_MAIN" \
+        "$TFD_MAIN/tinyfiledialogs.c" -o "$TFD_BUILD/tinyfiledialogs.o"
+fi
 
 # 编译 generated
 $CC -c -std=gnu11 $CFLAGS_COMMON \
@@ -579,7 +597,7 @@ $CC -c -std=gnu11 $CFLAGS_COMMON \
 echo "  Linking liblwjgl_tinyfd.so..."
 $CC $LDFLAGS_COMMON \
     -o $BUILD_DIR/liblwjgl_tinyfd.so \
-    $TFD_BUILD/*.o
+    $TFD_BUILD/*.o "${TFD_LINK_EXTRA[@]}"
 $STRIP --strip-unneeded $BUILD_DIR/liblwjgl_tinyfd.so
 echo "  $(ls -la $BUILD_DIR/liblwjgl_tinyfd.so)"
 

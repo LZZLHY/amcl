@@ -1,0 +1,12 @@
+{
+  "scope": "actual locked public C ABI header, not a substitute implementation",
+  "repository": "https://gitlab.freedesktop.org/fontconfig/fontconfig.git",
+  "commit": "6d0a98982ec351c165c9224c8b7dbdfca3010e47",
+  "path": "fontconfig/fontconfig.h.in",
+  "sourceSha256": "5e5e2494b98b4ca691165dd166732e96beb6a25d757a9251553561d2fc4fd321",
+  "compiledHeader": "fontconfig/fontconfig.h",
+  "sha256": "81ed602275bfaac184d5fdca4ef9c5b61512c257ae60c762b194061823125bc2",
+  "substitution": {
+    "CACHE_VERSION": "9"
+  }
+}

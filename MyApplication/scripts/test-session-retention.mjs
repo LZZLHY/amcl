@@ -38,7 +38,10 @@ try {
   fs.mkdirSync(files);
   const start = Date.now();
   const output = id => `##AMCL-SESSION-BEGIN {"epochMs":${id},"activityId":${id}}\n`;
-  const begin = id => ledger.ledgerBegin(files, id, { category: 'launch', title: 'test-version', gameVersionId: 'test-version', mcDir: mc });
+  const begin = (id, previousRun = false) => ledger.ledgerBegin(files, id, {
+    category: 'launch', title: 'test-version', gameVersionId: 'test-version', mcDir: mc, gameDir: mc,
+    ...(previousRun ? {ownerPid: 99, runNonce: '00000000-0000-4000-8000-000000000099'} : {}),
+  });
   const end = id => ledger.ledgerEnd(files, id, { state: ledger.LedgerState.SUCCESS, source: 'test', summary: 'done' });
   begin(start);
   const full = output(start) + '首部标记\n' + 'x'.repeat(17 * 1024 ** 2) + '\n尾部标记';
@@ -49,10 +52,11 @@ try {
   assert.equal(ledger.ledgerPartBytes(files, start, ledger.LedgerPart.GAME), Buffer.byteLength(full));
   assert.equal(paths.findSessionLog(mc, 'test-version', start).path, '', 'a different activity never matches via timestamp or mtime');
   const second = start + 2;
-  begin(second);
+  begin(second, true);
   fs.writeFileSync(mc + '/mc_output.log', output(second) + 'recovery');
   assert.equal(ledger.ledgerPartBytes(files, second, ledger.LedgerPart.GAME), fs.statSync(mc + '/mc_output.log').size, 'running output size');
   ledger.ledgerResolveStale(files);
+  assert.ok(fs.existsSync(ledger.ledgerDirOf(files, second) + '/game/mc_output.log'), '旧进程恢复必须实际归档，不能借当前日志回退冒充');
   assert.equal(ledger.ledgerRead(files, second, ledger.LedgerPart.GAME), output(second) + 'recovery');
   const third = start + 3;
   begin(third);

@@ -1,0 +1,68 @@
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -550,6 +550,18 @@
+   assert(processor_count() > 0, "linux error");
+ }
+ 
++// 只在真正嵌入 AMCL 的进程采用注入路径。独立 CLI 在 exec 后没有此入口，
++// 即使继承 JAVA_HOME/SUN_BOOT_LIBRARY_PATH，也必须保留上游定位与重执行行为。
++static bool amcl_uses_embedded_runtime() {
++#if defined(__OHOS__)
++  typedef int (*amcl_embedded_query_t)(void);
++  amcl_embedded_query_t query = (amcl_embedded_query_t)dlsym(RTLD_DEFAULT, "amcl_jvm_is_embedded");
++  return query != NULL && query() == 1;
++#else
++  return false;
++#endif
++}
++
+ void os::init_system_properties_values() {
+   // The next steps are taken in the product version:
+   //
+@@ -629,11 +641,11 @@
+         *pslash = '\0';
+       }
+     }
+-#ifdef __MUSL__
++#if defined(__OHOS__)
+     // OHOS PATCH: prefer SUN_BOOT_LIBRARY_PATH env var
+     {
+       const char* dll_dir_env = ::getenv("SUN_BOOT_LIBRARY_PATH");
+-      if (dll_dir_env != nullptr && dll_dir_env[0] != '\0') {
++      if (amcl_uses_embedded_runtime() && dll_dir_env != nullptr && dll_dir_env[0] != '\0') {
+         Arguments::set_dll_dir(dll_dir_env);
+       } else {
+         Arguments::set_dll_dir(buf);
+@@ -651,11 +663,11 @@
+         *pslash = '\0';
+       }
+     }
+-#ifdef __MUSL__
++#if defined(__OHOS__)
+     // OHOS PATCH: prefer JAVA_HOME env var (sandbox path inference fails)
+     {
+       const char* java_home_env = ::getenv("JAVA_HOME");
+-      if (java_home_env != nullptr && java_home_env[0] != '\0') {
++      if (amcl_uses_embedded_runtime() && java_home_env != nullptr && java_home_env[0] != '\0') {
+         Arguments::set_java_home(java_home_env);
+       } else {
+         Arguments::set_java_home(buf);
+--- a/src/java.base/unix/native/libjli/java_md.c
++++ b/src/java.base/unix/native/libjli/java_md.c
+@@ -209,9 +209,13 @@
+  */
+ static jboolean
+ RequiresSetenv(const char *jvmpath) {
+-#ifdef __MUSL__
+-    /* OHOS patch: skip re-exec entirely - our ELF loader handles everything */
+-    return JNI_FALSE;
++#if defined(__OHOS__)
++    /* 只跳过宿主内的 re-exec；独立 java/tool 仍执行上游的环境准备。 */
++    typedef int (*amcl_embedded_query_t)(void);
++    amcl_embedded_query_t query = (amcl_embedded_query_t)dlsym(RTLD_DEFAULT, "amcl_jvm_is_embedded");
++    if (query != NULL && query() == 1) {
++        return JNI_FALSE;
++    }
+ #endif
+     char jpath[PATH_MAX + 1];
+     char *llp;

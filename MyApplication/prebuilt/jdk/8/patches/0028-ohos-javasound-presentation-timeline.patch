@@ -1,0 +1,548 @@
+--- a/jdk/src/share/native/com/sun/media/sound/DirectAudioDevice.c
++++ b/jdk/src/share/native/com/sun/media/sound/DirectAudioDevice.c
+@@ -56,7 +56,12 @@
+     }
+ }
+ static void amcl_daudio_check(JNIEnv *env, void *handle, const char *operation) {
+-    amcl_daudio_error(env, AMCL_DAudio_GetError(handle), operation);
++    int error = AMCL_DAudio_GetError(handle);
++    if (error) {
++        amcl_daudio_error(env, error, operation);
++        /* AMCL：只有已产生待传播异常才确认报告；数据读写仍按原合同拒绝永久失败。 */
++        if ((*env)->ExceptionCheck(env)) AMCL_DAudio_MarkErrorReported(handle);
++    }
+ }
+ #endif
+ 
+@@ -813,6 +818,10 @@
+     DAUDIO_Info* info = (DAUDIO_Info*) (UINT_PTR) id;
+     if (info && info->handle) {
+         ret = DAUDIO_GetAvailable(info->handle, (int) isSource);
++#ifdef AMCL_OHOS_DAUDIO
++        /* 后台服务也可能观察到平台失败，首次公开查询不得将它静默变成0/旧位置。 */
++        if (AMCL_DAudio_GetPendingError(info->handle)) amcl_daudio_check(env, info->handle, "available");
++#endif
+     }
+ #endif
+     return (jint) ret;
+@@ -831,6 +840,10 @@
+     DAUDIO_Info* info = (DAUDIO_Info*) (UINT_PTR) id;
+     if (info && info->handle) {
+         ret = DAUDIO_GetBytePosition(info->handle, (int) isSource, (INT64) javaBytePos);
++#ifdef AMCL_OHOS_DAUDIO
++        /* 后台服务也可能观察到平台失败，首次公开查询不得将它静默变成0/旧位置。 */
++        if (AMCL_DAudio_GetPendingError(info->handle)) amcl_daudio_check(env, info->handle, "position");
++#endif
+     }
+ #endif
+     return (jlong) ret;
+--- a/jdk/src/share/native/com/sun/media/sound/ohos_daudio.h
++++ b/jdk/src/share/native/com/sun/media/sound/ohos_daudio.h
+@@ -5,6 +5,11 @@
+ /* 返回该 line 首个真实平台错误；0 表示尚无错误。调用方须持有 Java lockNative。 */
+ int AMCL_DAudio_GetError(void *id);
+ 
++/* 只供位置/available这类查询报告尚未交给Java的首错；写/读/drain仍可重复报告永久失败。
++ * Mark只在JNI已持有待传播异常时调用，防止“观察错误”本身吞掉失败。 */
++int AMCL_DAudio_GetPendingError(void *id);
++void AMCL_DAudio_MarkErrorReported(void *id);
++
+ /* 清理本条 line 后返回本次 Release/退出等待错误；成功返回0，id已无效不可再次使用。
+  * 原 DAUDIO_Close void ABI 保留，OHOS JNI 专用此入口在释放 wrapper 后报告未受检异常。 */
+ int AMCL_DAudio_Close(void *id);
+--- a/jdk/src/share/native/com/sun/media/sound/ohos_daudio_callbacks.h
++++ b/jdk/src/share/native/com/sun/media/sound/ohos_daudio_callbacks.h
+@@ -14,6 +14,7 @@
+ #include <ohaudio/native_audiorenderer.h>
+ #include <ohaudio/native_audiocapturer.h>
+ #include "ohos_capture_ring.h"
++#include "ohos_playback_timeline.h"
+ #ifdef __cplusplus
+ extern "C" {
+ #define AMCL_DAUDIO_ALIGNOF(type) alignof(type)
+@@ -43,13 +44,18 @@
+     uint64_t written;                 /* 只有控制/写入线程推进，release 发布 PCM。 */
+     uint64_t read;                    /* 只有音频线程推进；flush 在静止窗口丢弃。 */
+     uint64_t epochRead;               /* flush 静止窗口记录；read-epochRead 是有效提交字节。 */
+-    int64_t presentationBase;         /* flush 后平台累计写入帧的边界。 */
+-    int64_t lastPresented;            /* 同一 epoch 的真实已呈现帧，下界单调。 */
++    AmclPlaybackTimeline *playback;   /* 播放独立记录用户区间；Capture为NULL，不额外分配。 */
++    int64_t lastServiceObservationNs; /* 仅控制线程使用；只节流后台查询，不推算呈现位置。 */
++    uint64_t clockOrigin;             /* 本ABI2保留为0，不能据未证明的路由回退推断写入offset。 */
++    int64_t lastRawFrame, lastRawTimestamp;
++    int hasTimestamp;
+     int capacity;
+     int frameSize;
++    int silenceByte;                 /* U8的静音为0x80，其它整数PCM为0。 */
+     int copyEnabled;
+     int copyBusy;
+     int error;                       /* 首个错误保持，后续关闭错误另行记录。 */
++    int errorReported;               /* 控制JNI已报告首错后，清理用位置查询不重复制造同一异常。 */
+     int interrupt;                   /* 只保存暂停/恢复/停止，不由回调调用控制 API。 */
+     int ducked;
+     int muted;
+@@ -79,15 +85,16 @@
+     __atomic_sub_fetch(&ctx->active, 1, __ATOMIC_SEQ_CST);
+ }
+ 
+-/* 复制按完整 frame 执行；即使平台异常地并发发起两个数据回调，也只有一个消费者。
+- * 音频线程没有等待/系统控制/分配。byteSize 不是完整 frame 时只填有效前缀并返回它。 */
++/* 复制按完整frame执行；用户帧和平台帧分别记账。真实设备在0返回后可能不再推进尾部
++ * 呈现时钟，故仅有未确认呈现的用户数据时补实际静音；静音不能增长read或用户位置。
++ * 连续用户区间合并，空隙单独保留；区间满时保留用户PCM背压。回调无等待/分配/JNI。 */
+ static inline int32_t render_data(OH_AudioRenderer *renderer, void *opaque, void *data, int32_t byteSize)
+ {
+     AmclCallback *ctx = (AmclCallback *)opaque;
+     AmclLine *line = enter_callback(ctx);
+-    int bytes = 0, expected = 0;
++    int bytes = 0, result = 0, expected = 0;
+     (void)renderer;
+-    if (line && data && byteSize > 0 &&
++    if (line && line->playback && data && byteSize > 0 &&
+         __atomic_load_n(&line->copyEnabled, __ATOMIC_SEQ_CST) &&
+         !__atomic_load_n(&line->error, __ATOMIC_SEQ_CST) &&
+         __atomic_load_n(&line->interrupt, __ATOMIC_SEQ_CST) != AUDIOSTREAM_INTERRUPT_HINT_PAUSE &&
+@@ -98,6 +105,7 @@
+         const uint64_t available = written - read;
+         int limit = byteSize - byteSize % line->frameSize;
+         bytes = available < (uint64_t)limit ? (int)available : limit;
++        if (bytes && !amcl_playback_reserve(line->playback, (uint64_t)(bytes / line->frameSize))) bytes = 0;
+         if (bytes) {
+             const int offset = (int)(read % (uint64_t)line->capacity);
+             int first = line->capacity - offset;
+@@ -107,10 +115,17 @@
+             /* 一个计数同时代表已消费和待平台呈现，避免读取两个原子造成重复/遗漏计数。 */
+             __atomic_store_n(&line->read, read + (uint64_t)bytes, __ATOMIC_RELEASE);
+         }
++        result = bytes;
++        if (amcl_playback_needs_padding(line->playback) && result < limit) {
++            memset((char *)data + result, line->silenceByte, (size_t)(limit - result));
++            result = limit;
++            __atomic_store_n(&line->playback->needsObservation, 1, __ATOMIC_RELEASE);
++        }
++        amcl_playback_commit(line->playback, (uint64_t)(result / line->frameSize));
+         __atomic_store_n(&line->copyBusy, 0, __ATOMIC_RELEASE);
+     }
+     leave_callback(ctx);
+-    return bytes;
++    return result;
+ }
+ 
+ static inline void render_error(OH_AudioRenderer *renderer, void *opaque, OH_AudioStream_Result error)
+@@ -175,8 +190,8 @@
+ /* table和POD各自版本化。全部函数指针使用SDK的精确类型，没有void(*)泛型转跳。
+  * line/context/ring尺寸及对齐在注册前互检，正常音频回调不增加逐帧ABI分支。
+  */
+-#define AMCL_DAUDIO_CALLBACK_ABI_V1 UINT32_C(1)
+-#define AMCL_DAUDIO_CALLBACK_LAYOUT_V1 UINT32_C(1)
++#define AMCL_DAUDIO_CALLBACK_ABI_V2 UINT32_C(2)
++#define AMCL_DAUDIO_CALLBACK_LAYOUT_V2 UINT32_C(2)
+ typedef struct {
+     uint32_t abiVersion;
+     uint32_t tableSize;
+@@ -184,6 +199,8 @@
+     uint32_t lineSize;
+     uint32_t contextSize;
+     uint32_t ringSize;
++    uint32_t timelineSize;
++    uint32_t timelineAlignment;
+     uint32_t lineAlignment;
+     uint32_t contextAlignment;
+     OH_AudioRenderer_OnWriteDataCallbackAdvanced renderData;
+@@ -192,13 +209,14 @@
+     OH_AudioCapturer_OnReadDataCallback captureData;
+     OH_AudioCapturer_OnErrorCallback captureError;
+     OH_AudioCapturer_OnInterruptCallback captureInterrupt;
+-} AmclDAudioCallbackAbiV1;
++} AmclDAudioCallbackAbiV2;
+ 
+ /* 独立CLI用此本地表；HAP getter也返回此表，确保六个实现及其类型只有一个事实源。 */
+-static inline const AmclDAudioCallbackAbiV1* amcl_daudio_local_callbacks_v1(void) {
+-    static const AmclDAudioCallbackAbiV1 table = {
+-        AMCL_DAUDIO_CALLBACK_ABI_V1, sizeof(AmclDAudioCallbackAbiV1),
+-        AMCL_DAUDIO_CALLBACK_LAYOUT_V1, sizeof(AmclLine), sizeof(AmclCallback), sizeof(AmclCaptureRing),
++static inline const AmclDAudioCallbackAbiV2* amcl_daudio_local_callbacks_v2(void) {
++    static const AmclDAudioCallbackAbiV2 table = {
++        AMCL_DAUDIO_CALLBACK_ABI_V2, sizeof(AmclDAudioCallbackAbiV2),
++        AMCL_DAUDIO_CALLBACK_LAYOUT_V2, sizeof(AmclLine), sizeof(AmclCallback), sizeof(AmclCaptureRing),
++        sizeof(AmclPlaybackTimeline), AMCL_DAUDIO_ALIGNOF(AmclPlaybackTimeline),
+         AMCL_DAUDIO_ALIGNOF(AmclLine), AMCL_DAUDIO_ALIGNOF(AmclCallback),
+         render_data, render_error, render_interrupt, capture_data, capture_error, capture_interrupt
+     };
+@@ -206,11 +224,13 @@
+ }
+ 
+ /* 所有声明字段逐项检查，不能仅检查函数地址非零或依赖偶然相同的总大小。 */
+-static inline int amcl_daudio_callbacks_valid_v1(const AmclDAudioCallbackAbiV1* table) {
+-    return table && table->abiVersion == AMCL_DAUDIO_CALLBACK_ABI_V1 &&
+-        table->tableSize == sizeof(*table) && table->layoutVersion == AMCL_DAUDIO_CALLBACK_LAYOUT_V1 &&
++static inline int amcl_daudio_callbacks_valid_v2(const AmclDAudioCallbackAbiV2* table) {
++    return table && table->abiVersion == AMCL_DAUDIO_CALLBACK_ABI_V2 &&
++        table->tableSize == sizeof(*table) && table->layoutVersion == AMCL_DAUDIO_CALLBACK_LAYOUT_V2 &&
+         table->lineSize == sizeof(AmclLine) && table->contextSize == sizeof(AmclCallback) &&
+-        table->ringSize == sizeof(AmclCaptureRing) && table->lineAlignment == AMCL_DAUDIO_ALIGNOF(AmclLine) &&
++        table->ringSize == sizeof(AmclCaptureRing) && table->timelineSize == sizeof(AmclPlaybackTimeline) &&
++        table->timelineAlignment == AMCL_DAUDIO_ALIGNOF(AmclPlaybackTimeline) &&
++        table->lineAlignment == AMCL_DAUDIO_ALIGNOF(AmclLine) &&
+         table->contextAlignment == AMCL_DAUDIO_ALIGNOF(AmclCallback) &&
+         table->renderData && table->renderError && table->renderInterrupt &&
+         table->captureData && table->captureError && table->captureInterrupt;
+@@ -218,7 +238,7 @@
+ 
+ /* 正常SDK加载的宿主libentry公开入口；只返回只读表，不建立全局line registry或新线程。 */
+ __attribute__((visibility("default")))
+-const AmclDAudioCallbackAbiV1* amcl_javasound_callbacks_v1(void);
++const AmclDAudioCallbackAbiV2* amcl_javasound_callbacks_v2(void);
+ #ifdef __cplusplus
+ }
+ #endif
+--- /dev/null
++++ b/jdk/src/share/native/com/sun/media/sound/ohos_playback_timeline.h
+@@ -0,0 +1,124 @@
++/* 将系统真实呈现位置映射到用户PCM帧。系统帧包含为推进尾部而实际写入的静音，
++ * 用户帧只由原PCM消费增长。一个callback生产者、一个Java lockNative控制消费者；
++ * 连续PCM合并为一个活动区间，仅跨静音空隙时保存已关闭区间。回调无分配/锁/等待。
++ * 有界区间队列满时不消费新用户PCM，控制侧取得真实位置后回收并继续，不能覆盖记录。
++ */
++#ifndef AMCL_OHOS_PLAYBACK_TIMELINE_H
++#define AMCL_OHOS_PLAYBACK_TIMELINE_H
++#include <stdint.h>
++#include <string.h>
++
++#define AMCL_PLAYBACK_CLOSED_SPANS 256
++typedef struct {
++    uint64_t begin, end, userBegin;
++} AmclPlaybackSpan;
++
++typedef struct {
++    AmclPlaybackSpan spans[AMCL_PLAYBACK_CLOSED_SPANS];
++    uint64_t head, tail;              /* 完成区间SPSC队列；发布tail后正文保持不变。 */
++    uint64_t sequence;                /* 活动区间快照版本；正文也为原子，避免seqlock数据竞争。 */
++    uint64_t activeBegin, activeEnd, activeUserBegin;
++    uint64_t streamFrames, userFrames;
++    uint64_t observedFrame, observedUser; /* 只有控制消费者更新，callback只读取。 */
++    int needsObservation;             /* 有静音或队列压力时，允许已有line monitor查询位置。 */
++} AmclPlaybackTimeline;
++
++/** 仅在callback gate已停止且在途访问归零时重置，Flush后系统呈现坐标从0开始。 */
++static inline void amcl_playback_reset(AmclPlaybackTimeline *timeline)
++{ memset(timeline, 0, sizeof(*timeline)); }
++
++/** 在复制用户字节前预留区间。失败返回0时调用方必须保留原软件队列，不能先消费再丢弃。 */
++static inline int amcl_playback_reserve(AmclPlaybackTimeline *timeline, uint64_t frames)
++{
++    uint64_t stream = __atomic_load_n(&timeline->streamFrames, __ATOMIC_RELAXED);
++    uint64_t users = __atomic_load_n(&timeline->userFrames, __ATOMIC_RELAXED);
++    uint64_t begin = __atomic_load_n(&timeline->activeBegin, __ATOMIC_RELAXED);
++    uint64_t end = __atomic_load_n(&timeline->activeEnd, __ATOMIC_RELAXED);
++    uint64_t userBegin = __atomic_load_n(&timeline->activeUserBegin, __ATOMIC_RELAXED);
++    if (!frames) return 1;
++    if (frames > UINT64_MAX - stream || frames > UINT64_MAX - users) return 0;
++    if (end > begin && end != stream) {
++        /* 已经由控制侧确认全部呈现的活动区间无需再排队；发布观察帧前已发布用户计数。 */
++        if (end > __atomic_load_n(&timeline->observedFrame, __ATOMIC_ACQUIRE)) {
++            const uint64_t tail = __atomic_load_n(&timeline->tail, __ATOMIC_RELAXED);
++            const uint64_t head = __atomic_load_n(&timeline->head, __ATOMIC_ACQUIRE);
++            if (tail - head == AMCL_PLAYBACK_CLOSED_SPANS) {
++                __atomic_store_n(&timeline->needsObservation, 1, __ATOMIC_RELEASE);
++                return 0;
++            }
++            timeline->spans[tail % AMCL_PLAYBACK_CLOSED_SPANS].begin = begin;
++            timeline->spans[tail % AMCL_PLAYBACK_CLOSED_SPANS].end = end;
++            timeline->spans[tail % AMCL_PLAYBACK_CLOSED_SPANS].userBegin = userBegin;
++            __atomic_store_n(&timeline->tail, tail + 1, __ATOMIC_RELEASE);
++        }
++        begin = stream; userBegin = users;
++    } else if (end == begin) {
++        begin = stream; userBegin = users;
++    }
++    __atomic_add_fetch(&timeline->sequence, UINT64_C(1), __ATOMIC_ACQ_REL);
++    __atomic_store_n(&timeline->activeBegin, begin, __ATOMIC_RELAXED);
++    __atomic_store_n(&timeline->activeEnd, stream + frames, __ATOMIC_RELAXED);
++    __atomic_store_n(&timeline->activeUserBegin, userBegin, __ATOMIC_RELAXED);
++    __atomic_store_n(&timeline->userFrames, users + frames, __ATOMIC_RELEASE);
++    __atomic_add_fetch(&timeline->sequence, UINT64_C(1), __ATOMIC_RELEASE);
++    return 1;
++}
++
++/** callback真实返回给系统的帧数才进入平台坐标。静音和用户PCM都计平台帧，分别记账。 */
++static inline void amcl_playback_commit(AmclPlaybackTimeline *timeline, uint64_t frames)
++{
++    const uint64_t before = __atomic_load_n(&timeline->streamFrames, __ATOMIC_RELAXED);
++    __atomic_store_n(&timeline->streamFrames, before + frames, __ATOMIC_RELEASE);
++}
++
++static inline int amcl_playback_needs_padding(AmclPlaybackTimeline *timeline)
++{
++    return __atomic_load_n(&timeline->userFrames, __ATOMIC_ACQUIRE) >
++           __atomic_load_n(&timeline->observedUser, __ATOMIC_ACQUIRE);
++}
++
++/** frame来自成功的真实系统查询；绝不使用FramesWritten或墙钟推算。取不到一致活动
++ * 快照时保留已确认下界，下一次查询再推进。只有完整通过的关闭区间才允许重用其槽。 */
++static inline uint64_t amcl_playback_observe(AmclPlaybackTimeline *timeline, uint64_t frame)
++{
++    const uint64_t submitted = __atomic_load_n(&timeline->streamFrames, __ATOMIC_ACQUIRE);
++    const uint64_t previous = __atomic_load_n(&timeline->observedFrame, __ATOMIC_RELAXED);
++    uint64_t users = __atomic_load_n(&timeline->observedUser, __ATOMIC_RELAXED);
++    uint64_t head = __atomic_load_n(&timeline->head, __ATOMIC_RELAXED);
++    const uint64_t tail = __atomic_load_n(&timeline->tail, __ATOMIC_ACQUIRE);
++    unsigned retry;
++    if (frame > submitted) frame = submitted;
++    if (frame < previous) frame = previous; /* Flush通过reset显式开始新坐标，不倒退已确认用户位置。 */
++    while (head != tail) {
++        const AmclPlaybackSpan span = timeline->spans[head % AMCL_PLAYBACK_CLOSED_SPANS];
++        if (frame > span.begin) {
++            const uint64_t end = frame < span.end ? frame : span.end;
++            const uint64_t value = span.userBegin + end - span.begin;
++            if (value > users) users = value;
++        }
++        if (frame < span.end) break;
++        ++head;
++    }
++    __atomic_store_n(&timeline->head, head, __ATOMIC_RELEASE);
++    for (retry = 0; retry < 3; ++retry) {
++        const uint64_t first = __atomic_load_n(&timeline->sequence, __ATOMIC_ACQUIRE);
++        uint64_t begin, end, userBegin, value;
++        if (first & 1) continue;
++        begin = __atomic_load_n(&timeline->activeBegin, __ATOMIC_RELAXED);
++        end = __atomic_load_n(&timeline->activeEnd, __ATOMIC_RELAXED);
++        userBegin = __atomic_load_n(&timeline->activeUserBegin, __ATOMIC_RELAXED);
++        __atomic_thread_fence(__ATOMIC_ACQUIRE);
++        if (first != __atomic_load_n(&timeline->sequence, __ATOMIC_ACQUIRE)) continue;
++        if (end > begin && frame > begin) {
++            if (end > frame) end = frame;
++            value = userBegin + end - begin;
++            if (value > users) users = value;
++        }
++        break;
++    }
++    /* 先发布用户下界，后发布对应平台帧，producer才可依据平台帧省去已完成历史区间。 */
++    __atomic_store_n(&timeline->observedUser, users, __ATOMIC_RELEASE);
++    __atomic_store_n(&timeline->observedFrame, frame, __ATOMIC_RELEASE);
++    return users;
++}
++#endif
+--- a/jdk/src/solaris/native/com/sun/media/sound/ohos_daudio.c
++++ b/jdk/src/solaris/native/com/sun/media/sound/ohos_daudio.c
+@@ -26,12 +26,25 @@
+  * 后端已编译；它不授予设备资格。独立 ELF 节保留在正常 strip 后，不借文件名猜测。 */
+ const char AMCL_DAudio_BackendIdentity[]
+     __attribute__((section(".amcl.daudio"), used, visibility("default"))) =
+-    "AMCL_DAUDIO_OHOS_API20_DUPLEX_V2";
++    "AMCL_DAUDIO_OHOS_API20_DUPLEX_V3";
+ 
+ int AMCL_DAudio_GetError(void *id)
+ {
+     AmclLine *line = (AmclLine *)id;
+     return line ? __atomic_load_n(&line->error, __ATOMIC_SEQ_CST) : 0;
++}
++
++int AMCL_DAudio_GetPendingError(void *id)
++{
++    AmclLine *line = (AmclLine *)id;
++    const int error = AMCL_DAudio_GetError(id);
++    return line && !__atomic_load_n(&line->errorReported, __ATOMIC_ACQUIRE) ? error : 0;
++}
++
++void AMCL_DAudio_MarkErrorReported(void *id)
++{
++    AmclLine *line = (AmclLine *)id;
++    if (line && AMCL_DAudio_GetError(line)) __atomic_store_n(&line->errorReported, 1, __ATOMIC_RELEASE);
+ }
+ 
+ /* 控制路径保持各自的强类型 OHOS handle；方向分支不进入 PCM 字块复制循环。 */
+@@ -65,26 +78,26 @@
+ /* 嵌入JDK的映像不归系统动态链接器登记，系统CFI不能接受其中的回调地址。只有
+  * 已签名、正常加载的同一宿主映像中的共享POD回调可注册；缺失/错版必须在Generate
+  * 前失败，不回退到已实证会被CFI拒绝的匿名入口。独立CLI仍用本库的同源本地回调。 */
+-static const AmclDAudioCallbackAbiV1 *acquire_callbacks(AmclCallback *ctx)
++static const AmclDAudioCallbackAbiV2 *acquire_callbacks(AmclCallback *ctx)
+ {
+     int (*embedded)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "amcl_jvm_is_embedded");
+-    const AmclDAudioCallbackAbiV1 *(*factory)(void);
+-    const AmclDAudioCallbackAbiV1 *table;
++    const AmclDAudioCallbackAbiV2 *(*factory)(void);
++    const AmclDAudioCallbackAbiV2 *table;
+     Dl_info markerInfo, factoryInfo, addressInfo;
+     void *host;
+     const void *addresses[7];
+     unsigned i;
+-    if (!embedded || !embedded()) return amcl_daudio_local_callbacks_v1();
+-    factory = (const AmclDAudioCallbackAbiV1 *(*)(void))dlsym(RTLD_DEFAULT, "amcl_javasound_callbacks_v1");
++    if (!embedded || !embedded()) return amcl_daudio_local_callbacks_v2();
++    factory = (const AmclDAudioCallbackAbiV2 *(*)(void))dlsym(RTLD_DEFAULT, "amcl_javasound_callbacks_v2");
+     if (!factory || !dladdr((void *)embedded, &markerInfo) || !markerInfo.dli_fbase ||
+         !dladdr((void *)factory, &factoryInfo) || !factoryInfo.dli_fname ||
+         factoryInfo.dli_fbase != markerInfo.dli_fbase) goto fail;
+     host = dlopen(factoryInfo.dli_fname, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
+     if (!host) goto fail;
+     /* NOLOAD句柄和全局解析必须是同一映像，不接受重名库或额外装载副本的getter。 */
+-    if (dlsym(host, "amcl_javasound_callbacks_v1") != (void *)factory) { dlclose(host); goto fail; }
++    if (dlsym(host, "amcl_javasound_callbacks_v2") != (void *)factory) { dlclose(host); goto fail; }
+     table = factory();
+-    if (!amcl_daudio_callbacks_valid_v1(table)) { dlclose(host); goto fail; }
++    if (!amcl_daudio_callbacks_valid_v2(table)) { dlclose(host); goto fail; }
+     addresses[0] = table;
+     addresses[1] = (const void *)table->renderData;
+     addresses[2] = (const void *)table->renderError;
+@@ -212,6 +225,7 @@
+         return closeError ? closeError : AUDIOSTREAM_ERROR_ILLEGAL_STATE;
+     }
+     free(line->ring);
++    free(line->playback);
+     amcl_capture_destroy(&line->capture);
+     free(line);
+     if (ctx && released && !ctx->retainedBuilder) {
+@@ -232,7 +246,7 @@
+     OH_AudioStream_SampleFormat format, actualFormat;
+     OH_AudioStream_EncodingType actualEncoding;
+     OH_AudioStream_Result result;
+-    const AmclDAudioCallbackAbiV1 *callbacks;
++    const AmclDAudioCallbackAbiV2 *callbacks;
+     int32_t actualRate = 0, actualChannels = 0, callbackFrames = 0;
+     int configured = 0;
+     if (index || device || encoding != DAUDIO_PCM || channels < 1 ||
+@@ -247,9 +261,11 @@
+     line->isSource = !!isSource;
+     line->capacity = bufferBytes - bufferBytes % frameSize;
+     line->frameSize = frameSize;
++    line->silenceByte = bits == 8 ? 0x80 : 0;
+     if (isSource) line->ring = (unsigned char *)malloc((size_t)line->capacity);
++    if (isSource) line->playback = (AmclPlaybackTimeline *)calloc(1, sizeof(*line->playback));
+     line->callback = (AmclCallback *)calloc(1, sizeof(*line->callback));
+-    if ((isSource && !line->ring) || !line->callback) goto fail;
++    if ((isSource && (!line->ring || !line->playback)) || !line->callback) goto fail;
+     line->callback->codeLease = acquire_code();
+     if (!line->callback->codeLease) goto fail;
+     callbacks = acquire_callbacks(line->callback);
+@@ -327,6 +343,32 @@
+ #undef AMCL_REQUIRE
+ }
+ 
++/* 只在运行状态查询真实呈现时钟；暂停时API明确不可调用，保留已确认下界。
++ * 不明运行中回退只保留已确认下界，不能猜测新epoch并自动加旧frame而提前计用户帧。
++ * Flush另行在静止窗口清空此epoch，不能把累计FramesWritten当重置后的呈现基点。 */
++static uint64_t observe_playback(AmclLine *line)
++{
++    int64_t frame = -1, timestamp = -1;
++    uint64_t absolute;
++    OH_AudioStream_Result result;
++    if (!line->playback) return 0;
++    if (!line->platformRunning || AMCL_DAudio_GetError(line) ||
++        __atomic_load_n(&line->interrupt, __ATOMIC_SEQ_CST) == AUDIOSTREAM_INTERRUPT_HINT_PAUSE)
++        return __atomic_load_n(&line->playback->observedUser, __ATOMIC_ACQUIRE);
++    if (!__atomic_load_n(&line->playback->userFrames, __ATOMIC_ACQUIRE)) return 0;
++    result = OH_AudioRenderer_GetAudioTimestampInfo(line->renderer, &frame, &timestamp);
++    if (result != AUDIOSTREAM_SUCCESS || frame < 0 || timestamp < 0) {
++        record_error(line, result == AUDIOSTREAM_SUCCESS ? AUDIOSTREAM_ERROR_ILLEGAL_STATE : result);
++        return __atomic_load_n(&line->playback->observedUser, __ATOMIC_ACQUIRE);
++    }
++    line->lastRawFrame = frame;
++    line->lastRawTimestamp = timestamp;
++    line->hasTimestamp = 1;
++    /* clockOrigin保持0；未证明的route重置不能通过FramesWritten/时间估算或猜offset补齐。 */
++    absolute = (uint64_t)frame;
++    return amcl_playback_observe(line->playback, absolute);
++}
++
+ /* Service 只在原 Java lockNative 下执行。事件回调从不持该锁或发起 Start/Pause。
+  * 用户停止的 wantedRunning 始终优先于迟到的恢复提示。 */
+ void DAUDIO_Service(void *id, int isSource)
+@@ -381,6 +423,20 @@
+             if (result != AUDIOSTREAM_SUCCESS) record_error(line, result);
+             else line->appliedGain = gain;
+         }
++        /* 用户未显式drain/查位置时，原line monitor也应停止已经无需继续的尾静音。
++         * 200ms只限制后台查询频率；显式位置/drain仍直接读取系统，不用时间推算帧数。 */
++        if (line->platformRunning && line->playback &&
++            __atomic_load_n(&line->playback->needsObservation, __ATOMIC_ACQUIRE) &&
++            amcl_playback_needs_padding(line->playback)) {
++            struct timespec now;
++            if (!clock_gettime(CLOCK_MONOTONIC, &now)) {
++                const int64_t nanos = (int64_t)now.tv_sec * INT64_C(1000000000) + now.tv_nsec;
++                if (nanos - line->lastServiceObservationNs >= INT64_C(200000000)) {
++                    (void)observe_playback(line);
++                    line->lastServiceObservationNs = nanos;
++                }
++            }
++        }
+     }
+ }
+ 
+@@ -413,6 +469,7 @@
+     AmclLine *line = (AmclLine *)id;
+     OH_AudioStream_Result result = AUDIOSTREAM_SUCCESS;
+     if (!line || line->isSource != !!isSource) return FALSE;
++    if (line->isSource && line->platformRunning) (void)observe_playback(line);
+     line->wantedRunning = 0;
+     __atomic_store_n(&line->copyEnabled, 0, __ATOMIC_SEQ_CST);
+     if (line->platformRunning) {
+@@ -486,28 +543,17 @@
+                                   __atomic_load_n(&line->read, __ATOMIC_ACQUIRE));
+ }
+ 
+-/* read-epochRead 同时描述消费与有效提交；在途回调仍算作平台待呈现，不提前报完成。
+- * timestamp 是平台真实呈现位置，不能拿 GetFramesWritten 或墙钟代替。 */
++/* 软件排队与系统待呈现的用户PCM分别计数。真实静音只推进平台坐标，不能减少用户
++ * pending直到系统呈现位置实际跨过对应用户区间；跨空隙的新数据也不会提前完成。 */
+ static uint64_t pending_bytes(AmclLine *line)
+ {
+     const uint64_t read = __atomic_load_n(&line->read, __ATOMIC_ACQUIRE);
+     const uint64_t submitted = read - line->epochRead;
+     const uint64_t queued = __atomic_load_n(&line->written, __ATOMIC_ACQUIRE) - read;
+-    int64_t frame = 0, timestamp = 0;
+-    int64_t presented = line->lastPresented;
+-    if (submitted) {
+-        OH_AudioStream_Result result = OH_AudioRenderer_GetTimestamp(line->renderer, CLOCK_MONOTONIC, &frame, &timestamp);
+-        if (result == AUDIOSTREAM_SUCCESS && frame >= line->presentationBase) {
+-            int64_t value = frame - line->presentationBase;
+-            if (value > presented) presented = value;
+-            if ((uint64_t)presented > submitted / (uint64_t)line->frameSize)
+-                presented = (int64_t)(submitted / (uint64_t)line->frameSize);
+-            line->lastPresented = presented;
+-        } else if (result != AUDIOSTREAM_SUCCESS && line->platformRunning) {
+-            record_error(line, result);
+-        }
+-    }
+-    return queued + submitted - (uint64_t)presented * (uint64_t)line->frameSize;
++    uint64_t presented = observe_playback(line);
++    /* callback可能在前面的read快照后继续提交，不能因更新较新的观察结果而unsigned下溢。 */
++    if (presented > submitted / (uint64_t)line->frameSize) presented = submitted / (uint64_t)line->frameSize;
++    return queued + submitted - presented * (uint64_t)line->frameSize;
+ }
+ 
+ int DAUDIO_StillDraining(void *id, int isSource)
+@@ -534,7 +580,6 @@
+ {
+     AmclLine *line = (AmclLine *)id;
+     int resume;
+-    int64_t writtenFrames = 0;
+     OH_AudioStream_Result result;
+     if (!line || line->isSource != !!isSource || AMCL_DAudio_GetError(line)) return FALSE;
+     resume = line->wantedRunning;
+@@ -547,19 +592,18 @@
+         amcl_capture_flush(&line->capture);
+         return !resume || DAUDIO_Start(line, isSource);
+     }
+-    writtenFrames = line->presentationBase;
+     /* 从未提交平台数据的 prepared 流可能不接受 Flush；此时只存在自有软件队列。
+-     * 已提交过用户帧才调用真实 Flush，并以平台累计写入边界建立新 epoch。 */
++     * 已提交过用户帧才调用真实Flush。成功后系统呈现坐标归零，累计写入数无关。 */
+     if (__atomic_load_n(&line->read, __ATOMIC_ACQUIRE) != line->epochRead) {
+         result = OH_AudioRenderer_Flush(line->renderer);
+         if (result != AUDIOSTREAM_SUCCESS) { record_error(line, result); return FALSE; }
+-        result = OH_AudioRenderer_GetFramesWritten(line->renderer, &writtenFrames);
+-        if (result != AUDIOSTREAM_SUCCESS || writtenFrames < 0) { record_error(line, result); return FALSE; }
+     }
+     line->epochRead = __atomic_load_n(&line->written, __ATOMIC_ACQUIRE);
+     __atomic_store_n(&line->read, line->epochRead, __ATOMIC_RELEASE);
+-    line->presentationBase = writtenFrames;
+-    line->lastPresented = 0;
++    amcl_playback_reset(line->playback);
++    line->clockOrigin = 0;
++    line->lastRawFrame = line->lastRawTimestamp = line->lastServiceObservationNs = 0;
++    line->hasTimestamp = 0;
+     return !resume || DAUDIO_Start(line, isSource);
+ }
+ 

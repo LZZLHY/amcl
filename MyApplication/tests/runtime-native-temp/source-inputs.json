@@ -1,0 +1,71 @@
+{
+  "scope": "Exact selected postimages after active0030/0031; upstream commits remain separate from fixture Git commits",
+  "majors": {
+    "8": {
+      "upstream": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "patches": {
+        "0030-ohos-native-temp-contract.patch": "75341594de60c7ad61ea2b7ee7ceb0ebe951a772f1111a43582c02380d815ef9",
+        "0031-ohos-perfdata-uid-identity.patch": "2075b6579ff7f2b62bb4a0ffb91c3ce3aeaca739f993507dd7c7126440699e42"
+      },
+      "files": {
+        "hotspot/src/os/linux/vm/ohos_temp_directory.hpp": "f911d676bc17436c876098336fa8f74651a866116eb2981a29e16be380f89a7f",
+        "hotspot/src/os/linux/vm/os_linux.cpp": "7d82b87d4f2600acfe683f967cd306ddbecb324faadba69ee2992d3618a2d272",
+        "hotspot/src/os/linux/vm/perfMemory_linux.cpp": "6d3945a950cb8910a0d7d39fc9c96643343e372459091b2546b9df4ea63cd50c",
+        "hotspot/src/share/vm/runtime/arguments.cpp": "1e43c4efb13be0bf0c3e9bd5fc6f0c73aab257a54b0c7efbb83ee44155e2cd49",
+        "jdk/src/solaris/classes/sun/tools/attach/LinuxVirtualMachine.java": "b05efe2b001bf1a34ffd9402a67b8664e94766c09e5a0211f90b7dcd19eeb75c",
+        "jdk/src/solaris/native/sun/tools/attach/LinuxVirtualMachine.c": "ce90c423a143e3ad2de9d74643c15eac96d8b30a220ed11766f2533cf8310cfa"
+      }
+    },
+    "17": {
+      "upstream": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "patches": {
+        "0030-ohos-native-temp-contract.patch": "eaad35a2a14616dffb20d5206bd2333672896c219d61629905819ca0d41be0b4",
+        "0031-ohos-perfdata-uid-identity.patch": "f8af3cfea3f4ee472e63087334501696312d57db321f3d0e3e653f74728f1ac2"
+      },
+      "files": {
+        "src/hotspot/os/linux/ohos_temp_directory.hpp": "f911d676bc17436c876098336fa8f74651a866116eb2981a29e16be380f89a7f",
+        "src/hotspot/os/linux/os_linux.cpp": "8d673441c84ea826864bfb5f07410ae18d9ce470624e4ddd5684e558d15ec9d2",
+        "src/hotspot/os/posix/perfMemory_posix.cpp": "dde6a595ab7af4556567bab94b6b3360cdb9bf6389e69aca123c3aa5500fe83b",
+        "src/hotspot/share/runtime/arguments.cpp": "0d6adbd7ce950a13aa2fdee7686099676031afdc36f537a2448a9ecd32cb2a52",
+        "src/java.base/share/classes/module-info.java": "59d36b5ccdf60fb18584b58a671058fcba3949020bc3ea71c6a97af3eb5d788c",
+        "src/jdk.attach/linux/classes/sun/tools/attach/VirtualMachineImpl.java": "a00e13b6812d2c6bcc97f22ded66116cd8a8852fc8f4167990627c01f46ef588",
+        "src/jdk.attach/linux/native/libattach/VirtualMachineImpl.c": "98a5f38ccac49166803e2041b010ee1354e24d28e25c2321250a85c8b25661bf",
+        "src/jdk.internal.jvmstat/linux/classes/sun/jvmstat/PlatformSupportImpl.java": "c8492b28ccb6fc22209966ed879eb0adcc70353040e7008c1f2e1b1ac47a26ae"
+      }
+    },
+    "21": {
+      "upstream": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "patches": {
+        "0030-ohos-native-temp-contract.patch": "e5edfc7a9c9df66e65120361298902db59dacb7ab51f6c2dea220f4db3fe0b68",
+        "0031-ohos-perfdata-uid-identity.patch": "52f547a842a1ab0a10c82f47812e65b7922dd63eccb589b3dca5045a9fac222a"
+      },
+      "files": {
+        "src/hotspot/os/linux/ohos_temp_directory.hpp": "f911d676bc17436c876098336fa8f74651a866116eb2981a29e16be380f89a7f",
+        "src/hotspot/os/linux/os_linux.cpp": "f1923dc5788c9248b49545af80591bab0eeeab0a5c3d340cbc2b9895cea7db9a",
+        "src/hotspot/os/posix/perfMemory_posix.cpp": "f71e04531b61c4e77494f97b1daf05166454b92c124976751ee0dc66966387b9",
+        "src/hotspot/share/runtime/arguments.cpp": "18b6f8a18feb760574220b5c115f7a1215725b2f04c2f5c7df5d9d3a4ed2d3ab",
+        "src/java.base/share/classes/module-info.java": "cd48417f220c348d27c8f6688c1d1e5f74838f5acfbb1e65d34a41572b3864ff",
+        "src/jdk.attach/linux/classes/sun/tools/attach/VirtualMachineImpl.java": "50289e14d213f349440537419ce91795200d3912a2d6c5e1fe9865b1d6378352",
+        "src/jdk.attach/linux/native/libattach/VirtualMachineImpl.c": "5db86a88eb6835b3c75f40347c5b8c58b493faf91c8a2da635bb0b1a0f145247",
+        "src/jdk.internal.jvmstat/linux/classes/sun/jvmstat/PlatformSupportImpl.java": "2e10c3f4b9231b34c35526520343fb0e5430751bcf7c184d57113cc95191db29"
+      }
+    },
+    "25": {
+      "upstream": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "patches": {
+        "0030-ohos-native-temp-contract.patch": "4cf6b67bc189fc8434667a0927f17cd0a3637c9a8bd18cfe0eae21040d0b1bea",
+        "0031-ohos-perfdata-uid-identity.patch": "c10dc45b57c9942a8f3414d201487094a993812733ba5ea311684c45a92c5b70"
+      },
+      "files": {
+        "src/hotspot/os/linux/ohos_temp_directory.hpp": "f911d676bc17436c876098336fa8f74651a866116eb2981a29e16be380f89a7f",
+        "src/hotspot/os/linux/os_linux.cpp": "845d62cc13abda85bd666d4857255db62b7a3225278e5e2adf4c3601ac5b088b",
+        "src/hotspot/os/posix/perfMemory_posix.cpp": "4a0b547e35c7323828a347bbfb4e7da28b9ef747f3bafc3450238c72503b6b27",
+        "src/hotspot/share/runtime/arguments.cpp": "cb9a114164d388ced380120dbdd89d4487b0e9df70896eefdbefa5e7add4d796",
+        "src/java.base/share/classes/module-info.java": "6c099302801848d1170b7291d30180862dbd216a829352caab4a5b6de56f6b7e",
+        "src/jdk.attach/linux/classes/sun/tools/attach/VirtualMachineImpl.java": "02a2fc54b4c6f8084fbf8fa924a401c1c78c807d4cc9331a2db37067cac472be",
+        "src/jdk.attach/linux/native/libattach/VirtualMachineImpl.c": "1d232ce0480585acc2e097fb7e7a0d6c5f86a8a0ce5949fe50ae6b0b52d80d2b",
+        "src/jdk.internal.jvmstat/linux/classes/sun/jvmstat/PlatformSupportImpl.java": "2e10c3f4b9231b34c35526520343fb0e5430751bcf7c184d57113cc95191db29"
+      }
+    }
+  }
+}

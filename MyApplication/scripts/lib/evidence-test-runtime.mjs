@@ -12,7 +12,8 @@ export function evidenceRuntime(options = {}) {
   const directory = fs.mkdtempSync(path.join(workspaceTempRoot(), 'amcl-evidence-test-'));
   const cache = new Map();
   const control = { afterRead: undefined, failWrite: undefined, requests: [], files: [], main: '', cryptoUpdates: [],
-    remoteTransform: undefined, id: 'sAbCdEf', urlId: 'sAbCdEf', networkError: false };
+    remoteTransform: undefined, id: 'sAbCdEf', urlId: 'sAbCdEf', networkError: false,
+    metadata: [], source: '' };
   const stat = (p, follow = true) => {
     const value = typeof p === 'number' ? fs.fstatSync(p, { bigint: true }) : follow ? fs.statSync(p, { bigint: true }) : fs.lstatSync(p, { bigint: true });
     return { size: Number(value.size), mtime: Number(value.mtimeMs / 1000n), ctime: Number(value.ctimeMs / 1000n),
@@ -132,13 +133,21 @@ export function evidenceRuntime(options = {}) {
       if (name === '@kit.NetworkKit') return { http: { RequestMethod: { POST: 'POST', GET: 'GET', DELETE: 'DELETE' }, createHttp: () => ({
         async request(url, options) {
           control.requests.push({ url, options });
-          if (url.endsWith('/limits')) return { responseCode: 200, result: JSON.stringify({ maxLength: 20485760, maxLines: 200000, storageTime: 1296000 }) };
+          // 官方与备用实例分别保留真实的新旧契约，避免所有宿主测试继续用旧字段掩盖回退。
+          if (url.endsWith('/limits')) return { responseCode: 200, result: JSON.stringify(
+            url.startsWith('https://api.logshare.cn/')
+              ? { maxFiles: 200, maxTotalBytes: 20 * 1024 * 1024, maxRequestBodyBytes: 32 * 1024 * 1024, storageTime: 604800 }
+              : { maxLength: 10485760, maxLines: 50000, storageTime: 604800 }) };
           if (options.method === 'DELETE') return { responseCode: 200, result: JSON.stringify({ success: true, deleted: [url.split('/').pop()], failed: [] }) };
           if (options.method === 'POST') {
             if (control.networkError) throw new Error('synthetic response lost');
             const body = options.header['Content-Encoding'] === 'gzip' ? zlib.gunzipSync(Buffer.from(options.extraData)).toString() : options.extraData;
             const payload = JSON.parse(body);
-            control.files = payload.files || []; control.main = payload.content ?? control.files[0]?.content ?? '';
+            control.files = payload.files || [];
+            // 新上传仅有 files；摘要按稳定文件名定位，不能把排序后的第一个游戏日志当摘要。
+            control.main = control.files.find(file => file.name === '_amcl/diagnosis.txt')?.content
+              ?? payload.content ?? control.files[0]?.content ?? '';
+            control.metadata = payload.metadata ?? []; control.source = payload.source ?? '';
             return { responseCode: 201, result: JSON.stringify({ success: true, id: control.id, url: 'https://logshare.cn/' + control.urlId, token: 'synthetic-delete-token' }) };
           }
           if (url.includes('/v1/raw/')) {
@@ -170,8 +179,9 @@ export function evidenceRuntime(options = {}) {
     // Observed属于ArkUI观测引擎边界，宿主只保留原类构造器而不模拟UI刷新。
     // 因此纯任务模型的枚举、默认字段和状态/进度辅助函数仍完整来自生产模块，
     // 不必为了缺SDK装饰器而在各测试复制一份会遗漏新恢复策略的任务模型。
-    new Function('require', 'module', 'exports', 'AppStorage', 'Observed', compiled)(
-      dependency, module, module.exports, { get: () => context }, target => target);
+    new Function('require', 'module', 'exports', 'AppStorage', 'Observed', 'setTimeout', 'clearTimeout', compiled)(
+      dependency, module, module.exports, options.appStorage ?? { get: () => context }, target => target,
+      options.scheduling?.setTimeout ?? setTimeout, options.scheduling?.clearTimeout ?? clearTimeout);
     return module.exports;
   }
   return { directory, context, control, load, kitFs,

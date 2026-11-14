@@ -63,12 +63,18 @@ test('stat失败保持原件/可用活动且总占用未知，写入中条目不
 
 test('真实清单读取期间持租约，自动/手动删除不能越过，离页取消释放全部租约', async () => {
   const f = await fixture();
+  // 本例核验取消reader本身的租约寿命。手动删除需要允许维护owner，但不能因此让之前
+  // dirty留下的自动timer另起一个reader，使全局hasEvidenceLease混入无关维护任务。
+  // 使用生产批次hold隔离自动维护，不替换删除/租约方法；即时释放断言仍在原await之后。
+  f.ledger.ledgerBeginMaintenanceBatch(f.root);
   try {
     let reads = 0, enteredResolve, release, cancelled = false;
     const entered = new Promise(resolve => { enteredResolve = resolve; }); const gate = new Promise(resolve => { release = resolve; });
     const read = f.runtime.kitFs.readText;
+    // 热投影已去掉第二遍manifest读取；使本局真实dirty后在唯一一次原件读取中验证租约保护。
+    f.ledger.ledgerMarkDirty(f.root, 1);
     f.runtime.kitFs.readText = async p => {
-      if (p.endsWith('/logs/ledger/1/manifest.json') && ++reads === 2) { enteredResolve(); await gate; }
+      if (p.endsWith('/logs/ledger/1/manifest.json') && ++reads === 1) { enteredResolve(); await gate; }
       return read(p);
     };
     const pending = f.storage.readActivityStorage(f.root, () => cancelled); await entered;
@@ -78,7 +84,14 @@ test('真实清单读取期间持租约，自动/手动删除不能越过，离�
     cancelled = true; release(); await assert.rejects(pending, /取消/);
     assert.equal(f.io.hasEvidenceLease(f.root, 1), false); assert.ok(fs.existsSync(f.root + '/logs/ledger/1/manifest.json'));
     f.ledger.configureLedgerMaintenanceOwner(true, () => false);
-  } finally { f.runtime.close(); }
+  } finally {
+    // 先关闭本夹具的自动维护资格，再等待真实批次结束，避免收尾又发起独立文件读取。
+    // 即使释放hold失败也关闭本例运行时，不遗留临时目录或计时器。
+    try {
+      f.ledger.configureLedgerMaintenanceOwner(true, () => false);
+      await f.ledger.ledgerEndMaintenanceBatchAsync(f.root);
+    } finally { f.runtime.close(); }
+  }
 });
 
 test('真实异步clear按批末维护一次，受保护活动使整批零删除', async () => {

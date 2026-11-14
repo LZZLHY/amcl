@@ -1,0 +1,14 @@
+diff --git a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java
+--- a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java
++++ b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java
+@@ -31,7 +31,9 @@
+   /* Returns "win32" if Windows; "linux" if Linux. */
+   public static String getOS() throws UnsupportedPlatformException {
+     String os = System.getProperty("os.name");
+-    if (os.equals("Linux")) {
++    if ((os.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(os) || "OpenHarmony".equals(os) || "OHOS".equals(os))) {
+       return "linux";
+     } else if (os.equals("FreeBSD")) {
+       return "bsd";

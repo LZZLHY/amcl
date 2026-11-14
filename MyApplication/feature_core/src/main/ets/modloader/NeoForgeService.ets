@@ -23,6 +23,7 @@ import {
 } from './ModLoaderTypes';
 import { ForgelikeInstaller, ForgelikeProfile } from './ForgelikeInstaller';
 import { fetchMergedMavenVersions } from './MavenUtils';
+import { selectMcSourceUrls } from '../download/SourceProber';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BMCLAPI_BASE } from 'commons';
 import { AppLogger } from 'commons';
@@ -95,11 +96,12 @@ export class NeoForgeService implements IModLoaderService {
     //   命中/回源策略不同（已复核 `/libraries/net/neoforged/neoforge/21.1.9/...-installer.jar`
     //   返回 200），多一条国内候选。
     let installerRel = NEOFORGE_GROUP_PATH + '/' + loaderVersion + '/neoforge-' + loaderVersion + '-installer.jar';
-    let installerUrls: string[] = [
+    // 网关开启/明确官方时仅留真实maven；关闭档保留原镜像与官方候选，不改并发配置。
+    let installerUrls: string[] = selectMcSourceUrls([
       BMCLAPI_BASE + '/maven/' + installerRel,
       BMCLAPI_BASE + '/libraries/' + installerRel,
       NEOFORGE_MAVEN + '/' + installerRel,
-    ];
+    ]);
     let profile: ForgelikeProfile = {
       loaderName: 'NeoForge',
       gameVersion: gameVersion,

@@ -225,6 +225,11 @@ extern "C" void ohos_surface_input_gate_unlock(void) {
     s_surfaceInputGateMutex.unlock();
 }
 
+extern "C" void ohos_surface_input_gate_set_geometry_pending(bool pending) {
+    std::lock_guard<std::recursive_mutex> lock(s_surfaceInputGateMutex);
+    s_surfaceInputGate.geometryPending = pending;
+}
+
 extern "C" uint64_t ohos_surface_input_gate_accept(
     OH_NativeXComponent* component, void* window) {
     std::lock_guard<std::recursive_mutex> lock(s_surfaceInputGateMutex);
@@ -269,7 +274,7 @@ extern "C" void ohos_surface_input_gate_log_focus_edge(
 
 extern "C" uint64_t ohos_surface_input_gate_begin_current_transaction(void) {
     s_surfaceInputGateMutex.lock();
-    if (!s_surfaceInputGate.active || !s_surfaceInputGate.component ||
+    if (s_surfaceInputGate.geometryPending || !s_surfaceInputGate.active || !s_surfaceInputGate.component ||
         !s_surfaceInputGate.window || s_surfaceInputGate.publicationGeneration == 0) {
         s_surfaceInputGateMutex.unlock();
         return 0;
@@ -351,6 +356,7 @@ extern "C" uint64_t ohos_surface_input_gate_clear_transaction(
     if (acceptSurfaceInputGateLocked(component, window, true) != 0u) {
         // 先让消费者退休旧菜单，再进行可能失败的清窗；无效旧 destroy 不拥有此权限。
         retireTouchMenuSurfaceScope();
+        amcl_input_policy_retire_channels();
         amcl_cursor_lock_set_surface(false);
         amcl::input::PlatformInputCapturePlatformChanged(
             false, AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST);
@@ -366,6 +372,7 @@ extern "C" uint64_t ohos_surface_input_gate_clear_active_transaction(
     if (s_surfaceInputGate.active && mutation) {
         // 生命周期失败的 clear-active 也可能没有尚按住的手指，仍须撤销消费端旧菜单。
         retireTouchMenuSurfaceScope();
+        amcl_input_policy_retire_channels();
         amcl_cursor_lock_set_surface(false);
         amcl::input::PlatformInputCapturePlatformChanged(
             false, AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST);
@@ -381,6 +388,7 @@ public:
                                   bool requireWindow)
         : acceptedGeneration_(0) {
         ohos_surface_input_gate_lock();
+        if (s_surfaceInputGate.geometryPending) return;
         acceptedGeneration_ = requireWindow
             ? ohos_surface_input_gate_accept(component, window)
             : ohos_surface_input_gate_accept_component(component);
@@ -1186,6 +1194,9 @@ struct SchemaButtonRuntime {
     std::array<bool, 4> phaseHeld{};
     int64_t groupDownNs = 0;
     bool groupMoved = false;
+    /** 真实DOWN与滑入分别记在原按钮运行体内；滑入指不能污染另一真实手势的候选。 */
+    std::set<int> directFingers;
+    bool gestureCompleted = true;
 };
 
 struct SchemaCarriedOwner {
@@ -2243,45 +2254,71 @@ static void schemaRetireGroupPhaseOwners(SchemaButtonRuntime& state, const std::
     if (hadPhaseOwner) amcl_fire_button_pressed(state.control.id, keptHeld ? 1 : 0);
 }
 
-/** 正常 UP 的保持释放与取消分开：只有正常合格 UP 才触发 click/doubleClick。 */
-static void schemaGroupLastUp(SchemaButtonRuntime& state, bool cancelled) {
+/** 只初始化真实触摸的时间候选；滑入仅执行press，不启动长按或点击期限。调用方持schema锁。 */
+static void schemaBeginGroupGesture(SchemaButtonRuntime& state, bool direct) {
+    state.groupDownNs = direct ? schemaNowNs() : 0; state.groupMoved = false; state.longFired = false;
+    state.gestureCompleted = !direct; state.longDeadlineNs = 0;
+    if (direct && schemaUsesGroupPhases(state)) {
+        const auto& definition = s_touchGroups.Definition().controls[state.groupControl];
+        if (definition.bindings[1].Active()) {
+            state.longDeadlineNs = state.groupDownNs + (definition.fcl ? 400000000LL : SCHEMA_LONGPRESS_NS);
+            schemaWakeDeadlineWorker();
+        }
+    }
+}
+
+/** 最后一根真实DOWN手指正常结束时完成tap；仍在的滑入指只继续持有，不延后或补造tap。 */
+static void schemaCompleteGroupGesture(SchemaButtonRuntime& state) {
+    if (state.gestureCompleted || !schemaUsesGroupPhases(state)) return;
+    state.gestureCompleted = true;
+    const auto& definition = s_touchGroups.Definition().controls[state.groupControl];
+    const int64_t now = schemaNowNs();
+    const int64_t clickLimit = definition.fcl ? 100000000LL : SCHEMA_DOUBLETAP_NS;
+    const int64_t doubleLimit = definition.fcl ? 400000000LL : SCHEMA_DOUBLETAP_NS;
+    if (!state.groupMoved && !state.longFired && now >= state.groupDownNs && now-state.groupDownNs <= clickLimit) {
+        (void)schemaGroupPhase(state, 2);
+        if (state.lastTapNs > 0 && now-state.lastTapNs < doubleLimit) {
+            (void)schemaGroupPhase(state, 3); state.lastTapNs = 0;
+        } else state.lastTapNs = now;
+    }
+    state.longDeadlineNs = 0;
+}
+
+/** 真实UP、系统取消、接力离开各有语义；滑出不触发离散动作，也不全清AMCL锁存阶段。 */
+static void schemaGroupLastUp(SchemaButtonRuntime& state, bool cancelled, bool swipeExit = false) {
     if (!schemaUsesGroupPhases(state)) return;
     const auto& definition = s_touchGroups.Definition().controls[state.groupControl];
     if (cancelled) { schemaRetireGroupPhaseOwners(state); state.lastTapNs = 0; }
     else {
         for (size_t phase = 0; phase < 2; ++phase) {
-            if (!definition.bindings[phase].autoKeep && state.phaseHeld[phase]) {
+            const bool release = !definition.bindings[phase].autoKeep ||
+                (swipeExit && definition.fcl && phase == 0);
+            if (release && state.phaseHeld[phase]) {
                 inputLedger().releaseOwner(state.phaseOwners[phase]); state.phaseHeld[phase] = false;
             }
         }
-        const int64_t now = schemaNowNs();
-        const int64_t clickLimit = definition.fcl ? 100000000LL : SCHEMA_DOUBLETAP_NS;
-        const int64_t doubleLimit = definition.fcl ? 400000000LL : SCHEMA_DOUBLETAP_NS;
-        if (!state.groupMoved && !state.longFired && now >= state.groupDownNs && now-state.groupDownNs <= clickLimit) {
-            (void)schemaGroupPhase(state, 2);
-            if (state.lastTapNs > 0 && now-state.lastTapNs < doubleLimit) {
-                (void)schemaGroupPhase(state, 3); state.lastTapNs = 0;
-            } else state.lastTapNs = now;
+        if (!swipeExit) schemaCompleteGroupGesture(state);
+        else {
+            // 已完成的真实UP历史属于原直接手势，残留滑入指结束不能抹掉其双击资格。
+            // 纯滑入或真实手势滑出仍不保留tap历史。
+            if (!state.gestureCompleted || state.groupDownNs == 0) state.lastTapNs = 0;
+            state.gestureCompleted = true;
         }
     }
     // 直接退休ledger只处理输入所有权，不自动发UI反馈；普通UP和Cancel均补齐聚合末态。
     amcl_fire_button_pressed(state.control.id,
         std::any_of(state.phaseHeld.begin(), state.phaseHeld.end(), [](bool held) { return held; }) ? 1 : 0);
     state.longDeadlineNs = 0; state.longFired = false;
+    state.directFingers.clear();
 }
 
-static void schemaTriggerFirstDown(SchemaButtonRuntime& state) {
+static void schemaTriggerFirstDown(SchemaButtonRuntime& state, bool swipeEntry = false) {
     const AmclCtrlEntry& e = state.control;
     const long long now = schemaNowNs();
     state.groupControl = schemaGroupControlIndex(e.id);
     state.groupEligibility = state.groupControl < 0 ? 0 : s_touchGroups.Epoch(state.groupControl);
     if (schemaUsesGroupPhases(state)) {
-        state.groupDownNs = now; state.groupMoved = false; state.longFired = false;
-        const auto& definition = s_touchGroups.Definition().controls[state.groupControl];
-        if (definition.bindings[1].Active()) {
-            state.longDeadlineNs = now + (definition.fcl ? 400000000LL : SCHEMA_LONGPRESS_NS);
-            schemaWakeDeadlineWorker();
-        }
+        schemaBeginGroupGesture(state, !swipeEntry);
         (void)schemaGroupPhase(state, 0);
         return;
     }
@@ -2316,8 +2353,8 @@ static void schemaTriggerFirstDown(SchemaButtonRuntime& state) {
     }
 }
 
-static void schemaTriggerLastUp(SchemaButtonRuntime& state, bool cancelled = false) {
-    if (schemaUsesGroupPhases(state)) { schemaGroupLastUp(state, cancelled); return; }
+static void schemaTriggerLastUp(SchemaButtonRuntime& state, bool cancelled = false, bool swipeExit = false) {
+    if (schemaUsesGroupPhases(state)) { schemaGroupLastUp(state, cancelled, swipeExit); return; }
     const AmclCtrlEntry& e = state.control;
     if (e.trigger == 0 && state.outputDown) {
         if(schemaDispatchButton(e,state.owner,GLFW_RELEASE))state.outputDown=false;
@@ -2438,11 +2475,12 @@ static void schemaPollLongPressLocked(int64_t eventTimeNs = 0) {
 
 // 摇杆 WASD 边沿的唯一出口：direction 0..3 对应 GLFW 的 W/A/S/D，owner 固定为 OWNER_SCHEMA_WASD。
 // 调用方持 s_schemaMutex，输出经 routerOutput 进入 transaction → ledger → ring（与 longPress 同锁序）。
-static void schemaEmitWasd(int direction, bool press) {
-    if (direction < 0 || direction >= amcl::input::SchemaWasdLatch::kDirections) return;
+static bool schemaEmitWasd(int direction, bool press) {
+    if (direction < 0 || direction >= amcl::input::SchemaWasdLatch::kDirections) return false;
     const int code = s_touchConfig.actions[direction];
-    if (code != 0 && routerOutput(OWNER_SCHEMA_WASD + direction,code,press ? GLFW_PRESS : GLFW_RELEASE) && press)
-        ++s_touchGuide.movement;
+    const bool accepted = code != 0 && routerOutput(OWNER_SCHEMA_WASD + direction,code,press ? GLFW_PRESS : GLFW_RELEASE);
+    if (accepted && press) ++s_touchGuide.movement;
+    return accepted;
 }
 
 // 30ms 锁存期限到达后补发被吞掉的 PRESS；摇杆手指已不在或方向已不再想要时只清期限。
@@ -2806,15 +2844,17 @@ static void schemaAdvanceGroupsLocked() {
     const uint64_t before = s_touchGroups.Revision();
     std::set<size_t> hidden;
     try { hidden = s_touchGroups.Advance(); } catch (...) { return; }
-    if (!hidden.empty()) {
+    if (!hidden.empty() || s_touchGroups.HasHiddenControls()) {
         // 提交后不再分配容器，避免 mask 已隐藏而分配失败跳过必需的 owner 退休。
         std::array<AmclCtrlEntry, AMCL_CONTROL_SCHEMA_MAX_CONTROLS> visible{};
         int count = 0;
         for (size_t i = 0; i < s_schema.size(); ++i) if (s_touchGroups.Visible(i)) visible[count++] = s_schema[i];
         schemaRetireChangedControlsLocked(visible.data(), count);
         for (auto it=s_schemaCarriedOwners.begin(); it!=s_schemaCarriedOwners.end();) {
-            bool retire=false;
-            for (size_t group : hidden) retire |= it->second.groupId == s_touchGroups.Definition().groups[group].id;
+            // 承接键可能已不在当前场景几何中；仍按其原组判断层级隐藏，不能留下幽灵按住。
+            const int index = schemaGroupControlIndex(it->second.id.c_str());
+            const bool retire = index >= 0 ? !s_touchGroups.Visible(static_cast<size_t>(index)) :
+                !s_touchGroups.CarriedGroupVisible(it->second.groupId);
             if (retire) {
                 inputLedger().releaseOwner(it->first); amcl_fire_button_pressed(it->second.id.c_str(),0);
                 it=s_schemaCarriedOwners.erase(it);
@@ -2835,7 +2875,10 @@ static void schemaAdvanceGroupsLocked() {
 // 吞掉的 PRESS 会留下补发期限；这里唤醒 deadline worker，让手指静止时也能在期限到达时按下。
 // 调用方持 s_schemaMutex。
 static void schemaApplyWasd(bool w, bool a, bool s, bool d) {
-    const bool want[amcl::input::SchemaWasdLatch::kDirections] = { w, a, s, d };
+    // 空绑定不是暂时拒绝，不应制造永远不能完成的补发期限。
+    const bool want[amcl::input::SchemaWasdLatch::kDirections] = {
+        w && s_touchConfig.actions[0] != 0, a && s_touchConfig.actions[1] != 0,
+        s && s_touchConfig.actions[2] != 0, d && s_touchConfig.actions[3] != 0 };
     s_schemaWasdLatch.Apply(want, schemaNowNs(), schemaEmitWasd);
     if (s_schemaWasdLatch.EarliestDeadline() != 0) schemaWakeDeadlineWorker();
 }
@@ -2989,9 +3032,9 @@ static bool schemaHitTestLocked(float px, float py, AmclCtrlEntry& out) {
             const double dy = (double)py - ((double)e.y + (double)e.h * 0.5);
             const double dist = dx * dx + dy * dy;
             const bool higherRank = s_touchGroups.Enabled() && best >= 0 &&
-                s_touchGroups.Definition().controls[i].rank > s_touchGroups.Definition().controls[best].rank;
+                s_touchGroups.Rank(i) > s_touchGroups.Rank(best);
             const bool sameRank = !s_touchGroups.Enabled() || best < 0 ||
-                s_touchGroups.Definition().controls[i].rank == s_touchGroups.Definition().controls[best].rank;
+                s_touchGroups.Rank(i) == s_touchGroups.Rank(best);
             if (best < 0 || higherRank || (sameRank && dist < bestDist)) {
                 best = (int)i;
                 bestDist = dist;
@@ -3081,18 +3124,37 @@ static void schemaSwipeButtonLocked(SchemaFingerBinding& binding,int fid,float x
     const bool inCurrent = pointInRect(x,y,binding.control.x,binding.control.y,
                                       binding.control.w,binding.control.h,binding.control.hitSlop);
     const bool exactTarget = hasHit && pointInRect(x,y,hit.x,hit.y,hit.w,hit.h,0);
-    if (binding.owner != 0 && inCurrent &&
-        (!hasHit || std::strcmp(hit.id,binding.control.id) == 0 || !exactTarget)) return;
     auto old = s_schemaButtons.find(binding.control.id);
-    if (old != s_schemaButtons.end() && old->second.fingers.erase(fid) && old->second.fingers.empty())
-        schemaTriggerLastUp(old->second);
+    // 阶段按钮没有旧owner；真实接触成员才是留驻权威，输出拒绝也不能借MOVE反复补按。
+    const bool engaged = old != s_schemaButtons.end() && old->second.fingers.count(fid) != 0;
+    if (engaged && inCurrent &&
+        (!hasHit || std::strcmp(hit.id,binding.control.id) == 0 || !exactTarget)) return;
+    if (engaged) {
+        auto& state = old->second;
+        state.fingers.erase(fid);
+        const bool directLeft = state.directFingers.erase(fid) != 0;
+        if (state.fingers.empty()) schemaTriggerLastUp(state, false, true);
+        else if (directLeft && state.directFingers.empty()) {
+            // 源仍被滑入手指持有，真实手势已滑出：保持有，只撤其尚未提交的离散候选。
+            state.gestureCompleted = true; state.longDeadlineNs = 0; state.lastTapNs = 0;
+        }
+    }
     binding.owner = 0;
-    if (!hasHit || hit.kind != 0 || hit.handledBy != 0 ||
-        hit.swipeGroup != binding.control.swipeGroup || hit.trigger != 0 || hit.dragLook) return;
+    if (s_touchGroups.Enabled() && s_touchGroups.BlocksPoint(x, y, s_schema)) {
+        binding.role = SCHEMA_FINGER_IGNORED; return;
+    }
+    // 空隙保留链资格；显式其他角色/分组则隔离到真实终止，不在后续MOVE补认领。
+    if (!hasHit) return;
+    const int targetIndex = schemaGroupControlIndex(hit.id);
+    const bool targetPhases = targetIndex >= 0 && s_touchGroups.Definition().controls[targetIndex].phases;
+    if (hit.kind != 0 || hit.handledBy != 0 || hit.swipeGroup != binding.control.swipeGroup ||
+        (!targetPhases && hit.trigger != 0) || hit.dragLook) {
+        binding.role = SCHEMA_FINGER_IGNORED; return;
+    }
     if (s_touchGroups.Enabled()) {
         const int from = schemaGroupControlIndex(binding.control.id), to = schemaGroupControlIndex(hit.id);
         if (from < 0 || to < 0 || s_touchGroups.Definition().controls[from].group != s_touchGroups.Definition().controls[to].group ||
-            s_touchGroups.BlocksPoint(x, y, s_schema)) return;
+            s_touchGroups.BlocksPoint(x, y, s_schema)) { binding.role = SCHEMA_FINGER_IGNORED; return; }
     }
     auto& state = s_schemaButtons[hit.id];
     const bool empty = state.fingers.empty();
@@ -3100,7 +3162,7 @@ static void schemaSwipeButtonLocked(SchemaFingerBinding& binding,int fid,float x
     // 继续使用首指冻结快照。真实动作/命中变化已由发布差异退休，不能在这里改绑旧贡献。
     if (empty) state.control = hit;
     state.fingers.insert(fid);
-    if (empty) schemaTriggerFirstDown(state);
+    if (empty) { state.directFingers.clear(); schemaTriggerFirstDown(state, true); }
     binding.control = hit; binding.owner = state.owner;
 }
 
@@ -3144,6 +3206,7 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
             if (stale != s_schemaButtons.end()) {
                 SchemaButtonRuntime& state = stale->second;
                 state.fingers.erase(fid);
+                state.directFingers.erase(fid);
                 // 末指离开走正常 lastUp，保持 InputLedger 引用计数守恒。
                 if (state.fingers.empty()) schemaTriggerLastUp(state, true);
             }
@@ -3199,7 +3262,10 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
                 // 验证未变，所以下一次DOWN关闭它仍释放原输出，而新反馈只作用于新动作。
                 if (wasEmpty) state.control = hit;
                 state.fingers.insert(fid);
+                const bool firstDirect = state.directFingers.empty();
+                state.directFingers.insert(fid);
                 if (wasEmpty) schemaTriggerFirstDown(state);
+                else if (firstDirect && schemaUsesGroupPhases(state)) schemaBeginGroupGesture(state, true);
                 binding.owner = state.owner;
                 if (hit.dragLook) {
                     s_schemaDragLastX[fid] = px;
@@ -3223,7 +3289,8 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
         // 绝不走此分支。普通按钮只补dragLook末段，不在抬指时接力按下另一个按钮。
         switch (binding.role) {
             case SCHEMA_FINGER_JOYSTICK:
-                if (fid == s_schemaJoyFinger) schemaJoystick(px, py, binding.control);
+                // UP只终结当前方向；不能用终点重试一个先前被拒的DOWN，制造迟到短按。
+                if (!normalUp && fid == s_schemaJoyFinger) schemaJoystick(px, py, binding.control);
                 break;
             case SCHEMA_FINGER_SCROLL:
                 schemaScrollMove(py, fid);
@@ -3235,7 +3302,8 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
             case SCHEMA_FINGER_BUTTON:
                 {
                     auto found = s_schemaButtons.find(binding.control.id);
-                    if (found != s_schemaButtons.end() && schemaUsesGroupPhases(found->second)) {
+                    if (found != s_schemaButtons.end() && schemaUsesGroupPhases(found->second) &&
+                        found->second.directFingers.count(fid) != 0) {
                         auto& state = found->second;
                         const bool fcl = s_touchGroups.Definition().controls[state.groupControl].fcl;
                         const double limit = fcl ? 10.0 : 12.0 * s_touchContextDensity;
@@ -3290,7 +3358,7 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
         // CANCEL一旦先取得此事务，只退休原持有，不得在退休前补发任何过期候选；
         // 已由worker先提交的真实持有则沿下面的原owner正常释放，不尝试回滚游戏动作。
         schemaPollLongPressLocked(ev.timeStamp);
-        schemaPollWasdLatchLocked();
+        if (!normalUp) schemaPollWasdLatchLocked();
         schemaPollTouchHoldsLocked(ev.timeStamp);
     }
     if (normalUp || cancelled) {
@@ -3304,8 +3372,13 @@ static SchemaFingerRole handleSchemaGrabbedTouch(
             auto it = s_schemaButtons.find(binding.control.id);
             if (it != s_schemaButtons.end()) {
                 SchemaButtonRuntime& state = it->second;
+                const bool directEnded = state.directFingers.erase(fid) != 0;
                 state.fingers.erase(fid);
-                if (state.fingers.empty()) schemaTriggerLastUp(state, cancelled);
+                if (state.fingers.empty()) schemaTriggerLastUp(state, cancelled, !directEnded);
+                else if (directEnded && state.directFingers.empty() && schemaUsesGroupPhases(state)) {
+                    if (!cancelled) schemaCompleteGroupGesture(state);
+                    else { state.gestureCompleted = true; state.longDeadlineNs = 0; state.lastTapNs = 0; }
+                }
             }
         }
         if (binding.role == SCHEMA_FINGER_LOOK || binding.role == SCHEMA_FINGER_HOTBAR)
@@ -5103,6 +5176,23 @@ extern "C" bool ohos_touch_input_maintain() {
  * 严格只读的接受态视觉投影。只取已被生产入口/显式维护确认的状态，不消费grab公告、不采用
  * consumer ACK、不触发释放或手势解释。进度按单调时钟计算输出值，读取不推进生产状态。
  */
+/**
+ * 调用方持schema锁。只查询原触控owner的有效Use贡献，不推进Source状态或获取全局同键资格。
+ * 同控件阶段、承接和受限无障碍输出共用原账本，脉冲结束/解绑/退休立即失去资格。
+ */
+static bool schemaTouchUseHeldLocked() {
+    Output use{};
+    if (!amcl::input::DecodeLegacySchemaOutputCode(s_touchConfig.actions[amcl::input::TouchUse], &use)) return false;
+    const auto ownsUse = [&use](OwnerToken owner) { return owner != 0 && inputLedger().owns(owner, use); };
+    for (const auto& item : s_schemaButtons) {
+        if (ownsUse(item.second.owner)) return true;
+        for (const auto owner : item.second.phaseOwners) if (ownsUse(owner)) return true;
+    }
+    for (const auto& item : s_schemaCarriedOwners) if (ownsUse(item.first)) return true;
+    for (const auto& item : s_groupUiOwners) if (ownsUse(item.token)) return true;
+    return false;
+}
+
 extern "C" void ohos_touch_interaction_visual(double* values,int count) {
     if (!values || count < 14) return;
     std::lock_guard<std::recursive_mutex> gate(s_surfaceInputGateMutex);
@@ -5138,13 +5228,7 @@ extern "C" void ohos_touch_interaction_visual(double* values,int count) {
             // 直到原UP/CANCEL释放；辅助瞄准必须跟随这份持有，而不能因拖动关掉。
         }
     }
-    for (const auto& item:s_schemaButtons) {
-        if (!item.second.outputDown) continue;
-        const auto& control=item.second.control;
-        if (control.keyCount==0 && control.keyOrMouse==s_touchConfig.actions[amcl::input::TouchUse]) values[11]=1;
-        for (int i=0;i<control.keyCount;++i)
-            if(control.keys[i]==s_touchConfig.actions[amcl::input::TouchUse]) values[11]=1;
-    }
+    values[11] = schemaTouchUseHeldLocked() ? 1 : 0;
     pthread_mutex_unlock(&s_schemaMutex);
 }
 
@@ -5837,6 +5921,14 @@ TouchGroupReceipt ReadTouchGroups(uint64_t token) {
             publication.status != TouchPublicationStatus::Stale) {
             result.token = token; result.revision = s_touchGroups.Revision(); result.enabled = s_touchGroups.Enabled();
             result.pending = s_touchGroups.PendingPresentation(); result.mask = s_touchGroups.Mask(); result.epochs = s_touchGroups.Epochs();
+            // 与组mask在同一锁内采样。层级显隐、资格和绘制顺序不得来自不同修订。
+            const size_t count = s_touchGroups.Definition().controls.size();
+            result.controlMask.reserve(count); result.controlEpochs.reserve(count); result.controlRanks.reserve(count);
+            for (size_t control = 0; control < count; ++control) {
+                result.controlMask.push_back(s_touchGroups.Visible(control));
+                result.controlEpochs.push_back(s_touchGroups.Epoch(control));
+                result.controlRanks.push_back(s_touchGroups.Rank(control));
+            }
         }
     } catch (...) { pthread_mutex_unlock(&s_schemaMutex); throw; }
     pthread_mutex_unlock(&s_schemaMutex); return result;

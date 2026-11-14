@@ -48,6 +48,7 @@
 #include <vector>
 
 #include <curl/curl.h>
+#include "relay.h"
 
 #include "net_thread.h"
 
@@ -156,6 +157,7 @@ private:
         NetSourcePtr   source;
         std::string    host;
         std::string    actual_url;       // 当前请求的 URL（可能经过 302 重定向）
+        RelayRequestPlan relay_plan;    // 同一配置快照的URL/proof，生命周期覆盖本次easy。
         // 实际 host 的统一 Engine 名额；析构兜底未执行/取消，不伪造健康成功。
         std::unique_ptr<HostAdmissionLease> admission;
         int            redirect_count = 0;
@@ -192,7 +194,12 @@ private:
      * 下一 hop 仍使用原 NetThread/NetSource 和 owner，只更换实际 URL。
      * 仅事件循环访问；准入未成功时保留，终态清理。不会持久化权限或建立另一套任务。
      */
-    struct RedirectState { NetSourcePtr source; std::string url; int count = 0; };
+    struct RedirectState {
+        NetSourcePtr source;
+        std::string url;
+        int count = 0;
+        bool force_direct = false; // 网关失败后固定同逻辑源直连；不转移到worker队列。
+    };
     std::unordered_map<NetThread*, RedirectState> pending_redirects_;
     std::unordered_map<std::string, int> host_active_;
     std::unordered_map<std::string, int> host_limit_;
@@ -232,7 +239,9 @@ private:
     void handleFailure(TransferCtx* ctx, CURLcode rc, long http_code);
 
     // 重新入队让 feedTransfers 选新 source 重试
-    void retryTransfer(TransferCtx* ctx);
+    void retryTransfer(TransferCtx* ctx, bool advance_ordered_source = false);
+    /** 网关失败与官方源质量分离，保留有效prefix，经原预算重新入队一次直连。 */
+    void retryRelayDirect(TransferCtx* ctx, long http_code);
 
     // pending 全部延迟时计算精确睡眠，避免事件循环轮询热转。
     int64_t pendingWaitMs() const;

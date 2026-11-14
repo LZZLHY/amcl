@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * 共享的胶囊切换栏：只有一个选中背景，用弹簧平移到目标项。
  * 快速连续点击由 springMotion 继承当前速度，不排队，不改动内容区域的布局尺寸。
  * 宽度变化只重新定位终点；业务选中值始终由父组件持有。
@@ -14,6 +18,8 @@ export struct AnimatedPillBar {
   @Prop theme: ThemeColors = new ThemeColors();
   @Prop filled: boolean = false;
   @Prop disabled: boolean = false;
+  /** 设置域采用48vp热区与14字号；默认值保留其它既有调用方的布局尺寸。 */
+  @Prop largeControls: boolean = false;
   onSelect: (index: number) => void = () => {};
   @State private trackWidth: number = 0;
   @State private highlightX: number = 0;
@@ -35,20 +41,20 @@ export struct AnimatedPillBar {
 
   build() {
     Stack({ alignContent: Alignment.Start }) {
-      Row().width(this.itemWidth_()).height(44).borderRadius(22)
+      Row().width(this.itemWidth_()).height(this.largeControls ? 48 : 44).borderRadius(this.largeControls ? 24 : 22)
         .backgroundColor(this.filled ? this.theme.actionPrimary : this.theme.bgCard)
         .translate({ x: this.highlightX }).hitTestBehavior(HitTestMode.None)
       Row() {
         ForEach(this.labels, (label: string, index: number) => {
-          Button(label).layoutWeight(1).height(44).fontSize(12)
+          Button(label).layoutWeight(1).height(this.largeControls ? 48 : 44).fontSize(this.largeControls ? 14 : 12)
             .fontWeight(this.selectedIndex === index ? 600 : 400)
-            .fontColor(this.selectedIndex === index ? (this.filled ? this.theme.textOnPrimary : this.theme.primary) : this.theme.textSecondary)
+            .fontColor(this.selectedIndex === index ? (this.filled ? this.theme.textOnPrimary : this.largeControls ? this.theme.actionText : this.theme.actionText) : this.theme.textSecondary)
             .backgroundColor(Color.Transparent).enabled(!this.disabled)
             .accessibilityText(label + (this.selectedIndex === index ? '，已选中' : ''))
             .onClick(() => { if (index !== this.selectedIndex) this.onSelect(index); })
         }, (label: string, index: number): string => index + '-' + label)
       }.width('100%')
-    }.width('100%').height(52).padding(4).borderRadius(26).backgroundColor(this.theme.bgInput)
+    }.width('100%').height(this.largeControls ? 56 : 52).padding(4).borderRadius(this.largeControls ? 28 : 26).backgroundColor(this.theme.bgInput)
       .onAreaChange((_old: Area, current: Area): void => {
         this.trackWidth = Number(current.width);
         this.highlightX = this.targetX_();

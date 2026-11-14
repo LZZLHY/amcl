@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * AddAccountSheet.ets — 添加账户半屏 Sheet（v2 · 2026-05-23）
  *
  * v1 → v2 视觉升级：
@@ -34,7 +38,7 @@ import { MSA_REDIRECT_URI } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_ACCOUNT } from 'commons';
 import { common } from '@kit.AbilityKit';
-import { getDownloadHistoryStore, ActivityCategory, ActivityStatus, ActivityRecord } from 'feature_core';
+import { getTaskActivityOwner, reserveTaskActivityId, ActivityCategory, ActivityStatus } from 'feature_core';
 import { getAccountManager } from 'account';
 import { OfflineAccount, randomAccountId } from 'account';
 import { MicrosoftAccount, completeMicrosoftLogin } from 'account';
@@ -113,11 +117,31 @@ export struct AddAccountSheet {
 
   // Microsoft
   @State authUrl: string = '';
+  /** 授权 Web 当前导航的 HTTPS 来源；只保留 origin，不把令牌、state 或查询参数放进标题。 */
+  @State private microsoftOrigin_: string = '';
   private pkceVerifier: string = '';
   private pkceState: string = '';   // CSRF 校验：必须与 redirect 中的 ?state= 匹配
   private webController: webview.WebviewController = new webview.WebviewController();
   // 防止 onLoadIntercept 多次触发同一个 code（WebView 重定向期间会反复回调）
   private codeConsumed: boolean = false;
+  /** 登录只保小型摘要，但主键/耗时从真实提交开始固定，不能以结束时刻制造0秒活动。 */
+  private accountAttemptStarted_: number = 0;
+
+  private beginAccountAttempt_(): void {
+    if (this.accountAttemptStarted_ > 0) this.recordAccountActivity_('账户登录', '登录', ActivityStatus.ABORTED, '重新发起登录');
+    this.accountAttemptStarted_ = reserveTaskActivityId();
+  }
+
+  /** 浏览器授权等待或选角等待可取消；已在交换/落库的请求继续记录实际结果。 */
+  private cancelPendingAccount_(): void {
+    if (this.accountAttemptStarted_ > 0 && !this.busy && this.statusMsg.length === 0) {
+      this.recordAccountActivity_('账户登录', '登录', ActivityStatus.ABORTED, '用户取消');
+    }
+  }
+
+  private requestAccountClose_(): void { this.cancelPendingAccount_(); this.onClose(); }
+
+  aboutToDisappear(): void { this.cancelPendingAccount_(); }
 
 
   /** 标题只投影当前账户分支；授权流程与表单草稿仍由原 mode/业务方法持有。 */
@@ -128,24 +152,37 @@ export struct AddAccountSheet {
     return '添加账户';
   }
 
+  /**
+   * 从 ArkWeb 实际主页面事件提取来源，不用固定微软域名代替重定向后的网页。
+   * 这里只做来源展示，不表达站点已受信任；非 HTTPS、带用户信息或空白的地址不生成标签。
+   * 提取结果截在 authority 结束处，避免授权码、登录提示或用户路径进入可点击标题。
+   */
+  private microsoftPageOrigin_(address: string): string {
+    const match: RegExpMatchArray | null = address.match(/^https:\/\/([^/?#]+)/i);
+    if (match === null || match[1].length === 0 || /[@\s]/.test(match[1])) return '';
+    return 'https://' + match[1].toLowerCase();
+  }
+
   /** 后端交换令牌期间不能返回；其余操作保留原返回分支的状态重置顺序。 */
   private requestAccountBack_(): void {
     if (this.busy) return;
     // 多角色选择是第三方登录的内部一层；返回先清选择会话，不能直接跳过表单回类型页。
     if (this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0) {
+      this.cancelPendingAccount_();
       this.authPickProfiles = []; this.authSession = null; this.errorMsg = '';
       return;
     }
     if (this.statusMsg.length > 0) return;
+    this.cancelPendingAccount_();
     const microsoft: boolean = this.mode === MODE_MICROSOFT;
     this.mode = MODE_CHOOSER; this.errorMsg = ''; this.codeConsumed = false;
-    if (microsoft) this.stage = STAGE_NONE;
+    if (microsoft) { this.stage = STAGE_NONE; this.microsoftOrigin_ = ''; }
   }
 
   build() {
     Column() {
-      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: this.accountTitle_(), subtitle: this.mode === MODE_MICROSOFT ? 'login.microsoftonline.com' : '', theme: this.theme, modal: false, showBack: this.mode !== MODE_CHOOSER, showClose: true, backEnabled: !this.busy && (this.statusMsg.length === 0 || (this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0)), surfaceColor: this.theme.bgSecondary, backLabel: this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0 ? '返回第三方账户表单' : '返回账户类型', closeLabel: '关闭添加账户', backId: 'add-account-back', closeId: 'add-account-close', onBack: (): void => { this.requestAccountBack_(); }, onClose: (): void => { this.onClose(); },
+      // 来源并入标题同行；跟随真实 Web 导航而不是声称所有授权页面均来自一个固定域名。
+      ImmersiveTitleScaffold({ title: this.accountTitle_(), contextLabel: this.mode === MODE_MICROSOFT && this.stage === STAGE_NONE ? this.microsoftOrigin_ : '', contextTitle: '网页登录来源', theme: this.theme, modal: false, showBack: this.mode !== MODE_CHOOSER, showClose: true, backEnabled: !this.busy && (this.statusMsg.length === 0 || (this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0)), surfaceColor: this.theme.bgSecondary, backLabel: this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0 ? '返回第三方账户表单' : '返回账户类型', closeLabel: '关闭添加账户', backId: 'add-account-back', closeId: 'add-account-close', onBack: (): void => { this.requestAccountBack_(); }, onClose: (): void => { this.requestAccountClose_(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
@@ -173,11 +210,11 @@ export struct AddAccountSheet {
 
       // 安全提示
       Row({ space: 10 }) {
-        AppIcon({ name: AppIconName.Info, iconSize: 16, color: this.theme.primary })
+        AppIcon({ name: AppIconName.Info, iconSize: 16, color: this.theme.actionText })
         Text('令牌加密存储于设备 HUKS 安全区，不上传任何服务器')
           .fontSize(12)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
           .layoutWeight(1)
       }
       .width('100%')
@@ -195,6 +232,7 @@ export struct AddAccountSheet {
     .alignItems(HorizontalAlign.Start)
   }
 
+  /** 自有登录卡使用当前主题的柔和表面与中性正文；微软 logo 的四色识别资产不参与换色。 */
   @Builder
   MicrosoftHero() {
     Column({ space: 14 }) {
@@ -217,22 +255,22 @@ export struct AddAccountSheet {
             Text('微软正版账户')
               .fontSize(17)
               .fontWeight(FontWeight.Bold)
-              .fontColor('#FFFFFF')
+              .fontColor(this.theme.textPrimary)
             Row() {
               Text('推荐')
                 .fontSize(10)
                 .fontWeight(FontWeight.Bold)
-                .fontColor('#FFFFFF')
+                .fontColor(this.theme.actionText)
             }
             .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .backgroundColor('#FFFFFF30')
+            .backgroundColor(this.theme.bgElevated)
             .borderRadius(6)
           }
           .alignItems(VerticalAlign.Center)
           Text('使用 Microsoft 账户登录，可加入正版服务器')
             .fontSize(12)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#FFFFFFCC')
+            .fontColor(this.theme.textSecondary)
             .maxLines(2)
         }
         .alignItems(HorizontalAlign.Start)
@@ -254,11 +292,11 @@ export struct AddAccountSheet {
     .borderRadius(16)
     .linearGradient({
       angle: 135,
-      colors: [['#0064CC', 0.0], ['#007DFF', 1.0]],
+      colors: [[this.theme.primaryLight, 0.0], [this.theme.bgElevated, 1.0]],
     })
     .shadow({
       radius: 24,
-      color: '#007DFF40',
+      color: this.theme.cardShadowColor,
       offsetX: 0,
       offsetY: 8,
     })
@@ -285,14 +323,14 @@ export struct AddAccountSheet {
   @Builder
   HeroChip(icon: AppIconName, label: string) {
     Row({ space: 5 }) {
-      AppIcon({ name: icon, iconSize: 12, color: '#FFFFFF' })
+      AppIcon({ name: icon, iconSize: 12, color: this.theme.actionText })
       Text(label)
         .fontSize(11)
         .fontWeight(FontWeight.Medium)
-        .fontColor('#FFFFFF')
+        .fontColor(this.theme.actionText)
     }
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-    .backgroundColor('#FFFFFF20')
+    .backgroundColor(this.theme.bgElevated)
     .borderRadius(8)
     .alignItems(VerticalAlign.Center)
   }
@@ -315,7 +353,7 @@ export struct AddAccountSheet {
           .fontSize(16)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.theme.textPrimary)
-        Text('仅本地用户名，无法加入正版服务器')
+        Text('按名称区分账号，可从共享皮肤库选择外观')
           .fontSize(12)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.theme.textSecondary)
@@ -338,7 +376,7 @@ export struct AddAccountSheet {
   AuthlibCard() {
     Row({ space: 14 }) {
       Row() {
-        AppIcon({ name: AppIconName.ResourcePack, iconSize: 24, color: this.theme.primary })
+        AppIcon({ name: AppIconName.ResourcePack, iconSize: 24, color: this.theme.actionText })
       }
       .width(48)
       .height(48)
@@ -396,7 +434,7 @@ export struct AddAccountSheet {
         .enabled(!this.busy)
         .onChange((value: string) => { this.offlineUsername = value; })
 
-      Text('用户名只在本地使用，不与任何在线服务关联')
+      Text('不同名称代表不同离线账号，同名不会重复添加；皮肤和披风可在添加后从共享库选择。')
         .fontSize(12)
         .fontColor(this.theme.textHint)
 
@@ -408,7 +446,7 @@ export struct AddAccountSheet {
         .height(48)
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
-        .backgroundColor(this.busy ? this.theme.disabled : this.theme.primary)
+        .backgroundColor(this.busy ? this.theme.disabled : this.theme.actionPrimary)
         .fontColor(this.theme.textOnPrimary)
         .enabled(!this.busy)
         .onClick(() => { this.addOffline(); })
@@ -455,11 +493,11 @@ export struct AddAccountSheet {
           Flex({ wrap: FlexWrap.Wrap }) {
             ForEach(SKIN_SERVER_PRESETS, (preset: SkinServerPreset) => {
               Row({ space: 6 }) {
-                AppIcon({ name: AppIconName.ResourcePack, iconSize: 13, color: this.theme.primary })
+                AppIcon({ name: AppIconName.ResourcePack, iconSize: 13, color: this.theme.actionText })
                 Text(preset.name)
                   .fontSize(12)
                   .fontWeight(FontWeight.Medium)
-                  .fontColor(this.theme.primary)
+                  .fontColor(this.theme.actionText)
               }
               .padding({ left: 12, right: 12, top: 7, bottom: 7 })
               .margin({ right: 8, bottom: 8 })
@@ -534,7 +572,7 @@ export struct AddAccountSheet {
           .height(48)
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
-          .backgroundColor(this.busy ? this.theme.disabled : this.theme.primary)
+          .backgroundColor(this.busy ? this.theme.disabled : this.theme.actionPrimary)
           .fontColor(this.theme.textOnPrimary)
           .enabled(!this.busy)
           .onClick(() => { this.submitAuthlibLogin(); })
@@ -566,7 +604,7 @@ export struct AddAccountSheet {
           ForEach(this.authPickProfiles, (p: AccountProfile) => {
             Row({ space: 12 }) {
               Row() {
-                AppIcon({ name: AppIconName.Person, iconSize: 20, color: this.theme.primary })
+                AppIcon({ name: AppIconName.Person, iconSize: 20, color: this.theme.actionText })
               }
               .width(40)
               .height(40)
@@ -624,7 +662,7 @@ export struct AddAccountSheet {
       if (this.statusMsg.length > 0) {
         Row({ space: 8 }) {
           LoadingProgress()
-            .color(this.theme.primary)
+            .color(this.theme.actionText)
             .width(18)
             .height(18)
           Text(this.statusMsg)
@@ -650,6 +688,11 @@ export struct AddAccountSheet {
         .javaScriptAccess(true)
         .mixedMode(MixedMode.None)
         .cacheMode(CacheMode.Default)
+        // 页面重定向时立即替换来源；加载结束再校准最终地址，失败时由主文档错误分支清空。
+        .onPageBegin((event) => { this.microsoftOrigin_ = this.microsoftPageOrigin_(event?.url ?? ''); })
+        .onPageEnd((event) => {
+          this.microsoftOrigin_ = this.errorMsg.length === 0 ? this.microsoftPageOrigin_(event?.url ?? '') : '';
+        })
         // ⚠️ MSA 反 WebView 拦截：必须在 controller attach 时立即覆盖 UA，
         //   官方文档明确：在 onLoadIntercept 中设置概率性失败。
         .onControllerAttached(() => {
@@ -681,8 +724,9 @@ export struct AddAccountSheet {
           let code = err.getErrorCode();
           AppLogger.warn(TAG, `Web onErrorReceive: mainFrame=${isMain ? 'true' : 'false'} code=${code} desc=${desc} url=${url}`, null, LOG_DOMAIN_ACCOUNT);
           // 仅主 frame 错误才打扰用户（图片 / 子资源失败不影响登录）
-          if (isMain && this.errorMsg.length === 0) {
-            this.errorMsg = '网页加载失败（' + desc + '）。请检查网络后返回重试。';
+          if (isMain) {
+            this.microsoftOrigin_ = '';
+            if (this.errorMsg.length === 0) this.errorMsg = '网页加载失败（' + desc + '）。请检查网络后返回重试。';
           }
         })
 
@@ -717,7 +761,7 @@ export struct AddAccountSheet {
       // n=3 在 STAGE_XBOX_MC 或 STAGE_PROFILE 时高亮
       if (this.isStepDone(n)) {
         Row() {
-          AppIcon({ name: AppIconName.Check, iconSize: 11, color: '#FFFFFF', weight: FontWeight.Bold })
+          AppIcon({ name: AppIconName.Check, iconSize: 11, color: this.theme.textOnPrimary, weight: FontWeight.Bold })
         }
         .width(18)
         .height(18)
@@ -735,7 +779,7 @@ export struct AddAccountSheet {
         .width(18)
         .height(18)
         .borderRadius(9)
-        .backgroundColor(this.isStepActive(n) ? this.theme.primary : this.theme.bgInput)
+        .backgroundColor(this.isStepActive(n) ? this.theme.actionPrimary : this.theme.bgInput)
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
       }
@@ -761,7 +805,7 @@ export struct AddAccountSheet {
     Column() {
       // 真正的底部 chrome：分隔线 + 安全提示 + 取消按钮
       Row({ space: 8 }) {
-        AppIcon({ name: AppIconName.CheckCircle, iconSize: 13, color: this.theme.success })
+        AppIcon({ name: AppIconName.CheckCircle, iconSize: 13, color: this.theme.successText })
         Text('WebView 由 ArkWeb 提供 · 仅访问 microsoft.com')
           .fontSize(11)
           .fontWeight(FontWeight.Medium)
@@ -770,9 +814,9 @@ export struct AddAccountSheet {
         Text('取消')
           .fontSize(12)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
           .padding({ left: 8, right: 4 })
-          .onClick(() => { this.onClose(); })
+          .onClick(() => { this.requestAccountClose_(); })
       }
       .width('100%')
       .padding({ top: 10, bottom: 10, left: 16, right: 16 })
@@ -799,10 +843,10 @@ export struct AddAccountSheet {
   @Builder
   ErrorBanner(msg: string) {
     Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Error, iconSize: 16, color: this.theme.error })
+      AppIcon({ name: AppIconName.Error, iconSize: 16, color: this.theme.errorText })
       Text(msg)
         .fontSize(13)
-        .fontColor(this.theme.error)
+        .fontColor(this.theme.errorText)
         .layoutWeight(1)
     }
     .width('100%')
@@ -843,41 +887,24 @@ export struct AddAccountSheet {
 
   /** 写一条账户活动记录（仅存用户名+类型，绝不存 token）。 */
   private recordAccountActivity_(name: string, accType: string, status: string, errorMessage: string): void {
-    let ctx = AppStorage.get<common.UIAbilityContext>('uiAbilityContext');
-    if (!ctx) return;
-    let nowMs = Date.now();
-    let rec: ActivityRecord = {
-      versionName: name,
-      gameVersion: '-',
-      loaderType: 'account',
-      startedAt: nowMs,
-      durationMs: 0,
-      totalBytes: 0,
-      fileCount: 0,
-      status: status,
-      category: ActivityCategory.ACCOUNT,
-      endedAt: nowMs,
-      title: name,
-      subtitle: accType,
-    };
-    if (errorMessage.length > 0) rec.errorMessage = errorMessage;
-    let store = getDownloadHistoryStore();
-    store.init(ctx);
-    store.add(rec).catch((e: Error) => {
-      AppLogger.warn(TAG, 'account activity record failed', e, LOG_DOMAIN_ACCOUNT);
-    });
+    // 账户活动属于轻量摘要，不为用户名/登录状态创建一套完整证据目录。
+    const startedAt = this.accountAttemptStarted_;
+    this.accountAttemptStarted_ = 0;
+    getTaskActivityOwner().recordSummary(ActivityCategory.ACCOUNT, name, status, errorMessage || accType, startedAt);
+
   }
 
   /** 离线账户：直接 create + add + select。 */
   private async addOffline(): Promise<void> {
     if (this.busy) return;
+    this.beginAccountAttempt_();
     this.busy = true;
     this.errorMsg = '';
     try {
       let acc = OfflineAccount.create(this.offlineUsername);
       let am = getAccountManager();
       await am.add(acc);
-      am.select(acc.id);
+      await am.select(acc.id);
       AppLogger.info(TAG, `offline added: id=${acc.id} username=${acc.username}`, LOG_DOMAIN_ACCOUNT);
       this.recordAccountActivity_(acc.username, '离线账户', ActivityStatus.SUCCESS, '');
       this.onSuccess();
@@ -919,12 +946,14 @@ export struct AddAccountSheet {
     if (root.length === 0) { this.errorMsg = '请输入服务器地址'; return; }
     if (user.length === 0) { this.errorMsg = '请输入账号'; return; }
     if (pass.length === 0) { this.errorMsg = '请输入密码'; return; }
+    this.beginAccountAttempt_();
     this.busy = true;
     this.errorMsg = '';
     try {
       let session = await authlibAuthenticate(root, user, pass);
       if (session.availableProfiles.length === 0) {
         this.errorMsg = '该账号下没有可用角色，请先在皮肤站创建角色';
+        this.recordAccountActivity_('第三方登录', '第三方皮肤站', ActivityStatus.FAILED, this.errorMsg);
         return;
       }
       this.authSession = session;
@@ -946,6 +975,7 @@ export struct AddAccountSheet {
   /** 选角态：用户点选某个角色。 */
   private async selectAuthlibProfile(profile: AccountProfile): Promise<void> {
     if (this.busy) return;
+    if (this.accountAttemptStarted_ <= 0) this.beginAccountAttempt_();
     this.busy = true;
     this.errorMsg = '';
     try {
@@ -953,6 +983,7 @@ export struct AddAccountSheet {
     } catch (e) {
       this.errorMsg = '登录失败：' + (e as Error).message;
       AppLogger.error(TAG, 'authlib bind profile failed', e, LOG_DOMAIN_ACCOUNT);
+      this.recordAccountActivity_('第三方登录', '第三方皮肤站', ActivityStatus.FAILED, this.errorMsg);
     } finally {
       this.busy = false;
     }
@@ -969,7 +1000,7 @@ export struct AddAccountSheet {
     let account = AuthlibInjectorAccount.fromInteractiveLogin(args);
     let am = getAccountManager();
     await am.add(account);
-    am.select(account.id);
+    await am.select(account.id);
     AppLogger.info(TAG, `authlib account added: id=${account.id} username=${account.username} server=${args.serverName}`, LOG_DOMAIN_ACCOUNT);
     this.recordAccountActivity_(account.username, '第三方皮肤站', ActivityStatus.SUCCESS, '');
     this.authPickProfiles = [];
@@ -986,10 +1017,12 @@ export struct AddAccountSheet {
    */
   private async startMicrosoftLogin(): Promise<void> {
     if (this.busy) return;
+    this.beginAccountAttempt_();
     this.busy = true;
     this.errorMsg = '';
     this.statusMsg = '';
     this.codeConsumed = false;
+    this.microsoftOrigin_ = '';
     this.stage = STAGE_NONE;
     try {
       // 1) 清掉上次的 MSA cookie（不影响其他站点的 cookie 因为 MSA 没存其他业务的）
@@ -1010,6 +1043,7 @@ export struct AddAccountSheet {
     } catch (e) {
       this.errorMsg = '准备登录失败：' + (e as Error).message;
       AppLogger.error(TAG, 'startMicrosoftLogin failed', e, LOG_DOMAIN_ACCOUNT);
+      this.recordAccountActivity_('微软登录', '微软账户', ActivityStatus.FAILED, this.errorMsg);
     } finally {
       this.busy = false;
     }
@@ -1029,12 +1063,14 @@ export struct AddAccountSheet {
       this.errorMsg = '登录被拒绝（' + err + '）：' + (desc ? desc : '');
       this.statusMsg = '';
       AppLogger.warn(TAG, `oauth redirect with error: ${this.errorMsg}`, null, LOG_DOMAIN_ACCOUNT);
+      this.recordAccountActivity_('微软登录', '微软账户', err === 'access_denied' ? ActivityStatus.ABORTED : ActivityStatus.FAILED, this.errorMsg);
       return;
     }
     let code = parsed.get('code');
     if (!code || code.length === 0) {
       this.errorMsg = 'redirect 未带 code 参数';
       this.statusMsg = '';
+      this.recordAccountActivity_('微软登录', '微软账户', ActivityStatus.FAILED, this.errorMsg);
       return;
     }
     // CSRF 校验：MSA 必须把我们发出去的 state 原样回传
@@ -1043,6 +1079,7 @@ export struct AddAccountSheet {
       this.errorMsg = 'state 校验失败（可能存在 CSRF 攻击或 redirect 不完整）';
       this.statusMsg = '';
       AppLogger.warn(TAG, `state mismatch: expected=${this.pkceState.substring(0, 8)}... got=${state ? state.substring(0, 8) + '...' : '<empty>'}`, null, LOG_DOMAIN_ACCOUNT);
+      this.recordAccountActivity_('微软登录', '微软账户', ActivityStatus.FAILED, this.errorMsg);
       return;
     }
 
@@ -1067,7 +1104,7 @@ export struct AddAccountSheet {
       let account = MicrosoftAccount.fromInteractiveLogin(args);
       let am = getAccountManager();
       await am.add(account);
-      am.select(account.id);
+      await am.select(account.id);
       AppLogger.info(TAG, `microsoft account added: id=${account.id} username=${account.username} uuid=${account.uuid}`, LOG_DOMAIN_ACCOUNT);
 
       this.statusMsg = '';

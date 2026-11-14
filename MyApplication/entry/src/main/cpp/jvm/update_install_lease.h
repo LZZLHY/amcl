@@ -106,9 +106,13 @@ public:
     bool permits() {
         if (!object(0)) return false;
         space(); if (at_ != text_.size() || !seen_) return false;
+        // Coordinator 已核实旧事务结束后可把 verified 历史归档为 superseded；它不代表
+        // 安装仍占执行权。这里只同步这一明确合法终态，不能推断任意未知 phase 也已完成。
+        // 终态文本不能替代安装互斥：调用者仍须先取得同 inode 的 SH，permitsFiles 仍先
+        // 拒绝任何持久 fence；因此 EX 在持或 fence 未收尾时，superseded 也绝不放行。
         for (const char* phase : {"idle", "resolving", "queued", "preparing-material", "transferring",
                 "downloading", "verifying", "downloaded", "signing", "ready",
-                "awaiting-restart", "verified", "failed", "cancelled"}) if (phase_ == phase) return true;
+                "awaiting-restart", "verified", "superseded", "failed", "cancelled"}) if (phase_ == phase) return true;
         return false;
     }
 };

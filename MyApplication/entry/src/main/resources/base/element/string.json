@@ -1,5 +1,6 @@
 {
   "string": [
+    { "name": "perm_reason_mod_microphone", "value": "用于游戏中由你启用的语音聊天和 AI 模组语音交互，仅在前台录音" },
     { "name": "perm_reason_pasteboard", "value": "用于在游戏中粘贴服务器地址、命令和文字" },
     {
       "name": "module_desc",
@@ -64,6 +65,66 @@
     {
       "name": "input_drawer_closed",
       "value": "已收起"
+    },
+    {
+      "name": "perm_reason_microphone",
+      "value": "用于您主动启用的游戏语音和录音功能"
+    },
+    {
+      "name": "perm_reason_bluetooth_midi",
+      "value": "用于您主动启用的蓝牙 MIDI 乐器连接与音乐输入输出"
+    },
+    {
+      "name": "bluetooth_midi_permission_title",
+      "value": "蓝牙 MIDI 授权"
+    },
+    {
+      "name": "bluetooth_midi_permission_granted",
+      "value": "已授权。使用蓝牙 MIDI 时，请先在系统中连接设备。"
+    },
+    {
+      "name": "bluetooth_midi_permission_denied",
+      "value": "尚未授权。可前往系统授权设置允许应用访问蓝牙 MIDI 设备。"
+    },
+    {
+      "name": "bluetooth_midi_permission_needed",
+      "value": "使用蓝牙 MIDI 乐器前，需要您允许应用访问蓝牙。"
+    },
+    {
+      "name": "bluetooth_midi_permission_invalid",
+      "value": "当前无法申请蓝牙权限，请检查系统中的应用权限设置。"
+    },
+    {
+      "name": "bluetooth_midi_permission_query_failed",
+      "value": "无法读取蓝牙授权状态，请稍后重试。"
+    },
+    {
+      "name": "bluetooth_midi_permission_no_context",
+      "value": "当前页面无法发起授权，请重新进入设置。"
+    },
+    {
+      "name": "bluetooth_midi_permission_request_failed",
+      "value": "蓝牙授权未完成，请重试或在系统应用权限中查看。"
+    },
+    {
+      "name": "bluetooth_midi_permission_waiting",
+      "value": "正在等待授权…"
+    },
+    {
+      "name": "bluetooth_midi_permission_check",
+      "value": "检查授权状态"
+    },
+    {
+      "name": "bluetooth_midi_permission_settings",
+      "value": "前往授权设置"
+    },
+    {
+      "name": "bluetooth_midi_permission_allow",
+      "value": "允许蓝牙 MIDI"
+    },
+    {
+      "name": "bluetooth_midi_permission_retry",
+      "value": "重新检查"
     }
   ]
 }

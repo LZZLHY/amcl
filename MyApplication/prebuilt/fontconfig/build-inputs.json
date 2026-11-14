@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "target": "aarch64-linux-ohos",
+  "sources": {
+    "fontconfig": {
+      "repository": "https://gitlab.freedesktop.org/fontconfig/fontconfig.git",
+      "commit": "6d0a98982ec351c165c9224c8b7dbdfca3010e47",
+      "version": "2.17.1"
+    },
+    "expat": {
+      "repository": "https://github.com/libexpat/libexpat.git",
+      "commit": "a76b1174c1ea52abb639a4c69d52b630a8a106a2",
+      "version": "2.9.0"
+    },
+    "freetype": {
+      "repository": "https://github.com/freetype/freetype.git",
+      "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+      "version": "2.13.3",
+      "role": "headers-and-link-reference-only; never replaces a consumer FreeType"
+    }
+  },
+  "meson": {
+    "version": "1.6.1",
+    "url": "https://files.pythonhosted.org/packages/d2/f3/9d53c24a7113e08879b14117f83e7105251e6ecf7e03bb7c04926888db9c/meson-1.6.1-py3-none-any.whl",
+    "sha256": "3f41f6b03df56bb76836cc33c94e1a404c3584d48b3259540794a60a21fad1f9"
+  },
+  "gperf": {
+    "version": "3.3",
+    "url": "https://ftp.gnu.org/gnu/gperf/gperf-3.3.tar.gz",
+    "sha256": "fd87e0aba7e43ae054837afd6cd4db03a3f2693deb3619085e6ed9d8d9604ad8",
+    "checksumSource": "https://lists.gnu.org/archive/html/info-gnu/2025-04/msg00013.html"
+  },
+  "delivery": {
+    "library": "libfontconfig.so",
+    "classicFreeTypeNeeded": "libfreetype.so.6",
+    "modernAndHapFreeTypeNeeded": "libfreetype.so",
+    "expat": "private-static; XML public symbols must not escape the provider",
+    "cache": "explicit config and usable standard XDG/HOME cache first; optional official API13 Context; last automatic candidate is an owned private sibling of the provider's verified classic/modern JDK layout, outside runtime inventory; no hard-coded sandbox, HOME mutation or cwd cache guarantee"
+  }
+}

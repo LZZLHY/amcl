@@ -260,6 +260,19 @@ interface PolicyStatusObserver {
   listener: InputPolicyStatusListener
 }
 
+/** 删除确认冻结完整身份与回退对象；名称只用于展示，不能单独授权删除同名新实体。 */
+export interface LayoutDeletionReview {
+  profileId: string
+  profileRevision: number
+  name: string
+  activeId: string
+  activeRevision: number
+  activeName: string
+  fallbackId: string
+  fallbackRevision: number
+  fallbackName: string
+}
+
 export class LayoutStore {
   /** 原会话Runtime登记的只读provider；仓库不从报告决定持久提交或Native应用。 */
   private policyStatusRegistration: InputPolicyStatusRegistration | undefined = undefined
@@ -1438,17 +1451,21 @@ export class LayoutStore {
   }
 
   /**
-   * 新建方案（从经典手机预设克隆，去掉 isPreset 标记）。name 只是期望名：已被占用（含预设名）时
+   * 复制当前完整操控方案。显式source由命名确认前冻结，提交时核原ID/revision/name；
+   * 不存在当前项才使用设备匹配预设。name只是期望名：已被占用（含预设名）时
    * 按 uniqueProfileName 追加“副本”后缀，重名会让选中、保存、删除都命中错误的方案，并使独立进程
    * 启动时的布局合并整笔拒绝。返回对象的 name 是实际创建的名字，调用方的提示与选中必须以它为准。
    */
-  async createProfile(name: string): Promise<LayoutProfile> {
+  async createProfile(name: string, source?: LayoutProfile): Promise<LayoutProfile> {
+    const expected: LayoutProfile | undefined = source === undefined ? undefined : cloneLayout(source)
     return this.runMutation<LayoutProfile>(async (): Promise<LayoutProfile> => {
+    const origin: LayoutProfile | null = expected === undefined ?
+      (this.getProfile(this.activeName) ?? this.getProfile(this.pickDefaultByDevice())) : this.getProfile(expected.name)
+    if (origin === null || (expected !== undefined && (origin.profileId !== expected.profileId ||
+      origin.profileRevision !== expected.profileRevision || origin.name !== expected.name)))
+      throw new Error('复制来源已经改变，请重新选择当前方案')
+    const tpl: LayoutProfile = cloneLayoutWithFreshGroupIds(origin)
     this.captureEditorTransaction()
-    const presets: LayoutProfile[] = this.sessionRepository === null ? getAllPresets()
-      : this.profiles.filter((profile: LayoutProfile): boolean => profile.isPreset === true)
-        .map((profile: LayoutProfile): LayoutProfile => this.getProfile(profile.name)!)
-    const tpl = presets.length > 0 ? cloneLayout(presets[0]) : getDefaultLayout()
     const actualName: string = this.uniqueProfileName(name)
     tpl.name = actualName
     tpl.isPreset = false
@@ -1468,23 +1485,35 @@ export class LayoutStore {
    * 删除方案。阶段 2.2：拒绝删除系统预设；返回 true 表示删除成功。
    */
   async deleteProfile(name: string): Promise<boolean> {
+    const review: LayoutDeletionReview | null = this.reviewProfileDeletion(name)
+    return review === null ? false : this.deleteReviewedProfile(review)
+  }
+
+  /** 只读预览：在途写入只看已确认快照；无有效回退/身份或预设目标不签发删除确认。 */
+  reviewProfileDeletion(name: string): LayoutDeletionReview | null {
+    const profiles: LayoutProfile[] = this.pendingReadSnapshot?.profiles ?? this.profiles
+    const activeName: string = this.pendingReadSnapshot?.activeName ?? this.activeName
+    const target: LayoutProfile | undefined = profiles.find((p: LayoutProfile): boolean => p.name === name)
+    const active: LayoutProfile | undefined = profiles.find((p: LayoutProfile): boolean => p.name === activeName)
+    const fallback: LayoutProfile | undefined = target?.name === activeName ?
+      profiles.find((p: LayoutProfile): boolean => p.name !== name) : active
+    if (target === undefined || target.isPreset || target.profileId === undefined ||
+      active?.profileId === undefined || fallback?.profileId === undefined) return null
+    return { profileId: target.profileId, profileRevision: target.profileRevision ?? 1, name: target.name,
+      activeId: active.profileId, activeRevision: active.profileRevision ?? 1, activeName: active.name,
+      fallbackId: fallback.profileId, fallbackRevision: fallback.profileRevision ?? 1, fallbackName: fallback.name }
+  }
+
+  /** 用户确认后的唯一删除事务；排队前复制意图，排队后重核所有身份，失败由runMutation恢复目录。 */
+  async deleteReviewedProfile(review: LayoutDeletionReview): Promise<boolean> {
+    const expected: LayoutDeletionReview = JSON.parse(JSON.stringify(review)) as LayoutDeletionReview
     return this.runMutation<boolean>(async (): Promise<boolean> => {
+    const current: LayoutDeletionReview | null = this.reviewProfileDeletion(expected.name)
+    if (current === null || JSON.stringify(current) !== JSON.stringify(expected)) return false
     this.captureEditorTransaction()
-    const target = this.profiles.find(p => p.name === name)
-    if (target === undefined) return false
-    if (target && target.isPreset) {
-      return false
-    }
-    this.profiles = this.profiles.filter(p => p.name !== name)
-    if (this.profiles.length === 0) {
-      // 兜底：把所有预设补回来
-      const presets = getAllPresets()
-      for (let i = 0; i < presets.length; i++) {
-        this.profiles.push(presets[i])
-      }
-    }
-    if (this.activeName === name) {
-      this.activeName = this.profiles[0].name
+    this.profiles = this.profiles.filter((p: LayoutProfile): boolean => p.profileId !== expected.profileId)
+    if (this.activeName === expected.name) {
+      this.activeName = expected.fallbackName
       this.activeChosenAutomatically = false
     }
     await this.save()
@@ -1870,7 +1899,7 @@ export class LayoutStore {
       const viewport: number[] = this.importViewport()
       const review = analyzeExternalLayout(json,format+' 布局',viewport[0],viewport[1])
       const analysis: ImportAnalysis = {
-        ok: review.profile!==null, format: format, reason: review.reason, name: format+' 布局',
+        ok: review.profile!==null, format: format, reason: review.reason, name: review.profile?.name ?? format+' 布局',
         sourceDevice: 'unknown', currentDevice: current, deviceMismatch: false,
         sourceVersion: 0, legacy: false, controlCount: review.profile?.controls.length ?? 0,
         warnings: review.warnings, skippedControls: review.skipped

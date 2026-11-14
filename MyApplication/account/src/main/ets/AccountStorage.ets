@@ -35,6 +35,11 @@ const KEY_LIST = 'accounts_list';
 const KEY_SELECTED = 'selected_account_id';
 const KEY_RECORD_PREFIX = 'account_';
 
+/** 一次账号事务中的键更新；缺失value表示删除，所有键共用一次确认提交。 */
+interface ConfirmedAccountPreferenceChange { key: string; value?: string; }
+/** 只用于读取缺失状态，不写入Preferences，区分原来为空与原来不存在。 */
+const ABSENT_VALUE: string = '\u0000amcl-account-missing\u0000';
+
 // ============================================================
 //  AccountStorage（实例化方式）
 // ============================================================
@@ -150,6 +155,61 @@ export class AccountStorage {
       this.pref.flush();
     } catch (e) {
       AppLogger.warn(TAG, `saveRecord ${rec.id} failed`, e as Object, LOG_DOMAIN_ACCOUNT);
+    }
+  }
+
+  /**
+   * 确认单个账号及可选列表索引已持久提交。
+   *
+   * 名称/外观编辑必须等 flush 成功后才能发布新内存实例；添加账号将记录和索引放
+   * 在同一份 Preferences 提交，避免文件已导入却显示保存成功的假象。失败时恢复
+   * 旧缓存，并尽力持久恢复；恢复失败单独记警告，原始失败始终上抛供界面保留草稿。
+   * 游戏进程的只读快照会拒绝 put，调用方不得在 child 路径调用此方法。
+   */
+  async saveRecordConfirmed(rec: AccountRecord, accountIds?: string[]): Promise<void> {
+    if (!rec || !rec.id || rec.id.length === 0) {
+      throw new AccountError(ACCOUNT_ERR_INVALID_RECORD, 'AccountRecord 缺少 id');
+    }
+    const changes: ConfirmedAccountPreferenceChange[] = [{ key: KEY_RECORD_PREFIX + rec.id, value: JSON.stringify(rec) }];
+    if (accountIds !== undefined) changes.push({ key: KEY_LIST, value: JSON.stringify(accountIds) });
+    await this.commitConfirmed(changes);
+  }
+
+  /** 删除记录、列表及选中态一次确认，防止新增/删除交错使旧账号复活。 */
+  async removeRecordConfirmed(id: string, accountIds: string[], selectedId: string): Promise<void> {
+    await this.commitConfirmed([{ key: KEY_RECORD_PREFIX + id },
+      { key: KEY_LIST, value: JSON.stringify(accountIds) }, { key: KEY_SELECTED, value: selectedId }]);
+  }
+
+  /** 切换账号同样进入Manager写队列，避免失败回滚或删除覆盖用户的新选中态。 */
+  async setSelectedIdConfirmed(id: string): Promise<void> {
+    await this.commitConfirmed([{ key: KEY_SELECTED, value: id }]);
+  }
+
+  /** 确认事务共用的提交/精确缓存回滚；调用者保证同一个Manager内写操作串行。 */
+  private async commitConfirmed(changes: ConfirmedAccountPreferenceChange[]): Promise<void> {
+    const previous: ConfirmedAccountPreferenceChange[] = changes.map((change: ConfirmedAccountPreferenceChange): ConfirmedAccountPreferenceChange => {
+      const value: string = this.pref.getSync(change.key, ABSENT_VALUE) as string;
+      return value === ABSENT_VALUE ? { key: change.key } : { key: change.key, value: value };
+    });
+    try {
+      for (const change of changes) {
+        if (change.value === undefined) this.pref.deleteSync(change.key);
+        else this.pref.putSync(change.key, change.value);
+      }
+      await this.pref.flush();
+    } catch (error) {
+      try {
+        for (const change of previous) {
+          if (change.value === undefined) this.pref.deleteSync(change.key);
+          else this.pref.putSync(change.key, change.value);
+        }
+        await this.pref.flush();
+      } catch (rollbackError) {
+        AppLogger.warn(TAG, '账号保存失败后恢复原记录失败', rollbackError as Object, LOG_DOMAIN_ACCOUNT);
+      }
+      AppLogger.warn(TAG, '账号持久提交失败，保留原内存状态', error as Object, LOG_DOMAIN_ACCOUNT);
+      throw new AccountError('STORAGE', '账号保存失败，请重试；原账号设置未在界面中替换');
     }
   }
 

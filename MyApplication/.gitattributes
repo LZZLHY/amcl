@@ -1,4 +1,8 @@
 *.sh text eol=lf
+# zstd的输入/类身份/制品锁及自有适配按字节校验；所有平台检出使用同一LF正文。
+prebuilt/mod-natives/zstd-jni/** text eol=lf
+prebuilt/mod-natives/zstd-jni/**/*.so -text
+scripts/build-zstd-jni-ohos.py text eol=lf
 # JNA来源清单被deps.lock按字节锁定，Windows/Linux checkout必须保持同一LF正文。
 prebuilt/jna/manifest.json text eol=lf
 # unified diff 的空白上下文行包含必要前缀，不能作为源码行尾空格清理。
@@ -54,3 +58,34 @@ scripts/fixtures/input-consumer/l2-look-baseline/lwjgl.jar binary
 # 仅固定这两个合同头的 LF checkout；Windows core.autocrlf 不能产生假内容漂移，原 byte 门保持。
 entry/src/main/cpp/input/delivery/control_delivery.h text eol=lf
 entry/src/main/cpp/input/delivery/control_delivery_client.h text eol=lf
+# 字体模板/属性与Native嵌入资源按同一LF正文生成和校验，不能受维护者core.autocrlf改变身份。
+entry/src/main/resources/rawfile/fonts.conf text eol=lf
+entry/src/main/resources/rawfile/jdk8/fontconfig.properties text eol=lf
+entry/src/main/cpp/platform/jdk_font_resources.inc text eol=lf
+# 原上游许可正文由来源清单逐字节绑定，不允许检出换行转换产生伪造的来源漂移。
+prebuilt/fontconfig/licenses/** -text
+# 派生notice清单和正文同样按原始SHA交付；源码生成器固定LF，避免检出换行造成假漂移。
+prebuilt/fontconfig/derived-notices/** -text
+scripts/freetype-notices.py text eol=lf
+prebuilt/fontconfig/ohos-generic-fonts.h text eol=lf
+# 进程回归直接核上游固定commit的raw SHA；不能把Windows换行转换当作源码变更。
+tests/runtime-childproc/reference/** -text
+# 两个自有生成输入的函数体也按字节进入0024，固定LF保证跨平台重放一致。
+tests/runtime-childproc/child_fd_cleanup_candidate.h text eol=lf
+tests/runtime-childproc/amcl_process_platform.h text eol=lf
+# JavaSound同源控制/POD/回调按字节进入四代patch及HAP，跨平台检出必须保持同一正文。
+entry/src/main/cpp/javasound/ohos_daudio.c text eol=lf
+entry/src/main/cpp/javasound/ohos_daudio.h text eol=lf
+entry/src/main/cpp/javasound/ohos_capture_ring.h text eol=lf
+entry/src/main/cpp/javasound/ohos_daudio_callbacks.h text eol=lf
+entry/src/main/cpp/javasound/ohos_daudio_callbacks.c text eol=lf
+entry/src/main/cpp/javasound/ohos_playback_timeline.h text eol=lf
+tests/java-sound/daudio_zero_return_reference.h text eol=lf
+# Ports锁定上游原文保留原始字节；自有C/JNI模板以LF进入四代补丁。
+tests/java-sound-ports/reference/** -text
+entry/src/main/cpp/javasound/ports_*.c text eol=lf
+entry/src/main/cpp/javasound/ports_*.h text eol=lf
+# MIDI同源模板固定LF，锁定上游回归输入保留原始字节；由该模块单独生成补丁。
+entry/src/main/cpp/javasound/midi*.c text eol=lf
+entry/src/main/cpp/javasound/midi*.h text eol=lf
+tests/java-midi/reference/** -text

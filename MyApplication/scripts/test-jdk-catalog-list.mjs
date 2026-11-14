@@ -11,11 +11,13 @@ import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, sign, verify, createPublicKey } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { legacyRuntimeCatalogText } from './lib/legacy-runtime-catalog-fixture.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const managerPath = 'launch/src/main/ets/JdkManager.ets';
 const repositoryPath = 'launch/src/main/ets/RuntimeCatalogRepository.ets';
-const builtinText = fs.readFileSync(new URL('../entry/src/main/resources/rawfile/runtime-catalog/builtin.json', import.meta.url), 'utf8');
+// 换源、防回退和旧收据用例的起点是历史 v1；不把正式随包目录的发布变化误当作管理器回归。
+const builtinText = legacyRuntimeCatalogText();
 const builtin = JSON.parse(builtinText);
 const optionIndex = process.argv.indexOf('--source-ref');
 const sourceRef = optionIndex < 0 ? undefined : process.argv[optionIndex + 1];
@@ -35,7 +37,7 @@ function envelope(catalog) {
   return JSON.stringify({ protected: header, payload, signature: signature.toString('base64url') });
 }
 
-/** 生成结构合法的测试通道；具体包身份沿用随 HAP 交付的目录，不伪造包字节。 */
+/** 生成结构合法的测试通道；具体包身份沿用固定历史目录，不伪造包字节。 */
 function catalog(channel, revision = builtin.catalogRevision + 1) {
   const result = structuredClone(builtin);
   result.channel = channel;
@@ -53,34 +55,38 @@ function catalog(channel, revision = builtin.catalogRevision + 1) {
  * 每个场景使用全新的生产模块缓存和内存文件系统，避免静态单例与版本数组跨场景串值。
  * 系统边界只提供文件头、真实 OpenSSL 验签和受控 HTTP 结果；未调用的安装生命周期明确拒绝。
  */
-function fixture() {
+function fixture(requiredCapabilities = [], initialCatalogText = builtinText) {
   const files = new Map();
   const handles = new Map();
+  const directories = new Set(['/app']);
   const directoryEntries = new Set();
   const calls = { http: [], installers: [], crypto: 0 };
   let nextFd = 0;
   let remote = '';
-  const entry = path => { const item = files.get(path); if (!item) throw new Error('ENOENT: ' + path); return item; };
+  let relayUsable = false;
+  const entry = path => { const item = files.get(path); if (!item) throw Object.assign(new Error('ENOENT: ' + path),{code:'ENOENT'}); return item; };
   const put = (path, value, size) => files.set(path, { bytes: Buffer.from(value), size });
   const fileIo = {
     OpenMode: { READ_ONLY: 0, CREATE: 1, WRITE_ONLY: 2, TRUNC: 4 },
-    statSync(path) { const item = entry(path); return { size: item.size ?? item.bytes.length, isFile: () => true }; },
+    statSync(path) { if(directories.has(path))return{size:0,isFile:()=>false,isDirectory:()=>true};const item = entry(path); return { size: item.size ?? item.bytes.length, isFile: () => true }; },
     readTextSync: path => entry(path).bytes.toString('utf8'),
     listFileSync(path) { assert.equal(path, '/app/jdk'); return [...directoryEntries]; },
-    openSync(path, flags) { if (flags & 1) put(path, ''); else entry(path); const fd = ++nextFd; handles.set(fd, path); return { fd }; },
+    openSync(path, flags) { if (flags & 1) put(path, ''); else if(!directories.has(path))entry(path); const fd = ++nextFd; handles.set(fd, path); return { fd }; },
     readSync(fd, buffer) { const bytes = entry(handles.get(fd)).bytes; const count = Math.min(bytes.length, buffer.byteLength); new Uint8Array(buffer).set(bytes.subarray(0, count)); return count; },
-    writeSync(fd, value) { put(handles.get(fd), value); },
+    writeSync(fd, value) { const path=handles.get(fd),bytes=Buffer.from(value);put(path,Buffer.concat([entry(path).bytes,bytes]));return bytes.length; },
     closeSync(file) { handles.delete(typeof file === 'number' ? file : file.fd); },
     fsyncSync() {},
     renameSync(from, to) { files.set(to, entry(from)); files.delete(from); },
   };
+  fileIo.lstatSync=fileIo.statSync;
   // 常量和槽位语法直接取生产模块；其共享数组由真实 Manager 填充，未复制槽位判定。
   const constants = makePureEtsLoader()('commons/src/main/ets/common/Constants.ets');
-  const commons = { ...constants, ensureDirSync() {}, AppLogger: { info() {}, warn() {}, error() {} }, LogTags: { SVC_JDK: 'JdkManager' }, LOG_DOMAIN_LAUNCH: 1 };
+  const commons = { ...constants, ensureDirSync(path) {directories.add(path);}, AppLogger: { info() {}, warn() {}, error() {} }, LogTags: { SVC_JDK: 'JdkManager' }, LOG_DOMAIN_LAUNCH: 1 };
   class InstallerBoundary {
     constructor(options) { this.options = options; calls.installers.push(options); }
   }
   const load = makePureEtsLoader({
+    './RuntimeHostProtocol':{runtimeHostProtocols:()=>[1,2],runtimeRequiredCapabilities:()=>requiredCapabilities.slice()},
     commons,
     '@kit.CoreFileKit': { fileIo },
     '@kit.PerformanceAnalysisKit': { hilog: {} },
@@ -97,10 +103,19 @@ function fixture() {
       createHttp: () => ({ request: async (url, options) => { calls.http.push({ url, options }); return { responseCode: 200, result: remote }; }, destroy() {} }) } },
     // 这些边缘与被测的目录/内容/列表无关。创建安装器只记录冻结入参，不执行下载。
     './JdkInstaller': { JdkInstaller: InstallerBoundary },
-    './JdkDirectoryLease': {}, './LaunchJdkPolicy': {}, mods: {}, feature_core: {},
+    // 本组外部事实是已提交的静态目录；真实崩溃/锁互操作由 runtime-install 验收。
+    './JdkInstallStorage': { JdkInstallStorage: { recoverIfRequired() {}, recoveryRequired: () => false } },
+    './JdkDirectoryLease': { JdkDirectoryLease: { reader: () => ({ release() {} }) } }, './LaunchJdkPolicy': {}, mods: {},
+    feature_core: { getRelayClient: () => ({ isEnabled: () => relayUsable, status: () => ({ usable: relayUsable }) }),
+      DownloadManager: { instance: () => ({ initializeCaBundle() {},
+      // 新目录仍走同一受控网络边界；记录Native opt-in入参，实际列表/验签决策不替换。
+      async fetchTextEx(url, mirrors, timeout, headers, maxResponseBytes, allowRelay) {
+        calls.http.push({ url, options: { maxLimit: maxResponseBytes }, mirrors, timeout, headers, allowRelay });
+        return { statusCode: 200, body: remote, headers: {} };
+      } }) } },
   }, overrides);
   const context = { filesDir: '/app', resourceManager: { getRawFileContentSync: name =>
-    new Uint8Array(Buffer.from(name.endsWith('builtin.json') ? builtinText : JSON.stringify(trusted))) } };
+    new Uint8Array(Buffer.from(name.endsWith('builtin.json') ? initialCatalogText : JSON.stringify(trusted))) } };
   const api = load(managerPath);
   const repository = load(repositoryPath).RuntimeCatalogRepository.instance(context);
   const manager = new api.JdkManager(context);
@@ -121,17 +136,35 @@ function fixture() {
     put(dir + '/.amcl_release_tag', stamp);
   }
   return { api, manager, repository, calls, files, handles, install, put, directoryEntries,
+    setRelayUsable(value) { relayUsable = value; },
     setRemote(value) { remote = envelope(value); },
     cache(channel, value) { put('/app/runtime-catalog/' + channel + '.json', envelope(value)); } };
 }
 
 /** 每个命名场景结束都检查短文件句柄已关闭；异常保留 Node 的原始断言与堆栈。 */
-async function test(name, body) {
-  const f = fixture();
+async function test(name, body,requiredCapabilities=[],initialCatalogText=builtinText) {
+  const f = fixture(requiredCapabilities,initialCatalogText);
   await body(f);
   assert.equal(f.handles.size, 0, '短文件读取与缓存写入没有泄漏句柄');
   cases.push(name);
 }
+
+await test('管理器冻结保存的来源偏好，网关限制与实际竞速由任务路由器决定', async f => {
+  await f.repository.configure('stable', 'github', false); f.setRemote(catalog('stable'));
+  assert.equal((await f.repository.refresh()).ok, true);
+  f.api.setJdkDownloadSource('auto'); f.setRelayUsable(true);
+  assert.equal(f.api.isAccelActive(), true, '网关确实可用，负控不能用握手失败绕过旧策略');
+  assert.ok(f.manager.createInstaller('17', true));
+  assert.equal(f.calls.installers.at(-1).config.downloadSource, 'auto', '可用网关不等于更快，不能过滤Gitee锁定GitHub');
+  f.setRelayUsable(false); assert.ok(f.manager.createInstaller('17', true));
+  assert.equal(f.api.isAccelActive(), false, '保留Native真实状态查询API，不恢复初次缓存');
+  assert.equal(f.calls.installers.at(-1).config.downloadSource, 'auto');
+  for (const source of ['github', 'mirror', 'gitee', 'web']) {
+    f.api.setJdkDownloadSource(source); f.setRelayUsable(true);
+    assert.equal(f.api.getJdkDownloadSource(), source);
+    f.setRelayUsable(false); assert.equal(f.api.getJdkDownloadSource(), source);
+  }
+});
 
 await test('落后于另一通道最高代次的可信缓存只供展示，不创建旧推荐安装器', async f => {
   f.cache('stable', catalog('stable', builtin.catalogRevision + 3));
@@ -233,6 +266,57 @@ await test('已验证撤回经 buildFor 和安装器工厂共同生效，通道�
   assert.equal(list.length, 4); assert(list.every(item => !item.available));
   assert.equal(f.manager.createInstaller('17'), null);
 });
+
+await test('新App识别物理完整旧槽为需修复，稳定目录无兼容包时不重下同一坏包也不删除原件',async f=>{
+  const old=builtin.builds.find(build=>build.id===builtin.runtimes.find(runtime=>runtime.javaMajor===17).recommendedBuildId);
+  f.install('17',old.legacyTags[0]);await f.repository.configure('stable','github',false);
+  const state=f.manager.inspect('17');assert.equal(state.installed,false);assert.equal(state.repairRequired,true);assert.match(state.stateText,/ZIP\/JAR/);
+  assert.equal(f.manager.createInstaller('17',true),null);assert(f.files.has('/app/jdk/17/.amcl_release_tag'));assert.equal(f.calls.installers.length,0);
+},['zipfs-transaction-v1']);
+await test('稳定通道就绪后旧官方槽给出修复任务，新包合格后消除需修复状态',async f=>{
+  const next=catalog('stable'),runtime=next.runtimes.find(item=>item.javaMajor===17),old=next.builds.find(build=>build.id===runtime.recommendedBuildId);
+  const fixed=next.builds.filter(build=>build.runtimeId===runtime.id&&build.provenance.kind==='source-build').at(-1);
+  fixed.capabilities=[...fixed.capabilities,'zipfs-transaction-v1'];runtime.recommendedBuildId=fixed.id;runtime.loaderProtocol=2;runtime.recommendationRevision++;
+  f.install('17',old.legacyTags[0]);await f.repository.configure('stable','github',false);f.setRemote(next);assert.equal((await f.repository.refresh()).ok,true);f.manager.listVersions();
+  let state=f.manager.inspect('17');assert.equal(state.repairRequired,true);assert.equal(state.offerUpdate,true);
+  const installer=f.manager.createInstaller('17',true);assert.equal(installer.options.config.build.id,fixed.id);assert.equal(f.repository.snapshot().channel,'stable');
+  f.put('/app/jdk/17/amcl-runtime.json',JSON.stringify({schema:1,build:{patches:{'0019-zipfs-permission-copy-transaction.patch':'a'.repeat(64),'0025-ohos-javasound-duplex-host-callbacks.patch':'b'.repeat(64)}}}));
+  f.put('/app/jdk/17/.amcl_release_tag',fixed.legacyTags[0]??fixed.id);
+  state=f.manager.inspect('17');assert.equal(state.installed,true);assert.equal(state.repairRequired,false);
+},['zipfs-transaction-v1']);
+await test('不兼容用户导入保留来源且不自动接管，明确改用官方仍由用户操作',async f=>{
+  f.install('17','imported:owned');const state=f.manager.inspect('17');assert.equal(state.state,'user-import');assert.equal(state.repairRequired,true);assert.equal(state.offerUpdate,false);
+  assert(f.files.has('/app/jdk/17/.amcl_release_tag'));
+},['zipfs-transaction-v1']);
+
+// 可选真机旧版收据：原字节输入实际管理器，文件头仍为I/O夹具；设备安装与覆盖另验。
+const legacyIndex=process.argv.indexOf('--legacy-receipts');
+if(legacyIndex>=0){
+  assert.equal(sourceRef,undefined,'真机格式核验只运行当前候选源码');
+  const directory=process.argv[legacyIndex+1];assert(directory);
+  // 额外信任仅是应用本来携带的生产公钥，使真实旧缓存通过原验签链；不改缓存或用假签名替换。
+  trusted.keys.push(...JSON.parse(fs.readFileSync(new URL('../entry/src/main/resources/rawfile/runtime-catalog/trusted-keys.json',import.meta.url),'utf8')).keys);
+  const cacheRaw=fs.readFileSync(directory+'/stable.json','utf8');
+  const cachePayload=JSON.parse(Buffer.from(JSON.parse(cacheRaw).payload,'base64url'));assert.equal(cachePayload.schemaVersion,1);
+  // 覆盖升级的起点必须是当前真正随包的v2，而不是历史v1测试夹具。远端也使用同一
+  // 当前目录原文，不临时抬高代次来掩盖同代v1缓存→v2的兼容问题。
+  const shippingText=fs.readFileSync(new URL('../entry/src/main/resources/rawfile/runtime-catalog/builtin.json',import.meta.url),'utf8');
+  const shipping=JSON.parse(shippingText);assert.equal(shipping.schemaVersion,2);assert(shipping.catalogRevision>=cachePayload.catalogRevision);
+  for(const major of [8,17,21,25])await test('读取官方1.0.6真机收据并在稳定通道生成修复：'+major,async f=>{
+    const raw=fs.readFileSync(directory+'/jdk-'+major+'-receipt.json','utf8'),receipt=JSON.parse(raw);
+    assert.equal(receipt.javaMajor,major);assert.equal(receipt.schemaVersion,1);assert.equal(receipt.origin,'catalog');
+    const next=structuredClone(shipping),runtime=next.runtimes.find(item=>item.javaMajor===major);
+    const fixed=next.builds.find(build=>build.id===runtime.recommendedBuildIds[0]);
+    assert.equal(fixed.requiredHostProtocol,2);assert(fixed.capabilities.includes('zipfs-transaction-v1'));
+    f.install(String(major),receipt.build.legacyTags[0]);f.put('/app/jdk/'+major+'/.amcl-runtime-receipt.json',raw);
+    f.put('/app/runtime-catalog/stable.json',cacheRaw);
+    await f.repository.configure('stable','github',false);assert(f.calls.crypto>0,'实际旧缓存必须经过验签');
+    f.setRemote(next);assert.equal((await f.repository.refresh()).ok,true);f.manager.listVersions();
+    const state=f.manager.inspect(String(major));assert.equal(state.repairRequired,true);assert.equal(state.offerUpdate,true);
+    assert.equal(f.manager.createInstaller(String(major),true).options.config.build.id,fixed.id);
+    assert.equal(f.repository.snapshot().channel,'stable');
+  },['zipfs-transaction-v1'],shippingText);
+}
 
 console.log(JSON.stringify({ passed: cases.length, cases, source: sourceRef ?? 'current worktree',
   scope: 'production Repository + Manager + tree/update policies; SDK I/O boundaries; no device execution' }, null, 2));

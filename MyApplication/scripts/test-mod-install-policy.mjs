@@ -50,6 +50,17 @@ const downloadExports = {};
 vm.runInNewContext(ts.transpileModule(buildFunction.getText(installerAst), {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,
   {exports:downloadExports, safeBaseName:policy.safeBaseName});
 
+// 来源约束只删镜像，不应把同一个官方文件的原16连接上限降成缺省6；精确主机
+// 判据也不能把 GitHub、未知站点或相似域名放进高并发资格。
+for (const url of ['https://cdn.modrinth.com/data/a.jar','https://edge.forgecdn.net/files/a.jar']) {
+  const one=downloadExports.buildDownloadSpec({url,mirrors:[],filename:'a.jar',size:5000000},'/safe');
+  assert.equal(one.maxConnections,16);
+  assert.deepEqual(Array.from(one.urls),[url]);
+}
+for (const url of ['https://github.com/repo/a.jar','https://cdn.modrinth.com.author.example/a.jar']) {
+  assert.equal(downloadExports.buildDownloadSpec({url,mirrors:[],filename:'a.jar',size:5000000},'/safe').maxConnections,undefined);
+}
+
 /** 每例独立加载服务，目录锁/缓存不会跨用例泄漏；系统外不创建用户文件。 */
 function harness(options = {}) {
   // 只延迟Native释放端口；服务、目录锁、索引及提交/回滚仍执行同一生产实现。

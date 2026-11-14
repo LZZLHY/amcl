@@ -11,7 +11,7 @@ function fixture() {
   const component = ast.statements.find(node => node.members?.some(value => value.name?.getText(ast) === 'onPageShow'));
   const names = ['getPrefManager_', 'finishErrorSheetWait_', 'registryListener', 'onRegistryChanged_', 'onLauncherWorkVisibilityChanged_', 'onPageShow',
     'onPageHide', 'aboutToDisappear', 'observeExportActivities_', 'refreshStoreManager_', 'onNetBannerChange',
-    'startNetRecheck_', 'stopNetRecheck_', 'runNetCheck_', 'initNetworkCheck'];
+    'startNetRecheck_', 'stopNetRecheck_', 'runNetCheck_', 'initNetworkCheck', 'stopRelayObservation_'];
   const members = names.map(name => {
     const member = component.members.find(value => value.name?.getText(ast) === name);
     assert.ok(member, '缺少真实方法：' + name);
@@ -58,6 +58,8 @@ function fixture() {
     // 本测试只隔离网络可见性；App通道的真实策略/请求代次另有专用行为回归。
     shownAppUpdateChannel:'stable',prefManager_:{appUpdateChannel:'stable',appUpdateLatestSeen:()=>0,appUpdateLatestName:()=>''},
     tasksRev: 0, netBannerVisible: false, netBannerText: 'original', netRecheckTimer: -1, netCheckBusy_: false,
+    // 离页同时收口新的加速观察owner，装载真实清理方法并提供其明确初始状态。
+    relayStatusTimer_: -1, relayStatusUnsubscribe_: null,
     netCheckEpoch_: 0, netInitialCheckPending_: false, recoveryPresentationEpoch_: 0, launcherStartupAttempt_: 0,
     launcherWindow_: null, rootViewportUpdateTimer_: -1, registry: {removeListener() {}},
     syncStatusFromRegistry_() { businessCalls++; }});
@@ -89,7 +91,10 @@ test('真实页面/Ability可见性共同控制复检，隐藏事件保留业务
   assert.equal(f.historyRefreshCalls(), historyBeforeProgress + 1, '真实observer在终态请求活动投影');
   p.launcherWorkForeground_ = true; p.onLauncherWorkVisibilityChanged_(); assert.equal(f.timers.size, 1);
   p.registryListener(); assert.equal(p.tasksRev, 1);
+  let relayUnsubscriptions = 0;
+  p.relayStatusUnsubscribe_ = () => { relayUnsubscriptions++; };
   p.onPageHide(); assert.equal(f.timers.size, 0);
+  assert.equal(relayUnsubscriptions, 1); assert.equal(p.relayStatusUnsubscribe_, null);
   assert.equal(f.exportListeners.size, 0); assert.equal(p.storeExportUnsubscribe_, null);
   const historyWhenHidden = f.historyRefreshCalls(); f.emitExport({ state: 'cancelled' });
   assert.equal(f.historyRefreshCalls(), historyWhenHidden, '隐藏页已解除导出观察，不接收迟到终态');
@@ -102,6 +107,7 @@ test('真实页面/Ability可见性共同控制复检，隐藏事件保留业务
   p.launcherWorkForeground_ = false; p.onLauncherWorkVisibilityChanged_(); assert.equal(f.timers.size, 0);
   p.launcherWorkForeground_ = true; p.onLauncherWorkVisibilityChanged_(); assert.equal(f.timers.size, 1);
   p.aboutToDisappear(); assert.equal(f.timers.size, 0); assert.equal(p.launcherWorkVisible_, false);
+  assert.equal(relayUnsubscriptions, 1, '重复退出不能重复释放已结束的加速观察owner');
   assert.equal(f.exportListeners.size, 0); assert.equal(f.exportState.unsubscriptions, 2);
   assert.equal(f.exportState.sourceInspections, 0, '全程default不盘点store源');
 });

@@ -124,6 +124,11 @@ function legacyHarness(options = {}) {
   };
   const dm = {
     isCaBundleInitialized: () => true,
+    // 公共元数据已改用rich GET显式relay端口；仍由同一fixture返回原XML/sidecar，
+    // 不复制生产来源过滤或坐标解析，保留原请求记录和失败控制。
+    async fetchTextEx(url, mirrors, timeoutSeconds) {
+      return {statusCode:200,headers:{},body:await this.fetchText(url,mirrors,timeoutSeconds)};
+    },
     async fetchText(url) {
       if (url.endsWith('maven-metadata.xml')) return metadata([artifact]);
       if (url.endsWith('-installer.jar.sha1')) return sha(installerBytes);
@@ -164,6 +169,7 @@ function legacyHarness(options = {}) {
       return { updateSync: blob => state.update(blob.data), digestSync: () => ({ data: new Uint8Array(state.digest()) }) };
     } } },
     '../download/DownloadManager': { DownloadManager: { instance: () => dm } },
+    './DownloadManager': { DownloadManager: { instance: () => dm } },
     './ForgelikeInstaller': {},
     commons: { BMCLAPI_BASE: bmclBase, BMCLAPI_HOST: 'bmclapi2.bangbang93.com', MOJANG_META: 'https://piston-meta.mojang.com',
       DiagnosticPolicy: { isDeveloperBuild: () => false }, AppLogger: log, LogTags: {}, LOG_DOMAIN_MODLOADER: 0,
@@ -197,6 +203,9 @@ function harness(options = {}) {
     [mirrorMetadata, options.mirror ?? [[]]],
   ]);
   const dm = {
+    async fetchTextEx(url, mirrors, timeoutSeconds) {
+      return {statusCode:200,headers:{},body:await this.fetchText(url,mirrors,timeoutSeconds)};
+    },
     async fetchText(url, mirrors, timeoutSeconds) {
       if (snapshots.has(url)) {
         const values = snapshots.get(url);
@@ -257,6 +266,7 @@ function harness(options = {}) {
     '@kit.NetworkKit': { http: {} },
     '@kit.CryptoArchitectureKit': { cryptoFramework: {} },
     '../download/DownloadManager': { DownloadManager: { instance: () => dm } },
+    './DownloadManager': { DownloadManager: { instance: () => dm } },
     './ForgelikeInstaller': { ForgelikeInstaller: { async install(profile) {
       profiles.push(profile);
       return { success: true, versionId: profile.versionId };
@@ -296,13 +306,13 @@ function harness(options = {}) {
 }
 
 /** 从真实消费边界校验三来源、目录与工件名，避免只断言解析器返回值而漏掉旧接线。 */
-function assertInstallerUrls(urls, artifactVersion) {
+function assertInstallerUrls(urls, artifactVersion, ordered = false) {
   const relative = '/net/minecraftforge/forge/' + artifactVersion
     + '/forge-' + artifactVersion + '-installer.jar';
-  assert.deepEqual(Array.from(urls), [
-    bmclBase + '/maven' + relative, bmclBase + '/libraries' + relative,
-    'https://maven.minecraftforge.net' + relative,
-  ]);
+  const maven = bmclBase + '/maven' + relative;
+  const alias = bmclBase + '/libraries' + relative;
+  const upstream = 'https://maven.minecraftforge.net' + relative;
+  assert.deepEqual(Array.from(urls), ordered ? [maven, upstream, alias] : [maven, alias, upstream]);
 }
 
 /** 每例在断言全部通过后记录成功；失败立即以非零退出交给总门禁。 */
@@ -329,9 +339,10 @@ await test('Mercury Landing 短版本经真实 legacy 入口下载完整分支�
   const result = await h.install('1.7.10', '10.13.4.1614');
   assert.equal(h.downloads.length, 1);
   assert.equal(h.profiles.length, 0);
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10', true);
   assert.match(h.downloads[0].name, /1\.7\.10-10\.13\.4\.1614-1\.7\.10/);
   assert.equal(h.downloads[0].files[0].check.sha1, 'a'.repeat(40));
+  assert.equal(h.downloads[0].files[0].orderedVersionDownload, true);
   assert.equal(result.versionId, '1.7.10-forge-10.13.4.1614-1.7.10');
   assert.equal(result.success, false);
   assert.match(result.error, /fixture stopped/);
@@ -342,13 +353,13 @@ await test('Mercury Landing 短版本经真实 legacy 入口下载完整分支�
 await test('mc172 分支经实际 legacy 下载规格保留，与游戏版本后缀不同', async () => {
   const h = harness({ official: [['1.7.2-10.12.2.1161-mc172']] });
   await h.install('1.7.2', '10.12.2.1161');
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.2-10.12.2.1161-mc172');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.2-10.12.2.1161-mc172', true);
 });
 
 await test('无分支 legacy 控制仍传原有有效工件地址', async () => {
   const h = harness({ official: [['1.12.2-14.23.5.2864']] });
   await h.install('1.12.2', '14.23.5.2864');
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.12.2-14.23.5.2864');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.12.2-14.23.5.2864', true);
 });
 
 await test('现代完整 artifact 输入归一化后走共享引擎，并贯穿 profile 所有身份字段', async () => {
@@ -419,14 +430,14 @@ await test('legacy 只有旧短坐标库目录时不能把正确分支版本误�
   const result = await h.install('1.7.10', '10.13.4.1614');
   assert.equal(result.success, false);
   assert.equal(h.downloads.length, 1);
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10', true);
 });
 
 await test('显式分支安装跳过列表网络查询并保持 canonical 身份', async () => {
   const h = harness();
   const result = await h.install('1.7.10', '1.7.10-10.13.4.1614-1.7.10');
   assert.equal(h.metadataReads().length, 0);
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10', true);
   assert.equal(result.versionId, '1.7.10-forge-10.13.4.1614-1.7.10');
 });
 
@@ -439,7 +450,7 @@ await test('列表官方与落后镜像合并，已有正向缓存供安装复�
   assert.equal(legacy[0].loaderVersion, '10.13.4.1614-1.7.10');
   await h.install('1.7.10', '10.13.4.1614');
   assert.equal(h.metadataReads().length, 2, '已有唯一正缓存不应额外联网');
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10', true);
 });
 
 await test('列表缓存缺项时有限刷新取得发布分支，不永久缓存缺失', async () => {
@@ -448,7 +459,7 @@ await test('列表缓存缺项时有限刷新取得发布分支，不永久缓�
   await h.service.getLoaderVersions('1.7.10');
   await h.install('1.7.10', '10.13.4.1614');
   assert.equal(h.metadataReads().length, 4);
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.10-10.13.4.1614-1.7.10', true);
 });
 
 await test('缓存歧义有限刷新发现精确无分支项后，用明确身份进入下载', async () => {
@@ -457,7 +468,7 @@ await test('缓存歧义有限刷新发现精确无分支项后，用明确身�
   await h.service.getLoaderVersions('1.7.2');
   await h.install('1.7.2', '10.12.2.1161');
   assert.equal(h.metadataReads().length, 4);
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.2-10.12.2.1161');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.7.2-10.12.2.1161', true);
 });
 
 await test('刷新列表缺少旧正分支不能证明其撤销，仍保留歧义并阻止误选', async () => {
@@ -497,7 +508,7 @@ await test('两来源失败或缺项仍仅使用精确请求坐标并明确标�
 await test('单源查询设10秒上限，失败来源不阻止另一来源发现真正发布项', async () => {
   const h = harness({ official: [new Error('fixture timed out')], mirror: [['1.8.9-11.15.1.2318-1.8.9']] });
   await h.install('1.8.9', '11.15.1.2318');
-  assertInstallerUrls(h.downloads[0].files[0].urls, '1.8.9-11.15.1.2318-1.8.9');
+  assertInstallerUrls(h.downloads[0].files[0].urls, '1.8.9-11.15.1.2318-1.8.9', true);
   assert.ok(h.metadataReads().length > 0);
   assert.ok(h.metadataReads().every(read => read.timeoutSeconds === 10));
 });
@@ -509,7 +520,7 @@ await test('网络失败不会负缓存：同一服务稍后取得 metadata 后�
   const before = h.metadataReads().length;
   await h.install('1.7.10', '10.13.4.1614');
   assert.ok(h.metadataReads().length > before);
-  assertInstallerUrls(h.downloads.at(-1).files[0].urls, '1.7.10-10.13.4.1614-1.7.10');
+  assertInstallerUrls(h.downloads.at(-1).files[0].urls, '1.7.10-10.13.4.1614-1.7.10', true);
 });
 
 await test('非法请求在查询和下载前失败，避免跨路径身份污染', async () => {

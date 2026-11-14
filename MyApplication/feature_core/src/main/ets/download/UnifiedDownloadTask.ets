@@ -116,6 +116,15 @@ export class UnifiedTaskView {
   etaSeconds: number = -1;   // -1 = 未知
   durationMs: number = 0;
   startedAtMs: number = 0;
+  /**
+   * 构造任务时固定的领域信息。Registry统一开账，页面不再凭task id猜实例和类别；
+   * 重试保留这些输入并取得新startedAtMs，依赖文件仍继承父事务。
+   */
+  activityCategory: string = '';
+  activityGameVersion: string = '';
+  activityMcDir: string = '';
+  activityLoaderType: string = '';
+  activityLoaderVersion: string = '';
   /** 明确的上次尝试/父任务身份；只由入队调用方或 retry 操作设置，不按标题猜关系。 */
   parentActivityId: number = 0;
   activityRelation: string = '';

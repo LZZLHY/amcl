@@ -22,6 +22,9 @@ export * from './src/main/ets/ModpackPostProcessor';
 export * from './src/main/ets/ModpackInstaller';
 export * from './src/main/ets/ModpackInstallTask';
 export * from './src/main/ets/ModpackInstallSession';
+export { scanModpackRecovery, readModpackRecoveryKind } from './src/main/ets/ModpackRecoveryTasks';
+export * from './src/main/ets/ModpackPackage';
+export * from './src/main/ets/ModpackInstance';
 export * from './src/main/ets/ModpackSource';
 export * from './src/main/ets/LocalModScanner';
 // 本地资源 Sheet 先取得完整文件清单，再用可取消扫描补全来源；不按反查预算截断清单。

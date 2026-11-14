@@ -12,6 +12,49 @@ const ROOT_SNAPSHOT = 'entry/src/main/ets/runtime/DesktopLaunchSnapshot.ets';
 export { fixture } from './lib/game-layout-fixture.mjs';
 import { fixture } from './lib/game-layout-fixture.mjs';
 
+test('主题启动快照只携带owner确认值，隔离在途put与回滚未知并保留其他设置', async () => {
+  const f = fixture();
+  let rejectGate;
+  let pendingFailure;
+  try {
+    const t = f.owner.load('commons/src/main/ets/common/Theme.ets');
+    const PreferenceManager = f.owner.load('feature_system/src/main/ets/PreferenceManager.ets').PreferenceManager;
+    const manager = new PreferenceManager(f.disk.context);
+    const previous = new t.ThemeSelection(t.ThemeMode.DARK, t.ThemeAccent.ROSE);
+    const next = new t.ThemeSelection(t.ThemeMode.LIGHT, t.ThemeAccent.BLUE);
+    await manager.saveThemeSelection(previous);
+    f.ownerData.get('amcl_settings').set('unrelatedSnapshotProbe', 'keep');
+    f.state.themeFlushGate = new Promise((_, reject) => { rejectGate = reject; });
+    const pending = manager.saveThemeSelection(next);
+    pendingFailure = assert.rejects(pending, /回滚尚未确认/);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assert.equal(JSON.parse(f.ownerData.get('amcl_settings').get(t.THEME_SELECTION_KEY)).accent, t.ThemeAccent.BLUE);
+    const ticket = async () => {
+      const ref = await f.owner.snapshot.prepare(f.disk.context, 100, '1.21.1', f.activity);
+      return JSON.parse(fs.readFileSync(f.disk.directory + '/desktop-launch/' + ref.id + '.json', 'utf8'));
+    };
+    const first = await ticket();
+    assert.equal(JSON.parse(first.stores[0].values[t.THEME_SELECTION_KEY]).accent, t.ThemeAccent.ROSE);
+    assert.equal(first.stores[0].values.unrelatedSnapshotProbe, 'keep');
+    // 令回滚put失败，原缓存继续保留新色；快照仍必须使用owner旧确认值。
+    f.state.failThemeRollbackPut = true;
+    rejectGate(new Error('theme flush failure')); rejectGate = undefined;
+    await pendingFailure; pendingFailure = undefined;
+    assert.equal(JSON.parse(f.ownerData.get('amcl_settings').get(t.THEME_SELECTION_KEY)).accent, t.ThemeAccent.BLUE);
+    const unknown = await ticket();
+    assert.equal(JSON.parse(unknown.stores[0].values[t.THEME_SELECTION_KEY]).accent, t.ThemeAccent.ROSE);
+    assert.equal(unknown.stores[0].values.unrelatedSnapshotProbe, 'keep');
+    await manager.saveThemeSelection(next);
+    const confirmed = await ticket();
+    assert.equal(JSON.parse(confirmed.stores[0].values[t.THEME_SELECTION_KEY]).accent, t.ThemeAccent.BLUE);
+    assert.equal(JSON.parse(confirmed.stores[0].values[t.THEME_SELECTION_KEY]).mode, t.ThemeMode.LIGHT);
+  } finally {
+    if (rejectGate) rejectGate(new Error('theme flush failure'));
+    if (pendingFailure) await pendingFailure.catch(() => {});
+    f.disk.close();
+  }
+});
+
 test('实际snapshot→child布局保存→journal→parent导入，child从不打开XML且保留父并行新增', async () => {
   const f = fixture();
   try {

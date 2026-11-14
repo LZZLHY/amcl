@@ -7,7 +7,8 @@ function requireRange(buffer, offset, length, label) {
   }
 }
 
-export function readUniqueZipEntry(input, wantedName) {
+/** 只读取中央目录，供唯一条目读取与当前 HAP 原生库枚举共用；不解压其他资源。 */
+function centralDirectory(input) {
   const buffer = Buffer.from(input);
   let eocd = -1;
   for (let index = buffer.length - 22;
@@ -22,7 +23,7 @@ export function readUniqueZipEntry(input, wantedName) {
   requireRange(buffer, centralOffset, centralSize, 'central directory');
 
   let offset = centralOffset;
-  const matches = [];
+  const entries = [];
   for (let entry = 0; entry < count; entry += 1) {
     requireRange(buffer, offset, 46, `central header ${entry}`);
     if (buffer.readUInt32LE(offset) !== 0x02014b50) {
@@ -37,17 +38,24 @@ export function readUniqueZipEntry(input, wantedName) {
     const recordLength = 46 + nameLength + extraLength + commentLength;
     requireRange(buffer, offset, recordLength, `central record ${entry}`);
     const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
-    if (name === wantedName) {
-      matches.push({
-        method, compressedSize, uncompressedSize,
-        localOffset: buffer.readUInt32LE(offset + 42),
-      });
-    }
+    entries.push({ name, method, compressedSize, uncompressedSize,
+      localOffset: buffer.readUInt32LE(offset + 42) });
     offset += recordLength;
   }
   if (offset !== centralOffset + centralSize) {
     throw new Error('ZIP central directory size/count mismatch');
   }
+  return { buffer, entries };
+}
+
+/** 保留重复名称，实际读取时仍必须逐条执行唯一性检查，不能用 Set 隐藏重复载荷。 */
+export function listZipEntryNames(input) {
+  return centralDirectory(input).entries.map(entry => entry.name);
+}
+
+export function readUniqueZipEntry(input, wantedName) {
+  const { buffer, entries } = centralDirectory(input);
+  const matches = entries.filter(entry => entry.name === wantedName);
   if (matches.length !== 1) {
     throw new Error(`ZIP entry ${wantedName} must appear exactly once (actual=${matches.length})`);
   }

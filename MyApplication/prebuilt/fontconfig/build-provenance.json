@@ -1,0 +1,227 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-21T17:12:16.489479+08:00",
+  "buildId": "docker-fontconfig-20261021-163641-095492",
+  "buildStartedAt": "2026-10-21T16:36:55.043020+08:00",
+  "buildFinishedAt": "2026-10-21T16:37:50.378631+08:00",
+  "builderImageId": "sha256:a7fdcabe69327c412a3e99522c4d7fc5c41d46fe8ebd79bac53626fefcb050c0",
+  "buildInputDigest": "a93b0bd2e3c6405ef56a4e51a22608e48e90048955c71c9ed958b4362cf15893",
+  "buildManifestSha256": "4f73f6ed00f7bcb9527138e06c4c27f92f04984f1a213b02fee85e83c557df3e",
+  "buildLogSha256": "df64ee46ebf97e6c520434fd17bcd61d0076ce820aada4fba97a176f7bcda83f",
+  "providerProvenanceSha256": "178e55cb7cbbba10f2911de39c92d42b2be20b4d260ba0a4f6042eecb2e62ddf",
+  "specSha256": "f065e8952be4c99cdceb2c2363ce8b7897f4ff5c186909cafe83678a92088e3a",
+  "sources": {
+    "fontconfig": {
+      "repository": "https://gitlab.freedesktop.org/fontconfig/fontconfig.git",
+      "commit": "6d0a98982ec351c165c9224c8b7dbdfca3010e47",
+      "version": "2.17.1",
+      "archive": "fontconfig-6d0a98982ec351c165c9224c8b7dbdfca3010e47.tar",
+      "archiveSha256": "b00cfde7835a7624e747be49dfa5aeec91cd78f4e67a8c420bbd155e0cae084c"
+    },
+    "expat": {
+      "repository": "https://github.com/libexpat/libexpat.git",
+      "commit": "a76b1174c1ea52abb639a4c69d52b630a8a106a2",
+      "version": "2.9.0",
+      "archive": "expat-a76b1174c1ea52abb639a4c69d52b630a8a106a2.tar",
+      "archiveSha256": "8766d9fdb9d9cdf9666447987fa7dcf0af23a311ed72718eb6b92a98208eaa77"
+    },
+    "freetype": {
+      "repository": "https://github.com/freetype/freetype.git",
+      "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+      "version": "2.13.3",
+      "role": "headers-and-link-reference-only; never replaces a consumer FreeType",
+      "archive": "freetype-42608f77f20749dd6ddc9e0536788eaad70ea4b5.tar",
+      "archiveSha256": "98b67f6bdb1cec51bcea8c54326efac82b7373d9cc36933a556e1360dbbe9116"
+    }
+  },
+  "recipes": {
+    "deps.lock": "ac4c276c64a8b96c2030e057182dda05388c9efd342fd23aa42e9803774fbfea",
+    "docker/build_fontconfig_ohos.sh": "1d2b200d5f6ff9426124b353bf3c2c09bce51fdfad39400d592a2446d0c9515f",
+    "docker/builder-entry.sh": "44d31f454ad7ba405cd5766ece24a3cf3e9640b15c0f200e064b7cf1f2ca5d33",
+    "docker/project-build-entry.sh": "2d8aba77aec206453469361af5d77e86b42e6403c488e36383365eb615f1332b",
+    "docker/project.py": "55e75dd127234ee77804942fd223fae2f73e4212c88da4947c808a0252938a6f",
+    "docker/resume-builder-entry.sh": "c6d5c3365ebf7a54d064b10918ab54f596105550cb9ed920a22e88cd878e59c7",
+    "docker/scripts/apply_jdk_patches.py": "6067be656332007ba390872532e9371c786d19bdedcf52da460eabd8cb056363",
+    "docker/scripts/build_lwjgl_official.sh": "76916b79ac811025861fb8e501e958f2e41ccce715ac41858bc0a287697c88d1",
+    "docker/scripts/check_lwjgl_modules.sh": "b4484b1eddfd35e2c3615d15b1367bcfd9341db6d441d6916895b8b0a883e663",
+    "docker/scripts/copy_jdk_to_project.sh": "7788dbddc2d7871829d67c7ae62961828e260009b2c42567433136e5c202655d",
+    "docker/scripts/fontconfig_inputs.py": "5f90606bbe03e8f045be2b32de9bf87792a5434ab3075dbf53febbd649c32335",
+    "docker/scripts/incremental_rebuild.sh": "c1696aac182769f1606cd0e2919db366e53396f60c8a020dc5c9bafadfa912db",
+    "docker/scripts/jdk_build_identity.py": "6e18426118b6029b9652e767d861a3a01fadb53bb6c549e5305223c5650eb27f",
+    "docker/scripts/jdk_native_inputs.py": "a9bf774376185c8c5e5267a6b84db3751f16b44c6f3cd1e1e743a9c2f49845fd",
+    "docker/scripts/pack_jdk_full.sh": "d642bc478f845b63b3a84900079ed22113e15efca9d5ac7771d8ce9d1ef77108",
+    "docker/scripts/pack_jdk_release.sh": "d79e2ade1b70a43fdce74743bc6bf909088a8682e794c0c82d0f4cf40631770e",
+    "docker/scripts/pack_jdk_split.sh": "f544c4c174a8bac8045c1bb390d1777317ff2bd486910d91da18d771c345cbd9",
+    "docker/scripts/package_fontconfig.py": "52f59b41f219d9274872ca3ac9b6b8962e1469c99b0ac348bd36e287b08d7287",
+    "docker/scripts/package_runtime.py": "8267e6ccf9de7ddbb3bf6ffb4e7dbf40925a2a2fd457cc10b6ad0d80401e2ec9",
+    "docker/scripts/planb_diff_cfiles.sh": "c4a2382126b8ec7afa2a14c413cf1845c2986b35c4df29cfc7eca6f449031b6d",
+    "docker/scripts/planb_fetch_extra_jars.sh": "ed4cb591909eb30ec7bf335e85d50bf4bb6340464a3b775cc7307d2653898c41",
+    "docker/scripts/planb_fetch_jars.sh": "0df12c8187eccf7b530994b64adafb78b84364351bfd105f733255a12b0db29d",
+    "docker/scripts/planb_syntax_check.sh": "6200d8c105d27bbc02b0f75fadf9a31e12177b05b896a409a536579f14bc5a70",
+    "docker/scripts/prepare_freetype8.sh": "4ac9661bac59aad482eae29d9c8727c5604828f1e54b22266eb4262e6bb3cb4a",
+    "docker/scripts/prepare_jdk_abi.sh": "77f82e6e99e0413b58ff676a3363401aefd105d508bb6b279afdb7b93edcb9f2",
+    "docker/scripts/prepare_jdk_source.py": "a17150d3f82d8c11a5afe4af32a3615e1f4f1b0f7d13a306c56ca3c51f89ed3b",
+    "docker/scripts/rebuild_libjli.sh": "15d601c2f215c15918fa081d68e0f35194774a8e0dcacfe655df44ec652f35bd",
+    "docker/scripts/rebuild_libjvm.sh": "b4f44275436bc3d2e52ac02d2568a1b2d8599d5e3f4b477d653986daac7edd56",
+    "docker/scripts/run_configure.sh": "49eeeae7fe33ce862e4338216df9bba1163e3940e870bf3c3265aa3b1301cb7c",
+    "docker/scripts/verify_jdk25_safepoint.py": "0b102ae15fd764d1c90de987990ccd5ed66880e39f30b68faecb62f59029d3df",
+    "docker/scripts/verify_jdk_abi.py": "434b57e1cb2e657f12201fa53b6f5013dea0863b4934bae558aef751acab80fc",
+    "docker/setup_toolchain.sh": "5decb90fa721efdb5104b4b905dd86e3c5668c20a266c8391a3df02b420bbb9d",
+    "docker/stubs/cups/cups/cups.h": "704374f8075e9ca9247c632ae016546f123a38676c7b901c27cd487ee61bdd95",
+    "docker/stubs/cups/cups/ppd.h": "85f1dfead3b7796dcda7913857cac3ad0a41bd207434dccaf29776f3dd3002c5",
+    "docker/stubs/fontconfig/fontconfig/fontconfig.h": "7d5542ff2fa40af1b8e9a49f711f7712af884daaea6d64c918aa217079d9d983",
+    "docker/stubs/x11/X11/ap_keysym.h": "152892f2817a82042acdc2db214fef607e332592efb5bd9e11b42b2f31be059f",
+    "docker/stubs/x11/X11/cursorfont.h": "4f2963a82bd7ca6c56a35642d002e1b3b65c5fca5a01ec3caacfdb73fe2a051c",
+    "docker/stubs/x11/X11/DECkeysym.h": "87d80d2924b7c10848d7d4bc129064790755dcdb292262a896e2304a52349e3d",
+    "docker/stubs/x11/X11/extensions/shape.h": "d71f54e2a71990c5a5d5ba27e57f86b76c2d1fdd735588f5650432cd10b76209",
+    "docker/stubs/x11/X11/extensions/shmproto.h": "f946199ac0dc6d400840f3371bb1078c2df5815a40ed6a3befb68a26029a771a",
+    "docker/stubs/x11/X11/extensions/Xdbe.h": "a798addefda3e85677e7d2124a9fc28fa30c24ac05eb9c0bb71f71420b06228c",
+    "docker/stubs/x11/X11/extensions/XI.h": "afcc329d9e4856dad9da1721a77a98302c1196382e69ccb2e1b502e57b9c47b6",
+    "docker/stubs/x11/X11/extensions/XInput.h": "c137c4d5b03e6785e445c6c219c6836d1e652cf943efdbf729654bde328d742f",
+    "docker/stubs/x11/X11/extensions/Xrandr.h": "f33fc0c34afa89b14c2f09329a2f00d5dec523bd01e73ffe915577361102f514",
+    "docker/stubs/x11/X11/extensions/Xrender.h": "0a1b4a30c435e75c0a088014421f825b105cca42df701e67a637df8868b6fa60",
+    "docker/stubs/x11/X11/extensions/XShm.h": "e881b82f81b0d6736a938d66823654de79fde4cb649f37cd4743d1b1a37be6b7",
+    "docker/stubs/x11/X11/extensions/XTest.h": "aa12c9ad46916ae533c819ef23348ca866b7aa4eeeb71ada99a1167b4ad41c45",
+    "docker/stubs/x11/X11/extensions/xtestext1.h": "498bc9093d9f17515ce571c8c80de691f0a38089ff9df11192f72bb9bbebfeae",
+    "docker/stubs/x11/X11/HPkeysym.h": "2f0a2aa2c1707177bc6da7b4978689646649bb9a78d94b28fad0d2b861c83e44",
+    "docker/stubs/x11/X11/Intrinsic.h": "ca83a4395722be4963d32af445b143e877583ffffb82eedbb21b3faffbe31a91",
+    "docker/stubs/x11/X11/keysym.h": "6b6aa4ce44305a6dcf7333fbbe39b0f4fe0872f180eb73ff61b3ae4a58b6c81b",
+    "docker/stubs/x11/X11/keysymdef.h": "4e077343694621b022f8ad44ae9876938bdf515f08fe676959fee94a00bee40c",
+    "docker/stubs/x11/X11/Sunkeysym.h": "7be00bc32bc34e2c6be73c90d38127633cffbe465fe91f7c0f4efbad30dd6b4d",
+    "docker/stubs/x11/X11/X.h": "797a33c4c7bafa5bb28b102db6ee83c3435b46637826d60244d8ec59b24a4e54",
+    "docker/stubs/x11/X11/Xatom.h": "4e9807dfe55dbf1131a8373d57b0bee3ad4e1e75db26decb2572710be4dc8f77",
+    "docker/stubs/x11/X11/Xfuncproto.h": "6b6bb5d5c6b807fb969dee91add8cbefece13beb3ed1b0fed89af883bdc1bb2a",
+    "docker/stubs/x11/X11/XKBlib.h": "8d55ca634281b00b9c83eac85c011be817c8bd59c5a7cb26ddb46857445cbf2b",
+    "docker/stubs/x11/X11/Xlib.h": "2948d8534063e306c225c2d2666ffbeb1653601468b676595fcb6a8250b064f7",
+    "docker/stubs/x11/X11/Xmd.h": "862bfc85af1f03f620819e33f315751f82638439a3076f2414249305e6943c2d",
+    "docker/stubs/x11/X11/Xos.h": "b0338f06ca2cbbf9207e1e4384879d14997d7525d7889ff5abf7ca886d54466d",
+    "docker/stubs/x11/X11/Xproto.h": "b87d1bde972e79f9f89c180613363f8595cbc26e48d400de0680329fe22fc30f",
+    "docker/stubs/x11/X11/Xutil.h": "87a37d78246f0f07a37de15685adee52332f1168939708cb3e68b23bf3addcc0",
+    "prebuilt/fontconfig/build-inputs.json": "f065e8952be4c99cdceb2c2363ce8b7897f4ff5c186909cafe83678a92088e3a",
+    "prebuilt/stubs/src/cxxabi_shim.cpp": "b2916455ea37b0675a61061970955802e5c714e7a26124b64641d2f2d37f6455",
+    "prebuilt/stubs/src/eh_stubs.c": "039f4b36c6652f9f12ac111da5ca0bb93225ce995322a898a8c0e12780163e1d",
+    "prebuilt/stubs/src/README.md": "3b6ab54ebe3c76dca6be38daaf46fb635391c8b5b7dfcc01433f080c95141983"
+  },
+  "sdk": {
+    "resourceVersion": "15.0.4",
+    "sentinels": {
+      "usr/include/stdio.h": "92e8af529f1ccc1648916e8b819dbcec3a1f1597bf190ca33bcc4dee91fb2026",
+      "usr/include/aarch64-linux-ohos/bits/alltypes.h": "2e643832d88c292c67ed8fa735924b2fb0664eb4c04ab00068c37b35d7d65c71",
+      "usr/lib/aarch64-linux-ohos/libc.so": "068c85a380df4b09300e6cf0480a79ac25d31a004f1961d3a7dd7f3d00a952f2"
+    },
+    "completeIndexSha256": "36dd2f5e3e27a94b44bc3d16165a9a64d12b2ff2cb47c51d285f90358b93e65a"
+  },
+  "variants": {
+    "classic": {
+      "changes": [
+        {
+          "tag": 14,
+          "old": "libfontconfig.so.1",
+          "new": "libfontconfig.so",
+          "fileOffset": 16738
+        }
+      ],
+      "changedByteOffsets": [
+        16754,
+        16755
+      ],
+      "path": "classic/libfontconfig.so",
+      "sha256": "8e8a3c7ca56a3629dbc268e9c7d16c9e849e6f9bade49c98fb86c81d87d82459",
+      "sizeBytes": 547680,
+      "needed": [
+        "libfreetype.so.6",
+        "libc.so"
+      ],
+      "soname": [
+        "libfontconfig.so"
+      ]
+    },
+    "modern": {
+      "changes": [
+        {
+          "tag": 14,
+          "old": "libfontconfig.so.1",
+          "new": "libfontconfig.so",
+          "fileOffset": 16738
+        },
+        {
+          "tag": 1,
+          "old": "libfreetype.so.6",
+          "new": "libfreetype.so",
+          "fileOffset": 16713
+        }
+      ],
+      "changedByteOffsets": [
+        16727,
+        16728,
+        16754,
+        16755
+      ],
+      "path": "modern/libfontconfig.so",
+      "sha256": "9262ac1eecb87ed99537ecdb3e0de077bcd61e0e3c19de7e5f341116fb379ce1",
+      "sizeBytes": 547680,
+      "needed": [
+        "libfreetype.so",
+        "libc.so"
+      ],
+      "soname": [
+        "libfontconfig.so"
+      ]
+    }
+  },
+  "requiredFreeTypeSymbols": [
+    "FT_Done_Face",
+    "FT_Done_FreeType",
+    "FT_Done_MM_Var",
+    "FT_Get_Advance",
+    "FT_Get_BDF_Property",
+    "FT_Get_Char_Index",
+    "FT_Get_First_Char",
+    "FT_Get_MM_Var",
+    "FT_Get_Next_Char",
+    "FT_Get_PS_Font_Info",
+    "FT_Get_Postscript_Name",
+    "FT_Get_Sfnt_Name",
+    "FT_Get_Sfnt_Name_Count",
+    "FT_Get_Sfnt_Table",
+    "FT_Get_X11_Font_Format",
+    "FT_Init_FreeType",
+    "FT_Load_Glyph",
+    "FT_Load_Sfnt_Table",
+    "FT_New_Face",
+    "FT_Select_Charmap",
+    "FT_Select_Size",
+    "FT_Set_Named_Instance",
+    "FT_Set_Var_Design_Coordinates"
+  ],
+  "licenses": {
+    "fontconfig": {
+      "path": "prebuilt/fontconfig/licenses/fontconfig-2.17.1/COPYING",
+      "sha256": "51a51aa9823704fd90bccc616cdd17ebabb5b2b3e9cbde886ca02c7002288067",
+      "sourceCommit": "6d0a98982ec351c165c9224c8b7dbdfca3010e47",
+      "sourceFile": "COPYING"
+    },
+    "expat": {
+      "path": "prebuilt/fontconfig/licenses/expat-2.9.0/COPYING",
+      "sha256": "73cc92f80889ab23c7287b1a11dd50fdec190c3f26ebe5938c579043817d651e",
+      "sourceCommit": "a76b1174c1ea52abb639a4c69d52b630a8a106a2",
+      "sourceFile": "COPYING"
+    }
+  },
+  "consumption": {
+    "path": "entry/libs/arm64-v8a/libfontconfig.so",
+    "variant": "modern",
+    "sha256": "9262ac1eecb87ed99537ecdb3e0de077bcd61e0e3c19de7e5f341116fb379ce1",
+    "sizeBytes": 547680
+  },
+  "qualification": {
+    "completeJdkPackages": false,
+    "javaFontAndImageIO": false,
+    "coldHotCache": false,
+    "allDevices": false
+  },
+  "externalEvidence": {
+    "build": "E:\\AMCL\\.workspace\\build\\docker-fontconfig-20261021-163641-095492-57ec550c",
+    "tabletFontMatch": "E:/AMCL/.workspace/run/jdk-impl-preview/tablet-platform-font-provider-r4.json"
+  }
+}

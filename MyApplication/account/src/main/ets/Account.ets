@@ -11,6 +11,8 @@
  * 创建日期：2026-05-09（M1：账户抽象骨架）
  */
 
+import { OfflineAppearance } from './AppearanceTypes';
+
 // ============================================================
 //  账户类型枚举（值与 MC --userType 参数对应）
 // ============================================================
@@ -64,6 +66,9 @@ export interface AccountRecord {
   username: string;           // 明文显示名
   uuid: string;               // MC UUID（36 字符）
   createdAt: number;          // 毫秒时间戳
+
+  /** 离线账号的共享库选择；旧记录缺失时恢复游戏默认，不包含 PNG 或绝对沙箱路径。 */
+  offlineAppearance?: OfflineAppearance;
 
   // 仅 MicrosoftAccount 有，M1 不使用
   encrypted?: EncryptedBlob;

@@ -34,6 +34,8 @@ using EGLDisplay=void*; using EGLSurface=void*; using EGLContext=void*; using EG
 #define EGL_CONTEXT_LOST 0x300E
 #define EGL_BAD_SURFACE 0x300D
 #define EGL_BAD_NATIVE_WINDOW 0x300B
+#define EGL_WIDTH 0x3057
+#define EGL_HEIGHT 0x3056
 #define GLFW_PLATFORM_ERROR 0x10008
 #define GLFW_NO_API 0
 #define GLFW_OPENGL_API 0x00030001
@@ -45,7 +47,16 @@ using EGLDisplay=void*; using EGLSurface=void*; using EGLContext=void*; using EG
 #define AMCL_EXTERNAL_LOG_W(...) ((void)0)
 #define AMCL_EXTERNAL_LOG_E(...) ((void)0)
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#x); return 1; } } while(0)
+// 本夹具只观察GLFW跨入几何owner的调用，完整几何事务由backend-session回归验证。
+struct GeometryOwnerFixture {
+    uint32_t flags=0, observedKind=99;int checkpoints=0,width=-1,height=-1;
+    uint32_t geometryWorkFlags(){return flags;}
+    void geometryCheckpoint(){++checkpoints;}
+    void observeDrawable(int w,int h,uint32_t kind){width=w;height=h;observedKind=kind;}
+};
+struct BackendSessionHandle {GeometryOwnerFixture* session;};
 struct GLFWwindow {
+    void* graphicsBackendSession=nullptr;
     uint64_t nativeWindowGeneration=1;
     int clientAPI=GLFW_OPENGL_API;
     bool contextLostFatal=false, eglTeardownPending=false, auxiliary=false;
@@ -70,6 +81,7 @@ static int lastError=0, failureCode=0x3002, pendingDriverError=0x3000, errorRead
 static bool nativeGl=true, mobileGl=false, failApi=false, failRelease=false, presentation=true, failSwap=false;
 static bool failBind=false, failInterval=false, consumeErrorInCallback=false;
 static bool deferredSwap=false;
+static bool drawableQueryOk=true;
 static uint64_t actualPresentSequence=0;
 int amclGraphicsReadPresentSequenceV1(uint64_t* out){*out=actualPresentSequence;return mobileGl?1:0;}
 static int recordedPresents=0, observedPresents=0, inputPresents=0;
@@ -91,6 +103,7 @@ int eglMakeCurrent(EGLDisplay,EGLSurface surface,EGLSurface,EGLContext ctx){
 }
 int eglGetError(){++eglCalls;++errorReads;const int error=pendingDriverError;pendingDriverError=0x3000;return error;}
 int eglSwapBuffers(EGLDisplay,EGLSurface){++eglCalls;if(failSwap){pendingDriverError=failureCode;return 0;}if(!deferredSwap)++actualPresentSequence;return EGL_TRUE;}
+int eglQuerySurface(EGLDisplay,EGLSurface,int field,int* out){++eglCalls;*out=field==EGL_WIDTH?640:360;if(!drawableQueryOk)pendingDriverError=EGL_BAD_SURFACE;return drawableQueryOk?EGL_TRUE:0;}
 int eglSwapInterval(EGLDisplay,int){++eglCalls;if(failInterval){pendingDriverError=failureCode;return 0;}return EGL_TRUE;}
 void ReportError(int error,const char*){lastError=error;if(consumeErrorInCallback)(void)eglGetError();}
 bool consumePublishedSurfaceState(GLFWwindow*,const char*,bool){return presentation;}
@@ -288,6 +301,15 @@ int main(){
     CHECK(!report(&typed,"functional-probe",false,std::string("probe cleanup")));
     CHECK(fatalReports==0 && restartRequests==1);
 #endif
+    ResetFailureFixture();g_errorCallback=nullptr;nativeGl=true;mobileGl=false;
+    GLFWwindow geometryWindow;GeometryOwnerFixture geometry;BackendSessionHandle geometryHandle{&geometry};
+    geometryWindow.graphicsBackendSession=&geometryHandle;geometry.flags=3;
+    CHECK(glfwOHOS_MakeContextCurrentChecked(&geometryWindow)==1);
+    glfwSwapBuffers(&geometryWindow);
+    CHECK(geometry.checkpoints==1 && geometry.width==640 && geometry.height==360 && geometry.observedKind==1);
+    drawableQueryOk=false;glfwSwapBuffers(&geometryWindow);
+    CHECK(geometry.checkpoints==2 && geometry.width==0 && geometry.height==0 && geometry.observedKind==0);
+    drawableQueryOk=true;CHECK(glfwOHOS_MakeContextCurrentChecked(nullptr)==1);
     std::puts("GLFW context ownership, NO_API isolation and successful-swap-only presentation counters PASS");
     std::puts("GLFW EGL failure boundaries PASS: bind/release/API/auxiliary and presented swap/interval; first cause and resource ownership retained");
 }

@@ -19,7 +19,7 @@ export function runtime(product, forceDesktopProvider = false) {
     probeFails: false, probeCalls: 0, toasts: [], routes: [], newProbeText: 'FULL_RENDER_PROBE' };
   const methods = new Map([
     ['DesktopDeveloperToolsPage.ets', ['context', 'desktopProfileSummary', 'restoreSaved', 'refreshShares', 'verify', 'shareResult', 'copyShareUrl', 'revokeDiagnostic']],
-    ['McErrorSheet.ets', ['lsSubmit_', 'lsUseShare_', 'openShareComposer_']],
+    ['McErrorSheet.ets', ['openAnalysis_']],
     ['ActivityShareSheet.ets', ['prepare_', 'send_', 'release_', 'samePlan_', 'planCaption_', 'receiptCaption_',
       'busy_', 'setPhase_', 'fail_', 'advanced_', 'retrySave_', 'copy_', 'fits_', 'totalBytes_']],
   ]);
@@ -84,7 +84,7 @@ export function runtime(product, forceDesktopProvider = false) {
   const Activity = load('entry/src/main/ets/components/ActivityShareSheet.ets').Subject;
   const ShareDraft = load('entry/src/main/ets/components/ActivitySharePreparation.ets').ActivityShareDraft;
   const getUIContext = () => ({ getRouter: () => ({ pushUrl: async route => { state.routes.push(route); } }),
-    getPromptAction: () => ({ showDialog: async () => ({ index: 1 }) }) });
+    getPromptAction: () => ({ showDialog: async () => ({ index: 1 }), showToast: options => state.toasts.push(options.message) }) });
   function page() {
     return Object.assign(new Page(), { busy: false, sharing: false, result: '', savedLabel: '', saveError: '', shareStatus: '', diagnosticShares: [], getUIContext });
   }
@@ -99,9 +99,8 @@ export function runtime(product, forceDesktopProvider = false) {
     ledger.ledgerEnd(context.filesDir, id, { state: ledger.LedgerState.FAILED, source: 'fixture', summary: 'synthetic' });
     return { id, mc };
   }
-  function sheet(id, mc) {
-    return Object.assign(new Sheet(), { sessionKey: id, session: { mcDir: mc, version: '1.21.11', startedAt: id }, lsShareId: '', lsShareUrl: '',
-      uiCtx_: () => context, theme: {}, shortVersion: value => value, onShareChanged() {}, onClose() {}, getUIContext, toast_: text => state.toasts.push(text) });
+  function sheet(id) {
+    return Object.assign(new Sheet(), { sessionKey: id, openingLogs: false, onClose() {}, getUIContext });
   }
   function activity(id) {
     const selection = evidence.evidenceSelectionOf(context.filesDir, id);

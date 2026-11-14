@@ -47,6 +47,10 @@ export class RepairTask implements UnifiedDownloadAdapter {
     this.mcDir_ = mcDir;
     this.view.id = 'repair:' + versionName;
     this.view.category = TaskCategory.MC_VERSION;   // 复用 MC 蓝主题
+    // 视觉分类继续复用MC，活动事实明确是repair，不由页面instanceof决定。
+    this.view.activityCategory = 'repair';
+    this.view.activityMcDir = mcDir;
+    this.view.activityGameVersion = versionName;
     this.view.title = versionName;
     this.view.subtitle = '修复文件';
     this.view.state = UnifiedTaskState.PREPARING;

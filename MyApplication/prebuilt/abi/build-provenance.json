@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-21T09:47:35.613770+08:00",
+  "artifact": "entry/libs/arm64-v8a/libc++_shared.so",
+  "artifactSha256": "5ed1233b3f0a7cb4aaf59c02f2981581d300a17bf8900ad88cd7d88f65150729",
+  "artifactBytes": 1287264,
+  "unstrippedSha256": "5d3a37f22221a8f392e593519fbce6f484d67d84493556ca7303282a11fe3de4",
+  "source": {
+    "commit": "b7040c9fd2bce56bea2138cf7851f093e4bf3cce",
+    "repository": "https://github.com/openharmony/third_party_llvm-project.git",
+    "files": {
+      "0001-checked-fde-registration.patch": "addaf63a287bccdec24e65f5f1381c9c921ce3900f386b1cbd19da8263c8f9e9",
+      "amcl_unwind_image.h": "04410cba2b86a5caa56e476141d41573d620cdc3cf63dabd0ec462527d9895f7",
+      "amcl_unwind_images.hpp": "b32ac1e91956191e5437faca79f17542ac3383606089931b119bb6006badd955",
+      "source.json": "95616ca7ad63b6fbbf35909f5dd1f643a295754a582173520eecd0aa95061f60",
+      "source.tar": "ac95aca2609771a034eff07e3481325edf4f3d8a4c198df2b0bd4bdd0253e9f1"
+    }
+  },
+  "builderImageId": "sha256:a7fdcabe69327c412a3e99522c4d7fc5c41d46fe8ebd79bac53626fefcb050c0",
+  "sdk": {
+    "resourceVersion": "15.0.4",
+    "inputManifestSha256": "b6b6b97b243b2c69482de89e3aebd0ed907069d07867fdec19ca5d9c8ec54d3e",
+    "originalSharedSha256": "f69947af100b652e349ae51e4a4888bcc7a327db9085272d318176ef1782bf0f",
+    "files": {
+      "llvm/include/libcxx-ohos/include/c++/v1/__config_site": "9c36886ad0a669b1341429adedcb2ae14b9f6916b1e0a5c128d66de50b0a31ee",
+      "llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/clang_rt.crtbegin.o": "2f2e168ec5351204817d81c2da8a0dd5c6df55835cd393d69a9d01d90c6cdc9a",
+      "llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/clang_rt.crtend.o": "11bc3b24fc3689dee63fb94298392251125d7aefa157d1ad7c211e8dbb072214",
+      "llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.builtins.a": "2bf4cb1604c9255eae0cbc2f63ac1aa724b9020c1cf3080434f583f49dfdb067",
+      "oh-uni-package.json": "3dbc4a06ffd3b1be6b45c3c346a7900ca42f8a81a5b0454dc7f5cc1e5a9509a8",
+      "sysroot/usr/lib/aarch64-linux-ohos/crti.o": "59a6a02617475bd75fb189083acd36c7b3f302e227e6db838bd52a9993744a3f",
+      "sysroot/usr/lib/aarch64-linux-ohos/crtn.o": "0e975f27c7518882b010875958b708494a3339a9fe5ad6750306cbbcbe612fe5",
+      "sysroot/usr/lib/arm-linux-ohos/crti.o": "3e5e7f556a38ba2f779e061786de37fdfccabba51789b3234c2f4724f2903437",
+      "sysroot/usr/lib/arm-linux-ohos/crtn.o": "be31817211006a6f42dcc8bb3308648220391621e1940e90ac2d63e08dcf621d",
+      "sysroot/usr/lib/x86_64-linux-ohos/crti.o": "7cd174e0dc073a10795cdc3d1a8f3f752668bb61c28cb08ab8f075e48102037b",
+      "sysroot/usr/lib/x86_64-linux-ohos/crtn.o": "4ee3e025bd74d9a9fd640995c757dd751b879677926b51876f3388bf3965ec1d",
+      "llvm/lib/aarch64-linux-ohos/libc++_static.a": "2bf91128280175dd8448fba8eee77770edb44f1a1996807e7520f0fea9dadd0c"
+    }
+  },
+  "recipes": {
+    "tests/runtime-abi/build-application-provider.sh": "0d6a0c516d9b09e641ea0cbfff71219a12704e66f726d3aa62c15654a8c95cac",
+    "tests/runtime-abi/prepare-unwind.sh": "771b5eb1b37e1810fb42d6586df417d666b92c730be89befc8fea4606342a65d",
+    "tests/runtime-abi/verify-application-provider.py": "2ff2e598fe1e2da31be14b9b1193c61686a87b92baf88cc8b216a7fde3a17cd2"
+  },
+  "buildRecord": "E:\\AMCL\\.workspace\\build\\docker-application-abi-20261021-094237-f19769-57ec550c\\build-manifest.json",
+  "qualification": "AArch64/QEMU ABI and automatic custom EH passed; API26 tablet mixed-frame exception/metadata-rejection passed; full runtime qualification pending",
+  "bundledJdkProviderStatus": "Existing four JDK candidate ZIPs still carry SDK provider; final runtime packaging must include the repaired compatible provider and new immutable identity.",
+  "hapTransformation": {
+    "providerSha256": "e12df7851b33c4ebd66c3ccf50e53f42e1d4025ef5bb52bd169ba5020b11ed47",
+    "comparison": "all program headers and runtime LOAD bytes identical except ELF section-index header fields"
+  },
+  "tabletQualification": {
+    "device": "MRDI-W10",
+    "api": 26,
+    "hapSha256": "992a52a279644e349806db517e44170831254b665173257ef5c21c63d647a320",
+    "report": "E:/AMCL/.workspace/run/jdk-impl-preview/tablet-platform-unwind-r5.json",
+    "scope": "fixed native CPP fixtures and platform probe; JavaVM not created"
+  }
+}

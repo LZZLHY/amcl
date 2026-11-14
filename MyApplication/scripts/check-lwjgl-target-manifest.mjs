@@ -474,10 +474,16 @@ function effectiveModules(metadata, descriptor, problems) {
   };
 }
 
-function verifyLibraryNameContract(root, contract, module, problems) {
+function verifyLibraryNameContract(root, contract, module, problems, artifact) {
   if (!contract || typeof contract.source !== 'string' || typeof contract.key !== 'string' ||
       typeof contract.value !== 'string') {
     problems.push(`${module}: malformed libraryName contract`);
+    return;
+  }
+  const kind = contract.kind ?? 'literal';
+  if (!['literal', 'hap-absolute'].includes(kind) ||
+      (kind === 'hap-absolute' && contract.value !== basename(String(artifact)))) {
+    problems.push(`${module}: libraryName must bind the declared HAP provider basename`);
     return;
   }
   const path = resolveRepositoryPath(root, contract.source, `${module}: libraryName source`, problems);
@@ -486,7 +492,7 @@ function verifyLibraryNameContract(root, contract, module, problems) {
     problems.push(`${module}: libraryName source is missing: ${contract.source}`);
     return;
   }
-  if (!hasBootstrapLibraryName(readFileSync(path, 'utf8'), contract.key, contract.value)) {
+  if (!hasBootstrapLibraryName(readFileSync(path, 'utf8'), contract.key, contract.value, kind)) {
     problems.push(`${module}: active library-name route ${contract.key}=${contract.value} is missing`);
   }
 }
@@ -496,12 +502,18 @@ function verifyLibraryNameContract(root, contract, module, problems) {
  * 缓存错误值）。仅接受 RuntimeBootstrapProperties 的 result 初始化表内精确键值对；
  * 注释、别的函数或仅出现一个相同字符串均不能满足这个来源契约。冻结与创建顺序
  * 由运行时 bootstrap 的行为测试负责，本门禁只证明 provider 路由表确实包含该值。
+ * hap-absolute只接受同一个nativeDir参数加固定制品名；其它根、函数和表达式不作为证明。
  */
-export function hasBootstrapLibraryName(source, key, value) {
+export function hasBootstrapLibraryName(source, key, value, kind = 'literal') {
   const code = stripComments(source, { lang: 'c' });
   const body = /\bRuntimeBootstrapProperties\s*\([^)]*\)\s*\{\s*std::vector<BootstrapProperty>\s+result\s*\{([\s\S]*?)\n\s*\};/.exec(code);
   if (!body) return false;
-  const pair = new RegExp(`\\{\\s*"${escapeRegExp(key)}"\\s*,\\s*"${escapeRegExp(value)}"\\s*\\}`);
+  if (!['literal', 'hap-absolute'].includes(kind)) return false;
+  if (kind === 'hap-absolute' && !/^lib[^/\\]+\.so$/.test(value)) return false;
+  const expression = kind === 'hap-absolute'
+    ? `nativeDir\\s*\\+\\s*"/${escapeRegExp(value)}"`
+    : `"${escapeRegExp(value)}"`;
+  const pair = new RegExp(`\\{\\s*"${escapeRegExp(key)}"\\s*,\\s*${expression}\\s*\\}`);
   return pair.test(body[1]);
 }
 
@@ -575,7 +587,7 @@ function verifyNativeProvider(root, module, native, modernManifest, problems) {
     if (!native.libraryName) {
       problems.push(`${module}: bundle-file provider requires a libraryName route`);
     } else {
-      verifyLibraryNameContract(root, native.libraryName, module, problems);
+      verifyLibraryNameContract(root, native.libraryName, module, problems, native.artifact);
     }
   } else if (native.kind === 'cmake-output') {
     validateRequiredSymbols(native, module, problems);

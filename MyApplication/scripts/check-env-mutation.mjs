@@ -59,6 +59,8 @@ const EXCLUDED_PREFIXES = [
   'entry/src/main/cpp/openal/openal-soft/',
   'entry/src/main/cpp/third_party/',
   'entry/src/main/cpp/tests/host/',
+  // 单独的宿主EXE/DSO夹具，产品TU门已按具体文件核对其不进入HAP。
+  'entry/src/main/cpp/audio/tests/',
 ];
 const EXCLUDED_SEGMENTS = new Set(['mobileglues', 'build', '.cxx', 'node_modules', 'oh_modules', '.hvigor']);
 const LWJGL2_BACKEND = 'prebuilt/lwjgl2/ohos-backend';
@@ -103,6 +105,8 @@ export function canonicalName(argument) {
 const MC = 'entry/src/main/cpp/jvm/mc_launcher.cpp';
 const JVM = 'entry/src/main/cpp/jvm/jvm_launcher.cpp';
 const FORK = 'entry/src/main/cpp/jvm/fork_run_java.cpp';
+const JDK_QUALIFICATION = 'entry/src/main/cpp/napi/jdk_java_qualification.cpp';
+const FONT_CONTEXT = 'entry/src/main/cpp/napi/jdk_font_context_qualification.h';
 const BEFORE_JVM = 'if (!phase_initJvmWithClasspath(';
 const BEFORE_CREATE_VM = 'createVM(&jvm';
 const LAUNCH_WHY = 'launchWithProfileImpl runs synchronously on the UI thread (mcLaunchWithProfileV2); every write precedes phase_initJvmWithClasspath → jvmInit → JNI_CreateJavaVM and std::thread(mcLaunchThreadWithProfile)';
@@ -116,6 +120,18 @@ function launch(name, count = 1) {
 }
 
 export const ALLOWLIST = [
+  { file: 'entry/src/main/cpp/audio/audio_host.cpp', function: 'amclAudioHostPublishEarlyV1',
+    call: 'setenv', name: 'AMCL_AUDIO_HOST_ENV', phase: 'pre-thread',
+    why: '模块早发布链只写getter/PID常量，published守卫禁止重发；Begin要求已发布才创建Runtime及音频控制线程' },
+  { file: 'entry/src/main/cpp/jvm/jdk_native_temp_preparation.h', function: 'amcl::jvm::NativeTempEnvironment::publish',
+    call: 'setenv', name: '"TMPDIR"', phase: 'pre-thread',
+    why: 'jvmInit唯一owner在RuntimeOnce认领后、Seal之前发布；此时尚无VM线程，真实CreateJavaVM入口前失败由同对象恢复' },
+  { file: 'entry/src/main/cpp/jvm/jdk_native_temp_preparation.h', function: 'amcl::jvm::NativeTempEnvironment::restoreBeforeVm',
+    call: 'setenv', name: '"TMPDIR"', phase: 'pre-thread',
+    why: '只恢复CreateJavaVM之前失败的原正文；retainAfterVmEntry使进入VM后的失败也禁止回滚' },
+  { file: 'entry/src/main/cpp/jvm/jdk_native_temp_preparation.h', function: 'amcl::jvm::NativeTempEnvironment::restoreBeforeVm',
+    call: 'unsetenv', name: '"TMPDIR"', phase: 'pre-thread',
+    why: '仅在原TMPDIR缺席且尚未进入CreateJavaVM时还原缺席；不属于运行期环境写入' },
   // Source/getter 描述符带预线程PID，fork客户端先拒；表地址/职责句柄在模块初始化后不重写。
   { file: 'entry/src/main/cpp/input/source/source_control.cpp', function: 'amclSourceControlPublishV1',
     call: 'setenv', name: 'AMCL_SOURCE_CONTROL_ENV', phase: 'pre-thread',
@@ -266,12 +282,29 @@ export const ALLOWLIST = [
     why: 'shared production cold publisher, called by pre-JVM admission or claimed disposable TestHooks before provider freeze; identical value is read-only, sealed/loaded provider and write failure reject' },
   { file: JVM, function: 'jvmInit', call: 'setenv', name: '"JAVA_HOME"', phase: 'pre-thread', before: BEFORE_CREATE_VM, why: JVMINIT_WHY },
   { file: JVM, function: 'jvmInit', call: 'setenv', name: '"SUN_BOOT_LIBRARY_PATH"', phase: 'pre-thread', before: BEFORE_CREATE_VM, why: JVMINIT_WHY },
+  { file: JVM, function: 'jvmInit', call: 'setenv', name: '"FONTCONFIG_PATH"', phase: 'pre-thread', before: BEFORE_CREATE_VM, why: JVMINIT_WHY },
+  { file: JVM, function: 'jvmInit', call: 'setenv', name: '"FONTCONFIG_FILE"', phase: 'pre-thread', before: BEFORE_CREATE_VM, why: JVMINIT_WHY },
   { file: JVM, function: 'jvmInit', call: 'setenv', name: '"LC_ALL"', phase: 'pre-thread', before: BEFORE_CREATE_VM, why: JVMINIT_WHY },
   { file: JVM, function: 'jvmInit', call: 'setenv', name: '"LANG"', phase: 'pre-thread', before: BEFORE_CREATE_VM, why: JVMINIT_WHY },
-  ...['"FONTCONFIG_PATH"', '"FONTCONFIG_FILE"', '"LC_ALL"', '"LANG"', '"AMCL_GAME_DIR"', '"LD_LIBRARY_PATH"'].map((name) => (
+  ...['"AMCL_GAME_DIR"', '"LD_LIBRARY_PATH"'].map((name) => (
     { file: FORK, function: 'childMain', call: 'setenv', name, phase: 'pre-thread', why: FORK_WHY })),
 
   // ---- DevTools 探针（MC_OHOS_BUILD_TESTS） ----
+  // 固定JDK探针在独立NCP中运行，环境不会在UI进程或已有JVM中改写；顺序钉核对真实调用者。
+  { file: JDK_QUALIFICATION, function: 'runQualification', call: 'setenv', name: '"AMCL_GAME_DIR"',
+    phase: 'pre-thread', before: 'initResult = jvmInit(',
+    why: 'TestHooks共享/独立资格入口都先验证Fresh状态和空JavaVM，固定本次目录后才进入首次jvmInit；共享入口另有一次性claim，不能在已有VM中重写' },
+  { file: 'entry/src/main/cpp/napi/jdk_native_temp_vm_pair.inc', function: 'runNativeTempPairChild',
+    call: 'setenv', name: '"AMCL_GAME_DIR"', phase: 'pre-thread', before: 'init = jvmInit(',
+    why: '双VM资格的每一端都是独立Fresh NCP，自己的工具目录在该进程第一次jvmInit之前设置，target/client不改彼此环境' },
+  { file: FONT_CONTEXT, function: 'amcl::jdkqualification::fontcontext::Environment::Clear', call: 'unsetenv', name: 'entry.name',
+    phase: 'pre-thread', why: '固定九项字体环境的TestHooks局部诊断；唯一生产调用者是已验证Fresh的Java资格NCP，Clear/Restore都在jvmInit之前完成' },
+  { file: FONT_CONTEXT, function: 'amcl::jdkqualification::fontcontext::Environment::Restore', call: 'setenv', name: 'entry.name',
+    phase: 'pre-thread', why: '同一隔离NCP内按原值恢复固定字体环境；失败抛出并禁止继续创建JVM，析构兜底也处于该预JVM调用栈' },
+  { file: FONT_CONTEXT, function: 'amcl::jdkqualification::fontcontext::Environment::Restore', call: 'unsetenv', name: 'entry.name',
+    phase: 'pre-thread', why: '同一隔离NCP恢复原先不存在的固定字体环境项，未把父应用或运行中JVM列为允许写入者' },
+  { file: 'entry/src/main/cpp/napi/napi_jdk_probe.cpp', function: 'fontProviderProbe', call: 'setenv', name: '"FONTCONFIG_FILE"',
+    phase: 'pre-thread', why: '只由AmclJdkProbeMain独立NCP调用；此前短线程探针已join，尚未加载JVM，字体配置先于后续threadTerminal/TLS线程试验；父进程只接收报告' },
   { file: 'entry/src/main/cpp/tests/mg_test.cpp', function: 'runMobileGluesTest', call: 'setenv', name: '"MG_DIR_PATH"',
     phase: 'pre-thread', why: 'inside the forked single-threaded probe child (child == 0) before it initializes MobileGlues' },
   // 专用语义探针只接受应用重启后的冷状态，先阻断后续JVM/游戏，再在冻结provider前固定配置目录。
@@ -306,6 +339,34 @@ export const ALLOWLIST = [
 // ============================ 顺序钉 ============================
 // 把 pre-thread 登记依赖的时序骨架钉成可机械核对的锚点序列（在去注释文本里按序查找）。
 export const ORDER_PINS = [
+  { id: 'native-temp-single-owner-before-create-vm', file: JVM,
+    anchors: ['const int creationClaim = g_runtimeOnce.beginResult()', 'nativeTempRoot.revalidate()', 'nativeTempEnvironment.publish(nativeTempRoot.path())',
+      'amcl::ohos::SealProcessEnvironment(', 'nativeTempEnvironment.retainAfterVmEntry()', 'rc = createVM(&jvm'],
+    why: 'TMPDIR只在认领后、实际VM线程出现前发布，入口前失败恢复，入口后保持restart boundary' },
+  { id: 'native-temp-no-rollback-after-vm-entry', file: 'entry/src/main/cpp/jvm/jdk_native_temp_preparation.h',
+    anchors: ['int restoreBeforeVm() noexcept {', 'if (!changed_ || retain_) return 0;',
+      'setenv("TMPDIR", original_.c_str(), 1)', 'unsetenv("TMPDIR")'],
+    why: '恢复调用必须受retain边界保护，不能在可能已有JVM线程后改environ' },
+  { id: 'jdk-font-context-and-workdir-before-vm', file: JDK_QUALIFICATION,
+    anchors: ['static void runQualification(const char* entryParameters, int pipe, int transferredRoot, bool shared) {',
+      'jvmRuntimeState() == 0 && jvmGetJavaVM() == nullptr',
+      'amcl::jdkqualification::RunFontContextQualification(run.get())',
+      'setenv("AMCL_GAME_DIR", runPath.c_str(), 1)', 'initResult = jvmInit('],
+    why: '共用资格实现中的Fresh检查、字体/工作目录准备必须早于真实JVM创建；锚定实现而非前置声明' },
+  { id: 'jdk-native-temp-pair-workdir-before-vm', file: 'entry/src/main/cpp/napi/jdk_native_temp_vm_pair.inc',
+    anchors: ['void runNativeTempPairChild(NativeChildProcess_Args args) {',
+      'jvmRuntimeState() == 0 && !jvmGetJavaVM()', 'setenv("AMCL_GAME_DIR", own.c_str(), 1)', 'init = jvmInit('],
+    why: '各NCP端在Fresh身份和工具目录建立后才创建自己的JVM' },
+  { id: 'audio-descriptor-once-before-runtime-worker', file: 'entry/src/main/cpp/audio/audio_host.cpp',
+    anchors: ['int amclAudioHostPublishEarlyV1(void) {', 'if (published)',
+      'setenv(AMCL_AUDIO_HOST_ENV, text, 1)', 'published = true', 'int amclAudioHostBeginV1(',
+      'if (!published || used || !session', 'new amcl::audio::Runtime('],
+    why: '早发布仅登记地址且有一次性守卫；会话必须在成功发布后才建立实际音频worker' },
+  { id: 'jdk-font-provider-in-child-before-thread-probes', file: 'entry/src/main/cpp/napi/napi_jdk_probe.cpp',
+    anchors: ['OH_Ability_StartNativeChildProcess("libentry.so:AmclJdkProbeMain"',
+      'void AmclJdkProbeMain(NativeChildProcess_Args args) {',
+      'fontProviderProbe(args.entryParams, report)', 'threadTerminalProbe(report)'],
+    why: '平台字体写入属于新建NCP，不能挪回NAPI异步工作者或移动到后续线程探针之后' },
   { id: 'l2-keyboard-follows-control-once-publication', file: 'entry/src/main/cpp/input/delivery/control_delivery.cpp',
     anchors: ['void amclControlDeliveryPublishV1()', 'if(published.load(std::memory_order_acquire))return;',
       'if(status==0){published.store(true,std::memory_order_release);amclInputL2KeyboardPublishV1();}'],
@@ -317,7 +378,7 @@ export const ORDER_PINS = [
   { id: 'early-publication-covers-slots-and-descriptors', file: 'entry/src/main/cpp/platform/env_publication.cpp',
     anchors: ['EnsureRendererRestartSlot()',
       'amclBackendInputPublishAddress()', 'inputBridge_publishAddress()', 'amclControlDeliveryPublishV1()',
-      'amclLookExecutionPublishV1()', 'amclSourceControlPublishV1()', 'amclWindowHostPublishOwner()'],
+      'amclLookExecutionPublishV1()', 'amclSourceControlPublishV1()', 'amclAudioHostPublishEarlyV1()', 'amclWindowHostPublishOwner()'],
     why: 'module Init registers every dynamic slot and publishes every once-guarded descriptor before any AMCL thread' },
   { id: 'input-descriptor-once-and-complete-tail', file: 'entry/src/main/cpp/glfw/input_bridge_ohos.c',
     anchors: ['void inputBridge_publishAddress(void) {',

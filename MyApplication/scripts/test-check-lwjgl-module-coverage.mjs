@@ -139,13 +139,19 @@ for (const entry of policy.modules) {
 for (const name of ['glfwGetEGLDisplay', 'glfwGetEGLContext', 'glfwGetEGLSurface', 'glfwGetEGLConfig']) {
   assert.equal(byArtifact.get('libglfw.so').has(name), true, `NativeEGL 必需集合包含 ${name}`);
 }
+// TinyFD的真实默认提供方是本HAP内独立broker；同名符号藏到其他模块不能替代它。
+entries.set('libs/arm64-v8a/libamcl_game_dialog.so', Buffer.from('fixture:libamcl_game_dialog.so'));
+byArtifact.set('libamcl_game_dialog.so', new Set([
+  'AmclGameDialogAttachV1', 'AmclGameDialogDetachV1', 'AmclGameDialogAvailableV1',
+  'AmclGameDialogTakeV1', 'AmclGameDialogReplyV1', 'AmclGameDialogCancelV1', 'AmclGameDialogMessageV1', 'AmclGameDialogNotifyV1'
+]));
 const fullHapFixture = storedZip(entries);
 const inspect = (name, bytes) => {
   assert.equal(bytes.toString(), `fixture:${name}`, '必须检查从本次包读取的提供方');
   return byArtifact.get(name);
 };
 assert.equal(checkModuleCoverage({ root, policy, manifest, hapBytes: fullHapFixture, inspectExports: inspect }).ok, true);
-for (const missing of ['liblwjgl_opengles.so', 'liblwjgl_nanovg.so', 'libamcl_lwjgl_egl.so', 'libamcl_vulkan_wsi.so']) {
+for (const missing of ['liblwjgl_opengles.so', 'liblwjgl_nanovg.so', 'libamcl_lwjgl_egl.so', 'libamcl_vulkan_wsi.so', 'libamcl_game_dialog.so']) {
   const broken = new Map(entries); broken.delete(`libs/arm64-v8a/${missing}`);
   const report = checkModuleCoverage({ root, policy, manifest, hapBytes: storedZip(broken), inspectExports: inspect });
   assert.equal(report.ok, false, missing);
@@ -162,6 +168,8 @@ for (const [artifact, missing] of [
   ['libspirv-cross.so', 'spvc_compiler_compile'],
   ['libglfw.so', 'glfwGetEGLConfig'],
   ['libamcl_vulkan_wsi.so', 'vkGetInstanceProcAddr'],
+  ['libamcl_game_dialog.so', 'AmclGameDialogMessageV1'],
+  ['libamcl_game_dialog.so', 'AmclGameDialogDetachV1'],
 ]) {
   assert.equal(byArtifact.get(artifact).has(missing), true, `负控入口必须真实存在：${missing}`);
   const report = checkModuleCoverage({ root, policy, manifest, hapBytes: fullHapFixture,

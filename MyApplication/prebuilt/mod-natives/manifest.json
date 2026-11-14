@@ -4,6 +4,27 @@
   "runtimeDeps": ["libc++_shared.so", "libc.so"],
   "libraries": [
     {
+      "name": "sherpa-onnx-jni",
+      "artifact": "libsherpa-onnx-jni.so",
+      "distribution": "bundled",
+      "bundledPath": "entry/libs/arm64-v8a/libsherpa-onnx-jni.so",
+      "loadMechanism": "verified-sherpa-native-path",
+      "loadMechanismNote": "完整235类身份唯一命中后，在模组初始化前使用Sherpa公开库路径；未知绑定不强行选库。",
+      "sourceDir": "prebuilt/mod-natives/sherpa-onnx",
+      "artifactLock": "prebuilt/mod-natives/sherpa-onnx/artifacts.json",
+      "buildScript": "scripts/build-sherpa-ohos.py",
+      "status": "target-built; host inference verified; OHOS device qualification pending"
+    },
+    {
+      "name": "sherpa-onnx-runtime",
+      "artifact": "libonnxruntime.so",
+      "distribution": "bundled",
+      "bundledPath": "entry/libs/arm64-v8a/libonnxruntime.so",
+      "loadMechanism": "needed-by-verified-sherpa-jni",
+      "artifactLock": "prebuilt/mod-natives/sherpa-onnx/artifacts.json",
+      "status": "target-built; CPU model host verification passed; device qualification pending"
+    },
+    {
       "name": "imgui-java",
       "artifact": "libimgui-java64.so",
       "distribution": "bundled",

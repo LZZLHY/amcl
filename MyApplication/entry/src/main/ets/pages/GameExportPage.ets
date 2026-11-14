@@ -1,3 +1,4 @@
+import { applyNativeTheme } from '../components/AppTheme';
 /**
  * 游戏包导出的兼容路由宿主。
  *
@@ -15,6 +16,8 @@ import { GameExportSheet } from '../components/GameExportSheet';
 struct GameExportPage {
   @StorageProp('topRectHeight') private topSafe_: number = 0;
   @StorageProp('currentColorMode') @Watch('applyTheme_') private colorMode_: number = 0;
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('applyTheme_') private appThemeRevision: number = 0;
   @State private theme_: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false);
   @State private mcRoot_: string = '';
   @State private versionId_: string = '';
@@ -44,7 +47,8 @@ struct GameExportPage {
     if (context === undefined) return;
     const pref: PreferenceManager = new PreferenceManager(context);
     const dark: boolean = this.colorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
-    this.theme_ = resolveTheme(pref.themeMode, resolveIsDark(pref.themeMode, dark));
+    this.theme_ = resolveTheme(pref.themeMode, resolveIsDark(pref.themeMode, dark), pref.themeAccent);
+    applyNativeTheme(this.theme_);
   }
 
   /** 异步检查与草稿确认期间始终消费原 Back，由 Sheet 决定何时调用宿主离开。 */
@@ -53,6 +57,9 @@ struct GameExportPage {
     else this.getUIContext().getRouter().back();
     return true;
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
 
   build() {
     Column() {

@@ -238,7 +238,8 @@ export struct StartupSplash {
       ? Math.min(1, (this.foregroundMs_ - this.exitStartedForegroundMs_) / duration) : 0;
     this.context_.clearRect(0, 0, width, height);
     this.context_.globalAlpha = 1 - exit * exit * (3 - 2 * exit);
-    this.context_.fillStyle = this.isDark ? '#101114' : '#FFFFFF';
+    // 与全应用中性画布及系统启动资源一致，品牌斧体素颜色仍保持正式资产原样。
+    this.context_.fillStyle = this.isDark ? '#101114' : '#F3F4F6';
     this.context_.fillRect(0, 0, width, height);
     this.context_.globalAlpha = 1;
     this.frame_.width = width;

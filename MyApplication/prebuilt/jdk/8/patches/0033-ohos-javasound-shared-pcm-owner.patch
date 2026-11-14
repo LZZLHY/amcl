@@ -1,0 +1,434 @@
+--- a/jdk/src/solaris/native/com/sun/media/sound/ohos_daudio.c
++++ b/jdk/src/solaris/native/com/sun/media/sound/ohos_daudio.c
+@@ -21,6 +21,13 @@
+ #include "ohos_daudio_callbacks.h"
+ 
+ #if USE_DAUDIO == TRUE
++#include "ohos_daudio_host.h"
++
++/* 新宿主存在时，内建 provider 与启动器 SPI 共享权限、前台和真实流 owner。
++ * 无宿主的独立 CLI 保留下面完整原生后端；失效宿主不会回退绕过其撤销政策。 */
++const char AMCL_DAudio_HostedIdentity[]
++    __attribute__((section(".amcl.hostedpcm"), used, visibility("default"))) =
++    "AMCL_DAUDIO_HOSTED_PCM_V1";
+ 
+ /* 打包门只凭实际 libjsound 的此只读标记、libohaudio 依赖及逐符号供应者联合认定
+  * 后端已编译；它不授予设备资格。独立 ELF 节保留在正常 strip 后，不借文件名猜测。 */
+@@ -31,6 +38,11 @@
+ int AMCL_DAudio_GetError(void *id)
+ {
+     AmclLine *line = (AmclLine *)id;
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) {
++        const int state = host->api->state(host->handle);
++        if (state < 0 || (state & AMCL_AUDIO_FAILED)) record_error(line, state < 0 ? state : AMCL_AUDIO_PLATFORM);
++    }
+     return line ? __atomic_load_n(&line->error, __ATOMIC_SEQ_CST) : 0;
+ }
+ 
+@@ -175,6 +187,18 @@
+     unsigned r, f;
+     int channels;
+     if (index || device || !creator || !has_route(isSource)) return;
++    if (amcl_hosted_requested()) {
++        void *lease = NULL;
++        if (!amcl_hosted_acquire(&lease)) return;
++        // 与宿主实际转换器合同一致；Java 保留上游符号/端序转换，不虚报更宽格式。
++        for (r = 0; r < sizeof(rates) / sizeof(rates[0]); ++r)
++            if (rates[r] <= 192000) for (channels = 1; channels <= 2; ++channels)
++                for (f = 0; f < sizeof(bits) / sizeof(bits[0]); ++f)
++                    DAUDIO_AddAudioFormat(creator, bits[f], channels * bits[f] / 8, channels,
++                                          (float)rates[r], DAUDIO_PCM, bits[f] != 8, FALSE);
++        dlclose(lease);
++        return;
++    }
+     if (OH_AudioStreamBuilder_Create(&builder, isSource ? AUDIOSTREAM_TYPE_RENDERER : AUDIOSTREAM_TYPE_CAPTURER)
+         != AUDIOSTREAM_SUCCESS || !builder) return;
+     if (!isSource && OH_AudioStreamBuilder_SetCapturerInfo(builder, AUDIOSTREAM_SOURCE_TYPE_MIC) != AUDIOSTREAM_SUCCESS) {
+@@ -254,6 +278,7 @@
+         (bits != 8 && bits != 16 && bits != 24 && bits != 32) ||
+         (bits == 8 ? isSigned : (!isSigned || isBigEndian)) || channels > INT_MAX / (bits / 8) ||
+         frameSize != channels * (bits / 8) || bufferBytes < frameSize || !has_route(isSource)) return NULL;
++    if (amcl_hosted_requested()) return amcl_hosted_open(isSource, (int)sampleRate, bits, channels, bufferBytes);
+     format = bits == 8 ? AUDIOSTREAM_SAMPLE_U8 : bits == 16 ? AUDIOSTREAM_SAMPLE_S16LE :
+              bits == 24 ? AUDIOSTREAM_SAMPLE_S24LE : AUDIOSTREAM_SAMPLE_S32LE;
+     line = (AmclLine *)calloc(1, sizeof(*line));
+@@ -373,6 +398,7 @@
+  * 用户停止的 wantedRunning 始终优先于迟到的恢复提示。 */
+ void DAUDIO_Service(void *id, int isSource)
+ {
++    if (amcl_hosted_line(id)) { (void)isSource; (void)AMCL_DAudio_GetError(id); return; }
+     AmclLine *line = (AmclLine *)id;
+     int hint;
+     OH_AudioStream_Result result;
+@@ -442,6 +468,8 @@
+ 
+ int DAUDIO_Start(void *id, int isSource)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) return host->line.isSource == !!isSource && amcl_hosted_result(host, host->api->start(host->handle));
+     AmclLine *line = (AmclLine *)id;
+     OH_AudioStream_Result result;
+     if (!line || line->isSource != !!isSource || AMCL_DAudio_GetError(line)) return FALSE;
+@@ -466,6 +494,8 @@
+ 
+ int DAUDIO_Stop(void *id, int isSource)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) return host->line.isSource == !!isSource && amcl_hosted_result(host, host->api->stop(host->handle));
+     AmclLine *line = (AmclLine *)id;
+     OH_AudioStream_Result result = AUDIOSTREAM_SUCCESS;
+     if (!line || line->isSource != !!isSource) return FALSE;
+@@ -491,11 +521,16 @@
+ }
+ 
+ int AMCL_DAudio_Close(void *id)
+-{ return id ? destroy_line((AmclLine *)id) : 0; }
++{
++    AmclHostedLine *host = amcl_hosted_line(id);
++    return host ? amcl_hosted_close(host) : id ? destroy_line((AmclLine *)id) : 0;
++}
+ 
+ /* 上游负责 Java 数组及转换；这里只有 native 完整帧复制，不保留传入缓冲的借用指针。 */
+ int DAUDIO_Write(void *id, char *data, int byteSize)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) return amcl_hosted_io(host, (unsigned char *)data, byteSize, TRUE);
+     AmclLine *line = (AmclLine *)id;
+     uint64_t written, read, space;
+     int bytes, offset, first;
+@@ -519,6 +554,8 @@
+ /* 捕获只返回已经完整发布且未被覆盖的实际 PCM；无数据返回0，原 Java read 循环负责等待。 */
+ int DAUDIO_Read(void *id, char *data, int byteSize)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) return amcl_hosted_io(host, (unsigned char *)data, byteSize, FALSE);
+     AmclLine *line = (AmclLine *)id;
+     if (!line || line->isSource) return -1;
+     DAUDIO_Service(line, FALSE);
+@@ -534,6 +571,12 @@
+ 
+ int DAUDIO_GetAvailable(void *id, int isSource)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) {
++        if (host->line.isSource != !!isSource) return 0;
++        const int available = host->api->available(host->handle);
++        return amcl_hosted_result(host, available) ? available / (host->channels * 4) * host->line.frameSize : 0;
++    }
+     AmclLine *line = (AmclLine *)id;
+     if (!line || line->isSource != !!isSource) return 0;
+     DAUDIO_Service(line, isSource);
+@@ -558,6 +601,13 @@
+ 
+ int DAUDIO_StillDraining(void *id, int isSource)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) {
++        if (host->line.isSource != !!isSource) return FALSE;
++        if (!isSource) return DAUDIO_GetAvailable(id, isSource) > 0;
++        if (!amcl_hosted_result(host, host->api->requestFinish(host->handle))) return FALSE;
++        return amcl_hosted_pending(host) != 0;
++    }
+     AmclLine *line = (AmclLine *)id;
+     if (!line || line->isSource != !!isSource) return FALSE;
+     DAUDIO_Service(line, isSource);
+@@ -567,6 +617,20 @@
+ 
+ INT64 DAUDIO_GetBytePosition(void *id, int isSource, INT64 javaBytePos)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) {
++        if (host->line.isSource != !!isSource) return javaBytePos;
++        if (!isSource) {
++            const int64_t frames = host->api->framePosition(host->handle);
++            if (frames < 0 || frames > INT64_MAX / host->line.frameSize) {
++                record_error(&host->line, AMCL_AUDIO_PLATFORM); return 0;
++            }
++            return frames * host->line.frameSize;
++        }
++        const uint64_t pending = amcl_hosted_pending(host);
++        return javaBytePos >= 0 && pending <= (uint64_t)javaBytePos / host->line.frameSize
++            ? javaBytePos - (INT64)(pending * host->line.frameSize) : 0;
++    }
+     AmclLine *line = (AmclLine *)id;
+     uint64_t pending;
+     if (!line || line->isSource != !!isSource) return javaBytePos;
+@@ -578,6 +642,14 @@
+ 
+ int DAUDIO_Flush(void *id, int isSource)
+ {
++    AmclHostedLine *host = amcl_hosted_line(id);
++    if (host) {
++        if (host->line.isSource != !!isSource || !amcl_hosted_result(host, host->api->flush(host->handle))) return FALSE;
++        const int64_t frames = host->api->framePosition(host->handle);
++        if (frames < 0) { record_error(&host->line, AMCL_AUDIO_PLATFORM); return FALSE; }
++        host->submittedFrames = (uint64_t)frames;
++        return TRUE;
++    }
+     AmclLine *line = (AmclLine *)id;
+     int resume;
+     OH_AudioStream_Result result;
+--- /dev/null
++++ b/jdk/src/share/native/com/sun/media/sound/ohos_daudio_host.h
+@@ -0,0 +1,179 @@
++/* 内建 DirectAudioDevice 与启动器 SPI 共用已签名的 PCM owner。
++ * 此文件只编入 libjsound。已有 ABI2 AmclLine 保持原布局；托管 line 的扩展只由本
++ * 文件使用，不注册旧数据回调。上游 lockNative 串行访问 line，系统回调仍留在宿主。
++ */
++#ifndef AMCL_OHOS_DAUDIO_HOST_H
++#define AMCL_OHOS_DAUDIO_HOST_H
++#include <unistd.h>
++#include <math.h>
++#include "amcl_audio_runtime.h"
++
++#define AMCL_HOSTED_LINE_TAG 0x41484f53
++typedef struct {
++    AmclLine line; /* 首成员地址就是 JNI 的不透明句柄，ABI2 回调布局没有改变。 */
++    const AmclAudioApiV1 *api;
++    void *lease;
++    uint64_t handle, submittedFrames;
++    int bits, channels, scratchFrames;
++    float *scratch;
++} AmclHostedLine;
++
++static AmclHostedLine *amcl_hosted_line(void *id)
++{
++    AmclLine *line = (AmclLine *)id;
++    return line && line->hasTimestamp == AMCL_HOSTED_LINE_TAG ? (AmclHostedLine *)id : NULL;
++}
++
++/* 仅作为模式判据；存在但失效的宿主不能悄悄退回独立捕获绕过录音意图/前台撤销。 */
++static int amcl_hosted_requested(void) { return getenv(AMCL_AUDIO_HOST_ENV) != NULL; }
++
++/* 环境文本只帮助发现：先核真实导出，再持有同一系统映像，最后核全部 C 函数与会话。 */
++static const AmclAudioApiV1 *amcl_hosted_acquire(void **lease)
++{
++    const char *text = getenv(AMCL_AUDIO_HOST_ENV);
++    unsigned version = 0, pid = 0;
++    unsigned long long raw = 0;
++    char tail;
++    Dl_info identity, check;
++    const AmclAudioApiV1 *(*getter)(void);
++    const AmclAudioApiV1 *api;
++    const void *functions[14];
++    unsigned i;
++    *lease = NULL;
++    if (!text || strlen(text) > 100 || sscanf(text, "%u:%u:%llx%c", &version, &pid, &raw, &tail) != 3 ||
++        version != 1 || pid != (unsigned)getpid() || !raw) return NULL;
++    getter = (const AmclAudioApiV1 *(*)(void))(uintptr_t)raw;
++    if (!dladdr((void *)getter, &identity) || !identity.dli_fname || !identity.dli_fbase ||
++        !identity.dli_sname || strcmp(identity.dli_sname, "amclAudioHostGetV1") ||
++        identity.dli_saddr != (void *)getter) return NULL;
++    *lease = dlopen(identity.dli_fname, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
++    if (!*lease || dlsym(*lease, "amclAudioHostGetV1") != (void *)getter) goto fail;
++    api = getter();
++    if (!api || api->magic != AMCL_AUDIO_MAGIC || api->abi != AMCL_AUDIO_ABI ||
++        api->size != sizeof(*api) || api->pid != pid || !api->session) goto fail;
++    functions[0] = (void *)api->open; functions[1] = (void *)api->start;
++    functions[2] = (void *)api->stop; functions[3] = (void *)api->flush;
++    functions[4] = (void *)api->drain; functions[5] = (void *)api->close;
++    functions[6] = (void *)api->read; functions[7] = (void *)api->write;
++    functions[8] = (void *)api->available; functions[9] = (void *)api->bufferSize;
++    functions[10] = (void *)api->state; functions[11] = (void *)api->frameBytes;
++    functions[12] = (void *)api->framePosition; functions[13] = (void *)api->requestFinish;
++    for (i = 0; i < 14; ++i)
++        if (!functions[i] || !dladdr(functions[i], &check) || check.dli_fbase != identity.dli_fbase) goto fail;
++    return api;
++fail:
++    if (*lease) dlclose(*lease);
++    *lease = NULL;
++    return NULL;
++}
++
++static int amcl_hosted_result(AmclHostedLine *line, int result)
++{
++    if (result < 0) record_error(&line->line, result);
++    return result >= 0;
++}
++
++/* 保持 Java 整数 PCM 的原始帧大小/字节位置，宿主仅接受统一的交错 F32LE。
++ * 8位是无符号，16/24/32位是有符号little-endian；不把32位整数错误解释为float位型。
++ */
++static float amcl_pcm_decode(const unsigned char *source, int bits)
++{
++    uint32_t value = source[0];
++    unsigned i;
++    if (bits == 8) return ((int)value - 128) / 128.0f;
++    for (i = 1; i < (unsigned)bits / 8; ++i) value |= (uint32_t)source[i] << (i * 8);
++    const int64_t signedValue = (value & (UINT32_C(1) << (bits - 1)))
++        ? (int64_t)value - (INT64_C(1) << bits) : (int64_t)value;
++    return (float)((double)signedValue / (double)(INT64_C(1) << (bits - 1)));
++}
++
++static int amcl_pcm_encode(unsigned char *target, int bits, float sample)
++{
++    unsigned i;
++    int64_t value;
++    /* 无法表示的真实平台样本明确失败，不用填零掩盖输入质量或触发整数转换未定义行为。 */
++    if (!isfinite(sample)) return 0;
++    const int64_t scale = INT64_C(1) << (bits - 1);
++    value = sample <= -1 ? -scale : sample >= 1 ? scale - 1 : (int64_t)((double)sample * (double)scale);
++    if (bits == 8) value += 128;
++    const uint32_t raw = (uint32_t)value;
++    for (i = 0; i < (unsigned)bits / 8; ++i) target[i] = (unsigned char)(raw >> (i * 8));
++    return 1;
++}
++
++static void *amcl_hosted_open(int isSource, int rate, int bits, int channels, int bufferBytes)
++{
++    void *lease = NULL;
++    const AmclAudioApiV1 *api = amcl_hosted_acquire(&lease);
++    AmclHostedLine *line;
++    int frames, result;
++    if (!api) return NULL;
++    if (rate < 8000 || rate > 192000 || channels < 1 || channels > 2 ||
++        (bits != 8 && bits != 16 && bits != 24 && bits != 32) || bufferBytes < channels * (bits / 8)) goto fail;
++    frames = bufferBytes / (channels * (bits / 8));
++    if (frames > (8 * 1024 * 1024) / (channels * 4)) frames = (8 * 1024 * 1024) / (channels * 4);
++    line = (AmclHostedLine *)calloc(1, sizeof(*line));
++    if (!line) goto fail;
++    line->api = api; line->lease = lease; line->bits = bits; line->channels = channels;
++    line->scratchFrames = frames < 4096 ? frames : 4096;
++    line->scratch = (float *)malloc((size_t)line->scratchFrames * channels * sizeof(float));
++    if (!line->scratch) { free(line); goto fail; }
++    result = api->open(!isSource, rate, channels, AMCL_AUDIO_F32LE, frames * channels * 4, &line->handle);
++    if (result < 0 || !line->handle) { free(line->scratch); free(line); goto fail; }
++    line->line.hasTimestamp = AMCL_HOSTED_LINE_TAG;
++    line->line.isSource = !!isSource;
++    line->line.frameSize = channels * (bits / 8);
++    line->line.capacity = frames * line->line.frameSize;
++    return line;
++fail:
++    dlclose(lease);
++    return NULL;
++}
++
++/* 所有借用都在本次调用内结束；每次最多转换4096帧，不在系统回调分配/访问Java。 */
++static int amcl_hosted_io(AmclHostedLine *line, unsigned char *data, int bytes, int writing)
++{
++    int frames, available, converted, i, result;
++    if (!data || bytes < 0 || bytes % line->line.frameSize || line->line.isSource != !!writing) return -1;
++    if (__atomic_load_n(&line->line.error, __ATOMIC_ACQUIRE)) return -1;
++    frames = bytes / line->line.frameSize;
++    if (frames > line->scratchFrames) frames = line->scratchFrames;
++    available = line->api->available(line->handle);
++    if (!amcl_hosted_result(line, available)) return -1;
++    if (frames > available / (line->channels * 4)) frames = available / (line->channels * 4);
++    if (!frames) return 0;
++    converted = frames * line->channels;
++    if (writing) {
++        for (i = 0; i < converted; ++i) line->scratch[i] = amcl_pcm_decode(data + i * (line->bits / 8), line->bits);
++        result = line->api->write(line->handle, line->scratch, converted * 4);
++    } else result = line->api->read(line->handle, line->scratch, converted * 4, 0);
++    if (!amcl_hosted_result(line, result)) return -1;
++    if (result > converted * 4 || result % (line->channels * 4)) {
++        record_error(&line->line, AMCL_AUDIO_PLATFORM); return -1;
++    }
++    frames = result / (line->channels * 4);
++    if (writing) line->submittedFrames += (uint64_t)frames;
++    else for (i = 0; i < frames * line->channels; ++i)
++        if (!amcl_pcm_encode(data + i * (line->bits / 8), line->bits, line->scratch[i])) {
++            record_error(&line->line, AMCL_AUDIO_PLATFORM); return -1;
++        }
++    return frames * line->line.frameSize;
++}
++
++static uint64_t amcl_hosted_pending(AmclHostedLine *line)
++{
++    const int64_t position = line->api->framePosition(line->handle);
++    if (position < 0) { record_error(&line->line, AMCL_AUDIO_PLATFORM); return 0; }
++    return (uint64_t)position < line->submittedFrames ? line->submittedFrames - (uint64_t)position : 0;
++}
++
++static int amcl_hosted_close(AmclHostedLine *line)
++{
++    const int result = line->api->close(line->handle);
++    void *lease = line->lease;
++    free(line->scratch); free(line);
++    // 音频owner负责保全平台Release失败的回调资源；本适配层没有平台注册的裸回调。
++    dlclose(lease);
++    return result < 0 ? result : 0;
++}
++#endif
+--- /dev/null
++++ b/jdk/src/share/native/com/sun/media/sound/amcl_audio_runtime.h
+@@ -0,0 +1,78 @@
++/**
++ * AMCL 平台音频宿主 C ABI。宿主先发布本局 owner，Java/OpenAL 仅取得其函数表。
++ * 此协议是进程内生命周期边界，不是同进程不可信 native 代码的安全隔离机制。
++ * 所有句柄均为本局递增编号，不能转换成指针；失败返回负的 AmclAudioResult。
++ */
++#pragma once
++#include <stddef.h>
++#include <stdint.h>
++#if defined(__GNUC__)
++#define AMCL_AUDIO_EXPORT __attribute__((visibility("default")))
++#else
++#define AMCL_AUDIO_EXPORT
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
++enum AmclAudioResult {
++    AMCL_AUDIO_OK = 0,
++    AMCL_AUDIO_INVALID = -1,
++    AMCL_AUDIO_PERMISSION = -2,
++    AMCL_AUDIO_UNAVAILABLE = -3,
++    AMCL_AUDIO_PLATFORM = -4,
++    AMCL_AUDIO_LIMIT = -5
++};
++enum AmclAudioState {
++    AMCL_AUDIO_OPEN = 1,
++    AMCL_AUDIO_RUNNING = 2,
++    AMCL_AUDIO_ACTIVE = 4,
++    AMCL_AUDIO_FAILED = 8
++};
++enum AmclAudioEncoding { AMCL_AUDIO_S16LE = 1, AMCL_AUDIO_F32LE = 2 };
++/** 必须是真实 token 权限的线程安全查询；仅在控制线程调用，不可捕获 napi_env/Java 对象。 */
++typedef int (*AmclAudioRecordPermissionV1)(void *context);
++typedef struct AmclAudioApiV1 {
++    uint64_t magic;
++    uint32_t abi;
++    uint32_t size;
++    uint32_t pid;
++    uint32_t reserved;
++    uint64_t session;
++    int (*open)(int capture, int rate, int channels, int encoding, int bufferBytes, uint64_t *handle);
++    int (*start)(uint64_t);
++    int (*stop)(uint64_t);
++    int (*flush)(uint64_t);
++    int (*drain)(uint64_t);
++    int (*close)(uint64_t);
++    /** 数据长度/返回值均为字节；block=0 用于 OpenAL 已做可用量校验的读取。 */
++    int (*read)(uint64_t, void *, int, int block);
++    int (*write)(uint64_t, const void *, int);
++    int (*available)(uint64_t);
++    int (*bufferSize)(uint64_t);
++    int (*state)(uint64_t);
++    int (*frameBytes)(uint64_t);
++    int64_t (*framePosition)(uint64_t);
++    /** 非阻塞、幂等地请求补足转换尾帧；完成仍由framePosition对照已提交业务帧判断。 */
++    int (*requestFinish)(uint64_t);
++} AmclAudioApiV1;
++#define AMCL_AUDIO_MAGIC UINT64_C(0x414d434c41554431)
++#define AMCL_AUDIO_ABI 1u
++#define AMCL_AUDIO_HOST_ENV "AMCL_AUDIO_HOST_V1"
++/** NAPI进程初始化最早阶段调用：只发布稳定发现文本，不创建线程、不打开设备。 */
++AMCL_AUDIO_EXPORT int amclAudioHostPublishEarlyV1(void);
++/**
++ * 首次 begin 启动独立控制线程；本 PID 不允许更换 session 重用已污染 JVM。
++ * checkRecord=null 时播放可用，任何采集 open/start 都拒绝；系统 capturer 仍再次核权限。
++ */
++AMCL_AUDIO_EXPORT int amclAudioHostBeginV1(uint64_t session, AmclAudioRecordPermissionV1 checkRecord,
++                                           void *context, int foreground);
++/** 只接受当前 session；转后台会终止采集，不自动重新开麦。调用会等待控制线程完成。 */
++AMCL_AUDIO_EXPORT int amclAudioHostSetForegroundV1(uint64_t session, int foreground);
++/** 权限变化通知：重新查询真实权限并关闭不再合法的采集。每次 open/start 仍独立查询。 */
++AMCL_AUDIO_EXPORT int amclAudioHostRefreshPermissionV1(uint64_t session);
++/** 撤销后唤醒阻塞读写、关闭所有设备；之后 getter 返回 NULL。不得再 begin 当前 PID。 */
++AMCL_AUDIO_EXPORT int amclAudioHostEndV1(uint64_t session);
++AMCL_AUDIO_EXPORT const AmclAudioApiV1 *amclAudioHostGetV1(void);
++#ifdef __cplusplus
++}
++#endif

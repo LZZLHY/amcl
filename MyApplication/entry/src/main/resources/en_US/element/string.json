@@ -1,5 +1,6 @@
 {
   "string": [
+    { "name": "perm_reason_mod_microphone", "value": "For voice chat and AI voice interactions you enable in game, while the game is in the foreground" },
     {
       "name": "chat_input_field_placeholder",
       "value": "Connected to the game text field. Start typing…"
@@ -43,6 +44,66 @@
     {
       "name": "input_drawer_closed",
       "value": "Collapsed"
+    },
+    {
+      "name": "perm_reason_microphone",
+      "value": "For game voice and recording features you choose to use"
+    },
+    {
+      "name": "perm_reason_bluetooth_midi",
+      "value": "For Bluetooth MIDI instrument connections and musical input/output you choose to use"
+    },
+    {
+      "name": "bluetooth_midi_permission_title",
+      "value": "Bluetooth MIDI permission"
+    },
+    {
+      "name": "bluetooth_midi_permission_granted",
+      "value": "Allowed. Connect your device in system settings before using Bluetooth MIDI."
+    },
+    {
+      "name": "bluetooth_midi_permission_denied",
+      "value": "Not allowed yet. Open permission settings to allow access to Bluetooth MIDI devices."
+    },
+    {
+      "name": "bluetooth_midi_permission_needed",
+      "value": "Allow Bluetooth access before using a Bluetooth MIDI instrument."
+    },
+    {
+      "name": "bluetooth_midi_permission_invalid",
+      "value": "Bluetooth permission cannot be requested right now. Check the app's permissions in system settings."
+    },
+    {
+      "name": "bluetooth_midi_permission_query_failed",
+      "value": "Unable to read Bluetooth permission status. Try again later."
+    },
+    {
+      "name": "bluetooth_midi_permission_no_context",
+      "value": "This page cannot request permission. Reopen Settings and try again."
+    },
+    {
+      "name": "bluetooth_midi_permission_request_failed",
+      "value": "Bluetooth permission was not completed. Try again or check the app's system permissions."
+    },
+    {
+      "name": "bluetooth_midi_permission_waiting",
+      "value": "Waiting for permission…"
+    },
+    {
+      "name": "bluetooth_midi_permission_check",
+      "value": "Check permission status"
+    },
+    {
+      "name": "bluetooth_midi_permission_settings",
+      "value": "Open permission settings"
+    },
+    {
+      "name": "bluetooth_midi_permission_allow",
+      "value": "Allow Bluetooth MIDI"
+    },
+    {
+      "name": "bluetooth_midi_permission_retry",
+      "value": "Check again"
     }
   ]
 }

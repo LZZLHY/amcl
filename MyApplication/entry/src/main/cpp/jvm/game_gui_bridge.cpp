@@ -155,8 +155,9 @@ void amcl::gui::PollOnWorker(const Request& request,double values[AMCL_GAME_GUI_
     std::fill(values,values+AMCL_GAME_GUI_VALUE_COUNT,0.0);
     if(width<=0 || height<=0 || width>65535 || height>65535 || !version || !*version) return;
     // 即使该加载器没有可绑定GUI接口，也提供已发布的渲染尺寸供只读options估算；status仍为0。
-    values[3]=std::lround(amcl::renderscale::MapX(width));
-    values[4]=std::lround(amcl::renderscale::MapY(height));
+    if (!amcl::renderscale::MapWindowPoint(width, height, &values[3], &values[4])) return;
+    values[3]=std::lround(values[3]);
+    values[4]=std::lround(values[4]);
     std::lock_guard<std::mutex> lock(mutex);
     Environment jni; if(!jni.env || !prepare(jni.env)) return;
     jstring text=jni.env->NewStringUTF(version);
@@ -165,8 +166,9 @@ void amcl::gui::PollOnWorker(const Request& request,double values[AMCL_GAME_GUI_
     jni.env->DeleteLocalRef(text);
     if(clearException(jni.env) || configured!=JNI_TRUE) return;
     discover(jni); if(!bound) return;
-    const jint w=static_cast<jint>(std::lround(amcl::renderscale::MapX(width)));
-    const jint h=static_cast<jint>(std::lround(amcl::renderscale::MapY(height)));
+    // 同一worker请求消费同一对映射；外层已有resource前后验证负责拒绝迟到结果。
+    const jint w=static_cast<jint>(values[3]);
+    const jint h=static_cast<jint>(values[4]);
     auto array=static_cast<jdoubleArray>(pollGuideMethod ?
         jni.env->CallStaticObjectMethod(helper,pollGuideMethod,w,h,guideActive ? JNI_TRUE : JNI_FALSE) :
         jni.env->CallStaticObjectMethod(helper,pollMethod,w,h));

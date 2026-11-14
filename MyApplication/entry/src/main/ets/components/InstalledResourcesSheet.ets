@@ -1,3 +1,7 @@
+/**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { DiagnosticPolicy } from 'commons';
 /**
@@ -48,6 +52,8 @@ import {
   enableFilename,
 } from 'mods';
 import { DownloadManager } from 'feature_core';
+import { getTaskActivityOwner, BusinessActivityResult } from 'feature_core';
+import { LedgerState } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD, LOG_DOMAIN_UI } from 'commons';
 import { ResourceKind } from 'mods';
@@ -65,6 +71,8 @@ import { resolveInstalledLoaderKey } from '../components/LoaderCatalog';
 import { ModUpdateCoordinator } from './ModUpdateCoordinator';
 import { ModSourceRouter, createModUpdateSession } from 'mods';
 import { PreferenceManager } from 'feature_system';
+import { resolveModrinthSourcePreference, resolveCurseForgeFileSourcePreference, getModrinthSourceMode } from 'mods';
+import { getRelayClient } from 'feature_core';
 
 const TAG = 'InstalledResourcesSheet';
 
@@ -154,6 +162,9 @@ interface ModUpdateMeta {
 
 @Component
 export struct InstalledResourcesSheet {
+  /** 更新与修复复用列表的来源/缓存决策，正文选择在仓库映射时完成，不改事务与旧文件。 */
+  @Prop modSource: string = 'auto';
+  @Prop cacheRemoteMeta: boolean = true;
   @Prop theme: ThemeColors = {} as ThemeColors;
   @Prop bottomSafeHeight: number = 0;
   /** .minecraft 根（不带尾部 /） */
@@ -315,7 +326,7 @@ export struct InstalledResourcesSheet {
     if (this.embedded) {
       this.PanelBody_();
     } else {
-      ImmersiveTitleScaffold({ title: metaOf(this.kind).title, theme: this.theme, modal: true,
+      ImmersiveTitleScaffold({ title: metaOf(this.kind).title, contextLabel: this.versionId, contextTitle: '当前实例', theme: this.theme, modal: true,
         surfaceColor: this.theme.bgPrimary, closeLabel: '关闭管理面板',
         closeId: 'installedresourcessheet-close', closeEnabled: !this.navigationBlocked_(),
         onClose: (): void => { if (!this.navigationBlocked_()) this.onClose(); },
@@ -357,18 +368,8 @@ export struct InstalledResourcesSheet {
 
   @Builder
   Header() {
-    Column({ space: 6 }) {
-      Row() {
-        Column({ space: 2 }) {
-          Text(this.headerSubtitle())
-            .fontSize(11)
-            .fontColor(this.theme.textHint)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
+    // 对象由宿主页头展示一次；动作横向滚动，窄窗口不再挤出一个无意义的版本残片。
+    Scroll() {
         Row({ space: 8 }) {
           Row({ space: 5 }) {
             AppIcon({ name: AppIconName.Refresh, iconSize: 13, color: this.theme.textSecondary })
@@ -423,20 +424,17 @@ export struct InstalledResourcesSheet {
           .height(32)
           .padding({ left: 12, right: 12 })
           .borderRadius(16)
-          .backgroundColor(this.theme.primary)
+          .backgroundColor(this.theme.actionPrimary)
           .alignItems(VerticalAlign.Center)
           .onClick(() => {
             this.onClose()
             this.onJumpToBrowse(this.kind)
           })
-        }
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
+        }.alignItems(VerticalAlign.Center)
     }
+    .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
     .width('100%')
     .padding({ left: 20, right: 20, top: 6, bottom: 12 })
-    .alignItems(HorizontalAlign.Start)
   }
 
   /** 搜索框常驻，加载或无结果时不重挂输入框，保留软键盘和焦点。 */
@@ -461,7 +459,8 @@ export struct InstalledResourcesSheet {
       }
       .width('100%').padding({ left: 12, right: 4 })
       .backgroundColor(this.theme.bgInput).borderRadius(12)
-      Text('找到 ' + this.visibleCount + ' / 共 ' + this.rows.length + ' 个' + metaOf(this.kind).unit)
+      // 未查询只呈现总数/启用数；输入查询后才展示匹配数，避免两处重复总计。
+      Text(this.resourceSummary_())
         .id('installed-resource-search-count')
         .fontSize(11).fontColor(this.theme.textHint)
     }
@@ -544,7 +543,7 @@ export struct InstalledResourcesSheet {
         .height(36)
         .padding({ left: 18, right: 18 })
         .borderRadius(18)
-        .backgroundColor(this.theme.primary)
+        .backgroundColor(this.theme.actionPrimary)
         .alignItems(VerticalAlign.Center)
         .margin({ top: 8 })
         .onClick(() => {
@@ -565,7 +564,7 @@ export struct InstalledResourcesSheet {
     Column({ space: 10 }) {
       LoadingProgress()
         .width(36).height(36)
-        .color(this.theme.primary)
+        .color(this.theme.actionText)
       Text('扫描' + metaOf(this.kind).subdir + '/ 中…')
         .fontSize(12).fontColor(this.theme.textHint)
     }
@@ -603,11 +602,11 @@ export struct InstalledResourcesSheet {
       }
       .width('90%').padding(20)
       .backgroundColor(this.theme.bgCard).borderRadius(16)
-      .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 4 })
+      .shadow({ radius: 16, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 4 })
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .onClick(() => { this.pendingDelete = '' })
@@ -620,15 +619,19 @@ export struct InstalledResourcesSheet {
   // ResourceKind → AppIconName 映射已迁出到 components/ResourceIcons.kindIcon（跨组件复用），
   // 这里直接 import 使用。
 
-  private headerSubtitle(): string {
-    let m = metaOf(this.kind)
-    if (this.versionId.length === 0) return '未选择版本'
-    let total = this.rows.length
-    if (total === 0) return this.versionId + ' · 暂无' + m.unit
-    if (!m.togglable) return this.versionId + ' · ' + total + ' 个'
-    let enabled = 0
-    for (let r of this.rows) { if (r.enabled) enabled++ }
-    return this.versionId + ' · ' + total + ' 个 · ' + enabled + ' 启用'
+  /** 唯一列表统计来自已发布清单；加载阶段不把暂存空数组误说成“共0个”。 */
+  private resourceSummary_(): string {
+    if (!this.loaded) return '正在读取资源…';
+    const meta: KindMeta = metaOf(this.kind);
+    const total: number = this.rows.length;
+    if (this.query.trim().length > 0) return '找到 ' + this.visibleCount + ' / 共 ' + total + ' 个' + meta.unit;
+    let summary: string = '共 ' + total + ' 个' + meta.unit;
+    if (meta.togglable && total > 0) {
+      let enabled: number = 0;
+      for (const row of this.rows) { if (row.enabled) enabled++; }
+      summary += ' · ' + enabled + ' 启用';
+    }
+    return summary;
   }
 
   private emptyTitle(): string {
@@ -950,7 +953,15 @@ export struct InstalledResourcesSheet {
     this.verifying = true
     this.safeToast('正在校验完整性…', 1500)
     try {
-      await this.fetchIconsAsync(epoch, true)
+      await getTaskActivityOwner().run<void>({ category: 'verify', title: '校验已装模组',
+        mcDir: this.mcDir, gameVersionId: this.versionId },
+        (): Promise<void> => this.fetchIconsAsync(epoch, true),
+        (): BusinessActivityResult => {
+          let corrupt: number = 0
+          for (const row of this.rows) if (row.integrity === ModIntegrity.CORRUPT) corrupt++
+          return { state: !this.isCurrent(epoch) ? LedgerState.ABORTED : corrupt > 0 ? LedgerState.FAILED : LedgerState.SUCCESS,
+            summary: !this.isCurrent(epoch) ? '校验页面已离开，本轮结果未发布' : '已确认损坏模组 ' + corrupt, fileCount: this.rows.length }
+        })
       if (!this.isCurrent(epoch)) return;
       let corrupt = 0
       for (let r of this.rows) { if (r.integrity === ModIntegrity.CORRUPT) corrupt++ }
@@ -1012,9 +1023,9 @@ export struct InstalledResourcesSheet {
     return new ModrinthRepository(
       dm,
       getMetadataCacheStore(),
-      () => ModrinthSourceMode.MCIM_FIRST,
+      () => resolveModrinthSourcePreference(this.modSource, getModrinthSourceMode(), getRelayClient().isEnabled()),
       'AMCL/1.0.0 (https://github.com/axecraft/amcl)',
-      () => true,
+      () => this.cacheRemoteMeta,
     )
   }
 
@@ -1025,7 +1036,8 @@ export struct InstalledResourcesSheet {
       getMetadataCacheStore(),
       'AMCL/1.0.0 (https://github.com/axecraft/amcl)',
       () => true,
-      () => true,
+      () => this.cacheRemoteMeta,
+      () => resolveCurseForgeFileSourcePreference(this.modSource, getRelayClient().isEnabled()),
     )
   }
 
@@ -1138,11 +1150,13 @@ export struct InstalledResourcesSheet {
         return
       }
       this.safeToast(isOn ? '已启用' : '已禁用', 1200)
+      getTaskActivityOwner().recordSummary('resource_manage', row.displayName, 'success', isOn ? '启用资源' : '禁用资源')
       this.refresh()
       this.onChanged()
     } catch (e) {
       let msg = (e as Error).message
       AppLogger.warn(TAG, `toggle failed: ${msg}`, null, LOG_DOMAIN_UI)
+      getTaskActivityOwner().recordSummary('resource_manage', row.displayName, 'failed', '切换资源失败：' + msg)
       this.safeToast('切换失败：' + msg, 2000)
       this.refresh()
     }
@@ -1161,12 +1175,14 @@ export struct InstalledResourcesSheet {
         this.safeToast('文件已不存在', 1500)
       } else {
         this.safeToast('已删除 ' + target, 1500)
+        getTaskActivityOwner().recordSummary('resource_manage', target, 'success', '删除资源')
       }
       this.refresh()
       this.onChanged()
     } catch (e) {
       let msg = (e as Error).message
       AppLogger.warn(TAG, `delete failed: ${msg}`, null, LOG_DOMAIN_UI)
+      getTaskActivityOwner().recordSummary('resource_manage', target, 'failed', '删除资源失败：' + msg)
       this.safeToast('删除失败：' + msg, 2000)
     }
   }

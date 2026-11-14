@@ -36,8 +36,16 @@ import { NativeProbeDef, ProbeShape } from './ProbeRegistryModel';
  * 每条的 `shape` 必须与它提供的运行体一致 —— 由 `validateProbeRegistry` 机械保证，
  * 单测里对**真实这张表**跑一遍（不是对复制品）。
  */
-export function nativeProbeRegistry(): NativeProbeDef[] {
-  return [
+export function nativeProbeRegistry(javaNonce: string = '', javaMajor: string = '', javaProfile: string = 'basic'): NativeProbeDef[] {
+  const probes: NativeProbeDef[] = [
+    {
+      // 固定平台验证与后续自动化共用生产 NAPI，外部入口另行执行产品能力门控。
+      id: 'jdkPlatform', title: 'JDK 平台资格', shape: ProbeShape.CALLBACK_TEXT,
+      hasUiEntry: false, needsFilesDir: true,
+      runCallbackText: (filesDir: string, done: (text: string) => void): void => {
+        testNapi.runJdkPlatformProbe(filesDir, done);
+      },
+    },
     // ── 有 UI 入口的（DevToolsPage 的按钮走同一条实现，契约 §1.1）
     {
       id: 'jit', title: 'JIT / mmap', shape: ProbeShape.SYNC_TEXT,
@@ -174,4 +182,25 @@ export function nativeProbeRegistry(): NativeProbeDef[] {
       runAsyncJson: () => testNapi.getNativeGlCapability() as Promise<object>,
     },
   ];
+  // Java资格需要显式nonce/major，普通工具列表不绑定猜测参数；Want入口先验证再注入。
+  if (/^[a-z0-9-]{1,40}$/.test(javaNonce) && ['8', '17', '21', '25'].includes(javaMajor)) {
+    probes.push({
+      id: 'jdkJava', title: 'JDK Java 资格', shape: ProbeShape.CALLBACK_TEXT,
+      hasUiEntry: false, needsFilesDir: true,
+      runCallbackText: (filesDir: string, done: (text: string) => void): void => {
+        testNapi.runJdkJavaQualification(filesDir, javaNonce, javaMajor, javaProfile, done);
+      }
+    });
+  }
+  // 固定进程退出矩阵只需要证据nonce，不接收任意退出数值、信号或可执行文件路径。
+  if (/^[a-z0-9-]{1,40}$/.test(javaNonce)) {
+    probes.push({
+      id: 'jdkProcess', title: 'JDK 进程退出语义', shape: ProbeShape.CALLBACK_TEXT,
+      hasUiEntry: false, needsFilesDir: true,
+      runCallbackText: (filesDir: string, done: (text: string) => void): void => {
+        testNapi.runJdkProcessQualification(filesDir, javaNonce, done);
+      }
+    });
+  }
+  return probes;
 }

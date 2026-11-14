@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * DownloadSheet.ets — 版本下载进度 Sheet（Phase R-3 重设计 2026-05-13）
  *
  * 设计稿：docs/design/download-page-redesign/08_version_download_progress.png（Screen H）
@@ -60,11 +64,12 @@ export struct DownloadSheet {
     return AppIconName.Download
   }
 
+  /** 标题状态图标使用前景色，不与阶段/任务组件的进度填充角色混用。 */
   private getTitleIconColor(): ResourceColor {
-    if (this.isSuccess()) return this.theme.success
-    if (this.isError()) return this.theme.error
-    if (this.isPaused()) return this.theme.warning
-    return this.theme.primary
+    if (this.isSuccess()) return this.theme.successText
+    if (this.isError()) return this.theme.errorText
+    if (this.isPaused()) return this.theme.warningText
+    return this.theme.actionText
   }
 
   private getTitleText(): string {
@@ -74,11 +79,12 @@ export struct DownloadSheet {
     return '下载中'
   }
 
+  /** 本组件的中心百分比是文字；真正进度条填充仍由任务与阶段组件各自负责。 */
   private getProgressColor(): ResourceColor {
-    if (this.isSuccess()) return this.theme.success
-    if (this.isError()) return this.theme.error
-    if (this.isPaused()) return this.theme.warning
-    return this.theme.primary
+    if (this.isSuccess()) return this.theme.successText
+    if (this.isError()) return this.theme.errorText
+    if (this.isPaused()) return this.theme.warningText
+    return this.theme.actionText
   }
 
   private getActivePhase(): string {
@@ -163,14 +169,14 @@ export struct DownloadSheet {
       this.StatCell(
         this.dlState.speed.length > 0 ? this.dlState.speed : '—',
         '速度',
-        this.theme.primary
+        this.theme.actionText
       )
       this.StatCell(
         this.isDownloading() && this.dlState.etaSeconds >= 0
           ? '~ ' + formatEta(this.dlState.etaSeconds)
           : (this.dlState.durationMs > 0 ? formatDurationMs(this.dlState.durationMs) : '—'),
         this.isDownloading() ? '剩余' : '耗时',
-        this.theme.success
+        this.theme.successText
       )
     }
     .width('100%')
@@ -231,7 +237,7 @@ export struct DownloadSheet {
               Text('错误详情')
                 .fontSize(12)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(this.theme.error)
+                .fontColor(this.theme.errorText)
                 .margin({ bottom: 4 })
               Text(this.dlState.errorKind ? this.dlState.errorKind + ': ' + this.dlState.errorMessage : this.dlState.errorMessage)
                 .fontSize(12)
@@ -257,7 +263,7 @@ export struct DownloadSheet {
         if (this.isDownloading()) {
           Button('暂停')
             .fontSize(14)
-            .fontColor(this.theme.primary)
+            .fontColor(this.theme.actionText)
             .backgroundColor(this.theme.primaryLight)
             .borderRadius(20)
             .height(36)
@@ -267,7 +273,7 @@ export struct DownloadSheet {
 
           Button('取消')
             .fontSize(14)
-            .fontColor(this.theme.error)
+            .fontColor(this.theme.errorText)
             .backgroundColor(this.theme.errorBg)
             .borderRadius(20)
             .height(36)
@@ -278,7 +284,7 @@ export struct DownloadSheet {
           Button('继续下载')
             .fontSize(14)
             .fontColor(this.theme.textOnPrimary)
-            .backgroundColor(this.theme.primary)
+            .backgroundColor(this.theme.actionPrimary)
             .borderRadius(20)
             .height(36)
             .layoutWeight(1)
@@ -287,7 +293,7 @@ export struct DownloadSheet {
 
           Button('取消')
             .fontSize(14)
-            .fontColor(this.theme.error)
+            .fontColor(this.theme.errorText)
             .backgroundColor(this.theme.errorBg)
             .borderRadius(20)
             .height(36)
@@ -298,7 +304,7 @@ export struct DownloadSheet {
           Button('重试')
             .fontSize(14)
             .fontColor(this.theme.textOnPrimary)
-            .backgroundColor(this.theme.primary)
+            .backgroundColor(this.theme.actionPrimary)
             .borderRadius(20)
             .height(36)
             .layoutWeight(1)

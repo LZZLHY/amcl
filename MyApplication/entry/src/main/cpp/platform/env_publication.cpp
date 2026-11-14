@@ -19,6 +19,7 @@
 #include "../input/delivery/look_execution.h"
 #include "../input/source/source_control.h"
 #include "../jvm/callback_bridge_host.h"
+#include "../audio/audio_runtime.h"
 #include "../utils/amcl_log.h"
 
 #include <cstdio>
@@ -85,10 +86,12 @@ void PublishEarlyProcessEnvironment(const char* reason) {
         amclLookExecutionPublishV1();
         // 来源贡献端口也必须预线程发布；JNI/平台借原 Core 身份，输入时不建第二份 owner。
         amclSourceControlPublishV1();
+        // 只发布音频 getter/PID 常量，不建音频线程或打开设备；后续会话不再新增环境名。
+        const int audio = amclAudioHostPublishEarlyV1();
         const int owner = amclWindowHostPublishOwner();
         // 前台门禁的初值同样是 0；在 owner 刚发布后显式写一次，日志里可见 broker 已可用。
         const int foreground = amclWindowHostSetInputForeground(0);
-        const bool failed = restart < 0 || owner != 1 || foreground != 1;
+        const bool failed = restart < 0 || owner != 1 || foreground != 1 || audio != 0;
         char summary[256];
         std::snprintf(summary, sizeof(summary),
             "event=env-early-publication reason=%s restart=%s windowHostOwner=%d "

@@ -16,12 +16,16 @@ import { VersionParser, ParsedVersion, ensureMinecraftLoggingConfig, minecraftLo
 import { ProfileFieldSink } from 'account';
 import { parseLibraryPathGav, compareMavenVersions, LibraryGav } from 'feature_core';
 import { isMcVersionAtLeast } from 'commons';
+import { splitJvmArguments, normalizeResolutionPreference, resolveResolutionPercent,
+  withResolutionPolicy, gameResolutionDimension } from 'commons';
 import { resolveInstalledMcVersion, resolveInstalledLoader } from 'mods';
 import { launchNative } from './LaunchNativeBridge';
 import { normalizeManifestJnaTmpdir, jvmArgumentOverrideKey, retainLastJvmArgumentValues } from './RuntimeJvmArgumentPolicy';
 import { applyGameCompatibility } from './GameCompatibility';
 import { ActivityLogger } from 'commons';
-import { updateSessionEnvironment, sessionEnvironmentFact } from 'commons';
+import { updateSessionEnvironment, sessionEnvironmentFact, collectHostCpuInfo } from 'commons';
+import { applyCpuCompatibility } from './CpuCompatibility';
+import { applyAudioServiceCompatibility } from './AudioServiceCompatibility';
 import { prepareSessionLoggingArgument } from './SessionLoggingConfig';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 // Profile selection and metadata are owned by GraphicsProfileResolver / GraphicsProfileRegistry.
@@ -70,6 +74,8 @@ export interface LaunchProfile {
   classpath: string
   mcArgs: string[]
   extraJvmArgs: string[]
+  /** 新构造者发布的请求百分比；旧外部 Profile 缺此字段时仍由 Native 兼容 marker。 */
+  resolutionScalePercent?: number
   lwjglVersion: number
   lwjglJarDir: string
   username: string
@@ -185,6 +191,9 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
   // 与"校验通过"是两个事实，调用方必须分开处理。
   private lastContractReport: LaunchContractReport | null = null
   private customJvmArgs: string = ''   // 用户自定义 JVM 参数（原始字符串，全局），优先级最高
+  /** 0 保留旧参数兼容；实例/全局设置的继承已由 PreferenceManager 解析。 */
+  private resolutionScalePreference: number = 0
+  private effectiveResolutionPercent: number = 100
   // Canonical peer graphics profile preference (legacy PreferenceManager.glRenderer
   // storage key). Resolver applies platform, manifest and capability gates.
   private glRendererPref: string = 'mobileglues'
@@ -224,19 +233,19 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
   // DevTools 专用的 candidate/experimental 后端覆盖（PreferenceManager.devRendererOverride）。
   // 空串 = 无覆盖。判定归解析器（只对 lifecycle∈{Candidate, Experimental} 放行）。
   private devRendererOverride: string = ''
-  // 渲染面（XComponent surface / 屏幕）尺寸 px。>0 时作为 MC 初始分辨率（--width/--height）。
-  // 用途：LWJGL2（≤1.12）的早期加载页（Mojang logo）用 MC 初始 displayWidth/Height 直接渲染，
-  // 此时还没进主循环、没轮询过 wasResized，若初始值是默认 854×480 则加载页只占左下角。把初始
-  // 分辨率设为真实 surface 尺寸，加载页一开始即全屏（高版本 LWJGL3 靠 GLFW framebuffer 回调，无此问题）。
+  // 当前宿主显示区域P的物理px。构建时按同一政策推导初始L/F，Native再以平台实际
+  // 接受的发布校准。LWJGL2加载页与SDL最初的逻辑窗口都不能先使用另一套物理宽高，
+  // 也不能依赖未来某个resize事件补救初始化失配。
   private windowWidth: number = 0
   private windowHeight: number = 0
 
-  // 第三方皮肤站（authlib-injector）注入参数。仅当选中账户为 AUTHLIB_INJECTOR 时由
-  // 启动流程（McGamePage）设置：需要在启动前联网 prefetch 元数据、提取 jar，故不能在
-  // build() 里同步完成，由上游异步准备好后经 setter 注入。三者要么全空、要么全有。
+  // 第三方皮肤站或离线外观的单套authlib-injector参数。第三方联网、离线本机服务都由
+  // 上游异步准备完整，build不创建网络/文件服务；本局只允许一套API根和预取元数据。
   private authlibJarPath: string = ''      // 已提取到 filesDir 的 authlib-injector.jar 绝对路径
   private authlibApiRoot: string = ''      // API 根（-javaagent 参数值）
   private authlibPrefetched: string = ''   // base64(GET apiRoot 响应体)
+  /** 本地模式关闭额外公网命名空间查询；不意味着agent仅会覆盖自己的profile。 */
+  private authlibLocalAppearance: boolean = false
 
   setFilesDir(dir: string): LaunchProfileBuilder { this.filesDir = dir; return this }
   setMcDir(dir: string): LaunchProfileBuilder { this.mcDir = dir; return this }
@@ -252,6 +261,11 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
   setWindowSize(w: number, h: number): LaunchProfileBuilder { this.windowWidth = w; this.windowHeight = h; return this }
   /** 设置用户自定义 JVM 参数（原始字符串）。空串 = 不加。优先级最高，见 mergeUserJvmArgs。 */
   setCustomJvmArgs(raw: string): LaunchProfileBuilder { this.customJvmArgs = raw || ''; return this }
+  /** 只接收政策，不在 builder 中操作平台资源；构建时再与最终合并的旧参数统一。 */
+  setResolutionScalePercent(percent: number): LaunchProfileBuilder {
+    this.resolutionScalePreference = normalizeResolutionPreference(percent)
+    return this
+  }
   /** Legacy setter retained for callers while the resolver owns peer semantics. */
   setGlRenderer(v: string): LaunchProfileBuilder { this.glRendererPref = v || 'mobileglues'; return this }
   /** Canonical peer profile setter; keeps the old method as source compatibility. */
@@ -276,16 +290,17 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
   /** 设置 DevTools 后端覆盖（candidate/experimental 验证通道）。空串 = 无覆盖。 */
   setDevRendererOverride(v: string): LaunchProfileBuilder { this.devRendererOverride = v || ''; return this }
   /**
-   * 设置第三方皮肤站（authlib-injector）注入参数。三者需同时提供：
+   * 设置唯一authlib-injector实例。第三方或本地纹理服务三项都必须准备完整：
    *   - jarPath：已提取到本地的 authlib-injector.jar 绝对路径
    *   - apiRoot：皮肤站 API 根（ALI 解析后的最终地址）
    *   - prefetched：base64(GET apiRoot 响应体)，避免 agent 启动再联网
-   * 任一为空则整体跳过注入（非 authlib 账户即为空）。
+   * localAppearance只改变本地外观的功能选项；不改变账号认证类型和游戏UUID。
    */
-  setAuthlibInjector(jarPath: string, apiRoot: string, prefetched: string): LaunchProfileBuilder {
+  setAuthlibInjector(jarPath: string, apiRoot: string, prefetched: string, localAppearance: boolean = false): LaunchProfileBuilder {
     this.authlibJarPath = jarPath || ''
     this.authlibApiRoot = apiRoot || ''
     this.authlibPrefetched = prefetched || ''
+    this.authlibLocalAppearance = localAppearance
     return this
   }
   getLastBuildError(): string { return this.lastBuildError }
@@ -633,17 +648,34 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
       parsed.jvmArgs.push('-Damcl.mc.dir=' + this.mcDir)
     }
 
-    // 第三方皮肤站（authlib-injector）javaagent 注入。在 filterJvmArgs 之后追加，
-    // 避免被 unresolved-variable / 内存参数过滤误伤（这三条是 AMCL 生成的绝对路径 + base64，
-    // 不含 ${} 模板）。对齐 PCL2 ModLaunch 的 Auth 分支。
-    this.injectAuthlibArgs(parsed.jvmArgs)
-
     // IPv6 偏好护栏（方案 docs/adaptation/JDK_IPV6_ADAPTATION_PLAN.md §四·五 R2）。
     // ⚠️ 必须与能力层（elf_loader 的 /proc/net/if_inet6 垫片）同批上，不能滞后。
     this.injectIpv6PreferenceGuard(parsed.jvmArgs)
 
     // 用户自定义 JVM 参数：最高优先级，最后合入（同 -Dkey / -Xmx 覆盖 version.json 与 SSOT 默认）
     parsed.jvmArgs = this.mergeUserJvmArgs(parsed.jvmArgs)
+    // 认证配置在用户参数合并后校验，避免自定义第二套agent/预取根绕过前面的冲突检查。
+    // 其他用户参数优先级不变；认证三项必须共同来自当前选定账号的唯一准备结果。
+    try { this.injectAuthlibArgs(parsed.jvmArgs) }
+    catch (error) { this.lastBuildError = (error as Error).message; return null }
+    // 旧 marker 与新设置收敛为唯一启动政策，初始 MC 尺寸和 Native 配置消费同一个值。
+    this.effectiveResolutionPercent = resolveResolutionPercent(this.resolutionScalePreference, parsed.jvmArgs)
+    parsed.jvmArgs = withResolutionPolicy(parsed.jvmArgs, this.effectiveResolutionPercent)
+    // CPU 采集与日志同源；所有加载器在 JVM 创建前接入同一独立生产 Agent。
+    // 合并后拒绝伪造宿主事实，避免 OSHI 初始化缓存与会话记录各自使用不同值。
+    try {
+      const cpu = collectHostCpuInfo()
+      parsed.jvmArgs = applyCpuCompatibility(parsed.jvmArgs, this.filesDir, cpu)
+      parsed.jvmArgs = applyAudioServiceCompatibility(parsed.jvmArgs, this.filesDir)
+      // 保存实际传给这一局 JVM 的同一份快照；不让较早的活动初始化采样冒充生效值。
+      // 预检也构建 profile，但尚未创建活动，id=0 时不得写入账本。
+      if (this.alog.id() > 0) updateSessionEnvironment(this.filesDir, this.alog.id(), [
+        sessionEnvironmentFact('cpu.model', cpu.model || '系统未提供芯片型号', 'deviceInfo.chipType', cpu.model.length > 0 ? 'observed' : 'unavailable'),
+        sessionEnvironmentFact('cpu.cores', cpu.logicalIds.length > 0 ? cpu.logicalIds.length.toString() : '系统未开放核心列表',
+          'sysfs.cpu.online', cpu.logicalIds.length > 0 ? 'observed' : 'unavailable'),
+      ])
+    }
+    catch (error) { this.lastBuildError = (error as Error).message; return null }
     for (let arg of parsed.jvmArgs) {
       if (arg.indexOf(INPUT_PLAN_ARG_KEY) === 0) {
         this.lastBuildError = '输入启动计划由启动器生成，不允许自定义 JVM 参数覆盖'
@@ -754,6 +786,7 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
       classpath: classpath,
       mcArgs: mcArgs,
       extraJvmArgs: parsed.jvmArgs,
+      resolutionScalePercent: this.effectiveResolutionPercent,
       lwjglVersion: lwjglVersion,
       lwjglJarDir: lwjglJarDir,
       username: this.username,
@@ -1382,27 +1415,7 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
    * 以空格/制表/换行分隔；支持单/双引号包裹含空格的值（引号本身被去除）。
    */
   private parseUserJvmArgs(raw: string): string[] {
-    let out: string[] = []
-    if (!raw) return out
-    let cur = ''
-    let inToken = false
-    let quote = ''
-    for (let i = 0; i < raw.length; i++) {
-      let c = raw.charAt(i)
-      if (quote.length > 0) {
-        if (c === quote) { quote = '' } else { cur += c }
-      } else if (c === '"' || c === '\'') {
-        quote = c
-        inToken = true
-      } else if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
-        if (inToken) { out.push(cur); cur = ''; inToken = false }
-      } else {
-        cur += c
-        inToken = true
-      }
-    }
-    if (inToken) out.push(cur)
-    return out
+    return splitJvmArguments(raw)
   }
 
   /**
@@ -1530,15 +1543,28 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
     if (this.authlibJarPath.length === 0 || this.authlibApiRoot.length === 0 || this.authlibPrefetched.length === 0) {
       return
     }
+    // 用户参数或加载器若已放入另一套认证agent/配置，不能再叠加两个API根。其他CPU、
+    // 音频agent不受影响；冲突明确拒绝，由已有build错误处理报告给用户。
+    for (const argument of jvmArgs) {
+      if ((argument.startsWith('-javaagent:') && argument.toLowerCase().includes('authlib-injector')) ||
+          argument.startsWith('-Dauthlibinjector.')) throw new Error('authlib-injector启动参数重复，请移除自定义认证agent或配置')
+    }
     jvmArgs.push('-javaagent:' + this.authlibJarPath + '=' + this.authlibApiRoot)
     jvmArgs.push('-Dauthlibinjector.side=client')
     jvmArgs.push('-Dauthlibinjector.yggdrasil.prefetched=' + this.authlibPrefetched)
+    if (this.authlibLocalAppearance) {
+      // 本机服务没有公网账号、聊天签名或@mojang虚拟身份能力；这些选项不能被解释为正版资格。
+      jvmArgs.push('-Dauthlibinjector.mojangNamespace=disabled')
+      jvmArgs.push('-Dauthlibinjector.profileKey=disabled')
+      jvmArgs.push('-Dauthlibinjector.mojangAntiFeatures=disabled')
+      jvmArgs.push('-Dauthlibinjector.noShowServerName')
+    }
     this.alog.info(TAG, `authlib-injector args injected (apiRoot=${this.authlibApiRoot}, prefetched=${this.authlibPrefetched.length}B)`, LOG_DOMAIN_LAUNCH)
     // 第三方登录必须保证【JVM 内】HTTPS 可信：authlib-injector 在运行时要连皮肤站
     // （单人渲染自己皮肤下 CDN 贴图、多人 /join 走 sessionserver）。PCL2 为此在 Auth 分支加
     // -Djavax.net.ssl.trustStoreType=WINDOWS-ROOT 信任系统根证书；OHOS 无此机制，改为显式
     // 指向 JDK 自带 cacerts（标准 OpenJDK 产物，含 Mozilla CA，密码 changeit）。见下方方法。
-    this.injectJvmTrustStore(jvmArgs)
+    if (!this.authlibLocalAppearance) this.injectJvmTrustStore(jvmArgs)
   }
 
   /**
@@ -1704,8 +1730,12 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
         this.alog.warn(TAG, `Skip incomplete JVM arg pair: ${arg}`, null, LOG_DOMAIN_LAUNCH)
         continue
       }
-      // 跳过 C 层已硬编码的参数，避免重复
-      if (cLayerArgs.has(arg)) {
+      // 这两项是否自动注入由选中libjvm的原生临时根合同决定；SSOT列表包含旧包默认，
+      // 不能据此删除version.json的显式条目。用户参数仍在本过滤之后按原顺序追加。
+      const runtimeConditionalDefault: boolean = arg === '-XX:-UsePerfData'
+        || arg === '-XX:+DisableAttachMechanism'
+      // 其它一直由C层注入的条目继续精确去重，不扩大模块/图形/内存参数规则。
+      if (cLayerArgs.has(arg) && !runtimeConditionalDefault) {
         this.alog.info(TAG, `Skip C-layer duplicate JVM arg: ${arg}`, LOG_DOMAIN_LAUNCH)
         continue
       }
@@ -1780,12 +1810,12 @@ export class LaunchProfileBuilder implements ProfileFieldSink {
       ]
     }
 
-    // 注入 MC 初始分辨率（=渲染面尺寸），解决 LWJGL2 早期加载页（Mojang logo）只占左下角的问题。
+    // 注入政策候选的MC初始逻辑尺寸；Native在平台配置完成后校准，失败不能沿用请求数字。
     // 仅在未显式声明 --width/--height 时追加；尺寸无效（<=0）则不加。
     if (this.windowWidth > 0 && this.windowHeight > 0
       && args.indexOf('--width') < 0 && args.indexOf('--height') < 0) {
-      args.push('--width', String(this.windowWidth))
-      args.push('--height', String(this.windowHeight))
+      args.push('--width', String(gameResolutionDimension(this.windowWidth, this.effectiveResolutionPercent)))
+      args.push('--height', String(gameResolutionDimension(this.windowHeight, this.effectiveResolutionPercent)))
     }
 
     return args

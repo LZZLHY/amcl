@@ -1,3 +1,4 @@
+import { applyNativeTheme } from '../components/AppTheme';
 /**
  * DevToolsPage.ets — 开发者工具页面（2026-06 重构：主从布局 / 一多适配 / 明暗主题）
  *
@@ -93,6 +94,8 @@ struct DevToolsPage {
   @StorageProp('topRectHeight') topSafeHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0;
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0;
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
 
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!;
   private prefManager: PreferenceManager = new PreferenceManager(this.context);
@@ -135,7 +138,8 @@ struct DevToolsPage {
   private applyTheme() {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     let mode = this.prefManager.themeMode;
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark));
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent);
+    applyNativeTheme(this.theme);
   }
 
   private buildGroups(): ToolGroup[] {
@@ -237,12 +241,14 @@ struct DevToolsPage {
 
   // ==================== 布局 ====================
 
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme(); }
+
   build() {
     Column() {
       // 手机详情返回先退回工具列表；共享按钮只调用原 onBack，不绕过这层状态机。
       ImmersiveTitleScaffold({ title: (!this.isTablet() && this.showDetailOnPhone) ? this.currentToolDef().name : '开发者工具',
-        subtitle: (this.isTablet() || !this.showDetailOnPhone)
-          ? (this.isTablet() ? 'DEV · AMCL · 1.0.0-beta.5 · build 1000328' : 'DEV') : '',
+        // “开发者工具”已表达用途；不再展示重复 DEV 标签和硬编码的旧包身份。
         theme: this.theme, topSafeHeight: this.topSafeHeight, surfaceColor: this.theme.bgPrimary,
         onBack: (): void => { this.onBack(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
@@ -294,9 +300,9 @@ struct DevToolsPage {
     Row({ space: 12 }) {
       Circle({ width: 8, height: 8 }).fill(this.currentTool === t.id ? this.theme.primary : t.color)
       Text(t.name).layoutWeight(1).fontSize(15)
-        .fontColor(this.currentTool === t.id ? this.theme.primary : this.theme.textPrimary)
+        .fontColor(this.currentTool === t.id ? this.theme.actionText : this.theme.textPrimary)
         .fontWeight(this.currentTool === t.id ? FontWeight.Bold : FontWeight.Medium)
-      Text('›').fontSize(16).fontColor(this.currentTool === t.id ? this.theme.primary : this.theme.textHint)
+      Text('›').fontSize(16).fontColor(this.currentTool === t.id ? this.theme.actionText : this.theme.textHint)
     }
     .width('100%').padding({ left: 12, right: 12, top: 11, bottom: 11 }).borderRadius(R_CHIP)
     .backgroundColor(this.currentTool === t.id ? this.theme.primaryLight : Color.Transparent)
@@ -338,6 +344,15 @@ struct DevToolsPage {
     }.width('100%')
   }
 
+  /** 工具长说明按需阅读；只展示当前工具定义，不触发运行或改变控制台状态。 */
+  private showToolHelp_(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: this.currentToolDef().name,
+      message: this.toolDescription(this.currentToolDef()),
+      buttons: [{ text: '关闭', color: this.theme.actionText as string }],
+    }).catch((): void => { /* 点击框外或返回仅关闭说明。 */ });
+  }
+
   @Builder
   DetailContent() {
     Column({ space: 18 }) {
@@ -346,9 +361,14 @@ struct DevToolsPage {
           Circle({ width: 8, height: 8 }).fill(this.currentToolDef().color)
           Text(this.currentToolDef().cat).fontSize(11).fontColor(this.currentToolDef().color)
             .fontFamily(MONO).fontWeight(FontWeight.Medium).letterSpacing(0.6)
-        }.alignItems(VerticalAlign.Center)
-        Text(this.currentToolDef().name).fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
-        Text(this.toolDescription(this.currentToolDef())).width('100%').fontSize(14).fontColor(this.toolEnabled(this.currentToolDef()) ? this.theme.textSecondary : this.theme.textHint).lineHeight(21)
+          Blank()
+          Button('工具说明').height(44).fontSize(13).fontColor(this.theme.actionText)
+            .backgroundColor(Color.Transparent).onClick((): void => { this.showToolHelp_(); })
+        }.width('100%').alignItems(VerticalAlign.Center)
+        // 手机标题已经是工具名；平板保留详情名称以区分同屏的工具目录。
+        if (this.isTablet()) {
+          Text(this.currentToolDef().name).fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
+        }
       }.width('100%').alignItems(HorizontalAlign.Start)
 
       if (this.currentTool === 'mobileglOverride' || this.currentTool === 'minecraftVulkanOverride') {

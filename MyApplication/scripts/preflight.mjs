@@ -48,6 +48,8 @@
 //      docker-project: 无引擎测试固定 Compose 服务、身份复用、忙状态/归属拒绝、独占锁和失败证据。
 //      download-system: 真实Manager/Registry/共享、规格编译、来源代次和Maven结果；
 //      Linux Native/libcurl真实HTTP另走CI独立download-native job，不把宿主替身当Native验证。
+//      app-update: 软件三类发行、手动原件、来源/缓存隔离、事务恢复、fence与BMS双证明；仅宿主。
+//      sideload-native-terminal: app-update依赖的真实ArkTS事务→POSIX Native SH/fence准入，不进入SDK quick。
 //
 // ⚠️ 本注释块自己曾经过期过（只列到第 8 项、写"4 个套件、断言总数 ≥101"），
 // 而 `docs/release-checklist.md` §0 同时写着"预期 6 项全绿"+ 一个不存在的 `--strict`。
@@ -130,10 +132,13 @@ function findJavac() {
 
 function listJavaFiles(dir) {
   const out = [];
+  const omitLoaderFixtures = path.resolve(dir) === path.join(ROOT, 'JavaApp', 'test');
   function walk(d) {
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, ent.name);
-      if (ent.isDirectory()) walk(full);
+      // audio-loader-*是独立ModuleLayer/影子类路径夹具，由test-java-audio-loaders分别编译。
+      // 其多个module-info不能混入普通classpath单元测试；其它嵌套测试源码继续递归收集。
+      if (ent.isDirectory() && !(omitLoaderFixtures && ent.name.startsWith('audio-loader-'))) walk(full);
       else if (ent.isFile() && ent.name.endsWith('.java')) out.push(full);
     }
   }
@@ -1202,9 +1207,12 @@ add('input-runtime', () => {
     ['node', 'scripts/test-touch-optimization.mjs'],
     ['node', 'scripts/test-control-groups.mjs'],
     ['node', 'scripts/test-control-groups-editor.mjs'],
+    ['node', 'scripts/test-touch-editing-contract.mjs'],
     ['node', 'scripts/test-control-groups-storage.mjs'],
     // 完成积分的sensor delta携原policy/resource lease；跨时钟ns不作资格比较。
     ['node', 'scripts/test-gyro-lease.mjs'],
+    // 双向横屏策略、同尺寸翻转的显示通知及虚拟按键投影；系统旋转锁仍需真机验收。
+    ['node', 'scripts/test-landscape-rotation.mjs'],
     ['node', 'scripts/test-gyro-policy-activation.mjs'],
     ['node', 'scripts/test-touch-basics.mjs'],
     // 悬浮鼠标生产模型：两指移动权重锚、单指raw随指、多指稳位、边缘钳制与旧回执围栏。
@@ -1255,8 +1263,8 @@ add('input-runtime', () => {
     // 原文本wire经唯一Core/adapter/GLFW回调，保Unicode同包选区与已编译撤回/恢复；不只核UI参数。
     [isWin ? 'python' : 'python3', 'scripts/test-glfw-document-selection.py'],
     [isWin ? 'python' : 'python3', 'scripts/test-input-consumer-semantics.py'],
-    // Windows/Ubuntu沿同一真实组合门；CI已按deps.lock取得SDL源并传AMCL_SDL_TEST_REPO。
-    // 不靠预存同名库/伪skip：精确checkout→全新SDK原控制正反/restored→owned实际Poll正反/restored。
+    // Windows/Ubuntu 沿同一真实组合门；首次执行 checkout/SDK/owned 全部正负与恢复。
+    // 同输入只明确复用已复核的成功证据，Fresh 可强制重跑，缺依赖不能以裸库或 skip 通过。
     [isWin ? 'python' : 'python3', 'scripts/test-sdl-host-consumer.py'],
     ['node', 'scripts/test-check-input-runtime-boundary.mjs'],
     ['node', 'scripts/check-input-runtime-boundary.mjs'],
@@ -1267,6 +1275,21 @@ add('input-runtime', () => {
       detail: ((result.stdout || '') + (result.stderr || '') + (result.error?.message || '')).trim() };
   }
   return { ok: true, summary: 'production config/IME lifecycle, L2+SDL source semantics and neutral input ownership' };
+});
+
+// SDL 缓存规则修改时可单独运行；这里只验证漂移拒绝、进程锁与 owner 清理边界，
+// 不编译 SDL，也不把这些小夹具包装成业务链路或设备验证。普通 quick 不调用 preflight。
+add('sdl-host-cache', () => {
+  const python = isWin ? 'python' : 'python3';
+  const result = spawnSync(python, ['-B', 'scripts/test-sdl-host-cache.py'], {
+    cwd: ROOT, encoding: 'utf8', timeout: 30000, maxBuffer: 2 * 1024 * 1024,
+  });
+  return {
+    ok: result.status === 0,
+    summary: 'SDL cache evidence, dependency drift, process lock and owned cleanup boundaries',
+    detail: result.status === 0 ? null :
+      ((result.stdout || '') + (result.stderr || '') + (result.error?.message || '')).trim(),
+  };
 });
 
 add('sdl3-text-session', () => {
@@ -1510,9 +1533,21 @@ add('runtime-foundation', () => {
     ['node', 'scripts/test-runtime-update-ui.mjs'],
     ['node', 'scripts/test-jdk-tree-validation.mjs'],
     ['node', 'scripts/test-jdk-directory-lease.mjs'],
+    // 当前数字槽位的进程中断恢复、App依赖续作及兼容返回必须与普通目录回归一起持续执行。
+    ['node', 'scripts/test-jdk-install-journal.mjs'],
+    ['node', 'scripts/test-runtime-app-dependency.mjs'],
+    ['node', 'scripts/test-runtime-host-declaration.mjs'],
+    // 包内旧描述映射、新行为要求、v1回退与隔离传输执行实际解析器和入口适配，不靠UI猜可用。
+    ['node', 'scripts/test-runtime-compatibility.mjs'],
+    ['node', 'scripts/test-runtime-validation-transport.mjs'],
+    ['node', 'scripts/test-app-runtime-bootstrap.mjs'],
+    ['node', 'scripts/test-app-jdk-update-plan.mjs'],
     [python, '-B', 'scripts/test-runtime-packaging.py'],
-    // 活动series/生成器的静态防回生；真实上游源重放由JDK25编译/来源守卫另行验证。
-    [python, '-B', 'scripts/test-jdk25-safepoint-contract.py'],
+    [python, '-B', 'scripts/test-jdk-native-inputs.py'],
+    // 各major独立验证活动series/生成器；真实上游协议字节另由编译前和来源守卫确认。
+    [python, '-B', 'scripts/test-jdk25-safepoint-contract.py', '--major', '17'],
+    [python, '-B', 'scripts/test-jdk25-safepoint-contract.py', '--major', '21'],
+    [python, '-B', 'scripts/test-jdk25-safepoint-contract.py', '--major', '25'],
     ['node', 'scripts/test-prelaunch-runtime-slot.mjs'],
     ['node', 'scripts/check-lwjgl-legacy-slots.mjs'],
     ['node', 'scripts/test-lwjgl-runtime-slots.mjs'],
@@ -1567,6 +1602,35 @@ add('runtime-exit', () => {
   }
   return { ok: true, summary: 'isolated exit identity/record, real host JNI exit/halt, and session recovery verified' };
 });
+
+// 独立Native子门可定向执行；app-update依赖它，CI完整preflight也只执行一次。真实
+// Coordinator持久事务必须跨到POSIX reader/SH，缺Node/编译器/Windows的WSL均为失败。
+add('sideload-native-terminal', () => {
+  const r = spawnSync(process.execPath, ['scripts/test-sideload-native-terminal.mjs', '--current-only'], { cwd: ROOT, encoding: 'utf8' });
+  return { ok: !r.error && r.status === 0, summary: 'real ArkTS durable terminal to Native file admission',
+    detail: (r.stdout || '') + (r.stderr || '') + (r.error ? String(r.error) : '') };
+});
+
+// 软件更新是独立的持续回归面。执行当前生产实现的宿主套件，不依赖DevEco/HDC/账号；
+// 缺编译器或子进程错误一律失败。普通quick仍保持原契约，由CI和定向选择执行本组。
+add('app-update', () => {
+  for (const script of ['scripts/test-runtime-host-contract.mjs', 'scripts/test-prepare-sideload-host-inputs.mjs',
+    'scripts/test-sideload-signer-host.mjs', 'scripts/test-sideload-update.mjs',
+    'scripts/test-sideload-recovery.mjs', 'scripts/test-sideload-activity-relations.mjs',
+    // 完成交接及原JDK选择必须跨真实子进程死亡恢复，不能只依赖各模块正常路径。
+    'scripts/test-app-completion-recovery.mjs', 'scripts/test-runtime-intent-admission.mjs',
+    'scripts/test-app-subscription-handoff.mjs', 'scripts/test-runtime-intent-large-receipt.mjs',
+    'scripts/test-app-target-reader-compatibility.mjs',
+    'scripts/test-sideload-storage.mjs', 'scripts/test-sideload-install-fence.mjs',
+    'scripts/test-bm-terminal-evidence.mjs', 'scripts/test-update-delivery.mjs',
+    'scripts/test-app-update-channels.mjs', 'scripts/test-sideload-update-presentation.mjs',
+    'scripts/test-update-dialog-layout.mjs']) {
+    const run = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    if (run.status !== 0 || run.error || run.signal) return { ok: false, summary: script + ' failed',
+      detail: (run.stdout || '') + (run.stderr || '') + (run.error?.message || '') + (run.signal || '') };
+  }
+  return { ok: true, summary: 'production App release/manual-source/cache/recovery/fence/BMS host regressions; device not implied' };
+}, { dependencies: ['sideload-native-terminal'] });
 
 // 下载宿主门消费生产ArkTS模块，实际Native/socket/FD由独立Linux作业验证。
 // 编译器缺失/子进程失败必须阻断，不把缺少SDK或CI环境变量差异记为跳过成功。

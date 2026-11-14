@@ -91,13 +91,16 @@ function policyHudFixture() {
   let callback, removed = 0;
   const store = { addInputPolicyStatusListener(value) { callback = value; return {}; },
     removeInputPolicyStatusListener() { removed++; } };
-  const view = subject(['subscribeConfigurationStatus_', 'retireConfigurationStatus_', 'configurationHudMessage_'],
+  const notices=[];
+  const view = subject(['subscribeConfigurationStatus_', 'retireConfigurationStatus_', 'configurationHudMessage_', 'showTouchNotice_', 'onTouchStatusMessage_'],
     ['configurationStatusMessage', 'configurationStatusSnapshot', 'configurationStatusEditorPauseWait', 'configurationStatusSubscription',
-      'configurationStatusStore'], { inputPolicyStatusMessage: policyModel.inputPolicyStatusMessage });
-  Object.assign(view, { mounted: true, appearanceGeneration: 7, editing: true,
+      'configurationStatusStore','lastTouchNotice','lastTouchNoticeAt'], { inputPolicyStatusMessage: policyModel.inputPolicyStatusMessage,
+        hilog:{warn(){}},GAME_CONTROLS_TAG:'GameControls' });
+  Object.assign(view, { mounted: true, pageActive:true, appearanceGeneration: 7, editing: true,
+    getUIContext:()=>({getPromptAction:()=>({showToast:value=>notices.push(value)})}),
     editorInputPaused: true, editorModal: {} });
   view.subscribeConfigurationStatus_(store);
-  return { view, emit: value => callback(value), store, removed: () => removed };
+  return { view, notices, emit: value => callback(value), store, removed: () => removed };
 }
 const editorWait = { name: 'touch-controls', pending: true, stage: 'Waiting', reason: 'FrontendInactive' };
 {
@@ -216,4 +219,17 @@ const editorWait = { name: 'touch-controls', pending: true, stage: 'Waiting', re
   test.view.editing = false; assert.equal(test.view.configurationHudMessage_(), message);
   check('相同文字/同类新对象不重复写响应分类，同文字但能力分类变化仍更新可见性');
 }
-console.log('PASS ' + passed + ' input configuration HUD production groups; no app/device build performed');
+{
+  const test=policyHudFixture();
+  test.emit(policySnapshot([editorWait]));assert.equal(test.notices.length,0,'编辑自身的正常暂停不弹消息');
+  test.view.touchStatusMessage='聊天入口暂未就绪，请稍后重试';test.view.onTouchStatusMessage_();
+  assert.equal(test.notices.length,1);assert.equal(test.notices[0].duration,2000);
+  test.view.onTouchStatusMessage_();assert.equal(test.notices.length,1,'重复状态不得刷屏');
+  test.view.lastTouchNoticeAt-=4000;test.view.onTouchStatusMessage_();assert.equal(test.notices.length,2);
+  test.view.pageActive=false;test.view.touchStatusMessage='后台恢复';test.view.onTouchStatusMessage_();assert.equal(test.notices.length,2);
+  test.view.pageActive=true;test.view.mounted=false;test.view.onTouchStatusMessage_();assert.equal(test.notices.length,2);
+  test.view.mounted=true;test.view.touchStatusMessage='';test.view.onTouchStatusMessage_();assert.equal(test.notices.length,2);
+  test.view.getUIContext=()=>{throw Error('retired context')};test.view.showTouchNotice_('上下文已退场');
+  check('真实轻提示调用：两秒Toast、同文案去重、后台/销毁/空状态静默、上下文失效不破坏输入');
+}
+console.log('PASS ' + passed + ' input configuration notice production groups; no app/device build performed');

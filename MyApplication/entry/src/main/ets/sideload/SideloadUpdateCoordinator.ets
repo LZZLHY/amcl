@@ -7,8 +7,8 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { DownloadManager, DownloadTaskView, DownloadFileSpec, DownloadTaskRegistry, UnifiedTaskView } from 'feature_core';
-import { DiagnosticPolicy, LedgerState, AppLogger, LOG_DOMAIN_DOWNLOAD } from 'commons';
-import { SideloadUpdateAsset, SideloadUpdateTransaction, SideloadUpdatePhase, SideloadTransactionPolicy, AppUpdatePolicy } from 'update';
+import { DiagnosticPolicy, LedgerState, AppLogger, LOG_DOMAIN_DOWNLOAD, AppUpdateBinding, AppUpdateCompletionEvent, AppUpdateSuperseder } from 'commons';
+import { SideloadUpdateAsset, SideloadUpdateTransaction, SideloadUpdateCompletion, SideloadUpdatePhase, SideloadTransactionPolicy, AppUpdatePolicy } from 'update';
 import testNapi from 'libentry.so';
 // 必须使用产品源集别名，直接相对引用main会把default身份带入sideload/store/desktop。
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
@@ -21,8 +21,12 @@ import { SideloadUpdatePageParams } from './SideloadUpdateTestSession';
 import { SideloadFixtureHttp } from './SideloadFixtureHttp';
 import { SideloadUpdateTestSession } from './SideloadUpdateTestSession';
 import { SideloadUpdateSnapshot } from './SideloadUpdateSnapshot';
-import { GitHubUpdateAssetResolver, UpdateManifest, UpdateChecker } from 'update';
+import { GitHubUpdateAssetResolver, UpdateManifest, UpdateChecker, AppArtifactReceiptResolver } from 'update';
+import { PreferenceManager } from 'feature_system';
+import { JdkManager, RuntimeAppDependency } from 'launch';
+import { AppJdkUpdatePlanRuntime, AppJdkUpdateTarget } from '../runtime/AppJdkUpdatePlanRuntime';
 import { formatBytes } from 'commons';
+import { parseAppRuntimeRequirements } from 'commons';
 import { DeveloperSigningService } from './DeveloperSigningService';
 import { UpdateInstallGate } from './UpdateInstallGate';
 import { InstallFence } from './InstallFence';
@@ -41,7 +45,7 @@ interface SigningJob {
 
 /** UI 只能提交内部导入令牌；来源路径仍由唯一协调器拥有。 */
 export interface PreparedSideloadImport { token: string; manifest: UpdateManifest; }
-interface SideloadImportSource { token: string; path: string; manifest: UpdateManifest; sha256: string; }
+interface SideloadImportSource { token: string; path: string; manifest: UpdateManifest; sha256: string; asset: SideloadUpdateAsset; }
 
 export class SideloadUpdateCoordinator {
   private message: string = '正在准备更新';
@@ -77,6 +81,11 @@ export class SideloadUpdateCoordinator {
   /** 本轮解析后持有独立资产副本；UI 清单、旧持久事务及镜像临时令牌都不能改写安装目标。 */
   private attemptTarget: SideloadUpdateAsset | undefined = undefined;
   private attemptChannel: string = 'stable';
+  private requiredHostProtocol: number = 0;
+  private requiredHostProtocols: number[] = [];
+  private runtimeIntentId: string | undefined = undefined;
+  private subscriptionRevision: number | undefined = undefined;
+  private subscriptionSnapshotSet: boolean = false;
   private preparedImport: SideloadImportSource | undefined = undefined;
   private importSource: SideloadImportSource | undefined = undefined;
   private authSession: DeveloperAuthSession | undefined = undefined;
@@ -168,11 +177,16 @@ export class SideloadUpdateCoordinator {
       if (value !== undefined) {
         this.transaction = JSON.parse(JSON.stringify(value)) as SideloadUpdateTransaction; this.version = value.asset.versionName;
         // 准备阶段也可能已持久fence；跨进程没有NoInvocation凭据，统一进入核实而不新派发。
-        if (this.fenceBlocked() && value.phase !== SideloadUpdatePhase.Verified) {
+        if (this.fenceBlocked() && value.phase !== SideloadUpdatePhase.Verified && value.phase!==SideloadUpdatePhase.Superseded) {
           value.phase = SideloadUpdatePhase.ConfirmationPending;
           value.error = '上次安装执行权尚未核实，请查看更新状态'; this.save(value);
         }
-        if (value.phase === SideloadUpdatePhase.Verified) this.cleanPackages();
+        // Verified只是原App/BMS事实；必要交接未完成或高层sidecar仍在时，先保留包及冷恢复入口。
+        if (value.phase === SideloadUpdatePhase.Verified || value.phase===SideloadUpdatePhase.Superseded) {
+          this.migrateLegacySuperseded();
+          if(this.completionPending())this.confirmOnForeground=true;
+          else this.cleanPackages();
+        }
         if (value.phase === SideloadUpdatePhase.Ready) { value.phase = SideloadUpdatePhase.Downloaded; this.save(value); }
         if (value.phase === SideloadUpdatePhase.Downloading || value.phase === SideloadUpdatePhase.Verifying || value.phase === SideloadUpdatePhase.Signing) {
           value.failedPhase = value.phase; value.phase = SideloadUpdatePhase.Failed;
@@ -217,7 +231,7 @@ export class SideloadUpdateCoordinator {
     if (this.storageBlocked) { this.record('记录待核实', error); return; }
     // 安装派发后断连可能来自进程替换，普通调用方的 catch/cancel 不能抢先封账。
     // 真实失败由 reconcile 先转 Failed，真实成功由 recover 转 Verified 后分别结账。
-    if (this.transaction?.phase === SideloadUpdatePhase.Installing || this.transaction?.phase === SideloadUpdatePhase.ConfirmationPending) {
+    if (this.transaction?.phase === SideloadUpdatePhase.Installing || this.transaction?.phase === SideloadUpdatePhase.ConfirmationPending || this.completionPending()) {
       this.record('等待安装确认', error); return;
     }
     this.activity.finish(cancelled ? LedgerState.ABORTED : LedgerState.FAILED, error);
@@ -234,6 +248,8 @@ export class SideloadUpdateCoordinator {
     }
     this.activity.resume();
     if (task !== undefined && task.activityId === this.activity.activityId()) {
+      if ((task.phase === SideloadUpdatePhase.Verified || task.phase===SideloadUpdatePhase.Superseded) && this.completionPending()) {this.record('完成交接恢复','正在恢复原事务的完成或维修收尾步骤');return [this.activity.activityId()];}
+      if(task.phase===SideloadUpdatePhase.Superseded)this.activity.finish(LedgerState.INTERRUPTED,'维修版本已安全结束原执行权，不宣称旧目标仍在运行');
       if (task.phase === SideloadUpdatePhase.Verified) this.activity.finish(LedgerState.SUCCESS, '已由新进程确认目标版本、UID 与安装载荷');
       else if (task.phase === SideloadUpdatePhase.Installing || task.phase === SideloadUpdatePhase.ConfirmationPending) {
         this.record('恢复', '安装已派发，等待目标版本确认'); return [this.activity.activityId()];
@@ -294,6 +310,11 @@ export class SideloadUpdateCoordinator {
     if (!this.automatic) this.sameVersionTest = sameVersionTest;
     this.attemptChannel = this.manifest?.updateChannel ?? 'stable';
     asset = JSON.parse(JSON.stringify(this.attemptTarget)) as SideloadUpdateAsset;
+    // 人工开发原件只接受当前选择器令牌已经冻结的同一资产；诊断/路由不能直接构造该资格。
+    if (asset.releaseKind === 'developer' && (this.importSource === undefined ||
+      !this.sameAssetIdentity(this.importSource.asset, asset) || !SideloadTransactionPolicy.manualDeveloper(asset))) {
+      throw new Error('开发者版只能选择官网原始安装包后手动更新');
+    }
     this.beginAttempt(asset.versionName); this.cancelled = false;
     // 公开目标身份随每轮活动保留，后续重试或新版本覆盖 transaction.json 也不会丢失旧诊断依据。
     this.record('目标安装包', asset.tag + ' · ' + asset.product + ' · versionCode=' + asset.versionCode +
@@ -320,18 +341,26 @@ export class SideloadUpdateCoordinator {
     // 订阅身份冻结到本轮事务；同编号预览不借用诊断开关，低编号安装仍被拒绝。
     const channel = this.attemptChannel;
     const versionMatches = sameVersionTest ? this.allowSameVersionTest() && asset.versionCode === info.versionCode :
-      AppUpdatePolicy.canInstall(info.versionCode,info.versionName,asset.versionCode,asset.versionName,channel);
+      AppUpdatePolicy.canInstall(info.versionCode,info.versionName,asset.versionCode,asset.versionName,channel,
+        this.importSource !== undefined && this.sameAssetIdentity(this.importSource.asset,asset) && SideloadTransactionPolicy.manualDeveloper(asset));
     if (!versionMatches || !new RegExp('^[0-9a-f]{64}$').test(asset.sha256)) throw new Error('更新目标版本或摘要无效');
     const previous = this.state();
     // 分段缓存也绑定完整发行/产品/来源身份和当前安装基线，不能只靠摘要复用旧目录。
-    const reusable = previous !== undefined && this.sameAssetIdentity(previous.asset, asset) &&
+    // 高层恢复可能停在JDK两次rename之间。此时必须沿用原事务owner认领旧单槽journal，
+    // 手动精确收据增加的来源字段不改变同一HAP字节；仍核产品/发行/文件名及安装基线。
+    const samePendingPlan = previous !== undefined && AppJdkUpdatePlanRuntime.pending(this.context) && this.samePlanContent(previous.asset,asset);
+    const reusable = previous !== undefined && (this.sameAssetIdentity(previous.asset, asset) || samePendingPlan) &&
       this.sameInstalledBaseline(previous) && previous.sameVersionTest === sameVersionTest &&
-      (previous.updateChannel ?? 'stable') === channel;
+      ((previous.updateChannel ?? 'stable') === channel || samePendingPlan);
     const id = reusable && previous !== undefined ? previous.id : util.generateRandomUUID().replace(new RegExp('-', 'g'), '');
     const directory = this.root + '/tasks/' + id;
     SideloadFiles.ensureDirectory(directory);
     const draft: SideloadUpdateTransaction = { schema: 2, revision: this.transaction?.revision ?? 0, ownerAttemptId: this.attemptId, id: id, activityId: this.activity.activityId(), phase: SideloadUpdatePhase.Downloading, asset: asset,
       beforeVersionCode: info.versionCode, beforeVersionName: info.versionName, updateChannel: channel,
+      requiredHostProtocol:this.requiredHostProtocol || undefined,
+      requiredHostProtocols:this.requiredHostProtocols.length>0 ? this.requiredHostProtocols.slice() : undefined,
+      runtimeIntentId:this.runtimeIntentId,
+      subscriptionRevision:this.subscriptionSnapshotSet?this.subscriptionRevision:new PreferenceManager(this.context).appUpdateSelectionRevision(),
       beforeUid: info.appInfo.uid, expectedPayloadIdentity: '',
       sameVersionTest: sameVersionTest,
       unsignedPath: directory + '/unsigned.hap', signedPath: directory + '/signed.hap', signedSha256: '',
@@ -343,6 +372,7 @@ export class SideloadUpdateCoordinator {
     this.operation = '正在下载更新包';
     try {
       this.save(draft);
+      if(draft.runtimeIntentId!==undefined)RuntimeAppDependency.bindApp(this.context,draft.runtimeIntentId,this.appBinding(draft));
       const committed = this.state();
       if (committed === undefined) throw new Error('更新事务尚未提交');
       const unsignedPath = committed.unsignedPath;
@@ -428,6 +458,7 @@ export class SideloadUpdateCoordinator {
         else if (epoch !== this.epoch && this.automatic && current.phase === SideloadUpdatePhase.Signing) {
           this.operation = '运行环境已重新绑定，正在重新核实签名'; this.transition(SideloadUpdatePhase.Downloaded, current);
         }
+        if (current.phase === SideloadUpdatePhase.Cancelled || current.phase === SideloadUpdatePhase.Failed || this.cancelled) this.closePreparedRuntimePlan(current);
       }
       this.publish();
     }
@@ -436,7 +467,7 @@ export class SideloadUpdateCoordinator {
   /** 安装开始前允许取消；不删除原始包，下载器终态收敛后才允许再次开始。 */
   /** 用户撤销本轮许可；排队状态同样取消，历史Verified不能阻挡新Attempt。 */
   cancel(): void {
-    if (this.installationPending() || [SideloadUpdatePhase.Verified, SideloadUpdatePhase.Failed, SideloadUpdatePhase.Cancelled].indexOf(this.phase as SideloadUpdatePhase) >= 0) return;
+    if (this.installationPending() || [SideloadUpdatePhase.Verified,SideloadUpdatePhase.Superseded, SideloadUpdatePhase.Failed, SideloadUpdatePhase.Cancelled].indexOf(this.phase as SideloadUpdatePhase) >= 0) return;
     this.epoch++; this.automatic = false; this.working = false; this.checking = false;
     this.checkingAccount = false; this.accountReady = false; this.clearConnectionTimer();
     this.invalidateLoginEffect(); this.loginBusy = false; this.loginVisible = false; this.loginUrl = '';
@@ -446,6 +477,7 @@ export class SideloadUpdateCoordinator {
     else this.cancelTransfer();
     if (!this.installEffectActive) this.phase = SideloadUpdatePhase.Cancelled; this.operation = '更新已取消，已下载的数据会保留供重试'; this.message = this.operation;
     if (!this.installEffectActive) this.connection.close(); this.publish();
+    if (!this.isBusy() && !this.installEffectActive) this.closePreparedRuntimePlan(this.state());
   }
   /** 适配器回调直接到执行层，避免 service.cancel 与 registry.cancel 相互递归。 */
   private cancelTransfer(): void {
@@ -490,7 +522,8 @@ export class SideloadUpdateCoordinator {
    * 手动预检不授予安装许可。保存有界副本、读取真实信息，再匹配官方历史收据；
    * busy/fence 与自动更新共用，游戏运行时不启动手机 Java 处理器。
    */
-  async preparePickedPackage(uri: string, channel: string): Promise<PreparedSideloadImport> {
+  async preparePickedPackage(uri: string, channel: string, requiredHostProtocol: number = 0, requiredHostProtocols: number[] = []): Promise<PreparedSideloadImport> {
+    if(!Number.isInteger(requiredHostProtocol) || requiredHostProtocol<0 || requiredHostProtocol>999 || !Array.isArray(requiredHostProtocols)) throw new Error('JDK依赖要求无效，请重新选择');
     if(ProductBuildProfile.storeChannel || this.busy || this.working || this.installationPending() || this.fenceBlocked()) throw new Error('请先完成当前更新任务');
     this.gate.assertNoGame(this.context.filesDir); this.discardPreparedPackage();
     const token=util.generateRandomUUID().replace(new RegExp('-','g'),'');
@@ -499,6 +532,13 @@ export class SideloadUpdateCoordinator {
     const generation=this.runtimeGeneration;
     try {
       const size=await SideloadFiles.copyBounded(uri,path,2*1024*1024*1024);
+      const hash=await SideloadFiles.sha256(path);
+      const previous=this.state();
+      if(previous!==undefined && previous.asset.sha256===hash) {
+        // 只认领已存在、同原HAP的单槽发布journal；它不需要先有可运行的签名JDK，
+        // 不新下载、不切换新槽，也不为这个picker请求授予签名/安装许可。
+        AppJdkUpdatePlanRuntime.recoverPendingSlots(this.context,previous.id,hash);
+      }
       const signer=await this.ensureSigner();
       const runner=directory+'/runner.jar', result=directory+'/metadata.json';
       SideloadFiles.write(runner,this.context.resourceManager.getRawFileContentSync('sideload/amcl-signing-runner.jar'));
@@ -511,15 +551,26 @@ export class SideloadUpdateCoordinator {
       if(metadata['inspected']!==true || metadata['bundleName']!=='com.amcl.launcher' || metadata['product']!==product) throw new Error('请选择当前产品的官方未签名 HAP');
       const devices=metadata['deviceTypes']; const minimum=Number(metadata['minApi']);
       if(!Array.isArray(devices) || (devices as string[]).indexOf(deviceInfo.deviceType)<0 || !Number.isInteger(minimum) || minimum<1 || minimum>deviceInfo.sdkApiVersion) throw new Error('此安装包不支持当前设备或系统版本');
-      const tag='v'+String(metadata['versionName'] ?? '');
-      if(channel==='stable' && AppUpdatePolicy.prerelease(tag)) throw new Error('这是测试版本，请先切换到测试通道再选择');
-      const manifest=await UpdateChecker.publishedVersion(tag,ProductBuildProfile.product,channel);
-      const asset=GitHubUpdateAssetResolver.fromDelivery(manifest,ProductBuildProfile.product);
-      if(manifest.versionCode!==Number(metadata['versionCode']) || !UpdateChecker.canInstall(manifest,channel)) throw new Error('此安装包不是当前通道可安装的更新；低编号包不支持覆盖安装');
-      const hash=await SideloadFiles.sha256(path);
-      if(size!==asset.sizeBytes || hash!==asset.sha256) throw new Error('请选择 GitHub 发布的原始未签名包；此文件与官方摘要不一致');
+      const body=await DownloadManager.instance().fetchText(AppArtifactReceiptResolver.url(ProductBuildProfile.product,hash),[],15,16383);
+      const asset=AppArtifactReceiptResolver.parse(body,ProductBuildProfile.product,hash);
+      const kind=AppUpdatePolicy.releaseKind(asset.versionName);
+      const requirements=requiredHostProtocols.length>0 ? requiredHostProtocols : requiredHostProtocol>0 ? [requiredHostProtocol] : [];
+      if(requirements.length>8 || requirements.some((value: number): boolean => !Number.isInteger(value) || value<1 || value>999 ||
+        (asset.runtimeHostProtocols ?? [1]).indexOf(value)<0)) throw new Error('此安装包不支持用户所选JDK所需的宿主能力');
+      if(kind==='preview' && channel!=='preview') throw new Error('这是预览版本，请先切换到预览通道再选择');
+      if(asset.versionName!==metadata['versionName'] || asset.versionCode!==Number(metadata['versionCode']) ||
+        asset.sourceRevision!==metadata['sourceRevision'] || JSON.stringify(asset.runtimeHostProtocols)!==JSON.stringify(metadata['runtimeHostProtocols'] === undefined ? [1] : metadata['runtimeHostProtocols']) ||
+        (asset.runtimePlanProtocol === undefined ? 0 : asset.runtimePlanProtocol)!==(metadata['runtimePlanProtocol'] === undefined ? 0 : metadata['runtimePlanProtocol']) ||
+        JSON.stringify(parseAppRuntimeRequirements(asset.runtimeRequiredCapabilities,asset.runtimeRequiredMajors)) !==
+          JSON.stringify(parseAppRuntimeRequirements(metadata['runtimeRequiredCapabilities'] as string[] | undefined,metadata['runtimeRequiredMajors'] as number[] | undefined))) {
+        throw new Error('安装包真实身份与官方原件收据不一致');
+      }
+      if(!AppUpdatePolicy.canInstall(UpdateChecker.currentVersionCode(),UpdateChecker.currentVersionName(),asset.versionCode,asset.versionName,channel,
+        kind==='developer' && SideloadTransactionPolicy.manualDeveloper(asset))) throw new Error('此原件不是可安装的更新；低编号、同名替换或倒序开发包不支持覆盖');
+      const manifest=AppArtifactReceiptResolver.manifest(asset,channel);
+      if(size!==asset.sizeBytes || hash!==asset.sha256) throw new Error('请选择 GitHub 或官网发布的原始未签名包；此文件与官方摘要不一致');
       if(generation!==this.runtimeGeneration) throw new Error('更新页面已重新打开，请重新选择安装包');
-      this.preparedImport={token:token,path:path,manifest:manifest,sha256:hash};
+      this.preparedImport={token:token,path:path,manifest:manifest,sha256:hash,asset:asset};
       return {token:token,manifest:JSON.parse(JSON.stringify(manifest)) as UpdateManifest};
     } catch(error) {this.removeImportDirectory(directory);throw error as Error;}
     finally {this.busy=false;this.publish();}
@@ -548,7 +599,10 @@ export class SideloadUpdateCoordinator {
 
   /** 复用应用已经安装的JDK；不存在时给出可恢复原因，不能借用宿主签名伪装手机完成。 */
   private jdk(): string {
-    for (const version of ['17', '21', '25']) if (fs.accessSync(this.context.filesDir + '/jdk/' + version + '/lib/server/libjvm.so')) return version;
+    // 手机签名处理器同样必须经过真实JDK结构、收据和当前宿主协议准入；文件存在不能
+    // 绕过“此JDK需要新版AMCL”。盘点接口isStructurallyPresent不授予执行资格，不能用于此处。
+    const manager=new JdkManager(this.context);
+    for (const version of ['17', '21', '25']) if (manager.isInstalled(version)) return version;
     const draft = this.state(); if (draft !== undefined) { draft.recoveryAction = 'runtime'; this.save(draft); }
     throw new Error('请先到设置中的运行时管理安装 JDK 17 或更新版本，再继续更新');
   }
@@ -558,10 +612,40 @@ export class SideloadUpdateCoordinator {
     const transaction = this.state();
     if (transaction === undefined) throw new Error('更新事务不存在');
     this.assertTargetBinding(transaction);
+    // 若唯一签名JDK暂处发布rename间隙，普通manager无高层owner不能恢复它；先按原
+    // transaction与原件SHA恢复已经发生的单槽journal，再做真实Java inspection。
+    AppJdkUpdatePlanRuntime.recoverPendingSlots(this.context,transaction.id,transaction.asset.sha256);
     const directory = this.root + '/tasks/' + transaction.id;
     const signer = await this.ensureSigner(); this.assertEffect(epoch, owner); this.assertTargetBinding(transaction);
     const runner = directory + '/amcl-signing-runner.jar';
     SideloadFiles.write(runner, this.context.resourceManager.getRawFileContentSync('sideload/amcl-signing-runner.jar'));
+    // 宿主能力必须来自同一 unsigned HAP，不能仅凭线上清单授予返回正式版的 JDK 切换资格。
+    // 先准备完整兼容计划和合格替代，再使用当前仍可工作的 JDK 重签目标 App。
+    const inspection = directory + '/plan-metadata.json';
+    const inspected = await testNapi.runJavaProcessor(this.context.filesDir,this.jdk(),512,runner+':'+signer,
+      'AmclSigningRunner',['--inspect-hap',transaction.unsignedPath,inspection],directory,directory+'/plan-inspect.log');
+    this.assertEffect(epoch,owner); this.assertTargetBinding(transaction);
+    const metadata = inspected === 0 && fs.accessSync(inspection) ? JSON.parse(fs.readTextSync(inspection)) as Record<string,Object> : undefined;
+    if (metadata === undefined || metadata['inspected'] !== true || metadata['versionName'] !== transaction.asset.versionName ||
+      Number(metadata['versionCode']) !== transaction.asset.versionCode || metadata['product'] !== transaction.asset.product ||
+      !new RegExp('^[0-9a-f]{40}$').test(String(metadata['sourceRevision'] ?? ''))) throw new Error('无法核实目标应用的运行时兼容身份');
+    const protocols = (metadata['runtimeHostProtocols'] === undefined ? [1] : metadata['runtimeHostProtocols']) as number[];
+    if (!Array.isArray(protocols) || protocols.length === 0 || protocols.length > 8 ||
+      protocols.some((value: number,index: number): boolean => !Number.isSafeInteger(value) || value < 1 || value > 999 || protocols.indexOf(value)!==index)) throw new Error('目标应用宿主能力声明无效');
+    if (this.requirements(transaction).some((value: number): boolean => protocols.indexOf(value)<0)) throw new Error('目标HAP实际不支持所选JDK，请等待合格的新AMCL发行');
+    transaction.asset.sourceRevision=String(metadata['sourceRevision']); transaction.asset.runtimeHostProtocols=protocols.slice();
+    const planProtocol=metadata['runtimePlanProtocol'] === undefined ? 0 : metadata['runtimePlanProtocol'];
+    if(typeof planProtocol!=='number' || !Number.isInteger(planProtocol) || planProtocol<0 || planProtocol>2)throw new Error('目标App/JDK恢复协议声明无效');
+    transaction.asset.runtimePlanProtocol=planProtocol;
+    const runtimeRequirements=parseAppRuntimeRequirements(metadata['runtimeRequiredCapabilities'] as string[] | undefined,
+      metadata['runtimeRequiredMajors'] as number[] | undefined);
+    transaction.asset.runtimeRequiredCapabilities=runtimeRequirements.runtimeRequiredCapabilities;
+    transaction.asset.runtimeRequiredMajors=runtimeRequirements.runtimeRequiredMajors;
+    RuntimeAppDependency.assertTargetCompatibility(this.context,planProtocol);
+    this.save(transaction);
+    try { await AppJdkUpdatePlanRuntime.prepare(this.context,transaction.id,this.jdkTarget(transaction)); }
+    catch(error) { const next=this.state()!; next.recoveryAction='runtime'; this.save(next); throw error as Error; }
+    this.assertEffect(epoch,owner); this.assertTargetBinding(transaction);
     const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_SIGNATURE_INFO);
     const job = directory + '/job.json';
     const jobData: SigningJob = { sha256: transaction.asset.sha256, bundleName: info.name,
@@ -625,6 +709,7 @@ export class SideloadUpdateCoordinator {
       transaction.identityMode = String(result['identityMode'] ?? ''); transaction.profileTrust = String(result['profileTrust'] ?? '');
       this.operation = '更新包已准备完成';
       this.transition(SideloadUpdatePhase.Ready, transaction);
+      AppJdkUpdatePlanRuntime.markAppSigned(this.context,transaction.id,this.jdkTarget(transaction),transaction.signedPath);
     } finally { this.signingVault().clearTemporary(privateRoot); }
   }
 
@@ -658,11 +743,25 @@ export class SideloadUpdateCoordinator {
     let proof: InstallExecutionObservation | undefined = undefined;
     let enteredExecutor = false;
     try {
+      if (this.requirements(transaction).some((value: number): boolean => (transaction.asset.runtimeHostProtocols ?? [1]).indexOf(value)<0)) {
+        this.transition(SideloadUpdatePhase.Downloaded); throw new Error('缓存目标应用不支持所选JDK，请重新核实合格发行');
+      }
       if (!(await this.signatureFresh())) { this.transition(SideloadUpdatePhase.Downloaded); throw new Error('安装包签名证明已失效，请重新准备后更新'); }
+      // 热 Ready 复用也必须重新核对持久计划；缓存中的旧签名不能绕过新发生的 JDK 变化。
+      await AppJdkUpdatePlanRuntime.prepare(this.context,transaction.id,this.jdkTarget(transaction));
+      this.assertEffect(epoch,owner);
+      AppJdkUpdatePlanRuntime.markAppSigned(this.context,transaction.id,this.jdkTarget(transaction),transaction.signedPath);
       guards.assertCurrent(); guards.assertForeground();
       this.releaseFiles = DownloadTaskRegistry.instance().acquireReplacementLease();
       this.operation = '正在传送并核实安装准备'; this.transition(SideloadUpdatePhase.Transferring, transaction);
       enteredExecutor = true; await this.executor.prepare(identity, guards);
+      // Executor此时持有安装EX、持久fence和Registry替换租约；仅本owner的冻结兼容槽
+      // 可以切换，不能让普通JDK安装路径在这段时间争抢SH或放行新游戏。
+      RuntimeAppDependency.prepareTarget(this.context,transaction.asset.runtimePlanProtocol ?? 0);
+      await AppJdkUpdatePlanRuntime.restore(this.context,transaction.id,this.jdkTarget(transaction));
+      // 兼容检查核最终实际槽，而非把将被安全替换的before误当目标App仍需读取的结果。
+      AppJdkUpdatePlanRuntime.assertTargetDataCompatibility(this.context,this.jdkTarget(transaction));
+      guards.assertCurrent(); guards.assertForeground();
       if (!(await this.signatureFresh())) throw new InstallExecutionError('preparation', '传送期间签名证明已失效，请重新准备更新包');
       guards.assertCurrent(); guards.assertForeground();
       proof = await this.executor.dispatch(identity, (): void => {
@@ -696,6 +795,12 @@ export class SideloadUpdateCoordinator {
           this.transition(this.cancelled ? SideloadUpdatePhase.Cancelled : SideloadUpdatePhase.Failed, next);
         }
         this.executor.complete(identity, proof, false);
+        // complete已独立核实同一proof对象。只有可信REVOKED/NoInvocation且明确未提交bm，
+        // 才允许高层owner进一步核对“全部槽仍before、无未决单槽journal”后退出恢复计划。
+        // CLI退出、BMS失败或outcome-unknown均不能借这个入口清除已经切槽的保护。
+        if (proof.bmSubmitted === false && (proof.kind === 'pre-install-failed' || proof.kind === 'revoked')) {
+          this.closeNoInvocationRuntimePlan(this.state());
+        } else if (this.cancelled || this.state()?.phase === SideloadUpdatePhase.Failed) this.closePreparedRuntimePlan(this.state());
         try { await this.executor.cleanupPayload(identity); } catch (_) { this.record('清理待重试', '安装载荷暂未清理，已保留诊断'); }
         this.releaseInstallGates();
       } else if (!this.storageBlocked) {
@@ -719,6 +824,11 @@ export class SideloadUpdateCoordinator {
    */
   recover(launchId: string = '', launchNonce: string = ''): void {
     const transaction = this.state();
+    if((transaction?.phase===SideloadUpdatePhase.Verified || transaction?.phase===SideloadUpdatePhase.Superseded) && this.completionPending()) {
+      this.confirmOnForeground=true;
+      if(this.foreground&&!this.busy)this.reconcileInstallation(false).catch((): void=>{});
+      return;
+    }
     if (transaction === undefined || !this.installationPending()) return;
     const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     const profile = JSON.parse(new util.TextDecoder().decodeWithStream(this.context.resourceManager.getRawFileContentSync('product-profile.json'))) as Record<string, Object>;
@@ -776,7 +886,7 @@ export class SideloadUpdateCoordinator {
     next.phase = phase; next.updatedAt = Math.max(next.createdAt, next.updatedAt, Date.now()); this.save(next);
     if (next.ownerAttemptId === this.attemptId || this.attemptId.length === 0) this.phase = phase;
     this.record(phase, next.error || this.operation || phase);
-    if (phase === SideloadUpdatePhase.Verified) this.activity.finish(LedgerState.SUCCESS, '已由新进程确认目标身份和一次性安装执行权收尾');
+    if (phase === SideloadUpdatePhase.Verified && next.completion?.done!==false) this.activity.finish(LedgerState.SUCCESS, '已由新进程确认目标身份和一次性安装执行权收尾');
     else if (phase === SideloadUpdatePhase.Failed) this.finishAttempt(next.error || '更新失败');
     else if (phase === SideloadUpdatePhase.Cancelled) this.finishAttempt('更新已取消', true);
     this.publish();
@@ -887,10 +997,24 @@ export class SideloadUpdateCoordinator {
       this.transaction = committed; this.storageBlocked = false; this.failure = ''; this.publish();
     }
     const task = this.state();
-    if (task === undefined || (!this.installationPending() && !this.fenceBlocked())) return;
+    if (task === undefined || (!this.installationPending() && !this.fenceBlocked() && !this.completionPending())) return;
     this.busy = true;
     const identity = this.executionIdentity(task);
     try {
+      // 冷Verified不能凭持久布尔清计划：先核当前包、UID、source/product，再只观察原终态。
+      if(task.phase===SideloadUpdatePhase.Verified || task.phase===SideloadUpdatePhase.Superseded) {
+        const current=this.supersedingIdentity(task);
+        if(!this.installedTargetMatches(task) && current===undefined)throw new Error('当前安装身份与待收尾App事务不符，保留原计划');
+        const terminal=await this.executor.observe(identity);
+        if(!terminal.safeToRelease || terminal.installId!==identity.installId || terminal.nonce!==identity.nonce ||
+          task.completion!==undefined && !this.sameTerminal(task.completion,terminal))throw new Error('原安装终态尚未核实，保留完成交接');
+        const next=this.state()!;
+        if(next.completion===undefined || current!==undefined&&next.completion.mode==='target'){
+          next.completion=this.makeCompletion(next,terminal,current);next.phase=current===undefined?SideloadUpdatePhase.Verified:SideloadUpdatePhase.Superseded;this.save(next);
+        }
+        await this.finishCompletion(terminal);
+        return;
+      }
       let proof = allowRevoke ? await this.executor.revoke(identity) : await this.executor.observe(identity);
       if (allowRevoke && !proof.safeToRelease) proof = await this.executor.observe(identity);
       if (!proof.safeToRelease || (proof.kind === 'bms-success' && task.installedIdentityVerified !== true)) {
@@ -900,7 +1024,12 @@ export class SideloadUpdateCoordinator {
       }
       const next = this.state()!;
       const installed = next.installedIdentityVerified === true;
-      if (installed) { next.error = ''; next.confirmedAt = Date.now(); this.transition(SideloadUpdatePhase.Verified, next); }
+      if (installed) {
+        const current=this.installedTargetMatches(next)?undefined:this.supersedingIdentity(next);
+        if(!this.installedTargetMatches(next)&&current===undefined){next.error='旧目标曾被确认，但当前实际包不匹配，保留原执行权核实';this.transition(SideloadUpdatePhase.ConfirmationPending,next);return;}
+        next.error = ''; next.confirmedAt = Date.now(); next.completion=this.makeCompletion(next,proof,current);
+        this.transition(current===undefined?SideloadUpdatePhase.Verified:SideloadUpdatePhase.Superseded, next);
+      }
       else {
         next.error = proof.kind === 'revoked' || proof.kind === 'pre-install-failed' ? '安装执行权已安全撤销，可重试更新' : '系统已确认本次安装失败，原应用已保留';
         next.failedPhase = task.phase; next.recoveryAction = 'retry'; this.transition(SideloadUpdatePhase.Failed, next);
@@ -908,10 +1037,14 @@ export class SideloadUpdateCoordinator {
       // Verified/Failed已由权威平台proof保存；日志IO失败只阻断安全收尾并留可重试原件，
       // 不能经过普通fail路径改写该BMS事实。下一次核实仍消费相同执行权与固定终态。
       await this.activity.waitForFinishAsync();
+      if(installed){await this.finishCompletion(proof);return;}
       this.executor.complete(identity, proof, installed);
+      // 冷启动核实也可能证明原worker从未取得执行权；沿用同一专用收尾，不依赖当前UI阶段猜测。
+      if (!installed && proof.bmSubmitted === false && (proof.kind === 'pre-install-failed' || proof.kind === 'revoked')) {
+        this.closeNoInvocationRuntimePlan(next);
+      }
       try { await this.executor.cleanupPayload(identity); } catch (_) { this.record('清理待重试', '安装载荷暂未清理，已保留诊断'); }
       this.releaseInstallGates();
-      if (installed) { this.cleanPackages(); AppStorage.setOrCreate<boolean>('amclSideloadUpdateCompleted', true); }
       this.confirmOnForeground = false;
     } finally {
       this.busy = false; this.executor.releaseProcessLeases(identity); await this.connection.close(); this.publish();
@@ -931,7 +1064,151 @@ export class SideloadUpdateCoordinator {
     return left.tag === right.tag && left.versionCode === right.versionCode && left.versionName === right.versionName &&
       left.product === right.product && left.name === right.name && left.sha256 === right.sha256 &&
       left.sizeBytes === right.sizeBytes && left.legacyUniversal === right.legacyUniversal &&
-      left.url === right.url && left.websiteUrl === right.websiteUrl;
+      left.url === right.url && left.websiteUrl === right.websiteUrl && left.releaseKind === right.releaseKind &&
+      left.source === right.source && left.artifactId === right.artifactId && JSON.stringify(left.baseStable) === JSON.stringify(right.baseStable);
+  }
+  /** 仅供已有高层计划的原owner重试比较；不可替代新来源准入或原件SHA的实际文件核验。 */
+  private samePlanContent(left: SideloadUpdateAsset,right: SideloadUpdateAsset): boolean {
+    return left.sha256===right.sha256 && left.product===right.product && left.versionName===right.versionName &&
+      left.versionCode===right.versionCode && left.name===right.name;
+  }
+
+  /** 高层 App/JDK 计划只接收当前已冻结原件的实际包内能力，路径与秘钥不进入此公开身份。 */
+  private jdkTarget(task: SideloadUpdateTransaction): AppJdkUpdateTarget {
+    return {product:task.asset.product,versionName:task.asset.versionName,versionCode:task.asset.versionCode,
+      sha256:task.asset.sha256,sourceRevision:task.asset.sourceRevision ?? task.expectedPayloadIdentity,
+      runtimeHostProtocols:task.asset.runtimeHostProtocols?.slice() ?? [1],runtimePlanProtocol:task.asset.runtimePlanProtocol ?? 0,
+      runtimeRequiredCapabilities:task.asset.runtimeRequiredCapabilities?.slice(),runtimeRequiredMajors:task.asset.runtimeRequiredMajors?.slice()};
+  }
+  /** 用户意图只绑定逻辑App事务和不可变原件，重试Attempt不更换这份身份。 */
+  private appBinding(task: SideloadUpdateTransaction): AppUpdateBinding {
+    return {transactionId:task.id,assetSha256:task.asset.sha256,product:task.asset.product,versionName:task.asset.versionName,versionCode:task.asset.versionCode};
+  }
+  /** 只保存重核所需终态字段；原始账号/证书/远端日志不进入完成记录。 */
+  private makeCompletion(task: SideloadUpdateTransaction,proof: InstallExecutionObservation,superseder?: AppUpdateSuperseder): SideloadUpdateCompletion {
+    if(!proof.safeToRelease || proof.installId!==(task.installId ?? '') || proof.nonce!==task.restartNonce || task.installedIdentityVerified!==true)throw new Error('App完成证明不属于本事务');
+    const event: AppUpdateCompletionEvent={transactionId:task.id,assetSha256:task.asset.sha256,product:task.asset.product,
+      versionName:task.asset.versionName,versionCode:task.asset.versionCode,installId:proof.installId,sourceRevision:task.expectedPayloadIdentity,
+      uid:task.beforeUid,verifiedAt:task.confirmedAt,runtimeIntentId:task.runtimeIntentId};
+    return {schema:1,event:event,mode:superseder===undefined?'target':'superseded',superseder:superseder,
+      terminalKind:proof.kind,terminalCode:proof.code,terminalBmSubmitted:proof.bmSubmitted,
+      executionReleased:false,runtimeClosed:false,subscriptionCommitted:false,intentConfirmed:false,done:false};
+  }
+  private sameTerminal(value: SideloadUpdateCompletion,proof: InstallExecutionObservation): boolean {
+    return value.terminalKind===proof.kind && value.terminalCode===proof.code && value.terminalBmSubmitted===proof.bmSubmitted &&
+      value.event.installId===proof.installId;
+  }
+  /** 每次冷重入重新读系统及当前包内资料，不能以旧installedIdentityVerified代替现状。 */
+  private installedTargetMatches(task: SideloadUpdateTransaction): boolean {
+    const info=bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+    const profile=JSON.parse(new util.TextDecoder().decodeWithStream(this.context.resourceManager.getRawFileContentSync('product-profile.json'))) as Record<string,Object>;
+    const product=profile['name']==='default'?'sideload':profile['name'];
+    return info.name==='com.amcl.launcher' && info.versionCode===task.asset.versionCode && info.versionName===task.asset.versionName &&
+      info.appInfo.uid===task.beforeUid && profile['sourceRevision']===task.expectedPayloadIdentity && product===task.asset.product;
+  }
+  /** 更高code维修包只收原执行权；当前真实UID/product/source必须合格，不把它冒作原目标。 */
+  private supersedingIdentity(task: SideloadUpdateTransaction,historical: boolean = false): AppUpdateSuperseder | undefined {
+    if(task.installedIdentityVerified!==true&&!historical)return undefined;
+    const info=bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+    const profile=JSON.parse(new util.TextDecoder().decodeWithStream(this.context.resourceManager.getRawFileContentSync('product-profile.json'))) as Record<string,Object>;
+    const product=profile['name']==='default'?'sideload':profile['name'],source=profile['sourceRevision'];
+    const protocols=(profile['runtimeHostProtocols']===undefined?[1]:profile['runtimeHostProtocols']) as number[];
+    if(info.name!=='com.amcl.launcher'||(historical?info.versionCode<task.asset.versionCode:info.versionCode<=task.asset.versionCode)||info.appInfo.uid!==task.beforeUid||product!==task.asset.product||
+      typeof info.versionName!=='string'||info.versionName.length===0||typeof source!=='string'||!new RegExp('^[0-9a-f]{40}$').test(source)||
+      !Array.isArray(protocols)||protocols.length===0||protocols.length>8||protocols.some((value: number,index: number): boolean=>!Number.isInteger(value)||value<1||value>999||protocols.indexOf(value)!==index))return undefined;
+    return {product:task.asset.product,versionName:info.versionName,versionCode:info.versionCode,uid:info.appInfo.uid,sourceRevision:source,runtimeHostProtocols:protocols.slice()};
+  }
+  /**
+   * 仅无fence、无高层计划、无新绑定的旧Verified可作纯历史归档。当前非低code且身份已变化、同UID/product/source
+   * 必须独立核实；不推断旧BMS、不给后来新intent发事件，也不要求旧asset具有新增字段。
+   */
+  private migrateLegacySuperseded(): void {
+    const task=this.state();
+    if(task===undefined||task.phase!==SideloadUpdatePhase.Verified||task.completion!==undefined||task.runtimeIntentId!==undefined||
+      this.fenceBlocked()||AppJdkUpdatePlanRuntime.pending(this.context))return;
+    // 当前仍精确运行原目标时沿用既有历史终态，不制造一次新的维修接管或完成事件。
+    if(this.installedTargetMatches(task))return;
+    const current=this.supersedingIdentity(task,true);if(current===undefined)return;
+    task.phase=SideloadUpdatePhase.Superseded;task.legacySuperseded={schema:1,current:current,recordedAt:Date.now()};
+    task.error='原已终结更新仅作历史归档，不确认本次新安装，也不授予新的JDK续作许可';this.save(task);
+  }
+  private sameSuperseder(left: AppUpdateSuperseder | undefined,right: AppUpdateSuperseder | undefined): boolean {
+    return left!==undefined&&right!==undefined&&JSON.stringify(left)===JSON.stringify(right);
+  }
+  /**
+   * 原事务内逐步确认关键完成义务。每个effect后可靠写步骤；死亡后重入同一身份幂等执行。
+   * 高层sidecar和JDK意图在可等待远端清理之前收尾，AppStorage仅在最后通知UI。
+   */
+  private async finishCompletion(proof: InstallExecutionObservation): Promise<void> {
+    let task=this.state()!;
+    if((task.phase!==SideloadUpdatePhase.Verified&&task.phase!==SideloadUpdatePhase.Superseded) || task.completion===undefined ||
+      (task.completion.mode==='target'?!this.installedTargetMatches(task):!this.sameSuperseder(task.completion.superseder,this.supersedingIdentity(task))) ||
+      !this.sameTerminal(task.completion,proof))throw new Error('App完成交接身份不成立');
+    const identity=this.executionIdentity(task);
+    // 原终态日志也必须完成耐久交接；失败不改写已知BMS事实，但在释放fence前保留原收尾入口。
+    this.activity.finish(task.completion.mode==='target'?LedgerState.SUCCESS:LedgerState.INTERRUPTED,
+      task.completion.mode==='target'?'已核实原App/BMS终态，必要交接按原事务继续':'维修版本已核实原执行权，不宣称旧目标仍在运行');
+    await this.activity.waitForFinishAsync();
+    if(!task.completion.executionReleased || this.fenceBlocked()) {
+      this.executor.complete(identity,proof,true);task.completion.executionReleased=true;this.save(task);task=this.state()!;
+    }
+    if(!task.completion!.runtimeClosed || AppJdkUpdatePlanRuntime.pending(this.context)) {
+      if(task.completion!.mode==='superseded')AppJdkUpdatePlanRuntime.superseded(this.context,task.id,this.jdkTarget(task),task.completion!.superseder!);
+      else AppJdkUpdatePlanRuntime.verified(this.context,task.id,this.jdkTarget(task));
+      task.completion!.runtimeClosed=true;this.save(task);task=this.state()!;
+    }
+    if(!task.completion!.subscriptionCommitted) {
+      if(task.completion!.mode==='target' && AppUpdatePolicy.releaseKind(task.beforeVersionName ?? '')==='developer' && AppUpdatePolicy.releaseKind(task.asset.versionName)!=='developer') {
+        const applied=await new PreferenceManager(this.context).commitAppUpdateChannel(AppUpdatePolicy.channel(task.updateChannel ?? 'stable'),task.subscriptionRevision);
+        task.completion!.subscriptionResult=applied?'applied':'newer-selection-or-legacy';
+      }else task.completion!.subscriptionResult='not-required';
+      task.completion!.subscriptionCommitted=true;this.save(task);task=this.state()!;
+    }
+    this.releaseInstallGates();
+    if(!task.completion!.intentConfirmed) {
+      if(task.runtimeIntentId!==undefined){
+        if(task.completion!.mode==='superseded')RuntimeAppDependency.supersedeApp(this.context,task.runtimeIntentId,this.appBinding(task));
+        else RuntimeAppDependency.markAppVerified(this.context,task.completion!.event);
+      }
+      task.completion!.intentConfirmed=true;this.save(task);task=this.state()!;
+    }
+    if(!task.completion!.done){task.completion!.done=true;this.save(task);}
+    if(task.completion!.mode==='target')AppStorage.setOrCreate<boolean>('amclSideloadUpdateCompleted',true);
+    this.confirmOnForeground=false;
+    // 远端payload是可再生清理义务，不再隔断关键完成事件的持久交接。
+    try {await this.executor.cleanupPayload(identity);}catch(_){this.record('清理待重试','更新已完成，远端候选清理保留诊断');}
+    this.cleanPackages();this.publish();
+  }
+  /** 首页冷启动可以重放匹配的完成事件；不撤销或重新派发尚在安装中的事务。 */
+  async resumeVerifiedCompletion(): Promise<void> {
+    this.migrateLegacySuperseded();
+    if((this.transaction?.phase===SideloadUpdatePhase.Verified||this.transaction?.phase===SideloadUpdatePhase.Superseded) && (this.completionPending()||this.fenceBlocked()))await this.reconcileInstallation(false);
+  }
+  private completionPending(): boolean {
+    if(this.transaction?.phase!==SideloadUpdatePhase.Verified&&this.transaction?.phase!==SideloadUpdatePhase.Superseded)return false;
+    if(this.transaction.completion!==undefined && !this.transaction.completion.done)return true;
+    try{return AppJdkUpdatePlanRuntime.pending(this.context);}catch(_){return true;}
+  }
+  /** 兼容单要求历史事务；新用户意图以整个支持集合为准，不能丢失第二个JDK的依赖。 */
+  private requirements(task: SideloadUpdateTransaction): number[] {
+    return task.requiredHostProtocols?.slice() ?? (task.requiredHostProtocol===undefined ? [] : [task.requiredHostProtocol]);
+  }
+
+  /**
+   * 只有高层owner确认尚未开始切槽才可回收准备计划。签名/准备的在途Promise先退出；
+   * restoring或未知现场由桥拒绝回收并继续保留，取消不能伪造整个跨系统事务已经结束。
+   */
+  private closePreparedRuntimePlan(task: SideloadUpdateTransaction | undefined): void {
+    if (task === undefined || !new RegExp('^[0-9a-f]{40}$').test(task.asset.sourceRevision ?? task.expectedPayloadIdentity)) return;
+    try { AppJdkUpdatePlanRuntime.cancelBeforeRestore(this.context,task.id,this.jdkTarget(task)); }
+    catch (_) { AppLogger.warn('SideloadUpdate','已保留发生切槽或尚未核实的App/JDK计划',undefined,LOG_DOMAIN_DOWNLOAD); }
+  }
+
+  /** 调用方必须已通过Executor.complete核实NoInvocation；桥仍会独立拒绝任何已改槽或未知现场。 */
+  private closeNoInvocationRuntimePlan(task: SideloadUpdateTransaction | undefined): void {
+    if(task===undefined)return;
+    try {AppJdkUpdatePlanRuntime.cancelNoInvocation(this.context,task.id,this.jdkTarget(task));}
+    catch (_) {AppLogger.warn('SideloadUpdate','未派发系统安装，但JDK计划已有变化或仍待核实，继续保留',undefined,LOG_DOMAIN_DOWNLOAD);}
   }
 
   /** 原安装基线也是复用条件；UID、发行名或编号改变后必须重新建立事务和签名证明。 */
@@ -990,7 +1267,7 @@ export class SideloadUpdateCoordinator {
       if (this.phase === SideloadUpdatePhase.Installing) { this.message = '系统正在安装，请等待应用重新打开'; return; }
       if (this.phase === SideloadUpdatePhase.ConfirmationPending) { this.reconcile(); return; }
       if (this.phase === SideloadUpdatePhase.Verified && this.testAsset === undefined &&
-        (this.manifest === undefined || !UpdateChecker.canInstall(this.manifest,this.manifest.updateChannel ?? 'stable'))) return;
+        (this.manifest === undefined || (!UpdateChecker.canInstall(this.manifest,this.manifest.updateChannel ?? 'stable') && this.importSource === undefined))) return;
       // 先撤下上一轮内存候选。异步解析完成前 advance 不得凭旧 Ready/Downloaded 事务推进。
       this.attemptTarget = undefined;
       try { this.beginAttempt(this.version, true, retryOf); }
@@ -1042,7 +1319,7 @@ export class SideloadUpdateCoordinator {
         if (this.manifest === undefined) throw new Error('请返回检查更新后重试');
         // 无论是否有缓存，都先经产品解析器取得本次完整候选。解析后复制，防止外部对象
         // 在排队/账号授权期间变化；镜像健康和临时 lease 不属于安装内容身份。
-        const resolved = this.testAsset ?? await GitHubUpdateAssetResolver.resolve(this.manifest, ProductBuildProfile.product);
+        const resolved = this.importSource?.asset ?? this.testAsset ?? await GitHubUpdateAssetResolver.resolve(this.manifest, ProductBuildProfile.product);
         if (!this.active(epoch)) return;
         const asset = JSON.parse(JSON.stringify(resolved)) as SideloadUpdateAsset;
         this.attemptChannel = this.manifest.updateChannel ?? 'stable';
@@ -1060,7 +1337,14 @@ export class SideloadUpdateCoordinator {
           this.gate.assertNoGame(this.context.filesDir);
           if (this.installationPending() || this.fenceBlocked()) throw new Error('请先核实上一次安装结果');
           state.activityId = this.activity.activityId(); state.ownerAttemptId = this.attemptId;
+          state.requiredHostProtocol=this.requiredHostProtocol || undefined;
+          state.requiredHostProtocols=this.requiredHostProtocols.length>0 ? this.requiredHostProtocols.slice() : undefined;
+          state.runtimeIntentId=this.runtimeIntentId;
+          state.subscriptionRevision=this.subscriptionSnapshotSet?this.subscriptionRevision:state.subscriptionRevision;
+          if(state.phase===SideloadUpdatePhase.Ready && this.requiredHostProtocols.some((value: number): boolean =>
+            (state.asset.runtimeHostProtocols ?? [1]).indexOf(value)<0)) state.phase=SideloadUpdatePhase.Downloaded;
           this.save(state);
+          if(state.runtimeIntentId!==undefined)RuntimeAppDependency.bindApp(this.context,state.runtimeIntentId,this.appBinding(state));
           this.attemptTarget = asset;
           this.assertTargetBinding(state);
         } else {
@@ -1289,7 +1573,8 @@ export class SideloadUpdateCoordinator {
       if (this.finishing) return;
       this.finishing = true; this.finishingEpoch = this.epoch; this.publish();
       try { await this.reconcileInstallation(); this.failure = ''; }
-      catch (_) { this.failure = '暂未取得安装回执，请检查无线调试或重新打开 AMCL 后再核实'; this.message = this.failure; }
+      catch (error) { this.failure = this.completionPending()?'原安装事实已保留，完成交接待重试：'+(error as Error).message:
+        '暂未取得安装回执，请检查无线调试或重新打开 AMCL 后再核实'; this.message = this.failure; }
       finally { if (this.finishingEpoch === epoch) { this.finishing = false; this.finishingEpoch = -1; } this.publish(); }
     }
 
@@ -1349,14 +1634,45 @@ export class SideloadUpdateCoordinator {
   }
   /** 开始命令只有一个Owner；忙态附着当前快照而非另建VM推进器。 */
   requestUpdate(params: SideloadUpdatePageParams, retryOf: number = 0): string {
-    if (this.storageBlocked || this.installationPending() || this.fenceBlocked()) { this.reconcile(); this.publish(); return 'reconciling'; }
+    if (this.storageBlocked || this.installationPending() || this.fenceBlocked() || this.completionPending()) { this.reconcile(); this.publish(); return 'reconciling'; }
     if (this.working || this.finishing || this.isBusy()) return 'attached';
+    const required=params.requiredHostProtocol ?? 0;
+    if(!Number.isInteger(required) || required<0 || required>999)return 'rejected';
+    this.requiredHostProtocol=required;
+    const requirements=params.requiredHostProtocols ?? (required>0 ? [required] : []);
+    if(!Array.isArray(requirements) || requirements.length>8 || requirements.some((value: number,index: number): boolean =>
+      !Number.isInteger(value) || value<1 || value>999 || requirements.indexOf(value)!==index) || (required>0 && requirements.indexOf(required)<0))return 'rejected';
+    this.requiredHostProtocols=requirements.slice();
+    if(params.runtimeIntentId!==undefined && (typeof params.runtimeIntentId!=='string'||!new RegExp('^[0-9a-f]{32}$').test(params.runtimeIntentId)))return 'rejected';
+    this.runtimeIntentId=params.runtimeIntentId;
+    // 尚未终结的跨App/JDK计划必须保留原恢复入口。不能先覆写transaction再让prepare报错，
+    // 否则会丢掉已恢复槽位所绑定的原目标；同内容的明确重试仍复用旧缓存事务ID。
+    const previous=this.state();
+    // 真正重试沿用原选择代次；新的明确候选请求才重新冻结。旧事务缺字段不补造覆盖权。
+    try{this.subscriptionRevision=retryOf>0&&previous?.activityId===retryOf?previous.subscriptionRevision:new PreferenceManager(this.context).appUpdateSelectionRevision();}
+    catch(error){this.failure='无法冻结更新订阅：'+(error as Error).message;this.publish();return 'rejected';}
+    this.subscriptionSnapshotSet=true;
+    let runtimePending=false;
+    try {runtimePending=AppJdkUpdatePlanRuntime.pending(this.context);}
+    catch (_) {this.failure='App/JDK兼容记录暂不可安全读取，请保留现场后重新核实';this.message=this.failure;this.publish();return 'rejected';}
+    if(runtimePending && previous===undefined){this.failure='上次App/JDK计划尚未完成且安装记录缺失，请保留现场后核实';this.message=this.failure;this.publish();return 'rejected';}
+    if (runtimePending && previous !== undefined) {
+      let candidate=this.preparedImport?.token===params.importToken ? this.preparedImport?.asset :
+        this.importSource?.token===params.importToken ? this.importSource?.asset : undefined;
+      if(candidate===undefined && params.manifest!==undefined) {
+        try {candidate=GitHubUpdateAssetResolver.fromDelivery(params.manifest,ProductBuildProfile.product);} catch (_) { /* 无完整候选不替换未知计划。 */ }
+      }
+      if(candidate===undefined || candidate.sha256!==previous.asset.sha256 || candidate.product!==previous.asset.product ||
+        candidate.versionName!==previous.asset.versionName || candidate.versionCode!==previous.asset.versionCode || candidate.name!==previous.asset.name) {
+        this.message='请先继续上次 App/JDK 返回计划，已保留原安装包与恢复记录';this.publish();return 'rejected';
+      }
+    }
     if(params.importToken!==undefined) {
       const imported=this.preparedImport?.token===params.importToken ? this.preparedImport : this.importSource;
       if(imported===undefined || imported.token!==params.importToken || params.manifest===undefined ||
         UpdateChecker.targetKey(imported.manifest,ProductBuildProfile.product)!==UpdateChecker.targetKey(params.manifest,ProductBuildProfile.product)) return 'rejected';
       this.importSource=imported;this.preparedImport=undefined;
-      params={manifest:JSON.parse(JSON.stringify(imported.manifest)) as UpdateManifest,autoStart:true};
+      params={manifest:JSON.parse(JSON.stringify(imported.manifest)) as UpdateManifest,autoStart:true,requiredHostProtocol:required,requiredHostProtocols:requirements.slice(),runtimeIntentId:this.runtimeIntentId};
     } else {
       if(this.importSource!==undefined) this.removeImportDirectory(this.importSource.path.substring(0,this.importSource.path.lastIndexOf('/')));
       this.importSource=undefined;
@@ -1364,6 +1680,8 @@ export class SideloadUpdateCoordinator {
     this.diagnosticAttempt = false; this.testAsset = undefined; this.sameVersionTest = false;
     // 路由只提供值快照，后续修改调用方的 manifest 不能改变本轮通道或资产来源。
     this.manifest = params.manifest === undefined ? undefined : JSON.parse(JSON.stringify(params.manifest)) as UpdateManifest;
+    // 即使页面传入了看似官方的开发 manifest，也必须先有本轮选择器取得的内部令牌。
+    if (AppUpdatePolicy.releaseKind(this.manifest?.versionName ?? '') === 'developer' && this.importSource === undefined) return 'rejected';
     if (ProductBuildProfile.product === 'default' && DiagnosticPolicy.hasTestHooks() && params.testAsset !== undefined && SideloadUpdateTestSession.allowedAssetUrl(params.testAsset.url) &&
       (!params.testAsset.url.startsWith('http://') || SideloadFixtureHttp.registered(params.testAsset.url))) {
       this.testAsset = params.testAsset; this.sameVersionTest = params.sameVersionTest === true;
@@ -1373,7 +1691,7 @@ export class SideloadUpdateCoordinator {
   }
   requestCancel(id: string): boolean {
     if (id.length > 0 && id !== this.attemptId) return false;
-    if (this.installationPending()) return false;
+    if (this.installationPending() || this.completionPending()) return false;
     this.cancel(); return true;
   }
   /** Snapshot永不导出密钥/Token/UDID/nonce，也不把内部对象引用交给外部写入。 */
@@ -1436,6 +1754,8 @@ export class SideloadUpdateCoordinator {
       if (this.failure) this.message = this.failure;
       else if (transaction.error) this.message = transaction.error;
       else if (transaction.phase === SideloadUpdatePhase.Verified) this.message = '更新完成，已运行新版本';
+      else if (transaction.phase === SideloadUpdatePhase.Superseded) this.message = transaction.legacySuperseded!==undefined?
+        '历史已终结更新已归档，不确认本次新安装，也不授予新的JDK续作许可':'维修版本已核实并结束原执行权，旧目标不作为当前运行版本';
       else if (this.operation) this.message = this.operation;
     } else if (this.operation && !this.failure) this.message = this.operation;
     const download = this.downloadView(); this.currentActivityId = this.activity.activityId(); this.currentDownloadTaskId = download?.id ?? '';
@@ -1446,6 +1766,7 @@ export class SideloadUpdateCoordinator {
     if (speed > 0) this.transfer += ' · ' + formatBytes(speed) + '/s';
     if (!this.storageBlocked && !this.installEffectActive && transaction !== undefined && transaction.phase !== SideloadUpdatePhase.Installing && transaction.phase !== SideloadUpdatePhase.DispatchIntent && transaction.phase !== SideloadUpdatePhase.ConfirmationPending && this.fenceBlocked()) { this.phase = SideloadUpdatePhase.ConfirmationPending; this.message = transaction.error || '安装执行权仍待核实，请查看更新状态'; }
     if (download?.state === 'waiting') this.message = '更新包排队中 · 前方还有 ' + Math.max(0, download.queuePosition - 1) + ' 个任务';
+    if(this.completionPending()){this.phase=SideloadUpdatePhase.ConfirmationPending;this.message=this.failure||'原安装终态已保留，正在完成交接；可重新核实';}
   }
 
   /** 只消费当前picker选择的URI，文件大小限制和加密在域层，正文不出现在UI/日志。 */
@@ -1489,7 +1810,7 @@ export class SideloadUpdateCoordinator {
     try { return await this.signingVault().materialRevision() === task.materialRevision; } catch (_) { return false; }
   }
   /** 没有新清单也必须提供恢复入口，不能让已装latest但未知执行权的用户无处核实。 */
-  needsAttention(): boolean { return !(this.confirmOnForeground && this.busy) && (this.storageBlocked || this.installationPending() || this.fenceBlocked()); }
+  needsAttention(): boolean { return !(this.confirmOnForeground && this.busy) && (this.storageBlocked || this.installationPending() || this.fenceBlocked() || this.completionPending()); }
 
   /** 平台创建失败只保留保护状态，UI快照不能因为Vault不可用再抛启动异常。 */
   private signingVault(): SigningVault {

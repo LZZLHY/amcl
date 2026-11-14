@@ -54,6 +54,13 @@ void RunInputReconciliationTests() {
         timestampGate, 7u, 100));
     RCHECK(amcl::input::surface_gate::AcceptEventTimestamp(
         timestampGate, 7u, 101));
+    // 几何尚未确认时拒绝新输入，但保留生命周期身份，owner才能提交更新或处理销毁。
+    // 恢复输入只能由当前事务显式撤销暂停；不能借暂停绕过旧代事件的拒绝边界。
+    timestampGate.geometryPending = true;
+    RCHECK(!amcl::input::surface_gate::AcceptEventTimestamp(timestampGate, 7u, 101));
+    RCHECK(amcl::input::surface_gate::Accept(timestampGate, componentA, windowA, true) == 7u);
+    timestampGate.geometryPending = false;
+    RCHECK(amcl::input::surface_gate::AcceptEventTimestamp(timestampGate, 7u, 101));
     RCHECK(!amcl::input::surface_gate::AcceptEventTimestamp(
         timestampGate, 8u, 100));
     RCHECK(amcl::input::surface_gate::CommitCurrentUpdate(
@@ -66,7 +73,9 @@ void RunInputReconciliationTests() {
         timestampGate, 8u, 200));
     RCHECK(amcl::input::surface_gate::AcceptEventTimestamp(
         timestampGate, 8u, 201));
+    timestampGate.geometryPending = true;
     amcl::input::surface_gate::Invalidate(timestampGate);
+    RCHECK(!timestampGate.geometryPending);
     RCHECK(amcl::input::surface_gate::IsRetired(
         timestampGate, componentA, windowA));
     RCHECK(!amcl::input::surface_gate::CanActivate(

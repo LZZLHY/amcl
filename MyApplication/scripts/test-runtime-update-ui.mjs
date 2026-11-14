@@ -13,9 +13,10 @@ function productionGetter(name){
   assert.ok(member,'缺少真实getter：'+name);return member.getText(indexAst);
 }
 function method(name){
-  const start=source.indexOf('  private '+name);assert(start>=0,name+' missing');
-  const end=source.indexOf('\n  /**',start+1);assert(end>start);
-  return source.slice(start,end);
+  // 用SDK AST界定真实方法，不能把下一个注释的位置当函数结束而误执行后续@Builder布局。
+  const identifier=name.replace(/^async\s+/,'').replace(/\($/,'');
+  const member=indexComponent?.members?.find(value=>value.name?.getText(indexAst)===identifier);
+  assert(member,name+' missing');return member.getText(indexAst);
 }
 /** 提取生产组件传给设置页的真实回调，测试不复制偏好切换后的调度逻辑。 */
 function callback(signature,name,argument){
@@ -24,9 +25,10 @@ function callback(signature,name,argument){
   return name+'('+argument+'): void {'+source.slice(bodyStart,bodyEnd)+'\n}';
 }
 // 这些既有更新场景都从正常可交互首页开始；开屏/恢复排队由专门来源回归执行。
-const text='class Harness {\nstartupFinished_=true; recoveringSessions_=false; recoveryPresentationDeferred_=false; showMcErrorSheet=false;\n'+[
+const text='class Harness {\njdkVersions=[]; startupFinished_=true; recoveringSessions_=false; recoveryPresentationDeferred_=false; showMcErrorSheet=false;\n'+[
   productionGetter('getPrefManager_'),productionGetter('getJdkManager_'),
-  method('async checkRuntimeUpdates_'),method('drainUpdateDialogs_'),
+  method('initRuntimeUpdateCheck_'),method('async checkRuntimeUpdates_'),method('drainUpdateDialogs_'),
+  method('showRuntimeHostRequirement_'),method('async resumeRuntimeDependency_'),
   method('showRuntimeUpdateDialog_'),method('showUpdateDialog('),
   method('async importLocalJdk_'),
   callback('onJdkChannelChange: (channel: string): void => {','onChannelChange','channel: string'),
@@ -47,22 +49,24 @@ const prompt=loadPromptModule('../entry/src/main/ets/sideload/SideloadUpdateTest
   'entry/ProductBuildProfile':{ProductBuildProfile:{product:'default'}},update:{}});
 const presenter=loadPromptModule('../entry/src/main/ets/components/UpdatePromptPresenter.ets').UpdatePromptPresenter;
 let resolveFirst;let requests=0;const configured=[],configurations=[],timers=[];
-const repository={configure:async(channel,source,web)=>{configured.push(channel);configurations.push({channel,source,web});},refresh:()=>{
+const repository={hostUpgradeReason:()=>'',configure:async(channel,source,web)=>{configured.push(channel);configurations.push({channel,source,web});},refresh:()=>{
   requests++;return requests===1?new Promise(resolve=>{resolveFirst=resolve;}):Promise.resolve({ok:true,error:''});
 }};
 const scheduling=loadPromptModule('../launch/src/main/ets/RuntimeUpdatePolicy.ets');
 let dialogFailure=false,hostVisible=true;
 const importSlots=[];
-const Harness=new Function('RuntimeCatalogRepository','AppStorage','setTimeout','SideloadUpdateTestSession',
+const Harness=new Function('RuntimeAppDependency','RuntimeCatalogRepository','AppStorage','setTimeout','SideloadUpdateTestSession',
   'SideloadUpdatePromptPolicy','UpdatePromptPresenter','runtimePromptDue','formatBytes',
-  'CustomDialogController','UpdateDialog','DialogAlignment','setJdkDownloadSource','setJdkWebEnabled',
-  'AppLogger','TAG','LOG_DOMAIN_LAUNCH','SUPPORTED_JDK_VERSIONS','GameArchiveIO','JdkImporter','fs',js+'\nreturn Harness;')(
-  {instance:()=>repository},{get:()=>hostVisible},fn=>{timers.push(fn);return timers.length;},
+  'CustomDialogController','UpdateDialog','DialogAlignment','UpdateReminderLevel','setJdkDownloadSource','setJdkWebEnabled',
+  'AppLogger','TAG','LOG_DOMAIN_LAUNCH','SUPPORTED_JDK_VERSIONS','GameArchiveIO','JdkImporter','fs',
+  'getTaskActivityOwner','ActivityCategory','ActivityStatus','DistributionPolicy','GameRunAdmission','runtimeCheckDue',js+'\nreturn Harness;')(
+  {legacyIntent:()=>null,unconfirmedIntent:()=>null,hasVerifiedIntent:()=>false,requirements:()=>[]},{instance:()=>repository},{get:()=>hostVisible},fn=>{timers.push(fn);return timers.length;},
   prompt.SideloadUpdateTestSession,prompt.SideloadUpdatePromptPolicy,presenter,
   scheduling.runtimePromptDue,String,
-  class { open(){if(dialogFailure)throw Error('controlled dialog open failure');} },
-  options=>options,{Center:'center'},()=>{},()=>{},{info(){},warn(){}},'test',0,
-  importSlots,{importResourceFile:async()=>({cancelled:true})},{},{unlinkSync(){}});
+  class { constructor(options){this.options=options;} open(){if(dialogFailure)throw Error('controlled dialog open failure');} },
+  options=>options,{Center:'center'},loadPromptModule('../entry/src/main/ets/components/UpdateReminderPolicy.ets').UpdateReminderLevel,()=>{},()=>{},{info(){},warn(){}},'test',0,
+  importSlots,{importResourceFile:async()=>({cancelled:true})},{},{unlinkSync(){}},
+  () => ({ async recordSummary() {} }), { JDK: 'jdk' }, { SUCCESS: 'success', FAILED: 'failed' },{isStore:()=>false},{isAllowed:()=>true},scheduling.runtimeCheckDue);
 const page=new Harness();
 Object.assign(page,{context:{},jdkChannel:'stable',jdkSource:'github',jdkWebEnabled:false,jdkChecking:false,
   jdkHasUpdate:false,pendingRuntimeCheck_:false,pendingRuntimePrompt_:false,pendingRuntimePromptManual_:false,
@@ -155,6 +159,47 @@ for(const reason of ['after-game','hidden-host','privacy','empty-items','deferre
     if(reason==='hidden-host'||reason==='privacy')assert.equal(page.pendingRuntimePromptManual_,true,'宿主暂时不可见时保留手动提示意图');
   } finally { dialogFailure=false;hostVisible=true;presenter.forget(owner); }
 });
+// 必需修复使用真实Index方法；自动偏好、缓存、提示延后和无网络目标分别构造负控。
+for(const channel of ['stable','preview'])await auditCase(channel+' required repair bypasses normal check throttling and has guarded dismiss',()=>{
+  const owner='required-'+channel;
+  const page=dialogPage(owner,{jdkChannel:channel,jdkAutoCheck:false,runtimeAutoCheckStarted_:false,
+    prefManager_:{jdkLastCheck:Date.now(),jdkDeferredAt:Date.now(),jdkDeferredTarget:'keep-existing-defer'}});
+  const states=[{version:'17',repairRequired:true,updateAvailable:false,userImported:false,installedTag:'old',stateText:'缺少必需写回修复'}];
+  page.jdkManager_.listVersions=()=>states;let checks=0;page.checkRuntimeUpdates_=manual=>{assert.equal(manual,false);checks++;};
+  page.initRuntimeUpdateCheck_();assert.equal(checks,1,'本地不兼容不能被自动检查关闭或当天成功时间压住');
+  page.initRuntimeUpdateCheck_();assert.equal(checks,1,'同一启动会话不重复联网');
+  page.showRuntimeUpdateDialog_(false);const dialog=page.updateDialogCtrl_.options;
+  assert.equal(dialog.autoCancel,false);assert.equal(dialog.builder.reminderLevel,'required');
+  assert(dialog.builder.requiredNotice.consequence.includes('无法启动'));assert.equal(dialog.builder.newVersion,channel==='stable'?'稳定通道':'预览通道');
+  let dismissed=false;dialog.onWillDismiss({dismiss(){dismissed=true;}});assert.equal(dismissed,false,'遮罩与Back不得隐式关闭必需提醒');
+  const before=structuredClone(page.prefManager_);page.closeUpdateDialog_=()=>{page.updateDialogCtrl_=null;presenter.release(owner);};
+  dialog.builder.onLater();assert.deepEqual(page.prefManager_,before,'必需修复的明确退出不写普通24小时延后');assert(page.runtimeRequiredDismissed_);
+  page.showRuntimeUpdateDialog_(false);assert.equal(page.updateDialogCtrl_,null,'明确暂不游戏后同会话不循环弹窗');
+  page.gameLaunchedThisSession=true;page.showRuntimeUpdateDialog_(true);assert(page.updateDialogCtrl_,'再次请求受影响游戏必须能重新提示');
+  presenter.forget(owner);
+});
+await auditCase('required runtime repair is presented before a queued ordinary App update',()=>{
+  const owner='required-priority',page=dialogPage(owner);const states=[{version:'17',repairRequired:true,updateAvailable:true,userImported:false,stateText:'必须修复'}];
+  page.jdkVersions=states;page.jdkManager_.listVersions=()=>states;page.pendingRuntimePrompt_=true;
+  page.pendingAppUpdate_={};page.showUpdateDialog=()=>{throw Error('ordinary App prompt must wait');};
+  page.drainUpdateDialogs_();assert.equal(page.updateDialogCtrl_.options.builder.reminderLevel,'required');assert(page.pendingAppUpdate_);
+  presenter.forget(owner);
+});
+await auditCase('compatible or imported runtime does not force a disabled automatic check',()=>{
+  for(const state of [{version:'17',repairRequired:false},{version:'17',repairRequired:true,userImported:true}]){
+    const page=dialogPage('ordinary-disabled',{jdkAutoCheck:false,runtimeAutoCheckStarted_:false});page.jdkManager_.listVersions=()=>[state];
+    page.checkRuntimeUpdates_=()=>{throw Error('unexpected forced check');};page.initRuntimeUpdateCheck_();
+  }
+});
+await auditCase('required local repair remains visible without a downloadable catalog target',()=>{
+  const owner='required-offline',page=dialogPage(owner);page.jdkCatalogStatus='网络不可用，请重试';
+  page.jdkManager_.listVersions=()=>[{version:'21',repairRequired:true,updateAvailable:false,userImported:false,stateText:'旧运行时不兼容'}];
+  repository.buildFor=()=>undefined;page.showRuntimeUpdateDialog_(true);const dialog=page.updateDialogCtrl_.options;
+  assert.equal(dialog.builder.actionLabel,'重新检查修复包');assert.equal(dialog.builder.items.length,1);assert(dialog.builder.items[0].description.includes('网络不可用'));
+  let checked=false;page.closeUpdateDialog_=()=>{presenter.release(owner);page.updateDialogCtrl_=null;};
+  page.checkRuntimeUpdates_=manual=>{checked=manual;};dialog.builder.onInstallItems(['21']);assert(checked,'没有目标只能重查，不能创建无身份安装任务');
+  presenter.forget(owner);
+});
 for(const size of [0,3,5,9])await auditCase('local import menu consumes '+size+' registered slots with bounded menus',async()=>{
   const menus=[],steps=[],invalidButtons=[];
   importSlots.splice(0,importSlots.length,...['8','17','21','25','29','33','37','41','45'].slice(0,size));
@@ -178,6 +223,47 @@ for(const deleted of [false,true])await auditCase('delete callback reports actua
   deleting.onDelete('17');
   assert.equal(deleting.jdkExtractProgress.includes('已删除'),deleted,'租约/IO拒绝时不能显示删除成功');
   if(!deleted)assert(messages.length>0,'删除失败必须有可见反馈');
+});
+await auditCase('JDK rows follow replaced snapshots without rebuilding on progress frames',()=>{
+  // 使用SDK AST读取真正交给ForEach的键函数；宿主只模拟官方“同键复用旧组件”的规则，
+  // 不复制生产键算法。真机已复现安装/删除后旧行残留，最终ArkUI刷新仍须在设备复验。
+  const body=fs.readFileSync(new URL('../entry/src/main/ets/pages/tabs/DownloadTab.ets',import.meta.url),'utf8');
+  const ast=compiler.createSourceFile('DownloadTab.ets',body,compiler.ScriptTarget.Latest,true);
+  const component=ast.statements.find(n=>n.name?.getText(ast)==='DownloadTab');
+  const items=component.members.find(n=>n.name?.getText(ast)==='JdkItems_');
+  const loops=[];
+  function walk(node){
+    if(node.expression?.getText(ast)==='ForEach'&&node.arguments?.[0]?.getText(ast)==='this.jdkVersions')loops.push(node);
+    compiler.forEachChild(node,walk);
+  }
+  walk(items);assert.equal(loops.length,1,'必须覆盖实际JDK列表，不能测试未接线的辅助函数');
+  const helper=component.members.find(n=>n.name?.getText(ast)==='jdkRowKey_')?.getText(ast)??'';
+  const code=compiler.transpileModule('class RowHarness {'+helper+'\nkey(info: JdkVersionInfo): string { return ('+
+    loops[0].arguments[2].getText(ast)+')(info); }}',{compilerOptions:{target:compiler.ScriptTarget.ES2020}}).outputText;
+  const RowHarness=new Function(code+';return RowHarness;')(),page=new RowHarness(),busy=new Set();
+  page.taskRevision=0;page.isJdkDownloading=major=>busy.has(major);
+  let rows=new Map();
+  const render=values=>{const next=new Map();const result=values.map(value=>{
+    const key=page.key(value),row=rows.get(key)??{snapshot:structuredClone(value),busy:busy.has(value.version)};
+    next.set(key,row);return row;
+  });rows=next;return result;};
+  const imported=major=>({version:major,installed:true,available:true,sizeMB:100,path:'/jdk/'+major,
+    installedTag:'imported:fixture',expectedTag:'preview-'+major,updateAvailable:false,userImported:true,stateText:'本地导入'});
+  const original=[imported('8'),imported('17')],first=render(original);
+  const official={...original[1],installedTag:'preview-17',userImported:false,stateText:'已是最新'};
+  const installed=render([original[0],official]);
+  assert.equal(installed[1].snapshot.userImported,false,'受管安装已经提交后不能继续显示本地导入');
+  assert.equal(installed[0],first[0],'另一槽位不能因邻居安装而重建');
+  const absent={...original[0],installed:false,installedTag:'',userImported:false,stateText:''};
+  assert.equal(render([absent,official])[0].snapshot.installed,false,'删除后同主版本行应成为下载入口');
+  const stable={...official,expectedTag:'stable-17',updateAvailable:true,stateText:'有更新：preview → stable'};
+  assert.equal(render([absent,stable])[1].snapshot.expectedTag,'stable-17','切通道必须显示新推荐');
+  busy.add('17');page.taskRevision++;
+  const running=render([absent,stable]);assert.equal(running[1].busy,true,'任务开始应同步行按钮状态');
+  page.taskRevision++;
+  assert.equal(render(structuredClone([absent,stable]))[1],running[1],'普通进度帧不能重复重建同一状态行');
+  busy.clear();page.taskRevision++;
+  assert.equal(render([absent,stable])[1].busy,false,'终态应恢复操作按钮');
 });
 assert.deepEqual(failures,[],'所有生产回调和弹窗席位边界应通过');
 console.log('PASS production Index: channel/source/web changes coalesce latest checks; manual intent retained; hidden, deferred, empty and failed runtime dialogs do not leak presenter ownership.');

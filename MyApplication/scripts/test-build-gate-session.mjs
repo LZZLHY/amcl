@@ -10,16 +10,22 @@ import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {chooseProfile,decision,environmentIdentity,snapshot,start,event,finish} from './lib/build-gate-session.mjs';
 import {assertExternalOutputPath,resolveWorkspacePath} from './lib/workspace-paths.mjs';
+import {createHostTestScope} from './lib/host-test-lifecycle.mjs';
 
 const index=process.argv.indexOf('--out');
 if(index>=0&&!process.argv[index+1]) throw new Error('Missing --out');
-let output;
+let reportRoot;
 if(index>=0) {
-  output=assertExternalOutputPath(path.resolve(process.argv[index+1]));
-  if(fs.existsSync(output)) throw new Error('Evidence directory must be new');fs.mkdirSync(output,{recursive:true});
+  reportRoot=assertExternalOutputPath(path.resolve(process.argv[index+1]));
+  if(fs.existsSync(reportRoot)) throw new Error('Evidence directory must be new');fs.mkdirSync(reportRoot,{recursive:true});
 } else {
-  const parent=resolveWorkspacePath('run','gate-session-regression');fs.mkdirSync(parent,{recursive:true});output=fs.mkdtempSync(path.join(parent,'case-'));
+  const parent=resolveWorkspacePath('run','gate-session-regression');fs.mkdirSync(parent,{recursive:true});
+  reportRoot=fs.mkdtempSync(path.join(parent,'run-'));
 }
+// --out 仍是本轮外置证据根。只清理 helper 原子创建的子目录，保留根内小汇总，
+// 不能因调用者指定父目录就获得递归清空父目录的权限。
+const scope=createHostTestScope('fixtures-',{parent:reportRoot,automatic:false});
+const output=scope.directory;
 const originalEnvironment={...process.env};
 // 外部真实 SDK/JDK 不属于本测试输入；微型 fixture 通过专门案例验证外部目录内容。
 for(const name of ['JAVA_HOME','AMCL_JVM_TEST_JAVA_HOME','AMCL_LWJGL2_INPUTS','AMCL_LWJGL2_JDK8','AMCL_NAPI_SDK_INCLUDE','OHOS_SDK_ROOT','AMCL_GATE_SESSION_SDK_ROOT','AMCL_SDL_TEST_REPO']) delete process.env[name];
@@ -422,7 +428,17 @@ try {
   Object.assign(process.env,originalEnvironment);
   // 汇总和进程必须使用同一结论；新增用例后不得出现 summary FAIL 而退出码仍为0。
   // 用例数量随实际注册增长，不另维护易遗漏的硬编码总数；空运行仍不能通过。
-  const state=results.length>0&&results.every(row=>row.state==='PASS')?'PASS':'FAIL';
-  fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({completedAt:new Date().toISOString(),state,cases:results},null,2)+'\n');
+  const state=results.length>0&&results.every(row=>row.state==='PASS')&&!process.exitCode?'PASS':'FAIL';
+  const summary={completedAt:new Date().toISOString(),state,cases:results,fixture:output,
+    keepRequested:process.env.AMCL_KEEP_TEST_OUTPUT==='1'};
+  const report=path.join(reportRoot,'summary.json');
+  fs.writeFileSync(report,JSON.stringify(summary,null,2)+'\n');
   if(state!=='PASS')process.exitCode=1;
+  // spawnSync 子进程与环境恢复均已完成，之后才允许回收微型仓库和假构建输出。
+  // 异常/失败与显式保留使用通用 scope 语义，目录身份被替换时停止清理并失败。
+  try {await scope.close({success:state==='PASS'});}
+  catch(error) {
+    fs.writeFileSync(report,JSON.stringify({...summary,state:'FAIL',cleanupError:error.stack??String(error)},null,2)+'\n');
+    throw error;
+  }
 }

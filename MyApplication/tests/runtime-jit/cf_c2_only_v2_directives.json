@@ -1,0 +1,12 @@
+[
+  {
+    "match": "java/util/concurrent/CompletableFuture.*",
+    "c1": { "Enable": false },
+    "c2": { "Exclude": true }
+  },
+  {
+    "match": "*.*",
+    "c1": { "Enable": false },
+    "c2": { "inline": ["-java/util/concurrent/CompletableFuture.*"] }
+  }
+]

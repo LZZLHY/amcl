@@ -1,0 +1,302 @@
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -26,6 +26,9 @@
+ // no precompiled headers
+ #include "jvm.h"
+ #include "classfile/vmSymbols.hpp"
++#ifdef __OHOS__
++#include "ohos_temp_directory.hpp"
++#endif
+ #include "code/icBuffer.hpp"
+ #include "code/vtableStubs.hpp"
+ #include "compiler/compileBroker.hpp"
+@@ -1464,7 +1467,20 @@
+ 
+ // This must be hard coded because it's the system's temporary
+ // directory not the java application's temp directory, ala java.io.tmpdir.
+-const char* os::get_temp_directory() { return "/tmp"; }
++#ifdef __OHOS__
++static AmclOhosTempDirectory amcl_ohos_tmp_state = AMCL_OHOS_TEMP_INITIALIZER;
++// 实际只读LOAD中的版本合同；retain保证strip/linker GC后仍可由宿主核验，不能代设备资格。
++__attribute__((used, retain, section(".amcl.nativetemp")))
++static const char amcl_ohos_tmp_contract[] = "AMCL_OHOS_NATIVE_TMPDIR_V1";
++#endif
++
++const char* os::get_temp_directory() {
++#ifdef __OHOS__
++  return amcl_ohos_temp_directory(&amcl_ohos_tmp_state);
++#else
++  return "/tmp";
++#endif
++}
+ 
+ // check if addr is inside libjvm.so
+ bool os::address_is_in_vm(address addr) {
+@@ -4503,6 +4519,11 @@
+ 
+ // this is called _before_ most of the global arguments have been parsed
+ void os::init(void) {
++#ifdef __OHOS__
++  // 这里只读一次启动环境；晚期Java属性、agent或fatal路径都不能改工具发现根。
++  // 错误先保留为状态，现有init_2返回通路再拒绝创建VM，不能终止嵌入宿主。
++  amcl_freeze_ohos_temp_directory(&amcl_ohos_tmp_state, ::getenv("TMPDIR"));
++#endif
+   char dummy;   // used to get a guess on initial stack address
+ 
+   clock_tics_per_sec = sysconf(_SC_CLK_TCK);
+@@ -4626,6 +4647,14 @@
+ 
+ // this is called _after_ the global arguments have been parsed
+ jint os::init_2(void) {
++#ifdef __OHOS__
++  if (amcl_ohos_tmp_state.error != 0) {
++    jio_fprintf(defaultStream::error_stream(), "Invalid startup TMPDIR (errno=%d)\n",
++                amcl_ohos_tmp_state.error);
++    return JNI_EINVAL;
++  }
++#endif
++
+ 
+   // This could be set after os::Posix::init() but all platforms
+   // have to set it the same so we have to mirror Solaris.
+--- /dev/null
++++ b/src/hotspot/os/linux/ohos_temp_directory.hpp
+@@ -0,0 +1,63 @@
++/*
++ * AMCL 的 OHOS 原生临时根候选，仅用于后续受控 OpenJDK source patch。
++ * 该状态在 os::init 起点从启动 TMPDIR 冻结；getter 不读环境、不分配、不做文件IO。
++ * Java 的 -Djava.io.tmpdir 不参与工具发现协议，应用可保留其原有 Java 文件语义。
++ * /tmp 只是与上游一致的无配置值，不代表当前 OHOS token 已证明它可写。
++ */
++#ifndef AMCL_OHOS_TEMP_DIRECTORY_HPP
++#define AMCL_OHOS_TEMP_DIRECTORY_HPP
++
++#include <errno.h>
++#include <stddef.h>
++#include <string.h>
++#ifdef _MSC_VER
++#include <intrin.h>
++#endif
++
++// 固定缓冲避免崩溃报告路径依赖分配器；显式过长输入拒绝，绝不截断为另一目录。
++enum { AMCL_OHOS_TEMP_PATH_CAPACITY = 4096 };
++struct AmclOhosTempDirectory {
++  char storage[AMCL_OHOS_TEMP_PATH_CAPACITY];
++  void* volatile published;
++  int error;
++  bool frozen;
++};
++#define AMCL_OHOS_TEMP_INITIALIZER {{0}, NULL, 0, false}
++
++// 调用者在允许读启动环境的唯一初始化点传入 getenv("TMPDIR") 的值。
++// 此函数不创建目录或猜测缓存根，目录所有权/可用性由真实消费者和宿主准备阶段验证。
++inline int amcl_freeze_ohos_temp_directory(AmclOhosTempDirectory* state, const char* startup_tmpdir) {
++  if (state->frozen) return state->error;
++  state->frozen = true;
++  if (startup_tmpdir == NULL || startup_tmpdir[0] == '\0') return 0;
++  if (startup_tmpdir[0] != '/') return state->error = EINVAL;
++  size_t length = 0;
++  while (length < sizeof(state->storage) && startup_tmpdir[length] != '\0') ++length;
++  if (length == sizeof(state->storage)) return state->error = ENAMETOOLONG;
++  // 原生协议保留一个根分隔符，去掉其它尾分隔符；不解析符号链接或改变目录身份。
++  while (length > 1 && startup_tmpdir[length - 1] == '/') --length;
++  memcpy(state->storage, startup_tmpdir, length);
++  state->storage[length] = '\0';
++  // 完整正文与NUL准备好以后才发布指针；初始化中发生fatal也只会读到旧常量，
++  // 不会看到正在复制的半条路径。OHOS的指针原子读写无需额外库或锁。
++#ifdef _MSC_VER
++  _InterlockedExchangePointer(&state->published, state->storage);
++#else
++  __atomic_store_n(&state->published, static_cast<void*>(state->storage), __ATOMIC_RELEASE);
++#endif
++  return 0;
++}
++
++// 初始化前与配置无效时均保留常量fallback；配置错误必须由创建VM的返回值通路拒绝，
++// 不能因getter有fallback就把显式错误输入算作初始化成功。fatal路径不再次读TMPDIR。
++inline const char* amcl_ohos_temp_directory(AmclOhosTempDirectory* state) {
++#ifdef _MSC_VER
++  const char* path = static_cast<const char*>(_InterlockedCompareExchangePointer(
++      &state->published, NULL, NULL));
++#else
++  const char* path = static_cast<const char*>(__atomic_load_n(&state->published, __ATOMIC_ACQUIRE));
++#endif
++  return path != NULL ? path : "/tmp";
++}
++
++#endif
+--- a/src/jdk.attach/linux/classes/sun/tools/attach/VirtualMachineImpl.java
++++ b/src/jdk.attach/linux/classes/sun/tools/attach/VirtualMachineImpl.java
+@@ -32,6 +32,7 @@
+ import java.io.InputStream;
+ import java.io.IOException;
+ import java.io.File;
++import jdk.internal.vm.VMSupport;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
+@@ -46,7 +47,8 @@
+     // location is the same for all processes, otherwise the tools
+     // will not be able to find all Hotspot processes.
+     // Any changes to this needs to be synchronized with HotSpot.
+-    private static final String tmpdir = "/tmp";
++    // Java与native共用VMSupport事实源；工具与目标必须配置同一well-known根。
++    private static final String tmpdir = VMSupport.getVMTemporaryDirectory();
+     String socket_path;
+     /**
+      * Attaches to the target VM
+--- a/src/jdk.attach/linux/native/libattach/VirtualMachineImpl.c
++++ b/src/jdk.attach/linux/native/libattach/VirtualMachineImpl.c
+@@ -81,6 +81,18 @@
+         int err = 0;
+ 
+         memset(&addr, 0, sizeof(addr));
++#ifdef __OHOS__
++        /* 必须按JNI转换后的平台字节检查；Java字符数不能代表Unix地址长度。 */
++        memset(&addr, 0, sizeof(addr));
++        addr.sun_family = AF_UNIX;
++        const size_t amcl_path_length = strlen(p);
++        if (amcl_path_length >= sizeof(addr.sun_path)) {
++            err = ENAMETOOLONG;
++        } else {
++            memcpy(addr.sun_path, p, amcl_path_length + 1);
++            if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) err = errno;
++        }
++#else
+         addr.sun_family = AF_UNIX;
+         /* strncpy is safe because addr.sun_path was zero-initialized before. */
+         strncpy(addr.sun_path, p, sizeof(addr.sun_path) - 1);
+@@ -88,6 +100,7 @@
+         if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+             err = errno;
+         }
++#endif
+ 
+         if (isCopy) {
+             JNU_ReleaseStringPlatformChars(env, path, p);
+--- a/src/hotspot/share/runtime/arguments.cpp
++++ b/src/hotspot/share/runtime/arguments.cpp
+@@ -415,6 +415,14 @@
+   PropertyList_add(&_system_properties, _java_class_path);
+   PropertyList_add(&_system_properties, _jdk_boot_class_path_append);
+   PropertyList_add(&_system_properties, _vm_info);
++
++
++#ifdef __OHOS__
++  // os::init已冻结工具根；这里只创建Java默认值，晚期环境修改不能造成默认值漂移。
++  // writable保持上游-D/JVMTI覆盖语义；显式Java属性不会反向改变native/tool根。
++  PropertyList_add(&_system_properties,
++      new SystemProperty("java.io.tmpdir", os::get_temp_directory(), true));
++#endif
+ 
+   // Set OS specific system properties values
+   os::init_system_properties_values();
+--- a/src/hotspot/os/posix/perfMemory_posix.cpp
++++ b/src/hotspot/os/posix/perfMemory_posix.cpp
+@@ -127,7 +127,12 @@
+ // return the user specific temporary directory name.
+ // the caller is expected to free the allocated memory.
+ //
++#ifdef __OHOS__
++// getter把根限制在MAXPATHLEN以内；另预留/proc/<有符号int pid>/root及NUL，不能沿用/tmp的4字节假设。
++#define TMP_BUFFER_LEN (MAXPATHLEN+22)
++#else
+ #define TMP_BUFFER_LEN (4+22)
++#endif
+ static char* get_user_tmp_dir(const char* user, int vmid, int nspid) {
+   char* tmpdir = (char *)os::get_temp_directory();
+ #if defined(LINUX)
+@@ -135,7 +140,9 @@
+   // /proc/{vmid}/root/tmp/{PERFDATA_NAME_user}
+   // otherwise /tmp/{PERFDATA_NAME_user}
+   char buffer[TMP_BUFFER_LEN];
++#ifndef __OHOS__
+   assert(strlen(tmpdir) == 4, "No longer using /tmp - update buffer size");
++#endif
+ 
+   if (nspid != -1) {
+     jio_snprintf(buffer, TMP_BUFFER_LEN, "/proc/%d/root%s", vmid, tmpdir);
+@@ -509,15 +516,27 @@
+   int searchpid;
+   char* tmpdirname = (char *)os::get_temp_directory();
+ #if defined(LINUX)
+-  char buffer[MAXPATHLEN + 1];
++  char buffer[
++#ifdef __OHOS__
++      TMP_BUFFER_LEN
++#else
++      MAXPATHLEN + 1
++#endif
++  ];
++#ifndef __OHOS__
+   assert(strlen(tmpdirname) == 4, "No longer using /tmp - update buffer size");
++#endif
+ 
+   // On Linux, if nspid != -1, look in /proc/{vmid}/root/tmp for directories
+   // containing nspid, otherwise just look for vmid in /tmp.
+   if (nspid == -1) {
+     searchpid = vmid;
+   } else {
++#ifdef __OHOS__
++    jio_snprintf(buffer, sizeof(buffer), "/proc/%d/root%s", vmid, tmpdirname);
++#else
+     jio_snprintf(buffer, MAXPATHLEN, "/proc/%d/root%s", vmid, tmpdirname);
++#endif
+     tmpdirname = buffer;
+     searchpid = nspid;
+   }
+--- a/src/jdk.internal.jvmstat/linux/classes/sun/jvmstat/PlatformSupportImpl.java
++++ b/src/jdk.internal.jvmstat/linux/classes/sun/jvmstat/PlatformSupportImpl.java
+@@ -174,22 +174,24 @@
+      */
+     public int getLocalVmId(File file) throws NumberFormatException {
+         String p = file.getAbsolutePath();
+-        String s[] = p.split("\\/");
+-
+-        // Determine if this file is from a container
+-        if (s.length == 7 && s[1].equals("proc")) {
+-            int hostpid = Integer.parseInt(s[2]);
+-            int nspid = Integer.parseInt(s[6]);
+-            if (nspid == hostpid || nspid == getNamespaceVmId(hostpid)) {
+-                return hostpid;
+-            }
+-            else {
+-                return -1;
+-            }
+-        }
+-        else {
+-            return Integer.parseInt(file.getName());
+-        }
++        if (p.startsWith("/proc/")) {
++            int endPid = p.indexOf('/', 6);
++            if (endPid < 0) return -1;
++            String pidText = p.substring(6, endPid);
++            int hostpid = Integer.parseInt(pidText);
++            if (hostpid <= 0) return -1;
++            // 只接受已知/proc/<hostpid>/root + 本VM选定根 + hsperfdata用户目录 + nspid。
++            // 不按固定组件个数猜pid，也不把任意/proc路径归到另一个进程；不解析/跟随新增链接。
++            File userDirectory = file.getParentFile();
++            File actualRoot = userDirectory == null ? null : userDirectory.getParentFile();
++            File expectedRoot = new File("/proc/" + pidText + "/root" + getTemporaryDirectory());
++            if (actualRoot == null || !actualRoot.getAbsolutePath().equals(expectedRoot.getAbsolutePath()) ||
++                !userDirectory.getName().startsWith("hsperfdata_") ||
++                userDirectory.getName().length() == "hsperfdata_".length()) return -1;
++            int nspid = Integer.parseInt(file.getName());
++            return nspid > 0 && (nspid == hostpid || nspid == getNamespaceVmId(hostpid)) ? hostpid : -1;
++        }
++        return Integer.parseInt(file.getName());
+     }
+ 
+ 
+--- a/src/java.base/share/classes/module-info.java
++++ b/src/java.base/share/classes/module-info.java
+@@ -238,7 +238,8 @@
+         jdk.incubator.foreign;
+     exports jdk.internal.vm to
+         jdk.internal.jvmstat,
+-        jdk.management.agent;
++        jdk.management.agent,
++        jdk.attach;
+     exports jdk.internal.vm.annotation to
+         java.instrument,
+         jdk.internal.vm.ci,

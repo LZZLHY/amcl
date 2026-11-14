@@ -46,13 +46,13 @@ const std::vector<std::string>& getCommonJvmArgs() {
         //       jvm_launcher 里那套「启动方或用户显式选了收集器就跳过 SSOT 默认收集器」
         //       的机制是真实存在且有效的（isGcSelector），只是目前没有任何代码去用它注入 G1。
         //   -UseCompressedOops:   关闭对 narrow oop 的编码，简化 safepoint 处理
-        //   -UsePerfData:         禁用 /tmp/hsperfdata 文件（OHOS 沙箱不可写）
+        //   -UsePerfData:         旧运行包尚未实现私有native temp时的保守默认；新marker包由jvmInit省略
         //   -XX:UseSVE=0:         禁用 ARM SVE 指令（HotSpot 检测 SVE 在某些鸿蒙内核上不稳）
         //   +UnlockExperimentalVMOptions / +UnlockDiagnosticVMOptions: 允许下列参数
         //   +DisablePrimordialThreadGuardPages:
         //       OHOS 线程栈 guard page 分配失败会导致随机 crash（Amethyst-iOS 同款修复）
         //   +DisableAttachMechanism:
-        //       禁用 JVM attach API，减少对 /tmp 的依赖和安全面
+        //       旧运行包保留禁用；已实现native temp合同的新包省略自动项，用户显式值保持最后生效
         // --------------------------------------------------
         "-XX:+UseParallelGC",
         "-XX:-UseCompressedOops",
@@ -75,19 +75,8 @@ const std::vector<std::string>& getCommonJvmArgs() {
         //   忙等永不完成的 future → 100% CPU 空转黑屏（栈采样器定位）。
         //   强制 JVM 报告固定核数，恢复多线程池。
         "-XX:ActiveProcessorCount=8",
-        // 2026-06-06 根因修复：自定义 aarch64 OpenJDK 的 C2 误编译 CompletableFuture
-        //   的完成传播代码，生成无 safepoint 死循环 → Forge 并行 mod 加载（主线程
-        //   ModLoader.waitForTransition 忙等 future）100% CPU 空转黑屏（栈采样器 +
-        //   class+init 日志定位；C1-only 验证为 C2 codegen bug；详见
-        //   docs/reports/render-thread-spin-c2-completablefuture-202606.md）。
-        //   修复：把 java.util.concurrent.CompletableFuture（外层类）所有方法排除出
-        //   编译，强制解释执行，绕开 C2。其余全部保留 C2。
-        //   收窄说明：曾试过只排 postComplete，因问题间歇性 + 误编译方法可能不止一个，
-        //   单方法排除不可靠（仍复现黑屏）→ 收敛到"类级排除"这个可靠且低开销的粒度。
-        //   （CompletableFuture 仅做异步编排、不在渲染热路径，解释执行对 FPS 基本无感；
-        //    真正的业务 lambda/任务仍正常 C2 编译。）
-        //   注：'.' 分隔类名用 '/'；用 '::' 时类名须用 '.'（混用会 CompileCommand 解析失败）。
-        "-XX:CompileCommand=exclude,java/util/concurrent/CompletableFuture.*",
+        // CF兼容项由jvmInit在同一JDK共享租约内按release major决定；不是无条件SSOT。
+        // 不能将条件项放入ArkTS去重清单，否则会吞掉version.json的显式同字面规则。
 
         // --------------------------------------------------
         // Forge / Fabric 反射 JDK 内部 API（add-opens java.base）

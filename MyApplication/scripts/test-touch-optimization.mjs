@@ -74,8 +74,8 @@ for (const stepMs of [5,10,20,50]) {
 const samples=[], subscriptions=[], retired=[], warnings=[], timers=new Map();
 let frame=Array(14).fill(0), readCount=0, timerId=0;
 frame[0]=500;frame[1]=400;frame[2]=1;frame[3]=200;frame[4]=300;frame[12]=9;
-let maintenanceCalls=0;
-const native={maintainTouchInput:()=>{maintenanceCalls++;return true;},touchInteractionVisual:()=>frame.slice(),sendTouchGyroSample:(...args)=>{samples.push(args);return true;}};
+let maintenanceCalls=0, visualReads=0;
+const native={maintainTouchInput:()=>{maintenanceCalls++;return true;},touchInteractionVisual:()=>{visualReads++;return frame.slice();},sendTouchGyroSample:(...args)=>{samples.push(args);return true;}};
 const model={...layout,...gyroModule,...load('gamecontrol/src/main/ets/TouchPreferences.ets'),
   ...load('gamecontrol/src/main/ets/TouchActionBindings.ets'),...load('gamecontrol/src/main/ets/TouchGuide.ets'),
   ...load('gamecontrol/src/main/ets/InputConfiguration.ets')};
@@ -127,6 +127,11 @@ try {
     assert.equal(subscriptions.length,0,'只读视觉不启动或维护传感器');
     session.maintainSources();
     assert.equal(subscriptions.length,1);assert.equal(readCount,1);
+    // 同轮真实维护+外观读取一次；外观相同不重复递送，输入维护次数仍正常推进。
+    const beforeVisualReads=visualReads, beforeViews=views.length;
+    for(const tick of timers.values())tick();
+    assert.equal(visualReads-beforeVisualReads,1,'gyro and visual share one tick-local Native sample');
+    assert.equal(views.length,beforeViews);
     const callback=subscriptions[0].callback;
     callback({x:0,y:1,z:0,timestamp:1e9});callback({x:0,y:1,z:0,timestamp:1.02e9});
     assert.equal(samples.length,1);assert.equal(samples[0][3],9);
@@ -208,7 +213,7 @@ const optionSource=fs.readFileSync(path.join(repo,'entry/src/main/ets/components
 const optionAst=compiler.createSourceFile('TouchOptionsEditor.ets',optionSource,compiler.ScriptTarget.Latest,true);
 const optionOwner=optionAst.statements.find(node=>node.name?.getText(optionAst)==='TouchOptionsEditor'&&node.members);
 assert.ok(optionOwner);
-const names=['flag','number','cycle'];
+const names=['flag','number','choose'];
 if(optionOwner.members.some(node=>node.name?.getText(optionAst)==='commit'))names.push('commit');
 const bodies=names.map(name=>optionOwner.members.find(node=>node.name?.getText(optionAst)===name).getText(optionAst));
 const compiled=compiler.transpileModule('class TouchEditorSubject{'+bodies.join('\n')+'}\nmodule.exports=TouchEditorSubject;',

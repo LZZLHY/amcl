@@ -54,6 +54,8 @@ export function productionPathPolicy() {
 }
 export const fileIo = {
   OpenMode:{READ_ONLY:0,WRITE_ONLY:1,READ_WRITE:2,CREATE:fs.constants.O_CREAT,TRUNC:fs.constants.O_TRUNC},
+  // CoreFileKit 以布尔值表示路径不存在。其他宿主错误继续抛出，供生产读盘分支区别处理。
+  accessSync(p){try{fs.accessSync(p);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}},
   openSync(p,flags){return {fd:fs.openSync(p,flags)};},closeSync(file){fs.closeSync(typeof file==='number'?file:file.fd);},
   readSync(fd,b,opt){return fs.readSync(fd,new Uint8Array(b),0,opt.length,opt.offset);},
   writeSync(fd,data){return fs.writeSync(fd,typeof data==='string'?data:new Uint8Array(data));},
@@ -62,7 +64,13 @@ export const fileIo = {
   renameSync:fs.renameSync,unlinkSync:fs.unlinkSync,copyFileSync:fs.copyFileSync,fsyncSync:fs.fsyncSync,
 };
 export const mocks = {
+  // 本夹具的下载/目录回归隔离活动持久化端口；完整Registry+账本接线由
+  // test-task-activity-owner.mjs执行生产owner、history和磁盘，不在这里复制该算法。
+  './TaskActivityOwner':{getTaskActivityOwner:()=>({async beginTask(){},async finishTask(){}}),
+    reserveTaskActivityId:((last)=>minimum=>{last=Math.max(Date.now(),last+1,minimum??0);return last;})(0)},
   '@kit.CoreFileKit':{fileIo},
+  // Maven生产模块会导入平台HTTP类型；本组只允许用例显式注入的Native/网络端口。
+  '@kit.NetworkKit':{http:{createHttp(){throw new Error('Unexpected platform HTTP outside the explicit test boundary');}}},
   '@kit.CryptoArchitectureKit':{cryptoFramework},
   '@kit.ArkTS':{util:{TextEncoder:class {encodeInto(value){return new TextEncoder().encode(value);}},TextDecoder:{create(encoding,options){const d=new TextDecoder(encoding,options);return {decodeToString:b=>d.decode(b)};}}}},
   '@kit.BasicServicesKit':{zlib:{ReturnStatus:{OK:0,STREAM_END:1},CompressFlushMode:{FINISH:4},async createZip(){
@@ -72,6 +80,9 @@ export const mocks = {
       async getZStream(){return state;},async inflateEnd(){return 0;}};
   }}},
   '@kit.PerformanceAnalysisKit':{hilog:log},
+  // 来源决策只读取平台网关开关；默认夹具为关闭，专门的三模式矩阵会注入真实输入。
+  // 不替换SourceProber/URL构造等被测生产算法，也不在宿主发握手或加载Native桥。
+  './RelayClient':{getRelayClient:()=>({isEnabled:()=>false})},
   commons:{AppLogger:log,LOG_DOMAIN_DOWNLOAD:0},
 };
 /** 可选调度端口仅控制宿主定时器；默认仍用真实时钟，不替换被测生产决策。 */

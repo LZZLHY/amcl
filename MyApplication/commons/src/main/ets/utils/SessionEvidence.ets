@@ -26,7 +26,7 @@ import { evidenceFileStamp, evidenceFileStampAsync, evidenceTextDigest, hashEvid
   readEvidenceTextBounded, writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync, ensureEvidenceTextDurableAsync, ensureEvidenceDirectoryAsync,
   assertEvidencePreparationCurrent } from './EvidenceIo';
 import { readSessionCapture, readSessionCaptureAsync, CaptureSource, verifyCapturedSource,
-  verifyCapturedSourceAsync, nativeSessionIo, nativeSessionIoAsync } from './SessionCapture';
+  verifyCapturedSourceAsync, nativeSessionIo, nativeSessionIoAsync, NativeSessionIo } from './SessionCapture';
 import { readSessionBannerActivityId } from './GameLogPaths';
 
 const EVIDENCE_MANIFEST_NAME: string = 'evidence-manifest.json';
@@ -491,10 +491,31 @@ export function listSessionEvidence(filesDir: string, activityId: number, verify
 }
 
 interface NativeCaptureStatus {
+  pid?: number;
   sealed: boolean;
   dropped: number;
   writeFailures: number;
   truncated: number;
+}
+
+const MISSING_GAME_CAPTURE_REASON: string = '游戏进程日志采集收据缺失，启动器收据不能证明游戏进程日志完整';
+/**
+ * 同步/异步封账共用缺收据判据：不同于host的生产PID或游戏启动器正文要求游戏scope。
+ * gameStarted仅证明进入游戏；已知host/native-io同PID时，手机共享进程由host收据覆盖，
+ * 不能误要求独立game收据。进入游戏但缺少同PID拥有者证明时仍保守要求game收据。
+ * 不同进程的host计数不能替代game计数，文件SHA只证明已保存字节，不证明连续采集。
+ */
+function missingGameCaptureReason_(io: NativeSessionIo | undefined, host: NativeCaptureStatus | undefined,
+  game: NativeCaptureStatus | undefined, files: EvidenceFileRecord[]): string {
+  if (game !== undefined) return '';
+  const hostPid: number = host?.pid ?? 0;
+  const ownersKnown: boolean = io !== undefined && Number.isSafeInteger(hostPid) && hostPid > 0
+    && Number.isSafeInteger(io.pid) && io.pid > 0;
+  const sharedProducer: boolean = ownersKnown && hostPid === io?.pid;
+  const separateProducer: boolean = ownersKnown && hostPid !== io?.pid;
+  const gameKnown: boolean = separateProducer || (io?.gameStarted === true && !sharedProducer) || files.some((file: EvidenceFileRecord): boolean =>
+    file.bytes > 0 && file.path === 'launcher/launcher-game.log');
+  return gameKnown ? MISSING_GAME_CAPTURE_REASON : '';
 }
 
 function captureStatus_(dir: string, game: boolean): NativeCaptureStatus | undefined {
@@ -596,7 +617,7 @@ export function refreshSessionEvidence(filesDir: string, activityId: number,
     }
   }
   const reasons: string[] = missingReasons.filter((reason: string): boolean =>
-    reason !== '日志进程未完成封账' && reason !== '没有可用证据文件'
+      reason !== '日志进程未完成封账' && reason !== '没有可用证据文件' && reason !== MISSING_GAME_CAPTURE_REASON
       && reason.indexOf('日志采集有缺口') < 0 && !reason.startsWith('文件采集缺口：'));
   let dropped: number = 0;
   const io = nativeSessionIo(filesDir, activityId);
@@ -609,8 +630,12 @@ export function refreshSessionEvidence(filesDir: string, activityId: number,
     && (file.source === EvidenceSource.MC_STDIO || file.source === EvidenceSource.MOJANG_LOG4J || file.source === EvidenceSource.JVM)
     && file.verification !== 'verified');
   if (unverified.length > 0) reasons.push('部分游戏/JVM 文件缺少可核验的封账收据');
+  const hostStatus = captureStatus_(ledgerDir_(filesDir, activityId), false);
+  const gameStatus = captureStatus_(ledgerDir_(filesDir, activityId), true);
+  const missingGame: string = missingGameCaptureReason_(io, hostStatus, gameStatus, files);
+  if (missingGame.length > 0) reasons.push(missingGame);
   for (const game of [false, true]) {
-    const status = captureStatus_(ledgerDir_(filesDir, activityId), game);
+    const status = game ? gameStatus : hostStatus;
     if (status === undefined) continue;
     dropped += status.dropped;
     if (status.dropped + status.writeFailures + status.truncated > 0) {
@@ -979,7 +1004,7 @@ export async function refreshSessionEvidenceAsync(filesDir: string, activityId: 
     }
   }
   const reasons: string[] = missingReasons.filter((reason: string): boolean =>
-    reason !== '日志进程未完成封账' && reason !== '没有可用证据文件'
+    reason !== '日志进程未完成封账' && reason !== '没有可用证据文件' && reason !== MISSING_GAME_CAPTURE_REASON
       && reason.indexOf('日志采集有缺口') < 0 && !reason.startsWith('文件采集缺口：'));
   let dropped: number = 0;
   const io = await nativeSessionIoAsync(filesDir, activityId);
@@ -992,8 +1017,12 @@ export async function refreshSessionEvidenceAsync(filesDir: string, activityId: 
     && (file.source === EvidenceSource.MC_STDIO || file.source === EvidenceSource.MOJANG_LOG4J || file.source === EvidenceSource.JVM)
     && file.verification !== 'verified');
   if (unverified.length > 0) reasons.push('部分游戏/JVM 文件缺少可核验的封账收据');
+  const hostStatus = await captureStatusAsync_(ledgerDir_(filesDir, activityId), false);
+  const gameStatus = await captureStatusAsync_(ledgerDir_(filesDir, activityId), true);
+  const missingGame: string = missingGameCaptureReason_(io, hostStatus, gameStatus, files);
+  if (missingGame.length > 0) reasons.push(missingGame);
   for (const game of [false, true]) {
-    const status = await captureStatusAsync_(ledgerDir_(filesDir, activityId), game);
+    const status = game ? gameStatus : hostStatus;
     if (status === undefined) continue;
     dropped += status.dropped;
     if (status.dropped + status.writeFailures + status.truncated > 0) {

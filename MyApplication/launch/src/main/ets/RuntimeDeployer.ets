@@ -6,7 +6,7 @@
 
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { resolveFontconfigSource, FONTCONFIG_MIN_SIZE_BYTES, SUPPORTED_JDK_VERSIONS, isJdkSlotVersion } from 'commons';
+import { JdkInstallStorage } from './JdkInstallStorage';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import { lwjglRuntimeSlot } from './LwjglRuntimeSlots';
@@ -17,6 +17,10 @@ import { VersionFileVerifier, VersionParser } from 'feature_core';
 import { graphicsGameFacts } from './GraphicsGameFacts';
 import { GAME_COMPAT_JAR, GAME_COMPAT_SIZE, GAME_COMPAT_SHA256 } from './GameCompatibilityArtifact';
 import { gameCompatibilityPath } from './GameCompatibility';
+import { cpuCompatibilityPath } from './CpuCompatibility';
+import { CPU_AGENT_JAR, CPU_AGENT_SIZE, CPU_AGENT_SHA256 } from './CpuCompatibilityArtifact';
+import { audioServiceCompatibilityPath } from './AudioServiceCompatibility';
+import { AUDIO_SERVICE_AGENT_JAR, AUDIO_SERVICE_AGENT_SIZE, AUDIO_SERVICE_AGENT_SHA256 } from './AudioServiceCompatibilityArtifact';
 import { lwjglGenerationDirectory, runtimeSlotNativeOps, collectUnusedLwjglGenerations } from './RuntimeSlotGenerations';
 import { validateRuntimeTree } from './JdkTreeValidation';
 
@@ -25,6 +29,77 @@ export class RuntimeDeployer {
 
   constructor(context: Context) {
     this.context = context;
+  }
+
+  /**
+   * 部署全部产品共用的 CPU Agent。先验证不可变路径，损坏时只用已核验的 rawfile 修复。
+   * 独立临时文件、完整短写处理和 fsync 后验证摘要，再原子发布，避免半包进入 JVM。
+   */
+  async deployCpuCompatibility(filesDir: string): Promise<void> {
+    const dest: string = cpuCompatibilityPath(filesDir);
+    try {
+      if (fs.statSync(dest).size === CPU_AGENT_SIZE &&
+        (await VersionFileVerifier.sha256File(dest)).toLowerCase() === CPU_AGENT_SHA256) return;
+    } catch (error) { /* 文件不存在或损坏时从正式资源修复。 */ }
+    try { fs.mkdirSync(filesDir + '/runtime-compat', true); } catch (error) { /* 已存在。 */ }
+    const data: Uint8Array = this.context.resourceManager.getRawFileContentSync(CPU_AGENT_JAR);
+    if (data.byteLength !== CPU_AGENT_SIZE) throw new Error('CPU Agent 资源长度不符');
+    const temporary: string = dest + '.tmp.' + Date.now().toString() + '-' + Math.floor(Math.random() * 1000000000).toString();
+    try {
+      const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      try {
+        let offset: number = 0;
+        while (offset < data.byteLength) {
+          const chunk: Uint8Array = data.slice(offset);
+          const written: number = fs.writeSync(file.fd, chunk.buffer as ArrayBuffer);
+          if (written <= 0 || written > chunk.byteLength) throw new Error('CPU Agent 写入不完整');
+          offset += written;
+        }
+        fs.fsyncSync(file.fd);
+      } finally { fs.closeSync(file); }
+      if ((await VersionFileVerifier.sha256File(temporary)).toLowerCase() !== CPU_AGENT_SHA256) throw new Error('CPU Agent 摘要不符');
+      try { fs.renameSync(temporary, dest); } catch (error) {
+        if ((await VersionFileVerifier.sha256File(dest)).toLowerCase() !== CPU_AGENT_SHA256) throw new Error('CPU Agent 发布失败');
+      }
+    } finally {
+      try { fs.unlinkSync(temporary); } catch (error) { /* 已改名或未建立临时文件。 */ }
+    }
+  }
+
+  /**
+   * 在游戏加载器创建前交付标准SPI兼容Agent。先核大小/SHA，短写循环、fsync和原子改名
+   * 后再次确认；只部署内容寻址新文件，不把整个启动器JAR塞入Forge子模块。
+   */
+  async deployAudioServiceCompatibility(filesDir: string): Promise<void> {
+    const destination: string = audioServiceCompatibilityPath(filesDir);
+    try {
+      if (fs.statSync(destination).size === AUDIO_SERVICE_AGENT_SIZE &&
+        (await VersionFileVerifier.sha256File(destination)).toLowerCase() === AUDIO_SERVICE_AGENT_SHA256) return;
+    } catch (_) { /* 缺失或损坏时使用已核的随包资源修复。 */ }
+    try { fs.mkdirSync(filesDir + '/runtime-compat', true); } catch (_) { /* 已存在。 */ }
+    const data: Uint8Array = this.context.resourceManager.getRawFileContentSync(AUDIO_SERVICE_AGENT_JAR);
+    if (data.byteLength !== AUDIO_SERVICE_AGENT_SIZE) throw new Error('平台音频组件资源长度不符');
+    const temporary: string = destination + '.tmp.' + Date.now() + '-' + Math.floor(Math.random() * 1000000000);
+    try {
+      const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      try {
+        let offset: number = 0;
+        while (offset < data.byteLength) {
+          const part: Uint8Array = data.slice(offset);
+          const written: number = fs.writeSync(file.fd, part.buffer as ArrayBuffer);
+          if (written <= 0 || written > part.byteLength) throw new Error('平台音频组件写入不完整');
+          offset += written;
+        }
+        fs.fsyncSync(file.fd);
+      } finally { fs.closeSync(file); }
+      if ((await VersionFileVerifier.sha256File(temporary)).toLowerCase() !== AUDIO_SERVICE_AGENT_SHA256)
+        throw new Error('平台音频组件摘要不符');
+      try { fs.renameSync(temporary, destination); }
+      catch (_) {
+        if ((await VersionFileVerifier.sha256File(destination)).toLowerCase() !== AUDIO_SERVICE_AGENT_SHA256)
+          throw new Error('平台音频组件发布失败');
+      }
+    } finally { try { fs.unlinkSync(temporary); } catch (_) { /* 已发布或从未建文件。 */ } }
   }
 
   /** Immutable content-addressed artifact; never modifies the instance's mods directory. */
@@ -210,7 +285,7 @@ export class RuntimeDeployer {
    * 初始化当前 Minecraft 根的三个独立槽及其余运行时资产。
    * 一个未被选择的槽损坏不应阻止其他槽部署或启动器首页初始化；因此逐槽明确记错，
    * 保留该槽未提交状态，由按所选槽执行的预检阻断游戏。这里没有更换路线或静默降级。
-   * fonts.conf 与 JDK 的 fontconfig 仍落在沙箱 filesDir，不随 Minecraft 根迁移。
+   * 字体配置使用 filesDir/runtime-fonts 下的宿主内容地址文件，不改写任何 JDK 槽位。
    */
   deployAll(mcDir: string): void {
     const slots: string[] = ['lwjgl-ohos', 'lwjgl-ohos-322', 'lwjgl-ohos-2'];
@@ -225,8 +300,7 @@ export class RuntimeDeployer {
       }
     }
     this.deployStubObjcBridge(mcDir);
-    this.deployFontconfigRuntime();
-    this.deployJdk8FontConfig();
+    this.prepareJdkFonts();
   }
 
   /**
@@ -237,7 +311,7 @@ export class RuntimeDeployer {
    * yieldFrame 由页面提供与当前窗口绑定的绘制让步；HAR 不获取或持有 UIContext。
    * 未提供时使用 16 ms 定时让出事件循环，这只提供渲染机会，不保证真实呈现了一帧。
    * 资源读取、分块文件读写、fsync 和摘要使用 SDK 异步接口；native 的 stage/publish/
-   * discard/collect 保持同步原子边界，stub/fontconfig/JDK8 小阶段暂沿用已有实现。
+   * discard/collect 保持同步原子边界；宿主字体配置为单一小阶段，不进入 JDK 安装目录。
    * 调用方必须把本 Promise 纳入启动就绪条件，不能发起后立即开放游戏操作。
    * @throws {Error} 页面让步失败或非槽阶段出现未被原实现处理的异常时向宿主传播。
    */
@@ -257,9 +331,7 @@ export class RuntimeDeployer {
     await yieldFrame();
     this.deployStubObjcBridge(mcDir);
     await yieldFrame();
-    this.deployFontconfigRuntime();
-    await yieldFrame();
-    this.deployJdk8FontConfig();
+    this.prepareJdkFonts();
   }
 
   /**
@@ -439,99 +511,11 @@ export class RuntimeDeployer {
   }
 
   /**
-   * 部署 JDK 8 的 fontconfig.properties 到 <sandbox>/jdk/8/jre/lib/。
-   *
-   * 为什么需要：AMCL 自带的 OpenJDK 8 未携带 jre/lib/fontconfig.properties（也无 jre/lib/fonts/）。
-   * 任何调用 AWT 字体子系统的 mod（如 RLCraft 的 Varied Commodities 在 TrueTypeFont.<clinit>
-   * 里调 getAllFonts()）会触发 sun.awt.FontConfiguration.getVersion() 因内部表为空抛 NPE → mod
-   * 初始化失败 → 整个游戏崩。补上符合 OpenJDK 规范的 fontconfig.properties（映射逻辑字体到
-   * /system/fonts 的 HarmonyOS Sans）即可让字体子系统正常初始化。
-   *
-   * 仅针对 JDK 8（经典布局，走 sun.awt.FontConfiguration）；模块化 JDK 17/21/25 的字体机制不同、
-   * 不受此问题影响，故不处理。jdk/8 不存在（用户未装 JDK8）时静默跳过。
+   * 配置由宿主按完整 SHA 地址发布；普通/冷游戏/processor 进程复用同一 native 实现。
+   * 该调用不向数字 JDK 槽复制库，也不改写 imported 的原始来源；库提供者由 JVM 读取路径
+   * 单独核实。文件异常必须上报，不能吞掉错误后声称完整字体子系统已经就绪。
    */
-  private deployJdk8FontConfig(): void {
-    let jreLibDir = this.context.filesDir + '/jdk/8/jre/lib'
-    // 仅当 JDK8 已安装（jre/lib 存在）时才部署，避免无谓建目录。
-    try {
-      fs.statSync(jreLibDir)
-    } catch (e) {
-      return // JDK8 未安装
-    }
-    let dest = jreLibDir + '/fontconfig.properties'
-    try {
-      let data: Uint8Array = this.context.resourceManager.getRawFileContentSync('jdk8/fontconfig.properties')
-      let f = fs.openSync(dest, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC)
-      fs.writeSync(f.fd, data.buffer)
-      fs.closeSync(f)
-      AppLogger.info('FORGE', `Deployed JDK8 fontconfig.properties (${data.byteLength} bytes) to ${dest}`, LOG_DOMAIN_LAUNCH)
-    } catch (e) {
-      AppLogger.warn('FORGE', 'Failed to deploy JDK8 fontconfig.properties', e, LOG_DOMAIN_LAUNCH)
-    }
-  }
-
-  /**
-   * 部署 JVM 字体子系统所需的 fontconfig 运行时（fonts.conf + libfontconfig.so.1）。
-   *
-   * 历史：原 deployForgeBootstrapper 还顺带部署 forge-install-bootstrapper.jar；该 jar 自
-   * Forge 安装迁到 ForgelikeInstaller（自实现 processors）后已废弃，故本方法只保留 fontconfig
-   * 部署（Forge/NeoForge 安装器子进程 + 游戏 JVM 的字体子系统都依赖 libfontconfig.so.1）。
-   *
-   * 2026-08-27（加载链审查修复批次）：目标目录从硬编码 jdk/17/lib 扩为
-   * SUPPORTED_JDK_VERSIONS 全部版本。此前注释声称覆盖"安装器子进程 + 游戏 JVM"，
-   * 但 fork_run_java 按所选 JDK 预加载 <jdk>/lib/libfontconfig.so.1 —— MC ≥1.20.5
-   * 纪元路由到 21/25 时该文件从未被部署过，dlopen 必败。与 17 一致地"预埋"目录：
-   * JDK 后装时 unzip 落进同一 lib/，预埋文件不受影响。
-   */
-  private deployFontconfigRuntime(): void {
-    // Fontconfig stub (JVM 字体子系统需要 libfontconfig.so.1)
-    let fontsConf = this.context.filesDir + '/fonts.conf'
-    try {
-      let data: Uint8Array = this.context.resourceManager.getRawFileContentSync('fonts.conf')
-      let f = fs.openSync(fontsConf, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC)
-      fs.writeSync(f.fd, data.buffer)
-      fs.closeSync(f)
-    } catch (e) { /* */ }
-    // 复制 libfontconfig.so 到各 JDK lib 目录（命名为 libfontconfig.so.1）。
-    // fork_run_java / jvmInit 对所有版本统一读 <jdk>/<ver>/lib/（JDK8 也是），口径一致。
-    let fcSrc: string | null = null
-    let fcSrcResolved = false
-    // 独立游戏进程有自己的模块内存，未必初始化主页面目录注册表。合并磁盘数字槽位，
-    // 让新增主版本、离线安装和下架保留项同样获得字体配置，不依赖另一进程的数组状态。
-    const runtimeVersions: string[] = SUPPORTED_JDK_VERSIONS.slice();
-    try {
-      for (const version of fs.listFileSync(this.context.filesDir + '/jdk')) {
-        if (isJdkSlotVersion(version) && runtimeVersions.indexOf(version) < 0) runtimeVersions.push(version);
-      }
-    } catch (e) { /* 首次启动还没有安装目录，可信注册表项目仍可预部署。 */ }
-    for (let ver of runtimeVersions) {
-      let jdkLibDir = this.context.filesDir + '/jdk/' + ver + '/lib'
-      try { fs.mkdirSync(jdkLibDir, true) } catch (e) { /* exists */ }
-      let fcDest = jdkLibDir + '/libfontconfig.so.1'
-      try {
-        fs.statSync(fcDest)
-        continue // 已部署
-      } catch (e) { /* absent -> deploy */ }
-      if (!fcSrcResolved) {
-        fcSrc = resolveFontconfigSource(this.context.filesDir)
-        fcSrcResolved = true
-        if (!fcSrc) {
-          AppLogger.warn('FORGE', 'No valid fontconfig source found for deploy', null, LOG_DOMAIN_LAUNCH)
-          return
-        }
-      }
-      if (!fcSrc) { return }
-      try {
-        fs.copyFileSync(fcSrc, fcDest)
-        let st = fs.statSync(fcDest)
-        if (st.size <= FONTCONFIG_MIN_SIZE_BYTES) {
-          AppLogger.warn('FORGE', `fontconfig copied but too small: ${st.size} bytes (jdk ${ver})`, null, LOG_DOMAIN_LAUNCH)
-          continue
-        }
-        AppLogger.info('FORGE', `Deployed libfontconfig.so.1 to jdk/${ver}/lib from ${fcSrc}`, LOG_DOMAIN_LAUNCH)
-      } catch (e2) {
-        AppLogger.warn('FORGE', `Failed to deploy fontconfig for jdk ${ver}`, e2, LOG_DOMAIN_LAUNCH)
-      }
-    }
+  private prepareJdkFonts(): void {
+    JdkInstallStorage.prepareFonts(this.context.filesDir);
   }
 }

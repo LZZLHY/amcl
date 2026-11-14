@@ -1,3 +1,4 @@
+import { applyNativeTheme } from '../components/AppTheme';
 import testNapi from 'libentry.so';
 /**
  * VulkanPage.ets — Vulkan 能力探针（开发者探针页）
@@ -37,6 +38,8 @@ struct VulkanPage {
   // ---- 主题：与 DevToolsPage / RenderPage 同一套接法 ----
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0
 
@@ -86,9 +89,14 @@ struct VulkanPage {
 
   private applyTheme(): void {
     let systemIsDark: boolean = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
-    let mode: ThemeMode = new PreferenceManager(this.context).themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    const preferences: PreferenceManager = new PreferenceManager(this.context)
+    const mode: ThemeMode = preferences.themeMode
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), preferences.themeAccent)
+    applyNativeTheme(this.theme);
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme(); }
 
   build() {
     Column() {

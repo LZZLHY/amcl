@@ -18,6 +18,23 @@ bool omitCaps=false, raceProbe=false;
 VkResult capsStatus=VK_SUCCESS;
 VkSurfaceCapabilitiesKHR capabilities{};
 VkSwapchainCreateInfoKHR submitted{};
+const auto queue=reinterpret_cast<VkQueue>(0x2500);
+unsigned geometryCalls=0, completedPresents=0, lastGeometryPresent=0;
+uint32_t geometryWork=0;
+VkResult presentResult=VK_SUCCESS;
+
+// 仅替换窗口/驱动边界。请求不能从能力查询或交换链创建线程执行，真实present返回后
+// 才能进入宿主checkpoint；失败present不提供安全点资格，也不能伪造成功图像。
+uint32_t geometryFlags(){return geometryWork;}
+int geometryCheckpoint(void* p,uint64_t g,uint64_t token){
+    CHECK(p==window && g==generation && token==1);
+    CHECK(completedPresents>lastGeometryPresent);
+    lastGeometryPresent=completedPresents;++geometryCalls;return 1;
+}
+void observeDrawable(void* p,uint64_t g,uint64_t token,int width,int height,uint32_t source){
+    CHECK(p==window && g==generation && token==1 && source==2);
+    CHECK(width==static_cast<int>(submitted.imageExtent.width) && height==static_cast<int>(submitted.imageExtent.height));
+}
 
 // 同一个broker供真实WSI和探针使用；探针结束及游戏surface销毁后必须回到零引用/零token。
 int acquire(void*,uint64_t,void** p,int* width,int* height,uint64_t* g){
@@ -56,9 +73,15 @@ VKAPI_ATTR VkResult VKAPI_CALL createSwapchain(VkDevice,const VkSwapchainCreateI
     ++creates;submitted=*info;*out=reinterpret_cast<VkSwapchainKHR>(++nextSwapchain);return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL destroySwapchain(VkDevice,VkSwapchainKHR,const VkAllocationCallbacks*){}
+VKAPI_ATTR void VKAPI_CALL getQueue(VkDevice,uint32_t,uint32_t,VkQueue* out){*out=queue;}
+VKAPI_ATTR VkResult VKAPI_CALL present(VkQueue q,const VkPresentInfoKHR*){
+    CHECK(q==queue);++completedPresents;return presentResult;
+}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL deviceProc(VkDevice,const char* name){
     if(!std::strcmp(name,"vkCreateSwapchainKHR"))return reinterpret_cast<PFN_vkVoidFunction>(createSwapchain);
     if(!std::strcmp(name,"vkDestroySwapchainKHR"))return reinterpret_cast<PFN_vkVoidFunction>(destroySwapchain);
+    if(!std::strcmp(name,"vkGetDeviceQueue"))return reinterpret_cast<PFN_vkVoidFunction>(getQueue);
+    if(!std::strcmp(name,"vkQueuePresentKHR"))return reinterpret_cast<PFN_vkVoidFunction>(present);
     return nullptr;
 }
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL loader(VkInstance,const char* name){
@@ -137,6 +160,12 @@ int main(){
     auto createFn=reinterpret_cast<PFN_vkCreateSwapchainKHR>(amclVulkanGetDeviceProcAddr(logical,"vkCreateSwapchainKHR"));
     auto destroyFn=reinterpret_cast<PFN_vkDestroySwapchainKHR>(amclVulkanGetDeviceProcAddr(logical,"vkDestroySwapchainKHR"));
     auto destroySurfaceFn=reinterpret_cast<PFN_vkDestroySurfaceKHR>(amclVulkanGetInstanceProcAddr(instance,"vkDestroySurfaceKHR"));
+    auto queueFn=reinterpret_cast<PFN_vkGetDeviceQueue>(amclVulkanGetDeviceProcAddr(logical,"vkGetDeviceQueue"));
+    auto presentFn=reinterpret_cast<PFN_vkQueuePresentKHR>(amclVulkanGetDeviceProcAddr(logical,"vkQueuePresentKHR"));
+    auto capsFn=reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(amclVulkanGetInstanceProcAddr(instance,"vkGetPhysicalDeviceSurfaceCapabilitiesKHR"));
+    VkQueue selectedQueue{};queueFn(logical,0,0,&selectedQueue);
+    broker.geometryWorkFlags=geometryFlags;broker.geometryCheckpoint=geometryCheckpoint;broker.observeDrawable=observeDrawable;
+    geometryWork=1u;
     for(bool sdl : {false,true}){
         CHECK(amclVulkanSetAdmission(1,"minecraft-vulkan",sdl?"minecraft-26.3-sdl-vulkan-conservative-v1":"minecraft-26.2-conservative-v1"));
         VkSurfaceKHR surface{};
@@ -152,6 +181,9 @@ int main(){
         VkSwapchainKHR previous{};
         for(uint32_t turn : {2u,8u,1u,4u}){
             resetCaps(turn);
+            const auto geometryBefore=geometryCalls;
+            VkSurfaceCapabilitiesKHR actualCaps{};
+            CHECK(capsFn(selected,surface,&actualCaps)==VK_SUCCESS && geometryCalls==geometryBefore);
             VkImageFormatListCreateInfo extension{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
             VkSwapchainCreateInfoKHR request{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
             request.surface=surface;request.preTransform=capabilities.currentTransform;
@@ -165,11 +197,19 @@ int main(){
             request.presentMode=VK_PRESENT_MODE_FIFO_KHR;
             request.oldSwapchain=previous;request.pNext=&extension;
             VkSwapchainKHR next{};CHECK(createFn(logical,&request,nullptr,&next)==VK_SUCCESS && next);
+            CHECK(geometryCalls==geometryBefore);
             CHECK(submitted.preTransform==VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
             CHECK(submitted.imageExtent.width==request.imageExtent.width && submitted.imageExtent.height==request.imageExtent.height);
             CHECK(submitted.compositeAlpha==VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR && submitted.pNext==request.pNext);
             CHECK(submitted.oldSwapchain==previous && submitted.imageUsage==request.imageUsage && submitted.imageFormat==request.imageFormat);
             CHECK(request.preTransform==requestedTransform && request.compositeAlpha==VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+            uint32_t imageIndex=0;
+            VkPresentInfoKHR presentation{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            presentation.swapchainCount=1;presentation.pSwapchains=&next;presentation.pImageIndices=&imageIndex;
+            CHECK(presentFn(selectedQueue,&presentation)==VK_SUCCESS && geometryCalls==geometryBefore+1);
+            presentResult=VK_ERROR_OUT_OF_DATE_KHR;
+            CHECK(presentFn(selectedQueue,&presentation)==VK_ERROR_OUT_OF_DATE_KHR && geometryCalls==geometryBefore+1);
+            presentResult=VK_SUCCESS;
             if(previous)destroyFn(logical,previous,nullptr);previous=next;
         }
         VkSwapchainCreateInfoKHR rejected{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};

@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "source": "MRDI-W10 API26, actual Prominence G1 session1794460524584, no publication",
+  "files": {
+    "gameEvent": {
+      "filename": "event-game-rss.json",
+      "sha256": "c25a394a1b8fd03e760d6bdbe3b977f18d1594aef1c6e8296031df1737ebb3e6"
+    },
+    "hostEvent": {
+      "filename": "event-host-low-memory.json",
+      "sha256": "4ad95ca40fc73c9853b6a9f5831b32ade0de84fcb8e49af7d8d830f0cdf8fd9a"
+    },
+    "manifest": {
+      "filename": "game-manifest.json",
+      "sha256": "22def199c7ed5869c8818be0d8fcdb5ae7b9fc3e631d5fa5bc162377f7cc72ee"
+    },
+    "gameCapture": {
+      "filename": "capture-game.json",
+      "sha256": "cdd70c26adb80d66b78facbe1c412f2a054e7b3e4bae2ff3dff585ceae2e27a6"
+    }
+  },
+  "gameEvent": {
+    "schema": 1,
+    "domain": "OS",
+    "name": "APP_KILLED",
+    "receivedAt": 1794461497236,
+    "eventAt": 1794461384027,
+    "params": {
+      "app_running_unique_id": "2349954576225289227",
+      "bundle_version": "1.0.7-pre1",
+      "foreground": true,
+      "last_exit_detail_info": {
+        "exit_msg": "",
+        "kill_reason": "RssThresholdKiller",
+        "pid": "49558",
+        "process_name": "com.amcl.launcher:game",
+        "process_state": "2",
+        "pss": "7239793",
+        "rss": "7359531",
+        "timestamp": "1794461383995",
+        "uid": "20020252"
+      },
+      "reason": "RssThresholdKiller",
+      "time": 1794461384027
+    }
+  },
+  "hostEvent": {
+    "schema": 1,
+    "domain": "OS",
+    "name": "APP_KILLED",
+    "receivedAt": 1794461071057,
+    "eventAt": 1794461070960,
+    "params": {
+      "app_running_unique_id": "9847445142187263865",
+      "bundle_version": "1.0.7-pre1",
+      "foreground": false,
+      "last_exit_detail_info": {
+        "exit_msg": "",
+        "kill_reason": "LowMemoryKill",
+        "pid": "46120",
+        "process_name": "com.amcl.launcher",
+        "process_state": "4",
+        "pss": "363508",
+        "rss": "363508",
+        "timestamp": "1794461070870",
+        "uid": "20020252"
+      },
+      "reason": "LowMemoryKill",
+      "time": 1794461070960
+    }
+  },
+  "manifest": {
+    "schema": 1,
+    "activityId": 1794460524584,
+    "category": "launch",
+    "title": "AMCL-QA-pack17-prominence-1112",
+    "appVersion": "1.0.7-pre1",
+    "deviceModel": "MRDI-W10",
+    "osVersion": "OpenHarmony-7.0.0.111",
+    "startedAt": 1794460524584,
+    "endedAt": 1794461498639,
+    "state": 5,
+    "outcomeSource": "session.full-evidence",
+    "outcomeSummary": "游戏日志不可用或采集不完整，无法判定本次退出原因",
+    "errorKind": "",
+    "gameVersionId": "AMCL-QA-pack17-prominence-1112",
+    "loaderType": "fabric",
+    "loaderVersion": "0.19.3",
+    "jdk": "17",
+    "mcDir": "/storage/Users/currentUser/Download/com.amcl.launcher/.minecraft",
+    "appFilesDir": "/data/storage/el2/base/files",
+    "files": [
+      {
+        "name": "capture-sources.json",
+        "bytes": 3084
+      },
+      {
+        "name": "launcher/launcher-game.log",
+        "bytes": 145518
+      },
+      {
+        "name": "environment.json",
+        "bytes": 6014
+      },
+      {
+        "name": "capture-game.json",
+        "bytes": 181
+      },
+      {
+        "name": "render/renderer-game.log",
+        "bytes": 2397
+      },
+      {
+        "name": "game/logs/latest.log",
+        "bytes": 729666
+      },
+      {
+        "name": "game/mc_output.log",
+        "bytes": 1314939
+      },
+      {
+        "name": "configuration/log4j.xml",
+        "bytes": 1030
+      },
+      {
+        "name": "game-metadata.json",
+        "bytes": 602
+      },
+      {
+        "name": "jvm/jvm-stderr.log",
+        "bytes": 144
+      },
+      {
+        "name": "environment-observed.log",
+        "bytes": 605
+      },
+      {
+        "name": "native-io.json",
+        "bytes": 136
+      },
+      {
+        "name": "system/crash-tail.log",
+        "bytes": 31
+      }
+    ],
+    "revision": 6,
+    "recoveryInputKey": "e3df5f3704bb1f485c5458d2c8e160a9e21e31487f0c9c8f2b9e815b09f5af1e",
+    "platformInputKey": "",
+    "endTimeEstimated": true,
+    "recoveredAt": 1794461499013,
+    "pinned": false,
+    "parentActivityId": 0,
+    "relation": "",
+    "gameDir": "/storage/Users/currentUser/Download/com.amcl.launcher/.minecraft/versions/AMCL-QA-pack17-prominence-1112",
+    "ownerPid": 49558,
+    "runNonce": "547d8e44-e174-4756-bba5-03ea44dddb19"
+  },
+  "gameCapture": {
+    "schema": 1,
+    "activityId": 1794460524584,
+    "pid": 49558,
+    "sealed": false,
+    "captureMode": "full-with-repeat-counts",
+    "accepted": 1823,
+    "written": 1330,
+    "dropped": 0,
+    "writeFailures": 0,
+    "truncated": 0
+  }
+}

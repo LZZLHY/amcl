@@ -10,6 +10,7 @@
 #include <cmath>
 #include <memory>
 #include <new>
+#include <cstring>
 
 namespace {
 
@@ -170,6 +171,89 @@ void rejectLedgerEnd(napi_env env, napi_deferred deferred, const char* message) 
     if (error != nullptr) (void)napi_reject_deferred(env, deferred, error);
 }
 
+/**
+ * 异步开账只持有有界路径、数值身份和SDK工作句柄，不保存ArkUI对象或napi_ref。
+ * begin完成前不得启动真正producer；取消或完成投递失败时保留可能已打开的scope，
+ * 由账本owner重试/关闭，不能在JS回调中抢关可能已有调用方使用的同IDscope。
+ */
+struct LedgerBeginWork {
+    long long activityId = 0;
+    char directory[512] = {};
+    napi_async_work work = nullptr;
+    napi_deferred deferred = nullptr;
+    bool opened = false;
+    bool executionFailed = false;
+};
+
+/** SDK工作线程承担建目录、打开文件和耐久状态提交，不触碰任何JS句柄。 */
+void executeLedgerBegin(napi_env, void* data) {
+    auto* task = static_cast<LedgerBeginWork*>(data);
+    try { task->opened = amclLedgerBegin(task->activityId, task->directory) != 0; }
+    catch (...) { task->executionFailed = true; }
+}
+
+/** owner线程仅提交完成结果并释放work；布尔false保留原生开账失败语义。 */
+void completeLedgerBegin(napi_env env, napi_status status, void* data) {
+    std::unique_ptr<LedgerBeginWork> task(static_cast<LedgerBeginWork*>(data));
+    if (env == nullptr) return;
+    napi_value pending = nullptr;
+    if (takeLedgerException(env, &pending)) {
+        (void)napi_reject_deferred(env, task->deferred, pending);
+    } else if (status == napi_ok && !task->executionFailed) {
+        napi_value opened = nullptr;
+        if (napi_get_boolean(env, task->opened, &opened) == napi_ok)
+            (void)napi_resolve_deferred(env, task->deferred, opened);
+        else rejectLedgerEnd(env, task->deferred, "活动日志开账结果无法发布，请稍后重试");
+    } else {
+        rejectLedgerEnd(env, task->deferred, "活动日志开账未完成，原件已保留，请稍后重试");
+    }
+    if (task->work != nullptr) (void)napi_delete_async_work(env, task->work);
+}
+
+/**
+ * ArkTS → Promise<boolean>。JS入口只验证安全整数及固定上限路径，再创建真实async work。
+ * 不接受被截断或含NUL的目录，避免调用方以为已为目标目录开账却写到不同路径。
+ * 创建/排队失败返回拒绝的promise，native数据只有在SDK接管后才移交给complete释放。
+ */
+napi_value AmclLedgerBeginAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {};
+    double id = 0;
+    size_t bytes = 0;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 2
+        || napi_get_value_double(env, args[0], &id) != napi_ok || !std::isfinite(id)
+        || id <= 0 || id > 9007199254740991.0 || std::floor(id) != id
+        || napi_get_value_string_utf8(env, args[1], nullptr, 0, &bytes) != napi_ok
+        || bytes == 0 || bytes >= 512) {
+        (void)napi_throw_type_error(env, nullptr, "活动主键与日志目录必须有效，目录UTF-8长度须小于512字节");
+        return nullptr;
+    }
+    std::unique_ptr<LedgerBeginWork> task(new (std::nothrow) LedgerBeginWork());
+    if (!task) { (void)napi_throw_error(env, nullptr, "活动日志异步开账分配失败"); return nullptr; }
+    size_t copied = 0;
+    if (napi_get_value_string_utf8(env, args[1], task->directory, sizeof(task->directory), &copied) != napi_ok
+        || copied != bytes || std::strlen(task->directory) != bytes) {
+        (void)napi_throw_type_error(env, nullptr, "活动日志目录不可截断或包含空字符"); return nullptr;
+    }
+    task->activityId = static_cast<long long>(id);
+    napi_value promise = nullptr;
+    if (napi_create_promise(env, &task->deferred, &promise) != napi_ok) {
+        (void)napi_throw_error(env, nullptr, "活动日志异步开账无法创建完成凭据"); return nullptr;
+    }
+    napi_value resource = nullptr;
+    napi_status status = napi_create_string_utf8(env, "amclLedgerBeginAsync", NAPI_AUTO_LENGTH, &resource);
+    if (status == napi_ok) status = napi_create_async_work(env, nullptr, resource, executeLedgerBegin,
+        completeLedgerBegin, task.get(), &task->work);
+    if (status == napi_ok) status = napi_queue_async_work(env, task->work);
+    if (status != napi_ok) {
+        if (task->work != nullptr) (void)napi_delete_async_work(env, task->work);
+        rejectLedgerEnd(env, task->deferred, "活动日志异步开账未能排队，请稍后重试");
+    } else {
+        (void)task.release();
+    }
+    return promise;
+}
+
 /** 工作线程只调用原生 writer 关闭协议，不触碰 env、JS 值或 UI 状态。 */
 void executeLedgerEnd(napi_env, void* data) {
     auto* task = static_cast<LedgerEndWork*>(data);
@@ -294,6 +378,7 @@ constexpr napi_property_descriptor kLogDescriptors[] = {
     NAPI_FUNC("amclLogWrite",    AmclLogWrite),
     // 活动账本（L1-a）
     NAPI_FUNC("amclLedgerBegin",  AmclLedgerBegin),
+    NAPI_FUNC("amclLedgerBeginAsync", AmclLedgerBeginAsync),
     NAPI_FUNC("amclLedgerEnd",    AmclLedgerEnd),
     NAPI_FUNC("amclLedgerEndAsync", AmclLedgerEndAsync),
     NAPI_FUNC("amclLedgerEndAll", AmclLedgerEndAll),

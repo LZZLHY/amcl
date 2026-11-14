@@ -90,7 +90,7 @@ inline std::string formatLine(const Entry &e) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "%s %02x %02x %02x %02x %8s",
                   formatAddrHex(e.addr).c_str(),
-                  e.ifIndex & 0xffu,
+                  e.ifIndex,  // %02x 是最小显示宽度，不能截断真实 32 位接口编号。
                   e.prefixLen & 0xffu,
                   e.scope & 0xffu,
                   e.flags & 0xffu,

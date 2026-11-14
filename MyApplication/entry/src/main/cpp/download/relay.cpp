@@ -24,6 +24,7 @@ namespace {
 
 std::shared_mutex g_mu;
 RelayConfig       g_cfg;
+uint64_t          g_generation = 0; // 与g_cfg同锁；提交前撤销旧配置生成的凭据计划。
 
 std::atomic<int64_t> g_requests{0};
 std::atomic<int64_t> g_failures{0};
@@ -113,6 +114,7 @@ void relaySetConfig(const RelayConfig& cfg) {
     {
         std::unique_lock<std::shared_mutex> lk(g_mu);
         g_cfg = cfg;
+        ++g_generation;
     }
     // 重新注入配置视为"恢复健康"：清掉熔断，让新票据立刻可用
     g_consecutive_failures.store(0, std::memory_order_relaxed);
@@ -126,6 +128,7 @@ void relaySetConfig(const RelayConfig& cfg) {
 void relayDisable() {
     std::unique_lock<std::shared_mutex> lk(g_mu);
     g_cfg = RelayConfig{};
+    ++g_generation;
     AMCL_LOG_I(LOG_TAG, "relay disabled");
 }
 
@@ -175,7 +178,60 @@ bool relayIsRelayUrl(const std::string& url) {
     if (g_cfg.base.empty()) return false;
     std::string base = g_cfg.base;
     while (!base.empty() && base.back() == '/') base.pop_back();
-    return url.size() > base.size() && url.compare(0, base.size(), base) == 0;
+    const std::string prefix = base + "/p/";
+    return url.size() > prefix.size() && url.compare(0, prefix.size(), prefix) == 0;
+}
+
+RelayRequestPlan relayPrepareRequest(const std::string& method, const std::string& url,
+                                    bool allow_relay, bool rewrite_official, bool force_direct) {
+    RelayRequestPlan plan;
+    plan.url = url;
+    plan.fallback = force_direct;
+    if (!allow_relay || force_direct || relayTripped()) return plan;
+    RelayConfig snapshot;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_mu);
+        snapshot = g_cfg;
+        plan.generation = g_generation;
+    }
+    if (!snapshot.enabled || snapshot.base.empty() || snapshot.ticket.empty() ||
+        (snapshot.require_proof && snapshot.session_key.empty()) ||
+        (snapshot.expires_at_ms > 0 && nowMs() >= snapshot.expires_at_ms - 30000)) return plan;
+    std::string base = snapshot.base;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    const std::string prefix = base + "/p/";
+    if (!(url.size() > prefix.size() && url.compare(0, prefix.size(), prefix) == 0)) {
+        std::string host, rest;
+        if (!rewrite_official || !splitUrl(url, host, rest) || !isOfficialHost(host) ||
+            rest.find("..") != std::string::npos) return plan;
+        plan.url = prefix + host + rest; // 原始%编码与query不做转换。
+    }
+    plan.via_relay = true;
+    plan.headers.push_back("Authorization: Bearer " + snapshot.ticket);
+    if (snapshot.require_proof) {
+        const std::string ts = std::to_string(nowMs());
+        const std::string nonce = randomNonceHex();
+        const std::string raw = plan.url.substr(base.size());
+        const std::string canonical = "v1\n" + method + "\n" + raw + "\n" + ts + "\n" + nonce;
+        plan.headers.push_back("X-AMCL-Ts: " + ts);
+        plan.headers.push_back("X-AMCL-Nonce: " + nonce);
+        plan.headers.push_back("X-AMCL-Sig: " + hmacSha256Hex(snapshot.session_key, canonical));
+    }
+    return plan;
+}
+
+bool relaySubmitRequest(const RelayRequestPlan& plan, const std::function<bool()>& submit) {
+    if (plan.via_relay) {
+        std::shared_lock<std::shared_mutex> lock(g_mu);
+        if (plan.generation != g_generation || !g_cfg.enabled || relayTripped() ||
+            (g_cfg.expires_at_ms > 0 && nowMs() >= g_cfg.expires_at_ms - 30000)) return false;
+        if (!submit()) return false;
+        g_requests.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    if (!submit()) return false;
+    if (plan.fallback) g_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 bool relayBuildAuthHeaders(const std::string& method,
@@ -222,7 +278,7 @@ bool relayBuildAuthHeaders(const std::string& method,
     out_ts = "X-AMCL-Ts: " + ts;
     out_nonce = "X-AMCL-Nonce: " + nonce;
     out_sig = "X-AMCL-Sig: " + sig;
-    g_requests.fetch_add(1, std::memory_order_relaxed);
+    // 这里只准备头；真实请求统计由两个执行器在提交transport时统一记录。
     return true;
 }
 

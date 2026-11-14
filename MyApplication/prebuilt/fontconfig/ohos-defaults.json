@@ -1,0 +1,12 @@
+{
+  "commit": "6d0a98982ec351c165c9224c8b7dbdfca3010e47",
+  "patchSha256": "89b6f87b1198b2d6979d9208644b315bec78c616bdc90c74ef1047931e5ea7ba",
+  "before": {
+    "src/fcinit.c": "aede89b6faf356b68f0dafa4b54b5c5b744abaf1b30a86f7984c6085daa34e3f",
+    "src/fccfg.c": "28ad205cb71cb4dfbcb5aad4761f58082188ff21a95b9445f2e30a33fcc5fe28"
+  },
+  "after": {
+    "src/fcinit.c": "d34327e9f1cdd81a62abe9040fc0eada391a7ff52e82f56bdd9e7e4a310005f6",
+    "src/fccfg.c": "26e6941b5a65f5c342d8f2c70a4453a494a8852b5f78b1e9faf227edab7e8501"
+  }
+}

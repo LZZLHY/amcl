@@ -122,8 +122,22 @@ bool consumerCurrent(const Consumer& c,const AmclControlSnapshotV1& facts){retur
     c.stats.activation==facts.activation&&c.stats.target==facts.target&&c.stats.backend==facts.backend;}
 // 数学失败/overflow之前不改变family或stream。一次family采样先sum所有原增量，使用原
 // math计算公共gain/alpha，再分到每流；pending单位固定，旧policy余量不会重新缩放。
-bool processFamily(std::array<Family,AMCL_INPUT_SOURCE_COUNT+1>& families,std::map<uint64_t,Stream>& streams,
-        size_t index,const std::map<uint64_t,Pair>& raw,int64_t ns){
+// 同一数学实现接受完整表或栈上单流候选。常见样本不为一个raw值构造map节点，
+// 多设备同族仍按原map顺序归约，保留抵消、平滑余量和舍入锚点。
+using SingleStream = std::array<std::pair<uint64_t,Stream>,1>;
+using SingleSample = std::array<std::pair<uint64_t,Pair>,1>;
+Pair sampleFor(const std::map<uint64_t,Pair>& values,uint64_t id) {
+    const auto found=values.find(id);return found==values.end()?Pair{}:found->second;
+}
+Pair sampleFor(const SingleSample& values,uint64_t id) {
+    return values[0].first==id?values[0].second:Pair{};
+}
+Stream& streamFor(std::map<uint64_t,Stream>& values,uint64_t id) {return values.at(id);}
+Stream& streamFor(SingleStream& values,uint64_t) {return values[0].second;}
+SingleSample singleSample(uint64_t id,Pair value) {return {{{id,value}}};}
+template<class Streams,class Samples>
+bool processFamily(std::array<Family,AMCL_INPUT_SOURCE_COUNT+1>& families,Streams& streams,
+        size_t index,const Samples& raw,int64_t ns){
     auto& f=families[index];Pair input{},pending{};
     for(const auto& e:raw){input.x+=e.second.x;input.y+=e.second.y;}
     for(const auto& e:streams)if(e.second.active&&familyOf(e.second)==index){pending.x+=e.second.pending.x;pending.y+=e.second.pending.y;}
@@ -136,7 +150,7 @@ bool processFamily(std::array<Family,AMCL_INPUT_SOURCE_COUNT+1>& families,std::m
     if(!amcl::input::ComputeLookDeltaMath(math,&output))return false;
     Pair emitted{},remaining{};uint64_t anchor=0;
     for(auto& e:streams){auto& s=e.second;if(!s.active||familyOf(s)!=index)continue;
-        const auto found=raw.find(e.first);const Pair sample=found==raw.end()?Pair{}:found->second;
+        const Pair sample=sampleFor(raw,e.first);
         const Pair total{s.pending.x+sample.x*output.appliedGain,
             s.pending.y+sample.y*output.appliedGain*(math.invertY?-1.0:1.0)};
         const Pair emit{total.x*output.appliedAlpha,total.y*output.appliedAlpha};
@@ -147,7 +161,7 @@ bool processFamily(std::array<Family,AMCL_INPUT_SOURCE_COUNT+1>& families,std::m
     }
     // 线性分贡献会改变乘法/求和舍入顺序。把微小残差归给确定的同族anchor，使整体emit/
     // pending逐值回到旧“一次sum后math”输出，避免floor整数阈值因拆device改变一count。
-    if(anchor){auto& s=streams.at(anchor);s.owed.x+=output.emitDx-emitted.x;s.owed.y+=output.emitDy-emitted.y;
+    if(anchor){auto& s=streamFor(streams,anchor);s.owed.x+=output.emitDx-emitted.x;s.owed.y+=output.emitDy-emitted.y;
         s.pending.x+=output.pendingDx-remaining.x;s.pending.y+=output.pendingDy-remaining.y;
         if(!finite(s.owed)||!finite(s.pending))return false;}
     f.last=output.lastTimeNs;f.stats.NoteAccepted(output.emitDx+output.pendingDx-pending.x,
@@ -217,7 +231,7 @@ int32_t delta(uint64_t handle,double x,double y,uint64_t ns){if(foreign())return
         // sample clock只检本流；family math使用接受时钟，避免同为ns的不同域相互拒绝/排序。
         const int64_t mathNs=it->second.description.clock==AMCL_LOOK_OWNER_MONOTONIC?static_cast<int64_t>(ns):
             static_cast<int64_t>(ownerNow());
-        if(!processFamily(families,streams,family,{{handle,{x,y}}},mathNs))return AMCL_LOOK_REJECTED;
+        if(!processFamily(families,streams,family,singleSample(handle,{x,y}),mathNs))return AMCL_LOOK_REJECTED;
         streams.at(handle).sample=ns;r.families=std::move(families);r.streams=std::move(streams);backlog(r);return 0;
     }catch(const std::bad_alloc&){return AMCL_LOOK_PRESSURE;}}
 int32_t velocity(uint64_t handle,double x,double y,uint64_t ns){if(foreign())return AMCL_LOOK_NOT_READY;
@@ -234,12 +248,63 @@ int32_t advance(uint64_t session,uint64_t ns){if(foreign())return AMCL_LOOK_NOT_
     auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);if(r.session!=session||!r.grabbed)return AMCL_LOOK_STALE;
     try{auto families=r.families;auto streams=r.streams;if(!advanceCandidate(families,streams,ns))return AMCL_LOOK_REJECTED;
         r.families=std::move(families);r.streams=std::move(streams);backlog(r);return 0;}catch(const std::bad_alloc&){return AMCL_LOOK_PRESSURE;}}
+/** 单流触摸/gyro的局部候选。只在同族唯一、无待积分速率和其它owed时使用；其它来源
+ * pending保留原值。任何共同积分/多流求和仍走下方完整事务，不按当前流猜其它流已空。
+ * 调用方持look锁；分配只发生在新增不可变prefix，成功前不改变数学、sample或token。 */
+bool trySealSingle(Registry& r,uint64_t handle,double dx,double dy,uint64_t sampleNs,
+        uint64_t order,uint64_t ns,uint32_t flush,AmclLookPrefixV1* output,bool processed,int32_t& result) {
+    if (!handle || flush==1) return false;
+    const auto found=r.streams.find(handle);
+    if(found==r.streams.end()||!found->second.active) {result=AMCL_LOOK_STALE;return true;}
+    const size_t family=familyOf(found->second);
+    for(const auto& entry:r.streams) if(entry.second.active) {
+        if(entry.second.description.kind==AMCL_LOOK_MAPPED_RATE) return false;
+        if(entry.first!=handle&&(familyOf(entry.second)==family||entry.second.owed.x!=0||entry.second.owed.y!=0)) return false;
+    }
+    auto families=r.families;
+    SingleStream streams{{{handle,found->second}}};auto& current=streams[0].second;
+    result=AMCL_LOOK_REJECTED;
+    if(!modeCurrent(r,current.description.resource)) {result=AMCL_LOOK_STALE;return true;}
+    if((current.description.reserved&AMCL_LOOK_STREAM_POLICY_LEASE)&&current.policyEpoch!=families[family].policyEpoch) {
+        result=AMCL_LOOK_STALE;return true;
+    }
+    if(!finite({dx,dy})||(flush==2&&(dx!=0||dy!=0))) return true;
+    if(flush!=2) {
+        if(!sampleNs||sampleNs>INT64_MAX||sampleNs<current.sample) return true;
+        if(processed) {current.owed.x+=dx;current.owed.y+=dy;if(!finite(current.owed))return true;}
+        else if(!processFamily(families,streams,family,singleSample(handle,{dx,dy}),
+            static_cast<int64_t>(current.description.kind==AMCL_LOOK_GYRO_DELTA?ns:sampleNs))) return true;
+        current.sample=sampleNs;
+    }
+    Pair delivered=current.owed;
+    if(flush==2) {delivered.x+=current.pending.x;delivered.y+=current.pending.y;}
+    if(!finite(delivered)||std::abs(delivered.x)>std::numeric_limits<float>::max()||
+        std::abs(delivered.y)>std::numeric_limits<float>::max())return true;
+    if(flush==2&&(current.pending.x!=0||current.pending.y!=0))
+        families[family].stats.NoteFlush(true,current.pending.x,current.pending.y);
+    if(delivered.x!=0||delivered.y!=0) {
+        Prefix prefix;prefix.identity.size=sizeof(AmclLookPrefixV1);prefix.identity.token=r.nextPrefix;
+        prefix.identity.order=order;prefix.identity.gameSession=r.session;prefix.identity.resource=current.description.resource;
+        prefix.contributions.emplace(handle,delivered);const auto identity=prefix.identity;
+        r.prefixes.emplace(identity.token,std::move(prefix));
+        ++r.nextPrefix;current.owed={};if(flush==2)current.pending={};*output=identity;
+        result=AMCL_LOOK_PREFIX_READY;
+#if AMCL_INPUT_TRACE
+        amclInputLatencyAcceptV1(identity.token,identity.order,identity.gameSession,1);
+#endif
+    } else result=0;
+    found->second=current;r.families[family]=families[family];
+    return true;
+}
+
 int32_t sealCandidate(uint64_t handle,double dx,double dy,uint64_t sampleNs,uint64_t session,uint64_t order,uint64_t ns,uint32_t flush,AmclLookPrefixV1* output,bool processed=false){if(output)*output={};
     if(foreign())return AMCL_LOOK_NOT_READY;if(!output||!order||!ns||ns>INT64_MAX||flush>2||(flush==2&&!handle))return AMCL_LOOK_REJECTED;
     auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);if(r.session!=session||!r.grabbed)return AMCL_LOOK_STALE;
     // 运输方须先预留真实ring空间；prefix本身容量与所有候选分配也在数学提交之前核验。
     if(r.prefixes.size()>=kPrefixes||r.nextPrefix==UINT64_MAX)return AMCL_LOOK_PRESSURE;
-    try{auto families=r.families;auto streams=r.streams;if(!advanceCandidate(families,streams,ns))return AMCL_LOOK_REJECTED;
+    try{int32_t singleResult=0;
+        if(trySealSingle(r,handle,dx,dy,sampleNs,order,ns,flush,output,processed,singleResult))return singleResult;
+        auto families=r.families;auto streams=r.streams;if(!advanceCandidate(families,streams,ns))return AMCL_LOOK_REJECTED;
         if(handle){auto it=streams.find(handle);if(it==streams.end()||!it->second.active||!modeCurrent(r,it->second.description.resource))return AMCL_LOOK_STALE;
             if((it->second.description.reserved&AMCL_LOOK_STREAM_POLICY_LEASE)&&it->second.policyEpoch!=families[familyOf(it->second)].policyEpoch)return AMCL_LOOK_STALE;
             if(!finite({dx,dy})||it->second.description.kind==AMCL_LOOK_MAPPED_RATE)return AMCL_LOOK_REJECTED;
@@ -256,7 +321,7 @@ int32_t sealCandidate(uint64_t handle,double dx,double dy,uint64_t sampleNs,uint
                     // 手指/明确旧delta仍保原声明采样clock的加速与平滑系数；gyro STARTUP
                     // 只检本流次序并用owner接受clock即时线性处理，不把同ns数值强作同域。
                     const int64_t mathNs=it->second.description.kind==AMCL_LOOK_GYRO_DELTA?static_cast<int64_t>(ns):static_cast<int64_t>(sampleNs);
-                    if(!processFamily(families,streams,familyOf(it->second),{{handle,{dx,dy}}},mathNs))return AMCL_LOOK_REJECTED;
+                    if(!processFamily(families,streams,familyOf(it->second),singleSample(handle,{dx,dy}),mathNs))return AMCL_LOOK_REJECTED;
                 }
                 it->second.sample=sampleNs;}}
         std::array<Pair,AMCL_INPUT_SOURCE_COUNT+1> flushed{};
@@ -277,7 +342,7 @@ int32_t sealCandidate(uint64_t handle,double dx,double dy,uint64_t sampleNs,uint
         if(!finite(combined)||std::abs(combined.x)>std::numeric_limits<float>::max()||std::abs(combined.y)>std::numeric_limits<float>::max())return AMCL_LOOK_REJECTED;
         for(size_t i=0;i<flushed.size();++i)if(flushed[i].x!=0||flushed[i].y!=0)families[i].stats.NoteFlush(true,flushed[i].x,flushed[i].y);
         if(candidate.contributions.empty()){r.families=std::move(families);r.streams=std::move(streams);return 0;}
-        candidate.identity.token=r.nextPrefix++;const auto identity=candidate.identity;r.prefixes.emplace(identity.token,std::move(candidate));
+        candidate.identity.token=r.nextPrefix;const auto identity=candidate.identity;r.prefixes.emplace(identity.token,std::move(candidate));++r.nextPrefix;
         r.families=std::move(families);r.streams=std::move(streams);*output=identity;
 #if AMCL_INPUT_TRACE
         // 真候选成功后才记接受；此前失败不伪造接受。贡献范围尚未逐样本绑定，导出明确unknown。
@@ -408,6 +473,66 @@ int32_t abandonPrefix(uint64_t handle,uint64_t token){if(foreign())return AMCL_L
     if(c==r.consumers.end()||p==r.prefixes.end())return AMCL_LOOK_STALE;
     for(const auto& t:c->second.tickets)if(t.second.emission.prefix==token)return AMCL_LOOK_NOT_READY;
     p->second.receivers&=~(1u<<(c->second.stats.backend-1));++c->second.stats.discarded;return 0;}
+/** 已建立且同族唯一的实体流只准备本样本。三个新增索引节点在锁内先插入，任一步分配
+ * 失败只撤本次插入；流、时钟和计数直到全部准备完才提交，不复制积压prefix/事实表。
+ * 新设备、换资源、多实体流或容量压力仍使用完整候选，保证原有聚合及压力语义。 */
+bool tryPhysicalSingle(Registry& r,const AmclInputLookFactV1& fact,int32_t& result) {
+    const auto& event=fact.event;
+    const auto device=r.physicalStreams.find(event.header.deviceId);
+    if(device==r.physicalStreams.end())return false;
+    const auto found=r.streams.find(device->second);
+    if(found==r.streams.end()||!found->second.active)return false;
+    const uint64_t handle=found->first;
+    for(const auto& entry:r.streams)
+        if(entry.first!=handle&&entry.second.active&&familyOf(entry.second)==3)return false;
+    if(r.prefixes.size()>=kPrefixes||r.nextPrefix==UINT64_MAX)return false;
+    const auto& old=found->second.description.resource;
+    if(old.sessionEpoch!=event.header.sessionEpoch||old.surfaceEpoch!=event.header.surfaceEpoch||
+        old.focusEpoch!=event.header.focusEpoch||!modeCurrent(r,old)||
+        !amcl::input::SameInputSurfaceContextIdentity(old.context,fact.context))return false;
+    result=AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    if(event.header.eventType!=AMCL_INPUT_EVENT_POINTER_RELATIVE||!event.header.sequence||!fact.interactionOrder||
+        !event.header.monotonicTimeNs||event.header.monotonicTimeNs>INT64_MAX||!fact.context.generation||
+        r.physicalFacts.count(event.header.sequence)||r.physicalOrders.count(fact.interactionOrder))return true;
+    const Pair raw{event.payload.pointerRelative.rawDx,event.payload.pointerRelative.rawDy};
+    if(!finite(raw)||std::abs(raw.x)>std::numeric_limits<float>::max()||std::abs(raw.y)>std::numeric_limits<float>::max())return true;
+    auto families=r.families;SingleStream streams{{{handle,found->second}}};
+    if(!processFamily(families,streams,3,singleSample(handle,raw),static_cast<int64_t>(event.header.monotonicTimeNs)))return true;
+    auto& current=streams[0].second;const Pair delivered=current.owed;
+    if(!finite(delivered)||std::abs(delivered.x)>std::numeric_limits<float>::max()||std::abs(delivered.y)>std::numeric_limits<float>::max())return true;
+    const uint64_t token=r.nextPrefix;
+    Prefix prefix;prefix.identity.size=sizeof(AmclLookPrefixV1);prefix.identity.token=token;
+    prefix.identity.order=fact.interactionOrder;prefix.identity.gameSession=r.session;prefix.identity.resource=old;
+    // 元数据沿本次Core接受快照，不能冻结成最初一条样本的Hz/validBits。
+    prefix.identity.resource.context=fact.context;
+    prefix.contributions.emplace(handle,delivered);prefix.transported=true;prefix.receivers=fact.backendMask&r.activeBackends&7u;
+    struct InsertRollback {
+        Registry& registry;uint64_t token,sequence,order;bool prefix=false,fact=false,ordered=false,committed=false;
+        ~InsertRollback(){if(!committed){if(ordered)registry.physicalOrders.erase(order);
+            if(fact)registry.physicalFacts.erase(sequence);if(prefix)registry.prefixes.erase(token);}}
+    } rollback{r,token,event.header.sequence,fact.interactionOrder};
+    rollback.prefix=r.prefixes.emplace(token,std::move(prefix)).second;
+    if(!rollback.prefix)return true;
+    rollback.fact=r.physicalFacts.emplace(event.header.sequence,token).second;
+    if(!rollback.fact)return true;
+    rollback.ordered=r.physicalOrders.emplace(fact.interactionOrder,token).second;
+    if(!rollback.ordered)return true;
+    current.owed={};current.sample=event.header.monotonicTimeNs;
+    found->second=current;r.families[3]=families[3];++r.nextPrefix;rollback.committed=true;
+    // 稳态只回收队首最多8个完成项，不每个MOVE扫描全部积压；被慢消费者挡住时，
+    // 容量门会进入原完整候选回收/压力路径，未消费记录不被提前抹去。
+    for(size_t n=0;n<8&&!r.physicalFacts.empty();++n) {
+        const auto first=r.physicalFacts.begin();if(first->first==event.header.sequence)break;
+        const auto prior=r.prefixes.find(first->second);
+        if(prior!=r.prefixes.end()&&prior->second.receivers)break;
+        const uint64_t retired=first->second;
+        if(prior!=r.prefixes.end()){r.physicalOrders.erase(prior->second.identity.order);r.prefixes.erase(prior);}
+        r.physicalFacts.erase(first);
+        for(auto& consumer:r.consumers)consumer.second.used.erase(retired);
+    }
+    result=AMCL_INPUT_OK;return true;
+}
+
 /** Core持自己的接受mutex调用本hook；这里从不反查Core/ABI。整个physical批次以候选提交，
  * 任一数学/容量/浮点边界失败保持所有family/stream/memo原值，由Core回滚其完整接受事务。 */
 int32_t acceptPhysical(const AmclInputLookFactV1* facts,uint32_t count){if(foreign())return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
@@ -421,6 +546,8 @@ int32_t acceptPhysical(const AmclInputLookFactV1* facts,uint32_t count){if(forei
     }
     if(!r.session||!r.grabbed)return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
     try{
+        int32_t singleResult=0;
+        if(count==1&&tryPhysicalSingle(r,facts[0],singleResult))return singleResult;
         // 已终结physical memo在下一接受点回收，ring prefix由原ring GC负责；共享预算不得无界涨。
         auto prefixes=r.prefixes;auto physicalFacts=r.physicalFacts;auto orders=r.physicalOrders;std::vector<uint64_t> reclaimed;
         for(auto it=physicalFacts.begin();it!=physicalFacts.end();){const auto prefix=prefixes.find(it->second);
@@ -457,7 +584,7 @@ int32_t acceptPhysical(const AmclInputLookFactV1* facts,uint32_t count){if(forei
             // 不能靠低sensitivity把非法raw缩小后假接受，随后EncodeRaw丢记录却留下memo保留位。
             if(!finite(raw)||std::abs(raw.x)>std::numeric_limits<float>::max()||std::abs(raw.y)>std::numeric_limits<float>::max())
                 return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
-            if(!processFamily(families,streams,3,{{handle,raw}},static_cast<int64_t>(event.header.monotonicTimeNs)))
+            if(!processFamily(families,streams,3,singleSample(handle,raw),static_cast<int64_t>(event.header.monotonicTimeNs)))
                 return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
             auto& current=streams.at(handle);const Pair delivered=current.owed;
             // 三消费者最窄SDL float边界在接受前统一拒绝，不能加工成功后到某consumer才溢出。
@@ -538,7 +665,7 @@ extern "C" bool amclLookCompatProcess(int32_t source,double x,double y,int64_t n
     const uint64_t id=UINT64_MAX-index;
     try{auto families=r.families;auto streams=r.streams;auto& s=streams[id];s.active=true;s.description.source=source;
         s.description.kind=gyro?AMCL_LOOK_GYRO_DELTA:AMCL_LOOK_COMPAT_DELTA;
-        const Pair before=s.owed;if(!processFamily(families,streams,index,{{id,{x,y}}},ns))return false;
+        const Pair before=s.owed;if(!processFamily(families,streams,index,singleSample(id,{x,y}),ns))return false;
         const Pair output{streams.at(id).owed.x-before.x,streams.at(id).owed.y-before.y};streams.at(id).owed=before;
         r.families=std::move(families);r.streams=std::move(streams);backlog(r);*outX=output.x;*outY=output.y;return true;
     }catch(const std::bad_alloc&){return false;}}

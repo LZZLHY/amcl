@@ -1,5 +1,5 @@
 /** 按文件流读取完整日志事件；分页不拆异常链，所有显示行保留原文件位置。 */
-import { EvidenceTextCursor, evidenceFileStamp, LogEventParser, LogEventRecord,
+import { EvidenceTextCursor, evidenceFileStampAsync, LogEventParser, LogEventRecord,
   LogEventLine, logEventMatches, logLineSeverity } from 'commons';
 
 export interface LogReadSource { path: string; compressed: boolean; }
@@ -248,9 +248,15 @@ export class ActivityLogModel implements IDataSource {
     this.activeCursor?.cancel();
     let key: string;
     try {
-      key = JSON.stringify(sources.map((source: LogReadSource): string => source.path + ':' + source.compressed
-        + ':' + evidenceFileStamp(source.path))) + ':' + minLevel + ':' + keyword.toLowerCase() + ':' + fromLine;
-    } catch (e) { this.discardIdle_(); this.pageCache.clear(); throw (e as Error); }
+      // 缓存身份也异步核实；取消期间完成的旧stat不得清掉新页的游标与缓存。
+      const stamps: string[] = await Promise.all(sources.map(async (source: LogReadSource): Promise<string> =>
+        source.path + ':' + source.compressed + ':' + await evidenceFileStampAsync(source.path)));
+      key = JSON.stringify(stamps) + ':' + minLevel + ':' + keyword.toLowerCase() + ':' + fromLine;
+    } catch (e) {
+      if (generation !== this.generation) return false;
+      this.discardIdle_(); this.pageCache.clear(); throw (e as Error);
+    }
+    if (generation !== this.generation) return false;
     if (key !== this.scanKey) { this.discardIdle_(); this.pageCache.clear(); this.scanKey = key; }
     const cached: LogCachedPage | undefined = this.pageCache.get(skipMatches);
     if (cached !== undefined) { this.publishPage_(cached); return true; }

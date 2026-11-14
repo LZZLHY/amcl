@@ -110,3 +110,52 @@
 # JFR BitSet 的 BitMap 析构必须看到 ArrayAllocator 的真实模板定义。
 # 只修正这一编译单元，保持既有分配/释放语义及其他 JDK 的补丁不变。
 0013-jfr-bitset-allocation-template.patch
+
+# 嵌入行为只在真实宿主内启用，独立 CLI 保留上游行为；8 另恢复完整 Applet 类层。
+0014-ohos-embedded-boundary-and-class-closure.patch
+
+# 保留真实系统身份；具名 OHOS 使用已编译的 POSIX/Linux 实现与工具后端。
+0017-ohos-runtime-platform-dispatch.patch
+
+# 字体回退保全新增覆盖与真实文件；变量实例名不可触发默认物理字体替换。
+0018-fontconfig-preserve-fallback-coverage.patch
+
+# zipfs：只跳过同对象完整mode无变化复制，真实权限步骤先于原ZIP删除/挪动。
+0019-zipfs-permission-copy-transaction.patch
+
+# AWT加载逐步检查JNI异常；只缓存完整成功的headless值，不缓存线程env或默认false。
+# 失败保留pending异常并返回JNI_ERR，成功热路径不再调用Java；仅8有此原版漏查点。
+0020-jni-font-library-exception-check.patch
+
+# 正式Java编译保留UTF-8中文适配注释/文本，覆盖bootstrap及目标编译。
+0021-java-source-utf8.patch
+
+# FreeType→Java流读桥：异常/短读不发布伪缓存，保留首错和正常热命中。
+0022-freetype-stream-jni-and-cache-boundary.patch
+
+# API20 真实 OHOS PCM Playback；保留原 Java/JNI，异常清理、回调/代码寿命及完整帧队列。
+# 由共享 javasound 源生成；MIDI/Ports/Capture 与设备听感资格独立，不追认旧包。
+0023-ohos-javasound-daudio-playback.patch
+
+# OHOS childproc: raw getdents64闭合FD/显式execve；现代仅实际uname默认FORK，8保留VFORK。
+0024-ohos-childproc-safe-fork.patch
+
+# API20双向PCM与正常签名宿主的同源数据回调；保留CFI，真实权限/设备资格独立。
+0025-ohos-javasound-duplex-host-callbacks.patch
+
+# 可选API24 OH_MIDI与实际设备Ports；最低API20不变，硬件资格独立验证。
+0026-ohos-javasound-native-midi.patch
+0027-ohos-javasound-device-ports.patch
+
+# 实际呈现时钟映射用户PCM/静音区间；Flush坐标归零，签名宿主回调ABI2。
+0028-ohos-javasound-presentation-timeline.patch
+
+# 启动TMPDIR冻结、Attach/PerfData统一路径；实际只读marker与宿主单owner契约配套。
+0030-ohos-native-temp-contract.patch
+# OHOS应用UID无NSS条目时仅用真实UID命名PerfData，权限与工具发现规则保留。
+0031-ohos-perfdata-uid-identity.patch
+# 正常Destroy撤销Attach持久路径；保留原监听FD/daemon到进程退出边界。
+0032-ohos-attach-vm-exit-path.patch
+
+# 已签名宿主存在时共享PCM owner、录音政策与流生命周期；独立CLI保持原生后端。
+0033-ohos-javasound-shared-pcm-owner.patch

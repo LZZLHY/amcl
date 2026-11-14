@@ -215,7 +215,8 @@ test('async开账与终态队列顺序保持，native关闭真正await，实时�
   try {
     let release, enteredResolve, closed = false;
     const entered = new Promise(resolve => { enteredResolve = resolve; }); const gate = new Promise(resolve => { release = resolve; });
-    f.ledger.setLedgerScopeSink({ begin: () => true, end: () => assert.fail('异步封账不能调用同步native wait'), endAll() {},
+    f.ledger.setLedgerScopeSink({ begin: () => true, async beginAsync() { return true; },
+      end: () => assert.fail('异步封账不能调用同步native wait'), endAll() {},
       async endAsync() { enteredResolve(); await gate; closed = true; } });
     const beginning = f.ledger.ledgerBeginAsync(f.root, 100, { category: 'download', title: 'async task' });
     const ending = f.ledger.ledgerEndAsync(f.root, 100, { state: f.ledger.LedgerState.SUCCESS, source: 'task.completed', summary: 'done' });
@@ -243,10 +244,13 @@ test('clear全集预检与claim失败零删除；成功整批仅一份索引，�
       return readText(p);
     };
     const pending = f.ledger.ledgerClearAsync(f.root); await entered;
-    // ID3已完成预检；随后新租约在整批claim阶段再次阻止清理，证明没有TOCTOU遗漏。
-    f.io.acquireEvidenceLease(f.root, 3); release(); await assert.rejects(pending, /读取或删除/);
+    // 全集已在异步预检前认领，新 reader 必须被拒绝；外部损坏仍须在首个删除前发现。
+    assert.throws(() => f.io.acquireEvidenceLease(f.root, 3), /正在删除/);
+    const damaged = f.ledger.ledgerDirOf(f.root, 3) + '/manifest.json';
+    const original = fs.readFileSync(damaged); fs.writeFileSync(damaged, '{broken');
+    release(); await assert.rejects(pending, /清单无法读取/);
     for (const id of [1, 2, 3]) assert.ok(fs.existsSync(f.ledger.ledgerDirOf(f.root, id)));
-    f.io.releaseEvidenceLease(f.root, 3); f.runtime.kitFs.readText = readText; await f.flush();
+    fs.writeFileSync(damaged, original); f.runtime.kitFs.readText = readText; await f.flush();
     const counters = f.ledger.ledgerMaintenanceCounters();
     await f.ledger.ledgerClearAsync(f.root); await f.flush();
     assert.deepEqual(await f.ledger.ledgerListAsync(f.root), []);

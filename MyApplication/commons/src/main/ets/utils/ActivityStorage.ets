@@ -3,7 +3,7 @@
  * 不静默削减每版本保留承诺；保留/删除仍由 ActivityLedger 的统一保护规则执行。
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { ledgerListAsync, ledgerManifestAsync, LedgerState } from './ActivityLedger';
+import { ledgerReadSnapshotAsync, LedgerState } from './ActivityLedger';
 import { acquireEvidenceLease, releaseEvidenceLease, writeEvidenceTextAtomic } from './EvidenceIo';
 
 export interface ActivityStorageItem { activityId: number; title: string; bytes: number; pinned: boolean; running: boolean; }
@@ -19,14 +19,16 @@ interface StorageAlert { bytes: number; }
 export async function readActivityStorage(filesDir: string, cancelled: () => boolean): Promise<ActivityStorageSummary> {
   const result: ActivityStorageSummary = { bytes: 0, groups: [], issues: [] };
   const groups: Map<string, ActivityStorageGroup> = new Map<string, ActivityStorageGroup>();
-  for (const entry of await ledgerListAsync(filesDir, cancelled)) {
+  const snapshot = await ledgerReadSnapshotAsync(filesDir, cancelled);
+  for (const entry of snapshot.entries) {
     if (cancelled()) throw new Error('占用统计已取消');
     let leased: boolean = false;
     try {
       acquireEvidenceLease(filesDir, entry.activityId); leased = true;
-      const manifest = await ledgerManifestAsync(filesDir, entry.activityId);
+      // 原清单读取已由snapshot租约保护；此处只消费独立内存副本，不二次读盘制造跨轮混合状态。
+      const manifest = snapshot.manifests.get(entry.activityId);
       if (cancelled()) throw new Error('占用统计已取消');
-      if (manifest === null) throw new Error('清单不可读，目录原件仍保留');
+      if (manifest === undefined) throw new Error('清单不可读，目录原件仍保留');
       const trusted: boolean = entry.bytesState === 'current' && entry.manifestDigest === JSON.stringify(manifest);
       const bytes: number = trusted ? entry.bytes : -1;
       if (!trusted) result.issues.push(manifest.title + '：' + (entry.bytesState === 'writing'

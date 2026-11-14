@@ -1,0 +1,132 @@
+diff --git a/src/java.desktop/unix/native/common/awt/fontpath.c b/src/java.desktop/unix/native/common/awt/fontpath.c
+--- a/src/java.desktop/unix/native/common/awt/fontpath.c
++++ b/src/java.desktop/unix/native/common/awt/fontpath.c
+@@ -815,7 +815,7 @@
+     int i, arrlen;
+     jobject fcCompFontObj;
+     jstring fcNameStr, jstr;
+-    const char *locale, *fcName;
++    const char *locale = NULL, *fcName;
+     FcPattern *pattern;
+     FcResult result;
+     void* libfontconfig;
+@@ -944,6 +944,7 @@
+                 jstr = (*env)->NewStringUTF(env, (const char*)cacheDir);
+                 if (IS_NULL(jstr)) {
+                     (*FcStrListDone)(cacheDirs);
++                    closeFontConfig(libfontconfig, JNI_FALSE);
+                     return;
+                 }
+                 (*env)->SetObjectArrayElement(env, cacheDirArray, cnt++, jstr);
+@@ -955,8 +956,10 @@
+ 
+     locale = (*env)->GetStringUTFChars(env, localeStr, 0);
+     if (locale == NULL) {
+-        (*env)->ExceptionClear(env);
+-        JNU_ThrowOutOfMemoryError(env, "Could not create locale");
++        closeFontConfig(libfontconfig, JNI_FALSE);
++        if (!(*env)->ExceptionCheck(env)) {
++            JNU_ThrowOutOfMemoryError(env, "Could not create locale");
++        }
+         return;
+     }
+ 
+@@ -977,7 +980,7 @@
+         if (fcName == NULL) {
+             (*env)->DeleteLocalRef(env, fcCompFontObj);
+             (*env)->DeleteLocalRef(env, fcNameStr);
+-            continue;
++            break; /* 保留 GetStringUTFChars 的原始异常，交统一尾部释放 locale。 */
+         }
+         pattern = (*FcNameParse)((FcChar8 *)fcName);
+         (*env)->ReleaseStringUTFChars(env, fcNameStr, (const char*)fcName);
+@@ -1044,7 +1047,13 @@
+             return;
+         }
+         fontCount = 0;
++#ifdef __OHOS__
++        /* 构建回退链时保留任何新增字符；20/50 阈值会丢掉完整的小脚本。
++         * 仍通过字符并集去重，并保留 254 slot 上限；不改变逐字形热路径。 */
++        minGlyphs = 0;
++#else
+         minGlyphs = 20;
++#endif
+         if (debugMinGlyphsStr != NULL) {
+             int val = minGlyphs;
+             sscanf(debugMinGlyphsStr, "%5d", &val);
+@@ -1097,15 +1106,38 @@
+              * adversely affects load time for minimal value-add.
+              * This is still likely far more than we've had in the past.
+              */
++#ifndef __OHOS__
+             if (j==10) {
+                 minGlyphs = 50;
+             }
++#endif
+             if (unionCharset == NULL) {
+                 unionCharset = charset;
+             } else {
+                 if ((*FcCharSetSubtractCount)(charset, unionCharset)
+                     > minGlyphs) {
+-                    unionCharset = (* FcCharSetUnion)(unionCharset, charset);
++                    FcCharSet *nextUnion = (*FcCharSetUnion)(unionCharset, charset);
++                    if (nextUnion == NULL) {
++                        /* 原 owner 不转移；只做清理，不能继续 Fc 或普通 JNI 调用。 */
++                        if (prevUnionCharset != NULL) {
++                            (*FcCharSetDestroy)(prevUnionCharset);
++                        }
++                        free(family);
++                        free(styleStr);
++                        free(fullname);
++                        free(file);
++                        (*FcFontSetDestroy)(fontset);
++                        (*FcPatternDestroy)(pattern);
++                        if (locale != NULL) {
++                            (*env)->ReleaseStringUTFChars(env, localeStr, locale);
++                        }
++                        closeFontConfig(libfontconfig, JNI_FALSE);
++                        if (!(*env)->ExceptionCheck(env)) {
++                            JNU_ThrowOutOfMemoryError(env, "Could not combine font charsets");
++                        }
++                        return;
++                    }
++                    unionCharset = nextUnion;
+                     if (prevUnionCharset != NULL) {
+                       (*FcCharSetDestroy)(prevUnionCharset);
+                     }
+@@ -1211,6 +1243,9 @@
+         free(styleStr);
+         free(fullname);
+         free(file);
++        if ((*env)->ExceptionCheck(env)) {
++            break; /* 字符串/对象构造失败不得继续下一个 Fontconfig 请求。 */
++        }
+     }
+ 
+     /* release resources and close the ".so" */
+diff --git a/src/java.desktop/share/classes/sun/font/CompositeFont.java b/src/java.desktop/share/classes/sun/font/CompositeFont.java
+--- a/src/java.desktop/share/classes/sun/font/CompositeFont.java
++++ b/src/java.desktop/share/classes/sun/font/CompositeFont.java
+@@ -300,14 +300,14 @@
+                      * return composite font which cannot be casted to
+                      * physical font.
+                      */
+-                    try {
+-                        components[slot] =
+-                            (PhysicalFont) fm.findFont2D(componentNames[slot],
+-                                                         style,
+-                                                FontManager.PHYSICAL_FALLBACK);
+-                    } catch (ClassCastException cce) {
+-                        /* Assign default physical font to the slot */
+-                        components[slot] = fm.getDefaultPhysicalFont();
++                    /* Fontconfig 的变量字体实例名可能未被 Java 注册。文件已成功
++                     * 加载时，只接受真正解析到的物理字体；查找失败不能用默认字体
++                     * 覆盖它，否则会丢失原文件的整段脚本覆盖。TTC 的真实 face 名
++                     * 仍经原有查找解析；保留延迟加载、合成样式与已有字形缓存。 */
++                    Font2D matched = fm.findFont2D(componentNames[slot], style,
++                                                  FontManager.NO_FALLBACK);
++                    if (matched instanceof PhysicalFont) {
++                        components[slot] = (PhysicalFont) matched;
+                     }
+                 }
+             }

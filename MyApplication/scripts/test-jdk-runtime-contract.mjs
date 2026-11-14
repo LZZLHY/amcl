@@ -11,6 +11,9 @@ const cases = [];
 let legacySuite = 'JDK策略';
 const versions = new Map();
 const noop = () => {};
+// MavenUtils新增公共元数据/选源依赖；本组只执行坐标解析和JDK区间，误走该边界必须失败，
+// 不以伪造HTTP成功或放开真实网络来让纯函数回归变绿。实际来源策略由独立网关组验证。
+const forbiddenSourceRequest = () => { throw new Error('纯JDK区间回归不允许执行网络或来源任务'); };
 // 本组测试的外部目录事实来自真实随包 JSON；验签/缓存本身另由 test-runtime-catalog 执行。
 const catalog = JSON.parse(fs.readFileSync(new URL('../entry/src/main/resources/rawfile/runtime-catalog/builtin.json',import.meta.url),'utf8'));
 const dependencies = {
@@ -23,15 +26,20 @@ const dependencies = {
   '@kit.CryptoArchitectureKit': {},
   './JdkInstaller': {},
   './RuntimeCatalogRepository': { RuntimeCatalogRepository:{instance:()=>({
-    snapshot:()=>structuredClone(catalog),
+    // 目录已取得是本组的外部事实；选包继续调用生产兼容函数，覆盖当前 v2 多推荐结构。
+    snapshot:()=>structuredClone(catalog),hostUpgradeReason:()=>'',recommendationUnavailableReason:()=>'',
     isBuildAllowed:()=>true,
     definitions:()=>catalog.runtimes,
-    buildFor:major=>catalog.builds.find(b=>b.id===catalog.runtimes.find(r=>String(r.javaMajor)===major)?.recommendedBuildId)
+    buildFor:major=>{
+      const runtime=catalog.runtimes.find(r=>String(r.javaMajor)===major);
+      return runtime ? runtimeBuildForHost(catalog,runtime,[1,2],runtimeRequiredCapabilities()) : undefined;
+    }
   })} },
   './LaunchNativeBridge': {},
   './LaunchProfileBuilder': {},
   './LaunchContractPreflight': {},
   '../download/DownloadManager': {},
+  '../download/SourceProber': { selectMcSourceUrls: forbiddenSourceRequest, fetchPublicMcMetadata: forbiddenSourceRequest },
   './MavenSpecBuilder': {},
   'commons': {
     DiagnosticPolicy: { isDeveloperBuild: () => false },
@@ -40,7 +48,7 @@ const dependencies = {
     JDK_AUTO: 'auto', JDK21_MIN_MC_VERSION: '1.20.5', formatError: error => String(error),
   },
   'mods': {},
-  'feature_core': {},
+  'feature_core': { getRelayClient: () => ({ status: () => ({ usable: false }) }) },
   'launch': {},
   '@ohos/hypium': {
     describe: (_name, fn) => fn(),
@@ -53,6 +61,8 @@ const dependencies = {
   },
 };
 const load = makePureEtsLoader(dependencies);
+const {runtimeBuildForHost}=load('launch/src/main/ets/RuntimeCatalogValidation.ets');
+const {runtimeRequiredCapabilities}=load('launch/src/main/ets/RuntimeHostProtocol.ets');
 dependencies.commons.isJdkSlotVersion = load('commons/src/main/ets/common/Constants.ets').isJdkSlotVersion;
 Object.assign(dependencies.commons, load('commons/src/main/ets/utils/McVersionUtils.ets'));
 Object.assign(dependencies.mods, load('mods/src/main/ets/VersionIdUtils.ets'));
@@ -292,8 +302,9 @@ test('真实自检区分没有发布候选与合法已装：无选择拒绝、�
 
 test('目录新增29：列表与清单下限路由自动扩展，未知游戏仍优先既有25', () => {
   // 29 仅为协议夹具，不代表实际 Java29/OHOS 已通过验收。算法仍执行生产 Manager。
-  const runtime={...catalog.runtimes.find(r=>r.javaMajor===17),id:'java29-ohos-aarch64',javaMajor:29,recommendedBuildId:'fixture29'};
-  const build={...catalog.builds.find(b=>b.runtimeId==='java17-ohos-aarch64'),id:'fixture29',runtimeId:runtime.id,legacyTags:[]};
+  const runtime={...catalog.runtimes.find(r=>r.javaMajor===17),id:'java29-ohos-aarch64',javaMajor:29,recommendedBuildIds:['fixture29']};
+  const template=runtimeBuildForHost(catalog,catalog.runtimes.find(r=>r.javaMajor===17),[1,2],runtimeRequiredCapabilities());
+  const build={...template,id:'fixture29',runtimeId:runtime.id,legacyTags:[]};
   catalog.runtimes.push(runtime);catalog.builds.push(build);
   try {
     const manager=managerFor(manifest('未来自定义',29),[]);

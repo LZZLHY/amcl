@@ -36,8 +36,16 @@ reject('SDL init bypass', 'source', 'static bool phase_publishPlatformRuntime(ui
   'static bool phase_publishPlatformRuntime(uint64_t session) { SDL_SetMainReady();', 'no-host-java-platform-preload');
 reject('Vulkan receives GL hints', 'source', 'if (usesSdl3 && graphicsPlan.api == "OPENGL")',
   'if (usesSdl3)', 'opengl-only-provider-hints');
-reject('SDL libname drift', 'bootstrap', '{"org.lwjgl.sdl.libname", "libSDL3.so"}',
-  '{"org.lwjgl.sdl.libname", "libSDL3-copy.so"}', 'sdl-libname-frozen');
+reject('SDL libname drift', 'bootstrap', '{"org.lwjgl.sdl.libname", nativeDir + "/libSDL3.so"}',
+  '{"org.lwjgl.sdl.libname", nativeDir + "/libSDL3-copy.so"}', 'sdl-libname-frozen');
+reject('SDL returns to ambiguous basename', 'bootstrap', '{"org.lwjgl.sdl.libname", nativeDir + "/libSDL3.so"}',
+  '{"org.lwjgl.sdl.libname", "libSDL3.so"}', 'sdl-libname-frozen');
+reject('bundle owner observation removed', 'source', 'dladdr(reinterpret_cast<const void*>(&resolveHapNativeDir), &owner)',
+  'guessOwnerFromWritableFiles(&owner)', 'native-provider-from-current-hap');
+reject('writable directory substitutes bundle root', 'providers', '"/data/storage/el1/bundle/libs/arm64"',
+  '"/data/storage/el2/base/files/libs/arm64"', 'native-provider-from-current-hap');
+reject('directory can masquerade as provider', 'source', 'S_ISREG(info.st_mode)',
+  'true', 'native-provider-from-current-hap');
 reject('freeze moved after JVM input', 'source', 'if (!amcl::jvm::FreezeBootstrapProperties(finalJvmArgs, g_runtimeBootstrapProperties, bootstrapError)) {',
   'jvmSetExtraArgsList(finalJvmArgs); if (!amcl::jvm::FreezeBootstrapProperties(finalJvmArgs, g_runtimeBootstrapProperties, bootstrapError)) {',
   'bootstrap-freeze-before-jvm');
@@ -57,6 +65,11 @@ reject('property readback failure swallowed', 'source', 'if (!phase_verifyRuntim
 reject('descriptor ABI drift', 'source', '"1:%llu:%llu:%llu"', '"2:%llu:%llu:%llu"', 'publish-exact-runtime-identity');
 reject('descriptor overwritten', 'source', 'previous && std::strcmp(previous, descriptor) != 0',
   'false', 'publish-exact-runtime-identity');
+reject('auxiliary role collapses to primary', 'source', '"2:%llu:%llu:%llu:1"',
+  '"1:%llu:%llu:%llu"', 'auxiliary-role-before-descriptor');
+reject('auxiliary host configuration bypassed', 'source',
+  'if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;',
+  '/* skipped */', 'auxiliary-role-before-descriptor');
 // I27-05：回到游戏线程上的 setenv，或不再为 SDL3 预登记槽位，都必须具名失败。
 reject('late setenv on game thread', 'source',
   'amcl::envslot::ProcessRegistry().Store(amcl::envslot::kSdlHostRuntimeEnv, descriptor) < 0',
@@ -65,10 +78,10 @@ reject('late setenv breaks slot identity', 'source',
   'amcl::envslot::ProcessRegistry().Store(amcl::envslot::kSdlHostRuntimeEnv, descriptor) < 0',
   'setenv("AMCL_SDL_HOST_RUNTIME", descriptor, 1) != 0', 'publish-exact-runtime-identity');
 reject('slot not registered for SDL route', 'source',
-  'amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)',
+  'amcl::ohos::PrepareRuntimeEnvironmentSlots(true, environmentError)',
   'amcl::ohos::PrepareRuntimeEnvironmentSlots(false, environmentError)', 'sdl-host-runtime-slot-pre-registered');
 reject('slot registration removed before JVM creation', 'source',
-  'amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)',
+  'amcl::ohos::PrepareRuntimeEnvironmentSlots(true, environmentError)',
   'true', 'sdl-host-runtime-slot-pre-registered');
 reject('bridge publish bypass', 'source', 'publishCallbackBridgeHostV1(session) != JNI_OK',
   'false', 'bridge-descriptor-first');

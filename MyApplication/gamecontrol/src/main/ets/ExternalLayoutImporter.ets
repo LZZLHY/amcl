@@ -10,6 +10,7 @@ import { parseMinecraftTouchKey, TOUCH_ACTION_NAMES } from './TouchActionBinding
 import { evaluateLayoutExpression } from './LayoutExpression'
 import { ControlGroup, ControlGroupAction, ControlPhaseBinding, ControlActionPhase,
   CONTROL_GROUP_PROFILE_VERSION, TOUCH_GROUP_CAPABILITY, TOUCH_PHASE_CAPABILITY, MAX_CONTROL_GROUPS } from './ControlGroups'
+import { convertPrototypeLayout,PrototypeLayoutConversion } from './PrototypeLayoutImporter'
 
 type ForeignObject = Record<string, Object>
 
@@ -48,6 +49,7 @@ function clamp(value: number, low: number, high: number): number { return Math.m
 /** 格式识别不代表内容合法；analyzeExternalLayout才负责完整转换和可导入性判定。 */
 export function externalLayoutFormat(value: Object): string {
   const root = object(value)
+  if(root['format']==='amcl-ui-prototype')return 'amcl-prototype'
   if (Array.isArray(root['mControlDataList']) || Array.isArray(root['controlDataList']) ||
     Array.isArray(root['mJoystickDataList']) || Array.isArray(root['mDrawerDataList'])) return 'pojav'
   if (Array.isArray(root['viewGroups']) && root['controllerVersion']!==undefined) return 'fcl'
@@ -406,6 +408,10 @@ export function analyzeExternalLayout(json: string,name: string,width: number = 
     const format: string = externalLayoutFormat(root)
     fallback.format=format
     if (format.length===0) throw new Error('不支持的外部布局格式')
+    if(format==='amcl-prototype'){
+      const converted: PrototypeLayoutConversion=convertPrototypeLayout(root)
+      fallback.profile=converted.profile;fallback.warnings=converted.warnings;return fallback
+    }
     if (!Number.isFinite(width) || !Number.isFinite(height) || width<64 || height<64) throw new Error('视口尺寸无效')
     const reader = new ExternalControlReader(width,height)
     reader.review.format=format

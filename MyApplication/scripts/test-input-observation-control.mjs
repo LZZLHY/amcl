@@ -279,15 +279,15 @@ try {
   for(const stage of ['current','gui-stop','gui-scope-stop','getter-stop','getter-scope-control','geometry-stop','geometry-scope-control'])
     cases.push({name:'projection-boundary-'+stage,result:projectionBoundaryContract(stage)});
   assert.throws(()=>projectionBoundaryContract('gui-stop',s=>replace(s,
-    "if (!this.isCurrentProjectionSource_(lease)) return\n      if (typeof testNapi.touchInteractionVisual",
+    "if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease)) return\n      if (typeof testNapi.touchInteractionVisual",
     "if (false) return\n      if (typeof testNapi.touchInteractionVisual")),/GUI_REENTRY_RETIRE_MUST_NOT_READ_GLOBAL_VISUAL/);
   negatives.push('removed Source check after actual GUI callback');
   assert.throws(()=>projectionBoundaryContract('getter-scope-control',s=>replace(s,
-    'if (!this.isCurrentProjectionSource_(lease)) return\n      if (values.length',
+    'if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease)) return\n      if (values.length',
     'if (false) return\n      if (values.length')),/GETTER_RETURN_LOST_SOURCE_MUST_NOT_OFFER_GEOMETRY/);
   negatives.push('removed captured Source check after Native return (controlled same-lease scope loss)');
   assert.throws(()=>projectionBoundaryContract('geometry-scope-control',s=>replace(s,
-    'if (!this.isCurrentProjectionSource_(lease) || receive===undefined',
+    'if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease) || receive===undefined',
     'if (receive===undefined')),/GEOMETRY_REENTRY_RETIRE_MUST_NOT_OFFER_VISUAL/);
   negatives.push('removed Source check after geometry callback (controlled same-lease scope loss)');
   for(const stage of ['initial-stop','registration-return','observation-return','source-stop','scope-stop'])

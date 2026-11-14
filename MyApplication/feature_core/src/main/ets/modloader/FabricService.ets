@@ -34,7 +34,7 @@ import { BMCLAPI_BASE } from 'commons';
 import { AppLogger } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_MODLOADER } from 'commons';
-import { DownloadManager } from '../download/DownloadManager';
+import { fetchMcVersionListSources, fetchPublicMcMetadata, useOrderedMcDownload } from '../download/SourceProber';
 
 const TAG = LogTags.MOD_FABRIC;
 
@@ -115,8 +115,17 @@ export class FabricService implements IModLoaderService {
     let primaryUrl = BMCLAPI_FABRIC_META + '/v2/versions/game';
     let mirrorUrls = [FABRIC_META_BASE + '/v2/versions/game'];
     try {
-      let json = await DownloadManager.instance().fetchText(primaryUrl, mirrorUrls);
-      let versions: FabricGameVersion[] = JSON.parse(json) as FabricGameVersion[];
+      // 仅公共Fabric Meta GET；来源约束和明确metadata relay由共享入口执行。
+      const parseVersions = async (urls: string[]): Promise<FabricGameVersion[]> => {
+        const versions = JSON.parse(await fetchPublicMcMetadata(urls)) as FabricGameVersion[];
+        if (!Array.isArray(versions) || versions.length === 0) throw new Error('Fabric 游戏版本列表为空');
+        return versions;
+      };
+      // 列表在自动档先试官方，安装 profile 仍按独立的镜像→官方顺序。
+      const versions = useOrderedMcDownload()
+        ? await fetchMcVersionListSources((): Promise<FabricGameVersion[]> => parseVersions(mirrorUrls),
+          (): Promise<FabricGameVersion[]> => parseVersions([primaryUrl]))
+        : await parseVersions([primaryUrl].concat(mirrorUrls));
       let result: string[] = [];
       for (let v of versions) {
         result.push(v.version);
@@ -141,8 +150,16 @@ export class FabricService implements IModLoaderService {
     let primaryUrl = BMCLAPI_FABRIC_META + '/v2/versions/loader/' + gameVersion;
     let mirrorUrls = [FABRIC_META_BASE + '/v2/versions/loader/' + gameVersion];
     try {
-      let json = await DownloadManager.instance().fetchText(primaryUrl, mirrorUrls);
-      let entries: FabricLoaderForGame[] = JSON.parse(json) as FabricLoaderForGame[];
+      // 网关/明确官方时去掉BMCL，关闭后仍保留原候选回退，不另加小文件测速。
+      const parseEntries = async (urls: string[]): Promise<FabricLoaderForGame[]> => {
+        const entries = JSON.parse(await fetchPublicMcMetadata(urls)) as FabricLoaderForGame[];
+        if (!Array.isArray(entries)) throw new Error('Fabric 加载器列表格式无效');
+        return entries;
+      };
+      const entries = useOrderedMcDownload()
+        ? await fetchMcVersionListSources((): Promise<FabricLoaderForGame[]> => parseEntries(mirrorUrls),
+          (): Promise<FabricLoaderForGame[]> => parseEntries([primaryUrl]))
+        : await parseEntries([primaryUrl].concat(mirrorUrls));
       let result: ModLoaderVersion[] = [];
       for (let entry of entries) {
         let mlv: ModLoaderVersion = {
@@ -213,13 +230,15 @@ export class FabricService implements IModLoaderService {
         libs.push(entry);
       }
 
+      // 自动档的候选耗尽已由 Native 收口，不再从 ArkTS 整轮重启。
+      const orderedVersionDownload = useOrderedMcDownload();
       let dlResult = await downloadMavenLibraries(libs, libDir,
         (done: number, total: number, name: string, fraction: number) => {
           // Fabric 的阶段进度是固定的 1/3，字节比例只用于文案（让"卡住"的观感有个真实读数）。
           let pct = fraction >= 0 ? ', ' + Math.round(fraction * 100) + '%' : '';
           this.reportProgress(callback, 'downloading_libraries', 1, 3,
             '下载依赖库 (' + done + '/' + total + pct + ') ' + name);
-        });
+        }, false, orderedVersionDownload);
 
       if (dlResult.failed > 0) {
         // ⚠️ A-02 修复（2026-07-29）：库下载失败**必须**让安装失败。
@@ -228,12 +247,12 @@ export class FabricService implements IModLoaderService {
         //   asm / sponge-mixin）。旧行为会写出 version.json 并 return success=true，
         //   产出一个"已安装"但 libraries 里 0 个 jar 的版本，启动时
         //   ClassNotFoundException: net.fabricmc.loader.impl.launch.knot.KnotClient。
-        //   先只重试失败项（A-01 同款），仍失败才判定安装失败。
-        let retryLibs = selectFailedLibs(libs, dlResult);
+        //   手动模式沿用失败子集重试，自动模式直接使用 Native 的候选终态。
+        let retryLibs: MavenLibEntry[] = orderedVersionDownload ? [] : selectFailedLibs(libs, dlResult);
         AppLogger.warn(TAG,
           `Fabric libs: ${dlResult.failed}/${libs.length} failed, retrying ${retryLibs.length}`,
           null, LOG_DOMAIN_MODLOADER);
-        this.reportProgress(callback, 'downloading_libraries', 1, 3,
+        if (retryLibs.length > 0) this.reportProgress(callback, 'downloading_libraries', 1, 3,
           dlResult.failed + ' 个依赖库下载失败，正在重试...');
         let retry = retryLibs.length > 0
           ? await downloadMavenLibraries(retryLibs, libDir,
@@ -241,7 +260,7 @@ export class FabricService implements IModLoaderService {
                 let pct = fraction >= 0 ? ', ' + Math.round(fraction * 100) + '%' : '';
                 this.reportProgress(callback, 'downloading_libraries', 1, 3,
                   '重试依赖库 (' + done + '/' + total + pct + ') ' + name);
-              })
+              }, false, orderedVersionDownload)
           : dlResult;
         if (retry.failed > 0) {
           let names = (retry.failedNames || []).slice(0, 5).join(', ');
@@ -375,7 +394,8 @@ export class FabricService implements IModLoaderService {
     let primaryUrl = BMCLAPI_FABRIC_META + path;
     let mirrorUrls = [FABRIC_META_BASE + path];
     try {
-      let json = await DownloadManager.instance().fetchText(primaryUrl, mirrorUrls);
+      // profile是无业务头的公共GET，与版本列表使用相同候选及relay opt-in边界。
+      let json = await fetchPublicMcMetadata([primaryUrl].concat(mirrorUrls));
       let profile: FabricProfileJson = JSON.parse(json) as FabricProfileJson;
       return profile;
     } catch (e) {

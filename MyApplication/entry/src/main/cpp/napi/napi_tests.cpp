@@ -8,6 +8,9 @@
 #ifdef MC_OHOS_BUILD_TESTS
 
 #include "napi_helpers.h"
+#include "napi_jdk_probe.h"
+#include "jdk_java_qualification.h"
+#include "jdk_process_qualification.h"
 
 #include "../tests/tests.h"
 #include "../download/tests/download_tests.h"
@@ -201,6 +204,9 @@ constexpr napi_property_descriptor kTestsDescriptors[] = {
     NAPI_FUNC("runMobileglProbe",                         RunMobileglProbe),
     NAPI_FUNC("runMobileglPbufferProbe",                  RunMobileglPbufferProbe),
     NAPI_FUNC("runIpv6Probe",                             RunIpv6Probe),
+    NAPI_FUNC("runJdkPlatformProbe",                      RunJdkPlatformProbeNapi),
+    NAPI_FUNC("runJdkJavaQualification",                  RunJdkJavaQualificationNapi),
+    NAPI_FUNC("runJdkProcessQualification",               RunJdkProcessQualificationNapi),
     NAPI_FUNC("runIpv6JavaProbe",                         RunIpv6JavaProbe),
 };
 

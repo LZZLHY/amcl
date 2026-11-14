@@ -1,0 +1,81 @@
+--- a/hotspot/src/os/linux/vm/os_linux.cpp
++++ b/hotspot/src/os/linux/vm/os_linux.cpp
+@@ -332,6 +332,18 @@
+   assert(processor_count() > 0, "linux error");
+ }
+ 
++// 只在真正嵌入 AMCL 的进程采用注入路径。独立 CLI 在 exec 后没有此入口，
++// 即使继承 JAVA_HOME/SUN_BOOT_LIBRARY_PATH，也必须保留上游定位与重执行行为。
++static bool amcl_uses_embedded_runtime() {
++#if defined(__OHOS__)
++  typedef int (*amcl_embedded_query_t)(void);
++  amcl_embedded_query_t query = (amcl_embedded_query_t)dlsym(RTLD_DEFAULT, "amcl_jvm_is_embedded");
++  return query != NULL && query() == 1;
++#else
++  return false;
++#endif
++}
++
+ void os::init_system_properties_values() {
+   // The next steps are taken in the product version:
+   //
+@@ -397,10 +409,10 @@
+     if (pslash != NULL) {
+       *pslash = '\0';            // Get rid of /{client|server|hotspot}.
+     }
+-#ifdef __MUSL__
++#if defined(__OHOS__)
+     {
+       const char* amcl_boot_lib = ::getenv("SUN_BOOT_LIBRARY_PATH");
+-      if (amcl_boot_lib != NULL && amcl_boot_lib[0] != '\0') {
++      if (amcl_uses_embedded_runtime() && amcl_boot_lib != NULL && amcl_boot_lib[0] != '\0') {
+         Arguments::set_dll_dir((char*)amcl_boot_lib); // OHOS: prefer injected native lib dir
+       } else {
+         Arguments::set_dll_dir(buf);
+@@ -420,10 +432,10 @@
+         }
+       }
+     }
+-#ifdef __MUSL__
++#if defined(__OHOS__)
+     {
+       const char* amcl_java_home = ::getenv("JAVA_HOME");
+-      if (amcl_java_home != NULL && amcl_java_home[0] != '\0') {
++      if (amcl_uses_embedded_runtime() && amcl_java_home != NULL && amcl_java_home[0] != '\0') {
+         Arguments::set_java_home((char*)amcl_java_home); // OHOS: sandbox path inference unreliable
+       } else {
+         Arguments::set_java_home(buf);
+--- a/jdk/src/solaris/bin/java_md_solinux.c
++++ b/jdk/src/solaris/bin/java_md_solinux.c
+@@ -287,9 +287,13 @@
+  */
+ static jboolean
+ RequiresSetenv(int wanted, const char *jvmpath) {
+-#ifdef __MUSL__
+-    /* OHOS: ELF loader resolves libs; never re-exec (avoids musl re-exec deadlock) */
+-    return JNI_FALSE;
++#if defined(__OHOS__)
++    /* 只跳过宿主内的 re-exec；独立 java/tool 仍执行上游的环境准备。 */
++    typedef int (*amcl_embedded_query_t)(void);
++    amcl_embedded_query_t query = (amcl_embedded_query_t)dlsym(RTLD_DEFAULT, "amcl_jvm_is_embedded");
++    if (query != NULL && query() == 1) {
++        return JNI_FALSE;
++    }
+ #endif
+     char jpath[PATH_MAX + 1];
+     char *llp;
+--- a/jdk/make/CompileJavaClasses.gmk
++++ b/jdk/make/CompileJavaClasses.gmk
+@@ -165,10 +165,8 @@
+ EXFILES += sun/text/resources/BreakIteratorRules.java \
+     sun/text/resources/BreakIteratorRules_th.java
+ 
+-# TODO: Add BUILD_HEADLESS_ONLY to configure?
+-ifdef BUILD_HEADLESS_ONLY
+-  EXCLUDES += sun/applet
+-endif
++# Headless 只限制显示后端，不能删去旧模组依赖的 sun.applet Java 类。
++# 保留完整类层；真正调用显示能力仍按 HeadlessToolkit 的正常语义失败。
+ 
+ # Used on windows and macosx
+ ifeq (, $(filter $(OPENJDK_TARGET_OS), windows macosx))

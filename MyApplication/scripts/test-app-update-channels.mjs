@@ -42,7 +42,7 @@ assert(preferences.appUpdateDeferredAt('sideload','stable')>0);
 assert.equal(preferences.appUpdateLatestSeen('sideload','preview'),0);assert.equal(preferences.appUpdateLatestSeen('desktop','stable'),0);
 preferences.rememberAppUpdate('sideload','stable',11,'v11:b');assert.equal(preferences.appUpdateDeferredAt('sideload','stable'),0);
 preferences.deferAppUpdate('sideload','stable','v10:a');assert.equal(preferences.appUpdateDeferredAt('sideload','stable'),0);
-preferences.appUpdateChannel='preview';preferences.rememberAppUpdate('sideload','preview',20,'beta');preferences.appUpdateChannel='stable';
+await preferences.selectAppUpdateChannel('preview');preferences.rememberAppUpdate('sideload','preview',20,'beta');await preferences.selectAppUpdateChannel('stable');
 assert.equal(preferences.appUpdateLatestSeen('sideload','stable'),11);assert.equal(preferences.appUpdateLatestSeen('sideload','preview'),20);
 console.log('PASS App channels: legacy stable, explicit preview, stable convergence, product/cache/deferred identity isolation');
 
@@ -94,3 +94,5 @@ for(const [before,next,channel] of [['1.0.5','1.0.6-pre1','preview'],['1.0.6-pre
  assert.equal(f.counters.dispatch,1);assert.equal(UpdateChecker.hasCachedUpdate(100,100,next,next,channel),false);ui.dispose();
 }
 console.log('PASS equal code: stable→pre1→pre2 and preview→stable use production admission; old versionName never confirms installation');
+// 同一正式入口长期运行开发者人工发行回归，避免仅手动执行一次后失去构建接线。
+await import('./test-app-update-release-kinds.mjs');

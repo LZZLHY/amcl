@@ -9,16 +9,10 @@
  *   完整 JDK（含 .so + 数据）从 GitHub Releases 下载到 filesDir/jdk/<version>/
  *   .so 文件通过自定义 ELF loader 加载（绕过 HarmonyOS MAP_XPM 代码签名验证）
  *   需要 ALLOW_WRITABLE_CODE_MEMORY ACL 权限
- *   支持多版本 JDK（17/21/25），通过 jdkVersion 参数选择
+ *   支持多版本 JDK（8/17/21/25），通过 jdkVersion 参数选择
  *
- * HotSpot 源码补丁（权威清单见 prebuilt/jdk/<ver>/patches/series）：
- *   JDK 17: 8 个 —— musl-dlvsym-dlinfo / java-home-env / dll-dir-env / musl-utmpx /
- *           signals-posix-abort / aarch64-elf-safepoint-fallback /
- *           safepoint-mem-prot-read / libjli-skip-re-exec
- *   JDK 21: 8 个 —— 与 17 同构（全部 __MUSL__ 门控）
- *   JDK 25: 9 个 —— 21 的 8 个 + jfr-cpu-time-musl-disable
- *           （JDK 25 新增 JFR CPU-time profiling 用 musl 不支持的 SIGEV_THREAD_ID）
- *           详见 docs/adaptation/JDK25_ADAPTATION_ASSESSMENT.md
+ * HotSpot 补丁的活动事实源为 prebuilt/jdk/<major>/patches/series；源码、工具链和
+ * 四版候选来源分别随构建清单记录。这里不复制会与实际补丁漂移的数量或旧禁用策略。
  *
  * 历史警示（不要改回去）：
  *   - 不要关 safepoint polling（-XX:-UsePollingPageSafepoint）
@@ -29,13 +23,24 @@
 
 #include "jvm_launcher.h"
 #include "jvm_signal_dispatch.h"
+#include "jvm_signal_ownership.h"
+#include "jvm_status.h"
 #include "runtime_bootstrap_contract.h"
 #include "game_process_exit.h"
+#include "jvm_game_directory.h"
+#include "jdk_native_temp_preparation.h"
 #include "elf_loader.h"
 #include "jvm_common_args.h"
+#include "jvm_cf_policy.h"
 #include "jvm_heap_options.h"
+#include "jvm_heap_backing_directory.h"
+#include "jvm_heap_backing_verification.h"
 #include "../platform/graphics_plan.h"
 #include "../platform/env_publication.h"  // I27-05：JVM 创建认领时封存环境槽位登记表
+#include "../platform/jdk_font_resources.h"
+#include "../platform/jdk_install_store.h"
+#include "jni_invocation_support.h"
+#include "jni_watchdog_support.h"
 #include "jni_mutf8.h"   // NewStringUTF 只吃 Modified UTF-8：用户内容一律先转（见头文件）
 #include "../utils/amcl_log.h"
 #include "../utils/session_log_io.h"
@@ -77,7 +82,19 @@
 // ============================================================
 static int g_crashTailFd = -1;
 static char g_crashGameOutputPath[1024] = {0};
-static volatile sig_atomic_t g_crashHandlerEntered = 0;
+// handler登记前发布一次，此后FD/路径与handler共同持有到进程退出。普通配置写者的短
+// 原子门只保护发布前复制，signal handler从不等待它；避免setter与首次登记交错读半路径。
+static std::atomic<bool> g_crashObservationPublished{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "signal publication must not acquire an internal lock");
+static std::atomic_flag g_crashConfigurationWriter = ATOMIC_FLAG_INIT;
+struct CrashConfigurationWrite {
+    CrashConfigurationWrite() {
+        while (g_crashConfigurationWriter.test_and_set(std::memory_order_acquire)) std::this_thread::yield();
+    }
+    ~CrashConfigurationWrite() { g_crashConfigurationWriter.clear(std::memory_order_release); }
+};
+// atomic_flag 保证无锁；多个线程同时 abort 时只有一个写尾部，其他信号继续平台链。
+static std::atomic_flag g_crashHandlerEntered = ATOMIC_FLAG_INIT;
 
 static void crashWriteBytes(const char* data, size_t length) {
     if (g_crashTailFd < 0 || data == nullptr || length == 0) return;
@@ -144,6 +161,8 @@ static void crashDumpGameTailDirect() {
 }
 
 extern "C" void jvmSetCrashOutputPath(const char* path) {
+    CrashConfigurationWrite write;
+    if (g_crashObservationPublished.load(std::memory_order_acquire)) return;
     if (path == nullptr) {
         g_crashGameOutputPath[0] = '\0';
         return;
@@ -157,12 +176,22 @@ extern "C" void jvmSetCrashOutputPath(const char* path) {
 //  __clear_cache — libjvm.so 需要此符号，HarmonyOS musl 不提供
 //  直接在 libentry.so 中导出，确保 dlopen libjvm.so 时可用
 // ============================================================
+/**
+ * 向四代 JDK 声明当前是宿主内的嵌入场景。使用进程内入口而不是环境标志，
+ * 避免 ProcessBuilder 启动独立 java 后继承标志，错误跳过其库路径与 re-exec。
+ * 该入口仅声明运行方式，不授予文件、信号或内存权限。
+ */
+extern "C" __attribute__((visibility("default")))
+int amcl_jvm_is_embedded(void) { return 1; }
+
 extern "C" __attribute__((visibility("default")))
 void __clear_cache(void* start, void* end) {
-    static size_t ctr_el0 = 0;
-    if (ctr_el0 == 0) {
-        __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr_el0));
-    }
+    // 导出入口可能被多个 JIT/装载线程同时首次调用。CTR_EL0 直接读入本次栈上值，
+    // 避免旧的共享非原子懒缓存数据竞争，也不为几条指令引入锁、guard 或初始化协议。
+    // 保留 dc → dsb → ic → dsb/isb 顺序；调用者仍负责写代码与执行线程之间的发布同步。
+    if (reinterpret_cast<uintptr_t>(start) >= reinterpret_cast<uintptr_t>(end)) return;
+    size_t ctr_el0;
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr_el0));
     size_t icache_line = 4 << ((ctr_el0 >> 0) & 0xf);
     size_t dcache_line = 4 << ((ctr_el0 >> 16) & 0xf);
     char* p;
@@ -195,18 +224,37 @@ typedef jint (*JNI_CreateJavaVM_t)(JavaVM** pvm, void** penv, void* args);
 // ============================================================
 //  全局状态
 // ============================================================
-static std::string g_status;
-static std::string g_fullTestResult;
-static volatile bool g_testRunning = false;
+static amcl::jvm::StatusText g_status;
+// 在模块初始化时只登记一次。所有钩子都只获取/释放本模块状态锁，不跨 JNI、日志或
+// 其他业务锁。若登记失败，安装器 fork 准入会拒绝，避免把新同步锁变成子进程死锁点。
+static const int g_statusForkHooks = pthread_atfork(
+    [] { g_status.beforeFork(); }, [] { g_status.afterFork(); }, [] { g_status.afterFork(); });
+static thread_local std::string g_fullTestResult; // 返回缓冲属于本次 native 调用线程。
+static std::atomic<bool> g_testRunning{false}; // 诊断准入必须原子，不与游戏线程共用 JNIEnv。
 
 // JVM 生命周期
-static JavaVM* g_jvm = nullptr;
+static std::atomic<JavaVM*> g_jvm{nullptr};
+// 自有主调用/诊断与 VM 销毁共享准入；watchdog 另有可停止、可 join 的线程所有者。
+// 原生消费者取得的 JavaVM 借用仍由其会话负责静止，不能靠一个原子指针强行回收它们。
+static amcl::jni::InvocationGate g_invocationGate;
+static amcl::jni::WatchdogWorker g_watchdog;
+static std::atomic<jint> g_watchdogDetachFailure{JNI_OK};
+static std::atomic_flag g_destroyInProgress = ATOMIC_FLAG_INIT;
 // 一次创建尝试占用本进程；失败、游戏退出或 DestroyJavaVM 不清零 HotSpot/native 身份。
 // 安装器只从从未创建 JVM 的父进程 fork；父进程先原子保留，子进程验证 PID 后独立认领。
 static amcl::jvm::RuntimeOnce g_runtimeOnce;
 extern "C" int jvmRuntimeState() { return g_runtimeOnce.state(); }
-extern "C" void jvmRetireRuntime() { g_runtimeOnce.retire(); }
+extern "C" void jvmRetireRuntime() {
+    g_runtimeOnce.retire();
+    g_invocationGate.close();
+    // 退休不能在 Java 转储尚未返回时卡住游戏主线程；真正销毁会在后面 join。
+    g_watchdog.requestStop();
+}
 extern "C" int jvmReserveForFork() {
+    if (g_statusForkHooks != 0) {
+        g_status = "JVM 状态文本的 fork 同步钩子不可用";
+        return -7;
+    }
     return g_runtimeOnce.reserveFork(static_cast<uint32_t>(getpid()));
 }
 extern "C" int jvmReleaseForkReservation() {
@@ -215,7 +263,6 @@ extern "C" int jvmReleaseForkReservation() {
 // JNI 版本：随 JDK 布局在 jvmInit 里确定（JDK 8 经典布局 = JNI_VERSION_1_8，模块化 17/21/25 =
 //   JNI_VERSION_10）。后续 GetEnv/AttachCurrentThread 都用它，否则 JDK 8 上传 JNI_VERSION_10 会失败。
 static jint g_jniVersion = JNI_VERSION_10;
-static JNIEnv* g_env = nullptr;
 static std::string g_nativeLibDir;
 static std::string g_jdkDataDir;
 static std::string g_classpath;   // 外部可通过 jvmSetClasspath 设置
@@ -226,6 +273,15 @@ static bool g_jitMode = false;  // true=JIT混合模式, false=解释模式
 // fork 子进程模式（安装器 processor）：true 时 jvmInit 跳过游戏主进程专属 -D（system.class.loader /
 // lwjgl libname）与 watchdog 线程。由 fork_run_java 的 childMain 经 jvmSetForkChildMode 设置。
 static bool g_forkChildMode = false;
+#ifdef MC_OHOS_BUILD_TESTS
+// 固定资格开关只在Fresh独立工具进程中设置；读取发生在唯一一次VM参数构造中。
+static bool g_qualificationCfExplicit = false;
+extern "C" int jvmSetQualificationCfExplicit(int enabled) {
+    if (g_runtimeOnce.state() != 0 || g_jvm || !g_forkChildMode) return -1;
+    g_qualificationCfExplicit = enabled != 0;
+    return 0;
+}
+#endif
 
 static bool detectJitSupport() {
     void* p = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -271,17 +327,20 @@ extern "C" void jvmSetForkChildMode(int enabled) {
 extern "C" int jvmResetForForkChild(void) {
     // 只能认领经过保留、且 getpid 已变化的真实子进程。先检查 JVM 指针，拒绝任何异常的
     // “保留态却已有 HotSpot”组合；失败不修改原运行时身份，不能靠清零指针伪装干净。
-    if (g_jvm || g_env || !g_runtimeOnce.adoptForkChild(static_cast<uint32_t>(getpid()))) {
+    if (g_jvm || !g_runtimeOnce.adoptForkChild(static_cast<uint32_t>(getpid()))) {
         return -7;
     }
     g_jvm = nullptr;
-    g_env = nullptr;
+    // 只有未创建JVM的Fresh父进程允许走到这里；fork后仅当前线程，父侧配置门的副本
+    // 可以重新置空。已注册handler/已尝试JVM的父进程不能通过RuntimeOnce准入此路径。
+    g_crashConfigurationWriter.clear(std::memory_order_release);
+    g_crashObservationPublished.store(false, std::memory_order_release);
     if (g_crashTailFd >= 0) {
         close(g_crashTailFd);
         g_crashTailFd = -1;
     }
     g_crashGameOutputPath[0] = '\0';
-    g_crashHandlerEntered = 0;
+    g_crashHandlerEntered.clear(std::memory_order_release);
     g_classpath.clear();
     g_extraLibPath.clear();
     g_extraArgs.clear();
@@ -335,71 +394,53 @@ static uint64_t nowMs() {
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static std::string jstringToStdString(JNIEnv* env, jstring s) {
-    if (!env || !s) return "";
-    const char* c = env->GetStringUTFChars(s, nullptr);
-    if (!c) return "";
-    std::string out(c);
-    env->ReleaseStringUTFChars(s, c);
-    return out;
+/** Java 字符串按 UTF-16 正确转成 UI/日志使用的 UTF-8；归还借用不依赖转换是否抛错。 */
+static bool readJavaString(JNIEnv* env, jstring text, std::string& result) {
+    const jsize length = env->GetStringLength(text);
+    if (env->ExceptionCheck()) return false;
+    const jchar* chars = env->GetStringChars(text, nullptr);
+    if (!chars || env->ExceptionCheck()) return false;
+    struct BorrowedChars {
+        JNIEnv* env; jstring text; const jchar* chars;
+        ~BorrowedChars() { env->ReleaseStringChars(text, chars); }
+    } borrowed{env, text, chars};
+    return amcl::utf16ToUtf8(chars, static_cast<size_t>(length), result);
 }
 
-static std::string getThrowableStackTrace(JNIEnv* env, jthrowable ex) {
-    if (!env || !ex) return "";
-
-    std::string trace;
-    jclass swClass = env->FindClass("java/io/StringWriter");
-    jclass pwClass = env->FindClass("java/io/PrintWriter");
+/**
+ * 首个异常已由调用者保存。这里逐项检查补充诊断所需的 JNI 分配/查找，失败只放弃
+ * 额外文本，不覆盖原异常；嵌套局部帧使所有成功/失败路径均释放临时引用。
+ */
+static std::string getThrowableStackTrace(JNIEnv* env, jthrowable exception) {
+    if (!env || !exception || env->ExceptionCheck()) return {};
+    amcl::jni::LocalFrame frame(env, 16);
+    auto failed = [&] { if (env->ExceptionCheck()) env->ExceptionClear(); return std::string{}; };
+    if (!frame.valid()) return failed();
+    jclass writerClass = env->FindClass("java/io/StringWriter");
+    if (!writerClass || env->ExceptionCheck()) return failed();
+    jclass printerClass = env->FindClass("java/io/PrintWriter");
+    if (!printerClass || env->ExceptionCheck()) return failed();
     jclass throwableClass = env->FindClass("java/lang/Throwable");
-    if (!swClass || !pwClass || !throwableClass) {
-        if (env->ExceptionCheck()) env->ExceptionClear();
-        if (swClass) env->DeleteLocalRef(swClass);
-        if (pwClass) env->DeleteLocalRef(pwClass);
-        if (throwableClass) env->DeleteLocalRef(throwableClass);
-        return "";
-    }
-
-    jmethodID swCtor = env->GetMethodID(swClass, "<init>", "()V");
-    jmethodID swToString = env->GetMethodID(swClass, "toString", "()Ljava/lang/String;");
-    jmethodID pwCtor = env->GetMethodID(pwClass, "<init>", "(Ljava/io/Writer;)V");
-    jmethodID printStackTrace = env->GetMethodID(throwableClass, "printStackTrace", "(Ljava/io/PrintWriter;)V");
-    if (!swCtor || !swToString || !pwCtor || !printStackTrace) {
-        if (env->ExceptionCheck()) env->ExceptionClear();
-        env->DeleteLocalRef(swClass);
-        env->DeleteLocalRef(pwClass);
-        env->DeleteLocalRef(throwableClass);
-        return "";
-    }
-
-    jobject sw = env->NewObject(swClass, swCtor);
-    jobject pw = nullptr;
-    if (sw) {
-        pw = env->NewObject(pwClass, pwCtor, sw);
-    }
-
-    if (sw && pw) {
-        env->CallVoidMethod(ex, printStackTrace, pw);
-        if (!env->ExceptionCheck()) {
-            jstring stack = (jstring)env->CallObjectMethod(sw, swToString);
-            if (!env->ExceptionCheck() && stack) {
-                trace = jstringToStdString(env, stack);
-                env->DeleteLocalRef(stack);
-            } else if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-            }
-        } else {
-            env->ExceptionClear();
-        }
-    } else {
-        if (env->ExceptionCheck()) env->ExceptionClear();
-    }
-
-    if (pw) env->DeleteLocalRef(pw);
-    if (sw) env->DeleteLocalRef(sw);
-    env->DeleteLocalRef(swClass);
-    env->DeleteLocalRef(pwClass);
-    env->DeleteLocalRef(throwableClass);
-    return trace;
+    if (!throwableClass || env->ExceptionCheck()) return failed();
+    jmethodID writerCtor = env->GetMethodID(writerClass, "<init>", "()V");
+    if (!writerCtor || env->ExceptionCheck()) return failed();
+    jmethodID toString = env->GetMethodID(writerClass, "toString", "()Ljava/lang/String;");
+    if (!toString || env->ExceptionCheck()) return failed();
+    jmethodID printerCtor = env->GetMethodID(printerClass, "<init>", "(Ljava/io/Writer;)V");
+    if (!printerCtor || env->ExceptionCheck()) return failed();
+    jmethodID print = env->GetMethodID(throwableClass, "printStackTrace", "(Ljava/io/PrintWriter;)V");
+    if (!print || env->ExceptionCheck()) return failed();
+    jobject writer = env->NewObject(writerClass, writerCtor);
+    if (!writer || env->ExceptionCheck()) return failed();
+    jobject printer = env->NewObject(printerClass, printerCtor, writer);
+    if (!printer || env->ExceptionCheck()) return failed();
+    env->CallVoidMethod(exception, print, printer);
+    if (env->ExceptionCheck()) return failed();
+    jstring trace = static_cast<jstring>(env->CallObjectMethod(writer, toString));
+    if (!trace || env->ExceptionCheck()) return failed();
+    std::string result;
+    if (!readJavaString(env, trace, result)) return failed();
+    return result;
 }
 
 static void logJavaStackTrace(const std::string& trace) {
@@ -418,21 +459,6 @@ static void logJavaStackTrace(const std::string& trace) {
     }
 }
 
-/**
- * 确保 jvm.cfg 文件存在
- */
-static void ensureJvmCfg(const std::string& libDir) {
-    std::string cfgPath = libDir + "/jvm.cfg";
-    if (fileExists(cfgPath.c_str())) return;
-
-    FILE* f = fopen(cfgPath.c_str(), "w");
-    if (f) {
-        fprintf(f, "-server KNOWN\n");
-        fclose(f);
-        AMCL_LOG_I(LOG_TAG, "Created jvm.cfg at %{public}s", cfgPath.c_str());
-    }
-}
-
 // ============================================================
 //  JVM 初始化
 // ============================================================
@@ -446,7 +472,20 @@ static void ensureJvmCfg(const std::string& libDir) {
 // JVM 映射开始后进程不能重建另一运行时；共享租约与该进程同寿命。
 static int g_jdkDirectoryLeaseFd = -1;
 
+// 两参数 C ABI 保留给 processor、NCP 资格和独立诊断，不隐式改变其 cwd。
 extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
+    return jvmInit(appFilesDir, jdkVersion, nullptr);
+}
+
+// MC 显式传入已选目录；所有既有前置检查、认领和创建状态都只在本主体执行一次。
+int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory) {
+    return jvmInit(appFilesDir, jdkVersion, gameWorkingDirectory, nullptr);
+}
+
+// appFilesDir保留现有运行包安装根语义；仅隔离NCP通过第4参给真实应用父根。
+// 目录准备、环境发布、失败回滚及CreateVM边界只有此单一owner，NCP不另写TMPDIR。
+int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,
+            const char* trustedAppFilesDir) {
     const int runtimeState = g_runtimeOnce.state();
     if (runtimeState == amcl::jvm::RuntimeOnce::ForkReserved) {
         g_status = "安装器正在创建子进程，请稍后重试";
@@ -489,7 +528,33 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         AMCL_LOG_E(LOG_TAG, "jdk_runtime_in_use: %{public}s", leaseError.c_str());
         return -12;
     }
-
+    // 读者在同一 SH 内检查稳定 journal，不能边读半完成发布边尝试升级为写锁。
+    // 需要恢复时栈租约随返回释放，由安装协调层取得 writer/use.EX 恢复后重新启动。
+    try {
+        // 无版本的旧兼容目录不属于数字槽事务；不能把它伪造为传给安装器的 major。
+        if (jdkVersion && jdkVersion[0] && amcl::jdk::InstallRecoveryRequired(appFilesDir, jdkVersion)) {
+            g_status = "JDK 安装事务尚待恢复，请先完成运行时恢复后重试";
+            return -13;
+        }
+    } catch (const std::exception& error) {
+        g_status = "无法核实 JDK 安装事务: " + std::string(error.what());
+        return -13;
+    }
+    // 同一SH租约下读取release，目录布局/slot名/native-temp marker都不冒充版本身份。
+    // 未知只保留原自动规避，不成为新的启动错误；后续显式compiler参数完全不参与此决策。
+    const auto releaseIdentity = amcl::jvm::ReadReleaseMajor(jdkDataDir, jdkVersion);
+    bool addAutomaticCfExclusion = amcl::jvm::NeedsLegacyCfDefault(releaseIdentity);
+#ifdef MC_OHOS_BUILD_TESTS
+    // 固定CF资格臂自行提供完整规则，避免把生产默认变更悄悄计入旧broad/full实验。
+    if (g_forkChildMode && g_qualificationCfExplicit) addAutomaticCfExclusion = false;
+#endif
+    AMCL_LOG_I(LOG_TAG, "CF automatic default: releaseMajor=%{public}d status=%{public}s broad=%{public}d",
+               releaseIdentity.major, releaseIdentity.status, addAutomaticCfExclusion ? 1 : 0);
+    std::string fontsConfiguration, classicFontProperties, fontError;
+    if (!amcl::jdk::PrepareFontResources(appFilesDir, fontsConfiguration, classicFontProperties, fontError)) {
+        g_status = "字体配置准备失败: " + fontError;
+        return -14;
+    }
 
     // ============================================================
     // 查找 libjvm.so（ELF loader 模式，从 filesDir 加载）
@@ -521,6 +586,38 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         return -1;
     }
 
+    const std::string jvmPath = jvmInServer ? jvmPathServer : jvmPathFlat;
+    std::string nativeTempError;
+    const auto nativeTempContract = amcl::jvm::ReadNativeTempContractFile(jvmPath, nativeTempError);
+    if (nativeTempContract == amcl::jvm::NativeTempContract::Invalid) {
+        g_status = "JDK原生临时目录合同无效: " + nativeTempError;
+        return -17;
+    }
+    amcl::jvm::PreparedNativeTempRoot nativeTempRoot;
+    if (nativeTempContract == amcl::jvm::NativeTempContract::StartupTmpdirV1) {
+        // 嵌入宿主已有可信应用根；系统继承TMPDIR不是用户配置，不能选作私有工具目录。
+        // 复用本次prepare的实际分支/元数据；诊断不另执行探针、不枚举环境或调整权限。
+        amcl::jvm::NativeTempPreparationTrace tempTrace;
+        const int tempPreparation = nativeTempRoot.prepareEmbedded(
+            trustedAppFilesDir ? trustedAppFilesDir : appFilesDir, &tempTrace);
+        if (tempPreparation != 0) {
+            g_status = "JVM原生临时目录不可用 (errno=" + std::to_string(tempPreparation) +
+                "); nativeTempPreparation=" + tempTrace.json(tempPreparation);
+            return -17;
+        }
+    }
+    // 老包缺少marker时不准备目录、不改TMPDIR，继续保留既有两条自动禁用参数。
+    amcl::jvm::NativeTempEnvironment nativeTempEnvironment([](int error) noexcept {
+        // 状态对象持有自己的锁，只能先取独立快照、在锁外拼接再发布；不借出共享字符串。
+        // 此通知可能发生在析构/异常展开中，状态文本分配失败不能再次抛出而掩盖原启动错误。
+        try {
+            g_status = g_status.snapshot() + "；TMPDIR恢复失败 (errno=" + std::to_string(error) + ")";
+        } catch (...) {
+            // 保留原状态，下面的固定格式原生日志仍记录实际恢复errno。
+        }
+        AMCL_LOG_E(LOG_TAG, "native_temp_environment_restore_failed errno=%{public}d", error);
+    });
+
     // boot class path 核心文件检查：模块化 = lib/modules；JDK 8 经典 = jre/lib/rt.jar。
     if (!classicLayout) {
         std::string modulesPath = jdkDataDir + "/lib/modules";
@@ -538,6 +635,16 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         }
     }
 
+    // 此处只取得选中目录的描述符，失败时原 cwd 与 Fresh 身份都不变。实际 fchdir 必须
+    // 晚于下面的原子认领，避免 processor fork 保留窗口复制到一半变更的进程 cwd。
+    amcl::jvm::GameWorkingDirectory gameDirectory;
+    const int gameDirectoryPreparation = gameDirectory.prepare(gameWorkingDirectory);
+    if (gameDirectoryPreparation != 0) {
+        g_status = "游戏工作目录不可用 (errno=" + std::to_string(gameDirectoryPreparation) + ")";
+        AMCL_LOG_E(LOG_TAG, "game_working_directory_prepare_failed errno=%{public}d", gameDirectoryPreparation);
+        return -16;
+    }
+
     // 堆参数在任何一次性认领、信号变更或 libjvm 装载之前检查。用户可以修正非法输入后
     // 再启动；不能让 HotSpot 在 Xms>Xmx 时直接退出当前进程，丢掉可展示的错误原因。
     amcl::jvm::HeapOptions heapOptions;
@@ -547,6 +654,25 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         AMCL_LOG_E(LOG_TAG, "jvm_heap_options_rejected reason=%{public}s", heapError.c_str());
         return -11;
     }
+
+    // 文件背书与堆容量独立：使用上面按真实参数顺序得到的最终最大堆做磁盘准入。
+    // 失败发生在一次性认领前，不静默带着显式大-Xmx切回RAM，不清理共享目录。
+    amcl::jvm::HeapBackingRequest heapBacking;
+    amcl::jvm::PreparedHeapBackingDirectory heapDirectory;
+    if (!amcl::jvm::ResolveHeapBackingRequest(g_extraArgs, releaseIdentity.major, classicLayout,
+            getenv("JAVA_TOOL_OPTIONS"), getenv("_JAVA_OPTIONS"), getenv("JDK_AOT_VM_OPTIONS"),
+            heapBacking, heapError) ||
+        (heapBacking.enabled && !heapDirectory.prepare(trustedAppFilesDir ? trustedAppFilesDir : appFilesDir,
+            heapBacking, heapOptions.maximumBytes, heapError))) {
+        g_status = "文件堆准备失败（未回退普通内存）: " + heapError;
+        AMCL_LOG_E(LOG_TAG, "jvm_heap_backing_rejected reason=%{public}s", heapError.c_str());
+        return -11;
+    }
+    const std::string heapFileOption = heapBacking.enabled ? "-XX:AllocateHeapAt=" + heapDirectory.path() : "";
+    if (heapBacking.enabled) AMCL_LOG_I(LOG_TAG,
+        "heapfile admitted finalMaximumBytes=%{public}llu requiredDiskBytes=%{public}llu freeDiskBytes=%{public}llu",
+        (unsigned long long)heapOptions.maximumBytes, (unsigned long long)heapDirectory.requiredBytes(),
+        (unsigned long long)heapDirectory.freeBytes());
 
     // ============================================================
     // 在改变进程信号/装载运行时前原子认领；后续失败保持非 Fresh，不得再建另一 JVM。
@@ -558,6 +684,19 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         }
         g_status = "JVM 创建事务已被认领，需要重启进程";
         return -7;
+    }
+
+    if (nativeTempContract == amcl::jvm::NativeTempContract::StartupTmpdirV1) {
+        const int tempIdentity = nativeTempRoot.revalidate();
+        if (tempIdentity != 0) {
+            g_status = "JVM原生临时目录发布前身份变化 (errno=" + std::to_string(tempIdentity) + ")";
+            return -17;
+        }
+        const int tempPublication = nativeTempEnvironment.publish(nativeTempRoot.path());
+        if (tempPublication != 0) {
+            g_status = "JVM原生临时目录环境发布失败 (errno=" + std::to_string(tempPublication) + ")";
+            return -17;
+        }
     }
 
     // I27-05：认领之后本进程不会再有第二个 JVM，JNI_CreateJavaVM 一返回就有 JVM 线程。在此封存
@@ -587,7 +726,36 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     g_jdkDataDir = jdkDataDir;
     std::string searchPaths = nativeLibDir + ":" + nativeLibDir + "/server:" + nativeLibDir + "/jli";
     elf_set_search_path(searchPaths.c_str());
-    ensureJvmCfg(nativeLibDir);
+    // Invocation 不读取 JLI 的 jvm.cfg；完整 CLI 所需配置由正式 image 提供，启动器
+    // 不能在已认证且持 SH 的 JDK 槽里临时补文件来掩盖损坏或改变载荷身份。
+
+    // java.home 取值：模块化布局（17/21/25）= JDK 根（jdkDataDir，模块在 <home>/lib/modules）；
+    // JDK 8 经典布局 = JRE 目录（jdkDataDir/jre），因为 set_boot_path 按 <java.home>/lib/rt.jar
+    // 等定位引导类，rt.jar 实际在 jre/lib/ 下。若误用 jdkDataDir 会找 jdk/8/lib/rt.jar（不存在）
+    // → VM 初始化期 NoClassDefFoundError: java/lang/Object。
+    std::string javaHomeDir = classicLayout ? (jdkDataDir + "/jre") : jdkDataDir;
+
+    // 设置环境变量（HotSpot patch 依赖：os_linux.cpp 用 getenv("JAVA_HOME") 覆盖 dladdr 推断）
+    const std::string fontDirectory = fontsConfiguration.substr(0, fontsConfiguration.find_last_of('/'));
+    if (setenv("JAVA_HOME", javaHomeDir.c_str(), 1) != 0 ||
+        setenv("SUN_BOOT_LIBRARY_PATH", nativeLibDir.c_str(), 1) != 0 ||
+        setenv("FONTCONFIG_PATH", fontDirectory.c_str(), 1) != 0 ||
+        setenv("FONTCONFIG_FILE", fontsConfiguration.c_str(), 1) != 0) {
+        g_status = "JVM 路径/字体环境准备失败 (errno=" + std::to_string(errno) + ")";
+        return -14;
+    }
+
+    // 中文路径修复（2026-06）：把 locale 钉成 UTF-8。
+    // sun.jnu.encoding（JVM 文件名 ↔ 字节转换的编码）在 VM 早期由 OS locale 的
+    // CODESET 推断；musl 默认 "C" locale 的 CODESET 报 ASCII → 含中文的 classpath /
+    // user.dir / 文件名被损坏（NoSuchFileException / 乱码）。设 LC_ALL/LANG 为 UTF-8
+    // locale 让 nl_langinfo(CODESET) 返回 UTF-8 → sun.jnu.encoding=UTF-8。
+    // 必须在 JNI_CreateJavaVM 之前 setenv（VM init 时读一次）。与 jvm_common_args.cpp
+    // 的 -Dsun.jnu.encoding=UTF-8 / -Dfile.encoding=UTF-8 双保险。
+    if (setenv("LC_ALL", "en_US.UTF-8", 1) != 0 || setenv("LANG", "en_US.UTF-8", 1) != 0) {
+        g_status = "JVM UTF-8 环境准备失败 (errno=" + std::to_string(errno) + ")";
+        return -14;
+    }
 
     // 崩溃现场文件在注册 handler 之前预先打开。下一次冷启动先把它归档到上一条活动账本，
     // 此处已独占 JVM 创建事务，才可以关闭/替换全局 fd 并安全 O_TRUNC。
@@ -600,20 +768,23 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         g_crashTailFd = open((crashTailDir + "/crash-tail.log").c_str(),
                              O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     }
-    g_crashHandlerEntered = 0;
+    g_crashHandlerEntered.clear(std::memory_order_release);
     if (g_crashTailFd >= 0) crashWriteLiteral("AMCL_SIGNAL_SAFE_CRASH_TAIL_V1\n");
 
-    // HotSpot 会保存前任普通处理器并在未知异常时回调它。同步硬件异常不能设为
-    // SIG_IGN，否则 VM 会把未识别故障当成“旧处理器已消费”，永远重试同一指令。
-    // 先恢复普通处理器默认值；下面在创建 JVM 前登记 OHOS 特殊链，优先处理真正的 VM 信号。
+    // 同步硬件 fault 不能保持 SIG_IGN。只归一四个同步 signal 中实际被忽略的项，
+    // 合法自定义普通 handler 仍由 HotSpot 的 UseSignalChaining 保存并在非 VM 信号时
+    // 链回；其消费也属于四参数入口的合法 handled 结果。OHOS 特殊链及其他 signal
+    // owner 均保持，禁止 reset 1..31 或把四个同步信号的自定义 owner 一并清空。
     {
-        struct sigaction clean_sa{};
-        sigemptyset(&clean_sa.sa_mask);
-        clean_sa.sa_handler = SIG_DFL;
-        for (int sigid = 1; sigid < 32; sigid++) {
-            if (sigid != SIGKILL && sigid != SIGSTOP) sigaction(sigid, &clean_sa, nullptr);
+        amcl::jvm::PosixSignalActions actions;
+        const auto result = amcl::jvm::NormalizeIgnoredJvmSignals(actions);
+        if (!result.ok()) {
+            g_status = "JVM 被忽略同步信号的归一失败";
+            AMCL_LOG_E(LOG_TAG, "synchronous signal handoff failed signal=%{public}d errno=%{public}d rollback=%{public}d",
+                result.signal, result.error, result.rollbackError);
+            return -15;
         }
-        AMCL_LOG_I(LOG_TAG, "Ordinary signal dispositions reset to default before JVM ownership");
+        AMCL_LOG_I(LOG_TAG, "JVM ignored synchronous signals normalized; custom and unrelated owners retained");
     }
 
     // 检测 JIT 权限（RWX mmap）— 必须在加载 libjvm.so 之前！
@@ -634,9 +805,6 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
 
     // 加载 JVM 库（通过 ELF loader）
     elf_dlopen((nativeLibDir + "/libcxxabi_shim.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
-    std::string jvmPath = jvmInServer
-        ? (nativeLibDir + "/server/libjvm.so")
-        : (nativeLibDir + "/libjvm.so");
     void* jvmH = elf_dlopen(jvmPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (!jvmH) {
         g_status = std::string("libjvm.so 加载失败: ") + elf_error();
@@ -649,44 +817,22 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         return -3;
     }
 
-    // java.home 取值：模块化布局（17/21/25）= JDK 根（jdkDataDir，模块在 <home>/lib/modules）；
-    // JDK 8 经典布局 = JRE 目录（jdkDataDir/jre），因为 set_boot_path 按 <java.home>/lib/rt.jar
-    // 等定位引导类，rt.jar 实际在 jre/lib/ 下。若误用 jdkDataDir 会找 jdk/8/lib/rt.jar（不存在）
-    // → VM 初始化期 NoClassDefFoundError: java/lang/Object。
-    std::string javaHomeDir = classicLayout ? (jdkDataDir + "/jre") : jdkDataDir;
-
-    // 设置环境变量（HotSpot patch 依赖：os_linux.cpp 用 getenv("JAVA_HOME") 覆盖 dladdr 推断）
-    setenv("JAVA_HOME", javaHomeDir.c_str(), 1);
-    setenv("SUN_BOOT_LIBRARY_PATH", nativeLibDir.c_str(), 1);
-
-    // 中文路径修复（2026-06）：把 locale 钉成 UTF-8。
-    // sun.jnu.encoding（JVM 文件名 ↔ 字节转换的编码）在 VM 早期由 OS locale 的
-    // CODESET 推断；musl 默认 "C" locale 的 CODESET 报 ASCII → 含中文的 classpath /
-    // user.dir / 文件名被损坏（NoSuchFileException / 乱码）。设 LC_ALL/LANG 为 UTF-8
-    // locale 让 nl_langinfo(CODESET) 返回 UTF-8 → sun.jnu.encoding=UTF-8。
-    // 必须在 JNI_CreateJavaVM 之前 setenv（VM init 时读一次）。与 jvm_common_args.cpp
-    // 的 -Dsun.jnu.encoding=UTF-8 / -Dfile.encoding=UTF-8 双保险。
-    setenv("LC_ALL", "en_US.UTF-8", 1);
-    setenv("LANG", "en_US.UTF-8", 1);
-
     // JVM 参数（classpath 和 library path 可能很长，用 std::string）
-    char opt0[512], opt1[512], opt3[512], opt4[512], opt5[512], opt6[512];
-    snprintf(opt0, sizeof(opt0), "-Djava.home=%s", javaHomeDir.c_str());
-    snprintf(opt1, sizeof(opt1), "-Dsun.boot.library.path=%s", nativeLibDir.c_str());
+    const std::string opt0 = "-Djava.home=" + javaHomeDir;
+    const std::string opt1 = "-Dsun.boot.library.path=" + nativeLibDir;
     // user.home 和 user.dir：优先使用环境变量 AMCL_GAME_DIR（由 launchWithProfileImpl 设置）
     // 这样 JVM 启动时就使用正确的 gameDir，而不是 filesDir
     const char* gameDirEnv = getenv("AMCL_GAME_DIR");
     const char* userHomeDir = (gameDirEnv && gameDirEnv[0]) ? gameDirEnv : appFilesDir;
     const char* userDirDir = (gameDirEnv && gameDirEnv[0]) ? gameDirEnv : appFilesDir;
-    snprintf(opt3, sizeof(opt3), "-Duser.home=%s", userHomeDir);
-    snprintf(opt4, sizeof(opt4), "-Duser.dir=%s", userDirDir);
-    snprintf(opt5, sizeof(opt5), "-Djava.io.tmpdir=%s", appFilesDir);
-    // snprintf 只需要把 %p 原样交给 HotSpot；%% 是 C 格式串中的一个字面 %。
-    // 旧代码用了 %%%%p，生成的参数多了一层转义，可能无法按 pid 分文件。
+    const std::string opt3 = std::string("-Duser.home=") + userHomeDir;
+    const std::string opt4 = std::string("-Duser.dir=") + userDirDir;
+    const std::string opt5 = std::string("-Djava.io.tmpdir=") + appFilesDir;
+    // 路径使用完整动态字符串，不能把合法的深层工作目录静默截为 512 字节。
     // Fatal 报告直接归本局，旧工具/processor 沿用原目录，不把别次 JVM 的报告拼进来。
     const std::string fatalDir = amcl::sessionlog::owned()
         ? std::string(amcl::sessionlog::state.directory) + "/jvm" : jdkDataDir;
-    snprintf(opt6, sizeof(opt6), "-XX:ErrorFile=%s/hs_err_pid%%p.log", fatalDir.c_str());
+    const std::string opt6 = "-XX:ErrorFile=" + fatalDir + "/hs_err_pid%p.log";
 
     // classpath: 优先使用外部设置的，否则默认 appFilesDir
     std::string cpStr = g_classpath.empty() ? std::string(appFilesDir) : g_classpath;
@@ -759,12 +905,13 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     // ============================================================
     std::vector<JavaVMOption> optVec = {
         // 路径/内存（运行时生成）
-        { opt0, nullptr }, { opt1, nullptr },
+        { const_cast<char*>(opt0.c_str()), nullptr }, { const_cast<char*>(opt1.c_str()), nullptr },
         { const_cast<char*>(opt2str.c_str()), nullptr },
-        { opt3, nullptr }, { opt4, nullptr }, { opt5, nullptr },
+        { const_cast<char*>(opt3.c_str()), nullptr }, { const_cast<char*>(opt4.c_str()), nullptr },
+        { const_cast<char*>(opt5.c_str()), nullptr },
         { const_cast<char*>(opt7str.c_str()), nullptr },
         { const_cast<char*>(heapOptions.defaultMaximumOption.c_str()), nullptr },
-        { opt6, nullptr },  // -XX:ErrorFile
+        { const_cast<char*>(opt6.c_str()), nullptr },  // -XX:ErrorFile
 
         // 主进程专属
         //   Dorg.lwjgl.glfw.checkThread0: LWJGL 默认校验 GLFW 调用的线程 ID，
@@ -848,6 +995,12 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         { (char*)"-Dfabric.noGui=true", nullptr },
     };
 
+    // 四代均使用上游 Fontconfig 匹配系统字体。JDK8 的显式 sun.awt.fontconfig
+    // 会令 foundOsSpecificFile 保持 true，跳过 FcFontConfiguration 并只采用旧表的
+    // Latin 组件；awtfontpath 的目录枚举不会自动补入该逻辑字体的回退链。
+    // 真实 provider 现在由运行时提供，因此不再默认注入旧 properties。原用户显式
+    // 配置仍按后续自定义 JVM 参数生效，宿主也不改写已认证的 JDK 字体目录。
+
     // 用户没有提供初始堆时才注入。它仍位于所有用户选项之前，用户 MinHeapSize 的
     // 原始顺序保持不变；显式 -Xms0 的 HotSpot 自动计算含义也不被宿主默认值覆盖。
     if (!heapOptions.automaticInitialOption.empty()) {
@@ -894,6 +1047,8 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     }
     const auto& commonArgs = amcl::getCommonJvmArgs();
     for (const auto& s : commonArgs) {
+        // 只省略新包不再需要的自动保守项；后面的用户显式参数仍原样追加且最后生效。
+        if (amcl::jvm::OmitLegacyTempDefault(nativeTempContract, s.c_str())) continue;
         if (!gcOverride.empty() && s != gcOverride && isGcSelector(s)) {
             AMCL_LOG_I(LOG_TAG, "  GC override: skip SSOT %{public}s (%{public}s requested)", s.c_str(),
                        gcOverride.c_str());
@@ -902,10 +1057,18 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         optVec.push_back({ const_cast<char*>(s.c_str()), nullptr });
     }
 
+    // 自动项先于所有显式extra参数。这里只添加本方25/unknown旧默认，绝不追加false
+    // 或筛掉用户/加载器相同的CompileCommand、CompileOnly、command/directive文件。
+    if (addAutomaticCfExclusion) {
+        optVec.push_back({ const_cast<char*>(amcl::jvm::LegacyCfExclusion), nullptr });
+    }
+
     // 追加模组加载器的额外 JVM 参数（结构化列表）
     if (!g_extraArgs.empty()) {
         for (auto& s : g_extraArgs) {
             if (s.empty()) continue;
+            // 只在最终统一入口产生一个冻结文件堆选项，marker不交给Java业务代码。
+            if (amcl::jvm::IsHeapFileMarker(s) || amcl::jvm::IsHeapFileLocation(s)) continue;
             optVec.push_back({ const_cast<char*>(s.c_str()), nullptr });
             AMCL_LOG_I(LOG_TAG, "  extra JVM arg: %{public}s", s.c_str());
         }
@@ -973,13 +1136,23 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     }
 
     JavaVMInitArgs vm_args;
+    if (heapBacking.enabled) {
+        // 构建参数期间目录仍可能变化，按持有fd再次核验。显式文件堆不继承
+        // 普通RAM的忽略未知选项策略；实际VM管理值还会在CreateVM后再次读回。
+        if (!heapDirectory.revalidate(heapError)) {
+            g_status = "文件堆目录或空间已改变，请重启游戏进程: " + heapError;
+            return -11;
+        }
+        optVec.push_back({const_cast<char*>(heapFileOption.c_str()),nullptr});
+        optVec.push_back({const_cast<char*>("-XX:-IgnoreUnrecognizedVMOptions"),nullptr});
+    }
     // JNI 版本随 JDK 布局选择：JDK 8 最高仅支持 JNI_VERSION_1_8，传 JNI_VERSION_10 会被拒
     //   （JNI_CreateJavaVM 立即返回 -3 = JNI_EVERSION）。模块化 JDK（17/21/25）仍用 JNI_VERSION_10。
     vm_args.version = classicLayout ? JNI_VERSION_1_8 : JNI_VERSION_10;
     g_jniVersion = vm_args.version;
     vm_args.nOptions = (jint)optVec.size();
     vm_args.options = optVec.data();
-    vm_args.ignoreUnrecognized = JNI_TRUE;
+    vm_args.ignoreUnrecognized = heapBacking.enabled ? JNI_FALSE : JNI_TRUE;
 
     for (int i = 0; i < vm_args.nOptions; i++) {
         AMCL_LOG_I(LOG_TAG, "  opt[%{public}d]: %{public}s", i, optVec[i].optionString);
@@ -1007,15 +1180,19 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
             addSpecialHandler != nullptr, hotspotSignal != nullptr);
         return -11;
     }
-    sigemptyset(&jvmChainAction.sca_mask);
+    if (sigemptyset(&jvmChainAction.sca_mask) != 0) {
+        g_status = "JVM 信号桥掩码初始化失败";
+        return -15;
+    }
     jvmChainAction.sca_flags = 0;
     jvmChainAction.sca_sigaction = [](int sig, siginfo_t* info, void* context) -> bool {
         const int savedErrno = errno;
+        const bool diagnosticsReady = g_crashObservationPublished.load(std::memory_order_acquire);
         const bool handled = amcl::jvm::forwardSynchronousSignal(hotspotSignal, sig, info, context);
         if (!handled && info != nullptr && context != nullptr && info->si_code > 0) {
             // 故障路径只写启动前打开的 fd 和栈上十六进制文本，不做分配、符号解析或异步日志入队。
             auto* state = static_cast<ucontext_t*>(context);
-            if (unhandledReports.fetch_add(1, std::memory_order_relaxed) < 8) {
+            if (diagnosticsReady && unhandledReports.fetch_add(1, std::memory_order_relaxed) < 8) {
                 crashWriteLiteral("\nAMCL_UNHANDLED_JVM_SIGNAL_V1\n");
                 crashWriteAddressLine("SIGNAL=", static_cast<uintptr_t>(sig));
                 crashWriteAddressLine("PC=", static_cast<uintptr_t>(state->uc_mcontext.pc));
@@ -1031,20 +1208,32 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
         errno = savedErrno;
         return handled;
     };
+    {
+        CrashConfigurationWrite write;
+        g_crashObservationPublished.store(true, std::memory_order_release);
+    }
     // 只接管 HotSpot 可能消费的同步硬件异常。异步终止、采样和平台通知保持各自的所有者。
     for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE}) addSpecialHandler(sig, &jvmChainAction);
     AMCL_LOG_I(LOG_TAG, "JVM signal bridge ready: boolean result forwarding; unrecognized hardware faults are fatal");
 
-    // 注册 SIGABRT handler 来捕获 abort 调用位置
+    // SIGABRT 只作特殊链观察者；输出完成后返回 false，让平台 DFX/原普通 owner 按
+    // 自己的协议处理。不能为了抓一段栈尾而覆盖应用或平台已有的 abort disposition。
     {
-        struct sigaction abortSa;
-        memset(&abortSa, 0, sizeof(abortSa));
-        sigemptyset(&abortSa.sa_mask);
-        abortSa.sa_flags = SA_SIGINFO;
-        abortSa.sa_sigaction = [](int sig, siginfo_t* info, void* ctx) {
+        static signal_chain_action abortAction{};
+        if (sigemptyset(&abortAction.sca_mask) != 0) {
+            g_status = "JVM 中止观察掩码初始化失败";
+            return -15;
+        }
+        abortAction.sca_flags = 0;
+        abortAction.sca_sigaction = [](int sig, siginfo_t* info, void* ctx) -> bool {
+            (void)sig;
             (void)info;
-            if (g_crashHandlerEntered != 0) _exit(128 + sig);
-            g_crashHandlerEntered = 1;
+            const int savedErrno = errno;
+            if (!g_crashObservationPublished.load(std::memory_order_acquire)) return false;
+            if (g_crashHandlerEntered.test_and_set(std::memory_order_acquire)) {
+                errno = savedErrno;
+                return false;
+            }
             crashWriteLiteral("\n===== SIGABRT (signal-safe) =====\n");
             if (ctx != nullptr) {
                 ucontext_t* uc = static_cast<ucontext_t*>(ctx);
@@ -1053,10 +1242,11 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
             }
             crashDumpGameTailDirect();
             crashWriteLiteral("===== SIGABRT end =====\n");
-            signal(SIGABRT, SIG_DFL);
-            raise(SIGABRT);
+            g_crashHandlerEntered.clear(std::memory_order_release);
+            errno = savedErrno;
+            return false;
         };
-        sigaction(SIGABRT, &abortSa, nullptr);
+        addSpecialHandler(SIGABRT, &abortAction);
     }
 
     // Redirect JVM stderr+stdout to a file (survives instant process kill)
@@ -1065,7 +1255,9 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     std::string stderrFile = ownedSessionOutput ? amcl::sessionlog::jvmPath()
         : std::string(appFilesDir) + "/jvm_stderr.log";
     int origStderr = -1, origStdout = -1;
-    {
+    if (!g_forkChildMode) {
+        // processor 已在任何 JVM 初始化前校验并建立显式日志，不再临时切到跨任务共用的
+        // jvm_stderr.log；这样初始化诊断也留在该 processor 的原始 stdout/stderr 合同里。
         int fd = open(stderrFile.c_str(), O_WRONLY | O_CREAT | (ownedSessionOutput ? O_APPEND : O_TRUNC), 0644);
         if (fd >= 0) {
             origStderr = dup(STDERR_FILENO);
@@ -1077,12 +1269,21 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
             AMCL_LOG_I(LOG_TAG, "JVM stderr/stdout → %{public}s", stderrFile.c_str());
         } else { amcl::sessionlog::failure(errno); }
     }
-    AMCL_LOG_I(LOG_TAG, "Calling JNI_CreateJavaVM at %{public}p ...", (void*)createVM);
-
     uint64_t tStart = nowMs();
     JavaVM* jvm = nullptr;
     JNIEnv* env = nullptr;
-    jint rc = createVM(&jvm, (void**)&env, &vm_args);
+    // 所有会提前返回的前置工作都已结束，当前已独占 RuntimeOnce。失败的 fchdir 不改变
+    // cwd；成功后不再插入可拒绝启动的工作，立即创建 VM，让早期 compiler/agent 线程与
+    // 后续游戏看到同一目录。真正 CreateJavaVM 已调用后，即使返回失败也保留一次性失败
+    // 身份及该 cwd，不擅自假定未遗留线程。这里只移动原 Phase4 的时机，不限制任何 JIT。
+    const int gameDirectoryEntry = gameDirectory.enter();
+    jint rc = JNI_ERR;
+    if (gameDirectoryEntry == 0) {
+        AMCL_LOG_I(LOG_TAG, "Calling JNI_CreateJavaVM at %{public}p ...", (void*)createVM);
+        // 此后即使创建失败也不能假定没有残留线程；TMPDIR与runtime一次性身份一起保留。
+        nativeTempEnvironment.retainAfterVmEntry();
+        rc = createVM(&jvm, (void**)&env, &vm_args);
+    }
 
     // Restore stderr/stdout
     fflush(stderr);
@@ -1091,6 +1292,14 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     if (origStdout >= 0) { if (dup2(origStdout, STDOUT_FILENO) < 0) amcl::sessionlog::failure(errno); close(origStdout); }
     // 原始 JVM stdout/stderr 仅保留在独立可选证据中；启动器只记录 JNI 结果。
     uint64_t elapsed = nowMs() - tStart;
+    if (gameDirectoryEntry != 0) {
+        // stdio 已恢复，VM 未调用；原 cwd 由 fchdir 的失败语义保留。认领后的失败仍要求
+        // 重启进程，不回退 RuntimeOnce 或把已经装载的库/信号准备伪装成 Fresh。
+        amcl::sessionlog::finish();
+        g_status = "无法进入游戏工作目录，JVM 尚未创建 (errno=" + std::to_string(gameDirectoryEntry) + ")";
+        AMCL_LOG_E(LOG_TAG, "game_working_directory_enter_failed errno=%{public}d create_vm_called=0", gameDirectoryEntry);
+        return -16;
+    }
 
     AMCL_LOG_I(LOG_TAG, "JNI_CreateJavaVM returned %{public}d in %{public}llu ms", rc, (unsigned long long)elapsed);
 
@@ -1101,7 +1310,18 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
     }
 
     g_jvm = jvm;
-    g_env = env;
+    if (heapBacking.enabled) {
+        uint64_t actualMaximum = 0;
+        if (!amcl::jvm::VerifyHeapBackingVm(env, heapDirectory.path(), heapOptions.maximumBytes,
+                                          actualMaximum, heapError)) {
+            // VM已存在，保留一次性认领及g_jvm供进程退出；绝不重试第二个RAM JVM。
+            g_status = "JVM 文件堆合同未生效，需要结束游戏进程: " + heapError;
+            AMCL_LOG_E(LOG_TAG,"heapfile vm verification failed reason=%{public}s",heapError.c_str());
+            return -11;
+        }
+        AMCL_LOG_I(LOG_TAG,"heapfile VM verified actualMaximumBytes=%{public}llu strictOptions=1",
+            (unsigned long long)actualMaximum);
+    }
     g_runtimeOnce.ready();
 
     // 创建前后使用同一个有返回值的入口；无需切换到吞异常的中间模式。
@@ -1117,562 +1337,341 @@ extern "C" int jvmInit(const char* appFilesDir, const char* jdkVersion) {
  */
 #ifdef MC_OHOS_BUILD_TESTS
 extern "C" const char* jvmRunFullTest(const char* appFilesDir) {
-    if (g_testRunning) {
-        g_fullTestResult = "⚠️ 测试已在运行中";
+    (void)appFilesDir; // 保留 ABI；测试类直接定义在独立 loader，不再往已冻结 classpath 旁写无效文件。
+    bool expected = false;
+    if (!g_testRunning.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        g_fullTestResult = "测试已在运行中";
         return g_fullTestResult.c_str();
     }
-    g_testRunning = true;
-
-    std::ostringstream ss;
-    ss << "========== JVM 嵌入测试 ==========\n\n";
-
-    // 不再在测试中创建 JVM！
-    // JVM 只能创建一次，classpath 在创建时固定，之后无法修改。
-    // 如果测试先创建了 JVM（classpath 为空），MC 启动时就找不到类。
-    // JVM 应该由 mcLaunchWithProfileV2 的启动链创建（bootstrap classpath 正确）。
-    if (!g_jvm) {
-        ss << "⚠️ JVM 尚未初始化\n\n";
-        ss << "请先启动 Minecraft，JVM 会随 MC 一起初始化。\n";
-        ss << "MC 启动后可再次运行此测试查看 JVM 状态。\n\n";
-        ss << "原因：JVM 只能创建一次，classpath 在创建时固定。\n";
-        ss << "如果测试先创建 JVM（无 MC classpath），MC 将无法启动。\n";
-        g_testRunning = false;
-        g_fullTestResult = ss.str();
+    struct RunningGuard { ~RunningGuard() { g_testRunning.store(false, std::memory_order_release); } } running;
+    amcl::jni::InvocationGate::Use use(g_invocationGate);
+    JavaVM* vm = g_jvm.load(std::memory_order_acquire);
+    if (!use || g_runtimeOnce.state() != 2 || !vm) {
+        g_fullTestResult = "JVM 尚未就绪或本局已退休；请在已启动的 Minecraft 会话中运行诊断。";
         return g_fullTestResult.c_str();
     }
-
-    ss << "jvmInit: ✅ JVM 已就绪\n";
-    ss << "状态: " << g_status << "\n\n";
-
-    JNIEnv* env = g_env;
-
-    // 获取 JVM 系统属性
-    ss << "【JVM 系统属性】\n";
-    jclass systemClass = env->FindClass("java/lang/System");
-    if (systemClass) {
-        jmethodID getProperty = env->GetStaticMethodID(systemClass, "getProperty",
-            "(Ljava/lang/String;)Ljava/lang/String;");
-        if (getProperty) {
-            const char* props[] = {
-                "java.version", "java.vm.name", "java.vm.version",
-                "os.name", "os.arch", "java.home"
-            };
-            for (const char* prop : props) {
-                jstring key = env->NewStringUTF(prop);
-                jstring val = (jstring)env->CallStaticObjectMethod(systemClass, getProperty, key);
-                if (val) {
-                    const char* valStr = env->GetStringUTFChars(val, nullptr);
-                    ss << "  " << prop << " = " << valStr << "\n";
-                    env->ReleaseStringUTFChars(val, valStr);
-                } else {
-                    ss << "  " << prop << " = (null)\n";
-                }
-                env->DeleteLocalRef(key);
-                if (val) env->DeleteLocalRef(val);
+    amcl::jni::Environment environment(vm, g_jniVersion, true);
+    JNIEnv* env = environment.get();
+    if (!env || env->ExceptionCheck()) {
+        g_fullTestResult = "无法取得无待处理异常的当前线程 JNIEnv";
+        return g_fullTestResult.c_str();
+    }
+    std::ostringstream output;
+    output << "========== JVM 嵌入测试 ==========\n";
+    try {
+        amcl::jni::LocalFrame frame(env, 48);
+        amcl::jni::Failure failure;
+        auto execute = [&]() -> bool {
+            if (!frame.valid()) return failure.record(env, "PushLocalFrame(diagnostics)");
+            jclass system = env->FindClass("java/lang/System");
+            if (!failure.require(env, system, "FindClass(System)")) return false;
+            jmethodID get = env->GetStaticMethodID(system, "getProperty", "(Ljava/lang/String;)Ljava/lang/String;");
+            if (!failure.require(env, get, "System.getProperty")) return false;
+            output << "【JVM 系统属性】\n";
+            for (const char* property : {"java.version", "java.vm.name", "java.vm.version", "os.name", "os.arch", "java.home"}) {
+                jstring key = env->NewStringUTF(property);
+                if (!failure.require(env, key, "NewStringUTF(property)")) return false;
+                jstring value = static_cast<jstring>(env->CallStaticObjectMethod(system, get, key));
+                if (!failure.check(env, "System.getProperty()")) return false;
+                output << property << " = ";
+                if (value) {
+                    std::string text;
+                    if (!readJavaString(env, value, text)) return failure.record(env, "read Java property string");
+                    output << text << '\n';
+                } else output << "(null)\n";
+                env->DeleteLocalRef(value); env->DeleteLocalRef(key);
+            }
+            jclass runtimeClass = env->FindClass("java/lang/Runtime");
+            if (!failure.require(env, runtimeClass, "FindClass(Runtime)")) return false;
+            jmethodID getRuntime = env->GetStaticMethodID(runtimeClass, "getRuntime", "()Ljava/lang/Runtime;");
+            if (!failure.require(env, getRuntime, "Runtime.getRuntime")) return false;
+            jobject runtime = env->CallStaticObjectMethod(runtimeClass, getRuntime);
+            if (!failure.require(env, runtime, "Runtime.getRuntime()")) return false;
+            output << "【JVM Runtime】\n";
+            for (const char* name : {"maxMemory", "totalMemory", "freeMemory"}) {
+                jmethodID method = env->GetMethodID(runtimeClass, name, "()J");
+                if (!failure.require(env, method, name)) return false;
+                const jlong bytes = env->CallLongMethod(runtime, method);
+                if (!failure.check(env, name)) return false;
+                output << name << " = " << bytes / (1024 * 1024) << " MB\n";
+            }
+            jmethodID cpuMethod = env->GetMethodID(runtimeClass, "availableProcessors", "()I");
+            if (!failure.require(env, cpuMethod, "Runtime.availableProcessors")) return false;
+            const jint cpus = env->CallIntMethod(runtime, cpuMethod);
+            if (!failure.check(env, "Runtime.availableProcessors()")) return false;
+            output << "availableProcessors = " << cpus << '\n';
+            // 每次诊断拥有独立类加载器，重复调用不重定义同一类，也不借用游戏的 HelloWorld。
+            jclass urlClass = env->FindClass("java/net/URL");
+            if (!failure.require(env, urlClass, "FindClass(URL)")) return false;
+            jclass loaderClass = env->FindClass("java/net/URLClassLoader");
+            if (!failure.require(env, loaderClass, "FindClass(URLClassLoader)")) return false;
+            jmethodID ctor = env->GetMethodID(loaderClass, "<init>", "([Ljava/net/URL;Ljava/lang/ClassLoader;)V");
+            if (!failure.require(env, ctor, "URLClassLoader.<init>")) return false;
+            jobjectArray urls = env->NewObjectArray(0, urlClass, nullptr);
+            if (!failure.require(env, urls, "NewObjectArray(empty URLs)")) return false;
+            jobject loader = env->NewObject(loaderClass, ctor, urls, static_cast<jobject>(nullptr));
+            if (!failure.require(env, loader, "NewObject(diagnostic loader)")) return false;
+            jclass hello = env->DefineClass("HelloWorld", loader, reinterpret_cast<const jbyte*>(kHelloWorldClass), kHelloWorldClassLen);
+            if (!failure.require(env, hello, "DefineClass(HelloWorld)")) return false;
+            jmethodID main = env->GetStaticMethodID(hello, "main", "([Ljava/lang/String;)V");
+            if (!failure.require(env, main, "GetStaticMethodID(HelloWorld.main)")) return false;
+            jclass stringClass = env->FindClass("java/lang/String");
+            if (!failure.require(env, stringClass, "FindClass(String)")) return false;
+            jobjectArray args = env->NewObjectArray(0, stringClass, nullptr);
+            if (!failure.require(env, args, "NewObjectArray(HelloWorld args)")) return false;
+            env->CallStaticVoidMethod(hello, main, args);
+            if (!failure.check(env, "HelloWorld.main()")) return false;
+            output << "HelloWorld: PASS\n";
+            return true;
+        };
+        if (!execute()) {
+            output << "诊断失败: " << (failure.stage ? failure.stage : "unknown") << '\n';
+            if (failure.exception) {
+                env->Throw(failure.exception); env->ExceptionDescribe(); env->ExceptionClear();
+                env->DeleteLocalRef(failure.exception);
             }
         }
-        env->DeleteLocalRef(systemClass);
+    } catch (const std::exception& error) {
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        output << "诊断宿主错误: " << error.what() << '\n';
     }
-
-    // 获取 Runtime 信息
-    ss << "\n【JVM Runtime】\n";
-    jclass rtClass = env->FindClass("java/lang/Runtime");
-    if (rtClass) {
-        jmethodID getRuntime = env->GetStaticMethodID(rtClass, "getRuntime", "()Ljava/lang/Runtime;");
-        jobject runtime = env->CallStaticObjectMethod(rtClass, getRuntime);
-        if (runtime) {
-            jlong maxM = env->CallLongMethod(runtime, env->GetMethodID(rtClass, "maxMemory", "()J"));
-            jlong totalM = env->CallLongMethod(runtime, env->GetMethodID(rtClass, "totalMemory", "()J"));
-            jlong freeM = env->CallLongMethod(runtime, env->GetMethodID(rtClass, "freeMemory", "()J"));
-            jint nCpu = env->CallIntMethod(runtime, env->GetMethodID(rtClass, "availableProcessors", "()I"));
-            ss << "  maxMemory: " << (maxM / 1024 / 1024) << " MB\n";
-            ss << "  totalMemory: " << (totalM / 1024 / 1024) << " MB\n";
-            ss << "  freeMemory: " << (freeM / 1024 / 1024) << " MB\n";
-            ss << "  availableProcessors: " << nCpu << "\n";
-            env->DeleteLocalRef(runtime);
-        }
-        env->DeleteLocalRef(rtClass);
-    }
-
-    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
-
-    // HelloWorld 测试
-    ss << "\n【HelloWorld 测试】\n";
-    std::string classFile = std::string(appFilesDir) + "/HelloWorld.class";
-    FILE* cf = fopen(classFile.c_str(), "wb");
-    if (cf) {
-        fwrite(kHelloWorldClass, 1, kHelloWorldClassLen, cf);
-        fclose(cf);
-        int callRc = jvmCallMain("HelloWorld", 0, nullptr);
-        ss << "  jvmCallMain: " << (callRc == 0 ? "✅" : "❌") << " (rc=" << callRc << ")\n";
-    }
-
-    ss << "\n========== 测试完成 ==========\n";
-    g_testRunning = false;
-    g_fullTestResult = ss.str();
+    const jint detached = environment.finish();
+    if (detached != JNI_OK) output << "DetachCurrentThread 失败: " << detached << '\n';
+    g_fullTestResult = output.str();
     return g_fullTestResult.c_str();
 }
 
 #endif
 
-extern "C" int jvmCallMain(const char* className, int argc, const char** argv) {
-    if (!g_jvm || !g_env) {
-        g_status = "JVM 未初始化";
-        return -1;
+/** watchdog 的文本出口不持有 JNI 引用；任何文本都在对应 UTF chars 租约内同步消费。 */
+struct WatchdogLog {
+    void thread(const char* name, jsize depth) {
+        AMCL_LOG_I(LOG_TAG, "[WATCHDOG] Thread: %{public}s depth=%{public}d", name, static_cast<int>(depth));
     }
-    if (!className) {
-        g_status = "className 为空";
-        return -1;
+    void frame(const char* text) { AMCL_LOG_I(LOG_TAG, "[WATCHDOG]   at %{public}s", text); }
+};
+
+/** 线程所有者在首次等待结束后才附加；停止后先释放本轮局部帧，再准确 detach。 */
+static void runWatchdog(void* context, amcl::jni::WatchdogWorker& worker) noexcept {
+    if (worker.wait(20000)) return;
+    auto* vm = static_cast<JavaVM*>(context);
+    amcl::jni::Environment environment(vm, g_jniVersion, true);
+    JNIEnv* env = environment.get();
+    if (!env) {
+        AMCL_LOG_E(LOG_TAG, "[WATCHDOG] JNI environment failed rc=%{public}d", environment.status());
+        return;
     }
-
-    AMCL_LOG_I(LOG_TAG, "jvmCallMain: class=%{public}s, argc=%{public}d", className, argc);
-
-    // 调试：通过 Java API 读取实际的 java.class.path
-    {
-        JNIEnv* dbgEnv = nullptr;
-        jint rc2 = g_jvm->GetEnv((void**)&dbgEnv, g_jniVersion);
-        if (rc2 == JNI_EDETACHED) g_jvm->AttachCurrentThread((void**)&dbgEnv, nullptr);
-        if (dbgEnv) {
-            jclass sysClass = dbgEnv->FindClass("java/lang/System");
-            if (sysClass) {
-                jmethodID getProp = dbgEnv->GetStaticMethodID(sysClass, "getProperty",
-                    "(Ljava/lang/String;)Ljava/lang/String;");
-                if (getProp) {
-                    jstring key = dbgEnv->NewStringUTF("java.class.path");
-                    jstring val = (jstring)dbgEnv->CallStaticObjectMethod(sysClass, getProp, key);
-                    if (val) {
-                        const char* cval = dbgEnv->GetStringUTFChars(val, nullptr);
-                        int cpLen = cval ? (int)strlen(cval) : 0;
-                        AMCL_LOG_I(LOG_TAG, "java.class.path length=%{public}d", cpLen);
-                        if (cval && cpLen > 0) {
-                            // 打印前 300 字符
-                            std::string preview(cval, std::min(cpLen, 300));
-                            AMCL_LOG_I(LOG_TAG, "java.class.path: %{public}s...", preview.c_str());
-                        } else {
-                            AMCL_LOG_E(LOG_TAG, "java.class.path is EMPTY!");
-                        }
-                        if (cval) dbgEnv->ReleaseStringUTFChars(val, cval);
-                    }
-                    dbgEnv->DeleteLocalRef(key);
-                }
-                dbgEnv->DeleteLocalRef(sysClass);
-            }
-            if (dbgEnv->ExceptionCheck()) { dbgEnv->ExceptionDescribe(); dbgEnv->ExceptionClear(); }
-        }
-    }
-
-    // 确保当前线程已 attach 到 JVM
-    JNIEnv* env = nullptr;
-    jint getEnvRc = g_jvm->GetEnv((void**)&env, g_jniVersion);
-    if (getEnvRc == JNI_EDETACHED) {
-        g_jvm->AttachCurrentThread((void**)&env, nullptr);
-    } else if (getEnvRc != JNI_OK) {
-        g_status = "GetEnv 失败 (rc=" + std::to_string(getEnvRc) + ")";
-        return -1;
-    }
-
-    // className 保持 '.' 格式用于 ClassLoader.loadClass()
-    // 同时准备 '/' 格式用于 fallback FindClass
-    std::string dotClassName(className);
-    std::string jniClassName(className);
-    for (char& c : jniClassName) {
-        if (c == '.') c = '/';
-    }
-
-    // 使用 SystemClassLoader.loadClass() 加载类
-    // Invocation Interface 的 FindClass 使用 system CL（不是 TCCL/未来的 Knot/FML）。
-    // 本处仅加载启动器/processor 入口，游戏平台类由上游入口按照自己的拓扑加载。
-    jclass cls = nullptr;
-
-    jclass classLoaderClass = env->FindClass("java/lang/ClassLoader");
-    if (classLoaderClass) {
-        jmethodID getSystemCL = env->GetStaticMethodID(classLoaderClass,
-            "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
-        if (getSystemCL) {
-            jobject systemCL = env->CallStaticObjectMethod(classLoaderClass, getSystemCL);
-            if (systemCL) {
-                jmethodID loadClass = env->GetMethodID(classLoaderClass,
-                    "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-                if (loadClass) {
-                    jstring jClassName = env->NewStringUTF(dotClassName.c_str());
-                    cls = (jclass)env->CallObjectMethod(systemCL, loadClass, jClassName);
-                    if (env->ExceptionCheck()) {
-                        AMCL_LOG_E(LOG_TAG, "SystemClassLoader.loadClass failed for: %{public}s",
-                                     dotClassName.c_str());
-                        env->ExceptionDescribe();
-                        env->ExceptionClear();
-                        cls = nullptr;
-                    }
-                    env->DeleteLocalRef(jClassName);
-                }
-                env->DeleteLocalRef(systemCL);
-            }
-        }
-        env->DeleteLocalRef(classLoaderClass);
-    }
-    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
-
-    // 仅独立 processor 的工具兼容回退。游戏必须使用配置好的系统入口，不新建第二个
-    // parent=null URLClassLoader；入口缺失即失败，禁止用回退掩盖错误 classpath/运行身份。
-    if (!cls && g_forkChildMode && !g_classpath.empty()) {
-        AMCL_LOG_I(LOG_TAG, "Trying URLClassLoader fallback with g_classpath (%{public}zu chars)",
-                    g_classpath.size());
-
-        // 解析 g_classpath（冒号分隔）为 URL[] 数组
-        jclass urlClass = env->FindClass("java/net/URL");
-        jclass urlClsLoaderClass = env->FindClass("java/net/URLClassLoader");
-        jclass fileClass = env->FindClass("java/io/File");
-
-        if (urlClass && urlClsLoaderClass && fileClass) {
-            // 解析 classpath 条目
-            std::vector<std::string> cpEntries;
-            std::istringstream cpStream(g_classpath);
-            std::string entry;
-            while (std::getline(cpStream, entry, ':')) {
-                if (!entry.empty()) cpEntries.push_back(entry);
-            }
-            AMCL_LOG_I(LOG_TAG, "URLClassLoader: %{public}zu classpath entries", cpEntries.size());
-
-            // 诊断：打印前 5 个 classpath 条目和文件存在性
-            for (int i = 0; i < (int)cpEntries.size() && i < 5; i++) {
-                struct stat st;
-                bool exists = (stat(cpEntries[i].c_str(), &st) == 0);
-                long sz = exists ? (long)st.st_size : -1;
-                AMCL_LOG_I(LOG_TAG, "  cp[%{public}d]: exists=%{public}d size=%{public}ld %{public}s",
-                            i, exists, sz, cpEntries[i].c_str());
-            }
-
-            // 创建 URL[] 数组
-            jobjectArray urlArray = env->NewObjectArray((jint)cpEntries.size(), urlClass, nullptr);
-            jmethodID fileCtor = env->GetMethodID(fileClass, "<init>", "(Ljava/lang/String;)V");
-            jmethodID toURI = env->GetMethodID(fileClass, "toURI", "()Ljava/net/URI;");
-            jclass uriClass = env->FindClass("java/net/URI");
-            jmethodID toURL = env->GetMethodID(uriClass, "toURL", "()Ljava/net/URL;");
-
-            for (int i = 0; i < (int)cpEntries.size(); i++) {
-                jstring jPath = env->NewStringUTF(amcl::toModifiedUtf8(cpEntries[i]).c_str());
-                jobject fileObj = env->NewObject(fileClass, fileCtor, jPath);
-                jobject uriObj = env->CallObjectMethod(fileObj, toURI);
-                jobject urlObj = env->CallObjectMethod(uriObj, toURL);
-                env->SetObjectArrayElement(urlArray, i, urlObj);
-                env->DeleteLocalRef(jPath);
-                env->DeleteLocalRef(fileObj);
-                env->DeleteLocalRef(uriObj);
-                env->DeleteLocalRef(urlObj);
-                if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); break; }
-            }
-
-            // new URLClassLoader(urls, null)
-            // 使用 null parent 避免 parent-first delegation 到 system classloader
-            // system classloader 在 JVM 重用时可能没有 MC jar
-            jmethodID urlClCtor = env->GetMethodID(urlClsLoaderClass, "<init>",
-                "([Ljava/net/URL;Ljava/lang/ClassLoader;)V");
-
-            jobject urlClassLoader = env->NewObject(urlClsLoaderClass, urlClCtor, urlArray, (jobject)nullptr);
-            if (urlClassLoader && !env->ExceptionCheck()) {
-                // 设置为当前线程的 context class loader
-                jclass threadClass = env->FindClass("java/lang/Thread");
-                jmethodID currentThread = env->GetStaticMethodID(threadClass, "currentThread",
-                    "()Ljava/lang/Thread;");
-                jobject thread = env->CallStaticObjectMethod(threadClass, currentThread);
-                jmethodID setContextCL = env->GetMethodID(threadClass, "setContextClassLoader",
-                    "(Ljava/lang/ClassLoader;)V");
-                env->CallVoidMethod(thread, setContextCL, urlClassLoader);
-
-                // 用 URLClassLoader 加载目标类
-                jmethodID loadClass2 = env->GetMethodID(urlClsLoaderClass,
-                    "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-                jstring jClassName2 = env->NewStringUTF(dotClassName.c_str());
-                cls = (jclass)env->CallObjectMethod(urlClassLoader, loadClass2, jClassName2);
-                if (env->ExceptionCheck()) {
-                    AMCL_LOG_E(LOG_TAG, "URLClassLoader.loadClass failed for: %{public}s",
-                                 dotClassName.c_str());
+    try {
+        unsigned round = 0;
+        while (!worker.stopped()) {
+            amcl::jni::LocalFrame frame(env, 32);
+            amcl::jni::Failure failure;
+            WatchdogLog output;
+            AMCL_LOG_I(LOG_TAG, "[WATCHDOG] ==== Thread Dump #%{public}u ====", ++round);
+            const bool success = frame.valid()
+                ? amcl::jni::dumpThreadStacks(env, failure, output, [&] { return worker.stopped(); })
+                : failure.record(env, "watchdog PushLocalFrame");
+            if (!success) {
+                AMCL_LOG_E(LOG_TAG, "[WATCHDOG] stopped after first JNI failure: %{public}s",
+                    failure.stage ? failure.stage : "unknown");
+                if (failure.exception) {
+                    // 只打印已保存的首个异常，不在资源失败路径继续构造 Java 栈文本。
+                    env->Throw(failure.exception);
                     env->ExceptionDescribe();
-                    env->ExceptionClear();
-                    cls = nullptr;
-                } else {
-                    AMCL_LOG_I(LOG_TAG, "URLClassLoader loaded: %{public}s", dotClassName.c_str());
+                    if (env->ExceptionCheck()) env->ExceptionClear();
+                    env->DeleteLocalRef(failure.exception);
                 }
-                env->DeleteLocalRef(jClassName2);
-                env->DeleteLocalRef(thread);
-                env->DeleteLocalRef(threadClass);
-            } else {
-                if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
-                AMCL_LOG_E(LOG_TAG, "Failed to create URLClassLoader");
+                break;
             }
-
-            if (urlArray) env->DeleteLocalRef(urlArray);
-            if (uriClass) env->DeleteLocalRef(uriClass);
+            AMCL_LOG_I(LOG_TAG, "[WATCHDOG] ==== End Dump #%{public}u ====", round);
+            if (worker.wait(15000)) break;
         }
-        if (urlClass) env->DeleteLocalRef(urlClass);
-        if (urlClsLoaderClass) env->DeleteLocalRef(urlClsLoaderClass);
-        if (fileClass) env->DeleteLocalRef(fileClass);
+    } catch (const std::exception& error) {
         if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        AMCL_LOG_E(LOG_TAG, "[WATCHDOG] native diagnostic failed: %{public}s", error.what());
+    } catch (...) {
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        AMCL_LOG_E(LOG_TAG, "[WATCHDOG] native diagnostic failed with unknown exception");
     }
-
-    // 游戏入口失败不允许偷换类加载拓扑；独立 processor 保留既有工具兼容回退。
-    if (!cls && g_forkChildMode) {
-        AMCL_LOG_I(LOG_TAG, "Trying FindClass fallback for: %{public}s", jniClassName.c_str());
-        cls = env->FindClass(jniClassName.c_str());
+    const jint result = environment.finish();
+    if (result != JNI_OK) {
+        g_watchdogDetachFailure.store(result, std::memory_order_release);
+        AMCL_LOG_E(LOG_TAG, "[WATCHDOG] DetachCurrentThread failed rc=%{public}d", result);
     }
+}
 
-    if (!cls) {
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-        }
-        g_status = "类未找到: " + dotClassName;
-        AMCL_LOG_E(LOG_TAG, "Class not found: %{public}s", dotClassName.c_str());
+/** 只在 main 输入全部准备成功后启动既有显式 opt-in 诊断；不开启时不创建线程。 */
+static void startRequestedWatchdog() {
+    const char* setting = std::getenv("AMCL_JVM_THREAD_DUMP_WATCHDOG");
+    const bool enabled = (AMCL_DIAGNOSTICS_MASK & 1) && setting && std::strcmp(setting, "1") == 0;
+    if (g_forkChildMode || !enabled) return;
+    JavaVM* vm = g_jvm.load(std::memory_order_acquire);
+    if (!vm || g_runtimeOnce.state() != amcl::jvm::RuntimeOnce::Ready) return;
+    const int result = g_watchdog.start(runWatchdog, vm);
+    if (result != 0 && result != EALREADY && result != ECANCELED) {
+        AMCL_LOG_E(LOG_TAG, "[WATCHDOG] pthread_create/setup failed: %{public}d", result);
+    }
+}
+
+/**
+ * 当前线程获取环境并拥有局部帧。所有准备失败都在 main 前停止；main 抛出的异常使用
+ * 独立阶段报告。只解除本层附加的线程，已有 Java/宿主调用线程继续由其原所有者管理。
+ */
+extern "C" int jvmCallMain(const char* className, int argc, const char** argv) {
+    amcl::jni::InvocationGate::Use use(g_invocationGate);
+    JavaVM* vm = g_jvm.load(std::memory_order_acquire);
+    if (!use || g_runtimeOnce.state() != 2 || !vm) {
+        g_status = "JVM 不处于可调用状态";
         return -1;
     }
-    AMCL_LOG_I(LOG_TAG, "Class loaded: %{public}s", dotClassName.c_str());
-
-    // 查找 public static void main(String[] args)
-    jmethodID mainMethod = env->GetStaticMethodID(cls, "main", "([Ljava/lang/String;)V");
-    if (!mainMethod) {
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-        }
-        g_status = "main 方法未找到: " + jniClassName;
-        AMCL_LOG_E(LOG_TAG, "GetStaticMethodID(main) failed: %{public}s", jniClassName.c_str());
-        env->DeleteLocalRef(cls);
+    amcl::jni::Environment environment(vm, g_jniVersion);
+    JNIEnv* env = environment.get();
+    if (!env) {
+        g_status = "取得当前线程 JNIEnv 失败 (rc=" + std::to_string(environment.status()) + ")";
         return -1;
     }
-
-    // 构建 String[] args
-    jclass stringClass = env->FindClass("java/lang/String");
-    jobjectArray jArgs = env->NewObjectArray(argc, stringClass, nullptr);
-    for (int i = 0; i < argc; i++) {
-        // mcArgs 含 --username 等用户内容 → 必须转 MUTF-8（见 jni_mutf8.h）
-        jstring s = env->NewStringUTF(amcl::toModifiedUtf8(argv[i]).c_str());
-        env->SetObjectArrayElement(jArgs, i, s);
-        env->DeleteLocalRef(s);
-    }
-
-    // Full Java thread dumps are only available to the default development product.
-    static std::atomic<bool> s_watchdogStarted{false};
-    const char* watchdogOptIn = std::getenv("AMCL_JVM_THREAD_DUMP_WATCHDOG");
-    const bool watchdogEnabled =
-        (AMCL_DIAGNOSTICS_MASK & 1) && watchdogOptIn != nullptr && std::strcmp(watchdogOptIn, "1") == 0;
-    if ((AMCL_DIAGNOSTICS_MASK & 1) && !g_forkChildMode && !watchdogEnabled) {
-        AMCL_LOG_I(LOG_TAG,
-                   "[WATCHDOG] Periodic thread dumps disabled; set "
-                   "AMCL_JVM_THREAD_DUMP_WATCHDOG=1 for hang diagnostics");
-    }
-    bool expected = false;
-    if (!g_forkChildMode && watchdogEnabled &&
-        s_watchdogStarted.compare_exchange_strong(expected, true)) {
-        JavaVM* vmForWatchdog = g_jvm;
-        std::thread([vmForWatchdog]() {
-            // 给 MC 足够的启动时间再开始 dump
-            std::this_thread::sleep_for(std::chrono::seconds(20));
-            JNIEnv* wEnv = nullptr;
-            JavaVMAttachArgs aargs{};
-            aargs.version = g_jniVersion;
-            aargs.name = (char*)"amcl-watchdog";
-            aargs.group = nullptr;
-            if (vmForWatchdog->AttachCurrentThreadAsDaemon((void**)&wEnv, &aargs) != JNI_OK) {
-                AMCL_LOG_E(LOG_TAG, "[WATCHDOG] Failed to attach to JVM");
-                return;
-            }
-            AMCL_LOG_I(LOG_TAG, "[WATCHDOG] Attached — will dump Java thread stacks every 15s");
-            // 预解析类与方法
-            jclass threadCls = wEnv->FindClass("java/lang/Thread");
-            jclass mapCls = wEnv->FindClass("java/util/Map");
-            jclass mapEntryCls = wEnv->FindClass("java/util/Map$Entry");
-            jclass setCls = wEnv->FindClass("java/util/Set");
-            jclass iterCls = wEnv->FindClass("java/util/Iterator");
-            jclass steCls = wEnv->FindClass("java/lang/StackTraceElement");
-            if (wEnv->ExceptionCheck()) wEnv->ExceptionClear();
-            if (!threadCls || !mapCls || !mapEntryCls || !setCls || !iterCls || !steCls) {
-                AMCL_LOG_E(LOG_TAG, "[WATCHDOG] Failed to resolve classes");
-                vmForWatchdog->DetachCurrentThread();
-                return;
-            }
-            jmethodID getAllStacks = wEnv->GetStaticMethodID(threadCls, "getAllStackTraces", "()Ljava/util/Map;");
-            jmethodID entrySet = wEnv->GetMethodID(mapCls, "entrySet", "()Ljava/util/Set;");
-            jmethodID setIter = wEnv->GetMethodID(setCls, "iterator", "()Ljava/util/Iterator;");
-            jmethodID iterHasNext = wEnv->GetMethodID(iterCls, "hasNext", "()Z");
-            jmethodID iterNext = wEnv->GetMethodID(iterCls, "next", "()Ljava/lang/Object;");
-            jmethodID entryGetKey = wEnv->GetMethodID(mapEntryCls, "getKey", "()Ljava/lang/Object;");
-            jmethodID entryGetVal = wEnv->GetMethodID(mapEntryCls, "getValue", "()Ljava/lang/Object;");
-            jmethodID threadGetName = wEnv->GetMethodID(threadCls, "getName", "()Ljava/lang/String;");
-            jmethodID steToString = wEnv->GetMethodID(steCls, "toString", "()Ljava/lang/String;");
-            if (wEnv->ExceptionCheck()) { wEnv->ExceptionClear(); }
-
-            int round = 0;
-            while (true) {
-                round++;
-                AMCL_LOG_I(LOG_TAG, "[WATCHDOG] ==== Thread Dump #%{public}d ====", round);
-                jobject allMap = wEnv->CallStaticObjectMethod(threadCls, getAllStacks);
-                if (wEnv->ExceptionCheck()) { wEnv->ExceptionClear(); allMap = nullptr; }
-                if (!allMap) {
-                    AMCL_LOG_W(LOG_TAG, "[WATCHDOG] getAllStackTraces returned null (JVM cannot reach safepoint?)");
-                } else {
-                    jobject set = wEnv->CallObjectMethod(allMap, entrySet);
-                    jobject it = set ? wEnv->CallObjectMethod(set, setIter) : nullptr;
-                    while (it && wEnv->CallBooleanMethod(it, iterHasNext)) {
-                        jobject entry = wEnv->CallObjectMethod(it, iterNext);
-                        jobject thread = wEnv->CallObjectMethod(entry, entryGetKey);
-                        jobjectArray stack = (jobjectArray)wEnv->CallObjectMethod(entry, entryGetVal);
-                        jstring nameStr = (jstring)wEnv->CallObjectMethod(thread, threadGetName);
-                        const char* nameC = nameStr ? wEnv->GetStringUTFChars(nameStr, nullptr) : "?";
-                        jsize depth = stack ? wEnv->GetArrayLength(stack) : 0;
-                        AMCL_LOG_I(LOG_TAG, "[WATCHDOG] Thread: %{public}s depth=%{public}d", nameC, (int)depth);
-                        // 只打印前 12 帧，避免日志爆炸
-                        int maxFrames = depth < 12 ? depth : 12;
-                        for (int i = 0; i < maxFrames; i++) {
-                            jobject ste = wEnv->GetObjectArrayElement(stack, i);
-                            jstring s = (jstring)wEnv->CallObjectMethod(ste, steToString);
-                            const char* sC = s ? wEnv->GetStringUTFChars(s, nullptr) : "?";
-                            AMCL_LOG_I(LOG_TAG, "[WATCHDOG]   at %{public}s", sC ? sC : "?");
-                            if (sC && s) wEnv->ReleaseStringUTFChars(s, sC);
-                            if (s) wEnv->DeleteLocalRef(s);
-                            if (ste) wEnv->DeleteLocalRef(ste);
-                        }
-                        if (nameC && nameStr) wEnv->ReleaseStringUTFChars(nameStr, nameC);
-                        if (nameStr) wEnv->DeleteLocalRef(nameStr);
-                        if (stack) wEnv->DeleteLocalRef(stack);
-                        if (thread) wEnv->DeleteLocalRef(thread);
-                        if (entry) wEnv->DeleteLocalRef(entry);
-                    }
-                    if (it) wEnv->DeleteLocalRef(it);
-                    if (set) wEnv->DeleteLocalRef(set);
-                    wEnv->DeleteLocalRef(allMap);
+    // 调用者已有异常时不执行更多 Java 操作，也不擅自清除调用者的异常。
+    if (env->ExceptionCheck()) { g_status = "调用 main 前已有 JNI 异常"; return -1; }
+    std::string resultStatus;
+    bool success = false;
+    bool enteredMain = false;
+    try {
+        amcl::jni::LocalFrame frame(env, 32);
+        amcl::jni::Failure failure;
+        if (!frame.valid()) failure.record(env, "PushLocalFrame(main)");
+        else success = amcl::jni::callMain(env, className, argc, argv, g_forkChildMode, g_classpath, failure, [] {
+            // 可选诊断线程的创建失败不能改变 Java 主程序本身的启动结果。
+            try { startRequestedWatchdog(); }
+            catch (const std::system_error& error) { AMCL_LOG_E(LOG_TAG, "watchdog start failed: %{public}s", error.what()); }
+        });
+        enteredMain = failure.enteredMain;
+        if (!success) {
+            resultStatus = enteredMain ? "main 已执行并失败: " : "main 执行前失败: ";
+            resultStatus += failure.stage ? failure.stage : "unknown JNI failure";
+            if (failure.exception) {
+                // 先把首个异常交给 JVM 打印，再做可失败的补充格式化；后者不覆盖原阶段。
+                env->Throw(failure.exception);
+                env->ExceptionDescribe();
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                try {
+                    const std::string trace = getThrowableStackTrace(env, failure.exception);
+                    if (!trace.empty()) { logJavaStackTrace(trace); resultStatus += "\n" + trace; }
+                } catch (const std::exception&) {
+                    if (env->ExceptionCheck()) env->ExceptionClear();
+                    // 首个阶段和 JVM 已打印的异常仍有效；补充文本失败不能覆盖它。
                 }
-                if (wEnv->ExceptionCheck()) { wEnv->ExceptionClear(); }
-                AMCL_LOG_I(LOG_TAG, "[WATCHDOG] ==== End Dump #%{public}d ====", round);
-                std::this_thread::sleep_for(std::chrono::seconds(15));
+                env->DeleteLocalRef(failure.exception);
             }
-        }).detach();
-    }
-
-    // 调用 main
-    AMCL_LOG_I(LOG_TAG, "Calling %{public}s.main()...", className);
-    env->CallStaticVoidMethod(cls, mainMethod, jArgs);
-
-    // 检查异常 — 提取完整异常信息用于 UI 显示
-    if (env->ExceptionCheck()) {
-        jthrowable ex = env->ExceptionOccurred();
-        env->ExceptionDescribe();  // 输出到 logcat
-        env->ExceptionClear();
-
-        // 提取异常类名和消息
-        std::string exInfo = dotClassName + ".main() 抛出异常";
-        if (ex) {
-            // 获取异常类名
-            jclass exClass = env->GetObjectClass(ex);
-            if (exClass) {
-                jclass classClass = env->FindClass("java/lang/Class");
-                jmethodID getName = env->GetMethodID(classClass, "getName", "()Ljava/lang/String;");
-                jstring exClassName = (jstring)env->CallObjectMethod(exClass, getName);
-                if (exClassName) {
-                    const char* exNameStr = env->GetStringUTFChars(exClassName, nullptr);
-                    exInfo = std::string(exNameStr);
-                    env->ReleaseStringUTFChars(exClassName, exNameStr);
-                    env->DeleteLocalRef(exClassName);
-                }
-                env->DeleteLocalRef(classClass);
-                env->DeleteLocalRef(exClass);
-            }
-
-            // 获取异常消息
-            jclass throwableClass = env->FindClass("java/lang/Throwable");
-            jmethodID getMessage = env->GetMethodID(throwableClass, "getMessage", "()Ljava/lang/String;");
-            jstring msg = (jstring)env->CallObjectMethod(ex, getMessage);
-            if (msg) {
-                const char* msgStr = env->GetStringUTFChars(msg, nullptr);
-                exInfo += ": " + std::string(msgStr);
-                env->ReleaseStringUTFChars(msg, msgStr);
-                env->DeleteLocalRef(msg);
-            }
-
-            // 获取 cause
-            jmethodID getCause = env->GetMethodID(throwableClass, "getCause", "()Ljava/lang/Throwable;");
-            jthrowable cause = (jthrowable)env->CallObjectMethod(ex, getCause);
-            if (cause) {
-                jclass causeClass = env->GetObjectClass(cause);
-                jclass classClass2 = env->FindClass("java/lang/Class");
-                jmethodID getName2 = env->GetMethodID(classClass2, "getName", "()Ljava/lang/String;");
-                jstring causeName = (jstring)env->CallObjectMethod(causeClass, getName2);
-                jstring causeMsg = (jstring)env->CallObjectMethod(cause, getMessage);
-                if (causeName) {
-                    const char* s = env->GetStringUTFChars(causeName, nullptr);
-                    exInfo += "\n  Caused by: " + std::string(s);
-                    env->ReleaseStringUTFChars(causeName, s);
-                    env->DeleteLocalRef(causeName);
-                }
-                if (causeMsg) {
-                    const char* s = env->GetStringUTFChars(causeMsg, nullptr);
-                    exInfo += ": " + std::string(s);
-                    env->ReleaseStringUTFChars(causeMsg, s);
-                    env->DeleteLocalRef(causeMsg);
-                }
-                env->DeleteLocalRef(causeClass);
-                env->DeleteLocalRef(classClass2);
-                env->DeleteLocalRef(cause);
-            }
-            env->DeleteLocalRef(throwableClass);
+        } else {
+            resultStatus = std::string(className) + ".main() 执行完成";
         }
-        if (env->ExceptionCheck()) { env->ExceptionClear(); }
-
-        // 不依赖 stderr 文件，直接将 Java 堆栈按行写入 hilog 便于真机定位
-        if (ex) {
-            std::string trace = getThrowableStackTrace(env, ex);
-            logJavaStackTrace(trace);
-        }
-
-        g_status = exInfo;
-        AMCL_LOG_E(LOG_TAG, "Exception: %{public}s", exInfo.c_str());
-        if (ex) env->DeleteLocalRef(ex);
-        env->DeleteLocalRef(jArgs);
-        env->DeleteLocalRef(stringClass);
-        env->DeleteLocalRef(cls);
-        return -1;
+    } catch (const std::exception& error) {
+        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        resultStatus = enteredMain ? "main 执行后的宿主错误: " : "main 执行前的宿主错误: ";
+        resultStatus += error.what();
+        success = false;
     }
+    const jint detached = environment.finish();
+    if (detached != JNI_OK) {
+        AMCL_LOG_E(LOG_TAG, "DetachCurrentThread failed: %{public}d", detached);
+        if (success) resultStatus = "main 已返回，但解除宿主线程附加失败 (rc=" + std::to_string(detached) + ")";
+        success = false;
+    }
+    g_status = resultStatus;
+    AMCL_LOG_I(LOG_TAG, "main result=%{public}d: %{public}s", success ? 0 : -1, resultStatus.c_str());
+    return success ? 0 : -1;
+}
 
-    env->DeleteLocalRef(jArgs);
-    env->DeleteLocalRef(stringClass);
-    env->DeleteLocalRef(cls);
+/**
+ * 销毁只在自有 JNI 调用静止之后执行。关闭闸门不等待正在执行的 Java 主函数，遇忙
+ * 返回真实失败，调用者可在原调用结束后再次尝试销毁，但永远不能再次创建 JVM。
+ * 借出 JavaVM 的外部 GUI/采样等所有者也必须已经停止；本函数不强杀第三方 native 调用。
+ */
+static jint finishVm() {
+    if (g_destroyInProgress.test_and_set(std::memory_order_acquire)) {
+        g_status = "JVM 销毁已在进行中";
+        return JNI_ERR;
+    }
+    struct DestroyGuard { ~DestroyGuard() { g_destroyInProgress.clear(std::memory_order_release); } } guard;
+    JavaVM* vm = g_jvm.load(std::memory_order_acquire);
+    if (!vm) { g_status = "JVM 未创建或已销毁"; return JNI_ERR; }
+    jvmRetireRuntime();
+    const int joined = g_watchdog.stopAndJoin();
+    if (joined != 0 || g_watchdogDetachFailure.load(std::memory_order_acquire) != JNI_OK) {
+        g_status = "JVM 诊断线程未安全结束，拒绝销毁";
+        return JNI_ERR;
+    }
+    if (!g_invocationGate.idle()) {
+        g_status = "仍有宿主 JNI 调用正在执行，拒绝销毁 JVM";
+        return JNI_ERR;
+    }
+    jint result;
+    if (g_forkChildMode) {
+        // processor/NCP工具在当前native线程执行完main；必须先终结该Java线程身份。
+        // 否则依赖main.join/isAlive的合法worker（例如管道解码器）会与Destroy互相等待。
+        // 普通游戏的线程收尾仍按原契约，不借此假定另一线程创建的VM主线程已经结束。
+        const auto completion = amcl::jni::finishLauncherVm(vm);
+        if (completion.detached != JNI_OK) {
+            g_status = "launcher 主线程解除附加失败 (rc=" + std::to_string(completion.detached) + ")";
+            return completion.detached;
+        }
+        result = completion.destroyed;
+    } else {
+        result = vm->DestroyJavaVM();
+    }
+    if (result != JNI_OK) {
+        g_status = "DestroyJavaVM 失败 (rc=" + std::to_string(result) + ")";
+        return result;
+    }
+    g_jvm.store(nullptr, std::memory_order_release);
+    // OHOS特殊链仍在进程中注册，其他Native线程仍可能SIGABRT。不能在Destroy后关闭
+    // FD/清空路径：handler可能已取到旧FD，随后close+重用会写错文件。一个进程只建
+    // 一次JVM，因此固定这一个诊断FD及不可变路径与handler同进程寿命，由OS最终关闭；
+    // 不清理正在使用的重入标记，也不声称DestroyJavaVM已解除平台signal链。
+    g_status = "JVM 已完成非 daemon 工作和正常关闭";
+    return JNI_OK;
+}
 
-    g_status = jniClassName + ".main() 执行完成";
-    AMCL_LOG_I(LOG_TAG, "%{public}s.main() completed successfully", className);
-    return 0;
+/** processor 不启用周期 watchdog；依然复用同一准确销毁状态与返回值。 */
+extern "C" int jvmFinishProcessor(void) {
+    if (!g_forkChildMode || !g_jvm.load(std::memory_order_acquire) ||
+        g_runtimeOnce.state() != amcl::jvm::RuntimeOnce::Ready) {
+        g_status = "processor JVM 不处于可结束状态";
+        return JNI_ERR;
+    }
+    return finishVm();
 }
 
 extern "C" void jvmDestroy() {
-    if (g_jvm) {
-        AMCL_LOG_I(LOG_TAG, "Destroying JVM...");
-        g_jvm->DestroyJavaVM();
-        g_jvm = nullptr;
-        g_env = nullptr;
-        g_status = "JVM 已销毁";
-        AMCL_LOG_I(LOG_TAG, "JVM destroyed");
-    }
-    if (g_crashTailFd >= 0) {
-        close(g_crashTailFd);
-        g_crashTailFd = -1;
-    }
-    g_crashGameOutputPath[0] = '\0';
-    g_crashHandlerEntered = 0;
+    const jint result = finishVm();
+    if (result == JNI_OK) AMCL_LOG_I(LOG_TAG, "JVM destroyed after owned observers stopped");
+    else AMCL_LOG_E(LOG_TAG, "JVM destroy refused/failed rc=%{public}d: %{public}s", result, jvmGetStatus());
 }
 
 extern "C" void* jvmGetJavaVM() {
-    return (void*)g_jvm;
+    return static_cast<void*>(g_jvm.load(std::memory_order_acquire));
 }
 
 extern "C" void* jvmGetJNIEnv() {
-    return (void*)g_env;
+    // 兼容入口只查询当前线程，不隐式附加而把解除责任遗失给无所有权的 void*。
+    JNIEnv* env = nullptr;
+    amcl::jni::InvocationGate::Use use(g_invocationGate);
+    JavaVM* vm = g_jvm.load(std::memory_order_acquire);
+    if (!use || g_runtimeOnce.state() != 2 || !vm ||
+        vm->GetEnv(reinterpret_cast<void**>(&env), g_jniVersion) != JNI_OK) return nullptr;
+    return env;
 }
 
 extern "C" const char* jvmGetStatus() {
-    return g_status.c_str();
+    // const char* 属于读取线程，下一次同线程查询前有效，不受另一线程发布/销毁影响。
+    thread_local std::string snapshot;
+    try { snapshot = g_status.snapshot(); return snapshot.c_str(); }
+    catch (...) { return "无法分配 JVM 状态快照"; }
 }
 
 #ifdef MC_OHOS_BUILD_TESTS
 extern "C" int jvmIsTestRunning() {
-    return g_testRunning ? 1 : 0;
+    return g_testRunning.load(std::memory_order_acquire) ? 1 : 0;
 }
 
 #endif

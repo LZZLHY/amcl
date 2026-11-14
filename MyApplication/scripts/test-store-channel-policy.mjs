@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import {loader, ts, root} from './mod-install-test-runtime.mjs';
+import {parseJson5} from './product-contract.mjs';
 
 const read=relative=>fs.readFileSync(path.join(root,relative),'utf8');
 const components='entry/src/main/ets/components/', pages='entry/src/main/ets/pages/';
@@ -45,7 +46,7 @@ const guarded=[
   [components+'PreLaunchCheckSheet.ets','openNoJitDoc',[]], [components+'VersionConfigPanel.ets','openNoJitDoc',[]],
   [pages+'ModBrowsePage.ets','openWebsiteFromSheet',[]], [pages+'ModBrowsePage.ets','openExternalUrl_',['https://example.org']],
   [pages+'ModBrowsePage.ets','openCrossSourceWeb',[0]], [components+'SkinCapeDetailSheet.ets','openMinecraftProfile',[]],
-  [components+'McErrorSheet.ets','openInBrowser_',['https://example.org']], [pages+'LogShareHistoryPage.ets','open_',[{url:'https://example.org'}]],
+  [pages+'LogShareHistoryPage.ets','open_',[{url:'https://example.org'}]],
   [pages+'SponsorPage.ets','handleImageDownload_',['https://example.org/a.png']],
   [pages+'ChangelogPage.ets','openUrl_',['https://example.org/changelog']],
   [pages+'SoftwareUpdatePage.ets','openGithub',[]], [pages+'SoftwareUpdatePage.ets','startUpdate',[]],
@@ -80,14 +81,16 @@ const wants=[];const browser=method(components+'WebHostView.ets','openInBrowser'
 browser.fallbackBrowserUrl='https://example.org/retained';browser.context={startAbility(want){wants.push(want);}};
 browser.openInBrowser();assert.equal(wants[0].uri,'https://example.org/retained');checks++;
 
-// 商店日志菜单删去网页动作后，索引0/1仍分别是文件明细/撤回，不得偏移成网页或误撤回。
-for(const choice of [0,1]) {
+// 生产可读记录要求token为字符串；两种资格都验证索引0/1仍分别是文件明细和
+// 撤回/原因说明入口，不能用缺少必需字段的旧夹具掩盖商店网页守卫或菜单索引回归。
+for(const token of ['fixture-token',''])for(const choice of [0,1]) {
   let buttons=[],revoked=0;const history=method(pages+'LogShareHistoryPage.ets','recordMenu_',store);
-  history.busy=false;history.theme={primary:'#000',errorText:'#f00'};history.expandedRecord='';
+  history.busy=false;history.theme={actionText:'#000',errorText:'#f00'};history.expandedRecord='';
   history.getUIContext=()=>({getPromptAction:()=>({showActionMenu(value){buttons=value.buttons;return Promise.resolve({index:choice});}})});
-  history.confirmRevoke_=()=>{revoked++;};history.recordMenu_({url:'https://example.org/record'});
+  history.confirmRevoke_=()=>{revoked++;};history.recordMenu_({url:'https://example.org/record',token});
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(buttons.length,2);assert.ok(!buttons.some(button=>button.text.includes('网页')));
+  assert.equal(buttons[1].text,token?'撤回这条分享':'为何不能撤回');
   assert.equal(revoked,choice===1?1:0);assert.equal(history.expandedRecord,choice===0?'https://example.org/record':'');checks++;
 }
 // JIT 失败保留本地原因和确认，但商店不再露出“如何解决”网页按钮。
@@ -101,7 +104,7 @@ assert.equal(jitButtons.length,1);assert.equal(jitButtons[0].text,'我知道了'
 const host=read(components+'WebHostView.ets');
 assert.match(host,/if \(!DistributionPolicy\.isStore\(\) && !this\.loadFailed\)\s*\{\s*Web\(/);
 assert.match(read(components+'ModDetailSheet.ets'),/if \(!DistributionPolicy\.isStore\(\)\) \{ Row/);
-assert.equal((read(components+'SkinCapeDetailSheet.ets').match(/acc\.type === AccountType\.MICROSOFT && !DistributionPolicy\.isStore\(\)/g)||[]).length,2);
+assert.equal((read(components+'SkinCapeDetailSheet.ets').match(/acc\.type === AccountType\.MICROSOFT && !DistributionPolicy\.isStore\(\)/g)||[]).length,1);
 const local=read(pages+'LocalPolicyPage.ets');
 assert.match(local,/Text\(this\.body\)/);assert.ok(!/\bWeb\s*\(|startAbility\s*\(/.test(local));
 assert.match(local,/params\['policy'\]/);
@@ -117,7 +120,9 @@ for(const kind of ['privacy','logshare','license','../unexpected']) {
 }
 assert.match(read(components+'AddAccountSheet.ets'),/Web\(\{ src: this\.authUrl/);
 assert.ok(!/DistributionPolicy\.isStore/.test(read(components+'AddAccountSheet.ets')));checks+=6;
-const profile=JSON.parse(read('entry/build-profile.json5'));
+// 产品覆盖清单是 JSON5；合法配置注释不能令守卫已通过的渠道回归在路由核验时误失败。
+// 沿用生产配置解析器，继续逐目标检查本地政策页，不削弱页面存在性断言。
+const profile=parseJson5(read('entry/build-profile.json5'));
 assert.ok(JSON.parse(read('entry/src/main/resources/base/profile/main_pages.json')).src.includes('pages/LocalPolicyPage'));
 for(const target of profile.targets)if(target.source?.pages)assert.ok(target.source.pages.includes('pages/LocalPolicyPage'),target.name);
 for(const file of ['privacy.txt','logshare-privacy.txt','licenses.txt'])assert.ok(read('entry/src/main/resources/rawfile/store-policies/'+file).trim().length>100);

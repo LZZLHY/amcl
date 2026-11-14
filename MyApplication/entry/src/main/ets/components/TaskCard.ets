@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * TaskCard.ets — 统一任务列表卡片（v6.5 2026-05-22）
  *
  * 七种任务分类（MC / Mod / Shader / RPack / Datapack / Modpack / JDK）共用
@@ -57,7 +61,7 @@ export struct TaskCard {
       case TaskCategory.DATAPACK:      return this.theme.taskDatapackTeal
       case TaskCategory.MODPACK:       return this.theme.taskModpackOrange
       case TaskCategory.JDK:           return this.theme.taskJdkRedOrange
-      default:                          return this.theme.primary
+      default:                          return this.theme.actionText
     }
   }
 
@@ -91,6 +95,7 @@ export struct TaskCard {
   private isPaused(): boolean { return this.view.state === UnifiedTaskState.PAUSED }
   private isDone(): boolean { return this.view.state === UnifiedTaskState.DONE }
   private isError(): boolean {
+    // 失败/取消继续共用重试、移除等终态操作；这个分组不能直接作为“失败”文案判据。
     return this.view.state === UnifiedTaskState.ERROR || this.view.state === UnifiedTaskState.ABORTED
   }
 
@@ -110,6 +115,8 @@ export struct TaskCard {
   /** 状态行图标（"↓ 下载中"前面那个） */
   private statusIcon(): AppIconName {
     if (this.isDone())   return AppIconName.CheckCircle
+    // 取消是明确的ABORTED事实，不能继续借用异常图标误报下载错误。
+    if (this.view.state === UnifiedTaskState.ABORTED) return AppIconName.Close
     if (this.isError())  return AppIconName.Error
     if (this.isPaused()) return AppIconName.Pause
     if (this.isWaiting())return AppIconName.Hourglass
@@ -119,9 +126,9 @@ export struct TaskCard {
   }
 
   private statusIconColor(): ResourceColor {
-    if (this.isDone())   return this.theme.success
-    if (this.isError())  return this.theme.error
-    if (this.isPaused() || this.isWaiting()) return this.theme.warning
+    if (this.isDone())   return this.theme.successText
+    if (this.isError())  return this.theme.errorText
+    if (this.isPaused() || this.isWaiting()) return this.theme.warningText
     return this.categoryColor()
   }
 
@@ -141,6 +148,8 @@ export struct TaskCard {
   private metaLeft(): string {
     if (this.isWaiting())  return '待启动'
     if (this.isDone())     return '完成 · 用时 ' + this.formatDuration_(this.view.durationMs)
+    // 持久活动已按aborted封账时，列表必须表达同一结局；不改原有终态动作资格。
+    if (this.view.state === UnifiedTaskState.ABORTED) return stateLabel(this.view.state)
     if (this.isError())    return this.view.errorKind ? this.view.errorKind + ' · 失败' : '失败'
 
     let parts: string[] = []
@@ -266,7 +275,7 @@ export struct TaskCard {
           Text(this.percentLabel())
             .fontSize(this.isWaiting() ? 11 : 12)
             .fontWeight(this.isWaiting() ? 600 : 700)
-            .fontColor(this.isWaiting() ? this.theme.warning : this.theme.textPrimary)
+            .fontColor(this.isWaiting() ? this.theme.warningText : this.theme.textPrimary)
             .maxLines(1)
         }
         .width('100%')
@@ -284,7 +293,7 @@ export struct TaskCard {
           Text(this.metaLeft())
             .fontSize(11)
             .fontWeight(500)
-            .fontColor(this.isError() ? this.theme.error : this.theme.textSecondary)
+            .fontColor(this.isError() ? this.theme.errorText : this.theme.textSecondary)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
@@ -318,16 +327,16 @@ export struct TaskCard {
       if (this.view.canPause && this.isActive()) {
         this.IconButton(AppIconName.Pause, this.theme.bgInput, this.theme.textSecondary, () => this.onPause())
       } else if (this.view.canResume) {
-        this.IconButton(AppIconName.Play, this.theme.primaryLight, this.theme.primary, () => this.onResume())
+        this.IconButton(AppIconName.Play, this.theme.primaryLight, this.theme.actionText, () => this.onResume())
       } else if (this.view.canRecoverExternally) {
-        this.IconButton(AppIconName.Refresh, this.theme.primaryLight, this.theme.primary, () => this.onExternalRecovery())
+        this.IconButton(AppIconName.Refresh, this.theme.primaryLight, this.theme.actionText, () => this.onExternalRecovery())
       } else if (this.view.canRetry) {
-        this.IconButton(AppIconName.Refresh, this.theme.primaryLight, this.theme.primary, () => this.onRetry())
+        this.IconButton(AppIconName.Refresh, this.theme.primaryLight, this.theme.actionText, () => this.onRetry())
       }
 
       // 副操作：取消（活跃 / 暂停）或 移除（终态）
       if (this.view.canCancel) {
-        this.IconButton(AppIconName.Close, this.theme.errorBg, this.theme.error, () => this.onCancel())
+        this.IconButton(AppIconName.Close, this.theme.errorBg, this.theme.errorText, () => this.onCancel())
       } else if (this.isDone() || this.isError()) {
         this.IconButton(AppIconName.Trash, this.theme.bgInput, this.theme.textHint, () => this.onRemove())
       }

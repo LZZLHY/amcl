@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "service": "META-INF/services/javax.sound.sampled.spi.MixerProvider",
+  "profiles": [
+    {
+      "id": "forge47-securejarhandler-2.1.10",
+      "coordinate": "cpw.mods:securejarhandler:2.1.10",
+      "consumer": "net.minecraftforge:forge:1.20.1-47.2.0",
+      "artifactUrl": "https://maven.neoforged.net/releases/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar",
+      "artifactSha1": "51e6a22c6c716beb11e244bf5b8be480f51dd6b5",
+      "artifactSha256": "7ec9207f47bc8847a16566b9a3b4ced8d073c49592897eb30ce2aaf643fdfcab",
+      "className": "cpw/mods/cl/ModuleClassLoader",
+      "classSha256": "62e3eaa069098d55f5da70e6dbc2a35a1e622d68804b2af6049583151bcb6f16",
+      "method": "getResources",
+      "descriptor": "(Ljava/lang/String;)Ljava/util/Enumeration;",
+      "classDelegationMethod": "loadClass",
+      "classDelegationDescriptor": "(Ljava/lang/String;Z)Ljava/lang/Class;"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 #pragma once
 #include "graphics_runtime_export.h"
 #include "graphics_context_abi.h"
+#include "sdl_aux_runtime_policy.h"
 #include <atomic>
 #include <mutex>
 #include <set>
@@ -14,6 +15,18 @@ using EglContextState = AmclGraphicsContextStateV1;
  * 声明支持/符号存在不等于verified；功能正确性与性能保持独立，未知不能用于开放共享。
  */
 enum class FeatureEvidence { NotRun, Unsupported, Verified, Unknown };
+// 真实owner在window-surface创建/attach完整成功后保存的值副本。不借用前端可变
+// state指针；pbuffer创建不进入此表，避免把worker context和主窗口token拼成资格。
+struct PresentingEglIdentity {
+    void* display = nullptr;
+    void* context = nullptr;
+    void* surface = nullptr;
+    void* nativeWindow = nullptr;
+    bool matches(const AmclSdlAuxRequestV1& proof) const {
+        return display == proof.display && context == proof.context &&
+            surface == proof.drawSurface && nativeWindow == proof.nativeWindow;
+    }
+};
 struct GraphicsFeatureState {
     std::mutex mutex;
     bool probed = false;
@@ -36,7 +49,15 @@ struct GraphicsFeatureState {
     // 前端无关的真实context资格账本，0句柄表示驱动创建中的预留。SDL的多个surface
     // 不增加记录；并发创建必须先看到预留，不能同时把自己当成第一个context。
     std::map<uint64_t, void*> contextPermits;
+    std::map<uint64_t, PresentingEglIdentity> presentingSurfaces;
     uint64_t nextContextPermit = 0;
+    // 与contextPermits同锁，保证角色验证和首次消费不能跨越context退休。
+    SdlAuxRuntimePolicy sdlAux;
+    // 首次claim在资源锁内填值后release发布；身份字段之后不重写。退休只清alive，
+    // SDK事件泵可不加锁、不查EGL、不gettid地核会话仍存活，fork仍先核OS PID。
+    uint64_t sdlAuxSession=0,sdlAuxInstance=0;
+    int32_t sdlAuxLaunchThread=0,sdlAuxOwnerThread=0;
+    std::atomic<bool> sdlAuxAlive{false};
 };
 // 在新context交付游戏前执行一次有界小对象探针；任何清理/原context恢复失败均返回false。
 AMCL_GRAPHICS_PUBLIC bool ProbeGraphicsFeatures(const GraphicsRuntimeBinding&, EglContextState&);
@@ -48,4 +69,7 @@ AMCL_GRAPHICS_PUBLIC bool CommitGraphicsContext(const GraphicsRuntimeBinding&, u
 AMCL_GRAPHICS_PUBLIC bool RetireGraphicsContext(const GraphicsRuntimeBinding&, void* context);
 // 仅本方生命周期在证明部分创建的资源已经完整退休后释放预留；SDL创建异常保留到进程退出。
 AMCL_GRAPHICS_PUBLIC void ReleaseGraphicsContextPermit(const GraphicsRuntimeBinding&, uint64_t permit);
+// 只由实际生命周期owner调用；成功surface资格与permit同锁，失败不授予准入。
+bool RecordPresentingEglSurface(const GraphicsRuntimeBinding&, const EglContextState&);
+void RevokePresentingEglSurface(const GraphicsRuntimeBinding&, const EglContextState&);
 }

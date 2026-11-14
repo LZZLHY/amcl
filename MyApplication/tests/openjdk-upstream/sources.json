@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "jdkSourceAuthority": "prebuilt/jdk/build-inputs.json",
+  "jtreg": {
+    "repository": "https://github.com/openjdk/jtreg.git",
+    "ref": "jtreg-8.3+1",
+    "commit": "551e17adac0579859012c4c46318b8fa3cf2ff37",
+    "minimumHostMajor": 17,
+    "buildEntry": "make/build.sh"
+  },
+  "jcstress": {
+    "repository": "https://github.com/openjdk/jcstress.git",
+    "commit": "1d143cbd430f4cca63a8f0c8c1fad3aabc065421"
+  },
+  "suites": {
+    "8": {"jdk": "jdk/test", "hotspot": "hotspot/test", "langtools": "langtools/test"},
+    "17": {"jdk": "test/jdk", "hotspot": "test/hotspot/jtreg", "langtools": "test/langtools"},
+    "21": {"jdk": "test/jdk", "hotspot": "test/hotspot/jtreg", "langtools": "test/langtools"},
+    "25": {"jdk": "test/jdk", "hotspot": "test/hotspot/jtreg", "langtools": "test/langtools"}
+  }
+}

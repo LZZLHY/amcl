@@ -20,14 +20,28 @@ bool track(const GraphicsRuntimeBinding& r, EglContextState& s, std::string& err
     return true;
 }
 // 完成驱动创建后将真实句柄登记到同一资格。失败保留预留和句柄，原destroy路径负责退休。
-bool created(const GraphicsRuntimeBinding& r, EglContextState& s, bool ready, std::string& error) {
+bool created(const GraphicsRuntimeBinding& r, EglContextState& s, bool ready, bool windowSurface, std::string& error) {
     if (!ready) return false;
     // 不借窗口表推断 display 生命周期：成功创建证明 eglInitialize 已经完成，哪怕
     // 后续资格提交失败也仍有待真实退休的 provider 对象。记录与最后 context 退休同锁。
     { std::lock_guard<std::recursive_mutex> lock(r.features->resourcesMutex);
       r.features->initializedEglDisplay = s.display; }
-    if (CommitGraphicsContext(r, s.contextPermit, s.context)) return true;
+    if (CommitGraphicsContext(r, s.contextPermit, s.context)) {
+        if (!windowSurface || RecordPresentingEglSurface(r, s)) return true;
+        error = "presenting-surface-commit-failed"; return false;
+    }
     error = "context-permit-commit-failed"; s.contextLostFatal = true; s.shouldClose = 1; return false;
+}
+// 只在合法owner准备改变真实surface时撤销资格；部分驱动失败也不能恢复旧准入。
+// 显式MakeCurrent(NULL)不经过此函数，保留物理关联供同context重新绑定。
+void retiringSurface(const GraphicsRuntimeBinding& r, const EglContextState& s, int tid) {
+    if (!s.contextOwnerTid || s.contextOwnerTid == tid) RevokePresentingEglSurface(r, s);
+}
+bool attached(const GraphicsRuntimeBinding& r, EglContextState& s, bool ready, std::string& error) {
+    if (!ready) return false;
+    // attach调用的就是window-surface路线；hidden晋升此时仍可能保留auxiliary旧标记。
+    if (RecordPresentingEglSurface(r, s)) return true;
+    error = "presenting-surface-commit-failed"; return false;
 }
 bool untrack(const GraphicsRuntimeBinding& r, EglContextState& s, bool result, EGLDisplay oldDisplay, std::string& e) {
     if (!result) return false;
@@ -63,9 +77,10 @@ bool createGles(const GraphicsRuntimeBinding& r, EglContextState& s, const amcl:
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = CreateGlesEgl(r.egl, s, q.major, tid, e, s.auxiliary, &failure);
-    return created(r, s, completeEglOperation(s, ready, failure, "create-gles", e, wasFatal), e);
+    return created(r, s, completeEglOperation(s, ready, failure, "create-gles", e, wasFatal), !s.auxiliary, e);
 }
 bool suspendGles(const GraphicsRuntimeBinding& r, EglContextState& s, int tid, std::string& e) {
+    retiringSurface(r, s, tid);
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = SuspendGlesEglSurface(r.egl, s, tid, e, &failure);
@@ -75,9 +90,10 @@ bool attachGles(const GraphicsRuntimeBinding& r, EglContextState& s, void* w, in
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = AttachGlesEglSurface(r.egl, s, w, x, y, tid, e, &failure);
-    return completeEglOperation(s, ready, failure, "attach-gles", e, wasFatal);
+    return attached(r, s, completeEglOperation(s, ready, failure, "attach-gles", e, wasFatal), e);
 }
 bool destroyGles(const GraphicsRuntimeBinding& r, EglContextState& s, int tid, std::string& e) {
+    retiringSurface(r, s, tid);
     const bool wasFatal = s.contextLostFatal;
     const auto display = s.display; EglLifecycleStatus failure;
     const bool ready = DestroyGlesEgl(r.egl, s, tid, e, &failure);
@@ -90,16 +106,17 @@ bool createDesktop(const GraphicsRuntimeBinding& r, EglContextState& s, const am
     const bool ready = s.auxiliary ? amcl::desktop::CreateDesktopEgl(r.egl, s, q, amclGraphicsGlProcV1, tid, e,
         amcl::desktop::EglPbufferGeometry{s.width, s.height}, &failure) :
         amcl::desktop::CreateDesktopEgl(r.egl, s, q, amclGraphicsGlProcV1, tid, e, amcl::desktop::EglSurfaceGeometry{}, &failure);
-    return created(r, s, completeEglOperation(s, ready, failure, "create-desktop", e, wasFatal), e);
+    return created(r, s, completeEglOperation(s, ready, failure, "create-desktop", e, wasFatal), !s.auxiliary, e);
 }
 bool createMobile(const GraphicsRuntimeBinding& r, EglContextState& s, const amcl::desktop::ContextRequest& q, int tid, std::string& e) {
     if (!track(r, s, e)) return false;
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = CreateMobileGlEgl(r.egl, s, q, amclGraphicsGlProcV1, tid, e, s.auxiliary, GraphicsAuxiliaryVerified(r, true), &failure);
-    return created(r, s, completeEglOperation(s, ready, failure, "create-mobilegl", e, wasFatal), e);
+    return created(r, s, completeEglOperation(s, ready, failure, "create-mobilegl", e, wasFatal), !s.auxiliary, e);
 }
 bool suspendDesktop(const GraphicsRuntimeBinding& r, EglContextState& s, int tid, std::string& e) {
+    retiringSurface(r, s, tid);
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = amcl::desktop::SuspendDesktopEglSurface(r.egl, s, tid, &failure);
@@ -109,15 +126,16 @@ bool attachDesktop(const GraphicsRuntimeBinding& r, EglContextState& s, void* w,
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = amcl::desktop::AttachDesktopEglSurface(r.egl, s, w, x, y, tid, amcl::desktop::EglSurfaceGeometry{}, &failure);
-    return completeEglOperation(s, ready, failure, "attach-desktop", e, wasFatal);
+    return attached(r, s, completeEglOperation(s, ready, failure, "attach-desktop", e, wasFatal), e);
 }
 bool attachMobile(const GraphicsRuntimeBinding& r, EglContextState& s, void* w, int x, int y, int tid, std::string& e) {
     const bool wasFatal = s.contextLostFatal;
     EglLifecycleStatus failure;
     const bool ready = AttachMobileGlEglSurface(r.egl, s, w, x, y, tid, &failure);
-    return completeEglOperation(s, ready, failure, "attach-mobilegl", e, wasFatal);
+    return attached(r, s, completeEglOperation(s, ready, failure, "attach-mobilegl", e, wasFatal), e);
 }
 bool destroyDesktop(const GraphicsRuntimeBinding& r, EglContextState& s, int tid, std::string& e) {
+    retiringSurface(r, s, tid);
     const bool wasFatal = s.contextLostFatal;
     const auto display = s.display;
     EglLifecycleStatus failure;

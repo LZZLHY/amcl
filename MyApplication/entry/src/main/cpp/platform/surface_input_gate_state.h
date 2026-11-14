@@ -19,6 +19,8 @@ struct State {
     void* window = nullptr;
     uint64_t publicationGeneration = 0;
     bool active = false;
+    // 几何事务期间暂停新输入，但生命周期身份仍可用于owner提交或销毁。
+    bool geometryPending = false;
     uint64_t notBeforeEventTimestampNs = 0;
     bool componentOnlyGenerationSafe = false;
     std::array<RetiredIdentity, kRetiredIdentityCapacity> retired{};
@@ -77,6 +79,7 @@ inline void RetireCurrent(State& state) {
     state.window = nullptr;
     state.publicationGeneration = 0u;
     state.active = false;
+    state.geometryPending = false;
     state.notBeforeEventTimestampNs = 0u;
     state.componentOnlyGenerationSafe = false;
 }
@@ -122,7 +125,7 @@ inline void Invalidate(State& state) {
 inline bool AcceptEventTimestamp(const State& state,
                                  uint64_t acceptedGeneration,
                                  int64_t eventTimestampNs) {
-    return state.active && acceptedGeneration != 0u &&
+    return state.active && !state.geometryPending && acceptedGeneration != 0u &&
            state.publicationGeneration == acceptedGeneration &&
            state.notBeforeEventTimestampNs != 0u &&
            eventTimestampNs > 0 &&

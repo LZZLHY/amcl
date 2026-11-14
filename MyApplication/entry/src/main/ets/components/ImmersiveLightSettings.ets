@@ -12,6 +12,7 @@ import {
   copyImmersiveLightPreferences,
   ThemeColors
 } from 'commons';
+import { SettingsDivider, SettingsGroup, SettingsHint, SettingsToggleRow } from './SettingsPrimitives';
 
 /** 关闭由总开关表达；这里的四档只表示 HDS 导航材质的渲染偏好。 */
 const NAVIGATION_MATERIAL_MODES: DockLightMode[] = [
@@ -66,87 +67,90 @@ export struct ImmersiveLightSettings {
     this.onChange(next);
   }
 
+  /** 保存与回退信息全部来自父层，失败时保留旧确认态和原错误节点身份，允许用户再次操作。 */
+  @Builder
+  private SaveFeedback_() {
+    Column({ space: 8 }) {
+      if (this.status.length > 0) { SettingsHint({ text: this.status, theme: this.theme }); }
+      if (!this.preferences.enabled) {
+        SettingsHint({ text: '已暂停效果。下方的档位与模块选择会保留，再次开启后恢复。', theme: this.theme });
+      }
+      if (this.saving) { SettingsHint({ text: '正在保存…', theme: this.theme }); }
+      if (this.saveError.length > 0) {
+        Text(this.saveError).fontSize(14).lineHeight(22).fontColor(this.theme.errorText).width('100%')
+          .id('immersive-light-save-error');
+      }
+    }.width('100%').padding({ left: 16, right: 16, bottom: 16 }).alignItems(HorizontalAlign.Start);
+  }
+
+  /**
+   * 四档采用等宽分段样式；文字可换行、按钮保持至少48vp，系统大字体不会被固定高度截短。
+   * 按钮和请求方法同时执行原能力检查，不能通过分段样式绕过设备限制。
+   */
+  @Builder
+  private NavigationModes_() {
+    Column({ space: 16 }) {
+      Text('导航材质档位').fontSize(16).fontColor(this.theme.textPrimary).width('100%');
+      Row({ space: 4 }) {
+        ForEach(NAVIGATION_MATERIAL_MODES, (mode: DockLightMode) => {
+          Button({ type: ButtonType.Normal }) {
+            Text(dockLightModeLabel(mode)).fontSize(14).textAlign(TextAlign.Center).maxLines(2)
+              .fontWeight(this.preferences.navigationMode === mode ? 600 : 400)
+              .fontColor(this.preferences.navigationMode === mode ? this.theme.actionText : this.theme.textSecondary);
+          }.layoutWeight(1).constraintSize({ minHeight: 48 }).padding({ left: 8, right: 8, top: 8, bottom: 8 })
+            .borderRadius(24).backgroundColor(this.preferences.navigationMode === mode ? this.theme.bgCard : Color.Transparent)
+            .enabled(this.preferences.enabled && !this.saving && (this.hasPresets || mode === DockLightMode.AUTO))
+            .accessibilityText('导航材质，' + dockLightModeLabel(mode) +
+              (this.preferences.navigationMode === mode ? '，已选中' : ''))
+            .id('immersive-light-mode-' + mode)
+            .onClick((): void => { this.requestNavigationMode_(mode); });
+        }, (mode: DockLightMode): string => mode);
+      }.width('100%').padding(4).borderRadius(28).backgroundColor(this.theme.bgInput).alignItems(VerticalAlign.Center);
+      SettingsHint({ text: '应用于已启用的导航模块。实际观感随设备能力与系统设置调整。', theme: this.theme });
+      if (!this.hasPresets) {
+        SettingsHint({ text: '当前设备未提供手动材质档位，可保留自动适配。', theme: this.theme });
+      }
+    }.width('100%').padding(20).alignItems(HorizontalAlign.Start);
+  }
+
+  /** 总开关、真实状态和材质档位合为一个功能组；稳定开关节点在保存期间仅禁用，不替换身份。 */
+  @Builder
+  private LightGroupContent_() {
+    SettingsToggleRow({
+      title: '启用沉浸光感', description: '控制底部导航与圆形图标按钮，不更改系统光感设置。',
+      value: this.preferences.enabled, actionEnabled: !this.saving, theme: this.theme,
+      controlId: 'immersive-light-master', onChange: (enabled: boolean): void => { this.requestEnabled_(enabled); }
+    });
+    if (this.status.length > 0 || !this.preferences.enabled || this.saving || this.saveError.length > 0) {
+      this.SaveFeedback_();
+    }
+    SettingsDivider({ theme: this.theme });
+    this.NavigationModes_();
+  }
+
+  /** 模块开关分别透传原确认态；关闭总开关只禁用操作，不重置已保存的模块选择。 */
+  @Builder
+  private PlacementGroupContent_() {
+    SettingsToggleRow({
+      title: '底部导航栏', description: '为底部页签保留轻盈的悬浮材质。',
+      value: this.preferences.bottomBar, actionEnabled: this.preferences.enabled && !this.saving,
+      theme: this.theme, controlId: 'immersive-light-bottom-bar',
+      onChange: (enabled: boolean): void => { this.requestBottomBar_(enabled); }
+    });
+    SettingsDivider({ theme: this.theme });
+    SettingsToggleRow({
+      title: '圆形图标按钮', description: '统一控制返回、关闭和同类标题操作；不支持材质的位置使用一致的普通样式。',
+      value: this.preferences.titleButtons, actionEnabled: this.preferences.enabled && !this.saving,
+      theme: this.theme, controlId: 'immersive-light-title-buttons',
+      onChange: (enabled: boolean): void => { this.requestTitleButtons_(enabled); }
+    });
+  }
+
+  /** 主题选择由设置页统一呈现；这里仅负责沉浸光感的两组展示，不创建第二套主题状态。 */
   build() {
-    Column({ space: 20 }) {
-      Column({ space: 12 }) {
-        Row({ space: 16 }) {
-          Column({ space: 6 }) {
-            Text('启用沉浸光感').fontSize(17).fontWeight(600).fontColor(this.theme.textPrimary);
-            Text('控制底部导航与圆形图标按钮，不更改系统光感设置。')
-              .fontSize(13).fontColor(this.theme.textHint);
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start);
-          Toggle({ type: ToggleType.Switch, isOn: this.preferences.enabled })
-            .selectedColor(this.theme.primary).enabled(!this.saving)
-            .accessibilityText('启用沉浸光感').id('immersive-light-master')
-            .onChange((enabled: boolean): void => { this.requestEnabled_(enabled); });
-        }.width('100%').alignItems(VerticalAlign.Center);
-        if (this.status.length > 0) {
-          Text(this.status).fontSize(13).fontColor(this.theme.textSecondary).width('100%');
-        }
-        if (!this.preferences.enabled) {
-          Text('已暂停效果。下方的档位与模块选择会保留，再次开启后恢复。')
-            .fontSize(13).fontColor(this.theme.textHint).width('100%');
-        }
-        if (this.saving) {
-          Text('正在保存…').fontSize(13).fontColor(this.theme.textHint).width('100%');
-        }
-        if (this.saveError.length > 0) {
-          // 失败留在当前详情中，用户可以看到旧的确认态并再次操作，不弹出遮挡式提示。
-          Text(this.saveError).fontSize(13).fontColor(this.theme.errorText).width('100%')
-            .id('immersive-light-save-error');
-        }
-      }.width('100%').padding(20).borderRadius(24).backgroundColor(this.theme.bgCard);
-
-      Column({ space: 12 }) {
-        Text('导航材质档位').fontSize(16).fontWeight(600).fontColor(this.theme.textPrimary).width('100%');
-        Text('应用于已启用的导航模块。实际观感随设备能力与系统设置调整。')
-          .fontSize(13).fontColor(this.theme.textHint).width('100%');
-        Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach(NAVIGATION_MATERIAL_MODES, (mode: DockLightMode) => {
-            Button(dockLightModeLabel(mode))
-              .fontSize(14)
-              .fontColor(this.preferences.navigationMode === mode ? this.theme.textOnPrimary : this.theme.textSecondary)
-              .backgroundColor(this.preferences.navigationMode === mode ? this.theme.primary : this.theme.bgInput)
-              .constraintSize({ minHeight: 44 }).padding({ left: 16, right: 16 })
-              .borderRadius(22).margin({ right: 8, bottom: 8 })
-              .enabled(this.preferences.enabled && !this.saving && (this.hasPresets || mode === DockLightMode.AUTO))
-              .accessibilityText('导航材质，' + dockLightModeLabel(mode) +
-                (this.preferences.navigationMode === mode ? '，已选中' : ''))
-              .id('immersive-light-mode-' + mode)
-              .onClick((): void => { this.requestNavigationMode_(mode); });
-          }, (mode: DockLightMode): string => mode);
-        }.width('100%');
-        if (!this.hasPresets) {
-          Text('当前设备未提供手动材质档位，可保留自动适配。')
-            .fontSize(13).fontColor(this.theme.textHint).width('100%');
-        }
-      }.width('100%').padding(20).borderRadius(24).backgroundColor(this.theme.bgCard);
-
-      Column({ space: 16 }) {
-        Text('应用位置').fontSize(16).fontWeight(600).fontColor(this.theme.textPrimary).width('100%');
-        Row({ space: 16 }) {
-          Column({ space: 5 }) {
-            Text('底部导航栏').fontSize(16).fontColor(this.theme.textPrimary);
-            Text('为底部页签保留轻盈的悬浮材质。').fontSize(13).fontColor(this.theme.textHint);
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start);
-          Toggle({ type: ToggleType.Switch, isOn: this.preferences.bottomBar })
-            .selectedColor(this.theme.primary).enabled(this.preferences.enabled && !this.saving)
-            .accessibilityText('底部导航栏光感').id('immersive-light-bottom-bar')
-            .onChange((enabled: boolean): void => { this.requestBottomBar_(enabled); });
-        }.width('100%').alignItems(VerticalAlign.Center);
-        Row().width('100%').height(0.5).backgroundColor(this.theme.divider);
-        Row({ space: 16 }) {
-          Column({ space: 5 }) {
-            Text('圆形图标按钮').fontSize(16).fontColor(this.theme.textPrimary);
-            Text('统一控制返回、关闭和同类标题操作；不支持材质的位置使用一致的普通样式。')
-              .fontSize(13).fontColor(this.theme.textHint);
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start);
-          Toggle({ type: ToggleType.Switch, isOn: this.preferences.titleButtons })
-            .selectedColor(this.theme.primary).enabled(this.preferences.enabled && !this.saving)
-            .accessibilityText('圆形图标按钮光感').id('immersive-light-title-buttons')
-            .onChange((enabled: boolean): void => { this.requestTitleButtons_(enabled); });
-        }.width('100%').alignItems(VerticalAlign.Center);
-      }.width('100%').padding(20).borderRadius(24).backgroundColor(this.theme.bgCard);
+    Column({ space: 24 }) {
+      SettingsGroup({ title: '沉浸光感', theme: this.theme, content: (): void => { this.LightGroupContent_(); } });
+      SettingsGroup({ title: '应用位置', theme: this.theme, content: (): void => { this.PlacementGroupContent_(); } });
     }.width('100%').alignItems(HorizontalAlign.Start);
   }
 }

@@ -1,0 +1,182 @@
+--- a/src/hotspot/share/runtime/init.cpp
++++ b/src/hotspot/share/runtime/init.cpp
+@@ -43,6 +43,9 @@
+ #include "runtime/handles.inline.hpp"
+ #include "runtime/icache.hpp"
+ #include "runtime/init.hpp"
++#ifdef __OHOS__
++#include "services/attachListener.hpp"
++#endif
+ #include "runtime/safepoint.hpp"
+ #include "runtime/sharedRuntime.hpp"
+ #include "sanitizers/leak.hpp"
+@@ -215,6 +218,12 @@
+   static bool destructorsCalled = false;
+   if (!destructorsCalled) {
+     destructorsCalled = true;
++#ifdef __OHOS__
++    // DestroyJavaVM和System.exit均先到此，再调用宿主exit hook；不依赖普通atexit。
++    // 与init发布同gate，仅撤销持久Attach路径；保留仍在native段的listener FD/daemon原生命周期。
++    AttachListener::vm_shutdown();
++#endif
++
+     perfMemory_exit();
+     SafepointTracing::statistics_exit_log();
+     if (PrintStringTableStatistics) {
+--- a/src/hotspot/share/services/attachListener.hpp
++++ b/src/hotspot/share/services/attachListener.hpp
+@@ -87,6 +87,10 @@
+   static void vm_start() NOT_SERVICES_RETURN;
+   static void init()  NOT_SERVICES_RETURN;
+   static void abort() NOT_SERVICES_RETURN;
++#ifdef __OHOS__
++  // 正常VM终结（Destroy/System.exit）撤销持久Attach路径；FD/daemon保留原进程生命周期。
++  static void vm_shutdown() NOT_SERVICES_RETURN;
++#endif
+ 
+   // invoke to perform clean-up tasks when all clients detach
+   static void detachall() NOT_SERVICES_RETURN;
+--- a/src/hotspot/os/posix/attachListener_posix.cpp
++++ b/src/hotspot/os/posix/attachListener_posix.cpp
+@@ -163,10 +163,39 @@
+ volatile int PosixAttachListener::_listener = -1;
+ bool PosixAttachListener::_atexit_registered = false;
+ 
++#ifdef __OHOS__
++#include <pthread.h>
++
++// OHOS正常NCP返回使用quick_exit，普通atexit不能承担VM终结时的持久socket清理。
++// gate只保护init发布和终结/重启冷路径；必须在pd_init的ThreadBlockInVM析构之前释放。
++static pthread_mutex_t ohos_attach_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
++static bool ohos_attach_stopping = false;
++class OhosAttachLifecycleLock {
++  bool _locked;
++  OhosAttachLifecycleLock(const OhosAttachLifecycleLock&);
++  OhosAttachLifecycleLock& operator=(const OhosAttachLifecycleLock&);
++ public:
++  explicit OhosAttachLifecycleLock(bool fatal = false) {
++    int result = fatal ? pthread_mutex_trylock(&ohos_attach_lifecycle_mutex)
++                       : pthread_mutex_lock(&ohos_attach_lifecycle_mutex);
++    _locked = result == 0;
++    guarantee(fatal || _locked, "OHOS attach lifecycle mutex lock failed");
++  }
++  ~OhosAttachLifecycleLock() {
++    if (_locked) pthread_mutex_unlock(&ohos_attach_lifecycle_mutex);
++  }
++  bool locked() const { return _locked; }
++};
++static bool ohos_attach_is_stopping() {
++  OhosAttachLifecycleLock guard;
++  return ohos_attach_stopping;
++}
++#endif
++
+ // atexit hook to stop listener and unlink the file that it is
+ // bound too.
+ extern "C" {
+-  static void listener_cleanup() {
++  static void listener_cleanup_body() {
+     int s = PosixAttachListener::listener();
+     if (s != -1) {
+       PosixAttachListener::set_listener(-1);
+@@ -178,11 +207,31 @@
+       PosixAttachListener::set_path(nullptr);
+     }
+   }
++  // 普通过程退出仍保留原完整FD/path清理；gate不跨任何Java/VM状态转换。
++  static void listener_cleanup() {
++#ifdef __OHOS__
++    OhosAttachLifecycleLock guard;
++    ohos_attach_stopping = true;
++#endif
++    listener_cleanup_body();
++  }
++#ifdef __OHOS__
++  static void ohos_attach_restart_cleanup() {
++    OhosAttachLifecycleLock guard;
++    if (ohos_attach_stopping) return; // 正常VM终结后不可重开或再关仍被daemon借用的FD。
++    listener_cleanup_body();
++  }
++#endif
+ }
+ 
+ // Initialization - create a listener socket and bind it to a file
+ 
+ int PosixAttachListener::init() {
++#ifdef __OHOS__
++  OhosAttachLifecycleLock guard;
++  if (ohos_attach_stopping) return -1;
++  // 覆盖socket/bind/rename和最后发布；本函数return先解锁，随后pd_init才执行TBI析构。
++#endif
+   char path[UNIX_PATH_MAX];          // socket file
+   char initial_path[UNIX_PATH_MAX];  // socket file during setup
+   int listener;                      // listener socket (file descriptor)
+@@ -378,7 +427,11 @@
+     log_debug(attach)("Socket file %s does not exist - Restart Attach Listener",
+                       PosixAttachListener::path());
+ 
++#ifdef __OHOS__
++    ohos_attach_restart_cleanup();
++#else
+     listener_cleanup();
++#endif
+ 
+     // wait to terminate current attach listener instance...
+     {
+@@ -386,9 +439,16 @@
+       ThreadBlockInVM tbivm(JavaThread::current());
+       while (AttachListener::transit_state(AL_INITIALIZING,
+                                            AL_NOT_INITIALIZED) != AL_NOT_INITIALIZED) {
++#ifdef __OHOS__
++        // 最终safepoint可阻止listener回VM更新状态，native冷等待必须观察不可逆stop。
++        if (ohos_attach_is_stopping()) return false;
++#endif
+         os::naked_yield();
+       }
+     }
++#ifdef __OHOS__
++    if (ohos_attach_is_stopping()) return false;
++#endif
+     return is_init_trigger();
+   }
+   return false;
+@@ -441,8 +501,38 @@
+ 
+ // if VM aborts then remove listener
+ void AttachListener::abort() {
++#ifdef __OHOS__
++  // 致命错误可能发生在持gate的init线程；不能把原abort变成自锁等待。
++  // 锁忙时只保留原崩溃退出边界，不读取/撤销不稳定owner；这是best-effort清理。
++  OhosAttachLifecycleLock guard(true);
++  if (!guard.locked()) return;
++  ohos_attach_stopping = true;
++  listener_cleanup_body();
++#else
+   listener_cleanup();
+-}
++#endif
++}
++#ifdef __OHOS__
++void AttachListener::vm_shutdown() {
++  OhosAttachLifecycleLock guard;
++  ohos_attach_stopping = true; // 与init同锁：已开始的发布先完成；此后发布/重启都拒绝。
++  if (PosixAttachListener::has_path()) {
++    char owned_path[UNIX_PATH_MAX];
++    strcpy(owned_path, PosixAttachListener::path());
++    PosixAttachListener::set_path(NULL); // 先撤销路径归属，后续atexit不再重复unlink或误删同名新对象。
++    int result;
++    RESTARTABLE(::unlink(owned_path), result); // 只重试EINTR，绝不把其他删除错误当成功。
++    if (result != 0 && errno != ENOENT) {
++      const int cleanup_error = errno;
++      // 此入口只在正常VM终结，tty尚未释放；fatal abort仍沿自己的无新增日志路径。
++      warning("OHOS Attach socket cleanup failed (errno=%d): %s", cleanup_error, owned_path);
++    }
++  }
++  // 不shutdown/close或重置_listener：在途native accept仍可借用该FD。
++  // 保留HotSpot原有一次VM到进程退出边界；普通atexit仍full cleanup，NCP quick_exit由OS回收FD。
++}
++#endif
++
+ 
+ void AttachListener::pd_data_dump() {
+   os::signal_notify(SIGQUIT);

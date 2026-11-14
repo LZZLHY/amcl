@@ -328,7 +328,7 @@ function aaProof(task,kind,safeToRelease){return{kind,safeToRelease,bmSubmitted:
   assert.equal(f.counters.observe,1);assert.equal(f.coordinator.state().phase,'confirmation-pending');
   assert.notEqual(f.coordinator.state().installedIdentityVerified,true);assert.equal(f.counters.complete,0);
   // 真实目标版本、UID、载荷全部成立时，原有无 Want 的跨版本冷启动确认路径仍可完成。
-  Object.assign(f.environment,{version:2,uid:42,payload});f.coordinator.recover();await settle();
+  Object.assign(f.environment,{version:2,versionName:task.asset.versionName,uid:42,payload});f.coordinator.recover();await settle();
   assert.equal(f.coordinator.state().installedIdentityVerified,true);assert.equal(f.coordinator.state().phase,'verified');
   assert.equal(f.counters.complete,1);assert.equal(f.counters.dispatch,0);assert.equal(f.counters.prepare,0);
  }
@@ -345,7 +345,7 @@ function aaProof(task,kind,safeToRelease){return{kind,safeToRelease,bmSubmitted:
 {
  const task=pendingAaRecord();task.beforeVersionCode=1000685;task.asset.versionCode=1000686;
  const original=await fixture({journal:task});
- Object.assign(original.environment,{version:1000686,uid:task.beforeUid,payload:task.expectedPayloadIdentity});
+ Object.assign(original.environment,{version:1000686,versionName:task.asset.versionName,uid:task.beforeUid,payload:task.expectedPayloadIdentity});
  original.setObservation(aaProof(task,'unknown',false));original.coordinator.setAbilityForeground(true);
  original.coordinator.recover(task.installId,task.restartNonce);await settle();
  assert.equal(original.coordinator.state().phase,'confirmation-pending');
@@ -362,7 +362,9 @@ function aaProof(task,kind,safeToRelease){return{kind,safeToRelease,bmSubmitted:
  repaired.setObservation(aaProof(task,'bms-success',true));repaired.coordinator.setAbilityForeground(true);
  repaired.coordinator.recover(task.installId,task.restartNonce);await settle();
  const verified=JSON.parse(repaired.kitfs.readTextSync('/sandbox/sideload-update/transaction.json'));
- assert.equal(verified.phase,'verified');assert.equal(verified.installedIdentityVerified,true);
+ assert.equal(verified.phase,'superseded');assert.equal(verified.installedIdentityVerified,true);
+ assert.equal(verified.completion.mode,'superseded');assert.equal(repaired.counters.planVerified??0,0);
+ assert.equal(repaired.counters.planSuperseded,1,'维修身份只走专用退役，不冒作原目标Verified');
  for(const key of ['id','ownerAttemptId','installId','installProtocol','asset','beforeVersionCode','beforeUid',
   'expectedPayloadIdentity','restartNonce','signedPath','signedSha256'])assert.deepEqual(verified[key],persisted[key],key+' 必须保持原事务身份');
  assert.equal(repaired.counters.observe,1);assert.equal(repaired.counters.complete,1);

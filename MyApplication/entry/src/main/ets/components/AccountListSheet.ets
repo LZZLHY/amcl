@@ -1,45 +1,25 @@
 /**
- * AccountListSheet.ets — 账户管理半屏 Sheet（v2 · 2026-05-23 重设计）
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
+ * 账号管理半模态：当前身份、外观入口和切换列表分区显示。
  *
- * 新版结构（自上而下）：
- *   ┌──────────────────────────────────────────┐
- *   │ 共享模态标题 · 账户管理             [+][×] │
- *   ├──────────────────────────────────────────┤
- *   │ [HeroCard · 当前账户]                     │
- *   │   左：96x160 全身皮肤渲染                  │
- *   │   右：用户名 / 类型 + 令牌 badge / 披风行   │
- *   │   底：[刷新][皮肤详情][移除] 三按钮          │
- *   ├──────────────────────────────────────────┤
- *   │ 其他账户 (n)                              │
- *   │ [行] 头像 用户名 类型 [↕]                  │
- *   │ [行] ...                                  │
- *   └──────────────────────────────────────────┘
- *
- * 核心交互：
- *   - 当前账户在 Hero 卡突出展示，提供"管理动作"（刷新/详情/移除）
- *   - 其他账户列表，单击 → 切换到当前
- *   - HeroCard 的 "皮肤详情" → 弹出 SkinCapeDetailSheet（更大的皮肤+披风预览）
- *   - HeroCard 的 "刷新令牌" → 微软账户走 refresh()，离线账户禁用
- *   - 账户移除动作经过二次确认；标题关闭不删除账户
- *   - 标题 [+] 仅展开既有添加流程，标题 [×] 仅请求父层关闭整个账户管理
- *
- * 与 v1 的差异：
- *   - v1 把所有账户平铺成等大的行；选中态只在背景色区分
- *   - v2 引入"当前账户 vs 其他账户"双层视觉，对多账号场景更友好
- *   - v2 把皮肤/披风从子标题字符串提升为完整的视觉预览（用 SkinPreview / CapePreview）
- *
- * 创建日期：2026-05-23（v2 重设计）
+ * 当前账号的刷新、完整信息及移除集中在内部管理页；第三方多角色沿用原
+ * switchProfile 持久化流程。内部页面复用现有标题和同一 Sheet，既不放大容器，
+ * 登录样式保持原有结构，手机嵌套面板与外层共同遵循已保存的默认高度。
+ * 账号选择、删除和外观更新只发布持久化确认结果，离开后的异步续体仍须退役。
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
+import { getTaskActivityOwner } from 'feature_core';
 import { Account, AccountType } from 'account';
 import { getAccountManager } from 'account';
 import { AuthlibInjectorAccount, AccountProfile } from 'account';
 import { AddAccountSheet } from './AddAccountSheet';
 import { SkinCapeDetailSheet } from './SkinCapeDetailSheet';
 import { SkinCanvas3D } from './SkinCanvas3D';
-import { CapePreview } from './CapePreview';
 import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -51,6 +31,8 @@ const TAG = 'AccountListSheet';
 
 @Component
 export struct AccountListSheet {
+  /** 观察确认比例，使嵌套的登录和外观详情在下一次打开时使用最新选择。 */
+  @StorageProp('phoneSheetHeightPercent') private phoneSheetHeightPercent_: number = 80;
   @Prop theme: ThemeColors = {} as ThemeColors;
   @Prop bottomSafeHeight: number = 0;
   /** 顶部安全区高度 —— 给内嵌 sheet 用 */
@@ -73,6 +55,13 @@ export struct AccountListSheet {
   /** 其他账户列表快照（不包含 currentAcc）—— ForEach 用。 */
   @State otherAccs: Account[] = [];
   @State showAddSheet: boolean = false;
+  /** 更多入口只在当前半模态内切换正文，不创建额外模态或改动父层宽高。 */
+  @State showAccountSettings: boolean = false;
+  /** 只描述本地可恢复凭据；不能把 isUsable 的 true 误写成远端令牌仍有效。 */
+  @State currentLoginState: string = 'checking';
+  private loginStateEpoch: number = 0;
+  /** 同一账号重复打开确认也要区分，避免上一枚弹窗的迟到确认复用新的授权。 */
+  private deleteConfirmationEpoch: number = 0;
   @State showSkinDetail: boolean = false;
   @State skinDetailAccount: Account | null = null;
   @State pendingDeleteId: string = '';
@@ -112,21 +101,37 @@ export struct AccountListSheet {
 
   /** Refresh 进行中 —— 防止重入；按 id 区分以便未来支持多账户并发刷新。 */
   @State refreshingId: string = '';
+  /** 账号选择/移除等待持久确认期间禁用重复动作，避免界面先显示未确认的状态。 */
+  @State accountMutationId: string = '';
+  @State accountMutationAction: string = '';
+  private accountMutationEpoch: number = 0;
+  private alive: boolean = false;
   /** 刷新失败提示横幅（短暂显示，3s 自动消失）。 */
   @State refreshErrorMsg: string = '';
 
   aboutToAppear() {
+    this.alive = true;
+    this.accountMutationEpoch++;
+    this.accountMutationId = ''; this.accountMutationAction = '';
+    this.refreshingId = ''; this.switchingProfileId = ''; this.refreshErrorMsg = '';
     this.refresh();
   }
+
+  /** 只退役本页状态回调，已经提交的账号操作仍需通知外层首页重读确认结果。 */
+  aboutToDisappear(): void { this.alive = false; this.accountMutationEpoch++; this.loginStateEpoch++; this.deleteConfirmationEpoch++; this.pendingDeleteId = ''; }
 
   build() {
     Column() {
       // 主列表标题与圆形新增入口共享真实标题宿主；新增仍只打开原 AddAccount 子 Sheet。
       // X 继续调用父层 onClose，选择账户、刷新令牌、皮肤预览与自动登录均不由标题接管。
-      ImmersiveTitleScaffold({ title: '账户管理', theme: this.theme, surfaceColor: this.theme.bgSecondary,
-        modal: true, closeLabel: '关闭账户管理', onClose: (): void => { this.onClose(); },
-        menuActions: [{ id: 'add-account', label: '新增账户', icon: AppIconName.Plus }],
-        onMenuAction: (id: string): void => { if (id === 'add-account') this.showAddSheet = true; },
+      ImmersiveTitleScaffold({ title: this.showAccountSettings
+          ? (this.currentType === AccountType.AUTHLIB_INJECTOR ? '第三方账号' : '账号管理') : '账户管理',
+        theme: this.theme, surfaceColor: this.theme.bgPrimary,
+        modal: !this.showAccountSettings, showBack: this.showAccountSettings, showClose: true,
+        backLabel: '返回账户管理', onBack: (): void => { this.showAccountSettings = false; },
+        closeLabel: '关闭账户管理', onClose: (): void => { this.onClose(); },
+        menuActions: this.showAccountSettings ? [] : [{ id: 'add-account', label: '新增账户', icon: AppIconName.Plus, enabled: this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0 }],
+        onMenuAction: (id: string): void => { if (id === 'add-account' && !this.busy_()) this.showAddSheet = true; },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
 
@@ -134,12 +139,11 @@ export struct AccountListSheet {
       // 不可见锚点：承载 AddAccountSheet。把 bindSheet 绑在零尺寸 Column 上避免和后面
       // SkinDetailSheet 锚点冲突 —— 同一节点连续多次 bindSheet 在 ArkUI 里不可靠。
       //
-      // AddAccountSheet 走 largeSheetHeight (92%)：因为它含 Microsoft OAuth WebView，
-      // 80% 在小屏设备会把登录卡片下方挤出大块空白。这是项目里**唯一**走 92% 的 sheet
-      // —— 其他详情 / 设置 sheet 都保持 80% 的统一节奏。
+      // 登录内容含 Microsoft OAuth WebView：手机使用用户高度，非手机保留原 92% 策略，
+      // WebView 继续填充面板剩余空间；用户降低手机比例时内容仍由原登录页滚动处理。
       Column().width(0).height(0)
         .bindSheet($$this.showAddSheet, this.AddAccountSheetBuilder(), {
-          height: largeSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
+          height: largeSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_),
           width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
           dragBar: !centerSheetForLayout(this.deviceForm, this.appBreakpoint),
           showClose: false,
@@ -151,7 +155,7 @@ export struct AccountListSheet {
       // 与版本详情 / 模组详情等其他详情类 sheet 视觉一致。
       Column().width(0).height(0)
         .bindSheet($$this.showSkinDetail, this.SkinDetailSheetBuilder(), {
-          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
+          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_),
           width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
           dragBar: !centerSheetForLayout(this.deviceForm, this.appBreakpoint),
           showClose: false,
@@ -161,7 +165,7 @@ export struct AccountListSheet {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(this.theme.bgSecondary)
+    .backgroundColor(this.theme.bgPrimary)
     .padding({ bottom: this.bottomSafeHeight })
   }
 
@@ -176,6 +180,7 @@ export struct AccountListSheet {
       bottomSafeHeight: this.bottomSafeHeight,
       onSuccess: () => {
         this.showAddSheet = false;
+        this.showAccountSettings = false;
         this.refresh();
         this.onAccountsChanged();
       },
@@ -194,6 +199,9 @@ export struct AccountListSheet {
         // 披风切换成功后：父 sheet 重读账户状态，让 Hero 卡 cape 行 + 大头像
         // 重渲染。同时 onAccountsChanged() 让外层 Index 页知道。
         onChanged: () => {
+          // 离线编辑采用不可变账号替换，详情入口也必须更新为列表里的新实例。
+          const detailId = this.skinDetailAccount?.id ?? '';
+          this.skinDetailAccount = getAccountManager().findById(detailId) ?? null;
           this.refresh();
           this.onAccountsChanged();
         },
@@ -205,452 +213,319 @@ export struct AccountListSheet {
   //  Empty / Main 视图
   // ============================================================
 
+  /** 空态仍通过原 AddAccountSheet 添加账号，不在本次重建任何登录表单。 */
   @Builder
   EmptyView() {
-    Column({ space: 12 }) {
-      AppIcon({ name: AppIconName.Person, iconSize: 56, color: this.theme.textHint })
-      Text('还没有账户')
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.textPrimary)
-      Text('点击右上角 + 添加微软正版或离线账户')
-        .fontSize(13)
-        .fontColor(this.theme.textSecondary)
-        .textAlign(TextAlign.Center)
-      Button('立即添加')
-        .type(ButtonType.Capsule)
-        .height(40)
-        .fontSize(14)
-        .backgroundColor(this.theme.primary)
-        .fontColor(this.theme.textOnPrimary)
-        .margin({ top: 8 })
-        .onClick(() => { this.showAddSheet = true; })
-    }
-    .width('100%')
-    .layoutWeight(1)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .padding(20)
-  }
-
-  @Builder
-  MainScroll() {
-    Scroll() {
-      Column({ space: 14 }) {
-        // 当前账户 Hero 卡 —— currentAcc 在 refresh() 时同步
-        if (this.currentAcc !== null) {
-          this.HeroCard();
-        }
-
-        // 其他账户列表 —— otherAccs 是已过滤掉当前账户的快照
-        if (this.otherAccs.length > 0) {
-          this.OthersHeader();
-          ForEach(this.otherAccs, (acc: Account) => {
-            this.AccountRow(acc);
-          }, (acc: Account) => acc.id);
-        }
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 16 })
-    }
-    .layoutWeight(1)
-    .scrollBar(BarState.Off)
-    .edgeEffect(EdgeEffect.Spring)
-  }
-
-  // ============================================================
-  //  Hero Card —— 当前账户
-  // ============================================================
-
-  @Builder
-  HeroCard() {
-    Column() {
-      // 上半部分：皮肤 + 信息
-      Row({ space: 14 }) {
-        Stack() {
-          SkinCanvas3D({
-            skinUrl: this.currentSkinUrl,
-            username: this.currentName,
-            isOffline: this.currentType === AccountType.OFFLINE,
-            slim: this.currentSkinVariant === 'SLIM',
-            theme: this.theme,
-          })
-        }
-        .width(96)
-        .height(160)
-        .borderRadius(this.theme.cardRadius - 2)
-        .clip(true)
-
-        Column({ space: 8 }) {
-          // 用户名
-          Text(this.currentName)
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.theme.textPrimary)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-          // 类型 / 状态 badges
-          Row({ space: 6 }) {
-            this.HeroTypeBadge();
-            if (this.currentType === AccountType.MICROSOFT) {
-              Row({ space: 4 }) {
-                AppIcon({ name: AppIconName.Check, iconSize: 12, color: this.theme.primary, weight: FontWeight.Bold })
-                Text('令牌有效')
-                  .fontSize(11)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.theme.primary)
-              }
-              .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-              .backgroundColor(this.theme.primaryLight)
-              .borderRadius(8)
-              .alignItems(VerticalAlign.Center)
-            }
-          }
-          .alignItems(VerticalAlign.Center)
-
-          // UUID hint（只对微软账户显示，offline UUID 是本地派生没意义）
-          if (this.currentType === AccountType.MICROSOFT && this.currentUuid.length === 36) {
-            Text('ID · ' + this.currentUuid.substring(0, 4) + '…' + this.currentUuid.substring(32))
-              .fontSize(11)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.theme.textHint)
-              .maxLines(1)
-          }
-
-          // 披风行：所有账户都显示。微软账户展示真实披风 / 无披风；离线账户固定"无披风"。
-          this.CapeRow();
-
-          // 第三方皮肤站多角色：显示「切换角色」入口（bindMenu 列出全部角色）。
-          if (this.currentType === AccountType.AUTHLIB_INJECTOR && this.currentAuthProfiles.length > 1) {
-            this.AuthProfileSwitchRow();
-          }
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .padding(14)
-      .alignItems(VerticalAlign.Top)
-
-      // 下半部分：动作按钮
-      Row({ space: 8 }) {
-        this.ActionButton(
-          AppIconName.Refresh,
-          this.refreshingId === this.currentId ? '刷新中...' : '刷新令牌',
-          this.theme.primary,
-          (this.currentType === AccountType.MICROSOFT || this.currentType === AccountType.AUTHLIB_INJECTOR) && this.refreshingId !== this.currentId,
-          () => { let a = this.currentAcc; if (a !== null) this.refreshAccount(a); },
-        );
-        this.ActionButton(
-          AppIconName.ResourcePack,
-          '皮肤详情',
-          this.theme.textPrimary,
-          true,
-          () => {
-            this.skinDetailAccount = this.currentAcc;
-            this.showSkinDetail = true;
-          },
-        );
-        this.ActionButton(
-          AppIconName.Trash,
-          this.pendingDeleteId === this.currentId ? '确定删除' : '移除',
-          this.theme.error,
-          true,
-          () => {
-            if (this.pendingDeleteId === this.currentId) {
-              this.removeAccount(this.currentId);
-            } else {
-              this.armDelete(this.currentId);
-            }
-          },
-        );
-      }
-      .width('100%')
-      .padding({ left: 14, right: 14, top: 10, bottom: 12 })
-    }
-    .width('100%')
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(this.theme.cardRadius)
-    .border({ width: { top: 0 }, color: this.theme.divider })
+    Column({ space: 20 }) {
+      Row() {
+        AppIcon({ name: AppIconName.Person, iconSize: 32, color: this.theme.actionText })
+      }.width(72).height(72).justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+        .backgroundColor(this.theme.primaryLight).borderRadius(24)
+      Text('添加你的第一个账号').fontSize(22).fontWeight(FontWeight.Medium)
+        .fontColor(this.theme.textPrimary).textAlign(TextAlign.Center)
+      Text('登录微软或皮肤站账号，也可以创建离线账号开始本地游戏。')
+        .fontSize(16).fontColor(this.theme.textSecondary).textAlign(TextAlign.Center)
+      Button('添加账号').type(ButtonType.Capsule).height(48).width('100%')
+        .fontSize(16).fontWeight(FontWeight.Medium)
+        .backgroundColor(this.theme.actionPrimary).fontColor(this.theme.textOnPrimary)
+        .onClick((): void => { this.showAddSheet = true; })
+    }.width('100%').layoutWeight(1).padding(32)
+      .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
   }
 
   /**
-   * Hero 卡专用类型徽章 —— 无参，直接读 @State this.currentType。
-   * 不能复用带参 TypeBadge：ArkUI 对 @Builder 的【基本类型值参数】变化不重渲染
-   * （把 currentType 当值参传进去，切账号时徽章不刷新——正是本次要修的坑）。
-   * 直接读 @State 字段则能在 currentType 变化时原地更新。
+   * 正文分成当前账号和统一切换列表。内容仍可滚动，长名称、字号放大和更多账号
+   * 不依赖画稿的固定行高；外层 80%／居中 520、600vp 的尺寸策略保持不变。
    */
   @Builder
-  HeroTypeBadge() {
-    Row({ space: 4 }) {
-      if (this.currentType === AccountType.MICROSOFT) {
-        AppIcon({ name: AppIconName.CheckCircle, iconSize: 12, color: this.theme.success })
-        Text('微软正版')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.success)
-      } else if (this.currentType === AccountType.AUTHLIB_INJECTOR) {
-        AppIcon({ name: AppIconName.ResourcePack, iconSize: 12, color: this.theme.primary })
-        Text(this.currentServerName.length > 0 ? this.currentServerName : '第三方皮肤站')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.primary)
-          .maxLines(1)
+  MainScroll() {
+    Scroll() {
+      Column({ space: 24 }) {
+        if (this.currentAcc !== null) {
+          Column({ space: 8 }) {
+            Text('当前使用').fontSize(14).fontColor(this.theme.textSecondary)
+              .width('100%').padding({ left: 4, right: 4 })
+            this.HeroCard();
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }
+        if (this.otherAccs.length > 0) {
+          Column({ space: 8 }) {
+            this.OthersHeader();
+            Column() {
+              ForEach(this.otherAccs, (acc: Account, index: number) => {
+                if (index > 0) {
+                  this.GroupDivider_();
+                }
+                this.AccountRow(acc);
+              }, (acc: Account): string => acc.id)
+            }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+          }.width('100%')
+          Text('点击账号即可切换，外观随账号保留。')
+            .fontSize(14).fontColor(this.theme.textHint).width('100%')
+        }
+      }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 20 })
+    }.layoutWeight(1).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+  }
+
+  /** 组内只有一条分隔线，不为每个账号再嵌套独立卡片。 */
+  @Builder
+  private GroupDivider_() {
+    Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
+  }
+
+  /** 当前身份独占一行，头像和更多操作均不挤占外观说明的文字列。 */
+  @Builder
+  HeroCard() {
+    Column() {
+      this.CurrentIdentity_();
+      this.GroupDivider_();
+      this.AppearanceEntry_();
+    }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+  }
+
+  /**
+   * 身份全部读取独立的 @State 快照，切账号、改名和换肤都会刷新原位。
+   * 更多按钮使用真实 Button，44vp 命中范围同时覆盖触摸、焦点和键盘操作。
+   */
+  @Builder
+  private CurrentIdentity_() {
+    Row({ space: 12 }) {
+      MinecraftHeadAvatar({ uuid: this.currentType === AccountType.MICROSOFT ? this.currentUuid : '',
+        skinUrl: this.currentSkinUrl, diameter: 52, fallbackLetter: this.currentName.charAt(0).toUpperCase(),
+        bgColor: this.theme.bgInput, letterColor: this.theme.textPrimary, cornerRadius: 8 })
+      Column({ space: 4 }) {
+        Text(this.currentName).fontSize(22).fontWeight(FontWeight.Medium)
+          .fontColor(this.theme.textPrimary).width('100%').maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-      } else {
-        AppIcon({ name: AppIconName.Person, iconSize: 12, color: this.theme.textSecondary })
-        Text('离线账户')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.textSecondary)
+        Text(this.currentSource_()).fontSize(14).fontColor(this.theme.textSecondary)
+          .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.currentType !== AccountType.OFFLINE) {
+          Text(this.loginStateText_()).fontSize(14)
+            .fontColor(this.currentLoginState === 'usable' ? this.theme.successText : this.theme.textSecondary)
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (!this.showAccountSettings) {
+      Button({ type: ButtonType.Circle }) {
+        AppIcon({ name: AppIconName.More, iconSize: 20, color: this.theme.textPrimary })
+      }.width(44).height(44).padding(0).backgroundColor(this.theme.bgCard)
+        .accessibilityText('管理当前账号').id('account-current-more')
+        .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+        .onClick((): void => { if (!this.busy_()) this.showAccountSettings = true; })
       }
-    }
-    .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-    .backgroundColor(this.heroBadgeBg())
-    .borderRadius(8)
-    .alignItems(VerticalAlign.Center)
+    }.width('100%').padding(16).alignItems(VerticalAlign.Center)
   }
 
-  private heroBadgeBg(): ResourceColor {
-    if (this.currentType === AccountType.MICROSOFT) return this.theme.successBg;
-    if (this.currentType === AccountType.AUTHLIB_INJECTOR) return this.theme.primaryLight;
-    return this.theme.bgInput;
-  }
-
+  /** 外观入口独立提供完整角色和说明，点击继续使用原来的详情／离线编辑子层。 */
   @Builder
-  TypeBadge(type: AccountType) {
-    Row({ space: 4 }) {
-      if (type === AccountType.MICROSOFT) {
-        AppIcon({ name: AppIconName.CheckCircle, iconSize: 12, color: this.theme.success })
-        Text('微软正版')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.success)
-      } else if (type === AccountType.AUTHLIB_INJECTOR) {
-        AppIcon({ name: AppIconName.ResourcePack, iconSize: 12, color: this.theme.primary })
-        Text('第三方')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.primary)
-      } else {
-        AppIcon({ name: AppIconName.Person, iconSize: 12, color: this.theme.textSecondary })
-        Text('离线账户')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.textSecondary)
-      }
-    }
-    .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-    .backgroundColor(this.typeBadgeBg(type))
-    .borderRadius(8)
-    .alignItems(VerticalAlign.Center)
+  private AppearanceEntry_() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 20 }) {
+        Stack() {
+          SkinCanvas3D({ skinUrl: this.currentSkinUrl, username: this.currentName,
+            isOffline: this.currentType === AccountType.OFFLINE, slim: this.currentSkinVariant === 'SLIM', theme: this.theme })
+        }.width(76).height(112).backgroundColor(this.theme.bgInput).borderRadius(12).clip(true)
+        Column({ space: 6 }) {
+          Text(this.currentType === AccountType.OFFLINE ? '编辑账号与外观' : '皮肤与披风')
+            .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary).width('100%')
+          Text(this.appearanceSummary_()).fontSize(14).fontColor(this.theme.textSecondary)
+            .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.currentType === AccountType.OFFLINE ? '更改名称、皮肤或披风' : '查看外观与披风')
+            .fontSize(14).fontColor(this.theme.actionText).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        AppIcon({ name: AppIconName.ChevronRight, iconSize: 20, color: this.theme.textSecondary })
+      }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
+        .alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 136 }).backgroundColor(this.theme.bgCard)
+      .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+      .id('account-appearance-entry').onClick((): void => { this.openAppearance_(); })
   }
 
-  private typeBadgeBg(type: AccountType): ResourceColor {
-    if (type === AccountType.MICROSOFT) return this.theme.successBg;
-    if (type === AccountType.AUTHLIB_INJECTOR) return this.theme.primaryLight;
-    return this.theme.bgInput;
-  }
-
-  @Builder
-  CapeRow() {
-    // capeUrl / alias / 文本均走 @State，确保切换披风 / 同步成功后这一行立刻反映。
-    Row({ space: 10 }) {
-      CapePreview({
-        capeUrl: this.currentCapeUrl,
-        alias: this.currentCapeAlias,
-        theme: this.theme,
-        containerWidth: 32,
-        containerHeight: 48,
-        showLabel: false,
-      })
-      Column({ space: 2 }) {
-        Text(this.capeTitle())
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.textPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.capeSubtitle())
-          .fontSize(11)
-          .fontWeight(FontWeight.Regular)
-          .fontColor(this.theme.textSecondary)
-          .maxLines(1)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-      AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.textHint })
-    }
-    .width('100%')
-    .padding(10)
-    .backgroundColor(this.theme.bgInput)
-    .borderRadius(12)
-    .alignItems(VerticalAlign.Center)
-    .onClick(() => {
-      this.skinDetailAccount = this.currentAcc;
-      this.showSkinDetail = true;
-    })
-  }
-
-  @Builder
-  AuthProfileSwitchRow() {
-    Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Person, iconSize: 14, color: this.theme.textSecondary })
-      Text(this.switchingProfileId === this.currentId
-        ? '切换角色中...'
-        : '角色：' + this.currentName + ' · 点击切换')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.textSecondary)
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      AppIcon({ name: AppIconName.ChevronDown, iconSize: 14, color: this.theme.textHint })
-    }
-    .width('100%')
-    .padding({ left: 10, right: 10, top: 7, bottom: 7 })
-    .margin({ top: 6 })
-    .backgroundColor(this.theme.bgInput)
-    .borderRadius(10)
-    .alignItems(VerticalAlign.Center)
-    .bindMenu(this.ProfileMenu())
-  }
-
-  @Builder
-  ProfileMenu() {
-    Menu() {
-      ForEach(this.currentAuthProfiles, (p: AccountProfile) => {
-        MenuItem({
-          content: p.name,
-          // 当前角色前打勾（用 startIcon 不方便，用 content 后缀标记）
-        })
-          .selected(p.id === this.currentUuid)
-          .enabled(this.switchingProfileId.length === 0)
-          .onClick(() => {
-            if (p.id !== this.currentUuid) this.switchToProfile(p.id);
-          })
-      }, (p: AccountProfile) => p.id)
-    }
-  }
-
-  @Builder
-  ActionButton(icon: AppIconName, label: string, color: ResourceColor, enabled: boolean, action: () => void) {
-    Row({ space: 6 }) {
-      AppIcon({ name: icon, iconSize: 14, color: color })
-      Text(label)
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(color)
-        .maxLines(1)
-    }
-    .layoutWeight(1)
-    .height(36)
-    .backgroundColor(this.theme.bgInput)
-    .borderRadius(10)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .opacity(enabled ? 1.0 : 0.45)
-    .onClick(() => {
-      if (enabled) action();
-    })
-  }
-
-  // ============================================================
-  //  其他账户列表
-  // ============================================================
-
+  /** 其他账号的来源仅陈述已保存类型，不额外联网验证或伪造“令牌有效”。 */
   @Builder
   OthersHeader() {
-    Row({ space: 8 }) {
-      Text('其他账户')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.textSecondary)
-        .layoutWeight(1)
-      Text(this.otherAccs.length + ' 个')
-        .fontSize(12)
-        .fontWeight(FontWeight.Regular)
-        .fontColor(this.theme.textHint)
-    }
-    .width('100%')
-    .padding({ left: 4, right: 4, top: 6, bottom: 2 })
-    .alignItems(VerticalAlign.Center)
+    Row() {
+      Text('切换账号').fontSize(14).fontColor(this.theme.textSecondary).layoutWeight(1)
+      Text('其他 ' + this.otherAccs.length + ' 个').fontSize(14).fontColor(this.theme.textHint)
+    }.width('100%').padding({ left: 4, right: 4 }).alignItems(VerticalAlign.Center)
   }
 
+  /** 整行切换沿用持久化屏障；长按仅打开明确确认，不会触碰头像或新建登录页。 */
   @Builder
   AccountRow(acc: Account) {
-    Row({ space: 12 }) {
-      // 头像：MinecraftHeadAvatar 内部 fetch + 解码 + fallback 字母都封装好了。
-      // 离线账户 / UUID 不合法 → 传 '' 让 Avatar 走纯字母 fallback。
-      // 注：原版用 `Image(httpsUrl)` 已废弃，OpenHarmony 5 / API 14 静默不发请求 quirk
-      // 见 RemoteImage.ets / RemoteImageCache.ets 顶部的考古注释。
-      MinecraftHeadAvatar({
-        uuid: this.shouldFetchAvatar(acc) ? acc.uuid : '',
-        diameter: 44,
-        fallbackLetter: this.avatarLetter(acc),
-        bgColor: this.theme.bgInput,
-        letterColor: this.theme.textPrimary,
-      })
-
-      // 文字
-      Column({ space: 4 }) {
-        Text(acc.getDisplayName())
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.textPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Row({ space: 6 }) {
-          this.TypeBadge(acc.type);
-          if (acc.type === AccountType.MICROSOFT && (acc.getCapeAlias() ?? '').length > 0) {
-            Text('披风：' + (acc.getCapeAlias() ?? ''))
-              .fontSize(11)
-              .fontColor(this.theme.textHint)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        MinecraftHeadAvatar({ uuid: this.shouldFetchAvatar(acc) ? acc.uuid : '', skinUrl: acc.getSkinUrl() ?? '',
+          diameter: 44, fallbackLetter: this.avatarLetter(acc), bgColor: this.theme.bgInput,
+          letterColor: this.theme.textPrimary, cornerRadius: 8 })
+        Column({ space: 4 }) {
+          Text(acc.getDisplayName()).fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.theme.textPrimary).width('100%').maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.accountSource_(acc)).fontSize(14).fontColor(this.theme.textSecondary)
+            .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        if (this.accountMutationAction === 'select' && this.accountMutationId === acc.id) {
+          LoadingProgress().width(20).height(20).color(this.theme.actionText)
+        } else {
+          AppIcon({ name: AppIconName.ArrowRight, iconSize: 20, color: this.theme.textSecondary })
         }
-        .alignItems(VerticalAlign.Center)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
+      }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 }).alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 76 }).backgroundColor(this.theme.bgCard)
+      .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+      .onClick((): void => { this.selectAccount(acc.id); })
+      .gesture(LongPressGesture({ repeat: false, duration: 600 })
+        .onAction((): void => { this.armDelete(acc.id); }))
+  }
 
-      // 切换按钮
-      Row() {
-        AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 16, color: this.theme.primary })
-      }
-      .width(32)
-      .height(32)
-      .borderRadius(8)
-      .backgroundColor(this.theme.primaryLight)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
-    }
-    .width('100%')
-    .padding(10)
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(this.theme.cardRadius)
-    .alignItems(VerticalAlign.Center)
-    .onClick(() => {
-      this.selectAccount(acc.id);
-    })
-    .gesture(
-      LongPressGesture({ repeat: false, duration: 600 })
-        .onAction(() => {
-          this.armDelete(acc.id);
-        })
-    )
+  /**
+   * 同一半模态内部的管理页：刷新、完整身份及危险操作离开主操作区；第三方角色
+   * 使用明确的当前标记与原 switchProfile 流程，不创建第二套账号或角色持久化。
+   */
+  @Builder
+  private AccountSettings_() {
+    Scroll() {
+      Column({ space: 24 }) {
+        this.CurrentIdentity_();
+        if (this.currentType !== AccountType.OFFLINE && this.currentLoginState === 'unavailable') {
+          Column({ space: 12 }) {
+            Text('需要重新登录').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.theme.warningText)
+            Text('此账号没有可恢复的登录凭据，请通过原登录页面重新添加。')
+              .fontSize(14).fontColor(this.theme.warningText)
+            Button('添加登录账号').width('100%').height(44).fontSize(16)
+              .backgroundColor(this.theme.bgCard).fontColor(this.theme.actionText)
+              .onClick((): void => { this.showAddSheet = true; })
+          }.width('100%').padding(16).backgroundColor(this.theme.warningBg).borderRadius(16)
+        }
+        if (this.currentType === AccountType.AUTHLIB_INJECTOR && this.currentAuthProfiles.length > 1) {
+          Column({ space: 8 }) {
+            Text('选择角色').fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+            Column() {
+              ForEach(this.currentAuthProfiles, (profile: AccountProfile, index: number) => {
+                if (index > 0) {
+                  this.GroupDivider_();
+                }
+                this.AuthProfileRow_(profile);
+              }, (profile: AccountProfile): string => profile.id)
+            }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+          }.width('100%')
+        }
+        Column() {
+          if (this.currentType === AccountType.AUTHLIB_INJECTOR) {
+            this.ManagementAppearanceRow_();
+            this.GroupDivider_();
+          }
+          if (this.currentType !== AccountType.OFFLINE) {
+            this.RefreshManagementRow_();
+            this.GroupDivider_();
+          }
+          this.AccountInformationRow_();
+          this.GroupDivider_();
+          this.RemoveManagementRow_();
+        }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+      }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 20 })
+    }.layoutWeight(1).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+  }
+
+  /** 角色行直接绑定 currentUuid，选中变化不经过基本类型 Builder 值参缓存。 */
+  @Builder
+  private AuthProfileRow_(profile: AccountProfile) {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        AppIcon({ name: AppIconName.Person, iconSize: 24, color: this.theme.textSecondary })
+        Column({ space: 4 }) {
+          Text(profile.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary).width('100%')
+          Text(profile.id === this.currentUuid ? '当前角色' : '来自同一皮肤站账号').fontSize(14)
+            .fontColor(profile.id === this.currentUuid ? this.theme.actionText : this.theme.textSecondary).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        if (this.switchingProfileId === this.currentId) {
+          LoadingProgress().width(20).height(20).color(this.theme.actionText)
+        } else if (profile.id === this.currentUuid) {
+          AppIcon({ name: AppIconName.CheckCircle, iconSize: 20, color: this.theme.actionText })
+        }
+      }.width('100%').padding(16).alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 76 }).backgroundColor(this.theme.bgCard)
+      .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+      .onClick((): void => { if (profile.id !== this.currentUuid) this.switchToProfile(profile.id); })
+  }
+
+  /** 第三方角色的外观入口继续打开既有详情，不提供微软专属的披风同步操作。 */
+  @Builder
+  private ManagementAppearanceRow_() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        AppIcon({ name: AppIconName.ResourcePack, iconSize: 20, color: this.theme.textPrimary })
+        Column({ space: 4 }) {
+          Text('皮肤与披风').fontSize(16).fontColor(this.theme.textPrimary).width('100%')
+          Text('查看此角色的在线外观').fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        AppIcon({ name: AppIconName.ChevronRight, iconSize: 20, color: this.theme.textHint })
+      }.width('100%').padding(16).alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 76 }).backgroundColor(this.theme.bgCard)
+      .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+      .onClick((): void => { this.openAppearance_(); })
+  }
+
+  /** 在线账号才显示刷新，离线账号不再为一个禁用按钮占位。 */
+  @Builder
+  private RefreshManagementRow_() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        AppIcon({ name: AppIconName.Refresh, iconSize: 20, color: this.theme.textPrimary })
+        Text(this.refreshingId === this.currentId ? '正在刷新登录状态…' : '刷新登录状态')
+          .fontSize(16).fontColor(this.theme.textPrimary).layoutWeight(1).textAlign(TextAlign.Start)
+        if (this.refreshingId === this.currentId) {
+          LoadingProgress().width(20).height(20).color(this.theme.actionText)
+        } else {
+          AppIcon({ name: AppIconName.ChevronRight, iconSize: 20, color: this.theme.textHint })
+        }
+      }.width('100%').padding(16).alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 60 }).backgroundColor(this.theme.bgCard)
+      .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+      .onClick((): void => { const acc = this.currentAcc; if (acc !== null && !this.busy_()) this.refreshAccount(acc); })
+  }
+
+  /** UUID 与服务器信息只在有意查看时出现，不再挤占主卡身份列。 */
+  @Builder
+  private AccountInformationRow_() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        AppIcon({ name: AppIconName.Info, iconSize: 20, color: this.theme.textPrimary })
+        Column({ space: 4 }) {
+          Text('账号信息').fontSize(16).fontColor(this.theme.textPrimary).width('100%')
+          Text('UUID、账号类型与服务来源').fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        AppIcon({ name: AppIconName.ChevronRight, iconSize: 20, color: this.theme.textHint })
+      }.width('100%').padding(16).alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 76 }).backgroundColor(this.theme.bgCard)
+      .onClick((): void => { this.showAccountInformation_(); })
+  }
+
+  /** 危险操作在管理组内单独着色；真正删除仍由明确确认和原持久化屏障控制。 */
+  @Builder
+  private RemoveManagementRow_() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        AppIcon({ name: AppIconName.Trash, iconSize: 20, color: this.theme.errorText })
+        Column({ space: 4 }) {
+          Text(this.accountMutationAction === 'remove' ? '正在移除账号…' : '移除此账号')
+            .fontSize(16).fontColor(this.theme.errorText).width('100%')
+          Text('仅移除本机保存的账号信息').fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        AppIcon({ name: AppIconName.ChevronRight, iconSize: 20, color: this.theme.textHint })
+      }.width('100%').padding(16).alignItems(VerticalAlign.Center)
+    }.width('100%').padding(0).constraintSize({ minHeight: 76 }).backgroundColor(this.theme.bgCard)
+      .enabled(this.accountMutationId.length === 0 && this.refreshingId.length === 0 && this.switchingProfileId.length === 0)
+      .onClick((): void => { this.armDelete(this.currentId); })
   }
 
   @Builder
   ErrorToast(msg: string) {
     Row() {
       Row({ space: 8 }) {
-        AppIcon({ name: AppIconName.Error, iconSize: 16, color: this.theme.error })
+        AppIcon({ name: AppIconName.Error, iconSize: 16, color: this.theme.errorText })
         Text(msg)
           .fontSize(12)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
           .layoutWeight(1)
       }
       .padding(12)
@@ -693,9 +568,10 @@ export struct AccountListSheet {
     }
     this.currentAcc = cur;
     this.otherAccs = others;
+    if (cur === null) this.showAccountSettings = false;
 
-    // 同步当前账户的皮肤 / 披风字段到 @State 字符串。这才是 HeroCard 内 SkinCanvas3D
-    // / CapePreview 真正读到的"响应式"输入 —— 详见上方 @State 字段定义处的注释。
+    // 同步独立的皮肤、披风和身份快照，保证主卡预览及外观摘要在切换后原位刷新。
+    // 非响应式账号对象的方法结果不作为 Builder 的唯一刷新依据。
     if (cur !== null) {
       this.currentSkinUrl = cur.getSkinUrl() ?? '';
       this.currentSkinVariant = cur.getSkinVariant() ?? '';
@@ -727,106 +603,175 @@ export struct AccountListSheet {
       this.currentAuthProfiles = [];
     }
 
+    if (cur !== null) this.refreshLoginState_(cur);
+    else { this.loginStateEpoch++; this.currentLoginState = 'offline'; }
+
     hilog.info(0x0000, TAG,
       'refresh: %{public}d accounts, selected=%{public}s, others=%{public}d, capeUrl=%{public}s',
       this.accounts.length, this.selectedId, others.length,
       this.currentCapeUrl.length > 0 ? '<set>' : '<empty>');
   }
 
-  private selectAccount(id: string): void {
-    let am = getAccountManager();
-    am.select(id);
-    this.pendingDeleteId = '';
-    // 走 refresh() 而不是直接赋值 selectedId，是为了顺手刷新 currentAcc / otherAccs
-    // 快照 —— 这样 HeroCard 立即切到新账户，列表的"其他账户"行也自动重排。
-    this.refresh();
-    this.onAccountsChanged();
-    hilog.info(0x0000, TAG, 'select: %{public}s', id);
+  /** 只有账号管理器确认选中态持久成功后，才重排当前主卡并通知首页。 */
+  private async selectAccount(id: string): Promise<void> {
+    await this.commitAccountMutation_(id, false);
   }
 
-  private removeAccount(id: string): void {
-    let am = getAccountManager();
-    am.remove(id);
-    this.pendingDeleteId = '';
-    this.refresh();
-    this.onAccountsChanged();
-    hilog.info(0x0000, TAG, 'remove: %{public}s', id);
-  }
-
-  private armDelete(id: string): void {
-    this.pendingDeleteId = id;
-    setTimeout(() => {
-      if (this.pendingDeleteId === id) {
-        this.pendingDeleteId = '';
-      }
-    }, 3000);
+  /** 删除与新增/外观编辑共用管理器队列，不在等待期间先从UI移走账号。 */
+  private async removeAccount(id: string): Promise<void> {
+    await this.commitAccountMutation_(id, true);
   }
 
   /**
-   * 强制刷新令牌（仅对微软账户）。失败 → 短暂 toast，3s 自动消失。
-   * 成功 → 重新拉账户列表（refresh() 会同步皮肤/披风快照）。
+   * 选择和删除的共同确认屏障。生命周期世代只限制本页状态写入；保存已经成功后，
+   * 即使用户通过系统手势收起本页，也要通知仍存活的父owner更新首页账号快照。
+   */
+  private async commitAccountMutation_(id: string, remove: boolean): Promise<void> {
+    if (this.busy_()) return;
+    const epoch = ++this.accountMutationEpoch;
+    const notify = this.onAccountsChanged;
+    this.accountMutationId = id; this.accountMutationAction = remove ? 'remove' : 'select';
+    this.refreshErrorMsg = '';
+    let committed = false;
+    try {
+      const am = getAccountManager();
+      if (remove) await am.remove(id);
+      else await am.select(id);
+      committed = true;
+      if (remove) {
+        // 新主线的活动摘要必须跟随真实持久确认，记录失败不能推翻已经成功的账号删除。
+        try { getTaskActivityOwner().recordSummary('account', '删除账户', 'success', '已移除所选账户'); }
+        catch (error) { hilog.warn(0x0000, TAG, '账户已移除，活动摘要记录失败'); }
+      }
+      if (this.alive && epoch === this.accountMutationEpoch) {
+        this.pendingDeleteId = '';
+        this.refresh();
+      }
+      hilog.info(0x0000, TAG, 'account mutation committed: %{public}s %{public}s', remove ? 'remove' : 'select', id);
+    } catch (error) {
+      if (this.alive && epoch === this.accountMutationEpoch) {
+        this.refreshErrorMsg = (remove ? '移除失败：' : '切换失败：') + (error as Error).message;
+      }
+      hilog.warn(0x0000, TAG, 'account mutation failed: %{public}s', (error as Error).message);
+    } finally {
+      if (this.alive && epoch === this.accountMutationEpoch) {
+        this.accountMutationId = ''; this.accountMutationAction = '';
+      }
+    }
+    // 父层刷新异常不能把已经确认的账号提交再解释成存储失败。
+    if (committed) {
+      try { notify(); }
+      catch (error) { hilog.warn(0x0000, TAG, 'account owner notification failed: %{public}s', (error as Error).message); }
+    }
+  }
+
+  /**
+   * 删除确认冻结目标 id 与本页世代，第二次明确点击才进入原删除提交队列。
+   * 弹窗展示期间如果发生切换或页面退役，旧确认回调被拒绝；取消不改变账号。
+   */
+  private armDelete(id: string): void {
+    if (!this.alive || this.busy_()) return;
+    const acc = getAccountManager().findById(id);
+    if (acc === undefined) return;
+    const epoch = this.accountMutationEpoch;
+    const confirmation = ++this.deleteConfirmationEpoch;
+    this.pendingDeleteId = id;
+    this.getUIContext().showAlertDialog({ title: '移除 ' + acc.getDisplayName() + '？',
+      message: '仅移除此设备保存的账号。游戏文件与共享皮肤、披风素材库会继续保留。',
+      primaryButton: { value: '取消', action: (): void => { if (confirmation === this.deleteConfirmationEpoch && this.pendingDeleteId === id) this.pendingDeleteId = ''; } },
+      secondaryButton: { value: '移除账号', fontColor: this.theme.errorText, action: (): void => {
+        if (this.alive && epoch === this.accountMutationEpoch && confirmation === this.deleteConfirmationEpoch && this.pendingDeleteId === id && !this.busy_()) {
+          this.showAccountSettings = false;
+          this.removeAccount(id);
+        }
+      } } });
+  }
+
+  /**
+   * 刷新账号的原登录凭据并确认持久化，再刷新当前页面和首页。
+   * 与选择、删除及角色切换共享 busy 屏障，不能只检查自己的 refreshingId；已经
+   * 排队的旧角色点击在刷新开始后也必须被拒绝。局部状态和错误计时器绑定本次
+   * 页／操作世代与目标账号，页面退休后只保留已确认提交的父层通知。
    */
   private async refreshAccount(acc: Account): Promise<void> {
+    if (!this.alive || this.busy_()) return;
     if (acc.type !== AccountType.MICROSOFT && acc.type !== AccountType.AUTHLIB_INJECTOR) return;
-    if (this.refreshingId.length > 0) return;
-    this.refreshingId = acc.id;
+    const epoch = ++this.accountMutationEpoch;
+    const id = acc.id;
+    const notify = this.onAccountsChanged;
+    let committed = false;
+    this.refreshingId = id;
     this.refreshErrorMsg = '';
     try {
-      // MicrosoftAccount.refresh() 会绕过 isMcTokenFresh 短路（这里强制刷只对未过期的也重跑）
-      // 临时方案：调一次 refresh()，若 token 还在有效期会立即返回，不报错（用户友好但
-      // 不是"强制刷"）；要真正强制可以在 MicrosoftAccount 加 forceRefresh 参数（M3 计划）
+      // 保持原账号实现的刷新语义；凭据轮换后的持久化失败必须按失败呈现，不能
+      // 吞掉异常后再通知首页“成功”。UI 不自行读取或记录访问令牌。
       await acc.refresh();
-      // 刷新可能轮换 token（Microsoft）/ accessToken+clientToken（第三方），写回存储
-      try {
-        await getAccountManager().persistOne(acc);
-      } catch (e) {
-        hilog.warn(0x0000, TAG, 'persistOne after refresh failed: %{public}s', (e as Error).message);
+      await getAccountManager().persistOne(acc);
+      committed = true;
+      if (this.currentOperation_(epoch, id)) this.refresh();
+      hilog.info(0x0000, TAG, 'refresh committed for id=%{public}s', id);
+    } catch (error) {
+      const message = '刷新失败：' + (error as Error).message;
+      if (this.currentOperation_(epoch, id)) {
+        this.refreshErrorMsg = message;
+        setTimeout((): void => {
+          if (this.currentOperation_(epoch, id) && this.refreshErrorMsg === message) this.refreshErrorMsg = '';
+        }, 3000);
       }
-      // 重新拉列表 → SkinPreview / CapePreview 用最新 url 重新 attach Image
-      this.refresh();
-      this.onAccountsChanged();
-      hilog.info(0x0000, TAG, 'refresh succeeded for id=%{public}s', acc.id);
-    } catch (e) {
-      let msg = (e as Error).message;
-      this.refreshErrorMsg = '刷新失败：' + msg;
-      hilog.error(0x0000, TAG, 'refresh failed for id=%{public}s: %{public}s', acc.id, msg);
-      setTimeout(() => {
-        if (this.refreshErrorMsg === '刷新失败：' + msg) {
-          this.refreshErrorMsg = '';
-        }
-      }, 3000);
+      hilog.error(0x0000, TAG, 'refresh failed for id=%{public}s: %{public}s', id, (error as Error).message);
     } finally {
-      this.refreshingId = '';
+      // refresh() 可能读到另一个已确认选中账号，此时仍须释放本操作自己的忙态。
+      // 世代与目标标记都相同才清除，不能影响新页面或新一轮刷新。
+      if (this.alive && epoch === this.accountMutationEpoch && this.refreshingId === id) this.refreshingId = '';
     }
+    if (committed) this.notifyConfirmedChange_(notify);
   }
 
   /**
-   * 切换第三方皮肤站账户的当前角色（决策 #3）。
-   * 走 AuthlibInjectorAccount.switchProfile（账密重登 + 绑定目标角色）→ 持久化 → 刷新 UI。
+   * 第三方角色切换保持原服务调用和持久化顺序。与所有账号写操作互斥；await及
+   * 错误计时器只能更新发起页与目标账号，成功保存即使遇到关闭也仍通知父owner。
    */
   private async switchToProfile(profileId: string): Promise<void> {
-    if (this.switchingProfileId.length > 0) return;
-    let acc = this.currentAcc;
+    if (!this.alive || this.busy_()) return;
+    const acc = this.currentAcc;
     if (acc === null || acc.type !== AccountType.AUTHLIB_INJECTOR) return;
-    this.switchingProfileId = acc.id;
+    const epoch = ++this.accountMutationEpoch;
+    const id = acc.id;
+    const notify = this.onAccountsChanged;
+    let committed = false;
+    this.switchingProfileId = id;
     this.refreshErrorMsg = '';
     try {
-      let authAcc = acc as AuthlibInjectorAccount;
+      const authAcc = acc as AuthlibInjectorAccount;
       await authAcc.switchProfile(profileId);
       await getAccountManager().persistOne(authAcc);
-      this.refresh();
-      this.onAccountsChanged();
-      hilog.info(0x0000, TAG, 'switchProfile ok for id=%{public}s', acc.id);
-    } catch (e) {
-      let msg = (e as Error).message;
-      this.refreshErrorMsg = '切换角色失败：' + msg;
-      hilog.error(0x0000, TAG, 'switchProfile failed: %{public}s', msg);
-      setTimeout(() => {
-        if (this.refreshErrorMsg === '切换角色失败：' + msg) this.refreshErrorMsg = '';
-      }, 3000);
+      committed = true;
+      if (this.currentOperation_(epoch, id)) this.refresh();
+      hilog.info(0x0000, TAG, 'switchProfile committed for id=%{public}s', id);
+    } catch (error) {
+      const message = '切换角色失败：' + (error as Error).message;
+      if (this.currentOperation_(epoch, id)) {
+        this.refreshErrorMsg = message;
+        setTimeout((): void => {
+          if (this.currentOperation_(epoch, id) && this.refreshErrorMsg === message) this.refreshErrorMsg = '';
+        }, 3000);
+      }
+      hilog.error(0x0000, TAG, 'switchProfile failed for id=%{public}s: %{public}s', id, (error as Error).message);
     } finally {
-      this.switchingProfileId = '';
+      if (this.alive && epoch === this.accountMutationEpoch && this.switchingProfileId === id) this.switchingProfileId = '';
     }
+    if (committed) this.notifyConfirmedChange_(notify);
+  }
+
+  /** 界面状态发布资格同时绑定页面世代及操作对象，不能只凭账号ID判断仍属于当前页。 */
+  private currentOperation_(epoch: number, id: string): boolean {
+    return this.alive && epoch === this.accountMutationEpoch && id === this.currentId;
+  }
+
+  /** 持久化已确认后独立通知原父owner；通知异常不反转存储成功，也不向退役页面写状态。 */
+  private notifyConfirmedChange_(notify: () => void): void {
+    try { notify(); }
+    catch (error) { hilog.warn(0x0000, TAG, 'account owner notification failed: %{public}s', (error as Error).message); }
   }
 
   // ============================================================
@@ -839,23 +784,79 @@ export struct AccountListSheet {
     return n.charAt(0).toUpperCase();
   }
 
-  private capeTitle(): string {
-    if (this.currentCapeAlias.length > 0) return '披风 · ' + this.currentCapeAlias;
-    if (this.currentCapeUrl.length > 0) return '披风 · 已佩戴';
-    return '无披风';
+  /** 同一入口内的任何持久化、登录刷新或角色切换都禁止重复提交。 */
+  private busy_(): boolean {
+    return this.accountMutationId.length > 0 || this.refreshingId.length > 0 || this.switchingProfileId.length > 0;
   }
 
-  private capeSubtitle(): string {
-    if (this.currentCapeUrl.length > 0) return '点击查看大图与切换';
-    return '当前账户没有可用披风';
+  /** 当前来源读取 @State，其他行读取其不可变账号快照；均不包含秘密凭据。 */
+  private currentSource_(): string {
+    if (this.currentType === AccountType.MICROSOFT) return '微软正版';
+    if (this.currentType === AccountType.AUTHLIB_INJECTOR) return '第三方账号 · ' + (this.currentServerName || '皮肤站');
+    return '离线账号 · 本地游戏';
+  }
+
+  private accountSource_(acc: Account): string {
+    if (acc.type === AccountType.MICROSOFT) return '微软正版';
+    if (acc.type === AccountType.AUTHLIB_INJECTOR) return '第三方账号 · ' + (acc as AuthlibInjectorAccount).getServerName();
+    return '离线账号 · ' + ((acc.getSkinUrl() ?? '').length > 0 ? '本地皮肤' : '游戏默认皮肤');
+  }
+
+  /** 无网络检查的本地凭据状态，明确区分“可恢复”和“已验证有效”。 */
+  private loginStateText_(): string {
+    if (this.currentLoginState === 'usable') return '可自动登录';
+    if (this.currentLoginState === 'unavailable') return '需重新登录';
+    return '登录状态待确认';
+  }
+
+  private appearanceSummary_(): string {
+    const skin = this.currentSkinUrl.length > 0
+      ? (this.currentType === AccountType.OFFLINE ? '本地皮肤' : '在线皮肤') : '游戏默认皮肤';
+    const cape = this.currentCapeUrl.length > 0 ? (this.currentCapeAlias || '已佩戴披风') : '未佩戴披风';
+    return skin + ' · ' + cape;
+  }
+
+  /** 详情只接收当前确认账号；关闭后的迟到事件不会重新打开子层。 */
+  private openAppearance_(): void {
+    if (!this.alive || this.busy_() || this.currentAcc === null) return;
+    this.skinDetailAccount = this.currentAcc;
+    this.showSkinDetail = true;
+  }
+
+  /** 查看稳定账号身份，不序列化 encrypted 字段或任何 token。 */
+  private showAccountInformation_(): void {
+    const acc = this.currentAcc;
+    if (!this.alive || acc === null) return;
+    const lines: string[] = ['玩家：' + this.currentName, '类型：' + this.currentSource_(), 'UUID：' + this.currentUuid];
+    if (acc.type === AccountType.AUTHLIB_INJECTOR) lines.push('服务：' + (acc as AuthlibInjectorAccount).getApiRoot());
+    this.getUIContext().showAlertDialog({ title: '账号信息', message: lines.join('\n'),
+      confirm: { value: '知道了', action: (): void => {} } });
   }
 
   /**
-   * 是否应该让 MinecraftHeadAvatar 去拉 Crafatar。
+   * isUsable 只读本地可恢复凭据，不发送验证请求。结果只属于本次账号快照和生命周期
+   * 世代；切账号、更新外观或关闭之后，迟到结果不能覆盖另一个账号的状态。
+   */
+  private async refreshLoginState_(acc: Account): Promise<void> {
+    const epoch = ++this.loginStateEpoch;
+    this.currentLoginState = acc.type === AccountType.OFFLINE ? 'offline' : 'checking';
+    if (acc.type === AccountType.OFFLINE) return;
+    try {
+      const usable = await acc.isUsable();
+      if (this.alive && epoch === this.loginStateEpoch && acc.id === this.currentId) {
+        this.currentLoginState = usable ? 'usable' : 'unavailable';
+      }
+    } catch (_) {
+      if (this.alive && epoch === this.loginStateEpoch && acc.id === this.currentId) this.currentLoginState = 'checking';
+    }
+  }
+
+  /**
+   * 是否允许头像组件使用公开 UUID 作为纹理解码失败时的远程头像后备。
    *
-   * 离线账户 → 传 '' 走字母 fallback。
+   * 离线账号优先使用其本地 skinUrl，失败后仅显示字母，不把离线 UUID 发到远端。
    * 微软账户的 uuid 可能是 32 位无连字符或 36 位 dash 格式（早期版本 vs
-   * formatCanonicalUuid 之后存的）。Crafatar 两种都接受。
+   * formatCanonicalUuid 之后存的）。既有头像服务接受这两种形式。
    */
   private shouldFetchAvatar(acc: Account): boolean {
     if (acc.type !== AccountType.MICROSOFT) return false;
@@ -866,7 +867,9 @@ export struct AccountListSheet {
   @Builder
   private ImmersiveTitleContent1_() {
       // ===== 主体 =====
-      if (this.accounts.length === 0) {
+      if (this.showAccountSettings && this.currentAcc !== null) {
+        this.AccountSettings_();
+      } else if (this.accounts.length === 0) {
         this.EmptyView();
       } else {
         this.MainScroll();

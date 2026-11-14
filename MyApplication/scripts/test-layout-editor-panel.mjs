@@ -40,14 +40,18 @@ function method(name) {
 const names = ['syncPositionDraft_', 'applyPositionDraft_', 'alignSelectedToScreen_', 'chooseTrigger_', 'requestCancel_',
   'chooseScene_', 'chooseVisibility_', 'chooseSwipeGroup_', 'addButton', 'addHotbar', 'setMultiSelect',
   'openAddPanel_', 'returnFromAddPanel_', 'addControlOptions_', 'addJoystick_', 'selectForEditor_', 'addControlFromPanel_',
-  'openTab', 'compactPanel', 'panelChromeH', 'panelMinContentH', 'panelMaxTop', 'panelTopBase'];
-const compiled = compiler.transpileModule('class Subject {\n' + names.map(method).join('\n') + '\n}\nmodule.exports=Subject;', {
+  'openTab', 'compactPanel', 'panelChromeH', 'panelMinContentH', 'panelMaxTop', 'panelTopBase','panelWidth',
+  'captureEditorRoute_','backEditor_','switchMainPanel_','secondaryEditingDefinition_','syncSecondarySelection_',
+  'freshControlRoute_','placeFreshControl_','editorGroupVisible_','finishInlineKeyPicker_','selectControlIdentity_','repairEditorGroups_'];
+const tree=compiler.createSourceFile('LayoutEditor.ets',source,compiler.ScriptTarget.Latest,true);
+const route=tree.statements.find(n=>n.name?.getText(tree)==='CompactEditorRoute').getText(tree);
+const compiled = compiler.transpileModule(route+'\nclass Subject {\n' + names.map(method).join('\n') + '\n}\nmodule.exports=Subject;', {
   compilerOptions: { target: compiler.ScriptTarget.ES2020, module: compiler.ModuleKind.CommonJS }, reportDiagnostics: true,
 });
 assert.equal((compiled.diagnostics ?? []).filter(x => x.category === compiler.DiagnosticCategory.Error).length, 0);
 const module = { exports: {} };
 // 图标枚举只是UI外部边界；按键码、ID、新控件结构和物品栏仍使用真实生产模型。
-const bindings = { ...model, ...keys, cloneControlItem:model.cloneItem, AppIconName: { Keyboard: 1, Hotbar: 2, GameController: 3 } };
+const bindings = { ...model, ...keys, ...pure('gamecontrol/src/main/ets/ControlEditing.ets'), cloneControlItem:model.cloneItem, AppIconName: { Keyboard: 1, Hotbar: 2, GameController: 3 } };
 new Function('module', ...Object.keys(bindings), compiled.outputText)(module, ...Object.values(bindings));
 
 /** 几何端口使用本轮给定画布和布局比例；undo及存储边界被计数以发现误提交。 */
@@ -55,7 +59,8 @@ function fixture(type = ControlType.BUTTON) {
   const item = { type, baseWidth: 80, baseHeight: 80, itemScale: 0.8, xPct: 0.1, yPct: 0.2, trigger: 'press', swipeGroup: '2' };
   const view = new module.exports();
   Object.assign(view, { screenWidth: 1000, screenHeight: 600, globalScale: 1.25,
-    undoCalls: 0, refreshCalls: 0, cancelCalls: 0, statusMsg: '', editorReady: true, persistenceBusy: false,
+    editorRoutes:[],secondaryEditingGroup:'',currentControlGroup:'',selectedIds:[],inlinePickerGeneration:0,
+    selectedChildId:'',positionDraftDirty:false,undoCalls: 0, refreshCalls: 0, cancelCalls: 0, statusMsg: '', editorReady: true, persistenceBusy: false,
     baselineSig: 'original', sessionCatalogChanged: false, contentSignature: () => 'changed',
     positionXDraft: '120', positionYDraft: '160', positionWidthDraft: '120', positionHeightDraft: '64',
     selectedItem: () => item, selectedIsSystemMouse: () => item.systemAction === 'mouse',
@@ -64,6 +69,7 @@ function fixture(type = ControlType.BUTTON) {
     itemW: x => x.baseWidth * x.itemScale * view.globalScale,
     itemH: x => x.baseHeight * x.itemScale * view.globalScale,
     itemPxX: x => x.xPct * view.screenWidth, itemPxY: x => x.yPct * view.screenHeight,
+    itemCenterX:x=>(x.xPct*view.screenWidth+x.baseWidth*x.itemScale*view.globalScale/2),
   });
   return { view, item };
 }
@@ -75,17 +81,17 @@ function fixture(type = ControlType.BUTTON) {
   assert.equal(view.undoCalls, 1); assert.equal(view.refreshCalls, 1);
   check('精确位置沿原百分比字段提交，尺寸正确抵消全局与单项比例，只有一个撤销点');
 }
-for (const invalid of ['', 'NaN', '-1', '15']) {
+for (const invalid of ['', 'NaN', '-1', '4097']) {
   const { view, item } = fixture(); const before = structuredClone(item);
   view.positionWidthDraft = invalid; view.applyPositionDraft_();
   assert.deepEqual(item, before); assert.equal(view.undoCalls, 0); assert.ok(view.statusMsg);
   check('无效尺寸拒绝且不制造撤销：' + JSON.stringify(invalid));
 }
 {
-  const { view } = fixture(); view.positionWidthDraft = '15'; view.applyPositionDraft_();
+  const { view } = fixture(); view.positionWidthDraft = '4097'; view.applyPositionDraft_();
   const error = view.statusMsg; assert.ok(error);
   view.positionWidthDraft = '120'; view.applyPositionDraft_();
-  assert.equal(view.statusMsg, '位置与尺寸已应用'); assert.notEqual(view.statusMsg, error); assert.equal(view.undoCalls, 1);
+  assert.equal(view.statusMsg, '位置与尺寸已应用到草稿'); assert.notEqual(view.statusMsg, error); assert.equal(view.undoCalls, 1);
   view.positionHeightDraft = 'NaN'; view.applyPositionDraft_(); const secondError = view.statusMsg;
   view.alignSelectedToScreen_('11');
   assert.equal(view.statusMsg, '已按当前屏幕完成定位'); assert.notEqual(view.statusMsg, secondError);
@@ -98,8 +104,10 @@ for (const invalid of ['', 'NaN', '-1', '15']) {
 }
 {
   const { view, item } = fixture(ControlType.HOTBAR_SELECTOR); view.positionXDraft = '9999'; view.positionYDraft = '-99'; view.applyPositionDraft_();
-  assert.equal(item.xPct, (1000 - 120) / 1000); assert.equal(item.yPct, 0); assert.equal(item.hotbarUserPlaced, true);
-  check('物品栏精确移动夹取边界并保留手工定位身份');
+  assert.equal(item.xPct,0.1);assert.equal(item.yPct,0.2);assert.equal(view.undoCalls,0);
+  view.positionXDraft='880';view.positionYDraft='0';view.applyPositionDraft_();
+  assert.equal(item.xPct,.88);assert.equal(item.yPct,0);assert.equal(item.hotbarUserPlaced,true);
+  check('精确编辑拒绝越界值，修正后沿原字段提交并保留手工定位身份');
 }
 {
   const { view, item } = fixture(); view.alignSelectedToScreen_('22');
@@ -150,6 +158,8 @@ function addFixture() {
   Object.assign(view, { controls: [], selectedIdx: -1, selectedIds: [], multiSelectMode: false, groupDragging: false,
     ver: 0, showPanel: false, activeSheet: 'edit', addControlSearch: '', panelY: 12, panelDragDy: 0,
     showKeyPicker: false, appearanceSyncs: 0, autoAlignCalls: 0, selectedScaleVal: 100,
+    previewControlGroups:[],groupActionPhase:'press',panelX:300,panelDragDx:0,
+    selectedItem(){return view.controls[view.selectedIdx]??null;},selectGroupPhase_(){},
     syncSelectedAppearanceVals() { view.appearanceSyncs++; },
     autoAlignHotbar() { view.autoAlignCalls++; },
   });
@@ -163,16 +173,19 @@ function addFixture() {
 }
 {
   const view = addFixture();
-  assert.deepEqual(view.addControlOptions_().map(option=>option.id),['button','joystick','hotbar','space','shift','e','esc']);
+  assert.deepEqual(view.addControlOptions_().map(option=>option.id),['button','joystick','hotbar','space','shift','e','esc','f3','f4','f5','tab']);
   check('简化添加目录直接列出基础能力，无额外搜索状态');
 }
 {
   const view = addFixture(); view.openAddPanel_(); view.addControlFromPanel_('button');
+  assert.equal(view.controls.length,0);assert.equal(view.undoCalls,0);assert.equal(view.showKeyPicker,true);
+  view.finishInlineKeyPicker_(null);assert.equal(view.controls.length,0);assert.equal(view.undoCalls,0);
+  view.addControlFromPanel_('button');view.finishInlineKeyPicker_([keys.GLFW_KEY_F3]);
   assert.equal(view.controls.length, 1); assert.equal(view.controls[0].type, ControlType.BUTTON);
-  assert.deepEqual(view.controls[0].keys, [keys.GLFW_KEY_G]); assert.equal(view.showKeyPicker, true);
-  assert.equal(view.selectedIdx, 0); assert.equal(view.undoCalls, 1); assert.equal(view.activeSheet, 'add');
+  assert.deepEqual(view.controls[0].keys, [keys.GLFW_KEY_F3]); assert.equal(view.showKeyPicker, false);
+  assert.equal(view.selectedIdx, 0); assert.equal(view.undoCalls, 1); assert.equal(view.activeSheet, 'edit');
   assert.equal(view.controls[0].hidden, false); assert.deepEqual(view.controls[0].hideOnInput, []);
-  check('普通添加沿原G占位/新ID/一次撤销/选中并打开键位选择器');
+  check('普通添加确认前没有占位；取消零变化，确认后新ID/绑定/初始摆位共同一次撤销');
 }
 for (const [id, code] of [['space', keys.GLFW_KEY_SPACE], ['shift', keys.GLFW_KEY_LEFT_SHIFT], ['e', keys.GLFW_KEY_E], ['esc', keys.GLFW_KEY_ESCAPE]]) {
   const view = addFixture(); view.multiSelectMode = true; view.selectedIds = ['old']; view.addControlFromPanel_(id);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 namespace download {
 
@@ -78,6 +79,13 @@ void NetSource::recordSample(int rtt_ms, double throughput_bps) {
     tput_samples_[sample_next_] = throughput_bps;
     sample_next_ = (sample_next_ + 1) % kSampleWindowSize;
     if (sample_count_ < kSampleWindowSize) sample_count_++;
+}
+
+void NetSource::recordCompletedTransferSample(int64_t new_bytes, int64_t elapsed_ms) {
+    // 微小尾部续传不能制造虚假的高速完成证明；本机极短跨度按20ms保守计，且防乘法溢出。
+    if (new_bytes < 256 * 1024 || elapsed_ms < 0 || new_bytes > std::numeric_limits<int64_t>::max() / 1000) return;
+    const int64_t goodput = new_bytes * 1000 / std::max<int64_t>(20, elapsed_ms);
+    completed_goodput_bps_.store(goodput, std::memory_order_release);
 }
 
 int NetSource::avgRttMs() const {

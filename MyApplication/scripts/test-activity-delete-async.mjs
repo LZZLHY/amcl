@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+const { LayerRetreatPolicy } = makePureEtsLoader()('entry/src/main/ets/components/LayerRetreatPolicy.ets');
 /** 返回由用例显式兑现/拒绝的owner完成边界；只控制等待时序，不实现任何目录删除。 */
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 /** 让已经派发的Promise回调进入下一轮事件循环，不把宿主等待时长当成设备性能。 */
@@ -40,6 +42,8 @@ function clearFixture() {
   });
   Object.assign(subject, { loaded: true, clearing: false, confirmingClear_: false, selectionBusy: false, refreshing: false,
     hostVisible: true, records: [{ startedAt: 1 }], ledgerBytes: 100, clearGeneration_: 0, refreshGeneration_: 0, refreshAgain_: false,
+    // 真实onPageHide同时退休手势策略；只补生产纯策略和普通世代，不替换隐藏/删除事务。
+    retreatPolicy_: new LayerRetreatPolicy(), retreatAnimationEpoch_: 0,
     context: { filesDir: '/sandbox' }, theme: { primary: '#fff', error: '#f00' }, clearError: '',
     safeToast_: message => events.push(message), refreshRecords: async () => { events.push('refresh'); },
     getUIContext: () => ({ getPromptAction: () => ({ showDialog: async () => { dialogs++; return { index: choice }; } }) }),

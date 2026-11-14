@@ -7,7 +7,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { LengthMetrics } from '@kit.ArkUI';
 import {
   HdsNavigation, HdsNavigationTitleMode, HdsNavigationTitleBarOptions,
-  HdsNavigationMenuItemOptions, IconStyleMode, TextStyleMode, hdsMaterial,
+  HdsNavigationMenuItemOptions, IconStyleMode, TextStyleMode, TitleSize, hdsMaterial,
 } from '@kit.UIDesignKit';
 import { DockLightMode, ThemeColors, AppIconName, lookupIcon } from 'commons';
 import { AppRoundIconButton } from './AppRoundIconButton';
@@ -17,7 +17,15 @@ import { effectiveTitleLightMode, initializeImmersiveLightRuntime } from './Imme
 @Component
 export struct ImmersiveTitleScaffold {
   @Prop title: string = '';
-  @Prop subtitle: string = '';
+  /** 设置域可选择原生 MINI 的中大标题；默认关闭，其他页面的标题尺寸保持原契约。 */
+  @Prop emphasizedTitle: boolean = false;
+  /**
+   * 当前版本、账户等操作对象只通过标题同行的紧凑入口出现，不为说明文字另占一行。
+   * 调用方传完整身份；可视标签按字符缩短，点击时仍能查看完整值，不改变业务选择。
+   */
+  @Prop contextLabel: string = '';
+  /** 完整对象信息弹窗的标题，例如“当前版本”“当前账户”。 */
+  @Prop contextTitle: string = '当前对象';
   @Prop titleId: string = '';
   /** 无返回的品牌标题保留真实图片节点，宽度用于预留同行标题起点。 */
   @Prop brandWidth: number = 0;
@@ -81,9 +89,59 @@ export struct ImmersiveTitleScaffold {
     return (): void => { this.requestMenu_(identity); };
   }
 
+  /**
+   * 按字符预算中间省略，保留名称首尾且不切断Unicode代理项。中文/表情按双份预算处理，
+   * 返回、关闭或其他动作较多时继续收紧；预算是保守文案限制，真实像素仍由系统布局决定。
+   * 网页来源的协议已在完整信息中保留，同行标签优先显示可辨认的主机名。
+   */
+  private contextShortLabel_(): string {
+    const label: string = this.contextLabel.startsWith('https://') ? this.contextLabel.slice(8) : this.contextLabel;
+    const characters: string[] = Array.from(label);
+    const budget: number = (this.hasBack_() && this.hasClose_()) || this.menuActions.length > 0 ? 8 : 12;
+    let total: number = 0;
+    for (const character of characters) total += character.charCodeAt(0) <= 255 ? 1 : 2;
+    if (total <= budget) return label;
+    const prefixBudget: number = budget === 8 ? 4 : 7;
+    let prefix: string = '', suffix: string = '', prefixUnits: number = 0, suffixUnits: number = 0;
+    for (const character of characters) {
+      const units: number = character.charCodeAt(0) <= 255 ? 1 : 2;
+      if (prefixUnits + units > prefixBudget) break;
+      prefix += character; prefixUnits += units;
+    }
+    for (let index: number = characters.length - 1; index >= 0; index--) {
+      const character: string = characters[index];
+      const units: number = character.charCodeAt(0) <= 255 ? 1 : 2;
+      if (suffixUnits + units > budget - prefixBudget - 1) break;
+      suffix = character + suffix; suffixUnits += units;
+    }
+    return prefix + '…' + suffix;
+  }
+
+  /**
+   * 查看身份是只读操作。事件捕获生成时的身份，退休或切换对象后拒绝迟到点击，
+   * 防止旧页面的标签打开另一个实例的信息；原生弹窗取消不应转成业务错误。
+   */
+  private requestContext_(identity: string): void {
+    if (!this.alive_ || identity.length === 0 || identity !== this.contextLabel) return;
+    try {
+      this.getUIContext().showAlertDialog({ title: this.contextTitle, message: identity,
+        confirm: { value: '知道了', fontColor: this.theme.actionText, action: (): void => {} } });
+    } catch (_) { /* 宿主失效时不改变业务对象；查看信息没有需要回滚的写入。 */ }
+  }
+
+  /** 返回固定身份的闭包，新旧系统共用，不能在点击时把旧标签重定向到新对象。 */
+  private contextRequest_(): () => void {
+    const identity: string = this.contextLabel;
+    return (): void => { this.requestContext_(identity); };
+  }
+
   /** 文字操作保留胶囊，图标操作使用原生圆形项，角标交给同一个原生项。 */
   private menuItems_(): HdsNavigationMenuItemOptions[] {
     const items: HdsNavigationMenuItemOptions[] = [];
+    if (this.contextLabel.length > 0) {
+      items.push({ content: { label: this.contextShortLabel_(), componentId: 'app-title-context',
+        type: TextStyleMode.NORMAL, action: this.contextRequest_() } });
+    }
     if (this.showExternal) {
       items.push({ content: { icon: lookupIcon(AppIconName.ArrowUpRight).resource, label: '在浏览器中打开',
         componentId: 'app-title-external', isEnabled: this.externalEnabled, type: IconStyleMode.SMALL,
@@ -112,7 +170,8 @@ export struct ImmersiveTitleScaffold {
     return items;
   }
 
-  private accessoryHeight_(): number { return this.accessoryHeight + (this.subtitle.length > 0 ? 24 : 0); }
+  /** 附加区只为真实搜索、筛选、页签等控件分配高度；没有控件时不保留空白行。 */
+  private accessoryHeight_(): number { return Math.max(0, this.accessoryHeight); }
 
   /**
    * MINI标题的装饰品牌使用公开stackBuilder，真实Image仍可测量并独立透明交接。
@@ -124,14 +183,10 @@ export struct ImmersiveTitleScaffold {
       .padding({ left: 16 }).alignItems(VerticalAlign.Center).hitTestBehavior(HitTestMode.None)
   }
 
-  /** 副文／固定搜索有独立高度；其中的普通按钮不声称继承原生标题材质。 */
+  /** 固定搜索等功能附件由调用方持有；普通按钮不声称继承原生标题材质。 */
   @Builder
   private accessory_() {
     Column({ space: 0 }) {
-      if (this.subtitle.length > 0) {
-        Text(this.subtitle).fontSize(12).fontColor(this.theme.textSecondary)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%').height(24)
-      }
       this.headerAccessory()
     }.width('100%').padding({ left: 16, right: 16 })
   }
@@ -155,6 +210,10 @@ export struct ImmersiveTitleScaffold {
       options.content.bottomBuilder = { builder: (): void => { this.accessory_(); }, height: this.accessoryHeight_() };
     }
     if (deviceInfo.apiAvailable('6.1.0')) {
+      // mainTitleSize 是 API23 的离散字号规格，只在已有版本保护内触达；不虚构自由数值字号。
+      if (this.emphasizedTitle && !this.modal && options.content?.title !== undefined) {
+        options.content.title.mainTitleSize = TitleSize.TITLE_ML;
+      }
       const mode: DockLightMode = effectiveTitleLightMode(this.rawConfig);
       const off: boolean = mode === DockLightMode.OFF;
       let level: hdsMaterial.MaterialLevel = hdsMaterial.MaterialLevel.ADAPTIVE;
@@ -182,14 +241,22 @@ export struct ImmersiveTitleScaffold {
   @Builder
   private ordinaryTitle_() {
     Column() {
-      Row({ space: 12 }) {
+      Row({ space: 8 }) {
         if (this.hasBack_()) {
           AppRoundIconButton({ name: AppIconName.Back, theme: this.theme, accessibilityLabel: this.backLabel,
             actionEnabled: this.backEnabled, controlId: this.backId, onAction: (): void => { this.requestBack_(); } })
         }
         if (this.hasBrand_()) this.headerBrand()
-        Text(this.title).fontSize(20).fontWeight(700).fontColor(this.theme.textPrimary)
-          .layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).id(this.titleId)
+        Text(this.title).fontSize(this.emphasizedTitle && !this.modal ? 28 : 20).fontWeight(700).fontColor(this.theme.textPrimary)
+          .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).id(this.titleId)
+        if (this.contextLabel.length > 0) {
+          Button() {
+            Text(this.contextShortLabel_()).fontSize(12).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor(this.theme.textSecondary)
+          }.height(44).constraintSize({ maxWidth: 88 }).backgroundColor(this.theme.bgCard)
+            .accessibilityText(this.contextTitle + '，' + this.contextLabel + '，查看完整名称')
+            .id('app-title-context').onClick(this.contextRequest_())
+        }
         if (this.showExternal) {
           AppRoundIconButton({ name: AppIconName.ArrowUpRight, theme: this.theme, accessibilityLabel: '在浏览器中打开',
             actionEnabled: this.externalEnabled, onAction: (): void => { this.requestExternal_(); } })
@@ -209,7 +276,9 @@ export struct ImmersiveTitleScaffold {
           AppRoundIconButton({ name: AppIconName.Close, theme: this.theme, accessibilityLabel: this.closeLabel,
             actionEnabled: this.closeEnabled, controlId: this.closeId, onAction: (): void => { this.requestClose_(); } })
         }
-      }.width('100%').padding({ left: 16, right: 16, top: this.topSafeHeight + 12, bottom: 10 })
+      // 普通标题与原生一行MINI的56vp保持一致（44vp触点+上下各6vp）；
+      // MODAL另外保留原生契约的8vp顶部背板，安全区仅在这里追加一次。
+      }.width('100%').padding({ left: 16, right: 16, top: this.topSafeHeight + (this.modal ? 14 : 6), bottom: 6 })
         .alignItems(VerticalAlign.Center)
       if (this.accessoryHeight_() > 0) this.accessory_()
     }.width('100%')

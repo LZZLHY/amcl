@@ -9,6 +9,26 @@ if ! (set -o noclobber; printf '%s\n' "${AMCL_RUN_ID:?}" > /output/.amcl-request
 fi
 case "$suite" in
     elf) exec bash /workspace/tests/runtime-elf/run.sh ;;
+    jdk-abi) exec bash /workspace/tests/runtime-abi/build-target.sh ;;
+    jdk-abi-run) exec bash /workspace/tests/runtime-abi/run-target.sh "$@" ;;
+    runtime-io) exec bash /workspace/tests/runtime-io/run-host.sh ;;
+    runtime-install) exec bash /workspace/tests/runtime-install/run-host.sh ;;
+    runtime-java) exec bash /workspace/tests/runtime-java/run-host.sh ;;
+    runtime-process) exec bash /workspace/tests/runtime-process/run-ncp.sh ;;
+    runtime-childproc) exec bash /workspace/tests/runtime-childproc/run-qualification-host.sh ;;
+    java-ports) exec bash /workspace/tests/java-sound-ports/run-host.sh ;;
+    sound-links) exec bash /workspace/tests/java-sound/run-sound-links.sh ;;
+    runtime-midi) exec bash /workspace/tests/java-midi/run-qualification.sh ;;
+    tls-storage) exec bash /workspace/tests/runtime-tls-storage/run.sh ;;
+    tls-crt-reference) exec bash /workspace/tests/runtime-abi/tls-crt/run-glibc-reference.sh ;;
+    fontconfig-freetype) exec bash /workspace/tests/runtime-fontconfig/run-freetype.sh ;;
+    fontconfig-fallback) exec bash /workspace/tests/runtime-fontconfig/run-fallback.sh ;;
+    fontconfig-defaults) exec python3 -B /workspace/tests/runtime-fontconfig/run-defaults.py --sources "${AMCL_FONTCONFIG_DEFAULT_SOURCES_MANIFEST:?}" --output /output/fontconfig-defaults ;;
+    jdk-probe-owner) exec bash /workspace/tests/jdk-probe/run-host.sh ;;
+    jni-invocation) exec bash /workspace/tests/runtime-jni/run-host.sh ;;
+    processor-setup) exec bash /workspace/tests/runtime-process/run-host.sh ;;
+    unwind-cache) exec bash /workspace/tests/runtime-abi/run-unwind-cache.sh ;;
+    application-abi) exec bash /workspace/tests/runtime-abi/build-application-provider.sh ;;
     mobilegl-replay-host) exec bash /workspace/tests/mobilegl-replay-host/run-host.sh "$@" ;;
     mobilegl-cpu-proof)
         # 仅收取完整实际Linux链接输入；不执行CPU/GPU，也不授予正确性资格。
@@ -36,7 +56,13 @@ case "$suite" in
             --expected-image "${AMCL_MOBILEGL_HOST_IMAGE:?}" --output /output/mobilegl-cpu "$@" ;;
     gl4es-draw) exec bash /workspace/tests/gl4es-draw/run-host.sh "$@" ;;
     java-sound-8) exec bash /workspace/tests/java-sound/run-host8.sh ;;
-    java-sound-17|java-sound-21|java-sound-25)
+    java-sound-17)
+        # 该模式只有 project.py 的固定闭包/SHA 校验能建立，默认软件资格保持原入口。
+        if [ -n "${AMCL_DAUDIO_INPUT_SHA:-}" ]; then
+            exec bash /workspace/tests/java-sound/run-daudio-jni-host.sh
+        fi
+        exec bash /workspace/tests/java-sound/run-host.sh 17 ;;
+    java-sound-21|java-sound-25)
         exec bash /workspace/tests/java-sound/run-host.sh "${suite##*-}" ;;
     *) echo 'Unknown AMCL test suite'; exit 2 ;;
 esac

@@ -33,7 +33,8 @@ fi
 
 # 编译测试
 echo "[2/3] Compiling tests..."
-find "$TEST_DIR" -name "*.java" > "$BUILD_DIR/test_files.txt"
+# ModuleLayer和影子类路径夹具由专用音频加载器脚本分开构建，不能混入classpath编译。
+find "$TEST_DIR" -type d -name 'audio-loader-*' -prune -o -type f -name "*.java" -print > "$BUILD_DIR/test_files.txt"
 javac -d "$BUILD_DIR/test-classes" -source 17 -target 17 \
     -cp "$BUILD_DIR/classes" \
     @"$BUILD_DIR/test_files.txt"

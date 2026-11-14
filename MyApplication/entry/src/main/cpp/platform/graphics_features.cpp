@@ -220,14 +220,48 @@ bool RetireGraphicsContext(const GraphicsRuntimeBinding& runtime, void* context)
     auto& state = *runtime.features;
     std::lock_guard<std::recursive_mutex> lock(state.resourcesMutex);
     for (auto entry = state.contextPermits.begin(); entry != state.contextPermits.end(); ++entry) {
-        if (entry->second == context) { state.contextPermits.erase(entry); return true; }
+        if (entry->second == context) {
+            state.sdlAux.revoke(context,entry->first);
+            state.presentingSurfaces.erase(entry->first);
+            state.contextPermits.erase(entry); return true;
+        }
     }
     return false;
 }
 void ReleaseGraphicsContextPermit(const GraphicsRuntimeBinding& runtime, uint64_t permit) {
     if (!runtime.features || !permit) return;
     std::lock_guard<std::recursive_mutex> lock(runtime.features->resourcesMutex);
+    const auto found=runtime.features->contextPermits.find(permit);
+    if(found!=runtime.features->contextPermits.end())runtime.features->sdlAux.revoke(found->second,permit);
+    runtime.features->presentingSurfaces.erase(permit);
     runtime.features->contextPermits.erase(permit);
+}
+bool RecordPresentingEglSurface(const GraphicsRuntimeBinding& runtime, const EglContextState& surface) {
+    if (!runtime.features || runtime.delegate) return false;
+    auto& state = *runtime.features;
+    std::lock_guard<std::recursive_mutex> lock(state.resourcesMutex);
+    const auto permit = state.contextPermits.find(surface.contextPermit);
+    if (permit == state.contextPermits.end() || permit->second != surface.context ||
+        !surface.context || !surface.display || !surface.surface || !surface.nativeWindow ||
+        surface.surface == surface.parkingSurface || surface.contextLostFatal ||
+        surface.eglSurfaceDetachPending || surface.eglTeardownPending) return false;
+    try {
+        state.presentingSurfaces.insert_or_assign(surface.contextPermit,
+            PresentingEglIdentity{surface.display, surface.context, surface.surface, surface.nativeWindow});
+        return true;
+    } catch (...) {
+        // 分配失败不能留下此前同permit的可消费证明，实际句柄仍由原cleanup路径持有。
+        state.presentingSurfaces.erase(surface.contextPermit);
+        state.sdlAux.revoke(surface.context, surface.contextPermit);
+        return false;
+    }
+}
+void RevokePresentingEglSurface(const GraphicsRuntimeBinding& runtime, const EglContextState& surface) {
+    if (!runtime.features || runtime.delegate || !surface.contextPermit) return;
+    auto& state = *runtime.features;
+    std::lock_guard<std::recursive_mutex> lock(state.resourcesMutex);
+    state.presentingSurfaces.erase(surface.contextPermit);
+    state.sdlAux.revoke(surface.context, surface.contextPermit);
 }
 std::string GraphicsFeaturesJson(const GraphicsRuntimeBinding& runtime) {
     if (runtime.delegate) {

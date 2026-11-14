@@ -201,8 +201,13 @@ for(const relative of [G,T]){
 {
   const original=fs.readFileSync(path.join(PROJECT_ROOT,P),'utf8');
   const anchor=/await this\.pref\.flush\(\);\r?\n        state\.originals\.delete\(key\);/g;
-  assert.equal([...original.matchAll(anchor)].length,1);
-  const changed=original.replace(anchor,match=>match.replace('await this.pref.flush()','void this.pref.flush()'));
+  // 负对照只撤回被测冻结设置方法，其他功能也可以合法使用相同的持久化屏障。
+  const methodStart=original.indexOf('  private saveFrozenSetting_(');
+  const methodEnd=original.indexOf('  /** 原生手柄偏好',methodStart);
+  assert.ok(methodStart>=0&&methodEnd>methodStart);
+  const method=original.slice(methodStart,methodEnd);
+  assert.equal([...method.matchAll(anchor)].length,1);
+  const changed=original.slice(0,methodStart)+method.replace(anchor,match=>match.replace('await this.pref.flush()','void this.pref.flush()'))+original.slice(methodEnd);
   const f=fixture({[P]:changed}),s=f.storage(),wait=deferred();s.steps.push(wait);let finished=false;
   const saving=f.manager().saveDesktopNativeGamepad(true).then(()=>{finished=true;});await settle();
   assert.throws(()=>assert.equal(finished,false),assert.AssertionError);wait.resolve();await saving;

@@ -20,6 +20,7 @@
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 import { DownloadManager } from 'feature_core';
+import { isMcimMirrorUrl } from './ModDownloadSourcePolicy';
 import { MetadataCacheStore } from 'feature_core';
 import { buildConditionalRequest } from 'feature_core';
 import {
@@ -242,12 +243,16 @@ export class ModrinthRepository implements IRemoteModRepository {
     }
   }
 
-  /** 无缓存的纯 GET，用于 search / lookupVersionBySha1 */
+  /**
+   * 无缓存的公共GET，用于search/lookupVersionBySha1。这里只有UA和公开Modrinth
+   * URL，明确opt-in网关元数据；不改变通用fetchTextEx默认值，也不复用CF鉴权入口。
+   */
   private async fetchText(urls: UrlSet): Promise<string> {
     let reqHeaders: Record<string, string> = { 'User-Agent': this.userAgent_ };
     try {
+      let selected = this.currentUrls_(urls);
       let resp = await this.downloadManager_.fetchTextEx(
-        urls.primary, urls.mirrors, FETCH_TIMEOUT_SECONDS, reqHeaders);
+        selected.primary, selected.mirrors, FETCH_TIMEOUT_SECONDS, reqHeaders, undefined, true);
       if (resp.statusCode >= 200 && resp.statusCode < 300) return resp.body;
       throw new ModRepoError(ModSource.MODRINTH,
         resp.statusCode >= 500 ? ModRepoErrorKind.HTTP_SERVER : ModRepoErrorKind.HTTP_CLIENT,
@@ -277,10 +282,12 @@ export class ModrinthRepository implements IRemoteModRepository {
       for (let k of keys) reqHeaders[k] = cond[k];
     }
 
-    // 3. 发请求
+    // 3. 公共GET只携带UA及缓存条件头，沿用相同显式relay权限；304重取也不能掉回
+    // 旧的直连元数据路径。是否有可用票据和实际路由仍由Native决定。
     try {
+      let selected = this.currentUrls_(urls);
       let resp = await this.downloadManager_.fetchTextEx(
-        urls.primary, urls.mirrors, FETCH_TIMEOUT_SECONDS, reqHeaders);
+        selected.primary, selected.mirrors, FETCH_TIMEOUT_SECONDS, reqHeaders, undefined, true);
 
       // 304：用缓存 body + touch
       if (resp.statusCode === 304) {
@@ -293,8 +300,10 @@ export class ModrinthRepository implements IRemoteModRepository {
         // 304 但磁盘 body 读不到（极端），走一次无条件 GET
         AppLogger.warn(TAG, `304 but body missing; force reload: ${urls.primary}`, null, LOG_DOMAIN_DOWNLOAD);
         let reqPlain: Record<string, string> = { 'User-Agent': this.userAgent_ };
+        // 首次HTTP await期间可能收紧来源；恢复请求须再次取当前意图，不能继续用旧镜像plan。
+        let reloadUrls = this.currentUrls_(urls);
         let resp2 = await this.downloadManager_.fetchTextEx(
-          urls.primary, urls.mirrors, FETCH_TIMEOUT_SECONDS, reqPlain);
+          reloadUrls.primary, reloadUrls.mirrors, FETCH_TIMEOUT_SECONDS, reqPlain, undefined, true);
         if (resp2.statusCode >= 200 && resp2.statusCode < 300) {
           this.cacheStore_.put(urls.primary, resp2.body, resp2.headers);
           return resp2.body;
@@ -317,6 +326,19 @@ export class ModrinthRepository implements IRemoteModRepository {
       if (e instanceof ModRepoError) throw e;
       throw ModRepoError.fromUnknown(ModSource.MODRINTH, e as Object);
     }
+  }
+
+  /**
+   * UrlSet只由本模块官方公共API构造器生成。每次真正发起请求前复核当前严格模式，
+   * 尤其覆盖304恢复窗口；未知作者URL不作猜测改写，无官方候选时明确拒绝而非补镜像。
+   */
+  private currentUrls_(urls: UrlSet): UrlSet {
+    if (this.mode() !== ModrinthSourceMode.OFFICIAL_ONLY) return urls;
+    let allowed = [urls.primary].concat(urls.mirrors).filter((url: string) => !isMcimMirrorUrl(url));
+    if (allowed.length === 0) {
+      throw new ModRepoError(ModSource.MODRINTH, ModRepoErrorKind.HTTP_CLIENT, '源站模式没有可用的Modrinth官方地址');
+    }
+    return { primary: allowed[0], mirrors: allowed.slice(1) };
   }
 
   /** 统一 JSON 解析：失败包成 ModRepoErrorKind.PARSE */

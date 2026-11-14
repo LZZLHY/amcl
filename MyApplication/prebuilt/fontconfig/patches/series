@@ -1,0 +1,2 @@
+# 同源 generic fallback；标准/Context/槽外缓存依次验证，不改 HOME 或猜沙箱前缀。
+0001-ohos-default-fonts-and-context-cache.patch

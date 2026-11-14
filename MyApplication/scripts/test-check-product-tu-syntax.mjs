@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -25,6 +26,9 @@ try {
   const platformDir = join(cppDir, 'platform');
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(platformDir, { recursive: true });
+  // 显式审计根只使用可公开重建的工程标记，不复制维护者私有配置或真实依赖树。
+  writeFileSync(join(fixtureRoot, 'oh-package.json5'), '{"name":"product-tu-root-fixture"}\n');
+  writeFileSync(join(cppDir, 'CMakeLists.txt'), '# standalone product TU fixture\n');
 
   const checker = join(scriptsDir, 'check-product-tu-syntax.mjs');
   const fakeCompiler = join(fixtureRoot, 'fake compiler.mjs');
@@ -71,6 +75,34 @@ assert.ok(!args.includes('-o'));
   assert.match(store.stdout, /PASS: 1 个产品 TU/);
   assert.doesNotMatch(store.stderr, /api26_input_link_probe/);
 
+  // 本仓checker显式绑定另一份完整夹具根；其数据库、源码枚举和相对路径必须共同换根。
+  // 假编译器仍校验真实argv转换，不能把仅找到db或少枚举源码当作通过。
+  const external = (...args) => spawnSync(process.execPath, [
+    join(sourceRoot, 'scripts/check-product-tu-syntax.mjs'), ...args,
+  ], { encoding: 'utf8' });
+  const explicitRoot = external('--root', fixtureRoot, '--product', 'store');
+  assert.equal(explicitRoot.status, 0, explicitRoot.stdout + explicitRoot.stderr);
+  assert.match(explicitRoot.stdout, /PASS: 1 个产品 TU/);
+  const missingRoot = external('--root');
+  assert.equal(missingRoot.status, 2); assert.match(missingRoot.stderr, /incomplete option/);
+  const relativeRoot = external('--root', '.');
+  assert.equal(relativeRoot.status, 2); assert.match(relativeRoot.stderr, /absolute path/);
+  const noMarkers = external('--root', fixtureParent, '--product', 'store');
+  assert.equal(noMarkers.status, 2); assert.match(noMarkers.stderr, /project marker/);
+  const unknownArgument = external('--root', fixtureRoot, '--unknown-audit-root');
+  assert.equal(unknownArgument.status, 2); assert.match(unknownArgument.stderr, /unknown option/);
+
+  // 新音频豁免是精确四文件：生产核心或未来新增测试都不能被audio目录的宽泛排除漏过。
+  const audioTests = join(cppDir, 'audio/tests'); mkdirSync(audioTests, { recursive: true });
+  for (const name of ['audio_core_test.cpp', 'audio_binding_test.cpp', 'audio_client_test_export.cpp', 'audio_test_platform.cpp']) {
+    writeFileSync(join(audioTests, name), '// explicit run-host.sh target\n');
+  }
+  assert.equal(run('store').status, 0);
+  const productionAudio = join(cppDir, 'audio/audio_core.cpp'); writeFileSync(productionAudio, '// product core\n');
+  assert.match(run('store').stderr, /audio\/audio_core\.cpp/); rmSync(productionAudio);
+  const futureAudioTest = join(audioTests, 'unregistered_audio_probe.cpp'); writeFileSync(futureAudioTest, '// not approved\n');
+  assert.match(run('store').stderr, /audio\/tests\/unregistered_audio_probe\.cpp/); rmSync(futureAudioTest);
+
   // 真正位于本工程的构建生成物/第三方源码仍须排除，不能为了接纳新父目录而删掉排除规则。
   const storeDb = join(fixtureRoot, 'entry/.cxx/store/store/release/arm64-v8a/compile_commands.json');
   const storeDirectory = dirname(storeDb);
@@ -97,6 +129,41 @@ assert.ok(!args.includes('-o'));
   const foreignOnly = run('store');
   assert.equal(foreignOnly.status, 2, foreignOnly.stdout + foreignOnly.stderr);
   assert.match(foreignOnly.stderr, /选中 0 个 TU/);
+  writeFileSync(storeDb, JSON.stringify([ownEntry]));
+
+  // 只有已核对的八份JDK libjsound正文可缺席HAP DB，不能将整个javasound目录跳过。
+  const jdkSoundFiles = ['midi_api.c', 'midi_core.c', 'midi_jdk.c', 'midi_stream.c',
+    'midi_ump.c', 'ohos_daudio.c', 'ports_jni.c', 'ports_ohos.c'];
+  const soundDirectory = join(cppDir, 'javasound');
+  mkdirSync(soundDirectory);
+  for (const file of jdkSoundFiles) writeFileSync(join(soundDirectory, file), '// JDK libjsound source fixture\n');
+  const jdkOwned = run('store');
+  assert.equal(jdkOwned.status, 0, jdkOwned.stdout + jdkOwned.stderr);
+  // 未知文件、相似前缀和真实HAP桥接文件都仍须出现于DB；补回DB后必须实际执行其编译命令。
+  for (const file of ['new_backend.c', 'midi_api.c.extra.c', 'ohos_daudio_callbacks.c',
+      'midi_callbacks.c', 'ohos_capture_diagnostics.c']) {
+    const absolute = join(soundDirectory, file);
+    writeFileSync(absolute, '// HAP source fixture\n');
+    const missing = run('store');
+    assert.equal(missing.status, 1, missing.stdout + missing.stderr);
+    assert.ok(missing.stderr.includes('javasound/' + file), 'missing HAP TU must be named: ' + file);
+    writeFileSync(storeDb, JSON.stringify([ownEntry,
+      { directory: storeDirectory, file: absolute, command: mustNotRun }]));
+    const broken = run('store');
+    assert.equal(broken.status, 1, broken.stdout + broken.stderr);
+    assert.ok(broken.stdout.includes('FAIL  javasound/' + file), 'HAP callback compile must not be skipped: ' + file);
+    writeFileSync(storeDb, JSON.stringify([ownEntry,
+      { directory: storeDirectory, file: absolute, command }]));
+    assert.equal(run('store').status, 0, 'registered HAP TU should be compiled: ' + file);
+    unlinkSync(absolute);
+    writeFileSync(storeDb, JSON.stringify([ownEntry]));
+  }
+  // 精确缺席规则只影响完整性交叉核对；若一个JDK正文真的被HAP收录，也不能略过语法检查。
+  writeFileSync(storeDb, JSON.stringify([ownEntry,
+    { directory: storeDirectory, file: join(soundDirectory, 'ohos_daudio.c'), command: mustNotRun }]));
+  const presentJdkSource = run('store');
+  assert.equal(presentJdkSource.status, 1, presentJdkSource.stdout + presentJdkSource.stderr);
+  assert.match(presentJdkSource.stdout, /FAIL  javasound\/ohos_daudio\.c/);
   writeFileSync(storeDb, JSON.stringify([ownEntry]));
 
   const desktop = run('desktop');

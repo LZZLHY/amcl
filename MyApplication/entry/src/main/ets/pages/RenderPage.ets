@@ -1,3 +1,4 @@
+import { applyNativeTheme } from '../components/AppTheme';
 /**
  * RenderPage.ets — P1: OpenGL ES 渲染验证（开发者探针页）
  *
@@ -28,6 +29,8 @@ struct RenderPage {
   // ---- 主题：与 DevToolsPage 完全一致的接法（@StorageProp + @Watch 跟随系统切换）----
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
@@ -42,9 +45,14 @@ struct RenderPage {
 
   private applyTheme(): void {
     let systemIsDark: boolean = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
-    let mode: ThemeMode = new PreferenceManager(this.context).themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    const preferences: PreferenceManager = new PreferenceManager(this.context)
+    const mode: ThemeMode = preferences.themeMode
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), preferences.themeAccent)
+    applyNativeTheme(this.theme);
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme(); }
 
   build() {
     Column() {

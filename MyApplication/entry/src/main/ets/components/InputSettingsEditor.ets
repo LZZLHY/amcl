@@ -1,3 +1,4 @@
+// 编辑器工具按钮明确使用小圆角矩形；后续显式圆角可覆盖此默认值，不跟随系统胶囊造型。
 /** 独立输入设置界面。只编辑触控策略、来源视角与手柄；布局几何和组图原样保留。
  * 保存与取消共用原LayoutStore串行事务；销毁等待在途操作后收口，失败不丢草稿。
  */
@@ -12,11 +13,14 @@ import { hilog } from '@kit.PerformanceAnalysisKit'
 import { KeyPickerSheet } from './KeyPickerSheet'
 import { AppIconName } from 'commons'
 import { AppIcon } from './AppIcon'
-import { TouchOptionsEditor } from './TouchOptionsEditor'
-import { EditorTheme } from './TouchEditorTheme'
+import { TouchOptionsEditor, TouchOptionSlider, TouchOptionToggle } from './TouchOptionsEditor'
+import { controlProfileSaveLabel } from 'gamecontrol'
+import { EditorPalette } from './TouchEditorTheme'
 
 @Component
 export struct InputSettingsEditor {
+  /** 宿主提供的实例显示palette，不写入用户布局或输入配置。 */
+  @Prop palette: EditorPalette = new EditorPalette();
   @Prop targetProfileName: string = ''
   @Prop screenWidth: number = 720
   @Prop screenHeight: number = 360
@@ -24,11 +28,15 @@ export struct InputSettingsEditor {
   @Prop gyroscopeStatus: string = 'unknown'
   onDone: (profile: LayoutProfile | null) => void = (_profile: LayoutProfile | null): void => {}
   onInitializationFailed: (message: string) => void = (_message: string): void => {}
+  @Prop initialSection: string = ''
+  @State private category: string = 'home'
+  @State private lookAdvanced: boolean = false
+  @State private gamepadAdvanced: boolean = false
+  @State private originallyActive: boolean = true
+  private sliderGestureKey: string = ''
   @State private tab: string = 'touch'
   @State private touchSection: string = 'menu'
-  @State private lookPane: string = 'sources'
   @State private gamepadPane: string = 'general'
-  @State private gamepadGroup: string = 'abxy'
   @State private selectedGamepadButton: string = 'A'
   @State private gamepadBtnPicker: string = ''
   @State private touchBindingEditIndex: number = -1
@@ -42,10 +50,6 @@ export struct InputSettingsEditor {
   @State private selectedLookSource: LookPolicySource = 'touch'
   @State private joystickDeadZone: number = DEFAULT_JOYSTICK_DEAD_ZONE
   @State private haptic: boolean = true
-  @State private sensVal: number = 100
-  @State private smoothVal: number = 60
-  @State private accelVal: number = 0
-  @State private deadZoneVal: number = 18
   @State private undoCount: number = 0
   @State private statusMsg: string = ''
   @State private profileName: string = ''
@@ -80,6 +84,8 @@ export struct InputSettingsEditor {
       if (profile===null) throw new Error('方案已删除，请重新选择')
       this.original=cloneLayout(profile); this.session.open(profile); this.load_(profile)
       this.profileName=profile.name
+      this.originallyActive=store.getActiveProfile().profileId === profile.profileId
+      this.selectCategory_(this.initialSection.length > 0 ? this.initialSection : 'home')
       this.baselineSig=JSON.stringify(this.buildProfile())
     } catch(error) {
       this.statusMsg='无法打开输入设置：'+(error as Error).message
@@ -120,8 +126,7 @@ export struct InputSettingsEditor {
     this.lookAccel=profile.lookAccel ?? DEFAULT_LOOK_ACCEL
     this.lookPolicies=copySourceLookPreferences(profile.lookPolicies)
     this.joystickDeadZone=profile.joystickDeadZone ?? DEFAULT_JOYSTICK_DEAD_ZONE
-    this.deadZoneVal=Math.round(this.joystickDeadZone*100)
-    this.haptic=profile.haptic ?? true; this.syncLookSliders()
+    this.haptic=profile.haptic ?? true
   }
 
   /** 完整原方案只替换设置域；从不以空controls或默认组图重建。 */
@@ -187,62 +192,155 @@ export struct InputSettingsEditor {
     } finally { if (this.mounted && generation===this.generation) this.busy=false }
   }
 
+
+  /** 导航状态不进入草稿，不制造Undo；六类任务只映射既有设置域。 */
+  private selectCategory_(category: string): void {
+    const known: string[]=['home','move','look','menu','gesture','gyro','gamepad']
+    this.category=known.indexOf(category)>=0 ? category : 'home'
+    this.tab=category==='look' ? 'look' : category==='gamepad' ? 'gamepad' : 'touch'
+    if (this.tab==='touch' && category!=='home') this.touchSection=category
+    this.sliderUndoKey=''; this.sliderGestureKey=''
+  }
+  private categoryTitle_(category: string): string {
+    return category==='move' ? '移动' : category==='look' ? '视角' : category==='menu' ? '菜单与背包' :
+      category==='gesture' ? '快捷栏' : category==='gyro' ? '陀螺仪' : category==='gamepad' ? '映射手柄' : '设置目录'
+  }
+  @Builder
+  CategoryDirectory_() {
+    Column({space:8}) {
+      ForEach(['home','move','look','menu','gesture','gyro','gamepad'],(category: string) => {
+        Button(this.categoryTitle_(category)).type(ButtonType.Normal).borderRadius(6).height(44).width('100%').fontColor(this.palette.text)
+          .backgroundColor(this.category===category ? this.palette.surfaceActive : this.palette.surface)
+          .onClick((): void => { this.selectCategory_(category) })
+      },(category: string): string => category)
+    }.width('100%')
+  }
+  private touchLook_(): LookParameters {
+    return this.lookPolicies===undefined ? {sensitivity:this.lookSensitivity,invertY:this.invertY,smoothing:this.lookSmoothing,acceleration:this.lookAccel} :
+      sourceLookParameters(this.lookPolicies,'touch')
+  }
+  private setLookNumber_(field: string,value: number,mode: SliderChangeMode): void {
+    const next: LookParameters=this.editorLookParameters()
+    const old: number=field==='sensitivity' ? next.sensitivity : field==='smoothing' ? next.smoothing : next.acceleration
+    if (!this.prepareSliderChange('look-'+field,mode,old!==value)) return
+    if (field==='sensitivity') next.sensitivity=value
+    else if (field==='smoothing') next.smoothing=value
+    else next.acceleration=value
+    this.updateEditorLook(next)
+  }
+  private setStickRole_(side: string,role: StickRole): void {
+    if ((side==='left' ? this.gamepad.leftStick : this.gamepad.rightStick)===role) return
+    this.pushUndo(); if (side==='left') this.gamepad.leftStick=role; else this.gamepad.rightStick=role
+    this.gamepad=this.cloneGamepad(this.gamepad)
+  }
+  private setGamepadAction_(button: string,kind: 'hotbarPrev' | 'hotbarNext' | 'none'): void {
+    if (this.gamepad.buttonMap?.[button]?.kind===kind) return
+    this.pushUndo(); this.ensureButtonMap(); this.gamepad.buttonMap![button]={kind:kind}; this.gamepad=this.cloneGamepad(this.gamepad)
+    this.statusMsg=this.gamepadBtnDisplayName(button)+' → '+(kind==='hotbarPrev' ? '上一格' : kind==='hotbarNext' ? '下一格' : '无')
+  }
+  private setGamepadNumber_(field: string,value: number,mode: SliderChangeMode): void {
+    const old: number=field==='deadzone' ? this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE :
+      field==='threshold' ? this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD : this.gamepad.lookScale ?? 1
+    if (!this.prepareSliderChange('gamepad-'+field,mode,old!==value)) return
+    if (field==='deadzone') this.gamepad.stickDeadZone=value
+    else if (field==='threshold') this.gamepad.triggerThreshold=value
+    else this.gamepad.lookScale=value
+    this.gamepad=this.cloneGamepad(this.gamepad)
+  }
+  /** 恢复默认是显式破坏草稿的操作，确认绑定原页面与原配置；一次Undo恢复完整手柄域。 */
+  private confirmGamepadReset_(): void {
+    const generation: number=this.generation, signature: string=JSON.stringify(this.gamepad)
+    this.getUIContext().showAlertDialog({title:'恢复默认手柄配置',message:'将重置左右摇杆、参数和全部按钮映射；可在保存前撤销。',
+      primaryButton:{value:'取消',action:(): void=>{}},secondaryButton:{value:'恢复草稿',action:(): void=>{
+        if (!this.mounted || generation!==this.generation || JSON.stringify(this.gamepad)!==signature) return
+        this.pushUndo(); this.gamepad=defaultGamepadConfig()
+      }}})
+  }
+
   /** 只组装当前设置分区、选键浮层和退出确认；不创建输入、游戏帧或传感器订阅。 */
   build() {
     Stack() {
       Column({space:12}) {
-        Text('触控与输入设置').fontSize(20).fontColor(EditorTheme.text).width('100%')
-        Text(this.profileName).fontSize(12).fontColor(EditorTheme.muted).width('100%')
         Row({space:8}) {
-          ForEach(['touch','look','gamepad'], (tab: string) => {
-            Button(tab==='touch' ? '触控' : tab==='look' ? '视角与反馈' : '手柄').height(44).layoutWeight(1)
-              .fontColor(this.tab===tab ? EditorTheme.accent : EditorTheme.text)
-              .backgroundColor(EditorTheme.surface).onClick((): void => { this.tab=tab })
-          }, (tab: string): string => tab)
+          Text('手感与输入').fontSize(20).fontColor(this.palette.text).layoutWeight(1)
+          Text(this.profileName).fontSize(13).fontColor(this.palette.muted).maxLines(1)
+            .textOverflow({overflow:TextOverflow.Ellipsis}).constraintSize({maxWidth:'50%'})
+            .copyOption(CopyOptions.LocalDevice).accessibilityText('当前方案：'+this.profileName)
         }.width('100%')
-        Scroll() {
-          Column({space:12}) {
-            if (this.statusMsg.length>0) { Text(this.statusMsg).fontColor(EditorTheme.warning).fontSize(14) }
-            if (this.touch.joystickAutoWalk || this.touch.gestureMode!=='buttons') {
-              Text('旧方案中的自动前进和空白区域建造/战斗手势已停用；原配置保留用于导出。')
-                .fontColor(EditorTheme.warning).fontSize(13)
-            }
-            if (this.tab==='touch') {
-              TouchOptionsEditor({value:this.touch,section:this.touchSection,gyroscopeStatus:this.gyroscopeStatus,
-                onRemap:(index: number): void => { this.touchBindingEditIndex=index },
-                onChange:(value: TouchConfiguration,key: string,mode?: SliderChangeMode): void => { this.applyTouchChange(value,key,mode) }})
-            } else if (this.tab==='look') { this.GlobalTabContent() }
-            else { this.GamepadTabContent() }
-          }.width('100%')
-        // 短分区从滚动视口顶部开始，避免平板默认居中形成大块留白；长分区仍自然滚动。
-        }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Auto)
+        if (this.original?.isPreset) { Text('预设将在保存时创建完整副本并使用').fontSize(12).fontColor(this.palette.muted) }
+        else if (!this.originallyActive) { Text('保存后使用此完整操控方案').fontSize(12).fontColor(this.palette.muted) }
+        Row({space:12}) {
+          if (this.screenWidth >= 900) {
+            Scroll() { this.CategoryDirectory_() }.width(180).height('100%').align(Alignment.TopStart)
+          }
+          Scroll() {
+            Column({space:12}) {
+              if (this.statusMsg.length > 0) { Text(this.statusMsg).fontSize(14).fontColor(this.palette.warning).width('100%') }
+              if (this.screenWidth < 900 && this.category !== 'home') {
+                Button('‹ 设置目录 · '+this.categoryTitle_(this.category)).type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
+                  .onClick((): void => { this.selectCategory_('home') })
+              }
+              if (this.category === 'home') {
+                if (this.screenWidth < 900) { this.CategoryDirectory_() }
+                TouchOptionToggle({palette:this.palette,label:'专用控件跟随游戏键位',
+                  description:'作用于移动、快捷栏和陀螺仪使用识别；普通按钮保持自身绑定，手动覆盖优先。',value:this.touch.followGameBindings,
+                  onChange:(value: boolean): void => {
+                    if (value === this.touch.followGameBindings) return
+                    this.pushUndo(); const next: TouchConfiguration=normalizeTouchPreferences(this.touch) ?? new TouchConfiguration()
+                    next.followGameBindings=value; this.touch=next
+                  }})
+                if (this.touch.joystickAutoWalk || this.touch.gestureMode !== 'buttons') {
+                  Text('旧自动前进和空白区域玩法手势已停用；原值保留用于往返导出。').fontSize(13).fontColor(this.palette.warning)
+                }
+              } else if (this.category === 'look') { this.GlobalTabContent() }
+              else if (this.category === 'gamepad') { this.GamepadTabContent() }
+              else {
+                TouchOptionsEditor({palette:this.palette,value:this.touch,section:this.touchSection,showSectionPicker:false,
+                  gyroscopeStatus:this.gyroscopeStatus,joystickDeadZone:this.joystickDeadZone,
+                  sourceSensitivity:this.touchLook_().sensitivity,sourceInvertY:this.touchLook_().invertY,resolvedActionKeys:this.resolvedActionKeys,
+                  onRemap:(index: number): void => { this.touchBindingEditIndex=index },
+                  onDeadZone:(value: number,mode: SliderChangeMode): void => {
+                    if (this.prepareSliderChange('joystickDeadZone',mode,this.joystickDeadZone !== value)) this.joystickDeadZone=value
+                  },
+                  onChange:(value: TouchConfiguration,key: string,mode?: SliderChangeMode): void => { this.applyTouchChange(value,key,mode) }})
+                Button('专用键位政策：'+(this.touch.followGameBindings ? '跟随游戏' : '使用默认')+' ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
+                  .onClick((): void => { this.selectCategory_('home') })
+              }
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          }.layoutWeight(1).height('100%').align(Alignment.TopStart).scrollBar(BarState.Auto)
+        }.width('100%').layoutWeight(1)
         Row({space:8}) {
-          Button('撤销').height(44).layoutWeight(1).enabled(this.undoCount>0).onClick((): void => { this.undo_() })
-          Button('取消').height(44).layoutWeight(1).onClick((): void => { this.cancel_() })
-          Button('保存').height(44).layoutWeight(1).onClick((): void => { this.run_(true) })
+          Button('撤销').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).enabled(this.undoCount>0).onClick((): void => { this.undo_() })
+          Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.cancel_() })
+          Button(controlProfileSaveLabel(this.original?.isPreset === true,this.originallyActive)).type(ButtonType.Normal).borderRadius(6).constraintSize({minHeight:44})
+            .layoutWeight(2).onClick((): void => { this.run_(true) })
         }.width('100%')
-      }.width(Math.min(560,Math.max(1,this.screenWidth-24))).height(Math.max(1,this.screenHeight-24))
-        .padding(16).backgroundColor(EditorTheme.panel).borderRadius(16).enabled(!this.busy)
+      }.width(Math.min(this.screenWidth >= 900 ? 1000 : 560,Math.max(1,this.screenWidth-24)))
+        .height(Math.max(1,this.screenHeight-24)).padding(16).backgroundColor(this.palette.panel).borderRadius(16).enabled(!this.busy)
       if (this.touchBindingEditIndex>=0) {
-        KeyPickerSheet({currentKeys:this.touchBindingKeys(),currentDescription:this.touchBindingDescription(),allowCombo:false,
+        KeyPickerSheet({palette:this.palette,currentKeys:this.touchBindingKeys(),currentDescription:this.touchBindingDescription(),allowCombo:false,
           onPick:(keys: number[] | null): void => { this.applyTouchBinding(keys) }})
       }
       if (this.gamepadBtnPicker.length>0) {
-        KeyPickerSheet({currentKeys:this.gamepadBtnCurrentKeys(),allowCombo:false,onPick:(keys: number[] | null): void => {
-          if (keys!==null && keys.length>1) { this.statusMsg='手柄按钮只支持单键'; return }
-          const button: string=this.gamepadBtnPicker; this.gamepadBtnPicker=''
-          if (keys!==null) this.applyGamepadKey(button,keys.length>0 ? keys[0] : 0)
-        }})
+        KeyPickerSheet({palette:this.palette,currentKeys:this.gamepadBtnCurrentKeys(),allowCombo:false,
+          onPick:(keys: number[] | null): void => {
+            if (keys!==null && keys.length>1) { this.statusMsg='映射手柄只支持单键'; return }
+            const button: string=this.gamepadBtnPicker; this.gamepadBtnPicker=''
+            if (keys===null) return
+            if (keys.length===0) this.setGamepadAction_(button,'none'); else this.applyGamepadKey(button,keys[0])
+          }})
       }
       if (this.leaveConfirm) {
         Column({space:12}) {
-          Text('保存这次设置？').fontSize(18).fontColor(EditorTheme.text)
-          Button('保存并退出').height(44).onClick((): void => { this.run_(true) })
-          Button('继续编辑').height(44).onClick((): void => { this.leaveConfirm=false })
-          Button('放弃修改').height(44).onClick((): void => { this.run_(false) })
-        }.padding(24).backgroundColor(EditorTheme.panel).borderRadius(16)
+          Text('放弃尚未保存的输入设置？').fontSize(18).fontColor(this.palette.text)
+          Button('继续编辑').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.leaveConfirm=false })
+          Button('放弃修改').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.run_(false) })
+        }.padding(24).width(Math.min(420,this.screenWidth-24)).backgroundColor(this.palette.panel).borderRadius(16)
       }
-    }.width('100%').height('100%').backgroundColor('#80000000').hitTestBehavior(HitTestMode.Default)
+    // Default允许分类、滑条和取消按钮参与命中，同时遮挡后方游戏；Block会把所有子控件一起禁用。
+    // 游戏输入仍由宿主持有的编辑模态隔离，不靠吞掉设置页面自己的事件实现暂停。
+    }.width('100%').height('100%').backgroundColor('#90000000').hitTestBehavior(HitTestMode.Default)
+      .onTouch((event: TouchEvent): void => { event.stopPropagation() })
   }
 
   /** 选择器读取专用动作的最终单键；手动覆盖优先于游戏绑定，显式零代表解除。 */
@@ -310,8 +408,10 @@ export struct InputSettingsEditor {
 
   /** 返回现有逻辑按钮的固定展示顺序，不依赖平台硬件键码。 */
   private gamepadButtonOrder(): string[] {
-    return ['A', 'B', 'X', 'Y', 'L1', 'R1', 'L2', 'R2', 'START', 'SELECT', 'L3', 'R3',
-            'DPAD_UP', 'DPAD_DOWN', 'DPAD_LEFT', 'DPAD_RIGHT']
+    const common: string[] = ['A','B','X','Y','L1','R1','L2','R2','START','SELECT','L3','R3','DPAD_UP','DPAD_DOWN','DPAD_LEFT','DPAD_RIGHT']
+    // 显式数组分支避免向Object.keys传无上下文的对象字面量；缺表不制造临时映射或覆盖存档。
+    const saved: string[] = this.gamepad.buttonMap === undefined ? [] : Object.keys(this.gamepad.buttonMap)
+    return common.concat(saved.filter((name: string): boolean => common.indexOf(name) < 0))
   }
 
   /** 将逻辑按钮ID转换为显示名称；未特殊命名的按钮保持其稳定ID文本。 */
@@ -354,23 +454,7 @@ export struct InputSettingsEditor {
   }
 
   /** 沿既有键位/上一格/下一格/无动作循环，只改选中按钮，不影响其它映射。 */
-  private cycleGamepadSpecial(btn: string): void {
-    this.pushUndo()
-    this.ensureButtonMap()
-    const a = this.gamepad.buttonMap![btn]
-    const kind = a ? a.kind : 'none'
-    if (kind === 'key') {
-      this.gamepad.buttonMap![btn] = { kind: 'hotbarPrev' }
-    } else if (kind === 'hotbarPrev') {
-      this.gamepad.buttonMap![btn] = { kind: 'hotbarNext' }
-    } else if (kind === 'hotbarNext') {
-      this.gamepad.buttonMap![btn] = { kind: 'none' }
-    } else {
-      // none → 回到 key（默认空 code，引导用户点"键位"选）
-      this.gamepad.buttonMap![btn] = { kind: 'key', code: 0 }
-    }
-    this.gamepad = this.cloneGamepad(this.gamepad)
-  }
+
 
   /** 从当前草稿深复制映射，保证局部改键不会借用默认映射对象。 */
   private ensureButtonMap(): void {
@@ -380,17 +464,7 @@ export struct InputSettingsEditor {
   }
 
   /** 循环左或右摇杆的移动/视角/关闭角色，保存和运行采用仍由仓库及会话负责。 */
-  private cycleStick(which: 'left' | 'right'): void {
-    this.pushUndo()
-    const order: StickRole[] = ['move', 'look', 'none']
-    const cur: StickRole = which === 'left'
-      ? (this.gamepad.leftStick ?? 'move')
-      : (this.gamepad.rightStick ?? 'look')
-    const next = order[(order.indexOf(cur) + 1) % order.length]
-    if (which === 'left') this.gamepad.leftStick = next
-    else this.gamepad.rightStick = next
-    this.gamepad = this.cloneGamepad(this.gamepad)
-  }
+
 
   /** 将摇杆角色转换为用户可读文本，缺省沿原移动语义显示。 */
   private stickLabel(role: StickRole | undefined): string {
@@ -402,156 +476,55 @@ export struct InputSettingsEditor {
   /** 按需构建手柄基本参数与映射分区；所有操作只修改本编辑草稿。 */
   @Builder
   GamepadTabContent() {
-    Column({ space: 12 }) {
-      // 页内选择只决定构建哪组设置，不改变已确认的手柄角色、按钮或 Native 输入状态。
-      Row({ space: 4 }) {
-        Button('基本参数').fontSize(14).height(44).layoutWeight(1).borderRadius(EditorTheme.radiusSmall)
-          .backgroundColor(this.gamepadPane === 'general' ? EditorTheme.surfaceActive : EditorTheme.surface)
-          .fontColor(this.gamepadPane === 'general' ? EditorTheme.accent : EditorTheme.muted)
-          .onClick((): void => { this.gamepadPane = 'general' })
-        Button('按钮映射').fontSize(14).height(44).layoutWeight(1).borderRadius(EditorTheme.radiusSmall)
-          .backgroundColor(this.gamepadPane === 'buttons' ? EditorTheme.surfaceActive : EditorTheme.surface)
-          .fontColor(this.gamepadPane === 'buttons' ? EditorTheme.accent : EditorTheme.muted)
-          .onClick((): void => { this.gamepadPane = 'buttons' })
-      }.width('100%').padding(4).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
-
-      if (this.gamepadPane === 'general') {
-        Row() {
-          Text('启用手柄').fontSize(14).fontColor(EditorTheme.text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.gamepad.enabled !== false })
-            .selectedColor(EditorTheme.accent).switchPointColor(EditorTheme.panel)
-            .onChange((b: boolean) => { this.pushUndo(); this.gamepad.enabled = b; this.gamepad = this.cloneGamepad(this.gamepad) })
-        }.width('100%').constraintSize({ minHeight: 48 })
-
-        // 角色继续走原三态循环；当前按钮明确显示角色，不在 UI 层重写业务映射。
-        Row({ space: 12 }) {
-          Text('左摇杆').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-          Button(this.stickLabel(this.gamepad.leftStick ?? 'move')).fontSize(14).height(44).fontColor(EditorTheme.accent)
-            .backgroundColor(EditorTheme.surfaceActive).borderRadius(EditorTheme.radiusSmall).constraintSize({ minWidth: 96 })
-            .onClick(() => { this.cycleStick('left') })
+    Column({space:12}) {
+      TouchOptionToggle({palette:this.palette,label:'启用映射手柄',description:'只控制键鼠映射，不关闭游戏的原生手柄API。',value:this.gamepad.enabled!==false,
+        onChange:(value: boolean): void => { if (value===(this.gamepad.enabled!==false)) return; this.pushUndo(); this.gamepad.enabled=value; this.gamepad=this.cloneGamepad(this.gamepad) }})
+      ForEach(['left','right'],(side: string) => {
+        Text(side==='left' ? '左摇杆' : '右摇杆').fontSize(14).fontColor(this.palette.text)
+        Row({space:4}) {
+          ForEach(['move','look','none'],(role: string) => {
+            Button(this.stickLabel(role as StickRole)).type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1)
+              .backgroundColor((side==='left' ? this.gamepad.leftStick : this.gamepad.rightStick)===role ? this.palette.surfaceActive : this.palette.surface)
+              .fontColor(this.palette.text).onClick((): void => { this.setStickRole_(side,role as StickRole) })
+          },(role: string): string => role)
         }.width('100%')
-        Row({ space: 12 }) {
-          Text('右摇杆').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-          Button(this.stickLabel(this.gamepad.rightStick ?? 'look')).fontSize(14).height(44).fontColor(EditorTheme.accent)
-            .backgroundColor(EditorTheme.surfaceActive).borderRadius(EditorTheme.radiusSmall).constraintSize({ minWidth: 96 })
-            .onClick(() => { this.cycleStick('right') })
+      },(side: string): string => side)
+      Button(this.gamepadPane==='buttons' ? '收起按钮映射' : '按钮映射 · '+this.gamepadButtonOrder().length.toString()+' 项 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
+        .onClick((): void => { this.gamepadPane=this.gamepadPane==='buttons' ? 'general' : 'buttons' })
+      if (this.gamepadPane==='buttons') {
+        ForEach(this.gamepadButtonOrder(),(button: string) => {
+          Button(this.gamepadBtnDisplayName(button)+' · '+this.gamepadActionLabel(button)).type(ButtonType.Normal).borderRadius(6).constraintSize({minHeight:44}).width('100%')
+            .backgroundColor(this.selectedGamepadButton===button ? this.palette.surfaceActive : this.palette.surface).fontColor(this.palette.text)
+            .onClick((): void => { this.selectedGamepadButton=button })
+        },(button: string): string => button)
+        Text('正在编辑：'+this.gamepadBtnDisplayName(this.selectedGamepadButton)).fontSize(14).fontColor(this.palette.accent)
+        Button('选择单键').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.gamepadBtnPicker=this.selectedGamepadButton })
+        Row({space:4}) {
+          Button('上一格').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.setGamepadAction_(this.selectedGamepadButton,'hotbarPrev') })
+          Button('下一格').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.setGamepadAction_(this.selectedGamepadButton,'hotbarNext') })
+          Button('无').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.setGamepadAction_(this.selectedGamepadButton,'none') })
         }.width('100%')
-        Text('点击角色按“移动 → 视角 → 无”切换。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
-
-        // 三根滑条的范围、步长、模式及 undoKey 与原设置完全相同。
-        Column({ space: 2 }) {
-          Row() {
-            Text('摇杆死区').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-            Text(Math.round((this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE) * 100).toString() + '%')
-              .fontSize(14).fontColor(EditorTheme.text)
-          }.width('100%')
-          Slider({ value: Math.round((this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE) * 100), min: 0, max: 50, step: 1 })
-            .width('100%').blockColor(EditorTheme.text).selectedColor(EditorTheme.accent).trackColor(EditorTheme.stroke)
-            .onChange((val: number, mode: SliderChangeMode) => {
-              if (!this.prepareSliderChange('gamepadDeadZone', mode, (this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE) !== val / 100)) return
-              this.gamepad.stickDeadZone = val / 100; this.gamepad = this.cloneGamepad(this.gamepad)
-            })
-        }.width('100%')
-        Column({ space: 2 }) {
-          Row() {
-            Text('扳机阈值').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-            Text(Math.round((this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD) * 100).toString() + '%')
-              .fontSize(14).fontColor(EditorTheme.text)
-          }.width('100%')
-          Slider({ value: Math.round((this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD) * 100), min: 10, max: 95, step: 5 })
-            .width('100%').blockColor(EditorTheme.text).selectedColor(EditorTheme.accent).trackColor(EditorTheme.stroke)
-            .onChange((val: number, mode: SliderChangeMode) => {
-              if (!this.prepareSliderChange('gamepadTrigger', mode, (this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD) !== val / 100)) return
-              this.gamepad.triggerThreshold = val / 100; this.gamepad = this.cloneGamepad(this.gamepad)
-            })
-        }.width('100%')
-        Column({ space: 2 }) {
-          Row() {
-            Text('右摇杆增益').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-            Text((this.gamepad.lookScale ?? 1.0).toFixed(1)).fontSize(14).fontColor(EditorTheme.text)
-          }.width('100%')
-          Slider({ value: Math.round((this.gamepad.lookScale ?? 1.0) * 100), min: 30, max: 300, step: 10 })
-            .width('100%').blockColor(EditorTheme.text).selectedColor(EditorTheme.accent).trackColor(EditorTheme.stroke)
-            .onChange((val: number, mode: SliderChangeMode) => {
-              if (!this.prepareSliderChange('gamepadLookScale', mode, (this.gamepad.lookScale ?? 1) !== val / 100)) return
-              this.gamepad.lookScale = val / 100; this.gamepad = this.cloneGamepad(this.gamepad)
-            })
-        }.width('100%')
-      } else {
-        // 分组覆盖原 16 个逻辑按钮，列表和作用对象卡共用真实按钮名，防止特殊动作改到别的按钮。
-        Row({ space: 4 }) {
-          Button('ABXY').fontSize(13).height(44).layoutWeight(1).borderRadius(EditorTheme.radiusSmall)
-            .backgroundColor(this.gamepadGroup === 'abxy' ? EditorTheme.surfaceActive : EditorTheme.surface)
-            .fontColor(this.gamepadGroup === 'abxy' ? EditorTheme.accent : EditorTheme.muted)
-            .onClick((): void => { this.gamepadGroup = 'abxy'; this.selectedGamepadButton = 'A' })
-          Button('肩键扳机').fontSize(13).height(44).layoutWeight(1).borderRadius(EditorTheme.radiusSmall)
-            .backgroundColor(this.gamepadGroup === 'shoulders' ? EditorTheme.surfaceActive : EditorTheme.surface)
-            .fontColor(this.gamepadGroup === 'shoulders' ? EditorTheme.accent : EditorTheme.muted)
-            .onClick((): void => { this.gamepadGroup = 'shoulders'; this.selectedGamepadButton = 'L1' })
-          Button('功能十字').fontSize(13).height(44).layoutWeight(1).borderRadius(EditorTheme.radiusSmall)
-            .backgroundColor(this.gamepadGroup === 'function' ? EditorTheme.surfaceActive : EditorTheme.surface)
-            .fontColor(this.gamepadGroup === 'function' ? EditorTheme.accent : EditorTheme.muted)
-            .onClick((): void => { this.gamepadGroup = 'function'; this.selectedGamepadButton = 'START' })
-        }.width('100%').padding(4).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
-        ForEach(this.gamepadButtonsInGroup_(), (btn: string) => {
-          Row({ space: 10 }) {
-            Text(this.gamepadBtnDisplayName(btn)).fontSize(14).fontWeight(FontWeight.Medium)
-              .fontColor(this.selectedGamepadButton === btn ? EditorTheme.accent : EditorTheme.text).layoutWeight(1)
-            Text(this.gamepadActionLabel(btn)).fontSize(14).fontColor(EditorTheme.muted)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            AppIcon({ name: this.selectedGamepadButton === btn ? AppIconName.Check : AppIconName.ChevronRight,
-              iconSize: 16, color: this.selectedGamepadButton === btn ? EditorTheme.accent : EditorTheme.muted })
-          }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .backgroundColor(this.selectedGamepadButton === btn ? EditorTheme.surfaceActive : EditorTheme.surface)
-            .borderRadius(EditorTheme.radiusSmall)
-            .onClick((): void => { this.selectedGamepadButton = btn })
-            .accessibilityRole(AccessibilityRoleType.BUTTON)
-            .accessibilityText(this.gamepadBtnDisplayName(btn) + '，' + this.gamepadActionLabel(btn) + '，选择设置')
-        }, (btn: string): string => btn)
-        Column({ space: 8 }) {
-          Text('当前设置：' + this.gamepadBtnDisplayName(this.selectedGamepadButton))
-            .fontSize(14).fontWeight(FontWeight.Medium).fontColor(EditorTheme.accent).width('100%')
-          Text(this.selectedGamepadActionText_()).fontSize(14).fontColor(EditorTheme.text).width('100%')
-          Row({ space: 8 }) {
-            Button('选择单键').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.text)
-              .backgroundColor(EditorTheme.panel).borderRadius(EditorTheme.radiusSmall)
-              .border({ width: 1, color: EditorTheme.stroke })
-              .onClick((): void => { this.gamepadBtnPicker = this.selectedGamepadButton })
-            Button('切换特殊动作').fontSize(14).height(44).layoutWeight(1).fontColor(EditorTheme.accent)
-              .backgroundColor(EditorTheme.surfaceActive).borderRadius(EditorTheme.radiusSmall)
-              .onClick(() => { this.cycleGamepadSpecial(this.selectedGamepadButton) })
-          }.width('100%')
-          Button('解除此按钮绑定').fontSize(14).height(44).width('100%').fontColor(EditorTheme.muted)
-            .backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
-            .onClick((): void => { this.applyGamepadKey(this.selectedGamepadButton, 0) })
-          Text('仅作用于 ' + this.gamepadBtnDisplayName(this.selectedGamepadButton) + '。特殊动作按“键位 → 上一格 → 下一格 → 无”切换；选择单键不支持组合键。')
-            .fontSize(12).fontColor(EditorTheme.muted).width('100%')
-        }.width('100%').padding(12).backgroundColor(EditorTheme.surface).borderRadius(EditorTheme.radiusSmall)
       }
-
-      Button('恢复默认手柄配置').fontSize(14).height(44).fontColor(EditorTheme.text)
-        .backgroundColor(EditorTheme.panel).border({ width: 1, color: EditorTheme.stroke })
-        .borderRadius(EditorTheme.radiusSmall).width('100%')
-        .onClick(() => { this.pushUndo(); this.gamepad = defaultGamepadConfig(); this.statusMsg = '手柄映射已恢复默认' })
-      Text('恢复默认会同时还原摇杆角色、参数和按钮映射。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
-    }
-    .width('100%')
+      Button(this.gamepadAdvanced ? '收起高级参数' : '高级参数与恢复默认 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
+        .onClick((): void => { this.gamepadAdvanced=!this.gamepadAdvanced })
+      if (this.gamepadAdvanced) {
+        TouchOptionSlider({palette:this.palette,label:'映射摇杆死区',value:(this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE)*100,minimum:0,maximum:50,step:1,suffix:'%',
+          onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('deadzone',value/100,mode) }})
+        TouchOptionSlider({palette:this.palette,label:'扳机阈值',value:(this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD)*100,minimum:10,maximum:95,step:1,suffix:'%',
+          onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('threshold',value/100,mode) }})
+        TouchOptionSlider({palette:this.palette,label:'摇杆局部视角倍率',value:(this.gamepad.lookScale ?? 1)*100,minimum:30,maximum:300,step:5,suffix:'%',
+          onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('scale',value/100,mode) }})
+        Text('局部倍率继续与映射手柄来源的视角倍率相乘。额外保存的按钮映射完整保留。').fontSize(12).fontColor(this.palette.muted)
+        Button('恢复默认手柄配置…').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').fontColor(this.palette.warning).onClick((): void => { this.confirmGamepadReset_() })
+      }
+    }.width('100%')
   }
 
   /** 按当前显示分组选择既有逻辑按钮，不改变存档映射顺序或内容。 */
-  private gamepadButtonsInGroup_(): string[] {
-    const buttons: string[] = this.gamepadButtonOrder()
-    if (this.gamepadGroup === 'abxy') return buttons.slice(0, 4)
-    if (this.gamepadGroup === 'shoulders') return buttons.slice(4, 8)
-    return buttons.slice(8)
-  }
+
 
   /** 区分等待选键与明确无动作，避免用户将尚未绑定的占位误认为有效按键。 */
-  private selectedGamepadActionText_(): string {
-    const action: GamepadAction | undefined = this.gamepad.buttonMap ? this.gamepad.buttonMap[this.selectedGamepadButton] : undefined
-    if (action && action.kind === 'key' && (action.code ?? 0) === 0) return '键位待选择'
-    return '当前动作：' + this.gamepadActionLabel(this.selectedGamepadButton)
-  }
+
 
   /** 读取当前来源的完整四参数；旧方案继续使用兼容全局值，不自动拆分。 */
   private editorLookParameters(): LookParameters {
@@ -561,17 +534,12 @@ export struct InputSettingsEditor {
   }
 
   /** 将当前来源参数投影到滑条显示值，仅读取草稿，不写Native或持久配置。 */
-  private syncLookSliders(): void {
-    const value: LookParameters = this.editorLookParameters()
-    this.sensVal = Math.round(value.sensitivity * 100)
-    this.smoothVal = Math.round(value.smoothing * 100)
-    this.accelVal = Math.round(value.acceleration * 100)
-  }
+
 
   /** 切换编辑目标并结束旧滑条撤销边界，避免两个来源的同名参数被合并成一次操作。 */
   private selectLookSource(source: LookPolicySource): void {
     if (this.selectedLookSource === source) return
-    this.selectedLookSource = source; this.sliderUndoKey = ''; this.syncLookSliders()
+    this.selectedLookSource = source; this.sliderUndoKey = ''; this.sliderGestureKey = ''
   }
 
   /** 首次显式拆分复制原手感到各来源；关闭独立模式仍保留其参数以便再次启用。 */
@@ -582,7 +550,7 @@ export struct InputSettingsEditor {
     const next: SourceLookPreferences | undefined = copySourceLookPreferences(this.lookPolicies)
     if (next === undefined) { this.statusMsg = '当前视角参数非法，未拆分'; return }
     next.mode = enabled ? 'independent' : 'legacy-global'
-    this.lookPolicies = next; this.syncLookSliders()
+    this.lookPolicies = next
   }
 
   /** 整体替换当前来源参数；兼容模式同步旧四标量，独立模式只更新选中来源。 */
@@ -602,7 +570,7 @@ export struct InputSettingsEditor {
       else next.external = copyLookParameters(value)
       this.lookPolicies = next
     }
-    this.syncLookSliders()
+
   }
 
   /** 来源标识只用于说明设置归属，不从外部兼容通道推断真实硬件。 */
@@ -614,83 +582,39 @@ export struct InputSettingsEditor {
   /** 呈现来源视角与反馈参数；对齐吸附属于布局编辑器，不在此混入布局操作。 */
   @Builder
   GlobalTabContent() {
-    Column({ space: 12 }) {
-      Row({ space: 6 }) {
-        ForEach(['sources', 'feel'], (pane: string): void => {
-          Button(pane === 'sources' ? '视角来源' : pane === 'feel' ? '手感与反馈' : '对齐吸附')
-            .height(44).fontSize(14).layoutWeight(1).padding({ left: 4, right: 4 }).borderRadius(12)
-            .backgroundColor(this.lookPane === pane ? EditorTheme.surfaceActive : EditorTheme.surface)
-            .fontColor(this.lookPane === pane ? EditorTheme.accent : EditorTheme.muted)
-            .onClick((): void => { this.lookPane = pane })
-        }, (pane: string): string => pane)
-      }.width('100%')
-      Text(this.lookPolicies?.mode === 'independent' ? '当前来源：' + this.lookSourceName(this.selectedLookSource) : '当前政策：所有来源兼容设置')
-        .fontSize(12).fontColor(EditorTheme.accent).width('100%')
-      if (this.lookPane === 'sources') {
-        Row() {
-          Text('各来源独立视角').fontSize(14).fontColor(EditorTheme.text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.lookPolicies?.mode === 'independent' })
-            .selectedColor(EditorTheme.accent).onChange((value: boolean): void => { this.setIndependentLook(value) })
-        }.height(48).width('100%')
+    Column({space:12}) {
+      Text(this.lookPolicies?.mode === 'independent' ? '当前来源：'+this.lookSourceName(this.selectedLookSource) : '共享视角设置 · 影响原兼容政策覆盖的来源')
+        .fontSize(14).fontColor(this.palette.accent).width('100%')
+      TouchOptionSlider({palette:this.palette,label:'视角灵敏度',value:this.editorLookParameters().sensitivity*100,minimum:30,maximum:300,step:5,suffix:'%',
+        onChange:(value: number,mode: SliderChangeMode): void => { this.setLookNumber_('sensitivity',value/100,mode) }})
+      TouchOptionToggle({palette:this.palette,label:'Y轴倒置',value:this.editorLookParameters().invertY,
+        onChange:(value: boolean): void => {
+          if (value===this.editorLookParameters().invertY) return
+          this.pushUndo(); const next: LookParameters=this.editorLookParameters(); next.invertY=value; this.updateEditorLook(next)
+        }})
+      if (this.lookPolicies?.mode === 'independent' && this.selectedLookSource === 'physical') {
+        Text('物理鼠标使用直接输入，不应用跟手度平滑；原保存值保留。').fontSize(13).fontColor(this.palette.muted)
+      } else {
+        TouchOptionSlider({palette:this.palette,label:'视角跟手度',value:this.editorLookParameters().smoothing*100,minimum:10,maximum:100,step:5,suffix:'%',
+          onChange:(value: number,mode: SliderChangeMode): void => { this.setLookNumber_('smoothing',value/100,mode) }})
+      }
+      TouchOptionSlider({palette:this.palette,label:'视角加速',value:this.editorLookParameters().acceleration*100,minimum:0,maximum:100,step:5,suffix:'%',
+        onChange:(value: number,mode: SliderChangeMode): void => { this.setLookNumber_('acceleration',value/100,mode) }})
+      Text('陀螺仪继承触控来源的灵敏度和Y倒置，独立积分，不叠加手指平滑或加速。').fontSize(12).fontColor(this.palette.muted)
+      TouchOptionToggle({palette:this.palette,label:'触觉反馈',description:'方案级，设备支持时生效；关闭不影响按键与释放。',value:this.haptic,
+        onChange:(value: boolean): void => { if (value!==this.haptic) { this.pushUndo(); this.haptic=value } }})
+      Button(this.lookAdvanced ? '收起来源设置' : '高级 · 各来源独立设置 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
+        .onClick((): void => { this.lookAdvanced=!this.lookAdvanced })
+      if (this.lookAdvanced) {
+        TouchOptionToggle({palette:this.palette,label:'各来源独立视角',value:this.lookPolicies?.mode === 'independent',
+          description:'首次开启复制当前手感；关闭仍保留各来源数值。',onChange:(value: boolean): void => { this.setIndependentLook(value) }})
         if (this.lookPolicies?.mode === 'independent') {
-          ForEach([['physical', 'touch'], ['gamepad', 'external']], (sources: string[]): void => {
-            Row({ space: 8 }) {
-              ForEach(sources, (name: string): void => {
-                Button(this.lookSourceName(name as LookPolicySource)).height(44).fontSize(14).layoutWeight(1).borderRadius(12)
-                  .backgroundColor(this.selectedLookSource === name ? EditorTheme.surfaceActive : EditorTheme.surface)
-                  .fontColor(this.selectedLookSource === name ? EditorTheme.accent : EditorTheme.muted)
-                  .onClick((): void => { this.selectLookSource(name as LookPolicySource) })
-              }, (name: string): string => name)
-            }.width('100%')
-          }, (sources: string[]): string => sources.join('-'))
+          ForEach(['physical','touch','gamepad','external'],(source: string) => {
+            Button(this.lookSourceName(source as LookPolicySource)).type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
+              .backgroundColor(this.selectedLookSource===source ? this.palette.surfaceActive : this.palette.surface)
+              .fontColor(this.palette.text).onClick((): void => { this.selectLookSource(source as LookPolicySource) })
+          },(source: string): string => source)
         }
-        Text(this.lookPolicies?.mode !== 'independent' ? '开启独立设置会先复制当前手感，旧方案在关闭时保持原政策。' :
-          this.selectedLookSource === 'physical' ? '物理鼠标保留原始计数与既有无平滑规则。' :
-          this.selectedLookSource === 'touch' ? '陀螺仪继承灵敏度和倒置，独立积分，不叠加手指平滑与加速。' :
-          '只修改当前来源；其它来源保留各自参数。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
-        Row() { Text('视角灵敏度').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-          Text((this.sensVal / 100).toFixed(2) + '×').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
-        Slider({ value: this.sensVal, min: 30, max: 300, step: 5 }).width('100%').height(40)
-          .selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
-          .onChange((value: number, mode: SliderChangeMode): void => {
-            if (!this.prepareSliderChange('lookSensitivity', mode, this.editorLookParameters().sensitivity !== value / 100)) return
-            const next: LookParameters = this.editorLookParameters(); next.sensitivity = value / 100; this.updateEditorLook(next)
-          })
-        Row() { Text('Y 轴倒置').fontSize(14).fontColor(EditorTheme.text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.editorLookParameters().invertY }).selectedColor(EditorTheme.accent)
-            .onChange((value: boolean): void => { this.pushUndo(); const next: LookParameters = this.editorLookParameters(); next.invertY = value; this.updateEditorLook(next) })
-        }.height(48).width('100%')
-      } else if (this.lookPane === 'feel') {
-        Row() { Text('视角跟手度').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-          Text(this.smoothVal.toString() + '%').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
-        Slider({ value: this.smoothVal, min: 10, max: 100, step: 5 }).width('100%').height(40)
-          .selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
-          .onChange((value: number, mode: SliderChangeMode): void => {
-            if (!this.prepareSliderChange('lookSmoothing', mode, this.editorLookParameters().smoothing !== value / 100)) return
-            const next: LookParameters = this.editorLookParameters(); next.smoothing = value / 100; this.updateEditorLook(next)
-          })
-        Text('越大越跟手，越小越平滑。陀螺仪不叠加手指平滑和加速。').fontSize(12).fontColor(EditorTheme.muted).width('100%')
-        Row() { Text('视角加速').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-          Text(this.accelVal === 0 ? '关闭' : this.accelVal.toString() + '%').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
-        Slider({ value: this.accelVal, min: 0, max: 100, step: 5 }).width('100%').height(40)
-          .selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
-          .onChange((value: number, mode: SliderChangeMode): void => {
-            if (!this.prepareSliderChange('lookAccel', mode, this.editorLookParameters().acceleration !== value / 100)) return
-            const next: LookParameters = this.editorLookParameters(); next.acceleration = value / 100; this.updateEditorLook(next)
-          })
-        Row() { Text('摇杆死区').fontSize(14).fontColor(EditorTheme.muted).layoutWeight(1)
-          Text(this.deadZoneVal.toString() + '%').fontSize(14).fontColor(EditorTheme.text) }.width('100%')
-        Slider({ value: this.deadZoneVal, min: 1, max: 50, step: 1 }).width('100%').height(40)
-          .selectedColor(EditorTheme.accent).blockColor(EditorTheme.text)
-          .onChange((value: number, mode: SliderChangeMode): void => {
-            if (!this.prepareSliderChange('joystickDeadZone', mode, this.joystickDeadZone !== value / 100)) return
-            this.joystickDeadZone = value / 100; this.deadZoneVal = Math.round(value)
-          })
-        Row() { Column({ space: 3 }) { Text('触觉反馈').fontSize(14).fontColor(EditorTheme.text)
-          Text('设备支持时生效').fontSize(12).fontColor(EditorTheme.muted) }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          Toggle({ type: ToggleType.Switch, isOn: this.haptic }).selectedColor(EditorTheme.accent)
-            .onChange((value: boolean): void => { this.pushUndo(); this.haptic = value })
-        }.height(52).width('100%')
       }
     }.width('100%')
   }
@@ -705,16 +629,17 @@ export struct InputSettingsEditor {
 
   /** 按SDK的Begin/Moving/End/Click收口一段撤销；同值结束事件仍会清除合并键。 */
   private prepareSliderChange(key: string, mode: SliderChangeMode | undefined, changed: boolean): boolean {
-    if (mode === SliderChangeMode.Begin) this.sliderUndoKey = ''
+    if (mode === SliderChangeMode.Begin) this.sliderGestureKey = key
+    if (mode !== undefined && mode !== SliderChangeMode.Begin && mode !== SliderChangeMode.Click && this.sliderGestureKey !== key) return false
     if (changed) this.beginSliderUndo(key)
-    if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) this.sliderUndoKey = ''
+    if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) { this.sliderUndoKey = ''; this.sliderGestureKey = '' }
     return changed
   }
 
   /** 绘制静态分区标题；可变选中状态由各Builder直接读取，避免按值标题缓存。 */
   @Builder
   SectionLabel(text: string) {
-    Text(text).fontSize(14).fontWeight(FontWeight.Medium).fontColor(EditorTheme.muted)
+    Text(text).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.muted)
       .width('100%').height(28).margin({ top: 8, bottom: 4 })
   }
 }

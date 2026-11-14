@@ -1,8 +1,13 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * VersionManagerSheet.ets — 版本管理 Sheet（v2 重设计 2026-05-14）
  *
- * 当前 R3：storeManager 使用实例身份/六格资源/折叠管理/底部导出的详情；其他产品保留
- * 原详情，并将导出与游戏文件浏览平级。所有产品共用当前 Sheet 内的 GameExportSheet，
+ * 当前 R5：详情普通选项共用72vp最小行；Java/语言进入同Sheet单选页，JVM独立草稿
+ * 编辑。storeManager保留实例身份/六格资源/折叠管理/底部导出，其他产品保留四格布局。
+ * 设计依据为 docs/design/settings.pen 的V01–V16。所有产品共用当前 Sheet 内的 GameExportSheet，
  * 任务仍由协调器持有，页面隐藏或返回不等于取消。顶部 drag pill 由本宿主统一提供。
  *
  * 设计稿：
@@ -37,8 +42,9 @@ import { resolveInstanceGameDir, isIsolatedModpackInstance } from 'commons';
 import { GAME_LANGUAGES, GameLanguageOption, gameLanguageLabel } from 'commons';
 import { getModpackIconPath } from 'mods';
 import { readModpackSnapshot, ModpackSnapshot, ModpackMissingItem } from 'mods';
-import { ModpackInstallTask, createModpackFileResolver } from 'mods';
-import { getDownloadTaskRegistry } from 'feature_core';
+import { ModpackInstallTask, reopenModpackRepair, createModpackFileResolver, resolveCurseForgeFileSourcePreference,
+  CurseForgeFileSourceMode } from 'mods';
+import { getDownloadTaskRegistry, getRelayClient } from 'feature_core';
 import { resolveInstalledMcVersion } from 'mods';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { AppIconName } from 'commons';
@@ -60,6 +66,9 @@ import { SavesManagerSheet } from './SavesManagerSheet';
 import { VersionFileBrowser } from './VersionFileBrowser';
 import { GameArchiveIO } from './GameArchiveIO';
 import { GameExportSheet } from './GameExportSheet';
+import { GameResolutionSettings, GameResolutionPreferenceSnapshot } from './GameResolutionSettings';
+import { VersionDetailOptionRow, VersionDetailDivider, VersionDetailChoiceRow } from './VersionDetailOptionRow';
+import { VersionJvmArgsEditor } from './VersionJvmArgsEditor';
 import { getGameExportCoordinator, ExportTaskView } from '../export/GameExportCoordinator';
 
 const TAG = 'VersionManagerSheet';
@@ -68,6 +77,10 @@ const TAG = 'VersionManagerSheet';
 export struct VersionManagerSheet {
   @Prop canRunGame: boolean = true
   @Prop storeManager: boolean = false
+  /** 补齐任务快照当前正文来源限制，恢复时仍与持久严格策略合并，不能偷偷补用镜像。 */
+  @Prop modSource: string = 'auto'
+  /** 更新/修复沿用全局缓存开关；页面只透传，不自行读取或改写用户偏好。 */
+  @Prop cacheRemoteMeta: boolean = true
   /** 原实例补齐完成入队后交给统一任务详情，不在版本管理页持有后台下载。 */
   onOpenDownloadTask: (id: string) => void = () => {}
   @Prop theme: ThemeColors = {} as ThemeColors
@@ -182,9 +195,8 @@ export struct VersionManagerSheet {
   @State private resPacksCount: number = 0
   @State private dataPacksCount: number = 0
   @State private savesCount: number = 0
-  /** 切换反馈：sheet header 副标题瞬时绿色 "已切换到 ✓"，2.5 s 后清空 */
-  @State private switchedHint: string = ''
-  private switchedHintTimer: number = 0
+  /** 导出子层只投影导航标题；源实例和任务状态仍由 GameExportSheet/协调器持有。 */
+  @State private exportTitle_: string = '导出游戏包'
 
   /**
    * 重命名浮层状态：
@@ -196,19 +208,24 @@ export struct VersionManagerSheet {
   @State private renameInput: string = ''
   @State private renameError: string = ''
 
-  /**
-   * 单版本「自定义 JVM 参数」内联编辑（版本详情步）：
-   *   - jvmArgsExpanded: 是否展开编辑区（点击该行标题切换，animateTo 平滑伸缩）
-   *   - versionJvmArgs:  当前 detailVersion 的单版本参数文本。进入详情时由
-   *                      loadVersionJvmArgs(ver) 载入，编辑后经 onSaveVersionJvmArgs
-   *                      回调交给父组件持久化（本组件保持纯展示，不直接碰 Preferences）。
-   */
-  @State private jvmArgsExpanded: boolean = false
+  /** JVM摘要只保存原owner已确认的值；草稿与保存生命周期归独立编辑器。 */
   @State private versionJvmArgs: string = ''
+  /** 选择/编辑共用详情右侧槽位，按需挂载；离开动画结束才销毁正文。 */
+  @State private detailEditorMounted_: boolean = false
+  @State private detailEditorKind_: string = ''
+  @State private languageSearch_: string = ''
+  @State private editorNavigationBlocked_: boolean = false
+  /** 通用产品的五个系统目录只折叠展示，不改变目录解析与外部存储门控。 */
+  @State private systemFoldersExpanded_: boolean = false
+  private editorDismissHandler_: ((back?: boolean) => void) | undefined = undefined
 
   /** 当前 detailVersion 的【单版本 JDK 选择】：'' = 跟随全局 | 'auto' = 自动 | 具体版本 = 硬覆盖。
    *  进入详情时由 loadVersionJdk(ver) 载入；选择后经 onSaveVersionJdk 回调持久化。 */
   @State private versionJdk: string = ''
+  /** 详情版本的分辨率确认态；草稿由固定版本的编辑器持有，不借首页当前选版。 */
+  @State private versionResolutionPreference_: number = 0
+  @State private versionResolutionEffective_: number = 100
+  @State private versionResolutionReady_: boolean = false
 
   /** 当前 detailVersion 的【单版本游戏语言】：'' = 跟随全局 | 具体 code（'zh_cn'…）= 硬覆盖。
    *  进入详情时由 loadVersionGameLang(ver) 载入；选择后经 onSaveVersionGameLang 回调持久化。 */
@@ -240,8 +257,9 @@ export struct VersionManagerSheet {
   onRepairVersion: (ver: string) => void = () => {}
   onClose: () => void = () => {}
   /**
-   * 将导出组件的草稿/进行中关闭保护交给 bindSheet 宿主。宿主的系统返回、遮罩点击和
-   * 拖拽关闭均走同一 handler；退出导出层或销毁本组件时传 undefined，避免旧实例继续拦截。
+   * 历史名称保留兼容；现在向bindSheet宿主注册整个版本管理的唯一退出分发器。
+   * 系统返回先退当前层，遮罩/拖拽按关闭处理；JVM与导出再交给各自的草稿/任务保护。
+   * 只有整个组件销毁才注销，避免子页退出后系统关闭绕过下一次编辑器。
    */
   onRegisterExportDismiss: (handler: ((back?: boolean) => void) | undefined) => void = () => {}
   /**
@@ -275,6 +293,13 @@ export struct VersionManagerSheet {
    */
   onSaveVersionJdk: (ver: string, choice: string) => void = () => {}
 
+  /** 原偏好owner提供已确认比例与继承后的有效政策，详情面板不自行读取Preferences。 */
+  loadVersionResolution: (ver: string) => GameResolutionPreferenceSnapshot = () => new GameResolutionPreferenceSnapshot()
+  /** 保存必须等待真实flush；未接线的宿主明确拒绝，不能显示虚假的保存成功。 */
+  onSaveVersionResolution: (ver: string, percent: number) => Promise<void> = async (): Promise<void> => {
+    throw new Error('版本分辨率保存入口尚未连接')
+  }
+
   /**
    * 读取某版本的【单版本游戏语言】：'' = 跟随全局 | 具体 code（'zh_cn'/'en_us'…）= 硬覆盖。
    * 父组件接 PreferenceManager.getVersionOverride(ver).gameLanguage。默认 ''（跟随全局）。
@@ -292,10 +317,12 @@ export struct VersionManagerSheet {
    */
   loadVersionJvmArgs: (ver: string) => string = () => ''
   /**
-   * 持久化某版本的"单版本自定义 JVM 参数"。父组件接 PreferenceManager.setVersionOverride
-   * （只改 customJvmArgs 字段，其余字段保持）。默认 no-op。
+   * 持久化某版本的JVM参数，父组件返回专用owner的真实flush Promise。
+   * 只改customJvmArgs字段；未接线明确拒绝，编辑器不能把void/no-op当成保存成功。
    */
-  onSaveVersionJvmArgs: (ver: string, args: string) => void = () => {}
+  onSaveVersionJvmArgs: (ver: string, args: string) => Promise<void> = async (): Promise<void> => {
+    throw new Error('版本JVM参数保存入口尚未连接')
+  }
   /** 用户点"校验文件完整性 (SHA1)"：父组件跑 VersionFileVerifier.verifyAll 并展示结果。 */
   onVerifyVersionFiles: (ver: string) => void = () => {}
 
@@ -343,6 +370,11 @@ export struct VersionManagerSheet {
       this.pageMotion_.reset(0)
     }
     this.mountStep_(this.currentStep)
+    // 系统返回、遮罩及拖拽与顶部按钮共用唯一分发器；子编辑器/导出只注册本地处理器。
+    this.onRegisterExportDismiss((back?: boolean): void => {
+      if (back) this.requestManagerBack_()
+      else this.requestManagerClose_()
+    })
     // 这里只订阅内存中的任务投影，不触发源扫描、恢复或重任务；任务本身仍由协调器持有。
     this.exportTaskUnsubscribe_ = getGameExportCoordinator().subscribe((): void => {
       this.refreshDetailExportTask_()
@@ -356,8 +388,6 @@ export struct VersionManagerSheet {
     if (this.exportTaskUnsubscribe_ !== null) this.exportTaskUnsubscribe_()
     this.exportTaskUnsubscribe_ = null
     this.onRegisterExportDismiss(undefined)
-    if (this.switchedHintTimer !== 0) clearTimeout(this.switchedHintTimer)
-    this.switchedHintTimer = 0
   }
 
   /** 在设置目标步骤和启动位移动画前挂载内容；重复进入不会重建已访问页面。 */
@@ -392,9 +422,14 @@ export struct VersionManagerSheet {
   }
 
 
-  /** 同一标题投影当前持久页槽，不借助新 NavPathStack 替代原横滑状态。 */
+  /** 同一标题投影持久页槽和列表计数；操作教程不再占用独立副标题行。 */
   private managerTitle_(): string {
-    if (this.currentStep === 'export') return '导出游戏包';
+    if (this.currentStep === 'jdk') return 'Java 运行时';
+    if (this.currentStep === 'language') return '游戏语言';
+    if (this.currentStep === 'jvm') return 'JVM 参数';
+    if (this.currentStep === 'resolution') return '游戏分辨率';
+    // 导出层继续发布自己的当前步骤标题；进入编辑子页不改变导出协调器的任务身份。
+    if (this.currentStep === 'export') return this.exportTitle_;
     if (this.currentStep === 'saves') return '存档管理';
     if (this.currentStep === 'files') return '版本文件夹';
     if (this.currentStep === 'resources') {
@@ -403,12 +438,24 @@ export struct VersionManagerSheet {
       if (this.resourceKind === ResourceKind.DATAPACK) return '数据包管理';
       return '模组管理';
     }
-    return this.currentStep === 'detail' ? '版本详情' : '版本管理';
+    return this.currentStep === 'detail' ? '版本详情' : '版本管理 · ' + this.availableVersions.length;
+  }
+
+  /**
+   * 资源页与设置子页共用标题同行的实例入口，完整名称仍交给标题宿主查看。
+   * 详情和导出正文已有唯一身份卡，列表则用标题计数；这些层级不重复增加对象标签，
+   * 也不恢复旧版独占一行的副标题，避免本轮整合把紧凑标题契约回退。
+   */
+  private managerContext_(): string {
+    return this.currentStep === 'resources' || this.currentStep === 'saves' || this.currentStep === 'files'
+      || this.currentStep === 'jdk' || this.currentStep === 'language' || this.currentStep === 'jvm'
+      || this.currentStep === 'resolution'
+      ? this.detailVersion : '';
   }
 
   /** 子面板原有忙态/确认遮罩同步到移出正文后的标题按钮，不能从顶部绕过。 */
   private managerNavigationBlocked_(): boolean {
-    if (this.pageMotion_.moving) return true;
+    if (this.pageMotion_.moving || (this.currentStep === 'jvm' && this.editorNavigationBlocked_)) return true;
     if (this.currentStep === 'resources') return this.resourcesNavigationBlocked_;
     if (this.currentStep === 'saves') return this.savesNavigationBlocked_;
     if (this.currentStep === 'files') return this.filesNavigationBlocked_;
@@ -420,8 +467,11 @@ export struct VersionManagerSheet {
     if (this.managerNavigationBlocked_()) return;
     if (this.currentStep === 'export') {
       if (this.exportDismissHandler_ !== undefined) this.exportDismissHandler_(true);
+    } else if (this.currentStep === 'jvm') {
+      if (this.editorDismissHandler_ !== undefined) this.editorDismissHandler_(true);
     } else if (this.currentStep === 'detail') this.backToList();
-    else if (this.currentStep !== 'list') this.backToDetail();
+    else if (this.currentStep === 'list') this.onClose();
+    else this.backToDetail();
   }
 
   /** 关闭导出必须先通过原草稿/任务保护；处理器未就绪时不允许旁路退出。 */
@@ -429,6 +479,8 @@ export struct VersionManagerSheet {
     if (this.managerNavigationBlocked_()) return;
     if (this.currentStep === 'export') {
       if (this.exportDismissHandler_ !== undefined) this.exportDismissHandler_(false);
+    } else if (this.currentStep === 'jvm') {
+      if (this.editorDismissHandler_ !== undefined) this.editorDismissHandler_(false);
     } else this.onClose();
   }
 
@@ -461,7 +513,7 @@ export struct VersionManagerSheet {
       Column() {
       // 一个宿主包围所有已访问页槽，切层只更新标题与动作，不重建槽位或正文。
       ImmersiveTitleScaffold({ title: this.managerTitle_(),
-        subtitle: this.currentStep === 'list' ? (this.switchedHint || this.headerSubtitle()) : this.detailVersion,
+        contextLabel: this.managerContext_(), contextTitle: '当前实例',
         theme: this.theme, modal: false, showBack: this.currentStep !== 'list', showClose: true,
         surfaceColor: this.theme.bgPrimary, backEnabled: !this.managerNavigationBlocked_(),
         closeEnabled: !this.managerNavigationBlocked_(), backLabel: '返回上一层', closeLabel: '关闭版本管理',
@@ -492,6 +544,8 @@ export struct VersionManagerSheet {
   @Builder
   ResourcesStep() {
     InstalledResourcesSheet({
+      modSource: this.modSource,
+      cacheRemoteMeta: this.cacheRemoteMeta,
       theme: this.theme,
       bottomSafeHeight: this.bottomSafeHeight,
       mcDir: this.mcDir,
@@ -734,8 +788,8 @@ export struct VersionManagerSheet {
       // 2026-05-22：去掉中间分隔线、缩小按钮 width 56→44，iconSize 18→16，
       // 多留 ~14px 横向空间给标题。
       Column({ space: 1 }) {
-        AppIcon({ name: AppIconName.SettingsFilled, iconSize: 16, color: this.theme.primary })
-        Text('管理').fontSize(10).fontWeight(600).fontColor(this.theme.primary)
+        AppIcon({ name: AppIconName.SettingsFilled, iconSize: 16, color: this.theme.actionText })
+        Text('管理').fontSize(10).fontWeight(600).fontColor(this.theme.actionText)
       }
       .width(44)
       .height(54)
@@ -756,12 +810,12 @@ export struct VersionManagerSheet {
     .opacity(this.draggingVer === ver ? 0.28 : 1)
   }
 
-  /** 当前版本：2 px primary 蓝边框；其他：无边框（透明 0 厚度） */
+  /** 当前版本使用主题的必要选中边界；其他版本保持透明零厚度，不改变命中范围。 */
   private currentVersionBorder(ver: string): BorderOptions {
     if (ver === this.currentVersion) {
       return {
         width: 2,
-        color: this.theme.primary,
+        color: this.theme.actionText,
         style: BorderStyle.Solid,
       }
     }
@@ -788,18 +842,18 @@ export struct VersionManagerSheet {
       .height(28)
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(14)
-      .backgroundColor(this.filterLoader === loader ? this.theme.primary : this.theme.bgCard)
+      .backgroundColor(this.filterLoader === loader ? this.theme.actionPrimary : this.theme.bgCard)
       .onClick(() => { this.filterLoader = loader })
   }
 
   @Builder
   OrphansHintCard() {
     Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Warning, iconSize: 14, color: '#D97706' })
+      AppIcon({ name: AppIconName.Warning, iconSize: 14, color: this.theme.warningText })
       Text(this.orphanVersionDirs.length + ' 个版本不完整 / 损坏（安装中断或文件缺失）。可逐个修复或清理：')
         .fontSize(11)
         .fontWeight(500)
-        .fontColor('#92400E')
+        .fontColor(this.theme.warningText)
         .layoutWeight(1)
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -807,7 +861,7 @@ export struct VersionManagerSheet {
         Text('全部清理')
           .fontSize(11)
           .fontWeight(600)
-          .fontColor('#D97706')
+          .fontColor(this.theme.warningText)
       }
       .height(26)
       .padding({ left: 10, right: 10 })
@@ -818,7 +872,7 @@ export struct VersionManagerSheet {
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .backgroundColor('#FEF3C7')
+    .backgroundColor(this.theme.warningBg)
     .borderRadius(12)
     .alignItems(VerticalAlign.Center)
   }
@@ -827,13 +881,13 @@ export struct VersionManagerSheet {
   @Builder
   OrphanRow(name: string) {
     Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Warning, iconSize: 18, color: this.theme.error })
+      AppIcon({ name: AppIconName.Warning, iconSize: 18, color: this.theme.errorText })
       Column({ space: 3 }) {
         Row({ space: 6 }) {
           Text(name)
             .fontSize(14)
             .fontWeight(600)
-            .fontColor(this.theme.error)
+            .fontColor(this.theme.errorText)
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .lineHeight(18)
@@ -852,8 +906,8 @@ export struct VersionManagerSheet {
       .layoutWeight(1)
 
       Column({ space: 1 }) {
-        AppIcon({ name: AppIconName.Refresh, iconSize: 16, color: this.theme.primary })
-        Text('修复').fontSize(10).fontWeight(600).fontColor(this.theme.primary)
+        AppIcon({ name: AppIconName.Refresh, iconSize: 16, color: this.theme.actionText })
+        Text('修复').fontSize(10).fontWeight(600).fontColor(this.theme.actionText)
       }
       .width(44).height(54)
       .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
@@ -861,8 +915,8 @@ export struct VersionManagerSheet {
       .onClick(() => { this.onRepairVersion(name) })
 
       Column({ space: 1 }) {
-        AppIcon({ name: AppIconName.Trash, iconSize: 16, color: this.theme.error })
-        Text('删除').fontSize(10).fontWeight(600).fontColor(this.theme.error)
+        AppIcon({ name: AppIconName.Trash, iconSize: 16, color: this.theme.errorText })
+        Text('删除').fontSize(10).fontWeight(600).fontColor(this.theme.errorText)
       }
       .width(44).height(54)
       .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
@@ -873,7 +927,7 @@ export struct VersionManagerSheet {
     .padding({ left: 10, right: 8, top: 10, bottom: 10 })
     .backgroundColor(this.theme.bgCard)
     .borderRadius(14)
-    .border({ width: 1, color: this.theme.error, style: BorderStyle.Solid })
+    .border({ width: 1, color: this.theme.errorText, style: BorderStyle.Solid })
     .alignItems(VerticalAlign.Center)
   }
 
@@ -895,7 +949,7 @@ export struct VersionManagerSheet {
       .height(36)
       .padding({ left: 18, right: 18 })
       .borderRadius(18)
-      .backgroundColor(this.theme.primary)
+      .backgroundColor(this.theme.actionPrimary)
       .alignItems(VerticalAlign.Center)
       .margin({ top: 8 })
       .onClick(() => { this.onAddNew() })
@@ -922,23 +976,23 @@ export struct VersionManagerSheet {
     // 固定身份与页头一起保留，查看管理末项时仍能确认当前实例，不随正文滚走。
     Column() {
       this.StoreIdentityCard()
-    }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 16 }).flexShrink(0)
+    }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 16 }).flexShrink(0)
 
     Scroll() {
-      Column({ space: 16 }) {
+      Column({ space: 20 }) {
         if (this.detailExportActive_) { this.StoreExportTaskCard() }
         // 整合包的缺项补齐仍是有条件的真实入口，不能因简化主界面而丢到不可达的菜单。
         if (this.detailModpackSnap_ !== null) { this.DetailModpackCard() }
         this.StoreQuickActions()
         this.StoreResourcesCard()
         this.StoreDetailOptions()
-      }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 20 })
+      }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 20 })
     }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
 
     // 单一主行动始终全宽；不因窗口变宽缩成右侧按钮，也不叠放在可滚动的管理内容之上。
     Column() {
       this.StoreExportButton()
-    }.width('100%').padding({ left: 20, right: 20, top: 12, bottom: this.bottomSafeHeight + 12 })
+    }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: this.bottomSafeHeight + 12 })
       .backgroundColor(this.theme.bgCard).flexShrink(0)
   }
 
@@ -959,7 +1013,7 @@ export struct VersionManagerSheet {
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       if (this.detailVersion === this.currentVersion) {
-        Text('当前').fontSize(11).fontWeight(600).fontColor(this.theme.primary)
+        Text('当前').fontSize(11).fontWeight(600).fontColor(this.theme.actionText)
           .padding({ left: 8, right: 8, top: 4, bottom: 4 }).backgroundColor(this.theme.primaryLight).borderRadius(8)
       }
     }.width('100%').padding(16).backgroundColor(this.theme.bgCard).borderRadius(18)
@@ -970,11 +1024,11 @@ export struct VersionManagerSheet {
   StoreQuickActions() {
     Row({ space: 8 }) {
       Button(this.detailVersion === this.currentVersion ? '当前版本' : '设为当前')
-        .layoutWeight(1).height(44).fontSize(14).fontColor(this.theme.primary).backgroundColor(this.theme.bgCard)
-        .borderRadius(14).onClick(() => { this.handleSelectVersion(this.detailVersion) })
+        .layoutWeight(1).constraintSize({ minHeight: 48 }).fontSize(16).fontColor(this.theme.actionText).backgroundColor(this.theme.bgCard)
+        .borderRadius(24).onClick(() => { this.handleSelectVersion(this.detailVersion) })
       if (this.canRunGame) {
-        Button('运行调试').layoutWeight(1).height(44).fontSize(14)
-          .fontColor(this.theme.primary).backgroundColor(this.theme.bgCard).borderRadius(14)
+        Button('运行调试').layoutWeight(1).constraintSize({ minHeight: 48 }).fontSize(16)
+          .fontColor(this.theme.actionText).backgroundColor(this.theme.bgCard).borderRadius(24)
           .onClick(() => { if (this.detailVersion.length > 0) this.onLaunchVersion(this.detailVersion) })
       }
     }.width('100%')
@@ -1012,7 +1066,7 @@ export struct VersionManagerSheet {
       Row({ space: 6 }) {
         AppIcon({ name: kind === 0 ? AppIconName.Mod : kind === 1 ? AppIconName.Shader :
           kind === 2 ? AppIconName.ResourcePack : kind === 3 ? AppIconName.DataPack :
-          kind === 4 ? AppIconName.Save : AppIconName.Folder, iconSize: 20, color: this.theme.primary })
+          kind === 4 ? AppIconName.Save : AppIconName.Folder, iconSize: 20, color: this.theme.actionText })
         Text(kind === 0 ? this.modsCount.toString() : kind === 1 ? this.shadersCount.toString() :
           kind === 2 ? this.resPacksCount.toString() : kind === 3 ? this.dataPacksCount.toString() :
           kind === 4 ? this.savesCount.toString() : '浏览')
@@ -1049,72 +1103,61 @@ export struct VersionManagerSheet {
       if (this.storeManagementExpanded_) {
         Column() {
           this.StoreManagementRow(AppIconName.Edit, '重命名', false, () => { this.openRename() })
+          VersionDetailDivider({ theme: this.theme })
           this.StoreManagementRow(AppIconName.CheckCircle, '检查文件', false,
             () => { this.onVerifyVersionFiles(this.detailVersion) })
+          VersionDetailDivider({ theme: this.theme })
           this.StoreManagementRow(AppIconName.Folder, '版本文件', false, () => { this.gotoFiles() })
           if (this.isExternalStorage) {
+            VersionDetailDivider({ theme: this.theme })
             this.StoreManagementRow(AppIconName.Folder, '打开系统目录', false, () => { this.openFolder('') })
           }
+          VersionDetailDivider({ theme: this.theme })
           this.StoreManagementRow(AppIconName.Trash, '删除版本', true, () => { this.handleDetailDelete() })
-        }.width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
-          .backgroundColor(this.theme.bgCard).borderRadius(16)
+        }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
       }
     }.width('100%')
   }
 
-  /**
-   * 折叠入口先分配图标与完整标题，再把剩余空间交给右侧摘要；摘要过长只省略摘要。
-   * 标题四个汉字保留至少60vp并禁止收缩，摘要在弹性容器内右对齐且最多140vp，
-   * 因此不会再由次要的JDK名称或“检查 / 重命名”把“更多管理”挤成两行。
-   * 收起运行设置前仍保存已有 JVM 编辑；本次仅调整布局，不改变展开状态和动作回调。
-   */
+  /** 折叠只控制同组内容，上下箭头与普通进入项的右箭头保持独立语义。 */
   @Builder
   StoreDisclosureRow(kind: string) {
-    Row({ space: 10 }) {
-      AppIcon({ name: kind === 'runtime' ? AppIconName.Settings : AppIconName.More,
-        iconSize: 20, color: this.theme.textSecondary }).flexShrink(0)
-      Text(kind === 'runtime' ? '运行设置' : '更多管理').fontSize(15).fontWeight(600)
-        .fontColor(this.theme.textPrimary).maxLines(1).constraintSize({ minWidth: 60 }).flexShrink(0)
-      // 外层承接剩余宽，内层文本才限宽；宽屏时箭头仍靠右，窄屏时摘要不会反抢标题空间。
-      Row() {
-        Text(kind === 'runtime' ? this.versionJdkLabel() : '检查 / 重命名')
-          .fontSize(12).fontColor(this.theme.textSecondary).width('100%').constraintSize({ maxWidth: 140 })
-          .textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      }.layoutWeight(1).justifyContent(FlexAlign.End)
-      AppIcon({ name: (kind === 'runtime' ? this.storeRuntimeExpanded_ : this.storeManagementExpanded_) ?
-        AppIconName.ChevronUp : AppIconName.ChevronDown, iconSize: 16, color: this.theme.textHint }).flexShrink(0)
-    }.width('100%').constraintSize({ minHeight: 56 }).padding(16)
-      .backgroundColor(this.theme.bgCard).borderRadius(16)
-      .onClick(() => {
-        if (kind === 'runtime') {
-          if (this.storeRuntimeExpanded_ && this.jvmArgsExpanded) this.saveVersionJvmArgs()
-          this.storeRuntimeExpanded_ = !this.storeRuntimeExpanded_
-        } else this.storeManagementExpanded_ = !this.storeManagementExpanded_
-      })
+    VersionDetailOptionRow({ theme: this.theme, icon: kind === 'runtime' ? AppIconName.Settings : AppIconName.More,
+      title: kind === 'runtime' ? '运行设置' : '更多管理',
+      description: kind === 'runtime' ? 'Java、语言与启动参数' : '检查、重命名与文件管理',
+      value: kind === 'runtime' ? this.versionJdkLabel() : '', kind: 'disclosure',
+      expanded: kind === 'runtime' ? this.storeRuntimeExpanded_ : this.storeManagementExpanded_,
+      controlId: 'version-group-' + kind,
+      onAction: (): void => {
+        if (kind === 'runtime') this.storeRuntimeExpanded_ = !this.storeRuntimeExpanded_
+        else this.storeManagementExpanded_ = !this.storeManagementExpanded_
+      } }).backgroundColor(this.theme.bgCard).borderRadius(20)
   }
 
-  /** 菜单只转发已有动作；删除仍交由父级唯一确认，不在此新增第二个确认弹窗。 */
+  /** 共享行仅转发既有动作；删除仍由父级唯一确认，外部目录只保留根目录入口。 */
   @Builder
   StoreManagementRow(icon: AppIconName, label: string, danger: boolean, action: () => void) {
-    Row({ space: 12 }) {
-      AppIcon({ name: icon, iconSize: 19, color: danger ? this.theme.error : this.theme.textSecondary })
-      Text(label).fontSize(14).fontColor(danger ? this.theme.error : this.theme.textPrimary).layoutWeight(1)
-      AppIcon({ name: AppIconName.ChevronRight, iconSize: 15, color: this.theme.textHint })
-    }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 4, right: 4, top: 10, bottom: 10 })
-      .onClick(() => action())
+    VersionDetailOptionRow({ theme: this.theme, icon, title: label,
+      description: label === '重命名' ? '更改当前实例名称' : label === '检查文件' ? '校验版本文件完整性'
+        : label === '版本文件' ? '导入、导出与文件管理' : danger ? '删除前确认影响范围' : '使用系统文件管理器',
+      value: danger ? '删除' : label === '检查文件' ? '检查' : '', danger,
+      kind: danger || label === '检查文件' ? 'action' : label === '打开系统目录' ? 'external' : 'navigation',
+      actionEnabled: label !== '打开系统目录' || !this.openingFolder,
+      controlId: 'version-management-' + (danger ? 'delete' : label === '检查文件' ? 'verify' : label === '重命名' ? 'rename' : label === '版本文件' ? 'files' : 'external'),
+      onAction: action })
   }
 
   /** 只展示同一详情源的活动任务；点击复用导出层查看，不从详情重复启动重任务。 */
   @Builder
   StoreExportTaskCard() {
     Row({ space: 10 }) {
-      AppIcon({ name: AppIconName.Export, iconSize: 20, color: this.theme.primary })
+      AppIcon({ name: AppIconName.Export, iconSize: 20, color: this.theme.actionText })
       Column({ space: 3 }) {
-        Text('导出进行中').fontSize(14).fontWeight(600).fontColor(this.theme.primary)
+        Text('导出进行中').fontSize(14).fontWeight(600).fontColor(this.theme.actionText)
         Text(this.detailExportMessage_).fontSize(12).fontColor(this.theme.textSecondary)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.primary })
+      AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.actionText })
     }.width('100%').padding(14).backgroundColor(this.theme.primaryLight).borderRadius(14)
       .onClick(() => { this.openGameExport_() })
   }
@@ -1125,10 +1168,10 @@ export struct VersionManagerSheet {
     Button() {
       Row({ space: 8 }) {
         AppIcon({ name: AppIconName.Export, iconSize: 20, color: this.theme.textOnPrimary })
-        Text(this.detailExportActive_ ? '查看导出进度' : '导出游戏包').fontSize(15).fontWeight(600)
+        Text(this.detailExportActive_ ? '查看导出进度' : '导出游戏包').fontSize(16).fontWeight(600)
           .fontColor(this.theme.textOnPrimary)
       }.justifyContent(FlexAlign.Center).width('100%')
-    }.width('100%').height(48).borderRadius(16).backgroundColor(this.theme.primary)
+    }.width('100%').height(48).borderRadius(24).backgroundColor(this.theme.actionPrimary)
       .enabled(this.detailVersion.length > 0 && this.mcDir.length > 0)
       .onClick(() => { this.openGameExport_() })
   }
@@ -1137,7 +1180,7 @@ export struct VersionManagerSheet {
   DetailStep() {
     // ----- 滚动内容区 -----
     Scroll() {
-      Column({ space: 12 }) {
+      Column({ space: 20 }) {
         this.DetailHeroCard()
         this.DetailActionRow()
         if (this.detailModpackSnap_ !== null) {
@@ -1160,8 +1203,7 @@ export struct VersionManagerSheet {
   @Builder
   DetailHeroCard() {
     Row({ space: 12 }) {
-      // Hero 图标：56dp 方块图标（PCL2 同款），在 primary 蓝底上视觉对比足够
-      // 不再用旧的 SymbolGlyph + 深蓝色块叠加，避免与卡片底色冲突
+      // Hero 图标保留内容身份；背景使用当前主题填充，反色说明不再残留浅蓝字。
       Stack() {
         // 浅色底框，让方块贴图在深色 primary 背景上有"卡片感"
         Column().width(56).height(56).backgroundColor('#FFFFFF20').borderRadius(14)
@@ -1175,18 +1217,20 @@ export struct VersionManagerSheet {
       .width(56).height(56)
 
       Column({ space: 4 }) {
-        Text('Minecraft ' + this.detailMcVersion())
+        // 完整实例名是对象身份；MC 与加载器另作同排元数据，重命名实例也能清楚区分。
+        Text(this.detailVersion)
           .fontSize(16)
           .fontWeight(700)
           .fontColor(this.theme.textOnPrimary)
-          .maxLines(1)
+          .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .copyOption(CopyOptions.LocalDevice)
         Row({ space: 6 }) {
-          AppIcon({ name: this.detailHeroIcon(), iconSize: 12, color: '#BFDBFE' })
-          Text(this.detailLoaderText())
+          AppIcon({ name: this.detailHeroIcon(), iconSize: 12, color: this.theme.textOnPrimary })
+          Text('MC ' + this.detailMcVersion() + ' · ' + this.detailLoaderText())
             .fontSize(12)
             .fontWeight(500)
-            .fontColor('#BFDBFE')
+            .fontColor(this.theme.textOnPrimary)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
@@ -1209,7 +1253,7 @@ export struct VersionManagerSheet {
     }
     .width('100%')
     .padding(16)
-    .backgroundColor(this.theme.primary)
+    .backgroundColor(this.theme.actionPrimary)
     .borderRadius(16)
     .alignItems(VerticalAlign.Center)
   }
@@ -1223,7 +1267,7 @@ export struct VersionManagerSheet {
           .fontSize(11).fontWeight(600).fontColor(this.theme.textHint).width('100%')
 
         Row({ space: 8 }) {
-          AppIcon({ name: AppIconName.ModPack, iconSize: 18, color: this.theme.primary })
+          AppIcon({ name: AppIconName.ModPack, iconSize: 18, color: this.theme.actionText })
           Column({ space: 2 }) {
             Text(this.modpackSourceLabel_(this.detailModpackSnap_.source)
               + (this.detailModpackSnap_.packVersion.length > 0 ? ' · v' + this.detailModpackSnap_.packVersion : ''))
@@ -1243,12 +1287,12 @@ export struct VersionManagerSheet {
 
         if (this.detailModpackSnap_.missing.length > 0) {
           Row({ space: 8 }) {
-            AppIcon({ name: AppIconName.Warning, iconSize: 16, color: this.theme.error })
+            AppIcon({ name: AppIconName.Warning, iconSize: 16, color: this.theme.errorText })
             Text(this.detailModpackSnap_.missing.length + ' 项内容安装时缺失')
-              .fontSize(12).fontWeight(500).fontColor(this.theme.error).layoutWeight(1)
+              .fontSize(12).fontWeight(500).fontColor(this.theme.errorText).layoutWeight(1)
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             Text('复制清单')
-              .fontSize(12).fontWeight(600).fontColor(this.theme.primary)
+              .fontSize(12).fontWeight(600).fontColor(this.theme.actionText)
               .padding({ left: 10, right: 10, top: 4, bottom: 4 })
               .onClick(() => {
                 if (this.detailModpackSnap_ !== null) this.copyModpackMissing_(this.detailModpackSnap_)
@@ -1274,11 +1318,23 @@ export struct VersionManagerSheet {
     if (snap === null || snap.installId === undefined || context === null) return
     let id = 'modpack:' + snap.installId
     let registry = getDownloadTaskRegistry()
+    // 用户从已安装实例主动要求补齐时可以开启新一轮，仍由任务层核对正式收据与旧执行状态。
+    try {
+      reopenModpackRepair(context.filesDir, snap.installId, this.mcDir, this.detailVersion)
+    } catch (error) {
+      this.safeToast((error as Error).message, 2000)
+      return
+    }
     if (registry.getAdapter(id) === null) {
+      // 从已安装实例补齐也要捕获开关意图；恢复计划会单调保留更严格约束，不能因
+      // 此入口没有经过在线详情而重新允许MCIM正文。CF元数据仍走既有许可通道。
+      let officialOnly = resolveCurseForgeFileSourcePreference(this.modSource, getRelayClient().isEnabled())
+        === CurseForgeFileSourceMode.OFFICIAL_ONLY
       let task = new ModpackInstallTask({ title: this.detailVersion, sessionId: snap.installId,
         versionName: this.detailVersion, mcDir: this.mcDir, filesDir: context.filesDir,
         existingVersions: this.availableVersions, requireConfirmation: false,
-        resolveCfFile: createModpackFileResolver() })
+        officialFilesOnly: officialOnly,
+        resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, officialOnly) })
       registry.enqueue(task).catch((error: Error): void => {
         this.getUIContext().getPromptAction().showToast({ message: error.message })
       })
@@ -1298,15 +1354,14 @@ export struct VersionManagerSheet {
   DetailActionRow() {
       Row({ space: 8 }) {
       if (this.canRunGame) {
-      this.DetailActionBtn(AppIconName.Play, this.storeManager ? '运行调试' : '启动', this.theme.success, '#FFFFFF', () => {
+      this.DetailActionBtn(AppIconName.Play, this.storeManager ? '运行调试' : '启动', this.theme.actionPrimary, this.theme.textOnPrimary, () => {
         // 正式接入通用启动路径：切到详情版本，父组件走 launchMC（启动前校验 → 真正启动）。
         if (this.detailVersion.length > 0) this.onLaunchVersion(this.detailVersion)
       })
       }
-      this.DetailActionBtn(AppIconName.Copy, '复制', this.theme.bgCard, this.theme.textSecondary, () => {
-        this.getUIContext().getPromptAction().showToast({ message: '复制版本功能 R-5 接入', duration: 1500 })
-      })
-      this.DetailActionBtn(AppIconName.Trash, '删除', this.theme.errorBg, this.theme.error, () => {
+      // 复制版本尚未接入真实业务，使用明确的禁用态，避免占位提示被误认为可用能力。
+      this.DetailActionBtn(AppIconName.Copy, '复制', this.theme.bgInput, this.theme.textHint, () => {}, false)
+      this.DetailActionBtn(AppIconName.Trash, '删除', this.theme.errorBg, this.theme.errorText, () => {
         this.handleDetailDelete()
       })
       }.width('100%').height(48)
@@ -1321,6 +1376,8 @@ export struct VersionManagerSheet {
     this.exportMcRoot_ = this.mcDir
     this.exportVersionId_ = this.detailVersion
     this.exportVersionIsolation_ = this.versionIsolation
+    // 新导出实例挂载前先复位展示标题，异步恢复任务后再由子层发布实际层级。
+    this.exportTitle_ = '导出游戏包'
     this.exportMounted_ = true
     this.currentStep = 'export'
     this.pageMotion_.move(this.getUIContext(), 2)
@@ -1338,10 +1395,10 @@ export struct VersionManagerSheet {
   }
 
   @Builder
-  DetailActionBtn(icon: AppIconName, label: string, bg: ResourceColor, fg: ResourceColor, action: () => void) {
+  DetailActionBtn(icon: AppIconName, label: string, bg: ResourceColor, fg: ResourceColor, action: () => void, enabled: boolean = true) {
     Row({ space: 6 }) {
-      AppIcon({ name: icon, iconSize: 14, color: fg, weight: FontWeight.Bold })
-      Text(label).fontSize(13).fontWeight(600).fontColor(fg)
+      AppIcon({ name: icon, iconSize: 20, color: fg, weight: FontWeight.Bold })
+      Text(label).fontSize(16).fontWeight(600).fontColor(fg)
     }
     .layoutWeight(1)
     .height('100%')
@@ -1349,6 +1406,7 @@ export struct VersionManagerSheet {
     .alignItems(VerticalAlign.Center)
     .borderRadius(14)
     .backgroundColor(bg)
+    .enabled(enabled)
     .onClick(() => action())
   }
 
@@ -1483,44 +1541,11 @@ export struct VersionManagerSheet {
       }
       .width('100%').height(80)
 
-      // ===== 存档 cell（整行，含导入/导出）=====
-      Row({ space: 8 }) {
-        Column({ space: 4 }) {
-          Row({ space: 6 }) {
-            AppIcon({
-              name: AppIconName.Save,
-              iconSize: 16,
-              color: this.savesCount > 0 ? this.theme.textPrimary : this.theme.textHint,
-            })
-            Text(this.savesCount.toString())
-              .fontSize(16)
-              .fontWeight(700)
-              .fontColor(this.savesCount > 0 ? this.theme.textPrimary : this.theme.textHint)
-          }
-          .alignItems(VerticalAlign.Center)
-          Text('存档 · ' + this.savesHint())
-            .fontSize(11)
-            .fontWeight(500)
-            .fontColor(this.theme.textSecondary)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start).justifyContent(FlexAlign.Center)
-        .layoutWeight(1)
-
-        Row({ space: 5 }) {
-          AppIcon({ name: AppIconName.Import, iconSize: 14, color: this.theme.textOnPrimary })
-          Text('导入 / 导出')
-            .fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
-        }
-        .height(34).padding({ left: 14, right: 14 }).borderRadius(17)
-        .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
-      }
-      .width('100%').height(64)
-      .padding({ left: 12, right: 12 })
-      .backgroundColor(this.theme.bgInput).borderRadius(12)
-      .alignItems(VerticalAlign.Center)
-      .onClick(() => { this.handleManageSaves() })
+      // 存档仍进入原管理页；计数直接读取primitive State，统一成整行导航，移除重复小按钮。
+      VersionDetailDivider({ theme: this.theme })
+      VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Save, title: '存档管理',
+        value: this.savesCount + ' 个', description: '打开并管理此版本存档', kind: 'navigation',
+        controlId: 'version-saves-open', onAction: (): void => { this.handleManageSaves() } })
     }
     .width('100%')
     .padding(14)
@@ -1529,305 +1554,103 @@ export struct VersionManagerSheet {
     .alignItems(HorizontalAlign.Start)
   }
 
-  // 版本文件夹入口卡片：进入虚拟文件管理器（沙箱内/外通用，浏览+导入导出+删除+重命名+新建）。
+  /** 文件浏览、包导出及即时校验使用同组72vp行；执行项用动词，不伪装为子页。 */
   @Builder
   DetailFilesCard() {
-    // 其他产品保留原详情视觉，两个文件类行动平级同尺寸，不使用 store 的底部主按钮。
     Column({ space: 8 }) {
-      this.DetailFileAction(AppIconName.Folder, '浏览游戏文件夹', '浏览 / 导入 / 导出此版本的文件', false)
-      this.DetailFileAction(AppIconName.Export, '导出游戏包', '完整包或标准整合包', true)
-    }.width('100%')
-  }
-
-  /** 文件浏览与游戏包导出使用同一种行卡；参数只包含固定展示值，不按值传递可变计数。 */
-  @Builder
-  DetailFileAction(icon: AppIconName, label: string, hint: string, exportGame: boolean) {
-    Row({ space: 10 }) {
-      Stack({ alignContent: Alignment.Center }) {
-        Column().width(36).height(36).borderRadius(9).backgroundColor(this.theme.primaryLight)
-        AppIcon({ name: icon, iconSize: 18, color: this.theme.primary })
-      }
-      .width(36).height(36)
-
-      Column({ space: 2 }) {
-        Text(label)
-          .fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary)
-        Text(hint)
-          .fontSize(11).fontWeight(500).fontColor(this.theme.textHint)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.textHint })
-    }
-    .width('100%')
-    .padding({ left: 12, right: 12, top: 12, bottom: 12 })
-    .backgroundColor(this.theme.bgCard).borderRadius(14)
-    .alignItems(VerticalAlign.Center)
-    .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-    .enabled(this.detailVersion.length > 0 && this.mcDir.length > 0)
-    .onClick(() => { if (exportGame) this.openGameExport_(); else this.gotoFiles() })
-  }
-
-  /** store 折叠层只显示运行项；其他产品仍包含原来的隔离状态和文件校验行。 */
-  @Builder
-  DetailConfigCard(runtimeOnly: boolean = false) {
-    Column() {
-      if (!runtimeOnly) {
-      Text(this.canRunGame ? '·  启动配置' : '·  文件管理')
-        .fontSize(11)
-        .fontWeight(600)
-        .fontColor(this.theme.textHint)
-        .width('100%')
-      }
-
-      if (this.canRunGame) {
-      Row() {
-        Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.Memory, iconSize: 13, color: this.theme.textSecondary })
-          Text('JVM 最大内存').fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
-        }
-        .layoutWeight(1)
-        .alignItems(VerticalAlign.Center)
-
-        Text(this.mcXmx > 0 ? this.mcXmx + ' MB' : '—')
-          .fontSize(13)
-          .fontWeight(700)
-          .fontColor(this.theme.primary)
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 12 })
-      .alignItems(VerticalAlign.Center)
-
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-
-      Row() {
-        Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.Java, iconSize: 13, color: this.theme.textSecondary })
-          Text('Java 运行时').fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
-        }
-        .layoutWeight(1)
-        .alignItems(VerticalAlign.Center)
-
-        Row({ space: 4 }) {
-          Text(this.versionJdkLabel())
-            .fontSize(12).fontWeight(600).fontColor(this.theme.primary)
-          AppIcon({ name: AppIconName.ChevronDown, iconSize: 11, color: this.theme.primary })
-        }
-        .height(28)
-        .padding({ left: 10, right: 10 })
-        .borderRadius(14)
-        .backgroundColor(this.theme.primaryLight)
-        .alignItems(VerticalAlign.Center)
-        // 点开 menu 让用户选【该版本】的 JDK：跟随全局 / 自动 / 具体版本（硬覆盖，可选错调试）
-        .bindMenu(this.buildJdkVersionMenu())
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 12 })
-      .alignItems(VerticalAlign.Center)
-
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-
-      // 游戏语言（该版本 options.txt lang）：跟随全局 / 单版本覆盖
-      Row() {
-        Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.Language, iconSize: 13, color: this.theme.textSecondary })
-          Text('游戏语言').fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
-        }
-        .layoutWeight(1)
-        .alignItems(VerticalAlign.Center)
-
-        Row({ space: 4 }) {
-          Text(this.versionGameLangLabel())
-            .fontSize(12).fontWeight(600).fontColor(this.theme.primary)
-            .constraintSize({ maxWidth: 140 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          AppIcon({ name: AppIconName.ChevronDown, iconSize: 11, color: this.theme.primary })
-        }
-        .height(28)
-        .padding({ left: 10, right: 10 })
-        .borderRadius(14)
-        .backgroundColor(this.theme.primaryLight)
-        .alignItems(VerticalAlign.Center)
-        // 点开 menu 让用户选【该版本】的游戏语言：跟随全局 / 具体语言
-        .bindMenu(this.buildGameLangMenu())
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 12 })
-      .alignItems(VerticalAlign.Center)
-
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-
-      }
-      if (!runtimeOnly) {
-      Row() {
-        Row({ space: 6 }) {
-          AppIcon({
-            name: (this.versionIsolation || isIsolatedModpackInstance(this.mcDir, this.detailVersion)) ? AppIconName.IsolateOn : AppIconName.IsolateOff,
-            iconSize: 13,
-            color: this.theme.textSecondary,
-          })
-          Text('版本隔离').fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
-        }
-        .layoutWeight(1)
-        .alignItems(VerticalAlign.Center)
-
-        Text(isIsolatedModpackInstance(this.mcDir, this.detailVersion) ? '整合包固定开启' : (this.versionIsolation ? '已开启' : '关闭'))
-          .fontSize(12)
-          .fontWeight(600)
-          .fontColor((this.versionIsolation || isIsolatedModpackInstance(this.mcDir, this.detailVersion)) ? this.theme.success : this.theme.textHint)
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 12 })
-      .alignItems(VerticalAlign.Center)
-
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-      }
-
-      if (this.canRunGame) {
-      // 自定义 JVM 参数（单版本）—— 点击标题行就地展开编辑区，伸长本卡片
+      Text('文件管理').fontSize(16).fontWeight(600).fontColor(this.theme.textSecondary).width('100%')
       Column() {
-        Row() {
-          Row({ space: 6 }) {
-            AppIcon({ name: AppIconName.Settings, iconSize: 13, color: this.theme.textSecondary })
-            Text('自定义 JVM 参数').fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
-          }
-          .layoutWeight(1)
-          .alignItems(VerticalAlign.Center)
-
-          Row({ space: 6 }) {
-            // 折叠态且有内容时给个"已设置"标签，让用户一眼看出此版本有单独参数
-            if (!this.jvmArgsExpanded && this.versionJvmArgs.trim().length > 0) {
-              Text('已设置')
-                .fontSize(11).fontWeight(600).fontColor(this.theme.primary)
-                .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-                .borderRadius(8).backgroundColor(this.theme.primaryLight)
-            }
-            AppIcon({
-              name: this.jvmArgsExpanded ? AppIconName.ChevronUp : AppIconName.ChevronDown,
-              iconSize: 14,
-              color: this.theme.textHint,
-            })
-          }
-          .alignItems(VerticalAlign.Center)
-        }
-        .width('100%')
-        .padding({ top: 12, bottom: this.jvmArgsExpanded ? 10 : 4 })
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => {
-          let willExpand = !this.jvmArgsExpanded
-          // 收起前先落盘，避免编辑后直接点标题收起丢失输入
-          if (!willExpand) this.saveVersionJvmArgs()
-          this.getUIContext().animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-            this.jvmArgsExpanded = willExpand
-          })
-        })
-
-        if (this.jvmArgsExpanded) {
-          Column({ space: 8 }) {
-            TextArea({
-              text: this.versionJvmArgs,
-              placeholder: '仅作用于此版本 · 空格分隔 · 与全局参数叠加（本版本优先）',
-            })
-              .width('100%')
-              .height(96)
-              .fontSize(13)
-              .fontColor(this.theme.textPrimary)
-              .backgroundColor(this.theme.bgInput)
-              .borderRadius(10)
-              .onChange((v: string) => { this.versionJvmArgs = v })
-              .onBlur(() => { this.saveVersionJvmArgs() })
-
-            Text('留空 = 仅用全局参数。全局参数在「设置」页中编辑。修改后需重新启动游戏生效。')
-              .fontSize(11)
-              .fontColor(this.theme.textHint)
-              .width('100%')
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .padding({ bottom: 4 })
-        }
-      }
-      .width('100%')
-
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-
-      }
-      // 校验文件完整性（SHA1）—— store 已移到“更多管理”，其他产品保留原位置。
-      if (!runtimeOnly) {
-      Row() {
-        Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.CheckCircle, iconSize: 13, color: this.theme.textSecondary })
-          Text('校验文件完整性').fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
-        }
-        .layoutWeight(1)
-        .alignItems(VerticalAlign.Center)
-
-        Row({ space: 4 }) {
-          Text('SHA1')
-            .fontSize(11).fontWeight(600).fontColor(this.theme.textHint)
-          AppIcon({ name: AppIconName.ChevronRight, iconSize: 14, color: this.theme.textHint })
-        }
-        .alignItems(VerticalAlign.Center)
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 4 })
-      .alignItems(VerticalAlign.Center)
-      .onClick(() => { this.onVerifyVersionFiles(this.detailVersion) })
-      }
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(16)
-  }
-
-  @Builder
-  DetailFoldersCard() {
-    Column() {
-      Text('·  在系统文件管理中打开')
-        .fontSize(11)
-        .fontWeight(600)
-        .fontColor(this.theme.textHint)
-        .width('100%')
-
-      this.DetailFolderRow(AppIconName.Folder,       '版本根目录', '')
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-      this.DetailFolderRow(AppIconName.Mod,          'mods/', 'mods')
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-      this.DetailFolderRow(AppIconName.Shader,       'shaderpacks/', 'shaderpacks')
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-      this.DetailFolderRow(AppIconName.ResourcePack, 'resourcepacks/', 'resourcepacks')
-      Row().width('100%').height(1).backgroundColor(this.theme.divider)
-      this.DetailFolderRow(AppIconName.Save,         'saves/', 'saves')
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 8 })
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(16)
+        VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Folder, title: '版本文件',
+          description: '导入、导出与文件管理', kind: 'navigation', controlId: 'version-files-open',
+          actionEnabled: this.detailVersion.length > 0 && this.mcDir.length > 0,
+          onAction: (): void => { this.gotoFiles() } })
+        VersionDetailDivider({ theme: this.theme })
+        VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Export, title: '导出游戏包',
+          description: '完整包或标准整合包', kind: 'navigation', controlId: 'version-export-open',
+          actionEnabled: this.detailVersion.length > 0 && this.mcDir.length > 0,
+          onAction: (): void => { this.openGameExport_() } })
+        VersionDetailDivider({ theme: this.theme })
+        VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.CheckCircle, title: '校验文件完整性',
+          description: '检查版本文件的 SHA1', value: '检查', kind: 'action', controlId: 'version-verify-files',
+          onAction: (): void => { this.onVerifyVersionFiles(this.detailVersion) } })
+      }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
   /**
-   * @param sub 子目录名（'' = 版本根目录）。实际路径 = verDir()[ + '/' + sub]。
+   * 运行配置只呈现确认值与进入动作，不在列表中嵌套输入框或小胶囊菜单。
+   * memory是全局摘要，isolation是全局/整合包固定状态，二者均不可在本页修改。
+   * store的runtimeOnly继续隐藏重复的隔离说明；canRunGame仍门控全部运行设置。
    */
   @Builder
-  DetailFolderRow(icon: AppIconName, name: string, sub: string) {
-    Row() {
-      Row({ space: 10 }) {
-        AppIcon({ name: icon, iconSize: 15, color: this.theme.textSecondary })
-        Text(name).fontSize(13).fontWeight(500).fontColor(this.theme.textPrimary)
+  DetailConfigCard(runtimeOnly: boolean = false) {
+    Column({ space: 8 }) {
+      if (!runtimeOnly) {
+        Text(this.canRunGame ? '运行配置' : '版本状态').fontSize(16).fontWeight(600)
+          .fontColor(this.theme.textSecondary).width('100%')
       }
-      .alignItems(VerticalAlign.Center)
-      .layoutWeight(1)
+      Column() {
+        if (this.canRunGame) {
+          VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Memory, title: 'JVM 最大内存',
+            value: this.mcXmx > 0 ? (this.mcXmx % 1024 === 0 ? this.mcXmx / 1024 + ' GB' : this.mcXmx + ' MB') : '—',
+            description: '全局设置 · 本页只读', kind: 'readonly', controlId: 'version-memory-summary' })
+          VersionDetailDivider({ theme: this.theme })
+          VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Java, title: 'Java 运行时',
+            value: this.versionJdkLabel(), description: this.versionJdk === '' ? this.globalJdkDescription_() : this.versionJdk === 'auto' ? '按此版本需求自动匹配' : '指定运行时 · 强制使用',
+            kind: 'navigation', controlId: 'version-jdk-open', onAction: (): void => { this.openDetailEditor_('jdk') } })
+          VersionDetailDivider({ theme: this.theme })
+          this.VersionResolutionSetting_()
+          VersionDetailDivider({ theme: this.theme })
+          VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Language, title: '游戏语言',
+            value: this.versionGameLangLabel(), description: this.versionGameLang === '' ? '全局：' + gameLanguageLabel(this.globalGameLanguage) : '仅此版本 · 下次启动生效',
+            kind: 'navigation', controlId: 'version-language-open', onAction: (): void => { this.openDetailEditor_('language') } })
+          VersionDetailDivider({ theme: this.theme })
+        }
+        if (!runtimeOnly) {
+          VersionDetailOptionRow({ theme: this.theme,
+            icon: (this.versionIsolation || isIsolatedModpackInstance(this.mcDir, this.detailVersion)) ? AppIconName.IsolateOn : AppIconName.IsolateOff,
+            title: '版本隔离', value: isIsolatedModpackInstance(this.mcDir, this.detailVersion) ? '固定开启' : this.versionIsolation ? '已开启' : '已关闭',
+            description: isIsolatedModpackInstance(this.mcDir, this.detailVersion) ? '整合包独立目录 · 本页只读' : '全局设置 · 本页只读',
+            kind: 'readonly', controlId: 'version-isolation-summary' })
+          if (this.canRunGame) { VersionDetailDivider({ theme: this.theme }) }
+        }
+        if (this.canRunGame) {
+          VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Settings, title: 'JVM 参数',
+            value: this.versionJvmArgs.trim().length > 0 ? '已设置' : '未设置', description: '单版本参数，与全局叠加',
+            kind: 'navigation', controlId: 'version-jvm-open', onAction: (): void => { this.openDetailEditor_('jvm') } })
+        }
+      }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
 
-      AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 15, color: this.theme.primary })
-    }
-    .width('100%')
-    .padding({ top: 10, bottom: 10 })
-    .alignItems(VerticalAlign.Center)
-    .onClick(() => { this.openFolder(sub) })
-    .enabled(!this.openingFolder)
+  /** 五个系统目录只在外部存储时由调用方显示；折叠不改变实际目录解析。 */
+  @Builder
+  DetailFoldersCard() {
+    Column() {
+      VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Folder, title: '系统文件管理',
+        value: '5 个目录', description: '通过系统文件管理器打开', kind: 'disclosure', expanded: this.systemFoldersExpanded_,
+        controlId: 'version-system-folders', onAction: (): void => { this.systemFoldersExpanded_ = !this.systemFoldersExpanded_ } })
+      if (this.systemFoldersExpanded_) {
+        VersionDetailDivider({ theme: this.theme })
+        this.DetailFolderRow(AppIconName.Folder, '版本目录', '')
+        VersionDetailDivider({ theme: this.theme })
+        this.DetailFolderRow(AppIconName.Mod, '模组目录', 'mods')
+        VersionDetailDivider({ theme: this.theme })
+        this.DetailFolderRow(AppIconName.Shader, '光影目录', 'shaderpacks')
+        VersionDetailDivider({ theme: this.theme })
+        this.DetailFolderRow(AppIconName.ResourcePack, '资源包目录', 'resourcepacks')
+        VersionDetailDivider({ theme: this.theme })
+        this.DetailFolderRow(AppIconName.Save, '存档目录', 'saves')
+      }
+    }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+  }
+
+  /** 系统外跳统一右上箭头；openingFolder防重仍由原picker流程持有。 */
+  @Builder
+  DetailFolderRow(icon: AppIconName, name: string, sub: string) {
+    VersionDetailOptionRow({ theme: this.theme, icon, title: name,
+      description: sub.length > 0 ? sub : '查看此版本的文件', kind: 'external', actionEnabled: !this.openingFolder,
+      controlId: 'version-system-directory-' + (sub || 'root'), onAction: (): void => { this.openFolder(sub) } })
   }
 
   /** 详情版本目录根（含版本隔离判断）。 */
@@ -1891,22 +1714,16 @@ export struct VersionManagerSheet {
   private handleSelectVersion(ver: string): void {
     if (ver === this.currentVersion) {
       // 已是当前版本：仅做轻提示，不重复触发上层 onSelectVersion
-      this.flashSwitched(ver, '已是当前版本')
+      this.flashSwitched('已是当前版本')
       return
     }
     this.onSelectVersion(ver)
-    this.flashSwitched(ver, '已切换到 ' + ver + ' ✓')
+    this.flashSwitched('已切换到 ' + ver + ' ✓')
   }
 
-  private flashSwitched(ver: string, hint: string): void {
-    this.switchedHint = hint
-    if (this.switchedHintTimer !== 0) {
-      clearTimeout(this.switchedHintTimer)
-    }
-    this.switchedHintTimer = setTimeout(() => {
-      this.switchedHint = ''
-      this.switchedHintTimer = 0
-    }, 2500)
+  /** 切换确认使用当前 UIContext 的短提示；选中行仍由原 currentVersion 回传更新。 */
+  private flashSwitched(hint: string): void {
+    try { this.getUIContext().getPromptAction().showToast({ message: hint }); } catch (_) { }
   }
 
   /** 重置 5 个 primitive @State 资源计数（每个独立赋值确保 ArkUI dirty-track 都触发） */
@@ -1924,13 +1741,155 @@ export struct VersionManagerSheet {
     this.versionJvmArgs = this.loadVersionJvmArgs(ver)
     this.versionJdk = this.loadVersionJdk(ver)
     this.versionGameLang = this.loadVersionGameLang(ver)
-    this.jvmArgsExpanded = false
+    this.systemFoldersExpanded_ = false
+    this.languageSearch_ = ''
+    this.refreshVersionResolution_(ver)
   }
 
-  /** 持久化当前详情版本的单版本自定义 JVM 参数（trim 首尾空白）。 */
-  private saveVersionJvmArgs(): void {
-    if (this.detailVersion.length === 0) return
-    this.onSaveVersionJvmArgs(this.detailVersion, this.versionJvmArgs.trim())
+  /** 每次进入/切换详情读取同一版本的持久确认态，失败保留未知而不假称默认100%。 */
+  private refreshVersionResolution_(ver: string): void {
+    this.versionResolutionReady_ = false
+    if (ver.length === 0) return
+    try {
+      const snapshot = this.loadVersionResolution(ver)
+      this.versionResolutionPreference_ = snapshot.preferencePercent
+      this.versionResolutionEffective_ = snapshot.effectivePercent
+      this.versionResolutionReady_ = true
+    } catch (_) { /* 详情摘要显示暂不可用；展开编辑器保留原读取错误与重试入口。 */ }
+  }
+
+  /** 摘要只使用确认值，0跟随全局与明确的100%独立显示。 */
+  private versionResolutionLabel_(): string {
+    if (!this.versionResolutionReady_) return '暂不可用'
+    return this.versionResolutionPreference_ === 0 ? '跟随全局（' + this.versionResolutionEffective_ + '%）'
+      : this.versionResolutionPreference_ + '%'
+  }
+
+  /** 分辨率保留原编辑器和owner，统一为同Sheet进入项，不在列表里另做展开协议。 */
+  @Builder
+  private VersionResolutionSetting_() {
+    VersionDetailOptionRow({ theme: this.theme, icon: AppIconName.Settings, title: '游戏分辨率',
+      value: this.versionResolutionLabel_(), description: '仅此版本 · 下次启动生效', kind: 'navigation',
+      controlId: 'version-resolution-open', onAction: (): void => { this.openDetailEditor_('resolution') } })
+  }
+
+  /** 子页复用详情相邻槽位；不会关闭Sheet、切换首页版本或提前创建其他资源面板。 */
+  private openDetailEditor_(kind: string): void {
+    if (this.pageMotion_.moving || this.currentStep !== 'detail' || !this.canRunGame || this.detailVersion.length === 0) return
+    if (kind !== 'jdk' && kind !== 'language' && kind !== 'jvm' && kind !== 'resolution') return
+    this.languageSearch_ = ''
+    this.editorNavigationBlocked_ = false
+    this.editorDismissHandler_ = undefined
+    this.detailEditorKind_ = kind
+    this.detailEditorMounted_ = true
+    this.currentStep = kind
+    this.pageMotion_.move(this.getUIContext(), 2)
+  }
+
+  /** 跟随全局的说明只描述真实政策，不把首页当前MC推算的JDK误标为此详情推荐值。 */
+  private globalJdkDescription_(): string {
+    return '全局：' + (this.globalJdkVersion === 'auto' || this.globalJdkVersion.length === 0 ? '自动匹配' : 'Java ' + this.globalJdkVersion)
+  }
+
+  /** 选择立即应用原回调并返回详情；只有当前子页可发事件，动画中的迟到点击忽略。 */
+  private applyJdkChoice_(value: string): void {
+    if (this.currentStep !== 'jdk' || this.pageMotion_.moving) return
+    if (value !== '' && value !== 'auto' && !this.supportedJdkVersions.includes(value)) return
+    try {
+      if (value !== this.versionJdk) this.onSaveVersionJdk(this.detailVersion, value)
+      this.versionJdk = value
+      this.backToDetail()
+    } catch (_) { this.safeToast('Java 运行时设置失败，请重试', 1800) }
+  }
+
+  /** 语言写入下一次启动策略；搜索只过滤视图，不改变任何已保存值。 */
+  private applyLanguageChoice_(value: string): void {
+    if (this.currentStep !== 'language' || this.pageMotion_.moving) return
+    if (value !== '' && !GAME_LANGUAGES.some((item: GameLanguageOption): boolean => item.code === value)) return
+    try {
+      if (value !== this.versionGameLang) this.onSaveVersionGameLang(this.detailVersion, value)
+      this.versionGameLang = value
+      this.backToDetail()
+    } catch (_) { this.safeToast('游戏语言设置失败，请重试', 1800) }
+  }
+
+  /** 原语言目录为唯一事实源；按中文名、英文名/代码过滤，空搜索恢复全部选项。 */
+  private filteredLanguages_(): GameLanguageOption[] {
+    const query: string = this.languageSearch_.trim().toLowerCase()
+    return query.length === 0 ? GAME_LANGUAGES : GAME_LANGUAGES.filter((item: GameLanguageOption): boolean =>
+      item.label.toLowerCase().includes(query) || item.code.toLowerCase().includes(query))
+  }
+
+  /** 选择页与编辑页共用父级标题、实例身份及返回分发，正文单独滚动。 */
+  @Builder
+  private DetailEditorStep_() {
+    if (this.detailEditorKind_ === 'jvm') {
+      VersionJvmArgsEditor({ theme: this.theme, versionId: this.detailVersion, ownerKey: this.mcDir,
+        visible: this.currentStep === 'jvm', bottomSafeHeight: this.bottomSafeHeight,
+        loadValue: (ver: string): string => this.loadVersionJvmArgs(ver),
+        saveValue: (ver: string, value: string): Promise<void> => this.onSaveVersionJvmArgs(ver, value),
+        onSaved: (ver: string, value: string): void => { if (ver === this.detailVersion) this.versionJvmArgs = value },
+        onBack: (): void => { this.backToDetail() }, onClose: (): void => { this.onClose() },
+        onRegisterDismiss: (handler: ((back?: boolean) => void) | undefined): void => { this.editorDismissHandler_ = handler },
+        onNavigationBlocked: (blocked: boolean): void => { this.editorNavigationBlocked_ = blocked } })
+    } else if (this.detailEditorKind_ === 'resolution') {
+      // 编辑器自行安排正文滚动和固定操作栏，不能再嵌入选择列表的外层Scroll。
+      GameResolutionSettings({ theme: this.theme, versionScope: true, versionId: this.detailVersion,
+        ownerKey: this.mcDir, visible: this.currentStep === 'resolution', embedded: true, bottomSafeHeight: this.bottomSafeHeight,
+        loadPreference: (ver: string, _scope: boolean): GameResolutionPreferenceSnapshot => this.loadVersionResolution(ver),
+        savePreference: (percent: number, ver: string): Promise<void> => this.onSaveVersionResolution(ver, percent),
+        onSaved: (ver: string, _percent: number): void => { if (ver === this.detailVersion) this.refreshVersionResolution_(ver) } })
+    } else {
+      Scroll() {
+        Column({ space: 20 }) {
+          if (this.detailEditorKind_ === 'jdk') {
+            Text('仅作用于此版本。跟随全局、自动匹配与指定运行时是三种不同政策。')
+              .fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+            Column() {
+              VersionDetailChoiceRow({ theme: this.theme, title: '跟随全局', description: this.globalJdkDescription_(),
+                selected: this.versionJdk === '', group: 'version-jdk-' + this.mcDir + ':' + this.detailVersion, controlId: 'version-jdk-inherit',
+                onAction: (): void => { this.applyJdkChoice_('') } })
+              VersionDetailDivider({ theme: this.theme })
+              VersionDetailChoiceRow({ theme: this.theme, title: '自动匹配', description: '忽略全局固定值，按此版本需求匹配',
+                selected: this.versionJdk === 'auto', group: 'version-jdk-' + this.mcDir + ':' + this.detailVersion, controlId: 'version-jdk-auto',
+                onAction: (): void => { this.applyJdkChoice_('auto') } })
+            }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+            Column() {
+              ForEach(this.supportedJdkVersions, (version: string) => {
+                VersionDetailChoiceRow({ theme: this.theme, title: 'Java ' + version, description: '指定运行时 · 强制使用',
+                  selected: this.versionJdk === version, group: 'version-jdk-' + this.mcDir + ':' + this.detailVersion, controlId: 'version-jdk-' + version,
+                  onAction: (): void => { this.applyJdkChoice_(version) } })
+              }, (version: string): string => version)
+            }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+            Text('指定运行时可能与游戏不兼容，请确认版本要求。')
+              .fontSize(14).fontColor(this.theme.warningText).width('100%')
+          } else if (this.detailEditorKind_ === 'language') {
+            Text('仅此版本下次启动时使用；跟随全局会随全局设置更新。')
+              .fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+            TextInput({ text: this.languageSearch_, placeholder: '搜索语言或代码' }).height(48).fontSize(16)
+              .fontColor(this.theme.textPrimary).backgroundColor(this.theme.bgInput).borderRadius(24)
+              .onChange((value: string): void => { this.languageSearch_ = value }).id('version-language-search')
+            Column() {
+              VersionDetailChoiceRow({ theme: this.theme, title: '跟随全局', description: '全局：' + gameLanguageLabel(this.globalGameLanguage),
+                selected: this.versionGameLang === '', group: 'version-language-' + this.mcDir + ':' + this.detailVersion, controlId: 'version-language-inherit',
+                onAction: (): void => { this.applyLanguageChoice_('') } })
+              ForEach(this.filteredLanguages_(), (option: GameLanguageOption) => {
+                VersionDetailDivider({ theme: this.theme })
+                VersionDetailChoiceRow({ theme: this.theme, title: option.label, description: option.code,
+                  selected: this.versionGameLang === option.code, group: 'version-language-' + this.mcDir + ':' + this.detailVersion, controlId: 'version-language-' + option.code,
+                  onAction: (): void => { this.applyLanguageChoice_(option.code) } })
+              }, (option: GameLanguageOption): string => option.code)
+            }.width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).clip(true)
+            if (this.filteredLanguages_().length === 0) {
+              Text('没有匹配的语言，可修改搜索词。').fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+            }
+          }
+          if (this.detailEditorKind_ === 'jdk' || this.detailEditorKind_ === 'language') {
+            Text('点击选项立即应用并返回；直接返回不改变选择。').fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+          }
+        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: this.bottomSafeHeight + 24 })
+      }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
+    }
   }
 
   /** 进入版本详情时加载整合包快照（非整合包版本置 null）。读文件失败静默忽略。 */
@@ -1958,7 +1917,6 @@ export struct VersionManagerSheet {
 
   private gotoDetail(ver: string): void {
     if (this.pageMotion_.moving) return
-    if (this.currentStep === 'export') this.onRegisterExportDismiss(undefined)
     this.mountStep_('detail')
     this.detailVersion = ver
     this.storeRuntimeExpanded_ = false
@@ -1975,7 +1933,6 @@ export struct VersionManagerSheet {
 
   private backToList(): void {
     if (this.pageMotion_.moving) return
-    if (this.currentStep === 'export') this.onRegisterExportDismiss(undefined)
     this.mountStep_('list')
     this.currentStep = 'list'
     this.pageMotion_.move(this.getUIContext(), 0)
@@ -1995,15 +1952,21 @@ export struct VersionManagerSheet {
   /** 资源管理 → 详情。回到详情时重扫资源数量（用户可能启用/禁用/删除过）。 */
   private backToDetail(): void {
     if (this.pageMotion_.moving) return
-    // GameExportSheet 已完成返回确认；先解除宿主关闭保护，再销毁导出子层的页面订阅。
+    // 子层已完成返回确认；唯一宿主分发器常驻，动画结束才销毁临时页及订阅。
     const fromExport: boolean = this.currentStep === 'export'
-    if (fromExport) this.onRegisterExportDismiss(undefined)
+    const fromEditor: boolean = this.detailEditorMounted_
     this.mountStep_('detail')
     this.currentStep = 'detail'
     this.refreshDetailResStat(this.detailVersion)
     this.refreshDetailExportTask_()
     this.pageMotion_.move(this.getUIContext(), 1, (): void => {
       if (fromExport) this.exportMounted_ = false
+      if (fromEditor) {
+        this.detailEditorMounted_ = false
+        this.detailEditorKind_ = ''
+        this.editorDismissHandler_ = undefined
+        this.editorNavigationBlocked_ = false
+      }
     })
   }
 
@@ -2099,7 +2062,7 @@ export struct VersionManagerSheet {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#99000000')
+        .backgroundColor(this.theme.overlayShade)
         .onClick(() => { this.closeRename() })
 
       // 居中卡片
@@ -2134,11 +2097,11 @@ export struct VersionManagerSheet {
         // 即时错误提示（仅在有错时渲染，避免空行抖动）
         if (this.renameError.length > 0) {
           Row({ space: 4 }) {
-            AppIcon({ name: AppIconName.Warning, iconSize: 12, color: this.theme.error })
+            AppIcon({ name: AppIconName.Warning, iconSize: 12, color: this.theme.errorText })
             Text(this.renameError)
               .fontSize(12)
               .fontWeight(500)
-              .fontColor(this.theme.error)
+              .fontColor(this.theme.errorText)
               .layoutWeight(1)
           }
           .width('100%')
@@ -2165,7 +2128,7 @@ export struct VersionManagerSheet {
             .fontWeight(700)
             .fontColor(this.theme.textOnPrimary)
             // 不可提交时弱化（primaryLight + 降透明度），可提交时 primary 实色
-            .backgroundColor(this.canConfirmRename() ? this.theme.primary : this.theme.primaryLight)
+            .backgroundColor(this.canConfirmRename() ? this.theme.actionPrimary : this.theme.primaryLight)
             .opacity(this.canConfirmRename() ? 1 : 0.6)
             .borderRadius(12)
             .textAlign(TextAlign.Center)
@@ -2188,12 +2151,6 @@ export struct VersionManagerSheet {
   // ============================================================
   //  helpers — 列表 + 徽章
   // ============================================================
-
-  private headerSubtitle(): string {
-    let n = this.availableVersions.length
-    if (n === 0) return '尚未安装任何版本'
-    return n + ' 个已安装  ·  点击行体切换  ·  点击「管理」进入详情'
-  }
 
   private filteredVersions(): string[] {
     if (this.filterLoader.length === 0) return this.orderVersions
@@ -2231,7 +2188,7 @@ export struct VersionManagerSheet {
   @Builder
   DragPreview(ver: string) {
     Row() {
-      AppIcon({ name: AppIconName.DragHandle, iconSize: 16, color: this.theme.primary })
+      AppIcon({ name: AppIconName.DragHandle, iconSize: 16, color: this.theme.actionText })
       VersionBlockIcon({ versionId: ver, iconSize: 32, cornerRadius: 0, overrideImagePath: getModpackIconPath(this.mcDir, ver) })
         .width(32).height(32).margin({ left: 10 })
       Text(ver)
@@ -2243,7 +2200,7 @@ export struct VersionManagerSheet {
     .padding({ left: 14, right: 16, top: 12, bottom: 12 })
     .backgroundColor(this.theme.bgCard)
     .borderRadius(14)
-    .border({ width: 1.5, color: this.theme.primary, style: BorderStyle.Solid })
+    .border({ width: 1.5, color: this.theme.actionText, style: BorderStyle.Solid })
     .shadow({ radius: this.theme.cardShadowRadius * 2.2, color: this.theme.cardShadowColor })
     .scale({ x: 1.04, y: 1.04 })
   }
@@ -2317,88 +2274,11 @@ export struct VersionManagerSheet {
     return resolveInstalledLoaderInfo(this.mcDir, this.detailVersion).iconName
   }
 
-  /**
-   * 构造 JDK 版本选择 menu。
-   *
-   * 表项："JDK 17"、"JDK 21" 等。当前选中加 "✓" 前缀；与
-   * suggestedJdkVersion（按 mcVersion 推算的 autoSelectVersion 结果）一致时
-   * 加" · 推荐"后缀。
-   *
-   * 返回值遵循 ArkUI bindMenu(MenuElement[]) 接口；图标省略保持视觉简洁。
-   *
-   * suggestedJdkVersion === selectedJdkVersion 时不挂"推荐"，避免冗余。
-   */
-  private buildJdkVersionMenu(): MenuElement[] {
-    let items: MenuElement[] = []
-    // 跟随全局（附注全局当前值）
-    let globalLabel = this.globalJdkVersion === 'auto' ? '自动'
-      : (this.globalJdkVersion.length > 0 ? 'JDK ' + this.globalJdkVersion : '自动')
-    items.push({
-      value: (this.versionJdk === '' ? '✓  ' : '    ') + '跟随全局（' + globalLabel + '）',
-      action: () => { this.selectVersionJdk('') },
-    } as MenuElement)
-    // 自动（按版本纪元路由）
-    items.push({
-      value: (this.versionJdk === 'auto' ? '✓  ' : '    ') + '自动（按版本纪元）',
-      action: () => { this.selectVersionJdk('auto') },
-    } as MenuElement)
-    // 各具体版本（硬覆盖，可用于"选错也能启动"的调试）
-    let supported = this.supportedJdkVersions.length > 0 ? this.supportedJdkVersions : ['17']
-    for (let v of supported) {
-      let prefix = (v === this.versionJdk) ? '✓  ' : '    '
-      let suffix = (v === this.suggestedJdkVersion) ? '  · 推荐' : ''
-      items.push({
-        value: prefix + 'JDK ' + v + suffix,
-        action: () => { this.selectVersionJdk(v) },
-      } as MenuElement)
-    }
-    return items
-  }
-
-  /** 选择单版本 JDK：更新本地 state + 回调父组件持久化（'' 跟随全局 / 'auto' / 具体版本）。 */
-  private selectVersionJdk(choice: string): void {
-    this.versionJdk = choice
-    if (this.detailVersion.length > 0) {
-      this.onSaveVersionJdk(this.detailVersion, choice)
-    }
-  }
-
   /** 单版本 JDK 行的显示文案。 */
   private versionJdkLabel(): string {
     if (this.versionJdk === 'auto') return '自动'
     if (this.versionJdk.length > 0) return 'JDK ' + this.versionJdk
     return '跟随全局'
-  }
-
-  /**
-   * 构造单版本【游戏语言】选择 menu。首项"跟随全局（<全局语言>）"，其后各具体语言。
-   * 当前选中加 "✓" 前缀。
-   */
-  private buildGameLangMenu(): MenuElement[] {
-    let items: MenuElement[] = []
-    // 跟随全局（附注全局当前语言）
-    items.push({
-      value: (this.versionGameLang === '' ? '✓  ' : '    ')
-        + '跟随全局（' + gameLanguageLabel(this.globalGameLanguage) + '）',
-      action: () => { this.selectVersionGameLang('') },
-    } as MenuElement)
-    // 各具体语言（单版本硬覆盖）
-    for (let opt of GAME_LANGUAGES) {
-      let prefix = (opt.code === this.versionGameLang) ? '✓  ' : '    '
-      items.push({
-        value: prefix + opt.label,
-        action: () => { this.selectVersionGameLang(opt.code) },
-      } as MenuElement)
-    }
-    return items
-  }
-
-  /** 选择单版本游戏语言：更新本地 state + 回调父组件持久化（'' 跟随全局 / 具体 code）。 */
-  private selectVersionGameLang(code: string): void {
-    this.versionGameLang = code
-    if (this.detailVersion.length > 0) {
-      this.onSaveVersionGameLang(this.detailVersion, code)
-    }
   }
 
   /** 单版本游戏语言行的显示文案。 */
@@ -2542,7 +2422,7 @@ export struct VersionManagerSheet {
         }
         .width('100%').height('100%')
         .translate({ x: this.pageMotion_.offset(2) })
-        .visibility(this.exportMounted_ ? Visibility.Hidden : Visibility.Visible)
+        .visibility(this.exportMounted_ || this.detailEditorMounted_ ? Visibility.Hidden : Visibility.Visible)
 
         // Saves step（序号 3）—— 内嵌 SavesManagerSheet（embedded 模式）
         Column() {
@@ -2550,7 +2430,7 @@ export struct VersionManagerSheet {
         }
         .width('100%').height('100%')
         .translate({ x: this.pageMotion_.offset(3) })
-        .visibility(this.exportMounted_ ? Visibility.Hidden : Visibility.Visible)
+        .visibility(this.exportMounted_ || this.detailEditorMounted_ ? Visibility.Hidden : Visibility.Visible)
 
         // Files step（序号 4）—— 内嵌 VersionFileBrowser（虚拟文件管理器）
         Column() {
@@ -2558,7 +2438,13 @@ export struct VersionManagerSheet {
         }
         .width('100%').height('100%')
         .translate({ x: this.pageMotion_.offset(4) })
-        .visibility(this.exportMounted_ ? Visibility.Hidden : Visibility.Visible)
+        .visibility(this.exportMounted_ || this.detailEditorMounted_ ? Visibility.Hidden : Visibility.Visible)
+
+        // 选择/编辑与导出复用详情右侧相邻槽位；隐藏已有资源页，避免重叠焦点与事件。
+        if (this.detailEditorMounted_) {
+          Column() { this.DetailEditorStep_() }.width('100%').height('100%')
+            .translate({ x: this.pageMotion_.offset(2) })
+        }
 
         // 导出从详情右侧相邻槽位进入；返回结束前保留子页，原详情滚动状态不变。
         if (this.exportMounted_) {
@@ -2566,15 +2452,15 @@ export struct VersionManagerSheet {
           GameExportSheet({
             mcRoot: this.exportMcRoot_, versionId: this.exportVersionId_,
             versionIsolation: this.exportVersionIsolation_, theme: this.theme, embeddedHeader: true,
+            onTitleChange: (title: string): void => { this.exportTitle_ = title; },
             onBack: () => { this.backToDetail() },
             onClose: () => {
-              // 子层已完成草稿/任务关闭确认，再撤销宿主拦截，避免 bindSheet 二次询问。
-              this.onRegisterExportDismiss(undefined)
+              // 子层已完成草稿/任务关闭确认，直接通知宿主关闭；整个组件销毁时统一注销分发器。
               this.onClose()
             },
             onRegisterDismiss: (handler: ((back?: boolean) => void) | undefined): void => {
               this.exportDismissHandler_ = handler
-              this.onRegisterExportDismiss(this.currentStep === 'export' ? handler : undefined)
+              // 对外唯一分发器常驻；导出处理器只在currentStep为export时由分发器调用。
             },
           })
           }.width('100%').height('100%').translate({ x: this.pageMotion_.offset(2) })

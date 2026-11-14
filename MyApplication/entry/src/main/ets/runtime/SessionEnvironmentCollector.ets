@@ -4,9 +4,8 @@
  */
 import { common, bundleManager } from '@kit.AbilityKit';
 import deviceInfo from '@ohos.deviceInfo';
-import { fileIo as fs } from '@kit.CoreFileKit';
 import testNapi from 'libentry.so';
-import { LedgerBeginMeta, SessionEnvironmentFact, sessionEnvironmentFact, updateSessionEnvironment } from 'commons';
+import { LedgerBeginMeta, SessionEnvironmentFact, sessionEnvironmentFact, updateSessionEnvironment, collectHostCpuInfo } from 'commons';
 import { LaunchProfile } from 'launch';
 import { collectProductIdentity } from '../product/ProductIdentityCollector';
 
@@ -37,18 +36,12 @@ export function enrichSessionEnvironment(context: common.UIAbilityContext, activ
     sessionEnvironmentFact('gpu.vendor', '尚未初始化图形上下文', 'graphics.runtime', 'unavailable'),
     sessionEnvironmentFact('gpu.driver', '驱动信息未提供', 'graphics.runtime', 'unavailable'),
   ];
-  try { facts.push(sessionEnvironmentFact('cpu.model', deviceInfo.chipType, 'deviceInfo.chipType')); }
-  catch (e) { facts.push(sessionEnvironmentFact('cpu.model', '系统未提供芯片型号', 'deviceInfo.chipType', 'unavailable')); }
-  try {
-    const online: string = fs.readTextSync('/sys/devices/system/cpu/online').trim();
-    let count: number = 0;
-    for (const part of online.split(',')) {
-      const range: string[] = part.split('-');
-      count += range.length === 1 ? 1 : Number(range[1]) - Number(range[0]) + 1;
-    }
-    if (!(count > 0 && count <= 1024)) throw new Error('CPU 核心列表无效');
-    facts.push(sessionEnvironmentFact('cpu.cores', String(count), 'sysfs.cpu.online'));
-  } catch (e) { facts.push(sessionEnvironmentFact('cpu.cores', '系统未开放核心列表', 'sysfs.cpu.online', 'unavailable')); }
+  // 与游戏启动桥共用系统采集，空值保留明确不可用，不以当前设备补历史记录。
+  const cpu = collectHostCpuInfo();
+  facts.push(sessionEnvironmentFact('cpu.model', cpu.model || '系统未提供芯片型号', 'deviceInfo.chipType',
+    cpu.model.length > 0 ? 'observed' : 'unavailable'));
+  facts.push(sessionEnvironmentFact('cpu.cores', cpu.logicalIds.length > 0 ? cpu.logicalIds.length.toString() : '系统未开放核心列表',
+    'sysfs.cpu.online', cpu.logicalIds.length > 0 ? 'observed' : 'unavailable'));
   try { facts.push(sessionEnvironmentFact('memory.physicalMb', String(testNapi.getDeviceMemoryMB()), 'native.sysconf')); }
   catch (e) { facts.push(sessionEnvironmentFact('memory.physicalMb', '读取失败', 'native.sysconf', 'unavailable')); }
   if (profile !== undefined) {

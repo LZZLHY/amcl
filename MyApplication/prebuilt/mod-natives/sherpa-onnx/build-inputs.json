@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "targetAbi": "aarch64-linux-ohos",
+  "sherpa": {
+    "version": "1.13.3",
+    "repository": "https://github.com/k2-fsa/sherpa-onnx",
+    "commit": "330609dab49be6ee8b30702918ca7abbbad1286a",
+    "archive": "sherpa-onnx-330609dab49be6ee8b30702918ca7abbbad1286a.tar.gz",
+    "sha256": "83e3671094fc191e501b557739230895c919e51a63196f8dfa30183af52b921d",
+    "license": "Apache-2.0"
+  },
+  "onnxruntime": {
+    "version": "1.16.3",
+    "archive": "onnxruntime-ohos-arm64-v8a-1.16.3.zip",
+    "url": "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.16.3/onnxruntime-ohos-arm64-v8a-1.16.3.zip",
+    "sha256": "3367a54ef1f1c429d1116540e4e5bca98ff28b6de1603d53f4f73ebc24504b85",
+    "license": "MIT"
+  },
+  "jniHeaders": [
+    {
+      "path": "entry/src/main/cpp/jvm/jni.h",
+      "sha256": "1a913b6e83ff47456cea88bcecdb508be762fb4e61f929ce4cb621df0880a841"
+    },
+    {
+      "path": "entry/src/main/cpp/jvm/jni_md.h",
+      "sha256": "348071e16d2d5e2b1035ae0fd169743d34ab9ce8bf0cf7139327ad59d7efb7d8"
+    }
+  ],
+  "configuration": {
+    "provider": "cpu",
+    "tts": true,
+    "jni": true,
+    "portaudio": false
+  },
+  "hostOnnxruntime": {
+    "version": "1.16.3",
+    "archive": "onnxruntime-win-x64-1.16.3.zip",
+    "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-win-x64-1.16.3.zip",
+    "sha256": "5eb01f69bb2d9fa2893c88310bb5c1eb8d79e8c460810817eef08b6f9b1078af"
+  }
+}

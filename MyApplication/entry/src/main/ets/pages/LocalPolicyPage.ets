@@ -1,4 +1,9 @@
 /**
+ * 本地政策加载错误使用错误前景色，避免深色页面把状态填充色当正文；本地白名单、
+ * 加载代际、重试与首启同意的原有边界不变。
+ */
+import { applyNativeTheme } from '../components/AppTheme';
+/**
  * 随包政策与许可阅读页：只展示已核对的 UTF-8 本地文本，不创建 Web、外链或远程更新请求。
  * 首启隐私弹窗和日志分享说明复用此路由；返回后仍由原页面决定是否取得同意。
  * policy 仅选择固定资源白名单，不将路由参数拼成文件名，避免历史路由读取任意资源。
@@ -15,6 +20,8 @@ struct LocalPolicyPage {
   @StorageProp('topRectHeight') private topSafeHeight: number = 0;
   @StorageProp('bottomRectHeight') private bottomSafeHeight: number = 0;
   @StorageProp('currentColorMode') @Watch('applyTheme_') private colorMode: number = 0;
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('applyTheme_') private appThemeRevision: number = 0;
   @State private theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false);
   @State private title: string = '隐私政策';
   @State private body: string = '';
@@ -26,11 +33,12 @@ struct LocalPolicyPage {
 
   /** 使用项目原有主题与系统安全区；不建立另一套窗口监听或修改首启同意状态。 */
   aboutToAppear(): void { this.applyTheme_(); }
-  onPageShow(): void { this.load_(); }
+  onPageShow(): void { this.applyTheme_();  this.load_(); }
   aboutToDisappear(): void { this.generation++; }
   private applyTheme_(): void {
     const dark = this.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
-    this.theme = resolveTheme(this.preferences.themeMode, resolveIsDark(this.preferences.themeMode, dark));
+    this.theme = resolveTheme(this.preferences.themeMode, resolveIsDark(this.preferences.themeMode, dark), this.preferences.themeAccent);
+    applyNativeTheme(this.theme);
   }
 
   /** 异步读取固定随包文本；晚到结果不更新已销毁页面，失败只允许本地重试，不提供网页兜底。 */
@@ -75,7 +83,7 @@ struct LocalPolicyPage {
         Text('正在读取本地说明…').fontColor(this.theme.textSecondary).layoutWeight(1)
       } else if (this.errorText.length > 0) {
         Column({ space: 12 }) {
-          Text(this.errorText).fontColor(this.theme.error)
+          Text(this.errorText).fontColor(this.theme.errorText)
           Button('重试').height(44).onClick(() => { this.load_(); })
         }.layoutWeight(1).justifyContent(FlexAlign.Center)
       } else {

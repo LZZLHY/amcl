@@ -3,13 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
+import ts from './lib/ets-compiler.mjs';
 import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const require = createRequire(import.meta.url);
-const sdk = process.env.DEVECO_SDK_HOME;
-if (!sdk) throw new Error('DEVECO_SDK_HOME is required for SDK transpiler');
-const ts = require(resolve(sdk, 'default/openharmony/ets/build-tools/ets-loader/node_modules/typescript'));
 /** CommonJS临时加载保持原实现，SDK类型检查仍由正常HarmonyOS构建执行。 */
 function load(path, modules = {}) {
   const text = readFileSync(resolve(root, path), 'utf8');
@@ -24,6 +20,8 @@ function load(path, modules = {}) {
   return exports;
 }
 const models = load('update/src/main/ets/SideloadUpdateModels.ets');
+// 更新资产与事务已共用运行时要求校验；加载真实纯业务实现，平台替身不能把声明校验变成恒真。
+const runtimeRequirements = load('commons/src/main/ets/common/RuntimeRequirementPolicy.ets');
 // 模拟真机重复mkdir的EEXIST：保险库与事务服务共用目录时只能创建一次。
 let directoryExists = false, directoryCreates = 0;
 const { SideloadFiles: files } = load('entry/src/main/ets/sideload/SideloadFiles.ets', {
@@ -39,7 +37,7 @@ for (const file of ['SideloadUpdateCoordinator.ets', 'SideloadUpdateTestWant.ets
   assert.match(code, /from 'entry\/ProductBuildProfile'/);
   assert.doesNotMatch(code, /from '[.][.].*ProductBuildProfile'/);
 }
-const { GitHubUpdateAssetResolver: resolver } = load('update/src/main/ets/GitHubUpdateAssetResolver.ets', { '@kit.NetworkKit': {}, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets') });
+const { GitHubUpdateAssetResolver: resolver } = load('update/src/main/ets/GitHubUpdateAssetResolver.ets', { '@kit.NetworkKit': {}, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets'), commons:runtimeRequirements });
 const manifest = { tag: 'v1.0.6', versionCode: 1000679, versionName: '1.0.6' };
 const asset = { name: 'amcl-v1.0.6-sideload-unsigned.hap', size: 9000, digest: 'sha256:' + 'a'.repeat(64),
   browser_download_url: 'https://github.com/LZZLHY/amcl/releases/download/v1.0.6/amcl-v1.0.6-sideload-unsigned.hap' };
@@ -51,6 +49,8 @@ for (const mutate of [
   value => { value.tag_name = 'v1.0.7'; },
   value => { value.assets.push(structuredClone(asset)); },
   value => { value.assets[0].digest = ''; },
+  value => { value.assets[0].digest = ['sha256:' + 'a'.repeat(64)]; },
+  value => { value.assets[0].browser_download_url = [asset.browser_download_url]; },
   value => { value.assets[0].browser_download_url = 'https://example.com/payload.hap'; },
   value => { value.assets[0].size = -1; },
   value => { value.assets[0].name = 'amcl-v1.0.6-desktop-unsigned.hap'; }
@@ -59,7 +59,7 @@ for (const mutate of [
   assert.notEqual(JSON.stringify(changed), JSON.stringify(body), 'negative mutation must change input');
   assert.throws(() => resolver.parse(JSON.stringify(changed), manifest, 'sideload'));
 }
-const { SideloadTransactionPolicy: policy } = load('update/src/main/ets/SideloadTransactionPolicy.ets', { './SideloadUpdateModels': models, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets') });
+const { SideloadTransactionPolicy: policy } = load('update/src/main/ets/SideloadTransactionPolicy.ets', { './SideloadUpdateModels': models, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets'), commons:runtimeRequirements });
 const id = 'b'.repeat(32), nonce = 'c'.repeat(32), base = '/private/sideload-update';
 const transaction = { schema: 1, id, phase: models.SideloadUpdatePhase.Installing,
   asset: resolver.parse(JSON.stringify(body), manifest, 'sideload'), beforeVersionCode: 1000678, beforeUid: 20020376,

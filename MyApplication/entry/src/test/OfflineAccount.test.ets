@@ -5,7 +5,7 @@
  *   - deriveOfflineUuid    : 用户名 → 稳定 UUID（同输入同输出，不同输入不同输出，36 字符 8-4-4-4-12 格式）
  *   - createOfflineAccount : 工厂方法（默认值、空 username 处理）
  *   - fillProfile          : 4 个 setter 调用次数与参数（用 fake sink）
- *   - serialize            : schema 字段完整、type=legacy、version=1
+ *   - serialize            : schema 字段完整、type=legacy、version=2，兼容旧记录
  *   - getDisplayName       : 等于 username
  *   - refresh / getAccessToken / isUsable : 异步语义（resolve 与状态）
  *
@@ -195,7 +195,7 @@ export default function offlineAccountTest() {
     it('serialize 字段完整：version=1, type=legacy, 无 encrypted', 0, () => {
       let acc = OfflineAccount.create('Steve');
       let rec: AccountRecord = acc.serialize();
-      expect(rec.version).assertEqual(1);
+      expect(rec.version).assertEqual(2);
       expect(rec.type).assertEqual(AccountType.OFFLINE);
       expect(rec.username).assertEqual('Steve');
       expect(rec.uuid).assertEqual(acc.uuid);

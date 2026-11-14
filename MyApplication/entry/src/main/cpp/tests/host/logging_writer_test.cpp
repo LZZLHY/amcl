@@ -14,7 +14,10 @@
 #include <sstream>
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
 #define mkdir(path, mode) _mkdir(path)
+#else
+#include <unistd.h>
 #endif
 /** 捕获生产 writer 对隐式时区转换的回归；旧实现即使宿主没有崩溃也必须被此判据拒绝。 */
 static std::atomic<unsigned> localTimeCalls{0};
@@ -30,6 +33,23 @@ static tm* observed_localtime_r(const time_t* value, tm* result) {
 static std::mutex pauseMutex;
 static std::condition_variable pauseCv;
 static bool paused = false, released = false;
+/** 在真实状态持久化的sync边界暂停，不改变writer或计数算法；释放由独立测试线程控制。 */
+static std::atomic<bool> pauseNextDiskSync{false};
+static std::mutex diskPauseMutex;
+static std::condition_variable diskPauseCv;
+static bool diskPaused = false, diskReleased = false;
+static int controlledDiskSync(int fd) {
+    if (pauseNextDiskSync.exchange(false)) {
+        std::unique_lock<std::mutex> lock(diskPauseMutex);
+        diskPaused = true; diskPauseCv.notify_all();
+        diskPauseCv.wait(lock, [] { return diskReleased; });
+    }
+#ifdef _WIN32
+    return ::_commit(fd);
+#else
+    return ::fsync(fd);
+#endif
+}
 static int controlled_vsnprintf(char* out, size_t size, const char* fmt, va_list args) {
     if (std::strcmp(fmt, "PAUSE_OWNER") == 0) {
         std::unique_lock<std::mutex> lock(pauseMutex);
@@ -38,19 +58,78 @@ static int controlled_vsnprintf(char* out, size_t size, const char* fmt, va_list
     return std::vsnprintf(out, size, fmt, args);
 }
 #define vsnprintf controlled_vsnprintf
+#ifdef _WIN32
+#define _commit controlledDiskSync
+#else
+#define fsync controlledDiskSync
+#endif
 #include "../../utils/amcl_log.cpp"
 #undef vsnprintf
 #undef localtime_r
+#ifdef _WIN32
+#undef _commit
+#else
+#undef fsync
+#endif
 // 暴露仅测试可用的缓存复位入口，才能在同一进程内分别验证“缓存命中”和“解析阶段失败关闭”。
 #define AMCL_LOG_BRIDGE_TESTING 1
 #include "../../utils/amcl_log_bridge.h"
 static std::string readFile(const std::string& path) { std::ifstream file(path); std::ostringstream out; out << file.rdbuf(); return out.str(); }
 static void expect(bool value, const char* reason) { if (!value) { std::fprintf(stderr, "FAIL: %s\n", reason); std::exit(1); } }
+/** 早于生产hook注册，故正常退出时在hook之后执行；负控用固定退出2代替thread析构abort。 */
+static std::string processExitBase;
+static void verifyProcessExitHook() {
+    if (g_writerThread.joinable() || g_initialized.load()) {
+        std::fprintf(stderr, "EXIT_HOOK_ASSERT: writer not retired before static destruction\n");
+        std::_Exit(2);
+    }
+    if (readFile(processExitBase + "/amcl_launcher.log").find("LAST_PENDING_PROCESS_LINE") == std::string::npos
+        || readFile(processExitBase + "/ledger/launcher/launcher-host.log").find("LAST_PENDING_PROCESS_LINE") == std::string::npos
+        || readFile(processExitBase + "/ledger/capture-host.json").find("\"sealed\":true") == std::string::npos) {
+        std::fprintf(stderr, "EXIT_HOOK_ASSERT: pending original or sealed receipt missing\n");
+        std::_Exit(2);
+    }
+}
 int main(int argc, char** argv) {
     if (argc != 3) return 2;
     const std::string base = argv[1], mode = argv[2];
     std::filesystem::create_directories(base);
-    if (mode == "utc-time") {
+    if (mode == "normal-exit" || mode == "normal-exit-reinit") {
+        processExitBase = base;
+        expect(std::atexit(verifyProcessExitHook) == 0, "test exit verifier could not register");
+        amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        if (mode == "normal-exit-reinit") {
+            amclLogWriteFor(0, AMCL_LOG_LEVEL_ERROR, "TEST", "BEFORE_EXPLICIT_SHUTDOWN");
+            amclLogShutdown(); amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        }
+        expect(amclLedgerBegin(101, (base + "/ledger").c_str()) == 1, "process scope did not open");
+        pauseNextDiskSync.store(true);
+        std::thread flush([] { (void)amclLogFlushChecked(); });
+        { std::unique_lock<std::mutex> lock(diskPauseMutex);
+          expect(diskPauseCv.wait_for(lock, std::chrono::seconds(3), [] { return diskPaused; }), "exit disk boundary not reached"); }
+        amclLogWriteFor(101, AMCL_LOG_LEVEL_ERROR, "TEST", "LAST_PENDING_PROCESS_LINE");
+        expect(g_writeIndex.load() != g_flushedIndex.load(), "exit test did not leave a genuinely pending record");
+        flush.join(); // 原flush的有限等待结束，不释放writer，最后正文仍在其后等待消费。
+        // 测试释放器最后注册，正常退出先释放被暂停的磁盘，再由生产hook排空/join，最后验证。
+        expect(std::atexit([] {
+            { std::lock_guard<std::mutex> lock(diskPauseMutex); diskReleased = true; } diskPauseCv.notify_all();
+        }) == 0, "test disk release could not register");
+        std::printf("PASS main returned with pending writer; normal exit must drain it\n");
+        return 0; // 故意不调用amclLogShutdown，不能用显式收口掩盖进程hook缺失。
+    } else if (mode == "exit-registration-failure") {
+        // 仅由编译后的真实atexit失败负控进入，不创建writer、不依赖静态thread析构碰巧成功。
+        amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        expect(!g_initialized.load() && !g_writerThread.joinable(), "failed exit hook still created a writer");
+        expect(!g_globalWritable.load() && g_globalFailures.load() > 0 && g_globalLastError.load() == ENOMEM,
+            "exit hook failure was not published in existing health status");
+        const auto before = g_writeIndex.load();
+        amclLogWriteFor(0, AMCL_LOG_LEVEL_ERROR, "TEST", "FAILED_INIT_MUST_NOT_QUEUE");
+        expect(before == g_writeIndex.load(), "failed exit registration admitted a producer");
+        // 第二次call_once仍真正尝试注册，不能把首次失败当成功或创建无法收口的线程。
+        amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        expect(!g_initialized.load() && !g_writerThread.joinable() && g_globalFailures.load() == 2,
+            "exit registration failure was incorrectly cached as a completed initialization");
+    } else if (mode == "utc-time") {
         // 固定已知 epoch，覆盖闰日、2038 边界以及小缓冲区，不借用被测格式化器生成期望值。
         char formatted[32];
         expect(amclFormatLogTime(0, formatted, sizeof(formatted)) &&
@@ -125,9 +204,89 @@ int main(int argc, char** argv) {
         expect(returned.load(), "explicit reopen did not wake idle writer");
         // 脏capture状态须保留原定时维护，否则最后一批状态可能永远留在内存。
         g_reopenRequested.store(false);g_scopes[0].activityId=101;g_scopes[0].statusDirty=true;
+        // 本用例直接布置内部状态，须同时发布生产维护提示，实际begin/producer会自动维护它。
+        g_scopeMaintenancePending.store(true);
         const auto started=std::chrono::steady_clock::now();waitForWriterWork();
         const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count();
         expect(elapsed >= LOG_FLUSH_INTERVAL_MS / 2 && elapsed < 3000, "pending scope lost bounded maintenance");
+    } else if (mode == "producer-disk-isolation" || mode == "begin-disk-isolation") {
+        amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        expect(amclLedgerBegin(101, (base + "/first").c_str()) == 1, "first scope did not open");
+        pauseNextDiskSync.store(true);
+        // 两种原磁盘锁传染路径：writer强制持久化，以及另一个活动正在异步开账。
+        // sync进入后一直等待，测试必须在释放磁盘之前证明producer确已返回。
+        std::thread storage([&] {
+            if (mode == "producer-disk-isolation") amclLogFlushChecked();
+            else expect(amclLedgerBegin(202, (base + "/second").c_str()) == 1, "second scope did not open");
+        });
+        { std::unique_lock<std::mutex> lock(diskPauseMutex);
+          expect(diskPauseCv.wait_for(lock, std::chrono::seconds(3), [] { return diskPaused; }), "disk boundary not reached"); }
+        std::mutex completionMutex; std::condition_variable completionCv; bool completed = false;
+        std::thread producer([&] {
+            amclLogWriteFor(101, AMCL_LOG_LEVEL_ERROR, "TEST", "PRODUCER_DURING_BLOCKED_DISK");
+            { std::lock_guard<std::mutex> lock(completionMutex); completed = true; }
+            completionCv.notify_all();
+        });
+        { std::unique_lock<std::mutex> lock(completionMutex);
+          expect(completionCv.wait_for(lock, std::chrono::seconds(1), [&] { return completed; }), "producer waited for scope disk IO"); }
+        { std::lock_guard<std::mutex> lock(diskPauseMutex); diskReleased = true; } diskPauseCv.notify_all();
+        producer.join(); storage.join();
+        amclLogFlush(); expect(amclLedgerEndChecked(101) == 1, "scope close did not finish");
+        amclLogShutdown();
+        expect(readFile(base + "/first/launcher/launcher-host.log").find("PRODUCER_DURING_BLOCKED_DISK") != std::string::npos,
+            "nonblocking producer lost its scoped record");
+        expect(readFile(base + "/first/capture-host.json").find("\"accepted\":1") != std::string::npos,
+            "producer counter snapshot was not preserved after blocked IO");
+    } else if (mode == "scope-generation") {
+        amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        expect(amclLedgerBegin(101, (base + "/old").c_str()) == 1, "old scope did not open");
+        const uint64_t oldGeneration = scopeGenerationFor(101);
+        std::thread producer([] { amclLogWriteFor(101, AMCL_LOG_LEVEL_ERROR, "TEST", "PAUSE_OWNER"); });
+        { std::unique_lock<std::mutex> lock(pauseMutex); pauseCv.wait(lock, [] { return paused; }); }
+        expect(amclLedgerEndChecked(101) == 0, "scope closed before reserved producer published");
+        expect(amclLedgerBegin(101, (base + "/new").c_str()) == 0, "closing scope was falsely reported ready for reuse");
+        { std::lock_guard<std::mutex> lock(pauseMutex); released = true; } pauseCv.notify_all(); producer.join();
+        amclLogFlush(); expect(amclLedgerEndChecked(101) == 1, "old scope did not retire");
+        expect(amclLedgerBegin(101, (base + "/new").c_str()) == 1, "same ID could not reopen after confirmed close");
+        expect(scopeGenerationFor(101) != oldGeneration, "same ID reused old producer generation");
+        // 模拟迟到旧世代的计数和已格式化分流，不能污染新scope；不复制生产世代判据。
+        noteScopeEvent(101, oldGeneration, true, false);
+        teeToLedger(101, oldGeneration, "TEST", "STALE_GENERATION\n", 17);
+        amclLogWriteFor(101, AMCL_LOG_LEVEL_ERROR, "TEST", "NEW_GENERATION");
+        amclLogFlush(); expect(amclLedgerEndChecked(101) == 1, "new scope did not close"); amclLogShutdown();
+        const auto current = readFile(base + "/new/launcher/launcher-host.log");
+        expect(current.find("NEW_GENERATION") != std::string::npos && current.find("STALE_GENERATION") == std::string::npos,
+            "old generation entered reopened ledger");
+        const auto status = readFile(base + "/new/capture-host.json");
+        expect(status.find("\"accepted\":1") != std::string::npos && status.find("\"dropped\":0") != std::string::npos,
+            "old generation polluted reopened counters");
+    } else if (mode == "scope-counters") {
+        amclLogInit(base.c_str(), 20 * 1024 * 1024, 2);
+        expect(amclLedgerBegin(101, (base + "/ledger").c_str()) == 1, "counter scope did not open");
+        std::vector<std::thread> producers;
+        for (int worker = 0; worker < 4; ++worker) producers.emplace_back([worker] {
+            for (int sequence = 0; sequence < 100; ++sequence)
+                amclLogWriteFor(101, AMCL_LOG_LEVEL_ERROR, "TEST", "WORKER_%d_SEQ_%d", worker, sequence);
+        });
+        for (auto& producer : producers) producer.join();
+        amclLogFlush(); expect(amclLedgerEndChecked(101) == 1, "counter close did not finish"); amclLogShutdown();
+        const auto status = readFile(base + "/ledger/capture-host.json");
+        expect(status.find("\"accepted\":400") != std::string::npos && status.find("\"dropped\":0") != std::string::npos,
+            "multi-producer fixed counter bank lost updates");
+        const auto body = readFile(base + "/ledger/launcher/launcher-host.log");
+        for (int worker = 0; worker < 4; ++worker) for (int sequence = 0; sequence < 100; ++sequence)
+            expect(body.find("WORKER_" + std::to_string(worker) + "_SEQ_" + std::to_string(sequence) + "\n") != std::string::npos,
+                "multi-producer record missing after close");
+    } else if (mode == "fork-scope-reset") {
+        // 当前宿主平台直接执行生产fork-child清理入口，检查子进程继承状态不能被新日志继续使用。
+        // 不声称Windows模拟等同于POSIX fork调度；真实子进程仍保持原未初始化/no-op契约。
+        expect(amclLedgerBegin(101, (base + "/ledger").c_str()) == 1, "fork scope did not open");
+        const uint64_t previous = scopeGenerationFor(101);
+        g_initialized.store(true); onForkInChild();
+        expect(!g_initialized.load() && scopeGenerationFor(101) == 0 && !g_scopeMaintenancePending.load(), "fork retained parent scope identity");
+        const auto before = g_writeIndex.load();
+        amclLogWriteFor(101, AMCL_LOG_LEVEL_ERROR, "TEST", "CHILD_MUST_NOT_WRITE");
+        expect(g_writeIndex.load() == before && previous != 0, "fork child reused parent producer state");
     } else if (mode == "retention") {
         const std::string dir = base + "/ledger";
         expect(amclLedgerBegin(101, dir.c_str()) == 1, "scope failed to open");

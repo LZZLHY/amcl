@@ -347,6 +347,22 @@ bool parseFileConfig(napi_env env, napi_value js_file, NetFile::Config& out,
         err = "download policy requires a bearer token"; return false;
     }
 
+    // 版本文件可启用顺序策略。旧调用缺省保留原行为，显式字段必须是布尔值。
+    if (hasNamedProp(env, js_file, "orderedVersionDownload")) {
+        napi_value value = nullptr;
+        napi_valuetype type = napi_undefined;
+        if (napi_get_named_property(env, js_file, "orderedVersionDownload", &value) != napi_ok ||
+            napi_typeof(env, value, &type) != napi_ok || type != napi_boolean ||
+            napi_get_value_bool(env, value, &out.ordered_version_download) != napi_ok) {
+            err = "file.orderedVersionDownload must be a boolean";
+            return false;
+        }
+        if (out.ordered_version_download && out.authorized_policy) {
+            err = "authorized download cannot use the ordered version policy";
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -956,7 +972,9 @@ napi_value DownloadShutdown(napi_env env, napi_callback_info /*info*/) {
 //       primaryUrl: string,
 //       mirrors?: string[],
 //       timeoutSec?: number,
-//       requestHeaders?: Record<string, string>  // Phase 2.3 新增（可选）
+//       requestHeaders?: Record<string, string>, // Phase 2.3 新增（可选）
+//       maxResponseBytes?: number,              // 解压后正文硬上限
+//       allowRelay?: boolean                    // 公共metadata显式opt-in，缺省false
 //   ) → Promise<{
 //       ok: boolean,                              // status_code 200-299 或 304
 //       body?: string,
@@ -974,6 +992,8 @@ struct FetchTextData {
     std::vector<std::string> mirrors;
     int timeout_seconds = 30;
     size_t max_response_bytes = kDefaultMaxFetchResponseBytes;
+    // 缺省false保持其他metadata路由；仅公共JDK目录等显式调用者授权使用自有网关。
+    bool allow_relay = false;
     std::map<std::string, std::string> request_headers;
 
     // out（Phase 2.3 走 fetchToBufferEx，复用 FetchResponse 容器）
@@ -988,7 +1008,7 @@ void FetchTextExecute(napi_env /*env*/, void* data) {
     auto* d = static_cast<FetchTextData*>(data);
     d->rc = DownloadEngine::instance().fetchToBufferEx(
         d->primary_url, d->mirrors, d->timeout_seconds,
-        d->request_headers, d->max_response_bytes, d->resp);
+        d->request_headers, d->max_response_bytes, d->resp, d->allow_relay);
     // NAPI 边界的第二道防线：禁止再把超大 body 复制进 JS heap。
     // 真正的流式内存上限还必须由 engine.cpp 的 write callback 联动执行。
     if (d->rc == 0 && d->resp.body.size() > d->max_response_bytes) {
@@ -1044,8 +1064,8 @@ void FetchTextComplete(napi_env env, napi_status /*status*/, void* data) {
 }
 
 napi_value DownloadFetchText(napi_env env, napi_callback_info info) {
-    size_t argc = 5;
-    napi_value argv[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 6;
+    napi_value argv[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 1) {
         return throwErrorAndReturnNull(env,
             "downloadFetchText: need at least 1 arg (primaryUrl)");
@@ -1161,6 +1181,19 @@ napi_value DownloadFetchText(napi_env env, napi_callback_info info) {
         }
     }
 
+    // arg[5]必须是显式boolean，缺省保留旧路径。不能把字符串/数字真值解释为授权，
+    // 后续Native仍会在含业务凭据时拒绝网关，不能仅靠ArkTS声明保证凭据不外传。
+    if (argc >= 6 && argv[5] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, argv[5], &type) != napi_ok) {
+            return fail("downloadFetchText: allowRelay is unreadable");
+        }
+        if (type != napi_undefined &&
+            (type != napi_boolean || napi_get_value_bool(env, argv[5], &d->allow_relay) != napi_ok)) {
+            return fail("downloadFetchText: allowRelay must be a boolean");
+        }
+    }
+
     napi_value promise = nullptr;
     napi_value resource_name = nullptr;
     if (napi_create_promise(env, &d->deferred, &promise) != napi_ok ||
@@ -1176,6 +1209,113 @@ napi_value DownloadFetchText(napi_env env, napi_callback_info info) {
         return fail("downloadFetchText: failed to queue async work");
     }
     return promise;
+}
+
+/** 限量样本只携带标量结果；不创建TSFN、任务、文件或跨env可用的取消句柄。 */
+struct TransferProbeData {
+    std::string url, user_agent = "amcl/0.1 (OHOS; libcurl/8.10.1)";
+    int64_t expected_size = 0, submitted_at_ms = netThreadSteadyNowMs();
+    size_t sample_bytes = 262144;
+    int timeout_seconds = 5;
+    TransferProbeResult result;
+    napi_async_work work = nullptr;
+    napi_deferred deferred = nullptr;
+};
+
+/** worker线程内运行生产Engine；任何C++异常不能跨NAPI的C ABI，Engine RAII先收敛资源。 */
+void TransferProbeExecute(napi_env, void* opaque) {
+    auto* data = static_cast<TransferProbeData*>(opaque);
+    try {
+        DownloadEngine::instance().probeTransfer(data->url, data->expected_size, data->sample_bytes,
+            data->timeout_seconds, data->user_agent, data->result, data->submitted_at_ms);
+    } catch (...) { data->result.completed_sample = false; data->result.error_kind = "InternalError"; }
+}
+
+/** JS只收到测量值；失败同样有结构化HTTP/时间/字节事实，释放异步work恰好一次。 */
+void TransferProbeComplete(napi_env env, napi_status status, void* opaque) {
+    std::unique_ptr<TransferProbeData> data(static_cast<TransferProbeData*>(opaque));
+    napi_value result = nullptr;
+    if (status != napi_ok) { data->result.completed_sample = false; data->result.error_kind = "Aborted"; }
+    bool encoded = napi_create_object(env, &result) == napi_ok;
+    if (encoded) {
+        const auto number = [&](const char* name, int64_t value) -> bool {
+            napi_value property = nullptr;
+            return napi_create_double(env, static_cast<double>(value), &property) == napi_ok &&
+                napi_set_named_property(env, result, name, property) == napi_ok;
+        };
+        const auto boolean = [&](const char* name, bool value) -> bool {
+            napi_value property = nullptr;
+            return napi_get_boolean(env, value, &property) == napi_ok &&
+                napi_set_named_property(env, result, name, property) == napi_ok;
+        };
+        encoded = number("httpStatus", data->result.http_status) && number("receivedBytes", data->result.received_bytes) &&
+            number("elapsedMs", data->result.elapsed_ms) && number("ttfbMs", data->result.ttfb_ms) &&
+            boolean("completedSample", data->result.completed_sample) && boolean("rangeHonored", data->result.range_honored);
+        napi_value error = nullptr;
+        encoded = encoded && napi_create_string_utf8(env, data->result.error_kind.c_str(), data->result.error_kind.size(), &error) == napi_ok &&
+            napi_set_named_property(env, result, "errorKind", error) == napi_ok;
+    }
+    if (encoded) napi_resolve_deferred(env, data->deferred, result);
+    else {
+        // env关闭/OOM时不使用未初始化的napi_value；即使JS已不能接收拒绝，Native work和
+        // data仍在本回调尾部回收，不能为了报告错误而泄漏真实执行资源。
+        napi_value error = nullptr;
+        if (napi_get_undefined(env, &error) == napi_ok) napi_reject_deferred(env, data->deferred, error);
+    }
+    napi_delete_async_work(env, data->work);
+}
+
+/** 入参有独立硬限，不能由JS提供任意Header/网关权限或缩短后的隐式业务凭据。 */
+napi_value DownloadProbeTransferImpl(napi_env env, napi_callback_info info) {
+    size_t argc = 5; napi_value argv[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 2)
+        return throwErrorAndReturnNull(env, "downloadProbeTransfer: url and expectedSize required");
+    auto data = std::make_unique<TransferProbeData>();
+    if (!readBoundedString(env, argv[0], kMaxUrlBytes, data->url, false) || !isHttpUrl(data->url))
+        return throwErrorAndReturnNull(env, "downloadProbeTransfer: bounded HTTP(S) URL required");
+    const auto integer = [&](size_t index, double low, double high, double& value) {
+        napi_valuetype type = napi_undefined;
+        return napi_typeof(env, argv[index], &type) == napi_ok && type == napi_number &&
+            napi_get_value_double(env, argv[index], &value) == napi_ok && std::isfinite(value) &&
+            std::floor(value) == value && value >= low && value <= high;
+    };
+    double size = 0;
+    if (!integer(1, 1, static_cast<double>(kMaxDownloadFileBytes), size))
+        return throwErrorAndReturnNull(env, "downloadProbeTransfer: expectedSize must be a positive bounded integer");
+    data->expected_size = static_cast<int64_t>(size);
+    const auto provided = [&](size_t index) {
+        napi_valuetype type = napi_undefined;
+        return index < argc && napi_typeof(env, argv[index], &type) == napi_ok && type != napi_undefined;
+    };
+    if (provided(2)) {
+        double sample = 0;
+        if (!integer(2, 1, 524288, sample)) return throwErrorAndReturnNull(env, "downloadProbeTransfer: sampleBytes must be 1..524288");
+        data->sample_bytes = static_cast<size_t>(sample);
+    }
+    if (provided(3)) {
+        double seconds = 0;
+        if (!integer(3, 1, 8, seconds)) return throwErrorAndReturnNull(env, "downloadProbeTransfer: timeoutSeconds must be 1..8");
+        data->timeout_seconds = static_cast<int>(seconds);
+    }
+    if (provided(4) && (!readBoundedString(env, argv[4], 256, data->user_agent, false) || containsControlChar(data->user_agent)))
+        return throwErrorAndReturnNull(env, "downloadProbeTransfer: bounded single-line userAgent required");
+    napi_value promise, name;
+    if (napi_create_promise(env, &data->deferred, &promise) != napi_ok ||
+        napi_create_string_utf8(env, "downloadProbeTransfer", NAPI_AUTO_LENGTH, &name) != napi_ok ||
+        napi_create_async_work(env, nullptr, name, TransferProbeExecute, TransferProbeComplete, data.get(), &data->work) != napi_ok)
+        return throwErrorAndReturnNull(env, "downloadProbeTransfer: async work creation failed");
+    if (napi_queue_async_work(env, data->work) != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        return throwErrorAndReturnNull(env, "downloadProbeTransfer: async work queue failed");
+    }
+    data.release(); // complete回调在同一env拥有唯一回收权。
+    return promise;
+}
+
+/** 参数读取/分配异常同样不可跨NAPI C ABI；异步任务发布前仍由unique_ptr回收输入。 */
+napi_value DownloadProbeTransfer(napi_env env, napi_callback_info info) {
+    try { return DownloadProbeTransferImpl(env, info); }
+    catch (...) { return throwErrorAndReturnNull(env, "downloadProbeTransfer: allocation failed before queue submission"); }
 }
 
 napi_value DownloadComputeFileSha1(napi_env env, napi_callback_info info) {
@@ -1394,6 +1534,7 @@ void registerDownloadNapi(napi_env env, napi_value exports) {
         DL_NAPI_FUNC("downloadPublishNoReplace", DownloadPublishNoReplace),
         // Phase 3 (S2-2): metadata fetch through engine
         DL_NAPI_FUNC("downloadFetchText",       DownloadFetchText),
+        DL_NAPI_FUNC("downloadProbeTransfer",   DownloadProbeTransfer),
         // v5: 扩展 API — 暂停 / 继续 / 清理 / 重试 / Purge
         DL_NAPI_FUNC("downloadPauseTask",       DownloadPauseTask),
         DL_NAPI_FUNC("downloadResumeTask",      DownloadResumeTask),

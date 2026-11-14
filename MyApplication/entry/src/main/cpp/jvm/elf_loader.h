@@ -38,13 +38,15 @@ void elf_set_fake_exe_path(const char* path);
 
 /**
  * 加载 ELF 共享库。
+ * 每次成功返回一个公开持有引用；重复打开同一对象不会重复初始化，调用方逐次配对关闭。
+ * 该既有宿主入口使用 NOW/GLOBAL；透明 dlopen 入口的 LOCAL/GLOBAL 则按显式 flags 保留。
  * @param path  库文件路径（全路径）或文件名（按搜索路径查找）
  * @return 句柄，失败返回 NULL。用 elf_error() 获取错误信息。
  */
 elf_handle_t* elf_open(const char* path);
 
 /**
- * 查找已加载库中的符号。
+ * 按本体及 DT_NEEDED 的广度优先顺序查找符号，不把其他无依赖的 LOCAL 对象并入作用域。
  * @param h     elf_open 返回的句柄
  * @param name  符号名
  * @return 符号地址，未找到返回 NULL
@@ -52,13 +54,13 @@ elf_handle_t* elf_open(const char* path);
 void* elf_sym(elf_handle_t* h, const char* name);
 
 /**
- * 在所有已加载的 ELF 库和系统库中查找符号。
- * 查找顺序：ELF 已加载库（按加载顺序） → dlsym(RTLD_DEFAULT)
+ * 在全局发布的自加载库和系统库中查找符号，LOCAL 对象不因完成初始化而自动可见。
+ * 保留既有域间顺序：custom GLOBAL 发布顺序 → 系统域；不含无关 LOCAL 加载组。
  */
 void* elf_sym_global(const char* name);
 
 /**
- * 卸载库并释放资源。
+ * 释放一个公开引用；仍被其他公开引用或已链接依赖使用时保留对象。
  */
 void elf_close(elf_handle_t* h);
 
@@ -66,6 +68,13 @@ void elf_close(elf_handle_t* h);
  * 获取本线程最后一次错误信息；不消费它，供宿主日志直接读取。
  */
 const char* elf_error(void);
+
+/** 冷路径资源快照；仅观察，不以调用此函数、join或超时本身代替OS线程终态证明。 */
+typedef struct elf_tls_stats {
+    size_t residentArenas, registeredArenas, blocks, payloads, storageBytes, moduleBytes;
+    int expansionError;
+} elf_tls_stats;
+int elf_get_tls_stats(elf_tls_stats* stats);
 
 /** 与 dlerror 相同的一次消费语义，优先返回本线程自定义加载失败原因。 */
 char* elf_dlerror(void);
@@ -86,10 +95,15 @@ void* elf_dlopen(const char* path, int flags);
  */
 void* elf_dlsym(void* handle, const char* name);
 
-/**
- * 智能卸载。
+/** 精确版本查找：自加载对象按 VERDEF/VERSYM 匹配，系统对象交真实 dlvsym。
+ * 版本不存在必须返回错误，不能退回普通 dlsym 静默选择另一个 ABI。
  */
-void  elf_dlclose(void* handle);
+void* elf_dlvsym(void* handle, const char* name, const char* version);
+
+/**
+ * 智能卸载，返回真实成功/失败；每次成功只消费一个公开 open 引用。
+ */
+int elf_dlclose(void* handle);
 
 /**
  * 加载一个目录下所有 .so 文件。

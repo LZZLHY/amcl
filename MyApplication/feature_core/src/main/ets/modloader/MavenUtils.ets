@@ -18,6 +18,7 @@ import { AppLogger } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_MODLOADER } from 'commons';
 import { DownloadManager, DownloadTaskView } from '../download/DownloadManager';
+import { selectMcSourceUrls, fetchPublicMcMetadata, shouldUseBmclapiFirst, useOrderedMcDownload } from '../download/SourceProber';
 import { buildSpecsForLibs, buildSpecForLib, parseDoneEventToBatchResult } from './MavenSpecBuilder';
 import { formatError } from 'commons';
 
@@ -132,14 +133,15 @@ export function parseMavenMetadataVersions(xml: string): string[] {
  */
 export async function fetchMergedMavenVersions(urls: string[], label: string,
   timeoutSeconds: number = 30): Promise<string[]> {
-  let mgr = DownloadManager.instance();
   let requests: Promise<string[]>[] = [];
-  for (let url of urls) {
+  // 版本列表也不能绕过来源约束；关闭档仍并行合并原候选，未知自有仓库保持原URL。
+  // 这些无鉴权Maven XML是公共GET，显式使用窄metadata入口而非放宽通用默认值。
+  for (let url of selectMcSourceUrls(urls)) {
     if (!isSafeHttpUrl(url)) {
       AppLogger.warn(TAG, `${label} metadata URL rejected`, null, LOG_DOMAIN_MODLOADER);
       continue;
     }
-    requests.push(mgr.fetchText(url, [], timeoutSeconds).then((xml: string): string[] => {
+    requests.push(fetchPublicMcMetadata([url], timeoutSeconds).then((xml: string): string[] => {
       let vers = parseMavenMetadataVersions(xml);
       if (vers.length > 0) {
         AppLogger.info(TAG, `${label} metadata: url=${url} count=${vers.length}`, LOG_DOMAIN_MODLOADER);
@@ -545,7 +547,8 @@ export async function downloadMavenLibraries(
   libs: MavenLibEntry[],
   libDir: string,
   onProgress?: MavenLibsProgressCallback,
-  preferRealSource: boolean = false
+  preferRealSource: boolean = false,
+  orderedVersionDownload: boolean = useOrderedMcDownload()
 ): Promise<LibBatchDownloadResult> {
   if (libs.length === 0) {
     return { ok: 0, failed: 0, errors: [], failedNames: [] };
@@ -554,7 +557,10 @@ export async function downloadMavenLibraries(
   // 1. 构造 specs（纯函数，可测试）。preferRealSource=true 时把各库的真实仓库
   //    （maven central / forge maven）排到 BMCLAPI 前面——用于本机实测 BMCLAPI
   //    /maven 代理对 Forge 内容明显更慢的场景（见 probeUrlSpeedKBps）。
-  let buildResult = buildSpecsForLibs(libs, libDir, preferRealSource);
+  // 批量入口仅由加载器安装调用。默认自动档使用同一份游戏选源观察，手动来源和
+  // 通用单文件 Maven API 仍由各自原策略决定，避免影响导出与第三方资源下载。
+  const officialFirst = orderedVersionDownload ? !shouldUseBmclapiFirst() : preferRealSource;
+  let buildResult = buildSpecsForLibs(libs, libDir, officialFirst, orderedVersionDownload);
 
   // 2. 走 DownloadManager.createAndWait
   if (buildResult.specs.length > 0) {

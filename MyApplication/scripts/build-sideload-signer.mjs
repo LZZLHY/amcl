@@ -1,4 +1,4 @@
-/** 手机签名入口的可复现编译。只编译AMCL源码，依赖API来自本机SDK；运行时使用固定开源签名器。 */
+/** 手机签名入口的可复现编译。仅编译AMCL源码，API可来自SDK或显式固定公开工具；产物有界外置。 */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync, copyFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
@@ -8,8 +8,10 @@ import { assertExternalOutputPath, resolveWorkspacePath } from './lib/workspace-
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = join(root, 'entry/src/main/sideload/AmclSigningRunner.java');
 const sdk = process.env.DEVECO_SDK_HOME;
-if (!sdk) throw new Error('DEVECO_SDK_HOME is required');
-const dependency = join(sdk, 'default/openharmony/toolchains/lib/hap-sign-tool.jar');
+// 宿主/CI可用同一公开pin编译，不把raw资源目录伪装成SDK；显式输入仍必须核精确摘要。
+const explicitDependency=process.env.AMCL_SIGNER_COMPILER_JAR;
+if (!sdk&&!explicitDependency) throw new Error('DEVECO_SDK_HOME or AMCL_SIGNER_COMPILER_JAR is required');
+const dependency = explicitDependency ? resolve(explicitDependency) : join(sdk, 'default/openharmony/toolchains/lib/hap-sign-tool.jar');
 const build = process.env.AMCL_SIGNER_BUILD_DIR ? assertExternalOutputPath(process.env.AMCL_SIGNER_BUILD_DIR) : resolveWorkspacePath('build','sideload-signer');
 const classes = join(build, 'classes');
 const output = join(root, 'entry/src/main/resources/rawfile/sideload/amcl-signing-runner.jar');
@@ -49,17 +51,21 @@ const tool = name => {
 mkdirSync(classes, { recursive: true }); mkdirSync(dirname(output), { recursive: true });
 // 运行时签名器与已真机验收的固定实现相同；构建时核实摘要后打入 HAP，手机无需再向 GitHub 取工具。
 const pin = JSON.parse(readFileSync(join(root,'prebuilt/hap-sign-tool/pin.json'),'utf8'));
+if(explicitDependency&&hash(dependency)!==pin.sha256)throw new Error('Explicit compiler tool differs from the public signer pin');
 // Facade不持有业务常量；从唯一执行所有者核对runtime实际消费的固定签名器pin。
 const serviceSource = readFileSync(join(root,'entry/src/main/ets/sideload/SideloadUpdateCoordinator.ets'),'utf8');
 if (!serviceSource.includes("const SIGNER_SHA256 = '" + pin.sha256 + "'")) throw new Error('Runtime signer pin is not synchronized');
 const pinned = join(build,'hap-sign-tool-' + pin.sha256 + '.jar');
 function hash(file) { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
 if (!existsSync(pinned) || hash(pinned) !== pin.sha256) {
+  if(explicitDependency)copyFileSync(dependency,pinned);
+  else {
   const response = await fetch(pin.url, {signal:AbortSignal.timeout(90_000)});
   if (!response.ok || Number(response.headers.get('content-length')) > 48*1024*1024) throw new Error('Pinned signer download failed');
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length > 48*1024*1024 || createHash('sha256').update(bytes).digest('hex') !== pin.sha256) throw new Error('Pinned signer digest mismatch');
   writeFileSync(pinned,bytes);
+  }
 }
 copyFileSync(pinned,join(dirname(output),'hap-sign-tool.jar'));
 copyFileSync(join(root,'prebuilt/hap-sign-tool/LICENSE'),join(dirname(output),'hap-sign-tool-LICENSE.txt'));

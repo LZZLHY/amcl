@@ -1,0 +1,322 @@
+{
+  "time": "2026-10-22T02:20:48.284185+08:00",
+  "files": [
+    {
+      "major": "8",
+      "file": "8/AbstractMidiDeviceProvider.java",
+      "path": "jdk/src/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "720c7eae6fa01ead91af7b4f5f70afabf7ec93769b339b4dacaa956173113b9b"
+    },
+    {
+      "major": "8",
+      "file": "8/MidiInDeviceProvider.java",
+      "path": "jdk/src/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "90f58f8112cd602e7e4180292bc3047e89affd946252333b136ef264c6541a3c"
+    },
+    {
+      "major": "8",
+      "file": "8/MidiOutDeviceProvider.java",
+      "path": "jdk/src/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "169acdc45dd7b8299f7fdc013f59ae0097744ce3b0597dd70d7b8f73a7260185"
+    },
+    {
+      "major": "8",
+      "file": "8/MidiInDevice.java",
+      "path": "jdk/src/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "a70a78f4191f527bc439cca9216971d85dc23018ec97d69df845d2c6ccced61f"
+    },
+    {
+      "major": "8",
+      "file": "8/MidiOutDevice.java",
+      "path": "jdk/src/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "f213dc7bdb783c7b649e5c7ad50ab1dfed44fd0b3493b08103fa7bc612e863c6"
+    },
+    {
+      "major": "8",
+      "file": "8/MidiInDeviceProvider.c",
+      "path": "jdk/src/share/native/com/sun/media/sound/MidiInDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/native/com/sun/media/sound/MidiInDeviceProvider.c",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "5edf405185a457b81286dee44809575bb39fc3ba3fc18e3b5838efd35f969789"
+    },
+    {
+      "major": "8",
+      "file": "8/MidiOutDeviceProvider.c",
+      "path": "jdk/src/share/native/com/sun/media/sound/MidiOutDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/native/com/sun/media/sound/MidiOutDeviceProvider.c",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "e5c2029f2accbc0a20e2c156d5d4aaf98a479dc57b1070a44176183b4746080a"
+    },
+    {
+      "major": "8",
+      "file": "8/SoundLibraries.gmk",
+      "path": "jdk/make/lib/SoundLibraries.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/make/lib/SoundLibraries.gmk",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "28275760b666492bde7f00a585e51f846eb814caf2dad3c7e49e66d1a46c9bfa"
+    },
+    {
+      "major": "8",
+      "file": "8/Platform.c",
+      "path": "jdk/src/share/native/com/sun/media/sound/Platform.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/native/com/sun/media/sound/Platform.c",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "73ae14497a1c08fdd97b5885265d164c987ca72e99b825c264bee96112f0354b"
+    },
+    {
+      "major": "17",
+      "file": "17/AbstractMidiDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "3c57e6ed23c81d4a3d5682b2558e3be90400ff973028d37f6c2393da57957938"
+    },
+    {
+      "major": "17",
+      "file": "17/MidiInDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "91fd999629234db08cae9d9529248d2907a32467df71979a3c6d4cb4fea1c3a8"
+    },
+    {
+      "major": "17",
+      "file": "17/MidiOutDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "f46ca36433cf83d2a0cdd27f8ec49c50e1d6029adbd97d1ac41e224bfe7f5bdb"
+    },
+    {
+      "major": "17",
+      "file": "17/MidiInDevice.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "844b8c8cb47617c3f5d7d5a2c636054666f362210128811b2c7f1539b80a988f"
+    },
+    {
+      "major": "17",
+      "file": "17/MidiOutDevice.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "4d3b70f280c5f79d192c62ce958baef0db4801d5123bf205184ae2bc1be43f7e"
+    },
+    {
+      "major": "17",
+      "file": "17/MidiInDeviceProvider.c",
+      "path": "src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "5edf405185a457b81286dee44809575bb39fc3ba3fc18e3b5838efd35f969789"
+    },
+    {
+      "major": "17",
+      "file": "17/MidiOutDeviceProvider.c",
+      "path": "src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "e5c2029f2accbc0a20e2c156d5d4aaf98a479dc57b1070a44176183b4746080a"
+    },
+    {
+      "major": "17",
+      "file": "17/Lib.gmk",
+      "path": "make/modules/java.desktop/Lib.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/make/modules/java.desktop/Lib.gmk",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "69bcf74eae62bc0a344d1900597261218b0f7eddae5b588b99d6ab0cdd4f9966"
+    },
+    {
+      "major": "21",
+      "file": "21/AbstractMidiDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "3c57e6ed23c81d4a3d5682b2558e3be90400ff973028d37f6c2393da57957938"
+    },
+    {
+      "major": "21",
+      "file": "21/MidiInDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "91fd999629234db08cae9d9529248d2907a32467df71979a3c6d4cb4fea1c3a8"
+    },
+    {
+      "major": "21",
+      "file": "21/MidiOutDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "f46ca36433cf83d2a0cdd27f8ec49c50e1d6029adbd97d1ac41e224bfe7f5bdb"
+    },
+    {
+      "major": "21",
+      "file": "21/MidiInDevice.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "844b8c8cb47617c3f5d7d5a2c636054666f362210128811b2c7f1539b80a988f"
+    },
+    {
+      "major": "21",
+      "file": "21/MidiOutDevice.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "4d3b70f280c5f79d192c62ce958baef0db4801d5123bf205184ae2bc1be43f7e"
+    },
+    {
+      "major": "21",
+      "file": "21/MidiInDeviceProvider.c",
+      "path": "src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "5edf405185a457b81286dee44809575bb39fc3ba3fc18e3b5838efd35f969789"
+    },
+    {
+      "major": "21",
+      "file": "21/MidiOutDeviceProvider.c",
+      "path": "src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "e5c2029f2accbc0a20e2c156d5d4aaf98a479dc57b1070a44176183b4746080a"
+    },
+    {
+      "major": "21",
+      "file": "21/Lib.gmk",
+      "path": "make/modules/java.desktop/Lib.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/make/modules/java.desktop/Lib.gmk",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "d1239537885456905ce53f1f00213831d716914deaf3929ea88d9d572a6f88ec"
+    },
+    {
+      "major": "25",
+      "file": "25/AbstractMidiDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "3c57e6ed23c81d4a3d5682b2558e3be90400ff973028d37f6c2393da57957938"
+    },
+    {
+      "major": "25",
+      "file": "25/MidiInDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "91fd999629234db08cae9d9529248d2907a32467df71979a3c6d4cb4fea1c3a8"
+    },
+    {
+      "major": "25",
+      "file": "25/MidiOutDeviceProvider.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "f46ca36433cf83d2a0cdd27f8ec49c50e1d6029adbd97d1ac41e224bfe7f5bdb"
+    },
+    {
+      "major": "25",
+      "file": "25/MidiInDevice.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "844b8c8cb47617c3f5d7d5a2c636054666f362210128811b2c7f1539b80a988f"
+    },
+    {
+      "major": "25",
+      "file": "25/MidiOutDevice.java",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "4d3b70f280c5f79d192c62ce958baef0db4801d5123bf205184ae2bc1be43f7e"
+    },
+    {
+      "major": "25",
+      "file": "25/MidiInDeviceProvider.c",
+      "path": "src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "5edf405185a457b81286dee44809575bb39fc3ba3fc18e3b5838efd35f969789"
+    },
+    {
+      "major": "25",
+      "file": "25/MidiOutDeviceProvider.c",
+      "path": "src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "e5c2029f2accbc0a20e2c156d5d4aaf98a479dc57b1070a44176183b4746080a"
+    },
+    {
+      "major": "25",
+      "file": "25/Lib.gmk",
+      "path": "make/modules/java.desktop/Lib.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/make/modules/java.desktop/Lib.gmk",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "21023234bd1791e124e0e8e46be7f63d25434e619145f32e840725e5a62c038c"
+    },
+    {
+      "major": "8",
+      "file": "8/jni.h",
+      "path": "jdk/src/share/javavm/export/jni.h",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/javavm/export/jni.h",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "ed99792df48670072b78028faf704a8dcb6868fe140ccc7eced9b01dfa62fef4"
+    },
+    {
+      "major": "8",
+      "file": "8/jni_md.h",
+      "path": "jdk/src/solaris/javavm/export/jni_md.h",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/solaris/javavm/export/jni_md.h",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "ecbe6944fe1a4290644d5a6b3c8f68576798a53b9da12cd31c58c48569595ff7"
+    },
+    {
+      "major": "8",
+      "file": "8/mapfile-jsound",
+      "path": "jdk/make/mapfiles/libjsound/mapfile-vers",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/make/mapfiles/libjsound/mapfile-vers",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "7e744245cc577863c8ae4d5382319f3487da46d100c2bfb15dbb862f03aeb789"
+    },
+    {
+      "major": "8",
+      "file": "8/mapfile-jsoundalsa",
+      "path": "jdk/make/mapfiles/libjsoundalsa/mapfile-vers",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/make/mapfiles/libjsoundalsa/mapfile-vers",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "3defe19928162f63ab96bdb9e5767013746c4d9816b64966d7a6acb4ac124df3"
+    },
+    {
+      "major": "SDK",
+      "file": "sdk/ohmidi/native_midi.h",
+      "path": "ohmidi/native_midi.h",
+      "source": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\sysroot\\usr\\include\\ohmidi\\native_midi.h",
+      "sha256": "3e019ee06952d92e1cbc742068c63cd73a39d6531e8a0c2bcb4cc0b1a4b6ad41"
+    },
+    {
+      "major": "SDK",
+      "file": "sdk/ohmidi/native_midi_base.h",
+      "path": "ohmidi/native_midi_base.h",
+      "source": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\sysroot\\usr\\include\\ohmidi\\native_midi_base.h",
+      "sha256": "0afc15e53a5c29324cc4f52041ef0e3f7cadeb5a78d0c9a447f831f0a2c8c865"
+    },
+    {
+      "major": "SDK",
+      "file": "sdk/info/application_target_sdk_version.h",
+      "path": "info/application_target_sdk_version.h",
+      "source": "D:\\Huawei\\command-line-tools\\sdk\\default\\openharmony\\native\\sysroot\\usr\\include\\info\\application_target_sdk_version.h",
+      "sha256": "6e9a346eca8c1a3813b1118f12359b4693aa37d6ec630d6d59836a3c965d5578"
+    }
+  ]
+}

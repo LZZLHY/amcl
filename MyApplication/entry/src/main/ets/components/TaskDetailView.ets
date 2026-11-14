@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * TaskDetailView.ets — 单个下载任务详情（从 DownloadTasksSheet 抽出，2026-06-07）
  *
  * 为什么要独立成 @Component：
@@ -25,11 +29,11 @@ import {
   DownloadTaskRegistry, getDownloadTaskRegistry,
 } from 'feature_core';
 import {
-  UnifiedTaskView, UnifiedTaskState, TaskCategory, stateLabel, isActiveState,
+  ActivityCategory, UnifiedTaskView, UnifiedTaskState, TaskCategory, stateLabel, isActiveState,
 } from 'feature_core';
 import { McVersionTask } from 'feature_core';
 import { ResourceFileProvider, ResourceFileEntry } from 'mods';
-import { ModpackInstallTask, ModpackFile, ModpackProblem, modpackFileKey } from 'mods';
+import { ModpackInstallTask, ModpackFile, ModpackProblem, ModpackPackageCandidate, modpackFileKey } from 'mods';
 import { DownloadPhase, PhaseDetailModel } from 'feature_core';
 import { ThemeColors } from 'commons';
 import { AppIconName } from 'commons';
@@ -41,9 +45,9 @@ import { formatBytes, formatEta, formatSpeed } from 'commons';
 // ============================================================
 
 function phaseColor(theme: ThemeColors, status: string): ResourceColor {
-  if (status === 'done')    return theme.success
-  if (status === 'error')   return theme.error
-  if (status === 'running') return theme.primary
+  if (status === 'done')    return theme.successText
+  if (status === 'error')   return theme.errorText
+  if (status === 'running') return theme.actionText
   return theme.textHint
 }
 
@@ -118,12 +122,12 @@ struct McPhaseRowComp {
         })
           .width('100%')
           .height(4)
-          .color(this.theme.primary)
+          .color(this.theme.actionPrimary)
           .backgroundColor(this.theme.divider)
       }
       if (this.phase.status === 'running' && this.phase.message && this.phase.message.length > 0) {
         Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.ArrowDown, iconSize: 11, color: this.theme.primary })
+          AppIcon({ name: AppIconName.ArrowDown, iconSize: 11, color: this.theme.actionText })
           Text('正在下载 ' + this.phase.message)
             .fontSize(11)
             .fontColor(this.theme.textSecondary)
@@ -140,9 +144,9 @@ struct McPhaseRowComp {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(12)
     .border(this.phase.status === 'running'
-      ? { width: 1.5, color: this.theme.primary, style: BorderStyle.Solid }
+      ? { width: 1.5, color: this.theme.actionText, style: BorderStyle.Solid }
       : (this.phase.status === 'error'
-        ? { width: 1.5, color: this.theme.error, style: BorderStyle.Solid }
+        ? { width: 1.5, color: this.theme.errorText, style: BorderStyle.Solid }
         : { width: 0 }))
   }
 }
@@ -188,8 +192,8 @@ struct ModFileRowComp {
   }
 
   private rowColor_(s: string): ResourceColor {
-    if (s === 'done')    return this.theme.success
-    if (s === 'running') return this.theme.primary
+    if (s === 'done')    return this.theme.successText
+    if (s === 'running') return this.theme.actionText
     return this.theme.textHint
   }
 
@@ -235,7 +239,7 @@ struct ModFileRowComp {
         })
           .width('100%')
           .height(4)
-          .color(this.theme.primary)
+          .color(this.theme.actionPrimary)
           .backgroundColor(this.theme.divider)
       }
     }
@@ -244,7 +248,7 @@ struct ModFileRowComp {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(12)
     .border(this.rowStatus_() === 'running'
-      ? { width: 1.5, color: this.theme.primary, style: BorderStyle.Solid }
+      ? { width: 1.5, color: this.theme.actionText, style: BorderStyle.Solid }
       : { width: 0 })
   }
 }
@@ -290,6 +294,7 @@ export struct TaskDetailView {
   private packSummary_(): string {
     let session = this.modpackAdapter_()?.getSession()
     if (session === undefined) return '正在下载并解析清单；有可选内容时会提示选择。'
+    if (session.packageReady === false) return '已发现归档中的客户端或实例，请选择本次安装内容。'
     let bytes = 0
     for (let file of session.plan.files) bytes += Math.max(0, file.size)
     return 'Minecraft ' + session.plan.gameVersion + ' · ' + session.plan.loaderType + ' ' + session.plan.loaderVersion
@@ -332,8 +337,8 @@ export struct TaskDetailView {
 
   build() {
     Column() {
-      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: this.view.title, subtitle: this.detailHeaderLabel_(), theme: this.theme, modal: false, showClose: true, surfaceColor: this.theme.bgPrimary, backLabel: '返回任务列表', closeLabel: '关闭下载管理', backId: 'task-detail-back', closeId: 'task-detail-close', onBack: (): void => { this.onBack(); }, onClose: (): void => { this.onClose(); },
+      // 标题保留任务识别；运行、暂停和结束状态由下方实时进度卡表达，页头不再重复“任务详情”。
+      ImmersiveTitleScaffold({ title: this.view.title, theme: this.theme, modal: false, showClose: true, surfaceColor: this.theme.bgPrimary, backLabel: '返回任务列表', closeLabel: '关闭下载管理', backId: 'task-detail-back', closeId: 'task-detail-close', onBack: (): void => { this.onBack(); }, onClose: (): void => { this.onClose(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
@@ -381,7 +386,7 @@ export struct TaskDetailView {
           .fontSize(13)
           .fontWeight(600)
           .fontColor(this.view.state === UnifiedTaskState.ERROR || this.view.state === UnifiedTaskState.ABORTED
-            ? this.theme.error : this.theme.textPrimary)
+            ? this.theme.errorText : this.theme.textPrimary)
           .layoutWeight(1)
         Text(this.view.durationMs > 0 ? '耗时 ' + this.formatDurationLong_(this.view.durationMs) : '')
           .fontSize(11)
@@ -444,7 +449,7 @@ export struct TaskDetailView {
           .fontSize(13)
           .fontWeight(600)
           .fontColor(this.view.state === UnifiedTaskState.ERROR || this.view.state === UnifiedTaskState.ABORTED
-            ? this.theme.error : this.theme.textPrimary)
+            ? this.theme.errorText : this.theme.textPrimary)
           .layoutWeight(1)
         Text(this.view.durationMs > 0 ? '耗时 ' + this.formatDurationLong_(this.view.durationMs) : '')
           .fontSize(11)
@@ -486,7 +491,7 @@ export struct TaskDetailView {
         })
           .width('100%')
           .height(4)
-          .color(this.theme.primary)
+          .color(this.theme.actionPrimary)
           .backgroundColor(this.theme.divider)
       }
       if (p.status === 'running' && p.message && p.message.length > 0) {
@@ -503,9 +508,9 @@ export struct TaskDetailView {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(12)
     .border(p.status === 'running'
-      ? { width: 1.5, color: this.theme.primary, style: BorderStyle.Solid }
+      ? { width: 1.5, color: this.theme.actionText, style: BorderStyle.Solid }
       : (p.status === 'error'
-        ? { width: 1.5, color: this.theme.error, style: BorderStyle.Solid }
+        ? { width: 1.5, color: this.theme.errorText, style: BorderStyle.Solid }
         : { width: 0 }))
   }
 
@@ -532,9 +537,40 @@ export struct TaskDetailView {
       // 名称在开始安装前的下载详情编辑，执行期只展示持久意图/实际目录，恢复不会改名。
       Text('版本名称：' + (this.modpackAdapter_()?.getInstallName() ?? this.view.title))
         .fontSize(13).fontColor(this.theme.textPrimary).width('100%')
+      if (this.modpackAdapter_()?.canChooseOtherPackage()) {
+        Button('重新选择归档中的客户端或实例').fontSize(12).width('100%')
+          .onClick((): void => {
+            try { this.modpackAdapter_()?.chooseOtherPackage(); this.packSelectionRevision_++ }
+            catch (error) { this.getUIContext().getPromptAction().showToast({ message: (error as Error).message }) }
+          })
+      }
       if (this.view.requiresConfirmation) {
         Text('安装位置：' + (this.modpackAdapter_()?.getInstallRoot() ?? ''))
           .fontSize(12).fontColor(this.theme.textSecondary).width('100%')
+        if (this.modpackAdapter_()?.requiresPackageSelection()) {
+          Text('选择客户端或实例').fontSize(13).fontWeight(600).fontColor(this.theme.textPrimary)
+          ForEach(this.modpackAdapter_()?.packageCandidates() ?? [], (candidate: ModpackPackageCandidate) => {
+            Row({ space: 8 }) {
+              Radio({ value: candidate.id, group: 'modpack-payload:' + this.view.id })
+                .checked(this.modpackAdapter_()?.packageSelected(candidate.id) ?? false)
+                .onChange((selected: boolean): void => {
+                  if (selected) {
+                    try {
+                      this.modpackAdapter_()?.selectPackage(candidate.id)
+                      this.packSelectionRevision_++
+                    } catch (error) {
+                      this.getUIContext().getPromptAction().showToast({ message: (error as Error).message })
+                    }
+                  }
+                })
+              Column({ space: 3 }) {
+                Text(candidate.title).fontSize(13).fontColor(this.theme.textPrimary).width('100%')
+                Text(candidate.root + (candidate.gameDir ? ' · ' + candidate.gameDir : ''))
+                  .fontSize(11).fontColor(this.theme.textSecondary).width('100%')
+              }.layoutWeight(1)
+            }.width('100%').constraintSize({ minHeight: 48 })
+          }, (candidate: ModpackPackageCandidate): string => candidate.id)
+        } else {
         Text('可选内容 · 已选 ' + this.packOptionCount_() + ' 项')
           .fontSize(13).fontWeight(600).fontColor(this.theme.textPrimary)
         ForEach(this.modpackAdapter_()?.optionalFiles() ?? [], (file: ModpackFile) => {
@@ -550,13 +586,14 @@ export struct TaskDetailView {
         }, (file: ModpackFile): string => modpackFileKey(file))
         Text('未选择的可选文件不会下载；必需内容不可用时会保留缺失清单。')
           .fontSize(12).fontColor(this.theme.textSecondary)
+        }
       }
       Row() {
         Text('·  整合包安装')
           .fontSize(13)
           .fontWeight(600)
           .fontColor(this.view.state === UnifiedTaskState.ERROR || this.view.state === UnifiedTaskState.ABORTED
-            ? this.theme.error : this.theme.textPrimary)
+            ? this.theme.errorText : this.theme.textPrimary)
           .layoutWeight(1)
         Text(this.view.durationMs > 0 ? '耗时 ' + this.formatDurationLong_(this.view.durationMs) : '')
           .fontSize(11)
@@ -579,12 +616,12 @@ export struct TaskDetailView {
       if (this.view.state === UnifiedTaskState.ERROR && this.view.errorMessage.length > 0) {
         Text(this.view.errorMessage)
           .fontSize(12)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
           .width('100%')
           .margin({ top: 4 })
       }
       ForEach(this.packIssues_(), (line: string) => {
-        Text(line).fontSize(12).fontColor(this.theme.warning).width('100%')
+        Text(line).fontSize(12).fontColor(this.theme.warningText).width('100%')
       })
       if (this.view.state === UnifiedTaskState.DONE && this.view.canRetry) {
         Button('仅补齐原实例缺失内容').height(44).width('100%')
@@ -610,7 +647,7 @@ export struct TaskDetailView {
           .fontSize(13)
           .fontWeight(600)
           .fontColor(this.view.state === UnifiedTaskState.ERROR || this.view.state === UnifiedTaskState.ABORTED
-            ? this.theme.error : this.theme.textPrimary)
+            ? this.theme.errorText : this.theme.textPrimary)
           .layoutWeight(1)
         Text(this.view.durationMs > 0 ? '耗时 ' + this.formatDurationLong_(this.view.durationMs) : '')
           .fontSize(11)
@@ -625,29 +662,6 @@ export struct TaskDetailView {
       }, (entry: ResourceFileEntry, idx: number) => entry.filename + ':' + idx)
     }
     .width('100%')
-  }
-
-  // ============================================================
-  //  Header
-  // ============================================================
-
-
-
-  private detailHeaderLabel_(): string {
-    let v = this.view
-    if (v.state === UnifiedTaskState.ERROR)   return '任务详情 · 失败'
-    if (v.state === UnifiedTaskState.ABORTED) return '任务详情 · 已取消'
-    if (v.state === UnifiedTaskState.DONE)    return '任务详情 · 已完成'
-    if (v.state === UnifiedTaskState.PAUSED)  return '任务详情 · 已暂停'
-    return '任务详情'
-  }
-
-  private detailHeaderLabelColor_(): ResourceColor {
-    let v = this.view
-    if (v.state === UnifiedTaskState.ERROR || v.state === UnifiedTaskState.ABORTED) return this.theme.error
-    if (v.state === UnifiedTaskState.DONE)   return this.theme.success
-    if (v.state === UnifiedTaskState.PAUSED) return this.theme.warning
-    return this.theme.textHint
   }
 
   // ============================================================
@@ -670,11 +684,13 @@ export struct TaskDetailView {
 
         if (this.isHeroError_(this.view)) {
           Column({ space: 4 }) {
-            AppIcon({ name: AppIconName.Close, iconSize: 36, color: this.theme.error })
-            Text('下载失败')
+            AppIcon({ name: AppIconName.Close, iconSize: 36, color: this.theme.errorText })
+            // 取消沿用终态卡布局和重试入口，但必须与业务ABORTED事实使用一致文案。
+            Text(this.view.state === UnifiedTaskState.ABORTED ? stateLabel(this.view.state) :
+              (this.isModFileSave_(this.view) ? '保存失败' : '下载失败'))
               .fontSize(12)
               .fontWeight(600)
-              .fontColor(this.theme.error)
+              .fontColor(this.theme.errorText)
           }
           .alignItems(HorizontalAlign.Center)
         } else {
@@ -682,7 +698,7 @@ export struct TaskDetailView {
             Text(Math.round(this.view.progress) + '%')
               .fontSize(34)
               .fontWeight(700)
-              .fontColor(this.heroRingColor_(this.view))
+              .fontColor(this.heroRingColor_(this.view, true))
             Text(stateLabel(this.view.state))
               .fontSize(11)
               .fontWeight(500)
@@ -696,7 +712,7 @@ export struct TaskDetailView {
       Text(this.heroTitleText_(this.view))
         .fontSize(16)
         .fontWeight(600)
-        .fontColor(this.isHeroError_(this.view) ? this.theme.error : this.theme.textPrimary)
+        .fontColor(this.isHeroError_(this.view) ? this.theme.errorText : this.theme.textPrimary)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.Center)
@@ -716,7 +732,11 @@ export struct TaskDetailView {
   }
 
   private heroTitleText_(v: UnifiedTaskView): string {
+    // 保留任务名并明确用户取消；不能把沿用的终态操作分组误解为ERROR。
+    if (v.state === UnifiedTaskState.ABORTED) return stateLabel(v.state) + ' ' + v.title
     if (this.isHeroError_(v)) return v.title
+    // 另存保留资源配色与文件进度，实际阶段及成功结论由另存适配器提供。
+    if (this.isModFileSave_(v)) return v.currentLabel || stateLabel(v.state)
     // 此卡只承担电脑依赖准备，不能套用安装器“安装完成”或宣称整包已保存。
     if (v.category === TaskCategory.GAME_EXPORT) {
       return (v.state === UnifiedTaskState.DONE ? '电脑文件准备完成' : stateLabel(v.state)) + ' · ' + v.title
@@ -732,7 +752,14 @@ export struct TaskDetailView {
     return '正在安装 ' + v.title
   }
 
+  /** 单文件保存沿用真实资源展示分类，通过资源管理活动区分于实例安装。 */
+  private isModFileSave_(v: UnifiedTaskView): boolean {
+    return v.activityCategory === ActivityCategory.RESOURCE_MANAGE && (v.category === TaskCategory.MOD
+      || v.category === TaskCategory.SHADER || v.category === TaskCategory.RESOURCE_PACK)
+  }
+
   private isHeroError_(v: UnifiedTaskView): boolean {
+    // 仅作为终态布局/动作分组，重试、移除仍沿原条件；取消的显示与真正错误分开。
     return v.state === UnifiedTaskState.ERROR || v.state === UnifiedTaskState.ABORTED
   }
 
@@ -741,10 +768,11 @@ export struct TaskDetailView {
     return this.theme.bgCard
   }
 
-  private heroRingColor_(v: UnifiedTaskView): ResourceColor {
-    if (v.state === UnifiedTaskState.DONE)   return this.theme.success
-    if (this.isHeroError_(v))                return this.theme.error
-    if (v.state === UnifiedTaskState.PAUSED || v.state === UnifiedTaskState.WAITING) return this.theme.warning
+  /** 环形进度保留状态/类别填充；其内部数字另请求可读前景，避免深色下借用填充色。 */
+  private heroRingColor_(v: UnifiedTaskView, foreground: boolean = false): ResourceColor {
+    if (v.state === UnifiedTaskState.DONE)   return foreground ? this.theme.successText : this.theme.success
+    if (this.isHeroError_(v))                return foreground ? this.theme.errorText : this.theme.error
+    if (v.state === UnifiedTaskState.PAUSED || v.state === UnifiedTaskState.WAITING) return foreground ? this.theme.warningText : this.theme.warning
     if (v.category === TaskCategory.MC_VERSION)    return this.theme.taskMcBlue
     if (v.category === TaskCategory.MOD)           return this.theme.taskModPurple
     if (v.category === TaskCategory.SHADER)        return this.theme.taskShaderIndigo
@@ -752,11 +780,11 @@ export struct TaskDetailView {
     if (v.category === TaskCategory.DATAPACK)      return this.theme.taskDatapackTeal
     if (v.category === TaskCategory.MODPACK)       return this.theme.taskModpackOrange
     if (v.category === TaskCategory.JDK)           return this.theme.taskJdkRedOrange
-    return this.theme.primary
+    return foreground ? this.theme.actionText : this.theme.actionPrimary
   }
 
   private heroRingBg_(v: UnifiedTaskView): ResourceColor {
-    if (this.isHeroError_(v)) return '#F9D9DA'
+    if (this.isHeroError_(v)) return this.theme.errorBg
     return this.theme.divider
   }
 
@@ -796,15 +824,16 @@ export struct TaskDetailView {
 
       // ---- 速度 / 错误 ----
       Column({ space: 4 }) {
-        Text(this.isHeroError_(this.view)
+        // 内联读取仍保持ArkUI对view的依赖；ABORTED显示状态，不借用旧错误分类。
+        Text(this.view.state === UnifiedTaskState.ABORTED ? stateLabel(this.view.state) : this.isHeroError_(this.view)
           ? (this.view.errorKind.length > 0 ? this.view.errorKind : '失败')
           : (this.view.speedBps > 0 ? formatSpeed(this.view.speedBps) : '—'))
           .fontSize(15)
           .fontWeight(700)
-          .fontColor(this.isHeroError_(this.view) ? this.theme.error : this.theme.primary)
+          .fontColor(this.isHeroError_(this.view) ? this.theme.errorText : this.theme.actionText)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.isHeroError_(this.view) ? '错误' : '速度')
+        Text(this.view.state === UnifiedTaskState.ABORTED ? '状态' : (this.isHeroError_(this.view) ? '错误' : '速度'))
           .fontSize(11)
           .fontColor(this.theme.textHint)
       }
@@ -819,7 +848,7 @@ export struct TaskDetailView {
           .fontSize(15)
           .fontWeight(700)
           .fontColor((this.isHeroError_(this.view) || this.view.state === UnifiedTaskState.DONE)
-            ? this.theme.textPrimary : this.theme.success)
+            ? this.theme.textPrimary : this.theme.successText)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text((this.isHeroError_(this.view) || this.view.state === UnifiedTaskState.DONE) ? '耗时' : '剩余')
@@ -842,20 +871,20 @@ export struct TaskDetailView {
     Row({ space: 12 }) {
       if (this.view.requiresConfirmation) {
         this.PrimaryActionBtn_(AppIconName.ArrowDown, '安装所选内容',
-          this.theme.textOnPrimary, this.theme.primary, () => { this.confirmModpack_() })
-        this.SecondaryCircleBtn_(AppIconName.Close, this.theme.error,
+          this.theme.textOnPrimary, this.theme.actionPrimary, () => { this.confirmModpack_() })
+        this.SecondaryCircleBtn_(AppIconName.Close, this.theme.errorText,
           this.theme.errorBg, () => { this.registry_.cancel(this.view.id, false) })
       } else if (this.view.state === UnifiedTaskState.DONE) {
         this.PrimaryActionBtn_(AppIconName.Check, '完成',
-          this.theme.textOnPrimary, this.theme.success,
+          this.theme.textOnPrimary, this.theme.actionPrimary,
           () => this.onBack())
       } else if (this.isHeroError_(this.view)) {
         if (this.view.canRecoverExternally) {
           this.PrimaryActionBtn_(AppIconName.Refresh, this.view.category === TaskCategory.GAME_EXPORT ? '重新检查导出' : '重新检查应用更新',
-            this.theme.textOnPrimary, this.theme.primary, () => { this.onExternalRecovery() })
+            this.theme.textOnPrimary, this.theme.actionPrimary, () => { this.onExternalRecovery() })
         } else if (this.view.canRetry) {
           this.PrimaryActionBtn_(AppIconName.Refresh, '重试',
-            this.theme.textOnPrimary, this.theme.primary,
+            this.theme.textOnPrimary, this.theme.actionPrimary,
             () => { this.registry_.retry(this.view.id) })
         } else {
           this.PrimaryActionBtn_(AppIconName.Back, '返回列表',
@@ -865,19 +894,19 @@ export struct TaskDetailView {
           this.theme.bgCard, () => { this.registry_.remove(this.view.id) })
       } else if (this.view.canResume) {
         this.PrimaryActionBtn_(AppIconName.Play, '继续下载',
-          this.theme.textOnPrimary, this.theme.primary,
+          this.theme.textOnPrimary, this.theme.actionPrimary,
           () => { this.registry_.resume(this.view.id) })
-        this.SecondaryCircleBtn_(AppIconName.Close, this.theme.error,
+        this.SecondaryCircleBtn_(AppIconName.Close, this.theme.errorText,
           this.theme.errorBg, () => { this.registry_.cancel(this.view.id, false) })
       } else if (this.view.canPause && isActiveState(this.view.state)) {
         this.PrimaryActionBtn_(AppIconName.Close, '取消下载',
-          this.theme.error, this.theme.errorBg,
+          this.theme.errorText, this.theme.errorBg,
           () => { this.registry_.cancel(this.view.id, false) })
         this.SecondaryCircleBtn_(AppIconName.Pause, this.theme.textSecondary,
           this.theme.bgCard, () => { this.registry_.pause(this.view.id) })
       } else if (this.view.canCancel) {
-        this.PrimaryActionBtn_(AppIconName.Close, '取消下载',
-          this.theme.error, this.theme.errorBg,
+        this.PrimaryActionBtn_(AppIconName.Close, this.isModFileSave_(this.view) ? '取消保存' : '取消下载',
+          this.theme.errorText, this.theme.errorBg,
           () => { this.registry_.cancel(this.view.id, false) })
       } else {
         this.PrimaryActionBtn_(AppIconName.Back, '返回列表',
@@ -946,6 +975,10 @@ export struct TaskDetailView {
               .fontSize(13).lineHeight(21).fontColor(this.theme.textSecondary).width('100%')
           } else {
             this.ResourceFilesPanel_()
+            // 保存阶段错误可能发生在正文下载之后，保留目标核对或重新选址的原因。
+            if (this.isModFileSave_(this.view) && this.view.state === UnifiedTaskState.ERROR && this.view.errorMessage.length > 0) {
+              Text(this.view.errorMessage).fontSize(13).lineHeight(21).fontColor(this.theme.errorText).width('100%')
+            }
           }
         }
         .width('100%')

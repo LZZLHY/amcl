@@ -8,6 +8,72 @@
   },
   "gates": [
     {
+      "id": "check-hap-native-providers",
+      "script": "scripts/check-hap-native-providers.mjs",
+      "tool": "node",
+      "kind": "artifact",
+      "domain": "runtime",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["build-hap.ps1"]
+    },
+    {
+      "id": "test-hap-native-providers",
+      "script": "scripts/test-hap-native-providers.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["build-hap.ps1"]
+    },
+    {
+      "id": "test-touch-editing-contract",
+      "script": "scripts/test-touch-editing-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["scripts/preflight.mjs"]
+    },
+    {
+      "id": "test-runtime-compatibility",
+      "script": "scripts/test-runtime-compatibility.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["scripts/preflight.mjs"]
+    },
+    {
+      "id": "test-runtime-validation-transport",
+      "script": "scripts/test-runtime-validation-transport.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["scripts/preflight.mjs"]
+    },
+    {
+      "id": "test-app-runtime-bootstrap",
+      "script": "scripts/test-app-runtime-bootstrap.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": ["scripts/preflight.mjs"]
+    },
+    {
       "id": "check-quick-hap",
       "script": "scripts/check-quick-hap.mjs",
       "tool": "node",
@@ -16,7 +82,9 @@
       "quick": "always",
       "cachePolicy": "never",
       "dependsOn": [],
-      "surfaces": ["build-hap.ps1"]
+      "surfaces": [
+        "build-hap.ps1"
+      ]
     },
     {
       "id": "test-check-quick-hap",
@@ -27,7 +95,9 @@
       "quick": "defer",
       "cachePolicy": "never",
       "dependsOn": [],
-      "surfaces": ["build-hap.ps1"]
+      "surfaces": [
+        "build-hap.ps1"
+      ]
     },
     {
       "id": "test-build-profile-dispatch",
@@ -38,7 +108,9 @@
       "quick": "defer",
       "cachePolicy": "never",
       "dependsOn": [],
-      "surfaces": ["build-hap.ps1"]
+      "surfaces": [
+        "build-hap.ps1"
+      ]
     },
     {
       "id": "build-app",
@@ -1357,7 +1429,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -1384,7 +1457,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -3092,6 +3166,20 @@
       ]
     },
     {
+      "id": "test-landscape-rotation",
+      "script": "scripts/test-landscape-rotation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "input",
+      "quick": "defer",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
       "id": "test-gyro-lease",
       "script": "scripts/test-gyro-lease.mjs",
       "tool": "node",
@@ -3359,6 +3447,19 @@
       "dependsOn": [],
       "surfaces": [
         "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk-native-inputs",
+      "script": "scripts/test-jdk-native-inputs.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "jdk",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
         "scripts/preflight.mjs"
       ]
     },
@@ -4266,6 +4367,19 @@
       ]
     },
     {
+      "id": "test-sdl-host-cache",
+      "script": "scripts/test-sdl-host-cache.py",
+      "tool": "python",
+      "kind": "behavior",
+      "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
       "id": "test-sdl-host-consumer",
       "script": "scripts/test-sdl-host-consumer.py",
       "tool": "python",
@@ -4450,7 +4564,21 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sideload-native-terminal",
+      "script": "scripts/test-sideload-native-terminal.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "defer",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -4463,7 +4591,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -4476,7 +4605,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -4489,7 +4619,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -4502,7 +4633,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -4883,7 +5015,8 @@
       "cachePolicy": "never",
       "dependsOn": [],
       "surfaces": [
-        "build-hap.ps1"
+        "build-hap.ps1",
+        "scripts/preflight.mjs"
       ]
     },
     {
@@ -5084,6 +5217,201 @@
       "dependsOn": [],
       "surfaces": [
         ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-runtime-host-contract",
+      "script": "scripts/test-runtime-host-contract.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sideload-update-presentation",
+      "script": "scripts/test-sideload-update-presentation.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-update-dialog-layout",
+      "script": "scripts/test-update-dialog-layout.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "prepare-sideload-host-inputs",
+      "script": "scripts/prepare-sideload-host-inputs.mjs",
+      "tool": "node",
+      "kind": "prepare",
+      "domain": "update",
+      "quick": "always",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-prepare-sideload-host-inputs",
+      "script": "scripts/test-prepare-sideload-host-inputs.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-sideload-signer-host",
+      "script": "scripts/test-sideload-signer-host.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-jdk-install-journal",
+      "script": "scripts/test-jdk-install-journal.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-app-dependency",
+      "script": "scripts/test-runtime-app-dependency.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-host-declaration",
+      "script": "scripts/test-runtime-host-declaration.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-app-jdk-update-plan",
+      "script": "scripts/test-app-jdk-update-plan.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-app-completion-recovery",
+      "script": "scripts/test-app-completion-recovery.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-intent-admission",
+      "script": "scripts/test-runtime-intent-admission.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-app-subscription-handoff",
+      "script": "scripts/test-app-subscription-handoff.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-runtime-intent-large-receipt",
+      "script": "scripts/test-runtime-intent-large-receipt.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-app-target-reader-compatibility",
+      "script": "scripts/test-app-target-reader-compatibility.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "update",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
       ]
     }
   ]

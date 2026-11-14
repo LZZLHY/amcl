@@ -1,4 +1,9 @@
 /**
+ * 消息中心的错误提示、错误图标和原生确认框按钮使用状态前景色，保证深色卡片上的可读性；
+ * 未读圆点仍使用状态填充，清空、重试和消息读取流程保持原有行为。
+ */
+import { applyNativeTheme } from '../components/AppTheme';
+/**
  * MessageCenterPage.ets — 消息中心（消息中心与诊断体验 · M4.4）
  *
  * 首页右上角那个铃铛此前是纯占位、点了没反应。现在它是消息中心入口。
@@ -39,6 +44,8 @@ struct MessageCenterPage {
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
 
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   private prefManager: PreferenceManager = new PreferenceManager(this.context)
@@ -51,7 +58,8 @@ struct MessageCenterPage {
   private applyTheme_(): void {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
     let mode = this.prefManager.themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   onColorModeChange(): void {
@@ -143,8 +151,8 @@ struct MessageCenterPage {
         title: '清空消息？',
         message: '这会删除消息中心里的通知记录，不会删除活动日志或分享链接。',
         buttons: [
-          { text: '取消', color: this.theme.primary as string },
-          { text: '清空消息', color: this.theme.error as string },
+          { text: '取消', color: this.theme.actionText as string },
+          { text: '清空消息', color: this.theme.errorText as string },
         ],
       }).then((res: promptAction.ShowDialogSuccessResponse) => {
         if (res.index === 1) this.clearAll_()
@@ -163,10 +171,10 @@ struct MessageCenterPage {
   }
 
   private kindColor_(kind: AppMessageKind): ResourceColor {
-    if (kind === AppMessageKind.AI_ANALYSIS_FAILED) return this.theme.error
-    if (kind === AppMessageKind.DOWNLOAD_DONE) return this.theme.success
-    if (kind === AppMessageKind.UPDATE_AVAILABLE) return this.theme.warning
-    return this.theme.primary
+    if (kind === AppMessageKind.AI_ANALYSIS_FAILED) return this.theme.errorText
+    if (kind === AppMessageKind.DOWNLOAD_DONE) return this.theme.successText
+    if (kind === AppMessageKind.UPDATE_AVAILABLE) return this.theme.warningText
+    return this.theme.actionText
   }
 
   private kindBg_(kind: AppMessageKind): ResourceColor {
@@ -195,6 +203,9 @@ struct MessageCenterPage {
     if (this.messages.length > 0) return [{ id: 'clear-messages', label: '清空' }];
     return [];
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
 
   build() {
     Column() {
@@ -269,8 +280,8 @@ struct MessageCenterPage {
   private ImmersiveTitleContent1_() {
       if (this.loadingError.length > 0) {
         Row({ space: 8 }) {
-          AppIcon({ name: AppIconName.Warning, iconSize: 14, color: this.theme.error })
-          Text(this.loadingError).fontSize(12).fontColor(this.theme.error).layoutWeight(1)
+          AppIcon({ name: AppIconName.Warning, iconSize: 14, color: this.theme.errorText })
+          Text(this.loadingError).fontSize(12).fontColor(this.theme.errorText).layoutWeight(1)
           Button('重试').fontSize(12).onClick(() => { this.refresh_() })
         }.width('100%').padding({ left: 12, right: 12, top: 6, bottom: 6 })
       }

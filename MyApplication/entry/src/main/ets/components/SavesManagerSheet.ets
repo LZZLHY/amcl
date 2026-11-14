@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * SavesManagerSheet.ets — 当前版本「存档管理」Sheet（世界文件夹的导入 / 导出 / 删除）
  *
  * 与 InstalledResourcesSheet（文件级：模组/资源包/光影/数据包）并列的第 5 个资源板块。
@@ -91,7 +95,7 @@ export struct SavesManagerSheet {
     if (this.embedded) {
       this.PanelBody_();
     } else {
-      ImmersiveTitleScaffold({ title: '存档管理', theme: this.theme, modal: true,
+      ImmersiveTitleScaffold({ title: '存档管理', contextLabel: this.versionId, contextTitle: '当前实例', theme: this.theme, modal: true,
         surfaceColor: this.theme.bgPrimary, closeLabel: '关闭管理面板',
         closeId: 'savesmanagersheet-close', closeEnabled: !this.navigationBlocked_(),
         onClose: (): void => { if (!this.navigationBlocked_()) this.onClose(); },
@@ -135,7 +139,8 @@ export struct SavesManagerSheet {
   Header() {
     Row() {
       Column({ space: 2 }) {
-        Text(this.headerSubtitle())
+        // 实例身份由唯一页头负责，工具行只显示实际清单数量，不再重复长版本名。
+        Text(this.loaded ? this.rows.length + ' 个存档' : '正在读取…')
           .fontSize(11).fontColor(this.theme.textHint)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
@@ -156,7 +161,7 @@ export struct SavesManagerSheet {
           Text('导入').fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
         }
         .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-        .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
+        .backgroundColor(this.theme.actionPrimary).alignItems(VerticalAlign.Center)
         .onClick(() => { this.doImport() })
       }
     }
@@ -174,12 +179,6 @@ export struct SavesManagerSheet {
         }
       }, (row: SaveRow) => row.name + '|' + row.mtimeMs)
 
-      ListItem() {
-        Text('共 ' + this.rows.length + ' 个存档 · 导入会自动解压为文件夹')
-          .fontSize(11).fontColor(this.theme.textHint)
-          .width('100%').textAlign(TextAlign.Center)
-          .padding({ top: 12, bottom: 30 })
-      }
     }
     .layoutWeight(1).width('100%')
     .padding({ left: 20, right: 20 })
@@ -195,7 +194,7 @@ export struct SavesManagerSheet {
         AppIcon({
           name: AppIconName.Save,
           iconSize: 20,
-          color: row.valid ? this.theme.primary : this.theme.textHint,
+          color: row.valid ? this.theme.actionText : this.theme.textHint,
         })
       }
       .width(40).height(40)
@@ -207,7 +206,7 @@ export struct SavesManagerSheet {
         Row({ space: 6 }) {
           if (!row.valid) {
             Text('缺 level.dat')
-              .fontSize(10).fontWeight(700).fontColor(this.theme.error)
+              .fontSize(10).fontWeight(700).fontColor(this.theme.errorText)
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
               .borderRadius(5).backgroundColor(this.theme.errorBg)
           }
@@ -221,14 +220,14 @@ export struct SavesManagerSheet {
 
       Row({ space: 8 }) {
         Row() {
-          AppIcon({ name: AppIconName.Export, iconSize: 15, color: this.theme.primary })
+          AppIcon({ name: AppIconName.Export, iconSize: 15, color: this.theme.actionText })
         }
         .width(36).height(36).borderRadius(10)
         .backgroundColor(this.theme.bgInput).justifyContent(FlexAlign.Center)
         .onClick(() => { this.doExport(row.name) })
 
         Row() {
-          AppIcon({ name: AppIconName.Trash, iconSize: 15, color: this.theme.error })
+          AppIcon({ name: AppIconName.Trash, iconSize: 15, color: this.theme.errorText })
         }
         .width(36).height(36).borderRadius(10)
         .backgroundColor(this.theme.errorBg).justifyContent(FlexAlign.Center)
@@ -263,7 +262,7 @@ export struct SavesManagerSheet {
           Text('导入存档').fontSize(13).fontWeight(600).fontColor(this.theme.textOnPrimary)
         }
         .height(36).padding({ left: 18, right: 18 }).borderRadius(18)
-        .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
+        .backgroundColor(this.theme.actionPrimary).alignItems(VerticalAlign.Center)
         .margin({ top: 8 })
         .onClick(() => { this.doImport() })
       }
@@ -276,7 +275,7 @@ export struct SavesManagerSheet {
   @Builder
   LoadingState() {
     Column({ space: 10 }) {
-      LoadingProgress().width(36).height(36).color(this.theme.primary)
+      LoadingProgress().width(36).height(36).color(this.theme.actionText)
       Text('扫描 saves/ 中…').fontSize(12).fontColor(this.theme.textHint)
     }
     .width('100%').layoutWeight(1)
@@ -286,12 +285,12 @@ export struct SavesManagerSheet {
   @Builder
   BusyOverlay() {
     Column({ space: 12 }) {
-      LoadingProgress().width(40).height(40).color(this.theme.primary)
+      LoadingProgress().width(40).height(40).color(this.theme.actionText)
       Text(this.busyLabel).fontSize(13).fontColor(this.theme.textPrimary)
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
   }
 
@@ -320,11 +319,11 @@ export struct SavesManagerSheet {
       }
       .width('90%').padding(20)
       .backgroundColor(this.theme.bgCard).borderRadius(16)
-      .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 4 })
+      .shadow({ radius: 16, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 4 })
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
     .onClick(() => { this.pendingDelete = '' })
   }
@@ -337,12 +336,6 @@ export struct SavesManagerSheet {
     if (this.mcDir.length === 0) return ''
     if (this.versionId.length === 0 && this.versionIsolation) return ''
     return resolveInstanceGameDir(this.mcDir, this.versionId, this.versionIsolation) + '/saves'
-  }
-
-  private headerSubtitle(): string {
-    if (this.versionId.length === 0) return '未选择版本'
-    if (this.rows.length === 0) return this.versionId + ' · 暂无存档'
-    return this.versionId + ' · ' + this.rows.length + ' 个存档'
   }
 
   private refresh(): void {

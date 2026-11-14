@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "nativeProfile": "sherpa-onnx-1.13.3-ohos-cpu",
+  "targetAbi": "aarch64-linux-ohos",
+  "artifacts": [
+    {
+      "filename": "libsherpa-onnx-jni.so",
+      "sha256": "47a239d6a892162a270f55a37811dcd3ea603a2554fba682b6cb127f495805ff",
+      "size": 3450920,
+      "producerRawSha256": "72654f6eb345f78509887571ae6bf0c902207f42ac526c8d2c614eece6eac354",
+      "needed": [
+        "libc++_shared.so",
+        "libc.so",
+        "libhilog_ndk.z.so",
+        "libonnxruntime.so",
+        "librawfile.z.so"
+      ],
+      "requiredSymbols": [
+        "Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_newFromFile",
+        "Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_createStream",
+        "Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_decode",
+        "Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_getResult",
+        "Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_delete",
+        "Java_com_k2fsa_sherpa_onnx_OfflineStream_acceptWaveform",
+        "Java_com_k2fsa_sherpa_onnx_OfflineStream_delete",
+        "Java_com_k2fsa_sherpa_onnx_OfflineTts_newFromFile",
+        "Java_com_k2fsa_sherpa_onnx_OfflineTts_generateWithConfigImpl",
+        "Java_com_k2fsa_sherpa_onnx_OfflineTts_generateWithCallbackImpl",
+        "Java_com_k2fsa_sherpa_onnx_OfflineTts_getSampleRate",
+        "Java_com_k2fsa_sherpa_onnx_OfflineTts_delete"
+      ]
+    },
+    {
+      "filename": "libonnxruntime.so",
+      "sha256": "f9fd9080a10f2b93323d597225fbaa63d06f93b384bdfdd7285db9a9115fcc2b",
+      "size": 12930856,
+      "producerRawSha256": "f9fd9080a10f2b93323d597225fbaa63d06f93b384bdfdd7285db9a9115fcc2b",
+      "needed": [
+        "libc++_shared.so",
+        "libc.so"
+      ],
+      "requiredSymbols": [
+        "OrtGetApiBase"
+      ]
+    }
+  ],
+  "producer": {
+    "sourceCommit": "330609dab49be6ee8b30702918ca7abbbad1286a",
+    "sourceArchiveSha256": "83e3671094fc191e501b557739230895c919e51a63196f8dfa30183af52b921d",
+    "ortArchiveSha256": "3367a54ef1f1c429d1116540e4e5bca98ff28b6de1603d53f4f73ebc24504b85",
+    "jniHeaders": {
+      "entry/src/main/cpp/jvm/jni.h": "1a913b6e83ff47456cea88bcecdb508be762fb4e61f929ce4cb621df0880a841",
+      "entry/src/main/cpp/jvm/jni_md.h": "348071e16d2d5e2b1035ae0fd169743d34ab9ce8bf0cf7139327ad59d7efb7d8"
+    },
+    "buildReceiptSha256": "f189fb64b5826fd0a99ceeb1b19cb85358de889921baaf1de193bd424bacc8ed",
+    "buildLogSha256": "c61e0846a50cce64dee73de70254731d624ba69cc7415531dea616d527e7bee2",
+    "startedAt": "2026-10-25T14:39:49.424330+08:00",
+    "finishedAt": "2026-10-25T14:40:45.196461+08:00"
+  },
+  "qualification": {
+    "targetElf": "PASS",
+    "targetExecution": "NOT_RUN",
+    "hostEngine": {
+      "platform": "windows-x86_64",
+      "sherpaCommit": "330609dab49be6ee8b30702918ca7abbbad1286a",
+      "onnxruntime": "1.16.3",
+      "nativeSha256": {
+        "onnxruntime.dll": "6135d3c08003afb23b7c8997bed44d15d860e9bf8408aaa87e44fc8e4fe2fa48",
+        "sherpa-onnx-jni.dll": "16f40f1ce3cb9095b2849161c6f23026e05b8ea3a774e54c8df403436e7e3c80"
+      },
+      "receiptSha256": "610cf6bda12aacc827e0cb098f45092d394171844aae2151d23811c9d2a1cf2a",
+      "inference": {
+        "5.7.3": {
+          "state": "PASS",
+          "sampleRate": 22050,
+          "samples": 37120,
+          "callbacks": 2,
+          "rms": 0.1222460864634504,
+          "recognized": " The low world. This is a test.",
+          "logSha256": "ea08d50b53558ad1fef34b7464461e6d630fef85ee12c1c482466b30ff2ff5b3"
+        },
+        "6.0.0": {
+          "state": "PASS",
+          "sampleRate": 22050,
+          "samples": 37632,
+          "callbacks": 2,
+          "rms": 0.12461096559573105,
+          "recognized": " A low world, this is a test.",
+          "logSha256": "289fbc844ab79e37ccdb797fba4405b309ba861031728bdbe6b0c2c977f358b4"
+        }
+      }
+    },
+    "deviceAudio": "NOT_RUN",
+    "completeModStartup": "NOT_RUN"
+  },
+  "licenses": {
+    "licenses/eigen-src/COPYING.APACHE": "03379001a7b12a2ec997a25554247d985270b353c10d5bafee9ac8d6519820b7",
+    "licenses/eigen-src/COPYING.BSD": "51928dce36213c5333ba3172e847d735d4c6e9b7ff2722a326c49067155b82eb",
+    "licenses/eigen-src/COPYING.MINPACK": "c87b7f8ee88f6195e91743820c00354833583aef091b72e2d4a49c8e28e798a0",
+    "licenses/eigen-src/COPYING.MPL2": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+    "licenses/eigen-src/COPYING.README": "db640ff2bd90c6abd6a4d3fbb351e0ee4d555417cf840492054d1cbb2ea85644",
+    "licenses/eigen-src/LICENSE": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+    "licenses/ESPEAK-GPL-3.0.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "licenses/json-src/LICENSE.MIT": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603",
+    "licenses/kaldi_decoder-src/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "licenses/kaldi_native_fbank-src/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "licenses/kaldifst-src/LICENSE": "a682d6efd1ee5dee08a8e405c233c2c198ea70ae0718129daa83ab58cfe31c5d",
+    "licenses/kissfft-src/COPYING": "a2840585f8411be8e6826a31ef15ae65c950bd74a2437a73b013398a934ad0c6",
+    "licenses/ONNXRUNTIME-MIT.txt": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+    "licenses/ONNXRUNTIME-THIRD-PARTY.txt": "d7d726424fc23a8395c139bbc7eb2aefa2b5bb2eb3332ec34ad0442d149d2308",
+    "licenses/openfst-src/COPYING": "4300529197035fd3452350718a0b8cee984e9412c9932d7f35fcde849fc97a4b",
+    "licenses/PIPER-PHONEMIZE-MIT.txt": "13746d509d74e55ea2265fbef204bb7cdbf84a8315b0207e988326cb54387028",
+    "licenses/SHERPA-APACHE-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "licenses/simple-sentencepiece-src/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
+}

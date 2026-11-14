@@ -6,6 +6,7 @@ import { http } from '@kit.NetworkKit';
 import { UpdateManifest } from './UpdateChecker';
 import { SideloadUpdateAsset, SideloadMirror } from './SideloadUpdateModels';
 import { AppUpdatePolicy } from './AppUpdatePolicy';
+import { parseAppRuntimeRequirements } from 'commons';
 
 export class GitHubUpdateAssetResolver {
   /** 默认工程消费通用sideload资产；desktop必须有明确desktop资产，不能按渠道混选。 */
@@ -33,11 +34,11 @@ export class GitHubUpdateAssetResolver {
     }
     if (matches.length !== 1) throw new Error('未找到唯一的本产品更新包');
     const selected = matches[0];
-    const url = String(selected['browser_download_url'] ?? '');
+    const url = typeof selected['browser_download_url'] === 'string' ? selected['browser_download_url'] as string : '';
     const name = String(selected['name'] ?? '');
     const prefix = 'https://github.com/LZZLHY/amcl/releases/download/' + encodeURIComponent(manifest.tag) + '/';
     if (url !== prefix + encodeURIComponent(name)) throw new Error('更新包不是指定仓库的发布资产');
-    const digest = String(selected['digest'] ?? '');
+    const digest = typeof selected['digest'] === 'string' ? selected['digest'] as string : '';
     if (!new RegExp('^sha256:[0-9a-fA-F]{64}$').test(digest)) throw new Error('发布资产缺少可靠的SHA-256');
     const size = selected['size'];
     if (typeof size !== 'number' || !Number.isInteger(size) || size <= 0 || size > 2 * 1024 * 1024 * 1024) {
@@ -79,7 +80,7 @@ export class GitHubUpdateAssetResolver {
     const legacy = 'amcl-' + manifest.tag + '-unsigned.hap';
     if (asset.tag !== manifest.tag || asset.versionCode !== manifest.versionCode || asset.versionName !== manifest.versionName ||
       (asset.name !== name && !(wanted === 'sideload' && asset.name === legacy)) ||
-      asset.url !== prefix + encodeURIComponent(asset.name) || !new RegExp('^[0-9a-f]{64}$').test(asset.sha256) ||
+      asset.url !== prefix + encodeURIComponent(asset.name) || typeof asset.sha256 !== 'string' || !new RegExp('^[0-9a-f]{64}$').test(asset.sha256) ||
       !Number.isInteger(asset.sizeBytes) || asset.sizeBytes < 1 || asset.sizeBytes > 2 * 1024 * 1024 * 1024 ||
       asset.websiteUrl !== 'https://amcl.lovedhy.cn/api/packages/files/' + asset.sha256 + '/' + encodeURIComponent(asset.name) ||
       !Array.isArray(asset.mirrors)) throw new Error('更新发布身份校验失败');
@@ -89,8 +90,16 @@ export class GitHubUpdateAssetResolver {
     if (mirrors.length === 0 || mirrors.length > 2 || (mirrors.length === 2 && mirrors[0].provider === mirrors[1].provider)) {
       throw new Error('尚无已就绪的主镜像');
     }
+    // 新推荐携带同一原件的实际宿主声明；历史未声明只按协议1解释，不猜测新版能力。
+    const protocols=asset.runtimeHostProtocols === undefined ? [1] : asset.runtimeHostProtocols;
+    const planProtocol=asset.runtimePlanProtocol === undefined ? 0 : asset.runtimePlanProtocol;
+    const requirements=parseAppRuntimeRequirements(asset.runtimeRequiredCapabilities,asset.runtimeRequiredMajors);
+    if(!Number.isInteger(planProtocol) || planProtocol<0 || planProtocol>2)throw new Error('更新包恢复协议声明无效');
+    if(!Array.isArray(protocols) || protocols.length===0 || protocols.length>8 ||
+      protocols.some((value: number,index: number): boolean => !Number.isInteger(value) || value<1 || value>999 || protocols.indexOf(value)!==index)) throw new Error('更新包宿主声明无效');
     return { tag: asset.tag, versionCode: asset.versionCode, versionName: manifest.versionName, product: wanted,
       name: asset.name, url: asset.url, sha256: asset.sha256, sizeBytes: asset.sizeBytes, legacyUniversal: asset.name === legacy,
-      websiteUrl: asset.websiteUrl, mirrors: mirrors };
+      websiteUrl: asset.websiteUrl, mirrors: mirrors, runtimeHostProtocols:protocols.slice(),runtimePlanProtocol:planProtocol,sourceRevision:asset.sourceRevision,
+      runtimeRequiredCapabilities:requirements.runtimeRequiredCapabilities,runtimeRequiredMajors:requirements.runtimeRequiredMajors };
   }
 }

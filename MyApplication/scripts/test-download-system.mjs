@@ -39,14 +39,16 @@ let submitted=[];
 const dm={purgeTask:()=>true,cancel:()=>true,isCaBundleInitialized:()=>true,
   async createAndWait(spec,progress){submitted.push(spec);const view={taskId:submitted.length,filesDone:spec.files.length,filesTotal:spec.files.length,
     currentFile:spec.files[0]?.localPath??'',bytesDone:1,bytesTotal:1,progress:1,speedBps:0,etaSeconds:0,failedFiles:[]};progress?.(view);return view;}};
-class DormantDownloader {cancel(){}purgeNativeOwners(){return true;} }
+class DormantDownloader {cancel(){}purgeNativeOwners(){return true;} getActiveTaskId(){return 0;} }
 let starts=0;
 let beforePhases;
 class BoundaryRunner {async run(){starts++;beforePhases?.();}cancel(){}}
 const extra={commons:common,'@kit.CoreFileKit':{fileIo:io},'@kit.CryptoArchitectureKit':{cryptoFramework:{}},
   '../download/McDownloader':{McDownloader:DormantDownloader},'../modloader/ModLoaderManager':{ModLoaderManager:class {}},
   './DownloadManager':{DownloadManager:{instance:()=>dm}},'../modloader/MavenUtils':policy,
-  './SourceProber':{ensureRanking:async()=>({bmclapiFirst:false}),shouldUseBmclapiFirst:()=>false,buildSortedUrls:(a,b)=>[b,a]},
+  './SourceProber':{ensureRanking:async()=>({bmclapiFirst:false}),shouldUseBmclapiFirst:()=>false,buildSortedUrls:(a,b)=>[b,a],
+    useOrderedMcDownload:()=>false},
+  '../version/McVersionManifest':{},
   '../version/MetadataCacheStore':{getMetadataCacheStore:()=>({get:()=>null})},'../version/MetadataCache':{},'./PhaseRunner':{PhaseRunner:BoundaryRunner}};
 for(const name of ['PreparePhase','ClientPhase','LibrariesPhase','AssetsPhase','ModloaderPhase','MergePhase'])extra['./phases/'+name]={[name]:class {}};
 const load=loader(extra),U=load('feature_core/src/main/ets/download/UnifiedDownloadTask.ets');
@@ -66,6 +68,27 @@ assert.equal(queued.getTask().phase,'aborted');gate.resolve();await blocked;awai
 await reg.retry(queued.view.id);await turn();
 assert.equal(starts,1);assert.equal(queued.view.state,U.UnifiedTaskState.DONE);assert.equal(reg.runningIds_.length,0);
 pass('排队取消后重试真正执行并完成，无准备中空任务');
+
+// 原生回调只代表当前阶段。复现 assets 的 0 秒 ETA 被 Fabric 任务沿用的真机场景。
+const fabricProgress=new McTask('26.3','fabric','0.20.1','fabric-progress',mcRoot,filesRoot);
+const activeDownload=fabricProgress.getTask();
+activeDownload.handlePhaseProgress({phase:'assets',progress:1,speedBps:226202,message:'游戏资源完成',
+  bytesDone:485135675,bytesTotal:485135675,etaSeconds:0});
+assert.equal(fabricProgress.view.bytesTotal,485135675);
+assert.equal(fabricProgress.view.etaSeconds,0);
+activeDownload.handlePhaseProgress({phase:'modloader',progress:0.33,speedBps:0,message:'Fabric 依赖下载',
+  current:1,total:3});
+assert.equal(activeDownload.phaseDetails.find(detail=>detail.phase==='assets').status,'done');
+assert.equal(activeDownload.speed,'');
+assert.equal(fabricProgress.view.bytesDone,0);
+assert.equal(fabricProgress.view.bytesTotal,0);
+assert.equal(fabricProgress.view.etaSeconds,-1);
+activeDownload.handlePhaseProgress({phase:'assets',progress:1,speedBps:1,message:'迟到的资源进度',
+  bytesDone:485135675,bytesTotal:485135675,etaSeconds:0});
+assert.equal(activeDownload.phase,'modloader');
+assert.equal(fabricProgress.view.bytesTotal,0);
+assert.equal(fabricProgress.view.etaSeconds,-1);
+pass('切换到加载器时清除旧阶段统计，迟到事件不会恢复虚假的 0 秒 ETA');
 
 // DS08：另一 owner 的用户文件与 pending，即使收到清理请求也必须保留。
 reg=new Registry();Registry._instance=reg;reg.maxConcurrent=1;gate=deferred();blocked=reg.enqueue(adapter('blocker',gate));
@@ -96,18 +119,12 @@ const Repair=load('feature_core/src/main/ets/version/RepairTask.ets').RepairTask
 const repair=new Repair('existing',mcRoot);repair.view.state=U.UnifiedTaskState.DONE;
 const Detail=methodClass('entry/src/main/ets/components/TaskDetailView.ets',['mcAdapter_','mcPhaseList_'],{McVersionTask:McTask});
 const detail=new Detail();Object.assign(detail,{view:repair.view,registry_:{getAdapter:()=>repair}});assert.equal(detail.mcPhaseList_().length,0);
-const Index=methodClass('entry/src/main/ets/pages/Index.ets',['syncStatusFromRegistry_','terminalStatus_','recordModpackActivity_'],{...U,McVersionTask:McTask,RepairTask:Repair,ForgeRepairTask:class {},
+const Index=methodClass('entry/src/main/ets/pages/Index.ets',['syncStatusFromRegistry_'],{...U,McVersionTask:McTask,RepairTask:Repair,ForgeRepairTask:class {},
   ActivityCategory:{JDK:'jdk',MODPACK:'modpack',REPAIR:'repair'},ActivityStatus:{SUCCESS:'success',FAILED:'failed',ABORTED:'aborted'}});
-const index=new Index();Object.assign(index,{registry:{listAll:()=>[repair.view],getAdapter:()=>repair},ledgerBegun_:new Set(),mcTerminalRecorded_:new Set()});
-assert.equal(index.terminalStatus_(U.UnifiedTaskState.ERROR),'failed');
-assert.equal(index.terminalStatus_(U.UnifiedTaskState.ABORTED),'aborted');
-assert.equal(index.terminalStatus_(U.UnifiedTaskState.DONE),'success');
-let modpackStatus;index.addActivity_=(_category,_title,status)=>{modpackStatus=status;};
-index.recordModpackActivity_({state:U.UnifiedTaskState.ABORTED,startedAtMs:99,errorMessage:'已取消',title:'fixture'});
-assert.equal(modpackStatus,'aborted');
+const index=new Index();Object.assign(index,{registry:{listAll:()=>[repair.view],getAdapter:()=>repair},registryTerminalProjection_:new Map(),scanVersions(){}});
 assert.doesNotThrow(()=>index.syncStatusFromRegistry_());pass('修复 adapter 不进入普通 MC 专属详情或历史接口');
-let repairs=0;Object.assign(index,{beginActivity_(){},addActivity_(){repairs++;},scanVersions(){}});
-repair.view.startedAtMs=101;index.syncStatusFromRegistry_();index.syncStatusFromRegistry_();
+let repairs=0;Object.assign(index,{scanVersions(){repairs++;}});
+index.registryTerminalProjection_.clear();repair.view.startedAtMs=101;index.syncStatusFromRegistry_();index.syncStatusFromRegistry_();
 repair.view.startedAtMs=102;index.syncStatusFromRegistry_();assert.equal(repairs,2);
 // 导出准备终态不是Minecraft安装成功，不能触发版本扫描或追加游戏下载历史。
 const exportPrepare=new U.UnifiedTaskView();exportPrepare.id='export-prepare:owner';exportPrepare.category=U.TaskCategory.GAME_EXPORT;
@@ -126,12 +143,17 @@ assert.deepEqual(Object.keys(recoveryRoute.params).sort(),['mcRoot','taskId','ve
 assert.equal(recoveryRoute.params.taskId,'export-owner');assert.equal(recoveryRoute.params.mcRoot,'/mc');
 sheet.recoverTask_({...exportPrepare,category:U.TaskCategory.APP_UPDATE});assert.equal(updated,1);
 pass('导出恢复回原活动重新检查/另存，应用更新恢复保持原入口');
-const ExportHero=methodClass('entry/src/main/ets/components/TaskDetailView.ets',['heroTitleText_','isHeroError_','exportPreparedCount_'],{...U});
+// 标题抽取同时带上真实模组另存判据；只注入活动类别常量，仍执行生产分支。
+const ExportHero=methodClass('entry/src/main/ets/components/TaskDetailView.ets',
+  ['heroTitleText_','isHeroError_','isModFileSave_','exportPreparedCount_'],{...U,ActivityCategory:{RESOURCE_MANAGE:'resource_manage'}});
 const exportHero=new ExportHero();assert.match(exportHero.heroTitleText_(exportPrepare),/电脑文件准备完成/);
 assert(!exportHero.heroTitleText_(exportPrepare).includes('安装完成'));
 Object.assign(exportPrepare,{filesDone:3,filesTotal:0});exportHero.view=exportPrepare;
 assert.equal(exportHero.exportPreparedCount_(),'已校验 3 项');exportPrepare.filesDone=4;
 assert.equal(exportHero.exportPreparedCount_(),'已校验 4 项');
+const modFileSave=new U.UnifiedTaskView();Object.assign(modFileSave,{category:U.TaskCategory.MOD,
+  activityCategory:'resource_manage',state:U.UnifiedTaskState.DONE,currentLabel:'文件已保存并核对'});
+assert.equal(exportHero.heroTitleText_(modFileSave),'文件已保存并核对');
 pass('统一任务详情只声明电脑文件准备完成，不声明安装或整包保存成功');
 // Forge 修复显式委托同一 owner，生产 DownloadTask 不得将现有用户目录当作新安装残留。
 const FullRepair=methodClass('feature_core/src/main/ets/version/ForgeRepairTask.ets',['runFullReinstall_'],
@@ -176,28 +198,14 @@ beforePhases=()=>assert.equal(fs.readFileSync(coldB.getTask().tempDir+'/client.a
 await coldB.start();beforePhases=undefined;assert.equal(coldB.view.state,U.UnifiedTaskState.DONE);
 pass('冷启动重建复用持久暂存身份，其他版本与根隔离');
 
-// 恢复列表执行生产页面方法：入队隐藏、完成移除；纯字节进度不能触发重复读盘。
-const uiTask=new McTask('1.20.1',null,'','ui-resume',mcRoot,filesRoot);
-const uiRecord=uiTask.getTask().installSession_;Sessions.saveMcInstallSession(filesRoot,uiRecord);
-const uiRegistry=new Registry();let recoveryReads=0;
-const RecoveryUI=methodClass('entry/src/main/ets/pages/tabs/DownloadTab.ets',['refreshMcRecovery_','onRecoveryTasksChanged_'],
-  {...U,getDownloadTaskRegistry:()=>uiRegistry,listMcInstallRecovery:(...args)=>{recoveryReads++;return Sessions.listMcInstallRecovery(...args);}});
-const recoveryUI=new RecoveryUI();Object.assign(recoveryUI,{filesDir:filesRoot,mcDir:mcRoot,recoveryTasksSignature_:''});
-recoveryUI.refreshMcRecovery_();assert.ok(recoveryUI.mcRecovery_.some(v=>v.id===uiRecord.id));
-uiTask.view.state=U.UnifiedTaskState.DOWNLOADING;uiRegistry.adapters_.set(uiTask.view.id,uiTask);uiRegistry.orderedIds_.push(uiTask.view.id);
-recoveryUI.onRecoveryTasksChanged_();assert.equal(recoveryUI.mcRecovery_.some(v=>v.id===uiRecord.id),false);
-const readsBefore=recoveryReads;uiTask.view.progress=50;recoveryUI.onRecoveryTasksChanged_();assert.equal(recoveryReads,readsBefore);
-uiRecord.complete=true;Sessions.saveMcInstallSession(filesRoot,uiRecord);uiTask.view.state=U.UnifiedTaskState.DONE;recoveryUI.onRecoveryTasksChanged_();
-assert.equal(recoveryUI.mcRecovery_.some(v=>v.id===uiRecord.id),false);pass('恢复列表随任务状态更新，进度帧不重复读盘');
-
-// DS10：失败必须 reject 且保留原因；重试使用新活动，原页面方法开结账恰好一次。
+// DS10：失败必须 reject 且保留原因；重试使用新活动，页面只更新JDK展示，不重复开结账。
 let ok=false;const activities=[];const inst={setDownloadCallback(cb){this.cb=cb;},requestCancel(){},isDownloading:()=>false,
   purgeNativeOwners:()=>true,getFailureReason:()=> '磁盘已满',async downloadAndInstall(){activities.push(this.activityId);return ok;}};
 const Jdk=loader({commons:common,feature_core:{...U,DownloadTaskRegistry:{instance:()=>({notifyChange(){}})}},'./JdkManager':{},'./JdkInstaller':{}})('launch/src/main/ets/JdkInstallTask.ets').JdkInstallTask;
 const jdk=new Jdk('21',{createInstaller:()=>inst},111);await assert.rejects(jdk.start(),/磁盘已满/);assert.equal(jdk.view.errorMessage,'磁盘已满');
 jdk.view.startedAtMs=222;ok=true;await jdk.retry();assert.deepEqual(activities,[111,222]);
-let begun=0,ended=0;Object.assign(index,{registry:{listAll:()=>[jdk.view],getAdapter:()=>jdk},beginActivity_(){begun++;},addActivity_(){ended++;},updateJdkReadyState(){}});
-index.syncStatusFromRegistry_();index.syncStatusFromRegistry_();assert.equal(begun,1);assert.equal(ended,1);
+let begun=0,ended=0,refreshes=0;Object.assign(index,{registry:{listAll:()=>[jdk.view],getAdapter:()=>jdk},beginActivity_(){begun++;},addActivity_(){ended++;},updateJdkReadyState(){refreshes++;}});
+index.syncStatusFromRegistry_();index.syncStatusFromRegistry_();assert.equal(begun,0);assert.equal(ended,0);assert.equal(refreshes,1);
 pass('JDK 失败原因与新尝试活动身份完整传递');
 
 // DS01：实际协调器加实际 DownloadManager 入口，Native 传输为可控批次边界。

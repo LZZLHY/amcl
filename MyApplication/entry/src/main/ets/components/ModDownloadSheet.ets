@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * ModDownloadSheet.ets — 模组下载详情面板（v2，2026-05-12 重构）
  *
  * 文档：docs/guides/mod-download-system-plan.md §八.5
@@ -130,11 +134,12 @@ export struct ModDownloadSheet {
     return '准备中';
   }
 
+  /** 摘要文字和状态图标使用可读前景，下载引擎进度与状态判断保持不变。 */
   private getStatusColor(): ResourceColor {
-    if (this.modDl.success) return this.theme.success;
-    if (this.modDl.failed && !this.modDl.cancelled) return this.theme.error;
-    if (this.modDl.cancelled) return this.theme.warning;
-    return this.theme.primary;
+    if (this.modDl.success) return this.theme.successText;
+    if (this.modDl.failed && !this.modDl.cancelled) return this.theme.errorText;
+    if (this.modDl.cancelled) return this.theme.warningText;
+    return this.theme.actionText;
   }
 
   private getStatusIcon(): AppIconName {
@@ -228,7 +233,7 @@ export struct ModDownloadSheet {
           Blank()
           if (this.modDl.active && this.modDl.speedBps > 0) {
             Text(formatSpeed(this.modDl.speedBps))
-              .fontSize(12).fontColor(this.theme.primary).fontWeight(500)
+              .fontSize(12).fontColor(this.theme.actionText).fontWeight(500)
           }
           if (this.modDl.active && this.modDl.etaSeconds >= 0) {
             Text(' · 剩 ' + formatEta(this.modDl.etaSeconds))
@@ -254,7 +259,7 @@ export struct ModDownloadSheet {
               ForEach(this.modDl.currentFiles, (filename: string) => {
                 Row() {
                   Text('↓ ')
-                    .fontSize(12).fontColor(this.theme.primary)
+                    .fontSize(12).fontColor(this.theme.actionText)
                   Text(filename)
                     .fontSize(12).fontColor(this.theme.textPrimary)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
@@ -273,7 +278,7 @@ export struct ModDownloadSheet {
             // fallback: 单文件
             Row() {
               Text('↓ ')
-                .fontSize(12).fontColor(this.theme.primary)
+                .fontSize(12).fontColor(this.theme.actionText)
               Text(this.modDl.currentFile)
                 .fontSize(12).fontColor(this.theme.textPrimary)
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
@@ -291,10 +296,10 @@ export struct ModDownloadSheet {
             Column() {
               Row() {
                 Text('错误详情')
-                  .fontSize(12).fontWeight(500).fontColor(this.theme.error)
+                  .fontSize(12).fontWeight(500).fontColor(this.theme.errorText)
                 if (this.modDl.errorKind.length > 0) {
                   Text(' · ' + this.modDl.errorKind)
-                    .fontSize(11).fontColor(this.theme.error)
+                    .fontSize(11).fontColor(this.theme.errorText)
                 }
               }
               .width('100%')
@@ -314,7 +319,7 @@ export struct ModDownloadSheet {
           // 成功状态：填空白让 Scroll 不抖
           if (this.modDl.success) {
             Column({ space: 8 }) {
-              AppIcon({ name: AppIconName.Celebrate, iconSize: 36, color: this.theme.success })
+              AppIcon({ name: AppIconName.Celebrate, iconSize: 36, color: this.theme.successText })
               Text('所有文件已安装到目标版本目录')
                 .fontSize(13).fontColor(this.theme.textSecondary)
                 .textAlign(TextAlign.Center)
@@ -336,7 +341,7 @@ export struct ModDownloadSheet {
         if (this.canCancel()) {
           Button('取消下载')
             .fontSize(14)
-            .fontColor(this.theme.error)
+            .fontColor(this.theme.errorText)
             .backgroundColor(this.theme.errorBg)
             .borderRadius(20)
             .height(36)
@@ -346,7 +351,7 @@ export struct ModDownloadSheet {
           Button('重试')
             .fontSize(14)
             .fontColor(this.theme.textOnPrimary)
-            .backgroundColor(this.theme.primary)
+            .backgroundColor(this.theme.actionPrimary)
             .borderRadius(20)
             .height(36)
             .layoutWeight(1)
@@ -367,7 +372,7 @@ export struct ModDownloadSheet {
           Button(this.modDl.success ? '完成' : '关闭')
             .fontSize(14)
             .fontColor(this.theme.textOnPrimary)
-            .backgroundColor(this.modDl.success ? this.theme.success : this.theme.primary)
+            .backgroundColor(this.modDl.success ? this.theme.success : this.theme.actionPrimary)
             .borderRadius(20)
             .height(36)
             .layoutWeight(1)

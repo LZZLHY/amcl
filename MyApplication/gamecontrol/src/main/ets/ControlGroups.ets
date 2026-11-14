@@ -3,6 +3,9 @@
  * 数量限制与 Native touch_group_state.h 由契约测试逐项核对；隐藏成员仍计入原布局总预算。
  */
 export const CONTROL_GROUP_PROFILE_VERSION: number = 5
+/** 二级组引入新的执行语义，必须以v6显式声明；旧阅读器应拒绝而非把二级键平铺执行。 */
+export const SECONDARY_GROUP_PROFILE_VERSION: number = 6
+export const TOUCH_SECONDARY_GROUP_CAPABILITY: string = 'touch-secondary-groups-v1'
 export const MAX_CONTROL_GROUPS: number = 128
 export const MAX_CONTROL_GROUP_TARGETS: number = 128
 export const MAX_CONTROL_GROUP_OPERATIONS: number = 1024
@@ -19,6 +22,16 @@ export interface ControlGroup {
   id: string
   name: string
   initialVisible: boolean
+  /** true表示由一级展开键管理的二级组；成员仍使用全屏坐标，不创建容器或相对位置。 */
+  secondary?: boolean
+  /** 展开时隐藏其他一级，当前展开键保留以便再次点击收起；返回键始终可选。 */
+  hidePrimary?: boolean
+}
+
+/** 控件绑定的是稳定组ID。保留原键位字段以便解绑恢复，但绑定期间只执行此层级动作。 */
+export interface ControlSecondaryAction {
+  kind: 'toggle' | 'return'
+  groupId: string
 }
 
 /** 一次阶段可带多个有序操作；targets 保留重复项，Native 按顺序计算最终 mask。 */
@@ -54,7 +67,8 @@ export function validControlActionPhase(phase: string): boolean {
 /** 复制定义而不共享可变数组；undefined 保留旧格式“没有启用组”的含义。 */
 export function cloneControlGroups(groups: ControlGroup[] | undefined): ControlGroup[] | undefined {
   return groups?.map((group: ControlGroup): ControlGroup => {
-    return { id: group.id, name: group.name, initialVisible: group.initialVisible ?? true }
+    return { id: group.id, name: group.name, initialVisible: group.initialVisible ?? true,
+      secondary: group.secondary, hidePrimary: group.hidePrimary }
   })
 }
 
@@ -76,10 +90,13 @@ export function controlGroupTableIssue(groups: ControlGroup[] | undefined, defau
   const ids: Set<string> = new Set<string>()
   for (let index: number = 0; index < groups.length; index++) {
     const group: ControlGroup = groups[index]
-    if (!group || !hasOnlyControlGroupFields(group, ['id', 'name', 'initialVisible'])) return 'groups.fields'
+    if (!group || !hasOnlyControlGroupFields(group, ['id', 'name', 'initialVisible', 'secondary', 'hidePrimary'])) return 'groups.fields'
     if (!validControlGroupId(group.id) || ids.has(group.id)) return 'groups.identity'
     if (typeof group.name !== 'string' || group.name.length === 0 || group.name.length > 64) return 'groups.name'
     if (group.initialVisible !== undefined && typeof group.initialVisible !== 'boolean') return 'groups.initialVisible'
+    if (group.secondary !== undefined && group.secondary !== true) return 'groups.secondary'
+    if (group.hidePrimary !== undefined && (group.secondary !== true || typeof group.hidePrimary !== 'boolean')) return 'groups.hidePrimary'
+    if (group.secondary === true && (group.initialVisible !== false || group.id === defaultId)) return 'groups.secondary-default'
     ids.add(group.id)
   }
   return defaultId === undefined || !ids.has(defaultId) ? 'groups.default' : ''

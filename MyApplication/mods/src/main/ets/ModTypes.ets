@@ -132,12 +132,22 @@ export interface RemoteProject {
 }
 
 /**
- * 取项目的展示标题：命中中文译名优先，否则用原始英文标题。
- * UI（ModCard / ModDetailSheet）统一通过本函数取标题，避免各处重复判空。
+ * 创建可安全渲染的“未选择资源”快照。每次返回独立数组，避免组件间共享可变占位数据。
+ * 空 id 仅表示展示空态，不是可查询或可安装的远端项目；调用方仍须按详情会话控制操作资格。
+ */
+export function makeEmptyRemoteProject(): RemoteProject {
+  return { source: ModSource.MODRINTH, id: '', slug: '', kind: ResourceKind.MOD,
+    title: '', summary: '', author: '', iconUrl: '', downloads: 0, follows: 0,
+    categories: [], loaders: [], gameVersions: [], websiteUrl: '', dateModified: '' };
+}
+
+/**
+ * 取项目的展示标题：有效中文译名优先，其次原始标题，缺失时返回空串。
+ * 类型声明不能替代运行时校验：旧详情空对象或远端缺失字段不能使正文的 length 读取抛错。
  */
 export function displayTitleOf(p: RemoteProject): string {
-  if (p.chineseName !== undefined && p.chineseName.length > 0) return p.chineseName;
-  return p.title;
+  if (typeof p.chineseName === 'string' && p.chineseName.length > 0) return p.chineseName;
+  return typeof p.title === 'string' ? p.title : '';
 }
 
 // ============================================================

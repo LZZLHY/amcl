@@ -288,6 +288,10 @@ test('Index首页真实可见发布同时约束页签、开屏退场和页面hid
   // 必要准备就绪与开屏视觉退场是两个独立事实；主页的周期性动画只能在退场后恢复。
   // 显式构造ready已成立但动画尚未结束的窗口，防止夹具默认值掩盖提前发布可见的问题。
   const page = new module.exports(); page.currentTab = 0;
+  // 本例核对首页可见事实及通知顺序。订阅/计时器实现由test-relay-status-ui执行真实方法；
+  // 此处观测该端口接到的已发布状态，不能因缺少新接缝而在业务断言前抛TypeError。
+  const relayVisibility = [];
+  page.syncRelayObservation_ = () => relayVisibility.push(storage.get('amclHomeTabVisible'));
   page.launcherStartupReady_ = false; page.startupFinished_ = false;
   page.onHomeTabVisibilityChanged_(); assert.equal(storage.get('amclHomeTabVisible'), false);
   page.launcherStartupReady_ = true; page.onHomeTabVisibilityChanged_();
@@ -296,6 +300,7 @@ test('Index首页真实可见发布同时约束页签、开屏退场和页面hid
   page.currentTab = 1; page.onHomeTabVisibilityChanged_(); assert.equal(storage.get('amclHomeTabVisible'), false);
   page.currentTab = 0; storage.set('amclHostPageVisible', false); page.onHomeTabVisibilityChanged_();
   assert.equal(storage.get('amclHomeTabVisible'), false);
+  assert.deepEqual(relayVisibility, [false, false, true, false, false]);
   assert.match(source, /@Watch\('onHomeTabVisibilityChanged_'\) currentTab/);
 });
 
@@ -478,6 +483,8 @@ test('迟到平台外部报告按耐久精确集合补采，普通wake不全局�
     assert.equal(JSON.parse(fs.readFileSync(retryPath)).entries.length, 0);
     // 补采保护完成后，实际待展示队列仍有自己的lease；确认本次真实结果后才要求所有lease解除。
     const shown = (await owner.results())[0]; await owner.acknowledgePresentation(f.id, shown.revision);
+    // 展示lease已解除不等于并行维护也空闲；等待真实在途投影归还其读取租约再检查总租约。
+    await f.ledger.ledgerFlushMaintenanceAsync(f.runtime.directory);
     assert.equal(f.runtime.load('commons/src/main/ets/utils/EvidenceIo.ets').hasEvidenceLease(f.runtime.directory, f.id), false);
     assert.equal(f.counts.platform, fullCalls); assert.equal(globalPlatformLists, 0);
     assert.equal(f.state().outcomeRevision, stateBefore.outcomeRevision);
@@ -921,6 +928,8 @@ test('既有ended无exit的sealed采集边界不随迁移时间移动，真实JV
 test('bootstrap第二批真实读取故障不推进16项游标，重建owner只续作末批且不重写前批确认', async () => {
   const f = fixture();
   try {
+    // 本例故障属于bootstrap读取；暂停无关后台统计，避免一次性故障被metadata指纹先消费。
+    f.ledger.ledgerBeginMaintenanceBatch(f.runtime.directory);
     for (let index = 0; index < 32; index++) {
       const id = f.id + index;
       if (index > 0) f.ledger.ledgerBegin(f.runtime.directory, id, { category: 'launch', title: 'batch-' + index });

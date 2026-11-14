@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * DownloadTasksSheet.ets — 统一下载任务面板（v6.5 2026-05-22）
  *
  * 这是 FAB 点开后弹出的 sheet，取代了原来的 `DownloadSheet`（MC 专用）+
@@ -182,9 +186,9 @@ export struct DownloadTasksSheet {
       // 标题与关闭已由外层原生标题栏负责，这里只更新统计，避免进度刷新重新创建标题宿主。
       // 三宫格 stats
       Row({ space: 10 }) {
-        this.StatCell((): string => this.getActiveCount_().toString(), '进行中', (): ResourceColor => this.theme.primary)
-        this.StatCell((): string => this.getWaitingCount_().toString(), '等待中', (): ResourceColor => this.theme.warning)
-        this.StatCell((): string => this.getFinishedCount_().toString(), '已完成', (): ResourceColor => this.theme.success)
+        this.StatCell((): string => this.getActiveCount_().toString(), '进行中', (): ResourceColor => this.theme.actionText)
+        this.StatCell((): string => this.getWaitingCount_().toString(), '等待中', (): ResourceColor => this.theme.warningText)
+        this.StatCell((): string => this.getFinishedCount_().toString(), '已完成', (): ResourceColor => this.theme.successText)
       }
       .width('100%')
 
@@ -198,7 +202,7 @@ export struct DownloadTasksSheet {
           })
             .layoutWeight(1)
             .height(6)
-            .color(this.theme.primary)
+            .color(this.theme.actionPrimary)
             .backgroundColor(this.theme.divider)
           Text(Math.round(this.getAggregateProgress_()) + '%')
             .fontSize(12)
@@ -259,8 +263,8 @@ export struct DownloadTasksSheet {
       if (!view.exportTaskId || !view.exportMcRoot || !view.exportVersionId) return
       this.onClose()
       this.getUIContext().getRouter().pushUrl({ url: 'pages/GameExportPage', params: {
-        taskId: view.exportTaskId, mcRoot: view.exportMcRoot, versionId: view.exportVersionId,
-        versionIsolation: view.exportVersionIsolation,
+        'taskId': view.exportTaskId, 'mcRoot': view.exportMcRoot, 'versionId': view.exportVersionId,
+        'versionIsolation': view.exportVersionIsolation,
       } }).catch((): void => { /* 路由失败不创建新任务，原导出记录与失败事实继续保留。 */ })
       return
     }
@@ -280,7 +284,7 @@ export struct DownloadTasksSheet {
       .fontSize(12)
       .fontWeight(this.filter === value ? 600 : 500)
       .fontColor(this.filter === value ? this.theme.textOnPrimary : this.theme.textSecondary)
-      .backgroundColor(this.filter === value ? this.theme.primary : this.theme.bgCard)
+      .backgroundColor(this.filter === value ? this.theme.actionPrimary : this.theme.bgCard)
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(14)
       .onClick(() => { this.filter = value })
@@ -333,7 +337,7 @@ export struct DownloadTasksSheet {
       Button('关闭')
         .fontSize(13)
         .fontColor(this.theme.textOnPrimary)
-        .backgroundColor(this.theme.primary)
+        .backgroundColor(this.theme.actionPrimary)
         .borderRadius(20)
         .height(38)
         .layoutWeight(1)

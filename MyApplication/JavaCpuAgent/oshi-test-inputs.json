@@ -1,0 +1,196 @@
+{
+  "schema": 1,
+  "source": "Pinned Mojang version metadata; dependency URL/size/SHA1 are copied verbatim",
+  "versions": [
+    {
+      "minecraft": "1.12.2",
+      "metadataSha256": "56dac2e1caa872d7e37a7b5523056cd812dca94f912ad2bd652817bee60edca4",
+      "libraries": [
+        {
+          "coordinate": "oshi-project:oshi-core:1.1",
+          "path": "oshi-project/oshi-core/1.1/oshi-core-1.1.jar",
+          "sha1": "9ddf7b048a8d701be231c0f4f95fd986198fd2d8",
+          "size": 30973,
+          "url": "https://libraries.minecraft.net/oshi-project/oshi-core/1.1/oshi-core-1.1.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna:4.4.0",
+          "path": "net/java/dev/jna/jna/4.4.0/jna-4.4.0.jar",
+          "sha1": "cb208278274bf12ebdb56c61bd7407e6f774d65a",
+          "size": 1091208,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/4.4.0/jna-4.4.0.jar"
+        }
+      ]
+    },
+    {
+      "minecraft": "1.18.2",
+      "metadataSha256": "3df8f7b5e0ae5ccfd73adc9e00daf407a7274b138daab5793e58d14f2ab74144",
+      "libraries": [
+        {
+          "coordinate": "com.github.oshi:oshi-core:5.8.5",
+          "path": "com/github/oshi/oshi-core/5.8.5/oshi-core-5.8.5.jar",
+          "sha1": "1d0ec654d820741327f5a9229d513732a4b7ce50",
+          "size": 879623,
+          "url": "https://libraries.minecraft.net/com/github/oshi/oshi-core/5.8.5/oshi-core-5.8.5.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna:5.10.0",
+          "path": "net/java/dev/jna/jna/5.10.0/jna-5.10.0.jar",
+          "sha1": "7cf4c87dd802db50721db66947aa237d7ad09418",
+          "size": 1756400,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.10.0/jna-5.10.0.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna-platform:5.10.0",
+          "path": "net/java/dev/jna/jna-platform/5.10.0/jna-platform-5.10.0.jar",
+          "sha1": "fbed7d9669dba47714ad0d4f4454290a997aee69",
+          "size": 1343495,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna-platform/5.10.0/jna-platform-5.10.0.jar"
+        },
+        {
+          "coordinate": "org.slf4j:slf4j-api:1.8.0-beta4",
+          "path": "org/slf4j/slf4j-api/1.8.0-beta4/slf4j-api-1.8.0-beta4.jar",
+          "sha1": "83b0359d847ee053d745be7ec0d8e9e8a44304b4",
+          "size": 44213,
+          "url": "https://libraries.minecraft.net/org/slf4j/slf4j-api/1.8.0-beta4/slf4j-api-1.8.0-beta4.jar"
+        }
+      ]
+    },
+    {
+      "minecraft": "1.20.1",
+      "metadataSha256": "66ad62826f9f6a9782bab099e5223185a06e7079d6fc2b682b7376247389fb60",
+      "libraries": [
+        {
+          "coordinate": "com.github.oshi:oshi-core:6.2.2",
+          "path": "com/github/oshi/oshi-core/6.2.2/oshi-core-6.2.2.jar",
+          "sha1": "54f5efc19bca95d709d9a37d19ffcbba3d21c1a6",
+          "size": 947865,
+          "url": "https://libraries.minecraft.net/com/github/oshi/oshi-core/6.2.2/oshi-core-6.2.2.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna-platform:5.12.1",
+          "path": "net/java/dev/jna/jna-platform/5.12.1/jna-platform-5.12.1.jar",
+          "sha1": "097406a297c852f4a41e688a176ec675f72e8329",
+          "size": 1356627,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna-platform/5.12.1/jna-platform-5.12.1.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna:5.12.1",
+          "path": "net/java/dev/jna/jna/5.12.1/jna-5.12.1.jar",
+          "sha1": "b1e93a735caea94f503e95e6fe79bf9cdc1e985d",
+          "size": 1866196,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.12.1/jna-5.12.1.jar"
+        },
+        {
+          "coordinate": "org.slf4j:slf4j-api:2.0.1",
+          "path": "org/slf4j/slf4j-api/2.0.1/slf4j-api-2.0.1.jar",
+          "sha1": "f48d81adce2abf5ad3cfe463df517952749e03bc",
+          "size": 61388,
+          "url": "https://libraries.minecraft.net/org/slf4j/slf4j-api/2.0.1/slf4j-api-2.0.1.jar"
+        }
+      ]
+    },
+    {
+      "minecraft": "1.20.4",
+      "metadataSha256": "aa4b9aa59d793daec3a65ceebb5fb45787196946e19cd77f8691ed55b3efb0fd",
+      "libraries": [
+        {
+          "coordinate": "com.github.oshi:oshi-core:6.4.5",
+          "path": "com/github/oshi/oshi-core/6.4.5/oshi-core-6.4.5.jar",
+          "sha1": "943ba26de047eb6b28fff47f5ee939a34eb5fc8e",
+          "size": 970546,
+          "url": "https://libraries.minecraft.net/com/github/oshi/oshi-core/6.4.5/oshi-core-6.4.5.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna-platform:5.13.0",
+          "path": "net/java/dev/jna/jna-platform/5.13.0/jna-platform-5.13.0.jar",
+          "sha1": "88e9a306715e9379f3122415ef4ae759a352640d",
+          "size": 1363209,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna-platform/5.13.0/jna-platform-5.13.0.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna:5.13.0",
+          "path": "net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar",
+          "sha1": "1200e7ebeedbe0d10062093f32925a912020e747",
+          "size": 1879325,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar"
+        },
+        {
+          "coordinate": "org.slf4j:slf4j-api:2.0.7",
+          "path": "org/slf4j/slf4j-api/2.0.7/slf4j-api-2.0.7.jar",
+          "sha1": "41eb7184ea9d556f23e18b5cb99cad1f8581fc00",
+          "size": 63635,
+          "url": "https://libraries.minecraft.net/org/slf4j/slf4j-api/2.0.7/slf4j-api-2.0.7.jar"
+        }
+      ]
+    },
+    {
+      "minecraft": "1.21.1",
+      "metadataSha256": "50c56ec28f9a7d4b9b893d9d7e53f5f0ebd0d965f6fc2e9efe63c1d3a65b50f3",
+      "libraries": [
+        {
+          "coordinate": "com.github.oshi:oshi-core:6.4.10",
+          "path": "com/github/oshi/oshi-core/6.4.10/oshi-core-6.4.10.jar",
+          "sha1": "b1d8ab82d11d92fd639b56d639f8f46f739dd5fa",
+          "size": 979212,
+          "url": "https://libraries.minecraft.net/com/github/oshi/oshi-core/6.4.10/oshi-core-6.4.10.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna-platform:5.14.0",
+          "path": "net/java/dev/jna/jna-platform/5.14.0/jna-platform-5.14.0.jar",
+          "sha1": "28934d48aed814f11e4c584da55c49fa7032b31b",
+          "size": 1369287,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna-platform/5.14.0/jna-platform-5.14.0.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna:5.14.0",
+          "path": "net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar",
+          "sha1": "67bf3eaea4f0718cb376a181a629e5f88fa1c9dd",
+          "size": 1878533,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar"
+        },
+        {
+          "coordinate": "org.slf4j:slf4j-api:2.0.9",
+          "path": "org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar",
+          "sha1": "7cf2726fdcfbc8610f9a71fb3ed639871f315340",
+          "size": 64579,
+          "url": "https://libraries.minecraft.net/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar"
+        }
+      ]
+    },
+    {
+      "minecraft": "26.2",
+      "metadataSha256": "aaeca0a201d12c0d2259a7afe137099b1318602c073a17deccc77c7767d2f8c6",
+      "libraries": [
+        {
+          "coordinate": "com.github.oshi:oshi-core:6.9.0",
+          "path": "com/github/oshi/oshi-core/6.9.0/oshi-core-6.9.0.jar",
+          "sha1": "03224870731860cfcd7744581a05b559e94291e7",
+          "size": 1022125,
+          "url": "https://libraries.minecraft.net/com/github/oshi/oshi-core/6.9.0/oshi-core-6.9.0.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna-platform:5.17.0",
+          "path": "net/java/dev/jna/jna-platform/5.17.0/jna-platform-5.17.0.jar",
+          "sha1": "a4934c44d25a9d8c2ddf4203affd20330cb3426f",
+          "size": 1378617,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna-platform/5.17.0/jna-platform-5.17.0.jar"
+        },
+        {
+          "coordinate": "net.java.dev.jna:jna:5.17.0",
+          "path": "net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar",
+          "sha1": "33d12735bef894440780fce64f9758d420c7bae2",
+          "size": 2002589,
+          "url": "https://libraries.minecraft.net/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar"
+        },
+        {
+          "coordinate": "org.slf4j:slf4j-api:2.0.17",
+          "path": "org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar",
+          "sha1": "d9e58ac9c7779ba3bf8142aff6c830617a7fe60f",
+          "size": 69908,
+          "url": "https://libraries.minecraft.net/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar"
+        }
+      ]
+    }
+  ]
+}

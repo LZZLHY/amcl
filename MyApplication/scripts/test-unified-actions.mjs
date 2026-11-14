@@ -173,7 +173,7 @@ for (const available of [false, true]) {
   const preferences = new Preferences(); preferences.titleButtons = true; preferences.navigationMode = M.EXQUISITE;
   const draft = { value: '尚未提交的编辑' }; let bodyCalls = 0, accessoryCalls = 0;
   view.content = () => { bodyCalls++; assert.equal(draft.value, '尚未提交的编辑'); };
-  view.headerAccessory = () => accessoryCalls++; view.accessoryHeight = 48; view.subtitle = '辅助说明';
+  view.headerAccessory = () => accessoryCalls++; view.accessoryHeight = 48;
   view.title = '版本管理'; view.titleId = 'version-title'; view.backId = 'version-back'; view.showClose = true;
   view.menuActions = [{ id: 'messages', label: '消息', icon: I.Notification, badge: '2' },
     { id: 'save', label: '保存', enabled: false }];
@@ -184,7 +184,7 @@ for (const available of [false, true]) {
     if (available) {
       assert.equal(ui.records.some(record => record.type === 'HdsNavigation'), true);
       const options = ui.records.find(record => record.modifiers.titleBar).modifiers.titleBar[0];
-      assert.equal(options.content.bottomBuilder.height, 72); options.content.bottomBuilder.builder();
+      assert.equal(options.content.bottomBuilder.height, 48); options.content.bottomBuilder.builder();
       assert.equal(options.style.systemMaterialEffect.materialType, state === 'off' || state === 'module-off' ? 0 : 100);
       assert.equal(options.style.systemMaterialEffect.materialLevel, state === 'off' || state === 'module-off' ? 10 : 2);
     } else {
@@ -198,6 +198,46 @@ for (const available of [false, true]) {
   assert.equal(draft.value, '尚未提交的编辑');
 }
 pass('真实build/Builder声明分支：旧系统、新系统降级、总关闭/模块关闭与重开均保留正文和固定附件');
+
+// 官方一行MINI为56vp、仅主标题MODAL为64vp；旧系统回退不得额外保留一条副文间距。
+for (const modal of [false, true]) {
+  const { view, ui } = fixture(false);
+  view.modal = modal; view.topSafeHeight = 24; view.content = () => {};
+  view.build();
+  // SDK打印器会把容器块后的修饰器展开为独立声明；读取真实padding输入，不按接收器名字猜父节点。
+  const row = ui.records.find(record => record.modifiers.padding?.[0].left === 16 &&
+    record.modifiers.padding?.[0].top !== undefined);
+  assert.ok(row, '必须执行真实普通标题Builder');
+  const padding = row.modifiers.padding[0];
+  assert.equal(44 + padding.top - view.topSafeHeight + padding.bottom, modal ? 64 : 56,
+    '普通标题应匹配原生单行高度，且安全区只计一次');
+  assert.equal(view.nativeTitleOptions_().content.bottomBuilder, undefined, '无附件时不得生成空白底部区域');
+}
+pass('旧系统单行标题真实声明匹配MINI/MODAL高度与一次安全区，无副文空槽');
+
+// 当前对象只占标题同行菜单，不制造附加行；真实回调须保留完整身份并拒绝换对象后的旧点击。
+for (const available of [false, true]) {
+  const { view, ui } = fixture(available), dialogs = [];
+  view.getUIContext = () => ({ getHostContext: () => undefined, showAlertDialog: options => { dialogs.push(options); } });
+  view.contextTitle = '当前版本'; view.contextLabel = '1.20.1-forge-47.4.26-我的实例';
+  view.content = () => {}; view.showClose = true;
+  const fullName = view.contextLabel;
+  view.build();
+  assert.equal(view.nativeTitleOptions_().content.bottomBuilder, undefined, '对象身份不能产生独占附加行');
+  const click = available
+    ? view.menuItems_().find(item => item.content.componentId === 'app-title-context').content.action
+    : ui.records.find(item => item.modifiers.id?.[0] === 'app-title-context').modifiers.onClick[0];
+  click(); assert.equal(dialogs[0].message, fullName); assert.equal(dialogs[0].title, '当前版本');
+  view.contextLabel = '另一个实例'; click(); assert.equal(dialogs.length, 1, '旧标签不得改派到新实例');
+  const fresh = view.contextRequest_(); fresh(); assert.equal(dialogs[1].message, '另一个实例');
+  view.aboutToDisappear(); fresh(); assert.equal(dialogs.length, 2, '退休标题不能打开对象详情');
+  view.aboutToAppear(); view.contextLabel = ''; fresh(); assert.equal(dialogs.length, 2);
+  view.contextLabel = '😀'.repeat(13);
+  const shortened = Array.from(view.contextShortLabel_());
+  assert.ok(shortened.length <= 6 && shortened.every(character => character === '😀' || character === '…'),
+    '中文/补充字符使用更紧凑预算，且不得切断Unicode代理项');
+}
+pass('当前对象的原生/普通同行入口、完整身份、零额外高度与切换/退休迟到点击');
 
 // 执行HomeTab真实PageHeader，而非用subIcon外框/假资源替代原30vp Image。
 // 原生stackBuilder由测试显式模拟平台调用；这里证明原闭包与声明输入，不证明实际同行/遮挡。
@@ -289,7 +329,7 @@ const builderEntryContract = (() => {
     declarations.set(file, ast);
     for (const owner of ast.statements.filter(node => node.members && node.name)) {
       const slots = owner.members.filter(member => member.kind === compiler.SyntaxKind.PropertyDeclaration &&
-        (compiler.getAllDecorators?.(member) ?? []).some(decorator => decorator.expression.getText(ast).split('(')[0] === 'BuilderParam'))
+        (compiler.getAllDecorators?.(member) ?? compiler.getDecorators?.(member) ?? []).some(decorator => decorator.expression.getText(ast).split('(')[0] === 'BuilderParam'))
         .map(member => member.name.getText(ast));
       if (slots.length > 1) specs.set(owner.name.getText(ast), { file, slots });
     }
@@ -327,7 +367,7 @@ const builderEntryContract = (() => {
       const ast = declarations.get(file), scope = ast.statements.find(owner => owner.members &&
         owner.getStart(ast) <= tokens[index].start && owner.end >= tokens[index].start);
       const builder = scope?.members.find(member => member.name?.getText(ast) === transfer[2]);
-      assert.ok(builder?.body && (compiler.getAllDecorators?.(builder) ?? []).some(decorator => decorator.expression.getText(ast) === 'Builder'),
+      assert.ok(builder?.body && (compiler.getAllDecorators?.(builder) ?? compiler.getDecorators?.(builder) ?? []).some(decorator => decorator.expression.getText(ast) === 'Builder'),
         file + ' content必须指向同一父组件真实@Builder：' + transfer[2]);
       const builderBody = sources.get(file).slice(builder.body.getStart(ast), builder.body.end);
       assert.ok(builderSourceLex(builderBody).tokens.length > 2, file + ' 父@Builder不得丢失原正文');

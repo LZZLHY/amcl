@@ -1,0 +1,14 @@
+diff --git a/make/common/JavaCompilation.gmk b/make/common/JavaCompilation.gmk
+--- a/make/common/JavaCompilation.gmk
++++ b/make/common/JavaCompilation.gmk
+@@ -270,8 +270,9 @@
+   # Allow overriding on the command line
+   JAVA_WARNINGS_ARE_ERRORS ?= -Werror
+ 
++  # AMCL：Java适配源码使用UTF-8，保留中文注释/文本；不改变编译级别或其他检查。
+   # Tell javac to do exactly as told and no more
+-  PARANOIA_FLAGS := -implicit:none -Xprefer:source -XDignore.symbol.file=true -encoding ascii
++  PARANOIA_FLAGS := -implicit:none -Xprefer:source -XDignore.symbol.file=true -encoding UTF-8
+ 
+   $1_FLAGS += -g -Xlint:all $$($1_TARGET_RELEASE) $$(PARANOIA_FLAGS) $$(JAVA_WARNINGS_ARE_ERRORS)
+   $1_FLAGS += $$($1_JAVAC_FLAGS)

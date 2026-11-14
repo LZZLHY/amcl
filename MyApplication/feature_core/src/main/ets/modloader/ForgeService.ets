@@ -46,6 +46,7 @@ import { requiredJdkMajorForMc } from 'commons';
 import {
   DownloadManager, DownloadFileSpec, DownloadTaskSpec, DownloadCheck, DownloadTaskView,
 } from '../download/DownloadManager';
+import { orderMcLoaderDownloadUrls, selectMcSourceUrls, useOrderedMcDownload } from '../download/SourceProber';
 import { ForgelikeInstaller, ForgelikeProfile } from './ForgelikeInstaller';
 import { removeDirRecursive, fileExistsAndNonEmpty, formatSpeed } from 'commons';
 import { AppLogger } from 'commons';
@@ -183,11 +184,12 @@ export class ForgeService implements IModLoaderService {
       loaderCoordPrefix: 'net.minecraftforge:forge:' + artifactVersion + ':client',
       // 2026-07-30：与 NeoForge 一致补上 BMCLAPI `/libraries` 端点（与 `/maven` 命中/回源策略
       //   不同），避免 BMCLAPI 某一端点未收录时只剩国外单源。
-      installerUrls: [
+      // 在组装profile时就收紧installer来源，sidecar探测和正文不能各留一条BMCL旁路。
+      installerUrls: selectMcSourceUrls([
         BMCLAPI_MAVEN + '/net/minecraftforge/forge/' + artifactVersion + '/forge-' + artifactVersion + '-installer.jar',
         BMCLAPI_LIBRARIES_BASE + '/net/minecraftforge/forge/' + artifactVersion + '/forge-' + artifactVersion + '-installer.jar',
         FORGE_MAVEN + '/net/minecraftforge/forge/' + artifactVersion + '/forge-' + artifactVersion + '-installer.jar',
-      ],
+      ]),
       versionId: release.versionId,
       versionDirToken: 'forge',
       // 安装器 JDK 按 MC 纪元自动匹配（与游戏运行时同套：≤1.20.4→17 / 1.20.5+→21 / 26.1+→25），
@@ -281,11 +283,11 @@ export class ForgeService implements IModLoaderService {
       let installerRel = '/net/minecraftforge/forge/' + forgeVersion
         + '/forge-' + forgeVersion + '-installer.jar';
       // 探测到 `.sha1` 的源会被提到最前（preferSourceFirst），故不是 const。
-      let installerUrls: string[] = [
+      let installerUrls: string[] = orderMcLoaderDownloadUrls([
         BMCLAPI_MAVEN + installerRel,
         BMCLAPI_LIBRARIES_BASE + installerRel,
         FORGE_MAVEN + installerRel,
-      ];
+      ]);
 
       // Phase 9 (ARCH-1 闭环)：installer.jar 走 NAPI 引擎多源下载（断点续传 +
       // 坏主机黑名单 + 增量 SHA1）。先取期望 sha1（任一镜像成功即可），再调
@@ -304,7 +306,10 @@ export class ForgeService implements IModLoaderService {
       //   checkInstallerArtifact）把整次安装判死。命中 `.sha1` 的源同时提到 URL 最前。
       let shaProbe: InstallerSha1Probe = await probeInstallerSha1(installerUrls);
       let expectedSha1: string = shaProbe.sha1;
-      installerUrls = preferSourceFirst(installerUrls, shaProbe.sourceIndex);
+      // SHA-1 探针给完整性证据；默认档保留已决定的文件候选顺序。
+      const orderedVersionDownload = useOrderedMcDownload();
+      installerUrls = orderedVersionDownload ? orderMcLoaderDownloadUrls(installerUrls) :
+        selectMcSourceUrls(preferSourceFirst(installerUrls, shaProbe.sourceIndex));
       let primaryInstallerUrl = installerUrls[0];
 
       let downloaded = false;
@@ -315,6 +320,7 @@ export class ForgeService implements IModLoaderService {
       }
       let installerFile: DownloadFileSpec = {
         localPath: installerPath, urls: installerUrls, allowedRoot: mcDir,
+        orderedVersionDownload: orderedVersionDownload,
         // v4.9 (2026-06-06)：Forge installer.jar 用高并发分段下载。
         // 设备实测：BMCLAPI /maven 对该文件间歇性 403，引擎回落到官方 Forge maven
         // （支持 Range 但单连接仅 ~30KB/s），默认 4 段只有 ~120KB/s，8MB 安装器要 60~300s。
@@ -435,25 +441,25 @@ export class ForgeService implements IModLoaderService {
                   let frac = fraction >= 0 ? fraction : (total > 0 ? done / total : 0);
                   this.report(callback, 'pre_download_libs', 4 + frac * 3, 8,
                     '下载依赖库 (' + done + '/' + total + '): ' + name);
-                }, preferRealSource);
+                }, preferRealSource, orderedVersionDownload);
               if (libResult.failed > 0) {
                 // ⚠️ A-01 修复（2026-07-29）：只重试失败项。旧实现重下整批，而旧版 Forge 的
                 //   FML 依赖全部无 sha1/size（不带 check），native 对"无 checker 且目标已存在"
                 //   的提交会拒绝（N-01）→ 第二轮把第一轮成功项逐个判失败 → 永久失败闭环。
-                let retryLibs = selectFailedLibs(libEntries, libResult);
+                let retryLibs: MavenLibEntry[] = orderedVersionDownload ? [] : selectFailedLibs(libEntries, libResult);
                 AppLogger.warn(TAG,
                   `Legacy Forge libs: ${libResult.failed} failed, retrying ${retryLibs.length} of ${libEntries.length}`,
                   null, LOG_DOMAIN_MODLOADER);
-                this.report(callback, 'pre_download_libs', 4, 8,
+                if (retryLibs.length > 0) this.report(callback, 'pre_download_libs', 4, 8,
                   libResult.failed + ' 个库下载失败，正在重试...');
-                // 空子集 = 失败项全为非法坐标，重试无意义，沿用第一轮结论。
+                // 有序模式的候选预算由 Native 收口；空失败子集也沿用首轮结果。
                 let retry = retryLibs.length > 0
                   ? await downloadMavenLibraries(retryLibs, libDir,
                       (done: number, total: number, name: string, fraction: number) => {
                         let frac = fraction >= 0 ? fraction : (total > 0 ? done / total : 0);
                         this.report(callback, 'pre_download_libs', 4 + frac * 3, 8,
                           '重试依赖库 (' + done + '/' + total + '): ' + name);
-                      }, preferRealSource)
+                      }, preferRealSource, orderedVersionDownload)
                   : libResult;
                 if (retry.failed > 0) {
                   let names = (retry.failedNames || []).slice(0, 5).join(', ');

@@ -12,12 +12,14 @@
  *   - 本页再返回 → 回设置页
  */
 import { router, window, promptAction } from '@kit.ArkUI'
-import { common } from '@kit.AbilityKit'
+import { common, ConfigurationConstant } from '@kit.AbilityKit'
+import { PreferenceManager } from 'feature_system'
+import { applyNativeTheme } from '../components/AppTheme'
 import { picker } from '@kit.CoreFileKit'
 import { fileIo as fs } from '@kit.CoreFileKit'
 import { fileUri } from '@kit.CoreFileKit'
 import { systemShare } from '@kit.ShareKit'
-import { LayoutProfile, ImportAnalysis, LayoutLoadIssues, initialControlGroupVisible } from 'gamecontrol'
+import { LayoutProfile, LayoutDeletionReview, ImportAnalysis, LayoutLoadIssues, initialControlGroupVisible } from 'gamecontrol'
 import { LayoutThumbnail } from '../components/LayoutThumbnail'
 import { getLayoutStore, LayoutStore } from 'gamecontrol'
 import { AppIconName } from 'commons'
@@ -35,8 +37,10 @@ interface LayoutListRouteParams {
 @Entry
 @Component
 struct LayoutListPage {
-  /** 编辑器目录沿用原固定深色视觉；只让共享标题接管返回与顶部安全区。 */
-  private titleTheme: ThemeColors = resolveTheme(ThemeMode.DARK, false)
+  /** 目录chrome跟随应用快照；缩略图仍使用用户实际保存的按键颜色和样式。 */
+  @State private titleTheme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
+  @StorageProp('currentColorMode') @Watch('applyToolTheme_') private colorMode_: number = 0
+  @StorageProp('appThemeRevision') @Watch('applyToolTheme_') private appThemeRevision_: number = 0
   @StorageProp('topRectHeight') private topSafeHeight: number = 0
   @State profileNames: string[] = []
   /** 大库只绘制一页卡片，全部目录仍可连续翻页或直接定位活动方案。 */
@@ -51,6 +55,10 @@ struct LayoutListPage {
   // 改名浮层：renameTarget 非空时显示，renameDraft 为输入草稿。
   @State renameTarget: string = ''
   @State renameDraft: string = ''
+  @State private creatingCopy: boolean = false
+  @State private mutationBusy: boolean = false
+  /** 命名面板只持冻结来源，取消不调用Store，也不提前创建副本。 */
+  private copySource: LayoutProfile | undefined = undefined
 
   private store: LayoutStore = getLayoutStore()
   /** 异步预览/确认属于当前页面代次，迟到对话框不能在页面离开后新增布局。 */
@@ -62,9 +70,19 @@ struct LayoutListPage {
     return AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   }
 
+  /** 主题变化只刷新外围显示，不触发目录重扫、预设激活或布局存档写入。 */
+  private applyToolTheme_(): void {
+    const preferences: PreferenceManager = new PreferenceManager(this.getAbilityContext())
+    this.titleTheme = resolveTheme(preferences.themeMode,
+      this.colorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK, preferences.themeAccent)
+    applyNativeTheme(this.titleTheme)
+  }
+
   async aboutToAppear(): Promise<void> {
+    this.applyToolTheme_()
     this.importPageGeneration++
     this.importPageMounted = true
+    this.mutationBusy=false; this.renameTarget=''; this.copySource=undefined; this.creatingCopy=false
     if (!ProductInputProfile.supportsTouchLayouts()) {
       this.getUIContext().getRouter().back()
       return
@@ -97,6 +115,7 @@ struct LayoutListPage {
 
   /** Phase D：从编辑器回到本页时刷一次列表（编辑器保存后名字 / active 可能变化）。 */
   onPageShow(): void {
+    this.applyToolTheme_()
     this.refreshList()
   }
 
@@ -199,23 +218,18 @@ struct LayoutListPage {
 
   /** 新建仍经过原存储拒绝与错误反馈入口，标题菜单不改变方案编号和刷新时机。 */
   private async createProfile_(): Promise<void> {
-    try {
-      const created: LayoutProfile = await this.store.createProfile('方案' + (this.profileNames.length + 1).toString())
-      this.refreshList()
-      this.statusMsg = '已创建: ' + created.name
-    } catch (e) {
-      this.refreshList()
-      this.statusMsg = '新建失败: ' + (e as Error).message
-    }
+    if (this.mutationBusy || this.importBusy) return
+    this.copySource=this.store.getActiveProfile()
+    this.creatingCopy=true; this.renameTarget=this.copySource.name; this.renameDraft=this.copySource.name+' 副本'
   }
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
     Column() {
       // 外层 Stack 继续拥有改名遮罩；导航容器只承载原目录正文，不改浮层层级。
-      ImmersiveTitleScaffold({ title: '按键布局方案', theme: this.titleTheme,
-        topSafeHeight: this.topSafeHeight, surfaceColor: '#141414',
-        menuActions: [{ id: 'create-layout', label: '新建' }, { id: 'import-layout', label: '导入' }],
+      ImmersiveTitleScaffold({ title: '操控方案', theme: this.titleTheme,
+        topSafeHeight: this.topSafeHeight, surfaceColor: this.titleTheme.bgPrimary,
+        menuActions: [{ id: 'create-layout', label: '复制当前方案' }, { id: 'import-layout', label: '导入' }],
         onBack: (): void => { this.getUIContext().getRouter().back(); },
         onMenuAction: (id: string): void => {
           if (id === 'create-layout') this.createProfile_();
@@ -224,7 +238,7 @@ struct LayoutListPage {
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
-    .width('100%').height('100%').backgroundColor('#141414')
+    .width('100%').height('100%').backgroundColor(this.titleTheme.bgPrimary)
     .onAreaChange((_old: Area, newVal: Area) => {
       this.pageWidth = newVal.width as number
     })
@@ -242,50 +256,125 @@ struct LayoutListPage {
   RenameOverlay() {
     Column() {
       Column({ space: 14 }) {
-        Text('重命名方案').fontSize(16).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
-        TextInput({ text: this.renameDraft, placeholder: '输入新名称' })
-          .height(42).fontSize(14).width('100%')
+        Text(this.creatingCopy ? '复制当前方案并使用' : '重命名方案').fontSize(16).fontColor(this.titleTheme.textPrimary).fontWeight(FontWeight.Bold)
+        TextInput({ text: this.renameDraft, placeholder: '输入新名称' }).caretColor(this.titleTheme.actionText)
+          .height(44).fontSize(14).width('100%')
           .maxLength(40)
           .onChange((v: string) => { this.renameDraft = v })
         Row({ space: 10 }) {
-          Button('取消').fontSize(13).height(38).fontColor('#FFFFFF').layoutWeight(1)
-            .backgroundColor('#33FFFFFF').borderRadius(19)
-            .onClick(() => { this.renameTarget = ''; this.renameDraft = '' })
-          Button('确定').fontSize(13).height(38).fontColor('#FFFFFF').layoutWeight(1)
-            .backgroundColor('#448AFF').borderRadius(19)
+          Button('取消').fontSize(13).height(44).fontColor(this.titleTheme.textPrimary).layoutWeight(1)
+            .backgroundColor(this.titleTheme.bgInput).borderRadius(19)
+            .onClick(() => { if (!this.mutationBusy) { this.renameTarget = ''; this.renameDraft = ''; this.copySource=undefined; this.creatingCopy=false } })
+          Button('确定').fontSize(13).height(44).fontColor(this.titleTheme.textOnPrimary).layoutWeight(1)
+            .backgroundColor(this.titleTheme.actionPrimary).borderRadius(19)
             .onClick(() => { this.doRename() })
         }.width('100%')
       }
       .width('80%').constraintSize({ maxWidth: 360 })
       .padding(20)
-      .backgroundColor('#242424').borderRadius(16)
-      .border({ width: 1, color: '#22FFFFFF' })
+      .backgroundColor(this.titleTheme.bgCard).borderRadius(16)
+      .border({ width: 1, color: this.titleTheme.controlBorder })
       .onClick(() => { })   // 吞掉卡片内点击，避免冒泡到遮罩触发关闭
     }
     .width('100%').height('100%')
-    .backgroundColor('#99000000')
+    .backgroundColor(this.titleTheme.overlayShade)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .onClick(() => { this.renameTarget = ''; this.renameDraft = '' })
+    .onClick(() => { if (!this.mutationBusy) { this.renameTarget = ''; this.renameDraft = ''; this.copySource=undefined; this.creatingCopy=false } })
   }
 
-  private doRename(): void {
-    const oldName = this.renameTarget
-    const newName = this.renameDraft
-    this.store.renameProfile(oldName, newName).then((ok: boolean) => {
-      this.renameTarget = ''
-      this.renameDraft = ''
-      if (ok) {
-        this.refreshList()
-        this.statusMsg = '已重命名为: ' + newName.trim()
+  private async doRename(): Promise<void> {
+    if (this.mutationBusy || this.importBusy || !this.importPageMounted) return
+    const name: string=this.renameDraft.trim(), target: string=this.renameTarget
+    const generation: number=this.importPageGeneration, copying: boolean=this.creatingCopy
+    if (name.length===0 || name.length>40) { this.statusMsg='请输入1至40字的方案名'; return }
+    const source: LayoutProfile | undefined=this.copySource
+    this.mutationBusy=true
+    try {
+      if (copying) {
+        if (source===undefined) throw new Error('复制来源已失效，请重新选择')
+        const created: LayoutProfile=await this.store.createProfile(name,source)
+        if (!this.importPageMounted || generation!==this.importPageGeneration) return
+        this.statusMsg='已复制并使用：'+created.name
       } else {
-        this.statusMsg = '重命名失败：名称为空 / 过长 / 与现有方案重名'
+        const ok: boolean=await this.store.renameProfile(target,name)
+        if (!this.importPageMounted || generation!==this.importPageGeneration) return
+        if (!ok) throw new Error('名称重复、预设不可改名或原方案已改变')
+        this.statusMsg='已重命名：'+name
       }
-    }).catch((e: Error) => {
-      this.renameTarget = ''
+      this.renameTarget=''; this.renameDraft=''; this.creatingCopy=false; this.copySource=undefined; this.refreshList()
+    } catch (error) {
+      if (this.importPageMounted && generation===this.importPageGeneration) {
+        this.statusMsg=(copying ? '复制失败：' : '改名失败：')+(error as Error).message; this.refreshList()
+      }
+    } finally { if (generation===this.importPageGeneration) this.mutationBusy=false }
+  }
+
+
+  /** 路由明确携带所选方案；输入设置不会误编辑当前活动方案。 */
+  private openProfileEditor_(name: string, settings: boolean): void {
+    this.getUIContext().getRouter().pushUrl({url:'pages/LayoutEditorPage',params:{profileName:name,settingsOnly:settings}})
+      .catch((error: Error): void => { this.statusMsg='无法打开方案：'+error.message })
+  }
+
+  private profileMenu_(name: string): MenuElement[] {
+    const menu: MenuElement[]=[
+      {value:'手感与输入',action:(): void => { this.openProfileEditor_(name,true) }},
+      {value:'复制并使用',action:(): void => {
+        const source: LayoutProfile | null=this.store.getProfile(name)
+        if (source===null) { this.statusMsg='方案已不存在'; return }
+        this.copySource=source; this.creatingCopy=true; this.renameTarget=name; this.renameDraft=name+' 副本'
+      }},
+      {value:'重命名',enabled:!this.isPreset(name),action:(): void => {
+        this.creatingCopy=false; this.copySource=undefined; this.renameTarget=name; this.renameDraft=name
+      }},
+      {value:'导出',action:(): void => { this.doExport(name) }},
+      {value:'分享',action:(): void => { this.doShare(name) }},
+      {value:'删除…',enabled:!this.isPreset(name),action:(): void => { this.confirmDelete_(name) }}
+    ]
+    if (this.canExportLegacy_(name)) menu.push({value:'导出旧版兼容副本',action:(): void => { this.doExport(name,true) }})
+    return menu
+  }
+
+  /** “使用”采用整份配置；在途禁重入，迟到结果不更新后来页面。 */
+  private async useProfile_(name: string): Promise<void> {
+    if (this.mutationBusy || this.importBusy) return
+    const generation: number=this.importPageGeneration; this.mutationBusy=true
+    try {
+      await this.store.setActiveProfile(name)
+      if (this.importPageMounted && generation===this.importPageGeneration) { this.refreshList(); this.statusMsg='已使用完整操控方案：'+name }
+    } catch (error) {
+      if (this.importPageMounted && generation===this.importPageGeneration) { this.refreshList(); this.statusMsg='采用失败：'+(error as Error).message }
+    } finally { if (generation===this.importPageGeneration) this.mutationBusy=false }
+  }
+
+  /** 原生确认只冻结意图，不预删卡片；Store在事务内再次核对ID、修订与回退身份。 */
+  private confirmDelete_(name: string): void {
+    if (this.mutationBusy || this.importBusy) return
+    const review: LayoutDeletionReview | null=this.store.reviewProfileDeletion(name)
+    if (review===null) { this.statusMsg='该方案不能删除，或没有可用的回退方案'; return }
+    const generation: number=this.importPageGeneration
+    this.getUIContext().showAlertDialog({title:'删除操控方案「'+review.name+'」',
+      message:'将删除此方案的布局、触控、视角和手柄设置。'+
+        (review.profileId===review.activeId ? '\n删除后将使用「'+review.fallbackName+'」。' : '')+'\n确认后不能在此页面撤销。',
+      primaryButton:{value:'取消',action:(): void=>{}},secondaryButton:{value:'删除方案',action:(): void=>{
+        if (this.importPageMounted && generation===this.importPageGeneration) this.deleteConfirmed_(review,generation)
+      }}})
+  }
+
+  private async deleteConfirmed_(review: LayoutDeletionReview,generation: number): Promise<void> {
+    if (this.mutationBusy || this.importBusy || !this.importPageMounted) return
+    this.mutationBusy=true
+    try {
+      const deleted: boolean=await this.store.deleteReviewedProfile(review)
+      if (!this.importPageMounted || generation!==this.importPageGeneration) return
       this.refreshList()
-      this.statusMsg = '重命名失败: ' + e.message
-    })
+      this.statusMsg=deleted ? '已删除：'+review.name : '方案或回退选择已改变，本次未删除，请重新确认'
+    } catch (error) {
+      if (this.importPageMounted && generation===this.importPageGeneration) {
+        this.refreshList(); this.statusMsg='删除失败，原方案保留：'+(error as Error).message
+      }
+    } finally { if (generation===this.importPageGeneration) this.mutationBusy=false }
   }
 
   @Builder
@@ -293,29 +382,29 @@ struct LayoutListPage {
     Column({ space: 10 }) {
       // 标题行
       Row({ space: 8 }) {
-        Circle({ width: 9, height: 9 })
-          .fill(name === this.activeName ? '#448AFF' : '#888888')
+        Row().width(9).height(9).borderRadius(5)
+          .backgroundColor(name === this.activeName ? this.titleTheme.actionText : this.titleTheme.disabledText)
         Text(name)
           .fontSize(15)
-          .fontColor(name === this.activeName ? '#FFFFFF' : '#CCCCCC')
+          .fontColor(name === this.activeName ? this.titleTheme.textPrimary : this.titleTheme.textSecondary)
           .fontWeight(name === this.activeName ? FontWeight.Bold : FontWeight.Medium)
           .layoutWeight(1)
         // 改名：仅非系统预设可改（默认两个预设不可改名）。
         if (!this.isPreset(name)) {
           Row() {
-            AppIcon({ name: AppIconName.Edit, iconSize: 15, color: '#88FFFFFF' })
+            AppIcon({ name: AppIconName.Edit, iconSize: 15, color: this.titleTheme.textSecondary })
           }
           .width(30).height(30).justifyContent(FlexAlign.Center)
-          .onClick(() => { this.renameTarget = name; this.renameDraft = name })
+          .onClick(() => { this.creatingCopy=false; this.copySource=undefined; this.renameTarget = name; this.renameDraft = name })
         }
         if (this.isPreset(name)) {
-          Text('系统').fontSize(10).fontColor('#448AFF').fontWeight(FontWeight.Medium)
-            .backgroundColor('#33448AFF')
+          Text('系统').fontSize(10).fontColor(this.titleTheme.actionText).fontWeight(FontWeight.Medium)
+            .backgroundColor(this.titleTheme.primaryLight)
             .borderRadius(8).padding({ left: 7, right: 7, top: 3, bottom: 3 })
         }
         if (name === this.activeName) {
-          Text('当前').fontSize(10).fontColor('#FFFFFF').fontWeight(FontWeight.Medium)
-            .backgroundColor('#448AFF')
+          Text('当前').fontSize(10).fontColor(this.titleTheme.textOnPrimary).fontWeight(FontWeight.Medium)
+            .backgroundColor(this.titleTheme.actionPrimary)
             .borderRadius(8).padding({ left: 7, right: 7, top: 3, bottom: 3 })
         }
       }
@@ -331,95 +420,30 @@ struct LayoutListPage {
       // 描述行：按钮数量
       Row() {
         Text(this.cardDescription(name))
-          .fontSize(11).fontColor('#66FFFFFF').layoutWeight(1)
+          .fontSize(11).fontColor(this.titleTheme.textSecondary).layoutWeight(1)
       }
 
-      // 操作按钮行（胶囊，语义色对齐设计稿）
-      Row({ space: 6 }) {
-        if (name !== this.activeName) {
-          Button('使用')
-            .fontSize(12).height(32).fontColor('#448AFF').fontWeight(FontWeight.Medium)
-            .backgroundColor('#33448AFF').borderRadius(16)
-            .layoutWeight(1)
-            .onClick(async () => {
-              // 所有 mutation 都可能因写入封锁或写盘失败而拒绝；失败原因原样显示，列表按存储回滚后的状态刷新。
-              try {
-                await this.store.setActiveProfile(name)
-                this.refreshList()
-                this.statusMsg = '已切换到: ' + name
-              } catch (e) {
-                this.refreshList()
-                this.statusMsg = '切换失败: ' + (e as Error).message
-              }
-            })
-        }
-        Button('编辑')
-          .fontSize(12).height(32).fontColor('#FFFFFF').fontWeight(FontWeight.Medium)
-          .backgroundColor('#448AFF').borderRadius(16)
-          .layoutWeight(1)
-          .onClick(() => {
-            // 把方案名作为 params 传给 LayoutEditorPage
-            this.getUIContext().getRouter().pushUrl({
-              url: 'pages/LayoutEditorPage',
-              params: { profileName: name }
-            })
-          })
-        if (this.isPreset(name)) {
-          Button('克隆')
-            .fontSize(12).height(32).fontColor('#FFFFFF').fontWeight(FontWeight.Medium)
-            .backgroundColor('#4466BB6A').borderRadius(16)
-            .layoutWeight(1)
-            .onClick(async () => {
-              try {
-                const cloned = await this.store.cloneAsUser(name)
-                this.refreshList()
-                if (cloned) this.statusMsg = '已克隆为: ' + cloned.name
-              } catch (e) {
-                this.refreshList()
-                this.statusMsg = '克隆失败: ' + (e as Error).message
-              }
-            })
-        } else if (this.profileNames.length > 1) {
-          Button('删除')
-            .fontSize(12).height(32).fontColor('#FF5252').fontWeight(FontWeight.Medium)
-            .backgroundColor('#33FF5252').borderRadius(16)
-            .layoutWeight(1)
-            .onClick(async () => {
-              try {
-                const ok = await this.store.deleteProfile(name)
-                this.refreshList()
-                this.statusMsg = ok ? ('已删除: ' + name) : '删除失败'
-              } catch (e) {
-                this.refreshList()
-                this.statusMsg = '删除失败: ' + (e as Error).message
-              }
-            })
-        }
-        Button('导出')
-          .fontSize(12).height(32).fontColor('#FFFFFFB3').fontWeight(FontWeight.Medium)
-          .backgroundColor('#1AFFFFFF').borderRadius(16)
-          .layoutWeight(1)
-          .onClick(() => { this.doExport(name) })
-        Button('分享')
-          .fontSize(12).height(32).fontColor('#66BB6A').fontWeight(FontWeight.Medium)
-          .backgroundColor('#3366BB6A').borderRadius(16)
-          .layoutWeight(1)
-          .onClick(() => { this.doShare(name) })
-      }
-      if (this.canExportLegacy_(name)) {
-        Button('导出旧版兼容副本（使用保留的全来源手感）')
-          .fontSize(12).height(30).fontColor('#FFFFFFB3').backgroundColor('#1AFFFFFF')
-          .width('100%').margin({ top: 6 })
-          .onClick(() => { this.doExport(name, true) })
-      }
+      Text('含布局、触控、视角与手柄设置').fontSize(12).fontColor(this.titleTheme.textSecondary).width('100%')
+      Row({space:8}) {
+        Button(name===this.activeName ? '当前使用' : '使用').height(44).fontSize(13).layoutWeight(1)
+          .enabled(name!==this.activeName && !this.mutationBusy && !this.importBusy)
+          .backgroundColor(this.titleTheme.primaryLight).fontColor(this.titleTheme.actionText)
+          .onClick((): void => { this.useProfile_(name) })
+        Button('编辑布局').height(44).fontSize(13).layoutWeight(1).enabled(!this.mutationBusy && !this.importBusy)
+          .backgroundColor(this.titleTheme.actionPrimary).fontColor(this.titleTheme.textOnPrimary)
+          .onClick((): void => { this.openProfileEditor_(name,false) })
+        Button('更多').height(44).fontSize(13).layoutWeight(1).enabled(!this.mutationBusy && !this.importBusy)
+          .backgroundColor(this.titleTheme.bgInput).fontColor(this.titleTheme.textPrimary)
+          .bindMenu(this.profileMenu_(name)).accessibilityText(name+'，更多操作')
+      }.width('100%')
     }
     .width('100%')
     .padding(12)
-    .backgroundColor(name === this.activeName ? '#1E3357' : '#242424')
+    .backgroundColor(name === this.activeName ? this.titleTheme.primaryLight : this.titleTheme.bgCard)
     .borderRadius(14)
     .border({
       width: name === this.activeName ? 1.5 : 0,
-      color: '#448AFF'
+      color: this.titleTheme.actionText
     })
   }
 
@@ -550,8 +574,9 @@ struct LayoutListPage {
             title: '导入布局方案',
             message: msg,
             buttons: [
-              { text: '取消', color: '#8A8A8A' },
-              { text: '仍要导入', color: '#448AFF' },
+              // 本应用palette使用不透明HEX字符串；原生Dialog参数不接受ResourceColor的number分支。
+              { text: '取消', color: this.titleTheme.textSecondary as string },
+              { text: '仍要导入', color: this.titleTheme.actionText as string },
             ],
           }).then((res: promptAction.ShowDialogSuccessResponse) => {
             if (res.index === 1 && this.importPageMounted && generation === this.importPageGeneration) {
@@ -595,8 +620,8 @@ struct LayoutListPage {
       // 加载异常提示（非阻塞）：常驻在状态行上方，不遮挡列表、不需要用户确认。
       if (this.loadNotice.length > 0) {
         Text(this.loadNotice)
-          .fontSize(11).fontColor('#FFB74D')
-          .backgroundColor('#26FFB74D').borderRadius(8)
+          .fontSize(11).fontColor(this.titleTheme.warningText)
+          .backgroundColor(this.titleTheme.warningBg).borderRadius(8)
           .width('100%').padding({ left: 12, right: 12, top: 6, bottom: 6 })
           .margin({ bottom: 4 })
       }
@@ -604,7 +629,7 @@ struct LayoutListPage {
       // 状态行
       if (this.statusMsg.length > 0) {
         Text(this.statusMsg)
-          .fontSize(11).fontColor('#FFD54F')
+          .fontSize(11).fontColor(this.titleTheme.warningText)
           .width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
       }
 
@@ -612,7 +637,7 @@ struct LayoutListPage {
         Row({space:8}) {
           Button('上一页').fontSize(13).height(36).enabled(this.profilePage>0)
             .onClick((): void => { this.moveProfilePage_(-1) })
-          Text((this.profilePage+1).toString()+'/'+this.profilePageCount_().toString()).fontSize(13).fontColor('#CCCCCC').layoutWeight(1)
+          Text((this.profilePage+1).toString()+'/'+this.profilePageCount_().toString()).fontSize(13).fontColor(this.titleTheme.textSecondary).layoutWeight(1)
           Button('当前').fontSize(13).height(36).onClick((): void => { this.showCurrentProfilePage_() })
           Button('下一页').fontSize(13).height(36).enabled(this.profilePage+1<this.profilePageCount_())
             .onClick((): void => { this.moveProfilePage_(1) })

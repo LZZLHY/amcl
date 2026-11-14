@@ -2,6 +2,9 @@
 import assert from 'node:assert/strict';
 import { fixture } from './lib/game-layout-fixture.mjs';
 const f=fixture();
+// 磁盘与 V2 通道使用 JSON；可选字段 absent 与 own undefined 的内存形态不是数据丢失。
+// 其余持久化字段仍逐值比较；v5 不启用二级组，v6 的 true/hidePrimary 行为由专门二级组回归验证。
+const persistedGroups=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 try {
   const model=f.owner.load('gamecontrol/src/main/ets/ControlLayout.ets');
   const look=f.owner.load('gamecontrol/src/main/ets/LookPreferences.ets');
@@ -18,7 +21,7 @@ try {
   f.ownerData.set('control_layout',new Map([['profiles',JSON.stringify([profile,untouched])],['active_profile','组方案']]));
   await f.launchV2();
   const loaded=f.child.store.getProfile('组方案');
-  assert.equal(loaded.version,5);assert.deepEqual(loaded.controlGroups,profile.controlGroups);
+  assert.equal(loaded.version,5);assert.deepEqual(persistedGroups(loaded.controlGroups),persistedGroups(profile.controlGroups));
   assert.equal(loaded.controls.find(c=>c.id===button.id).phaseBindings[0].phase,'click');
   loaded.controlGroups[1].name='游戏中修改';
   assert.equal(await f.child.store.saveProfile(loaded),true);
@@ -46,10 +49,11 @@ try {
   f.disk.control.failWrite=undefined;f.state.lock=0;
   assert.equal((await f.owner.journal.importPending(f.disk.context)).imported,1);
   assert.equal(f.owner.store.getProfile('组方案').controlGroups[1].name,'游戏中修改');
-  assert.deepEqual(f.owner.store.getProfile('未打开').controlGroups,untouched.controlGroups);
+  assert.deepEqual(persistedGroups(f.owner.store.getProfile('未打开').controlGroups),persistedGroups(untouched.controlGroups));
   const final=f.owner.store.getProfile(copied.name);assert.equal(final.version,5);assert.ok(final.lookPolicies);
   assert.equal(f.owner.store.getProfile(presetCopy.name).controlGroups[1].name,'最终草稿');
-  assert.deepEqual(f.owner.store.getProfile(presetName).controlGroups,presetSource.controlGroups);
+  assert.deepEqual(persistedGroups(f.owner.store.getProfile(presetName).controlGroups),persistedGroups(presetSource.controlGroups));
+  assert.equal(final.controlGroups[1].secondary,undefined);assert.equal(final.controlGroups[1].hidePrimary,undefined);
   assert.deepEqual(final.controls.find(c=>c.groupActions?.length).groupActions[0].targets,[final.controlGroups[1].id]);
   assert.equal(f.child.xmlOpens(),0);
   console.log('PASS v5 groups: real Store/V2/lazy repository/clone/cancel/write failure/owner merge and lookPolicies');

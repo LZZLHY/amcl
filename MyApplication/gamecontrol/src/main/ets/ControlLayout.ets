@@ -33,7 +33,8 @@ import {
 } from './GlfwKeys'
 import { TouchPreferences, normalizeTouchPreferences } from './TouchPreferences'
 import { SourceLookPreferences, copySourceLookPreferences } from './LookPreferences'
-import { ControlGroup, ControlGroupAction, ControlPhaseBinding, ControlGesturePolicy,
+import { ControlGroup, ControlGroupAction, ControlPhaseBinding, ControlGesturePolicy, ControlSecondaryAction,
+  SECONDARY_GROUP_PROFILE_VERSION, TOUCH_SECONDARY_GROUP_CAPABILITY,
   CONTROL_GROUP_PROFILE_VERSION, TOUCH_GROUP_CAPABILITY, TOUCH_PHASE_CAPABILITY, MAX_CONTROL_GROUP_OPERATIONS,
   cloneControlGroups, cloneControlGroupActions, cloneControlPhaseBindings, controlGroupTableIssue,
   controlGroupActionIssue, controlPhaseBindingIssue, hasOnlyControlGroupFields } from './ControlGroups'
@@ -160,6 +161,10 @@ export interface ControlStyle {
   bgPressed?: string
   fg?: string
   opacity?: number
+  /** 按键真实边框的vp宽度；缺席或0均不绘制，编辑选中框不属于此样式。 */
+  borderWidth?: number
+  /** 仅影响真实边框，使用与背景、文字相同的ArkUI颜色格式。 */
+  borderColor?: string
   shape?: 'circle' | 'square' | 'rounded' | 'diamond'
   /**
    * 圆角度（UI 重构 2026-05-29）：0..1 连续值，表示圆角占"按钮短边一半"的比例。
@@ -175,6 +180,8 @@ export interface ControlStyle {
  * 单个控件的布局数据
  */
 export interface ControlItem {
+  /** v6二级组动作：绑定时覆盖原游戏输出，解绑删除此字段即可恢复原键位。 */
+  secondaryAction?: ControlSecondaryAction
   /** v5 顶层单一归属；抽屉子项继承父组，恢复入口不允许归入用户组。 */
   controlGroupId?: string
   /** 有序的具名组动作；纯组按钮使用 keys=[] / keyOrMouse=0，不生成伪游戏键。 */
@@ -609,6 +616,7 @@ function cloneItemFields(c: ControlItem, children: ControlItem[] | undefined): C
     itemScale: c.itemScale, isCircle: c.isCircle,
     style: c.style ? {
       bg: c.style.bg, bgPressed: c.style.bgPressed, fg: c.style.fg,
+      borderWidth: c.style.borderWidth, borderColor: c.style.borderColor,
       opacity: c.style.opacity, shape: c.style.shape, cornerRadius: c.style.cornerRadius
     } : undefined,
     alignGroup: c.alignGroup, alignIndex: c.alignIndex,
@@ -621,6 +629,8 @@ function cloneItemFields(c: ControlItem, children: ControlItem[] | undefined): C
     dragLook: c.dragLook,
     swipeGroup: c.swipeGroup,
     controlGroupId: c.controlGroupId,
+    secondaryAction: c.secondaryAction === undefined ? undefined :
+      {kind:c.secondaryAction.kind,groupId:c.secondaryAction.groupId},
     groupActions: cloneControlGroupActions(c.groupActions),
     phaseBindings: cloneControlPhaseBindings(c.phaseBindings),
     gesturePolicy: c.gesturePolicy,
@@ -697,13 +707,15 @@ export function cloneLayout(src: LayoutProfile): LayoutProfile {
 
 /** 持久版本由所需能力决定；v5 与独立来源视角政策组合时绝不降写成 v4。 */
 export function layoutProfileVersion(profile: LayoutProfile): number {
+  if (profile.version === SECONDARY_GROUP_PROFILE_VERSION ||
+    profile.controlGroups?.some((group: ControlGroup): boolean => group.secondary === true)) return SECONDARY_GROUP_PROFILE_VERSION
   return profile.controlGroups !== undefined ? CONTROL_GROUP_PROFILE_VERSION :
     (profile.lookPolicies === undefined ? LAYOUT_PROFILE_VERSION : SOURCE_LOOK_PROFILE_VERSION)
 }
 
 /** 运行有效动作的统一判断；纯组按钮可命中，真正解除绑定的旧按钮仍不产生热区。 */
 export function hasControlAction(item: ControlItem): boolean {
-  return (item.groupActions?.some((action: ControlGroupAction): boolean => action.targets.length > 0) ?? false) ||
+  return item.secondaryAction !== undefined || (item.groupActions?.some((action: ControlGroupAction): boolean => action.targets.length > 0) ?? false) ||
     (item.phaseBindings !== undefined ? item.phaseBindings.some((phase: ControlPhaseBinding): boolean => phase.keys.length > 0) :
       effectiveKeys(item).length > 0)
 }
@@ -720,10 +732,13 @@ export function initialControlGroupVisible(profile: LayoutProfile, item: Control
  * 子树有界遍历，避免坏 JSON 通过此额外校验绕过原控件深度/总量守卫。
  */
 function layoutControlGroupIssue(profile: LayoutProfile): string {
-  const enabled: boolean = profile.version === CONTROL_GROUP_PROFILE_VERSION
+  const secondaryEnabled: boolean = profile.version === SECONDARY_GROUP_PROFILE_VERSION
+  const enabled: boolean = profile.version === CONTROL_GROUP_PROFILE_VERSION || secondaryEnabled
   if (!enabled && (profile.controlGroups !== undefined || profile.defaultControlGroupId !== undefined ||
     profile.requiredCapabilities !== undefined)) return 'groups.version'
   const ids: Set<string> = new Set<string>()
+  const secondaryIds: Set<string> = new Set<string>()
+  const openers: Set<string> = new Set<string>(), returns: Set<string> = new Set<string>()
   if (enabled) {
     if (!hasOnlyControlGroupFields(profile, ['version','profileId','profileRevision','name','globalScale','lookSensitivity',
       'invertY','lookSmoothing','lookAccel','lookPolicies','joystickDeadZone','haptic','touch','globalOpacity','targetDevice',
@@ -731,12 +746,17 @@ function layoutControlGroupIssue(profile: LayoutProfile): string {
       'controlGroups','defaultControlGroupId','requiredCapabilities'])) return 'groups.profile-fields'
     const issue: string = controlGroupTableIssue(profile.controlGroups, profile.defaultControlGroupId)
     if (issue.length > 0) return issue
-    for (const group of profile.controlGroups!) ids.add(group.id)
-    if (!Array.isArray(profile.requiredCapabilities) || profile.requiredCapabilities.length > 2 ||
+    for (const group of profile.controlGroups!) {
+      ids.add(group.id)
+      if (group.secondary === true) { if (!secondaryEnabled) return 'groups.secondary-version'; secondaryIds.add(group.id) }
+    }
+    if (!Array.isArray(profile.requiredCapabilities) || profile.requiredCapabilities.length > (secondaryEnabled ? 3 : 2) ||
       profile.requiredCapabilities.indexOf(TOUCH_GROUP_CAPABILITY) < 0) return 'groups.capabilities'
+    if (secondaryEnabled && profile.requiredCapabilities.indexOf(TOUCH_SECONDARY_GROUP_CAPABILITY) < 0) return 'groups.secondary-capability'
     const capabilities: Set<string> = new Set<string>()
     for (const capability of profile.requiredCapabilities) {
-      if ((capability !== TOUCH_GROUP_CAPABILITY && capability !== TOUCH_PHASE_CAPABILITY) ||
+      if ((capability !== TOUCH_GROUP_CAPABILITY && capability !== TOUCH_PHASE_CAPABILITY &&
+        !(secondaryEnabled && capability === TOUCH_SECONDARY_GROUP_CAPABILITY)) ||
         capabilities.has(capability)) return 'groups.capability'
       capabilities.add(capability)
     }
@@ -750,20 +770,35 @@ function layoutControlGroupIssue(profile: LayoutProfile): string {
       if (!item || ++count > MAX_LAYOUT_CONTROL_COUNT) return 'groups.members'
       if (!enabled) {
         if (item.controlGroupId !== undefined || item.groupActions !== undefined || item.phaseBindings !== undefined ||
-          item.gesturePolicy !== undefined) return 'groups.version'
+          item.gesturePolicy !== undefined || item.secondaryAction !== undefined) return 'groups.version'
       } else {
         if (!hasOnlyControlGroupFields(item, ['id','label','type','keyOrMouse','keys','modifiers','trigger','xPct','yPct',
           'baseWidth','baseHeight','itemScale','isCircle','style','alignGroup','alignIndex','grabbedOnly','menuOnly','hidden',
           'locked','visibilityOverride','hideOnInput','dragLook','swipeGroup','hotbarUserPlaced','systemAction','children',
-          'controlGroupId','groupActions','phaseBindings','gesturePolicy'])) return 'groups.control-fields'
+          'controlGroupId','groupActions','phaseBindings','gesturePolicy','secondaryAction'])) return 'groups.control-fields'
         const protectedEntry: boolean = item.systemAction === 'visibility' || item.systemAction === 'edit'
         const member: string | undefined = item.controlGroupId ?? parent
         if (protectedEntry ? member !== undefined : member === undefined || !ids.has(member)) return 'groups.member'
         if (parent !== undefined && member !== parent) return 'groups.child-membership'
+        // 二级入口不允许嵌套或绑定系统控件；同组仅一个展开键和至多一个返回键。
+        // 原keys/trigger等字段保留供解绑恢复，运行编译时由secondaryAction整体覆盖。
+        if (item.secondaryAction !== undefined) {
+          const action: ControlSecondaryAction = item.secondaryAction
+          if (!secondaryEnabled || !action || !hasOnlyControlGroupFields(action, ['kind','groupId']) ||
+            (action.kind !== 'toggle' && action.kind !== 'return') || !secondaryIds.has(action.groupId) ||
+            depth !== 0 || item.type !== ControlType.BUTTON || item.systemAction !== undefined ||
+            item.hidden === true || item.visibilityOverride === 'force_hide') return 'groups.secondary-action'
+          const occupied: Set<string> = action.kind === 'toggle' ? openers : returns
+          if (occupied.has(action.groupId) || (action.kind === 'toggle' ? secondaryIds.has(member ?? '') : member !== action.groupId))
+            return 'groups.secondary-binding'
+          occupied.add(action.groupId)
+        }
         if (item.gesturePolicy !== undefined && item.gesturePolicy !== 'amcl' && item.gesturePolicy !== 'fcl') return 'groups.policy'
         if (item.gesturePolicy !== undefined && item.phaseBindings === undefined) return 'groups.policy-bindings'
         const actionsIssue: string = controlGroupActionIssue(item.groupActions, ids)
         if (actionsIssue.length > 0) return actionsIssue
+        if ((item.groupActions ?? []).some((action: ControlGroupAction): boolean =>
+          action.targets.some((id: string): boolean => secondaryIds.has(id)))) return 'groups.secondary-direct-action'
         const phaseIssue: string = controlPhaseBindingIssue(item.phaseBindings)
         if (phaseIssue.length > 0) return phaseIssue
         if ((item.groupActions !== undefined || item.phaseBindings !== undefined) &&
@@ -810,6 +845,7 @@ export function enableLayoutControlGroups(source: LayoutProfile): LayoutProfile 
 /** 所有组引用只在这里重写；输入是已校验草稿，映射缺席表示保留外部目标。 */
 function remapControlGroupReferences(item: ControlItem, mapping: Map<string, string>): void {
   if (item.controlGroupId !== undefined) item.controlGroupId = mapping.get(item.controlGroupId) ?? item.controlGroupId
+  if (item.secondaryAction !== undefined) item.secondaryAction.groupId = mapping.get(item.secondaryAction.groupId) ?? item.secondaryAction.groupId
   for (const action of item.groupActions ?? []) {
     action.targets = action.targets.map((id: string): string => mapping.get(id) ?? id)
   }
@@ -819,7 +855,11 @@ function remapControlGroupReferences(item: ControlItem, mapping: Map<string, str
 /** 复制整个方案时组和控件都取得新身份；所有内部引用在完整映射建成后统一更新。 */
 export function cloneLayoutWithFreshGroupIds(source: LayoutProfile): LayoutProfile {
   const result: LayoutProfile = cloneLayout(source)
-  if (result.controlGroups === undefined) return result
+  // 无组方案也必须更新控件身份；复制完整方案不能沿用原控件的运行/编辑身份。
+  if (result.controlGroups === undefined) {
+    result.controls = result.controls.map((item: ControlItem): ControlItem => cloneItemWithFreshIds(item, result.controls))
+    return result
+  }
   const mapping: Map<string, string> = new Map<string, string>()
   for (const group of result.controlGroups) {
     const id: string = generateControlId(result.controls)
@@ -840,7 +880,8 @@ export function duplicateLayoutControlGroup(source: LayoutProfile, groupId: stri
   const group: ControlGroup | undefined = result.controlGroups?.find((value: ControlGroup): boolean => value.id === groupId)
   if (group === undefined) return null
   const newId: string = generateControlId(result.controls)
-  result.controlGroups!.push({ id: newId, name: name, initialVisible: group.initialVisible })
+  result.controlGroups!.push({ id: newId, name: name, initialVisible: group.initialVisible,
+    secondary: group.secondary, hidePrimary: group.hidePrimary })
   const mapping: Map<string, string> = new Map<string, string>(); mapping.set(groupId, newId)
   for (const item of source.controls) {
     if (item.controlGroupId !== groupId) continue
@@ -857,8 +898,22 @@ export function removeLayoutControlGroup(source: LayoutProfile, groupId: string,
   if (moveTo !== undefined && (moveTo === groupId ||
     !source.controlGroups.some((group: ControlGroup): boolean => group.id === moveTo))) return null
   const result: LayoutProfile = cloneLayout(source)
+  const secondary: boolean = source.controlGroups.some((group: ControlGroup): boolean => group.id === groupId && group.secondary === true)
+  // 通过组删除快捷栏与单项删除使用相同的一次性注入标记，保存/重载不能自动补回已明确删除的条目。
+  if(moveTo===undefined&&source.controls.some((item: ControlItem): boolean=>item.controlGroupId===groupId&&item.type===ControlType.HOTBAR_SELECTOR))result.hotbarAutoAdded=true
+  if(secondary){
+    // 系统聊天/鼠标等可归组但不可删除。保留原控件及配置并移回一级，避免Store补齐时重建默认键。
+    const protectedTree=(item: ControlItem): boolean=>item.systemAction!==undefined||(item.children??[]).some((child: ControlItem): boolean=>protectedTree(child))
+    const moveProtected=(item: ControlItem): void=>{
+      if(item.controlGroupId===groupId)item.controlGroupId=moveTo??result.defaultControlGroupId
+      for(const child of item.children??[])moveProtected(child)
+    }
+    for(const item of result.controls)if(item.controlGroupId===groupId&&protectedTree(item))moveProtected(item)
+  }
   result.controlGroups = result.controlGroups!.filter((group: ControlGroup): boolean => group.id !== groupId)
-  result.controls = result.controls.filter((item: ControlItem): boolean => item.controlGroupId !== groupId || moveTo !== undefined)
+  // 删除二级组时主按键和可选返回键必须真正移出数据；保留成员仅保留普通二级成员。
+  result.controls = result.controls.filter((item: ControlItem): boolean =>
+    !(secondary && item.secondaryAction?.groupId === groupId) && (item.controlGroupId !== groupId || moveTo !== undefined))
   const clean = (item: ControlItem): void => {
     if (item.controlGroupId === groupId) item.controlGroupId = moveTo
     if (item.groupActions !== undefined) {
@@ -1146,10 +1201,12 @@ function normalizeControlItem(source: ControlItem, depth: number, state: Normali
     const s = source.style
     if ((s.bg !== undefined && (typeof s.bg !== 'string' || s.bg.length > 64))
         || (s.bgPressed !== undefined && (typeof s.bgPressed !== 'string' || s.bgPressed.length > 64))
-        || (s.fg !== undefined && (typeof s.fg !== 'string' || s.fg.length > 64))) {
+        || (s.fg !== undefined && (typeof s.fg !== 'string' || s.fg.length > 64))
+        || (s.borderColor !== undefined && (typeof s.borderColor !== 'string' || s.borderColor.length > 64))) {
       return rejectControl(state, path, 'style')
     }
     if (s.opacity !== undefined && !finiteInRange(s.opacity, 0.1, 1)) return rejectControl(state, path, 'style')
+    if (s.borderWidth !== undefined && !finiteInRange(s.borderWidth, 0, 12)) return rejectControl(state, path, 'style.borderWidth')
     if (s.cornerRadius !== undefined && !finiteInRange(s.cornerRadius, 0, 1)) {
       return rejectControl(state, path, 'style')
     }
@@ -1250,12 +1307,12 @@ export function validateAndNormalizeLayoutWithReason(source: LayoutProfile): Lay
     return rejectProfile('profile.name')
   }
   if (!Array.isArray(source.controls)) return rejectProfile('profile.controls')
-  if (source.version !== undefined && !validInteger(source.version, 1, CONTROL_GROUP_PROFILE_VERSION)) {
+  if (source.version !== undefined && !validInteger(source.version, 1, SECONDARY_GROUP_PROFILE_VERSION)) {
     return rejectProfile('profile.version')
   }
   // 扩展必须声明新格式，避免旧v3读取器忽略字段后把独立政策误当全来源。
   // 外部值先验证再clone；不能把非法扩展复制成undefined悄悄降级旧政策。
-  if (source.lookPolicies !== undefined && ((source.version !== SOURCE_LOOK_PROFILE_VERSION && source.version !== CONTROL_GROUP_PROFILE_VERSION)
+  if (source.lookPolicies !== undefined && ((source.version !== SOURCE_LOOK_PROFILE_VERSION && source.version !== CONTROL_GROUP_PROFILE_VERSION && source.version !== SECONDARY_GROUP_PROFILE_VERSION)
       || copySourceLookPreferences(source.lookPolicies) === undefined)) return rejectProfile('profile.lookPolicies')
   if (source.version === SOURCE_LOOK_PROFILE_VERSION && source.lookPolicies === undefined) {
     return rejectProfile('profile.lookPolicies.missing')

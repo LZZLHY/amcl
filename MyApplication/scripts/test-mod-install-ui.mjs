@@ -22,9 +22,14 @@ const registry={enqueue:async task=>{submitted.push(task);await pendingInstall;}
 const exported={};
 // 安装准备现在由真实loadChosenDetail内部扫描；连同其生产投影/准入方法一起抽取，
 // 不能用测试替身预先宣告ready，否则会绕过本次新增的安装计划门控。
-const js=ts.transpileModule('class Page {\n'+['buildDeclaredDepRows','buildDepRows','detailInstallIssue','loadChosenDetail','confirmInstallFromSheet','invalidateLocalScanCache','executeInstall','recordHistory'].map(method).join('\n')+'\n}\nexports.Page=Page;',
+// 确认入口还以真实会话保护旧CTA，并调用统一请求关闭；继续抽取其生产帮助函数，
+// 不能把交互资格固定为true或用空close吞掉新增生命周期契约。
+const js=ts.transpileModule('class Page {\n'+['buildDeclaredDepRows','buildDepRows','detailInstallIssue','loadChosenDetail',
+  'detailInteractionActive_','confirmInstallFromSheet','closeDetail','invalidateDetailWork_',
+  'invalidateLocalScanCache','executeInstall','usesCustomResourceSave_','currentBrowseKind_'].map(method).join('\n')+'\n}\nexports.Page=Page;',
   {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2021}}).outputText;
 vm.runInNewContext(js,{exports:exported,...T,...R,ModInstallTask:Task,ResourceInstallTask:Task,
+  supportsCustomResourceSave:kind=>['mod','resourcepack','shader'].includes(kind),
   getDownloadTaskRegistry:()=>registry,resolveInstalledLoader:()=> 'fabric',resolveInstalledMcVersion:()=> '1.21.11',
   ActivityCategory:{MOD_INSTALL:'mod_install'},LedgerState:{SUCCESS:1,FAILED:2},DiagnosticPolicy:{isDeveloperBuild:()=>false},
   AppLogger:{warn(){}},LOG_DOMAIN_DOWNLOAD:1,TAG:'ModBrowsePage',getDownloadHistoryStore:()=>historyStore,
@@ -34,8 +39,11 @@ vm.runInNewContext(js,{exports:exported,...T,...R,ModInstallTask:Task,ResourceIn
   ledgerEndAsync:async(_dir,id,outcome)=>{io.endCalls++;if(io.endError)throw Error('关闭IO故障fixture');io.rows.set(id,{...io.rows.get(id),...outcome});},
   makeResolverFromRouter:()=>({resolve:async()=>{enteredResolve();await pendingResolve;return {dependencies:[],conflicts:[],depthExceeded:false};}})});
 const page=new exported.Page();Object.assign(page,{router_:{repoFor:()=>({})},detailProject_:project,detailFetchEpoch_:1,detailLoading_:true,detailError_:'',detailOptionalIds_:[],
+  // 本组从已呈现的资源详情开始，关闭/退休字段只提供初值，后续变化仍由真实方法决定。
+  showDetailSheet_:true,detailSession_:1,detailSessionCounter_:1,detailPresentedSession_:1,detailClosing_:false,detailDisposed_:false,
   detailPreparingInstall_:false,detailInstallReady_:false,detailInstallError_:'',detailDependenciesResolved_:false,detailPreparedMcDir_:'',detailPreparedVersionId_:'',
-  targetMcDir_:'/original',targetVersionId_:'target-original',versionIsolation:true,detailSelectedVersion_:version,detailPrimaryFile_:null,detailInstalledPrimary_:null,
+  targetMcDir_:'/original',targetVersionId_:'target-original',versionIsolation:true,kindIdx_:0,customSaveKindIndices_:[],
+  detailSelectedVersion_:version,detailPrimaryFile_:null,detailInstalledPrimary_:null,
   detailResolvedDeps_:[],downloadingProjectIds_:new Set(),localScanCache_:new Map(),localScanCacheEpoch_:0,messages:[],history:[],
   toast(text){this.messages.push(text);},onStatusMessage(){},getOrScanInstalled:async()=>[],hasValidCurrentVersion:()=>true,uiCtx:()=>undefined,kindLabelOf:()=> '模组',recordHistory(...args){this.history.push(args);}});
 const loading=page.loadChosenDetail(version,1);await startedResolve;
@@ -49,7 +57,7 @@ const install=page.executeInstall(project,version,primary,[]);assert.equal(submi
 page.targetMcDir_='/changed';page.targetVersionId_='changed';page.versionIsolation=false;releaseInstall();await install;
 assert.equal(page.localScanCacheEpoch_,scanEpoch+1);assert.equal(page.localScanCache_.size,0,'安装结束应清除已装文件快照');
 assert.equal(submitted[0].request.mcDir,'/original');assert.equal(submitted[0].request.versionId,'target-original');assert.equal(submitted[0].request.versionIsolation,true);
-assert.equal(page.history[0][7],'1.21.11','History uses the original game snapshot');
+assert.equal(submitted[0].request.mcDir,'/original','Activity identity now belongs to the task owner, not the page');
 // 后续各单点反例必须恢复与已准备计划一致的目标；否则“目标变化”会掩盖被测守卫缺失。
 page.targetMcDir_='/original';page.targetVersionId_='target-original';page.versionIsolation=true;
 assert.equal(page.detailPreparedMcDir_,page.targetMcDir_);assert.equal(page.detailPreparedVersionId_,page.targetVersionId_);
@@ -73,31 +81,5 @@ const RealTask=taskLoad('mods/src/main/ets/ModInstallTask.ets').ModInstallTask;
 const original={mcDir:'/original',versionId:'v',versionIsolation:true,root:JSON.parse(JSON.stringify(version)),title:'root',router:{},optionalIds:['optional']};
 const task=new RealTask(original);original.root.files[0].filename='changed.jar';original.optionalIds.push('changed');await task.start();
 assert.equal(captured.root.files[0].filename,'root.jar');assert.deepEqual(Array.from(captured.optionalIds),['optional']);
-// 开账busy位于真实try/finally，不能留下永久下载标记，也不能在基线前启动producer。
-function finalizerPage(){return Object.assign(new exported.Page(),{router_:{},targetMcDir_:'/fixture',targetVersionId_:'v',versionIsolation:true,
- detailOptionalIds_:[],detailInstalledPrimary_:null,downloadingProjectIds_:new Set(),localScanCache_:new Map(),localScanCacheEpoch_:0,
- recordedHistoryKeys_:new Set(),historyFinalizationJobs_:new Map(),historyTerminalFacts_:new Map(),historySavedKeys_:new Set(),
- uiCtx:()=>({filesDir:'/fixture',getApplicationContext:()=>({filesDir:'/fixture'})}),kindLabelOf:()=> '模组',onStatusMessage(){},toast(){}});}
-{
- const subject=finalizerPage(),before=submitted.length;io.beginError=true;
- await assert.rejects(subject.executeInstall(project,version,primary,[]),/清理忙态/);io.beginError=false;
- assert.equal(subject.downloadingProjectIds_.has(project.id),false);assert.equal(submitted.length,before);
- assert.equal(subject.localScanCacheEpoch_,1,'失败收尾同样退休旧扫描');assert.equal(subject.localScanCache_.size,0);
-}
-// 已完成安装的真实SUCCESS先耐久保存；关闭失败既不变FAILED，也不阻断原事实的阶段重试。
-{
- io.rows.clear();io.history.length=0;const subject=finalizerPage();io.endError=true;
- await subject.executeInstall(project,version,primary,[]);const id=[...io.rows.keys()][0],record=io.history[0];
- assert.equal(record.status,'success');assert.equal(subject.recordedHistoryKeys_.has(id),false);
- const receipt=JSON.parse(io.receipts.get('/fixture/logs/ledger/'+id+'/task-terminal.json'));
- assert.equal(receipt.runNonce,io.rows.get(id).runNonce);assert.equal(receipt.outcome.state,1);
- assert.equal(receipt.outcome.endedAt,record.endedAt);assert.equal(subject.downloadingProjectIds_.size,0);
- io.endError=false;
- await subject.recordHistory(project,'模组',id,0,0,'failed','后续IO异常不能改安装结果','1.21.11','fabric','/fixture');
- assert.equal(io.rows.get(id).state,1);assert.equal(io.rows.get(id).endedAt,record.endedAt);
- assert.equal(io.history.length,1,'只补canonical，不重复追加已经持久的历史');assert(subject.recordedHistoryKeys_.has(id));
- const calls=io.endCalls;await subject.recordHistory(project,'模组',id,0,0,'failed','重复入口','1.21.11','fabric','/fixture');
- assert.equal(io.endCalls,calls,'完整成功后才以dedup返回');
-}
-console.log('PASS: real Mod page busy cleanup, fixed durable SUCCESS, independent history/canonical retries and post-commit dedup');
-console.log('PASS: original page methods block early/error/wrong-file submission, snapshot destination/history, and real task deep-copies root/optional choices');
+// 持久化/重试/取消由生产Registry所有者专项验证，页面仅保证固定输入和finally清理。
+console.log('PASS: original page gates installation, snapshots destination, and releases page state; task lifecycle is validated by test-task-activity-owner.mjs');

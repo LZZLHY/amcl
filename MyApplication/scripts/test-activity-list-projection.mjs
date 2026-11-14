@@ -3,11 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
 const source = fs.readFileSync(new URL('../entry/src/main/ets/pages/DownloadHistoryPage.ets', import.meta.url), 'utf8');
 const ast = compiler.createSourceFile('DownloadHistoryPage.ets', source, compiler.ScriptTarget.Latest, true);
 const component = ast.statements.find(node => node.name?.text === 'DownloadHistoryPage');
-const snippets = ['refreshRecords', 'onPageShow', 'onPageHide', 'aboutToDisappear'].map(name => {
+const snippets = ['refreshRecords', 'resetRetreat_', 'onPageShow', 'onPageHide', 'aboutToDisappear'].map(name => {
   const node = component.members.find(node => node.name?.text === name); assert.ok(node?.body, name);
   return source.slice(node.getStart(ast), node.end);
 }).join('\n');
@@ -15,6 +16,8 @@ const code = compiler.transpileModule('class Probe {' + snippets + '}\nmodule.ex
   { compilerOptions: { target: compiler.ScriptTarget.ES2022 } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { resolve, reject, promise }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
+// 刷新和离页现在还退休辅助区的手势状态；装配真实纯策略，不能用缺方法或空reset掩盖页面链路。
+const { LayerRetreatPolicy } = makePureEtsLoader()('entry/src/main/ets/components/LayerRetreatPolicy.ets');
 
 /**
  * 无参数创建历史页面Probe，实际执行生产refreshRecords及show/hide/disappear，读取策略不在夹具复制。
@@ -32,12 +35,19 @@ function fixture() {
   const subject = new module.exports(); Object.assign(subject, { hostVisible: true, refreshing: false,
     selectionBusy: false, refreshGeneration_: 0, refreshAgain_: false, context: { filesDir: '/sandbox' },
     records: [{ startedAt: 1, status: 'success' }], availability: new Map([[1, true]]), ledgerBytes: 10,
-    detailRevision: 0, loaded: false, loadError: '', updateGroups_() { this.groupPublishes = (this.groupPublishes ?? 0) + 1; } });
+    detailRevision: 0, loaded: false, loadError: '',
+    clearGeneration_: 0, retreatPolicy_: new LayerRetreatPolicy(), retreatAnimationEpoch_: 0,
+    retreatHidden_: 40, retreatAnchorInset_: 80, retreatAnimating_: true, retreatHitHeight_: 40,
+    retreatScrollable_: true, retreatReturning_: true, retreatTouchActive_: true,
+    // 主题属于UI适配边界；show真实刷新调用它，但本夹具不装配窗口与Native主题服务。
+    applyTheme_() {}, updateGroups_() { this.groupPublishes = (this.groupPublishes ?? 0) + 1; } });
   return { subject, requests, revisions };
 }
 
 test('路由隐藏拒绝旧记录/占用/错误；快速返回合并新读取且只有新结果能刷新详情', async () => {
   const f = fixture(); const first = f.subject.refreshRecords(); await turn();
+  assert.equal(f.subject.retreatHidden_, 0); assert.equal(f.subject.retreatAnchorInset_, -1);
+  assert.equal(f.subject.retreatScrollable_, false); assert.equal(f.subject.retreatAnimating_, false);
   f.subject.onPageHide(); f.subject.onPageShow(); assert.equal(f.requests.length, 1);
   f.requests[0].resolve({ records: [{ startedAt: 2 }], ledgerIds: [2], ledgerBytes: 999 }); await first; await turn();
   assert.equal(f.requests.length, 2); assert.equal(f.requests[0].cancelled(), true);

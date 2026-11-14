@@ -16,6 +16,8 @@ OHOS_SYSROOT=${OHOS_SYSROOT:-/ohos-sysroot}
 TOOLCHAIN_DIR=${TOOLCHAIN_DIR:-/ohos-toolchain}
 WORK_DIR=/build
 JOBS=${JOBS:-$(nproc)}
+# 统一产物身份：配方、打包和收尾检查共用本次请求的新文件名。
+export JDK_OUTPUT="${JDK_OUTPUT:-/output/jdk17-ohos-${AMCL_RUN_ID:-candidate}.zip}"
 JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}
 
 echo "============================================"
@@ -105,33 +107,35 @@ echo "  stubs:   $STUBS_SRC_DIR"
 
 # 使用统一补丁系统应用所有源码补丁
 python3 /build/scripts/apply_jdk_patches.py --patch-dir "$PATCH_DIR" --target /build/jdk17u
+# 对本版本的完整上游协议文件复核；撤销补丁编号本身不能阻止改名绕过回生。
+python3 /build/scripts/verify_jdk25_safepoint.py --major 17 --source /build/jdk17u \
+    --patch-dir "$PATCH_DIR" --inputs /prebuilt/jdk/build-inputs.json
 
 # --- Step 5: Configure ---
 echo ""
 echo "[5/7] Running configure..."
 
-# 预先创建 libcxxabi_shim.so (configure 链接测试需要)
-echo "  Pre-creating libcxxabi_shim.so for link tests..."
-mkdir -p /output/jdk-libs
-/usr/bin/ohos-clang --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} \
-    -c -fPIC -o /tmp/eh_stubs.o "$STUBS_SRC_DIR/eh_stubs.c"
-/usr/bin/ohos-clang++ --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} \
-    -shared -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti \
-    -o /output/jdk-libs/libcxxabi_shim.so "$STUBS_SRC_DIR/cxxabi_shim.cpp" /tmp/eh_stubs.o \
-    -fuse-ld=lld -Wl,-soname,libcxxabi_shim.so -nostdlib++ -nodefaultlibs -lc
-echo "  libcxxabi_shim.so ready"
+# 链接真实应用 ABI；兼容外壳只保留 SONAME，不定义 guard/EH/RTTI。
+ARCH_INCLUDE="-I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos"
+bash /build/scripts/prepare_jdk_abi.sh 17 /output/jdk-libs
 
 export BUILD_CC=/usr/bin/clang-15
 export BUILD_CXX=/usr/bin/clang++-15
 
-LIBCXX_INC=/usr/lib/llvm-15/include/c++/v1
+LIBCXX_INC=${AMCL_JDK_CXX_INCLUDE:?}
 
-COMMON_CFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC -I/build/stub-headers -isystem $LIBCXX_INC"
-COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC -I/build/stub-headers -isystem $LIBCXX_INC -stdlib=libc++ -nostdlib++"
+COMMON_CFLAGS="${AMCL_JDK_RESOURCE_FLAG} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0 -D__MUSL__ -DMUSL_LIBC -I/build/stub-headers -isystem $LIBCXX_INC"
+COMMON_CXXFLAGS="${AMCL_JDK_RESOURCE_FLAG} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0 -D__MUSL__ -DMUSL_LIBC -I/build/stub-headers -isystem $LIBCXX_INC -stdlib=libc++ -nostdlib++ -nostdinc++"
 
 # 固定上游源码时间，避免构建时间成为未登记输入。
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-bash configure \
+# test-image默认不会带gtest；显式配置真实框架，不能导出空清单后声称已接入。
+test_configure=()
+if [ "${AMCL_JDK_TEST_IMAGE:-0}" = 1 ]; then
+    python3 /build/scripts/prepare_gtest.py --source /build/upstream-googletest --receipt /build/upstream-googletest.json
+    test_configure+=(--with-gtest=/build/upstream-googletest)
+fi
+bash configure "${test_configure[@]}" \
     --openjdk-target=aarch64-unknown-linux-musl \
     --with-jvm-variants=server \
     --with-debug-level=release \
@@ -139,7 +143,7 @@ bash configure \
     --with-boot-jdk=$JAVA_HOME \
     --with-extra-cflags="$COMMON_CFLAGS" \
     --with-extra-cxxflags="$COMMON_CXXFLAGS" \
-    --with-extra-ldflags="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fuse-ld=lld -L${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos -nostdlib++ -L/output/jdk-libs -lcxxabi_shim" \
+    --with-extra-ldflags="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fuse-ld=lld -L${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos -nostdlib++ -L/output/jdk-libs -lcxxabi_shim -lc++_shared" \
     --x-includes=/dev/null \
     --x-libraries=/dev/null \
     --with-cups-include=/build/stub-cups \
@@ -168,7 +172,10 @@ echo "  Configure complete"
 # --- Step 6: Build ---
 echo ""
 echo "[6/7] Building (JOBS=$JOBS)..."
-gmake images JOBS=$JOBS 2>&1 | tee /build/build.log
+# 上游 native/gtest 只在显式资格请求中编译，保持正常 JDK 增量构建范围。
+build_targets=(images)
+if [ "${AMCL_JDK_TEST_IMAGE:-0}" = 1 ]; then build_targets+=(test-image); fi
+gmake "${build_targets[@]}" JOBS=$JOBS 2>&1 | tee /build/build.log
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
     echo "BUILD FAILED! Last 50 lines:"
@@ -203,17 +210,7 @@ readelf -d $(find $IMAGE_DIR -name "libjvm.so" | head -1) | grep NEEDED
 
 # 最终运行包由统一入口生成；不再额外复制整棵开发 image 到输出目录。
 
-# --- Post-build Step 1: 创建 libcxxabi_shim.so (供 rebuild_libjli 链接) ---
-echo ""
-echo "[Post-1] Creating libcxxabi_shim.so..."
-mkdir -p /output/jdk-libs
-/usr/bin/ohos-clang --target=aarch64-linux-ohos --sysroot=/ohos-sysroot-rw \
-    -c -fPIC -o /tmp/eh_stubs.o "$STUBS_SRC_DIR/eh_stubs.c"
-/usr/bin/ohos-clang++ --target=aarch64-linux-ohos --sysroot=/ohos-sysroot-rw \
-    -shared -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti \
-    -o /output/jdk-libs/libcxxabi_shim.so "$STUBS_SRC_DIR/cxxabi_shim.cpp" /tmp/eh_stubs.o \
-    -fuse-ld=lld -Wl,-soname,libcxxabi_shim.so -nostdlib++ -nodefaultlibs -lc
-echo "  libcxxabi_shim.so created (with eh_stubs)"
+# ABI 库在 configure 前已经从冻结 SDK 构建并验证，无需重新生成。
 
 # --- Post-build Step 2: 重编 libjli.so (含 exit 拦截 + 符号导出) ---
 echo ""
@@ -229,5 +226,5 @@ echo ""
 echo "============================================"
 echo " FULL BUILD PIPELINE COMPLETE!"
 echo " .so files: /output/jdk-libs/"
-echo " Runtime zip: /output/jdk17-ohos-runtime-audio-rc2.zip"
+echo " Runtime zip: $JDK_OUTPUT"
 echo "============================================"

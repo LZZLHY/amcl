@@ -26,6 +26,81 @@ import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 
 public final class AmclSigningRunner {
     /**
+     * 读取同一HAP的真实宿主集合并规范排序。历史包缺声明只投影协议1；空集合、重复、
+     * 非数值、分数、溢出或非正数均拒绝，不能以getAsInt截断坏声明后假装兼容。
+     */
+    private static com.google.gson.JsonArray hostProtocols(JsonObject product) {
+        com.google.gson.JsonArray result = new com.google.gson.JsonArray();
+        if (!product.has("runtimeHostProtocols")) { result.add(1); return result; }
+        // Gson的JsonNull表示字段明确存在但无效，不能与旧包完全缺字段混为一谈。
+        if (!product.get("runtimeHostProtocols").isJsonArray()) throw new SecurityException("Invalid host protocol");
+        com.google.gson.JsonArray input = product.getAsJsonArray("runtimeHostProtocols");
+        if (input.size() == 0 || input.size() > 8) throw new SecurityException("Invalid host protocol");
+        java.util.TreeSet<Integer> values = new java.util.TreeSet<>();
+        for (com.google.gson.JsonElement value : input) {
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) throw new SecurityException("Invalid host protocol");
+            int protocol = value.getAsBigDecimal().intValueExact();
+            if (protocol < 1 || protocol > 999 || !values.add(protocol)) throw new SecurityException("Invalid host protocol");
+        }
+        for (int protocol : values) result.add(protocol);
+        return result;
+    }
+
+    /** 包内显式发行类型必须与实际版本名相同；旧正式/预览包缺字段时按历史版本格式解释。 */
+    private static String releaseKind(JsonObject product, String versionName) {
+        if (!versionName.matches("[0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:pre[1-9][0-9]*|dev[1-9][0-9]*|(?:alpha|beta|rc|pre)\\.[0-9]+))?")) {
+            throw new SecurityException("HAP release kind invalid");
+        }
+        String kind = versionName.matches(".*-dev[1-9][0-9]*") ? "developer" : versionName.contains("-") ? "preview" : "stable";
+        if (product.has("releaseKind") && !kind.equals(product.get("releaseKind").getAsString())) throw new SecurityException("HAP release kind mismatch");
+        return kind;
+    }
+
+    /** 实际目标声明reader能力：0历史、1旧小收据、2大收据及耐久意图；未知值失败关闭。 */
+    private static int runtimePlanProtocol(JsonObject product) {
+        if (!product.has("runtimePlanProtocol")) return 0;
+        com.google.gson.JsonElement value=product.get("runtimePlanProtocol");
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) throw new SecurityException("Invalid runtime plan protocol");
+        int protocol=value.getAsBigDecimal().intValueExact();
+        if (protocol<0 || protocol>2) throw new SecurityException("Unsupported runtime plan protocol");
+        return protocol;
+    }
+
+    /**
+     * 从实际HAP提取App对JDK的行为/槽位要求。历史缺字段保留空集合；不能把字符串、
+     * 重复项、浮点major或缺major的能力请求规范化成另一份合法声明。
+     */
+    private static JsonObject runtimeRequirements(JsonObject product) {
+        JsonObject result = new JsonObject();
+        com.google.gson.JsonArray capabilities = new com.google.gson.JsonArray();
+        com.google.gson.JsonArray majors = new com.google.gson.JsonArray();
+        for (String name : new String[]{"runtimeRequiredCapabilities", "runtimeRequiredMajors"}) {
+            if (!product.has(name)) continue;
+            if (!product.get(name).isJsonArray()) throw new SecurityException("Invalid runtime requirements");
+            com.google.gson.JsonArray input = product.getAsJsonArray(name);
+            boolean strings = name.equals("runtimeRequiredCapabilities");
+            if (input.size() > (strings ? 24 : 64)) throw new SecurityException("Invalid runtime requirements");
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            for (com.google.gson.JsonElement value : input) {
+                if (!value.isJsonPrimitive()) throw new SecurityException("Invalid runtime requirements");
+                if (strings) {
+                    if (!value.getAsJsonPrimitive().isString() || !value.getAsString().matches("[a-z0-9][a-z0-9._-]{0,95}") ||
+                        !seen.add(value.getAsString())) throw new SecurityException("Invalid runtime requirements");
+                    capabilities.add(value.getAsString());
+                } else {
+                    if (!value.getAsJsonPrimitive().isNumber()) throw new SecurityException("Invalid runtime requirements");
+                    int major = value.getAsBigDecimal().intValueExact();
+                    if (major < 8 || major > 999 || !seen.add(Integer.toString(major))) throw new SecurityException("Invalid runtime requirements");
+                    majors.add(major);
+                }
+            }
+        }
+        if (capabilities.size() > 0 && majors.size() == 0) throw new SecurityException("Runtime majors required");
+        result.add("runtimeRequiredCapabilities", capabilities); result.add("runtimeRequiredMajors", majors);
+        return result;
+    }
+
+    /**
      * 系统appId编码的是实际公钥bits，不是Java PublicKey.getEncoded()的整个SPKI。
      * OpenHarmony security_appverify 的GetPublickeyBase64调用i2d_PublicKey：EC对应
      * X9.62公钥点，RSA对应PKCS#1 RSAPublicKey DER，二者均为SPKI的subjectPublicKey。
@@ -164,6 +239,15 @@ public final class AmclSigningRunner {
                 inspected.addProperty("product", values[1].get("name").getAsString());
                 inspected.addProperty("minApi", app.get("minAPIVersion").getAsInt() % 1000);
                 inspected.add("deviceTypes", module.get("deviceTypes"));
+                // 给App/JDK兼容计划提供同一原件的真实载荷身份与支持集合。历史包缺声明时
+                // 只按已部署的协议1解释；这不会假装其支持尚未整合的协议2实现。
+                inspected.addProperty("sourceRevision", optionalString(values[1], "sourceRevision"));
+                inspected.add("runtimeHostProtocols", hostProtocols(values[1]));
+                inspected.addProperty("releaseKind", releaseKind(values[1], app.get("versionName").getAsString()));
+                inspected.addProperty("runtimePlanProtocol", runtimePlanProtocol(values[1]));
+                JsonObject requirements = runtimeRequirements(values[1]);
+                inspected.add("runtimeRequiredCapabilities", requirements.get("runtimeRequiredCapabilities"));
+                inspected.add("runtimeRequiredMajors", requirements.get("runtimeRequiredMajors"));
                 inspected.addProperty("inspected", true);
             } catch (Throwable error) {
                 inspected = new JsonObject(); inspected.addProperty("inspected", false);
@@ -245,6 +329,12 @@ public final class AmclSigningRunner {
                 }
                 String identity = product.has("sourceRevision") ? product.get("sourceRevision").getAsString() : "";
                 if (!identity.matches("[0-9a-f]{40}")) throw new SecurityException("HAP source revision unavailable");
+                // 发行类型与宿主声明从真实原件独立核实。官网人工来源不会绕过相同的
+                // SHA、包身份、签名材料和权限校验；此处仅核包内声明与版本名的一致性。
+                releaseKind(product, app.get("versionName").getAsString());
+                hostProtocols(product);
+                runtimePlanProtocol(product);
+                runtimeRequirements(product);
                 result.addProperty("payloadIdentity", identity);
             }
             // .cer是签发证书链，P12的alias可能仍保留CSR生成时的自签名证书。

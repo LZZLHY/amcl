@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { stripComments, langForPath } from './lib/source-noise.mjs';
 import { readElfIdentity } from './check-mg-build-contract.mjs';
 import { assertExternalOutputPath } from './lib/workspace-paths.mjs';
+import { parseJson5 } from './product-contract.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourcePaths = [
@@ -57,13 +58,19 @@ export function inspectSource(relative, source) {
   return { path: relative, sha256: sha(source), references };
 }
 
+/**
+ * 读取给定工程的图形源码引用、产品声明与工作区原生库，生成只读盘点。
+ * sourceRoot 只切换源码检索位置，产品和制品仍绑定 root；这些静态事实不授予
+ * HAP 或真机资格。工程配置是 JSON5，必须沿用项目解析器保留字符串语义并支持
+ * 合法注释、BOM 和尾逗号，不能因维护者补充配置说明而让整个 CI 盘点失败。
+ */
 export function buildInventory(root = ROOT, sourceRoot = root) {
   const sources = sourcePaths.map(relative => {
     const file = path.join(sourceRoot, relative);
     if (!fs.existsSync(file)) return { path: relative, present: false, sha256: null, references: [] };
     return { present: true, ...inspectSource(relative, fs.readFileSync(file, 'utf8')) };
   });
-  const build = JSON.parse(fs.readFileSync(path.join(root, 'entry/build-profile.json5'), 'utf8'));
+  const build = parseJson5(fs.readFileSync(path.join(root, 'entry/build-profile.json5'), 'utf8'));
   const products = build.targets.filter(target => target.name !== 'ohosTest').map(target => ({
     product: target.name,
     declaredArguments: target.config?.buildOption?.externalNativeOptions?.arguments ?? '',

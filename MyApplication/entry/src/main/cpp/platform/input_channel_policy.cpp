@@ -98,6 +98,25 @@ bool ValidButtonChannel(AmclInputChannel channel, uint32_t button) {
            (button == 1u && channel == AMCL_INPUT_CHANNEL_TOUCH_MIRROR);
 }
 
+/** 调用方持策略锁。历史能力不跨已结束的输入拓扑，尚未结束的真实按住保留其通道事实。
+ * 滚轮没有持有或可关联的设备号，真实拔插/换surface时退休整个兼容域，等待新样本发现。 */
+void RetireChannelsLocked(bool preserveHeld) {
+    // 配对存在的按钮必已登记过能力，原位清位再重建，退休路径不分配新的map节点。
+    for (auto& seen : g_buttonSeen) seen.second = 0;
+    uint32_t left = 0;
+    for (const auto& held : g_buttonPressOwners) {
+        if (!preserveHeld) break;
+        const auto seen = g_buttonSeen.find(held.first.first);
+        if (seen != g_buttonSeen.end()) seen->second |= ChannelBit(held.second);
+        if (held.first.first == 1u) left |= ChannelBit(held.second);
+    }
+    g_leftSeen.store(left, std::memory_order_release);
+    g_wheelSeen.store(0, std::memory_order_release);
+    for (auto it=g_buttonSeen.begin(); it!=g_buttonSeen.end();) {
+        if (it->second == 0) it=g_buttonSeen.erase(it); else ++it;
+    }
+}
+
 // 所有者变化时打一行。热路径上只做一次原子比较，稳态零日志。
 void LogOwnerChange(bool left, AmclInputChannel owner) {
     std::atomic<uint8_t>& slot = left ? g_loggedLeftOwner : g_loggedWheelOwner;
@@ -175,6 +194,12 @@ extern "C" void amcl_input_policy_reset_pairing(void) {
     g_buttonPressOwners.clear();
 }
 
+extern "C" void amcl_input_policy_retire_channels(void) {
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    // surface自身已退休；旧在途记录只负责UP配对，不给下一surface留下能力证明。
+    RetireChannelsLocked(false);
+}
+
 extern "C" bool amcl_input_policy_button_begin(
         AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
     if (!ValidButton(nativeButton) || !ValidButtonChannel(channel, nativeButton)) return false;
@@ -226,6 +251,7 @@ extern "C" void amcl_input_policy_release_pointer_device(
                 ++it;
             }
         }
+        RetireChannelsLocked(true);
     }
     // 摘表先于回调，且不持策略锁进入 ingress/ledger，避免下游同步重入形成锁反转。
     if (release) for (const auto& identity : retired) release(identity.second, identity.first, context);

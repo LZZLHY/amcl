@@ -99,6 +99,17 @@ struct FetchResponse {
     std::string                           err_msg;
 };
 
+/** 二进制限量GET的测量事实，不持有正文、文件、任务或凭据；received_bytes是样本计数，不是wire流量。 */
+struct TransferProbeResult {
+    int http_status = 0;
+    int64_t received_bytes = 0;
+    int64_t elapsed_ms = 0;
+    int64_t ttfb_ms = -1; // 尚无合法正文为-1；从submitted到首次样本正文，含排队/准入/跳转。
+    bool completed_sample = false;
+    bool range_honored = false;
+    std::string error_kind;
+};
+
 class DownloadEngine {
 public:
     struct Config {
@@ -246,6 +257,9 @@ public:
      *
      * @param request_headers key 大小写不敏感；空 map = 没有附加头
      * @param out_resp        填充 status_code / body / headers / err_kind / err_msg
+     * @param allow_relay     缺省false保留其他metadata的直连/镜像行为；仅显式opt-in的公共
+     *                        元数据可经自有网关，失败最多回原URL直连一次，共用原总预算。
+     *                        含业务凭据的请求自动禁止网关，凭据不转交发布方服务。
      * @return 0 = 至少一个 URL 成功（含 304）；-1 = 全部源失败
      */
     int fetchToBufferEx(const std::string& primary_url,
@@ -253,7 +267,18 @@ public:
                         int timeout_seconds,
                         const std::map<std::string, std::string>& request_headers,
                         size_t max_response_bytes,
-                        FetchResponse& out_resp);
+                        FetchResponse& out_resp,
+                        bool allow_relay = false);
+
+    /**
+     * 无文件/无relay/无业务凭据的公共二进制吞吐取样。size必须为已知正数，sample为
+     * 1..512KiB，timeout为1..8秒；所有准入/重定向共用steady截止时间。只返回测量值，
+     * 达到样本cap主动结束是成功，不记网关故障。submitted_at_ms仅供Native排队时钟，
+     * 缺省从本调用起算；NAPI传提交时刻避免worker排队后重新获得完整预算。
+     */
+    int probeTransfer(const std::string& url, int64_t expected_size, size_t sample_bytes,
+                      int timeout_seconds, const std::string& user_agent, TransferProbeResult& out,
+                      int64_t submitted_at_ms = 0);
 
     bool isRunning() const { return running_.load(std::memory_order_relaxed); }
 

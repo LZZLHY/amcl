@@ -19,6 +19,8 @@ import { connection, http } from '@kit.NetworkKit';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 import { DownloadManager } from './DownloadManager';
+import { getTaskActivityOwner, BusinessActivity, BusinessActivityResult } from './TaskActivityOwner';
+import { LedgerState } from 'commons';
 
 const TAG = 'NetworkDiagnostics';
 
@@ -189,6 +191,17 @@ function summarizeErr(e: Object): string {
  * 跑一次完整网络诊断。约 1~8 秒（并行探测，取决于最慢的超时）。
  */
 export async function runNetworkDiagnostics(): Promise<NetworkReport> {
+  return getTaskActivityOwner().run<NetworkReport>({ category: 'diagnostic', title: '网络环境检测' },
+    async (activity: BusinessActivity): Promise<NetworkReport> => {
+      const report = await runNetworkDiagnosticsOwned_();
+      for (const probe of report.probes) activity.event(probe.status + ' ' + probe.name + '：' + probe.detail);
+      return report;
+    }, (report: NetworkReport): BusinessActivityResult => ({ state: LedgerState.SUCCESS,
+      summary: report.title + '：' + report.summary, fileCount: report.probes.length }));
+}
+
+/** 网络状态是诊断发现，不等于诊断执行失败；探测异常仍由外层owner保留FAILED结局。 */
+async function runNetworkDiagnosticsOwned_(): Promise<NetworkReport> {
   let probes: NetworkProbe[] = [];
 
   // ① 系统网络层

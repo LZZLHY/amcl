@@ -24,9 +24,11 @@ const target={tag:'v2.0.0',versionCode:2,versionName:'2.0.0',product:'sideload',
  mirrors:[{provider:'miawa',projectId:'amcl',ready:true,filePath:'amcl/v2.0.0/amcl-v2.0.0-sideload-unsigned.hap'}]};
 const manifest={...target,delivery:{schema:1,ready:true,assets:[target]}};
 /** 各case使用独立模块单例与虚拟Kit文件域；真实Writer仍循环写真实宿主文件。 */
-async function fixture({journal,account='valid',delayDownload=false,delaySign=false,signFailure=false,delayConnect=false,delayClose=false,connectFailOnce=false,signCommitFailure=false,expireMaterialFirst=false,delayLoginBegin=false,child=0,candidate=manifest}={}){
+async function fixture({journal,account='valid',delayDownload=false,delaySign=false,signFailure=false,delayConnect=false,delayClose=false,connectFailOnce=false,signCommitFailure=false,expireMaterialFirst=false,delayLoginBegin=false,child=0,candidate=manifest,usableSigningJdks=['17'],runtimePlanPending=false,runtimePlanUnreadable=false,signingJdkNeedsPlanRecovery=false,runtimeRestoreFailure='',revokeProofKind='',initialEnvironment,initialIntent,initialFence,preferenceFactory,actualRuntimePlanProtocol=0}={}){
  // 每个用例可提供独立公开清单，用同一真实流水线覆盖同 code 的预览/返回场景。
- const selectedAsset=candidate.delivery.assets[0];
+ // 实际HAP字节及其包内元数据不随外部manifest对象变化；用于验证迟到输入不能重定向原件。
+ const selectedAsset=structuredClone(candidate.delivery.assets[0]);
+ let runtimePlanExists=runtimePlanPending,restoreAttempted=false;
  const physical=fs.mkdtempSync(path.join(output,'case-')),rows=new Map(),storage=new Map(),locks=new Set(),handles=new Map();
  const pending=new Set(),timers=new Set(),mounted=new Set();let closing=false,coordinator;
  /**
@@ -55,6 +57,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
  const kitfs={OpenMode:{READ_ONLY:1,READ_WRITE:2,WRITE_ONLY:4,CREATE:8,NOFOLLOW:16,TRUNC:32},
   accessSync:p=>fs.existsSync(mapped(p)),mkdirSync:(p,recursive=false)=>fs.mkdirSync(mapped(p),{recursive}),
   listFileSync:p=>fs.readdirSync(mapped(p)),statSync:p=>typeof p==='number'?(handles.get(p).directory?fs.statSync(handles.get(p).path):fs.fstatSync(p)):fs.statSync(mapped(p)),
+  lstatSync:p=>fs.lstatSync(mapped(p)),
   readTextSync:p=>fs.readFileSync(mapped(p),'utf8'),
   renameSync:(a,b)=>{if(signCommitFailure&&String(b).endsWith('/transaction.json')&&fs.readFileSync(mapped(a),'utf8').includes('\"phase\":\"signing\"'))throw Error('ENOSPC signing fixture');if(faults.rename&&String(b).endsWith('/transaction.json'))throw Error('ENOSPC fixture');fs.renameSync(mapped(a),mapped(b));},
   unlinkSync:p=>fs.unlinkSync(mapped(p)),rmdirSync:p=>fs.rmdirSync(mapped(p)),
@@ -74,17 +77,24 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
  };
  fs.mkdirSync(mapped('/sandbox/sideload-update'),{recursive:true});
  if(journal)fs.writeFileSync(mapped('/sandbox/sideload-update/transaction.json'),JSON.stringify(journal));
+ if(initialIntent)fs.writeFileSync(mapped('/sandbox/runtime-app-intent.json'),typeof initialIntent==='string'?initialIntent:JSON.stringify(initialIntent));
+ if(initialFence)fs.writeFileSync(mapped('/sandbox/sideload-update/install-fence.json'),typeof initialFence==='string'?initialFence:JSON.stringify(initialFence));
  fs.mkdirSync(mapped('/sandbox/jdk/17/lib/server'),{recursive:true});fs.writeFileSync(mapped('/sandbox/jdk/17/lib/server/libjvm.so'),'fixture');
  let generatedId='';
  const kitUtil={Base64Helper:class{encodeToStringSync(v){return Buffer.from(v).toString('base64');}},generateRandomUUID:()=>crypto.randomUUID(),TextDecoder:class{decodeWithStream(b){return new TextDecoder().decode(b);}}};
  const hashKit={createMd(){const h=crypto.createHash('sha256');return{async update(v){h.update(v.data);},async digest(){return{data:new Uint8Array(h.digest())};}};}};
- const cache=new Map();let common,core,update;
+ const cache=new Map();let common,core,update,runtimePlanApi;
  // UID 与版本、载荷都是 bundle/resource 平台边界事实；不能直接写 Coordinator 的确认标志造成功。
  const environment={version:journal?.phase==='verified'?journal.asset.versionCode:1,versionName:journal?.phase==='verified'?journal.asset.versionName:'1.0.0',payload:journal?.phase==='verified'?payload:'old',uid:42};
- const context={filesDir:'/sandbox',resourceManager:{getRawFileContentSync(name){
-  if(name==='product-profile.json')return new TextEncoder().encode(JSON.stringify({sourceRevision:environment.payload}));
+ if(initialEnvironment)Object.assign(environment,initialEnvironment);
+ const context={filesDir:'/sandbox',preferencesDir:'/sandbox/preferences',resourceManager:{getRawFileContentSync(name){
+  if(name==='product-profile.json')return new TextEncoder().encode(JSON.stringify({sourceRevision:environment.payload,name:environment.product??'sideload',runtimeHostProtocols:environment.hostProtocols??[1,2]}));
   assert(['sideload/hap-sign-tool.jar','sideload/amcl-signing-runner.jar'].includes(name));
-  return new Uint8Array(fs.readFileSync(path.join(project,'entry/src/main/resources/rawfile',name)));
+  // 轻量源码任务树不复制已锁定的12MiB签名工具；可显式借只读工具输入目录，
+  // Coordinator仍会按生产SHA pin核实。runner优先当前分支，不能借旧源码冒充新实现。
+  const own=path.join(project,'entry/src/main/resources/rawfile',name);
+  const input=fs.existsSync(own)?own:path.join(process.env.AMCL_SIDELOAD_TEST_RAW_ROOT??path.dirname(own),name);
+  return new Uint8Array(fs.readFileSync(input));
  }}};
  storage.set('uiAbilityContext',context);
  const native={configureSideloadInstallRoot:()=>true,
@@ -96,7 +106,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
     fs.writeFileSync(mapped(args[2]),JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',p12Base64:Buffer.from('p12 fixture').toString('base64'),csr:'fixture CSR'}));return 0;
    }
    if(args[0]==='--inspect-hap'){
-    fs.writeFileSync(mapped(args[2]),JSON.stringify({inspected:true,bundleName:'com.amcl.launcher',versionName:selectedAsset.versionName,versionCode:selectedAsset.versionCode,product:'sideload',minApi:20,deviceTypes:['phone']}));return 0;
+    fs.writeFileSync(mapped(args[2]),JSON.stringify({inspected:true,bundleName:'com.amcl.launcher',versionName:selectedAsset.versionName,versionCode:selectedAsset.versionCode,product:'sideload',minApi:20,deviceTypes:['phone'],sourceRevision:payload,runtimeHostProtocols:[1],runtimePlanProtocol:actualRuntimePlanProtocol}));return 0;
    }
    counters.sign++;if(delaySign)await signGate.promise;if(signFailure)return 1;
    const config=JSON.parse(kitfs.readTextSync(args[0]));fs.writeFileSync(mapped(args[2]),'signed fixture');
@@ -135,7 +145,9 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   async prepare(i,g){g.assertCurrent();g.assertForeground();counters.prepare++;if(child!==0)throw Error('请先保存并退出所有游戏窗口');this.fence.arm(i);}
   async dispatch(i,commit,g){g.assertCurrent();g.assertForeground();commit();counters.dispatch++;return this.unknown(i);}
   unknown(i){return{kind:'unknown',safeToRelease:false,bmSubmitted:true,code:0,message:'待核实fixture',installId:i.installId,nonce:i.nonce};}
-  async revoke(i){counters.revoke++;return this.unknown(i);}async observe(i){counters.observe++;this.proof=observation||this.unknown(i);return this.proof;}
+  async revoke(i){counters.revoke++;this.proof=revokeProofKind?{kind:revokeProofKind,safeToRelease:true,bmSubmitted:false,code:0,
+    message:'可信未派发fixture',installId:i.installId,nonce:i.nonce}:this.unknown(i);return this.proof;}
+  async observe(i){counters.observe++;this.proof=observation||this.unknown(i);return this.proof;}
   releaseProcessLeases(){}async cleanupPayload(){counters.cleanup++;}complete(i,p,installed){counters.complete++;assert.equal(p,this.proof);assert(p.safeToRelease);if(p.kind==='bms-success')assert(installed);this.fence.clear(i);}
  }
  // 平台替身也可能由 void 方法触发（例如 cancel 发出的 Connection.close）；同样登记其真实 Promise，
@@ -155,15 +167,48 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
    if(name==='account')return{HuksAesGcm256Provider:HardwareCipher};if(name==='entry/ProductBuildProfile')return{ProductBuildProfile:{product:'sideload',storeChannel:false}};
    if(name==='libentry.so')return{default:native};if(name==='@kit.CoreFileKit')return{fileIo:kitfs,picker:{}};
    if(name==='@kit.ArkTS')return{util:kitUtil};if(name==='@kit.CryptoArchitectureKit')return{cryptoFramework:hashKit};
+   // 仅测试中按App进程世代提供真实宿主声明边界，不能把fixture结果当实际JDK运行资格。
+   if(name==='./RuntimeHostProtocol')return{runtimeHostProtocols:()=>environment.hostProtocols??[1,2],runtimeRequiredCapabilities:()=>environment.runtimeRequiredCapabilities??[]};
    if(name==='@kit.ArkUI')return{window:windowKit};if(name==='@kit.ArkWeb')return{webview:{WebviewController:class{}}};
-   if(name==='feature_system')return{PreferenceManager:class{themeMode=0;}};
+   if(name==='feature_system'&&preferenceFactory)return{PreferenceManager:preferenceFactory};
+   if(name==='feature_system')return{PreferenceManager:class{themeMode=0;
+    get appUpdateChannel(){return storage.get('fixtureAppUpdateChannel')??'stable';}
+    set appUpdateChannel(value){storage.set('fixtureAppUpdateChannel',value);}
+    appUpdateSelectionRevision(){return storage.get('fixtureAppUpdateRevision')??0;}
+    async selectAppUpdateChannel(value){storage.set('fixtureAppUpdateChannel',value);storage.set('fixtureAppUpdateRevision',(storage.get('fixtureAppUpdateRevision')??0)+1);}
+    async commitAppUpdateChannel(value,expected){if(expected===undefined||expected!==(storage.get('fixtureAppUpdateRevision')??0))return false;storage.set('fixtureAppUpdateChannel',value);return true;}}};
+   // 跨域JDK资格在此仅提供明确的结构/宿主判断结果，不把libjvm假文件当作真实JVM可用。
+   // JdkManager真实收据/结构与host准入由运行时域回归覆盖；本组证明签名路径必经该结果。
+   if(name==='launch')return{RuntimeAppDependency:load('launch/src/main/ets/RuntimeAppDependency.ets').RuntimeAppDependency,JdkManager:class{isInstalled(version){counters.jdkEligibilityChecks=(counters.jdkEligibilityChecks??0)+1;
+    return (!signingJdkNeedsPlanRecovery||counters.planRecovery>0)&&usableSigningJdks.includes(version)&&kitfs.accessSync('/sandbox/jdk/'+version+'/lib/server/libjvm.so');}}};
    if(name==='@kit.AbilityKit')return{ConfigurationConstant:{ColorMode:{COLOR_MODE_DARK:1}},bundleManager:{BundleFlag:{},getBundleInfoForSelfSync:()=>({name:'com.amcl.launcher',versionCode:environment.version,versionName:environment.versionName,appInfo:{uid:environment.uid},signatureInfo:{fingerprint:'F',appId:'installed-app',appIdentifier:'installed-app'}})}};
    if(name==='@kit.BasicServicesKit')return{deviceInfo:{sdkApiVersion:26,deviceType:'phone'}};if(name==='@kit.NetworkKit')return{http:{RequestMethod:{GET:'GET',POST:'POST'},HttpDataType:{ARRAY_BUFFER:1},createHttp:()=>({destroy(){},async request(url){const b=Buffer.from(url.includes('profile')?'profile fixture':'cert fixture');return{responseCode:200,result:b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength)};}})}};
+   if(name==='@kit.PerformanceAnalysisKit')return{hilog:{info(){},warn(){},error(){},debug(){}}};
    if(name==='./DeveloperAuthSession')return{DeveloperAuthSession:Auth,DeveloperAuthState:{Valid:'valid',Missing:'missing',Expired:'expired',Unavailable:'unavailable',Cancelled:'cancelled'}};
    if(name==='./SideloadConnection')return{SideloadConnection:Connection};
    if(name==='./SideloadInstallExecutor')return{SideloadInstallExecutor:Executor,...load('entry/src/main/ets/sideload/SideloadInstallProtocol.ets')};
+   // App/JDK桥是跨域平台边界；该域的真实journal/槽位由其独立套件验证。
+   // 此夹具记录调用顺序，确保生产Coordinator确实先准备、后签名、持fence恢复再派发。
+   if(name==='../runtime/AppJdkUpdatePlanRuntime')return{AppJdkUpdatePlanRuntime:runtimePlanApi??={
+    assertTargetDataCompatibility(){assert(kitfs.accessSync('/sandbox/sideload-update/install-fence.json'));assert(counters.planRestored>0,'target reader budget must inspect final restored slots');counters.planDataChecked=(counters.planDataChecked??0)+1;},
+    recoverPendingSlots(_context,id,hash){assert(/^[0-9a-f]{32}$/.test(id));assert(/^[0-9a-f]{64}$/.test(hash));
+      if(runtimePlanPending&&journal)assert.equal(id,journal.id,'original plan owner must survive retry');counters.planRecovery=(counters.planRecovery??0)+1;counters.planRecoveryOwner=id;},
+    async prepare(_context,id,target){counters.planPrepared=(counters.planPrepared??0)+1;assert.equal(target.sha256,selectedAsset.sha256);if(runtimeRestoreFailure)runtimePlanExists=true;},
+    markAppSigned(){assert(counters.sign>0||journal?.phase==='ready');counters.planSigned=(counters.planSigned??0)+1;},
+    async restore(){assert(counters.planSigned>0);assert(kitfs.accessSync('/sandbox/sideload-update/install-fence.json'));restoreAttempted=true;
+      if(runtimeRestoreFailure)throw Error(runtimeRestoreFailure);counters.planRestored=(counters.planRestored??0)+1;},
+    cancelBeforeRestore(){if(counters.planRestored||restoreAttempted)throw Error('restored plan retained');counters.planCancelled=(counters.planCancelled??0)+1;runtimePlanExists=false;},
+    cancelNoInvocation(){assert(counters.complete>0,'Executor must first authenticate the same proof');assert.equal(counters.planRestored??0,0,'changed slots cannot be retired');
+      counters.planNoInvocationCancelled=(counters.planNoInvocationCancelled??0)+1;runtimePlanExists=false;},
+    pending(){if(runtimePlanUnreadable)throw Error('plan storage unavailable');return runtimePlanExists;},
+    superseded(_context,id,target,current){assert(current.versionCode>target.versionCode);assert.equal(current.uid,environment.uid);counters.planSuperseded=(counters.planSuperseded??0)+1;runtimePlanExists=false;},
+    verified(){counters.planVerified=(counters.planVerified??0)+1;runtimePlanExists=false;}}};
 
    if(name==='./SideloadDownloadSources')return{SideloadDownloadSources:{download:async(a,active,run)=>run({label:'fixture',url:a.url})}};
+   // 更新下载已有真实SideloadUpdateActivity，本夹具隔离普通任务owner端口，避免重复账本。
+   // 通用owner的真实IO/重试由test-task-activity-owner组合回归覆盖。
+   if(name==='./TaskActivityOwner')return{getTaskActivityOwner:()=>({async beginTask(){},async finishTask(){}}),
+    reserveTaskActivityId:minimum=>{synthetic=Math.max(Date.now(),synthetic+1,minimum??0);return synthetic;}};
    if(name.startsWith('.'))return load(path.posix.normalize(path.posix.join(path.posix.dirname(file),name))+'.ets');
    throw Error('Unmocked '+name);
   // 装饰器仅是宿主平台边缘：现有组件的Prop布局参数与State一样保留原字段初始化，不替业务赋值。
@@ -188,11 +233,22 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   ledgerEndAsync:async(_d,id,o)=>{counters.ledgerEnds++;if(faults.ledgerGate)await faults.ledgerGate.promise;
    if(faults.ledgerEnd)throw Error('账本终态IO故障fixture');rows.set(id,{...rows.get(id),...o});}};
  Object.assign(common,load('commons/src/main/ets/utils/AtomicFileWriter.ets'));
+ Object.assign(common,load('commons/src/main/ets/common/RuntimeRequirementPolicy.ets'));
  core=load('feature_core/src/main/ets/download/UnifiedDownloadTask.ets');Object.assign(core,load('feature_core/src/main/ets/download/DownloadTaskRegistry.ets'));
  // 默认替身的写入在返回前已同步退出；purge=true只声明这一平台事实。延迟收敛专项
  // 可覆盖此端口并注入release gate，真实Coordinator/Registry/事务仍按生产实现执行。
- core.DownloadManager={instance:()=>({getTasks:()=>[],async fetchText(){return JSON.stringify(candidate);},async createAndWait(spec,progress){counters.download++;if(delayDownload)await fetchGate.promise;fs.writeFileSync(mapped(spec.files[0].localPath),data);progress({taskId:1,bytesDone:data.length,bytesTotal:data.length,speedBps:5,finished:true});},cancel(){},purgeTask:()=>true,async awaitTaskReleased(){}})};
- update=load('update/src/main/ets/SideloadUpdateModels.ets');Object.assign(update,load('update/src/main/ets/SideloadTransactionPolicy.ets'),load('update/src/main/ets/GitHubUpdateAssetResolver.ets'),load('update/src/main/ets/AppUpdatePolicy.ets'),load('update/src/main/ets/UpdateChecker.ets'));
+ core.DownloadManager={instance:()=>({getTasks:()=>[],async fetchText(url){
+  counters.fetch=(counters.fetch??0)+1;
+  if(url.includes('/api/packages/artifact?'))return JSON.stringify({schema:1,kind:'app-artifact',verified:true,
+   releaseKind:selectedAsset.releaseKind??'stable',source:selectedAsset.source??'github',artifactId:selectedAsset.artifactId??'fixture:artifact',
+   versionName:selectedAsset.versionName,versionCode:selectedAsset.versionCode,product:selectedAsset.product,name:selectedAsset.name,
+   sha256:selectedAsset.sha256,sizeBytes:selectedAsset.sizeBytes,websiteUrl:selectedAsset.websiteUrl,
+   tag:selectedAsset.releaseKind==='developer'?undefined:selectedAsset.tag,githubUrl:selectedAsset.releaseKind==='developer'?undefined:selectedAsset.url,
+   baseStable:selectedAsset.baseStable,audit:{bundleName:'com.amcl.launcher',versionName:selectedAsset.versionName,versionCode:selectedAsset.versionCode,
+    product:selectedAsset.product,sourceRevision:payload,minApi:20,abi:'arm64-v8a',deviceTypes:['phone'],runtimeHostProtocols:[1]}});
+  return JSON.stringify(candidate);
+ },async createAndWait(spec,progress){counters.download++;if(delayDownload)await fetchGate.promise;fs.writeFileSync(mapped(spec.files[0].localPath),data);progress({taskId:1,bytesDone:data.length,bytesTotal:data.length,speedBps:5,finished:true});},cancel(){},purgeTask:()=>true,async awaitTaskReleased(){}})};
+ update=load('update/src/main/ets/SideloadUpdateModels.ets');Object.assign(update,load('update/src/main/ets/SideloadTransactionPolicy.ets'),load('update/src/main/ets/GitHubUpdateAssetResolver.ets'),load('update/src/main/ets/AppUpdatePolicy.ets'),load('update/src/main/ets/UpdateChecker.ets'),load('update/src/main/ets/AppArtifactReceiptResolver.ets'));
  const {SigningVault}=load('entry/src/main/ets/sideload/SigningVault.ets'),vault=new SigningVault(context);
  if(!expireMaterialFirst)await vault.importBundle(JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',
   p12Base64:Buffer.from('p12 fixture').toString('base64'),certificateBase64:Buffer.from('cert fixture').toString('base64'),profileBase64:Buffer.from('profile fixture').toString('base64')}));
@@ -225,7 +281,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   for(const handle of [...handles.values()])kitfs.closeSync(handle);
   assert.equal(handles.size,0);assert.equal(timers.size,0);assert.equal(pending.size,0);
  });
- return{coordinator,core,load,rows,counters,faults,fetchGate,signGate,connectionGate,closeGate,authBegins,authSessions,render,mountContent,context,environment,mapped,kitfs,vault,storage,setObservation(v){observation=v;},authorize(index=authBegins.length-1){account='valid';const operation=authBegins[index];if(operation){operation.auth.valid=true;operation.callback(true,'fixture success');}else authObject.valid=true;},expireAccount(){account='expired';authObject.valid=false;},setEncryptionGate(g){encryptionGate=g;}};
+ return{coordinator,core,load,rows,counters,faults,fetchGate,signGate,connectionGate,closeGate,authBegins,authSessions,render,mountContent,context,environment,mapped,kitfs,vault,storage,runtimePlanApi,setObservation(v){observation=v;},authorize(index=authBegins.length-1){account='valid';const operation=authBegins[index];if(operation){operation.auth.valid=true;operation.callback(true,'fixture success');}else authObject.valid=true;},expireAccount(){account='expired';authObject.valid=false;},setEncryptionGate(g){encryptionGate=g;}};
 }
 /** 完整旧持久记录由真实Repository加载；不靠修改Coordinator private字段构造结果。 */
 const record=(phase='verified')=>({schema:1,id:oldId,phase,asset:{...target,tag:'v1.5.0',versionCode:phase==='verified'?1:2,versionName:'1.5.0'},

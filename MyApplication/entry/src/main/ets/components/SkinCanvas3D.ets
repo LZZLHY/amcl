@@ -41,7 +41,8 @@ import { DiagnosticPolicy } from 'commons';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { image } from '@kit.ImageKit';
 import { ThemeColors } from 'commons';
-import { getRemotePixelMap } from 'commons';
+import { loadAccountTexture } from './AccountTextureLoader';
+import { normalizePreviewSkinPixels, PreviewSkinPixels } from './OfflineSkinPixels';
 import { buildSteveSkinRGBA, DEFAULT_SKIN_W, DEFAULT_SKIN_H } from './DefaultSkin';
 
 const TAG = 'SkinCanvas3D';
@@ -624,6 +625,9 @@ export struct SkinCanvas3D {
    * （getRemotePixelMap 内部有 cache，但 await 一次还是有开销，这里再短路一层。）
    */
   private _lastFetchedUrl: string = '';
+  /** 每次输入变化都使旧异步工作退役，包含 A→B→A 和组件关闭后迟到的解码结果。 */
+  private _fetchEpoch: number = 0;
+  private _alive: boolean = false;
 
   /**
    * 已解码的 skin RGBA 像素缓冲（PixelMap 解出来的字节，
@@ -675,6 +679,7 @@ export struct SkinCanvas3D {
   private _gestureBasePitch: number = 0;
 
   aboutToAppear(): void {
+    this._alive = true;
     // 第一手日志 —— 如果 hilog 看不到这条，说明 SkinCanvas3D 根本没被挂载
     // （检查 SkinCapeDetailSheet 是否打开，或 SkinCard 是否构建到了这个分支）。
     hilog.info(0x0000, TAG, 'aboutToAppear url=%{public}s slim=%{public}s offline=%{public}s w=%{public}d h=%{public}d',
@@ -684,6 +689,9 @@ export struct SkinCanvas3D {
       this.containerWidth, this.containerHeight);
     this.kickOffFetch();
   }
+
+  /** 只退役本组件任务；共享资产原图由缓存持有，不能在一个预览关闭时提前释放。 */
+  aboutToDisappear(): void { this._alive = false; this._fetchEpoch++; }
 
   /** @Watch 回调：skinUrl / slim 变化都重新拉皮肤 + 重绘 */
   onInputsChange(_propName: string): void {
@@ -766,13 +774,14 @@ export struct SkinCanvas3D {
    * 异步发起 skin PNG 拉取。完成后 `_pixelMap` 被赋值 + `_skinRGBA` 字节缓冲被填好，
    * 然后触发 `tryDraw()`。
    *
-   * 幂等性：同一 url 不会重复 fetch（_lastFetchedUrl 短路 + getRemotePixelMap
-   * 自己的 inflight cache 双保险）。
+   * 本地库和远程profile使用统一加载入口；不可因账号类型为离线而忽略已选择的纹理。
+   * 暂存解码结果只有在任务世代仍有效时才一次性发布，避免异步像素读取串账号。
    */
   private kickOffFetch(): void {
-    // Offline 或无 url —— 不走网络。离线账户改用程序化默认 Steve 皮肤渲染 3D 模型
-    // （比字母头像更直观、与游戏一致）；真正"无皮肤且非离线占位"才退字母。
-    if (this.isOffline || this.skinUrl.length === 0) {
+    if (!this._alive) return;
+    const epoch = ++this._fetchEpoch;
+    // 只有没有自定义纹理时才显示默认预览；离线账号也可能持有共享库皮肤。
+    if (this.skinUrl.length === 0) {
       this._pixelMap = null;
       this._lastFetchedUrl = '';
       this._skinRGBA = buildSteveSkinRGBA();
@@ -790,27 +799,13 @@ export struct SkinCanvas3D {
     }
     this._lastFetchedUrl = url;
 
-    getRemotePixelMap(url).then(async (pm: image.PixelMap | null): Promise<void> => {
-      // 异步回来时 skinUrl 可能已经被切换到别的账户；只有当前 prop 仍然是当时
-      // 发起的 url 才 commit，避免快切账户时显示错图。
-      if (this.skinUrl !== url) {
-        hilog.info(0x0000, TAG, 'skinUrl changed mid-fetch, dropping result for %{public}s', url);
-        return;
-      }
-      if (pm !== null) {
-        // 把 PixelMap 字节倒到 Uint8Array，软件光栅化会从这里采样源像素。
-        // RemoteImageCache 用 desiredPixelFormat=RGBA_8888 解码 → buf 字节是 RGBA。
-        await this.cacheSkinPixels(pm);
-      } else {
-        this._skinRGBA = null;
-        this._skinW = 0;
-        this._skinH = 0;
-      }
-      // cacheSkinPixels 也是 async，期间 skinUrl 可能再次被切换，再次校验
-      if (this.skinUrl !== url) {
-        hilog.info(0x0000, TAG, 'skinUrl changed during pixel cache, dropping for %{public}s', url);
-        return;
-      }
+    loadAccountTexture(url).then(async (pm: image.PixelMap | null): Promise<void> => {
+      if (!this._alive || this._fetchEpoch !== epoch || this.skinUrl !== url) return;
+      const pixels = pm === null ? null : await this.cacheSkinPixels(pm);
+      if (!this._alive || this._fetchEpoch !== epoch || this.skinUrl !== url) return;
+      this._skinRGBA = pixels?.pixels ?? null;
+      this._skinW = pixels?.width ?? 0;
+      this._skinH = pixels?.height ?? 0;
       this._pixelMap = pm;
       if (pm === null) {
         hilog.warn(0x0000, TAG, 'fetch returned null for %{public}s, falling back to letter', url);
@@ -818,6 +813,11 @@ export struct SkinCanvas3D {
         hilog.info(0x0000, TAG, 'fetch+cache ok for %{public}s rgba=%{public}s',
           url, this._skinRGBA !== null ? 'yes' : 'no');
       }
+      this.tryDraw();
+    }).catch((error: Error): void => {
+      if (!this._alive || this._fetchEpoch !== epoch) return;
+      this._pixelMap = null; this._skinRGBA = null; this._skinW = 0; this._skinH = 0;
+      hilog.warn(0x0000, TAG, 'account skin decode failed: %{public}s', error.message);
       this.tryDraw();
     });
   }
@@ -829,36 +829,31 @@ export struct SkinCanvas3D {
    * 是 RGBA 排列（每像素 4 字节，顺序 R, G, B, A）。如果哪天上游格式变了，需要在这里
    * 显式做一次 swizzle。
    *
-   * 失败时 `_skinRGBA = null`，外层 `tryDraw` 会走 letter fallback。
+   * 返回独立快照，不能在异步读取期间修改组件状态；调用者校验任务世代后再发布。
    */
-  private async cacheSkinPixels(pm: image.PixelMap): Promise<void> {
+  private async cacheSkinPixels(pm: image.PixelMap): Promise<PreviewSkinPixels | null> {
     try {
       let info = await pm.getImageInfo();
       let sw = info.size.width;
       let sh = info.size.height;
       if (sw <= 0 || sh <= 0) {
         hilog.warn(0x0000, TAG, 'invalid skin size %{public}dx%{public}d', sw, sh);
-        this._skinRGBA = null;
-        return;
+        return null;
       }
       let buf = new ArrayBuffer(sw * sh * 4);
       await pm.readPixelsToBuffer(buf);
-      this._skinRGBA = new Uint8Array(buf);
-      this._skinW = sw;
-      this._skinH = sh;
       hilog.info(0x0000, TAG, 'skin pixels cached %{public}dx%{public}d (%{public}d bytes)',
         sw, sh, buf.byteLength);
+      return normalizePreviewSkinPixels(new Uint8Array(buf), sw, sh);
     } catch (e) {
       hilog.warn(0x0000, TAG, 'cacheSkinPixels failed: %{public}s', (e as Error).message);
-      this._skinRGBA = null;
-      this._skinW = 0;
-      this._skinH = 0;
+      return null;
     }
   }
 
   /**
-   * 尝试绘制 —— 三个条件：Canvas 已经 onReady + (pixelMap + 像素缓冲都有 → drawPlayer)
-   * 或 (没有 pixmap → letter fallback)。
+   * 尝试绘制 —— Canvas和测量尺寸就绪后，有RGBA快照就画人物，否则画字母兜底。
+   * 程序化默认预览和文件皮肤共用该快照资格，不要求默认皮肤额外伪造PixelMap。
    *
    * drawPlayer 是 async（要 await image.createPixelMap 把 dest 缓冲转回 PixelMap），
    * 用 _drawInProgress / _drawPending 串行化：同一时刻只跑一个 drawPlayer，重复请求
@@ -871,7 +866,7 @@ export struct SkinCanvas3D {
     if (this._measuredW <= 0 || this._measuredH <= 0) return;
 
     // 没有皮肤 / 像素缓冲未就绪 → letter fallback（同步路径）
-    if (this._pixelMap === null || this._skinRGBA === null) {
+    if (this._skinRGBA === null) {
       try {
         this.drawLetterFallback();
         this._stage = 'ready';
@@ -891,8 +886,8 @@ export struct SkinCanvas3D {
     }
 
     this._drawInProgress = true;
-    let pm = this._pixelMap;
-    this.drawPlayer(pm)
+    // 程序化默认皮肤只有RGBA缓冲，没有来源PixelMap；真正的渲染资格是像素快照。
+    this.drawPlayer()
       .then(() => {
         this._stage = 'ready';
       })
@@ -952,7 +947,7 @@ export struct SkinCanvas3D {
    * 失败语义：rasterize 阶段不抛（per-pixel 失败默默跳过），createPixelMap 抛了直接
    * 把错误冒泡给 tryDraw 的 .catch，那里会切到 'error' stage。
    */
-  private async drawPlayer(_img: image.PixelMap): Promise<void> {
+  private async drawPlayer(): Promise<void> {
     let ctx = this.ctx;
     // 用 onAreaChange 测出来的实际 Canvas 尺寸；首次 onAreaChange 之前用 containerWidth/Height 兜底
     let w = this._measuredW > 0 ? this._measuredW : Math.floor(this.containerWidth);

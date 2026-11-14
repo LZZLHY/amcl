@@ -27,6 +27,8 @@ OHOS_SYSROOT=${OHOS_SYSROOT:-/ohos-sysroot}
 TOOLCHAIN_DIR=${TOOLCHAIN_DIR:-/ohos-toolchain}
 WORK_DIR=/build
 JOBS=${JOBS:-$(nproc)}
+# 统一产物身份：配方、打包和收尾检查共用本次请求的新文件名。
+export JDK_OUTPUT="${JDK_OUTPUT:-/output/jdk8-ohos-${AMCL_RUN_ID:-candidate}.zip}"
 SRC=$WORK_DIR/jdk8u
 
 # boot JDK8 由 Dockerfile.jdk8-toolchain 的官方归档和 SHA-256 固定。
@@ -74,7 +76,7 @@ install_fake_gcc_wrapper() {
   local path="$1" clangbin="$2" lang="$3"
   local syslib="${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos"
   local cxxflags=""
-  [ "$lang" = "cxx" ] && cxxflags="-stdlib=libc++ -nostdlib++ -isystem /usr/lib/llvm-15/include/c++/v1"
+  [ "$lang" = "cxx" ] && cxxflags="-stdlib=libc++ -nostdlib++ -nostdinc++ -isystem ${AMCL_JDK_CXX_INCLUDE:?}"
   cat > "$path" <<WRAP
 #!/bin/bash
 for a in "\$@"; do
@@ -97,9 +99,8 @@ for arg in "\$@"; do
   case "\$arg" in
     -lpthread|-ldl|-lrt|-lresolv) ;;
     -static-libstdc++|-static-libgcc) ;;
-    # HotSpot 关闭 C++ 异常/RTTI，所需 ABI 符号由已验证的专用 shim 提供。
-    # 原脚本转成 -lc++ 依赖旧 sysroot 的手工库，新 SDK 并没有该文件。
-    -lstdc++) ARGS+=("-lcxxabi_shim");;
+    # GCC-only 配方的标准库依赖转为应用 NDK 的完整运行库。
+    -lstdc++) ARGS+=("-lc++_shared");;
     -std=gnu++*|-std=c++*) [ "\$IS_C" = "1" ] || ARGS+=("\$arg");;
     *) ARGS+=("\$arg");;
   esac
@@ -108,9 +109,9 @@ done
 if [ "\$LINK_EXECUTABLE" = 1 ] && [ "\$HAS_OUTPUT" = 1 ]; then
   ARGS+=("-Wl,--dynamic-linker=/lib/ld-musl-aarch64.so.1")
 fi
-COMMON="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -Qunused-arguments -Wno-error=int-conversion -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos -I/build/stub-headers ${cxxflags} -B${syslib} -L${syslib} -rtlib=compiler-rt -unwindlib=none -fuse-ld=lld"
+COMMON="${AMCL_JDK_RESOURCE_FLAG} ${AMCL_JDK_PLATFORM_FLAGS} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -Qunused-arguments -Wno-error=int-conversion -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos -I/build/stub-headers ${cxxflags} -B${syslib} -L${syslib} -rtlib=compiler-rt -unwindlib=none -fuse-ld=lld"
 if [ "\$LINKING" = "1" ]; then
-  exec $clangbin \$COMMON -L/build/jdk8-libs -lcxxabi_shim "\${ARGS[@]}" -Wno-error
+  exec $clangbin \$COMMON -L/build/jdk8-libs -lcxxabi_shim -lc++_shared "\${ARGS[@]}" -Wno-error
 else
   exec $clangbin \$COMMON "\${ARGS[@]}" -Wno-error
 fi
@@ -127,48 +128,12 @@ cd "$SRC"
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 
 ARCH_INCLUDE="-I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos"
-LIBCXX_INC=/usr/lib/llvm-15/include/c++/v1
+LIBCXX_INC=${AMCL_JDK_CXX_INCLUDE:?}
 TARGET_LIB="${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos"
 
-# 预建 libcxxabi_shim.so（configure 链接测试需要；与 jdk21 同款）
-# 全程写容器本地 /build（避开当前不可靠的 D:\ bind mount）。
+# 与现代 JDK 共用真实应用 ABI；经典版另带 libc 名称兼容 C 入口。
 OUT_LIBDIR=/build/jdk8-libs
-mkdir -p "$OUT_LIBDIR"
-STUBS_SRC_DIR=/build/stubs/src
-for c in /build/stubs/src /stubs-src/src /stubs-src /work25/stubs-src/src; do
-  [ -f "$c/eh_stubs.c" ] && STUBS_SRC_DIR="$c" && break
-done
-echo "  stubs src: $STUBS_SRC_DIR ; out libdir: $OUT_LIBDIR"
-/usr/bin/ohos-clang --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} $ARCH_INCLUDE \
-    -c -fPIC -o /tmp/eh_stubs.o "$STUBS_SRC_DIR/eh_stubs.c"
-
-# musl 兼容垫片（isnanf/isinff/__xpg_strerror_r/awt_*）必须编进同一个 .so ——
-# 理由：JDK 8 的 hotspot/jdk 链接行已经带 -lcxxabi_shim，搭这趟车就不用改 configure。
-# ⚠️ 这一步 2026-06 是**手工**做的，脚本里只留了一行 TODO ⇒ 换容器后 JDK 8 直接编不过。
-#    2026-08-29 正式化进脚本；找不到源就硬失败，别静默编出一个缺符号的 shim。
-MUSL_COMPAT=""
-for c in /host-docker/jdk8_musl_compat.c /out/jdk8_musl_compat.c /build/jdk8_musl_compat.c \
-         "$(dirname "$0")/jdk8_musl_compat.c"; do
-  [ -f "$c" ] && MUSL_COMPAT="$c" && break
-done
-[ -n "$MUSL_COMPAT" ] || { echo "ERROR: jdk8_musl_compat.c not found (docker/jdk8_musl_compat.c)"; exit 1; }
-echo "  musl compat shim: $MUSL_COMPAT"
-/usr/bin/ohos-clang --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} $ARCH_INCLUDE \
-    -c -fPIC -o /tmp/jdk8_musl_compat.o "$MUSL_COMPAT"
-
-/usr/bin/ohos-clang++ --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} $ARCH_INCLUDE \
-    -shared -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti \
-    -nostdlib -L${TARGET_LIB} \
-    -o "$OUT_LIBDIR/libcxxabi_shim.so" "$STUBS_SRC_DIR/cxxabi_shim.cpp" /tmp/eh_stubs.o \
-    /tmp/jdk8_musl_compat.o \
-    -fuse-ld=lld -Wl,-soname,libcxxabi_shim.so -lc
-# 断言垫片符号真的被导出了 —— `-fvisibility=hidden` + 忘了 EXPORT 会静默丢符号，
-# 而后果要等到几十分钟后 libjava.so 链接才炸。
-for s in isnanf isinff __xpg_strerror_r awt_Lock; do
-  /usr/bin/llvm-nm-15 --defined-only "$OUT_LIBDIR/libcxxabi_shim.so" 2>/dev/null | grep -qw "$s" \
-    || { echo "ERROR: libcxxabi_shim.so 缺导出符号 $s"; exit 1; }
-done
-echo "  libcxxabi_shim.so ready (含 musl 垫片，符号已断言)"
+bash /build/scripts/prepare_jdk_abi.sh 8 "$OUT_LIBDIR"
 
 # X11 stub 头补两个 Xt 类型：headless 构建仍会编 jawt/头文件预处理，
 # 而我们的 stub Intrinsic.h 是手写的最小集，缺这两个 typedef 会在预处理期报错。
@@ -199,9 +164,9 @@ echo "  stub libs ready"
 export BUILD_CC=/usr/bin/clang-15
 export BUILD_CXX=/usr/bin/clang++-15
 
-COMMON_CFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
-COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -stdlib=libc++ -nostdlib++ -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
-COMMON_LDFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fuse-ld=lld -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none -nostdlib++ -L${OUT_LIBDIR} -lcxxabi_shim"
+COMMON_CFLAGS="${AMCL_JDK_RESOURCE_FLAG} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0 -D__MUSL__ -DMUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
+COMMON_CXXFLAGS="${AMCL_JDK_RESOURCE_FLAG} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0 -D__MUSL__ -DMUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -stdlib=libc++ -nostdlib++ -nostdinc++ -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
+COMMON_LDFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fuse-ld=lld -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none -nostdlib++ -L${OUT_LIBDIR} -lcxxabi_shim -lc++_shared"
 
 if [ "$STAGE" = "configure" ] || [ "$STAGE" = "build" ]; then
   echo ""
@@ -299,6 +264,6 @@ if [ "$STAGE" = "build" ]; then
   cp "$OUT_LIBDIR/libcxxabi_shim.so" "$IMAGE/jre/lib/aarch64/"
   cp -L /build/freetype-2.13.3/objs/.libs/libfreetype.so "$IMAGE/jre/lib/aarch64/libfreetype.so.6"
   # 修复后的完整运行包使用独立名称；不能覆盖曾含缺失 HotSpot 符号的旧候选。
-  JDK_VERSION=8 JDK_IMAGE="$IMAGE" JDK_OUTPUT=/output/jdk8-ohos-runtime-link-rc1.zip \
+  JDK_VERSION=8 JDK_IMAGE="$IMAGE" \
     bash /build/scripts/pack_jdk_full.sh
 fi

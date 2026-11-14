@@ -30,11 +30,14 @@ SDK_CONSUMPTION_PATHS=(
  'source/src/events/SDL_keyboard.c','source/src/events/SDL_mouse.c','source/src/events/SDL_events.c',
  'source/src/events/SDL_eventwatch.c','source/src/events/SDL_inputdelivery_c.h',
  'source/src/SDL_amclinputcontrol_c.h','source/src/core/openharmony/SDL_amclhostruntime.h',
+ # SDL.c 新消费图形宿主表后，后续 owned 文本门必须绑定这些真实头，不能只锁调用者。
+ 'source/src/video/openharmony/SDL_amclgraphicsruntime.h',
+ 'source/src/video/openharmony/graphics_runtime_abi.h','source/src/video/openharmony/sdl_aux_runtime_abi.h',
  'source/src/video/openharmony/SDL_openharmonyamcl.c',
  'source/src/video/openharmony/control_delivery.h','source/src/video/openharmony/control_delivery_client.h',
  # 后续owned文本门复用本SDK时也必须绑定此次真实可选client的两共同声明。
  'source/src/video/openharmony/input/input_latency_observation.h','source/src/video/openharmony/input/input_latency_client.h',
-)
+)+(('host-posix/unistd.h',) if os.name=='nt' else ())
 SDK_CMAKE_EXPORT_PATHS=tuple('build/sdk/'+name for name in
  ('SDL3Config.cmake','SDL3headersTargets.cmake','SDL3staticTargets.cmake','SDL3sharedTargets.cmake'))
 
@@ -203,7 +206,21 @@ set_property(TARGET sdl_control PROPERTY C_STANDARD 11)
 target_compile_definitions(sdl_control PRIVATE SDL_VIDEO_DRIVER_OPENHARMONY AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_TESTING _CRT_SECURE_NO_WARNINGS)
 target_include_directories(sdl_control PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/source/src" "${CMAKE_CURRENT_BINARY_DIR}/sdk/include-config-release/build_config" "${CMAKE_CURRENT_BINARY_DIR}/sdk/include-revision" "${CMAKE_CURRENT_SOURCE_DIR}/source/src/video/openharmony" "${CMAKE_CURRENT_SOURCE_DIR}/owner/input/delivery" "${CMAKE_CURRENT_SOURCE_DIR}/owner/stubs")
 '''
-    if os.name=='nt':text+='target_compile_options(sdl_control PRIVATE /utf-8)\ntarget_compile_options(amcl_owner_shared PRIVATE /utf-8)\nset_source_files_properties(consumer.c PROPERTIES COMPILE_OPTIONS "/experimental:c11atomics")\n'
+    if os.name=='nt':
+        # 此门在 Windows SDK 中显式编译 OHOS 输入消费者；新增共享图形表头依赖
+        # POSIX getpid。边界适配调用 CRT 的真实进程号，不替换图形表校验或 SDL 业务，
+        # 不删 include，也不修改正式 series/制品。只对本轮外置宿主编译提供此头。
+        posix=output/'host-posix';posix.mkdir()
+        (posix/'unistd.h').write_text('''/* Windows 宿主测试的真实进程身份适配；不授予 OHOS/辅助 SDL 设备资格。 */
+#ifndef AMCL_HOST_POSIX_UNISTD_H
+#define AMCL_HOST_POSIX_UNISTD_H
+#include <process.h>
+#define getpid _getpid
+#endif
+''',encoding='utf-8')
+        text+='target_include_directories(SDL3-static PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host-posix")\n'
+        text+='target_include_directories(SDL3-shared PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host-posix")\n'
+        text+='target_compile_options(sdl_control PRIVATE /utf-8)\ntarget_compile_options(amcl_owner_shared PRIVATE /utf-8)\nset_source_files_properties(consumer.c PROPERTIES COMPILE_OPTIONS "/experimental:c11atomics")\n'
     else:text+='target_compile_definitions(sdl_control PRIVATE _GNU_SOURCE)\ntarget_link_libraries(sdl_control PRIVATE ${CMAKE_DL_LIBS} pthread)\ntarget_link_options(sdl_control PRIVATE -rdynamic)\ntarget_link_libraries(amcl_owner_shared PRIVATE ${CMAKE_DL_LIBS} pthread)\n'
     # shared SDK只作cold/Init契约探针，不声明已建立输入来源。完整消费仍由下方static真实闭包执行。
     # Windows宿主不编译OHOS平台文件，这两个无订阅observer边界从不接收/模拟控制输入。
@@ -229,7 +246,9 @@ void SDL_AMCL_ObserveLookPoll(double x,double y){(void)x;(void)y;}
         protocol_mutations=[
             ('sdk-marker-wrong-version',sdk_core,b'return SDL_AMCL_INPUT_CONTROL_PROTOCOL_V1;',b'return 2u;','cold'),
             ('sdk-init-skips-owner',sdk_core,b'if (input_host>0 && !SDL_AMCL_ValidateInputRuntimeV1(true)) return false;',b'/* wrong: skip actual owner gate */','cold'),
-            ('sdk-dynapi-borrows-host-copy',sdk_dynapi,b'if (AMCL_SdlInputHostIdentityV1()>0) libname=NULL;',b'/* wrong: borrow override in host */','host'),
+            # 0030 将损坏身份也纳入拒绝（!=0）；仍撤回现役完整条件，证明真实两映像
+            # host路由会错误借用override，不能因旧文本锚点消失而跳过这项行为负控。
+            ('sdk-dynapi-borrows-host-copy',sdk_dynapi,b'if (AMCL_SdlInputHostIdentityV1()!=0) libname=NULL;',b'/* wrong: borrow override in host */','host'),
             ('sdk-late-init-follows-copy',sdk_dynapi,b'SDL_AMCL_INPUT_INIT_DISPATCH(fn,args,ret)   ',b'/* wrong: skip late host source gate */   ','late')]
         for mode,target,before,after,test_mode in protocol_mutations:
             # OHOS的master switch=0没有外部jump table；只测试实际活跃分支，不能靠unused变异报负控成功。

@@ -19,7 +19,8 @@ import {
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const cache = new Map();
 const readReal = (rel) => {
-  if (!cache.has(rel)) cache.set(rel, fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+  // 变异锚点按逻辑源码行匹配，Windows的合法CRLF检出与Linux LF必须执行同一负控。
+  if (!cache.has(rel)) cache.set(rel, fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n'));
   return cache.get(rel);
 };
 let checks = 0;
@@ -178,14 +179,40 @@ for (const name of ['AMCL_MC_LOG_MIRROR', 'AMCL_AUDIO_DIAGNOSTICS']) {
     `    setenv("${name}", "1", 1);\n    g_mcThread = std::thread(mcLaunchThreadWithProfile,`,
     ['order', 'count-mismatch']);
 }
+// 字体环境已迁入统一jvmInit；登记迁移不能允许它在真实VM创建之后再写一次。
+for (const name of ['FONTCONFIG_PATH', 'FONTCONFIG_FILE']) {
+  mutate(`${name} cannot be rewritten after CreateJavaVM`, 'entry/src/main/cpp/jvm/jvm_launcher.cpp',
+    '        rc = createVM(&jvm, (void**)&env, &vm_args);',
+    `        rc = createVM(&jvm, (void**)&env, &vm_args);\n    setenv("${name}", "late", 1);`,
+    ['order', 'count-mismatch']);
+}
+mutate('font context qualification loses Fresh NCP guard', 'entry/src/main/cpp/napi/jdk_java_qualification.cpp',
+  'jvmRuntimeState() == 0 && jvmGetJavaVM() == nullptr', 'true', ['order-pin']);
+mutate('audio descriptor loses its once guard', 'entry/src/main/cpp/audio/audio_host.cpp',
+  'if (published)', 'if (false)', ['order-pin']);
+mutate('native temp pair loses its Fresh VM guard', 'entry/src/main/cpp/napi/jdk_native_temp_vm_pair.inc',
+  'jvmRuntimeState() == 0 && !jvmGetJavaVM()', 'true', ['order-pin']);
+mutate('qualification workdir rewritten after JVM creation', 'entry/src/main/cpp/napi/jdk_java_qualification.cpp',
+  '        io::Require(initResult == 0, "jvmInit 失败");',
+  '        io::Require(initResult == 0, "jvmInit 失败");\n        setenv("AMCL_GAME_DIR", "late", 1);',
+  ['order', 'count-mismatch']);
+mutate('platform font setup moved after thread probes', 'entry/src/main/cpp/napi/napi_jdk_probe.cpp',
+  '            fontProviderProbe(args.entryParams, report);\n            threadTerminalProbe(report);',
+  '            threadTerminalProbe(report);\n            fontProviderProbe(args.entryParams, report);', ['order-pin']);
 {
   // 把认领处的封存挪到建 JVM 之后（两处替换，mutate 只做一处，所以单独写）。
   const file = 'entry/src/main/cpp/jvm/jvm_launcher.cpp';
   const original = readReal(file);
   const seal = '    amcl::ohos::SealProcessEnvironment(g_forkChildMode ? "fork-child-jvm-claim" : "jvm-create-claim");';
-  assert.ok(original.includes(seal), 'seal anchor present');
-  const changed = original.replace(seal, '').replace('    jint rc = createVM(&jvm, (void**)&env, &vm_args);',
-    '    jint rc = createVM(&jvm, (void**)&env, &vm_args);\n    amcl::ohos::SealProcessEnvironment("late");');
+  assert.equal(original.split(seal).length, 2, 'seal anchor must match exactly once');
+  // 插入点必须是真实调用语句，不能匹配前面的 rc 初始化或仅调用日志。锚点变化立即失败，
+  // 避免负例只删掉旧封存、实际却没有把它搬到 VM 创建后，悄悄减少顺序覆盖。
+  const createCall = '        rc = createVM(&jvm, (void**)&env, &vm_args);';
+  assert.equal(original.split(createCall).length, 2, 'real CreateJavaVM call anchor must match exactly once');
+  const changed = original.replace(seal, '').replace(createCall,
+    `${createCall}\n        amcl::ohos::SealProcessEnvironment("late");`);
+  assert.ok(changed.includes(`${createCall}\n        amcl::ohos::SealProcessEnvironment("late");`),
+    'seal mutation must be inserted after the actual CreateJavaVM call');
   const result = runGate({ read: (rel) => (rel === file ? changed : readReal(rel)) });
   assert.ok(!result.ok && kinds(result).has('order-pin'), 'seal moved after createVM must break seal-at-jvm-claim');
   mutations++;

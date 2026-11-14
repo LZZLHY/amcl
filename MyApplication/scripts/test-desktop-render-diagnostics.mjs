@@ -59,9 +59,9 @@ for(const product of ['desktop']){
     assert.equal(a.shared.desktopDiagnosticId,undefined);
     assert(!r.control.files.some(file=>file.content.includes('PROBE_MIDDLE')));
     const first=s.posts.length;await a.copy_();assert.equal(s.posts.length,first);
-    const b=r.sheet(game.id,game.mc);assert(await b.lsSubmit_());assert.equal(s.posts.length,first,'same snapshot reuses an existing session share');
+    const b=r.sheet(game.id);await b.openAnalysis_();assert.equal(s.posts.length,first,'opening local diagnosis never repeats an explicit share');
     p.save(s.filesDir,'SECOND_PROBE_HEAD\nSECOND_PROBE_TAIL',true);
-    assert(await b.lsSubmit_());assert.equal(s.posts.length,first,'AI reuses an explicit share and never uploads a new probe');
+    assert.deepEqual(s.routes.at(-1),{url:'pages/ActivityLogPage',params:{activityId:game.id,view:'overview'}});
     a.advanced_();await a.prepare_(false);await a.send_(false);assert(a.shared,a.errorText);
     assert.equal(s.posts.length,first,'unchanged selected files reuse their digest after preview');
     const c=r.page();s.newProbeText='PAGE_COMPLETE_HEAD\nPAGE_COMPLETE_TAIL';await c.verify(true);
@@ -117,9 +117,9 @@ for(const product of ['default','store','sideload','desktopLegacy']){
       const page=r.page();await page.verify(true);await page.shareResult();assert.equal(s.probeCalls,0);assert.equal(s.posts.length,0);
       assert.equal(s.reads,0);assert.equal(s.writes,0);
       const game=r.seed();
-      assert.equal(await r.sheet(game.id,game.mc).lsSubmit_(),false);
-      assert.equal(s.posts.length,0,'AI without an explicit share only opens the composer');
-      assert.equal(s.routes.at(-1).url,'pages/ActivityLogPage');
+      await r.sheet(game.id).openAnalysis_();
+      assert.equal(s.posts.length,0,'opening local diagnosis never uploads or opens the composer');
+      assert.deepEqual(s.routes.at(-1),{url:'pages/ActivityLogPage',params:{activityId:game.id,view:'overview'}});
       const activity=r.activity(game.id);await activity.prepare_(false);assert(activity.snapshot,activity.errorText);
       assert.equal(s.posts.length,0);await activity.send_(false);assert(activity.shared,activity.errorText);
       const body=r.control.files.map(file=>file.content).join('\n');

@@ -30,6 +30,7 @@ import {
   fromCurseForgeClassId,
 } from './ModTypes';
 import { SortBy } from './RemoteModRepository';
+import { isOfficialModDownloadRequired, isMcimMirrorUrl } from './ModDownloadSourcePolicy';
 
 // ============================================================
 //  常量
@@ -334,14 +335,75 @@ export function buildForgeCdnUrlFromFileId(fileId: number, fileName: string): st
  *
  * 输入是空串则返回空 URL（调用方应再调 /download-url 端点重新解析）。
  */
-export function buildCurseForgeFileDownloadUrls(officialUrl: string): CFUrlSet {
+/** 文件来源和元数据通道分别选择：官方文件无须 API Key，CF 元数据仍沿用既有合法通道。 */
+export enum CurseForgeFileSourceMode {
+  MIRROR_FIRST = 'mirrorFirst',
+  OFFICIAL_FIRST = 'officialFirst',
+  OFFICIAL_ONLY = 'officialOnly',
+}
+
+/**
+ * 与MR共享同一三态契约：网关开启或明确官方时正文仅官方，关闭后恢复保存的偏好。
+ * gatewayEnabled必须是开关意图，握手失败/熔断不能放宽正文候选。CF列表认证不在此
+ * 决策内：用户允许元数据继续走MCIM，文件CDN本身不需要官方API Key。
+ */
+export function resolveCurseForgeFileSourcePreference(preference: string, gatewayEnabled: boolean): CurseForgeFileSourceMode {
+  if (isOfficialModDownloadRequired(preference, gatewayEnabled)) return CurseForgeFileSourceMode.OFFICIAL_ONLY;
+  if (preference === 'mcim') return CurseForgeFileSourceMode.MIRROR_FIRST;
+  return CurseForgeFileSourceMode.MIRROR_FIRST;
+}
+
+/**
+ * 为官方文件生成保守的备用候选。已验证同一文件由 edge 对 Range 返回 404，
+ * 而由 edge 的 HEAD 明确跳转至 mediafilez 后可以返回正确的 206。
+ * 仅处理精确 HTTPS 官方主机和已知文件路径；不重新编码路径，也不重排签名参数。
+ * 其余地址只保留原输入，避免将第三方或畸形地址改写成官方候选。
+ */
+export function buildCurseForgeOfficialFileUrls(originalUrl: string): string[] {
+  if (originalUrl.length === 0) return [];
+  const result: string[] = [originalUrl];
+  if (/[\\\u0000-\u0020\u007f]/.test(originalUrl)) return result;
+  const parts = /^https:\/\/([^/?#]+)(\/[^?#]*)(\?[^#]*)?$/i.exec(originalUrl);
+  if (parts === null || parts[1].toLowerCase() !== 'edge.forgecdn.net'
+    || !/^\/files\/[0-9]+\/[0-9]+\/[^/]+$/.test(parts[2])) return result;
+  result.push('https://mediafilez.forgecdn.net' + parts[2] + (parts[3] ?? ''));
+  return result;
+}
+
+export function buildCurseForgeFileDownloadUrls(officialUrl: string,
+  mode: CurseForgeFileSourceMode = CurseForgeFileSourceMode.MIRROR_FIRST): CFUrlSet {
   if (officialUrl.length === 0) return { primary: '', mirrors: [] };
+  if (mode === CurseForgeFileSourceMode.OFFICIAL_ONLY) {
+    // 元数据通道允许MCIM不等于把它返回的镜像downloadUrl认作官方。只有具有明确
+    // fileId/fileName的上层可按既有CF协议构造官方地址；这里无身份就失败关闭。
+    if (isCurseForgeMirrorUrl(officialUrl)) return { primary: '', mirrors: [] };
+    // 备用 URL 沿用 mirrors 字段，但严格模式下生成的候选依旧是官方 CDN。
+    const official = buildCurseForgeOfficialFileUrls(officialUrl);
+    return { primary: official[0], mirrors: official.slice(1) };
+  }
   let mcim = mirrorifyCurseForgeCdn(officialUrl);
   if (mcim === officialUrl) {
     // 不是已知 CDN 主机：MCIM 没镜像，只能走原 URL
     return { primary: officialUrl, mirrors: [] };
   }
-  return { primary: mcim, mirrors: [officialUrl] };
+  return mode === CurseForgeFileSourceMode.OFFICIAL_FIRST
+    ? { primary: officialUrl, mirrors: [mcim] } : { primary: mcim, mirrors: [officialUrl] };
+}
+
+/** 精确匹配已知MCIM authority，保留相似前缀的未知作者域名。 */
+export function isCurseForgeMirrorUrl(url: string): boolean {
+  return isMcimMirrorUrl(url);
+}
+
+/**
+ * CF元数据可能携带镜像downloadUrl。严格正文模式只针对已知镜像回到CF已定义的
+ * fileId/文件名CDN地址，不猜未知作者URL，不改其他模式的候选顺序或原始query。
+ */
+export function resolveCurseForgeOfficialFileUrl(file: CFFileRaw, mode: CurseForgeFileSourceMode): string {
+  let url = nonEmptyStr(file.downloadUrl);
+  if (mode !== CurseForgeFileSourceMode.OFFICIAL_ONLY || !isCurseForgeMirrorUrl(url)) return url;
+  let name = nonEmptyStr(file.fileName);
+  return name.length > 0 ? buildForgeCdnUrlFromFileId(file.id, name) : '';
 }
 
 // ============================================================
@@ -572,9 +634,10 @@ function extractGameVersionsFromGameVersions(arr: string[]): string[] {
 }
 
 /** CFFile → RemoteFile（默认作为 primary） */
-export function mapCurseForgeFile(file: CFFileRaw, isPrimary: boolean): RemoteFile {
-  let officialUrl = nonEmptyStr(file.downloadUrl);
-  let urls = buildCurseForgeFileDownloadUrls(officialUrl);
+export function mapCurseForgeFile(file: CFFileRaw, isPrimary: boolean,
+  mode: CurseForgeFileSourceMode = CurseForgeFileSourceMode.MIRROR_FIRST): RemoteFile {
+  let officialUrl = resolveCurseForgeOfficialFileUrl(file, mode);
+  let urls = buildCurseForgeFileDownloadUrls(officialUrl, mode);
   let rf: RemoteFile = {
     url: urls.primary,
     mirrors: urls.mirrors,
@@ -596,8 +659,9 @@ export function mapCurseForgeDependency(d: CFFileDependencyRaw): RemoteDependenc
 }
 
 /** CFFile → RemoteVersion（同时映射 loader 拆分 + dependencies） */
-export function mapCurseForgeFileAsVersion(file: CFFileRaw): RemoteVersion {
-  let primary = mapCurseForgeFile(file, true);
+export function mapCurseForgeFileAsVersion(file: CFFileRaw,
+  mode: CurseForgeFileSourceMode = CurseForgeFileSourceMode.MIRROR_FIRST): RemoteVersion {
+  let primary = mapCurseForgeFile(file, true, mode);
   let deps: RemoteDependency[] = [];
   if (file.dependencies !== undefined) {
     for (let d of file.dependencies) deps.push(mapCurseForgeDependency(d));

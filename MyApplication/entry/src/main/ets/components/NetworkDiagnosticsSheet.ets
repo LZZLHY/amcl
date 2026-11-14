@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * NetworkDiagnosticsSheet.ets — 网络环境检测 Sheet
  *
  * 由顶部「网络异常」横幅点击、或各下载错误处的「网络检测」按钮打开。
@@ -58,9 +62,9 @@ export struct NetworkDiagnosticsSheet {
   private verdictColor_(): ResourceColor {
     if (!this.report) return this.theme.textHint
     let v = this.report.verdict
-    if (v === NetworkVerdict.OK) return this.theme.success
-    if (v === NetworkVerdict.PARTIAL) return this.theme.warning
-    return this.theme.error
+    if (v === NetworkVerdict.OK) return this.theme.successText
+    if (v === NetworkVerdict.PARTIAL) return this.theme.warningText
+    return this.theme.errorText
   }
 
   private verdictBg_(): ResourceColor {
@@ -117,7 +121,7 @@ export struct NetworkDiagnosticsSheet {
           // 结论卡片
           if (this.running) {
             Row({ space: 12 }) {
-              LoadingProgress().width(24).height(24).color(this.theme.primary)
+              LoadingProgress().width(24).height(24).color(this.theme.actionText)
               Text('正在检测网络环境…')
                 .fontSize(15).fontColor(this.theme.textSecondary)
             }
@@ -145,8 +149,8 @@ export struct NetworkDiagnosticsSheet {
             .alignItems(HorizontalAlign.Start)
           } else if (this.errorText.length > 0) {
             Column({ space: 8 }) {
-              AppIcon({ name: AppIconName.Warning, iconSize: 22, color: this.theme.error })
-              Text(this.errorText).fontSize(14).fontColor(this.theme.error).textAlign(TextAlign.Center)
+              AppIcon({ name: AppIconName.Warning, iconSize: 22, color: this.theme.errorText })
+              Text(this.errorText).fontSize(14).fontColor(this.theme.errorText).textAlign(TextAlign.Center)
               Button('重试检测').onClick(() => { this.runDiag_() })
             }.width('100%').padding(18).backgroundColor(this.theme.errorBg)
               .borderRadius(this.theme.cardRadius).alignItems(HorizontalAlign.Center)
@@ -154,7 +158,7 @@ export struct NetworkDiagnosticsSheet {
 
           // 建议
           if (this.report !== null && this.errorText.length > 0) {
-            Text(this.errorText).fontSize(13).fontColor(this.theme.error).width('100%')
+            Text(this.errorText).fontSize(13).fontColor(this.theme.errorText).width('100%')
           }
           if (this.report && this.report.suggestions.length > 0) {
             Column({ space: 6 }) {
@@ -163,7 +167,7 @@ export struct NetworkDiagnosticsSheet {
                 .width('100%')
               ForEach(this.report.suggestions, (s: string) => {
                 Row({ space: 8 }) {
-                  Text('•').fontSize(14).fontColor(this.theme.primary)
+                  Text('•').fontSize(14).fontColor(this.theme.actionText)
                   Text(s).fontSize(13.5).fontColor(this.theme.textSecondary).layoutWeight(1)
                 }
                 .width('100%').alignItems(VerticalAlign.Top)
@@ -186,8 +190,8 @@ export struct NetworkDiagnosticsSheet {
                     name: p.status === ProbeStatus.OK ? AppIconName.CheckCircle
                       : (p.status === ProbeStatus.FAIL ? AppIconName.Error : AppIconName.Info),
                     iconSize: 18,
-                    color: p.status === ProbeStatus.OK ? this.theme.success
-                      : (p.status === ProbeStatus.FAIL ? this.theme.error : this.theme.textHint),
+                    color: p.status === ProbeStatus.OK ? this.theme.successText
+                      : (p.status === ProbeStatus.FAIL ? this.theme.errorText : this.theme.textHint),
                   })
                   Column({ space: 2 }) {
                     Text(p.name)
@@ -221,7 +225,7 @@ export struct NetworkDiagnosticsSheet {
           .onClick(() => { this.copyReport_() })
         Button(this.running ? '检测中…' : '重新检测')
           .fontSize(15).fontColor(Color.White)
-          .backgroundColor(this.theme.primary).borderRadius(24)
+          .backgroundColor(this.theme.actionPrimary).borderRadius(24)
           .height(46).layoutWeight(1)
           .enabled(!this.running)
           .onClick(() => { this.runDiag_() })

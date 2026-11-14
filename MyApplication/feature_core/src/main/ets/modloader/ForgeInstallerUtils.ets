@@ -23,7 +23,7 @@ import {
 } from './MavenUtils';
 import { BMCLAPI_BASE, BMCLAPI_HOST, MOJANG_META } from 'commons';
 import { DownloadManager, DownloadTaskView } from '../download/DownloadManager';
-import { buildSortedUrls } from '../download/SourceProber';
+import { buildSortedUrls, selectMcSourceUrls, fetchPublicMcMetadata, useOrderedMcDownload } from '../download/SourceProber';
 import { fileExistsAndNonEmpty } from 'commons';
 import { AppLogger } from 'commons';
 import { LogTags } from 'commons';
@@ -90,11 +90,10 @@ export async function probeInstallerSha1(urls: string[]): Promise<InstallerSha1P
   let out = new InstallerSha1Probe();
   if (urls.length === 0) return out;
   const SHA1_PROBE_TIMEOUT_SECONDS = 6;
-  let mgr = DownloadManager.instance();
   let probes: Promise<string>[] = [];
   for (let url of urls) {
     probes.push(
-      mgr.fetchText(url + '.sha1', [], SHA1_PROBE_TIMEOUT_SECONDS)
+      fetchPublicMcMetadata([url + '.sha1'], SHA1_PROBE_TIMEOUT_SECONDS)
         .then((text: string): string => {
           let m = /([0-9a-fA-F]{40})/.exec(text);
           return (m && m[1]) ? m[1].toLowerCase() : '';
@@ -406,6 +405,18 @@ export function extractLibrariesFromInstallerJson(
 }
 
 /**
+ * 仅在本次Native映射下载成功、真实writer释放后发布的内存证据。它不跨安装持久化，
+ * libraryDir绑定调用方独占的安装沙箱；processor消费前仍须重新核对路径、size和SHA1。
+ */
+export interface VerifiedMappingsDownload {
+  gameVersion: string;
+  libraryDir: string;
+  path: string;
+  sha1: string;
+  size: number;
+}
+
+/**
  * 预下载 Mappings（PCL 核心步骤）
  * 参照 PCL: If Json("data")("MOJMAPS") IsNot Nothing Then
  *   下载原版 Json 文件 → 获取 client_mappings URL → 下载到对应 Maven 路径
@@ -413,7 +424,7 @@ export function extractLibrariesFromInstallerJson(
 export async function preDownloadMappings(
   installProfilePath: string, gameVersion: string, libDir: string,
   onProgress?: (view: DownloadTaskView) => void
-): Promise<void> {
+): Promise<VerifiedMappingsDownload | undefined> {
   let profileObj = readJsonFile(installProfilePath);
   if (!profileObj) return;
 
@@ -447,10 +458,11 @@ export async function preDownloadMappings(
   let mappingsSha1 = '';
   let mappingsSize = 0;
   let mgr = DownloadManager.instance();
-  let manifestUrls = [BMCLAPI_VERSION_MANIFEST, MOJANG_VERSION_MANIFEST];
+  // 与正文使用同一官方约束，避免mapping预取元数据先偷偷访问BMCL。
+  let manifestUrls = selectMcSourceUrls([BMCLAPI_VERSION_MANIFEST, MOJANG_VERSION_MANIFEST]);
   for (let mUrl of manifestUrls) {
     try {
-      let manifestText = await mgr.fetchText(mUrl);
+      let manifestText = await fetchPublicMcMetadata([mUrl]);
       let manifest = JSON.parse(manifestText) as Record<string, Object>;
       let versions = manifest['versions'] as Array<Record<string, string>>;
       let versionUrl = '';
@@ -470,7 +482,7 @@ export async function preDownloadMappings(
       // 合并 bmclapi + 官方 versionUrl 为单次多源调用（NAPI 自动 fallback）
       let versionMirrors: string[] = [];
       if (bmclapiVersionUrl !== versionUrl) versionMirrors.push(versionUrl);
-      let versionText = await mgr.fetchText(bmclapiVersionUrl, versionMirrors);
+      let versionText = await fetchPublicMcMetadata([bmclapiVersionUrl].concat(versionMirrors));
 
       let versionJson = JSON.parse(versionText) as Record<string, Object>;
       let downloads = versionJson['downloads'] as Record<string, Object> | undefined;
@@ -505,12 +517,13 @@ export async function preDownloadMappings(
     .replace('launcher.mojang.com', BMCLAPI_HOST);
 
   let taskId = 0;
+  let verifiedView: DownloadTaskView | undefined = undefined;
   // 明确的Error容器跨回调保留首个取消异常；不依赖ArkTS对闭包赋值的局部收窄。
   const callbackErrors: Error[] = [];
   try {
     // 映射是明文工件，不能套JAR魔数；元数据中的SHA1/size真正传入Native，既能
     // 强预检已有文件，也能拒绝HTML/JSON错误页，并保留原写盘/断点/提交保护。
-    await mgr.createAndWait({ name: 'Forge client mappings ' + gameVersion, files: [{ localPath,
+    verifiedView = await mgr.createAndWait({ name: 'Forge client mappings ' + gameVersion, files: [{ localPath,
       allowedRoot: libDir, urls: buildSortedUrls(bmclapiMappingsUrl, mappingsUrl),
       check: { sha1: mappingsSha1, size: mappingsSize } }] }, (view: DownloadTaskView): void => {
         taskId = view.taskId;
@@ -522,6 +535,7 @@ export async function preDownloadMappings(
           if (taskId > 0) mgr.cancel(taskId);
         }
       });
+    if (verifiedView.taskId > 0) taskId = verifiedView.taskId;
     if (callbackErrors.length > 0) throw callbackErrors[0];
   } finally {
     // processor/沙箱租约持有本调用栈，必须真实释放后才可继续或清理，不能有限等待
@@ -529,6 +543,10 @@ export async function preDownloadMappings(
     if (taskId > 0) await mgr.awaitTaskReleased(taskId, true);
   }
   AppLogger.info(TAG, 'Mappings download verified', LOG_DOMAIN_MODLOADER);
+  // createAndWait的成功契约包含Native的强check；未取得真实完成任务身份则不授予跳过资格。
+  // finally中的释放屏障已经结束，返回值仅属于此调用栈，不是可重放的“文件曾存在”声明。
+  if (verifiedView === undefined || !verifiedView.finished || verifiedView.aborted || taskId <= 0) return undefined;
+  return { gameVersion, libraryDir: libDir, path: localPath, sha1: mappingsSha1, size: mappingsSize };
 }
 
 /**

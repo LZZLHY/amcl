@@ -314,7 +314,8 @@ export class EvidenceTextCursor {
     } else {
       this.file = await fs.open(path, fs.OpenMode.READ_ONLY);
       const stat = await fs.stat(this.file.fd);
-      this.length = stat.size; this.inode = String(stat.ino); this.stamp = evidenceFileStamp(path);
+      // 异步游标的身份核验也使用异步stat，不在分页/跟读入口留下同步文件调用。
+      this.length = stat.size; this.inode = String(stat.ino); this.stamp = await evidenceFileStampAsync(path);
     }
   }
 
@@ -348,7 +349,7 @@ export class EvidenceTextCursor {
     if (!this.live || this.file === undefined || this.cancelled) throw new Error('跟随读取未就绪');
     const stat = await fs.stat(this.path);
     if (String(stat.ino) !== this.inode || stat.size < this.length) throw new Error('日志已被替换或截短，请重新选择文件');
-    const current: string = evidenceFileStamp(this.path);
+    const current: string = await evidenceFileStampAsync(this.path);
     if (stat.size === this.length && current !== this.stamp) throw new Error('日志原位内容发生变化，请重新读取');
     this.length = stat.size; this.stamp = current; this.ended = this.position >= this.length;
     return this.length;

@@ -71,6 +71,12 @@ export class ForgeRepairTask implements UnifiedDownloadAdapter {
     this.filesDir_ = filesDir;
     this.view.id = 'repair:' + versionName;
     this.view.category = TaskCategory.MC_VERSION;
+    // 修复领域身份随任务保存，重试及无页面执行也能获得正确类别和实例。
+    this.view.activityCategory = 'repair';
+    this.view.activityMcDir = mcDir;
+    this.view.activityGameVersion = gameVersion;
+    this.view.activityLoaderType = 'forge';
+    this.view.activityLoaderVersion = loaderVersion;
     this.view.title = versionName;
     this.view.subtitle = '修复 Forge（保留存档/模组）';
     this.view.state = UnifiedTaskState.PREPARING;

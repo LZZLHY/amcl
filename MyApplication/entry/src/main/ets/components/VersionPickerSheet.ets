@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * VersionPickerSheet.ets — 模组安装"目标版本"选择 Sheet
  *
  * 用途：模组 / 资源包 / 光影下载时，选择要把资源装进哪个**已安装**的 MC 版本。
@@ -42,9 +46,14 @@ export struct VersionPickerSheet {
   @Prop selectedVersionId: string = '';
   /** 打开时默认停在哪个页签：0=沙箱 / 1=外部 */
   @Prop initialTab: number = 0;
+  /** 资源页显式允许系统另存时才显示入口；只选实例的调用方沿用默认行为。 */
+  @Prop allowCustomResourceSave: boolean = false;
+  @Prop customResourceSaveSelected: boolean = false;
 
   /** 选定某版本回调（location: 'sandbox' | 'external'） */
   onPick: (location: string, versionId: string) => void = () => {};
+  /** 切换行为交给浏览器；系统保存窗口在用户确定资源文件并点击下载后才打开。 */
+  onPickCustomResourceSave: () => void = () => {};
   /** 关闭回调 */
   onClose: () => void = () => {};
 
@@ -83,7 +92,7 @@ export struct VersionPickerSheet {
   build() {
     Column() {
       // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: '选择安装版本', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭安装目标选择', closeId: 'version-picker-close', onClose: (): void => { this.onClose(); },
+      ImmersiveTitleScaffold({ title: this.allowCustomResourceSave ? '选择下载目标' : '选择安装版本', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭安装目标选择', closeId: 'version-picker-close', onClose: (): void => { this.onClose(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
@@ -101,7 +110,7 @@ export struct VersionPickerSheet {
         Text(id)
           .fontSize(15)
           .fontWeight(500)
-          .fontColor(this.isSelected(id) ? this.theme.primary : this.theme.textPrimary)
+          .fontColor(this.isSelected(id) ? this.theme.actionText : this.theme.textPrimary)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(this.subtitleOf(id))
@@ -114,7 +123,7 @@ export struct VersionPickerSheet {
       .margin({ left: 12 })
 
       if (this.isSelected(id)) {
-        AppIcon({ name: AppIconName.CheckCircle, iconSize: 20, color: this.theme.primary })
+        AppIcon({ name: AppIconName.CheckCircle, iconSize: 20, color: this.theme.actionText })
       } else {
         AppIcon({ name: AppIconName.ArrowRight, iconSize: 16, color: this.theme.textHint })
       }
@@ -124,7 +133,7 @@ export struct VersionPickerSheet {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(this.theme.cardRadius)
     .border(this.isSelected(id)
-      ? { width: 1.5, color: this.theme.primary }
+      ? { width: 1.5, color: this.theme.actionText }
       : { width: 0, color: Color.Transparent })
     .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
     .onClick(() => { this.onPick(this.activeLocation(), id) })
@@ -133,6 +142,21 @@ export struct VersionPickerSheet {
   /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
   @Builder
   private ImmersiveTitleContent1_() {
+      if (this.allowCustomResourceSave) {
+        Row({ space: 10 }) {
+          AppIcon({ name: AppIconName.Folder, iconSize: 18, color: this.theme.actionText })
+          Column({ space: 3 }) {
+            Text('下载到自定义位置').fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary)
+            Text('下载时由系统窗口选择保存位置').fontSize(11).fontColor(this.theme.textSecondary)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          AppIcon({ name: this.customResourceSaveSelected ? AppIconName.CheckCircle : AppIconName.ArrowRight,
+            iconSize: 18, color: this.customResourceSaveSelected ? this.theme.actionText : this.theme.textHint })
+        }
+        .id('version-picker-custom-mod-save')
+        .width('100%').padding(12).margin({ bottom: 8 }).borderRadius(12)
+        .backgroundColor(this.customResourceSaveSelected ? this.theme.primaryLight : this.theme.bgInput)
+        .onClick((): void => { this.onPickCustomResourceSave(); })
+      }
       // ============ 左右页签：沙箱 / 外部 ============
       Row({ space: 8 }) {
         // —— 沙箱 ——
@@ -142,20 +166,25 @@ export struct VersionPickerSheet {
             iconSize: 14,
             color: this.tabIdx_ === 0 ? this.theme.textOnPrimary : this.theme.textSecondary,
           })
-          Text('沙箱')
-            .fontSize(14)
-            .fontWeight(this.tabIdx_ === 0 ? 600 : 500)
-            .fontColor(this.tabIdx_ === 0 ? this.theme.textOnPrimary : this.theme.textSecondary)
-          Text('(' + this.sandboxVersions.length + ')')
-            .fontSize(12)
-            .fontColor(this.tabIdx_ === 0 ? this.theme.textOnPrimary : this.theme.textHint)
+          // 存储后果属于位置选项本身；两种后果同时可见，用户选择前即可判断。
+          Column({ space: 2 }) {
+            Row({ space: 4 }) {
+              Text('沙箱').fontSize(14).fontWeight(this.tabIdx_ === 0 ? 600 : 500)
+                .fontColor(this.tabIdx_ === 0 ? this.theme.textOnPrimary : this.theme.textSecondary)
+              Text('(' + this.sandboxVersions.length + ')').fontSize(12)
+                .fontColor(this.tabIdx_ === 0 ? this.theme.textOnPrimary : this.theme.textHint)
+            }
+            Text('卸载时删除').fontSize(11)
+              .fontColor(this.tabIdx_ === 0 ? this.theme.textOnPrimary : this.theme.textHint)
+          }.alignItems(HorizontalAlign.Start)
         }
         .layoutWeight(1)
-        .height(40)
+        .constraintSize({ minHeight: 56 }).padding({ top: 6, bottom: 6 })
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .borderRadius(12)
-        .backgroundColor(this.tabIdx_ === 0 ? this.theme.primary : this.theme.bgInput)
+        .backgroundColor(this.tabIdx_ === 0 ? this.theme.actionPrimary : this.theme.bgInput)
+        .accessibilityText('沙箱，应用内私有目录，卸载 AMCL 会一并删除')
         .onClick(() => { if (this.tabIdx_ !== 0) this.tabIdx_ = 0 })
 
         // —— 外部 ——
@@ -167,40 +196,33 @@ export struct VersionPickerSheet {
               ? this.theme.textHint
               : (this.tabIdx_ === 1 ? this.theme.textOnPrimary : this.theme.textSecondary),
           })
-          Text('外部')
-            .fontSize(14)
-            .fontWeight(this.tabIdx_ === 1 ? 600 : 500)
-            .fontColor(!this.externalAvailable
-              ? this.theme.textHint
-              : (this.tabIdx_ === 1 ? this.theme.textOnPrimary : this.theme.textSecondary))
-          Text(this.externalAvailable ? '(' + this.externalVersions.length + ')' : '不可用')
-            .fontSize(12)
-            .fontColor(!this.externalAvailable
-              ? this.theme.textHint
-              : (this.tabIdx_ === 1 ? this.theme.textOnPrimary : this.theme.textHint))
+          Column({ space: 2 }) {
+            Row({ space: 4 }) {
+              Text('外部').fontSize(14).fontWeight(this.tabIdx_ === 1 ? 600 : 500)
+                .fontColor(!this.externalAvailable ? this.theme.textHint
+                  : (this.tabIdx_ === 1 ? this.theme.textOnPrimary : this.theme.textSecondary))
+              Text(this.externalAvailable ? '(' + this.externalVersions.length + ')' : '不可用').fontSize(12)
+                .fontColor(!this.externalAvailable ? this.theme.textHint
+                  : (this.tabIdx_ === 1 ? this.theme.textOnPrimary : this.theme.textHint))
+            }
+            Text('卸载后保留').fontSize(11)
+              .fontColor(this.tabIdx_ === 1 && this.externalAvailable ? this.theme.textOnPrimary : this.theme.textHint)
+          }.alignItems(HorizontalAlign.Start)
         }
         .layoutWeight(1)
-        .height(40)
+        .constraintSize({ minHeight: 56 }).padding({ top: 6, bottom: 6 })
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .borderRadius(12)
         .opacity(this.externalAvailable ? 1 : 0.5)
-        .backgroundColor(this.tabIdx_ === 1 ? this.theme.primary : this.theme.bgInput)
+        .backgroundColor(this.tabIdx_ === 1 ? this.theme.actionPrimary : this.theme.bgInput)
+        .accessibilityText(this.externalAvailable ? '外部，保存在下载目录，卸载 AMCL 不会丢失' : '外部存储不可用')
         .onClick(() => {
           if (!this.externalAvailable) return;
           if (this.tabIdx_ !== 1) this.tabIdx_ = 1;
         })
       }
-      .width('100%')
-
-      // ============ 当前页签说明 ============
-      Text(this.tabIdx_ === 1
-        ? '外部：保存在下载目录，卸载 AMCL 不会丢失'
-        : '沙箱：应用内私有目录，卸载 AMCL 会一并删除')
-        .fontSize(11)
-        .fontColor(this.theme.textHint)
-        .width('100%')
-        .padding({ left: 4, top: 10, bottom: 6 })
+      .width('100%').padding({ bottom: 8 })
 
       // ============ 版本列表 / 空态 ============
       if (this.activeList().length === 0) {
@@ -209,7 +231,7 @@ export struct VersionPickerSheet {
           Text('该位置暂无已安装版本')
             .fontSize(14)
             .fontColor(this.theme.textSecondary)
-          Text('请先在「下载」页安装一个游戏版本')
+          Text(this.allowCustomResourceSave ? '可使用上方的自定义保存位置' : '请先在「下载」页安装一个游戏版本')
             .fontSize(12)
             .fontColor(this.theme.textHint)
         }

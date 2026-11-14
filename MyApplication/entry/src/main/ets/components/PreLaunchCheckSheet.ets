@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * PreLaunchCheckSheet.ets — 启动前硬校验 Sheet
  *
  * 点击"启动游戏"后先弹出本 Sheet，依次跑各项校验（JIT / JDK 版本匹配 / 运行时环境 /
@@ -358,8 +362,8 @@ export struct PreLaunchCheckSheet {
 
   build() {
     Column() {
-      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: '启动前检查', subtitle: this.version || '<unknown>', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭启动前检查', closeId: 'prelaunch-close', onClose: (): void => { this.onClose(); },
+      // 检查对象并入标题同行胶囊；长版本可点开完整名称，缺失时不展示内部占位或占用第二行。
+      ImmersiveTitleScaffold({ title: '启动前检查', contextLabel: this.version.trim(), contextTitle: '检查版本', theme: this.theme, modal: true, surfaceColor: this.theme.bgPrimary, closeLabel: '关闭启动前检查', closeId: 'prelaunch-close', onClose: (): void => { this.onClose(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
@@ -378,7 +382,7 @@ export struct PreLaunchCheckSheet {
         if (c.status === 'running') {
           LoadingProgress()
             .width(22).height(22)
-            .color(this.theme.primary)
+            .color(this.theme.actionText)
         } else {
           AppIcon({
             name: this.statusIcon(c.status),
@@ -399,7 +403,7 @@ export struct PreLaunchCheckSheet {
         Text(c.detail)
           .fontSize(11)
           .lineHeight(16)
-          .fontColor(c.status === 'fail' ? this.theme.error : (c.status === 'warn' ? this.theme.warning : this.theme.textSecondary))
+          .fontColor(c.status === 'fail' ? this.theme.errorText : (c.status === 'warn' ? this.theme.warningText : this.theme.textSecondary))
           .width('100%')
       }
       .layoutWeight(1)
@@ -420,9 +424,9 @@ export struct PreLaunchCheckSheet {
   }
 
   private statusColor(status: string): ResourceColor {
-    if (status === 'pass') return this.theme.success;
-    if (status === 'fail') return this.theme.error;
-    if (status === 'warn') return this.theme.warning;
+    if (status === 'pass') return this.theme.successText;
+    if (status === 'fail') return this.theme.errorText;
+    if (status === 'warn') return this.theme.warningText;
     return this.theme.textHint;     // pending
   }
 
@@ -431,7 +435,7 @@ export struct PreLaunchCheckSheet {
     Column() {
       if (this.phase === 'running') {
         Row({ space: 10 }) {
-          LoadingProgress().width(20).height(20).color(this.theme.primary)
+          LoadingProgress().width(20).height(20).color(this.theme.actionText)
           Text('正在校验启动环境…')
             .fontSize(14)
             .fontWeight(600)
@@ -443,11 +447,11 @@ export struct PreLaunchCheckSheet {
         .alignItems(VerticalAlign.Center)
       } else if (this.phase === 'passed') {
         Row({ space: 8 }) {
-          AppIcon({ name: AppIconName.CheckCircle, iconSize: 18, color: this.theme.success })
+          AppIcon({ name: AppIconName.CheckCircle, iconSize: 18, color: this.theme.successText })
           Text('校验通过，正在进入游戏…')
             .fontSize(15)
             .fontWeight(700)
-            .fontColor(this.theme.success)
+            .fontColor(this.theme.successText)
         }
         .width('100%')
         .height(48)
@@ -473,7 +477,7 @@ export struct PreLaunchCheckSheet {
       if (this.repairError.length > 0) {
         Text(this.repairError)
           .fontSize(12)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
           .width('100%')
           .maxLines(3)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -487,7 +491,7 @@ export struct PreLaunchCheckSheet {
         }
         .width('100%').height(48)
         .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.theme.primary)
+        .backgroundColor(this.theme.actionPrimary)
         .borderRadius(24)
         .onClick(() => { this.openNoJitDoc() })
       }
@@ -500,7 +504,7 @@ export struct PreLaunchCheckSheet {
         }
         .width('100%').height(48)
         .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.theme.primary)
+        .backgroundColor(this.theme.actionPrimary)
         .borderRadius(24)
         .onClick(() => { this.startJdkDownloadFlow() })
       }
@@ -513,7 +517,7 @@ export struct PreLaunchCheckSheet {
           .fontSize(15)
           .fontWeight(700)
           .fontColor(this.theme.textOnPrimary)
-          .backgroundColor(this.theme.primary)
+          .backgroundColor(this.theme.actionPrimary)
           .borderRadius(24)
           .textAlign(TextAlign.Center)
           .onClick(() => {
@@ -540,7 +544,7 @@ export struct PreLaunchCheckSheet {
         .height(48)
         .fontSize(15)
         .fontWeight(600)
-        .fontColor(this.theme.primary)
+        .fontColor(this.theme.actionText)
         .backgroundColor(this.theme.primaryLight)
         .borderRadius(24)
         .textAlign(TextAlign.Center)
@@ -583,9 +587,9 @@ export struct PreLaunchCheckSheet {
   JdkWarnActions_() {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
-        AppIcon({ name: AppIconName.Warning, iconSize: 18, color: this.theme.warning })
+        AppIcon({ name: AppIconName.Warning, iconSize: 18, color: this.theme.warningText })
         Text('JDK 版本可能不匹配')
-          .fontSize(14).fontWeight(700).fontColor(this.theme.warning)
+          .fontSize(14).fontWeight(700).fontColor(this.theme.warningText)
           .layoutWeight(1)
       }
       .width('100%')
@@ -603,7 +607,7 @@ export struct PreLaunchCheckSheet {
           .fontSize(15)
           .fontWeight(700)
           .fontColor(this.theme.textOnPrimary)
-          .backgroundColor(this.theme.primary)
+          .backgroundColor(this.theme.actionPrimary)
           .borderRadius(24)
           .textAlign(TextAlign.Center)
           .onClick(() => {
@@ -619,7 +623,7 @@ export struct PreLaunchCheckSheet {
           .height(48)
           .fontSize(15)
           .fontWeight(600)
-          .fontColor(this.theme.warning)
+          .fontColor(this.theme.warningText)
           .backgroundColor(this.theme.warningBg)
           .borderRadius(24)
           .textAlign(TextAlign.Center)
@@ -651,7 +655,7 @@ export struct PreLaunchCheckSheet {
   RepairingView_() {
     Column({ space: 8 }) {
       Row({ space: 10 }) {
-        LoadingProgress().width(20).height(20).color(this.theme.primary)
+        LoadingProgress().width(20).height(20).color(this.theme.actionText)
         Text(this.repairLabel.length > 0 ? this.repairLabel : '正在修复…')
           .fontSize(13)
           .fontWeight(600)
@@ -662,14 +666,14 @@ export struct PreLaunchCheckSheet {
         Text(this.repairProgress + '%')
           .fontSize(13)
           .fontWeight(700)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
       Progress({ value: this.repairProgress, total: 100, type: ProgressType.Linear })
         .width('100%')
-        .color(this.theme.primary)
+        .color(this.theme.actionPrimary)
 
       Text('修复仍走统一下载器（下载页可查看）。完成后将自动重新校验。')
         .fontSize(11)

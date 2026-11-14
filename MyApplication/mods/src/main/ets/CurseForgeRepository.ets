@@ -5,7 +5,7 @@
  *
  * 关键设计：
  *   - **仅走 MCIM 镜像**（mod.mcimirror.top/curseforge/v1）：本启动器不内置 CurseForge API Key，
- *     直连官方端点会被 401。MCIM 不可用时由 isAvailable() 返回 false，路由器跳过本源。
+ *     直连官方端点会被 401。历史探针只提示状态，实际 CF 请求失败由仓库正常回报。
  *   - 依赖注入：DownloadManager + MetadataCacheStore + UA。
  *   - 缓存策略（与 Modrinth 一致）：
  *     • search：不缓存
@@ -52,6 +52,8 @@ import {
   buildCurseForgeFileUrl,
   buildCurseForgeFileDownloadUrl,
   buildCurseForgeFileDownloadUrls,
+  resolveCurseForgeOfficialFileUrl,
+  CurseForgeFileSourceMode,
   buildForgeCdnUrlFromFileId,
   nonEmptyStr,
   toCurseForgeModLoaderType,
@@ -91,13 +93,17 @@ export type CacheEnabledProvider = () => boolean;
 
 /**
  * CurseForge 文件下载解析结果：真实文件名 + 下载 URL 列表（含镜像，按优先级）。
- * 用于整合包安装：既要 URL 下载，也要真实 fileName 落地到 mods/<fileName>。
+ * 归档补链与普通资源下载共用精确文件身份，普通资源的实例目录由子接口另行声明。
  */
-export interface CfFileDownloadInfo {
+export interface CfArchiveDownloadInfo {
   urls: string[];
   filename: string;
   size: number;
   sha1?: string;
+}
+
+/** 普通资源还需确定实例内落点；整合包归档本身不受此目录分类约束。 */
+export interface CfFileDownloadInfo extends CfArchiveDownloadInfo {
   /** 客户端实例中的资源目录，由来源项目类型或文件模块解析。 */
   targetDirectory: string;
 }
@@ -108,15 +114,19 @@ export class CurseForgeRepository implements IRemoteModRepository {
   private downloadManager_: DownloadManager;
   private cacheStore_: MetadataCacheStore;
   private userAgent_: string;
-  /** MCIM 端点是否可用；由外部 ModSourceProber（Phase 2.2 接入）决定，缺省视为可用 */
+  /** ModSourceProber 的历史提示；不是 CF API 准入判据，失败缓存不能阻止实际请求。 */
   private mcimAvailable_: () => boolean;
   private cacheEnabledProvider_: CacheEnabledProvider;
+  /** 每次映射精确文件时读取当前来源策略；不改变必须经 MCIM 的元数据认证通道。 */
+  private fileSourceModeProvider_: () => CurseForgeFileSourceMode;
+  /** 负向探测只输出一次提示，不让另一个服务的短时失败阻断本服务实际请求。 */
+  private probeWarningEmitted_: boolean = false;
 
   /**
    * @param downloadManager   复用现有单例
    * @param cacheStore        复用现有 MetadataCacheStore（TTL + ETag/304）
    * @param userAgent         `AMCL/<ver> (https://github.com/<repo>)`
-   * @param mcimAvailable     可选闭包：MCIM 不可用时 isAvailable() 短路；默认 () => true
+   * @param mcimAvailable     可选的历史探测提示；失败只告警，真实 CF 请求仍可恢复服务。
    * @param cacheEnabledProvider 可选：返回 false 时所有 cachedFetch 退化为无缓存 fetchText
    *                             （用户在 SettingsTab 关掉 cacheRemoteMeta 时生效）
    */
@@ -126,6 +136,7 @@ export class CurseForgeRepository implements IRemoteModRepository {
     userAgent: string,
     mcimAvailable?: () => boolean,
     cacheEnabledProvider?: CacheEnabledProvider,
+    fileSourceModeProvider?: () => CurseForgeFileSourceMode,
   ) {
     this.downloadManager_ = downloadManager;
     this.cacheStore_ = cacheStore;
@@ -133,11 +144,13 @@ export class CurseForgeRepository implements IRemoteModRepository {
     this.mcimAvailable_ = mcimAvailable !== undefined ? mcimAvailable : (() => true);
     this.cacheEnabledProvider_ = cacheEnabledProvider !== undefined
       ? cacheEnabledProvider : (() => true);
+    this.fileSourceModeProvider_ = fileSourceModeProvider !== undefined
+      ? fileSourceModeProvider : (() => CurseForgeFileSourceMode.MIRROR_FIRST);
   }
 
   isAvailable(): boolean {
-    if (!this.downloadManager_.isCaBundleInitialized()) return false;
-    return this.mcimAvailable_();
+    // Modrinth 的 category 端点与 CF API 可能独立失败；不能把其 30 分钟负缓存当熔断器。
+    return this.downloadManager_.isCaBundleInitialized();
   }
 
   // ============================================================
@@ -261,7 +274,7 @@ export class CurseForgeRepository implements IRemoteModRepository {
         seen.add(f.id);
         newIds++;
         if (f.isServerPack === true || f.isAvailable === false) continue;
-        try { result.push(mapCurseForgeFileAsVersion(f)); }
+        try { result.push(mapCurseForgeFileAsVersion(f, this.fileSourceModeProvider_())); }
         catch (e) {
           AppLogger.warn(TAG, 'skip file', e as Object, LOG_DOMAIN_DOWNLOAD);
         }
@@ -295,7 +308,7 @@ export class CurseForgeRepository implements IRemoteModRepository {
     let urls = buildCurseForgeFileUrl(parts[0], parts[1]);
     let body = await this.cachedFetch(urls, TTL_VERSION_MS);
     let raw = this.parseJson<CFFileResponseRaw>(body);
-    return mapCurseForgeFileAsVersion(raw.data);
+    return mapCurseForgeFileAsVersion(raw.data, this.fileSourceModeProvider_());
   }
 
   // ============================================================
@@ -337,16 +350,11 @@ export class CurseForgeRepository implements IRemoteModRepository {
    * 全部失败时 throw ModRepoError（调用方记入缺失清单）。
    */
   async resolveFileDownloadInfo(modId: string, fileId: string, _gameVersion?: string, _loader?: string): Promise<CfFileDownloadInfo> {
-    this.assertReady();
-    const id = fileId.indexOf('/') >= 0 ? fileId.substring(fileId.lastIndexOf('/') + 1) : fileId;
-    const urls = buildCurseForgeFileUrl(modId, id);
-    const body = await this.cachedFetch(urls, TTL_VERSION_MS);
-    const raw = this.parseJson<CFFileResponseRaw>(body);
-    if (raw.data === undefined || raw.data === null || String(raw.data.id) !== id || String(raw.data.modId) !== modId)
-      throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, 'CurseForge 返回的文件身份不符');
-    if (raw.data.isServerPack === true) throw new Error('指定文件是服务端分发，不能安装到客户端');
-    const info = this.buildInfoFromCfFile_(raw.data);
-    if (info === null) throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, '该指定文件没有可用下载地址，请手动选择其他版本');
+    const file = await this.fetchExactFile_(modId, fileId);
+    const download = this.buildInfoFromCfFile_(file);
+    if (download === null) throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, '该指定文件没有可用下载地址，请手动选择其他版本');
+    const info: CfFileDownloadInfo = { urls: download.urls, filename: download.filename,
+      size: download.size, sha1: download.sha1, targetDirectory: classifyCurseForgeFileDirectory(file) };
     if (info.targetDirectory.length === 0) {
       // 模块元数据不足时再查询项目分类，避免把所有 ZIP 默认为 mods 或 saves。
       const projectUrls = buildCurseForgeProjectUrl(modId);
@@ -363,6 +371,31 @@ export class CurseForgeRepository implements IRemoteModRepository {
     return info;
   }
 
+  /**
+   * 为详情页补齐精确客户端归档的地址。归档只进入安装工作目录，不是实例中的普通
+   * 模组/资源包，因而不要求 classId=4471 能映射到 mods 等资源目录；身份与服务端包
+   * 准入仍和资源解析共用，不能因补地址而更换用户所选 fileId。
+   */
+  async resolveArchiveDownloadInfo(modId: string, fileId: string): Promise<CfArchiveDownloadInfo> {
+    const file = await this.fetchExactFile_(modId, fileId);
+    const info = this.buildInfoFromCfFile_(file);
+    if (info === null) throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, '该指定归档没有可用下载地址');
+    return info;
+  }
+
+  /** 两类下载共用精确文件身份与客户端准入，避免同端点的不同调用方形成安全差异。 */
+  private async fetchExactFile_(modId: string, fileId: string): Promise<CFFileRaw> {
+    this.assertReady();
+    const id = fileId.indexOf('/') >= 0 ? fileId.substring(fileId.lastIndexOf('/') + 1) : fileId;
+    const urls = buildCurseForgeFileUrl(modId, id);
+    const body = await this.cachedFetch(urls, TTL_VERSION_MS);
+    const raw = this.parseJson<CFFileResponseRaw>(body);
+    if (raw.data === undefined || raw.data === null || String(raw.data.id) !== id || String(raw.data.modId) !== modId)
+      throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.PARSE, 'CurseForge 返回的文件身份不符');
+    if (raw.data.isServerPack === true) throw new Error('指定文件是服务端分发，不能安装到客户端');
+    return raw.data;
+  }
+
 
 
 
@@ -371,17 +404,17 @@ export class CurseForgeRepository implements IRemoteModRepository {
    * 从 CFFileRaw 构造下载信息：downloadUrl 非空则镜像化，为 null/空则按 fileId 反推 CDN。
    * 拿不到任何 URL → 返回 null。
    */
-  private buildInfoFromCfFile_(file: CFFileRaw): CfFileDownloadInfo | null {
+  private buildInfoFromCfFile_(file: CFFileRaw): CfArchiveDownloadInfo | null {
     // 注意：mcim 对"作者禁用第三方下载"的文件，downloadUrl 返回 JSON null（非字段缺失），
     // 必须用 nonEmptyStr 同时判 null（否则 .length 抛 "Cannot read property length of null"）。
     let fileName = nonEmptyStr(file.fileName);
-    let officialUrl = nonEmptyStr(file.downloadUrl);
+    let officialUrl = resolveCurseForgeOfficialFileUrl(file, this.fileSourceModeProvider_());
     if (officialUrl.length === 0 && fileName.length > 0 && file.id > 0) {
       officialUrl = buildForgeCdnUrlFromFileId(file.id, fileName);
     }
     if (officialUrl.length === 0) return null;
 
-    let urlSet = buildCurseForgeFileDownloadUrls(officialUrl);
+    let urlSet = buildCurseForgeFileDownloadUrls(officialUrl, this.fileSourceModeProvider_());
     let urls: string[] = [];
     if (urlSet.primary.length > 0) urls.push(urlSet.primary);
     for (let m of urlSet.mirrors) urls.push(m);
@@ -393,8 +426,7 @@ export class CurseForgeRepository implements IRemoteModRepository {
       finalName = clean.substring(clean.lastIndexOf('/') + 1).split('%20').join(' ');
     }
     return { urls: urls, filename: finalName, size: file.fileLength,
-      sha1: extractSha1FromCfHashes(file.hashes) ?? undefined,
-      targetDirectory: classifyCurseForgeFileDirectory(file) };
+      sha1: extractSha1FromCfHashes(file.hashes) ?? undefined };
   }
 
   // ============================================================
@@ -440,7 +472,7 @@ export class CurseForgeRepository implements IRemoteModRepository {
       if (matches === undefined || matches === null || matches.length === 0) return null;
       let file = matches[0].file;
       if (file === undefined || file === null) return null;
-      return mapCurseForgeFileAsVersion(file);
+      return mapCurseForgeFileAsVersion(file, this.fileSourceModeProvider_());
     } catch (e) {
       AppLogger.warn(TAG, `fingerprint lookup failed (fp=${fingerprint})`, e as Object, LOG_DOMAIN_DOWNLOAD);
       return null;
@@ -459,9 +491,9 @@ export class CurseForgeRepository implements IRemoteModRepository {
         'CA bundle 未初始化，请在 EntryAbility.onCreate 中调 initializeCaBundle(context)');
     }
     if (!this.mcimAvailable_()) {
-      throw new ModRepoError(ModSource.CURSEFORGE, ModRepoErrorKind.NETWORK,
-        'CurseForge 暂不可用：MCIM 镜像未通过健康检查');
-    }
+      if (!this.probeWarningEmitted_) AppLogger.warn(TAG, '历史镜像探测失败，仍尝试 CurseForge 实际请求', null, LOG_DOMAIN_DOWNLOAD);
+      this.probeWarningEmitted_ = true;
+    } else this.probeWarningEmitted_ = false;
   }
 
   /** 无缓存的纯 GET（search 用）*/

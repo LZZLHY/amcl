@@ -24,6 +24,7 @@ import {
   parseDependencyType,
   toModrinthType,
 } from './ModTypes';
+import { isOfficialModDownloadRequired, isMcimMirrorUrl } from './ModDownloadSourcePolicy';
 
 // ============================================================
 //  常量
@@ -43,6 +44,21 @@ export enum ModrinthSourceMode {
   MCIM_FIRST = 'mcim',
   /** 官方优先，MCIM 作为 fallback */
   OFFICIAL_FIRST = 'official',
+  /** 用户明确选择官方时，候选仅含作者提供的官方地址；仍允许 Native 使用自家网关。 */
+  OFFICIAL_ONLY = 'officialOnly',
+}
+
+/**
+ * 统一真实列表、已装资源和 Fabric API 的来源约束。网关开启时只保留官方候选；
+ * 参数必须取开关意图 isEnabled，不能取会随握手/熔断改变的 usable。这样网关不可用
+ * 时仍只回官方直连，不会把一次路由故障变成未经用户选择的镜像回退。关闭后重新消费
+ * 保存的偏好；本纯函数不修改偏好，也不把元数据RTT当作正文吞吐。
+ */
+export function resolveModrinthSourcePreference(preference: string, automaticMode: ModrinthSourceMode,
+  gatewayEnabled: boolean): ModrinthSourceMode {
+  if (isOfficialModDownloadRequired(preference, gatewayEnabled)) return ModrinthSourceMode.OFFICIAL_ONLY;
+  if (preference === 'mcim') return ModrinthSourceMode.MCIM_FIRST;
+  return automaticMode;
 }
 
 // ============================================================
@@ -55,6 +71,7 @@ export interface UrlSet {
 }
 
 function makeUrlSet(officialUrl: string, mcimUrl: string, mode: ModrinthSourceMode): UrlSet {
+  if (mode === ModrinthSourceMode.OFFICIAL_ONLY) return { primary: officialUrl, mirrors: [] };
   if (mode === ModrinthSourceMode.MCIM_FIRST) {
     return { primary: mcimUrl, mirrors: [officialUrl] };
   }
@@ -227,6 +244,10 @@ export function mirrorifyModrinthCdn(url: string): string {
  * 若非 cdn.modrinth.com 的 URL，只返回 [officialUrl]（MCIM 不镜像未知 CDN）。
  */
 export function buildFileDownloadUrls(officialUrl: string, mode: ModrinthSourceMode): UrlSet {
+  // 旧映射对象可能只剩MCIM地址；不能把参数名officialUrl当作官方身份的证明。
+  if (mode === ModrinthSourceMode.OFFICIAL_ONLY) {
+    return isMcimMirrorUrl(officialUrl) ? { primary: '', mirrors: [] } : { primary: officialUrl, mirrors: [] };
+  }
   if (!officialUrl.startsWith(MODRINTH_CDN_OFFICIAL_PREFIX)) {
     return { primary: officialUrl, mirrors: [] };
   }

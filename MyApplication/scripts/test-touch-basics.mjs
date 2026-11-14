@@ -10,6 +10,7 @@ import {environment} from './lib/ets-runtime-fixture.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const load=makePureEtsLoader();
 const layout=load('gamecontrol/src/main/ets/ControlLayout.ets');
+const editing=load('gamecontrol/src/main/ets/ControlEditing.ets');
 const gui=load('gamecontrol/src/main/ets/GameGuiGeometry.ets');
 const {VirtualMouseModel,FloatingMouseFrame,floatingMouseFrame}=load('gamecontrol/src/main/ets/VirtualMouseModel.ets');
 const {TouchGuide,TouchGuideStep,TouchGuideFeedback,parseTouchGuideFeedback}=load('gamecontrol/src/main/ets/TouchGuide.ets');
@@ -18,11 +19,16 @@ const controlGeometry=load('gamecontrol/src/main/ets/TouchControlGeometry.ets');
 const guideGeometry=load('gamecontrol/src/main/ets/TouchGuideLayout.ets');
 const runtimeGeometry=load('gamecontrol/src/main/ets/RuntimeTouchLayout.ets');
 const surfaceModel=load('gamecontrol/src/main/ets/InputSurfaceContext.ets');
+// 桌面控制面新增独立工具主题；装配真实palette类/映射，不以空对象绕过其字段与Watch生命周期。
+const editorTheme=makePureEtsLoader({commons:{}})('entry/src/main/ets/components/TouchEditorTheme.ets');
 let cases=0;
 function check(name,body){body();cases++;console.log('PASS '+name);}
 function snapshot(requested=3,effective=3,revision=1){return gui.parseGameGuiState([2,requested,effective,1280,720,Math.ceil(1280/effective),Math.ceil(720/effective),1,revision,1,0,0,0]);}
 /** 只提取被测试的真实方法；平台属性由夹具提供，不包含ArkUI绘制语言或复制的业务实现。 */
 function component(file,type,names,dependencies={},sourceOverrides={}) {
+  if(type==='LayoutEditor') dependencies={...editing,...dependencies};
+  if(type==='KeyPickerSheet'&&(names.includes('confirmChoice')||names.includes('visibleOptions'))&&!names.includes('acceptsCode_'))
+    names=names.concat(['acceptsCode_']);
   // 撤回负控仅替换本次内存源码；生产文件不落盘改写，且后续仍提取、编译真实方法。
   const text=sourceOverrides[file]??fs.readFileSync(path.join(root,file),'utf8');
   const ast=compiler.createSourceFile(file,text,compiler.ScriptTarget.Latest,true);
@@ -30,14 +36,22 @@ function component(file,type,names,dependencies={},sourceOverrides={}) {
   assert.ok(node,type);
   const methods=node.members.filter(member=>names.includes(member.name?.getText(ast))).map(member=>member.getText(ast));
   assert.equal(methods.length,names.length);
-  const compiled=compiler.transpileModule('class Subject{'+methods.join('\n')+'}\nmodule.exports=Subject;',
+  // 导航方法的新依赖来自同一生产数据类，不能在宿主另造返回栈或用 noop 绕开真实选择路径。
+  const route=type==='LayoutEditor'&&names.includes('captureEditorRoute_')?
+    ast.statements.find(item=>item.name?.getText(ast)==='CompactEditorRoute').getText(ast):'';
+  const compiled=compiler.transpileModule(route+'\nclass Subject{'+methods.join('\n')+'}\nmodule.exports=Subject;',
     {compilerOptions:{target:compiler.ScriptTarget.ES2020,module:compiler.ModuleKind.CommonJS},reportDiagnostics:true});
   assert.equal((compiled.diagnostics??[]).filter(d=>d.category===compiler.DiagnosticCategory.Error).length,0,
     '生产方法及撤回负控必须先编译成功，语法错误不能冒充行为断言命中');
   const js=compiled.outputText;
   const module={exports:{}};
   new Function('module',...Object.keys(dependencies),js)(module,...Object.values(dependencies));
-  return new module.exports();
+  const instance=new module.exports();
+  if(type==='LayoutEditor') Object.assign(instance,{selectedChildId:'',positionDraftDirty:false,
+    editorRoutes:[],selectedIds:[],previewControlGroups:[],currentControlGroup:'',secondaryEditingGroup:'',
+    activeSheet:'edit',inlinePickerGeneration:0,multiSelectMode:false});
+  if(type==='LayoutEditor'&&typeof instance.selectedItem!=='function') instance.selectedItem=()=>null;
+  return instance;
 }
 
 /**
@@ -72,7 +86,10 @@ function desktopSchemaExitContract(sourceOverrides={}) {
     Object.assign(candidate,{windowId,displayId:1,widthPx:width,heightPx:height,density,transform:0,provisional:false});
     const context=store.publish(lease,candidate);assert.ok(context);return {lease,context};
   };
-  const dependencies={Stack:()=>chain,width:()=>chain,HitTestMode:{Transparent:1},
+  const dependencies={...editorTheme,Stack:()=>chain,Button:()=>chain,width:()=>chain,
+    HitTestMode:{Transparent:1},Alignment:{TopEnd:'top-end'},
+    // 分辨率工具和原生Button只隔离绘制边界；原父组件仍生成palette、回调与IME资格。
+    GameResolutionPanel:()=>{},
     DesktopPhysicalTextInput:value=>ime.push({...value}),
     testNapi:{setControlSchema:schema=>{effects.push(structuredClone(schema));return 1;}},
     getInputSurfaceContextStore:()=>store,INPUT_SURFACE_FIELD_DENSITY:surfaceModel.INPUT_SURFACE_FIELD_DENSITY,
@@ -249,14 +266,14 @@ check('鼠标系统入口不能单删/批删或隐藏成单场景，拖动仍走
   // 执行真实编辑器方法，覆盖普通删除与多选删除两条入口；移动必须写回同一个存档控件。
   const mouse=layout.makeSystemButton('mouse',.45,.25,0),other=layout.makeSystemButton('input',.1,.1,0);
   const editor=component('entry/src/main/ets/components/LayoutEditor.ets','LayoutEditor',
-    ['selectedItem','selectedIsSystemMouse','deleteSelected','batchDelete','cycleVisibility','cycleScene','commitDrag'],{ControlType:layout.ControlType});
+    ['selectedItem','selectedIsSystemMouse','deleteSelected','batchDelete','multiSelectedItems','chooseVisibility_','chooseScene_','commitDrag'],{ControlType:layout.ControlType,controlScene:layout.controlScene,setControlScene:layout.setControlScene});
   Object.assign(editor,{controls:[mouse,other],selectedIdx:0,selectedIds:[mouse.id],screenWidth:1000,screenHeight:500,
     dragIdx:0,dragDx:100,dragDy:50,pushUndo(){},refreshControls(){},clearSnapGuides(){},
     itemPxX:item=>item.xPct*1000,itemPxY:item=>item.yPct*500,itemW:()=>48,itemH:()=>48});
   assert.equal(editor.selectedIsSystemMouse(),true);
-  editor.deleteSelected();assert.equal(editor.controls[0],mouse);assert.match(editor.statusMsg,/不可删除/);
+  editor.deleteSelected();assert.equal(editor.controls[0],mouse);assert.match(editor.statusMsg,/不可删除|不能删除/);
   editor.batchDelete();assert.equal(editor.controls.length,2);assert.equal(editor.controls[0],mouse);
-  editor.cycleVisibility();editor.cycleScene();assert.equal(mouse.grabbedOnly,false);assert.notEqual(mouse.hidden,true);
+  editor.chooseVisibility_('force_hide');editor.chooseScene_('menu');assert.equal(mouse.grabbedOnly,false);assert.notEqual(mouse.hidden,true);
   editor.commitDrag();assert.equal(mouse.xPct,.55);assert.equal(mouse.yPct,.35);assert.equal(editor.controls[1],other);
 });
 check('鼠标系统入口遵循全局显隐和已保存策略；UI与Native共用已确认可见集合',()=>{
@@ -776,11 +793,15 @@ check('解除与取消的真实选择器结果不同，显式未绑定可保存�
 });
 check('低高度横屏的编辑器与改键弹窗保留可达的保存/取消区域',()=>{
   const editor=component('entry/src/main/ets/components/LayoutEditor.ets','LayoutEditor',
-    ['compactPanel','panelChromeH','panelMinContentH','panelTopBase','panelContentMaxH']);
+    ['compactPanel','panelChromeH','panelMinContentH','panelMaxTop','panelTopBase','panelContentMaxH']);
   for(const height of [180,240,320,360,480,720]) {
-    Object.assign(editor,{screenHeight:height,panelY:12,panelDragDy:0});
-    assert.ok(editor.panelTopBase()+editor.panelChromeH()+editor.panelContentMaxH()+8<=height,
-      `编辑器底栏超出${height}vp视口`);
+    for(const panelY of [-1,12,height-10]) {
+      Object.assign(editor,{screenHeight:height,panelY,panelDragDy:0});
+      assert.ok(editor.panelTopBase()+editor.panelChromeH()+editor.panelContentMaxH()+8<=height,
+        `编辑器底栏超出${height}vp视口，原定位=${panelY}`);
+      assert.equal(editor.panelY,panelY,'显示约束不改写用户定位');
+      if(height>=240&&panelY===12)assert.equal(editor.panelTopBase(),12,'正常高度保留既有定位');
+    }
   }
   const picker=component('entry/src/main/ets/components/KeyPickerSheet.ets','KeyPickerSheet',['panelW','panelH']);
   for(const [width,height] of [[240,180],[360,240],[720,360],[1280,720]]) {
@@ -872,7 +893,7 @@ check('手柄改键真实入参禁组合且真实回调拒绝多键，单键与�
   const visit=node=>{if(compiler.isCallExpression(node)&&node.expression.getText(ast)==='KeyPickerSheet'&&
     node.arguments[0]?.getText(ast).includes('gamepadBtnCurrentKeys'))properties=node.arguments[0];compiler.forEachChild(node,visit);};visit(ast);
   assert.equal(properties.properties.find(node=>node.name?.getText(ast)==='allowCombo')?.initializer.getText(ast),'false');
-  const editor=component(settingsFile,'InputSettingsEditor',['applyGamepadKey','ensureButtonMap','gamepadBtnDisplayName','gamepadActionLabel'],
+  const editor=component(settingsFile,'InputSettingsEditor',['applyGamepadKey','ensureButtonMap','gamepadBtnDisplayName','gamepadActionLabel','setGamepadAction_'],
     {glfwKeyName:String,defaultGamepadButtonMap:layout.defaultGamepadButtonMap});
   Object.assign(editor,{gamepad:layout.defaultGamepadConfig(),gamepadBtnPicker:'A',pushUndo(){},cloneGamepad:value=>structuredClone(value)});
   const onPick=originalComponentCallback(settingsFile,'InputSettingsEditor','build',(node,tree)=>
@@ -939,10 +960,11 @@ check('单个与批量复制超视口合法大控件都保持零下界且整份�
     const profile=layout.getDefaultLayout();profile.controls=profile.controls.filter(c=>c.type===layout.ControlType.BUTTON&&!c.systemAction).slice(0,1);
     Object.assign(profile.controls[0],{baseWidth:200,baseHeight:200,itemScale:2,xPct:0,yPct:0});profile.globalScale=2;
     assert.ok(layout.validateAndNormalizeLayout(profile));
-    const editor=component(editorFile,'LayoutEditor',['duplicateSelected','batchDuplicate','selectedItem','itemW','itemH'],
+    const editor=component(editorFile,'LayoutEditor',['duplicateSelected','batchDuplicate','duplicateControls_','selectControlIdentity_',
+      'captureEditorRoute_','syncSecondarySelection_','repairEditorGroups_','selectedItem','itemW','itemH'],
       {cloneItemWithFreshIds:layout.cloneItemWithFreshIds});
     Object.assign(editor,{controls:profile.controls,selectedIdx:0,globalScale:2,screenWidth:720,screenHeight:360,pushUndo(){},refreshControls(){},
-      multiSelectedItems:()=>[profile.controls[0]]});
+      multiSelectedItems:()=>[profile.controls[0]],syncSelectedAppearanceVals(){},syncPositionDraft_(){},openTab(){}});
     if(bulk)editor.batchDuplicate();else editor.duplicateSelected();
     assert.equal(editor.controls.length,2);assert.equal(editor.controls[1].xPct,0);assert.equal(editor.controls[1].yPct,0);
     assert.ok(layout.validateAndNormalizeLayout(profile));
@@ -952,7 +974,7 @@ check('单个与批量复制超视口合法大控件都保持零下界且整份�
 check('真实全局缩放Slider两次拖动分两步撤销，同值End和离散Click正确收口',()=>{
   const editor=component(editorFile,'LayoutEditor',['beginSliderUndo','prepareSliderChange'],{SliderChangeMode:sliderModes});
   const snapshots=[];Object.assign(editor,{sliderUndoKey:'',globalScale:1,refreshControls(){},pushUndo(){snapshots.push(this.globalScale);this.sliderUndoKey='';}});
-  const onChange=originalComponentCallback(editorFile,'LayoutEditor','EditTabContent',(node,tree)=>
+  const onChange=originalComponentCallback(editorFile,'LayoutEditor','GlobalLayoutPanel_',(node,tree)=>
     compiler.isArrowFunction(node)&&node.getText(tree).includes("prepareSliderChange('globalScale'"),editor);
   onChange(100,sliderModes.Begin);onChange(80,sliderModes.Moving);onChange(80,sliderModes.End);
   onChange(80,sliderModes.Begin);onChange(60,sliderModes.Moving);onChange(60,sliderModes.End);

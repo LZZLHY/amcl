@@ -1,4 +1,4 @@
-// 实际 LogShare 客户端协议/凭据/SSE 回归。所有网络均为可控边界，绝不外发用户日志。
+// 实际 LogShare 新旧协议、凭据与历史 SSE 解析回归；所有网络均为可控边界，绝不外发用户日志。
 import assert from 'node:assert/strict';
 import { evidenceRuntime } from './lib/evidence-test-runtime.mjs';
 const mocks = {};
@@ -6,6 +6,10 @@ const fixture = evidenceRuntime({ imports: mocks });
 const load = fixture.load;
 try {
   const PRIMARY = 'https://api.logshare.cn', BACKUP = 'https://amcl.lovedhy.cn/logshare-api';
+  const MiB = 1024 * 1024;
+  const officialLimits = { maxFiles: 200, maxTotalBytes: 20 * MiB, maxRequestBodyBytes: 32 * MiB, storageTime: 1296000 };
+  const legacyLimits = { maxLength: 10 * MiB, maxLines: 50000, storageTime: 604800 };
+  let limitsOverride;
   let response;
   let readbackResponse;
   let lastRequest;
@@ -14,29 +18,18 @@ try {
   let saved = '', failSave = false;
   fixture.control.failWrite = name => failSave && name.includes('share-records');
   const calls = [];
-  let streamCode = 200;
-  // 模拟 NetworkKit 合法的不同回调顺序：数据/EOF 可以早于状态 Promise。
-  let streamEarly = false, streamHeaders = {}, streamChunked = true;
-  let streamText = 'event: status\ndata: {"type":"thinking","delta":"private reasoning"}\n\ndata: {"choices":[{"delta":{"content":"中文分析结论"}}]}\n\nevent: done\ndata: {"status":"completed"}\n\n';
   const successFor = url => ({ responseCode: 200, result: JSON.stringify({ success: true, id: 'abc1234', url: url.startsWith(BACKUP) ? 'https://amcl.lovedhy.cn/logshare/abc1234' : 'https://logshare.cn/abc1234', raw: url.replace(/\/log$/, '/raw/abc1234'), token: 'delete-credential' }) });
   mocks['@kit.NetworkKit'] = { http: {
     RequestMethod: { POST: 'POST', GET: 'GET', DELETE: 'DELETE' },
     createHttp() {
-      const handlers = new Map();
-      let destroyed = false;
       return {
-        on(name, handler) { handlers.set(name, handler); }, off(name) { handlers.delete(name); },
         async request(url, options) {
           lastRequest = { url, ...options }; calls.push(lastRequest);
           if (requestError) throw requestError;
           if ((officialDown && url.startsWith(PRIMARY)) || (backupDown && url.startsWith(BACKUP))) throw Object.assign(new Error('offline'), {code:2300007});
           if (url.endsWith('/limits')) {
-            const official = url.startsWith(PRIMARY);
-            return { responseCode: 200, result: JSON.stringify({
-              maxLength: official ? 20485760 : 10485760,
-              maxLines: official ? 200000 : 50000,
-              storageTime: official ? 1296000 : 604800,
-            }) };
+            return { responseCode: 200, result: JSON.stringify(limitsOverride
+              ?? (url.startsWith(PRIMARY) ? officialLimits : legacyLimits)) };
           }
           if (primaryUploadDown && url === PRIMARY+'/v1/log') return {responseCode:503,result:JSON.stringify({error:'unavailable',code:503})};
           if (readbackResponse && options.method === 'GET') return readbackResponse(url, options);
@@ -46,25 +39,17 @@ try {
         },
         async requestInStream(url, options) {
           calls.push({url,...options});
-          const deliver = () => {
-            handlers.get('headersReceive')?.(streamHeaders);
-            const bytes = new TextEncoder().encode(streamText);
-            if (streamChunked) for (const byte of bytes) { if (destroyed) break; handlers.get('dataReceive')?.(Uint8Array.of(byte).buffer); }
-            else handlers.get('dataReceive')?.(bytes.buffer);
-            handlers.get('dataEnd')?.();
-          };
-          if (streamEarly) deliver();
-          else if (streamCode === 200) setTimeout(deliver, 0);
-          return streamCode;
+          throw new Error('已下架 AI 不应创建流式网络请求');
         },
-        destroy() { destroyed = true; }
+        destroy() {}
       };
     }
   } };
   mocks['@kit.ArkData'] = { preferences: { async getPreferences() { return { async get() { return saved; }, async put(key, value) { if (failSave) throw new Error('disk full'); saved = value; }, async flush() {} }; } } };
   mocks['@kit.AbilityKit'] = { bundleManager: { BundleFlag: { GET_BUNDLE_INFO_DEFAULT: 0 }, getBundleInfoForSelfSync() { return { versionName: '1.2.3-test' }; } } };
   const client = load('entry/src/main/ets/components/LogShareClient.ets');
-  const meta = { launcher:'AMCL', appVersion:'', mcVersion:'test', loader:'', jdk:'', device:'', osVersion:'', outcome:'test' };
+  const meta = { launcher:'AMCL', appVersion:'', mcVersion:'1.21.11', loader:'Fabric', jdk:'21', device:'fixture', osVersion:'HarmonyOS',
+    outcome:'failed', activityId:7, snapshot:'digest-fixture', environmentSchema:'1' };
   let routed = await client.submitLog('synthetic test log', 'amcl-launcher', meta);
   assert.equal(routed.ok, true);
   assert.equal(routed.apiBaseUrl, PRIMARY);
@@ -75,14 +60,37 @@ try {
   const uploadRequest = calls.find(call=>call.method==='POST');
   assert.equal(uploadRequest.readTimeout, 300000, '上传仍遵循长读超时');
   assert.equal(JSON.parse(uploadRequest.extraData).source, 'amcl/1.2.3-test');
-  assert(Array.isArray(JSON.parse(uploadRequest.extraData).metadata));
+  assert.equal(Object.hasOwn(JSON.parse(uploadRequest.extraData),'content'),false,'新旧实例统一只上传 files，不重复发送兼容 content');
+  const metadata = JSON.parse(uploadRequest.extraData).metadata;
+  assert(Array.isArray(metadata));
+  assert.equal(metadata.find(item=>item.key==='version').value,'1.21.11');
+  assert.equal(metadata.some(item=>item.key==='mcVersion'),false,'公开 Minecraft 版本使用平台约定的 version key');
+  assert(metadata.every(item=>typeof item.label==='string'&&item.label.length>0&&typeof item.visible==='boolean'));
+  for(const key of ['activityId','snapshot','environmentSchema']) assert.equal(metadata.find(item=>item.key===key).visible,false);
+  assert.equal(metadata.find(item=>item.key==='version').visible,true);
+  const current = await client.getLimits(PRIMARY), legacy = await client.getLimits(BACKUP);
+  assert.equal(current.ok,true); assert.equal(current.maxBytes,Number.MAX_SAFE_INTEGER); assert.equal(current.maxLines,Number.MAX_SAFE_INTEGER);
+  assert.equal(current.maxFiles,200); assert.equal(current.maxTotalBytes,20*MiB); assert.equal(current.maxRequestBodyBytes,32*MiB);
+  assert.equal(legacy.ok,true); assert.equal(legacy.maxBytes,10*MiB); assert.equal(legacy.maxLines,50000);
+  assert.equal(legacy.maxFiles,200); assert.equal(legacy.maxTotalBytes,12*MiB); assert.equal(legacy.maxRequestBodyBytes,20*MiB);
+  assert.equal(client.logShareExportBudgetBytes(current),20*MiB); assert.equal(client.logShareExportBudgetBytes(legacy),12*MiB);
+  // 新模型中任意一个字段错误都不能偷偷降级为“无限制”；旧模型仍须完整且类型正确。
+  for (const invalid of [
+    {...officialLimits,maxFiles:'200'}, {...officialLimits,maxTotalBytes:0}, {...officialLimits,maxRequestBodyBytes:1.5},
+    {...officialLimits,maxRequestBodyBytes:undefined}, {...officialLimits,storageTime:-1},
+    {...legacyLimits,maxLength:'10485760'}, {...legacyLimits,maxLines:0},
+  ]) { limitsOverride=invalid; assert.equal((await client.getLimits()).ok,false,JSON.stringify(invalid)); }
+  limitsOverride=undefined;
 
   calls.length = 0; officialDown = true;
-  routed = await client.submitLog('synthetic', 'test');
+  routed = await client.submitLog('synthetic', 'test', {...meta,activityId:123,snapshot:'internal-snapshot',environmentSchema:'1'});
   assert.equal(routed.ok, true); assert.equal(routed.apiBaseUrl, BACKUP); assert.equal(routed.usedFallback, true);
   assert.equal(routed.storageTimeSec,604800);
   assert.equal(calls.filter(call=>call.url===PRIMARY+'/v1/log').length,0,'failed preflight does not upload');
   assert.equal(calls.filter(call=>call.method==='POST').length,1);
+  const backupMetadata=JSON.parse(calls.find(call=>call.method==='POST').extraData).metadata;
+  assert(backupMetadata.every(item=>item.visible!==false),'旧实例不发送隐藏元数据，避免依赖其可见性实现');
+  assert(!backupMetadata.some(item=>['activityId','snapshot','environmentSchema'].includes(item.key)));
   backupDown = true;
   routed = await client.submitLog('synthetic','test');
   assert.equal(routed.ok,false); assert.equal(routed.error,'日志分享暂不可用');
@@ -108,6 +116,9 @@ try {
   response = {responseCode:200,result:JSON.stringify({success:true,id:'abc1234',url:'https://logshare.cn/abc1234'})};
   routed = await client.submitLog('synthetic','test');
   assert.equal(routed.ok,false,'missing credentials cannot look successful');
+  response = {responseCode:200,result:JSON.stringify({success:true,id:'abc1234',url:'https://logshare.cn/abc1234',token:'discard-this-token',deduplicated:true})};
+  routed = await client.submitLog('synthetic','test');
+  assert.equal(routed.ok,true,'去重命中的分享链接仍有效'); assert.equal(routed.token,''); assert.equal(routed.deduplicated,true);
   response = undefined;
   requestError = Object.assign(new Error('Internal error'),{code:2300999});
   for (const failed of [await client.getLimits(),await client.deleteLogs(['abc1234'],'test')]) {
@@ -130,6 +141,18 @@ try {
   await client.revokeShare(fixture.context,backupSame);
   assert.equal(lastRequest.url,BACKUP+'/v1/log/sameID1'); assert.equal(lastRequest.header.Authorization,'Bearer backup-secret');
   assert.equal((await client.loadShareRecords(fixture.context)).filter(rec=>rec.id==='sameID1').length,1);
+  // 同实例去重返回的新 token 无删除权，不能覆盖首次上传时已持久化的凭据。
+  await client.addShareRecord(fixture.context,{...primarySame,token:'',deduplicated:true,sharedAt:Date.now()+1});
+  assert.equal((await client.loadShareRecords(fixture.context)).find(rec=>rec.id==='sameID1').token,'official-secret');
+  const unowned={id:'unowned',url:'https://logshare.cn/unowned',token:'',deduplicated:true,sharedAt:Date.now(),versionId:'test'};
+  await client.addShareRecord(fixture.context,unowned); calls.length=0;
+  assert.equal((await client.revokeShare(fixture.context,unowned)).ok,false);
+  assert.equal(calls.length,0,'没有删除权的去重记录不能发 DELETE');
+  // 同 ID 的去重接收可以复用 token，但旧一代核验不能覆盖新快照或广播旧活动结果。
+  const replacement={...unowned,sharedAt:unowned.sharedAt+1,activityId:222,snapshotDigest:'new-snapshot'};
+  await client.addShareRecord(fixture.context,replacement);
+  assert.equal(await client.updateShareVerification(fixture.context,unowned,{verified:true,warning:'old result'}),false);
+  assert.equal(await client.updateShareVerification(fixture.context,replacement,{verified:true,warning:'current result'}),true);
   calls.length=0;
   assert.equal((await client.revokeShare(fixture.context, {...primarySame,apiBaseUrl:BACKUP})).ok,false);
   assert.equal(calls.length,0,'mismatched provenance never sends a credential');
@@ -141,16 +164,15 @@ try {
       onError(error){resolve({answer,error,done});}
     },base);
   });
-  const complete=await runStream();
-  assert.equal(complete.text,'中文分析结论'); assert.equal(complete.done,1); assert(!complete.answer.includes('private'));
+  // 线上生成式 AI 已下架：官方与备用都在本地明确拒绝，绕过 UI 也不能触发请求。
   calls.length=0;
-  assert.match((await runStream(BACKUP)).error,/备用/);
-  assert.equal(calls.length,0,'backup IDs never reach the official AI service');
-  streamText='data: {"choices":[{"delta":{"content":"partial"}}]}\n\n';
-  const truncated=await runStream(); assert.equal(truncated.done,0); assert.match(truncated.error,/中断/);
-  streamCode=429;
-  assert.match((await runStream()).error,/HTTP 429/);
-  streamCode=200;
+  for (const base of [PRIMARY,BACKUP]) {
+    const unavailable=await runStream(base);
+    assert.equal(unavailable.error,client.LOGSHARE_AI_UNAVAILABLE); assert.equal(unavailable.done,0); assert.equal(unavailable.answer,'');
+  }
+  assert.equal(calls.length,0,'下架的 AI 入口零网络请求');
+  assert.equal(client.logShareSupportsAi('https://logshare.cn/abc1234'),false);
+  assert.equal(client.logShareSupportsAi('https://amcl.lovedhy.cn/logshare/abc1234'),false);
   const parserModule=load('entry/src/main/ets/components/LogShareSse.ets');
   let errorMessage='',completion=0;
   const parser=new parserModule.LogShareSseParser({onDelta(){},onDone(){completion++;},onError(message){errorMessage=message;}});
@@ -181,21 +203,27 @@ try {
   assert.equal(parse([': heartbeat\n\n'.repeat(90000)+publicFrame+doneFrame]).done,1,'同一网络块的许多小帧不触发误限额');
   assert.equal(parse([publicFrame+'event: error\n\n'+doneFrame]).done,0);
 
-  streamText=publicFrame+doneFrame; streamEarly=true;
-  const earlyOk=await runStream(); assert.equal(earlyOk.done,1); assert.equal(earlyOk.answer,'中文结论');
-  streamCode=429; streamHeaders={'Retry-After':'42','Content-Type':'text/event-stream'};
-  const earlyBad=await runStream(); assert.equal(earlyBad.done,0); assert.equal(earlyBad.answer,''); assert.match(earlyBad.error,/42 秒/);
-  streamCode=200; streamHeaders={'Content-Type':'application/json'}; streamText='{"error":"not a stream"}';
-  assert.match((await runStream()).error,/未返回流式/);
-  streamHeaders={}; streamChunked=false; streamText='x'.repeat(2*1024*1024+1);
-  assert.match((await runStream()).error,/确认 HTTP 状态前过大/);
-  console.log('PASS official status frames, CR/LF/BOM and fragmented boundaries, bounded frames, unknown-event isolation, early HTTP callbacks and JSON refusal');
-  // files 正文低于 12 MiB 仍可能因 JSON 转义超出官网 20 MiB 解压保护；必须在 POST 前拒绝。
+  console.log('PASS retired AI makes no requests; historical SSE parser retains status isolation, CR/LF/BOM, fragmented UTF-8 and bounded frames');
+  // 新接口分别限制正文总量与 JSON 请求体；利用小动态限额核对转义膨胀，不生成大夹具。
   calls.length=0;
-  const oversized=await client.submitLogFiles([{name:'launcher/launcher-host.log',content:'"'.repeat(10*1024*1024)}],'test',undefined,
-    {apiBaseUrl:PRIMARY,checkedAt:Date.now(),attempts:[],limits:{ok:true,maxBytes:20485760,maxLines:200000,storageTimeSec:1296000,error:''}});
-  assert.equal(oversized.ok,false);assert.equal(oversized.errorStage,'local-prepare');assert.match(oversized.error,/20 MiB/);
+  const newPlan = {apiBaseUrl:PRIMARY,checkedAt:Date.now(),attempts:[],limits:current};
+  const tinyBodyPlan={...newPlan,limits:{...current,maxTotalBytes:2048,maxRequestBodyBytes:1024}};
+  const oversized=await client.submitLogFiles([{name:'launcher/launcher-host.log',content:'"'.repeat(600)}],'test',undefined,tinyBodyPlan);
+  assert.equal(oversized.ok,false);assert.equal(oversized.errorStage,'local-prepare');
   assert.equal(calls.filter(c=>c.method==='POST').length,0);
+  // 多文件 200 响应是选择清单；客户端不能把它当成“零问题”的有效分析。
+  const selectedName='crash-reports/测试 日志 #1.txt';
+  response={responseCode:200,result:JSON.stringify({success:true,id:'abc1234',fileCount:2,requiresFileSelection:true,
+    files:[{name:'latest.log'},{name:selectedName}]})};
+  const selection=await client.getInsights('abc1234',PRIMARY);
+  assert.equal(selection.ok,false); assert.equal(selection.requiresFileSelection,true);
+  assert.deepEqual(selection.files,['latest.log',selectedName]); assert.match(selection.error,/选择/);
+  response={responseCode:200,result:JSON.stringify({id:'vanilla/client',name:'Vanilla',type:'Client Log',version:'1.21.11',
+    analysis:{problems:[{message:'Synthetic problem',counter:1,solutions:[]}],information:[]}})};
+  const insight=await client.getInsights('abc1234',PRIMARY,selectedName);
+  assert.equal(insight.ok,true); assert.equal(insight.name,'Vanilla');
+  assert.equal(lastRequest.url,PRIMARY+'/v1/insights/abc1234/'+selectedName.split('/').map(encodeURIComponent).join('/'));
+  response=undefined;
   // GET 元数据返回空 files 不能用“少一项”推断主文件已收到；缺失状态只保留为未核验。
   calls.length=0; response={responseCode:200,result:JSON.stringify({id:'abc1234',files:[]})};
   const missingFiles=await client.verifyLogShareFiles('abc1234',['launcher/launcher-host.log'],PRIMARY);
@@ -239,14 +267,29 @@ try {
   assert.equal((await client.verifyLogShareContents('abc1234',receipts,PRIMARY)).contentStatus,'unavailable');
   assert.equal(reads,1,'raw readback also respects HTTP 429');
   readbackResponse=undefined;
-  // 服务端 maxLines 按主正文/单个附加文件分别过滤，不是跨 files[] 求和。
-  const lineFile = 'x\n'.repeat(150000);
-  const linePreflight = {apiBaseUrl:PRIMARY,checkedAt:Date.now(),attempts:[],limits:{ok:true,maxBytes:20485760,maxLines:200000,storageTimeSec:1296000,error:''}};
+  // 新实例没有逐文件大小或行数限制；正文总量与文件数独立检查。
+  const noOldLineLimit=await client.submitLogFiles([{name:'game/logs/long.log',content:'x\n'.repeat(250001)}],
+    'test',undefined,newPlan,{deferVerification:true,onAccepted:async()=>{}});
+  assert.equal(noOldLineLimit.ok,true,'新实例不能继承旧 maxLines 限制');
+  const totalPlan={...newPlan,limits:{...current,maxTotalBytes:100,maxRequestBodyBytes:4096}};
+  calls.length=0;
+  const overTotal=await client.submitLogFiles([{name:'a.log',content:'a'.repeat(60)},{name:'b.log',content:'b'.repeat(60)}],
+    'test',undefined,totalPlan);
+  assert.equal(overTotal.ok,false); assert.equal(calls.filter(call=>call.method==='POST').length,0);
+  const countPlan={...newPlan,limits:{...current,maxFiles:1}};
+  const overCount=await client.submitLogFiles([{name:'a.log',content:'a'},{name:'b.log',content:'b'}],'test',undefined,countPlan);
+  assert.equal(overCount.ok,false); assert.equal(calls.filter(call=>call.method==='POST').length,0);
+  const overLocalCount=await client.submitLogFiles(Array.from({length:201},(_,i)=>({name:'f'+i+'.log',content:'x'})),
+    'test',undefined,newPlan);
+  assert.equal(overLocalCount.ok,false); assert.equal(calls.filter(call=>call.method==='POST').length,0);
+  // 备用旧实例 maxLines 仍逐文件检查，多个合格文件的行数不能错误地求和。
+  const lineFile = 'x\n'.repeat(30000);
+  const linePreflight = {apiBaseUrl:BACKUP,checkedAt:Date.now(),attempts:[],limits:legacy};
   const twoFiles=await client.submitLogFiles([
     {name:'game/logs/a.log',content:lineFile}, {name:'game/logs/b.log',content:lineFile},
   ],'test',undefined,linePreflight,{deferVerification:true,onAccepted:async()=>{}});
   assert.equal(twoFiles.ok,true,'two files below per-file maxLines remain uploadable');
-  const oneTooMany=await client.submitLogFiles([{name:'game/logs/too-many.log',content:'x\n'.repeat(200001)}],
+  const oneTooMany=await client.submitLogFiles([{name:'game/logs/too-many.log',content:'x\n'.repeat(50001)}],
     'test',undefined,linePreflight,{deferVerification:true,onAccepted:async()=>{}});
   assert.equal(oneTooMany.ok,false); assert.equal(oneTooMany.errorStage,'validation'); assert.match(oneTooMany.error,/maxLines/);
   // maxLength 也是逐文件限制，小文件之和允许超过它；仍保留12MiB附件总预算。
@@ -262,12 +305,11 @@ try {
     {name:'b.log',content:'b'.repeat(6*1024*1024+1)}],'test',undefined,linePreflight);
   assert.equal(tooLargeBundle.ok,false); assert.match(tooLargeBundle.error,/展开/);
   assert.equal(calls.length,0,'oversized bundle never sends a POST');
-  console.log('PASS per-file limits, strict file manifests, bounded transport/5xx GET retries and no retry for 429/404');
-  streamEarly=false;streamCode=200;streamHeaders={};streamText=publicFrame+doneFrame;
+  console.log('PASS dynamic new totals/body/count, legacy per-file limits, explicit insights selection and encoded filenames');
   let afterCancel=0;
-  client.streamAiAnalysis('abc1234',{onDelta(){afterCancel++;},onDone(){afterCancel++;},onError(){afterCancel++;}}).cancel();
-  await new Promise(resolve=>setTimeout(resolve,10));assert.equal(afterCancel,0,'取消后的迟到回调不再通知页面');
-  console.log('PASS complete JSON request budget and cancelled stream callback isolation');
+  const disabledHandle=client.streamAiAnalysis('abc1234',{onDelta(){afterCancel++;},onDone(){afterCancel++;},onError(){afterCancel++;}});
+  const unavailableNotifications=afterCancel; disabledHandle.cancel();
+  await new Promise(resolve=>setTimeout(resolve,10));assert.equal(afterCancel,unavailableNotifications,'禁用入口取消后没有迟到通知');
   console.log('PASS primary preference, health-only failover; no automatic POST replay, dual outage, recovery, input rejection, per-provider retention and credential isolation');
-  console.log('PASS SSE one-byte UTF-8 chunks, hidden status suppression, done, interrupted stream, HTTP 429, server errors, backup AI refusal');
+  console.log('PASS metadata visibility, canonical version key, deduplicated ownership and retired AI guard');
 } finally { fixture.close(); }

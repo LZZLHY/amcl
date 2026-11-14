@@ -7,7 +7,11 @@ let checks=0;
 function passed(name){checks++;console.log('PASS '+name);}
 function gamepadThreshold(mutate=false){
   const key='gamecontrol/src/main/ets/GamepadManager.ets';
-  const env=environment({sourceOverrides:mutate?{[key]:s=>s.replace('value > 0 && value >= threshold','value >= threshold')}:{}});
+  const env=environment({sourceOverrides:mutate?{[key]:s=>{
+    const anchor='const isDown = value > 0 && (wasDown';
+    assert.equal(s.split(anchor).length,2,'唯一现役trigger零值保护');
+    return s.replace(anchor,'const isDown = (wasDown');
+  }}:{}});
   const layout=env.load('gamecontrol/src/main/ets/ControlLayout.ets');
   const {GamepadManager,AXIS_ABS_GAS}=env.load(key);
   const profile=layout.getDefaultLayout();profile.gamepad=layout.defaultGamepadConfig();profile.gamepad.triggerThreshold=0;

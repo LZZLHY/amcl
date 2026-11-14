@@ -26,6 +26,29 @@ function sample(callback,base) {
   callback({x:0,y:1,z:0,timestamp:base});
   callback({x:0,y:1,z:0,timestamp:base+20000000});
 }
+// 两个横屏方向逐轴验证；翻转必须退休旧流，新流首样本只建基线，用户反向设置仍各自只应用一次。
+for (const rotation of [1,3]) for (const [invertX,invertY] of [[false,false],[true,false],[false,true]]) {
+  const f=fixture();f.options.gyroscopeInvertX=invertX;f.options.gyroscopeInvertY=invertY;
+  assert.equal(f.gyro.configure(true,f.options,rotation,9),true);
+  const before=f.subscriptions[0];
+  before({x:1,y:2,z:0,timestamp:1e9});before({x:1,y:2,z:0,timestamp:1.02e9});
+  assert.equal(f.submits.length,1);
+  const direction=rotation===1 ? -1 : 1;
+  assert.ok(Math.abs(f.submits[0][1]-direction*7.2*(invertX ? -1 : 1))<1e-8,'横屏水平轴向');
+  assert.ok(Math.abs(f.submits[0][2]+direction*14.4*(invertY ? -1 : 1))<1e-8,'横屏垂直轴向');
+  assert.equal(f.gyro.configure(true,f.options,4-rotation,9),true);
+  assert.deepEqual(f.offs,[before]);assert.deepEqual(f.retires,['gyro:1']);
+  before({x:1,y:2,z:0,timestamp:1.04e9});
+  assert.equal(f.submits.length,1,'迟到的旧方向回调不得再次转动视角');
+  const after=f.subscriptions[1];after({x:-1,y:-2,z:0,timestamp:1.04e9});
+  assert.equal(f.submits.length,1,'翻转后首样本不得积出跨方向跳变');
+  after({x:-1,y:-2,z:0,timestamp:1.06e9});
+  assert.equal(f.submits.length,2);assert.equal(f.submits[1][0],'gyro:2');
+  assert.ok(Math.abs(f.submits[1][1]-f.submits[0][1])<1e-8,'相同屏幕方向运动在两侧横持时保持水平语义');
+  assert.ok(Math.abs(f.submits[1][2]-f.submits[0][2])<1e-8,'相同屏幕方向运动在两侧横持时保持垂直语义');
+  f.gyro.stop();
+}
+console.log('PASS both landscape gyro axes, inversion preferences, original callback retirement and first-sample baseline');
 {
   const f=fixture();f.gyro.configure(true,f.options,0,9);
   assert.equal(f.gyro.currentStatus(),'active');assert.equal(f.begins.length,1);

@@ -191,7 +191,8 @@ export class ModInstallService {
         this.checkCancelled(observer);
         observer.phase(MOD_INSTALL_COMMIT_PHASE);
         await commitModFiles(dir, staging, changes);
-        AppLogger.info(TAG, 'mod plan committed: root=' + request.root.id + ' files=' + planned.length + ' dir=' + dir, LOG_DOMAIN_DOWNLOAD);
+        AppLogger.info(TAG, 'mod plan committed: root=' + request.root.id + ' files=' + planned.length + ' dir=' + dir,
+          LOG_DOMAIN_DOWNLOAD, activityId);
       } finally {
         if (!downloadReleased) downloadReleased = await this.releaseBatch(batch);
         if (downloadReleased && !hasModRecoveryJournal(dir) && modFileExists(staging)) removeDirRecursive(staging);

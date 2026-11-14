@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "javaOutputRelease": 8,
+  "inputSha256": "cb5b1368e9879033f5e620d99ae78c5a07ca1049ec029f2a639345c8c40e3dc2",
+  "sha256": "529b618dda5113b868bfef8a278d39393c2720c88be2039bbcf8903154bb6218",
+  "size": 137416,
+  "asmSha256": "03d99a74ad1ee5c71334ef67437f4ef4fe3488caa7c96d8645abc73c8e2017d4",
+  "contractSha256": "95ab61069886addae7e8a6cff0fcc2e641aa0c9508d4d011fbbc43b1abdd8c82",
+  "sources": [
+    {
+      "path": "scripts/build-cpu-agent.py",
+      "sha256": "e92bdb795ce9c43c4dd5899e1f4b067d45d761b11e5038f1b2ce4d001c4336b6"
+    },
+    {
+      "path": "scripts/lwjgl-stack-backfill/lib/sources.json",
+      "sha256": "450bbab57a391458b543d84d4a8a548a1caaa69443bb4029deee0f9883243cbc"
+    },
+    {
+      "path": "JavaCpuAgent/ASM-LICENSE.txt",
+      "sha256": "bad262fe87ca4d6ef21fdf0ef00a94b408dfc9a2c21bdafa9b78b417bee65dc3"
+    },
+    {
+      "path": "JavaCpuAgent/src/com/amcl/cpu/CpuAgent.java",
+      "sha256": "d899e06bcd0df2491e9a78a9e2e97f8e1424f09ea4e6b9215ae91954c25e8f7c"
+    }
+  ],
+  "classes": [
+    "com/amcl/cpu/CpuAgent$CpuTransformer$1.class",
+    "com/amcl/cpu/CpuAgent$CpuTransformer$2.class",
+    "com/amcl/cpu/CpuAgent$CpuTransformer$3.class",
+    "com/amcl/cpu/CpuAgent$CpuTransformer.class",
+    "com/amcl/cpu/CpuAgent$Facts.class",
+    "com/amcl/cpu/CpuAgent.class",
+    "com/amcl/cpu/internal/asm/AnnotationVisitor.class",
+    "com/amcl/cpu/internal/asm/AnnotationWriter.class",
+    "com/amcl/cpu/internal/asm/Attribute$Set.class",
+    "com/amcl/cpu/internal/asm/Attribute.class",
+    "com/amcl/cpu/internal/asm/ByteVector.class",
+    "com/amcl/cpu/internal/asm/ClassReader.class",
+    "com/amcl/cpu/internal/asm/ClassTooLargeException.class",
+    "com/amcl/cpu/internal/asm/ClassVisitor.class",
+    "com/amcl/cpu/internal/asm/ClassWriter.class",
+    "com/amcl/cpu/internal/asm/ConstantDynamic.class",
+    "com/amcl/cpu/internal/asm/Constants.class",
+    "com/amcl/cpu/internal/asm/Context.class",
+    "com/amcl/cpu/internal/asm/CurrentFrame.class",
+    "com/amcl/cpu/internal/asm/Edge.class",
+    "com/amcl/cpu/internal/asm/FieldVisitor.class",
+    "com/amcl/cpu/internal/asm/FieldWriter.class",
+    "com/amcl/cpu/internal/asm/Frame.class",
+    "com/amcl/cpu/internal/asm/Handle.class",
+    "com/amcl/cpu/internal/asm/Handler.class",
+    "com/amcl/cpu/internal/asm/Label.class",
+    "com/amcl/cpu/internal/asm/MethodTooLargeException.class",
+    "com/amcl/cpu/internal/asm/MethodVisitor.class",
+    "com/amcl/cpu/internal/asm/MethodWriter.class",
+    "com/amcl/cpu/internal/asm/ModuleVisitor.class",
+    "com/amcl/cpu/internal/asm/ModuleWriter.class",
+    "com/amcl/cpu/internal/asm/Opcodes.class",
+    "com/amcl/cpu/internal/asm/RecordComponentVisitor.class",
+    "com/amcl/cpu/internal/asm/RecordComponentWriter.class",
+    "com/amcl/cpu/internal/asm/Symbol.class",
+    "com/amcl/cpu/internal/asm/SymbolTable$Entry.class",
+    "com/amcl/cpu/internal/asm/SymbolTable$LabelEntry.class",
+    "com/amcl/cpu/internal/asm/SymbolTable.class",
+    "com/amcl/cpu/internal/asm/Type.class",
+    "com/amcl/cpu/internal/asm/TypePath.class",
+    "com/amcl/cpu/internal/asm/TypeReference.class",
+    "com/amcl/cpu/internal/asm/signature/SignatureReader.class",
+    "com/amcl/cpu/internal/asm/signature/SignatureVisitor.class",
+    "com/amcl/cpu/internal/asm/signature/SignatureWriter.class"
+  ]
+}

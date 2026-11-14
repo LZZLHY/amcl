@@ -39,10 +39,17 @@ amcl::input::LaunchPlan g_inputLaunchPlan;
 // 此测试消费prepare阶段已经取得的cold事实；真实LoadLibrary/dlopen/同映像校验由
 // test-sdl-bootstrap-contract和cold-protocol实编闭包另证，这里不复制其身份算法。
 bool sdlClaimVerified=true,g_inputLaunchLegacy=false;
-struct SdlClaimBoundary { bool VerifiedForCurrentProcess(bool) const { return sdlClaimVerified; } } g_sdlInputLibraryClaim;
-bool configureOK=true,storeOK=true,callbackOK=true;
+bool claimedTyped=false,claimedAuxiliary=false;
+struct SdlClaimBoundary { bool VerifiedForCurrentProcess(bool typed,bool auxiliary) const {
+    claimedTyped=typed;claimedAuxiliary=auxiliary;return sdlClaimVerified;
+} } g_sdlInputLibraryClaim;
+bool configureOK=true,storeOK=true,callbackOK=true,auxiliaryOK=true;
 uint32_t configuredBackend=0;uint64_t configuredSession=0,callbackSession=0;
-int configureCalls=0,stores=0;
+int configureCalls=0,stores=0,auxiliaryCalls=0;uint64_t auxiliarySession=0;bool auxiliaryRetire=true;
+// 辅助owner边界记录真实phase传入的64位身份与操作，并可注入拒绝；不复制生产角色选择。
+bool configureAuxiliarySdlRuntime(uint64_t session,bool retire){
+    ++auxiliaryCalls;auxiliarySession=session;auxiliaryRetire=retire;return auxiliaryOK;
+}
 std::string storedDescriptor;
 // registry边界仅保存本child的描述符；不建立新marker、不修改父进程或用户环境。
 namespace amcl::envslot {
@@ -61,7 +68,8 @@ void reset(const char* slot,const char* window){
     // 不再提供GraphicsPlan/ActiveGraphicsPlan，让测试证明该phase没有图形寄生依赖。
     g_inputLaunchPlan=amcl::input::LaunchPlan();std::string error;
     amcl::input::LegacyLaunchPlan(slot,window,g_inputLaunchPlan,error);
-    configureOK=storeOK=callbackOK=true;configureCalls=stores=0;
+    configureOK=storeOK=callbackOK=auxiliaryOK=true;configureCalls=stores=auxiliaryCalls=0;
+    auxiliarySession=0;auxiliaryRetire=true;claimedTyped=claimedAuxiliary=false;
     sdlClaimVerified=true;g_inputLaunchLegacy=false;
     configuredBackend=0;configuredSession=callbackSession=0;storedDescriptor.clear();g_mcStatus.clear();
 }
@@ -74,9 +82,13 @@ int main(){
          Route{"LWJGL3","SDL3",AMCL_MENU_CURSOR_BACKEND_SDL3}}){
         reset(route.slot,route.window);CHECK(phase_publishPlatformRuntime(session));
         CHECK(configureCalls==1&&configuredBackend==route.expected&&configuredSession==session&&callbackSession==session);
-        if(route.expected==AMCL_MENU_CURSOR_BACKEND_SDL3)
-            CHECK(stores==1&&storedDescriptor=="1:123:456:9007199254740993");
-        else CHECK(stores==0);
+        CHECK(claimedTyped&&stores==1);
+        if(route.expected==AMCL_MENU_CURSOR_BACKEND_SDL3){
+            CHECK(!claimedAuxiliary&&auxiliaryCalls==0&&storedDescriptor=="1:123:456:9007199254740993");
+        }else{
+            CHECK(claimedAuxiliary&&auxiliaryCalls==1&&auxiliarySession==session&&!auxiliaryRetire);
+            CHECK(storedDescriptor=="2:123:456:9007199254740993:1");
+        }
     }
     reset("LWJGL3","GLFW");g_inputLaunchPlan=amcl::input::LaunchPlan();
     CHECK(!phase_publishPlatformRuntime(session)&&configureCalls==0);
@@ -96,6 +108,14 @@ int main(){
     reset("LWJGL3","SDL3");sdlClaimVerified=false;
     CHECK(!phase_publishPlatformRuntime(session)&&configureCalls==0&&stores==0&&callbackSession==0);
     reset("LWJGL3","GLFW");callbackOK=false;CHECK(!phase_publishPlatformRuntime(session)&&configureCalls==0);
+    reset("LWJGL3","GLFW");auxiliaryOK=false;
+    CHECK(!phase_publishPlatformRuntime(session)&&auxiliaryCalls==1&&configureCalls==0&&stores==0&&callbackSession==0);
+    reset("LWJGL3","GLFW");sdlClaimVerified=false;
+    CHECK(!phase_publishPlatformRuntime(session)&&auxiliaryCalls==0&&configureCalls==0&&stores==0);
+    reset("LWJGL3","SDL3");g_inputLaunchLegacy=true;CHECK(phase_publishPlatformRuntime(session));
+    CHECK(!claimedTyped&&!claimedAuxiliary&&auxiliaryCalls==0&&storedDescriptor=="1:123:456:9007199254740993");
+    reset("LWJGL3","GLFW");g_inputLaunchLegacy=true;CHECK(phase_publishPlatformRuntime(session));
+    CHECK(claimedTyped&&claimedAuxiliary&&auxiliaryCalls==1);
     std::cout<<"PASS real startup phase: LWJGL2/322/3/SDL3, exact session, missing/unknown plan and configure failure\n";
     return 0;
 }
@@ -121,3 +141,7 @@ with temporary_directory(prefix='menu-cursor-startup-') as directory:
     print('PASS negative control: forcing GLFW for every generation')
     check(production.replace(call,'('+call+', 1)',1),True)
     print('PASS negative control: ignoring configure failure')
+    auxiliary='if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;'
+    assert production.count(auxiliary)==1
+    check(production.replace(auxiliary,'if(auxiliarySdl)(void)configureAuxiliarySdlRuntime(session,false);',1),True)
+    print('PASS negative control: ignoring auxiliary owner rejection')

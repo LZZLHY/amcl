@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "at": "2026-10-22T02:05:23.414256+08:00",
+  "files": [
+    {
+      "major": "8",
+      "path": "jdk/src/share/classes/com/sun/media/sound/PortMixer.java",
+      "file": "8/PortMixer.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/PortMixer.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "5b192d43269ad377115edcecf7ba57b9b6524504d236928e5c20ea321a95a6eb",
+      "bytes": 17309,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "8",
+      "path": "jdk/src/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "file": "8/PortMixerProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "32c595885ec508977243ab0f1e555e85f9979d29cd1947a7241871b9ee31464f",
+      "bytes": 4611,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "8",
+      "path": "jdk/src/share/native/com/sun/media/sound/PortMixerProvider.c",
+      "file": "8/PortMixerProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/native/com/sun/media/sound/PortMixerProvider.c",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "8fb7583e0959fe3e56f11c5552163f91d7a3e884859ca3df50a74fb60cf423e1",
+      "bytes": 4306,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "8",
+      "path": "jdk/src/share/native/com/sun/media/sound/Platform.c",
+      "file": "8/Platform.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/share/native/com/sun/media/sound/Platform.c",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "73ae14497a1c08fdd97b5885265d164c987ca72e99b825c264bee96112f0354b",
+      "bytes": 4705,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "8",
+      "path": "jdk/make/lib/SoundLibraries.gmk",
+      "file": "8/SoundLibraries.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/make/lib/SoundLibraries.gmk",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "28275760b666492bde7f00a585e51f846eb814caf2dad3c7e49e66d1a46c9bfa",
+      "bytes": 8721,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "17",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/PortMixer.java",
+      "file": "17/PortMixer.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/PortMixer.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "65e1f3fc8650f7ac1bc81e684dd48682da5f4f381ccb2031806cc14517334143",
+      "bytes": 15895,
+      "acquisition": "verified previously acquired upstream bytes"
+    },
+    {
+      "major": "17",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "file": "17/PortMixerProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "b4f0b36966b79039cdab91ef33f1156f8b0116aee168178a0f8663360ba1901a",
+      "bytes": 4318,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "17",
+      "path": "src/java.desktop/share/native/libjsound/PortMixerProvider.c",
+      "file": "17/PortMixerProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/native/libjsound/PortMixerProvider.c",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "8fb7583e0959fe3e56f11c5552163f91d7a3e884859ca3df50a74fb60cf423e1",
+      "bytes": 4306,
+      "acquisition": "verified previously acquired upstream bytes"
+    },
+    {
+      "major": "17",
+      "path": "src/java.desktop/share/native/libjsound/Platform.c",
+      "file": "17/Platform.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.desktop/share/native/libjsound/Platform.c",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "5a0dbaa805c5151a6871bcb54f77f29983b4c7ff99e41ea97f7e97b5485b4842",
+      "bytes": 1636,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "17",
+      "path": "make/modules/java.desktop/Lib.gmk",
+      "file": "17/Lib.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/make/modules/java.desktop/Lib.gmk",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "sha256": "69bcf74eae62bc0a344d1900597261218b0f7eddae5b588b99d6ab0cdd4f9966",
+      "bytes": 4874,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "21",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/PortMixer.java",
+      "file": "21/PortMixer.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/PortMixer.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "bd3773e7a08704978c1c14c9740254e34960bae98428a003d3a6666df43df150",
+      "bytes": 15871,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "21",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "file": "21/PortMixerProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "b4f0b36966b79039cdab91ef33f1156f8b0116aee168178a0f8663360ba1901a",
+      "bytes": 4318,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "21",
+      "path": "src/java.desktop/share/native/libjsound/PortMixerProvider.c",
+      "file": "21/PortMixerProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/native/libjsound/PortMixerProvider.c",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "8fb7583e0959fe3e56f11c5552163f91d7a3e884859ca3df50a74fb60cf423e1",
+      "bytes": 4306,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "21",
+      "path": "src/java.desktop/share/native/libjsound/Platform.c",
+      "file": "21/Platform.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.desktop/share/native/libjsound/Platform.c",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "5a0dbaa805c5151a6871bcb54f77f29983b4c7ff99e41ea97f7e97b5485b4842",
+      "bytes": 1636,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "21",
+      "path": "make/modules/java.desktop/Lib.gmk",
+      "file": "21/Lib.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/make/modules/java.desktop/Lib.gmk",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "sha256": "d1239537885456905ce53f1f00213831d716914deaf3929ea88d9d572a6f88ec",
+      "bytes": 4945,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "25",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/PortMixer.java",
+      "file": "25/PortMixer.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/PortMixer.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "bd3773e7a08704978c1c14c9740254e34960bae98428a003d3a6666df43df150",
+      "bytes": 15871,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "25",
+      "path": "src/java.desktop/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "file": "25/PortMixerProvider.java",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/classes/com/sun/media/sound/PortMixerProvider.java",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "b4f0b36966b79039cdab91ef33f1156f8b0116aee168178a0f8663360ba1901a",
+      "bytes": 4318,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "25",
+      "path": "src/java.desktop/share/native/libjsound/PortMixerProvider.c",
+      "file": "25/PortMixerProvider.c",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.desktop/share/native/libjsound/PortMixerProvider.c",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "8fb7583e0959fe3e56f11c5552163f91d7a3e884859ca3df50a74fb60cf423e1",
+      "bytes": 4306,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "25",
+      "path": "make/modules/java.desktop/Lib.gmk",
+      "file": "25/Lib.gmk",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/make/modules/java.desktop/Lib.gmk",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "sha256": "21023234bd1791e124e0e8e46be7f63d25434e619145f32e840725e5a62c038c",
+      "bytes": 4867,
+      "acquisition": "HTTPS exact OpenJDK commit"
+    },
+    {
+      "major": "8",
+      "file": "8/mapfile-libjsound",
+      "path": "jdk/make/mapfiles/libjsound/mapfile-vers",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/make/mapfiles/libjsound/mapfile-vers",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "7e744245cc577863c8ae4d5382319f3487da46d100c2bfb15dbb862f03aeb789",
+      "bytes": 4866,
+      "acquisition": "verified same locked OpenJDK original from MIDI reference manifest"
+    },
+    {
+      "major": "8",
+      "file": "8/mapfile-libjsoundalsa",
+      "path": "jdk/make/mapfiles/libjsoundalsa/mapfile-vers",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/make/mapfiles/libjsoundalsa/mapfile-vers",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "sha256": "3defe19928162f63ab96bdb9e5767013746c4d9816b64966d7a6acb4ac124df3",
+      "bytes": 4613,
+      "acquisition": "verified same locked OpenJDK original from MIDI reference manifest"
+    }
+  ]
+}

@@ -1,3 +1,8 @@
+/**
+ * 更新状态徽章的小字和勾号使用成功前景色，与 successBg 成对适配明暗；版本筛选、
+ * 发布记录及外跳流程不变，实色筛选按钮继续使用填充色与反色文字。
+ */
+import { applyNativeTheme } from '../components/AppTheme';
 import { DistributionPolicy } from 'commons';
 /**
  * ChangelogPage.ets — 更新日志页
@@ -49,6 +54,8 @@ struct ChangelogPage {
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
 
   @State private loading: boolean = true
   @State private releases: ChangelogRelease[] = []
@@ -77,7 +84,8 @@ struct ChangelogPage {
   private applyTheme_(): void {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
     let mode = this.prefManager.themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   onColorModeChange(): void {
@@ -176,6 +184,9 @@ struct ChangelogPage {
     return ''
   }
 
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
+
   build() {
     Column() {
     // 只迁移返回和获准的外跳入口；商店态继续不生成外跳菜单项，正文过滤与滚动保持原状态。
@@ -254,9 +265,9 @@ struct ChangelogPage {
         })
       } else {
         Row({ space: 4 }) {
-          AppIcon({ name: AppIconName.Check, iconSize: 12, color: this.theme.success })
+          AppIcon({ name: AppIconName.Check, iconSize: 12, color: this.theme.successText })
           Text(this.hasUpdate_() ? '有新版本' : '已是最新')
-            .fontSize(11).fontWeight(600).fontColor(this.theme.success)
+            .fontSize(11).fontWeight(600).fontColor(this.theme.successText)
         }
         .padding({ left: 9, right: 9, top: 4, bottom: 4 })
         .borderRadius(7)
@@ -375,7 +386,7 @@ struct ChangelogPage {
   private ImmersiveTitleContent1_() {
       if (this.loading) {
         Column({ space: 12 }) {
-          LoadingProgress().width(40).height(40).color(this.theme.primary)
+          LoadingProgress().width(40).height(40).color(this.theme.actionText)
           Text('正在读取更新日志…').fontSize(13).fontColor(this.theme.textHint)
         }
         .width('100%').layoutWeight(1)

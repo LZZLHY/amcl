@@ -33,13 +33,18 @@
  *   node scripts/check-product-tu-syntax.mjs input platform # 只查路径含关键字的
  *   node scripts/check-product-tu-syntax.mjs --product desktop --target desktop \
  *     --mode release --abi arm64-v8a                         # 精确绑定本轮构建
+ *   node scripts/check-product-tu-syntax.mjs --root E:/verified-sdk-checkout \
+ *     --product store --mode release                        # 显式使用已验收槽的源码和真实db
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// 默认仍绑定脚本所属工程。独立轻源码任务可显式选择已核实的完整验收槽；枚举源码、
+// 解析相对编译路径和查找数据库必须共同使用同一个根，不能只借外部db凑本工程覆盖率。
+const DEFAULT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+let ROOT = DEFAULT_ROOT;
 
 const DB_CANDIDATES = [
   'entry/.cxx/desktop/desktop/release/arm64-v8a/compile_commands.json',
@@ -67,11 +72,28 @@ function productSourcePath(entry) {
 // 完整性交叉核对用：**按设计**不该出现在产品 compile db 里的源码。
 // 只有这份清单之外的缺失才算 db 过期/漏编 —— 否则这个检查会被一堆预期缺失淹没。
 const NOT_IN_PRODUCT_DB = [
+  // AMCL维护正文，四代JDK配方通过活动source patch编入各自libjsound，不属于HAP目标。
+  // 精确到文件；同目录的ohos_daudio_callbacks.c、midi_callbacks.c和
+  // ohos_capture_diagnostics.c仍由HAP编译，任何新增C文件也必须重新确认归属。
+  { prefix: 'javasound/ohos_daudio.c', reason: 'JDK 8/17/21/25 libjsound的PCM后端；0023/0025/0028 source patch，HAP只消费独立callback桥' },
+  ...['javasound/midi_api.c', 'javasound/midi_core.c', 'javasound/midi_jdk.c',
+    'javasound/midi_stream.c', 'javasound/midi_ump.c'].map(prefix => ({
+      prefix, reason: 'JDK 8/17/21/25 libjsound的MIDI后端/JNI；0026 source patch，HAP编译的是midi_callbacks.c',
+    })),
+  ...['javasound/ports_jni.c', 'javasound/ports_ohos.c'].map(prefix => ({
+    prefix, reason: 'JDK 8/17/21/25 libjsound的真实设备Ports后端/JNI；0027 source patch及JDK Make选择',
+  })),
   // host 测试有自己的 CMakeLists（tests/host/CMakeLists.txt），不属于产品目标。
   { prefix: 'tests/host/', reason: 'host 测试目标，独立 CMakeLists' },
   // MC_OHOS_BUILD_TESTS=OFF（release 显式传，见 CHANGELOG 1000518）。
   { prefix: 'tests/', reason: 'MC_OHOS_BUILD_TESTS=OFF' },
   { prefix: 'download/tests/', reason: 'MC_OHOS_BUILD_TESTS=OFF' },
+  // 仅列出run-host.sh真实编译的四个宿主夹具，不排除audio目录或未来新增的产品TU。
+  // 产品audio/CMakeLists.txt只收录五个生产源；以下main/测试导出/FakePlatform仅供Linux宿主验收。
+  { prefix: 'audio/tests/audio_core_test.cpp', reason: 'audio/tests/run-host.sh编译ASan/UBSan核心回归EXE，不属于产品目标' },
+  { prefix: 'audio/tests/audio_binding_test.cpp', reason: 'audio/tests/run-host.sh编译dlopen/dlmopen发现协议回归EXE，不属于产品目标' },
+  { prefix: 'audio/tests/audio_client_test_export.cpp', reason: 'audio/tests/run-host.sh编译client-fixture共享库的测试导出，不属于产品目标' },
+  { prefix: 'audio/tests/audio_test_platform.cpp', reason: 'audio/tests/run-host.sh编译host-fixture共享库的FakePlatform，不替代产品audio_ohaudio.cpp' },
   // AMCL_INPUT_GATE0_TELEMETRY option 默认 OFF，TU 不参与编译。
   { prefix: 'platform/gate0_input_telemetry.cpp', reason: 'AMCL_INPUT_GATE0_TELEMETRY=OFF' },
   // API22 desktop now disables the optional API26 strong-link probe too.
@@ -128,6 +150,7 @@ function collectFirstPartySources() {
 function parseArguments(argv) {
   const options = { filters: [] };
   const names = new Map([
+    ['--root', 'root'],
     ['--product', 'product'],
     ['--target', 'target'],
     ['--mode', 'mode'],
@@ -142,6 +165,11 @@ function parseArguments(argv) {
     }
     if (index + 1 >= argv.length) throw new Error(`incomplete option: ${argv[index]}`);
     const value = argv[++index];
+    if (key === 'root') {
+      if (!isAbsolute(value)) throw new Error(`root must be an absolute path: ${value}`);
+      options.root = resolve(value);
+      continue;
+    }
     if (!/^[A-Za-z0-9_.-]+$/.test(value)) throw new Error(`invalid ${key}: ${value}`);
     options[key] = value;
   }
@@ -153,6 +181,19 @@ function parseArguments(argv) {
     throw new Error('--target/--mode/--abi require --product');
   }
   return options;
+}
+
+/**
+ * 显式根必须是公开可重建的同类工程，不能把普通目录或仅一份db当作完整源码审计。
+ * 不要求维护者私有build-profile；默认脚本所属根继续保持原兼容行为。
+ */
+function validateExplicitRoot(root) {
+  for (const marker of ['oh-package.json5', 'entry/src/main/cpp/CMakeLists.txt']) {
+    const absolute = join(root, marker);
+    if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+      throw new Error(`explicit root is missing project marker: ${marker}`);
+    }
+  }
 }
 
 function findDb(options) {
@@ -222,6 +263,8 @@ function toArgv(entry) {
 let cli;
 try {
   cli = parseArguments(process.argv.slice(2));
+  if (cli.root) validateExplicitRoot(cli.root);
+  ROOT = cli.root ?? DEFAULT_ROOT;
 } catch (error) {
   console.error(`[check-product-tu-syntax] FAIL: ${error.message}`);
   process.exit(2);

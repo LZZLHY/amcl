@@ -14,6 +14,8 @@
 #include "engine.h"
 #include "transport_policy.h"
 #include "host_admission.h"
+#include "relay.h"
+#include "http_range.h"
 
 #include <curl/curl.h>
 #include <fcntl.h>     // 2026-08-04：probeNextFreeFdForDiag 用 ::open 探 fd 水位
@@ -21,6 +23,7 @@
 #include <unistd.h>    // 同上：::close
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -1756,7 +1759,7 @@ std::string fetchOrigin(const std::string& url) {
 int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
                 const std::map<std::string, std::string>& request_headers,
                 size_t max_response_bytes, FetchResponse& out,
-                const std::atomic<bool>* cancelled) {
+                const std::atomic<bool>* cancelled, bool allow_relay) {
     out.body.clear(); out.headers.clear(); out.status_code = 0;
     out.err_kind.clear(); out.err_msg.clear();
     std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> easy(curl_easy_init(), curl_easy_cleanup);
@@ -1766,6 +1769,25 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
     std::string actual_url = url;
     int redirects = 0;
     bool family_retry_consumed = false;
+    bool first_hop = true;
+    bool direct_fallback = false;
+    // 只有无业务凭据的公共GET才可opt-in。即便调用方误传true，也不能把账号Bearer、
+    // Cookie、自定义Host或另一套网关证明交给自有网关；旧metadata缺省路由完全不变。
+    for (const auto& header : request_headers) {
+        std::string name = header.first;
+        for (char& character : name) character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        if (name == "authorization" || name == "proxy-authorization" || name == "cookie" ||
+            name == "host" || name.rfind("x-amcl-", 0) == 0) allow_relay = false;
+    }
+    // 网关失败只允许回原始候选一次；回源后的同源跳转和换族都保持直连，不能重新
+    // 包装同一URL。重置的只是这次候选的响应/进展，不重建或延长调用者总deadline。
+    const auto begin_direct_fallback = [&]() {
+        direct_fallback = true; actual_url = url; redirects = 0; first_hop = true;
+        family_retry_consumed = false;
+        out.err_kind.clear(); out.err_msg.clear();
+        progress.last_body_progress_ms = nowMonotonicUs() / 1000;
+        progress.idle_expired = false;
+    };
     while (true) {
         if (cancelled && cancelled->load(std::memory_order_acquire)) {
             out.err_kind = "Aborted"; out.err_msg = "download engine shutdown before metadata HTTP"; return -1;
@@ -1773,7 +1795,17 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
         if (!isTransportHttpUrl(actual_url)) {
             out.err_kind = "HttpStatus"; out.err_msg = "metadata URL protocol must be HTTP(S)"; return -1;
         }
-        const std::string host = familyHostFromUrl(actual_url);
+        // 每个真实hop重新取配置代次和nonce；redirect不重新包装任意官方主机，只对
+        // 网关自己的/p路径重新签名。原查询编码、官方URL及来源候选集合均不改写。
+        const auto relay_plan = relayPrepareRequest("GET", actual_url, allow_relay, first_hop, direct_fallback);
+        const std::string& transport_url = relay_plan.url;
+        const std::string host = familyHostFromUrl(transport_url);
+        // 唯一官方候选也必须为网关黑洞保留直连机会；持续有效正文仍可用原总预算，
+        // 这个上限只限制无进展，不能把合法大目录误改成5秒内必须下载完。
+        const int64_t route_remaining = std::max<int64_t>(1, deadline - nowMonotonicUs() / 1000);
+        progress.idle_limit_ms = relay_plan.via_relay
+            ? std::min<int64_t>(idle_limit_ms > 0 ? idle_limit_ms : 5000, std::max<int64_t>(1, route_remaining / 2))
+            : idle_limit_ms;
         auto& engine = DownloadEngine::instance();
         HostAdmissionLease admission;
         while (!admission.tryAcquire(host)) {
@@ -1783,12 +1815,14 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
             const int64_t now = nowMonotonicUs() / 1000;
             const int64_t ready = std::max(engine.badHostReadyAtMs(host), engine.hostRateLimitUntilMs(host));
             // 下一候选可用时不占着本次metadata在已知冷却主机前排队，也不绕过冷却发HTTP。
-            if (idle_limit_ms > 0 && ready > now) {
+            if (progress.idle_limit_ms > 0 && ready > now) {
+                if (relay_plan.via_relay) { begin_direct_fallback(); break; }
                 out.err_kind = "RetryAfter"; out.err_msg = "metadata candidate host is cooling down"; return -1;
             }
             // 名额/半开探针被占也没有正文进展。有后继时，候选的空闲窗必须覆盖
             // 准入排队，不能等整条deadline后才让一个本来健康的镜像获得尝试机会。
-            if (idle_limit_ms > 0 && now - progress.last_body_progress_ms >= idle_limit_ms) {
+            if (progress.idle_limit_ms > 0 && now - progress.last_body_progress_ms >= progress.idle_limit_ms) {
+                if (relay_plan.via_relay) { begin_direct_fallback(); break; }
                 out.err_kind = "Timeout"; out.err_msg = "metadata candidate host remained busy before fallback budget"; return -1;
             }
             if (now >= deadline || ready > deadline) {
@@ -1797,11 +1831,13 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
         }
+        // 准入阶段未发送HTTP就切回源时，旧网关lease仍未获得；重新规划真实源站。
+        if (direct_fallback && relay_plan.via_relay) continue;
         const int64_t remaining = deadline - nowMonotonicUs() / 1000;
         if (remaining <= 0) { out.err_kind = "Timeout"; out.err_msg = "metadata request deadline exhausted"; return -1; }
         curl_easy_reset(easy.get());
         out.body.clear(); out.headers.clear(); out.status_code = 0;
-        curl_easy_setopt(easy.get(), CURLOPT_URL, actual_url.c_str());
+        curl_easy_setopt(easy.get(), CURLOPT_URL, transport_url.c_str());
         curl_easy_setopt(easy.get(), CURLOPT_FOLLOWLOCATION, 0L);
         curl_easy_setopt(easy.get(), CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(easy.get(), CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min<int64_t>(remaining, 15000)));
@@ -1841,7 +1877,19 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
             if (!appended) { out.err_kind = "Unknown"; out.err_msg = "metadata header allocation failed"; return -1; }
             headers.release(); headers.reset(appended);
         }
+        for (const auto& line : relay_plan.headers) {
+            curl_slist* appended = curl_slist_append(headers.get(), line.c_str());
+            if (!appended) { out.err_kind = "Unknown"; out.err_msg = "metadata relay header allocation failed"; return -1; }
+            headers.release(); headers.reset(appended);
+        }
         if (headers) curl_easy_setopt(easy.get(), CURLOPT_HTTPHEADER, headers.get());
+        // 与worker相同：发布即将执行的transport时验证配置代次并计真实提交，不能在
+        // prepare阶段计数；执行curl期间不持配置锁，关闭加速不会被慢网络阻塞。
+        if (!relaySubmitRequest(relay_plan, [] { return true; })) {
+            begin_direct_fallback(); continue;
+        }
+        AMCL_LOG_D(LOG_TAG, "metadata transport: host=%{public}s relay=%{public}d fallback=%{public}d",
+                   host.c_str(), relay_plan.via_relay ? 1 : 0, relay_plan.fallback ? 1 : 0);
         const CURLcode rc = curl_easy_perform(easy.get());
         long http = 0; curl_easy_getinfo(easy.get(), CURLINFO_RESPONSE_CODE, &http);
         out.status_code = static_cast<int>(http);
@@ -1871,18 +1919,27 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
         if (progress.idle_expired) {
             out.err_kind = "Timeout"; out.err_msg = "metadata candidate made no body progress before fallback budget";
             AMCL_LOG_D(LOG_TAG, "metadata idle fallback: host=%{public}s idle_limit_ms=%{public}lld",
-                       host.c_str(), (long long)idle_limit_ms);
+                       host.c_str(), (long long)progress.idle_limit_ms);
+            if (relay_plan.via_relay) { relayNoteFailure(static_cast<int>(http)); begin_direct_fallback(); continue; }
             return -1;
         }
         if (try_family) { family_retry_consumed = true; continue; }
         if (rc == CURLE_OK && (http == 301 || http == 302 || http == 307 || http == 308)) {
             char* raw_redirect = nullptr; curl_easy_getinfo(easy.get(), CURLINFO_REDIRECT_URL, &raw_redirect);
-            const std::string next = raw_redirect ? raw_redirect : "";
+            // 与正文两执行器保持同一 Location 兼容边界，原查询签名和跨 origin 头隔离不变。
+            const std::string next = normalizeTransportRedirectUrl(raw_redirect ? raw_redirect : "");
             if (redirects++ < 5 && isTransportHttpUrl(next)) {
-                actual_url = next; family_retry_consumed = false; continue;
+                if (relay_plan.via_relay) relayNoteSuccess();
+                actual_url = next; first_hop = false; family_retry_consumed = false; continue;
             }
         }
-        if (rc == CURLE_OK && ((http >= 200 && http < 300) || http == 304)) return 0;
+        if (rc == CURLE_OK && ((http >= 200 && http < 300) || http == 304)) {
+            if (relay_plan.via_relay) relayNoteSuccess();
+            return 0;
+        }
+        if (relay_plan.via_relay && rc != CURLE_WRITE_ERROR) {
+            relayNoteFailure(static_cast<int>(http)); begin_direct_fallback(); continue;
+        }
         out.err_kind = curlcodeToKind(rc, http);
         out.err_msg = rc == CURLE_OK ? "HTTP " + std::to_string(http) : curlErrorMessage(rc);
         if (rc != CURLE_OK && http > 0) out.err_msg += " (http=" + std::to_string(http) + ")";
@@ -1898,7 +1955,7 @@ int fetchOnceEx(const std::string& url, int64_t deadline, int64_t idle_limit_ms,
 int fetchCandidates(const std::string& primary, const std::vector<std::string>& mirrors,
                     int timeout_seconds, const std::map<std::string, std::string>& headers,
                     size_t max_bytes, bool accept_not_modified, FetchResponse& out,
-                    const std::atomic<bool>* cancelled) {
+                    const std::atomic<bool>* cancelled, bool allow_relay = false) {
     const int seconds = timeout_seconds <= 0 ? 30 : std::min(timeout_seconds, 300);
     const int64_t deadline = transportDeadlineAfter(nowMonotonicUs() / 1000, static_cast<int64_t>(seconds) * 1000);
     std::vector<std::string> urls;
@@ -1921,7 +1978,7 @@ int fetchCandidates(const std::string& primary, const std::vector<std::string>& 
         const int64_t idle = has_fallback ? std::min<int64_t>(5000,
             std::max<int64_t>(1, remaining / static_cast<int64_t>(urls.size() - index))) : 0;
         const int64_t started = nowMonotonicUs() / 1000;
-        const int result = fetchOnceEx(urls[index], deadline, idle, headers, max_bytes, out, cancelled);
+        const int result = fetchOnceEx(urls[index], deadline, idle, headers, max_bytes, out, cancelled, allow_relay);
         if (result == 0 && (accept_not_modified || out.status_code != 304)) {
             AMCL_LOG_D(LOG_TAG, "metadata candidate ok: index=%{public}zu count=%{public}zu host=%{public}s status=%{public}d elapsed_ms=%{public}lld bytes=%{public}zu",
                        index, urls.size(), familyHostFromUrl(urls[index]).c_str(), out.status_code,
@@ -1963,7 +2020,8 @@ int DownloadEngine::fetchToBufferEx(const std::string& primary_url,
                                      int timeout_seconds,
                                      const std::map<std::string, std::string>& request_headers,
                                      size_t max_response_bytes,
-                                     FetchResponse& out_resp) {
+                                     FetchResponse& out_resp,
+                                     bool allow_relay) {
     if (!acquireCurlUse(&out_resp.err_kind, &out_resp.err_msg)) return -1;
     const auto release_use = [this](DownloadEngine*) noexcept { releaseCurlUse(); };
     std::unique_ptr<DownloadEngine, decltype(release_use)> curl_use(this, release_use);
@@ -1975,7 +2033,225 @@ int DownloadEngine::fetchToBufferEx(const std::string& primary_url,
     }
 
     return fetchCandidates(primary_url, mirrors, timeout_seconds, request_headers, max_response_bytes, true,
-                           out_resp, &shutdown_requested_);
+                           out_resp, &shutdown_requested_, allow_relay);
+}
+
+namespace {
+
+/** 一个sample hop的固定大小观测状态。只保留128B格式前缀和受限响应头，不保存完整正文。 */
+struct BinarySampleContext {
+    std::map<std::string, std::string> headers;
+    FetchHeaderContext header{&headers, 0};
+    size_t header_bytes = 0;
+    std::array<char, 128> prefix{};
+    size_t prefix_size = 0, received = 0, target = 0;
+    int64_t expected = 0, deadline = 0, first_body_ms = -1;
+    const std::atomic<bool>* shutdown = nullptr;
+    bool headers_checked = false, range_honored = false, cap_reached = false;
+    bool redirect_body_stopped = false;
+    std::string error;
+};
+
+/** 禁止URL内嵌业务凭据；初始HTTPS不能降级到HTTP，回环HTTP仍可用于宿主测试。 */
+bool sampleUrlAllowed(const std::string& url, bool require_https) {
+    if (url.size() > 8192 || !isTransportHttpUrl(url)) return false;
+    for (unsigned char c : url) if (c < 0x20 || c == 0x7f) return false;
+    const auto begin = url.find("://") + 3;
+    const auto end = url.find_first_of("/?#", begin);
+    if (url.substr(begin, end == std::string::npos ? end : end - begin).find('@') != std::string::npos) return false;
+    return !require_https || fetchOrigin(url).rfind("https://", 0) == 0;
+}
+
+/** 精确正数字段，拒绝溢出、混入字符和多个矛盾长度；重复头由curl本身协议校验承接。 */
+bool sampleLength(const std::string& value, int64_t expected) {
+    size_t at = 0; int64_t length = -1;
+    return parseUnsignedInt64(value, at, length) && at == value.size() && length == expected;
+}
+
+/**
+ * 限量入口会截断3xx正文，此时libcurl可能尚未发布CURLINFO_REDIRECT_URL。先用原查询，
+ * 缺失时让同一libcurl URL API按当前hop解析已收Location；不手工拼基址或解码query。
+ * 路径未转义字节继续交既有normalize函数处理，协议/凭据/降级由下一hop统一拒绝。
+ */
+std::string sampleRedirect(CURL* easy, const BinarySampleContext& ctx, const std::string& current) {
+    char* reported = nullptr; curl_easy_getinfo(easy, CURLINFO_REDIRECT_URL, &reported);
+    if (reported && reported[0]) return normalizeTransportRedirectUrl(reported);
+    const auto location = ctx.headers.find("location");
+    if (location == ctx.headers.end()) return {};
+    std::unique_ptr<CURLU, decltype(&curl_url_cleanup)> parsed(curl_url(), curl_url_cleanup);
+    if (!parsed || curl_url_set(parsed.get(), CURLUPART_URL, current.c_str(), 0) != CURLUE_OK ||
+        curl_url_set(parsed.get(), CURLUPART_URL, location->second.c_str(), CURLU_ALLOW_SPACE) != CURLUE_OK) return {};
+    char* resolved = nullptr;
+    if (curl_url_get(parsed.get(), CURLUPART_URL, &resolved, 0) != CURLUE_OK) return {};
+    const std::string result = normalizeTransportRedirectUrl(resolved); curl_free(resolved); return result;
+}
+
+/** 验证HTTP对所取对象的声明；206必须证明完整Range窗口，200必须有正确整文件长度。 */
+bool validateSampleHeaders(BinarySampleContext& ctx) {
+    if (ctx.headers_checked) return ctx.error.empty();
+    ctx.headers_checked = true;
+    const auto type = ctx.headers.find("content-type");
+    if (type != ctx.headers.end()) {
+        std::string lowered = type->second;
+        for (char& c : lowered) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lowered.find("text/html") != std::string::npos || lowered.find("application/xhtml") != std::string::npos ||
+            lowered.find("application/json") != std::string::npos) ctx.error = "UnexpectedContent";
+    }
+    const auto encoding = ctx.headers.find("content-encoding");
+    if (encoding != ctx.headers.end() && encoding->second != "identity" && !encoding->second.empty()) ctx.error = "UnexpectedEncoding";
+    const auto length = ctx.headers.find("content-length");
+    if (ctx.header.status == 206) {
+        ParsedContentRange range;
+        const auto raw = ctx.headers.find("content-range");
+        if (raw == ctx.headers.end() || !parseContentRangeValue(raw->second, range) ||
+            !contentRangeMatches(range, 0, static_cast<int64_t>(ctx.target) - 1, ctx.expected)) ctx.error = "InvalidContentRange";
+        else ctx.range_honored = true;
+        if (length != ctx.headers.end() && !sampleLength(length->second, static_cast<int64_t>(ctx.target))) ctx.error = "InvalidContentLength";
+    } else if (ctx.header.status == 200) {
+        if (length == ctx.headers.end() || !sampleLength(length->second, ctx.expected)) ctx.error = "InvalidContentLength";
+    } else ctx.error = "HttpStatus";
+    return ctx.error.empty();
+}
+
+/** 响应头经过已有metadata解析器，但本入口额外限制整个hop最多64KiB，异常不跨C回调。 */
+size_t sampleHeader(char* data, size_t size, size_t count, void* opaque) {
+    auto& ctx = *static_cast<BinarySampleContext*>(opaque);
+    if (size && count > std::numeric_limits<size_t>::max() / size) return 0;
+    const size_t bytes = size * count;
+    if (bytes > 65536 - std::min<size_t>(65536, ctx.header_bytes)) { ctx.error = "HeadersTooLarge"; return 0; }
+    ctx.header_bytes += bytes;
+    try { return fetchHeaderCallback(data, size, count, &ctx.header); }
+    catch (...) { ctx.error = "InternalError"; return 0; }
+}
+
+/**
+ * 只计接受的样本字节。达到cap立即主动结束，rc23由外层按cap标记归一为成功；curl/socket
+ * 可能预取额外数据，因此received不是wire量。3xx正文不计样本且立即截断，防大错误页
+ * 花掉整个取样流量；手动redirect仍由外层按原HTTP(S)边界处理。
+ */
+size_t sampleWrite(char* data, size_t size, size_t count, void* opaque) {
+    auto& ctx = *static_cast<BinarySampleContext*>(opaque);
+    if (size && count > std::numeric_limits<size_t>::max() / size) return 0;
+    const size_t bytes = size * count;
+    if (ctx.header.status >= 300 && ctx.header.status < 400) { ctx.redirect_body_stopped = true; return 0; }
+    try {
+        if (!validateSampleHeaders(ctx)) return 0;
+        const size_t take = std::min(bytes, ctx.target - ctx.received);
+        const size_t prefix_take = std::min(take, ctx.prefix.size() - ctx.prefix_size);
+        std::memcpy(ctx.prefix.data() + ctx.prefix_size, data, prefix_take); ctx.prefix_size += prefix_take;
+        std::string prefix(ctx.prefix.data(), ctx.prefix_size);
+        for (char& c : prefix) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const auto first = prefix.find_first_not_of(" \t\r\n");
+        if (first != std::string::npos && (prefix.compare(first, 5, "<html") == 0 || prefix.compare(first, 9, "<!doctype") == 0)) {
+            ctx.error = "UnexpectedContent"; return 0;
+        }
+        // 与总elapsed使用相同steady原点。HTTP头或3xx正文都不能起这个钟；头后等待
+        // 首批真实样本的成本属于TTFB，不能被估价层误算成持续正文低速。
+        if (take > 0 && ctx.first_body_ms < 0) ctx.first_body_ms = nowMonotonicUs() / 1000;
+        ctx.received += take;
+        if (ctx.received >= ctx.target) { ctx.cap_reached = true; return 0; }
+        return bytes;
+    } catch (...) { ctx.error = "InternalError"; return 0; }
+}
+
+/** Native shutdown和总deadline可停止真实curl；JS观察代次取消仅在ArkTS拒绝发布结果。 */
+int sampleProgress(void* opaque, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    const auto& ctx = *static_cast<BinarySampleContext*>(opaque);
+    return (ctx.shutdown && ctx.shutdown->load(std::memory_order_acquire)) ||
+        nowMonotonicUs() / 1000 >= ctx.deadline ? 1 : 0;
+}
+} // namespace
+
+int DownloadEngine::probeTransfer(const std::string& url, int64_t expected_size, size_t sample_bytes,
+                                 int timeout_seconds, const std::string& user_agent, TransferProbeResult& out,
+                                 int64_t submitted_at_ms) {
+    out = TransferProbeResult{};
+    const int64_t now = nowMonotonicUs() / 1000;
+    const int64_t started = submitted_at_ms > 0 ? std::min(submitted_at_ms, now) : now;
+    // 归还计时由无分配guard覆盖所有返回/异常；输出赋值在取得curl生命周期之前完成。
+    const auto finish_time = [&out, started](int*) noexcept { out.elapsed_ms = std::max<int64_t>(0, nowMonotonicUs() / 1000 - started); };
+    int marker = 0; std::unique_ptr<int, decltype(finish_time)> time_guard(&marker, finish_time);
+    if (expected_size <= 0 || expected_size > kMaxDownloadFileBytes || sample_bytes == 0 || sample_bytes > 512 * 1024 ||
+        timeout_seconds < 1 || timeout_seconds > 8 || user_agent.empty() || user_agent.size() > 256 ||
+        !sampleUrlAllowed(url, false)) { out.error_kind = "InvalidArgument"; return -1; }
+    for (unsigned char c : user_agent) if (c < 0x20 || c == 0x7f) { out.error_kind = "InvalidArgument"; return -1; }
+    const int64_t deadline = transportDeadlineAfter(started, timeout_seconds * 1000LL);
+    if (now >= deadline) { out.error_kind = "Timeout"; return -1; }
+    std::string init_error;
+    if (!acquireCurlUse(&out.error_kind, &init_error)) return -1;
+    const auto release_use = [this](DownloadEngine*) noexcept { releaseCurlUse(); };
+    std::unique_ptr<DownloadEngine, decltype(release_use)> use(this, release_use);
+    std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> easy(curl_easy_init(), curl_easy_cleanup);
+    if (!easy) { out.error_kind = "InternalError"; return -1; }
+    const bool require_https = fetchOrigin(url).rfind("https://", 0) == 0;
+    std::string actual = url;
+    const size_t target = static_cast<size_t>(std::min<int64_t>(expected_size, static_cast<int64_t>(sample_bytes)));
+    for (int redirects = 0; redirects <= 5; ++redirects) {
+        if (!sampleUrlAllowed(actual, require_https)) { out.error_kind = "InvalidRedirect"; return -1; }
+        const std::string host = transportHost(actual);
+        HostAdmissionLease admission;
+        while (!admission.tryAcquire(host)) {
+            if (shutdown_requested_.load(std::memory_order_acquire)) { out.error_kind = "Aborted"; return -1; }
+            if (nowMonotonicUs() / 1000 >= deadline) { out.error_kind = "Timeout"; return -1; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const int64_t hop_started = nowMonotonicUs() / 1000;
+        const int64_t remaining = deadline - hop_started;
+        if (remaining <= 0) { out.error_kind = "Timeout"; return -1; }
+        if (shutdown_requested_.load(std::memory_order_acquire)) { out.error_kind = "Aborted"; return -1; }
+        BinarySampleContext ctx;
+        ctx.expected = expected_size; ctx.target = target; ctx.deadline = deadline; ctx.shutdown = &shutdown_requested_;
+        curl_easy_reset(easy.get());
+        curl_easy_setopt(easy.get(), CURLOPT_URL, actual.c_str());
+        curl_easy_setopt(easy.get(), CURLOPT_FOLLOWLOCATION, 0L);
+        curl_easy_setopt(easy.get(), CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(easy.get(), CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min<int64_t>(3000, remaining)));
+        curl_easy_setopt(easy.get(), CURLOPT_TIMEOUT_MS, static_cast<long>(remaining));
+        curl_easy_setopt(easy.get(), CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(easy.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+        const std::string ca = getCaBundlePath(); if (!ca.empty()) curl_easy_setopt(easy.get(), CURLOPT_CAINFO, ca.c_str());
+        curl_easy_setopt(easy.get(), CURLOPT_IPRESOLVE, ipResolveFor(host));
+        curl_easy_setopt(easy.get(), CURLOPT_USERAGENT, user_agent.c_str());
+        curl_easy_setopt(easy.get(), CURLOPT_ACCEPT_ENCODING, "identity");
+        const std::string range = "0-" + std::to_string(target - 1);
+        curl_easy_setopt(easy.get(), CURLOPT_RANGE, range.c_str());
+        curl_easy_setopt(easy.get(), CURLOPT_FAILONERROR, 0L);
+        curl_easy_setopt(easy.get(), CURLOPT_HEADERFUNCTION, sampleHeader);
+        curl_easy_setopt(easy.get(), CURLOPT_HEADERDATA, &ctx);
+        curl_easy_setopt(easy.get(), CURLOPT_WRITEFUNCTION, sampleWrite);
+        curl_easy_setopt(easy.get(), CURLOPT_WRITEDATA, &ctx);
+        curl_easy_setopt(easy.get(), CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(easy.get(), CURLOPT_XFERINFOFUNCTION, sampleProgress);
+        curl_easy_setopt(easy.get(), CURLOPT_XFERINFODATA, &ctx);
+        // 不调用relayPrepareRequest、不安装HTTPHEADER/授权/Cookie，不改任何下载文件状态。
+        const CURLcode rc = curl_easy_perform(easy.get());
+        long status = 0; curl_easy_getinfo(easy.get(), CURLINFO_RESPONSE_CODE, &status);
+        out.http_status = static_cast<int>(status);
+        out.ttfb_ms = ctx.first_body_ms >= 0 ? std::max<int64_t>(0, ctx.first_body_ms - started) : -1;
+        // 短样本不提供整文件强健康证明；名额正常归还，不奖励/惩罚网关或逻辑来源。
+        admission.finish(false);
+        if (status == 408 || status == 429 || status == 503) {
+            const auto retry = ctx.headers.find("retry-after");
+            noteHostRateLimit(host, retry == ctx.headers.end() ? 0 : parseTransportRetryAfter(retry->second));
+        }
+        if (shutdown_requested_.load(std::memory_order_acquire)) { out.error_kind = "Aborted"; return -1; }
+        if ((rc == CURLE_OK || ctx.redirect_body_stopped) && (status == 301 || status == 302 || status == 307 || status == 308)) {
+            actual = sampleRedirect(easy.get(), ctx, actual);
+            if (redirects == 5) { out.error_kind = "RedirectLimit"; return -1; }
+            continue;
+        }
+        out.received_bytes = static_cast<int64_t>(ctx.received); out.range_honored = ctx.range_honored;
+        if (!ctx.error.empty()) { out.error_kind = ctx.error; return -1; }
+        if (ctx.cap_reached && (rc == CURLE_OK || rc == CURLE_WRITE_ERROR)) {
+            out.completed_sample = true; return 0;
+        }
+        if (nowMonotonicUs() / 1000 >= deadline || rc == CURLE_OPERATION_TIMEDOUT || rc == CURLE_ABORTED_BY_CALLBACK)
+            out.error_kind = "Timeout";
+        else if (status != 200 && status != 206) out.error_kind = status > 0 ? "HttpStatus" : curlcodeToKind(rc, status);
+        else out.error_kind = rc == CURLE_OK ? "IncompleteSample" : curlcodeToKind(rc, status);
+        return -1;
+    }
+    out.error_kind = "RedirectLimit"; return -1;
 }
 
 } // namespace download

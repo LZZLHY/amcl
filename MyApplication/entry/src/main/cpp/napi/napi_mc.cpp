@@ -7,6 +7,7 @@
  */
 #include "napi_mc.h"
 #include "napi_helpers.h"
+#include "napi_jdk_install.h"
 #include "graphics_semantics_guard.h"
 
 #include <hilog/log.h>
@@ -28,11 +29,27 @@
 #include "../jvm/game_process_exit.h"
 #include "../platform/graphics_observation_abi.h"
 #include "../platform/runtime_slot_store.h"
+#include "../platform/xcomponent.h"
 
 #undef LOG_TAG
 #define LOG_TAG "NAPI_MC"
 
 namespace {
+
+/** 会话调整只提交比例意图；同步返回的true不代表GPU已经采用，界面必须继续读取状态。 */
+napi_value McRequestResolutionScale(napi_env env, napi_callback_info info) {
+    size_t count = 2;
+    napi_value arguments[2]{};
+    double percent = 0;
+    const bool valid = napi_get_cb_info(env, info, &count, arguments, nullptr, nullptr) == napi_ok &&
+        count == 1 && napi_get_value_double(env, arguments[0], &percent) == napi_ok;
+    return amcl::napi::MakeBoolResult(env, valid && amclResolutionRequestPercent(percent));
+}
+
+/** 复制当前进程的几何事务快照，字符串中的request/actual及来源不可由UI互相替代。 */
+napi_value McGetResolutionState(napi_env env, napi_callback_info) {
+    return amcl::napi::WrapStringResult(env, amclResolutionStatusJson());
+}
 
 // OS 锁在进程结束（含崩溃）时释放，锁文件本身永不删除。缓存必须连同取得锁的 PID、
 // 逻辑启动器与目录一起核验，不能把 fork 继承来的 fd 当成新游戏进程的隔离证明。
@@ -398,6 +415,8 @@ napi_value ProbeNativePath(napi_env env, napi_callback_info info) {
     { name, nullptr, fn, nullptr, nullptr, nullptr, napi_default, nullptr }
 
 constexpr napi_property_descriptor kMcDescriptors[] = {
+    NAPI_FUNC("mcRequestResolutionScale", McRequestResolutionScale),
+    NAPI_FUNC("mcGetResolutionState", McGetResolutionState),
     NAPI_FUNC("desktopProcessId", DesktopProcessId),
     NAPI_FUNC("desktopGameProcessState", DesktopGameProcessState),
     NAPI_FUNC("mcLaunchWithProfile",   McLaunchWithProfile),
@@ -433,6 +452,7 @@ constexpr napi_property_descriptor kMcDescriptors[] = {
 namespace amcl::napi {
 
 void registerMcNapi(napi_env env, napi_value exports) {
+    RegisterJdkInstall(env, exports);
     napi_define_properties(env, exports,
                            sizeof(kMcDescriptors) / sizeof(kMcDescriptors[0]),
                            kMcDescriptors);

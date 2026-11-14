@@ -1,0 +1,63 @@
+diff --git a/jdk/make/Setup.gmk b/jdk/make/Setup.gmk
+--- a/jdk/make/Setup.gmk
++++ b/jdk/make/Setup.gmk
+@@ -23,6 +23,7 @@
+ # questions.
+ #
+ 
++# AMCL：三类javac入口均显式UTF-8；主类、构建工具及demo共享同一源码编码。
+ DISABLE_WARNINGS := -Xlint:all,-deprecation,-unchecked,-rawtypes,-cast,-serial,-dep-ann,-static,-fallthrough,-try,-varargs,-empty,-finally
+ 
+ # To build with all warnings enabled, do the following:
+@@ -40,7 +41,7 @@
+ $(eval $(call SetupJavaCompiler,GENERATE_OLDBYTECODE, \
+     JVM := $(JAVA_SMALL), \
+     JAVAC := $(NEW_JAVAC), \
+-    FLAGS := $(BOOT_JDK_SOURCETARGET) -bootclasspath $(BOOT_RTJAR) $(DISABLE_WARNINGS), \
++    FLAGS := -encoding UTF-8 $(BOOT_JDK_SOURCETARGET) -bootclasspath $(BOOT_RTJAR) $(DISABLE_WARNINGS), \
+     SERVER_DIR := $(SJAVAC_SERVER_DIR), \
+     SERVER_JVM := $(SJAVAC_SERVER_JAVA)))
+ 
+@@ -50,7 +51,7 @@
+     JVM := $(JAVA), \
+     JAVAC := $(NEW_JAVAC), \
+     FLAGS := -bootclasspath $(JDK_OUTPUTDIR)/classes -source 8 -target 8 \
+-        -encoding ascii -XDignore.symbol.file=true $(JAVAC_WARNINGS) \
++        -encoding UTF-8 -XDignore.symbol.file=true $(JAVAC_WARNINGS) \
+         $(GENERATE_JDKBYTECODE_EXTRA_FLAGS), \
+     SERVER_DIR := $(SJAVAC_SERVER_DIR), \
+     SERVER_JVM := $(SJAVAC_SERVER_JAVA)))
+@@ -62,6 +63,6 @@
+ $(eval $(call SetupJavaCompiler,GENERATE_USINGJDKBYTECODE, \
+     JVM := $(JAVA_SMALL), \
+     JAVAC := $(NEW_JAVAC), \
+-    FLAGS := -bootclasspath $(JDK_OUTPUTDIR)/classes $(DISABLE_WARNINGS), \
++    FLAGS := -encoding UTF-8 -bootclasspath $(JDK_OUTPUTDIR)/classes $(DISABLE_WARNINGS), \
+     SERVER_DIR := $(SJAVAC_SERVER_DIR), \
+     SERVER_JVM := $(SJAVAC_SERVER_JAVA)))
+diff --git a/hotspot/make/linux/makefiles/rules.make b/hotspot/make/linux/makefiles/rules.make
+--- a/hotspot/make/linux/makefiles/rules.make
++++ b/hotspot/make/linux/makefiles/rules.make
+@@ -128,7 +128,8 @@
+ # Settings for javac
+ BOOT_SOURCE_LANGUAGE_VERSION = 7
+ BOOT_TARGET_CLASS_VERSION = 7
+-JAVAC_FLAGS = -g -encoding ascii
++# AMCL：HotSpot构建工具保留中文源码，编译级别和其他检查保持原样。
++JAVAC_FLAGS = -g -encoding UTF-8
+ BOOTSTRAP_JAVAC_FLAGS = $(JAVAC_FLAGS) -source $(BOOT_SOURCE_LANGUAGE_VERSION) -target $(BOOT_TARGET_CLASS_VERSION)
+ 
+ # With parallel makes, print a message at the end of compilation.
+diff --git a/common/autoconf/spec.gmk.in b/common/autoconf/spec.gmk.in
+--- a/common/autoconf/spec.gmk.in
++++ b/common/autoconf/spec.gmk.in
+@@ -480,7 +480,8 @@
+ POST_STRIP_CMD:=@POST_STRIP_CMD@
+ POST_MCS_CMD:=@POST_MCS_CMD@
+ 
+-JAVA_FLAGS:=@JAVA_FLAGS@
++# AMCL：BeanInfo/doclet等Java内嵌编译器使用构建JVM默认编码；不能依赖容器C locale。
++JAVA_FLAGS:=@JAVA_FLAGS@ -Dfile.encoding=UTF-8
+ JAVA_FLAGS_BIG:=@JAVA_FLAGS_BIG@
+ JAVA_FLAGS_SMALL:=@JAVA_FLAGS_SMALL@
+ 

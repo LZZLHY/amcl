@@ -3,6 +3,15 @@
   "baselineId": "amcl-build-gates-8ee89d35",
   "sourceCommit": "8ee89d352c13bfb40db9e92773578af3f454b67b",
   "description": "原入口完整性基线。PowerShell采用官方AST，JS/TS采用TypeScript AST，CI采用YAML结构；不是运行通过收据。",
+  "approvedForeachExtensions": [
+    {
+      "callsite": "build-hap.ps1:call-034",
+      "sourceCommit": "1201adee89d8e00bc90165b99a9667d2ee1d8d81",
+      "addedMembers": ["test-landscape-rotation.mjs"],
+      "previousValues": "@('test-touch-input-maintenance.mjs', 'test-game-session-host.mjs',\n    'test-gyro-lease.mjs', 'test-gyro-policy-activation.mjs', 'test-entry-ime-stage-observation.mjs')",
+      "reason": "双向横屏修复已在原foreach中增加真实回归。本条仅把该调用的成员见证同步为六项，保留原五项相对顺序；sourceCommit/sourceFiles的原8ee提取身份及其它历史见证不变。"
+    }
+  ],
   "sourceFiles": [
     {
       "path": "build-hap.ps1",
@@ -811,7 +820,7 @@
         {
           "kind": "foreach",
           "variable": "$InputStopTest",
-          "values": "@('test-touch-input-maintenance.mjs', 'test-game-session-host.mjs',\n    'test-gyro-lease.mjs', 'test-gyro-policy-activation.mjs', 'test-entry-ime-stage-observation.mjs')",
+          "values": "@('test-touch-input-maintenance.mjs', 'test-game-session-host.mjs',\n    'test-gyro-lease.mjs', 'test-landscape-rotation.mjs', 'test-gyro-policy-activation.mjs', 'test-entry-ime-stage-observation.mjs')",
           "line": 224
         }
       ],
@@ -825,6 +834,7 @@
         "scripts/test-touch-input-maintenance.mjs",
         "scripts/test-game-session-host.mjs",
         "scripts/test-gyro-lease.mjs",
+        "scripts/test-landscape-rotation.mjs",
         "scripts/test-gyro-policy-activation.mjs",
         "scripts/test-entry-ime-stage-observation.mjs"
       ],
@@ -835,6 +845,7 @@
             "test-touch-input-maintenance.mjs",
             "test-game-session-host.mjs",
             "test-gyro-lease.mjs",
+            "test-landscape-rotation.mjs",
             "test-gyro-policy-activation.mjs",
             "test-entry-ime-stage-observation.mjs"
           ]

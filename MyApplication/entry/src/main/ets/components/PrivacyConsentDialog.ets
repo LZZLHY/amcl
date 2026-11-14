@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * PrivacyConsentDialog.ets — 开屏隐私政策同意弹窗（上架合规）
  *
  * 上架（华为应用市场 / AG）要求：用户首次启动须先阅读并同意隐私政策方可使用。
@@ -78,8 +82,8 @@ export struct PrivacyConsentDialog {
             Row({ space: 4 }) {
               Text('点击查看：').fontSize(13).fontColor(this.theme.textSecondary)
               Text('完整隐私政策')
-                .fontSize(13).fontWeight(600).fontColor(this.theme.primary)
-                .decoration({ type: TextDecorationType.Underline, color: this.theme.primary })
+                .fontSize(13).fontWeight(600).fontColor(this.theme.actionText)
+                .decoration({ type: TextDecorationType.Underline, color: this.theme.actionText })
                 .onClick(() => { this.openPolicy() })
             }
             .width('100%')
@@ -98,7 +102,7 @@ export struct PrivacyConsentDialog {
             .onClick(() => { this.onDisagree() })
           Button('同意并继续')
             .type(ButtonType.Capsule).height(42).fontSize(15).fontWeight(600).layoutWeight(1)
-            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.primary)
+            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.actionPrimary)
             .onClick(() => { this.onAgree() })
         }
         .width('100%')
@@ -109,12 +113,12 @@ export struct PrivacyConsentDialog {
       .padding(22)
       .backgroundColor(this.theme.bgCard)
       .borderRadius(20)
-      .shadow({ radius: 24, color: '#40000000', offsetX: 0, offsetY: 6 })
+      .shadow({ radius: 24, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 6 })
     }
     .width('100%')
     .height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#99000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
   }

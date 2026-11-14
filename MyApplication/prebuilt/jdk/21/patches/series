@@ -24,19 +24,13 @@
 # musl libc: 跳过不支持的 setutxent/getutxent/endutxent
 0004-musl-utmpx.patch
 
-# === 5-8: OHOS 运行时关键 patch（HotSpot 信号处理 / Safepoint / libjli） ===
-
-# OHOS：javaSignalHandler 不在未识别信号上 abort，避免设备误杀 JVM
-# 注意：JDK 21 的参数名从 17 的 ucVoid 改成了 context（anchor 已对应调整）
-0005-signals-posix-abort-if-unrecognized.patch
-
-# OHOS：aarch64 信号处理对 ELF loader 加载的代码做 SafePoint polling SEGV fallback
-# （CodeCache 看不到 ELF-loaded code，需要在 SEGV 时 disarm polling page 让 CPU 重试）
-0006-aarch64-elf-safepoint-fallback.patch
-
-# OHOS：safepoint polling page 用 MEM_PROT_READ 而不是 MEM_PROT_NONE
-# 配合 0006 的 fallback 一起，让 polling 走 SIGSEGV→重试，避免 SIGBUS abort
-0007-safepoint-mechanism-mem-prot-read.patch
+# === 上游普通信号与安全点协议 ===
+#
+# 0005/0006/0007 已退出活动集，原件保留作历史制品追溯和实际失败负对照。
+# 普通 wrapper 必须为未识别同步故障进入上游 fatal；宿主四参数桥独立处理链顺序。
+# bad polling page 保持 NONE，正常 poll 转入 VM stub；自定义 ELF 装载不改变
+# JIT 代码归属和安全点协议，不能通过放开共享页返回 true 来冒充线程已协调。
+# 构建前与来源落盘前分别验证本 major 三份协议文件等于锁定上游完整字节。
 
 # OHOS：libjli 跳过 re-exec 路径（RequiresSetenv 永远返回 JNI_FALSE）
 # ELF loader 已经处理好了 LD_LIBRARY_PATH，原路径是为 musl 早期版本的兜底，会触发死锁
@@ -92,3 +86,51 @@
 
 # Docker 使用 Linux 用户空间；WSL 内核标识不能改变构建宿主 ABI。
 0013-ohos-linux-container-build-host.patch
+
+# 嵌入行为只在真实宿主内启用，独立 CLI 保留上游行为；8 另恢复完整 Applet 类层。
+0014-ohos-embedded-boundary-and-class-closure.patch
+
+# Fontconfig：恢复本代 FreeType 的真实 BDF/PCF 驱动及查询服务，不裁减 FC 能力。
+0016-fontconfig-freetype-bdf-pcf-completion.patch
+
+# 保留真实系统身份；具名 OHOS 使用已编译的 POSIX/Linux 实现与工具后端。
+0017-ohos-runtime-platform-dispatch.patch
+
+# 字体回退保全新增覆盖与真实文件；变量实例名不可触发默认物理字体替换。
+0018-fontconfig-preserve-fallback-coverage.patch
+
+# zipfs：只跳过同对象完整mode无变化复制，真实权限步骤先于原ZIP删除/挪动。
+0019-zipfs-permission-copy-transaction.patch
+
+# 正式Java编译保留UTF-8中文适配注释/文本，覆盖bootstrap及目标编译。
+0021-java-source-utf8.patch
+
+# FreeType→Java流读桥：异常/短读不发布伪缓存，保留首错和正常热命中。
+0022-freetype-stream-jni-and-cache-boundary.patch
+
+# API20 真实 OHOS PCM Playback；保留原 Java/JNI，异常清理、回调/代码寿命及完整帧队列。
+# 由共享 javasound 源生成；MIDI/Ports/Capture 与设备听感资格独立，不追认旧包。
+0023-ohos-javasound-daudio-playback.patch
+
+# OHOS childproc: raw getdents64闭合FD/显式execve；现代仅实际uname默认FORK，8保留VFORK。
+0024-ohos-childproc-safe-fork.patch
+
+# API20双向PCM与正常签名宿主的同源数据回调；保留CFI，真实权限/设备资格独立。
+0025-ohos-javasound-duplex-host-callbacks.patch
+
+# 可选API24 OH_MIDI与实际设备Ports；最低API20不变，硬件资格独立验证。
+0026-ohos-javasound-native-midi.patch
+0027-ohos-javasound-device-ports.patch
+
+# 实际呈现时钟映射用户PCM/静音区间；Flush坐标归零，签名宿主回调ABI2。
+0028-ohos-javasound-presentation-timeline.patch
+
+# 启动TMPDIR冻结、Attach/PerfData统一路径；实际只读marker与宿主单owner契约配套。
+0030-ohos-native-temp-contract.patch
+# OHOS应用UID无NSS条目时仅用真实UID命名PerfData，权限与工具发现规则保留。
+0031-ohos-perfdata-uid-identity.patch
+# 正常Destroy撤销Attach持久路径；保留原监听FD/daemon到进程退出边界。
+0032-ohos-attach-vm-exit-path.patch
+
+# 已签名宿主存在时共享PCM owner、录音政策与流生命周期；独立CLI保持原生后端。
+0033-ohos-javasound-shared-pcm-owner.patch

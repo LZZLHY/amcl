@@ -26,16 +26,19 @@ import { DiagnosticPolicy } from 'commons';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { BMCLAPI_BASE, MOJANG_META, MOJANG_RESOURCES, MOJANG_LIBRARIES } from 'commons';
+import { BMCLAPI_BASE, MOJANG_RESOURCES, MOJANG_LIBRARIES } from 'commons';
 import { CancelledError } from 'commons';
 import {
   DownloadManager, DownloadTaskSpec, DownloadFileSpec, DownloadTaskView,
   DownloadCheck, FetchTextRichResult,
 } from './DownloadManager';
 import { getMetadataCacheStore } from '../version/MetadataCacheStore';
+import { McManifestVersion, loadMcVersionManifest } from '../version/McVersionManifest';
 import { buildConditionalRequest } from '../version/MetadataCache';
 import { basename, formatSpeed } from 'commons';
-import { shouldUseBmclapiFirst, buildSortedUrls } from './SourceProber';
+import { shouldUseBmclapiFirst, buildSortedUrls, selectMcSourceUrls, canRelayPublicMcMetadata,
+  fetchPublicMcMetadata, isOfficialMcSourceOnly, useOrderedMcDownload } from './SourceProber';
+import { buildMavenArtifactUrls, buildMavenUrls, isKnownMavenRepositoryRoot } from '../modloader/MavenSpecBuilder';
 import {
   mavenToRelativePath, safeBaseName, safeRelPath, isSafeHttpUrl, isValidSha1, isValidJarFile, computeFileSha1,
 } from '../modloader/MavenUtils';
@@ -46,10 +49,6 @@ import { LogTags } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 
 const TAG = LogTags.UTIL_DOWNLOADER;
-
-function useBmclapi(): boolean {
-  return shouldUseBmclapiFirst();
-}
 
 // ============ 元数据请求超时（秒，Phase 3.5 起走 fetchText NAPI） ============
 const META_TIMEOUT_SECONDS = 30;
@@ -104,9 +103,6 @@ export interface DownloadProgress {
 
 export type ProgressCallback = (progress: DownloadProgress) => void;
 
-interface VersionEntry { id: string; type: string; url: string; }
-interface VersionLatest { release: string; snapshot: string; }
-interface VersionManifest { latest: VersionLatest; versions: VersionEntry[]; }
 // 2026-05-06：Phase 7 解锁 export 以支持 McDownloader.filterLibraries 的纯函数单元测试。
 export interface LibraryDownload { path: string; url: string; sha1: string; size: number; }
 export interface LibraryDownloads { artifact?: LibraryDownload; }
@@ -289,6 +285,13 @@ export class McDownloader {
       if (mirror !== primaryUrl && mirrorList.indexOf(mirror) < 0) mirrorList.push(mirror);
     }
 
+    // MC公共元数据在查缓存之前应用同一来源约束，避免官方档仍按旧BMCL primary的
+    // key命中/请求镜像。未知作者原始地址保留；若没有允许来源就明确失败，不补镜像。
+    let allowed = selectMcSourceUrls([primaryUrl].concat(mirrorList));
+    if (allowed.length === 0) throw new Error('仅官方来源下没有可用的MC元数据地址');
+    primaryUrl = allowed[0];
+    mirrorList = allowed.slice(1);
+
     // Phase 2.3 step 1: TTL 内直接命中
     if (maxAgeMs !== 0) {
       let store = getMetadataCacheStore();
@@ -313,9 +316,10 @@ export class McDownloader {
       }
     }
 
-    // Phase 3.5 + 2.3: 单次调用 NAPI（含可选条件头）
+    // 这里只处理公开Mojang元数据和缓存条件头，显式允许元数据走网关；通用API及
+    // CF业务鉴权入口保持默认不允许。Native仍验证业务头、白名单和票据。
     let resp: FetchTextRichResult = await this.mgr.fetchTextEx(
-      primaryUrl, mirrorList, META_TIMEOUT_SECONDS, reqHeaders);
+      primaryUrl, mirrorList, META_TIMEOUT_SECONDS, reqHeaders, undefined, canRelayPublicMcMetadata(allowed));
 
     // Phase 2.3 step 2-cont: 304 → 用本地 body + touch fetchedAt
     if (resp.statusCode === 304) {
@@ -332,7 +336,9 @@ export class McDownloader {
       // 包 try-catch + rethrow，让上层 cacheGetText 的 try-catch 接住。
       let plain: string;
       try {
-        plain = await this.mgr.fetchText(primaryUrl, mirrorList, META_TIMEOUT_SECONDS);
+        // 无缓存正文的304必须重新走同一公共GET权限及来源约束，不能在恢复分支掉回
+        // 默认不经relay的旧fetchText，也不因设置变化把镜像重新补回候选。
+        plain = await fetchPublicMcMetadata([primaryUrl].concat(mirrorList), META_TIMEOUT_SECONDS);
       } catch (e) {
         this.alog().warn(TAG, 'fetchText fallback failed', e, LOG_DOMAIN_DOWNLOAD);
         throw e as Error;
@@ -367,38 +373,18 @@ export class McDownloader {
     let safeVersion = requireSafeSegment(version, 'version');
     this.report('获取版本信息', 0, 2, 'version_manifest_v2.json');
 
-    let bmcl = useBmclapi();
-    let manifestPrimary = bmcl
-      ? BMCLAPI_BASE + '/mc/game/version_manifest_v2.json'
-      : MOJANG_META + '/mc/game/version_manifest_v2.json';
-    let manifestFallback = bmcl
-      ? MOJANG_META + '/mc/game/version_manifest_v2.json'
-      : BMCLAPI_BASE + '/mc/game/version_manifest_v2.json';
-    // 单次调用走 NAPI 多源 fallback；缓存 6 小时（Phase 2.3 + 3.5）
-    let manifestJson = await this.httpGet(manifestPrimary, [manifestFallback], MANIFEST_CACHE_MS);
-    if (!manifestJson.startsWith('{')) {
-      throw new Error('非 JSON 响应: ' + manifestJson.substring(0, 100));
-    }
-    let manifest: VersionManifest = JSON.parse(manifestJson) as VersionManifest;
-
-    let versionEntry: VersionEntry | undefined = undefined;
-    for (let v of manifest.versions) {
-      if (v.id === safeVersion) { versionEntry = v; break; }
-    }
-    if (!versionEntry) throw new Error('版本 ' + safeVersion + ' 未找到');
+    const manifest = await loadMcVersionManifest(MANIFEST_CACHE_MS, false, safeVersion);
+    const versionEntry = manifest.versions.find((entry: McManifestVersion): boolean => entry.id === safeVersion);
+    if (versionEntry === undefined) throw new Error('版本 ' + safeVersion + ' 未找到');
 
     this.report('获取版本详情', 1, 2, safeVersion + '.json');
-    // version JSON URL 也替换为 BMCLAPI 镜像
-    let versionUrl = versionEntry.url;
-    if (bmcl && versionUrl.indexOf('piston-meta.mojang.com') >= 0) {
-      versionUrl = versionUrl.replace('https://piston-meta.mojang.com', BMCLAPI_BASE);
-    }
-    if (bmcl && versionUrl.indexOf('launchermeta.mojang.com') >= 0) {
-      versionUrl = versionUrl.replace('https://launchermeta.mojang.com', BMCLAPI_BASE);
-    }
-    // version.json 按 sha1 寻址 → 永不过期（Phase 2.3），NAPI 做镜像 fallback（Phase 3.5）
-    let versionMirrors = versionUrl !== versionEntry.url ? [versionEntry.url] : [];
-    let rawJson = await this.httpGet(versionUrl, versionMirrors, IMMUTABLE_CACHE_MS);
+    // 版本详情的官方优先与镜像优先都保留另一条来源。只重写已知 Mojang URL 前缀，
+    // 不把版本清单里的未知仓库地址或 query 当作公共镜像等价关系。
+    const officialUrl = versionEntry.url;
+    const mirrorUrl = officialUrl.replace(/^https:\/\/(?:piston-meta|launchermeta|launcher|piston-data)\.mojang\.com\//,
+      BMCLAPI_BASE + '/');
+    const urls = mirrorUrl !== officialUrl ? buildSortedUrls(mirrorUrl, officialUrl) : [officialUrl];
+    const rawJson = await this.httpGet(urls[0], urls.slice(1), IMMUTABLE_CACHE_MS);
     if (!rawJson.startsWith('{')) {
       throw new Error('非 JSON 响应: ' + rawJson.substring(0, 100));
     }
@@ -475,6 +461,7 @@ export class McDownloader {
       localPath: clientPath,
       urls: urls,
       allowedRoot: destDir,
+      orderedVersionDownload: useOrderedMcDownload(),
       check: { sha1: clientSha1, size: clientSize },
     };
     let spec: DownloadTaskSpec = {
@@ -518,6 +505,9 @@ export class McDownloader {
     let libs = McDownloader.filterLibraries(versionJson.libraries);
     let libTotal = libs.length;
     let files: DownloadFileSpec[] = [];
+    // 批次内保持同一份设置与选源观察，避免并发读清单改变已有文件的候选顺序。
+    const orderedVersionDownload = useOrderedMcDownload();
+    const preferOfficial = !shouldUseBmclapiFirst();
     let librariesRoot = this.mcDir + '/libraries';
     let seenPaths: Set<string> = new Set<string>();
     this.ensureDir(librariesRoot);
@@ -563,15 +553,23 @@ export class McDownloader {
         let libDir = libPath.substring(0, libPath.lastIndexOf('/'));
         this.ensureDir(libDir);
 
-        let urls = validatedUrls(buildSortedUrls(
-          BMCLAPI_BASE + '/maven/' + artifactPath,
-          artifact.url || (MOJANG_LIBRARIES + '/' + artifactPath)
-        ), 'library artifact.urls');
+        const directUrl = artifact.url || (MOJANG_LIBRARIES + '/' + artifactPath);
+        const mavenMirror = BMCLAPI_BASE + '/maven/' + artifactPath;
+        let candidates = buildSortedUrls(mavenMirror, directUrl);
+        if (orderedVersionDownload) {
+          // PCL 保留清单给出的 Mojang 制品直链在前；加载器 Maven 的真实仓库与
+          // 两个 BMCL 别名则按同一套自动档顺序，未知直链不拼公共镜像。
+          candidates = directUrl.startsWith(MOJANG_LIBRARIES + '/')
+            ? [directUrl, mavenMirror, BMCLAPI_BASE + '/libraries/' + artifactPath]
+            : buildMavenArtifactUrls(directUrl, preferOfficial, true);
+        }
+        let urls = validatedUrls(candidates, 'library artifact.urls');
 
         files.push({
           localPath: libPath,
           urls: urls,
           allowedRoot: librariesRoot,
+          orderedVersionDownload: orderedVersionDownload,
           check: { sha1: artifactSha1, size: artifact.size },
         });
       } else {
@@ -598,6 +596,7 @@ export class McDownloader {
         this.ensureDir(libDir);
 
         let candidates: string[] = [];
+        let declaredRepo: string | undefined = undefined;
         // BMCLAPI /maven 镜像（同时代理 forge maven + central，国内最稳）优先
         candidates.push(BMCLAPI_BASE + '/maven/' + relPath);
         // lib 自带仓库根（死链 files.minecraftforge.net 重写为现役 maven.minecraftforge.net）
@@ -607,6 +606,7 @@ export class McDownloader {
             .replace('https://files.minecraftforge.net/maven/', 'https://maven.minecraftforge.net/');
           if (isSafeHttpUrl(root)) {
             if (!root.endsWith('/')) root += '/';
+            declaredRepo = root;
             let u = root + relPath;
             if (isSafeHttpUrl(u) && candidates.indexOf(u) < 0) candidates.push(u);
           }
@@ -621,12 +621,19 @@ export class McDownloader {
           if (candidates.indexOf(u) < 0) candidates.push(u);
         }
 
-        let safeCandidates = validatedUrls(candidates, 'legacy library.urls');
+        // 旧格式库也不能绕过正文规则。未知作者仓库没有已证明的公开镜像等价关系，
+        // 严格档只保留它自己的原始地址；已知公共仓库则移除BMCL/阿里镜像。关闭档
+        // 完整保留原候选及Native评分，不借本次修复改变其他下载策略。
+        let permitted = orderedVersionDownload ? buildMavenUrls(lib.name, declaredRepo, preferOfficial, undefined, true) :
+          (isOfficialMcSourceOnly() && declaredRepo !== undefined && !isKnownMavenRepositoryRoot(declaredRepo)
+            ? [declaredRepo + relPath] : selectMcSourceUrls(candidates));
+        let safeCandidates = validatedUrls(permitted, 'legacy library.urls');
         // 老格式无 sha1/size → 不传 check，引擎只校验非空 + PK 头（合法 JAR）。
         files.push({
           localPath: libPath,
           urls: safeCandidates,
           allowedRoot: librariesRoot,
+          orderedVersionDownload: orderedVersionDownload,
         });
       }
     }
@@ -855,6 +862,7 @@ export class McDownloader {
         localPath: destPath,
         urls: urls,
         allowedRoot: layoutRoot,
+        orderedVersionDownload: useOrderedMcDownload(),
         check: check,
       });
     }

@@ -262,7 +262,8 @@ bool amcl_game_gui_retire_source(uint32_t id){Runtime* owner=runtime();if(!owner
 void amcl_read_game_gui_for_source(uint32_t id,int width,int height,const char* version,double* values,bool guide) {
     std::fill(values,values+AMCL_GAME_GUI_VALUE_COUNT,0.0);
     if(width<=0 || height<=0 || width>65535 || height>65535 || !version || !*version || std::strlen(version)>96)return;
-    values[3]=std::lround(amcl::renderscale::MapX(width));values[4]=std::lround(amcl::renderscale::MapY(height));
+    if(!amcl::renderscale::MapWindowPoint(width,height,&values[3],&values[4]))return;
+    values[3]=std::lround(values[3]);values[4]=std::lround(values[4]);
     Runtime* owner=runtime();if(!owner)return;Runtime& r=*owner;Resource now;
     std::lock_guard<std::mutex> lock(r.mutex);Source* s=find(r,id);
     if(!processLive(r) || !s)return;
@@ -279,7 +280,10 @@ void amcl_read_game_gui_for_source(uint32_t id,int width,int height,const char* 
         if(s->ticket.id){if(r.restoreOwner==s->ticket.id)r.restoreOwner=0;s->ticket.result=3;s->ticket.javaId=0;s->ticket.executing=false;s->ticket.submitted=false;}
     }
     std::copy(s->cache.begin(),s->cache.end(),values);overlay(*s,values);
-    if(values[3]<=0 || values[4]<=0){values[3]=std::lround(amcl::renderscale::MapX(width));values[4]=std::lround(amcl::renderscale::MapY(height));}
+    if(values[3]<=0 || values[4]<=0){
+        if(!amcl::renderscale::MapWindowPoint(width,height,&values[3],&values[4]))return;
+        values[3]=std::lround(values[3]);values[4]=std::lround(values[4]);
+    }
     s->request.width=width;s->request.height=height;s->request.guide=guide;
     std::memcpy(s->request.version,version,std::strlen(version)+1);s->queued=true;
     if(ensureWorker(r))r.wake.notify_one();

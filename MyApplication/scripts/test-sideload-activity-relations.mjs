@@ -60,7 +60,7 @@ function mount(f,params){const {SideloadUpdateViewModel:VM}=f.load('entry/src/ma
 // 真正Core由目标进程确认成功后，新VM首次onShown请求不同版本必须开独立主活动。
 {
  const f=await fixture(),oldUi=f.render();await settle();const task=f.coordinator.state();
- Object.assign(f.environment,{version:2,payload});f.setObservation({kind:'bms-success',safeToRelease:true,bmSubmitted:true,
+ Object.assign(f.environment,{version:2,versionName:task.asset.versionName,payload});f.setObservation({kind:'bms-success',safeToRelease:true,bmSubmitted:true,
   code:0,message:'明确平台测试终态',installId:task.installId,nonce:task.restartNonce});
  f.coordinator.recover(task.installId,task.restartNonce);await settle();assert.equal(f.coordinator.state().phase,'verified');
  const oldId=task.activityId,history=JSON.stringify(f.rows.get(oldId));oldUi.dispose();
@@ -125,7 +125,7 @@ function mount(f,params){const {SideloadUpdateViewModel:VM}=f.load('entry/src/ma
 // 权威BMS事实先持久，日志失败保留Verified/fence；重试日志后才complete同一安装执行权。
 {
  const f=await fixture(),ui=f.render();await settle();const task=f.coordinator.state(),gate=deferred();
- f.faults.ledgerGate=gate;f.environment.version=2;f.environment.payload=payload;
+ f.faults.ledgerGate=gate;f.environment.version=2;f.environment.versionName=task.asset.versionName;f.environment.payload=payload;
  f.setObservation({kind:'bms-success',safeToRelease:true,bmSubmitted:true,code:0,message:'明确平台终态',installId:task.installId,nonce:task.restartNonce});
  f.coordinator.recover(task.installId,task.restartNonce);await settle();
  assert.equal(f.coordinator.state().phase,'verified');assert.equal(f.counters.complete,0);

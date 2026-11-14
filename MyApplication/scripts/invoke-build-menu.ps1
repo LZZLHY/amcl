@@ -7,6 +7,8 @@ param(
     [switch]$CheckOnly,
     [ValidateSet('full','quick')][string]$ValidationProfile = 'full',
     [switch]$Fresh,
+    # 正式发行候选必须显式开启源码/远端/洁净门；仅选择 release 编译模式不隐式授予发行资格。
+    [switch]$Release,
     # 仅显式 full 才能追加重型输入闭包双扫；正常 quick 由主入口拒绝此组合。
     [switch]$DeepAudit
 )
@@ -57,6 +59,7 @@ try {
         $buildArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $builder,
             '-Product', $Product, '-BuildMode', $BuildMode, '-HapKind', 'signed', '-ValidationProfile', $ValidationProfile)
         if ($Fresh) { $buildArguments += '-Fresh' }
+        if ($Release) { $buildArguments += '-Release' }
         if ($DeepAudit) { $buildArguments += '-DeepAudit' }
         & $shell @buildArguments
         $exitCode = $LASTEXITCODE

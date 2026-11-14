@@ -1,0 +1,231 @@
+diff --git a/src/java.desktop/share/classes/sun/font/FontUtilities.java b/src/java.desktop/share/classes/sun/font/FontUtilities.java
+--- a/src/java.desktop/share/classes/sun/font/FontUtilities.java
++++ b/src/java.desktop/share/classes/sun/font/FontUtilities.java
+@@ -66,7 +66,9 @@
+             public Object run() {
+                 String osName = System.getProperty("os.name", "unknownOS");
+ 
+-                isLinux = osName.startsWith("Linux");
++                isLinux = (osName.startsWith("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osName) || "OpenHarmony".equals(osName) || "OHOS".equals(osName));
+ 
+                 isMacOSX = osName.contains("OS X"); // TODO: MacOSX
+                 if (isMacOSX) {
+diff --git a/src/java.desktop/share/classes/sun/awt/OSInfo.java b/src/java.desktop/share/classes/sun/awt/OSInfo.java
+--- a/src/java.desktop/share/classes/sun/awt/OSInfo.java
++++ b/src/java.desktop/share/classes/sun/awt/OSInfo.java
+@@ -95,7 +95,9 @@
+                 return WINDOWS;
+             }
+ 
+-            if (osName.contains("Linux")) {
++            if ((osName.contains("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osName) || "OpenHarmony".equals(osName) || "OHOS".equals(osName))) {
+                 return LINUX;
+             }
+ 
+diff --git a/src/java.base/unix/classes/java/lang/ProcessImpl.java b/src/java.base/unix/classes/java/lang/ProcessImpl.java
+--- a/src/java.base/unix/classes/java/lang/ProcessImpl.java
++++ b/src/java.base/unix/classes/java/lang/ProcessImpl.java
+@@ -132,7 +132,9 @@
+         static Platform get() {
+             String osName = GetPropertyAction.privilegedGetProperty("os.name");
+ 
+-            if (osName.equals("Linux")) { return LINUX; }
++            if ((osName.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osName) || "OpenHarmony".equals(osName) || "OHOS".equals(osName))) { return LINUX; }
+             if (osName.contains("OS X")) { return BSD; }
+             if (osName.equals("AIX")) { return AIX; }
+ 
+diff --git a/src/java.base/unix/classes/sun/net/PortConfig.java b/src/java.base/unix/classes/sun/net/PortConfig.java
+--- a/src/java.base/unix/classes/sun/net/PortConfig.java
++++ b/src/java.base/unix/classes/sun/net/PortConfig.java
+@@ -43,7 +43,9 @@
+     static {
+         jdk.internal.loader.BootLoader.loadLibrary("net");
+         String os = GetPropertyAction.privilegedGetProperty("os.name");
+-        if (os.startsWith("Linux")) {
++        if ((os.startsWith("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(os) || "OpenHarmony".equals(os) || "OHOS".equals(os))) {
+             defaultLower = 32768;
+             defaultUpper = 61000;
+         } else if (os.contains("OS X")) {
+diff --git a/src/jdk.net/share/classes/jdk/net/ExtendedSocketOptions.java b/src/jdk.net/share/classes/jdk/net/ExtendedSocketOptions.java
+--- a/src/jdk.net/share/classes/jdk/net/ExtendedSocketOptions.java
++++ b/src/jdk.net/share/classes/jdk/net/ExtendedSocketOptions.java
+@@ -364,7 +364,9 @@
+                             return System.getProperty("os.name");
+                         }
+                     });
+-            if ("Linux".equals(osname)) {
++            if (("Linux".equals(osname) ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osname) || "OpenHarmony".equals(osname) || "OHOS".equals(osname))) {
+                 return newInstance("jdk.net.LinuxSocketOptions");
+             } else if (osname.startsWith("Mac")) {
+                 return newInstance("jdk.net.MacOSXSocketOptions");
+diff --git a/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/Platform.java b/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/Platform.java
+--- a/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/Platform.java
++++ b/src/jdk.jlink/share/classes/jdk/tools/jlink/internal/Platform.java
+@@ -100,7 +100,12 @@
+      * Returns the runtime {@code Platform.OperatingSystem}.
+      */
+     private static OperatingSystem runtimeOS() {
+-        String osName = System.getProperty("os.name").substring(0, 3).toLowerCase();
++        String actualName = System.getProperty("os.name");
++        // OHOS 镜像仍使用已编译的 Linux jlink 后端，不能返回 UNKNOWN 或改系统属性。
++        if ("HarmonyOS".equals(actualName) || "OpenHarmony".equals(actualName) || "OHOS".equals(actualName)) {
++            return OperatingSystem.LINUX;
++        }
++        String osName = actualName.substring(0, 3).toLowerCase();
+         OperatingSystem os = switch (osName) {
+             case "win" -> OperatingSystem.WINDOWS;
+             case "lin" -> OperatingSystem.LINUX;
+diff --git a/src/jdk.jpackage/share/classes/jdk/jpackage/internal/Platform.java b/src/jdk.jpackage/share/classes/jdk/jpackage/internal/Platform.java
+--- a/src/jdk.jpackage/share/classes/jdk/jpackage/internal/Platform.java
++++ b/src/jdk.jpackage/share/classes/jdk/jpackage/internal/Platform.java
+@@ -60,7 +60,9 @@
+         if (os.indexOf("win") >= 0) {
+             platform = Platform.WINDOWS;
+         }
+-        else if (os.indexOf("nix") >= 0 || os.indexOf("nux") >= 0) {
++        else if ((os.indexOf("nix") >= 0 || os.indexOf("nux") >= 0 ||
++                // 只接纳具名 OHOS，仍由实际工具/系统能力决定包格式是否可用。
++                os.equals("harmonyos") || os.equals("openharmony") || os.equals("ohos"))) {
+             platform = Platform.LINUX;
+         }
+         else if (os.indexOf("mac") >= 0) {
+diff --git a/src/java.desktop/unix/classes/sun/print/PrintServiceLookupProvider.java b/src/java.desktop/unix/classes/sun/print/PrintServiceLookupProvider.java
+--- a/src/java.desktop/unix/classes/sun/print/PrintServiceLookupProvider.java
++++ b/src/java.desktop/unix/classes/sun/print/PrintServiceLookupProvider.java
+@@ -153,11 +153,15 @@
+     }
+ 
+     static boolean isLinux() {
+-        return (osname.equals("Linux"));
++        return ((osname.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osname) || "OpenHarmony".equals(osname) || "OHOS".equals(osname)));
+     }
+ 
+     static boolean isBSD() {
+-        return (osname.equals("Linux") ||
++        return ((osname.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osname) || "OpenHarmony".equals(osname) || "OHOS".equals(osname)) ||
+                 osname.contains("OS X"));
+     }
+ 
+diff --git a/src/java.desktop/share/classes/sun/print/PSPrinterJob.java b/src/java.desktop/share/classes/sun/print/PSPrinterJob.java
+--- a/src/java.desktop/share/classes/sun/print/PSPrinterJob.java
++++ b/src/java.desktop/share/classes/sun/print/PSPrinterJob.java
+@@ -1629,7 +1629,9 @@
+         }
+ 
+         String osname = System.getProperty("os.name");
+-        if (osname.equals("Linux") || osname.contains("OS X")) {
++        if ((osname.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osname) || "OpenHarmony".equals(osname) || "OHOS".equals(osname)) || osname.contains("OS X")) {
+             execCmd = new String[ncomps];
+             execCmd[n++] = "/usr/bin/lpr";
+             if ((pFlags & PRINTER) != 0) {
+diff --git a/src/java.desktop/unix/classes/sun/awt/X11/XScrollbarPeer.java b/src/java.desktop/unix/classes/sun/awt/X11/XScrollbarPeer.java
+--- a/src/java.desktop/unix/classes/sun/awt/X11/XScrollbarPeer.java
++++ b/src/java.desktop/unix/classes/sun/awt/X11/XScrollbarPeer.java
+@@ -75,7 +75,9 @@
+      * Currently uses hardcoded values
+      */
+     private int getDefaultDimension() {
+-        if (System.getProperty("os.name").equals("Linux")) {
++        if ((System.getProperty("os.name").equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(System.getProperty("os.name")) || "OpenHarmony".equals(System.getProperty("os.name")) || "OHOS".equals(System.getProperty("os.name")))) {
+             return DEFAULT_WIDTH_LINUX;
+         } else {
+             return DEFAULT_WIDTH_SOLARIS;
+diff --git a/src/java.desktop/unix/classes/sun/awt/X11/MotifColorUtilities.java b/src/java.desktop/unix/classes/sun/awt/X11/MotifColorUtilities.java
+--- a/src/java.desktop/unix/classes/sun/awt/X11/MotifColorUtilities.java
++++ b/src/java.desktop/unix/classes/sun/awt/X11/MotifColorUtilities.java
+@@ -638,7 +638,9 @@
+ 
+     @SuppressWarnings("removal")
+     static void loadSystemColors(int[] systemColors) {
+-        if ("Linux".equals(AccessController.doPrivileged(new GetPropertyAction("os.name")))) { // Load motif default colors on Linux.
++        if (("Linux".equals(AccessController.doPrivileged(new GetPropertyAction("os.name"))) ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(AccessController.doPrivileged(new GetPropertyAction("os.name"))) || "OpenHarmony".equals(AccessController.doPrivileged(new GetPropertyAction("os.name"))) || "OHOS".equals(AccessController.doPrivileged(new GetPropertyAction("os.name"))))) { // Load motif default colors on Linux.
+             loadMotifDefaultColors(systemColors);
+         }
+         else
+diff --git a/src/java.security.jgss/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java b/src/java.security.jgss/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java
+--- a/src/java.security.jgss/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java
++++ b/src/java.security.jgss/share/classes/sun/security/jgss/wrapper/SunNativeProvider.java
+@@ -84,7 +84,9 @@
+                                 = System.getProperty("sun.security.jgss.lib");
+                         if (defaultLib == null || defaultLib.trim().equals("")) {
+                             String osname = System.getProperty("os.name");
+-                            if (osname.startsWith("Linux")) {
++                            if ((osname.startsWith("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(osname) || "OpenHarmony".equals(osname) || "OHOS".equals(osname))) {
+                                 gssLibs = new String[]{
+                                     "libgssapi.so",
+                                     "libgssapi_krb5.so",
+diff --git a/src/java.base/share/classes/sun/net/sdp/SdpSupport.java b/src/java.base/share/classes/sun/net/sdp/SdpSupport.java
+--- a/src/java.base/share/classes/sun/net/sdp/SdpSupport.java
++++ b/src/java.base/share/classes/sun/net/sdp/SdpSupport.java
+@@ -40,7 +40,9 @@
+ 
+ public final class SdpSupport {
+     private static final String os = GetPropertyAction.privilegedGetProperty("os.name");
+-    private static final boolean isSupported = os.equals("Linux");
++    private static final boolean isSupported = (os.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(os) || "OpenHarmony".equals(os) || "OHOS".equals(os));
+     private static final JavaIOFileDescriptorAccess fdAccess =
+         SharedSecrets.getJavaIOFileDescriptorAccess();
+ 
+diff --git a/src/java.base/share/classes/sun/launcher/LauncherHelper.java b/src/java.base/share/classes/sun/launcher/LauncherHelper.java
+--- a/src/java.base/share/classes/sun/launcher/LauncherHelper.java
++++ b/src/java.base/share/classes/sun/launcher/LauncherHelper.java
+@@ -175,7 +175,9 @@
+                 SecuritySettings.printSecuritySettings(opt, ostream);
+                 break;
+             case "system":
+-                if (System.getProperty("os.name").contains("Linux")) {
++                if ((System.getProperty("os.name").contains("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(System.getProperty("os.name")) || "OpenHarmony".equals(System.getProperty("os.name")) || "OHOS".equals(System.getProperty("os.name")))) {
+                     printSystemMetrics();
+                     break;
+                 }
+@@ -184,7 +186,9 @@
+                 printProperties();
+                 printLocale(true);
+                 SecuritySettings.printSecuritySummarySettings(ostream);
+-                if (System.getProperty("os.name").contains("Linux")) {
++                if ((System.getProperty("os.name").contains("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(System.getProperty("os.name")) || "OpenHarmony".equals(System.getProperty("os.name")) || "OHOS".equals(System.getProperty("os.name")))) {
+                     printSystemMetrics();
+                 }
+                 break;
+diff --git a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java
+--- a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java
++++ b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/utilities/PlatformInfo.java
+@@ -31,7 +31,9 @@
+   /* Returns "win32" if Windows; "linux" if Linux. */
+   public static String getOS() throws UnsupportedPlatformException {
+     String os = System.getProperty("os.name");
+-    if (os.equals("Linux")) {
++    if ((os.equals("Linux") ||
++                /* OHOS 使用本目标已编译的 Linux/POSIX 后端；保留真实 os.name。 */
++                "HarmonyOS".equals(os) || "OpenHarmony".equals(os) || "OHOS".equals(os))) {
+       return "linux";
+     } else if (os.equals("FreeBSD")) {
+       return "bsd";

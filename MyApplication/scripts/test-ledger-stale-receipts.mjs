@@ -16,10 +16,10 @@ import { evidenceRuntime } from './lib/evidence-test-runtime.mjs';
 function fixture() {
   const runtime = evidenceRuntime(), root = runtime.directory.replaceAll('\\', '/');
   const ledger = runtime.load('commons/src/main/ets/utils/ActivityLedger.ets');
-  ledger.setLedgerProcessRunNonce('stale-receipt-test'); ledger.configureLedgerMaintenanceOwner(true, () => true);
+  ledger.setLedgerProcessRunNonce('current-receipt-test'); ledger.configureLedgerMaintenanceOwner(true, () => true);
   ledger.ledgerBeginMaintenanceBatch(root);
   return { runtime, root, ledger,
-    begin(id, category) { assert.equal(ledger.ledgerBegin(root, id, { category, title: category }), true); },
+    begin(id, category) { assert.equal(ledger.ledgerBegin(root, id, { category, title: category, runNonce: 'stale-receipt-test' }), true); },
     /** 按id生成模组业务完成原件，override用于注入错误身份/结局；record快照不授予canonical写权。 */
     mod(id, override = {}) { return { schema: 1, activityId: id, category: 'mod_install', runNonce: 'stale-receipt-test',
       outcome: { state: ledger.LedgerState.SUCCESS, source: 'modInstall.terminal', summary: 'installed', endedAt: id + 10 },

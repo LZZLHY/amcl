@@ -9,11 +9,21 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
-const ActivityCategory = { LAUNCH: 'launch', DOWNLOAD: 'download', MOD_INSTALL: 'mod_install', JDK: 'jdk', MODPACK: 'modpack', GAME_EXPORT: 'game_export' };
+const ActivityCategory = { LAUNCH: 'launch', DOWNLOAD: 'download', MOD_INSTALL: 'mod_install', JDK: 'jdk', MODPACK: 'modpack', GAME_EXPORT: 'game_export',
+  RESOURCE_MANAGE: 'resource_manage', VERSION_MANAGE: 'version_manage', STORAGE: 'storage', SKIN: 'skin', VERIFY: 'verify' };
 const model = makePureEtsLoader({ feature_core: { ActivityCategory } })('entry/src/main/ets/components/ActivityUiModel.ets');
 const record = fields => ({ category: 'launch', status: 'success', startedAt: 1, loaderType: 'fabric',
   versionName: '1.21.1', gameVersion: '1.21.1', ...fields });
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('新增长业务与轻摘要使用中文类别，共享标签不暴露内部字符串', () => {
+  for (const category of ['resource_manage', 'version_manage', 'storage', 'skin', 'verify', 'diagnostic', 'render-diagnostic']) {
+    assert.notEqual(model.activityCategoryLabel(category), category);
+    assert.notEqual(model.activityCategoryLabel(category), '操作');
+  }
+  assert.equal(model.activityCategoryLabel('game_export'), '游戏包导出');
+  assert.equal(model.activityCategoryLabel('game_export', true), '导出');
+});
 
 test('filters use actual categories and do not reclassify successful games', () => {
   assert(model.matchesActivity(record({ category: 'jdk' }), '1.21', model.ActivityFilter.DOWNLOAD));
@@ -105,14 +115,14 @@ test('status rail preserves actual counts, keeps pending neutral and bounds tick
 });
 
 /** 服务桩只替换网络、磁盘和通知边界，任务表、订阅和迟到回调保护执行真实代码。 */
-function serviceFixture() {
+function serviceFixture(supported = false) {
   const calls = [], saved = [], messages = [];
   let failSave = false;
   const base = 'https://api.logshare.cn';
   const load = makePureEtsLoader({
     '@kit.AbilityKit': {},
     commons: { AppLogger: { info() {}, warn() {} }, LOG_DOMAIN_UI: 0 },
-    './LogShareClient': { LOGSHARE_API_BASE: base,
+    './LogShareClient': { LOGSHARE_API_BASE: base, logShareSupportsAi: () => supported,
       streamAiAnalysis: (id, cb) => { calls.push({ id, cb }); return { cancel() { cb.onError('cancelled'); } }; },
       loadShareRecords: async () => calls.map(call => ({ id: call.id, apiBaseUrl: base, activityId: 1, snapshotDigest: 'snapshot-' + call.id })),
     },
@@ -122,11 +132,38 @@ function serviceFixture() {
     './AppNotifier': { postAppMessage: async (_ctx, msg) => { messages.push(msg); } },
   });
   return { service: load('entry/src/main/ets/components/AiAnalysisService.ets'), calls, saved, messages, base,
-    context: { filesDir: '/fixture' }, failSave: () => { failSave = true; }, recoverSave: () => { failSave = false; } };
+    context: { filesDir: '/fixture' }, failSave: () => { failSave = true; }, recoverSave: () => { failSave = false; },
+    disableProvider: () => { supported = false; } };
 }
 
+/** 官方与备用实例均已停用新分析，遗留服务调用不得建任务、请求网络或投递失败通知。 */
+test('retired LogShare AI rejects official and backup starts without side effects', async () => {
+  const f = serviceFixture(), changed = [];
+  f.service.subscribeAiTaskChanges(key => changed.push(key));
+  for (const provider of [f.base, 'https://amcl.lovedhy.cn/logshare-api']) {
+    f.service.startAiAnalysis(f.context, 1, 'old-link', 'fixture', provider);
+    f.service.startAiAnalysis(f.context, 1, 'old-link', 'fixture', provider);
+  }
+  await tick();
+  assert.equal(f.calls.length, 0); assert.equal(f.saved.length, 0); assert.equal(f.messages.length, 0);
+  assert.deepEqual(changed, []); assert.equal(f.service.getAiTaskSnapshot(1).state, f.service.AiTaskState.IDLE);
+});
+
+/** 仅在本例模拟停用前已有的内存结果；停用后本地补存仍可完成，绝不重发网络请求。 */
+test('provider retirement does not erase a completed report or block local save retry', async () => {
+  const f = serviceFixture(true);
+  f.failSave(); f.service.startAiAnalysis(f.context, 1, 'existing', 'fixture');
+  f.calls[0].cb.onDone('已有回答'); await tick();
+  f.disableProvider(); f.service.startAiAnalysis(f.context, 1, 'replacement', 'fixture');
+  assert.equal(f.calls.length, 1); assert.equal(f.service.getAiTaskText(1), '已有回答');
+  f.recoverSave(); await f.service.retrySaveAiReport(f.context, 1);
+  assert.equal(f.service.getAiTaskSnapshot(1).saved, true); assert.equal(f.saved.length, 1);
+  assert.equal(f.calls.length, 1, '补存已完成报告不得重新请求已下线的服务');
+});
+
 test('multiple UI observers coexist with the legacy sheet and unsubscribe independently', async () => {
-  const f = serviceFixture(), one = [], two = [], legacy = [];
+  // 显式模拟停用前的旧内存任务，继续保护历史回调与保存契约；默认夹具不支持新分析。
+  const f = serviceFixture(true), one = [], two = [], legacy = [];
   const a = f.service.subscribeAiTaskChanges(key => one.push(key));
   f.service.subscribeAiTaskChanges(key => two.push(key));
   f.service.startAiAnalysis(f.context, 1, 'abc', 'test');
@@ -142,7 +179,7 @@ test('multiple UI observers coexist with the legacy sheet and unsubscribe indepe
 });
 
 test('replacement and explicit cancellation ignore late callbacks and do not publish false failures', async () => {
-  const f = serviceFixture();
+  const f = serviceFixture(true);
   f.service.startAiAnalysis(f.context, 1, 'old', 'test');
   f.service.startAiAnalysis(f.context, 1, 'new', 'test');
   f.calls[0].cb.onDone('obsolete'); f.calls[0].cb.onDelta('late');
@@ -152,7 +189,7 @@ test('replacement and explicit cancellation ignore late callbacks and do not pub
 });
 
 test('idempotence and provider guard prevent repeat requests and backup AI', async () => {
-  const f = serviceFixture();
+  const f = serviceFixture(true);
   f.service.startAiAnalysis(f.context, 1, 'id', 'test');
   f.service.startAiAnalysis(f.context, 1, 'id', 'test');
   f.service.startAiAnalysis(f.context, 2, 'backup', 'test', 'https://backup.invalid');
@@ -167,7 +204,7 @@ test('idempotence and provider guard prevent repeat requests and backup AI', asy
 });
 
 test('a failing legacy UI callback does not prevent durable report publication', async () => {
-  const f = serviceFixture();
+  const f = serviceFixture(true);
   f.service.startAiAnalysis(f.context, 1, 'id', 'test');
   f.service.attachAiObserver(1, { onDelta() { throw new Error('view gone'); },
     onDone() { throw new Error('view gone'); }, onError() {} });
@@ -177,7 +214,7 @@ test('a failing legacy UI callback does not prevent durable report publication',
 
 /** 队列只影响粗状态；限流冷却在服务层生效，任何 UI 入口都不能绕开。 */
 test('AI queue status is coarse and Retry-After blocks repeat requests for the same share', () => {
-  const f = serviceFixture();
+  const f = serviceFixture(true);
   f.service.startAiAnalysis(f.context, 1, 'queued-id', 'test');
   f.calls[0].cb.onStatus('queued', 3);
   assert.match(f.service.getAiTaskSnapshot(1).statusText, /排队中/);

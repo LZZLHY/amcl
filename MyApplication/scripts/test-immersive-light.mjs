@@ -24,7 +24,9 @@ const sourcePaths = ['commons/src/main/ets/common/DockLight.ets', 'commons/src/m
 const sourceHashes = () => Object.fromEntries(sourcePaths.map(file => [file,
   createHash('sha256').update(fs.readFileSync(path.join(PROJECT_ROOT, file))).digest('hex')]));
 const initialHashes = sourceHashes();
-const load = makePureEtsLoader();
+// 设置宿主新增真实设备枚举及高度缺省；仅硬件查询与系统日志由宿主隔离。
+const load = makePureEtsLoader({ '@ohos.deviceInfo': {}, '@ohos.display': {},
+  '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } } });
 // 图标查找继续执行生产目录，只有系统资源解析是宿主边界；新标题共享依赖不能用空枚举掩盖。
 globalThis.$r = value => value;
 const common = { ...load('commons/src/main/ets/common/DockLight.ets'), ...load('commons/src/main/ets/common/ImmersiveLight.ets'),
@@ -136,7 +138,8 @@ function component(relative, name, dependencies, globals = {}) {
 const colors = { Transparent: 'transparent' }, theme = { textPrimary: '#111', textSecondary: '#666', bgCard: '#fff' };
 for (const available of [false, true]) {
   let back = 0, close = 0, external = 0;
-  const design = { IconStyleMode: { SMALL: 100 }, get hdsMaterial() { assert.ok(available); return {
+  const design = { IconStyleMode: { SMALL: 100 }, get TitleSize() { assert.ok(available); return { TITLE_S: 0, TITLE_ML: 1 }; },
+    get hdsMaterial() { assert.ok(available); return {
     MaterialType: { NONE: 0, ADAPTIVE: 100 }, MaterialLevel: { ADAPTIVE: 10, EXQUISITE: 0, GENTLE: 1, SMOOTH: 2 } }; } };
   const Header = component('entry/src/main/ets/components/ImmersiveTitleScaffold.ets', 'ImmersiveTitleScaffold', {
     commons: common, './AppRoundIconButton': {}, './AppTitleAction': {},
@@ -154,6 +157,11 @@ for (const available of [false, true]) {
   if (available) { assert.equal(options.style.systemMaterialEffect.materialType, 100); assert.equal(options.style.systemMaterialEffect.materialLevel, 2);
     assert.equal(options.style.originalStyle.backgroundStyle.backgroundColor, '#f1f3f5'); }
   else assert.equal(options.style, undefined);
+  view.emphasizedTitle = true;
+  const emphasized = view.nativeTitleOptions_();
+  assert.equal(emphasized.content.title.mainTitleSize, available ? 1 : undefined,
+    '增强标题只触达已有 API23 保护内的原生离散字号');
+  view.emphasizedTitle = false;
   view.modal = true; view.menuItems_().find(item => item.content.componentId === view.closeId).content.action(); assert.equal(close, 1);
   view.modal = false; view.showExternal = false; assert.deepEqual(view.menuItems_(), []);
   view.rawConfig = encode({ ...first, enabled: false });
@@ -170,21 +178,27 @@ settings.preferences = requests.at(-1); settings.requestTitleButtons_(false); as
 settings.requestEnabled_(true); settings.preferences = requests.at(-1);
 settings.requestBottomBar_(false); assert.equal(settings.preferences.bottomBar, true);
 settings.saving = true; settings.requestNavigationMode_(M.AUTO); assert.equal(requests.length, 3);
+const settingsCatalog = load('entry/src/main/ets/pages/tabs/SettingsCatalog.ets');
 const Tab = component('entry/src/main/ets/pages/tabs/SettingsTab.ets', 'SettingsTab', { commons: { ...common,
-  ThemeMode: { LIGHT: 0, DARK: 1, SYSTEM: 2 }, JDK_AUTO: 'auto' },
+  ...load('commons/src/main/ets/common/device/DeviceProfile.ets'), ...load('commons/src/main/ets/common/SheetSizes.ets'),
+  ...load('commons/src/main/ets/common/Theme.ets'), JDK_AUTO: 'auto',
+  DistributionPolicy: { isStore: () => true, allowPublisherServices: () => false },
+  DiagnosticPolicy: { hasTestHooks: () => false }, DeviceProfile: { isPC: () => false } },
   // 本组只执行设置分区与返回订阅；其余业务入口显式隔离，误走它们会因缺少能力直接失败。
   '../../components/TouchLearningStore': {}, '@kit.ArkUI': {}, '@kit.AbilityKit': {},
-  '@kit.PerformanceAnalysisKit': {}, 'entry/ProductInputProfile': {} },
+  '@kit.PerformanceAnalysisKit': {}, './SettingsCatalog': settingsCatalog,
+  'entry/ProductInputProfile': { ProductInputProfile: { supportsTouchLayouts: () => false,
+    canChooseInteraction: () => false, canChooseTabletProcess: () => false } } },
   { Color: colors, Scroller: class { scrollTo() {} } });
 const tab = new Tab(); let backHandler;
 tab.onSectionBackReady = handler => { backHandler = handler; }; tab.visible = true;
 tab.aboutToAppear(); tab.selectSection_('immersive'); tab.syncSectionBack_();
 assert.equal(typeof backHandler, 'function'); const stale = backHandler;
 assert.equal(backHandler(), true); assert.equal(tab.activeSection, 'overview');
-tab.activeSection = 'immersive'; tab.visible = false; tab.syncSectionBack_();
+tab.activeSection = 'appearance'; tab.visible = false; tab.syncSectionBack_();
 assert.equal(backHandler, undefined); assert.equal(stale(), false);
 tab.canRunGame = false; tab.settingsQuery = '光感';
-assert.ok(tab.visibleSections_().some(section => section.id === 'immersive'));
+assert.ok(tab.visibleSections_().some(section => section.id === 'appearance'));
 tab.visible = true; tab.syncSectionBack_(); tab.aboutToDisappear(); assert.equal(backHandler, undefined);
 pass('设置事件不可变、总关闭保留模块、保存禁重、商店搜索与可见二级返回');
 

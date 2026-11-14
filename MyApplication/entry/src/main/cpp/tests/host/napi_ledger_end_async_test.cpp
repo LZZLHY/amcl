@@ -20,9 +20,9 @@
     std::fprintf(stderr, "LEDGER ASYNC CHECK FAIL line %d: %s\n", __LINE__, #condition); \
     std::exit(2); } } while (false)
 
-struct napi_value__ { double number = 0; int state = 0; };
+struct napi_value__ { double number = 0; int state = 0; std::string text; };
 struct napi_deferred__ { napi_value value = nullptr; };
-struct napi_callback_info__ { napi_value value = nullptr; };
+struct napi_callback_info__ { napi_value value = nullptr; napi_value directory = nullptr; };
 struct napi_env__ {};
 struct napi_async_work__ {
     napi_async_execute_callback execute;
@@ -38,9 +38,10 @@ std::vector<std::unique_ptr<napi_deferred__>> deferreds;
 std::map<std::string, napi_callback> methods;
 napi_async_work queued = nullptr;
 std::thread::id ownerThread;
-int created = 0, deleted = 0, nativeCalls = 0, errors = 0;
+int created = 0, deleted = 0, nativeCalls = 0, beginCalls = 0, errors = 0;
 bool queueFailure = false, createFailure = false, closeSuccess = true, closeThrows = false;
-int stringFailures = 0, errorFailures = 0, undefinedFailures = 0;
+bool beginSuccess = true, beginThrows = false;
+int stringFailures = 0, errorFailures = 0, undefinedFailures = 0, booleanFailures = 0;
 bool failureLeavesException = false;
 napi_value pendingException = nullptr;
 
@@ -54,6 +55,12 @@ void onOwner() { CHECK(std::this_thread::get_id() == ownerThread); }
 napi_value request(double id) {
     napi_callback_info__ information{value(id)};
     return methods.at("amclLedgerEndAsync")(&environment, &information);
+}
+/** 开账沿真实注册表派发，路径由SDK替身提供；JS调用返回时不得已执行Native磁盘端口。 */
+napi_value requestBegin(double id, const std::string& directory = "/sandbox/logs/ledger/1789050000000") {
+    napi_value path = value(); path->text = directory;
+    napi_callback_info__ information{value(id), path};
+    return methods.at("amclLedgerBeginAsync")(&environment, &information);
 }
 /**
  * status指定complete的SDK状态，execute=false模拟未执行的取消；消费本次queued工作一次。
@@ -70,11 +77,24 @@ void finish(napi_status status = napi_ok, bool execute = true) {
 
 // 下列实现只模拟SDK生命周期、线程与失败返回，不重新实现活动关闭或文件业务。
 extern "C" napi_status napi_get_cb_info(napi_env, napi_callback_info info, size_t* argc,
-    napi_value* args, napi_value*, void**) { onOwner(); *argc = 1; args[0] = info->value; return napi_ok; }
+    napi_value* args, napi_value*, void**) {
+    onOwner(); const size_t capacity = *argc;
+    *argc = info->directory == nullptr ? 1 : 2; args[0] = info->value;
+    if (capacity > 1 && info->directory != nullptr) args[1] = info->directory;
+    return napi_ok;
+}
 extern "C" napi_status napi_get_value_double(napi_env, napi_value input, double* out) { onOwner(); *out = input->number; return napi_ok; }
 extern "C" napi_status napi_get_value_int32(napi_env, napi_value, int32_t* out) { *out = 0; return napi_ok; }
-extern "C" napi_status napi_get_value_string_utf8(napi_env, napi_value, char*, size_t, size_t* out) { *out = 0; return napi_ok; }
-extern "C" napi_status napi_get_boolean(napi_env, bool input, napi_value* out) { *out = value(input ? 1 : 0); return napi_ok; }
+extern "C" napi_status napi_get_value_string_utf8(napi_env, napi_value input, char* buffer, size_t size, size_t* out) {
+    onOwner(); if (buffer == nullptr) { *out = input->text.size(); return napi_ok; }
+    const size_t copied = std::min(input->text.size(), size > 0 ? size - 1 : 0);
+    if (size > 0) { std::memcpy(buffer, input->text.data(), copied); buffer[copied] = '\0'; }
+    *out = copied; return napi_ok;
+}
+extern "C" napi_status napi_get_boolean(napi_env, bool input, napi_value* out) {
+    onOwner(); if (booleanFailures > 0) { --booleanFailures; return napi_generic_failure; }
+    *out = value(input ? 1 : 0); return napi_ok;
+}
 extern "C" napi_status napi_get_undefined(napi_env, napi_value* out) {
     onOwner(); // 实际SDK的get_undefined不检查lastException，settlement入口才检查。
     if (undefinedFailures > 0) { undefinedFailures--; return napi_generic_failure; }
@@ -99,9 +119,10 @@ extern "C" napi_status napi_create_promise(napi_env, napi_deferred* out, napi_va
     onOwner(); *promise = value(); auto item = std::make_unique<napi_deferred__>(); item->value = *promise;
     *out = item.get(); deferreds.push_back(std::move(item)); return napi_ok;
 }
-extern "C" napi_status napi_resolve_deferred(napi_env, napi_deferred deferred, napi_value) {
+extern "C" napi_status napi_resolve_deferred(napi_env, napi_deferred deferred, napi_value resolved) {
     onOwner(); if (pendingException) return napi_pending_exception;
-    CHECK(deferred->value->state == 0); deferred->value->state = 1; return napi_ok;
+    CHECK(deferred->value->state == 0); deferred->value->state = 1;
+    deferred->value->number = resolved->number; return napi_ok;
 }
 extern "C" napi_status napi_reject_deferred(napi_env, napi_deferred deferred, napi_value) {
     onOwner(); if (pendingException) return napi_pending_exception;
@@ -130,7 +151,12 @@ extern "C" int amclLogFlushChecked() { return 1; }
 extern "C" const char* amclLogGetStatus() { return "{}"; }
 extern "C" const char* amclLogGetPath() { return ""; }
 extern "C" void amclLogWriteFor(long long, AmclLogLevel, const char*, const char*, ...) {}
-extern "C" int amclLedgerBegin(long long, const char*) { return 1; }
+extern "C" int amclLedgerBegin(long long id, const char* directory) {
+    CHECK(std::this_thread::get_id() != ownerThread); CHECK(id == 1789050000000LL);
+    CHECK(std::string(directory) == "/sandbox/logs/ledger/1789050000000"); ++beginCalls;
+    if (beginThrows) throw std::runtime_error("controlled begin failure");
+    return beginSuccess ? 1 : 0;
+}
 extern "C" void amclLedgerEnd(long long) { CHECK(false && "async bridge must never use unchecked legacy close"); }
 extern "C" void amclLedgerEndAll() {}
 extern "C" void amclLedgerUnbindTask(unsigned long long) {}
@@ -176,5 +202,23 @@ int main() {
     stringFailures = 1; napi_value resourceWithoutPending = request(id); CHECK(resourceWithoutPending->state == 2);
     CHECK(request(0) == nullptr && request(1.5) == nullptr && request(9007199254740992.0) == nullptr);
     CHECK(errors == 3 && queued == nullptr && created == deleted);
-    std::printf("PASS production NAPI ledger close: worker boundary, timeout, cancel, exception, queue/create failure, invalid identity; work=%d/%d\n", created, deleted);
+    // 开账复用真实async work边界：失败返回false，SDK取消/异常/排队失败拒绝，不静默同步执行。
+    napi_value opened = requestBegin(id); CHECK(opened && opened->state == 0 && beginCalls == 0);
+    finish(); CHECK(opened->state == 1 && opened->number == 1 && beginCalls == 1);
+    beginSuccess = false; napi_value unavailable = requestBegin(id); finish();
+    CHECK(unavailable->state == 1 && unavailable->number == 0); beginSuccess = true;
+    napi_value cancelledBegin = requestBegin(id); finish(napi_cancelled, false); CHECK(cancelledBegin->state == 2);
+    beginThrows = true; napi_value failedBegin = requestBegin(id); finish(); CHECK(failedBegin->state == 2); beginThrows = false;
+    const int previousBegins = beginCalls;
+    queueFailure = true; napi_value beginQueueError = requestBegin(id); CHECK(beginQueueError->state == 2); queueFailure = false;
+    createFailure = true; napi_value beginCreateError = requestBegin(id); CHECK(beginCreateError->state == 2); createFailure = false;
+    CHECK(beginCalls == previousBegins && queued == nullptr && created == deleted);
+    booleanFailures = 1; napi_value beginResultError = requestBegin(id); finish(); CHECK(beginResultError->state == 2);
+    napi_value beginPendingError = requestBegin(id); pendingException = value(); finish();
+    CHECK(beginPendingError->state == 2 && pendingException == nullptr);
+    CHECK(requestBegin(0) == nullptr && requestBegin(1.5) == nullptr && requestBegin(id, "") == nullptr
+        && requestBegin(id, std::string(512, 'x')) == nullptr
+        && requestBegin(id, std::string("/sandbox\0bad", 12)) == nullptr);
+    CHECK(errors == 8 && queued == nullptr && created == deleted);
+    std::printf("PASS production NAPI ledger begin/close: worker boundary, false-open, timeout, cancel, exception, queue/create failure, invalid identity/path; work=%d/%d\n", created, deleted);
 }

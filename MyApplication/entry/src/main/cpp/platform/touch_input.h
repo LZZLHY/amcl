@@ -23,6 +23,9 @@ extern "C" {
 // callback to finish before typed lifecycle/cancel publication begins.
 void ohos_surface_input_gate_lock(void);
 void ohos_surface_input_gate_unlock(void);
+// 分辨率事务只暂停输入生产，不撤销surface身份；owner仍可在同一gate内提交新几何。
+// 调用者先通过现有cancel退休held，确认实际drawable后再恢复，不能用它伪造生命周期。
+void ohos_surface_input_gate_set_geometry_pending(bool pending);
 uint64_t ohos_surface_input_gate_accept(OH_NativeXComponent* component, void* window);
 uint64_t ohos_surface_input_gate_accept_component(OH_NativeXComponent* component);
 // Records an OnFocus/OnBlur callback at its entry, before the caller performs

@@ -27,6 +27,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstdint>
+#include <new>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -67,6 +68,7 @@ struct LogEntry {
     // 2026-07-30（活动账本 · L1-a）：该行归属的活动主键；0 = 不归属任何活动。
     // 由 producer 填（线程本地或显式指定），writer 据此分流写进账本目录。
     long long activityId;
+    uint64_t activityGeneration = 0;  // 开账世代；迟到的旧记录不能写进同ID重新打开的scope
 };
 
 // ==================== 活动账本 scope ====================
@@ -98,6 +100,8 @@ static bool reserveLongMessage(size_t bytes) {
 
 struct LedgerScope {
     long long activityId = 0;          // 0 = 空槽
+    uint64_t generation = 0;
+    uint64_t counterEpoch = 0;         // 最近一次交给writer的producer计数快照
     char dir[512] = {0};
     FILE* head = nullptr;              // launcher/launcher-host.log 或 launcher-game.log
     FILE* tail = nullptr;              // 兼容历史结构，新 writer 不创建 tail
@@ -117,9 +121,67 @@ struct LedgerScope {
 };
 
 static LedgerScope g_scopes[AMCL_LEDGER_MAX_SCOPES];
-// 保护 scope 表。writer 写账本、begin/end 开关文件都要拿它 ——
-// begin/end 是低频操作，竞争可以忽略。**临界区内绝不能调 amclLogWrite**（会自锁）。
+// 文件表只供writer和显式开关账本事务使用，允许包含磁盘IO；producer永远不取得此锁。
 static std::mutex g_scopeMutex;
+
+/**
+ * producer只访问固定大小计数表。该锁内仅复制整数或更新计数，不分配、不格式化、
+ * 不取得文件表锁，也不执行任何IO。writer在持文件表锁时短暂取快照，锁序单向，
+ * 使磁盘慢写不会经统计或等待条件间接传回日志调用线程。
+ */
+struct ScopeCounters {
+    long long activityId = 0;
+    uint64_t generation = 0;
+    uint64_t epoch = 0;
+    unsigned long accepted = 0, dropped = 0, truncated = 0;
+};
+static ScopeCounters g_scopeCounters[AMCL_LEDGER_MAX_SCOPES];
+static std::mutex g_scopeCounterMutex;
+static uint64_t g_nextScopeGeneration = 0; // 只在短计数锁中递增，复用同一活动ID仍分配新世代
+static std::atomic<bool> g_scopeMaintenancePending{false};
+
+/** 在格式化/预留之前固定归属世代；其后关闭并重新开账不会接管这条旧记录。 */
+static uint64_t scopeGenerationFor(long long activityId) {
+    if (activityId == 0) return 0;
+    std::lock_guard<std::mutex> lock(g_scopeCounterMutex);
+    for (const ScopeCounters& counters : g_scopeCounters)
+        if (counters.activityId == activityId) return counters.generation;
+    return 0;
+}
+
+/** 文件表锁内注册新scope；整数身份先发布，调用方仍须等begin成功后才派发producer。 */
+static void registerScopeCountersLocked(LedgerScope* scope) {
+    std::lock_guard<std::mutex> lock(g_scopeCounterMutex);
+    ScopeCounters& counters = g_scopeCounters[scope - g_scopes];
+    counters = ScopeCounters{};
+    if (++g_nextScopeGeneration == 0) ++g_nextScopeGeneration;
+    counters.activityId = scope->activityId; counters.generation = g_nextScopeGeneration;
+    scope->generation = counters.generation;
+    g_scopeMaintenancePending.store(true, std::memory_order_release);
+}
+
+/** 固定计数快照或退役身份；退役与最后取样同一短临界区，旧世代不再接收计数。 */
+static void snapshotScopeCountersLocked(LedgerScope* scope, bool retire = false) {
+    std::lock_guard<std::mutex> lock(g_scopeCounterMutex);
+    ScopeCounters& counters = g_scopeCounters[scope - g_scopes];
+    if (counters.activityId != scope->activityId || counters.generation != scope->generation) return;
+    if (scope->counterEpoch != counters.epoch) scope->statusDirty = true;
+    scope->accepted = counters.accepted; scope->dropped = counters.dropped;
+    scope->truncated = counters.truncated; scope->counterEpoch = counters.epoch;
+    if (retire) counters = ScopeCounters{};
+}
+
+/** IO后重算短提示；与producer发布共用计数锁，不能覆盖IO期间新到达的dirty。 */
+static void refreshScopeMaintenanceLocked() {
+    std::lock_guard<std::mutex> lock(g_scopeCounterMutex);
+    bool pending = false;
+    for (int index = 0; index < AMCL_LEDGER_MAX_SCOPES; ++index) {
+        const LedgerScope& scope = g_scopes[index];
+        if (scope.activityId != 0)
+            pending = pending || scope.statusDirty || scope.counterEpoch != g_scopeCounters[index].epoch;
+    }
+    g_scopeMaintenancePending.store(pending, std::memory_order_release);
+}
 
 // 当前线程的日志归属活动。native 侧是真线程并发，线程本地天然可用。
 // （ArkTS 侧不能用：单 JS 线程 + async 交错会串味，走 amclLogWriteFor 显式传）
@@ -142,6 +204,8 @@ static int g_globalRetryMs = 500;
 static std::atomic<bool> g_initialized{false};
 static std::atomic<bool> g_shutdown{false};
 static std::atomic<bool> g_atforkRegistered{false};
+/** 正常进程退出的收口只注册一次；显式shutdown/init不重复堆积atexit回调。 */
+static std::once_flag g_processExitHookOnce;
 
 // 环形缓冲区
 // g_writeIndex 只在槽位世代匹配时 CAS 推进；g_readIndex 由 writer 独占。
@@ -200,12 +264,8 @@ static void waitForWriterWork() {
             || g_reopenRequested.load(std::memory_order_acquire);
     };
     while (!ready()) {
-        bool maintenance = !g_globalWritable.load(std::memory_order_acquire);
-        {
-            std::lock_guard<std::mutex> scopeLock(g_scopeMutex);
-            for (const LedgerScope& scope : g_scopes)
-                maintenance = maintenance || (scope.activityId != 0 && scope.statusDirty);
-        }
+        const bool maintenance = !g_globalWritable.load(std::memory_order_acquire)
+            || g_scopeMaintenancePending.load(std::memory_order_acquire);
         if (maintenance) {
             g_cv.wait_for(lock, std::chrono::milliseconds(LOG_FLUSH_INTERVAL_MS), ready);
             return;
@@ -413,15 +473,18 @@ static void persistScopeStatusLocked(LedgerScope* s, bool sealed, bool force = f
     }
 }
 
-static void noteScopeEvent(long long activityId, bool dropped, bool truncated) {
-    if (activityId == 0) return;
-    std::lock_guard<std::mutex> lock(g_scopeMutex);
-    LedgerScope* s = findScopeLocked(activityId);
-    if (!s) return;
-    if (dropped) ++s->dropped;
-    else if (truncated) ++s->truncated;
-    else ++s->accepted;
-    s->statusDirty = true;
+static void noteScopeEvent(long long activityId, uint64_t generation, bool dropped, bool truncated) {
+    if (activityId == 0 || generation == 0) return;
+    std::lock_guard<std::mutex> lock(g_scopeCounterMutex);
+    for (ScopeCounters& counters : g_scopeCounters) {
+        if (counters.activityId != activityId || counters.generation != generation) continue;
+        if (dropped) ++counters.dropped;
+        else if (truncated) ++counters.truncated;
+        else ++counters.accepted;
+        ++counters.epoch;
+        g_scopeMaintenancePending.store(true, std::memory_order_release);
+        return;
+    }
 }
 
 /** 完整追加普通日志；空间不足时记录失败，保留已经写入的原件。 */
@@ -441,6 +504,7 @@ static void appendScopeFileLocked(LedgerScope* s, FILE* file, const char* line, 
 /** 关闭一个 scope 并发布终态；历史 tail 分片仅保留兼容读取，不再覆盖它们。 */
 static void closeScopeLocked(LedgerScope* s) {
     if (!s) return;
+    snapshotScopeCountersLocked(s, true);
     for (FILE* file : {s->head, s->tail, s->render}) {
         if (!file) continue;
         if (fflush(file) != 0) ++s->failures;
@@ -449,6 +513,7 @@ static void closeScopeLocked(LedgerScope* s) {
     s->head = nullptr; s->tail = nullptr; s->render = nullptr;
     persistScopeStatusLocked(s, true);
     *s = LedgerScope{};
+    refreshScopeMaintenanceLocked();
 }
 
 static void writeToScopeLocked(LedgerScope* s, const char* line, int len) {
@@ -478,11 +543,11 @@ static void writeRenderToScopeLocked(LedgerScope* s, const char* line, int len) 
     appendScopeFileLocked(s, s->render, line, len, &s->renderBytes);
 }
 
-static void teeToLedger(long long activityId, const char* tag, const char* line, int len) {
-    if (activityId == 0) return;
+static void teeToLedger(long long activityId, uint64_t generation, const char* tag, const char* line, int len) {
+    if (activityId == 0 || generation == 0) return;
     std::lock_guard<std::mutex> lock(g_scopeMutex);
     LedgerScope* s = findScopeLocked(activityId);
-    if (!s) return;
+    if (!s || s->generation != generation) return;
     if (isRenderTag(tag)) writeRenderToScopeLocked(s, line, len);
     else writeToScopeLocked(s, line, len);
 }
@@ -493,11 +558,13 @@ static void flushScopesLocked(bool force = false) {
     for (int i = 0; i < AMCL_LEDGER_MAX_SCOPES; i++) {
         if (g_scopes[i].activityId == 0) continue;
         LedgerScope& scope = g_scopes[i];
+        snapshotScopeCountersLocked(&scope);
         for (FILE* file : {scope.head, scope.tail, scope.render}) {
             if (file && fflush(file) != 0) { ++scope.failures; scope.statusDirty = true; }
         }
         persistScopeStatusLocked(&scope, false, force);
     }
+    refreshScopeMaintenanceLocked();
 }
 
 /** writer 消费完 end 请求之前已预留的槽位后，安全关闭对应 scope。 */
@@ -537,6 +604,8 @@ static void finishClosingScopes(unsigned int consumed) {
 // （tests/host/log_coalesce_test.cpp）。这里只负责 IO 与线程私有状态。
 /** 只由 writer 线程访问，不需要任何同步。 */
 static AmclCoalesceState g_coalesce = {};
+/** 合并键还须绑定scope世代；相同ID重新开账不能接收旧游程的汇总行。 */
+static uint64_t g_coalesceGeneration = 0;
 
 /**
  * 把攒着的重复计数落成一行。
@@ -567,7 +636,7 @@ static void flushCoalescedLocked(bool keepRun) {
     if (len < 0) len = 0;
     if (len > static_cast<int>(sizeof(line)) - 1) len = static_cast<int>(sizeof(line)) - 1;
     writeGlobalSink(line, static_cast<size_t>(len));
-    teeToLedger(g_coalesce.activityId, g_coalesce.tag, line, len);
+    teeToLedger(g_coalesce.activityId, g_coalesceGeneration, g_coalesce.tag, line, len);
 
     amclCoalesceAfterFlush(&g_coalesce, keepRun ? 1 : 0);
 }
@@ -584,7 +653,7 @@ static void emitEntry(const LogEntry& entry) {
         if (strncmp(facts, "AMCL_ENV_V1\t", 12) == 0) {
             std::lock_guard<std::mutex> lock(g_scopeMutex);
             LedgerScope* scope = findScopeLocked(entry.activityId);
-            if (scope) {
+            if (scope && scope->generation == entry.activityGeneration) {
                 const std::string path = std::string(scope->dir) + "/environment-observed.log";
                 FILE* file = fopen(path.c_str(), "a");
                 if (!file || fprintf(file, "%s\n", facts) < 0 || fflush(file) != 0) {
@@ -594,7 +663,8 @@ static void emitEntry(const LogEntry& entry) {
             }
         }
     }
-    if (entry.extendedMessage.empty() && amclCoalesceMatches(&g_coalesce, entry.level, entry.activityId,
+    if (entry.extendedMessage.empty() && g_coalesceGeneration == entry.activityGeneration
+        && amclCoalesceMatches(&g_coalesce, entry.level, entry.activityId,
                             entry.tag, entry.message)) {
         if (amclCoalesceNoteRepeat(&g_coalesce, static_cast<long long>(entry.timestamp))) {
             flushCoalescedLocked(/*keepRun=*/true);
@@ -613,10 +683,11 @@ static void emitEntry(const LogEntry& entry) {
     const std::string line = std::string("[") + timeBuf + "][" + levelToStr(entry.level)
         + "][" + entry.tag + "] " + body + "\n";
     writeGlobalSink(line.data(), line.size());
-    teeToLedger(entry.activityId, entry.tag, line.data(), static_cast<int>(line.size()));
+    teeToLedger(entry.activityId, entry.activityGeneration, entry.tag, line.data(), static_cast<int>(line.size()));
 
     // 长行不进入定长合并键，避免相同前缀、不同堆栈被错误合并。
     if (entry.extendedMessage.empty()) {
+        g_coalesceGeneration = entry.activityGeneration;
         amclCoalesceBegin(&g_coalesce, entry.level, entry.activityId,
                           entry.tag, entry.message, static_cast<long long>(entry.timestamp));
     }
@@ -745,16 +816,35 @@ static void publishExternalSinkDescriptorOnce() {
 }
 
 // ==================== 公共 API ====================
+/**
+ * 进程拥有writer，Ability销毁只flush。运行期注册的atexit回调先于全局thread对象的
+ * 静态析构执行，按原shutdown协议等待producer、排空正文、关闭scope并join线程。
+ * 注册失败不创建无法正常回收的thread；call_once抛出后仍允许下一次init重试。
+ * fork-child继续沿原未初始化/no-op边界，不在退出回调里重建父进程writer。
+ */
+static bool registerProcessExitHook() {
+    try {
+        std::call_once(g_processExitHookOnce, [] {
+            if (std::atexit(amclLogShutdown) != 0) throw std::bad_alloc();
+        });
+        return true;
+    } catch (...) {
+        globalSinkFailure(ENOMEM);
+        return false;
+    }
+}
+
 extern "C" void amclLogInit(const char* logDir, int maxFileSize, int maxFiles) {
     if (g_initialized.load()) { g_reopenRequested.store(true); notifyWriter(); return; }
 
     g_logDir = logDir;
     g_maxFileSize = maxFileSize > 0 ? maxFileSize : 2 * 1024 * 1024;
     g_maxFiles = maxFiles > 0 ? maxFiles : 5;
+    g_logPath = g_logDir + "/amcl_launcher.log";
+    if (!registerProcessExitHook()) return;
 
     ensureDir(g_logDir);
 
-    g_logPath = g_logDir + "/amcl_launcher.log";
     g_globalFailures.store(0); g_globalLostWrites.store(0); g_globalLastError.store(0);
     g_globalWritable.store(false); g_globalRetryMs = 500; g_nextGlobalRetry = {};
     reopenGlobalSink(true);
@@ -779,6 +869,7 @@ extern "C" void amclLogInit(const char* logDir, int maxFileSize, int maxFiles) {
     // P2：合并游程状态同步重置。不重置的话，init/shutdown/init 之后第一条日志
     // 会被拿去与**上一个生命周期**的最后一行比较，可能被静默抑制。
     amclCoalesceReset(&g_coalesce);
+    g_coalesceGeneration = 0;
     for (int i = 0; i < LOG_BUFFER_SIZE; i++) {
         releaseLongMessage(g_buffer[i]);
         g_buffer[i].sequence.store(static_cast<unsigned int>(i), std::memory_order_relaxed);
@@ -830,6 +921,8 @@ static void writeImplV(long long activityId, AmclLogLevel level,
     if (!amclDiagnosticLogAllowed(AMCL_DIAGNOSTICS_MASK, static_cast<int>(level), tag, fmt)) return;
     if (!g_initialized.load(std::memory_order_acquire)) return;
 
+    const uint64_t activityGeneration = scopeGenerationFor(activityId);
+
     // 生命周期租约确保 shutdown 不会在已经预留的 producer 发布前关闭 writer。
     struct ProducerLease {
         ProducerLease() { g_activeProducers.fetch_add(1, std::memory_order_acq_rel); }
@@ -848,7 +941,7 @@ static void writeImplV(long long activityId, AmclLogLevel level,
         } else if (distance < 0) {
             // 上一世代尚未消费，包含「已预留但未发布」。丢弃不消耗序号。
             g_droppedTotal.fetch_add(1, std::memory_order_relaxed);
-            noteScopeEvent(activityId, true, false);
+            noteScopeEvent(activityId, activityGeneration, true, false);
             notifyWriter();
             return;
         } else {
@@ -859,6 +952,7 @@ static void writeImplV(long long activityId, AmclLogLevel level,
     entry.level = level;
     entry.timestamp = time(nullptr);
     entry.activityId = activityId;
+    entry.activityGeneration = activityGeneration;
     strncpy(entry.tag, tag ? tag : "?", sizeof(entry.tag) - 1);
     entry.tag[sizeof(entry.tag) - 1] = '\0';
     releaseLongMessage(entry);
@@ -900,8 +994,8 @@ static void writeImplV(long long activityId, AmclLogLevel level,
     } else if (required < 0) {
         strcpy(entry.message, "[AMCL capture failed: invalid printf encoding]");
     }
-    noteScopeEvent(activityId, false, false);
-    if (truncated) noteScopeEvent(activityId, false, true);
+    noteScopeEvent(activityId, activityGeneration, false, false);
+    if (truncated) noteScopeEvent(activityId, activityGeneration, false, true);
     entry.sequence.store(idx + 1, std::memory_order_release);
     notifyWriter();
 }
@@ -950,11 +1044,12 @@ extern "C" long long amclLogGetThreadActivity(void) {
 // ==================== 活动账本：公共 API ====================
 
 extern "C" int amclLedgerBegin(long long activityId, const char* dir) {
-    if (activityId == 0 || !dir || !dir[0]) return 0;
+    if (activityId <= 0 || !dir || !dir[0] || strlen(dir) >= sizeof(LedgerScope::dir)) return 0;
     std::unique_lock<std::mutex> lk(g_scopeMutex);
 
     // 幂等：同一活动重复 begin 只生效一次
-    if (findScopeLocked(activityId) != nullptr) return 1;
+    if (LedgerScope* existing = findScopeLocked(activityId))
+        return existing->head != nullptr && !existing->closing ? 1 : 0;
 
     LedgerScope* free_slot = nullptr;
     for (int i = 0; i < AMCL_LEDGER_MAX_SCOPES; i++) {
@@ -971,11 +1066,13 @@ extern "C" int amclLedgerBegin(long long activityId, const char* dir) {
     const std::string headPath = launcherDir + (gameOwner ? "/launcher-game.log" : "/launcher-host.log");
     *free_slot = LedgerScope{};
     free_slot->activityId = activityId;
+    registerScopeCountersLocked(free_slot);
     strncpy(free_slot->dir, dir, sizeof(free_slot->dir) - 1);
     free_slot->head = fopen(headPath.c_str(), "a");
     free_slot->headBytes = getFileSize(headPath.c_str());
     if (!free_slot->head) ++free_slot->failures;
     persistScopeStatusLocked(free_slot, false);
+    refreshScopeMaintenanceLocked();
     // 打开失败也保留 scope 状态，使后续归档能报告 write-failed，而非空的 complete。
     const int opened = free_slot->head ? 1 : 0;
     // 新scope的状态写入失败时仍需要后台重试。先释放scope锁再通知，保持g_mutex→scope锁序。
@@ -1091,6 +1188,7 @@ static void onForkInChild() {
     // 清掉它，避免子进程若重新 init 时拿父进程的最后一行做比较（AGENTS §三·7 那类
     // 「fork 出来的子进程继承了父进程已解析的缓存」是本仓咬过多次的形状）。
     amclCoalesceReset(&g_coalesce);
+    g_coalesceGeneration = 0;
     if (g_logFile) {
         fclose(g_logFile);
         g_logFile = nullptr;
@@ -1103,7 +1201,10 @@ static void onForkInChild() {
         if (g_scopes[i].tail) { fclose(g_scopes[i].tail); g_scopes[i].tail = nullptr; }
         if (g_scopes[i].render) { fclose(g_scopes[i].render); g_scopes[i].render = nullptr; }
         g_scopes[i].activityId = 0;
+        g_scopes[i].generation = 0;
+        g_scopeCounters[i] = ScopeCounters{};
     }
+    g_scopeMaintenancePending.store(false, std::memory_order_release);
     // 不去 join writer：它在子进程里根本不存在
     // g_writerThread 留着空 thread 对象不影响（destructor 也不 join）
 }

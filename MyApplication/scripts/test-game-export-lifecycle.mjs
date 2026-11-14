@@ -73,6 +73,29 @@ function fixture({ fabric = false, missingLibrary = false, nativeHashes = false 
     historyInitGate: null, historyAddGate: null, historyInitStarted: false, historyAddStarted: false, historyWriteFailure: '',
     // FileUri只作为SDK显示元数据边界；未知content URI必须由生产代码保守保持空名。
     fileUriCalls: [], fileUriFailure: false, fileUriName: '用户改名的导出文件.mrpack' };
+  // 本专项复用生产活动owner；ledger/history是可控持久化边界，完整账本组合另有专项。
+  const activityRows = new Map();
+  const historyStore = {
+    async init() {
+      state.historyInitStarted = true;
+      if (state.historyInitGate) await state.historyInitGate;
+      if (state.historyWriteFailure === 'init') throw new Error('history init failed');
+    },
+    async add(record) {
+      await this.init(); state.historyAddStarted = true;
+      if (state.historyAddGate) await state.historyAddGate;
+      if (state.historyWriteFailure === 'add') throw new Error('history add failed');
+      state.history.push(record);
+    },
+  };
+  const activityBoundary = {
+    LedgerState: { RUNNING: 0, SUCCESS: 1, FAILED: 2, ABORTED: 3 },
+    ledgerDirOf: (dir, id) => dir + '/logs/ledger/' + id,
+    async ledgerManifestAsync(_dir, id) { return activityRows.get(id) ?? null; },
+    async ledgerBeginAsync(_dir, id, meta) { activityRows.set(id, { ...meta, ownerPid: 101, runNonce: 'export-' + id, state: 0 }); return true; },
+    async ledgerEndAsync(_dir, id, outcome) { activityRows.set(id, { ...activityRows.get(id), ...outcome }); },
+    async writeEvidenceTextAtomicAsync(file, text) { const target = physical(file); await fs.promises.mkdir(path.dirname(target), { recursive: true }); await fs.promises.writeFile(target, text); },
+  };
   function physical(p) {
     if (p.startsWith('content://')) return path.join(directory, 'picked', p.substring('content://'.length).replaceAll('/', '_'));
     if (p.startsWith('file://docs/storage/Users/currentUser/')) return path.join(directory, 'picked', 'document-picker-output');
@@ -227,7 +250,9 @@ function fixture({ fabric = false, missingLibrary = false, nativeHashes = false 
       },
     });
   }
-  const appStorage = { get: key => key === 'uiAbilityContext' ? { filesDir: '/app' } : undefined };
+  const activityStorage = new Map();
+  const appStorage = { get: key => key === 'uiAbilityContext' ? { filesDir: '/app' } : activityStorage.get(key),
+    setOrCreate: (key, value) => activityStorage.set(key, value) };
 
   /** 只抽取已有安全函数的真实声明，避免加载与本用例无关的整个下载网络模块。 */
   function selected(relative, names) {
@@ -248,10 +273,10 @@ function fixture({ fabric = false, missingLibrary = false, nativeHashes = false 
       if (name === '@kit.CryptoArchitectureKit') return { cryptoFramework };
       if (name === '@kit.AbilityKit') return {};
       if (name === '@kit.BasicServicesKit') return { zlib: { async decompressFile(input, output) { lifecycleExtract(fs.readFileSync(physical(input)), physical(output)); } } };
-      if (name === '@kit.ArkTS') return { util: { generateRandomUUID: crypto.randomUUID, TextEncoder: class { encodeInto(text) { return new Uint8Array(Buffer.from(text)); } } } };
+      if (name === '@kit.ArkTS') return { process: { pid: 101 }, util: { generateRandomUUID: crypto.randomUUID, TextEncoder: class { encodeInto(text) { return new Uint8Array(Buffer.from(text)); } } } };
       if (name === 'libentry.so') return { default: runtime };
       if (name === 'commons') return { ...load('commons/src/main/ets/utils/Base64Util.ets'), ...load('commons/src/main/ets/utils/AtomicFileWriter.ets'),
-        ...load('commons/src/main/ets/utils/InstancePaths.ets'), AppLogger: { error: (...args) => state.errors.push(args.join(' ')), warn() {}, info() {} } };
+        ...load('commons/src/main/ets/utils/InstancePaths.ets'), ...activityBoundary, AppLogger: { error: (...args) => state.errors.push(args.join(' ')), warn() {}, info() {} } };
       if (name === 'feature_core') {
         const core = {};
         for (const file of ['ExportTypes', 'ExportPath', 'ExportContentSelection', 'ExportVersionResolver', 'ForgelikeExportPlanner', 'DesktopDependencyPlanner', 'StandardPackWriter', 'ExportFilePlan', 'ExportZipFormat']) {
@@ -267,19 +292,8 @@ function fixture({ fabric = false, missingLibrary = false, nativeHashes = false 
         Object.assign(core, load('feature_core/src/main/ets/download/UnifiedDownloadTask.ets'));
         // 进程准入必须执行同一个生产协调器，不能在导出fixture里用“永远允许”替身。
         Object.assign(core, load('feature_core/src/main/ets/download/ProcessActivityCoordinator.ets'));
-        return { ...core, ActivityCategory: { GAME_EXPORT: 'game_export' }, getDownloadHistoryStore: () => ({
-          async init() {
-            state.historyInitStarted = true;
-            if (state.historyInitGate) await state.historyInitGate;
-            if (state.historyWriteFailure === 'init') throw new Error('history init failed');
-          },
-          async add(record) {
-            state.historyAddStarted = true;
-            if (state.historyAddGate) await state.historyAddGate;
-            if (state.historyWriteFailure === 'add') throw new Error('history add failed');
-            state.history.push(record);
-          },
-        }),
+        return { ...core, ActivityCategory: { GAME_EXPORT: 'game_export' }, getDownloadHistoryStore: () => historyStore,
+          getTaskActivityOwner: () => load('feature_core/src/main/ets/download/TaskActivityOwner.ets').getTaskActivityOwner(),
           installedJdkMajors: filesDir => [8, 17, 21, 25].filter(major => fs.existsSync(physical(filesDir + '/jdk/' + major + '/release')) && fs.existsSync(physical(filesDir + '/jdk/' + major + '/lib/server/libjvm.so'))),
           // 生产builder只负责等价来源及顺序；网络仍由独立bytes映射替换。显式映射优先，
           // 使[]、重复及非HTTPS输入能真实经过Coordinator过滤，不在端口复制其处理算法。
@@ -298,17 +312,21 @@ function fixture({ fabric = false, missingLibrary = false, nativeHashes = false 
           assert.equal(state.versionLease, 0); state.versionLease++; return () => { state.versionLease--; };
         } };
       }
+      if (name === './DownloadHistory') return { ActivityCategory: { GAME_EXPORT: 'game_export' }, getDownloadHistoryStore: () => historyStore };
       if (name.startsWith('.')) return load(path.relative(PROJECT_ROOT, path.resolve(PROJECT_ROOT, path.dirname(relative), name + '.ets')).replaceAll('\\', '/'));
       throw new Error('Unmocked dependency: ' + name);
     };
-    new Function('exports', 'require', 'AppStorage', js)(exports, require, appStorage); return exports;
+    new Function('exports', 'require', 'AppStorage', 'getRelayClient', 'selectMcSourceUrls', js)(
+      exports, require, appStorage, () => ({isEnabled: () => state.relayEnabled === true}),
+      urls => sourcePolicy.selectMcSourceUrls(urls)); return exports;
   }
   // 用原声明组装纯模块，不加载HTTP/NAPI。排序专项执行真正的用户偏好setter、
   // shouldUseBmclapiFirst和Maven候选规则；未配置专项的老用例维持官方优先端口基线。
   const sourcePolicy = load('selected-source-policy', 'const TAG = "source-policy-fixture"; const AppLogger = { info() {} };\n'
     + selected('feature_core/src/main/ets/download/SourceProber.ets',
-      ['PROBE_MAX_AGE_MS', 'cachedRanking', 'probeGeneration', 'sourcePreference', 'normalizeMode',
-        'setMcSourcePreference', 'getMcSourcePreference', 'getCachedRanking', 'shouldUseBmclapiFirst']));
+      ['preferMojang', 'sourcePreference', 'normalizeMode',
+        'setMcSourcePreference', 'getMcSourcePreference', 'isOfficialMcSourceOnly',
+        'isKnownSourceMirror', 'filterKnownSourceMirrors', 'selectMcSourceUrls', 'shouldUseBmclapiFirst']));
   sourcePolicy.setMcSourcePreference('official');
   const candidateBuilder = load('selected-real-maven-builder',
     selected('commons/src/main/ets/common/Constants.ets', ['BMCLAPI_HOST', 'BMCLAPI_BASE'])
@@ -389,7 +407,10 @@ function fixture({ fabric = false, missingLibrary = false, nativeHashes = false 
     assert.equal(result.status, 0, result.stderr); return Object.fromEntries(Object.entries(JSON.parse(result.stdout)).map(([key, value]) => [key, Buffer.from(value, 'base64')]));
   }
   return { state, directory, physical, put, network, coordinator, registry, sourcePolicy, load, selected, request, terminal, sourceIdentity, readZip, versionId,
-    close() { assert.equal(openFiles.size, 0); assert.equal(state.nativeHashJobs.size, 0); assert.equal(state.registryLease, 0); assert.equal(state.versionLease, 0);
+    close() {
+      const owner = modules.get('feature_core/src/main/ets/download/TaskActivityOwner.ets')?.getTaskActivityOwner();
+      if (owner?.retryTimer_ >= 0) { clearTimeout(owner.retryTimer_); owner.retryTimer_ = -1; }
+      assert.equal(openFiles.size, 0); assert.equal(state.nativeHashJobs.size, 0); assert.equal(state.registryLease, 0); assert.equal(state.versionLease, 0);
       const actual = fs.realpathSync(directory), base = fs.realpathSync(parent); assert.equal(path.dirname(actual), base);
       assert(path.basename(actual).startsWith('amcl-export-life-')); fs.rmSync(actual, { recursive: true, force: true }); },
   };
@@ -404,7 +425,7 @@ const activityIndexAst = compiler.createSourceFile('Index.ets', activityIndexSou
 const activityIndex = activityIndexAst.statements.find(node => node.members?.some(member => member.name?.getText(activityIndexAst) === 'observeExportActivities_'));
 assert(activityIndex, '真实Index必须接入共用导出活动订阅');
 const activityIndexMethods = ['observeExportActivities_', 'refreshStoreManager_', 'refreshRecentActivities_',
-  'finishErrorSheetWait_', 'onPageHide'].map(name => {
+  'finishErrorSheetWait_', 'stopRelayObservation_', 'onPageHide'].map(name => {
   const member = activityIndex.members.find(value => value.name?.getText(activityIndexAst) === name);
   assert(member?.body, name); return member.getText(activityIndexAst);
 });
@@ -430,16 +451,17 @@ function activityIndexProjection(f) {
     inspectSource() { observations.sourceReads++; assert.fail('default activity subscription must never inspect source'); },
   };
   new Function('exports', 'DistributionPolicy', 'getGameExportCoordinator', 'getDownloadHistoryStore', 'AppStorage',
-    'setTimeout', 'clearTimeout', 'AppLogger', 'TAG', 'LOG_DOMAIN_DOWNLOAD', activityIndexJs)(exported, { isStore: () => false }, () => coordinator,
+    'setTimeout', 'clearTimeout', 'clearInterval', 'AppLogger', 'TAG', 'LOG_DOMAIN_DOWNLOAD', activityIndexJs)(exported, { isStore: () => false }, () => coordinator,
       () => ({ async waitReady() {
         observations.historyWaits++;
         const task = f.coordinator.getTask();
         if (task && ['running', 'cancelling'].includes(task.state)) observations.nonTerminalHistoryWaits++;
         if (f.state.historyInitGate) await f.state.historyInitGate;
       }, listStored() { return f.state.history.slice().reverse(); } }),
-      { setOrCreate() {} }, callback => callback(), clearTimeout, { warn() {} }, 'Index', 1);
+      { setOrCreate() {} }, callback => callback(), clearTimeout, clearInterval, { warn() {} }, 'Index', 1);
   const page = new exported.IndexProjection();
   Object.assign(page, { launcherWorkVisible_: true, storeExportUnsubscribe_: null, recentActivities: [], showVersionManager: true,
+    relayStatusTimer_: -1, relayStatusUnsubscribe_: null,
     storeCheckGeneration_: 0, storeCheckSignature_: '', recoveryPresentationEpoch_: 0,
     // 此夹具模拟已挂载并能导出的首页；真实隐藏方法先收口错误Sheet等待，再解除导出订阅。
     // 直接提取finishErrorSheetWait_并设置生产初值，不能用空实现吞掉生命周期异常。
@@ -460,7 +482,9 @@ for (const boundary of ['init', 'add']) test(`same-Sheet close before delayed hi
     await f.coordinator.pickAndStart({ filesDir: '/app' }, preview);
     const execution = f.coordinator.execution_;
     const task = await f.terminal();
-    assert.equal(task.state, 'succeeded'); assert.equal(f.state.history.length, 0);
+    assert.equal(task.state, 'succeeded', task.message); assert.equal(f.state.history.length, 0);
+    // 活动owner先耐久写终态原件，再进入历史端口，不能凭旧同步时序推定已到达。
+    await waitForExportCondition(() => f.state[boundary === 'init' ? 'historyInitStarted' : 'historyAddStarted']);
     assert(f.state[boundary === 'init' ? 'historyInitStarted' : 'historyAddStarted']);
     const processOwner = f.load('feature_core/src/main/ets/download/ProcessActivityCoordinator.ets').ProcessActivityCoordinator.instance();
     assert.equal(f.coordinator.execution_, execution, '可见succeeded不能冒充整个owner已经结算');
@@ -509,7 +533,7 @@ test('history persistence failure retains warning notification without replacing
     await f.coordinator.pickAndStart({ filesDir: '/app' }, preview); const execution = f.coordinator.execution_;
     const task = await f.terminal(); await execution;
     assert.equal(task.state, 'succeeded'); assert.equal(task.readbackVerified, true); assert.equal(f.state.history.length, 0);
-    assert.match(task.message, /活动摘要暂未保存/); assert(notices.some(value => /活动摘要暂未保存/.test(value)));
+    assert.match(f.coordinator.getTask().message, /活动摘要暂未保存/); assert(notices.some(value => /活动摘要暂未保存/.test(value)));
     assert.equal(f.coordinator.execution_, undefined);
     const owner = f.load('feature_core/src/main/ets/download/ProcessActivityCoordinator.ets').ProcessActivityCoordinator.instance();
     const lease = owner.acquireSharedGame(); lease.releasePreparation();
@@ -663,6 +687,7 @@ for (const fabric of [false, true]) for (const format of ['full', 'modrinth', 'c
         if (fabric) assert.equal(index.minecraft.modLoaders[0].id, 'fabric-0.16.10'); assert(!entries['modrinth.index.json']);
       }
       assert(f.state.stages.includes('校验归档')); assert(f.state.stages.includes('写入目标'));
+      await f.coordinator.execution_;
       assert.equal(f.state.history.length, 1); assert.equal(f.state.history[0].exportTaskId, task.id);
       assert.equal(await f.coordinator.restoreTask(task.id), true); assert.equal(f.coordinator.getTask().state, 'succeeded');
     } finally { f.close(); }
@@ -861,6 +886,7 @@ test('target ENOSPC fails with partial-file explanation and unchanged source', a
     f.put('/mc/versions/1.20.1/mods/large.jar', crypto.randomBytes(140001));
     const source = f.sourceIdentity(); const preview = await f.coordinator.checkPlan(await f.request()); f.state.targetWriteFailure = true;
     await f.coordinator.pickAndStart({ filesDir: '/app' }, preview); const task = await f.terminal();
+    await f.coordinator.execution_;
     assert.equal(task.state, 'failed'); assert.match(task.message, /半成品|未完成文件/); assert.deepEqual(f.sourceIdentity(), source);
     assert(fs.statSync(f.physical(f.state.selectedUri)).size > 0); assert(fs.statSync(f.physical(f.state.selectedUri)).size < preview.totalBytes);
   } finally { f.close(); }
@@ -1033,6 +1059,7 @@ test('terminal private record failure still publishes completion and releases al
   try {
     const source = f.sourceIdentity(); const preview = await f.coordinator.checkPlan(await f.request('curseforge')); f.state.recordFailure = 'terminal';
     await f.coordinator.pickAndStart({ filesDir: '/app' }, preview); const task = await f.terminal();
+    await f.coordinator.execution_;
     assert.equal(task.state, 'succeeded'); assert.equal(task.readbackVerified, true); assert(f.state.recordFailureUsed);
     assert.match(task.message, /记录|保存/); assert.equal(f.coordinator.execution_, undefined);
     assert.equal(f.state.registryLease, 0); assert.equal(f.state.versionLease, 0); assert.deepEqual(f.sourceIdentity(), source);
@@ -1145,21 +1172,22 @@ for (const modern of [false, true]) test(`complete export ${modern ? 'NeoForge p
 
 /**
  * 真实偏好状态与真实Maven候选builder贯穿installer/processor到实际Native计划。
- * mirror与official是方向相反的对照：任一层固定true，或Coordinator把直链塞回队首，
- * 至少mirror断言会失败；全部来源bytes另行映射，成功导出仍须校验完整安装器及ZIP。
+ * 镜像优先与仅官方是相反对照；网关开启进一步收紧为仅官方但不改用户原偏好。
+ * 全部来源bytes另行映射，成功导出仍须校验完整安装器及ZIP。
  */
-for (const modern of [false, true]) for (const mode of ['mirror', 'official']) {
-  test(`complete ${modern ? 'NeoForge processor' : 'legacy Forge'} export preserves ${mode}-first source setting in real plans`, async () => {
+for (const modern of [false, true]) for (const mode of ['mirror', 'official']) for (const relayEnabled of [false, true]) {
+  test(`complete ${modern ? 'NeoForge processor' : 'legacy Forge'} export preserves ${mode} source with relay=${relayEnabled} in real plans`, async () => {
     const f = fixture();
     try {
       const setup = configureForgelike(f, modern), mirrorBase = 'https://bmclapi2.bangbang93.com/';
       f.state.useProductionMavenCandidates = true;
+      f.state.relayEnabled = relayEnabled;
       f.sourcePolicy.setMcSourcePreference(mode);
       assert.equal(f.sourcePolicy.getMcSourcePreference(), mode);
       // 预期次序直接来自政策和独立工件路径，不能用被测builder生成期望再与自己比较。
       const expectedUrls = (relative, direct) => {
         const mirrors = [mirrorBase + 'maven/' + relative, mirrorBase + 'libraries/' + relative];
-        return mode === 'mirror' ? [...mirrors, direct] : [direct, ...mirrors];
+        return mode === 'mirror' && !relayEnabled ? [...mirrors, direct] : [direct];
       };
       const artifacts = [{ path: setup.relative + '-installer.jar', url: setup.installerUrl },
         ...(modern ? setup.profile.libraries.map(library => library.downloads.artifact) : [])];
@@ -1181,7 +1209,7 @@ for (const modern of [false, true]) for (const mode of ['mirror', 'official']) {
       assert.deepEqual(f.state.sidecarCalls[0], { url: installerUrls[0] + '.sha1',
         mirrors: installerUrls.slice(1).map(url => url + '.sha1'), timeoutSeconds: 30 });
       assert.equal(f.state.mavenCalls.length, artifacts.length);
-      assert(f.state.mavenCalls.every(call => call.preferRealSource === (mode === 'official')),
+      assert(f.state.mavenCalls.every(call => call.preferRealSource === (mode === 'official' || relayEnabled)),
         'installer和processor两层都必须读到现有用户源偏好');
       assert.equal(f.state.processorCalls, modern ? 1 : 0);
       assert.deepEqual(f.sourceIdentity(), before);
@@ -1395,8 +1423,9 @@ test('cancellation during NeoForge processor waits for its real completion befor
     f.coordinator.cancelTask(); await new Promise(resolve => setImmediate(resolve)); assert.equal(f.coordinator.getTask().state, 'cancelling');
     assert(fs.existsSync(f.physical('/app/game-export/work/' + id + '/forgelike/runtime')));
     release(); const task = await f.terminal(); assert.equal(task.state, 'cancelled'); assert.deepEqual(f.sourceIdentity(), before);
+    await f.coordinator.execution_;
     assert(!fs.existsSync(f.physical('/app/game-export/work/' + id)));
-  } finally { if (release) release(); f.close(); }
+  } finally { if (release) release(); if (f.coordinator.execution_) await f.coordinator.execution_; f.close(); }
 });
 
 /** R5统一任务接线：运行生产Registry，不用立即resolve的enqueue桩掩盖槽位/取消竞态。 */
@@ -1483,6 +1512,7 @@ test('preparation failure is ERROR with external export recovery; registry retry
     await f.coordinator.pickAndStart({ filesDir: '/app' }, preview); assert.equal((await f.terminal()).state, 'failed');
     const view = f.registry.listAll()[0]; assert.equal(view.state, 'error'); assert.equal(view.canRetry, false);
     assert.equal(view.canRecoverExternally, true); await assert.rejects(f.registry.retry(view.id), /原业务入口/);
+    await f.coordinator.execution_;
     assert.equal(f.state.pickerCalls, 1); assert.equal(f.state.targetWritten, 0);
     assert.equal(f.state.history.at(-1).status, 'failed'); assert.equal(f.registry.runningIds_.length, 0);
   } finally { f.close(); }
@@ -1494,6 +1524,7 @@ test('prepared dependencies DONE does not claim final export success when target
     const preview = await f.coordinator.checkPlan(await f.request()); f.state.targetWriteFailure = true;
     await f.coordinator.pickAndStart({ filesDir: '/app' }, preview); assert.equal((await f.terminal()).state, 'failed');
     assert.equal(f.registry.listAll()[0].state, 'done'); assert.match(f.registry.listAll()[0].currentLabel, /仍由导出任务/);
+    await f.coordinator.execution_;
     assert.equal(f.state.history.at(-1).status, 'failed');
   } finally { f.close(); }
 });

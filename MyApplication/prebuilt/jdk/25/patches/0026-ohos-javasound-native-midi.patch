@@ -1,0 +1,1788 @@
+--- a/make/modules/java.desktop/Lib.gmk
++++ b/make/modules/java.desktop/Lib.gmk
+@@ -57,12 +57,12 @@
+   endif
+ 
+   # AMCL：依据真实目标编译旗标选择 OHOS，仅平台后端切换，Java/JNI 层仍用上游实现。
+-  LIBJSOUND_EXCLUDE_FILES := ohos_daudio.c
++  LIBJSOUND_EXCLUDE_FILES := ohos_daudio.c midi_api.c midi_core.c midi_stream.c midi_ump.c midi_jdk.c
+   LIBJSOUND_LINUX_LIBS := $(ALSA_LIBS)
+   ifneq ($(findstring -D__OHOS__,$(CFLAGS_JDKLIB)), )
+     LIBJSOUND_CFLAGS := $(filter-out -DUSE_PORTS=TRUE -DUSE_PLATFORM_MIDI_OUT=TRUE -DUSE_PLATFORM_MIDI_IN=TRUE,$(LIBJSOUND_CFLAGS)) \
+-        -DUSE_PORTS=FALSE -DUSE_PLATFORM_MIDI_OUT=FALSE -DUSE_PLATFORM_MIDI_IN=FALSE -DAMCL_OHOS_DAUDIO=1
+-    LIBJSOUND_EXCLUDE_FILES := $(notdir $(wildcard $(TOPDIR)/src/java.desktop/linux/native/libjsound/PLATFORM_API_LinuxOS_ALSA*.c))
++        -DUSE_PORTS=FALSE -DUSE_PLATFORM_MIDI_OUT=TRUE -DUSE_PLATFORM_MIDI_IN=TRUE -DAMCL_OHOS_DAUDIO=1 -DAMCL_OHOS_MIDI=1
++    LIBJSOUND_EXCLUDE_FILES := $(notdir $(wildcard $(TOPDIR)/src/java.desktop/linux/native/libjsound/PLATFORM_API_LinuxOS_ALSA*.c)) MidiInDevice.c MidiOutDevice.c MidiInDeviceProvider.c MidiOutDeviceProvider.c PlatformMidi.c
+     LIBJSOUND_LINUX_LIBS := -lohaudio
+   endif
+   $(eval $(call SetupJdkLibrary, BUILD_LIBJSOUND, \
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_api.c
+@@ -0,0 +1,36 @@
++/* 可选库缺失与库已存在但符号不完整分开记录，后者不能冒充零设备成功。
++ * dlopen成功引用由api持有，所有解析失败均回滚该引用和整张表。 */
++#include "midi_api.h"
++#include <dlfcn.h>
++#include <stdio.h>
++#include <string.h>
++int amcl_midi_api_load(AmclMidiApi* api, char* error, size_t errorSize) {
++    if (!api) return AMCL_MIDI_API_BROKEN;
++    memset(api, 0, sizeof(*api));
++    if (error && errorSize) error[0] = 0;
++    api->library = dlopen("libohmidi.so", RTLD_NOW | RTLD_LOCAL);
++    if (!api->library) {
++        const char* why = dlerror();
++        if (error && errorSize) snprintf(error, errorSize, "OH_MIDI unavailable: %s", why ? why : "dlopen failed");
++        return AMCL_MIDI_API_UNAVAILABLE;
++    }
++#define AMCL_MIDI_API_RESOLVE(field, symbol) do { \
++        dlerror(); \
++        api->field = (__typeof__(api->field))dlsym(api->library, #symbol); \
++        if (!api->field) { \
++            const char* why = dlerror(); \
++            if (error && errorSize) snprintf(error, errorSize, "OH_MIDI missing %s: %s", #symbol, why ? why : "null symbol"); \
++            amcl_midi_api_close(api); \
++            return AMCL_MIDI_API_BROKEN; \
++        } \
++    } while (0);
++    AMCL_MIDI_API_MEMBERS(AMCL_MIDI_API_RESOLVE)
++#undef AMCL_MIDI_API_RESOLVE
++    return AMCL_MIDI_API_OK;
++}
++void amcl_midi_api_close(AmclMidiApi* api) {
++    if (!api) return;
++    void* library = api->library;
++    memset(api, 0, sizeof(*api));
++    if (library) dlclose(library);
++}
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_api.h
+@@ -0,0 +1,40 @@
++/* OH_MIDI API24 的精确可选接口。只在控制线程加载和解析，不产生 libohmidi 的
++ * DT_NEEDED；API20 无此库时返回明确 unavailable，不能提高整个应用的最低API。
++ * 每个函数指针直接由当前SDK声明派生，参数/返回值漂移会由编译器检查。
++ */
++#ifndef AMCL_MIDI_API_H
++#define AMCL_MIDI_API_H
++#include <ohmidi/native_midi.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++#define AMCL_MIDI_API_MEMBERS(X) \
++    X(Create, OH_MIDIClient_Create) \
++    X(Destroy, OH_MIDIClient_Destroy) \
++    X(GetDeviceCount, OH_MIDIClient_GetDeviceCount) \
++    X(GetDeviceInfos, OH_MIDIClient_GetDeviceInfos) \
++    X(GetPortCount, OH_MIDIClient_GetPortCount) \
++    X(GetPortInfos, OH_MIDIClient_GetPortInfos) \
++    X(OpenDevice, OH_MIDIClient_OpenDevice) \
++    X(CloseDevice, OH_MIDIClient_CloseDevice) \
++    X(OpenInputPort, OH_MIDIDevice_OpenInputPort) \
++    X(OpenOutputPort, OH_MIDIDevice_OpenOutputPort) \
++    X(CloseInputPort, OH_MIDIDevice_CloseInputPort) \
++    X(CloseOutputPort, OH_MIDIDevice_CloseOutputPort) \
++    X(Send, OH_MIDIDevice_Send) \
++    X(FlushOutputPort, OH_MIDIDevice_FlushOutputPort)
++typedef struct {
++    void* library;
++#define AMCL_MIDI_API_FIELD(field, symbol) __typeof__(&symbol) field;
++    AMCL_MIDI_API_MEMBERS(AMCL_MIDI_API_FIELD)
++#undef AMCL_MIDI_API_FIELD
++} AmclMidiApi;
++enum { AMCL_MIDI_API_OK = 0, AMCL_MIDI_API_UNAVAILABLE = 1, AMCL_MIDI_API_BROKEN = -1 };
++/* load只接固定平台库名；测试故障库由独立进程的受控动态搜索目录提供。error必须
++ * 由调用方拥有，生命周期不依赖线程局部dlerror缓冲。close仅在client全部结束后用。 */
++int amcl_midi_api_load(AmclMidiApi* api, char* error, size_t errorSize);
++void amcl_midi_api_close(AmclMidiApi* api);
++#ifdef __cplusplus
++}
++#endif
++#endif
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_callbacks.h
+@@ -0,0 +1,206 @@
++/* 系统可调用的MIDI边界。嵌入场景只把正常签名加载的HAP函数注册给OH_MIDI，
++ * 函数仅修改本头定义的版本化POD并复制借用数据，不回调JDK代码、不进入JNI。
++ * 独立CLI的相同源码由系统链接器正常登记，可用本地表。队列是多生产者/单消费者，
++ * 回调无堆分配、无互斥锁、无阻塞等待；容量不足是可见错误，不覆盖未读音乐数据。
++ */
++#ifndef AMCL_MIDI_CALLBACKS_H
++#define AMCL_MIDI_CALLBACKS_H
++#include <ohmidi/native_midi_base.h>
++#include <semaphore.h>
++#include <string.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AMCL_MIDI_CALLBACK_ABI 1u
++#define AMCL_MIDI_POD_LAYOUT 1u
++#define AMCL_MIDI_PACKET_CAPACITY 4096u
++#define AMCL_MIDI_NOTICE_CAPACITY 128u
++enum {
++    AMCL_MIDI_BAD_PACKET = -12001,
++    AMCL_MIDI_QUEUE_FULL = -12002,
++    AMCL_MIDI_CALLBACK_CONTENTION = -12003,
++    AMCL_MIDI_WAKE_FAILED = -12004
++};
++typedef struct {
++    uint64_t timestamp;
++    uint32_t words[2];
++    uint32_t wordCount;
++} AmclMidiPacket;
++typedef struct { uint64_t sequence; AmclMidiPacket packet; } AmclMidiPacketSlot;
++typedef struct {
++    uint32_t layout, closing, active;
++    int32_t error;
++    uint32_t wakePending;
++    uint64_t enqueue, dequeue, receivedPackets, receivedWords;
++    sem_t wake;
++    AmclMidiPacketSlot slots[AMCL_MIDI_PACKET_CAPACITY];
++} AmclMidiInputPod;
++typedef struct { int64_t deviceId; int32_t action; } AmclMidiNotice;
++typedef struct { uint64_t sequence; AmclMidiNotice notice; } AmclMidiNoticeSlot;
++typedef struct {
++    uint32_t layout, closing, active, invalidated;
++    int32_t error;
++    uint64_t epoch, enqueue, dequeue;
++    AmclMidiNoticeSlot slots[AMCL_MIDI_NOTICE_CAPACITY];
++} AmclMidiClientPod;
++
++/* 初始化/销毁仅由控制线程调用；sem_t属于公开libc ABI，表校验同时检查其外层
++ * 结构大小/对齐。SDK成功CloseInputPort且active=0之后才允许sem_destroy/free。 */
++static inline int amcl_midi_input_init(AmclMidiInputPod* pod) {
++    memset(pod, 0, sizeof(*pod)); pod->layout = AMCL_MIDI_POD_LAYOUT;
++    for (uint64_t i = 0; i < AMCL_MIDI_PACKET_CAPACITY; ++i) pod->slots[i].sequence = i;
++    return sem_init(&pod->wake, 0, 0);
++}
++static inline void amcl_midi_client_init(AmclMidiClientPod* pod) {
++    memset(pod, 0, sizeof(*pod)); pod->layout = AMCL_MIDI_POD_LAYOUT;
++    for (uint64_t i = 0; i < AMCL_MIDI_NOTICE_CAPACITY; ++i) pod->slots[i].sequence = i;
++}
++static inline void amcl_midi_input_wake(AmclMidiInputPod* pod) {
++    if (!__atomic_exchange_n(&pod->wakePending, 1u, __ATOMIC_ACQ_REL) && sem_post(&pod->wake) != 0)
++        __atomic_store_n(&pod->error, AMCL_MIDI_WAKE_FAILED, __ATOMIC_RELEASE);
++}
++static inline void amcl_midi_input_error(AmclMidiInputPod* pod, int error) {
++    int32_t expected = 0;
++    __atomic_compare_exchange_n(&pod->error, &expected, error, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++    amcl_midi_input_wake(pod);
++}
++
++/* sequence发布在payload写完之后。CAS竞争有界，异常多生产者持续争抢会明确报错；
++ * 回调不会等消费线程，也不会借用事件在返回之后失效的data指针。 */
++static inline int amcl_midi_packet_push(AmclMidiInputPod* pod, const OH_MIDIEvent* event,
++                                        size_t offset, unsigned words) {
++    uint64_t position = __atomic_load_n(&pod->enqueue, __ATOMIC_RELAXED);
++    for (unsigned retry = 0; retry < 128; ++retry) {
++        AmclMidiPacketSlot* slot = &pod->slots[position & (AMCL_MIDI_PACKET_CAPACITY - 1u)];
++        uint64_t sequence = __atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE);
++        int64_t delta = (int64_t)(sequence - position);
++        if (delta < 0) return AMCL_MIDI_QUEUE_FULL;
++        if (delta == 0 && __atomic_compare_exchange_n(&pod->enqueue, &position, position + 1,
++                                                     1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++            slot->packet.timestamp = event->timestamp;
++            slot->packet.wordCount = words;
++            slot->packet.words[0] = event->data[offset];
++            slot->packet.words[1] = words == 2 ? event->data[offset + 1] : 0;
++            __atomic_store_n(&slot->sequence, position + 1, __ATOMIC_RELEASE);
++            __atomic_add_fetch(&pod->receivedPackets, 1, __ATOMIC_RELAXED);
++            __atomic_add_fetch(&pod->receivedWords, words, __ATOMIC_RELAXED);
++            return 0;
++        }
++        position = __atomic_load_n(&pod->enqueue, __ATOMIC_RELAXED);
++    }
++    return AMCL_MIDI_CALLBACK_CONTENTION;
++}
++/* 单消费线程取得的是自有副本，随后立即归还槽位，不持队列槽跨Java用户回调。 */
++static inline int amcl_midi_packet_pop(AmclMidiInputPod* pod, AmclMidiPacket* packet) {
++    uint64_t position = pod->dequeue;
++    AmclMidiPacketSlot* slot = &pod->slots[position & (AMCL_MIDI_PACKET_CAPACITY - 1u)];
++    if (__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) != position + 1) return 0;
++    *packet = slot->packet;
++    __atomic_store_n(&slot->sequence, position + AMCL_MIDI_PACKET_CAPACITY, __ATOMIC_RELEASE);
++    pod->dequeue = position + 1;
++    return 1;
++}
++static inline int amcl_midi_notice_pop(AmclMidiClientPod* pod, AmclMidiNotice* notice) {
++    uint64_t position = pod->dequeue;
++    AmclMidiNoticeSlot* slot = &pod->slots[position & (AMCL_MIDI_NOTICE_CAPACITY - 1u)];
++    if (__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) != position + 1) return 0;
++    *notice = slot->notice;
++    __atomic_store_n(&slot->sequence, position + AMCL_MIDI_NOTICE_CAPACITY, __ATOMIC_RELEASE);
++    pod->dequeue = position + 1;
++    return 1;
++}
++
++/* 这些精确SDK签名直接放入函数指针表，不能用void*万能跳板接受任意函数地址。 */
++static inline void amcl_midi_on_device_change(void* user, OH_MIDIDeviceChangeAction action,
++                                               OH_MIDIDeviceInformation info) {
++    AmclMidiClientPod* pod = (AmclMidiClientPod*)user;
++    if (!pod) return;
++    __atomic_add_fetch(&pod->active, 1u, __ATOMIC_SEQ_CST);
++    if (!__atomic_load_n(&pod->closing, __ATOMIC_ACQUIRE) && pod->layout == AMCL_MIDI_POD_LAYOUT) {
++        uint64_t position = __atomic_load_n(&pod->enqueue, __ATOMIC_RELAXED);
++        int published = 0;
++        for (unsigned retry = 0; retry < 128; ++retry) {
++            AmclMidiNoticeSlot* slot = &pod->slots[position & (AMCL_MIDI_NOTICE_CAPACITY - 1u)];
++            int64_t delta = (int64_t)(__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) - position);
++            if (delta < 0) break;
++            if (delta == 0 && __atomic_compare_exchange_n(&pod->enqueue, &position, position + 1,
++                                                         1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++                slot->notice.deviceId = info.midiDeviceId; slot->notice.action = (int32_t)action;
++                __atomic_store_n(&slot->sequence, position + 1, __ATOMIC_RELEASE);
++                published = 1; break;
++            }
++            position = __atomic_load_n(&pod->enqueue, __ATOMIC_RELAXED);
++        }
++        if (!published) __atomic_store_n(&pod->invalidated, 1u, __ATOMIC_RELEASE);
++        __atomic_add_fetch(&pod->epoch, 1, __ATOMIC_RELEASE);
++    }
++    __atomic_sub_fetch(&pod->active, 1u, __ATOMIC_SEQ_CST);
++}
++static inline void amcl_midi_on_error(void* user, OH_MIDIStatusCode code) {
++    AmclMidiClientPod* pod = (AmclMidiClientPod*)user;
++    if (!pod) return;
++    __atomic_add_fetch(&pod->active, 1u, __ATOMIC_SEQ_CST);
++    if (!__atomic_load_n(&pod->closing, __ATOMIC_ACQUIRE) && pod->layout == AMCL_MIDI_POD_LAYOUT) {
++        int32_t expected = 0;
++        __atomic_compare_exchange_n(&pod->error, &expected, (int32_t)code, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++        __atomic_add_fetch(&pod->epoch, 1, __ATOMIC_RELEASE);
++    }
++    __atomic_sub_fetch(&pod->active, 1u, __ATOMIC_SEQ_CST);
++}
++static inline void amcl_midi_on_received(void* user, const OH_MIDIEvent* events, size_t count) {
++    AmclMidiInputPod* pod = (AmclMidiInputPod*)user;
++    if (!pod) return;
++    __atomic_add_fetch(&pod->active, 1u, __ATOMIC_SEQ_CST);
++    if (__atomic_load_n(&pod->closing, __ATOMIC_ACQUIRE) || pod->layout != AMCL_MIDI_POD_LAYOUT) goto done;
++    if ((!events && count) || count > AMCL_MIDI_PACKET_CAPACITY) {
++        amcl_midi_input_error(pod, AMCL_MIDI_BAD_PACKET); goto done;
++    }
++    for (size_t i = 0; i < count; ++i) {
++        if (!events[i].data || !events[i].length || events[i].length > 128) {
++            amcl_midi_input_error(pod, AMCL_MIDI_BAD_PACKET); break;
++        }
++        for (size_t offset = 0; offset < events[i].length;) {
++            unsigned type = events[i].data[offset] >> 28;
++            unsigned words = type <= 2 ? 1u : type == 3 ? 2u : 0u;
++            if (!words || words > events[i].length - offset) {
++                amcl_midi_input_error(pod, AMCL_MIDI_BAD_PACKET); goto done;
++            }
++            int result = amcl_midi_packet_push(pod, &events[i], offset, words);
++            if (result) { amcl_midi_input_error(pod, result); goto done; }
++            offset += words;
++        }
++    }
++    if (count) amcl_midi_input_wake(pod);
++done:
++    __atomic_sub_fetch(&pod->active, 1u, __ATOMIC_SEQ_CST);
++}
++
++typedef struct {
++    uint32_t abiVersion, tableSize, layoutVersion;
++    uint32_t clientSize, inputSize, clientAlignment, inputAlignment;
++    OH_MIDICallback_OnDeviceChange onDeviceChange;
++    OH_MIDICallback_OnError onError;
++    OH_MIDIDevice_OnReceived onReceived;
++} AmclMidiCallbackAbiV1;
++static inline const AmclMidiCallbackAbiV1* amcl_midi_local_callbacks_v1(void) {
++    static const AmclMidiCallbackAbiV1 table = {
++        AMCL_MIDI_CALLBACK_ABI, sizeof(AmclMidiCallbackAbiV1), AMCL_MIDI_POD_LAYOUT,
++        sizeof(AmclMidiClientPod), sizeof(AmclMidiInputPod),
++        __alignof__(AmclMidiClientPod), __alignof__(AmclMidiInputPod),
++        amcl_midi_on_device_change, amcl_midi_on_error, amcl_midi_on_received
++    };
++    return &table;
++}
++static inline int amcl_midi_callbacks_valid_v1(const AmclMidiCallbackAbiV1* table) {
++    return table && table->abiVersion == AMCL_MIDI_CALLBACK_ABI && table->tableSize == sizeof(*table) &&
++        table->layoutVersion == AMCL_MIDI_POD_LAYOUT && table->clientSize == sizeof(AmclMidiClientPod) &&
++        table->inputSize == sizeof(AmclMidiInputPod) && table->clientAlignment == __alignof__(AmclMidiClientPod) &&
++        table->inputAlignment == __alignof__(AmclMidiInputPod) && table->onDeviceChange && table->onError && table->onReceived;
++}
++__attribute__((visibility("default"))) const AmclMidiCallbackAbiV1* amcl_javasound_midi_callbacks_v1(void);
++#ifdef __cplusplus
++}
++#endif
++#endif
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_core.c
+@@ -0,0 +1,559 @@
++/* 所有SDK调用位于普通控制/既有Java MIDI输入线程。系统回调只接触独立POD，
++ * 因而manager锁不会与回调形成反向等待，也无需新增常驻broker线程。
++ */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include "midi_core.h"
++#include <errno.h>
++#include <limits.h>
++#include <pthread.h>
++#include <stdlib.h>
++#include <time.h>
++
++typedef struct AmclMidiDevice {
++    int64_t id;
++    OH_MIDIDevice* native;
++    unsigned openPorts, references;
++    struct AmclMidiDevice* next;
++} AmclMidiDevice;
++struct AmclMidiUse {
++    AmclMidiManager* manager;
++    AmclMidiDevice* device;
++    uint64_t token, epoch;
++    uint32_t port, closed, stopped, reading, disconnected;
++    int direction, portOpen, everStarted, safe, error;
++    unsigned references;
++    pthread_mutex_t io;
++    AmclMidiInputPod* input;
++    AmclMidiStream stream;
++    uint8_t receivingSysex[16];
++    AmclMidiPacket pending;
++    int hasPending;
++    struct AmclMidiUse* next;
++};
++struct AmclMidiManager {
++    pthread_mutex_t lock;
++    const AmclMidiApi* api;
++    const AmclMidiCallbackAbiV1* callbacks;
++    OH_MIDIClient* client;
++    AmclMidiClientPod* pod;
++    AmclMidiEndpoint* endpoints;
++    size_t count;
++    uint64_t nextHandle, appliedEpoch;
++    int32_t nextEndpoint;
++    int destroying, destroyStatus, serviceReported, recreate;
++    AmclMidiDevice* devices;
++    AmclMidiUse *handles, *retired;
++};
++
++static uint64_t monotonic_ns(void) {
++    struct timespec now;
++    if (clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
++    return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
++}
++/* SDK成功关闭后的在途计数等待；超时不释放它仍可访问的内存。SDK本身的关闭
++ * 调用是否有界属于其合同，本函数不声称能给阻塞的系统IPC强行设墙钟期限。 */
++static int quiescent(uint32_t* active) {
++    uint64_t start = monotonic_ns();
++    struct timespec pause = {0, 1000000};
++    do {
++        if (!__atomic_load_n(active, __ATOMIC_SEQ_CST)) return 1;
++        nanosleep(&pause, NULL);
++    } while (start && monotonic_ns() - start < UINT64_C(1000000000));
++    return !__atomic_load_n(active, __ATOMIC_SEQ_CST);
++}
++static int manager_error(AmclMidiManager* m) {
++    if (m->destroying || !m->client) return AMCL_MIDI_CLOSED;
++    return __atomic_load_n(&m->pod->error, __ATOMIC_ACQUIRE);
++}
++int amcl_midi_manager_create(AmclMidiManager** output, const AmclMidiApi* api, const AmclMidiCallbackAbiV1* table) {
++    if (!output || !api || !amcl_midi_callbacks_valid_v1(table)) return AMCL_MIDI_ABI;
++    *output = NULL;
++#define AMCL_MIDI_REQUIRE(field, symbol) if (!api->field) return AMCL_MIDI_ABI;
++    AMCL_MIDI_API_MEMBERS(AMCL_MIDI_REQUIRE)
++#undef AMCL_MIDI_REQUIRE
++    AmclMidiManager* m = calloc(1, sizeof(*m));
++    if (!m) return AMCL_MIDI_MEMORY;
++    m->pod = calloc(1, sizeof(*m->pod));
++    if (!m->pod) { free(m); return AMCL_MIDI_MEMORY; }
++    if (pthread_mutex_init(&m->lock, NULL)) { free(m->pod); free(m); return AMCL_MIDI_MEMORY; }
++    m->api = api; m->callbacks = table; m->nextHandle = 1; m->nextEndpoint = 1;
++    amcl_midi_client_init(m->pod);
++    OH_MIDICallbacks callbacks = { table->onDeviceChange, table->onError };
++    int result = api->Create(&m->client, callbacks, m->pod);
++    if (result || !m->client) {
++        /* Create失败没有发布client；公开实现也销毁失败实例。同步回调必须先归零。 */
++        __atomic_store_n(&m->pod->closing, 1u, __ATOMIC_RELEASE);
++        if (quiescent(&m->pod->active)) { pthread_mutex_destroy(&m->lock); free(m->pod); free(m); }
++        else *output = m; /* 未静止的异常路径让外层保留宿主/API引用。 */
++        return result ? result : OH_MIDI_STATUS_SYSTEM_ERROR;
++    }
++    *output = m;
++    return 0;
++}
++
++/* count只是预估；多留一个槽并在填满时扩容重试，避免热插拔计数竞态导致静默截断。
++ * GetDeviceCount的公开实现曾吞内部错误，因此即使count=0也实际GetDeviceInfos。
++ */
++static int device_infos(AmclMidiManager* m, OH_MIDIDeviceInformation** output, size_t* count) {
++    size_t hint = 0;
++    int result = m->api->GetDeviceCount(m->client, &hint);
++    if (result) return result;
++    if (hint == SIZE_MAX) return AMCL_MIDI_MEMORY;
++    size_t capacity = hint + 1;
++    for (unsigned retry = 0; retry < 5; ++retry) {
++        if (capacity > SIZE_MAX / sizeof(**output)) return AMCL_MIDI_MEMORY;
++        OH_MIDIDeviceInformation* infos = calloc(capacity, sizeof(*infos));
++        if (!infos) return AMCL_MIDI_MEMORY;
++        size_t actual = 0;
++        result = m->api->GetDeviceInfos(m->client, infos, capacity, &actual);
++        if (result || actual > capacity) { free(infos); return result ? result : AMCL_MIDI_INVALID; }
++        if (actual < capacity) { *output = infos; *count = actual; return 0; }
++        free(infos);
++        if (capacity > SIZE_MAX / 2) return AMCL_MIDI_MEMORY;
++        capacity *= 2;
++    }
++    return AMCL_MIDI_CHANGED;
++}
++static int port_infos(AmclMidiManager* m, int64_t id, OH_MIDIPortInformation** output, size_t* count) {
++    size_t hint = 0;
++    int result = m->api->GetPortCount(m->client, id, &hint);
++    if (result) return result;
++    if (hint == SIZE_MAX) return AMCL_MIDI_MEMORY;
++    size_t capacity = hint + 1;
++    for (unsigned retry = 0; retry < 5; ++retry) {
++        if (capacity > SIZE_MAX / sizeof(**output)) return AMCL_MIDI_MEMORY;
++        OH_MIDIPortInformation* infos = calloc(capacity, sizeof(*infos));
++        if (!infos) return AMCL_MIDI_MEMORY;
++        size_t actual = 0;
++        result = m->api->GetPortInfos(m->client, id, infos, capacity, &actual);
++        if (result || actual > capacity) { free(infos); return result ? result : AMCL_MIDI_INVALID; }
++        if (actual < capacity) { *output = infos; *count = actual; return 0; }
++        free(infos);
++        if (capacity > SIZE_MAX / 2) return AMCL_MIDI_MEMORY;
++        capacity *= 2;
++    }
++    return AMCL_MIDI_CHANGED;
++}
++static void apply_notices(AmclMidiManager* m) {
++    uint64_t observed = __atomic_load_n(&m->pod->epoch, __ATOMIC_ACQUIRE);
++    int all = __atomic_exchange_n(&m->pod->invalidated, 0u, __ATOMIC_ACQ_REL);
++    if (all) {
++        for (size_t i = 0; i < m->count; ++i) m->endpoints[i].token = 0;
++        /* 通知溢出意味着无法再证明某个在用handle未经历断连/重连。不能只撤销
++         * 下一份快照而让旧输入永久等待；现役端口明确报告Changed，用户关闭重开
++         * 后由新的真实快照恢复。这里只表达身份不确定，不伪造“物理已断开”。 */
++        for (AmclMidiUse* u = m->handles; u; u = u->next) {
++            __atomic_store_n(&u->error, AMCL_MIDI_CHANGED, __ATOMIC_RELEASE);
++            if (u->input) amcl_midi_input_error(u->input, AMCL_MIDI_CHANGED);
++        }
++    }
++    AmclMidiNotice notice;
++    while (amcl_midi_notice_pop(m->pod, &notice)) {
++        if (notice.action != OH_MIDI_DEVICE_CHANGE_ACTION_DISCONNECTED) continue;
++        for (size_t i = 0; i < m->count; ++i)
++            if (m->endpoints[i].device.midiDeviceId == notice.deviceId) m->endpoints[i].token = 0;
++        for (AmclMidiUse* u = m->handles; u; u = u->next) if (u->device->id == notice.deviceId) {
++            __atomic_store_n(&u->disconnected, 1u, __ATOMIC_RELEASE);
++            if (u->input) amcl_midi_input_error(u->input, OH_MIDI_STATUS_INVALID_DEVICE_HANDLE);
++        }
++    }
++    __atomic_store_n(&m->appliedEpoch, observed, __ATOMIC_RELEASE);
++}
++static int same_endpoint(const AmclMidiEndpoint* a, const AmclMidiEndpoint* b) {
++    return a->device.midiDeviceId == b->device.midiDeviceId && a->port.portIndex == b->port.portIndex &&
++        a->port.direction == b->port.direction && a->device.deviceType == b->device.deviceType &&
++        a->device.nativeProtocol == b->device.nativeProtocol && a->device.vendorId == b->device.vendorId &&
++        a->device.productId == b->device.productId &&
++        !strncmp(a->device.deviceName, b->device.deviceName, sizeof(a->device.deviceName)) &&
++        !strncmp(a->device.deviceAddress, b->device.deviceAddress, sizeof(a->device.deviceAddress)) &&
++        !strncmp(a->port.name, b->port.name, sizeof(a->port.name));
++}
++static void free_use_locked(AmclMidiUse* u);
++/* 服务死亡首先作为真实错误交给调用方。所有旧端口/在途JNI退出后，下一次显式
++ * 枚举可按SDK要求销毁并重建client，不需要重启JVM。失败Destroy已消费的原指针
++ * 绝不重用；其quiescence不确定时保持错误和所有权，不能为了恢复伪造安全释放。 */
++static int recover_service_locked(AmclMidiManager* m) {
++    int error = __atomic_load_n(&m->pod->error, __ATOMIC_ACQUIRE);
++    if (error != OH_MIDI_STATUS_SERVICE_DIED && !m->recreate) return 0;
++    if (!m->serviceReported) { m->serviceReported = 1; return OH_MIDI_STATUS_SERVICE_DIED; }
++    if (m->handles) return OH_MIDI_STATUS_SERVICE_DIED;
++    for (AmclMidiUse* u = m->retired; u; u = u->next) if (u->references) return OH_MIDI_STATUS_SERVICE_DIED;
++    if (m->client) {
++        __atomic_store_n(&m->pod->closing, 1u, __ATOMIC_RELEASE);
++        m->destroyStatus = m->api->Destroy(m->client); m->client = NULL; m->recreate = 1;
++    }
++    if (m->destroyStatus) return m->destroyStatus;
++    if (!quiescent(&m->pod->active)) return AMCL_MIDI_TIMEOUT;
++    for (AmclMidiUse* u = m->retired; u; u = u->next)
++        if (u->input && !quiescent(&u->input->active)) return AMCL_MIDI_TIMEOUT;
++    while (m->retired) { m->retired->safe = 1; free_use_locked(m->retired); }
++    free(m->endpoints); m->endpoints = NULL; m->count = 0;
++    amcl_midi_client_init(m->pod); m->appliedEpoch = 0;
++    OH_MIDICallbacks callbacks = {m->callbacks->onDeviceChange, m->callbacks->onError};
++    int result = m->api->Create(&m->client, callbacks, m->pod);
++    if (result || !m->client) { m->client = NULL; return result ? result : OH_MIDI_STATUS_SYSTEM_ERROR; }
++    m->serviceReported = m->recreate = 0;
++    return 0;
++}
++static int refresh_locked(AmclMidiManager* m) {
++    int result = recover_service_locked(m);
++    if (!result) result = manager_error(m);
++    if (result) return result;
++    for (unsigned attempt = 0; attempt < 3; ++attempt) {
++        apply_notices(m);
++        uint64_t epoch = __atomic_load_n(&m->pod->epoch, __ATOMIC_ACQUIRE);
++        OH_MIDIDeviceInformation* devices = NULL; size_t count = 0;
++        AmclMidiEndpoint* endpoints = NULL; size_t size = 0;
++        result = device_infos(m, &devices, &count);
++        for (size_t i = 0; !result && i < count; ++i) {
++            OH_MIDIDeviceInformation* device = &devices[i];
++            if ((device->deviceType != OH_MIDI_DEVICE_TYPE_USB && device->deviceType != OH_MIDI_DEVICE_TYPE_BLE) ||
++                (device->nativeProtocol != OH_MIDI_PROTOCOL_1_0 && device->nativeProtocol != OH_MIDI_PROTOCOL_2_0) ||
++                !memchr(device->deviceName, 0, sizeof(device->deviceName)) ||
++                !memchr(device->deviceAddress, 0, sizeof(device->deviceAddress))) { result = AMCL_MIDI_INVALID; break; }
++            OH_MIDIPortInformation* ports = NULL; size_t portCount = 0;
++            result = port_infos(m, device->midiDeviceId, &ports, &portCount);
++            if (!result && portCount > SIZE_MAX / sizeof(*endpoints) - size) result = AMCL_MIDI_MEMORY;
++            if (!result && portCount) {
++                AmclMidiEndpoint* grown = realloc(endpoints, (size + portCount) * sizeof(*endpoints));
++                if (!grown) result = AMCL_MIDI_MEMORY; else endpoints = grown;
++            }
++            for (size_t j = 0; !result && j < portCount; ++j) {
++                if (ports[j].deviceId != device->midiDeviceId ||
++                    (ports[j].direction != OH_MIDI_PORT_DIRECTION_INPUT && ports[j].direction != OH_MIDI_PORT_DIRECTION_OUTPUT) ||
++                    !memchr(ports[j].name, 0, sizeof(ports[j].name))) { result = AMCL_MIDI_INVALID; break; }
++                AmclMidiEndpoint endpoint = {0}; endpoint.device = *device; endpoint.port = ports[j];
++                /* 同一个设备/端口/方向重复项不是两个真实端点，拒绝有歧义的SDK快照。 */
++                for (size_t k = 0; k < size; ++k)
++                    if (endpoints[k].device.midiDeviceId == device->midiDeviceId && endpoints[k].port.portIndex == ports[j].portIndex &&
++                        endpoints[k].port.direction == ports[j].direction) { result = AMCL_MIDI_INVALID; break; }
++                if (!result) endpoints[size++] = endpoint;
++            }
++            free(ports);
++        }
++        free(devices);
++        if (result) { free(endpoints); return result; }
++        if (epoch != __atomic_load_n(&m->pod->epoch, __ATOMIC_ACQUIRE)) { free(endpoints); continue; }
++        for (size_t i = 0; i < size; ++i) {
++            for (size_t j = 0; j < m->count; ++j)
++                if (m->endpoints[j].token && same_endpoint(&endpoints[i], &m->endpoints[j])) { endpoints[i].token = m->endpoints[j].token; break; }
++            if (!endpoints[i].token) {
++                if (m->nextEndpoint <= 0 || m->nextEndpoint == INT_MAX) { free(endpoints); return AMCL_MIDI_MEMORY; }
++                endpoints[i].token = m->nextEndpoint++;
++            }
++        }
++        free(m->endpoints); m->endpoints = endpoints; m->count = size;
++        return 0;
++    }
++    return AMCL_MIDI_CHANGED;
++}
++int amcl_midi_snapshot(AmclMidiManager* m, int direction, AmclMidiEndpoint** output, size_t* count) {
++    if (!m || !output || !count || (direction != 0 && direction != 1)) return AMCL_MIDI_INVALID;
++    *output = NULL; *count = 0; pthread_mutex_lock(&m->lock);
++    int result = refresh_locked(m); size_t matches = 0;
++    if (!result) {
++        for (size_t i = 0; i < m->count; ++i) if ((int)m->endpoints[i].port.direction == direction) ++matches;
++        if (matches) {
++            *output = malloc(matches * sizeof(**output));
++            if (!*output) result = AMCL_MIDI_MEMORY;
++            else for (size_t i = 0; i < m->count; ++i)
++                if ((int)m->endpoints[i].port.direction == direction) (*output)[(*count)++] = m->endpoints[i];
++        }
++    }
++    pthread_mutex_unlock(&m->lock); return result;
++}
++
++/* 同一client同一device只OpenDevice一次，真实的多输入/多输出端口共享它。SDK的
++ * portIndex直接来自快照，不假定连续，也不把input0/output1或BLE示例当设备事实。 */
++int amcl_midi_open(AmclMidiManager* m, int token, int direction, uint64_t* handle) {
++    if (!m || !handle || (direction != 0 && direction != 1)) return AMCL_MIDI_INVALID;
++    *handle = 0; pthread_mutex_lock(&m->lock);
++    int result = refresh_locked(m); const AmclMidiEndpoint* endpoint = NULL;
++    if (!result) for (size_t i = 0; i < m->count; ++i)
++        if (m->endpoints[i].token == token && (int)m->endpoints[i].port.direction == direction) { endpoint = &m->endpoints[i]; break; }
++    if (!result && !endpoint) result = AMCL_MIDI_STALE;
++    AmclMidiDevice* device = NULL; AmclMidiUse* use = NULL; int newDevice = 0;
++    if (!result) {
++        for (AmclMidiUse* u = m->handles; u; u = u->next)
++            if (u->device->id == endpoint->device.midiDeviceId && u->port == endpoint->port.portIndex && u->direction == direction)
++                result = OH_MIDI_STATUS_PORT_ALREADY_OPEN;
++        for (device = m->devices; device && device->id != endpoint->device.midiDeviceId; device = device->next) {}
++    }
++    if (!result && !device) {
++        device = calloc(1, sizeof(*device));
++        if (!device) result = AMCL_MIDI_MEMORY;
++        else {
++            newDevice = 1; device->id = endpoint->device.midiDeviceId;
++            result = m->api->OpenDevice(m->client, device->id, &device->native);
++            if (!result && !device->native) result = OH_MIDI_STATUS_SYSTEM_ERROR;
++        }
++    }
++    if (!result) {
++        use = calloc(1, sizeof(*use));
++        if (!use) result = AMCL_MIDI_MEMORY;
++        else if (pthread_mutex_init(&use->io, NULL)) { free(use); use = NULL; result = AMCL_MIDI_MEMORY; }
++    }
++    if (!result) {
++        use->manager = m; use->device = device; use->direction = direction; use->port = endpoint->port.portIndex;
++        use->epoch = monotonic_ns(); use->references = 1; use->safe = 1; use->stopped = direction == 0;
++        if (!use->epoch || m->nextHandle == UINT64_MAX) result = AMCL_MIDI_INVALID;
++        else if (direction == 0) {
++            use->input = calloc(1, sizeof(*use->input));
++            if (!use->input) result = AMCL_MIDI_MEMORY;
++            else if (amcl_midi_input_init(use->input)) { free(use->input); use->input = NULL; result = AMCL_MIDI_MEMORY; }
++        } else {
++            OH_MIDIPortDescriptor descriptor = { use->port, OH_MIDI_PROTOCOL_1_0 };
++            result = m->api->OpenOutputPort(device->native, descriptor);
++            if (!result) use->portOpen = 1;
++        }
++    }
++    if (!result) {
++        if (newDevice) { device->next = m->devices; m->devices = device; }
++        ++device->references; ++device->openPorts;
++        use->token = m->nextHandle++; use->next = m->handles; m->handles = use; *handle = use->token;
++    } else {
++        if (use) { if (use->input) { sem_destroy(&use->input->wake); free(use->input); } pthread_mutex_destroy(&use->io); free(use); }
++        if (newDevice && device) { if (device->native) m->api->CloseDevice(m->client, device->native); free(device); }
++    }
++    pthread_mutex_unlock(&m->lock); return result;
++}
++AmclMidiUse* amcl_midi_acquire(AmclMidiManager* m, uint64_t token, int direction) {
++    if (!m || !token) return NULL;
++    pthread_mutex_lock(&m->lock); AmclMidiUse* found = NULL;
++    for (AmclMidiUse* u = m->handles; u; u = u->next)
++        if (u->token == token && u->direction == direction && !u->closed) { ++u->references; found = u; break; }
++    pthread_mutex_unlock(&m->lock); return found;
++}
++static void free_use_locked(AmclMidiUse* u) {
++    AmclMidiManager* m = u->manager;
++    AmclMidiUse** link = &m->retired;
++    while (*link && *link != u) link = &(*link)->next;
++    if (*link == u) *link = u->next;
++    if (u->input) { sem_destroy(&u->input->wake); free(u->input); }
++    pthread_mutex_destroy(&u->io);
++    if (!--u->device->references && !u->device->openPorts) free(u->device);
++    free(u);
++}
++void amcl_midi_release(AmclMidiUse* u) {
++    if (!u) return;
++    AmclMidiManager* m = u->manager; pthread_mutex_lock(&m->lock);
++    if (--u->references == 0 && u->closed && u->safe) free_use_locked(u);
++    pthread_mutex_unlock(&m->lock);
++}
++static int use_error(AmclMidiUse* u) {
++    if (__atomic_load_n(&u->closed, __ATOMIC_ACQUIRE)) return AMCL_MIDI_CLOSED;
++    /* 热插拔无需等下一次Java枚举；既有输入线程的定期检查同样消费通知并结束
++     * 已断开设备。回调只入队，实际handle状态修改仍在普通线程的manager锁下。 */
++    if (__atomic_load_n(&u->manager->pod->epoch, __ATOMIC_ACQUIRE) !=
++        __atomic_load_n(&u->manager->appliedEpoch, __ATOMIC_ACQUIRE)) {
++        pthread_mutex_lock(&u->manager->lock); apply_notices(u->manager); pthread_mutex_unlock(&u->manager->lock);
++    }
++    int ownership = __atomic_load_n(&u->error, __ATOMIC_ACQUIRE);
++    if (ownership) return ownership;
++    if (__atomic_load_n(&u->disconnected, __ATOMIC_ACQUIRE)) return OH_MIDI_STATUS_INVALID_DEVICE_HANDLE;
++    int result = __atomic_load_n(&u->manager->pod->error, __ATOMIC_ACQUIRE);
++    if (!result && u->input) result = __atomic_load_n(&u->input->error, __ATOMIC_ACQUIRE);
++    return result;
++}
++int amcl_midi_start(AmclMidiUse* u) {
++    if (!u || u->direction != 0) return AMCL_MIDI_INVALID;
++    pthread_mutex_lock(&u->io); int result = use_error(u);
++    if (!result && !u->portOpen) {
++        /* 同一handle的停止/重启仅在旧读取者离开后重置消费状态；普通Java重开会
++         * 获得全新的handle，不能以join(1000)结束为旧Receiver已经返回的证明。 */
++        if (u->everStarted && __atomic_load_n(&u->reading, __ATOMIC_ACQUIRE)) result = AMCL_MIDI_BUSY;
++        else {
++            if (u->everStarted) {
++                while (amcl_midi_packet_pop(u->input, &u->pending)) {}
++                u->hasPending = 0; memset(u->receivingSysex, 0, sizeof(u->receivingSysex));
++            }
++            __atomic_store_n(&u->input->closing, 0u, __ATOMIC_RELEASE);
++            __atomic_store_n(&u->stopped, 0u, __ATOMIC_RELEASE);
++            OH_MIDIPortDescriptor descriptor = { u->port, OH_MIDI_PROTOCOL_1_0 };
++            result = u->manager->api->OpenInputPort(u->device->native, descriptor, u->manager->callbacks->onReceived, u->input);
++            if (!result) u->portOpen = u->everStarted = 1;
++            else { __atomic_store_n(&u->stopped, 1u, __ATOMIC_RELEASE); __atomic_store_n(&u->input->closing, 1u, __ATOMIC_RELEASE); }
++        }
++    }
++    pthread_mutex_unlock(&u->io); return result;
++}
++int amcl_midi_stop(AmclMidiUse* u) {
++    if (!u || u->direction != 0) return AMCL_MIDI_INVALID;
++    __atomic_store_n(&u->stopped, 1u, __ATOMIC_RELEASE);
++    __atomic_store_n(&u->input->closing, 1u, __ATOMIC_RELEASE); amcl_midi_input_wake(u->input);
++    pthread_mutex_lock(&u->io); int result = 0;
++    if (u->portOpen) {
++        result = u->manager->api->CloseInputPort(u->device->native, u->port);
++        u->portOpen = 0; /* 公开实现可在错误返回前消费端口，禁止重复使用旧port对象。 */
++        if (result || !quiescent(&u->input->active)) u->safe = 0;
++    }
++    pthread_mutex_unlock(&u->io); return result ? result : u->safe ? 0 : AMCL_MIDI_TIMEOUT;
++}
++int amcl_midi_close(AmclMidiManager* m, uint64_t token) {
++    if (!m || !token) return AMCL_MIDI_CLOSED;
++    pthread_mutex_lock(&m->lock); AmclMidiUse** link = &m->handles;
++    while (*link && (*link)->token != token) link = &(*link)->next;
++    AmclMidiUse* u = *link;
++    if (!u) { pthread_mutex_unlock(&m->lock); return AMCL_MIDI_CLOSED; }
++    *link = u->next; u->next = m->retired; m->retired = u;
++    __atomic_store_n(&u->closed, 1u, __ATOMIC_RELEASE);
++    pthread_mutex_unlock(&m->lock);
++    int result = 0;
++    if (u->input) result = amcl_midi_stop(u);
++    else {
++        pthread_mutex_lock(&u->io);
++        if (u->portOpen) { result = m->api->CloseOutputPort(u->device->native, u->port); u->portOpen = 0; }
++        pthread_mutex_unlock(&u->io);
++    }
++    pthread_mutex_lock(&m->lock);
++    AmclMidiDevice* device = u->device;
++    if (!--device->openPorts) {
++        AmclMidiDevice** dlink = &m->devices;
++        while (*dlink && *dlink != device) dlink = &(*dlink)->next;
++        if (*dlink) *dlink = device->next;
++        int closed = m->api->CloseDevice(m->client, device->native);
++        device->native = NULL; /* 无论返回值，SDK可已消费该raw handle，不能重试它。 */
++        if (!result) result = closed;
++        if (!closed) for (AmclMidiUse* old = m->retired; old; old = old->next)
++            if (old->device == device && (!old->input || quiescent(&old->input->active))) old->safe = 1;
++    }
++    if (--u->references == 0 && u->safe) free_use_locked(u);
++    pthread_mutex_unlock(&m->lock); return result;
++}
++int64_t amcl_midi_position(AmclMidiUse* u) {
++    uint64_t now = monotonic_ns();
++    return !u || use_error(u) || now < u->epoch ? -1 : (int64_t)((now - u->epoch) / 1000);
++}
++
++/* 批量发送保留每个事件的原始单调时钟时间，按SDK written精确前进。一次batch
++ * 最多64包，满缓冲只重试未接受部分；关闭和1秒单调期限可打断等待，绝不重新
++ * 提交已接受前缀，也不把WOULD_BLOCK当成功。long消息本身无1024字节截断上限。 */
++static int send_bytes(AmclMidiUse* u, const uint8_t* bytes, size_t size, int64_t micros) {
++    if (!u || u->direction != 1 || (size && !bytes)) return AMCL_MIDI_INVALID;
++    uint64_t timestamp;
++    if (amcl_midi_time_to_ns(u->epoch, micros, &timestamp)) return AMCL_MIDI_INVALID;
++    pthread_mutex_lock(&u->io);
++    int result = use_error(u); size_t offset = 0;
++    AmclMidiStream validation = u->stream; AmclMidiOutput ignored;
++    unsigned group = u->port & 15u; /* 与SDK SendSysEx自身的group选择完全一致。 */
++    while (!result) {
++        int step = amcl_midi_stream_next(&validation, group, bytes, size, &offset, timestamp, &ignored);
++        if (step < 0) result = AMCL_MIDI_INVALID;
++        if (step <= 0) break;
++    }
++    offset = 0;
++    while (!result) {
++        AmclMidiStream states[64], candidate = u->stream;
++        size_t offsets[64], cursor = offset;
++        AmclMidiOutput packets[64]; OH_MIDIEvent events[64]; unsigned count = 0; int complete = 0;
++        while (count < 64) {
++            int step = amcl_midi_stream_next(&candidate, group, bytes, size, &cursor, timestamp, &packets[count]);
++            if (step < 0) { result = AMCL_MIDI_INVALID; break; }
++            if (!step) { complete = 1; break; }
++            states[count] = candidate; offsets[count] = cursor;
++            events[count].timestamp = packets[count].timestamp;
++            events[count].length = packets[count].count; events[count].data = packets[count].words; ++count;
++        }
++        unsigned sent = 0; uint64_t started = monotonic_ns();
++        while (!result && sent < count) {
++            result = use_error(u); if (result) break;
++            uint32_t written = 0;
++            int status = u->manager->api->Send(u->device->native, u->port, events + sent, count - sent, &written);
++            if (written > count - sent) { result = AMCL_MIDI_INVALID; break; }
++            if (written) { sent += written; u->stream = states[sent - 1]; offset = offsets[sent - 1]; }
++            if (status != OH_MIDI_STATUS_OK && status != OH_MIDI_STATUS_WOULD_BLOCK) { result = status; break; }
++            if (sent == count) break;
++            if (status == OH_MIDI_STATUS_OK && !written) { result = AMCL_MIDI_INVALID; break; }
++            if (!started || monotonic_ns() - started >= UINT64_C(1000000000)) { result = AMCL_MIDI_TIMEOUT; break; }
++            struct timespec pause = {0, 10000000}; nanosleep(&pause, NULL);
++        }
++        if (result) break;
++        if (complete) { u->stream = candidate; break; }
++    }
++    pthread_mutex_unlock(&u->io); return result;
++}
++int amcl_midi_send_short(AmclMidiUse* u, uint32_t packed, int64_t micros) {
++    unsigned size = amcl_midi_short_size((uint8_t)packed); uint32_t check;
++    if (!size || amcl_midi_short_to_ump(packed, 0, &check) < 0) return AMCL_MIDI_INVALID;
++    uint8_t bytes[3] = {(uint8_t)packed, (uint8_t)(packed >> 8), (uint8_t)(packed >> 16)};
++    return send_bytes(u, bytes, size, micros);
++}
++int amcl_midi_send_long(AmclMidiUse* u, const uint8_t* bytes, size_t size, int64_t micros) {
++    if (!bytes || !size || (bytes[0] != 0xf0 && bytes[0] != 0xf7)) return AMCL_MIDI_INVALID;
++    if (bytes[0] == 0xf7 && size > 1) { ++bytes; --size; }
++    return send_bytes(u, bytes, size, micros);
++}
++int amcl_midi_read_begin(AmclMidiUse* u) {
++    if (!u || u->direction != 0) return AMCL_MIDI_INVALID;
++    uint32_t expected = 0;
++    return __atomic_compare_exchange_n(&u->reading, &expected, 1u, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED) ? 0 : AMCL_MIDI_BUSY;
++}
++void amcl_midi_read_end(AmclMidiUse* u) { if (u) __atomic_store_n(&u->reading, 0u, __ATOMIC_RELEASE); }
++int amcl_midi_next(AmclMidiUse* u, AmclMidiMessage* message) {
++    if (!u || !message || u->direction != 0 || !u->reading) return AMCL_MIDI_INVALID;
++    memset(message, 0, sizeof(*message)); unsigned group = 0;
++    while (1) {
++        if (__atomic_load_n(&u->stopped, __ATOMIC_ACQUIRE) || __atomic_load_n(&u->closed, __ATOMIC_ACQUIRE)) return message->length ? 1 : 0;
++        int error = use_error(u); if (error) return error;
++        AmclMidiPacket packet;
++        if (u->hasPending) { packet = u->pending; u->hasPending = 0; }
++        else if (!amcl_midi_packet_pop(u->input, &packet)) {
++            if (message->length) return 1;
++            __atomic_store_n(&u->input->wakePending, 0u, __ATOMIC_RELEASE);
++            if (amcl_midi_packet_pop(u->input, &packet)) { u->pending = packet; u->hasPending = 1; continue; }
++            if (__atomic_load_n(&u->stopped, __ATOMIC_ACQUIRE) || __atomic_load_n(&u->closed, __ATOMIC_ACQUIRE)) return 0;
++            struct timespec deadline;
++            if (clock_gettime(CLOCK_REALTIME, &deadline)) return OH_MIDI_STATUS_SYSTEM_ERROR;
++            deadline.tv_nsec += 100000000;
++            if (deadline.tv_nsec >= 1000000000) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000; }
++            if (sem_timedwait(&u->input->wake, &deadline) && errno != ETIMEDOUT && errno != EINTR) return OH_MIDI_STATUS_SYSTEM_ERROR;
++            continue; /* 定期检查client服务死亡；关闭由sem_post立即唤醒。 */
++        }
++        AmclMidiDecoded decoded;
++        int kind = amcl_midi_from_ump(packet.words, packet.wordCount, &decoded);
++        if (kind < 0) return AMCL_MIDI_BAD_PACKET;
++        if (kind == AMCL_MIDI_UMP_UTILITY) continue;
++        int64_t micros = amcl_midi_time_from_ns(u->epoch, packet.timestamp);
++        if (message->length && (kind != AMCL_MIDI_UMP_SYSEX7 || decoded.group != group || micros != message->microseconds ||
++            message->length + decoded.payloadSize + 1 > sizeof(message->data))) {
++            u->pending = packet; u->hasPending = 1; return 1;
++        }
++        if (kind == AMCL_MIDI_UMP_SHORT) { message->packed = decoded.packed; message->microseconds = micros; return 1; }
++        unsigned form = decoded.sysexForm; group = decoded.group;
++        if ((form < 2 && u->receivingSysex[group]) || (form >= 2 && !u->receivingSysex[group])) return AMCL_MIDI_BAD_PACKET;
++        if (!message->length) {
++            message->isLong = 1; message->microseconds = micros;
++            message->data[message->length++] = form < 2 ? 0xf0 : 0xf7;
++        }
++        memcpy(message->data + message->length, decoded.payload, decoded.payloadSize); message->length += decoded.payloadSize;
++        u->receivingSysex[group] = form == 1 || form == 2;
++        if (!u->receivingSysex[group]) { message->data[message->length++] = 0xf7; return 1; }
++    }
++}
++
++int amcl_midi_manager_destroy(AmclMidiManager* m) {
++    if (!m) return 0;
++    /* 调用方停止发布manager后进入此处。关闭动作仍可让已持有的JNI循环自然离开。 */
++    for (;;) {
++        pthread_mutex_lock(&m->lock); uint64_t token = m->handles ? m->handles->token : 0; pthread_mutex_unlock(&m->lock);
++        if (!token) break;
++        amcl_midi_close(m, token);
++    }
++    pthread_mutex_lock(&m->lock);
++    for (AmclMidiUse* u = m->retired; u; u = u->next)
++        if (u->references) { pthread_mutex_unlock(&m->lock); return AMCL_MIDI_BUSY; }
++    m->destroying = 1; __atomic_store_n(&m->pod->closing, 1u, __ATOMIC_RELEASE);
++    int result = m->destroyStatus;
++    if (m->client) { result = m->api->Destroy(m->client); m->client = NULL; m->destroyStatus = result; }
++    if (!result && !quiescent(&m->pod->active)) result = AMCL_MIDI_TIMEOUT;
++    if (!result) {
++        for (AmclMidiUse* u = m->retired; u; u = u->next)
++            if (u->input && !quiescent(&u->input->active)) { result = AMCL_MIDI_TIMEOUT; break; }
++    }
++    if (result) { pthread_mutex_unlock(&m->lock); return result; }
++    while (m->retired) { m->retired->safe = 1; free_use_locked(m->retired); }
++    free(m->endpoints); free(m->pod);
++    pthread_mutex_unlock(&m->lock); pthread_mutex_destroy(&m->lock); free(m); return 0;
++}
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_core.h
+@@ -0,0 +1,54 @@
++/* JavaSound平台MIDI控制面。manager管理一个真实OH_MIDIClient及共享device；端口
++ * 与Java可见设备分别用不复用的整数身份，既有对象不会因列表重新排序打开另一设备。
++ * acquire/release跨整个JNI输入循环持有真实对象，但不持锁跨Java用户Receiver回调。
++ */
++#ifndef AMCL_MIDI_CORE_H
++#define AMCL_MIDI_CORE_H
++#include "midi_api.h"
++#include "midi_callbacks.h"
++#include "midi_stream.h"
++#ifdef __cplusplus
++extern "C" {
++#endif
++typedef struct AmclMidiManager AmclMidiManager;
++typedef struct AmclMidiUse AmclMidiUse;
++typedef struct {
++    int32_t token;
++    OH_MIDIDeviceInformation device;
++    OH_MIDIPortInformation port;
++} AmclMidiEndpoint;
++typedef struct {
++    int isLong;
++    uint32_t packed;
++    int64_t microseconds;
++    size_t length;
++    uint8_t data[4096];
++} AmclMidiMessage;
++enum {
++    AMCL_MIDI_STALE = -12101, AMCL_MIDI_MEMORY = -12102, AMCL_MIDI_CHANGED = -12103,
++    AMCL_MIDI_INVALID = -12104, AMCL_MIDI_CLOSED = -12105, AMCL_MIDI_BUSY = -12106,
++    AMCL_MIDI_TIMEOUT = -12107, AMCL_MIDI_ABI = -12108
++};
++/* api/table在manager成功销毁前均由调用方保活。失败Destroy可能已消费SDK句柄，
++ * manager会记住该事实；不得重试原指针，返回非0时保留数据和两个映像租约。 */
++int amcl_midi_manager_create(AmclMidiManager** output, const AmclMidiApi* api, const AmclMidiCallbackAbiV1* table);
++int amcl_midi_manager_destroy(AmclMidiManager* manager);
++int amcl_midi_snapshot(AmclMidiManager* manager, int direction, AmclMidiEndpoint** output, size_t* count);
++int amcl_midi_open(AmclMidiManager* manager, int endpointToken, int direction, uint64_t* handle);
++int amcl_midi_close(AmclMidiManager* manager, uint64_t handle);
++AmclMidiUse* amcl_midi_acquire(AmclMidiManager* manager, uint64_t handle, int direction);
++void amcl_midi_release(AmclMidiUse* use);
++int amcl_midi_start(AmclMidiUse* use);
++int amcl_midi_stop(AmclMidiUse* use);
++int64_t amcl_midi_position(AmclMidiUse* use);
++int amcl_midi_send_short(AmclMidiUse* use, uint32_t packed, int64_t microseconds);
++int amcl_midi_send_long(AmclMidiUse* use, const uint8_t* bytes, size_t size, int64_t microseconds);
++/* begin/end禁止同一端口出现两个读取者。next返回1消息/0已停/负或平台正错误码，
++ * 只在成功情况下填写message。故障状态与“没有输入”不能混为一谈。 */
++int amcl_midi_read_begin(AmclMidiUse* use);
++void amcl_midi_read_end(AmclMidiUse* use);
++int amcl_midi_next(AmclMidiUse* use, AmclMidiMessage* message);
++#ifdef __cplusplus
++}
++#endif
++#endif
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_jdk.c
+@@ -0,0 +1,307 @@
++/* OHOS专属libjsound JNI适配。Java继续使用上游MidiIn/OutDevice、Provider、
++ * Receiver/Transmitter和软件合成器；只替换此目标原来的平台native适配单元。
++ * 统一快照、64位时间戳、完整JNI验错及真实输入hold修复原适配中的必要缺口。
++ */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include "midi_core.h"
++#include <jni.h>
++#include <dlfcn.h>
++#include <limits.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++const char AMCL_Midi_BackendIdentity[]
++    __attribute__((section(".amcl.midi"), used, visibility("default"))) = "AMCL_MIDI_OHOS_API24_OPTIONAL_V1";
++static pthread_mutex_t ownerLock = PTHREAD_MUTEX_INITIALIZER;
++static AmclMidiApi platformApi;
++static AmclMidiManager* manager;
++static void* hostLease;
++static void* clientCodeLease;
++static const AmclMidiCallbackAbiV1* callbackTable;
++static int apiAttempted, apiStatus, managerStatus;
++static char apiDiagnostic[320];
++
++/* client整个有效期保活实际JNI映像，独立CLI的本地typed回调同样受此保护。
++ * JVM先调用JNI_OnUnload再释放自身dlopen引用；成功清理才释放本租约，失败保留。 */
++static void* keep_code(void) {
++    Dl_info owner, actual;
++    if (!dladdr((void*)&AMCL_Midi_BackendIdentity, &owner) || !owner.dli_fname || !owner.dli_fbase) return NULL;
++    void* lease = dlopen(owner.dli_fname, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
++    void* marker = lease ? dlsym(lease, "AMCL_Midi_BackendIdentity") : NULL;
++    if (!marker || !dladdr(marker, &actual) || actual.dli_fbase != owner.dli_fbase) {
++        if (lease) dlclose(lease);
++        return NULL;
++    }
++    return lease;
++}
++
++static void throw_midi(JNIEnv* env, int code, int opening) {
++    if ((*env)->ExceptionCheck(env)) return;
++    const char* type = code == AMCL_MIDI_MEMORY ? "java/lang/OutOfMemoryError" :
++        opening ? "javax/sound/midi/MidiUnavailableException" :
++        code == AMCL_MIDI_INVALID ? "java/lang/IllegalArgumentException" : "java/lang/IllegalStateException";
++    jclass cls = (*env)->FindClass(env, type);
++    if (!cls) return;
++    char text[384]; snprintf(text, sizeof(text), "OH_MIDI operation failed (status=%d)%s%s", code,
++                            apiStatus ? ": " : "", apiStatus ? apiDiagnostic : "");
++    (*env)->ThrowNew(env, cls, text); (*env)->DeleteLocalRef(env, cls);
++}
++/* 标记、工厂、只读表及三个typed入口必须位于同一正常HAP映像。NOLOAD引用一直
++ * 保留到SDK client成功销毁；独立CLI使用本映像正常装载的同源回调。
++ */
++static const AmclMidiCallbackAbiV1* load_callbacks(void) {
++    int (*embedded)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "amcl_jvm_is_embedded");
++    if (!embedded || !embedded()) return amcl_midi_local_callbacks_v1();
++    const AmclMidiCallbackAbiV1* (*factory)(void) =
++        (const AmclMidiCallbackAbiV1* (*)(void))dlsym(RTLD_DEFAULT, "amcl_javasound_midi_callbacks_v1");
++    Dl_info marker, owner, actual;
++    if (!factory || !dladdr((void*)embedded, &marker) || !marker.dli_fbase ||
++        !dladdr((void*)factory, &owner) || !owner.dli_fname || owner.dli_fbase != marker.dli_fbase) return NULL;
++    void* lease = dlopen(owner.dli_fname, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
++    if (!lease) return NULL;
++    if (dlsym(lease, "amcl_javasound_midi_callbacks_v1") != (void*)factory) { dlclose(lease); return NULL; }
++    const AmclMidiCallbackAbiV1* table = factory();
++    if (!amcl_midi_callbacks_valid_v1(table)) { dlclose(lease); return NULL; }
++    const void* addresses[] = {table, (void*)table->onDeviceChange, (void*)table->onError, (void*)table->onReceived};
++    for (unsigned i = 0; i < sizeof(addresses)/sizeof(addresses[0]); ++i)
++        if (!dladdr(addresses[i], &actual) || actual.dli_fbase != owner.dli_fbase) { dlclose(lease); return NULL; }
++    hostLease = lease;
++    return table;
++}
++/* API缺失允许Provider报告零设备；存在但接口不完整、创建失败、服务错误要抛出
++ * 实际错误。临时client配额失败可由下一次查询重试，不污染成永久“无设备”。 */
++static int get_manager(AmclMidiManager** output) {
++    pthread_mutex_lock(&ownerLock);
++    if (!apiAttempted) {
++        apiAttempted = 1; apiStatus = amcl_midi_api_load(&platformApi, apiDiagnostic, sizeof(apiDiagnostic));
++        if (apiStatus) fprintf(stderr, "AMCL MIDI capability: status=%d %s\n", apiStatus, apiDiagnostic);
++    }
++    int result = apiStatus;
++    if (!result && !callbackTable) {
++        callbackTable = load_callbacks();
++        if (!callbackTable) result = AMCL_MIDI_ABI;
++    }
++    if (!result && !clientCodeLease) {
++        clientCodeLease = keep_code();
++        if (!clientCodeLease) result = AMCL_MIDI_ABI;
++    }
++    if (!result && !manager) {
++        managerStatus = amcl_midi_manager_create(&manager, &platformApi, callbackTable);
++        if (!managerStatus) fprintf(stderr, "AMCL MIDI backend ready: provider=libohmidi.so api=24 callbackAbi=1; real client created\n");
++    }
++    if (!result) result = managerStatus;
++    *output = result ? NULL : manager;
++    pthread_mutex_unlock(&ownerLock); return result;
++}
++__attribute__((destructor)) static void destroy_backend(void) {
++    /* 异常SDK关闭会保留回调数据及provider/HAP租约；不能为零泄漏报告制造UAF。 */
++    int result = amcl_midi_manager_destroy(manager);
++    if (result) { fprintf(stderr, "AMCL MIDI shutdown retained live ownership: status=%d\n", result); return; }
++    manager = NULL;
++    amcl_midi_api_close(&platformApi);
++    if (hostLease) { dlclose(hostLease); hostLease = NULL; }
++    if (clientCodeLease) { void* lease = clientCodeLease; clientCodeLease = NULL; dlclose(lease); }
++}
++JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
++    (void)vm; (void)reserved; destroy_backend();
++}
++
++/* SDK标准UTF-8精确转UTF-16，保留中文及非BMP设备名；NewStringUTF的modified
++ * UTF-8合同不适用于四字节系统字符串。坏编码拒绝快照，不截断、不删除字符。
++ */
++static jstring utf8_string(JNIEnv* env, const char* text) {
++    size_t length = strlen(text), at = 0, count = 0;
++    if (length > INT_MAX / sizeof(jchar)) { throw_midi(env, AMCL_MIDI_MEMORY, 0); return NULL; }
++    jchar* chars = malloc((length + 1) * sizeof(*chars));
++    if (!chars) { throw_midi(env, AMCL_MIDI_MEMORY, 0); return NULL; }
++    while (at < length) {
++        uint32_t code, minimum; unsigned needed;
++        unsigned char first = (unsigned char)text[at++];
++        if (first < 0x80) { code = first; minimum = 0; needed = 0; }
++        else if (first >= 0xc2 && first <= 0xdf) { code = first & 31u; minimum = 0x80; needed = 1; }
++        else if (first >= 0xe0 && first <= 0xef) { code = first & 15u; minimum = 0x800; needed = 2; }
++        else if (first >= 0xf0 && first <= 0xf4) { code = first & 7u; minimum = 0x10000; needed = 3; }
++        else goto invalid;
++        if (needed > length - at) goto invalid;
++        for (unsigned i = 0; i < needed; ++i) {
++            unsigned char next = (unsigned char)text[at++];
++            if ((next & 0xc0u) != 0x80u) goto invalid;
++            code = (code << 6) | (next & 63u);
++        }
++        if (code < minimum || code > 0x10ffffu || (code >= 0xd800 && code <= 0xdfff)) goto invalid;
++        if (code <= 0xffff) chars[count++] = (jchar)code;
++        else { code -= 0x10000; chars[count++] = (jchar)(0xd800 | (code >> 10)); chars[count++] = (jchar)(0xdc00 | (code & 1023)); }
++    }
++    jstring value = (*env)->NewString(env, chars, (jsize)count); free(chars); return value;
++invalid:
++    free(chars); throw_midi(env, AMCL_MIDI_INVALID, 0); return NULL;
++}
++static jobjectArray device_infos(JNIEnv* env, int direction) {
++    AmclMidiManager* m = NULL; AmclMidiEndpoint* endpoints = NULL; size_t count = 0;
++    int result = get_manager(&m);
++    if (!result) result = amcl_midi_snapshot(m, direction, &endpoints, &count);
++    if (result != 0 && result != AMCL_MIDI_API_UNAVAILABLE) { throw_midi(env, result, 0); return NULL; }
++    if (count > INT_MAX) { free(endpoints); throw_midi(env, AMCL_MIDI_MEMORY, 0); return NULL; }
++    if ((*env)->PushLocalFrame(env, 8) < 0) { free(endpoints); return NULL; }
++    const char* name = direction ? "com/sun/media/sound/MidiOutDeviceProvider$MidiOutDeviceInfo" :
++                                  "com/sun/media/sound/MidiInDeviceProvider$MidiInDeviceInfo";
++    jclass cls = (*env)->FindClass(env, name); jobjectArray array = NULL;
++    if (!cls) goto done;
++    jmethodID constructor = (*env)->GetMethodID(env, cls, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V");
++    if (!constructor) goto done;
++    array = (*env)->NewObjectArray(env, (jsize)count, cls, NULL);
++    if (!array) goto done;
++    for (size_t i = 0; i < count; ++i) {
++        if ((*env)->PushLocalFrame(env, 6) < 0) { array = NULL; break; }
++        char display[384], vendor[40], description[96];
++        const AmclMidiEndpoint* endpoint = &endpoints[i];
++        snprintf(display, sizeof(display), "%s%s%s", endpoint->device.deviceName,
++                 endpoint->port.name[0] ? " / " : "", endpoint->port.name);
++        snprintf(vendor, sizeof(vendor), "0x%llx", (unsigned long long)endpoint->device.vendorId);
++        snprintf(description, sizeof(description), "%s MIDI %s", endpoint->device.deviceType == OH_MIDI_DEVICE_TYPE_USB ? "USB" : "BLE", direction ? "output" : "input");
++        jstring a = utf8_string(env, display), b = NULL, c = NULL, d = NULL;
++        if (a) b = utf8_string(env, vendor);
++        if (b) c = utf8_string(env, description);
++        if (c) d = utf8_string(env, "unknown"); /* SDK未给固件版本，不伪造。 */
++        jobject info = d ? (*env)->NewObject(env, cls, constructor, a, b, c, d, (jint)i, (jint)endpoint->token) : NULL;
++        if (info) (*env)->SetObjectArrayElement(env, array, (jsize)i, info);
++        int failed = !info || (*env)->ExceptionCheck(env);
++        (*env)->PopLocalFrame(env, NULL);
++        if (failed) { array = NULL; break; }
++    }
++done:
++    free(endpoints); return (jobjectArray)(*env)->PopLocalFrame(env, array);
++}
++JNIEXPORT jobjectArray JNICALL Java_com_sun_media_sound_MidiInDeviceProvider_nGetDeviceInfos(JNIEnv* env, jclass cls) {
++    (void)cls; return device_infos(env, 0);
++}
++JNIEXPORT jobjectArray JNICALL Java_com_sun_media_sound_MidiOutDeviceProvider_nGetDeviceInfos(JNIEnv* env, jclass cls) {
++    (void)cls; return device_infos(env, 1);
++}
++/* 旧JNI符号仍保留。新的OHOS Java路径只用一致快照；这些兼容入口不会把同一
++ * Java Info的四个字符串分散成四次易竞态的枚举。 */
++static jint legacy_count(JNIEnv* env, int direction) {
++    jobjectArray infos = device_infos(env, direction);
++    if (!infos) return 0;
++    jint count = (*env)->GetArrayLength(env, infos); (*env)->DeleteLocalRef(env, infos); return count;
++}
++static jstring legacy_string(JNIEnv* env, int direction, jint index, const char* getter) {
++    jobjectArray infos = device_infos(env, direction);
++    if (!infos) return NULL;
++    jstring value = NULL;
++    if (index < 0 || index >= (*env)->GetArrayLength(env, infos)) throw_midi(env, AMCL_MIDI_STALE, 0);
++    else {
++        jobject info = (*env)->GetObjectArrayElement(env, infos, index);
++        if (info) {
++            jclass cls = (*env)->GetObjectClass(env, info);
++            jmethodID method = cls ? (*env)->GetMethodID(env, cls, getter, "()Ljava/lang/String;") : NULL;
++            if (method) { value = (jstring)(*env)->CallObjectMethod(env, info, method); if ((*env)->ExceptionCheck(env)) value = NULL; }
++            if (cls) (*env)->DeleteLocalRef(env, cls);
++            (*env)->DeleteLocalRef(env, info);
++        }
++    }
++    (*env)->DeleteLocalRef(env, infos); return value;
++}
++#define AMCL_LEGACY_PROVIDER(Part, direction) \
++ JNIEXPORT jint JNICALL Java_com_sun_media_sound_##Part##DeviceProvider_nGetNumDevices(JNIEnv* e,jclass c) { (void)c; return legacy_count(e,direction); } \
++ JNIEXPORT jstring JNICALL Java_com_sun_media_sound_##Part##DeviceProvider_nGetName(JNIEnv* e,jclass c,jint i) { (void)c;return legacy_string(e,direction,i,"getName"); } \
++ JNIEXPORT jstring JNICALL Java_com_sun_media_sound_##Part##DeviceProvider_nGetVendor(JNIEnv* e,jclass c,jint i) { (void)c;return legacy_string(e,direction,i,"getVendor"); } \
++ JNIEXPORT jstring JNICALL Java_com_sun_media_sound_##Part##DeviceProvider_nGetDescription(JNIEnv* e,jclass c,jint i) { (void)c;return legacy_string(e,direction,i,"getDescription"); } \
++ JNIEXPORT jstring JNICALL Java_com_sun_media_sound_##Part##DeviceProvider_nGetVersion(JNIEnv* e,jclass c,jint i) { (void)c;return legacy_string(e,direction,i,"getVersion"); }
++AMCL_LEGACY_PROVIDER(MidiIn, 0)
++AMCL_LEGACY_PROVIDER(MidiOut, 1)
++#undef AMCL_LEGACY_PROVIDER
++
++static jlong open_device(JNIEnv* env, jint token, int direction) {
++    AmclMidiManager* m = NULL; uint64_t handle = 0; int result = get_manager(&m);
++    if (!result) result = amcl_midi_open(m, token, direction, &handle);
++    if (result) throw_midi(env, result, 1);
++    return (jlong)handle;
++}
++static AmclMidiUse* acquire(JNIEnv* env, jlong token, int direction) {
++    AmclMidiManager* m = NULL; int result = get_manager(&m);
++    AmclMidiUse* use = !result ? amcl_midi_acquire(m, (uint64_t)token, direction) : NULL;
++    if (!use) throw_midi(env, result ? result : AMCL_MIDI_CLOSED, 0);
++    return use;
++}
++static void close_device(JNIEnv* env, jlong token) {
++    if (!token) return;
++    AmclMidiManager* m = NULL; int result = get_manager(&m);
++    if (!result) result = amcl_midi_close(m, (uint64_t)token);
++    if (result && result != AMCL_MIDI_CLOSED) throw_midi(env, result, 0);
++}
++static jlong position(JNIEnv* env, jlong token, int direction) {
++    (void)env; AmclMidiManager* m = NULL;
++    if (get_manager(&m)) return -1;
++    AmclMidiUse* use = amcl_midi_acquire(m, (uint64_t)token, direction);
++    if (!use) return -1;
++    int64_t value = amcl_midi_position(use); amcl_midi_release(use); return (jlong)value;
++}
++#define AMCL_DEVICE_ENTRIES(Part, direction) \
++ JNIEXPORT jlong JNICALL Java_com_sun_media_sound_##Part##Device_nOpen(JNIEnv* e,jobject o,jint t) { (void)o;return open_device(e,t,direction); } \
++ JNIEXPORT void JNICALL Java_com_sun_media_sound_##Part##Device_nClose(JNIEnv* e,jobject o,jlong t) { (void)o;close_device(e,t); } \
++ JNIEXPORT jlong JNICALL Java_com_sun_media_sound_##Part##Device_nGetTimeStamp(JNIEnv* e,jobject o,jlong t) { (void)o;return position(e,t,direction); }
++AMCL_DEVICE_ENTRIES(MidiIn, 0)
++AMCL_DEVICE_ENTRIES(MidiOut, 1)
++#undef AMCL_DEVICE_ENTRIES
++JNIEXPORT void JNICALL Java_com_sun_media_sound_MidiInDevice_nStart(JNIEnv* env, jobject object, jlong token) {
++    (void)object; AmclMidiUse* use = acquire(env, token, 0); if (!use) return;
++    int result = amcl_midi_start(use); amcl_midi_release(use); if (result) throw_midi(env, result, 1);
++}
++JNIEXPORT void JNICALL Java_com_sun_media_sound_MidiInDevice_nStop(JNIEnv* env, jobject object, jlong token) {
++    (void)object; if (!token) return;
++    AmclMidiUse* use = acquire(env, token, 0); if (!use) return;
++    int result = amcl_midi_stop(use); amcl_midi_release(use); if (result) throw_midi(env, result, 0);
++}
++JNIEXPORT void JNICALL Java_com_sun_media_sound_MidiOutDevice_nSendShortMessage(JNIEnv* env, jobject object, jlong token, jint packed, jlong micros) {
++    (void)object; AmclMidiUse* use = acquire(env, token, 1); if (!use) return;
++    int result = amcl_midi_send_short(use, (uint32_t)packed, (int64_t)micros); amcl_midi_release(use);
++    if (result) throw_midi(env, result, 0);
++}
++JNIEXPORT void JNICALL Java_com_sun_media_sound_MidiOutDevice_nSendLongMessage(JNIEnv* env, jobject object, jlong token, jbyteArray bytes, jint size, jlong micros) {
++    (void)object;
++    if (!bytes || size <= 0 || size > (*env)->GetArrayLength(env, bytes)) { throw_midi(env, AMCL_MIDI_INVALID, 0); return; }
++    AmclMidiUse* use = acquire(env, token, 1); if (!use) return;
++    jbyte* data = (*env)->GetByteArrayElements(env, bytes, NULL);
++    if (!data) { amcl_midi_release(use); return; }
++    int result = amcl_midi_send_long(use, (const uint8_t*)data, (size_t)size, (int64_t)micros);
++    (*env)->ReleaseByteArrayElements(env, bytes, data, JNI_ABORT); amcl_midi_release(use);
++    if (result) throw_midi(env, result, 0);
++}
++JNIEXPORT void JNICALL Java_com_sun_media_sound_MidiInDevice_nGetMessages(JNIEnv* env, jobject object, jlong token) {
++    AmclMidiManager* m = NULL; if (get_manager(&m)) return;
++    /* 关闭与Java线程启动/退出可竞态；关闭后无法取得新hold就是正常结束。 */
++    AmclMidiUse* use = amcl_midi_acquire(m, (uint64_t)token, 0); if (!use) return;
++    int result = amcl_midi_read_begin(use); if (result) { amcl_midi_release(use); throw_midi(env, result, 0); return; }
++    Dl_info owner, exported; void* codeLease = NULL;
++    if (dladdr((void*)&Java_com_sun_media_sound_MidiInDevice_nGetMessages, &owner) && owner.dli_fname)
++        codeLease = dlopen(owner.dli_fname, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
++    void* entry = codeLease ? dlsym(codeLease, "Java_com_sun_media_sound_MidiInDevice_nGetMessages") : NULL;
++    if (!entry || !dladdr(entry, &exported) || exported.dli_fbase != owner.dli_fbase) {
++        if (codeLease) dlclose(codeLease);
++        amcl_midi_read_end(use); amcl_midi_release(use); throw_midi(env, AMCL_MIDI_ABI, 0); return;
++    }
++    if ((*env)->PushLocalFrame(env, 4) < 0) goto release;
++    jclass cls = (*env)->GetObjectClass(env, object);
++    jmethodID shortMethod = cls ? (*env)->GetMethodID(env, cls, "callbackShortMessage", "(IJ)V") : NULL;
++    jmethodID longMethod = shortMethod ? (*env)->GetMethodID(env, cls, "callbackLongMessage", "([BJ)V") : NULL;
++    if (longMethod) while (1) {
++        AmclMidiMessage message; result = amcl_midi_next(use, &message);
++        if (result != 1) { if (result) throw_midi(env, result, 0); break; }
++        if (!message.isLong) (*env)->CallVoidMethod(env, object, shortMethod, (jint)message.packed, (jlong)message.microseconds);
++        else {
++            jbyteArray data = (*env)->NewByteArray(env, (jsize)message.length);
++            if (!data) break;
++            (*env)->SetByteArrayRegion(env, data, 0, (jsize)message.length, (const jbyte*)message.data);
++            if (!(*env)->ExceptionCheck(env)) (*env)->CallVoidMethod(env, object, longMethod, data, (jlong)message.microseconds);
++            (*env)->DeleteLocalRef(env, data);
++        }
++        if ((*env)->ExceptionCheck(env)) break; /* 原用户异常原样传播，不能带pending异常继续JNI。 */
++    }
++    (*env)->PopLocalFrame(env, NULL);
++release:
++    amcl_midi_read_end(use); amcl_midi_release(use); dlclose(codeLease);
++}
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_stream.c
+@@ -0,0 +1,75 @@
++/* 完整消息和跨调用分段使用同一转换路径，保留原MIDI时间戳。SysEx的六字节暂存
++ * 只为确定Start/Complete形式，不限制整条消息大小；任意长度由多个UMP连续发送。
++ * UMP规范7.7允许Start/Continue携带0..6字节，因此实时消息和调用边界之前可先
++ * 发布已有SysEx，既不移动时间也不将时钟消息排到先前的SysEx数据之前。
++ */
++#include "midi_stream.h"
++#include <string.h>
++int amcl_midi_stream_next(AmclMidiStream* s, unsigned group, const uint8_t* data,
++                         size_t length, size_t* offset, uint64_t timestamp, AmclMidiOutput* out) {
++    if (!s || !offset || !out || group > 15 || (*offset > length) || (length && !data)) return -1;
++    out->count = 0;
++    while (*offset < length) {
++        uint8_t b = data[*offset];
++        /* 实时消息允许插入SysEx和未完成的短消息，不能取消其状态。 */
++        if (b >= 0xf8) {
++            if (s->sysexOpen && (s->sysexSize || !s->sysexSent)) {
++                if (amcl_midi_sysex7_to_ump(s->sysexSent ? 2 : 1, group, s->sysex, s->sysexSize, out->words) < 0) return -1;
++                out->count = 2; out->timestamp = s->timestamp;
++                s->sysexSent = 1; s->sysexSize = 0; s->timestamp = timestamp;
++                return 1;
++            }
++            if (amcl_midi_short_to_ump(b, group, out->words) < 0) return -1;
++            ++*offset; out->count = 1; out->timestamp = timestamp; return 1;
++        }
++        if (s->sysexOpen) {
++            if (b == 0xf7) {
++                if (amcl_midi_sysex7_to_ump(s->sysexSent ? 3 : 0, group, s->sysex,
++                                           s->sysexSize, out->words) < 0) return -1;
++                out->count = 2; out->timestamp = s->timestamp;
++                s->sysexOpen = s->sysexSent = s->sysexSize = 0; ++*offset; return 1;
++            }
++            if (b >= 0x80) return -1;
++            if (s->sysexSize == 6) {
++                if (amcl_midi_sysex7_to_ump(s->sysexSent ? 2 : 1, group, s->sysex, 6, out->words) < 0) return -1;
++                out->count = 2; out->timestamp = s->timestamp;
++                s->sysexSent = 1; s->sysexSize = 0; s->timestamp = timestamp;
++                return 1; /* 本字节尚未消费，交给下一包。 */
++            }
++            if (!s->sysexSize && s->sysexSent) s->timestamp = timestamp;
++            s->sysex[s->sysexSize++] = b; ++*offset; continue;
++        }
++        if (b == 0xf0) {
++            if (s->status) return -1;
++            s->running = 0; s->sysexOpen = 1; s->sysexSent = s->sysexSize = 0;
++            s->timestamp = timestamp; ++*offset; continue;
++        }
++        if (b >= 0x80) {
++            unsigned total = amcl_midi_short_size(b);
++            if (!total || s->status) return -1;
++            s->status = b; s->running = b < 0xf0 ? b : 0;
++            s->have = 0; s->need = (uint8_t)(total - 1); s->timestamp = timestamp; ++*offset;
++        } else {
++            if (!s->status) {
++                if (!s->running) return -1;
++                s->status = s->running; s->have = 0;
++                s->need = (uint8_t)(amcl_midi_short_size(s->status) - 1); s->timestamp = timestamp;
++            }
++            if (s->have >= s->need || s->have >= sizeof(s->data)) return -1;
++            s->data[s->have++] = b; ++*offset;
++        }
++        if (s->have == s->need) {
++            uint32_t packed = s->status | (s->need ? (uint32_t)s->data[0] << 8 : 0) |
++                (s->need > 1 ? (uint32_t)s->data[1] << 16 : 0);
++            if (amcl_midi_short_to_ump(packed, group, out->words) < 0) return -1;
++            out->count = 1; out->timestamp = s->timestamp;
++            s->status = s->have = s->need = 0; return 1;
++        }
++    }
++    if (s->sysexOpen && (s->sysexSize || !s->sysexSent)) {
++        if (amcl_midi_sysex7_to_ump(s->sysexSent ? 2 : 1, group, s->sysex, s->sysexSize, out->words) < 0) return -1;
++        out->count = 2; out->timestamp = s->timestamp;
++        s->sysexSent = 1; s->sysexSize = 0; return 1;
++    }
++    return 0;
++}
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_stream.h
+@@ -0,0 +1,22 @@
++/* Java SysexMessage 的F0/F7分段及F7逃逸字节流转换。状态在控制线程/发送锁下使用，
++ * 与系统实时回调无关；Send成功之前只修改副本，拒绝或WOULD_BLOCK不提前消费字节。
++ */
++#ifndef AMCL_MIDI_STREAM_H
++#define AMCL_MIDI_STREAM_H
++#include "midi_ump.h"
++typedef struct {
++    uint8_t running, status, have, need;
++    uint8_t data[2];
++    uint8_t sysexOpen, sysexSent, sysexSize, sysex[6];
++    uint64_t timestamp;
++} AmclMidiStream;
++typedef struct { uint32_t words[2]; unsigned count; uint64_t timestamp; } AmclMidiOutput;
++/* 返回1=形成一个UMP，0=本段已耗尽且可能仍有跨段消息，负值=非法MIDI字节序列。
++ * SysEx Start/Continue合法携带0..6字节；本段结束即提交已有数据，不能为了凑满
++ * 六字节延迟原Java时间戳。调用方应持续调用至返回0，而不是只检查offset。
++ * 调用方负责跳过Java长消息的首个F7 continuation marker（长度>1时），真实末尾
++ * EOX仍通过此解析器。running status只允许通道消息，System Common会取消它。
++ */
++int amcl_midi_stream_next(AmclMidiStream* state, unsigned group, const uint8_t* data,
++                         size_t length, size_t* offset, uint64_t timestamp, AmclMidiOutput* output);
++#endif
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_ump.c
+@@ -0,0 +1,79 @@
++/* 字段按UMP数值位序构造，和主机字节序无关；不通过未对齐指针读取MIDI字节。 */
++#include "midi_ump.h"
++#include <limits.h>
++
++unsigned amcl_midi_short_size(uint8_t status) {
++    if (status < 0x80) return 0;
++    if (status < 0xf0) return (status >> 4) == 0xc || (status >> 4) == 0xd ? 2 : 3;
++    switch (status) {
++        case 0xf1: case 0xf3: return 2;
++        case 0xf2: return 3;
++        case 0xf6: case 0xf8: case 0xfa: case 0xfb: case 0xfc: case 0xfe: case 0xff: return 1;
++        default: return 0;
++    }
++}
++int amcl_midi_short_to_ump(uint32_t packed, unsigned group, uint32_t* output) {
++    const uint8_t status = (uint8_t)packed;
++    const unsigned size = amcl_midi_short_size(status);
++    const uint32_t first = (packed >> 8) & 255, second = (packed >> 16) & 255;
++    if (!output || group > 15 || (packed >> 24) || !size || (size > 1 && first > 127) ||
++        (size > 2 && second > 127)) return AMCL_MIDI_UMP_INVALID;
++    *output = (status < 0xf0 ? UINT32_C(0x20000000) : UINT32_C(0x10000000)) |
++        ((uint32_t)group << 24) | ((uint32_t)status << 16) |
++        (size > 1 ? first << 8 : 0) | (size > 2 ? second : 0);
++    return AMCL_MIDI_UMP_SHORT;
++}
++int amcl_midi_sysex7_to_ump(unsigned form, unsigned group, const uint8_t* bytes, size_t count, uint32_t output[2]) {
++    if (!output || form > 3 || group > 15 || count > 6 || (count && !bytes)) return AMCL_MIDI_UMP_INVALID;
++    uint32_t first = UINT32_C(0x30000000) | ((uint32_t)group << 24) | ((uint32_t)form << 20) | ((uint32_t)count << 16);
++    uint32_t second = 0;
++    for (size_t i = 0; i < count; ++i) {
++        if (bytes[i] > 127) return AMCL_MIDI_UMP_INVALID;
++        if (i < 2) first |= (uint32_t)bytes[i] << ((1 - (unsigned)i) * 8);
++        else second |= (uint32_t)bytes[i] << ((5 - (unsigned)i) * 8);
++    }
++    output[0] = first; output[1] = second;
++    return AMCL_MIDI_UMP_SYSEX7;
++}
++unsigned amcl_midi_protocol1_words(uint32_t first) {
++    const unsigned type = first >> 28;
++    return type <= 2 ? 1 : type == 3 ? 2 : 0;
++}
++int amcl_midi_from_ump(const uint32_t* words, size_t available, AmclMidiDecoded* output) {
++    if (!words || !available || !output) return AMCL_MIDI_UMP_INVALID;
++    const unsigned type = words[0] >> 28, size = amcl_midi_protocol1_words(words[0]);
++    if (!size) return AMCL_MIDI_UMP_UNSUPPORTED;
++    if (available < size) return AMCL_MIDI_UMP_INVALID;
++    output->packed = 0; output->group = (uint8_t)((words[0] >> 24) & 15);
++    output->sysexForm = 0; output->payloadSize = 0;
++    if (type == 0) return AMCL_MIDI_UMP_UTILITY;
++    if (type < 3) {
++        const uint8_t status = (uint8_t)(words[0] >> 16);
++        const unsigned bytes = amcl_midi_short_size(status);
++        const uint32_t a = (words[0] >> 8) & 255, b = words[0] & 255;
++        if (!bytes || (type == 1 ? status < 0xf0 : status >= 0xf0) ||
++            (bytes > 1 && a > 127) || (bytes > 2 && b > 127)) return AMCL_MIDI_UMP_INVALID;
++        output->packed = status | (bytes > 1 ? a << 8 : 0) | (bytes > 2 ? b << 16 : 0);
++        return AMCL_MIDI_UMP_SHORT;
++    }
++    const unsigned form = (words[0] >> 20) & 15, count = (words[0] >> 16) & 15;
++    if (form > 3 || count > 6) return AMCL_MIDI_UMP_INVALID;
++    output->sysexForm = (uint8_t)form; output->payloadSize = (uint8_t)count;
++    for (unsigned i = 0; i < count; ++i) {
++        const uint8_t byte = (uint8_t)(i < 2 ? words[0] >> ((1 - i) * 8) : words[1] >> ((5 - i) * 8));
++        if (byte > 127) return AMCL_MIDI_UMP_INVALID;
++        output->payload[i] = byte;
++    }
++    return AMCL_MIDI_UMP_SYSEX7;
++}
++int amcl_midi_time_to_ns(uint64_t epochNs, int64_t microseconds, uint64_t* output) {
++    if (!output) return -1;
++    if (microseconds < 0) { *output = 0; return 0; }
++    if ((uint64_t)microseconds > (UINT64_MAX - epochNs) / 1000) return -1;
++    *output = epochNs + (uint64_t)microseconds * 1000;
++    return 0;
++}
++int64_t amcl_midi_time_from_ns(uint64_t epochNs, uint64_t timestampNs) {
++    if (!timestampNs || timestampNs < epochNs) return -1;
++    return (int64_t)((timestampNs - epochNs) / 1000);
++}
+--- /dev/null
++++ b/src/java.desktop/linux/native/libjsound/midi_ump.h
+@@ -0,0 +1,44 @@
++/* JavaSound MIDI1与OH_MIDI protocol1 UMP之间的无状态编解码。
++ * 本模块不调用平台/Java，不申请内存；动态收发、SysEx跨包状态和错误传播由控制侧负责。
++ * SDK明确protocol1仍使用MT1/MT2/MT3 UMP，不能把原始MIDI字节数组直接作为UMP发送。
++ */
++#ifndef AMCL_MIDI_UMP_H
++#define AMCL_MIDI_UMP_H
++#include <stddef.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum {
++    AMCL_MIDI_UMP_UNSUPPORTED = -2,
++    AMCL_MIDI_UMP_INVALID = -1,
++    AMCL_MIDI_UMP_UTILITY = 0,
++    AMCL_MIDI_UMP_SHORT = 1,
++    AMCL_MIDI_UMP_SYSEX7 = 2
++};
++typedef struct {
++    uint32_t packed;       /* Java平台顺序：status | data1<<8 | data2<<16。 */
++    uint8_t group;
++    uint8_t sysexForm;     /* 0完整、1开始、2继续、3结束；F0/F7由上层按此恢复。 */
++    uint8_t payloadSize;
++    uint8_t payload[6];
++} AmclMidiDecoded;
++
++/* 返回MIDI1短消息总字节数；未定义status、F0/F7或数据字节返回0。 */
++unsigned amcl_midi_short_size(uint8_t status);
++int amcl_midi_short_to_ump(uint32_t packed, unsigned group, uint32_t* output);
++int amcl_midi_sysex7_to_ump(unsigned form, unsigned group, const uint8_t* bytes, size_t count, uint32_t output[2]);
++/* 只识别protocol1约定的消息类型；未知类型返回0，调用者不得猜长度跨越后续数据。 */
++unsigned amcl_midi_protocol1_words(uint32_t first);
++int amcl_midi_from_ump(const uint32_t* words, size_t available, AmclMidiDecoded* output);
++
++/* Java时间戳以设备open时基为微秒，OH_MIDI以CLOCK_MONOTONIC纳秒为基准。
++ * 负Java时间戳表示立即发送；0 native接收时间表示未知，不伪造成软件收到时刻。
++ */
++int amcl_midi_time_to_ns(uint64_t epochNs, int64_t microseconds, uint64_t* output);
++int64_t amcl_midi_time_from_ns(uint64_t epochNs, uint64_t timestampNs);
++#ifdef __cplusplus
++}
++#endif
++#endif
+--- a/src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java
++++ b/src/java.desktop/share/classes/com/sun/media/sound/AbstractMidiDeviceProvider.java
+@@ -49,7 +49,11 @@
+         // also for memory's sake, do not initialize the arrays here
+     }
+ 
+-    final synchronized void readDeviceInfos() {
++    final void readDeviceInfos() {
++        synchronized (getClass()) { readDeviceInfosLocked(); }
++    }
++
++    private void readDeviceInfosLocked() {
+         Info[] infos = getInfoCache();
+         MidiDevice[] devices = getDeviceCache();
+         if (!enabled) {
+@@ -62,15 +66,17 @@
+             return;
+         }
+ 
++        // AMCL：OHOS一次JNI返回同代次完整Info数组；null仍表示原上游平台。
++        Info[] snapshot = getPlatformDeviceInfos();
+         int oldNumDevices = (infos==null)?-1:infos.length;
+-        int newNumDevices = getNumDevices();
+-        if (oldNumDevices != newNumDevices) {
++        int newNumDevices = snapshot == null ? getNumDevices() : snapshot.length;
++        if (snapshot != null || oldNumDevices != newNumDevices) {
+             // initialize the arrays
+             Info[] newInfos = new Info[newNumDevices];
+             MidiDevice[] newDevices = new MidiDevice[newNumDevices];
+ 
+             for (int i = 0; i < newNumDevices; i++) {
+-                Info newInfo = createInfo(i);
++                Info newInfo = snapshot == null ? createInfo(i) : snapshot[i];
+ 
+                 // in case that we are re-reading devices, try to find
+                 // the previous one and reuse it
+@@ -112,32 +118,36 @@
+ 
+     @Override
+     public final MidiDevice.Info[] getDeviceInfo() {
+-        readDeviceInfos();
+-        Info[] infos = getInfoCache();
+-        MidiDevice.Info[] localArray = new MidiDevice.Info[infos.length];
+-        System.arraycopy(infos, 0, localArray, 0, infos.length);
+-        return localArray;
++        synchronized (getClass()) {
++            readDeviceInfos();
++            Info[] infos = getInfoCache();
++            MidiDevice.Info[] localArray = new MidiDevice.Info[infos.length];
++            System.arraycopy(infos, 0, localArray, 0, infos.length);
++            return localArray;
++        }
+     }
+ 
+     @Override
+     public final MidiDevice getDevice(final MidiDevice.Info info) {
+-        Objects.requireNonNull(info);
+-        if (info instanceof Info) {
+-            readDeviceInfos();
+-            MidiDevice[] devices = getDeviceCache();
+-            Info[] infos = getInfoCache();
+-            Info thisInfo = (Info) info;
+-            int index = thisInfo.getIndex();
+-            if (index >= 0 && index < devices.length && infos[index] == info) {
+-                if (devices[index] == null) {
+-                    devices[index] = createDevice(thisInfo);
+-                }
+-                if (devices[index] != null) {
+-                    return devices[index];
+-                }
+-            }
+-        }
+-        throw MidiUtils.unsupportedDevice(info);
++        synchronized (getClass()) {
++            Objects.requireNonNull(info);
++            if (info instanceof Info) {
++                readDeviceInfos();
++                MidiDevice[] devices = getDeviceCache();
++                Info[] infos = getInfoCache();
++                Info thisInfo = (Info) info;
++                int index = thisInfo.getIndex();
++                if (index >= 0 && index < devices.length && infos[index] == info) {
++                    if (devices[index] == null) {
++                        devices[index] = createDevice(thisInfo);
++                    }
++                    if (devices[index] != null) {
++                        return devices[index];
++                    }
++                }
++            }
++            throw MidiUtils.unsupportedDevice(info);
++        }
+     }
+ 
+     /**
+@@ -146,14 +156,25 @@
+      */
+     static class Info extends MidiDevice.Info {
+         private int index;
++        // 数组位置可重排，真实端点token不可变；-1保留非OHOS的原索引合同。
++        private final int nativeIndex;
+ 
+         Info(String name, String vendor, String description, String version, int index) {
++            this(name, vendor, description, version, index, -1);
++        }
++
++        Info(String name, String vendor, String description, String version, int index, int nativeIndex) {
+             super(name, vendor, description, version);
+             this.index = index;
+-        }
++            this.nativeIndex = nativeIndex;
++        }
++
++        final int getNativeIndex() { return nativeIndex < 0 ? index : nativeIndex; }
++        final boolean isPlatformSnapshot() { return nativeIndex >= 0; }
+ 
+         final boolean equalStrings(Info info) {
+             return      (info != null
++                         && nativeIndex == info.nativeIndex
+                          && getName().equals(info.getName())
+                          && getVendor().equals(info.getVendor())
+                          && getDescription().equals(info.getDescription())
+@@ -169,6 +190,9 @@
+         }
+ 
+     } // class Info
++
++    // 普通平台继续使用原枚举与缓存；OHOS提供统一完整快照，数量相等也能识别换设备。
++    Info[] getPlatformDeviceInfos() { return null; }
+ 
+     abstract int getNumDevices();
+     abstract MidiDevice[] getDeviceCache();
+--- a/src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java
++++ b/src/java.desktop/share/classes/com/sun/media/sound/MidiInDevice.java
+@@ -39,6 +39,76 @@
+ 
+     private volatile Thread midiInThread;
+ 
++    // AMCL：OHOS输入线程绑定本次不复用的native handle；旧Receiver阻塞后返回，
++    // 不能读取刚重新打开的新handle，也不能清除新线程的引用。
++    private final java.util.concurrent.atomic.AtomicReference<Thread> ohosInputThread =
++        new java.util.concurrent.atomic.AtomicReference<Thread>();
++
++    private void openOhos() throws MidiUnavailableException {
++        final long opened = nOpen(((AbstractMidiDeviceProvider.Info)getDeviceInfo()).getNativeIndex());
++        if (opened == 0) throw new MidiUnavailableException("Unable to open OH_MIDI device");
++        id = opened;
++        Thread created = null;
++        try {
++            // 先完成平台启动再启动读取者；失败路径始终释放已经获得的native资源。
++            nStart(opened);
++            created = JSSecurityManager.createThread(new Runnable() {
++                public void run() { runOhos(opened); }
++            }, "Java Sound MidiInDevice Thread", false, -1, false);
++            if (created == null) throw new OutOfMemoryError("MIDI input thread");
++            ohosInputThread.set(created);
++            created.start();
++        } catch (MidiUnavailableException | RuntimeException | Error failure) {
++            id = 0;
++            ohosInputThread.compareAndSet(created, null);
++            try { nStop(opened); } catch (RuntimeException | Error cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
++            try { nClose(opened); } catch (RuntimeException | Error cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
++            throw failure;
++        }
++    }
++
++    private void closeOhos() {
++        final long opened = id;
++        id = 0;
++        Throwable failure = null;
++        try { super.implClose(); } catch (RuntimeException | Error problem) { failure = problem; }
++        try { nStop(opened); } catch (RuntimeException | Error problem) { failure = appendFailure(failure, problem); }
++        Thread reader = ohosInputThread.getAndSet(null);
++        if (reader != null && reader != Thread.currentThread()) {
++            try { reader.join(1000); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
++        }
++        // native持有者负责在途Receiver的真实寿命，join超时不能当作可直接free的证明。
++        try { nClose(opened); } catch (RuntimeException | Error problem) { failure = appendFailure(failure, problem); }
++        if (failure instanceof RuntimeException) throw (RuntimeException)failure;
++        if (failure instanceof Error) throw (Error)failure;
++    }
++
++    private static Throwable appendFailure(Throwable first, Throwable next) {
++        if (first == null) return next;
++        if (first != next) first.addSuppressed(next);
++        return first;
++    }
++
++    private void runOhos(final long opened) {
++        try {
++            while (id == opened && opened != 0) {
++                nGetMessages(opened);
++                if (id == opened) {
++                    try { Thread.sleep(1); } catch (InterruptedException interrupted) { /* 下轮检查本次handle。 */ }
++                }
++            }
++        } catch (RuntimeException | Error failure) {
++            // 用户Receiver异常仍送到原线程uncaught handler；先撤回这个设备的资源，
++            // 不误关已重新打开的handle，也不覆盖原始异常。
++            if (id == opened) try { close(); } catch (RuntimeException | Error cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
++            throw failure;
++        } finally {
++            ohosInputThread.compareAndSet(Thread.currentThread(), null);
++        }
++    }
++
++
++
+     MidiInDevice(AbstractMidiDeviceProvider.Info info) {
+         super(info);
+     }
+@@ -47,6 +117,7 @@
+     // may want to separate these??
+     @Override
+     protected synchronized void implOpen() throws MidiUnavailableException {
++        if (((AbstractMidiDeviceProvider.Info)getDeviceInfo()).isPlatformSnapshot()) { openOhos(); return; }
+         int index = ((MidiInDeviceProvider.MidiInDeviceInfo)getDeviceInfo()).getIndex();
+         id = nOpen(index); // can throw MidiUnavailableException
+ 
+@@ -70,6 +141,7 @@
+     // may want to separate these??
+     @Override
+     protected synchronized void implClose() {
++        if (((AbstractMidiDeviceProvider.Info)getDeviceInfo()).isPlatformSnapshot()) { closeOhos(); return; }
+         long oldId = id;
+         id = 0;
+ 
+--- a/src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java
++++ b/src/java.desktop/share/classes/com/sun/media/sound/MidiInDeviceProvider.java
+@@ -104,6 +104,12 @@
+     static final class MidiInDeviceInfo extends AbstractMidiDeviceProvider.Info {
+         private final Class<?> providerClass;
+ 
++        private MidiInDeviceInfo(String name, String vendor, String description, String version,
++                                       int index, int nativeIndex) {
++            super(name, vendor, description, version, index, nativeIndex);
++            this.providerClass = MidiInDeviceProvider.class;
++        }
++
+         private MidiInDeviceInfo(int index, Class<?> providerClass) {
+             super(nGetName(index), nGetVendor(index), nGetDescription(index), nGetVersion(index), index);
+             this.providerClass = providerClass;
+@@ -111,6 +117,11 @@
+ 
+     } // class MidiInDeviceInfo
+ 
++    // AMCL：同一次返回真实端点标识及完整UTF-16名称；非OHOS native返回null。
++    @Override
++    Info[] getPlatformDeviceInfos() { return nGetDeviceInfos(); }
++
++    private static native Info[] nGetDeviceInfos();
+     private static native int nGetNumDevices();
+     private static native String nGetName(int index);
+     private static native String nGetVendor(int index);
+--- a/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java
++++ b/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDevice.java
+@@ -45,7 +45,7 @@
+ 
+     @Override
+     protected synchronized void implOpen() throws MidiUnavailableException {
+-        int index = ((AbstractMidiDeviceProvider.Info)getDeviceInfo()).getIndex();
++        int index = ((AbstractMidiDeviceProvider.Info)getDeviceInfo()).getNativeIndex();
+         id = nOpen(index); // can throw MidiUnavailableException
+         if (id == 0) {
+             throw new MidiUnavailableException("Unable to open native device");
+--- a/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java
++++ b/src/java.desktop/share/classes/com/sun/media/sound/MidiOutDeviceProvider.java
+@@ -101,6 +101,12 @@
+     static final class MidiOutDeviceInfo extends AbstractMidiDeviceProvider.Info {
+         private final Class<?> providerClass;
+ 
++        private MidiOutDeviceInfo(String name, String vendor, String description, String version,
++                                       int index, int nativeIndex) {
++            super(name, vendor, description, version, index, nativeIndex);
++            this.providerClass = MidiOutDeviceProvider.class;
++        }
++
+         private MidiOutDeviceInfo(int index, Class<?> providerClass) {
+             super(nGetName(index), nGetVendor(index), nGetDescription(index), nGetVersion(index), index);
+             this.providerClass = providerClass;
+@@ -108,6 +114,11 @@
+ 
+     } // class MidiOutDeviceInfo
+ 
++    // AMCL：同一次返回真实端点标识及完整UTF-16名称；非OHOS native返回null。
++    @Override
++    Info[] getPlatformDeviceInfos() { return nGetDeviceInfos(); }
++
++    private static native Info[] nGetDeviceInfos();
+     private static native int nGetNumDevices();
+     private static native String nGetName(int index);
+     private static native String nGetVendor(int index);
+--- a/src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c
++++ b/src/java.desktop/share/native/libjsound/MidiInDeviceProvider.c
+@@ -141,3 +141,10 @@
+     TRACE0("Java_com_sun_media_sound_MidiInDeviceProvider_nGetVersion completed.\n");
+     return jString;
+ }
++
++/* AMCL：非OHOS保留原平台枚举合同；新Java看到null继续使用原native索引和缓存。
++ * OHOS构建排除此上游JNI单元，改用同名标准接口的midi_jdk.c统一快照实现。 */
++JNIEXPORT jobjectArray JNICALL
++Java_com_sun_media_sound_MidiInDeviceProvider_nGetDeviceInfos(JNIEnv* env, jclass cls) {
++    (void)env; (void)cls; return NULL;
++}
+--- a/src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c
++++ b/src/java.desktop/share/native/libjsound/MidiOutDeviceProvider.c
+@@ -142,3 +142,10 @@
+ 
+     return jString;
+ }
++
++/* AMCL：非OHOS保留原平台枚举合同；新Java看到null继续使用原native索引和缓存。
++ * OHOS构建排除此上游JNI单元，改用同名标准接口的midi_jdk.c统一快照实现。 */
++JNIEXPORT jobjectArray JNICALL
++Java_com_sun_media_sound_MidiOutDeviceProvider_nGetDeviceInfos(JNIEnv* env, jclass cls) {
++    (void)env; (void)cls; return NULL;
++}

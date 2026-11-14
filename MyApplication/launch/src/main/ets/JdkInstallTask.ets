@@ -22,7 +22,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   UnifiedDownloadAdapter, UnifiedTaskView, UnifiedTaskState, TaskCategory,
 } from 'feature_core';
-import { JdkManager, JdkDownloadProgress } from './JdkManager';
+import { JdkManager, JdkDownloadProgress, JdkExpectedSelection } from './JdkManager';
 import { JdkInstaller } from './JdkInstaller';
 import { DownloadTaskRegistry } from 'feature_core';
 import { AppLogger } from 'commons';
@@ -92,10 +92,11 @@ export class JdkInstallTask implements UnifiedDownloadAdapter {
    *   不传的话，因为过期的安装在新语义下仍算「已装」，更新会命中幂等门直接报完成。
    */
   constructor(jdkVersion: string, manager: JdkManager, activityId: number = 0,
-              forceReinstall: boolean = false) {
+              forceReinstall: boolean = false, expected?: JdkExpectedSelection) {
     this.jdkVersion_ = jdkVersion;
     this.activityId_ = activityId;
-    this.installer_ = manager.createInstaller(jdkVersion, forceReinstall);
+    // 可选精确身份只供耐久续作；原普通构造保持兼容，失败不能回退到另一个推荐包。
+    this.installer_ = manager.createInstaller(jdkVersion, forceReinstall,expected);
     this.initError_ = (this.installer_ === null)
       ? 'JDK ' + jdkVersion + ' 未知或未发布'
       : '';

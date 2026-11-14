@@ -9,9 +9,13 @@
  *   三处字面量高度重复，改一处忘改另两处就会产生参数冲突 / 去重失效。
  *
  * 本文件是唯一权威清单。所有消费者通过 amcl::getCommonJvmArgs() 获取。
- * ArkTS 侧通过 NAPI 函数 `getCommonJvmArgs()` 获取同一份列表。
+ * ArkTS 侧通过 NAPI 函数 `getCommonJvmArgs()` 获取同一份列表用于去重。
+ * 列表保留旧包的UsePerfData/Attach保守默认，不等于每个运行包的最终effective参数：
+ * jvmInit仅对实际只读libjvm合同支持的包省略这两条自动项，平台可用性仍以目标验证为准。
+ * 清单/用户显式同名参数保持来源和末项覆盖顺序，不能因条件默认去重而被删除。
  *
- * 清单只包含【和版本 / classpath / 用户设置无关】的"OHOS 兼容性修复参数"，不含：
+ * 清单集中维护共享默认及明确的旧包兼容项；不直接装配以下运行时参数：
+ *   - CF自动编译规避（jvmInit按真实release major决定，显式来源原样保留）
  *   - -Xmx / -Xms / -XX:TieredStopAtLevel    （主/子进程不同）
  *   - -Djava.home / -Dsun.boot.library.path  （运行时生成）
  *   - 与 classpath 相关的 -Xbootclasspath/a:... （共享清单不装配 Cacio 运行体）

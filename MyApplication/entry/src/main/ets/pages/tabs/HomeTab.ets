@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * HomeTab.ets — 首页 Tab 组件（Phase R-2 重设计 2026-05-13）
  *
  * 设计稿：docs/design/download-page-redesign/05_app_home.png（Screen E）
@@ -7,7 +11,7 @@
  *   - 删除原"3D 皮肤预览"40% 屏幕占位
  *   - 新增 AMCL Logo Header（左侧白色圆角 + 像素粉斧 icon + AMCL 标题，右侧 🔔 / ⚙）
  *   - Account Card 暴露令牌过期倒计时（占位文本）
- *   - **Hero Version Card 大蓝色卡**：超大 56sp 版本号 + Loader 副标题 + 3 个深蓝 chip
+ *   - **Hero Version Card 柔和主题卡**：超大 56sp 版本号 + Loader 副标题 + 3 个中性配置标签
  *   - 状态指示行：● 就绪 · JDK 17 已加载（沿用现有 props）
  *   - **64dp 大启动按钮**（胶囊形）
  *   - Quick Stats 三列：已装版本数 / 已装模组数（占位）/ 上次游戏（占位）
@@ -19,6 +23,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
 import { AppIconName } from 'commons';
 import { ActivityRecord, ActivityCategory, ActivityStatus } from 'feature_core';
+import { activityCategoryLabel } from '../../components/ActivityUiModel';
 import { getModpackIconPath } from 'mods';
 // 一多适配（响应式）：设备形态 / 断点抽象，由 Index @Provide 下沉。
 import { Breakpoint, DeviceForm } from 'commons';
@@ -41,6 +46,14 @@ import { StartupTargetRect } from '../../components/startup/StartupTypes';
  * 右侧留白，供后续放新闻 / 自定义卡片。手机及窄窗口不使用此宽度（走整宽单列）。
  */
 const HOME_WIDE_COLUMN_WIDTH: number = 480
+
+/** Hero状态块只接收单个直接对象字面量，遵循Builder按引用更新规则。
+ * JDK/Xmx/隔离来自父组件的现有Prop；不能将其拆成多个按值参数后冻结首次显示。
+ */
+interface HeroChipState {
+  icon: AppIconName
+  label: string
+}
 
 @Component
 export struct HomeTab {
@@ -200,7 +213,7 @@ export struct HomeTab {
       MotionSection({ order: 0, entranceEnabled: this.startupRevealed,
         animateEntrance: !this.startupHandoffPending }) { this.AccountCard() }
 
-      // ============ Hero Version Card（大蓝色卡核心新增） ============
+      // ============ Hero Version Card（柔和强调底承载当前实例） ============
       MotionSection({ order: 1, entranceEnabled: this.startupRevealed,
         animateEntrance: !this.startupHandoffPending }) { this.HeroVersionCard() }
 
@@ -269,7 +282,7 @@ export struct HomeTab {
   @Builder
   AccountCard() {
     Row({ space: 10 }) {
-      // 头像：MinecraftHeadAvatar 内部底层是蓝圆 + 首字母（fallback），uuid 拉到
+      // 头像：MinecraftHeadAvatar 内部底层是主题色底 + 首字母（fallback），uuid 拉到
       // Crafatar 头像后会盖一层 Image(pixelMap) 上去。
       // - 离线账户：传 uuid='' → 内部不发请求 → 只显示首字母
       // - 微软正版：传 uuid=acc.uuid → 内部走 RemoteImageCache 拉 + 解码 → 显示玩家头像
@@ -284,7 +297,7 @@ export struct HomeTab {
         // 缘和发型轮廓都能完整看到。比起列表行的圆形头像，首页这一格更"产品 logo 感"。
         cornerRadius: 8,
         fallbackLetter: this.avatarLetter(),
-        bgColor: this.theme.primary,
+        bgColor: this.theme.actionPrimary,
         letterColor: this.theme.textOnPrimary,
       })
 
@@ -327,30 +340,30 @@ export struct HomeTab {
     .onClick(() => { this.onOpenAccountList() })
   }
 
-  /** Hero Version Card —— 大蓝色卡片 + 56sp 版本号 */
+  /** 柔和强调底承载当前实例，正文保持中性色；首页唯一大面积实色交给下方主操作。 */
   @Builder
   HeroVersionCard() {
     Column({ space: 12 }) {
-      // 顶部："当前选中" 绿色脉冲点 + 右侧"切换版本 ▾" 深蓝按钮
+      // 当前选择不是成功状态；提示、切换入口和配置标签都消费当前主题的前景角色。
       Row() {
         Row({ space: 6 }) {
-          Circle({ width: 8, height: 8 }).fill(this.theme.success)
+          Row().width(8).height(8).borderRadius(4).backgroundColor(this.theme.actionText)
           Text('当前选中')
             .fontSize(11)
             .fontWeight(600)
-            .fontColor('#BFDBFE')
+            .fontColor(this.theme.textSecondary)
         }
         .alignItems(VerticalAlign.Center)
         .layoutWeight(1)
 
         Row({ space: 4 }) {
-          Text('切换版本').fontSize(11).fontWeight(600).fontColor(this.theme.textOnPrimary)
-          AppIcon({ name: AppIconName.ChevronDown, iconSize: 11, color: this.theme.textOnPrimary })
+          Text('切换版本').fontSize(11).fontWeight(600).fontColor(this.theme.actionText)
+          AppIcon({ name: AppIconName.ChevronDown, iconSize: 11, color: this.theme.actionText })
         }
         .height(28)
         .padding({ left: 12, right: 12 })
         .borderRadius(14)
-        .backgroundColor('#1E40AF')
+        .backgroundColor(this.theme.bgElevated)
         .alignItems(VerticalAlign.Center)
         .onClick(() => { this.onOpenVersionManager() })
       }
@@ -363,14 +376,14 @@ export struct HomeTab {
         content: this.heroVersionText(),
         fontSize: 56,
         fontWeight: 700,
-        fontColor: this.theme.textOnPrimary,
+        fontColor: this.theme.textPrimary,
       })
 
       // Loader 副标题
       if (this.heroLoaderText().length > 0) {
         Row({ space: 6 }) {
           // 与版本管理 sheet / 下载页一致：用 3D 方块图标（草方块 / 铁砧 / Fabric / ...）
-          // 18dp 比文字 14sp 略大，在 hero 蓝底上视觉上才能"立体"起来；
+          // 18dp 比文字 14sp 略大，在柔和强调底上保留内容图标的识别细节；
           // 14dp 跟字号同宽时立体感细节会糊
           VersionBlockIcon({
             versionId: this.mcVersion,
@@ -381,43 +394,44 @@ export struct HomeTab {
           Text(this.heroLoaderText())
             .fontSize(14)
             .fontWeight(500)
-            .fontColor(this.theme.textOnPrimary)
+            .fontColor(this.theme.textPrimary)
         }
         .alignItems(VerticalAlign.Center)
       }
 
-      // 3 个深蓝 chip：JDK / Xmx / 隔离
+      // 三个配置标签使用提升表面和普通说明字，不再保留固定深蓝子块。
       Row({ space: 6 }) {
         if (!this.storeManager || this.canRunGame) {
-          this.HeroChip(AppIconName.Java, 'JDK ' + this.effectiveJdkVersion)
-          this.HeroChip(AppIconName.Memory, this.mcXmx > 0 ? this.mcXmx + ' MB' : '自动')
+          this.HeroChip({ icon: AppIconName.Java, label: 'JDK ' + this.effectiveJdkVersion })
+          this.HeroChip({ icon: AppIconName.Memory, label: this.mcXmx > 0 ? this.mcXmx + ' MB' : '自动' })
         }
-        this.HeroChip(
-          this.versionIsolation ? AppIconName.IsolateOn : AppIconName.IsolateOff,
-          this.versionIsolation ? '版本隔离' : '共享存档',
-        )
+        this.HeroChip({
+          icon: this.versionIsolation ? AppIconName.IsolateOn : AppIconName.IsolateOff,
+          label: this.versionIsolation ? '版本隔离' : '共享存档',
+        })
       }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .padding({ left: 20, right: 20, top: 20, bottom: 20 })
-    .backgroundColor(this.theme.primary)
+    .backgroundColor(this.theme.primaryLight)
     .borderRadius(24)
   }
 
   @Builder
-  HeroChip(icon: AppIconName, label: string) {
+  HeroChip(state: HeroChipState) {
     Row({ space: 4 }) {
-      AppIcon({ name: icon, iconSize: 11, color: '#BFDBFE' })
-      Text(label)
+      // 对象参数保持 ArkUI Builder 状态联动，颜色沿用当前主题语义。
+      AppIcon({ name: state.icon, iconSize: 11, color: this.theme.actionText })
+      Text(state.label)
         .fontSize(10)
         .fontWeight(500)
-        .fontColor('#BFDBFE')
+        .fontColor(this.theme.textSecondary)
     }
     .height(24)
     .padding({ left: 10, right: 10 })
     .borderRadius(12)
-    .backgroundColor('#1E40AF')
+    .backgroundColor(this.theme.bgElevated)
     .alignItems(VerticalAlign.Center)
   }
 
@@ -448,20 +462,24 @@ export struct HomeTab {
       AppIcon({
         name: this.storeManager ? AppIconName.Export : (this.noVersionInstalled() ? AppIconName.Download : (this.isRunning ? AppIconName.Hourglass : AppIconName.Play)),
         iconSize: 22,
-        color: this.theme.textOnPrimary,
+        color: (this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive())
+          ? this.theme.textOnPrimary : this.theme.disabledText,
         weight: FontWeight.Bold,
       })
       Text(this.storeManager ? this.managerLabel : this.launchButtonText())
         .fontSize(19)
         .fontWeight(700)
-        .fontColor(this.theme.textOnPrimary)
+        .fontColor((this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive())
+          ? this.theme.textOnPrimary : this.theme.disabledText)
     }
     .width('100%')
     .height(64)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .borderRadius(32)
-    .backgroundColor((this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive()) ? this.theme.primary : this.theme.disabled)
+    // 禁用态只改呈现，不放开下面既有点击分支；浅深主题都使用配套的禁用字与底。
+    .backgroundColor((this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive())
+      ? this.theme.actionPrimary : this.theme.disabledBg)
     .onClick(() => {
       if (this.storeManager) {
         if (this.managerAction !== 'checking') this.onManagerAction()
@@ -473,10 +491,10 @@ export struct HomeTab {
     })
     if (this.storeManager && this.hasExistingGame && this.managerAction !== 'session') {
       Button('返回现有游戏 / 退出').width('100%').height(48).fontSize(14)
-        .backgroundColor(this.theme.bgCard).fontColor(this.theme.primary).onClick(() => { this.onReturnGame() })
+        .backgroundColor(this.theme.bgCard).fontColor(this.theme.actionText).onClick(() => { this.onReturnGame() })
     } else if (this.storeManager && this.canRunGame && !this.noVersionInstalled()) {
       Button('运行调试').width('100%').height(48).fontSize(14)
-        .backgroundColor(this.theme.bgCard).fontColor(this.theme.primary)
+        .backgroundColor(this.theme.bgCard).fontColor(this.theme.actionText)
         .enabled(this.canLaunch()).onClick(() => { this.onLaunch() })
     }
     }.width('100%')
@@ -551,19 +569,7 @@ export struct HomeTab {
 
   // ---- 活动记录展示 helper ----
   private activityCategoryLabel_(category: string): string {
-    // 与账本详情区分整轮应用更新及其安装包下载，不能统一降级为不明确的“操作”。
-    if (category === ActivityCategory.APP_UPDATE) return '更新'
-    if (category === ActivityCategory.APP_UPDATE_DOWNLOAD) return '下载'
-    if (category === ActivityCategory.DOWNLOAD) return '下载'
-    if (category === ActivityCategory.MOD_INSTALL) return '安装'
-    if (category === ActivityCategory.LAUNCH) return '启动'
-    if (category === ActivityCategory.REPAIR) return '修复'
-    if (category === ActivityCategory.JDK) return 'JDK'
-    if (category === ActivityCategory.ACCOUNT) return '账户'
-    if (category === ActivityCategory.MODPACK) return '整合包'
-    // 共用活动列表继续显示原有行为，只给新导出类别使用准确名称。
-    if (category === ActivityCategory.GAME_EXPORT) return '导出'
-    return '操作'
+    return activityCategoryLabel(category, true)
   }
 
   private activityStatusLabel_(status: string): string {
@@ -577,13 +583,26 @@ export struct HomeTab {
     return status
   }
 
-  private activityStatusColor_(status: string): string {
-    if (status === 'running') return '#3B82F6'
-    if (status === 'interrupted') return '#F59E0B'
-    if (status === ActivityStatus.SUCCESS) return '#22C55E'  // 绿
-    if (status === ActivityStatus.FAILED) return '#EF4444'   // 红
-    if (status === ActivityStatus.CRASHED) return '#F97316'  // 橙
-    return '#9CA3AF'                                          // 灰（取消/其它）
+  /** 活动状态文字和小图标保持独立语义；状态判断、排序与活动身份完全不变。 */
+  private activityStatusColor_(status: string): ResourceColor {
+    if (status === 'running') return this.theme.actionText
+    if (status === 'interrupted') return this.theme.warningText
+    if (status === ActivityStatus.SUCCESS) return this.theme.successText
+    if (status === ActivityStatus.FAILED) return this.theme.errorText
+    if (status === ActivityStatus.CRASHED) return this.theme.errorText
+    return this.theme.textSecondary
+  }
+
+  /**
+   * 状态容器与文字成对，不在ResourceColor尾部拼透明度。HarmonyOS八位HEX为ARGB，
+   * 在#RRGGBB后拼1A会改变RGB通道；资源/数值颜色也不能安全地拼字符串。
+   */
+  private activityStatusBackground_(status: string): ResourceColor {
+    if (status === 'running') return this.theme.primaryLight
+    if (status === 'interrupted') return this.theme.warningBg
+    if (status === ActivityStatus.SUCCESS) return this.theme.successBg
+    if (status === ActivityStatus.FAILED || status === ActivityStatus.CRASHED) return this.theme.errorBg
+    return this.theme.bgInput
   }
 
   private activityRelativeTime_(ms: number): string {
@@ -703,7 +722,7 @@ export struct HomeTab {
         .fontSize(11).fontWeight(600)
         .fontColor(this.activityStatusColor_(rec.status))
         .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-        .backgroundColor(this.activityStatusColor_(rec.status) + '1A')  // 10% 透明底
+        .backgroundColor(this.activityStatusBackground_(rec.status))
         .borderRadius(8)
     }
     .width('100%')
@@ -780,11 +799,11 @@ export struct HomeTab {
   }
 
   private statusColor(): ResourceColor {
-    if (this.storeManager) return this.managerAction === 'export' ? this.theme.success : this.theme.warning
-    if (this.availableVersions.length === 0) return this.theme.warning
-    if (!this.jdkReady) return this.theme.warning
-    if (this.mcDownloading) return this.theme.warning
-    return this.theme.success
+    if (this.storeManager) return this.managerAction === 'export' ? this.theme.successText : this.theme.warningText
+    if (this.availableVersions.length === 0) return this.theme.warningText
+    if (!this.jdkReady) return this.theme.warningText
+    if (this.mcDownloading) return this.theme.warningText
+    return this.theme.successText
   }
 
   private statusDetailText(): string {

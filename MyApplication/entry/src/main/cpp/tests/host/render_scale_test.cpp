@@ -1,7 +1,7 @@
 // render_scale_test.cpp — 渲染分辨率缩放（-Damcl.render.scale）的契约钉子
 //
 // 钉住四件事（契约见 platform/render_scale.h）：
-//   1. 解析域 [0.5, 1.0)：越界/垃圾/NaN 一律回 1.0 且 outValid=false ——
+//   1. 解析域 [0.5, 1.0]：越界/垃圾/NaN 一律回 1.0 且 outValid=false ——
 //      这是"非法输入绝不能把 buffer 几何改成怪值"的第一道闸；
 //   2. real→scaled 的取整：round + 向下偶数对齐 + 下限保护；
 //   3. scale==1 恒等零开销：恒等快照下 MapX/MapY 必须原样返回；
@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <iostream>
 #include <limits>
+#include <atomic>
+#include <thread>
 
 namespace {
 
@@ -40,7 +42,35 @@ int main() {
     using amcl::renderscale::ResetSnapshot;
     using amcl::renderscale::ScaledDimension;
 
-    // ── 1. ParseScale：域 [0.5, 1.0)，其余一律 1.0 + invalid ──────────────
+    // GUI worker没有surface gate，必须用一次原子读取取得两轴；切换时不得读出混合尺寸。
+    {
+        PublishSnapshot(2688, 1216, 2016, 912);
+        double width = -1, height = -2;
+        require(amcl::renderscale::MapWindowPoint(2688, 1216, &width, &height) && width == 2016 && height == 912,
+                "paired GUI mapping reads one geometry");
+        require(!amcl::renderscale::MapWindowPoint(std::numeric_limits<double>::quiet_NaN(), 0, &width, &height)
+                && width == 2016 && height == 912, "invalid paired input preserves output");
+        std::atomic<bool> ready{false}, stop{false};
+        std::thread writer([&]() {
+            ready.store(true, std::memory_order_release);
+            while (!stop.load(std::memory_order_acquire)) {
+                PublishSnapshot(2688, 1216, 2016, 912);
+                PublishSnapshot(2688, 1216, 1344, 608);
+            }
+        });
+        while (!ready.load(std::memory_order_acquire)) std::this_thread::yield();
+        bool coherent = true;
+        for (int i = 0; i < 50000; ++i) {
+            coherent = amcl::renderscale::MapWindowPoint(2688, 1216, &width, &height) && coherent;
+            coherent = ((width == 2016 && height == 912) || (width == 1344 && height == 608)) && coherent;
+        }
+        stop.store(true, std::memory_order_release);
+        writer.join();
+        require(coherent, "concurrent GUI mapping never combines two revisions");
+        ResetSnapshot();
+    }
+
+    // ── 1. ParseScale：域 [0.5, 1.0]，其余一律 1.0 + invalid ──────────────
     {
         bool valid = true;
         require(nearlyEqual(ParseScale(nullptr, &valid), 1.0) && !valid,
@@ -57,10 +87,12 @@ int main() {
         require(nearlyEqual(ParseScale("7.5e-1", &valid), 0.75) && valid,
                 "strtod scientific notation stays accepted");
 
-        require(nearlyEqual(ParseScale("1.0", &valid), 1.0) && !valid,
-                "1.0 is outside the domain (exclusive upper bound)");
-        require(nearlyEqual(ParseScale("1", &valid), 1.0) && !valid,
-                "1 is outside the domain");
+        require(nearlyEqual(ParseScale("1.0", &valid), 1.0) && valid,
+                "explicit 100 percent is valid");
+        require(nearlyEqual(ParseScale("1", &valid), 1.0) && valid,
+                "integer identity is valid");
+        require(nearlyEqual(ParseScale("1.0001", &valid), 1.0) && !valid,
+                "supersampling remains outside the supported domain");
         require(nearlyEqual(ParseScale("0.4999", &valid), 1.0) && !valid,
                 "below 0.5 must fall back");
         require(nearlyEqual(ParseScale("-0.75", &valid), 1.0) && !valid,
@@ -77,6 +109,22 @@ int main() {
         // outValid 可省略：解析器不得解引用空指针。
         require(nearlyEqual(ParseScale("0.75", nullptr), 0.75),
                 "outValid=nullptr must be tolerated");
+    }
+
+    // 初始参数反例：物理显示为 2688×1216、游戏候选为 2016×912 时，SDL 和旧版
+    // 加载页必须从小逻辑窗口开始；重复尺寸/等号形式和非法缺值不能泄漏旧尺寸。
+    {
+        std::vector<std::string> args{"--version", "26.4", "--width", "2688", "--height=1216", "--width=854", "--demo"};
+        amcl::renderscale::SetInitialGameSize(args, 2016, 912);
+        const std::vector<std::string> expected{"--version", "26.4", "--demo", "--width", "2016", "--height", "912"};
+        require(args == expected, "SDL initialization uses the accepted game dimensions");
+        amcl::renderscale::SetInitialGameSize(args, 0, 912);
+        require(args == expected, "unavailable surface must not inject zero geometry");
+        amcl::renderscale::SetInitialGameSize(args, 2688, 1216);
+        require(args[args.size()-3] == "2688" && args.back() == "1216", "100 percent restores initial dimensions");
+        args = {"--width", "--demo", "--height"};
+        amcl::renderscale::SetInitialGameSize(args, 800, 600);
+        require(args.front() == "--demo" && args.size() == 5, "malformed dimension does not consume an unrelated flag");
     }
 
     // ── 2. ScaledDimension：round + 向下偶数对齐 + 下限 ───────────────────

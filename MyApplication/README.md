@@ -20,7 +20,7 @@
 | [gate0-evidence.lock](gate0-evidence.lock)、[脱敏输入能力记录](docs/testing/gate0-raw-relative-evidence.md) | 默认 Native 配置所需的能力批准与文档身份输入；保留原风险接受事实及未闭合缺口 |
 | [docs/](docs/) | 为公开快照编写的架构、构建与来源说明 |
 
-仓库根目录的 [.gitmodules](../.gitmodules) 和 Git 索引共同记录本工程三个上游子模块；[deps.lock](deps.lock) 补充版本、源码与产物指纹。不要只复制本目录而丢失外层 Git 仓库，也不要把依赖的默认分支当作锁定版本。
+仓库根目录的 [.gitmodules](../.gitmodules) 和 Git 索引共同记录本工程四个上游子模块；[deps.lock](deps.lock) 补充版本、源码与产物指纹。不要只复制本目录而丢失外层 Git 仓库，也不要把依赖的默认分支当作锁定版本。
 
 ## 构建范围
 

@@ -110,7 +110,11 @@ test('游戏活跃的首次成功初始化不消费stale义务，真正空闲后
   try {
     f.control.idle = false; f.seed();
     const activeId = 1000;
-    assert.equal(f.ledger.ledgerBegin(f.runtime.directory, activeId, { category: 'diagnostic', title: 'unfinished' }), true);
+    assert.equal(f.ledger.ledgerBegin(f.runtime.directory, activeId, {
+      category: 'diagnostic', title: 'unfinished previous run', runNonce: 'previous-runtime-run',
+    }), true);
+    const currentId = 1001;
+    assert.equal(f.ledger.ledgerBegin(f.runtime.directory, currentId, { category: 'download', title: 'current download' }), true);
     await f.wake();
     assert.equal(f.control.staleCalls, 0); assert.equal(f.control.initialized, 1);
     assert.equal(f.ledger.ledgerManifest(f.runtime.directory, activeId).state, f.ledger.LedgerState.RUNNING);
@@ -118,6 +122,8 @@ test('游戏活跃的首次成功初始化不消费stale义务，真正空闲后
     f.control.idle = true; await f.wake();
     assert.equal(f.control.staleCalls, 1);
     assert.equal(f.ledger.ledgerManifest(f.runtime.directory, activeId).state, f.ledger.LedgerState.INTERRUPTED);
+    assert.equal(f.ledger.ledgerManifest(f.runtime.directory, currentId).state, f.ledger.LedgerState.RUNNING,
+      '延后到空闲的旧轮恢复不能关闭本轮仍在执行的下载');
     const stale = fs.readFileSync(f.ledger.ledgerDirOf(f.runtime.directory, activeId) + '/manifest.json');
     await f.wake();
     assert.equal(f.control.staleCalls, 1, 'fulfilled start不能漏stale，也不应每次亮屏重复stale');

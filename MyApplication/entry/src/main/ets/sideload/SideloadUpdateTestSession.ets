@@ -12,6 +12,11 @@ export interface SideloadUpdatePageParams {
   manifest?: UpdateManifest; autoStart?: boolean;
   /** Coordinator 核验后的不透明令牌；路由不能提供任意安装路径。 */
   importToken?: string;
+  /** 从明确JDK依赖动作带来的兼容约束；只会缩小候选范围，不授予安装或切通道权限。 */
+  requiredHostProtocol?: number;
+  requiredHostProtocols?: number[];
+  /** 私有JDK续作代次；只有记账后明确进入此流程的页面携带，不能由普通更新推断。 */
+  runtimeIntentId?: string;
   testAsset?: SideloadUpdateAsset; sameVersionTest?: boolean;
 }
 

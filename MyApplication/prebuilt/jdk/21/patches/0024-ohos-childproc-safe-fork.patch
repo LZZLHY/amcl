@@ -1,0 +1,300 @@
+--- a/src/java.base/unix/native/libjava/childproc.c
++++ b/src/java.base/unix/native/libjava/childproc.c
+@@ -33,6 +33,9 @@
+ #include <limits.h>
+ 
+ #include "childproc.h"
++#ifdef __OHOS__
++#include "amcl_child_fd_cleanup.h"
++#endif
+ 
+ const char * const *parentPathv;
+ 
+@@ -73,6 +76,10 @@
+ int
+ closeDescriptors(void)
+ {
++#ifdef __OHOS__
++    /* OHOS: 真机close_range触发SIGSYS，固定使用已验证的raw getdents64；不得试探受限syscall。 */
++    return amcl_child_fd_cleanup(FAIL_FILENO + 1, AMCL_CHILD_FD_DENTS_ONLY, NULL) == 0;
++#else
+     DIR *dp;
+     struct dirent *dirp;
+     int from_fd = FAIL_FILENO + 1;
+@@ -106,6 +113,8 @@
+     closedir(dp);
+ 
+     return 1;
++
++#endif
+ }
+ 
+ int
+@@ -242,6 +251,13 @@
+                            const char *argv[],
+                            const char *const envp[])
+ {
++#ifdef __OHOS__
++    /* OHOS: FORK/VFORK均复用已有execve和ENOEXEC回退，不改全局environ或调用execvp。 */
++    (void)mode;
++    execve(file, (char **) argv, (char **) envp);
++    if (errno == ENOEXEC)
++        execve_as_traditional_shell_script(file, argv, envp);
++#else
+     if (mode == MODE_VFORK) {
+         /* shared address space; be very careful. */
+         execve(file, (char **) argv, (char **) envp);
+@@ -252,6 +268,8 @@
+         environ = (char **) envp;
+         execvp(file, (char **) argv);
+     }
++
++#endif
+ }
+ 
+ /**
+@@ -266,10 +284,16 @@
+             const char *argv[],
+             const char *const envp[])
+ {
++#ifdef __OHOS__
++    /* OHOS: NULL保留继承环境；路径沿用fork前建立的parentPathv，不在child分配/解析getenv。 */
++    if (envp == NULL)
++        envp = (const char * const *)environ;
++#else
+     if (envp == NULL || (char **) envp == environ) {
+         execvp(file, (char **) argv);
+         return;
+     }
++#endif
+ 
+     if (*file == '\0') {
+         errno = ENOENT;
+@@ -396,6 +420,11 @@
+     /* We moved the fail pipe fd */
+     fail_pipe_fd = FAIL_FILENO;
+ 
++#ifdef __OHOS__
++    /* OHOS: raw getdents64清理失败就报告原errno；不以不完备上界或百万次close掩盖失败。 */
++    if (closeDescriptors() == 0)
++        goto WhyCantJohnnyExec;
++#else
+     /* close everything */
+     if (closeDescriptors() == 0) { /* failed,  close the old way */
+         int max_fd = (int)sysconf(_SC_OPEN_MAX);
+@@ -404,6 +433,7 @@
+             if (close(fd) == -1 && errno != EBADF)
+                 goto WhyCantJohnnyExec;
+     }
++#endif
+ 
+     /* change to the new working directory */
+     if (p->pdir != NULL && chdir(p->pdir) < 0)
+--- a/src/java.base/unix/classes/java/lang/ProcessImpl.java
++++ b/src/java.base/unix/classes/java/lang/ProcessImpl.java
+@@ -83,6 +83,9 @@
+     private /* final */ InputStream  stdout;
+     private /* final */ InputStream  stderr;
+ 
++    // OHOS默认机制只来自本地uname，不能被可覆写的os.name或其他Java属性伪造。
++    private static native boolean isOhosPlatform();
++
+     private static enum LaunchMechanism {
+         // order IS important!
+         FORK,
+@@ -97,7 +100,7 @@
+     private static LaunchMechanism launchMechanism() {
+         String s = GetPropertyAction.privilegedGetProperty("jdk.lang.Process.launchMechanism");
+         if (s == null) {
+-            return LaunchMechanism.POSIX_SPAWN;
++            return isOhosPlatform() ? LaunchMechanism.FORK : LaunchMechanism.POSIX_SPAWN;
+         }
+ 
+         try {
+--- a/src/java.base/unix/native/libjava/ProcessImpl_md.c
++++ b/src/java.base/unix/native/libjava/ProcessImpl_md.c
+@@ -47,6 +47,17 @@
+ #include <spawn.h>
+ 
+ #include "childproc.h"
++#include "amcl_process_platform.h"
++
++/* 默认机制只识别本目标的真实内核身份；非OHOS构建/其他uname仍返回原平台默认。
++ * 本入口不读取或写入Java属性，不在exec失败后降级，也不改变任何显式选择。 */
++JNIEXPORT jboolean JNICALL
++Java_java_lang_ProcessImpl_isOhosPlatform(JNIEnv *env, jclass clazz) {
++    (void)env;
++    (void)clazz;
++    return amcl_process_is_ohos() ? JNI_TRUE : JNI_FALSE;
++}
++
+ 
+ /*
+  *
+--- /dev/null
++++ b/src/java.base/unix/native/libjava/amcl_child_fd_cleanup.h
+@@ -0,0 +1,139 @@
++/* OHOS childproc清理实现：函数体与独立资格探针一致。
++ * 生产调用固定DENTS_ONLY；商业目标已证close_range触发SIGSYS，不作运行时试探。
++ * 返回失败必须沿原JDK fail pipe退出；保留stdio/FAIL_FILENO，不改变非OHOS分支。
++ */
++#ifndef AMCL_CHILD_FD_CLEANUP_CANDIDATE_H
++#define AMCL_CHILD_FD_CLEANUP_CANDIDATE_H
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#ifndef AMCL_CHILD_FD_SYSCALL
++#define AMCL_CHILD_FD_SYSCALL syscall
++#endif
++enum amcl_child_fd_strategy { AMCL_CHILD_FD_AUTO = 0, AMCL_CHILD_FD_RANGE_ONLY = 1, AMCL_CHILD_FD_DENTS_ONLY = 2 };
++enum amcl_child_fd_stage { AMCL_CHILD_FD_OK = 0, AMCL_CHILD_FD_ARGUMENT = 1, AMCL_CHILD_FD_RANGE = 2,
++    AMCL_CHILD_FD_RESERVE = 3, AMCL_CHILD_FD_OPEN = 4, AMCL_CHILD_FD_READ = 5,
++    AMCL_CHILD_FD_DECODE = 6, AMCL_CHILD_FD_CLOSE = 7, AMCL_CHILD_FD_DIRECTORY_CLOSE = 8 };
++struct amcl_child_fd_stats {
++    unsigned method, stage, range_attempted, getdents_calls, records, close_calls;
++    int range_error, error;
++};
++
++/* 原始linux_dirent64的固定字段偏移来自实际SDK/AArch64编译断言。按字节读d_reclen，
++ * 因此故障夹具的未对齐输入也不会产生C未定义行为。每次必定前进或返回错误。 */
++static inline int amcl_child_fd_decode(const unsigned char* data, size_t available, size_t* consumed, int* fd) {
++    size_t length, i;
++    unsigned value = 0, digits = 0;
++    int numeric = 1, terminated = 0;
++    if (available < 20) { errno = EIO; return -1; }
++#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++    length = ((size_t)data[16] << 8) | data[17];
++#else
++    length = data[16] | ((size_t)data[17] << 8);
++#endif
++    if (length < 24 || (length & 7) || length > available) { errno = EIO; return -1; }
++    *fd = -1;
++    for (i = 19; i < length; ++i) {
++        unsigned char c = data[i];
++        if (!c) { terminated = 1; break; }
++        if (c < '0' || c > '9') numeric = 0;
++        if (numeric) {
++            if (value > ((unsigned)INT_MAX - (unsigned)(c - '0')) / 10) { errno = EOVERFLOW; return -1; }
++            value = value * 10 + (unsigned)(c - '0'); ++digits;
++        }
++    }
++    if (!terminated || i == 19) { errno = EIO; return -1; }
++    if (!numeric) {
++        if (!((i == 20 && data[19] == '.') || (i == 21 && data[19] == '.' && data[20] == '.'))) {
++            errno = EIO; return -1; // /proc/self/fd只有dot与十进制FD，不能静默忽略异常记录。
++        }
++    } else if (digits) *fd = (int)value;
++    *consumed = length;
++    return 0;
++}
++
++/* 失败阶段与最初errno独立保存；清理目录FD不得把第一错误覆盖掉。 */
++static inline int amcl_child_fd_fail(struct amcl_child_fd_stats* stats, unsigned stage, int error) {
++    if (stats) { stats->stage = stage; stats->error = error; }
++    errno = error; return -1;
++}
++
++/* Linux close在EINTR时已释放FD；不能盲目重试并可能关闭后来的新FD。EBADF已满足关闭目标。
++ * 其它错误保留为准备失败，调用者必须沿fail pipe/_exit收口，不能继续exec泄漏未知FD。 */
++static inline int amcl_child_fd_close_one(int fd, struct amcl_child_fd_stats* stats) {
++    long result;
++    if (stats) ++stats->close_calls;
++    result = AMCL_CHILD_FD_SYSCALL(SYS_close, (long)fd);
++    return result == 0 || errno == EBADF || errno == EINTR ? 0 : -1;
++}
++
++/* 只有child自己的/proc/self/fd能覆盖fork时的真实表；不能预开父目录FD或仅复制父FD名单。
++ * 4096字节对齐栈缓冲与实际FD数量成比例，不根据RLIMIT对空洞执行百万次close。 */
++static inline int amcl_child_fd_cleanup(unsigned first, int strategy, struct amcl_child_fd_stats* stats) {
++    int directory, saved_error = 0;
++    unsigned saved_stage = AMCL_CHILD_FD_OK;
++    union { uint64_t alignment; unsigned char bytes[4096]; } buffer;
++    if (stats) {
++        stats->method = 0; stats->stage = 0; stats->range_attempted = 0; stats->getdents_calls = 0;
++        stats->records = 0; stats->close_calls = 0; stats->range_error = 0; stats->error = 0;
++    }
++    if (first > INT_MAX || strategy < AMCL_CHILD_FD_AUTO || strategy > AMCL_CHILD_FD_DENTS_ONLY)
++        return amcl_child_fd_fail(stats, AMCL_CHILD_FD_ARGUMENT, EINVAL);
++    if (strategy != AMCL_CHILD_FD_DENTS_ONLY) {
++#ifdef SYS_close_range
++        if (stats) stats->range_attempted = 1;
++        if (AMCL_CHILD_FD_SYSCALL(SYS_close_range, (unsigned long)first, (unsigned long)UINT_MAX, (long)0) == 0) {
++            if (stats) stats->method = AMCL_CHILD_FD_RANGE_ONLY;
++            return 0;
++        }
++        if (stats) stats->range_error = errno;
++#else
++        errno = ENOSYS;
++        if (stats) stats->range_error = ENOSYS;
++#endif
++        if (strategy == AMCL_CHILD_FD_RANGE_ONLY) return amcl_child_fd_fail(stats, AMCL_CHILD_FD_RANGE, errno);
++    }
++    if (stats) stats->method = AMCL_CHILD_FD_DENTS_ONLY;
++    // FD表正好填满时先腾出一个可关闭的低槽；它本就属于目标清理范围。
++    if (amcl_child_fd_close_one((int)first, stats) != 0)
++        return amcl_child_fd_fail(stats, AMCL_CHILD_FD_RESERVE, errno);
++    do {
++        directory = (int)AMCL_CHILD_FD_SYSCALL(SYS_openat, (long)AT_FDCWD, "/proc/self/fd",
++            (long)(O_RDONLY | O_DIRECTORY | O_CLOEXEC), (long)0);
++    } while (directory < 0 && errno == EINTR);
++    if (directory < 0) return amcl_child_fd_fail(stats, AMCL_CHILD_FD_OPEN, errno);
++    for (;;) {
++        long bytes;
++        size_t at = 0;
++        if (stats) ++stats->getdents_calls;
++        bytes = AMCL_CHILD_FD_SYSCALL(SYS_getdents64, (long)directory, buffer.bytes, sizeof(buffer.bytes));
++        if (bytes < 0 && errno == EINTR) continue;
++        if (bytes < 0) { saved_error = errno; saved_stage = AMCL_CHILD_FD_READ; break; }
++        if (bytes == 0) break;
++        if ((unsigned long)bytes > sizeof(buffer.bytes)) { saved_error = EIO; saved_stage = AMCL_CHILD_FD_READ; break; }
++        while (at < (size_t)bytes) {
++            size_t consumed;
++            int fd;
++            if (amcl_child_fd_decode(buffer.bytes + at, (size_t)bytes - at, &consumed, &fd) != 0) {
++                saved_error = errno; saved_stage = AMCL_CHILD_FD_DECODE; break;
++            }
++            if (stats) ++stats->records;
++            if (fd >= 0 && (unsigned)fd >= first && fd != directory && amcl_child_fd_close_one(fd, stats) != 0) {
++                saved_error = errno; saved_stage = AMCL_CHILD_FD_CLOSE; break;
++            }
++            at += consumed;
++        }
++        if (saved_error) break;
++    }
++    if (amcl_child_fd_close_one(directory, stats) != 0 && !saved_error) {
++        saved_error = errno; saved_stage = AMCL_CHILD_FD_DIRECTORY_CLOSE;
++    }
++    if (saved_error) return amcl_child_fd_fail(stats, saved_stage, saved_error);
++    return 0;
++}
++#endif
+--- /dev/null
++++ b/src/java.base/unix/native/libjava/amcl_process_platform.h
+@@ -0,0 +1,22 @@
++/* ProcessImpl默认机制的本地平台身份。只在父侧类初始化调用，不进入fork child。
++ * 编译目标与真实uname必须同时匹配；不读取os.name、AMCL环境或可覆写Java属性。
++ * 查询失败保留上游默认值；显式launchMechanism选择完全不经过该默认分支。
++ */
++#ifndef AMCL_PROCESS_PLATFORM_H
++#define AMCL_PROCESS_PLATFORM_H
++#include <string.h>
++#include <sys/utsname.h>
++#ifndef AMCL_PROCESS_UNAME
++#define AMCL_PROCESS_UNAME uname
++#endif
++static inline int amcl_process_is_ohos(void) {
++#ifdef __OHOS__
++    struct utsname identity;
++    if (AMCL_PROCESS_UNAME(&identity) != 0) return 0;
++    return strcmp(identity.sysname, "HarmonyOS") == 0 ||
++        strcmp(identity.sysname, "OpenHarmony") == 0 || strcmp(identity.sysname, "OHOS") == 0;
++#else
++    return 0;
++#endif
++}
++#endif

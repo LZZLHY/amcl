@@ -14,7 +14,7 @@
 
 import { formatBytes } from './DownloadManager';
 import { formatDurationMs } from 'commons';
-import { ledgerList, ledgerManifest, ledgerListAsync, ledgerManifestAsync, LedgerState, LedgerManifest, LedgerEntry } from 'commons';
+import { ledgerList, ledgerManifest, ledgerReadSnapshotAsync, LedgerState, LedgerManifest, LedgerEntry } from 'commons';
 import { DownloadTask } from './DownloadTask';
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
@@ -132,6 +132,8 @@ export interface DownloadHistoryReadSnapshot {
 
 /** 旧活动记录已离开 LRU 时，从持久账本恢复可查看的入口。 */
 function historyRecordFromLedger(m: LedgerManifest): DownloadHistoryRecord {
+  // taskFacts由canonical恢复/正常finish严格校验并耐久保存；历史投影只消费同轮manifest，不额外读terminal。
+  const facts = m.taskFacts;
   const record: DownloadHistoryRecord = {
     versionName: m.gameVersionId || m.title, gameVersion: m.gameVersionId,
     loaderType: m.loaderType, loaderVersion: m.loaderVersion,
@@ -139,7 +141,7 @@ function historyRecordFromLedger(m: LedgerManifest): DownloadHistoryRecord {
     durationMs: m.endTimeEstimated !== true && m.endedAt > 0 ? Math.max(0, m.endedAt - m.startedAt) : 0,
     durationEstimated: m.endTimeEstimated === true,
     pinned: m.pinned === true, parentActivityId: m.parentActivityId, relation: m.relation,
-    totalBytes: 0, fileCount: m.files.length,
+    totalBytes: facts?.totalBytes ?? 0, fileCount: facts?.fileCount ?? m.files.length,
     status: m.state === LedgerState.RUNNING ? 'running' : m.state === LedgerState.INTERRUPTED ? 'interrupted'
       : m.state === LedgerState.SUCCESS ? ActivityStatus.SUCCESS
       : (m.state === LedgerState.CRASHED ? ActivityStatus.CRASHED
@@ -147,6 +149,7 @@ function historyRecordFromLedger(m: LedgerManifest): DownloadHistoryRecord {
     category: m.category, title: m.title, mcDir: m.mcDir,
     errorMessage: m.outcomeSummary, errorKind: m.errorKind,
   };
+  if (facts?.exportTaskId !== undefined) record.exportTaskId = facts.exportTaskId;
   return record;
 }
 
@@ -606,16 +609,10 @@ export class DownloadHistoryStore {
    */
   async readSnapshotAsync(cancelled: () => boolean): Promise<DownloadHistoryReadSnapshot> {
     if (cancelled()) throw new Error('活动列表读取已取消');
-    const entries: LedgerEntry[] = this.filesDir_.length > 0 ? await ledgerListAsync(this.filesDir_, cancelled) : [];
-    const manifests: LedgerManifest[] = [];
-    for (let start: number = 0; start < entries.length; start += 8) {
-      if (cancelled()) throw new Error('活动列表读取已取消');
-      const batch: (LedgerManifest | null)[] = await Promise.all(entries.slice(start, start + 8)
-        .map((entry: LedgerEntry): Promise<LedgerManifest | null> => ledgerManifestAsync(this.filesDir_, entry.activityId)));
-      if (cancelled()) throw new Error('活动列表读取已取消');
-      for (const manifest of batch) if (manifest !== null) manifests.push(manifest);
-      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
-    }
+    // 占用与结局共用同轮已核验原清单，不在索引读取后再打开全部manifest。
+    const snapshot = this.filesDir_.length > 0 ? await ledgerReadSnapshotAsync(this.filesDir_, cancelled) : undefined;
+    const entries: LedgerEntry[] = snapshot?.entries ?? [];
+    const manifests: LedgerManifest[] = snapshot === undefined ? [] : Array.from(snapshot.manifests.values());
     if (cancelled()) throw new Error('活动列表读取已取消');
     const records: DownloadHistoryRecord[] = this.lru_.list();
     const positions: Map<number, number> = new Map<number, number>();
@@ -644,14 +641,17 @@ export class DownloadHistoryStore {
   /** 当前所有记录的副本（最新 → 最老）；保留原同步兼容入口，页面首开使用异步投影。 */
   list(): DownloadHistoryRecord[] {
     const records = this.lru_.list();
+    // 同步兼容入口保留原IO契约；按主键映射避免合并大量账本时逐项findIndex的平方成本。
+    const positions: Map<number, number> = new Map<number, number>();
+    records.forEach((record: DownloadHistoryRecord, index: number): void => { positions.set(record.startedAt, index); });
     // 账本是日志入口的事实源，不能被通用活动 LRU 挤掉。
     if (this.filesDir_.length > 0) {
       for (const entry of ledgerList(this.filesDir_)) {
         const m = ledgerManifest(this.filesDir_, entry.activityId);
         if (m === null) continue;
-        const index: number = records.findIndex((record: DownloadHistoryRecord): boolean => record.startedAt === entry.activityId);
-        if (index >= 0) records[index] = this.withLedgerOutcome_(records[index], m);
-        else records.push(historyRecordFromLedger(m));
+        const index: number | undefined = positions.get(entry.activityId);
+        if (index !== undefined) records[index] = this.withLedgerOutcome_(records[index], m);
+        else { positions.set(entry.activityId, records.length); records.push(historyRecordFromLedger(m)); }
       }
     }
     return records.sort((a: DownloadHistoryRecord, b: DownloadHistoryRecord): number => b.startedAt - a.startedAt);

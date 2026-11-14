@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "files": [
+    {
+      "major": "8",
+      "relative": "8/childproc.c",
+      "upstreamPath": "jdk/src/solaris/native/java/lang/childproc.c",
+      "repository": "https://github.com/openjdk/jdk8u-dev.git",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/solaris/native/java/lang/childproc.c",
+      "sha256": "4d75817ac40003f6ccd274d4570da68b838409a86c87c41ecbba95e6023a3f73"
+    },
+    {
+      "major": "8",
+      "relative": "8/childproc.h",
+      "upstreamPath": "jdk/src/solaris/native/java/lang/childproc.h",
+      "repository": "https://github.com/openjdk/jdk8u-dev.git",
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk8u-dev/35c254f58c70663df28cc7d15c9545c88250b6ce/jdk/src/solaris/native/java/lang/childproc.h",
+      "sha256": "797d205e0b02c7a5d82b6ecb8c89483c0cdc341b1469b2962ec56a707fe50def"
+    },
+    {
+      "major": "17",
+      "relative": "17/childproc.c",
+      "upstreamPath": "src/java.base/unix/native/libjava/childproc.c",
+      "repository": "https://github.com/openjdk/jdk17u.git",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.base/unix/native/libjava/childproc.c",
+      "sha256": "5153fd6af11905b6fc708e960740daded5e580b92651a54eacd594d25fbcb3f2"
+    },
+    {
+      "major": "17",
+      "relative": "17/childproc.h",
+      "upstreamPath": "src/java.base/unix/native/libjava/childproc.h",
+      "repository": "https://github.com/openjdk/jdk17u.git",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.base/unix/native/libjava/childproc.h",
+      "sha256": "8e6fc95aa8d92b17ff8f8a34a9861c3c03d78b3f49888bac6d99d873c4a3f944"
+    },
+    {
+      "major": "21",
+      "relative": "21/childproc.c",
+      "upstreamPath": "src/java.base/unix/native/libjava/childproc.c",
+      "repository": "https://github.com/openjdk/jdk21u.git",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.base/unix/native/libjava/childproc.c",
+      "sha256": "5153fd6af11905b6fc708e960740daded5e580b92651a54eacd594d25fbcb3f2"
+    },
+    {
+      "major": "21",
+      "relative": "21/childproc.h",
+      "upstreamPath": "src/java.base/unix/native/libjava/childproc.h",
+      "repository": "https://github.com/openjdk/jdk21u.git",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.base/unix/native/libjava/childproc.h",
+      "sha256": "8e6fc95aa8d92b17ff8f8a34a9861c3c03d78b3f49888bac6d99d873c4a3f944"
+    },
+    {
+      "major": "25",
+      "relative": "25/childproc.c",
+      "upstreamPath": "src/java.base/unix/native/libjava/childproc.c",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/native/libjava/childproc.c",
+      "sha256": "bfb5e9b6ed31ce2f9c99c7031a1c15fc2abf0c6eb086a32578669f817da2bd6e"
+    },
+    {
+      "major": "25",
+      "relative": "25/childproc.h",
+      "upstreamPath": "src/java.base/unix/native/libjava/childproc.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/native/libjava/childproc.h",
+      "sha256": "8a962738861c970f7d3083052abc2b180c5599dc3acc5a98228f84422d730e51"
+    },
+    {
+      "major": "25",
+      "relative": "25/jni_util.h",
+      "upstreamPath": "src/java.base/share/native/libjava/jni_util.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/share/native/libjava/jni_util.h",
+      "sha256": "74fcbeaaf10a95d3025d16da442157d21ac097971972564e643709270e01e02d"
+    },
+    {
+      "major": "25",
+      "relative": "25/jni.h",
+      "upstreamPath": "src/java.base/share/native/include/jni.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/share/native/include/jni.h",
+      "sha256": "1e03bd83d1662ac00647f7a06c11d32333767ee537803ec1d153e89888414520"
+    },
+    {
+      "major": "25",
+      "relative": "25/jni_md.h",
+      "upstreamPath": "src/java.base/unix/native/include/jni_md.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/native/include/jni_md.h",
+      "sha256": "8232a5a68d36060aaa426fbfdb4537983ecfdfc5fe07a43230005ddd1a4b986a"
+    },
+    {
+      "major": "25",
+      "relative": "25/jni_util_md.h",
+      "upstreamPath": "src/java.base/unix/native/libjava/jni_util_md.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/native/libjava/jni_util_md.h",
+      "sha256": "265ca84a705d51ca1242d9f5a3575b232b6ddcb118541820f9d201c4ed7858a1"
+    },
+    {
+      "major": "25",
+      "relative": "25/jlong.h",
+      "upstreamPath": "src/java.base/share/native/libjava/jlong.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/share/native/libjava/jlong.h",
+      "sha256": "615acf5c8420f6c8f9a705723f84c766b4c207c4482191546c5b657a88caa712"
+    },
+    {
+      "major": "25",
+      "relative": "25/jlong_md.h",
+      "upstreamPath": "src/java.base/unix/native/libjava/jlong_md.h",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/native/libjava/jlong_md.h",
+      "sha256": "0288abc078d459dbdc1087b69c60c517c00d88f3464feea494478a19233edbb2"
+    },
+    {
+      "major": "17",
+      "relative": "17/ProcessImpl.java",
+      "upstreamPath": "src/java.base/unix/classes/java/lang/ProcessImpl.java",
+      "repository": "https://github.com/openjdk/jdk17u.git",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.base/unix/classes/java/lang/ProcessImpl.java",
+      "sha256": "fd77df2434e2f70b8bd2e66d7d7f512a0eb99369a6f7a3458a84aa5925741f3b"
+    },
+    {
+      "major": "17",
+      "relative": "17/ProcessImpl_md.c",
+      "upstreamPath": "src/java.base/unix/native/libjava/ProcessImpl_md.c",
+      "repository": "https://github.com/openjdk/jdk17u.git",
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk17u/b7d004b4f2787ea49454291d48326ad1cd97c0d0/src/java.base/unix/native/libjava/ProcessImpl_md.c",
+      "sha256": "2e01c28119afc1a805c12894da05ee3504f8ae3a6c99c6fe633a414aa354a68a"
+    },
+    {
+      "major": "21",
+      "relative": "21/ProcessImpl.java",
+      "upstreamPath": "src/java.base/unix/classes/java/lang/ProcessImpl.java",
+      "repository": "https://github.com/openjdk/jdk21u.git",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.base/unix/classes/java/lang/ProcessImpl.java",
+      "sha256": "3c501366c6ebfe3699da9a4bc4c68bbe8dd0df48b49d5984efb3c0954549a71f"
+    },
+    {
+      "major": "21",
+      "relative": "21/ProcessImpl_md.c",
+      "upstreamPath": "src/java.base/unix/native/libjava/ProcessImpl_md.c",
+      "repository": "https://github.com/openjdk/jdk21u.git",
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk21u/dfcd8d2eecfe62e91070244d8eb10906dc3c812d/src/java.base/unix/native/libjava/ProcessImpl_md.c",
+      "sha256": "ebbd25f52dc75fb28cc59781c9ee0cb963b49c73fcbb2d128e3646a18cbc30cd"
+    },
+    {
+      "major": "25",
+      "relative": "25/ProcessImpl.java",
+      "upstreamPath": "src/java.base/unix/classes/java/lang/ProcessImpl.java",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/classes/java/lang/ProcessImpl.java",
+      "sha256": "c3bcce2b4ec52033e4fb3f47e8a33f225016a2bb2525ce158bd9a0ca5b980083"
+    },
+    {
+      "major": "25",
+      "relative": "25/ProcessImpl_md.c",
+      "upstreamPath": "src/java.base/unix/native/libjava/ProcessImpl_md.c",
+      "repository": "https://github.com/openjdk/jdk25u.git",
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "url": "https://raw.githubusercontent.com/openjdk/jdk25u/e8f9ebe5ea813b675410a89fbfafa22e42c04e6a/src/java.base/unix/native/libjava/ProcessImpl_md.c",
+      "sha256": "f660a4b30d645ddd7c0677750a405f88959f269b7eca410a222090f8b8cbb30d"
+    }
+  ]
+}

@@ -7,16 +7,21 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <curl/curl.h>
 #include "exception.h"
 
 namespace download {
+
+/** 普通工件每个 HTTP hop 的产品标识。复位 easy 后也要重装，且不包含来源授权。 */
+inline constexpr char kDownloadUserAgent[] = "amcl/0.1 (OHOS; libcurl/8.10.1)";
 
 /** 一次 HTTP 的兼容参数；先保存原来两种执行方式的数值，再独立验证后续调优。 */
 struct TransportRequestProfile {
@@ -60,8 +65,29 @@ inline TransportRequestProfile multiRequestProfile(long connect_s, long total_s,
     return p;
 }
 
+/** PCL 的等待按读取间隔计时。连续有正文的 GET 不套平均速度门槛或整请求总时长。 */
+inline int64_t versionReadTimeoutMs(int consecutive_failures) {
+    return consecutive_failures > 0 ? 30000 : 15000;
+}
+
+/** 游戏文件沿用各执行器的连接复用设置，只用当前源的读取策略替换限时参数。 */
+inline TransportRequestProfile orderedVersionProfile(TransportRequestProfile profile, int consecutive_failures) {
+    profile.connect_timeout_s = versionReadTimeoutMs(consecutive_failures) / 1000;
+    profile.total_timeout_s = 0;
+    profile.low_speed_limit = 0;
+    profile.low_speed_time_s = 0;
+    return profile;
+}
+
+/** 分段读间隔超过 5 秒，且这一块不足约 1 KB/s，才让当前连接让位。 */
+inline bool orderedVersionSlowRead(int64_t gap_ms, size_t received_bytes) {
+    return gap_ms > 5000 && static_cast<uint64_t>(gap_ms) > received_bytes;
+}
+
 /** 两执行器设置同一组普通选项；授权、CA、Range、relay 与回调仍显式安装。 */
 inline void applyTransportProfile(CURL* easy, const TransportRequestProfile& p) {
+    // worker 重定向会 reset easy，必须在共用配置中恢复公开 UA；部分镜像拒绝无 UA 的请求。
+    curl_easy_setopt(easy, CURLOPT_USERAGENT, kDownloadUserAgent);
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, p.connect_timeout_s);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT, p.total_timeout_s);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, p.low_speed_limit);
@@ -140,6 +166,23 @@ inline bool slowerThanTransportPeers(int64_t own_bps, int64_t file_bps, int acti
     return own_bps <= std::numeric_limits<int64_t>::max() / 6 && own_bps * 6 < peer_average;
 }
 
+/**
+ * 同一实际 HTTP 内的持续慢尾证据窗。调用者已验证原有启动时长、余量、活跃段数、
+ * 绝对低速和相对快 peer 条件；本函数只防止约 200ms 的零字节抖动触发换连接。
+ * 任一条件消失立即清窗，连续满足三秒才允许抢占；新 hop/重试必须显式清零。
+ * 时间由 steady clock 提供，不读取系统时间，也不持有任务或网络资源。
+ */
+inline bool sustainedTransportPeerSlow(std::atomic<int64_t>& since_ms, int64_t now_ms, bool eligible) {
+    constexpr int64_t kContinuousPeerSlowMs = 3000;
+    if (!eligible) { since_ms.store(0, std::memory_order_relaxed); return false; }
+    int64_t since = since_ms.load(std::memory_order_relaxed);
+    if (since <= 0 || now_ms < since) {
+        since_ms.store(now_ms, std::memory_order_relaxed);
+        return false;
+    }
+    return now_ms - since >= kContinuousPeerSlowMs;
+}
+
 /** 实际 hop 的主机。支持 IPv6 字面量、端口、userinfo 与无路径 URL，统一为小写。 */
 inline std::string transportHost(const std::string& url) {
     const size_t scheme = url.find("://");
@@ -168,6 +211,50 @@ inline bool isTransportHttpUrl(const std::string& url) {
     std::string scheme = url.substr(0, colon);
     for (char& c : scheme) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     return (scheme == "http" || scheme == "https") && !transportHost(url).empty();
+}
+
+/**
+ * 为手动重定向修复 Location 中未转义的路径字节，返回可重新交给 CURLOPT_URL 的 URL。
+ * 输入必须来自当前 easy 的 CURLINFO_REDIRECT_URL：相对 Location 由 libcurl 按本次
+ * 请求解析，不能在这里另拼基址或解码整串 URL。调用方仍负责原有协议、主机和授权准入。
+ *
+ * 仅编码 RFC 3986 path 之外的字节（例如文件名里的空格、[、] 与 UTF-8 字节）；
+ * 合法 pchar、路径分隔符 / 及已有 %XX（含大小写）原样保留，避免二次编码或改变资源身份。
+ * authority、query 和 fragment 均逐字保留：其中的 +、%2F、参数顺序和签名可能有意义。
+ * 含控制字节（包括 NUL/CR/LF）的输入返回空串，由调用方按非法跳转拒绝；不能把头部
+ * 分隔符编码后继续请求。其他非法协议/主机/query 不猜测修复，交给既有边界和 libcurl。
+ * 函数不持有 handle/凭据或共享状态，worker、CURLM 与 metadata 可独立并发调用。
+ */
+inline std::string normalizeTransportRedirectUrl(const std::string& url) {
+    for (unsigned char byte : url) if (byte < 0x20 || byte == 0x7f) return {};
+    const size_t scheme = url.find("://");
+    if (scheme == std::string::npos) return url;
+    const size_t path = url.find_first_of("/?#", scheme + 3);
+    if (path == std::string::npos || url[path] != '/') return url;
+    const size_t suffix = url.find_first_of("?#", path);
+    const size_t end = suffix == std::string::npos ? url.size() : suffix;
+    const auto is_hex = [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+    };
+    const auto is_path_char = [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            std::string_view("-._~!$&'()*+,;=:@/").find(static_cast<char>(c)) != std::string_view::npos;
+    };
+    static constexpr char hex[] = "0123456789ABCDEF";
+    std::string result = url.substr(0, path);
+    result.reserve(url.size());
+    for (size_t i = path; i < end; ++i) {
+        const auto byte = static_cast<unsigned char>(url[i]);
+        if (byte == '%' && i + 2 < end && is_hex(static_cast<unsigned char>(url[i + 1])) &&
+            is_hex(static_cast<unsigned char>(url[i + 2]))) {
+            result.append(url, i, 3); i += 2;
+        } else if (is_path_char(byte)) result.push_back(static_cast<char>(byte));
+        else {
+            result.push_back('%'); result.push_back(hex[byte >> 4]); result.push_back(hex[byte & 15]);
+        }
+    }
+    result.append(url, end, std::string::npos);
+    return result;
 }
 
 } // namespace download

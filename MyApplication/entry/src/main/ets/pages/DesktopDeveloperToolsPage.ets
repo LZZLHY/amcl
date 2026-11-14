@@ -1,9 +1,11 @@
+import { applyNativeTheme } from '../components/AppTheme';
 import { pasteboard, deviceInfo } from '@kit.BasicServicesKit'
 import { fileIo as fs } from '@kit.CoreFileKit'
 import { ThemeColors, ThemeMode, resolveTheme, ledgerBeginAsync, ledgerEndAsync, ledgerManifestAsync, LedgerState,
   ledgerDirOf, writeEvidenceTextAtomicAsync, listSessionEvidenceAsync, setEvidenceSelection, ensureEvidenceDirectoryAsync } from 'commons'
 import testNapi, { NativeGlCapability } from 'libentry.so'
-import { common } from '@kit.AbilityKit'
+import { common, ConfigurationConstant } from '@kit.AbilityKit'
+import { PreferenceManager } from 'feature_system'
 import { ProductRenderDiagnostics } from 'entry/ProductRenderDiagnostics'
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold'
 import { graphicsProfileById, GraphicsProfileSpec } from 'launch'
@@ -16,6 +18,9 @@ struct DesktopDeveloperToolsPage {
   /** 电脑窗口存在系统栏时由共享标题消费一次，正文只保留原诊断区间距。 */
   @StorageProp('topRectHeight') private topSafeHeight: number = 0
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
+  /** 页面外围消费应用确认的主题；探针内容、保存/分享身份与终端语义色不参与主题变更。 */
+  @StorageProp('currentColorMode') @Watch('applyTheme_') private colorMode_: number = 0
+  @StorageProp('appThemeRevision') @Watch('applyTheme_') private appThemeRevision_: number = 0
   @State busy: boolean = false
   @State result: string = '无需安装 Minecraft。点击下方按钮，验证系统桌面 OpenGL，并复制完整结果反馈。'
   @State verdict: string = '尚未验证'
@@ -27,6 +32,7 @@ struct DesktopDeveloperToolsPage {
   private pendingShare: LogShareRecord | undefined = undefined
 
   aboutToAppear(): void {
+    this.applyTheme_()
     if (!ProductRenderDiagnostics.enabled) {
       this.verdict = '此诊断仅供电脑包使用'
       return
@@ -38,6 +44,16 @@ struct DesktopDeveloperToolsPage {
 
   private context(): common.UIAbilityContext | undefined {
     return AppStorage.get<common.UIAbilityContext>('uiAbilityContext')
+  }
+
+  /** 只读取本进程偏好并重建颜色快照；不重跑验证、不触发网络或新的窗口订阅。 */
+  private applyTheme_(): void {
+    const context: common.UIAbilityContext | undefined = this.context()
+    if (context === undefined) return
+    const preferences: PreferenceManager = new PreferenceManager(context)
+    this.theme = resolveTheme(preferences.themeMode,
+      this.colorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK, preferences.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   private desktopProfileSummary(): string {
@@ -186,6 +202,20 @@ struct DesktopDeveloperToolsPage {
       this.getUIContext().getPromptAction().showToast({ message: '复制失败：' + (error as Error).message })
     }
   }
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
+
+  /** 操作用途与结果边界放入按需说明；打开说明不运行探针、不保存或分享任何诊断。 */
+  private showDiagnosticHelp_(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '电脑渲染诊断说明',
+      message: '基础验证检查系统能力、OpenGL 4.2 Core 上下文和实际像素读回，记录电脑原生渲染环境。\n\n'
+        + '画面出现黑面、缺块时，可运行渲染诊断，检查着色器、纹理、顶点与缓冲区更新；结果不等同于游戏画面验收。\n\n'
+        + '诊断会保存并随电脑游戏日志分享；单独分享会上传脱敏后的完整输出，保留期以分享页为准，可撤回。',
+      buttons: [{ text: '关闭', color: this.theme.actionText as string }],
+    }).catch((): void => { /* 点击框外或返回仅关闭说明。 */ });
+  }
+
   build() {
     Column() {
       // 标题返回不接管渲染测试与分享任务，原 busy/sharing 守卫仍留在各业务按钮。
@@ -200,9 +230,11 @@ struct DesktopDeveloperToolsPage {
   @Builder
   private ImmersiveTitleContent1_() {
       Column({ space: 12 }) {
-      Text('系统桌面 OpenGL').fontSize(20).fontWeight(FontWeight.Medium).width('100%')
-      Text('检查系统能力、OpenGL 4.2 Core 上下文和实际像素读回，记录电脑原生渲染环境。')
-        .fontSize(15).width('100%')
+      Row({ space: 12 }) {
+        Text('系统桌面 OpenGL').fontSize(20).fontWeight(FontWeight.Medium).layoutWeight(1)
+        Button('说明').height(44).fontSize(14).fontColor(this.theme.actionText)
+          .backgroundColor(Color.Transparent).onClick((): void => { this.showDiagnosticHelp_(); })
+      }.width('100%').alignItems(VerticalAlign.Center)
       Row({ space: 12 }) {
         Button(this.busy ? '验证中…' : '验证桌面 OpenGL').enabled(ProductRenderDiagnostics.enabled && !this.busy && !this.sharing)
           .onClick(() => { this.verify() })
@@ -216,13 +248,9 @@ struct DesktopDeveloperToolsPage {
             .onClick(() => { this.shareResult() })
         }
       }.width('100%')
-      Text('画面出现黑面、缺块时运行。检查着色器、纹理、顶点与缓冲区更新；结果不等同于游戏画面验收。')
-        .fontSize(14).width('100%')
       Text(this.verdict).fontSize(18).fontWeight(FontWeight.Medium).width('100%')
       if (ProductRenderDiagnostics.enabled) {
-        Text(this.savedLabel).fontSize(12).width('100%')
-        Text('诊断会保存并随电脑游戏日志分享；单独分享会上传脱敏后的完整输出，保留期以分享页为准，可撤回。')
-          .fontSize(12).width('100%')
+        if (this.savedLabel.length > 0) { Text(this.savedLabel).fontSize(12).width('100%') }
         if (this.saveError.length > 0) { Text(this.saveError).fontSize(12).width('100%') }
         if (this.shareStatus.length > 0) { Text(this.shareStatus).fontSize(12).width('100%') }
         if (this.diagnosticShares.length > 0) {

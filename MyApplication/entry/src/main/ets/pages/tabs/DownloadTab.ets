@@ -1,16 +1,12 @@
 /**
- * DownloadTab.ets — 下载 Tab 组件（Phase R-1 重设计 2026-05-13）
- *
- * 设计稿：docs/design/download-page-redesign/01_download_home.png（Screen A）
- *
- * Phase R-1 改动：
- *   - "下载" 大标题 + 右侧 🔍 / ⊗ 圆形操作按钮
- *   - 顶部 3 段 sub-tab 升级为 6 个横向滚动 chips：
- *     版本 / 模组 / 光影 / 资源包 / 整合包 / JDK
- *   - 模组/光影/资源包共享 ModBrowsePage（不同 kindIdx）
- *   - 整合包目前显示"即将推出"占位（待 P1-MODS Phase 4）
- *
- * 原有 3 子页：版本（DlVersionTab）/ JDK（DlJdkTab）/ 模组（DlModBrowseTab）保留。
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
+ * 下载Tab承载版本、模组、光影、资源包、整合包与JDK六分类的固定导航。
+ * 四资源共用受控ModBrowsePage；版本筛选与JDK目录由DownloadAuxiliaryList管理退让，
+ * 搜索与顶层导航留在滚动宿主外。
+ * 本组件只展示并转发业务意图，不自动创建下载任务，也不拥有后台任务生命周期。
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -18,8 +14,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { floatingDockReserveHeight } from 'commons';
 import { router, promptAction } from '@kit.ArkUI';
 import { ThemeColors } from 'commons';
-import { McVersionService, McVersion, McInstallSession, listMcInstallRecovery,
-  getDownloadTaskRegistry, UnifiedTaskView, TaskCategory, isTerminalState } from 'feature_core';
+import { McVersionService, McVersion } from 'feature_core';
 import { JdkManager, JdkVersionInfo } from 'launch';
 import { ModBrowsePage } from '../ModBrowsePage';
 // v6.5：ModDlState 不再需要（ModBrowsePage 改为 registry.enqueue）
@@ -27,6 +22,8 @@ import { AppIconName } from 'commons';
 import { AppIcon } from '../../components/AppIcon';
 import { VersionBlockIcon } from '../../components/VersionBlockIcon';
 import { classifyVersion, VersionCategory } from 'mods';
+import { DownloadAuxiliaryList } from '../../components/DownloadAuxiliaryList';
+import { DownloadSearchField } from '../../components/DownloadSearchField';
 
 // 顶级 Tab 元数据（与设计稿对齐：6 个一字排开）
 interface DlTabMeta {
@@ -46,6 +43,8 @@ const DL_TABS: DlTabMeta[] = [
 @Component
 export struct DownloadTab {
   @Prop theme: ThemeColors = {} as ThemeColors
+  /** 原生主Tab保留组件时，由Index透传可见性，阻止后台动画续播。 */
+  @Prop hostVisible: boolean = true
   @Prop topSafeHeight: number = 0
   @Prop bottomSafeHeight: number = 0
   /** 手机横屏：true 时分类页签走左侧竖向侧边栏，右侧给内容/模组列表更宽空间。 */
@@ -62,34 +61,9 @@ export struct DownloadTab {
   onRefreshJdkCatalog: () => void = () => {}
 
   // P1-MODS Phase 1.7：模组浏览页依赖
-  @Prop @Watch('refreshMcRecovery_') mcDir: string = ''
-  @Prop filesDir: string = ''
-  @Prop @Watch('onRecoveryTasksChanged_') taskRevision: number = 0
-  @State private mcRecovery_: McInstallSession[] = []
-  private recoveryTasksSignature_: string = ''
-  onRecoverMc: (session: McInstallSession) => void = () => {}
-
-  /** 冷启动仅展示持久意图；用户点击后由父页面送入 Registry，不能自动发起隐形下载。 */
-  aboutToAppear(): void { this.refreshMcRecovery_() }
-  private refreshMcRecovery_(): void {
-    const registry = getDownloadTaskRegistry()
-    this.mcRecovery_ = this.filesDir.length > 0 ? listMcInstallRecovery(this.filesDir, this.mcDir)
-      .filter((session: McInstallSession): boolean => {
-        const install = registry.get('mc:' + session.versionName)
-        const repair = registry.get('repair:' + session.versionName)
-        return (!install || isTerminalState(install.state)) && (!repair || isTerminalState(repair.state))
-      }) : []
-  }
-
-  /** Registry 每个进度帧都会通知；只在 MC 任务状态/身份变化时读盘，避免下载时反复扫描。 */
-  private onRecoveryTasksChanged_(): void {
-    const signature = getDownloadTaskRegistry().listAll()
-      .filter((view: UnifiedTaskView): boolean => view.category === TaskCategory.MC_VERSION)
-      .map((view: UnifiedTaskView): string => view.id + ':' + view.startedAtMs.toString() + ':' + view.state).sort().join('\n')
-    if (signature === this.recoveryTasksSignature_) return
-    this.recoveryTasksSignature_ = signature
-    this.refreshMcRecovery_()
-  }
+  @Prop mcDir: string = ''
+  /** JDK 行据此重新读取任务状态，切换按钮可用性。 */
+  @Prop taskRevision: number = 0
   @Prop currentMcVersion: string = ''
   @Prop versionIsolation: boolean = true
   // P0 修复 #4：传给 ModBrowsePage 用于版本存在性校验
@@ -127,6 +101,11 @@ export struct DownloadTab {
   @State filterOld: boolean = false
   @State filterAprilFools: boolean = false
   @State versionSearch: string = ''
+  /** 输入焦点期间保持全部筛选可见，不把键盘编辑当作列表浏览。 */
+  @State private versionSearchFocused_: boolean = false
+  /** 显式进入版本配置或JDK操作时复位旧展示方向，业务任务仍由原父回调管理。 */
+  @State private versionActionEpoch_: number = 0
+  @State private jdkActionEpoch_: number = 0
   private mcVersionService: McVersionService = new McVersionService()
 
   // 回调
@@ -153,21 +132,28 @@ export struct DownloadTab {
   onOpenDownloadTask: (id: string) => void = () => {}
   // v6.5：onModDownloadProgress / onModInstallStart 已下台，走 registry 是唯一路径。
 
+  /**
+   * 普通下载样式保持固定标题。横竖屏只增减侧栏和顶部导航，正文始终位于同一Column，
+   * 避免旋转销毁资源浏览器、查询和IME；资源胶囊也共用一个受控浏览器实例。
+   */
   build() {
-    if (this.isLandscape) {
-      this.LandscapeLayout()
-    } else {
-      this.PortraitLayout()
-    }
+    Row() {
+      if (this.isLandscape) this.DownloadSidebar_()
+      Column() {
+        if (!this.isLandscape) this.PortraitHeader_()
+        this.DlTabContent()
+      }.layoutWeight(1).height('100%').padding({ top: this.isLandscape ? this.topSafeHeight : 0 })
+    }.width('100%').height('100%')
   }
 
   /** 竖屏（原布局）：大标题 + 横向滚动 chips + 内容。 */
   @Builder
-  PortraitLayout() {
+  private PortraitHeader_() {
     Column() {
       // ============ 顶部 Page Header（"下载" 大标题） ============
       Row() {
         Text('下载')
+          .id('download-page-title')
           .fontSize(28)
           .fontWeight(700)
           .fontColor(this.theme.textPrimary)
@@ -188,18 +174,15 @@ export struct DownloadTab {
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
       .width('100%')
+      .id('download-category-strip')
 
-      // ============ Tab 内容区 ============
-      this.DlTabContent()
     }
     .width('100%')
-    .height('100%')
   }
 
   /** 横屏：左侧竖向侧边栏（标题 + 竖向页签 + 操作按钮），右侧内容占满剩余宽度。 */
   @Builder
-  LandscapeLayout() {
-    Row() {
+  private DownloadSidebar_() {
       // ---- 左侧侧边栏 ----
       Column() {
         Text('下载')
@@ -227,16 +210,6 @@ export struct DownloadTab {
       .padding({ left: 12, right: 8, top: this.topSafeHeight + 12, bottom: 0 })
       .alignItems(HorizontalAlign.Start)
 
-      // ---- 右侧内容区 ----
-      Column() {
-        this.DlTabContent()
-      }
-      .layoutWeight(1)
-      .height('100%')
-      .padding({ top: this.topSafeHeight })
-    }
-    .width('100%')
-    .height('100%')
   }
 
   /** Tab 内容区（竖/横屏共用）。 */
@@ -244,14 +217,9 @@ export struct DownloadTab {
   DlTabContent() {
     if (this.dlSubTab === 0) {
       this.DlVersionTab()
-    } else if (this.dlSubTab === 1) {
-      this.DlModBrowseTab(0)  // MOD
-    } else if (this.dlSubTab === 2) {
-      this.DlModBrowseTab(2)  // SHADER
-    } else if (this.dlSubTab === 3) {
-      this.DlModBrowseTab(1)  // RESOURCE_PACK
-    } else if (this.dlSubTab === 4) {
-      this.DlModBrowseTab(3)  // MODPACK 整合包
+    } else if (this.dlSubTab >= 1 && this.dlSubTab <= 4) {
+      // 同一个ArkUI分支承载四类资源，胶囊只改defaultKindIdx，不重建搜索和整个页面。
+      this.DlModBrowseTab()
     } else {
       this.DlJdkTab()
     }
@@ -275,7 +243,7 @@ export struct DownloadTab {
     .width('100%')
     .padding({ top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor(this.dlSubTab === tab.idx ? this.theme.primary : this.theme.bgCard)
+    .backgroundColor(this.dlSubTab === tab.idx ? this.theme.actionPrimary : this.theme.bgCard)
     .shadow(this.dlSubTab === tab.idx
       ? { radius: 0, color: Color.Transparent }
       : { radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
@@ -306,7 +274,7 @@ export struct DownloadTab {
     .height(40)
     .padding({ left: 16, right: 16 })
     .borderRadius(20)
-    .backgroundColor(this.dlSubTab === tab.idx ? this.theme.primary : this.theme.bgCard)
+    .backgroundColor(this.dlSubTab === tab.idx ? this.theme.actionPrimary : this.theme.bgCard)
     .shadow(this.dlSubTab === tab.idx
       ? { radius: 0, color: Color.Transparent }
       : { radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
@@ -336,10 +304,10 @@ export struct DownloadTab {
           .fontColor(this.theme.textSecondary)
           .textAlign(TextAlign.Center)
         Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.Construction, iconSize: 12, color: this.theme.warning })
+          AppIcon({ name: AppIconName.Construction, iconSize: 12, color: this.theme.warningText })
           Text(footerHint)
             .fontSize(11)
-            .fontColor(this.theme.warning)
+            .fontColor(this.theme.warningText)
             .fontWeight(500)
         }
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
@@ -356,24 +324,22 @@ export struct DownloadTab {
   }
 
   /**
-   * 模组浏览 Tab 内容区。`kindHint` 决定 ModBrowsePage 默认显示的资源类别：
-   *   0 = MOD（模组）/ 1 = RESOURCE_PACK / 2 = SHADER
-   *
-   * 注：当前 ModBrowsePage 内部仍保留自己的 KindCard 选择器，未做受控化改造。
-   *     R-1 阶段仅通过 `defaultKindIdx` 设置 aboutToAppear 时的初值。
+   * 四类资源共用同一正文位置。Prop直接读取父状态，由子组件Watch切换控制器；
+   * 不通过Builder的按值参数传递快照，避免同实例下类别迟迟不同步。
    */
   @Builder
-  DlModBrowseTab(kindHint: number) {
+  DlModBrowseTab() {
     Column() {
       ModBrowsePage({
         theme: this.theme,
+        hostVisible: this.hostVisible,
         mcDir: this.mcDir,
         currentMcVersion: this.currentMcVersion,
         versionIsolation: this.versionIsolation,
         availableVersions: this.availableVersions,
         modSource: this.modSource,
         cacheRemoteMeta: this.cacheRemoteMeta,
-        defaultKindIdx: kindHint,
+        defaultKindIdx: this.dlSubTab === 2 ? 2 : this.dlSubTab === 3 ? 1 : this.dlSubTab === 4 ? 3 : 0,
         topSafeHeight: this.topSafeHeight,
         bottomSafeHeight: this.bottomSafeHeight,
         onStatusMessage: this.onModStatusMessage,
@@ -384,33 +350,45 @@ export struct DownloadTab {
     .layoutWeight(1)
   }
 
+  /** 搜索固定，筛选可以随滚动退让，结果状态变化不重新挂载搜索输入。 */
   @Builder
   DlVersionTab() {
     Column() {
-      if (this.mcRecovery_.length > 0) {
-        Scroll() {
-          Column({ space: 6 }) {
-            Text('未完成的版本安装').fontSize(14).fontColor(this.theme.textSecondary)
-            ForEach(this.mcRecovery_, (session: McInstallSession) => {
-              Button('继续安装 ' + session.versionName)
-                .width('100%')
-                .onClick(() => { this.onRecoverMc(session); this.refreshMcRecovery_() })
-            }, (session: McInstallSession) => session.id)
-          }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 8 })
-        }.constraintSize({ maxHeight: 160 }).width('100%')
-      }
-      Row() {
-        TextInput({ placeholder: '搜索版本号...', text: this.versionSearch })
-          .height(40)
-          .fontSize(14)
-          .layoutWeight(1)
-          .backgroundColor(this.theme.bgCard)
-          .borderRadius(20)
-          .onChange((val: string) => { this.versionSearch = val })
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
+      // 与模组/光影等分类使用同一搜索组件；版本查询仍在本页即时筛选，不引入网络去抖。
+      DownloadSearchField({
+        theme: this.theme, text: this.versionSearch, placeholder: '搜索版本号...',
+        controlId: 'version-browser-search',
+        onTextChange: (value: string): void => { this.versionSearch = value },
+        onInputFocus: (): void => { this.versionSearchFocused_ = true },
+        onInputBlur: (): void => { this.versionSearchFocused_ = false },
+        onClear: (): void => { this.versionSearch = '' },
+      })
 
+      DownloadAuxiliaryList({
+        theme: this.theme, active: this.hostVisible && this.dlSubTab === 0,
+        resetKey: this.versionRetreatKey_(), blocked: this.versionSearchFocused_ || this.mcVersionsLoading,
+        firstEnabled: false, secondEnabled: true,
+        itemCount: this.getFilteredVersions().length,
+        hasResults: !this.mcVersionsLoading && !this.mcVersionsError && this.getFilteredVersions().length > 0,
+        bottomInset: this.dlContentBottomPad(),
+        // 箭头闭包固定父页this；直接传@Builder方法会在子组件中以子实例调用。
+        firstLayer: () => { this.EmptyAuxiliary_() }, secondLayer: () => { this.VersionFilters_() },
+        items: () => { this.VersionItems_() }, empty: () => { this.VersionEmpty_() },
+      }).layoutWeight(1)
+    }.width('100%').layoutWeight(1)
+    .onAppear(() => { if (this.mcVersionList.length === 0) this.loadVersionList() })
+  }
+
+  /** 版本结果或辅助层身份变化时清除旧方向预算；不持久化自动退让状态。 */
+  private versionRetreatKey_(): string {
+    return this.versionSearch + ':' + this.filterRelease + ':' + this.filterSnapshot + ':' + this.filterOld
+      + ':' + this.filterAprilFools + ':' + this.mcVersionList.length + ':' + this.mcVersionsLoading
+      + ':' + this.mcVersionsError + ':' + this.versionActionEpoch_
+  }
+
+  /** 原筛选状态仍由DownloadTab持有，逐层退让不改任何类别选择。 */
+  @Builder
+  private VersionFilters_() {
       // 筛选 chips —— 4 个版本类别，全部可单独 / 组合切换，至少保留一个
       // 视觉上沿用原有的圆角胶囊 + 选中态 primary 蓝底；间距 8 vp 与原版一致
       //
@@ -423,43 +401,57 @@ export struct DownloadTab {
         Text('正式版')
           .fontSize(12)
           .fontColor(this.filterRelease ? this.theme.textOnPrimary : this.theme.textSecondary)
-          .backgroundColor(this.filterRelease ? this.theme.primary : this.theme.bgCard)
+          .backgroundColor(this.filterRelease ? this.theme.actionPrimary : this.theme.bgCard)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
           .borderRadius(14)
           .onClick(() => { this.toggleFilter('release') })
         Text('快照')
           .fontSize(12)
           .fontColor(this.filterSnapshot ? this.theme.textOnPrimary : this.theme.textSecondary)
-          .backgroundColor(this.filterSnapshot ? this.theme.primary : this.theme.bgCard)
+          .backgroundColor(this.filterSnapshot ? this.theme.actionPrimary : this.theme.bgCard)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
           .borderRadius(14)
           .onClick(() => { this.toggleFilter('snapshot') })
         Text('远古版')
           .fontSize(12)
           .fontColor(this.filterOld ? this.theme.textOnPrimary : this.theme.textSecondary)
-          .backgroundColor(this.filterOld ? this.theme.primary : this.theme.bgCard)
+          .backgroundColor(this.filterOld ? this.theme.actionPrimary : this.theme.bgCard)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
           .borderRadius(14)
           .onClick(() => { this.toggleFilter('old') })
         Text('愚人节')
           .fontSize(12)
           .fontColor(this.filterAprilFools ? this.theme.textOnPrimary : this.theme.textSecondary)
-          .backgroundColor(this.filterAprilFools ? this.theme.primary : this.theme.bgCard)
+          .backgroundColor(this.filterAprilFools ? this.theme.actionPrimary : this.theme.bgCard)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
           .borderRadius(14)
           .onClick(() => { this.toggleFilter('aprilfools') })
         Blank()
         Text('刷新')
           .fontSize(12)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
           .onClick(() => { this.loadVersionList(true) })
       }
       .width('100%')
       .padding({ left: 16, right: 16, bottom: 8 })
 
+  }
+
+  /** 真实列表项保留版本身份key，首占位由唯一滚动宿主统一生成。 */
+  @Builder
+  private VersionItems_() {
+    ForEach(this.getFilteredVersions(), (ver: McVersion) => {
+      ListItem() { this.VersionItem(ver) }
+    }, (ver: McVersion): string => ver.id)
+  }
+
+  /** 网络、错误与空结果沿用原操作；没有真实内容时宿主禁止自动退让。 */
+  @Builder
+  private VersionEmpty_() {
+    Column() {
       if (this.mcVersionsLoading) {
         Column() {
-          LoadingProgress().width(40).height(40).color(this.theme.primary)
+          LoadingProgress().width(40).height(40).color(this.theme.actionText)
           Text('正在获取版本列表...')
             .fontSize(13)
             .fontColor(this.theme.textHint)
@@ -472,13 +464,13 @@ export struct DownloadTab {
         Column() {
           Text(this.mcVersionsError)
             .fontSize(14)
-            .fontColor(this.theme.error)
+            .fontColor(this.theme.errorText)
             .textAlign(TextAlign.Center)
           Button('重试')
             .type(ButtonType.Capsule)
             .height(36)
             .fontSize(14)
-            .backgroundColor(this.theme.primary)
+            .backgroundColor(this.theme.actionPrimary)
             .fontColor(this.theme.textOnPrimary)
             .margin({ top: 16 })
             .onClick(() => { this.loadVersionList(true) })
@@ -502,32 +494,8 @@ export struct DownloadTab {
           Text('可以清除搜索词，或切换上方的版本类别').fontSize(12).fontColor(this.theme.textHint)
           Button('清除搜索').height(44).onClick(() => { this.versionSearch = '' })
         }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
-      } else {
-        List({ space: 8 }) {
-          ForEach(this.getFilteredVersions(), (ver: McVersion) => {
-            ListItem() {
-              this.VersionItem(ver)
-            }
-          })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .padding({ left: 16, right: 16 })
-        // 避让属于滚动内容的末尾：到达底部时，最后一张版本卡停在导航栏上方，
-        // 不把这段余量固定裁进 List 视口；搜索过滤后的列表也沿用同一尾部约束。
-        .contentEndOffset(this.dlContentBottomPad())
       }
-    }
-    .width('100%')
-    // 版本区只占父 Column 扣除标题和分类栏后的剩余高度；若使用 100%，
-    // 子区会从标题下方再铺满整页，List 即使滚到底，末项仍可能落在屏幕外。
-    // 横屏父列同样提供确定高度，内部搜索、筛选与恢复提示继续先占位，列表使用余量。
-    .layoutWeight(1)
-    .onAppear(() => {
-      if (this.mcVersionList.length === 0) {
-        this.loadVersionList()
-      }
-    })
+    }.width('100%').height('100%')
   }
 
   @Builder
@@ -564,7 +532,7 @@ export struct DownloadTab {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(this.theme.cardRadius)
     .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-    .onClick(() => { this.onSelectGameVersion(ver.id, this.mcVersionToCategory(ver)) })
+    .onClick(() => { this.versionActionEpoch_++; this.onSelectGameVersion(ver.id, this.mcVersionToCategory(ver)) })
   }
 
   /**
@@ -611,10 +579,31 @@ export struct DownloadTab {
     this.filterAprilFools = a
   }
 
+  /** JDK目录信息成为辅助层，版本实体、导入和进度保留在可滚动正文。 */
   @Builder
   DlJdkTab() {
-    Scroll() {
-      Column({ space: 12 }) {
+    DownloadAuxiliaryList({
+      theme: this.theme, active: this.hostVisible && this.dlSubTab === 5,
+      resetKey: this.jdkRetreatKey_(),
+      blocked: this.jdkChecking || this.jdkImporting, firstEnabled: true, secondEnabled: false,
+      itemCount: this.jdkVersions.length + 1 + (this.jdkDownloadMsg ? 1 : 0), hasResults: true,
+      rowSpacing: 12, bottomInset: this.dlContentBottomPad(),
+      firstLayer: () => { this.JdkCatalog_() }, secondLayer: () => { this.EmptyAuxiliary_() },
+      items: () => { this.JdkItems_() }, empty: () => { this.EmptyAuxiliary_() },
+    }).layoutWeight(1)
+  }
+
+  /** 目录/版本身份和显式操作会重置展示；下载任务的普通进度帧不反复打断列表。 */
+  private jdkRetreatKey_(): string {
+    return this.jdkChannel + ':' + this.jdkCatalogStatus + ':' + this.jdkChecking + ':' + this.jdkActionEpoch_
+      + ':' + this.jdkVersions.map((info: JdkVersionInfo): string => info.version + ':' + info.installed
+        + ':' + info.stateText + ':' + info.available).join(',')
+  }
+
+  /** 目录异常依然完整展示通道、检查结果与重试动作；卡片的尾距属于该完整层。 */
+  @Builder
+  private JdkCatalog_() {
+    Column() {
         // 目录异常不能只留下导入卡片：始终显示当前通道、检查结果与可重复执行的刷新动作。
         Column({ space: 6 }) {
           Row({ space: 8 }) {
@@ -622,19 +611,40 @@ export struct DownloadTab {
               .fontSize(15).fontWeight(500).fontColor(this.theme.textPrimary).layoutWeight(1)
             Button(this.jdkChecking ? '检查中' : '刷新列表')
               .type(ButtonType.Capsule).height(32).fontSize(13)
-              .backgroundColor(this.jdkChecking ? this.theme.disabled : this.theme.primary)
+              .backgroundColor(this.jdkChecking ? this.theme.disabled : this.theme.actionPrimary)
               .fontColor(this.theme.textOnPrimary).enabled(!this.jdkChecking)
-              .onClick((): void => { this.onRefreshJdkCatalog() })
+              .onClick((): void => { this.jdkActionEpoch_++; this.onRefreshJdkCatalog() })
           }.width('100%')
           Text(this.jdkCatalogStatus.length > 0 ? this.jdkCatalogStatus : '可刷新目录以检查当前通道的 JDK。')
             .fontSize(12).fontColor(this.theme.textHint).width('100%')
           if (this.jdkVersions.length === 0 && !this.jdkChecking) {
             Text('暂未取得可展示的 JDK。请刷新列表，或检查下载源与网络设置。')
-              .fontSize(12).fontColor(this.theme.warning).width('100%')
+              .fontSize(12).fontColor(this.theme.warningText).width('100%')
           }
         }
         .width('100%').padding(16).backgroundColor(this.theme.bgCard).borderRadius(this.theme.cardRadius)
+    }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 12 })
+  }
+
+  /** 插槽占位不产生高度；JDK只有一个辅助层，不能虚构第二层端点。 */
+  @Builder
+  private EmptyAuxiliary_() { Column().height(0) }
+
+  /**
+   * Manager每次返回新的普通状态快照；ForEach若仅以主版本作键，会继续绑定旧对象，
+   * 导致安装、删除和切通道后仍显示旧身份。用小型JdkVersionInfo快照及在途状态区分行。
+   * taskRevision参数只建立任务变化的观察依赖，不进入键值；普通进度帧不会重建相同行，
+   * 只有任务开始/终结改变按钮可用性时重建，也不影响辅助层的滚动重置规则。
+   */
+  private jdkRowKey_(info: JdkVersionInfo, _taskRevision: number): string {
+    return JSON.stringify(info) + ':' + this.isJdkDownloading(info.version)
+  }
+
+  /** JDK行和本地导入各自成为真实ListItem，末尾避让随正文滚动。 */
+  @Builder
+  private JdkItems_() {
         ForEach(this.jdkVersions, (info: JdkVersionInfo) => {
+          ListItem() {
           Row() {
             Column() {
               Row() {
@@ -649,57 +659,63 @@ export struct DownloadTab {
                     .margin({ left: 6 })
                 }
               }
-              Text(info.installed
+              Text(info.repairRequired ? '需修复（原安装已保留）' : info.installed
                 ? '已安装'
                 : (info.available ? '需下载 ~' + info.sizeMB + ' MB' : '暂不可下载'))
                 .fontSize(13).fontWeight(400)
-                .fontColor(info.installed ? this.theme.success : this.theme.textHint)
+                .fontColor(info.repairRequired ? this.theme.warningText : info.installed ? this.theme.successText : this.theme.textHint)
                 .margin({ top: 4 })
               // 状态说明行：把「装的是什么 → 期望什么」说出来。
               // 旧行为把"过期"显示成"未安装"，用户和我们都不知道真实原因（方案里的 J-b）。
               if (info.stateText.length > 0) {
                 Text(info.stateText)
                   .fontSize(12).fontWeight(400)
-                  .fontColor(info.updateAvailable ? this.theme.warning : this.theme.textHint)
+                  .fontColor(info.updateAvailable ? this.theme.warningText : this.theme.textHint)
                   .margin({ top: 2 })
               }
             }
             .alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-            if (info.installed) {
-              // 有新版时「更新」排在「删除」前面：删除是破坏性动作，不该抢主位
-              if (info.updateAvailable || (info.userImported && info.available)) {
-                // 用户导入永不自动更新；这个明确动作才允许用已校验官方包替换导入项。
-                Button(this.isJdkDownloading(info.version) ? '更新中' : (info.userImported ? '改用官方' : (info.rollback ? '回退修复' : '更新')))
+            if (info.installed || info.repairRequired) {
+              // 已装官方包也提供真实重新下载安装入口；不用先删仍可用的runtime才能修复
+              // 下载/安装。复用onJdkUpdate的forceReinstall，唯一staging及完整校验成功后
+              // 才发布，新任务失败/取消沿既有事务保留旧安装。没有可下载推荐时不展示。
+              // 原有“先升级AMCL宿主”的更新入口仍由updateAvailable保留；新增重装只
+              // 对当前有可下载推荐的槽生效，不能使旧宿主看不到原先可见的升级提示。
+              if (info.updateAvailable || info.available) {
+                // 用户导入永不自动替换；只有“改用官方”这个明确点击进入相同安全事务。
+                Button(this.isJdkDownloading(info.version) ? '下载中' : (info.userImported ? '改用官方' : (info.repairRequired ? '修复' : (info.rollback ? '回退修复' : (info.updateAvailable ? '更新' : '重新安装')))))
                   .type(ButtonType.Capsule).height(32).fontSize(13)
-                  .backgroundColor(this.isJdkDownloading(info.version) ? this.theme.disabled : this.theme.primary)
+                  .backgroundColor(this.isJdkDownloading(info.version) ? this.theme.disabled : this.theme.actionPrimary)
                   .fontColor(this.theme.textOnPrimary)
                   .enabled(!this.isJdkDownloading(info.version))
                   .margin({ right: 8 })
-                  .onClick(() => { this.onJdkUpdate(info.version) })
+                  .onClick(() => { this.jdkActionEpoch_++; this.onJdkUpdate(info.version) })
               }
               Button('删除')
                 .type(ButtonType.Capsule).height(32).fontSize(13)
                 .backgroundColor(this.theme.error).fontColor(this.theme.textOnPrimary)
-                .onClick(() => { this.onJdkDelete(info.version) })
+                .onClick(() => { this.jdkActionEpoch_++; this.onJdkDelete(info.version) })
             } else if (info.available) {
               // B-1 修复（2026-05-26）：每个版本独立判断，下载 17 时 21 按钮仍可点
               Button(this.isJdkDownloading(info.version) ? '下载中' : '下载')
                 .type(ButtonType.Capsule).height(32).fontSize(13)
-                .backgroundColor(this.isJdkDownloading(info.version) ? this.theme.disabled : this.theme.primary)
+                .backgroundColor(this.isJdkDownloading(info.version) ? this.theme.disabled : this.theme.actionPrimary)
                 .fontColor(this.theme.textOnPrimary)
                 .enabled(!this.isJdkDownloading(info.version))
-                .onClick(() => { this.onJdkDownload(info.version) })
+                .onClick(() => { this.jdkActionEpoch_++; this.onJdkDownload(info.version) })
             }
           }
           .width('100%').padding(16)
           .backgroundColor(this.theme.bgCard)
           .borderRadius(this.theme.cardRadius)
           .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-        })
+          }
+        }, (info: JdkVersionInfo): string => this.jdkRowKey_(info, this.taskRevision))
 
         // 本地导入入口。放在列表下方而不是每行一个按钮：导入要先选"装到哪个槽位"，
         // 那是一次带选择的操作，不适合塞进行内。
+        ListItem() {
         Column({ space: 6 }) {
           Row() {
             Column() {
@@ -714,7 +730,7 @@ export struct DownloadTab {
               .backgroundColor(this.jdkImporting ? this.theme.disabled : this.theme.bgInput)
               .fontColor(this.theme.textPrimary)
               .enabled(!this.jdkImporting)
-              .onClick(() => { this.onJdkImport() })
+              .onClick(() => { this.jdkActionEpoch_++; this.onJdkImport() })
           }
           .width('100%')
           // ⚠️ 这句必须留着：导入不校验 SHA-256（没有期望值可比），
@@ -726,35 +742,27 @@ export struct DownloadTab {
         .backgroundColor(this.theme.bgCard)
         .borderRadius(this.theme.cardRadius)
         .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
+        }
 
         if (this.jdkDownloadMsg) {
+          ListItem() {
           Column() {
             if (this.jdkDownloadPercent > 0) {
               Stack({ alignContent: Alignment.Start }) {
                 Row().width('100%').height(4).backgroundColor(this.theme.bgInput).borderRadius(2)
                 Row().width(this.jdkDownloadPercent + '%').height(4)
-                  .backgroundColor(this.jdkDownloadPercent >= 100 ? this.theme.success : this.theme.primary)
+                  .backgroundColor(this.jdkDownloadPercent >= 100 ? this.theme.success : this.theme.actionPrimary)
                   .borderRadius(2)
               }
               .width('100%').height(4).margin({ bottom: 8 })
             }
             Text(this.jdkDownloadMsg)
-              .fontSize(13).fontColor(this.theme.warning).maxLines(2)
+              .fontSize(13).fontColor(this.theme.warningText).maxLines(2)
           }
           .width('100%').padding(16)
           .backgroundColor(this.theme.bgCard).borderRadius(this.theme.cardRadius)
+          }
         }
-      }
-      .width('100%')
-      // 2026-05-24：原纸值 68 → FloatingDock 预留
-      .padding({ left: 16, right: 16, top: 4, bottom: this.dlContentBottomPad() })
-    }
-    .width('100%')
-    // Scroll 默认将子内容居中；目录较短时必须显式贴顶，避免分类栏下方出现空白。
-    // 底部避让保留在内部 Column，随内容滚动，不改变首张 JDK 卡片的起始位置。
-    .align(Alignment.TopStart)
-    // 视口只使用标题和分类栏下方的余量，横屏也由右侧父列提供确定高度。
-    .layoutWeight(1)
   }
 
   // 内部方法
@@ -831,7 +839,6 @@ export struct DownloadTab {
    * 版本子页（0）按需触发一次版本列表加载。命令为 -1（初始）时不动内部 tab。
    */
   onNavCommand(): void {
-    this.refreshMcRecovery_()
     if (this.navCommand < 0) return
     let sub = this.navCommand % 10
     if (sub < 0 || sub > 5) return

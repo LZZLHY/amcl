@@ -253,6 +253,7 @@ public:
                 else if (request.find(" /forbidden ") != std::string::npos) status = 403;
                 else if (request.find(" /server ") != std::string::npos) status = 500;
                 else if (request.find(" /rate ") != std::string::npos) status = 503;
+                else if (request.find(" /rate429 ") != std::string::npos) status = 429;
                 else if (request.find(" /first ") != std::string::npos) ++first_requests;
                 else if (request.find(" /last ") != std::string::npos) ++last_requests;
                 const size_t body_size = status == 200 ? payload.size() : 0;
@@ -260,7 +261,7 @@ public:
                 const std::string declared_size = oversized_head ? "9223372036854775807" : std::to_string(body_size);
                 std::string response = "HTTP/1.1 " + std::to_string(status) + " Fixture\r\nContent-Length: " +
                     declared_size + "\r\nConnection: close\r\n";
-                if (status == 503) response += "Retry-After: 120\r\n";
+                if (status == 503 || status == 429) response += "Retry-After: 120\r\n";
                 response += "\r\n";
                 if (status == 200 && !head) response += payload;
                 // send 允许部分写入；必须完整送出成功正文，防止夹具本身制造 SizeMismatch。
@@ -754,13 +755,16 @@ static void statusThenSuccess(download::DownloadEngine& engine, const fs::path& 
     std::cout << "PASS HTTP " << endpoint << " fallback preserves IPv4 bytes=" << size << std::endl;
 }
 
-/** 真实授权 503 保留续领分类、来源、120 秒 Retry-After，不误报无源或连接故障。 */
-static void authorizedRateLimit(download::DownloadEngine& engine, const fs::path& root, size_t size) {
+/** 真实授权429/503保留续领分类、来源与120秒Retry-After；独立host避免跨用例冷却。 */
+static void authorizedRateLimit(download::DownloadEngine& engine, const fs::path& root, size_t size, int status = 503) {
     // 主机级 Retry-After 会影响后续任务；用各自回环 IP 隔离，不修改生产冷却状态。
-    StatusHttpFixture server(size, size < 1024 * 1024 ? "127.0.0.2" : "127.0.0.3");
-    auto cfg = config("authorized Retry-After", root, root / ("authorized-503-" + std::to_string(size)));
+    assert(status == 429 || status == 503);
+    StatusHttpFixture server(size, status == 429 ? (size < 1024 * 1024 ? "127.0.0.18" : "127.0.0.19") :
+                                                 (size < 1024 * 1024 ? "127.0.0.2" : "127.0.0.3"));
+    const std::string endpoint = status == 429 ? "/rate429" : "/rate";
+    auto cfg = config("authorized Retry-After", root, root / ("authorized-" + std::to_string(status) + "-" + std::to_string(size)));
     auto& file = cfg.files[0];
-    file.urls = {server.url("/rate")};
+    file.urls = {server.url(endpoint)};
     file.check.expected_size = size;
     file.max_connections = 1;
     file.bearer_token = "fixture-only-token";
@@ -774,10 +778,10 @@ static void authorizedRateLimit(download::DownloadEngine& engine, const fs::path
     waitForSettled(task);
     auto error = task->error();
     assert(task->state() == download::LoadState::Failed && error && error->needs_new_lease);
-    assert(error->kind == download::ErrorKind::AuthorizationRenewalRequired && error->http_status == 503);
-    assert(error->url_context == server.url("/rate") && error->retry_after_ms == 120000);
+    assert(error->kind == download::ErrorKind::AuthorizationRenewalRequired && error->http_status == status);
+    assert(error->url_context == server.url(endpoint) && error->retry_after_ms == 120000);
     assert(error->request_started && error->http_attempts == 1);
-    std::cout << "PASS authorization 503 preserves Retry-After bytes=" << size << std::endl;
+    std::cout << "PASS authorization " << status << " preserves Retry-After bytes=" << size << std::endl;
 }
 
 /**
@@ -1019,12 +1023,27 @@ static void terminationErrorCopy() {
 #include "source_contribution_cases.h"
 #include "unknown_size_cases.h"
 #include "metadata_fallback_cases.h"
+#include "relay_cases.h"
+#include "metadata_relay_cases.h"
+#include "transfer_probe_cases.h"
+#include "callback_rebalance_cases.h"
+#include "redirect_url_cases.h"
+#include "cold_source_race_cases.h"
+#include "cold_source_yield_cases.h"
 
 int main(int argc, char** argv) {
     // 定向入口运行同一生产核心和正式用例，便于小修验证；默认仍运行完整既有回归。
     const bool unknown_size_only = argc == 3 && std::string(argv[2]) == "--unknown-size-only";
     const bool metadata_only = argc == 3 && std::string(argv[2]) == "--metadata-only";
-    assert(argc == 2 || unknown_size_only || metadata_only);
+    const bool relay_only = argc == 3 && std::string(argv[2]) == "--relay-only";
+    const bool redirect_url_only = argc == 3 && std::string(argv[2]) == "--redirect-url-only";
+    const bool transport_only = argc == 3 && std::string(argv[2]) == "--transport-only";
+    const bool callback_rebalance_only = argc == 3 && std::string(argv[2]) == "--callback-rebalance-only";
+    const bool transfer_probe_only = argc == 3 && std::string(argv[2]) == "--transfer-probe-only";
+    const bool cold_source_race_only = argc == 3 && std::string(argv[2]) == "--cold-source-race-only";
+    const bool cold_source_yield_only = argc == 3 && std::string(argv[2]) == "--cold-source-yield-only";
+    const bool cold_source_reverse_only = argc == 3 && std::string(argv[2]) == "--cold-source-reverse-only";
+    assert(argc == 2 || unknown_size_only || metadata_only || relay_only || redirect_url_only || transport_only || callback_rebalance_only || transfer_probe_only || cold_source_race_only || cold_source_yield_only || cold_source_reverse_only);
     fs::path parent = fs::absolute(argv[1]).lexically_normal();
     assert(parent != parent.root_path());
     fs::path root = parent / ("native-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
@@ -1048,8 +1067,62 @@ int main(int argc, char** argv) {
     assert(::close(checked_fd) == 0);
     std::cout << "PASS checker borrows fd without changing offset" << std::endl;
     auto& engine = download::DownloadEngine::instance();
+    if (cold_source_yield_only || cold_source_reverse_only) {
+        cold_source_yield_cases::run(engine, root, cold_source_reverse_only ? 1 : -1);
+        engine.shutdown(); fs::remove_all(root); // socket与owner均已收敛，仅回收本轮成功fixture。
+        return 0;
+    }
+    if (cold_source_race_only) {
+        runColdSourceRaceCases(engine, root);
+        engine.shutdown(); fs::remove_all(root); // 所有HTTP/owner已退出后，仅回收本轮成功夹具。
+        return 0;
+    }
+    if (transfer_probe_only) {
+        runTransferProbeCases(engine, root); transfer_probe_cases::shutdown(engine);
+        engine.shutdown(); fs::remove_all(root); // 子进程/socket/curl全部收敛后，仅回收本轮成功夹具。
+        return 0;
+    }
+    if (callback_rebalance_only) {
+        runCallbackRebalanceCases(engine, root);
+        engine.shutdown();
+        fs::remove_all(root); // 真实HTTP和owner全部收敛后仅回收本轮成功夹具；失败保现场。
+        return 0;
+    }
+    if (transport_only) {
+        // 只选择既有真实网络/文件用例，保留全部原断言；full仍独立验证持目录FD改名等
+        // 平台文件系统契约。此入口可在Drvfs上检验正文、错误、Range、取消及资源收敛。
+        for (size_t size : {size_t(4096), size_t(3 * 1024 * 1024)}) {
+            missingSources(engine, root, size);
+            statusThenSuccess(engine, root, size, "/forbidden");
+            statusThenSuccess(engine, root, size, "/server");
+            authorizedRateLimit(engine, root, size);
+            authorizedRateLimit(engine, root, size, 429);
+        }
+        verifiedExistingArtifact(engine, root);
+        verifiedExistingArtifact(engine, root, true);
+        runTransportPolicyCases(engine, root);
+        runUnknownSizeCases(engine, root);
+        cancelDuringHttpCooldown(engine, root);
+        idleDownloadThreads("after transport-only real HTTP and cancellation");
+        shutdownDuringHttpCooldown(engine, root);
+        fs::remove_all(root); // 所有子线程/owner已真实退出后回收本轮成功夹具。
+        return 0;
+    }
+    if (redirect_url_only) {
+        runRedirectUrlCases(engine, root);
+        engine.shutdown();
+        fs::remove_all(root); // 成功后只回收本轮新建夹具；失败保留文件和断点现场。
+        return 0;
+    }
+    if (relay_only) {
+        runRelayCases(engine, root);
+        engine.shutdown();
+        fs::remove_all(root); // 只回收本轮成功创建的夹具；断言失败保留现场。
+        return 0;
+    }
     if (metadata_only) {
         runMetadataFallbackCases(engine);
+        runMetadataRelayCases(engine);
         engine.shutdown();
         return 0;
     }
@@ -1125,6 +1198,13 @@ int main(int argc, char** argv) {
     runSourceContributionCases(engine, root);
     runUnknownSizeCases(engine, root);
     runMetadataFallbackCases(engine);
+    runMetadataRelayCases(engine);
+    runTransferProbeCases(engine, root);
+    runColdSourceRaceCases(engine, root);
+    cold_source_yield_cases::run(engine, root);
+    runRelayCases(engine, root);
+    runCallbackRebalanceCases(engine, root);
+    runRedirectUrlCases(engine, root);
     cancelDuringHttpCooldown(engine, root);
     idleDownloadThreads("after real HTTP success failure and cancellation");
     shutdownDuringHttpCooldown(engine, root);

@@ -91,6 +91,17 @@ const { verifyLwjglRuntimeSlot: verifySelected, verifyLwjglRuntimeSlotSync: veri
 const verifyLwjglRuntimeSlot = directory => verifySelected(directory, featureFor(directory));
 const verifyLwjglRuntimeSlotSync = (directory, marker = true) => verifySelectedSync(directory, marker, featureFor(directory));
 const { RuntimeDeployer } = load('launch/src/main/ets/RuntimeDeployer.ets');
+// 首页部署也经过进程装配的JDK存储端口；本套件仅观察字体准备调用，实际POSIX实现另验。
+const fontPreparations = [];
+load('launch/src/main/ets/JdkInstallStorage.ets').setJdkInstallNativeOps({
+  operation(action, filesDir, major, target, writerFd, useFd) {
+    assert.equal(action, 'fonts'); assert.equal(filesDir, context.filesDir);
+    assert.deepEqual([major, target, writerFd, useFd], ['', '', -1, -1]);
+    fontPreparations.push(filesDir); return '';
+  },
+  extract() { throw new Error('LWJGL部署不能进入JDK解压'); },
+  seal() { throw new Error('LWJGL部署不能封存JDK'); },
+});
 const { lwjglGenerationDirectory, setRuntimeSlotNativeOps } = load('launch/src/main/ets/RuntimeSlotGenerations.ets');
 const slotDir = name => lwjglGenerationDirectory(mcDir, name, featureFor(name));
 let stageSequence = 0;
@@ -269,6 +280,7 @@ try {
   fs.mkdirSync(context.filesDir, { recursive: true });
   badResource = selectSlot('lwjgl-ohos', 17).jars.find(jar => jar.name === 'lwjgl.jar').resourcePath;
   deployer.deployAll(mcDir);
+  assert.deepEqual(fontPreparations, [context.filesDir]);
   badResource = '';
   check(await verifyLwjglRuntimeSlot(slotDir('lwjgl-ohos')), false, '发布失败保留原损坏代，不伪装成功');
   assert.ok(errors.some((entry) => entry.join(' ').includes('lwjgl-ohos')));

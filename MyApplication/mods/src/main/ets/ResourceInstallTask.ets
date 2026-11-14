@@ -85,6 +85,9 @@ export class ResourceInstallTask implements UnifiedDownloadAdapter, ResourceFile
     let versionTag = '@dir=' + resourceKindToInstallDir(init.request.kind, init.request.mcDir, init.request.versionId, init.request.versionIsolation);
     this.view.id = cat + ':' + init.projectTitle + '@' + init.request.primary.filename + versionTag;
     this.view.category = cat;
+    // 所有资源类型共用执行owner；保留真实目标输入，避免按task标题重新猜实例。
+    this.view.activityMcDir = init.request.mcDir;
+    this.view.activityGameVersion = init.request.versionId;
     this.view.title = init.projectTitle;
     if (init.iconUrl !== undefined && init.iconUrl.length > 0) {
       this.view.iconUrl = init.iconUrl;

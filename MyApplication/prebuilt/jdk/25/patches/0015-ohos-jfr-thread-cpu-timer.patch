@@ -1,0 +1,91 @@
+--- a/src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp
++++ b/src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp
+@@ -43,6 +43,9 @@
+ #include "utilities/ticks.hpp"
+ 
+ #include "signals_posix.hpp"
++#if defined(__OHOS__)
++#include "cpu_time_timer_ohos.hpp"
++#endif
+ 
+ static const int64_t RECOMPUTE_INTERVAL_MS = 100;
+ 
+@@ -314,7 +317,9 @@
+   if (create_timer_for_thread(thread, timerid)) {
+     tl->set_cpu_timer(&timerid);
+   } else {
+-    if (!Atomic::or_then_fetch(&_warned_about_timer_creation_failure, true)) {
++    // cmpxchg 返回旧值，只有首次失败输出告警；or_then_fetch 返回新 true，
++    // 会让原先的条件永远为假，不能用“没有告警”推定计时器正常。
++    if (!Atomic::cmpxchg(&_warned_about_timer_creation_failure, false, true)) {
+       log_warning(jfr)("Failed to create timer for a thread");
+     }
+     tl->deallocate_cpu_time_jfr_queue();
+@@ -655,7 +660,7 @@
+ 
+ static const int SIG = SIGPROF;
+ 
+-static void set_timer_time(timer_t timerid, int64_t period_nanos) {
++static bool set_timer_time(timer_t timerid, int64_t period_nanos) {
+   struct itimerspec its;
+   if (period_nanos == 0) {
+     its.it_interval.tv_sec = 0;
+@@ -667,11 +672,20 @@
+   its.it_value = its.it_interval;
+   if (timer_settime(timerid, 0, &its, nullptr) == -1) {
+     warning("Failed to set timer for thread sampling: %s", os::strerror(os::get_last_error()));
+-  }
++    return false;
++  }
++  return true;
+ }
+ 
+ bool JfrCPUSamplerThread::create_timer_for_thread(JavaThread* thread, timer_t& timerid) {
+-  struct sigevent sev;
++#if defined(__OHOS__)
++  // 旧 SDK 缺声明不等于系统缺能力；公开 timer API 的失败保留真实 errno。
++  if (amcl_ohos::create_thread_cpu_timer(thread->osthread()->pthread_id(),
++          thread->osthread()->thread_id(), SIG, &timerid) != 0) {
++    return false;
++  }
++#else
++  struct sigevent sev{};
+   sev.sigev_notify = SIGEV_THREAD_ID;
+   sev.sigev_signo = SIG;
+   sev.sigev_value.sival_ptr = nullptr;
+@@ -685,9 +699,12 @@
+   if (timer_create(clock, &sev, &timerid) < 0) {
+     return false;
+   }
++#endif
+   int64_t period = get_sampling_period();
+-  if (period != 0) {
+-    set_timer_time(timerid, period);
++  if (period != 0 && !set_timer_time(timerid, period)) {
++    // arm 失败不能登记一个永远不采样的“成功” timer，也不能泄漏内核对象。
++    timer_delete(timerid);
++    return false;
+   }
+   return true;
+ }
+@@ -739,6 +756,20 @@
+ };
+ 
+ bool JfrCPUSamplerThread::init_timers() {
++#if defined(__OHOS__)
++  // 在占用 SIGPROF 和建立 JavaThread 队列之前试建未启动的同类 timer。
++  // 平台不支持时明确失败，保持原信号所有者不变；不影响其他 JFR 事件。
++  timer_t probe;
++  if (amcl_ohos::create_thread_cpu_timer(pthread_self(),
++          (pid_t)os::current_thread_id(), SIG, &probe) != 0) {
++    log_warning(jfr)("Thread CPU timer unavailable: %s", os::strerror(os::get_last_error()));
++    return false;
++  }
++  if (timer_delete(probe) != 0) {
++    log_warning(jfr)("Thread CPU timer probe cleanup failed: %s", os::strerror(os::get_last_error()));
++    return false;
++  }
++#endif
+   // install sig handler for sig
+   void* prev_handler = PosixSignals::get_signal_handler_for_signal(SIG);
+   if ((prev_handler != SIG_DFL && prev_handler != SIG_IGN && prev_handler != (void*)::handle_timer_signal) ||

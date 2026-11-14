@@ -1,5 +1,6 @@
 import { hapTasks, OhosPluginId } from '@ohos/hvigor-ohos-plugin';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
 /**
@@ -22,6 +23,45 @@ function activeTargetName(): string {
 }
 const TARGET = activeTargetName();
 let BUILD_MODE = process.argv.find(arg => arg.startsWith('buildMode='))?.slice('buildMode='.length) ?? 'debug';
+
+/** 原生制品必须先于PreBuild和ProcessLibs的输入快照；不能只挂在并行的资源编译链上。 */
+function stageSherpaRuntimePlugin() {
+  return {
+    pluginId: 'stageSherpaRuntime',
+    apply(node: any) {
+      node.registerTask({
+        name: 'stageSherpaRuntime',
+        run: () => {
+          const projectRoot = resolve(__dirname, '..');
+          execFileSync(process.execPath, [resolve(projectRoot, 'scripts/stage-sherpa-runtime.mjs')],
+            { cwd: projectRoot, stdio: 'inherit' });
+          // 这两份JNI也必须先于原生输入快照，避免首次构建在资源任务中途才出现新库。
+          execFileSync(process.execPath, [resolve(projectRoot, 'scripts/stage-zstd-runtime.mjs')],
+            { cwd: projectRoot, stdio: 'inherit' });
+        },
+        postDependencies: [`${TARGET}@PreBuild`],
+      });
+    },
+  };
+}
+
+/**
+ * Agent同时生成entry资源和launch HAR中的pin。必须在全工程配置阶段生成，不能仅依赖
+ * entry PreBuild任务：launch是独立HAR，其CompileArkTS不等待entry任务链。
+ */
+function prepareAudioServiceAgentPlugin() {
+  return {
+    pluginId: 'prepareAudioServiceAgent',
+    apply(node: any) {
+      // SDK先完成所有node配置/回调，再创建并执行任务；与现有HDC配方使用同一已验证时序。
+      node.afterNodeEvaluate(() => {
+        const projectRoot = resolve(__dirname, '..');
+        execFileSync(process.env.AMCL_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
+          [resolve(projectRoot, 'scripts/build-audio-service-agent.py')], { cwd: projectRoot, stdio: 'inherit' });
+      });
+    },
+  };
+}
 
 /** Full native argument replacement: product identity is never inferred from Debug. */
 function diagnosticProfilePlugin() {
@@ -46,14 +86,21 @@ function diagnosticProfilePlugin() {
         // 自更新按产品渠道选择，不能从debug/release推断；store不编译或链接HDC核心。
         const sideload = TARGET !== 'store';
         native.arguments += ' -DAMCL_ENABLE_SIDELOAD_UPDATE=' + (sideload ? 'ON' : 'OFF');
+        // 同一 daemon 重评配置时只保留本轮摘要；store 不携带非 store 的旧输入身份。
+        native.arguments = native.arguments.replace(/(?:^|\s)-DAMCL_HDC_CORE_ARCHIVE_PATH_SHA256(?::STRING)?=\S+/g, '');
         if (sideload) {
           const output = execFileSync(process.execPath, [resolve(projectRoot, 'scripts/build-hdc-core.mjs')],
             { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
           const archive = output.split(/\r?\n/).pop();
           if (!archive) throw new Error('HDC archive path unavailable');
-          // Hvigor会把arguments中的引号原样带入CMake缓存；路径通过子进程环境传递，
-          // 既避免把引号当成文件名，也支持用户工作区路径含空格的情况。
-          process.env.AMCL_HDC_CORE_ARCHIVE = archive.replace(/\\/g, '/');
+          // 完整绝对路径仍经环境传递，避免 Hvigor 将空格路径的引号作为字面字符。
+          // 另将同一路径的 UTF-8 SHA-256 纳入显式 CMake 参数：目录迁移或切换构建槽
+          // 会改变 SDK 的配置快照，使其重新生成 Ninja，而相同路径继续复用增量缓存。
+          // CMake 会独立核对摘要，拒绝 worker 环境与本轮参数不一致时链接旧库。
+          const archivePath = resolve(archive).replace(/\\/g, '/');
+          process.env.AMCL_HDC_CORE_ARCHIVE = archivePath;
+          native.arguments += ' -DAMCL_HDC_CORE_ARCHIVE_PATH_SHA256=' +
+            createHash('sha256').update(archivePath, 'utf8').digest('hex');
         }
         // Every product carries the same graphics providers. Only retired
         // in-app Mesa/Zink assets are excluded from the complete artifact set.
@@ -277,6 +324,8 @@ function desktopManifestPlugin() {
 export default {
   system: hapTasks, /* Built-in plugin of Hvigor. It cannot be modified. */
   plugins: [
+    stageSherpaRuntimePlugin(),
+    prepareAudioServiceAgentPlugin(),
     diagnosticProfilePlugin(),
     desktopManifestPlugin(),
     prepareProductArtifactPlugin(),

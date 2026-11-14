@@ -309,10 +309,7 @@ const char* glfwGetKeyName(int key, int scancode) {
 }
 
 int glfwGetKeyScancode(int key) { return key; }
-GLFWcursor* glfwCreateStandardCursor(int shape) { return nullptr; }
-GLFWcursor* glfwCreateCursor(const GLFWimage* image, int xhot, int yhot) { return nullptr; }
-void glfwDestroyCursor(GLFWcursor* cursor) { }
-void glfwSetCursor(GLFWwindow* window, GLFWcursor* cursor) { }
+// 光标对象与窗口生命周期共用核心锁，实现在glfw_compat.cpp包含的glfw_cursor.inc。
 
 
 static bool desktopCommand(int kind, int a = 0, int b = 0, int c = 0, int d = 0, const char* text = nullptr) {

@@ -6,6 +6,8 @@
  */
 
 export * from './src/main/ets/Account';
+export * from './src/main/ets/AppearanceTypes';
+export * from './src/main/ets/AppearanceLibrary';
 export * from './src/main/ets/AccountManager';
 export * from './src/main/ets/AccountStorage';
 export * from './src/main/ets/CryptoProvider';

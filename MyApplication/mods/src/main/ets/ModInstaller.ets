@@ -129,7 +129,10 @@ export function buildDownloadSpec(file: RemoteFile, targetDir: string): Download
   //     路由，加连接只造成互抢；两种情形不矛盾，判据是当前是否已接近带宽上限。）
   //   16 亦是 kHighParallelMaxConnections 的硬上限，不会再往上扩。
   // 单连接 TCP 窗口由 SO_RCVBUF 放大 + 强制 HTTP/1.1 保证（net_thread sockoptEnlargeRcvbuf）。
-  if (urls.length > 1) {
+  // 官方仅源会去掉合成镜像，但不能顺带降低同一个官方文件既有的并发上限。
+  // 只放行原本会生成双源的精确 CDN 主机；作者自定义站点和 GitHub 的旧护栏保持。
+  const knownResourceCdn = /^https:\/\/(?:cdn\.modrinth\.com|edge\.forgecdn\.net|mediafilez\.forgecdn\.net)\//i.test(file.url);
+  if (urls.length > 1 || knownResourceCdn) {
     spec.maxConnections = 16;
   }
   if (file.sha1 !== undefined && file.sha1.length > 0) {

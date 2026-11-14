@@ -1,7 +1,7 @@
 """抽取实际mc_launcher输入prepare/publish正文并执行源码路径正反例。
 
 DDL/JNI输出版仅作边界计数；实际plan、SDL owner/cold检查、env槽和freeze规则都用正式头。
-缺契约不得publish/prepare consumer，非SDL不装库；不将此宿主证明扩大为游戏Ready。
+缺契约不得publish/prepare consumer；辅助SDL不更改GLFW/LWJGL2输入owner，不将冷制品证明扩大为游戏Ready。
 """
 from pathlib import Path
 import argparse
@@ -41,9 +41,9 @@ std::string g_mcStatus;
 LaunchPlan g_inputLaunchPlan;
 ProcessSdlInputLibraryClaim g_sdlInputLibraryClaim;
 bool g_inputLaunchLegacy=false;
-int published=0,configured=0;
+int published=0,configured=0;uint32_t configuredConsumer=0;
 int publishCallbackBridgeHostV1(uint64_t){++published;return 0;}
-extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t){++configured;return 1;}
+extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t consumer,uint64_t){++configured;configuredConsumer=consumer;return 1;}
 '''
 MAIN=r'''
 int main(int argc,char** argv){
@@ -53,11 +53,21 @@ int main(int argc,char** argv){
  if(mode=="unverified-publish"){
   g_inputLaunchPlan=sdl;
   CHECK(!phase_publishPlatformRuntime(42)&&published==0&&configured==0);
- }else if(mode=="non-sdl"){
-  LaunchPlan glfw{"v1","GLFW","LWJGL3","GLFW","libglfw.so","glfw-present-2"};
-  CHECK(phase_prepareInputArtifact(glfw,false,"/does-not-exist",args,props,error));
-  CHECK(g_inputLaunchPlan.abi=="GLFW"&&!g_sdlInputLibraryClaim.VerifiedForCurrentProcess(false));
+ }else if(mode=="glfw-auxiliary"||mode=="lwjgl2-auxiliary"){
+  const bool l2=mode=="lwjgl2-auxiliary";
+  LaunchPlan plan=l2?LaunchPlan{"v1","LWJGL2","LWJGL2","GLFW","liblwjgl_v2.so","l2-pull"}:
+    LaunchPlan{"v1","GLFW","LWJGL3","GLFW","libglfw.so","glfw-present-2"};
+  CHECK(phase_prepareInputArtifact(plan,false,directory,args,props,error));
+  CHECK(g_inputLaunchPlan.abi==plan.abi&&g_inputLaunchPlan.window=="GLFW");
+  CHECK(g_sdlInputLibraryClaim.VerifiedForCurrentProcess(true));
+  CHECK(amcl::envslot::ProcessRegistry().Register(amcl::envslot::kSdlHostRuntimeEnv,amcl::envslot::Kind::kText,127,"")>=0);
   CHECK(phase_publishPlatformRuntime(42)&&published==1&&configured==1);
+  CHECK(configuredConsumer==(l2?AMCL_MENU_CURSOR_BACKEND_LWJGL2:AMCL_MENU_CURSOR_BACKEND_GLFW));
+  CHECK(getenv(amcl::envslot::kSdlHostRuntimeEnv)&&*getenv(amcl::envslot::kSdlHostRuntimeEnv));
+ }else if(mode=="auxiliary-missing"||mode=="auxiliary-legacy-rejected"){
+  LaunchPlan glfw{"v1","GLFW","LWJGL3","GLFW","libglfw.so","glfw-present-2"};
+  CHECK(!phase_prepareInputArtifact(glfw,mode=="auxiliary-legacy-rejected",directory,args,props,error));
+  CHECK(!phase_publishPlatformRuntime(42)&&published==0&&configured==0);
  }else if(mode=="missing"||mode=="override"||mode=="dynapi"){
   if(mode=="override")args.push_back("-Dorg.lwjgl.sdl.libname=other.so");
   if(mode=="dynapi"){
@@ -112,16 +122,16 @@ endif()
     compile('production');binary=build/('build/Release/bootstrap.exe' if os.name=='nt' else 'build/bootstrap')
     facts=[]
     def check(mode,negative=False,label=None):
-        directory=build/('old' if mode in ('missing','legacy') else 'new')
+        directory=build/('old' if mode in ('missing','legacy','auxiliary-missing','auxiliary-legacy-rejected') else 'new')
         result=subprocess.run([str(binary),mode,str(directory)],capture_output=True,timeout=30)
         text=(result.stdout+result.stderr).decode('utf-8',errors='replace');print(text.strip(),flush=True)
         (run/((label or mode)+'.log')).write_text(text,encoding='utf-8')
         assert (result.returncode!=0 and 'SDL BOOTSTRAP' in text) if negative else result.returncode==0,mode
         facts.append({'mode':label or mode,'exit':result.returncode,'negative':negative})
-    for mode in ['missing','unverified-publish','non-sdl','override','dynapi','legacy','production']:check(mode)
+    for mode in ['missing','unverified-publish','glfw-auxiliary','lwjgl2-auxiliary','auxiliary-missing','auxiliary-legacy-rejected','override','dynapi','legacy','production']:check(mode)
     for name,before,after,mode in [
-        ('publish-suppresses-artifact-check','!g_sdlInputLibraryClaim.VerifiedForCurrentProcess(!g_inputLaunchLegacy)','false','unverified-publish'),
-        ('non-sdl-also-loads','if (plan.abi == "SDL3")','if (true)','non-sdl'),
+        ('publish-suppresses-artifact-check','!g_sdlInputLibraryClaim.VerifiedForCurrentProcess(!allowLegacySdl)','false','unverified-publish'),
+        ('auxiliary-accepts-legacy','const bool allowLegacySdl = sdlInput && legacy;','const bool allowLegacySdl = legacy;','auxiliary-legacy-rejected'),
         ('dynapi-not-rejected','!amcl::input::ValidateSelectedSdlEnvironment(std::getenv("SDL3_DYNAMIC_API"), error)','false','dynapi'),
     ]:
         assert production.count(before)==1,name

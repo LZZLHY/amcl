@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * VersionConfigPanel.ets — 版本下载详情面板（Phase R-3 重设计 2026-05-13）
  *
  * 设计稿：docs/design/download-page-redesign/06_version_download_sheet.png（Screen F）
@@ -46,6 +50,8 @@ import { getMetadataCacheStore } from 'feature_core';
 import { DownloadManager } from 'feature_core';
 import { RemoteVersion, RemoteFile, RemoteProject, pickPrimaryFile } from 'mods';
 import { pickBestVersion } from 'mods';
+import { resolveModrinthSourcePreference, getModrinthSourceMode } from 'mods';
+import { getRelayClient } from 'feature_core';
 import { formatBytes } from 'commons';
 
 const TAG = 'VersionConfigPanel';
@@ -68,6 +74,9 @@ function loaderInfoForChoice(idx: number): LoaderInfo {
 
 @Component
 export struct VersionConfigPanel {
+  /** Fabric API 根文件也遵守当前来源/缓存偏好，不能先映射成镜像再交给依赖安装器。 */
+  @Prop modSource: string = 'auto'
+  @Prop cacheRemoteMeta: boolean = true
   @Prop @Watch('refreshVulkanStatus') gameVersion: string = ''
   /**
    * 版本子类别（由父组件从 manifest type 判出后透传，限 vanilla 状态生效）。
@@ -347,7 +356,7 @@ export struct VersionConfigPanel {
           .alignItems(VerticalAlign.Center)
 
           Text('Mojang 官方')
-            .fontSize(10).fontWeight(700).fontColor(this.theme.primary)
+            .fontSize(10).fontWeight(700).fontColor(this.theme.actionText)
             .padding({ left: 8, right: 8, top: 3, bottom: 3 })
             .borderRadius(6)
             .backgroundColor(this.theme.primaryLight)
@@ -442,7 +451,7 @@ export struct VersionConfigPanel {
       Column({ space: 8 }) {
         Row({ space: 6 }) {
           Text('·')
-            .fontSize(14).fontWeight(700).fontColor(this.theme.primary)
+            .fontSize(14).fontWeight(700).fontColor(this.theme.actionText)
           Text('版本说明')
             .fontSize(14).fontWeight(700).fontColor(this.theme.textPrimary)
         }
@@ -470,11 +479,11 @@ export struct VersionConfigPanel {
         if (this.descShowToggle) {
           Row({ space: 4 }) {
             Text(this.descExpanded ? '收起' : '展开')
-              .fontSize(12).fontWeight(600).fontColor(this.theme.primary)
+              .fontSize(12).fontWeight(600).fontColor(this.theme.actionText)
             AppIcon({
               name: this.descExpanded ? AppIconName.ChevronUp : AppIconName.ChevronDown,
               iconSize: 12,
-              color: this.theme.primary,
+              color: this.theme.actionText,
             })
           }
           .alignItems(VerticalAlign.Center)
@@ -522,7 +531,7 @@ export struct VersionConfigPanel {
           name: this.vulkanHint!.available ? AppIconName.CheckCircle : AppIconName.Warning,
           iconSize: 14,
           color: this.vulkanHint?.status === VulkanFeasibilityState.UNKNOWN ? this.theme.textHint
-            : (this.vulkanHint!.available ? this.theme.success : this.theme.warning),
+            : (this.vulkanHint!.available ? this.theme.successText : this.theme.warningText),
         })
         Text('Vulkan 设备检查')
           .fontSize(14).fontWeight(700).fontColor(this.theme.textPrimary)
@@ -530,7 +539,7 @@ export struct VersionConfigPanel {
         Text(this.vulkanHint?.statusLabel ?? '')
           .fontSize(11).fontWeight(600)
           .fontColor(this.vulkanHint?.status === VulkanFeasibilityState.UNKNOWN ? this.theme.textHint
-            : (this.vulkanHint!.available ? this.theme.success : this.theme.warning))
+            : (this.vulkanHint!.available ? this.theme.successText : this.theme.warningText))
           .backgroundColor(this.vulkanHint?.status === VulkanFeasibilityState.UNKNOWN ? this.theme.bgCard
             : (this.vulkanHint!.available ? this.theme.successBg : this.theme.warningBg))
           .padding({ left: 8, right: 8, top: 2, bottom: 2 })
@@ -566,14 +575,14 @@ export struct VersionConfigPanel {
     Column({ space: 10 }) {
       Row({ space: 6 }) {
         Text('·')
-          .fontSize(14).fontWeight(700).fontColor(this.theme.primary)
+          .fontSize(14).fontWeight(700).fontColor(this.theme.actionText)
         Text('选择加载器')
           .fontSize(14).fontWeight(700).fontColor(this.theme.textPrimary)
         Column().layoutWeight(1)
         Text('了解区别 ›')
           .fontSize(11)
           .fontWeight(600)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
           .onClick(() => {
             // 2026-05-23 API NEXT 迁移：promptAction.showToast 弃用，改走 UIContext。
             // 详见 docs/guides/api-migration-2026-05.md。
@@ -599,7 +608,7 @@ export struct VersionConfigPanel {
             + this.loaderChoiceSlogan(this.loaderChoice))
             .fontSize(13)
             .fontWeight(700)
-            .fontColor(this.theme.primary)
+            .fontColor(this.theme.actionText)
           Text(loaderInfoForChoice(this.loaderChoice).description)
             .fontSize(11)
             .fontWeight(500)
@@ -620,17 +629,17 @@ export struct VersionConfigPanel {
       // 未支持提示（NeoForge / Quilt 选中时）
       if (this.loaderChoice > 0 && !this.isLoaderSupported(this.loaderChoice)) {
         Row({ space: 8 }) {
-          AppIcon({ name: AppIconName.Construction, iconSize: 13, color: this.theme.warning })
+          AppIcon({ name: AppIconName.Construction, iconSize: 13, color: this.theme.warningText })
           Text('该加载器暂未接入，请选择 Fabric 或 Forge')
             .fontSize(11)
             .fontWeight(500)
-            .fontColor(this.theme.warning)
+            .fontColor(this.theme.warningText)
             .layoutWeight(1)
         }
         .width('100%')
         .padding({ left: 10, right: 10, top: 8, bottom: 8 })
         .borderRadius(10)
-        .backgroundColor('#FEF3C7')
+        .backgroundColor(this.theme.warningBg)
         .alignItems(VerticalAlign.Center)
       }
     }
@@ -665,7 +674,7 @@ export struct VersionConfigPanel {
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .borderRadius(10)
-    .backgroundColor(this.loaderChoice === idx ? this.theme.primary : this.theme.bgInput)
+    .backgroundColor(this.loaderChoice === idx ? this.theme.actionPrimary : this.theme.bgInput)
     .opacity((loaderInfoForChoice(idx).supported && this.isLoaderJdkReady(idx)) ? 1.0 : 0.55)
     .onClick(() => {
       if (this.loaderChoice === idx) return
@@ -713,15 +722,15 @@ export struct VersionConfigPanel {
     Column({ space: 10 }) {
       Row({ space: 6 }) {
         Text('·')
-          .fontSize(14).fontWeight(700).fontColor(this.theme.primary)
+          .fontSize(14).fontWeight(700).fontColor(this.theme.actionText)
         Text(loaderInfoForChoice(this.loaderChoice).displayName + ' Loader 版本')
           .fontSize(14).fontWeight(700).fontColor(this.theme.textPrimary)
         Column().layoutWeight(1)
         if (this.loaderVersionsLoading) {
-          LoadingProgress().width(14).height(14).color(this.theme.primary)
+          LoadingProgress().width(14).height(14).color(this.theme.actionText)
         } else if (this.loaderVersions.length > 0) {
           Text('查看全部')
-            .fontSize(11).fontWeight(600).fontColor(this.theme.primary)
+            .fontSize(11).fontWeight(600).fontColor(this.theme.actionText)
         }
       }
       .width('100%')
@@ -739,7 +748,7 @@ export struct VersionConfigPanel {
       } else if (this.loaderVersionsError.length > 0) {
         Text('加载器版本获取失败：' + this.loaderVersionsError)
           .fontSize(12)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
       } else if (this.loaderVersions.length === 0) {
         Text('该 MC 版本暂无可用的 ' + loaderInfoForChoice(this.loaderChoice).displayName + ' 加载器版本')
           .fontSize(12)
@@ -755,11 +764,11 @@ export struct VersionConfigPanel {
         // 选中版本提示
         if (this.selectedLoaderVersion.length > 0) {
           Row({ space: 4 }) {
-            AppIcon({ name: AppIconName.Check, iconSize: 11, color: this.theme.success, weight: FontWeight.Bold })
+            AppIcon({ name: AppIconName.Check, iconSize: 11, color: this.theme.successText, weight: FontWeight.Bold })
             Text('推荐使用最新稳定版本')
               .fontSize(11)
               .fontWeight(500)
-              .fontColor(this.theme.success)
+              .fontColor(this.theme.successText)
           }
           .alignItems(VerticalAlign.Center)
         }
@@ -862,7 +871,7 @@ export struct VersionConfigPanel {
 
         // 右：Toggle / loading / 不可用 chip
         if (this.fabricApiLoading) {
-          LoadingProgress().width(22).height(22).color(this.theme.primary)
+          LoadingProgress().width(22).height(22).color(this.theme.actionText)
         } else if (this.fabricApiError.length > 0) {
           // 拉取失败：固定 disabled 视觉，不暴露 toggle 让用户切（因为没数据）
           Text('不可用')
@@ -872,7 +881,7 @@ export struct VersionConfigPanel {
             .backgroundColor(this.theme.bgInput)
         } else {
           Toggle({ type: ToggleType.Switch, isOn: this.withFabricApi })
-            .selectedColor(this.theme.primary)
+            .selectedColor(this.theme.actionText)
             .switchPointColor('#FFFFFF')
             .onChange((on: boolean) => { this.withFabricApi = on })
         }
@@ -895,13 +904,13 @@ export struct VersionConfigPanel {
         .fontSize(11).fontWeight(500).fontColor(this.theme.textHint)
     } else if (this.fabricApiError.length > 0) {
       Text(this.fabricApiError)
-        .fontSize(11).fontWeight(500).fontColor(this.theme.error)
+        .fontSize(11).fontWeight(500).fontColor(this.theme.errorText)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     } else if (this.fabricApiVersion !== null && this.fabricApiPrimary !== null) {
       Row({ space: 6 }) {
         Text(this.fabricApiVersion!.versionNumber)
-          .fontSize(11).fontWeight(600).fontColor(this.theme.primary)
+          .fontSize(11).fontWeight(600).fontColor(this.theme.actionText)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text('·')
@@ -918,7 +927,7 @@ export struct VersionConfigPanel {
     Column({ space: 6 }) {
       Row({ space: 6 }) {
         Text('·')
-          .fontSize(14).fontWeight(700).fontColor(this.theme.primary)
+          .fontSize(14).fontWeight(700).fontColor(this.theme.actionText)
         Text('版本名称')
           .fontSize(14).fontWeight(700).fontColor(this.theme.textPrimary)
       }
@@ -956,11 +965,11 @@ export struct VersionConfigPanel {
 
       if (this.nameError.length > 0) {
         Row({ space: 6 }) {
-          AppIcon({ name: AppIconName.Warning, iconSize: 12, color: this.theme.error })
+          AppIcon({ name: AppIconName.Warning, iconSize: 12, color: this.theme.errorText })
           Text(this.nameError)
             .fontSize(11)
             .fontWeight(500)
-            .fontColor(this.theme.error)
+            .fontColor(this.theme.errorText)
         }
         .alignItems(VerticalAlign.Center)
       }
@@ -980,26 +989,26 @@ export struct VersionConfigPanel {
           AppIcon({
             name: AppIconName.ArrowDown,
             iconSize: 14,
-            color: this.theme.textOnPrimary,
+            color: this.canStart() ? this.theme.textOnPrimary : this.theme.disabledText,
             weight: FontWeight.Bold,
           })
           Text(this.canStart() ? '开始下载' : this.disabledReason())
             .fontSize(14)
             .fontWeight(700)
-            .fontColor(this.theme.textOnPrimary)
+            .fontColor(this.canStart() ? this.theme.textOnPrimary : this.theme.disabledText)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
         .alignItems(VerticalAlign.Center)
         if (this.canStart()) {
           Text('预计 ~ 285 MB')
-            .fontSize(10).fontWeight(500).fontColor('#BFDBFE')
+            .fontSize(10).fontWeight(500).fontColor(this.theme.textOnPrimary)
         }
       }
       .layoutWeight(1)
       .padding({ left: 16, right: 16, top: this.canStart() ? 8 : 14, bottom: this.canStart() ? 8 : 14 })
       .borderRadius(14)
-      .backgroundColor(this.canStart() ? this.theme.primary : this.theme.disabled)
+      .backgroundColor(this.canStart() ? this.theme.actionPrimary : this.theme.disabledBg)
       .alignItems(HorizontalAlign.Center)
       .justifyContent(FlexAlign.Center)
       .onClick(() => { this.startDownload() })
@@ -1027,7 +1036,7 @@ export struct VersionConfigPanel {
           + '。当前没有可用 JDK，是否前往下载安装 JDK ' + requiredMajor + '？',
         buttons: [
           { text: '取消', color: this.theme.textSecondary as string },
-          { text: '去安装', color: this.theme.primary as string },
+          { text: '去安装', color: this.theme.actionText as string },
         ],
       }).then((r: promptAction.ShowDialogSuccessResponse) => {
         if (r.index === 1) this.onInstallJdk(requiredMajor)
@@ -1081,25 +1090,25 @@ export struct VersionConfigPanel {
     Row({ space: 8 }) {
       if (this.resolvedInstallerJdk(this.requiredJdkForLoader(this.loaderChoice)) > 0) {
         // 已有可用安装器 JDK：绿色提示 + 运行时 JDK 信息
-        AppIcon({ name: AppIconName.Check, iconSize: 13, color: this.theme.success, weight: FontWeight.Bold })
+        AppIcon({ name: AppIconName.Check, iconSize: 13, color: this.theme.successText, weight: FontWeight.Bold })
         Text('将用已安装的 JDK ' + this.resolvedInstallerJdk(this.requiredJdkForLoader(this.loaderChoice))
           + ' 安装；该版本运行需 JDK ' + this.runtimeJdkForLoader(this.loaderChoice) + '+（启动时自动匹配）')
           .fontSize(11)
           .fontWeight(500)
-          .fontColor(this.theme.success)
+          .fontColor(this.theme.successText)
           .layoutWeight(1)
       } else {
         // 无可用安装器 JDK：提示需安装所需纪元 JDK + 「去安装」
-        AppIcon({ name: AppIconName.Construction, iconSize: 13, color: this.theme.warning })
+        AppIcon({ name: AppIconName.Construction, iconSize: 13, color: this.theme.warningText })
         Text('安装需 JDK ' + this.requiredJdkForLoader(this.loaderChoice) + '，当前未安装')
           .fontSize(11)
           .fontWeight(500)
-          .fontColor(this.theme.warning)
+          .fontColor(this.theme.warningText)
           .layoutWeight(1)
         Text('去安装')
           .fontSize(11)
           .fontWeight(700)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
           .onClick(() => {
             this.onInstallJdk(this.requiredJdkForLoader(this.loaderChoice))
           })
@@ -1128,20 +1137,20 @@ export struct VersionConfigPanel {
   }
 
   private chipBgColor(ver: ModLoaderVersion): ResourceColor {
-    if (this.selectedLoaderVersion === ver.loaderVersion) return this.theme.primary
-    if (!ver.stable) return '#FEF3C7'
+    if (this.selectedLoaderVersion === ver.loaderVersion) return this.theme.actionPrimary
+    if (!ver.stable) return this.theme.warningBg
     return this.theme.bgInput
   }
 
   private chipTextColor(ver: ModLoaderVersion): ResourceColor {
     if (this.selectedLoaderVersion === ver.loaderVersion) return this.theme.textOnPrimary
-    if (!ver.stable) return '#D97706'
+    if (!ver.stable) return this.theme.warningText
     return this.theme.textSecondary
   }
 
   private chipBetaTextColor(ver: ModLoaderVersion): ResourceColor {
     if (this.selectedLoaderVersion === ver.loaderVersion) return this.theme.textOnPrimary
-    return '#D97706'
+    return this.theme.warningText
   }
 
   private getLoaderType(): ModLoaderType | null {
@@ -1277,7 +1286,7 @@ export struct VersionConfigPanel {
   private promptJitUnavailableForForge(): void {
     try {
       // 按真实 promptAction.Button 类型构造动作；商店只显示本地说明的确认按钮。
-      const buttons: promptAction.Button[] = [{ text: '我知道了', color: this.theme.primary as string }];
+      const buttons: promptAction.Button[] = [{ text: '我知道了', color: this.theme.actionText as string }];
       if (!DistributionPolicy.isStore()) buttons.unshift({ text: '如何解决', color: this.theme.textSecondary as string });
       this.getUIContext().getPromptAction().showDialog({
         title: '无法安装 Forge：JIT 不可用',
@@ -1339,9 +1348,9 @@ export struct VersionConfigPanel {
     let modrinth = new ModrinthRepository(
       dm,
       getMetadataCacheStore(),
-      () => ModrinthSourceMode.MCIM_FIRST,
+      () => resolveModrinthSourcePreference(this.modSource, getModrinthSourceMode(), getRelayClient().isEnabled()),
       'AMCL/1.0.0 (https://github.com/axecraft/amcl)',
-      () => true,
+      () => this.cacheRemoteMeta,
     )
     modrinth.getVersions('fabric-api', ['fabric'], [this.gameVersion])
       .then((versions: RemoteVersion[]) => {

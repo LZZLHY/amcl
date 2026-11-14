@@ -215,12 +215,17 @@ function productionMethods(relative,ownerName,names,dependencies={}) {
 }
 /** 原组件提取入口保持不变；Session与GameControls使用同一可编译的逐字方法装载器。 */
 function controlsMethods(names,dependencies={}) {
-  const helpers=['touchControlGroupIndex_','touchControlGroupEpoch_','touchGroupVisible_',
-    'confirmTouchGroupLayout_','displayedGroupControls_'];
+  // UI 层级必须读取生产 rank 投影，与 Native 命中保持同一排序，不能用常量替身补方法。
+  const helpers=['touchControlGroupIndex_','touchControlGroupEpoch_','touchGroupVisible_','touchGroupRank_',
+    'confirmTouchGroupLayout_','displayedGroupControls_','reportGroupApiFailure_'];
   if(names.includes('ControlView'))helpers.push('ControlContent');
   const groupCompiler=makePureEtsLoader({'gamecontrol':layouts})('entry/src/main/ets/components/TouchGroupSchemaCompiler.ets');
-  return productionMethods('entry/src/main/ets/components/GameControls.ets','GameControls',[...new Set([...names,...helpers])],
-    {Visibility:{Visible:0,Hidden:1},...groupCompiler,...dependencies});
+  const view=productionMethods('entry/src/main/ets/components/GameControls.ets','GameControls',[...new Set([...names,...helpers])],
+    {Visibility:{Visible:0,Hidden:1},AppLogger:{warn(){}},GAME_CONTROLS_TAG:'GameControls',LOG_DOMAIN_UI:0,
+      ...groupCompiler,...dependencies});
+  // 组件字段是平台 State 边界；使用当前生产空镜像初值，后续仍由真实同步方法写入回执。
+  Object.assign(view,{groupControlIndices:new Map(),groupControlMask:[],groupControlRanks:[],groupControlEpochs:[],groupRanks:new Map()});
+  return view;
 }
 /** 本组只创建真实绑定完成scope，不启用来源时钟或gyro；options原文作为受控文件读取结果。 */
 function bindingSession(f) {
@@ -448,6 +453,22 @@ function guiIntentCallbacks(subject,args,relative='GameControls.ets',ownerName='
 }
 /** 只替代 Native 回执/SDK测量边界，执行真实必要通知、镜像更新、节点确认与恢复方法。 */
 {
+  let failRead=true, failAck=true, warnings=0;
+  const napi={readTouchGroups:()=>{
+    if(failRead)throw Error('temporary read failure');
+    return {token:'current',revision:'7',enabled:true,pending:true,mask:[true],epochs:['4']};
+  },confirmTouchGroups:()=>{if(failAck)throw Error('temporary ack failure');return true;}};
+  const view=controlsMethods(['syncTouchGroups_'],{testNapi:napi,AppLogger:{warn(){warnings++;}}});
+  Object.assign(view,{mounted:true,groupSchema:{groups:[{}],controls:[]},uiPublicationToken:'current',groupToken:'current',
+    groupRevision:'7',groupPresentedRevision:'7',groupMask:[true],groupEpochs:['4'],groupPending:true,
+    groupApiFailureWarned:false,ensureTouchGroupListener_(){},touchSurface:{admits:()=>true}});
+  view.syncTouchGroups_();view.syncTouchGroups_();
+  assert.equal(warnings,1);assert.equal(view.groupToken,'current');assert.equal(view.groupPending,true);
+  failRead=false;view.syncTouchGroups_();assert.equal(view.groupPending,true);assert.equal(warnings,1);
+  failAck=false;view.syncTouchGroups_();assert.equal(view.groupPending,false);
+  passed('group bridge exceptions warn once, retain pending identity and recover through the original acknowledgement');
+}
+{
   let listener,reads=0,confirms=0,failConfirm=true,markerReady=false,wrongRect=false;
   let state={token:'g-token',revision:'2',enabled:true,pending:true,mask:[true,false],epochs:['1','2']};
   const napi={readTouchGroups:token=>{assert.equal(token,state.token);reads++;return structuredClone(state);},
@@ -463,7 +484,7 @@ function guiIntentCallbacks(subject,args,relative='GameControls.ets',ownerName='
   Object.assign(entry.rectPx,{x:10,y:20,width:30,height:40});
   const runtime=new geometry.RuntimeTouchLayout();runtime.entries=[entry];
   Object.assign(view,{mounted:true,pageActive:true,appearanceGeneration:1,uiPublicationToken:state.token,
-    groupSchema:{groups:[{id:'base'},{id:'tools'}]},groupIndices:new Map([['base',0]]),
+    groupSchema:{groups:[{id:'base'},{id:'tools'}],controls:[{group:0,rank:0}]},groupIndices:new Map([['base',0]]),
     groupRegistration:'',nextGroupListenerAttempt:0,touchSession:{hasCurrentSource:()=>true},groupMask:[],groupEpochs:[],groupToken:'',groupRevision:'',groupPending:false,
     groupPresentedRevision:'',runtimeLayout:runtime,observationEnabled:false,editing:false,imeOpen:false,fieldImeOpen:false,
     blockedUiFingers:new Set(),groupBlockedUiFingers:new Set(),touchSurface:{admits:token=>token===state.token},releaseControlInputs(){},retireHiddenMouse_(){},

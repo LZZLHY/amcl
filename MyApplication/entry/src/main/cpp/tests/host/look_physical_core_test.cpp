@@ -12,6 +12,15 @@
 #include <cstdlib>
 #include <limits>
 #include <vector>
+#include <new>
+// 仅在一次生产提交内计数/注入分配失败。测试验证成本不随积压线性增长，且失败不会
+// 留下半份Core或Look接受；测量不包含fixture构值、诊断读取或consumer callback。
+static bool counting=false;static size_t allocations=0;static int failAfter=-1;
+void* operator new(std::size_t bytes){if(counting)++allocations;
+    if(failAfter==0){failAfter=-1;throw std::bad_alloc();}if(failAfter>0)--failAfter;
+    void* p=std::malloc(bytes?bytes:1);if(!p)throw std::bad_alloc();return p;}
+void operator delete(void* p) noexcept {std::free(p);}
+void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 #define CHECK(v) do{if(!(v)){std::fprintf(stderr,"LOOK PHYSICAL FAIL %d: %s\n",__LINE__,#v);std::exit(1);}}while(false)
 using namespace amcl::input;
 GlfwInputAdapter glfw;
@@ -77,6 +86,35 @@ int main(){
     CHECK(api->publishDeviceChange(8,AMCL_INPUT_DEVICE_ADDED,AMCL_INPUT_DEVICE_CAP_POINTER_RELATIVE)==0);
     CHECK(api->submitEvent(&motion)==0);CHECK(glfw.Pump().status==GlfwAdapterStatus::kOk&&moves.size()==3);
     CHECK(look->physicalPrefix(moves.back().sequence,&token)==1&&look->prepare(consumers[0],token,&dropped)==1&&dropped.dx>0);
+    // 单样本常见路径拒绝必须回滚，与上面的多记录batch同口径。
+    CHECK(HostInputStateCore().GetObservability(&coreBefore)==0);
+    const auto singleMath=SourceLookPipelineSnapshot();CHECK(api->submitEvent(&huge)==AMCL_INPUT_ERROR_INVALID_ARGUMENT);
+    CHECK(HostInputStateCore().GetObservability(&coreAfter)==0);
+    CHECK(coreBefore.lastSequence==coreAfter.lastSequence&&coreBefore.accepted==coreAfter.accepted&&
+        SourceLookPipelineSnapshot().accepted==singleMath.accepted);
+    allocations=0;counting=true;const int thinResult=api->submitEvent(&motion);counting=false;CHECK(thinResult==0);
+    const size_t thin=allocations;
+    for(int i=0;i<32;++i)CHECK(api->submitEvent(&motion)==0);
+    allocations=0;counting=true;const int loadedResult=api->submitEvent(&motion);counting=false;CHECK(loadedResult==0);
+    const size_t loaded=allocations;CHECK(loaded<=thin+4);
+    // 每个实际分配点逐一失败；下一次正常样本仍可用，不借全局RESET掩盖半提交。
+    size_t failurePoints=0;
+    for(size_t point=0;point<loaded+4;++point){
+        CHECK(HostInputStateCore().GetObservability(&coreBefore)==0);const auto originalMath=SourceLookPipelineSnapshot();
+        failAfter=static_cast<int>(point);int result=0;
+        try{result=api->submitEvent(&motion);}catch(...){failAfter=-1;CHECK(false);}
+        const bool injected=failAfter==-1;failAfter=-1;
+        // deque跨块分配数会比相邻一次多一项；实际没有触发故障时正常提交，不误报算法失败。
+        if(!injected){CHECK(result==0);break;}
+        if(result!=AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED)std::fprintf(stderr,"injected point=%zu result=%d\n",point,result);
+        CHECK(result==AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED);++failurePoints;
+        CHECK(HostInputStateCore().GetObservability(&coreAfter)==0);
+        CHECK(coreBefore.lastSequence==coreAfter.lastSequence&&coreBefore.accepted==coreAfter.accepted&&
+            SourceLookPipelineSnapshot().accepted==originalMath.accepted);
+    }
+    CHECK(api->submitEvent(&motion)==0);
+    CHECK(failurePoints>0);
+    std::printf("single MOVE allocations: light=%zu queued=%zu; failure points=%zu\n",thin,loaded,failurePoints);
     // 新inactive surface即便保留metadata也不能登记新的look流，capture不代理活surface。
     surface.active=0;CHECK(api->publishSurface(&surface)==0);AmclInputLookCoreResourceV1 unavailable{};
     CHECK(amclInputOwnerReadLookResourceV1(&unavailable)==0);

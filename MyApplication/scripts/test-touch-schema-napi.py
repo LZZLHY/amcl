@@ -45,7 +45,8 @@ PRODUCTION = '\n\n'.join(definition(name) for name in [
     'static napi_value SchemaResult(', 'static napi_value RejectSchema(',
     'static bool NamedValue(', 'static bool StrictInt(', 'static bool NamedInt(',
     'static bool NamedDouble(', 'static bool NamedBool(', 'static bool ReadTouchSchemaOptions(',
-    'static bool GroupFields(', 'static bool GroupArray(', 'static bool GroupText(', 'static bool ReadGroupSchema(',
+    'static bool GroupFields(', 'static bool GroupArray(', 'static bool GroupText(',
+    'static bool GroupOptionalBool(', 'static bool GroupOptionalInt(', 'static bool ReadGroupSchema(',
     'napi_value SetControlSchemaImpl(', 'napi_value SetControlSchema(', 'napi_value PublishTouchSchema('
 ])
 
@@ -358,6 +359,18 @@ int groupParsing() {
       CHECK(!ReadGroupSchema(nullptr,root,1,decoded));
       group->fields["controls"]->elements.push_back(object());amcl::input::TouchGroupSchema invalid;
       CHECK(!ReadGroupSchema(nullptr,root,1,invalid)); }
+    // 二级入口必须具有对应组定义和唯一press层级动作，不能借新操作码夹带游戏输出。
+    { auto root=groupMessage(),group=root->fields["groupSchema"],member=group->fields["controls"]->elements[0];
+      auto layer=object();layer->fields={{"id",text("secondary")},{"initialVisible",boolean(false)},
+        {"secondary",boolean(true)},{"hidePrimary",boolean(true)}};group->fields["groups"]->elements.push_back(layer);
+      member->fields["secondaryTarget"]=number(1);member->fields["secondaryReturn"]=boolean(false);
+      auto press=member->fields["bindings"]->elements[0];auto action=press->fields["actions"]->elements[0];
+      action->fields["target"]=number(1);action->fields["operation"]=number(3);
+      amcl::input::TouchGroupSchema valid;CHECK(ReadGroupSchema(nullptr,root,1,valid));
+      CHECK(valid.groups[1].hidePrimary&&valid.controls[0].secondaryTarget==1);
+      press->fields["keys"]->elements.push_back(number(69));amcl::input::TouchGroupSchema mixed;
+      CHECK(!ReadGroupSchema(nullptr,root,1,mixed));press->fields["keys"]->elements.clear();
+      layer->fields["secondary"]=number(1);amcl::input::TouchGroupSchema badType;CHECK(!ReadGroupSchema(nullptr,root,1,badType)); }
     begin("old-api");Call old{{groupMessage()}};auto rejected=SetControlSchema(nullptr,&old);
     CHECK(rejected->type==napi_number&&rejected->number==0&&legacyInstalls==0);
     std::cout<<"PASS v4 group parser: complete extension, closed fields, references/enums and old API refusal\n";return 0;

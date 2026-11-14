@@ -93,6 +93,8 @@ endif()
 target_sources(${OPENAL_TARGET} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ohaudio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ohaudio.h
+    # 仅发现宿主版本化音频函数表，不把PCM核心静态编入OpenAL形成第二owner。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../audio/audio_client.cpp
 )
 
 # OHAudio 后端头文件搜索路径

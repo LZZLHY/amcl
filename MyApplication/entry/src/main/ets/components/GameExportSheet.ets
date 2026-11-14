@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * GameExportSheet — 全产品共用的游戏包导出 Sheet 内容。
  *
  * 仅负责 R4 单列视图、选择草稿和协调器事实的投影；源文件盘点、下载、归档及保存仍由
@@ -117,6 +121,8 @@ export struct GameExportSheet {
   @Prop backLabel: string = '返回版本详情';
   onBack: () => void = () => {};
   onClose: () => void = () => {};
+  /** 内嵌时向唯一宿主页头投影当前层级，不让局部步骤标题另占一行。 */
+  onTitleChange: (title: string) => void = () => {};
   /** 宿主转交所有 dismiss 意图；undefined 表示组件已销毁，不再拥有关闭处理权。 */
   onRegisterDismiss: (handler: ((back?: boolean) => void) | undefined) => void = () => {};
   @StorageProp('bottomRectHeight') private bottomSafe_: number = 0;
@@ -230,6 +236,7 @@ export struct GameExportSheet {
       if (this.alive_) this.refreshTask_();
     });
     this.refreshTask_();
+    this.onTitleChange(this.title_());
     this.initialize_(this.loaded_);
   }
 
@@ -628,6 +635,8 @@ export struct GameExportSheet {
    * 等当前动画真正结束后再投影一次最新业务状态，不抢占当前转场或重挂任务 owner。
    */
   private syncNavigation_(direction: number, animated: boolean = true): void {
+    // 即使任务阶段未更换正文页 key，标题中的“正在取消”等状态也需要同步。
+    if (this.alive_ && this.embeddedHeader) this.onTitleChange(this.title_());
     const target: string = this.navigationKey_();
     if (target === this.navPage_) return;
     if (this.pageMotion_.moving) { this.navQueuedDirection_ = direction; return; }
@@ -824,23 +833,11 @@ export struct GameExportSheet {
     } else this.check_();
   }
 
-  /** 内嵌导出的局部步骤标题；返回和关闭由唯一标题宿主执行原guard，不重复建按钮。 */
-  @Builder
-  Header() {
-    // 父标题负责返回/关闭；局部步骤标题只投影当前导出层级，不伪装成系统标题栏。
-    if (this.embeddedHeader && this.title_() !== '导出游戏包') {
-      Text(this.title_()).fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
-        .width('100%').padding({ left: 20, right: 20, top: 4, bottom: 8 });
-    } else {
-      Column().height(0);
-    }
-  }
-
   /** 身份卡优先使用当前展示任务的固定身份，避免另一个版本的活动任务被当前标题冒充。 */
   @Builder
   Identity() {
     Row({ space: 12 }) {
-      Row() { AppIcon({ name: AppIconName.ModPack, iconSize: 27, color: this.theme.primary }) }
+      Row() { AppIcon({ name: AppIconName.ModPack, iconSize: 27, color: this.theme.actionText }) }
         .width(44).height(44).borderRadius(14).backgroundColor(this.theme.primaryLight).justifyContent(FlexAlign.Center)
       Column({ space: 4 }) {
         Text(this.step_ === 2 ? this.taskVersion_ : (this.source_?.request.displayName || this.versionId_))
@@ -863,7 +860,7 @@ export struct GameExportSheet {
           }
           Text((step < this.step_ ? '' : (step + 1) + '  ') + (step === 0 ? '设置' : step === 1 ? '检查' : '导出'))
             .fontSize(14).fontWeight(step === this.step_ ? FontWeight.Bold : FontWeight.Normal)
-            .fontColor(step === this.step_ ? this.theme.primary : this.theme.textSecondary)
+            .fontColor(step === this.step_ ? this.theme.actionText : this.theme.textSecondary)
         }.layoutWeight(1).height(34).justifyContent(FlexAlign.Center).borderRadius(12)
           .backgroundColor(step === this.step_ ? this.theme.primaryLight : Color.Transparent)
       }, (step: number): string => step.toString())
@@ -877,19 +874,19 @@ export struct GameExportSheet {
       Column({ space: 10 }) {
         Row() {
           AppIcon({ name: format === 'full' ? AppIconName.Save : format === 'modrinth' ? AppIconName.ModPack : AppIconName.LoaderNeoForge,
-            iconSize: 22, color: this.format_ === format ? this.theme.primary : this.theme.textSecondary })
+            iconSize: 22, color: this.format_ === format ? this.theme.actionText : this.theme.textSecondary })
           Blank()
-          if (this.format_ === format) AppIcon({ name: AppIconName.CheckCircle, iconSize: 14, color: this.theme.primary })
+          if (this.format_ === format) AppIcon({ name: AppIconName.CheckCircle, iconSize: 14, color: this.theme.actionText })
         }.width('100%')
         Text(this.formatShort_(format)).fontSize(14).minFontSize(12).maxFontSize(14)
           .fontWeight(this.format_ === format ? FontWeight.Bold : FontWeight.Normal)
-          .fontColor(this.format_ === format ? this.theme.primary : this.theme.textSecondary)
+          .fontColor(this.format_ === format ? this.theme.actionText : this.theme.textSecondary)
           .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').alignItems(HorizontalAlign.Start).padding(12)
     }.layoutWeight(1).height(80).borderRadius(16)
       .backgroundColor(this.format_ === format ? this.theme.primaryLight : this.theme.bgCard)
       // border.radius 显式保留选中／未选中两态圆角，避免 border 重置先前 borderRadius。
-      .border({ width: this.format_ === format ? 2 : 1, color: this.format_ === format ? this.theme.primary : this.theme.divider, radius: 16 })
+      .border({ width: this.format_ === format ? 2 : 1, color: this.format_ === format ? this.theme.actionText : this.theme.divider, radius: 16 })
       .enabled(this.editable_()).accessibilityText(this.formatLabel_(format) + (this.format_ === format ? '，已选中' : ''))
       .onClick(() => { this.chooseFormat_(format); })
   }
@@ -901,7 +898,7 @@ export struct GameExportSheet {
       Row() {
         Text('导出格式').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.theme.textSecondary)
         Blank()
-        Button() { AppIcon({ name: AppIconName.Save, iconSize: 20, color: this.theme.primary }) }
+        Button() { AppIcon({ name: AppIconName.Save, iconSize: 20, color: this.theme.actionText }) }
           .width(44).height(44).backgroundColor(Color.Transparent).accessibilityText('保存导出草稿')
           .enabled(this.editable_()).onClick(() => { this.saveDraft_(); })
       }.width('100%')
@@ -917,7 +914,7 @@ export struct GameExportSheet {
           Button({ type: ButtonType.Normal }) {
             Text(launcher === 'pcl' ? 'PCL 2' : 'HMCL').fontSize(16)
               .fontWeight(this.launcher_ === launcher ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(this.launcher_ === launcher ? this.theme.primary : this.theme.textSecondary)
+              .fontColor(this.launcher_ === launcher ? this.theme.actionText : this.theme.textSecondary)
           }.layoutWeight(1).height(44).borderRadius(12)
             .backgroundColor(this.launcher_ === launcher ? this.theme.bgCard : Color.Transparent)
             .opacity(launcher === 'pcl' && !this.pclAllowed_() ? 0.4 : 1)
@@ -991,13 +988,13 @@ export struct GameExportSheet {
     Column({ space: 8 }) {
       Row({ space: 8 }) {
         Text('导出内容').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary).layoutWeight(1)
-        if (this.scanState_ === 'loading') LoadingProgress().width(22).height(22).color(this.theme.primary)
+        if (this.scanState_ === 'loading') LoadingProgress().width(22).height(22).color(this.theme.actionText)
         Button('恢复默认', { type: ButtonType.Normal })
           .height(44).padding({ left: 8, right: 8 }).fontSize(12).fontColor(this.theme.textSecondary)
           .backgroundColor(Color.Transparent).enabled(this.editable_())
           .onClick(() => { this.resetContentSelection_(); })
         Button(this.scanState_ === 'error' ? '重新读取' : '刷新', { type: ButtonType.Normal })
-          .height(44).padding({ left: 12, right: 12 }).fontSize(14).fontColor(this.theme.primary)
+          .height(44).padding({ left: 12, right: 12 }).fontSize(14).fontColor(this.theme.actionText)
           .backgroundColor(Color.Transparent).enabled(!this.busy_ && !this.activeTask_())
           .onClick(() => { this.initialize_(true); })
       }.width('100%')
@@ -1023,8 +1020,8 @@ export struct GameExportSheet {
                 iconSize: 16, color: this.theme.textOnPrimary })
             }
           }.width(23).height(23).borderRadius(6)
-            .backgroundColor(options.selection === 'none' ? Color.Transparent : this.theme.primary)
-            .border({ width: 1.5, color: options.selection === 'none' ? this.theme.textHint : this.theme.primary, radius: 6 })
+            .backgroundColor(options.selection === 'none' ? Color.Transparent : this.theme.actionPrimary)
+            .border({ width: 1.5, color: options.selection === 'none' ? this.theme.textHint : this.theme.actionText, radius: 6 })
         }.width(44).height(44).backgroundColor(Color.Transparent)
           .enabled(options.editable && options.group.availability !== 'empty')
           .accessibilityRole(AccessibilityRoleType.CHECKBOX).accessibilityChecked(options.selection === 'all')
@@ -1072,7 +1069,7 @@ export struct GameExportSheet {
           ? '目录大小待统计' : exportSize(options.item.size)).fontSize(12)
           .fontColor(options.item.reason.length > 0 ? this.theme.warningText : this.theme.textSecondary).width('100%')
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Checkbox({ name: options.item.id }).select(options.selected).selectedColor(this.theme.primary)
+      Checkbox({ name: options.item.id }).select(options.selected).selectedColor(this.theme.actionText)
         .width(22).height(22).enabled(options.editable).responseRegion({ x: -10, y: -10, width: 44, height: 44 })
         .accessibilityText(options.item.label + '，' + options.item.path + (options.item.reason.length > 0 ? '，读取存在问题，可取消排除' : ''))
         .onChange((selected: boolean): void => { this.selectNode_(options.item.id, selected); })
@@ -1130,13 +1127,13 @@ export struct GameExportSheet {
         Row({ space: 8 }) {
           Text(this.taskState_ === 'cancelling' ? '正在取消' : this.taskStage_ || '准备导出')
             .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary).layoutWeight(1)
-          LoadingProgress().width(23).height(23).color(this.theme.primary)
+          LoadingProgress().width(23).height(23).color(this.theme.actionText)
         }.width('100%')
         Text(exportSize(this.taskBytes_) + (this.hasByteProgress_() ? ' / ' + exportSize(this.taskTotalBytes_) : ' 已处理'))
           .fontSize(23).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary).width('100%')
         if (this.hasByteProgress_()) {
           Progress({ value: Math.min(this.taskBytes_, this.taskTotalBytes_), total: this.taskTotalBytes_, type: ProgressType.Linear })
-            .width('100%').color(this.theme.primary).backgroundColor(this.theme.bgInput)
+            .width('100%').color(this.theme.actionPrimary).backgroundColor(this.theme.bgInput)
         }
         Text('本阶段已处理 ' + this.taskFiles_ +
           (this.hasByteProgress_() ? ' / ' + this.taskTotalFiles_ : '') + ' 个文件')
@@ -1150,10 +1147,10 @@ export struct GameExportSheet {
           Row({ space: 12 }) {
             AppIcon({ name: this.taskPhase_() > index ? AppIconName.CheckCircle : this.taskPhase_() === index ? AppIconName.Time : AppIconName.Hourglass,
               iconSize: 20, color: this.taskPhase_() > index ? this.theme.successText :
-                this.taskPhase_() === index ? this.theme.primary : this.theme.textHint })
+                this.taskPhase_() === index ? this.theme.actionText : this.theme.textHint })
             Text(phase).fontSize(15).fontWeight(this.taskPhase_() === index ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(this.taskPhase_() === index ? this.theme.primary : this.theme.textPrimary).layoutWeight(1)
-            if (this.taskPhase_() === index) Text(this.taskState_ === 'cancelling' ? '正在取消' : '进行中').fontSize(13).fontColor(this.theme.primary)
+              .fontColor(this.taskPhase_() === index ? this.theme.actionText : this.theme.textPrimary).layoutWeight(1)
+            if (this.taskPhase_() === index) Text(this.taskState_ === 'cancelling' ? '正在取消' : '进行中').fontSize(13).fontColor(this.theme.actionText)
           }.width('100%')
         }, (phase: string): string => phase)
       }.width('100%').padding(17).backgroundColor(this.theme.bgCard).borderRadius(16)
@@ -1196,14 +1193,14 @@ export struct GameExportSheet {
       if (this.taskState_ === 'succeeded') {
         Button({ type: ButtonType.Normal }) {
           Row({ space: 8 }) {
-            AppIcon({ name: AppIconName.Refresh, iconSize: 20, color: this.theme.primary })
-            Text('再次导出').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.theme.primary)
+            AppIcon({ name: AppIconName.Refresh, iconSize: 20, color: this.theme.actionText })
+            Text('再次导出').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.theme.actionText)
           }.justifyContent(FlexAlign.Center)
         }.width('100%').height(48).borderRadius(16).backgroundColor(this.theme.bgCard)
           .enabled(!this.busy_).onClick(() => { this.retry_(); })
       } else {
         Button(this.backLabel, { type: ButtonType.Normal }).width('100%').height(44).borderRadius(14)
-          .backgroundColor(this.theme.bgCard).fontColor(this.theme.primary).onClick(() => { this.requestBack_(); })
+          .backgroundColor(this.theme.bgCard).fontColor(this.theme.actionText).onClick(() => { this.requestBack_(); })
       }
     }.width('100%')
   }
@@ -1308,7 +1305,7 @@ export struct GameExportSheet {
         Text(this.primaryLabel_()).fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.theme.textOnPrimary)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.justifyContent(FlexAlign.Center)
-    }.width('100%').height(48).borderRadius(16).backgroundColor(this.theme.primary)
+    }.width('100%').height(48).borderRadius(16).backgroundColor(this.theme.actionPrimary)
       .enabled(this.primaryEnabled_()).onClick(() => { this.primary_(); })
   }
 
@@ -1330,11 +1327,11 @@ export struct GameExportSheet {
         Text('返回前保存当前选项，下次进入可以继续；检查结果仍需重新生成。')
           .fontSize(14).fontColor(this.theme.textSecondary).width('100%')
         Button(this.savingLeave_ ? '正在保存…' : '保存草稿并离开').width('100%').height(46)
-          .backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary).enabled(!this.savingLeave_)
+          .backgroundColor(this.theme.actionPrimary).fontColor(this.theme.textOnPrimary).enabled(!this.savingLeave_)
           .onClick(() => { this.saveAndLeave_(); })
         Button('放弃本次修改').width('100%').height(44).backgroundColor(this.theme.bgInput).fontColor(this.theme.textPrimary)
           .enabled(!this.savingLeave_).onClick(() => { this.finishLeave_(); })
-        Button('继续编辑').width('100%').height(44).backgroundColor(Color.Transparent).fontColor(this.theme.primary)
+        Button('继续编辑').width('100%').height(44).backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
           .enabled(!this.savingLeave_).onClick(() => { this.showLeaveConfirm_ = false; })
         if (this.error_.length > 0) Text(this.error_).fontSize(13).fontColor(this.theme.errorText).width('100%')
         }.width('100%').padding(22).backgroundColor(this.theme.bgCard).borderRadius(22)
@@ -1366,7 +1363,7 @@ export struct GameExportSheet {
           this.TaskResult()
         } else if (!this.loaded_) {
           if (this.busy_) {
-            LoadingProgress().width(32).height(32).color(this.theme.primary)
+            LoadingProgress().width(32).height(32).color(this.theme.actionText)
             Text('正在盘点源实例…').fontSize(14).fontColor(this.theme.textSecondary)
           } else {
             Button('重新读取').width('100%').height(48).onClick(() => { this.initialize_(); })
@@ -1403,7 +1400,6 @@ export struct GameExportSheet {
   private ExportBody_() {
     Stack({ alignContent: Alignment.Center }) {
       Column({ space: 0 }) {
-        this.Header()
         Column({ space: 8 }) {
           this.Identity()
           if (this.layer_ === 'main' && (this.step_ !== 2 || this.activeTask_())) this.Steps()

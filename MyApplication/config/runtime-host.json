@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "supportedProtocols": [1, 2],
+  "runtimePlanProtocol": 2,
+  "runtimeCatalogProtocol": 2,
+  "requiredRuntimeCapabilities": ["zipfs-transaction-v1"],
+  "requiredRuntimeMajors": [8, 17, 21, 25]
+}

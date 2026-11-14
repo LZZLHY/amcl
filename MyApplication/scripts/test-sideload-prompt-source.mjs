@@ -30,11 +30,12 @@ const profile = { product: 'default', storeChannel: false };
 let hooks = true, currentCode = 1000681, fetchBoundary;
 const requests = [], logMessages = [];
 const logger = { info: (_tag, message) => logMessages.push(message), warn() {}, debug() {} };
-const commons = { AppLogger: logger, formatError: String, UPDATE_MANIFEST_URLS: officialUrls,
+// 平台日志/地址可替身，运行时声明的纯校验必须加载当前生产实现。
+const commons = { ...load('commons/src/main/ets/common/RuntimeRequirementPolicy.ets'), AppLogger: logger, formatError: String, UPDATE_MANIFEST_URLS: officialUrls,
   DiagnosticPolicy: { hasTestHooks: () => hooks }, DistributionPolicy: { allowSideloadUpdates: () => true, isStore: () => false } };
 const models = load('update/src/main/ets/SideloadUpdateModels.ets');
 const noteTypes = load('update/src/main/ets/ChangelogTypes.ets');
-const resolver = load('update/src/main/ets/GitHubUpdateAssetResolver.ets', { '@kit.NetworkKit': {}, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets') });
+const resolver = load('update/src/main/ets/GitHubUpdateAssetResolver.ets', { '@kit.NetworkKit': {}, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets'), commons });
 const checkerModule = load('update/src/main/ets/UpdateChecker.ets', {
   commons, './AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets'), './ChangelogTypes': noteTypes, './GitHubUpdateAssetResolver': resolver,
   '@kit.AbilityKit': { bundleManager: { BundleFlag: { GET_BUNDLE_INFO_DEFAULT: 0 },

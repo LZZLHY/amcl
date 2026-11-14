@@ -21,13 +21,14 @@ import {
 import { downloadMavenLibraries, selectFailedLibs, computeFileSha1, MavenLibEntry } from './MavenUtils';
 import {
   decompressFile, extractLibrariesFromInstallerJson, preDownloadMappings, copyMavenToLibraries,
-  installedJdkMajors, probeInstallerSha1, preferSourceFirst, InstallerSha1Probe,
+  installedJdkMajors, probeInstallerSha1, preferSourceFirst, InstallerSha1Probe, VerifiedMappingsDownload,
 } from './ForgeInstallerUtils';
 import { forgeNative } from './ForgelikeNative';
 import { ForgelikeProcessorRunner } from './ForgelikeProcessorRunner';
 import {
   DownloadManager, DownloadFileSpec, DownloadTaskSpec, DownloadCheck, DownloadTaskView,
 } from '../download/DownloadManager';
+import { orderMcLoaderDownloadUrls, selectMcSourceUrls, useOrderedMcDownload } from '../download/SourceProber';
 import { removeDirRecursive, fileExistsAndNonEmpty, formatSpeed } from 'commons';
 import { resolveFontconfigSource, FONTCONFIG_MIN_SIZE_BYTES } from 'commons';
 import { pickInstalledJdkMajor } from 'commons';
@@ -137,9 +138,17 @@ export class ForgelikeInstaller {
       //   BMCLAPI 排在首位 → 先付一次 HEAD 404（1.37s，determineFileSize 的串行探测）再付一次
       //   GET 404（0.34s）才轮到真正可用的 maven.neoforged.net。把命中 `.sha1` 的源提到最前即可
       //   省掉这两次空转；顺序只是偏好，引擎的多源 fallback 行为不变。
-      let shaProbe: InstallerSha1Probe = await probeInstallerSha1(profile.installerUrls);
+      // profile可能来自较早的页面/恢复调用；提交前仍检查当前来源，不能因保留了旧
+      // installer数组而绕过网关/官方约束。关闭档保留原列表，不改连接数与重试策略。
+      let profileUrls = orderMcLoaderDownloadUrls(profile.installerUrls);
+      if (profileUrls.length === 0) throw new Error('仅官方来源下没有可用的加载器安装器地址');
+      let shaProbe: InstallerSha1Probe = await probeInstallerSha1(profileUrls);
       expectedSha1 = shaProbe.sha1;
-      let installerUrls = preferSourceFirst(profile.installerUrls, shaProbe.sourceIndex);
+      // 自动档不让先返回 SHA-1 的候选覆盖实际制品顺序。
+      const orderedVersionDownload = useOrderedMcDownload();
+      let installerUrls = orderedVersionDownload ? orderMcLoaderDownloadUrls(profileUrls) :
+        selectMcSourceUrls(preferSourceFirst(profileUrls, shaProbe.sourceIndex));
+      if (installerUrls.length === 0) throw new Error('加载器安装器来源已被当前策略收紧');
       AppLogger.info(TAG, `installer download: urls=${installerUrls.length} url0=${installerUrls[0]} sha1=${expectedSha1.length === SHA1_HEX_LEN ? expectedSha1 : '(none)'}`, LOG_DOMAIN_MODLOADER);
       try { fs.unlinkSync(installerPath); } catch (e) { /* */ }
       // maxConnections=1：NeoForge installer 的镜像链 BMCLAPI 302→USTC(cernet.mirrors.ustc.edu.cn)
@@ -151,6 +160,7 @@ export class ForgelikeInstaller {
       // 详见 ForgelikeProfile.installerMaxConnections 注释。
       let installerFile: DownloadFileSpec = {
         localPath: installerPath, urls: installerUrls, allowedRoot: mcDir,
+        orderedVersionDownload: orderedVersionDownload,
         maxConnections: profile.installerMaxConnections,
       };
       if (expectedSha1.length === SHA1_HEX_LEN) {
@@ -248,25 +258,25 @@ export class ForgelikeInstaller {
               // 最后一个大库（如 6.98MB 的 universal.jar）会独占几十秒，纯文件计数会静止。
               let frac = fraction >= 0 ? fraction : (total > 0 ? done / total : 0);
               ForgelikeInstaller.report(callback, 'pre_download_libs', 2 + frac, 8, '预下载依赖库 (' + done + '/' + total + '): ' + name);
-            });
+            }, false, orderedVersionDownload);
           if (r1.failed > 0) {
             // ⚠️ A-01 修复（2026-07-29）：重试只提交**失败项**，绝不重下已成功落地的库。
             //   旧实现把完整 `filtered` 再提交一遍，而加载器库多数不带 check（无 sha1/size），
             //   native 对"无 checker 且目标已存在"的提交会拒绝（N-01）→ 第二轮把第一轮的
             //   成功项逐个判失败 → r2.failed>0 恒成立 → 加载器安装永久失败且自我触发。
-            let retryLibs = selectFailedLibs(filtered, r1);
-            ForgelikeInstaller.report(callback, 'pre_download_libs', 2, 8, r1.failed + ' 个库下载失败，正在重试...');
+            let retryLibs: MavenLibEntry[] = orderedVersionDownload ? [] : selectFailedLibs(filtered, r1);
+            if (retryLibs.length > 0) ForgelikeInstaller.report(callback, 'pre_download_libs', 2, 8,
+              r1.failed + ' 个库下载失败，正在重试...');
             AppLogger.warn(TAG,
               `Pre-download libs: ${r1.failed} failed, retrying ${retryLibs.length} of ${filtered.length}`,
               null, LOG_DOMAIN_MODLOADER);
-            // retryLibs 为空只可能是失败项全是"非法坐标"（buildSpecsForLibs 的 invalidNames，
-            // 不在 libs 里能反查到名字）—— 那类重试也救不回来，直接沿用第一轮结论。
+            // 有序模式的候选预算由 Native 收口；空失败子集也直接沿用第一轮结论。
             let r2 = retryLibs.length > 0
               ? await downloadMavenLibraries(retryLibs, libDir,
                   (done: number, total: number, name: string, fraction: number) => {
                     let frac = fraction >= 0 ? fraction : (total > 0 ? done / total : 0);
                     ForgelikeInstaller.report(callback, 'pre_download_libs', 2 + frac, 8, '重试依赖库 (' + done + '/' + total + '): ' + name);
-                  })
+                  }, false, orderedVersionDownload)
               : r1;
             if (r2.failed > 0) {
               let names = (r2.failedNames || []).slice(0, 5).join(', ');
@@ -291,8 +301,9 @@ export class ForgelikeInstaller {
 
       // Step 4: 预下载 mappings
       ForgelikeInstaller.report(callback, 'pre_download_mappings', 3, 8, '预下载 Mappings...');
+      let verifiedMappings: VerifiedMappingsDownload | undefined = undefined;
       try {
-        await preDownloadMappings(installProfilePath, profile.gameVersion, libDir, (view: DownloadTaskView): void => {
+        verifiedMappings = await preDownloadMappings(installProfilePath, profile.gameVersion, libDir, (view: DownloadTaskView): void => {
           ForgelikeInstaller.report(callback, 'pre_download_mappings', 3 + view.progress * 0.25, 8,
             '预下载 Mappings：' + (view.currentFile || profile.gameVersion));
         });
@@ -313,7 +324,8 @@ export class ForgelikeInstaller {
         throw new Error('JIT 权限不可用，无法运行 ' + profile.loaderName + ' 安装器。\n'
           + '请在设备设置中启用“允许可写代码内存”（JIT）权限后重试。');
       }
-      await ForgelikeInstaller.ensureRawFile('fonts.conf', filesDir + '/fonts.conf', true);
+      // 字体配置由创建JVM前必经的Native PrepareFontResources发布绝对缓存路径和内容摘要；
+      // rawfile/fonts.conf现在是模板，不能再原样复制为可执行环境中的配置。
       ForgelikeInstaller.ensureRuntimePrerequisites(filesDir, installerJdk);
       let versionDirsBefore = ForgelikeInstaller.listVersionDirs(mcDir);
 
@@ -337,7 +349,7 @@ export class ForgelikeInstaller {
       let installRc = -1;
       let procResult = await ForgelikeProcessorRunner.run(
         installProfilePath, installerTempDir, mcDir, libDir, filesDir,
-        profile.gameVersion, installerJdk, installerXmxMb, profile.loaderName, callback);
+        profile.gameVersion, installerJdk, installerXmxMb, profile.loaderName, callback, verifiedMappings);
       if (procResult.success) {
         installRc = 0;
         AppLogger.info(TAG, `${profile.loaderName} processors done: ran=${procResult.ranCount}`, LOG_DOMAIN_MODLOADER);

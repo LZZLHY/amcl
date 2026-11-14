@@ -20,13 +20,21 @@ import {
   InstalledModLoader,
 } from './ModLoaderTypes';
 import { FabricService } from './FabricService';
+import { QuiltService } from './QuiltService';
 import { ForgeService } from './ForgeService';
 import { NeoForgeService } from './NeoForgeService';
 
 const TAG = 'ModLoaderManager';
 
+/** 安装前的纯能力查询；清单能识别某类型不代表它已有可执行服务，统一以此集合为准。 */
+export function isSupportedInstallerLoader(type: ModLoaderType): boolean {
+  return type === ModLoaderType.FABRIC || type === ModLoaderType.QUILT
+    || type === ModLoaderType.FORGE || type === ModLoaderType.NEOFORGE;
+}
+
 export class ModLoaderManager {
   private fabricService: FabricService = new FabricService();
+  private quiltService: QuiltService = new QuiltService();
   private forgeService: ForgeService = new ForgeService();
   private neoForgeService: NeoForgeService = new NeoForgeService();
   // private optiFineService: OptiFineService = new OptiFineService();
@@ -42,6 +50,8 @@ export class ModLoaderManager {
     switch (loaderType) {
       case ModLoaderType.FABRIC:
         return this.fabricService.getSupportedGameVersions();
+      case ModLoaderType.QUILT:
+        return this.quiltService.getSupportedGameVersions();
       case ModLoaderType.FORGE:
         return this.forgeService.getSupportedGameVersions();
       case ModLoaderType.NEOFORGE:
@@ -58,6 +68,8 @@ export class ModLoaderManager {
     switch (loaderType) {
       case ModLoaderType.FABRIC:
         return this.fabricService.getLoaderVersions(gameVersion);
+      case ModLoaderType.QUILT:
+        return this.quiltService.getLoaderVersions(gameVersion);
       case ModLoaderType.FORGE:
         return this.forgeService.getLoaderVersions(gameVersion);
       case ModLoaderType.NEOFORGE:
@@ -93,6 +105,8 @@ export class ModLoaderManager {
     switch (loaderType) {
       case ModLoaderType.FABRIC:
         return this.fabricService.install(gameVersion, loaderVersion, mcDir, callback, filesDirOverride);
+      case ModLoaderType.QUILT:
+        return this.quiltService.install(gameVersion, loaderVersion, mcDir, callback, filesDirOverride);
       case ModLoaderType.FORGE:
         return this.forgeService.install(gameVersion, loaderVersion, mcDir, callback, filesDirOverride);
       case ModLoaderType.NEOFORGE:
@@ -116,6 +130,8 @@ export class ModLoaderManager {
     switch (loaderType) {
       case ModLoaderType.FABRIC:
         return this.fabricService.uninstall(versionId, mcDir);
+      case ModLoaderType.QUILT:
+        return this.quiltService.uninstall(versionId, mcDir);
       case ModLoaderType.FORGE:
         return this.forgeService.uninstall(versionId, mcDir);
       case ModLoaderType.NEOFORGE:
@@ -154,6 +170,18 @@ export class ModLoaderManager {
    * 判断一个版本是否是模组加载器版本，并返回加载器信息
    */
   detectModLoader(versionId: string, versionsDir: string): InstalledModLoader | null {
+    // Quilt 具有自己的规范 ID 与启动类，不能复用 Fabric 检测结果伪装已安装。
+    const quiltInfo = QuiltService.parseQuiltVersionId(versionId);
+    if (quiltInfo !== null) {
+      try {
+        const jsonPath = versionsDir + '/' + versionId + '/' + versionId + '.json';
+        const stat = fs.lstatSync(jsonPath);
+        if (stat.isFile() && !stat.isSymbolicLink() && stat.size > 0) return {
+          type: ModLoaderType.QUILT, loaderVersion: quiltInfo.loaderVersion,
+          gameVersion: quiltInfo.gameVersion, versionId: versionId,
+        };
+      } catch (_) { /* 缺失配置不构成已安装证据。 */ }
+    }
     // Fabric: fabric-loader-{loaderVersion}-{gameVersion}
     let fabricInfo = FabricService.parseFabricVersionId(versionId);
     if (fabricInfo) {
@@ -226,6 +254,7 @@ export class ModLoaderManager {
   getSupportedLoaderTypes(): ModLoaderType[] {
     return [
       ModLoaderType.FABRIC,
+      ModLoaderType.QUILT,
       ModLoaderType.FORGE,
       ModLoaderType.NEOFORGE,
       // 未来添加：

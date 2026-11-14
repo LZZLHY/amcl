@@ -11,7 +11,8 @@
  *   Mojang 用 UUID.nameUUIDFromBytes("OfflinePlayer:"+name)（基于 MD5，UUID v3）。
  *   AMCL 用 FNV-1a 64-bit ×2，是 AMCL 内部稳定 UUID，**与 Mojang 不一致**。
  *   理由：避免引入 MD5 实现或异步 cryptoFramework，保持 deriveOfflineUuid 纯同步。
- *   离线模式不联机，UUID 不一致没有实际影响。
+ *   已保存的 UUID 必须继续保留；外观编辑和改名不重算 UUID，避免影响存档身份。
+ *   离线服务器可能另按名称分配 UUID，不能据此承诺其身份或多人外观保持不变。
  *
  * 创建日期：2026-05-09（M1）
  */
@@ -27,6 +28,7 @@ import {
 } from './Account';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_ACCOUNT } from 'commons';
+import { OfflineAppearance, copyOfflineAppearance, ACCOUNT_TEXTURE_PREFIX } from './AppearanceTypes';
 
 const TAG = 'OfflineAccount';
 
@@ -171,19 +173,22 @@ export class OfflineAccount implements Account {
   readonly username: string;
   readonly uuid: string;
   readonly createdAt: number;
+  /** 本账号独立的选择快照；PNG 属于共享库，不能在修改本实例时改写库文件。 */
+  private readonly appearance: OfflineAppearance;
 
-  private constructor(id: string, username: string, uuid: string, createdAt: number) {
+  private constructor(id: string, username: string, uuid: string, createdAt: number, appearance?: OfflineAppearance) {
     this.id = id;
     this.username = username;
     this.uuid = uuid;
     this.createdAt = createdAt;
+    this.appearance = copyOfflineAppearance(appearance);
   }
 
   /**
    * 工厂方法：创建新离线账户。
    * - 空 username 退化为 'MCPlayer'
    * - username 自动 trim（避免前后空格）
-   * - 每次 create 生成新 id（即使 username 相同，账户列表里也是独立条目）
+   * - 工厂生成新的内部 id；持久化前 AccountManager 检查名称唯一性，禁止重复添加
    */
   static create(username: string): OfflineAccount {
     let cleanName = (username || '').trim();
@@ -209,7 +214,20 @@ export class OfflineAccount implements Account {
     let uuid = rec.uuid && rec.uuid.length === 36 ? rec.uuid : deriveOfflineUuid(username);
     let id = rec.id && rec.id.length > 0 ? rec.id : randomAccountId();
     let createdAt = rec.createdAt > 0 ? rec.createdAt : Date.now();
-    return new OfflineAccount(id, username, uuid, createdAt);
+    return new OfflineAccount(id, username, uuid, createdAt, rec.offlineAppearance);
+  }
+
+  /** 返回独立外观副本，编辑器修改草稿不会改变当前账号或其他账号的选择。 */
+  getOfflineAppearance(): OfflineAppearance { return copyOfflineAppearance(this.appearance); }
+
+  /** 改名只替换显示/启动名字，保留已有 ID、UUID、创建时间和外观配置。 */
+  withUsername(username: string): OfflineAccount {
+    return new OfflineAccount(this.id, username.trim(), this.uuid, this.createdAt, this.appearance);
+  }
+
+  /** 创建新的不可变账号实例；修订号由 AccountManager 在确认本次写入时统一增加。 */
+  withAppearance(appearance: OfflineAppearance): OfflineAccount {
+    return new OfflineAccount(this.id, this.username, this.uuid, this.createdAt, appearance);
   }
 
   // ===== Account 接口实现 =====
@@ -231,12 +249,13 @@ export class OfflineAccount implements Account {
 
   serialize(): AccountRecord {
     return {
-      version: 1,
+      version: 2,
       id: this.id,
       type: AccountType.OFFLINE,
       username: this.username,
       uuid: this.uuid,
       createdAt: this.createdAt,
+      offlineAppearance: this.getOfflineAppearance(),
     };
   }
 
@@ -248,11 +267,18 @@ export class OfflineAccount implements Account {
     return this.username;
   }
 
-  // 离线账户没有 Mojang 服务可查的皮肤/披风元数据；UI 应基于 username 派生 fallback。
-  getSkinUrl(): string | null { return null; }
-  getSkinVariant(): string | null { return null; }
-  getCapeUrl(): string | null { return null; }
-  getCapeAlias(): string | null { return null; }
+  /** 本地纹理使用专用来源协议，由 UI 本地解码，不将内部文件当成 HTTP 地址。 */
+  getSkinUrl(): string | null {
+    return this.appearance.skin ? ACCOUNT_TEXTURE_PREFIX + this.appearance.skin.relativePath : null;
+  }
+  /** 无自定义皮肤时保留默认语义；模型按本账号选择返回。 */
+  getSkinVariant(): string | null { return this.appearance.skin ? this.appearance.model : null; }
+  /** 披风与皮肤独立，支持仅自定义披风的账号。 */
+  getCapeUrl(): string | null {
+    return this.appearance.cape ? ACCOUNT_TEXTURE_PREFIX + this.appearance.cape.relativePath : null;
+  }
+  /** 本地文件展示名不是 Mojang 已授予的披风名；只用于账号外观显示。 */
+  getCapeAlias(): string | null { return this.appearance.cape?.name ?? null; }
 
   getOwnedCapes(): AccountCape[] { return []; }
 

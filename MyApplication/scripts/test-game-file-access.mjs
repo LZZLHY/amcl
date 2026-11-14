@@ -22,7 +22,9 @@ const nativeFs = {
 function load(relative, name, bindings) {
   const source = fs.readFileSync(path.join(root, relative), 'utf8').replace(/^import .*;\r?\n/gm, '');
   const js = stripTypeScriptTypes(source, { mode: 'transform' }).replace(/^export /gm, '');
-  return runInNewContext(js + '\n' + name, bindings);
+  // 文件准入/部分失败专项隔离活动存储；活动自身的真实持久化用组合owner套件覆盖。
+  return runInNewContext(js + '\n' + name, { LedgerState: { SUCCESS: 1, FAILED: 2, ABORTED: 3 },
+    getTaskActivityOwner: () => ({ configure() {}, run: async (_meta, action) => action({ event() {} }) }), ...bindings });
 }
 function storage(dir, sdk = 26, extraFs = {}) {
   const api = load('feature_system/src/main/ets/GameStorage.ets', 'GameStorage', {

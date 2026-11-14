@@ -40,6 +40,9 @@ struct GLFWwindow : amcl::graphics::EglContextState {
     bool visible;
     int cursorMode;
     bool cursorModeAssigned;
+    // 逻辑光标关联不拥有对象；可被多个窗口共享，销毁光标时统一解除关联。
+    // 纯指针保持窗口现有零初始化契约；不改变抓取模式或输入分发。
+    GLFWcursor* cursor;
     // 标题由本窗口strdup/free持有，不能借用LWJGL临时MemoryStack上的UTF-8字节。
     const char* title;
     // 仅渲染owner消费并更新已发布的窗口代际；UI线程只向WindowHost发布快照。

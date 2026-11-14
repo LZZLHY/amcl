@@ -1,0 +1,740 @@
+--- a/jdk/make/lib/SoundLibraries.gmk
++++ b/jdk/make/lib/SoundLibraries.gmk
+@@ -70,9 +70,9 @@
+   LIBJSOUND_CFLAGS += -DX_PLATFORM=X_LINUX
+   # AMCL：真实 OHOS 编译只切换 DAUDIO 平台实现，不建立依赖 ALSA 的额外库。
+   ifneq ($(findstring -D__OHOS__,$(CFLAGS_JDKLIB)), )
+-    LIBJSOUND_CFLAGS += -DUSE_DAUDIO=TRUE -DUSE_PORTS=FALSE \
++    LIBJSOUND_CFLAGS += -DUSE_DAUDIO=TRUE -DUSE_PORTS=TRUE \
+         -DUSE_PLATFORM_MIDI_IN=TRUE -DUSE_PLATFORM_MIDI_OUT=TRUE -DAMCL_OHOS_DAUDIO=1 -DAMCL_OHOS_MIDI=1
+-    LIBJSOUND_SRC_FILES += $(LIBJSOUND_DAUDIOFILES) ohos_daudio.c midi_api.c midi_core.c midi_stream.c midi_ump.c midi_jdk.c
++    LIBJSOUND_SRC_FILES += $(LIBJSOUND_DAUDIOFILES) ohos_daudio.c midi_api.c midi_core.c midi_stream.c midi_ump.c midi_jdk.c ports_ohos.c ports_jni.c
+     LIBJSOUND_OHOS_LIBS := -lohaudio
+   else
+     EXTRA_SOUND_JNI_LIBS += jsoundalsa
+--- a/jdk/make/mapfiles/libjsound/mapfile-vers
++++ b/jdk/make/mapfiles/libjsound/mapfile-vers
+@@ -84,6 +84,9 @@
+             Java_com_sun_media_sound_PortMixer_nGetPortType;
+             Java_com_sun_media_sound_PortMixer_nOpen;
+             Java_com_sun_media_sound_PortMixerProvider_nGetNumDevices;
++            Java_com_sun_media_sound_PortMixerProvider_nGetGeneration;
++            Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfoSnapshot;
++            Java_com_sun_media_sound_PortMixer_nOpenSnapshot;
+             Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfo;
+ 	local:
+ 	    *;
+--- a/jdk/make/mapfiles/libjsoundalsa/mapfile-vers
++++ b/jdk/make/mapfiles/libjsoundalsa/mapfile-vers
+@@ -68,6 +68,7 @@
+             Java_com_sun_media_sound_MidiOutDevice_nSendLongMessage;
+             Java_com_sun_media_sound_MidiOutDevice_nSendShortMessage;
+             Java_com_sun_media_sound_PortMixerProvider_nGetNumDevices;
++            Java_com_sun_media_sound_PortMixerProvider_nGetGeneration;
+             Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfo;
+             Java_com_sun_media_sound_PortMixer_nClose;
+             Java_com_sun_media_sound_PortMixer_nControlGetFloatValue;
+--- a/jdk/src/share/classes/com/sun/media/sound/PortMixer.java
++++ b/jdk/src/share/classes/com/sun/media/sound/PortMixer.java
+@@ -80,7 +80,7 @@
+ 
+         try {
+             try {
+-                id = nOpen(getMixerIndex());
++                id = openPortMixer();
+                 if (id != 0) {
+                     count = nGetPortCount(id);
+                     if (count < 0) {
+@@ -158,7 +158,7 @@
+         if (Printer.trace) Printer.trace(">> PortMixer: implOpen (id="+id+")");
+ 
+         // open the mixer device
+-        id = nOpen(getMixerIndex());
++        id = openPortMixer();
+ 
+         if (Printer.trace) Printer.trace("<< PortMixer: implOpen succeeded.");
+     }
+@@ -201,6 +201,12 @@
+         // should never happen...
+         if (Printer.debug) Printer.debug("unknown port type: "+type);
+         return null;
++    }
++
++    // AMCL：打开具体OHOS端口前由native重新确认token仍存在；拒绝下标复用/同id换设备。
++    private long openPortMixer() throws LineUnavailableException {
++        long token = ((PortMixerProvider.PortMixerInfo) getMixerInfo()).getNativeToken();
++        return token == 0 ? nOpen(getMixerIndex()) : nOpenSnapshot(token);
+     }
+ 
+     int getMixerIndex() {
+@@ -303,16 +309,18 @@
+                 if (!isOpen()) {
+                     if (Printer.trace) Printer.trace("> PortMixerPort: open");
+                     // reserve mixer resources for this line
+-                    mixer.open(this);
+                     try {
++                        mixer.open(this);
+                         // open the line.  may throw LineUnavailableException.
+                         implOpen();
+ 
+                         // if we succeeded, set the open state to true and send events
+                         setOpen(true);
+-                    } catch (LineUnavailableException e) {
+-                        // release mixer resources for this line and then throw the exception
+-                        mixer.close(this);
++                    } catch (LineUnavailableException | RuntimeException | Error e) {
++                        // AMCL：平台拒绝/分配或事件失败都撤回已保留资源，首异常不被清理覆盖。
++                        try { setOpen(false); } catch (RuntimeException | Error cleanup) { if (cleanup != e) e.addSuppressed(cleanup); }
++                        try { implClose(); } catch (RuntimeException | Error cleanup) { if (cleanup != e) e.addSuppressed(cleanup); }
++                        try { mixer.close(this); } catch (RuntimeException | Error cleanup) { if (cleanup != e) e.addSuppressed(cleanup); }
+                         throw e;
+                     }
+                     if (Printer.trace) Printer.trace("< PortMixerPort: open succeeded");
+@@ -482,6 +490,7 @@
+ 
+     // open the mixer with the given index. Returns a handle ID
+     private static native long nOpen(int mixerIndex) throws LineUnavailableException;
++    private static native long nOpenSnapshot(long token) throws LineUnavailableException;
+     private static native void nClose(long id);
+ 
+     // gets the number of ports for this mixer
+--- a/jdk/src/share/classes/com/sun/media/sound/PortMixerProvider.java
++++ b/jdk/src/share/classes/com/sun/media/sound/PortMixerProvider.java
+@@ -48,6 +48,9 @@
+      */
+     private static PortMixer[] devices;
+ 
++    // AMCL：0代表上游平台；非0为OHOS实际设备快照代次。
++    private static long cacheGeneration;
++
+ 
+     // STATIC
+ 
+@@ -75,26 +78,35 @@
+     }
+ 
+     private static void init() {
+-        // get the number of input devices
+         int numDevices = nGetNumDevices();
+-
+-        if (infos == null || infos.length != numDevices) {
+-            if (Printer.trace) Printer.trace("PortMixerProvider: init()");
+-            // initialize the arrays
+-            infos = new PortMixerInfo[numDevices];
+-            devices = new PortMixer[numDevices];
+-
+-            // fill in the info objects now.
+-            // we'll fill in the device objects as they're requested.
+-            for (int i = 0; i < infos.length; i++) {
+-                infos[i] = nNewPortMixerInfo(i);
++        long generation = nGetGeneration();
++        if (infos == null || infos.length != numDevices || cacheGeneration != generation) {
++            // AMCL：先建完整同代次候选；JNI/OOM失败不发布半份数组。
++            PortMixerInfo[] nextInfos = new PortMixerInfo[numDevices];
++            PortMixer[] nextDevices = new PortMixer[numDevices];
++            for (int i = 0; i < numDevices; i++) {
++                nextInfos[i] = generation == 0 ? nNewPortMixerInfo(i) : nNewPortMixerInfoSnapshot(i, generation);
++                if (nextInfos[i] == null) throw new IllegalStateException("Missing port descriptor");
+             }
+-            if (Printer.trace) Printer.trace("PortMixerProvider: init(): found numDevices: " + numDevices);
++            // 真实端口身份未变化时复用Info/Mixer；同数量换设备仍按token更新，旧引用不改指向。
++            if (generation != 0 && infos != null) {
++                java.util.HashMap<Long, Integer> previous = new java.util.HashMap<Long, Integer>();
++                for (int i = 0; i < infos.length; i++) previous.put(infos[i].nativeToken, i);
++                for (int i = 0; i < nextInfos.length; i++) {
++                    Integer old = previous.get(nextInfos[i].nativeToken);
++                    if (old != null) { nextInfos[i] = infos[old]; nextDevices[i] = devices[old]; }
++                }
++            }
++            // 以上全部可能抛异常的操作已完成，才更新现有Info的内部数组位置并发布。
++            for (int i = 0; i < nextInfos.length; i++) nextInfos[i].index = i;
++            infos = nextInfos; devices = nextDevices; cacheGeneration = generation;
+         }
+     }
+ 
+     public Mixer.Info[] getMixerInfo() {
+         synchronized (PortMixerProvider.class) {
++            // OHOS无后台监听线程，只在显式枚举/取设备时刷新。
++            if (cacheGeneration != 0) init();
+             Mixer.Info[] localArray = new Mixer.Info[infos.length];
+             System.arraycopy(infos, 0, localArray, 0, infos.length);
+             return localArray;
+@@ -104,6 +116,8 @@
+ 
+     public Mixer getMixer(Mixer.Info info) {
+         synchronized (PortMixerProvider.class) {
++            // OHOS无后台监听线程，只在显式枚举/取设备时刷新。
++            if (cacheGeneration != 0) init();
+             for (int i = 0; i < infos.length; i++) {
+                 if (infos[i].equals(info)) {
+                     return getDevice(infos[i]);
+@@ -132,12 +146,21 @@
+      * This constructor is called from native.
+      */
+     static final class PortMixerInfo extends Mixer.Info {
+-        private final int index;
++        private int index;
++        // 非OHOS值为0；OHOS绑定具体设备身份，不能用重排后的数组下标打开别的端口。
++        private final long nativeToken;
+ 
+         private PortMixerInfo(int index, String name, String vendor, String description, String version) {
++            this(index, 0, name, vendor, description, version);
++        }
++
++        private PortMixerInfo(int index, long nativeToken, String name, String vendor, String description, String version) {
+             super("Port " + name, vendor, description, version);
+             this.index = index;
++            this.nativeToken = nativeToken;
+         }
++
++        long getNativeToken() { return nativeToken; }
+ 
+         int getIndex() {
+             return index;
+@@ -147,5 +170,7 @@
+ 
+     // NATIVE METHODS
+     private static native int nGetNumDevices();
++    private static native long nGetGeneration();
++    private static native PortMixerInfo nNewPortMixerInfoSnapshot(int mixerIndex, long generation);
+     private static native PortMixerInfo nNewPortMixerInfo(int mixerIndex);
+ }
+--- a/jdk/src/share/native/com/sun/media/sound/Platform.c
++++ b/jdk/src/share/native/com/sun/media/sound/Platform.c
+@@ -74,9 +74,10 @@
+   (JNIEnv *env, jclass clazz, jint feature) {
+ 
+ #if defined(AMCL_OHOS_DAUDIO)
+-    /* AMCL：DAUDIO 真实位于主 libjsound；尚未实现的 MIDI/Ports 不伪装设备。 */
++    /* AMCL：DAUDIO、MIDI及真实设备Ports的JNI都位于主libjsound，各自平台能力独立。 */
+     /* AMCL：MIDI JNI已在主库实现；平台provider仍在API20运行时可选。 */
+     if (feature == com_sun_media_sound_Platform_FEATURE_MIDIIO) return com_sun_media_sound_Platform_LIB_MAIN;
++    if (feature == com_sun_media_sound_Platform_FEATURE_PORTS) return com_sun_media_sound_Platform_LIB_MAIN;
+     return feature == com_sun_media_sound_Platform_FEATURE_DIRECT_AUDIO ?
+         com_sun_media_sound_Platform_LIB_MAIN : 0;
+ #endif
+--- a/jdk/src/share/native/com/sun/media/sound/PortMixerProvider.c
++++ b/jdk/src/share/native/com/sun/media/sound/PortMixerProvider.c
+@@ -104,3 +104,9 @@
+     TRACE0("Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfo succeeded.\n");
+     return info;
+ }
++
++/* AMCL：非OHOS沿用原平台端口索引/缓存；0只选择旧实现，不表示系统零设备。
++ * OHOS排除本编译单元，ports_jni.c返回真实快照代次和稳定设备token。 */
++JNIEXPORT jlong JNICALL Java_com_sun_media_sound_PortMixerProvider_nGetGeneration(JNIEnv *env, jclass cls) {
++    (void)env; (void)cls; return 0;
++}
+--- /dev/null
++++ b/jdk/src/solaris/native/com/sun/media/sound/ports_jni.c
+@@ -0,0 +1,186 @@
++/*
++ * OHOS 专属 PortMixer JNI，替换该目标的两个上游 PortMixer C 适配单元。
++ * 使用标准 JavaSound 类/类型和真实OHAudio快照；不构造假Float/Boolean控制，不把没有
++ * SDK setter的系统音量映射成本地变量。其他平台继续编译原上游JNI实现。
++ */
++#include "ports_ohos.h"
++#include <jni.h>
++#include <limits.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ohaudio/native_audio_device_base.h>
++
++/* 保留首个Java异常，所有查类/分配失败路径立即返回，不能在pending异常下继续JNI。 */
++static void throw_ports(JNIEnv *env, const char *type, int code, int native_error)
++{
++    jclass cls; char message[128];
++    if ((*env)->ExceptionCheck(env)) return;
++    cls = (*env)->FindClass(env, type);
++    if (!cls) return;
++    snprintf(message, sizeof(message), "OHAudio port operation failed (result=%d, native=%d)", code, native_error);
++    (*env)->ThrowNew(env, cls, message); (*env)->DeleteLocalRef(env, cls);
++}
++
++static void throw_result(JNIEnv *env, int code, int native_error, int opening)
++{
++    const char *type = code == AMCL_PORTS_NO_MEMORY ? "java/lang/OutOfMemoryError" :
++        opening ? "javax/sound/sampled/LineUnavailableException" : "java/lang/IllegalStateException";
++    throw_ports(env, type, code, native_error);
++}
++
++/* JNI NewStringUTF接受modified UTF-8，不能直接消费系统标准UTF-8中的4字节字符。
++ * 在有界输入中精确解码为UTF-16，非BMP写surrogate pair；坏编码明确失败，不删为ASCII。 */
++static jstring utf8_string(JNIEnv *env, const char *text)
++{
++    const unsigned char *bytes = (const unsigned char *)text;
++    size_t length, at = 0, count = 0;
++    jchar *chars; jstring value;
++    if (!text) { throw_result(env, AMCL_PORTS_INVALID, 0, 0); return NULL; }
++    length = strlen(text);
++    if (length > 65535u) { throw_result(env, AMCL_PORTS_INVALID, 0, 0); return NULL; }
++    chars = (jchar *)malloc((length + 1) * sizeof(jchar));
++    if (!chars) { throw_result(env, AMCL_PORTS_NO_MEMORY, 0, 0); return NULL; }
++    while (at < length) {
++        uint32_t code, minimum; unsigned needed, i;
++        unsigned char first = bytes[at++];
++        if (first < 0x80) { code = first; minimum = 0; needed = 0; }
++        else if (first >= 0xc2 && first <= 0xdf) { code = first & 31u; minimum = 0x80; needed = 1; }
++        else if (first >= 0xe0 && first <= 0xef) { code = first & 15u; minimum = 0x800; needed = 2; }
++        else if (first >= 0xf0 && first <= 0xf4) { code = first & 7u; minimum = 0x10000; needed = 3; }
++        else goto invalid;
++        if (needed > length - at) goto invalid;
++        for (i = 0; i < needed; ++i) {
++            unsigned char next = bytes[at++]; if ((next & 0xc0u) != 0x80u) goto invalid;
++            code = (code << 6) | (next & 63u);
++        }
++        if (code < minimum || code > 0x10ffffu || (code >= 0xd800u && code <= 0xdfffu)) goto invalid;
++        if (code <= 0xffffu) chars[count++] = (jchar)code;
++        else { code -= 0x10000u; chars[count++] = (jchar)(0xd800u | (code >> 10)); chars[count++] = (jchar)(0xdc00u | (code & 1023u)); }
++    }
++    value = (*env)->NewString(env, chars, (jsize)count); free(chars); return value;
++invalid:
++    free(chars); throw_result(env, AMCL_PORTS_INVALID, 0, 0); return NULL;
++}
++
++JNIEXPORT jint JNICALL Java_com_sun_media_sound_PortMixerProvider_nGetNumDevices(JNIEnv *env, jclass cls)
++{
++    size_t count = 0; uint64_t generation = 0; int native_error = 0, result; (void)cls;
++    result = amcl_ports_refresh(&count, &generation, &native_error);
++    if (result != AMCL_PORTS_OK || count > INT_MAX) { throw_result(env, result, native_error, 0); return 0; }
++    return (jint)count;
++}
++
++JNIEXPORT jlong JNICALL Java_com_sun_media_sound_PortMixerProvider_nGetGeneration(JNIEnv *env, jclass cls)
++{
++    (void)env; (void)cls; return (jlong)amcl_ports_generation();
++}
++
++/* 每个Mixer对应一个真正的descriptor。Java数组下标和native稳定token分别传入，
++ * 避免拔插后同一下标悄悄指向另一设备。完整名称放在Mixer.Info，typed Port遵循标准名称。 */
++JNIEXPORT jobject JNICALL Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfoSnapshot(
++    JNIEnv *env, jclass cls, jint index, jlong generation)
++{
++    AmclPortInfo info; int result; jclass type; jmethodID constructor;
++    jstring name, vendor, description, version; jobject value = NULL; char detail[128]; (void)cls;
++    result = amcl_ports_info_at((size_t)index, (uint64_t)generation, &info);
++    if (result != AMCL_PORTS_OK) { throw_result(env, result, 0, 0); return NULL; }
++    if ((*env)->PushLocalFrame(env, 8) < 0) { amcl_ports_info_free(&info); return NULL; }
++    type = (*env)->FindClass(env, "com/sun/media/sound/PortMixerProvider$PortMixerInfo");
++    if (!type) goto done;
++    constructor = (*env)->GetMethodID(env, type, "<init>", "(IJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
++    if (!constructor) goto done;
++    name = utf8_string(env, info.name); if (!name) goto done;
++    vendor = utf8_string(env, "OHAudio"); if (!vendor) goto done;
++    snprintf(detail, sizeof(detail), "OHAudio device %u, type %d, role %d; system controls not publicly writable", info.device_id, info.type, info.role);
++    description = utf8_string(env, detail); if (!description) goto done;
++    version = utf8_string(env, "1"); if (!version) goto done;
++    value = (*env)->NewObject(env, type, constructor, index, (jlong)info.token, name, vendor, description, version);
++done:
++    amcl_ports_info_free(&info); return (*env)->PopLocalFrame(env, value);
++}
++
++/* 上游旧调用点保留符号兼容，OHOS新Java分支始终传入明确代次。 */
++JNIEXPORT jobject JNICALL Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfo(JNIEnv *env, jclass cls, jint index)
++{
++    return Java_com_sun_media_sound_PortMixerProvider_nNewPortMixerInfoSnapshot(env, cls, index, (jlong)amcl_ports_generation());
++}
++
++JNIEXPORT jlong JNICALL Java_com_sun_media_sound_PortMixer_nOpenSnapshot(JNIEnv *env, jclass cls, jlong token)
++{
++    uint64_t handle = 0; int native_error = 0, result; (void)cls;
++    result = amcl_ports_open((uint64_t)token, &handle, &native_error);
++    if (result != AMCL_PORTS_OK) { throw_result(env, result, native_error, 1); return 0; }
++    return (jlong)handle;
++}
++
++JNIEXPORT jlong JNICALL Java_com_sun_media_sound_PortMixer_nOpen(JNIEnv *env, jclass cls, jint index)
++{
++    AmclPortInfo info; jlong value; int result = amcl_ports_info_at((size_t)index, amcl_ports_generation(), &info);
++    if (result != AMCL_PORTS_OK) { throw_result(env, result, 0, 1); return 0; }
++    value = Java_com_sun_media_sound_PortMixer_nOpenSnapshot(env, cls, (jlong)info.token);
++    amcl_ports_info_free(&info); return value;
++}
++
++JNIEXPORT void JNICALL Java_com_sun_media_sound_PortMixer_nClose(JNIEnv *env, jclass cls, jlong handle)
++{
++    (void)env; (void)cls; if (handle) (void)amcl_ports_close((uint64_t)handle);
++}
++
++/* 一个真实设备只暴露一个源或目标Port，不增加“默认设备”或虚拟mixer占位符。 */
++JNIEXPORT jint JNICALL Java_com_sun_media_sound_PortMixer_nGetPortCount(JNIEnv *env, jclass cls, jlong handle)
++{
++    AmclPortInfo info; int result; (void)cls;
++    result = amcl_ports_handle_info((uint64_t)handle, &info);
++    if (result != AMCL_PORTS_OK) { throw_result(env, result, 0, 0); return 0; }
++    amcl_ports_info_free(&info); return 1;
++}
++
++static int get_info(JNIEnv *env, jlong handle, jint index, AmclPortInfo *info)
++{
++    int result = index == 0 ? amcl_ports_handle_info((uint64_t)handle, info) : AMCL_PORTS_INVALID;
++    if (result != AMCL_PORTS_OK) { throw_result(env, result, 0, 0); return 0; }
++    return 1;
++}
++
++JNIEXPORT jint JNICALL Java_com_sun_media_sound_PortMixer_nGetPortType(JNIEnv *env, jclass cls, jlong handle, jint index)
++{
++    AmclPortInfo info; jint type; (void)cls;
++    if (!get_info(env, handle, index, &info)) return 0;
++    if (info.role == AUDIO_DEVICE_ROLE_INPUT) {
++        type = info.type == AUDIO_DEVICE_TYPE_MIC || info.type == AUDIO_DEVICE_TYPE_WIRED_HEADSET || info.type == AUDIO_DEVICE_TYPE_USB_HEADSET ? 0x02 : 0x01;
++    } else {
++        type = info.type == AUDIO_DEVICE_TYPE_SPEAKER ? 0x0200 :
++            info.type == AUDIO_DEVICE_TYPE_WIRED_HEADPHONES || info.type == AUDIO_DEVICE_TYPE_WIRED_HEADSET || info.type == AUDIO_DEVICE_TYPE_USB_HEADSET ? 0x0300 : 0x0100;
++    }
++    amcl_ports_info_free(&info); return type;
++}
++
++JNIEXPORT jstring JNICALL Java_com_sun_media_sound_PortMixer_nGetPortName(JNIEnv *env, jclass cls, jlong handle, jint index)
++{
++    AmclPortInfo info; jstring value; (void)cls;
++    if (!get_info(env, handle, index, &info)) return NULL;
++    value = utf8_string(env, info.name); amcl_ports_info_free(&info); return value;
++}
++
++/* 查询控制前确认设备仍在。当前公开SDK没有系统音量/静音setter，Vector保持空是能力
++ * 事实，不创建可写外观或调用局部Renderer gain。无控制不等于无真实设备。 */
++JNIEXPORT void JNICALL Java_com_sun_media_sound_PortMixer_nGetControls(JNIEnv *env, jclass cls, jlong handle, jint index, jobject vector)
++{
++    int native_error = 0, result; (void)cls;
++    if (index != 0 || !vector) { throw_result(env, AMCL_PORTS_INVALID, 0, 1); return; }
++    result = amcl_ports_check_present((uint64_t)handle, &native_error);
++    if (result != AMCL_PORTS_OK) throw_result(env, result, native_error, 1);
++}
++
++/* 未公布任何控制句柄。即使通过反射误调旧私有native入口，也必须报不支持，不能假成功。 */
++#define CONTROL_UNSUPPORTED(env) throw_ports(env, "java/lang/UnsupportedOperationException", AMCL_PORTS_INVALID, 0)
++JNIEXPORT void JNICALL Java_com_sun_media_sound_PortMixer_nControlSetIntValue(JNIEnv *env, jclass cls, jlong id, jint value)
++{ (void)cls; (void)id; (void)value; CONTROL_UNSUPPORTED(env); }
++JNIEXPORT jint JNICALL Java_com_sun_media_sound_PortMixer_nControlGetIntValue(JNIEnv *env, jclass cls, jlong id)
++{ (void)cls; (void)id; CONTROL_UNSUPPORTED(env); return 0; }
++JNIEXPORT void JNICALL Java_com_sun_media_sound_PortMixer_nControlSetFloatValue(JNIEnv *env, jclass cls, jlong id, jfloat value)
++{ (void)cls; (void)id; (void)value; CONTROL_UNSUPPORTED(env); }
++JNIEXPORT jfloat JNICALL Java_com_sun_media_sound_PortMixer_nControlGetFloatValue(JNIEnv *env, jclass cls, jlong id)
++{ (void)cls; (void)id; CONTROL_UNSUPPORTED(env); return 0; }
+--- /dev/null
++++ b/jdk/src/solaris/native/com/sun/media/sound/ports_ohos.c
+@@ -0,0 +1,270 @@
++/*
++ * 普通应用真实 OHAudio 设备 → JavaSound Port 快照。
++ * 所有 SDK 数组在本次调用释放；内存仅保留必要的设备字符串副本和已打开 handle。
++ * 无系统回调指针、后台线程或本地音量状态。请求失败与空设备列表是不同结果。
++ */
++#include "ports_ohos.h"
++#include <ohaudio/native_audio_routing_manager.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* 这些上限限制异常供应者数据的资源使用；超限明确失败，不截断名字或悄悄丢设备。 */
++#define AMCL_PORTS_MAX_DEVICES 4096u
++#define AMCL_PORTS_MAX_TEXT 65536u
++#ifndef AMCL_PORTS_ALLOC
++#define AMCL_PORTS_ALLOC calloc
++#endif
++
++__attribute__((used, section(".amcl.ports")))
++static const char amcl_ports_marker[] = "AMCL_PORTS_OHOS_API20_DEVICES_V1";
++
++typedef struct AmclPortHandle {
++    uint64_t id;
++    AmclPortInfo info;
++    struct AmclPortHandle *next;
++} AmclPortHandle;
++
++static pthread_mutex_t ports_lock = PTHREAD_MUTEX_INITIALIZER;
++static AmclPortInfo *current;
++static size_t current_count;
++static uint64_t current_generation;
++static uint64_t next_token = 1, next_handle = 1;
++static AmclPortHandle *handles;
++static size_t handle_count;
++
++/* SDK 名称是借用指针，ReleaseDevices 后失效。空名仍用实际 id/type/role 描述，
++ * 不凭空补“speaker”等硬件；保留所有非空原文与非 BMP UTF-8。 */
++static int copy_text(const char *value, char **copy)
++{
++    size_t size = 0;
++    *copy = NULL;
++    if (!value) return AMCL_PORTS_INVALID;
++    while (size < AMCL_PORTS_MAX_TEXT && value[size]) ++size;
++    if (size == AMCL_PORTS_MAX_TEXT) return AMCL_PORTS_INVALID;
++    *copy = (char *)AMCL_PORTS_ALLOC(size + 1, 1);
++    if (!*copy) return AMCL_PORTS_NO_MEMORY;
++    memcpy(*copy, value, size + 1);
++    return AMCL_PORTS_OK;
++}
++
++void amcl_ports_info_free(AmclPortInfo *info)
++{
++    if (!info) return;
++    free(info->name); free(info->address); memset(info, 0, sizeof(*info));
++}
++
++static void free_list(AmclPortInfo *list, size_t count)
++{
++    size_t i;
++    for (i = 0; i < count; ++i) amcl_ports_info_free(&list[i]);
++    free(list);
++}
++
++static int clone_info(const AmclPortInfo *source, AmclPortInfo *target)
++{
++    int result;
++    memset(target, 0, sizeof(*target));
++    target->token = source->token; target->device_id = source->device_id;
++    target->role = source->role; target->type = source->type;
++    result = copy_text(source->name, &target->name);
++    if (result == AMCL_PORTS_OK) result = copy_text(source->address, &target->address);
++    if (result != AMCL_PORTS_OK) amcl_ports_info_free(target);
++    return result;
++}
++
++/* id+role 决定排序，名称/类型/地址决定身份是否保持；不把同数目的换设备当作缓存命中。 */
++static int compare_id(const void *left, const void *right)
++{
++    const AmclPortInfo *a = left, *b = right;
++    if (a->device_id != b->device_id) return a->device_id < b->device_id ? -1 : 1;
++    return a->role < b->role ? -1 : a->role > b->role;
++}
++
++static int same_device(const AmclPortInfo *a, const AmclPortInfo *b)
++{
++    return a->device_id == b->device_id && a->role == b->role && a->type == b->type &&
++        strcmp(a->name, b->name) == 0 && strcmp(a->address, b->address) == 0;
++}
++
++/* mutex 内先构造完整候选，所有 SDK 返回值及描述符都核实后才发布。OOM、坏数组、
++ * 重复身份或 ReleaseDevices 失败均保留原缓存并返回错误，绝不发布半份列表。 */
++static int refresh_locked(int *native_error)
++{
++    OH_AudioRoutingManager *manager = NULL;
++    OH_AudioDeviceDescriptorArray *array = NULL;
++    AmclPortInfo *candidate = NULL;
++    size_t count = 0, i, j;
++    int result = AMCL_PORTS_OK, changed;
++    OH_AudioCommon_Result status;
++    *native_error = 0;
++    status = OH_AudioManager_GetAudioRoutingManager(&manager);
++    if (status != AUDIOCOMMON_RESULT_SUCCESS || !manager) {
++        *native_error = (int)status; return AMCL_PORTS_PLATFORM_ERROR;
++    }
++    status = OH_AudioRoutingManager_GetDevices(manager, AUDIO_DEVICE_FLAG_ALL, &array);
++    if (status != AUDIOCOMMON_RESULT_SUCCESS) { *native_error = (int)status; result = AMCL_PORTS_PLATFORM_ERROR; goto done; }
++    if (!array || array->size > AMCL_PORTS_MAX_DEVICES || (array->size && !array->descriptors)) {
++        result = AMCL_PORTS_INVALID; goto done;
++    }
++    if (array->size) {
++        candidate = AMCL_PORTS_ALLOC(array->size, sizeof(*candidate));
++        if (!candidate) { result = AMCL_PORTS_NO_MEMORY; goto done; }
++    }
++    for (i = 0; i < array->size; ++i) {
++        OH_AudioDeviceDescriptor *descriptor = array->descriptors[i];
++        OH_AudioDevice_Role role;
++        OH_AudioDevice_Type type;
++        uint32_t id;
++        char *name = NULL, *address = NULL;
++        AmclPortInfo *entry;
++        char unnamed[96];
++        if (!descriptor) { result = AMCL_PORTS_INVALID; goto done; }
++#define GET_DEVICE(call) do { status = (call); if (status != AUDIOCOMMON_RESULT_SUCCESS) { \
++    *native_error = (int)status; result = AMCL_PORTS_PLATFORM_ERROR; goto done; } } while (0)
++        GET_DEVICE(OH_AudioDeviceDescriptor_GetDeviceRole(descriptor, &role));
++        GET_DEVICE(OH_AudioDeviceDescriptor_GetDeviceType(descriptor, &type));
++        GET_DEVICE(OH_AudioDeviceDescriptor_GetDeviceId(descriptor, &id));
++        /* DEFAULT/INVALID 是选择占位符，不是具体硬件端口。其他真实类型保留为未知typed Port。 */
++        if (type == AUDIO_DEVICE_TYPE_INVALID || type == AUDIO_DEVICE_TYPE_DEFAULT) continue;
++        if (role != AUDIO_DEVICE_ROLE_INPUT && role != AUDIO_DEVICE_ROLE_OUTPUT) { result = AMCL_PORTS_INVALID; goto done; }
++        GET_DEVICE(OH_AudioDeviceDescriptor_GetDeviceName(descriptor, &name));
++        GET_DEVICE(OH_AudioDeviceDescriptor_GetDeviceAddress(descriptor, &address));
++#undef GET_DEVICE
++        if (!name || !address) { result = AMCL_PORTS_INVALID; goto done; }
++        if (!name[0]) {
++            snprintf(unnamed, sizeof(unnamed), "OHAudio device %u (type %d, role %d)", id, (int)type, (int)role);
++            name = unnamed;
++        }
++        entry = &candidate[count++]; entry->device_id = id; entry->type = (int)type; entry->role = (int)role;
++        result = copy_text(name, &entry->name);
++        if (result == AMCL_PORTS_OK) result = copy_text(address, &entry->address);
++        if (result != AMCL_PORTS_OK) goto done;
++    }
++done:
++    if (array) {
++        status = OH_AudioRoutingManager_ReleaseDevices(manager, array);
++        if (status != AUDIOCOMMON_RESULT_SUCCESS && result == AMCL_PORTS_OK) {
++            *native_error = (int)status; result = AMCL_PORTS_PLATFORM_ERROR;
++        }
++    }
++    if (result != AMCL_PORTS_OK) { free_list(candidate, count); return result; }
++    if (count > 1) qsort(candidate, count, sizeof(*candidate), compare_id);
++    for (i = 1; i < count; ++i) if (compare_id(&candidate[i - 1], &candidate[i]) == 0) {
++        free_list(candidate, count); return AMCL_PORTS_INVALID;
++    }
++    changed = current_generation == 0 || count != current_count;
++    /* 两份列表按真实id/role排序，用线性合并保持token，避免设备数增长时二次扫描。 */
++    j = 0;
++    for (i = 0; i < count; ++i) {
++        while (j < current_count && compare_id(&current[j], &candidate[i]) < 0) ++j;
++        if (j < current_count && same_device(&candidate[i], &current[j])) candidate[i].token = current[j].token;
++        if (!candidate[i].token) {
++            /* Java使用有符号jlong；到正数边界明确失败，不能转换为负值或复用旧token。 */
++            if (next_token >= INT64_MAX) { free_list(candidate, count); return AMCL_PORTS_INVALID; }
++            candidate[i].token = next_token++; changed = 1;
++        }
++    }
++    if (changed && current_generation >= INT64_MAX) { free_list(candidate, count); return AMCL_PORTS_INVALID; }
++    if (changed) ++current_generation;
++    free_list(current, current_count); current = candidate; current_count = count;
++    return AMCL_PORTS_OK;
++}
++
++int amcl_ports_refresh(size_t *count, uint64_t *generation, int *native_error)
++{
++    int result;
++    if (!count || !generation || !native_error) return AMCL_PORTS_INVALID;
++    pthread_mutex_lock(&ports_lock); result = refresh_locked(native_error);
++    if (result == AMCL_PORTS_OK) { *count = current_count; *generation = current_generation; }
++    pthread_mutex_unlock(&ports_lock); return result;
++}
++
++uint64_t amcl_ports_generation(void)
++{
++    uint64_t generation;
++    pthread_mutex_lock(&ports_lock); generation = current_generation; pthread_mutex_unlock(&ports_lock);
++    return generation;
++}
++
++int amcl_ports_info_at(size_t index, uint64_t generation, AmclPortInfo *info)
++{
++    int result;
++    if (!info) return AMCL_PORTS_INVALID;
++    memset(info, 0, sizeof(*info)); pthread_mutex_lock(&ports_lock);
++    result = generation != current_generation || index >= current_count ? AMCL_PORTS_STALE : clone_info(&current[index], info);
++    pthread_mutex_unlock(&ports_lock); return result;
++}
++
++int amcl_ports_open(uint64_t token, uint64_t *handle, int *native_error)
++{
++    int result;
++    size_t i;
++    AmclPortHandle *entry = NULL;
++    if (!token || !handle || !native_error) return AMCL_PORTS_INVALID;
++    *handle = 0; pthread_mutex_lock(&ports_lock); result = refresh_locked(native_error);
++    if (result != AMCL_PORTS_OK) goto done;
++    for (i = 0; i < current_count && current[i].token != token; ++i) { }
++    if (i == current_count) { result = AMCL_PORTS_STALE; goto done; }
++    if (next_handle >= INT64_MAX || handle_count >= AMCL_PORTS_MAX_DEVICES) { result = AMCL_PORTS_INVALID; goto done; }
++    entry = AMCL_PORTS_ALLOC(1, sizeof(*entry));
++    if (!entry) { result = AMCL_PORTS_NO_MEMORY; goto done; }
++    result = clone_info(&current[i], &entry->info);
++    if (result != AMCL_PORTS_OK) { free(entry); goto done; }
++    entry->id = next_handle++; entry->next = handles; handles = entry; ++handle_count; *handle = entry->id;
++done:
++    pthread_mutex_unlock(&ports_lock); return result;
++}
++
++int amcl_ports_close(uint64_t handle)
++{
++    AmclPortHandle **link, *entry; int found;
++    pthread_mutex_lock(&ports_lock); link = &handles;
++    while (*link && (*link)->id != handle) link = &(*link)->next;
++    entry = *link; found = entry != NULL;
++    if (entry) { *link = entry->next; --handle_count; amcl_ports_info_free(&entry->info); free(entry); }
++    pthread_mutex_unlock(&ports_lock);
++    return found ? AMCL_PORTS_OK : AMCL_PORTS_STALE;
++}
++
++int amcl_ports_handle_info(uint64_t handle, AmclPortInfo *info)
++{
++    AmclPortHandle *entry; int result;
++    if (!info) return AMCL_PORTS_INVALID;
++    memset(info, 0, sizeof(*info)); pthread_mutex_lock(&ports_lock);
++    for (entry = handles; entry && entry->id != handle; entry = entry->next) { }
++    result = entry ? clone_info(&entry->info, info) : AMCL_PORTS_STALE;
++    pthread_mutex_unlock(&ports_lock); return result;
++}
++
++int amcl_ports_check_present(uint64_t handle, int *native_error)
++{
++    AmclPortHandle *entry; size_t i; int result;
++    if (!native_error) return AMCL_PORTS_INVALID;
++    pthread_mutex_lock(&ports_lock); result = refresh_locked(native_error);
++    if (result != AMCL_PORTS_OK) goto done;
++    for (entry = handles; entry && entry->id != handle; entry = entry->next) { }
++    if (!entry) { result = AMCL_PORTS_STALE; goto done; }
++    for (i = 0; i < current_count && current[i].token != entry->info.token; ++i) { }
++    if (i == current_count) result = AMCL_PORTS_STALE;
++done:
++    pthread_mutex_unlock(&ports_lock); return result;
++}
++
++/* 真正模块卸载释放有界缓存和所有剩余句柄；正常调用由Java close同步保护。
++ * 不注册应用生命周期回调，不延长系统descriptor寿命。 */
++__attribute__((destructor)) static void release_ports_cache(void)
++{
++    AmclPortHandle *entry;
++    pthread_mutex_lock(&ports_lock);
++    while ((entry = handles) != NULL) { handles = entry->next; amcl_ports_info_free(&entry->info); free(entry); }
++    free_list(current, current_count); current = NULL; current_count = 0; handle_count = 0; current_generation = 0;
++    pthread_mutex_unlock(&ports_lock);
++}
++
++#ifdef AMCL_PORTS_TEST
++void amcl_ports_test_reset(void) { release_ports_cache(); }
++size_t amcl_ports_test_handles(void) { size_t n; pthread_mutex_lock(&ports_lock); n=handle_count; pthread_mutex_unlock(&ports_lock); return n; }
++uint64_t amcl_ports_test_handle_sequence(void) { uint64_t n; pthread_mutex_lock(&ports_lock); n=next_handle-1; pthread_mutex_unlock(&ports_lock); return n; }
++#endif
+--- /dev/null
++++ b/jdk/src/solaris/native/com/sun/media/sound/ports_ohos.h
+@@ -0,0 +1,48 @@
++/*
++ * OHOS JavaSound Ports 的设备快照与所有权接口。
++ * 这里只映射系统实际返回的端口，不制造可写系统音量/静音控制。普通应用的公开 API
++ * 不提供这些 setter；Renderer 的局部 gain 也不能代替硬件 Port 控制。
++ * 同步查询只发生在枚举/打开/控制查询，不注册系统回调、不创建线程，不进入 PCM 热路径。
++ */
++#ifndef AMCL_PORTS_OHOS_H
++#define AMCL_PORTS_OHOS_H
++#include <stddef.h>
++#include <stdint.h>
++
++enum AmclPortsResult {
++    AMCL_PORTS_OK = 0,
++    AMCL_PORTS_NO_MEMORY = -1,
++    AMCL_PORTS_PLATFORM_ERROR = -2,
++    AMCL_PORTS_STALE = -3,
++    AMCL_PORTS_INVALID = -4
++};
++
++/* 字符串是本接口分配的完整 UTF-8 副本；调用者必须用 amcl_ports_info_free 释放。
++ * token 标识同一具体设备身份（id/role/type/name/address），不会因列表重排指向其他设备。 */
++typedef struct AmclPortInfo {
++    uint64_t token;
++    uint32_t device_id;
++    int role;
++    int type;
++    char *name;
++    char *address;
++} AmclPortInfo;
++
++/* 刷新实际设备列表并返回一致的数量/代次；平台错误另写 native_error，不伪装成零设备。 */
++int amcl_ports_refresh(size_t *count, uint64_t *generation, int *native_error);
++uint64_t amcl_ports_generation(void);
++/* 只读取明确代次中的一项；刷新竞争时返回 STALE，调用者不能拼接两个代次。 */
++int amcl_ports_info_at(size_t index, uint64_t generation, AmclPortInfo *info);
++void amcl_ports_info_free(AmclPortInfo *info);
++/* 打开前重新确认具体 token 仍在；handle 是独立单调编号，关闭/重复关闭不解引用旧指针。 */
++int amcl_ports_open(uint64_t token, uint64_t *handle, int *native_error);
++int amcl_ports_close(uint64_t handle);
++int amcl_ports_handle_info(uint64_t handle, AmclPortInfo *info);
++int amcl_ports_check_present(uint64_t handle, int *native_error);
++/* 仅宿主故障注入使用；生产构建不能从运行期环境或 JVM 属性切换供应者。 */
++#ifdef AMCL_PORTS_TEST
++void amcl_ports_test_reset(void);
++size_t amcl_ports_test_handles(void);
++uint64_t amcl_ports_test_handle_sequence(void);
++#endif
++#endif

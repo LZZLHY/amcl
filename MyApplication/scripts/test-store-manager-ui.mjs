@@ -149,6 +149,8 @@ function sourceChangeFixture(store = true) {
     availableVersions: ['selected'], orphanVersionDirs: [], context: { filesDir: '/app' },
     registry: { listAll: () => [] }, mcRoot: () => observations.root,
     scanInstalledModsCount() { observations.stats++; }, savePreferences() { observations.preferences++; },
+    // 本套件只测商店源核验；真实JDK计算由test-home-version-state直接执行现有方法验证。
+    updateJdkReadyState() {},
   });
   return { page, reads, plans, observations };
 }
@@ -205,7 +207,7 @@ console.log('PASS store source changes: unchanged IDs revoke cache; real file/ve
  * 历史读取边界，不用假refreshRecentActivities或空refreshStoreManager掩盖接线缺失。
  */
 const activityMethodNames = ['observeExportActivities_', 'refreshStoreManager_', 'checkStoreVersions_',
-  'refreshRecentActivities_', 'finishErrorSheetWait_', 'onPageHide'];
+  'refreshRecentActivities_', 'finishErrorSheetWait_', 'stopRelayObservation_', 'onPageHide'];
 const activityMethods = activityMethodNames.map(name => {
   const member = indexComponent.members.find(value => value.name?.getText(indexAst) === name);
   assert(member?.body, name); return member.getText(indexAst);
@@ -231,11 +233,12 @@ function exportActivityFixture(store) {
     getDownloadHistoryStore: () => ({ async waitReady() {
       if (state.task?.state === 'running' || state.task?.state === 'cancelling') state.readsDuringActiveProgress++;
     }, listStored() { state.reads++; return state.persisted.slice(); } }),
-    AppStorage: { setOrCreate() {} }, setTimeout(callback) { callback(); }, clearTimeout,
+    AppStorage: { setOrCreate() {} }, setTimeout(callback) { callback(); }, clearTimeout, clearInterval,
     AppLogger: { warn() {} }, TAG: 'Index', LOG_DOMAIN_DOWNLOAD: 1,
   });
   const page = new exported.Page();
   Object.assign(page, { launcherWorkVisible_: true, storeExportUnsubscribe_: null, storeCheckGeneration_: 0,
+    relayStatusTimer_: -1, relayStatusUnsubscribe_: null,
     storeCheckSignature_: '', storeScanError_: '', storeReadyVersions_: [], mcVersion: 'selected', versionIsolation: true,
     availableVersions: ['selected'], orphanVersionDirs: [], context: { filesDir: '/app' },
     registry: { listAll: () => [] }, mcRoot: () => '/mc', recentActivities: [], recoveryPresentationEpoch_: 0,

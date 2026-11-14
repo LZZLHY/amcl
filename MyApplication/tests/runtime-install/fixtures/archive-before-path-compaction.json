@@ -1,0 +1,6 @@
+{
+  "sourceCommit": "e4e70653a5bab6b4bb8ac18c9dd9f509274fc81d",
+  "sourcePath": "entry/src/main/cpp/platform/jdk_install_archive.cpp",
+  "sha256": "1112248fb35b9d81b5cc429bb3100d9cc2ab592e65a6cf36554f7c54d1ea5b75",
+  "purpose": "Immutable real pre-compaction parser for bounded-address-space negative control; not a second production implementation."
+}

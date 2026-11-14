@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * MarkdownView.ets — 轻量 Markdown 渲染器（消息中心与诊断体验 · M1）
  *
  * 为什么自己写：ArkUI 没有内置 Markdown 组件。备选方案都被否掉了 ——
@@ -422,7 +426,7 @@ export struct MarkdownView {
       ForEach(parseMarkdownInline(b.text), (s: MdSpan, i: number) => {
         Span(s.text)
           .fontFamily(s.code ? 'HarmonyHeiTi-Mono, monospace' : '')
-          .fontColor(s.code ? this.theme.primary : this.theme.textPrimary)
+          .fontColor(s.code ? this.theme.actionText : this.theme.textPrimary)
       }, (s: MdSpan, i: number) => i + ':' + (s.code ? 'c' : 't'))
     }
     .fontSize(this.headingSize_(b.level))
@@ -441,7 +445,7 @@ export struct MarkdownView {
           .fontWeight(s.bold ? FontWeight.Bold : FontWeight.Normal)
           // §2.4：Span 不支持 backgroundColor，行内代码只能靠等宽字体 + 强调色区分
           .fontFamily(s.code ? 'HarmonyHeiTi-Mono, monospace' : '')
-          .fontColor(s.code ? this.theme.primary
+          .fontColor(s.code ? this.theme.actionText
             : (s.bold ? this.theme.textPrimary : this.theme.textSecondary))
       }, (s: MdSpan, i: number) => i + ':' + (s.bold ? 'b' : '') + (s.code ? 'c' : ''))
     }
@@ -466,7 +470,7 @@ export struct MarkdownView {
           Span(s.text)
             .fontWeight(s.bold ? FontWeight.Bold : FontWeight.Normal)
             .fontFamily(s.code ? 'HarmonyHeiTi-Mono, monospace' : '')
-            .fontColor(s.code ? this.theme.primary
+            .fontColor(s.code ? this.theme.actionText
               : (s.bold ? this.theme.textPrimary : this.theme.textSecondary))
         }, (s: MdSpan, i: number) => i + ':' + (s.bold ? 'b' : '') + (s.code ? 'c' : ''))
       }
@@ -518,7 +522,7 @@ export struct MarkdownView {
           : ('展开剩余 ' + (this.codeLineCount_(b) - this.maxCodeLines) + ' 行'))
           .fontSize(this.baseFontSize - 1)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
           .onClick(() => { this.toggleCode_(idx) })
       }
     }

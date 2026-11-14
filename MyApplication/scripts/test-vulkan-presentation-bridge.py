@@ -51,12 +51,14 @@ bridge_functions = [extract.block(bridge, bridge.index(signature)) for signature
     'JNIEXPORT void inputBridge_notifyFramePresented(void) {',
     'void inputBridge_sdlNotifyFramePresented(void) {']]
 wsi_functions = [extract.block(wsi, wsi.index(signature)) for signature in [
+    'bool refreshResolutionSurface(VkSurfaceKHR surface, bool checkpoint) {',
     'void notifyFramePresented(const char* provider, uint64_t window, uint64_t generation) {',
     'VKAPI_ATTR VkResult VKAPI_CALL createSwapchain(VkDevice device, const VkSwapchainCreateInfoKHR* requested,',
     'VKAPI_ATTR void VKAPI_CALL destroySwapchain(VkDevice device, VkSwapchainKHR swapchain,',
     'VKAPI_ATTR VkResult VKAPI_CALL queuePresent(VkQueue queue, const VkPresentInfoKHR* info) {']]
 prefix = r'''
 #include "@ROOT@/entry/src/main/cpp/platform/graphics_observation.cpp"
+#include "@ROOT@/entry/src/main/cpp/glfw/amcl_native_window_lease_broker_abi.h"
 #include "@ROOT@/entry/src/main/cpp/input/delivery/pointer_transaction.h"
 #include "@ROOT@/entry/src/main/cpp/platform/vulkan_wsi_diagnostics.h"
 #include "@ROOT@/entry/src/main/cpp/utils/product_diagnostics.h"
@@ -97,8 +99,10 @@ namespace wsi_fixture {
 #define VKAPI_ATTR
 #define VKAPI_CALL
 using VkQueue=uintptr_t; using VkDevice=uintptr_t; using VkSwapchainKHR=uintptr_t; using VkResult=int;
+using VkInstance=uintptr_t; using VkSurfaceKHR=uintptr_t;
 struct VkAllocationCallbacks {};
-struct VkSwapchainCreateInfoKHR { uintptr_t surface; };
+struct VkExtent2D { uint32_t width, height; };
+struct VkSwapchainCreateInfoKHR { VkSurfaceKHR surface; VkExtent2D imageExtent{320,200}; };
 struct VkPresentInfoKHR { uint32_t swapchainCount; const VkSwapchainKHR* pSwapchains; VkResult* pResults; };
 constexpr VkResult VK_SUCCESS=0, VK_SUBOPTIMAL_KHR=1000001003, VK_ERROR_DEVICE_LOST=-4;
 constexpr uintptr_t VK_NULL_HANDLE=0;
@@ -106,8 +110,10 @@ using PFN_vkQueuePresentKHR=VkResult(*)(VkQueue,const VkPresentInfoKHR*);
 using PFN_vkCreateSwapchainKHR=VkResult(*)(VkDevice,const VkSwapchainCreateInfoKHR*,const VkAllocationCallbacks*,VkSwapchainKHR*);
 using PFN_vkDestroySwapchainKHR=void(*)(VkDevice,VkSwapchainKHR,const VkAllocationCallbacks*);
 constexpr VkResult VK_ERROR_EXTENSION_NOT_PRESENT=-7;
-struct SurfaceRecord { uint64_t windowId, generation; const char* provider; };
-struct SwapchainRecord { VkDevice device; uint64_t windowId, generation; const char* provider; };
+constexpr VkResult VK_ERROR_SURFACE_LOST_KHR=-1000000000;
+using PFN_vkDestroySurfaceKHR=void(*)(VkInstance,VkSurfaceKHR,const VkAllocationCallbacks*);
+@SURFACE_RECORD@
+@SWAPCHAIN_RECORD@
 struct Runtime { std::mutex mutex; std::map<uint64_t,VkDevice> queues{{1,2}};
     std::map<uint64_t,SurfaceRecord> surfaces;
     std::map<uint64_t,SwapchainRecord> swapchains;
@@ -116,6 +122,15 @@ Runtime& runtime() { return state; }
 uint64_t bits(uintptr_t value) { return value; }
 uint64_t pid() { return getpid(); }
 VkResult result=VK_SUCCESS;
+AmclNativeWindowLeaseBrokerV2 broker{};
+int observations=0;
+void observeDrawable(void*,uint64_t,uint64_t,int width,int height,uint32_t kind) {
+    assert(width==320 && height==200 && kind==2); ++observations;
+}
+SurfaceRecord surface(uint64_t window,uint64_t generation,const char* provider) {
+    SurfaceRecord record{}; record.windowId=window;record.generation=generation;
+    record.provider=provider;record.broker=&broker;return record;
+}
 VkResult rawPresent(VkQueue, const VkPresentInfoKHR*) { return result; }
 VkResult rawCreate(VkDevice, const VkSwapchainCreateInfoKHR* request, const VkAllocationCallbacks*, VkSwapchainKHR* out) {
     *out=request->surface+100; return VK_SUCCESS;
@@ -138,9 +153,11 @@ main = r'''
 int main() {
     using namespace wsi_fixture;
     assert(amclGraphicsPublishObserverV1()); registerGraphicsPresentationSinks();
-    state.surfaces[10]={77,7,"GLFW"};
+    broker.structSize=sizeof(broker);broker.observeDrawable=&observeDrawable;
+    state.surfaces[10]=surface(77,7,"GLFW");
     VkSwapchainCreateInfoKHR request{10};VkSwapchainKHR chain=0;
     assert(createSwapchain(2,&request,nullptr,&chain)==VK_SUCCESS);
+    assert(observations==1 && state.swapchains.at(chain).surface==10);
     VkPresentInfoKHR info{1,&chain,nullptr};
     for(int i=0;i<3;++i) assert(queuePresent(1,&info)==VK_SUCCESS);
     refreshGlfwPresentationState();
@@ -152,7 +169,10 @@ int main() {
     result=VK_SUCCESS;destroySwapchain(2,chain,nullptr);queuePresent(1,&info);
     refreshGlfwPresentationState();
     assert(g_presentSerial==3 && local().totalFrames==3);
-    state.surfaces[20]={88,8,"SDL3"};request.surface=20;
+    state.surfaces[10].destroying=true;
+    assert(createSwapchain(2,&request,nullptr,&chain)==VK_ERROR_SURFACE_LOST_KHR);
+    assert(observations==1);
+    state.surfaces[20]=surface(88,8,"SDL3");request.surface=20;
     assert(createSwapchain(2,&request,nullptr,&chain)==VK_SUCCESS);
     queuePresent(1,&info);
     assert(g_sdlMenuState.presentSerial==0 && local().totalFrames==4); // 输入失活不抹去图形事实。
@@ -173,6 +193,10 @@ int main() {
 code = prefix.replace('@ROOT@', root.as_posix()).replace('@LEFT_CONTRIBUTION@', state_type('LegacyLeftContribution'))
 code = code.replace('@SDL_MENU_STATE@', state_type('SDLMenuPointerState'))
 code = code.replace('@GLFW_PRESENTATION_CLOCK@', state_type('GlfwPresentationClock'))
+# Surface/Swapchain布局随生产原文消费，避免新增租约字段后手写旧形状继续失真。
+for name, marker in [('SurfaceRecord', '@SURFACE_RECORD@'), ('SwapchainRecord', '@SWAPCHAIN_RECORD@')]:
+    body = extract.block(wsi, wsi.index('struct ' + name + ' {')) + ';'
+    driver = driver.replace(marker, body)
 code += '\n'.join(bridge_functions) + driver + trace_macro + '\n'.join(wsi_functions) + main
 with workspace_temporary_directory(prefix='amcl-present-bridge-') as temporary:
     source=Path(temporary)/'test.cpp';source.write_text(code,encoding='utf-8')

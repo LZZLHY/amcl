@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "runtimes": {
+    "8": {
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "path": "jdk/src/share/native/sun/font/freetypeScaler.c",
+      "beforeSha256": "920a594f7074f3b6e376866aeef7604870e1ba93930f1d7de3f77c47dafac065",
+      "afterSha256": "dcc90975e513759481467f9fc67a2685339e5cfe7ae2022178d485d4ebfd144c",
+      "patchSha256": "a5f98f375d59c7751b51ec6c152fa6e4f4d25e0fb45343b971df2ab4a1174f21"
+    },
+    "17": {
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "path": "src/java.desktop/share/native/libfontmanager/freetypeScaler.c",
+      "beforeSha256": "f689bb53c8311070bb936003c94695a89571245ceb6af001354ca852757e86d4",
+      "afterSha256": "dc3335d69c8db1ff59bac59f264ccf5fad7b46d677c5e24e68b3f98773a6acbe",
+      "patchSha256": "007791438e224834ef2ab69073914a4d4ce9adbb65344ed24d5350c5d695ce0e"
+    },
+    "21": {
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "path": "src/java.desktop/share/native/libfontmanager/freetypeScaler.c",
+      "beforeSha256": "93e5fd9348019efea25685bbeafda5dc40d4c82f2a86f359efffde7e9f015922",
+      "afterSha256": "d0f81ea1d225404d7c2bf55cdc985a15213020db026d1492a1bad31277fbb4b6",
+      "patchSha256": "8925b93b8061130ccbc1377f8d893e9bbbbe9cd658bc08a6f34e6c55838523ac"
+    },
+    "25": {
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "path": "src/java.desktop/share/native/libfontmanager/freetypeScaler.c",
+      "beforeSha256": "a1ca8f65cc9133b5531d145eeaa2bc9154faac2944868e293c084fd2f48587d8",
+      "afterSha256": "ce74a2c811220ce766c4718b7df27efb802f7e37e165c04ff66b76fc64f4594b",
+      "patchSha256": "6ddf75ef91e36cd711d1a6fc08e3d1ff2c3f24e336c23ea70f292438a7c37adf"
+    }
+  }
+}

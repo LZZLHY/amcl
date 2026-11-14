@@ -9,7 +9,11 @@
  *   - aboutToDisappear 恢复 UNSPECIFIED，避免影响下一个页面
  */
 import { router, window } from '@kit.ArkUI'
-import { common } from '@kit.AbilityKit'
+import { common, ConfigurationConstant } from '@kit.AbilityKit'
+import { ThemeColors, ThemeMode, resolveTheme } from 'commons'
+import { PreferenceManager } from 'feature_system'
+import { EditorPalette, editorPalette } from '../components/TouchEditorTheme'
+import { applyNativeTheme } from '../components/AppTheme'
 import { LayoutProfile } from 'gamecontrol'
 import { LayoutEditor } from '../components/LayoutEditor'
 import { InputSettingsEditor } from '../components/InputSettingsEditor'
@@ -25,10 +29,16 @@ interface EditorPageParams {
 @Entry
 @Component
 struct LayoutEditorPage {
+  /** 颜色快照与布局草稿完全分开；主题通知不进入租约、事务、按键或输入会话。 */
+  @State private theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
+  @State private palette: EditorPalette = new EditorPalette()
+  @StorageProp('currentColorMode') @Watch('applyToolTheme_') private colorMode_: number = 0
+  @StorageProp('appThemeRevision') @Watch('applyToolTheme_') private appThemeRevision_: number = 0
   @State screenW: number = 720
   @State screenH: number = 360
   @State ready: boolean = false
   @State private settingsOnly: boolean = false
+  @State private settingsSection: string = ''
   @State loadError: string = ''
 
   private targetProfileName: string = ''
@@ -44,7 +54,17 @@ struct LayoutEditorPage {
     return AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   }
 
+  /** 只映射工具面板显示，绝不将应用配色写回ControlItem或用户布局JSON。 */
+  private applyToolTheme_(): void {
+    const preferences: PreferenceManager = new PreferenceManager(this.getAbilityContext())
+    this.theme = resolveTheme(preferences.themeMode,
+      this.colorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK, preferences.themeAccent)
+    this.palette = editorPalette(this.theme)
+    applyNativeTheme(this.theme)
+  }
+
   async aboutToAppear(): Promise<void> {
+    this.applyToolTheme_()
     this.pageMounted = true
     this.pageCompleted = false
     this.ready = false
@@ -162,19 +182,28 @@ struct LayoutEditorPage {
     this.applyEditorWindowStyle_(false, generation)
   }
 
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyToolTheme_(); }
+
   build() {
     Stack() {
-      // 背景：模拟游戏画面深色，让 LayoutEditor 的按钮叠在上面
-      Column().width('100%').height('100%').backgroundColor('#333333')
+      // 独立编辑器的空画布背景属于工具chrome；实际按钮继续按用户保存的样式绘制。
+      Column().width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
 
       if (this.ready) {
         if (this.settingsOnly) {
-          InputSettingsEditor({targetProfileName:this.targetProfileName,screenWidth:this.screenW,screenHeight:this.screenH,
+          InputSettingsEditor({palette:this.palette,targetProfileName:this.targetProfileName,screenWidth:this.screenW,screenHeight:this.screenH,initialSection:this.settingsSection,
             onDone:(_result: LayoutProfile | null): void => { this.finishEditorPage_() },
             onInitializationFailed:(message: string): void => { this.reportEditorPageError_(message) }})
         } else {
         LayoutEditor({
+          palette: this.palette,
           targetProfileName:this.targetProfileName,
+          onOpenSettings:(result: LayoutProfile | null,section: string): void => {
+            const store=getLayoutStore(); store.beginEditorTransaction()
+            this.targetProfileName=(result ?? store.getActiveProfile()).name
+            this.settingsSection=section; this.settingsOnly=true
+          },
           screenWidth: this.screenW,
           screenHeight: this.screenH,
           onDone: (_result: LayoutProfile | null) => { this.finishEditorPage_() },
@@ -182,7 +211,7 @@ struct LayoutEditorPage {
         })
         }
       } else if (this.loadError.length > 0) {
-        Text(this.loadError).fontSize(14).fontColor('#FFFFFF').padding(24)
+        Text(this.loadError).fontSize(14).fontColor(this.theme.errorText).padding(24)
       }
     }
     .width('100%')

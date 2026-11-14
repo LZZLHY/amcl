@@ -23,14 +23,15 @@ import { EntryTouchInputMaintenanceLease, startEntryTouchInputMaintenance,
   reconcileEntryTouchInputMaintenance, reconcileEntryTouchInputMaintenanceCleanup,
   EntryTouchInputMaintenanceStopReceipt, stopEntryTouchInputMaintenance } from '../components/EntryTouchInputMaintenance'
 import { GameLaunchGate } from './GameLaunchGate'
+import { GameDialogRuntime } from './GameDialogRuntime'
 import { GamepadOutputRoute, NativeGamepadRouteDecision, resolveNativeGamepadRoute,
   NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, NATIVE_GAMEPAD_CAPTURE_READY_KEY } from './NativeGamepadRoutePolicy'
 
 // 与原文本停资源同量级的有限安全预算；复用Host原250ms heartbeat槽，不新增生产时钟。
 const TOUCH_STOP_RETRY_BUDGET: number=5
 const TOUCH_STOP_BUDGET_MS: number=2000
-// 主动退出可能尚未进入Native JVM exit hook，不能只借它的3秒pipe预算。此一次性
-// 期限仅约束ArkTS等待前台请求；不宣称取消OS请求、前台已显示或进程已在3秒内终止。
+// 前台交接与所有异步清理共用原来的一次3秒总期限，不能先等交接再追加清理期限。
+// Native hook仍有自己的强制退出兜底；OS强杀不保证ArkTS回调或本地收据正常完成。
 const EXIT_HANDOFF_BUDGET_MS: number=3000
 
 /** 前端只收状态和观察机会；去掉订阅不会停止输入维护或游戏退出检测。 */
@@ -54,6 +55,11 @@ export interface GameSessionCleanupStep {
   reason: string
 }
 
+/** 单局异步资源的最小所有权端口；close必须先同步围栏回调，再返回真实平台释放结果。 */
+export interface GameSessionOwnedResource {
+  close: () => Promise<void>
+}
+
 /** 最多16个原前端等待者；等待只组织装配，不代表consumer READY或取消持久存储事务。 */
 interface InputPreparationWaiter {
   finish: (ready: boolean) => void
@@ -61,6 +67,21 @@ interface InputPreparationWaiter {
 }
 
 export class GameSessionHost {
+  /** 本机纹理监听归真实游戏会话；前端detach不清它，停止及启动失败统一释放。 */
+  private offlineAppearanceResource: GameSessionOwnedResource | undefined = undefined
+
+  /** 认领原资源后才开始异步准备，stop可取消尚在listen/签名的原操作。 */
+  ownOfflineAppearance(resource: GameSessionOwnedResource): void {
+    if (this.ended() || this.offlineAppearanceResource !== undefined) throw new Error('离线外观会话不能重复认领')
+    this.offlineAppearanceResource = resource
+  }
+
+  /** 启动失败的所有早退路径共用；先解除所有权，close幂等围栏并清理原资源。 */
+  async releaseOfflineAppearance(): Promise<void> {
+    const resource: GameSessionOwnedResource | undefined = this.offlineAppearanceResource
+    this.offlineAppearanceResource = undefined
+    if (resource !== undefined) await resource.close()
+  }
   readonly gamepad: GamepadManager
   readonly inputRuntime: GameInputRuntime
   /** IME controller及必要维护归本局，前端只绑定原UI资源和观察；构造不取OS/Native能力。 */
@@ -97,6 +118,12 @@ export class GameSessionHost {
   private runtimePollExecuting: boolean = false
   private startTimer: number = -1
   private exitStarted: boolean = false
+  /** 先发布同一个退出事务再调用外部平台，Ability重入销毁也只能等待原事务。 */
+  private exitTask: Promise<void> | undefined = undefined
+  /** 清理状态变化的单个退出观察者；只由原stop回调唤醒，不新增轮询/维护时钟。 */
+  private exitReadinessObserver: (() => void) | undefined = undefined
+  /** 期限或终态发布后，迟到原平台回调仍能结束资源，但不能把超时收据改回Clean。 */
+  private exitReadinessFinalized: boolean = false
   private inputPlanWire: string = ''
   private failureCounts: Map<string, number> = new Map<string, number>()
   private cleanup: GameSessionCleanupStep[] = []
@@ -522,6 +549,18 @@ export class GameSessionHost {
   stop(reason: string): GameSessionCleanupStep[] {
     if (this.ended()) return this.cleanupSnapshot()
     this.state = 'Stopping'
+    // Socket监听与已接受连接都异步释放；Pending不得被同步stop返回伪写为完成。
+    if (this.offlineAppearanceResource !== undefined) {
+      const textureStep: GameSessionCleanupStep = { name: 'offline-appearance-stop', completed: false, reason: 'Pending' }
+      this.cleanup.push(textureStep)
+      this.releaseOfflineAppearance().then((): void => {
+        if (this.exitReadinessFinalized) return
+        textureStep.completed = true; textureStep.reason = ''; this.logOutcome(reason)
+      }).catch((error: Error): void => {
+        if (this.exitReadinessFinalized) return
+        textureStep.reason = error.message; this.noteFault('offline-appearance-stop', error); this.logOutcome(reason)
+      })
+    }
     this.inputPrepared = false
     this.settlePreparation(false)
     this.requestedActive = false
@@ -537,6 +576,7 @@ export class GameSessionHost {
     this.runtimePoll = -1
     this.cleanupStep('start-timer-stop', (): void => { if (startTimer>=0) clearTimeout(startTimer) })
     this.cleanupStep('heartbeat-stop', (): void => { if (heartbeat>=0) clearTimeout(heartbeat) })
+    this.cleanupStep('game-dialog-stop', (): void => { GameDialogRuntime.detach() })
     this.cleanupStep('runtime-poll-stop', (): void => { if (runtimePoll>=0) clearTimeout(runtimePoll) })
     this.cleanupStep('gui-observation-stop', (): void => {
       const scope: number = this.guiObservationScope
@@ -571,6 +611,10 @@ export class GameSessionHost {
     this.cleanup.push(textStep)
     const textRuntime: EntryTextInputRuntime = this.textInputRuntime
     const textOutcome = (snapshot: EntryTextInputRuntimeSnapshot): void => {
+      if (this.exitReadinessFinalized) {
+        textRuntime.removeStopOutcomeListener(textOutcome)
+        return
+      }
       textStep.completed = snapshot.stopOutcome === 'Completed'
       textStep.reason = textStep.completed ? '' : snapshot.stopOutcome === 'Pending' ? 'Pending' :
         snapshot.failure.length>0 ? snapshot.failure : snapshot.stopOutcome
@@ -623,10 +667,12 @@ export class GameSessionHost {
     const windowStep: GameSessionCleanupStep = { name: 'window-restore', completed: false, reason: 'Pending' }
     this.cleanup.push(windowStep)
     this.restoreWindow(this.coordinator).then((): void => {
+      if (this.exitReadinessFinalized) return
       windowStep.completed = true
       windowStep.reason = ''
       this.logOutcome(reason)
     }).catch((error: Error): void => {
+      if (this.exitReadinessFinalized) return
       windowStep.reason = error.message
       this.noteFault('window-restore', error)
       this.logOutcome(reason)
@@ -638,55 +684,118 @@ export class GameSessionHost {
   }
 
   /**
-   * 运行退出检测及用户请求共用单次事务。先尝试原context的前台归还，在成功、失败或
-   * 等待期限结束后只尝试一次Native ACK；不把输入Ended当作OS资源/进程全部回收。
+   * 运行退出检测、用户退出与Ability销毁共用原单次事务。返回同一Promise，先等待
+   * 原清理与前台交接完成或总期限，再flush终态并ACK；输入Ended本身不代表资源已释放。
    */
-  async requestExit(): Promise<void> {
-    if (this.exitStarted) return
+  requestExit(): Promise<void> {
+    if (this.exitTask !== undefined) return this.exitTask
     this.exitStarted = true
-    this.stop('session-stop')
-    if (AppStorage.get<boolean>('desktopGameProcess') === true) {
-      try {
-        if (this.context === undefined) throw new Error('Game context unavailable')
-        const parameters: Record<string, number> = { 'gameExitActivityId': this.activityId }
-        const want: Want = { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility', parameters: parameters }
-        await this.requestLauncherHandoff(this.context, want)
-      } catch (error) { this.noteFault('return-to-launcher', error) }
-      finally { try { testNapi.mcForceExit() } catch (error) { this.noteFault('exit-ack', error) } }
-      return
-    }
-    try { testNapi.mcForceExit() } catch (error) { this.noteFault('shared-exit', error) }
-    try { appRecovery.restartApp() } catch (error) { this.noteFault('shared-restart', error) }
+    let complete: () => void = (): void => {}
+    this.exitTask = new Promise<void>((resolve: () => void): void => { complete = resolve })
+    // 事务已发布后才开始stop/startAbility，防同步平台回入onDestroy再发第二次ACK。
+    this.performExit().then(complete).catch((error: Error): void => { this.noteFault('exit-task', error); complete() })
+    return this.exitTask
   }
 
   /**
-   * 只给本次退出的原平台Promise加有限等待。OS请求仍按原调用执行，迟到完成只消费
-   * 原Promise的结果，不再触发ACK或改写超时。计时器故障按失败收口，不能跳过退出；
-   * clearTimeout失败时已settled的闭包仍无权二次完成。正常成功/拒绝立即撤掉本地timer。
+   * 一次总期限覆盖stop同步前缀、并行平台交接和异步清理。失败也必须经过finally，
+   * 原Native兜底和共享进程restart不因日志、时钟或某个资源拒绝而丢失。
    */
-  private requestLauncherHandoff(context: common.UIAbilityContext, want: Want): Promise<void> {
-    return new Promise<void>((resolve: () => void, reject: (reason: Error) => void): void => {
+  private async performExit(): Promise<void> {
+    const isolated: boolean = AppStorage.get<boolean>('desktopGameProcess') === true
+    let deadline: number = -1
+    try {
+      const now: number = systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE)
+      if (!Number.isFinite(now) || now < 0) throw new Error('ExitCleanupClockUnavailable')
+      deadline = now + EXIT_HANDOFF_BUDGET_MS
+    } catch (error) { this.noteFault('exit-clock', error) }
+    try {
+      this.stop('session-stop')
+      await this.waitForExitReadiness(deadline, isolated)
+    } catch (error) {
+      this.finalizeExitReadiness('ExitReadinessFailed')
+      this.noteFault('exit-readiness', error)
+    } finally {
+      this.exitReadinessFinalized = true; this.exitReadinessObserver = undefined
+      this.logOutcome('exit-readiness')
+      // mcForceExit会结束活动writer并ACK；必须先把最后一份资源回执真正flush。
+      try { AppLogger.flush() } catch (error) { this.noteFault('exit-log-flush', error) }
+      try { testNapi.mcForceExit() } catch (error) { this.noteFault(isolated ? 'exit-ack' : 'shared-exit', error) }
+      if (!isolated) try { appRecovery.restartApp() } catch (error) { this.noteFault('shared-restart', error) }
+    }
+  }
+
+  /**
+   * 原stop的回调通过logOutcome唤醒；不轮询、不重试平台动作。仅一个timer使用剩余
+   * 总预算；超时/调度失败把所有Pending固定为失败原因，迟到回调不改写这份退出回执。
+   */
+  private waitForExitReadiness(deadline: number, isolated: boolean): Promise<void> {
+    return new Promise<void>((resolve: () => void): void => {
       let settled: boolean = false
       let timer: number = -1
-      const finish = (failure?: Error): void => {
+      const finish = (failure: string = ''): void => {
         if (settled) return
-        settled = true
+        settled = true; this.exitReadinessObserver = undefined
         if (timer >= 0) {
           try { clearTimeout(timer) } catch (error) { this.noteFault('exit-handoff-timer-clear', error) }
           timer = -1
         }
-        if (failure !== undefined) reject(failure)
-        else resolve()
+        this.finalizeExitReadiness(failure)
+        if (failure.length > 0) this.noteFault('exit-readiness', new Error(failure))
+        resolve()
       }
+      const check = (): void => { if (!settled && !this.cleanup.some((step: GameSessionCleanupStep): boolean => step.reason === 'Pending')) finish() }
+      let handoff: GameSessionCleanupStep | undefined = undefined
+      if (isolated) {
+        handoff = { name: 'launcher-handoff', completed: false, reason: 'Pending' }; this.cleanup.push(handoff)
+      }
+      this.exitReadinessObserver = check
+      // 先发出唯一原平台请求；timer创建失败也不能吞掉这次应有的前台交接尝试。
+      if (handoff !== undefined) {
+        const original: GameSessionCleanupStep = handoff
+        try {
+          if (this.context === undefined) throw new Error('Game context unavailable')
+          const parameters: Record<string, number> = { 'gameExitActivityId': this.activityId }
+          const want: Want = { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility', parameters: parameters }
+          this.context.startAbility(want).then((): void => {
+            if (settled) return
+            original.completed = true; original.reason = ''; this.logOutcome('exit-readiness')
+          }).catch((error: Error): void => {
+            if (settled) return
+            original.reason = error.message || 'ReturnToLauncherFailed'; this.noteFault('return-to-launcher', error); this.logOutcome('exit-readiness')
+          })
+        } catch (error) {
+          original.reason = (error as Error).message || 'ReturnToLauncherFailed'; this.noteFault('return-to-launcher', error)
+        }
+      }
+      let remaining: number = -1
+      try { if (deadline >= 0) remaining = deadline - systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE) }
+      catch (error) { this.noteFault('exit-clock', error) }
+      if (remaining <= 0 || remaining > EXIT_HANDOFF_BUDGET_MS) { finish('ExitCleanupClockOrDeadlineUnavailable'); return }
       try {
-        // 先发出原前台请求并接住晚到拒绝，再建立本次等待预算；调度失败也不会留下
-        // unhandled rejection或要求再次调用startAbility。一次性timer不复活输入维护。
-        context.startAbility(want).then((): void => { finish() }).catch((error: Error): void => { finish(error) })
-        if (!settled) timer = setTimeout((): void => {
-          finish(new Error('ReturnToLauncherDeadlineExceeded'))
-        }, EXIT_HANDOFF_BUDGET_MS) as number
-      } catch (error) { finish(error as Error) }
+        timer = setTimeout((): void => {
+          finish(handoff !== undefined && handoff.reason === 'Pending' ? 'ReturnToLauncherDeadlineExceeded' : 'ExitCleanupDeadlineExceeded')
+        }, remaining) as number
+      } catch (_) { finish('ExitReadinessTimerUnavailable'); return }
+      check()
     })
+  }
+
+  /** 期限一旦终结就冻结原收据；OS随后完成资源释放也不能冒充在预算内完成。 */
+  private finalizeExitReadiness(failure: string): void {
+    if (this.exitReadinessFinalized) return
+    if (failure.length > 0) {
+      let marked: boolean = false
+      this.cleanup.forEach((step: GameSessionCleanupStep): void => {
+        if (step.reason === 'Pending') { step.completed = false; step.reason = failure; marked = true }
+      })
+      if (!marked) this.cleanup.push({ name: 'exit-readiness', completed: false, reason: failure })
+    }
+    this.exitReadinessFinalized = true
+    if (this.heartbeat >= 0) {
+      try { clearTimeout(this.heartbeat) } catch (error) { this.noteFault('exit-cleanup-timer-clear', error) }
+      this.heartbeat = -1
+    }
   }
 
   private active(): boolean {
@@ -782,6 +891,7 @@ export class GameSessionHost {
       this.maintenanceExecuting = true
       this.runStep('grab-state', (): void => { this.applyGrab(testNapi.isGrabbed()) })
       this.runStep('configuration', (): void => { this.configuration.reconcile() })
+      this.runStep('game-dialog', (): void => { GameDialogRuntime.maintain() })
       this.runStep('gamepad-route', (): void => { this.reconcileGamepadRoute() })
       this.runStep('mapped-runtime', (): void => { this.inputRuntime.reconcile() })
       this.runStep('text-session', (): void => { this.textInputRuntime.maintain() })
@@ -813,6 +923,7 @@ export class GameSessionHost {
    * 不读后来scope；超限留原墓碑并报告具名CleanupFailed，进程结束承担最终隔离。
    */
   private scheduleTouchStopCleanup(reason: string): void {
+    if (this.exitReadinessFinalized) return
     const original: EntryTouchInputMaintenanceStopReceipt | undefined=this.touchStopReceipt
     const step: GameSessionCleanupStep | undefined=this.touchStopStep
     if (original===undefined || step===undefined || step.completed) return
@@ -824,7 +935,7 @@ export class GameSessionHost {
     catch (_) { step.reason='TouchSourceCleanupClockUnavailable'; return }
     if (now>=this.touchStopDeadline) { step.reason='TouchSourceCleanupDeadlineExceeded'; return }
     try { this.heartbeat=setTimeout((): void => {
-      if (this.touchStopReceipt!==original || this.touchStopStep!==step || !this.ended()) return
+        if (this.exitReadinessFinalized || this.touchStopReceipt!==original || this.touchStopStep!==step || !this.ended()) return
       this.heartbeat=-1
       let at: number=0
       try { at=systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE) }
@@ -887,6 +998,8 @@ export class GameSessionHost {
 
   /** Pending是异步资源尚未结束，既不伪造Clean也不提前记为失败；日志失败仍继续退出。 */
   private logOutcome(reason: string): void {
+    // 先通知资源事实，日志故障不能使已经完成的清理仍被退出屏障当成Pending。
+    if (this.exitReadinessObserver !== undefined) this.exitReadinessObserver()
     try {
       const failed: boolean = this.cleanup.some((step: GameSessionCleanupStep): boolean => !step.completed && step.reason !== 'Pending')
       const pending: boolean = this.cleanup.some((step: GameSessionCleanupStep): boolean => step.reason === 'Pending')
@@ -927,4 +1040,9 @@ export function stopGameSession(reason: string): boolean {
   if (processSession === undefined) return false
   processSession.stop(reason)
   return true
+}
+
+/** Ability销毁只加入已存在的退出事务；没有Host时返回undefined，让原Native兜底继续。 */
+export function requestExistingGameSessionExit(): Promise<void> | undefined {
+  return processSession === undefined ? undefined : processSession.requestExit()
 }

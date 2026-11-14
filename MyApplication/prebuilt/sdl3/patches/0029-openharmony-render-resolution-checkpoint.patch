@@ -1,0 +1,88 @@
+diff --git a/src/video/openharmony/SDL_amclpresentation.h b/src/video/openharmony/SDL_amclpresentation.h
+index bb6c46b0..726534c5 100644
+--- a/src/video/openharmony/SDL_amclpresentation.h
++++ b/src/video/openharmony/SDL_amclpresentation.h
+@@ -40,6 +40,10 @@ typedef struct AMCL_NativeWindowLeaseBrokerV2
+     int (*movePresentationGeometry)(uint64_t, void *, uint64_t, uint64_t, uint64_t);
+     /* 宿主实时输入资格；缺少长度/回调时注入窗口不能授权。 */
+     uint32_t (*peekInputForeground)(void);
++    /* 与宿主V2追加尾部同布局；旧宿主缺尾部时不具备运行调整资格。 */
++    uint32_t (*geometryWorkFlags)(void);
++    int (*geometryCheckpoint)(void *, uint64_t, uint64_t);
++    void (*observeDrawable)(void *, uint64_t, uint64_t, int, int, uint32_t);
+ } AMCL_NativeWindowLeaseBrokerV2;
+ #define AMCL_INPUT_FOREGROUND_BROKER_SIZE \
+     ((uint32_t)(offsetof(AMCL_NativeWindowLeaseBrokerV2, peekInputForeground) + \
+@@ -73,6 +77,30 @@ typedef struct AMCL_PresentationOwner
+     uint64_t rejected;
+ } AMCL_PresentationOwner;
+ 
++/* 稳定帧仅做宿主原子flags读取，不查询EGL、不改变尺寸或呈现owner。 */
++static inline uint32_t AMCL_PresentationGeometryFlags(const AMCL_PresentationOwner *owner)
++{
++    const AMCL_NativeWindowLeaseBrokerV2 *broker = owner ? owner->broker : NULL;
++    return owner && owner->token && broker &&
++        broker->structSize >= offsetof(AMCL_NativeWindowLeaseBrokerV2, observeDrawable) + sizeof(broker->observeDrawable) &&
++        broker->geometryWorkFlags && broker->geometryCheckpoint && broker->observeDrawable
++        ? broker->geometryWorkFlags() : 0u;
++}
++
++/* 只能在真实呈现线程、驱动调用之间执行，不能由PumpEvents猜测另一个线程的current。 */
++static inline void AMCL_PresentationGeometryCheckpoint(const AMCL_PresentationOwner *owner)
++{
++    if (AMCL_PresentationGeometryFlags(owner) & 1u)
++        owner->broker->geometryCheckpoint(owner->native_window, owner->generation, owner->token);
++}
++
++/* 成功查询的实际EGL尺寸与请求分别表达，auxiliary pbuffer不调用本入口。 */
++static inline void AMCL_PresentationObserveDrawable(const AMCL_PresentationOwner *owner, int width, int height, uint32_t source)
++{
++    if (AMCL_PresentationGeometryFlags(owner) & 2u)
++        owner->broker->observeDrawable(owner->native_window, owner->generation, owner->token, width, height, source);
++}
++
+ typedef void *(*AMCL_PresentationCreateFn)(void *context, void *native_window);
+ typedef bool (*AMCL_PresentationDestroyFn)(void *context, void *surface);
+ 
+diff --git a/src/video/openharmony/SDL_openharmonyopengl.c b/src/video/openharmony/SDL_openharmonyopengl.c
+index 8a315dbf..703375a3 100644
+--- a/src/video/openharmony/SDL_openharmonyopengl.c
++++ b/src/video/openharmony/SDL_openharmonyopengl.c
+@@ -48,6 +48,19 @@ static bool OPENHARMONY_AMCL_ObservedSwap(SDL_VideoDevice *_this, SDL_WindowData
+     const Uint64 before = sample ? SDL_GetTicksNS() : 0;
+     const bool result = SDL_EGL_SwapBuffersWithError(_this, data->egl_surface, error);
+     data->amcl_last_swap_presented = verify ? runtime->presentSequence() > before_present : result;
++    /* 仅成功呈现且宿主等待确认时读真实drawable。读回失败不拿surface_width补证。
++     * 此处仍在原current owner线程，且没有另一项EGL/NativeWindow操作在途。 */
++    if (result && data->amcl_last_swap_presented && data->role == OPENHARMONY_WINDOW_PRESENTED &&
++        (AMCL_PresentationGeometryFlags(&data->presentation) & 2u)) {
++        EGLint actual_width = 0, actual_height = 0;
++        if (_this->egl_data->eglQuerySurface(_this->egl_data->egl_display, data->egl_surface, EGL_WIDTH, &actual_width) &&
++            _this->egl_data->eglQuerySurface(_this->egl_data->egl_display, data->egl_surface, EGL_HEIGHT, &actual_height)) {
++            AMCL_PresentationObserveDrawable(&data->presentation, actual_width, actual_height, 1u);
++        } else {
++            SDL_LogWarn(SDL_LOG_CATEGORY_VIDEO, "AMCL resolution drawable query failed: 0x%x", _this->egl_data->eglGetError());
++            AMCL_PresentationObserveDrawable(&data->presentation, 0, 0, 0u);
++        }
++    }
+     if (observer) observer->swapped("SDL3", sample ? SDL_GetTicksNS() - before : 0, result ? 1 : 0, (uint32_t)*error);
+     /* present成功后下一帧acquire仍可能失败；先记真实帧再交回错误，避免把已出帧
+      * 的终局误当首帧前故障。辅助pbuffer永远不通知输入或学习历史。 */
+@@ -1180,6 +1193,17 @@ bool OPENHARMONY_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+     // OHNativeWindow is retired. Sync first so a newly published lease can
+     // recover a previously suspended window at this same present boundary.
+     SDL_GLContext context = SDL_GL_GetCurrentContext();
++    /* 宿主配置只交给真实current线程；完成后原Prepare路径采纳新代次并安全通知游戏。
++     * 不在CreateSDLWindow内触发watcher，也不把主窗口比例施加到辅助pbuffer。 */
++    if (AMCL_PresentationGeometryFlags(&data->presentation) & 1u) {
++        const AmclGraphicsRuntimeV1 *geometry_runtime = AMCL_GraphicsRuntime();
++        EGLContext (*geometry_current)(void) = geometry_runtime
++            ? (EGLContext (*)(void))geometry_runtime->eglProc("eglGetCurrentContext") : NULL;
++        if (context && SDL_GL_GetCurrentWindow() == window && geometry_current &&
++            data->owner_thread == SDL_GetCurrentThreadID() && geometry_current() == (EGLContext)context) {
++            AMCL_PresentationGeometryCheckpoint(&data->presentation);
++        }
++    }
+     if (!OPENHARMONY_AMCL_PreparePresentedWindow(
+             _this, window, context, false)) {
+         ((SDL_VideoData *)_this->internal)->swap_fail++;

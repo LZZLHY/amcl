@@ -13,6 +13,7 @@
 #include "ohos_frame_rate_hint.h"
 #include "ohos_native_window_telemetry.h"
 #include "render_scale.h"
+#include "render_resolution_state.h"
 #include "surface_republish_policy.h"
 #include "touch_input.h"
 #if AMCL_INPUT_GATE0_TELEMETRY
@@ -26,6 +27,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include <atomic>
+#include <sstream>
+#include <chrono>
 #include <unistd.h>
 
 #undef LOG_TAG
@@ -57,6 +61,31 @@ static int g_realHeight = 0;
 // 供 amclRenderScaleReapplyForLaunch 重放 Changed 流程：surface gate 的
 // update/accept 都要 component+window 成对身份，仅存 g_window 不够。
 static OH_NativeXComponent* g_component = nullptr;
+// 已应用显示几何与最新平台区域分开；UI只记录后者，活动生产者的修改交给owner安全点。
+static int g_surfaceWidth = 0, g_surfaceHeight = 0;
+static amcl::renderscale::ResolutionState g_resolution;
+static std::atomic<uint32_t> g_resolutionWork{0};
+static bool g_geometryClientRegistered = false;
+static bool g_haveDrawableObservation = false;
+static bool g_runtimeResolutionRequest = false;
+static uint64_t g_timedRevision = 0;
+static std::atomic<int64_t> g_resolutionChangedAtNs{0};
+static int64_t ResolutionNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+static uint32_t ResolutionWorkFlags() { return g_resolutionWork.load(std::memory_order_acquire); }
+static int ResolutionCheckpoint(void*, uint64_t, uint64_t);
+static void ResolutionDrawableObserved(void*, uint64_t, uint64_t, int, int, uint32_t);
+static const AmclWindowGeometryClientV1 g_geometryClient{
+    sizeof(AmclWindowGeometryClientV1), 1, ResolutionWorkFlags, ResolutionCheckpoint, ResolutionDrawableObserved};
+static void PublishResolutionWork() {
+    const uint32_t flags = g_resolution.flags();
+    if (flags != g_resolutionWork.load(std::memory_order_relaxed) || g_timedRevision != g_resolution.revision()) {
+        g_timedRevision = g_resolution.revision();
+        g_resolutionChangedAtNs.store(ResolutionNowNs(), std::memory_order_release);
+    }
+    g_resolutionWork.store(flags, std::memory_order_release);
+}
 
 namespace {
 
@@ -146,6 +175,10 @@ void PublishInputForegroundFocusState(amcl::ohos::ComponentFocus focus,
 void amcl::ohos::PublishInputForegroundGateForAbility(
         uint32_t abilityForegroundMask, const char* reason) {
     std::lock_guard<std::mutex> lock(g_inputForegroundGateMutex);
+    // 恢复前台重新给owner完整确认窗口；不把后台停帧时间算作几何失败。
+    // 只写单个原子时点，不在foreground锁内反向取得surface gate。
+    if (g_inputForegroundGate.abilityForegroundMask == 0 && abilityForegroundMask != 0)
+        g_resolutionChangedAtNs.store(ResolutionNowNs(), std::memory_order_release);
     g_inputForegroundGate.abilityForegroundMask = abilityForegroundMask;
     // 同一OR-mask同时驱动输入可见性和capture准入；只写原子位，不在frame-rate
     // 发布锁内调用窗口管理器。Unknown组件焦点在前台恢复后仍然有效。
@@ -199,63 +232,24 @@ static uint64_t ClearSurfaceMutation(void* opaque,
 }
 
 // ==================== 渲染分辨率缩放 ====================
-// 应用缩放后的 buffer 几何并返回**发布尺寸**（scale==1 时 == real 且不触碰
-// NativeWindow），同时发布输入坐标映射快照。契约与"为什么 SET_BUFFER_GEOMETRY
-// 不受 telemetry 头 'active resize 不做查询' 警告约束"（SET 走 buffer queue
-// 生产者配置、调用点全在 UI/JS 主线程序列且先于发布）的完整论证见
-// render_scale.h 头注释。
-static void ApplyRenderScaleGeometry(void* window, int realWidth, int realHeight,
-                                     int* publishWidth, int* publishHeight) {
-    *publishWidth = realWidth;
-    *publishHeight = realHeight;
-
-    bool scaleValid = false;
-    const char* scaleText = getenv("AMCL_RENDER_SCALE");
-    const double scale =
-        amcl::renderscale::ParseScale(scaleText, &scaleValid);
-    int scaledWidth = realWidth;
-    int scaledHeight = realHeight;
-    if (scaleValid && realWidth > 0 && realHeight > 0) {
-        scaledWidth = amcl::renderscale::ScaledDimension(realWidth, scale);
-        scaledHeight = amcl::renderscale::ScaledDimension(realHeight, scale);
+// 仅在首次生产者出现前或真实呈现owner的安全点调用。两个平台操作均不具备跨线程
+// 自动互斥保证；成功只是配置候选，映射要与后续broker/input发布一起提交。
+static bool ApplyRenderScaleGeometry(void* window, const amcl::renderscale::ResolutionTarget& target, uint64_t revision) {
+    if (!window || target.displayWidth <= 0 || target.displayHeight <= 0) return false;
+    auto* native = static_cast<OHNativeWindow*>(window);
+    // 原生尺寸不需要缩放能力；可选缩放模式失败不能阻断100%的原有基线。
+    const bool scaled = target.width != target.displayWidth || target.height != target.displayHeight;
+    const int32_t scaling = scaled ? OH_NativeWindow_NativeWindowSetScalingModeV2(native, OH_SCALING_MODE_SCALE_TO_WINDOW_V2) : 0;
+    const int32_t geometry = scaling == 0 ? OH_NativeWindow_NativeWindowHandleOpt(
+        native, SET_BUFFER_GEOMETRY, target.width, target.height) : scaling;
+    if (scaling != 0 || geometry != 0) {
+        OH_LOG_ERROR(LOG_APP, "[AMCL-RESOLUTION] configure-failed scaling=%{public}d geometry=%{public}d request=%{public}llu",
+            scaling, geometry, static_cast<unsigned long long>(revision));
+        return false;
     }
-
-    const bool wantScale =
-        scaledWidth != realWidth || scaledHeight != realHeight;
-    // 上一次发布处于缩放态而本次回到恒等（进程内重启把 scale 改回 1）时，必须显式
-    // 把几何 SET 回 real：BUFFER_GEOMETRY 是 NativeWindow 的持久状态，不还原就残留。
-    const bool mustRestore =
-        !wantScale && amcl::renderscale::MappingActive() && realWidth > 0 &&
-        realHeight > 0;
-
-    if ((wantScale || mustRestore) && window != nullptr) {
-        // SET_BUFFER_GEOMETRY 变参序是 (width, height)——与 GET 的 (height, width) 相反。
-        const int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(
-            static_cast<OHNativeWindow*>(window), SET_BUFFER_GEOMETRY,
-            static_cast<int32_t>(wantScale ? scaledWidth : realWidth),
-            static_cast<int32_t>(wantScale ? scaledHeight : realHeight));
-        if (rc != 0) {
-            // 失败按恒等发布：宁可不降分辨率，也不能让输入映射与真实 buffer 几何脱节。
-            OH_LOG_WARN(LOG_APP,
-                        "[AMCL-RENDER-SCALE] SET_BUFFER_GEOMETRY failed rc=%{public}d "
-                        "requested=%{public}.4f real=%{public}dx%{public}d; staying at 1.0",
-                        rc, scale, realWidth, realHeight);
-        } else if (wantScale) {
-            *publishWidth = scaledWidth;
-            *publishHeight = scaledHeight;
-            OH_LOG_INFO(LOG_APP,
-                        "[AMCL-RENDER-SCALE] requested=%{public}.2f "
-                        "real=%{public}dx%{public}d effective=%{public}dx%{public}d",
-                        scale, realWidth, realHeight, scaledWidth, scaledHeight);
-        } else {
-            OH_LOG_INFO(LOG_APP,
-                        "[AMCL-RENDER-SCALE] restored 1.0 real=%{public}dx%{public}d",
-                        realWidth, realHeight);
-        }
-    }
-
-    amcl::renderscale::PublishSnapshot(realWidth, realHeight, *publishWidth,
-                                       *publishHeight);
+    OH_LOG_INFO(LOG_APP, "[AMCL-RESOLUTION] configured request=%{public}llu scale=%{public}.4f display=%{public}dx%{public}d logical=%{public}dx%{public}d actual=pending",
+        static_cast<unsigned long long>(revision), target.scale, target.displayWidth, target.displayHeight, target.width, target.height);
+    return true;
 }
 
 static void DisableCurrentInputSurfaceAfterLifecycleFailure(
@@ -291,6 +285,11 @@ static void DisableCurrentInputSurfaceAfterLifecycleFailure(
     g_component = nullptr;
     // 输入映射快照与 surface 同生命周期：surface 失效后没有任何坐标可映射。
     amcl::renderscale::ResetSnapshot();
+    g_resolution.suspend();
+    g_surfaceWidth = g_surfaceHeight = 0;
+    g_haveDrawableObservation = false;
+    PublishResolutionWork();
+    ohos_surface_input_gate_set_geometry_pending(false);
 }
 
 // 2 的幂节流：只在第 1、2、4、8… 次记录重复事件，计数本身仍逐次累加供诊断。
@@ -311,6 +310,16 @@ static void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
             component, "surface-create-malformed");
         return;
     }
+    AmclWindowHostStats createdOwner{};
+    amclWindowHostGetStats(&createdOwner);
+    if (ohos_surface_input_gate_accept(component, window) != 0 ||
+        (window == g_window && createdOwner.livePresentationToken != 0)) {
+        // 重复/歧义Create不能在UI线程配置一个已有producer的NativeWindow。
+        DisableCurrentInputSurfaceAfterLifecycleFailure(component, "surface-create-occupied");
+        g_resolution.requireRestart("surface-create-occupied");
+        PublishResolutionWork();
+        return;
+    }
 
     uint64_t w = 0, h = 0;
     OH_NativeXComponent_GetXComponentSize(component, window, &w, &h);
@@ -325,8 +334,28 @@ static void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     //  由 amclRenderScaleReapplyForLaunch 在 env 写入后重放，见 render_scale.h。）
     int publishWidth = createdWidth;
     int publishHeight = createdHeight;
-    ApplyRenderScaleGeometry(window, createdWidth, createdHeight,
-                             &publishWidth, &publishHeight);
+    g_geometryClientRegistered = amclWindowHostRegisterGeometryClient(&g_geometryClient) == 1;
+    if (!g_geometryClientRegistered) {
+        DisableCurrentInputSurfaceAfterLifecycleFailure(component, "geometry-client-conflict");
+        g_resolution.requireRestart("geometry-client-conflict");
+        PublishResolutionWork();
+        return;
+    }
+    // 新资源必须撤销旧actual证据；即使物理尺寸相同，也要重新配置和确认。
+    g_resolution.suspend();
+    g_resolution.displayChanged(createdWidth, createdHeight);
+    if (createdWidth > 0 && createdHeight > 0 &&
+        !ApplyRenderScaleGeometry(window, g_resolution.target(), g_resolution.revision())) {
+        g_resolution.nativeFallback(createdWidth, createdHeight, "initial-geometry-rejected");
+        if (!ApplyRenderScaleGeometry(window, g_resolution.target(), g_resolution.revision())) {
+            DisableCurrentInputSurfaceAfterLifecycleFailure(component, "initial-geometry-failed");
+            return;
+        }
+    }
+    if (createdWidth > 0 && createdHeight > 0) {
+        publishWidth = g_resolution.target().width;
+        publishHeight = g_resolution.target().height;
+    }
 
     SurfacePublicationMutationContext mutationContext{
         window, publishWidth, publishHeight};
@@ -354,6 +383,15 @@ static void OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
     g_realWidth = createdWidth;
     g_realHeight = createdHeight;
     g_component = component;
+    g_surfaceWidth = createdWidth;
+    g_surfaceHeight = createdHeight;
+    g_haveDrawableObservation = false;
+    if (createdWidth > 0 && createdHeight > 0) g_resolution.configured(generation, g_resolution.revision());
+    amcl::renderscale::PublishSnapshot(createdWidth, createdHeight, publishWidth, publishHeight);
+    PublishResolutionWork();
+    // 创建成功只是发布了配置；首次 actual 之前同样停收游戏输入，避免低分辨率映射
+    // 已更新而游戏 drawable 尚未建立。独立 ArkUI 护栏不经过这个游戏输入门。
+    ohos_surface_input_gate_set_geometry_pending(true);
     AMCL_LOG_I(LOG_TAG, "Surface size: %{public}dx%{public}d generation=%{public}llu",
                 g_width, g_height, (unsigned long long)generation);
 
@@ -376,32 +414,108 @@ enum class SurfaceRefreshCause { kSurfaceChanged, kLaunchReplay };
 static uint64_t g_idempotentSurfaceChanges = 0u;
 
 // OnSurfaceChanged 与启动时机重放（amclRenderScaleReapplyForLaunch）共用的核心。
-// 调用方必须持有 surface gate 锁且 accept 已通过；expectedGeneration 仅用于日志。
+// 调用方必须持有surface gate且accept已通过；expectedGeneration绑定无变更确认和错误。
+// ownerCheckpoint仅使用已采样P；alreadyConfigured只能由同一revision完成SET后再次CAS的owner传入。
 // 未变判定见 surface_republish_policy.h：新代次会让 input core 当作新 surface 复位
 // （释放全部 held、清 capture/文本会话），而图形侧此时没有任何需要处理的变化。
 static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
                                             void* window,
                                             uint64_t expectedGeneration,
                                             SurfaceRefreshCause cause,
-                                            const char* reason) {
+                                            const char* reason,
+                                            int suppliedWidth = -1, int suppliedHeight = -1,
+                                            bool ownerCheckpoint = false, bool alreadyConfigured = false) {
     uint64_t w = 0, h = 0;
-    OH_NativeXComponent_GetXComponentSize(component, window, &w, &h);
-    const int newWidth = CheckedSurfaceDimension(w, "width");
-    const int newHeight = CheckedSurfaceDimension(h, "height");
-
-    // 尺寸变化（折叠/键盘避让）同样先 SET 新几何再发布，纪律同 Created。
-    // 判定之前执行：即使本次不发布，也会按当前 scale 重设 buffer 几何（SET 幂等）。
+    // owner线程只消费UI已经采样的物理区域，不能跨线程调用XComponent尺寸接口。
+    if (!ownerCheckpoint) OH_NativeXComponent_GetXComponentSize(component, window, &w, &h);
+    const int newWidth = ownerCheckpoint ? suppliedWidth : CheckedSurfaceDimension(w, "width");
+    const int newHeight = ownerCheckpoint ? suppliedHeight : CheckedSurfaceDimension(h, "height");
+    g_surfaceWidth = newWidth;
+    g_surfaceHeight = newHeight;
+    g_resolution.displayChanged(newWidth, newHeight);
+    if (newWidth <= 0 || newHeight <= 0) {
+        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
+        ohos_surface_input_gate_set_geometry_pending(true);
+        g_haveDrawableObservation = false;
+    }
+    if (newWidth > 0 && newHeight > 0 && !(g_resolution.flags() & 1u)) {
+        if (!ownerCheckpoint && cause == SurfaceRefreshCause::kSurfaceChanged)
+            amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
+        return;
+    }
+    AmclWindowHostStats ownerStats{};
+    amclWindowHostGetStats(&ownerStats);
+    if (!ownerCheckpoint && cause == SurfaceRefreshCause::kSurfaceChanged &&
+        newWidth > 0 && newHeight > 0 && ownerStats.livePresentationToken != 0) {
+        // producer token 也会在首次 shader/资源加载前建立。只有本局曾确认目标 drawable
+        // 才把系统尺寸变化视为有界运行事务；首帧前转向不能意外启用 30 秒终局。
+        g_runtimeResolutionRequest = g_resolution.hasConfirmedDuringLaunch();
+        // 物理区域已变时先退休旧held并暂停新输入；producer在下一安全点配置和发布。
+        if (g_realWidth != newWidth || g_realHeight != newHeight) {
+            ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
+            ohos_surface_input_gate_set_geometry_pending(true);
+        }
+        // 零面积时owner可能已经停车，单纯等待swap会互等。先发布最后一次已配置的
+        // 非零逻辑尺寸唤醒前端，保持输入暂停；不在UI线程改NativeWindow，也不宣称
+        // 旧GPU资源仍可用。原resourceEpoch变化继续要求owner按既有流程退休/重建。
+        const auto previous = g_resolution.applied();
+        if ((g_width <= 0 || g_height <= 0) && previous.width > 0 && previous.height > 0) {
+            SurfacePublicationMutationContext resume{window, previous.width, previous.height};
+            const uint64_t resumed = ohos_surface_input_gate_update_transaction(component, window, UpdateSurfaceMutation, &resume);
+            if (!resumed) {
+                DisableCurrentInputSurfaceAfterLifecycleFailure(component, "resolution-resume-publication");
+                return;
+            }
+            g_width = previous.width;
+            g_height = previous.height;
+            g_realWidth = newWidth;
+            g_realHeight = newHeight;
+            amcl::renderscale::PublishSnapshot(newWidth, newHeight, g_width, g_height);
+            amcl::input::PlatformInputSurfaceChanged(static_cast<uint32_t>(g_width), static_cast<uint32_t>(g_height), resumed);
+        }
+        PublishResolutionWork();
+        amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
+        return;
+    }
+    if (newWidth > 0 && newHeight > 0) {
+        // prelaunch 重放和无 producer 的初始化也遵守“确认后恢复”规则。这里仍持 gate，
+        // 先退休 held，再配置/发布；SET 失败分支只在旧 actual 仍有效时允许继续输入。
+        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
+        ohos_surface_input_gate_set_geometry_pending(true);
+    }
     int publishWidth = newWidth;
     int publishHeight = newHeight;
-    ApplyRenderScaleGeometry(window, newWidth, newHeight, &publishWidth,
-                             &publishHeight);
+    if (newWidth > 0 && newHeight > 0) {
+        publishWidth = g_resolution.target().width;
+        publishHeight = g_resolution.target().height;
+    }
+    bool geometryConfigured = alreadyConfigured || newWidth <= 0 || newHeight <= 0 ||
+        ApplyRenderScaleGeometry(window, g_resolution.target(), g_resolution.revision());
+    // 尚无生产者时可以明确尝试原生候选；它也必须成功SET并在首次呈现后确认。
+    // 不把失败返回当作“系统应该仍是原生尺寸”。
+    if (!geometryConfigured && ownerStats.livePresentationToken == 0 && g_resolution.target().scale != 1.0) {
+        g_resolution.nativeFallback(newWidth, newHeight, "initial-geometry-rejected");
+        publishWidth = g_resolution.target().width;
+        publishHeight = g_resolution.target().height;
+        geometryConfigured = ApplyRenderScaleGeometry(window, g_resolution.target(), g_resolution.revision());
+    }
+    if (!geometryConfigured) {
+        g_resolution.rejected("geometry-configure-failed");
+        if (g_realWidth != newWidth || g_realHeight != newHeight || !g_resolution.hasConfirmedDrawable())
+            g_resolution.requireRestart("physical-geometry-unconfirmed");
+        ohos_surface_input_gate_set_geometry_pending(g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired);
+        PublishResolutionWork();
+        return;
+    }
 
     const amcl::ohos::SurfacePublicationGeometry current{
         g_window, g_realWidth, g_realHeight, g_width, g_height};
     const amcl::ohos::SurfacePublicationGeometry next{
         window, newWidth, newHeight, publishWidth, publishHeight};
     if (amcl::ohos::SurfacePublicationUnchanged(current, next)) {
-        if (cause == SurfaceRefreshCause::kSurfaceChanged) {
+        if (newWidth > 0 && newHeight > 0) g_resolution.configured(expectedGeneration, g_resolution.revision());
+        PublishResolutionWork();
+        if (cause == SurfaceRefreshCause::kSurfaceChanged && !ownerCheckpoint) {
             const uint64_t count = ++g_idempotentSurfaceChanges;
             if (FirstOrPowerOfTwo(count)) {
                 OH_LOG_INFO(LOG_APP,
@@ -412,7 +526,7 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
                             (unsigned long long)expectedGeneration, newWidth,
                             newHeight, publishWidth, publishHeight);
             }
-            amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
+            if (!ownerCheckpoint) amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
         }
         return;
     }
@@ -442,6 +556,9 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
     g_height = publishHeight;
     g_realWidth = newWidth;
     g_realHeight = newHeight;
+    amcl::renderscale::PublishSnapshot(newWidth, newHeight, publishWidth, publishHeight);
+    if (newWidth > 0 && newHeight > 0) g_resolution.configured(generation, g_resolution.revision());
+    PublishResolutionWork();
     OH_LOG_INFO(LOG_APP,
                 "Surface changed: %{public}dx%{public}d generation=%{public}llu",
                 g_width, g_height, (unsigned long long)generation);
@@ -449,7 +566,7 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
     amcl::input::PlatformInputSurfaceChanged(
         static_cast<uint32_t>(g_width), static_cast<uint32_t>(g_height),
         generation);
-    amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
+    if (!ownerCheckpoint) amcl::ohos::ApplyExpectedFrameRateHint(component, reason);
 }
 
 static void OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
@@ -472,6 +589,11 @@ static void OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
 // render_scale.h）。与 surface 回调同一 JS/UI 线程序列，锁序也与回调一致。
 extern "C" void amclRenderScaleReapplyForLaunch(void) {
     SurfaceInputGateTransaction gateTransaction;
+    bool valid = false;
+    g_resolution.beginLaunch(amcl::renderscale::ParseScale(getenv("AMCL_RENDER_SCALE"), &valid));
+    g_haveDrawableObservation = false;
+    g_runtimeResolutionRequest = false;
+    PublishResolutionWork();
     if (g_component == nullptr || g_window == nullptr) {
         // surface 尚未创建（或已销毁）：之后的 OnSurfaceCreated 会读到刚写的 env。
         return;
@@ -482,6 +604,112 @@ extern "C" void amclRenderScaleReapplyForLaunch(void) {
     RefreshPublishedSurfaceGeometry(g_component, g_window, expectedGeneration,
                                     SurfaceRefreshCause::kLaunchReplay,
                                     "render-scale-launch");
+}
+
+/** 渲染安全点不运行游戏回调；旧token和旧surface在gate内复核后才允许改变几何。 */
+static int ResolutionCheckpoint(void* window, uint64_t generation, uint64_t token) {
+    amcl::renderscale::ResolutionTarget candidate{};
+    uint64_t revision = 0;
+    {
+        SurfaceInputGateTransaction transaction;
+        AmclWindowHostStats stats{};
+        amclWindowHostGetStats(&stats);
+        if (!g_component || window != g_window || token != stats.livePresentationToken ||
+            ohos_surface_input_gate_accept(g_component, window) != generation || !(g_resolution.flags() & 1u)) return 0;
+        candidate = g_resolution.target();
+        revision = g_resolution.revision();
+        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
+        ohos_surface_input_gate_set_geometry_pending(true);
+    }
+    // 调用方仍持强引用和当前呈现资格。驱动操作不占surface/input gate，UI不会因
+    // producer配置等待而被锁住。期间UI可合并新请求/退休窗口；下面必须重新CAS。
+    const bool configured = ApplyRenderScaleGeometry(window, candidate, revision);
+    SurfaceInputGateTransaction transaction;
+    AmclWindowHostStats stats{};
+    amclWindowHostGetStats(&stats);
+    if (!g_component || window != g_window || token != stats.livePresentationToken ||
+        ohos_surface_input_gate_accept(g_component, window) != generation ||
+        revision != g_resolution.revision() || !(g_resolution.flags() & 1u)) return 0;
+    if (!configured) {
+        g_resolution.rejected("geometry-configure-failed");
+        if (g_realWidth != candidate.displayWidth || g_realHeight != candidate.displayHeight || !g_resolution.hasConfirmedDrawable())
+            g_resolution.requireRestart("physical-geometry-unconfirmed");
+        ohos_surface_input_gate_set_geometry_pending(g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired);
+        PublishResolutionWork();
+        return -1;
+    }
+    RefreshPublishedSurfaceGeometry(g_component, window, generation, SurfaceRefreshCause::kSurfaceChanged,
+        "render-scale-owner", candidate.displayWidth, candidate.displayHeight, true, true);
+    return g_resolution.phase() == amcl::renderscale::ResolutionPhase::kAwaitingDrawable ||
+        g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestoring ? 1 : -1;
+}
+
+/** 只在变化事务中接收同代实际图像；正常稳定帧不查询EGL、不加本gate锁。 */
+static void ResolutionDrawableObserved(void* window, uint64_t generation, uint64_t token,
+                                       int width, int height, uint32_t source) {
+    SurfaceInputGateTransaction transaction;
+    AmclWindowHostStats stats{};
+    amclWindowHostGetStats(&stats);
+    if (!g_component || window != g_window || token != stats.livePresentationToken ||
+        ohos_surface_input_gate_accept(g_component, window) != generation) return;
+    if (!g_resolution.observe(generation, width, height, source)) return;
+    // 正尺寸但不匹配目标不能开放第一笔手动事务；先让初始确认/有限恢复闭环。
+    if (g_resolution.hasConfirmedDrawable()) g_haveDrawableObservation = true;
+    PublishResolutionWork();
+    const auto phase = g_resolution.phase();
+    if (phase == amcl::renderscale::ResolutionPhase::kConfirmed || phase == amcl::renderscale::ResolutionPhase::kRejected)
+        ohos_surface_input_gate_set_geometry_pending(false);
+    else if (phase == amcl::renderscale::ResolutionPhase::kRestartRequired) {
+        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
+        ohos_surface_input_gate_set_geometry_pending(true);
+    }
+    if (!(g_resolution.flags() & 2u)) OH_LOG_INFO(LOG_APP,
+        "[AMCL-RESOLUTION] observed request=%{public}llu generation=%{public}llu source=%{public}u actual=%{public}dx%{public}d phase=%{public}d reason=%{public}s",
+        static_cast<unsigned long long>(g_resolution.revision()), static_cast<unsigned long long>(generation),
+        source, width, height, static_cast<int>(phase), g_resolution.reason());
+}
+
+extern "C" bool amclResolutionRequestPercent(double percent) {
+    SurfaceInputGateTransaction transaction;
+    if (!g_geometryClientRegistered || !g_haveDrawableObservation || !g_component || !g_window ||
+        g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired ||
+        ohos_surface_input_gate_accept(g_component, g_window) == 0) return false;
+    const bool accepted = g_resolution.request(percent / 100.0, g_surfaceWidth, g_surfaceHeight);
+    if (accepted) g_runtimeResolutionRequest = true;
+    PublishResolutionWork();
+    return accepted;
+}
+
+extern "C" const char* amclResolutionStatusJson(void) {
+    SurfaceInputGateTransaction transaction;
+    // 手动/活动窗口事务不能无限挂起。只在Ability确实前台时计入此结束边界；
+    // 首次游戏加载的shader/资源准备不受30秒限制，也不因后台停帧误判失败。
+    bool foreground = false;
+    { std::lock_guard<std::mutex> lock(g_inputForegroundGateMutex); foreground = g_inputForegroundGate.abilityForegroundMask != 0; }
+    if (g_runtimeResolutionRequest && g_resolution.flags() != 0u && foreground &&
+        ResolutionNowNs() - g_resolutionChangedAtNs.load(std::memory_order_acquire) > INT64_C(30000000000)) {
+        g_resolution.requireRestart("geometry-confirmation-timeout");
+        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
+        ohos_surface_input_gate_set_geometry_pending(true);
+        PublishResolutionWork();
+    }
+    static thread_local std::string result;
+    const char* phaseNames[] = {"idle", "pending", "awaiting-drawable", "confirmed", "rejected", "restoring", "restart-required", "suspended"};
+    const auto& applied = g_resolution.applied();
+    std::ostringstream json;
+    json << "{\"schema\":1,\"requestId\":\"" << g_resolution.revision() << "\",\"generation\":\"" << g_resolution.generation()
+         << "\",\"phase\":\"" << phaseNames[static_cast<unsigned>(g_resolution.phase())]
+         << "\",\"requestedPercent\":" << g_resolution.desiredScale() * 100.0
+         << ",\"configuredPercent\":" << applied.scale * 100.0
+         << ",\"displayWidth\":" << g_surfaceWidth << ",\"displayHeight\":" << g_surfaceHeight
+         << ",\"logicalWidth\":" << applied.width << ",\"logicalHeight\":" << applied.height
+         << ",\"actualWidth\":" << g_resolution.actualWidth() << ",\"actualHeight\":" << g_resolution.actualHeight()
+         << ",\"actualSource\":" << g_resolution.observationSource()
+         << ",\"canRequest\":" << (g_geometryClientRegistered && g_haveDrawableObservation ? "true" : "false")
+         << ",\"virtualWindowManaged\":" << (g_resolution.virtualWindowManaged() ? "true" : "false")
+         << ",\"reason\":\"" << g_resolution.reason() << "\"}";
+    result = json.str();
+    return result.c_str();
 }
 
 static void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
@@ -539,6 +767,11 @@ static void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
     // 映射快照随 surface 一起失效；下一个 surface 的 Created 会重新发布。
     // 销毁不触碰环境（I27-05）：窗口指针与尺寸都只在窗口宿主快照里，清除快照即可。
     amcl::renderscale::ResetSnapshot();
+    g_resolution.suspend();
+    g_surfaceWidth = g_surfaceHeight = 0;
+    g_haveDrawableObservation = false;
+    PublishResolutionWork();
+    ohos_surface_input_gate_set_geometry_pending(false);
     AMCL_LOG_I(LOG_TAG, "Surface snapshot cleared generation=%{public}llu",
                 (unsigned long long)generation);
 }
@@ -568,10 +801,8 @@ static void OnBlur(OH_NativeXComponent* component, void* window) {
     PublishInputForegroundFocusState(amcl::ohos::ComponentFocus::Blurred,
                                      "blur");
     ohos_cancel_all_input(AMCL_INPUT_CANCEL_FOCUS_LOST);
-    // The window manager releases the cursor lock by itself on focus loss.
-    // Record it here so the next lock request is not skipped as redundant;
-    // this is the authoritative edge, earlier than any ArkTS observation.
-    amcl_cursor_lock_note_focus_lost();
+    // XComponent失焦并不证明系统窗口失焦；上面的主动解锁若失败，保留原窗口清理目标。
+    // 只有真实窗口失焦通知才可确认平台自动释放，不能在这里把待办当成已经完成。
     amcl::ohos::SetFrameRateFocused(component, false, "blur");
 }
 

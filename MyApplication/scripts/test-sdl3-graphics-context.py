@@ -33,9 +33,20 @@ with workspace_temporary_directory(prefix='amcl-sdl-context-') as temporary:
 #include <iostream>
 using Uint64=uint64_t;using EGLint=int;
 #define OPENHARMONY_WINDOW_PRESENTED 0
-struct SDL_WindowData {int role=0;void* egl_surface=nullptr;bool amcl_last_swap_presented=false;};
+#define EGL_WIDTH 0x3057
+#define EGL_HEIGHT 0x3056
+#define SDL_LOG_CATEGORY_VIDEO 1
+struct Presentation {uint32_t flags=0;};
+struct SDL_WindowData {int role=0;void* egl_surface=nullptr;bool amcl_last_swap_presented=false;Presentation presentation;};
 struct SDL_VideoData {int presented_notify=0,presented_swap_success=0;};
-struct SDL_VideoDevice {SDL_VideoData* internal;};
+struct EglData {void* egl_display=nullptr;bool(*eglQuerySurface)(void*,void*,int,int*);int(*eglGetError)();};
+struct SDL_VideoDevice {SDL_VideoData* internal;EglData* egl_data=nullptr;};
+bool queryOk=true;int observedWidth=-1,observedHeight=-1;uint32_t observedKind=99;int warnings=0;
+uint32_t AMCL_PresentationGeometryFlags(Presentation* p){return p->flags;}
+void AMCL_PresentationObserveDrawable(Presentation*,int width,int height,uint32_t kind){observedWidth=width;observedHeight=height;observedKind=kind;}
+bool querySurface(void*,void*,int field,int* result){*result=field==EGL_WIDTH?480:270;return queryOk;}
+int queryError(){return 0x300d;}
+void SDL_LogWarn(int,const char*,int){++warnings;}
 struct AMCL_GraphicsObserverV1 {void(*swapped)(const char*,uint64_t,int,uint32_t);};
 uint64_t sequence=0;bool result=true,advance=true;int input=0,swaps=0;
 AmclGraphicsRuntimeV1 runtime{};
@@ -61,6 +72,12 @@ int main()try{
     window.role=0;advance=false;runtime.presentSequence=nullptr;
     CHECK(OPENHARMONY_AMCL_ObservedSwap(&device,&window,&error) && input==3);
     CHECK(video.presented_notify==3 && video.presented_swap_success==3 && swaps==5);
+    // 系统查询口显式报告真实drawable；失败必须传递未知值，不能沿用上次尺寸。
+    EglData egl{nullptr,&querySurface,&queryError};device.egl_data=&egl;window.presentation.flags=2;
+    CHECK(OPENHARMONY_AMCL_ObservedSwap(&device,&window,&error));
+    CHECK(observedWidth==480 && observedHeight==270 && observedKind==1);
+    queryOk=false;CHECK(OPENHARMONY_AMCL_ObservedSwap(&device,&window,&error));
+    CHECK(observedWidth==0 && observedHeight==0 && observedKind==0 && warnings==1);
     std::cout<<"SDL present evidence PASS: actual production swap wrapper, deferred/auxiliary/failure exclusion and post-present failure\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

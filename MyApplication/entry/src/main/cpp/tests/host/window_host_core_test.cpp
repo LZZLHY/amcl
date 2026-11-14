@@ -162,7 +162,31 @@ void resourceEpochs() {
     check(core.clear(window, 6) == 7 && driver.references[window] == 0, "identity test reference balance");
 }
 
+// 配置资格不代表GPU资源可沿用：正常尺寸变化/零面积恢复可到owner安全点，
+// 但clear后同地址重发、其他owner token和其他window都不能修改当前窗口。
+void geometryCheckpointIdentity() {
+    NativeDriver driver;
+    WindowHostCore core(driver.api());
+    void* window = reinterpret_cast<void*>(0x4321);
+    uint64_t token = 0;
+    check(core.publish(window, 2688, 1216) == 1, "geometry checkpoint initial publication");
+    check(core.claimPresentation(window, 1, 1, &token) == 1, "geometry checkpoint owner claim");
+    check(core.matchesPresentation(window, 1, token), "current drawable observation identity accepted");
+    check(core.geometryCheckpointGeneration(window, 1, token + 1) == 0, "foreign owner cannot configure geometry");
+    check(core.updateSize(window, 1, 0, 0) == 2, "zero geometry suspends");
+    check(core.geometryCheckpointGeneration(window, 1, token) == 0, "suspended publication is not ready for configure");
+    check(core.updateSize(window, 2, 2688, 1216) == 3, "resume announces last configured size");
+    check(core.geometryCheckpointGeneration(window, 1, token) == 3, "same native object permits owner-safe configure after zero size");
+    check(!core.matchesPresentation(window, 1, token), "old drawable generation cannot confirm resumed resources");
+    check(!core.movePresentationGeometry(token, window, 1, 3, 1), "configuration authorization does not prove GPU continuity");
+    check(core.clear(window, 3) == 4 && core.publish(window, 2688, 1216) == 5, "same-address replacement");
+    check(core.geometryCheckpointGeneration(window, 1, token) == 0, "missed clear cannot configure replacement");
+    check(core.releasePresentation(token) == 1, "old owner retires");
+    core.clear(window, 5);
+}
+
 int main() {
+    geometryCheckpointIdentity();
     lifetimeAndFailures();
     inputTransactionOrder();
     resourceEpochs();

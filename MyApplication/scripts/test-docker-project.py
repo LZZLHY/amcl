@@ -33,6 +33,52 @@ class ProjectContract(unittest.TestCase):
     def tearDown(self):
         for item in reversed(self.patches): item.stop()
         self.temporary.cleanup()
+    def test_install_archives_require_all_four_immutable_files(self):
+        """不连接Docker即可拒绝错误源/摘要/重复major，不允许以tag或文件名代替身份。"""
+        records=[]
+        for major in ('8','17','21','25'):
+            archive=self.root/(major+'.zip'); archive.write_bytes(('fixture-'+major).encode())
+            records.append({'major':major,'archive':str(archive),'sha256':project.digest(archive),'sizeBytes':archive.stat().st_size})
+        manifest=self.root/'install-archives.json'
+        project.write_json(manifest,{'schemaVersion':1,'archives':records})
+        actual=project.install_archive_inputs(manifest)
+        self.assertEqual([record['major'] for record in actual],['8','17','21','25'])
+        self.assertTrue(all(record['containerPath'].startswith('/install-archives/') for record in actual))
+        records[0]['sha256']='0'*64; project.write_json(manifest,{'schemaVersion':1,'archives':records})
+        with self.assertRaisesRegex(ValueError,'identity mismatch'): project.install_archive_inputs(manifest)
+        records[0]['sha256']=project.digest(records[0]['archive']); records[0]['major']='17'
+        project.write_json(manifest,{'schemaVersion':1,'archives':records})
+        with self.assertRaisesRegex(ValueError,'unique'): project.install_archive_inputs(manifest)
+        self.assertEqual(self.calls,[])
+    def test_fontconfig_default_sources_are_bound_before_docker(self):
+        """默认缓存套件只收同目录原/候选普通文件；错误参数/摘要先于引擎操作失败。"""
+        files = {}
+        for variant in ('before', 'after'):
+            path = self.root / ('fccfg-' + variant + '.c')
+            path.write_text('fixture-' + variant)
+            files[variant] = {'file': path.name, 'size': path.stat().st_size, 'sha256': project.digest(path)}
+        manifest = self.root / 'default-sources.json'
+        data = {'schemaVersion': 1, 'kind': 'fontconfig-default-sources', 'files': files}
+        project.write_json(manifest, data)
+        with self.assertRaisesRegex(ValueError, 'restricted'):
+            self.execute(fontconfig_default_sources=str(manifest), plan_only=True)
+        files['after']['sha256'] = '0' * 64
+        project.write_json(manifest, data)
+        with self.assertRaisesRegex(ValueError, 'Unexpected Fontconfig default source'):
+            self.execute(action='test', suite='fontconfig-defaults', fontconfig_default_sources=str(manifest), plan_only=True)
+        files['after']['sha256'] = project.digest(self.root / files['after']['file'])
+        files['after']['file'] = '../fccfg-after.c'
+        project.write_json(manifest, data)
+        with self.assertRaisesRegex(ValueError, 'Unexpected Fontconfig default source'):
+            self.execute(action='test', suite='fontconfig-defaults', fontconfig_default_sources=str(manifest), plan_only=True)
+        self.assertEqual(self.calls, [])
+        files['after']['file'] = 'fccfg-after.c'
+        project.write_json(manifest, data)
+        _, text = self.execute(action='test', suite='fontconfig-defaults', fontconfig_default_sources=str(manifest), plan_only=True)
+        plan = json.loads(text)
+        self.assertEqual(plan['fontconfigDefaultSources']['sha256'], project.digest(manifest))
+        self.assertEqual(len(plan['fontconfigDefaultSources']['files']), 2)
+        self.assertFalse(Path(plan['output']).exists())
     def docker(self,*args):
         self.calls.append(args)
         if args[:2]==('image','inspect'): return IMAGE

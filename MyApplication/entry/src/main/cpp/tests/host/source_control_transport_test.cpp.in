@@ -11,6 +11,7 @@
 #include "input/amcl_input_host_descriptor.h"
 #include "platform/source_control_client.h"
 #include "platform/control_schema_abi.h"
+#include "platform/touch_group_state.h"
 #include "platform/legacy_output_code.h"
 #include <atomic>
 #include <chrono>
@@ -224,12 +225,16 @@ int main(){
     for(int code:{65,-1}){
         const auto touch=transaction(source,producer,acquire(1,"touch",{code}));CHECK(touch.accepted&&touch.owner);pump(window);
         const auto gamepad=transaction(source,producer,acquire(2,"gamepad",{code}));CHECK(gamepad.accepted&&gamepad.finalEdges==0);
+        const AmclSourceOutputV1 queried{code<0?1u:0u,code<0?-code-1:code};
+        CHECK(source->owns(producer,touch.owner,&queried)==1&&source->owns(producer,gamepad.owner,&queried)==1);
+        CHECK(source->owns(0,touch.owner,&queried)==AMCL_SOURCE_NOT_READY);
         if(code>=0){Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,code,123,1,0);
             Java_org_lwjgl_glfw_CallbackBridge_nativeSendKey(nullptr,nullptr,code,123,0,0);}
         else {Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(nullptr,nullptr,0,1,0);
             Java_org_lwjgl_glfw_CallbackBridge_nativeSendMouseButton(nullptr,nullptr,0,0,0);}
         pump(window);CHECK(code>=0?glfwGetKey(&window,code)==1:glfwGetMouseButton(&window,0)==1);
         CHECK(release(source,producer,touch.owner).accepted);pump(window);CHECK(code>=0?glfwGetKey(&window,code)==1:glfwGetMouseButton(&window,0)==1);
+        CHECK(source->owns(producer,touch.owner,&queried)==0&&source->owns(producer,0,&queried)==1);
         CHECK(release(source,producer,gamepad.owner).accepted);pump(window);CHECK(code>=0?glfwGetKey(&window,code)==0:glfwGetMouseButton(&window,0)==0);
     }
     // 无配对 UP/REPEAT 不借别人 token；兼容0重复 DOWN 与 NAPI0模拟端口共用同一份。

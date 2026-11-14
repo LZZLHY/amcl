@@ -102,6 +102,21 @@ export class VersionFileVerifier {
   }
 
   /**
+   * 复用 McDownloader.downloadLibraries 的既有 Maven 坐标判据：OHOS 的 LWJGL
+   * 由自带运行时提供，jinput/jutils 的桌面输入实现也不参与实际 classpath。
+   * 下载器本就不落盘这些上游 PC 制品，完整性元数据必须保持同一边界，否则
+   * 1.8.9 等版本会把正常替代误报成缺失。这里只看声明坐标的相同前缀，不按
+   * 文件名中的 lwjgl/jinput 字样猜测；Paulscode OpenAL 等普通依赖仍须校验。
+   * 自带运行时本身的部署/检查仍由 RuntimeDeployer 与 PreLaunchValidator 负责，
+   * 跳过 PC 原件不代表已经确认替代运行时安装成功，也不放宽其他库的 SHA/size。
+   */
+  private static isRuntimeProvidedLibrary_(coordinate: string): boolean {
+    return coordinate.indexOf('org.lwjgl') === 0
+      || coordinate.indexOf('net.java.jinput') === 0
+      || coordinate.indexOf('net.java.jutils') === 0;
+  }
+
+  /**
    * 是否为 Forge 安装器【本地生成产物】（forge -client/-universal、mc -extra/-srg）。
    * 这类文件由安装器在设备上处理生成，磁盘 sha1 与 version.json 声明的 sha1【天然不一致】
    * （json 里的 sha1 是上游 Maven 件的，设备上是 binpatch/合并后的产物）。因此只验"存在 +
@@ -218,6 +233,10 @@ export class VersionFileVerifier {
         // 关键：先按 rules 过滤（伪装 linux）。平台专属库（natives-macos/windows 等）
         // 本就不该下载到本机，跳过它们，避免误报"缺失"。
         if (!VersionFileVerifier.libRulesPass_(lib['rules'])) continue;
+        // rules 之后对齐下载/启动的 OHOS 替代边界；未声明 name 的 artifact 仍走
+        // 原校验流程，不以路径或文件名相似为由跳过未知的真实依赖。
+        let coordinate = typeof lib['name'] === 'string' ? lib['name'] as string : '';
+        if (VersionFileVerifier.isRuntimeProvidedLibrary_(coordinate)) continue;
         let dl = lib['downloads'] as Record<string, Object>;
         if (!dl) continue;
         let art = dl['artifact'] as Record<string, Object>;

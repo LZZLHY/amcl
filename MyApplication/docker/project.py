@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from workspace_paths import external_output_path, workspace_path
 
 RECIPES = {'smoke': 'build_sysroot_probe.sh', **{name: f'build_{name}_ohos.sh'
-           for name in ('curl','gl4es','jdk8','jdk17','jdk21','jdk25','lwjgl','sdl3','shaderc')}}
+           for name in ('curl','fontconfig','gl4es','jdk8','jdk17','jdk21','jdk25','lwjgl','sdl3','shaderc')}}
 SENTINELS = ('usr/include/stdio.h','usr/include/aarch64-linux-ohos/bits/alltypes.h',
              'usr/lib/aarch64-linux-ohos/libc.so')
 PROJECT = 'amcl'
@@ -60,6 +60,31 @@ def image_id(name):
         raise ValueError('Expected an immutable local Docker image ID')
     return identity
 
+def freeze_unwind_source(source, destination):
+    """只从固定 Git commit 导出真实输入；忽略工作树修改，补丁另按正式源码冻结。"""
+    if not source:
+        raise ValueError('unwind qualification requires --unwind-source')
+    lock = read_json(ROOT/'prebuilt/abi/source.json')
+    source = Path(source).resolve()
+    def git(*args):
+        # git archive 也会消费宿主 autocrlf；显式保持上游 LF，不能让 Windows 配置
+        # 悄悄改变导出的编译输入，或把补丁应用失败错误归因到固定源码版本。
+        return subprocess.check_output(['git', '-C', str(source), '-c', 'core.autocrlf=false',
+                                        '-c', 'core.eol=lf', *args])
+    if git('remote', 'get-url', 'origin').decode().strip() != lock['repository']:
+        raise ValueError('Unexpected libunwind source repository')
+    if git('rev-parse', lock['commit']+'^{commit}').decode().strip() != lock['commit']:
+        raise ValueError('Unverified libunwind source commit')
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination/'source.tar').write_bytes(git('archive', lock['commit'], *lock['paths']))
+    for name in lock['patches']:
+        (destination/name).write_bytes((ROOT/'prebuilt/abi/patches'/name).read_bytes())
+    for name in lock.get('files', []):
+        (destination/name).write_bytes((ROOT/'prebuilt/abi'/name).read_bytes())
+    write_json(destination/'source.json', lock)
+    return {'commit': lock['commit'], 'repository': lock['repository'],
+            'files': {path.name: digest(path) for path in sorted(destination.iterdir())}}
+
 @contextmanager
 def project_lock(directory):
     """同 checkout 的状态/Compose 变更持有 OS 文件锁；进程退出自动释放，不凭 PID 删除锁文件。"""
@@ -90,6 +115,31 @@ def bind(source, target, readonly=True):
     return {'type':'bind','source':source.as_posix(),'target':target,'read_only':readonly,
             'bind':{'create_host_path':False}}
 
+def install_archive_inputs(path):
+    """完整安装测试只认固定四原包身份；先验文件/SHA/size，再允许建立只读挂载。"""
+    value = read_json(path)
+    if not isinstance(value, dict):
+        raise ValueError('install archives manifest must be an object')
+    records = value.get('archives')
+    if value.get('schemaVersion') != 1 or not isinstance(records, list) or len(records) != 4:
+        raise ValueError('install archives require schemaVersion 1 and exactly four candidates')
+    result = []
+    for record in records:
+        if not isinstance(record, dict) or record.get('major') not in ('8', '17', '21', '25'):
+            raise ValueError('invalid install archive major')
+        archive = Path(record.get('archive', '')).resolve()
+        expected = record.get('sha256', '')
+        size = record.get('sizeBytes')
+        if not archive.is_file() or not re.fullmatch('[0-9a-f]{64}', expected) or type(size) is not int or size <= 0:
+            raise ValueError('invalid install archive path, SHA256 or size')
+        if archive.stat().st_size != size or digest(archive) != expected:
+            raise ValueError('install archive identity mismatch: ' + str(archive))
+        result.append({'major':record['major'], 'archive':str(archive), 'sha256':expected, 'sizeBytes':size,
+                       'containerPath':'/install-archives/' + record['major'] + '.zip'})
+    if {record['major'] for record in result} != {'8', '17', '21', '25'}:
+        raise ValueError('install archive majors must be unique')
+    return sorted(result, key=lambda record:int(record['major']))
+
 def check_service(service):
     """仅接管本 checkout 的已停止受控服务；发现其他归属或活动容器不强制替换。"""
     ids = docker('ps','-aq','--filter','label=com.docker.compose.project='+PROJECT,
@@ -119,11 +169,38 @@ def input_identity(component, image, sysroot):
     for directory in (ROOT/'docker/scripts', ROOT/'docker/stubs', ROOT/'prebuilt/stubs/src'):
         files.update(p for p in directory.rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     if component.startswith('jdk'):
+        # 入口、源码准备和兼容 C 文件也是配方闭包，不能只记录顶层 build 脚本。
+        files.update(p for p in (ROOT/'docker').rglob('*')
+                     if p.is_file() and p.suffix in ('.sh', '.py', '.c', '.h')
+                     and '__pycache__' not in p.parts)
         files.add(ROOT/'prebuilt/jdk/build-inputs.json')
         for name in ('patches','shims'):
             files.update(p for p in (ROOT/'prebuilt/jdk'/component[3:]/name).rglob('*') if p.is_file())
+        if component in ('jdk17', 'jdk21', 'jdk25'):
+            # 新导入的FT源码既有精确patch，也绑定匹配上游版本/逐文件来源和原始许可。
+            # 与实际patch字节不符时构建前拒绝；不能在发布时用后来改写的说明追认来源。
+            metadata = ROOT/'prebuilt/fontconfig/freetype-completion.json'
+            completion = read_json(metadata)['runtimes'][component[3:]]
+            expected_patch = f'prebuilt/jdk/{component[3:]}/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch'
+            if completion.get('patch') != expected_patch or digest(ROOT/expected_patch) != completion.get('patchSha256'):
+                raise ValueError('FreeType completion patch identity mismatch')
+            files.add(metadata)
+            for license in completion['licenses'].values():
+                name = license['path']
+                expected_prefix = 'prebuilt/fontconfig/licenses/freetype-' + completion['version'] + '/'
+                if not name.startswith(expected_prefix) or '..' in Path(name).parts or digest(ROOT/name) != license['sha256']:
+                    raise ValueError('FreeType completion license identity mismatch')
+                files.add(ROOT/name)
     else:
         files.update(p for p in (ROOT/'prebuilt'/component/'patches').rglob('*') if p.is_file())
+        if component == 'fontconfig':
+            # 字体 provider 也冻结完整目标 SDK 与入口；不能用旧三个哨兵或宿主头
+            # 代替真实 ABI 输入。消费者 FT 原件保持不变，由候选验收逐一核对导出。
+            files.add(ROOT/'prebuilt/fontconfig/build-inputs.json')
+            files.add(ROOT/'prebuilt/fontconfig/ohos-defaults.json')
+            files.add(ROOT/'prebuilt/fontconfig/ohos-generic-fonts.h')
+            files.update(ROOT/'docker'/name for name in (
+                'project-build-entry.sh', 'builder-entry.sh', 'resume-builder-entry.sh', 'project.py'))
         if component == 'lwjgl':
             # VMA正式兼容/诊断补丁是编译输入；变化后不能静默认领旧组件工作卷。
             files.add(ROOT/'prebuilt/lwjgl3/local-worktree.patch')
@@ -141,6 +218,11 @@ def input_identity(component, image, sysroot):
     facts = {'component':component,'imageId':image,'sysroot':str(sysroot),
              'sdk':{p:digest(sysroot/p) for p in SENTINELS},
              'files':{p.relative_to(ROOT).as_posix():digest(p) for p in sorted(files)}}
+    if component.startswith('jdk') or component == 'fontconfig':
+        # 完整目标 sysroot、应用 C++ 头/库及 compiler-rt 在执行前冻结为只读输入。
+        sys.path.insert(0, str(ROOT/'docker/scripts'))
+        from jdk_native_inputs import native_inputs
+        facts['nativeSdk'] = native_inputs(sysroot)
     facts['digest'] = hashlib.sha256(json.dumps(facts,sort_keys=True).encode()).hexdigest()
     if component=='gl4es': facts['consumerLockSha256']=digest(ROOT/'deps.lock')
     return facts
@@ -222,10 +304,131 @@ def adopt_manifest(path, component, facts):
     return {'volume':manifest['workVolume'],'buildId':manifest['runId'],'inputs':facts,
             'adoptedFrom':str(Path(path).resolve()),'createdAt':now()}
 
+def daudio_test_inputs(args):
+    """DAUDIO 仅是 java-sound-17 的明确输入模式；两个参数成对且绑定独立 SHA。"""
+    manifest = getattr(args, 'java_sound_daudio_sources', None)
+    expected_sha = getattr(args, 'java_sound_daudio_sha', None)
+    if not manifest and not expected_sha:
+        return None
+    if args.action != 'test' or args.suite != 'java-sound-17' or not manifest or not expected_sha:
+        raise ValueError('DAUDIO input/independent SHA pair is restricted to java-sound-17')
+    if getattr(args, 'test_arg', []):
+        raise ValueError('DAUDIO uses fixed test inputs; arbitrary test arguments are not accepted')
+    module_path = ROOT / 'tests/java-sound/daudio_qa_inputs.py'
+    spec = importlib.util.spec_from_file_location('amcl_daudio_qa_inputs', module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    commit = read_json(ROOT / 'prebuilt/jdk/build-inputs.json')['runtimes']['17']['commit']
+    return module.validate(manifest, expected_sha, commit)
+
+
 def run(args):
     """解析请求后先完成只读预检；计划模式无目录/卷/容器副作用。"""
     directory = external_output_path(args.state_dir) if args.state_dir else workspace_path('build','docker-project')
     state = load_state(directory)
+    daudio_sources = daudio_test_inputs(args)
+    fontconfig_sources = None
+    if getattr(args, 'fontconfig_sources', None):
+        if args.action != 'test' or args.suite != 'fontconfig-freetype':
+            raise ValueError('--fontconfig-sources is restricted to fontconfig-freetype')
+        manifest_path = Path(args.fontconfig_sources).resolve()
+        font_inputs = read_json(manifest_path)
+        if font_inputs.get('schemaVersion') != 1 or set(font_inputs.get('runtimes', {})) != {'17', '21', '25'}:
+            raise ValueError('Expected all three FreeType before/after source pairs')
+        # 预检绑定实际清单和六份只读归档；套件内还会独立检查所有源码成员摘要。
+        # 路径只能是该清单同目录的普通文件，不能隐式挂入其他源树或临时目录。
+        archives = []
+        for major, item in font_inputs['runtimes'].items():
+            for variant in ('before', 'after'):
+                record = item[variant]
+                name = record['file']
+                path = manifest_path.parent / name
+                if (not re.fullmatch(r'[A-Za-z0-9._-]+', name) or path.is_symlink()
+                        or not path.is_file() or path.resolve().parent != manifest_path.parent
+                        or digest(path) != record['sha256']):
+                    raise ValueError('Unexpected FreeType source archive: ' + str(name))
+                archives.append({'major': major, 'variant': variant, 'file': name,
+                                 'sha256': record['sha256'], 'sizeBytes': path.stat().st_size})
+        fontconfig_sources = {'manifest': str(manifest_path), 'sha256': digest(manifest_path),
+                              'archives': archives, 'containerDirectory': '/fontconfig-sources'}
+    if args.action == 'test' and args.suite == 'fontconfig-freetype' and not fontconfig_sources:
+        raise ValueError('fontconfig-freetype requires explicit --fontconfig-sources')
+    fontconfig_fallback_sources = None
+    if getattr(args, 'fontconfig_fallback_sources', None):
+        if args.action != 'test' or args.suite != 'fontconfig-fallback':
+            raise ValueError('--fontconfig-fallback-sources is restricted to fontconfig-fallback')
+        manifest_path = Path(args.fontconfig_fallback_sources).resolve()
+        fallback_inputs = read_json(manifest_path)
+        if (fallback_inputs.get('schemaVersion') not in (1, 2) or fallback_inputs.get('kind') != 'fontconfig-fallback-sources'
+                or set(fallback_inputs.get('runtimes', {})) != {'8', '17', '21', '25'}):
+            raise ValueError('Expected four locked Fontconfig fallback source pairs')
+        # 只接受同目录具名普通文件并绑定真实 SHA；容器内再次对照仓库补丁身份。
+        files = []
+        for major, item in fallback_inputs['runtimes'].items():
+            expected_files = {'native', 'java', 'stream'} if fallback_inputs['schemaVersion'] == 2 else {'native', 'java'}
+            if set(item['files']) != expected_files:
+                raise ValueError('Incomplete Fontconfig native/Java source pair')
+            for language, pair in item['files'].items():
+                for variant in ('before', 'after'):
+                    record = pair[variant]
+                    name = record['file']
+                    path = manifest_path.parent / name
+                    if (not re.fullmatch(r'[A-Za-z0-9._-]+', name) or path.is_symlink()
+                            or not path.is_file() or path.resolve().parent != manifest_path.parent
+                            or digest(path) != record['sha256'] or path.stat().st_size != record['size']):
+                        raise ValueError('Unexpected Fontconfig source: ' + str(name))
+                    files.append({'major': major, 'language': language, 'variant': variant,
+                                  'file': name, 'sha256': record['sha256'], 'sizeBytes': record['size']})
+        fontconfig_fallback_sources = {'manifest': str(manifest_path), 'sha256': digest(manifest_path),
+                                      'files': files, 'containerDirectory': '/fontconfig-fallback-sources'}
+    if args.action == 'test' and args.suite == 'fontconfig-fallback' and not fontconfig_fallback_sources:
+        raise ValueError('fontconfig-fallback requires explicit --fontconfig-fallback-sources')
+    fontconfig_default_sources = None
+    if getattr(args, 'fontconfig_default_sources', None):
+        if args.action != 'test' or args.suite != 'fontconfig-defaults':
+            raise ValueError('--fontconfig-default-sources is restricted to fontconfig-defaults')
+        manifest_path = Path(args.fontconfig_default_sources).resolve()
+        default_inputs = read_json(manifest_path)
+        if (default_inputs.get('schemaVersion') != 1 or default_inputs.get('kind') != 'fontconfig-default-sources'
+                or set(default_inputs.get('files', {})) != {'before', 'after'}):
+            raise ValueError('Expected locked Fontconfig default source pair')
+        files = []
+        for variant, record in default_inputs['files'].items():
+            name = record['file']
+            path = manifest_path.parent / name
+            if (not re.fullmatch(r'[A-Za-z0-9._-]+', name) or path.is_symlink() or not path.is_file()
+                    or path.resolve().parent != manifest_path.parent or digest(path) != record['sha256']
+                    or path.stat().st_size != record['size']):
+                raise ValueError('Unexpected Fontconfig default source: ' + str(name))
+            files.append(dict(record, variant=variant))
+        fontconfig_default_sources = {'manifest': str(manifest_path), 'sha256': digest(manifest_path),
+                                     'files': files, 'containerDirectory': '/fontconfig-default-sources'}
+    if args.action == 'test' and args.suite == 'fontconfig-defaults' and not fontconfig_default_sources:
+        raise ValueError('fontconfig-defaults requires explicit --fontconfig-default-sources')
+    install_archives = None
+    if getattr(args, 'install_archives', None):
+        if args.action != 'test' or args.suite != 'runtime-install':
+            raise ValueError('--install-archives is restricted to runtime-install')
+        install_archives = install_archive_inputs(args.install_archives)
+    tls_negative = None
+    if getattr(args, 'tls_negative_header', None):
+        if args.action != 'test' or args.suite != 'tls-storage':
+            raise ValueError('--tls-negative-header is restricted to tls-storage')
+        header = Path(args.tls_negative_header).resolve()
+        if not header.is_file():
+            raise ValueError('TLS negative control header does not exist')
+        # 旧算法仅作明确指定的负对照，绑定实际字节，不混入现役源码或隐式选择历史文件。
+        tls_negative = {'path':str(header), 'sha256':digest(header),
+                        'containerPath':'/tls-negative/reference.h'}
+    tls_module_negative = None
+    if getattr(args, 'tls_module_negative_header', None):
+        if args.action != 'test' or args.suite != 'tls-storage':
+            raise ValueError('--tls-module-negative-header is restricted to tls-storage')
+        header = Path(args.tls_module_negative_header).resolve()
+        if not header.is_file():
+            raise ValueError('TLS module negative control header does not exist')
+        tls_module_negative = {'path':str(header), 'sha256':digest(header),
+                               'containerPath':'/tls-negative/module-reference.h'}
     if args.action=='status':
         print(json.dumps({'project':PROJECT,'statePath':str(directory/'state.json'),
               'workspaces':{name:{'volume':item['volume'],'inputIdentity':item['inputs']['digest'],
@@ -306,7 +509,7 @@ def run(args):
         if not (Path(args.mobilegl_host_cache)/'CMakeCache.txt').is_file():
             raise ValueError('actual Linux object cache missing')
     else:
-        image = image_id(qa_name if args.action=='test' and args.suite=='elf' else image_name)
+        image = image_id(qa_name if args.action=='test' and args.suite in ('elf', 'jdk-abi-run', 'runtime-io', 'runtime-install', 'runtime-java', 'runtime-process', 'tls-storage', 'tls-crt-reference', 'fontconfig-freetype', 'jdk-probe-owner', 'processor-setup', 'unwind-cache') else image_name)
     check_service(service)
     facts = input_identity(component,image,sysroot) if args.action in ('build','adopt') else None
     cached = state['workspaces'].get(component)
@@ -322,7 +525,7 @@ def run(args):
         if not source: raise ValueError('Build/adopt matching JDK source workspace first')
         check_volume(source['volume'])
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]
-    suite_id={'mobilegl-replay-host':'mgl-replay','mobilegl-cpu-host':'mgl-cpu','mobilegl-cpu-proof':'mgl-proof'}.get(args.suite,args.suite) if service=='qa' else args.suite
+    suite_id={'mobilegl-replay-host':'mgl-replay','mobilegl-cpu-host':'mgl-cpu','mobilegl-cpu-proof':'mgl-proof','fontconfig-freetype':'font-ft','fontconfig-fallback':'font-fallback','fontconfig-defaults':'font-defaults'}.get(args.suite,args.suite) if service=='qa' else args.suite
     run_id = 'docker-'+(suite_id if service=='qa' else component)+'-'+stamp
     out_root = workspace_path('build',run_id)
     work = cached if reuse else {'volume':'amcl-work-'+component+'-'+uuid.uuid4().hex[:8],
@@ -332,6 +535,22 @@ def run(args):
             'output':str(out_root/'out'),'workVolume':work['volume'] if facts else None,
             'workspaceMode':('reuse' if reuse else 'fresh') if facts else ('read-only-source' if source else 'isolated-test'),
             'inputs':facts,'suite':args.suite if service=='qa' else None}
+    if install_archives:
+        plan['installArchives'] = install_archives
+        plan['scratch'] = {'type':'tmpfs', 'path':'/dev/shm', 'limitBytes':2 * 1024**3,
+                           'evidence':'per-file SHA256/mode and logs persisted to external output; source ZIP unchanged'}
+    if tls_negative:
+        plan['tlsNegativeControl'] = tls_negative
+    if tls_module_negative:
+        plan['tlsModuleNegativeControl'] = tls_module_negative
+    if fontconfig_sources:
+        plan['fontconfigSources'] = fontconfig_sources
+    if fontconfig_fallback_sources:
+        plan['fontconfigFallbackSources'] = fontconfig_fallback_sources
+    if fontconfig_default_sources:
+        plan['fontconfigDefaultSources'] = fontconfig_default_sources
+    if daudio_sources:
+        plan['javaSoundDaudioSources'] = daudio_sources
     if args.plan_only: print(json.dumps(plan,ensure_ascii=False,indent=2)); return 0
     if source:
         # Java Sound QA真实读取已登记源码卷；缓存身份只是输入声明，实际编译文件
@@ -344,6 +563,8 @@ def run(args):
         latest = load_state(directory)
         if latest!=state: raise RuntimeError('Project state changed during preflight; retry')
         check_service(service)
+        if daudio_sources and daudio_test_inputs(args) != daudio_sources:
+            raise ValueError('DAUDIO inputs changed while waiting for the fixed QA lock')
         if service=='qa' and args.suite=='mobilegl-cpu-proof':
             # 等待固定QA锁期间不能借旧source-clean声明收取新缓存；再次原生Git核源。
             # 与现有合同一样，调用者还须冻结host cache写者；只读bind不代替宿主写者协调。
@@ -382,12 +603,32 @@ def run(args):
                 docker('volume','create','--label','amcl.project=amcl','--label','amcl.component='+component,work['volume'])
             check_volume(work['volume'])
             state['workspaces'][component]=work
-            mounts=[bind(ROOT/'docker','/recipes'),bind(ROOT/'prebuilt','/prebuilt'),
-                    bind(sysroot,'/ohos-sysroot'),bind(out_root/'out','/output',False),
+            recipe_root, prebuilt_root, sdk_root = ROOT/'docker', ROOT/'prebuilt', Path(sysroot)
+            native_mount = None
+            if component.startswith('jdk') or component == 'fontconfig':
+                from jdk_native_inputs import freeze_files
+                frozen = out_root/'inputs'
+                freeze_files(ROOT, facts['files'], frozen/'project')
+                freeze_files(facts['nativeSdk']['root'], facts['nativeSdk']['files'], frozen/'native')
+                recipe_root, prebuilt_root = frozen/'project/docker', frozen/'project/prebuilt'
+                sdk_root, native_mount = frozen/'native/sysroot', frozen/'native'
+                write_json(out_root/'out/build-inputs.json', facts)
+                plan['frozenInputs'] = str(frozen)
+            mounts=[bind(recipe_root,'/recipes'),bind(prebuilt_root,'/prebuilt'),
+                    bind(sdk_root,'/ohos-sysroot'),bind(out_root/'out','/output',False),
                     {'type':'volume','source':'work','target':'/build','volume':{'nocopy':True}}]
             command=['/recipes/project-build-entry.sh','reuse' if reuse else 'fresh',RECIPES[component],*args.recipe_arg]
             env={'AMCL_BUILDER_MANAGED':'1','AMCL_BUILD_ID':work['buildId'],'AMCL_RUN_ID':run_id,
                  'AMCL_SYSROOT_BASE':'/ohos-sysroot','JOBS':str(args.jobs)}
+            if getattr(args, 'upstream_test_image', False):
+                if component not in ('jdk17', 'jdk21', 'jdk25'):
+                    raise ValueError('upstream-test-image requires a modern JDK build; JDK8 uses its own upstream suites')
+                env['AMCL_JDK_TEST_IMAGE'] = '1'
+            if native_mount:
+                mounts.append(bind(native_mount, '/ohos-native'))
+                env.update(AMCL_JDK_NATIVE_ROOT='/ohos-native',
+                           AMCL_TARGET_INPUTS_DIGEST=facts['digest'],
+                           AMCL_TARGET_RESOURCE_VERSION=facts['nativeSdk']['resourceVersion'])
             model=service_model(service,image,command,mounts,env)
             model['volumes']={'work':{'external':True,'name':work['volume']}}
         else:
@@ -396,6 +637,76 @@ def run(args):
             if args.suite=='gl4es-draw':
                 mounts.append(bind(args.gl4es_source,'/gl4es-source'))
             qa_env={'AMCL_RUN_ID':run_id}
+            if daudio_sources:
+                # 只挂已核完整闭包，不把 arbitrary 路径或命令透传给通用 QA 入口。
+                mounts.append(bind(daudio_sources['root'], '/daudio-inputs'))
+                qa_env['AMCL_DAUDIO_INPUT_SHA'] = daudio_sources['manifestSha256']
+            if fontconfig_sources:
+                manifest_path = Path(fontconfig_sources['manifest'])
+                mounts.append(bind(manifest_path.parent, '/fontconfig-sources'))
+                qa_env['AMCL_FONTCONFIG_SOURCES_MANIFEST'] = '/fontconfig-sources/' + manifest_path.name
+            if fontconfig_fallback_sources:
+                manifest_path = Path(fontconfig_fallback_sources['manifest'])
+                mounts.append(bind(manifest_path.parent, '/fontconfig-fallback-sources'))
+                qa_env['AMCL_FONTCONFIG_FALLBACK_SOURCES_MANIFEST'] = '/fontconfig-fallback-sources/' + manifest_path.name
+            if fontconfig_default_sources:
+                manifest_path = Path(fontconfig_default_sources['manifest'])
+                mounts.append(bind(manifest_path.parent, '/fontconfig-default-sources'))
+                qa_env['AMCL_FONTCONFIG_DEFAULT_SOURCES_MANIFEST'] = '/fontconfig-default-sources/' + manifest_path.name
+            if tls_negative:
+                mounts.append({'type':'bind', 'source':Path(tls_negative['path']).as_posix(),
+                               'target':tls_negative['containerPath'], 'read_only':True,
+                               'bind':{'create_host_path':False}})
+                qa_env['TLS_STORAGE_NEGATIVE_HEADER'] = tls_negative['containerPath']
+            if tls_module_negative:
+                mounts.append({'type':'bind', 'source':Path(tls_module_negative['path']).as_posix(),
+                               'target':tls_module_negative['containerPath'], 'read_only':True,
+                               'bind':{'create_host_path':False}})
+                qa_env['TLS_STORAGE_MODULE_NEGATIVE_HEADER'] = tls_module_negative['containerPath']
+            if install_archives:
+                # 不扩大通用bind目录契约；此专用分支只挂载已验证的四个普通文件。
+                for record in install_archives:
+                    mounts.append({'type':'bind','source':Path(record['archive']).as_posix(),
+                                   'target':record['containerPath'],'read_only':True,
+                                   'bind':{'create_host_path':False}})
+                write_json(out_root/'out/install-archives.json', {'schemaVersion':1, 'archives':install_archives})
+                (out_root/'out/install-archives.tsv').write_text(''.join(
+                    f"{r['major']}\t{r['containerPath']}\t{r['sha256']}\t{r['sizeBytes']}\n" for r in install_archives),encoding='utf-8')
+                qa_env['AMCL_INSTALL_ARCHIVES'] = '/output/install-archives.tsv'
+            if args.suite in ('unwind-cache', 'application-abi'):
+                plan['unwindInputs'] = freeze_unwind_source(args.unwind_source, out_root/'unwind-input')
+                mounts.append(bind(out_root/'unwind-input', '/unwind-input'))
+            if args.suite in ('elf', 'jdk-abi-run') and getattr(args, 'elf_fixtures', None):
+                # 只读实际候选 ELF，驱动仅做映射/解析/权限验证，不运行这些库的代码。
+                mounts.append(bind(args.elf_fixtures, '/elf-fixtures'))
+                qa_env['AMCL_ELF_FIXTURES'] = '/elf-fixtures'
+            if args.suite=='jdk-abi-run':
+                # 显式使用先前真实编译产物和设备只读运行库。该套件只授予
+                # AArch64/QEMU 行为证据，不代表设备沙箱或自定义 loader 通过。
+                if not args.abi_artifacts or not args.abi_libc:
+                    raise ValueError('jdk-abi-run requires --abi-artifacts and --abi-libc')
+                libc = Path(args.abi_libc).resolve()
+                if not libc.is_file():
+                    raise ValueError('Actual device libc is missing')
+                mounts.extend((bind(args.abi_artifacts, '/abi'), bind(libc.parent, '/device-libc')))
+                qa_env['AMCL_ABI_LIBC_FILE'] = libc.name
+            if args.suite in ('jdk-abi', 'application-abi'):
+                # 编译资格只读取本次冻结的完整目标 SDK。执行资格由实际运行环境
+                # 另行出具，不能把此编译套件的退出 0 写成设备 ABI 已通过。
+                if not sysroot:
+                    raise ValueError('jdk-abi requires --sysroot from selected native SDK')
+                sys.path.insert(0, str(ROOT/'docker/scripts'))
+                from jdk_native_inputs import native_inputs, freeze_files
+                native_facts = native_inputs(sysroot)
+                if args.suite == 'application-abi':
+                    # SDK 的合并静态归档已含 libc++abi；只加入此配方真实消费的额外输入，
+                    # 不把该输入强加给此前四份 JDK 配方，避免虚假联动其重建身份。
+                    archive = read_json(ROOT/'prebuilt/abi/source.json')['sdkArchive']
+                    native_facts['files'][archive] = digest(Path(native_facts['root'])/archive)
+                freeze_files(native_facts['root'], native_facts['files'], out_root/'native-input')
+                write_json(out_root/'out/native-inputs.json', native_facts)
+                mounts.append(bind(out_root/'native-input', '/ohos-native'))
+                qa_env['AMCL_TARGET_RESOURCE_VERSION'] = native_facts['resourceVersion']
             if args.suite=='mobilegl-replay-host':
                 mounts.append(bind(args.mobilegl_source,'/mobilegl-source'))
                 qa_env['AMCL_MOBILEGL_SOURCE_COMMIT']=args.mobilegl_expected_source
@@ -428,6 +739,9 @@ def run(args):
                 qa_env.update(AMCL_QA_SOURCE_VOLUME=source['volume'],
                     AMCL_QA_SOURCE_INPUTS_DIGEST=(source.get('inputs') or {}).get('digest') or 'unknown')
             model=service_model(service,image,['/workspace/docker/project-test-entry.sh',args.suite,*args.test_arg],mounts,qa_env)
+            if install_archives:
+                # 只有显式四包完整安装测试使用2GiB内存POSIX树；不改其他服务/套件默认资源。
+                model['services'][service]['shm_size'] = '2gb'
             if source:
                 mounts.append({'type':'volume','source':'source','target':'/source','read_only':True,'volume':{'nocopy':True}})
                 model['volumes']={'source':{'external':True,'name':source['volume']}}
@@ -482,7 +796,21 @@ def main():
     parser.add_argument('--legacy-config',help='init only: explicitly register the local read-only legacy catalog')
     parser.add_argument('--sysroot')
     parser.add_argument('--component',choices=RECIPES,default='smoke')
-    parser.add_argument('--suite',choices=('elf','java-sound-8','java-sound-17','java-sound-21','java-sound-25','gl4es-draw','mobilegl-replay-host','mobilegl-cpu-host','mobilegl-cpu-proof'),default='elf')
+    parser.add_argument('--upstream-test-image', action='store_true',
+                        help='build original OpenJDK native/gtest test-image with the same frozen modern JDK inputs')
+    parser.add_argument('--suite',choices=('elf','jdk-abi','jdk-abi-run','runtime-io','runtime-install','runtime-java','runtime-process','runtime-childproc','runtime-midi','tls-storage','tls-crt-reference','fontconfig-freetype','fontconfig-fallback','fontconfig-defaults','jdk-probe-owner','jni-invocation','processor-setup','unwind-cache','application-abi','java-sound-8','java-sound-17','java-sound-21','java-sound-25','java-ports','sound-links','gl4es-draw','mobilegl-replay-host','mobilegl-cpu-host','mobilegl-cpu-proof'),default='elf')
+    parser.add_argument('--unwind-source',help='unwind qualification: fixed vendor Git source; exact commit exported read-only')
+    parser.add_argument('--abi-artifacts',help='jdk-abi-run: target harness build output directory')
+    parser.add_argument('--elf-fixtures',help='elf: exact candidate native files with list.txt, read-only')
+    parser.add_argument('--install-archives',help='runtime-install only: explicit schema-v1 manifest of four immutable ZIPs with independent SHA256/size')
+    parser.add_argument('--fontconfig-sources',help='fontconfig-freetype only: complete-series source manifest and six immutable before/after archives')
+    parser.add_argument('--fontconfig-fallback-sources',help='fontconfig-fallback only: four locked native/Java before/after source pairs')
+    parser.add_argument('--fontconfig-default-sources',help='fontconfig-defaults only: locked Fontconfig fccfg.c before/after source pair')
+    parser.add_argument('--java-sound-daudio-sources',help='java-sound-17 only: fixed DAUDIO JNI source/patch/SDK manifest.json')
+    parser.add_argument('--java-sound-daudio-sha',help='independent SHA256 of the selected DAUDIO input manifest')
+    parser.add_argument('--tls-negative-header',help='tls-storage only: read-only historical header for the exact recovery-race negative control')
+    parser.add_argument('--tls-module-negative-header',help='tls-storage only: read-only historical header for the exact module-retention negative control')
+    parser.add_argument('--abi-libc',help='jdk-abi-run: actual device ld-musl/libc file, read-only')
     parser.add_argument('--mobilegl-source',help='MobileGL host suites: actual hydrated standalone pinned Git seed, read-only')
     parser.add_argument('--mobilegl-expected-source',help='independent full source commit required by host qualification')
     parser.add_argument('--mobilegl-qa-image',help='host software graphics image; does not alter default builder/ELF image')

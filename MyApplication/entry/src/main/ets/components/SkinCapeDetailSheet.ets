@@ -1,33 +1,17 @@
+/**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
 import { AppTitleAction } from './AppTitleAction';
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { DiagnosticPolicy } from 'commons';
 /**
- * SkinCapeDetailSheet.ets — 皮肤 / 披风 详情 Sheet（v2 · 2026-05-23）
+ * 账号外观详情：在线账号展示身份、紧凑角色预览和已拥有的披风；
+ * 离线账号仍分流到共享素材库编辑器，两者不共用保存语义。
  *
- * 在 AccountListSheet 的 Hero 卡按"皮肤详情"或点击披风行时弹出。
- *
- * 结构：
- *   ┌──────────────────────────────────────────┐
- *   │ [<] 皮肤与披风                             │
- *   │      · 用户名                              │
- *   ├──────────────────────────────────────────┤
- *   │ [SkinCard]                               │
- *   │   渐变 stage：大尺寸全身皮肤渲染            │
- *   │   底部：CLASSIC/SLIM badge + 跳转按钮       │
- *   │                                          │
- *   │ [CapeCard]                               │
- *   │   渐变 stage：当前披风（大）               │
- *   │   底部：alias badge                       │
- *   │                                          │
- *   │ [InfoNote] 数据由 Mojang Profile 提供      │
- *   └──────────────────────────────────────────┘
- *
- * 编辑能力：
- *   皮肤 / 披风的"修改"功能在 minecraft.net 网页或 Minecraft 启动器内完成 ——
- *   AMCL 不内嵌皮肤上传 UI（M3 计划，需先解决 Bearer token 上传 PUT 风险）。
- *   "前往修改"按钮跳浏览器到 minecraft.net/profile。
- *
- * 创建日期：2026-05-23
+ * 微软披风点击后继续走真实setActiveCape与persistOne确认；第三方账号
+ * 只展示其服务返回的外观，不出现Mojang同步或微软网页管理入口。
+ * 本组件不改变父层Sheet尺寸，也不接管添加账号/登录页面。
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -39,9 +23,12 @@ import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
 import { CapePreview } from './CapePreview';
 import { SkinCanvas3D } from './SkinCanvas3D';
+import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
+import { OfflineAppearanceEditor } from './OfflineAppearanceEditor';
 
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_ACCOUNT } from 'commons';
+import { getTaskActivityOwner } from 'feature_core';
 
 const TAG = 'SkinCapeDetailSheet';
 
@@ -103,7 +90,20 @@ export struct SkinCapeDetailSheet {
   @State activeCapeUrl: string = '';
   @State activeCapeAlias: string = '';
 
+  /** 视图世代只控制展示权；已派发的账号持久化仍按原目标完成。 */
+  private pageEpoch: number = 0;
+  private alive: boolean = false;
+
+  /** 确认续体仍属于同一次打开和同一个账号，关闭后不再写本地状态。 */
+  private currentPage_(epoch: number, id: string): boolean {
+    return this.alive && this.pageEpoch === epoch && this.account?.id === id;
+  }
+
+  aboutToDisappear(): void { this.alive = false; this.pageEpoch++; }
+
   aboutToAppear(): void {
+    this.alive = true;
+    this.pageEpoch++;
     // 显式重置 transient 状态，防止 sheet 复用时残留上次的 preview / toast
     this.previewCape = null;
     this.previewIsNoCape = false;
@@ -120,27 +120,40 @@ export struct SkinCapeDetailSheet {
   /** 同步仍只对微软账户开放，忙态通过共同菜单的 enabled 投影，不能并发请求。 */
   private skinTitleActions_(): AppTitleAction[] {
     if (!this.canSync()) return [];
-    return [{ id: 'sync', label: this.syncing ? '同步中' : '同步披风', icon: AppIconName.Refresh, enabled: !this.syncing }];
+    return [{ id: 'sync', label: this.syncing ? '同步中' : '同步披风', icon: AppIconName.Refresh, enabled: !this.syncing && !this.isBusy() }];
   }
 
   build() {
     // Stack 作根：主内容 + 预览浮层（z-order 由 child 顺序决定，浮层在最上）。
     // 旧版根是 Column，加预览时改 Stack 不影响布局——主内容自己 width/height 100%。
     Stack() {
+      // 离线账号使用共享库编辑器；微软和第三方的远端 profile 详情继续保留原行为。
+      if (this.account !== null && (this.account as Account).type === AccountType.OFFLINE) {
+        OfflineAppearanceEditor({ theme: this.theme, bottomSafeHeight: this.bottomSafeHeight,
+          accountId: (this.account as Account).id, onClose: (): void => { this.onClose(); },
+          onChanged: (): void => {
+            // 编辑返回新账号实例；重新按稳定ID查找，不能继续读打开页面时的旧对象。
+            const id = this.account?.id ?? '';
+            this.account = getAccountManager().findById(id) ?? null;
+            this.refreshCapeStateFromAccount();
+            this.onChanged();
+          } })
+      } else {
       Column() {
-      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: '皮肤与披风', subtitle: this.headerSubtitle(), theme: this.theme, modal: false, surfaceColor: this.theme.bgSecondary, backLabel: '返回账户管理', backId: 'skin-cape-back', menuActions: this.skinTitleActions_(), onMenuAction: (id: string): void => { if (id === 'sync' && this.canSync() && !this.syncing) this.syncProfileNow(); }, onBack: (): void => { this.onClose(); },
+      // 账户是修改对象，保留为标题同行胶囊；完整名称由胶囊详情读取，不再另占一行。
+      ImmersiveTitleScaffold({ title: '皮肤与披风', contextLabel: this.headerAccountName_(), contextTitle: '当前账户', theme: this.theme, modal: false, surfaceColor: this.theme.bgPrimary, backLabel: '返回账户管理', backId: 'skin-cape-back', menuActions: this.skinTitleActions_(), onMenuAction: (id: string): void => { if (id === 'sync' && this.canSync() && !this.syncing) this.syncProfileNow(); }, onBack: (): void => { this.onClose(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }
       .width('100%')
       .height('100%')
-      .backgroundColor(this.theme.bgSecondary)
+      .backgroundColor(this.theme.bgPrimary)
       .padding({ bottom: this.bottomSafeHeight })
 
       // 预览浮层（长按 tile 弹出大图，松手关闭）—— 主内容上方独立一层
       if (this.previewCape !== null || this.previewIsNoCape) {
         this.CapePreviewOverlay();
+      }
       }
     }
     .width('100%')
@@ -153,11 +166,11 @@ export struct SkinCapeDetailSheet {
   @Builder
   ErrorToast(msg: string) {
     Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.Error, iconSize: 16, color: this.theme.error })
+      AppIcon({ name: AppIconName.Error, iconSize: 16, color: this.theme.errorText })
       Text(msg)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.error)
+        .fontColor(this.theme.errorText)
         .layoutWeight(1)
         .maxLines(2)
     }
@@ -177,11 +190,11 @@ export struct SkinCapeDetailSheet {
   @Builder
   SuccessToast(msg: string) {
     Row({ space: 8 }) {
-      AppIcon({ name: AppIconName.CheckCircle, iconSize: 16, color: this.theme.success })
+      AppIcon({ name: AppIconName.CheckCircle, iconSize: 16, color: this.theme.successText })
       Text(msg)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.success)
+        .fontColor(this.theme.successText)
         .layoutWeight(1)
         .maxLines(2)
     }
@@ -193,16 +206,53 @@ export struct SkinCapeDetailSheet {
     .margin({ bottom: 12 })
   }
 
+  /** 身份、外观和管理入口分组展示，正文由外层Scroll负责小窗口与大字体可达性。 */
   @Builder
   MainBody() {
-    // 这里有意把 this.account 的非 null 判断写在 @Builder 里 —— ArkTS 编译器
-    // 对 this 字段的类型收窄不像本地变量稳定（API 18 个测试），所以 SkinCard /
-    // CapeCard 接受 Account 形参，外面把 this.account 强转后传进去。
     if (this.account !== null) {
+      this.OnlineIdentity_(this.account as Account);
       this.SkinCard(this.account as Account);
-      this.CapeCard(this.account as Account);
+      if ((this.account as Account).type === AccountType.MICROSOFT) {
+        this.CapeSwitcherSection(this.account as Account);
+      } else {
+        this.CapeCard(this.account as Account);
+      }
+      this.AccountInformation_(this.account as Account);
       this.InfoNote();
     }
+  }
+
+  /** 用户名获得独立伸缩空间，来源另行展示，避免挤在角色右侧的多枚小徽章里。 */
+  @Builder
+  private OnlineIdentity_(acc: Account) {
+    Row({ space: 12 }) {
+      MinecraftHeadAvatar({ skinUrl: this.activeSkinUrl, uuid: acc.uuid, diameter: 44,
+        fallbackLetter: acc.getDisplayName().slice(0, 1).toUpperCase(), cornerRadius: 8,
+        bgColor: this.theme.primaryLight, letterColor: this.theme.actionText })
+      Column({ space: 4 }) {
+        Text(acc.getDisplayName()).fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(this.theme.textPrimary).width('100%').maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(acc.type === AccountType.MICROSOFT ? '微软正版 · 资料来自 Mojang' : '第三方账号 · 外观由皮肤站提供')
+          .fontSize(14).fontColor(this.theme.textSecondary).width('100%')
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+    }.width('100%').padding({ left: 4, right: 4 }).alignItems(VerticalAlign.Center)
+  }
+
+  /** UUID等低频资料通过明确入口查看，不再常驻主卡挤占姓名和外观空间。 */
+  @Builder
+  private AccountInformation_(acc: Account) {
+    Row({ space: 12 }) {
+      AppIcon({ name: AppIconName.Info, iconSize: 20, color: this.theme.textSecondary })
+      Text('账号信息').fontSize(16).fontColor(this.theme.textPrimary).layoutWeight(1)
+      AppIcon({ name: AppIconName.ChevronRight, iconSize: 18, color: this.theme.textHint })
+    }.width('100%').constraintSize({ minHeight: 56 }).padding({ left: 16, right: 16, top: 12, bottom: 12 })
+      .backgroundColor(this.theme.bgCard).borderRadius(16)
+      .onClick((): void => {
+        this.getUIContext().showAlertDialog({ title: '账号信息',
+          message: acc.getDisplayName() + '\n' + (acc.type === AccountType.MICROSOFT ? '微软正版' : '第三方账号') + '\nUUID：' + acc.uuid,
+          confirm: { value: '完成', action: (): void => {} } });
+      })
   }
 
   /**
@@ -230,7 +280,7 @@ export struct SkinCapeDetailSheet {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#000000B0')
+        .backgroundColor(this.theme.overlayShade)
         .onClick(() => { this.closePreview(); })
 
       // 中央卡片：大图 + 元数据 + 关闭按钮。点击卡片本身不关闭（只有点蒙层才关闭）。
@@ -335,7 +385,8 @@ export struct SkinCapeDetailSheet {
     return '';
   }
 
-  private headerSubtitle(): string {
+  /** 只读取当前账户的显示名；无账户时不生成上下文占位，避免误认另一个编辑对象。 */
+  private headerAccountName_(): string {
     let acc = this.account;
     if (acc === null) return '';
     return acc.getDisplayName();
@@ -345,199 +396,51 @@ export struct SkinCapeDetailSheet {
   //  Cards
   // ============================================================
 
+  /**
+   * 角色预览和在线皮肤信息并排，避免旧320高舞台把披风选择推到多屏之外。
+   * 预览仍消费确认态URL/模型，网页按钮只对非商店微软账号开放。
+   */
   @Builder
   SkinCard(acc: Account) {
-    Column() {
-      // 渐变 stage：大尺寸 3D 皮肤渲染
+    Row({ space: 20 }) {
       Stack() {
-        // 底色：让 WebView 透明背景下能看到一层渐变 + Canvas 降级时背景不至于全黑
-        Column()
-          .width('100%')
-          .height('100%')
-          .linearGradient({
-            angle: 180,
-            colors: [['#60A5FA', 0.0], ['#1E40AF', 1.0]],
-          })
-          .borderRadius({ topLeft: 16, topRight: 16 })
-
-        // 皮肤渲染（Canvas 软件投影；fetch 走 RemoteImageCache —— 见 SkinCanvas3D
-        // 文件头的"为什么不用 ImageBitmap"注释）。
-        // v6 起 SkinCanvas3D 自己 width('100%').height('100%') + onAreaChange 测尺寸，
-        // 不再需要 containerWidth/Height props 限定大小，由外层 Stack 的 .height(320) 决定。
-        // skinUrl / slim 走 @State —— 详见类字段定义处的注释（ArkUI 引用比对 quirk）。
-        SkinCanvas3D({
-          skinUrl: this.activeSkinUrl,
-          username: acc.getDisplayName(),
-          isOffline: acc.type === AccountType.OFFLINE,
-          slim: this.activeSkinVariant === 'SLIM',
-          theme: this.theme,
-        })
-      }
-      .width('100%')
-      .height(320)
-
-      // Meta 行
-      Row({ space: 10 }) {
-        Column({ space: 3 }) {
-          Row({ space: 6 }) {
-            AppIcon({ name: AppIconName.ResourcePack, iconSize: 14, color: this.theme.textPrimary })
-            Text('皮肤')
-              .fontSize(14)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.theme.textPrimary)
-            this.SkinVariantBadge();
-          }
-          .alignItems(VerticalAlign.Center)
-          Text(this.skinSubtitle(acc))
-            .fontSize(11)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.theme.textHint)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
+        SkinCanvas3D({ skinUrl: this.activeSkinUrl, username: acc.getDisplayName(),
+          isOffline: false, slim: this.activeSkinVariant === 'SLIM', theme: this.theme })
+      }.width(88).height(152).backgroundColor(this.theme.bgInput).borderRadius(12).clip(true)
+      Column({ space: 8 }) {
+        Text('当前皮肤').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
+        Text(this.activeSkinVariant === 'SLIM' ? 'Slim · 纤细手臂' : 'Classic · 普通手臂')
+          .fontSize(14).fontColor(this.theme.textSecondary)
         if (acc.type === AccountType.MICROSOFT && !DistributionPolicy.isStore()) {
           Row({ space: 6 }) {
-            AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 13, color: this.theme.primary })
-            Text('前往修改')
-              .fontSize(12)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.theme.primary)
-          }
-          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-          .backgroundColor(this.theme.primaryLight)
-          .borderRadius(10)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => { this.openMinecraftProfile(); })
+            Text('前往网页修改').fontSize(14).fontColor(this.theme.actionText)
+            AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 16, color: this.theme.actionText })
+          }.constraintSize({ minHeight: 44 }).alignItems(VerticalAlign.Center)
+            .onClick((): void => { this.openMinecraftProfile(); })
         }
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 12, left: 14, right: 14 })
-      .alignItems(VerticalAlign.Center)
-      .border({ width: { top: 1 }, color: this.theme.divider })
-    }
-    .width('100%')
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(16)
-    .clip(true)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+    }.width('100%').constraintSize({ minHeight: 184 }).padding(16)
+      .backgroundColor(this.theme.bgCard).borderRadius(20).alignItems(VerticalAlign.Center)
   }
 
-  @Builder
-  SkinVariantBadge() {
-    Row() {
-      Text(this.skinVariantText())
-        .fontSize(10)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.theme.primary)
-    }
-    .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-    .backgroundColor(this.theme.primaryLight)
-    .borderRadius(6)
-    .alignItems(VerticalAlign.Center)
-  }
-
+  /** 第三方外观仅展示远端返回的当前披风，不混入微软已拥有披风和同步命令。 */
   @Builder
   CapeCard(acc: Account) {
-    Column() {
-      // Cape stage —— 灰底渐变，更突出披风颜色
-      Stack() {
-        Column()
-          .width('100%')
-          .height('100%')
-          .linearGradient({
-            angle: 180,
-            colors: [['#1F2937', 0.0], ['#0F172A', 1.0]],
-          })
-          .borderRadius({ topLeft: 16, topRight: 16 })
-
-        if (this.hasCape()) {
-          // capeUrl / alias 走 @State —— 详见类字段定义处的注释。
-          CapePreview({
-            capeUrl: this.activeCapeUrl,
-            alias: this.activeCapeAlias,
-            theme: this.theme,
-            containerWidth: 96,
-            containerHeight: 160,
-            showLabel: false,
-          })
-        } else {
-          Column({ space: 8 }) {
-            AppIcon({ name: AppIconName.EmptySad, iconSize: 36, color: '#FFFFFF60' })
-            Text('未佩戴披风')
-              .fontSize(13)
-              .fontWeight(FontWeight.Medium)
-              .fontColor('#FFFFFFBB')
-            Text('在 Minecraft Realms 或活动中获取披风后即可显示')
-              .fontSize(11)
-              .fontWeight(FontWeight.Regular)
-              .fontColor('#FFFFFF80')
-              .textAlign(TextAlign.Center)
-              .maxLines(2)
-          }
-          .alignItems(HorizontalAlign.Center)
-          .padding({ left: 24, right: 24 })
-        }
+    Row({ space: 16 }) {
+      if (this.hasCape()) {
+        CapePreview({ capeUrl: this.activeCapeUrl, alias: this.activeCapeAlias, theme: this.theme,
+          containerWidth: 40, containerHeight: 64, showLabel: false })
+      } else {
+        Row() {
+          AppIcon({ name: AppIconName.Shader, iconSize: 24, color: this.theme.textHint })
+        }.width(40).height(64).justifyContent(FlexAlign.Center)
       }
-      .width('100%')
-      .height(200)
-
-      // Meta 行
-      Row({ space: 10 }) {
-        Column({ space: 3 }) {
-          Row({ space: 6 }) {
-            AppIcon({ name: AppIconName.Shader, iconSize: 14, color: this.theme.textPrimary })
-            Text('披风')
-              .fontSize(14)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.theme.textPrimary)
-            if (this.hasCape()) {
-              this.CapeAliasBadge();
-            }
-          }
-          .alignItems(VerticalAlign.Center)
-          Text(this.capeSubtitle(acc))
-            .fontSize(11)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.theme.textHint)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        if (acc.type === AccountType.MICROSOFT && !DistributionPolicy.isStore()) {
-          Row({ space: 6 }) {
-            AppIcon({ name: AppIconName.ArrowUpRight, iconSize: 13, color: this.theme.textPrimary })
-            Text('管理')
-              .fontSize(12)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.theme.textPrimary)
-          }
-          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-          .backgroundColor(this.theme.bgInput)
-          .borderRadius(10)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => { this.openMinecraftProfile(); })
-        }
-      }
-      .width('100%')
-      .padding({ top: 12, bottom: 12, left: 14, right: 14 })
-      .alignItems(VerticalAlign.Center)
-      .border({ width: { top: 1 }, color: this.theme.divider })
-
-      // ===== 我的披风 grid（M2.6 + M2.7）=====
-      // 微软账户始终显示 section（即使 ownedCapes=0 也展示空状态 + 同步按钮，
-      // 让玩家能主动从 Mojang 拉最新披风列表）；离线账户跳过整个 section。
-      if (acc.type === AccountType.MICROSOFT) {
-        this.CapeSwitcherSection(acc);
-      }
-    }
-    .width('100%')
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(16)
-    .clip(true)
+      Column({ space: 6 }) {
+        Text(this.hasCape() ? (this.activeCapeAlias || '当前披风') : '未佩戴披风')
+          .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
+        Text('由第三方皮肤站提供').fontSize(14).fontColor(this.theme.textSecondary)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+    }.width('100%').padding(16).backgroundColor(this.theme.bgCard).borderRadius(20)
   }
 
   /**
@@ -558,55 +461,54 @@ export struct SkinCapeDetailSheet {
   @Builder
   CapeSwitcherSection(acc: Account) {
     Column({ space: 10 }) {
-      // 子标题：「我的披风 · N 个」+ 切换 hint + 内联同步按钮（与 header 同步按钮等价，
-      // 这里离 grid 更近、玩家更容易找到）
+      // 库标题、真实拥有数量与同步入口同行；同步和切换共用原命令的互斥守卫。
       Row({ space: 8 }) {
         Text('我的披风')
-          .fontSize(13)
+          .fontSize(14)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.theme.textPrimary)
         Text(this.switcherSubtitle())
-          .fontSize(11)
+          .fontSize(14)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.theme.textSecondary)
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        // 内联同步按钮：图标 + "刷新" 文字，比 header 那个 icon-only 更醒目
+        // 就近保留同步入口，标题菜单和这里调用同一命令，不建立第二套数据源。
         this.InlineSyncButton();
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
+      // 老记录可能只有当前纹理，没有已拥有披风列表。此时展示已知预览并引导同步，
+      // 不能把“缺少active ID”误当成“未佩戴”，也不能凭纹理URL伪造可选披风ID。
+      if (this.activeCapeUrl.length > 0 && this.activeCapeId.length === 0) {
+        Row({ space: 12 }) {
+          CapePreview({ capeUrl: this.activeCapeUrl, alias: this.activeCapeAlias, theme: this.theme,
+            containerWidth: 30, containerHeight: 48, showLabel: false })
+          Column({ space: 4 }) {
+            Text(this.activeCapeAlias || '当前佩戴的披风').fontSize(16).fontColor(this.theme.textPrimary)
+            Text('同步后可查看已拥有的披风').fontSize(14).fontColor(this.theme.textSecondary)
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding(12).backgroundColor(this.theme.bgCard).borderRadius(16)
+      }
+      // 不佩戴是独立有效选项；空库也能明确表达当前无披风，未知远端状态不编造素材。
+      Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start,
+        alignItems: ItemAlign.Start }) {
+        this.NoCapeTile(acc);
+        ForEach(this.ownedCapes, (cape: AccountCape) => { this.CapeTile(acc, cape); },
+          (cape: AccountCape) => cape.id);
+      }.width('100%')
       if (this.ownedCapes.length === 0) {
-        // 空状态：本地缓存里没披风。可能是首次登录还没拉过 / 玩家就是没披风。
-        // 提示玩家点同步按钮主动从 Mojang 拉一遍。
-        this.EmptyCapesPrompt();
-      } else {
-        // tile 网格：3 列。用 Flex.Wrap 而不是 Grid —— 后者要预知行高，前者根据
-        // tile 内容自然撑开，加 / 减 cape 不用调列表布局。
-        Flex({
-          direction: FlexDirection.Row,
-          wrap: FlexWrap.Wrap,
-          justifyContent: FlexAlign.Start,
-          alignItems: ItemAlign.Start,
-        }) {
-          // "无披风" tile（始终在最前；点击 → DELETE /capes/active）
-          this.NoCapeTile(acc);
-          // 其余披风，按 owned 顺序展示
-          ForEach(this.ownedCapes, (cape: AccountCape) => {
-            this.CapeTile(acc, cape);
-          }, (cape: AccountCape) => cape.id);
-        }
-        .width('100%')
+        Text('暂无已拥有的披风，可同步获取最新资料。').fontSize(14).fontColor(this.theme.textSecondary)
       }
 
       // 底部 hint：长按可预览（仅在有披风时展示，避免空状态时重复信息）
       if (this.ownedCapes.length > 0) {
         Row({ space: 6 }) {
           AppIcon({ name: AppIconName.Info, iconSize: 12, color: this.theme.textHint })
-          Text('点击切换 · 长按可查看大图')
-            .fontSize(11)
+          Text('点击切换 · 长按查看大图')
+            .fontSize(14)
             .fontColor(this.theme.textHint)
             .maxLines(1)
         }
@@ -615,9 +517,8 @@ export struct SkinCapeDetailSheet {
       }
     }
     .width('100%')
-    .padding({ top: 14, bottom: 14, left: 14, right: 14 })
+    .padding({ top: 4, bottom: 4 })
     .alignItems(HorizontalAlign.Start)
-    .border({ width: { top: 1 }, color: this.theme.divider })
   }
 
   /**
@@ -631,54 +532,26 @@ export struct SkinCapeDetailSheet {
         LoadingProgress()
           .width(14)
           .height(14)
-          .color(this.theme.primary)
+          .color(this.theme.actionText)
       } else {
-        AppIcon({ name: AppIconName.Refresh, iconSize: 12, color: this.theme.primary })
+        AppIcon({ name: AppIconName.Refresh, iconSize: 12, color: this.theme.actionText })
       }
-      Text(this.syncing ? '同步中…' : '刷新')
-        .fontSize(11)
+      Text(this.syncing ? '同步中…' : '同步')
+        .fontSize(14)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.primary)
+        .fontColor(this.theme.actionText)
     }
-    .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+    .constraintSize({ minWidth: 60, minHeight: 44 })
+    .padding({ left: 12, right: 12 })
+    .justifyContent(FlexAlign.Center)
     .backgroundColor(this.theme.primaryLight)
     .borderRadius(8)
     .alignItems(VerticalAlign.Center)
     .opacity(this.syncing ? 0.7 : 1.0)
     .onClick(() => {
-      if (this.syncing) return;
+      if (this.syncing || this.isBusy()) return;
       this.syncProfileNow();
     })
-  }
-
-  /**
-   * ownedCapes 为空时的占位提示。可能是：
-   *   1. 首次登录 + 上次 fromInteractiveLogin 没拉到（profile 调用失败但登录成功）
-   *   2. 该账户从未获得过披风（这是大多数玩家的情况）
-   *   3. 老账户记录（< M2.6）没有 ownedCapes 字段，需要 sync 一次
-   *
-   * 显示一个友好的引导："点上方刷新按钮从 Mojang 同步"。
-   */
-  @Builder
-  EmptyCapesPrompt() {
-    Column({ space: 8 }) {
-      AppIcon({ name: AppIconName.EmptySad, iconSize: 32, color: this.theme.textHint })
-      Text('暂无披风信息')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.textPrimary)
-      Text(this.emptyCapesHintText())
-        .fontSize(11)
-        .fontWeight(FontWeight.Regular)
-        .fontColor(this.theme.textSecondary)
-        .textAlign(TextAlign.Center)
-        .maxLines(3)
-    }
-    .width('100%')
-    .padding({ top: 16, bottom: 16, left: 12, right: 12 })
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.theme.bgInput)
-    .borderRadius(12)
   }
 
   /**
@@ -697,19 +570,19 @@ export struct SkinCapeDetailSheet {
           .width('100%')
           .height('100%')
           .borderRadius(8)
-          .backgroundColor('#1F2937')
+          .backgroundColor(this.isNoCapeSelected() ? this.theme.primaryLight : this.theme.bgCard)
           // 选中态：primary 色边框（与 CapeTile 高亮一致）
           .border({
             width: this.isNoCapeSelected() ? 2 : 1,
-            color: this.isNoCapeSelected() ? this.theme.primary : this.theme.divider,
-            radius: 8,
+            color: this.isNoCapeSelected() ? this.theme.actionText : this.theme.divider,
+            radius: 16,
           })
 
-        // 居中 X / 斜杠图标占位
+        // 未佩戴项使用主题容器；选中同时显示描边、标签和勾选，深浅主题都可辨。
         AppIcon({
           name: AppIconName.Close,
           iconSize: 28,
-          color: this.isNoCapeSelected() ? this.theme.primary : '#FFFFFFAA',
+          color: this.isNoCapeSelected() ? this.theme.actionText : this.theme.textHint,
         })
 
         // Spinner / check 角标
@@ -719,21 +592,21 @@ export struct SkinCapeDetailSheet {
           this.TileActiveCheck();
         }
       }
-      .width(72)
-      .height(96)
+      .width('100%')
+      .height(112)
 
-      Text('无披风')
-        .fontSize(11)
+      Text('不佩戴')
+        .fontSize(14)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.isNoCapeSelected() ? this.theme.primary : this.theme.textSecondary)
+        .fontColor(this.isNoCapeSelected() ? this.theme.actionText : this.theme.textSecondary)
         .maxLines(1)
     }
     .width('33%')
     .padding(6)
     .alignItems(HorizontalAlign.Center)
-    .opacity(this.isBusy() && !this.isSwitchingThisTile('__none__') ? 0.5 : 1.0)
+    .opacity((this.isBusy() || this.syncing) && !this.isSwitchingThisTile('__none__') ? 0.5 : 1.0)
     .onClick(() => {
-      if (this.isBusy()) return;            // 防并发
+      if (this.isBusy() || this.syncing) return;            // 防并发
       if (this.isNoCapeSelected()) return;   // 已是"无披风"，no-op
       this.applyCape(acc, null);
     })
@@ -760,10 +633,10 @@ export struct SkinCapeDetailSheet {
           .borderRadius(8)
           .border({
             width: this.isCapeSelected(cape.id) ? 2 : 1,
-            color: this.isCapeSelected(cape.id) ? this.theme.primary : this.theme.divider,
-            radius: 8,
+            color: this.isCapeSelected(cape.id) ? this.theme.actionText : this.theme.divider,
+            radius: 16,
           })
-        // CapePreview 内部自带 #1F2937 暗灰底，无需再叠
+        // 复用实际披风纹理裁剪，外层选中边框不改动内部像素颜色。
         CapePreview({
           capeUrl: cape.url,
           alias: cape.alias,
@@ -778,22 +651,22 @@ export struct SkinCapeDetailSheet {
           this.TileActiveCheck();
         }
       }
-      .width(72)
-      .height(96)
+      .width('100%')
+      .height(112)
 
       Text(cape.alias.length > 0 ? cape.alias : '披风')
-        .fontSize(11)
+        .fontSize(14)
         .fontWeight(this.isCapeSelected(cape.id) ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.isCapeSelected(cape.id) ? this.theme.primary : this.theme.textPrimary)
+        .fontColor(this.isCapeSelected(cape.id) ? this.theme.actionText : this.theme.textPrimary)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('33%')
     .padding(6)
     .alignItems(HorizontalAlign.Center)
-    .opacity(this.isBusy() && !this.isSwitchingThisTile(cape.id) ? 0.5 : 1.0)
+    .opacity((this.isBusy() || this.syncing) && !this.isSwitchingThisTile(cape.id) ? 0.5 : 1.0)
     .onClick(() => {
-      if (this.isBusy()) return;
+      if (this.isBusy() || this.syncing) return;
       if (this.isCapeSelected(cape.id)) return;
       this.applyCape(acc, cape.id);
     })
@@ -807,12 +680,12 @@ export struct SkinCapeDetailSheet {
   @Builder
   TileActiveCheck() {
     Row() {
-      AppIcon({ name: AppIconName.Check, iconSize: 12, color: '#FFFFFF', weight: FontWeight.Bold })
+      AppIcon({ name: AppIconName.Check, iconSize: 12, color: this.theme.textOnPrimary, weight: FontWeight.Bold })
     }
     .width(20)
     .height(20)
     .borderRadius(10)
-    .backgroundColor(this.theme.primary)
+    .backgroundColor(this.theme.actionPrimary)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .position({ top: 4, right: 4 })
@@ -825,45 +698,23 @@ export struct SkinCapeDetailSheet {
       LoadingProgress()
         .width(28)
         .height(28)
-        .color(this.theme.primary)
+        .color(this.theme.actionText)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#00000080')
+    .backgroundColor(this.theme.overlayShade)
     .borderRadius(8)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
   }
 
-  @Builder
-  CapeAliasBadge() {
-    Row() {
-      Text((this.activeCapeAlias.length > 0 ? this.activeCapeAlias : '已佩戴').toUpperCase())
-        .fontSize(10)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.theme.warning)
-    }
-    .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-    .backgroundColor(this.theme.warningBg)
-    .borderRadius(6)
-    .alignItems(VerticalAlign.Center)
-  }
-
+  /** 文案按实际账号来源说明归属，第三方不会被错误标记为Mojang资料。 */
   @Builder
   InfoNote() {
-    Row({ space: 10 }) {
-      AppIcon({ name: AppIconName.Info, iconSize: 16, color: this.theme.primary })
-      Text('皮肤与披风数据来自 Mojang Profile · 更新令牌后会自动同步')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.theme.primary)
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ top: 10, bottom: 10, left: 12, right: 12 })
-    .backgroundColor(this.theme.primaryLight)
-    .borderRadius(12)
-    .alignItems(VerticalAlign.Top)
+    Text(this.account?.type === AccountType.MICROSOFT
+      ? '点击披风后即时提交，成功后同步账号资料。'
+      : '此角色的皮肤与披风由登录的第三方皮肤站提供。')
+      .fontSize(14).fontColor(this.theme.textSecondary).width('100%')
   }
 
   // ============================================================
@@ -874,48 +725,11 @@ export struct SkinCapeDetailSheet {
     return this.activeCapeUrl.length > 0;
   }
 
-  private skinSubtitle(acc: Account): string {
-    if (acc.type === AccountType.OFFLINE) {
-      return '离线账户 · 仅本地展示';
-    }
-    if (this.activeSkinUrl.length > 0) return 'textures.minecraft.net · 自动同步';
-    return '使用默认 Steve 皮肤';
-  }
-
-  private skinVariantText(): string {
-    let v = this.activeSkinVariant.toUpperCase();
-    if (v === 'CLASSIC' || v === 'SLIM') return v;
-    return 'CLASSIC';
-  }
-
-  private capeSubtitle(acc: Account): string {
-    if (acc.type === AccountType.OFFLINE) return '离线账户没有披风';
-    if (this.ownedCapes.length === 0) {
-      // M2.7 起即使 ownedCapes=0 也展示 grid section（含同步按钮），subtitle 引导玩家去同步
-      return this.hasCape()
-        ? '已佩戴 · 下方刷新可查看更多披风'
-        : '点击下方刷新从 Mojang 同步披风';
-    }
-    // 有 ownedCapes 时下面就有切换 grid 了，subtitle 简洁点
-    return this.hasCape()
-      ? '已佩戴 · 在下方切换'
-      : '未佩戴 · 在下方选择';
-  }
-
   /** "我的披风" section 标题右边的副标题（数量 / 状态提示）。 */
   private switcherSubtitle(): string {
     if (this.syncing) return '正在从 Mojang 同步…';
     if (this.ownedCapes.length === 0) return '点击右侧刷新加载';
     return '共 ' + this.ownedCapes.length + ' 个';
-  }
-
-  /** EmptyCapesPrompt 里的引导文字（按账户来源给出不同建议）。 */
-  private emptyCapesHintText(): string {
-    let acc = this.account;
-    if (acc !== null && acc.type === AccountType.MICROSOFT) {
-      return '点击右上角的刷新按钮从 Mojang 同步，\n或在 Minecraft Realms / 活动中获取披风';
-    }
-    return '只有微软正版账户能查看与切换披风';
   }
 
   /** 是否允许显示"同步"按钮（header / inline）。仅微软正版账户。 */
@@ -937,7 +751,8 @@ export struct SkinCapeDetailSheet {
   }
   /** "无披风" tile 当前是否选中（账户无 active cape） */
   private isNoCapeSelected(): boolean {
-    return this.activeCapeId.length === 0;
+    // 缓存资料缺少ownedCapes时仍可能持有真实capeUrl，不能误高亮“不佩戴”。
+    return this.activeCapeId.length === 0 && this.activeCapeUrl.length === 0;
   }
   /** 整个 grid 是否处于切换中（任何 tile busy 都禁点其它 tile） */
   private isBusy(): boolean {
@@ -999,38 +814,30 @@ export struct SkinCapeDetailSheet {
    * 因为 setActiveCape 抛错后 account 内部状态没变。
    */
   private async applyCape(acc: Account, capeId: string | null): Promise<void> {
-    // 用 '__none__' 作为 NoCapeTile 的虚拟 id —— 本地状态用，不会发给服务器
-    let busyKey = capeId === null ? '__none__' : capeId;
-    if (this.switchingCapeId.length > 0) return;
-    // 防竞态：sync 在飞 → 跳过这次切换。否则切换完成可能被尚未返回的 sync 用旧
-    // profile 覆盖回去（race window：sync GET 已发但 cape PUT 也已发的情况）
-    if (this.syncing) return;
+    if (!this.alive || this.account?.id !== acc.id || acc.type !== AccountType.MICROSOFT || this.isBusy() || this.syncing) return;
+    const epoch: number = this.pageEpoch;
+    const id: string = acc.id;
+    const notify: () => void = this.onChanged;
+    const busyKey: string = capeId === null ? '__none__' : capeId;
     this.switchingCapeId = busyKey;
-    this.capeErrorMsg = '';
-    AppLogger.info(TAG, `applyCape start: ${busyKey}`, LOG_DOMAIN_ACCOUNT);
+    this.capeErrorMsg = ''; this.capeSuccessMsg = '';
     try {
       await acc.setActiveCape(capeId);
-      // 落库（持久化新的 active cape + ownedCapes 状态）
+      // 账号写入以原始目标为准；页面关闭只退休显示，不能跳过已经成功的远端操作落库。
       await getAccountManager().persistOne(acc);
-      // 重新读快照刷 UI
-      this.refreshCapeStateFromAccount();
-      // 通知父 sheet 刷 Hero 卡 / 列表
-      this.onChanged();
-      AppLogger.info(TAG, `applyCape ok: ${busyKey}`, LOG_DOMAIN_ACCOUNT);
-      // 成功 toast：友好提示玩家"切换成功"，2s 自动消失
-      this.showSuccess(capeId === null ? '已脱下披风' : '披风切换成功');
-    } catch (e) {
-      let msg = (e instanceof AccountError)
-        ? (e as AccountError).message
-        : ('切换披风失败：' + (e as Error).message);
-      this.capeErrorMsg = msg;
-      this.capeSuccessMsg = '';   // 互斥：失败时清成功 toast
-      AppLogger.error(TAG, `applyCape failed: ${msg}`, null, LOG_DOMAIN_ACCOUNT);
-      setTimeout(() => {
-        if (this.capeErrorMsg === msg) this.capeErrorMsg = '';
-      }, 3000);
+      this.recordCapeActivity_('success', capeId === null ? '已脱下披风' : '披风切换成功');
+      try { notify(); } catch (error) { AppLogger.warn(TAG, '披风已保存，父界面刷新失败', error as Object, LOG_DOMAIN_ACCOUNT); }
+      if (this.currentPage_(epoch, id)) {
+        this.refreshCapeStateFromAccount();
+        this.showSuccess(capeId === null ? '已脱下披风' : '披风切换成功');
+      }
+    } catch (error) {
+      const message: string = error instanceof AccountError ? (error as AccountError).message : '切换披风失败：' + (error as Error).message;
+      AppLogger.error(TAG, message, error as Object, LOG_DOMAIN_ACCOUNT);
+      this.recordCapeActivity_('failed', message);
+      if (this.currentPage_(epoch, id)) this.showFailure_(message);
     } finally {
-      this.switchingCapeId = '';
+      if (this.currentPage_(epoch, id)) this.switchingCapeId = '';
     }
   }
 
@@ -1046,62 +853,55 @@ export struct SkinCapeDetailSheet {
    *   5. finally 清 syncing
    */
   private async syncProfileNow(): Promise<void> {
-    let acc = this.account;
-    if (acc === null) return;
-    if (acc.type !== AccountType.MICROSOFT) return;
-    if (this.syncing) return;
-    // 防竞态：cape 切换在飞 → 让切换先完成（切换后会拿到最新 profile，sync 暂时
-    // 不需要；用户可在切换完后再点 sync）
-    if (this.switchingCapeId.length > 0) return;
+    const acc: Account | null = this.account;
+    if (!this.alive || acc === null || acc.type !== AccountType.MICROSOFT || this.syncing || this.isBusy()) return;
+    const epoch: number = this.pageEpoch;
+    const id: string = acc.id;
+    const notify: () => void = this.onChanged;
+    const beforeCount: number = this.ownedCapes.length;
     this.syncing = true;
-    this.capeErrorMsg = '';
-    this.capeSuccessMsg = '';
-    let beforeCount = this.ownedCapes.length;
-    AppLogger.info(TAG, `syncProfileNow start: id=${acc.id} before=${beforeCount}`, LOG_DOMAIN_ACCOUNT);
+    this.capeErrorMsg = ''; this.capeSuccessMsg = '';
     try {
       await acc.syncProfile();
-      // 同步成功后落库（serialize 包含 skinUrl / capeUrl / ownedCapes 等明文字段）
       await getAccountManager().persistOne(acc);
-      this.refreshCapeStateFromAccount();
-      this.onChanged();
-      let afterCount = this.ownedCapes.length;
-      // 给出更具体的 toast：是新增了披风还是没变
-      let msg: string;
-      if (afterCount > beforeCount) {
-        msg = '同步成功 · 新增 ' + (afterCount - beforeCount) + ' 个披风';
-      } else if (afterCount < beforeCount) {
-        msg = '同步成功 · 披风列表已更新';
-      } else if (afterCount === 0) {
-        msg = '同步完成 · 当前账户没有披风';
-      } else {
-        msg = '同步成功 · 披风列表已是最新';
+      try { notify(); } catch (error) { AppLogger.warn(TAG, '资料已保存，父界面刷新失败', error as Object, LOG_DOMAIN_ACCOUNT); }
+      if (this.currentPage_(epoch, id)) {
+        this.refreshCapeStateFromAccount();
+        const afterCount: number = this.ownedCapes.length;
+        this.showSuccess(afterCount > beforeCount ? '同步成功 · 新增 ' + (afterCount - beforeCount) + ' 个披风'
+          : (afterCount === 0 ? '同步完成 · 当前账户没有披风' : '同步成功 · 披风列表已更新'));
       }
-      this.showSuccess(msg);
-      AppLogger.info(TAG, `syncProfileNow ok: after=${afterCount}`, LOG_DOMAIN_ACCOUNT);
-    } catch (e) {
-      let msg = (e instanceof AccountError)
-        ? (e as AccountError).message
-        : ('同步披风列表失败：' + (e as Error).message);
-      this.capeErrorMsg = msg;
-      this.capeSuccessMsg = '';
-      AppLogger.error(TAG, `syncProfileNow failed: ${msg}`, null, LOG_DOMAIN_ACCOUNT);
-      setTimeout(() => {
-        if (this.capeErrorMsg === msg) this.capeErrorMsg = '';
-      }, 3000);
+    } catch (error) {
+      const message: string = error instanceof AccountError ? (error as AccountError).message : '同步披风列表失败：' + (error as Error).message;
+      AppLogger.error(TAG, message, error as Object, LOG_DOMAIN_ACCOUNT);
+      if (this.currentPage_(epoch, id)) this.showFailure_(message);
     } finally {
-      this.syncing = false;
+      if (this.currentPage_(epoch, id)) this.syncing = false;
     }
   }
 
-  /**
-   * 设置成功 toast 并 2s 后自动清除。多次连续调用以最后一次为准（idempotent
-   * 通过 closure 比对当前消息实现）。
-   */
+  /** 活动归属继续使用主线统一owner；摘要故障不能把已确认的账号操作改写为失败。 */
+  private recordCapeActivity_(status: string, message: string): void {
+    try { getTaskActivityOwner().recordSummary('skin', '切换披风', status, message); }
+    catch (error) { AppLogger.warn(TAG, '披风操作摘要记录失败', error as Object, LOG_DOMAIN_ACCOUNT); }
+  }
+
+  /** 临时反馈绑定当前视图和目标；旧计时器不能清除重新打开后的新消息。 */
   private showSuccess(msg: string): void {
-    this.capeSuccessMsg = msg;
-    setTimeout(() => {
-      if (this.capeSuccessMsg === msg) this.capeSuccessMsg = '';
+    const epoch: number = this.pageEpoch, id: string = this.account?.id ?? '';
+    this.capeErrorMsg = ''; this.capeSuccessMsg = msg;
+    setTimeout((): void => {
+      if (this.currentPage_(epoch, id) && this.capeSuccessMsg === msg) this.capeSuccessMsg = '';
     }, 2000);
+  }
+
+  /** 失败保留原确认态；提示只在所属页面仍存活时显示和定时撤下。 */
+  private showFailure_(msg: string): void {
+    const epoch: number = this.pageEpoch, id: string = this.account?.id ?? '';
+    this.capeSuccessMsg = ''; this.capeErrorMsg = msg;
+    setTimeout((): void => {
+      if (this.currentPage_(epoch, id) && this.capeErrorMsg === msg) this.capeErrorMsg = '';
+    }, 3000);
   }
 
   // ============================================================
@@ -1155,7 +955,7 @@ export struct SkinCapeDetailSheet {
   private ImmersiveTitleContent1_() {
         // 主内容滚动区
         Scroll() {
-          Column({ space: 12 }) {
+          Column({ space: 16 }) {
             this.MainBody();
           }
           .width('100%')

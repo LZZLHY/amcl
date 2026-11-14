@@ -43,6 +43,7 @@
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { getRemotePixelMap } from 'commons';
+import { isLocalAccountTexture, loadAccountTexture } from './AccountTextureLoader';
 
 const TAG = 'MinecraftHeadAvatar';
 
@@ -86,13 +87,20 @@ export struct MinecraftHeadAvatar {
    * @State 让 ArkUI 能在异步解码完成后重渲染（盖上 Image 层）。
    */
   @State private pixelMap: image.PixelMap | null = null;
+  /** 绑定当前组件和输入世代；旧头像不能在账号快速切换后覆盖新的头像。 */
+  private loadEpoch: number = 0;
+  private alive: boolean = false;
 
   aboutToAppear(): void {
+    this.alive = true;
     hilog.info(0x0000, TAG, 'aboutToAppear: uuid=%{public}s len=%{public}d diameter=%{public}d',
       this.uuid.length === 0 ? '<empty>' : this.uuid,
       this.uuid.length, this.diameter);
     this.kickOffLoad();
   }
+
+  /** 共享原图不释放，迟到裁图从未交给 Image 时才可立即释放。 */
+  aboutToDisappear(): void { this.alive = false; this.loadEpoch++; }
 
   /** 切账户 / 皮肤变化 → 清空旧头像 + 重新加载。 */
   private onInputsChange(): void {
@@ -110,37 +118,46 @@ export struct MinecraftHeadAvatar {
    *   3. 都不行 → 字母兜底（pixelMap 保持 null）。
    */
   private kickOffLoad(): void {
+    if (!this.alive) return;
+    const epoch = ++this.loadEpoch;
     if (this.skinUrl.length > 0) {
       let skin = this.skinUrl;
-      getRemotePixelMap(skin).then(async (pm: image.PixelMap | null): Promise<void> => {
-        if (this.skinUrl !== skin) return;           // 期间切了账户 → 丢弃
+      loadAccountTexture(skin).then(async (pm: image.PixelMap | null): Promise<void> => {
+        if (!this.alive || this.loadEpoch !== epoch || this.skinUrl !== skin) return;
         if (pm !== null) {
           let head = await this.cropHeadPM(pm);
-          if (this.skinUrl === skin && head !== null) {
+          if (!this.alive || this.loadEpoch !== epoch || this.skinUrl !== skin) {
+            if (head !== null) head.release().catch((): void => {});
+            return;
+          }
+          if (head !== null) {
             this.pixelMap = head;
             return;
           }
         }
-        // 皮肤裁切失败 → 尝试 uuid 兜底
-        this.loadFromUuid_();
+        // 本地纹理失败保留本地字母兜底，不为离线账号向第三方服务发送UUID。
+        if (!isLocalAccountTexture(skin)) this.loadFromUuid_(epoch);
       }).catch((e: Error) => {
+        if (!this.alive || this.loadEpoch !== epoch) return;
         hilog.warn(0x0000, TAG, 'skin head load failed: %{public}s', e ? e.message : '');
-        this.loadFromUuid_();
+        if (!isLocalAccountTexture(skin)) this.loadFromUuid_(epoch);
       });
       return;
     }
-    this.loadFromUuid_();
+    this.loadFromUuid_(epoch);
   }
 
   /** mc-heads.net 头像兜底（仅当 skinUrl 不可用时）。 */
-  private loadFromUuid_(): void {
+  private loadFromUuid_(epoch: number): void {
+    if (!this.alive || this.loadEpoch !== epoch || isLocalAccountTexture(this.skinUrl)) return;
     let uuid = this.uuid;
+    const expectedSkin = this.skinUrl;
     if (uuid.length !== 32 && uuid.length !== 36) {
       return;
     }
     let url = 'https://mc-heads.net/avatar/' + uuid + '/' + this.targetPx();
     getRemotePixelMap(url).then((pm: image.PixelMap | null) => {
-      if (this.uuid === uuid && this.skinUrl.length === 0 && pm !== null) {
+      if (this.alive && this.loadEpoch === epoch && this.uuid === uuid && this.skinUrl === expectedSkin && pm !== null) {
         this.pixelMap = pm;
       }
     }).catch((e: Error) => {

@@ -20,6 +20,19 @@ export { EntryTouchInputMaintenanceLease, startEntryTouchInputMaintenance,
   reconcileEntryTouchInputMaintenance, stopEntryTouchInputMaintenance } from './EntryTouchInputMaintenance'
 
 /** 全部坐标为surface px，页面在绘制入口统一除density；不把本对象当作新的输入状态机。 */
+/** 只活在一次16ms调用栈内的读取结果；来源或GUI回调轮次变化即不用，不跨tick缓存Native事实。 */
+class EntryTouchVisualSample {
+  lease: EntryTouchInputMaintenanceLease
+  guiReads: number
+  epoch: number
+  values: number[] | undefined = undefined
+  constructor(lease: EntryTouchInputMaintenanceLease, guiReads: number, epoch: number) {
+    this.lease = lease
+    this.guiReads = guiReads
+    this.epoch = epoch
+  }
+}
+
 export class EntryTouchVisual {
   menuX: number = 0
   menuY: number = 0
@@ -60,7 +73,7 @@ export class EntryTouchSession {
   private bindingActivation: string = ''
   private timer: number = -1
   private receive: ((state: EntryTouchVisual) => void) | undefined = undefined
-  private lastVisual: string = ''
+  private lastVisual: number[] = []
   /** 菜单面板位置是实际绘制/命中几何；它与可退订的光标、高亮、教学投影分别送达。 */
   private geometryReceive: ((x: number, y: number) => void) | undefined = undefined
   private lastGeometry: string = ''
@@ -277,14 +290,14 @@ export class EntryTouchSession {
     this.receive = receive
     // 兼容原挂接签名；未提供GUI闭包的视觉恢复不得清掉必要几何订阅。
     if (guiReceive!==undefined) { this.guiReceive=guiReceive; this.nextGuiRead=0; this.lastGui='' }
-    this.lastVisual = ''
+    this.lastVisual = []
     this.deliverWithdrawnGuiTicket()
   }
 
   /** 撤销视觉/教学只清可选闭包；GUI缩放和菜单面板几何仍服务原schema/绘制/命中。 */
   unsubscribeVisual(): void {
     this.receive = undefined
-    this.guideActive = false; this.lastVisual = ''
+    this.guideActive = false; this.lastVisual = []
   }
 
   /** 显式挂接本来源；没有活跃宿主或来源容量不足时保持关闭，不把旧源改绑未来会话。 */
@@ -371,8 +384,9 @@ export class EntryTouchSession {
     }
     if (active && this.timer === -1) {
       const lease: EntryTouchInputMaintenanceLease | undefined = this.sourceLease
+      const epoch: number = this.gyroConfigurationEpoch
       this.timer = setInterval(() => {
-        if (!this.active || lease === undefined || this.sourceLease !== lease || !isEntryTouchInputMaintenanceCurrent(lease)) return
+        if (!this.active || epoch !== this.gyroConfigurationEpoch || lease === undefined || this.sourceLease !== lease || !isEntryTouchInputMaintenanceCurrent(lease)) return
         try { this.heartbeat?.() }
         catch (error) {
           if (!this.heartbeatWarned) {
@@ -381,8 +395,14 @@ export class EntryTouchSession {
             catch (_) { /* 日志只缺观察，原Source/gyro维护继续，不补输入或重建订阅。 */ }
           }
         }
-        this.maintainSources()
-        this.refreshVisual()
+        // 同轮gyro和外观共用已取得的只读值；无UI订阅也照常维护Source，不以刷新节拍驱动输入。
+        if (epoch !== this.gyroConfigurationEpoch) return
+        const sample: EntryTouchVisualSample | undefined = this.gyroOptions.gyroscopeMode !== 'off' &&
+          this.touchAdmitted && this.grabbed && (this.receive !== undefined || this.geometryReceive !== undefined)
+          ? new EntryTouchVisualSample(lease, this.guiReads, epoch) : undefined
+        this.maintainSources(sample)
+        if (epoch !== this.gyroConfigurationEpoch) return
+        this.refreshVisual(sample)
       },16) as number
     }
   }
@@ -391,18 +411,22 @@ export class EntryTouchSession {
    * 来源必要维护独立于UI getter。Native缺实际mode或快照资格时立即停gyro；重新取得合法
    * schema/抓取状态后只从新样本积分，不重放停顿期间的时间或旧传感器尾量。
    */
-  maintainSources(): boolean {
+  maintainSources(sample?: EntryTouchVisualSample): boolean {
+    const epoch: number = this.gyroConfigurationEpoch
+    if (sample !== undefined && sample.epoch !== epoch) return false
     const lease: EntryTouchInputMaintenanceLease | undefined = this.sourceLease
     const operation: number=this.gyroOperation
     this.gyroProgress.stage='Waiting'; this.gyroProgress.reason='SourceInactive'
     if (!this.active || lease === undefined || !isEntryTouchInputMaintenanceCurrent(lease)) return false
     try {
-      if (!reconcileEntryTouchInputMaintenance(lease) || typeof testNapi.touchInteractionVisual !== 'function') {
+      const reconciled: boolean = reconcileEntryTouchInputMaintenance(lease)
+      if (epoch !== this.gyroConfigurationEpoch) return false
+      if (!reconciled || typeof testNapi.touchInteractionVisual !== 'function') {
         this.gyro.stop(); return false
       }
       if (this.gyroOptions.gyroscopeMode === 'off') {
         const closed: boolean=this.gyro.configure(false,this.gyroOptions,this.rotation,0)
-        const current: boolean=operation===this.gyroOperation && this.sourceLease===lease && isEntryTouchInputMaintenanceCurrent(lease)
+        const current: boolean=epoch===this.gyroConfigurationEpoch && operation===this.gyroOperation && this.sourceLease===lease && isEntryTouchInputMaintenanceCurrent(lease)
         if (closed && current) { this.gyroProgress.stage='Applied'; this.gyroProgress.reason='' }
         // 关闭尚未完成时只读原gyro清理状态；回入后的旧续体不能覆盖后来operation的原因。
         else if (current) this.gyroProgress.reason=this.gyro.currentStatus()
@@ -411,7 +435,8 @@ export class EntryTouchSession {
       if (!this.touchAdmitted || !this.grabbed) {
         this.gyro.stop(); this.gyroProgress.reason='InputNotAdmitted'; return false
       }
-      const values: number[] = testNapi.touchInteractionVisual()
+      const values: number[] = this.readVisualSample_(sample)
+      if (epoch !== this.gyroConfigurationEpoch) return false
       if (values.length < 14 || values.some((value: number): boolean => !Number.isFinite(value))) {
         this.gyro.stop(); this.gyroProgress.reason='NativeVisualUnavailable'; return false
       }
@@ -419,17 +444,24 @@ export class EntryTouchSession {
       const gyroEnabled: boolean = nativeGrabbed &&
         (this.gyroOptions.gyroscopeMode === 'always' || values[11] === 1)
       const completed: boolean=this.gyro.configure(gyroEnabled,this.gyroOptions,this.rotation,values[12])
+      // 同一个originLease可重挂；epoch才区分两轮来源。旧续体不停止新订阅，也不发布旧快照。
+      if (epoch !== this.gyroConfigurationEpoch) return false
       if (operation!==this.gyroOperation || this.sourceLease!==lease || !isEntryTouchInputMaintenanceCurrent(lease)) {
         this.gyro.stop(); return false
       }
       this.gyroProgress.stage=completed ? 'Applied' : 'Waiting'
       this.gyroProgress.reason=completed ? '' : this.gyro.currentStatus()
       return completed
-    } catch (_) { this.gyro.stop(); this.gyroProgress.reason='OutcomeUnknown'; return false }
+    } catch (_) {
+      if (epoch === this.gyroConfigurationEpoch) { this.gyro.stop(); this.gyroProgress.reason='OutcomeUnknown' }
+      return false
+    }
   }
 
   /** 同步只读投影用于DOWN后的即时反馈；定时读取补齐native命中扩展区和锁定后的静止状态。 */
-  refreshVisual(): void {
+  refreshVisual(sample?: EntryTouchVisualSample): void {
+    const epoch: number = this.gyroConfigurationEpoch
+    if (sample !== undefined && sample.epoch !== epoch) return
     // 立即刷新也可能来自已排队的旧UI事件；原来源退休后不可读取后来资源的全局快照。
     if (!this.active || !this.hasCurrentSource()) return
     const guiReceive: ((state: GameGuiState) => void) | undefined=this.guiReceive
@@ -443,11 +475,11 @@ export class EntryTouchSession {
       try { this.refreshGuiProjection_(guiReceive,lease) } catch (_) { this.warnProjection_() }
       // GUI接收器可经registerRegions同步停源。不得在失权后读取全局Native缓存，
       // 同一local lease也不代替仍有效的scope；只继续本次captured lease的活跃续体。
-      if (!this.isCurrentProjectionSource_(lease)) return
+      if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease)) return
       if (typeof testNapi.touchInteractionVisual!=='function' || (geometryReceive===undefined && receive===undefined)) return
-      const values: number[] = testNapi.touchInteractionVisual()
+      const values: number[] = this.readVisualSample_(sample)
       // Native边缘同样可同步回入停止/换scope；返回数值不能给原续体重新授予发布资格。
-      if (!this.isCurrentProjectionSource_(lease)) return
+      if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease)) return
       if (values.length < 14 || values.some((value: number): boolean => !Number.isFinite(value))) {
         return
       }
@@ -458,10 +490,11 @@ export class EntryTouchSession {
         try { geometryReceive(values[0],values[1]) } catch (_) { this.warnProjection_() }
       }
       // 必要几何接收器也可停源；其返回后不能继续构值/递送可选显示。
-      if (!this.isCurrentProjectionSource_(lease) || receive===undefined || this.receive!==receive) return
-      const signature: string = values.join(',')
-      if (signature === this.lastVisual) return
-      this.lastVisual = signature
+      if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease) || receive===undefined || this.receive!==receive) return
+      // 只比较数值，不为每帧构造/回收一整串文本；缓存只服务外观去重，不决定输入资格。
+      if (values.length === this.lastVisual.length &&
+        values.every((value: number, index: number): boolean => value === this.lastVisual[index])) return
+      this.lastVisual = values
       const state = new EntryTouchVisual()
       state.menuX=values[0]; state.menuY=values[1]; state.menuVisible=values[2] === 1
       state.centerX=values[3]; state.centerY=values[4]; state.joystickX=values[5]; state.joystickY=values[6]
@@ -476,6 +509,18 @@ export class EntryTouchSession {
         hilog.warn(0x0000,'GameControls','Touch visual projection unavailable: %{public}s',String(error))
       }
     }
+  }
+
+  /** 独立调用仍读取当前Native。GUI读取可能同步回调发布新几何，故该轮之后不复用旧值；
+   * lease必须原样匹配，不能把旧tick的结果贴到新来源。Native返回后的资格由原调用方复核。 */
+  private readVisualSample_(sample?: EntryTouchVisualSample): number[] {
+    const reusable: boolean = sample !== undefined && sample.epoch === this.gyroConfigurationEpoch &&
+      sample.lease === this.sourceLease && sample.guiReads === this.guiReads
+    if (reusable && sample !== undefined && sample.values !== undefined) return sample.values
+    const values: number[] = testNapi.touchInteractionVisual()
+    if (reusable && sample !== undefined && sample.epoch === this.gyroConfigurationEpoch &&
+      sample.lease === this.sourceLease && sample.guiReads === this.guiReads) sample.values = values
+    return values
   }
 
   /** 每个外部返回边界复核同一个原Source；纯资格查询不维护/复活来源，也不读Native。 */

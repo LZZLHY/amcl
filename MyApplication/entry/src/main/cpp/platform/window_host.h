@@ -23,6 +23,20 @@ typedef struct AmclWindowHostSnapshot {
 } AmclWindowHostSnapshot;
 typedef void (*AmclWindowHostCommitFn)(const AmclWindowHostSnapshot*, void*);
 
+/**
+ * XComponent owner 注册的只读函数表，生命周期覆盖当前进程。flags不得加gate锁；
+ * 其余回调由呈现线程进入，注册者自行串行化UI生命周期与政策，不能访问ArkUI对象。
+ * 跨namespace只转发C接口，不复制输入映射或另建窗口owner；fork后必须重新注册。
+ */
+typedef struct AmclWindowGeometryClientV1 {
+    uint32_t structSize;
+    uint32_t abiVersion;
+    uint32_t (*workFlags)(void);
+    int (*checkpoint)(void*, uint64_t, uint64_t);
+    void (*observe)(void*, uint64_t, uint64_t, int, int, uint32_t);
+} AmclWindowGeometryClientV1;
+AMCL_WINDOW_EXPORT int amclWindowHostRegisterGeometryClient(const AmclWindowGeometryClientV1* client);
+
 typedef struct AmclWindowHostStats {
     uint64_t generation;
     uint64_t publications;

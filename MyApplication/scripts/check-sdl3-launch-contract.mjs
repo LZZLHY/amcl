@@ -20,6 +20,7 @@ const PATCH = '0013-openharmony-host-runtime-ownership.patch';
 const SOURCE_PATHS = {
   source: 'entry/src/main/cpp/jvm/mc_launcher.cpp',
   bootstrap: 'entry/src/main/cpp/jvm/runtime_bootstrap_contract.h',
+  providers: 'entry/src/main/cpp/jvm/hap_native_provider_contract.h',
   profile: 'launch/src/main/ets/LaunchProfileBuilder.ets',
   gameFacts: 'launch/src/main/ets/GraphicsGameFacts.ets',
   patch: 'prebuilt/sdl3/patches/' + PATCH,
@@ -98,19 +99,29 @@ export function analyzeSdlLaunchSources(files) {
     const thread = functionBody(source, 'mcLaunchThreadWithProfile');
     const publish = functionBody(source, 'phase_publishPlatformRuntime');
     const verify = functionBody(source, 'phase_verifyRuntimeProperties');
-    check('absolute-native-fallback', resolveDir.includes('"/data/storage/el1/bundle/libs/arm64"'));
+    // 目录必须来自当前libentry实际映像；不能继续认可“存在就用”的可写邻近目录或猜测fallback。
+    const ownerDirectory = functionBody(files.providers, 'HapNativeDirectoryFromOwner');
+    check('native-provider-from-current-hap', ordered(resolveDir,
+      ['dladdr(', 'amcl::jvm::HapNativeDirectoryFromOwner(', 'amcl::jvm::CheckHapExternalProviderFiles('])
+      && resolveDir.includes('S_ISREG(info.st_mode)') && !resolveDir.includes('filesDir')
+      && launch.includes('if (!resolveHapNativeDir(hapNativeDir, hapNativeError))')
+      && ['"/data/storage/el1/bundle/libs/arm64"', '"/data/storage/el1/bundle/libs/arm64-v8a"',
+        '"/data/storage/el1/bundle/libs"'].every(root => ownerDirectory.includes(root))
+      && ownerDirectory.includes('owner == std::string(candidate) + "/libentry.so"')
+      && ownerDirectory.includes('return false;'));
     check('structured-provider-authority', launch.includes('const bool usesSdl3 = graphicsPlan.window == "SDL3";')
       && launch.includes('legacySdl != (graphicsPlan.window == "SDL3")'));
     check('opengl-only-provider-hints', launch.includes('if (usesSdl3 && graphicsPlan.api == "OPENGL")')
       && launch.includes('amcl::renderer::FindBackendGlLibrary(sdlBackendId)')
       && launch.includes('const std::string glProviderPath = sdlBackend->systemLibrary ? sdlBackend->glLibName : hapNativeDir + "/" + sdlBackend->glLibName;'));
     check('provider-hints-before-jvm', ordered(launch, [
-      'resolveHapNativeDir(filesDir)',
+      'resolveHapNativeDir(hapNativeDir, hapNativeError)',
       'setenv("SDL_OPENGL_LIBRARY", glProviderPath.c_str(), 1)',
       'setenv("SDL_EGL_LIBRARY", sdlBackend->systemLibrary ? "libEGL.so" : glProviderPath.c_str(), 1)',
       'phase_initJvmWithClasspath(', 'std::thread(mcLaunchThreadWithProfile',
     ]));
-    check('sdl-libname-frozen', hasBootstrapLibraryName(files.bootstrap, 'org.lwjgl.sdl.libname', 'libSDL3.so'));
+    check('sdl-libname-frozen', hasBootstrapLibraryName(files.bootstrap, 'org.lwjgl.sdl.libname', 'libSDL3.so', 'hap-absolute'));
+    check('sdl-ffm-fallback-frozen', hasBootstrapLibraryName(files.bootstrap, 'dev.isxander.sdl.library', 'libSDL3.so', 'hap-absolute'));
     check('bootstrap-freeze-before-jvm', ordered(launch, [
       'amcl::jvm::RuntimeBootstrapProperties(', 'amcl::jvm::FreezeBootstrapProperties(',
       'jvmSetExtraArgsList(finalJvmArgs)', 'phase_initJvmWithClasspath(',
@@ -134,14 +145,21 @@ export function analyzeSdlLaunchSources(files) {
     check('publish-exact-runtime-identity', publish.includes('"1:%llu:%llu:%llu"')
       && publish.includes('getpid()') && publish.includes('syscall(SYS_gettid)')
       && publish.includes('static_cast<unsigned long long>(session)')
-      && ordered(publish, ['plan->window == "SDL3"', slotStore])
+      && ordered(publish, ['!g_sdlInputLibraryClaim.VerifiedForCurrentProcess(!allowLegacySdl,auxiliarySdl)', slotStore])
+      && !publish.includes('if (plan->window == "SDL3")')
       && publish.includes('previous && std::strcmp(previous, descriptor) != 0')
       && publish.includes(slotStore + ' < 0'));
-    // 槽位只能在 JNI_CreateJavaVM 之前、且只为 SDL3 路线登记（空值会被 SDL 判为畸形，其他路线必须缺席）；
+    // 辅助消费者使用独立的显式角色，必须先cold核实际制品并配置owner，不能复用主SDL身份。
+    check('auxiliary-role-before-descriptor', publish.includes('const bool auxiliarySdl = plan->abi != "SDL3";')
+      && publish.includes('"2:%llu:%llu:%llu:1"')
+      && ordered(publish, ['VerifiedForCurrentProcess(!allowLegacySdl,auxiliarySdl)',
+        'if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;', slotStore]));
+    // 所有游戏都可有辅助SDL消费者：槽位须在JVM前登记，真正描述符在合法游戏线程填写。
+    // 空槽只是未发布身份，不能授予premain里的任意SDL_Init线程资格；主窗口路由不参与此裁决。
     // 全文件不得再有任何对该名字的 setenv/unsetenv/putenv。登记表的封存点在 jvmInit 的创建认领处，
     // 由 check-env-mutation.mjs 的顺序钉住，这里只钉登记本身。
     check('sdl-host-runtime-slot-pre-registered', ordered(launch, [
-      'amcl::ohos::PrepareRuntimeEnvironmentSlots(graphicsPlan.window == "SDL3", environmentError)',
+      'amcl::ohos::PrepareRuntimeEnvironmentSlots(true, environmentError)',
       'phase_initJvmWithClasspath(', 'std::thread(mcLaunchThreadWithProfile',
     ]) && !/\b(?:setenv|unsetenv|putenv)\s*\(\s*(?:"AMCL_SDL_HOST_RUNTIME"|(?:amcl::envslot::)?kSdlHostRuntimeEnv\b)/.test(source));
     check('bridge-descriptor-first', /if\s*\(publishCallbackBridgeHostV1\(session\)\s*!=\s*JNI_OK\)/.test(publish));

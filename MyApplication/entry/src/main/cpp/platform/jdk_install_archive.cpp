@@ -1,0 +1,340 @@
+/**
+ * JDK 专用安全 ZIP 解压器。使用系统 zlib 的 STORE/raw-DEFLATE，不把未知目录交给
+ * 不可中断的整包 API。写前预检全部 central/local 元数据；每次输出再核对实际字节预算。
+ * 支持普通 ZIP 与 ZIP64、UTF-8 名称和 data descriptor；不接受链接、特殊项或多卷容器。
+ */
+#include "jdk_install_io.h"
+#include "jdk_install_store.h"
+#include <chrono>
+#include <sys/statvfs.h>
+#include <zlib.h>
+
+namespace amcl::jdk {
+namespace {
+using namespace io;
+using Bytes = std::vector<unsigned char>;
+uint16_t U16(const unsigned char *p) {
+    return uint16_t(p[0]) | uint16_t(p[1]) << 8;
+}
+uint32_t U32(const unsigned char *p) {
+    return uint32_t(U16(p)) | uint32_t(U16(p + 2)) << 16;
+}
+uint64_t U64(const unsigned char *p) {
+    return uint64_t(U32(p)) | uint64_t(U32(p + 4)) << 32;
+}
+bool Range(uint64_t at, uint64_t size, uint64_t end) {
+    return at <= end && size <= end - at;
+}
+Bytes Get(int fd, uint64_t at, size_t size) {
+    Bytes b(size);
+    if (size)
+        Read(fd, b.data(), size, at);
+    return b;
+}
+struct Entry {
+    std::string name;
+    uint64_t compressed{}, size{}, local{}, data{}, end{};
+    uint32_t crc{};
+    uint16_t flags{}, method{};
+    mode_t mode{};
+    bool directory{};
+};
+/** 只有出现 0xffffffff 哨兵时才按规范顺序读取 ZIP64 扩展；同种扩展重复一律拒绝。 */
+void Zip64(const unsigned char *extra, size_t length, uint64_t &size, uint64_t &compressed, uint64_t &offset) {
+    bool found = false;
+    // 0xffffffff 是32位字段的扩展哨兵，也可能恰好是扩展中的合法64位数值。
+    // 单独保存“仍需读取”状态，禁止在读取后再次拿字段数值判断是否缺失。
+    std::array<bool, 3> needed{size == 0xffffffffULL, compressed == 0xffffffffULL, offset == 0xffffffffULL};
+    for (size_t p = 0; p < length;) {
+        Require(length - p >= 4, "ZIP 扩展已截断");
+        const size_t n = U16(extra + p + 2);
+        Require(n <= length - p - 4, "ZIP 扩展越界");
+        if (U16(extra + p) == 1) {
+            Require(!found, "ZIP64 扩展重复");
+            found = true;
+            size_t q = p + 4;
+            size_t index = 0;
+            for (auto *value : {&size, &compressed, &offset}) {
+                if (needed[index]) {
+                    Require(q + 8 <= p + 4 + n, "ZIP64 字段缺失");
+                    *value = U64(extra + q);
+                    needed[index] = false;
+                    q += 8;
+                }
+                ++index;
+            }
+        }
+        p += 4 + n;
+    }
+    Require(!needed[0] && !needed[1] && !needed[2], "ZIP64 所需扩展缺失");
+}
+/** 以目录组件排序，令一棵子树连续出现。斜线要排在所有合法组件字节之前，不能用普通
+ * 字符串顺序：否则 a（文件）、a-（旁支）、a/child 会让“相邻父文件”检查漏掉冲突。
+ * 只排序条目指针，不复制名称或保存每层完整父路径，深路径的内存随输入元数据线性增长。 */
+bool ComponentLess(const Entry *a, const Entry *b) {
+    return std::lexicographical_compare(
+        a->name.begin(), a->name.end(), b->name.begin(), b->name.end(),
+        [](unsigned char left, unsigned char right) { return (left == '/' ? 0 : left) < (right == '/' ? 0 : right); });
+}
+std::vector<Entry> Inspect(int fd, uint64_t length, uint64_t &total, size_t &pathCount) {
+    Require(length >= 22 && length <= MaxBytes, "ZIP 大小超过支持范围");
+    const size_t tailSize = static_cast<size_t>(std::min<uint64_t>(65557, length));
+    const auto tail = Get(fd, length - tailSize, tailSize);
+    size_t eocd = tailSize;
+    for (size_t p = tailSize - 22;; --p) {
+        if (U32(tail.data() + p) == 0x06054b50 && p + 22 + U16(tail.data() + p + 20) == tailSize) {
+            eocd = p;
+            break;
+        }
+        if (p == 0)
+            break;
+    }
+    Require(eocd != tailSize, "ZIP 结束目录缺失");
+    const auto *end = tail.data() + eocd;
+    Require(U16(end + 4) == 0 && U16(end + 6) == 0 && U16(end + 8) == U16(end + 10), "不支持分盘 ZIP 容器");
+    uint64_t count = U16(end + 10), size = U32(end + 12), start = U32(end + 16), centralEnd = length - tailSize + eocd;
+    if (count == 0xffff || size == 0xffffffff || start == 0xffffffff) {
+        Require(centralEnd >= 20, "ZIP64 定位器缺失");
+        const auto locator = Get(fd, centralEnd - 20, 20);
+        Require(U32(locator.data()) == 0x07064b50 && U32(locator.data() + 4) == 0 && U32(locator.data() + 16) == 1,
+                "ZIP64 定位器无效");
+        const auto pos = U64(locator.data() + 8);
+        Require(Range(pos, 56, centralEnd - 20), "ZIP64 结束目录越界");
+        const auto z = Get(fd, pos, 56);
+        const auto *p = z.data();
+        Require(U32(p) == 0x06064b50 && U64(p + 4) >= 44 && Range(pos, 12 + U64(p + 4), centralEnd - 20) &&
+                    pos + 12 + U64(p + 4) == centralEnd - 20 && U32(p + 16) == 0 && U32(p + 20) == 0 &&
+                    U64(p + 24) == U64(p + 32),
+                "ZIP64 结束目录无效");
+        count = U64(p + 32);
+        size = U64(p + 40);
+        start = U64(p + 48);
+        centralEnd = pos;
+    }
+    Require(count > 0 && count <= MaxEntries && size <= 64 * 1024 * 1024 && Range(start, size, centralEnd) &&
+                start + size == centralEnd,
+            "ZIP 中央目录超过预算或范围错误");
+    const auto central = Get(fd, start, static_cast<size_t>(size));
+    std::vector<Entry> entries;
+    entries.reserve(count);
+    size_t cursor = 0;
+    total = 0;
+    for (uint64_t i = 0; i < count; ++i) {
+        Require(Range(cursor, 46, size), "ZIP 中央条目已截断");
+        const auto *c = central.data() + cursor;
+        const size_t names = U16(c + 28), extra = U16(c + 30), comment = U16(c + 32);
+        Require(U32(c) == 0x02014b50 && Range(cursor + 46, names + extra + comment, size) && U16(c + 34) == 0,
+                "ZIP 中央条目无效");
+        Entry e;
+        e.name.assign(reinterpret_cast<const char *>(c + 46), names);
+        e.flags = U16(c + 8);
+        e.method = U16(c + 10);
+        Require((e.flags & ~(uint16_t(0x800 | 8 | 6))) == 0 && (e.method == 0 || e.method == 8),
+                "ZIP 使用不支持的加密或压缩方式");
+        e.directory = !e.name.empty() && e.name.back() == '/';
+        if (e.directory)
+            e.name.pop_back();
+        Parts(e.name); // 立即拒绝非法名称/深度；隐含目录的准确总数在组件有序遍历中计算。
+        // UNIX 外部属性含文件类型；DOS/缺省属性只允许普通文件和目录，不照搬 suid/可写权限。
+        const uint32_t unixMode = U32(c + 38) >> 16;
+        const uint32_t type = unixMode & S_IFMT;
+        Require(type == 0 || type == (e.directory ? S_IFDIR : S_IFREG), "ZIP 含链接或特殊文件：" + e.name);
+        e.mode = e.directory ? 0755 : (unixMode & 0111 ? 0755 : 0644);
+        e.crc = U32(c + 16);
+        e.compressed = U32(c + 20);
+        e.size = U32(c + 24);
+        e.local = U32(c + 42);
+        Zip64(c + 46 + names, extra, e.size, e.compressed, e.local);
+        Require(e.size <= MaxBytes - total && e.compressed <= length, "ZIP 展开大小超过预算");
+        total += e.size;
+        Require(!e.directory || e.size == 0, "ZIP 目录携带文件数据");
+        Require(Range(e.local, 30, start), "ZIP 本地条目越界");
+        const auto local = Get(fd, e.local, 30);
+        const auto *l = local.data();
+        const size_t ln = U16(l + 26), lx = U16(l + 28);
+        Require(U32(l) == 0x04034b50 && U16(l + 6) == e.flags && U16(l + 8) == e.method &&
+                    Range(e.local + 30, ln + lx, start),
+                "ZIP 本地条目不匹配");
+        const auto variable = Get(fd, e.local + 30, ln + lx);
+        const std::string localName(reinterpret_cast<const char *>(variable.data()), ln);
+        Require(localName == e.name + (e.directory ? "/" : ""), "ZIP 本地名称与中央目录不一致");
+        uint64_t ls = U32(l + 22), lc = U32(l + 18), unused = 0;
+        if (!(e.flags & 8)) {
+            Zip64(variable.data() + ln, lx, ls, lc, unused);
+            Require(ls == e.size && lc == e.compressed && U32(l + 14) == e.crc, "ZIP 本地大小/CRC 不一致");
+        }
+        e.data = e.local + 30 + ln + lx;
+        Require(Range(e.data, e.compressed, start), "ZIP 压缩数据越界");
+        e.end = e.data + e.compressed;
+        if (e.flags & 8) {
+            const bool wide =
+                U32(c + 20) == 0xffffffff || U32(c + 24) == 0xffffffff || ls == 0xffffffff || lc == 0xffffffff;
+            const size_t minimum = wide ? 20 : 12;
+            Require(Range(e.end, minimum, start), "ZIP 数据描述符缺失");
+            auto descriptor = Get(fd, e.end, static_cast<size_t>(std::min<uint64_t>(minimum + 4, start - e.end)));
+            const size_t signature = U32(descriptor.data()) == 0x08074b50 ? 4 : 0;
+            Require(descriptor.size() >= minimum + signature, "ZIP 数据描述符截断");
+            const auto *d = descriptor.data() + signature;
+            Require(U32(d) == e.crc && (wide ? U64(d + 4) : U32(d + 4)) == e.compressed &&
+                        (wide ? U64(d + 12) : U32(d + 8)) == e.size,
+                    "ZIP 数据描述符不匹配");
+            e.end += minimum + signature;
+        }
+        entries.push_back(std::move(e));
+        cursor += 46 + names + extra + comment;
+    }
+    Require(cursor == size, "ZIP 中央目录存在额外未解释记录");
+    std::vector<const Entry *> order;
+    order.reserve(entries.size());
+    for (const auto &entry : entries)
+        order.push_back(&entry);
+    std::sort(order.begin(), order.end(), ComponentLess);
+    std::vector<std::string> previousParts;
+    const Entry *previousEntry = nullptr;
+    pathCount = 0;
+    for (const auto *entry : order) {
+        if (previousEntry) {
+            Require(previousEntry->name != entry->name, "ZIP 包含重复文件或目录：" + entry->name);
+            Require(previousEntry->directory || entry->name.rfind(previousEntry->name + "/", 0) != 0,
+                    "ZIP 文件被用作父目录：" + entry->name);
+        }
+        auto parts = Parts(entry->name);
+        size_t shared = 0;
+        while (shared < parts.size() && shared < previousParts.size() && parts[shared] == previousParts[shared])
+            ++shared;
+        // 组件顺序等价于树的先序：与上一条共享的祖先已计数，其余节点只计算一次。
+        Require(parts.size() - shared <= MaxEntries - pathCount, "ZIP 文件和隐含目录总数超过预算");
+        pathCount += parts.size() - shared;
+        previousParts = std::move(parts);
+        previousEntry = entry;
+    }
+    std::sort(order.begin(), order.end(), [](const Entry *a, const Entry *b) { return a->local < b->local; });
+    uint64_t previous = 0;
+    for (const auto *entry : order) {
+        Require(entry->local >= previous, "ZIP 条目文件范围相互覆盖");
+        previous = entry->end;
+    }
+    return entries;
+}
+} // namespace
+
+void ExtractInstallArchive(const std::string &archive, const std::string &stage, const std::string &archiveSha,
+                           uint64_t timeoutMs) {
+    using namespace io;
+    Require(Hash(archiveSha), "ZIP 缺少完整 SHA256 身份");
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(std::max<uint64_t>(1000, std::min<uint64_t>(timeoutMs, 1200000)));
+    auto active = [&] { Require(std::chrono::steady_clock::now() <= deadline, "JDK 解压超时，底层 owner 已停止"); };
+    auto root = Directory(stage);
+    Require(Names(root.get()).empty(), "JDK staging 必须为空目录");
+    Fd source(open(archive.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (source.get() < 0)
+        Error("无法打开 JDK ZIP");
+    struct stat before {};
+    if (fstat(source.get(), &before))
+        Error("无法读取 ZIP 属性");
+    Require(S_ISREG(before.st_mode) && before.st_nlink == 1 && before.st_size >= 22, "ZIP 必须是普通单链接文件");
+    uint64_t total = 0;
+    size_t pathCount = 0;
+    const auto entries = Inspect(source.get(), before.st_size, total, pathCount);
+    active();
+    // 安装器的实际输出上限沿用既有 2 GiB 下限/16 GiB 上限；压缩比只决定本次预算，不能绕过硬上限。
+    const uint64_t limit =
+        std::min(MaxBytes, std::max<uint64_t>(2ULL * 1024 * 1024 * 1024, uint64_t(before.st_size) * 200));
+    Require(total <= limit, "JDK ZIP 声明的展开字节超过预算");
+    struct statvfs space {};
+    if (fstatvfs(root.get(), &space))
+        Error("无法读取安装文件系统剩余空间");
+    const uint64_t reserve = 32ULL * 1024 * 1024 + pathCount * 4096ULL;
+    Require(space.f_frsize && space.f_bavail <= UINT64_MAX / space.f_frsize &&
+                uint64_t(space.f_bavail) * space.f_frsize >= total + reserve,
+            "JDK 安装剩余空间不足");
+    std::array<unsigned char, Chunk> in{}, out{};
+    download::Sha256 archiveHash;
+    for (uint64_t at = 0; at < uint64_t(before.st_size);) {
+        active();
+        const size_t n = std::min<uint64_t>(in.size(), before.st_size - at);
+        Read(source.get(), in.data(), n, at);
+        archiveHash.update(in.data(), n);
+        at += n;
+    }
+    Require(archiveHash.finalizeHex() == archiveSha, "解压时 ZIP 身份与校验时不一致");
+    uint64_t actualTotal = 0;
+    for (const auto &entry : entries) {
+        active();
+        auto parent = Parent(root.get(), entry.name, true);
+        const auto leaf = Leaf(entry.name);
+        if (entry.directory) {
+            auto dir = ChildDirectory(parent.get(), leaf, true);
+            if (fchmod(dir.get(), 0755))
+                Error("无法设置安装目录权限");
+            continue;
+        }
+        Fd file(openat(parent.get(), leaf.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
+        if (file.get() < 0)
+            Error("无法创建解压文件 " + entry.name);
+        uint64_t compressed = 0, actual = 0;
+        uint32_t crc = 0;
+        auto emit = [&](const unsigned char *bytes, size_t n) {
+            active();
+            Require(n <= entry.size - actual && n <= limit - actualTotal, "ZIP 实际展开字节超过声明或预算");
+            Write(file.get(), bytes, n);
+            crc = crc32(crc, bytes, static_cast<uInt>(n));
+            actual += n;
+            actualTotal += n;
+        };
+        if (entry.method == 0) {
+            Require(entry.compressed == entry.size, "STORE 条目大小不一致");
+            while (compressed < entry.compressed) {
+                const size_t n = std::min<uint64_t>(in.size(), entry.compressed - compressed);
+                Read(source.get(), in.data(), n, entry.data + compressed);
+                emit(in.data(), n);
+                compressed += n;
+            }
+        } else {
+            z_stream z{};
+            Require(inflateInit2(&z, -MAX_WBITS) == Z_OK, "无法初始化 ZIP 解压状态");
+            try {
+                int code = Z_OK;
+                while (code != Z_STREAM_END) {
+                    if (z.avail_in == 0 && compressed < entry.compressed) {
+                        const size_t n = std::min<uint64_t>(in.size(), entry.compressed - compressed);
+                        Read(source.get(), in.data(), n, entry.data + compressed);
+                        compressed += n;
+                        z.next_in = in.data();
+                        z.avail_in = n;
+                    }
+                    const auto priorIn = z.avail_in;
+                    z.next_out = out.data();
+                    z.avail_out = out.size();
+                    code = inflate(&z, Z_NO_FLUSH);
+                    Require(code == Z_OK || code == Z_STREAM_END, "ZIP DEFLATE 数据损坏");
+                    const size_t produced = out.size() - z.avail_out;
+                    emit(out.data(), produced);
+                    Require(code == Z_STREAM_END || produced || z.avail_in != priorIn, "ZIP DEFLATE 未取得进展");
+                }
+                Require(compressed == entry.compressed && z.avail_in == 0, "ZIP DEFLATE 含尾随数据");
+            } catch (...) {
+                inflateEnd(&z);
+                throw;
+            }
+            inflateEnd(&z);
+        }
+        Require(actual == entry.size && crc == entry.crc, "ZIP 实际大小或 CRC 不匹配：" + entry.name);
+        if (fchmod(file.get(), entry.mode))
+            Error("无法恢复 ZIP 文件权限");
+        struct stat mode {};
+        if (fstat(file.get(), &mode))
+            Error("无法回读 ZIP 文件权限");
+        Require((mode.st_mode & 07777) == entry.mode && mode.st_nlink == 1, "ZIP 文件权限未生效或出现硬链接");
+        // 文件 fsync 统一交给 SealInstallStage；此前崩溃仅留下从未进入 journal 的可丢弃 staging。
+    }
+    struct stat after {};
+    if (fstat(source.get(), &after))
+        Error("无法复核 ZIP 属性");
+    Require(before.st_dev == after.st_dev && before.st_ino == after.st_ino && before.st_size == after.st_size &&
+                before.st_mtim.tv_sec == after.st_mtim.tv_sec && before.st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+                before.st_ctim.tv_sec == after.st_ctim.tv_sec && before.st_ctim.tv_nsec == after.st_ctim.tv_nsec,
+            "解压期间 ZIP 被修改");
+}
+} // namespace amcl::jdk

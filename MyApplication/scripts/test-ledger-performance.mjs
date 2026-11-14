@@ -16,6 +16,12 @@ const tests = [
   // 派生检查点不反馈事实清单；未变证据时间稳定，legacy原件和固定坏SHA不被覆盖/重签。
   'test-evidence-derived-boundary.mjs',
   'test-ledger-maintenance.mjs', 'test-ledger-async-capture.mjs', 'test-session-recovery-owner.mjs',
+  // 大规模列表/详情使用生产投影核验实际IO工作量、跨进程发布失效与无变化零写。
+  'test-ledger-read-work.mjs',
+  'test-activity-evidence-cache.mjs',
+  'test-evidence-game-scope.mjs',
+  // root组合候选提供的生产owner保护回归；独占子树的定向测试结果与整合验证分别记录。
+  'test-ledger-owner-protection.mjs',
   'test-session-recovery-scheduling.mjs',
   'test-activity-list-projection.mjs', 'test-history-read-snapshot.mjs', 'test-marquee-lifecycle.mjs',
   'test-version-panel-mount.mjs', 'test-activity-pin-async.mjs', 'test-activity-storage-async.mjs',

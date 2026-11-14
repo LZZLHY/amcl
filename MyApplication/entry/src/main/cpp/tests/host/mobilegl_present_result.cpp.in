@@ -11,6 +11,7 @@
 #include <optional>
 #include <algorithm>
 #include <span>
+#include <limits>
 #define MGLOG_D(...) ((void)0)
 #define MGLOG_E(...) ((void)0)
 #define MGLOG_E_ONCE(...) ((void)0)
@@ -28,6 +29,12 @@ constexpr int VK_PRESENT_MODE_IMMEDIATE_KHR=0,VK_PRESENT_MODE_MAILBOX_KHR=1,VK_P
 constexpr int VK_FALSE=0,VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO=1,VK_STRUCTURE_TYPE_FENCE_CREATE_INFO=2,VK_FENCE_CREATE_SIGNALED_BIT=1;
 struct VkSemaphoreCreateInfo {int type;};struct VkFenceCreateInfo {int type,flags=0;};
 using EGLDisplay=uintptr_t; using EGLSurface=uintptr_t; using EGLContext=uintptr_t; using EGLBoolean=int;
+using EGLint=int;
+struct VkExtent2D {uint32_t width=0,height=0;};
+// 仅为公开查询生产函数提供常量；实际宽高判据来自 EGLState，不由夹具重写。
+constexpr int EGL_WIDTH=0x3057,EGL_HEIGHT=0x3056,EGL_BAD_PARAMETER=0x300c,EGL_BAD_MATCH=0x3009,EGL_BAD_ACCESS=0x3002,
+    EGL_BAD_CONFIG=0x3005,EGL_BAD_ATTRIBUTE=0x3004,EGL_TEXTURE_FORMAT=0x3080,EGL_TEXTURE_TARGET=0x3081,
+    EGL_MIPMAP_LEVEL=0x3083,EGL_MIPMAP_TEXTURE=0x3082,EGL_RENDER_BUFFER=0x3086,EGL_SWAP_BEHAVIOR=0x3093,EGL_CONFIG_ID=0x3028;
 constexpr auto EGL_NO_SURFACE=0u,EGL_NO_CONTEXT=0u;
 constexpr auto EGL_FALSE=0,EGL_TRUE=1,EGL_SUCCESS=0x3000,EGL_BAD_SURFACE=0x300d,EGL_CONTEXT_LOST=0x300e;
 constexpr auto VK_NULL_HANDLE=0,VK_SUCCESS=0,VK_SUBOPTIMAL_KHR=1000001003,VK_ERROR_OUT_OF_DATE_KHR=-1000001004;
@@ -37,6 +44,7 @@ VkResult submit=VK_SUCCESS,present=VK_SUCCESS,acquire=VK_SUCCESS;
 bool recreate=true, resize=false;
 unsigned submissions=0,presents=0;
 bool surfaceSupported=true;
+VkExtent2D rebuiltExtent{1344,608};
 }
 VkResult vkQueueSubmit(int,int,const int*,int){++driver::submissions;return driver::submit;}
 VkResult vkQueuePresentKHR(int,const int*){++driver::presents;return driver::present;}
@@ -72,6 +80,10 @@ struct Swapchain {
     const auto& GetSupportedPresentModes()const{return modes;}
     VkPresentModeKHR GetPresentMode()const{return mode;}
     int GetHandle() const{return handle;}unsigned GetImageCount() const{return 1;}
+    // 默认 FBO 与预旋转后的图像故意不同，测试会拒绝使用错误的坐标域。
+    VkExtent2D surfaceExtent{2016,912};
+    VkExtent2D GetSurfaceExtent()const{return surfaceExtent;}
+    VkExtent2D GetExtent()const{return {surfaceExtent.height,surfaceExtent.width};}
     int GetImageLayout(unsigned){return 0;}int GetImage(unsigned){return 1;}
     void SetImageLayout(unsigned,int){}void SetImageContentDefined(unsigned,bool){}void SetAllDepthStencilContentUndefined(){}
 };
@@ -100,6 +112,7 @@ public:
         *m_samplerManager=&factory,*m_textureManager=&factory,*m_uniformManager=&factory;
     std::vector<int> m_convertedVertexStreams;
     bool RecreateSwapchain(){++rebuilds;if(driver::recreate){m_swapchainObject.handle=1;
+        m_swapchainObject.surfaceExtent=driver::rebuiltExtent;
         m_swapchainObject.mode=SwapchainObject::ChooseSwapchainPresentMode(m_swapchainObject.modes,m_config.SwapInterval);
         m_swapchainSwapInterval=m_config.SwapInterval;}return driver::recreate;}
     void FlushPendingCommands(){}void CreateSurface(){m_surface=20;if(!m_window)m_window=500;}
@@ -142,7 +155,28 @@ public:
 }
 namespace MobileGL::MG_Impl::EGLImpl {
 thread_local std::uint64_t presentedSequence=0;
-struct State {int error=EGL_SUCCESS;bool ValidateSurfaceOnDisplay(EGLDisplay,EGLSurface){return true;}void SetError(int value){error=value;}} state;
+// 夹具只建立 EGL 对象与身份，实际窗口缓存更新/查询完整抽取自生产 Core.cpp。
+struct State {
+    using EGLDisplayHandle=EGLDisplay;using EGLSurfaceHandle=EGLSurface;using EGLConfigHandle=uintptr_t;
+    enum class SurfaceType {Window,PlatformWindow,Pbuffer};
+    struct SurfaceObject {
+        EGLDisplay Display=1;EGLConfigHandle Config=1;SurfaceType Type=SurfaceType::Window;
+        bool DestroyPending=false;
+        int Width=0,Height=0,TextureFormat=0,TextureTarget=0,MipmapLevel=0,MipmapTexture=0,RenderBuffer=0,SwapBehavior=0;
+    };
+    struct ConfigObject {int ConfigId=1;} config;
+    mutable std::recursive_mutex m_mutex;
+    std::map<EGLSurface,SurfaceObject> m_surfaces{{1,{}}};
+    int error=EGL_SUCCESS;
+    bool ValidateSurfaceOnDisplay(EGLDisplay display,EGLSurface surface){return m_surfaces.contains(surface)&&m_surfaces.at(surface).Display==display;}
+    const SurfaceObject* TryGetSurface(EGLSurface surface)const{auto it=m_surfaces.find(surface);return it==m_surfaces.end()?nullptr:&it->second;}
+    const ConfigObject* TryGetConfig(EGLConfigHandle)const{return &config;}
+    void SetError(int value){error=value;}
+    void UpdateWindowDrawableExtent(EGLDisplayHandle,EGLSurfaceHandle,Uint32,Uint32);
+    Bool QuerySurface(EGLDisplayHandle,EGLSurfaceHandle,EGLint,EGLint*)const;
+} state;
+@UPDATE_DRAWABLE@
+@QUERY_SURFACE@
 State* GetState(){return &state;}
 MG_Backend::BackendObject backend;
 MG_Backend::BackendObject* GetBackendObject(State*){return &backend;}
@@ -173,8 +207,34 @@ int main() try {
         state.error=EGL_SUCCESS;const auto before=PresentedSequence();
         CHECK((SwapBuffers(1,1)==EGL_TRUE)==test.success);
         CHECK((PresentedSequence()>before)==test.actual);CHECK(state.error==test.error);
+        int width=-1,height=-1;
+        CHECK(state.QuerySurface(1,1,EGL_WIDTH,&width)&&state.QuerySurface(1,1,EGL_HEIGHT,&height));
+        const bool validDrawable=test.actual&&test.success&&!test.resize;
+        CHECK(width == (validDrawable?2016:0));CHECK(height == (validDrawable?912:0));
         std::cout<<test.name<<": egl="<<test.success<<" actual="<<test.actual<<" error="<<state.error<<'\n';
     }
+    // 同一 swap 内退休旧资源并分配新资源时，两者都不能拿到“本帧已确认”资格；
+    // 下一次成功呈现才返回新宽高。旧结果不可确认新资源，pbuffer 分配也不能被污染。
+    driver::recreate=true;driver::resize=true;driver::submit=driver::present=driver::acquire=0;
+    VulkanRenderer resized;active=&resized;
+    CHECK(SwapBuffers(1,1));int width=-1,height=-1;
+    CHECK(state.QuerySurface(1,1,EGL_WIDTH,&width)&&width==0);
+    driver::resize=false;CHECK(SwapBuffers(1,1));
+    CHECK(state.QuerySurface(1,1,EGL_WIDTH,&width)&&width==1344);
+    CHECK(state.QuerySurface(1,1,EGL_HEIGHT,&height)&&height==608);
+    state.error=EGL_BAD_ACCESS; // 尺寸事实发布不能吞掉之前的 EGL 错误。
+    state.UpdateWindowDrawableExtent(2,1,900,500);
+    CHECK(state.QuerySurface(1,1,EGL_WIDTH,&width)&&width==1344);
+    CHECK(state.error==EGL_BAD_ACCESS);
+    state.UpdateWindowDrawableExtent(1,1,UINT32_MAX,10);
+    CHECK(state.QuerySurface(1,1,EGL_WIDTH,&width)&&width==0);
+    auto& pbuffer=state.m_surfaces[2];pbuffer.Type=State::SurfaceType::Pbuffer;pbuffer.Width=pbuffer.Height=1;
+    state.UpdateWindowDrawableExtent(1,2,1344,608);state.UpdateWindowDrawableExtent(1,2,0,0);
+    CHECK(state.QuerySurface(1,2,EGL_WIDTH,&width)&&width==1);
+    auto& retired=state.m_surfaces[1];retired.DestroyPending=true;
+    state.UpdateWindowDrawableExtent(1,1,2016,912);
+    CHECK(state.QuerySurface(1,1,EGL_WIDTH,&width)&&width==0);
+    retired.DestroyPending=false;state.error=EGL_SUCCESS;
     // 真实上游选择策略、后端请求转发和完整Present只在实际模式变化时重建。
     driver::recreate=true;driver::resize=false;driver::submit=driver::present=driver::acquire=0;
     CHECK(SwapchainObject::ChooseSwapchainPresentMode({0,1,2,3},Nullopt)==1);

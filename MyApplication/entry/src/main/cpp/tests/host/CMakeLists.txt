@@ -138,6 +138,12 @@ target_compile_features(amcl_window_host_core_test PRIVATE cxx_std_17)
 target_compile_definitions(amcl_window_host_core_test PRIVATE AMCL_WINDOW_HOST_TESTING)
 add_test(NAME amcl_window_host_core_test COMMAND amcl_window_host_core_test)
 set_tests_properties(amcl_window_host_core_test PROPERTIES LABELS "graphics;window;lifetime")
+add_executable(amcl_window_geometry_callback_test window_geometry_callback_test.cpp
+    ../../platform/window_host.cpp ../../platform/window_host_core.cpp)
+target_compile_features(amcl_window_geometry_callback_test PRIVATE cxx_std_17)
+target_compile_definitions(amcl_window_geometry_callback_test PRIVATE AMCL_WINDOW_HOST_TESTING)
+add_test(NAME amcl_window_geometry_callback_test COMMAND amcl_window_geometry_callback_test)
+set_tests_properties(amcl_window_geometry_callback_test PROPERTIES LABELS "graphics;window;resolution" TIMEOUT 5)
 if(WIN32)
     foreach(_fixture IN ITEMS a b)
         add_library(amcl_window_host_fixture_${_fixture} SHARED
@@ -1355,6 +1361,11 @@ add_input_component_host_test(
     ../../platform/render_scale.cpp
 )
 target_include_directories(amcl_render_scale_test PRIVATE ../../platform)
+
+# 请求/配置/实际图像的事务反例与有限恢复，不依赖设备、EGL替身或计时睡眠。
+add_input_component_host_test(amcl_render_resolution_state_test
+    render_resolution_state_test.cpp ../../platform/render_scale.cpp)
+target_include_directories(amcl_render_resolution_state_test PRIVATE ../../platform)
 
 # ============================================================
 # 渲染后端镜像表（渲染后端治理 §S4）

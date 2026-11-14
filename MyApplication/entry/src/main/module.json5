@@ -75,7 +75,22 @@
     ],
     "requestPermissions": [
       {
+        // 只有用户在模组语音设置中明确开启才请求授权；后台与撤权立即停止采集。
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:perm_reason_mod_microphone",
+        "usedScene": { "abilities": ["EntryAbility", "GameAbility"], "when": "inuse" }
+      },
+      {
         "name": "ohos.permission.INTERNET"
+      },
+      {
+        // 蓝牙MIDI仅在设置页由用户显式申请；声明覆盖启动器与私有游戏Ability。
+        "name": "ohos.permission.ACCESS_BLUETOOTH",
+        "reason": "$string:perm_reason_bluetooth_midi",
+        "usedScene": {
+          "abilities": ["EntryAbility", "GameAbility"],
+          "when": "inuse"
+        }
       },
       {
         // 网络诊断：读取默认网络是否可用 + 承载类型（WiFi/蜂窝/以太网）。

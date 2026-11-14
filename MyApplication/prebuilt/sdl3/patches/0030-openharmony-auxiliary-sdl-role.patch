@@ -1,0 +1,663 @@
+diff --git a/src/SDL.c b/src/SDL.c
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -25,6 +25,7 @@
+ #include "core/openharmony/SDL_amclinputhostpolicy.h"
+ #include "video/openharmony/control_delivery_client.h"
+ #include "video/openharmony/input/delivery/look_execution_client.h"
++#include "video/openharmony/SDL_amclgraphicsruntime.h"
+ #endif
+ 
+ #if defined(SDL_PLATFORM_WINDOWS)
+@@ -70,6 +71,7 @@
+ #include "core/openharmony/SDL_openharmony.h"
+ #include <sys/syscall.h>
+ #include "core/openharmony/SDL_amclhostruntime.h"
++#include "video/openharmony/sdl_aux_runtime_abi.h"
+ #endif
+ 
+ #define SDL_ALL_SUBSYSTEM_FLAGS ~0U
+@@ -214,11 +216,56 @@
+ static SDL_SpinLock SDL_amclHostLock;
+ static SDL_AtomicInt SDL_amclHostMode;
+ static SDL_AtomicInt SDL_amclHostPumpObserved;
++/* 在第一次有效host入口触碰任何SDK锁之前发布；即使Init尚未完成，fork也不能靠改env继承锁。 */
++static SDL_AtomicInt SDL_amclHostPid;
++/* mode发布后不可更换的pthread身份，不依赖可能被外部SetMainReady改写的全局值。 */
++static SDL_ThreadID SDL_amclHostThread;
++
++static bool SDL_AMCL_CheckProcess(void)
++{
++    const uint64_t pid=(uint64_t)getpid();
++    int bound=SDL_GetAtomicInt(&SDL_amclHostPid);
++    if(bound)return (uint64_t)bound==pid;
++    AMCL_SdlHostDescriptor identity={0};
++    const int parsed=AMCL_SdlHostReadDescriptor(SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"),pid,&identity);
++    if(parsed==AMCL_SDL_HOST_WRONG_PID)return false;
++    if(parsed>0){
++        if(pid>INT32_MAX)return false;
++        SDL_CompareAndSwapAtomicInt(&SDL_amclHostPid,0,(int)pid);
++        return (uint64_t)SDL_GetAtomicInt(&SDL_amclHostPid)==pid;
++    }
++    return true;
++}
+ 
+ /* 返回错误保留阶段和数值原因，调用方不得吞掉错误继续初始化子系统。 */
+ static bool SDL_AMCL_HostError(const char *phase, int result)
+ {
+     return SDL_SetError("AMCL SDL host-runtime %s rejected (%d): ABI/PID/thread/session mismatch or process restart required", phase, result);
++}
++
++/* 只在SDL自旋锁之外调用；actual实例cookie来自本映像静态对象，cold检查不触发本函数。 */
++static int SDL_AMCL_AuxOperation(const AMCL_SdlHostDescriptor *identity,Uint32 operation,uint64_t pid,uint64_t tid)
++{
++#ifdef SDL_VIDEO_DRIVER_OPENHARMONY
++    if(!AMCL_GraphicsRuntimeRequired())return AMCL_SDL_HOST_MALFORMED;
++    const AmclGraphicsRuntimeV1 *runtime=AMCL_GraphicsRuntime();
++    if(!runtime || runtime->structSize<AMCL_GRAPHICS_RUNTIME_V1_SDL_AUX_SIZE || !runtime->sdlAuxOperation)
++        return AMCL_SDL_HOST_MALFORMED;
++    AmclSdlAuxRequestV1 request={0};AmclSdlAuxResultV1 response={0};
++    request.structSize=sizeof(request);request.abiVersion=1;request.processId=pid;
++    request.sessionId=identity->session;request.launchThreadId=(int32_t)identity->launch_tid;
++    request.instanceCookie=(uint64_t)(uintptr_t)&SDL_amclHostRuntime;
++    response.structSize=sizeof(response);response.abiVersion=1;
++    const int result=runtime->sdlAuxOperation(operation,&request,&response);
++    if(result<0)return result;
++    if(response.structSize<sizeof(response) || response.abiVersion!=1 || response.status!=result ||
++       response.sessionId!=identity->session || response.launchThreadId!=(int32_t)identity->launch_tid ||
++       response.ownerThreadId!=(int32_t)tid || response.instanceCookie!=request.instanceCookie)
++        return AMCL_SDL_HOST_MALFORMED;
++    return result;
++#else
++    return AMCL_SDL_HOST_MALFORMED;
++#endif
+ }
+ 
+ /*
+@@ -228,14 +275,32 @@
+  */
+ static bool SDL_AMCL_PrepareHostRuntime(void)
+ {
++    if(!SDL_AMCL_CheckProcess())return false;
+     const uint64_t pid = (uint64_t)getpid();
+     const uint64_t tid = (uint64_t)syscall(SYS_gettid);
++    const char *descriptor=SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME");
++    AMCL_SdlHostDescriptor identity={0};
++    const int parsed=AMCL_SdlHostReadDescriptor(descriptor,pid,&identity);
++    /* fork继承的锁和SDL错误TLS都可能不可重入，PID拒绝不调用其它SDL API。 */
++    if(parsed==AMCL_SDL_HOST_WRONG_PID)return false;
++    if(parsed<0)return SDL_AMCL_HostError("identity",parsed);
+     const SDL_ThreadID thread = SDL_GetCurrentThreadID();
+     int result;
+     uint64_t session;
++    const bool auxiliary=parsed>0 && identity.abi==2;
++    if(auxiliary){
++        SDL_LockSpinlock(&SDL_amclHostLock);
++        result=AMCL_SdlAuxLocalCheck(&SDL_amclHostRuntime,&identity,pid,tid,false);
++        SDL_UnlockSpinlock(&SDL_amclHostLock);
++        if(result<0)return SDL_AMCL_HostError("aux-local",result);
++        result=SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_CLAIM,pid,tid);
++        if(result<0)return SDL_AMCL_HostError("aux-owner",result);
++        result=SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_PEEK_ACTIVE,pid,tid);
++        if(result<0)return SDL_AMCL_HostError("aux-before-commit",result);
++    }
+     SDL_LockSpinlock(&SDL_amclHostLock);
+-    result = AMCL_SdlHostPrepare(&SDL_amclHostRuntime,
+-        SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"), pid, tid);
++    result = auxiliary ? AMCL_SdlAuxCommit(&SDL_amclHostRuntime,&identity,pid,tid) :
++        AMCL_SdlHostPrepare(&SDL_amclHostRuntime,descriptor,pid,tid);
+     session = SDL_amclHostRuntime.session;
+     if (result > 0 && SDL_MainThreadID && SDL_MainThreadID != thread) {
+         /* 本实例已被其他主线程占用，永久退休；不容许外部改写后通过 READY 重试。 */
+@@ -245,17 +310,37 @@
+     }
+     if (result == AMCL_SDL_HOST_FIRST) {
+         SDL_SetMainReady();
++        SDL_amclHostThread=thread;
+         SDL_SetAtomicInt(&SDL_amclHostMode, 1);
++    }
++    if(auxiliary && result<0){
++        /* 宿主已认可但本实例短锁复核失败，永久退休，不混合standalone/其它main。 */
++        if(SDL_amclHostRuntime.state<2){
++            SDL_amclHostRuntime.pid=pid;SDL_amclHostRuntime.tid=tid;SDL_amclHostRuntime.session=identity.session;
++            SDL_amclHostRuntime.launch_tid=identity.launch_tid;SDL_amclHostRuntime.abi=2;
++        }
++        SDL_amclHostRuntime.state=3;
++        SDL_SetAtomicInt(&SDL_amclHostMode,-1);
+     }
+     SDL_UnlockSpinlock(&SDL_amclHostLock);
+     if (result < 0) {
++        if(auxiliary)(void)SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_QUIT,pid,tid);
+         return SDL_AMCL_HostError("prepare", result);
++    }
++    if(auxiliary){
++        const int active=SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_PEEK_ACTIVE,pid,tid);
++        if(active<0){
++            SDL_LockSpinlock(&SDL_amclHostLock);SDL_amclHostRuntime.state=3;
++            SDL_SetAtomicInt(&SDL_amclHostMode,-1);SDL_UnlockSpinlock(&SDL_amclHostLock);
++            return SDL_AMCL_HostError("aux-after-commit",active);
++        }
+     }
+     if (result == AMCL_SDL_HOST_FIRST) {
+         SDL_LogInfo(SDL_LOG_CATEGORY_SYSTEM,
+-            "[AMCL-SDL-HOST] phase=main-ready instance=%p pid=%llu tid=%llu session=%llu main=%llu",
++            "[AMCL-SDL-HOST] phase=main-ready instance=%p pid=%llu tid=%llu session=%llu main=%llu role=%s launch_tid=%llu",
+             (void *)&SDL_amclHostRuntime, (unsigned long long)pid, (unsigned long long)tid,
+-            (unsigned long long)session, (unsigned long long)SDL_MainThreadID);
++            (unsigned long long)session, (unsigned long long)SDL_MainThreadID,
++            auxiliary?"auxiliary-v2":"primary-v1",(unsigned long long)SDL_amclHostRuntime.launch_tid);
+     }
+     return true;
+ }
+@@ -263,10 +348,41 @@
+ /* SDL_Quit 是整局终点；不能靠保留的 SDL_MainIsReady 复活已退休游戏会话。 */
+ static bool SDL_AMCL_RetireHostRuntime(void)
+ {
++    if(!SDL_AMCL_CheckProcess())return false;
++    const uint64_t pid=(uint64_t)getpid();
++    const uint64_t tid=(uint64_t)syscall(SYS_gettid);
++    const char *descriptor=SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME");
++    AMCL_SdlHostDescriptor identity={0};
++    const int parsed=AMCL_SdlHostReadDescriptor(descriptor,pid,&identity);
++    if(parsed==AMCL_SDL_HOST_WRONG_PID)return false;
++    if(parsed<0)return SDL_AMCL_HostError("quit-identity",parsed);
+     int result;
++    if(parsed>0 && identity.abi==2){
++        SDL_LockSpinlock(&SDL_amclHostLock);
++        result=AMCL_SdlAuxLocalCheck(&SDL_amclHostRuntime,&identity,pid,tid,true);
++        SDL_UnlockSpinlock(&SDL_amclHostLock);
++        if(result<0)return SDL_AMCL_HostError("quit-local",result);
++        /* Quit-before-Init也只允许一个真实候选；不凭第一次Quit就把任意worker当owner。 */
++        if(result==AMCL_SDL_HOST_FIRST){
++            result=SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_CLAIM,pid,tid);
++            if(result<0)return SDL_AMCL_HostError("quit-claim",result);
++        }
++        result=SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_QUIT,pid,tid);
++        if(result<0)return SDL_AMCL_HostError("quit-owner",result);
++        SDL_LockSpinlock(&SDL_amclHostLock);
++        result=AMCL_SdlAuxLocalCheck(&SDL_amclHostRuntime,&identity,pid,tid,true);
++        if(SDL_amclHostRuntime.state<2){
++            SDL_amclHostRuntime.pid=pid;SDL_amclHostRuntime.tid=tid;SDL_amclHostRuntime.launch_tid=identity.launch_tid;
++            SDL_amclHostRuntime.session=identity.session;SDL_amclHostRuntime.abi=2;
++        }
++        SDL_amclHostRuntime.state=3;
++        SDL_SetAtomicInt(&SDL_amclHostMode,-1);
++        SDL_UnlockSpinlock(&SDL_amclHostLock);
++        return result<0?SDL_AMCL_HostError("quit-commit",result):true;
++    }
+     SDL_LockSpinlock(&SDL_amclHostLock);
+     result = AMCL_SdlHostRetire(&SDL_amclHostRuntime,
+-        SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"), (uint64_t)getpid(), (uint64_t)syscall(SYS_gettid));
++        descriptor,pid,tid);
+     if (result > 0) {
+         SDL_SetAtomicInt(&SDL_amclHostMode, -1);
+     }
+@@ -280,12 +396,24 @@
+  */
+ bool SDL_AMCL_ValidateEventThread(bool observe_pump)
+ {
++    /* Init已锁PID但尚未发布mode时，fork child也必须在SDK错误TLS/锁前拒绝。 */
++    if(!SDL_AMCL_CheckProcess())return false;
+     const int mode = SDL_GetAtomicInt(&SDL_amclHostMode);
++    const uint64_t pid=(uint64_t)getpid();
+     if (!mode) {
+-        return true;
+-    }
+-    if (mode < 0 || SDL_GetCurrentThreadID() != SDL_MainThreadID) {
++        AMCL_SdlHostDescriptor identity={0};
++        const int parsed=AMCL_SdlHostReadDescriptor(SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"),pid,&identity);
++        if(parsed==AMCL_SDL_HOST_WRONG_PID)return false;
++        return parsed==AMCL_SDL_HOST_STANDALONE ? true : SDL_AMCL_HostError("event-before-prepare",parsed<0?parsed:AMCL_SDL_HOST_WRONG_THREAD);
++    }
++    if(SDL_amclHostRuntime.pid!=pid)return false; /* 继承身份不进入SDL锁或错误TLS。 */
++    if (mode < 0 || SDL_GetCurrentThreadID() != SDL_amclHostThread || SDL_amclHostThread!=SDL_MainThreadID) {
+         return SDL_AMCL_HostError("event-pump", mode < 0 ? AMCL_SDL_HOST_RETIRED : AMCL_SDL_HOST_WRONG_THREAD);
++    }
++    if(SDL_amclHostRuntime.abi==2){
++        AMCL_SdlHostDescriptor identity={2,pid,SDL_amclHostRuntime.launch_tid,SDL_amclHostRuntime.session,1};
++        const int active=SDL_AMCL_AuxOperation(&identity,AMCL_SDL_AUX_PEEK_ACTIVE,pid,SDL_amclHostRuntime.tid);
++        if(active<0)return SDL_AMCL_HostError("event-session",active);
+     }
+     if (observe_pump && SDL_CompareAndSwapAtomicInt(&SDL_amclHostPumpObserved, 0, 1)) {
+         SDL_LogInfo(SDL_LOG_CATEGORY_SYSTEM,
+@@ -294,6 +422,47 @@
+             (unsigned long long)SDL_MainThreadID, (unsigned long long)SDL_EventsThreadID,
+             (unsigned long long)SDL_VideoThreadID);
+     }
++    return true;
++}
++
++/* 公开QuitSubSystem也必须核进程/固定owner；退休后的同线程回滚/内部Quit清理仍允许。
++ * 未进入host的standalone沿用上游行为。此入口不以env重写授予另一个线程清理权。 */
++static bool SDL_AMCL_AllowCleanup(void)
++{
++    if(!SDL_AMCL_CheckProcess())return false;
++    const int mode=SDL_GetAtomicInt(&SDL_amclHostMode);
++    if(!mode){
++        AMCL_SdlHostDescriptor identity={0};
++        const int parsed=AMCL_SdlHostReadDescriptor(SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"),(uint64_t)getpid(),&identity);
++        return parsed==0 ? true : SDL_AMCL_HostError("cleanup-before-prepare",parsed<0?parsed:AMCL_SDL_HOST_WRONG_THREAD);
++    }
++    if(SDL_amclHostRuntime.pid!=(uint64_t)getpid())return false;
++    if(SDL_amclHostRuntime.tid!=(uint64_t)syscall(SYS_gettid) ||
++       (SDL_amclHostThread && SDL_amclHostThread!=SDL_GetCurrentThreadID()))
++        return SDL_AMCL_HostError("cleanup-thread",AMCL_SDL_HOST_WRONG_THREAD);
++    return true;
++}
++
++/* 最终初始化提交点；此前开始的子系统若遇会话退休，由原flags_initialized路径回滚。 */
++static bool SDL_AMCL_InitCommit(void)
++{
++    return SDL_AMCL_ValidateEventThread(false);
++}
++
++/* 视频入口在任何子系统/窗口副作用前调用；ABI2不取得窗口、输入或SDL GPU设备所有权。 */
++bool SDL_AMCL_AllowVideo(void)
++{
++    if(!SDL_AMCL_CheckProcess())return false;
++    const uint64_t pid=(uint64_t)getpid();
++    const int mode=SDL_GetAtomicInt(&SDL_amclHostMode);
++    if(mode && SDL_amclHostRuntime.pid!=pid)return false;
++    if(mode<0)return SDL_AMCL_HostError("video-after-retire",AMCL_SDL_HOST_RETIRED);
++    if(mode && SDL_amclHostRuntime.abi==2)return SDL_SetError("AMCL auxiliary SDL cannot initialize video or GPU windows");
++    AMCL_SdlHostDescriptor identity={0};
++    const int parsed=AMCL_SdlHostReadDescriptor(SDL_getenv_unsafe("AMCL_SDL_HOST_RUNTIME"),pid,&identity);
++    if(parsed==AMCL_SDL_HOST_WRONG_PID)return false;
++    if(parsed<0 || (mode && parsed==0))return SDL_AMCL_HostError("video-identity",parsed<0?parsed:AMCL_SDL_HOST_CHANGED);
++    if(parsed>0 && identity.abi==2)return SDL_SetError("AMCL auxiliary SDL cannot initialize video or GPU windows");
+     return true;
+ }
+ #endif
+@@ -432,12 +601,17 @@
+ bool SDL_InitSubSystem(SDL_InitFlags flags)
+ {
+     Uint32 flags_initialized = 0;
++#ifdef SDL_PLATFORM_OPENHARMONY
++    if(!SDL_AMCL_CheckProcess())return false;
++    if((flags & SDL_INIT_VIDEO) && !SDL_AMCL_AllowVideo())return false;
++#endif
+ 
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+     /* 本namespace实际初始化必须再次校验本SDK与唯一Core，不能借cold bootstrap的copy。
+      * 无AMCL host-runtime描述符的独立SDL应用仍按原子系统初始化合同运行。 */
+     const int input_host=AMCL_SdlInputHostIdentityV1();
+-    if (input_host<0) return SDL_SetError("InputContractMismatch:sdl_host_identity");
++    if(input_host==AMCL_SDL_HOST_WRONG_PID)return false;
++    if (input_host<0) return SDL_SetError("InputContractMismatch:sdl_host_identity (%d)",input_host);
+     if (input_host>0 && !SDL_AMCL_ValidateInputRuntimeV1(true)) return false;
+ #endif
+ #ifdef SDL_PLATFORM_OPENHARMONY
+@@ -701,6 +875,11 @@
+ 
+     (void)flags_initialized; // make static analysis happy, since this only gets used in error cases.
+ 
++#ifdef SDL_PLATFORM_OPENHARMONY
++    if (!SDL_AMCL_InitCommit()) {
++        goto quit_and_error;
++    }
++#endif
+     return SDL_ClearError();
+ 
+ quit_and_error:
+@@ -719,6 +898,11 @@
+ 
+ void SDL_QuitSubSystem(SDL_InitFlags flags)
+ {
++#ifdef SDL_PLATFORM_OPENHARMONY
++    if (!SDL_AMCL_AllowCleanup()) {
++        return;
++    }
++#endif
+     // Shut down requested initialized subsystems
+ 
+ #ifndef SDL_CAMERA_DISABLED
+@@ -896,6 +1080,12 @@
+ SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputLookProtocolV1(void)
+ {
+     return SDL_AMCL_INPUT_LOOK_PROTOCOL_V1;
++}
++
++/* 仅声明此实际制品实现辅助线程协议，不读取env、不cold初始化SDK/owner。 */
++SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_AuxHostProtocolV2(void)
++{
++    return SDL_AMCL_AUX_HOST_PROTOCOL_V2;
+ }
+ 
+ /* 仅runtime准备/首个实际pump借port前调用。SDL_internal将版本锚绑定本SDK的
+@@ -937,6 +1127,14 @@
+ #endif
+         ) || SDL_AMCL_InputLookProtocolV1() != SDL_AMCL_INPUT_LOOK_PROTOCOL_V1)
+         return SDL_SetError("InputContractMismatch:sdl_runtime_look_protocol");
++    if (!amclControlAddressInOwner((uintptr_t)SDL_AMCL_AuxHostProtocolV2,
++#ifdef _WIN32
++            (uintptr_t)self
++#else
++            (uintptr_t)self.dli_fbase
++#endif
++        ) || SDL_AMCL_AuxHostProtocolV2()!=SDL_AMCL_AUX_HOST_PROTOCOL_V2)
++        return SDL_SetError("InputContractMismatch:sdl_runtime_aux_protocol");
+     if (requireOwner) {
+         if (!SDL_AMCL_HasInternalDynapiV1()) return SDL_SetError("InputContractMismatch:sdl_external_dynapi");
+         const AmclControlDeliveryPortV1* port=NULL;
+diff --git a/src/SDL_amclinputcontrol_c.h b/src/SDL_amclinputcontrol_c.h
+--- a/src/SDL_amclinputcontrol_c.h
++++ b/src/SDL_amclinputcontrol_c.h
+@@ -5,6 +5,7 @@
+ #include "SDL_internal.h"
+ #define SDL_AMCL_INPUT_CONTROL_PROTOCOL_V1 1u
+ #define SDL_AMCL_INPUT_LOOK_PROTOCOL_V1 1u
++#define SDL_AMCL_AUX_HOST_PROTOCOL_V2 2u
+ /* SDL_DYNAMIC_API把SDL_DECLSPEC清空以隐藏REAL符号；此私有标识独立导出，不进入dynapi表。 */
+ #if defined(_WIN32) && defined(DLL_EXPORT)
+ #define SDL_AMCL_INPUT_PUBLIC __declspec(dllexport)
+@@ -16,6 +17,7 @@
+ extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputControlProtocolV1(void);
+ /* 独立声明本实际 SDK 具有不可变 look prefix 边缘；不触发 owner 或 consumer 准备。 */
+ extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputLookProtocolV1(void);
++extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_AuxHostProtocolV2(void);
+ #if defined(__GNUC__)
+ extern __attribute__((visibility("hidden"))) bool SDL_AMCL_ValidateInputRuntimeV1(bool requireOwner);
+ extern __attribute__((visibility("hidden"))) bool SDL_AMCL_HasInternalDynapiV1(void);
+diff --git a/src/core/openharmony/SDL_amclhostruntime.h b/src/core/openharmony/SDL_amclhostruntime.h
+--- a/src/core/openharmony/SDL_amclhostruntime.h
++++ b/src/core/openharmony/SDL_amclhostruntime.h
+@@ -17,6 +17,9 @@
+     uint64_t session;
+     /* 0 未消费，1 已选择 standalone，2 宿主 main-ready，3 已退休。 */
+     unsigned int state;
++    /* ABI2辅助实例另保留冻结launch TID；tid始终是本实例实际锁定的owner内核TID。 */
++    unsigned int abi;
++    uint64_t launch_tid;
+ } AMCL_SdlHostRuntime;
+ 
+ enum AMCL_SdlHostResult
+@@ -60,6 +63,47 @@
+     return 1;
+ }
+ 
++typedef struct AMCL_SdlHostDescriptor {
++    uint64_t abi, pid, launch_tid, session, role;
++} AMCL_SdlHostDescriptor;
++
++/* 只解析不可变身份，不授予main-ready。ABI2末项1明确表示辅助，坏/旧协议不作standalone。 */
++static inline int AMCL_SdlHostReadDescriptor(const char *descriptor,uint64_t current_pid,AMCL_SdlHostDescriptor *out)
++{
++    AMCL_SdlHostDescriptor value = { 0 };
++    const char *cursor=descriptor;
++    if(!descriptor)return AMCL_SDL_HOST_STANDALONE;
++    if(!out || !AMCL_SdlHostReadNumber(&cursor,':',&value.abi) || (value.abi!=1 && value.abi!=2) ||
++       !AMCL_SdlHostReadNumber(&cursor,':',&value.pid) || !AMCL_SdlHostReadNumber(&cursor,':',&value.launch_tid) ||
++       !AMCL_SdlHostReadNumber(&cursor,value.abi==1?'\0':':',&value.session) ||
++       (value.abi==2 && (!AMCL_SdlHostReadNumber(&cursor,'\0',&value.role) || value.role!=1 || value.launch_tid>INT32_MAX)))
++        return AMCL_SDL_HOST_MALFORMED;
++    if(!current_pid || value.pid!=current_pid)return AMCL_SDL_HOST_WRONG_PID;
++    *out=value;return AMCL_SDL_HOST_READY;
++}
++
++/* 宿主调用前后均核本实例身份；不持本锁跨graphics owner/driver/broker调用。 */
++static inline int AMCL_SdlAuxLocalCheck(const AMCL_SdlHostRuntime *runtime,const AMCL_SdlHostDescriptor *d,
++                                      uint64_t pid,uint64_t tid,bool retiring)
++{
++    if(!runtime || !d || d->abi!=2 || d->role!=1 || !tid)return AMCL_SDL_HOST_MALFORMED;
++    if(d->pid!=pid || !pid)return AMCL_SDL_HOST_WRONG_PID;
++    if(runtime->state==3 && !retiring)return AMCL_SDL_HOST_RETIRED;
++    if(runtime->state==0)return AMCL_SDL_HOST_FIRST;
++    if(runtime->state==1 || runtime->abi!=2 || runtime->pid!=pid || runtime->session!=d->session ||
++       runtime->launch_tid!=d->launch_tid)return AMCL_SDL_HOST_CHANGED;
++    if(runtime->tid!=tid)return AMCL_SDL_HOST_WRONG_THREAD;
++    return AMCL_SDL_HOST_READY;
++}
++/* 仅graphics owner已经核准本次actual实例后调用；FIRST让调用者在实际SDK执行SetMainReady。 */
++static inline int AMCL_SdlAuxCommit(AMCL_SdlHostRuntime *runtime,const AMCL_SdlHostDescriptor *d,uint64_t pid,uint64_t tid)
++{
++    const int result=AMCL_SdlAuxLocalCheck(runtime,d,pid,tid,false);
++    if(result!=AMCL_SDL_HOST_FIRST)return result;
++    runtime->pid=pid;runtime->tid=tid;runtime->launch_tid=d->launch_tid;runtime->session=d->session;
++    runtime->abi=2;runtime->state=2;return result;
++}
++
+ /*
+  * 描述符 ABI 固定为 1:<pid>:<Linux gettid>:<session>；各身份均为正整数。
+  * 首次接受之前同时核对进程和实际调用线程，不把第一个调用者自动认作 owner。
+@@ -94,6 +138,7 @@
+     if (runtime->state == 3) {
+         return AMCL_SDL_HOST_RETIRED;
+     }
++    if(runtime->state==2 && runtime->abi!=1)return AMCL_SDL_HOST_CHANGED;
+     if (runtime->state == 1 || (runtime->state == 2 &&
+         (runtime->pid != pid || runtime->tid != tid || runtime->session != session))) {
+         return AMCL_SDL_HOST_CHANGED;
+@@ -105,6 +150,8 @@
+     runtime->tid = tid;
+     runtime->session = session;
+     runtime->state = 2;
++    runtime->abi = 1;
++    runtime->launch_tid = tid;
+     return AMCL_SDL_HOST_FIRST;
+ }
+ 
+@@ -126,7 +173,8 @@
+         return result;
+     }
+     if (result != AMCL_SDL_HOST_STANDALONE) {
+-        *runtime = probe;
++        /* 已发布身份不重复写，事件泵在mode acquire后可安全只读pid/abi。 */
++        if(runtime->state==0)*runtime = probe;
+         runtime->state = 3;
+     }
+     return result;
+@@ -135,6 +183,7 @@
+ /* 仅 SDL 内部调用，未新增 public/dynapi ABI；发布构建同样执行事件泵线程约束。 */
+ #ifdef SDL_PLATFORM_OPENHARMONY
+ extern bool SDL_AMCL_ValidateEventThread(bool observe_pump);
++extern bool SDL_AMCL_AllowVideo(void);
+ #endif
+ 
+ #endif
+diff --git a/src/core/openharmony/SDL_amclinputhostpolicy.h b/src/core/openharmony/SDL_amclinputhostpolicy.h
+--- a/src/core/openharmony/SDL_amclinputhostpolicy.h
++++ b/src/core/openharmony/SDL_amclinputhostpolicy.h
+@@ -1,5 +1,5 @@
+-/* 只用既有严格十进制host协议核调用者身份，供实际SDK/尚无jump-table的dynapi使用。
+- * probe是栈对象，不设置SDK main-ready/初始化状态，不借owner，不把裸环境存在当host。 */
++/* 只核严格ABI/PID/session文本，供线程安全查询与dynapi内部选取使用。
++ * Init/Pump的线程资格由实际SDK单独核验，不能因库查询线程不同回落到外部SDK。 */
+ #ifndef SDL_amclinputhostpolicy_h_
+ #define SDL_amclinputhostpolicy_h_
+ #include "SDL_amclhostruntime.h"
+@@ -13,15 +13,15 @@
+ #endif
+ static inline int AMCL_SdlInputHostIdentityV1(void)
+ {
+-    AMCL_SdlHostRuntime probe = { 0 };
++    AMCL_SdlHostDescriptor parsed = { 0 };
+ #ifdef _WIN32
+     char descriptor[128];
+     const DWORD length=GetEnvironmentVariableA("AMCL_SDL_HOST_RUNTIME",descriptor,sizeof(descriptor));
+     if (!length) return AMCL_SDL_HOST_STANDALONE;
+     if (length>=sizeof(descriptor)) return AMCL_SDL_HOST_MALFORMED;
+-    return AMCL_SdlHostPrepare(&probe,descriptor,(uint64_t)_getpid(),(uint64_t)GetCurrentThreadId());
++    return AMCL_SdlHostReadDescriptor(descriptor,(uint64_t)_getpid(),&parsed);
+ #else
+-    return AMCL_SdlHostPrepare(&probe,getenv("AMCL_SDL_HOST_RUNTIME"),(uint64_t)getpid(),(uint64_t)syscall(SYS_gettid));
++    return AMCL_SdlHostReadDescriptor(getenv("AMCL_SDL_HOST_RUNTIME"),(uint64_t)getpid(),&parsed);
+ #endif
+ }
+ #endif
+diff --git a/src/dynapi/SDL_dynapi.c b/src/dynapi/SDL_dynapi.c
+--- a/src/dynapi/SDL_dynapi.c
++++ b/src/dynapi/SDL_dynapi.c
+@@ -263,7 +263,8 @@
+ #define SDL_AMCL_INPUT_INIT_DISPATCH(fn,args,ret) \
+     if (((void*)(uintptr_t)fn##_REAL==(void*)(uintptr_t)SDL_Init_REAL || \
+          (void*)(uintptr_t)fn##_REAL==(void*)(uintptr_t)SDL_InitSubSystem_REAL) && \
+-        AMCL_SdlInputHostIdentityV1()>0 && !SDL_AMCL_HasInternalDynapiV1()) { ret fn##_REAL args; }
++        AMCL_SdlInputHostIdentityV1()!=0 && \
++        (!SDL_AMCL_HasInternalDynapiV1() || AMCL_SdlInputHostIdentityV1()<0)) { ret fn##_REAL args; }
+ #else
+ #define SDL_AMCL_INPUT_INIT_DISPATCH(fn,args,ret)
+ #endif
+@@ -563,7 +564,8 @@
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+     /* 使用实际pid/tid/session协议确认host；不调用SDK API，避免jump-table初始化递归。
+      * 严格host只用本映像REAL表，没有加载另一个SDK或改写用户环境。 */
+-    if (AMCL_SdlInputHostIdentityV1()>0) libname=NULL;
++    /* 有宿主但身份无效也不能回落外部SDK；真实Init负责给出拒绝，不把错误当standalone。 */
++    if (AMCL_SdlInputHostIdentityV1()!=0) libname=NULL;
+ #endif
+     SDL_DYNAPI_ENTRYFN entry = NULL; // funcs from here by default.
+     bool use_internal = true;
+diff --git a/src/dynapi/SDL_dynapi.exports b/src/dynapi/SDL_dynapi.exports
+--- a/src/dynapi/SDL_dynapi.exports
++++ b/src/dynapi/SDL_dynapi.exports
+@@ -3,6 +3,7 @@
+ _SDL_DYNAPI_entry
+ _SDL_AMCL_InputControlProtocolV1
+ _SDL_AMCL_InputLookProtocolV1
++_SDL_AMCL_AuxHostProtocolV2
+ _SDL_AcquireCameraFrame
+ _SDL_AcquireGPUCommandBuffer
+ _SDL_AcquireGPUSwapchainTexture
+diff --git a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -4,6 +4,7 @@
+     SDL_DYNAPI_entry;
+     SDL_AMCL_InputControlProtocolV1;
+     SDL_AMCL_InputLookProtocolV1;
++    SDL_AMCL_AuxHostProtocolV2;
+     SDL_AcquireCameraFrame;
+     SDL_AcquireGPUCommandBuffer;
+     SDL_AcquireGPUSwapchainTexture;
+diff --git a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
+--- a/src/gpu/SDL_gpu.c
++++ b/src/gpu/SDL_gpu.c
+@@ -19,6 +19,9 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#ifdef SDL_PLATFORM_OPENHARMONY
++#include "../core/openharmony/SDL_amclhostruntime.h"
++#endif
+ #include "SDL_sysgpu.h"
+ 
+ /* Normally this macro would use something like SDL_IsObjectValid, but in GPU's
+@@ -724,6 +727,9 @@
+ 
+ SDL_GPUDevice *SDL_CreateGPUDeviceWithProperties(SDL_PropertiesID props)
+ {
++#ifdef SDL_PLATFORM_OPENHARMONY
++    if(!SDL_AMCL_AllowVideo())return NULL;
++#endif
+ #ifndef SDL_GPU_DISABLED
+     bool debug_mode;
+     bool preferLowPower;
+diff --git a/src/video/SDL_video.c b/src/video/SDL_video.c
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -20,6 +20,9 @@
+ */
+ 
+ #include "SDL_internal.h"
++#ifdef SDL_PLATFORM_OPENHARMONY
++#include "../core/openharmony/SDL_amclhostruntime.h"
++#endif
+ 
+ // The high-level video driver subsystem
+ 
+@@ -624,6 +627,9 @@
+  */
+ bool SDL_VideoInit(const char *driver_name)
+ {
++#ifdef SDL_PLATFORM_OPENHARMONY
++    if(!SDL_AMCL_AllowVideo())return false;
++#endif
+     SDL_VideoDevice *video;
+     bool init_events = false;
+     bool init_keyboard = false;
+diff --git a/src/video/openharmony/SDL_amclpresentation.h b/src/video/openharmony/SDL_amclpresentation.h
+--- a/src/video/openharmony/SDL_amclpresentation.h
++++ b/src/video/openharmony/SDL_amclpresentation.h
+@@ -44,6 +44,8 @@
+     uint32_t (*geometryWorkFlags)(void);
+     int (*geometryCheckpoint)(void *, uint64_t, uint64_t);
+     void (*observeDrawable)(void *, uint64_t, uint64_t, int, int, uint32_t);
++    /* 仅镜像新增只读身份尾部；SDL视频仍按各自所需前缀判断旧宿主，不扩大必需长度。 */
++    int (*matchesPresentationIdentity)(void *, uint64_t, uint64_t, uint64_t);
+ } AMCL_NativeWindowLeaseBrokerV2;
+ #define AMCL_INPUT_FOREGROUND_BROKER_SIZE \
+     ((uint32_t)(offsetof(AMCL_NativeWindowLeaseBrokerV2, peekInputForeground) + \
+diff --git a/src/video/openharmony/graphics_runtime_abi.h b/src/video/openharmony/graphics_runtime_abi.h
+--- a/src/video/openharmony/graphics_runtime_abi.h
++++ b/src/video/openharmony/graphics_runtime_abi.h
+@@ -1,7 +1,9 @@
+ #ifndef AMCL_GRAPHICS_RUNTIME_ABI_H
+ #define AMCL_GRAPHICS_RUNTIME_ABI_H
+ #include <stdint.h>
++#include <stddef.h>
+ #include "graphics_context_abi.h"
++#include "sdl_aux_runtime_abi.h"
+ #define AMCL_GRAPHICS_RUNTIME_ENV "AMCL_GRAPHICS_RUNTIME_V1"
+ /** 冻结后发布的公共C描述符。字符串/函数指针由中立运行时保留到进程退出；消费者
+  * 先校验环境中的PID，再解引用并核验尺寸/版本。无有效表时宿主路线必须拒绝启动，
+@@ -33,5 +35,10 @@
+     const char* (*featuresJson)(void);
+     const char* implementationIdentity;
+     void* (*providerProc)(const char* name);
++    // 可选尾部：显式辅助SDL的会话、呈现线程证明与实际实例准入；不改变主输入/窗口。
++    int (*sdlAuxOperation)(uint32_t operation,const AmclSdlAuxRequestV1*,AmclSdlAuxResultV1*);
+ } AmclGraphicsRuntimeV1;
++// 旧完整V1前缀保持可用；仅使用辅助SDL的消费者要求新增尾部，不以新sizeof读取旧表。
++#define AMCL_GRAPHICS_RUNTIME_V1_CORE_SIZE ((uint32_t)offsetof(AmclGraphicsRuntimeV1,sdlAuxOperation))
++#define AMCL_GRAPHICS_RUNTIME_V1_SDL_AUX_SIZE ((uint32_t)(offsetof(AmclGraphicsRuntimeV1,sdlAuxOperation)+sizeof(((AmclGraphicsRuntimeV1*)0)->sdlAuxOperation)))
+ #endif
+diff --git a/src/video/openharmony/sdl_aux_runtime_abi.h b/src/video/openharmony/sdl_aux_runtime_abi.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/sdl_aux_runtime_abi.h
+@@ -0,0 +1,45 @@
++#ifndef AMCL_SDL_AUX_RUNTIME_ABI_H
++#define AMCL_SDL_AUX_RUNTIME_ABI_H
++#include <stdint.h>
++
++// 图形owner可选尾部使用的固定C记录。指针仅作为驱动/资源身份值，不能跨调用借用窗口对象。
++// ABI1主SDL不调用本接口；ABI2辅助描述符必须有本表及已核同映像的SDK辅助协议。
++#define AMCL_SDL_AUX_CONFIGURE 1u
++#define AMCL_SDL_AUX_PUBLISH_EGL 2u
++#define AMCL_SDL_AUX_REVOKE_EGL 3u
++#define AMCL_SDL_AUX_CLAIM 4u
++#define AMCL_SDL_AUX_QUIT 5u
++#define AMCL_SDL_AUX_RETIRE_SESSION 6u
++// 热路径只查询已锁定会话存活；SDK须先核自身固定pthread身份与PID，此查询不授予新owner。
++#define AMCL_SDL_AUX_PEEK_ACTIVE 7u
++#define AMCL_SDL_AUX_FIRST 1
++#define AMCL_SDL_AUX_READY 2
++#define AMCL_SDL_AUX_INVALID -1
++#define AMCL_SDL_AUX_WRONG_PID -2
++#define AMCL_SDL_AUX_WRONG_THREAD -3
++#define AMCL_SDL_AUX_CHANGED -4
++#define AMCL_SDL_AUX_RETIRED -5
++#define AMCL_SDL_AUX_UNPROVEN -6
++#define AMCL_SDL_AUX_FOREIGN_INSTANCE -7
++
++typedef struct AmclSdlAuxRequestV1 {
++    uint32_t structSize, abiVersion;
++    uint64_t processId, sessionId, instanceCookie;
++    int32_t launchThreadId;
++    uint32_t reserved;
++    void* display;
++    void* context;
++    void* drawSurface;
++    void* nativeWindow;
++    uint64_t contextPermit, presentationToken, generation, resourceEpoch;
++    // configure绑定已cold核验的制品文件身份；claim的cookie还须由owner核到同一文件映像。
++    uint64_t selectedFileDevice, selectedFileInode;
++} AmclSdlAuxRequestV1;
++
++typedef struct AmclSdlAuxResultV1 {
++    uint32_t structSize, abiVersion;
++    int32_t status, launchThreadId, ownerThreadId;
++    uint32_t reserved;
++    uint64_t sessionId, instanceCookie, proofGeneration;
++} AmclSdlAuxResultV1;
++#endif

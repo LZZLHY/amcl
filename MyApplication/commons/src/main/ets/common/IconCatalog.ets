@@ -137,6 +137,8 @@ export enum AppIconName {
 
   // ---- AI（2026-07-30；symbol id 已在 SDK id_defined.json 核验存在） ----
   Ai,            // AI 智能分析（wand_and_stars_fill）
+  // 触控组的层级标识；square_stack_3d 已在当前SDK的id_defined.json核验，追加枚举不改变旧值。
+  Layers,
 }
 
 /** Catalog 行：sys.symbol Resource + fallback emoji */
@@ -251,6 +253,7 @@ export function lookupIcon(name: AppIconName): IconEntry {
 
     // ---- 按键布局编辑器 ----
     case AppIconName.Keyboard:        return { resource: $r('sys.symbol.keyboard'),                   fallback: '⌨' };
+    case AppIconName.Layers:          return { resource: $r('sys.symbol.square_stack_3d'),            fallback: '▱' };
     case AppIconName.Trigger:         return { resource: $r('sys.symbol.hand_tap'),                   fallback: '👆' };
     case AppIconName.Scene:           return { resource: $r('sys.symbol.rectangle_stack'),            fallback: '🎬' };
     case AppIconName.Aim:             return { resource: $r('sys.symbol.scope'),                      fallback: '🎯' };

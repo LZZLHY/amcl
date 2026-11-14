@@ -101,6 +101,9 @@ const char* amclLogRead(int maxBytes);
  * 渲染域分到 render/renderer*.log，旧 launcher.tail* 仅保留读取兼容。
  *
  * 幂等：同一 activityId 重复调用只生效一次。
+ * 已有scope若正在关闭或首次打开失败，返回0，不能把存在表项误认为可执行producer。
+ * 此兼容入口含同步文件IO；ArkTS生产异步入口使用amclLedgerBeginAsync并等待true后派发。
+ * producer只访问独立固定计数表，绝不取得持有文件IO的scope锁；同ID重开以内部世代隔离。
  *
  * @param activityId 活动主键（ArkTS 侧 = ActivityRecord.startedAt，毫秒）。0 无效。
  * @param dir        账本目录绝对路径（不存在会尝试创建）

@@ -1,8 +1,8 @@
 # 公开快照构建说明
 
-1.0.6 / 1000910 的公开输入对应干净源提交 `fb1b299f87c7bbac069cac24cfe65df303ebb381`，完整文件身份见 `SOURCE_SNAPSHOT.json`。宿主运行代码与 `d5c059a4df22a29abc2bc39dd667913e22021642` 一致，本轮仅收窄随包日志，不包含协议 2 运行时集成；游戏 JDK 独立下载，以发布目录及客户端实际协议为准。本版包含手机自更新与签名入口、游戏包导出、触控与下载修复及其构建输入；公开候选的文件/依赖身份核验与正式 HAP 构建、真机验收分别记录，不把同步快照称为重新完成公开克隆构建。下面的 1.0.4 全新克隆结果保留为历史证据。当前 JNA 输入与验证入口见 [JNA 说明](../prebuilt/jna/README.md)。
+1.0.7 / 1000911 的公开输入对应干净源提交 `9c21c7216d91ab074c2b8d6522b90a38fd9d3899`，完整文件身份见 `SOURCE_SNAPSHOT.json`。本版包含新版运行时宿主、稳定通道内的旧 JDK 修复、共用的普通／强提醒更新组件以及图形、输入和模组原生库适配。仅不兼容且必须修复的受管 JDK 使用强提醒；App 预留同一展示能力，当前发行不启用 App 强制更新策略。升级后受影响的游戏须先修复运行时，JDK 通道可一直保持稳定。
 
-本次按同一冻结提交重新执行手动导出，补齐必要的构建、测试说明，并附上从现有锁文件生成的 [第三方输入索引](../DEPENDENCY_INPUTS.json)。四个子模块与既有 Native 输入保持原发行身份；索引列出的未完成声明和历史来源边界仍保留，不将元数据校验写成一次新的 HAP 或真机验收。
+四代正式 JDK 独立发布；App、目录读取协议、恢复读取协议与 JDK 装载协议分别按实际包内声明核对。公开快照固定已公开的 MobileGL 源码与锁定制品，普通 HAP 重建仍按下述公开依赖流程执行。源码导出、公开克隆构建、正式侧载包和真机验收各自记录证据；本页保留后文 1.0.4 的历史验证，不将其当作本次结果。
 
 2026-09-24 已按此流程完成 **1.0.4 / 1000671、sideload / release / unsigned** HAP 构建及包内关键输入校验；环境、产物 SHA-256 和剩余限制见 [本轮核验记录](public-reproduction-audit.md)。
 
@@ -95,6 +95,14 @@ node scripts/prepare-public-deps.mjs --check
 ```
 
 无参数命令准备依赖；--check 只检查已准备内容。首次运行需要下载较大的源码树，耗时取决于网络。按脚本报出的仓库、路径和命令判断进展，不要把某一次大型 Git 下载耗时直接视为编译卡死。
+
+1.0.7 的游戏兼容层还需要 [threading-inputs.json](../prebuilt/runtime-compat/threading-inputs.json) 中固定的编译输入。选择一个仓库外目录并显式下载；下载器会校验实际长度和摘要，游戏／模组本体不进入兼容层 JAR。把下面路径换成本机目录，并将 `AMCL_COMPAT_JAVA_HOME` 指向完整 JDK 25：
+
+```powershell
+$env:AMCL_GAME_COMPAT_INPUTS = 'C:/AMCL-cache/game-compat-inputs'
+$env:AMCL_COMPAT_JAVA_HOME = 'C:/Java/jdk-25'
+python scripts/prepare-game-compat-inputs.py --download --output $env:AMCL_GAME_COMPAT_INPUTS
+```
 
 准备入口自动设置 `GIT_LFS_SKIP_SMUDGE=1`，跳过 MobileGL 可选 trace_replay 工具使用的大型 LFS 回放夹具，保留其指针文件。普通 HAP 构建不消费这些夹具，不需要另行运行 `git lfs pull`；只有独立使用对应工具时才需要准备其额外数据。
 
@@ -230,7 +238,7 @@ node scripts/check-mobilegl-build-contract.mjs --prepare --product default
 
 依赖准备与 Java 启动器编译已在独立公开工程验证通过；这与完整 HAP 的编译、安装、设备验收仍是不同层次的结果。
 
-本次同步另外保留 [prebuilt/lwjgl3/local-worktree.patch](../prebuilt/lwjgl3/local-worktree.patch)，用于审阅主工作区中尚未进入上游提交的两份 VMA C++ 修改。它基于锁定的 LWJGL 提交，SHA-256 为 `531dc88f3593831cd97972ee05cb65eb27640e11ac627a54332e9392a24b2bd4`；准备脚本不会把它自动应用到供 Java 资源构建使用的已锁定上游源码树。普通 HAP 使用快照内保留的 `liblwjgl_vma.so`；独立重编该库时还需要核对补丁、Native 构建参数和最终产物。保存这份补丁不等于已经完成该库从干净克隆到产物的重建验证。
+本次同步另外保留 [prebuilt/lwjgl3/local-worktree.patch](../prebuilt/lwjgl3/local-worktree.patch)，用于审阅主工作区中尚未进入上游提交的两份 VMA C++ 修改。它基于锁定的 LWJGL 提交，SHA-256 为 `4af5f2259e3490eda3d4ba0c61cbbd68490fa6a8949080bc56110527c203bbb3`；准备脚本不会把它自动应用到供 Java 资源构建使用的已锁定上游源码树。普通 HAP 使用快照内保留的 `liblwjgl_vma.so`；独立重编该库时还需要核对补丁、Native 构建参数和最终产物。保存这份补丁不等于已经完成该库从干净克隆到产物的重建验证。
 
 新的 JDK 8/17/21/25 构建输入已经通过 [prebuilt/jdk/build-inputs.json](../prebuilt/jdk/build-inputs.json) 固定精确提交，配方使用 `docker/scripts/prepare_jdk_source.py` 准备。旧 `deps.lock [openjdk].commit` 的 `PENDING` 属于历史声明，不能据此否定新配方已有的源码 pin；新 pin 也不补证旧混合发行运行时的完整来源或逐字节重建结果。组件索引将两类身份分开列出。
 

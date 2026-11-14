@@ -1,3 +1,4 @@
+import { validateRuntimeHostDeclaration } from './RuntimeHostDeclaration';
 /**
  * JdkImporter.ets — 从本地压缩包导入 JDK（离线可用 / 用户自带）
  *
@@ -18,9 +19,9 @@
  *     对用户自己塞的包提示"更新"＝提示覆盖掉它，那是数据破坏。
  *
  * 安全面完全复用既有设施，没有自己写一套：
- *   - 解压走 `feature_core` 的 `decompressFile`，它带 containment / symlink 拒绝 /
- *     条目数 / 累计字节 / 目录深度 全套扫描（见 ForgeInstallerUtils）；
- *   - 落地走与官方安装**同一段** staging → rename + backup + 回滚。
+ *   - 解压走 JdkInstallStorage 的同一原生 owner：写前预检全部名称/结构，流式输出时
+ *     强制累计字节、条目数、深度与普通文件约束；不复用只有事后扫描的通用解压入口。
+ *   - 落地与官方下载共用持久 journal、目录 fsync、精确身份恢复，保留 writer/use 协议。
  *
  * ⭐ 一条不变量（也是最容易做错的地方）：**导入成功 ⇒ `JdkManager.isInstalled()` 必须为真**。
  * 所以这里的结构校验不是"随便查个文件"，而是**逐项复现 isInstalled 的 probe 列表**。
@@ -30,18 +31,20 @@
  */
 
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { removeDirRecursive } from 'commons';
 import { ensureDirSync } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
-import { decompressFile, VersionFileVerifier } from 'feature_core';
+import { VersionFileVerifier } from 'feature_core';
+import { getTaskActivityOwner, BusinessActivity, BusinessActivityResult } from 'feature_core';
+import { LedgerState } from 'commons';
 import { IMPORTED_TAG_PREFIX } from './JdkUpdatePolicy';
 import { validateRuntimeTree } from './JdkTreeValidation';
 import { JdkDirectoryLease } from './JdkDirectoryLease';
+import { JdkInstallStorage } from './JdkInstallStorage';
 
 const TAG = 'JdkImporter';
 
-/** 导入结果。`cancelled` 与 `ok=false` 分开 —— 用户取消不是错误。 */
+/** 已选中本地包后的实际安装结果；Picker取消在调用本入口之前处理。 */
 export interface JdkImportResult {
   ok: boolean;
   /** 失败/成功的人话说明，直接可以进 toast。 */
@@ -101,28 +104,35 @@ export class JdkImporter {
   static async importFromZip(
     context: Context, version: string, zipPath: string, onProgress?: JdkImportProgress
   ): Promise<JdkImportResult> {
+    const owner = getTaskActivityOwner(); owner.configure(context.filesDir);
+    return owner.run<JdkImportResult>({ category: 'jdk', title: '本地导入 JDK ' + version },
+      (activity: BusinessActivity): Promise<JdkImportResult> => JdkImporter.importOwned_(context, version, zipPath, onProgress, activity),
+      (result: JdkImportResult): BusinessActivityResult => ({ state: result.ok ? LedgerState.SUCCESS : LedgerState.FAILED,
+        summary: result.message }));
+  }
+
+  /** 活动owner只负责日志终态；安装仍由单槽journal持久化，租约/清理在业务finally闭合。 */
+  private static async importOwned_(context: Context, version: string, zipPath: string,
+    onProgress: JdkImportProgress | undefined, activity: BusinessActivity): Promise<JdkImportResult> {
+    let lastPhase: string = '';
     const report = (phase: string, percent: number, msg: string): void => {
+      // 阶段边沿记入本活动；百分比继续走UI回调，避免把解压进度重复写成大量日志。
+      if (phase !== lastPhase) { lastPhase = phase; activity.event(msg); }
       if (onProgress) onProgress(phase, percent, msg);
     };
 
     const installRoot = context.filesDir + '/jdk';
-    const targetDir = installRoot + '/' + version;
-    const token = 'import-' + version + '-' + Date.now().toString() + '-'
-      + Math.floor(Math.random() * 1000000000).toString();
-    // ⚠️ staging 必须与 targetDir 同文件系统，rename 才是 O(1) 且原子的 —— 所以放在
-    //    installRoot 下，不是 cacheDir（那是另一个挂载点）。与官方安装同一约定。
-    const extractRoot = installRoot + '/.staging-' + token;
+    // staging 由 native 在 installRoot 内唯一创建；发布保持同文件系统 rename。
+    let extractRoot = '';
 
     let writerLease: JdkDirectoryLease | null = null;
     let useLease: JdkDirectoryLease | null = null;
-    let backupDir = '';
-    let backupCreated = false;
 
     try {
       writerLease = JdkDirectoryLease.writer(context.filesDir, version);
+      JdkInstallStorage.recoverWithWriter(context.filesDir, version, writerLease);
       ensureDirSync(installRoot);
-      try { removeDirRecursive(extractRoot) } catch (e) { /* 不存在很正常 */ }
-      ensureDirSync(extractRoot);
+      extractRoot = JdkInstallStorage.createStage(context.filesDir, version, writerLease);
 
       // ---- 1) 先算 zip 的 sha256（也顺便证明这个文件读得动）----
       report('verifying', -1, '正在计算校验值…');
@@ -134,13 +144,13 @@ export class JdkImporter {
       }
       const stamp = IMPORTED_TAG_PREFIX + sha.substring(0, 12);
 
-      // ---- 2) 安全解压（containment / symlink / 数量 / 体积 全套扫描在 decompressFile 里）----
+      // ---- 2) 与官方下载共用写前预检/流式硬预算；不会在系统解压结束后才发现磁盘已写满。----
       report('extracting', -1, '正在解压（大包可能需要几分钟，请勿关闭）…');
       try {
-        await decompressFile(zipPath, extractRoot, 300000);
+        await JdkInstallStorage.extract(zipPath, extractRoot, sha);
       } catch (e) {
         const err = e as Error;
-        AppLogger.warn(TAG, `import decompress failed: ${err.message}`, e as Object, LOG_DOMAIN_LAUNCH);
+        AppLogger.warn(TAG, `import decompress failed: ${err.message}`, e as Object, LOG_DOMAIN_LAUNCH, activity.id);
         return { ok: false, message: '解压失败：' + err.message, stamp: '' };
       }
 
@@ -158,61 +168,38 @@ export class JdkImporter {
         };
       }
 
+      const hostError = validateRuntimeHostDeclaration(root);
+      if (hostError !== '') return {ok:false,message:hostError,stamp:''};
+
       // ---- 4) 导入身份必须随目录一起发布 ----
       // 用户 ZIP 可能来自一份官方目录备份，不能信任其中携带的受管 receipt/tag。
       // 移除内嵌 receipt，再强制写 imported 戳；失败直接终止，保留旧安装，防止误自动接管。
       let hasReceipt = false;
       try { fs.statSync(root + '/.amcl-runtime-receipt.json'); hasReceipt = true; } catch (e) { /* 正常导入无收据。 */ }
       if (hasReceipt) fs.unlinkSync(root + '/.amcl-runtime-receipt.json');
-      const sf = fs.openSync(root + '/.amcl_release_tag',
-        fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-      try { fs.writeSync(sf.fd, stamp); fs.fsyncSync(sf.fd); } finally { fs.closeSync(sf); }
+      JdkInstallStorage.writeMetadata(root + '/.amcl_release_tag', stamp);
+      await JdkInstallStorage.seal(root, version, sha);
 
-      // ---- 5) 原子发布：旧目录先改名保底，失败能回滚 ----
+      // ---- 5) 同一持久 journal 发布：失败/进程死亡均由记录恢复，所有切换在 use.EX 内。----
       useLease = JdkDirectoryLease.publication(context.filesDir, version);
       report('extracting', 100, '正在安装…');
-      backupDir = targetDir + '.backup-' + Date.now().toString() + '-'
-        + Math.floor(Math.random() * 1000000).toString();
-      let targetExisted = false;
-      try { fs.statSync(targetDir); targetExisted = true } catch (e) { /* 首次安装 */ }
-      try {
-        if (targetExisted) {
-          fs.renameSync(targetDir, backupDir);
-          backupCreated = true;
-        }
-        fs.renameSync(root, targetDir);
-      } catch (e) {
-        AppLogger.error(TAG, 'import publish failed', e as Object, LOG_DOMAIN_LAUNCH);
-        if (backupCreated) {
-          try {
-            fs.renameSync(backupDir, targetDir);
-            backupCreated = false;
-          } catch (e2) {
-            AppLogger.error(TAG, 'import rollback failed; backup retained at ' + backupDir,
-              e2 as Object, LOG_DOMAIN_LAUNCH);
-          }
-        }
-        return { ok: false, message: '安装失败（已尽力恢复原有 JDK）', stamp: '' };
-      }
-      if (backupCreated) {
-        try { removeDirRecursive(backupDir) } catch (e) {
-          AppLogger.warn(TAG, 'import backup cleanup failed: ' + backupDir, e as Object, LOG_DOMAIN_LAUNCH);
-        }
-        backupCreated = false;
-      }
+      JdkInstallStorage.publish(context.filesDir, version, root, writerLease, useLease);
 
-      AppLogger.info(TAG, `JDK ${version} imported from local zip, stamp=${stamp}`, LOG_DOMAIN_LAUNCH);
+      AppLogger.info(TAG, `JDK ${version} imported from local zip, stamp=${stamp}`, LOG_DOMAIN_LAUNCH, activity.id);
       report('verifying', 100, '导入完成');
       return { ok: true, message: 'JDK ' + version + ' 已从本地包导入（' + stamp + '）', stamp };
     } catch (e) {
       const err = e as Error;
-      AppLogger.error(TAG, 'import failed', e as Object, LOG_DOMAIN_LAUNCH);
+      AppLogger.error(TAG, 'import failed', e as Object, LOG_DOMAIN_LAUNCH, activity.id);
       return { ok: false, message: '导入失败：' + err.message, stamp: '' };
     } finally {
       if (useLease !== null) useLease.release();
-      if (writerLease !== null) writerLease.release();
-      // staging 一律清掉；发布成功时 root 已被 rename 走，这里删的是残留的外层目录。
-      try { removeDirRecursive(extractRoot) } catch (e) { /* ignore */ }
+      if (writerLease !== null) {
+        // journal 未恢复时 native 保留相关 staging；不能删除第二次 rename 前的唯一新副本。
+        try { JdkInstallStorage.discard(context.filesDir, version, extractRoot, writerLease); }
+        catch (cleanupError) { AppLogger.warn(TAG, '导入 staging 保留供恢复', cleanupError as Object, LOG_DOMAIN_LAUNCH, activity.id); }
+        writerLease.release();
+      }
     }
   }
 }

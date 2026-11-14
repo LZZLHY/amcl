@@ -59,6 +59,29 @@ def function(text, signature):
     return text[begin:end]
 
 
+def option_fragments(text):
+    """按 jvmInit 的职责边界提取，不依赖 option 的存储类型或旧固定数组长度。
+
+    区块必须在同一生产函数内唯一且有序；结构变化时明确失败，不能从别处拼出测试替身。
+    字符串所有者和最终 JavaVMInitArgs 一起进入夹具作用域，直到真实 CreateJavaVM 返回。
+    """
+    body = function(text, 'int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,\n            const char* trustedAppFilesDir)')
+
+    def offset(marker):
+        if body.count(marker) != 1:
+            raise RuntimeError('Production jvmInit boundary is missing or ambiguous: ' + marker.strip())
+        return body.index(marker)
+
+    preflight = offset('    amcl::jvm::HeapOptions heapOptions;')
+    claim = offset('    const int creationClaim = g_runtimeOnce.beginResult();')
+    start = offset('    // JVM 参数（')
+    stop = offset('    // 使用 OpenJDK')
+    if not preflight < claim < start < stop:
+        raise RuntimeError('Production heap preflight and Invocation option blocks are out of order')
+    return {'jvm_bootstrap_heap_preflight.inc': body[preflight:claim],
+            'jvm_bootstrap_options.inc': body[start:stop]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--java-home', default='')
@@ -102,17 +125,14 @@ def main():
     options = options_path.read_text(encoding='utf-8')
     functions = [function(launch, signature) for signature in ('static void setSystemProperty(',
                  'static bool getSystemProperty(', 'static bool phase_verifyRuntimeProperties(')]
-    start = options.index('    char opt0[512]')
-    stop = options.index('    // 使用 OpenJDK', start)
-    preflight_start = options.index('    amcl::jvm::HeapOptions heapOptions;')
-    preflight_end = options.index('    // ============================================================', preflight_start)
-    pieces = {'jvm_bootstrap_properties.inc': '\n'.join(functions),
-              'jvm_bootstrap_heap_preflight.inc': options[preflight_start:preflight_end],
-              'jvm_bootstrap_options.inc': options[start:stop]}
+    pieces = {'jvm_bootstrap_properties.inc': '\n'.join(functions), **option_fragments(options)}
     for name, body in pieces.items():
         (build / name).write_text(body, encoding='utf-8')
     hashes = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in (
-        launch_path, options_path, CPP / 'jvm/jvm_heap_options.h', CPP / 'jvm/jni_mutf8.h', CPP / 'jvm/jvm_common_args.cpp')}
+        Path(__file__), launch_path, options_path, CPP / 'tests/host/jvm_bootstrap_invocation.cpp',
+        CPP / 'jvm/jvm_heap_options.h', CPP / 'jvm/jvm_heap_backing.h', CPP / 'jvm/jni_mutf8.h', CPP / 'jvm/jvm_common_args.cpp', CPP / 'jvm/jvm_cf_policy.h',
+        CPP / 'jvm/runtime_bootstrap_contract.h', CPP / 'jvm/hap_native_provider_contract.h', CPP / 'jvm/jna_runtime_contract.h', CPP / 'jvm/jdk_native_temp_contract.h', CPP / 'jvm/elf_input_validation.h',
+        CPP / 'platform/graphics_plan.h', CPP / 'platform/egl_provider_dispatch.h')}
     (output / 'source-manifest.json').write_text(json.dumps({'source_sha256': hashes,
         'extracted_sha256': {name: hashlib.sha256(body.encode()).hexdigest() for name, body in pieces.items()},
         'host_adjustment': 'Remove only AMCL java.system.class.loader option before Invocation; do not run production exit hook.'}, indent=2), encoding='utf-8')
@@ -126,6 +146,7 @@ def main():
             *([] if sys.platform == 'darwin' else ['-ldl'])], check=True)
     cases = [('unicode-properties', 'properties', [], None),
              ('default', 'options', ['128'], None),
+             ('owned-paths-longer-than-512', 'owned-options', ['128'], None),
              ('custom-xmx-audit-regression', 'options', ['4096', '-Xmx512m'], None),
              ('explicit-xms', 'options', ['4096', '-Xmx512m', '-Xms128m'], None),
              ('last-maximum', 'options', ['4096', '-Xmx1g', '-XX:MaxHeapSize=128m'], None),
@@ -136,10 +157,16 @@ def main():
                  '-XX:InitialHeapSize=134217729'], 'gc-alignment-dependent'),
              ('explicit-too-large', 'options', ['4096', '-Xmx128m', '-Xms256m'], 'heap_minimum_exceeds_maximum'),
              ('invalid-then-valid', 'options', ['4096', '-Xmxwrong', '-Xmx128m'], 'heap_size_invalid:Xmx'),
-             ('overflow', 'options', ['4096', '-Xmx18446744073709551616'], 'heap_size_invalid:Xmx')]
+             ('overflow', 'options', ['4096', '-Xmx18446744073709551616'], 'heap_size_invalid:Xmx'),
+             # 文件堆不在本套宿主JNI资格内；仍需证明真实生产拒绝不会静默变成RAM启动。
+             ('file-heap-rejected-before-load', 'options', ['128','-Damcl.heapfile=1'],
+              'host_fixture_heapfile_unavailable' if int(major) in (17,21,25) else 'heapfile_runtime_family_unverified')]
     rows = []
     for name, mode, extra, rejection in cases:
-        result = subprocess.run([str(binary), mode, str(jvm), str(home), str(output), major, *extra],
+        # 这里验证 JVM 选项字符串，不声称该虚拟路径可创建文件。原始日志始终落真实 output；
+        # 多段路径使 user/home/tmp/ErrorFile 超过旧 512 字节边界，不碰宿主 JDK 或文件系统限制。
+        directory = output.joinpath(*(['owned-' + 'p' * 72] * 8)) if mode == 'owned-options' else output
+        result = subprocess.run([str(binary), mode, str(jvm), str(home), str(directory), major, *extra],
                                 cwd=output, env=env, capture_output=True, timeout=45)
         (output / (name + '.log')).write_bytes(result.stdout + b'\nSTDERR:\n' + result.stderr)
         actual = (result.stdout + result.stderr).decode('utf-8', errors='replace')
@@ -160,6 +187,8 @@ def main():
         else:
             assert result.returncode == 0, (name, result.returncode, actual)
             assert 'CREATE_JVM_RC=0' in actual and 'HOST_RESULT=0' in actual, (name, actual)
+            if mode == 'owned-options':
+                assert 'OWNED_OPTIONS=PASS' in actual and 'OWNED_PROPERTIES=PASS' in actual, (name, actual)
         rows.append({'case': name, 'jdk': major, 'process_rc': result.returncode, 'expected_rejection': rejection, 'pass': True})
         print('PASS jdk' + major + ' ' + name, flush=True)
     (output / 'results.json').write_text(json.dumps(rows, indent=2), encoding='utf-8')

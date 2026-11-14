@@ -1,0 +1,410 @@
+diff --git a/src/java.desktop/share/native/libfontmanager/freetypeScaler.c b/src/java.desktop/share/native/libfontmanager/freetypeScaler.c
+--- a/src/java.desktop/share/native/libfontmanager/freetypeScaler.c
++++ b/src/java.desktop/share/native/libfontmanager/freetypeScaler.c
+@@ -46,12 +46,6 @@
+ 
+ #include "fontscaler.h"
+ 
+-#define CHECK_EXCEPTION(env, describe)                 \
+-    if ((*(env))->ExceptionCheck(env)) {               \
+-        if (describe) (*(env))->ExceptionDescribe(env);\
+-        else          (*(env))->ExceptionClear(env);   \
+-    }
+-
+ #define  ftFixed1  (FT_Fixed) (1 << 16)
+ #define  FloatToFTFixed(f) (FT_Fixed)((f) * (float)(ftFixed1))
+ #define  FTFixedToFloat(x) ((x) / (float)(ftFixed1))
+@@ -78,6 +72,9 @@
+     unsigned fontDataOffset;
+     unsigned fontDataLength;
+     unsigned fileSize;
++    /* 当前 native 调用中读回调失败后禁止 FreeType 再次带着 pending 异常进入 Java。
++     * 下一次合法 native 调用由 setupFTContext 复位，不增加 cache-hit 的 JNI 调用。 */
++    jboolean readFailed;
+ } FTScalerInfo;
+ 
+ typedef struct FTScalerContext {
+@@ -147,124 +144,103 @@
+ static void invalidateJavaScaler(JNIEnv *env,
+                                  jobject scaler,
+                                  FTScalerInfo* scalerInfo) {
++    jthrowable original = (*env)->ExceptionOccurred(env);
++    if (original != NULL) (*env)->ExceptionClear(env);
+     freeNativeResources(env, scalerInfo);
+     (*env)->CallVoidMethod(env, scaler, invalidateScalerMID);
+-    // NB: Exceptions must not be cleared (and therefore no JNI calls
+-    // performed) after calling this method because it intentionally
+-    // leaves an exception pending.
++    if (original != NULL) {
++        /* invalidateScaler 先清 native 指针再抛自己的异常，不能覆盖先前读失败。 */
++        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
++        (*env)->Throw(env, original);
++        (*env)->DeleteLocalRef(env, original);
++    } else {
++        (void)(*env)->ExceptionCheck(env); /* 保留 invalidateScaler 的原异常并满足 JNI 检查。 */
++    }
+ }
+ 
+ /******************* I/O handlers ***************************/
+ 
+ #define FILEDATACACHESIZE 1024
++
++/* Java 读异常不能被转换成成功字节数；保留原异常，后续 FT 回调仅返回流失败。 */
++static jboolean checkReadException(FTScalerInfo *scalerInfo) {
++    JNIEnv *env = scalerInfo->env;
++    if ((*env)->ExceptionCheck(env)) {
++        scalerInfo->readFailed = JNI_TRUE;
++        scalerInfo->fontDataLength = 0;
++        /* 诊断打印会清除异常，先持有原对象并在打印后恢复。 */
++        if (debugFonts) {
++            jthrowable original = (*env)->ExceptionOccurred(env);
++            if (original != NULL) {
++                (*env)->ExceptionDescribe(env);
++                (*env)->Throw(env, original);
++                (*env)->DeleteLocalRef(env, original);
++            }
++        }
++        return JNI_TRUE;
++    }
++    return JNI_FALSE;
++}
+ 
+ static unsigned long ReadTTFontFileFunc(FT_Stream stream,
+                                         unsigned long offset,
+                                         unsigned char* destBuffer,
+                                         unsigned long numBytes)
+ {
+-    FTScalerInfo *scalerInfo = (FTScalerInfo *) stream->pathname.pointer;
+-    JNIEnv* env = scalerInfo->env;
++    FTScalerInfo *scalerInfo = (FTScalerInfo *)stream->pathname.pointer;
++    JNIEnv *env = scalerInfo->env;
+     jobject bBuffer;
+-    int bread = 0;
+-
+-    /* A call with numBytes == 0 is a seek. It should return 0 if the
+-     * seek position is within the file and non-zero otherwise.
+-     * For all other cases, ie numBytes !=0, return the number of bytes
+-     * actually read. This applies to truncated reads and also failed reads.
+-     */
+-
++    jint bread;
++    if (scalerInfo->readFailed) {
++        return numBytes == 0 ? 1 : 0;
++    }
++    /* seek 不读 Java；溢出/EOF/尾部截断沿用 FreeType 的流返回协议。 */
+     if (numBytes == 0) {
+-        if (offset > scalerInfo->fileSize) {
+-            return -1;
+-        } else {
+-            return 0;
+-       }
+-    }
+-
+-    if (offset + numBytes < offset) {
+-        return 0; // ft should not do this, but just in case.
+-    }
+-
+-    if (offset >= scalerInfo->fileSize) {
+-        return 0;
+-    }
+-
+-    if (offset + numBytes > scalerInfo->fileSize) {
+-        numBytes = scalerInfo->fileSize - offset;
+-    }
+-
+-    /* Large reads will bypass the cache and data copying */
++        return offset > scalerInfo->fileSize ? (unsigned long)-1 : 0;
++    }
++    if (offset + numBytes < offset || offset >= scalerInfo->fileSize) return 0;
++    if (numBytes > scalerInfo->fileSize - offset) numBytes = scalerInfo->fileSize - offset;
++
+     if (numBytes > FILEDATACACHESIZE) {
+         bBuffer = (*env)->NewDirectByteBuffer(env, destBuffer, numBytes);
+         if (bBuffer != NULL) {
+-            bread = (*env)->CallIntMethod(env,
+-                                          scalerInfo->font2D,
+-                                          sunFontIDs.ttReadBlockMID,
+-                                          bBuffer, offset, numBytes);
+-            CHECK_EXCEPTION(env, debugFonts);
+-            if (bread < 0) {
+-                return 0;
+-            } else {
+-               return bread;
+-            }
+-        } else {
+-            /* We probably hit bug 4845371. For reasons that
+-             * are currently unclear, the call stacks after the initial
+-             * createScaler call that read large amounts of data seem to
+-             * be OK and can create the byte buffer above, but this code
+-             * is here just in case.
+-             * 4845371 is fixed now so I don't expect this code path to
+-             * ever get called but its harmless to leave it here on the
+-             * small chance its needed.
+-             */
+-            jbyteArray byteArray = (jbyteArray)
+-            (*env)->CallObjectMethod(env, scalerInfo->font2D,
+-                                     sunFontIDs.ttReadBytesMID,
+-                                     offset, numBytes);
+-            CHECK_EXCEPTION(env, debugFonts);
+-            /* If there's an OutOfMemoryError then byteArray will be null */
+-            if (byteArray == NULL) {
+-                return 0;
+-            } else {
+-                unsigned long len = (*env)->GetArrayLength(env, byteArray);
+-                if (len < numBytes) {
+-                    numBytes = len; // don't get more bytes than there are ..
+-                }
+-                (*env)->GetByteArrayRegion(env, byteArray,
+-                                           0, numBytes, (jbyte*)destBuffer);
+-                return numBytes;
+-            }
+-        }
+-    } /* Do we have a cache hit? */
+-      else if (scalerInfo->fontDataOffset <= offset &&
+-        scalerInfo->fontDataOffset + scalerInfo->fontDataLength >=
+-                                                         offset + numBytes)
+-    {
+-        unsigned cacheOffset = offset - scalerInfo->fontDataOffset;
+-
+-        memcpy(destBuffer, scalerInfo->fontData+(size_t)cacheOffset, numBytes);
++            bread = (*env)->CallIntMethod(env, scalerInfo->font2D,
++                sunFontIDs.ttReadBlockMID, bBuffer, offset, numBytes);
++            jboolean failed = checkReadException(scalerInfo);
++            (*env)->DeleteLocalRef(env, bBuffer);
++            if (failed || bread < 0 || (unsigned long)bread > numBytes) return 0;
++            return (unsigned long)bread;
++        }
++        if (checkReadException(scalerInfo)) return 0;
++        /* 保留上游历史的“无异常但不能建立 direct buffer”数组回退，不把 OOME 吞掉。
++         * CallObjectMethod 的异常返回值不可使用；成功对象使用后立即释放 local ref。 */
++        jbyteArray bytes = (jbyteArray)(*env)->CallObjectMethod(env, scalerInfo->font2D,
++            sunFontIDs.ttReadBytesMID, offset, numBytes);
++        if (checkReadException(scalerInfo) || bytes == NULL) return 0;
++        jsize length = (*env)->GetArrayLength(env, bytes);
++        if ((unsigned long)length < numBytes) numBytes = (unsigned long)length;
++        (*env)->GetByteArrayRegion(env, bytes, 0, numBytes, (jbyte *)destBuffer);
++        jboolean failed = checkReadException(scalerInfo);
++        (*env)->DeleteLocalRef(env, bytes);
++        return failed ? 0 : numBytes;
++    }
++    if (scalerInfo->fontDataOffset <= offset &&
++        scalerInfo->fontDataOffset + scalerInfo->fontDataLength >= offset + numBytes) {
++        /* 正常热命中仍是同一有界 memcpy，不重新进入 Java 或扫描系统字体。 */
++        memcpy(destBuffer, scalerInfo->fontData + (size_t)(offset - scalerInfo->fontDataOffset), numBytes);
+         return numBytes;
+-    } else {
+-        /* Must fill the cache */
+-        scalerInfo->fontDataOffset = offset;
+-        scalerInfo->fontDataLength =
+-                 (offset + FILEDATACACHESIZE > scalerInfo->fileSize) ?
+-                 scalerInfo->fileSize - offset : FILEDATACACHESIZE;
+-        bBuffer = scalerInfo->directBuffer;
+-        bread = (*env)->CallIntMethod(env, scalerInfo->font2D,
+-                                      sunFontIDs.ttReadBlockMID,
+-                                      bBuffer, offset,
+-                                      scalerInfo->fontDataLength);
+-        CHECK_EXCEPTION(env, debugFonts);
+-        if (bread <= 0) {
+-            return 0;
+-        } else if ((unsigned long)bread < numBytes) {
+-           numBytes = bread;
+-        }
+-        memcpy(destBuffer, scalerInfo->fontData, numBytes);
+-        return numBytes;
+-    }
++    }
++    unsigned int wanted = scalerInfo->fileSize - offset > FILEDATACACHESIZE ?
++        FILEDATACACHESIZE : (unsigned int)(scalerInfo->fileSize - offset);
++    scalerInfo->fontDataOffset = (unsigned int)offset;
++    scalerInfo->fontDataLength = 0; /* 读完成之前没有可发布缓存，短读也不能暴露旧尾部。 */
++    bread = (*env)->CallIntMethod(env, scalerInfo->font2D, sunFontIDs.ttReadBlockMID,
++        scalerInfo->directBuffer, offset, wanted);
++    if (checkReadException(scalerInfo) || bread <= 0 || (unsigned int)bread > wanted) return 0;
++    scalerInfo->fontDataLength = (unsigned int)bread;
++    if ((unsigned long)bread < numBytes) numBytes = (unsigned long)bread;
++    memcpy(destBuffer, scalerInfo->fontData, numBytes);
++    return numBytes;
+ }
+ 
+ typedef FT_Error (*FT_Prop_Set_Func)(FT_Library library,
+@@ -432,14 +408,15 @@
+                                               scalerInfo->fontData,
+                                               scalerInfo->fontDataLength);
+             if (bBuffer != NULL) {
+-                (*env)->CallVoidMethod(env, font2D,
+-                                   sunFontIDs.readFileMID, bBuffer);
+-
+-                error = FT_New_Memory_Face(scalerInfo->library,
+-                                   scalerInfo->fontData,
+-                                   scalerInfo->fontDataLength,
+-                                   indexInCollection,
+-                                   &scalerInfo->face);
++                (*env)->CallVoidMethod(env, font2D, sunFontIDs.readFileMID, bBuffer);
++                if (!(*env)->ExceptionCheck(env)) {
++                    error = FT_New_Memory_Face(scalerInfo->library,
++                                       scalerInfo->fontData,
++                                       scalerInfo->fontDataLength,
++                                       indexInCollection,
++                                       &scalerInfo->face);
++                }
++                (*env)->DeleteLocalRef(env, bBuffer);
+             }
+         }
+     } else { /* Truetype */
+@@ -448,12 +425,13 @@
+         if (scalerInfo->fontData != NULL) {
+             FT_Stream ftstream = (FT_Stream) calloc(1, sizeof(FT_StreamRec));
+             if (ftstream != NULL) {
+-                scalerInfo->directBuffer = (*env)->NewDirectByteBuffer(env,
+-                                           scalerInfo->fontData,
+-                                           FILEDATACACHESIZE);
++                bBuffer = (*env)->NewDirectByteBuffer(env, scalerInfo->fontData, FILEDATACACHESIZE);
++                if (bBuffer != NULL) {
++                    scalerInfo->directBuffer = (*env)->NewGlobalRef(env, bBuffer);
++                    (*env)->DeleteLocalRef(env, bBuffer);
++                }
++                /* global ref 失败时不得带 pending OOME 进入 FreeType/Java 回调。 */
+                 if (scalerInfo->directBuffer != NULL) {
+-                    scalerInfo->directBuffer = (*env)->NewGlobalRef(env,
+-                                               scalerInfo->directBuffer);
+                     ftstream->base = NULL;
+                     ftstream->size = filesize;
+                     ftstream->pos = 0;
+@@ -469,6 +447,12 @@
+                                          &ft_open_args,
+                                          indexInCollection,
+                                          &scalerInfo->face);
++                    if (!error && scalerInfo->readFailed) {
++                        /* 可选表错误可能未反映在 FT 返回码中，先销毁 face 再释放外部 stream。 */
++                        FT_Done_Face(scalerInfo->face);
++                        scalerInfo->face = NULL;
++                        error = 1;
++                    }
+                     if (!error) {
+                         scalerInfo->faceStream = ftstream;
+                     }
+@@ -601,6 +585,8 @@
+ 
+     scalerInfo->env = env;
+     scalerInfo->font2D = font2D;
++    if (scalerInfo->readFailed && (*env)->ExceptionCheck(env)) return 1;
++    scalerInfo->readFailed = JNI_FALSE;
+ 
+     if (context != NULL) {
+         setupTransform(&matrix, context);
+@@ -615,7 +601,7 @@
+         FT_Library_SetLcdFilter(scalerInfo->library, FT_LCD_FILTER_DEFAULT);
+     }
+ 
+-    return errCode;
++    return scalerInfo->readFailed ? 1 : errCode;
+ }
+ 
+ // using same values as for the transformation matrix
+@@ -649,6 +635,10 @@
+     }
+ 
+     errCode = setupFTContext(env, font2D, scalerInfo, context);
++    if (scalerInfo->readFailed) {
++        invalidateJavaScaler(env, scaler, scalerInfo);
++        return NULL;
++    }
+ 
+     if (errCode) {
+         metrics = (*env)->NewObject(env,
+@@ -784,6 +774,7 @@
+                                  env, scaler, font2D,
+                                  pScalerContext, pScaler, glyphCode, JNI_FALSE);
+      info = (GlyphInfo*) jlong_to_ptr(image);
++     if ((*env)->ExceptionCheck(env)) { free(info); return; }
+ 
+      if (info != NULL) {
+          (*env)->SetFloatField(env, metrics, sunFontIDs.xFID, info->advanceX);
+@@ -983,7 +974,7 @@
+     renderFlags |= target;
+ 
+     error = FT_Load_Glyph(scalerInfo->face, glyphCode, renderFlags);
+-    if (error) {
++    if (error || scalerInfo->readFailed) {
+         //do not destroy scaler yet.
+         //this can be problem of particular context (e.g. with bad transform)
+         return ptr_to_jlong(getNullGlyphImage());
+@@ -1008,7 +999,7 @@
+             return ptr_to_jlong(glyphInfo);
+         }
+         error = FT_Render_Glyph(ftglyph, FT_LOAD_TARGET_MODE(target));
+-        if (error != 0) {
++        if (error != 0 || scalerInfo->readFailed) {
+             return ptr_to_jlong(getNullGlyphImage());
+         }
+     }
+@@ -1234,7 +1225,7 @@
+     renderFlags = FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP;
+ 
+     error = FT_Load_Glyph(scalerInfo->face, glyphCode, renderFlags);
+-    if (error) {
++    if (error || scalerInfo->readFailed) {
+         return NULL;
+     }
+ 
+@@ -1420,6 +1411,7 @@
+ 
+     outline = getFTOutline(env, font2D, context, scalerInfo,
+                            glyphCode, xpos, ypos);
++    if (scalerInfo != NULL && scalerInfo->readFailed) return NULL;
+ 
+     if (outline == NULL || outline->n_points == 0) {
+         return gp;
+@@ -1479,7 +1471,7 @@
+                                glyphCode,
+                                xpos,
+                                ypos);
+-    if (gp == NULL) { /* can be legal */
++    if (gp == NULL && !(*env)->ExceptionCheck(env)) { /* 仅无异常的空轮廓可构造空路径。 */
+         gp = (*env)->NewObject(env,
+                                sunFontIDs.gpClass,
+                                sunFontIDs.gpCtrEmpty);
+@@ -1507,6 +1499,7 @@
+     FTScalerInfo* scalerInfo = (FTScalerInfo *) jlong_to_ptr(pScaler);
+ 
+     outline = getFTOutline(env, font2D, context, scalerInfo, glyphCode, 0, 0);
++    if (scalerInfo != NULL && scalerInfo->readFailed) return NULL;
+     if (outline == NULL || outline->n_points == 0) {
+         /* it is legal case, e.g. invisible glyph */
+         bounds = (*env)->NewObject(env,
+@@ -1551,7 +1544,7 @@
+     jobject gp = NULL;
+     jbyteArray types;
+     jfloatArray coords;
+-    GPData gpdata;
++    GPData gpdata = {0};
+     int i;
+     jint *glyphs;
+ 
+@@ -1574,6 +1567,7 @@
+     }
+ 
+     (*env)->GetIntArrayRegion(env, glyphArray, 0, numGlyphs, glyphs);
++    if ((*env)->ExceptionCheck(env)) { free(glyphs); return NULL; }
+ 
+     gpdata.numCoords = 0;
+     for (i=0; i<numGlyphs;i++) {
+@@ -1587,6 +1581,10 @@
+                                glyphs[i],
+                                xpos, ypos);
+ 
++        if (scalerInfo != NULL && scalerInfo->readFailed) {
++            free(glyphs); free(gpdata.pointTypes); free(gpdata.pointCoords);
++            return NULL;
++        }
+         if (outline == NULL || outline->n_points == 0) {
+             continue;
+         }
+@@ -1659,6 +1657,7 @@
+     FTScalerInfo *scalerInfo = (FTScalerInfo*) jlong_to_ptr(pScaler);
+ 
+     outline = getFTOutline(env, font2D, context, scalerInfo, glyphCode, 0, 0);
++    if (scalerInfo != NULL && scalerInfo->readFailed) return NULL;
+ 
+     if (outline != NULL && outline->n_points > pointNumber) {
+         x =  F26Dot6ToFloat(outline->points[pointNumber].x);

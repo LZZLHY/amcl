@@ -14,6 +14,13 @@
 
 #include <string>
 #include <vector>
+#include <climits>
+#include <memory>
+#include <new>
+#include <stdexcept>
+#include <cmath>
+#include <map>
+#include <mutex>
 
 #include "../jvm/fork_run_java.h"
 
@@ -25,6 +32,17 @@ namespace {
 #define NAPI_FUNC(name, fn) \
     { name, nullptr, fn, nullptr, nullptr, nullptr, napi_default, nullptr }
 
+// 仅主进程的控制API/异步完成访问此表；不持锁跨fork、wait、JNI或NAPI调用。
+// weak_ptr 不延长任务寿命，完成/入队失败时按对象身份删除，防止旧回调删除同名新任务。
+std::mutex processorRequestsMutex;
+std::map<std::string, std::weak_ptr<amcl::jvm::ProcessorControl>> processorRequests;
+void RemoveProcessorRequest(const std::string& id, const std::shared_ptr<amcl::jvm::ProcessorControl>& control) {
+    if (id.empty()) return;
+    std::lock_guard<std::mutex> lock(processorRequestsMutex);
+    const auto found = processorRequests.find(id);
+    if (found != processorRequests.end() && found->second.lock() == control) processorRequests.erase(found);
+}
+
 // ============================================================
 //  RunJavaProcessor — 跑单个 Forge/NeoForge processor（任意 args + 显式 cwd）
 //  签名：runJavaProcessor(filesDir, jdkVersion, xmxMb, classpath, mainClass,
@@ -32,96 +50,212 @@ namespace {
 //  每个 processor 一个干净 classpath（只含其声明的 jar）的独立 JVM，杜绝 installer.jar
 //  shaded 类（joptsimple/gson）泄漏（FCL/HMCL 同款思路）。
 // ============================================================
+/**
+ * 任务只在 queue 成功后交给 complete；解析/建工作项失败仍由当前 NAPI 线程销毁。
+ * 预先保留完成错误对象，使 execute 分配失败及完成时创建数值失败也能拒绝 Promise，
+ * 不把取消或 NAPI 错误转换成默认 result=0 的成功。
+ */
 struct ProcessorData {
-    std::string filesDir;
-    std::string jdkVersion = "17";
-    int xmxMb = 2048;
-    std::string classpath;
-    std::string mainClass;
+    napi_env env = nullptr;
+    std::string filesDir, jdkVersion, classpath, mainClass, workDir, logFile;
     std::vector<std::string> args;
-    std::string workDir;
-    std::string logFile;
+    int xmxMb = 2048;
     int result = -1;
+    const char* nativeFailure = nullptr;
     napi_async_work work = nullptr;
     napi_deferred deferred = nullptr;
+    napi_ref completionError = nullptr;
+    std::string requestId;
+    std::shared_ptr<amcl::jvm::ProcessorControl> control;
+    ~ProcessorData() {
+        // 所有销毁均发生在输入/完成 NAPI 线程；execute 只借用对象，不释放它。
+        if (work) napi_delete_async_work(env, work);
+        if (completionError) napi_delete_reference(env, completionError);
+        RemoveProcessorRequest(requestId, control);
+    }
 };
 
-void ProcessorExecute(napi_env /*env*/, void* data) {
-    auto* d = (ProcessorData*)data;
-    OH_LOG_INFO(LOG_APP, "Processor[bg]: main=%{public}s args=%{public}zu jdk=%{public}s xmx=%{public}dMB",
-        d->mainClass.c_str(), d->args.size(), d->jdkVersion.c_str(), d->xmxMb);
-    std::vector<const char*> argv;
-    argv.reserve(d->args.size());
-    for (auto& a : d->args) argv.push_back(a.c_str());
-    d->result = forkRunJavaCwd(
-        d->filesDir.c_str(), d->jdkVersion.c_str(),
-        d->classpath.c_str(), d->mainClass.c_str(),
-        (int)argv.size(), argv.empty() ? nullptr : argv.data(),
-        d->workDir.c_str(),
-        d->logFile.empty() ? nullptr : d->logFile.c_str(), d->xmxMb);
-    OH_LOG_INFO(LOG_APP, "Processor[bg]: fork child returned %{public}d", d->result);
+/** C 接口不能表示内嵌 NUL；完整动态读取之后准确拒绝，绝不截短成另一个路径或参数。 */
+bool ReadProcessorString(napi_env env, napi_value value, std::string& target) {
+    return amcl::napi::ReadStringValue(env, value, target) && target.find('\0') == std::string::npos;
 }
 
-void ProcessorComplete(napi_env env, napi_status /*status*/, void* data) {
-    auto* d = (ProcessorData*)data;
-    napi_value result;
-    napi_create_int32(env, d->result, &result);
-    napi_resolve_deferred(env, d->deferred, result);
-    napi_delete_async_work(env, d->work);
-    delete d;
+void ProcessorExecute(napi_env, void* data) {
+    auto& job = *static_cast<ProcessorData*>(data);
+    try {
+        std::vector<const char*> arguments;
+        arguments.reserve(job.args.size());
+        for (const auto& argument : job.args) arguments.push_back(argument.c_str());
+        if (job.control) {
+            job.result = amcl::jvm::RunControlledProcessor(job.filesDir.c_str(), job.jdkVersion.c_str(),
+                job.classpath.c_str(), job.mainClass.c_str(), static_cast<int>(arguments.size()),
+                arguments.empty() ? nullptr : arguments.data(), job.workDir.c_str(),
+                job.logFile.empty() ? nullptr : job.logFile.c_str(), job.xmxMb, *job.control);
+        } else {
+            job.result = forkRunJavaCwd(job.filesDir.c_str(), job.jdkVersion.c_str(),
+                job.classpath.c_str(), job.mainClass.c_str(), static_cast<int>(arguments.size()),
+                arguments.empty() ? nullptr : arguments.data(), job.workDir.c_str(),
+                job.logFile.empty() ? nullptr : job.logFile.c_str(), job.xmxMb);
+        }
+    } catch (const std::exception& error) {
+        if (job.control) job.control->finish(-1);
+        job.nativeFailure = "processor native execution failed";
+        OH_LOG_ERROR(LOG_APP, "Processor native failure: %{public}s", error.what());
+    } catch (...) {
+        if (job.control) job.control->finish(-1);
+        job.nativeFailure = "processor native execution failed with unknown exception";
+        OH_LOG_ERROR(LOG_APP, "Processor native failure: unknown exception");
+    }
 }
 
-napi_value RunJavaProcessor(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value argv[8];
-    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+/** 完成状态来自 NAPI 和真实进程结果；被取消且未执行的任务不会向 JavaScript 返回 exit0。 */
+void ProcessorComplete(napi_env env, napi_status status, void* data) {
+    std::unique_ptr<ProcessorData> job(static_cast<ProcessorData*>(data));
+    napi_value result = nullptr;
+    const bool succeeded = status == napi_ok && !job->nativeFailure &&
+        napi_create_int32(env, job->result, &result) == napi_ok;
+    napi_status settled = napi_generic_failure;
+    if (succeeded) {
+        settled = napi_resolve_deferred(env, job->deferred, result);
+    } else {
+        // 已挂起的 JS 异常优先交给调用者；没有异常时使用事先创建的资源错误。
+        bool pending = false;
+        if (napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+            napi_get_and_clear_last_exception(env, &result);
+        }
+        if (!result) napi_get_reference_value(env, job->completionError, &result);
+        if (result) settled = napi_reject_deferred(env, job->deferred, result);
+    }
+    if (settled != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "Processor promise completion failed napi_status=%{public}d", static_cast<int>(settled));
+        // NAPI 环境终止等异常状态下不能保证交付；仍配对清理，绝不日志写成任务成功。
+    }
+}
 
-    auto* d = new ProcessorData();
-    char buf[8192];
-    size_t len = 0;
-    if (argc >= 8) {
-        if (napi_get_value_string_utf8(env, argv[0], buf, sizeof(buf), &len) == napi_ok) d->filesDir = buf;
-        if (napi_get_value_string_utf8(env, argv[1], buf, sizeof(buf), &len) == napi_ok) d->jdkVersion = buf;
-        int32_t xmx = d->xmxMb;
-        if (napi_get_value_int32(env, argv[2], &xmx) == napi_ok) d->xmxMb = xmx;
-        if (napi_get_value_string_utf8(env, argv[3], buf, sizeof(buf), &len) == napi_ok) d->classpath = buf;
-        if (napi_get_value_string_utf8(env, argv[4], buf, sizeof(buf), &len) == napi_ok) d->mainClass = buf;
-        // argv[5] = string[]
-        bool isArray = false;
-        napi_is_array(env, argv[5], &isArray);
-        if (isArray) {
-            uint32_t n = 0;
-            napi_get_array_length(env, argv[5], &n);
-            for (uint32_t i = 0; i < n; i++) {
-                napi_value el;
-                if (napi_get_element(env, argv[5], i, &el) == napi_ok &&
-                    napi_get_value_string_utf8(env, el, buf, sizeof(buf), &len) == napi_ok) {
-                    d->args.push_back(buf);
-                }
+napi_value RunJavaProcessor(napi_env env, napi_callback_info info) try {
+    size_t count = 10;
+    napi_value arguments[10]{};
+    if (napi_get_cb_info(env, info, &count, arguments, nullptr, nullptr) != napi_ok || count < 8) {
+        napi_throw_type_error(env, "PROCESSOR_ARGS", "runJavaProcessor 需要 8 个完整参数");
+        return nullptr;
+    }
+    std::unique_ptr<ProcessorData> job(new ProcessorData);
+    job->env = env;
+    int32_t memory = 0;
+    if (!ReadProcessorString(env, arguments[0], job->filesDir) ||
+        !ReadProcessorString(env, arguments[1], job->jdkVersion) ||
+        napi_get_value_int32(env, arguments[2], &memory) != napi_ok ||
+        !ReadProcessorString(env, arguments[3], job->classpath) ||
+        !ReadProcessorString(env, arguments[4], job->mainClass) ||
+        !amcl::napi::ReadStringArrayValue(env, arguments[5], job->args) ||
+        !ReadProcessorString(env, arguments[6], job->workDir) ||
+        !ReadProcessorString(env, arguments[7], job->logFile) ||
+        job->filesDir.empty() || job->filesDir.front() != '/' || job->mainClass.empty() ||
+        job->args.size() > INT_MAX) {
+        napi_throw_type_error(env, "PROCESSOR_INPUT", "processor 路径、类名、参数数组或内存参数无效");
+        return nullptr;
+    }
+    for (const auto& argument : job->args) {
+        if (argument.find('\0') != std::string::npos) {
+            napi_throw_type_error(env, "PROCESSOR_NUL", "processor 参数不能包含 NUL 字符");
+            return nullptr;
+        }
+    }
+    uint64_t timeoutMs = 0;
+    if (count >= 9) {
+        napi_valuetype type;
+        if (napi_typeof(env, arguments[8], &type) != napi_ok ||
+            (type != napi_undefined && (!ReadProcessorString(env, arguments[8], job->requestId) ||
+                job->requestId.empty() || job->requestId.size() > 256))) {
+            napi_throw_type_error(env, "PROCESSOR_REQUEST_ID", "可选 requestId 必须是1至256字节的非NUL字符串");
+            return nullptr;
+        }
+    }
+    if (count >= 10) {
+        napi_valuetype type; double milliseconds = 0;
+        if (napi_typeof(env, arguments[9], &type) != napi_ok ||
+            (type != napi_undefined && (napi_get_value_double(env, arguments[9], &milliseconds) != napi_ok ||
+                !std::isfinite(milliseconds) || milliseconds < 0 || milliseconds > 9007199254740991.0 ||
+                std::floor(milliseconds) != milliseconds))) {
+            napi_throw_type_error(env, "PROCESSOR_TIMEOUT", "可选 timeoutMs 必须是非负安全整数；0表示不限时");
+            return nullptr;
+        }
+        timeoutMs = static_cast<uint64_t>(milliseconds);
+    }
+    if (!job->requestId.empty() || timeoutMs) {
+        job->control = std::make_shared<amcl::jvm::ProcessorControl>(timeoutMs);
+        if (!job->requestId.empty()) {
+            bool duplicate = false;
+            {
+                std::lock_guard<std::mutex> lock(processorRequestsMutex);
+                const auto found = processorRequests.find(job->requestId);
+                duplicate = found != processorRequests.end() && !found->second.expired();
+                if (!duplicate) processorRequests[job->requestId] = job->control;
+            }
+            if (duplicate) {
+                napi_throw_error(env, "PROCESSOR_DUPLICATE_ID", "requestId 仍由另一个 processor 任务使用");
+                return nullptr;
             }
         }
-        if (napi_get_value_string_utf8(env, argv[6], buf, sizeof(buf), &len) == napi_ok) d->workDir = buf;
-        if (napi_get_value_string_utf8(env, argv[7], buf, sizeof(buf), &len) == napi_ok) d->logFile = buf;
     }
-    if (d->jdkVersion.empty()) d->jdkVersion = "17";
-    if (d->xmxMb < 512) d->xmxMb = 512;
-    if (d->xmxMb > 8192) d->xmxMb = 8192;
-
-    OH_LOG_INFO(LOG_APP, "RunJavaProcessor: scheduling... main=%{public}s args=%{public}zu jdk=%{public}s",
-        d->mainClass.c_str(), d->args.size(), d->jdkVersion.c_str());
-
-    napi_value promise;
-    napi_create_promise(env, &d->deferred, &promise);
-    napi_value resourceName;
-    napi_create_string_utf8(env, "javaProcessor", NAPI_AUTO_LENGTH, &resourceName);
-    napi_create_async_work(env, nullptr, resourceName,
-                           ProcessorExecute, ProcessorComplete, d, &d->work);
-    napi_queue_async_work(env, d->work);
+    // 保留既有默认 JDK 与堆范围；不限制 classpath/参数为固定字节缓冲，合法长输入完整传递。
+    if (job->jdkVersion.empty()) job->jdkVersion = "17";
+    job->xmxMb = memory < 512 ? 512 : memory > 8192 ? 8192 : memory;
+    napi_value resource = nullptr, errorText = nullptr, error = nullptr, promise = nullptr;
+    napi_status status = napi_create_string_utf8(env, "javaProcessor", NAPI_AUTO_LENGTH, &resource);
+    if (status == napi_ok) status = napi_create_string_utf8(env,
+        "processor 被取消或原生任务/完成资源失败；没有报告成功退出", NAPI_AUTO_LENGTH, &errorText);
+    if (status == napi_ok) status = napi_create_error(env, nullptr, errorText, &error);
+    if (status == napi_ok) status = napi_create_reference(env, error, 1, &job->completionError);
+    if (status == napi_ok) status = napi_create_async_work(env, nullptr, resource,
+        ProcessorExecute, ProcessorComplete, job.get(), &job->work);
+    if (status == napi_ok) status = napi_create_promise(env, &job->deferred, &promise);
+    if (status != napi_ok) {
+        napi_throw_error(env, "PROCESSOR_PREPARE", "无法准备 processor 异步任务");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, job->work);
+    if (status != napi_ok) {
+        // Promise 已建立后必须走拒绝路径，工作项尚未接管，栈所有者负责释放。
+        napi_reject_deferred(env, job->deferred, error);
+        return promise;
+    }
+    job.release();
     return promise;
+} catch (const std::exception& error) {
+    napi_throw_error(env, "PROCESSOR_NATIVE_INPUT", error.what());
+    return nullptr;
+} catch (...) {
+    napi_throw_error(env, "PROCESSOR_NATIVE_INPUT", "无法准备 processor 输入");
+    return nullptr;
+}
+
+/** 取消只提交不可逆的控制意图；Promise 仍等唯一worker真实回收目标进程后才完成。 */
+napi_value CancelJavaProcessor(napi_env env, napi_callback_info info) try {
+    size_t count = 1; napi_value arguments[1]{}; std::string id;
+    if (napi_get_cb_info(env, info, &count, arguments, nullptr, nullptr) != napi_ok || count != 1 ||
+        !ReadProcessorString(env, arguments[0], id) || id.empty() || id.size() > 256) {
+        napi_throw_type_error(env, "PROCESSOR_REQUEST_ID", "cancelJavaProcessor 需要有效 requestId"); return nullptr;
+    }
+    bool accepted = false;
+    {
+        std::lock_guard<std::mutex> lock(processorRequestsMutex);
+        const auto found = processorRequests.find(id);
+        if (found != processorRequests.end()) {
+            const auto control = found->second.lock();
+            if (control) accepted = control->cancel();
+        }
+    }
+    napi_value result = nullptr;
+    if (napi_get_boolean(env, accepted, &result) != napi_ok) return nullptr;
+    return result;
+} catch (...) {
+    napi_throw_error(env, "PROCESSOR_CANCEL", "无法提交 processor 取消请求"); return nullptr;
 }
 
 constexpr napi_property_descriptor kForgeDescriptors[] = {
     NAPI_FUNC("runJavaProcessor", RunJavaProcessor),
+    NAPI_FUNC("cancelJavaProcessor", CancelJavaProcessor),
 };
 
 #undef NAPI_FUNC

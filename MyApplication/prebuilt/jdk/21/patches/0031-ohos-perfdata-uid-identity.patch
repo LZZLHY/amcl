@@ -1,0 +1,28 @@
+--- a/src/hotspot/os/posix/perfMemory_posix.cpp
++++ b/src/hotspot/os/posix/perfMemory_posix.cpp
+@@ -454,6 +454,25 @@
+ 
+   struct passwd* p = nullptr;
+   int result = getpwuid_r(uid, &pwent, pwbuf, (size_t)bufsize, &p);
++
++#ifdef __OHOS__
++  // 应用UID可以没有passwd条目；只在查询成功且确实无条目时，以真实UID命名PerfData。
++  // 这只是hsperfdata目录的稳定标识，不伪造NSS用户或java.user.name；所有者/链接检查仍保留。
++  // getpwuid_r通过返回码表达错误，errno可能是此前sysconf遗留值，不能用它推翻成功无条目。
++  if (result == 0 && p == NULL) {
++    char uid_name[32]; // 覆盖"uid_"、64位无符号十进制上界及NUL，绝不截断成另一个UID。
++    int length = jio_snprintf(uid_name, sizeof(uid_name), "uid_%llu", (unsigned long long)uid);
++    if (length <= 0 || (size_t)length >= sizeof(uid_name)) {
++      FREE_C_HEAP_ARRAY(char, pwbuf);
++      return NULL;
++    }
++    char* user_name = NEW_C_HEAP_ARRAY(char, (size_t)length + 1, mtInternal);
++    memcpy(user_name, uid_name, (size_t)length + 1);
++    FREE_C_HEAP_ARRAY(char, pwbuf);
++    return user_name;
++  }
++#endif
++
+ 
+   if (result != 0 || p == nullptr || p->pw_name == nullptr || *(p->pw_name) == '\0') {
+     if (PrintMiscellaneous && Verbose) {

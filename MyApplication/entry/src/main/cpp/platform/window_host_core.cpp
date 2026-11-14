@@ -70,6 +70,7 @@ uint64_t WindowHostCore::publish(void* window, int width, int height, AmclWindow
     publicationReference_ = window != nullptr;
     resourceEpoch_ = snapshot_.generation;
     geometryEpoch_ = snapshot_.generation;
+    objectEpoch_ = snapshot_.generation;
     commit(previous, beforeCommit, context);
     return snapshot_.generation;
 }
@@ -163,6 +164,7 @@ int WindowHostCore::claimPresentation(void* window, uint64_t generation, uint32_
         return 0;
     }
     *token = result;
+    presentationObjectEpoch_ = objectEpoch_;
     return 1;
 }
 
@@ -173,13 +175,36 @@ int WindowHostCore::movePresentation(uint64_t token, void* window, uint64_t gene
         ++counters_.rejectedPresentations;
         return 0;
     }
+    presentationObjectEpoch_ = objectEpoch_;
     return 1;
 }
 
 int WindowHostCore::releasePresentation(uint64_t token) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!presenter_.release(token)) { ++counters_.rejectedPresentations; return 0; }
+    presentationObjectEpoch_ = 0;
     return 1;
+}
+
+bool WindowHostCore::matchesPresentation(void* window, uint64_t generation, uint64_t token) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ready() && objectEpoch_ == presentationObjectEpoch_ && token != 0 && token == presenter_.token() &&
+        window == snapshot_.nativeWindow && generation == snapshot_.generation &&
+        generation == presenter_.generation();
+}
+
+bool WindowHostCore::matchesPresentationIdentity(void* window,uint64_t generation,uint64_t token,uint64_t resourceEpoch) const {
+    // 不拼接两次getter的快照；当前资源和presenter身份必须在同一临界区成立。
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ready() && resourceEpoch && resourceEpoch==resourceEpoch_ &&
+        objectEpoch_==presentationObjectEpoch_ && token && token==presenter_.token() &&
+        window==snapshot_.nativeWindow && generation==snapshot_.generation && generation==presenter_.generation();
+}
+
+uint64_t WindowHostCore::geometryCheckpointGeneration(void* window, uint64_t generation, uint64_t token) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ready() && objectEpoch_ == presentationObjectEpoch_ && token != 0 && token == presenter_.token() &&
+        generation == presenter_.generation() && window == snapshot_.nativeWindow ? snapshot_.generation : 0;
 }
 
 int WindowHostCore::movePresentationGeometry(uint64_t token, void* window, uint64_t previous,

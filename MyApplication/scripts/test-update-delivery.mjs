@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
+import ts from './lib/ets-compiler.mjs';
 import { fileURLToPath } from 'node:url';
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),require=createRequire(import.meta.url);
-const ts=require(path.join(process.env.DEVECO_SDK_HOME,'default/openharmony/ets/build-tools/ets-loader/node_modules/typescript'));
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 function load(file,deps,globals={}) {const js=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
   const exports={};vm.runInNewContext(js,{exports,require:name=>{if(!(name in deps))throw new Error('Unmocked '+name);return deps[name];},Object,Number,RegExp,JSON,Date,Array,Map,Uint8Array,ArrayBuffer,Promise,console,setTimeout,clearTimeout,...globals});return exports;}
 const logger={info(){},warn(){},error(){}},types=load('update/src/main/ets/ChangelogTypes.ets',{});
-const resolver=load('update/src/main/ets/GitHubUpdateAssetResolver.ets',{'@kit.NetworkKit':{},'./AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets',{})});
+// 与生产更新器共用真实要求解析器，不复制或放宽新运行时声明判据。
+const runtimeRequirements=load('commons/src/main/ets/common/RuntimeRequirementPolicy.ets',{});
+const resolver=load('update/src/main/ets/GitHubUpdateAssetResolver.ets',{'@kit.NetworkKit':{},'./AppUpdatePolicy':load('update/src/main/ets/AppUpdatePolicy.ets',{}),commons:runtimeRequirements});
 const sha='a'.repeat(64),tag='v2.0.0',name='amcl-v2.0.0-sideload-unsigned.hap';
 const asset={tag,name,url:'https://github.com/LZZLHY/amcl/releases/download/'+tag+'/'+name,sha256:sha,sizeBytes:100,versionCode:2,versionName:'2.0.0',product:'sideload',legacyUniversal:false,
   websiteUrl:'https://amcl.lovedhy.cn/api/packages/files/'+sha+'/'+name,mirrors:[{provider:'miawa',projectId:'amcl',ready:true,filePath:'amcl/'+tag+'/'+name}]};

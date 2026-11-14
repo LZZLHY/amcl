@@ -2,10 +2,11 @@
  * OHAudio 播放后端：配置回读、控制线程与回调生命周期分离。
  * OpenAL 的设备状态锁负责串行调用 open/reset/start/stop；系统回调只记录事件。
  * 工作线程用 try_lock 获取同一设备锁，关闭时不会等待一个持锁调用者而形成死锁。
- * 当前最低 API20；播放、录音和 Java Sound 是不同能力，本后端只声明 Playback。
+ * 当前最低 API20；既有播放路径保持独立，Capture通过宿主共享PCM服务实现。
  */
 #include "config.h"
 #include "ohaudio.h"
+#include "../audio/audio_client.h"
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -688,17 +689,114 @@ void OHAudioPlayback::controlLoop() {
 }
 } // namespace
 
-/** 工厂仅声明已实现的系统播放后端，录音保持明确的不可用能力。 */
+/**
+ * OpenAL采集adapter。它没有第二份系统capturer：所有设备/权限/格式转换由宿主PCM owner
+ * 管理。OpenAL设备锁串行调用本adapter，系统音频回调永不回调OpenAL设备对象。
+ */
+namespace {
+struct OHAudioCapture final : BackendBase {
+    const AmclAudioApiV1 *api{nullptr};
+    uint64_t handle{0};
+    bool byteOutput{false};
+    int nativeFrame{0};
+    explicit OHAudioCapture(DeviceBase *device) : BackendBase(device) {}
+    /** 只关闭本订阅；宿主在最后采集订阅关闭时释放真实设备。 */
+    ~OHAudioCapture() override {
+        if (api && handle)
+            api->close(handle);
+    }
+    /** 保留请求格式；不支持的扩展格式准确失败，不偷偷改写应用的capture样本类型。 */
+    void open(std::string_view name) override {
+        if (!name.empty() && name != DeviceName)
+            throw al::backend_exception{al::backend_error::NoDevice, "Unknown OHAudio capture device"};
+        api = amcl::audio::resolveAudioHost();
+        if (!api)
+            throw al::backend_exception{al::backend_error::NoDevice, "OHAudio capture host unavailable"};
+        if (mDevice->FmtChans != DevFmtMono && mDevice->FmtChans != DevFmtStereo)
+            throw al::backend_exception{al::backend_error::DeviceError,
+                                        "OHAudio capture supports mono/stereo"};
+        int encoding = AMCL_AUDIO_S16LE;
+        if (mDevice->FmtType == DevFmtFloat)
+            encoding = AMCL_AUDIO_F32LE;
+        else if (mDevice->FmtType != DevFmtShort && mDevice->FmtType != DevFmtUByte)
+            throw al::backend_exception{al::backend_error::DeviceError,
+                                        "OHAudio capture sample format unavailable"};
+        byteOutput = mDevice->FmtType == DevFmtUByte;
+        nativeFrame = static_cast<int>(mDevice->channelsFromFmt()) * (encoding == AMCL_AUDIO_S16LE ? 2 : 4);
+        const uint64_t capacity =
+            static_cast<uint64_t>(std::max(mDevice->mBufferSize, 1u)) * static_cast<uint64_t>(nativeFrame);
+        if (capacity > 8 * 1024 * 1024)
+            throw al::backend_exception{al::backend_error::DeviceError, "OHAudio capture buffer too large"};
+        const int result =
+            api->open(1, static_cast<int>(mDevice->mSampleRate), static_cast<int>(mDevice->channelsFromFmt()),
+                      encoding, static_cast<int>(capacity), &handle);
+        if (result != 0)
+            throw al::backend_exception{al::backend_error::NoDevice, "OHAudio capture open failed ({})",
+                                        result};
+        mDeviceName = DeviceName;
+    }
+    /** start仍重新检查真实权限；不能通过先前open成功绕过权限撤销。 */
+    void start() override {
+        if (!api || !handle || api->start(handle) != 0)
+            throw al::backend_exception{al::backend_error::DeviceError,
+                                        "OHAudio capture start denied or unavailable"};
+    }
+    /** stop只停本订阅并保留未读帧，其他订阅不受影响。 */
+    void stop() override {
+        if (api && handle && api->stop(handle) != 0)
+            mDevice->handleDisconnect("OHAudio capture stop failed");
+    }
+    /** 返回完整帧数量；失效同步通知OpenAL真实断连，不返回永久假零设备。 */
+    uint availableSamples() override {
+        if (!api || !handle)
+            return 0;
+        const int state = api->state(handle);
+        if (state & AMCL_AUDIO_FAILED) {
+            mDevice->handleDisconnect("OHAudio capture permission/session/device revoked");
+            return 0;
+        }
+        const int bytes = api->available(handle);
+        if (bytes < 0) {
+            mDevice->handleDisconnect("OHAudio capture session ended");
+            return 0;
+        }
+        return static_cast<uint>(bytes / nativeFrame);
+    }
+    /** 调用方已检查available；仍用非阻塞读取避免设备锁跨音频等待。8位按AL无符号定义转换。 */
+    void captureSamples(std::byte *buffer, uint samples) override {
+        if(samples==0)return;
+        const size_t count = static_cast<size_t>(samples) * static_cast<size_t>(nativeFrame);
+        if (count > 8 * 1024 * 1024)
+            throw al::backend_exception{al::backend_error::DeviceError, "OHAudio capture read too large"};
+        if (byteOutput) {
+            std::vector<int16_t> data(count / 2);
+            const int got = api->read(handle, data.data(), static_cast<int>(count), 0);
+            if (got != static_cast<int>(count))
+                throw al::backend_exception{al::backend_error::DeviceError,
+                                            "OHAudio capture read interrupted"};
+            for (size_t i = 0; i < data.size(); ++i)
+                buffer[i] = std::byte{static_cast<uint8_t>((static_cast<int>(data[i]) + 32768) >> 8)};
+        } else if (api->read(handle, buffer, static_cast<int>(count), 0) != static_cast<int>(count))
+            throw al::backend_exception{al::backend_error::DeviceError, "OHAudio capture read interrupted"};
+    }
+};
+} // namespace
+/** 枚举只陈述实现能力，不请求授权也不打开麦克风；open/start才执行真实资格核验。 */
 auto OHAudioBackendFactory::init() -> bool { return true; }
-auto OHAudioBackendFactory::querySupport(BackendType type) -> bool { return type == BackendType::Playback; }
-auto OHAudioBackendFactory::enumerate(BackendType type) -> std::vector<std::string> {
-    return type == BackendType::Playback ? std::vector{std::string{DeviceName}} : std::vector<std::string>{};
+auto OHAudioBackendFactory::querySupport(BackendType type) -> bool {
+    return type == BackendType::Playback || type == BackendType::Capture;
 }
-auto OHAudioBackendFactory::createBackend(DeviceBase* device, BackendType type) -> BackendPtr {
-    if(type == BackendType::Playback) return BackendPtr{new OHAudioPlayback{device}};
+auto OHAudioBackendFactory::enumerate(BackendType type) -> std::vector<std::string> {
+    return querySupport(type) ? std::vector{std::string{DeviceName}} : std::vector<std::string>{};
+}
+auto OHAudioBackendFactory::createBackend(DeviceBase *device, BackendType type) -> BackendPtr {
+    if (type == BackendType::Playback)
+        return BackendPtr{new OHAudioPlayback{device}};
+    if (type == BackendType::Capture)
+        return BackendPtr{new OHAudioCapture{device}};
     return nullptr;
 }
-auto OHAudioBackendFactory::getFactory() -> BackendFactory& {
+auto OHAudioBackendFactory::getFactory() -> BackendFactory & {
     static OHAudioBackendFactory factory;
     return factory;
 }

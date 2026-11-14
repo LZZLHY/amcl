@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Restore real Fontconfig BDF/PCF service closure",
+  "repository": "https://github.com/freetype/freetype.git",
+  "runtimes": {
+    "17": {
+      "jdkCommit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "version": "2.13.3",
+      "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+      "jdkHeaderSha256": "b8d8b9e32b2956cce3a9c5d9b8d18041fb7451acb747805c20b62bf1b4804cdb",
+      "patch": "prebuilt/jdk/17/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch",
+      "patchSha256": "1ba57d5e5c611275ce30f3c33c6ef6543b6e36f870231ac3e01754c66546bd36",
+      "importedFiles": {
+        "include/freetype/ftbzip2.h": {
+          "sha256": "76c9e1a31ebe293af5989d18c742a33a1869b4cc1ef4dfc3a535fa10a09862cb",
+          "target": "src/java.desktop/share/native/libfreetype/include/freetype/ftbzip2.h"
+        },
+        "include/freetype/ftlzw.h": {
+          "sha256": "2d5bf1d9075275776e9be7becd793ac079f52982f7db70ec87ea764f637a4fcd",
+          "target": "src/java.desktop/share/native/libfreetype/include/freetype/ftlzw.h"
+        },
+        "src/base/ftbdf.c": {
+          "sha256": "605ea127a0e742da2a90552b78b1182fc3b720f4bd0fdbaa9423580e7742aa3c",
+          "target": "src/java.desktop/share/native/libfreetype/src/base/ftbdf.c"
+        },
+        "src/bdf/bdf.h": {
+          "sha256": "34d6898421d151c08e4f68de14bc1bc0136cbb8aea3d106b0b89af1503932835",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdf.h"
+        },
+        "src/bdf/bdfdrivr.c": {
+          "sha256": "c3c6a11a9cf8ef1a6357525fd4258d0fb566ed831a1a1ea6758c2e8a8bce00bb",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdfdrivr.c"
+        },
+        "src/bdf/bdfdrivr.h": {
+          "sha256": "04b2f2b47cb2f8e4bb9fdcd0d0e40ae48db2ad3444ec353ebec8d6bc62c0b579",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdfdrivr.h"
+        },
+        "src/bdf/bdferror.h": {
+          "sha256": "3a94e79259ae348289e8f747beb5d2363dff5242c2c7496b0658b2e7bf168c9e",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdferror.h"
+        },
+        "src/bdf/bdflib.c": {
+          "sha256": "226c684cdc275c782a8b56a82942a679ceed8d7ff819259692e8e4b5c3884be0",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdflib.c"
+        },
+        "src/pcf/pcf.h": {
+          "sha256": "1b5b0a15e5057000a9e5be4a4b6230d314a603b1e289510b3436541c7a6ad214",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcf.h"
+        },
+        "src/pcf/pcfdrivr.c": {
+          "sha256": "a936a18dd6c4fd4b265d73c2f0fdcd8699e9197e56f280182eba362160982899",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfdrivr.c"
+        },
+        "src/pcf/pcfdrivr.h": {
+          "sha256": "b82b46a913b45dbb82fe7997d26d9c60c6d2f8bad295df20528ff39c6352ea82",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfdrivr.h"
+        },
+        "src/pcf/pcferror.h": {
+          "sha256": "bf32517706a73cdb39b5fcf8e29a244672a8b8bb7865520234ee340e3aa03eda",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcferror.h"
+        },
+        "src/pcf/pcfread.c": {
+          "sha256": "1ae0281a1c843b088fcda678e146572f02c2be3829c3f44a260347135c0f0273",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfread.c"
+        },
+        "src/pcf/pcfread.h": {
+          "sha256": "cd36704be8cbf71b7025d6d0269d78fc2245d2f2d4b29035bf861e562afdea30",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfread.h"
+        },
+        "src/pcf/pcfutil.c": {
+          "sha256": "85f96e9fd54d9ef69eb39e9dc1d085b6e071921cc012da0f503c75d4b8bf336b",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfutil.c"
+        },
+        "src/pcf/pcfutil.h": {
+          "sha256": "b51ad3b562a4063474f5de11292e7446e0832bf9380c3e39e9fc66e0cae87b5e",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfutil.h"
+        },
+        "src/sfnt/ttbdf.c": {
+          "sha256": "9c4a344d8ee65dbe06b8135bec76b3c487eb32e9eb83c0f2f97b69b4fdea28fd",
+          "target": "src/java.desktop/share/native/libfreetype/src/sfnt/ttbdf.c"
+        },
+        "src/sfnt/ttbdf.h": {
+          "sha256": "7d1078c61c04c591a343f3833635dbdbe12275a0ed772e42d634f5d0ceb31aba",
+          "target": "src/java.desktop/share/native/libfreetype/src/sfnt/ttbdf.h"
+        }
+      },
+      "controls": {
+        "include/freetype/config/ftmodule.h": {
+          "beforeSha256": "7096d3cc02c94c077fa4d02e0afd40c45a5b2e8e89a54e3438223ad1dafde7b0",
+          "afterSha256": "d2e3bfa1b346a512497b26f944e13e9197f8cd7bbcaf58e7a1dc715f3508810c"
+        },
+        "include/freetype/config/ftoption.h": {
+          "beforeSha256": "7989eee429c93e6ce3e32c14422d9081c6f6447494c378c41749690dc4ac654f",
+          "afterSha256": "00a7ce9fcb049d31a911cb0e76fa1919deb985f4313c77bd6868634f68686bc4"
+        }
+      },
+      "licenses": {
+        "LICENSE.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.13.3/LICENSE.TXT",
+          "sha256": "2e3bbb7d7c5c396368dd0853a790ec29ce5b8647163dde42a0493fb0d6556b2b"
+        },
+        "docs/FTL.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.13.3/FTL.TXT",
+          "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1"
+        },
+        "docs/GPLv2.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.13.3/GPLv2.TXT",
+          "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18"
+        }
+      }
+    },
+    "21": {
+      "jdkCommit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "version": "2.13.2",
+      "commit": "920c5502cc3ddda88f6c7d85ee834ac611bb11cc",
+      "jdkHeaderSha256": "f8405ec80687d9e6c5fddb301288c370fe702f159a98b6152e9d32b3f68c2d46",
+      "patch": "prebuilt/jdk/21/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch",
+      "patchSha256": "3e0da1d123efbff01ab1f4f51b1d19a9fb01847c7a90ffef80f2a547d1f73ee3",
+      "importedFiles": {
+        "include/freetype/ftbzip2.h": {
+          "sha256": "8151c78e894005634cf6c29238ae0d81a5a1c9787d1b254e2b7c9688c3a9dd62",
+          "target": "src/java.desktop/share/native/libfreetype/include/freetype/ftbzip2.h"
+        },
+        "include/freetype/ftlzw.h": {
+          "sha256": "5a15b6e6da79afc5525bf92160fcca3141dec9e9fec9c5e2d1c1c6fa07153c86",
+          "target": "src/java.desktop/share/native/libfreetype/include/freetype/ftlzw.h"
+        },
+        "src/base/ftbdf.c": {
+          "sha256": "561cd38d2c763e5c3af1d8e06e65917e0eb38cf34718bc0b7186cf0a9395b00a",
+          "target": "src/java.desktop/share/native/libfreetype/src/base/ftbdf.c"
+        },
+        "src/bdf/bdf.h": {
+          "sha256": "34d6898421d151c08e4f68de14bc1bc0136cbb8aea3d106b0b89af1503932835",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdf.h"
+        },
+        "src/bdf/bdfdrivr.c": {
+          "sha256": "35ab50ca2289d1ddefa8a7886a69fbce8948e7133c8504bf1ae7226f31b65604",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdfdrivr.c"
+        },
+        "src/bdf/bdfdrivr.h": {
+          "sha256": "04b2f2b47cb2f8e4bb9fdcd0d0e40ae48db2ad3444ec353ebec8d6bc62c0b579",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdfdrivr.h"
+        },
+        "src/bdf/bdferror.h": {
+          "sha256": "3a94e79259ae348289e8f747beb5d2363dff5242c2c7496b0658b2e7bf168c9e",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdferror.h"
+        },
+        "src/bdf/bdflib.c": {
+          "sha256": "48fa61caf0a699c1109b153d3e53bece81af23da9fc8505be8380759d24ad6c8",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdflib.c"
+        },
+        "src/pcf/pcf.h": {
+          "sha256": "1b5b0a15e5057000a9e5be4a4b6230d314a603b1e289510b3436541c7a6ad214",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcf.h"
+        },
+        "src/pcf/pcfdrivr.c": {
+          "sha256": "3de891e408257fac6ab48f748c2a53e5f825ef258eb1a2db8cc7c91b5415b77d",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfdrivr.c"
+        },
+        "src/pcf/pcfdrivr.h": {
+          "sha256": "b82b46a913b45dbb82fe7997d26d9c60c6d2f8bad295df20528ff39c6352ea82",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfdrivr.h"
+        },
+        "src/pcf/pcferror.h": {
+          "sha256": "bf32517706a73cdb39b5fcf8e29a244672a8b8bb7865520234ee340e3aa03eda",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcferror.h"
+        },
+        "src/pcf/pcfread.c": {
+          "sha256": "1ae0281a1c843b088fcda678e146572f02c2be3829c3f44a260347135c0f0273",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfread.c"
+        },
+        "src/pcf/pcfread.h": {
+          "sha256": "cd36704be8cbf71b7025d6d0269d78fc2245d2f2d4b29035bf861e562afdea30",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfread.h"
+        },
+        "src/pcf/pcfutil.c": {
+          "sha256": "ca0b1d350724d11a8c986480fac6de4f2683df034c4cbbd35a04f7a77b49eed9",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfutil.c"
+        },
+        "src/pcf/pcfutil.h": {
+          "sha256": "b51ad3b562a4063474f5de11292e7446e0832bf9380c3e39e9fc66e0cae87b5e",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfutil.h"
+        },
+        "src/sfnt/ttbdf.c": {
+          "sha256": "57d92fb79a0b62af444a5ae00f7cf56b4501a6ba00a73a80c9e4de6962d7ddc8",
+          "target": "src/java.desktop/share/native/libfreetype/src/sfnt/ttbdf.c"
+        },
+        "src/sfnt/ttbdf.h": {
+          "sha256": "0312c0df4a5c81c6bdafe4700fdc9d92af27b04ae5ce6deaeeea29beaa56e51f",
+          "target": "src/java.desktop/share/native/libfreetype/src/sfnt/ttbdf.h"
+        }
+      },
+      "controls": {
+        "include/freetype/config/ftmodule.h": {
+          "beforeSha256": "7096d3cc02c94c077fa4d02e0afd40c45a5b2e8e89a54e3438223ad1dafde7b0",
+          "afterSha256": "d2e3bfa1b346a512497b26f944e13e9197f8cd7bbcaf58e7a1dc715f3508810c"
+        },
+        "include/freetype/config/ftoption.h": {
+          "beforeSha256": "12aad7a92247cb36bc83d394b6f91c8677645271cd75b93bc58ac2ddd419358d",
+          "afterSha256": "2c7544f03064e997ad92035363015f76efebcd4b8bcd2521971945978ce0ce3e"
+        }
+      },
+      "licenses": {
+        "LICENSE.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.13.2/LICENSE.TXT",
+          "sha256": "2e3bbb7d7c5c396368dd0853a790ec29ce5b8647163dde42a0493fb0d6556b2b"
+        },
+        "docs/FTL.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.13.2/FTL.TXT",
+          "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1"
+        },
+        "docs/GPLv2.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.13.2/GPLv2.TXT",
+          "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18"
+        }
+      }
+    },
+    "25": {
+      "jdkCommit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "version": "2.14.2",
+      "commit": "f4205da14867c5387cd6a329b90ee10a6df6eeff",
+      "jdkHeaderSha256": "28519f6bdbda31718a5ac2715ca0d3765b5594cad6ef20d0a817d780d6a4ae79",
+      "patch": "prebuilt/jdk/25/patches/0016-fontconfig-freetype-bdf-pcf-completion.patch",
+      "patchSha256": "f8b71799684604a168ed618a3bdcb44c2c14156e34aa22bb2c6896da39f72a1e",
+      "importedFiles": {
+        "include/freetype/ftbzip2.h": {
+          "sha256": "d7d36df9acb1f95795354193e243e9c4f89eb84557cfe2c6085014046e14fdfd",
+          "target": "src/java.desktop/share/native/libfreetype/include/freetype/ftbzip2.h"
+        },
+        "include/freetype/ftlzw.h": {
+          "sha256": "4419f2af8725058dfbd7d938fc3fa1f9d88f3897f736664324d0057c3466f925",
+          "target": "src/java.desktop/share/native/libfreetype/include/freetype/ftlzw.h"
+        },
+        "src/base/ftbdf.c": {
+          "sha256": "92fbddf5b9b205c3c14964c752e7cdc5db35c98b0569981aa30550b1f5f90043",
+          "target": "src/java.desktop/share/native/libfreetype/src/base/ftbdf.c"
+        },
+        "src/bdf/bdf.h": {
+          "sha256": "96f636a13c881892c338459feb8d8baf5410c9d885ac36e8deb97505488ee78c",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdf.h"
+        },
+        "src/bdf/bdfdrivr.c": {
+          "sha256": "2f78a032c93eba3100b9cb241df3f2bd8b76785af3da6e0826e05b7877b0c540",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdfdrivr.c"
+        },
+        "src/bdf/bdfdrivr.h": {
+          "sha256": "04b2f2b47cb2f8e4bb9fdcd0d0e40ae48db2ad3444ec353ebec8d6bc62c0b579",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdfdrivr.h"
+        },
+        "src/bdf/bdferror.h": {
+          "sha256": "3a94e79259ae348289e8f747beb5d2363dff5242c2c7496b0658b2e7bf168c9e",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdferror.h"
+        },
+        "src/bdf/bdflib.c": {
+          "sha256": "d6d3b5e198f0be8dc3d83abded5ea3be35cf0192e9f84e6ab290e379a04b9946",
+          "target": "src/java.desktop/share/native/libfreetype/src/bdf/bdflib.c"
+        },
+        "src/pcf/pcf.h": {
+          "sha256": "1b5b0a15e5057000a9e5be4a4b6230d314a603b1e289510b3436541c7a6ad214",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcf.h"
+        },
+        "src/pcf/pcfdrivr.c": {
+          "sha256": "5cc01d4392ed3aa6540e3a3b4fa06473360a9cfa985c195a324c0c9f95f35693",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfdrivr.c"
+        },
+        "src/pcf/pcfdrivr.h": {
+          "sha256": "b82b46a913b45dbb82fe7997d26d9c60c6d2f8bad295df20528ff39c6352ea82",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfdrivr.h"
+        },
+        "src/pcf/pcferror.h": {
+          "sha256": "bf32517706a73cdb39b5fcf8e29a244672a8b8bb7865520234ee340e3aa03eda",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcferror.h"
+        },
+        "src/pcf/pcfread.c": {
+          "sha256": "ec64a484f6cf1b810cb68e7e65e0d160dcf1bea7a3c0e636288e9f0b219f8827",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfread.c"
+        },
+        "src/pcf/pcfread.h": {
+          "sha256": "cd36704be8cbf71b7025d6d0269d78fc2245d2f2d4b29035bf861e562afdea30",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfread.h"
+        },
+        "src/pcf/pcfutil.c": {
+          "sha256": "85f96e9fd54d9ef69eb39e9dc1d085b6e071921cc012da0f503c75d4b8bf336b",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfutil.c"
+        },
+        "src/pcf/pcfutil.h": {
+          "sha256": "b51ad3b562a4063474f5de11292e7446e0832bf9380c3e39e9fc66e0cae87b5e",
+          "target": "src/java.desktop/share/native/libfreetype/src/pcf/pcfutil.h"
+        },
+        "src/sfnt/ttbdf.c": {
+          "sha256": "bdfb71b9c35290e9d8766e257bf663c11a9334794e24ffccf6f7aff188cedcf4",
+          "target": "src/java.desktop/share/native/libfreetype/src/sfnt/ttbdf.c"
+        },
+        "src/sfnt/ttbdf.h": {
+          "sha256": "399cab16ba74d704706fd74e7fd8dfdea9dba83af6791a512243c3f2e9b94db1",
+          "target": "src/java.desktop/share/native/libfreetype/src/sfnt/ttbdf.h"
+        }
+      },
+      "controls": {
+        "include/freetype/config/ftmodule.h": {
+          "beforeSha256": "7096d3cc02c94c077fa4d02e0afd40c45a5b2e8e89a54e3438223ad1dafde7b0",
+          "afterSha256": "d2e3bfa1b346a512497b26f944e13e9197f8cd7bbcaf58e7a1dc715f3508810c"
+        },
+        "include/freetype/config/ftoption.h": {
+          "beforeSha256": "5687ff081e72e0fcdb107a7e2bde49de4504e11ee6ac43c3e92527e7bdb3704f",
+          "afterSha256": "dcb88277433ca9e19e9e84e874348a7e9733ac73c1ca1aa72b7f379f2fc4335d"
+        }
+      },
+      "licenses": {
+        "LICENSE.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.14.2/LICENSE.TXT",
+          "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b"
+        },
+        "docs/FTL.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.14.2/FTL.TXT",
+          "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"
+        },
+        "docs/GPLv2.TXT": {
+          "path": "prebuilt/fontconfig/licenses/freetype-2.14.2/GPLv2.TXT",
+          "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18"
+        }
+      }
+    }
+  }
+}

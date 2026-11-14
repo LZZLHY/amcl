@@ -3,6 +3,7 @@
  */
 export * from './src/main/ets/UpdateChecker';
 export * from './src/main/ets/AppUpdatePolicy';
+export * from './src/main/ets/AppArtifactReceiptResolver';
 export * from './src/main/ets/ChangelogTypes';
 export * from './src/main/ets/ChangelogService';
 export * from './src/main/ets/SideloadUpdateModels';

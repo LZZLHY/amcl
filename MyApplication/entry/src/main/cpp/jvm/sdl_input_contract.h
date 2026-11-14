@@ -17,6 +17,7 @@
 #define AMCL_SDL_INPUT_CONTROL_V1 1u
 #define AMCL_SDL_INPUT_LOOK_SYMBOL "SDL_AMCL_InputLookProtocolV1"
 #define AMCL_SDL_INPUT_LOOK_V1 1u
+#define AMCL_SDL_AUX_HOST_SYMBOL "SDL_AMCL_AuxHostProtocolV2"
 enum AmclSdlInputContractResult {
     AMCL_SDL_INPUT_CONTRACT_OK=0,
     // 只有调用方明确选择legacy计划才能接受标识缺席，不能把坏标识降级为此结果。
@@ -102,6 +103,15 @@ static inline int amclCheckSelectedSdlInputContractV1(void* selected,const char*
 }
 static inline int amclCheckSelectedSdlLookContractV1(void* selected,const char* exactPath,bool allowLegacy,uint32_t* actual){
     return amclCheckSelectedSdlProtocolV1(selected,exactPath,AMCL_SDL_INPUT_LOOK_SYMBOL,1,allowLegacy,actual);
+}
+static inline int amclCheckSelectedSdlAuxContractV2(void* selected,const char* exactPath,uint32_t* actual){
+    return amclCheckSelectedSdlProtocolV1(selected,exactPath,AMCL_SDL_AUX_HOST_SYMBOL,2,false,actual);
+}
+static inline const char* amclSdlAuxContractReason(int result){
+    switch(result){case AMCL_SDL_INPUT_CONTRACT_MISSING:return "InputContractMismatch:sdl_aux_marker_missing";
+        case AMCL_SDL_INPUT_CONTRACT_VERSION:return "InputContractMismatch:sdl_aux_protocol_version";
+        case AMCL_SDL_INPUT_CONTRACT_FOREIGN:return "InputContractMismatch:sdl_aux_marker_foreign";
+        default:return "InputContractMismatch:sdl_aux_selected_handle_invalid";}
 }
 /** look失败具名独立，不让旧common-control标记被记录成已支持新1020运输。 */
 static inline const char* amclSdlLookContractReason(int result){

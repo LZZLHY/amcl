@@ -821,18 +821,39 @@ int64_t NetFile::sumRecentSpeedBps() const {
     return sum;
 }
 
-NetSourcePtr NetFile::pickBestSource(bool needs_range, int preferred_idx) {
+int NetFile::completedFasterSourceIndex(int current_source_id, int64_t current_goodput_bps) const {
+    if (requiresSingleSourceRecheck() || current_goodput_bps < 0) return -1;
+    std::lock_guard<std::mutex> lk(mu_);
+    const int64_t now = netThreadSteadyNowMs();
+    int best = -1; int64_t best_goodput = 0;
+    for (const auto& source : sources_) {
+        if (!source || source->id == current_source_id || !source->isAvailable(now) ||
+            !source->range_verified.load(std::memory_order_acquire) ||
+            source->no_range_support.load(std::memory_order_acquire)) continue;
+        const auto host = extractHostFromUrl(source->url);
+        if (DownloadEngine::instance().isBadHost(host) || DownloadEngine::instance().hostRateLimitUntilMs(host) > now) continue;
+        const int64_t completed = source->completedTransferGoodputBps();
+        // 比当前完整attempt的有效吞吐至少快4倍才值得再付一次连接成本；不使用瞬时0速。
+        if (completed / 4 > current_goodput_bps && completed > best_goodput) {
+            best = source->id; best_goodput = completed;
+        }
+    }
+    return best;
+}
+
+NetSourcePtr NetFile::pickBestSource(bool needs_range, int preferred_idx, int ordered_floor) {
     // Phase 8（2026-05-06）：改用综合评分选源（score = rtt/100 + 1MB/throughput + fail_count，越低越优）
     //   - NetSource::computeScore() 内含"无数据中性回退"：首次选源时所有源同分 → 按 id 稳定 → 与旧版
     //     "按声明顺序"效果一致；样本累积后，快源/失败少的源胜出。
     //   - fail_count 仍然是 score 的一部分 → v4.6 重试阈值翻转逻辑依然生效（失败越多 → score 越高 → 越难被选）。
     //   - needs_range / no_range_support 语义保留：分段任务优先支持 Range 的源，全挂了才退 fallback。
     std::lock_guard<std::mutex> lk(mu_);
+    const bool ordered = usesOrderedVersionDownload();
     // v6（PCL2 多源轮询）：优先返回调用方指定的首选源（段i→源i），让不同段并发走不同源，
     // 带宽相加 + 避免同一源被并发 Range 命中（规避 mcimirror 缓存代理对并发 Range 返回
     // 不一致字节导致的拼接损坏）。仅当该源当前可用且满足 Range 需求时生效；否则落到下面的
     // 综合评分选源（失败重试时也会回到这里换更优源）。
-    if (preferred_idx >= 0 && preferred_idx < (int)sources_.size()) {
+    if (!ordered && preferred_idx >= 0 && preferred_idx < (int)sources_.size()) {
         const auto& ps = sources_[preferred_idx];
         if (ps && !ps->checksum_bad.load(std::memory_order_relaxed) &&
             !DownloadEngine::instance().isBadHost(extractHostFromUrl(ps->url))) {
@@ -858,11 +879,17 @@ NetSourcePtr NetFile::pickBestSource(bool needs_range, int preferred_idx) {
     //   这个缺口彻底暴露，故在此补齐。
     for (const auto& s : sources_) {
         if (!s) continue;
+        if (ordered && s->id < ordered_floor) continue;
         if (!s->isAvailable(now_ms)) continue;
         const std::string sh = extractHostFromUrl(s->url);
         if (DownloadEngine::instance().isBadHost(sh)) continue;
         // 主机级 429 退避未到期 → 本轮跳过该源（源级 cooldown 已同步，这里是双保险）。
         if (DownloadEngine::instance().hostRateLimitUntilMs(sh) > now_ms) continue;
+        // 游戏版本按已冻结的声明顺序选下一可用候选，仍遵守区间和真实主机的冷却。
+        if (ordered) {
+            if (!needs_range || !s->no_range_support.load(std::memory_order_relaxed)) return s;
+            continue;
+        }
         double sc = s->computeScore();
         if (needs_range && s->no_range_support.load(std::memory_order_relaxed)) {
             // 放入 fallback（万一所有支持 Range 的源都挂了，还能用这个）
@@ -953,10 +980,11 @@ DownloadExceptionPtr NetFile::validatePaths() const {
     return nullptr;
 }
 
-int64_t NetFile::nextSourceReadyMs(bool needs_range) const {
+int64_t NetFile::nextSourceReadyMs(bool needs_range, int ordered_floor) const {
     int64_t ready = INT64_MAX;
     for (const auto& src : sources_) {
-        if (!src || src->checksum_bad.load(std::memory_order_acquire) ||
+        if (!src || (usesOrderedVersionDownload() && src->id < ordered_floor) ||
+            src->checksum_bad.load(std::memory_order_acquire) ||
             src->is_failed.load(std::memory_order_acquire) ||
             (needs_range && src->no_range_support.load(std::memory_order_acquire))) continue;
         // ⚠️ 2026-07-29：必须把**主机熔断**到期时刻也算进来。
@@ -1413,6 +1441,10 @@ void NetFile::initSegments() {
     if (isHighParallel()) {
         piece_min = kHighParallelPieceMinBytes;
     }
+    if (usesOrderedVersionDownload()) {
+        // PCL 对至少 1 MiB 的已知工件才考虑多段。现有区间能力和连接硬上限继续生效。
+        piece_min = 1024 * 1024;
+    }
 
     int pieces;
     if (size <= 0 || size < piece_min || all_sources_range_unsupported_) {
@@ -1444,6 +1476,21 @@ void NetFile::initSegments() {
         target_connections_ = pieces;
     }
     if (target_connections_ < pieces) target_connections_ = pieces;  // 目标不低于初始段数
+
+    if (usesOrderedVersionDownload()) {
+        // 冷启动先用一条整文件 GET。只有已知边界、可校验且允许多连接时，后续才可在
+        // 已成功读取正文的健康来源上切尾；原段和新增段由既有缩边锁隔离写入。
+        const bool adaptive = size >= piece_min && piece_limit > 1 && !all_sources_range_unsupported_ &&
+            cfg_.check.needsAnyCheck();
+        if (!adaptive) target_connections_ = 1;
+        auto t = std::make_shared<NetThread>(this, 0, adaptive ? size - 1 : -1, 0);
+        if (adaptive) t->startWithFullGet();
+        threads_.push_back(t);
+        threads_pending_launch_.push_back(t);
+        AMCL_LOG_I(LOG_TAG, "initSegments: ordered version initial single GET, adaptive=%{public}d: %{public}s",
+                    adaptive, cfg_.local_path.c_str());
+        return;
+    }
 
     if (pieces == 1) {
         // 单段：不发 Range 请求（end=-1），server 返回完整 Content-Length 全量。
@@ -1509,18 +1556,29 @@ void NetFile::initSegments() {
         return;
     }
 
+    // 普通冷首批也需要真实来源样本：否则各源尚无吞吐数据、评分同分时，所有段
+    // 都稳定选source0，第二源即使更快也永远没有机会产生样本。只在已有可信内容
+    // 摘要的多段/多源普通文件启用；size-only不能证明跨镜像内容相同，授权任务继续
+    // 保留原权限/次数语义。这里不增段、不增连接上限，不向原URL池外添加任何地址。
+    const auto& digest = cfg_.check.expected_sha1;
+    const bool content_digest = digest.size() == 40 && std::all_of(digest.begin(), digest.end(), [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    });
+    const bool cold_source_samples = pieces >= 2 && nsrc > 1 && content_digest &&
+        !hasAuthorizationPolicy() && !usesOrderedVersionDownload();
     int64_t piece_sz = size / pieces;
     int64_t start = 0;
     for (int i = 0; i < pieces; ++i) {
         int64_t end = (i == pieces - 1) ? (size - 1) : (start + piece_sz - 1);
         auto t = std::make_shared<NetThread>(this, start, end, 0);
-        // v7.5 / 2026-07-29：真正的高并发路径（上限 > 默认 4）才把初始段轮询分配到
-        // 不同镜像，以绕开慢镜像的单 IP 限速。1..4 是纯上限模式，不钉源，继续交给
-        // pickBestSource 按吞吐收敛到最快源；否则 client 的 BMCLAPI + Mojang 混合源会被
-        // 强制各占一部分段，整文件被慢源拖尾。
-        if (isHighParallel() && nsrc > 1) {
+        // 复用原高并发首轮分配；强摘要普通多段也可借同一机制获得不同来源样本。
+        // 段0仍优先声明的source0；只有首轮用此偏好，失败/重试继续原吞吐评分，且
+        // pickBestSource仍核Range能力、主机准入/冷却与可用性。单GET和all-unfriendly
+        // 已在上方返回，不被本分支放宽；旧high-parallel行为保持不变。
+        if (nsrc > 1 && !usesOrderedVersionDownload() && (isHighParallel() || cold_source_samples)) {
             t->setPreferredSourceIdx(i % nsrc);
         }
+        if (cold_source_samples && !isHighParallel()) t->enableColdSourceSampling();
         threads_.push_back(t);
         threads_pending_launch_.push_back(t);
         start = end + 1;
@@ -2057,7 +2115,7 @@ void NetFile::onAllThreadsDone() {
                 }
             }
         }
-        if (was_multi && !any_range_source) {
+        if (!usesOrderedVersionDownload() && was_multi && !any_range_source) {
             discardStaging();
             rebuildSingleSegment();
             state_.store(NetState::Downloading, std::memory_order_release);
@@ -2071,13 +2129,15 @@ void NetFile::onAllThreadsDone() {
         // 所有源可能因瞬时网络抖动或 Mojang 慢连接被标记 is_failed，文件永久失败。
         // 给 kMaxFileRetries 轮重试机会：只重置非 404 源状态，重新入队。
         // 404 源不重置——该镜像确实没这个文件，重试也是 404 浪费时间。
-        if (retry_count_ < kMaxFileRetries) {
+        if (!usesOrderedVersionDownload() && retry_count_ < kMaxFileRetries) {
             retry_count_++;
 
             // 1. 只重置非 404 源的失败状态（404 源保持 is_failed）
             bool any_source_reset = false;
+            bool all_sources_are_404 = false;
             {
                 std::lock_guard<std::mutex> lk(mu_);
+                all_sources_are_404 = !sources_.empty();
                 for (auto& src : sources_) {
                     // 跳过因 HTTP 404 被禁用的源（该镜像确实没这个文件）
                     // C-1 修复：last_error 现在通过 lastError() 走 mutex 保护读
@@ -2086,6 +2146,9 @@ void NetFile::onAllThreadsDone() {
                         last_err && last_err->http_status == 404) {
                         continue;
                     }
+                    // 没有失败计数的健康源也可能因段的总预算结束而到达此处；它从未
+                    // 回过404，不能用“无需重置任何源”推导文件已经从所有来源下架。
+                    all_sources_are_404 = false;
                     if (src->fail_count.load(std::memory_order_relaxed) > 0 ||
                         src->is_failed.load(std::memory_order_relaxed)) {
                         src->fail_count.store(0, std::memory_order_relaxed);
@@ -2097,9 +2160,13 @@ void NetFile::onAllThreadsDone() {
             }
 
             if (!any_source_reset) {
-                // 所有失败源都是 404，没有可重试的源，直接放弃
-                AMCL_LOG_W(LOG_TAG, "file retry %{public}d/%{public}d: all failed sources are 404, giving up: %{public}s",
-                            retry_count_, kMaxFileRetries, cfg_.local_path.c_str());
+                if (all_sources_are_404) {
+                    AMCL_LOG_W(LOG_TAG, "file retry %{public}d/%{public}d: all sources returned HTTP 404, giving up: %{public}s",
+                        retry_count_, kMaxFileRetries, cfg_.local_path.c_str());
+                } else {
+                    AMCL_LOG_W(LOG_TAG, "file retry %{public}d/%{public}d: no failed-source state to reset; preserve execution error: %{public}s",
+                        retry_count_, kMaxFileRetries, cfg_.local_path.c_str());
+                }
             } else {
                 // 2. 只重试 Failed 的 thread，保留 Finished 的（多段大文件场景）
                 std::vector<NetThreadPtr> retry_threads;
@@ -2161,10 +2228,13 @@ void NetFile::onAllThreadsDone() {
         // 却能对整文件 GET 返回 200；也可能是代理/边缘节点对 Range 的其它不兼容。整文件 GET
         // 兼容性最强，作为最后一搏能救回这类源。一次性（single_segment_fullget_tried_）且仅
         // 从多段收敛，避免循环；复位非 checksum_bad 源的瞬时失败/Range 标记让整文件 GET 重新选它们。
-        if (was_multi && !single_segment_fullget_tried_) {
+        if ((was_multi || usesOrderedVersionDownload()) && !single_segment_fullget_tried_) {
             single_segment_fullget_tried_ = true;
             bool have_usable = false;
-            {
+            if (usesOrderedVersionDownload()) {
+                // 顺序策略只再走一轮整文件候选。保留已确认缺失、坏内容和服务端等待事实。
+                have_usable = nextSourceReadyMs(false) >= 0;
+            } else {
                 std::lock_guard<std::mutex> lk(mu_);
                 for (auto& src : sources_) {
                     if (!src || src->checksum_bad.load(std::memory_order_relaxed)) continue;
@@ -2429,6 +2499,7 @@ void NetFile::maybeGrowThreadsImpl() {
     if (!cfg_.check.needsAnyCheck()) return;
     int64_t fsize = file_size_.load(std::memory_order_relaxed);
     if (fsize < kAdaptiveMinFileBytes) return;
+    const bool ordered = usesOrderedVersionDownload();
 
     // ========================================================================
     //  速度门控：PCL2 的规则 + 自校准地板 + 螺旋刹车
@@ -2489,6 +2560,7 @@ void NetFile::maybeGrowThreadsImpl() {
         int64_t    speed       = 0;
         NetThread* worst        = nullptr;   // ETA 最差（最慢长杆）的可拆段
         int64_t    worst_undone = 0;
+        int        ordered_worst_source_id = -1;
         double     worst_eta    = -1.0;
         bool       worst_is_straggler = false;
         bool       worst_has_stable_sample = false;
@@ -2533,6 +2605,17 @@ void NetFile::maybeGrowThreadsImpl() {
                 int64_t e = t->end();
                 if (e >= t->start()) {  // 仅 Range 段可拆（全量段 end<0 跳过）
                     int64_t undone = e - (t->start() + t->done()) + 1;
+                    if (ordered) {
+                        const int source_id = t->currentSourceId();
+                        if (source_id < 0 || source_id >= static_cast<int>(sources_.size()) ||
+                            isMultiThreadUnfriendlyHost(sources_[source_id]->url) || undone < kAdaptiveMinSplitBytes) continue;
+                        // 顺序策略给最大可用剩余段切尾，不因瞬时速率波动抢占其它段。
+                        if (undone > worst_undone) {
+                            worst = t.get(); worst_undone = undone;
+                            ordered_worst_source_id = source_id;
+                        }
+                        continue;
+                    }
                     const int64_t sample_age = t->transferStartMs() > 0
                         ? now_ms - t->transferStartMs() : 0;
                     const bool stable_sample = sp > 1024 && sample_age >= kStragglerMinSampleMs;
@@ -2689,7 +2772,7 @@ void NetFile::maybeGrowThreadsImpl() {
         // ETA 至少 8 秒才值得支付一次新连接成本；快尾段继续沿用已热身的连接。
         {
             int64_t fsz_now = file_size_.load(std::memory_order_relaxed);
-            if (fsz_now > 0) {
+            if (!ordered && fsz_now > 0) {
                 int64_t done_now = 0;
                 for (const auto& t : threads_) done_now += std::max<int64_t>(0, t->done());
                 int64_t remaining_now = std::max<int64_t>(0, fsz_now - done_now);
@@ -2734,11 +2817,11 @@ void NetFile::maybeGrowThreadsImpl() {
         if (e < cur) return;
         int64_t split_start = worst_is_straggler
             ? cur + kStragglerKeepBytes
-            : cur + worst_undone / 2;
+            : cur + (ordered ? worst_undone - worst_undone * 2 / 5 : worst_undone / 2);
         const int64_t min_keep = worst_is_straggler
-            ? kStragglerKeepBytes : kMinSplitPieceBytes;
+            ? kStragglerKeepBytes : (ordered ? kAdaptiveMinSplitBytes / 2 : kMinSplitPieceBytes);
         const int64_t min_new = worst_is_straggler
-            ? kStragglerMinNewBytes : kMinSplitPieceBytes;
+            ? kStragglerMinNewBytes : (ordered ? kAdaptiveMinSplitBytes * 2 / 5 : kMinSplitPieceBytes);
         int64_t keep_len = split_start - cur;
         int64_t new_len = e - split_start + 1;
         if (split_start <= cur || keep_len < min_keep || new_len < min_new) return;
@@ -2749,6 +2832,7 @@ void NetFile::maybeGrowThreadsImpl() {
             threads_.reserve(threads_.size() + 1);
             submission.reserve(1);
             new_thread = std::make_shared<NetThread>(this, split_start, e, 0);
+            if (ordered) new_thread->startOrderedSplitAt(ordered_worst_source_id);
             submission.push_back(new_thread);
         } catch (...) {
             AMCL_LOG_W(LOG_TAG, "adaptive growth skipped: allocation failed before boundary mutation");

@@ -240,7 +240,7 @@ test('真实Entry前台恢复覆盖触控平板，锁活跃/异常时不消费�
   // 同时覆盖两种产品值，防止缺失产品依赖后用固定true跳过生产分支造成假通过。
   for (const storeChannel of [false, true]) for (const state of [0, 1, -1, -2, -3, 'throw']) {
     const storage = new Map();
-    let wakes = 0, foregrounds = 0, updateForegrounds = 0;
+    let wakes = 0, foregrounds = 0, updateForegrounds = 0, taskForegrounds = 0, audioForegrounds = 0;
     const module = { exports: {} };
     const values = {
       ProductInputProfile: { selection: () => ({ isolatedGameProcess: true, desktopWindow: false }) },
@@ -252,6 +252,8 @@ test('真实Entry前台恢复覆盖触控平板，锁活跃/异常时不消费�
       } },
       // 输入前台恢复与退出账本消费是独立职责；即使游戏进程仍存活也应通知本进程输入端。
       getInputSourceRegistry: () => ({ notifyAbilityForeground() { foregrounds++; } }),
+      getTaskActivityOwner: () => ({ setForeground(value) { assert.equal(value, true); taskForegrounds++; } }),
+      ModAudioRuntime: { setForeground(value) { assert.equal(value, true); audioForegrounds++; } },
       testNapi: { desktopGameProcessState: () => { if (state === 'throw') throw new Error('lock error'); return state; },
         setOhosFrameRateForeground() {} },
     DesktopGameResults: { importPending: async () => '' },
@@ -265,6 +267,7 @@ test('真实Entry前台恢复覆盖触控平板，锁活跃/异常时不消费�
     const subject = new module.exports(); subject.context = { filesDir: '/sandbox' };
     subject.onForeground();
     assert.equal(foregrounds, 1, '实际Ability前台必须发布输入恢复事实');
+    assert.equal(taskForegrounds, 1); assert.equal(audioForegrounds, 1);
     assert.equal(updateForegrounds, storeChannel ? 0 : 1, '仅侧载产品通知更新服务前台事实');
     assert.equal(wakes, state === 0 ? 1 : 0, String(state));
     assert.equal(storage.has('pendingJvmExitSessions'), false, 'Entry不再向页面发布全部历史候选');

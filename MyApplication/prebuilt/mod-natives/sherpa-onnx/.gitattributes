@@ -1,0 +1,5 @@
+# 清单摘要和上游许可按原字节核对，不让检出平台改写它们的换行。
+*.json text eol=lf
+*.cmake text eol=lf
+arm64-v8a/*.so binary
+licenses/** -text -whitespace

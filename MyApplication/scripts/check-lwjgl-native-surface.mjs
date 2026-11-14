@@ -145,10 +145,16 @@ export function runNativeSurfaceCheck({ sourceRoot = SOURCE_ROOT, output } = {})
     }
     const dynamic = execFileSync(readelf, ['-d', library], { encoding: 'utf8' });
     const needed = [...dynamic.matchAll(/Shared library: \[([^\]]+)\]/g)].map((match) => match[1]);
-    const badNeeded = needed.filter((dep) => dep !== 'libc.so' && dep !== 'libc++_shared.so');
+    // TinyFD只新增明确的同包对话框broker依赖；不能把任意应用库普遍加入JNI白名单。
+    const badNeeded = needed.filter((dep) => dep !== 'libc.so' && dep !== 'libc++_shared.so' &&
+      !(name === 'liblwjgl_tinyfd.so' && dep === 'libamcl_game_dialog.so'));
     if (badNeeded.length > 0) fail(`${name}: unexpected NEEDED ${badNeeded.join(', ')}`);
+    if (name === 'liblwjgl_tinyfd.so' && !needed.includes('libamcl_game_dialog.so'))
+      fail('TinyFD must use the actual OHOS game dialog broker');
 
     const symbolsText = execFileSync(readelf, ['--dyn-syms', '--wide', library], { encoding: 'utf8' });
+    if (name === 'liblwjgl_tinyfd.so' && /\bUND\b[^\n]*\b(?:popen|system|fork|execve|fgets|getchar)\b/.test(symbolsText))
+      fail('TinyFD must not enter a desktop shell or console fallback');
     if (/\bUND\b[^\n]*(?:ffi_|\bvk[A-Z]|NSt3__1)/.test(symbolsText)) {
       fail(`${name}: forbidden unresolved ffi/vulkan/std::__1 symbol`);
     }

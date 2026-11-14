@@ -28,6 +28,8 @@
 #include "../utils/stack_sampler.h"      // glfwOHOS_samplerSetJvmHooks
 
 #include "napi_jvm.h"
+#include "napi_audio.h"
+#include "napi_game_dialog.h"
 #include "napi_sideload_update.h"
 #include "napi_mc.h"
 #include "napi_desktop.h"
@@ -96,6 +98,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     //                  / checkJitAvailable / getCommonJvmArgs
     //                  / downloadEngineProbe / downloadEngineSelfTest
     amcl::napi::registerJvmNapi(env, exports);
+    amcl::napi::registerAudioNapi(env, exports);
+    amcl::napi::registerGameDialogNapi(env, exports);
 
     // § napi_mc.cpp：mcLaunchWithProfile / mcLaunchWithProfileV2
     //                 / mcGetStatus / mcCheckFiles / mcIsRunning / mcForceExit / mcReadLog

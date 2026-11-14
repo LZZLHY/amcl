@@ -39,6 +39,7 @@ import {
   BMCLAPI_MAVEN,
   BMCLAPI_LIBRARIES,
 } from './MavenUtils';
+import { selectMcSourceUrls } from '../download/SourceProber';
 
 // ============================================================
 //  公开 interface
@@ -141,6 +142,15 @@ function knownMavenRepoBases(): string[] {
 }
 
 /**
+ * 只判断代码已登记的仓库根，供旧版库格式保持未知作者仓库的唯一原始来源。
+ * 不按“像Maven的路径”猜镜像关系，query/自定义前缀也不会被当作已知公共仓库。
+ */
+export function isKnownMavenRepositoryRoot(repo: string): boolean {
+  let base = repo.endsWith('/') ? repo : repo + '/';
+  return knownMavenRepoBases().some((known: string): boolean => known === base);
+}
+
+/**
  * 加载器"自有"制品所属的 group 前缀 → 它唯一的真实上游仓库。
  *
  * 这些 group 只存在于对应加载器的 Maven，把 Central / 阿里云 / Mojang libraries
@@ -209,26 +219,43 @@ function relPathFromUrl(url: string): string {
  * 已知仓库工件的候选准备原语，同时服务坐标安装与电脑导出。输入仍是远端语义，
  * 不改本地storagePath，也不因“目录看起来像Maven”替换未知私有来源。
  */
-function buildArtifactCandidates(relative: string, direct: string, hint: string, preferReal: boolean): string[] {
+function buildArtifactCandidates(relative: string, direct: string, hint: string, preferReal: boolean,
+  orderedVersionDownload: boolean = false): string[] {
   const urls: string[] = [];
   const mirrors = [BMCLAPI_MAVEN + relative, BMCLAPI_LIBRARIES + relative];
   const owner = loaderOwnedRepo(relative);
   const repositories = owner.length > 0 ? [owner] : DEFAULT_MAVEN_REPOS;
-  if (!preferReal) for (const url of mirrors) pushSafeUrl(urls, url);
-  pushSafeUrl(urls, direct);
-  pushSafeUrl(urls, hint);
+  if (orderedVersionDownload) {
+    // 已知实际 Maven 放在首选 BMCL 与第二个兼容别名之间；官方偏好时将其放到最前。
+    // 非自有组补充原 AMCL 已知仓库，以便兼容老 Forge 依赖；未知作者仍不生成镜像。
+    if (!preferReal) pushSafeUrl(urls, mirrors[0]);
+    pushSafeUrl(urls, direct);
+    pushSafeUrl(urls, hint);
+    if (owner.length > 0) pushSafeUrl(urls, owner + relative);
+    else if (preferReal) pushSafeUrl(urls, 'https://libraries.minecraft.net/' + relative);
+    if (preferReal) pushSafeUrl(urls, mirrors[0]);
+    pushSafeUrl(urls, mirrors[1]);
+  } else {
+    if (!preferReal) for (const url of mirrors) pushSafeUrl(urls, url);
+    pushSafeUrl(urls, direct);
+    pushSafeUrl(urls, hint);
+  }
   for (const repository of repositories) {
     pushSafeUrl(urls, (repository.endsWith('/') ? repository : repository + '/') + relative);
   }
-  if (preferReal) for (const url of mirrors) pushSafeUrl(urls, url);
-  return urls;
+  if (!orderedVersionDownload && preferReal) for (const url of mirrors) pushSafeUrl(urls, url);
+  // 候选构造与来源授权分开：网关/明确官方时移除本代码认识的BMCL/阿里公共镜像；
+  // 未知作者仓库仍保留其原始URL和query，不猜等价官方地址或删空后暗补镜像。
+  return selectMcSourceUrls(urls);
 }
 
 /** 只有已登记仓库根才能产生等价候选；未知URL保持唯一原直链。 */
-export function buildMavenArtifactUrls(url: string, preferRealSource: boolean = false): string[] {
+export function buildMavenArtifactUrls(url: string, preferRealSource: boolean = false,
+  orderedVersionDownload: boolean = false): string[] {
   if (!isSafeHttpUrl(url)) return [];
   const relative = relPathFromUrl(url);
-  return relative.length > 0 ? buildArtifactCandidates(relative, url, '', preferRealSource) : [url];
+  return relative.length > 0 ? buildArtifactCandidates(relative, url, '', preferRealSource, orderedVersionDownload) :
+    selectMcSourceUrls([url]);
 }
 
 /** sidecar后缀属于路径，必须置于原query之前；不能把令牌/query文字改成文件后缀。 */
@@ -253,7 +280,7 @@ export function artifactSidecarUrl(url: string, suffix: string): string {
  */
 export function buildMavenUrls(
   coordinate: string, repoHint: string | undefined, preferRealSource: boolean = false,
-  directUrl?: string
+  directUrl?: string, orderedVersionDownload: boolean = false
 ): string[] {
   let coord = parseMavenName(coordinate);
   if (coord === null) return [];
@@ -265,7 +292,7 @@ export function buildMavenUrls(
   // 且其路径通过严格相对路径校验时，才允许拿来构造镜像 URL。
   let safeDirectUrl = (directUrl !== undefined && isSafeHttpUrl(directUrl)) ? directUrl : '';
   let directRel = safeDirectUrl.length > 0 ? relPathFromUrl(safeDirectUrl) : '';
-  if (safeDirectUrl.length > 0 && directRel.length === 0) return [safeDirectUrl];
+  if (safeDirectUrl.length > 0 && directRel.length === 0) return selectMcSourceUrls([safeDirectUrl]);
   let mirrorRel = directRel.length > 0 ? directRel : relPath;
 
 
@@ -278,11 +305,11 @@ export function buildMavenUrls(
     // 未登记仓库根可能是私有制品库，坐标本身不授予其它镜像等价性。没有已知
     // 官方directUrl时仅使用明确仓库，不拿通用Maven布局猜公开镜像的相同内容。
     if (safeDirectUrl.length === 0 && !knownMavenRepoBases().some((known: string): boolean => known === base)) {
-      return hintUrl.length > 0 ? [hintUrl] : [];
+      return hintUrl.length > 0 ? selectMcSourceUrls([hintUrl]) : [];
     }
   }
 
-  return buildArtifactCandidates(mirrorRel, safeDirectUrl, hintUrl, preferRealSource);
+  return buildArtifactCandidates(mirrorRel, safeDirectUrl, hintUrl, preferRealSource, orderedVersionDownload);
 }
 
 /**
@@ -294,7 +321,7 @@ export function buildMavenUrls(
  * 非法坐标返回 null。
  */
 export function buildSpecForLib(
-  lib: MavenLibEntry, libDir: string, preferRealSource: boolean = false
+  lib: MavenLibEntry, libDir: string, preferRealSource: boolean = false, orderedVersionDownload: boolean = false
 ): DownloadFileSpec | null {
   // 本地存储路径：优先用 Forge 显式 storagePath（重定位库的 classpath 据此定位），
   // 否则从坐标重构。
@@ -303,7 +330,7 @@ export function buildSpecForLib(
     : safeRelPath(mavenToRelativePath(lib.name));
   if (relPath.length === 0) return null;
 
-  let urls = buildMavenUrls(lib.name, lib.url, preferRealSource, lib.directUrl);
+  let urls = buildMavenUrls(lib.name, lib.url, preferRealSource, lib.directUrl, orderedVersionDownload);
   if (urls.length === 0) return null;
 
   let normalizedDir = normalizeDir(libDir);
@@ -326,6 +353,7 @@ export function buildSpecForLib(
     urls: urls,
     allowedRoot: normalizedDir,
   };
+  if (orderedVersionDownload) spec.orderedVersionDownload = true;
   if (check !== undefined) spec.check = check;
   return spec;
 }
@@ -335,7 +363,7 @@ export function buildSpecForLib(
  * 失败回报阶段把 localPath 转回原始 Maven 坐标。
  */
 export function buildSpecsForLibs(
-  libs: MavenLibEntry[], libDir: string, preferRealSource: boolean = false
+  libs: MavenLibEntry[], libDir: string, preferRealSource: boolean = false, orderedVersionDownload: boolean = false
 ): MavenSpecResult {
   let specs: DownloadFileSpec[] = [];
   let invalidNames: string[] = [];
@@ -345,7 +373,7 @@ export function buildSpecsForLibs(
   let conflicts: Set<string> = new Set<string>();
 
   for (let lib of libs) {
-    let spec = buildSpecForLib(lib, libDir, preferRealSource);
+    let spec = buildSpecForLib(lib, libDir, preferRealSource, orderedVersionDownload);
     if (spec === null) {
       invalidNames.push(lib.name);
       continue;

@@ -6,6 +6,7 @@ import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 const load=makePureEtsLoader();
 const model=load('gamecontrol/src/main/ets/ControlLayout.ets');
 const groups=load('gamecontrol/src/main/ets/ControlGroups.ets');
+const editing=load('gamecontrol/src/main/ets/ControlEditing.ets');
 const source=fs.readFileSync(new URL('../entry/src/main/ets/components/LayoutEditor.ets',import.meta.url),'utf8');
 const ast=compiler.createSourceFile('LayoutEditor.ets',source,compiler.ScriptTarget.Latest,true);
 const owner=ast.statements.find(n=>n.name?.getText(ast)==='LayoutEditor');
@@ -13,20 +14,23 @@ const names=['buildProfile','loadProfile','cloneGamepad','currentDeviceModel','s
   'repairEditorGroups_','editorGroupVisible_','editorCanvasOrder_','applyGroupDraft_','chooseControlGroup_','toggleGroupPreview_',
   'createControlGroup_','renameControlGroup_','setGroupInitialVisible_','moveGroupOrder_','duplicateControlGroup_',
   'groupDeletionDescription_','deleteControlGroup_','moveSelectedToGroup_','currentGroup_','filteredControlGroups_',
-  'phaseName_','selectGroupPhase_','selectedGroupAction_','phaseActionIndices_','groupActionSummary_','selectGroupAction_','moveGroupAction_','removePhaseTarget_','selectedBindingLabel_','phaseTargets_','setPhaseTargets_','togglePhaseTarget_','currentPhaseKeys_','applyPhaseKeys_'];
+  'phaseName_','selectGroupPhase_','selectedGroupAction_','phaseActionIndices_','groupActionSummary_','selectGroupAction_','moveGroupAction_','removePhaseTarget_','selectedBindingLabel_','phaseTargets_','setPhaseTargets_','togglePhaseTarget_','currentPhaseKeys_','applyPhaseKeys_','selectControlIdentity_','pruneInvisibleSelection_','currentPhaseAutoKeep_',
+  'secondaryEditingDefinition_','captureEditorRoute_','syncSecondarySelection_'];
 const declarations=names.map(name=>{const method=owner.members.find(n=>n.name?.getText(ast)===name);assert.ok(method,name);return method.getText(ast);});
 const edit=load('gamecontrol/src/main/ets/LayoutEditSession.ets');
-const bindings={...model,...groups,...edit,...load('gamecontrol/src/main/ets/GlfwKeys.ets'),
+const bindings={...model,...groups,...edit,...editing,getLayoutStore:()=>({getActiveProfile:()=>({profileId:undefined})}),...load('gamecontrol/src/main/ets/GlfwKeys.ets'),
   ...load('gamecontrol/src/main/ets/TouchPreferences.ets'),...load('gamecontrol/src/main/ets/LookPreferences.ets'),
   ...load('entry/src/main/ets/components/LayoutCatalogPaging.ets'),cloneControlItem:model.cloneItem,
   deviceInfo:{marketName:'host fixture'},UNDO_STACK_MAX:20};
-const compiled=compiler.transpileModule('class Subject{'+declarations.join('\n')+'}\nmodule.exports=Subject;',
+const route=ast.statements.find(n=>n.name?.getText(ast)==='CompactEditorRoute').getText(ast);
+const compiled=compiler.transpileModule(route+'\nclass Subject{'+declarations.join('\n')+'}\nmodule.exports=Subject;',
   {compilerOptions:{module:compiler.ModuleKind.CommonJS,target:compiler.ScriptTarget.ES2020}}).outputText;
 const module={exports:{}};new Function('module',...Object.keys(bindings),compiled)(module,...Object.values(bindings));
 const view=new module.exports();
-Object.assign(view,{selectedIds:[],selectedIdx:-1,profileNames:[],previewControlGroups:[],currentControlGroup:'',ver:0,
+Object.assign(view,{selectedIds:[],selectedIdx:-1,selectedChildId:'',allGroups:false,profileNames:[],previewControlGroups:[],currentControlGroup:'',ver:0,
+  secondaryEditingGroup:'',activeSheet:'edit',editorRoutes:[],inlinePickerGeneration:0,
   groupNameDraft:'',groupSearch:'',deletingGroup:'',groupActionPhase:'press',groupActionOperation:'toggle',phaseKeyControlId:'',
-  multiSelectMode:false,editSession:new edit.LayoutEditSession(),selectedGroupActionIndex:-1,undoCount:0,syncLookSliders(){}});
+  multiSelectMode:false,editSession:new edit.LayoutEditSession(),selectedGroupActionIndex:-1,undoCount:0,syncLookSliders(){},syncSelectedAppearanceVals(){},syncPositionDraft_(){},openTab(){}});
 const initial=model.getDefaultLayout();initial.name='编辑测试';view.loadProfile(initial);
 view.groupNameDraft='工具';view.createControlGroup_();
 assert.equal(view.controlGroups.length,2);assert.equal(view.undoCount,1);
@@ -36,6 +40,8 @@ view.selectedIdx=view.controls.findIndex(item=>!item.systemAction&&item.type===0
 const originalItem=model.cloneItem(view.selectedItem());view.moveSelectedToGroup_();
 assert.equal(view.selectedItem().controlGroupId,tools);
 assert.equal(view.selectedItem().xPct,originalItem.xPct);assert.deepEqual(view.selectedItem().keys,originalItem.keys);
+// 首次组动作现在必须先显式确认转换；真实确认入口由touch-editing-contract单独回放。
+assert.equal(view.applyGroupDraft_(editing.convertControlToPhases(view.buildProfile(),view.selectedItem().id),'已确认转换'),true);
 view.groupActionOperation='hide';view.setPhaseTargets_([tools]);
 assert.equal(view.buildProfile().controls[view.selectedIdx].groupActions[0].targets[0],tools);
 view.phaseKeyControlId=view.selectedItem().id;view.phaseKeyPhase='click';view.groupActionPhase='press';
@@ -146,6 +152,6 @@ view.selectGroupPhase_('press');view.selectGroupAction_(2);view.moveGroupAction_
 assert.deepEqual(view.selectedItem().groupActions.map(a=>a.operation),['show','toggle','hide','show']);
 view.selectedItem().phaseBindings=[{phase:'click',keys:[69],autoKeep:true}];
 view.selectedItem().keys=[];view.selectedItem().keyOrMouse=0;
-assert.match(view.selectedBindingLabel_(),/单击抬起.*E.*切换保持/);
-view.selectedItem().phaseBindings=[];assert.equal(view.selectedBindingLabel_(),'触控组动作');
+assert.match(view.selectedBindingLabel_(),/单击抬起.*E.*再次触发松开/);
+view.selectedItem().phaseBindings=[];assert.equal(view.selectedBindingLabel_(),'控件组动作');
 console.log('PASS ordered mixed group actions, duplicate target identity, per-row undo and truthful phase summary');

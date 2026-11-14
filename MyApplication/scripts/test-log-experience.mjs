@@ -222,7 +222,12 @@ test('diagnostic index scans full sources, links real stages and deduplicates re
 });
 
 test('queue retries allocate a new activity with a parent while resume keeps the original identity', async () => {
-  const f = evidenceRuntime();
+  // 本项只测Registry身份/恢复策略；完整owner接线已由test-task-activity-owner执行生产组合。
+  let nextId = 0;
+  const f = evidenceRuntime({ imports: { './TaskActivityOwner': {
+    getTaskActivityOwner: () => ({ async beginTask() {}, async finishTask() {} }),
+    reserveTaskActivityId: () => ++nextId,
+  } } });
   try {
     // 任务状态、恢复策略和默认view均加载真实生产模块；这里只替代执行adapter，
     // 不再复制旧枚举/辅助函数，以免产品增加策略后fixture掩盖或制造回归。

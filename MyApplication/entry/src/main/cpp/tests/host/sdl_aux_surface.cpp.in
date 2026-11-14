@@ -1,0 +1,71 @@
+// 验证实际owner的物理surface登记与EGL/broker联检；仅系统边界使用可控桩。
+#include "graphics_features.h"
+#include "amcl_native_window_lease_broker_abi.h"
+#include <cstdlib>
+#include <cstdio>
+#define EGL_DRAW 0x3059
+#undef assert
+#define assert(v) do { if(!(v)){std::fprintf(stderr,"line=%d failed: %s\n",__LINE__,#v);std::exit(7);} }while(0)
+static void* display=(void*)1;static void* context=(void*)2;static void* draw=(void*)3;
+static bool brokerReady=true;static int brokerCalls=0;
+static AmclNativeWindowLeaseBrokerV2 broker{};
+static const AmclNativeWindowLeaseBrokerV2* amclWindowHostGetBroker(){return &broker;}
+static int identity(void*w,uint64_t generation,uint64_t token,uint64_t epoch){
+    ++brokerCalls;return brokerReady&&w==(void*)4&&generation==7&&token==8&&epoch==9;
+}
+namespace amcl::graphics {
+struct Delegate { int(*commitContext)(uint64_t,void*);int(*retireContext)(void*); };
+struct GraphicsRuntimeBinding {
+    GraphicsFeatureState* features;Delegate* delegate=nullptr;
+    struct {bool ready=true;void*(*eglGetCurrentDisplay)();void*(*eglGetCurrentContext)();void*(*eglGetCurrentSurface)(int);}egl;
+};
+@FEATURES@
+@VERIFY@
+@CREATED@
+@RETIRING@
+@ATTACHED@
+}
+int main(){
+    using namespace amcl::graphics;
+    GraphicsFeatureState features;GraphicsRuntimeBinding runtime{&features};
+    runtime.egl.eglGetCurrentDisplay=[](){return display;};runtime.egl.eglGetCurrentContext=[](){return context;};
+    runtime.egl.eglGetCurrentSurface=[](int which){assert(which==EGL_DRAW);return draw;};
+    broker.abiVersion=2;broker.structSize=sizeof(broker);broker.matchesPresentationIdentity=identity;
+    EglContextState window;window.display=display;window.context=context;window.surface=draw;
+    window.nativeWindow=(void*)4;window.parkingSurface=(void*)5;window.contextPermit=6;window.contextOwnerTid=21;
+    features.contextPermits[6]=nullptr;std::string error;
+    AmclSdlAuxRequestV1 proof{};proof.processId=11;proof.display=display;proof.context=context;proof.drawSurface=draw;
+    proof.nativeWindow=(void*)4;proof.contextPermit=6;proof.generation=7;proof.presentationToken=8;proof.resourceEpoch=9;
+    assert(!VerifiedPresentingEgl(runtime,proof));
+    assert(!created(runtime,window,false,true,error));assert(features.presentingSurfaces.empty());
+    assert(created(runtime,window,true,true,error));assert(VerifiedPresentingEgl(runtime,proof));
+    // 任一物理值或broker身份错配均失败；已存在的worker permit不能拼接主token。
+    for(int n=0;n<8;++n){auto bad=proof;
+        if(n==0)bad.display=(void*)91;if(n==1)bad.context=(void*)92;if(n==2)bad.drawSurface=(void*)93;
+        if(n==3)bad.nativeWindow=(void*)94;if(n==4)bad.contextPermit=95;
+        if(n==5)bad.generation=96;if(n==6)bad.presentationToken=97;if(n==7)bad.resourceEpoch=98;
+        assert(!VerifiedPresentingEgl(runtime,bad));
+    }
+    features.contextPermits[16]=(void*)12;auto worker=proof;worker.contextPermit=16;worker.context=(void*)12;worker.drawSurface=(void*)13;
+    context=(void*)12;draw=(void*)13;assert(!VerifiedPresentingEgl(runtime,worker));context=window.context;draw=window.surface;
+    brokerReady=false;assert(!VerifiedPresentingEgl(runtime,proof));brokerReady=true;
+    broker.structSize=AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_GEOMETRY_SIZE;assert(!VerifiedPresentingEgl(runtime,proof));broker.structSize=sizeof(broker);
+    // 错误线程不得撤销正常owner；合法退休开始即撤销，即使真实driver随后失败。
+    assert(features.sdlAux.configure(11,20,30,41,42)>0);assert(features.sdlAux.publishVerified(proof,21)>0);
+    retiringSurface(runtime,window,22);assert(VerifiedPresentingEgl(runtime,proof));
+    retiringSurface(runtime,window,21);assert(!VerifiedPresentingEgl(runtime,proof));assert(!features.sdlAux.pendingProof(21));
+    assert(!attached(runtime,window,false,error));assert(!VerifiedPresentingEgl(runtime,proof));
+    // hidden pbuffer最初不登记，晋升时旧auxiliary标记未清，真实window attach仍可登记。
+    window.auxiliary=1;assert(created(runtime,window,true,false,error));assert(!VerifiedPresentingEgl(runtime,proof));
+    assert(attached(runtime,window,true,error));assert(VerifiedPresentingEgl(runtime,proof));
+    features.sdlAux.publishVerified(proof,21);features.sdlAux.revoke(window.context,6);
+    assert(VerifiedPresentingEgl(runtime,proof)); // 显式解绑仅清proof，重绑无需重建surface关联。
+    window.contextLostFatal=1;RevokePresentingEglSurface(runtime,window);assert(!RecordPresentingEglSurface(runtime,window));window.contextLostFatal=0;
+    window.eglSurfaceDetachPending=1;assert(!RecordPresentingEglSurface(runtime,window));window.eglSurfaceDetachPending=0;
+    window.eglTeardownPending=1;assert(!RecordPresentingEglSurface(runtime,window));window.eglTeardownPending=0;
+    window.surface=window.parkingSurface;assert(!RecordPresentingEglSurface(runtime,window));window.surface=draw;
+    assert(attached(runtime,window,true,error));assert(RetireGraphicsContext(runtime,window.context));assert(features.presentingSurfaces.empty());
+    features.contextPermits[6]=window.context;assert(RecordPresentingEglSurface(runtime,window));ReleaseGraphicsContextPermit(runtime,6);
+    assert(features.presentingSurfaces.empty()&&!features.contextPermits.count(6));
+    std::puts("actual owner surface record/EGL/broker checks and retirement passed");
+}

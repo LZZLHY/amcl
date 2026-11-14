@@ -52,6 +52,14 @@ int main(int argc,char** argv){
  CHECK(claim.Claim(argv[1],false,error)&&claim.VerifiedForCurrentProcess(true)&&claim.Protocol()==1);
  CHECK(claim.Claim(argv[1],false,error));CHECK(!claim.Claim(argv[2],true,error));
  CHECK(error=="InputContractMismatch:sdl_selected_artifact_changed"&&claim.VerifiedForCurrentProcess(true));
+ // 辅助协议独立存在，不能把common/look协议冒充为新角色资格；制品文件身份随cold核验冻结。
+ CHECK(amclCheckSelectedSdlAuxContractV2(current,argv[1],&observed)==0&&observed==2);
+ CHECK(amclCheckSelectedSdlAuxContractV2(lookMissing,argv[6],&observed)==AMCL_SDL_INPUT_CONTRACT_MISSING);
+ ProcessSdlInputLibraryClaim auxiliary;CHECK(auxiliary.Claim(argv[1],false,error,true));
+ CHECK(auxiliary.VerifiedForCurrentProcess(true,true));uint64_t device=0,inode=0;
+ CHECK(auxiliary.AuxiliaryArtifactIdentity(device,inode)&&inode);
+ ProcessSdlInputLibraryClaim missingAux;CHECK(!missingAux.Claim(argv[6],true,error,true));
+ CHECK(!missingAux.VerifiedForCurrentProcess(false,true));
  ProcessSdlInputLibraryClaim compatibility;CHECK(!compatibility.Claim(argv[2],false,error));
  CHECK(compatibility.Claim(argv[2],true,error)&&compatibility.VerifiedForCurrentProcess(false)&&!compatibility.VerifiedForCurrentProcess(true));
  ProcessSdlInputLibraryClaim controlOnly;CHECK(!controlOnly.Claim(argv[6],false,error)&&error=="InputContractMismatch:sdl_look_marker_missing");
@@ -86,11 +94,14 @@ def main(options):
     lookHit=re.search(r'^(?:SDL_DECLSPEC|SDL_AMCL_INPUT_PUBLIC) Uint32 SDLCALL SDL_AMCL_InputLookProtocolV1\(void\)\s*\{[^}]*\}',source,re.M)
     if not lookHit:raise ValueError('actual complete SDK independent look marker missing')
     lookMarker=lookHit.group(0)
+    auxHit=re.search(r'^(?:SDL_DECLSPEC|SDL_AMCL_INPUT_PUBLIC) Uint32 SDLCALL SDL_AMCL_AuxHostProtocolV2\(void\)\s*\{[^}]*\}',source,re.M)
+    if not auxHit:raise ValueError('actual complete SDK auxiliary host marker missing')
+    auxMarker=auxHit.group(0)
     prefix='#include <stdint.h>\ntypedef uint32_t Uint32;\n#define SDLCALL\n#define SDL_AMCL_INPUT_CONTROL_PROTOCOL_V1 1u\n#define SDL_AMCL_INPUT_LOOK_PROTOCOL_V1 1u\n'
     prefix+='#ifdef _WIN32\n#define SDL_DECLSPEC __declspec(dllexport)\n#else\n#define SDL_DECLSPEC __attribute__((visibility("default")))\n#endif\n'
-    prefix+='#define SDL_AMCL_INPUT_PUBLIC SDL_DECLSPEC\n'
+    prefix+='#define SDL_AMCL_INPUT_PUBLIC SDL_DECLSPEC\n#define SDL_AMCL_AUX_HOST_PROTOCOL_V2 2u\n'
     standard='extern "C" SDL_DECLSPEC int SDL_GetVersion(void){return 3006000;}\n'
-    (build/'new.cpp').write_text(prefix+'extern "C" '+marker+'\nextern "C" '+lookMarker+'\n'+standard,encoding='utf-8')
+    (build/'new.cpp').write_text(prefix+'extern "C" '+marker+'\nextern "C" '+lookMarker+'\nextern "C" '+auxMarker+'\n'+standard,encoding='utf-8')
     # 使用任务专属模块名；version.dll是Windows系统依赖，不能让坏协议fixture遮住它。
     (build/'amcl_bad_protocol.cpp').write_text(prefix.replace('PROTOCOL_V1 1u','PROTOCOL_V1 2u')+'extern "C" '+marker+'\n'+standard,encoding='utf-8')
     (build/'old.cpp').write_text(prefix+standard,encoding='utf-8')

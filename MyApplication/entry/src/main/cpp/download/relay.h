@@ -16,14 +16,16 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace download {
 
 /** 加速网关运行期配置 */
 struct RelayConfig {
     bool        enabled = false;
-    std::string base;          // 形如 https://amcl.lovedhy.cn/dl（无尾斜杠）
+    std::string base;          // 形如 https://relay.amcl.lovedhy.cn/dl（无尾斜杠）
     std::string ticket;        // Bearer 票据
     std::string session_key;   // 持有证明密钥（仅内存）
     bool        require_proof = true;
@@ -35,6 +37,37 @@ void relaySetConfig(const RelayConfig& cfg);
 
 /** 关闭加速（用户关开关 / 握手失败 / 网关不可用时） */
 void relayDisable();
+
+/**
+ * 一次实际 hop 的内存请求计划。URL和凭据来自同一配置快照，避免配置轮换时把旧URL
+ * 与新票据拼在一起；headers只交给本次easy handle，不写日志或文件。
+ * generation只用于提交前撤销旧计划，不承诺取消已经提交的在途HTTP。
+ */
+struct RelayRequestPlan {
+    std::string url;
+    std::vector<std::string> headers;
+    uint64_t generation = 0;
+    bool via_relay = false;
+    bool fallback = false;
+};
+
+/**
+ * 构造GET/HEAD请求计划：普通官方源可改写，redirect hop只允许给当前受信 /p/ URL
+ * 重新签名。带业务Bearer的任务必须传allow_relay=false；force_direct表示上次网关
+ * 失败后的同源直连重试，不改变队列、Range或任务权限预算。
+ */
+RelayRequestPlan relayPrepareRequest(const std::string& method, const std::string& url,
+                                    bool allow_relay, bool rewrite_official = true,
+                                    bool force_direct = false);
+
+/**
+ * 提交请求的线性化边界。网关计划在共享配置锁内校验代次，并执行一个不阻塞、不重入
+ * Relay API的submit回调；callback成功才计请求。worker回调只发布即将执行的transport，
+ * CURLM回调只执行add_handle。锁不跨网络IO，关闭只阻止尚未提交的旧计划。
+ * requests表示已提交的网关传输尝试，不表示服务端收到或成功；fallbacks只计实际提交
+ * 的失败后直连尝试。返回false可能是旧计划已撤销，或submit自身拒绝，调用方保留原因。
+ */
+bool relaySubmitRequest(const RelayRequestPlan& plan, const std::function<bool()>& submit);
 
 /** 当前是否可用（已启用 + 票据未过期 + 必要字段齐全） */
 bool relayUsable();
@@ -50,7 +83,7 @@ bool relayCanAccelerate(const std::string& url);
 /**
  * 把官方源 URL 改写成经网关的 URL。
  *   https://cdn.modrinth.com/data/x.jar
- *     → https://amcl.lovedhy.cn/dl/p/cdn.modrinth.com/data/x.jar
+ *     → https://relay.amcl.lovedhy.cn/dl/p/cdn.modrinth.com/data/x.jar
  * 不可加速或未启用时返回空串（调用方保持原 URL）。
  * ⚠️ 不对 path 做任何解码/编码：Modrinth 文件名里的 %2B 必须原样带过去，
  *    否则上游 URL 与网关缓存键都会错开（网关侧已踩过一次）。

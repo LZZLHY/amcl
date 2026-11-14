@@ -67,6 +67,8 @@ public:
         // 这一区分允许 client 限制到 4 连接而不被当作 Forge/模组高并发任务。
         // 完整性仍由下载结束的 SHA1/size 终检兜底。
         int                      max_connections = 0;
+        // 游戏版本文件显式使用声明顺序、逐源回退和按读取进度判超时的策略。
+        bool                     ordered_version_download = false;
         std::string bearer_token;           // 单源短时凭据；断点元数据从不序列化此字段
         // 期限从Native接收配置时的steady时钟起算，只限制新请求；在途健康GET不超时取消。
         bool authorized_policy = false;
@@ -86,9 +88,19 @@ public:
     const std::string& localPath() const { return cfg_.local_path; }
     const std::string& stagingPath() const { return staging_path_; }
     const std::vector<NetSourcePtr>& sources() const { return sources_; }
+    /** 只为新增冷首批查询另一可用Range来源的真实完成证明；不改变旧评分或领取HTTP名额。 */
+    int completedFasterSourceIndex(int current_source_id, int64_t current_goodput_bps) const;
     const FileChecker& checker() const { return cfg_.check; }
     uint64_t taskId() const { return cfg_.task_id; }
     const std::string& bearerToken() const { return cfg_.bearer_token; }
+    /** URL签名等无Bearer权限也受业务授权策略约束，不能被普通Relay改写或转发。 */
+    bool hasAuthorizationPolicy() const {
+        return cfg_.authorized_policy || cfg_.authorized_single_use || !cfg_.bearer_token.empty();
+    }
+    /** 授权文件沿用专门的额度和失败合同，即使 Native 直接构造了冲突配置。 */
+    bool usesOrderedVersionDownload() const { return cfg_.ordered_version_download && !hasAuthorizationPolicy(); }
+    /** 只在上一批段收敛、全量兜底段发布前置位，随后由该段读取。 */
+    bool orderedFullGetFallback() const { return usesOrderedVersionDownload() && single_segment_fullget_tried_; }
     /** HTTP真正发出前占本文件lease次数，两条传输路径共同调用；无授权时无操作。 */
     DownloadExceptionPtr beginAuthorizedRequest();
     /** 累计所有收到的HTTP正文，不因Range重置本地done而恢复供应方预算。 */
@@ -214,8 +226,8 @@ public:
     int  syncStagingDurable();
     /** 生产 meta 入口：数据 fsync 后在同一可信父目录写 v1，并与文件提交/丢弃串行。 */
     bool persistResumeMeta(const struct DownloadMeta& meta, uint64_t storage_generation);
-    NetSourcePtr pickBestSource(bool needs_range = false, int preferred_idx = -1);
-    int64_t nextSourceReadyMs(bool needs_range = false) const;
+    NetSourcePtr pickBestSource(bool needs_range = false, int preferred_idx = -1, int ordered_floor = 0);
+    int64_t nextSourceReadyMs(bool needs_range = false, int ordered_floor = 0) const;
 
     /**
      * 当前处于传输中（Connecting / Reading / Downloading）的段数。

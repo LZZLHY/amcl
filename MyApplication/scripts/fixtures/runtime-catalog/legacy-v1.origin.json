@@ -1,0 +1,6 @@
+{
+  "sourceCommit": "76721d2e15f56a1c6c47397bc02767c2dcb635e9",
+  "sourcePath": "entry/src/main/resources/rawfile/runtime-catalog/builtin.json",
+  "sha256": "0bc5f5d7363e29fd72b875cb593b25a0d797aac608b002e8642ba4e40c5cd945",
+  "purpose": "旧协议与真实旧缓存回归的固定 v1 输入；当前交付目录另测，不随正式 builtin 升级变义。"
+}

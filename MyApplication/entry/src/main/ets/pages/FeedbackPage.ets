@@ -1,3 +1,4 @@
+import { applyNativeTheme } from '../components/AppTheme';
 /**
  * FeedbackPage.ets — 问题反馈页（内嵌 AMCL-web 反馈页）
  *
@@ -21,6 +22,8 @@ struct FeedbackPage {
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
 
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   private prefManager: PreferenceManager = new PreferenceManager(this.context)
@@ -32,12 +35,16 @@ struct FeedbackPage {
   private applyTheme_() {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
     let mode = this.prefManager.themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   onColorModeChange() {
     this.applyTheme_()
   }
+
+  /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
+  onPageShow(): void { this.applyTheme_(); }
 
   build() {
     Column() {

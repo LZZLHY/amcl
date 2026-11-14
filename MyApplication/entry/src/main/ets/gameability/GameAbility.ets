@@ -2,16 +2,18 @@ import { isInputObservationTestWant, runInputObservationTestWant } from '../comp
 import { getDesktopSystemBridge } from '../window/DesktopSystemBridge';
 /** 游戏UI与JVM共享经过PID/锁核验的私有进程；初始化失败必须先回传并落盘，再关闭。 */
 import { initializeGameProcess, initializeGameProcessLogging } from '../runtime/ProcessRuntime';
-import { stopGameSession } from '../runtime/GameSessionHost';
+import { stopGameSession, requestExistingGameSessionExit } from '../runtime/GameSessionHost';
+import { ModAudioRuntime } from '../runtime/ModAudioRuntime';
+import { GameDialogRuntime } from '../runtime/GameDialogRuntime';
 import { PlatformDfxWatcher } from '../runtime/PlatformDfxWatcher';
 import { DesktopLaunchSnapshot } from '../runtime/DesktopLaunchSnapshot';
 import { GraphicsRecoveryStore } from '../runtime/GraphicsRecoveryStore';
 import { common } from '@kit.AbilityKit';
-import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { AppLogger, DiagnosticPolicy } from 'commons';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
-import { ledgerBegin, LedgerBeginMeta } from 'commons';
+import { LedgerBeginMeta } from 'commons';
 import { ActivityCategory } from 'feature_core';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
@@ -23,15 +25,31 @@ const TAG = LogTags.GAME_ABILITY;
 const FRAME_RATE_FOREGROUND_SOURCE_GAME: number = 2;
 
 export default class GameAbility extends UIAbility {
+  /** 独立游戏进程仅发布显示模式；UI自行解析启动快照中的应用偏好，不改变输入身份。 */
+  onConfigurationUpdate(newConfig: Configuration): void {
+    if (typeof newConfig.colorMode === 'number') {
+      AppStorage.setOrCreate<number>('currentColorMode', newConfig.colorMode);
+    }
+  }
+
   private isolated: boolean = false;
   // 隔离成立只授予进程退出权限，不等于快照/运行时初始化成功。窗口必须单独检查ready，
   // 避免失败后等待回传期间又加载页面，触发第二次启动或未初始化的HAR访问。
   private startupReady: boolean = false;
   private startupFailurePending: boolean = false;
   private startupStage: string = 'isolation';
+  /** onCreate不能返回Promise；窗口和初始化共用本轮任务，销毁使旧世代只能保留原件。 */
+  private startupTask: Promise<void> | undefined = undefined;
+  private startupGeneration: number = 0;
+  private windowGeneration: number = 0;
+  private destroyed: boolean = false;
+  /** 前台通知可先于异步scope基线；attach会复位音频状态，完成后须补回真实Ability资格。 */
+  private abilityForeground: boolean = false;
 
   /** 生命周期同步部分只核验和准备本局状态；失败回传由独立异步方法按顺序收尾。 */
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    const generation: number = ++this.startupGeneration;
+    this.destroyed = false;
     // 转发检查到旧进程后仍可能竞态冷建Ability。诊断Want绝不消费启动快照、建立Host/
     // Source或加载游戏窗口。仅初始化原诊断政策并经过同一双门写不可用回执，不能把
     // startAbility完成当作观察关闭成功，也不能借冷请求建立任何游戏资源。
@@ -49,7 +67,7 @@ export default class GameAbility extends UIAbility {
       return
     }
     // 独立游戏进程可以先冷启动；下载/processor准入前固定自己的可信files根，不启动HDC。
-    try {
+    this.startupTask = (async (): Promise<void> => { try {
       if (!testNapi.configureSideloadInstallRoot(this.context.filesDir)) throw new Error('无法固定游戏文件事务保护目录');
     } catch (error) { this.failStartup_('无法建立游戏文件保护，请重新打开启动器。', error); return; }
     const parentPid: number = (want.parameters?.['parentPid'] as number) ?? 0;
@@ -84,6 +102,9 @@ export default class GameAbility extends UIAbility {
       this.checkpointStartup_('snapshot');
       DesktopLaunchSnapshot.consume(this.context, (want.parameters?.['snapshotId'] as string) ?? '',
         (want.parameters?.['accountSnapshot'] as string) ?? '', parentPid, activityId, testNapi.desktopProcessId(), version);
+      // 本进程没有EntryAbility的颜色发布者；只在私有快照核验后补初始显示配置。
+      // 不建立输入来源、不发布布局，显示通知失败也不能改变启动准入结论。
+      try { this.onConfigurationUpdate(this.context.config); } catch (_) { /* 兼容缺少配置的显示环境。 */ }
       // 只在私有启动快照验证成功后承认恢复票据；Want 本身不能指定任意后端重试。
       const recoveryId: string = (want.parameters?.['snapshotId'] as string) ?? '';
       const recovery = GraphicsRecoveryStore.ticket(this.context.filesDir, recoveryId);
@@ -95,7 +116,11 @@ export default class GameAbility extends UIAbility {
       }
       // 快照安装后才允许读取游戏配置；日志已在验证快照前开启，失败不会落入无文件窗口。
       this.checkpointStartup_('runtime-init');
-      initializeGameProcess(this.context, activityId, launchMeta);
+      await initializeGameProcess(this.context, activityId, launchMeta,
+        (): boolean => !this.destroyed && generation === this.startupGeneration && !this.startupFailurePending);
+      // async work不可强行撤销已完成的磁盘提交；仅撤销后续运行时/页面准入，不回写旧状态。
+      if (this.destroyed || generation !== this.startupGeneration || this.startupFailurePending) return;
+      if (this.abilityForeground) ModAudioRuntime.setForeground(true);
       if (activityId > 0) {
         try { testNapi.amclLedgerSetLaunchActivity(activityId); }
         catch (e) { AppLogger.debug(TAG, 'Launch activity bridge unavailable; native banner uses time identity', LOG_DOMAIN_LAUNCH); }
@@ -138,8 +163,13 @@ export default class GameAbility extends UIAbility {
       this.startupReady = true;
       this.checkpointStartup_('ready');
     } catch (error) {
-      this.failStartup_('游戏进程初始化失败，请查看启动日志。', error);
-    }
+      if (!this.destroyed && generation === this.startupGeneration)
+        await this.failStartup_('游戏进程初始化失败，请查看启动日志。', error);
+    } })().catch(async (error: Error): Promise<void> => {
+      // 初期隔离/日志等同步边界若意外抛错，也归入同一启动任务；不能留下无人观察的rejection。
+      if (!this.destroyed && generation === this.startupGeneration)
+        await this.failStartup_('游戏进程初始化失败，请查看启动日志。', error);
+    });
   }
 
   /** 仅记录固定阶段及进程身份，不输出Want中的账号/凭据；在下一个高风险边界前刷盘。 */
@@ -158,6 +188,8 @@ export default class GameAbility extends UIAbility {
     if (this.startupFailurePending) return;
     this.startupFailurePending = true;
     this.startupReady = false;
+    this.startupGeneration++;
+    this.windowGeneration++;
     AppLogger.error(TAG, 'Game startup failed stage=' + this.startupStage, error, LOG_DOMAIN_LAUNCH);
     AppLogger.flush();
     const failureWant: Want = { bundleName: this.context.applicationInfo.name, abilityName: 'EntryAbility',
@@ -183,6 +215,15 @@ export default class GameAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    // 先解除同步Java等待；窗口销毁和Host停止重复到达也只能取消原代次。
+    try { GameDialogRuntime.detach(); }
+    catch (error) { AppLogger.warn(TAG, 'Game dialog retirement failed; continuing destroy', error, LOG_DOMAIN_LAUNCH); }
+    this.destroyed = true;
+    this.abilityForeground = false;
+    this.startupReady = false;
+    this.startupGeneration++;
+    this.windowGeneration++;
+    if (this.isolated) ModAudioRuntime.detach();
     if (!this.isolated) return;
     // 撤销原生手柄焦点（native 随即中和全部手柄）。它抛错（如混淆改名）不能跳过下面的桌面桥
     // 停止、三端释放与进程退出：同步生命周期回调里逃出的异常就是 JS Crash。
@@ -208,34 +249,61 @@ export default class GameAbility extends UIAbility {
     try {
       testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, false)
     } catch (e) { /* 老 native 兼容 */ }
-    AppLogger.info(TAG, 'onDestroy', LOG_DOMAIN_LAUNCH);
-    AppLogger.flush();
-    if (this.isolated) testNapi.mcForceExit();
-  }
-
-  onWindowStageCreate(windowStage: window.WindowStage): void {
-    if (!this.isolated || !this.startupReady || this.startupFailurePending) return;
-    this.checkpointStartup_('load-content');
-    // loadContent既可能同步抛错，也可能通过回调报告失败，两条路径共享回传/退出协议。
     try {
-      windowStage.loadContent('pages/McGamePage', (err) => {
-        if (err.code) {
-          this.failStartup_('游戏页面加载失败，请查看启动日志。', err);
-          return;
-        }
-        if (!this.startupFailurePending) this.checkpointStartup_('page-loaded');
+      AppLogger.info(TAG, 'onDestroy', LOG_DOMAIN_LAUNCH);
+      AppLogger.flush();
+    } catch (_) { /* 日志失败不能跳过原游戏会话清理和Native退出兜底。 */ }
+    if (this.isolated) {
+      // 正常requestExit可能正在等待纹理监听/窗口/IME的原Promise；销毁只能加入同一个
+      // 有界事务，不能抢先ACK杀死这些回调。冷启动失败没有Host时仍沿原Native直接退出。
+      const exiting: Promise<void> | undefined = requestExistingGameSessionExit();
+      if (exiting === undefined) testNapi.mcForceExit();
+      else exiting.catch((error: Error): void => {
+        try { AppLogger.warn(TAG, 'Game session exit transaction failed', error, LOG_DOMAIN_LAUNCH); } catch (_) {}
       });
-    } catch (error) {
-      this.failStartup_('游戏页面加载失败，请查看启动日志。', error);
     }
   }
 
+  onWindowStageCreate(windowStage: window.WindowStage): void {
+    const windowGeneration: number = ++this.windowGeneration;
+    const startupGeneration: number = this.startupGeneration;
+    const task: Promise<void> | undefined = this.startupTask;
+    if (!this.isolated || this.destroyed || this.startupFailurePending || task === undefined) return;
+    // WindowStage可以先于开账Promise完成；等待同一个onCreate任务，不能按当时ready=false丢掉窗口。
+    task.then((): void => {
+      if (this.destroyed || windowGeneration !== this.windowGeneration || startupGeneration !== this.startupGeneration
+        || !this.startupReady || this.startupFailurePending) return;
+      this.checkpointStartup_('load-content');
+      // 同步抛错和异步回调错误共享原回传协议；已销毁/替换窗口的旧回调不再改变启动状态。
+      try {
+        windowStage.loadContent('pages/McGamePage', (err) => {
+          if (this.destroyed || windowGeneration !== this.windowGeneration || startupGeneration !== this.startupGeneration) return;
+          if (err.code) {
+            this.failStartup_('游戏页面加载失败，请查看启动日志。', err);
+            return;
+          }
+          if (!this.startupFailurePending) this.checkpointStartup_('page-loaded');
+        });
+      } catch (error) {
+        this.failStartup_('游戏页面加载失败，请查看启动日志。', error);
+      }
+    }).catch((error: Error): void => {
+      if (!this.destroyed && windowGeneration === this.windowGeneration && startupGeneration === this.startupGeneration)
+        this.failStartup_('游戏进程初始化失败，请查看启动日志。', error);
+    });
+  }
+
   onWindowStageDestroy(): void {
+    try { GameDialogRuntime.detach(); }
+    catch (error) { AppLogger.warn(TAG, 'Game dialog window retirement failed', error, LOG_DOMAIN_LAUNCH); }
+    this.windowGeneration++;
     getDesktopSystemBridge().stop();
     AppLogger.info(TAG, 'onWindowStageDestroy', LOG_DOMAIN_LAUNCH);
   }
 
   onForeground(): void {
+    this.abilityForeground = true;
+    if (this.isolated) ModAudioRuntime.setForeground(true);
     try {
       testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, true)
     } catch (e) { /* 老 native 兼容 */ }
@@ -245,7 +313,9 @@ export default class GameAbility extends UIAbility {
   }
 
   onBackground(): void {
+    this.abilityForeground = false;
     if (!this.isolated) return;
+    ModAudioRuntime.setForeground(false);
     // 同 onDestroy：焦点撤销失败只记录，下面的三端释放与 native 兜底必须照常执行。
     try {
       testNapi.desktopGamepadFocus(false);

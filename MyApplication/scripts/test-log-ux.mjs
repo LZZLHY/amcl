@@ -93,16 +93,16 @@ test('leaving during preview generation releases the completed snapshot and does
 });
 
 test('clipboard completion, rejection and success reflect the system result', async () => {
-  let resolve, reject; const notices = [];
-  const p = page('components/McErrorSheet.ets', ['copyText_'], {
+  let resolve, reject;
+  const p = page('pages/LogShareHistoryPage.ets', ['copy_'], {
     pasteboard: { MIMETYPE_TEXT_PLAIN: 'text/plain', createData: (_, t) => t,
       getSystemPasteboard: () => ({ setData: () => new Promise((yes, no) => { resolve = yes; reject = no; }) }) },
   });
-  p.toast_ = text => notices.push(text);
-  const first = p.copyText_('link', 'copied'); assert.deepEqual(notices, []);
-  reject(new Error('denied')); await first; assert.match(notices[0], /复制失败/);
-  const next = p.copyText_('link', 'copied'); assert.equal(notices.length, 1);
-  resolve(); await next; assert.equal(notices[1], 'copied');
+  p.errorText = ''; p.statusText = '';
+  const first = p.copy_({ url: 'link' }); assert.equal(p.statusText, '');
+  reject(new Error('denied')); await first; assert.match(p.errorText, /复制失败/);
+  const next = p.copy_({ url: 'link' }); assert.equal(p.statusText, '');
+  resolve(); await next; assert.equal(p.statusText, '链接已复制'); assert.equal(p.errorText, '');
 });
 
 test('local removal requires confirmation and rechecks running/read protection', async () => {
@@ -126,14 +126,14 @@ test('local removal requires confirmation and rechecks running/read protection',
 
 test('revoke is single-flight, reports rejection and retains credentials for retry', async () => {
   let calls = 0, reject;
-  const p = page('components/McErrorSheet.ets', ['lsRevoke'], {
+  const p = page('pages/LogShareHistoryPage.ets', ['revoke_'], {
     revokeShare: () => { calls++; return new Promise((_, no) => { reject = no; }); },
   });
-  Object.assign(p, { uiCtx_: () => ({}), lsShareId: 'abcdef', lsShareUrl: 'link', lsShareToken: 'token', session: {},
-    revoking: false, toast_() {} });
-  p.lsRevoke(); p.lsRevoke(); assert.equal(calls, 1); assert.equal(p.revoking, true);
+  const record = { id: 'abcdef', url: 'link', token: 'token' };
+  Object.assign(p, { context: {}, busy: false, records: [record] });
+  p.revoke_(record); p.revoke_(record); assert.equal(calls, 1); assert.equal(p.busy, true);
   reject(new Error('disk failure')); await tick();
-  assert.equal(p.revoking, false); assert.equal(p.lsShareToken, 'token'); assert.match(p.lsError, /disk failure/);
+  assert.equal(p.busy, false); assert.equal(p.records[0].token, 'token'); assert.match(p.errorText, /disk failure/);
 });
 
 test('message storage load retries and failed writes do not publish a false empty/read state', async () => {
@@ -200,20 +200,58 @@ test('critical source guard rejects new volatile errors, missing files and dupli
   assert(checkCriticalLogging(file => read(file) + (file.endsWith('glfw_egl.cpp') ? '\nAMCL_LOG_E(LOG_TAG, "bad-link");' : '')).length);
 });
 
-test('AI without a current share explains the prerequisite and preserves diagnosis routing', async () => {
-  let choice = 0; const routes = []; let closed = 0;
-  const p = page('components/McErrorSheet.ets', ['lsSubmit_', 'openShareComposer_'], {
-    loadShareRecords: async () => [{ activityId: 8, accepted: true, sharedAt: 1, storageTimeSec: 1 }],
-    isShareRecordCurrent: () => false,
-  });
-  Object.assign(p, { uiCtx_: () => ({}), sessionKey: 8, session: { startedAt: 8, version: '1.21.11' }, theme: {},
-    shortVersion: x => x, onClose: () => { closed++; }, toast_() {},
-    getUIContext: () => ({ getPromptAction: () => ({ showDialog: async () => ({ index: choice }) }),
-      getRouter: () => ({ pushUrl: async route => { routes.push(route); } }) }) });
-  assert.equal(await p.lsSubmit_(), false); await tick(); assert.equal(closed, 0); assert.equal(routes.length, 0);
-  choice = 1; assert.equal(await p.lsSubmit_(), false); await tick();
-  assert.equal(routes.length, 1); assert.equal(routes[0].params.requestAi, true);
-  assert.equal(routes[0].params.diagnosisTitle, '1.21.11'); assert.equal(routes[0].params.activityId, 8);
+test('the retired analysis callback in activity details never opens public sharing', async () => {
+  const notices = [];
+  const workspace = page('pages/ActivityLogPage.ets', ['requestAnalysis_'], { LOGSHARE_AI_UNAVAILABLE: 'AI 服务已下线' });
+  Object.assign(workspace, { requestAi: true, showShareOptions: false, toast_: text => notices.push(text) });
+  await workspace.requestAnalysis_(); assert.equal(workspace.requestAi, false); assert.equal(workspace.showShareOptions, false);
+  assert.deepEqual(notices, ['AI 服务已下线']);
+});
+
+/** 错误弹窗只导航到本局详情，拦住连点，并在路由失败后保留重试入口。 */
+test('the crash sheet opens the same local activity once and remains open after navigation failure', async () => {
+  const p = page('components/McErrorSheet.ets', ['openAnalysis_']);
+  const routes = [], notices = [];
+  let closes = 0, resolve, reject;
+  Object.assign(p, { sessionKey: 32, openingLogs: false, onClose: () => { closes++; },
+    getUIContext: () => ({ getRouter: () => ({ pushUrl: route => {
+      routes.push(route); return new Promise((yes, no) => { resolve = yes; reject = no; });
+    } }), getPromptAction: () => ({ showToast: options => notices.push(options.message) }) }) });
+  const first = p.openAnalysis_(); await p.openAnalysis_();
+  assert.deepEqual(routes, [{ url: 'pages/ActivityLogPage', params: { activityId: 32, view: 'overview' } }]);
+  reject(new Error('page unavailable')); await first;
+  assert.equal(closes, 0); assert.equal(p.openingLogs, false); assert.match(notices[0], /请重试/);
+  const retry = p.openAnalysis_(); resolve(); await retry;
+  assert.equal(routes.length, 2); assert.equal(closes, 1);
+});
+
+/** 新索引报告与旧版单正文均只从本机读取，不依赖提供方还能创建新任务。 */
+test('new and legacy saved AI reports remain readable after the provider is retired', async () => {
+  const states = { IDLE: 0, RUNNING: 1, DONE: 2, ERROR: 3 };
+  for (const legacy of [false, true]) {
+    const p = page('components/ActivityAiCard.ets', ['read_', 'canAnalyze_'], {
+      AiTaskState: states, LOGSHARE_API_BASE: 'https://api.logshare.cn', logShareSupportsAi: () => false,
+      loadAiReport: () => legacy ? undefined : { summary: '本地摘要', apiBaseUrl: 'https://api.logshare.cn', shareId: 'old', snapshotDigest: 'snapshot' },
+      loadAiReportBody: () => '已有完整报告', aiPreviewText: text => text, parseAiStructuredDiagnosis: () => undefined,
+      fs: { accessSync: () => true, statSync: () => ({ size: 30 }), readTextSync: () => '旧版本报告正文' },
+      loadShareRecords: async () => [{ activityId: 8, accepted: true, id: 'old', apiBaseUrl: 'https://api.logshare.cn', snapshotDigest: 'snapshot' }],
+      isShareRecordCurrent: () => true,
+    });
+    Object.assign(p, { activityId: 8, revision: 0, retryTimer: -1, expanded: true, allowAnalyze: true,
+      context_: () => ({ filesDir: '/fixture' }), applyTask_: () => false });
+    await p.read_();
+    assert.equal(p.canAnalyze_(), false); assert.equal(p.phase, states.DONE); assert.equal(p.localSaved, true);
+    assert.equal(p.answer, legacy ? '旧版本报告正文' : '已有完整报告');
+    assert.equal(p.failure, '');
+  }
+});
+
+/** 去重取得的链接没有本机删除凭据时，旧点击回调也不能进入删除确认或网络请求。 */
+test('a share without a local deletion token cannot enter revocation from share history', () => {
+  const p = page('pages/LogShareHistoryPage.ets', ['confirmRevoke_']);
+  Object.assign(p, { busy: false,
+    getUIContext() { throw new Error('缺少撤回凭据时不得弹出删除确认'); } });
+  p.confirmRevoke_({ token: '' }); assert.match(p.errorText, /没有撤回凭据/); assert.equal(p.busy, false);
 });
 
 test('a disabled author destination never silently becomes public sharing', async () => {

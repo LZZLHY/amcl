@@ -51,17 +51,18 @@ export struct DesktopGamepadSettings {
           Column({ space: 4 }) {
             Text('由游戏处理手柄').fontSize(16).fontColor(this.theme.textPrimary)
             Text('适合控制器模组。关闭时使用启动器按键映射；下次启动游戏生效。')
-              .fontSize(12).fontColor(this.theme.textHint)
+              .fontSize(14).fontColor(this.theme.textSecondary)
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.nativeMode })
+            .width(48).height(32).responseRegion({ x: 0, y: -8, width: 48, height: 48 })
             .accessibilityText('由游戏处理手柄')
             .enabled(!this.saving)
             .onChange((enabled: boolean) => {
               this.changeNativeMode_(enabled)
             })
-        }.width('100%').padding({ top: 12, bottom: 12 })
+        }.width('100%').padding(16)
         if (this.saveMessage.length > 0) {
-          Text(this.saveMessage).fontSize(12).fontColor(this.theme.textHint).width('100%')
+          Text(this.saveMessage).fontSize(14).fontColor(this.theme.textSecondary).width('100%').padding({ left: 16, right: 16, bottom: 16 })
         }
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
       }

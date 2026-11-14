@@ -15,7 +15,6 @@ import { removeDirRecursive, isVersionInstalled, writeVersionInstallCommit,
   removeVersionInstallCommit } from 'commons';
 import { ModLoaderManager } from '../modloader/ModLoaderManager';
 import { DownloadManager, DownloadFailedFile } from './DownloadManager';
-import { ensureRanking } from './SourceProber';
 import { formatSpeed } from 'commons';
 // Phase 6.3 (S3-2): PhaseRunner 抽象 + 6 个 phase 类
 import {
@@ -508,8 +507,8 @@ export class DownloadTask {
     try {
       await p;
     } catch (e) {
-      // ⚠️ 2026-08-04：doStart 的**前置检查**（"版本 X 已存在"、ensureRanking 之前的
-      //   目录清理等）抛在 phase try/catch 之外，那条路径一次 notify 都不发，phase 会
+      // ⚠️ 2026-08-04：doStart 的**前置检查**（"版本 X 已存在"、目录准备等）
+      //   抛在 phase try/catch 之外，那条路径一次 notify 都不发，phase 会
       //   一直停在 PREPARE。上层 McVersionTask.mapPhase(PREPARE) = PREPARING，于是
       //   view 永久卡"准备中"：isInProgressState 恒真 → Registry.remove() 拒绝清理，
       //   enqueue 同 id 又被"已在进行中"顶掉 → 这个版本在杀进程前再也装不了。
@@ -568,14 +567,7 @@ export class DownloadTask {
     this.startTimeMs = Date.now();
     this.alog_.info(TAG, `Start: game=${this.gameVersion} loader=${this.loaderType || 'none'} ver=${this.loaderVersion} name=${this.versionName}`, LOG_DOMAIN_DOWNLOAD)
 
-    try {
-      let ranking = await ensureRanking();
-      this.alog_.info(TAG, `Source ranking: bmclapiFirst=${ranking.bmclapiFirst ? 'true' : 'false'}`, LOG_DOMAIN_DOWNLOAD)
-    } catch (e) {
-      this.alog_.warn(TAG, 'Source probe failed, using defaults', e, LOG_DOMAIN_DOWNLOAD)
-    }
-
-    // 元数据测速期间也可收到取消，进入目录写入前必须再次检查。
+    // 源偏好由准备阶段的真实版本清单响应更新。进入目录写入前确认任务仍有效。
     if (this.cancelled) throw new CancelledError();
     // 检查目标版本是否已安装（统一标准：jar > 1MB）
     let targetDir = this.mcDir + '/versions/' + this.versionName;
@@ -794,7 +786,9 @@ export class DownloadTask {
     for (let d of this.phaseDetails) {
       if (d.phase === p.phase) { phaseDetail = d; break; }
     }
-    if (phaseDetail === null) return;
+    // 已结束阶段可能还有排队中的 Native 进度事件。只接收当前阶段或它的后继，
+    // 避免旧阶段的字节数、速度和剩余时间重新进入任务卡。
+    if (phaseDetail === null || phaseDetail.status === 'done') return;
 
     // 阶段切换
     if (phaseDetail.status === 'pending') {
@@ -805,13 +799,16 @@ export class DownloadTask {
       }
       phaseDetail.status = 'running';
       this.phase = p.phase as DownloadPhase;
+      // 这些计数的所有者是单个阶段。下一阶段尚未报告字节数或 ETA 时应显示未知，
+      // 例如 assets 完成后 Fabric 只报告依赖文件数，不能继续显示 assets 的 100% 和 0 秒。
+      this.bytesDone = 0;
+      this.bytesTotal = 0;
+      this.etaSeconds = -1;
     }
 
-    // 任务级速度/ETA/字节
-    if (p.speedBps !== undefined && p.speedBps > 0) {
-      this.speed = formatSpeed(p.speedBps);
-    }
-    if (p.etaSeconds !== undefined && p.etaSeconds >= 0) {
+    // 零速度和 -1 ETA 都是有效的新样本，分别表示没有传输和时间未知。
+    this.speed = p.speedBps > 0 ? formatSpeed(p.speedBps) : '';
+    if (p.etaSeconds !== undefined) {
       this.etaSeconds = p.etaSeconds;
     }
     if (p.bytesDone !== undefined) this.bytesDone = p.bytesDone;

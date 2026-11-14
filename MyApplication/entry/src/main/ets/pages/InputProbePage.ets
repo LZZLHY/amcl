@@ -26,9 +26,12 @@
  */
 
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
+import { ThemeColors, ThemeMode, resolveTheme } from 'commons';
+import { PreferenceManager } from 'feature_system';
+import { applyNativeTheme } from '../components/AppTheme';
 
 const MONO: string = 'monospace';
-const BG: string = '#0E1117';
 const PANEL: string = '#161B22';
 const FG: string = '#C9D3DE';
 const DIM: string = '#6E7B8A';
@@ -67,6 +70,10 @@ class Counters {
 @Entry
 @Component
 struct InputProbePage {
+  /** 只更新诊断页外围；事件采集区与裁决的固定终端配色保持独立语义。 */
+  @State private theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false);
+  @StorageProp('currentColorMode') @Watch('applyTheme_') private colorMode_: number = 0;
+  @StorageProp('appThemeRevision') @Watch('applyTheme_') private appThemeRevision_: number = 0;
   @State deviceLine: string = '';
   @State verdictText: string = '接上鼠标，然后按住左键拖动 2~3 秒';
   @State verdictColor: string = AMBER;
@@ -84,8 +91,21 @@ struct InputProbePage {
   private lastRawDy: number = 0;
 
   aboutToAppear(): void {
+    this.applyTheme_();
     this.deviceLine = `${deviceInfo.marketName} · ${deviceInfo.osFullName} · API ${deviceInfo.sdkApiVersion} · ${deviceInfo.deviceType}`;
   }
+
+  /** 只读取主题，不清零样本、不冻结采集，也不引入新的输入或计时订阅。 */
+  private applyTheme_(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (context === undefined) return;
+    const preferences: PreferenceManager = new PreferenceManager(context);
+    this.theme = resolveTheme(preferences.themeMode,
+      this.colorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK, preferences.themeAccent);
+    applyNativeTheme(this.theme);
+  }
+
+  onPageShow(): void { this.applyTheme_(); }
 
   // ==================== 事件采集 ====================
 
@@ -302,10 +322,26 @@ struct InputProbePage {
     this.verdictColor = AMBER;
   }
 
+  /** 设备事实按需完整查看；收起默认元信息行后仍可核对平台、型号和 SDK，不影响采集状态。 */
+  private showDeviceInfo_(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '当前诊断设备',
+      message: this.deviceLine.length > 0 ? this.deviceLine : '设备信息尚未就绪',
+      buttons: [{ text: '关闭', color: this.theme.actionText as string }],
+    }).catch((): void => { /* 点击框外或返回仅关闭设备信息。 */ });
+  }
+
   build() {
     Column({ space: 8 }) {
-      Text('键鼠原始输入诊断').fontSize(18).fontColor(FG).fontWeight(FontWeight.Bold)
-      Text(this.deviceLine).fontSize(11).fontColor(DIM).fontFamily(MONO)
+      Row({ space: 8 }) {
+        Text('键鼠原始输入诊断').fontSize(18).fontColor(this.theme.textPrimary).fontWeight(FontWeight.Bold)
+          .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Button({ type: ButtonType.Normal }) {
+          Text(deviceInfo.marketName || deviceInfo.deviceType).fontSize(12).fontColor(this.theme.actionText)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).ellipsisMode(EllipsisMode.CENTER)
+        }.height(44).constraintSize({ maxWidth: 104 }).padding({ left: 4, right: 4 }).backgroundColor(Color.Transparent)
+          .accessibilityText('当前诊断设备：' + this.deviceLine).onClick((): void => { this.showDeviceInfo_(); })
+      }.width('100%').alignItems(VerticalAlign.Center)
 
       Text(this.verdictText)
         .fontSize(13).fontColor(this.verdictColor).fontFamily(MONO)
@@ -317,11 +353,11 @@ struct InputProbePage {
 
       Row({ space: 10 }) {
         Button(this.frozen ? '继续采集' : '暂停采集')
-          .type(ButtonType.Capsule).fontSize(13)
+          .type(ButtonType.Capsule).fontSize(13).backgroundColor(this.theme.actionPrimary).fontColor(this.theme.textOnPrimary)
           .onClick(() => { this.frozen = !this.frozen; })
-        Button('清零').type(ButtonType.Capsule).fontSize(13)
+        Button('清零').type(ButtonType.Capsule).fontSize(13).backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText)
           .onClick(() => { this.resetAll(); })
-        Button('返回').type(ButtonType.Capsule).fontSize(13)
+        Button('返回').type(ButtonType.Capsule).fontSize(13).backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText)
           .onClick(() => { this.getUIContext().getRouter().back(); })
       }
 
@@ -355,6 +391,6 @@ struct InputProbePage {
             .onActionEnd((e: GestureEvent) => { this.handlePan('end   ', e); })
         )
     }
-    .width('100%').height('100%').padding(12).backgroundColor(BG)
+    .width('100%').height('100%').padding(12).backgroundColor(this.theme.bgPrimary)
   }
 }

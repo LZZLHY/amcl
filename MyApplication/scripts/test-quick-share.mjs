@@ -10,7 +10,8 @@ import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 const base = 'https://api.logshare.cn';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const plan = overrides => ({ apiBaseUrl: base, checkedAt: Date.now(), attempts: [],
-  limits: { ok: true, maxBytes: 10485760, maxLines: 50000, storageTimeSec: 1296000 }, ...overrides });
+  limits: { ok: true, maxBytes: 10485760, maxLines: 50000, storageTimeSec: 1296000,
+    maxFiles: 200, maxTotalBytes: 12*1024*1024, maxRequestBodyBytes: 20*1024*1024 }, ...overrides });
 const meta = { launcher: 'AMCL', appVersion: 'test', mcVersion: 'test', loader: '', jdk: '', device: '', osVersion: '', outcome: '' };
 function component(names, bindings = {}) {
   const file = 'entry/src/main/ets/components/ActivityShareSheet.ets';
@@ -34,9 +35,9 @@ function sheetFixture(options = {}) {
     rememberQuickShareConsent: async () => { remembers++; },
     shareEvidenceSnapshot: async () => { sends++; return record; },
     disposeEvidenceExportSnapshot: () => { disposed++; }, activityShareMetadata: () => meta,
-    saveSessionShare: async () => {}, logShareSupportsAi: url => url.startsWith('https://logshare.cn/'),
+    saveSessionShare: async () => {}, logShareSupportsAi: () => false,
     logShareSourceLabel: () => 'official',
-    logShareExportBudgetBytes: limits => limits.ok ? 12 * 1024 * 1024 : 0,
+    logShareExportBudgetBytes: limits => limits.ok ? Math.min(limits.maxTotalBytes,20*1024*1024) : 0,
     DistributionPolicy: { allowPublisherServices: () => true },
   });
   Object.assign(p, { alive: true, generation: 0, advanced: options.advanced ?? false, context: {},
@@ -61,7 +62,25 @@ test('advanced and backup paths cannot inherit automatic public upload authoriza
   assert.equal(advanced.counts().sends, 0); assert.equal(advanced.p.phase, 'review');
   const backup = sheetFixture({ consent: true, plan: plan({ apiBaseUrl: 'https://amcl.lovedhy.cn/logshare-api' }) });
   backup.p.requestAi = true; await backup.p.prepare_(true);
-  assert.equal(backup.counts().sends, 0); assert.equal(backup.p.requestAi, false); assert.match(backup.p.errorText, /不支持 AI/);
+  assert.equal(backup.counts().sends, 0); assert.equal(backup.p.requestAi, false); assert.equal(backup.p.errorText, '');
+});
+
+/** 分享只提交文件与凭据，升级前残留的分析选择不会额外启动已下线的任务。 */
+test('an old AI selection cannot attach analysis to official or backup sharing', async () => {
+  for (const apiBaseUrl of [base, 'https://amcl.lovedhy.cn/logshare-api']) {
+    const f = sheetFixture({ advanced: true, plan: plan({ apiBaseUrl }) });
+    f.p.requestAi = true; await f.p.prepare_(false);
+    assert.equal(f.p.requestAi, false); assert.equal(f.counts().sends, 0);
+    f.p.requestAi = true; await f.p.send_(false);
+    assert.equal(f.p.requestAi, false); assert.equal(f.counts().sends, 1); assert.equal(f.counts().ai, 0);
+  }
+});
+
+test('a deduplicated share without a local token does not promise revocation', () => {
+  const f = sheetFixture();
+  assert.match(f.p.receiptCaption_({ url: 'https://logshare.cn/abc1234', token: '' }), /本机无撤回凭据/);
+  assert.doesNotMatch(f.p.receiptCaption_({ url: 'https://logshare.cn/abc1234', token: '' }), /撤回凭据已保存/);
+  assert.match(f.p.receiptCaption_({ url: 'https://logshare.cn/abc1234', token: 'held-token' }), /撤回凭据已保存/);
 });
 
 test('stale preflight with unchanged terms sends once; changed provider requires a fresh confirmation', async () => {
@@ -71,6 +90,19 @@ test('stale preflight with unchanged terms sends once; changed provider requires
   const changed = sheetFixture({ plan: plan({ apiBaseUrl: 'https://amcl.lovedhy.cn/logshare-api' }) });
   changed.p.snapshot = { files: [] }; changed.p.phase = 'review'; changed.p.preflight = plan({ checkedAt: Date.now() - 70000 });
   await changed.p.send_(false); assert.equal(changed.counts().sends, 0); assert.equal(changed.p.phase, 'review');
+});
+
+/** 新版实例的逐文件哨兵值相同，仍须把三项真实配额变化作为重新确认的条件。 */
+test('new file count, total and body quotas invalidate confirmation and constrain preview', () => {
+  const f=sheetFixture(), original=plan();
+  for (const field of ['maxFiles','maxTotalBytes','maxRequestBodyBytes']) {
+    const changed={...original,limits:{...original.limits,[field]:original.limits[field]-1}};
+    assert.equal(f.p.samePlan_(original,changed),false,field);
+  }
+  f.p.previews=[{bytes:10,lines:1},{bytes:10,lines:1}];
+  assert.equal(f.p.fits_(original),true);
+  assert.equal(f.p.fits_({...original,limits:{...original.limits,maxFiles:1}}),false);
+  assert.equal(f.p.fits_({...original,limits:{...original.limits,maxTotalBytes:19}}),false);
 });
 
 test('quick defaults do not adopt advanced optional files; consent changes with retention and instance', async () => {
@@ -190,33 +222,6 @@ test('SSE status exposes only coarse queue progress, never reasoning or tool pay
     + 'data: {"choices":[{"delta":{"content":"公开结论"}}]}\n\nevent: done\ndata: {"status":"completed"}\n\n');
   assert.deepEqual(statuses, [['queued', 2], ['analyzing', 0], ['analyzing', 0]]);
   assert.deepEqual(answers, ['公开结论']);
-});
-
-test('AI HTTP errors preserve delayed JSON and Retry-After regardless of event order', async () => {
-  for (const code of [404, 429]) {
-    for (const bodyFirst of [false, true]) {
-      const f = evidenceRuntime({ imports: { '@kit.NetworkKit': { http: { RequestMethod: { GET: 'GET' }, createHttp: () => {
-        const handlers = new Map();
-        return { on: (name, callback) => handlers.set(name, callback), off: name => handlers.delete(name), destroy() {},
-          requestInStream: async () => {
-            handlers.get('headersReceive')?.({ 'content-type': 'application/json', 'retry-after': '45' });
-            const body = () => { handlers.get('dataReceive')?.(new TextEncoder().encode(JSON.stringify({ code,
-              error: code === 404 ? 'AI analysis is disabled.' : 'queue full' })).buffer); handlers.get('dataEnd')?.(); };
-            if (bodyFirst) body(); else setTimeout(body, 5);
-            return code;
-          } };
-      } } } } });
-      try {
-        const client = f.load('entry/src/main/ets/components/LogShareClient.ets'); let wait = 0;
-        const error = await new Promise(resolve => client.streamAiAnalysis('abc1234', {
-          onDelta() { throw new Error('HTTP 错误不得当正文'); }, onDone() { throw new Error('HTTP 错误不得成功'); },
-          onRetryAfter: seconds => { wait = seconds; }, onError: resolve,
-        }));
-        if (code === 404) { assert.match(error, /AI 服务暂未开启/); assert.doesNotMatch(error, /日志不存在或已过期/); }
-        else { assert.equal(wait, 45); assert.match(error, /45 秒/); }
-      } finally { f.close(); }
-    }
-  }
 });
 
 test('identical selected bytes from different activities never reuse another activity receipt', async () => {

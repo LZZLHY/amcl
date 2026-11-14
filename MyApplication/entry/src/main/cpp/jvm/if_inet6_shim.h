@@ -78,8 +78,9 @@ extern "C" {
 /**
  * elf_loader 的 fopen 插桩入口。
  *
- * @return 非 NULL = 本垫片提供的可读流（调用方直接返回它）；
- *         NULL    = 本垫片不接管，**调用方必须回落真 fopen**。
+ * 精确目标路径内部先尝试真实 fopen；仅 EACCES/EPERM 允许由实际 IPv6 数据回落。
+ * 非 NULL 流由调用者 fclose，包含真实流或独占快照流。目标路径的 NULL 是本次
+ * 打开失败，errno 保留，不应再次 fopen 覆盖失败；非目标路径才由调用者自行打开。
  */
 FILE *amclIfInet6ShimOpen(const char *path, const char *mode);
 

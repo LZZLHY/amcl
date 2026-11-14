@@ -5,13 +5,13 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, fileUri, picker, statfs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { AtomicFileWriter, resolveInstanceGameDir, AppLogger } from 'commons';
+import { AtomicFileWriter, resolveInstanceGameDir, AppLogger, LedgerState } from 'commons';
 import { ExportRequest, ExportIssue, ExportVersionSource, ExportResolvedVersion, ExportInventoryFile,
   ExportDependency, ExportPlannedFile, ExportFilePlanResult, ExportVersionResolver, DesktopDependencyPlanner,
   ExportFilePlan, exportHasErrors, DownloadManager, DownloadFileSpec, DownloadTaskView, DownloadTaskRegistry, compileDownloadFiles,
   buildMavenArtifactUrls, artifactSidecarUrl, shouldUseBmclapiFirst,
   safeBaseName, safeRelPath, claimVersionInstall, isTerminalState, UnifiedTaskView, ExportPlatform,
-  ActivityRecord, ActivityCategory, getDownloadHistoryStore, ExportPath, ExportLoaderKind, ProcessActivityCoordinator,
+  ActivityCategory, getTaskActivityOwner, BusinessActivity, ExportPath, ExportLoaderKind, ProcessActivityCoordinator,
   ExportContentTree, defaultExportContentSelection, exportContentSelectionIssues } from 'feature_core';
 import testNapi from 'libentry.so';
 import { exportPathExists, assertExportPath, readExportText, readExportVersions, discoverExportContentTree,
@@ -124,6 +124,8 @@ export class GameExportCoordinator {
   private preparation_: ExportPreparationDownloadTask | null = null;
   /** 包括终态记录/清理的整段 Promise；展示终态不代表 owner 的 finally 已经收口。 */
   private execution_: Promise<void> | undefined = undefined;
+  /** 全导出而非仅下载阶段持有一个活动；所有准备文件日志显式归入这个固定身份。 */
+  private activity_: BusinessActivity | undefined = undefined;
   private recovered_: boolean = false;
   private draftTail_: Promise<void> = Promise.resolve();
   /** 历史记录恢复只拥有本次展示代次；新恢复请求或另存预约都会撤销旧异步读取的发布权。 */
@@ -204,6 +206,7 @@ export class GameExportCoordinator {
     if (this.task_ === null) throw new Error('导出任务已失去 owner');
     this.task_.stage = label; this.task_.message = message;
     this.task_.processedBytes = 0; this.task_.processedFiles = 0;
+    this.activity_?.event(label + '：' + message);
     await this.persistTask(); this.changed();
   }
 
@@ -596,7 +599,7 @@ export class GameExportCoordinator {
     }
     try {
       const result = await DownloadManager.instance().createAndWait({ name: '导出准备 ' + checked.preview.request.versionId,
-        files: compileDownloadFiles(specs) }, (view: DownloadTaskView): void => {
+        files: compileDownloadFiles(specs), activityId: this.activity_?.id }, (view: DownloadTaskView): void => {
           if (view.taskId > 0) this.downloadIds_.add(view.taskId);
           if (this.cancelRequested_ && view.taskId > 0) DownloadManager.instance().cancel(view.taskId);
           const label = '准备电脑依赖：' + (view.currentFile || dependencies[0].path);
@@ -742,6 +745,13 @@ export class GameExportCoordinator {
     let releaseVersion: (() => void) | undefined = undefined;
     let safeToClean = false;
     try {
+      // Picker已确认，业务owner固定完整导出身份；等待scope后才允许复制、下载及打包。
+      const activityOwner = getTaskActivityOwner(); activityOwner.configure(this.context().filesDir);
+      const startedAt = Number(task.id.substring(0, task.id.indexOf('-')));
+      this.activity_ = await activityOwner.begin({ category: ActivityCategory.GAME_EXPORT, title: '导出 ' + request.displayName,
+        gameVersionId: original.resolved.vanillaVersion, mcDir: request.mcRoot,
+        loaderType: original.resolved.loader.kind, loaderVersion: original.resolved.loader.version }, startedAt);
+      this.activity_.setExportTaskId(task.id);
       // 沿用Picker确认时已取得的预约；直到目标关闭/回读/记录和清理全部结束才释放。
       await makeDirectory(parentPath(work), this.context().filesDir); await fs.mkdir(work);
       const owner: ExportOwner = { id: task.id, schemaVersion: 1 };
@@ -844,23 +854,15 @@ export class GameExportCoordinator {
       try { await this.persistTask(); }
       catch (_) { task.message += ' 任务记录暂未保存，请保留本页结果并检查应用存储。'; }
       this.changed();
-      try {
-        const startedAt = Number(task.id.substring(0, task.id.indexOf('-')));
-        const record: ActivityRecord = { versionName: request.versionId, gameVersion: original.resolved.vanillaVersion,
-          loaderType: original.resolved.loader.kind, loaderVersion: original.resolved.loader.version,
-          startedAt, endedAt: Date.now(), durationMs: Math.max(0, Date.now() - startedAt), totalBytes: task.size,
-          fileCount: task.totalFiles, status: task.state === 'succeeded' ? 'success' : task.state === 'cancelled' ? 'aborted' : 'failed',
-          category: ActivityCategory.GAME_EXPORT, title: '导出 ' + request.displayName,
-          subtitle: request.format + ' · ' + request.launcher.toUpperCase(), mcDir: request.mcRoot, exportTaskId: task.id };
-        if (task.state !== 'succeeded') record.errorMessage = task.message;
-        const history = getDownloadHistoryStore(); await history.init(this.context()); await history.add(record);
-        // 私有任务终态先于活动LRU的异步耐久提交。内嵌Sheet可能已经返回详情/关闭，
-        // 此时首页不会经过onPageShow；只有add成功后再通知，消费者才能取得最新持久视图。
-        // 本次是稳定终态通知，与归档字节进度分开；写入失败仍沿下方原路径发布明确警告。
-        this.changed();
-      } catch (_) {
-        task.message += ' 活动摘要暂未保存，导出私有记录仍保留。';
-        try { await this.persistTask(); } catch (_) { /* 私有存储不可写时仍发布内存终态，释放owner。 */ }
+      if (this.activity_ !== undefined) {
+        // 私有任务结果已固定；统一owner先保存耐久终态再提交历史，IO失败只补写记录。
+        const saved = await getTaskActivityOwner().finishSafely(this.activity_, task.state === 'succeeded' ? LedgerState.SUCCESS
+          : task.state === 'cancelled' ? LedgerState.ABORTED : LedgerState.FAILED, task.message, task.size, task.totalFiles);
+        if (!saved) {
+          task.message += ' 活动摘要暂未保存，导出私有记录仍保留。';
+          try { await this.persistTask(); } catch (_) { /* 已确认的导出结局保持，原件等待统一owner补写。 */ }
+        }
+        this.activity_ = undefined;
         this.changed();
       }
       if (safeToClean) {

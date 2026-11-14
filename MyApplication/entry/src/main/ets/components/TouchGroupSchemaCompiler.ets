@@ -11,18 +11,30 @@ export function compileTouchGroups(profile: LayoutProfile, layout: RuntimeTouchL
   const phaseNames: ControlActionPhase[] = ['press','longPress','click','doubleClick']
   const ids: string[] = profile.controlGroups.map((group: ControlGroup): string => group.id)
   const result: TouchGroupSchema = { profile:profile.profileId ?? 'unsaved',
-    groups:profile.controlGroups.map((group: ControlGroup): TouchGroupSchemaDefinition => { return {id:group.id,initialVisible:group.initialVisible} }), controls:[] }
+    groups:profile.controlGroups.map((group: ControlGroup): TouchGroupSchemaDefinition => {
+      const definition: TouchGroupSchemaDefinition={id:group.id,initialVisible:group.initialVisible}
+      if(group.secondary===true){definition.secondary=true;definition.hidePrimary=group.hidePrimary===true}
+      return definition
+    }), controls:[] }
   for (let index: number = 0; index < controls.length; index++) {
     const entry = layout.find(controls[index].id)
     const item: ControlItem | undefined = entry?.item
     const parent: ControlItem | undefined = entry !== undefined && entry.parentId.length > 0 ? layout.find(entry.parentId)?.item : undefined
     const groupId: string | undefined = item?.controlGroupId ?? parent?.controlGroupId
     const group: number = groupId === undefined ? -1 : ids.indexOf(groupId)
-    const phases: boolean = item !== undefined && (item.phaseBindings !== undefined || (item.groupActions?.length ?? 0) > 0)
+    const secondary: boolean = item?.secondaryAction !== undefined
+    const phases: boolean = item !== undefined && (secondary || item.phaseBindings !== undefined || (item.groupActions?.length ?? 0) > 0)
     const binding: TouchGroupSchemaControl = { group:group,phases:phases,fcl:item?.gesturePolicy === 'fcl',mouseTool:item?.systemAction === 'mouse',rank:index,bindings:[] }
+    if(item?.secondaryAction!==undefined){
+      binding.secondaryTarget=ids.indexOf(item.secondaryAction.groupId)
+      binding.secondaryReturn=item.secondaryAction.kind==='return';binding.fcl=false
+    }
     for (const phase of phaseNames) {
       const value: TouchGroupSchemaPhase = { keys:[],autoKeep:false,actions:[] }
-      if (item !== undefined && phases) {
+      // 绑定期间原游戏动作只作为解绑恢复数据保存，绝不与展开/收起同时发送。
+      if (item?.secondaryAction !== undefined) {
+        if(phase==='press')value.actions.push({target:binding.secondaryTarget!,operation:binding.secondaryReturn ? 4 : 3})
+      } else if (item !== undefined && phases) {
         if (item.phaseBindings !== undefined) {
           const saved = item.phaseBindings.find((candidate: ControlPhaseBinding): boolean => candidate.phase === phase)
           if (saved !== undefined) { value.keys=saved.keys.slice(); value.autoKeep=saved.autoKeep }

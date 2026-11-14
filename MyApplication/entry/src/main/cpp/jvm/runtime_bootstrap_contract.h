@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include "jna_runtime_contract.h"
+#include "hap_native_provider_contract.h"
 #include "../platform/egl_provider_dispatch.h"
 
 namespace amcl::jvm {
@@ -67,19 +68,36 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
         // GLES。调用者须保证同线程已有兼容的真实 GLES current context，本属性不切换它。
         {"org.lwjgl.opengles.libname", "libGLESv3.so"},
         {"org.lwjgl.opengles.contextAPI", "EGL"},
-        {"org.lwjgl.glfw.libname", "libglfw.so"},
-        {"org.lwjgl.sdl.libname", "libSDL3.so"},
-        {"org.lwjgl.freetype.libname", "libfreetype.so"},
-        {"org.lwjgl.vulkan.libname", "libamcl_vulkan_wsi.so"},
-        {"org.lwjgl.shaderc.libname", "shaderc"},
-        {"org.lwjgl.spvc.libname", "spirv-cross"},
+        // 明确选择本 HAP 的外部 C provider，避免同名 JDK 库/上游平台 natives 抢占。
+        // LWJGL 的绝对路径入口不使用 Maven natives SHA1；AMCL 成品门绑定真实 ELF、
+        // 来源和导出面，生成 JNI 模块的原有 hash 检查不受影响。
+        {"org.lwjgl.glfw.libname", nativeDir + "/libglfw.so"},
+        {"org.lwjgl.openal.libname", nativeDir + "/libopenal.so"},
+        {"org.lwjgl.sdl.libname", nativeDir + "/libSDL3.so"},
+        // SDL的独立FFM绑定在system fallback读取此公开属性。显式Path加载的第三方内嵌
+        // 库仍由原绑定处理；这里只冻结fallback到已审核的同包制品，不抢先初始化SDL。
+        {"dev.isxander.sdl.library", nativeDir + "/libSDL3.so"},
+        {"org.lwjgl.freetype.libname", nativeDir + "/libfreetype.so"},
+        {"org.lwjgl.vulkan.libname", nativeDir + "/libamcl_vulkan_wsi.so"},
+        {"org.lwjgl.shaderc.libname", nativeDir + "/libshaderc.so"},
+        {"org.lwjgl.spvc.libname", nativeDir + "/libspirv-cross.so"},
         {"amcl.graphics.profile", profile}, {"amcl.sdl3", sdl ? "1" : "0"},
         // JNI 协议由实际 classpath JNA 决定。deferred 用空 boot path 与禁止系统搜索，
         // 交回 JNA 自带 native，不能再无条件强制协议 7 或允许错误 fallback 偷换槽位。
         {"jna.boot.library.path", jna.bootLibraryPath}, {"jna.boot.library.name", jna.bootLibraryName},
         {"jna.nosys", "true"}, {"jna.tmpdir", gameDir + "/natives/jna"},
         {"imgui.library.path", nativeDir},
+        // 标准 Java Sound SPI 由启动器父加载域交付；JNI 路径须先于任意 AudioSystem 查询冻结。
+        {"amcl.audio.jni.path", nativeDir + "/libamcl_audio_jni.so"},
+        {"amcl.audio.enabled", "true"}, {"amcl.audio.service.schema", "1"},
+        // 自有候选路径只描述已交付 native。Java 只读 resolver 命中真实绑定后才启用官方属性。
+        {"amcl.sherpa.native.path", nativeDir},
+        // zstd标准/DH绑定先按完整Java身份选择；只发布当前HAP目录，不预加载或改变上游用户值。
+        {"amcl.zstd.native.path", nativeDir},
         {"minecraft.applet.TargetDirectory", gameDir},
+        // Java业务临时文件与实例数据同卷，默认Files.move可走rename。VM工具/Attach使用
+        // jvmInit独立发布的私有TMPDIR；processor入口不调用本游戏属性工厂，仍沿用旧默认。
+        {"java.io.tmpdir", gameDir + "/.amcl/java-tmp"},
         {"net.minecraft.clientmodname", "AMCL"}
     };
     // 必须在 agent 与 LWJGL Configuration 初始化前冻结；Linux 默认 libEGL.so.1
@@ -95,6 +113,30 @@ inline std::string PropertyKey(const std::string& argument) {
     if (argument.compare(0, 2, "-D") != 0) return {};
     const auto end = argument.find('=', 2);
     return argument.substr(2, end == std::string::npos ? end : end - 2);
+}
+
+/**
+ * 显式Java临时目录是高级用户输入，保留其最后参数生效语义，不暗中替换为游戏默认值。
+ * 只移除本厂生成的缺省属性，不修改原参数；返回true提示调用方不要创建缺省目录。
+ * 它不改变VM原生TMPDIR，也不因自定义路径而授予同卷移动或私有存储保证。
+ */
+inline bool PreserveExplicitJavaTempDirectory(const std::vector<std::string>& arguments,
+        std::vector<BootstrapProperty>& properties) {
+    const bool custom = std::any_of(arguments.begin(), arguments.end(), [](const auto& argument) {
+        return PropertyKey(argument) == "java.io.tmpdir";
+    });
+    if (custom) properties.erase(std::remove_if(properties.begin(), properties.end(), [](const auto& property) {
+        return property.first == "java.io.tmpdir";
+    }), properties.end());
+    return custom;
+}
+
+/** 标准mixer仅提供缺省选择；保留用户明确选的可用provider，不把它升级为宿主独占路径。 */
+inline void ApplyAudioMixerDefaults(std::vector<std::string>& args) {
+    for (const char* key : {"javax.sound.sampled.SourceDataLine", "javax.sound.sampled.TargetDataLine", "javax.sound.sampled.Clip"}) {
+        const bool selected = std::any_of(args.begin(), args.end(), [key](const std::string& arg) { return PropertyKey(arg) == key; });
+        if (!selected) args.emplace_back(std::string("-D") + key + "=com.amcl.audio.OhosMixerProvider");
+    }
 }
 
 /**

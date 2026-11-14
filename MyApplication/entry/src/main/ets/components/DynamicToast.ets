@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * DynamicToast.ets — 应用内灵动弹窗（消息中心与诊断体验 · M5.6）
  *
  * 用户在应用内时用它告知（切后台才发系统通知，见 AppNotifier 的分流表）。
@@ -103,7 +107,7 @@ export struct DynamicToast {
       }
       .width(34).height(34)
       .borderRadius(17)
-      .backgroundColor(this.theme.primary)
+      .backgroundColor(this.theme.actionPrimary)
 
       Column({ space: 2 }) {
         Text(this.title)
@@ -124,7 +128,7 @@ export struct DynamicToast {
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .backgroundColor(this.theme.bgCard)
     .borderRadius(18)
-    .shadow({ radius: 16, color: '#26000000', offsetY: 4 })
+    .shadow({ radius: 16, color: this.theme.cardShadowColor, offsetY: 4 })
     .alignItems(VerticalAlign.Center)
     .margin({ top: this.topSafeHeight + 8, left: 12, right: 12 })
     .translate({ y: this.offsetY })

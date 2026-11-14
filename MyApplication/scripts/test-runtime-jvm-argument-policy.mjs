@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
 const noIO = () => { throw new Error('参数回归不允许文件或设备调用'); };
+// 分词已成为设置/启动共用的真实纯模块，fixture只补依赖，不复写算法。
+const resolutionLoad = makePureEtsLoader();
 class SilentLogger {
   info() {}
   warn() {}
@@ -19,11 +21,13 @@ const load = makePureEtsLoader({
   '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
   // 本测试的版本投影不含 libraries；若将来调用到 Maven 解析，需显式扩展真实依赖范围。
   '../modloader/MavenUtils': { mavenToRelativePath: noIO },
-  commons: { ActivityLogger: SilentLogger, formatError: String },
+  commons: { ActivityLogger: SilentLogger, formatError: String,
+    ...resolutionLoad('commons/src/main/ets/utils/JvmArgumentTokens.ets'),
+    ...resolutionLoad('commons/src/main/ets/common/GameResolutionPolicy.ets') },
   feature_core: {},
   account: {},
   mods: {},
-  './LaunchNativeBridge': { launchNative: () => ({ getCommonJvmArgs: () => ['-XX:-UseCompressedOops'] }) },
+  './LaunchNativeBridge': { launchNative: () => ({ getCommonJvmArgs: () => ['-XX:-UseCompressedOops', '-XX:-UsePerfData', '-XX:+DisableAttachMechanism'] }) },
   './GameCompatibility': {},
   './GraphicsProfileRegistry': { GraphicsGameApi: { UNKNOWN: 'unknown' } },
   './GraphicsBackendPlan': { VulkanPolicy: { ALLOW: 'allow' } },
@@ -119,3 +123,15 @@ assert.deepEqual(retainLastJvmArgumentValues(['--add-opens', 'java.base/java.lan
   '--add-opens', 'java.base/java.nio=ALL-UNNAMED']), ['--add-opens', 'java.base/java.lang=ALL-UNNAMED',
   '--add-opens', 'java.base/java.nio=ALL-UNNAMED']);
 console.log(`PASS runtime JVM argument policy: ${manifestCases} official-manifest/path cases, custom provenance, last-value overrides, repeatable modules and provider negatives`);
+
+// 实际LaunchProfileBuilder生产方法必须保留manifest条件默认；此处只验证参数来源/顺序，
+// marker读取、native装配及JVM有效值分别有独立门，不能将本ArkTS单元结果冒称目标资格。
+const tempManifest = ['-XX:-UsePerfData', '-XX:+DisableAttachMechanism'];
+const filteredTemp = builderFor(gameDir).filterJvmArgs(['-XX:-UseCompressedOops', ...tempManifest], '/fixture/client.jar');
+assert.deepEqual(filteredTemp, tempManifest, '仅两项条件默认例外；其它SSOT仍去重');
+assert.deepEqual(builderFor(gameDir).mergeUserJvmArgs(filteredTemp), tempManifest,
+  'manifest显式输入在没有用户覆盖时保持原顺序');
+const userTempOptions = ['-XX:+UsePerfData', '-XX:-DisableAttachMechanism'];
+assert.deepEqual(builderFor(gameDir, userTempOptions.join(' ')).mergeUserJvmArgs(filteredTemp),
+  [...tempManifest, ...userTempOptions], '用户显式值留在最后，不重排或丢弃');
+console.log('PASS real LaunchProfileBuilder temp defaults: manifest preserved, other SSOT dedup, custom last; no native qualification');

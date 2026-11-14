@@ -27,6 +27,14 @@ for token,path,signature in [
     source=(module/path).read_text(encoding='utf-8')
     template=template.replace(token,extract.block(source,source.index(signature)))
 
+# EGL 窗口缓存的写入和公开查询也编译生产正文；测试只替代对象容器/驱动，不复制
+# “正尺寸是否可发布、pbuffer 是否可覆盖”等判据。限定类名替换仅适配宿主夹具名。
+core=(module/'MG_State/EGLState/Core.cpp').read_text(encoding='utf-8')
+for token,signature in [
+    ('@UPDATE_DRAWABLE@','            void EGLContext::UpdateWindowDrawableExtent('),
+    ('@QUERY_SURFACE@','            Bool EGLContext::QuerySurface(')]:
+    template=template.replace(token,extract.block(core,core.index(signature)).replace('EGLContext::','State::').replace('const_cast<EGLContext*>','const_cast<State*>'))
+
 # 默认排序同样从真实头文件取，不能用夹具自行重写的排名掩盖上游行为变化。
 header=(module/'MG_Backend/DirectVulkan/Renderer/SwapchainObject.h').read_text(encoding='utf-8')
 ranking=re.search(r'static constexpr VkPresentModeKHR s_desiredPresentModes\[\]\s*\{[^}]+\};',header).group()
@@ -42,7 +50,8 @@ with workspace_temporary_directory(prefix='amcl-mobilegl-present-') as temporary
     source.write_text(template.replace(needle,'(void)backendFunctions.Present(); return {PresentationStatus::Presented,true,0};'),encoding='utf-8')
     compile_cpp(source,binary,standard='c++20')
     rejected=subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
-    assert rejected.returncode!=0 and 'PresentedSequence()' in rejected.stderr,rejected
+    # 新增尺寸检查可能先于呈现序列检查击穿该反控；两者都必须来自同一生产链。
+    assert rejected.returncode!=0 and any(marker in rejected.stderr for marker in ('PresentedSequence()', 'width ==')),rejected
     print('PASS: unconditional-success backend negative control rejected')
     # 撤回OHOS切换资格更新后，pbuffer会错误沿用窗口VSync；必须由相同真实retarget用例拒绝。
     needle='m_presentsToAppWindow = window != NativeWindowType{};'
@@ -52,3 +61,19 @@ with workspace_temporary_directory(prefix='amcl-mobilegl-present-') as temporary
     rejected=subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
     assert rejected.returncode!=0 and 'm_presentsToAppWindow' in rejected.stderr,rejected
     print('PASS: stale OHOS window/pbuffer classification negative control rejected')
+    # 撤回实际尺寸回传，旧“呈现成功但 query 永远为零”必须由同一跨层用例拒绝。
+    needle='state->UpdateWindowDrawableExtent(dpy, draw, result.drawableWidth, result.drawableHeight);'
+    assert template.count(needle)==1
+    source.write_text(template.replace(needle,'/* negative: omit actual drawable publication */'),encoding='utf-8')
+    compile_cpp(source,binary,standard='c++20')
+    rejected=subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
+    assert rejected.returncode!=0 and 'width ==' in rejected.stderr,rejected
+    print('PASS: missing actual drawable publication negative control rejected')
+    # 预旋转后的图像宽高不能冒充 GL 应用坐标域；两个域刻意采用相反宽高。
+    needle='presentedDrawableExtent = m_swapchainObject.GetSurfaceExtent();'
+    assert template.count(needle)==1
+    source.write_text(template.replace(needle,'presentedDrawableExtent = m_swapchainObject.GetExtent();'),encoding='utf-8')
+    compile_cpp(source,binary,standard='c++20')
+    rejected=subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
+    assert rejected.returncode!=0 and 'width ==' in rejected.stderr,rejected
+    print('PASS: pre-rotated image extent negative control rejected')

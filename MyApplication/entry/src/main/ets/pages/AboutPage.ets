@@ -1,6 +1,14 @@
+import { applyNativeTheme } from '../components/AppTheme';
 import { util } from '@kit.ArkTS';
 import { DistributionPolicy } from 'commons';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
+import {
+  SettingsDivider,
+  SettingsGroup,
+  SettingsHint,
+  SettingsToggleRow,
+  SettingsValueRow
+} from '../components/SettingsPrimitives';
 /**
  * AboutPage.ets — 关于页
  *
@@ -24,10 +32,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
 import { APP_VERSION, APP_REPO_URL, AUTHOR_EMAIL, QQ_GROUP_ID } from 'commons';
 import { BRAND_DISCLAIMER } from 'commons';
-import { DeviceProfile } from 'commons';
 import { AppIconName } from 'commons';
 import { formatBytes } from 'commons';
-import { AppIcon } from '../components/AppIcon';
 import { SideloadUpdateService } from '../sideload/SideloadUpdateService';
 import { UpdatePromptPresenter } from '../components/UpdatePromptPresenter';
 import { UpdateDialog } from '../components/UpdateDialog';
@@ -45,6 +51,8 @@ struct AboutPage {
   @StorageProp('topRectHeight') topSafeHeight: number = 0
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
   /** 检查更新进行中（禁用重复点击 + 显示「检查中…」）。 */
   @State private checkingUpdate: boolean = false
   /** 是否有可用更新（驱动「检查更新」行红点，与 Index 的自动更新红点同源判定）。 */
@@ -113,7 +121,8 @@ struct AboutPage {
   private applyTheme_(): void {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
     let mode = this.prefManager.themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   onColorModeChange(): void {
@@ -160,6 +169,11 @@ struct AboutPage {
   /** 检查更新：按所选通道核对安装编号及发行名，并展示更新或返回正式版候选。 */
   private async doCheckUpdate_(): Promise<void> {
     if (DistributionPolicy.isStore()) return
+    // 开发者版只在专用页明确选择退出，不借普通“检查更新”恢复自动推荐。
+    if (!UpdateChecker.automaticAllowed()) {
+      this.getUIContext().getRouter().pushUrl({url:'pages/SoftwareUpdatePage'}).catch((): void => {})
+      return
+    }
     if (this.checkingUpdate) return
     this.checkingUpdate = true
     const generation = ++this.checkGeneration
@@ -276,179 +290,181 @@ struct AboutPage {
   }
 
   /** 后台/设置往返仅发布显示事实，不销毁连续更新。真正离页取消迟到检查请求。 */
-  onPageShow(): void { this.allowDebug = GameRunAdmission.isAllowed(); this.hasPendingUpdate = !DistributionPolicy.isStore() && SideloadUpdateService.get(this.context).needsAttention(); this.pageVisible = true; if (this.pendingUpdate !== undefined) { const pending = this.pendingUpdate; this.pendingUpdate = undefined; this.showUpdateDialog_(pending) } }
+  onPageShow(): void { this.applyTheme_();  this.allowDebug = GameRunAdmission.isAllowed(); this.hasPendingUpdate = !DistributionPolicy.isStore() && SideloadUpdateService.get(this.context).needsAttention(); this.pageVisible = true; if (this.pendingUpdate !== undefined) { const pending = this.pendingUpdate; this.pendingUpdate = undefined; this.showUpdateDialog_(pending) } }
   onPageHide(): void { this.pageVisible = false; this.exitUpdateForRoute_(); setTimeout((): void => { this.exitUpdateForRoute_(); }, 0) }
   aboutToDisappear(): void {
     this.checkGeneration++; this.pageVisible = false; if (UpdatePromptPresenter.owns(this.updatePresenterOwner)) this.exitPresentedUpdate(); this.closeUpdateDialog_(); UpdatePromptPresenter.forget(this.updatePresenterOwner)
   }
 
+  /**
+   * 标题仍由既有 HDS 宿主管理，系统返回和更新弹窗席位不会因视觉重排另起所有者。
+   * 通过箭头转调正文 Builder，保证正文中的状态始终读取当前 AboutPage 实例。
+   */
   build() {
     Column() {
-    // 返回按钮迁入真正的 HDS 标题栏；正文、更新弹窗所有权及 router 返回仍由本页负责。
-    ImmersiveTitleScaffold({ title: '关于', theme: this.theme, topSafeHeight: this.topSafeHeight,
-      surfaceColor: this.theme.bgPrimary, onBack: (): void => { this.getUIContext().getRouter().back(); },
-      content: (): void => { this.ImmersiveTitleContent1_(); }
-    })
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.theme.bgPrimary)
+      ImmersiveTitleScaffold({
+        title: '关于 AMCL', emphasizedTitle: true, theme: this.theme, topSafeHeight: this.topSafeHeight,
+        surfaceColor: this.theme.bgPrimary,
+        onBack: (): void => { this.getUIContext().getRouter().back(); },
+        content: (): void => { this.ImmersiveTitleContent1_(); }
+      })
+    }.width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
+  }
+
+  /** 读取已装包的名称。包信息查询失败时，使用与构建配置同步的版本名。 */
+  private readonly installedVersionName: string = UpdateChecker.currentVersionName() || APP_VERSION;
+
+  /** 只在默认开发包读取安装码，独立于预览版名称。 */
+  private readonly installedVersionCode: number = ProductBuildProfile.product === 'default'
+    ? UpdateChecker.currentVersionCode() : 0;
+
+  /** 应用名和实际包内版本名共用一行，预览后缀随包内名称呈现。 */
+  @Builder
+  private BrandHeader_() {
+    Column({ space: 8 }) {
+      Image($r('app.media.amcl_axe')).width(80).height(80).objectFit(ImageFit.Contain)
+        .backgroundColor(this.theme.bgCard).borderRadius(20).clip(true).draggable(false)
+      Row({ space: 12 }) {
+        Text('AMCL').fontSize(28).fontWeight(600).fontColor(this.theme.textPrimary)
+        Text(this.installedVersionName).fontSize(16).fontColor(this.theme.textSecondary)
+      }.alignItems(VerticalAlign.Center).justifyContent(FlexAlign.Center)
+    }.width('100%').padding({ top: 20, bottom: 8 }).alignItems(HorizontalAlign.Center)
   }
 
   /**
-   * 信息行：左标题 + 副值 + 右图标。isLink=true 时副值用主色（表示可跳转）。
+   * 版本分组集中现有更新入口。检查状态直接以文字表达，同时继续禁用重复检查；
+   * 商店产品仅保留本地更新日志，不能因分组抽取恢复 GitHub、自更新或安装包入口。
    */
   @Builder
-  InfoRow(title: string, value: string, rightIcon: AppIconName, isLink: boolean, onTap: () => void) {
-    Row() {
-      Column() {
-        Text(title)
-          .fontSize(16).fontWeight(400).fontColor(this.theme.textPrimary)
-        Text(value)
-          .fontSize(12).fontColor(isLink ? this.theme.primary : this.theme.textHint)
-          .margin({ top: 2 })
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ right: 12 })
-      AppIcon({ name: rightIcon, iconSize: 16, color: this.theme.textHint })
+  private VersionGroupContent_() {
+    // 开发包可核对真实安装码。发行产品只在顶部显示其实际版本名。
+    if (ProductBuildProfile.product === 'default' && this.installedVersionCode > 0) {
+      SettingsValueRow({ title: 'versionCode', value: String(this.installedVersionCode),
+        theme: this.theme, interactive: false, showTrailing: false, controlId: 'about-version-code' })
+      SettingsDivider({ theme: this.theme })
     }
-    .width('100%').height(60).alignItems(VerticalAlign.Center)
-    .onClick(() => { onTap() })
+    if (!DistributionPolicy.isStore()) {
+      SettingsValueRow({
+        title: '检查更新', value: this.checkingUpdate ? '检查中…' : this.hasUpdate ? '有新版本' : '检查',
+        theme: this.theme, actionValue: true, showTrailing: false, actionEnabled: !this.checkingUpdate,
+        controlId: 'about-check-update', onAction: (): void => { this.doCheckUpdate_(); }
+      })
+      SettingsDivider({ theme: this.theme })
+      SettingsValueRow({
+        title: '软件更新', value: '稳定 / 测试通道', theme: this.theme,
+        controlId: 'about-software-update',
+        onAction: (): void => { this.getUIContext().getRouter().pushUrl({ url: 'pages/SoftwareUpdatePage' }); }
+      })
+      SettingsDivider({ theme: this.theme })
+    }
+    SettingsValueRow({
+      title: '更新日志', value: '查看版本变化', theme: this.theme,
+      controlId: 'about-changelog', onAction: (): void => { this.openChangelog_(); }
+    })
+    if (this.hasPendingUpdate && !DistributionPolicy.isStore()) {
+      SettingsDivider({ theme: this.theme })
+      SettingsValueRow({
+        title: '上次更新', value: '查看进度或恢复', theme: this.theme,
+        controlId: 'about-resume-update',
+        onAction: (): void => {
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/SideloadUpdatePage', params: { autoStart: false } });
+        }
+      })
+    }
   }
 
-  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
+  /** 联系信息沿用原常量与复制方法，复制图标区分即时动作和进入下一页的导航箭头。 */
+  @Builder
+  private ContactGroupContent_() {
+    if (!DistributionPolicy.isStore()) {
+      SettingsValueRow({
+        title: 'GitHub', value: '查看源代码', theme: this.theme,
+        controlId: 'about-github', onAction: (): void => { this.openUrl_(APP_REPO_URL); }
+      })
+      SettingsDivider({ theme: this.theme })
+    }
+    SettingsValueRow({
+      title: '作者联系方式', description: AUTHOR_EMAIL, value: '复制', theme: this.theme,
+      trailingIcon: AppIconName.Copy, actionValue: true, controlId: 'about-copy-email',
+      onAction: (): void => { this.copyToClipboard_(AUTHOR_EMAIL, '邮箱'); }
+    })
+    SettingsDivider({ theme: this.theme })
+    SettingsValueRow({
+      title: 'QQ 交流群', value: QQ_GROUP_ID, theme: this.theme,
+      trailingIcon: AppIconName.Copy, actionValue: true, controlId: 'about-copy-group',
+      onAction: (): void => { this.copyToClipboard_(QQ_GROUP_ID, '群号'); }
+    })
+  }
+
+  /**
+   * 商店调试开关只消费 GameRunAdmission 发布的确认态；保存期以进度指示替代重复操作，
+   * 失败与关闭运行的说明继续来自原事务方法，不在展示层推定准入已经变化。
+   */
+  @Builder
+  private StoreDebugGroupContent_() {
+    SettingsToggleRow({
+      title: '允许调试', description: '开启后显示运行游戏及运行设定；版本下载、文件管理与导出始终可用。',
+      value: this.allowDebug, saving: this.savingDebug, theme: this.theme,
+      controlId: 'about-allow-debug', onChange: (enabled: boolean): void => { this.saveDebugChoice_(enabled); }
+    })
+    if (this.debugMessage.length > 0) {
+      Column() {
+        SettingsHint({
+          text: this.debugMessage, theme: this.theme, isError: this.debugMessage.startsWith('保存未完成')
+        })
+      }.width('100%').padding({ left: 16, right: 16, bottom: 16 })
+    }
+  }
+
+  /** 商店政策与许可始终使用原本地路由，不把规范说明改成外部网页请求。 */
+  @Builder
+  private StorePolicyGroupContent_() {
+    SettingsValueRow({
+      title: '隐私政策', value: '随包本地阅读', theme: this.theme,
+      controlId: 'about-local-privacy', onAction: (): void => { this.openLocalPolicy_('privacy'); }
+    })
+    SettingsDivider({ theme: this.theme })
+    SettingsValueRow({
+      title: '许可与致谢', description: '第三方组件与开源许可', theme: this.theme,
+      controlId: 'about-local-license', onAction: (): void => { this.openLocalPolicy_('license'); }
+    })
+  }
+
+  /** 免责声明完整引用共享事实源，允许大字体自然换行，不截短或另写合规文案。 */
+  @Builder
+  private DisclaimerContent_() {
+    Column({ space: 12 }) {
+      Text('免责声明').fontSize(16).fontColor(this.theme.textPrimary).width('100%')
+      SettingsHint({ text: BRAND_DISCLAIMER, theme: this.theme })
+    }.width('100%').padding(20).alignItems(HorizontalAlign.Start)
+  }
+
+  /**
+   * 正文使用原滚动宿主，手机保持 16vp 页边距，大屏居中限宽以免设置行与长说明过度拉伸。
+   * 分组间距统一为 24vp；所有动态行使用独立 Prop，组正文通过箭头回到本页 Builder，
+   * 因而主题、检查状态和调试确认值都不会被一次性的 Builder 参数快照冻结。
+   */
   @Builder
   private ImmersiveTitleContent1_() {
-      Scroll() {
-        Column({ space: 16 }) {
-          // ===== 头部：居中软件图标 + 名称 + 版本 =====
-          Column({ space: 10 }) {
-            Image($r('app.media.amcl_axe'))
-              .width(96).height(96)
-              .borderRadius(22)
-              .draggable(false)
-            Text('AMCL')
-              .fontSize(24).fontWeight(700).fontColor(this.theme.textPrimary)
-            Text('v' + APP_VERSION)
-              .fontSize(14).fontWeight(500).fontColor(this.theme.primary)
+    Scroll() {
+      Row() {
+        Column({ space: 24 }) {
+          this.BrandHeader_()
+          SettingsGroup({ title: '版本', theme: this.theme, content: (): void => { this.VersionGroupContent_(); } })
+          SettingsGroup({
+            title: DistributionPolicy.isStore() ? '联系' : '联系与开源', theme: this.theme,
+            content: (): void => { this.ContactGroupContent_(); }
+          })
+          if (DistributionPolicy.isStore()) {
+            SettingsGroup({ title: '调试', theme: this.theme, content: (): void => { this.StoreDebugGroupContent_(); } })
+            SettingsGroup({ title: '政策与许可', theme: this.theme, content: (): void => { this.StorePolicyGroupContent_(); } })
           }
-          .width('100%')
-          .padding({ top: 12, bottom: 12 })
-          .alignItems(HorizontalAlign.Center)
-
-          // ===== 信息卡片 =====
-          Column() {
-            if (!DistributionPolicy.isStore()) {
-            // GitHub
-            this.InfoRow('GitHub', APP_REPO_URL, AppIconName.ChevronRight, true,
-              () => { this.openUrl_(APP_REPO_URL) })
-
-            Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
-            }
-
-            // 作者联系方式（邮箱，点击复制）
-            this.InfoRow('作者联系方式', AUTHOR_EMAIL, AppIconName.Copy, false,
-              () => { this.copyToClipboard_(AUTHOR_EMAIL, '邮箱') })
-
-            Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
-
-            // QQ 交流群（点击复制群号）
-            this.InfoRow('QQ 交流群', QQ_GROUP_ID, AppIconName.Copy, false,
-              () => { this.copyToClipboard_(QQ_GROUP_ID, '群号') })
-
-            if (DistributionPolicy.isStore()) {
-              Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
-              Row({ space: 12 }) {
-                Column({ space: 6 }) {
-                  Text('允许调试').fontSize(16).fontColor(this.theme.textPrimary)
-                  Text('开启后显示运行游戏及运行设定；版本下载、文件管理与导出始终可用。')
-                    .fontSize(12).fontColor(this.theme.textHint)
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                if (this.savingDebug) {
-                  LoadingProgress().width(24).height(24).color(this.theme.primary)
-                } else {
-                  Toggle({ type: ToggleType.Switch, isOn: this.allowDebug })
-                    .onChange((enabled: boolean): void => { this.saveDebugChoice_(enabled) })
-                }
-              }.width('100%').padding({ top: 16, bottom: 16 })
-              if (this.debugMessage.length > 0) {
-                Text(this.debugMessage).fontSize(12).fontColor(this.theme.textSecondary).width('100%').padding({ bottom: 12 })
-              }
-            }
-
-            Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
-
-            // 更新日志（上架轨也保留：数据走随包快照，不联网）
-            this.InfoRow('更新日志', '查看每个版本的变更', AppIconName.ChevronRight, false,
-              () => { this.openChangelog_() })
-            if (DistributionPolicy.isStore()) {
-              this.InfoRow('隐私政策', '随包本地阅读', AppIconName.ChevronRight, false,
-                () => { this.openLocalPolicy_('privacy') })
-              this.InfoRow('许可与致谢', '第三方组件与开源许可', AppIconName.ChevronRight, false,
-                () => { this.openLocalPolicy_('license') })
-            }
-
-            if (!DistributionPolicy.isStore()) {
-              this.InfoRow('软件更新', '稳定／测试通道 · 手动安装包', AppIconName.ChevronRight, false,
-                () => { this.getUIContext().getRouter().pushUrl({ url: 'pages/SoftwareUpdatePage' }) })
-            }
-            // 检查更新（上架轨隐藏：更新交由应用市场；未来方向——跳转应用市场详情页 / 接入市场更新接口）
-            if (this.hasPendingUpdate && !DistributionPolicy.isStore()) {
-              this.InfoRow('上次更新', '查看进度或恢复更新', AppIconName.ChevronRight, false,
-                () => { this.getUIContext().getRouter().pushUrl({ url: 'pages/SideloadUpdatePage', params: { autoStart: false } }) })
-            }
-            if (!DistributionPolicy.isStore()) {
-              Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
-
-              Row() {
-                Column() {
-                  Text('检查更新')
-                    .fontSize(16).fontWeight(400).fontColor(this.theme.textPrimary)
-                  Text(this.checkingUpdate ? '检查中…' : ('当前 v' + APP_VERSION + ' · 从 GitHub 获取最新版本'))
-                    .fontSize(12).fontColor(this.theme.textHint).margin({ top: 2 })
-                }
-                .alignItems(HorizontalAlign.Start).layoutWeight(1)
-                if (this.checkingUpdate) {
-                  LoadingProgress().width(20).height(20).color(this.theme.primary)
-                } else {
-                  // 有可用更新时在箭头前显示红点
-                  if (this.hasUpdate) {
-                    Row().width(8).height(8).borderRadius(4).backgroundColor(this.theme.error).margin({ right: 8 })
-                  }
-                  AppIcon({ name: AppIconName.ChevronRight, iconSize: 16, color: this.theme.textHint })
-                }
-              }
-              .width('100%').height(60).alignItems(VerticalAlign.Center)
-              .onClick(() => { this.doCheckUpdate_() })
-            }
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16 })
-          .backgroundColor(this.theme.bgCard)
-          .borderRadius(this.theme.cardRadius)
-          .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-
-          // ===== 免责声明卡片（知识产权合规） =====
-          Column({ space: 8 }) {
-            Text('免责声明')
-              .fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
-            Text(BRAND_DISCLAIMER)
-              .fontSize(12).fontColor(this.theme.textSecondary).lineHeight(19).width('100%')
-          }
-          .width('100%')
-          .padding(16)
-          .backgroundColor(this.theme.bgCard)
-          .borderRadius(this.theme.cardRadius)
-          .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-
-          Text('感谢使用 AMCL · 点击邮箱 / 群号可复制')
-            .fontSize(11).fontColor(this.theme.textHint)
+          SettingsGroup({ title: '说明', theme: this.theme, content: (): void => { this.DisclaimerContent_(); } })
+          Text('感谢使用 AMCL').fontSize(14).fontColor(this.theme.textSecondary)
             .textAlign(TextAlign.Center).width('100%')
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 4, bottom: Math.max(24, this.bottomSafeHeight + 16) })
-      }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-    }
+        }.width('100%').constraintSize({ maxWidth: 760 }).alignItems(HorizontalAlign.Start)
+          .padding({ left: 16, right: 16, top: 8, bottom: Math.max(24, this.bottomSafeHeight + 16) })
+      }.width('100%').justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Top)
+    }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+  }
 }

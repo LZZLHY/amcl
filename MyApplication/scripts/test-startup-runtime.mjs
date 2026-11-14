@@ -223,8 +223,8 @@ function fixture(configuration = {}) {
     },
   } };
   const deployer = new RuntimeDeployer(context);
-  // 三个非槽小阶段由其他既有回归覆盖；此处仅记录调用顺序，测试范围不伪称包含其 IO。
-  for (const method of ['deployStubObjcBridge', 'deployFontconfigRuntime', 'deployJdk8FontConfig']) {
+  // 两个非槽小阶段由其他既有回归覆盖；此处仅记录调用顺序，测试范围不伪称包含其 IO。
+  for (const method of ['deployStubObjcBridge', 'prepareJdkFonts']) {
     deployer[method] = () => events.push(['phase', method]);
   }
   const directory = (slot = 'lwjgl-ohos') => generations.lwjglGenerationDirectory(mcDir, slot, slot === 'lwjgl-ohos' ? 17 : 0);
@@ -321,12 +321,12 @@ await check('校验前后marker变化拒绝stage提交', async state => {
 }, { flipMarker: true });
 await check('公开入口await让步并保留失败槽与两个独立成功槽', async state => {
   await state.deployer.deployAllForStartup(state.mcDir, async () => { state.counters.yields++; await nextTurn(); });
-  assert.equal(state.counters.yields, 6);
+  assert.equal(state.counters.yields, 5);
   assert.equal(state.files.has(state.directory() + '/.installed'), false);
   state.assertCommitted('lwjgl-ohos-322'); state.assertCommitted('lwjgl-ohos-2');
   assert.ok(state.logs.some(values => values[0] === 'error' && values.join(' ').includes('lwjgl-ohos')));
   assert.deepEqual(state.events.filter(event => event[0] === 'phase').map(event => event[1]),
-    ['deployStubObjcBridge', 'deployFontconfigRuntime', 'deployJdk8FontConfig']);
+    ['deployStubObjcBridge', 'prepareJdkFonts']);
 }, { badResource: 'lwjgl-ohos' });
 
 const report = { schema: 'amcl/startup-runtime-regression@1', recordedAt: new Date().toISOString(),

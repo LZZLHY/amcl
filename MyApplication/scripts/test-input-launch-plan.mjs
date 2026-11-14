@@ -58,7 +58,11 @@ const builderLoad = makePureEtsLoader({
     mainClass: 'net.minecraft.client.main.Main', type: 'release', libraries: [...libraries],
     jvmArgs: [...versionJvmArgs], gameArgs: [], assetIndex: 'fixture', inheritsFrom: '',
   }; } }, parseLibraryPathGav: () => null },
-  commons: { ActivityLogger: Logger, DiagnosticPolicy: { isDeveloperBuild: () => false }, isMcVersionAtLeast: () => false },
+  commons: { ActivityLogger: Logger, DiagnosticPolicy: { isDeveloperBuild: () => false }, isMcVersionAtLeast: () => false,
+    // 本套件不访问设备CPU；显式提供“未知”事实，CPU参数装配仍执行生产模块。
+    collectHostCpuInfo: () => ({ model: '', abi: 'arm64-v8a', logicalIds: [], topology: '', physicalCount: 0, packageCount: 0 }),
+    ...load('commons/src/main/ets/utils/JvmArgumentTokens.ets'),
+    ...load('commons/src/main/ets/common/GameResolutionPolicy.ets') },
   account: {}, mods: { resolveInstalledMcVersion: () => '1.20.4', resolveInstalledLoader: () => 'vanilla' },
   './LaunchNativeBridge': { launchNative: () => ({ getCommonJvmArgs: () => ['-XX:-UseCompressedOops'] }) },
   './GameCompatibility': { applyGameCompatibility: arguments_ => arguments_ },
@@ -69,10 +73,11 @@ const builderLoad = makePureEtsLoader({
   }), serializeGraphicsPlan: () => 'graph-fixture' },
 });
 const { LaunchProfileBuilder } = builderLoad('launch/src/main/ets/LaunchProfileBuilder.ets');
-function build(custom = '') {
+function build(custom = '', resolutionPercent = 0) {
   parses = 0;
   const builder = new LaunchProfileBuilder().setFilesDir('/files').setMcDir('/mc').setGameDir('/game')
-    .setVersion('renamed-instance').setJdkVersion('17').setCustomJvmArgs(custom);
+    .setVersion('renamed-instance').setJdkVersion('17').setCustomJvmArgs(custom)
+    .setResolutionScalePercent(resolutionPercent).setWindowSize(2688, 1216);
   builder.buildClasspath = () => ({ classpath: '/mc/client.jar', jars: ['/mc/client.jar'], missingJars: [] });
   builder.validateAllJarsZipHeader = () => [];
   return { builder, profile: builder.build() };
@@ -93,6 +98,20 @@ for (const [library, abi] of [
     '任何窗口路线都不能默认安装GPU等待诊断');
   assert.deepEqual(profile.extraJvmArgs.filter(arg => arg.startsWith('-Damcl.input.plan=')),
     ['-Damcl.input.plan=' + profile.inputPlanWire]);
+  // 四个实际前端均执行完整Builder装配：显式政策覆盖旧marker，初始游戏参数与政策同源。
+  // Native还会按平台接受尺寸作最终校准；这里不能把候选参数当作设备实际图像。
+  for (const [percent, width, height] of [[50, 1344, 608], [75, 2016, 912], [100, 2688, 1216]]) {
+    const scaled = build('"-Damcl.render.scale=0.6" -Dkeep="a b"', percent).profile;
+    assert.ok(scaled);
+    assert.equal(scaled.resolutionScalePercent, percent);
+    assert.deepEqual(scaled.extraJvmArgs.filter(arg => arg.startsWith('-Damcl.render.scale=')),
+      ['-Damcl.render.scale=' + percent / 100]);
+    assert.ok(scaled.extraJvmArgs.includes('-Dkeep=a b'));
+    assert.equal(scaled.mcArgs[scaled.mcArgs.indexOf('--width') + 1], String(width));
+    assert.equal(scaled.mcArgs[scaled.mcArgs.indexOf('--height') + 1], String(height));
+  }
+  assert.equal(build('-Damcl.render.scale=0.75').profile.resolutionScalePercent, 75,
+    '未显式保存新政策时兼容既有marker');
   const denied = build('-Damcl.input.plan=' + profile.inputPlanWire);
   assert.equal(denied.profile, null);
   assert.match(denied.builder.getLastBuildError(), /输入启动计划/);

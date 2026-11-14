@@ -92,6 +92,18 @@ typedef struct AmclNativeWindowLeaseBrokerV2 {
     // 不分配、不调用系统接口，可在任意线程逐帧调用。消费者必须先核验 structSize 覆盖到本字段、
     // 且指针非空才能调用；更短的描述符不能证明宿主授予输入资格，注入窗口必须保守停收。
     uint32_t (*peekInputForeground)(void);
+    // 分辨率可选尾部。0=无工作，bit0=等待呈现owner应用，bit1=等待真实drawable观测。
+    // flags只做原子读取；checkpoint必须由本窗口的真实呈现线程在驱动调用之间执行，
+    // 宿主核验同一token/窗口/代次后调用注册者，且不持broker账本锁跨回调。
+    uint32_t (*geometryWorkFlags)(void);
+    int (*geometryCheckpoint)(void* nativeWindow, uint64_t generation, uint64_t presentationToken);
+    // source: 1=EGL成功查询，2=成功创建的Vulkan交换链。不是请求值或窗口getter。
+    void (*observeDrawable)(void* nativeWindow, uint64_t generation, uint64_t presentationToken,
+                            int width, int height, uint32_t source);
+    // 辅助角色只读证明：在原broker锁内同时核窗口/发布代次/资源epoch/呈现token。
+    // 不增加引用、不转移owner、不调用几何/系统回调；旧短表没有这项资格。
+    int (*matchesPresentationIdentity)(void* nativeWindow,uint64_t generation,
+                                      uint64_t presentationToken,uint64_t resourceEpoch);
 } AmclNativeWindowLeaseBrokerV2;
 
 // The core prefix is retained for append-only ABI accounting. SDL's hybrid
@@ -113,6 +125,12 @@ typedef struct AmclNativeWindowLeaseBrokerV2 {
 #define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_INPUT_FOREGROUND_SIZE \
     ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, peekInputForeground) + \
                 sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->peekInputForeground)))
+#define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_GEOMETRY_SIZE \
+    ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, observeDrawable) + \
+                sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->observeDrawable)))
+#define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PRESENTATION_IDENTITY_SIZE \
+    ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, matchesPresentationIdentity) + \
+                sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->matchesPresentationIdentity)))
 
 #if defined(__cplusplus)
 static_assert(offsetof(AmclNativeWindowLeaseBrokerV2, acquire) ==

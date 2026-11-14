@@ -2,6 +2,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+
+// 普通返回Want运行真实QA识别器；误入下载/文件业务时立即失败。
+const rejectedQa = new Proxy({}, {get: (_target, name) => assert.fail('普通返回Want误入整合包QA：' + String(name))});
+const modpackWant = makePureEtsLoader({
+  commons: rejectedQa, 'entry/ProductBuildProfile': {ProductBuildProfile: {product: 'default'}},
+  '@kit.AbilityKit': rejectedQa, '@kit.CoreFileKit': rejectedQa, feature_core: rejectedQa,
+  feature_system: rejectedQa, mods: rejectedQa, '../export/ExportArchiveIO': rejectedQa,
+  '../product/ProductIdentityCollector': rejectedQa,
+})('entry/src/main/ets/components/ModpackDownloadTestWant.ets');
+const jdkWant = makePureEtsLoader({
+  commons: {DiagnosticPolicy: {hasTestHooks: () => true}},
+  '@kit.AbilityKit': rejectedQa, '@kit.CoreFileKit': rejectedQa, feature_system: rejectedQa,
+  './NativeProbeRegistry': rejectedQa, './ProbeRegistryModel': rejectedQa,
+})('entry/src/main/ets/devtools/JdkQualificationWant.ets');
 
 const index = fs.readFileSync(new URL('../entry/src/main/ets/pages/Index.ets', import.meta.url), 'utf8');
 const start = index.indexOf('  private desktopPreparing: boolean = false');
@@ -154,6 +169,8 @@ for (const storeChannel of [false, true]) for (const value of [55, 0, -1, '55', 
     amclSideloadUpdateTransaction: 'fixture-transaction', amclSideloadUpdateNonce: 'fixture-nonce' } };
   const values = {
     isInputObservationTestWant: () => false,
+    runModpackDownloadTestWant: modpackWant.runModpackDownloadTestWant,
+    runJdkQualificationWant: jdkWant.runJdkQualificationWant,
     forwardInputObservationTestWant() { throw Error('ordinary game-return Want must not enter observation forwarding'); },
     runLogShareConnectivityWant() {}, AppLogger: { info() {} }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
     AppStorage: { setOrCreate() {} }, ProductBuildProfile: { storeChannel },

@@ -21,8 +21,8 @@
  * 进度桥接：ModLoaderManager.install 传入的 progress callback 内部
  *   是 { current, total, message } 字段；这里直接转成 PhaseProgress。
  *
- * 取消：ModLoaderManager 当前没有 cancel 接口，phase.cancel 只翻 cancelled 标志。
- *       Forge installer 在子进程里跑，cancel 时只能等其退出（5-30s）。
+ * 取消：phase.cancel 翻 cancelled 标志；processor执行期间继续通过现有进度回调检查，
+ *       回调抛CancelledError后Native终止并真实回收子进程，原Promise完成后才清理沙箱。
  *
  * 创建日期：2026-05-06
  */
@@ -63,8 +63,8 @@ export class ModloaderPhase implements IDownloadPhase {
     if (safeGameVersion.length === 0) throw new Error('ModloaderPhase: gameVersion 路径段不安全');
 
     let phaseName = this.name;
-    let loaderLabel = this.state_.loaderType === ModLoaderType.FABRIC ? 'Fabric'
-      : (this.state_.loaderType === ModLoaderType.NEOFORGE ? 'NeoForge' : 'Forge');
+    // 使用统一名称映射，Quilt 不得在界面和诊断中被错误标为 Forge。
+    let loaderLabel = ModLoaderManager.getLoaderDisplayName(this.state_.loaderType);
     onProgress({
       phase: phaseName,
       progress: 0,
@@ -157,7 +157,7 @@ export class ModloaderPhase implements IDownloadPhase {
       this.state_.loaderVersion,
       installBaseMcDir,
       (progress: ModLoaderInstallProgress): void => {
-        // 不能中断正在运行的 JVM，但下一处理步骤/下载回调开始前可以安全结束取消。
+        // processor 运行期间也会检查；Native 回收完成前不会提前释放安装锁或清理沙箱。
         if (this.state_.cancelled) throw new CancelledError();
         let prog = (progress.total > 0) ? (progress.current / progress.total) : 0;
         if (prog > 1) prog = 1;
@@ -174,10 +174,10 @@ export class ModloaderPhase implements IDownloadPhase {
       this.state_.filesDir,
     );
 
+    if (this.state_.cancelled) throw new CancelledError();
     if (!result.success) {
       throw new Error('模组加载器安装失败: ' + (result.error || '未知错误'));
     }
-    if (this.state_.cancelled) throw new CancelledError();
 
     // 找 loader 生成的 version.json；versionId 可能来自远端元数据，必须先拒绝路径语义。
     let safeVersionId = safePathSegment(result.versionId);
@@ -188,7 +188,7 @@ export class ModloaderPhase implements IDownloadPhase {
     }
     this.state_.loaderJsonPath = loaderJsonPath;
 
-    let label = this.state_.loaderType === ModLoaderType.FABRIC ? 'Fabric 安装完成' : 'Forge 安装完成';
+    let label = loaderLabel + ' 安装完成';
     onProgress({
       phase: phaseName,
       progress: 1.0,
@@ -211,7 +211,7 @@ export class ModloaderPhase implements IDownloadPhase {
         if (safePathSegment(name).length === 0) continue;
         if (name === this.state_.gameVersion) continue;
         if (name === this.state_.versionName) continue;
-        if (name.indexOf('forge') >= 0 || name.indexOf('fabric') >= 0) {
+        if (name.indexOf('forge') >= 0 || name.indexOf('fabric') >= 0 || name.indexOf('quilt') >= 0) {
           let jsonPath = versionsDir + '/' + name + '/' + name + '.json';
           if (fileExistsAndNonEmpty(jsonPath)) {
             AppLogger.info(TAG, 'Found loader json by scan: ' + jsonPath);

@@ -32,7 +32,7 @@ double ParseScale(const char* text, bool* outValid) {
     // 避免"半个数字"被静默接受成一个看似合理的比例。
     if (end == text || *end != '\0') return 1.0;
     if (!std::isfinite(parsed)) return 1.0;
-    if (parsed < kMinScale || parsed >= 1.0) return 1.0;
+    if (parsed < kMinScale || parsed > 1.0) return 1.0;
 
     if (outValid != nullptr) *outValid = true;
     return parsed;
@@ -47,6 +47,24 @@ int ScaledDimension(int real, double scale) {
     if (scaled < 2) scaled = 2;
     if (scaled > real) scaled = real;  // 防御：scale<1 时数学上不可达
     return static_cast<int>(scaled);
+}
+
+void SetInitialGameSize(std::vector<std::string>& arguments, int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    std::vector<std::string> resolved;
+    resolved.reserve(arguments.size() + 4);
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto& argument = arguments[index];
+        if (argument == "--width" || argument == "--height") {
+            // 畸形的缺值选项不能吞掉后面的独立开关；正常尺寸值随旧选项一并替换。
+            if (index + 1 < arguments.size() && arguments[index + 1].rfind("--", 0) != 0) ++index;
+            continue;
+        }
+        if (argument.rfind("--width=", 0) == 0 || argument.rfind("--height=", 0) == 0) continue;
+        resolved.push_back(argument);
+    }
+    resolved.insert(resolved.end(), {"--width", std::to_string(width), "--height", std::to_string(height)});
+    arguments.swap(resolved);
 }
 
 double MapAxis(double value, int real, int scaled) {
@@ -92,6 +110,20 @@ double MapY(double y) {
     const int real = static_cast<int>((packed >> 32) & 0xFFFF);
     const int scaled = static_cast<int>(packed & 0xFFFF);
     return MapAxis(y, real, scaled);
+}
+
+bool MapWindowPoint(double x, double y, double* windowX, double* windowY) {
+    if (!windowX || !windowY || !std::isfinite(x) || !std::isfinite(y)) return false;
+    const uint64_t packed = g_snapshot.load(std::memory_order_acquire);
+    double mappedX = x, mappedY = y;
+    if (packed != 0) {
+        mappedX = MapAxis(x, static_cast<int>((packed >> 48) & 0xFFFF), static_cast<int>((packed >> 16) & 0xFFFF));
+        mappedY = MapAxis(y, static_cast<int>((packed >> 32) & 0xFFFF), static_cast<int>(packed & 0xFFFF));
+    }
+    if (!std::isfinite(mappedX) || !std::isfinite(mappedY)) return false;
+    *windowX = mappedX;
+    *windowY = mappedY;
+    return true;
 }
 
 /** 同一菜单ACK的两轴必须用同一有效比例，不能用两个独立MapX/MapY读取拼出跨快照逆变换。 */

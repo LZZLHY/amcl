@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { root, ts } from '../../scripts/mod-install-test-runtime.mjs';
+import { root, ts, productionPathPolicy } from '../../scripts/mod-install-test-runtime.mjs';
 import { fixture as sideloadFixture, settle } from '../../scripts/lib/sideload-coordinator-fixture.mjs';
 
 const log = { info() {}, warn() {}, error() {}, debug() {}, flush() {} };
@@ -74,6 +74,9 @@ function registryFor(port) {
   const unified = production('feature_core/src/main/ets/download/UnifiedDownloadTask.ets');
   const Registry = production('feature_core/src/main/ets/download/DownloadTaskRegistry.ets',
     { ...unified, ...production('feature_core/src/main/ets/download/ProcessActivityCoordinator.ets'),
+      // 本专项验证真实Native释放屏障；活动持久化端口独立由owner组合回归验证。
+      getTaskActivityOwner: () => ({ async beginTask() {}, async finishTask() {} }),
+      reserveTaskActivityId: (() => { let last = 0; return () => last = Math.max(Date.now(), last + 1); })(),
       AppLogger: log, LOG_DOMAIN_DOWNLOAD: 0 }, port.scheduling).DownloadTaskRegistry;
   const registry = new Registry(); registry.maxConcurrent = 1;
   let leases = 0;
@@ -119,24 +122,34 @@ export async function runBusinessOwnerReleaseRegression() {
   // 真实prepare归档下载失败发生在execute预约之前；Task.catch仍必须持Registry到释放。
   {
     const port = ownerPort(), context = registryFor(port), { unified, registry } = context;
+    // 本场景的新建会话没有放弃标记；使用生产准入，只用虚拟文件系统提供不存在的标记。
+    const recoveryAdmission = production('mods/src/main/ets/ModpackInstallSession.ets', {
+      ...productionPathPolicy(), fs: { accessSync(name) {
+        assert.equal(name, '/fixture/modpack-work/owner-fixture/dismissed.json');
+        return false;
+      } },
+    }).assertModpackRecoveryAvailable;
     port.manager.createAndWait = async (_spec, progress) => {
       progress({ taskId: 9, filesDone: 0, filesTotal: 1, bytesDone: 0, bytesTotal: 4, speedBps: 0, etaSeconds: -1 });
       throw new Error('archive transfer failed');
     };
     const installerBindings = { DownloadManager: { instance: () => port.manager }, ActivityLogger: class { warn() {} },
       LOG_DOMAIN_DOWNLOAD: 0, fs: { lstatSync() { throw new Error('ENOENT'); } }, ensureDirSync() {},
-      modpackWorkDir: () => '/fixture/modpack', saveModpackSource() {}, newVersionInstallOwner: () => 'owner-fixture' };
+      modpackWorkDir: () => '/fixture/modpack', saveModpackSource() {}, newVersionInstallOwner: () => 'owner-fixture',
+      assertModpackRecoveryAvailable: recoveryAdmission, ...production('mods/src/main/ets/ModpackDownloadUrls.ets') };
     const Installer = production('mods/src/main/ets/ModpackInstaller.ets', installerBindings, port.scheduling).ModpackInstaller;
     const Task = production('mods/src/main/ets/ModpackInstallTask.ets', { ...unified, ModpackInstaller: Installer,
       AppLogger: log, LOG_DOMAIN_DOWNLOAD: 0, newVersionInstallOwner: () => 'owner-fixture',
-      DownloadTaskRegistry: { instance: () => registry } }, port.scheduling).ModpackInstallTask;
+      DownloadTaskRegistry: { instance: () => registry }, assertModpackRecoveryAvailable: recoveryAdmission },
+    port.scheduling).ModpackInstallTask;
     const task = new Task({ title: 'archive failure', mcDir: '/fixture/mc', filesDir: '/fixture', existingVersions: [],
       archiveUrl: 'https://fixture.invalid/archive.zip', requireConfirmation: false });
     let settled = false;
     const pending = registry.enqueue(task).then(() => { settled = true; return null; }, error => { settled = true; return error; });
     try {
       await port.advance(31000);
-      assert.equal(settled, false); assert.equal(context.leases, 1); assert(registry.runningIds_.includes(task.view.id));
+      assert.equal(settled, false, '归档失败应等待真实Native owner：' + (settled ? String(await pending) : 'pending'));
+      assert.equal(context.leases, 1); assert(registry.runningIds_.includes(task.view.id));
       assert.deepEqual(Array.from(task.installer_.dmIds_), [9]);
       port.release(); await port.advance(500); assert.match((await pending).message, /archive transfer failed/);
       assert.equal(context.leases, 0); assert.equal(task.installer_.dmIds_.length, 0);

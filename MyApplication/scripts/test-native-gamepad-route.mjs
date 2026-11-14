@@ -29,7 +29,7 @@ function wire(abi) {
 const wires = { empty: '', LWJGL2: wire('LWJGL2'), GLFW: wire('GLFW'), SDL3: wire('SDL3') };
 
 /** 完整执行ProcessRuntime初始化；未声明的系统依赖必须失败，不用三行规则镜像代替模块。 */
-function processFixture(requested, captureResult, override) {
+async function processFixture(requested, captureResult, override) {
   const values = new Map(), calls = [], ledgerOwnership = [], preferences = { requested };
   const storage = { setOrCreate: (key, value) => values.set(key, value), get: key => values.get(key) };
   const native = { getDiagnosticCapabilities: () => 0,
@@ -47,12 +47,17 @@ function processFixture(requested, captureResult, override) {
       setSystemNativeBridge: noop },
     'gamecontrol': { setControlNativeSink: noop, getInputSourceRegistry: () => ({ setNativeSink: noop }),
       getInputDeviceMonitor: () => ({ ensureStarted: noop }) },
-    'launch': { setLaunchNativeBridge: noop, setRuntimeSlotNativeOps: noop },
+    'launch': { setLaunchNativeBridge: noop, setRuntimeSlotNativeOps: noop,
+      setJdkInstallNativeOps: port => {
+        for (const method of ['operation', 'extract', 'seal']) assert.equal(typeof port[method], 'function');
+      } },
     'entry/ProductBuildProfile': { ProductBuildProfile: {} },
     'entry/ProductInputProfile': { ProductInputProfile: { initialize: noop } },
     'entry/ProductLauncherWindowChrome': {}, '@kit.AbilityKit': {}, '@kit.ArkUI': {}, '@kit.CoreFileKit': {},
     './NativeGamepadRoutePolicy': policy
   };
+  // 音频是独立生命周期端口；本组检查输入路由，不能因新增进程装配依赖而跳过真实ProcessRuntime。
+  dependencies['./ModAudioRuntime'] = { ModAudioRuntime: { attach: noop } };
   const body = override ?? fs.readFileSync(path.join(root, processPath), 'utf8');
   const result = compiler.transpileModule(body, { fileName: processPath,
     compilerOptions: { module: compiler.ModuleKind.CommonJS, target: compiler.ScriptTarget.ES2020 }, reportDiagnostics: true });
@@ -63,7 +68,7 @@ function processFixture(requested, captureResult, override) {
     return dependencies[name];
   }, module, module.exports, storage);
   const initialize = () => module.exports.initializeGameProcess({ filesDir: '/private/files', config: { colorMode: 1 } });
-  initialize();
+  await initialize();
   assert.deepEqual(ledgerOwnership, [false], '游戏进程初始化必须明确关闭父账本维护所有权');
   return { values, calls, preferences, initialize,
     requested: () => values.get(policy.NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY),
@@ -121,7 +126,7 @@ assert.equal(policy.resolveNativeGamepadRoute(true, true, wires.GLFW.replace('ab
 pass('actual input plans empty/L2/GLFW/SDL × request/capture; invalid combinations; mapped source output');
 
 for (const requested of [false, true]) for (const rawReady of [false, true]) {
-  const f = processFixture(requested, rawReady);
+  const f = await processFixture(requested, rawReady);
   assert.equal(f.requested(), requested);
   assert.equal(f.ready(), requested && rawReady, 'mode-off success must not claim capture READY');
   assert.equal(f.values.has('nativeGamepadOutputActive'), false);
@@ -134,7 +139,7 @@ pass('actual ProcessRuntime publishes requested/capture facts only; platform ini
   const original = fs.readFileSync(path.join(root, processPath), 'utf8');
   const before = 'NATIVE_GAMEPAD_CAPTURE_READY_KEY, nativePad && padReady';
   assert.equal(original.split(before).length, 2, 'unique capture-fact mutation');
-  const bad = processFixture(false, true, original.replace(before, 'NATIVE_GAMEPAD_CAPTURE_READY_KEY, padReady'));
+  const bad = await processFixture(false, true, original.replace(before, 'NATIVE_GAMEPAD_CAPTURE_READY_KEY, padReady'));
   assert.throws(() => assert.equal(bad.ready(), false), assert.AssertionError);
   pass('compiled ProcessRuntime negative rejected: mode-off success falsely claims capture READY');
 }
@@ -183,13 +188,13 @@ pass('actual manager held-route transition releases old contribution and never d
 pass('actual RELEASE rejection retains pending/applied, successful retry finishes; config.enabled is separate');
 
 {
-  const process = processFixture(true, true), f = sourceFixture();
+  const process = await processFixture(true, true), f = sourceFixture();
   const requested = process.requested(), ready = process.ready();
   assert.equal(apply(f, requested, ready, wires.GLFW).applied, Route.Native);
   process.preferences.requested = false;
   assert.equal(process.requested(), true, 'setting change does not update current frozen process fact');
   assert.equal(apply(f, requested, ready, wires.GLFW).applied, Route.Native);
-  const next = processFixture(false, true), nextSource = sourceFixture();
+  const next = await processFixture(false, true), nextSource = sourceFixture();
   assert.equal(apply(nextSource, next.requested(), next.ready(), wires.GLFW).applied, Route.Mapped);
   nextSource.pad.handleButtonForDevice(9, nextSource.keys.OHOS_BUTTON_A, true);
   assert.equal(nextSource.output.length, 1);

@@ -119,6 +119,9 @@ GLFWerrorfun g_errorCallback = nullptr;
 int g_initialized = 0;
 static auto g_startTime = std::chrono::steady_clock::now();
 
+// 与窗口registry/生命周期锁处于同一TU，避免第二份窗口表或失效裸指针缓存。
+#include "glfw_cursor.inc"
+
 // 窗口 hint 缓存
 // DSO 装载早于图形计划发布；禁止全局构造期间绑定默认 provider。glfwInit 后再设定缺省 hint。
 int g_hintClientAPI = GLFW_OPENGL_ES_API;
@@ -200,6 +203,31 @@ struct BackendSessionHandle {
     bool presentRecordFailureLogged = false;
 };
 static std::atomic<uint64_t> g_nextBackendSessionId{1};
+
+// 只在本前端原生命周期临界区调用。传值给中立owner；不借出GLFWwindow或C++session。
+// owner会再核真实EGL current、permit和broker身份，这里不能凭contextOwnerTid单独授予资格。
+static void updateAuxSdlPresentingProof(GLFWwindow* window,bool revoke) {
+    if(!window)return;
+    const auto* runtime=amcl::graphics::BoundGraphicsRuntime();
+    if(!runtime)return;
+    const auto& api=runtime->publicApi;
+    if(api.structSize<AMCL_GRAPHICS_RUNTIME_V1_SDL_AUX_SIZE || !api.sdlAuxOperation)return;
+    AmclSdlAuxRequestV1 request{};request.structSize=sizeof(request);request.abiVersion=1;
+    request.processId=static_cast<uint64_t>(getpid());request.context=window->context;
+    request.contextPermit=window->contextPermit;
+    AmclSdlAuxResultV1 result{};result.structSize=sizeof(result);result.abiVersion=1;
+    if(revoke){api.sdlAuxOperation(AMCL_SDL_AUX_REVOKE_EGL,&request,&result);return;}
+    if(window!=g_currentWindow || window->auxiliary || window->clientAPI==GLFW_NO_API ||
+       window->shouldClose || window->contextLostFatal || window->eglSurfaceDetachPending ||
+       window->eglTeardownPending || !window->graphicsBackendSession)return;
+    const auto* handle=static_cast<const BackendSessionHandle*>(window->graphicsBackendSession);
+    if(!handle->session || !handle->session->presentationIdentity(request.presentationToken))return;
+    const auto lease=handle->session->lease();
+    if(lease.nativeWindow!=window->nativeWindow || lease.generation!=window->nativeWindowGeneration)return;
+    request.display=window->display;request.drawSurface=window->surface;
+    request.nativeWindow=lease.nativeWindow;request.generation=lease.generation;request.resourceEpoch=lease.resourceEpoch;
+    (void)api.sdlAuxOperation(AMCL_SDL_AUX_PUBLISH_EGL,&request,&result);
+}
 
 static amcl::graphics::BackendAdapterCallbacks makeGraphicsSessionCallbacks(GLFWwindow* window) {
     amcl::graphics::BackendAdapterCallbacks callbacks;
@@ -1906,6 +1934,7 @@ static bool recordGlfwEglFailure(GLFWwindow* window, const char* stage, EGLint e
     if (window) {
         window->contextLostFatal = true;
         window->shouldClose = 1;
+        updateAuxSdlPresentingProof(window,true);
     }
     requestRendererProcessRestart("egl-context-lost");
     if (!wasFatal) amclGraphicsFatalV1("egl-context-lost", static_cast<uint32_t>(error),
@@ -1916,6 +1945,7 @@ static bool recordGlfwEglFailure(GLFWwindow* window, const char* stage, EGLint e
 static void markEglSurfaceDetachPending(GLFWwindow* window, const char* reason) {
     if (!window) return;
     window->eglSurfaceDetachPending = true;
+    updateAuxSdlPresentingProof(window,true);
     const long long delayMs = scheduleSurfaceRecovery(window);
     if (window->surfaceRecoveryFailures == 1 ||
         (window->surfaceRecoveryFailures % 10) == 0) {
@@ -2064,6 +2094,7 @@ static bool consumePublishedSurfaceState(GLFWwindow* window, const char* checkpo
         window->width = publishedWidth; window->height = publishedHeight;
         window->sizeNotifications.Observe(publishedWidth, publishedHeight);
         publishTypedWindowInputBinding(window, true);
+        updateAuxSdlPresentingProof(window,false);
         OH_LOG_INFO(LOG_APP, "graphics_surface_geometry generation=%{public}llu resource=%{public}llu geometry=%{public}llu preserved=1",
             static_cast<unsigned long long>(publishedGeneration),
             static_cast<unsigned long long>(handle->session->lease().resourceEpoch),
@@ -2116,6 +2147,8 @@ static bool consumePublishedSurfaceState(GLFWwindow* window, const char* checkpo
     window->sizeNotifications.Observe(publishedWidth, publishedHeight);
     inputBridge_setWindowSize(publishedWidth, publishedHeight);
     publishTypedWindowInputBinding(window, true);
+    // 新surface和lease都提交后刷新线程证明；geometry-only路径也按新broker代次刷新。
+    updateAuxSdlPresentingProof(window,false);
     return isBackendSurfaceReady(window);
 }
 // ==================== GLFW 核心实现 ====================
@@ -2219,6 +2252,7 @@ int glfwInit(void) {
     return GLFW_TRUE;
 }
 
+// AMCL_GLFW_TERMINATE_LIFECYCLE_BEGIN
 void glfwTerminate(void) {
     std::lock_guard<std::recursive_mutex> lifecycle(g_contextLifecycleMutex);
     // 主辅可以任意顺序退休；任何owner线程/驱动拒绝均保留整个GLFW寿命，不释放悬空指针。
@@ -2243,10 +2277,13 @@ void glfwTerminate(void) {
     g_typedInputHost = nullptr;
     g_threadCurrentContext = nullptr;
     amcl::ohos::LeaveInteractiveRenderQoS("glfw-terminate");
+    // 所有窗口确实退出后才释放剩余光标；上方teardown早退保留完整寿命。
+    glfwOHOS_ClearCursorsLocked();
     g_initialized = 0;
     g_nativeEglContextCreated = false;
     OH_LOG_INFO(LOG_APP, "GLFW: Terminated");
 }
+// AMCL_GLFW_TERMINATE_LIFECYCLE_END
 
 void glfwWindowHint(int hint, int value) {
     switch (hint) {
@@ -2763,6 +2800,12 @@ void glfwSwapBuffers(GLFWwindow* window) {
         window->surfaceRecoveryFailures = 0;
         window->nextSurfaceRecoveryAttemptMs = 0;
     }
+    // 真实current已核验，且此时没有驱动调用在途。仅呈现窗口的session能申请尺寸事务；
+    // 完成后仍走原consume/resize通知，不能在宿主回调中调用游戏或替换游戏GL资源。
+    if (window->graphicsBackendSession) {
+        auto* geometryOwner = static_cast<BackendSessionHandle*>(window->graphicsBackendSession);
+        if (geometryOwner->session->geometryWorkFlags() & 1u) geometryOwner->session->geometryCheckpoint();
+    }
     // Surface callbacks run on the ArkUI thread. Consume their latest atomic
     // epoch here before touching either EGLSurface or OHNativeWindow, so a
     // frame can never be presented through a destroyed/replaced pointer even
@@ -2842,6 +2885,22 @@ void glfwSwapBuffers(GLFWwindow* window) {
         // 学习历史或累计游戏帧。普通EGL后端继续采用其原有成功语义。
         if (!actualPresent) return;
         recordGraphicsBackendSessionPresent(window);
+        // 只在创建/调整后的有限确认期查询实际EGL尺寸，稳定帧保持原呈现路径。
+        // 查询失败不使用请求值补证；它留下未确认状态，由运行界面如实显示。
+        if (window->graphicsBackendSession) {
+            auto* geometryOwner = static_cast<BackendSessionHandle*>(window->graphicsBackendSession);
+            if (geometryOwner->session->geometryWorkFlags() & 2u) {
+                EGLint actualWidth = 0, actualHeight = 0;
+                if (eglQuerySurface(window->display, window->surface, EGL_WIDTH, &actualWidth) == EGL_TRUE &&
+                    eglQuerySurface(window->display, window->surface, EGL_HEIGHT, &actualHeight) == EGL_TRUE) {
+                    geometryOwner->session->observeDrawable(actualWidth, actualHeight, 1u);
+                } else {
+                    const EGLint queryError = eglGetError();
+                    geometryOwner->session->observeDrawable(0, 0, 0u);
+                    recordGlfwEglFailure(window, "resolution-query", queryError);
+                }
+            }
+        }
         amclGraphicsSwapV1("GLFW", swapNs, 1, 0);
         inputBridge_notifyFramePresentedForTargetV1(
             reinterpret_cast<uint64_t>(window), window->nativeWindowGeneration);
@@ -2964,6 +3023,7 @@ static bool makeGlfwContextCurrent(GLFWwindow* window) {
             }
         }
         if (releasedWindow && releasedWindow->contextOwnerTid == currentTid) {
+            updateAuxSdlPresentingProof(releasedWindow,true);
             releasedWindow->contextOwnerTid = 0;
         }
         g_threadCurrentContext = nullptr;
@@ -3022,10 +3082,13 @@ static bool makeGlfwContextCurrent(GLFWwindow* window) {
             }
             if (previousWindow && previousWindow != window &&
                 previousWindow->contextOwnerTid == currentTid) {
+                updateAuxSdlPresentingProof(previousWindow,true);
                 previousWindow->contextOwnerTid = 0;
             }
             window->contextOwnerTid = currentTid;
             g_threadCurrentContext = window;
+            // 覆盖实际MakeCurrent与alreadyCurrent成功两条路径；pbuffer worker不获呈现角色。
+            updateAuxSdlPresentingProof(window,false);
             // 注：gl4es（老 MC ≤1.16.5 固定管线后端）不再需要在此显式初始化。gl4es 由 LWJGL 经
             //   org.lwjgl.opengl.libname 在 JVM 命名空间加载，并在【首个 GL 调用】时自行懒初始化
             //   （OHOS 补丁 0002：getter.c 入口调 gl4es_ensure_init），那一刻正好在本渲染线程、
@@ -3113,6 +3176,7 @@ bool glfwOHOS_PromoteWindow(GLFWwindow* window) {
     if (g_threadCurrentContext == window && eglGetCurrentContext() == window->context) {
         amcl_sampler_set_render_tid(static_cast<int>(gettid()));
         amcl_sampler_start();
+        updateAuxSdlPresentingProof(window,false);
     }
     // 先前隐藏窗口的尺寸查询可能已被游戏缓存；保留其lifetime并补发尺寸变更，不能Prime掉事件。
     window->sizeNotifications.Observe(width, height);

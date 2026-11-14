@@ -343,9 +343,14 @@ requireMatch(xcomponent,
 requireMatch(preferences,
   /get ohosFrameRateCap\(\)[\s\S]*normalizeOhosFrameRateCap[\s\S]*OHOS_FRAME_RATE_CAP_MAX/,
   'persistent normalized OHOS frame-rate cap');
-requireMatch(settingsPage,
-  /系统调度帧率上限[\s\S]*FrameRateCapChip\(0, '自动'\)[\s\S]*onOhosFrameRateCapChange/,
-  'explicit scheduler-cap settings UI');
+// 界面已由即时 chip 改为确认式单选：仍需自动值、完整候选和同一 native 交付回调，
+// 不把旧 Builder 名称保留为门禁替身，也不因新布局削弱下面的真实持久化/即时交付检查。
+requireMatch(settingsPage, /系统调度帧率上限[\s\S]*this\.openSheet_\('frame'\)/,
+  'explicit scheduler-cap settings entry');
+requireMatch(settingsPage, /\[0, 30, 60, 90, 120, 144, 165, 240\]/,
+  'scheduler-cap automatic and explicit choices');
+requireMatch(settingsPage, /kind === 'frame'\) this\.onOhosFrameRateCapChange\(Number\(value\)\)/,
+  'confirmed scheduler-cap dispatch');
 for (const error of analyzeFrameCapSettings(indexPage).errors) {
   fail(`missing settings state, persistence and immediate native handoff: ${error}`);
 }

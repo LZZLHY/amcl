@@ -20,6 +20,7 @@ input_identity=$({
     cd "$OHOS_SYSROOT_ORIG"
     sha256sum usr/include/stdio.h usr/include/aarch64-linux-ohos/bits/alltypes.h usr/lib/aarch64-linux-ohos/libc.so
     sha256sum "$setup_recipe"
+    printf '%s\n' "${AMCL_TARGET_INPUTS_DIGEST:-legacy-sentinels}"
 } | sha256sum | cut -d' ' -f1)
 if [ -e "$OHOS_SYSROOT" ]; then
     [ -f "$OHOS_SYSROOT/.amcl-input-identity" ] && [ "$(cat "$OHOS_SYSROOT/.amcl-input-identity")" = "$input_identity" ] || {
@@ -34,6 +35,28 @@ else
 fi
 
 OHOS_LIBDIR=$OHOS_SYSROOT/usr/lib/aarch64-linux-ohos
+
+# JDK 使用同一 SDK 的应用 ABI 和 compiler-rt。Ubuntu Clang 的 resource 布局
+# 与 OHOS 不同，此处只转换目录名，不编造空 crt，也不借用宿主 libgcc。
+# 输出在输入摘要约束的独占工作卷，SDK 原件保持只读。
+export AMCL_JDK_RESOURCE_FLAG=""
+export AMCL_JDK_PLATFORM_FLAGS=""
+if [ -n "${AMCL_JDK_NATIVE_ROOT:-}" ]; then
+    native_resource="$AMCL_JDK_NATIVE_ROOT/llvm/lib/clang/${AMCL_TARGET_RESOURCE_VERSION:?}"
+    local_resource="$TOOLCHAIN_DIR/clang-resource"
+    mkdir -p "$local_resource/lib/linux" "$OHOS_SYSROOT/usr/lib"
+    cp -a "$native_resource/include" "$local_resource/"
+    cp "$native_resource/lib/aarch64-linux-ohos/libclang_rt.builtins.a" \
+        "$local_resource/lib/linux/libclang_rt.builtins-aarch64.a"
+    cp "$native_resource/lib/aarch64-linux-ohos/clang_rt.crtbegin.o" "$OHOS_SYSROOT/usr/lib/crtbeginS.o"
+    cp "$native_resource/lib/aarch64-linux-ohos/clang_rt.crtend.o" "$OHOS_SYSROOT/usr/lib/crtendS.o"
+    cp "$AMCL_JDK_NATIVE_ROOT/llvm/lib/aarch64-linux-ohos/libc++_shared.so" "$OHOS_LIBDIR/"
+    export AMCL_JDK_RESOURCE_FLAG="-resource-dir=$local_resource"
+    export AMCL_JDK_CXX_INCLUDE="$AMCL_JDK_NATIVE_ROOT/llvm/include/libcxx-ohos/include/c++/v1"
+    # 与选定 SDK clang --target=aarch64-linux-ohos 的真实预定义一致。
+    # __OHOS_FAMILY__ 也是该 SDK libc++ 的 locale/rune 与线程能力选择输入。
+    export AMCL_JDK_PLATFORM_FLAGS="-D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0"
+fi
 
 echo "=== Setting up OHOS cross-compilation toolchain ==="
 echo "Sysroot: $OHOS_SYSROOT"
@@ -142,6 +165,9 @@ fi
 exec /usr/bin/ohos-clang \
     --target=aarch64-linux-ohos \
     --sysroot=$OHOS_SYSROOT \
+    ${AMCL_JDK_RESOURCE_FLAG:-} \
+    ${AMCL_JDK_PLATFORM_FLAGS:-} \
+    -B$OHOS_SYSROOT/usr/lib -rtlib=compiler-rt -unwindlib=none -fuse-ld=lld \
     -L$OHOS_LIBDIR \
     "\${ARGS[@]}"
 WRAPPER
@@ -168,6 +194,9 @@ fi
 exec /usr/bin/ohos-clang++ \
     --target=aarch64-linux-ohos \
     --sysroot=$OHOS_SYSROOT \
+    ${AMCL_JDK_RESOURCE_FLAG:-} \
+    ${AMCL_JDK_PLATFORM_FLAGS:-} \
+    -B$OHOS_SYSROOT/usr/lib -rtlib=compiler-rt -unwindlib=none -fuse-ld=lld \
     -stdlib=libc++ \
     -nostdlib++ \
     -L$OHOS_LIBDIR \

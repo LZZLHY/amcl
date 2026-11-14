@@ -48,7 +48,7 @@ static inline int32_t amclSourceControlResolveV1(const AmclSourceControlPortV1**
         port->pid!=process||!port->ownerHost)return AMCL_SOURCE_REJECTED;
 #define AMCL_SOURCE_CHECK(name) if(!amclControlAddressInOwner((uintptr_t)port->name,base))return AMCL_SOURCE_REJECTED
     AMCL_SOURCE_CHECK(verifyOwner);AMCL_SOURCE_CHECK(openProducer);AMCL_SOURCE_CHECK(preparedProducer);
-    AMCL_SOURCE_CHECK(transact);AMCL_SOURCE_CHECK(query);AMCL_SOURCE_CHECK(ownedTextKeyTap);AMCL_SOURCE_CHECK(ownedTextKeyTapForKeyboard);
+    AMCL_SOURCE_CHECK(transact);AMCL_SOURCE_CHECK(query);AMCL_SOURCE_CHECK(ownedTextKeyTap);AMCL_SOURCE_CHECK(ownedTextKeyTapForKeyboard);AMCL_SOURCE_CHECK(owns);
 #undef AMCL_SOURCE_CHECK
     const int32_t result=port->verifyOwner(port->ownerHost);if(result<0)return result;
     *output=port;return 0;

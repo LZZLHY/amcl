@@ -48,7 +48,8 @@ test('entrance timer is cancelled on unmount and reduced motion presents content
     clearTimeout: id => pending.delete(id),
   });
   const component = new Section();
-  Object.assign(component, { alive: false, frameTimer: -1, enterAlpha: 0, enterY: 12, animateEntrance: true, order: 2,
+  // 此方法提取夹具不执行字段初始化，显式补上生产默认开启值，继续验证真实计时器与取消路径。
+  Object.assign(component, { alive: false, frameTimer: -1, enterAlpha: 0, enterY: 12, entranceEnabled: true, animateEntrance: true, order: 2,
     getUIContext: () => ({ animateTo: (options, update) => { animations.push(options); update(); } }) });
   component.aboutToAppear(); component.enter_(); component.enter_(); assert.equal(pending.size, 1);
   component.aboutToDisappear(); assert.equal(pending.size, 0); assert.equal(animations.length, 0);
@@ -103,15 +104,20 @@ test('workspace underline clamps in compact and wide layouts without moving touc
 
 test('opening share is local only and closing AI reading does not start or cancel analysis', () => {
   let analysis = 0;
-  const Workspace = methods('pages/ActivityLogPage.ets', ['openShareComposer_', 'aiSheetOptions_'], { SheetType: { BOTTOM: 0 } });
+  // 真正的Sheet选项已通过设备形态选择用户手机高度；本例聚焦关闭/分析边界，
+  // 隔离为平板分支以免把缺失设备绑定误报为页面业务失败。
+  const Workspace = methods('pages/ActivityLogPage.ets', ['openShareComposer_', 'aiSheetOptions_'], {
+    SheetType: { BOTTOM: 0 }, DeviceProfile: { form: () => 'tablet' }, DeviceForm: { PHONE: 'phone' },
+  });
   const workspace = new Workspace(); Object.assign(workspace, { loading: false, sharing: false, exportingEvidence: false,
     theme: {}, sharedLog: { id: 'old' }, showShareOptions: false, showAiResult: true, analyzeAfterReading: false,
     requestAnalysis_: () => { analysis++; } });
   workspace.openShareComposer_(); assert.equal(workspace.showShareOptions, true); assert.equal(workspace.sharedLog.id, 'old');
   assert.equal(workspace.shareMode, 'quick'); assert.equal(workspace.shareDestination, 'logshare'); assert.equal(workspace.requestAi, false);
   workspace.aiSheetOptions_().onDisappear(); assert.equal(workspace.showAiResult, false); assert.equal(analysis, 0);
-  workspace.analyzeAfterReading = true; workspace.aiSheetOptions_().onDisappear(); assert.equal(analysis, 1);
-  workspace.aiSheetOptions_().onDisappear(); assert.equal(analysis, 1, '同一次显式分析操作不能重复触发');
+  // 升级前遗留的标记不能让关闭历史阅读层重新开始分析或公开上传。
+  workspace.analyzeAfterReading = true; workspace.aiSheetOptions_().onDisappear(); assert.equal(analysis, 0);
+  workspace.aiSheetOptions_().onDisappear(); assert.equal(analysis, 0);
   workspace.showShareOptions = false; workspace.sharing = true; workspace.openShareComposer_(); assert.equal(workspace.showShareOptions, false);
 });
 
@@ -132,37 +138,48 @@ test('viewport keeps its height; local ZIP is directly available and AI empty st
 });
 
 /** 执行真实导航方法，覆盖概览底部进入二级、二级互切及搜索结果跳转，不改动设置值。 */
-test('every settings section and search change resets content to the top without smooth carry-over', () => {
-  const offsets = []; let saves = 0;
+test('every settings section and search change resets content without committing a JVM draft', () => {
+  const offsets = []; let saves = 0, cancellations = 0;
   const Settings = methods('pages/tabs/SettingsTab.ets', ['selectSection_', 'changeSearch_']);
-  const page = new Settings(); Object.assign(page, { jvmArgsExpanded: true, mcXmx: 4096, settingsQuery: '日志',
-    saveCustomJvmArgs: () => { saves++; }, contentScroller: { scrollTo: options => offsets.push(options) } });
+  // 只隔离目录、弹层取消和返回订阅边缘；滚动/清查询/内存草稿仍执行真实生产方法。
+  const sections = ['logs', 'performance', 'controls', 'appearance', 'download'];
+  const page = new Settings(); Object.assign(page, { canRunGame: true, mcXmx: 4096, settingsQuery: '日志',
+    availableSections_: () => sections.map(id => ({ id })), cancelSheet_: () => { cancellations++; },
+    syncSectionBack_: () => {}, saveCustomJvmArgs: () => { saves++; },
+    contentScroller: { scrollTo: options => offsets.push(options) } });
   for (const section of ['logs', 'performance', 'controls', 'download', 'overview']) {
     page.selectSection_(section);
     assert.equal(page.activeSection, section); assert.equal(page.settingsQuery, '');
     assert.equal(page.xmxDraft, '4096'); assert.equal(page.memoryError, '');
   }
-  assert.equal(saves, 1); assert.equal(page.mcXmx, 4096);
+  assert.equal(saves, 0, '分区切换不能提交本轮已批准的显式保存草稿');
+  assert.equal(cancellations, 5); assert.equal(page.mcXmx, 4096);
   page.changeSearch_('Java'); assert.equal(page.settingsQuery, 'Java');
   page.changeSearch_(''); assert.equal(offsets.length, 7);
   assert(offsets.every(options => options.xOffset === 0 && options.yOffset === 0 && options.animation === false));
 });
 
-test('settings search is a fixed sibling before the content Scroll, not inside it', () => {
+test('settings search stays in the title accessory while the separate content builder owns Scroll', () => {
   const source = read('pages/tabs/SettingsTab.ets');
   const ast = ts.createSourceFile('SettingsTab.ets', source, ts.ScriptTarget.Latest, true);
   const component = ast.statements.find(node => node.members?.some(member => member.name?.getText(ast) === 'build'));
   const build = component.members.find(member => member.name?.getText(ast) === 'build').getText(ast);
-  const scroll = build.indexOf('Scroll(this.contentScroller)');
-  assert(scroll > 0); assert(build.indexOf("id('settings-fixed-search')") < scroll);
-  assert(!build.slice(scroll).includes("placeholder: '搜索设置或功能'"));
-  assert.match(build.slice(scroll), /layoutWeight\(1\)/);
+  const accessory = component.members.find(member => member.name?.getText(ast) === 'SettingsHeaderAccessory_').getText(ast);
+  const content = component.members.find(member => member.name?.getText(ast) === 'ImmersiveTitleContent1_').getText(ast);
+  assert.match(build, /headerAccessory:[\s\S]*this\.SettingsHeaderAccessory_\(\)/);
+  assert.match(build, /content:[\s\S]*this\.ImmersiveTitleContent1_\(\)/);
+  assert.match(accessory, /id\('settings-fixed-search'\)/);
+  assert.doesNotMatch(accessory, /Scroll\(/);
+  assert.match(content, /Scroll\(this\.contentScroller\)/);
+  assert.doesNotMatch(content, /placeholder: '搜索设置或功能'/);
+  assert.match(content, /layoutWeight\(1\)/);
 });
 
 test('ledger storage and remote-share management live in the menu without a persistent footer', async () => {
   const menus = [];
-  let bytes = 1761608;
-  const Ledger = methods('pages/DownloadHistoryPage.ets', ['manage_'], { formatLogBytes: () => '1.68 MB', ledgerTotalBytes: () => bytes });
+  // 管理菜单消费已确认的异步 snapshot 投影；旧同步扫描边缘若被误用必须直接失败。
+  const Ledger = methods('pages/DownloadHistoryPage.ets', ['manage_'], { formatLogBytes: () => '1.68 MB',
+    ledgerTotalBytes: () => { throw new Error('管理菜单不得同步扫描日志占用'); } });
   const page = new Ledger(); Object.assign(page, { ledgerBytes: 1761608, theme: {}, context: { filesDir: '/fixture' },
     getUIContext: () => ({ getPromptAction: () => ({ showActionMenu: options => {
       menus.push(options); return Promise.reject(new Error('cancel')); } }) }), safeToast_() {} });
@@ -172,6 +189,6 @@ test('ledger storage and remote-share management live in the menu without a pers
   const source = read('pages/DownloadHistoryPage.ets');
   assert.doesNotMatch(source, /Button\('分享记录与撤回'\)/);
   assert.match(source, /id\('activity-records-scroll'\)/);
-  bytes = -1; page.manage_(); await new Promise(resolve => setImmediate(resolve));
+  page.ledgerBytes = -1; page.manage_(); await new Promise(resolve => setImmediate(resolve));
   assert.match(menus[1].title, /占用暂不可读/);
 });

@@ -1,70 +1,77 @@
 #!/bin/bash
-set -e
+# 现代JDK的libjli重链：编译器visibility决定可见性，version-script只限制导出范围。
+# 正式17/21/25配方均使用固定标准编译树，不搜索其他配置作为静默回落。
+# 可选BUILD_DIR必须指向同一标准树；--verify-only用于只读核验真实目标库。
+set -euo pipefail
 
-# ============================================================
-#  rebuild_libjli.sh — 重新编译 libjli.so 并强制导出 JLI_* 符号
-#
-#  设计理念：
-#    - 标准 OpenJDK 用 -fvisibility=hidden 编译 libjli.c，导致 libjava.so
-#      链接时无法解析 JLI_Exit / JLI_ExitHook 这些被 hotspot/share/runtime
-#      间接 dlsym 的符号。
-#    - 我们通过链接器版本脚本（version-script）显式 exports JLI_*。
-#
-#  用法：
-#    JDK_VERSION=17 bash /build/scripts/rebuild_libjli.sh [BUILD_DIR]
-#    JDK_VERSION=21 bash /build/scripts/rebuild_libjli.sh
-#
-#  输入：
-#    JDK_VERSION = 17 | 21（默认 17，决定 /build/jdkXXu 路径）
-#    可选位置参数：BUILD_DIR（默认自动 find）
-#
-#  输出：
-#    - 覆盖 ${BUILD_DIR}/support/modules_libs/java.base/libjli.so
-#    - 同步 cp 到 /output/jdk-libs/libjli.so
-#    - 同步 cp 到 ${BUILD_DIR}/images/jdk/lib/libjli.so
-# ============================================================
-
-JDK_VERSION=${JDK_VERSION:-17}
-JDK_SRC="/build/jdk${JDK_VERSION}u"
-
-if [ ! -d "$JDK_SRC" ]; then
-    echo "ERROR: JDK source not found: $JDK_SRC"
-    exit 1
-fi
-
-echo "=== Rebuilding libjli.so for JDK ${JDK_VERSION} with all OHOS patches ==="
-
-# 自动检测 build 输出目录 (openjdk-target 不同时目录名可能变化)
-if [ -n "$1" ] && [ -d "$1" ]; then
-    BUILD_DIR=$(find "$1/.." -maxdepth 2 -name "linux-*-server-release" -type d 2>/dev/null | head -1)
-    if [ -z "$BUILD_DIR" ]; then
-        # User explicitly passed a path; resolve to the linux-*-server-release parent
-        BUILD_DIR=$(find "$JDK_SRC/build" -maxdepth 1 -name "linux-*-server-release" -type d | head -1)
+# 解析唯一标准目录；函数可被回归直接source，source本文件不会触发编译。
+resolve_libjli_build_dir() {
+    local source=${1:?source required} requested=${2-} expected resolved
+    source=$(realpath -e -- "$source") || return 1
+    expected="$source/build/linux-aarch64-server-release"
+    [ -d "$expected" ] || { echo "ERROR: expected build directory missing: $expected" >&2; return 1; }
+    expected=$(realpath -e -- "$expected") || return 1
+    [ "$expected" = "$source/build/linux-aarch64-server-release" ] || {
+        echo 'ERROR: build directory resolves outside its fixed source tree' >&2; return 1;
+    }
+    if [ -n "$requested" ]; then
+        [[ "$requested" = /* ]] || { echo 'ERROR: explicit BUILD_DIR must be absolute' >&2; return 1; }
+        resolved=$(realpath -e -- "$requested") || return 1
+        [ "$resolved" = "$expected" ] || { echo "ERROR: explicit BUILD_DIR is not $expected" >&2; return 1; }
     fi
-else
-    BUILD_DIR=$(find "$JDK_SRC/build" -maxdepth 1 -name "linux-*-server-release" -type d | head -1)
-fi
-if [ -z "$BUILD_DIR" ]; then
-    echo "ERROR: Cannot find build output directory under $JDK_SRC/build/"
-    ls "$JDK_SRC/build/" 2>/dev/null
-    exit 1
-fi
-echo "  Build dir: $BUILD_DIR"
+    for required in spec.gmk support/native/java.base/libjli support/modules_libs/java.base images/jdk/lib; do
+        [ -e "$expected/$required" ] || { echo "ERROR: incomplete build directory: $expected/$required" >&2; return 1; }
+    done
+    printf '%s\n' "$expected"
+}
 
-# 创建版本脚本，强制导出 JLI_* 符号
-# 即使 -fvisibility=hidden，链接器版本脚本优先级更高。
-# 注意：JDK 17 有 JLI_Exit / JLI_ExitHook（被我们的 cxxabi_shim 用于 System.exit hook），
-# JDK 21 把这两个移除了，jdk21u 的 jli_util.h 已不导出它们。
-# 列在 globals 里 + 不存在 = 链接器不会报错（version-script 是 selective export，缺失符号忽略）。
-# 完整导出 JLI 契约，不能把 libinstrument 使用的 ManifestIterate 隐藏为 LOCAL。
-cat > /tmp/libjli_exports.map << 'VERSCRIPT'
+# 只认可dynsym内已定义且可见的函数，不接受UND、普通symtab或同名前缀。
+# 失败必须传递给正式构建；READELF仅选择读取工具，不能关闭门禁。
+verify_libjli_exports() {
+    local library=${1:?library required} reader=${READELF:-aarch64-linux-ohos-readelf} header symbols symbol
+    [ -f "$library" ] || { echo "ERROR: libjli missing: $library" >&2; return 1; }
+    header=$("$reader" -h "$library") || return 1
+    grep -Eq 'Class:[[:space:]]+ELF64' <<< "$header" &&
+        grep -Eq 'Data:.*little endian' <<< "$header" &&
+        grep -Eq 'Type:[[:space:]]+DYN' <<< "$header" &&
+        grep -Eq 'Machine:[[:space:]]+AArch64' <<< "$header" || {
+            echo "ERROR: libjli must be an ELF64 little-endian AArch64 shared object: $library" >&2; return 1;
+        }
+    symbols=$("$reader" --dyn-syms --wide "$library") || return 1
+    for symbol in JLI_Launch JLI_ManifestIterate; do
+        awk -v wanted="$symbol" '
+            $4 == "FUNC" && ($5 == "GLOBAL" || $5 == "WEAK") &&
+            ($6 == "DEFAULT" || $6 == "PROTECTED") && $7 ~ /^[0-9]+$/ && $7 + 0 > 0 {
+                name = $8; sub(/@.*/, "", name); if (name == wanted) found = 1;
+            }
+            END { exit !found }
+        ' <<< "$symbols" || { echo "ERROR: missing defined dynamic JLI function: $symbol" >&2; return 1; }
+    done
+    echo "PASS: AArch64 libjli exports JLI_Launch and JLI_ManifestIterate: $library"
+}
+
+main() {
+    if [ "${1-}" = '--verify-only' ]; then
+        [ "$#" -eq 2 ] || { echo 'Usage: rebuild_libjli.sh --verify-only LIBRARY' >&2; return 2; }
+        verify_libjli_exports "$2"
+        return
+    fi
+    [ "$#" -le 1 ] || { echo 'Usage: rebuild_libjli.sh [BUILD_DIR]' >&2; return 2; }
+    if [ "$#" -eq 1 ] && [ -z "$1" ]; then echo 'ERROR: explicit BUILD_DIR is empty' >&2; return 2; fi
+    JDK_VERSION=${JDK_VERSION:-17}
+    case "$JDK_VERSION" in 17|21|25) ;; *) echo "ERROR: unsupported JDK_VERSION: $JDK_VERSION" >&2; return 2 ;; esac
+    JDK_SRC="/build/jdk${JDK_VERSION}u"
+    BUILD_DIR=$(resolve_libjli_build_dir "$JDK_SRC" "${1-}")
+    echo "=== Rebuilding libjli.so for JDK $JDK_VERSION in $BUILD_DIR ==="
+    # 版本脚本不能提升hidden符号；下方重编以default visibility公开真实JLI实现。
+    # JLI_Exit/JLI_ExitHook旧伪桥已退役；required export只由实际消费者契约决定。
+    EXPORT_MAP="$BUILD_DIR/libjli_exports.map"
+    cat > "$EXPORT_MAP" << 'VERSCRIPT'
 {
     global: JLI_*;
     local: *;
 };
 VERSCRIPT
-
-echo "  Created linker version script for symbol export"
 
 COMMON_FLAGS="-MMD \
     -I${BUILD_DIR}/support/modules_include/java.base \
@@ -78,9 +85,9 @@ COMMON_FLAGS="-MMD \
     -Wunused-function -Wundef -Wunused-value -Woverloaded-virtual \
     -std=c99 -fno-strict-aliasing \
     --target=aarch64-linux-ohos --sysroot=/ohos-sysroot-rw -fPIC \
-    -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC \
+    -D__MUSL__ -DMUSL_LIBC  \
     -I/ohos-sysroot-rw/usr/include/aarch64-linux-ohos \
-    -I/build/stub-headers -isystem /usr/lib/llvm-15/include/c++/v1 \
+    -I/build/stub-headers -isystem ${AMCL_JDK_CXX_INCLUDE:?} \
     -B/ohos-sysroot-rw/usr/lib/aarch64-linux-ohos \
     -L/ohos-sysroot-rw/usr/lib/aarch64-linux-ohos \
     -rtlib=compiler-rt -unwindlib=none \
@@ -95,7 +102,7 @@ COMMON_FLAGS="-MMD \
 
 OBJ_DIR=${BUILD_DIR}/support/native/java.base/libjli
 
-# Step 1: Recompile java.c (contains JLI_Exit, JavaMain, etc.)
+# Step 1: 重编java.c中的JLI_Launch/JavaMain等真实入口。
 echo "[1/4] Recompiling java.c..."
 /ohos-toolchain/aarch64-linux-ohos-gcc \
     $COMMON_FLAGS \
@@ -123,33 +130,29 @@ echo "[3/4] Relinking libjli.so..."
     -B/ohos-sysroot-rw/usr/lib/aarch64-linux-ohos \
     -L/ohos-sysroot-rw/usr/lib/aarch64-linux-ohos \
     -rtlib=compiler-rt -unwindlib=none \
-    -nostdlib++ -L/output/jdk-libs -lcxxabi_shim \
+    -nostdlib++ -L/output/jdk-libs -lcxxabi_shim -lc++_shared \
     -L${BUILD_DIR}/support/modules_libs/java.base \
     -L${BUILD_DIR}/support/modules_libs/java.base/server \
     -shared -Wl,-z,origin -Wl,-rpath,\$ORIGIN -Wl,--disable-new-dtags \
     -Wl,-soname=libjli.so \
-    -Wl,--version-script=/tmp/libjli_exports.map \
+    -Wl,--version-script="$EXPORT_MAP" \
     -o ${BUILD_DIR}/support/modules_libs/java.base/libjli.so \
     "$OBJ_DIR"/*.o \
     -Wl,--no-undefined \
     -lz -ldl -lpthread
 echo "  libjli.so linked OK"
 
-# Step 4: Copy to output and JDK image
-echo "[4/4] Copying to output..."
+# 发布前检查required exports；不将错误产物先复制到输出或最终镜像。
+verify_libjli_exports "${BUILD_DIR}/support/modules_libs/java.base/libjli.so"
+echo "[4/4] Copying verified libjli to output and JDK image..."
 mkdir -p /output/jdk-libs
-cp ${BUILD_DIR}/support/modules_libs/java.base/libjli.so /output/jdk-libs/libjli.so
-cp ${BUILD_DIR}/support/modules_libs/java.base/libjli.so ${BUILD_DIR}/images/jdk/lib/libjli.so
+cp "${BUILD_DIR}/support/modules_libs/java.base/libjli.so" /output/jdk-libs/libjli.so
+cp "${BUILD_DIR}/support/modules_libs/java.base/libjli.so" "${BUILD_DIR}/images/jdk/lib/libjli.so"
+verify_libjli_exports /output/jdk-libs/libjli.so
+verify_libjli_exports "${BUILD_DIR}/images/jdk/lib/libjli.so"
+echo 'NEEDED dependencies:'
+"${READELF:-aarch64-linux-ohos-readelf}" -d /output/jdk-libs/libjli.so | grep NEEDED
+echo '=== Verified libjli rebuild complete ==='
+}
 
-echo ""
-echo "=== Done! ==="
-ls -la /output/jdk-libs/libjli.so
-file /output/jdk-libs/libjli.so
-echo ""
-echo "Verify exported symbols (must show JLI_Exit and JLI_ExitHook):"
-aarch64-linux-ohos-nm -D /output/jdk-libs/libjli.so | grep -i "JLI_Exit" || echo "❌ JLI_Exit NOT in dynamic symbols!"
-aarch64-linux-ohos-nm -D /output/jdk-libs/libjli.so | grep -i "JLI_ExitHook" || echo "❌ JLI_ExitHook NOT in dynamic symbols!"
-aarch64-linux-ohos-nm -D /output/jdk-libs/libjli.so | grep -i "JLI_Launch" || echo "❌ JLI_Launch NOT in dynamic symbols!"
-echo ""
-echo "NEEDED dependencies:"
-aarch64-linux-ohos-readelf -d /output/jdk-libs/libjli.so | grep NEEDED
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

@@ -9,6 +9,7 @@
 
 // ---- common：常量 / 主题 / 图标 / 设备形态 ----
 export * from './src/main/ets/common/Constants';
+export * from './src/main/ets/common/device/HostCpuInfo';
 export * from './src/main/ets/common/DockLight';
 export * from './src/main/ets/common/ImmersiveLight';
 export * from './src/main/ets/common/DiagnosticPolicy';
@@ -62,3 +63,7 @@ export { LaunchPreferenceSnapshot, LaunchPreferenceStore, LaunchPreferenceValue,
 export { createLaunchPreferenceStores } from './src/main/ets/utils/PreferenceSnapshot';
 export * from './src/main/ets/utils/LayoutStorageBudget';
 export * from './src/main/ets/utils/OwnerLayoutSourceRepository';
+export * from './src/main/ets/utils/JvmArgumentTokens';
+export * from './src/main/ets/common/GameResolutionPolicy';
+export * from './src/main/ets/types/AppUpdateCompletion';
+export { AppRuntimeRequirements, parseAppRuntimeRequirements } from './src/main/ets/common/RuntimeRequirementPolicy';

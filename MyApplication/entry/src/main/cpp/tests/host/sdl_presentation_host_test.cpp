@@ -23,6 +23,11 @@ static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, peekInputForeground) == o
     "SDL input-foreground tail offset must match the host ABI");
 static_assert(AMCL_INPUT_FOREGROUND_BROKER_SIZE == AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_INPUT_FOREGROUND_SIZE,
     "SDL input-foreground size guard must match the host ABI");
+// 0029的三个函数指针跨DSO使用，逐字段核验实际完整series生成头与宿主声明的偏移。
+static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, geometryWorkFlags) == offsetof(AmclNativeWindowLeaseBrokerV2, geometryWorkFlags));
+static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, geometryCheckpoint) == offsetof(AmclNativeWindowLeaseBrokerV2, geometryCheckpoint));
+static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, observeDrawable) == offsetof(AmclNativeWindowLeaseBrokerV2, observeDrawable));
+static_assert(offsetof(AMCL_NativeWindowLeaseBrokerV2, matchesPresentationIdentity) == offsetof(AmclNativeWindowLeaseBrokerV2, matchesPresentationIdentity));
 
 namespace {
 AmclPresentationOwner hostOwner;
@@ -38,9 +43,23 @@ uintptr_t nextSurface = 100;
 std::vector<std::string> events;
 unsigned createCalls = 0;
 unsigned destroyCalls = 0;
+uint32_t geometryFlags = 0;
+unsigned geometryCalls = 0, observationCalls = 0;
 int failures = 0;
 void check(bool condition, const char* message) {
     if (!condition) { ++failures; std::cerr << "FAIL " << message << '\n'; }
+}
+// 仅替换宿主回调，SDL资格检查及参数转发执行完整有序补丁生成的生产函数。
+uint32_t workFlags() { return geometryFlags; }
+int checkpoint(void* window, uint64_t generation, uint64_t token) {
+    check(window == publishedWindow && generation == publishedGeneration && token == hostOwner.token(), "checkpoint forwards original owner");
+    ++geometryCalls;
+    return 1;
+}
+void observe(void* window, uint64_t generation, uint64_t token, int width, int height, uint32_t source) {
+    check(window == publishedWindow && generation == publishedGeneration && token == hostOwner.token(), "observation forwards original owner");
+    check(width == 600 && height == 450 && source == 1u, "observation forwards actual dimensions and source");
+    ++observationCalls;
 }
 uint64_t peekGeneration() { return publishedGeneration; }
 uint32_t peekState() { return publishedState; }
@@ -104,6 +123,37 @@ bool retire(AMCL_PresentationOwner& owner, void* surface) {
 }
 }
 int main() {
+    reset();
+    // 缺尾部/空owner/稳态均不能调用；只有明确工作位才转发一次原token与真实观测。
+    broker.geometryWorkFlags = workFlags;
+    broker.geometryCheckpoint = checkpoint;
+    broker.observeDrawable = observe;
+    AMCL_PresentationOwner geometryOwner{};
+    auto* geometrySurface = make(geometryOwner);
+    check(geometrySurface != nullptr, "geometry fixture has a real tracked resource");
+    check(AMCL_PresentationGeometryFlags(nullptr) == 0, "empty owner refuses geometry");
+    geometryFlags = 3u;
+    const auto fullSize = broker.structSize;
+    broker.structSize = AMCL_INPUT_FOREGROUND_BROKER_SIZE;
+    check(AMCL_PresentationGeometryFlags(&geometryOwner) == 0, "legacy descriptor refuses new tail");
+    AMCL_PresentationGeometryCheckpoint(&geometryOwner);
+    AMCL_PresentationObserveDrawable(&geometryOwner, 600, 450, 1u);
+    check(geometryCalls == 0 && observationCalls == 0, "legacy tail never invokes callbacks");
+    broker.structSize = fullSize;
+    geometryFlags = 0;
+    AMCL_PresentationGeometryCheckpoint(&geometryOwner);
+    AMCL_PresentationObserveDrawable(&geometryOwner, 600, 450, 1u);
+    check(geometryCalls == 0 && observationCalls == 0, "steady frames perform no geometry callbacks");
+    geometryFlags = 1u;
+    AMCL_PresentationGeometryCheckpoint(&geometryOwner);
+    AMCL_PresentationObserveDrawable(&geometryOwner, 600, 450, 1u);
+    check(geometryCalls == 1 && observationCalls == 0, "pending configuration does not fabricate observation");
+    geometryFlags = 2u;
+    AMCL_PresentationGeometryCheckpoint(&geometryOwner);
+    AMCL_PresentationObserveDrawable(&geometryOwner, 600, 450, 1u);
+    check(geometryCalls == 1 && observationCalls == 1, "awaiting drawable forwards only real observation");
+    check(retire(geometryOwner, geometrySurface) && AMCL_PresentationRelease(&geometryOwner), "geometry fixture balances references");
+    geometryFlags = 0;
     reset();
     AMCL_PresentationOwner first{};
     auto* firstSurface = make(first);

@@ -1,8 +1,9 @@
-/** 会话完整性与 AI 输入契约；直接执行生产 ETS，网络只用内存假服务，不外发任何日志。 */
+/** 会话完整性与公开分享输入契约；直接执行生产 ETS，网络只用内存假服务，不外发任何日志。 */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { evidenceRuntime } from './lib/evidence-test-runtime.mjs';
+import { closeEvidenceRuntime } from './lib/close-evidence-runtime.mjs';
 const common = name => 'commons/src/main/ets/utils/' + name + '.ets';
 
 test('internal recovery receipts never become launcher logs or exported evidence', async () => {
@@ -17,11 +18,13 @@ test('internal recovery receipts never become launcher logs or exported evidence
     const snapshot = await x.createEvidenceExportSnapshot(f.directory, f.context.tempDir, e.evidenceSelectionOf(f.directory, 101, files), '');
     assert(!snapshot.files.some(file => fs.readFileSync(file.path, 'utf8').includes('internal-recovery')));
     x.disposeEvidenceExportSnapshot(snapshot);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
-test('production environment collector populates ledger metadata and keeps host facts distinct from runtime plans', () => {
-  const f = evidenceRuntime({ imports: {
+test('production environment collector populates ledger metadata and keeps host facts distinct from runtime plans', async () => {
+  // CPU采集已下沉commons的系统事实端口；本用例保留明确平台快照，不访问宿主sysfs猜设备CPU。
+  const f = evidenceRuntime({ commons: { collectHostCpuInfo: () => ({ model: 'SYNTHETIC_SOC', abi: 'arm64-v8a',
+    logicalIds: [], topology: '', physicalCount: 0, packageCount: 0 }) }, imports: {
     '@ohos.deviceInfo': { default: { chipType: 'SYNTHETIC_SOC', abiList: 'arm64-v8a' } },
     'libentry.so': { default: { getDeviceMemoryMB: () => 8192 } },
     '../product/ProductIdentityCollector': { collectProductIdentity: () => ({ product: 'default', storeChannel: false,
@@ -48,10 +51,10 @@ test('production environment collector populates ledger metadata and keeps host 
     assert.equal(repository.environmentValue(actual, 'gpu.model'), 'ACTUAL_GPU');
     assert.equal(repository.environmentValue(actual, 'host.os'), 'HarmonyOS');
     assert.equal(repository.environmentValue(actual, 'java.guestOs'), 'Linux');
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
-test('sealed receipt rejects shortening, equal-length rewrite and disappearance without resigning damaged bytes', () => {
+test('sealed receipt rejects shortening, equal-length rewrite and disappearance without resigning damaged bytes', async () => {
   for (const damage of ['short', 'same-size', 'missing']) {
     const f = evidenceRuntime();
     try {
@@ -72,11 +75,11 @@ test('sealed receipt rejects shortening, equal-length rewrite and disappearance 
       const planAfter = f.load(common('SessionCapture')).readSessionCapture(f.directory, id);
       assert.equal(planAfter.sources.find(item => item.destination === 'game/logs/latest.log').capturedSha256, before);
       assert.equal(fs.existsSync(path), damage !== 'missing', '校验不能偷偷覆盖或重建已封账原件');
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });
 
-test('owned output survives next launch and unclean exit remains partial; early failure defaults include stdio/JVM', () => {
+test('owned output survives next launch and unclean exit remains partial; early failure defaults include stdio/JVM', async () => {
   for (const ended of [true, false]) {
     const f = evidenceRuntime();
     try {
@@ -96,7 +99,7 @@ test('owned output survives next launch and unclean exit remains partial; early 
         assert.equal(file.state, ended ? 'complete' : 'partial');
         assert.equal(file.verification, 'verified');
       }
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });
 
@@ -106,7 +109,8 @@ test('environment, overview and full files reach the actual request; remote byte
     const ledger = f.load(common('ActivityLedger')), e = f.load(common('SessionEvidence'));
     const env = f.load(common('SessionEnvironment')), x = f.load(common('EvidenceExportSnapshot'));
     const client = f.load('entry/src/main/ets/components/LogShareClient.ets');
-    ledger.ledgerBegin(f.directory, 101, { category: 'launch', title: 'environment test' });
+    ledger.ledgerBegin(f.directory, 101, { category: 'launch', title: 'environment test',
+      gameVersionId:'1.21.11',loaderType:'Fabric',loaderVersion:'0.18.0',appVersion:'1.0.4-test' });
     env.updateSessionEnvironment(f.directory, 101, [
       env.sessionEnvironmentFact('launcher.version', '1.0.4-test', 'test'),
       env.sessionEnvironmentFact('host.os', 'HarmonyOS', 'test'),
@@ -117,8 +121,20 @@ test('environment, overview and full files reach the actual request; remote byte
     const selection = e.evidenceSelectionOf(f.directory, 101);
     const snapshot = await x.createEvidenceExportSnapshot(f.directory, f.context.tempDir, selection, 'outcome=failed');
     const files = await x.snapshotShareFiles(snapshot, 12 * 1024 * 1024, 200000);
-    const result = await client.submitLogFiles(files, 'amcl-launcher');
+    // 用真实活动准备层生成 metadata，再从实际请求边界核对，避免只测试一个手写映射表。
+    const preparation=f.load('entry/src/main/ets/components/ActivitySharePreparation.ets');
+    const draft=new preparation.ActivityShareDraft();
+    draft.activityId=101; draft.manifest=ledger.ledgerManifest(f.directory,101);
+    draft.environment=env.readObservedSessionEnvironment(f.directory,101);
+    const metadata=preparation.activityShareMetadata(draft); metadata.snapshot=snapshot.digest;
+    const result = await client.submitLogFiles(files, 'amcl-launcher',metadata);
     assert.equal(result.ok, true);
+    const sentMetadata=new Map(f.control.metadata.map(item=>[item.key,item]));
+    assert.equal(sentMetadata.get('version').value,'1.21.11');
+    assert.equal(sentMetadata.get('hostOs').value,'HarmonyOS');
+    assert.equal(sentMetadata.get('cpu').value,'TEST_CPU'); assert.equal(sentMetadata.get('gpu').value,'TEST_GPU');
+    assert.equal(sentMetadata.get('activityId').visible,false); assert.equal(sentMetadata.get('snapshot').visible,false);
+    assert.equal(sentMetadata.get('environmentSchema').visible,false);
     assert.match(f.control.main, /HarmonyOS/); assert.match(f.control.main, /TEST_CPU/); assert.match(f.control.main, /TEST_GPU/);
     assert.match(f.control.main, /1\.0\.4-test/);
     assert(f.control.files.find(file => file.name === 'game/mc_output.log').content.includes('FIRST\nMIDDLE\nLAST'));
@@ -137,10 +153,10 @@ test('environment, overview and full files reach the actual request; remote byte
     assert(!privateFiles.find(file => file.name === x.EVIDENCE_DIAGNOSIS_NAME).content.includes('TEST_CPU'));
     assert.equal(env.readSessionEnvironment(f.directory, 102).facts.length, 0, '历史缺失不能读取另一局或当前环境');
     x.disposeEvidenceExportSnapshot(privateSnapshot);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
-test('known Log4j configuration is derived without editing original semantics, unknown/custom is explicit', () => {
+test('known Log4j configuration is derived without editing original semantics, unknown/custom is explicit', async () => {
   const f = evidenceRuntime();
   try {
     const logging = f.load('launch/src/main/ets/SessionLoggingConfig.ets');
@@ -151,5 +167,5 @@ test('known Log4j configuration is derived without editing original semantics, u
     const custom = '<Configuration><File fileName="custom/my.log"/></Configuration>';
     const untouched = logging.rewriteSessionLoggingXml(custom, '/session');
     assert.equal(untouched.owned, false); assert.equal(untouched.text, custom);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });

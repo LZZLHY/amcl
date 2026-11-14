@@ -1,0 +1,117 @@
+--- a/src/jdk.zipfs/share/classes/jdk/nio/zipfs/ZipFileSystem.java
++++ b/src/jdk.zipfs/share/classes/jdk/nio/zipfs/ZipFileSystem.java
+@@ -1770,6 +1770,8 @@
+             return;
+         PosixFileAttributes attrs = getPosixAttributes(zfpath);
+         Path tmpFile = createTempFileInSameDirectoryAs(zfpath);
++        // AMCL：只在原ZIP有POSIX权限时记录临时对象身份；无该视图保持原路径。
++        final Object tmpFileKey = attrs == null ? null : readZipTemporaryKey(tmpFile);
+         try (OutputStream os = new BufferedOutputStream(Files.newOutputStream(tmpFile, WRITE))) {
+             ArrayList<Entry> elist = new ArrayList<>(inodes.size());
+             long written = 0;
+@@ -1853,16 +1855,100 @@
+             end.cenlen = written - end.cenoff;
+             end.write(os, written, forceEnd64);
+         }
++        // AMCL：权限复制仍可能失败，必须先完成再删除/挪走原ZIP。
++        // 同值普通权限是冗余元数据请求；真正变化保持原API和原异常。
++        try {
++            if (attrs != null && !hasSameZipPermissions(tmpFile, tmpFileKey, attrs.permissions())) {
++                Files.setPosixFilePermissions(tmpFile, attrs.permissions());
++            }
++        } catch (IOException | RuntimeException | Error failure) {
++            closeSourceAfterPermissionFailure(failure);
++            throw failure;
++        }
+         ch.close();
+         Files.delete(zfpath);
+ 
+-        // Set the POSIX permissions of the original Zip File if available
+-        // before moving the temp file
+-        if (attrs != null) {
+-            Files.setPosixFilePermissions(tmpFile, attrs.permissions());
+-        }
+         Files.move(tmpFile, zfpath, REPLACE_EXISTING);
+         hasUpdate = false;    // clear
++    }
++
++    /**
++     * AMCL: zipfs owns this newly created temporary file. Skip only the exact
++     * already-satisfied metadata copy; never turn a failed permission change
++     * into success. The full Unix mode includes special bits omitted by the
++     * nine PosixFilePermission values. Unknown views still use the original API.
++     *
++     * AMCL中文契约：仅优化本zipfs自有临时对象的无变化权限复制；完整07777必须相同，
++     * 不能忽略setuid/setgid/sticky。对象身份变化明确失败，不改变全局权限API的语义。
++     */
++    private boolean hasSameZipPermissions(Path temporary, Object expectedKey,
++                                          Set<PosixFilePermission> permissions)
++        throws IOException
++    {
++        if (expectedKey == null) {
++            return false;
++        }
++        final Map<String, Object> current;
++        try {
++            current = Files.readAttributes(temporary, "unix:mode,fileKey",
++                                           LinkOption.NOFOLLOW_LINKS);
++        } catch (UnsupportedOperationException unsupported) {
++            return false;
++        }
++        if (!expectedKey.equals(current.get("fileKey"))) {
++            throw new IOException("Temporary ZIP identity changed before permission copy");
++        }
++        Object value = current.get("mode");
++        if (!(value instanceof Integer)) {
++            return false;
++        }
++        int observed = (Integer)value;
++        if ((observed & 0170000) != 0100000) {
++            throw new IOException("Temporary ZIP is no longer a regular file");
++        }
++        return matchesZipPermissionMode(observed, permissions);
++    }
++
++    /** AMCL：新增属性读取失败也不能跳过原ZIP通道的关闭；保留原失败为主异常。 */
++    private Object readZipTemporaryKey(Path temporary) throws IOException {
++        try {
++            return Files.readAttributes(temporary, BasicFileAttributes.class,
++                                        LinkOption.NOFOLLOW_LINKS).fileKey();
++        } catch (IOException | RuntimeException | Error failure) {
++            closeSourceAfterPermissionFailure(failure);
++            throw failure;
++        }
++    }
++
++    /** AMCL：sync异常会跳过上游close中的后续ch.close，提前失败必须显式关闭且不吞主因。 */
++    private void closeSourceAfterPermissionFailure(Throwable failure) {
++        try {
++            ch.close();
++        } catch (IOException | RuntimeException | Error closeFailure) {
++            if (failure != closeFailure) {
++                failure.addSuppressed(closeFailure);
++            }
++        }
++    }
++
++    /** AMCL：显式映射九位权限，不依赖enum.ordinal；特殊位必须同请求一样为0。 */
++    private static boolean matchesZipPermissionMode(int observed,
++                                                    Set<PosixFilePermission> permissions) {
++        int requested = 0;
++        for (PosixFilePermission permission : permissions) {
++            switch (permission) {
++            case OWNER_READ: requested |= 0400; break;
++            case OWNER_WRITE: requested |= 0200; break;
++            case OWNER_EXECUTE: requested |= 0100; break;
++            case GROUP_READ: requested |= 0040; break;
++            case GROUP_WRITE: requested |= 0020; break;
++            case GROUP_EXECUTE: requested |= 0010; break;
++            case OTHERS_READ: requested |= 0004; break;
++            case OTHERS_WRITE: requested |= 0002; break;
++            case OTHERS_EXECUTE: requested |= 0001; break;
++            }
++        }
++        return (observed & 07777) == requested;
+     }
+ 
+     /**

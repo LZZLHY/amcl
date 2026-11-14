@@ -33,6 +33,7 @@ amcl::input::CursorCaptureContext g_context;
 // 锁边；平台加锁期间若窗口管理器重入焦点回调，不会反向卡在frame-rate发布锁上。
 std::atomic<bool> g_foregroundAllowed{true};
 bool g_locked = false;
+// 同时保存尚未确认释放的原窗口。g_locked=false而ID非零只表示清理待办，不授予输入资格。
 int32_t g_lockedWindowId = 0;
 // Read from the input hot path without taking the mutex.
 std::atomic<bool> g_lockedFlag{false};
@@ -147,6 +148,23 @@ const Resolver& ResolveLocked() {
     return g_resolver;
 }
 
+/** 只在捕获边界持g_mutex调用。关闭应用侧资格先于结果判断；平台失败保留原目标供既有
+ * 生命周期/显式请求重试。成功之前不得用新窗口覆盖此ID，也不在MOVE路径做清理。 */
+AmclCursorLockResult ReleaseCursorLocked(const Resolver& resolver) {
+    if (g_lockedWindowId == 0) return AMCL_CURSOR_LOCK_UNCHANGED;
+    const int32_t target = g_lockedWindowId;
+    const int32_t code = resolver.unlock(target);
+    g_locked = false;
+    g_lockedFlag.store(false, std::memory_order_release);
+    g_lockedAtNs.store(0, std::memory_order_release);
+    if (code != 0) {
+        OH_LOG_WARN(LOG_APP, "OH_WindowManager_UnlockCursor(%{public}d) failed code=%{public}d", target, code);
+        return CursorLockFailureResult(code);
+    }
+    g_lockedWindowId = 0;
+    OH_LOG_INFO(LOG_APP, "cursor unlocked from window %{public}d", target);
+    return AMCL_CURSOR_LOCK_OK;
+}
 }  // namespace
 
 extern "C" AmclCursorLockResult amcl_cursor_lock_set(int32_t windowId,
@@ -171,11 +189,14 @@ extern "C" AmclCursorLockResult amcl_cursor_lock_set(int32_t windowId,
     if (locked && g_locked && g_lockedWindowId == windowId) {
         return AMCL_CURSOR_LOCK_UNCHANGED;
     }
-    if (!locked && !g_locked) {
-        return AMCL_CURSOR_LOCK_UNCHANGED;
-    }
+    if (!locked) return ReleaseCursorLocked(resolver);
 
     if (locked) {
+        // 原窗口仍待释放时先闭合它；失败返回拒绝，避免新窗口加锁掩盖旧资源责任。
+        if (g_lockedWindowId != 0) {
+            const auto released = ReleaseCursorLocked(resolver);
+            if (released != AMCL_CURSOR_LOCK_OK) return released;
+        }
         // 模式默认钉住（follow=false），依据与兜底见文件顶部 g_followMovement 的说明。
         // 一旦看门狗降级过就固定用跟随模式，不再反复切换。
         const bool follow = g_followMovement.load(std::memory_order_acquire);
@@ -223,29 +244,12 @@ extern "C" AmclCursorLockResult amcl_cursor_lock_set(int32_t windowId,
     }
 
 
-    const int32_t releaseWindowId = g_lockedWindowId != 0 ? g_lockedWindowId : windowId;
-    const int32_t code = resolver.unlock(releaseWindowId);
-    // Clear local state regardless: the platform also drops the lock on focus
-    // loss, so a failure here must not leave this process believing it still
-    // owns a lock it cannot release.
-    g_locked = false;
-    g_lockedWindowId = 0;
-    g_lockedFlag.store(false, std::memory_order_release);
-    g_lockedAtNs.store(0, std::memory_order_release);
-    if (code != 0) {
-        OH_LOG_WARN(LOG_APP,
-                    "OH_WindowManager_UnlockCursor(%{public}d) failed code=%{public}d",
-                    releaseWindowId, code);
-        return CursorLockFailureResult(code);
-    }
-    OH_LOG_INFO(LOG_APP, "cursor unlocked from window %{public}d",
-                releaseWindowId);
-    return AMCL_CURSOR_LOCK_OK;
+    return AMCL_CURSOR_LOCK_UNCHANGED;
 }
 
 extern "C" void amcl_cursor_lock_note_focus_lost(void) {
     std::lock_guard<std::mutex> guard(g_mutex);
-    if (!g_locked) return;
+    if (g_lockedWindowId == 0) return;
     // The window manager already released it; only the cached state is stale.
     g_locked = false;
     g_lockedWindowId = 0;

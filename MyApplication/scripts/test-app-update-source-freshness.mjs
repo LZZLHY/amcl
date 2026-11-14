@@ -30,8 +30,10 @@ function load(relative, dependencies = {}) {
 }
 
 const policy = load('update/src/main/ets/AppUpdatePolicy.ets');
+// 来源新鲜度回归同样执行真实运行时要求解析，不以缺字段的旧替身绕过生产依赖。
+const runtimeRequirements = load('commons/src/main/ets/common/RuntimeRequirementPolicy.ets');
 const resolver = load('update/src/main/ets/GitHubUpdateAssetResolver.ets', {
-  '@kit.NetworkKit': {}, './AppUpdatePolicy': policy,
+  '@kit.NetworkKit': {}, './AppUpdatePolicy': policy, commons:runtimeRequirements,
 });
 const noteTypes = load('update/src/main/ets/ChangelogTypes.ets');
 const downloadPath = 'feature_core/src/main/ets/download/DownloadManager.ets';

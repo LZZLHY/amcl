@@ -331,6 +331,17 @@ int32_t transact(uint64_t producer,const AmclSourceRequestV1* request,AmclSource
         return result->status=AMCL_SOURCE_RETIRED_DEFERRED;
     }catch(const std::bad_alloc&){return result->status=AMCL_SOURCE_PRESSURE;}
 }
+/** 行为判断只取原账本，不顺便扫描所有来源统计；与完整query共享同一owner锁及准入。 */
+int32_t owns(uint64_t producer,uint64_t owner,const AmclSourceOutputV1* value) {
+    if (foreign() || !hasPreparedHandle(producer)) return AMCL_SOURCE_NOT_READY;
+    if (!value || !valid(*value)) return AMCL_SOURCE_REJECTED;
+    auto* storage = state(); if (!storage) return AMCL_SOURCE_NOT_READY;
+    auto& s = *storage;
+    std::lock_guard<std::recursive_mutex> lock(s.runtime.TransactionMutex());
+    if (!roleFor(s, producer)) return AMCL_SOURCE_REJECTED;
+    return (owner ? s.runtime.Ledger().owns(owner, output(*value)) :
+        s.runtime.Ledger().isHeld(output(*value))) ? 1 : 0;
+}
 int32_t query(uint64_t producer,uint64_t owner,const AmclSourceOutputV1* value,AmclSourceSnapshotV1* snapshot){
     if(snapshot)std::memset(snapshot,0,sizeof(*snapshot));if(foreign()||!snapshot)return AMCL_SOURCE_NOT_READY;
     if(!hasPreparedHandle(producer))return AMCL_SOURCE_NOT_READY;
@@ -368,7 +379,7 @@ extern "C" uint64_t amclSourceControlRetiredKeyTerminalsV1(){
 extern "C" const AmclSourceControlPortV1* amclSourceControlGetPortV1(){
     if(foreign())return nullptr;
     static const AmclSourceControlPortV1 port={AMCL_SOURCE_CONTROL_MAGIC,1,sizeof(AmclSourceControlPortV1),sourceProcess,
-        reinterpret_cast<uintptr_t>(amclInputGetHostApiV1()),verify,open,prepared,transact,query,ownedTextKeyTap,ownedTextKeyTapForKeyboard};
+        reinterpret_cast<uintptr_t>(amclInputGetHostApiV1()),verify,open,prepared,transact,query,ownedTextKeyTap,ownedTextKeyTapForKeyboard,owns};
     return &port;
 }
 extern "C" void amclSourceControlPublishV1(){

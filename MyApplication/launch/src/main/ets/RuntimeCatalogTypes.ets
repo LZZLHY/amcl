@@ -2,6 +2,8 @@
  * 运行时目录 v1 的数据契约。接口只描述数据，不能取代 RuntimeCatalogValidation 的边界校验。
  * 所有路径由客户端根据 javaMajor/adapter 生成；远程数据没有脚本或本地安装路径字段。
  */
+/** 安装收据的独立UTF-8字节合同；producer、实际安装识别和续作ack使用同一预算。 */
+export const RUNTIME_INSTALL_RECEIPT_LIMIT: number = 1024 * 1024;
 export interface RuntimeArchive { type: string; fileName: string; sizeBytes: number; sha256: string; }
 export interface RuntimePart { url: string; sizeBytes: number; sha256: string; }
 export interface RuntimeDownload { sourceId: string; transport: string; url?: string; parts?: RuntimePart[]; }
@@ -9,6 +11,8 @@ export interface RuntimeProvenance {
   kind: string; sourceRepository: string; sourceCommit: string; manifestSha256: string; evidence: string[];
 }
 export interface RuntimeBuild {
+  /** v2固定宿主要求；v1仅可由其runtime.loaderProtocol解释，不从Java主版本猜测。 */
+  requiredHostProtocol?: number;
   id: string; runtimeId: string; javaVersion: string; legacyTags: string[]; archive: RuntimeArchive;
   downloads: RuntimeDownload[]; notes: string[]; capabilities: string[]; validationLevel: string;
   provenance: RuntimeProvenance; status: string;
@@ -16,6 +20,8 @@ export interface RuntimeBuild {
 /** 明确回退指令：只提示这些已安装 build，原因必须展示；不是降低目录/推荐代次。 */
 export interface RuntimeRollback { fromBuildIds: string[]; reason: string; }
 export interface RuntimeDefinition {
+  /** v2按顺序选择第一份本机兼容的推荐；空列表显式停止新推荐，保留历史身份与安装。 */
+  recommendedBuildIds?: string[];
   id: string; javaMajor: number; displayName: string; os: string; arch: string; libc: string; adapter: string;
   minimumCatalogProtocol: number; minimumApi: number; loaderProtocol: number;
   recommendationRevision: number; recommendedBuildId: string;

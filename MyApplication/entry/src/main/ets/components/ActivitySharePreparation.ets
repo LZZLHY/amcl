@@ -55,7 +55,10 @@ export function activityShareMetadata(draft: ActivityShareDraft): LogShareMetada
   const m = draft.manifest;
   const environment = draft.environment;
   const value = (key: string): string => environment === undefined ? 'unknown (not recorded)' : environmentValue(environment, key);
-  return { launcher: 'AMCL', appVersion: m?.appVersion ?? '', mcVersion: m?.gameVersionId ?? '',
+  // 已记录的实际游戏版本优先于实例目录名；缺少环境记录时保留旧账本信息。
+  const observedVersion: string = environment === undefined ? '' : environmentValue(environment, 'game.version');
+  return { launcher: 'AMCL', appVersion: m?.appVersion ?? '',
+    mcVersion: observedVersion.length > 0 && !observedVersion.startsWith('unknown') ? observedVersion : m?.gameVersionId ?? '',
     loader: m === undefined ? '' : m.loaderType + ' ' + m.loaderVersion,
     jdk: m?.jdk ?? '', device: m?.deviceModel ?? '', osVersion: m?.osVersion ?? '',
     outcome: m === undefined ? '' : ledgerStateLabel(m.state), activityId: draft.activityId, snapshot: '',
@@ -67,8 +70,9 @@ export function activityShareMetadata(draft: ActivityShareDraft): LogShareMetada
 
 export function activityShareDisclosure(draft: ActivityShareDraft): string {
   return 'source: ' + resolveLogShareSource('amcl-launcher') + '\n'
-    + logShareMetadataItems(activityShareMetadata(draft)).map((item): string => item.key + ': ' + item.value).join('\n')
-    + '\nsnapshot: 本次冻结快照的校验摘要';
+    + logShareMetadataItems(activityShareMetadata(draft)).map((item): string => (item.label ?? item.key)
+      + ' (' + item.key + (item.visible === false ? '，新接口隐藏；旧实例不发送' : '，公开') + '): ' + item.value).join('\n')
+    + '\nsnapshot: 本次冻结快照的校验摘要（新接口隐藏；旧实例不发送该元数据）';
 }
 
 export async function prepareActivityShare(context: common.UIAbilityContext,
@@ -91,7 +95,7 @@ export function persistActivityShareSelection(context: common.UIAbilityContext, 
  * 脱敏版本变化都会改变键。不同活动的文件名/内容正常变化不要求再次走高级预览。
  */
 export function quickShareConsentKey(plan: LogSharePreflight): string {
-  return evidenceTextDigest('quick-public-v2|recommended-latest-stdio-jvm-trusted-crash-launcher|environment-diagnosis|metadata-v2|'
+  return evidenceTextDigest('quick-public-v3|recommended-latest-stdio-jvm-trusted-crash-launcher|environment-diagnosis|metadata-v3|'
     + EVIDENCE_EXPORT_FORMAT + '|'
     + EVIDENCE_REDACTION_VERSION + '|' + plan.apiBaseUrl + '|' + plan.limits.storageTimeSec);
 }

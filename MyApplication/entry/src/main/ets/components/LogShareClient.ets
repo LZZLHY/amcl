@@ -4,8 +4,8 @@
  * 新分享优先使用官方 LogShare，服务故障时使用 AMCL 备用实例。
  *
  * 接口以当前 https://logshare.cn/api-docs 为准；历史实测偏差仅作排查记录。
- * JSON 与 text/plain 都在当前官方文档中；本客户端选用 JSON。
- * 上传结果字段在顶层，metadata 为 key/value 数组，DELETE 使用 Bearer token。
+ * 新旧实例统一使用 JSON files[]；metadata 显式声明显示名称和公开范围。
+ * 上传结果字段在顶层，DELETE 使用 Bearer token；去重响应不授予新的删除权。
  * 网络异常保留 NetworkKit code，HTTP 与 API code 分别返回，不能混成一句 message。
  *
  * 隐私约定：
@@ -22,9 +22,9 @@ import { preferences } from '@kit.ArkData';
 import { common, bundleManager } from '@kit.AbilityKit';
 import { AppLogger, LOG_DOMAIN_UI } from 'commons';
 import { sanitizeLogForExport, LogExportTarget, utf8ByteLength, isSafeEvidencePath, stringToUtf8, ensureDirSync, writeEvidenceTextAtomic,
-  evidenceTextDigest, EVIDENCE_DIAGNOSIS_NAME } from 'commons';
+  evidenceTextDigest } from 'commons';
 import { LogShareErrorResult, LogShareRequestError, logShareTransportError, setLogShareError } from './LogShareErrors';
-import { LogShareSseParser, LogShareSseSink } from './LogShareSse';
+import { LogShareSseSink } from './LogShareSse';
 
 const TAG = 'LogShareClient';
 
@@ -36,14 +36,16 @@ export const LOGSHARE_BACKUP_WEB_BASE = 'https://amcl.lovedhy.cn/logshare';
 export const LOGSHARE_UNAVAILABLE = '日志分享暂不可用';
 const BASE = LOGSHARE_API_BASE;
 
-/** Instance ownership is retained when switching from the official service. */
+/** 分享链接保留实际实例身份，读取和撤回不得跨实例发送凭据。 */
 export function logShareInstanceForUrl(url: string): string {
   if (url.startsWith(LOGSHARE_WEB_BASE + '/')) return BASE;
   if (url.startsWith('https://www.logshare.cn/')) return BASE;
   if (url.startsWith(LOGSHARE_BACKUP_WEB_BASE + '/')) return LOGSHARE_BACKUP_API_BASE;
   return '';
 }
-export function logShareSupportsAi(url: string): boolean { return logShareInstanceForUrl(url) === BASE; }
+/** 官方已移除生成式 AI，备用实例也不提供；历史报告读取不受此开关影响。 */
+export const LOGSHARE_AI_UNAVAILABLE: string = 'LogShare AI 分析已下线，日志分享和规则分析仍可使用';
+export function logShareSupportsAi(_url: string): boolean { return false; }
 export function canonicalLogShareUrl(apiBase: string, id: string): string {
   if (!isAllowedInstance(apiBase) || !isValidLogShareId(id)) throw new Error('分享身份无效');
   return (apiBase === BASE ? LOGSHARE_WEB_BASE : LOGSHARE_BACKUP_WEB_BASE) + '/' + id;
@@ -59,19 +61,21 @@ export function canRetryLogShare(result: LogShareErrorResult): boolean {
   if (result.errorStage !== 'transport' && result.errorStage !== 'response') return false;
   return (result.httpStatus ?? 0) === 0;
 }
-/** 官方建议客户端读超时至少 300 秒，普通请求与 SSE 统一。 */
+/** 保留大文件上传的既有长读超时；停用 AI 不改变上传容错窗口。 */
 export const LOGSHARE_READ_TIMEOUT_MS: number = 300000;
 /**
  * 客户端安全预算与服务端 `/v1/limits` 是两套不同的概念：
  *
- * - `maxBytes`/`maxLines` 来自本次实例，决定服务端是否接受本次请求；
+ * - 新实例返回文件数、展开总量和请求体限制，旧实例返回逐文件大小和行数；
  * - 下列常量只限制本地快照、JSON 解压和读回时的内存/CPU 风险，不能冒充服务端限额。
  *
- * LogShare 文档另外规定多文件正文展开累计预算为 12 MiB；它不是 `/v1/limits.maxLength`
- * 的替代值，因此单独命名，并在 UI/错误消息中与动态服务端限额分开表达。
+ * 新实例最多使用 20 MiB 正文/32 MiB JSON 的本地预算；旧实例沿用 12/20 MiB，
+ * 缺少新字段不能被解释为旧服务自动获得更大容量。
  */
-export const LOGSHARE_MULTIFILE_EXPANSION_BUDGET_BYTES: number = 12 * 1024 * 1024;
-export const LOGSHARE_LOCAL_JSON_SAFE_CAP_BYTES: number = 20 * 1024 * 1024;
+export const LOGSHARE_MULTIFILE_EXPANSION_BUDGET_BYTES: number = 20 * 1024 * 1024;
+const LOGSHARE_LEGACY_TOTAL_BYTES: number = 12 * 1024 * 1024;
+const LOGSHARE_LEGACY_REQUEST_BYTES: number = 20 * 1024 * 1024;
+export const LOGSHARE_LOCAL_JSON_SAFE_CAP_BYTES: number = 32 * 1024 * 1024;
 export const LOGSHARE_LOCAL_READBACK_FILE_SAFE_CAP_BYTES: number = 20 * 1024 * 1024;
 export const LOGSHARE_LOCAL_READBACK_TOTAL_SAFE_CAP_BYTES: number = 24 * 1024 * 1024;
 export const LOGSHARE_LOCAL_RESPONSE_SAFE_CAP_BYTES: number = 24 * 1024 * 1024;
@@ -101,6 +105,8 @@ function logShareFilePriority_(name: string): number {
 
 /** POST /v1/log 结果。 */
 export interface LogShareSubmitResult extends LogShareErrorResult {
+  /** 命中已有日志时返回的临时 token 无删除权，必须丢弃。 */
+  deduplicated?: boolean;
   apiBaseUrl?: string;
   usedFallback?: boolean;
   storageTimeSec?: number;
@@ -156,8 +162,11 @@ export interface LogShareInsight {
   counter: number;
 }
 
-/** POST /v1/analyse 与 GET /v1/insights/{id} 的结果（两者结构实测一致）。 */
+/** 已存储文件的 GET /v1/insights 规则分析结果，区别于已下线的生成式 AI。 */
 export interface LogShareAnalysis extends LogShareErrorResult {
+  /** 多文件响应要求调用方选择明确文件，不能伪装成空分析成功。 */
+  requiresFileSelection?: boolean;
+  files?: string[];
   ok: boolean;
   /** 识别到的日志类型标识，如 "neoforge/server"。 */
   id: string;
@@ -186,16 +195,19 @@ export interface LogShareLimits extends LogShareErrorResult {
   storageTimeSec: number;
   maxBytes: number;
   maxLines: number;
+  /** 统一后的文件数、展开正文总量和原始/解压 JSON 请求体限额。 */
+  maxFiles: number;
+  maxTotalBytes: number;
+  maxRequestBodyBytes: number;
   error: string;
 }
 
 /**
- * files[] 总量采用公开的展开预算。maxLength/maxLines 是逐文件过滤器限制，
- * 不能作为多个合法小文件之和的上限；动态限制由预览与发送端逐文件核对。
+ * 总量使用实例配额与客户端安全预算的较小者；旧实例的逐文件限额另行核对。
  * 预检失败时返回零，调用方不能用占位值取得上传资格。
  */
 export function logShareExportBudgetBytes(limits: LogShareLimits): number {
-  return limits.ok ? LOGSHARE_MULTIFILE_EXPANSION_BUDGET_BYTES : 0;
+  return limits.ok ? Math.min(limits.maxTotalBytes, LOGSHARE_MULTIFILE_EXPANSION_BUDGET_BYTES) : 0;
 }
 
 /** 预览时确认的服务与保留期；确认上传不能静默改投另一实例。 */
@@ -240,6 +252,8 @@ export interface LogShareMetadata {
   graphicsProvider?: string;
   javaBuild?: string;
   environmentSchema?: string;
+  /** 已记录的整合包标识；未知时不上传猜测值。 */
+  modpack?: string;
 }
 
 // ============================================================
@@ -253,10 +267,12 @@ interface LogSubmitBody {
   files?: LogShareFile[];
 }
 
-/** 官方 JSON metadata 是数组，每项声明 key/value。 */
+/** 官方 JSON metadata 数组：值已脱敏，显示名称和可见性由客户端明确声明。 */
 export interface LogShareMetadataItem {
   key: string;
   value: string;
+  label?: string;
+  visible?: boolean;
 }
 
 /** LogShare 多文件上传中的一个纯文本文件。 */
@@ -269,20 +285,21 @@ export interface LogShareFile {
 
 export function logShareMetadataItems(meta: LogShareMetadata): LogShareMetadataItem[] {
   const items: LogShareMetadataItem[] = [
-    { key: 'launcher', value: meta.launcher },
-    { key: 'appVersion', value: meta.appVersion },
-    { key: 'mcVersion', value: meta.mcVersion },
-    { key: 'loader', value: meta.loader },
-    { key: 'jdk', value: meta.jdk },
-    { key: 'device', value: meta.device },
-    { key: 'osVersion', value: meta.osVersion },
-    { key: 'outcome', value: meta.outcome },
+    { key: 'launcher', value: meta.launcher, label: '启动器', visible: true },
+    { key: 'appVersion', value: meta.appVersion, label: '问题发生时的应用版本', visible: true },
+    { key: 'version', value: meta.mcVersion, label: 'Minecraft 版本', visible: true },
+    { key: 'loader', value: meta.loader, label: '模组加载器', visible: true },
+    { key: 'jdk', value: meta.jdk, label: 'Java 运行时', visible: true },
+    { key: 'device', value: meta.device, label: '设备型号', visible: true },
+    { key: 'osVersion', value: meta.osVersion, label: '系统版本', visible: true },
+    { key: 'outcome', value: meta.outcome, label: '会话结果', visible: true },
+    { key: 'modpack', value: meta.modpack ?? '', label: '整合包', visible: true },
   ];
   if (meta.activityId !== undefined && meta.activityId > 0) {
-    items.push({ key: 'activityId', value: String(meta.activityId) });
+    items.push({ key: 'activityId', value: String(meta.activityId), label: '活动关联标识', visible: false });
   }
   if (meta.snapshot !== undefined && meta.snapshot.length > 0) {
-    items.push({ key: 'snapshot', value: meta.snapshot });
+    items.push({ key: 'snapshot', value: meta.snapshot, label: '快照校验摘要', visible: false });
   }
   const extra: LogShareMetadataItem[] = [
     { key: 'uploaderVersion', value: meta.uploaderVersion ?? '' }, { key: 'hostOs', value: meta.hostOs ?? '' },
@@ -291,9 +308,15 @@ export function logShareMetadataItems(meta: LogShareMetadata): LogShareMetadataI
     { key: 'graphicsProfile', value: meta.graphicsProfile ?? '' }, { key: 'graphicsProvider', value: meta.graphicsProvider ?? '' },
     { key: 'javaBuild', value: meta.javaBuild ?? '' }, { key: 'environmentSchema', value: meta.environmentSchema ?? '' },
   ];
-  for (const item of extra) if (item.value.length > 0) items.push(item);
-  for (const item of items) item.value = sanitizeLogForExport(item.value, LogExportTarget.LOGSHARE, 1024).substring(0, 1024);
-  return items;
+  // 扩展字段沿用已记录事实，不从当前设备补造历史环境。隐藏仅影响公开元信息，
+  // 不能作为保存秘密的手段；所有 value 仍先经过统一脱敏。
+  const labels: string[] = ['上传客户端版本', '主机系统', '主机 API', 'CPU', 'GPU', 'GPU 探测结果',
+    '图形方案', '图形提供者', 'Java 构建', '环境格式版本'];
+  for (let index = 0; index < extra.length; index++) {
+    const item = extra[index]; item.label = labels[index]; item.visible = item.key !== 'environmentSchema'; items.push(item);
+  }
+  for (const item of items) item.value = Array.from(sanitizeLogForExport(item.value, LogExportTarget.LOGSHARE, 4096)).slice(0, 1024).join('');
+  return items.filter((item: LogShareMetadataItem): boolean => item.value.trim().length > 0).slice(0, 100);
 }
 
 /** 产品调用补上安装包的实际版本；诊断工具自定义 source 原样保留。 */
@@ -312,6 +335,7 @@ interface RemoteLogFile { name: string; size?: number; }
 interface RemoteLogFiles { id?: string; files?: RemoteLogFile[]; }
 
 interface SubmitResp {
+  deduplicated?: boolean;
   code?: number | string;
   success?: boolean;
   message?: string;
@@ -327,8 +351,10 @@ interface AnalyseRespAnalysis {
   information?: LogShareInsight[];
 }
 
-/** /v1/analyse 与 /v1/insights 响应：无 success/data 包装（实测）。 */
+/** 规则分析响应与多文件选择响应共用此网络边界，解析时必须区分。 */
 interface AnalyseResp {
+  requiresFileSelection?: boolean;
+  files?: RemoteLogFile[];
   id?: string;
   name?: string;
   type?: string;
@@ -356,6 +382,9 @@ interface LimitsResp {
   storageTime?: number;
   maxLength?: number;
   maxLines?: number;
+  maxFiles?: number;
+  maxTotalBytes?: number;
+  maxRequestBodyBytes?: number;
   error?: string;
 }
 
@@ -377,7 +406,7 @@ function normalizeError(code: number, body: string): string {
   if (code === 404) return serverMsg.toLowerCase().indexOf('ai analysis is disabled') >= 0 ? 'AI 服务暂未开启' : '日志不存在或已过期';
   if (code === 413) return '日志过大，已超过服务端上限';
   if (code === 415) return '服务端不接受该内容类型';
-  if (code === 429) return '请求过于频繁或分析队列已满，请稍后再试';
+  if (code === 429) return '请求过于频繁，请稍后再试';
   if (code >= 500) return '服务端内部错误，请稍后再试';
   return serverMsg.length > 0 ? serverMsg : ('请求失败 (' + code + ')');
 }
@@ -430,17 +459,21 @@ async function gzipShareJson_(text: string): Promise<ArrayBuffer | undefined> {
 }
 
 /** 统一的 JSON 请求。 */
-async function postJson(path: string, bodyJson: string, apiBase: string = BASE): Promise<string> {
+async function postJson(path: string, bodyJson: string, apiBase: string = BASE,
+  requestLimit: number = LOGSHARE_LOCAL_JSON_SAFE_CAP_BYTES): Promise<string> {
   if (!isAllowedInstance(apiBase)) throw new Error('日志分享实例无效');
   let compressed: ArrayBuffer | undefined = undefined;
   try {
-    // 当前官方 API 文档声明的 20 MiB 解压保护作用于完整 JSON，而非 files 正文之和；
-    // 它与实例 maxLength、files[] 展开总预算是不同层级，不能互相替代。
+    // 完整 JSON 的转义开销也计入实例请求体限额，压缩不能绕过解压后上限。
     // 引号、反斜杠和控制字符转义会膨胀，必须在 gzip 和发送之前核对真实字节数。
-    if (utf8ByteLength(bodyJson) > LOGSHARE_LOCAL_JSON_SAFE_CAP_BYTES) {
-      throw new Error('JSON 请求超过本地安全解压预算（20 MiB），请减少所选文件或导出 ZIP');
+    const budget: number = Math.min(requestLimit, LOGSHARE_LOCAL_JSON_SAFE_CAP_BYTES);
+    if (utf8ByteLength(bodyJson) > budget) {
+      throw new Error('JSON 请求超过本次请求体安全预算（' + budget + ' 字节），请减少所选文件或导出 ZIP');
     }
     compressed = await gzipShareJson_(bodyJson);
+    if (compressed !== undefined && compressed.byteLength > requestLimit) {
+      throw new Error('压缩后的请求体超过本次实例限额');
+    }
   } catch (e) {
     // 此时尚未创建网络请求，不能告诉用户“已上传但结果未知”。
     throw new LogShareRequestError('本地分享准备失败：' + (e as Error).message, 'local-prepare');
@@ -521,8 +554,7 @@ export async function submitLogFiles(rawFiles: LogShareFile[], source: string,
   meta?: LogShareMetadata, preflight?: LogSharePreflight, hooks?: LogShareDeliveryHooks): Promise<LogShareSubmitResult> {
   const files: LogShareFile[] = [];
   let totalBytes = 0;
-  // 主 content 来自其中一个附件，因此单项最大值也覆盖它；JSON 序列化时的
-  // 重复正文另由完整请求预算检查，不能在 files[] 总量里重复扣减。
+  // 纯文件模型每份正文只计一次；旧实例额外保留逐文件大小和行数检查。
   let maxFileBytes = 0;
   let maxFileLines = 0;
   for (const raw of rawFiles) {
@@ -551,8 +583,7 @@ export async function submitLogFiles(rawFiles: LogShareFile[], source: string,
   if (files.length > MAX_UPLOAD_FILES) {
     return { ok: false, id: '', url: '', rawUrl: '', token: '', error: '日志文件数量超过 200 个上限' };
   }
-  // UI 可以按角色展示文件，但远端 files[0] 应稳定指向主日志，不能因路径字典序
-  // 让 crash-report 变成主文件，影响 LogShare 默认分析与用户打开页面的第一屏。
+  // 发送顺序方便旧实例将 files[0] 作为主日志。新实例不保证该顺序，读取必须使用文件名。
   files.sort((a: LogShareFile, b: LogShareFile): number => {
     const ap: number = logShareFilePriority_(a.name);
     const bp: number = logShareFilePriority_(b.name);
@@ -560,10 +591,8 @@ export async function submitLogFiles(rawFiles: LogShareFile[], source: string,
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
   const body: LogSubmitBody = { source: resolveLogShareSource(source), files: files };
-  // 概览已经是快照中的可预览文件；显式 content 使 GET AI 初始上下文确定包含主机事实。
-  // 真实 latest/stdout 不改写且仍在 files 中，不能用概览替代完整游戏正文。
-  const diagnosis = files.find((file: LogShareFile): boolean => file.name === EVIDENCE_DIAGNOSIS_NAME);
-  if (diagnosis !== undefined) body.content = diagnosis.content;
+  // 诊断概览已是具名文件，不再作为 content 重复上传；避免生成额外 latest.log，
+  // 也避免把概览当成游戏主日志交给规则分析。
   if (meta !== undefined) body.metadata = logShareMetadataItems(meta);
   return submitPayload_(body, totalBytes, maxFileBytes, maxFileLines, preflight, hooks);
 }
@@ -595,12 +624,20 @@ async function submitPayload_(body: LogSubmitBody, bytes: number,
     return out;
   }
   const exportBudget: number = logShareExportBudgetBytes(limits);
+  // 旧实例没有公开可见性保证；隐藏字段直接不发送，不能仅依赖旧服务尊重 visible。
+  if (limits.maxBytes !== Number.MAX_SAFE_INTEGER && body.metadata !== undefined) {
+    body.metadata = body.metadata.filter((item: LogShareMetadataItem): boolean => item.visible !== false);
+  }
+  if ((body.files?.length ?? 0) > Math.min(limits.maxFiles, MAX_UPLOAD_FILES)) {
+    out.error = '所选文件数量超过本次实例上限（' + Math.min(limits.maxFiles, MAX_UPLOAD_FILES) + ' 个）';
+    out.errorStage = 'validation'; return out;
+  }
   if (maxFileBytes > limits.maxBytes || bytes > exportBudget || maxFileLines > limits.maxLines) {
     if (maxFileBytes > limits.maxBytes) {
       out.error = '单个日志文件超过本次实例服务端 maxLength（' + limits.maxBytes
         + ' 字节）；请减少该文件或导出完整 ZIP';
     } else if (bytes > exportBudget) {
-      out.error = '所选多文件正文超过本地展开安全预算（' + exportBudget
+      out.error = '所选多文件正文超过本次展开安全预算（' + exportBudget
         + ' 字节）；请减少所选文件或导出完整 ZIP';
     } else {
       out.error = '所选日志超过本次实例服务端 maxLines（' + limits.maxLines
@@ -609,7 +646,7 @@ async function submitPayload_(body: LogSubmitBody, bytes: number,
     out.errorStage = 'validation'; return out;
   }
 
-  const result = await submitToInstance(instance, body, limits.storageTimeSec, hooks);
+  const result = await submitToInstance(instance, body, limits, hooks);
   result.storageTimeSec = limits.storageTimeSec;
   result.usedFallback = instance === LOGSHARE_BACKUP_API_BASE;
   result.attempts = attempts;
@@ -625,14 +662,17 @@ async function submitPayload_(body: LogSubmitBody, bytes: number,
   return result;
 }
 
-async function submitToInstance(apiBase: string, body: LogSubmitBody, storageTimeSec: number,
+async function submitToInstance(apiBase: string, body: LogSubmitBody, limits: LogShareLimits,
   hooks?: LogShareDeliveryHooks): Promise<LogShareSubmitResult> {
   const out: LogShareSubmitResult = { ok: false, id: '', url: '', rawUrl: '', token: '', error: '', apiBaseUrl: apiBase,
-    storageTimeSec: storageTimeSec };
+    storageTimeSec: limits.storageTimeSec };
   try {
-    const text = await postJson('/v1/log', JSON.stringify(body), apiBase);
+    const text = await postJson('/v1/log', JSON.stringify(body), apiBase, limits.maxRequestBodyBytes);
     const resp = JSON.parse(text) as SubmitResp;
-    out.id = resp.id ?? ''; out.url = resp.url ?? ''; out.rawUrl = resp.raw ?? ''; out.token = resp.token ?? '';
+    out.id = resp.id ?? ''; out.url = resp.url ?? ''; out.rawUrl = resp.raw ?? '';
+    out.deduplicated = resp.deduplicated === true;
+    // 去重响应签发的 token 未存储，不能发送给 DELETE，更不能覆盖首次上传的有效凭据。
+    out.token = out.deduplicated ? '' : resp.token ?? '';
     out.uploadedPaths = (body.files ?? []).map((file: LogShareFile): string => file.name);
     out.uploadedReceipts = (body.files ?? []).map((file: LogShareFile): LogShareContentReceipt => {
       return { name: file.name, bytes: utf8ByteLength(file.content), sha256: evidenceTextDigest(file.content),
@@ -643,7 +683,7 @@ async function submitToInstance(apiBase: string, body: LogSubmitBody, storageTim
         boundaryNewlineSha256: boundaryNewlineDigest_(body.content) });
     }
     out.ok = resp.success !== false && isValidLogShareId(out.id)
-      && logShareInstanceForUrl(out.url) === apiBase && out.token.length > 0
+      && logShareInstanceForUrl(out.url) === apiBase && (out.token.length > 0 || out.deduplicated === true)
       && (out.url === canonicalLogShareUrl(apiBase, out.id)
         || apiBase === BASE && out.url === 'https://www.logshare.cn/' + out.id);
     if (!out.ok) {
@@ -652,7 +692,7 @@ async function submitToInstance(apiBase: string, body: LogSubmitBody, storageTim
       if (resp.code !== undefined) { out.apiCode = String(resp.code); out.error = '[API ' + out.apiCode + '] ' + out.error; }
     }
     // id/token 已知后，先交给上层原子落盘。无效 URL 的已知凭据也要保存供撤回。
-    if (hooks !== undefined && isValidLogShareId(out.id) && out.token.length > 0) {
+    if (hooks !== undefined && isValidLogShareId(out.id) && (out.token.length > 0 || out.ok && out.deduplicated === true)) {
       try { await hooks.onAccepted(out); }
       catch (e) {
         out.ok = false; out.errorStage = 'persist';
@@ -712,7 +752,8 @@ async function verifyLogShareFilesOnce_(id: string, expected: string[], apiBase:
       }
       names.push(file.name);
     }
-    // /v1/log/{id} 的 files 是附加文件清单，不含主 raw。严格按名称集合核对，
+    // 新上传仅使用具名 files，完整清单应与实际发送集合一致。旧历史主 raw 收据另行读取。
+    // 严格按名称集合核对，
     // 不能用“数量少一个”猜测主文件，否则清单为空时会把缺失文件误报为已收到。
     const verified: boolean = remote.id === id && names.length === expected.length
       && expected.every((name: string): boolean => names.indexOf(name) >= 0);
@@ -805,7 +846,7 @@ async function readBackRawWithRetry_(path: string, apiBase: string, expectedByte
   throw lastError;
 }
 
-/** 把 /v1/analyse 与 /v1/insights 的响应体解析成统一结构。 */
+/** 规则分析只接受真实 analysis；200 文件列表必须交还调用方选择文件。 */
 function parseAnalysis(text: string): LogShareAnalysis {
   const out: LogShareAnalysis = {
     ok: false, id: '', name: '', type: '', version: '', title: '',
@@ -815,6 +856,17 @@ function parseAnalysis(text: string): LogShareAnalysis {
   if (resp.error && resp.error.length > 0) {
     out.error = resp.error;
     return out;
+  }
+  if (Array.isArray(resp.files)) {
+    if (resp.files.length === 0 || resp.files.length > MAX_UPLOAD_FILES
+      || resp.files.some((file: RemoteLogFile): boolean => file === null || typeof file.name !== 'string' || !isSafeEvidencePath(file.name))) {
+      out.error = '规则分析返回的文件清单无效'; return out;
+    }
+    out.files = resp.files.map((file: RemoteLogFile): string => file.name);
+    out.requiresFileSelection = true; out.error = '这条日志包含多个文件，请先选择要分析的文件'; return out;
+  }
+  if (resp.success === false || resp.analysis === undefined || resp.analysis === null) {
+    out.error = '服务端未返回有效的规则分析结果'; return out;
   }
   out.id = resp.id ?? '';
   out.name = resp.name ?? '';
@@ -829,11 +881,13 @@ function parseAnalysis(text: string): LogShareAnalysis {
   return out;
 }
 
-export async function getInsights(id: string, apiBase: string = BASE): Promise<LogShareAnalysis> {
+export async function getInsights(id: string, apiBase: string = BASE, filename?: string): Promise<LogShareAnalysis> {
   const result: LogShareAnalysis = { ok: false, id: '', name: '', type: '', version: '', title: '', problems: [], information: [], error: '备用分享不支持分析' };
   if (apiBase !== BASE) return result;
   if (!isValidLogShareId(id)) { result.error = '日志 ID 无效'; return result; }
-  try { return parseAnalysis(await getText('/v1/insights/' + id, apiBase)); }
+  if (filename !== undefined && !isSafeEvidencePath(filename)) { result.error = '日志文件名无效'; return result; }
+  const suffix: string = filename === undefined ? '' : '/' + filename.split('/').map((part: string): string => encodeURIComponent(part)).join('/');
+  try { return parseAnalysis(await getText('/v1/insights/' + id + suffix, apiBase)); }
   catch (e) { setLogShareError(result, e as Error); return result; }
 }
 
@@ -861,15 +915,16 @@ export async function deleteLogs(ids: string[], token: string, apiBase: string =
     });
     let body = typeof res.result === 'string' ? res.result : '';
     if (res.responseCode !== 200) {
-      // The upstream sharing server wraps an all-missing DELETE as HTTP 400 + per-id 404.
+      // 新旧实例均可能用 HTTP 400 包装全部不存在的结果，逐项确认 404 后才视为已撤回。
       try {
-        const missing = (JSON.parse(body) as DeleteResp).errors;
+        const payload = JSON.parse(body) as DeleteResp;
+        const missing = payload.errors ?? payload.failed;
         if (missing !== undefined && missing.length === ids.length
-          && missing.every((item: LogShareDeleteFailure): boolean => item.code === 404 && ids.includes(item.id))) {
+          && missing.every((item: string | LogShareDeleteFailure): boolean => typeof item !== 'string' && item.code === 404 && ids.includes(item.id))) {
           out.ok = true;
           return out;
         }
-      } catch (e) { /* Other errors retain their HTTP code and credentials. */ }
+      } catch (e) { /* 其他失败保留 HTTP 原因与凭据，供用户重试。 */ }
       setLogShareError(out, httpFailure(res.responseCode, body));
       return out;
     }
@@ -888,48 +943,44 @@ export async function deleteLogs(ids: string[], token: string, apiBase: string =
   return out;
 }
 
-/** 查询服务端实际限额。 */
+/** 只接受完整、正整数的限额；出现任意新版字段时必须完整采用新版模型。 */
+function validLimit_(value: number | undefined): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/** 查询所选实例的真实限额；新模型不再施加旧版逐文件大小、行数约束。 */
 export async function getLimits(apiBase: string = BASE): Promise<LogShareLimits> {
   const out: LogShareLimits = {
-    ok: false,
-    storageTimeSec: LOGSHARE_STORAGE_DAYS * 24 * 3600,
-    maxBytes: DEFAULT_LIMIT_BYTES_PLACEHOLDER,
-    maxLines: MAX_UPLOAD_LINES,
-    error: '',
+    ok: false, storageTimeSec: LOGSHARE_STORAGE_DAYS * 86400,
+    maxBytes: DEFAULT_LIMIT_BYTES_PLACEHOLDER, maxLines: MAX_UPLOAD_LINES,
+    maxFiles: MAX_UPLOAD_FILES, maxTotalBytes: 0, maxRequestBodyBytes: 0, error: '',
   };
   try {
-    let text = await getText('/v1/limits', apiBase, 6000);
-    let resp = JSON.parse(text) as LimitsResp;
-    // JSON 强制转换不会校验运行时类型；拒绝字符串、无穷值和小数，避免错误配置绕过预检。
-    if (resp.error || typeof resp.storageTime !== 'number' || !Number.isSafeInteger(resp.storageTime) || resp.storageTime <= 0
-      || typeof resp.maxLength !== 'number' || !Number.isSafeInteger(resp.maxLength) || resp.maxLength <= 0
-      || typeof resp.maxLines !== 'number' || !Number.isSafeInteger(resp.maxLines) || resp.maxLines <= 0) {
-      throw new Error(resp.error ?? '服务端限制格式无效');
+    const resp = JSON.parse(await getText('/v1/limits', apiBase, 6000)) as LimitsResp;
+    if (resp === null || resp.error || !validLimit_(resp.storageTime)) throw new Error('服务端限制格式无效');
+    const modern: boolean = resp.maxFiles !== undefined || resp.maxTotalBytes !== undefined || resp.maxRequestBodyBytes !== undefined;
+    if (modern) {
+      if (!validLimit_(resp.maxFiles) || !validLimit_(resp.maxTotalBytes) || !validLimit_(resp.maxRequestBodyBytes)) {
+        throw new Error('服务端新版限制字段不完整或无效');
+      }
+      out.maxFiles = resp.maxFiles ?? 0;
+      out.maxTotalBytes = resp.maxTotalBytes ?? 0;
+      out.maxRequestBodyBytes = resp.maxRequestBodyBytes ?? 0;
+      // 这两个内部值表示“服务端未设逐文件限制”，本地读回安全预算仍单独生效。
+      out.maxBytes = Number.MAX_SAFE_INTEGER; out.maxLines = Number.MAX_SAFE_INTEGER;
+    } else {
+      if (!validLimit_(resp.maxLength) || !validLimit_(resp.maxLines)) throw new Error('服务端旧版限制格式无效');
+      out.maxBytes = resp.maxLength ?? 0; out.maxLines = resp.maxLines ?? 0;
+      out.maxTotalBytes = LOGSHARE_LEGACY_TOTAL_BYTES; out.maxRequestBodyBytes = LOGSHARE_LEGACY_REQUEST_BYTES;
     }
-    if (resp.storageTime !== undefined) out.storageTimeSec = resp.storageTime;
-    if (resp.maxLength !== undefined) out.maxBytes = resp.maxLength;
-    if (resp.maxLines !== undefined) out.maxLines = resp.maxLines;
-    out.ok = true;
-  } catch (e) {
-    setLogShareError(out, e as Error);
-  }
+    out.storageTimeSec = resp.storageTime ?? 0; out.ok = true;
+  } catch (e) { setLogShareError(out, e as Error); }
   return out;
 }
 
 // ============================================================
 //  AI 分析（SSE 流式）
 // ============================================================
-
-/** SSE 单个 chunk 里我们关心的部分。 */
-interface AiDelta {
-  /** 正文增量。**只取这个字段。** */
-  content?: string;
-  /** 思维链 —— 绝不能展示给用户，这里声明出来只为提醒不要用。 */
-  reasoning?: string;
-  reasoning_content?: string;
-}
-interface AiChoice { delta?: AiDelta; }
-interface AiChunk { choices?: AiChoice[]; }
 
 /** streamAiAnalysis 的回调集合。 */
 export interface AiStreamCallbacks extends LogShareSseSink {
@@ -949,101 +1000,12 @@ export interface AiStreamHandle {
 }
 
 /**
- * 对已存储日志做 AI 分析（SSE 流式）。
- *
- * ⚠️ **默认不要把结果直接当结论展示给用户。** 2026-07-30 实测：对一局
- * 「已进入主菜单、被用户从后台划掉」的会话，AI 判定为「两个致命错误导致游戏无法
- * 启动」，把环境误判为 ChromeOS / 安卓容器 / Termux，并建议删除 LWJGL jar、
- * 执行 `sudo apt remove` / `pacman -S` —— 在 HarmonyOS 沙箱内要么无意义，
- * 要么会破坏安装。UI 必须折叠展示并标注「第三方 AI 推测」。
- *
- * 解析要点：
- *   - data 正文按当前文档的 OpenAI 兼容 JSON 格式解析；
- *   - 只累加 choices[0].delta.content，丢弃 reasoning / reasoning_content；
- *   - 当前文档以 `event: done` 结束，status 事件不作为分析正文展示；
- *   - 流尾可能混入服务端 PHP 警告的 HTML（`<br />` / `<b>Deprecated</b>`），要能容忍。
+ * 旧调用方的兼容边界：官方已移除 AI 服务，立即返回明确原因，不创建 HTTP 请求。
+ * 历史 SSE 解析器和报告格式保留给本地历史读取；恢复其他提供方须另行建立契约。
  */
-export function streamAiAnalysis(id: string, cb: AiStreamCallbacks, apiBase: string = BASE): AiStreamHandle {
-  if (apiBase !== BASE || !isValidLogShareId(id)) {
-    cb.onError(apiBase !== BASE ? '该日志保存在备用服务，暂不支持 AI 分析' : '日志 ID 无效');
-    return { cancel: (): void => {} };
-  }
-  const req = http.createHttp();
-  const decoder = util.TextDecoder.create('utf-8', { ignoreBOM: true });
-  let finished = false;
-  let responsePrefix: string = '';
-  let jsonResponse: boolean = false;
-  let retryAfter: number = 30;
-  let statusCode: number = 0;
-  let streamEnded: boolean = false;
-  // NetworkKit 的 dataReceive 可能先于 requestInStream Promise；HTTP 未知时先缓冲，
-  // 不能让 429/5xx 中碰巧形似 SSE 的错误体触发 onDone 或持久化成成功报告。
-  let pendingText: string = '';
-  let errorBodyTimer: number = -1;
-  const finish = (): void => {
-    if (finished) return;
-    finished = true;
-    pendingText = '';
-    if (errorBodyTimer >= 0) clearTimeout(errorBodyTimer);
-    try { req.off('dataReceive'); req.off('dataEnd'); req.off('headersReceive'); req.destroy(); } catch (e) { /* already closed */ }
-  };
-  const parser = new LogShareSseParser({
-    onDelta: (text: string): void => { if (!finished) cb.onDelta(text); },
-    onDone: (text: string): void => { if (!finished) { finish(); cb.onDone(text); } },
-    onError: (message: string): void => { if (!finished) { finish(); cb.onError(message); } },
-    onStatus: (status: string, position: number): void => { if (!finished) cb.onStatus?.(status, position); },
-  });
-  /** HTTP 状态可能先于响应体到达；收完短错误体再判别 AI 停用/队列满，最多等待两秒。 */
-  const failHttp = (): void => {
-    if (finished || statusCode === 0 || statusCode === 200) return;
-    if (statusCode === 429) cb.onRetryAfter?.(retryAfter);
-    finish(); cb.onError(httpFailure(statusCode, responsePrefix).message
-      + (statusCode === 429 ? '；请至少 ' + retryAfter + ' 秒后重试' : ''));
-  };
-  const finishBody = (): void => {
-    if (finished || !streamEnded || statusCode === 0) return;
-    if (statusCode !== 200) { failHttp(); return; }
-    if (jsonResponse) { finish(); cb.onError('AI 服务未返回流式回答，请稍后重试'); return; }
-    parser.feed(decoder.decodeToString(new Uint8Array(0), { stream: false })); parser.end();
-  };
-  req.on('headersReceive', (raw: Object): void => {
-    const headers = raw as Record<string, Object>;
-    jsonResponse = String(headers['content-type'] ?? headers['Content-Type'] ?? '').toLowerCase().indexOf('application/json') >= 0;
-    const value: string = String(headers['retry-after'] ?? headers['Retry-After'] ?? '30');
-    const seconds: number = Number(value);
-    const parsed: number = Number.isFinite(seconds) ? seconds : Math.ceil((Date.parse(value) - Date.now()) / 1000);
-    if (Number.isFinite(parsed)) retryAfter = Math.max(1, Math.min(3600, parsed));
-  });
-  req.on('dataReceive', (data: ArrayBuffer): void => {
-    if (finished) return;
-    const text: string = decoder.decodeToString(new Uint8Array(data), { stream: true });
-    if (responsePrefix.length < 8192) responsePrefix += text.substring(0, 8192 - responsePrefix.length);
-    if (statusCode === 0) {
-      if (pendingText.length + text.length > 2 * 1024 * 1024) {
-        finish(); cb.onError('AI 响应在确认 HTTP 状态前过大'); return;
-      }
-      pendingText += text;
-    } else if (!jsonResponse && statusCode === 200) parser.feed(text);
-  });
-  req.on('dataEnd', (): void => {
-    streamEnded = true;
-    // 响应码与结束事件可不同序到达，两者齐备才将 EOF 判为中断或 HTTP 错误。
-    finishBody();
-  });
-  req.requestInStream(apiBase + '/v1/ai/' + id, {
-    method: http.RequestMethod.GET, header: { 'Accept': 'text/event-stream' },
-    connectTimeout: 10000, readTimeout: LOGSHARE_READ_TIMEOUT_MS,
-  }).then((code: number): void => {
-    if (finished) return;
-    statusCode = code;
-    const pending: string = pendingText; pendingText = '';
-    if (code === 200 && !jsonResponse) parser.feed(pending);
-    if (code !== 200 && !finished) {
-      if (streamEnded) failHttp();
-      else errorBodyTimer = setTimeout(failHttp, 2000);
-    } else finishBody();
-  }).catch((e: Error): void => { if (!finished) { finish(); cb.onError(logShareTransportError(e).message); } });
-  return { cancel: (): void => { finish(); } };
+export function streamAiAnalysis(_id: string, cb: AiStreamCallbacks, _apiBase: string = BASE): AiStreamHandle {
+  cb.onError(LOGSHARE_AI_UNAVAILABLE);
+  return { cancel: (): void => {} };
 }
 
 // ============================================================
@@ -1052,6 +1014,8 @@ export function streamAiAnalysis(id: string, cb: AiStreamCallbacks, apiBase: str
 
 /** 一条已分享记录。 */
 export interface LogShareRecord {
+  /** 去重只复用链接，不授予新删除凭据。 */
+  deduplicated?: boolean;
   /** 有凭据但未通过响应校验的记录只供核对/撤回，不能显示成分享成功。 */
   accepted?: boolean;
   /** Exact desktop probe snapshot included in this immutable share; absent for ordinary logs. */
@@ -1175,7 +1139,8 @@ export async function updateShareVerification(ctx: common.UIAbilityContext, reco
   const pending = shareWriteQueue.then(async (): Promise<boolean> => {
     const history = await loadShareHistory(ctx);
     const current = history.records.find((item: LogShareRecord): boolean => item.id === record.id
-      && item.url === record.url && item.token === record.token);
+      && item.url === record.url && item.token === record.token && item.sharedAt === record.sharedAt
+      && item.snapshotDigest === record.snapshotDigest && item.activityId === record.activityId);
     if (current === undefined) return false;
     current.remoteFilesVerified = verification.verified; current.verificationError = verification.warning;
     current.contentVerification = verification.contentStatus ?? 'names-only';
@@ -1201,6 +1166,13 @@ async function addShareRecordNow(ctx: common.UIAbilityContext, rec: LogShareReco
     throw new Error('分享实例与链接不一致，无法保存撤回凭据');
   }
   rec.apiBaseUrl = instance;
+  if (rec.deduplicated === true) {
+    const history = await loadShareHistory(ctx);
+    // 只继承同实例同 ID 的有效旧凭据；不同实例的同名 ID 不构成所有权证据。
+    const previous = history.records.find((item: LogShareRecord): boolean => item.id === rec.id
+      && logShareInstanceForUrl(item.url) === instance && item.token.length > 0);
+    rec.token = previous?.token ?? '';
+  }
   // 先提交可独立恢复的原子日志，UI 只有在凭据真正持久化后才展示成功。
   writeShareJournal_(ctx, rec, false);
 
@@ -1230,6 +1202,9 @@ export async function revokeShare(ctx: common.UIAbilityContext,
   const instance = logShareInstanceForUrl(rec.url);
   if (!instance || (rec.apiBaseUrl !== undefined && rec.apiBaseUrl !== instance)) {
     return { ok: false, deleted: [], failed: [rec.id], error: '分享实例与链接不一致，未发送撤回凭据' };
+  }
+  if (rec.token.length === 0) {
+    return { ok: false, deleted: [], failed: [rec.id], error: '该链接命中已有日志，本机没有有效撤回凭据' };
   }
   let r = await deleteLogs(idList, rec.token, instance);
   if (r.ok || r.error.indexOf('不存在') >= 0 || r.error.indexOf('已过期') >= 0) {

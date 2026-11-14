@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "finishedAt": "2026-11-12T11:35:25.587664+08:00",
+  "sourceCommit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
+  "sourceArchiveSha256": "5bfef732e1987d2ec4ee7e0c3622bbafd2f7094f837e45ffe4def764f16f06d4",
+  "recipeSha256": "42ff28ba09c46a1dcdaf183eae84f7c544d4f8a00caf83ae3cc11b2e7d8c21e4",
+  "backendSha256": "eea148e2ba59d139577701fe06f1c7007c551c7ed419e3b7829cc4cf0c197566",
+  "brokerSourceSha256": "5b62acc4230ebf64175a30a8ad866658d53477e47629478b33876209ab7b0e81",
+  "brokerHeaderSha256": "283036fe0f8c0fdaebb005fcb2ca6df5963be24dff7c43bf25baab41a6a3bb2b",
+  "compilerSha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba",
+  "jniExports": [
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1colorChooser",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1getGlobalChar",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1getGlobalInt",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1inputBox",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1messageBox",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1notifyPopup",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1openFileDialog",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1saveFileDialog",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1selectFolderDialog",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_ntinyfd_1setGlobalInt",
+    "Java_org_lwjgl_util_tinyfd_TinyFileDialogs_tinyfd_1beep"
+  ],
+  "needed": [
+    "libamcl_game_dialog.so",
+    "libc.so"
+  ],
+  "brokerImports": [
+    "AmclGameDialogAvailableV1",
+    "AmclGameDialogMessageV1",
+    "AmclGameDialogNotifyV1"
+  ],
+  "sha256": "adbd009a4e9d0b739c5ecd5d987529c8c95a5d74bc7e05de75b31a5c4dc45ba2",
+  "size": 48672,
+  "originalSha256": "adbd009a4e9d0b739c5ecd5d987529c8c95a5d74bc7e05de75b31a5c4dc45ba2",
+  "installed": true,
+  "scope": "OHOS ABI and sources; real dialogs/game require tablet validation"
+}

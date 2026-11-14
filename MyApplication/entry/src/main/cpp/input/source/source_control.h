@@ -69,6 +69,9 @@ typedef struct AmclSourceControlPortV1 {
     /** 新80字节私有尾：同时冻结文字与L2键资源。旧72表/请求exact size冷拒。
      * 旧尾对L2明确NotReady，不能把缺少原key scope的调用静默贴到新Keyboard。 */
     int32_t (*ownedTextKeyTapForKeyboard)(uint64_t producer,uint64_t textSession,uint64_t textScope,uint64_t keyboardScope,int32_t key,AmclSourceResultV1*);
+    /** 只读行为查询：1持有、0不持有、负值未准入。owner=0查询聚合；不生成诊断统计。
+     * 私有表按exact size协商，缺此尾的旧producer/owner不得互借，公开游戏ABI不变。 */
+    int32_t (*owns)(uint64_t producer,uint64_t owner,const AmclSourceOutputV1* output);
 } AmclSourceControlPortV1;
 AMCL_SOURCE_PUBLIC const AmclSourceControlPortV1* amclSourceControlGetPortV1(void);
 AMCL_SOURCE_PUBLIC void amclSourceControlPublishV1(void);

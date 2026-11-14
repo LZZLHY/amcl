@@ -42,6 +42,7 @@ import { writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync, hasEvidenceLease
   evidenceTextDigest, ensureEvidenceTextDurableAsync, ensureEvidenceTextDurable, setEvidenceLeaseReleaseObserver, ensureEvidenceDirectoryAsync,
   assertEvidencePreparationCurrent, noteEvidencePublicationUnknown } from './EvidenceIo';
 import { AtomicWriteError } from './AtomicFileWriter';
+import { platformEventObject, readPlatformEventIdentity, platformKilledSummary } from './PlatformEventIdentity';
 
 const TAG = 'ActivityLedger';
 
@@ -57,11 +58,11 @@ export const LEDGER_INDEX_NAME: string = 'index.json';
 export const LEDGER_MANIFEST_NAME: string = 'manifest.json';
 
 /**
- * 账本条目数上限。与 `ActivityRecord` 的 LRU 容量（50）对齐 ——
- * 活动记录看不到的条目，账本留着也没有入口。
+ * 普通已结束活动的数量预算。游戏按实例版本独立保留，pin、运行中和未知占用受保护；
+ * 列表会从账本补回已离开历史 LRU 的记录，因此该值不是整个账本的最大条目数。
  */
 export const LEDGER_MAX_ENTRIES: number = 50;
-/** 账本总体积预算：64 MiB。 */
+/** 普通活动的体积预算；游戏原件及受保护活动不受此值限制，不能对 UI 声称全局 64 MiB。 */
 export const LEDGER_MAX_TOTAL_BYTES: number = 64 * 1024 * 1024;
 
 /** 用户设置独立持久化，清空账本不重置偏好。 */
@@ -205,6 +206,13 @@ export interface LedgerBeginMeta {
   runNonce?: string;
 }
 
+/** 业务统计与导出结果导航，仅保存有界展示字段，不接受任意历史记录或文件路径作为写权限。 */
+export interface LedgerTaskFacts {
+  totalBytes: number;
+  fileCount: number;
+  exportTaskId?: string;
+}
+
 /** 结束账本时的结论。 */
 export interface LedgerOutcome {
   state: LedgerState;
@@ -217,6 +225,7 @@ export interface LedgerOutcome {
   /** 恢复裁决可提供已验证的结束时间；显式 0 表示未知，不能用恢复时间计算游戏时长。 */
   endedAt?: number;
   recoveredAt?: number;
+  taskFacts?: LedgerTaskFacts;
 }
 
 /** 账本里的一个文件。 */
@@ -271,6 +280,8 @@ export interface LedgerManifest {
   ownerPid?: number;
   runNonce?: string;
   files: LedgerFile[];
+  /** 与终态一起提交的业务统计；不能把日志证据文件数量冒充实际下载文件数量。 */
+  taskFacts?: LedgerTaskFacts;
 }
 
 /** 索引里的一条（UI 列表直接用，不必逐个读 manifest）。 */
@@ -292,7 +303,12 @@ export interface LedgerEntry {
   manifestDigest?: string;
   /** 受控元数据发布集合的身份，进程重启也能识别selection/receipt等落盘后索引未刷新。 */
   metadataFingerprint?: string;
+  /** 本活动根目录的原子发布revision；仅纳秒mtime/ctime可用时参与热缓存，低精度SDK安全回退。 */
+  directoryRevision?: string;
 }
+
+/** 同轮展示投影：结局与占用来自同一份manifest快照，消费者不再重复打开原清单。 */
+export interface LedgerReadSnapshot { entries: LedgerEntry[]; manifests: Map<number, LedgerManifest>; }
 
 /** 游戏生产者只发布本局结果；global index/retention始终归启动器owner。 */
 export interface LedgerGameTerminal { schema: number; activityId: number; runNonce: string; pid: number; outcome: LedgerOutcome; }
@@ -319,6 +335,8 @@ let maintenanceOwner: boolean = true;
 let maintenanceAllowed: (() => boolean) | undefined = undefined;
 /** root按filesDir隔离，防止验证夹具/多个应用根共享派生缓存。 */
 const indexCaches: Map<string, LedgerEntry[]> = new Map<string, LedgerEntry[]>();
+/** 磁盘索引变化仍使内存投影失效；缺失也是明确身份，避免无索引时每次重新全量扫描。 */
+const readIndexRevisions: Map<string, string> = new Map<string, string>();
 const dirtyLedgers: Map<string, Set<number>> = new Map<string, Set<number>>();
 const dirtyGenerations: Map<string, number> = new Map<string, number>();
 const maintenanceJobs: Map<string, Promise<void>> = new Map<string, Promise<void>>();
@@ -436,6 +454,8 @@ function scheduleMaintenance_(filesDir: string): void {
 export interface LedgerScopeSink {
   /** 打开 scope；返回是否成功。 */
   begin(activityId: number, dir: string): boolean;
+  /** 真正异步打开并确认 scope；生产者必须等待确认，不能以 Promise 包装同步磁盘操作。 */
+  beginAsync?(activityId: number, dir: string): Promise<boolean>;
   /** 关闭 scope。 */
   end(activityId: number): void;
   /** 可选真正native async work端口；它必须等待同一writer关闭，不是Promise包同步wait。 */
@@ -449,9 +469,28 @@ let processRunNonce: string = String(process.pid) + '-' + Date.now();
 /** Ability 进程启动时注入一次身份，异步启动活动各自保存这份不可变归属。 */
 export function setLedgerProcessRunNonce(nonce: string): void { processRunNonce = nonce; }
 
+/**
+ * 旧轮恢复可能被游戏锁延后到本轮已经创建任务之后，不能再用“发现 RUNNING”推断进程已退出。
+ * nonce 是进程轮次身份，PID 可被系统复用；当前 nonce 或当前 PID 且缺少 nonce 的旧兼容记录
+ * 都保守视为本轮，等待实际 producer 提交终态。不同非空 nonce 即使 PID 相同仍可按旧轮恢复。
+ */
+function belongsToCurrentLedgerRun_(manifest: LedgerManifest): boolean {
+  const nonce: string = manifest.runNonce ?? '';
+  return nonce.length > 0 ? nonce === processRunNonce : manifest.ownerPid === process.pid;
+}
+
 /** 由 entry 注入 native 实现；传 null 卸载（此时账本只有 manifest，没有日志分流）。 */
 export function setLedgerScopeSink(sink: LedgerScopeSink | null): void {
   g_scopeSink = sink;
+}
+
+/** 只接受真实 Native 异步端口；缺装配保持未准入，不偷偷退回同步文件操作。 */
+async function openLedgerScopeAsync_(filesDir: string, activityId: number): Promise<boolean> {
+  if (g_scopeSink === null) return true;
+  if (g_scopeSink.beginAsync === undefined) throw new Error('异步账本开账端口尚未装配，任务尚未开始');
+  const opened: boolean = await g_scopeSink.beginAsync(activityId, ledgerDirOf(filesDir, activityId));
+  if (!opened) AppLogger.warn(TAG, 'native ledger scope unavailable，保留可恢复manifest', null, LOG_DOMAIN);
+  return opened;
 }
 
 // ============================================================================
@@ -558,6 +597,24 @@ function num_(obj: Record<string, Object>, key: string, fallback: number): numbe
   return (typeof v === 'number') ? v as number : fallback;
 }
 
+/**
+ * 从已核实身份的原件或canonical读取展示事实。字节/文件数必须为非负安全整数；
+ * 导出导航只允许短的领域任务ID，禁止将路径或其他类别记录变成可打开的导出目标。
+ */
+function parseLedgerTaskFacts_(value: Object | undefined, category: string): LedgerTaskFacts | undefined {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, Object>;
+  const bytes = raw['totalBytes']; const count = raw['fileCount'];
+  if (typeof bytes !== 'number' || typeof count !== 'number' || !Number.isSafeInteger(bytes as number)
+    || !Number.isSafeInteger(count as number) || (bytes as number) < 0 || (count as number) < 0) return undefined;
+  const facts: LedgerTaskFacts = { totalBytes: bytes as number, fileCount: count as number };
+  const exportId = raw['exportTaskId'];
+  if (category === 'game_export' && typeof exportId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(exportId as string)) {
+    facts.exportTaskId = exportId as string;
+  }
+  return facts;
+}
+
 export function parseLedgerManifest(json: string): LedgerManifest | null {
   if (json.length === 0) return null;
   let obj: Record<string, Object> | null = null;
@@ -577,6 +634,7 @@ export function parseLedgerManifest(json: string): LedgerManifest | null {
   m.recoveryInputKey = str_(obj, 'recoveryInputKey');
   m.platformInputKey = str_(obj, 'platformInputKey');
   m.category = str_(obj, 'category');
+  m.taskFacts = parseLedgerTaskFacts_(obj['taskFacts'], m.category);
   m.title = str_(obj, 'title');
   m.appVersion = str_(obj, 'appVersion');
   m.deviceModel = str_(obj, 'deviceModel');
@@ -776,7 +834,7 @@ export function ledgerBeginAsync(filesDir: string, activityId: number, meta: Led
       let old: string = '';
       try { old = await fs.readText(path); } catch (error) { if ((error as BusinessError).code !== 13900002) throw error as Error; }
       if (old !== text) await writeEvidenceTextAtomicAsync(path, text); else await ensureEvidenceTextDurableAsync(path);
-      return true;
+      return await openLedgerScopeAsync_(filesDir, activityId);
     }
     const manifest = existing ?? emptyManifest(activityId);
     const previous: string = existing === null ? '' : JSON.stringify(existing);
@@ -797,11 +855,8 @@ export function ledgerBeginAsync(filesDir: string, activityId: number, meta: Led
     }
     if (manifest.category === 'launch') await beginSessionCaptureAsync(filesDir, activityId, manifest.gameDir ?? '', manifest.appFilesDir, manifest.jdk);
     await refreshSessionEvidenceAsync(filesDir, activityId, 'running', 'partial');
-    // scope创建仍是原native契约（小型建目录/头文件），不存在500ms结束flush等待。
-    if (g_scopeSink !== null && !g_scopeSink.begin(activityId, ledgerDirOf(filesDir, activityId))) {
-      AppLogger.warn(TAG, 'native ledger scope unavailable，保留可恢复manifest', null, LOG_DOMAIN);
-    }
-    return true;
+    // 基线已耐久后才请求真实 Native async work；打开失败不能允许 producer 无归属地继续执行。
+    return await openLedgerScopeAsync_(filesDir, activityId);
   });
 }
 
@@ -858,6 +913,7 @@ export function ledgerEnd(filesDir: string, activityId: number,
   m.outcomeSource = outcome.source;
   m.outcomeSummary = outcome.summary;
   m.errorKind = outcome.errorKind ?? '';
+  if (outcome.taskFacts !== undefined) m.taskFacts = parseLedgerTaskFacts_(outcome.taskFacts, m.category);
   m.revision = (m.revision ?? 0) + 1;
   archiveAuxiliaryFiles_(filesDir, m);
   archiveSessionLogs(filesDir, m);
@@ -884,6 +940,8 @@ export function ledgerEnd(filesDir: string, activityId: number,
 function sameOutcome_(manifest: LedgerManifest, outcome: LedgerOutcome): boolean {
   if (manifest.state !== outcome.state || manifest.outcomeSource !== outcome.source
     || manifest.outcomeSummary !== outcome.summary || manifest.errorKind !== (outcome.errorKind ?? '')) return false;
+  if (outcome.taskFacts !== undefined && JSON.stringify(manifest.taskFacts)
+    !== JSON.stringify(parseLedgerTaskFacts_(outcome.taskFacts, manifest.category))) return false;
   return outcome.endedAt === undefined || outcome.endedAt === 0
     || manifest.endedAt === outcome.endedAt && manifest.endTimeEstimated !== true;
 }
@@ -896,16 +954,40 @@ export async function ledgerManifestAsync(filesDir: string, activityId: number):
 
 /** 严格数字目录发现；轻量集合枚举不进入任何日志子目录。 */
 async function listActivityIdsAsync_(filesDir: string): Promise<number[]> {
+  return (await activityDirectoriesAsync_(filesDir)).map((entry: LedgerDirectoryRevision): number => entry.activityId);
+}
+
+interface LedgerDirectoryRevision { activityId: number; revision: string; }
+/**
+ * 集合发现与发布revision共用一次lstat。受控metadata都以同目录rename提交，游戏进程的
+ * capture/terminal/metadata发布也改变本活动根目录；只读热刷新每局一次轻量lstat，不读14份metadata。
+ * 子目录内的启动器写入由本进程dirty通知兜底。没有纳秒精度时返回空revision，必须走原内容核验。
+ */
+function directoryRevisionOf_(stat: fs.Stat): string {
+  if (stat.mtimeNs === undefined || stat.ctimeNs === undefined) return '';
+  return String(stat.ino) + ':' + String(stat.mtimeNs) + ':' + String(stat.ctimeNs);
+}
+async function activityDirectoriesAsync_(filesDir: string, cancelled?: () => boolean): Promise<LedgerDirectoryRevision[]> {
+  if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
   const root: string = ledgerRoot(filesDir);
   if (!await fs.access(root)) return [];
-  const ids: number[] = [];
-  for (const name of await fs.listFile(root)) {
-    if (!new RegExp('^[1-9][0-9]*$').test(name)) continue;
-    const id: number = Number(name);
-    if (!Number.isSafeInteger(id) || !(await fs.lstat(root + '/' + name)).isDirectory()) continue;
-    ids.push(id);
+  const names: string[] = (await fs.listFile(root)).filter((name: string): boolean =>
+    new RegExp('^[1-9][0-9]*$').test(name) && Number.isSafeInteger(Number(name)));
+  const directories: LedgerDirectoryRevision[] = [];
+  for (let start: number = 0; start < names.length; start += 8) {
+    if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
+    const batch: (LedgerDirectoryRevision | undefined)[] = await Promise.all(names.slice(start, start + 8)
+      .map(async (name: string): Promise<LedgerDirectoryRevision | undefined> => {
+        try {
+          const stat = await fs.lstat(root + '/' + name);
+          if (stat.isSymbolicLink() || !stat.isDirectory()) return undefined;
+          return { activityId: Number(name), revision: directoryRevisionOf_(stat) };
+        } catch (error) { if ((error as BusinessError).code === 13900002) return undefined; throw error as Error; }
+      }));
+    if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
+    for (const directory of batch) if (directory !== undefined) directories.push(directory);
   }
-  return ids.sort((left: number, right: number): number => right - left);
+  return directories.sort((left: LedgerDirectoryRevision, right: LedgerDirectoryRevision): number => right.activityId - left.activityId);
 }
 
 /** 只读活动集合给恢复发现使用，绝不借账本占用索引递归扫描日志。 */
@@ -1106,6 +1188,7 @@ async function endInternalAsync_(filesDir: string, activityId: number, outcome: 
       if (outcome.recoveredAt !== undefined) manifest.recoveredAt = outcome.recoveredAt;
       manifest.state = outcome.state; manifest.outcomeSource = outcome.source;
       manifest.outcomeSummary = outcome.summary; manifest.errorKind = outcome.errorKind ?? '';
+      if (outcome.taskFacts !== undefined) manifest.taskFacts = parseLedgerTaskFacts_(outcome.taskFacts, manifest.category);
     }
     if (!options.capturePrepared && manifest.category === 'launch') {
       const next: number = options.nextLaunchAt ?? await ledgerNextLaunchAtAsync(filesDir, activityId);
@@ -1226,7 +1309,7 @@ export function ledgerResolveStale(filesDir: string, pendingUpdateIds: number[] 
   for (let id of listActivityIds(filesDir)) {
     let mp = manifestPath(filesDir, id);
     let m = parseLedgerManifest(readTextFile(mp));
-    if (m === null || m.state !== LedgerState.RUNNING) continue;
+    if (m === null || m.state !== LedgerState.RUNNING || belongsToCurrentLedgerRun_(m)) continue;
     // 覆盖安装会主动结束旧进程，已经核实事务身份的更新允许等待新版本确认。
     // 仅豁免明确传入且类别匹配的主活动；下载子任务、普通游戏和任意其他 ID 仍正常收尾。
     if (m.category === 'app_update' && pendingUpdateIds.indexOf(id) >= 0) continue;
@@ -1261,7 +1344,7 @@ export function ledgerResolveStale(filesDir: string, pendingUpdateIds: number[] 
 }
 
 /**
- * 把上一次进程收到的 HiAppEvent 文件按接收时刻归入最近的游戏活动。
+ * 把迟到的HiAppEvent按真实事件时刻、PID或显式活动身份归档；不使用接收时刻猜最近一局。
  *
  * 事件可能在应用重启后才投递，不能要求它在 ledgerEnd 期间到达；
  * 找不到可信时间窗时保留 pending 文件，下一次启动继续尝试。
@@ -1284,8 +1367,10 @@ export function archivePlatformEventFiles_(filesDir: string): void {
       if (typeof raw === 'string') params = JSON.parse(raw as string) as Record<string, Object>;
       else if (raw !== undefined && typeof raw === 'object') params = raw as Record<string, Object>;
     } catch (e) { continue; }
-    const eventAt: number = num_(event, 'eventAt', num_(params, 'time', 0));
-    const pid: number = num_(params, 'pid', 0);
+    const identity = readPlatformEventIdentity(event, params);
+    if (identity.conflict) continue;
+    const eventAt: number = identity.eventAt;
+    const pid: number = identity.pid;
     const explicitId: number = num_(event, 'activityId', 0);
     // 没有活动主键时，原归属规则必须同时具有事件时间和进程 PID；缺少任一项，
     // 后面的逐活动匹配必然没有候选。先保留原事件并跳过这轮磁盘扫描，避免冷启动/
@@ -1339,7 +1424,12 @@ export function archivePlatformEventFiles_(filesDir: string): void {
     }
     archiveFile(path, targetDir + '/' + targetName);
     if (fileBytes(targetDir + '/' + targetName) === 0) continue;
-    applyPlatformOutcome_(manifest, text);
+    // 独立游戏可在父启动器被系统回收后继续运行。父进程事件保留为背景证据，
+    // 不能据它结束游戏；shared/旧记录没有另一游戏PID时保留原兼容规则。
+    let gamePid: number = 0;
+    try { gamePid = num_(JSON.parse(readTextFile(ledgerDirOf(filesDir, manifest.activityId) + '/capture-game.json')) as Record<string, Object>, 'pid', 0); }
+    catch (_) { /* 缺少旧格式游戏进程证明时继续使用已核manifest归属。 */ }
+    if (pid <= 0 || gamePid <= 0 || pid === gamePid) applyPlatformOutcome_(manifest, text);
     manifest.files = scanDir(filesDir, manifest.activityId);
     if (!writeTextFile(manifestPath(filesDir, manifest.activityId), JSON.stringify(manifest))) continue;
     refreshSessionEvidence(filesDir, manifest.activityId, 'recovered', 'partial',
@@ -1348,12 +1438,14 @@ export function archivePlatformEventFiles_(filesDir: string): void {
   }
 }
 
-/** 平台仅补足没有显式游戏终态的活动，正文中的关键字不参与判定。 */
+/** 只消费上方已核到本局游戏进程的结构化平台事件，正文关键字不参与判定。 */
 function applyPlatformOutcome_(manifest: LedgerManifest, eventText: string): void {
   let event: Record<string, Object>;
   try { event = JSON.parse(eventText) as Record<string, Object>; } catch (e) { return; }
   const name: string = str_(event, 'name');
-  const reason: string = str_(event, 'reason');
+  const identity = readPlatformEventIdentity(event, platformEventObject(event['params']));
+  if (identity.conflict) return;
+  const reason: string = identity.reason;
   const platformCrash: boolean = name === 'APP_CRASH' || (name === 'LAST_EXIT_REASON'
     && ['CPP_CRASH', 'JS_ERROR', 'APP_FREEZE'].indexOf(reason) >= 0);
   // 本函数只接收上方已经精确归属的事件。晚到真实崩溃可纠正日志/退出请求推导结果，
@@ -1362,7 +1454,7 @@ function applyPlatformOutcome_(manifest: LedgerManifest, eventText: string): voi
     && (manifest.outcomeSource === 'session.jvm-exit' || manifest.outcomeSource === 'session.full-evidence');
   if (manifest.state !== LedgerState.RUNNING && manifest.state !== LedgerState.INTERRUPTED
     && !(platformCrash && recomputable)) return;
-  const eventAt: number = num_(event, 'eventAt', 0);
+  const eventAt: number = identity.eventAt;
   if (eventAt >= manifest.startedAt && eventAt <= Date.now()) {
     manifest.endedAt = eventAt;
     manifest.endTimeEstimated = false;
@@ -1378,7 +1470,7 @@ function applyPlatformOutcome_(manifest: LedgerManifest, eventText: string): voi
   } else if (name === 'APP_KILLED' || name === 'LAST_EXIT_REASON') {
     manifest.state = LedgerState.INTERRUPTED;
     manifest.outcomeSource = 'platform.' + name;
-    manifest.outcomeSummary = '应用由系统结束，游戏终态未知';
+    manifest.outcomeSummary = name === 'APP_KILLED' ? platformKilledSummary(reason) : '应用由系统结束，游戏终态未知';
   }
 }
 
@@ -1815,10 +1907,14 @@ function ledgerPartExportFloor_(p: LedgerPart): number {
 export function ledgerRemovalBlockReason(filesDir: string, activityId: number): string {
   if (isEvidenceDeleting(filesDir, activityId)) return '活动日志正在删除，请稍后重试';
   if (hasEvidenceLease(filesDir, activityId)) return '日志正在读取或导出，请稍后删除';
-  if (ledgerManifest(filesDir, activityId)?.state === LedgerState.RUNNING) {
-    return '活动仍在进行中，请结束后再删除日志';
-  }
-  if (ledgerManifest(filesDir, activityId)?.pinned === true) return '这条活动已设为保留，请先取消保留后再删除';
+  return manifestRemovalBlockReason_(ledgerManifest(filesDir, activityId));
+}
+
+/** 同步兼容、异步预检与最终删除共用纯判据；未知清单绝不是已结束且未保留的证明。 */
+function manifestRemovalBlockReason_(manifest: LedgerManifest | null): string {
+  if (manifest === null) return '活动清单无法读取，原始日志保留等待修复';
+  if (manifest.state === LedgerState.RUNNING) return '活动仍在进行中，请结束后再删除日志';
+  if (manifest.pinned === true) return '这条活动已设为保留，请先取消保留后再删除';
   return '';
 }
 
@@ -1941,6 +2037,17 @@ function removeCachedEntry_(filesDir: string, activityId: number): void {
  */
 async function measureEntryAsync_(filesDir: string, activityId: number, cancelled?: () => boolean): Promise<LedgerEntry> {
   maintenanceCounters.activityScans++;
+  // manifest读取前固定目录发布边界；读取/扫描期间发生外部rename时不能把旧结局+新占用发布为current。
+  let directoryBefore: string = '';
+  let before: string = '';
+  try {
+    directoryBefore = directoryRevisionOf_(await fs.lstat(ledgerDirOf(filesDir, activityId)));
+    before = await metadataFingerprintAsync_(filesDir, activityId, cancelled);
+  } catch (error) {
+    if (cancelled !== undefined && cancelled()) throw error as Error;
+    /* 无法核实的边界保持unknown，原始清单仍尽量用于展示。 */
+  }
+  if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
   const manifest = await ledgerManifestAsync(filesDir, activityId);
   const entry: LedgerEntry = {
     activityId: activityId, category: manifest?.category ?? '', title: manifest?.title ?? '',
@@ -1952,16 +2059,18 @@ async function measureEntryAsync_(filesDir: string, activityId: number, cancelle
   };
   if (manifest === null) return entry;
   try {
-    const before: string = await metadataFingerprintAsync_(filesDir, activityId);
     const files: LedgerFile[] = [];
     await scanDirAsync_(ledgerDirOf(filesDir, activityId), '', files, 0, true, cancelled);
     for (const file of files) {
       entry.bytes += file.bytes;
       if (file.bytes > 0 && ['game.log', 'game/mc_output.log', 'game/logs/latest.log', 'mc-latest.log'].includes(file.name)) entry.hasGame = true;
     }
-    const after: string = await metadataFingerprintAsync_(filesDir, activityId);
+    const after: string = await metadataFingerprintAsync_(filesDir, activityId, cancelled);
+    const directoryAfter: string = directoryRevisionOf_(await fs.lstat(ledgerDirOf(filesDir, activityId)));
     entry.metadataFingerprint = after;
-    entry.bytesState = before !== after ? 'unknown' : manifest.state === LedgerState.RUNNING ? 'writing' : 'current';
+    const stable: boolean = before.length > 0 && before === after && directoryBefore === directoryAfter;
+    entry.directoryRevision = stable ? directoryAfter : '';
+    entry.bytesState = !stable ? 'unknown' : manifest.state === LedgerState.RUNNING ? 'writing' : 'current';
   } catch (error) {
     if (cancelled !== undefined && cancelled()) throw error as Error;
     entry.bytesState = 'unknown';
@@ -1974,12 +2083,13 @@ async function measureEntryAsync_(filesDir: string, activityId: number, cancelle
  * 固定受控发布文件的有界变化身份，不递归日志目录。metadata缺失是可表示状态，EIO必须失败。
  * 有纳秒mtime/ctime时使用stamp快速验证；旧SDK读取有界元数据SHA，绝不凭秒级时间+长度认未变。
  */
-async function metadataFingerprintAsync_(filesDir: string, activityId: number): Promise<string> {
+async function metadataFingerprintAsync_(filesDir: string, activityId: number, cancelled?: () => boolean): Promise<string> {
   const directory: string = ledgerDirOf(filesDir, activityId);
   const identity: string[] = [];
   for (const name of ['manifest.json', 'evidence-manifest.json', 'evidence-selection.json', 'capture-sources.json',
     'capture-host.json', 'capture-game.json', 'native-io.json', 'game-terminal.json', 'game-metadata.json',
     'platform-inputs.json', 'environment.json', 'experience-index.json', 'launcher/recovery-receipt.json', 'launcher/recovery-state.json']) {
+    if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
     try {
       const stat = await fs.stat(directory + '/' + name);
       if (!stat.isFile()) throw new Error('元数据不是普通文件，无法可靠核实');
@@ -1999,22 +2109,44 @@ async function metadataFingerprintAsync_(filesDir: string, activityId: number): 
 
 /** V2索引解析只接受完整字段；旧schema继续显示但不成为可信保留输入。 */
 function validIndex_(snapshot: LedgerIndexSnapshot, ids: number[]): boolean {
+  const identities: Set<number> = new Set<number>(ids);
   return snapshot.schema === 2 && snapshot.bytesIncludeMetadata === true && Array.isArray(snapshot.entries)
     && snapshot.entries.length === ids.length && new Set<number>(snapshot.entries.map((entry: LedgerEntry): number => entry.activityId)).size === ids.length
-    && snapshot.entries.every((entry: LedgerEntry): boolean => ids.includes(entry.activityId) && Number.isSafeInteger(entry.activityId)
+    && snapshot.entries.every((entry: LedgerEntry): boolean => identities.has(entry.activityId) && Number.isSafeInteger(entry.activityId)
       && Number.isSafeInteger(entry.bytes) && entry.bytes >= 0 && typeof entry.versionKey === 'string'
       && typeof entry.manifestDigest === 'string' && ['current', 'writing', 'unknown'].includes(entry.bytesState ?? ''));
 }
 
+/** 磁盘派生索引按纳秒身份失效；低精度SDK读取一份索引内容摘要，绝不凭秒级时间认未变。 */
+async function readIndexRevisionAsync_(filesDir: string): Promise<string> {
+  try {
+    const stat = await fs.lstat(indexPath(filesDir));
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('账本索引路径不是普通文件');
+    if (stat.mtimeNs !== undefined && stat.ctimeNs !== undefined) return String(stat.ino) + ':'
+      + stat.size + ':' + String(stat.mtimeNs) + ':' + String(stat.ctimeNs);
+    return 'sha256:' + evidenceTextDigest(await fs.readText(indexPath(filesDir)));
+  } catch (error) {
+    // 派生索引坏路径/权限故障不能挡住原件读取，也不能使内存缓存永久可信；每次明确异步对账。
+    return (error as BusinessError).code === 13900002 ? 'missing' : 'unavailable';
+  }
+}
+
 /**
- * 显示与维护共用的异步索引入口。集合/schema失效时只用真实异步IO修复；
- * 有效索引仅验证小型manifest身份，dirty活动才递归统计。取消抛错，不发布假空列表。
+ * 显示与维护共用的异步投影。热刷新每活动一次目录lstat复核原子发布revision，
+ * 只有本地dirty、跨进程发布、运行中/unknown条目才重测；重启或索引变化重新核实metadata。
+ * 低精度SDK保留14份metadata内容身份退路。每批最多八局，取消/删除冲突不返回假空列表。
  */
 export async function ledgerListAsync(filesDir: string, cancelled?: () => boolean, publish: boolean = false): Promise<LedgerEntry[]> {
   if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
-  const ids: number[] = await listActivityIdsAsync_(filesDir);
+  const directories: LedgerDirectoryRevision[] = await activityDirectoriesAsync_(filesDir, cancelled);
+  const ids: number[] = directories.map((directory: LedgerDirectoryRevision): number => directory.activityId);
+  const indexRevision: string = await readIndexRevisionAsync_(filesDir);
+  if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
   let entries = indexCaches.get(filesDir);
-  if (entries === undefined) {
+  const trustedMemory: boolean = indexRevision !== 'unavailable' && entries !== undefined
+    && readIndexRevisions.get(filesDir) === indexRevision;
+  if (!trustedMemory) {
+    entries = undefined;
     try {
       const snapshot = JSON.parse(await fs.readText(indexPath(filesDir))) as LedgerIndexSnapshot;
       if (validIndex_(snapshot, ids)) entries = snapshot.entries;
@@ -2024,27 +2156,78 @@ export async function ledgerListAsync(filesDir: string, cancelled?: () => boolea
   if (entries === undefined) { entries = []; changed = true; maintenanceCounters.fullRebuilds++; }
   const result: LedgerEntry[] = [];
   const dirty = dirtyLedgers.get(filesDir);
-  for (const id of ids) {
+  // 老数组find与validIndex的ids.includes都会在历史增长时退化成平方工作量；主键映射只建一次。
+  const byId: Map<number, LedgerEntry> = new Map<number, LedgerEntry>();
+  for (const entry of entries) byId.set(entry.activityId, entry);
+  for (let start: number = 0; start < directories.length; start += 8) {
     if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
-    const previous = entries.find((entry: LedgerEntry): boolean => entry.activityId === id);
-    const manifest = await ledgerManifestAsync(filesDir, id);
-    let fingerprint: string = '';
-    if (previous !== undefined && !dirty?.has(id)) {
-      try { fingerprint = await metadataFingerprintAsync_(filesDir, id); } catch (_) { /* 无法核实就只重查该局，并保护unknown。 */ }
+    const pending: Promise<LedgerEntry>[] = directories.slice(start, start + 8)
+      .map(async (directory: LedgerDirectoryRevision): Promise<LedgerEntry> => {
+        if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
+        const id: number = directory.activityId;
+        const previous = byId.get(id);
+        const generation: number = dirtyGenerations.get(filesDir + '/' + id) ?? 0;
+        acquireEvidenceLease(filesDir, id);
+        try {
+          if (previous !== undefined && !dirty?.has(id) && previous.bytesState === 'current') {
+            // 已封账文件由owner统一管理；游戏进程仅在本活动根原子发布，目录revision覆盖该接缝。
+            if (trustedMemory && directory.revision.length > 0 && previous.directoryRevision === directory.revision) return previous;
+            // 高精度目录revision真的变化时直接重测，不能只因14份metadata未变就漏掉新增正文。
+            if (directory.revision.length === 0 || previous.directoryRevision === directory.revision) {
+              const manifest = await ledgerManifestAsync(filesDir, id);
+              let fingerprint: string = '';
+              try { fingerprint = await metadataFingerprintAsync_(filesDir, id, cancelled); }
+              catch (error) { if (cancelled !== undefined && cancelled()) throw error as Error; /* 无法核实则保护unknown并重测。 */ }
+              if (!dirty?.has(id) && previous.manifestDigest === JSON.stringify(manifest)
+                && fingerprint.length > 0 && previous.metadataFingerprint === fingerprint) {
+                const after = await fs.lstat(ledgerDirOf(filesDir, id));
+                if (directory.revision === directoryRevisionOf_(after)) {
+                  previous.directoryRevision = directory.revision; return previous;
+                }
+              }
+            }
+          }
+          const entry = await measureEntryAsync_(filesDir, id, cancelled); changed = true;
+          if (generation === (dirtyGenerations.get(filesDir + '/' + id) ?? 0)) dirty?.delete(id);
+          else { entry.bytesState = 'unknown'; entry.directoryRevision = ''; }
+          return entry;
+        } finally { releaseEvidenceLease(filesDir, id); }
+      });
+    let batch: LedgerEntry[];
+    try { batch = await Promise.all(pending); }
+    catch (error) {
+      // Promise.all首个失败不能提前结束其余IO/租约；等待本批全部收尾，调用方才可销毁页面或夹具。
+      await Promise.allSettled(pending); throw error as Error;
     }
-    if (previous !== undefined && !dirty?.has(id) && previous.manifestDigest === JSON.stringify(manifest)
-      && fingerprint.length > 0 && previous.metadataFingerprint === fingerprint) {
-      result.push(previous); continue;
-    }
-    const generation: number = dirtyGenerations.get(filesDir + '/' + id) ?? 0;
-    result.push(await measureEntryAsync_(filesDir, id, cancelled)); changed = true;
-    if (generation === (dirtyGenerations.get(filesDir + '/' + id) ?? 0)) dirty?.delete(id);
+    for (const entry of batch) result.push(entry);
+    // 无IO的热缓存批次也明确让出事件循环，不能把2000份内存投影挤在一个Promise续体里。
+    if (start + 8 < directories.length) await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
   }
   if (result.length !== entries.length) changed = true;
   if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
   indexCaches.set(filesDir, result);
+  readIndexRevisions.set(filesDir, indexRevision);
   if (changed && maintenanceOwner && publish) await publishIndexAsync_(filesDir, result);
   return result.slice().sort((left: LedgerEntry, right: LedgerEntry): number => right.activityId - left.activityId);
+}
+
+/**
+ * 同轮原清单取自已经核验的manifestDigest，返回独立解析对象；外部消费者不能改坏内部缓存。
+ * 只做分批内存解析，不再次打开N份manifest；损坏目录仍留在entries，且占用保持unknown。
+ */
+export async function ledgerReadSnapshotAsync(filesDir: string, cancelled?: () => boolean): Promise<LedgerReadSnapshot> {
+  const entries = await ledgerListAsync(filesDir, cancelled);
+  const manifests: Map<number, LedgerManifest> = new Map<number, LedgerManifest>();
+  for (let start: number = 0; start < entries.length; start += 32) {
+    if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
+    for (const entry of entries.slice(start, start + 32)) {
+      const manifest = parseLedgerManifest(entry.manifestDigest ?? '');
+      if (manifest !== null) manifests.set(entry.activityId, manifest);
+    }
+    if (start + 32 < entries.length) await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
+  }
+  if (cancelled !== undefined && cancelled()) throw new Error('账本读取已取消');
+  return { entries: entries, manifests: manifests };
 }
 
 /** 单个JSON快照发布仍有O(N)序列化，但没有递归全账本IO；属于可重建派生缓存。 */
@@ -2052,6 +2235,7 @@ async function publishIndexAsync_(filesDir: string, entries: LedgerEntry[]): Pro
   await ensureEvidenceDirectoryAsync(ledgerRoot(filesDir));
   const snapshot: LedgerIndexSnapshot = { schema: 2, bytesIncludeMetadata: true, entries: entries };
   await writeEvidenceTextAtomicAsync(indexPath(filesDir), JSON.stringify(snapshot));
+  readIndexRevisions.set(filesDir, await readIndexRevisionAsync_(filesDir));
   maintenanceCounters.indexWrites++;
 }
 
@@ -2066,25 +2250,26 @@ async function removeDirectoryAsync_(directory: string): Promise<void> {
   await fs.rmdir(directory);
 }
 
-/** 复核和claim之前没有await间隙；pin/lease/提交共用同一owner保护门。 */
+/** 同活动 canonical 队列串行执行删除，首个 IO await 前先认领，阻止新 reader 或写入。 */
 export async function ledgerRemoveAsync(filesDir: string, activityId: number): Promise<void> {
   return await serializeCanonicalAsync_(filesDir, activityId, (): Promise<void> => removeInternalAsync_(filesDir, activityId));
 }
 async function removeInternalAsync_(filesDir: string, activityId: number): Promise<void> {
   if (!maintenanceOwner || maintenanceAllowed !== undefined && !maintenanceAllowed()) throw new Error('游戏进程仍活跃或状态未知，暂时无法清理日志');
-  // manifest读取虽小仍可能await，因此读完后必须再用当前owner事实同步复核一次并claim。
-  const reason: string = ledgerRemovalBlockReason(filesDir, activityId);
-  if (reason.length > 0) throw new Error(reason);
-  if (g_scopeSink !== null) {
-    if (g_scopeSink.endAsync === undefined) throw new Error('异步账本关闭端口尚未装配，日志未删除');
-    await g_scopeSink.endAsync(activityId);
-  }
-  // 上面的真实异步关闭允许新reader进来，必须再复核并原子claim，不能沿用旧检查结果。
-  const latestReason: string = ledgerRemovalBlockReason(filesDir, activityId);
-  if (latestReason.length > 0) throw new Error(latestReason);
-  if (maintenanceAllowed !== undefined && !maintenanceAllowed()) throw new Error('游戏进程状态已变化，日志未删除');
+  if (hasEvidenceLease(filesDir, activityId)) throw new Error('日志正在读取或导出，请稍后删除');
   if (!tryClaimEvidenceDeletion(filesDir, activityId)) throw new Error('日志正在读取或删除，请稍后重试');
   try {
+    const reason: string = manifestRemovalBlockReason_(await ledgerManifestAsync(filesDir, activityId));
+    if (reason.length > 0) throw new Error(reason);
+    if (g_scopeSink !== null) {
+      if (g_scopeSink.endAsync === undefined) throw new Error('异步账本关闭端口尚未装配，日志未删除');
+      await g_scopeSink.endAsync(activityId);
+    }
+    // Native 关闭有真实等待。即使本进程写门已封闭，也要保留外部损坏/读失败的最终防线；
+    // 不借同步可选链把 null 解释成可删，且游戏状态在最后一轮读取结束后再次核实。
+    const latestReason: string = manifestRemovalBlockReason_(await ledgerManifestAsync(filesDir, activityId));
+    if (latestReason.length > 0) throw new Error(latestReason);
+    if (maintenanceAllowed !== undefined && !maintenanceAllowed()) throw new Error('游戏进程状态已变化，日志未删除');
     const directory: string = ledgerDirOf(filesDir, activityId);
     await removeDirectoryAsync_(directory);
     if (await fs.access(directory)) throw new Error('部分日志未能删除，请重试');
@@ -2104,11 +2289,7 @@ async function syncLedgerDirectoryAsync_(filesDir: string): Promise<void> {
 export async function ledgerRemovalBlockReasonAsync(filesDir: string, activityId: number): Promise<string> {
   if (isEvidenceDeleting(filesDir, activityId)) return '活动日志正在删除，请稍后重试';
   if (hasEvidenceLease(filesDir, activityId)) return '日志正在读取或导出，请稍后删除';
-  const manifest = await ledgerManifestAsync(filesDir, activityId);
-  if (manifest === null) return '活动清单无法读取，原始日志保留等待修复';
-  if (manifest.state === LedgerState.RUNNING) return '活动仍在进行中，请结束后再删除日志';
-  if (manifest.pinned === true) return '这条活动已设为保留，请先取消保留后再删除';
-  return '';
+  return manifestRemovalBlockReason_(await ledgerManifestAsync(filesDir, activityId));
 }
 export async function ledgerClearBlockReasonAsync(filesDir: string): Promise<string> {
   for (const id of await listActivityIdsAsync_(filesDir)) {
@@ -2125,24 +2306,39 @@ export async function ledgerClearBlockReasonAsync(filesDir: string): Promise<str
  */
 export async function ledgerClearAsync(filesDir: string): Promise<void> {
   if (!maintenanceOwner || maintenanceAllowed !== undefined && !maintenanceAllowed()) throw new Error('游戏进程仍活跃或状态未知，暂时无法清理日志');
-  const ids = await listActivityIdsAsync_(filesDir);
-  if (clearingRoots.has(filesDir) || ids.some((id: number): boolean => canonicalQueues.has(filesDir + '/' + id))) throw new Error('活动清单正在提交，请稍后重试');
+  const prefix: string = filesDir + '/';
+  if (clearingRoots.has(filesDir) || Array.from(canonicalQueues.keys()).some((key: string): boolean => key.startsWith(prefix))
+    || Array.from(canonicalMutations).some((key: string): boolean => key.startsWith(prefix))) {
+    throw new Error('活动清单正在提交，请稍后重试');
+  }
   clearingRoots.add(filesDir); ledgerBeginMaintenanceBatch(filesDir);
   const claims: number[] = [];
   try {
+    // 发现集合本身也是真实异步 IO；先关闭新建写门，防止列举完成时漏掉刚进入的任务。
+    const ids = await listActivityIdsAsync_(filesDir);
+    if (ids.some((id: number): boolean => canonicalQueues.has(filesDir + '/' + id)
+      || canonicalMutations.has(filesDir + '/' + id))) throw new Error('活动清单正在提交，请稍后重试');
+    // 完整集合在任何清单读取/关闭 await 前一起认领，任一现有租约导致零删除。
+    // clearingRoots 同时阻止 canonical 新建与 pin，后续读取无需同步重扫或留下 TOCTOU 窗口。
     for (const id of ids) {
-      const reason: string = await ledgerRemovalBlockReasonAsync(filesDir, id);
+      if (hasEvidenceLease(filesDir, id)) throw new Error('日志正在读取或导出，请稍后删除');
+      if (!tryClaimEvidenceDeletion(filesDir, id)) throw new Error('日志正在读取或删除，请稍后重试');
+      claims.push(id);
+    }
+    for (const id of ids) {
+      const reason: string = manifestRemovalBlockReason_(await ledgerManifestAsync(filesDir, id));
       if (reason.length > 0) throw new Error(reason);
       if (g_scopeSink !== null) {
         if (g_scopeSink.endAsync === undefined) throw new Error('异步账本关闭端口尚未装配，日志未删除');
         await g_scopeSink.endAsync(id);
       }
     }
-    if (maintenanceAllowed !== undefined && !maintenanceAllowed()) throw new Error('游戏进程状态已变化，清理已延后');
+    // 所有关闭完成后再读一轮，任何外部损坏或未知身份都在首个实际删除前失败。
     for (const id of ids) {
-      if (!tryClaimEvidenceDeletion(filesDir, id)) throw new Error('日志正在读取或删除，请稍后重试');
-      claims.push(id);
+      const reason: string = manifestRemovalBlockReason_(await ledgerManifestAsync(filesDir, id));
+      if (reason.length > 0) throw new Error(reason);
     }
+    if (maintenanceAllowed !== undefined && !maintenanceAllowed()) throw new Error('游戏进程状态已变化，清理已延后');
     for (const id of ids) {
       await removeDirectoryAsync_(ledgerDirOf(filesDir, id));
       if (await fs.access(ledgerDirOf(filesDir, id))) throw new Error('部分日志未能删除，请重试；未删除原件仍保留');
@@ -2287,32 +2483,26 @@ function appendRelatedCandidate_(current: LedgerManifest, activityId: number, ca
   else if (related.length < 8) related.push(item);
 }
 
-/** 使用SDK异步文本IO和同一个manifest解析器；缺失/损坏与原同步读取一样返回null。 */
-async function relatedManifestAsync_(filesDir: string, activityId: number): Promise<LedgerManifest | null> {
-  try { return parseLedgerManifest(await fs.readText(manifestPath(filesDir, activityId))); }
-  catch (_) { return null; }
-}
-
 /**
- * 阅读页的关联导航异步投影：只读少量索引后以8份一批异步读取manifest，避免在首次
- * layout中同步打开全部活动文件。批内Promise.all保持原倒序，关系规则与8/4条上限
- * 仍共用原实现。离页/换活动时在下一批前停止，不把取消结果发布成“没有关联”。
+ * 关联导航消费同轮异步投影，索引缺失/损坏也只异步重建内存视图，不调用同步ledgerList。
+ * 关系规则与8/4上限共用原实现；离页/换活动时在下一批前停止，不发布一个假空关系结果。
  */
 export async function ledgerRelatedActivitiesAsync(filesDir: string, activityId: number,
   cancelled: () => boolean): Promise<LedgerRelatedActivity[]> {
   if (cancelled()) throw new Error('关联活动读取已取消');
-  const current: LedgerManifest | null = await relatedManifestAsync_(filesDir, activityId);
-  if (current === null) return [];
+  const snapshot = await ledgerReadSnapshotAsync(filesDir, cancelled);
+  const current = snapshot.manifests.get(activityId);
+  if (current === undefined) return [];
   const related: LedgerRelatedActivity[] = []; const sameInstance: LedgerRelatedActivity[] = [];
-  const entries: LedgerEntry[] = ledgerList(filesDir).filter((entry: LedgerEntry): boolean => entry.activityId !== activityId);
+  const entries: LedgerEntry[] = snapshot.entries.filter((entry: LedgerEntry): boolean => entry.activityId !== activityId);
   for (let start: number = 0; start < entries.length; start += 8) {
     if (cancelled()) throw new Error('关联活动读取已取消');
     const batch: LedgerEntry[] = entries.slice(start, start + 8);
-    const candidates: (LedgerManifest | null)[] = await Promise.all(batch.map((entry: LedgerEntry): Promise<LedgerManifest | null> =>
-      relatedManifestAsync_(filesDir, entry.activityId)));
+    const candidates: (LedgerManifest | undefined)[] = batch.map((entry: LedgerEntry): LedgerManifest | undefined =>
+      snapshot.manifests.get(entry.activityId));
     if (cancelled()) throw new Error('关联活动读取已取消');
     for (const candidate of candidates) {
-      if (candidate !== null) appendRelatedCandidate_(current, activityId, candidate, related, sameInstance);
+      if (candidate !== undefined) appendRelatedCandidate_(current, activityId, candidate, related, sameInstance);
     }
     if (related.length >= 8 && sameInstance.length >= 4) break;
   }
@@ -2549,8 +2739,10 @@ async function archivePlatformEventBatchAsync_(filesDir: string, retryBatch?: Pl
       throw error as Error;
     }
     const explicitId: number = num_(event, 'activityId', 0);
-    const eventAt: number = num_(event, 'eventAt', num_(params, 'time', 0));
-    const pid: number = num_(params, 'pid', 0);
+    const identity = readPlatformEventIdentity(event, params);
+    if (identity.conflict) continue;
+    const eventAt: number = identity.eventAt;
+    const pid: number = identity.pid;
     if (retryBatch !== undefined) {
       const expected = retryBatch.find((entry): boolean => entry.name === name);
       if (expected === undefined || expected.eventKey !== evidenceTextDigest(text)) throw new Error('平台补采原件身份已变化，保留双方事实等待重新归属');
@@ -2616,7 +2808,11 @@ async function archivePlatformEventBatchAsync_(filesDir: string, retryBatch?: Pl
       const inputText: string = JSON.stringify(ordered);
       const nextKey: string = evidenceTextDigest(inputText);
       const previous: string = JSON.stringify(manifest);
-      applyPlatformOutcome_(manifest, text);
+      // 与同步恢复一致：父进程的终止是本局背景证据，不证明独立游戏已经结束。
+      let gamePid: number = 0;
+      try { gamePid = num_(JSON.parse(await fs.readText(ledgerDirOf(filesDir, manifest.activityId) + '/capture-game.json')) as Record<string, Object>, 'pid', 0); }
+      catch (error) { if ((error as BusinessError).code !== 13900002 && !(error instanceof SyntaxError)) throw error as Error; }
+      if (pid <= 0 || gamePid <= 0 || pid === gamePid) applyPlatformOutcome_(manifest, text);
       const files: LedgerFile[] = [];
       await scanDirAsync_(ledgerDirOf(filesDir, manifest.activityId), '', files, 0);
       manifest.files = files;
@@ -2642,31 +2838,47 @@ async function archivePlatformEventBatchAsync_(filesDir: string, retryBatch?: Pl
 }
 
 /**
- * 仅接入已明确发布业务终态收据的两种caller。原文绑定ID/category/非空nonce及真实完成时刻；
- * 完成后的canonical重试失败不能把实际SUCCESS重新认作进程中断。record正文不参与签发完整性，
- * 其他业务仍由自己的权威恢复链处理，不把任意JSON都当作通用“完成”声明。
+ * 读取统一任务 owner 的 v2 原件及旧 Mod/更新下载 v1 原件。新原件必须匹配进程 PID、
+ * 非空轮次 nonce、活动主键、类别及 source；只认真实终态和可信完成时刻。
+ * 游戏和更新父事务保持各自的权威恢复链，不能由通用任务收据替代；record 快照不授予写权。
  */
 async function readStaleProducerOutcomeAsync_(filesDir: string, manifest: LedgerManifest): Promise<LedgerOutcome | undefined> {
   const mod: boolean = manifest.category === 'mod_install';
   const updateDownload: boolean = manifest.category === 'app_update_download';
-  if (!mod && !updateDownload || (manifest.runNonce ?? '').length === 0) return undefined;
-  const path: string = ledgerDirOf(filesDir, manifest.activityId) + (mod ? '/task-terminal.json' : '/update-terminal.json');
+  if (manifest.category === 'launch' || manifest.category === 'app_update' || (manifest.runNonce ?? '').length === 0) return undefined;
+  const path: string = ledgerDirOf(filesDir, manifest.activityId) + (updateDownload ? '/update-terminal.json' : '/task-terminal.json');
   try {
     const stat = await fs.stat(path);
     if (!stat.isFile() || stat.size <= 0 || stat.size > 512 * 1024) return undefined;
     await ensureEvidenceTextDurableAsync(path);
     const value = JSON.parse(await fs.readText(path)) as Record<string, Object>;
-    if (value === null || value['schema'] !== 1 || value['activityId'] !== manifest.activityId
+    if (value === null || value['activityId'] !== manifest.activityId
       || value['category'] !== manifest.category || value['runNonce'] !== manifest.runNonce) return undefined;
-    const raw = mod ? value['outcome'] as Record<string, Object> : value;
+    const taskOwner: boolean = value['schema'] === 2 && !updateDownload;
+    if (taskOwner) {
+      const producerPid = value['producerPid'];
+      if (typeof producerPid !== 'number' || !Number.isSafeInteger(producerPid as number)
+        || producerPid !== manifest.ownerPid) return undefined;
+    } else if (value['schema'] !== 1 || !mod && !updateDownload) return undefined;
+    const raw = updateDownload ? value : value['outcome'] as Record<string, Object>;
     if (raw === undefined || raw === null || typeof raw !== 'object') return undefined;
     const state = raw['state']; const endedAt = raw['endedAt']; const summary = raw['summary'];
-    if (state !== LedgerState.SUCCESS && state !== LedgerState.FAILED && (!updateDownload || state !== LedgerState.ABORTED)
+    if (state !== LedgerState.SUCCESS && state !== LedgerState.FAILED && (!(updateDownload || taskOwner) || state !== LedgerState.ABORTED)
       || typeof summary !== 'string' || typeof endedAt !== 'number' || !Number.isSafeInteger(endedAt)
       || endedAt < manifest.activityId || endedAt > Date.now()
-      || mod && raw['source'] !== 'modInstall.terminal') return undefined;
-    return { state: state as LedgerState, source: mod ? 'modInstall.terminal' : 'sideload.update',
-      summary: summary, endedAt: endedAt };
+      || taskOwner && raw['source'] !== 'task.owner' || !taskOwner && mod && raw['source'] !== 'modInstall.terminal') return undefined;
+    let taskFacts: LedgerTaskFacts | undefined = undefined;
+    if (taskOwner) {
+      const record = value['record'] as Record<string, Object>;
+      const status: string = state === LedgerState.SUCCESS ? 'success' : state === LedgerState.ABORTED ? 'aborted' : 'failed';
+      // 身份与业务结局已在上方核实；展示原件还须逐字段匹配，坏展示字段不能伪造导航或统计。
+      if (record !== undefined && record !== null && record['startedAt'] === manifest.activityId
+        && record['category'] === manifest.category && record['endedAt'] === endedAt && record['status'] === status) {
+        taskFacts = parseLedgerTaskFacts_(record, manifest.category);
+      }
+    }
+    return { state: state as LedgerState, source: taskOwner ? 'task.owner' : mod ? 'modInstall.terminal' : 'sideload.update',
+      summary: summary, endedAt: endedAt, taskFacts: taskFacts };
   } catch (error) {
     if ((error as BusinessError).code === 13900002 || error instanceof SyntaxError) return undefined;
     throw error as Error;
@@ -2679,12 +2891,13 @@ export async function ledgerResolveStaleAsync(filesDir: string, pendingUpdateIds
   let count: number = 0;
   for (const id of await listActivityIdsAsync_(filesDir)) {
     const manifest = await ledgerManifestAsync(filesDir, id);
-    if (manifest === null || manifest.state !== LedgerState.RUNNING || manifest.category === 'app_update' && pendingUpdateIds.includes(id)) continue;
+    if (manifest === null || manifest.state !== LedgerState.RUNNING || belongsToCurrentLedgerRun_(manifest)
+      || manifest.category === 'app_update' && pendingUpdateIds.includes(id)) continue;
     if (maintenanceAllowed !== undefined && !maintenanceAllowed()) break;
     const terminal = await readStaleProducerOutcomeAsync_(filesDir, manifest);
     await ledgerEndAsync(filesDir, id, terminal ?? { state: LedgerState.INTERRUPTED, source: 'ledger.resolveStale',
       summary: '上次应用退出时该操作尚未结束（进程被结束或崩溃）', endedAt: 0, recoveredAt: Date.now() },
-      { inputKey: 'stale:' + (manifest.runNonce ?? '') });
+      { inputKey: 'stale:' + (manifest.runNonce ?? ''), expectedManifestRevision: manifest.revision ?? 0 });
     count++;
     maintenanceCounters.staleCommits++;
   }

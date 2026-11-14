@@ -17,5 +17,27 @@ g++ -std=c++17 -O0 -g -pthread -fmax-errors=2 -I"$repo/tests/download-system/stu
   "$src/net_file.cpp" "$src/net_thread.cpp" "$src/net_source.cpp" "$src/net_state.cpp" \
   "$src/multi_downloader.cpp" "$src/download_meta.cpp" "$src/file_checker.cpp" \
   "$src/sha1.cpp" "$src/config.cpp" "$src/exception.cpp" "$src/probe.cpp" \
-  "$src/relay.cpp" "$src/hmac_sha256.cpp" "$curl_lib" -o "$build/native-regression"
-"$build/native-regression" "$build"
+  "$src/relay.cpp" "$src/hmac_sha256.cpp" "$curl_lib" \
+  -Wl,--wrap=curl_easy_setopt -Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_multi_info_read -o "$build/native-regression"
+# 默认仍运行完整suite；定向开关选择同一生产执行器中的正文、网关或重定向URL场景。
+if [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == relay ]]; then
+  "$build/native-regression" "$build" --relay-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == redirect-url ]]; then
+  "$build/native-regression" "$build" --redirect-url-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == transport ]]; then
+  "$build/native-regression" "$build" --transport-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == metadata ]]; then
+  "$build/native-regression" "$build" --metadata-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == callback-rebalance ]]; then
+  "$build/native-regression" "$build" --callback-rebalance-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == transfer-probe ]]; then
+  "$build/native-regression" "$build" --transfer-probe-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == cold-source-race ]]; then
+  "$build/native-regression" "$build" --cold-source-race-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == cold-source-yield ]]; then
+  "$build/native-regression" "$build" --cold-source-yield-only
+elif [[ "${AMCL_DOWNLOAD_TEST_SUITE:-}" == cold-source-reverse ]]; then
+  "$build/native-regression" "$build" --cold-source-reverse-only
+else
+  "$build/native-regression" "$build"
+fi

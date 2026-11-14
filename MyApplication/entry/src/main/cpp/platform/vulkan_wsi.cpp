@@ -130,12 +130,14 @@ struct SurfaceRecord {
     PFN_vkDestroySurfaceKHR destroy;
     bool destroying = false;
     const char* provider = "GLFW"; // 创建入口确定身份，不从当前可变环境猜测。
+    uint64_t resourceEpoch = 0; // 只允许同一资源的几何更新；失去资源连续性要求游戏重建VkSurface。
 };
 // 只保存呈现归属，不持有游戏swapchain；销毁仍完全由Minecraft调用驱动完成。
 struct SwapchainRecord {
     VkDevice device;
     uint64_t windowId, generation;
     const char* provider;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
 };
 struct DeviceRecord {
     VkPhysicalDevice physical;
@@ -353,6 +355,48 @@ bool trackedSurfaceForDevice(VkDevice device, VkSurfaceKHR surface, VkPhysicalDe
     if (surfaceIt == r.surfaces.end() || surfaceIt->second.instance != deviceIt->second.instance) return false;
     physical = deviceIt->second.physical;
     instance = deviceIt->second.instance;
+    return true;
+}
+
+/**
+ * 只有成功vkQueuePresent返回后的真实呈现线程执行尺寸配置；能力查询和交换链
+ * 创建可能由其它线程发起，不能凭持有Surface句柄获得NativeWindow配置资格。
+ * 复制租约记录后释放WSI表锁，再进入宿主事务；其它入口只同步已发布的几何，
+ * 且只有同一NativeWindow/resourceEpoch才能移动呈现token。
+ * 不改变VkCapabilities、不创建/销毁游戏交换链；旧交换链保留自己的创建代次。
+ */
+bool refreshResolutionSurface(VkSurfaceKHR surface, bool checkpoint) {
+    auto& r = runtime();
+    SurfaceRecord record{};
+    {
+        std::lock_guard<std::mutex> lock(r.mutex);
+        const auto found = r.surfaces.find(bits(surface));
+        if (found == r.surfaces.end()) return true; // 非受管对象透明转发。
+        if (found->second.destroying) return false;
+        record = found->second;
+    }
+    const auto* broker = record.broker;
+    const bool supportsGeometry = broker && broker->structSize >= AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_GEOMETRY_SIZE &&
+        broker->geometryWorkFlags && broker->geometryCheckpoint && broker->observeDrawable;
+    if (checkpoint && supportsGeometry && (broker->geometryWorkFlags() & 1u))
+        broker->geometryCheckpoint(record.nativeWindow, record.generation, record.token);
+    if (!broker || !broker->peekGeneration || broker->peekGeneration() == record.generation) return true;
+    if (!record.resourceEpoch || broker->structSize < AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_IDENTITY_SIZE ||
+        !broker->acquireIdentity || !broker->movePresentationGeometry) return false;
+    AmclNativeWindowIdentityV1 identity{};
+    identity.structSize = sizeof(identity);
+    identity.abiVersion = 1;
+    const int acquired = broker->acquireIdentity(record.nativeWindow, record.generation, &identity);
+    const bool continuous = acquired != 0 && identity.nativeWindow == record.nativeWindow &&
+        identity.resourceEpoch == record.resourceEpoch && identity.width > 0 && identity.height > 0;
+    const bool moved = continuous && broker->movePresentationGeometry(record.token, record.nativeWindow,
+        record.generation, identity.generation, identity.resourceEpoch) == 1;
+    if (acquired == 1) broker->release(identity.nativeWindow);
+    if (!moved) return false;
+    std::lock_guard<std::mutex> lock(r.mutex);
+    const auto found = r.surfaces.find(bits(surface));
+    if (found == r.surfaces.end() || found->second.destroying || found->second.token != record.token) return false;
+    found->second.generation = identity.generation;
     return true;
 }
 
@@ -799,6 +843,8 @@ VKAPI_ATTR VkResult VKAPI_CALL createSwapchain(VkDevice device, const VkSwapchai
     auto gdpa = deviceProcFor(device);
     auto raw = gdpa ? reinterpret_cast<PFN_vkCreateSwapchainKHR>(gdpa(device, "vkCreateSwapchainKHR")) : nullptr;
     if (!raw) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    // 创建路径只采纳已由present安全点发布的几何，不从可能独立的创建线程执行SET。
+    if (requested && !refreshResolutionSurface(requested->surface, false)) return VK_ERROR_SURFACE_LOST_KHR;
     VkSwapchainCreateInfoKHR adjusted{};
     uint32_t selectedAlpha = 0, supportedAlpha = 0;
     const VkResult adaptation = queryAndAdaptSwapchain(device, requested, adjusted, selectedAlpha, supportedAlpha);
@@ -809,19 +855,33 @@ VKAPI_ATTR VkResult VKAPI_CALL createSwapchain(VkDevice device, const VkSwapchai
     }
     const VkResult result = raw(device, requested ? &adjusted : requested, allocator, swapchain);
     auto& r = runtime();
-    std::lock_guard<std::mutex> lock(r.mutex);
-    if (result == VK_SUCCESS) {
+    SurfaceRecord observed{};
+    bool haveObserved = false;
+    uint64_t createdCount = 0;
+    {
+      std::lock_guard<std::mutex> lock(r.mutex);
+      if (result == VK_SUCCESS) {
         ++r.swapchainsCreated;
         // 只有真实受管surface的swapchain才能形成宿主呈现事件；其他用户的Vulkan对象透明转发。
         const auto surface = requested ? r.surfaces.find(bits(requested->surface)) : r.surfaces.end();
         if (swapchain && *swapchain && surface != r.surfaces.end()) {
             const auto& owner = surface->second;
-            r.swapchains[bits(*swapchain)] = {device, owner.windowId, owner.generation, owner.provider};
+            r.swapchains[bits(*swapchain)] = {device, owner.windowId, owner.generation, owner.provider, requested->surface};
+            observed = owner;
+            haveObserved = !owner.destroying;
         }
+      }
+      createdCount = r.swapchainsCreated;
+    }
+    // 真实vkCreateSwapchain成功后才确认imageExtent；回调在WSI锁外，不能制造创建成功。
+    if (haveObserved && observed.broker->structSize >= AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_GEOMETRY_SIZE &&
+        observed.broker->observeDrawable) {
+        observed.broker->observeDrawable(observed.nativeWindow, observed.generation, observed.token,
+            static_cast<int>(adjusted.imageExtent.width), static_cast<int>(adjusted.imageExtent.height), 2u);
     }
     emitWsiLog(result == VK_SUCCESS ? false : true,
         "graphics_swapchain_create result=%d swapchains=%llu alpha=0x%X supportedAlpha=0x%X",
-        static_cast<int>(result), static_cast<unsigned long long>(r.swapchainsCreated), selectedAlpha, supportedAlpha);
+        static_cast<int>(result), static_cast<unsigned long long>(createdCount), selectedAlpha, supportedAlpha);
     return result;
 }
 
@@ -867,6 +927,9 @@ VKAPI_ATTR VkResult VKAPI_CALL queuePresent(VkQueue queue, const VkPresentInfoKH
         }
     }
     if (haveFrame) notifyFramePresented(frame.provider, frame.windowId, frame.generation);
+    // 一帧驱动提交结束后消费手动调整；前端下一次poll看到新逻辑尺寸，游戏自己重建交换链。
+    // 旧swapchain的frame.generation不改成新值，不能以旧图像放行新几何的输入屏障。
+    if (haveFrame && frame.surface != VK_NULL_HANDLE) refreshResolutionSurface(frame.surface, true);
 
     // SUBOPTIMAL仍完成呈现，不是终局故障；默认不因它逐帧同步写hilog/stderr。
     // 必要计数和输入通知已在上面提交，周期成功摘要仅在显式WSI trace下输出。
@@ -962,6 +1025,15 @@ VkResult createSurface(VkInstance instance, uint64_t windowId,
         return VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
     }
     SurfaceRecord record{instance, VK_NULL_HANDLE, windowId, nativeWindow, generation, token, broker, destroy};
+    if (broker->structSize >= AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_IDENTITY_SIZE && broker->acquireIdentity) {
+        AmclNativeWindowIdentityV1 identity{};
+        identity.structSize = sizeof(identity);
+        identity.abiVersion = 1;
+        const int acquired = broker->acquireIdentity(nativeWindow, generation, &identity);
+        if (acquired != 0 && identity.nativeWindow == nativeWindow && identity.generation == generation)
+            record.resourceEpoch = identity.resourceEpoch;
+        if (acquired == 1) broker->release(identity.nativeWindow);
+    }
     record.provider = requested ? "SDL3" : "GLFW";
     SurfaceCreateInfo info{kSurfaceType, nullptr, 0, nativeWindow};
     if (requested) info = *requested;

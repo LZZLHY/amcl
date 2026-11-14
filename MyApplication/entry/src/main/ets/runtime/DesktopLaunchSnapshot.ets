@@ -10,7 +10,7 @@ import { PreferenceManager } from 'feature_system'
 import { INPUT_PLAN_SCHEMA } from 'launch'
 import { GameRunAdmission } from './GameRunAdmission'
 import { ProcessPreferences, LaunchPreferenceSnapshot, LaunchPreferenceValue,
-  AppLogger, LOG_DOMAIN_LAUNCH } from 'commons'
+  AppLogger, LOG_DOMAIN_LAUNCH, THEME_SELECTION_KEY, encodeThemeSelection } from 'commons'
 
 interface DesktopPreferenceTicket {
   schema: number
@@ -74,9 +74,12 @@ export class DesktopLaunchSnapshot {
     if (accountJson.length > 32768) throw new Error('Selected account launch snapshot is too large')
     const layoutSource: LayoutLaunchSource | null = await getLayoutStore().captureLaunchLayoutSource()
     const snapshots: LaunchPreferenceSnapshot[] = [
-      await ProcessPreferences.captureOwner(context, 'amcl_settings'),
+      await PreferenceManager.captureConfirmedSettings(context),
       layoutSource === null ? await getLayoutStore().captureLaunchPreferences() : { name: 'control_layout', values: {} }
     ]
+    // captureOwner会flush整份Preferences缓存，可能读到尚未获专用owner确认的主题put。
+    // 只覆盖这个显示键为同目录getter的确认快照，不改变其他设置、布局摘要或输入契约。
+    snapshots[0].values[THEME_SELECTION_KEY] = encodeThemeSelection(new PreferenceManager(context).themeSelection)
     if (storedAccount && manager.findById(account.id) !== account) throw new Error('启动账户已变化，请重新启动')
     const id: string = util.generateRandomUUID().toLowerCase()
     const layoutDigest: string = GameLayoutTransportV2.prepare(context, id, activityId, parentPid, snapshots[1], layoutSource)

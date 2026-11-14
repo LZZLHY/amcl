@@ -97,13 +97,30 @@ export class UpdateChecker {
   /** 红点沿用与联网候选相同的比较，升级后同 code 的旧预览缓存也会自然消失。 */
   static hasCachedUpdate(currentVersionCode: number, latestSeenVersionCode: number,
     currentName: string = '', latestName: string = '', channel: string = 'stable'): boolean {
+    if (!AppUpdatePolicy.automaticAllowed(currentName)) return false;
     return AppUpdatePolicy.canInstall(currentVersionCode,currentName,latestSeenVersionCode,latestName,channel);
   }
 
   /** 版本名必须读取实际安装包，不能使用可能滞后的展示常量作为同 code 安装证据。 */
   static currentVersionName(): string {
-    try { return bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName; }
+    try { const name=bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName; return typeof name==='string' ? name : ''; }
     catch (_) { return ''; }
+  }
+
+  /** 实际已安装发行决定自动检查资格，不读取可能残留的偏好或页面展示常量。 */
+  static automaticAllowed(): boolean { return AppUpdatePolicy.automaticAllowed(UpdateChecker.currentVersionName()); }
+
+  /** 推荐声明只用于下载前筛选；签名前会再从该HAP读取真实集合，不允许数字大小代替能力。 */
+  static supportsHost(manifest: UpdateManifest, product: string, required: number): boolean {
+    if(required===0) return true;
+    return UpdateChecker.supportsHosts(manifest,product,[required]);
+  }
+  /** 同一用户选择可包含多个JDK要求；目标HAP必须明确支持整个集合，而不只支持第一个。 */
+  static supportsHosts(manifest: UpdateManifest, product: string, required: number[]): boolean {
+    if(!Array.isArray(required) || required.length>8 || required.some((value: number): boolean => !Number.isInteger(value) || value<1 || value>999)) return false;
+    if(required.length===0)return true;
+    try {const available=GitHubUpdateAssetResolver.fromDelivery(manifest,product).runtimeHostProtocols ?? [1];return required.every((value: number): boolean => available.indexOf(value)>=0);}
+    catch (_) {return false;}
   }
 
   /** 页面、自动检查和手动包预检共享准入，防止 UI 仍只按数字过滤掉预览版。 */
@@ -255,11 +272,16 @@ export class UpdateChecker {
    * 不能在多个源中取最高版本：发布者可以撤回或降低推荐，静态镜像也可能暂时滞后。
    * 显式注入源只在给定列表中读取，避免诊断会话失败后混入真正的生产候选。
    */
-  static async checkForUpdate(urls: string[] = UPDATE_MANIFEST_URLS, product: string = 'sideload', channel: string = 'stable'): Promise<UpdateCheckResult> {
+  static async checkForUpdate(urls: string[] = UPDATE_MANIFEST_URLS, product: string = 'sideload', channel: string = 'stable',
+    developerExit: boolean = false): Promise<UpdateCheckResult> {
     let current = UpdateChecker.currentVersionCode();
     let result: UpdateCheckResult = { ok: false, hasUpdate: false, current: current, manifest: null, error: '' };
 
     if (!DistributionPolicy.allowSideloadUpdates()) { result.error = '此渠道使用应用市场更新'; return result; }
+    // developerExit 只由软件更新页的明确离开动作传入；默认入口连请求也不发出。
+    if (!UpdateChecker.automaticAllowed() && !developerExit) {
+      result.error = '开发者版已暂停应用更新检查，请在软件更新页选择返回正式版或转入预览版'; return result;
+    }
     if (urls.length === 0) {
       result.error = '未配置更新源';
       return result;

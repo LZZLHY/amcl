@@ -167,7 +167,7 @@ def run_mode(name,body,negative=False,variant=''):
         core='extern "C" bool ownedTextEndBudgetFail();\n'+core[:begin]+core_block+core[end:]
     if variant in ('old64','old72'):
         needle='''    static const AmclSourceControlPortV1 port={AMCL_SOURCE_CONTROL_MAGIC,1,sizeof(AmclSourceControlPortV1),sourceProcess,
-        reinterpret_cast<uintptr_t>(amclInputGetHostApiV1()),verify,open,prepared,transact,query,ownedTextKeyTap,ownedTextKeyTapForKeyboard};
+        reinterpret_cast<uintptr_t>(amclInputGetHostApiV1()),verify,open,prepared,transact,query,ownedTextKeyTap,ownedTextKeyTapForKeyboard,owns};
     return &port;''';assert source.count(needle)==1
         replacement='''    struct Old64 {uint32_t magic,version,size,pid;uint64_t owner;
         decltype(verify)*v;decltype(open)*o;decltype(prepared)*p;decltype(transact)*t;decltype(query)*q;};

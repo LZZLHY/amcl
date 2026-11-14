@@ -3,7 +3,8 @@
  * 输入始终保持不变；补齐后的完整树再验证，预算不足返回失败，不能移除用户控件或少补入口。
  */
 import { LayoutProfile, ControlItem, ControlType, SystemAction, cloneLayout,
-  makeSystemButton, validateAndNormalizeLayoutWithReason } from './ControlLayout'
+  makeSystemButton, validateAndNormalizeLayoutWithReason, effectiveKeys } from './ControlLayout'
+import { GLFW_KEY_T } from './GlfwKeys'
 import { ensureSystemMouseControl } from './TouchControlPresentation'
 
 /** 原文件读取以 UTF-8 字节计；此限额只用于导入，合法单方案可在 V2 通过多个块传输。 */
@@ -64,8 +65,14 @@ export function buildLayoutCandidate(source: LayoutProfile): LayoutCandidateResu
     // 恢复层不进入用户组；新注入聊天入口则进入默认组，已有成员归属保持。
     if (candidate.controlGroups !== undefined) item.controlGroupId = action === 'input' ?
       (item.controlGroupId ?? candidate.defaultControlGroupId) : undefined
-    // 系统入口不向游戏发用户绑定，不允许toggle/dragLook等普通按钮解释改变输入/编辑职责。
-    item.keyOrMouse = 0; item.keys = []; item.modifiers = 0; item.trigger = 'press'
+    // 聊天是必备系统入口。旧迁移留下的0/[]恢复默认T；有效自定义键或组合仍按用户配置发送。
+    // 只修复键位，不重建控件，保留ID、位置、尺寸、样式、组归属和其它普通按钮的显式空绑定。
+    if (action === 'input' && effectiveKeys(item).length === 0) {
+      item.keyOrMouse = GLFW_KEY_T; item.keys = [GLFW_KEY_T]; item.modifiers = 0
+    }
+    // 编辑/显隐恢复入口没有游戏输出；所有系统入口仍禁止普通阶段/连滑夺取业务职责。
+    if (action !== 'input') { item.keyOrMouse = 0; item.keys = []; item.modifiers = 0 }
+    item.trigger = 'press'; item.phaseBindings = undefined; item.groupActions = undefined
     item.grabbedOnly = false
     item.menuOnly = false
     item.hidden = false

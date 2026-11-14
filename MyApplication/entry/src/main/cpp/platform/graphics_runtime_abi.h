@@ -1,7 +1,9 @@
 #ifndef AMCL_GRAPHICS_RUNTIME_ABI_H
 #define AMCL_GRAPHICS_RUNTIME_ABI_H
 #include <stdint.h>
+#include <stddef.h>
 #include "graphics_context_abi.h"
+#include "sdl_aux_runtime_abi.h"
 #define AMCL_GRAPHICS_RUNTIME_ENV "AMCL_GRAPHICS_RUNTIME_V1"
 /** 冻结后发布的公共C描述符。字符串/函数指针由中立运行时保留到进程退出；消费者
  * 先校验环境中的PID，再解引用并核验尺寸/版本。无有效表时宿主路线必须拒绝启动，
@@ -33,5 +35,10 @@ typedef struct AmclGraphicsRuntimeV1 {
     const char* (*featuresJson)(void);
     const char* implementationIdentity;
     void* (*providerProc)(const char* name);
+    // 可选尾部：显式辅助SDL的会话、呈现线程证明与实际实例准入；不改变主输入/窗口。
+    int (*sdlAuxOperation)(uint32_t operation,const AmclSdlAuxRequestV1*,AmclSdlAuxResultV1*);
 } AmclGraphicsRuntimeV1;
+// 旧完整V1前缀保持可用；仅使用辅助SDL的消费者要求新增尾部，不以新sizeof读取旧表。
+#define AMCL_GRAPHICS_RUNTIME_V1_CORE_SIZE ((uint32_t)offsetof(AmclGraphicsRuntimeV1,sdlAuxOperation))
+#define AMCL_GRAPHICS_RUNTIME_V1_SDL_AUX_SIZE ((uint32_t)(offsetof(AmclGraphicsRuntimeV1,sdlAuxOperation)+sizeof(((AmclGraphicsRuntimeV1*)0)->sdlAuxOperation)))
 #endif

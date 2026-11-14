@@ -88,6 +88,11 @@ export class McVersionTask implements UnifiedDownloadAdapter {
   ) {
     this.view.id = 'mc:' + versionName;
     this.view.category = TaskCategory.MC_VERSION;
+    // 领域输入由执行owner直接消费；页面离开、排队或卡片重试均沿用同一份固定元信息。
+    this.view.activityMcDir = mcDir;
+    this.view.activityGameVersion = gameVersion;
+    this.view.activityLoaderType = loaderType ?? 'vanilla';
+    this.view.activityLoaderVersion = loaderVersion;
     this.view.title = versionName;
     this.view.subtitle = loaderSubtitle(loaderType, loaderVersion);
     this.view.state = UnifiedTaskState.PREPARING;

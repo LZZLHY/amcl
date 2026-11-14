@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * 已装资源惰性列表的单行视图。通过 ObjectLink 观察共享行属性，更新图标或进度时只刷新该行。
  * 实际磁盘操作与来源查询仍由 Sheet 编排；回调捕获资源身份，过滤后不使用数组下标执行操作。
  */
@@ -42,7 +46,7 @@ export struct InstalledResourceItem {
           cornerRadius: 10,
           fallbackIcon: kindIcon(this.kind),
           fallbackBg: this.row.enabled ? this.theme.primaryLight : this.theme.bgInput,
-          fallbackColor: this.row.enabled ? this.theme.primary : this.theme.textHint,
+          fallbackColor: this.row.enabled ? this.theme.actionText : this.theme.textHint,
           fallbackIconSize: 20,
         })
 
@@ -61,7 +65,7 @@ export struct InstalledResourceItem {
             if (this.togglable) {
               Text(this.row.enabled ? '启用' : '禁用')
                 .fontSize(10).fontWeight(700)
-                .fontColor(this.row.enabled ? this.theme.success : this.theme.textHint)
+                .fontColor(this.row.enabled ? this.theme.successText : this.theme.textHint)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .borderRadius(5)
                 .backgroundColor(this.row.enabled ? this.theme.successBg : this.theme.bgInput)
@@ -72,7 +76,7 @@ export struct InstalledResourceItem {
             if (this.row.integrity === ModIntegrity.CORRUPT) {
               Text('已损坏')
                 .fontSize(10).fontWeight(700)
-                .fontColor(this.theme.error)
+                .fontColor(this.theme.errorText)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .borderRadius(5)
                 .backgroundColor(this.theme.errorBg)
@@ -84,7 +88,7 @@ export struct InstalledResourceItem {
             if (this.row.updateState === 'outdated') {
               Text('可更新')
                 .fontSize(10).fontWeight(700)
-                .fontColor(this.theme.primary)
+                .fontColor(this.theme.actionText)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .borderRadius(5)
                 .backgroundColor(this.theme.primaryLight)
@@ -94,7 +98,7 @@ export struct InstalledResourceItem {
             } else if (this.row.updateState === 'updating') {
               Text('更新中 ' + this.row.updatingPct + '%')
                 .fontSize(10).fontWeight(700)
-                .fontColor(this.theme.primary)
+                .fontColor(this.theme.actionText)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .borderRadius(5)
                 .backgroundColor(this.theme.primaryLight)
@@ -115,7 +119,7 @@ export struct InstalledResourceItem {
               AppIcon({
                 name: this.expanded ? AppIconName.ChevronUp : AppIconName.ChevronDown,
                 iconSize: 14,
-                color: this.row.updateState === 'outdated' ? this.theme.primary : this.theme.textSecondary,
+                color: this.row.updateState === 'outdated' ? this.theme.actionText : this.theme.textSecondary,
               })
             }
             .width(32).height(32).borderRadius(10)
@@ -126,12 +130,12 @@ export struct InstalledResourceItem {
 
           if (this.togglable) {
             Toggle({ type: ToggleType.Switch, isOn: this.row.enabled })
-              .selectedColor(this.theme.primary)
+              .selectedColor(this.theme.actionText)
               .onChange((isOn: boolean) => { this.onToggle(isOn) })
           }
 
           Row() {
-            AppIcon({ name: AppIconName.Trash, iconSize: 15, color: this.theme.error })
+            AppIcon({ name: AppIconName.Trash, iconSize: 15, color: this.theme.errorText })
           }
           .width(36).height(36)
           .borderRadius(10)
@@ -153,20 +157,20 @@ export struct InstalledResourceItem {
           if (this.row.updateState === 'updating') {
             Column({ space: 6 }) {
               Row({ space: 8 }) {
-                LoadingProgress().width(16).height(16).color(this.theme.primary)
+                LoadingProgress().width(16).height(16).color(this.theme.actionText)
                 Text('正在更新到 ' + this.row.latestVersionNumber + '  ' + this.row.updatingPct + '%')
                   .fontSize(12).fontWeight(500).fontColor(this.theme.textSecondary)
                   .layoutWeight(1)
               }
               .width('100%').alignItems(VerticalAlign.Center)
               Progress({ value: this.row.updatingPct, total: 100, type: ProgressType.Linear })
-                .color(this.theme.primary)
+                .color(this.theme.actionPrimary)
                 .width('100%')
             }
             .width('100%')
           } else if (this.row.integrity === ModIntegrity.CORRUPT) {
             Text('文件已损坏（与模组源校验不一致）')
-              .fontSize(12).fontWeight(600).fontColor(this.theme.error)
+              .fontSize(12).fontWeight(600).fontColor(this.theme.errorText)
               .width('100%').margin({ bottom: 4 })
             Text('可从原始来源重新下载同一版本进行修复。')
               .fontSize(11).fontColor(this.theme.textHint)
@@ -192,7 +196,7 @@ export struct InstalledResourceItem {
                 Text('更新').fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
               }
               .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-              .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
+              .backgroundColor(this.theme.actionPrimary).alignItems(VerticalAlign.Center)
               .onClick(() => { this.onUpdate() })
               // 检查更新
               Row({ space: 4 }) {

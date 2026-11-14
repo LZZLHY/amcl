@@ -45,14 +45,16 @@ names = [
     'static bool schemaDispatchButton(',
     'static bool schemaUsesGroupPhases(',
     'static void schemaAdvanceGroupsLocked(',
-    'static bool schemaGroupPhase(', 'static void schemaGroupLastUp(',
+    'static bool schemaGroupPhase(', 'static void schemaBeginGroupGesture(',
+    'static void schemaCompleteGroupGesture(', 'static void schemaGroupLastUp(',
     'static void schemaTriggerFirstDown(', 'static void schemaTriggerLastUp(',
-    'static void schemaPollLongPressLocked(', 'static void schemaEmitWasd(', 'static void schemaPollWasdLatchLocked(',
+    'static void schemaPollLongPressLocked(', 'static bool schemaEmitWasd(', 'static void schemaPollWasdLatchLocked(',
     'static void schemaApplyWasd(', 'static void schemaJoystick(', 'static void schemaScrollMove(',
     'static bool schemaOwnsMenuButtonLocked(',
     'static void schemaPollTouchHoldsLocked(', 'static void schemaBeginTouchCandidate(',
     'static void schemaMoveTouchCandidate(', 'static void schemaFinishTouchCandidate(',
-    'static void schemaSwipeButtonLocked(', 'static SchemaFingerRole handleSchemaGrabbedTouch('
+    'static void schemaSwipeButtonLocked(', 'static SchemaFingerRole handleSchemaGrabbedTouch(',
+    'static bool schemaTouchUseHeldLocked('
 ]
 def definition(signature):
     """跳过同名的前置声明，必须取到真正带函数体的生产定义。"""

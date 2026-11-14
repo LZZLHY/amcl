@@ -4,6 +4,19 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(mc_ohos_native)
 
+# OHOS SDK 的公共链接 flags 默认带 -lunwind，会在每个 C++ .so 中先抽取静态
+# 展开器；即使已经依赖 libc++_shared，也会出现多份公开 _Unwind_* 和互不相见的
+# 动态 EH 状态。自加载映像登记必须由同一应用 provider 消费，不能靠隐藏符号掩盖
+# 内部仍在使用的第二份运行时。只在本工程的 shared STL 配置中移除该精确参数，
+# 并关闭编译器再次隐式添加 unwind 库；C++ ABI/EH 仍完整链接到 libc++_shared。
+# 不修改安装的 SDK、不修改其他并排工程，也不改变异常/RTTI 或优化选项。
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND OHOS_STL STREQUAL "c++_shared")
+    foreach(AMCL_ABI_LINK_FLAGS CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
+        string(REGEX REPLACE "(^|[ \t])-lunwind([ \t]|$)" " " AMCL_ABI_LINK_VALUE "${${AMCL_ABI_LINK_FLAGS}}")
+        set(${AMCL_ABI_LINK_FLAGS} "${AMCL_ABI_LINK_VALUE} --unwindlib=none")
+    endforeach()
+endif()
+
 set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 编译选项：是否包含验证测试代码（发布时可关闭）
@@ -454,6 +467,8 @@ option(AMCL_DESKTOP_NATIVE_GL_VALIDATE "Build a non-publishable desktop native G
 
 set(NAPI_SOURCES
     napi/napi_entry.cpp     # Init() 调度器（顺序契约见文件顶部）
+    napi/napi_audio.cpp     # 模组音频政策：同步拒绝，异步设备收敛
+    napi/napi_game_dialog.cpp # 游戏同步提示的异步UI回包，不在UI线程等待JVM
     napi/napi_helpers.cpp   # 共享类型转换工具（amcl::napi 命名空间）
     napi/napi_jvm.cpp       # JVM / GPU / 下载引擎 probe NAPI
     platform/native_gl.cpp
@@ -466,6 +481,12 @@ set(NAPI_SOURCES
     napi/napi_export.cpp    # 导出异步job；查询/取消/收敛后释放，不占ArkTS数据循环
     napi/napi_sideload_update.cpp # 受控自更新HDC桥（store为unsupported）
     napi/napi_tests.cpp     # MC_OHOS_BUILD_TESTS 验证测试（条件编译）
+    napi/napi_jdk_probe.cpp # TestHooks 的真实应用子进程/exec/动态库前置验证。
+    napi/jdk_java_qualification.cpp # TestHooks独立NCP内完整安装和真实JavaVM资格。
+    napi/jdk_process_qualification.cpp # TestHooks固定退出矩阵，核实NCP回调真实语义。
+    napi/jdk_audio_timing_qualification.cpp # TestHooks固定PCM观察真实回调/呈现时钟，不替代播放验收。
+    napi/jdk_capture_diagnostics.cpp # TestHooks短录音边界统计收口；普通产品编译为空。
+    napi/jdk_capture_native_qualification.cpp # TestHooks同格式NORMAL/FAST短录音对照。
 )
 
 # 平台模块（XComponent、触摸、GPU 信息、MG 配置、Vulkan 探针）
@@ -535,6 +556,8 @@ endif()
 # OpenAL Soft（真正的 3D 音频实现，OHAudio 后端）
 # 替代了之前的 openal_stub.c 空实现
 # 构建配置和 OHAudio 后端代码在 openal/ 目录中
+# 平台音频 owner 先建立目标；JNI 与 OpenAL adapter 只能绑定宿主发布的同一实例。
+add_subdirectory(audio ${CMAKE_CURRENT_BINARY_DIR}/audio)
 add_subdirectory(openal ${CMAKE_CURRENT_BINARY_DIR}/openal)
 
 # libjcocoa.so — java-objc-bridge JNI 空实现
@@ -699,7 +722,8 @@ target_link_libraries(amcl_vulkan_wsi PRIVATE libhilog_ndk.z.so)
 # 会话协调与只读观测可以被entry、GLFW、SDL消费，不能反向引用这些消费者的符号。
 add_library(amcl_graphics_runtime SHARED
     platform/graphics_runtime_binding.cpp platform/graphics_observation.cpp platform/graphics_backend_session.cpp
-    platform/graphics_egl_context.cpp platform/graphics_features.cpp platform/graphics_gl_lookup.cpp)
+    platform/graphics_egl_context.cpp platform/graphics_features.cpp platform/graphics_gl_lookup.cpp
+    platform/sdl_aux_runtime.cpp)
 target_include_directories(amcl_graphics_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(amcl_graphics_runtime PRIVATE cxx_std_20)
 target_compile_options(amcl_graphics_runtime PRIVATE -fvisibility=hidden -funwind-tables)
@@ -969,6 +993,11 @@ endif()
 # 主模块（libentry.so）
 # GL 翻译只在独立 GL host；entry 与 GLFW 通过物理 DSO 依赖共享该实现。
 # ============================================================
+# loader的权威线程槽必须由系统PT_TLS持有。SDK默认emutls通过pthread key管理，
+# 其清理可能先于最后C++/TSD回调，不能用作退出期仍有效的普通TLS身份。
+# 仅这个消费tls_thread_storage.h的TU切换；新增消费TU时必须遵守相同原生TLS合同。
+set_property(SOURCE jvm/elf_loader.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-emulated-tls)
+
 add_library(entry SHARED
     ${NAPI_SOURCES}
     ${PLATFORM_SOURCES}
@@ -1021,6 +1050,12 @@ endif()
 
 if(MC_OHOS_BUILD_TESTS)
     target_compile_definitions(entry PRIVATE MC_OHOS_BUILD_TESTS)
+    # 平台资格必须使用签名安装的真实 ELF 作为正例，再验证同字节数据目录副本。
+    # 两个 fixture 仅属于测试产品；PIE 保留 main/解释器，不能用共享库伪装 exec。
+    add_library(amcl_load_probe SHARED tests/jdk_load_probe.c)
+    add_executable(amcl_exec_probe tests/jdk_exec_probe.c)
+    set_target_properties(amcl_exec_probe PROPERTIES OUTPUT_NAME "libamcl_exec_probe" SUFFIX ".so")
+    target_link_libraries(entry PRIVATE libchild_process.so)
 endif()
 
 # 栈采样器开关传递给 libentry（jvm_common_args.cpp 据此决定是否补 PreserveFramePointer）
@@ -1032,17 +1067,41 @@ target_compile_definitions(entry PRIVATE AMCL_NATIVE_DESKTOP_ONLY=$<BOOL:${AMCL_
 target_compile_definitions(glfw PRIVATE AMCL_NATIVE_DESKTOP_ONLY=$<BOOL:${AMCL_NATIVE_DESKTOP_ONLY}> AMCL_DESKTOP_NATIVE_GL_VALIDATE=$<BOOL:${AMCL_DESKTOP_NATIVE_GL_VALIDATE}>)
 target_link_libraries(entry PRIVATE amcl_input_runtime libpasteboard.so libudmf.so libdeviceinfo_ndk.z.so amcl_vulkan_wsi amcl_window_host amcl_graphics_runtime)
 target_link_libraries(entry PRIVATE libz.so) # 有界 JNA ZIP 条目使用系统 raw-deflate/CRC 实现
+target_sources(entry PRIVATE audio_host_policy.cpp)
+# AccessToken 每次采集查询真实应用权限，不能使用 ArkTS 的旧快照授权录音。
+target_link_libraries(entry PRIVATE amcl_audio_runtime libability_access_control.so)
+# TinyFD与NAPI通过同一DT_NEEDED库共享队列；不借用跨DSO静态变量或环境裸指针。
+add_library(amcl_game_dialog SHARED platform/game_dialog.cpp)
+set_target_properties(amcl_game_dialog PROPERTIES CXX_STANDARD 17 CXX_VISIBILITY_PRESET hidden)
+target_compile_options(amcl_game_dialog PRIVATE -fvisibility-inlines-hidden)
+target_link_libraries(entry PRIVATE amcl_game_dialog)
 target_sources(entry PRIVATE platform/runtime_slot_store.cpp)
+# JavaSound的系统回调必须位于正常签名加载的宿主映像；共享POD/回调函数体也供独立CLI编译。
+# 不改变CFI编译/运行时策略，不向系统注册自加载函数，不增加音频线程或PCM复制层。
+target_sources(entry PRIVATE javasound/ohos_daudio_callbacks.c)
+# 显式arm的短录音诊断只在TestHooks中有实现；正常回调不附加采样统计分支。
+target_sources(entry PRIVATE javasound/ohos_capture_diagnostics.c)
+# 默认调试HAP通常使用-O0；实时PCM函数从已优化JDK移到宿主后仍需常规优化。
+# 只覆盖本C源的Debug优化级别，保留调试信息、系统CFI与Release配置的原选项。
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_source_files_properties(javasound/ohos_daudio_callbacks.c PROPERTIES COMPILE_FLAGS "-O2")
+    set_source_files_properties(javasound/ohos_capture_diagnostics.c PROPERTIES COMPILE_FLAGS "-O2")
+    set_source_files_properties(napi/jdk_capture_native_qualification.cpp PROPERTIES COMPILE_FLAGS "-O2")
+endif()
+# API24可选MIDI的系统回调同样由签名宿主执行；本C源只有POD/原子/sem_post，
+# 不静态引用OH_MIDI新符号，产品API20保持不变，provider仍由JDK控制线程动态选择。
+target_sources(entry PRIVATE javasound/midi_callbacks.c)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_source_files_properties(javasound/midi_callbacks.c PROPERTIES COMPILE_FLAGS "-O2")
+endif()
+# JDK 单槽安装、受限流式 ZIP 和内容地址字体配置；与现役 writer/use 协议共用。
+target_sources(entry PRIVATE platform/jdk_install_store.cpp platform/jdk_install_archive.cpp
+    platform/jdk_font_resources.cpp napi/napi_jdk_install.cpp)
 
 if(AMCL_ENABLE_SIDELOAD_UPDATE)
-    # 正常Hvigor入口通过环境传递完整路径，避免其arguments字符串保留字面引号。
-    # 独立Native验证仍可显式传入-DAMCL_HDC_CORE_ARCHIVE。
-    if(DEFINED ENV{AMCL_HDC_CORE_ARCHIVE})
-        set(AMCL_HDC_CORE_ARCHIVE "$ENV{AMCL_HDC_CORE_ARCHIVE}")
-    endif()
-    if(NOT EXISTS "${AMCL_HDC_CORE_ARCHIVE}")
-        message(FATAL_ERROR "Complete HDC archive missing; use build-hdc-core.mjs")
-    endif()
+    # 在导入静态库前核对 Hvigor 的路径身份；解析逻辑也供独立 CMake 回归直接执行。
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/AmclHdcArchive.cmake")
+    amcl_resolve_hdc_archive()
     add_library(amcl_hdc_core STATIC IMPORTED)
     set_target_properties(amcl_hdc_core PROPERTIES IMPORTED_LOCATION "${AMCL_HDC_CORE_ARCHIVE}")
     target_link_libraries(entry PRIVATE amcl_hdc_core)

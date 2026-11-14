@@ -1,4 +1,9 @@
 /**
+ * 活动记录外围的统计、错误提示和确认按钮使用对应状态前景色，配套已有状态浅底；
+ * 时间线、记录过滤、日志清理确认与专业日志阅读的配色和行为不在此调整。
+ */
+import { applyNativeTheme } from '../components/AppTheme';
+/**
  * DownloadHistoryPage.ets — 活动账本 V2（保留原路由名兼容旧入口）
  *
  * 从历史存储与账本读取真实活动，按本地日期分组，支持关键词与类别筛选。
@@ -28,6 +33,8 @@ import { formatDurationMs } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from '../components/AppIcon';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
+import { LayerRetreatPolicy, RetreatFrame, retreatLayerHeight, retreatLayerOffset,
+  retreatStableInset, retreatLeadItemHeight, retreatNeedsTopRestore } from '../components/LayerRetreatPolicy';
 
 // M3：会话快照 —— 判定日志是否还在保留窗口内 + 反查落点
 import { isReopenableRecord, resolveSessionSnapshot } from '../components/McSessionSnapshot';
@@ -40,7 +47,7 @@ import {
 
 import { ActivityAiCard } from '../components/ActivityAiCard';
 import { ActivityShareSheet } from '../components/ActivityShareSheet';
-import { DeviceProfile, centerSheetForLayout, detailSheetHeightForLayout, sheetWidthForLayout } from 'commons';
+import { DeviceProfile, DeviceForm, centerSheetForLayout, detailSheetHeightForLayout, sheetWidthForLayout } from 'commons';
 import { ActivityTimelineItem } from '../components/ActivityTimelineItem';
 import { AnimatedPillBar } from '../components/AnimatedPillBar';
 import { MotionSection } from '../components/MotionSection';
@@ -51,7 +58,7 @@ import { ActivityStoragePanel } from '../components/ActivityStoragePanel';
 import { activityStorageAlert } from 'commons';
 import { ActivityListDataSource, ActivityListRow } from '../components/ActivityListDataSource';
 import { ActivityFilter, ActivityDayGroup, ActivityDayStats, matchesActivity, groupActivities,
-  activityTodayStats, activityCategory, activityStatusLabel, isAbnormalActivity,
+  activityTodayStats, activityCategory, activityCategoryLabel, activityStatusLabel, isAbnormalActivity,
   ActivityStatusBand, activityStatusBands, activityClock, activityDisplayTitle } from '../components/ActivityUiModel';
 
 const TAG = 'DownloadHistory'
@@ -60,6 +67,8 @@ const ACTIVITY_FILTERS: ActivityFilter[] = [ActivityFilter.ALL, ActivityFilter.G
 @Entry
 @Component
 struct DownloadHistoryPage {
+  /** 独立账本页面消费同一已保存比例，手机分享与管理面板不另行固定高度。 */
+  @StorageProp('phoneSheetHeightPercent') private phoneSheetHeightPercent_: number = 80;
   @State records: DownloadHistoryRecord[] = []
   @State loaded: boolean = false
   /** 筛选、分组和概览只来自真实记录；读取失败不伪装为空列表。 */
@@ -76,6 +85,29 @@ struct DownloadHistoryPage {
   @State private selectedId: number = 0
   @State private readerFocused: boolean = false
   @State private hostVisible: boolean = true
+  /**
+   * 活动账本试点仅退让搜索下方的分类与统计，标题和搜索节点始终留在原父级。
+   * hidden为累计让出的vp高度；分类先消耗，统计后消耗，反向滑动按相反顺序恢复。
+   * 手动统计展开由overviewExpanded独立持有，不把用户偏好写进临时滚动状态。
+   */
+  @State private retreatHidden_: number = 0
+  /** 冻结的内容首占位，不跟随统计/分类收展；负值只用于新数据或窗口上下文重测。 */
+  @State private retreatAnchorInset_: number = -1
+  /** 整层端点与视觉动画分离；旧动画完成不能解除新动画的测量/命中保护。 */
+  @State private retreatAnimating_: boolean = false
+  @State private retreatHitHeight_: number = 0
+  private retreatAnimationEpoch_: number = 0
+  @State private retreatFilterHeight_: number = 0
+  @State private retreatOverviewHeight_: number = 0
+  /** 只在辅助区完全展开时评估列表是否超出一屏，收展过程不反复改变可滚资格。 */
+  private retreatScrollable_: boolean = false
+  private retreatSearchFocused_: boolean = false
+  private retreatViewportHeight_: number = 0
+  private retreatPolicy_: LayerRetreatPolicy = new LayerRetreatPolicy()
+  /** 只绑定左活动List；右侧日志工作区没有此控制器。 */
+  private retreatScroller_: Scroller = new Scroller()
+  private retreatReturning_: boolean = false
+  private retreatTouchActive_: boolean = false
   /** 路由隐藏/销毁撤销旧读取；在途返回或元数据变更合并为下一轮，不复用取消中的请求。 */
   private refreshGeneration_: number = 0
   private refreshAgain_: boolean = false
@@ -97,6 +129,8 @@ struct DownloadHistoryPage {
   @StorageProp('bottomRectHeight') bottomSafeHeight: number = 0
   /** 系统深浅色：变化时重算主题，跟随全局主题统一。 */
   @StorageProp('currentColorMode') @Watch('onColorModeChange') currentColorMode: number = 0
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('onColorModeChange') private appThemeRevision: number = 0;
   /** 正在上传的记录 key（startedAt 字符串）；非空表示该条上传中，UI 禁用按钮。 */
   @State uploadingKey: string = ''
   @State private clearing: boolean = false
@@ -118,8 +152,17 @@ struct DownloadHistoryPage {
   }
 
   /** 首次显示与路由返回共用同一刷新入口；在途防重和发送/导出保护仍由原刷新方法负责。 */
-  onPageShow(): void { this.hostVisible = true; this.refreshRecords() }
-  onPageHide(): void { this.hostVisible = false; this.refreshGeneration_++; this.refreshAgain_ = false; this.clearGeneration_++ }
+  onPageShow(): void { this.applyTheme_();  this.hostVisible = true; this.refreshRecords() }
+  onPageHide(): void {
+    this.retreatReturning_ = false
+    this.retreatTouchActive_ = false
+    this.hostVisible = false; this.refreshGeneration_++; this.refreshAgain_ = false; this.clearGeneration_++
+    // 离页不保留上一段手势的方向累计；业务读取与确认代次继续走原有退役路径。
+    this.retreatPolicy_.reset()
+    this.retreatSearchFocused_ = false
+    this.retreatAnimationEpoch_++
+    this.retreatAnimating_ = false
+  }
 
   /** 页面销毁即取消未完成只读投影，旧finally也不能在销毁后补发刷新。 */
   aboutToDisappear(): void { this.onPageHide() }
@@ -127,7 +170,8 @@ struct DownloadHistoryPage {
   private applyTheme_(): void {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
     let mode = this.prefManager.themeMode
-    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark))
+    this.theme = resolveTheme(mode, resolveIsDark(mode, systemIsDark), this.prefManager.themeAccent)
+    applyNativeTheme(this.theme);
   }
 
   onColorModeChange(): void {
@@ -141,6 +185,8 @@ struct DownloadHistoryPage {
   private async refreshRecords(): Promise<void> {
     if (!this.hostVisible || this.selectionBusy) return
     if (this.refreshing) { this.refreshAgain_ = true; return }
+    // 刷新属于显式的新内容上下文，恢复工具入口但不新建列表或改动数据读取流程。
+    this.resetRetreat_(true)
     const generation: number = ++this.refreshGeneration_
     const cancelled: () => boolean = (): boolean => !this.hostVisible || generation !== this.refreshGeneration_
     this.refreshing = true
@@ -185,6 +231,156 @@ struct DownloadHistoryPage {
     else { this.selectedRecords = []; this.selectedId = 0 }
   }
 
+  /**
+   * 恢复临时辅助区并丢弃旧方向。query/filter/刷新/尺寸变化还需重新评估短内容，
+   * 普通获焦或统计手动展开只复位展示，不修改已经选中的分类、查询或活动。
+   */
+  private resetRetreat_(recheckContent: boolean = false): void {
+    this.retreatReturning_ = false
+    this.retreatTouchActive_ = false
+    this.retreatAnimationEpoch_++
+    this.retreatAnimating_ = false
+    this.retreatHitHeight_ = 0
+    this.retreatHidden_ = 0
+    this.retreatPolicy_.reset()
+    if (recheckContent) {
+      this.retreatScrollable_ = false
+      this.retreatAnchorInset_ = -1
+    }
+  }
+
+  /** 当前需要释放的自然布局高度包含各层尾部间距，不把隐藏层间的空白留在列表上方。 */
+  private retreatTotalHeight_(): number {
+    return this.retreatFilterHeight_ + this.retreatOverviewHeight_
+  }
+
+  /** 本地触点观察仅用于排除拖动中的旧stop事件，不抢占任何手势。 */
+  private observeRetreatTouch_(event: TouchEvent): void {
+    if (event.type === TouchType.Down) {
+      this.retreatPolicy_.cancelQueuedContinuation()
+      this.retreatTouchActive_ = true
+    }
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      this.retreatTouchActive_ = false
+      this.retreatPolicy_.cancelQueuedContinuation()
+    }
+  }
+
+  private observeRetreatStop_(): void {
+    if (!this.retreatTouchActive_) this.retreatPolicy_.cancelQueuedContinuation()
+    this.restoreRetreatAtStart_(!this.retreatTouchActive_)
+  }
+
+  private observeRetreatPosition_(offset: number, state: ScrollState): void {
+    if (!this.hostVisible) return
+    if (offset < -0.01) this.retreatReturning_ = true
+    else if (state === ScrollState.Scroll && offset > 0.01) this.retreatReturning_ = false
+    this.restoreRetreatAtStart_()
+  }
+
+  /** 真实到顶直接补全自动恢复，保留手动统计偏好、冻结首占位与原记录身份。 */
+  private restoreRetreatAtStart_(settled: boolean = false): boolean {
+    if (!this.hostVisible || !this.loaded || this.groups.length === 0 || this.retreatHidden_ <= 0
+      || (this.readerFocused && this.viewportWidth >= 840)) return false
+    try {
+      const position: OffsetResult = this.retreatScroller_.currentOffset()
+      if (!position || !retreatNeedsTopRestore(this.retreatHidden_, position.yOffset,
+        this.retreatReturning_, settled && !this.retreatTouchActive_)) return false
+    } catch (_) { return false }
+    this.retreatPolicy_.reset()
+    this.animateRetreatTo_(0)
+    return true
+  }
+
+  /** 未浏览前使用自然工具区高度；首次实际滚动后该内容坐标基准保持不变。 */
+  private retreatListInset_(): number {
+    return retreatStableInset(this.retreatAnchorInset_, this.retreatTotalHeight_())
+  }
+
+  /** 显式统计开关也先冻结，恢复/收起工具区不会把正在看的记录推走。 */
+  private freezeRetreatAnchor_(): void {
+    if (this.retreatAnchorInset_ < 0 && this.retreatFilterHeight_ > 0 && this.retreatOverviewHeight_ > 0) {
+      this.retreatAnchorInset_ = this.retreatListInset_()
+    }
+  }
+
+  /** 完全退场的覆盖层不参与命中，显示时阻止下面的记录透出或被误点。 */
+  private retreatOverlayHeight_(hidden: number = this.retreatHidden_): number {
+    return retreatLayerHeight(this.retreatFilterHeight_, hidden, 0)
+      + retreatLayerHeight(this.retreatOverviewHeight_, hidden, this.retreatFilterHeight_)
+  }
+
+  private retreatInputEnabled_(): boolean {
+    return this.hostVisible && this.loaded && this.groups.length > 0 && this.retreatAnchorInset_ >= 0
+      && this.retreatScrollable_ && !this.refreshing && !this.selectionBusy && !this.retreatSearchFocused_
+      && !this.showQuickShare && !this.showStorage && (!this.readerFocused || this.viewportWidth < 840)
+  }
+
+  /**
+   * 内层保持自然高度，外层只裁剪并让出占位。尺寸回调只写真实变化，避免滚动每帧
+   * 重置进度；完全展开且整层动画已结束后才重新接受统计/字体变化的自然高度。
+   */
+  private measureRetreatLayer_(filter: boolean, area: Area): void {
+    // 裁剪中的测量已受父层可见高度约束，不能把它回写成自然高而缩掉退让容量。
+    if (this.retreatHidden_ > 0 || this.retreatAnimating_) return
+    const measured: number = Number(area.height)
+    if (!Number.isFinite(measured) || measured <= 0) return
+    const previous: number = filter ? this.retreatFilterHeight_ : this.retreatOverviewHeight_
+    if (Math.abs(previous - measured) <= 0.5) return
+    if (filter) this.retreatFilterHeight_ = measured
+    else this.retreatOverviewHeight_ = measured
+    this.retreatHidden_ = Math.min(this.retreatHidden_, this.retreatTotalHeight_())
+  }
+
+  /**
+   * 当前可见首末行只在完全展开的参考视口中参与短内容判断。保守地将首尾同时可见
+   * 的列表视作短内容，确保空态、短历史与其分类/刷新入口始终可达；隐藏期间不反馈
+   * 当前扩大的视口，避免可滚资格与头部高度互相驱动而振荡。
+   */
+  private updateRetreatScrollable_(start: number, end: number): void {
+    if (this.retreatHidden_ > 0) return
+    const count: number = this.activityRows_.totalCount()
+    // 第0项是固定内容首占位，真实LazyForEach行索引整体加1。
+    this.retreatScrollable_ = count > 0 && (start > 1 || end < count)
+  }
+
+  /**
+   * 只在左侧活动List观察方向段并触发一次整层平移，列表原始位移始终完整放行。
+   * 完全隐藏时仍由同一可见List接收反向输入，右侧详情与Sheet没有这一绑定。
+   * 初载/刷新、搜索编辑、分享/管理覆盖层及专业阅读期间均不抢占正文位移。
+   */
+  private retreatScrollFrame_(offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult {
+    if (state === ScrollState.Scroll) {
+      if (offset < -0.01) this.retreatReturning_ = true
+      else if (offset > 0.01) this.retreatReturning_ = false
+      if (offset < -0.01 && this.restoreRetreatAtStart_()) return { offsetRemain: offset }
+    }
+    if (state === ScrollState.Scroll) this.freezeRetreatAnchor_()
+    const frame: RetreatFrame = this.retreatPolicy_.step(offset, this.retreatHidden_,
+      [this.retreatFilterHeight_, this.retreatOverviewHeight_], this.retreatInputEnabled_(), state === ScrollState.Scroll)
+    this.animateRetreatTo_(frame.hidden)
+    return { offsetRemain: frame.offsetRemain }
+  }
+
+  /** 普通逐层和到顶补全复用同一动画世代，旧完成不能覆盖新的上滑方向。 */
+  private animateRetreatTo_(next: number): void {
+    if (next !== this.retreatHidden_) {
+      const epoch: number = ++this.retreatAnimationEpoch_
+      this.retreatHitHeight_ = Math.max(this.retreatHitHeight_, this.retreatOverlayHeight_(), this.retreatOverlayHeight_(next))
+      this.retreatAnimating_ = true
+      this.getUIContext().animateTo({ duration: UiMotion.reduced() ? 0 : 180, curve: Curve.EaseOut,
+        onFinish: (): void => {
+          if (epoch !== this.retreatAnimationEpoch_) return
+          this.retreatAnimating_ = false
+          this.retreatHitHeight_ = 0
+          if (this.restoreRetreatAtStart_()) return
+          const continuation: RetreatFrame = this.retreatPolicy_.finishTransition(this.retreatHidden_,
+            [this.retreatFilterHeight_, this.retreatOverviewHeight_], this.retreatInputEnabled_(), this.retreatTouchActive_)
+          this.animateRetreatTo_(continuation.hidden)
+        } }, (): void => { this.retreatHidden_ = next })
+    }
+  }
+
   /** 平板侧栏只切换选中活动，手机则进入相同工作区的路由包装。 */
   private openOverview_(record: DownloadHistoryRecord): void {
     if (this.selectionBusy) { this.safeToast_('正在发送或导出，请稍后切换活动'); return }
@@ -225,9 +421,9 @@ struct DownloadHistoryPage {
     this.getUIContext().getPromptAction().showActionMenu({
       title: '管理活动账本 · ' + (this.ledgerBytes < 0 ? '占用暂不可读' : '日志占用 ' + formatLogBytes(this.ledgerBytes)),
       buttons: [
-        { text: '分享记录与撤回', color: this.theme.primary as string },
-        { text: '清空本地记录与日志', color: this.theme.error as string },
-        { text: '日志占用、保留与空间提醒', color: this.theme.primary as string },
+        { text: '分享记录与撤回', color: this.theme.actionText as string },
+        { text: '清空本地记录与日志', color: this.theme.errorText as string },
+        { text: '日志占用、保留与空间提醒', color: this.theme.actionText as string },
       ],
     }).then((result: promptAction.ActionMenuSuccessResponse): void => {
       if (result.index === 0) this.getUIContext().getRouter().pushUrl({ url: 'pages/LogShareHistoryPage' })
@@ -266,9 +462,9 @@ struct DownloadHistoryPage {
   private recordMenu_(record: DownloadHistoryRecord): void {
     if (this.selectionBusy) return
     this.getUIContext().getPromptAction().showActionMenu({ title: this.cardTitle_(record), buttons: [
-      { text: '自定义分享与预览', color: this.theme.primary as string },
-      { text: '查看原始日志', color: this.theme.primary as string },
-      { text: '查看活动详情', color: this.theme.primary as string },
+      { text: '自定义分享与预览', color: this.theme.actionText as string },
+      { text: '查看原始日志', color: this.theme.actionText as string },
+      { text: '查看活动详情', color: this.theme.actionText as string },
     ] }).then((result: promptAction.ActionMenuSuccessResponse): void => {
       if (result.index === 0) { this.shareRecords = [record]; this.shareMode = 'advanced'; this.showQuickShare = true }
       else if (result.index === 1) this.openActivityLog_(record)
@@ -279,8 +475,8 @@ struct DownloadHistoryPage {
   private ledgerShareOptions_(): SheetOptions {
     const form = DeviceProfile.form(); const breakpoint = DeviceProfile.breakpointOf(this.viewportWidth)
     const center: boolean = centerSheetForLayout(form, breakpoint)
-    const height: number = detailSheetHeightForLayout(form, breakpoint, this.bottomSafeHeight, this.topSafeHeight)
-    return { height: this.shareMode === 'quick' ? Math.min(height, 440) : height,
+    const height: number = detailSheetHeightForLayout(form, breakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_)
+    return { height: form !== DeviceForm.PHONE && this.shareMode === 'quick' ? Math.min(height, 440) : height,
       width: sheetWidthForLayout(form, breakpoint), preferType: center ? SheetType.CENTER : SheetType.BOTTOM,
       // 内容组件的统一原生标题负责 X；消失收口仍在本宿主，拖拽/系统返回也会执行。
       showClose: false, dragBar: !center, backgroundColor: this.theme.bgPrimary,
@@ -356,13 +552,13 @@ struct DownloadHistoryPage {
       const message: string = '将删除本地活动记录和已保存的活动日志。\n\n'
         + '当前记录：' + this.records.length + ' 条\n'
         + '日志占用：' + (this.ledgerBytes < 0 ? '暂不可读' : formatLogBytes(this.ledgerBytes)) + '\n\n'
-        + '在线分享链接不会被撤回，请在“日志分享记录”中单独处理。'
+        + '在线分享仍会保留；清理后可在“日志分享记录”中查看链接或单独撤回。'
       const result: promptAction.ShowDialogSuccessResponse = await this.getUIContext().getPromptAction().showDialog({
         title: '清空本地活动记录？',
         message: message,
         buttons: [
-          { text: '取消', color: this.theme.primary as string },
-          { text: '清空本地记录', color: this.theme.error as string },
+          { text: '取消', color: this.theme.actionText as string },
+          { text: '清空本地记录', color: this.theme.errorText as string },
         ],
       })
       accepted = result.index === 1
@@ -401,7 +597,7 @@ struct DownloadHistoryPage {
     if (status === 'success') return this.theme.successText
     if (status === 'failed' || status === 'crashed') return this.theme.errorText
     if (status === 'aborted' || status === 'interrupted') return this.theme.warningText
-    if (status === 'running') return this.theme.primary
+    if (status === 'running') return this.theme.actionText
     return this.theme.textHint
   }
 
@@ -436,17 +632,8 @@ struct DownloadHistoryPage {
 
   /** 右上角标签：下载/安装沿用加载器标签；其余显示类别名。 */
   private categoryTag_(record: DownloadHistoryRecord): string {
-    let c = this.cat_(record)
-    if (c === ActivityCategory.LAUNCH) return '启动'
-    if (c === ActivityCategory.REPAIR) return '修复'
-    if (c === ActivityCategory.JDK) return 'JDK'
-    if (c === ActivityCategory.APP_UPDATE) return '应用更新'
-    if (c === ActivityCategory.APP_UPDATE_DOWNLOAD) return '更新包下载'
-    if (c === ActivityCategory.ACCOUNT) return '账户'
-    if (c === ActivityCategory.MODPACK) return '整合包'
-    if (c === ActivityCategory.GAME_EXPORT) return '游戏包导出'
-    if (c === ActivityCategory.MOD_INSTALL) return '安装'
-    return this.loaderTag(record)
+    const category = this.cat_(record)
+    return category === ActivityCategory.DOWNLOAD ? this.loaderTag(record) : activityCategoryLabel(category)
   }
 
   /** 卡片主标题：优先 title，回退 versionName。 */
@@ -478,7 +665,8 @@ struct DownloadHistoryPage {
   build() {
     Column() {
       // 标题菜单只转交既有管理操作；账本分栏和嵌入详情的生命周期仍由原页面持有。
-      ImmersiveTitleScaffold({ title: '活动账本', subtitle: '启动、下载与排查记录', titleId: 'activity-records-title',
+      // 用途已由分类和记录列表表达，标题下不再常驻一行解释文字。
+      ImmersiveTitleScaffold({ title: '活动账本', titleId: 'activity-records-title',
         theme: this.theme, surfaceColor: this.theme.bgPrimary, topSafeHeight: this.topSafeHeight,
         backLabel: '返回设置', menuActions: [{ id: 'manage-ledger', label: '管理', enabled: !this.selectionBusy }],
         onBack: (): void => { this.getUIContext().getRouter().back(); },
@@ -489,14 +677,23 @@ struct DownloadHistoryPage {
       Column().width(0).height(0)
         .bindSheet(this.showStorage, this.Storage_(), this.storageSheetOptions_())
     }.width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
-      .onAreaChange((_previous: Area, current: Area) => { this.viewportWidth = Number(current.width) })
+      .onAreaChange((_previous: Area, current: Area) => {
+        const width: number = Number(current.width)
+        const height: number = Number(current.height)
+        // 页面尺寸变化才废弃旧测量上下文；辅助层收展不改变页面本身尺寸。
+        if (Math.abs(width - this.viewportWidth) > 0.5 || Math.abs(height - this.retreatViewportHeight_) > 0.5) {
+          this.resetRetreat_(true)
+        }
+        this.viewportWidth = width
+        this.retreatViewportHeight_ = height
+      })
       .bindSheet(this.showQuickShare, this.LedgerShare_(), this.ledgerShareOptions_())
   }
 
   /** 管理和快捷分享使用不同的稳定锚点，避免对同一元素重复 bindSheet 覆盖前一个弹层。 */
   private storageSheetOptions_(): SheetOptions {
     const options: SheetOptions = this.ledgerShareOptions_()
-    options.height = '85%'
+    if (DeviceProfile.form() !== DeviceForm.PHONE) options.height = '85%'
     options.onDisappear = (): void => {
       this.showStorage = false
       if (this.pendingStorageActivity > 0) {
@@ -524,23 +721,150 @@ struct DownloadHistoryPage {
         Text('今天 · ' + this.stats.total + ' 条').fontSize(13).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1)
         if (this.stats.failed > 0) { Text(this.stats.failed + ' 次失败').fontSize(12).fontColor(this.theme.errorText) }
         Button(this.overviewExpanded ? '收起' : '统计').height(44).fontSize(12)
-          .backgroundColor(Color.Transparent).fontColor(this.theme.primary).onClick(() => {
+          .backgroundColor(Color.Transparent).fontColor(this.theme.actionText).onClick(() => {
+            this.freezeRetreatAnchor_()
+            // 明确的统计操作先完整显示辅助区；只改变原统计偏好，不借用退让量保存选择。
+            this.resetRetreat_()
             // 小块统计展开只使用有界时长；系统减弱动画时立即呈现。
             this.getUIContext().animateTo({ duration: UiMotion.reduced() ? 0 : 180, curve: Curve.EaseOut }, (): void => {
               this.overviewExpanded = !this.overviewExpanded
             })
           })
-        Button() { AppIcon({ name: AppIconName.Refresh, iconSize: 16, color: this.theme.primary }) }
+        Button() { AppIcon({ name: AppIconName.Refresh, iconSize: 16, color: this.theme.actionText }) }
           .width(44).height(44).backgroundColor(Color.Transparent).accessibilityText('刷新活动账本')
           .enabled(!this.refreshing && !this.selectionBusy).onClick(() => { this.refreshRecords() })
       }.width('100%')
       if (this.overviewExpanded) {
         Row({ space: 12 }) {
-          Text(this.stats.completed + ' 已完成').fontSize(13).fontColor(this.theme.success)
-          Text(this.stats.interrupted + ' 中断/取消').fontSize(13).fontColor(this.theme.warning)
+          Text(this.stats.completed + ' 已完成').fontSize(13).fontColor(this.theme.successText)
+          Text(this.stats.interrupted + ' 中断/取消').fontSize(13).fontColor(this.theme.warningText)
         }.width('100%').padding({ bottom: 8 })
       }
     }.width('100%').padding({ left: 4, right: 0 })
+  }
+
+  /**
+   * 统计层位于搜索下方但最后退让；12vp尾距属于本层自然高度，完全收起不留下空行。
+   * 裁剪期间整层暂停命中与读屏，避免只剩半个刷新按钮却仍可被点击或焦点选中。
+   */
+  @Builder
+  private RetreatOverview_() {
+    Column() {
+      Column() {
+        MotionSection({ order: 0 }) { this.TodayOverview_() }
+      }.width('100%').padding({ bottom: 12 }).flexShrink(0)
+        .height((this.retreatAnimating_ || this.retreatHidden_ > 0) && this.retreatOverviewHeight_ > 0
+          ? this.retreatOverviewHeight_ : LayoutPolicy.fixAtIdealSize)
+        .constraintSize({ minHeight: this.retreatAnimating_ || this.retreatHidden_ > 0 ? this.retreatOverviewHeight_ : 0 })
+        .translate({ y: retreatLayerOffset(this.retreatOverviewHeight_, this.retreatHidden_, this.retreatFilterHeight_) })
+        .renderFit(RenderFit.TOP_LEFT)
+        .onAreaChange((_previous: Area, current: Area) => { this.measureRetreatLayer_(false, current) })
+    }.width('100%')
+      .height(this.retreatOverviewHeight_ > 0
+        ? retreatLayerHeight(this.retreatOverviewHeight_, this.retreatHidden_, this.retreatFilterHeight_) : LayoutPolicy.fixAtIdealSize)
+      .clip(true)
+      .enabled(!this.retreatAnimating_ && this.retreatHidden_ <= this.retreatFilterHeight_)
+      .accessibilityLevel(!this.retreatAnimating_ && this.retreatHidden_ <= this.retreatFilterHeight_ ? 'auto' : 'no-hide-descendants')
+  }
+
+  /** 分类先退让，恢复时先显示统计再找回分类；原筛选值和回调由本页持续持有。 */
+  @Builder
+  private RetreatFilters_() {
+    Column() {
+      Column() {
+        AnimatedPillBar({ labels: ['全部', '游戏', '下载', '导出', '异常'], theme: this.theme, filled: false,
+          selectedIndex: ACTIVITY_FILTERS.indexOf(this.activeFilter), disabled: this.selectionBusy,
+          onSelect: (index: number): void => {
+            this.resetRetreat_(true)
+            this.activeFilter = ACTIVITY_FILTERS[index]
+            this.updateGroups_()
+          } })
+      }.width('100%').padding({ bottom: 12 }).flexShrink(0)
+        .height((this.retreatAnimating_ || this.retreatHidden_ > 0) && this.retreatFilterHeight_ > 0
+          ? this.retreatFilterHeight_ : LayoutPolicy.fixAtIdealSize)
+        .constraintSize({ minHeight: this.retreatAnimating_ || this.retreatHidden_ > 0 ? this.retreatFilterHeight_ : 0 })
+        .translate({ y: retreatLayerOffset(this.retreatFilterHeight_, this.retreatHidden_, 0) })
+        .renderFit(RenderFit.TOP_LEFT)
+        .onAreaChange((_previous: Area, current: Area) => { this.measureRetreatLayer_(true, current) })
+    }.width('100%')
+      .height(this.retreatFilterHeight_ > 0
+        ? retreatLayerHeight(this.retreatFilterHeight_, this.retreatHidden_, 0) : LayoutPolicy.fixAtIdealSize)
+      .clip(true).enabled(!this.retreatAnimating_ && this.retreatHidden_ <= 0)
+      .accessibilityLevel(!this.retreatAnimating_ && this.retreatHidden_ <= 0 ? 'auto' : 'no-hide-descendants')
+  }
+
+  /** 左侧记录使用固定视口；统计与分类覆盖在上面，右侧详情不在此Builder。 */
+  @Builder
+  private RetreatLedgerResults_() {
+    // List的几何视口固定；辅助区仅作为局部覆盖层收展。
+    Stack({ alignContent: Alignment.TopStart }) {
+    if (this.groups.length === 0) {
+      Column({ space: 16 }) {
+        AppIcon({ name: AppIconName.History, iconSize: 40, color: this.theme.actionText })
+        Text(this.records.length === 0 ? '故事，从一次启动开始' : '没有匹配的活动')
+          .fontSize(16).fontWeight(600).fontColor(this.theme.textPrimary)
+        Text(this.records.length === 0 ? '下载、启动、安装和修复等活动会自动出现在这里。' : '试试其他关键词或清除筛选条件。')
+          .fontSize(12).fontColor(this.theme.textSecondary).textAlign(TextAlign.Center)
+        if (this.records.length > 0) {
+          Button('清除筛选').height(44).onClick(() => {
+            this.resetRetreat_(true)
+            this.query = ''; this.activeFilter = ActivityFilter.ALL; this.updateGroups_()
+          })
+        }
+      }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+        .padding({ left: 20, right: 20, top: this.retreatListInset_() + 20, bottom: 20 })
+    } else {
+      List({ space: 8, scroller: this.retreatScroller_ }) {
+        // 固定声明的首项随真实内容滚动，收展期间不改高度或原数据源的key。
+        ListItem() { Column().width('100%').height('100%') }
+          .height(retreatLeadItemHeight(this.retreatListInset_(), 8))
+          .id('activity-retreat-content-inset').focusable(false)
+          .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+        LazyForEach(this.activityRows_, (row: ActivityListRow) => {
+          ListItem() {
+            if (row.header) {
+            Row({ space: 8 }) {
+              Text(row.groupLabel).fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
+              Text(row.groupCount + ' 条').fontSize(12).fontColor(this.theme.textSecondary)
+              Divider().layoutWeight(1).color(this.theme.divider)
+            }.width('100%').padding({ top: 12, bottom: 4 })
+            } else {
+              MotionSection({ order: row.indexInGroup + 1, animateEntrance: row.groupIndex === 0 && row.indexInGroup < 5 }) {
+                ActivityTimelineItem({ time: activityClock(row.record.startedAt), color: this.statusBadgeColor(row.record.status),
+                  last: row.lastInGroup, theme: this.theme }) { this.RecordCard(row.record) }
+              }
+            }
+          }
+        }, (row: ActivityListRow): string => row.key)
+      }.width('100%').height('100%').scrollBar(BarState.Auto).cachedCount(4).id('activity-records-scroll')
+        // 退让扩大视口后可能恰好容纳全部记录，仍保留结果区的反向恢复输入。
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .onScrollStart(() => {
+          if (!this.retreatAnimating_) this.retreatPolicy_.reset()
+        })
+        .onScrollFrameBegin((offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult => {
+          return this.retreatScrollFrame_(offset, state)
+        })
+        .onTouch((event: TouchEvent) => { this.observeRetreatTouch_(event) })
+        .onReachStart(() => { this.restoreRetreatAtStart_() })
+        .onDidScroll((offset: number, state: ScrollState) => { this.observeRetreatPosition_(offset, state) })
+        .onScrollStop(() => { this.observeRetreatStop_() })
+        .onScrollIndex((start: number, end: number): void => { this.updateRetreatScrollable_(start, end) })
+    }
+      Stack({ alignContent: Alignment.TopStart }) {
+        Column() {
+          this.RetreatOverview_()
+          this.RetreatFilters_()
+        }.width('100%').backgroundColor(this.theme.bgPrimary).clip(true)
+        if (this.retreatAnimating_ && this.retreatHitHeight_ > 0) {
+          Column().width('100%').height(this.retreatHitHeight_).hitTestBehavior(HitTestMode.Block)
+        }
+      }.id('activity-retreat-overlay').width('100%')
+        .height(this.retreatAnimating_ ? this.retreatHitHeight_
+          : (this.retreatTotalHeight_() > 0 ? this.retreatOverlayHeight_() : LayoutPolicy.fixAtIdealSize))
+        .clip(true)
+        .hitTestBehavior(this.retreatAnimating_ || this.retreatOverlayHeight_() > 0 ? HitTestMode.Default : HitTestMode.None)
+    }.id('activity-retreat-viewport').width('100%').layoutWeight(1).clip(true)
   }
 
   /** 标题独占整行，状态与快捷操作放在下一行，长版本名不再被两枚操作按钮挤窄。 */
@@ -557,7 +881,7 @@ struct DownloadHistoryPage {
           }
           if ((record.parentActivityId ?? 0) > 0) {
             Text(record.relation === 'retry' ? '重试记录' : record.relation === 'graphics-recovery' ? '图形恢复尝试' : '关联的子任务')
-              .fontSize(11).fontColor(this.theme.primary).width('100%')
+              .fontSize(11).fontColor(this.theme.actionText).width('100%')
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').constraintSize({ minHeight: 44 }).padding(0).borderRadius(0)
@@ -587,7 +911,7 @@ struct DownloadHistoryPage {
       }.width('100%')
     }.width('100%').padding({ left: 12, right: 8, top: 6, bottom: 6 }).borderRadius(12)
       .backgroundColor(this.viewportWidth >= 840 && this.selectedId === record.startedAt ? this.theme.primaryLight : this.theme.bgCard)
-      .border({ width: { left: 3 }, color: this.viewportWidth >= 840 && this.selectedId === record.startedAt ? this.theme.primary : Color.Transparent })
+      .border({ width: { left: 3 }, color: this.viewportWidth >= 840 && this.selectedId === record.startedAt ? this.theme.actionText : Color.Transparent })
       .alignItems(HorizontalAlign.Start)
   }
 
@@ -597,18 +921,18 @@ struct DownloadHistoryPage {
     Column({ space: 12 }) {
       if (this.loadError.length > 0 || this.clearError.length > 0) {
         Row({ space: 12 }) {
-          Text(this.loadError || this.clearError).fontSize(12).fontColor(this.theme.error).layoutWeight(1)
+          Text(this.loadError || this.clearError).fontSize(12).fontColor(this.theme.errorText).layoutWeight(1)
           Button('重试').height(44).enabled(!this.refreshing).onClick(() => { this.refreshRecords() })
         }.width('100%').padding(12).borderRadius(16).backgroundColor(this.theme.errorBg)
       }
       if (!this.loaded && this.refreshing) {
         Column({ space: 12 }) {
-          LoadingProgress().width(32).height(32).color(this.theme.primary)
+          LoadingProgress().width(32).height(32).color(this.theme.actionText)
           Text('正在读取本地活动…').fontSize(14).fontColor(this.theme.textSecondary)
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       } else if (!this.loaded && this.loadError.length > 0) {
         Column({ space: 12 }) {
-          AppIcon({ name: AppIconName.Warning, iconSize: 36, color: this.theme.warning })
+          AppIcon({ name: AppIconName.Warning, iconSize: 36, color: this.theme.warningText })
           Text('暂时无法读取活动账本').fontSize(16).fontColor(this.theme.textPrimary)
           Text('读取恢复前不会把它显示为空账本。').fontSize(12).fontColor(this.theme.textSecondary)
           Button('重新读取').height(44).onClick(() => { this.refreshRecords() })
@@ -616,50 +940,31 @@ struct DownloadHistoryPage {
       } else {
         Row({ space: 20 }) {
           if (!this.readerFocused || this.viewportWidth < 840) {
-          Column({ space: 12 }) {
-            MotionSection({ order: 0 }) { this.TodayOverview_() }
-            if (this.storageAlertBytes > 0 && this.ledgerBytes >= this.storageAlertBytes) {
-              Button('日志占用已达到提醒阈值 · 查看').height(44).fontSize(12).fontColor(this.theme.warning)
-                .backgroundColor(this.theme.bgCard).onClick(() => { this.showStorage = true })
-            }
-            TextInput({ placeholder: '搜索活动、版本或错误摘要', text: this.query })
+          // 搜索是左列表的固定首节点；只调整其后的辅助层，不改标题宿主或右侧工作区。
+          Column({ space: 0 }) {
+            TextInput({ placeholder: '搜索活动、版本或错误摘要', text: this.query }).caretColor(this.theme.actionText)
+              .id('activity-records-search')
               .height(44).fontSize(13).backgroundColor(this.theme.bgCard).borderRadius(12)
-              .enabled(!this.selectionBusy)
-              .onChange((value: string): void => { if (!this.selectionBusy) { this.query = value; this.updateGroups_() } })
-            AnimatedPillBar({ labels: ['全部', '游戏', '下载', '导出', '异常'], theme: this.theme, filled: false,
-              selectedIndex: ACTIVITY_FILTERS.indexOf(this.activeFilter), disabled: this.selectionBusy,
-              onSelect: (index: number): void => { this.activeFilter = ACTIVITY_FILTERS[index]; this.updateGroups_() } })
-            if (this.groups.length === 0) {
-              Column({ space: 16 }) {
-                AppIcon({ name: AppIconName.History, iconSize: 40, color: this.theme.primary })
-                Text(this.records.length === 0 ? '故事，从一次启动开始' : '没有匹配的活动')
-                  .fontSize(16).fontWeight(600).fontColor(this.theme.textPrimary)
-                Text(this.records.length === 0 ? '下载、启动、安装和修复等活动会自动出现在这里。' : '试试其他关键词或清除筛选条件。')
-                  .fontSize(12).fontColor(this.theme.textSecondary).textAlign(TextAlign.Center)
-                if (this.records.length > 0) {
-                  Button('清除筛选').height(44).onClick(() => { this.query = ''; this.activeFilter = ActivityFilter.ALL; this.updateGroups_() })
+              .margin({ bottom: 12 }).enabled(!this.selectionBusy)
+              .onFocus(() => {
+                this.retreatSearchFocused_ = true
+                this.resetRetreat_()
+              })
+              .onBlur(() => { this.retreatSearchFocused_ = false; this.retreatPolicy_.reset() })
+              .onChange((value: string): void => {
+                if (!this.selectionBusy) {
+                  this.resetRetreat_(true)
+                  this.query = value
+                  this.updateGroups_()
                 }
-              }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).padding(20)
-            } else {
-              List({ space: 8 }) {
-                LazyForEach(this.activityRows_, (row: ActivityListRow) => {
-                  ListItem() {
-                    if (row.header) {
-                    Row({ space: 8 }) {
-                      Text(row.groupLabel).fontSize(12).fontWeight(600).fontColor(this.theme.textSecondary)
-                      Text(row.groupCount + ' 条').fontSize(12).fontColor(this.theme.textSecondary)
-                      Divider().layoutWeight(1).color(this.theme.divider)
-                    }.width('100%').padding({ top: 12, bottom: 4 })
-                    } else {
-                      MotionSection({ order: row.indexInGroup + 1, animateEntrance: row.groupIndex === 0 && row.indexInGroup < 5 }) {
-                        ActivityTimelineItem({ time: activityClock(row.record.startedAt), color: this.statusBadgeColor(row.record.status),
-                          last: row.lastInGroup, theme: this.theme }) { this.RecordCard(row.record) }
-                      }
-                    }
-                  }
-                }, (row: ActivityListRow): string => row.key)
-              }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).cachedCount(4).id('activity-records-scroll')
+              })
+            // 空间提醒是实际问题入口，留在退让层外；不存在时不额外占位。
+            if (this.storageAlertBytes > 0 && this.ledgerBytes >= this.storageAlertBytes) {
+              Button('日志占用已达到提醒阈值 · 查看').height(44).fontSize(12).fontColor(this.theme.warningText)
+                .margin({ bottom: 12 }).backgroundColor(this.theme.bgCard)
+                .onClick(() => { this.resetRetreat_(); this.showStorage = true })
             }
+            this.RetreatLedgerResults_()
             // 最后一个子节点就是可伸展的列表/空态，底部不再保留 44vp 操作行与 16vp 间隔。
           }.width(this.viewportWidth >= 840 ? 320 : '100%').height('100%')
           }
@@ -671,7 +976,7 @@ struct DownloadHistoryPage {
                   // 导出结果保存在私有任务文件，不要求存在日志账本才能重入。
                   // 宽窗自动选中行仅展示历史摘要；用户点击按钮后读取准确任务结果。
                   Column({ space: 16 }) {
-                    AppIcon({ name: AppIconName.Export, iconSize: 32, color: this.theme.primary })
+                    AppIcon({ name: AppIconName.Export, iconSize: 32, color: this.theme.actionText })
                     Text(this.cardTitle_(selected)).fontSize(18).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
                     Text(activityStatusLabel(selected)).fontSize(14).fontColor(this.statusBadgeColor(selected.status)).width('100%')
                     Text(selected.subtitle ?? '').fontSize(13).fontColor(this.theme.textSecondary).width('100%')
@@ -701,6 +1006,7 @@ struct DownloadHistoryPage {
         }.width('100%').layoutWeight(1)
       }
     }.width('100%').height('100%').backgroundColor(this.theme.bgPrimary)
-      .padding({ top: 16, left: 20, right: 20, bottom: this.bottomSafeHeight + 12 })
+      // 标题已不含说明行，正文从首个真实统计控件开始；不再叠加16vp顶部空白。
+      .padding({ top: 0, left: 20, right: 20, bottom: this.bottomSafeHeight + 12 })
       }
 }

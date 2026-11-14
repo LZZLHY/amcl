@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readElfIdentity } from './check-mg-build-contract.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
+import { checkApplicationAbi } from './check-application-abi.mjs';
 import { assertExternalOutputPath, workspacePath } from './lib/workspace-paths.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,6 +111,10 @@ export function auditGraphicsRuntime(hap, evidenceDir) {
   // 库调用与 CLI 使用同一边界，避免历史调用者通过导出函数重新创建仓内解包树。
   evidenceDir = assertExternalOutputPath(evidenceDir);
   const archive = fs.readFileSync(hap);
+  const abiProduct = JSON.parse(readUniqueZipEntry(archive, 'resources/rawfile/product-profile.json').toString('utf8')).name;
+  const abiTarget = /^entry-(.+)-(?:signed|unsigned)\.hap$/.exec(path.basename(hap))?.[1];
+  if (!abiTarget) throw Error('Unexpected SDK HAP filename for ABI audit');
+  const applicationAbi = checkApplicationAbi(archive, { root: ROOT, product: abiProduct, target: abiTarget });
   fs.mkdirSync(evidenceDir, { recursive: true });
   const llvm = process.env.AMCL_LLVM_BIN || 'D:/Huawei/command-line-tools/sdk/default/openharmony/native/llvm/bin';
   const executable = name => path.join(llvm, name + (process.platform === 'win32' ? '.exe' : ''));
@@ -133,7 +138,7 @@ export function auditGraphicsRuntime(hap, evidenceDir) {
   }
   const issues = graphicsRuntimeIssues(images, { product });
   const report = { schema: 1, capturedAt: new Date().toISOString(), hap: path.resolve(hap),
-    hapSha256: createHash('sha256').update(archive).digest('hex'), images, issues,
+    hapSha256: createHash('sha256').update(archive).digest('hex'), images, issues, applicationAbi,
     verdict: issues.length ? 'FAIL' : 'PASS', scope: 'HAP physical linkage and exports; no game rendering verdict' };
   fs.writeFileSync(path.join(evidenceDir, 'graphics-runtime.json'), JSON.stringify(report, null, 2) + '\n');
   return report;

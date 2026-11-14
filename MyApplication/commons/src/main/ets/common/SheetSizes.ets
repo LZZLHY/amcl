@@ -5,9 +5,9 @@
  *   - LARGE 几乎贴顶，跟全屏页很难视觉区分
  *   - MEDIUM 在内容多时（详情 / 版本管理）严重滚动焦虑
  *
- * 详情类 sheet 统一走 80% 安全区高（避开状态栏 + 底部导航条），既留 20% 背景上下文，
- * 又有足够空间放 hero + 内容卡 + sticky CTA。height: '80%' 是基于全屏；这里换算成 vp
- * 数字（屏幕高 - top safe - bottom safe）* 0.8，更接近用户感知。
+ * 手机详情和登录 sheet 使用设置中已保存的展开比例，缺省为安全区高度的 80%；
+ * 平板和电脑继续使用原来的详情 80%、登录 92% 及居中卡片封顶。比例统一换算成 vp，
+ * 不让 height: '80%' 基于整屏计算而覆盖状态栏、底部导航条的安全区约束。
  *
  * 历史：
  *   - v1 (2026-05-17) 70%：早期偏保守，详情 sheet 内容多时仍滚动焦虑
@@ -26,6 +26,33 @@
 
 import { Breakpoint, DeviceForm } from './device/DeviceProfile';
 
+/** 手机面板比例与偏好键由公共层统一定义，设置页、保存 owner 与尺寸消费者共用。 */
+export const DEFAULT_PHONE_SHEET_HEIGHT_PERCENT: number = 80;
+export const MIN_PHONE_SHEET_HEIGHT_PERCENT: number = 50;
+export const MAX_PHONE_SHEET_HEIGHT_PERCENT: number = 100;
+export const PHONE_SHEET_HEIGHT_STEP: number = 5;
+export const PHONE_SHEET_HEIGHT_STORAGE_KEY: string = 'phoneSheetHeightPercent';
+
+/**
+ * 将已保存值或控件输入规范到 50–100、步进 5 的百分比。
+ * 非有限数字回退默认值；越界值截到端点，避免损坏偏好生成负数或过高的 Sheet。
+ * 保存入口仍要求输入本身合法，不能把这个兼容读取规则当成任意值写入的许可。
+ */
+export function normalizePhoneSheetHeightPercent(value: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PHONE_SHEET_HEIGHT_PERCENT;
+  const bounded: number = Math.max(MIN_PHONE_SHEET_HEIGHT_PERCENT, Math.min(MAX_PHONE_SHEET_HEIGHT_PERCENT, value));
+  return Math.round(bounded / PHONE_SHEET_HEIGHT_STEP) * PHONE_SHEET_HEIGHT_STEP;
+}
+
+/** 按原有屏幕缓存和安全区计算 vp 高度；异常缓存沿用 800vp 兜底，不读取用户偏好。 */
+function safeSheetHeight_(bottomSafeHeight: number, topSafeHeight: number, percent: number): number {
+  let screenH: number = AppStorage.get<number>('screenHeightVp') ?? 800;
+  if (!Number.isFinite(screenH) || screenH <= 0) screenH = 800;
+  let safeH: number = screenH - topSafeHeight - bottomSafeHeight;
+  if (!Number.isFinite(safeH) || safeH <= 0) safeH = screenH;
+  return Math.round(safeH * percent / 100);
+}
+
 /**
  * 详情类 sheet 推荐高度（vp）：屏幕安全区 80%。
  *
@@ -39,13 +66,7 @@ import { Breakpoint, DeviceForm } from './device/DeviceProfile';
  * 工具函数直接读缓存。
  */
 export function detailSheetHeight(bottomSafeHeight: number, topSafeHeight: number): number {
-  // EntryAbility 在 onWindowStageCreate 里把 vp 形式的屏幕高度缓存到这个 key。
-  // 单测/极少数 EntryAbility 还没 ready 的场景下回退兜底 800 vp。
-  let screenH = AppStorage.get<number>('screenHeightVp') ?? 800;
-  if (screenH <= 0) screenH = 800;
-  let safeH = screenH - topSafeHeight - bottomSafeHeight;
-  if (safeH <= 0) safeH = screenH;
-  return Math.round(safeH * 0.8);
+  return safeSheetHeight_(bottomSafeHeight, topSafeHeight, 80);
 }
 
 /**
@@ -65,11 +86,7 @@ export function detailSheetHeight(bottomSafeHeight: number, topSafeHeight: numbe
  * 同样的"先读 AppStorage 缓存的 screenHeightVp"逻辑见 detailSheetHeight。
  */
 export function largeSheetHeight(bottomSafeHeight: number, topSafeHeight: number): number {
-  let screenH = AppStorage.get<number>('screenHeightVp') ?? 800;
-  if (screenH <= 0) screenH = 800;
-  let safeH = screenH - topSafeHeight - bottomSafeHeight;
-  if (safeH <= 0) safeH = screenH;
-  return Math.round(safeH * 0.92);
+  return safeSheetHeight_(bottomSafeHeight, topSafeHeight, 92);
 }
 
 /**
@@ -135,22 +152,32 @@ export function sheetWidthForLayout(form: DeviceForm, bp: Breakpoint): number | 
 
 /**
  * 一多：sheet 高度（vp）。
- * - 非居中卡片（底部抽屉）：沿用 `detailSheetHeight`（安全区 80%）。
+ * - 手机形态：使用已确认的手机面板比例，横屏不因宽度增大而改为居中卡片。
+ * - 非手机的底部抽屉：沿用 `detailSheetHeight`（安全区 80%）。
  * - 居中卡片：在 80% 安全区基础上封顶 640vp，避免平板上一张超高窄卡。
  *
- * 登录类（largeSheetHeight 92%）由调用点单独处理，不走本函数。
+ * 可显式传入被组件观察的 phoneHeightPercent，确保设置变化能触发真实 SheetOptions
+ * 重算；无显式参数的旧调用方读取 AppStorage 中已经发布的确认值，缺失时使用 80%。
  */
-export function detailSheetHeightForLayout(form: DeviceForm, bp: Breakpoint, bottomSafeHeight: number, topSafeHeight: number): number {
+export function detailSheetHeightForLayout(form: DeviceForm, bp: Breakpoint, bottomSafeHeight: number, topSafeHeight: number,
+  phoneHeightPercent: number = AppStorage.get<number>(PHONE_SHEET_HEIGHT_STORAGE_KEY) ?? DEFAULT_PHONE_SHEET_HEIGHT_PERCENT): number {
+  if (form === DeviceForm.PHONE) {
+    return safeSheetHeight_(bottomSafeHeight, topSafeHeight, normalizePhoneSheetHeightPercent(phoneHeightPercent));
+  }
   const base = detailSheetHeight(bottomSafeHeight, topSafeHeight);
   if (!centerSheetForLayout(form, bp)) return base;
   return Math.min(base, 640);
 }
 
 /**
- * 一多：登录类 sheet 高度（vp）。底部抽屉沿用 `largeSheetHeight`（92%，给 OAuth WebView）；
- * 居中卡片封顶 720vp（比普通详情 640 略高，容纳登录卡片，又不至于在平板上过高）。
+ * 一多：手机登录面板同样遵从用户的展开比例，缺省为 80%，不再另设不可调整的 92%。
+ * 非手机底部抽屉仍为 92%；居中卡片封顶 720vp，保持平板和电脑的登录空间。
  */
-export function largeSheetHeightForLayout(form: DeviceForm, bp: Breakpoint, bottomSafeHeight: number, topSafeHeight: number): number {
+export function largeSheetHeightForLayout(form: DeviceForm, bp: Breakpoint, bottomSafeHeight: number, topSafeHeight: number,
+  phoneHeightPercent: number = AppStorage.get<number>(PHONE_SHEET_HEIGHT_STORAGE_KEY) ?? DEFAULT_PHONE_SHEET_HEIGHT_PERCENT): number {
+  if (form === DeviceForm.PHONE) {
+    return safeSheetHeight_(bottomSafeHeight, topSafeHeight, normalizePhoneSheetHeightPercent(phoneHeightPercent));
+  }
   const base = largeSheetHeight(bottomSafeHeight, topSafeHeight);
   if (!centerSheetForLayout(form, bp)) return base;
   return Math.min(base, 720);

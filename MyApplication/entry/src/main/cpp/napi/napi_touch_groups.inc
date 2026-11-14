@@ -22,6 +22,16 @@ static bool GroupText(napi_env env,napi_value object,const char* name,size_t max
     return NamedValue(env,object,name,&value) && ReadBoundedUtf8String(env,value,maximum,text) && text.find('\0') == std::string::npos;
 }
 
+/** 新字段缺席保留v5普通组语义；显式提供的非布尔/非整数值不能当缺省值忽略。 */
+static bool GroupOptionalBool(napi_env env,napi_value object,const char* name,bool* value) {
+    bool present = false;
+    return napi_has_named_property(env,object,name,&present) == napi_ok && (!present || NamedBool(env,object,name,value));
+}
+static bool GroupOptionalInt(napi_env env,napi_value object,const char* name,int* value) {
+    bool present = false;
+    return napi_has_named_property(env,object,name,&present) == napi_ok && (!present || NamedInt(env,object,name,value));
+}
+
 /** 所有长度与枚举先验再分配；原 v3 解析器不会碰到扩展，也不能误接受 v4 的半份表。 */
 static bool ReadGroupSchema(napi_env env,napi_value root,uint32_t controlCount,amcl::input::TouchGroupSchema& result) {
     napi_value object = nullptr, groups = nullptr, controls = nullptr; uint32_t count = 0;
@@ -30,8 +40,9 @@ static bool ReadGroupSchema(napi_env env,napi_value root,uint32_t controlCount,a
         !GroupArray(env,object,"groups",amcl::input::kMaxTouchGroups,&groups,&count)) return false;
     for (uint32_t i = 0; i < count; ++i) {
         napi_value group = nullptr; amcl::input::TouchGroupDefinition value;
-        if (napi_get_element(env,groups,i,&group) != napi_ok || !GroupFields(env,group,{"id","initialVisible"}) ||
-            !GroupText(env,group,"id",23,value.id) || !NamedBool(env,group,"initialVisible",&value.initialVisible)) return false;
+        if (napi_get_element(env,groups,i,&group) != napi_ok || !GroupFields(env,group,{"id","initialVisible","secondary","hidePrimary"}) ||
+            !GroupText(env,group,"id",23,value.id) || !NamedBool(env,group,"initialVisible",&value.initialVisible) ||
+            !GroupOptionalBool(env,group,"secondary",&value.secondary) || !GroupOptionalBool(env,group,"hidePrimary",&value.hidePrimary)) return false;
         result.groups.push_back(std::move(value));
     }
     if (!GroupArray(env,object,"controls",AMCL_CONTROL_SCHEMA_MAX_CONTROLS,&controls,&count) ||
@@ -40,10 +51,12 @@ static bool ReadGroupSchema(napi_env env,napi_value root,uint32_t controlCount,a
     for (uint32_t i = 0; i < count; ++i) {
         napi_value control = nullptr, phases = nullptr; uint32_t phaseCount = 0; amcl::input::TouchGroupControl value;
         if (napi_get_element(env,controls,i,&control) != napi_ok ||
-            !GroupFields(env,control,{"group","phases","fcl","mouseTool","rank","bindings"}) ||
+            !GroupFields(env,control,{"group","phases","fcl","mouseTool","rank","bindings","secondaryTarget","secondaryReturn"}) ||
             !NamedInt(env,control,"group",&value.group) || !NamedInt(env,control,"rank",&value.rank) ||
             !NamedBool(env,control,"phases",&value.phases) || !NamedBool(env,control,"fcl",&value.fcl) ||
             !NamedBool(env,control,"mouseTool",&value.mouseTool) ||
+            !GroupOptionalInt(env,control,"secondaryTarget",&value.secondaryTarget) ||
+            !GroupOptionalBool(env,control,"secondaryReturn",&value.secondaryReturn) ||
             !GroupArray(env,control,"bindings",4,&phases,&phaseCount) || phaseCount != 4) return false;
         for (uint32_t p = 0; p < 4; ++p) {
             napi_value phase = nullptr, keys = nullptr, actions = nullptr; uint32_t keyCount = 0, actionCount = 0;
@@ -60,7 +73,7 @@ static bool ReadGroupSchema(napi_env env,napi_value root,uint32_t controlCount,a
             for (uint32_t a = 0; a < actionCount; ++a) {
                 napi_value action = nullptr; int32_t target = -1, operation = -1;
                 if (napi_get_element(env,actions,a,&action) != napi_ok || !GroupFields(env,action,{"target","operation"}) ||
-                    !NamedInt(env,action,"target",&target) || target < 0 || !NamedInt(env,action,"operation",&operation) || operation < 0 || operation > 2) return false;
+                    !NamedInt(env,action,"target",&target) || target < 0 || !NamedInt(env,action,"operation",&operation) || operation < 0 || operation > 4) return false;
                 binding.actions.push_back({static_cast<uint32_t>(target),static_cast<amcl::input::TouchGroupOperation>(operation)});
             }
             if (!value.phases && binding.Active()) return false;
@@ -106,6 +119,22 @@ napi_value ReadTouchGroups(napi_env env,napi_callback_info info) {
         }
         if (napi_set_named_property(env,result,"mask",mask) != napi_ok || napi_set_named_property(env,result,"epochs",epochs) != napi_ok)
             return amcl::napi::MakeUndefined(env);
+        napi_value controlMask = nullptr, controlEpochs = nullptr, controlRanks = nullptr;
+        if (state.controlMask.size() != state.controlEpochs.size() || state.controlMask.size() != state.controlRanks.size() ||
+            napi_create_array_with_length(env,state.controlMask.size(),&controlMask) != napi_ok ||
+            napi_create_array_with_length(env,state.controlEpochs.size(),&controlEpochs) != napi_ok ||
+            napi_create_array_with_length(env,state.controlRanks.size(),&controlRanks) != napi_ok) return amcl::napi::MakeUndefined(env);
+        for (size_t i = 0; i < state.controlMask.size(); ++i) {
+            napi_value flag = nullptr, epoch = nullptr, rank = nullptr;
+            const std::string identity = std::to_string(state.controlEpochs[i]);
+            if (napi_get_boolean(env,state.controlMask[i] != 0,&flag) != napi_ok || napi_set_element(env,controlMask,i,flag) != napi_ok ||
+                napi_create_string_utf8(env,identity.data(),identity.size(),&epoch) != napi_ok || napi_set_element(env,controlEpochs,i,epoch) != napi_ok ||
+                napi_create_int32(env,state.controlRanks[i],&rank) != napi_ok || napi_set_element(env,controlRanks,i,rank) != napi_ok)
+                return amcl::napi::MakeUndefined(env);
+        }
+        if (napi_set_named_property(env,result,"controlMask",controlMask) != napi_ok ||
+            napi_set_named_property(env,result,"controlEpochs",controlEpochs) != napi_ok ||
+            napi_set_named_property(env,result,"controlRanks",controlRanks) != napi_ok) return amcl::napi::MakeUndefined(env);
         return result;
     } catch (...) { return amcl::napi::MakeUndefined(env); }
 }

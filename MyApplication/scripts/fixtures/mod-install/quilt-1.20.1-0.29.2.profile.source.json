@@ -1,0 +1,6 @@
+{
+  "url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.29.2/profile/json",
+  "retrievedAt": "2026-10-28",
+  "sha256": "d80984470ffd959f6716e6aee3f239374872670b4ddd9f6efefcf5428b211e71",
+  "purpose": "官方客户端profile真实形状夹具；测试替换下载传输字节，不冒充Java启动验收"
+}

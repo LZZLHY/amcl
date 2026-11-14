@@ -55,7 +55,7 @@ def run(name,command,cwd=build,timeout=60):
 
 try:
     sources=[cpp/'jvm/game_gui_bridge.cpp',cpp/'jvm/game_gui_observation.cpp',cpp/'jvm/game_gui_observation.h',
-        cpp/'jvm/runtime_bootstrap_contract.h',cpp/'jvm/game_process_exit_core.h',cpp/'input/input_state_core.cpp',
+        cpp/'jvm/runtime_bootstrap_contract.h',cpp/'jvm/hap_native_provider_contract.h',cpp/'jvm/game_process_exit_core.h',cpp/'input/input_state_core.cpp',
         root/'JavaApp/src/com/amcl/launcher/GameGuiBridge.java',root/'JavaApp/test/net/minecraft/client/Minecraft.java',
         root/'scripts/lib/game-gui-observation-host.cpp',root/'scripts/lib/game-gui-observation-test-io.h']
     receipt['inputs']=[identity(file) for file in sources]

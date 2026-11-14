@@ -28,15 +28,15 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { image } from '@kit.ImageKit';
 import { ThemeColors } from 'commons';
-import { getRemotePixelMap } from 'commons';
+import { loadAccountTexture } from './AccountTextureLoader';
 
 const TAG = 'CapePreview';
 
 /**
  * 披风纹理里「外面（别人看到的那面）」的源矩形：
  *   x=1, y=1, w=10, h=16
- * 对 64×32 旧版披风和 64×64 HD 披风都成立（HD 版只是右下加了内衬第二层，前
- * 面这个矩形位置不变）。如果哪天 Mojang 改格式，这个常量就要重新核对。
+ * 本地共享库首期只接受标准64×32披风。既有远端纹理仍按该固定UV裁片展示，
+ * 不能由图片能解码推出任意高清尺寸均已适配；增加格式前要独立核验UV缩放。
  */
 const CAPE_SRC_X = 1;
 const CAPE_SRC_Y = 1;
@@ -90,10 +90,16 @@ export struct CapePreview {
   private _measuredH: number = 0;
   /** 短路：同一 url 不重复 fetch（getRemotePixelMap 自身也有 inflight cache，这是双保险） */
   private _lastFetchedUrl: string = '';
+  /** 拒绝切换披风、关闭组件后迟到的解码回调；原图始终由共享缓存持有。 */
+  private _fetchEpoch: number = 0;
+  private _alive: boolean = false;
 
   aboutToAppear(): void {
+    this._alive = true;
     this.kickOffFetch();
   }
+
+  aboutToDisappear(): void { this._alive = false; this._fetchEpoch++; }
 
   /** @Watch 回调：capeUrl 变化（账户切换 / refresh）→ 重新拉 + 重绘 */
   onUrlChange(): void {
@@ -105,8 +111,10 @@ export struct CapePreview {
   // ============================================================
 
   private kickOffFetch(): void {
+    if (!this._alive) return;
+    const epoch = ++this._fetchEpoch;
     if (this.capeUrl.length === 0) {
-      // 没有披风 url（offline 账户 / 微软账户没披风）→ 清掉缓存的 PM，让 dash 占位显示
+      // 当前账号未选择披风时清除裁图；离线账号有本地披风时仍走统一加载入口。
       this._capePM = null;
       this._failed = false;
       this._lastFetchedUrl = '';
@@ -120,9 +128,8 @@ export struct CapePreview {
     }
     this._lastFetchedUrl = this.capeUrl;
     let url = this.capeUrl;
-    getRemotePixelMap(url).then(async (pm: image.PixelMap | null) => {
-      // url 在 fetch 期间又变了 → 这次结果作废，等新 fetch 回来
-      if (this.capeUrl !== url) return;
+    loadAccountTexture(url).then(async (pm: image.PixelMap | null) => {
+      if (!this._alive || this._fetchEpoch !== epoch || this.capeUrl !== url) return;
       if (pm === null) {
         hilog.warn(0x0000, TAG, 'cape fetch/decode failed for %{public}s', url);
         this._failed = true;
@@ -130,9 +137,20 @@ export struct CapePreview {
       } else {
         // 把 (1,1)-(11,17) 区域复制成独立的 10×16 PM（避开 9 参 drawImage 的
         // device-px 坑，让后续 5 参 drawImage 能正确按 vp 放大）。
-        this._capePM = await this.cropCapePM(pm);
-        this._failed = (this._capePM === null);
+        const cropped = await this.cropCapePM(pm);
+        // 裁剪也会异步；只销毁从未交给 Canvas 的过期结果，不能误释放共享原图。
+        if (!this._alive || this._fetchEpoch !== epoch || this.capeUrl !== url) {
+          if (cropped !== null) cropped.release().catch((): void => {});
+          return;
+        }
+        this._capePM = cropped;
+        this._failed = cropped === null;
       }
+      this.tryDraw();
+    }).catch((error: Error): void => {
+      if (!this._alive || this._fetchEpoch !== epoch) return;
+      this._failed = true; this._capePM = null;
+      hilog.warn(0x0000, TAG, 'account cape decode failed: %{public}s', error.message);
       this.tryDraw();
     });
   }
@@ -227,17 +245,13 @@ export struct CapePreview {
   build() {
     Column() {
       Stack() {
-        // 底色：统一暗灰（matching minecraft.net 披风选择页的 tile 底色）。
-        //
-        // 旧版根据 alias 区分（Migrator 红、Vanilla 蓝、Cherry 粉…），但 minecraft.net
-        // 自己也是统一暗灰底，让披风纹理颜色自身去呈现 brand 感更合理。
-        //
-        // #1F2937 ≈ Tailwind slate-800，对所有披风颜色（红/绿/蓝/粉/黑）都是稳定背景。
+        // 预览舞台消费当前主题的中性输入底色，与账号/素材卡保持同一浅深层级。
+        // 这里只改外围容器；原始纹理、最近邻绘制和10:16比例仍由tryDraw原样负责。
         Column()
           .width('100%')
           .height('100%')
           .borderRadius(4)
-          .backgroundColor('#1F2937')
+          .backgroundColor(this.theme.bgInput)
 
         // Canvas 渲染层 —— 撑满父容器，自己用 onAreaChange 测尺寸。
         // 有披风时贴像素，没披风 / 加载失败时保持透明（露出底层底色）。
@@ -264,7 +278,7 @@ export struct CapePreview {
           Text('无披风')
             .fontSize(Math.max(9, this.containerWidth * 0.26))
             .fontWeight(FontWeight.Medium)
-            .fontColor('#FFFFFFB0')
+            .fontColor(this.theme.textHint)
             .textAlign(TextAlign.Center)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })

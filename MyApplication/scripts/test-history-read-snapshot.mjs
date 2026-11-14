@@ -17,9 +17,13 @@ function asyncIoOnly(runtime, rejectSync = true) {
     mtime: Number(value.mtimeMs / 1000n), ctime: Number(value.ctimeMs / 1000n),
     mtimeNs: value.mtimeNs, ctimeNs: value.ctimeNs,
     isFile: () => value.isFile(), isDirectory: () => value.isDirectory(), isSymbolicLink: () => value.isSymbolicLink() });
-  kit.stat = async p => info(await (typeof p === 'number'
-    ? promisify(fs.fstat)(p, { bigint: true }) : fs.promises.stat(p, { bigint: true })));
-  kit.lstat = async p => info(await fs.promises.lstat(p, { bigint: true }));
+  // 保持SDK的数字错误码；原生Node ENOENT字符串会错误地把“首次没有派生索引”变成IO故障。
+  const sdk = async operation => { try { return info(await operation()); } catch (error) {
+    if (error.code === 'ENOENT') error.code = 13900002; throw error;
+  } };
+  kit.stat = p => sdk(() => typeof p === 'number'
+    ? promisify(fs.fstat)(p, { bigint: true }) : fs.promises.stat(p, { bigint: true }));
+  kit.lstat = p => sdk(() => fs.promises.lstat(p, { bigint: true }));
   kit.listFile = p => fs.promises.readdir(p);
   kit.open = async (p, mode = 0) => {
     // Windows宿主不能用普通Node fd同步目录；沿用现有runtime的目录句柄边界，检查仍异步。
@@ -133,4 +137,23 @@ test('完整清单读取批内并发不超过八份，批次间给事件循环�
     finally { clearInterval(timer); }
     assert.ok(maximum <= 8 && maximum > 0); assert.ok(manifests >= 68); assert.ok(turns > 0);
   } finally { f.runtime.close(); }
+});
+
+test('真实账本历史投影保留已验证任务统计/exportTaskId，显式零值和无facts旧记录沿用准确fallback', () => {
+  const runtime = evidenceRuntime({ imports: { './DownloadManager': { formatBytes: String }, './DownloadTask': {} },
+    // 只暴露原生产纯投影函数供调用，不替换解析、统计或合并算法；上游canonical校验由owner回归覆盖。
+    transform: (absolute, source) => absolute.endsWith('DownloadHistory.ets') ? source + '\nexport { historyRecordFromLedger };' : source });
+  try {
+    const api = runtime.load('feature_core/src/main/ets/download/DownloadHistory.ets');
+    const ledger = runtime.load('commons/src/main/ets/utils/ActivityLedger.ets');
+    const manifest = ledger.parseLedgerManifest(JSON.stringify({ activityId: 100, startedAt: 100, endedAt: 200,
+      category: 'export', state: 1, files: [{ name: 'launcher.log', bytes: 12 }] }));
+    const old = api.historyRecordFromLedger(manifest); assert.equal(old.totalBytes, 0); assert.equal(old.fileCount, 1);
+    manifest.taskFacts = { totalBytes: 345678, fileCount: 42, exportTaskId: '100-real-export-task' };
+    const recovered = api.historyRecordFromLedger(manifest);
+    assert.equal(recovered.totalBytes, 345678); assert.equal(recovered.fileCount, 42); assert.equal(recovered.exportTaskId, '100-real-export-task');
+    manifest.taskFacts = { totalBytes: 0, fileCount: 0 };
+    const empty = api.historyRecordFromLedger(manifest); assert.equal(empty.totalBytes, 0); assert.equal(empty.fileCount, 0);
+    assert.equal(empty.exportTaskId, undefined);
+  } finally { runtime.close(); }
 });

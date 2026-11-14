@@ -15,9 +15,9 @@ export interface LwjglJdkView {
   jars: LwjglViewJar[];
 }
 export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
-  { javaFeature: 17, sourceSlotIdentity: '36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4',
-    manifestSha256: 'd52323c2d73e029001c8bed1f9bffdad7a9d925a14f734a46a62dd09df13e880',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=17\npolicy=cap-future-mr-v1\nsource=6419841c220fc40e30908e9a72b1734c338d0d4c01955ada8d2d91a05ddc7eef\nmanifest=d52323c2d73e029001c8bed1f9bffdad7a9d925a14f734a46a62dd09df13e880\n", jars: [
+  { javaFeature: 17, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
+    manifestSha256: '749abfdbf733c1614d1d4a433ee5d1680709484a67626e16df188e3d1545554a',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=17\npolicy=cap-future-mr-v1\nsource=97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90\nmanifest=749abfdbf733c1614d1d4a433ee5d1680709484a67626e16df188e3d1545554a\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
@@ -42,7 +42,7 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
         resourcePath: 'lwjgl/lwjgl-spvc.jar' },
       { name: 'lwjgl-stb.jar', size: 149340, sha256: '18892f1d6f42453f9fd228c52fcb146d63d78d2439ebed3857157ef43eb0feac',
         resourcePath: 'lwjgl/lwjgl-stb.jar' },
-      { name: 'lwjgl-tinyfd.jar', size: 17499, sha256: '8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f',
+      { name: 'lwjgl-tinyfd.jar', size: 16340, sha256: '3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951',
         resourcePath: 'lwjgl/lwjgl-tinyfd.jar' },
       { name: 'lwjgl-vma.jar', size: 113456, sha256: '921a19362dafeff1b8778a98a077fb7da3ef64b4279ccc76381f3c3b0cc5d098',
         resourcePath: 'lwjgl/lwjgl-vma.jar' },
@@ -51,9 +51,9 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
       { name: 'lwjgl.jar', size: 2493536, sha256: 'b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd',
         resourcePath: 'lwjgl-jdk/b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd.jar' },
     ] },
-  { javaFeature: 21, sourceSlotIdentity: '36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4',
-    manifestSha256: '49ee7b57c352d7cbf220552e75dee6728f379e86cccede32a486fa21db0c5121',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=21\npolicy=cap-future-mr-v1\nsource=6419841c220fc40e30908e9a72b1734c338d0d4c01955ada8d2d91a05ddc7eef\nmanifest=49ee7b57c352d7cbf220552e75dee6728f379e86cccede32a486fa21db0c5121\n", jars: [
+  { javaFeature: 21, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
+    manifestSha256: '3bc8bd214f957bb2e7290f5224299d30163eba2f76bfeade31a250f8af2727c4',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=21\npolicy=cap-future-mr-v1\nsource=97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90\nmanifest=3bc8bd214f957bb2e7290f5224299d30163eba2f76bfeade31a250f8af2727c4\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
@@ -78,7 +78,7 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
         resourcePath: 'lwjgl/lwjgl-spvc.jar' },
       { name: 'lwjgl-stb.jar', size: 149340, sha256: '18892f1d6f42453f9fd228c52fcb146d63d78d2439ebed3857157ef43eb0feac',
         resourcePath: 'lwjgl/lwjgl-stb.jar' },
-      { name: 'lwjgl-tinyfd.jar', size: 17499, sha256: '8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f',
+      { name: 'lwjgl-tinyfd.jar', size: 16340, sha256: '3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951',
         resourcePath: 'lwjgl/lwjgl-tinyfd.jar' },
       { name: 'lwjgl-vma.jar', size: 113456, sha256: '921a19362dafeff1b8778a98a077fb7da3ef64b4279ccc76381f3c3b0cc5d098',
         resourcePath: 'lwjgl/lwjgl-vma.jar' },
@@ -87,9 +87,9 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
       { name: 'lwjgl.jar', size: 2493536, sha256: 'b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd',
         resourcePath: 'lwjgl-jdk/b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd.jar' },
     ] },
-  { javaFeature: 25, sourceSlotIdentity: '36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4',
-    manifestSha256: '0ddb880632144adbe0c35dabafc60df4f56c94a545a41c13cac3738a78db3131',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=25\npolicy=cap-future-mr-v1\nsource=6419841c220fc40e30908e9a72b1734c338d0d4c01955ada8d2d91a05ddc7eef\nmanifest=0ddb880632144adbe0c35dabafc60df4f56c94a545a41c13cac3738a78db3131\n", jars: [
+  { javaFeature: 25, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
+    manifestSha256: '9067ceb6867f5a81a9f5f91a695d27124d45853e311ea8be1e3a0b24b8e43dd9',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=25\npolicy=cap-future-mr-v1\nsource=97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90\nmanifest=9067ceb6867f5a81a9f5f91a695d27124d45853e311ea8be1e3a0b24b8e43dd9\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
@@ -114,7 +114,7 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
         resourcePath: 'lwjgl/lwjgl-spvc.jar' },
       { name: 'lwjgl-stb.jar', size: 149340, sha256: '18892f1d6f42453f9fd228c52fcb146d63d78d2439ebed3857157ef43eb0feac',
         resourcePath: 'lwjgl/lwjgl-stb.jar' },
-      { name: 'lwjgl-tinyfd.jar', size: 17499, sha256: '8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f',
+      { name: 'lwjgl-tinyfd.jar', size: 16340, sha256: '3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951',
         resourcePath: 'lwjgl/lwjgl-tinyfd.jar' },
       { name: 'lwjgl-vma.jar', size: 113456, sha256: '921a19362dafeff1b8778a98a077fb7da3ef64b4279ccc76381f3c3b0cc5d098',
         resourcePath: 'lwjgl/lwjgl-vma.jar' },

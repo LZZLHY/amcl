@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "javaOutputRelease": 8,
+  "inputSha256": "904ef94191482d7b511ef6566756e9dd9f3dd4a10c6762d5fb4f06d5e3a43bb7",
+  "sha256": "c86166dfa11a97eed78c6445f1c5f751f9492852b7ca14cc9f644ba26c69d7f4",
+  "size": 137673,
+  "asmSha256": "03d99a74ad1ee5c71334ef67437f4ef4fe3488caa7c96d8645abc73c8e2017d4",
+  "contractSha256": "e978b2a7aa8fe9326c61a0c2b3ce61e107ca28b08ecdec3d276ed31cb0d77f63",
+  "sources": [
+    {
+      "path": "scripts/build-audio-service-agent.py",
+      "sha256": "45dc0d4a21d56d36263ad5214a795f28f0373ed1dbe0b7b118d5a1572a65df62"
+    },
+    {
+      "path": "scripts/lwjgl-stack-backfill/lib/sources.json",
+      "sha256": "450bbab57a391458b543d84d4a8a548a1caaa69443bb4029deee0f9883243cbc"
+    },
+    {
+      "path": "JavaAudioServiceAgent/supported-loaders.json",
+      "sha256": "08988410d9a0a957358575f0addcdf32a02b36a7f1f86eaf1aec865581a18ac3"
+    },
+    {
+      "path": "JavaCpuAgent/ASM-LICENSE.txt",
+      "sha256": "bad262fe87ca4d6ef21fdf0ef00a94b408dfc9a2c21bdafa9b78b417bee65dc3"
+    },
+    {
+      "path": "JavaAudioServiceAgent/src/com/amcl/audioagent/AudioServiceAgent.java",
+      "sha256": "c3463f419144071d1f323878a1e5f08c7c5661e9a43095b16f97fe0603a1021c"
+    }
+  ],
+  "classes": [
+    "com/amcl/audioagent/AudioServiceAgent$ServiceTransformer$1$1.class",
+    "com/amcl/audioagent/AudioServiceAgent$ServiceTransformer$1$2.class",
+    "com/amcl/audioagent/AudioServiceAgent$ServiceTransformer$1.class",
+    "com/amcl/audioagent/AudioServiceAgent$ServiceTransformer.class",
+    "com/amcl/audioagent/AudioServiceAgent.class",
+    "com/amcl/audioagent/internal/asm/AnnotationVisitor.class",
+    "com/amcl/audioagent/internal/asm/AnnotationWriter.class",
+    "com/amcl/audioagent/internal/asm/Attribute$Set.class",
+    "com/amcl/audioagent/internal/asm/Attribute.class",
+    "com/amcl/audioagent/internal/asm/ByteVector.class",
+    "com/amcl/audioagent/internal/asm/ClassReader.class",
+    "com/amcl/audioagent/internal/asm/ClassTooLargeException.class",
+    "com/amcl/audioagent/internal/asm/ClassVisitor.class",
+    "com/amcl/audioagent/internal/asm/ClassWriter.class",
+    "com/amcl/audioagent/internal/asm/ConstantDynamic.class",
+    "com/amcl/audioagent/internal/asm/Constants.class",
+    "com/amcl/audioagent/internal/asm/Context.class",
+    "com/amcl/audioagent/internal/asm/CurrentFrame.class",
+    "com/amcl/audioagent/internal/asm/Edge.class",
+    "com/amcl/audioagent/internal/asm/FieldVisitor.class",
+    "com/amcl/audioagent/internal/asm/FieldWriter.class",
+    "com/amcl/audioagent/internal/asm/Frame.class",
+    "com/amcl/audioagent/internal/asm/Handle.class",
+    "com/amcl/audioagent/internal/asm/Handler.class",
+    "com/amcl/audioagent/internal/asm/Label.class",
+    "com/amcl/audioagent/internal/asm/MethodTooLargeException.class",
+    "com/amcl/audioagent/internal/asm/MethodVisitor.class",
+    "com/amcl/audioagent/internal/asm/MethodWriter.class",
+    "com/amcl/audioagent/internal/asm/ModuleVisitor.class",
+    "com/amcl/audioagent/internal/asm/ModuleWriter.class",
+    "com/amcl/audioagent/internal/asm/Opcodes.class",
+    "com/amcl/audioagent/internal/asm/RecordComponentVisitor.class",
+    "com/amcl/audioagent/internal/asm/RecordComponentWriter.class",
+    "com/amcl/audioagent/internal/asm/Symbol.class",
+    "com/amcl/audioagent/internal/asm/SymbolTable$Entry.class",
+    "com/amcl/audioagent/internal/asm/SymbolTable$LabelEntry.class",
+    "com/amcl/audioagent/internal/asm/SymbolTable.class",
+    "com/amcl/audioagent/internal/asm/Type.class",
+    "com/amcl/audioagent/internal/asm/TypePath.class",
+    "com/amcl/audioagent/internal/asm/TypeReference.class",
+    "com/amcl/audioagent/internal/asm/signature/SignatureReader.class",
+    "com/amcl/audioagent/internal/asm/signature/SignatureVisitor.class",
+    "com/amcl/audioagent/internal/asm/signature/SignatureWriter.class"
+  ]
+}

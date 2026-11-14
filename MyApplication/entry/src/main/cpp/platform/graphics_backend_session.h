@@ -108,6 +108,12 @@ public:
     virtual bool moveGeometryOwner(uint64_t, const NativeWindowLease&, const NativeWindowLease&, std::string&) { return false; }
     virtual bool releasePresentOwner(uint64_t, std::string&) = 0;
     virtual uint64_t currentGeneration() const = 0;
+    // 旧broker不提供运行调整资格，保留零工作/不观测；不能伪造请求已应用。
+    virtual uint32_t geometryWorkFlags() const { return 0; }
+    virtual int geometryCheckpoint(uint64_t, const NativeWindowLease&) { return 0; }
+    virtual void observeDrawable(uint64_t, const NativeWindowLease&, int, int, uint32_t) {}
+    // 只读角色证明；旧broker返回false，不把拥有引用等同于拥有当前呈现权。
+    virtual bool presentationIdentity(uint64_t,const NativeWindowLease&,uint64_t&) const { return false; }
 };
 
 class AMCL_GRAPHICS_PUBLIC AbiNativeWindowBroker final : public NativeWindowBroker {
@@ -120,6 +126,10 @@ public:
     bool moveGeometryOwner(uint64_t, const NativeWindowLease&, const NativeWindowLease&, std::string&) override;
     bool releasePresentOwner(uint64_t, std::string&) override;
     uint64_t currentGeneration() const override;
+    uint32_t geometryWorkFlags() const override;
+    int geometryCheckpoint(uint64_t, const NativeWindowLease&) override;
+    void observeDrawable(uint64_t, const NativeWindowLease&, int, int, uint32_t) override;
+    bool presentationIdentity(uint64_t,const NativeWindowLease&,uint64_t&) const override;
     const AmclNativeWindowLeaseBrokerV2* abi() const { return abi_; }
 private:
     const AmclNativeWindowLeaseBrokerV2* abi_;
@@ -143,6 +153,12 @@ public:
     bool markResourcesRetired(std::string&);
     // Called only after the backend reports a successful real presentation.
     bool recordPresent(std::string&);
+    /** 由真实驱动owner调用；不销毁游戏资源，窗口前端随后消费新代次并发送尺寸事件。 */
+    uint32_t geometryWorkFlags() const { return broker_ ? broker_->geometryWorkFlags() : 0; }
+    int geometryCheckpoint();
+    void observeDrawable(int width, int height, uint32_t source);
+    // 调用者须持前端原生命周期锁；复制后的token仍由最终使用者向broker再次核验。
+    bool presentationIdentity(uint64_t& token) const;
     bool resize(int, int, uint64_t, std::string&);
     bool refreshGeometry(int, int, uint64_t, std::string&);
     bool suspend(std::string&);

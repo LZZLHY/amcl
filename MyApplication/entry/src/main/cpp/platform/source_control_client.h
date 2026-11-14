@@ -27,6 +27,12 @@ inline AmclSourceSnapshotV1 SourceSnapshot(OwnerToken owner=0,const Output* valu
     const AmclSourceOutputV1 encoded=value?SourceOutput(*value):AmclSourceOutputV1{};
     if(SourcePort(&port,&producer))(void)port->query(producer,owner,value?&encoded:nullptr,&snapshot);return snapshot;
 }
+/** 每次行为判断只查一个owner/output，诊断统计仍由显式SourceSnapshot读取。 */
+inline bool SourceOwns(OwnerToken owner,const Output& value) {
+    const AmclSourceControlPortV1* port=nullptr;uint64_t producer=0;
+    const auto encoded=SourceOutput(value);
+    return SourcePort(&port,&producer)&&port->owns(producer,owner,&encoded)==1;
+}
 /** owned文字能力独立于物理路由。只借已prepared原Source，空/旧scope/压力准确拒绝；
  * 不 fallback匿名按键、不分两笔、不把整pair入运输当consumer完成。 */
 inline bool SourceOwnedTextKeyTap(const AmclInputTextCoreResourceV1& original,int32_t key,uint64_t originalKeyboardScope=0) {
@@ -72,8 +78,8 @@ public:
         request.owner=owner;request.flags=AMCL_SOURCE_ALLOW_RETIRE;(void)SourceTransaction(request);}
     void releaseAll(){AmclSourceRequestV1 request{};request.operation=AMCL_SOURCE_CANCEL_ALL;
         request.flags=AMCL_SOURCE_ALLOW_RETIRE;(void)SourceTransaction(request);}
-    bool owns(OwnerToken owner,const Output& value)const{return SourceSnapshot(owner,&value).owns!=0;}
-    bool isHeld(const Output& value)const{return SourceSnapshot(0,&value).owns!=0;}
+    bool owns(OwnerToken owner,const Output& value)const{return SourceOwns(owner,value);}
+    bool isHeld(const Output& value)const{return SourceOwns(0,value);}
     size_t ownerCount()const{return SourceSnapshot().owners;}
     size_t outputCount()const{return SourceSnapshot().outputs;}
 };

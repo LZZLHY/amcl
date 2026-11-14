@@ -25,14 +25,15 @@
  */
 
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { mavenToRelativePath } from './MavenUtils';
-import { decompressFile } from './ForgeInstallerUtils';
+import { mavenToRelativePath, safeRelPath, computeFileSha1 } from './MavenUtils';
+import { decompressFile, VerifiedMappingsDownload } from './ForgeInstallerUtils';
 import { ModLoaderInstallProgress, ModLoaderInstallCallback } from './ModLoaderTypes';
 import { forgeNative } from './ForgelikeNative';
 import { removeDirRecursive, fileExistsAndNonEmpty } from 'commons';
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_MODLOADER } from 'commons';
 import { withInstallerProcessorLock } from '../version/VersionInstallLease';
+import { invokeInstallerProcessor } from './ProcessorInvocation';
 
 const TAG = 'ForgelikeProcRunner';
 
@@ -77,7 +78,7 @@ export class ForgelikeProcessorRunner {
     profilePath: string, installerTempDir: string,
     mcDir: string, libDir: string, filesDir: string,
     gameVersion: string, installerJdk: string, xmxMb: number,
-    loaderName: string, callback?: ModLoaderInstallCallback
+    loaderName: string, callback?: ModLoaderInstallCallback, verifiedMappings?: VerifiedMappingsDownload
   ): Promise<ForgelikeProcessorResult> {
     let profile: Record<string, Object> | null = null;
     try {
@@ -158,13 +159,26 @@ export class ForgelikeProcessorRunner {
 
       let logFile = mcDir + '/forge-installer.log'; // 追加式日志（runJavaProcessor 内 O_TRUNC，每步覆盖）
       let rc = -1;
+      let reusedMappings = false;
       const processor: ResolvedProcessor = resolved;
       try {
         rc = await withInstallerProcessorLock<number>(async (): Promise<number> => {
           // 等待别的安装释放 processor 槽之后重报步骤，产品 callback 可在此接收取消。
           ForgelikeProcessorRunner.report(callback, 'installing', 5 + (i / clientProcessors.length), 8, stepMsg);
-          return forgeNative().runJavaProcessor(filesDir, installerJdk, xmxMb,
-            processor.classpath, processor.mainClass, processor.args, mcDir, logFile);
+          // 上游DOWNLOAD_MOJMAPS会先删除已有输出再用Java联网；仅同owner本轮Native强校验
+          // 成功且此刻仍匹配的映射可以复用。锁内fresh检查避免排队期间文件变化后消费旧证据。
+          if (await ForgelikeProcessorRunner.canReuseMappings(processor, verifiedMappings, mcDir, libDir, gameVersion)) {
+            // fresh校验有异步边界；即使不用创建JVM，也不能吞掉校验期间到达的取消。
+            ForgelikeProcessorRunner.report(callback, 'installing', 5 + (i / clientProcessors.length), 8, stepMsg);
+            reusedMappings = true;
+            AppLogger.info(TAG, `processor #${i} DOWNLOAD_MOJMAPS reused fresh Native-verified mappings`, LOG_DOMAIN_MODLOADER);
+            return 0;
+          }
+          return invokeInstallerProcessor(forgeNative(), filesDir, installerJdk, xmxMb,
+            processor.classpath, processor.mainClass, processor.args, mcDir, logFile,
+            callback === undefined ? undefined : (): void => {
+              ForgelikeProcessorRunner.report(callback, 'installing', 5 + (i / clientProcessors.length), 8, stepMsg);
+            });
         });
       } catch (e) {
         return new ForgelikeProcessorResult(false,
@@ -184,11 +198,80 @@ export class ForgelikeProcessorRunner {
         return new ForgelikeProcessorResult(false,
           loaderName + ' 安装步骤 ' + (i + 1) + ' 未产出预期文件: ' + outMissing, ran);
       }
-      ran++;
+      if (!reusedMappings) ran++;
     }
 
     try { removeDirRecursive(procTmpBase); } catch (e) { /* */ }
     return new ForgelikeProcessorResult(true, '', ran, patchedClientPath);
+  }
+
+  /** 只接受唯一的独立参数，重复或缺值都不给跳过资格，保留上游原参数处理语义。 */
+  private static singleArgument(args: string[], name: string): string {
+    let value = '';
+    let found = false;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] !== name) continue;
+      if (found || i + 1 >= args.length || args[i + 1].startsWith('--')) return '';
+      found = true; value = args[i + 1];
+    }
+    return value;
+  }
+
+  /**
+   * 只给位于本owner的libraries内、逐级没有链接的普通文件复用资格。未知/非canonical
+   * 路径直接回原processor，不把外部文件或另一安装沙箱的“正确hash”冒充本次输入。
+   */
+  private static ownedMappingsPath(path: string, mcDir: string, libDir: string): boolean {
+    if (libDir !== mcDir + '/libraries' || !path.startsWith(libDir + '/')) return false;
+    let relative = path.substring(libDir.length + 1);
+    if (relative.length === 0 || safeRelPath(relative) !== relative) return false;
+    let owner = fs.lstatSync(mcDir);
+    if (!owner.isDirectory() || owner.isSymbolicLink()) return false;
+    let parts = ('libraries/' + relative).split('/');
+    let current = mcDir;
+    for (let i = 0; i < parts.length; i++) {
+      current += '/' + parts[i];
+      let stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink() || (i < parts.length - 1 ? !stat.isDirectory() : !stat.isFile())) return false;
+    }
+    return true;
+  }
+
+  /** 采用现有文件摘要路径的revision口径；hash期间的替换、增减和写入不能沿用旧匹配。 */
+  private static fileRevision(stat: fs.Stat): string {
+    return String(stat.ino) + ':' + stat.size + ':' + String(stat.mtimeNs ?? stat.mtime)
+      + ':' + String(stat.ctimeNs ?? stat.ctime);
+  }
+
+  /**
+   * 复用资格只针对Forge/NeoForge installertools的本版本client映射下载步骤；其它task
+   * 或缺证据/错owner/缺失/损坏都执行原Java处理。size与SHA来自本轮官方元数据及成功
+   * Native任务，不能只凭task名字或“文件已存在”跳过。校验I/O失败也不制造成功。
+   */
+  private static async canReuseMappings(processor: ResolvedProcessor, evidence: VerifiedMappingsDownload | undefined,
+    mcDir: string, libDir: string, gameVersion: string): Promise<boolean> {
+    if (evidence === undefined || evidence.gameVersion !== gameVersion || evidence.libraryDir !== libDir
+      || !Number.isSafeInteger(evidence.size) || evidence.size <= 0 || !/^[0-9a-f]{40}$/.test(evidence.sha1)) return false;
+    // 只复用本轮已核实实现：2.1.2的官方工件及其SHA1。未知版本/Forge变体/自定义JAR
+    // 即使参数同名也保留Java行为，不能用一个task字符串消除其它实现的自定义副作用。
+    let knownMain = processor.mainClass === 'net.neoforged.installertools.ConsoleTool';
+    let knownJar = processor.jarCoord === 'net.neoforged.installertools:installertools:2.1.2';
+    if (!knownMain || !knownJar || ForgelikeProcessorRunner.singleArgument(processor.args, '--task') !== 'DOWNLOAD_MOJMAPS'
+      || ForgelikeProcessorRunner.singleArgument(processor.args, '--version') !== gameVersion
+      || ForgelikeProcessorRunner.singleArgument(processor.args, '--side') !== 'client'
+      || ForgelikeProcessorRunner.singleArgument(processor.args, '--output') !== evidence.path) return false;
+    try {
+      if (!ForgelikeProcessorRunner.ownedMappingsPath(evidence.path, mcDir, libDir)) return false;
+      let processorJar = libDir + '/' + mavenToRelativePath(processor.jarCoord);
+      if (!ForgelikeProcessorRunner.ownedMappingsPath(processorJar, mcDir, libDir)
+        || (await computeFileSha1(processorJar)).toLowerCase() !== '72524c0362f812d8aa4cdb4c03e9b45e2b71ae3b') return false;
+      let before = fs.lstatSync(evidence.path);
+      if (before.size !== evidence.size) return false;
+      let actual = (await computeFileSha1(evidence.path)).toLowerCase();
+      let after = fs.lstatSync(evidence.path);
+      return actual === evidence.sha1 && ForgelikeProcessorRunner.fileRevision(before) === ForgelikeProcessorRunner.fileRevision(after)
+        && ForgelikeProcessorRunner.ownedMappingsPath(evidence.path, mcDir, libDir);
+    } catch (_) { return false; }
   }
 
   /** sides 缺失/空 → 两端都跑；否则仅当含 'client' 才跑。 */

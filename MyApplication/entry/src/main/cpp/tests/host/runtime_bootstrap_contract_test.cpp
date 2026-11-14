@@ -10,8 +10,34 @@
 
 #define REQUIRE(x) do { if (!(x)) { std::cerr << "FAIL " << __LINE__ << ": " #x << '\n'; std::exit(1); } } while (0)
 int main() {
+    // 标准音频只补默认值；用户指定其它已安装provider仍按Java原有选择规则处理。
+    std::vector<std::string> audioArgs{"-Djavax.sound.sampled.SourceDataLine=UserProvider#Mixer"};
+    amcl::jvm::ApplyAudioMixerDefaults(audioArgs);
+    REQUIRE(audioArgs.size() == 3);
+    REQUIRE(audioArgs.front() == "-Djavax.sound.sampled.SourceDataLine=UserProvider#Mixer");
+    const auto audioOnce = audioArgs;
+    amcl::jvm::ApplyAudioMixerDefaults(audioArgs);
+    REQUIRE(audioArgs == audioOnce);
     using namespace amcl::jvm;
-    const auto properties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", true);
+    auto properties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", true);
+    // 当前安装包映像是唯一目录来源：用户数据、路径穿越、别的DSO都不能冒充本包。
+    std::string directory, ownerError;
+    for (const char* root : {"/data/storage/el1/bundle/libs/arm64",
+            "/data/storage/el1/bundle/libs/arm64-v8a", "/data/storage/el1/bundle/libs"}) {
+        REQUIRE(HapNativeDirectoryFromOwner(std::string(root) + "/libentry.so", directory, ownerError));
+        REQUIRE(directory == root);
+    }
+    for (const char* owner : {"libentry.so", "/data/storage/el2/base/files/libs/libentry.so",
+            "/data/storage/el1/bundle/libs/arm64/../arm64/libentry.so",
+            "/data/storage/el1/bundle/libs/arm64/libglfw.so", ""}) {
+        directory = "unchanged";
+        REQUIRE(!HapNativeDirectoryFromOwner(owner, directory, ownerError) && directory == "unchanged");
+    }
+    REQUIRE(CheckHapExternalProviderFiles("/hap/libs", [](const std::string&) { return true; }, ownerError));
+    REQUIRE(!CheckHapExternalProviderFiles("/hap/libs", [](const std::string& p) {
+        return p != "/hap/libs/libfreetype.so";
+    }, ownerError));
+    REQUIRE(ownerError == "hap_native_provider_missing:libfreetype.so");
     // EGL 必须在首次 LWJGL Configuration 读取前与真实 provider 配对，不能误用 Linux 的
     // libEGL.so.1 或把翻译器的虚拟句柄交给系统 EGL。这里同时覆盖两条系统路线及无 EGL 的 Vulkan。
     REQUIRE(RuntimeEglLibrary("/hap/libs", "mobileglues") == "/hap/libs/libamcl_lwjgl_egl.so");
@@ -22,15 +48,77 @@ int main() {
     REQUIRE(RuntimeEglLibrary("/hap/libs", "unknown-profile").empty());
     std::string error;
     std::vector<std::string> args{"-Xmx1024m", "-Dorg.lwjgl.sdl.libname=libSDL3.so", "-Dorg.lwjgl.libname=lwjgl_v322"};
+    bool customOpenAl = true;
+    REQUIRE(NormalizeHapProviderArguments(args, properties, "/hap/libs", customOpenAl, error));
+    REQUIRE(!customOpenAl);
     REQUIRE(FreezeBootstrapProperties(args, properties, error));
     const auto once = args;
     REQUIRE(std::find(args.begin(), args.end(), "-Djna.tmpdir=/instance/natives/jna") != args.end());
+    REQUIRE(std::find(args.begin(), args.end(), "-Djava.io.tmpdir=/instance/.amcl/java-tmp") != args.end());
+    // provider候选根属于真实HAP；用户的上游ZstdNativePath仍可显式选择，二者不能混淆。
+    REQUIRE(std::count(args.begin(), args.end(), "-Damcl.zstd.native.path=/hap/libs") == 1);
+    std::vector<std::string> spoofedZstd{"-Damcl.zstd.native.path=/public/mods"};
+    const auto spoofedOriginal = spoofedZstd;
+    REQUIRE(!FreezeBootstrapProperties(spoofedZstd, properties, error) && spoofedZstd == spoofedOriginal);
+    std::vector<std::string> customZstd{"-DZstdNativePath=/user/custom-zstd.so"};
+    REQUIRE(FreezeBootstrapProperties(customZstd, properties, error));
+    REQUIRE(customZstd.front() == "-DZstdNativePath=/user/custom-zstd.so");
     REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.egl.libname=/hap/libs/libamcl_lwjgl_egl.so") != args.end());
     REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.opengles.libname=libGLESv3.so") != args.end());
     REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.opengles.contextAPI=EGL") != args.end());
     REQUIRE(FreezeBootstrapProperties(args, properties, error) && args == once);
-    REQUIRE(std::count(args.begin(), args.end(), "-Dorg.lwjgl.sdl.libname=libSDL3.so") == 1);
+    REQUIRE(std::count(args.begin(), args.end(), "-Dorg.lwjgl.sdl.libname=/hap/libs/libSDL3.so") == 1);
+    // 独立FFM消费者与LWJGL命中同一制品；这只绑定fallback，不提前执行其SDL_Init。
+    REQUIRE(std::count(args.begin(), args.end(), "-Ddev.isxander.sdl.library=/hap/libs/libSDL3.so") == 1);
+    REQUIRE(std::count(args.begin(), args.end(), "-Dorg.lwjgl.openal.libname=/hap/libs/libopenal.so") == 1);
+    for (const auto& alias : HapOwnedProviderAliases()) {
+        REQUIRE(std::count(args.begin(), args.end(), std::string("-D") + alias.key + "=/hap/libs/" + alias.artifact) == 1);
+    }
     REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.libname=lwjgl_v322") != args.end());
+    // 自定义Java临时目录保留最后参数语义，既不重写用户路径也不创建缺省目录。
+    for (const std::vector<std::string>& customTemp : {
+            std::vector<std::string>{"-Djava.io.tmpdir=/chosen/tmp"},
+            std::vector<std::string>{"-Djava.io.tmpdir=/first", "-Djava.io.tmpdir="}}) {
+        auto properties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", false);
+        REQUIRE(PreserveExplicitJavaTempDirectory(customTemp, properties));
+        REQUIRE(std::none_of(properties.begin(), properties.end(), [](const auto& p) { return p.first == "java.io.tmpdir"; }));
+        auto actual = customTemp;
+        REQUIRE(FreezeBootstrapProperties(actual, properties, error));
+        REQUIRE(std::equal(customTemp.begin(), customTemp.end(), actual.begin()));
+    }
+    // OpenAL保留高级显式选择及最后值语义；默认值规范化不覆盖用户的不同provider。
+    for (const std::string value : {"none", "", "/user/custom/libopenal.so"}) {
+        auto customProperties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", true);
+        std::vector<std::string> customArgs{"-Dorg.lwjgl.openal.libname=libopenal.so", "-Dorg.lwjgl.openal.libname=" + value};
+        const auto originalArgs = customArgs;
+        REQUIRE(NormalizeHapProviderArguments(customArgs, customProperties, "/hap/libs", customOpenAl, error));
+        REQUIRE(customOpenAl && customArgs == originalArgs);
+        REQUIRE(std::none_of(customProperties.begin(), customProperties.end(), [](const auto& p) {
+            return p.first == "org.lwjgl.openal.libname";
+        }));
+        REQUIRE(FreezeBootstrapProperties(customArgs, customProperties, error));
+        REQUIRE(std::find(customArgs.begin(), customArgs.end(), "-Dorg.lwjgl.openal.libname=" + value) != customArgs.end());
+    }
+    auto defaultProperties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", true);
+    std::vector<std::string> defaultArgs{"-Dorg.lwjgl.openal.libname=none", "-Dorg.lwjgl.openal.libname=libopenal.so"};
+    REQUIRE(NormalizeHapProviderArguments(defaultArgs, defaultProperties, "/hap/libs", customOpenAl, error));
+    REQUIRE(!customOpenAl && defaultArgs.empty());
+    REQUIRE(FreezeBootstrapProperties(defaultArgs, defaultProperties, error));
+    // 子入口缺席时继续Supplier复用；显式等值可规范，外来库拒绝且不产生半更新。
+    const std::string childKey = "org.lwjgl.shaderc.glslang.libname";
+    REQUIRE(std::none_of(properties.begin(), properties.end(), [&](const auto& p) { return p.first == childKey; }));
+    auto childProperties = properties;
+    std::vector<std::string> childArgs{"-D" + childKey + "=shaderc"};
+    REQUIRE(NormalizeHapProviderArguments(childArgs, childProperties, "/hap/libs", customOpenAl, error));
+    REQUIRE(FreezeBootstrapProperties(childArgs, childProperties, error));
+    const auto childOnce = childArgs; const auto propertiesOnce = childProperties;
+    REQUIRE(NormalizeHapProviderArguments(childArgs, childProperties, "/hap/libs", customOpenAl, error));
+    REQUIRE(FreezeBootstrapProperties(childArgs, childProperties, error));
+    REQUIRE(childArgs == childOnce && childProperties == propertiesOnce);
+    std::vector<std::string> badChild{"-Dorg.lwjgl.glfw.libname=libglfw.so", "-D" + childKey + "=/other/libshaderc.so"};
+    const auto badChildBefore = badChild; const auto childPropertiesBefore = childProperties;
+    REQUIRE(!NormalizeHapProviderArguments(badChild, childProperties, "/hap/libs", customOpenAl, error));
+    REQUIRE(badChild == badChildBefore && childProperties == childPropertiesBefore);
     for (const char* invalid : {"-Dorg.lwjgl.sdl.libname", "-Dorg.lwjgl.opengl.libname=evil",
             "-Djava.system.class.loader=Other", "-Djava.class.path=/other", "-Djava.library.path=/other",
             "-Dorg.lwjgl.vulkan.libname=other", "-Dorg.lwjgl.egl.libname=libEGL.so.1",

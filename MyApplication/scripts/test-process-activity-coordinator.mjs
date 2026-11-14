@@ -5,8 +5,10 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { loader, root, ts } from './mod-install-test-runtime.mjs';
+import { loader, root } from './mod-install-test-runtime.mjs';
+import ts from './lib/ets-compiler.mjs';
 import path from 'node:path';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
 const noop = () => {};
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
@@ -147,15 +149,21 @@ assert.match(nativeMethod, /processLaunch\.commitNativeDispatch\(\)[\s\r\n]*let 
 function pageFixture(f, isolated, work) {
   const code = ts.transpileModule('class Page {\n' + startMethod + '\n}\nreturn Page;',
     { compilerOptions: { target: ts.ScriptTarget.ES2021 } }).outputText;
-  const Page = new Function('AppStorage', 'ProductInputProfile', 'GameRunAdmission', 'LOG_DOMAIN_LAUNCH', 'TAG', code)(
-    { get: () => undefined }, { selection: () => ({ isolatedGameProcess: isolated, desktopWindow: false }) }, f.admission, 1, 'test');
+  // 页面入口现已先挂接真实TinyFD窗口；只替换Native租约端口，继续运行生产attach。
+  // 每次使用独立模块缓存，不能让上个测试的静态窗口身份污染后继准入判据。
+  const dialogSessions=[];
+  const dialog=makePureEtsLoader({'@kit.ArkUI':{},commons:{AppLogger:log,LOG_DOMAIN_LAUNCH:1},
+    'libentry.so':{default:{gameDialogAttach:session=>{dialogSessions.push(session);return 'activity-dialog';},gameDialogDetach:()=>true}}})
+    ('entry/src/main/ets/runtime/GameDialogRuntime.ets').GameDialogRuntime;
+  const Page = new Function('AppStorage', 'ProductInputProfile', 'GameRunAdmission', 'LOG_DOMAIN_LAUNCH', 'TAG', 'GameDialogRuntime', code)(
+    { get: () => undefined }, { selection: () => ({ isolatedGameProcess: isolated, desktopWindow: false }) }, f.admission, 1, 'test',dialog);
   const page = new Page(); let current = true; let calls = 0;
   const host = { accepts: () => current, isRunning: () => false, waitPrepared: async () => true,
     bindActivity: noop, sessionActivity: () => 1 };
   Object.assign(page, { sessionHost: host, frontendLease: {}, context: {}, inputLifecycleEpoch: 1,
     navigatedAway: false, mcStarted: false, inputProductFailure_: '',
     getUIContext: () => ({ getRouter: () => ({ getParams: () => ({ activityId: 1 }) }) }),
-    beginLaunchLedgerEarly_: noop, launchLogger_: () => log, recordLaunchFailure_: async () => {}, restoreGameWindow: async () => {},
+    beginLaunchLedgerEarly_: () => assert.deepEqual(dialogSessions,[1]), launchLogger_: () => log, recordLaunchFailure_: async () => {}, restoreGameWindow: async () => {},
     startMCInternal: async lease => { calls++; await work?.(lease); } });
   return { page, retire: () => { current = false; }, calls: () => calls };
 }

@@ -41,7 +41,7 @@ extern "C" __attribute__((visibility("default"))) EglFunction eglGetProcAddress(
     const auto* owner = static_cast<const AmclGraphicsRuntimeServiceV2*>(address);
     if (!amcl::graphics::ValidGraphicsRuntimeServiceV2(owner, pid)) return nullptr;
     const auto* api = owner->bound();
-    if (!api || api->structSize < sizeof(AmclGraphicsRuntimeV1) || api->abiVersion != 1 ||
+    if (!api || api->structSize < AMCL_GRAPHICS_RUNTIME_V1_CORE_SIZE || api->abiVersion != 1 ||
         api->processId != static_cast<uint64_t>(pid) || !api->eglProc) return nullptr;
     return reinterpret_cast<EglFunction>(api->eglProc(name));
 }

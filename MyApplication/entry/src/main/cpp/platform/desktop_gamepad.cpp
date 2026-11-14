@@ -242,7 +242,7 @@ std::array<AmclDesktopGamepad, 16> pads{};
 std::array<unsigned char, 16> digitalHats{};
 std::map<std::string, uint64_t> changed;
 uint64_t deviceEpoch = 0;
-bool nativeMode = false, focused = false, started = false, attempted = false;
+bool nativeMode = false, focused = false, started = false;
 int Find(const std::string& id) {
     for (size_t i = 0; i < pads.size(); ++i) if (pads[i].connected && id == pads[i].id) return static_cast<int>(i);
     return -1;
@@ -332,6 +332,13 @@ bool ControllerResult(int error, const char* stage) {
 }
 bool Start() {
     auto& api=Api(); if(!api.ready) return false;
+    // 上次失败可能只枚举了部分设备；未成功启用的清单不能在下次成功时冒充仍在线。
+    // 保留每槽generation单调性，旧输入观察不会把重启后的连接当成原连接。
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for(auto& pad:pads) {if(pad.connected)++pad.generation;pad.connected=0;Neutral(pad);}
+        digitalHats.fill(0);changed.clear();
+    }
     if(!ControllerResult(api.OH_GameDevice_RegisterDeviceMonitor(OnDevice), "OH_GameDevice_RegisterDeviceMonitor")) return false;
     bool ok=true;
     if(!ControllerResult(api.OH_GamePad_LeftShoulder_RegisterButtonInputMonitor(OnButton), "OH_GamePad_LeftShoulder_RegisterButtonInputMonitor")) ok=false;
@@ -399,8 +406,9 @@ bool Start() {
 }
 }
 bool SetNativeGamepadMode(bool enabled) {
-    // Called on the owning UI thread before the game's input component starts.
-    if(enabled && !attempted) { attempted=true; started=Start(); }
+    // 原UI owner的明确启用边界才尝试启动。Api()缓存真实符号能力；Start会撤销本次
+    // 部分注册，运行时失败不再被“曾经尝试”永久封死。已成功订阅不重复注册，无重试时钟。
+    if (enabled && !started) started = Start();
     std::lock_guard<std::mutex> lock(mutex);
     nativeMode=enabled && started;
     for(auto& pad:pads) Neutral(pad);

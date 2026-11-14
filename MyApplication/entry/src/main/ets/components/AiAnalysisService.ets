@@ -22,7 +22,7 @@
 
 import { common } from '@kit.AbilityKit';
 import { AppLogger, LOG_DOMAIN_UI } from 'commons';
-import { streamAiAnalysis, AiStreamHandle, LOGSHARE_API_BASE, loadShareRecords, LogShareRecord } from './LogShareClient';
+import { streamAiAnalysis, AiStreamHandle, LOGSHARE_API_BASE, loadShareRecords, LogShareRecord, logShareSupportsAi } from './LogShareClient';
 import { saveSessionAiText } from './McSessionSnapshot';
 import { AiReportSource, saveAiReport } from './AiReportStore';
 import { buildAiDoneMessage, buildAiFailedMessage } from './AppMessageStore';
@@ -156,6 +156,10 @@ export function isAiRunning(sessionKey: number): boolean {
  */
 export function startAiAnalysis(ctx: common.UIAbilityContext, sessionKey: number,
   logShareId: string, versionLabel: string, apiBaseUrl: string = LOGSHARE_API_BASE, snapshotDigest: string = ''): void {
+  // LogShare 已下线生成式 AI。能力判断必须早于建任务、通知和任何网络调用，
+  // 使旧路由、迟到的 UI 回调或其他遗留调用都不能重新发起已失效的请求。
+  // 不改写现有任务和本地报告，历史阅读与已完成结果的本地补存仍可独立使用。
+  if (!logShareSupportsAi(apiBaseUrl)) return;
   if (sessionKey <= 0 || logShareId.length === 0 || apiBaseUrl !== LOGSHARE_API_BASE) return;
   let existing = tasks_.get(sessionKey);
   // 重试冷却留在服务层，旧诊断页与新阅读 sheet 都不能绕过 Retry-After。

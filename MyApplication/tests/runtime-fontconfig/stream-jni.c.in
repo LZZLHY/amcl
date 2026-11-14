@@ -1,0 +1,110 @@
+/* 真实 HotSpot JNI 驱动：只有不可自然制造的 direct-buffer/array-region 失败由薄转发器注入。
+ * 其余 CallInt/CallObject、异常对象、ByteBuffer/byte[] 和 CheckJNI 全部走真实宿主 JVM。
+ * 单线程串行夹具的全局状态不进入产品库。 */
+#include <jni.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+/* 8u 结构中的布局缓存本测试不解引用，仅保留与真实指针字段相同的声明。 */
+typedef struct TTLayoutTableCache_ TTLayoutTableCache;
+@SCALER_STRUCT@
+@CACHE_DEFINE@
+@ORIGINAL_MACRO@
+static jboolean debugFonts;
+static struct { jmethodID ttReadBlockMID, ttReadBytesMID; } sunFontIDs;
+static JNIEnv *actual;
+static jobject marker;
+static int mode, checks;
+static uint64_t lastState;
+static jobject proxyDirect(JNIEnv *unused, void *address, jlong capacity) {
+    (void)unused;
+    if (mode == 2 || mode == 5 || mode == 9) return NULL;
+    if (mode == 3) { (*actual)->Throw(actual, (jthrowable)marker); return NULL; }
+    return (*actual)->NewDirectByteBuffer(actual, address, capacity);
+}
+static jint proxyInt(JNIEnv *unused, jobject object, jmethodID method, ...) {
+    (void)unused; va_list arguments; va_start(arguments, method);
+    jint value = (*actual)->CallIntMethodV(actual, object, method, arguments);
+    va_end(arguments); return value;
+}
+static jobject proxyObject(JNIEnv *unused, jobject object, jmethodID method, ...) {
+    (void)unused; va_list arguments; va_start(arguments, method);
+    jobject value = (*actual)->CallObjectMethodV(actual, object, method, arguments);
+    va_end(arguments); return value;
+}
+static jboolean proxyCheck(JNIEnv *unused) { (void)unused; ++checks; return (*actual)->ExceptionCheck(actual); }
+static jthrowable proxyOccurred(JNIEnv *unused) { (void)unused; return (*actual)->ExceptionOccurred(actual); }
+static void proxyDescribe(JNIEnv *unused) { (void)unused; (*actual)->ExceptionDescribe(actual); }
+static void proxyClear(JNIEnv *unused) { (void)unused; (*actual)->ExceptionClear(actual); }
+static jint proxyThrow(JNIEnv *unused, jthrowable value) { (void)unused; return (*actual)->Throw(actual, value); }
+static void proxyDelete(JNIEnv *unused, jobject value) { (void)unused; (*actual)->DeleteLocalRef(actual, value); }
+static jsize proxyLength(JNIEnv *unused, jarray value) { (void)unused; return (*actual)->GetArrayLength(actual, value); }
+static void proxyRegion(JNIEnv *unused, jbyteArray array, jsize start, jsize count, jbyte *data) {
+    (void)unused;
+    if (mode == 9) { (*actual)->Throw(actual, (jthrowable)marker); return; }
+    (*actual)->GetByteArrayRegion(actual, array, start, count, data);
+}
+@READ_HELPER@
+@READ_CALLBACK@
+static jmethodID invalidateScalerMID;
+static int resourceReleases;
+/* 库资源的释放仅记录次数；异常保存/Java 失效调用使用整个生产函数。 */
+static void freeNativeResources(JNIEnv *env, FTScalerInfo *scaler) {
+    (void)env; (void)scaler; ++resourceReleases;
+}
+@INVALIDATE@
+
+JNIEXPORT void JNICALL Java_FontStreamProbe_invalidate(JNIEnv *env, jclass type, jobject scaler, jthrowable prior) {
+    (void)type;
+    jclass scalerClass = (*env)->GetObjectClass(env, scaler);
+    invalidateScalerMID = (*env)->GetMethodID(env, scalerClass, "invalidateScaler", "()V");
+    (*env)->DeleteLocalRef(env, scalerClass);
+    resourceReleases = 0;
+    if (prior != NULL) (*env)->Throw(env, prior);
+    invalidateJavaScaler(env, scaler, NULL);
+    lastState = resourceReleases;
+}
+
+JNIEXPORT jlong JNICALL Java_FontStreamProbe_exercise(JNIEnv *env, jclass type, jobject reader, jint inputMode) {
+    (void)type; actual = env; mode = inputMode; checks = 0; debugFonts = mode == 10;
+    jclass readerClass = (*env)->GetObjectClass(env, reader);
+    sunFontIDs.ttReadBlockMID = (*env)->GetMethodID(env, readerClass, "readBlock", "(Ljava/nio/ByteBuffer;II)I");
+    sunFontIDs.ttReadBytesMID = (*env)->GetMethodID(env, readerClass, "readBytes", "(II)[B");
+    jfieldID markerId = (*env)->GetFieldID(env, readerClass, "marker", "Ljava/lang/Throwable;");
+    marker = (*env)->GetObjectField(env, reader, markerId);
+    struct JNINativeInterface_ table = **env;
+    table.NewDirectByteBuffer = proxyDirect; table.CallIntMethod = proxyInt; table.CallObjectMethod = proxyObject;
+    table.ExceptionCheck = proxyCheck; table.ExceptionOccurred = proxyOccurred; table.ExceptionDescribe = proxyDescribe;
+    table.ExceptionClear = proxyClear; table.Throw = proxyThrow; table.DeleteLocalRef = proxyDelete;
+    table.GetArrayLength = proxyLength; table.GetByteArrayRegion = proxyRegion;
+    JNIEnv forwarding = &table;
+    FTScalerInfo scaler; memset(&scaler, 0, sizeof(scaler));
+    scaler.env = &forwarding; scaler.font2D = reader; scaler.fileSize = 4096;
+    scaler.fontData = malloc(FILEDATACACHESIZE); memset(scaler.fontData, 0xcc, FILEDATACACHESIZE);
+    jobject localBuffer = (*env)->NewDirectByteBuffer(env, scaler.fontData, FILEDATACACHESIZE);
+    scaler.directBuffer = (*env)->NewGlobalRef(env, localBuffer); (*env)->DeleteLocalRef(env, localBuffer);
+    FT_StreamRec stream; memset(&stream, 0, sizeof(stream)); stream.pathname.pointer = &scaler;
+    unsigned char bytes[4096]; memset(bytes, 0xaa, sizeof(bytes));
+    int large = mode == 1 || mode == 2 || mode == 3 || mode == 5 || mode == 9;
+    unsigned long first = ReadTTFontFileFunc(&stream, 0, bytes, large ? 2048 : 64);
+    int beforeSecond = checks;
+    unsigned long offset = mode == 6 ? 32 : 8;
+    unsigned long second = large ? 0 : ReadTTFontFileFunc(&stream, offset, bytes, 16);
+    lastState = (uint64_t)first | ((uint64_t)second << 16) | ((uint64_t)scaler.fontDataLength << 32) |
+        (checks == beforeSecond ? UINT64_C(1) << 48 : 0) | (bytes[0] == (unsigned char)offset ? UINT64_C(1) << 49 : 0);
+    if (mode == 0 || mode == 1) {
+        /* 无真实异常的正常路径故意立即执行普通 JNI；原漏检必须被 -Xcheck:jni 识别。 */
+        jstring barrier = (*env)->NewStringUTF(env, "ordinary-JNI-after-stream");
+        (*env)->DeleteLocalRef(env, barrier);
+    }
+    (*env)->DeleteGlobalRef(env, scaler.directBuffer);
+    (*env)->DeleteLocalRef(env, marker); (*env)->DeleteLocalRef(env, readerClass);
+    free(scaler.fontData);
+    return (jlong)lastState;
+}
+JNIEXPORT jlong JNICALL Java_FontStreamProbe_last(JNIEnv *env, jclass type) {
+    (void)env; (void)type; return (jlong)lastState;
+}

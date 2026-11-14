@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {evidenceRuntime} from './lib/evidence-test-runtime.mjs';
+import {closeEvidenceRuntime} from './lib/close-evidence-runtime.mjs';
 let releaseClose,enterClose,beginFails=false,uploaded=0,revoked=0,activeDirectory='',queued='',remoteDeleted=false;
 const gate=new Promise(resolve=>releaseClose=resolve),entered=new Promise(resolve=>enterClose=resolve);
 const options={imports:{},commons:{DiagnosticPolicy:{hasTestHooks:()=>true,resolvedCapabilities:()=>1}},
@@ -22,9 +23,10 @@ options.imports['./EvidenceShareService']={async shareEvidenceSnapshot(_context,
  return{id:'fixture001',url:'https://fixture.invalid/view/fixture001',apiBaseUrl:'https://fixture.invalid',remoteFilesVerified:true};}};
 options.imports['@kit.NetworkKit']={http:{RequestMethod:{GET:'GET'},createHttp:()=>({destroy(){},
  async request(url){return{responseCode:remoteDeleted?404:200,result:url.includes('/render/')?'AMCL_SYNTHETIC_RENDER hostprobe':'AMCL synthetic routing probe hostprobe'};}})}};
-// Native sink替身只控制关闭完成边界：begin保存当前真实目录，endAsync等gate兑现后写入累积正文。
+// Native sink替身控制真实异步端口的完成边界：beginAsync保存当前目录，endAsync等gate兑现后写正文。
 // 生产Probe必须await它再冻结快照；同步end明确拒绝。finally仅清本fixture目录，不创建真实writer线程。
-ledger.setLedgerScopeSink({begin(_id,dir){activeDirectory=dir;fs.mkdirSync(dir+'/launcher',{recursive:true});return true;},
+ledger.setLedgerScopeSink({begin(){throw Error('Probe禁止同步Native开账');},
+ async beginAsync(_id,dir){activeDirectory=dir;fs.mkdirSync(dir+'/launcher',{recursive:true});return true;},
  end(){throw Error('Probe禁止同步Native关闭');},async endAsync(){enterClose();await gate;fs.writeFileSync(activeDirectory+'/launcher/launcher-host.log',queued);}});
 const {runProbe}=fixture.load('entry/src/main/ets/components/LogShareConnectivityProbe.ets');
 try{
@@ -38,4 +40,4 @@ try{
  const failure=JSON.parse(fs.readFileSync(fixture.context.filesDir+'/logshare-connectivity-beginfailed.json','utf8'));
  assert(failure.steps.some(step=>step.name==='probe-error'&&!step.ok));assert.equal(uploaded,1,'开账失败不发送');
  console.log('PASS: production Probe waits actual async close before snapshot/upload, preserves LONG_END, revokes synthetic share and records begin failure');
-}finally{fixture.close();}
+}finally{await closeEvidenceRuntime(fixture);}

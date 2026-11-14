@@ -1,3 +1,4 @@
+import { EditorPalette } from './TouchEditorTheme'
 /**
  * 真实游戏上的半透明教学层。只绘制遮罩、指针和文字；真实摇杆、快捷栏、菜单始终由原输入系统处理。
  * 除顶部工具栏外全部不参与命中，工具栏矩形由GameControls登记为ArkUI排除区。
@@ -7,6 +8,8 @@ import { TouchControlRect, TouchGuideStep, TouchGuideLayout, touchGuideLayout } 
 
 @Component
 export struct TouchLearningView {
+  /** 独立实例只为工具chrome取色；原触点、按钮身份、几何、命中和输入生命周期不变。 */
+  @Prop palette: EditorPalette = new EditorPalette()
   @Prop @Watch('restartAnimation') step: number=TouchGuideStep.Move
   @Prop @Watch('refreshAnimation') active: boolean=true
   @Prop @Watch('refreshAnimation') fingers: number=0
@@ -148,31 +151,32 @@ export struct TouchLearningView {
       Column({space:this.layout().compact ? 4 : 8}) {
         if(this.layout().menuRail) {
           Text(this.progressLabel()+' · '+this.message()).fontSize(14).lineHeight(18).maxLines(2)
-            .fontColor('#F1FAF3').width('100%')
+            .fontColor(this.palette.text).width('100%')
         } else {
           Text(this.progressLabel()+' · '+this.title()).fontSize(this.layout().compact ? 16 : 18)
-            .fontWeight(FontWeight.Medium).fontColor('#F1FAF3').width('100%')
+            .fontWeight(FontWeight.Medium).fontColor(this.palette.text).width('100%')
           Text(this.message()).fontSize(this.layout().compact ? 14 : 16).maxLines(this.layout().compact ? 2 : 4)
-            .fontColor('#DCECE0').width('100%')
-          if(!this.layout().compact) { Text('直接操作游戏 · 达成后自动继续').fontSize(14).fontColor('#A6CDB5').width('100%') }
+            .fontColor(this.palette.muted).width('100%')
+          // 各步骤已有实际操作说明；通用的自动继续提示仅在首个移动步骤出现，避免每步重复占高。
+          if(!this.layout().compact && this.step===TouchGuideStep.Move) { Text('直接操作游戏 · 达成后自动继续').fontSize(14).fontColor(this.palette.muted).width('100%') }
         }
       }.width(this.cardWidth()).height(this.layout().card.height).padding(this.layout().menuRail ? 8 : this.layout().compact ? 10 : 16)
-        .opacity(!this.grabbed && this.fingers>0 ? 0 : 1).backgroundColor('#D020332A').borderRadius(12)
-        .border({width:1,color:'#668BB59A'}).position({x:this.cardX(),y:this.cardY()})
+        .opacity(!this.grabbed && this.fingers>0 ? 0 : 1).backgroundColor(this.palette.panel).borderRadius(12)
+        .border({width:1,color:this.palette.stroke}).position({x:this.cardX(),y:this.cardY()})
     }.width('100%').height('100%').hitTestBehavior(HitTestMode.None)
   }
   build() {
     Stack({alignContent:Alignment.TopStart}) {
       this.VisualGuide()
       Row({space:8}) {
-        Button('跳过此步').fontSize(14).height(44).layoutWeight(1).backgroundColor('#C92B4438').fontColor('#F1FAF3')
+        Button('跳过此步').fontSize(14).height(44).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text)
           .hitTestBehavior(HitTestMode.Block).onClick((): void => { this.onSkip(this.publicationToken) })
         if(this.step===TouchGuideStep.Menu && !this.grabbed) {
-          Button('开始滚动').fontSize(14).height(44).layoutWeight(1).backgroundColor('#B7EFCD').fontColor('#153B25')
+          Button('开始滚动').fontSize(14).height(44).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent)
             .enabled(this.scrollEnabled && (this.navigationKind!==3 || !this.navigationScrollKnown || this.navigationScrollable))
             .hitTestBehavior(HitTestMode.Block).onClick((): void => { this.onBeginScroll(this.publicationToken) })
         }
-        Button('关闭引导').fontSize(14).height(44).layoutWeight(1).backgroundColor('#C92B4438').fontColor('#F1FAF3')
+        Button('关闭引导').fontSize(14).height(44).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text)
           .hitTestBehavior(HitTestMode.Block).onClick((): void => { this.onClose(this.publicationToken) })
       }.width(this.layout().toolbar.width).height(this.layout().toolbar.height)
         .position({x:this.layout().toolbar.x,y:this.layout().toolbar.y})

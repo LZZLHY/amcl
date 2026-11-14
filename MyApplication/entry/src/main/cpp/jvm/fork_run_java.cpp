@@ -19,7 +19,7 @@
  * 核心流程：
  * 1. 原子保留从 Fresh 到 fork 返回的窗口；fork() 创建子进程
  * 2. 子进程：先验证保留态/PID并重置，再重定向 stdout/stderr、chdir 到目标目录
- * 3. 子进程：设置字体/locale/库路径环境 + 预加载 fontconfig stub
+ * 3. 子进程：固定真实 cwd/正确 classic 或现代库路径；jvmInit统一准备字体/locale
  * 4. 子进程：jvmSetForkChildMode(true)（跳过游戏专属 -D 与 watchdog）
  * 5. 子进程：jvmSetClasspath / jvmSetXmx / jvmSetExtraArgsList → jvmInit → jvmCallMain
  * 6. 父进程：fork 返回后立即释放保留，waitpid 等待子进程结束，返回退出码
@@ -33,26 +33,24 @@
 #include "fork_run_java.h"
 #include "jvm_launcher.h"
 #include "processor_wait.h"
+#include "processor_environment.h"
+#include "processor_child_owner.h"
 #include "update_install_lease.h"
 #include "../utils/amcl_log.h"
 #include <hilog/log.h>
-#include <dlfcn.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string>
 #include <vector>
 
 #undef LOG_TAG
 #define LOG_TAG "FORK_JAVA"
-
-/* ELF loader API（fontconfig stub 预加载用；libjvm 由 jvmInit 内部经 ELF loader 加载）*/
-extern "C" {
-    void* elf_open(const char* path);
-}
 
 /**
  * 子进程入口：复用 jvmInit + jvmCallMain 启动嵌入式 JVM 并跑 main()。
@@ -61,39 +59,48 @@ extern "C" {
  */
 static void childMain(const char* filesDir, const char* jdkVersion,
                       const char* classpath, const char* mainClass,
-                      int argc, const char** argv, int xmxMb,
-                      const char* workDir) {
+                      int argc, const char** argv, int xmxMb) {
     std::string javaHome = std::string(filesDir) + "/jdk/" + jdkVersion;
-    std::string jdkLib = javaHome + "/lib";
+    // 只读当前槽的真实布局；8 的 native 库在 jre/lib/aarch64，不能把现代 lib/ 前缀
+    // 写进环境后再期望 jvmInit 的搜索路径掩盖它。现有自带 fontconfig 也按同布局读取。
+    const std::string classicLib = javaHome + "/jre/lib/aarch64";
+    struct stat classicVm{};
+    const bool classic = stat((classicLib + "/server/libjvm.so").c_str(), &classicVm) == 0 && S_ISREG(classicVm.st_mode);
+    std::string jdkLib = classic ? classicLib : javaHome + "/lib";
     std::string serverLib = jdkLib + "/server";
 
-    /* 字体 / locale 环境（与主进程一致；jvmInit 自身只钉 LC_ALL/LANG，这里补 FONTCONFIG）。
-     * 中文路径修复：把 locale 钉成 UTF-8，让 sun.jnu.encoding 经 CODESET 推断为 UTF-8，
-     * 避免 musl 默认 "C" locale 损坏含中文的 .minecraft / 版本目录路径。 */
-    setenv("FONTCONFIG_PATH", filesDir, 1);
-    setenv("FONTCONFIG_FILE", (std::string(filesDir) + "/fonts.conf").c_str(), 1);
-    setenv("LC_ALL", "en_US.UTF-8", 1);
-    setenv("LANG", "en_US.UTF-8", 1);
+    // 字体配置与 UTF-8 locale 统一由 jvmInit 在首次加载 native 前准备；其配置在宿主
+    // 内容地址目录中，不在启动时重写或跨槽复制已认证 JDK 载荷。
 
-    /* user.home/user.dir = 工作目录：jvmInit 优先读 AMCL_GAME_DIR 设这两个属性。processor
-     * 全用绝对路径，但设为 mcDir 与旧 JLI（无 -Duser.dir → JVM 取 getcwd=workDir）行为一致最稳。*/
-    if (workDir && workDir[0]) {
-        setenv("AMCL_GAME_DIR", workDir, 1);
+    // user.dir 必须反映已经成功 chdir 后的真实绝对目录。相对 cwd 不能直接变成 Java
+    // 属性，未指定 cwd 也不能继承父进程旧 AMCL_GAME_DIR；两者都按真实 getcwd 处理。
+    // 缓冲逐次扩展，不另设512/8192字节限制；资源失败由子入口异常边界准确结束。
+    std::vector<char> currentDirectory(256);
+    while (!getcwd(currentDirectory.data(), currentDirectory.size())) {
+        if (errno != ERANGE) {
+            fprintf(stderr, "[FORK_JAVA] getcwd failed errno=%d\n", errno); _exit(78);
+        }
+        if (currentDirectory.size() > currentDirectory.max_size() / 2) throw std::bad_alloc();
+        currentDirectory.resize(currentDirectory.size() * 2);
+    }
+    if (setenv("AMCL_GAME_DIR", currentDirectory.data(), 1) != 0) {
+        fprintf(stderr, "[FORK_JAVA] AMCL_GAME_DIR environment failed errno=%d\n", errno);
+        _exit(78);
     }
 
     /* LD_LIBRARY_PATH：serverLib / jdkLib 前置，便于依赖库 dlopen（libjvm 本体由 ELF loader 加载）。*/
     std::string ldPath = serverLib + ":" + jdkLib;
     const char* oldLd = getenv("LD_LIBRARY_PATH");
     if (oldLd && oldLd[0]) { ldPath += ":"; ldPath += oldLd; }
-    setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
+    if (setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1) != 0) {
+        fprintf(stderr, "[FORK_JAVA] LD_LIBRARY_PATH environment failed errno=%d\n", errno);
+        _exit(78);
+    }
     fprintf(stdout, "[FORK_JAVA] jdkVersion=%s xmx=%dMB\n", jdkVersion, xmxMb);
     fprintf(stdout, "[FORK_JAVA] LD_LIBRARY_PATH=%s\n", ldPath.c_str());
 
-    /* 预加载 fontconfig stub（jvmInit 不负责；processor 多为 headless 构建工具，防御性保留）。*/
-    std::string fcPath = jdkLib + "/libfontconfig.so.1";
-    void* fcDl = dlopen(fcPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
-    fprintf(stdout, "[FORK_JAVA] dlopen fontconfig: %s\n", fcDl ? "OK" : (dlerror() ? dlerror() : "fail"));
-    elf_open(fcPath.c_str());
+    // FontConfigManager 自身按 versioned/unversioned 名读取提供者，jvmInit 建立正确的
+    // 当前槽搜索路径；这里不在配置/目录租约前提前执行库构造器，也不双重 open 同一库。
 
     /* 子分支已经先完成保留态/PID 验证和重置；这里仅切到 processor 的专属参数模式。 */
     jvmSetForkChildMode(1);
@@ -102,8 +109,8 @@ static void childMain(const char* filesDir, const char* jdkVersion,
     jvmSetClasspath(classpath);
     jvmSetXmx(xmxMb);
     /* processor 专属：
-     *   -XX:TieredStopAtLevel=1：用 C1 编译（比纯解释 -Xint 快 5-10×且安全，不涉及
-     *       speculative opt / SIGSEGV safepoint），避免 BinaryPatcher/ART 等 processor 极慢。
+     *   -XX:TieredStopAtLevel=1：暂保留既有 processor 编译策略，等待安全点修复后的
+     *       C1/C2 因子与吞吐实测。C1 仍会参与安全点，不能把它当作信号协议替代。
      *   -Xms128m：与旧 JLI 路径一致。
      *   -Dsun.java2d.fontpath：OHOS 系统字体路径，AWT/字体相关 processor 兜底。
      * （add-opens / -XX 基础 / 编码等共享参数由 jvmInit 内的 getCommonJvmArgs() 统一下发。）*/
@@ -129,19 +136,28 @@ static void childMain(const char* filesDir, const char* jdkVersion,
     fprintf(stdout, "[FORK_JAVA] jvmCallMain returned %d (status=%s)\n", mainRc, jvmGetStatus());
     fflush(stdout);
 
-    /* jvmCallMain：0=main 正常返回，-1=main 抛异常。processor 若 System.exit(n) 则进程已直接
-     * 退出 n（不回到这里）。映射为 shell 退出码（0..255）：成功 0，异常 1。
-     * 不调 jvmDestroy（DestroyJavaVM 会等非守护线程，可能挂起）；产物已落盘，直接 _exit。*/
+    // main 返回不能证明线程产物和 shutdown hooks 已完成。即使 main 抛错也按标准
+    // Invocation 生命周期完成非 daemon 工作；System.exit/halt 已结束进程则不会回来。
+    // 本层不把无限等待伪装成成功；后续进程监督负责取消/超时，不能靠截断工作来简化。
+    const int finishRc = jvmFinishProcessor();
+    if (finishRc != 0) {
+        fprintf(stderr, "[FORK_JAVA] VM completion failed rc=%d: %s\n", finishRc, jvmGetStatus());
+        fflush(stderr);
+        _exit(70);
+    }
+    fflush(stdout);
+    fflush(stderr);
     _exit(mainRc == 0 ? 0 : 1);
 }
 
-extern "C" int forkRunJavaCwd(
+static int runProcessor(
     const char* filesDir, const char* jdkVersion,
     const char* classpath, const char* mainClass,
     int argc, const char** argv,
     const char* workDir,
-    const char* logFile, int xmxMb
+    const char* logFile, int xmxMb, amcl::jvm::ProcessorControl* control
 ) {
+    if (control && control->stopping()) return control->finish(-1);
     // 共享租约覆盖 fork 前准入和精确 waitpid 完成。子进程继承同一 open-file-description，
     // 即使父进程被替换，仍在执行的 processor 也不会让覆盖安装获得排他租约。
     amcl::UpdateInstallReadLease fileLease(filesDir);
@@ -157,59 +173,84 @@ extern "C" int forkRunJavaCwd(
                    reservation == -8 ? "fork_busy_retry_later" : "parent_jvm_not_fresh", reservation);
         return reservation;
     }
+    // fork前的日志/输入分配也可能抛C++异常；保留态必须在异常退栈时归还，避免父进程
+    // 永久停在ForkReserved。子分支按合同只会_exit，不调用父侧release析构。
+    struct ForkReservationOwner {
+        bool active = true;
+        int release() noexcept { if (!active) return -1; active = false; return jvmReleaseForkReservation(); }
+        ~ForkReservationOwner() { if (active) jvmReleaseForkReservation(); }
+    } reservationOwner;
     AMCL_LOG_I(LOG_TAG, "forkRunJava (JNI_CreateJavaVM/jvmInit): jdk=%s main=%s, cp=%zu chars, xmx=%dMB",
                 jdkVersion, mainClass, strlen(classpath), xmxMb);
 
     pid_t pid = fork();
     if (pid < 0) {
         const int forkError = errno;
-        jvmReleaseForkReservation();
+        reservationOwner.release();
         AMCL_LOG_E(LOG_TAG, "fork() failed: %s", strerror(forkError));
         return -1;
     }
 
+    // 从parent第一次可抛操作之前即持有child。退出码/状态日志出错不能把仍运行的
+    // processor遗留给上层；该guard先于更早创建的文件租约析构，保证停止/回收先完成。
+    amcl::jvm::PosixChildOwnership childSystem;
+    amcl::jvm::ProcessorChildOwner<> childOwner(pid, childSystem);
     if (pid == 0) {
+        try {
         /* 子进程第一项运行时操作：只有继承了保留态且 PID 改变才能恢复 Fresh。
          * 失败仅 write/_exit，不运行 fontconfig、ELF loader 或错误状态下的 JVM 配置。
          * 这里只封闭 HotSpot 创建与 fork 的竞争，不把整个多线程进程变成 async-signal-safe。 */
         if (jvmResetForForkChild() != 0) {
             static const char error[] = "[FORK_JAVA] invalid fork reservation; refusing inherited JVM state\n";
-            write(STDERR_FILENO, error, sizeof(error) - 1);
+            const ssize_t written = write(STDERR_FILENO, error, sizeof(error) - 1);
+            (void)written; // 错误日志仅尽力写出；写失败也必须保持下面的准确非零退出。
             _exit(70);
         }
-        /* 重定向 stdout/stderr 到日志文件 */
-        if (logFile) {
-            int fd = open(logFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd >= 0) {
-                dup2(fd, STDOUT_FILENO);
-                dup2(fd, STDERR_FILENO);
-                close(fd);
-            }
+        // 显式日志和 cwd 都是本次启动合同。任何一步失败均先记录原 errno 再结束；
+        // 不能继续触碰 ELF/JVM，更不能在错误目录产出文件后向父进程报告成功。
+        amcl::jvm::PosixProcessorIo setupSystem;
+        const auto setup = amcl::jvm::PrepareProcessorIo(workDir, logFile, setupSystem);
+        if (!setup.ok()) {
+            amcl::jvm::ReportProcessorSetupFailure(setup);
+            _exit(78); // 与已有 JVM 初始化失败 70 分开；父侧仍等真实子进程结束。
         }
-
-        /* chdir 到显式工作目录（installer 在当前目录写日志等；processor 用绝对路径，
-         * cwd 设为 mcDir 最稳）。workDir 为空则不切。 */
-        if (workDir && workDir[0]) {
-            chdir(workDir);
-            fprintf(stdout, "[FORK_JAVA] chdir to %s\n", workDir);
-        }
+        if (workDir && workDir[0]) fprintf(stdout, "[FORK_JAVA] chdir to %s\n", workDir);
 
         /* 运行 Java（复用 jvmInit/jvmCallMain）*/
-        childMain(filesDir, jdkVersion, classpath, mainClass, argc, argv, xmxMb, workDir);
+        childMain(filesDir, jdkVersion, classpath, mainClass, argc, argv, xmxMb);
         _exit(99); /* 不应该到这里 */
+        } catch (...) {
+            // fork复制了NAPI worker的调用栈。任何C++异常都必须在子入口结束，不能向上
+            // 退回继承的异步运行时、触碰父进程的NAPI对象或误执行complete。此处不分配。
+            static const char failure[] = "[FORK_JAVA] native child initialization/execution exception; exiting 70\n";
+            const ssize_t written = write(STDERR_FILENO, failure, sizeof(failure) - 1);
+            (void)written; // OOM/坏stderr时不为补诊断再次分配或返回父worker栈。
+            _exit(70);
+        }
     }
 
     /* 父侧不等待 processor 结束才放锁：fork 已完成快照，后续父子状态彼此独立。
      * 保留释放失败是内部契约错误；仍回收已经创建的子进程，不能遗留 zombie。 */
-    const bool released = jvmReleaseForkReservation() == 0;
+    const bool released = reservationOwner.release() == 0;
     if (!released) AMCL_LOG_E(LOG_TAG, "processor_fork_release_failed");
     AMCL_LOG_I(LOG_TAG, "forkRunJava: child pid=%d, waiting...", pid);
     // errno 必须紧随 waitpid 保存；EINTR 继续等待同一个 PID，其他失败不解析初始 status=0。
-    const auto waited = amcl::jvm::WaitForProcessor(pid, [](int64_t expectedPid, int* status, int* waitError) {
-        const pid_t actualPid = waitpid(static_cast<pid_t>(expectedPid), status, 0);
-        *waitError = actualPid < 0 ? errno : 0;
-        return static_cast<int64_t>(actualPid);
-    });
+    amcl::jvm::ProcessorWaitResult waited{};
+    if (control) {
+        amcl::jvm::PosixProcessorSupervisor system;
+        const auto supervised = amcl::jvm::SuperviseProcessor(pid, *control, system);
+        waited = supervised.waited;
+        childOwner.observe(waited);
+        if (supervised.signalError) AMCL_LOG_E(LOG_TAG,
+            "processor terminate signal failed errno=%{public}d; result still requires actual wait", supervised.signalError);
+    } else {
+        waited = amcl::jvm::WaitForProcessor(pid, [](int64_t expectedPid, int* status, int* waitError) {
+            const pid_t actualPid = waitpid(static_cast<pid_t>(expectedPid), status, 0);
+            *waitError = actualPid < 0 ? errno : 0;
+            return static_cast<int64_t>(actualPid);
+        });
+        childOwner.observe(waited);
+    }
     if (!waited.reaped) {
         AMCL_LOG_E(LOG_TAG, "processor_wait_failed expected=%{public}d actual=%{public}lld errno=%{public}d (%{public}s)",
                    pid, static_cast<long long>(waited.actualPid), waited.error, strerror(waited.error));
@@ -227,4 +268,19 @@ extern "C" int forkRunJavaCwd(
     }
 
     return released ? exitCode : -7;
+}
+
+extern "C" int forkRunJavaCwd(const char* filesDir, const char* jdkVersion,
+    const char* classpath, const char* mainClass, int argc, const char** argv,
+    const char* workDir, const char* logFile, int xmxMb) {
+    return runProcessor(filesDir, jdkVersion, classpath, mainClass, argc, argv, workDir, logFile, xmxMb, nullptr);
+}
+
+int amcl::jvm::RunControlledProcessor(const char* filesDir, const char* jdkVersion,
+    const char* classpath, const char* mainClass, int argc, const char** argv,
+    const char* workDir, const char* logFile, int xmxMb, ProcessorControl& control) {
+    const int result = runProcessor(filesDir, jdkVersion, classpath, mainClass, argc, argv, workDir, logFile, xmxMb, &control);
+    const int completion = control.finish(result);
+    // fork/wait/保留身份错误没有提供“目标已回收”资格，不能被取消标记包装成正常取消完成。
+    return result == -1 || result == -7 ? result : completion;
 }

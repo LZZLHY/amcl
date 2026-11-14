@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * DownloadFab.ets — 浮动下载进度圆 (v5.1)
  *
  * 右下角 56dp 圆形 FAB：
@@ -114,7 +118,7 @@ export struct DownloadFab {
     if (this.isSuccess()) return this.theme.success
     if (this.isError()) return this.theme.error
     if (this.isPaused()) return this.theme.warning
-    return this.theme.primary
+    return this.theme.actionPrimary
   }
 
   private badgeText(): string {
@@ -140,21 +144,21 @@ export struct DownloadFab {
             AppIcon({
               name: AppIconName.Check,
               iconSize: 24,
-              color: this.theme.success,
+              color: this.theme.successText,
               weight: FontWeight.Bold,
             })
           } else if (this.isError()) {
             AppIcon({
               name: AppIconName.Close,
               iconSize: 24,
-              color: this.theme.error,
+              color: this.theme.errorText,
               weight: FontWeight.Bold,
             })
           } else if (this.isPaused()) {
             AppIcon({
               name: AppIconName.Pause,
               iconSize: 22,
-              color: this.theme.warning,
+              color: this.theme.warningText,
               weight: FontWeight.Bold,
             })
           } else {
@@ -162,7 +166,7 @@ export struct DownloadFab {
               AppIcon({
                 name: AppIconName.ArrowDown,
                 iconSize: 22,
-                color: this.theme.primary,
+                color: this.theme.actionText,
                 weight: FontWeight.Bold,
               })
             }
@@ -187,14 +191,14 @@ export struct DownloadFab {
             .constraintSize({ minWidth: 18 })
             .padding({ left: 5, right: 5 })
             .borderRadius(9)
-            .backgroundColor(this.theme.primary)
+            .backgroundColor(this.theme.actionPrimary)
             .textAlign(TextAlign.Center)
             .position({ x: DOWNLOAD_FAB_SIZE - 16, y: -2 })
         }
       }
       .width(DOWNLOAD_FAB_SIZE)
       .height(DOWNLOAD_FAB_SIZE)
-      .shadow({ radius: 8, color: '#33000000', offsetX: 0, offsetY: 2 })
+      .shadow({ radius: 8, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 2 })
       .borderRadius(DOWNLOAD_FAB_SIZE / 2)
       .position({ x: this.fabOffsetX + this.dragDeltaX, y: this.fabOffsetY + this.dragDeltaY })
       .scale({ x: this.fabScale, y: this.fabScale })

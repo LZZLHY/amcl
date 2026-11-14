@@ -1,4 +1,9 @@
 /**
+ * 更新准备失败的普通状态图标使用错误前景色，配合现有中性容器保证深色可读；
+ * 只调整此单个图标，不改变Coordinator状态、安装确认或原有实色按钮。
+ */
+import { applyNativeTheme } from './AppTheme';
+/**
  * R3 自更新弹窗内容：固定标题、版本对照、单一滚动中段和固定页脚，填满父容器给定的尺寸。
  * 登录回调、调试准备、下载、签名和安装仍由唯一 Coordinator 连续推进，ViewModel 仅投影。
  * 本组件只改变显示层级和命令入口，不产生第二份下载进度、安装许可或更新尝试。
@@ -8,12 +13,15 @@ import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { webview } from '@kit.ArkWeb';
 import { window } from '@kit.ArkUI';
 import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
+import { DeviceProfile, DeviceForm, Breakpoint, detailSheetHeightForLayout } from 'commons';
 import { PreferenceManager } from 'feature_system';
 import { UpdateNoteEntry, noteTypeLabel } from 'update';
 import { SideloadUpdateViewModel, SideloadUpdatePageParams } from '../sideload/SideloadUpdateViewModel';
 
 @Component
 export struct SideloadUpdateContent {
+  /** 手机登录层沿用全局面板比例；非手机继续保留原来的 92% 登录高度。 */
+  @StorageProp('phoneSheetHeightPercent') private phoneSheetHeightPercent_: number = 80;
   params: SideloadUpdatePageParams = {};
   /** 以下字段仅展示发行身份；不参与候选校验，也不覆盖 Coordinator 的真实目标版本。 */
   currentVersion: string = '';
@@ -36,6 +44,8 @@ export struct SideloadUpdateContent {
   @StorageProp('topRectHeight') topSafe: number = 0;
   @StorageProp('bottomRectHeight') bottomSafe: number = 0;
   @StorageProp('currentColorMode') @Watch('applyTheme') colorMode: number = 0;
+  /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
+  @StorageProp('appThemeRevision') @Watch('applyTheme') private appThemeRevision: number = 0;
   private webController: webview.WebviewController = new webview.WebviewController();
   private stage: window.WindowStage | undefined = undefined;
   private appWindow: window.Window | undefined = undefined;
@@ -108,8 +118,10 @@ export struct SideloadUpdateContent {
 
   private applyTheme(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    const mode = new PreferenceManager(context).themeMode;
-    this.theme = resolveTheme(mode, resolveIsDark(mode, this.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK));
+    const preferences: PreferenceManager = new PreferenceManager(context);
+    const mode: ThemeMode = preferences.themeMode;
+    this.theme = resolveTheme(mode, resolveIsDark(mode, this.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK), preferences.themeAccent);
+    applyNativeTheme(this.theme);
   }
 
   /** 只在目标状态变化时调用窗口服务，进度tick不会重复IPC；不修改系统息屏设置。 */
@@ -150,18 +162,10 @@ export struct SideloadUpdateContent {
     return version.length === 0 ? '—' : version.startsWith('v') ? version : 'v' + version;
   }
 
-  /** 发行元数据缺项时省略分隔符，不能用设计示例冒充真实容量或日期。 */
-  private releaseLabel(): string {
-    let label = 'AMCL';
-    if (this.sizeLabel.length > 0) label += ' · ' + this.sizeLabel;
-    if (this.releaseDate.length > 0) label += ' · ' + this.releaseDate;
-    return label;
-  }
-
   /** 文件任务未完成时维持真实下载主视图；账号与调试检查仍可并行，不能画成串行步骤。 */
   private showDownload(): boolean {
     return !this.viewModel.runtimeRetired && this.viewModel.phase !== 'failed' && this.viewModel.phase !== 'cancelled' &&
-      !this.installationPending() && this.viewModel.phase !== 'verified' && this.viewModel.phase !== 'storage-blocked' &&
+      !this.installationPending() && this.viewModel.phase !== 'verified' && this.viewModel.phase !== 'superseded' && this.viewModel.phase !== 'storage-blocked' &&
       this.viewModel.downloadTaskId.length > 0 && this.viewModel.downloadState !== 'done';
   }
 
@@ -172,7 +176,8 @@ export struct SideloadUpdateContent {
 
   /** Coordinator 的 transfer 固定为“已下载 / 总量 · 速率”，拆分只影响排版，原始详情仍可展开。 */
   private transferSize(): string {
-    return this.viewModel.transfer.split(' · ')[0] || '等待下载队列';
+    // 有真实进度时优先显示已下载/总量；尚未传输时才使用发行清单提供的大小。
+    return this.viewModel.transfer.split(' · ')[0] || (this.sizeLabel.length > 0 ? '安装包 ' + this.sizeLabel : '等待下载队列');
   }
 
   /** 尚无速率时显示真实队列/校验状态，不生成占位速度或预估剩余时间。 */
@@ -187,6 +192,7 @@ export struct SideloadUpdateContent {
     const phase = this.viewModel.phase;
     if (this.viewModel.runtimeRetired) return '请重新打开更新';
     if (phase === 'verified') return '更新完成';
+    if (phase === 'superseded') return '原安装已结束';
     if (phase === 'confirmation-pending') return this.viewModel.finishing ? '正在检查更新结果' : '等待更新结果';
     if (phase === 'storage-blocked') return '无法读取上次更新记录';
     if (phase === 'dispatch-intent' || phase === 'installing') return '等待系统安装结果';
@@ -214,6 +220,7 @@ export struct SideloadUpdateContent {
     if (this.viewModel.runtimeRetired || phase === 'failed' || phase === 'storage-blocked' ||
       phase === 'awaiting-restart' || phase === 'idle' || phase === 'resolving') return this.viewModel.message;
     if (phase === 'verified') return '已确认运行新版本';
+    if (phase === 'superseded') return this.viewModel.message;
     if (phase === 'confirmation-pending') return '系统结果确认后会自动完成；暂时无法确认时可重新检查';
     if (phase === 'dispatch-intent' || phase === 'installing') return '可以关闭界面，安装保护记录会保留';
     if (phase === 'cancelled') return '已下载的数据会按原校验规则复用';
@@ -231,6 +238,7 @@ export struct SideloadUpdateContent {
     if (this.viewModel.runtimeRetired) return '关闭界面';
     if (phase === 'awaiting-restart') return '关闭界面';
     if (phase === 'verified') return '完成';
+    if (phase === 'superseded') return '关闭界面';
     if (phase === 'confirmation-pending') return '重新检查';
     if (phase === 'storage-blocked') return '重试读取';
     if (phase === 'dispatch-intent' || phase === 'installing') return '安装中';
@@ -248,7 +256,7 @@ export struct SideloadUpdateContent {
 
   /** 自动推进和终态核实的忙锁由 VM 提供，禁用按钮不为业务增加新的确认门。 */
   private primaryEnabled(): boolean {
-    if (this.viewModel.runtimeRetired || this.viewModel.phase === 'verified' ||
+    if (this.viewModel.runtimeRetired || this.viewModel.phase === 'verified' || this.viewModel.phase === 'superseded' ||
       this.viewModel.phase === 'awaiting-restart') return true;
     if (this.viewModel.finishing) return false;
     if (this.viewModel.phase === 'confirmation-pending' || this.viewModel.phase === 'storage-blocked') return true;
@@ -262,7 +270,7 @@ export struct SideloadUpdateContent {
   private runPrimary(): void {
     if (!this.primaryEnabled()) return;
     const phase = this.viewModel.phase;
-    if (this.viewModel.runtimeRetired || phase === 'verified' || phase === 'awaiting-restart') { this.close(); return; }
+    if (this.viewModel.runtimeRetired || phase === 'verified' || phase === 'superseded' || phase === 'awaiting-restart') { this.close(); return; }
     if (phase === 'confirmation-pending' || phase === 'storage-blocked') { this.viewModel.reconcile(); return; }
     if (this.viewModel.recoveryAction === 'runtime' || this.viewModel.recoveryAction === 'package') {
       const key = this.viewModel.recoveryAction === 'runtime' ? 'amclUpdateOpenSettings' : 'amclUpdateRecoveryRequested';
@@ -291,22 +299,18 @@ export struct SideloadUpdateContent {
     this.getUIContext().getRouter().pushUrl({ url: 'pages/ActivityLogPage', params: { 'activityId': id, 'view': 'overview' } });
   }
 
-  /** 固定标题使用发行元数据，状态变化只替换文字与图标，不重建外框。 */
+  /** 标题只说明更新状态；容量归下载正文，日期归已有详情区，固定高度同步收紧为一行。 */
   @Builder
   private header() {
     Row({ space: 12 }) {
       Row() {
-        SymbolGlyph($r('sys.symbol.cloud_and_arrow_down')).fontSize(22).fontColor([this.theme.primary])
+        SymbolGlyph($r('sys.symbol.cloud_and_arrow_down')).fontSize(22).fontColor([this.theme.actionText])
       }.width(this.compact ? 40 : 44).height(this.compact ? 40 : 44).justifyContent(FlexAlign.Center)
         .backgroundColor(this.theme.primaryLight).borderRadius(16)
-      Column({ space: 3 }) {
-        Text(this.viewModel.phase === 'verified' ? '更新完成' : '正在更新 AMCL')
-          .fontSize(this.compact ? 17 : 18).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.releaseLabel()).fontSize(12).fontColor(this.theme.textSecondary)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-    }.width('100%').height(this.compact ? 40 : 52).flexShrink(0)
+      Text(this.viewModel.phase === 'superseded' ? '原安装已结束' : this.viewModel.phase === 'verified' ? '更新完成' : '正在更新 AMCL')
+        .fontSize(this.compact ? 17 : 18).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+    }.width('100%').height(44).alignItems(VerticalAlign.Center).flexShrink(0)
   }
 
   /** 同一双列版本条贯穿各阶段，目标来自 VM，当前版本由父级读取已安装应用信息。 */
@@ -344,9 +348,9 @@ export struct SideloadUpdateContent {
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%').alignItems(VerticalAlign.Center)
       Progress({ value: this.viewModel.progress, total: 100, type: ProgressType.Linear })
-        .width('100%').color(this.theme.primary).backgroundColor(this.theme.bgInput).style({ strokeWidth: 6 })
+        .width('100%').color(this.theme.actionText).backgroundColor(this.theme.bgInput).style({ strokeWidth: 6 })
       Row() {
-        Text(this.transferSpeed()).fontSize(12).fontColor(this.theme.primary).layoutWeight(1)
+        Text(this.transferSpeed()).fontSize(12).fontColor(this.theme.actionText).layoutWeight(1)
         Text('完成后自动继续').fontSize(12).fontColor(this.theme.textSecondary)
       }.width('100%')
       if (this.viewModel.needsLogin || this.viewModel.accountRetry || (!this.viewModel.connectionReady && this.viewModel.connectionRetry)) {
@@ -359,7 +363,7 @@ export struct SideloadUpdateContent {
   @Builder
   private stageStatus() {
     Column({ space: this.compact ? 12 : 18 }) {
-      if (this.viewModel.downloadState === 'done' && !this.installationPending() && this.viewModel.phase !== 'verified') {
+      if (this.viewModel.downloadState === 'done' && !this.installationPending() && this.viewModel.phase !== 'verified' && this.viewModel.phase !== 'superseded') {
         Row({ space: 8 }) {
           SymbolGlyph($r('sys.symbol.checkmark_circle')).fontSize(15).fontColor([this.theme.successText])
           Text('安装包已校验').fontSize(13).fontColor(this.theme.textSecondary)
@@ -369,14 +373,14 @@ export struct SideloadUpdateContent {
         if (this.viewModel.phase === 'verified') {
           SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(32).fontColor([this.theme.successText])
         } else if (this.viewModel.phase === 'failed' || this.viewModel.phase === 'storage-blocked') {
-          SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(28).fontColor([this.theme.error])
+          SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(28).fontColor([this.theme.errorText])
         } else if (this.viewModel.phase === 'confirmation-pending' || this.viewModel.phase === 'cancelled' || this.viewModel.runtimeRetired) {
           SymbolGlyph($r('sys.symbol.clock')).fontSize(28).fontColor([this.theme.textSecondary])
         } else if (this.viewModel.needsLogin || this.viewModel.accountRetry || this.viewModel.needsImport ||
           (!this.viewModel.connectionReady && !this.viewModel.checking)) {
-          SymbolGlyph($r('sys.symbol.info_circle')).fontSize(28).fontColor([this.theme.primary])
+          SymbolGlyph($r('sys.symbol.info_circle')).fontSize(28).fontColor([this.theme.actionText])
         } else {
-          LoadingProgress().width(28).height(28).color(this.theme.primary)
+          LoadingProgress().width(28).height(28).color(this.theme.actionText)
         }
         Text(this.statusTitle()).fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
           .layoutWeight(1)
@@ -393,41 +397,48 @@ export struct SideloadUpdateContent {
       if (!this.installationPending() && !this.viewModel.finishing && !this.viewModel.runtimeRetired) {
         if (this.viewModel.accountRetry && this.viewModel.working) {
           Button('重新登录华为账号').height(40).width('100%').fontSize(13)
-            .backgroundColor(Color.Transparent).fontColor(this.theme.primary)
+            .backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
             .onClick((): void => { this.viewModel.login(); })
         }
         if (!this.viewModel.connectionReady && this.viewModel.working) {
           Row() {
             Button(this.manualPort ? '收起手动端口' : '手动端口').height(40).fontSize(13)
-              .backgroundColor(Color.Transparent).fontColor(this.theme.primary)
+              .backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
               .onClick((): void => { this.manualPort = !this.manualPort; })
             Blank()
             if (this.viewModel.connectionRetry) {
-              Button('重新检查').height(40).fontSize(13).backgroundColor(Color.Transparent).fontColor(this.theme.primary)
+              Button('重新检查').height(40).fontSize(13).backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
                 .enabled(!this.viewModel.checking).onClick((): void => { this.retryConnection(); })
             }
           }.width('100%')
           if (this.manualPort) {
             Text('输入系统无线调试页面的端口，无需 IP 地址。')
               .fontSize(12).lineHeight(19).fontColor(this.theme.textSecondary).width('100%')
-            TextInput({ text: this.viewModel.port, placeholder: '例如 10178' }).type(InputType.Number).maxLength(5)
+            TextInput({ text: this.viewModel.port, placeholder: '例如 10178' }).caretColor(this.theme.actionText).type(InputType.Number).maxLength(5)
               .height(44).fontColor(this.theme.textPrimary).backgroundColor(this.theme.bgInput)
               .onChange((value: string): void => { this.viewModel.port = value; })
             // 主按钮可能优先承载登录/材料恢复，端口区域保留连接命令，不能被另一阻塞项藏掉。
             Button('连接并继续').height(44).width('100%').fontSize(13)
-              .backgroundColor(this.theme.bgInput).fontColor(this.theme.primary).enabled(!this.viewModel.checking)
+              .backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText).enabled(!this.viewModel.checking)
               .onClick((): void => { this.retryConnection(); })
           }
         }
         if (this.viewModel.needsImport && this.viewModel.materialReady) {
           Button('导入原安装签名配置').height(40).width('100%').fontSize(13)
-            .backgroundColor(Color.Transparent).fontColor(this.theme.primary)
+            .backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
             .onClick((): void => { this.viewModel.importMaterial(); })
         }
       }
       if (this.detailsVisible) {
+        // 延用现有“查看详情”开关；发行事实只在需要时展开，不挤占每个更新阶段的固定标题。
+        if (this.sizeLabel.length > 0) {
+          Text('下载大小：' + this.sizeLabel).fontSize(12).lineHeight(20).fontColor(this.theme.textSecondary).width('100%')
+        }
+        if (this.releaseDate.length > 0) {
+          Text('发布日期：' + this.releaseDate).fontSize(12).lineHeight(20).fontColor(this.theme.textSecondary).width('100%')
+        }
         Text(this.viewModel.message).fontSize(13).lineHeight(21).fontColor(this.theme.textPrimary).width('100%')
-        if (!this.installationPending() && this.viewModel.phase !== 'verified' && !this.viewModel.runtimeRetired) {
+        if (!this.installationPending() && this.viewModel.phase !== 'verified' && this.viewModel.phase !== 'superseded' && !this.viewModel.runtimeRetired) {
           Text(this.viewModel.accountMessage).fontSize(12).lineHeight(20).fontColor(this.theme.textSecondary).width('100%')
           Text(this.viewModel.connectionMessage).fontSize(12).lineHeight(20).fontColor(this.theme.textSecondary).width('100%')
           if (!this.viewModel.connectionReady) {
@@ -438,7 +449,7 @@ export struct SideloadUpdateContent {
         if (this.viewModel.activityId > 0 && !this.viewModel.working && !this.viewModel.finishing &&
           this.viewModel.phase !== 'dispatch-intent' && this.viewModel.phase !== 'installing') {
           Button('查看本次更新记录').height(40).width('100%').fontSize(13)
-            .backgroundColor(Color.Transparent).fontColor(this.theme.primary).onClick((): void => { this.openActivity(); })
+            .backgroundColor(Color.Transparent).fontColor(this.theme.actionText).onClick((): void => { this.openActivity(); })
         }
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
@@ -452,7 +463,7 @@ export struct SideloadUpdateContent {
       if (this.entries.length > 0) {
         ForEach(this.entries, (entry: UpdateNoteEntry) => {
           Column({ space: 4 }) {
-            Text(noteTypeLabel(entry.type)).fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.theme.primary)
+            Text(noteTypeLabel(entry.type)).fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.theme.actionText)
             Text(entry.text).fontSize(13).lineHeight(21).fontColor(this.theme.textSecondary).width('100%')
           }.width('100%').alignItems(HorizontalAlign.Start)
         }, (entry: UpdateNoteEntry, index: number): string => index.toString() + ':' + entry.text)
@@ -480,7 +491,7 @@ export struct SideloadUpdateContent {
       Row() {
         if (this.showChangelogEntry) {
           Button(this.releaseNotesVisible ? '返回更新进度' : '查看完整更新日志').height(32).fontSize(12)
-            .padding({ left: 0, right: 4 }).backgroundColor(Color.Transparent).fontColor(this.theme.primary)
+            .padding({ left: 0, right: 4 }).backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
             .layoutWeight(1).onClick((): void => { this.releaseNotesVisible = !this.releaseNotesVisible; })
         } else {
           Blank().layoutWeight(1)
@@ -510,7 +521,9 @@ export struct SideloadUpdateContent {
       // 绑定稳定根节点，不额外插入零尺寸子项产生 Column gap；保证页脚与发现态基线一致。
       // 成功回调由 Coordinator 将 loginVisible 置 false；收起回调只采样窗口，不撤销成功授权。
       .bindSheet(this.viewModel.loginVisible, this.loginSheet(), {
-        height: Math.max(1, (this.screenHeight - this.topSafe - this.bottomSafe) * 0.92),
+        height: DeviceProfile.form() === DeviceForm.PHONE
+          ? detailSheetHeightForLayout(DeviceForm.PHONE, Breakpoint.SM, this.bottomSafe, this.topSafe, this.phoneSheetHeightPercent_)
+          : Math.max(1, (this.screenHeight - this.topSafe - this.bottomSafe) * 0.92),
         preferType: SheetType.BOTTOM, showClose: false, dragBar: true,
         backgroundColor: this.theme.bgCard, enableOutsideInteractive: false,
         onDisappear: (): void => { this.refreshWindowFacts(); },
@@ -519,14 +532,14 @@ export struct SideloadUpdateContent {
   }
 
   /**
-   * 登录复用微软登录的高 Sheet 承载思路：约 92% 安全高度、固定标题、官方 Web 占剩余空间。
+   * 登录采用固定标题与剩余空间 Web；手机跟随用户高度，非手机保留原 92% 安全高度。
    * 不重画官方账号表单，不重复下载卡；关闭只结束授权会话，成功自动收起并保留同一背后模态。
    */
   @Builder
   private loginSheet() {
     Column({ space: 12 }) {
       // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: '登录华为账号', subtitle: '登录成功后自动返回并继续更新', theme: this.theme, modal: true, surfaceColor: this.theme.bgCard, closeLabel: '关闭授权', closeId: 'sideload-login-close', onClose: (): void => { this.viewModel.closeLogin(); },
+      ImmersiveTitleScaffold({ title: '登录华为账号', theme: this.theme, modal: true, surfaceColor: this.theme.bgCard, closeLabel: '关闭授权', closeId: 'sideload-login-close', onClose: (): void => { this.viewModel.closeLogin(); },
         content: (): void => { this.ImmersiveTitleContent1_(); }
       })
     }.width('100%').height('100%').padding({ left: 20, right: 20, top: 8, bottom: Math.max(16, this.bottomSafe) })
@@ -544,7 +557,7 @@ export struct SideloadUpdateContent {
           })
       } else {
         Column({ space: 16 }) {
-          if (this.viewModel.loginBusy) { LoadingProgress().width(40).height(40).color(this.theme.primary) }
+          if (this.viewModel.loginBusy) { LoadingProgress().width(40).height(40).color(this.theme.actionText) }
           Text(this.viewModel.loginMessage).fontSize(16).lineHeight(24).fontColor(this.theme.textPrimary)
           if (!this.viewModel.loginBusy) {
             Button('重新登录').height(48).width('100%').backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary)
@@ -552,7 +565,9 @@ export struct SideloadUpdateContent {
           }
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
-      Text(this.viewModel.loginUrl.length > 0 ? this.viewModel.loginMessage : '关闭授权后，下载仍会继续')
+      // 登录流程解释归已有底部状态，不再在标题下重复；保留真实账号状态与关闭后果。
+      Text(this.viewModel.loginUrl.length > 0 ? (this.viewModel.loginMessage.length > 0 ? this.viewModel.loginMessage + ' · ' : '')
+        + '成功后自动返回并继续更新' : '关闭授权后，下载仍会继续')
         .fontSize(12).lineHeight(19).fontColor(this.theme.textSecondary).width('100%').flexShrink(0)
 
       }

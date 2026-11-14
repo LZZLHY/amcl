@@ -32,7 +32,10 @@ const naming=installerSource.statements.filter(node=>ts.isFunctionDeclaration(no
   && ['sanitizeVersionName','validateModpackVersionName'].includes(node.name?.text)).map(node=>node.getText(installerSource)).join('\n');
 const pageMethods=['openDetail','prefetchDetail','pickDetailVersion','buildDeclaredDepRows','buildDepRows',
   'onPickVersion','invalidateLocalScanCache','getOrScanInstalled','detailInstallIssue','loadChosenDetail',
-  'toggleDetailDep','selectAllDetailDeps','closeDetail','switchDetailSource','confirmInstallFromSheet'];
+  'toggleDetailDep','selectAllDetailDeps','closeDetail','detailInteractionActive_',
+  'invalidateDetailWork_','resetDetailState_',
+  'onDetailWillDisappear_','onDetailDidDisappear_','switchDetailSource','confirmInstallFromSheet',
+  'usesCustomResourceSave_','currentBrowseKind_'];
 const sheetMethods=['mcGroups','selectedGroupVersions','versionSupportsMc','canInstall','depRenderKey'];
 const code=naming+'\nclass Page {\n'+pageMethods.map(name=>method(pageSource,name)).join('\n')
   +'\n}\nclass Sheet {\n'+sheetMethods.map(name=>method(sheetSource,name)).join('\n')+'\n}\nexports.Page=Page;exports.Sheet=Sheet;';
@@ -42,6 +45,7 @@ const exported={};
 const environments=new Map([['/mc::target',{loader:'fabric',game:'1.21.11'}],['/other::other',{loader:'fabric',game:'1.21.11'}]]);
 const environment=(dir,id)=>environments.get(dir+'::'+id)??{loader:'',game:''};
 vm.runInNewContext(transpiled.outputText,{exports:exported,...types,...resolver,...mc,...productionPathPolicy(),
+  supportsCustomResourceSave:kind=>['mod','resourcepack','shader'].includes(kind),
   resolveInstalledLoader:(dir,id)=>environment(dir,id).loader,resolveInstalledMcVersion:(dir,id)=>environment(dir,id).game,
   GameStorage:{sandboxMcDir:()=>'/mc',externalMcDir:()=>'/other'},
   makeResolverFromRouter:router=>({resolve:(...args)=>router.resolve(...args)}),
@@ -59,13 +63,19 @@ const plan=(dependencies=[])=>({dependencies,conflicts:[],depthExceeded:false,ha
 const ids=items=>Array.from(items,item=>item.id);
 
 /** 每案独占端口与状态；wrapper只保留生产Promise供等待，不替换生产错误/代次逻辑。 */
-function subject({versions=[],valid=true,kind='mod',scan=async()=>[],resolve=async()=>plan(),downloadInfo=async()=>({urls:[]})}={}){
-  const calls={versions:[],scan:0,resolve:[],download:[],submitted:[],messages:[]};
+function subject({versions=[],valid=true,kind='mod',scan=async()=>[],resolve=async()=>plan(),
+  downloadInfo=async()=>({urls:[]}),archiveDownloadInfo=async()=>({urls:[]})}={}){
+  const calls={versions:[],scan:0,resolve:[],download:[],archiveDownload:[],submitted:[],saved:[],messages:[]};
   const repo={getVersions:async(...args)=>{calls.versions.push(args);return versions;},
-    resolveFileDownloadInfo:async(...args)=>{calls.download.push(args);return downloadInfo(...args);}};
+    resolveFileDownloadInfo:async(...args)=>{calls.download.push(args);return downloadInfo(...args);},
+    // CF整合包归档与普通模组文件是不同端口。分别记录可防止误走普通文件/分类路径仍冒充成功。
+    resolveArchiveDownloadInfo:async(...args)=>{calls.archiveDownload.push(args);return archiveDownloadInfo(...args);}};
   const router={repoFor:()=>repo,resolve:async(...args)=>{calls.resolve.push(args);return resolve(...args);}};
   const page=Object.assign(new exported.Page(),{router_:router,detailProject_:project({kind}),detailFetchEpoch_:1,
+    // 纯方法夹具从已挂载且详情可见的页面开始；会话与退出状态仍由生产方法维护。
+    detailSessionCounter_:1,detailSession_:1,detailPresentedSession_:1,detailClosing_:false,detailDisposed_:false,
     targetMcDir_:valid?'/mc':'',targetVersionId_:valid?'target':'',versionIsolation:true,targetValid_:valid,
+    kindIdx_:kind==='mod'?0:kind==='modpack'?3:kind==='resourcepack'?1:2,customSaveKindIndices_:[],
     detailLoading_:false,detailError_:'',detailPreparingInstall_:false,detailInstallReady_:false,detailInstallError_:'',
     detailDependenciesResolved_:false,detailPreparedMcDir_:'',detailPreparedVersionId_:'',detailOptionalIds_:[],
     detailSelectedVersion_:null,detailPrimaryFile_:null,detailAllVersions_:[],detailDeps_:[],detailResolvedDeps_:[],
@@ -74,6 +84,7 @@ function subject({versions=[],valid=true,kind='mod',scan=async()=>[],resolve=asy
     hasValidCurrentVersion(){return this.targetValid_;},toast(message){calls.messages.push(message);},
     async getOrScanInstalled(){calls.scan++;return scan();},
     async executeInstall(...args){calls.submitted.push(args);},installModpackFromSheet(...args){calls.submitted.push(args);},
+    async saveResourceFileFromSheet_(...args){calls.saved.push(args);},
   });
   page.prefetchDetail=(...args)=>(page.prefetchJob=exported.Page.prototype.prefetchDetail.apply(page,args));
   page.pickDetailVersion=(...args)=>(page.pickJob=exported.Page.prototype.pickDetailVersion.apply(page,args));
@@ -144,10 +155,11 @@ await check('无已装实例的整合包仍独立准备并通过自己的名称�
   assert.equal(calls.submitted.length,1,'整合包创建新实例，不要求已有实例');
 });
 
-await check('无安装目标可开详情和浏览，不读无效目录或解析安装依赖',async()=>{
+await check('无安装目标时保存选中文件，不读无效目录或解析安装依赖',async()=>{
   const v=version('no-target');const {page,calls}=subject({valid:false,versions:[v]});await open(page);
   assert.equal(page.showDetailSheet_,true);assertBrowse(page,v);assert.equal(calls.versions.length,1);
-  assert.equal(calls.scan,0);assert.equal(calls.resolve.length,0);assert.match(page.detailInstallError_,/选择已安装/);assertBlocked(page,calls);
+  assert.equal(calls.scan,0);assert.equal(calls.resolve.length,0);assert.equal(page.detailInstallReady_,true);
+  assertBlocked(page,calls);assert.equal(calls.saved.length,1);assert.equal(calls.saved[0][2],v.files[0]);
 });
 
 await check('手选不匹配文件可读，换回兼容文件后重新取得安装资格',async()=>{
@@ -171,8 +183,44 @@ for(const [name,downloadInfo] of [['异常',async()=>{throw Error('CF地址fixtu
     const cf=version('cf',{source:'curseforge',files:[{...primary('cf'),url:''}]}),good=version('good');
     const {page,calls}=subject({downloadInfo});page.detailProject_=project({source:'curseforge'});
     await page.pickDetailVersion(cf);assertBrowse(page,cf);assert.equal(page.detailPreparingInstall_,false);assert.equal(page.detailInstallReady_,false);
+    assert.equal(calls.download.length,1);assert.equal(calls.archiveDownload.length,0,'普通CF模组仍使用原文件地址端口');
     assert.ok(page.detailInstallError_.length>0);assert.equal(page.detailError_,'');assertBlocked(page,calls);
     await page.pickDetailVersion(good);assert.equal(page.detailInstallReady_,true);assert.equal(page.detailInstallError_,'');
+  });
+}
+
+await check('CF整合包空URL经真实归档分支准备，普通文件地址端口不能代替',async()=>{
+  const cf=version('cf-pack',{source:'curseforge',files:[{...primary('cf-pack'),url:'',filename:'pack.zip'}]});
+  const info={urls:['https://example.invalid/pack.zip','https://example.invalid/mirror-pack.zip'],filename:'pack.zip',
+    size:123,sha1:'0123456789abcdef0123456789abcdef01234567'};
+  const {page,calls}=subject({valid:false,kind:'modpack',archiveDownloadInfo:async()=>info});
+  page.detailProject_=project({source:'curseforge',kind:'modpack'});
+  await page.pickDetailVersion(cf);assertBrowse(page,cf);
+  assert.deepEqual(calls.archiveDownload,[['project','cf-pack']]);assert.equal(calls.download.length,0);
+  assert.equal(page.detailPrimaryFile_.url,info.urls[0]);assert.deepEqual(Array.from(page.detailPrimaryFile_.mirrors),info.urls.slice(1));
+  assert.equal(page.detailPrimaryFile_.size,123);assert.equal(page.detailPrimaryFile_.sha1,info.sha1);
+  assert.equal(page.detailInstallReady_,true);page.confirmInstallFromSheet();assert.equal(calls.submitted.length,1);
+  assert.equal(calls.submitted[0][2].url,info.urls[0],'安装捕获归档分支实际解析的地址');
+});
+
+for(const failed of [false,true]){
+  await check('CF整合包归档地址关闭后迟到'+(failed?'失败':'成功')+'被真实epoch拒绝，不改退出快照或重授安装资格',async()=>{
+    const address=deferred(),entered=deferred();
+    const cf=version('closing-cf-pack',{source:'curseforge',files:[{...primary('closing-cf-pack'),url:'',filename:'closing-pack.zip'}]});
+    const {page,calls}=subject({valid:false,kind:'modpack',archiveDownloadInfo:()=>{entered.resolve();return address.promise;}});
+    page.detailProject_=project({source:'curseforge',kind:'modpack'});
+    const pending=page.pickDetailVersion(cf);await entered.promise;
+    const snapshot={project:page.detailProject_,primary:page.detailPrimaryFile_,selected:page.detailSelectedVersion_,
+      error:page.detailInstallError_,preparing:page.detailPreparingInstall_},epoch=page.detailFetchEpoch_,session=page.detailSession_;
+    page.closeDetail();assert.ok(page.detailFetchEpoch_>epoch);assert.equal(page.showDetailSheet_,false);
+    if(failed)address.reject(Error('关闭后归档解析失败'));else address.resolve({urls:['https://example.invalid/late.zip'],filename:'late.zip',size:999});
+    await pending;
+    assert.equal(calls.archiveDownload.length,1);assert.equal(calls.download.length,0);
+    assert.equal(page.detailProject_,snapshot.project);assert.equal(page.detailPrimaryFile_,snapshot.primary);
+    assert.equal(page.detailSelectedVersion_,snapshot.selected);assert.equal(page.detailInstallError_,snapshot.error);
+    assert.equal(page.detailPreparingInstall_,snapshot.preparing);assert.equal(page.detailInstallReady_,false);
+    assertBlocked(page,calls);assert.equal(calls.submitted.length,0);
+    page.onDetailDidDisappear_(session);assert.equal(page.detailPrimaryFile_,null);assert.equal(page.detailProject_.id,'');
   });
 }
 
@@ -215,8 +263,15 @@ await check('目录请求和安装准备均在关闭后失效，旧错误不能�
   const listing=deferred(),{page,repo}=subject();repo.getVersions=()=>listing.promise;page.openDetail(project());const fetch=page.prefetchJob;
   page.closeDetail();listing.resolve([version('late-directory')]);await fetch;
   assert.equal(page.showDetailSheet_,false);assert.equal(page.detailSelectedVersion_,null);assert.equal(page.detailAllVersions_.length,0);
+  assert.equal(page.detailProject_.id,'project','退出动画期间保留仍可能被正文读取的项目快照');
+  page.onDetailDidDisappear_(page.detailSession_);
+  assert.equal(page.detailProject_.id,'','真正退出后才清空安全的项目模型');
   const scan=deferred(),second=subject({scan:()=>scan.promise}),pending=second.page.pickDetailVersion(version('closing'));
+  const selectedBeforeClose=second.page.detailSelectedVersion_,errorBeforeClose=second.page.detailInstallError_;
   second.page.closeDetail();scan.reject(Error('关闭后的扫描失败'));await pending;
+  assert.equal(second.page.detailSelectedVersion_,selectedBeforeClose,'关闭立即退休请求，但不提前清除正文选版');
+  assert.equal(second.page.detailInstallError_,errorBeforeClose,'迟到错误不能改写退出快照');
+  second.page.onDetailDidDisappear_(second.page.detailSession_);
   assert.equal(second.page.detailSelectedVersion_,null);assert.equal(second.page.detailInstallError_,'');assert.equal(second.page.detailPreparingInstall_,false);
 });
 
@@ -233,7 +288,8 @@ await check('即使旧ready与错误提示被篡改，确认仍拒绝错误MC/lo
   const {page,calls}=subject();await page.pickDetailVersion(version('valid'));
   page.detailSelectedVersion_=version('wrong',{loaders:['forge'],gameVersions:['1.20.4']});
   page.detailInstallError_='';page.detailInstallReady_=true;assertBlocked(page,calls);assert.match(calls.messages.at(-1),/不匹配/);
-  page.detailSelectedVersion_=version('valid');page.targetValid_=false;assertBlocked(page,calls);assert.match(calls.messages.at(-1),/选择已安装/);
+  page.detailSelectedVersion_=version('valid');page.targetValid_=false;assertBlocked(page,calls);
+  assert.equal(calls.saved.length,0,'旧实例准备结果不能触发系统另存');assert.match(calls.messages.at(-1),/下载目标已变化/);
 });
 
 await check('无法识别loader/MC不得借兼容函数空字符串通配授予安装资格',async()=>{
@@ -297,11 +353,13 @@ await check('声明依赖跨文件有独立key，依赖版本/警告变化更新
   assert.equal(key,sheet.depRenderKey({...first}),'内容相同的行保留稳定身份');
 });
 
-await check('非MOD资源无目标同样可浏览，有目标不执行模组扫描与依赖解析',async()=>{
+await check('光影与资源包无实例默认另存，有实例仍走资源安装，全程不触发模组扫描和依赖解析',async()=>{
   for(const kind of ['resourcepack','shader']){
     const v=version(kind),{page,calls}=subject({kind,valid:false,versions:[v]});await open(page);assertBrowse(page,v);assertBlocked(page,calls);
+    assert.equal(calls.saved.length,1);assert.equal(calls.saved[0][2],v.files[0]);
     page.targetValid_=true;page.targetMcDir_='/mc';page.targetVersionId_='target';await page.pickDetailVersion(v);
     assert.equal(page.detailInstallReady_,true);assert.equal(calls.scan,0);assert.equal(calls.resolve.length,0);
+    page.confirmInstallFromSheet();assert.equal(calls.submitted.length,1);assert.equal(calls.saved.length,1);
   }
 });
 
@@ -359,6 +417,8 @@ await check('关闭重开退休在途真实扫描，旧结果不回填也不覆�
   page.openDetail(project());const old=page.prefetchJob;await enteredOld.promise;
   assert.equal(scans.length,1);const firstEpoch=page.localScanCacheEpoch_;
   page.closeDetail();assert.equal(page.localScanCacheEpoch_,firstEpoch+1);
+  // 用户必须先完成本次Sheet退出才能再次打开；不向关闭动画中人工塞入新会话。
+  page.onDetailDidDisappear_(page.detailSession_);
   page.openDetail(project());const fresh=page.prefetchJob;await enteredNew.promise;
   assert.equal(scans.length,2,'重开详情必须开始新的真实扫描');
   assert.equal(page.localScanCacheEpoch_,firstEpoch+2,'重开也必须退休先前的扫描代次');

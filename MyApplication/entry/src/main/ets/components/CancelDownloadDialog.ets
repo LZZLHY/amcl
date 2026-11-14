@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * CancelDownloadDialog.ets — 下载取消确认对话框（v5 新增）
  *
  * 用户按"取消下载"时弹出，提供三个选项：
@@ -65,7 +69,7 @@ export struct CancelDownloadDialog {
           .height(44)
           .fontSize(14)
           .fontWeight(600)
-          .backgroundColor(this.theme.primary)
+          .backgroundColor(this.theme.actionPrimary)
           .fontColor(this.theme.textOnPrimary)
           .onClick(() => {
             this.controller.close()
@@ -78,7 +82,7 @@ export struct CancelDownloadDialog {
           .height(44)
           .fontSize(14)
           .backgroundColor(this.theme.bgInput)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
           .onClick(() => {
             this.controller.close()
             this.onConfirm(true)

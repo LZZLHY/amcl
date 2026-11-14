@@ -16,6 +16,20 @@
       "previous": 3,
       "current": 5,
       "reason": "按AGENTS.md §二审阅LookPort新增的当前契约：跨映像解析及ownerHost核对、不可变表进程pin、真实票据资格仍由owner判断、fork先于本地锁拒绝。5行含块注释标记，正文说明缓存地址不等于缓存有效性；仅此文件3→5，其他基线不变，依据见多输入端架构愿景与改进提案lookport-comment-review-20261015。"
+    },
+    {
+      "recordedAt": "2026-11-05 19:56:01 +0800",
+      "file": "entry/src/main/cpp/napi/napi_forge.cpp",
+      "previous": 9,
+      "current": 12,
+      "reason": "按AGENTS §二审阅当前NAPI异步processor契约。新增段明确queue前后的所有权交接、预留错误对象与完成失败不能伪造result=0；原接口与独立classpath说明继续保留。仅核定该文件，见运行时与音频施工记录发布准备S5。"
+    },
+    {
+      "recordedAt": "2026-11-05 19:56:01 +0800",
+      "file": "entry/src/main/cpp/napi/napi_log.cpp",
+      "previous": 4,
+      "current": 5,
+      "reason": "按AGENTS §二审阅LedgerBeginWork当前契约。保留有界工作数据、不持ArkUI/napi_ref、producer启动屏障和取消后owner收尾职责。仅核定该文件，见运行时与音频施工记录发布准备S5。"
     }
   ],
   "totals": {
@@ -105,7 +119,7 @@
     "gamecontrol/src/main/ets/GlfwKeys.ets": 10,
     "entry/src/main/cpp/input/adapters/glfw_typed_absolute_route.cpp": 9,
     "entry/src/main/cpp/platform/native_mouse_route_policy.h": 9,
-    "entry/src/main/cpp/napi/napi_forge.cpp": 9,
+    "entry/src/main/cpp/napi/napi_forge.cpp": 12,
     "entry/src/main/cpp/tests/host/gate0_sample_throttle_test.cpp": 9,
     "entry/src/main/cpp/glfw/glfw_compat.h": 8,
     "entry/src/main/cpp/platform/input_ledger.cpp": 7,
@@ -139,7 +153,7 @@
     "entry/src/main/cpp/platform/legacy_physical_edge_router.cpp": 4,
     "entry/src/main/cpp/platform/ohos_frame_rate_hint.cpp": 4,
     "entry/src/main/cpp/platform/ohos_native_window_telemetry.h": 4,
-    "entry/src/main/cpp/napi/napi_log.cpp": 4,
+    "entry/src/main/cpp/napi/napi_log.cpp": 5,
     "entry/src/main/cpp/glfw/glfw_internal.h": 4,
     "entry/src/main/cpp/glfw/ohos_surface_state.h": 4,
     "entry/src/main/cpp/tests/host/input_core_glfw_adapter_integration_test.cpp": 4,

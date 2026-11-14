@@ -2,10 +2,15 @@ import { DesktopGameResults } from '../runtime/DesktopGameResults'
 import { GameRunAdmission } from '../runtime/GameRunAdmission'
 import { SharedProcessGameLease } from 'feature_core'
 import { GameSessionHost, GameFrontendLease, getGameSessionHost } from '../runtime/GameSessionHost'
+import { GameDialogRuntime } from '../runtime/GameDialogRuntime'
 import { NativeGamepadRouteDecision, nativeGamepadRouteStatusMessage } from '../runtime/NativeGamepadRoutePolicy'
 import { reconcileEntryInputSession } from '../components/EntryInputSessionCoordinator'
 import { ProcessPreferences } from 'commons'
+import { ThemeColors, ThemeMode, resolveTheme } from 'commons'
+import { ConfigurationConstant } from '@kit.AbilityKit'
+import { applyNativeTheme } from '../components/AppTheme'
 import { DesktopFileDrop } from '../runtime/DesktopFileDrop'
+import { GameResolutionGuard } from '../components/GameResolutionGuard'
 import { DiagnosticPolicy } from 'commons'
 /**
  * McGamePage.ets — MC 全屏渲染页面（横屏）
@@ -18,7 +23,7 @@ import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 // 活动账本（L3）：游戏会话也是一条活动，与下载/安装共用同一套账本
 // （ActivityCategory 本文件下方已 import，不再重复引入）
-import { ledgerBegin, ledgerBeginAsync, LedgerBeginMeta, ledgerHas, ledgerManifestAsync, ledgerEndAsync, LedgerState, LedgerOutcome } from 'commons';
+import { ledgerBeginAsync, LedgerBeginMeta, ledgerHas, ledgerManifestAsync, ledgerEndAsync, LedgerState, LedgerOutcome } from 'commons';
 import { enrichSessionEnvironment } from '../runtime/SessionEnvironmentCollector';
 import { ProductRenderDiagnostics } from 'entry/ProductRenderDiagnostics';
 import testNapi from 'libentry.so';
@@ -76,7 +81,10 @@ import { SUPPORTED_JDK_VERSION, isJdkSlotVersion } from 'commons';
 import { getAccountManager } from 'account';
 import { AccountType } from 'account';
 import { AuthlibInjectorAccount, YggdrasilApi, RealHttpClient } from 'account';
-import { AUTHLIB_INJECTOR_JAR_NAME, encodeStandardBase64, stringToUtf8 } from 'commons';
+import { OfflineAccount } from 'account';
+import { ensureAuthlibInjectorArtifact } from '../runtime/AuthlibInjectorArtifact';
+import { OfflineAppearanceServer } from '../runtime/OfflineAppearanceServer';
+import { encodeStandardBase64, stringToUtf8 } from 'commons';
 import { formatError } from 'commons';
 import { SessionMarker } from 'launch';
 import { PreferenceManager } from 'feature_system';
@@ -139,6 +147,11 @@ const PHYSICAL_KEY_TYPED_ROUTE_HANDLED: number = 11
 @Entry
 @Component
 struct McGamePage {
+  /** 仅用于游戏工具chrome；独立游戏进程的偏好来自启动快照，不额外建立跨进程主题通道。 */
+  @State private toolTheme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false)
+  /** GameAbility只发布本进程配置颜色；该通知不携带启动器偏好或任何输入身份。 */
+  @StorageProp('currentColorMode') @Watch('applyToolTheme_') private toolColorMode_: number = -1
+  private appliedToolColorMode_: ConfigurationConstant.ColorMode | undefined = undefined
   // 稳定会话拥有来源、配置与时钟；页面实例仅持可撤销的前端资格。
   private sessionHost: GameSessionHost = getGameSessionHost()
   private frontendLease: GameFrontendLease | undefined = undefined
@@ -153,6 +166,7 @@ struct McGamePage {
   @State surfaceContextGeneration: number = 0
   @State pageInputActive: boolean = true
   private inputOverlayPaused: boolean = false
+  @State private resolutionFailed: boolean = false
   private pageVisible: boolean = true
   private surfaceFocused: boolean = true
   private gameWindowReady: boolean = false
@@ -423,7 +437,31 @@ struct McGamePage {
     this.displayChangeListenerRegistered = false
   }
 
+  /** 只读取当前进程允许的偏好快照并应用原生控件主题，不触及会话、输入身份或渲染内容。 */
+  private applyToolTheme_(): void {
+    try {
+      const preferences: PreferenceManager = new PreferenceManager(this.context)
+      const mode: ThemeMode = preferences.themeMode
+      this.toolTheme = resolveTheme(mode,
+        this.toolColorMode_ === ConfigurationConstant.ColorMode.COLOR_MODE_DARK, preferences.themeAccent)
+      // 只在目标模式改变时同步原生输入控件环境；配置回调重入会命中缓存，不形成设置循环。
+      const target: ConfigurationConstant.ColorMode = mode === ThemeMode.DARK ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK
+        : mode === ThemeMode.LIGHT ? ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT : ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET
+      if (this.appliedToolColorMode_ !== target) {
+        this.appliedToolColorMode_ = target
+        this.context.getApplicationContext().setColorMode(target)
+      }
+      applyNativeTheme(this.toolTheme)
+    } catch (error) {
+      // 设置失败时撤回缓存，使下一次页面激活/配置通知仍可重试，避免记住尚未应用的目标。
+      this.appliedToolColorMode_ = undefined
+      // 主题读取或原生配色失败仅保留原工具显示，不能阻止游戏Host attach或改动输入生命周期。
+      AppLogger.warn('McGameTheme', '工具主题尚未更新，保留原显示', error)
+    }
+  }
+
   async aboutToAppear(): Promise<void> {
+    this.applyToolTheme_()
     let activityId: number = AppStorage.get<number>('mcLaunchActivityId') ?? 0
     try { activityId = (this.getUIContext().getRouter().getParams() as McGameRouteParams).activityId ?? activityId }
     catch (_) { /* 独立游戏页面使用已校验的 AppStorage 路由字段。 */ }
@@ -434,6 +472,9 @@ struct McGamePage {
     let routeFrontend: GameFrontendLease | undefined = undefined
     this.nativeGamepadRouteMessage = ''
     try {
+      // 页面已有真实UIContent后、任何await及JVM启动前装配；窗口级生命周期由
+      // GameAbility/Host退休，页面重建不取消正在等待用户选择的原请求。
+      if (activityId > 0) GameDialogRuntime.attach(this.getUIContext(), activityId)
       this.frontendLease = this.sessionHost.attach(this.context, activityId, {
       onState: (grabbed: boolean, active: boolean): void => {
         this.isInGame = grabbed
@@ -636,7 +677,7 @@ struct McGamePage {
     // 只发布本前端的原始事实。Ability/来源资格由宿主单独合取，不能把投影后的
     // pageInputActive=false当成页面事实，否则后台/晚到focus会永久抹掉恢复期望。
     const eligible: boolean = this.pageVisible && this.surfaceFocused && this.gameWindowReady &&
-      !this.inputOverlayPaused
+      !this.inputOverlayPaused && !this.resolutionFailed
     this.sessionHost.setFrontendState(this.frontendLease, eligible, this.gameWindowId)
   }
 
@@ -854,6 +895,7 @@ struct McGamePage {
   }
 
   onPageShow(): void {
+    this.applyToolTheme_()
     this.inputRuntime.resumeAfterLifecycle()
     this.pageVisible = true
     if (!this.windowRestoreRequestedForHide) {
@@ -1064,8 +1106,9 @@ struct McGamePage {
       }
 
       // 产品控制面：手机/平板 target 编译触控 GameControls；desktop target 编译纯实体键鼠控制面。
-      if (this.mcStarted) {
+      if (this.mcStarted && !this.resolutionFailed) {
         ProductGameControlSurface({
+          toolTheme: this.toolTheme,
           gameDirectory: this.touchGameDirectory,
           realGameVersion: this.touchRealGameVersion,
           isGrabbed: this.isInGame,
@@ -1083,6 +1126,12 @@ struct McGamePage {
           .fontSize(13).fontColor('#FFFFFF').padding(8).borderRadius(8)
           .backgroundColor('#AA000000').constraintSize({maxWidth:420})
           .align(Alignment.TopEnd).margin({right:12,top:12}).hitTestBehavior(HitTestMode.None)
+      }
+      if (this.mcStarted) {
+        GameResolutionGuard({ toolTheme: this.toolTheme, onFailure: (): void => {
+          this.resolutionFailed = true
+          this.updatePageInputActive()
+        } })
       }
     }
     .width('100%')
@@ -2050,41 +2099,19 @@ struct McGamePage {
 
   /**
    * 准备第三方皮肤站（authlib-injector）启动所需：
-   *   1) 从 rawfile 提取 authlib-injector.jar 到 filesDir（幂等，已存在且非空则跳过）
+   *   1) 按官方原件摘要提取到内容地址；不能因旧版JAR非空而跨HAP升级继续复用
    *   2) GET apiRoot 预取元数据（同时借 YggdrasilApi 完成 ALI 解析），base64 编码
    *   3) builder.setAuthlibInjector(jarPath, resolvedRoot, prefetchedBase64)
    *
    * 成功返回 ''；失败返回错误描述（调用方据此中断启动）。
    */
   private async prepareAuthlibInjector_(acc: AuthlibInjectorAccount, builder: LaunchProfileBuilder, filesDir: string): Promise<string> {
-    // 1) 提取 jar
-    let jarPath = filesDir + '/' + AUTHLIB_INJECTOR_JAR_NAME
+    // 1) 与本地离线外观共用已核验原件，但第三方ALI/认证准备仍走原服务链。
+    let jarPath: string = ''
     try {
-      let needExtract = true
-      try {
-        let st = fs.statSync(jarPath)
-        if (st.size > 0) needExtract = false
-      } catch (e) { /* 不存在 → 需提取 */ }
-      if (needExtract) {
-        let data = await this.context.resourceManager.getRawFileContent(AUTHLIB_INJECTOR_JAR_NAME)
-        if (!data || data.byteLength <= 0) {
-          return AUTHLIB_INJECTOR_JAR_NAME + ' 为空（rawfile 可能未正确打包）'
-        }
-        let f = fs.openSync(jarPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC)
-        try {
-          fs.writeSync(f.fd, data.buffer)
-        } finally {
-          fs.closeSync(f)
-        }
-        let writtenSize = 0
-        try { writtenSize = fs.statSync(jarPath).size } catch (e) { /* ignore */ }
-        if (writtenSize <= 0) {
-          return AUTHLIB_INJECTOR_JAR_NAME + ' 写入后大小为 0'
-        }
-        this.launchLogger_().info(TAG, `Extracted ${AUTHLIB_INJECTOR_JAR_NAME}: ${writtenSize} bytes`, LOG_DOMAIN_LAUNCH)
-      }
+      jarPath = await ensureAuthlibInjectorArtifact(this.context, filesDir)
     } catch (e) {
-      return '提取 ' + AUTHLIB_INJECTOR_JAR_NAME + ' 失败: ' + (e as Error).message
+      return '准备authlib-injector失败: ' + (e as Error).message
     }
 
     // 2) 预取元数据（含 ALI 解析）
@@ -2101,6 +2128,25 @@ struct McGamePage {
     } catch (e) {
       return '无法连接皮肤站（' + apiRoot + '）：' + (e as Error).message
     }
+  }
+
+  /**
+   * 离线外观只读取选定账号快照，不调用远端登录/ALI，也不改变用户名、UUID或凭据。
+   * 先让Host持有服务，再开始listen/签名，失败和会话stop都能取消并关闭同一个对象。
+   */
+  private async prepareOfflineAppearance_(account: OfflineAccount, builder: LaunchProfileBuilder, filesDir: string): Promise<void> {
+    const appearance = account.getOfflineAppearance()
+    if (appearance.skin === undefined && appearance.cape === undefined) return
+    this.statusText = '正在准备本地皮肤与披风...'
+    const service = new OfflineAppearanceServer((message: string): void => {
+      this.launchLogger_().info(TAG, message, LOG_DOMAIN_LAUNCH)
+    })
+    this.sessionHost.ownOfflineAppearance(service)
+    const prepared = await service.start(filesDir, account.uuid, account.username, appearance)
+    const jarPath: string = await ensureAuthlibInjectorArtifact(this.context, filesDir)
+    // Native同步前缀创建JVM/premain，期间ArkTS回调不可运行；完整prefetched元数据是
+    // 不向本机ArkTS服务回查配置的前提。Java main后续运行在Native游戏线程，才消费纹理。
+    builder.setAuthlibInjector(jarPath, prepared.apiRoot, prepared.prefetched, true)
   }
 
   // ⚰️ 2026-09-04（启动架构世代化 §S02）：这里曾有 `isForgeLaunchProfile()` ——
@@ -2174,8 +2220,8 @@ struct McGamePage {
     return this.sessionHost.runLaunch(frontend, (): Promise<void> => this.startMCOnce())
   }
 
-  /** 在窗口校验、资源部署和 JVM 参数构造前建立本局账本，消除启动前日志空窗。 */
-  private beginLaunchLedgerEarly_(): void {
+  /** 在窗口校验、资源部署和JVM参数构造前等待真实开账；离页后不再发布旧活动归属。 */
+  private async beginLaunchLedgerEarly_(): Promise<void> {
     if (this.launchStartedAt_ <= 0 || ledgerHas(this.context.filesDir, this.launchStartedAt_)) return
     let version: string = ''
     let mcDir: string = ''
@@ -2191,12 +2237,21 @@ struct McGamePage {
       mcDir: mcDir,
       appFilesDir: this.applicationFilesDir_(),
     }
+    const epoch: number = this.inputLifecycleEpoch
+    const frontend: GameFrontendLease | undefined = this.launchFrontendLease
+    const startedAt: number = this.launchStartedAt_
     try {
-      ledgerBegin(this.context.filesDir, this.launchStartedAt_, enrichSessionEnvironment(this.context, this.launchStartedAt_, meta))
+      const opened: boolean = await ledgerBeginAsync(this.context.filesDir, startedAt,
+        enrichSessionEnvironment(this.context, startedAt, meta))
+      if (epoch !== this.inputLifecycleEpoch || this.navigatedAway || !this.sessionHost.accepts(frontend)
+        || startedAt !== this.launchStartedAt_) return
+      if (!opened) throw new Error('本局活动日志基线尚未建立')
       // native 横幅需要在 stdout 重定向之前知道本局 activityId。
       testNapi.amclLedgerSetLaunchActivity(this.launchStartedAt_)
     } catch (e) {
       // 账本是诊断增强能力；建立失败不能阻止正常启动流程。
+      if (epoch !== this.inputLifecycleEpoch || this.navigatedAway || !this.sessionHost.accepts(frontend)
+        || startedAt !== this.launchStartedAt_) return
       this.launchLogger_().warn(TAG, 'early launch ledger begin failed', e, LOG_DOMAIN_LAUNCH)
     }
   }
@@ -2246,9 +2301,15 @@ struct McGamePage {
     this.launchRecorded_ = false
     this.launchFailureRecord_ = undefined
     this.launchFailureTask_ = undefined
-    this.beginLaunchLedgerEarly_()
     let processLaunch: SharedProcessGameLease | undefined = undefined
     try {
+      // 旧共享路线可能直到此处才产生活动ID，必须用原Host刚绑定的真实身份；不能在
+      // aboutToAppear把合法的0准备态当启动失败，也不能等JVM启动后才装配提示。
+      GameDialogRuntime.attach(this.getUIContext(), this.launchStartedAt_)
+      await this.beginLaunchLedgerEarly_()
+      // 开账包含SDK异步IO；等候期间退出/重绑前端后，不得继续申请窗口或进入JVM准备。
+      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+          !this.sessionHost.accepts(this.launchFrontendLease)) return
       // 输入产品身份没能与 native 对齐（见 recordInputProductFailure_）时绝不启动 JVM。
       // 放在桌面窗口校验之前、交给下面既有的 catch 记录失败，finally 负责恢复窗口。
       if (this.inputProductFailure_.length > 0) throw new Error(this.inputProductFailure_)
@@ -2266,6 +2327,9 @@ struct McGamePage {
           !this.sessionHost.accepts(this.launchFrontendLease)) return
       await this.startMCInternal(processLaunch)
     } catch (e) {
+      // 新增开账await及其失败都可能迟到；已退休前端只由finally归还原预约，不发布旧失败。
+      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+          !this.sessionHost.accepts(this.launchFrontendLease)) return
       this.statusText = '游戏启动准备失败：' + (e as Error).message
       this.launchLogger_().error(TAG, 'Game launch preparation rejected', e, LOG_DOMAIN_LAUNCH)
       await this.recordLaunchFailure_(AppStorage.get<string>('mcVersion') ?? '', this.statusText)
@@ -2276,6 +2340,8 @@ struct McGamePage {
       // 所有早退（参数缺失、资源失败、profile 拒绝、native rc）统一经过这里；
       // 不再要求每个新增失败分支记得手工恢复窗口。
       if (!this.mcStarted) {
+        try { await this.sessionHost.releaseOfflineAppearance() }
+        catch (error) { this.launchLogger_().warn(TAG, '离线外观准备资源释放失败', error, LOG_DOMAIN_LAUNCH) }
         await this.restoreGameWindow(this.gameWindowCoordinator, 'launch-failed')
       }
     }
@@ -2323,7 +2389,9 @@ struct McGamePage {
     const launchMeta: LedgerBeginMeta = { category: ActivityCategory.LAUNCH,
       title: mcVersion || 'unknown', gameVersionId: mcVersion, jdk: jdkVersion,
       mcDir: this.mcDir, gameDir: gameDir, appFilesDir: this.applicationFilesDir_() }
-    ledgerBegin(this.context.filesDir, this.launchStartedAt_, enrichSessionEnvironment(this.context, this.launchStartedAt_, launchMeta))
+    await ledgerBeginAsync(this.context.filesDir, this.launchStartedAt_, enrichSessionEnvironment(this.context, this.launchStartedAt_, launchMeta))
+    if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+        !this.sessionHost.accepts(this.launchFrontendLease)) return
     testNapi.amclLedgerSetLaunchActivity(this.launchStartedAt_)
     this.launchLogger_().info(TAG, `Launch params resolved: filesDir=${filesDir} mcDir=${this.mcDir} gameDir=${gameDir} mcVersion=${mcVersion}`, LOG_DOMAIN_LAUNCH)
 
@@ -2389,6 +2457,8 @@ struct McGamePage {
       }
       this.launchLogger_().info(TAG, `Extracted amcl-launcher.jar: ${writtenSize} bytes`, LOG_DOMAIN_LAUNCH)
       await new RuntimeDeployer(this.context).deployGameCompatibility(filesDir)
+      await new RuntimeDeployer(this.context).deployCpuCompatibility(filesDir)
+      await new RuntimeDeployer(this.context).deployAudioServiceCompatibility(filesDir)
     } catch (e) {
       let reason = (e as Error).message
       this.launchLogger_().error(TAG, 'FATAL: Failed to deploy Java runtime components', e, LOG_DOMAIN_LAUNCH)
@@ -2528,6 +2598,7 @@ struct McGamePage {
       .setXmxMb(mcXmx)
       .setWindowSize(surfaceW, surfaceH)
       .setCustomJvmArgs(preferenceManager.resolveLaunch(mcVersion).customJvmArgs)
+      .setResolutionScalePercent(preferenceManager.resolveLaunch(mcVersion).renderScalePercent)
       .setGraphicsProfile(requestedGraphicsProfile)
       // DevTools 后端覆盖（candidate 验证通道，治理规范 §2.3）。产品常态是空串 = 无覆盖；
       // 开发验证产品的设置页与 DevTools 共用覆盖偏好；解析器校验候选状态和 SDL3 路线。
@@ -2546,6 +2617,9 @@ struct McGamePage {
         await this.recordLaunchFailure_(mcVersion, '第三方登录准备失败: ' + authlibErr)
         return
       }
+    } else if (account.type === AccountType.OFFLINE) {
+      // 与第三方注入互斥。无自定义皮肤/披风时函数直接返回，保持原默认离线启动。
+      await this.prepareOfflineAppearance_(account as OfflineAccount, builder, filesDir)
     }
 
     try { await builder.prepareLogging() }
@@ -2614,10 +2688,14 @@ struct McGamePage {
         meta.parentActivityId = recoveryTicket.rootActivityId
         meta.relation = 'graphics-recovery'
       }
-      ledgerBegin(profile.filesDir, sessionStartedAt, enrichSessionEnvironment(this.context, sessionStartedAt, meta, profile))
+      await ledgerBeginAsync(profile.filesDir, sessionStartedAt, enrichSessionEnvironment(this.context, sessionStartedAt, meta, profile))
+      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+          !this.sessionHost.accepts(this.launchFrontendLease)) return
       testNapi.amclLedgerSetLaunchActivity(sessionStartedAt)
     } catch (e) {
       // 账本开失败绝不能阻断启动（设计文档 §8 的硬要求）
+      if (this.launchLifecycleEpoch !== this.inputLifecycleEpoch || this.navigatedAway ||
+          !this.sessionHost.accepts(this.launchFrontendLease)) return
       this.launchLogger_().warn(TAG, 'ledger begin for game session failed', e, LOG_DOMAIN_LAUNCH)
     }
 

@@ -44,6 +44,10 @@ export class ModInstallTask implements UnifiedDownloadAdapter, ResourceFileProvi
     this.view.title = request.title;
     this.view.subtitle = request.root.versionNumber;
     this.view.category = TaskCategory.MOD;
+    // 新装、更新和修复都由Registry所有者记录；任何入口不再自行分配另一个账本ID。
+    this.view.activityMcDir = request.mcDir;
+    this.view.activityGameVersion = request.versionId;
+    this.view.activityCategory = request.oldPath !== undefined ? 'resource_manage' : 'mod_install';
     this.view.state = UnifiedTaskState.PREPARING;
     this.view.canCancel = true;
     this.view.canViewDetail = true;

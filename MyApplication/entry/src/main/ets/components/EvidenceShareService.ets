@@ -58,11 +58,11 @@ async function submitSnapshot_(context: common.UIAbilityContext, snapshot: Evide
     if (existing.accepted === false) throw new LogShareRequestError('上次上传响应未通过校验，撤回凭据已保留；请先在分享记录核对或撤回', 'verification');
     return existing;
   }
-  // files 解析器限制附件总量，实例 maxLength/maxLines 则逐文件检查；读取前先按
-  // 冻结收据拒绝单文件超限，避免错误地用 maxLength 限制全部附件之和。
-  if (preflight !== undefined && preflight.limits.ok && snapshot.files.some((file): boolean =>
-    file.bytes > preflight.limits.maxBytes || file.lines > preflight.limits.maxLines)) {
-    throw new LogShareRequestError('单个日志文件超过分享服务限额，请减少该文件或导出完整 ZIP', 'limit');
+  // 读取冻结正文前先校验文件数与旧实例逐文件限额；新版总量由实际所选实例决定。
+  if (preflight !== undefined && preflight.limits.ok
+    && (snapshot.files.length > Math.min(200, preflight.limits.maxFiles) || snapshot.files.some((file): boolean =>
+      file.bytes > preflight.limits.maxBytes || file.lines > preflight.limits.maxLines))) {
+    throw new LogShareRequestError('所选文件数量或单文件内容超过分享服务限额，请减少文件或导出完整 ZIP', 'limit');
   }
   const exportBudget: number = preflight !== undefined && preflight.limits.ok
     ? logShareExportBudgetBytes(preflight.limits) : LOGSHARE_MULTIFILE_EXPANSION_BUDGET_BYTES;
@@ -83,6 +83,7 @@ async function submitSnapshot_(context: common.UIAbilityContext, snapshot: Evide
         url: receipt.ok ? receipt.url : canonicalLogShareUrl(receipt.apiBaseUrl ?? '', receipt.id), token: receipt.token,
         accepted: receipt.ok, sharedAt: Date.now(), versionId: metadata.mcVersion,
         apiBaseUrl: receipt.apiBaseUrl, storageTimeSec: receipt.storageTimeSec,
+        deduplicated: receipt.deduplicated,
         selectedPaths: receipt.uploadedPaths ?? snapshot.files.map((file): string => file.name), snapshotRevision: snapshot.revision,
         snapshotDigest: snapshot.digest, redactionVersion: snapshot.redactionVersion,
         remoteFilesVerified: false, verificationError: receipt.ok ? '正在核对远端文件清单' : receipt.error,

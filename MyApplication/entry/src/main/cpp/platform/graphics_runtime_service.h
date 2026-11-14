@@ -19,7 +19,7 @@ namespace amcl::graphics {
 /** 仅在环境文本 PID 已与当前进程匹配后调用；不拥有/释放表，也不触发 bind 或初始化。 */
 inline bool ValidGraphicsRuntimeServiceV2(const AmclGraphicsRuntimeServiceV2* owner, int pid) {
     return owner && owner->size >= sizeof(AmclGraphicsRuntimeServiceV2) && owner->abi == 2 &&
-        owner->publicApiSize >= sizeof(AmclGraphicsRuntimeV1) && owner->pid == pid &&
+        owner->publicApiSize >= AMCL_GRAPHICS_RUNTIME_V1_CORE_SIZE && owner->pid == pid &&
         owner->bind && owner->bound;
 }
 }

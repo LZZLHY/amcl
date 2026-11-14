@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { evidenceRuntime } from './lib/evidence-test-runtime.mjs';
+import { closeEvidenceRuntime } from './lib/close-evidence-runtime.mjs';
 const common = name => 'commons/src/main/ets/utils/' + name + '.ets';
 
 // 升级后的新旧 stdout 同时存在时，新路径必须胜出；旧恢复时间也不能被默认视作精确。
-test('migration prefers new stdout over the legacy alias and old inferred timestamps remain unknown', () => {
+test('migration prefers new stdout over the legacy alias and old inferred timestamps remain unknown', async () => {
   const f = evidenceRuntime();
   try {
     const ledger = f.load(common('ActivityLedger'));
@@ -17,7 +18,7 @@ test('migration prefers new stdout over the legacy alias and old inferred timest
     assert.equal(evidence.find(file => file.role === 'minecraft-output').localPath.replaceAll('\\', '/'), current.replaceAll('\\', '/'));
     const manifest = ledger.parseLedgerManifest(JSON.stringify({ activityId: 100, category: 'launch', startedAt: 100, endedAt: 999999, state: 1, outcomeSource: 'session.full-evidence' }));
     assert.equal(manifest.endTimeEstimated, true);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 // 顺序遍历同一文件应只扫描一次；回看最近页不得触发 IO，来源变化必须使缓存失效。
@@ -59,7 +60,7 @@ test('reader continues pages, preserves source lines, highlights cross-token mat
     assert.equal(model.getData(0).sourceLineNumber, 301);
     model.cancel();
     await new Promise(resolve => setImmediate(resolve));
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 // 恢复时刻只作观察边界，不能把关闭应用后的整夜累计成游玩时间。
@@ -68,11 +69,14 @@ test('unknown recovered end time stays explicit while verified end time and unch
   try {
     const ledger = f.load(common('ActivityLedger'));
     const id = Date.now() - 86400000;
-    ledger.ledgerBegin(f.directory, id, { category: 'launch', title: 'test', gameVersionId: 'test', mcDir: f.directory + '/mc' });
+    ledger.ledgerBegin(f.directory, id, { category: 'launch', title: 'test', gameVersionId: 'test',
+      mcDir: f.directory + '/mc', gameDir: f.directory + '/mc',
+      ownerPid: 99, runNonce: '00000000-0000-4000-8000-000000000099' });
     f.write('mc/mc_output.log', `##AMCL-SESSION-BEGIN {"activityId":${id}}\nStopping!\n`);
     let copies = 0;
     f.kitFs.copyFileSync = (from, to) => { copies++; fs.copyFileSync(from, to); };
     ledger.ledgerResolveStale(f.directory);
+    assert(fs.existsSync(f.directory + '/logs/ledger/' + id + '/game/mc_output.log'), '必须实际归档旧进程stdout');
     const first = copies;
     ledger.ledgerArchiveCompletedSessions(f.directory);
     assert.equal(copies, first, '未变化来源不重复全量复制');
@@ -84,7 +88,7 @@ test('unknown recovered end time stays explicit while verified end time and unch
     const known = ledger.ledgerManifest(f.directory, id);
     assert.equal(known.endTimeEstimated, false);
     assert.equal(known.endedAt, id + 5000);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 // 跨归档、清单与裁决执行真实生产链路，覆盖只有 stdout 的会话及别局横幅拒绝。
@@ -95,7 +99,10 @@ test('exact archived stdout survives working rotation and remains usable for out
       const ledger = f.load(common('ActivityLedger'));
       const evidence = f.load(common('SessionEvidence'));
       const id = Date.now() - 2000;
-      ledger.ledgerBegin(f.directory, id, { category: 'launch', title: 'test', gameVersionId: 'test', mcDir: f.directory + '/mc' });
+      // stdout捕获必须绑定本局实际gameDir。mcDir只是实例根，不能据此猜测隔离目录。
+      ledger.ledgerBegin(f.directory, id, { category: 'launch', title: 'test', gameVersionId: 'test',
+        mcDir: f.directory + '/mc', gameDir: f.directory + '/mc',
+        ownerPid: 99, runNonce: '00000000-0000-4000-8000-000000000099' });
       f.write('mc/mc_output.log', `##AMCL-SESSION-BEGIN {"activityId":${id},"epochMs":${id}}\n${body}\n`);
       ledger.ledgerResolveStale(f.directory);
       f.write('mc/mc_output.log', `##AMCL-SESSION-BEGIN {"activityId":${id + 1},"epochMs":${id + 1}}\nOTHER`);
@@ -111,7 +118,7 @@ test('exact archived stdout survives working rotation and remains usable for out
       const wrong = evidence.listSessionEvidence(f.directory, id).find(file => file.role === 'minecraft-output');
       assert.equal(wrong.attribution, 'previous-session');
       assert.equal(wrong.uploadPolicy, 'never');
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });
 
@@ -134,10 +141,10 @@ test('history reads latest ledger outcome without losing share credentials or mu
       assert.equal(current.totalBytes, 777);
     }
     assert.equal(record.status, 'aborted');
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
-test('native capture failures stay visible; rotations classified; saved selection uses current revision', () => {
+test('native capture failures stay visible; rotations classified; saved selection uses current revision', async () => {
   const f = evidenceRuntime();
   try {
     const s = f.load(common('SessionEvidence'));
@@ -154,7 +161,7 @@ test('native capture failures stay visible; rotations classified; saved selectio
     assert.equal(s.evidenceSelectionOf(f.directory, 1).revision, updated.revision);
     f.control.failWrite = name => name.includes('evidence-selection');
     assert.throws(() => s.setEvidenceSelection(f.directory, 1, []), /保存失败/);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('frozen snapshot rejects lost files and same-size rewrites and does not adopt a changed selection', async () => {
@@ -176,7 +183,7 @@ test('frozen snapshot rejects lost files and same-size rewrites and does not ado
     x.disposeEvidenceExportSnapshot(snapshot);
     fs.unlinkSync(path);
     await assert.rejects(() => x.createEvidenceExportSnapshot(f.directory, f.context.tempDir, selection, ''), /消失/);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('gzip exact boundary, Unicode chunk boundaries and streaming export beyond old 16 MiB cap', async () => {
@@ -194,10 +201,10 @@ test('gzip exact boundary, Unicode chunk boundaries and streaming export beyond 
     assert.equal(snapshot.files[0].bytes, 18000000);
     assert.match(snapshot.files[0].name, /decompressed\.log$/);
     x.disposeEvidenceExportSnapshot(snapshot);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
-test('source checkpoints capture early crashes without stdout and update nonempty files', () => {
+test('source checkpoints capture early crashes without stdout and update nonempty files', async () => {
   const f = evidenceRuntime();
   try {
     const c = f.load(common('SessionCapture'));
@@ -215,10 +222,10 @@ test('source checkpoints capture early crashes without stdout and update nonempt
     f.write('minecraft/logs/latest.log', 'NEXT SESSION');
     c.checkpointSessionCapture(f.directory, id, Date.now(), Date.now() - 1);
     assert.doesNotMatch(fs.readFileSync(saved, 'utf8'), /NEXT SESSION/);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
-test('redaction preserves SHA-256 and labels while masking short contextual secrets', () => {
+test('redaction preserves SHA-256 and labels while masking short contextual secrets', async () => {
   const f = evidenceRuntime();
   try {
     const r = f.load(common('Redact'));
@@ -229,12 +236,12 @@ test('redaction preserves SHA-256 and labels while masking short contextual secr
     assert.doesNotMatch(r.redactToken('Authorization: Basic dTpw'), /dTpw/);
     const once = r.redactToken('Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890');
     assert.match(once, /^Authorization: Bearer /); assert.equal(r.redactToken(once), once);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 // 执行真实 ArkTS 脱敏模块，覆盖曾使上传回归溢出匹配栈的 6 MiB 连续字段。
 // 同时检查大技术摘要不被截断、真实 token 仍被遮蔽，避免用跳过脱敏换取通过。
-test('large opaque fields redact without stack overflow while hexadecimal diagnostics remain intact', () => {
+test('large opaque fields redact without stack overflow while hexadecimal diagnostics remain intact', async () => {
   const f = evidenceRuntime();
   try {
     const r = f.load(common('Redact'));
@@ -248,11 +255,11 @@ test('large opaque fields redact without stack overflow while hexadecimal diagno
     // 明确的凭据上下文优先于长十六进制摘要豁免。
     const contextual = r.redactToken('password=' + hex);
     assert.equal(contextual, `password=aaaaaa***[${hex.length}chars]***aaaaaa`);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 // 钉住原规则的主体门槛、至多两个 padding 以及中文/URL/换行边界。
-test('opaque token scanning preserves threshold, padding and surrounding text', () => {
+test('opaque token scanning preserves threshold, padding and surrounding text', async () => {
   const f = evidenceRuntime();
   try {
     const r = f.load(common('Redact'));
@@ -264,7 +271,7 @@ test('opaque token scanning preserves threshold, padding and surrounding text', 
     const bounded = '中/' + body + '.尾\n' + short;
     assert.equal(r.redactToken(bounded), '中/ZZZZZZ***[40chars]***ZZZZZZ.尾\n' + short);
     assert.equal(r.redactToken('a'.repeat(40) + '='), 'aaaaaa***[41chars]***aaaaa=');
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('explicit excerpts allocate budgets per file, preserve crash reports and leave the full snapshot intact', async () => {
@@ -285,7 +292,7 @@ test('explicit excerpts allocate budgets per file, preserve crash reports and le
     assert.equal(fs.readFileSync(snapshot.files.find(file => file.role === 'minecraft-main').path, 'utf8').split('\n').length, 60003);
     assert.notEqual(excerpt.digest, snapshot.digest);
     x.disposeEvidenceExportSnapshot(snapshot); x.disposeEvidenceExportSnapshot(excerpt);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('LogShare uses dynamic limits, gzip, matching id and never reposts unknown outcomes', async () => {
@@ -301,7 +308,7 @@ test('LogShare uses dynamic limits, gzip, matching id and never reposts unknown 
     const before = f.control.requests.filter(r => r.options.method === 'POST').length;
     await client.submitLogFiles([{ name: 'a.log', content: 'x' }], 'amcl-launcher');
     assert.equal(f.control.requests.filter(r => r.options.method === 'POST').length - before, 1);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('share credential persistence failure retries storage, not POST; records survive ledger deletion', async () => {
@@ -322,11 +329,11 @@ test('share credential persistence failure retries storage, not POST; records su
     fs.rmSync(f.directory + '/logs/ledger/4', { recursive: true });
     assert.equal((await client.loadShareRecords(f.context)).length, 1);
     assert.equal(client.isShareRecordCurrent({ ...record, sharedAt: 1 }), false);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 
-test('DFX event type and external_log array are parsed, future sessions and explicit success are protected', () => {
+test('DFX event type and external_log array are parsed, future sessions and explicit success are protected', async () => {
   const f = evidenceRuntime();
   try {
     const l = f.load(common('ActivityLedger')), s = f.load(common('SessionEvidence'));
@@ -347,7 +354,7 @@ test('DFX event type and external_log array are parsed, future sessions and expl
     const reports = s.listSessionEvidence(f.directory, 1000).filter(file => file.role === 'system-crash');
     assert.equal(reports.length, 2); assert(reports.every(file => file.defaultSelected));
     assert(reports.some(file => fs.readFileSync(file.localPath, 'utf8') === 'REAL_SYSTEM_CRASH'));
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('startup gzip from prior latest is excluded; same-session slices become eligible', async () => {
@@ -368,7 +375,7 @@ test('startup gzip from prior latest is excluded; same-session slices become eli
     const current = files.find(file => file.path.endsWith('-2.log.gz'));
     assert.equal(previous.attribution, 'previous-session'); assert.equal(previous.defaultSelected, false);
     assert.equal(current.attribution, 'source-baseline'); assert.equal(current.defaultSelected, true);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('paged reader searches whole logical Unicode lines, retains bounded rows and cancels stale reads', async () => {
@@ -386,7 +393,7 @@ test('paged reader searches whole logical Unicode lines, retains bounded rows an
     f.control.afterRead = async () => { if (!changed) { changed = true; await model.loadEvidence([{ path: b, compressed: false }], 0, ''); } };
     assert.equal(await model.loadEvidence([{ path: a, compressed: false }], 0, ''), false);
     assert.match(model.getData(0).text, /B_ONLY/);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('full session outcome resolves evidence beyond preview tails without overwriting explicit outcome', async () => {
@@ -404,7 +411,7 @@ test('full session outcome resolves evidence beyond preview tails without overwr
     const saved = l.ledgerManifest(f.directory, id); saved.state = 1; saved.outcomeSource = 'game.explicit-exit';
     f.write('logs/ledger/' + id + '/manifest.json', JSON.stringify(saved));
     assert.equal((await resolver.resolveRecoveredSessionOutcome(f.directory, id)).state, 1);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 
@@ -417,7 +424,7 @@ test('legacy unowned crash files cannot turn a restored session into a fresh cra
     f.write('logs/ledger/55/crash-reports/crash-2026-09-02_03.30.00-client.txt', 'old crash report');
     const result = await resolver.resolveRecoveredSessionOutcome(f.directory, 55);
     assert.equal(result.state, l.LedgerState.INTERRUPTED);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('unchanged old crash baseline remains not-produced and cannot override a normal current exit', async () => {
@@ -445,7 +452,7 @@ test('unchanged old crash baseline remains not-produced and cannot override a no
     assert.equal(l.ledgerManifest(f.directory, id).state, l.LedgerState.SUCCESS);
     assert.equal(fs.readFileSync(old, 'utf8'), 'YESTERDAY_REAL_CRASH\n');
     assert.equal(fs.statSync(old).mtimeMs, before, '不得删除、改写或touch用户旧报告');
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('real current Minecraft and JVM fatal reports still override Stopping when body is readable', async () => {
@@ -462,7 +469,7 @@ test('real current Minecraft and JVM fatal reports still override Stopping when 
       const result = await resolver.resolveRecoveredSessionOutcome(f.directory, id);
       assert.equal(result.state, l.LedgerState.CRASHED);
       assert.match(result.summary, /本次启动产生了崩溃报告/);
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });
 
@@ -483,7 +490,7 @@ test('empty latest placeholder cannot take priority over exact captured stdio', 
     f.write('logs/ledger/' + id + '/capture-sources.json', JSON.stringify(plan));
     const result = await resolver.resolveRecoveredSessionOutcome(f.directory, id);
     assert.equal(result.state, l.LedgerState.SUCCESS);
-  } finally { f.close(); }
+  } finally { await closeEvidenceRuntime(f); }
 });
 
 test('report metadata without readable body cannot invent a crash or guarantee success', async () => {
@@ -512,7 +519,7 @@ test('report metadata without readable body cannot invent a crash or guarantee s
       const result = await resolver.resolveRecoveredSessionOutcome(f.directory, id);
       assert.equal(result.state, l.LedgerState.INTERRUPTED, failure);
       assert.match(result.summary, /报告正文不可读/);
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });
 
@@ -530,7 +537,7 @@ test('state and attribution independently exclude false evidence even with nonem
       plan.sources.find(item => item.destination === 'game/logs/latest.log').state = state;
       f.write('logs/ledger/' + id + '/capture-sources.json', JSON.stringify(plan));
       assert.equal((await resolver.resolveRecoveredSessionOutcome(f.directory, id)).state, l.LedgerState.INTERRUPTED);
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
   for (const attribution of ['previous-session', 'ambiguous', 'unknown']) {
     const f = evidenceRuntime();
@@ -545,7 +552,7 @@ test('state and attribution independently exclude false evidence even with nonem
       plan.sources.find(item => item.destination.startsWith('crash-reports/')).attribution = attribution;
       f.write('logs/ledger/' + id + '/capture-sources.json', JSON.stringify(plan));
       assert.equal((await resolver.resolveRecoveredSessionOutcome(f.directory, id)).state, l.LedgerState.INTERRUPTED);
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });
 
@@ -569,6 +576,6 @@ test('read failure or incomplete capture after a stop marker cannot claim comple
       }
       const result = await resolver.resolveRecoveredSessionOutcome(f.directory, id);
       assert.equal(result.state, l.LedgerState.INTERRUPTED, failure);
-    } finally { f.close(); }
+    } finally { await closeEvidenceRuntime(f); }
   }
 });

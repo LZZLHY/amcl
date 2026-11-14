@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "runtimes": {
+    "8": {
+      "commit": "35c254f58c70663df28cc7d15c9545c88250b6ce",
+      "patchSha256": "8972492c6b1397675931023497b0d9ec6bed68aab7021a6901a3c7b088bafd36",
+      "files": {
+        "jdk/src/solaris/native/sun/awt/fontpath.c": "afcfaf58b68e90a7bf849a2ecc9b2e9028063bf921064a3cb45b70e46ff8847a",
+        "jdk/src/share/classes/sun/font/CompositeFont.java": "ff98b40f07f96689e8cee2c1353319d577fb3dcb140acef769dec17e095f6f36"
+      },
+      "patchedFiles": {
+        "jdk/src/solaris/native/sun/awt/fontpath.c": "ff7a74314034039c7bdd6f1e045a0154a06dba4e0ba66035ffeaef61c8a2c049",
+        "jdk/src/share/classes/sun/font/CompositeFont.java": "906e1db000d0be9b7265c605254be2f0e98bdc1293b32ef7959f62d9efbbed3f"
+      }
+    },
+    "17": {
+      "commit": "b7d004b4f2787ea49454291d48326ad1cd97c0d0",
+      "patchSha256": "3ae7fa4b98c7c72b7e9dd0b06c3e07788c22a95ab6544f54f0546febab6d63f3",
+      "files": {
+        "src/java.desktop/unix/native/common/awt/fontpath.c": "d20211c5ee94cb5a6dc76ca59e6db251de0f183f38057f80c7a9b49fe4341bc8",
+        "src/java.desktop/share/classes/sun/font/CompositeFont.java": "46224cc2b4409d6585a1bd7ccda1c083c60067e75af15d67ff04d2a07857eff2"
+      },
+      "patchedFiles": {
+        "src/java.desktop/unix/native/common/awt/fontpath.c": "3d61eedc669efa30e80b6accb478041d597a45c089c1247b14f3870258b8f13b",
+        "src/java.desktop/share/classes/sun/font/CompositeFont.java": "7d8d723e2d83b093d14c53dfd6a39e18f304c28d67b75493a237b6556517fb53"
+      }
+    },
+    "21": {
+      "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
+      "patchSha256": "8f7d96677d5b4e710a2f44542fab2cadc541851a0f0c8e7c5fd92c32d63683c3",
+      "files": {
+        "src/java.desktop/unix/native/common/awt/fontpath.c": "9fe5a974d486e6751742a479f8f7a0bc45230a41f77552d224f0ef6ca7ff96bf",
+        "src/java.desktop/share/classes/sun/font/CompositeFont.java": "4ad6ef29f71c7e338a560ba8ba01d14952d30cb4c4af9f1cc45acd76d573543a"
+      },
+      "patchedFiles": {
+        "src/java.desktop/unix/native/common/awt/fontpath.c": "559ee17aa5422e457d1528693f8068490e06466240a17fb734af14dd87c15b7a",
+        "src/java.desktop/share/classes/sun/font/CompositeFont.java": "72c1965b7ffea18cfcf260f9cf4b7e87b0d7b65c719ec6fb4ffeb3c5e2069854"
+      }
+    },
+    "25": {
+      "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
+      "patchSha256": "c41b21ba334c09326ceaa8a2087cc8e5282b71cee1064b92f56f4cfc0044c20b",
+      "files": {
+        "src/java.desktop/unix/native/common/awt/fontpath.c": "d04eff6892a6c5b64756d995680bc02d47c8863d79737d35a73cbb594ed1a9bc",
+        "src/java.desktop/share/classes/sun/font/CompositeFont.java": "46224cc2b4409d6585a1bd7ccda1c083c60067e75af15d67ff04d2a07857eff2"
+      },
+      "patchedFiles": {
+        "src/java.desktop/unix/native/common/awt/fontpath.c": "9c965e176b491bbf4ab7b3e57b0b50b6985c489f6c2b7e77ff6df0efccc1a9c4",
+        "src/java.desktop/share/classes/sun/font/CompositeFont.java": "7d8d723e2d83b093d14c53dfd6a39e18f304c28d67b75493a237b6556517fb53"
+      }
+    }
+  }
+}

@@ -36,11 +36,15 @@ namespace transport_policy_cases {
  */
 class HttpFixture {
 public:
-    enum class Mode { ResumedRedirect, Cooldown, Complete };
+    enum class Mode { ResumedRedirect, Redirect, Cooldown, Complete, ServerError, Missing, IgnoreResumedRange };
     const Mode mode;
     const std::string host;
     std::string payload;
     std::string redirect_target;
+    // 精确匹配最终 request-target（含 query）；默认值保留原有传输策略场景。
+    const std::string expected_target;
+    // 真实 CERNET 节点对未携带产品 UA 的跳转请求返回 403；默认关闭以保留其他夹具语义。
+    const bool require_redirect_user_agent;
     int listener = -1;
     int port = 0;
     std::atomic<bool> stopping{false};
@@ -49,8 +53,10 @@ public:
     std::atomic<int64_t> last_offset{-1};
     std::thread worker;
 
-    HttpFixture(size_t bytes, Mode fixture_mode, std::string address, std::string target = {})
-        : mode(fixture_mode), host(std::move(address)), redirect_target(std::move(target)) {
+    HttpFixture(size_t bytes, Mode fixture_mode, std::string address, std::string target = {},
+                std::string expected = "/target", bool require_ua = false)
+        : mode(fixture_mode), host(std::move(address)), redirect_target(std::move(target)),
+          expected_target(std::move(expected)), require_redirect_user_agent(require_ua) {
         payload.resize(bytes);
         // 非恒定内容同时验证前缀、偏移和3xx正文未混入，不能仅靠文件长度冒充正确。
         for (size_t i = 0; i < bytes; ++i) payload[i] = static_cast<char>('a' + i % 23);
@@ -112,14 +118,23 @@ private:
             bool ranged = false;
             const int64_t offset = rangeOffset(request, ranged);
             last_offset.store(offset);
-            const bool target = request.find(" /target ") != std::string::npos;
+            const bool target = request.find(" " + expected_target + " ") != std::string::npos;
             const bool head = request.compare(0, 5, "HEAD ") == 0;
             if (head) ++head_requests;
             const int request_number = target ? ++target_requests : ++origin_requests;
-            if (mode == Mode::Cooldown && request_number == 1) {
+            if (mode == Mode::ServerError || mode == Mode::Missing) {
+                const std::string status = mode == Mode::Missing ? "404 Not Found" : "500 Server Error";
+                const std::string header = "HTTP/1.1 " + status + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                sendBytes(client, header.data(), header.size());
+            } else if (target && require_redirect_user_agent &&
+                request.find("\r\nUser-Agent: amcl/0.1 (OHOS; libcurl/8.10.1)\r\n") == std::string::npos) {
+                const std::string denied = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                sendBytes(client, denied.data(), denied.size());
+            } else if (mode == Mode::Cooldown && request_number == 1) {
                 const std::string header = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 6\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 sendBytes(client, header.data(), header.size());
-            } else if (mode == Mode::ResumedRedirect && !target && request_number > 1) {
+            } else if (!target && (mode == Mode::Redirect ||
+                        ((mode == Mode::ResumedRedirect || mode == Mode::IgnoreResumedRange) && request_number > 1))) {
                 // 第一跳的 Retry-After/Content-Range 不得污染最终200/206响应。
                 const std::string body = "redirect body is not artifact bytes";
                 const std::string next = redirect_target.empty() ? "/target" : redirect_target;
@@ -129,17 +144,20 @@ private:
                 if (!head) sendBytes(client, body.data(), body.size());
             } else {
                 assert(offset >= 0 && static_cast<size_t>(offset) < payload.size());
-                const size_t remaining = payload.size() - static_cast<size_t>(offset);
-                std::string header = ranged ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n";
+                const bool supports_range = ranged && !(target && mode == Mode::IgnoreResumedRange);
+                const size_t response_offset = supports_range ? static_cast<size_t>(offset) : 0;
+                const size_t remaining = payload.size() - response_offset;
+                std::string header = supports_range ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n";
                 header += "Content-Length: " + std::to_string(remaining) + "\r\n";
-                if (ranged) header += "Content-Range: bytes " + std::to_string(offset) + "-" +
+                if (supports_range) header += "Content-Range: bytes " + std::to_string(offset) + "-" +
                     std::to_string(payload.size() - 1) + "/" + std::to_string(payload.size()) + "\r\n";
                 header += "Connection: close\r\n\r\n";
                 sendBytes(client, header.data(), header.size());
                 size_t bytes = remaining;
-                if (mode == Mode::ResumedRedirect && !target && request_number == 1) bytes /= 2;
+                if ((mode == Mode::ResumedRedirect || mode == Mode::IgnoreResumedRange) &&
+                    !target && request_number == 1) bytes /= 2;
                 if (target) target_offset.store(offset);
-                if (!head) sendBytes(client, payload.data() + offset, bytes);
+                if (!head) sendBytes(client, payload.data() + response_offset, bytes);
             }
             ::shutdown(client, SHUT_RDWR); ::close(client);
         }
@@ -177,6 +195,58 @@ inline void resumedRedirect(download::DownloadEngine& engine, const std::filesys
     assert(saved == server.payload);
     assert(engine.purgeTask(task->taskId()));
     std::cout << "PASS real resumed relative redirect preserves prefix path=" << (small ? "multi" : "worker") << std::endl;
+}
+
+/** 真实执行器覆盖顺序选择、已知缺失不重试及全部瞬时失败时仅再遍历一次。 */
+inline void orderedSources(download::DownloadEngine& engine, const std::filesystem::path& root, size_t size,
+                           HttpFixture::Mode second_mode, int host_number) {
+    HttpFixture first(size, HttpFixture::Mode::ServerError, "127.0.0." + std::to_string(host_number));
+    HttpFixture second(size, second_mode, "127.0.0." + std::to_string(host_number + 1));
+    download::NetFile::Config file;
+    file.local_path = (root / ("ordered-version-" + std::to_string(host_number))).string();
+    file.allowed_root = root.string(); file.urls = {first.url(), second.url()};
+    file.ordered_version_download = true; file.max_connections = 1;
+    file.check.expected_size = size;
+    download::Sha1 hash; hash.update(first.payload.data(), first.payload.size());
+    file.check.expected_sha1 = hash.finalizeHex();
+    download::LoaderDownload::Config config; config.name = "ordered version sources"; config.files.push_back(file);
+    auto task = engine.createTask(config); assert(engine.startTask(task->taskId())); waitSettled(engine, task);
+    const bool complete = second_mode == HttpFixture::Mode::Complete;
+    assert(task->state() == (complete ? download::LoadState::Finished : download::LoadState::Failed));
+    assert(first.origin_requests == (complete ? 1 : 2));
+    assert(second.origin_requests == (second_mode == HttpFixture::Mode::ServerError ? 2 : 1));
+    if (complete) assert(readFixtureFile(file.local_path) == second.payload);
+    else assert(!std::filesystem::exists(file.local_path));
+    assert(engine.purgeTask(task->taskId()));
+    std::cout << "PASS ordered version source traversal bytes=" << size
+              << " requests=" << first.origin_requests << ',' << second.origin_requests << std::endl;
+}
+
+/** CDN 忽略非零 Range 时，验证旧前缀被放弃、下一跳仍带 UA 并安全重下完整工件。 */
+inline void orderedIgnoredRange(download::DownloadEngine& engine, const std::filesystem::path& root, size_t bytes) {
+    const bool small = bytes < 1024 * 1024;
+    HttpFixture server(bytes, HttpFixture::Mode::IgnoreResumedRange,
+                       small ? "127.0.0.79" : "127.0.0.78", {}, "/target", true);
+    download::NetFile::Config file;
+    file.local_path = (root / (small ? "ordered-ignore-range-multi" : "ordered-ignore-range-worker")).string();
+    file.allowed_root = root.string();
+    file.urls = {server.url()}; file.ordered_version_download = true; file.max_connections = 1;
+    file.check.expected_size = bytes;
+    download::Sha1 hash; hash.update(server.payload.data(), server.payload.size());
+    file.check.expected_sha1 = hash.finalizeHex();
+    download::LoaderDownload::Config config; config.name = "ordered version ignored Range"; config.files.push_back(file);
+    auto task = engine.createTask(config); assert(engine.startTask(task->taskId())); waitSettled(engine, task);
+    if (task->state() != download::LoadState::Finished || server.origin_requests != 3 || server.target_requests != 2) {
+        auto error = task->error();
+        std::cerr << "ordered ignored Range state=" << static_cast<int>(task->state())
+                  << " origin=" << server.origin_requests << " target=" << server.target_requests
+                  << " last_offset=" << server.target_offset << " error="
+                  << (error ? error->toString() : "none") << std::endl;
+    }
+    assert(task->state() == download::LoadState::Finished && server.origin_requests == 3 && server.target_requests == 2);
+    assert(server.target_offset == 0 && readFixtureFile(file.local_path) == server.payload);
+    assert(engine.purgeTask(task->taskId()));
+    std::cout << "PASS ordered version redirected 200 restarts ignored resumed Range from zero bytes=" << bytes << std::endl;
 }
 
 /** 6s冷却长于小文件5s stall阈值；第二请求必须重新起钟，恰好两次GET完成。 */
@@ -357,6 +427,74 @@ inline void deferredRedirectSelectsFallback(download::DownloadEngine& engine, co
 }
 
 /**
+ * 唯一origin已解析302，但目标CDN暂时没有名额：等待不能丢hop并反复重取origin。
+ * 使用生产共享准入的真实64份名额和回环HTTP，不模拟调度函数；4秒后归还名额，
+ * 旧实现会先把30次请求耗在origin，新实现应各请求origin/目标一次并写出准确完整内容。
+ */
+inline void temporaryRedirectCapacityPreservesHop(download::DownloadEngine& engine,
+    const std::filesystem::path& root) {
+    for (bool small : {true, false}) {
+        const size_t size = small ? 4096 : 2 * 1024 * 1024;
+        HttpFixture target(size, HttpFixture::Mode::Complete, small ? "127.0.0.58" : "127.0.0.60");
+        HttpFixture origin(size, HttpFixture::Mode::Redirect, small ? "127.0.0.59" : "127.0.0.61", target.url());
+        uint64_t occupied[64] = {};
+        for (auto& token : occupied) assert(engine.tryAcquireHostSlot(target.host, &token));
+        download::NetFile::Config file;
+        file.local_path = (root / (small ? "policy-redirect-capacity-multi" : "policy-redirect-capacity-worker")).string();
+        file.allowed_root = root.string(); file.urls = {origin.url()}; file.max_connections = 1;
+        file.check.expected_size = size;
+        download::Sha1 sha; sha.update(origin.payload.data(), origin.payload.size()); file.check.expected_sha1 = sha.finalizeHex();
+        download::LoaderDownload::Config cfg; cfg.name = "redirect waits for real host capacity"; cfg.files.push_back(file);
+        auto task = engine.createTask(cfg);
+        std::thread release([&] {
+            std::this_thread::sleep_for(std::chrono::seconds(4));
+            for (auto token : occupied) engine.releaseHostSlot(target.host, false, token);
+        });
+        assert(engine.startTask(task->taskId())); waitSettled(engine, task); release.join();
+        std::cout << "RESULT redirect-capacity " << (small ? "multi" : "worker")
+            << " finished=" << (task->state() == download::LoadState::Finished)
+            << " origin=" << origin.origin_requests << " target=" << target.origin_requests << std::endl;
+        assert(task->state() == download::LoadState::Finished);
+        assert(origin.origin_requests == 1 && target.origin_requests == 1);
+        std::ifstream input(file.local_path, std::ios::binary);
+        const std::string saved((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        assert(saved == origin.payload && engine.purgeTask(task->taskId()));
+    }
+    std::cout << "PASS temporary redirect capacity preserves one resolved hop on multi and worker" << std::endl;
+}
+
+/** 已解析hop等待名额时取消仍需迅速收敛，不能因worker保留调用栈而卡住退出/文件所有权。 */
+inline void cancelPendingRedirectCapacity(download::DownloadEngine& engine,
+    const std::filesystem::path& root) {
+    for (bool small : {true, false}) {
+        HttpFixture target(small ? 4096 : 2 * 1024 * 1024, HttpFixture::Mode::Complete,
+            small ? "127.0.0.62" : "127.0.0.64");
+        HttpFixture origin(target.payload.size(), HttpFixture::Mode::Redirect,
+            small ? "127.0.0.63" : "127.0.0.65", target.url());
+        uint64_t occupied[64] = {};
+        for (auto& token : occupied) assert(engine.tryAcquireHostSlot(target.host, &token));
+        download::NetFile::Config file;
+        file.local_path = (root / (small ? "policy-redirect-cancel-multi" : "policy-redirect-cancel-worker")).string();
+        file.allowed_root = root.string(); file.urls = {origin.url()}; file.max_connections = 1;
+        file.check.expected_size = target.payload.size();
+        download::LoaderDownload::Config cfg; cfg.name = "cancel resolved hop waiting for capacity"; cfg.files.push_back(file);
+        auto task = engine.createTask(cfg); assert(engine.startTask(task->taskId()));
+        for (int i = 0; i < 400 && origin.origin_requests == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(origin.origin_requests == 1 && target.origin_requests == 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto start = std::chrono::steady_clock::now();
+        assert(engine.cancelTask(task->taskId())); waitSettled(engine, task);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        assert(task->state() == download::LoadState::Aborted && elapsed < 1500);
+        assert(origin.origin_requests == 1 && target.origin_requests == 0);
+        for (auto token : occupied) engine.releaseHostSlot(target.host, false, token);
+        assert(engine.purgeTask(task->taskId()));
+    }
+    std::cout << "PASS cancellation while waiting on resolved redirect settles both executors without origin replay" << std::endl;
+}
+
+/**
  * 生产入口 acquireCurlUse 后的urls.reserve真实抛bad_alloc，两入口都必须被RAII归还。
  * 原Native main随后有带限时断言的真实shutdown；若计数泄漏，该既有收尾反例将失败。
  * 所有参数先构造，TLS钩子后直接调用，不让测试日志/实参构造抢先消费故障。
@@ -420,9 +558,18 @@ inline void halfOpenObservation(download::DownloadEngine& engine) {
 
 /** native.cpp 只需显式调用一次；所有场景复用它已启动的唯一 Engine。 */
 inline void runTransportPolicyCases(download::DownloadEngine& engine, const std::filesystem::path& root) {
+    transport_policy_cases::temporaryRedirectCapacityPreservesHop(engine, root);
+    transport_policy_cases::cancelPendingRedirectCapacity(engine, root);
     transport_policy_cases::serverDeadline(engine);
     transport_policy_cases::resumedRedirect(engine, root, 4096);
     transport_policy_cases::resumedRedirect(engine, root, 2 * 1024 * 1024);
+    using Mode = transport_policy_cases::HttpFixture::Mode;
+    transport_policy_cases::orderedSources(engine, root, 4096, Mode::Complete, 70);
+    transport_policy_cases::orderedSources(engine, root, 1988880, Mode::Complete, 72);
+    transport_policy_cases::orderedSources(engine, root, 4096, Mode::ServerError, 74);
+    transport_policy_cases::orderedSources(engine, root, 1988880, Mode::Missing, 76);
+    transport_policy_cases::orderedIgnoredRange(engine, root, 4096);
+    transport_policy_cases::orderedIgnoredRange(engine, root, 1551593);
     transport_policy_cases::cooldownStartsFreshAttempt(engine, root);
     transport_policy_cases::metadataAdmission(engine);
     transport_policy_cases::initialCooldownIsBounded(engine, root);

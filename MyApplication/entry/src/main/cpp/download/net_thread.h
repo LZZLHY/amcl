@@ -41,6 +41,9 @@ inline int64_t netThreadSteadyNowMs() {
 
 class NetThread {
 public:
+    /** curl 回调主动结束的原因。peer 调度是本地决定；无进展仍是可回退的传输故障。 */
+    enum class CallbackStopReason { None, UserCancelled, PeerRebalance, NoProgress };
+    CallbackStopReason callbackStopReason() const { return callback_stop_reason_.load(std::memory_order_acquire); }
     /**
      * 构造：
      *   @param task  所属文件；执行期间强持有，settled 后释放以打破 NetFile/NetThread 环
@@ -139,6 +142,36 @@ public:
 
     bool isAborted() const { return aborted_.load(std::memory_order_relaxed); }
 
+    /** 仅NetFile新strong/noauth/非high多段首批在发布到队列前设置，非public Spec选项。 */
+    void enableColdSourceSampling() { cold_source_sampling_ = true; }
+    bool coldSourceYieldUsed() const { return cold_yield_used_.load(std::memory_order_acquire); }
+
+    /** 网关失败后的下一次同逻辑源直连由原执行器继续调度，不降级为另一套队列。 */
+    void requestRelayDirectRetry() { relay_direct_retry_.store(true, std::memory_order_release); }
+    bool relayDirectRetryPending() const { return relay_direct_retry_.load(std::memory_order_acquire); }
+    void relayDirectRetrySubmitted() { relay_direct_retry_.store(false, std::memory_order_release); }
+
+    /**
+     * CURLM 的 ctx 每次 HTTP 都会销毁，直连恢复链须绑定本 NetFile 内稳定的 source.id
+     * 保留到后续请求。规划仅查询是否匹配，不消费状态；普通重试/冷却/重定向仍可
+     * 直连。另一逻辑源真正提交成功后才清除，候选被准入推迟不算换源。仅当前执行器
+     * 调用；新执行 epoch 在旧 transport 收敛后重置，不把 A 的失败扩散到健康 B。
+     */
+    void rememberRelayDirectChainSource(int source_id) {
+        relay_direct_chain_source_id_.store(source_id, std::memory_order_release);
+    }
+    bool relayDirectChainFor(int source_id) const {
+        return relay_direct_chain_source_id_.load(std::memory_order_acquire) == source_id;
+    }
+    /** 在真实HTTP提交成功边界消费换源事实；分配/准入/配置轮换等未提交路径不得调用。 */
+    void relaySourceSubmitted(int source_id) {
+        const int bound = relay_direct_chain_source_id_.load(std::memory_order_acquire);
+        if (bound >= 0 && bound != source_id) {
+            relay_direct_chain_source_id_.store(-1, std::memory_order_release);
+            relayDirectRetrySubmitted();
+        }
+    }
+
     /** 用于 meta 序列化：快照当前段的 { start, end, done } */
     struct Snapshot { int64_t start, end, done; };
     Snapshot snapshot() const { return { start_, end_.load(std::memory_order_acquire), done() }; }
@@ -181,6 +214,16 @@ public:
     bool requiresRangeSupport() const {
         return start_ > 0 || done_.load(std::memory_order_acquire) > 0;
     }
+
+    /** 只有执行当前段的 worker 或 CURLM loop 读取/更新顺序游标。 */
+    int orderedSourceFloor() const { return ordered_source_floor_; }
+    /** 新增段从正在提供正文的来源起步，避免回到刚失败或不适合分段的候选。 */
+    void startOrderedSplitAt(int source_id) { ordered_source_floor_ = source_id; }
+    /** 起步只有一个边界已知的段，第一次从零读取仍发普通 GET。 */
+    void startWithFullGet() { start_with_full_get_ = true; }
+    /** 同一逻辑源的跳转、换地址族和网关直连恢复必须在进入这里之前处理。 */
+    void noteOrderedSourceFailure(const NetSourcePtr& source, const DownloadExceptionPtr& error,
+                                  const std::string& effective_host, bool received_bytes);
 
     // Attempt state belongs to one file execution epoch. resetDone() only rewinds segment
     // contents and intentionally preserves it; prepareForRetryExecution() starts a new file-level
@@ -298,9 +341,27 @@ private:
     };
     mutable SpeedWindow speed_;
 
+    // 一个实际 HTTP 的同步回调独占更新，原子 getter 供结束后的执行器/诊断读取。
+    // beginTransportAttempt 会清空，重定向或重试不可继承上一 hop 的本地结束原因/慢尾窗。
+    std::atomic<CallbackStopReason> callback_stop_reason_{CallbackStopReason::None};
+    std::atomic<int64_t> peer_slow_since_ms_{0};
+    // cold资格在队列发布前固定。每线程终生至多一次早让渡，used不在hop/attempt/epoch
+    // 重置；其余候选/观察窗只由worker及其同步curl回调拥有，不与UI线程共享。
+    bool cold_source_sampling_ = false;
+    std::atomic<bool> cold_yield_used_{false};
+    std::atomic<int> cold_retry_source_idx_{-1};
+    int64_t cold_attempt_started_ms_ = 0, cold_attempt_base_done_ = 0;
+    int64_t cold_candidate_since_ms_ = 0;
+    int cold_candidate_source_id_ = -1;
+
     // v4.5b: 5 秒无数据主动断线（PCL2 §4.5）
     // onWrite 收到数据时更新，onProgress 检测超时后返回 1 让 curl 中止
     std::atomic<int64_t> last_data_receive_ms_{0};
+    // 段所属执行器的顺序策略状态。每个真实 HTTP hop 重新计时，队列等待不算读超时。
+    int ordered_source_floor_ = 0;
+    int64_t ordered_read_timeout_ms_ = 0;
+    bool ordered_slow_read_ = false;
+    bool start_with_full_get_ = false;
     // 本次 transfer 的起点（performOnce 每次尝试前置）。作为 stall 看门狗在**首字节到达前**
     // 的基线：只有 last_data_receive_ms_ 时，"连上却一直不吐字节"的连接会让看门狗彻底失效，
     // 段永不返回 → 文件永不收敛（表现为进度卡在最后几十 KB、速度 0、重试仍卡同一处）。
@@ -326,6 +387,10 @@ private:
     // 用户可见的"进度条倒退 + 反复从头下载"（真机 cdn.modrinth.com→307→cdn-alt 每次续传都触发）。
     // PCL2 用 HttpClient 自动 follow，302 响应体不进应用层，天然无此问题；这里对齐其语义。
     std::atomic<long> hdr_status_code_{0};
+    std::atomic<bool> relay_direct_retry_{false};
+    std::atomic<int> relay_direct_chain_source_id_{-1}; // 仅绑定所属文件的源序号，不持有 URL 或凭据。
+    // 仅worker拥有；performOnce通知run先直连原源，不把网关失败记到官方源。
+    bool relay_attempt_failed_ = false;
     // 仅当前HTTP执行线程/其同步curl回调访问；新epoch只能在旧transport收敛后进入。
     // 用本次新增1MiB正文尽早关闭半开探针，避免一个健康的大包独占该host至EOF。
     HostAdmissionLease* attempt_admission_ = nullptr;  // 只借当前hop，不拥有，不跨回调执行期

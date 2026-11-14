@@ -48,6 +48,12 @@ public class AmclLauncher {
      * 且 prepare/main 由协议要求跑在同一条线程上。</p>
      */
     private static volatile String deliveryVerdictLine = "";
+    // prepare 阶段 stdout 可能尚未重定向；将只读 ABI 决议留到 launchPrepared 复述。
+    private static volatile String sherpaVerdictLine = "";
+    // 只保留选择结果，换流后再输出；选择阶段不触发模组类定义或JNI库的ClassLoader归属。
+    private static volatile String zstdVerdictLine = "";
+    // SQLite策略结果跨prepare/main换流保存；不保存类引用或ClassLoader，避免抢占JNI归属。
+    private static volatile String sqliteVerdictLine = "";
 
     /**
      * ⭐ 三层防线里的**第 ③ 层，也是唯一能否证"实际值"的一层**。
@@ -172,6 +178,14 @@ public class AmclLauncher {
             throw new IllegalArgumentException("mainClass is empty in launch config");
         }
 
+        // 仅检查已选实例和 classpath 的归档字节，早于游戏 URL 挂载及任何模组类初始化。
+        // 这不是 premain 接点；未知/重复/混合绑定保留模组原加载路径和用户明确配置。
+        sherpaVerdictLine = "[AMCL-SHERPA] " + SherpaNativeBootstrap.configure(config.classpath, config.gameDir);
+        zstdVerdictLine = "[AMCL-ZSTD] " + ZstdNativeBootstrap.configure(config.classpath, config.gameDir,
+            config.isFabric && config.isForge ? "ambiguous" : config.isFabric ? "fabric" : config.isForge ? "forge" : "none");
+        sqliteVerdictLine = "[AMCL-SQLITE] " + SqliteNativeTempBootstrap.configure(config.classpath, config.gameDir,
+            config.filesDir, config.isFabric && config.isForge ? "ambiguous" : config.isFabric ? "fabric" : config.isForge ? "forge" : "none");
+
         System.out.println("[AmclLauncher] mainClass=" + config.mainClass
             + " classpath=" + config.classpath.length + " jars"
             + " forge=" + config.isForge + " fabric=" + config.isFabric);
@@ -254,6 +268,9 @@ public class AmclLauncher {
         AmclClassLoader loader = prepared.loader;
 
         AwtRuntime.reportAfterRedirect();
+        if (!sherpaVerdictLine.isEmpty()) System.out.println(sherpaVerdictLine);
+        if (!zstdVerdictLine.isEmpty()) System.out.println(zstdVerdictLine);
+        if (!sqliteVerdictLine.isEmpty()) System.out.println(sqliteVerdictLine);
 
         // Fabric 库清单的可观测判据。放在这里（Phase 5）而不是设置点（Phase 1.5），
         // 因为 stdout 到 Phase 4 才被重定向进 mc_output.log。
@@ -285,6 +302,12 @@ public class AmclLauncher {
         // 同一条形状的第三处：C0 探针的 premain 结论也发生在换流之前。
         // **探针没装时它也打一行**（status=absent）—— 那是"默认关"的产品实际值。
         if (AmclBuildProfile.DEVELOPER_DIAGNOSTICS) AmclAgentProbe.reportAfterRedirect();
+        // premain 早于游戏日志换流；在可观察的会话输出中复述生产 CPU 桥状态和真实来源。
+        // 后续每个 OSHI 类的首次定义另由 Agent 记录 adapted 计数，installed 本身不冒充查询成功。
+        System.out.println("[AMCL-CPU] status=" + System.getProperty("amcl.cpu.agent.status", "absent")
+                + " model=" + System.getProperty("amcl.cpu.model", "")
+                + " logical=" + System.getProperty("amcl.cpu.agent.logical", "unknown")
+                + " source=" + System.getProperty("amcl.cpu.agent.logicalSource", "unknown"));
 
         // 同 requireIsolatedGameMain：只在 amcl-loader-only 交付下成立（§3.4）。
         if (isAmclLoaderOnlyDelivery()) {

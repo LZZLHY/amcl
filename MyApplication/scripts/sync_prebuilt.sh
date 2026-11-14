@@ -59,6 +59,9 @@ sync_files() {
 sync_files "$PREBUILT/jna"             "$LIBS_DIR" "so" "JNA"
 sync_files "$PREBUILT/stubs"           "$LIBS_DIR" "so" "STUBS"
 
+# Sherpa 以内容锁校验后同步，不能让通用 mtime 策略把旧 ABI 当作新制品。
+node "$ROOT_DIR/scripts/stage-sherpa-runtime.mjs"
+
 # .jar 文件
 sync_files "$PREBUILT/lwjgl3/jars"     "$RAWFILE_LWJGL" "jar" "LWJGL3-JAR"
 # LWJGL 322 套（3.2.3，方案 C 多版本）：MC 1.13–1.18.2 用。jar 已在 prebuilt 阶段改名+注入桥接

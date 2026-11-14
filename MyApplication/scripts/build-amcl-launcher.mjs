@@ -17,22 +17,29 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  copyFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { productDefinition } from './product-contract.mjs';
+import { stageSherpaRuntime } from './stage-sherpa-runtime.mjs';
+import { stageZstdRuntime } from './stage-zstd-runtime.mjs';
+import { zstdBindingResource } from './zstd-binding-contract.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(SCRIPT_PATH);
 const PROJECT_ROOT = resolve(SCRIPT_DIR, '..');
 const JAVA_APP = join(PROJECT_ROOT, 'JavaApp');
 const SRC_DIR = join(JAVA_APP, 'src');
+// 标准 Java SPI 通过资源发现 provider；资源与源码一起纳入内容身份，防止复用缺服务描述的旧 JAR。
+const RESOURCE_DIR = join(JAVA_APP, 'resources');
+const SHERPA_BINDINGS = join(PROJECT_ROOT, 'prebuilt/mod-natives/sherpa-onnx/verified-bindings.json');
 const CLASSES_DIR = join(JAVA_APP, 'build', 'classes');
 const BUILD_MANIFEST = join(JAVA_APP, 'build', 'amcl-launcher-build.json');
 const JAR_MANIFEST = join(JAVA_APP, 'build', 'amcl-launcher.mf');
 const OUT_JAR = join(PROJECT_ROOT, 'entry', 'src', 'main', 'resources', 'rawfile', 'amcl-launcher.jar');
-const BUILD_SCHEMA = 2;
+const BUILD_SCHEMA = 3;
 const TARGET_RELEASE = '8';
 const productIndex = process.argv.indexOf('--product');
 const PRODUCT = productIndex < 0 ? 'default' : process.argv[productIndex + 1];
@@ -81,6 +88,54 @@ function collectJavaFiles(dir) {
   return files;
 }
 
+/** 只打包源集中显式保存的普通资源，拒绝符号链接，防止服务文件指向工作树外的任意内容。 */
+function collectResources(dir) {
+  if (!existsSync(dir)) return [];
+  const files = [];
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, ent.name);
+    if (ent.isSymbolicLink()) throw new Error(`Launcher resource may not be a symlink: ${path}`);
+    if (ent.isDirectory()) files.push(...collectResources(path));
+    else if (ent.isFile()) files.push(path);
+  }
+  return files.sort();
+}
+
+/**
+ * 权威绑定清单只保存一份 JSON；本函数严格校验后生成运行时有界 properties。
+ * 生成资源和原始 manifest 字节都进入 input identity，分支切换不能沿用旧 ABI 表。
+ */
+function sherpaBindingResource() {
+  const source = readFileSync(SHERPA_BINDINGS);
+  const value = JSON.parse(source.toString('utf8'));
+  const prefix = 'com/k2fsa/sherpa/onnx/';
+  if (value.schemaVersion !== 1 || value.classPrefix !== prefix || value.classCount !== 235 ||
+      !Array.isArray(value.profiles) || !value.profiles.length || value.profiles.length > 16)
+    throw new Error('Invalid Sherpa verified binding manifest');
+  const lines = ['schema=1', `classPrefix=${prefix}`, `manifest.sha256=${createHash('sha256').update(source).digest('hex')}`,
+    `profile.count=${value.profiles.length}`];
+  const ids = new Set();
+  for (const [index, profile] of value.profiles.entries()) {
+    const key = `profile.${index}.`;
+    if (!/^[a-zA-Z0-9.-]{1,80}$/.test(profile.id) || ids.has(profile.id)) throw new Error('Duplicate or invalid Sherpa binding profile');
+    ids.add(profile.id);
+    const container = profile.container;
+    if (!container || !['self', 'jarjar'].includes(container.kind)) throw new Error('Unknown Sherpa binding container');
+    if (container.kind === 'jarjar' && (!/^META-INF\/jarjar\/[a-zA-Z0-9._-]+\.jar$/.test(container.entry) || !/^[0-9a-f]{64}$/.test(container.sha256)))
+      throw new Error('Invalid Sherpa nested binding identity');
+    const classes = Object.entries(profile.classSha256 || {}).sort(([left], [right]) => left.localeCompare(right, 'en'));
+    if (classes.length !== 235) throw new Error('Incomplete Sherpa class identity set');
+    lines.push(`${key}id=${profile.id}`, `${key}kind=${container.kind}`, `${key}entry=${container.entry || ''}`,
+      `${key}sha256=${container.sha256 || ''}`, `${key}class.count=${classes.length}`);
+    for (const [at, [path, digest]] of classes.entries()) {
+      if (!path.startsWith(prefix) || !/^[a-zA-Z0-9_/$.-]+\.class$/.test(path) || path.includes('..') || !/^[0-9a-f]{64}$/.test(digest))
+        throw new Error('Invalid Sherpa class identity');
+      lines.push(`${key}class.${at}.path=${path}`, `${key}class.${at}.sha256=${digest}`);
+    }
+  }
+  return { source, bytes: Buffer.from(`${lines.join('\n')}\n`, 'ascii') };
+}
+
 // ---- 3. 内容身份：源文件 + 构建脚本 + target release ----
 function updateHashRecord(hash, label, bytes) {
   const value = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes), 'utf8');
@@ -96,7 +151,7 @@ function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function computeInputIdentity(srcFiles) {
+function computeInputIdentity(srcFiles, resourceFiles, bindings, zstdBindings) {
   const files = srcFiles.map(path => ({
     path,
     relativePath: relative(SRC_DIR, path).replaceAll('\\', '/'),
@@ -106,13 +161,24 @@ function computeInputIdentity(srcFiles) {
   updateHashRecord(hash, 'target-release', TARGET_RELEASE);
   updateHashRecord(hash, 'product-profile', PROFILE_SOURCE);
   updateHashRecord(hash, 'builder', readFileSync(SCRIPT_PATH));
+  updateHashRecord(hash, 'sherpa-binding-manifest', bindings.source);
+  updateHashRecord(hash, 'sherpa-generated-resource', bindings.bytes);
+  // zstd选择表与真实生成规则进入缓存身份，不能沿用上个绑定集合的启动JAR。
+  updateHashRecord(hash, 'zstd-binding-manifest', zstdBindings.source);
+  updateHashRecord(hash, 'zstd-generated-resource', zstdBindings.bytes);
+  updateHashRecord(hash, 'zstd-binding-generator', readFileSync(join(SCRIPT_DIR, 'zstd-binding-contract.mjs')));
   for (const file of files) {
     updateHashRecord(hash, 'source-path', file.relativePath);
     updateHashRecord(hash, 'source-bytes', readFileSync(file.path));
   }
+  for (const path of resourceFiles) {
+    updateHashRecord(hash, 'resource-path', relative(RESOURCE_DIR, path).replaceAll('\\', '/'));
+    updateHashRecord(hash, 'resource-bytes', readFileSync(path));
+  }
   return {
     inputSha256: hash.digest('hex'),
     sourceFiles: files.map(file => file.relativePath),
+    resourceFiles: resourceFiles.map(path => relative(RESOURCE_DIR, path).replaceAll('\\', '/')),
   };
 }
 
@@ -145,7 +211,10 @@ function main() {
     return;
   }
 
-  const inputIdentity = computeInputIdentity(javaFiles);
+  const resourceFiles = collectResources(RESOURCE_DIR);
+  const bindings = sherpaBindingResource();
+  const zstdBindings = zstdBindingResource(PROJECT_ROOT);
+  const inputIdentity = computeInputIdentity(javaFiles, resourceFiles, bindings, zstdBindings);
   if (isJarUpToDate(OUT_JAR, inputIdentity)) {
     console.log(`[build-amcl-launcher] UP-TO-DATE (${javaFiles.length} src, input=${inputIdentity.inputSha256.slice(0, 16)}, ${OUT_JAR})`);
     return;
@@ -170,6 +239,17 @@ function main() {
     ['-d', CLASSES_DIR, '--release', TARGET_RELEASE, ...javaFiles, GENERATED_PROFILE],
     { stdio: 'inherit' });
 
+  // 资源明确复制到本次 classes，再作为独立目录参数交给 jar；不依赖 javac 处理非 Java 文件。
+  for (const path of resourceFiles) {
+    const target = join(CLASSES_DIR, relative(RESOURCE_DIR, path));
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(path, target);
+  }
+  const sherpaResource = join(CLASSES_DIR, 'com/amcl/launcher/sherpa-bindings.properties');
+  mkdirSync(dirname(sherpaResource), { recursive: true });
+  writeFileSync(sherpaResource, bindings.bytes);
+  writeFileSync(join(CLASSES_DIR, 'com/amcl/launcher/zstd-bindings.properties'), zstdBindings.bytes);
+
   // jar cfm OUT_JAR <manifest> -C CLASSES_DIR com
   // 用 cfm 而不是 cf：Premain-Class 必须在清单里，否则 -javaagent 只会报
   // "Failed to find Premain-Class manifest attribute" 并**终止 JVM 启动**。
@@ -182,7 +262,7 @@ function main() {
   mkdirSync(dirname(OUT_JAR), { recursive: true });
   writeFileSync(JAR_MANIFEST, JAR_MANIFEST_TEXT, 'utf8');
   execFileSync(jar,
-    ['cfm', OUT_JAR, JAR_MANIFEST, '-C', CLASSES_DIR, 'com'],
+    ['cfm', OUT_JAR, JAR_MANIFEST, '-C', CLASSES_DIR, '.'],
     { stdio: 'inherit' });
 
   const size = statSync(OUT_JAR).size;
@@ -196,15 +276,23 @@ function main() {
     inputSha256: inputIdentity.inputSha256,
     sourceCount: inputIdentity.sourceFiles.length,
     sourceFiles: inputIdentity.sourceFiles,
+    resourceFiles: inputIdentity.resourceFiles,
     jarSha256,
   }, null, 2)}\n`, 'utf8');
   console.log(`[build-amcl-launcher] OK  ${OUT_JAR}  (${size} bytes, sha256=${jarSha256})`);
 }
 
 try {
+  // Java 绑定表与本次 HAP 的真实 native 同批消费，缺失/篡改制品不能只产出可发现的 Java 门面。
+  stageSherpaRuntime();
+  stageZstdRuntime();
   // Fabric compatibility is a separate mod artifact; do not put its classes in
   // amcl-launcher.jar or the JVM parent classpath (Knot owns their instance state).
   const python = process.env.AMCL_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  // CPU 兼容是全部产品共有的独立生产 Agent；与默认关闭的开发探针分别构建和交付。
+  execFileSync(python, [join(SCRIPT_DIR, 'build-cpu-agent.py')], { cwd: PROJECT_ROOT, stdio: 'inherit' });
+  // Forge 的实际模块加载器需要限定的 SPI 资源桥；独立 Agent 与 launcher 一起按源码身份更新。
+  execFileSync(python, [join(SCRIPT_DIR, 'build-audio-service-agent.py')], { cwd: PROJECT_ROOT, stdio: 'inherit' });
   execFileSync(python, [join(SCRIPT_DIR, 'build-game-compat.py')], { cwd: PROJECT_ROOT, stdio: 'inherit' });
   main();
 } catch (e) {

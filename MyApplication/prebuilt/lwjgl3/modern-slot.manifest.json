@@ -7,7 +7,7 @@
   "sourceCommit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
   "deploymentDirectory": "lwjgl-ohos",
   "nativeSuffix": "",
-  "manifestEntrySha256": "36c07681f2532968b8e3f2606cdbc8db471d89c7538d1feaeeacd3c0fcef77f4",
+  "manifestEntrySha256": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
   "postprocess": [
     "root-module-info",
     "complete-module-packages",
@@ -80,8 +80,8 @@
     },
     {
       "name": "lwjgl-tinyfd.jar",
-      "size": 17499,
-      "sha256": "8a66f8b4b5b6826b17908e7c15ffac0693538f5929767db92227cf3583f1e65f"
+      "size": 16340,
+      "sha256": "3b48891a5bc432ea2c4897fb92aaa76fca3707081201a9b15322287971266951"
     },
     {
       "name": "lwjgl-vma.jar",
@@ -117,8 +117,8 @@
     },
     {
       "name": "liblwjgl_tinyfd.so",
-      "size": 88768,
-      "sha256": "74d3ddf4a6a6442a70e4aa05d28c17ddabdda89f546930a3a101a8a4ab6b0d1d"
+      "size": 48672,
+      "sha256": "adbd009a4e9d0b739c5ecd5d987529c8c95a5d74bc7e05de75b31a5c4dc45ba2"
     },
     {
       "name": "liblwjgl_vma.so",

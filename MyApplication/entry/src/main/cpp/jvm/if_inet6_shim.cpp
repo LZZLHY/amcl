@@ -3,14 +3,21 @@
  *
  * 方案 §四·五 R1；施工记录 §S06。
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "if_inet6_shim.h"
+#include "../platform/owned_read_stream.h"
 
 #include "../utils/amcl_log.h"
 
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <pthread.h>
+#include <atomic>
+#include <memory>
+#include <cerrno>
+#include <cstdint>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -28,34 +35,16 @@ namespace {
 const char *const kTargetPath = "/proc/net/if_inet6";
 const char *const kEnvSwitch = "AMCL_JDK_IF_INET6_SHIM";
 
-// ---- 合成内容的载体（R1.5：每次调用现生成，不缓存内容）----
-//
-// fmemopen **不复制** buffer：返回的 FILE* 在被 fclose 之前，buffer 必须一直有效。
-// 三种可选做法与取舍：
-//   a) 每次 malloc 一块然后不释放 —— 会随调用次数无界泄漏。
-//      NetworkInterface.getNetworkInterfaces() 是 Java 侧可被循环调用的公开 API，
-//      放任无界泄漏不可接受。
-//   b) 额外插桩 fclose 来释放 —— 要在 loader 里再加一处插桩，且得维护"哪些流是我们造的"
-//      这张表；为一个诊断级别的读路径引入两处插桩不值得。
-//   c) 固定大小的静态环（本实现）—— 内存有界（8 × 4 KiB = 32 KiB），无需插桩 fclose。
-//
-// 选 c 的前提是"同时打开的这类流不会超过环的槽位数"。JDK 两个消费者都是
-// fopen → 顺序读 → fclose 的同步短流程，实际并发度是 1；给 8 槽是余量。
-// ⚠️ 前提写在这里：若将来出现长期持有该流的消费者，环会被绕回覆写，那时必须改成 b。
-constexpr int kRingSlots = 8;
-constexpr size_t kSlotBytes = 4096;   // 一行约 56 B ⇒ 约 70 条地址的余量
-
-char g_ring[kRingSlots][kSlotBytes];
-int g_ringNext = 0;
-pthread_mutex_t g_ringLock = PTHREAD_MUTEX_INITIALIZER;
+// 每次打开由 owned_read_stream 持有独立不可变快照，fclose 自动释放。
+// 没有容量为八的共享环，也没有在 fork 子进程中可能继承锁定态的流注册表。
 
 // ---- 开关（R1.7）----
 // 读一次就定死：JDK 的探测发生在 JNI_OnLoad，中途改环境变量没有意义，
 // 而"同一进程内两次调用给出不同答案"会让日志无法判读。
-amcl::ifinet6::ShimMode g_mode = amcl::ifinet6::ShimMode::On;
-bool g_modeResolved = false;
-pid_t g_modePid = 0;
-pthread_mutex_t g_modeLock = PTHREAD_MUTEX_INITIALIZER;
+// 上 32 位记录真实 PID，下 32 位为 1(on)/2(off)。一次原子发布完整状态，
+// fork 继承旧 PID 后重新解析；不存在被其他线程持有且在子进程永久锁死的 mutex。
+static_assert(ATOMIC_LLONG_LOCK_FREE == 2, "fork-safe state requires lock-free 64-bit atomics");
+std::atomic<unsigned long long> g_modeState{0};
 
 // 标记文件：存在即关闭垫片。用沙箱内视角的绝对路径 —— 应用自己看到的 filesDir 就是
 // /data/storage/el2/base/haps/entry/files（启动日志里的 filesDir 与此一致）。
@@ -71,76 +60,35 @@ bool markerFilePresent() {
 }
 
 amcl::ifinet6::ShimMode resolveMode() {
-    pthread_mutex_lock(&g_modeLock);
-    // 按 pid 复位（与 §S06.6 给观测计数器加的那条同一个理由）：探针与游戏都在
-    // **fork 出来的子进程**里建 JVM，而 fork 会把父进程「已解析」的结果一起继承。
-    // 父进程先解析过一次，子进程就再也读不到新投放的标记文件/新写的环境变量了 ——
-    // 表现是「开关明明放上去了却没反应」，而且不报错。
-    const pid_t self = getpid();
-    if (g_modeResolved && g_modePid != self) {
-        g_modeResolved = false;
-        g_mode = amcl::ifinet6::ShimMode::On;
+    const auto tag = static_cast<unsigned long long>(static_cast<uint32_t>(getpid())) << 32;
+    auto state = g_modeState.load(std::memory_order_acquire);
+    if ((state & 0xffffffff00000000ULL) != tag || (state & 0xffffffffULL) == 0) {
+        // 启动参数写环境发生在启动 JVM 之前；第一次读取后维持本进程的稳定策略。
+        const char* value = getenv(kEnvSwitch);
+        const bool disabled = (value && std::strcmp(value, "0") == 0) || markerFilePresent();
+        state = tag | (disabled ? 2ULL : 1ULL);
+        g_modeState.store(state, std::memory_order_release);
     }
-    if (!g_modeResolved) {
-        const char *v = getenv(kEnvSwitch);
-        // 只认显式的 "0" 为关闭；其它值（含未设置）一律按开启，避免拼写错误静默关掉修复。
-        if (v != nullptr && std::strcmp(v, "0") == 0) {
-            g_mode = amcl::ifinet6::ShimMode::Off;
-        } else if (markerFilePresent()) {
-            g_mode = amcl::ifinet6::ShimMode::Off;
-        }
-        // ⚠️ R1.7 原本只有环境变量一条通道，而它在真机上**按不到**（2026-08-29 实测）：
-        // HarmonyOS 的应用进程不继承 `hdc shell` 的环境，也没有 UI 去设它。
-        // 「声明了却关不掉的 kill switch」比没有更糟：出事时会照文档去关，关不掉还不知道为什么。
-        // 所以现在有两条**都验证过可达**的通道，环境变量只作为它们的内部载体：
-        //
-        //   ① 用户通道：JVM marker `-Damcl.jdk.ifInet6Shim=0`，走「自定义 JVM 参数」
-        //      （与 R2 偏好护栏同一条已验证通道）。mc_launcher.cpp 把它翻成本环境变量，
-        //      那里是进程内唯一的写入者，形状与 MG 那批开关逐字一致。
-        //   ② 排查通道：标记文件（见 kMarkerPath）。
-        //
-        // 关于②的一段弯路，记下来免得重走：我一度断言「标记文件也不通」，依据是
-        // `hdc shell touch` 被拒、`hdc file send` 用**物理路径**新建被拒。那个结论是错的 ——
-        // 漏了 `hdc file send -b <bundleName> <本地> ./data/storage/el2/base/...`：
-        // `-b` 是专给 **debug 应用沙箱**的通道（API 15+，要求 module.json5 有
-        // ohos.permission.INTERNET，本仓有），实测能在沙箱里**新建**文件。
-        // ⇒ 判定一个通道「不可行」之前要把它的墙实际量一遍（AGENTS §二.10），而且要确认
-        //    自己用的是那条路的**正确形状**（§二.11 与 §三 就是从这次教训写下来的）——
-        //    我这次是拿一个错的命令形状去否证一整条路。
-        g_modeResolved = true;
-        g_modePid = self;
-    }
-    amcl::ifinet6::ShimMode m = g_mode;
-    pthread_mutex_unlock(&g_modeLock);
-    return m;
+    return (state & 0xffffffffULL) == 2 ? amcl::ifinet6::ShimMode::Off : amcl::ifinet6::ShimMode::On;
 }
 
 // ---- 观测行（R1.8）----
 // 每种判定只打第一次 + 之后每 64 次打一次，避免 NetworkInterface 被循环调用时刷屏，
 // 但仍保留"这条路径确实在被走"的单调证据（AGENTS §2.3：判据要是单调增长的计数）。
-struct DecisionCounter {
-    unsigned long count;
-};
-DecisionCounter g_counters[6] = {{0u}, {0u}, {0u}, {0u}, {0u}, {0u}};
+std::atomic<unsigned long long> g_counters[6]{};
 
-// ⚠️ 计数器必须按进程复位（2026-08-29 真机踩到才补的）。
-//
-// fork 会把整块内存**连计数器一起**复制给子进程。首次真机验证时的实际后果：
-// 父进程（DevTools 能力探针的 C3b）先记了一次 synthesized → hits=1；随后 Java 侧探针
-// fork 出子 JVM，子进程里 libnet 真正触发的那一次 synthesize 变成 hits=2，
-// 正好被 observe() 的「首次 + 每 64 次」节流吃掉 ⇒ **子进程里一行都没打**，
-// 于是"垫片在 fork 出来的 JVM 里到底有没有接管"变成不可判读的
-// （而 amcl_log 在子进程是刻意 no-op 的，见 fork_run_java.cpp 文件头，
-//   所以子进程唯一的文件通道就是被 dup2 到 logFile 的 stdout/stderr）。
-//
-// ⇒ 观测面上的状态跨 fork 一律要重新判定。这与"写线程不跨 fork 继承"是同一类错误。
-pid_t g_ownerPid = 0;
-
-void resetCountersIfForked() {
-    pid_t self = getpid();
-    if (g_ownerPid == self) return;
-    for (int i = 0; i < 6; ++i) g_counters[i].count = 0u;
-    g_ownerPid = self;
+// PID 与计数同一次 CAS 发布，避免并发 reset 抹掉另一个线程的增量。
+// 计数到 32 位上限后饱和，不回绕成“首次”；不影响任何文件或网络行为。
+unsigned long nextCount(int index) {
+    const auto tag = static_cast<unsigned long long>(static_cast<uint32_t>(getpid())) << 32;
+    auto previous = g_counters[index].load(std::memory_order_relaxed);
+    for (;;) {
+        unsigned long long count = (previous & 0xffffffff00000000ULL) == tag
+            ? previous & 0xffffffffULL : 0;
+        if (count < 0xffffffffULL) ++count;
+        if (g_counters[index].compare_exchange_weak(previous, tag | count,
+                std::memory_order_relaxed)) return static_cast<unsigned long>(count);
+    }
 }
 
 int decisionIndex(amcl::ifinet6::ShimDecision d) {
@@ -156,9 +104,7 @@ int decisionIndex(amcl::ifinet6::ShimDecision d) {
 }
 
 void observe(amcl::ifinet6::ShimDecision d, size_t entries, const char *extra) {
-    resetCountersIfForked();
-    int i = decisionIndex(d);
-    unsigned long n = ++g_counters[i].count;
+    unsigned long n = nextCount(decisionIndex(d));
     if (n != 1u && (n % 64u) != 0u) return;
 
     const char *sep = (extra != nullptr && extra[0] != '\0') ? " " : "";
@@ -215,6 +161,8 @@ std::size_t collectLocalEntries(std::vector<Entry> &out) {
     if (getifaddrs(&head) != 0) {
         return 0u;
     }
+    // vector 扩容失败时也释放平台地址表，异常交给打开边界转成 ENOMEM。
+    std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> owner(head, freeifaddrs);
     for (struct ifaddrs *ifa = head; ifa != nullptr; ifa = ifa->ifa_next) {
         if (ifa->ifa_addr == nullptr) continue;
         if (ifa->ifa_addr->sa_family != AF_INET6) continue;
@@ -232,7 +180,6 @@ std::size_t collectLocalEntries(std::vector<Entry> &out) {
                       (ifa->ifa_name != nullptr) ? ifa->ifa_name : "?");
         out.push_back(e);
     }
-    freeifaddrs(head);
     return out.size();
 }
 
@@ -245,7 +192,7 @@ const char *amclIfInet6ShimModeName(void) {
     return (resolveMode() == amcl::ifinet6::ShimMode::Off) ? "off" : "on";
 }
 
-FILE *amclIfInet6ShimOpen(const char *path, const char *mode) {
+FILE *amclIfInet6ShimOpen(const char *path, const char *mode) try {
     // R1.1：只拦精确路径。这里先做最便宜的判断，绝大多数 fopen 在此原路返回。
     if (path == nullptr || std::strcmp(path, kTargetPath) != 0) {
         return nullptr;   // 不打日志：这是热路径，JDK 的每次 fopen 都会经过
@@ -256,13 +203,20 @@ FILE *amclIfInet6ShimOpen(const char *path, const char *mode) {
 
     // R1.2：真文件优先。平台放开之后垫片自动退场。
     FILE *real = fopen(path, mode);
+    const int realError = errno;
     const bool realOk = (real != nullptr);
+    // 只补沙箱的权限性观测缺口；ENOENT/EIO/EMFILE 等必须保留其真实失败。
+    if (!realOk && realError != EACCES && realError != EPERM) {
+        errno = realError;
+        return nullptr;
+    }
 
     // 先按不需要枚举地址的分支判一次，避免无谓地调 getifaddrs。
     amcl::ifinet6::ShimDecision d =
         amcl::ifinet6::decide(true, readOnly, m, realOk, /*entryCount=*/1u);
     if (d != amcl::ifinet6::ShimDecision::Synthesize) {
         observe(d, 0u, nullptr);
+        if (!realOk) errno = realError;
         return realOk ? real : nullptr;   // 非 Synthesize 一律回落（realOk 时就是真文件流）
     }
 
@@ -277,26 +231,15 @@ FILE *amclIfInet6ShimOpen(const char *path, const char *mode) {
     }
 
     const std::string text = amcl::ifinet6::formatFile(entries);
-    if (text.empty() || text.size() >= kSlotBytes) {
-        // R1.6：装不下就 fail-safe 回落，不截断（截断会产出一条残行喂给 fscanf）
-        observe(d, n, "note=too-large-fallback");
-        return nullptr;
-    }
-
-    pthread_mutex_lock(&g_ringLock);
-    char *slot = g_ring[g_ringNext];
-    g_ringNext = (g_ringNext + 1) % kRingSlots;
-    std::memcpy(slot, text.data(), text.size());
-    slot[text.size()] = '\0';
-    pthread_mutex_unlock(&g_ringLock);
-
-    FILE *mem = fmemopen(slot, text.size(), "r");
-    if (mem == nullptr) {
-        observe(d, n, "note=fmemopen-failed-fallback");
-        return nullptr;   // R1.6
-    }
-    observe(d, n, nullptr);
-    return mem;
+    FILE* stream = amcl::ifinet6::openOwnedReadStream(text.data(), text.size());
+    const int error = errno;
+    observe(d, n, stream ? nullptr : "note=owned-stream-failed");
+    if (!stream) errno = error;
+    return stream;
+} catch (const std::bad_alloc&) {
+    // C 边界不允许 C++ 分配异常穿过 fopen 调用方。
+    errno = ENOMEM;
+    return nullptr;
 }
 
 } // extern "C"

@@ -15,27 +15,27 @@ const common = { AppLogger: log, LOG_DOMAIN_DOWNLOAD: 0,
 export async function runDownloadSourceLifecycleRegression() {
   const cases = [];
   {
-    const calls = [];
-    const load = loader({ commons: common, './DownloadManager': { DownloadManager: { instance: () => ({
-      fetchTextEx(url) { const call = deferred(); calls.push({ url, ...call }); return call.promise; },
-    }) } } });
+    // 在途官方和镜像独立收口；切严格来源后，旧镜像不能发布到新消费者。
+    const calls = [], timers = new Map(); let nextTimer = 0;
+    const load = loader({ commons: common }, { setTimeout(fn) { const id = ++nextTimer; timers.set(id, fn); return id; },
+      clearTimeout(id) { timers.delete(id); } });
     const source = load('feature_core/src/main/ets/download/SourceProber.ets');
-    const first = source.ensureRanking(), same = source.ensureRanking();
-    assert.equal(calls.length, 2, '同代次多消费者只启动一对真实探测');
+    const official = deferred(), mirror = deferred();
+    const first = source.fetchMcVersionListSources(() => { calls.push('official'); return official.promise; },
+      () => { calls.push('mirror'); return mirror.promise; });
+    assert.deepEqual(calls, ['official']);
+    [...timers.values()].forEach(run => run());
+    assert.deepEqual(calls, ['official', 'mirror']);
     source.setMcSourcePreference('official');
-    calls.slice(0, 2).forEach(call => call.resolve({ statusCode: 200 }));
-    await Promise.all([first, same]);
-    assert.equal(source.getCachedRanking(), null);
-    assert.equal((await source.ensureRanking()).bmclapiFirst, false);
+    mirror.resolve('old-mirror'); official.resolve('valid-official');
+    assert.equal(await first, 'valid-official');
+    assert.equal(timers.size, 0);
     source.setMcSourcePreference('auto');
-    const old = source.ensureRanking(); source.clearCache(); const current = source.ensureRanking();
-    assert.equal(calls.length, 6);
-    calls.slice(2, 4).forEach(call => call.resolve({ statusCode: 200 })); await old;
-    const sharedCurrent = source.ensureRanking(); assert.equal(calls.length, 6, '旧finally不能清掉新inflight');
-    calls.slice(4, 6).forEach(call => call.resolve({ statusCode: 200 }));
-    const [ranking] = await Promise.all([current, sharedCurrent]);
-    assert.equal(source.getCachedRanking(), ranking);
-    cases.push('MC probe in-flight deduplication and preference/cache generation reject stale publication');
+    const current = source.fetchMcVersionListSources(async () => 'new-official',
+      async () => { throw new Error('settled official may not open mirror'); });
+    assert.equal(await current, 'new-official');
+    assert.equal(timers.size, 0);
+    cases.push('MC delayed mirror cannot publish after source changes and successful official cleans timer');
   }
   {
     const calls = []; let destroyed = 0;
@@ -55,11 +55,19 @@ export async function runDownloadSourceLifecycleRegression() {
     cases.push('Mod source refresh rejects old cache and old request cleanup cannot clear new in-flight work');
   }
   {
-    const calls = [], configured = [], timers = new Map(); let cleared = 0, destroyed = 0, nextTimer = 0, allowed = true;
+    const calls = [], verifications = [], configured = [], timers = new Map(); let cleared = 0, destroyed = 0, nextTimer = 0, allowed = true, nativeUsable = false;
     const bytes = () => ({ data: new Uint8Array(32) });
     const load = loader({ commons: { ...common, DistributionPolicy: { allowPublisherServices: () => allowed } },
-      '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, createHttp() { return {
-        request() { const call = deferred(); calls.push(call); return call.promise; }, destroy() { destroyed++; },
+      '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST', GET: 'GET' }, HttpDataType: { STRING: 'string' }, createHttp() { return {
+        request(url,options) {
+          // 当前真实生产协议在握手后还做同入口GET自检；只有本例新一代票据可到达此边界。
+          // 保留握手deferred用于控制旧回包顺序，自检另行计数，不能把它吞掉或算成旧请求。
+          if(url.endsWith('/api/v1/session/verify')) {
+            assert.equal(options.method,'GET');verifications.push(url);
+            return Promise.resolve({responseCode:200,result:JSON.stringify({ok:true,deviceId:'fixture'})});
+          }
+          const call = deferred(); calls.push(call); return call.promise;
+        }, destroy() { destroyed++; },
       }; } } },
       '@kit.CryptoArchitectureKit': { cryptoFramework: {
         createRandom: () => ({ generateRandomSync: bytes }),
@@ -68,8 +76,9 @@ export async function runDownloadSourceLifecycleRegression() {
         createMac: () => ({ initSync() {}, updateSync() {}, doFinalSync: bytes }),
       } },
       '@kit.ArkTS': { buffer: { from: text => Buffer.from(text) }, util: {} },
-      './RelayNativeBridge': { getRelayNativeBridge: () => ({ configure(...args) { configured.push(args); },
-        clear() { cleared++; }, stats: () => null }) },
+      './RelayNativeBridge': { getRelayNativeBridge: () => ({ configure(...args) { configured.push(args); nativeUsable = true; },
+        clear() { cleared++; nativeUsable = false; },
+        stats: () => ({ requests: 0, failures: 0, fallbacks: 0, authRejects: 0, tripped: false, usable: nativeUsable }) }) },
     }, { setTimeout(fn) { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); } });
     const { RelayClient } = load('feature_core/src/main/ets/download/RelayClient.ets');
     const relay = new RelayClient();
@@ -80,10 +89,14 @@ export async function runDownloadSourceLifecycleRegression() {
     calls[0].resolve(success('stale')); assert.equal(await first, false);
     assert.equal(configured.length, 0); assert.equal(relay.status().active, false); assert.equal(timers.size, 0);
     const old = relay.setEnabled(true); await relay.setEnabled(false); const current = relay.setEnabled(true);
-    calls[2].resolve(success('current')); assert.equal(await current, true); const clearBeforeOld = cleared;
+    calls[2].resolve(success('current')); const currentReady = await current;
+    assert.equal(currentReady, true, JSON.stringify(relay.status())); const clearBeforeOld = cleared;
     calls[1].resolve({ responseCode: 503, result: '{}' }); assert.equal(await old, false);
     assert.equal(cleared, clearBeforeOld); assert.equal(relay.status().active, true);
-    assert.equal(configured.length, 1); assert.equal(timers.size, 1); assert.equal(destroyed, 3);
+    assert.equal(configured.length, 1); assert.equal(timers.size, 1); assert.equal(verifications.length,1);assert.equal(destroyed, 4);
+    nativeUsable = false;
+    assert.equal(relay.status().sessionReady, true); assert.equal(relay.status().active, false, '握手票据不能替代Native可用性');
+    nativeUsable = true;
     allowed = false; await relay.setEnabled(true); assert.equal(relay.status().active, false);
     assert.equal(calls.length, 3); assert.equal(timers.size, 0);
     cases.push('Relay disable/re-enable and product policy revoke stale handshake publication without touching newer session');

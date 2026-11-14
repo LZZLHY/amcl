@@ -84,6 +84,7 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   if (sharedLook !== undefined) native.sharedLookExecutionSupported = () => { record('look-cold-contract'); return sharedLook; };
   class Logger { constructor(activityId) { this.activityId = activityId; } info(_tag, text) { record('log', text); } }
   const context = { startAbility: async want => { record('return-ability', want.parameters.gameExitActivityId);
+    if (state.handoffCallback !== undefined) state.handoffCallback();
     if (state.handoff !== undefined) await state.handoff.promise; } };
   const gamecontrol = { GamepadManager: Gamepad, GameInputRuntime: Runtime, InputConfigurationRuntime: Configuration,
     AmclInputSource: { Gamepad: 2 }, GLFW_PRESS: 1, getInputSourceRegistry: () => registry,
@@ -104,7 +105,7 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   const env = environment({ commons: { ActivityLogger: Logger, LOG_DOMAIN_LAUNCH: 1,
     // 记录真实Host的故障出口及原错误，仅作为诊断oracle，不改变异常和清理政策。
     AppLogger: { warn: (_tag,text,error) => record('fault',text,error?.message ?? String(error)),
-      error: noop, info: noop, debug: noop } }, sourceOverrides,
+      error: noop, info: noop, debug: noop, flush: () => record('log-flush') } }, sourceOverrides,
     globals: { ...timerEdges, AppStorage: { get: key => key === 'desktopGameProcess' ? isolated
       : key === 'nativeGamepadRouteRequested' ? state.nativeGamepadRequested
       : key === 'nativeGamepadCaptureReady' ? state.nativeGamepadCaptureReady : undefined } },
@@ -344,8 +345,14 @@ function abilityLifecycle(relative, f) {
   const code = compiler.transpileModule('class Ability {\n' + members.join('\n') + '\n}\nreturn Ability;',
     { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
   const bindings = { getInputSourceRegistry: () => f.registry, testNapi: f.native,
+    // 组合主线的启动器Ability会通知活动owner；仅隔离此新增平台边缘并核对真实转发值。
+    getTaskActivityOwner: () => ({ setForeground: value => { f.state.activityForeground = value; } }),
+    // 音频已有独立Ability生命周期端口；本组仅适配它，输入注册表/Host仍使用真实实现。
+    ModAudioRuntime: { setForeground: noop },
     ProductInputProfile: { selection: () => ({ isolatedGameProcess: false }) }, ProductBuildProfile: { storeChannel: true },
     AppLogger: { info: noop, warn: noop }, AppStorage: { setOrCreate: noop }, LOG_DOMAIN_LAUNCH: 1, TAG: 'ability-test',
+    // Ability新增音频前后台边缘；本组只验证输入Host，仍执行真实生命周期方法全文。
+    ModAudioRuntime: { setForeground: noop },
     FRAME_RATE_FOREGROUND_SOURCE_ENTRY: 1, FRAME_RATE_FOREGROUND_SOURCE_GAME: 2 };
   const Ability = new Function(...Object.keys(bindings), code)(...Object.values(bindings));
   const ability = new Ability(); ability.isolated = true; return ability;
@@ -358,12 +365,14 @@ for (const relative of ['entry/src/main/ets/entryability/EntryAbility.ets', 'ent
     if (lateRegistration) ability.onBackground();
     f.prepare(); f.host.markRunning(); f.host.setFrontendState(lease, true, 7);
     if (!lateRegistration) ability.onBackground();
+    if (relative.includes('/entryability/')) assert.equal(f.state.activityForeground, false);
     f.host.setFrontendState(lease, true, 7); f.state.grab = true; f.run(250);
     assert.equal(f.host.inputRuntime.isLifecycleActive(), false, '后台或晚注册的真实来源保留Ability墓碑');
     assert.equal(f.host.inputRuntime.active, false, '旧页面/心跳不能伪造Ability前台');
     f.host.inputRuntime.resumeAfterLifecycle(); f.host.setFrontendState(lease, true, 7);
     assert.equal(f.host.inputRuntime.active, false, '组件焦点只恢复自身边界，不能改写Ability事实');
     ability.onForeground();
+    if (relative.includes('/entryability/')) assert.equal(f.state.activityForeground, true);
     assert.equal(f.host.inputRuntime.isLifecycleActive(), true);
     assert.equal(f.host.inputRuntime.active, true, '真实Ability前台恢复通过宿主合取原前端资格');
     f.host.setFrontendState(lease, false, 7); ability.onBackground(); ability.onForeground();
@@ -380,7 +389,7 @@ for (const mode of ['deferred-success', 'deferred-reject', 'synchronous-reject',
   if (mode === 'force-error') f.state.throwOn.add('force-exit');
   const exiting = f.host.requestExit();
   assert.equal(f.count('return-ability'), 1);
-  await f.host.requestExit();
+  assert.equal(f.host.requestExit(), exiting, '重复退出必须加入原有事务，不能产生立即完成的伪回执');
   assert.equal(f.count('return-ability'), 1, '重复请求不能生成第二个前台交接');
   if (mode.startsWith('deferred')) {
     assert.equal(f.count('force-exit'), 0, '期限内退出ACK等待原前台请求完成或失败');
@@ -521,31 +530,51 @@ function pageStart(f, lease) {
   assert.ok(owner); const method = owner.members.find(member => member.name?.getText(ast) === 'startMCOnce').getText(ast);
   const code = compiler.transpileModule('class Page {\n' + method + '\n}\nreturn Page;',
     { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
+  // JVM 启动前新增了真实 TinyFD 窗口装配；只替换 Native 租约边界，保留生产 attach 的身份判定。
+  const dialogSessions=[];
+  const dialog=makePureEtsLoader({'@kit.ArkUI':{},commons:{AppLogger:{info:noop,warn:noop},LOG_DOMAIN_LAUNCH:1},
+    'libentry.so':{default:{gameDialogAttach:session=>{dialogSessions.push(session);return 'dialog-fixture';},gameDialogDetach:()=>true}}})
+    ('entry/src/main/ets/runtime/GameDialogRuntime.ets').GameDialogRuntime;
   // 本组为default启动：真实准入类在非store返回空票据，不改变原输入准备/窗口/JVM边界顺序。
-  const Page = new Function('AppStorage', 'ProductInputProfile', 'LOG_DOMAIN_LAUNCH', 'TAG', 'GameRunAdmission', code)(
+  const Page = new Function('AppStorage', 'ProductInputProfile', 'LOG_DOMAIN_LAUNCH', 'TAG', 'GameRunAdmission', 'GameDialogRuntime', code)(
     { get: key => key === 'mcLaunchActivityId' ? 100 : undefined }, { selection: () => ({ desktopWindow: true }) }, 1, 'page-start-test',
-    { captureDispatch: () => '', reserveProcessLaunch: () => undefined });
+    { captureDispatch: () => '', reserveProcessLaunch: () => undefined }, dialog);
   const page = new Page(); const actions = [];
   Object.assign(page, { sessionHost: f.host, frontendLease: lease, context: f.context, inputLifecycleEpoch: 1,
     navigatedAway: false, mcStarted: false, inputProductFailure_: '', gameWindowCoordinator: f.host.windowCoordinator,
     getUIContext: () => ({ getRouter: () => ({ getParams: () => ({ activityId: 100 }) }) }),
-    beginLaunchLedgerEarly_: () => actions.push('ledger'), launchLogger_: () => ({ error: noop }),
+    beginLaunchLedgerEarly_: () => {assert.deepEqual(dialogSessions,[100]);actions.push('ledger');}, launchLogger_: () => ({ error: noop }),
     recordLaunchFailure_: () => actions.push('launch-failed'), restoreGameWindow: async () => actions.push('window-restore'),
     startMCInternal: async () => { actions.push('jvm-boundary'); f.host.markRunning(); page.mcStarted = true; } });
-  return { page, actions };
+  return { page, actions, dialogSessions };
 }
 for (const retire of [false, true]) {
-  const f = fixture(); const lease = f.attach(); const { page, actions } = pageStart(f, lease);
+  const f = fixture(); const lease = f.attach(); const { page, actions, dialogSessions } = pageStart(f, lease);
   const starting = page.startMCOnce(); await flush();
   assert.deepEqual(actions, [], '等待真实输入装配前不能提前固定活动/触碰启动边界');
   assert.equal(f.count('window-enter'), 0, 'Surface启动定时器不能抢在LayoutStore.init完成前取得启动Window');
   if (retire) f.host.detach(lease); else f.prepare();
   await starting;
-  if (retire) { assert.deepEqual(actions, []); assert.equal(f.count('window-enter'), 0); }
-  else { assert.deepEqual(actions, ['ledger', 'jvm-boundary']); assert.equal(f.count('window-enter'), 1); }
+  if (retire) { assert.deepEqual(actions, []); assert.deepEqual(dialogSessions,[]);assert.equal(f.count('window-enter'), 0); }
+  else { assert.deepEqual(actions, ['ledger', 'jvm-boundary']);assert.deepEqual(dialogSessions,[100]);assert.equal(f.count('window-enter'), 1); }
   f.host.stop('test-stop'); await flush();
 }
 console.log('PASS real Page.startMCOnce: waits host assembly before Window/JVM, retired preparation cannot start through old Surface request');
+
+{
+  const f = fixture(); const lease = f.attach(); f.prepare();
+  const { page, actions } = pageStart(f, lease);
+  let finishLedger;
+  const pendingLedger = new Promise(resolve => { finishLedger = resolve; });
+  page.beginLaunchLedgerEarly_ = () => { actions.push('ledger'); return pendingLedger; };
+  const starting = page.startMCOnce(); await flush();
+  assert.deepEqual(actions, ['ledger']); assert.equal(f.count('window-enter'), 0);
+  f.host.detach(lease); finishLedger(); await starting;
+  assert.equal(actions.includes('jvm-boundary'), false, '异步开账迟到后原前端已退，不能进入JVM准备');
+  assert.equal(f.count('window-enter'), 0, '异步开账等待期间不能抢先进入窗口');
+  f.host.stop('test-stop'); await flush();
+}
+console.log('PASS real Page.startMCOnce: asynchronous ledger baseline blocks Window/JVM and rechecks retired frontend');
 
 {
   const f = fixture(); const lease = f.attach(); const { page, actions } = pageStart(f, lease);
@@ -878,3 +907,138 @@ assert.match(snapshotSource,snapshotCopy);
 await assert.rejects(()=>verifyCleanupSnapshots(snapshotSource.replace(snapshotCopy,'return this.cleanup.slice()')),
   error=>error.code==='ERR_ASSERTION'&&error.message.includes('外部返回值不能改写内部清理权威'));
 console.log('PASS actual Host cleanup snapshots: mutation isolation, asynchronous history, retry progress and compiled shallow-copy negative control');
+
+/** 离线纹理资源归真实Host；前端离开不停止，真实stop和启动失败明确释放原对象。 */
+{
+  const f = fixture(); const lease = f.attach(); f.prepare();
+  const closed = deferred(); let closes = 0;
+  const original = { close() { closes++; return closed.promise; } };
+  f.host.ownOfflineAppearance(original);
+  assert.throws(() => f.host.ownOfflineAppearance({ async close() {} }), /重复认领/);
+  f.host.detach(lease); assert.equal(closes, 0, '页面销毁不能结束运行纹理服务');
+  const stopped = f.host.stop('texture-session-stop');
+  assert.equal(closes, 1); assert.equal(stopped.find(step => step.name === 'offline-appearance-stop').reason, 'Pending');
+  f.host.stop('repeat'); assert.equal(closes, 1);
+  closed.resolve(); await flush();
+  assert.equal(f.host.cleanupSnapshot().find(step => step.name === 'offline-appearance-stop').completed, true);
+  assert.equal(stopped.find(step => step.name === 'offline-appearance-stop').completed, false, '旧快照不能被后续异步清理改写');
+  assert.throws(() => f.host.ownOfflineAppearance(original), /重复认领/);
+}
+{
+  const f = fixture(); f.attach(); let closes = 0;
+  f.host.ownOfflineAppearance({ async close() { closes++; } });
+  await f.host.releaseOfflineAppearance(); await f.host.releaseOfflineAppearance();
+  assert.equal(closes, 1, '前置启动失败的统一清理只关闭原资源一次');
+  f.host.stop('failed-start'); assert.equal(closes, 1);
+}
+console.log('PASS actual Host offline texture ownership: frontend detach, pending stop receipt, idempotence and failed-start cleanup');
+
+/** 生产退出屏障：ACK必须晚于原资源终态，或同一个总期限；迟到回调不改超时收据。 */
+for (const mode of ['late-close', 'close-reject', 'never-close', 'late-window', 'never-window', 'late-text', 'never-text', 'fast']) {
+  const f = fixture({ isolated: true }); const lease = f.attach(); f.prepare(); f.host.markRunning();
+  const pending = deferred(); let closes = 0;
+  if (mode.includes('close')) f.host.ownOfflineAppearance({ close() { closes++; return pending.promise; } });
+  else f.host.ownOfflineAppearance({ async close() { closes++; } });
+  if (mode.includes('window')) f.state.deferredRestore = pending;
+  if (mode.includes('text')) f.state.textStopOutcome = 'Pending';
+  const exiting = f.host.requestExit();
+  assert.equal(f.host.requestExit(), exiting); assert.equal(f.module.requestExistingGameSessionExit(), exiting);
+  await flush();
+  if (mode !== 'fast') assert.equal(f.count('force-exit'), 0, mode + ':平台交接完成不能抢先ACK原Pending资源');
+  if (mode.startsWith('never-')) {
+    assert.equal(f.env.timer.size, 1, '仅退出总期限timer，无新增轮询');
+    f.state.now = 3000; f.run(3000);
+  } else if (mode === 'close-reject') pending.reject(new Error('controlled close rejected'));
+  else if (mode === 'late-text') f.host.textInputRuntime.emitOutcome({ stopOutcome: 'Completed', failure: '', platformDetachResolved: true, localLeaseClosed: true });
+  else if (mode !== 'fast') pending.resolve();
+  await exiting; await flush();
+  assert.equal(f.count('force-exit'), 1); assert.equal(closes, 1); assert.equal(f.env.timer.size, 0);
+  const snapshot = f.host.cleanupSnapshot();
+  assert.ok(snapshot.every(step => step.reason !== 'Pending'), 'ACK前每项都有终态/明确超时原因');
+  const ack = f.calls.findIndex(row => row[0] === 'force-exit');
+  const flushAt = f.calls.findIndex(row => row[0] === 'log-flush');
+  assert.ok(flushAt >= 0 && flushAt < ack, '最终回执flush必须先于Native ACK');
+  if (mode.startsWith('never-')) {
+    assert.ok(snapshot.some(step => step.reason === 'ExitCleanupDeadlineExceeded'));
+    pending.resolve(); f.host.textInputRuntime.emitOutcome({ stopOutcome: 'Completed', failure: '', platformDetachResolved: true, localLeaseClosed: true });
+    await flush(); assert.deepEqual(f.host.cleanupSnapshot(), snapshot, '迟到原回调不能把超时改写为Clean');
+  } else if (mode === 'close-reject') assert.ok(snapshot.some(step => step.reason === 'controlled close rejected'));
+  else assert.ok(snapshot.every(step => step.completed));
+  f.host.setFrontendState(lease, true, 7); await f.host.requestExit();
+  assert.equal(f.count('force-exit'), 1); assert.equal(f.host.inputRuntime.active, false); assert.equal(f.host.isEnded(), true);
+}
+
+/** stop同步耗时已消耗预算；handoff慢不能再为未完成纹理close续一个完整3秒。 */
+{
+  const f = fixture({ isolated: true }); f.attach(); f.prepare(); f.host.markRunning();
+  const close = deferred(); f.state.handoff = deferred();
+  f.host.ownOfflineAppearance({ close() { f.state.now = 700; return close.promise; } });
+  const exiting = f.host.requestExit(); await flush();
+  assert.equal(f.env.timer.size, 1); assert.equal([...f.env.timer.values()][0].delay, 2300);
+  f.state.now = 2000; f.state.handoff.resolve(); await flush();
+  assert.equal(f.count('force-exit'), 0); assert.equal(f.env.timer.size, 1);
+  assert.equal([...f.env.timer.values()][0].delay, 2300, 'handoff完成不重建或续期timer');
+  f.state.now = 3000; f.run(2300); await exiting;
+  assert.equal(f.count('force-exit'), 1); const terminal = f.host.cleanupSnapshot();
+  close.resolve(); await flush(); assert.deepEqual(f.host.cleanupSnapshot(), terminal);
+}
+
+/** 提取真实Ability.onDestroy全文；仅替换OS/音频/桌面桥边缘，调用原Host导出的函数。 */
+function destroyingGameAbility(f, { noHost = false } = {}) {
+  const relative = 'entry/src/main/ets/gameability/GameAbility.ets';
+  const source = fs.readFileSync(new URL('../' + relative, import.meta.url), 'utf8');
+  const ast = compiler.createSourceFile(relative, source, compiler.ScriptTarget.Latest, true);
+  const owner = ast.statements.find(node => node.members?.some(member => member.name?.getText(ast) === 'onDestroy'));
+  const method = owner.members.find(member => member.name?.getText(ast) === 'onDestroy').getText(ast);
+  const code = compiler.transpileModule('class Ability {\n' + method + '\n}\nreturn Ability;', { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
+  const bindings = { ModAudioRuntime: { detach: noop }, testNapi: f.native,
+    getDesktopSystemBridge: () => ({ stop: noop }), getInputSourceRegistry: () => f.registry,
+    stopGameSession: noHost ? () => false : f.module.stopGameSession,
+    requestExistingGameSessionExit: noHost ? () => undefined : f.module.requestExistingGameSessionExit,
+    AppLogger: { info: noop, warn: noop, flush: noop }, TAG: 'game-ability-test', LOG_DOMAIN_LAUNCH: 1,
+    FRAME_RATE_FOREGROUND_SOURCE_GAME: 2 };
+  const Ability = new Function(...Object.keys(bindings), code)(...Object.values(bindings));
+  const ability = new Ability(); ability.isolated = true; return ability;
+}
+
+for (const mode of ['destroy-during-request', 'destroy-first', 'sync-handoff-destroy']) {
+  const f = fixture({ isolated: true }); f.attach(); f.prepare(); f.host.markRunning();
+  const close = deferred(); f.host.ownOfflineAppearance({ close() { return close.promise; } });
+  const ability = destroyingGameAbility(f);
+  if (mode === 'sync-handoff-destroy') f.state.handoffCallback = () => ability.onDestroy();
+  let exiting;
+  if (mode === 'destroy-first') { ability.onDestroy(); exiting = f.host.requestExit(); }
+  else { exiting = f.host.requestExit(); ability.onDestroy(); }
+  ability.onDestroy(); await flush();
+  assert.equal(f.count('force-exit'), 0, mode + ':销毁不能直接抢先Native ACK');
+  assert.equal(f.count('return-ability'), 1); assert.equal(f.host.requestExit(), exiting);
+  close.resolve(); await exiting; await flush();
+  assert.equal(f.count('force-exit'), 1); assert.equal(f.env.timer.size, 0);
+}
+{
+  const f = fixture({ isolated: true }); const ability = destroyingGameAbility(f, { noHost: true });
+  ability.onDestroy(); assert.equal(f.count('force-exit'), 1, '无Host的冷启动失败保留原Native兜底');
+}
+for (const failure of ['log-flush', 'clock']) {
+  const f = fixture({ isolated: true }); f.attach(); f.prepare(); f.host.markRunning();
+  if (failure === 'log-flush') f.state.throwOn.add('log-flush'); else f.state.clockThrows = true;
+  await f.host.requestExit(); await flush();
+  assert.equal(f.count('force-exit'), 1); assert.equal(f.env.timer.size, 0);
+  assert.ok(f.host.cleanupSnapshot().every(step => step.reason !== 'Pending'));
+}
+console.log('PASS real Host/Ability exit barrier: late/rejected/never close, window/text, single total deadline, flush before ACK, duplicate/reentrant destroy, late callbacks, cold fallback and clock/log faults');
+
+/** 撤回真正生产屏障作负控；必须命中同一个ACK先后断言，语法/装载失败不能充数。 */
+async function assertDeferredCloseBarrier(hostSource) {
+  const f = fixture({ isolated: true, hostSource }); f.attach(); f.prepare(); f.host.markRunning();
+  const close = deferred(); f.host.ownOfflineAppearance({ close() { return close.promise; } });
+  const exiting = f.host.requestExit();
+  try { await flush(); assert.equal(f.count('force-exit'), 0, 'ACK不能早于原异步close终态'); }
+  finally { close.resolve(); await exiting; await flush(); }
+}
+await assertDeferredCloseBarrier();
+const exitSource = fs.readFileSync(new URL('../entry/src/main/ets/runtime/GameSessionHost.ets', import.meta.url), 'utf8');
+const exitWait = 'await this.waitForExitReadiness(deadline, isolated)'; assert.ok(exitSource.includes(exitWait));
+await assert.rejects(() => assertDeferredCloseBarrier(exitSource.replace(exitWait, '/* withdrawn readiness wait */')),
+  error => error.code === 'ERR_ASSERTION' && error.message.includes('ACK不能早于原异步close终态'));
+console.log('PASS exit readiness compiled withdrawal negative control: removing production await reproduces premature ACK');

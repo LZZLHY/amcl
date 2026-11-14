@@ -11,6 +11,7 @@ export * from './src/main/ets/download/DownloadManager';
 export * from './src/main/ets/download/DownloadTask';
 export * from './src/main/ets/download/DownloadTaskRegistry';
 export * from './src/main/ets/download/ProcessActivityCoordinator';
+export * from './src/main/ets/download/TaskActivityOwner';
 export * from './src/main/ets/download/UnifiedDownloadTask';
 export * from './src/main/ets/download/DownloadHistory';
 export * from './src/main/ets/download/SourceProber';
@@ -55,6 +56,7 @@ export * from './src/main/ets/modloader/ForgelikeInstaller';
 export * from './src/main/ets/modloader/ForgelikeProcessorRunner';
 export * from './src/main/ets/modloader/NeoForgeService';
 export * from './src/main/ets/modloader/FabricService';
+export * from './src/main/ets/modloader/QuiltService';
 
 export * from './src/main/ets/download/RelayNativeBridge';
 

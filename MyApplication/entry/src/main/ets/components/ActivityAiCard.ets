@@ -1,4 +1,8 @@
 /**
+ * AI 入口的标题、普通图标和透明按钮使用操作前景色，保证主题浅底上的明暗可读性；
+ * LogShare AI 下线后只保留本地报告与补存结果；新分析动作由提供方能力门控。
+ */
+/**
  * 账本列表、手机详情和平板侧栏共用的 AI 结果卡。
  * 仅观察现有分析服务和本地报告；首次出现、展开或切换活动均不会发起上传/分析。
  * 每个实例持有独立订阅，离开时释放；流生命周期仍由 AiAnalysisService 管理。
@@ -10,7 +14,7 @@ import { MarkdownView } from './MarkdownView';
 import { aiPreviewText } from './ActivityUiModel';
 import { loadAiReport, loadAiReportBody, SavedAiReport } from './AiReportStore';
 import { AiTaskSnapshot, AiTaskState, getAiTaskSnapshot, subscribeAiTaskChanges, unsubscribeAiTaskChanges, retrySaveAiReport } from './AiAnalysisService';
-import { loadShareRecords, LogShareRecord, isShareRecordCurrent, LOGSHARE_API_BASE } from './LogShareClient';
+import { loadShareRecords, LogShareRecord, isShareRecordCurrent, LOGSHARE_API_BASE, logShareSupportsAi, LOGSHARE_AI_UNAVAILABLE } from './LogShareClient';
 import { AiStructuredDiagnosis, parseAiStructuredDiagnosis } from './AiDiagnostic';
 import { AiDiagnosticCard } from './AiDiagnosticCard';
 import { common } from '@kit.AbilityKit';
@@ -24,7 +28,8 @@ export struct ActivityAiCard {
   @Prop expanded: boolean = false;
   /** 时间轴已有详情入口时省略重复按钮；手机概览仍提供单独阅读入口。 */
   @Prop showCompactAction: boolean = true;
-  @Prop allowAnalyze: boolean = true;
+  /** 分析发起默认禁用；只有调用方授权且提供方真实支持时才允许显示发起动作。 */
+  @Prop allowAnalyze: boolean = false;
   /** 概览不为尚未分析创建大块占位；已有结果/失败仍明确展示。 */
   @Prop hideWhenEmpty: boolean = false;
   onOpen: () => void = () => {};
@@ -148,9 +153,12 @@ export struct ActivityAiCard {
   private title_(): string {
     if (this.phase === AiTaskState.RUNNING) return this.liveStatus || 'AI 正在分析…';
     if (this.phase === AiTaskState.ERROR) return 'AI 分析失败';
-    if (this.phase === AiTaskState.DONE) return this.historyResult ? 'AI 历史结果' : 'AI 分析 · 已完成';
-    return this.failure.length > 0 ? 'AI 结果暂不可读' : '尚未进行 AI 分析';
+    if (this.phase === AiTaskState.DONE) return this.historyResult ? 'AI 历史结果' : '已保存的 AI 报告';
+    return this.failure.length > 0 ? 'AI 结果暂不可读' : 'AI 服务已下线';
   }
+
+  /** 历史报告能否阅读与提供方能否新建任务分开，服务下线不隐藏本地结果。 */
+  private canAnalyze_(): boolean { return this.allowAnalyze && logShareSupportsAi(LOGSHARE_API_BASE); }
 
   /** 保存失败可独立重试；按钮不会产生第二次公开上传或分析计费。 */
   private async retrySave_(): Promise<void> {
@@ -169,14 +177,25 @@ export struct ActivityAiCard {
   build() {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
-        AppIcon({ name: AppIconName.Ai, iconSize: 18, color: this.theme.primary })
-        Text(this.title_()).fontSize(14).fontWeight(600).fontColor(this.theme.primary).layoutWeight(1)
+        AppIcon({ name: AppIconName.Ai, iconSize: 18, color: this.theme.actionText })
+        Text(this.title_()).fontSize(this.expanded ? 16 : 14).fontWeight(600)
+          .fontColor(this.theme.actionText).layoutWeight(1)
         if (this.phase === AiTaskState.RUNNING) { LoadingProgress().width(18).height(18).color(this.theme.primary) }
         if (this.expanded || this.phase !== AiTaskState.IDLE) {
           Text('仅供参考').fontSize(11).fontColor(this.theme.warningText)
         }
       }.width('100%')
       if (!this.compactIdle_()) {
+      // 完整报告先交代第三方结论边界，再呈现真实Markdown；不把示例结论或新分析请求写入UI。
+      // 仅expanded阅读层采用此提示与白卡表面，其他页面的紧凑AI摘要保持原有形态。
+      if (this.expanded) {
+        Column({ space: 4 }) {
+          Text('仅供参考，请结合原始日志核对。').fontSize(14).fontWeight(600).fontColor(this.theme.warningText)
+          Text('第三方 AI 未针对 HarmonyOS 校准，可能误判。请勿直接执行不适用于本平台的命令。')
+            .fontSize(12).lineHeight(18).fontColor(this.theme.warningText).width('100%')
+        }.width('100%').padding(12).borderRadius(12).backgroundColor(this.theme.warningBg)
+          .alignItems(HorizontalAlign.Start)
+      }
       if (this.expanded && this.diagnostic !== undefined) {
         AiDiagnosticCard({ diagnosis: this.diagnostic, theme: this.theme })
       }
@@ -188,8 +207,8 @@ export struct ActivityAiCard {
       } else {
         Text(this.phase === AiTaskState.RUNNING ? '可以离开当前页面，完成后在消息中心查看。'
           : this.phase === AiTaskState.DONE ? '分析已完成，点击查看完整回答。'
-          : this.phase === AiTaskState.ERROR ? '分析未完成，可在详情中重试。'
-          : this.showCompactAction ? 'AI 需要主动确认公开分享；不会自动上传日志。' : '尚无结论 · 可在详情中主动分析')
+          : this.phase === AiTaskState.ERROR ? '这次分析未完成；服务已下线，无法重新分析。'
+          : LOGSHARE_AI_UNAVAILABLE)
           .fontSize(12).fontColor(this.theme.textSecondary).width('100%')
       }
       if (this.sourceCaption.length > 0) {
@@ -200,26 +219,26 @@ export struct ActivityAiCard {
           .maxLines(this.expanded ? 20 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       if (this.expanded) {
-        Text('第三方 AI 未针对 HarmonyOS 校准，可能误判。请核对日志，不要直接执行不适用于本平台的命令。')
-          .fontSize(12).fontColor(this.theme.warningText).width('100%')
         if (this.phase === AiTaskState.DONE && !this.localSaved && this.failure.length > 0) {
           Button(this.savingResult ? '正在保存…' : '重试保存结果').height(44)
             .enabled(!this.savingResult).onClick(() => { this.retrySave_() })
         }
-        if (this.phase === AiTaskState.IDLE || this.phase === AiTaskState.ERROR) {
+        if (this.canAnalyze_() && (this.phase === AiTaskState.IDLE || this.phase === AiTaskState.ERROR)) {
           Button(this.phase === AiTaskState.ERROR ? '重试 AI 分析' : '选择日志并分析')
-            .height(44).fontSize(14).fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.primary)
-            .enabled(this.allowAnalyze && !this.retryWaiting).onClick(() => { this.onRequestAnalysis() })
+            .height(48).fontSize(14).fontWeight(600).borderRadius(24)
+            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.actionPrimary)
+            .enabled(!this.retryWaiting).onClick(() => { this.onRequestAnalysis() })
         }
-      } else if (this.showCompactAction) {
-        Button(this.phase === AiTaskState.RUNNING ? '展开实时分析' : this.phase === AiTaskState.IDLE ? '选择日志并分析' : '展开阅读全文')
-          .height(44).fontSize(14).fontWeight(600).fontColor(this.theme.primary)
-          .backgroundColor(Color.Transparent).enabled(this.phase !== AiTaskState.IDLE || this.allowAnalyze)
-          .onClick(() => { if (this.phase === AiTaskState.IDLE) this.onRequestAnalysis(); else this.onOpen(); })
+      } else if (this.showCompactAction && (this.phase !== AiTaskState.IDLE || this.failure.length > 0 || this.canAnalyze_())) {
+        Button(this.phase === AiTaskState.RUNNING ? '展开实时分析'
+          : this.phase === AiTaskState.IDLE && this.canAnalyze_() ? '选择日志并分析' : '展开阅读全文')
+          .height(44).fontSize(14).fontWeight(600).fontColor(this.theme.actionText)
+          .backgroundColor(Color.Transparent)
+          .onClick(() => { if (this.phase === AiTaskState.IDLE && this.canAnalyze_()) this.onRequestAnalysis(); else this.onOpen(); })
       }
       }
-    }.width('100%').padding(this.compactIdle_() ? 0 : this.showCompactAction ? 16 : 12).borderRadius(18)
-      .backgroundColor(this.compactIdle_() ? Color.Transparent : this.theme.primaryLight)
+    }.width('100%').padding(this.compactIdle_() ? 0 : this.expanded ? 20 : this.showCompactAction ? 16 : 12).borderRadius(18)
+      .backgroundColor(this.compactIdle_() ? Color.Transparent : this.expanded ? this.theme.bgCard : this.theme.primaryLight)
       .alignItems(HorizontalAlign.Start)
       .visibility(this.hideWhenEmpty && this.phase === AiTaskState.IDLE && this.failure.length === 0 ? Visibility.None : Visibility.Visible)
       .onClick(() => { if (!this.expanded && !this.showCompactAction) this.onOpen(); })

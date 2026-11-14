@@ -39,7 +39,7 @@ import {fixture,record,settle,payload} from './lib/sideload-coordinator-fixture.
 {
  const f=await fixture(),ui=f.render();await settle();assert.equal(f.counters.dispatch,1);const task=f.coordinator.state();
  f.coordinator.finishAttempt('ambiguous disconnect');assert.equal(f.rows.get(task.activityId).state,0);
- f.environment.version=2;f.environment.payload=payload;
+ f.environment.version=2;f.environment.versionName=task.asset.versionName;f.environment.payload=payload;
  f.setObservation({kind:'bms-success',safeToRelease:true,bmSubmitted:true,code:0,message:'trusted fixture terminal',installId:task.installId,nonce:task.restartNonce});
  f.coordinator.recover(task.installId,task.restartNonce);await settle();
  assert.equal(f.coordinator.state().phase,'verified');assert.equal(f.kitfs.accessSync('/sandbox/sideload-update/install-fence.json'),false);

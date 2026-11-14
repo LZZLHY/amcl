@@ -99,6 +99,14 @@ struct NetSource {
      */
     void recordSample(int rtt_ms, double throughput_bps);
 
+    /**
+     * 仅真实worker成功填满段后调用：本次新增至少256KiB，跨度覆盖整次performOnce
+     * 的准入/全部跳转，不把旧prefix计入速率。与可含中止的旧sample window分离，
+     * 不修改computeScore。对象只属于当前NetFile，单原子发布避免速率/时间组合撕裂。
+     */
+    void recordCompletedTransferSample(int64_t new_bytes, int64_t elapsed_ms);
+    int64_t completedTransferGoodputBps() const { return completed_goodput_bps_.load(std::memory_order_acquire); }
+
     /** 当前窗口内 RTT 平均值（毫秒）。窗口为空返回 -1。 */
     int    avgRttMs() const;
 
@@ -117,6 +125,7 @@ struct NetSource {
     double computeScore() const;
 
 private:
+    std::atomic<int64_t> completed_goodput_bps_{0};
     // last_error_ 由 last_error_mu_ 保护（与 NetThread::last_error_ 同构）
     mutable std::mutex   last_error_mu_;
     DownloadExceptionPtr last_error_;

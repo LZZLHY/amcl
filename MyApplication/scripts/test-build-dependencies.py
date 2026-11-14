@@ -2,7 +2,8 @@
 
 测试通过真实配置解析器及三个消费者验证优先级。生产配方与产物检查器使用合成
 class 和受控编译桩走真实收据路径，避免只匹配源码字符串却遗漏实际消费闭包。
-所有目录保留在调用方指定的外置 invocation 中，测试不改真实本机配置和环境。
+小汇总保留在调用方指定的外置 invocation 中；成功后回收亲建夹具，失败或显式
+调试保留现场。测试不改真实本机配置和环境，也不清空调用者提供的共享父目录。
 """
 import argparse
 import contextlib
@@ -24,6 +25,7 @@ from lib import game_compat_inputs as inputs
 from lib import game_compat_sessions as sessions
 from lib import game_compat_validation as validation
 from lib.workspace_paths import external_output_path, workspace_path
+from lib.host_test_lifecycle import HostTestScope
 
 PROJECT = Path(__file__).resolve().parents[1]
 TEST_ROOT = None
@@ -41,8 +43,11 @@ class DependencyTests(unittest.TestCase):
     """每项测试独占外置子目录，并清空相关环境，防止借用维护者真实材料。"""
 
     def setUp(self):
-        """临时目录不自动删除，失败时仍可复核实际 JSON、收据和目录生命周期。"""
-        self.directory = Path(tempfile.mkdtemp(prefix=self._testMethodName + "-", dir=TEST_ROOT))
+        """每项仍独占子目录；整轮成功才回收，失败时保全实际 JSON、收据与所有 case。"""
+        # 运行根新增生命周期子层后，完整测试名会把 Windows Java 样本路径推过限制。
+        # 短摘要仍绑定真实测试身份，完整名字由 unittest/小汇总保留，不牺牲用例隔离。
+        case_id = hashlib.sha256(self.id().encode("utf-8")).hexdigest()[:8]
+        self.directory = Path(tempfile.mkdtemp(prefix="case-" + case_id + "-", dir=TEST_ROOT))
         self.root = self.directory / "clone"
         self.root.mkdir()
         self.config = self.root / "build-dependencies.local.json"
@@ -215,7 +220,9 @@ class DependencyTests(unittest.TestCase):
     def test_workspace_environment_overrides_local_run_root(self):
         """AMCL_RUN_DIR 或 AMCL_WORKSPACE_ROOT 任一设置时，均保持原公共路由而不读 local。"""
         for variable in ("AMCL_RUN_DIR", "AMCL_WORKSPACE_ROOT"):
-            base = self.directory / variable
+            # 环境键保留完整语义，物理夹具只用短名字，避免外置父目录与多层 invocation
+            # 叠加后超过 Windows 路径长度限制；断言仍核对真实选路和环境未变。
+            base = self.directory / ("run" if variable == "AMCL_RUN_DIR" else "ws")
             with self.subTest(variable=variable), mock.patch.dict(os.environ, {variable: str(base)}, clear=True), \
                  mock.patch.object(sessions, "dependency_path", side_effect=AssertionError("workspace overrides local")):
                 before = dict(os.environ)
@@ -358,21 +365,40 @@ class DependencyTests(unittest.TestCase):
 
 
 def main():
-    """每次入口原子分配新 invocation，保留结构化结果；默认仍遵循现有外置路由。"""
+    """外置 invocation 保存小汇总；只回收本轮亲建夹具，失败/keep 不改原现场。"""
     global TEST_ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", "--output", dest="output", help="External parent for a new test invocation")
     arguments = parser.parse_args()
+    # 用例会有意清空环境以验证本机配置优先级；先按调用进程的真实环境初始化标准库
+    # 临时根缓存，避免 Windows 在清空 TEMP 后把 cwd 误选成系统临时目录。该调用不改
+    # 全局 TEMP/TMP，也不创建目录；所有真实测试输出仍显式位于本轮 E/仓外 scope。
+    tempfile.gettempdir()
     parent = external_output_path(arguments.output) if arguments.output else workspace_path("run", "dependency-tests")
     parent.mkdir(parents=True, exist_ok=True)
-    TEST_ROOT = Path(tempfile.mkdtemp(prefix="invocation-", dir=parent))
-    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DependencyTests))
-    report = {"schema": 1, "state": "PASS" if result.wasSuccessful() else "FAIL", "testsRun": result.testsRun,
-              "failed": len(result.failures), "errors": len(result.errors), "output": str(TEST_ROOT),
+    invocation = Path(tempfile.mkdtemp(prefix="invocation-", dir=parent))
+    scope = HostTestScope("fixtures-", parent=invocation)
+    TEST_ROOT = scope.directory
+    report = {"schema": 1, "state": "FAIL", "output": str(TEST_ROOT),
+              "keepRequested": os.environ.get("AMCL_KEEP_TEST_OUTPUT") == "1",
               "sdkBuildExecuted": False, "realJavaExecuted": False, "deviceOperations": False}
-    (TEST_ROOT / "summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print("[build-dependencies] " + json.dumps(report))
-    return 0 if result.wasSuccessful() else 1
+    summary = invocation / "summary.json"
+    try:
+        # TextTestRunner 已等待每个同步用例及其 subprocess.run；mock/文件上下文也均已退出。
+        # 先写可独立保存的小结果，再删除 scope 内的最小源码 clone 与假编译输入。
+        result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DependencyTests))
+        report.update(state="PASS" if result.wasSuccessful() else "FAIL", testsRun=result.testsRun,
+                      failed=len(result.failures), errors=len(result.errors))
+        summary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        report["fixtureRetained"] = not scope.close(success=result.wasSuccessful())
+    except Exception as error:
+        # 目录身份变化或收尾失败同样失败；不擅自删除残留，也不把成功断言包装成成功收尾。
+        report.update(state="FAIL", error=str(error), fixtureRetained=scope.directory.exists())
+        raise
+    finally:
+        summary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print("[build-dependencies] " + json.dumps(report))
+    return 0 if report["state"] == "PASS" else 1
 
 
 if __name__ == "__main__":

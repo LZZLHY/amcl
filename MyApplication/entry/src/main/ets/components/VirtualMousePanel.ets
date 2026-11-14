@@ -1,3 +1,4 @@
+import { EditorPalette } from './TouchEditorTheme'
 /**
  * 可直接操作的悬浮鼠标本体。移动、左右键拖动、滚轮均以窗口vp坐标驱动共享模型。
  * 本体位置由共享模型投影：单指原始位移随指、两指同轮固定，活动期间只钳制可见边界。
@@ -17,6 +18,8 @@ const INACTIVE_MOUSE_PORT: VirtualMousePort={
 
 @Component
 export struct VirtualMousePanel {
+  /** 独立实例只为工具chrome取色；原触点、按钮身份、几何、命中和输入生命周期不变。 */
+  @Prop palette: EditorPalette = new EditorPalette()
   model: VirtualMouseModel=new VirtualMouseModel(INACTIVE_MOUSE_PORT)
   onClose: () => void=(): void => {}
   onInteraction: () => void=(): void => {}
@@ -82,17 +85,17 @@ export struct VirtualMousePanel {
     // SDK生成的Text观察闭包只捕获该boolean，不会登记所属组件状态的读取依赖。
     // 标签/角色是固定输入，颜色则在观察闭包内直接读取@State，使真实DOWN/UP及reset反馈可刷新。
     Stack({alignContent:Alignment.Center}) {
-      Text(label).fontSize(14).fontColor((part==='left' ? this.leftDown : this.rightDown) ? '#10241F' : '#ECF3F0')
+      Text(label).fontSize(14).fontColor((part==='left' ? this.leftDown : this.rightDown) ? this.palette.onAccent : this.palette.text)
         .textAlign(TextAlign.Center).maxLines(1).hitTestBehavior(HitTestMode.None)
       if(part==='left' ? this.leftDown : this.rightDown) {
         // 标签可能被按键指遮住；仅在端口已接受的持有态显示外缘短条，不用缩放改变触达边界。
-        Rect().width(2).height(this.compact ? 18 : 28).radiusWidth(1).radiusHeight(1).fill('#245345')
+        Rect().width(2).height(this.compact ? 18 : 28).radiusWidth(1).radiusHeight(1).fill(this.palette.onAccent)
           .align(part==='left' ? Alignment.Start : Alignment.End)
           .margin({left:part==='left' ? 5 : 0,right:part==='right' ? 5 : 0})
           .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
       }
     }.height('100%').layoutWeight(1)
-      .backgroundColor((part==='left' ? this.leftDown : this.rightDown) ? '#A4E7CC' : '#EB263A38')
+      .backgroundColor((part==='left' ? this.leftDown : this.rightDown) ? this.palette.accentFill : this.palette.panel)
       .hitTestBehavior(HitTestMode.Block)
       .onTouch((event: TouchEvent): void => { this.touchArea(event,part) })
       .onClick((): void => { this.activate(part==='left' ? -1 : -2) })
@@ -106,23 +109,23 @@ export struct VirtualMousePanel {
           Stack({alignContent:Alignment.Center}) {
             // 独立SVG viewBox将图形固定在20×20vp盒内；不依赖⇧字体字面、基线或Button默认内边距。
             Image($r('app.media.virtual_mouse_shift')).width(20).height(20).objectFit(ImageFit.Contain)
-              .fillColor(this.shiftLock ? '#10241F' : '#EDF5F1').hitTestBehavior(HitTestMode.None)
+              .fillColor(this.shiftLock ? this.palette.onAccent : this.palette.text).hitTestBehavior(HitTestMode.None)
               .accessibilityLevel('no')
             if(this.shiftLock) {
               // 角标独立定位，不参与主图标的居中计算；锁定前后Shift轮廓保持原位。
-              AppIcon({name:AppIconName.Lock,iconSize:9,color:'#10241F'})
+              AppIcon({name:AppIconName.Lock,iconSize:9,color:this.palette.onAccent})
                 .width(10).height(10).position({x:29,y:4}).hitTestBehavior(HitTestMode.None)
                 .accessibilityLevel('no')
             }
           }.width(44).height(44).hitTestBehavior(HitTestMode.None)
         }.width(44).height(44).padding(0).borderRadius(22)
-          .backgroundColor(this.shiftLock ? '#A4E7CC' : '#C9253836')
+          .backgroundColor(this.shiftLock ? this.palette.accentFill : this.palette.surface)
           .accessibilityText(this.shiftLock ? '释放Shift' : '按住Shift')
           // 旧组件销毁后的迟到键盘/无障碍激活也不能创建新工具持有。
           .onClick((): void => { if(!this.alive) return; this.model.toggle(340); this.refreshHeld(); this.onInteraction() })
         Blank()
         // 视觉仍为 32vp、命中由共同按钮保证 44vp；先释放工具持键，再收起面板。
-        AppRoundIconButton({ name: AppIconName.Close, color: '#EDF5F1', containerBg: '#C9253836',
+        AppRoundIconButton({ name: AppIconName.Close, color: this.palette.text, containerBg: this.palette.surface,
           visualDiameter: 32, actionEnabled: this.alive, accessibilityLabel: '收起虚拟鼠标',
           controlId: 'virtual-mouse-close', onAction: (): void => {
             if (!this.alive) return;
@@ -134,32 +137,32 @@ export struct VirtualMousePanel {
           this.MouseKey('左键','left')
           Column({space:this.compact ? 1 : 4}) {
             // 整条44vp区域都是同一个滑动滚轮；上下箭头与槽内刻线只有方向提示，没有独立点击语义。
-            AppIcon({name:AppIconName.ChevronUp,iconSize:12,color:'#B9D6CB'})
+            AppIcon({name:AppIconName.ChevronUp,iconSize:12,color:this.palette.muted})
               .width(16).height(this.compact ? 12 : 16).hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
             Column({space:3}) {
-              Rect().width(8).height(1).fill('#B9D6CB')
-              Rect().width(8).height(1).fill('#EDF5F1')
-              Rect().width(8).height(1).fill('#B9D6CB')
+              Rect().width(8).height(1).fill(this.palette.muted)
+              Rect().width(8).height(1).fill(this.palette.text)
+              Rect().width(8).height(1).fill(this.palette.muted)
             }.width(18).height(this.compact ? 24 : 36).justifyContent(FlexAlign.Center)
-              .backgroundColor('#324F48').borderRadius(9).border({width:1,color:'#6684A99C'})
+              .backgroundColor(this.palette.surfaceActive).borderRadius(9).border({width:1,color:this.palette.stroke})
               .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
-            AppIcon({name:AppIconName.ChevronDown,iconSize:12,color:'#B9D6CB'})
+            AppIcon({name:AppIconName.ChevronDown,iconSize:12,color:this.palette.muted})
               .width(16).height(this.compact ? 12 : 16).hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
-          }.width(44).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#ED1B2C2A')
+          }.width(44).height('100%').justifyContent(FlexAlign.Center).backgroundColor(this.palette.surface)
             .hitTestBehavior(HitTestMode.Block)
             .onTouch((event: TouchEvent): void => { this.touchArea(event,'wheel') })
             .accessibilityText('滚轮，上下滑动滚动当前指针指向的区域')
           this.MouseKey('右键','right')
         }.width('100%').height(this.compact ? 56 : 88)
         Column({space:2}) {
-          Text('⠿').fontSize(this.compact ? 18 : 24).fontColor('#D6E8DF')
-          Text('移动').fontSize(this.compact ? 12 : 14).fontColor('#AFC5BE')
-        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#EB263A38')
+          Text('⠿').fontSize(this.compact ? 18 : 24).fontColor(this.palette.text)
+          Text('移动').fontSize(this.compact ? 12 : 14).fontColor(this.palette.muted)
+        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor(this.palette.panel)
           .hitTestBehavior(HitTestMode.Block)
           .onTouch((event: TouchEvent): void => { this.touchArea(event,'move') })
           .accessibilityText('移动鼠标，拖动此处只移动指针')
       }.width('100%').layoutWeight(1).borderRadius(this.compact ? 20 : 28).clip(true)
-        .backgroundColor('#6084A99C').border({width:1,color:'#6684A99C'})
+        .backgroundColor(this.palette.surface).border({width:1,color:this.palette.stroke})
     }.width('100%').height('100%').hitTestBehavior(HitTestMode.Default)
       .onTouch((event: TouchEvent): void => { event.stopPropagation() })
   }

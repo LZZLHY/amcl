@@ -2,7 +2,11 @@
  * 所有生产调用和系统调用都用始终执行的显式检查；编译模式不能删除取得租约等副作用。
  * 这是单线程宿主进程，fork子进程只使用poll/read/close/_exit，不初始化业务运行时。
  */
-#include "../../jvm/update_install_lease.h"
+// 默认编译当前生产头；定向负控可显式绑定受保护旧提交的原头，仅影响本测试TU。
+#ifndef AMCL_SIDELOAD_LEASE_HEADER
+#define AMCL_SIDELOAD_LEASE_HEADER "../../jvm/update_install_lease.h"
+#endif
+#include AMCL_SIDELOAD_LEASE_HEADER
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -130,42 +134,88 @@ void RunChild(int readFd, int writeFd) {
     if (close(readFd) != 0) _exit(13);
     _exit(0); // 不执行继承的C++析构；进程退出关闭继承的SH租约FD。
 }
+
+/** exec新进程重新配置同一路径并读持久文件，证明准入不依赖父进程单例或历史缓存。 */
+void RestartCheck(const std::string& executable, const std::string& root, bool permit) {
+    const pid_t child = fork();
+    if (child == 0) {
+        execl(executable.c_str(), executable.c_str(), root.c_str(), permit ? "--restart-allow" : "--restart-deny", nullptr);
+        _exit(20);
+    }
+    RequireSystem(child > 0, "创建租约重启验证子进程");
+    ChildOwner owner(child); owner.Wait();
+}
+
+/** 完整读取实际Coordinator/取证原件，不解析后重序列化，避免掩盖Native遇到的字节形状。 */
+std::string ReadJournal(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    Require(input.is_open(), "打开实际生产事务输入");
+    std::string result((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    Require(!input.bad(), "完整读取实际生产事务输入");
+    return result;
+}
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        Require(argc == 2, "必须提供一个仓库外fixture绝对目录");
+        Require(argc == 2 || argc == 3, "必须提供仓库外fixture目录，可附实际生产journal路径");
         const std::string root = argv[1];
+        const std::string executable = std::filesystem::canonical(argv[0]).string();
+        if (argc == 3 && (std::string(argv[2]) == "--restart-allow" || std::string(argv[2]) == "--restart-deny")) {
+            Require(amcl::ConfigureUpdateInstallFilesRoot(root), "重启配置同一生产根");
+            const bool acquired = static_cast<bool>(amcl::AcquireConfiguredUpdateReadLease());
+            Require(acquired == (std::string(argv[2]) == "--restart-allow"), "新进程必须按持久事务/fence重新裁决");
+            std::cout << "PASS sideload restart durable admission=" << acquired << '\n';
+            return 0;
+        }
         std::error_code directoryError;
         std::filesystem::create_directories(root + "/sideload-update", directoryError);
         Require(!directoryError, "创建fixture目录: " + directoryError.message());
         Require(amcl::ConfigureUpdateInstallFilesRoot(root), "配置生产安装共享租约根");
         Require(!amcl::ConfigureUpdateInstallFilesRoot(root + "/other"), "生产根固定后拒绝切换");
+        const std::string actualJournal = argc == 3 ? ReadJournal(argv[2]) : "{\"schema\":2,\"phase\":\"superseded\"}";
+        Text(root + "/sideload-update/transaction.json", actualJournal);
+        const bool parsed = amcl::installlease::LegacyPhaseReader(actualJournal).permits();
         auto lease = amcl::AcquireConfiguredUpdateReadLease();
+        // 必须先输出实际业务裁决，旧header负控要证明false/false，而非编译或夹具失败。
+        std::cout << "LEASE_INPUT bytes=" << actualJournal.size() << " permits=" << parsed
+                  << " acquired=" << static_cast<bool>(lease) << std::endl;
+        Require(parsed && static_cast<bool>(lease), "实际生产合法终态必须经完整Native reader取得SH");
         Require(lease && lease->acquired(), "取得实际SH共享租约");
         Descriptor exclusive(open((root + "/.sideload-install.lock").c_str(), O_RDWR));
         RequireSystem(exclusive.value >= 0, "打开同inode安装锁");
         RequireBusy(exclusive.value, "实际SH共享租约必须阻止EX安装锁");
         lease.reset();
         RequireSystem(Lock(exclusive.value, LOCK_EX | LOCK_NB) == 0, "释放SH后取得EX安装锁");
+        Require(!amcl::AcquireConfiguredUpdateReadLease(), "合法superseded也不能穿过在持EX");
         Text(root + "/sideload-update/install-fence.json", "{}");
         RequireSystem(Lock(exclusive.value, LOCK_UN) == 0, "释放安装EX锁");
         Require(!amcl::AcquireConfiguredUpdateReadLease(), "持久fence在锁空时仍拒绝SH准入");
+        RestartCheck(executable, root, false);
         std::error_code removeError;
         const bool removed = std::filesystem::remove(root + "/sideload-update/install-fence.json", removeError);
         Require(removed && !removeError, "移除本次fence夹具: " + removeError.message());
         for (const auto& invalid : {"{", "{\"phase\":\"installing\"}", "{\"phase\":\"confirmation-pending\"}",
-                "{\"phase\":\"ready\",\"phase\":\"verified\"}", "{\"phase\":\"ready\"} trailing"}) {
+                "{\"phase\":\"ready\",\"phase\":\"verified\"}", "{\"phase\":\"ready\"} trailing",
+                "{\"phase\":\"unknown-terminal\"}", "{\"phase\":\"superseded\",\"phase\":\"superseded\"}",
+                "{\"nested\":{\"phase\":\"superseded\"}}", "{\"phase\":\"superseded\",\"text\":\"\\u00xz\"}"}) {
             Text(root + "/sideload-update/transaction.json", invalid);
             Require(!amcl::AcquireConfiguredUpdateReadLease(), "legacy坏文件必须拒绝: " + std::string(invalid));
         }
         Text(root + "/sideload-update/transaction.json", "{\"phase\":\"ready\",\"x\":[1,true,{\"s\":\"\\u0061\"}]} ");
         Require(static_cast<bool>(amcl::AcquireConfiguredUpdateReadLease()), "完整legacy JSON允许合法嵌套与转义");
-        for (const auto* phase : {"resolving", "queued", "preparing-material", "transferring"}) {
+        Text(root + "/sideload-update/transaction.json", "");
+        Require(!amcl::AcquireConfiguredUpdateReadLease(), "空事务拒绝");
+        Text(root + "/sideload-update/transaction.json", std::string(512 * 1024 + 1, ' '));
+        Require(!amcl::AcquireConfiguredUpdateReadLease(), "超出既有512KiB上界的事务拒绝");
+        for (const auto* phase : {"idle", "resolving", "queued", "preparing-material", "transferring",
+                "downloading", "verifying", "downloaded", "signing", "ready", "awaiting-restart",
+                "verified", "superseded", "failed", "cancelled"}) {
             Text(root + "/sideload-update/transaction.json", std::string("{\"phase\":\"") + phase + "\"}");
             Require(static_cast<bool>(amcl::AcquireConfiguredUpdateReadLease()), "legacy合法准备阶段准入: " + std::string(phase));
         }
-        Text(root + "/sideload-update/transaction.json", "{\"phase\":\"ready\"}");
+        Text(root + "/sideload-update/transaction.json", actualJournal);
+        RestartCheck(executable, root, true);
         lease = amcl::AcquireConfiguredUpdateReadLease();
         Require(static_cast<bool>(lease), "fork前取得生产SH租约");
         int pipeFd[2]{-1, -1};

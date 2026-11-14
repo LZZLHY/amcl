@@ -49,6 +49,8 @@ typedef enum {
 // lock automatically on focus loss, so callers must re-apply after regaining
 // focus. `amcl_cursor_lock_note_focus_lost` records that system-side release so
 // the next lock request is not skipped as redundant.
+// 解锁失败立即撤应用侧active，但保留原窗口清理目标；下次显式请求/生命周期重试，
+// 在旧目标闭合前不允许新窗口覆盖它。普通组件失焦不等同系统窗口已确认自动解锁。
 AmclCursorLockResult amcl_cursor_lock_set(int32_t windowId, bool locked);
 
 // Marks the cached lock state as released because the platform auto-unlocked on

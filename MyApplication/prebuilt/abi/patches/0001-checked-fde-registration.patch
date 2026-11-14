@@ -1,0 +1,161 @@
+diff --git a/libunwind/src/AddressSpace.hpp b/libunwind/src/AddressSpace.hpp
+index 5cf7e4466..fc449971a 100644
+--- a/libunwind/src/AddressSpace.hpp
++++ b/libunwind/src/AddressSpace.hpp
+@@ -22,6 +22,7 @@
+ #include "dwarf2.h"
+ #include "EHHeaderParser.hpp"
+ #include "Registers.hpp"
++#include "amcl_unwind_image.h"
+ 
+ #ifndef _LIBUNWIND_USE_DLADDR
+   #if !(defined(_LIBUNWIND_IS_BAREMETAL) || defined(_WIN32) || defined(_AIX))
+@@ -47,6 +48,7 @@ struct EHABIIndexEntry {
+ 
+ #if defined(_AIX)
+ namespace libunwind {
++
+ char *getFuncNameFromTBTable(uintptr_t pc, uint16_t &NameLen,
+                              unw_word_t *offset);
+ }
+@@ -119,6 +121,9 @@ extern char __exidx_end;
+ 
+ namespace libunwind {
+ 
++// 只读、无分配查询；映像描述符由登记方校验并保证其内存活过合法展开调用。
++_LIBUNWIND_HIDDEN bool findRegisteredImage(uintptr_t pc, amcl_unwind_image_v1 &image);
++
+ /// Used by findUnwindSections() to return info about needed sections.
+ struct UnwindInfoSections {
+ #if defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND) ||                                \
+@@ -513,6 +518,18 @@ static int findUnwindSectionsByPhdr(struct dl_phdr_info *pinfo,
+ 
+ inline bool LocalAddressSpace::findUnwindSections(pint_t targetAddr,
+                                                   UnwindInfoSections &info) {
++#if defined(_LIBUNWIND_USE_DL_ITERATE_PHDR) && defined(_LIBUNWIND_SUPPORT_DWARF_INDEX)
++  amcl_unwind_image_v1 image;
++  if (findRegisteredImage(targetAddr, image)) {
++    info.dso_base = image.image_base;
++    info.text_segment_length = image.image_size;
++    info.dwarf_section = image.eh_frame;
++    info.dwarf_section_length = image.eh_frame_size;
++    info.dwarf_index_section = image.eh_frame_hdr;
++    info.dwarf_index_section_length = image.eh_frame_hdr_size;
++    return true;
++  }
++#endif
+ #ifdef __APPLE__
+   dyld_unwind_sections dyldInfo;
+   if (_dyld_find_unwind_sections((void *)targetAddr, &dyldInfo)) {
+diff --git a/libunwind/src/UnwindCursor.hpp b/libunwind/src/UnwindCursor.hpp
+index ee535fffb..3bb0cbbaa 100644
+--- a/libunwind/src/UnwindCursor.hpp
++++ b/libunwind/src/UnwindCursor.hpp
+@@ -97,8 +97,9 @@ class _LIBUNWIND_HIDDEN DwarfFDECache {
+ public:
+   static constexpr pint_t kSearchAll = static_cast<pint_t>(-1);
+   static pint_t findFDE(pint_t mh, pint_t pc);
+-  static void add(pint_t mh, pint_t ip_start, pint_t ip_end, pint_t fde);
+-  static void removeAllIn(pint_t mh);
++  // 返回本次是否完成登记；普通可重建 cache 的调用方可以忽略，动态加载事务必须检查。
++  static int add(pint_t mh, pint_t ip_start, pint_t ip_end, pint_t fde);
++  static int removeAllIn(pint_t mh);
+   static void iterateCacheEntries(void (*func)(unw_word_t ip_start,
+                                                unw_word_t ip_end,
+                                                unw_word_t fde, unw_word_t mh));
+@@ -165,15 +166,25 @@ typename A::pint_t DwarfFDECache<A>::findFDE(pint_t mh, pint_t pc) {
+ }
+ 
+ template <typename A>
+-void DwarfFDECache<A>::add(pint_t mh, pint_t ip_start, pint_t ip_end,
++int DwarfFDECache<A>::add(pint_t mh, pint_t ip_start, pint_t ip_end,
+                            pint_t fde) {
+ #if !defined(_LIBUNWIND_NO_HEAP)
+-  _LIBUNWIND_LOG_IF_FALSE(_lock.lock());
++  // 锁失败时不读写共享表；此层位于 C++ ABI 之下，不能依赖异常或 operator new。
++  if (!_lock.lock()) return UNW_EUNSPEC;
+   if (_bufferUsed >= _bufferEnd) {
+     size_t oldSize = (size_t)(_bufferEnd - _buffer);
++    if (oldSize > SIZE_MAX / (4 * sizeof(entry))) {
++      _LIBUNWIND_LOG_IF_FALSE(_lock.unlock());
++      return UNW_ENOMEM;
++    }
+     size_t newSize = oldSize * 4;
+     // Can't use operator new (we are below it).
+     entry *newBuffer = (entry *)malloc(newSize * sizeof(entry));
++    // 必须在复制之前检查失败，原 buffer/used/end 保持不变，允许调用者撤销本批。
++    if (!newBuffer) {
++      _LIBUNWIND_LOG_IF_FALSE(_lock.unlock());
++      return UNW_ENOMEM;
++    }
+     memcpy(newBuffer, _buffer, oldSize * sizeof(entry));
+     if (_buffer != _initialBuffer)
+       free(_buffer);
+@@ -193,12 +204,16 @@ void DwarfFDECache<A>::add(pint_t mh, pint_t ip_start, pint_t ip_end,
+   }
+ #endif
+   _LIBUNWIND_LOG_IF_FALSE(_lock.unlock());
++  return UNW_ESUCCESS;
++#else
++  return UNW_ENOMEM;
+ #endif
+ }
+ 
+ template <typename A>
+-void DwarfFDECache<A>::removeAllIn(pint_t mh) {
+-  _LIBUNWIND_LOG_IF_FALSE(_lock.lock());
++int DwarfFDECache<A>::removeAllIn(pint_t mh) {
++  // 注销也必须在取得写锁后修改；失败交回 loader，不能先 unmap 后让陈旧 FDE 留存。
++  if (!_lock.lock()) return UNW_EUNSPEC;
+   entry *d = _buffer;
+   for (const entry *s = _buffer; s < _bufferUsed; ++s) {
+     if (s->mh != mh) {
+@@ -209,6 +224,7 @@ void DwarfFDECache<A>::removeAllIn(pint_t mh) {
+   }
+   _bufferUsed = d;
+   _LIBUNWIND_LOG_IF_FALSE(_lock.unlock());
++  return UNW_ESUCCESS;
+ }
+ 
+ #ifdef __APPLE__
+diff --git a/libunwind/src/libunwind.cpp b/libunwind/src/libunwind.cpp
+index e0e98c04a..0f5166196 100644
+--- a/libunwind/src/libunwind.cpp
++++ b/libunwind/src/libunwind.cpp
+@@ -287,7 +287,11 @@ _LIBUNWIND_WEAK_ALIAS(__unw_iterate_dwarf_unwind_cache,
+                       unw_iterate_dwarf_unwind_cache)
+ 
+ /// IPI: for __register_frame()
+-void __unw_add_dynamic_fde(unw_word_t fde) {
++// AMCL 映像桥与本文件使用同一个真实 unwinder，不为每条 FDE 新建运行时。
++#include "amcl_unwind_images.hpp"
++
++// 这四个 SPI 在所选 SDK provider 已公开；重建时显式保持其导出，避免默认可见性变化。
++_LIBUNWIND_EXPORT void __unw_add_dynamic_fde(unw_word_t fde) {
+   CFI_Parser<LocalAddressSpace>::FDE_Info fdeInfo;
+   CFI_Parser<LocalAddressSpace>::CIE_Info cieInfo;
+   const char *message = CFI_Parser<LocalAddressSpace>::decodeFDE(
+@@ -306,12 +310,12 @@ void __unw_add_dynamic_fde(unw_word_t fde) {
+ }
+ 
+ /// IPI: for __deregister_frame()
+-void __unw_remove_dynamic_fde(unw_word_t fde) {
++_LIBUNWIND_EXPORT void __unw_remove_dynamic_fde(unw_word_t fde) {
+   // fde is own mh_group
+   DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
+ }
+ 
+-void __unw_add_dynamic_eh_frame_section(unw_word_t eh_frame_start) {
++_LIBUNWIND_EXPORT void __unw_add_dynamic_eh_frame_section(unw_word_t eh_frame_start) {
+   // The eh_frame section start serves as the mh_group
+   unw_word_t mh_group = eh_frame_start;
+   CFI_Parser<LocalAddressSpace>::CIE_Info cieInfo;
+@@ -333,7 +337,7 @@ void __unw_add_dynamic_eh_frame_section(unw_word_t eh_frame_start) {
+   }
+ }
+ 
+-void __unw_remove_dynamic_eh_frame_section(unw_word_t eh_frame_start) {
++_LIBUNWIND_EXPORT void __unw_remove_dynamic_eh_frame_section(unw_word_t eh_frame_start) {
+   // The eh_frame section start serves as the mh_group
+   DwarfFDECache<LocalAddressSpace>::removeAllIn(
+       (LocalAddressSpace::pint_t)eh_frame_start);

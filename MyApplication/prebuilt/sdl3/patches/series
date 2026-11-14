@@ -253,3 +253,9 @@
 
 # 桌面桥仅2in1使用；非桌面不逐帧加载GLFW，保留桌面晚发布与原输入泵。
 0028-openharmony-desktop-device-gate.patch
+
+# 主呈现owner安全点消费分辨率请求，真实EGL图像确认与输入几何分别发布。
+0029-openharmony-render-resolution-checkpoint.patch
+
+# 显式辅助SDL角色：合法呈现线程/实际实例准入，视频副作用拒绝，主SDL ABI1保持。
+0030-openharmony-auxiliary-sdl-role.patch

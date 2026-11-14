@@ -55,8 +55,9 @@ function trackGameWindowRestore(pending: Promise<void>): void {
 /**
  * phone/tablet 产品窗口前端。
  *
- * 行为保持原 McGamePage：横屏、内容全屏、隐藏系统栏。区别仅在于三条 Promise
- * 现在严格串行 await，并保存进入前状态供启动失败/页面离开时幂等恢复。
+ * 游戏只允许横屏/反向横屏，两个方向之间的自动切换遵守控制中心的旋转锁定开关；
+ * 内容全屏并隐藏系统栏。窗口写操作严格串行 await，保存进入前状态供启动失败/
+ * 页面离开时幂等恢复；方向采样仍由当前 Window 所属 Display 提供给输入上下文。
  */
 export class MobileGameWindowCoordinator {
   private activeWindow: window.Window | undefined = undefined
@@ -130,7 +131,11 @@ export class MobileGameWindowCoordinator {
       this.initialLayoutFullScreen = baseline.layoutFullScreen
       // 从第一条平台写操作开始，本 coordinator 就拥有恢复责任。任何后续 reject 都会由
       // McGamePage 的失败边界调用 restore，不把半应用状态留给启动器。
-      await win.setPreferredOrientation(window.Orientation.LANDSCAPE)
+      // 限定可用方向为横屏和反向横屏，由系统按握持姿态及旋转锁定开关选择朝向。
+      // 不能固定 LANDSCAPE，否则翻转手机时仍锁在单侧；也不能用四向自动旋转，
+      // 否则用户关闭系统旋转锁定后会进入不支持的竖屏游戏。180° 翻转虽不改变宽高，
+      // McGamePage 的 Display change 通知仍会重新采样 transform，推进输入/触控身份。
+      await win.setPreferredOrientation(window.Orientation.AUTO_ROTATION_LANDSCAPE_RESTRICTED)
       if (!this.ownsGameWindow()) throw new Error('Game window ownership replaced')
       await win.setWindowLayoutFullScreen(true)
       if (!this.ownsGameWindow()) throw new Error('Game window ownership replaced')

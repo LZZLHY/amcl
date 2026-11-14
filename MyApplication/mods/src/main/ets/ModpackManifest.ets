@@ -73,6 +73,13 @@ export interface ModpackProblem {
   required?: boolean;
 }
 
+/** 来源明确声明的必需本地内容；root 相对已选归档候选根，缺省为 '.'，摘要须精确核验。 */
+export interface ModpackLocalFile {
+  path: string;
+  sha1: string;
+  root?: string;
+}
+
 /** 用户选择与缺失条目使用来源精确身份，CF 解析前后文件名变化不改变其 key。 */
 export function modpackFileKey(file: ModpackFile): string {
   return file.cfProjectId !== undefined && file.cfFileId !== undefined
@@ -93,6 +100,12 @@ export interface ModpackPlan {
   overrideDirs: string[];
   /** 无法构造下载文件的清单条目也必须进入最终缺失统计，不能只藏在 warnings。 */
   problems: ModpackProblem[];
+  /** PC 实例导入只发布用户内容，不允许源实例 JSON/JAR/控制元数据覆盖新构建。 */
+  contentOnly?: boolean;
+  /** 源实例目录 ID；目标名称可由用户修改，过滤源 JSON/JAR 仍使用此身份。 */
+  instanceVersionId?: string;
+  /** 仅校验来源确实声明为必需的本地文件，不把全部未声明内容自动提升为必需项。 */
+  requiredLocalFiles?: ModpackLocalFile[];
 }
 
 /** 解析结果：计划 + 解析阶段已知的告警（缺字段 / 跳过的文件等）。 */
@@ -175,7 +188,7 @@ interface CfManifestRaw {
 export function parseModrinthIndex(jsonText: string): ParsedModpack {
   let raw: MrIndexRaw;
   try {
-    raw = JSON.parse(jsonText) as MrIndexRaw;
+    raw = JSON.parse(stripModpackTextBom(jsonText)) as MrIndexRaw;
   } catch (e) {
     throw new Error('modrinth.index.json 解析失败：非法 JSON');
   }
@@ -306,7 +319,7 @@ function mrEnvOf(env?: MrIndexFileEnv): ModpackEnv {
 export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
   let raw: CfManifestRaw;
   try {
-    raw = JSON.parse(jsonText) as CfManifestRaw;
+    raw = JSON.parse(stripModpackTextBom(jsonText)) as CfManifestRaw;
   } catch (e) {
     throw new Error('manifest.json 解析失败：非法 JSON');
   }
@@ -350,6 +363,7 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
 
   let files: ModpackFile[] = [];
   let rawFiles: CfManifestFile[] = raw.files ?? [];
+  let byIdentity: Map<string, ModpackFile> = new Map<string, ModpackFile>();
   for (let f of rawFiles) {
     let pid: number = f.projectID ?? 0;
     let fid: number = f.fileID ?? 0;
@@ -358,6 +372,14 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
       continue;
     }
     let env: ModpackEnv = (f.required === false) ? ModpackEnv.OPTIONAL : ModpackEnv.REQUIRED;
+    // 有些导出器重复写同一精确文件。只合并 project/file 双身份完全相同的项，
+    // 顺序保留首次出现位置；任何 required 声明都优先，不能被后来的 optional 降级。
+    let identity = pid + ':' + fid;
+    let previous = byIdentity.get(identity);
+    if (previous !== undefined) {
+      if (env === ModpackEnv.REQUIRED) previous.env = ModpackEnv.REQUIRED;
+      continue;
+    }
     let file: ModpackFile = {
       path: '',            // CF 文件名/路径在解析下载 URL 时确定（落到 mods/）
       urls: [],            // 待 ModpackInstaller 解析
@@ -368,10 +390,12 @@ export function parseCurseForgeManifest(jsonText: string): ParsedModpack {
       fileNameHint: 'CF 文件 ' + pid + '/' + fid,
     };
     files.push(file);
+    byIdentity.set(identity, file);
   }
 
+  if (raw.overrides !== undefined && typeof raw.overrides !== 'string') throw new Error('CurseForge overrides 必须为目录字符串');
   let overridesRaw: string = (raw.overrides !== undefined && raw.overrides.length > 0) ? raw.overrides : 'overrides';
-  let overrides: string = safeRelPath(overridesRaw);
+  let overrides: string = normalizeModpackOverrideDirectory(overridesRaw);
   let overrideDirs: string[] = [];
   if (overrides.length === 0) {
     problems.push({ name: overridesRaw, reason: 'overrides 路径不安全，未应用覆盖文件', required: true });
@@ -434,6 +458,25 @@ export function safeRelPath(path: string): string {
 
 export function safeBaseName(name: string): string {
   return canonicalSafeBaseName(name);
+}
+
+/** 仅移除文本开头的 UTF-8 BOM；不改 JSON 正文、路径或字符串内部的同码位字符。 */
+export function stripModpackTextBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.substring(1) : text;
+}
+
+/**
+ * 只在 CF 的“目录”字段兼容无歧义别名，不放宽通用文件路径策略。点根返回显式 '.'
+ * 标记，由安装器限定在已验证归档根内应用且排除控制清单；不自动探测其他目录。
+ * 允许前导 './'、尾分隔符与 Windows 反斜杠，仍拒绝绝对路径、盘符和任意 '..'。
+ */
+export function normalizeModpackOverrideDirectory(value: string): string {
+  if (value.length === 0 || value.startsWith('/') || value.startsWith('\\') || /^[a-zA-Z]:/.test(value)) return '';
+  let normalized = value.replace(/\\/g, '/');
+  while (normalized.startsWith('./')) normalized = normalized.substring(2);
+  while (normalized.endsWith('/')) normalized = normalized.substring(0, normalized.length - 1);
+  if (normalized === '.' || normalized.length === 0) return '.';
+  return canonicalSafeRelPath(normalized);
 }
 
 /** 从 Record<string,string> 安全取值（key 可含横线，走索引签名访问），缺省空串。 */

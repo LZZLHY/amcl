@@ -5,15 +5,18 @@
  * 所有设置项集中管理，避免 get/put key 字符串分散在各处。
  */
 
-import { ProcessPreferences, LaunchPreferenceStore, LaunchPreferenceValue } from 'commons';
+import { ProcessPreferences, LaunchPreferenceStore, LaunchPreferenceValue, LaunchPreferenceSnapshot } from 'commons';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ThemeMode } from 'commons';
+import { ThemeMode, ThemeAccent, ThemeSelection, THEME_SELECTION_KEY,
+  decodeThemeSelection, encodeThemeSelection, normalizeThemeMode, normalizeThemeAccent } from 'commons';
 import { DockLightMode, normalizeDockLightMode } from 'commons';
 import { ImmersiveLightPreferences, migrateImmersiveLightPreferences,
   decodeImmersiveLightPreferences, encodeImmersiveLightPreferences } from 'commons';
 import { SUPPORTED_JDK_VERSION, isJdkSlotVersion, JDK_AUTO } from 'commons';
 import { DEFAULT_GAME_LANGUAGE, normalizeGlobalGameLanguage } from 'commons';
 import { formatError } from 'commons';
+import { normalizeResolutionPreference } from 'commons';
+import { DEFAULT_PHONE_SHEET_HEIGHT_PERCENT, PHONE_SHEET_HEIGHT_STORAGE_KEY, normalizePhoneSheetHeightPercent } from 'commons';
 
 const TAG = 'PreferenceManager'
 const PREF_NAME = 'amcl_settings'
@@ -21,6 +24,8 @@ const OHOS_FRAME_RATE_CAP_MIN: number = 30
 const OHOS_FRAME_RATE_CAP_MAX: number = 240
 const IMMERSIVE_LIGHT_KEY: string = 'immersiveLightPreferences';
 const IMMERSIVE_LIGHT_ABSENT: string = '__amcl_immersive_light_absent__';
+/** 用非数字哨兵区分“从未设置”与默认 80；失败时能恢复原来的键缺失状态。 */
+const PHONE_SHEET_HEIGHT_ABSENT: string = '__amcl_phone_sheet_height_absent__';
 
 /** 同一偏好目录的写入队列与确认值屏障；独立页面的读取也不能看到在途缓存。 */
 class ImmersiveLightWriteState {
@@ -45,13 +50,74 @@ class StoreDebugWriteState {
   original: boolean | undefined = undefined;
 }
 
+/**
+ * 分辨率与单版本JVM参数共用的记录写入所有者。两者可能写同一个verLaunch键，必须
+ * 使用同目录队列及确认屏障，不能各建队列互相覆盖。jvmKeys仅标记在途或回滚未知的
+ * JVM字段；普通JDK/语言void写入口据此保留该字段，不扩大冻结输入设置的允许键集合。
+ */
+class ResolutionWriteState {
+  tail: Promise<void> = Promise.resolve();
+  originals: Map<string, LaunchPreferenceValue> = new Map<string, LaunchPreferenceValue>();
+  jvmKeys: Set<string> = new Set<string>();
+}
+
+/**
+ * 全局 JVM 参数的专用单键写入所有者。
+ *
+ * 同一真实 preferencesDir 下的 manager 共用队列与确认值屏障；页面重新挂载不能
+ * 把 put 已修改、但 flush 尚未确认的缓存当成保存结果。原值只在提交或回滚未确认
+ * 期间保留，持久权威仍是 amcl_settings，不创建第二份参数记录或扩大冻结输入键集合。
+ */
+class CustomJvmArgsWriteState {
+  tail: Promise<void> = Promise.resolve();
+  original: LaunchPreferenceValue | undefined = undefined;
+}
+
+/** 同一真实目录的主题事务；单键JSON把显示模式与强调色一起确认，失败屏障不跨owner迁移。 */
+class ThemeSelectionWriteState {
+  tail: Promise<void> = Promise.resolve();
+  original: LaunchPreferenceValue | undefined = undefined;
+}
+
+/** 手机 Sheet 高度的同目录单键事务；只在保存/回滚未确认期间保留旧确认值。 */
+class PhoneSheetHeightWriteState {
+  tail: Promise<void> = Promise.resolve();
+  original: LaunchPreferenceValue | undefined = undefined;
+}
+
+/** 麦克风意图的单键提交队列；同目录实例共用已确认基线，不发布在途 Preferences 缓存。 */
+class ModMicrophoneWriteState {
+  tail: Promise<void> = Promise.resolve();
+  original: boolean | undefined = undefined;
+}
+/** App订阅值和用户选择代次共用同一owner队列；完成回放不能覆盖后来明确的用户选择。 */
+class AppUpdateChannelWriteState {
+  tail: Promise<void> = Promise.resolve();
+  requestedRevision: number = 0;
+  selectionPending: number = 0;
+  originalChannel: string | undefined = undefined;
+  originalRevision: number | undefined = undefined;
+}
+
 export class PreferenceManager {
+  private static appUpdateChannelOwners: Map<string,AppUpdateChannelWriteState> = new Map<string,AppUpdateChannelWriteState>();
+  private appUpdateChannelWrites: AppUpdateChannelWriteState | undefined = undefined;
+  private static microphoneOwners: Map<string, ModMicrophoneWriteState> = new Map<string, ModMicrophoneWriteState>();
+  private microphoneWrites: ModMicrophoneWriteState | undefined = undefined;
+  private static resolutionOwners: Map<string, ResolutionWriteState> = new Map<string, ResolutionWriteState>();
+  private resolutionWrites: ResolutionWriteState | undefined = undefined;
   /** 模块随真实进程重建；目录+固定PREF_NAME识别同一owner，不用UIContext对象猜一轮保存。 */
   private static frozenSettingOwners: Map<string, FrozenSettingsWriteState> = new Map<string, FrozenSettingsWriteState>();
   private static storeDebugOwners: Map<string, StoreDebugWriteState> = new Map<string, StoreDebugWriteState>();
   private storeDebugState: StoreDebugWriteState | undefined = undefined;
   private static immersiveLightOwners: Map<string, ImmersiveLightWriteState> = new Map<string, ImmersiveLightWriteState>();
   private immersiveLightWrites: ImmersiveLightWriteState | undefined = undefined;
+  private static customJvmArgsOwners: Map<string, CustomJvmArgsWriteState> = new Map<string, CustomJvmArgsWriteState>();
+  private customJvmArgsWrites: CustomJvmArgsWriteState | undefined = undefined;
+  private static themeSelectionOwners: Map<string, ThemeSelectionWriteState> = new Map<string, ThemeSelectionWriteState>();
+  private themeSelectionWrites: ThemeSelectionWriteState | undefined = undefined;
+  private static phoneSheetHeightOwners: Map<string, PhoneSheetHeightWriteState> = new Map<string, PhoneSheetHeightWriteState>();
+  private phoneSheetHeightWrites: PhoneSheetHeightWriteState | undefined = undefined;
 
   /** 只读已确认值；保存期间不把Preferences的临时缓存当下局可采用的选择。 */
   get desktopNativeGamepad(): boolean { return this.readFrozenSetting_('desktopNativeGamepad', false) as boolean; }
@@ -67,6 +133,21 @@ export class PreferenceManager {
     // 但两项新保存入口明确拒绝，不能把undefined或组件实例名拼成虚假的Preferences owner。
     const directory: string = context.preferencesDir;
     if (!ProcessPreferences.isGameProcess() && typeof directory === 'string' && directory.length > 0) {
+      let channelState=PreferenceManager.appUpdateChannelOwners.get(directory);
+      if(channelState===undefined){channelState=new AppUpdateChannelWriteState();PreferenceManager.appUpdateChannelOwners.set(directory,channelState);}
+      this.appUpdateChannelWrites=channelState;
+      let microphoneState: ModMicrophoneWriteState | undefined = PreferenceManager.microphoneOwners.get(directory);
+      if (microphoneState === undefined) {
+        microphoneState = new ModMicrophoneWriteState();
+        PreferenceManager.microphoneOwners.set(directory, microphoneState);
+      }
+      this.microphoneWrites = microphoneState;
+      let resolution: ResolutionWriteState | undefined = PreferenceManager.resolutionOwners.get(directory);
+      if (resolution === undefined) {
+        resolution = new ResolutionWriteState();
+        PreferenceManager.resolutionOwners.set(directory, resolution);
+      }
+      this.resolutionWrites = resolution;
       let state: FrozenSettingsWriteState | undefined = PreferenceManager.frozenSettingOwners.get(directory);
       if (state === undefined) {
         state = new FrozenSettingsWriteState();
@@ -85,6 +166,24 @@ export class PreferenceManager {
         PreferenceManager.immersiveLightOwners.set(directory, lightState);
       }
       this.immersiveLightWrites = lightState;
+      let jvmState: CustomJvmArgsWriteState | undefined = PreferenceManager.customJvmArgsOwners.get(directory);
+      if (jvmState === undefined) {
+        jvmState = new CustomJvmArgsWriteState();
+        PreferenceManager.customJvmArgsOwners.set(directory, jvmState);
+      }
+      this.customJvmArgsWrites = jvmState;
+      let themeState: ThemeSelectionWriteState | undefined = PreferenceManager.themeSelectionOwners.get(directory);
+      if (themeState === undefined) {
+        themeState = new ThemeSelectionWriteState();
+        PreferenceManager.themeSelectionOwners.set(directory, themeState);
+      }
+      this.themeSelectionWrites = themeState;
+      let sheetState: PhoneSheetHeightWriteState | undefined = PreferenceManager.phoneSheetHeightOwners.get(directory);
+      if (sheetState === undefined) {
+        sheetState = new PhoneSheetHeightWriteState();
+        PreferenceManager.phoneSheetHeightOwners.set(directory, sheetState);
+      }
+      this.phoneSheetHeightWrites = sheetState;
     }
   }
 
@@ -229,6 +328,58 @@ export class PreferenceManager {
 
   get desktopInteraction(): string { return this.readFrozenSetting_('desktopInteraction', 'auto') as string; }
 
+  /** 用户明确选择是否允许模组录音；损坏值、读取错误和首次安装均关闭，不等同系统已授权。 */
+  get modMicrophoneEnabled(): boolean {
+    if (this.microphoneWrites?.original !== undefined) return this.microphoneWrites.original;
+    try { return this.pref.getSync('modMicrophoneEnabled', false) === true; }
+    catch (_) { return false; }
+  }
+
+  /**
+   * 原启动器是偏好唯一写者。完整 put/flush 后才确认；失败只恢复此键，回滚未确认保留基线。
+   * 游戏进程消费启动快照，只读本项；设备授权与真实采集状态不存入 Preferences。
+   */
+  setModMicrophoneEnabled(enabled: boolean): Promise<void> {
+    const state: ModMicrophoneWriteState | undefined = this.microphoneWrites;
+    if (ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('请在启动器设置中修改模组麦克风权限'));
+    }
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      const previous: boolean = this.modMicrophoneEnabled;
+      state.original = previous;
+      try {
+        await this.pref.put('modMicrophoneEnabled', enabled);
+        await this.pref.flush();
+        state.original = undefined;
+      } catch (error) {
+        try {
+          this.pref.putSync('modMicrophoneEnabled', previous);
+          await this.pref.flush();
+          state.original = undefined;
+        } catch (_) { throw new Error('麦克风选择保存失败，回滚尚未确认，请重试'); }
+        throw error as Error;
+      }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  /**
+   * 隔离启动快照与麦克风提交共用同一队列：不能让captureOwner.flush/getAllSync绕过确认屏障。
+   * 在途提交完成或回滚后才捕获；回滚尚未确认则拒绝新局，避免把短暂true缓存当授权意图。
+   */
+  static captureConfirmedSettings(context: Context): Promise<LaunchPreferenceSnapshot> {
+    const owner: PreferenceManager = new PreferenceManager(context);
+    const state: ModMicrophoneWriteState | undefined = owner.microphoneWrites;
+    if (state === undefined || ProcessPreferences.isGameProcess()) return Promise.reject(new Error('无法捕获启动器确认设置'));
+    const task: Promise<LaunchPreferenceSnapshot> = state.tail.then(async (): Promise<LaunchPreferenceSnapshot> => {
+      if (state.original !== undefined) throw new Error('麦克风设置回滚尚未确认，请重试');
+      return await ProcessPreferences.captureOwner(context, PREF_NAME);
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
   /**
    * 平板独立游戏进程的持久选择；不复用历史 useNewWindow（窗口样式并不等于进程边界）。
    * 缺省开启，只有真实布尔值参与决策；损坏或不可读取的值安全关闭，不以字符串真值猜测。
@@ -266,8 +417,118 @@ export class PreferenceManager {
     }
   }
 
-  get themeMode(): ThemeMode { return this.getNumber('themeMode', ThemeMode.SYSTEM) as ThemeMode; }
-  set themeMode(v: ThemeMode) { this.put('themeMode', v); }
+  /** 单键新配置优先；缺失或损坏才回退旧明暗。保存及回滚未知期间只读原确认值。 */
+  get themeSelection(): ThemeSelection {
+    const legacy: ThemeMode = normalizeThemeMode(this.getNumber('themeMode', ThemeMode.SYSTEM));
+    try {
+      const state: ThemeSelectionWriteState | undefined = this.themeSelectionWrites;
+      const raw: LaunchPreferenceValue = state !== undefined && state.original !== undefined
+        ? state.original : this.pref.getSync(THEME_SELECTION_KEY, '');
+      return decodeThemeSelection(typeof raw === 'string' ? raw : '', legacy);
+    } catch (_) { return decodeThemeSelection('', legacy); }
+  }
+
+  get themeMode(): ThemeMode { return this.themeSelection.mode; }
+  get themeAccent(): ThemeAccent { return this.themeSelection.accent; }
+
+  /** 旧赋值入口仍走同一owner队列；需要显示保存结果的新UI必须await专用方法。 */
+  set themeMode(v: ThemeMode) {
+    this.saveThemeSelection(new ThemeSelection(v, this.themeAccent)).catch((error: Error): void => {
+      hilog.warn(0x0000, TAG, '主题保存失败：%{public}s', formatError(error));
+    });
+  }
+
+  /**
+   * 明确“应用主题”的唯一持久入口。单键put/flush成功以后才解除读取屏障；同目录请求
+   * 串行执行，多页面不能看到Preferences已put但未flush的在途值。失败只回滚本键，
+   * 回滚也失败则保留旧确认值并报告未知磁盘态，下一次同值重试不能幂等虚报成功。
+   * 游戏快照只读，本方法不会变更运行中游戏的显示、输入或布局身份。
+   */
+  saveThemeSelection(value: ThemeSelection): Promise<void> {
+    const state: ThemeSelectionWriteState | undefined = this.themeSelectionWrites;
+    if (value === undefined || value === null || normalizeThemeMode(value.mode) !== value.mode ||
+      normalizeThemeAccent(value.accent) !== value.accent || ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('主题只能在已初始化的启动器中保存有效预设'));
+    }
+    const encoded: string = encodeThemeSelection(value);
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器中更改主题');
+      const previous: LaunchPreferenceValue = state.original !== undefined
+        ? state.original : await this.pref.get(THEME_SELECTION_KEY, '');
+      if (ProcessPreferences.isGameProcess()) throw new Error('主题存储身份已改变，请重新打开启动器');
+      if (state.original === undefined && previous === encoded) return;
+      state.original = previous;
+      try {
+        await this.pref.put(THEME_SELECTION_KEY, encoded);
+        await this.pref.flush();
+        state.original = undefined;
+      } catch (error) {
+        try {
+          this.pref.putSync(THEME_SELECTION_KEY, previous);
+          await this.pref.flush();
+          state.original = undefined;
+        } catch (rollbackError) {
+          hilog.warn(0x0000, TAG, '主题回滚尚未确认：%{public}s', formatError(rollbackError));
+          throw new Error('主题保存失败，磁盘回滚尚未确认，请重试：' + formatError(error));
+        }
+        throw error as Error;
+      }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  /**
+   * 手机 Sheet 的已确认展开比例。缺失、异常类型或损坏数字使用公共读取规则；同目录
+   * manager 在 put/flush 或失败回滚期间只读旧确认值，不把缓存改动当成已保存选择。
+   */
+  get phoneSheetHeightPercent(): number {
+    try {
+      const state: PhoneSheetHeightWriteState | undefined = this.phoneSheetHeightWrites;
+      const raw: LaunchPreferenceValue = state !== undefined && state.original !== undefined
+        ? state.original : this.pref.getSync(PHONE_SHEET_HEIGHT_STORAGE_KEY, DEFAULT_PHONE_SHEET_HEIGHT_PERCENT);
+      return normalizePhoneSheetHeightPercent(typeof raw === 'number' ? raw : DEFAULT_PHONE_SHEET_HEIGHT_PERCENT);
+    } catch (_) { return DEFAULT_PHONE_SHEET_HEIGHT_PERCENT; }
+  }
+
+  /**
+   * 只保存手机面板比例，沿真实 preferencesDir 串行执行单键 put/flush。
+   * 合法输入必须已经满足范围和步进；失败恢复原键（含首次未设置），回滚未确认时继续
+   * 保留读取屏障并报错。游戏快照和缺少存储 owner 的页面不允许写入，不修改冻结设置。
+   */
+  savePhoneSheetHeightPercent(value: number): Promise<void> {
+    const state: PhoneSheetHeightWriteState | undefined = this.phoneSheetHeightWrites;
+    if (typeof value !== 'number' || !Number.isFinite(value) || normalizePhoneSheetHeightPercent(value) !== value ||
+      ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('请在启动器中保存有效的手机面板高度'));
+    }
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器中修改手机面板高度');
+      const previous: LaunchPreferenceValue = state.original !== undefined
+        ? state.original : await this.pref.get(PHONE_SHEET_HEIGHT_STORAGE_KEY, PHONE_SHEET_HEIGHT_ABSENT);
+      if (ProcessPreferences.isGameProcess()) throw new Error('面板高度存储身份已改变，请重新打开启动器');
+      if (state.original === undefined && previous === value) return;
+      state.original = previous;
+      try {
+        await this.pref.put(PHONE_SHEET_HEIGHT_STORAGE_KEY, value);
+        await this.pref.flush();
+        state.original = undefined;
+      } catch (error) {
+        try {
+          if (previous === PHONE_SHEET_HEIGHT_ABSENT) this.pref.deleteSync(PHONE_SHEET_HEIGHT_STORAGE_KEY);
+          else this.pref.putSync(PHONE_SHEET_HEIGHT_STORAGE_KEY, previous);
+          await this.pref.flush();
+          state.original = undefined;
+        } catch (rollbackError) {
+          hilog.warn(0x0000, TAG, '手机面板高度回滚尚未确认：%{public}s', formatError(rollbackError));
+          throw new Error('手机面板高度保存失败，磁盘回滚尚未确认，请重试：' + formatError(error));
+        }
+        throw error as Error;
+      }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
 
   /** 独立外观键不进入旧 saveAll 快照，避免其他设置的批量保存覆盖正在确认的档位。 */
   get dockLightMode(): DockLightMode {
@@ -483,8 +744,126 @@ export class PreferenceManager {
    * 与 mcStorageLocation 一样在专门的设置页编辑，不进 loadAll/saveAll 批量快照，
    * 避免被批量覆盖。
    */
-  get customJvmArgs(): string { return this.getString('customJvmArgs', ''); }
+  /** 保存期间及回滚未知时只读取原确认值；损坏的非字符串参数按默认空值处理。 */
+  get customJvmArgs(): string {
+    try {
+      const state: CustomJvmArgsWriteState | undefined = this.customJvmArgsWrites;
+      const value: LaunchPreferenceValue = state !== undefined && state.original !== undefined
+        ? state.original : this.pref.getSync('customJvmArgs', '');
+      return typeof value === 'string' ? value : '';
+    } catch (_) { return ''; }
+  }
   set customJvmArgs(v: string) { this.put('customJvmArgs', v); }
+
+  /** 仅给分辨率相关读者提供确认屏障；不改变其他设置既有读写语义。 */
+  private readResolutionSetting_(key: string, fallback: LaunchPreferenceValue): LaunchPreferenceValue {
+    if (this.resolutionWrites?.originals.has(key)) return this.resolutionWrites.originals.get(key) as LaunchPreferenceValue;
+    try { return this.pref.getSync(key, fallback); } catch (_) { return fallback; }
+  }
+
+  /** 0 为缺省兼容旧 marker，100 为玩家明确选择原生分辨率，两者不可合并存储。 */
+  get resolutionScalePercent(): number {
+    const value: LaunchPreferenceValue = this.readResolutionSetting_('resolutionScalePercent', 0);
+    return normalizeResolutionPreference(typeof value === 'number' ? value : 0);
+  }
+
+  /**
+   * 保存全局或一个实例的分辨率选择，0 表示缺省/继承。游戏进程使用只读偏好快照，
+   * 运行中调节属于会话政策，不能经本方法偷偷修改下一局设置。
+   * 失败仅在该键仍等于本次写入时回滚，避免覆盖期间其他设置对同一实例记录的修改。
+   */
+  saveResolutionScalePercent(percent: number, versionId: string = ''): Promise<void> {
+    const state: ResolutionWriteState | undefined = this.resolutionWrites;
+    if ((percent !== 0 && normalizeResolutionPreference(percent) === 0)
+      || ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('无法保存分辨率：比例无效或当前不是启动器设置进程'));
+    }
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('设置存储进程已改变，请重新打开设置');
+      const key: string = versionId.length > 0 ? 'verLaunch.' + versionId : 'resolutionScalePercent';
+      const fallback: LaunchPreferenceValue = versionId.length > 0 ? '' : 0;
+      let previous: LaunchPreferenceValue = this.readResolutionSetting_(key, fallback);
+      let value: LaunchPreferenceValue = percent;
+      if (versionId.length > 0) {
+        let override: VersionLaunchOverride = this.getVersionOverride(versionId);
+        if (state.jvmKeys.has(key)) {
+          // 前笔JVM回滚未知时仍使用旧JVM确认值，但保留随后void入口已修改的其他字段。
+          // 本次分辨率保存/回滚若flush成功，会一起确认这份完整记录并解除共享屏障。
+          const confirmedJvm: string = override.customJvmArgs;
+          override = this.versionOverrideForWrite_(this.pref.getSync(key, ''));
+          override.customJvmArgs = confirmedJvm;
+          previous = JSON.stringify(override);
+        }
+        override.renderScalePercent = percent;
+        value = JSON.stringify(override);
+      }
+      state.originals.set(key, previous);
+      try {
+        this.pref.putSync(key, value);
+        await this.pref.flush();
+        state.originals.delete(key);
+        state.jvmKeys.delete(key);
+      } catch (error) {
+        if (this.pref.getSync(key, fallback) !== value) {
+          state.originals.delete(key);
+          state.jvmKeys.delete(key);
+          throw new Error('保存失败且该实例设置已变化，请重新读取后重试');
+        }
+        try {
+          this.pref.putSync(key, previous);
+          await this.pref.flush();
+          state.originals.delete(key);
+          state.jvmKeys.delete(key);
+        } catch (_) { throw new Error('分辨率保存失败，磁盘恢复尚未确认，请重试'); }
+        throw error as Error;
+      }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  /**
+   * 为显式“保存 JVM 参数”提供可等待的持久提交结果，输入首尾空白沿用旧编辑器规则。
+   *
+   * 仅启动器在真实偏好目录中允许写入；同目录的多页面请求按原 owner 串行执行。
+   * put 与 flush 均成功后才清除读取屏障。失败时只回滚本键并等待回滚落盘；回滚也
+   * 失败则保留旧确认值并报告磁盘未知，后续同值重试仍须真正写入，不能幂等跳过。
+   * 返回的 Promise 只代表偏好保存，不修改已经运行的 JVM，也不替代单版本参数合并。
+   */
+  saveCustomJvmArgs(value: string): Promise<void> {
+    const state: CustomJvmArgsWriteState | undefined = this.customJvmArgsWrites;
+    if (typeof value !== 'string' || ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('JVM 参数只能在已初始化的启动器中保存'));
+    }
+    const normalized: string = value.trim();
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器中修改 JVM 参数');
+      const previous: LaunchPreferenceValue = state.original !== undefined
+        ? state.original : await this.pref.get('customJvmArgs', '');
+      if (ProcessPreferences.isGameProcess()) throw new Error('JVM 参数存储身份已改变，请重新打开启动器');
+      // 只有已经确认的相同值可以跳过；回滚未知时即使恢复旧值也要真正写盘。
+      if (state.original === undefined && previous === normalized) return;
+      state.original = previous;
+      try {
+        await this.pref.put('customJvmArgs', normalized);
+        await this.pref.flush();
+        state.original = undefined;
+      } catch (error) {
+        try {
+          this.pref.putSync('customJvmArgs', previous);
+          await this.pref.flush();
+          state.original = undefined;
+        } catch (rollbackError) {
+          hilog.warn(0x0000, TAG, 'JVM 参数回滚尚未确认：%{public}s', formatError(rollbackError));
+          throw new Error('JVM 参数保存失败，磁盘回滚尚未确认，请重试：' + formatError(error));
+        }
+        throw error as Error;
+      }
+    });
+    // 仅队列尾消化异常来保留显式重试机会；原任务仍把失败交给调用它的编辑器。
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
 
   /**
    * 全局游戏语言（Minecraft `options.txt` 的 `lang` 键）。默认简体中文 `zh_cn`。
@@ -516,12 +895,96 @@ export class PreferenceManager {
   }
 
   /**
+   * 写事务严格解析共享实例记录：空串代表尚无覆盖；损坏JSON或非对象必须报错，不能
+   * 像只读展示的兜底一样当作全默认并覆盖用户其他字段。字段默认与原getter保持一致。
+   */
+  private versionOverrideForWrite_(stored: LaunchPreferenceValue): VersionLaunchOverride {
+    if (typeof stored !== 'string') throw new Error('实例设置不可读取，请重新打开版本详情');
+    if (stored.length === 0) return this.defaultVersionOverride();
+    const fields = JSON.parse(stored) as Record<string, Object>;
+    if (fields === null || typeof fields !== 'object' || Array.isArray(fields)) {
+      throw new Error('实例设置记录已损坏，请先恢复后重试');
+    }
+    return {
+      xmx: typeof fields['xmx'] === 'number' ? fields['xmx'] as number : 0,
+      jdkVersion: typeof fields['jdkVersion'] === 'string' ? fields['jdkVersion'] as string : '',
+      customJvmArgs: typeof fields['customJvmArgs'] === 'string' ? fields['customJvmArgs'] as string : '',
+      gameLanguage: typeof fields['gameLanguage'] === 'string' ? fields['gameLanguage'] as string : '',
+      renderScalePercent: normalizeResolutionPreference(typeof fields['renderScalePercent'] === 'number'
+        ? fields['renderScalePercent'] as number : 0),
+    };
+  }
+
+  /** 同步更改一个实例记录的缓存；耐久确认由调用事务显式等待flush，失败必须向上传递。 */
+  private writeVersionOverrideSync_(key: string, value: VersionLaunchOverride): void {
+    if (value.xmx <= 0 && value.jdkVersion.length === 0 && value.customJvmArgs.length === 0
+      && value.gameLanguage.length === 0 && normalizeResolutionPreference(value.renderScalePercent) === 0) {
+      this.pref.deleteSync(key);
+    } else this.pref.putSync(key, JSON.stringify(value));
+  }
+
+  /**
+   * 显式保存一个固定实例的JVM参数。只改customJvmArgs，首尾空白沿用旧编辑器trim规则；
+   * 空串恢复“仅用全局参数”。同目录请求与分辨率共用队列，put/flush完成前getter仍给
+   * 旧确认值。失败重新读取最新记录并只回滚JVM字段，保留同期JDK/语言/内存等修改。
+   * 回滚也失败则保留屏障与保护标记，返回拒绝供原编辑器重试；同值也必须实际写盘。
+   */
+  saveVersionJvmArgs(versionId: string, value: string): Promise<void> {
+    const state: ResolutionWriteState | undefined = this.resolutionWrites;
+    if (typeof versionId !== 'string' || versionId.trim().length === 0 || typeof value !== 'string'
+      || ProcessPreferences.isGameProcess() || state === undefined) {
+      return Promise.reject(new Error('单版本JVM参数只能在已初始化的启动器中保存，且必须指定版本'));
+    }
+    const normalized: string = value.trim();
+    const task: Promise<void> = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('设置存储进程已改变，请重新打开版本详情');
+      const key: string = 'verLaunch.' + versionId;
+      // 不使用展示getter的读取失败兜底；读取异常必须发生在写入之前，不能猜空记录。
+      const original: LaunchPreferenceValue = state.originals.has(key)
+        ? state.originals.get(key) as LaunchPreferenceValue : this.pref.getSync(key, '');
+      const previous: VersionLaunchOverride = this.versionOverrideForWrite_(original);
+      const next: VersionLaunchOverride = this.versionOverrideForWrite_(this.pref.getSync(key, ''));
+      // 共用队列进入时仍存在屏障，代表前笔回滚未知。此次仅明确修改JVM，不能顺带
+      // 采用缓存中尚未确认的分辨率；其他void字段仍保留最新同步缓存语义。
+      if (state.originals.has(key)) next.renderScalePercent = previous.renderScalePercent;
+      next.customJvmArgs = normalized;
+      state.originals.set(key, original);
+      state.jvmKeys.add(key);
+      try {
+        this.writeVersionOverrideSync_(key, next);
+        await this.pref.flush();
+        state.originals.delete(key);
+        state.jvmKeys.delete(key);
+      } catch (error) {
+        try {
+          const restored: VersionLaunchOverride = this.versionOverrideForWrite_(this.pref.getSync(key, ''));
+          restored.customJvmArgs = previous.customJvmArgs;
+          // 只投影最新其他字段与原JVM确认值；这仍不证明磁盘已恢复，须等待回滚flush。
+          state.originals.set(key, JSON.stringify(restored));
+          this.writeVersionOverrideSync_(key, restored);
+          await this.pref.flush();
+          state.originals.delete(key);
+          state.jvmKeys.delete(key);
+        } catch (rollbackError) {
+          hilog.warn(0x0000, TAG, '单版本JVM参数回滚尚未确认：%{public}s', formatError(rollbackError));
+          throw new Error('单版本JVM参数保存失败，磁盘回滚尚未确认，请重试：' + formatError(error));
+        }
+        throw error as Error;
+      }
+    });
+    // 队列尾独立消化失败以允许重试；返回的原任务保留拒绝，编辑器不能提前发布保存成功。
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+  /**
    * 读取某版本的启动配置覆盖。无记录 / 解析失败 → 全字段默认（即全沿用全局）。
    * key = `verLaunch.<versionId>`，值为 JSON 编码的 VersionLaunchOverride。
    */
   getVersionOverride(versionId: string): VersionLaunchOverride {
     if (!versionId || versionId.length === 0) return this.defaultVersionOverride();
-    let raw = this.getString('verLaunch.' + versionId, '');
+    const stored: LaunchPreferenceValue = this.readResolutionSetting_('verLaunch.' + versionId, '');
+    let raw: string = typeof stored === 'string' ? stored : '';
     if (raw.length === 0) return this.defaultVersionOverride();
     try {
       let o = JSON.parse(raw) as Record<string, Object>;
@@ -530,6 +993,8 @@ export class PreferenceManager {
         jdkVersion: typeof o['jdkVersion'] === 'string' ? (o['jdkVersion'] as string) : '',
         customJvmArgs: typeof o['customJvmArgs'] === 'string' ? (o['customJvmArgs'] as string) : '',
         gameLanguage: typeof o['gameLanguage'] === 'string' ? (o['gameLanguage'] as string) : '',
+        renderScalePercent: normalizeResolutionPreference(typeof o['renderScalePercent'] === 'number'
+          ? o['renderScalePercent'] as number : 0),
       };
     } catch (e) {
       hilog.warn(0x0000, TAG, 'getVersionOverride parse failed: %{public}s', formatError(e));
@@ -544,12 +1009,52 @@ export class PreferenceManager {
   setVersionOverride(versionId: string, o: VersionLaunchOverride): void {
     if (!versionId || versionId.length === 0) return;
     let key = 'verLaunch.' + versionId;
-    if (o.xmx <= 0 && o.jdkVersion.length === 0 && o.customJvmArgs.length === 0
-        && o.gameLanguage.length === 0) {
-      try { this.pref.deleteSync(key); this.pref.flush(); } catch (e) { /* 不存在也无妨 */ }
+    // 共享记录保存期间，普通读者只看到确认基线；旧void入口仍可更改JDK/语言等字段，
+    // 但不能把确认快照里的旧分辨率或旧JVM文本覆盖到在途值。读取/解析异常交回调用者，
+    // 不猜空记录；合并仅发生在事务期间，普通同步调用的原有语义与签名保持不变。
+    const next: VersionLaunchOverride = {
+      xmx: o.xmx, jdkVersion: o.jdkVersion, customJvmArgs: o.customJvmArgs,
+      gameLanguage: o.gameLanguage, renderScalePercent: o.renderScalePercent,
+    };
+    let legacyConfirmed: VersionLaunchOverride | undefined = undefined;
+    if (this.resolutionWrites?.originals.has(key)) {
+      const current: VersionLaunchOverride = this.versionOverrideForWrite_(this.pref.getSync(key, ''));
+      next.renderScalePercent = normalizeResolutionPreference(current.renderScalePercent);
+      if (this.resolutionWrites.jvmKeys.has(key)) {
+        const baseline: VersionLaunchOverride = this.versionOverrideForWrite_(
+          this.resolutionWrites.originals.get(key) as LaunchPreferenceValue);
+        // 只应用调用者相对确认快照实际改动的其他字段，连续JDK/语言写入不会互带旧快照。
+        if (next.xmx === baseline.xmx) next.xmx = current.xmx;
+        if (next.jdkVersion === baseline.jdkVersion) next.jdkVersion = current.jdkVersion;
+        if (next.gameLanguage === baseline.gameLanguage) next.gameLanguage = current.gameLanguage;
+        next.customJvmArgs = current.customJvmArgs;
+        // 旧void字段维持原有“同步缓存可读”语义；只保留JVM/分辨率的确认屏障。
+        // 更新这些字段的读取基线后，下次明确选回旧JDK/语言也会被识别为真正改动。
+        baseline.xmx = next.xmx;
+        baseline.jdkVersion = next.jdkVersion;
+        baseline.gameLanguage = next.gameLanguage;
+        legacyConfirmed = baseline;
+      }
+    }
+    if (next.xmx <= 0 && next.jdkVersion.length === 0 && next.customJvmArgs.length === 0
+        && next.gameLanguage.length === 0 && normalizeResolutionPreference(next.renderScalePercent) === 0) {
+      try {
+        this.pref.deleteSync(key);
+        this.pref.flush();
+        if (legacyConfirmed !== undefined && this.resolutionWrites !== undefined
+          && this.pref.getSync(key, '') === '') {
+          this.resolutionWrites.originals.set(key, JSON.stringify(legacyConfirmed));
+        }
+      } catch (e) { /* 不存在也无妨，旧void入口仍维持原失败契约。 */ }
       return;
     }
-    this.put(key, JSON.stringify(o));
+    const encoded: string = JSON.stringify(next);
+    this.put(key, encoded);
+    // put()保留旧void错误处理；只有缓存确实接受本次值才发布其他字段的读取基线。
+    if (legacyConfirmed !== undefined && this.resolutionWrites !== undefined
+      && this.pref.getSync(key, '') === encoded) {
+      this.resolutionWrites.originals.set(key, JSON.stringify(legacyConfirmed));
+    }
   }
 
   /**
@@ -579,8 +1084,9 @@ export class PreferenceManager {
       jdkVersion: o.jdkVersion,
       customJvmArgs: merged.join(' '),
       gameLanguage: lang,
+      renderScalePercent: normalizeResolutionPreference(o.renderScalePercent) || this.resolutionScalePercent,
       fromGlobal: o.xmx <= 0 && o.jdkVersion.length === 0 && o.customJvmArgs.length === 0
-        && o.gameLanguage.length === 0,
+        && o.gameLanguage.length === 0 && normalizeResolutionPreference(o.renderScalePercent) === 0,
     };
   }
 
@@ -728,8 +1234,61 @@ export class PreferenceManager {
   // ===== 检查更新（节流 + 红点持久化） =====
 
   /** App 订阅独立于 jdkChannel；旧安装默认稳定，不沿用未知或损坏的选择。 */
-  get appUpdateChannel(): string { return this.getString('appUpdateChannel','stable') === 'preview' ? 'preview' : 'stable'; }
-  set appUpdateChannel(value: string) { this.put('appUpdateChannel',value === 'preview' ? 'preview' : 'stable'); }
+  get appUpdateChannel(): string {return this.appUpdateChannelWrites?.originalChannel ?? (this.getString('appUpdateChannel','stable')==='preview'?'preview':'stable');}
+  /** 兼容旧void调用；真实页面使用可等待入口，失败可见而不把在途缓存当保存成功。 */
+  set appUpdateChannel(value: string) {this.selectAppUpdateChannel(value).catch((error: Error): void=>{hilog.warn(0x0000,TAG,'更新订阅保存失败：%{public}s',error.message);});}
+  private readAppUpdateRevision_(): number {
+    const value=this.pref.getSync('appUpdateChannelRevision',0);
+    if(typeof value!=='number'||!Number.isSafeInteger(value)||value<0)throw new Error('更新订阅代次无效，请重新核实设置');
+    return value;
+  }
+  /** 在App原事务创建时同步冻结用户选择代次；不存在的新键按历史基线0，旧事务无字段不补造。 */
+  appUpdateSelectionRevision(): number {
+    const state=this.appUpdateChannelWrites;
+    if(state===undefined||ProcessPreferences.isGameProcess())throw new Error('更新订阅缺少启动器写owner');
+    if(state.selectionPending>0||state.originalRevision!==undefined)throw new Error('更新订阅保存尚未确认，请稍后重试更新');
+    return Math.max(state.originalRevision ?? this.readAppUpdateRevision_(),state.requestedRevision);
+  }
+  /** 明确用户选择生成新代次；值和代次在同一put/await flush中确认，同目录请求串行。 */
+  selectAppUpdateChannel(value: string): Promise<void> {
+    const state=this.appUpdateChannelWrites;
+    if(state===undefined||ProcessPreferences.isGameProcess())return Promise.reject(new Error('更新订阅缺少启动器写owner'));
+    let revision: number;
+    try{revision=Math.max(this.readAppUpdateRevision_(),state.requestedRevision)+1;}catch(error){return Promise.reject(error as Error);}
+    if(!Number.isSafeInteger(revision))return Promise.reject(new Error('更新订阅代次超限'));
+    state.requestedRevision=revision;state.selectionPending++;
+    const work=state.tail.catch((): void=>{}).then(async (): Promise<void>=>{await this.writeAppUpdateSelection_(state,value,revision);});
+    // 失败且回滚已确认的用户请求没有产生耐久新代次；最后请求结束后收回内存预约。
+    // 回滚仍未知时继续保留确认屏障，新App事务不能捕获尚未存在的磁盘代次。
+    const settled=work.finally((): void=>{state.selectionPending--;if(state.selectionPending===0&&state.originalRevision===undefined)state.requestedRevision=this.readAppUpdateRevision_();});
+    state.tail=settled.catch((): void=>{});return settled;
+  }
+  /** 原完成步骤只在捕获代次未变化时写入；返回false表示后来选择或旧schema优先，不覆盖。 */
+  commitAppUpdateChannel(value: string,expectedRevision?: number): Promise<boolean> {
+    const state=this.appUpdateChannelWrites;
+    if(expectedRevision===undefined)return Promise.resolve(false);
+    if(state===undefined||ProcessPreferences.isGameProcess())return Promise.reject(new Error('更新订阅缺少启动器写owner'));
+    const work=state.tail.catch((): void=>{}).then(async (): Promise<boolean>=>{
+      if(!Number.isSafeInteger(expectedRevision)||expectedRevision<0)throw new Error('原更新订阅代次无效');
+      if(state.requestedRevision>expectedRevision || this.readAppUpdateRevision_()!==expectedRevision)return false;
+      await this.writeAppUpdateSelection_(state,value,expectedRevision);return true;
+    });
+    state.tail=work.then((): void=>{},(): void=>{});return work;
+  }
+  /** 只回滚本域两键；回滚未知时保留确认屏障，不把失败缓存发布给其他页面。 */
+  private async writeAppUpdateSelection_(state: AppUpdateChannelWriteState,value: string,revision: number): Promise<void> {
+    const previousChannel=state.originalChannel ?? (this.pref.getSync('appUpdateChannel','stable')==='preview'?'preview':'stable');
+    const previousRevision=state.originalRevision ?? this.readAppUpdateRevision_();
+    state.originalChannel=previousChannel;state.originalRevision=previousRevision;
+    try {
+      this.pref.putSync('appUpdateChannel',value==='preview'?'preview':'stable');this.pref.putSync('appUpdateChannelRevision',revision);
+      await this.pref.flush();state.originalChannel=undefined;state.originalRevision=undefined;
+    } catch (_) {
+      this.pref.putSync('appUpdateChannel',previousChannel);this.pref.putSync('appUpdateChannelRevision',previousRevision);
+      try{await this.pref.flush();state.originalChannel=undefined;state.originalRevision=undefined;}catch(_){throw new Error('更新订阅保存及回滚尚未确认，请重新核实存储');}
+      throw new Error('更新订阅尚未保存，请重试');
+    }
+  }
   /** 每个产品／通道拥有独立节流与推荐缓存，旧全局缓存不自动迁为稳定版事实。 */
   private appUpdateKey(product: string, channel: string, field: string): string {
     return 'appUpdate.' + (product === 'desktop' ? 'desktop' : 'sideload') + '.' + (channel === 'preview' ? 'preview' : 'stable') + '.' + field;
@@ -876,11 +1435,11 @@ export class PreferenceManager {
   }
 
   /**
-   * 一次性保存所有设置（用于 ViewModel 批量同步）
+   * 保存旧游戏设置快照。主题和光感均有独立确认事务，不得由其他设置的批量保存
+   * 覆盖临时预览或正在flush的确认值；themeMode只保留在loadAll返回值用于兼容读取。
    */
   saveAll(snapshot: PreferenceSnapshot): void {
     this.putBatch({
-      'themeMode': snapshot.themeMode,
       'mcVersion': snapshot.mcVersion,
       'useNewWindow': snapshot.useNewWindow,
       'versionIsolation': snapshot.versionIsolation,
@@ -907,6 +1466,8 @@ export interface VersionLaunchOverride {
   xmx: number;          // MB，<=0 = 沿用全局
   jdkVersion: string;   // '' = 跟随全局 | 'auto' = 自动路由 | 具体版本 = 硬覆盖
   customJvmArgs: string;
+  /** 缺失/0 继承全局；50–100 是该实例的显式选择，100 不等于继承。 */
+  renderScalePercent?: number;
   gameLanguage: string; // '' = 跟随全局设置 | 具体 code（'zh_cn'/'en_us'…）= 单版本硬覆盖
 }
 
@@ -915,6 +1476,8 @@ export interface EffectiveLaunchConfig {
   xmx: number;
   jdkVersion: string;   // '' = 调用方按纪元自动路由
   customJvmArgs: string;
+  /** 显式政策的继承结果；0 让 Builder 继续消费兼容的旧 JVM marker。 */
+  renderScalePercent: number;
   gameLanguage: string; // 实际生效的游戏语言 code（单版本覆盖 or 全局默认；恒非空）
   fromGlobal: boolean;
 }

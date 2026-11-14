@@ -58,6 +58,9 @@ function ability(relative, f) {
   const members = ['onBackground', 'onForeground'].map(name => abilityOwner.members.find(member => member.name?.getText(ast) === name).getText(ast)).join('\n');
   const Ability = execute('class Ability {\n' + members + '\n}\nreturn Ability;', {
     getInputSourceRegistry: () => f.registry, testNapi: f.native, AppLogger: { info: noop, warn: noop },
+    // 活动与音频owner是独立生命周期端口；保留生产调用及实参检查，不改输入资格算法。
+    getTaskActivityOwner: () => ({ setForeground: active => assert.equal(typeof active, 'boolean') }),
+    ModAudioRuntime: { setForeground: active => assert.equal(typeof active, 'boolean') },
     AppStorage: { setOrCreate: noop }, ProductBuildProfile: { storeChannel: true },
     ProductInputProfile: { selection: () => ({ isolatedGameProcess: false }) },
     TAG: 'page-facts-fixture', LOG_DOMAIN_LAUNCH: 1,

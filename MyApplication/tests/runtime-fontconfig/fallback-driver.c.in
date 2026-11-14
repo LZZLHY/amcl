@@ -1,0 +1,168 @@
+/* 真实 Fontconfig 字符集执行上游/补后的阈值和 owned union 源片段。
+ * 所有集合在初始化构造；此夹具不是应用的逐字形热路径。 */
+#include <assert.h>
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+typedef struct _FcCharSet FcCharSet;
+static FcCharSet *(*RealCreate)(void), *(*RealUnion)(const FcCharSet *, const FcCharSet *);
+static int (*RealAdd)(FcCharSet *, unsigned int);
+static void (*RealDestroy)(FcCharSet *);
+static unsigned int (*FcCharSetSubtractCount)(const FcCharSet *, const FcCharSet *);
+static FcCharSet *owned[64];
+static int ownedCount;
+static int unionCalls, failAt, pendingError, preserveError, oomThrows;
+static int arraysLive, patternsLive, fontsetsLive, localeLive, providerLive, frameLive;
+static int hasFrame;
+static void *arrayPointers[4];
+static void *(*RealPatternCreate)(void), *(*RealFontSetCreate)(void);
+static void (*RealPatternDestroy)(void *), (*RealFontSetDestroy)(void *);
+
+/* JNI 只作为清理边界替身。源片段实际执行 Release/Pop/ExceptionCheck，首错误不能覆盖。 */
+typedef const struct FakeJniTable *FakeEnv;
+struct FakeJniTable {
+    void (*ReleaseStringUTFChars)(FakeEnv *, void *, const char *);
+    void *(*PopLocalFrame)(FakeEnv *, void *);
+    int (*ExceptionCheck)(FakeEnv *);
+};
+static void releaseLocale(FakeEnv *env, void *value, const char *chars) {
+    (void)env; (void)value; assert(localeLive == 1); localeLive = 0; free((void *)chars);
+}
+static void *popFrame(FakeEnv *env, void *value) {
+    (void)env; assert(frameLive == 1); frameLive = 0; return value;
+}
+static int exceptionCheck(FakeEnv *env) { (void)env; return pendingError != 0; }
+static const struct FakeJniTable table = {releaseLocale, popFrame, exceptionCheck};
+static void JNU_ThrowOutOfMemoryError(FakeEnv *env, const char *message) {
+    (void)env; (void)message; assert(!pendingError); pendingError = 77; ++oomThrows;
+}
+#define JNI_FALSE 0
+static void closeFontConfig(void *library, int keep) {
+    (void)library; (void)keep; assert(providerLive == 1); providerLive = 0;
+}
+static void trackedFree(void *value) {
+    for (int i = 0; i < 4; ++i) if (arrayPointers[i] == value) {
+        arrayPointers[i] = NULL; --arraysLive; free(value); return;
+    }
+    assert(0 && "unexpected or duplicate array release");
+}
+static void trackedPatternDestroy(void *value) {
+    assert(patternsLive == 1); --patternsLive; RealPatternDestroy(value);
+}
+static void trackedFontSetDestroy(void *value) {
+    assert(fontsetsLive == 1); --fontsetsLive; RealFontSetDestroy(value);
+}
+static void (*FcPatternDestroy)(void *) = trackedPatternDestroy;
+static void (*FcFontSetDestroy)(void *) = trackedFontSetDestroy;
+
+/* 记录真实 FcCharSetUnion 返回的所有权，区分借用首集合与新分配并集。 */
+static FcCharSet *trackedUnion(const FcCharSet *a, const FcCharSet *b) {
+    if (++unionCalls == failAt) {
+        if (preserveError) pendingError = 99;
+        return NULL; /* 在真实 FcCharSet 已存在时注入一次分配失败，不伪造其它 Fc 行为。 */
+    }
+    FcCharSet *value = RealUnion(a, b);
+    assert(value != NULL && ownedCount < 64);
+    owned[ownedCount++] = value;
+    return value;
+}
+static void trackedDestroy(FcCharSet *value) {
+    int at;
+    for (at = 0; at < ownedCount; ++at) if (owned[at] == value) break;
+    assert(at < ownedCount); /* 不得误释放 fontset 借出的首个集合。 */
+    owned[at] = owned[--ownedCount];
+    RealDestroy(value);
+}
+static FcCharSet *(*FcCharSetUnion)(const FcCharSet *, const FcCharSet *) = trackedUnion;
+static void (*FcCharSetDestroy)(FcCharSet *) = trackedDestroy;
+
+/* 两处阈值和整个合并分支由真实源注入，测试驱动不另写筛选条件。 */
+#define free trackedFree
+static unsigned int selectFonts(FcCharSet **sets, int nfonts) {
+    unsigned int minGlyphs, selected = 0;
+    int j, fontCount = 0;
+    char *debugMinGlyphsStr = NULL;
+    FcCharSet *unionCharset = NULL, *prevUnionCharset = NULL;
+    void *family = arrayPointers[0] = malloc(8), *styleStr = arrayPointers[1] = malloc(8);
+    void *fullname = arrayPointers[2] = malloc(8), *file = arrayPointers[3] = malloc(8);
+    void *pattern = RealPatternCreate(), *fontset = RealFontSetCreate(), *libfontconfig = (void *)1;
+    void *localeStr = (void *)1;
+    const char *locale = (const char *)malloc(8);
+    FakeEnv fake = &table; FakeEnv *env = &fake;
+    assert(family && styleStr && fullname && file && pattern && fontset && locale);
+    arraysLive = 4; patternsLive = fontsetsLive = localeLive = providerLive = 1; frameLive = hasFrame;
+@INITIAL@
+    for (j=0; j<nfonts; ++j) {
+        FcCharSet *charset = sets[j];
+@SELECTION@
+        ++fontCount;
+        selected |= (1U << j);
+    }
+@CLEANUP@
+    /* 生产完整函数在本段之后构造 Java 输出；这里只收敛未进入注入分支的测试资源。 */
+    free(family); free(styleStr); free(fullname); free(file);
+    (*FcPatternDestroy)(pattern); (*FcFontSetDestroy)(fontset);
+    (*env)->ReleaseStringUTFChars(env, localeStr, locale);
+    closeFontConfig(libfontconfig, JNI_FALSE);
+    if (hasFrame) (*env)->PopLocalFrame(env, NULL);
+    return selected;
+}
+#undef free
+
+int main(int argc, char **argv) {
+    assert(argc == 5);
+    int repaired = atoi(argv[1]), originalLeak = atoi(argv[2]), patched = atoi(argv[3]);
+    hasFrame = atoi(argv[4]);
+    void *library = dlopen("libfontconfig.so.1", RTLD_NOW | RTLD_LOCAL);
+    assert(library != NULL);
+    *(void **)(&RealCreate) = dlsym(library, "FcCharSetCreate");
+    *(void **)(&RealAdd) = dlsym(library, "FcCharSetAddChar");
+    *(void **)(&RealUnion) = dlsym(library, "FcCharSetUnion");
+    *(void **)(&RealDestroy) = dlsym(library, "FcCharSetDestroy");
+    *(void **)(&FcCharSetSubtractCount) = dlsym(library, "FcCharSetSubtractCount");
+    *(void **)(&RealPatternCreate) = dlsym(library, "FcPatternCreate");
+    *(void **)(&RealPatternDestroy) = dlsym(library, "FcPatternDestroy");
+    *(void **)(&RealFontSetCreate) = dlsym(library, "FcFontSetCreate");
+    *(void **)(&RealFontSetDestroy) = dlsym(library, "FcFontSetDestroy");
+    assert(RealCreate && RealAdd && RealUnion && RealDestroy && FcCharSetSubtractCount &&
+           RealPatternCreate && RealPatternDestroy && RealFontSetCreate && RealFontSetDestroy);
+    for (int repeat = 0; repeat < 100; ++repeat) {
+        FcCharSet *sets[17];
+        int sizes[] = {1, 19, 20, 21, 49, 50, 51};
+        for (int i = 0; i < 17; ++i) {
+            sets[i] = RealCreate(); assert(sets[i]);
+            for (unsigned int point = 32; point < 128; ++point) assert(RealAdd(sets[i], point));
+            if (i >= 10) for (int n = 0; n < sizes[i - 10]; ++n)
+                assert(RealAdd(sets[i], (unsigned int)(0x1000 + i * 0x100 + n)));
+        }
+        unsigned int selected = selectFonts(sets, 17);
+        unsigned int expected = repaired ? (1U | (127U << 10)) : (1U | (1U << 16));
+        assert(selected == expected); /* 旧源码只能接受 51；新源码保留 1..50 新字并继续去重。 */
+        assert(originalLeak ? ownedCount == 1 : ownedCount == 0);
+        /* 原8缺陷被明确断言后由夹具回收，避免将预期旧泄漏混同修复的 LSan 结果。 */
+        while (ownedCount) trackedDestroy(owned[ownedCount - 1]);
+        assert(!(arraysLive || patternsLive || fontsetsLive || localeLive || providerLive || frameLive));
+        if (repeat == 0) {
+            int attempts[] = {1, 3, 7};
+            int cases = repaired ? 3 : 1;
+            for (int fault = 0; fault < cases; ++fault) for (int existing = 0; existing < 2; ++existing) {
+                unionCalls = pendingError = oomThrows = 0; failAt = attempts[fault]; preserveError = existing;
+                unsigned int failed = selectFonts(sets, 17);
+                if (patched) {
+                    assert(failed == 0 && unionCalls == failAt); /* 失败后不能继续形成/发布覆盖表。 */
+                    assert(pendingError == (existing ? 99 : 77) && oomThrows == !existing);
+                    assert(ownedCount == 0);
+                } else {
+                    assert(failed != 0 && oomThrows == 0); /* 原源码确实把 NULL 当普通结果继续。 */
+                }
+                assert(!(arraysLive || patternsLive || fontsetsLive || localeLive || providerLive || frameLive));
+                while (ownedCount) trackedDestroy(owned[ownedCount - 1]);
+            }
+            unionCalls = pendingError = oomThrows = failAt = preserveError = 0;
+        }
+        for (int i = 0; i < 17; ++i) RealDestroy(sets[i]);
+    }
+    dlclose(library);
+    printf("PASS real charset coverage, duplicates, ownership, injected OOM and first-error/resource cleanup; iterations=100 repaired=%d oldLeak=%d patched=%d\n", repaired, originalLeak, patched);
+    return 0;
+}

@@ -140,9 +140,9 @@ fork_release_tag_commit  = 8b69f7fee6c11a46d325731f29ef6b5008da2878
 upstream        = https://github.com/MobileGL-Dev/MobileGL.git
 repo            = https://github.com/LZZLHY/MobileGL.git
 branch          = amcl/ohos
-commit          = 13c1e4e0bf0e2c6f1c00340ed960e23dc77d1274
+commit          = 234a95b88e8f1a5a91ae542a37b566d9631434af
 base_commit     = 0d2fceab0eb0776b8e9c10903b50572579de8cc3
-source_tree     = 3d30994696e7cc8fc970a7f8b8e0b9fc2143cfe9
+source_tree     = ebf0f46a91cd53084d0021cf6f26a145dca16012
 # fork 提交栈（base..commit）：Phase 1（sstream 显式包含 / OHOS Vulkan
 # 平台分支 / 聚合体显式构造（P0960R3 绕行）/ 结构化绑定拷贝（P1091R3 绕行）/ tl::expected
 # 分流 / CMake OHOS 平台支持 / libc++experimental 链接 / --exclude-libs 符号面收敛）
@@ -156,9 +156,9 @@ spirv_headers_commit = 2a611a970fdbc41ac2e3e328802aed9985352dca
 # Windows autocrlf 会把工作区转成 CRLF）:
 tl_expected_tag      = v1.3.1
 tl_expected_sha256   = 0788f7d544a2fdec1dd7a794e1e9863ad4cc6a8817982b6fd93fd98724b9fa19
-# 产物指纹：保留既有FP64/COPY修复，定向移植上游VSync并适配OHOS窗口复用；正常OHOS 13c1e4e0重建。
-libmobilegl_stripped_sha256 = 42faad9cb68f93d0cb81e7f7b57cce41bd4e289788c23066e40dece9c21951d1
-libmobilegl_unstripped_sha256 = 72addf9d68f45a60a9af361a0654673ce45f0dcf160f9045360df89011d8ef01
+# 本地实验候选：NULL/TexStorage延迟CPU清零；正常OHOS构建，尚未获得整合包/发布资格。
+libmobilegl_stripped_sha256 = 97aa55fbb70f4164bd14c911dfca4901cce4ab291d28cdb15c7541af37fe88fc
+libmobilegl_unstripped_sha256 = 5fcddd5616e31327bd9e145aafab49dac1c3a2941311e7da7cb00fd0fb188981
 
 # -----------------------------------------------------------------------------
 # [openal-soft] — 3D 音频库（OHAudio backend 通过 prebuilt/openal-soft/patches/ 注入）
@@ -241,8 +241,8 @@ liblwjgl_opengl_size   = 343472
 liblwjgl_opengl_sha256 = 1581bffd7202faebcdcfd4ff6e91014167fc1dddece18cf5680e6a85bdfa2057
 liblwjgl_stb_size      = 413864
 liblwjgl_stb_sha256    = 77344c86be745893be35c9653063f230f8e72d97dc1a10d61f3130d0037bc44f
-liblwjgl_tinyfd_size   = 88768
-liblwjgl_tinyfd_sha256 = 74d3ddf4a6a6442a70e4aa05d28c17ddabdda89f546930a3a101a8a4ab6b0d1d
+liblwjgl_tinyfd_size   = 48672
+liblwjgl_tinyfd_sha256 = adbd009a4e9d0b739c5ecd5d987529c8c95a5d74bc7e05de75b31a5c4dc45ba2
 liblwjgl_vma_size      = 146216
 liblwjgl_vma_sha256    = 01099dfe0f61192b0860267ca927356e9b256aadfb207b7648762a844ac0a317
 liblwjgl_spng_size     = 154352
@@ -581,11 +581,11 @@ base_commit    = de51952c2ea538241909789926f4d01845ad1bb0   # icculus 分支的 
 abi_base       = f87239e71e42da91ca317a12eefb82cfbf3393eb   # release-3.4.12 = LWJGL 3.4.2 绑定所对齐的上游 release（当前最新稳定版）
 vendor_ref     = 03b7fb95b4069cc7798f5554ef12239d983bc7bf   # OpenMinecraft-Dev/SDL —— 已不是当前基线的来源；保留作 fallback 分支的 cherry-pick 出处与 MetsukiMio 署名依据（见 prebuilt/sdl3/README.md §署名）
 version_string = SDL-3.5.0-release-3.4.0-983-ge293db30d
-patchset_sha256  = c16151aaff95e034f9bd76fd91b82ec71a04f3ff428a649619706d7ee652cc81
-size            = 2251080
-sha256          = 921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816
-hap_size        = 1855520
-hap_sha256      = 1ed3799167e7d53a3e010de14e2281f73eaef7e899c20f3bf3ed261de9c27277
+patchset_sha256 = da5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9
+size            = 2257888
+sha256          = 853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064
+hap_size        = 1861448
+hap_sha256      = 7c2a09fa6d4e4172a147fd105cfa203e433b2e11049734e7622bd845892d6c29
 #
 #   2026-09-02 Gate D typed TextInputSession（commit 仍是 e293db30d，新增 0006）：
 #     SDL 保持 64B/version=1 backend envelope；文本 session/commit/editing/candidates/
@@ -727,3 +727,28 @@ lwjgl-natives_sha256  = PENDING
 [jna-runtime]
 manifest = prebuilt/jna/manifest.json
 manifest_sha256 = 25832ce2edc66fc9eda599896ef3f0a4fe409db55fa89bfa9feca56ed1b46cbf
+
+# authlib-injector保持官方未修改JAR；同一原件供第三方认证和本地离线纹理使用。
+# 官方release资产digest于2026-10-25核实，并对下载原件重新计算SHA-256。
+[authlib-injector]
+repo = https://github.com/yushijinhun/authlib-injector
+version = 1.2.8
+commit = 5437f5b465ee3f5be0a1e5e1ae3c50978114f6fb
+build = 56
+asset_url = https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.8/authlib-injector-1.2.8.jar
+artifact = entry/src/main/resources/rawfile/authlib-injector.jar
+sha256 = 9c7f4343e6c82034958ffb48c14a2cb0c85928be7283103ce17da00c6d5a7b10
+bytes = 349681
+license = AGPL-3.0-or-later WITH authlib-injector-exception
+
+# 标准与DH重定位绑定的独立OHOS zstd-JNI；源码、完整Java类身份和实际制品分列。
+[zstd-jni]
+repo = https://github.com/luben/zstd-jni
+version = 1.5.7-12
+commit = b1ab612ca2777d6937f418933b5899132517dab3
+inputs = prebuilt/mod-natives/zstd-jni/build-inputs.json
+inputs_sha256 = 2d8f2b391f0dcea82abae3c55a1821355f9df7962ff0342839424cf6398e1e60
+bindings = prebuilt/mod-natives/zstd-jni/verified-bindings.json
+bindings_sha256 = 7666ecacd80b9cfb0629715ad291904099501f31358bc9f201bc8218fd279426
+artifacts = prebuilt/mod-natives/zstd-jni/artifacts.json
+artifacts_sha256 = 1081e7b42823c44ea32152bdef659592c190bb6efbe1c99c0cf0d65375c1b7cf

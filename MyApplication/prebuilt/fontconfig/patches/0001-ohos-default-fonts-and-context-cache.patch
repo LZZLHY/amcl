@@ -1,0 +1,246 @@
+diff --git a/src/fcinit.c b/src/fcinit.c
+--- a/src/fcinit.c
++++ b/src/fcinit.c
+@@ -25,6 +25,9 @@
+ #include "fcint.h"
+ 
+ #include <stdlib.h>
++#ifdef __OHOS__
++#include "amcl-generic-fonts.h"
++#endif
+ 
+ #if defined(FC_ATOMIC_INT_NIL)
+ #  pragma message("Could not find any system to define atomic_int macros, library may NOT be thread-safe.")
+@@ -44,9 +47,15 @@
+ 	""
+ 	"<fontconfig>" FC_DEFAULT_FONTS
+ 	"  <dir prefix=\"xdg\">fonts</dir>"
++#ifndef __OHOS__
+ 	"  <cachedir>" FC_CACHEDIR
+ 	"</cachedir>"
++#endif
+ 	"  <cachedir prefix=\"xdg\">fontconfig</cachedir>"
++#ifdef __OHOS__
++        /* 与 HAP 的同源 generic 规则，不依赖 cwd 下存在系统配置。 */
++        AMCL_FONTCONFIG_GENERIC_RULES
++#endif
+ 	"  <include ignore_missing=\"yes\">" CONFIGDIR
+ 	"</include>"
+ 	"  <include ignore_missing=\"yes\" prefix=\"xdg\">fontconfig/conf.d</include>"
+@@ -73,6 +82,11 @@
+ {
+     FcConfig *fallback = FcInitFallbackConfig (sysroot);
+ 
++    /* XML/配置分配失败时不能解引用空 fallback；此函数接管输入配置所有权。 */
++    if (!fallback) {
++        FcConfigDestroy (config);
++        return NULL;
++    }
+     /* Copy filter data */
+     fallback->filter_func = config->filter_func;
+     fallback->filter_data = config->filter_data;
+@@ -131,13 +145,22 @@
+ 	if (!have_own) {
+ 	    fprintf (stderr,
+ 	             "Fontconfig warning: no <cachedir> elements found. Check configuration.\n");
++#ifndef __OHOS__
+ 	    fprintf (stderr,
+ 	             "Fontconfig warning: adding <cachedir>%s</cachedir>\n",
+ 	             FC_CACHEDIR);
++#endif
+ 	}
+ 	prefix = FcConfigXdgCacheHome();
+-	if (!prefix)
++	if (!prefix) {
++#ifdef __OHOS__
++            /* 缺 Context/只读安装并非 out-of-memory：字体继续可用，缓存能力明确失败。 */
++            fprintf (stderr, "Fontconfig warning: no usable cache directory; configure XDG_CACHE_HOME or cachedir\n");
++            return config;
++#else
+ 	    goto bail;
++#endif
++        }
+ 	plen = strlen ((const char *)prefix);
+ 	p = realloc (prefix, plen + 12);
+ 	if (!p)
+@@ -149,7 +172,11 @@
+ 	    fprintf (stderr,
+ 	             "Fontconfig warning: adding <cachedir prefix=\"xdg\">fontconfig</cachedir>\n");
+ 
+-	if (!FcConfigAddCacheDir (config, (FcChar8 *)FC_CACHEDIR) ||
++        /* OHOS 不把相对 FC_CACHEDIR 当成当前工作目录中的可写缓存。 */
++	if (
++#ifndef __OHOS__
++            !FcConfigAddCacheDir (config, (FcChar8 *)FC_CACHEDIR) ||
++#endif
+ 	    !FcConfigAddCacheDir (config, (FcChar8 *)prefix)) {
+ 	    FcConfig      *fallback;
+ 	    const FcChar8 *sysroot;
+diff --git a/src/fccfg.c b/src/fccfg.c
+--- a/src/fccfg.c
++++ b/src/fccfg.c
+@@ -2441,9 +2441,156 @@
+     return 0;
+ }
+ 
++#ifdef __OHOS__
++#include <AbilityKit/ability_runtime/application_context.h>
++#include <dlfcn.h>
++#include <limits.h>
++#include <fcntl.h>
++
++/* 标准缓存位置优先。尚未创建的子目录由上游 FcDirCacheWrite/FcMakeDirectory 创建；
++ * 此处只确认最近已有祖先确实可写，既不改 HOME，也不把只读 cwd 当作缓存根。 */
++static FcBool
++FcOhosCacheHomeUsable (const FcChar8 *home)
++{
++    char path[PATH_MAX];
++    if (!home || home[0] != '/' ||
++        snprintf (path, sizeof (path), "%s/fontconfig", home) >= (int)sizeof (path))
++        return FcFalse;
++    for (;;) {
++        struct stat status;
++        if (stat (path, &status) == 0)
++            return S_ISDIR (status.st_mode) &&
++                   (status.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 &&
++                   access (path, W_OK | X_OK) == 0;
++        if (errno != ENOENT)
++            return FcFalse;
++        char *last = strrchr (path, '/');
++        if (!last || last == path)
++            return FcFalse;
++        *last = 0;
++    }
++}
++
++/* 官方 API 是可选来源。固定 NDK 库名普通加载并核实际符号提供者；ChildProcess 可能
++ * 返回 CONTEXT_NOT_EXIST，不能据此伪造 Context 或拼接系统沙箱前缀。 */
++static FcChar8 *
++FcOhosContextCacheHome (void)
++{
++    typedef AbilityRuntime_ErrorCode (*CacheDirFunc) (char *, int32_t, int32_t *);
++    _Static_assert (__builtin_types_compatible_p (CacheDirFunc,
++                    __typeof__ (&OH_AbilityRuntime_ApplicationContextGetCacheDir)),
++                    "Official cache API signature changed");
++    void *provider = dlopen ("libability_runtime.so", RTLD_NOW | RTLD_LOCAL);
++    if (!provider)
++        return NULL;
++    void *symbol = dlsym (provider, "OH_AbilityRuntime_ApplicationContextGetCacheDir");
++    Dl_info info = {0};
++    FcChar8 *result = NULL;
++    if (symbol && dladdr (symbol, &info) && info.dli_fname && info.dli_fbase) {
++        const char *leaf = strrchr (info.dli_fname, '/');
++        leaf = leaf ? leaf + 1 : info.dli_fname;
++        if (strcmp (leaf, "libability_runtime.so") == 0) {
++            char path[PATH_MAX] = {0};
++            int32_t written = -1;
++            CacheDirFunc getCacheDir = (CacheDirFunc)symbol;
++            AbilityRuntime_ErrorCode code = getCacheDir (path, sizeof (path), &written);
++            size_t length = strnlen (path, sizeof (path));
++            if (code == ABILITY_RUNTIME_ERROR_CODE_NO_ERROR && path[0] == '/' &&
++                length > 0 && length < sizeof (path) && written > 0 &&
++                (size_t)written < sizeof (path) &&
++                (length == (size_t)written || length + 1 == (size_t)written) &&
++                FcOhosCacheHomeUsable ((const FcChar8 *)path))
++                result = FcStrCopy ((const FcChar8 *)path);
++        }
++    }
++    dlclose (provider);
++    return result;
++}
++
++/* 槽外私有缓存，不修改 amcl-runtime.json 所列安装树、封存摘要或安装/use 租约。
++ * 只识别交付契约的两种布局；地址取自本函数，避免被其它 FC 符号插桩指向无关 DSO。
++ * 不扫描父目录，不解释任意 JSON，也不猜 /data/storage 等系统前缀。 */
++static FcChar8 *
++FcOhosProviderCacheHome (void)
++{
++    Dl_info info = {0};
++    char library[PATH_MAX];
++    const char *suffixes[] = {"/jre/lib/aarch64/libfontconfig.so", "/lib/libfontconfig.so"};
++    size_t prefix = 0;
++    if (!dladdr ((void *)FcOhosProviderCacheHome, &info) || !info.dli_fname ||
++        info.dli_fname[0] != '/' || !realpath (info.dli_fname, library))
++        return NULL;
++    size_t length = strlen (library);
++    for (unsigned int index = 0; index < sizeof (suffixes) / sizeof (suffixes[0]); ++index) {
++        size_t tail = strlen (suffixes[index]);
++        if (length > tail && strcmp (library + length - tail, suffixes[index]) == 0) {
++            prefix = length - tail;
++            break;
++        }
++    }
++    if (prefix == 0)
++        return NULL;
++    library[prefix] = 0; /* 实际 JDK 根；缓存必须在它的父目录。 */
++    char *last = strrchr (library, '/');
++    if (!last || last == library)
++        return NULL; /* 绝不在文件系统根创建默认缓存。 */
++    *last = 0;
++    int parent = open (library, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++    if (parent < 0)
++        return NULL;
++    struct stat owner;
++    FcChar8 *result = NULL;
++    const char *name = ".amcl-fontconfig-cache";
++    if (fstat (parent, &owner) == 0 && S_ISDIR (owner.st_mode) &&
++        owner.st_uid == geteuid() && (owner.st_mode & S_IWUSR) &&
++        !(owner.st_mode & (S_IWGRP | S_IWOTH))) {
++        int made = mkdirat (parent, name, 0700);
++        if (made == 0 || errno == EEXIST) {
++            int cache = openat (parent, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++            if (cache >= 0) {
++                struct stat actual, named;
++                /* 并发建立只能收敛到同一 owned 普通目录；未知链接/错 owner 保留并拒绝。 */
++                if (fstat (cache, &actual) == 0 && S_ISDIR (actual.st_mode) &&
++                    actual.st_uid == geteuid() && (actual.st_mode & 0777) == 0700 &&
++                    fstatat (parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0 &&
++                    named.st_dev == actual.st_dev && named.st_ino == actual.st_ino) {
++                    char path[PATH_MAX];
++                    if (snprintf (path, sizeof (path), "%s/%s", library, name) < (int)sizeof (path) &&
++                        FcOhosCacheHomeUsable ((const FcChar8 *)path))
++                        result = FcStrCopy ((const FcChar8 *)path);
++                }
++                close (cache);
++            }
++        }
++    }
++    close (parent);
++    return result;
++}
++#endif
++
+ FcChar8 *
+ FcConfigXdgCacheHome (void)
+ {
++#ifdef __OHOS__
++    const char *env = getenv ("XDG_CACHE_HOME");
++    FcChar8 *ret = NULL;
++    if (!_FcConfigHomeEnabled)
++        return NULL;
++    if (env && env[0] && FcOhosCacheHomeUsable ((const FcChar8 *)env))
++        return FcStrCopy ((const FcChar8 *)env);
++    const FcChar8 *home = FcConfigHome();
++    if (home && home[0] == '/') {
++        size_t length = strlen ((const char *)home);
++        ret = malloc (length + 8);
++        if (!ret) return NULL;
++        memcpy (ret, home, length);
++        memcpy (ret + length, "/.cache", 8);
++        if (FcOhosCacheHomeUsable (ret)) return ret;
++        free (ret);
++    }
++    ret = FcOhosContextCacheHome();
++    return ret ? ret : FcOhosProviderCacheHome();
++#else
+     const char *env = getenv ("XDG_CACHE_HOME");
+     FcChar8    *ret = NULL;
+ 
+@@ -2465,6 +2612,7 @@
+     }
+ 
+     return ret;
++#endif
+ }
+ 
+ FcChar8 *

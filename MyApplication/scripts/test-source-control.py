@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def block(text, name):
     """只提取指定生产函数完整正文，配方失败不降级到复制实现。"""
-    hit = re.search(r'^(?:static )?(?:void|int|bool) '+re.escape(name)+r'\([^;{}]*\)\s*\{', text, re.M)
+    hit = re.search(r'^(?:static )?(?:void|int|bool|amcl::input::SourceLedgerProxy&) '+re.escape(name)+r'\([^;{}]*\)\s*\{', text, re.M)
     if not hit:
         raise ValueError('Production function missing: '+name)
     brace=text.index('{',hit.start()); depth=1; end=brace+1
@@ -62,7 +62,13 @@ def main(options):
         end+=1
     assert touch[end]==';';end+=1
     native=touch[start:end]+'\nstd::map<std::string,SchemaButtonRuntime> s_schemaButtons;\n'
-    native+='\n'.join(block(touch,name) for name in ['schemaDispatchButton','schemaTriggerFirstDown','schemaTriggerLastUp','schemaPollLongPressLocked'])
+    # 触发器已接入组阶段；完整取其真实依赖，保留本套件无组方案的兼容路径。
+    # 不用恒false函数绕过现役分支，组方案的正向矩阵仍由touch-groups专项执行。
+    native+='std::vector<AmclCtrlEntry> s_schema;\nTouchGroupState s_touchGroups;\nuint64_t s_touchGroupSequence=0;\n'
+    native+='\n'.join(block(touch,name) for name in ['inputLedger','schemaDispatchButton',
+        'schemaGroupControlIndex','schemaUsesGroupPhases','schemaGroupPhase','schemaRetireGroupPhaseOwners',
+        'schemaBeginGroupGesture','schemaCompleteGroupGesture','schemaGroupLastUp',
+        'schemaTriggerFirstDown','schemaTriggerLastUp','schemaPollLongPressLocked'])
     fixture=fixture.replace('@NATIVE_BUTTON@',native)
     if capacity==4096:
         # 原完整Source/六码/窗口组合继续以8槽运行；4k只截取真实初始化/正常pair前提，
@@ -125,7 +131,7 @@ def main(options):
         cpp/'tests/host/source_control_transport_test.cpp.in',cpp/'tests/host/source_control_allocation_test.cpp',
         cpp/'tests/host/source_control_identity_test.cpp',Path(__file__)]
     paths += [cpp/'platform'/name for name in ['input_ledger.h','external_held_registry.h','external_held_edge_router.h',
-        'legacy_output_runtime.h','legacy_physical_edge_router.h','input_source.h','legacy_output_code.h','control_schema_abi.h']]
+        'legacy_output_runtime.h','legacy_physical_edge_router.h','input_source.h','legacy_output_code.h','control_schema_abi.h','touch_group_state.h']]
     before={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     configure_host_cmake(cmake,build,build/'build')
     run=subprocess.run([cmake,'--build',str(build/'build'),'--config','Release'],capture_output=True)

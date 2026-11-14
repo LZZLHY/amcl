@@ -24,7 +24,9 @@ export interface ForgeNativeBridge {
    */
   runJavaProcessor(filesDir: string, jdkVersion: string, xmxMb: number,
                    classpath: string, mainClass: string, args: string[],
-                   workDir: string, logFile: string): Promise<number>;
+                   workDir: string, logFile: string, requestId?: string, timeoutMs?: number): Promise<number>;
+  /** 成功仅表示取消被接受，调用者必须继续 await 原任务，不能提前清理它的输出目录。 */
+  cancelJavaProcessor(requestId: string): boolean;
 }
 
 let g_forgeNative: ForgeNativeBridge | null = null;

@@ -1,8 +1,12 @@
+import { validateRuntimeHostDeclaration } from './RuntimeHostDeclaration';
 import { validateRuntimeTree } from './JdkTreeValidation';
 import { JdkDirectoryLease } from './JdkDirectoryLease';
+import { JdkInstallStorage } from './JdkInstallStorage';
 import { DiagnosticPolicy } from 'commons';
 import { RuntimeCatalogRepository } from './RuntimeCatalogRepository';
-import { RuntimeBuild, RuntimeDefinition, RuntimeDownload, RuntimeInstallReceipt } from './RuntimeCatalogTypes';
+import { RuntimeBuild, RuntimeDefinition, RuntimeDownload, RuntimeInstallReceipt, RUNTIME_INSTALL_RECEIPT_LIMIT } from './RuntimeCatalogTypes';
+import { runtimeHostProtocols } from './RuntimeHostProtocol';
+import { runtimeRequiredHost } from './RuntimeCatalogValidation';
 import { runtimeReceiptStamp, runtimeRecommendationApplies } from './RuntimeUpdatePolicy';
 /**
  * JDK 只读管理与安装工厂。版本和包身份来自 RuntimeCatalogRepository 的可信 JSON，
@@ -14,7 +18,6 @@ import { runtimeReceiptStamp, runtimeRecommendationApplies } from './RuntimeUpda
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { removeDirRecursive } from 'commons';
 import { AppLogger } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
@@ -26,7 +29,7 @@ import { isMcVersionAtLeast, detectMcEra, McEra } from 'commons';
 import { requiredJdkMajorForMc } from 'commons';
 import { extractGameVersionFromId } from 'mods';
 import { JdkInstaller } from './JdkInstaller';
-import { VersionParser } from 'feature_core';
+import { VersionParser, getRelayClient } from 'feature_core';
 // JDK 选择策略（纯函数）。**路由与 Phase 0 自检共用它** —— 它自己只消费契约表，
 // 世代判定仍然唯一在 LoaderGenerationResolver（规范 §1.1 纪律 1）。
 import {
@@ -42,8 +45,12 @@ export interface JdkStatus {
   ready: boolean;
   progress: string;
 }
+/** JDK续作只允许原用户选择的不可变构建；工厂同步目录后仍须再次匹配，不能静默转目标。 */
+export interface JdkExpectedSelection { buildId: string; sha256: string; sizeBytes?: number; }
 
 export interface JdkVersionInfo {
+  /** 物理槽仍保留，但缺少当前App要求；修复按钮保持原通道，不能冒作正常已安装。 */
+  repairRequired?: boolean;
   rollback?: boolean;
   version: string;        // 可信目录或本地安装中的规范数字主版本
   installed: boolean;
@@ -66,6 +73,7 @@ export interface JdkVersionInfo {
 
 /** `JdkManager.inspect()` 的返回：一个版本的完整状态。 */
 export interface JdkInspection {
+  repairRequired?: boolean;
   rollback?: boolean;
   version: string;
   /** 能不能拿它启动游戏（= `isInstalled()`）。 */
@@ -196,55 +204,39 @@ export const MIRROR_TEMPLATES: string[] = [
 //
 // 由 entry 层（Index.loadPreferences / SettingsTab 回调）在启动时 & 用户切换时注入。
 // JdkInstaller.downloadJdkArchive 读取此值决定源排序：
-//   'auto'   Gitee 优先 → 失败回退 GitHub 镜像/直连（默认，国内最稳）
-//   'github' GitHub 源站直连优先（开代理/VPN 用户满速，比镜像快），镜像作回退
-//   'gitee'  强制 Gitee（失败仍回退 GitHub 保证可用）
+//   'auto'   网关关闭时对官方/镜像实际限量竞速；web仅在独立启用后作为独立组参与
+//   'github' 仅 GitHub 官方来源，可经过自有网关；不混入 Gitee/第三方镜像/web
+//   'gitee'  Gitee 优先（失败仍按安装器既有来源回退）
 //   'mirror' 只走 GitHub 代理镜像（跳过 Gitee），交给引擎按 RTT 选最快
+//   'web'    仅独立启用的 AMCL 服务器来源
 let g_jdkDownloadSource: string = 'auto'
-// 自有 JDK 来源独立 opt-in；关闭时目录和安装器都在创建网络任务前排除该来源。
+// 独立web来源保持opt-in；网关模式另可使用同一官方签名归档的第一方静态缓存，
+// 该缓存是传输路径，不修改本偏好。具体资格由JdkDownloadRouting精确绑定，不能混入第三方。
 let g_jdkWebEnabled: boolean = false;
 export function setJdkWebEnabled(enabled: boolean): void { g_jdkWebEnabled = enabled; }
 export function isJdkWebEnabled(): boolean { return g_jdkWebEnabled; }
-
-/**
- * 加速下载是否生效（由 entry 层在握手成功/失败时注入）。
- *
- * 为什么用注入而不是直接调 feature_core：launch 这个 HAR 不能反向依赖 feature_core，
- * 否则会形成循环依赖（feature_core 里的 JdkInstallTask 已经依赖 launch）。
- * 所以沿用本文件既有的"模块级全局 + entry 注入"模式。
- */
-let g_accelActive: boolean = false
 
 /** 设置全局 JDK 下载源偏好（entry 层注入）。非法值归一到 'auto'。 */
 export function setJdkDownloadSource(src: string): void {
   g_jdkDownloadSource = (src === 'github' || src === 'gitee' || src === 'mirror' || src === 'web') ? src : 'auto'
 }
 
-/** 注入「加速下载是否真的可用」（握手成功且票据有效才为 true）。 */
-export function setAccelActive(active: boolean): void {
-  g_accelActive = active
-}
-
-/** 加速是否生效。 */
+/**
+ * 保留真实Native可用态查询，不能恢复为初次握手注入的bool。该状态只表示网关当前
+ * 能否参与传输，不表示吞吐更快，也不再改变JDK来源偏好。真正提交仍由Native核验。
+ */
 export function isAccelActive(): boolean {
-  return g_accelActive
+  return getRelayClient().status().usable
 }
 
 /**
- * 读取当前 JDK 下载源偏好。JdkInstaller 内部使用。
- *
- * 加速生效时把 **'auto'** 提升为 'github'（官方源直连）：官方 URL 会被 native 改写成
- * 经加速网关，而 Gitee / GitHub 代理镜像不在网关白名单里（也没必要——网关到 GitHub
- * 本身就快），走镜像等于放弃加速。握手失败时 g_accelActive 为 false，行为不变。
- *
- * ⚠️ 2026-08-04 修正：原实现在加速生效时**无条件**返回 'github'，把用户显式选的
- * gitee / mirror / github 一起吞掉了。用户明确选了源却不生效，是"换源没用"这类
- * 反馈的一个来源。现在只覆盖 'auto'（"你来决定"），显式选择一律照办 ——
- * 与版本下载源（SourceProber.shouldUseBmclapiFirst）保持同一条原则：
- * **用户选了就用用户的**。
+ * 读取并冻结用户实际选择，供目录/旧描述两种安装路径使用。
+ * 网关关闭时auto在安装器按真实限量GET排序；显式源站始终不加入镜像。网关开启
+ * 则由任务路由器限定官方内容，先试同build第一方缓存、再官方回源，不再去Gitee/代理。
+ * 本函数只返回保存的偏好，不因开关覆盖持久值；传输方式改变由路由器在提交前重新核对。
+ * 本函数不调并发、不代替用户打开独立web来源，也不把usable推断成网关的吞吐证明。
  */
 export function getJdkDownloadSource(): string {
-  if (g_accelActive && g_jdkDownloadSource === 'auto') return 'github'
   return g_jdkDownloadSource
 }
 
@@ -268,6 +260,18 @@ export class JdkManager {
 
   /** 将当前已验签推荐与磁盘已装槽位合并；目录下架不会删除用户可用安装。 */
   synchronizeCatalog(): void {
+    // 两种历史journal都在稳定锁目录；Native stage也需在冷启动收口。恢复失败保持
+    // 原件并由isInstalled拒绝运行该槽，不能把两次rename之间暂缺的数字目录漏掉。
+    try {
+      for (const name of fs.listFileSync(this.context.filesDir + '/jdk/.locks')) {
+        const match = name.match(new RegExp('^([1-9][0-9]{0,2})\\.(publish\\.json|journal|stage)$'));
+        if (match === null) continue;
+        try {
+          if (match[2] === 'stage') JdkInstallStorage.collectAbandonedStage(this.context.filesDir, match[1]);
+          else JdkInstallStorage.recoverIfRequired(this.context.filesDir, match[1]);
+        } catch (error) { AppLogger.warn(TAG,'JDK ' + match[1] + ' 恢复尚未完成，保留现场',error as Object,LOG_DOMAIN_LAUNCH); }
+      }
+    } catch (_) { /* 首次启动没有锁目录；逐槽检查仍独立拒绝未恢复事务。 */ }
     const next: Record<string, JdkVersionConfig> = {};
     for (const runtime of this.catalog.definitions()) {
       const major = runtime.javaMajor.toString();
@@ -278,11 +282,12 @@ export class JdkManager {
         next[major] = { tag:'',dataFile:'',dataSizeMB:0,
           markerFile:runtime.javaMajor === 8 ? 'jre/lib/rt.jar' : 'release',
           minMcVersion:'',maxMcVersion:'',available:false,
-          unavailableReason:this.catalog.recommendationUnavailableReason() || '当前通道暂无可下载构建' };
+          unavailableReason:this.catalog.recommendationUnavailableReason() || this.catalog.hostUpgradeReason(major) || '当前通道暂无可下载构建' };
         continue;
       }
       const config: JdkVersionConfig = {
         runtime:runtime, build:build, downloads:build.downloads, webEnabled:g_jdkWebEnabled,
+        unavailableReason:this.catalog.hostUpgradeReason(major) || undefined,
         downloadSource:getJdkDownloadSource(),
         tag:build.legacyTags.length > 0 ? build.legacyTags[0] : build.id,
         dataFile:build.archive.fileName, dataSizeMB:Math.ceil(build.archive.sizeBytes / 1048576),
@@ -337,7 +342,28 @@ export class JdkManager {
    * 已安装判定读取共同文件/架构/主版本契约，再独立判断发行戳。
    * 不执行候选代码，不把已有用户导入包误判为官方最新能力。
    */
+  /** 兼容返回必须盘点物理有效但宿主要求不合格的槽，不能因installed=false把它漏掉。 */
+  isStructurallyPresent(version: string): boolean {
+    return isJdkSlotVersion(version) && validateRuntimeTree(this.getJdkDir(version),version) === '';
+  }
+
   isInstalled(version: string): boolean {
+    if (!isJdkSlotVersion(version)) return false;
+    try {
+      // 先退到读锁外恢复，再在 SH 内复查。至多重试一次覆盖恢复检查与取锁之间的崩溃窗口。
+      for (let attempt = 0; attempt < 2; attempt++) {
+        JdkInstallStorage.recoverIfRequired(this.context.filesDir, version);
+        const read = JdkDirectoryLease.reader(this.context.filesDir, version);
+        try {
+          if (!JdkInstallStorage.recoveryRequired(this.context.filesDir, version)) return this.isInstalledRead_(version);
+        } finally { read.release(); }
+      }
+    } catch (e) { AppLogger.warn(TAG, 'JDK 状态检查暂不可用：' + version, e as Object, LOG_DOMAIN_LAUNCH); }
+    return false;
+  }
+
+  /** 只能在本次短 use.SH 内调用；此处不创建 JVM、不修改候选运行时文件。 */
+  private isInstalledRead_(version: string): boolean {
     const info = JDK_VERSIONS[version]
     if (!isJdkSlotVersion(version)) return false
     let dir = this.getJdkDir(version)
@@ -347,6 +373,7 @@ export class JdkManager {
       AppLogger.warn(TAG, `JDK ${version} content invalid: ${contentError}`, null, LOG_DOMAIN_LAUNCH)
       return false
     }
+    if (validateRuntimeHostDeclaration(dir) !== '') return false;
     // release-tag 戳：**只有已知有害的旧包才判不可用**，其余一律容忍为可用。
     //
     // ⚠️ 2026-08-29 语义变更（判定抽到 JdkUpdatePolicy.ets，理由写在那个文件开头）：
@@ -383,7 +410,7 @@ export class JdkManager {
       try {
         const path = dir + '/.amcl-runtime-receipt.json';
         const stat = fs.statSync(path); receiptFound = true;
-        if (!stat.isFile() || stat.size > 65536 || stat.size === 0) throw new Error('receipt 内容无效');
+        if (!stat.isFile() || stat.size > RUNTIME_INSTALL_RECEIPT_LIMIT || stat.size === 0) throw new Error('receipt 内容无效');
         const receipt = JSON.parse(fs.readTextSync(path)) as RuntimeInstallReceipt;
         if (receipt.schemaVersion === 1 && receipt.origin === 'catalog' && receipt.javaMajor.toString() === version &&
           receipt.runtimeId === info.runtime.id) {
@@ -422,10 +449,12 @@ export class JdkManager {
     const input = this.tagInputFor_(version, dirPath, info)
     const state = classifyJdkTag(input)
     // ⚠️ 目录不存在时不要报「有新版本」：那会让一个**没装**的版本显示成"待更新"。
-    const structurallyPresent = installed || state === 'stale-blocking'
+    const structurallyPresent = this.isStructurallyPresent(version)
     const rollback = info.runtime !== undefined && info.runtime.rollback !== undefined;
     const applies = runtimeRecommendationApplies(info.runtime,input.installedTag,rollback ? this.catalog.snapshot().builds : []);
-    const stateText = info.unavailableReason !== undefined
+    const hostError = structurallyPresent ? validateRuntimeHostDeclaration(dirPath) : '';
+    const repairRequired = structurallyPresent && (hostError !== '' || state === 'stale-blocking');
+    const stateText = hostError !== '' ? hostError : info.unavailableReason !== undefined
       ? (state === 'user-import' ? '本地导入（不参与更新检查）；' : '') + info.unavailableReason
       : rollback && structurallyPresent && state !== 'user-import'
       ? (applies ? '回退修复：' + info.runtime!.rollback!.reason : '当前安装不在此次回退范围内')
@@ -439,7 +468,8 @@ export class JdkManager {
       expectedTag: input.expectedTag,
       state,
       usable: installed,
-      offerUpdate: info.available && structurallyPresent && shouldOfferUpdate(state) && applies,
+      repairRequired: repairRequired,
+      offerUpdate: info.available && structurallyPresent && state !== 'user-import' && (repairRequired || shouldOfferUpdate(state)) && applies,
       stateText: stateText,
       rollback: rollback && applies,
     }
@@ -463,6 +493,7 @@ export class JdkManager {
         installedTag: ins.installedTag,
         expectedTag: ins.expectedTag,
         updateAvailable: ins.offerUpdate,
+        repairRequired: ins.repairRequired,
         rollback: ins.rollback,
         userImported: ins.state === 'user-import',
         stateText: ins.stateText,
@@ -712,7 +743,7 @@ export class JdkManager {
     try {
       writerLease = JdkDirectoryLease.writer(this.context.filesDir, version)
       useLease = JdkDirectoryLease.publication(this.context.filesDir, version)
-      removeDirRecursive(dir)
+      JdkInstallStorage.delete(this.context.filesDir, version, writerLease, useLease)
       AppLogger.info(TAG, `Deleted JDK ${version} at ${dir}`, LOG_DOMAIN_LAUNCH)
       return true
     } catch (e) {
@@ -776,7 +807,24 @@ export class JdkManager {
    * @param forceReinstall 「更新」路径必须传 true —— 否则会命中 JdkInstaller 里
    *   "已装则跳过下载"的幂等门（新语义下 tag 过期仍算已装），表现为点了瞬间说完成。
    */
-  createInstaller(version: string, forceReinstall: boolean = false): JdkInstaller | null {
+  /**
+   * 为跨App兼容计划冻结指定推荐。必须仍在所选可信目录、未撤回、且当前真实宿主能够运行；
+   * 目标App能力只选择兼容包，不授权当前App执行自己尚未实现的协议。
+   */
+  compatibilityConfig(version: string, buildId: string): JdkVersionConfig {
+    const catalog = this.catalog.snapshot();
+    const runtime = catalog.runtimes.find((r: RuntimeDefinition): boolean => r.javaMajor.toString() === version);
+    const build = catalog.builds.find((b: RuntimeBuild): boolean => b.id === buildId && runtime !== undefined && b.runtimeId === runtime.id);
+    if (runtime === undefined || build === undefined || !this.catalog.isBuildAllowed(buildId) ||
+      runtimeHostProtocols().indexOf(runtimeRequiredHost(catalog,build)) < 0) throw new Error('兼容JDK不受当前宿主支持或已撤回');
+    const config: JdkVersionConfig = {runtime:runtime,build:build,downloads:build.downloads,webEnabled:g_jdkWebEnabled,
+      downloadSource:getJdkDownloadSource(),tag:build.legacyTags.length > 0 ? build.legacyTags[0] : build.id,
+      dataFile:build.archive.fileName,dataSizeMB:Math.ceil(build.archive.sizeBytes / 1048576),markerFile:version === '8' ? 'jre/lib/rt.jar' : 'release',
+      minMcVersion:'',maxMcVersion:'',available:true,sha256:build.archive.sha256,sizeBytes:build.archive.sizeBytes};
+    return JSON.parse(JSON.stringify(config)) as JdkVersionConfig;
+  }
+
+  createInstaller(version: string, forceReinstall: boolean = false, expected?: JdkExpectedSelection): JdkInstaller | null {
     this.synchronizeCatalog();
     const config = JDK_VERSIONS[version]
     if (!config) {
@@ -787,6 +835,8 @@ export class JdkManager {
       AppLogger.warn(TAG, `createInstaller: JDK ${version} not available`, null, LOG_DOMAIN_LAUNCH)
       return null
     }
+    if(expected!==undefined && (config.build?.id!==expected.buildId || config.sha256!==expected.sha256 ||
+      expected.sizeBytes!==undefined && config.sizeBytes!==expected.sizeBytes))throw new Error('原JDK续作目标已改变，请重新选择，未创建其他构建的安装器');
     return new JdkInstaller({
       context: this.context,
       version: version,

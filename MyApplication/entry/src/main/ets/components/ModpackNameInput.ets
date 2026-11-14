@@ -1,4 +1,8 @@
 /**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
+/**
  * 整合包安装前的版本名称输入。在线下载详情与本地导入详情共用普通版本的紧凑卡片样式。
  * 名称和校验结果由父页面持有；本组件只回传编辑，不持有安装任务或读取文件系统，
  * 因此详情关闭后不会修改已经快照并入队的安装意图。
@@ -26,7 +30,7 @@ export struct ModpackNameInput {
           .padding({ left: 8, right: 12 })
       }.width('100%').padding({ left: 12 }).backgroundColor(this.theme.bgInput).borderRadius(10)
       if (this.error.length > 0) {
-        Text(this.error).fontSize(11).fontColor(this.theme.error).width('100%')
+        Text(this.error).fontSize(11).fontColor(this.theme.errorText).width('100%')
       } else {
         Text('重名时自动添加序号').fontSize(11).fontColor(this.theme.textHint).width('100%')
       }

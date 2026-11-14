@@ -1,15 +1,19 @@
 import { forwardInputObservationTestWant, isInputObservationTestWant } from '../components/InputObservationTestWant';
 import { GameLayoutJournal, GameLayoutImportReport } from '../runtime/GameLayoutJournal';
 import { runLogShareConnectivityWant } from '../components/LogShareConnectivityProbe';
+import { runJdkQualificationWant } from '../devtools/JdkQualificationWant';
+import { installRuntimeDownloadValidation } from '../devtools/RuntimeDownloadValidation';
 import { EntryDownloadEngine, EntryNativeLogSink, EntryLedgerScopeSink, installProcessNativeBridges } from '../runtime/ProcessRuntime';
 import { stopGameSession } from '../runtime/GameSessionHost';
 import { getGameExportCoordinator } from '../export/GameExportCoordinator';
 import { GameRunAdmission } from '../runtime/GameRunAdmission';
+import { ModAudioRuntime } from '../runtime/ModAudioRuntime';
 import { PlatformDfxWatcher } from '../runtime/PlatformDfxWatcher';
 import { SessionRecoveryRuntime } from '../runtime/SessionRecoveryRuntime';
 import { SideloadUpdateService } from '../sideload/SideloadUpdateService';
 import { InstallFence } from '../sideload/InstallFence';
 import { runSideloadUpdateTestWant } from '../sideload/SideloadUpdateTestWant';
+import { isModpackDownloadTestWant, runModpackDownloadTestWant } from '../components/ModpackDownloadTestWant';
 import { setRelayNativeBridge, RelayStatsNative, RelayNativeBridge } from 'feature_core';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
@@ -21,7 +25,7 @@ import { window } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import testNapi from 'libentry.so';
 import { ProductLauncherWindowChrome } from 'entry/ProductLauncherWindowChrome';
-import { DownloadManager } from 'feature_core';
+import { DownloadManager, getTaskActivityOwner } from 'feature_core';
 import {
   setDownloadNativeEngine, DownloadNativeEngine,
   NativeFetchTextResult, NativeTaskInfo,
@@ -56,6 +60,10 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics, testNapi.getDiagnosticCapabilities());
+    // 冷QA请求单独保存，普通初始化只看空Want；不得让同一个外部请求同时触发导入、
+    // 桌面、通知、自更新或其他诊断动作。这里只隔离参数，仍完整初始化Native/CA/存储。
+    const modpackQaWant: Want | undefined = isModpackDownloadTestWant(want) ? want : undefined;
+    if (modpackQaWant !== undefined) want = {};
     // 外部自动化只使用exported的启动器入口，受控操作内部转发到已存在的私有游戏Ability。
     // 独立固定参数通道不复用任意导入URL、日志分享或安装事务参数。
     if (isInputObservationTestWant(want)) {
@@ -72,6 +80,7 @@ export default class EntryAbility extends UIAbility {
     // 所有 @Entry 页面后续都通过 AppStorage.get('uiAbilityContext') 取，不再调
     // 已弃用的 getContext(this)。详见 docs/guides/api-migration-2026-05.md。
     AppStorage.setOrCreate<common.UIAbilityContext>('uiAbilityContext', this.context);
+    ModAudioRuntime.attach(this.context);
     // 导出恢复仅属于启动器进程：识别旧任务中断，不自动重启压缩或续用失效文档授权。
     // 异常保留任务原件，不阻断首页初始化；用户可在版本管理导出页重新检查。
     getGameExportCoordinator().recover(this.context).catch((error: Error): void => {
@@ -161,6 +170,10 @@ export default class EntryAbility extends UIAbility {
     // 须在 initializeCaBundle 之前完成（downloadEngine 是 CA 初始化的前置）。
     try {
       this.downloadEngine_ = installProcessNativeBridges();
+      installRuntimeDownloadValidation(this.context,this.downloadEngine_);
+      // 生命周期服务属于启动器进程。此处只绑定目录，不读取历史或扫描日志；
+      // 原HistoryStore初始化继续由既有首页准备边界完成，领域入口不再依赖页面先装配owner。
+      getTaskActivityOwner().configure(this.context.filesDir, this.context.getApplicationContext().filesDir);
       AppLogger.info(TAG, 'All native bridges injected', LOG_DOMAIN_LAUNCH);
     } catch (e) {
       AppLogger.error(TAG, 'Failed to inject native bridges — download/launch will not work', e as Object, LOG_DOMAIN_LAUNCH);
@@ -189,7 +202,10 @@ export default class EntryAbility extends UIAbility {
     LauncherStartupRuntime.install(async (): Promise<void> => {
       await this.cleanupOrphanSandboxes();
       this.completeDeferredStartup_();
+      // QA 入口必须在真实 Native bridge/CA/存储初始化后调用，避免测试自行补装业务环境。
+      if (modpackQaWant !== undefined) { runModpackDownloadTestWant(this.context, modpackQaWant); return; }
       runLogShareConnectivityWant(this.context, want);
+      runJdkQualificationWant(this.context, want);
       runSideloadUpdateTestWant(this.context, want);
     });
     AppLogger.info(TAG, 'Ability onCreate; optional boot work awaits splash first frame', LOG_DOMAIN_LAUNCH);
@@ -224,6 +240,8 @@ export default class EntryAbility extends UIAbility {
   /** 「打开方式」热启动：app 已在运行时点击 .json 文件会走这里，暂存 uri 触发导入。 */
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     if (isInputObservationTestWant(want)) { forwardInputObservationTestWant(this.context,want); return; }
+    // 专用 Want 只转发固定夹具，不再消费任意导入 URI、桌面或安装事务附加参数。
+    if (runModpackDownloadTestWant(this.context, want)) return;
     // 自动重启也可能抵达用户已打开的新实例，热启动与冷启动使用同一身份核验。
     if (!ProductBuildProfile.storeChannel) {
       const id = want.parameters?.['amclSideloadUpdateTransaction'];
@@ -241,6 +259,7 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate<number>('graphicsRecoverySignal', returnedActivity);
     }
     runLogShareConnectivityWant(this.context, want);
+    runJdkQualificationWant(this.context, want);
     runSideloadUpdateTestWant(this.context, want);
     const uri = this.extractImportUri(want);
     if (uri.length > 0) {
@@ -324,6 +343,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    getTaskActivityOwner().setForeground(false);
+    ModAudioRuntime.detach();
     LauncherStartupRuntime.detach();
     // 同进程游戏的运行资源归会话；无游戏宿主时空操作，不触碰管理侧的 JVM/下载寿命。
     stopGameSession('entry-ability-destroy');
@@ -342,10 +363,10 @@ export default class EntryAbility extends UIAbility {
       AppLogger.warn(TAG, 'download callback detach failed', e as Object, LOG_DOMAIN_LAUNCH);
     }
 
-    // 在关闭日志前先 flush 一次，确保最后一条 onDestroy 日志能落盘
+    // writer与下载引擎、活动owner同属进程。Ability销毁只刷出生命周期边沿，不能关闭
+    // 仍在下载/导出或补写的scope；正常进程退出由Native退出hook drain并join，重建Ability复用writer。
     AppLogger.info(TAG, 'Ability onDestroy (download callbacks detached; process engine retained)', LOG_DOMAIN_LAUNCH);
     AppLogger.flush();
-    try { testNapi.amclLogShutdown(); } catch (e) { /* ignore */ }
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -409,6 +430,9 @@ export default class EntryAbility extends UIAbility {
   };
 
   onForeground(): void {
+    // 前台wake与退避timer共享一个补写事务；日志坏盘不在后台常驻轮询。
+    getTaskActivityOwner().setForeground(true);
+    ModAudioRuntime.setForeground(true);
     // 平板隔离仍是触控窗口；恢复取决于实际进程边界，不能再以 desktopWindow 排除平板。
     try {
       if (ProductInputProfile.selection().isolatedGameProcess) this.recoverExitedGameSessions_();
@@ -454,6 +478,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onBackground(): void {
+    getTaskActivityOwner().setForeground(false);
+    ModAudioRuntime.setForeground(false);
     // 后台期间系统可能不再派发触摸 UP/CANCEL；与 GameAbility 保持同一取消边界。
     // 三端平级：先经注册表对每个已注册端各说一次，再 native 兜底。
     // 启动器进程通常没有端注册（游戏页面不在这里），此时 releaseAllEnds 是空转 ——

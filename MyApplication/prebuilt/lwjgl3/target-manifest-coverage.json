@@ -71,6 +71,7 @@
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
           "key": "org.lwjgl.freetype.libname",
+          "kind": "hap-absolute",
           "value": "libfreetype.so"
         }
       }
@@ -111,12 +112,13 @@
       "native": {
         "kind": "bundle-file",
         "artifact": "entry/libs/arm64-v8a/libSDL3.so",
-        "size": 2251080,
-        "sha256": "921002aeab93bc2132253449e8ff60a6bc5bc4d51041b7c998b420bd08818816",
-        "requiredSymbols": ["SDL_Init"],
+        "size": 2257888,
+        "sha256": "853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064",
+        "requiredSymbols": ["SDL_Init", "SDL_AMCL_AuxHostProtocolV2"],
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
           "key": "org.lwjgl.sdl.libname",
+          "kind": "hap-absolute",
           "value": "libSDL3.so"
         }
       }
@@ -133,7 +135,8 @@
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
           "key": "org.lwjgl.shaderc.libname",
-          "value": "shaderc"
+          "kind": "hap-absolute",
+          "value": "libshaderc.so"
         }
       }
     },
@@ -154,7 +157,8 @@
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
           "key": "org.lwjgl.spvc.libname",
-          "value": "spirv-cross"
+          "kind": "hap-absolute",
+          "value": "libspirv-cross.so"
         }
       }
     },

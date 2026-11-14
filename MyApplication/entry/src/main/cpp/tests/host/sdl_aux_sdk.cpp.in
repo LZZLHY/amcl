@@ -1,0 +1,130 @@
+// 真实SDK host函数与入口前缀；只以桩承接系统线程、driver和root owner边界。
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <cstdarg>
+#include "@POLICY@"
+#include "@GRAPHICS_ABI@"
+#include "@HOST_HEADER@"
+#undef assert
+#define assert(v) do { if(!(v)){std::fprintf(stderr,"line=%d failed: %s\n",__LINE__,#v);std::exit(7);} }while(0)
+using Uint32=uint32_t;using SDL_ThreadID=uint64_t;using SDL_InitFlags=uint32_t;using SDL_PropertiesID=uint32_t;
+struct SDL_GPUDevice { int unused; };
+struct SDL_AtomicInt { int value=0; };using SDL_SpinLock=int;
+static uint64_t pidValue=11,tidValue=20;static const char* descriptor=nullptr;
+static int locks=0,lockCalls=0,errors=0,mainReadyCalls=0,hostCalls=0,peekCalls=0,subsystemEffects=0,videoEffects=0,gpuEffects=0,cleanupEffects=0;
+static bool runtimeValid=true,imageValid=true,malformedResponse=false,retireRace=false,hostAlive=false;
+static bool retireOnClaim=false,retireOnFirstPeek=false,retireDuringDriver=false;
+static SDL_ThreadID SDL_MainThreadID=0,SDL_EventsThreadID=0,SDL_VideoThreadID=0;
+static amcl::graphics::SdlAuxRuntimePolicy policy;
+static AmclGraphicsRuntimeV1 runtime{};
+#define SDL_PLATFORM_OPENHARMONY 1
+#define SDL_VIDEO_DRIVER_OPENHARMONY 1
+#define SDL_LOG_CATEGORY_SYSTEM 0
+#define SDL_INIT_VIDEO 0x20u
+#define SYS_gettid 1
+static uint64_t fakePid(){return pidValue;}
+static long fakeSyscall(int){return static_cast<long>(tidValue);}
+#define getpid fakePid
+#define syscall fakeSyscall
+static SDL_ThreadID SDL_GetCurrentThreadID(){return tidValue+900;}
+static const char* SDL_getenv_unsafe(const char*){return descriptor;}
+static void SDL_LockSpinlock(int*){assert(locks==0);++locks;++lockCalls;}
+static void SDL_UnlockSpinlock(int*){assert(locks==1);--locks;}
+static int SDL_GetAtomicInt(SDL_AtomicInt* p){return p->value;}
+static void SDL_SetAtomicInt(SDL_AtomicInt* p,int v){p->value=v;}
+static bool SDL_CompareAndSwapAtomicInt(SDL_AtomicInt*p,int old,int value){if(p->value!=old)return false;p->value=value;return true;}
+static bool SDL_SetError(const char*,...){assert(!locks);++errors;return false;}
+static bool SDL_ClearError(){return true;}
+static void SDL_PushError(){}
+static void SDL_PopError(){}
+static void retireRoot(){assert(policy.retireSession(11,20,30)>=0);hostAlive=false;}
+static void SDL_LogInfo(int,const char*,...){assert(!locks);}
+static void SDL_SetMainReady(){++mainReadyCalls;SDL_MainThreadID=SDL_GetCurrentThreadID();}
+static bool AMCL_GraphicsRuntimeRequired(){return runtimeValid;}
+static const AmclGraphicsRuntimeV1* AMCL_GraphicsRuntime(){return runtimeValid?&runtime:nullptr;}
+static bool SDL_AMCL_ValidateInputRuntimeV1(bool){return imageValid;}
+static int AMCL_SdlInputHostIdentityV1(){AMCL_SdlHostDescriptor d{};return AMCL_SdlHostReadDescriptor(descriptor,pidValue,&d);}
+@HOST_BLOCK@
+@CLEANUP_GATE@
+#define SDL_QuitSubSystem TestCleanup
+@INIT_GATE@
+#undef SDL_QuitSubSystem
+@VIDEO_GATE@
+@GPU_GATE@
+
+static int owner(uint32_t operation,const AmclSdlAuxRequestV1* request,AmclSdlAuxResultV1* output){
+    assert(!locks);++hostCalls;int result=AMCL_SDL_AUX_INVALID;
+    assert(request->structSize==sizeof(*request)&&request->abiVersion==1);
+    if(operation==AMCL_SDL_AUX_CLAIM){
+        if(!imageValid)return AMCL_SDL_AUX_FOREIGN_INSTANCE;
+        result=policy.claim(pidValue,static_cast<int32_t>(tidValue),request->launchThreadId,request->sessionId,request->instanceCookie,true);
+        if(result==AMCL_SDL_AUX_FIRST)hostAlive=true;
+    }else if(operation==AMCL_SDL_AUX_QUIT){result=policy.quit(pidValue,static_cast<int32_t>(tidValue),request->sessionId,request->instanceCookie);if(result>=0)hostAlive=false;}
+    else if(operation==AMCL_SDL_AUX_PEEK_ACTIVE){++peekCalls;if(!hostAlive)return AMCL_SDL_AUX_RETIRED;result=policy.claim(pidValue,static_cast<int32_t>(tidValue),request->launchThreadId,request->sessionId,request->instanceCookie,false);}
+    policy.describe(result,*output);
+    // root真实退休与SDK局部提交交错，保留已返回的旧响应以验证后续复核。
+    if((retireOnClaim&&operation==AMCL_SDL_AUX_CLAIM)||
+       (retireOnFirstPeek&&operation==AMCL_SDL_AUX_PEEK_ACTIVE&&peekCalls==1))retireRoot();
+    if(malformedResponse)output->ownerThreadId++;
+    if(retireRace && operation==AMCL_SDL_AUX_CLAIM)SDL_amclHostRuntime.state=1;
+    return result;
+}
+static void reset(const char* text,uint64_t tid=20){
+    descriptor=text;pidValue=11;tidValue=tid;locks=lockCalls=errors=mainReadyCalls=hostCalls=peekCalls=subsystemEffects=videoEffects=gpuEffects=cleanupEffects=0;
+    runtimeValid=imageValid=true;malformedResponse=retireRace=hostAlive=false;
+    retireOnClaim=retireOnFirstPeek=retireDuringDriver=false;
+    SDL_MainThreadID=SDL_EventsThreadID=SDL_VideoThreadID=0;
+    SDL_amclHostRuntime={};SDL_amclHostMode={};SDL_amclHostPumpObserved={};SDL_amclHostPid={};SDL_amclHostThread=0;
+    policy=amcl::graphics::SdlAuxRuntimePolicy{};assert(policy.configure(11,20,30,41,42)>0);
+    AmclSdlAuxRequestV1 proof{};proof.processId=11;proof.display=(void*)1;proof.context=(void*)2;proof.drawSurface=(void*)3;
+    proof.nativeWindow=(void*)4;proof.contextPermit=5;proof.presentationToken=6;proof.generation=7;proof.resourceEpoch=8;
+    assert(policy.publishVerified(proof,21)>0);
+    runtime={};runtime.structSize=sizeof(runtime);runtime.abiVersion=1;runtime.processId=11;runtime.sdlAuxOperation=owner;
+}
+int main(){
+    reset(nullptr);assert(TestInit(0));assert(mainReadyCalls==0&&hostCalls==0&&subsystemEffects==1);
+    reset("1:11:20:30");assert(TestInit(0));assert(mainReadyCalls==1&&hostCalls==0);assert(SDL_AMCL_ValidateEventThread(false));
+    assert(SDL_AMCL_RetireHostRuntime());assert(!TestInit(0));
+    reset("1:11:20:30",21);assert(!TestInit(0));assert(mainReadyCalls==0&&subsystemEffects==0);
+    reset("2:11:20:30:1");assert(TestInit(0));assert(mainReadyCalls==1&&subsystemEffects==1);
+    assert(TestInit(0));assert(mainReadyCalls==1);const int priorPeek=peekCalls;assert(SDL_AMCL_ValidateEventThread(false));assert(peekCalls==priorPeek+1);
+    reset("2:11:20:30:1",21);assert(TestInit(0));assert(SDL_amclHostRuntime.tid==21&&SDL_amclHostRuntime.launch_tid==20);
+    assert(SDL_AMCL_ValidateEventThread(true));policy.revoke((void*)2,5);assert(TestInit(0));
+    const int before=hostCalls;tidValue=22;assert(!SDL_AMCL_ValidateEventThread(false));assert(!TestInit(0));assert(hostCalls==before);
+    tidValue=21;assert(SDL_AMCL_RetireHostRuntime());assert(!hostAlive);assert(SDL_AMCL_RetireHostRuntime());assert(!TestInit(0));
+    reset("2:11:20:30:1",22);assert(!TestInit(0));assert(!mainReadyCalls&&!subsystemEffects);
+    reset("2:11:20:30:1",21);runtime.structSize=AMCL_GRAPHICS_RUNTIME_V1_CORE_SIZE;assert(!TestInit(0));assert(!hostCalls&&!mainReadyCalls);
+    reset("2:11:20:30:1",21);runtime.sdlAuxOperation=nullptr;assert(!TestInit(0));assert(!mainReadyCalls);
+    reset("2:11:20:30:1",21);malformedResponse=true;assert(!TestInit(0));assert(!mainReadyCalls&&!subsystemEffects);
+    reset("2:11:20:30:1",21);retireRace=true;assert(!TestInit(0));assert(SDL_amclHostMode.value<0&&!hostAlive);
+    reset("2:11:20:30:1",21);retireOnClaim=true;assert(!TestInit(0));assert(!mainReadyCalls&&!subsystemEffects);
+    reset("2:11:20:30:1",21);retireOnFirstPeek=true;assert(!TestInit(0));assert(!subsystemEffects&&SDL_amclHostMode.value<0);
+    reset("2:11:20:30:1",21);retireDuringDriver=true;assert(!TestInit(0));assert(subsystemEffects==1&&cleanupEffects==1);
+    reset("2:11:20:30:1",21);SDL_MainThreadID=9999;assert(!TestInit(0));assert(!mainReadyCalls&&!hostAlive);
+    reset("2:11:20:30:1",21);assert(TestInit(0));hostAlive=false;assert(!SDL_AMCL_ValidateEventThread(false));
+    reset("2:11:20:30:1",21);assert(TestInit(0));
+    const int cleanupBefore=cleanupEffects;tidValue=22;TestCleanup(0);assert(cleanupEffects==cleanupBefore);
+    tidValue=21;TestCleanup(0);assert(cleanupEffects==cleanupBefore+1);
+    assert(SDL_AMCL_RetireHostRuntime());TestCleanup(0);assert(cleanupEffects==cleanupBefore+2);
+    reset("2:11:20:30:1",21);assert(TestInit(0));pidValue=12;
+    const int priorErrors=errors,priorLocks=lockCalls,priorHost=hostCalls;
+    assert(!SDL_AMCL_ValidateEventThread(false));assert(!TestInit(0));assert(!SDL_AMCL_RetireHostRuntime());
+    TestCleanup(0);assert(!cleanupEffects);
+    descriptor=nullptr;assert(!TestInit(0));TestCleanup(0);assert(!SDL_AMCL_RetireHostRuntime());
+    descriptor="2:12:21:31:1";assert(!TestInit(0));TestCleanup(0);assert(!SDL_AMCL_RetireHostRuntime());
+    assert(!cleanupEffects);
+    assert(errors==priorErrors&&lockCalls==priorLocks&&hostCalls==priorHost);
+    reset("2:11:20:30:1",21);assert(!TestInit(SDL_INIT_VIDEO|0x10));assert(!TestVideo(nullptr));assert(!TestGpu(0));
+    assert(!mainReadyCalls&&!hostCalls&&!subsystemEffects&&!videoEffects&&!gpuEffects);
+    reset("1:11:20:30");assert(TestVideo(nullptr));assert(TestGpu(0));
+    // 首个host入口已锁PID、尚未SetMainReady发布mode的fork窗口；env缺失或重写均不得回standalone。
+    reset("2:11:20:30:1",21);assert(SDL_AMCL_CheckProcess());assert(SDL_amclHostMode.value==0);
+    pidValue=12;descriptor=nullptr;const int earlyErrors=errors,earlyLocks=lockCalls;
+    assert(!SDL_AMCL_ValidateEventThread(false));assert(!TestVideo(nullptr));assert(!TestGpu(0));
+    descriptor="2:12:21:31:1";assert(!SDL_AMCL_ValidateEventThread(false));assert(!TestVideo(nullptr));assert(!TestGpu(0));
+    assert(errors==earlyErrors&&lockCalls==earlyLocks&&!videoEffects&&!gpuEffects&&!hostCalls);
+    reset("2:11:20:30:2");assert(!TestInit(0));assert(!mainReadyCalls&&!subsystemEffects);
+    std::puts("actual SDK host/entry gates: primary, auxiliary, thread, instance, fork, retirement and video denial passed");
+}

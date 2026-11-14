@@ -20,6 +20,10 @@ struct TouchGroupReceipt {
     bool enabled = false, pending = false;
     std::vector<uint8_t> mask;
     std::vector<uint64_t> epochs;
+    /** 二级组可隐藏同组中除当前入口外的控件，按控件投影避免UI用整组mask猜测。 */
+    std::vector<uint8_t> controlMask;
+    std::vector<uint64_t> controlEpochs;
+    std::vector<int> controlRanks;
 };
 TouchGroupReceipt ReadTouchGroups(uint64_t token);
 bool ConfirmTouchGroups(uint64_t token, uint64_t revision);

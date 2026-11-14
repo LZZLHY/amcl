@@ -68,6 +68,27 @@ export function activityCategory(record: DownloadHistoryRecord): string {
   return record.loaderType.indexOf('mod-') === 0 ? ActivityCategory.MOD_INSTALL : ActivityCategory.DOWNLOAD;
 }
 
+/** 所有已接入业务共享中文类别；首页使用短标签，完整账本不再漏出内部枚举字符串。 */
+export function activityCategoryLabel(category: string, compact: boolean = false): string {
+  if (category === ActivityCategory.APP_UPDATE) return compact ? '更新' : '应用更新';
+  if (category === ActivityCategory.APP_UPDATE_DOWNLOAD) return compact ? '下载' : '更新包下载';
+  if (category === ActivityCategory.DOWNLOAD) return '下载';
+  if (category === ActivityCategory.MOD_INSTALL) return '安装';
+  if (category === ActivityCategory.LAUNCH) return '启动';
+  if (category === ActivityCategory.REPAIR) return '修复';
+  if (category === ActivityCategory.JDK) return 'JDK';
+  if (category === ActivityCategory.ACCOUNT) return '账户';
+  if (category === ActivityCategory.MODPACK) return '整合包';
+  if (category === ActivityCategory.GAME_EXPORT) return compact ? '导出' : '游戏包导出';
+  if (category === ActivityCategory.VERSION_MANAGE) return compact ? '版本' : '版本管理';
+  if (category === ActivityCategory.RESOURCE_MANAGE) return compact ? '资源' : '资源管理';
+  if (category === ActivityCategory.STORAGE) return '迁移';
+  if (category === ActivityCategory.SKIN) return '皮肤';
+  if (category === ActivityCategory.VERIFY) return '校验';
+  if (category === 'diagnostic' || category === 'render-diagnostic') return '诊断';
+  return '操作';
+}
+
 /** 常见生成型版本 ID 在列表中使用可辨认短名；自定义名称保持原样，详情仍保留完整 ID。 */
 export function activityDisplayTitle(record: DownloadHistoryRecord): string {
   const title: string = record.title || record.versionName;

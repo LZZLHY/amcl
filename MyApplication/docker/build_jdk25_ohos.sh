@@ -8,7 +8,7 @@ set -e
 #  状态 (2026-05-30): JDK 25 上线编译路径（MC 26.1+ YY.D.H 纪元首个要求 Java 25）
 #  - 8 个 OHOS 真 patch（与 21 同构，由 docker/port_jdk25_patches.sh 生成）
 #  - 默认上游：jdk25u jdk-25.0.4+3 (commit e8f9ebe5e)
-#  - 输出：/output/jdk25-ohos-runtime-audio-rc2.zip（与 21 的 jdk21-ohos-full.zip 同构）
+#  - 输出：$JDK_OUTPUT（与 21 的 jdk21-ohos-full.zip 同构）
 #  - 严格对齐 build_jdk21_ohos.sh，仅替换版本号 + boot JDK 25
 #
 #  用法:
@@ -38,6 +38,8 @@ OHOS_SYSROOT=${OHOS_SYSROOT:-/ohos-sysroot}
 TOOLCHAIN_DIR=${TOOLCHAIN_DIR:-/ohos-toolchain}
 WORK_DIR=/build
 JOBS=${JOBS:-$(nproc)}
+# 统一产物身份：配方、打包和收尾检查共用本次请求的新文件名。
+export JDK_OUTPUT="${JDK_OUTPUT:-/output/jdk25-ohos-${AMCL_RUN_ID:-candidate}.zip}"
 
 # Boot JDK：jdk25u build 需要 JDK 24 或 25，必须强制用 Temurin 25（如果存在）
 # 注意：Dockerfile 把 JAVA_HOME export 成了 JDK 17，所以这里不能依赖 ${JAVA_HOME:-...}
@@ -162,62 +164,45 @@ fi
 echo "  patches: $PATCH_DIR"
 echo "  stubs:   $STUBS_SRC_DIR"
 
-# 仅重放series声明的活动补丁；历史0006/0007原件仍用于追溯，不能通配应用。
+# 仅重放series声明的活动补丁；历史0005/0006/0007原件留作追溯，不通配应用。
 python3 /build/scripts/apply_jdk_patches.py --patch-dir "$PATCH_DIR" --target /build/jdk25u
-# 编译前核对完整上游安全点文件，防止旧绕过换名回生；不改变宿主信号链。
-python3 /build/scripts/verify_jdk25_safepoint.py --source /build/jdk25u \
+# 编译前核对完整上游安全点和普通信号入口，防止旧绕过换名回生；宿主桥独立保留。
+python3 /build/scripts/verify_jdk25_safepoint.py --major 25 --source /build/jdk25u \
     --patch-dir "$PATCH_DIR" --inputs /prebuilt/jdk/build-inputs.json
 
 # --- Step 5: Configure ---
 echo ""
 echo "[5/7] Running configure..."
 
-# 预先创建 libcxxabi_shim.so (configure 链接测试需要)
-echo "  Pre-creating libcxxabi_shim.so for link tests..."
-mkdir -p /output/jdk-libs
-# 清理上一次 post-build 留下的 libjli.so（rebuild_libjli.sh 会把版本脚本受限的
-# libjli.so 拷到 /output/jdk-libs/）。如果这个文件残留，下次 jdk25 build 的
-# javac/jrunscript/jstatd 等可执行文件 link 时会优先命中它（因为 /output/jdk-libs
-# 在 -L 列表前面），结果出现 "JLI_PreprocessArg undefined" 这种诡异链接错误。
-rm -f /output/jdk-libs/libjli.so 2>/dev/null || true
-
-# 关键 include path：clang 默认只看 /usr/include；OHOS musl 的 bits/* 在 per-arch 子目录
-# /usr/include/aarch64-linux-ohos/。stdlib.h 会 #include <bits/alltypes.h>，
-# 不加这个 -I 整个 sysroot 都用不了。
+# 链接真实应用 ABI；兼容外壳只保留 SONAME，不定义 guard/EH/RTTI。
 ARCH_INCLUDE="-I${OHOS_SYSROOT}/usr/include/aarch64-linux-ohos"
-
-/usr/bin/ohos-clang --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} $ARCH_INCLUDE \
-    -c -fPIC -o /tmp/eh_stubs.o "$STUBS_SRC_DIR/eh_stubs.c"
-# 注意 -nostdlib：OHOS sysroot 没有 gcc 风格的 crt*.o；clang 默认会去找 host 的
-# /usr/lib/gcc/* 链接 crti.o / crtbeginS.o，链接器会失败。
-# -nostdlib 同时禁用 startfiles 和 default libs；shim 不需要 startfile（它就是个共享库），
-# libc 自己用 -lc 显式带。
-/usr/bin/ohos-clang++ --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} $ARCH_INCLUDE \
-    -shared -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti \
-    -nostdlib -L${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos \
-    -o /output/jdk-libs/libcxxabi_shim.so "$STUBS_SRC_DIR/cxxabi_shim.cpp" /tmp/eh_stubs.o \
-    -fuse-ld=lld -Wl,-soname,libcxxabi_shim.so -lc
-echo "  libcxxabi_shim.so ready"
+bash /build/scripts/prepare_jdk_abi.sh 25 /output/jdk-libs
 
 export BUILD_CC=/usr/bin/clang-15
 export BUILD_CXX=/usr/bin/clang++-15
 
-LIBCXX_INC=/usr/lib/llvm-15/include/c++/v1
+LIBCXX_INC=${AMCL_JDK_CXX_INCLUDE:?}
 
 # 关键：让 Ubuntu clang 使用 Huawei NDK 的 compiler-rt + crt 启动文件。
 # - -rtlib=compiler-rt 让 clang 使用 compiler-rt 而不是 libgcc
-# - -unwindlib=none 不需要 unwinder（cxxabi_shim.cpp 自带 stub）
+# - -unwindlib=none 禁止编译器隐式添加另一套 unwind；真实 unwind 在 libc++_shared 中
 # - -B 加 sysroot 的 aarch64-linux-ohos 子目录到 crt 搜索路径
 # 提前条件：/usr/lib/llvm-15/lib/clang/15.0.7/lib/linux/libclang_rt.builtins-aarch64.a
 # 由 docker entrypoint 或 setup_toolchain.sh 从 Huawei NDK 复制好。
 TARGET_LIB="${OHOS_SYSROOT}/usr/lib/aarch64-linux-ohos"
 
-COMMON_CFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
-COMMON_CXXFLAGS="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__MUSL__ -DMUSL_LIBC -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_MUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -stdlib=libc++ -nostdlib++ -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
+COMMON_CFLAGS="-I/prebuilt/jdk/25/shims ${AMCL_JDK_RESOURCE_FLAG} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0 -D__MUSL__ -DMUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
+COMMON_CXXFLAGS="-I/prebuilt/jdk/25/shims ${AMCL_JDK_RESOURCE_FLAG} --target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fPIC -D__OHOS__=1 -D__OHOS_FAMILY__=1 -D__OHOS_Major__=0 -D__MUSL__ -DMUSL_LIBC $ARCH_INCLUDE -I/build/stub-headers -isystem $LIBCXX_INC -stdlib=libc++ -nostdlib++ -nostdinc++ -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none"
 
 # 固定上游源码时间，避免构建时间成为未登记输入。
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-bash configure \
+# test-image默认不会带gtest；显式配置真实框架，不能导出空清单后声称已接入。
+test_configure=()
+if [ "${AMCL_JDK_TEST_IMAGE:-0}" = 1 ]; then
+    python3 /build/scripts/prepare_gtest.py --source /build/upstream-googletest --receipt /build/upstream-googletest.json
+    test_configure+=(--with-gtest=/build/upstream-googletest)
+fi
+bash configure "${test_configure[@]}" \
     `# 2026-08-29：显式声明构建主机，别让 config.guess 自己猜。` \
     `# Docker Desktop 的容器跑在 WSL2 VM 里，uname -r 带 "microsoft-standard-WSL2"，` \
     `# 而 jdk25u 的 config.guess 会据此判成 x86_64-pc-wsl ⇒ openjdk-build os-cpu 变成` \
@@ -234,7 +219,7 @@ bash configure \
     --with-boot-jdk=$JAVA_HOME \
     --with-extra-cflags="$COMMON_CFLAGS" \
     --with-extra-cxxflags="$COMMON_CXXFLAGS" \
-    --with-extra-ldflags="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fuse-ld=lld -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none -nostdlib++ -L/output/jdk-libs -lcxxabi_shim" \
+    --with-extra-ldflags="--target=aarch64-linux-ohos --sysroot=${OHOS_SYSROOT} -fuse-ld=lld -B${TARGET_LIB} -L${TARGET_LIB} -rtlib=compiler-rt -unwindlib=none -nostdlib++ -L/output/jdk-libs -lcxxabi_shim -lc++_shared" \
     --x-includes=/dev/null \
     --x-libraries=/dev/null \
     --with-cups-include=/build/stub-cups \
@@ -263,7 +248,10 @@ echo "  Configure complete"
 # --- Step 6: Build ---
 echo ""
 echo "[6/7] Building (JOBS=$JOBS)..."
-gmake images JOBS=$JOBS 2>&1 | tee /build/build-25.log
+# 上游 test-image 与正式映像共用已冻结输入；是否实际运行另由 jtreg/gtest 收据证明。
+build_targets=(images)
+if [ "${AMCL_JDK_TEST_IMAGE:-0}" = 1 ]; then build_targets+=(test-image); fi
+gmake "${build_targets[@]}" JOBS=$JOBS 2>&1 | tee /build/build-25.log
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
     echo "BUILD FAILED! Last 50 lines:"
@@ -295,10 +283,11 @@ echo "============================================"
 echo " BUILD SUCCESSFUL!"
 echo " JDK:     $IMAGE_DIR"
 echo " Version: $(grep JAVA_VERSION= $IMAGE_DIR/release | head -1)"
-echo " Output:  /output/jdk25-ohos-runtime-audio-rc2.zip"
+echo " Output:  $JDK_OUTPUT"
 echo "============================================"
 du -sh $IMAGE_DIR
-ls -lh /output/jdk25-ohos-runtime-audio-rc2.zip 2>/dev/null || echo "WARNING: pack_jdk_full.sh did not produce zip!"
+[ -s "$JDK_OUTPUT" ] || { echo "ERROR: missing validated runtime: $JDK_OUTPUT"; exit 1; }
+ls -lh "$JDK_OUTPUT"
 
 echo ""
 echo "Candidate runtime built; use the recorded remote validation plan before any immutable new release."

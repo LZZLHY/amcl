@@ -31,6 +31,12 @@ public:
     int claimPresentation(void*, uint64_t, uint32_t, uint64_t*);
     int movePresentation(uint64_t, void*, uint64_t);
     int releasePresentation(uint64_t);
+    // 只核验当前呈现租约，不转移/续期；返回后不得假设锁仍由调用方持有。
+    bool matchesPresentation(void*, uint64_t, uint64_t) const;
+    bool matchesPresentationIdentity(void*,uint64_t,uint64_t,uint64_t) const;
+    // 同一被引用NativeWindow从零面积恢复时，owner可能尚持旧发布代次；仅授权其
+    // 安全点处理当前窗口，返回当前代次供entry再次CAS，不移动呈现token或证明GPU连续。
+    uint64_t geometryCheckpointGeneration(void*, uint64_t, uint64_t) const;
     int beginInputPublication(int*, int*, uint64_t*);
     void endInputPublication();
     AmclWindowHostSnapshot snapshot() const;
@@ -51,6 +57,10 @@ private:
     // 公共旧 snapshot 的字节布局保持；epoch 仅通过尺寸可检查的新 broker 尾部输出。
     uint64_t resourceEpoch_ = 0;
     uint64_t geometryEpoch_ = 0;
+    // NativeWindow对象连续性与GPU资源epoch不同：零面积会退休GPU资源，但仍可由
+    // 原owner配置同一被引用对象；clear/publish即使同地址也必须拒绝原owner的配置。
+    uint64_t objectEpoch_ = 0;
+    uint64_t presentationObjectEpoch_ = 0;
     bool publicationReference_ = false;
     AmclNativeWindowLeaseLedger leases_;
     AmclPresentationOwner presenter_;

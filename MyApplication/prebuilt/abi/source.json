@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/openharmony/third_party_llvm-project.git",
+  "commit": "b7040c9fd2bce56bea2138cf7851f093e4bf3cce",
+  "paths": [
+    "libunwind/include",
+    "libunwind/src",
+    "libunwind/LICENSE.TXT"
+  ],
+  "patches": [
+    "0001-checked-fde-registration.patch"
+  ],
+  "files": [
+    "amcl_unwind_image.h",
+    "amcl_unwind_images.hpp"
+  ],
+  "sdkArchive": "llvm/lib/aarch64-linux-ohos/libc++_static.a",
+  "contract": "public vendor LLVM 15 unwinder plus exact SDK application ABI archive; not an exact commercial SDK source claim"
+}

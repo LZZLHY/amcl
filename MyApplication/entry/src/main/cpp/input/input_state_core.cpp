@@ -361,8 +361,9 @@ struct EventRecord {
     AmclInputSurfaceContextPayload lookContext{};
     uint32_t lookBackendMask=0;
     uint64_t l2KeyboardScope=0;
-    EventRecord(const AmclInputEvent& value, const std::set<uint64_t>& receivers)
-        : event(value), recipients(receivers), interactionOrder(amclInputNextInteractionOrder()) {}
+    // 接收者集合已由本次提交创建；移动其节点，避免每条记录再次分配同一份集合。
+    EventRecord(const AmclInputEvent& value, std::set<uint64_t> receivers)
+        : event(value), recipients(std::move(receivers)), interactionOrder(amclInputNextInteractionOrder()) {}
 };
 // `sequence` 是引用本包的那条文本事件被盖上的 sequence。READY 检查据此把“已读走、尚未
 // ReleasePacket”的包与该消费者最近一次读走的记录对应起来（见 `lastDeliveredSequence`）。
@@ -842,6 +843,42 @@ struct InputStateCore::Impl {
             ++obs.acceptedWithoutRecipient;
         }
         return true;
+    }
+
+    /** 单条相对位移的局部事务。调用方已持Core及交互顺序锁，并证明无需压力隔离。
+     * Append只改尾记录、顺序/时间与计数，hook按契约原子接受；失败只撤本次尾记录，
+     * 不触及held、文本、设备或consumer，更不为一个MOVE复制历史队列。容量不足沿完整batch。 */
+    int32_t SubmitRelativeWithoutPressure(AmclInputEvent event, uint64_t now,
+                                         AmclInputLookCommitV1 commit) {
+        const int32_t payload = ValidatePayload(event);
+        if (payload != AMCL_INPUT_OK) return payload;
+        const int32_t admission = Validate(event);
+        if (admission != AMCL_INPUT_OK) return admission;
+        if ((event.header.flags & AMCL_INPUT_EVENT_FLAG_PLATFORM_TIMESTAMP) != 0u &&
+            event.header.monotonicTimeNs > now) return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+        if (requireGlfwReady && !AnyBackendReady()) return AMCL_INPUT_ERROR_BACKEND_NOT_READY;
+        if (!HasSequenceBudget(1u)) return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
+        event.header.flags &= ~AMCL_INPUT_EVENT_FLAG_SYNTHETIC;
+        const auto beforeObs = obs;
+        const uint64_t beforeSequence = nextSequence, beforeTime = lastTimeNs;
+        const size_t beforeSize = queue.size();
+        const auto restore = [&]() {
+            if (queue.size() > beforeSize) queue.pop_back();
+            nextSequence = beforeSequence; lastTimeNs = beforeTime; obs = beforeObs;
+        };
+        try {
+            if (!Append(event, now, false)) { restore(); return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED; }
+            if (queue.size() != beforeSize) {
+                const auto& record = queue.back();
+                const AmclInputLookFactV1 fact{record.event, record.lookContext,
+                    record.interactionOrder, record.lookBackendMask, 0};
+                const int32_t result = commit(&fact, 1);
+                if (result != AMCL_INPUT_OK) { restore(); return result; }
+            }
+            return AMCL_INPUT_OK;
+        } catch (const std::bad_alloc&) {
+            restore(); return AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED;
+        }
     }
 
     void Prune() {
@@ -2381,6 +2418,17 @@ int32_t InputStateCore::SubmitEvent(const AmclInputEvent* event) {
     // unauthorised callback.
     if (IsAbsolutePositionBoundButton(known)) {
         return AMCL_INPUT_ERROR_INVALID_ARGUMENT;
+    }
+    // 稳态单条MOVE只追加一条，无压力隔离时无需全量候选。锁内核容量，不能用锁外
+    // 快照跳过真实背压；完整路径仍处理压力退休/多事件，接受与拒绝语义相同。
+    const auto relativeCommit = lookCommitHook.load(std::memory_order_acquire);
+    if (known.header.eventType == AMCL_INPUT_EVENT_POINTER_RELATIVE && relativeCommit && this == lookHookCore) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->queue.size() < kQueueCapacity) {
+            impl_->transactionL2KeyboardScope = impl_->l2KeyboardScope.load(std::memory_order_acquire);
+            InteractionBatch orderedBatch;
+            return impl_->SubmitRelativeWithoutPressure(known, NowNs(), relativeCommit);
+        }
     }
     // 新私有physical执行使用与batch相同的接受/回滚闭包。hook缺席的独立Core与显式旧
     // fixture仍保既有路线；新consumer必协商look端口，不能用缺hook谎称memo已存在。

@@ -1,3 +1,4 @@
+import { EditorPalette } from './TouchEditorTheme'
 /**
  * GameControls.ets — 虚拟按键（Control Schema v3 + publication v1 + ArkUI 辅助交互）
  *
@@ -24,7 +25,7 @@ import { TouchSurfaceController, TouchSurfaceCandidate } from './TouchSurfaceCon
 import { EntryTouchModalLease, acquireEntryTouchModal, releaseEntryTouchModal,
   reconcileEntryTouchModals, hasEntryTouchModal } from './EntryTouchModalBroker';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { DiagnosticPolicy } from 'commons';
+import { AppLogger, DiagnosticPolicy, LOG_DOMAIN_UI } from 'commons';
 import {
   GLFW_PRESS, GLFW_RELEASE,
   GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_1,
@@ -40,6 +41,7 @@ import {
 import { getLayoutStore, LayoutStore } from 'gamecontrol';
 import { LayoutEditor } from './LayoutEditor';
 import { InputSettingsEditor } from './InputSettingsEditor';
+import { GameResolutionPanel } from './GameResolutionPanel';
 import { SourceControlClient } from 'gamecontrol';
 import { GameGuiState, projectGameNavigation, SmallGuiGuard, FloatingMouseFrame,
   TouchGuideLayout, touchGuideLayout } from 'gamecontrol'
@@ -59,7 +61,7 @@ import { getInputDeviceMonitor, DeviceCapability } from 'gamecontrol';
 import { getPhysicalPointerEcho } from 'gamecontrol';
 import { getInputSourceRegistry, AmclInputSource, InputEnd, CallbackInputEnd } from 'gamecontrol';
 import { ControlGroupWitness } from 'gamecontrol';
-import { TouchGroupReceipt, TouchGroupSchema, TouchGroupCommandReceipt } from 'libentry.so';
+import { TouchGroupReceipt, TouchGroupSchema, TouchGroupSchemaDefinition, TouchGroupCommandReceipt } from 'libentry.so';
 import { compileTouchGroups } from './TouchGroupSchemaCompiler';
 import { joystickSector } from 'gamecontrol';
 import {
@@ -160,6 +162,9 @@ struct ButtonItemView {
   @Prop fgPressed: string
   @Prop bgNormal: string
   @Prop bgPressed: string
+  /** 真实边框与填充/文字共同受opacity控制，背景Alpha只属于bg颜色自身。 */
+  @Prop borderWidthVp: number = 0
+  @Prop strokeColorValue: string = '#DDFFFFFF'
   @Prop nodeId: string = ''
   @Prop groupVisible: boolean = true
   @Prop groupRank: number = 0
@@ -192,6 +197,7 @@ struct ButtonItemView {
       .fontColor(this.vis.pressed ? this.fgPressed : this.fgNormal)
       .borderRadius(this.borderRadiusVp)
       .backgroundColor(this.vis.pressed ? this.bgPressed : this.bgNormal)
+      .border({width:this.borderWidthVp,color:this.strokeColorValue})
       .opacity(this.opacityVal)
       .scale({ x: this.vis.pressed ? 0.95 : 1.0, y: this.vis.pressed ? 0.95 : 1.0 })
       .animation({ duration: 50, curve: Curve.EaseOut })
@@ -215,8 +221,15 @@ struct ButtonItemView {
 
 @Component
 export struct GameControls {
+  /** 应用工具显示快照；仅EditorOverlay/辅助面板读取，普通用户按键样式与输入发布不消费。 */
+  @Prop palette: EditorPalette = new EditorPalette()
   /** 仅为 Native 回执的呈现镜像，任何按钮回调不得直接翻转该数组。 */
   @State private groupMask: boolean[] = []
+  /** Native按控件发布的同修订投影，支持同组中只保留当前展开键的二级界面。 */
+  @State private groupControlMask: boolean[] = []
+  @State private groupControlRanks: number[] = []
+  private groupControlEpochs: string[] = []
+  private groupControlIndices: Map<string, number> = new Map<string, number>()
   @State private groupRevision: string = ''
   private groupEpochs: string[] = []
   private groupSchema: TouchGroupSchema | undefined = undefined
@@ -234,6 +247,7 @@ export struct GameControls {
   private groupControls: ControlItem[] = []
   private pendingGroupCommands: Map<string, TouchGroupCommandIntent> = new Map<string, TouchGroupCommandIntent>()
   private lastGroupIssue: string = ''
+  private groupApiFailureWarned: boolean = false
   /** 由页面传入经过实例隔离校验的目录，只读该游戏的动作绑定。 */
   @Prop @Watch('onTouchGameDirectoryChanged') gameDirectory: string = ''
   @Prop @Watch('onTouchGameDirectoryChanged') realGameVersion: string = ''
@@ -269,7 +283,10 @@ export struct GameControls {
   @State private runtimeLayout: RuntimeTouchLayout = new RuntimeTouchLayout()
   @State private uiPublicationToken: string = ''
   private presentedCandidateId: string = ''
-  @State private touchStatusMessage: string = ''
+  @State @Watch('onTouchStatusMessage_') private touchStatusMessage: string = ''
+  /** 通知只进入轻提示；短时间相同消息去重，不增加定时器或常驻命中区域。 */
+  private lastTouchNotice: string = ''
+  private lastTouchNoticeAt: number = 0
   /** 原会话provider只读状态，保存与激活分别显示；订阅本身不驱动输入或发布。 */
   @State private configurationStatusMessage: string = ''
   /** 同一次原报告的普通值缓存；不交给ArkUI观察代理，也不将展示过滤结果写回Store或运行域。 */
@@ -571,6 +588,8 @@ export struct GameControls {
   @State editing: boolean = false
   /** 同一模态下先选择任务，再挂载唯一编辑器；两个界面不共享未保存草稿。 */
   @State private editorMode: string = 'choose'
+  @State private editorSettingsProfile: string = ''
+  @State private editorSettingsSection: string = ''
   @State private editorChoiceBusy: boolean = false
   /** 读取草稿和取得输入暂停期间也独占请求，避免连续点击并发打开编辑覆盖层。 */
   private editorOpening: boolean = false
@@ -827,6 +846,8 @@ export struct GameControls {
       if (this.configurationStatusEditorPauseWait !== editorPauseWait) {
         this.configurationStatusEditorPauseWait = editorPauseWait
       }
+      // 编辑暂停本身不报错；真正的保存/激活状态仍保留原快照，仅把展示改为短暂小提示。
+      if (this.editing) this.showTouchNotice_(this.configurationHudMessage_())
     })
   }
 
@@ -845,6 +866,21 @@ export struct GameControls {
     const message: string = this.configurationStatusMessage
     if (!this.editing || !this.editorInputPaused || this.editorModal === undefined) return message
     return this.configurationStatusEditorPauseWait ? '' : message
+  }
+
+  /** 状态变化时才展示通知，避免启动等待或一次聊天失败留下左上角大框；不改变任何输入准入事实。 */
+  private onTouchStatusMessage_(): void {
+    this.showTouchNotice_(this.touchStatusMessage)
+  }
+
+  /** 与虚拟鼠标入口使用同一UIContext Toast；后台/销毁后不弹出，同文案三秒内不刷屏。 */
+  private showTouchNotice_(message: string): void {
+    if (!this.mounted || !this.pageActive || message.length === 0) return
+    const now: number = Date.now()
+    if (message === this.lastTouchNotice && now - this.lastTouchNoticeAt < 3000) return
+    this.lastTouchNotice=message;this.lastTouchNoticeAt=now
+    try { this.getUIContext().getPromptAction().showToast({message:message,duration:2000}) }
+    catch (error) { hilog.warn(0x0000,GAME_CONTROLS_TAG,'触控轻提示未显示：%{public}s',(error as Error).message) }
   }
 
   /** 先撤本前端观察引用再按原仓库退订；清理不借 getLayoutStore 的后来实例/运行代。 */
@@ -873,13 +909,23 @@ export struct GameControls {
   }
 
   private touchControlGroupEpoch_(id: string): string {
+    const control: number = this.groupControlIndices.get(id) ?? -1
+    if(control>=0 && control<this.groupControlEpochs.length)return this.groupControlEpochs[control]
     const group: number = this.touchControlGroupIndex_(id)
     return group < 0 ? '1' : (this.groupEpochs[group] ?? '0')
   }
 
   private touchGroupVisible_(id: string): boolean {
+    const control: number = this.groupControlIndices.get(id) ?? -1
+    if(control>=0 && control<this.groupControlMask.length)return this.groupControlMask[control]
     const group: number = this.touchControlGroupIndex_(id)
     return group < 0 || (this.groupMask[group] ?? false)
+  }
+
+  /** 与Native命中使用同一rank，展开键不会被任意摆放到其上的二级成员遮住。 */
+  private touchGroupRank_(id: string): number {
+    const control: number=this.groupControlIndices.get(id) ?? -1
+    return control>=0 && control<this.groupControlRanks.length ? this.groupControlRanks[control] : (this.groupRanks.get(id) ?? 0)
   }
 
   /** 注册身份绑定本次 appearance；关闭可选高亮/触觉不影响此必要状态通道。 */
@@ -895,7 +941,14 @@ export struct GameControls {
         if (this.mounted && appearance === this.appearanceGeneration && this.touchSession === session && session.hasCurrentSource())
           this.syncTouchGroups_()
       })
-    } catch (_) { /* 原 reconcile 在活跃时重试登记和取回完整回执。 */ }
+    } catch (error) { this.reportGroupApiFailure_('登记通知', error) }
+  }
+
+  /** 每次挂接只记录首个桥接异常；保留原维护重试和在途身份，避免每帧刷屏。 */
+  private reportGroupApiFailure_(operation: string, error: Error): void {
+    if (this.groupApiFailureWarned) return
+    this.groupApiFailureWarned = true
+    AppLogger.warn(GAME_CONTROLS_TAG, '触控组' + operation + '暂未完成，将沿原状态重试', error, LOG_DOMAIN_UI)
   }
 
   /** 只在修订改变、静态呈现或在途恢复时取完整 mask；保持现有维护频率，不增加定时器。 */
@@ -908,14 +961,18 @@ export struct GameControls {
       const value: TouchGroupReceipt = testNapi.readTouchGroups(this.uiPublicationToken)
       if (!value.enabled || value.token !== this.uiPublicationToken || value.mask.length !== this.groupSchema.groups.length ||
         value.epochs.length !== value.mask.length) return
+      const controls: number=this.groupSchema.controls.length
+      if(this.groupSchema.groups.some((group: TouchGroupSchemaDefinition): boolean=>group.secondary===true) &&
+        (value.controlMask?.length!==controls || value.controlEpochs?.length!==controls || value.controlRanks?.length!==controls))return
       const previous: boolean[] = this.groupMask
       this.groupToken=value.token; this.groupEpochs=value.epochs.slice(); this.groupPending=value.pending
+      this.groupControlEpochs=value.controlEpochs?.slice() ?? []
       if (value.revision !== this.groupRevision || previous.length !== value.mask.length) {
         this.groupPresentedRevision=''
         this.groupMask=value.mask.slice(); this.groupRevision=value.revision
+        this.groupControlMask=value.controlMask?.slice() ?? [];this.groupControlRanks=value.controlRanks?.slice() ?? []
         for (const entry of this.runtimeLayout.entries) {
-          const group: number = this.touchControlGroupIndex_(entry.item.id)
-          if (group >= 0 && !value.mask[group]) this.releaseControlInputs(entry.item.id)
+          if (!this.touchGroupVisible_(entry.item.id)) this.releaseControlInputs(entry.item.id)
         }
         this.retireHiddenMouse_()
       }
@@ -924,7 +981,7 @@ export struct GameControls {
       if (this.groupPending && this.groupPresentedRevision === value.revision && this.touchSurface.admits(value.token)) {
         if (testNapi.confirmTouchGroups(value.token,value.revision)) this.groupPending=false
       }
-    } catch (_) { /* 结果未知保留原 token/revision 和门控，原维护继续查询。 */ }
+    } catch (error) { this.reportGroupApiFailure_('同步回执', error) }
   }
 
   private touchGroupMarkerId_(): string { return this.touchMarkerId_() + '-groups-' + this.groupRevision }
@@ -976,7 +1033,7 @@ export struct GameControls {
       }
       this.groupPresentedRevision=revision
       if (testNapi.confirmTouchGroups(token,revision)) this.syncTouchGroups_()
-    } catch (_) { /* 失败保留在途事实，下一次真实布局完成或恢复后继续。 */ }
+    } catch (error) { this.reportGroupApiFailure_('确认布局', error) }
   }
 
   /** SDK观察注册瞬时失败也可由同一活跃心跳恢复；每秒至多一次，注销只针对自己的callback。 */
@@ -1120,12 +1177,15 @@ export struct GameControls {
     this.groupSchema = groupMetadata !== undefined && groupMetadata.groups.length > 0 ? groupMetadata : undefined
     this.groupRanks = new Map<string, number>()
     this.groupIndices = new Map<string, number>()
+    this.groupControlIndices = new Map<string, number>()
+    this.groupControlMask=[];this.groupControlRanks=[];this.groupControlEpochs=[]
     this.groupControls = []
     if (this.groupSchema !== undefined) {
       const controls: ControlSchemaEntry[] = candidate.schema.controls
       for (let index: number = 0; index < controls.length; index++) {
         this.groupRanks.set(controls[index].id,this.groupSchema.controls[index].rank)
         this.groupIndices.set(controls[index].id,this.groupSchema.controls[index].group)
+        this.groupControlIndices.set(controls[index].id,index)
       }
       this.groupControls=this.runtimeLayout.entries.map((entry: RuntimeTouchEntry): ControlItem => entry.item)
       this.groupToken=''; this.groupRevision=''; this.groupMask=[]; this.groupEpochs=[]; this.groupPresentedRevision=''
@@ -1238,7 +1298,7 @@ export struct GameControls {
         if (receipt.status === 'rejected' || receipt.status === 'stale' || receipt.status === 'expired')
           this.reportGroupIssue_('恢复初始显隐未被接受或已过期，请在布局稳定后重新操作')
         else this.syncTouchGroups_()
-      } catch (_) { /* 继续重试同一序号，不另造 toggle。 */ }
+      } catch (error) { this.reportGroupApiFailure_('恢复显隐', error) }
     }
   }
 
@@ -1328,6 +1388,7 @@ export struct GameControls {
 
   async aboutToAppear(): Promise<void> {
     this.mounted = true
+    this.groupApiFailureWarned = false
     this.touchSurface = this.createTouchSurface_()
     const expectedAppearanceGeneration: number = ++this.appearanceGeneration
     // 三端平级：把触控虚拟按键端登记进注册表，让所有复位边界都能覆盖到它。
@@ -1831,16 +1892,20 @@ export struct GameControls {
     const controls: ControlSchemaEntry[] = []
     for (const entry of layout.entries) {
       const item: ControlItem = entry.item
+      // 层级绑定保留原键位/触发/滑动字段供解绑恢复，但运行条目必须完全隔离这些备份。
+      // 只清组phase输出仍会留下dragLook或连滑入口，不能让展开键顺带转动视角或滑入触发。
+      const secondary: boolean=item.secondaryAction!==undefined
       controls.push({ id:item.id, kind:item.type as number, handledBy:entry.handledBy,
         x:entry.rectPx.x, y:entry.rectPx.y, w:entry.rectPx.width, h:entry.rectPx.height,
-        hitSlop:entry.hitSlopPx, keyOrMouse:item.keyOrMouse, keys:effectiveKeys(item),
-        trigger:this.triggerCode(item.trigger), dragLook:item.dragLook === true,
-        haptic:profile.haptic ?? true, swipeGroup:item.swipeGroup ? swipeGroups.indexOf(item.swipeGroup)+1 : 0 })
+        hitSlop:entry.hitSlopPx, keyOrMouse:secondary?0:item.keyOrMouse, keys:secondary?[]:effectiveKeys(item),
+        trigger:secondary?0:this.triggerCode(item.trigger), dragLook:!secondary&&item.dragLook === true,
+        haptic:profile.haptic ?? true, swipeGroup:!secondary&&item.swipeGroup ? swipeGroups.indexOf(item.swipeGroup)+1 : 0 })
     }
     if(this.guiHint && !this.isGrabbed) this.addUiBlock(controls,'gui_hint_',Math.max(12,(context.widthVp()-this.hintWidth())/2),12,
       this.hintWidth(),Math.min(240,context.heightVp()-24),context.density,layout,'gui-hint')
-    if(issue.length>0) this.addUiBlock(controls,'touch_status_',12,48,Math.max(1,Math.min(400,context.widthVp()-24)),
-      Math.max(1,Math.min(112,context.heightVp()-24)),context.density,layout,'compatibility')
+    // 真正不支持的布局仍提供可操作修复入口；消息本身走Toast，排除区只对应这个小按钮。
+    if(issue.length>0) this.addUiBlock(controls,'touch_status_',12,12,Math.max(1,Math.min(160,context.widthVp()-24)),
+      Math.max(1,Math.min(36,context.heightVp()-24)),context.density,layout,'compatibility')
     this.touchSession.setRuntimeContext(context)
     this.touchSession.setGuiViewport(context.widthPx,context.heightPx,this.realGameVersion)
     const schema: ControlSchemaMsg = { schemaVersion:3, compWidth:context.widthPx, compHeight:context.heightPx,
@@ -2000,9 +2065,14 @@ export struct GameControls {
       // 就同时开着两条。故障表现是物理键盘字符双发，完整序列见
       // `gamecontrol/src/main/ets/ImeActivationGate.ets` 的头注释。
       if (this.isGrabbed) {
+        // 正常候选已将系统聊天的旧空值恢复为T；若收到未就绪的旧节点，不向Native发送空输入。
+        if (effectiveKeys(item).length === 0) {
+          this.touchStatusMessage = '聊天入口暂未就绪，请稍后重试'
+          return
+        }
         const acquired: boolean = this.dispatchButton(item, GLFW_PRESS)
         this.noteImeRoute('key-acquire', imeRole, imeAppearance, acquired)
-        if (!acquired) return
+        if (!acquired) { this.touchStatusMessage = '聊天按键暂未接受，请稍后重试'; return }
         Promise.resolve().then(() => {
           const released: boolean = this.dispatchButton(item, GLFW_RELEASE)
           this.noteImeRoute('key-release', imeRole, imeAppearance, released)
@@ -2057,7 +2127,7 @@ export struct GameControls {
       this.desiredProfile = cloneLayout(this.profile)
       this.profileVer++
       this.onLayoutChanged()
-      this.editorMode='choose'
+      this.editorMode='choose'; this.editorSettingsProfile=''; this.editorSettingsSection=''
       this.editing = true
       this.syncGuideBounds()
       opened = true
@@ -2431,7 +2501,9 @@ export struct GameControls {
       this.handleSystemAction(item)
       return
     }
-    if (this.groupSchema !== undefined && (item.phaseBindings !== undefined || (item.groupActions?.length ?? 0) > 0)) {
+    // Native组信息尚未就绪时层级入口不能回退发送原键位；键盘/无障碍也走同一层级phase。
+    if(item.secondaryAction!==undefined&&this.groupSchema===undefined)return
+    if (this.groupSchema !== undefined && (item.secondaryAction!==undefined || item.phaseBindings !== undefined || (item.groupActions?.length ?? 0) > 0)) {
       if (!this.admitTouchAction_(this.uiPublicationToken,item.id,eligibility) || this.groupRegistration.length === 0) return
       const controlIndex: number=this.runtimeLayout.entries.findIndex((entry: RuntimeTouchEntry): boolean => entry.item.id === item.id)
       const activePhases: number[]=[]
@@ -2684,28 +2756,17 @@ export struct GameControls {
         Text(this.groupRevision).width(1).height(1).fontSize(1).opacity(0).position({x:0,y:0})
           .id(this.touchGroupMarkerId_()).hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
       }
-      if (this.editing && this.configurationHudMessage_().length > 0) {
-        // 配置保存/激活报告只在编辑布局时展示，不作为所有游戏版本的常驻HUD。
-        // 原报告订阅与失败事实保留；纯观察文字不参与触控命中和Native排除区。
-        Row() {
-          Text(this.configurationHudMessage_()).fontSize(13).fontColor('#FFFFFF')
-        }.padding(8).backgroundColor('#88000000').borderRadius(8)
-          .align(Alignment.TopStart).margin({left:12,top:12}).hitTestBehavior(HitTestMode.None)
-      }
-      if (this.touchStatusMessage.length > 0) {
-        Column({space:8}) {
-          Text(this.touchStatusMessage).fontSize(13).fontColor('#FFFFFF')
-          if (layoutCapabilityIssue(this.profile).length > 0 && !this.editing) {
-            Button('编辑布局').onClick((): void => {
-              if (this.admitTouchAction_(this.uiPublicationToken)) this.openEditor()
-            })
-          }
-        }.padding(12).backgroundColor('#D9222D3D').borderRadius(10)
-          .width(this.touchOverlay_('compatibility').rectVp.width>0 ? this.touchOverlay_('compatibility').rectVp.width : 300)
-          .height(this.touchOverlay_('compatibility').rectVp.height>0 ? this.touchOverlay_('compatibility').rectVp.height : 112)
+      if (layoutCapabilityIssue(this.profile).length > 0 && this.touchOverlay_('compatibility').id.length > 0) {
+        // 仅能力不兼容保留小型修复动作；普通通知不创建全局HUD、遮罩或隐形点击死区。
+        Button('检查按键布局',{type:ButtonType.Normal}).fontSize(12).padding(4)
+          .backgroundColor(this.palette.surface).fontColor(this.palette.text).borderRadius(6)
+          .width(this.touchOverlay_('compatibility').rectVp.width)
+          .height(this.touchOverlay_('compatibility').rectVp.height)
           .id(this.touchNodeId_(this.touchOverlay_('compatibility').id))
           .position({x:this.touchOverlay_('compatibility').rectVp.x,y:this.touchOverlay_('compatibility').rectVp.y})
-          .hitTestBehavior(this.touchOverlay_('compatibility').id.length>0 ? HitTestMode.Block : HitTestMode.None)
+          .hitTestBehavior(HitTestMode.Default).onClick((): void => {
+            if (!this.editing && this.admitTouchAction_(this.uiPublicationToken)) this.openEditor()
+          })
       }
 
       // 注：编辑布局 / 显示（可见性档位）已改为布局中的"系统功能按钮"（systemAction=edit/visibility），
@@ -2724,7 +2785,7 @@ export struct GameControls {
           .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
       }
       if(this.mousePanelVisible_()) {
-        VirtualMousePanel({model:this.mouseController.model,resetRevision:this.mouseResetRevision,compact:this.mouseFrame().compact,
+        VirtualMousePanel({palette:this.palette,model:this.mouseController.model,resetRevision:this.mouseResetRevision,compact:this.mouseFrame().compact,
           onClose:(): void => { this.closeMouse() },
           onInteraction:(): void => { this.touchSession.refreshVisual(); this.syncMouseBounds() }})
           .width(this.mouseFrame().width).height(this.mouseFrame().height)
@@ -2734,7 +2795,7 @@ export struct GameControls {
         this.GuiSizeHint({ token: this.uiPublicationToken })
       }
       if(this.tutorialOpen && !this.editing && !this.guiHint && !this.imeOpen && !this.fieldImeOpen && !hasEntryTouchModal()) {
-        TouchLearningView({step:this.guideStep,active:this.pageActive,grabbed:this.isGrabbed,mouseOpen:this.mouseOpen,publicationToken:this.uiPublicationToken,
+        TouchLearningView({palette:this.palette,step:this.guideStep,active:this.pageActive,grabbed:this.isGrabbed,mouseOpen:this.mouseOpen,publicationToken:this.uiPublicationToken,
           fingers:this.touchVisual.guide.fingers,scrollEnabled:normalizeTouchPreferences(this.profile.touch)?.menuTwoFingerScroll ?? true,
           viewWidth:this.compWidth,viewHeight:this.compHeight,target:this.guideTarget(),toolbarX:this.guideToolbarX(),
           navigationKind:this.guiState.navigationKind,navigationScrollable:this.guiState.navigationScrollable,
@@ -2838,7 +2899,7 @@ export struct GameControls {
     .height(this.itemH($$.item))
     .id(this.touchNodeId_($$.item.id))
     .visibility(this.touchGroupVisible_($$.item.id) ? Visibility.Visible : Visibility.Hidden)
-    .zIndex(this.groupRanks.get($$.item.id) ?? 0)
+    .zIndex(this.touchGroupRank_($$.item.id))
     .position({ x: this.itemX($$.item), y: this.itemY($$.item) })
     .hitTestBehavior(HitTestMode.Block)
     .onTouch((event: TouchEvent) => {
@@ -2910,7 +2971,7 @@ export struct GameControls {
   @Builder
   ButtonView($$: TouchControlViewArgs) {
     ButtonItemView({
-      groupVisible:this.touchGroupVisible_($$.item.id),groupRank:this.groupRanks.get($$.item.id) ?? 0,
+      groupVisible:this.touchGroupVisible_($$.item.id),groupRank:this.touchGroupRank_($$.item.id),
       nodeId:this.touchNodeId_($$.item.id),
       vis: this.getBtnVis($$.item.id),
       pressedVer: this.btnPressedVer,
@@ -2925,6 +2986,7 @@ export struct GameControls {
       fgNormal: $$.item.style?.fg ?? '#DDFFFFFF',
       fgPressed: $$.item.style?.fg ?? '#FFFFFFFF',
       bgNormal: $$.item.style?.bg ?? '#30FFFFFF',
+      borderWidthVp: $$.item.style?.borderWidth ?? 0, strokeColorValue: $$.item.style?.borderColor ?? '#DDFFFFFF',
       bgPressed: $$.item.style?.bgPressed ?? $$.item.style?.bg ?? '#52FFFFFF',
       onTouchEvent: (event: TouchEvent) => {
         const admitted: boolean = this.admitTouchUi_(event,$$.token,$$.item.id,$$.groupEpoch ?? '0')
@@ -3102,7 +3164,7 @@ export struct GameControls {
     .borderRadius(this.itemW($$.item) / 2)
     .id(this.touchNodeId_($$.item.id))
     .visibility(this.touchGroupVisible_($$.item.id) ? Visibility.Visible : Visibility.Hidden)
-    .zIndex(this.groupRanks.get($$.item.id) ?? 0)
+    .zIndex(this.touchGroupRank_($$.item.id))
     .position({ x: this.itemX($$.item), y: this.itemY($$.item) })
     .hitTestBehavior(HitTestMode.Block)
     .onTouch((event: TouchEvent) => {
@@ -3207,7 +3269,7 @@ export struct GameControls {
     .border({ width: 1, color: '#3CFFFFFF' })
     .id(this.touchNodeId_($$.item.id))
     .visibility(this.touchGroupVisible_($$.item.id) ? Visibility.Visible : Visibility.Hidden)
-    .zIndex(this.groupRanks.get($$.item.id) ?? 0)
+    .zIndex(this.touchGroupRank_($$.item.id))
     .position({ x: this.itemX($$.item), y: this.itemY($$.item) })
     .hitTestBehavior(HitTestMode.Block)
     .onTouch((event: TouchEvent) => {
@@ -3273,7 +3335,7 @@ export struct GameControls {
       .backgroundColor(this.drawerOpen.get($$.item.id) ? '#88448AFF' : '#44448AFF')
       .id(this.touchNodeId_($$.item.id))
     .visibility(this.touchGroupVisible_($$.item.id) ? Visibility.Visible : Visibility.Hidden)
-    .zIndex(this.groupRanks.get($$.item.id) ?? 0)
+    .zIndex(this.touchGroupRank_($$.item.id))
       .position({ x: this.itemX($$.item), y: this.itemY($$.item) })
       .hitTestBehavior(HitTestMode.Block)
       .animation({ duration: 200 })
@@ -3309,7 +3371,7 @@ export struct GameControls {
   @Builder
   DrawerChild($$: TouchDrawerChildArgs) {
     ButtonItemView({
-      groupVisible:this.touchGroupVisible_($$.item.id),groupRank:this.groupRanks.get($$.item.id) ?? 0,
+      groupVisible:this.touchGroupVisible_($$.item.id),groupRank:this.touchGroupRank_($$.item.id),
       nodeId:this.touchNodeId_($$.item.id),
       vis: this.getBtnVis($$.item.id),
       pressedVer: this.btnPressedVer,
@@ -3324,6 +3386,7 @@ export struct GameControls {
       fgNormal: $$.item.style?.fg ?? '#DDFFFFFF',
       fgPressed: $$.item.style?.fg ?? '#FFFFFFFF',
       bgNormal: $$.item.style?.bg ?? '#30FFFFFF',
+      borderWidthVp: $$.item.style?.borderWidth ?? 0, strokeColorValue: $$.item.style?.borderColor ?? '#DDFFFFFF',
       bgPressed: $$.item.style?.bgPressed ?? $$.item.style?.bg ?? '#52FFFFFF',
       onTouchEvent: (event: TouchEvent) => { if (this.admitTouchUi_(event,$$.token,$$.item.id,$$.groupEpoch ?? '0')) this.handleDrawerChildTouch($$.item, event) },
       onAccessibilityActivate: () => { if (this.admitTouchAction_($$.token,$$.item.id,$$.groupEpoch ?? '0')) this.activateButtonFromAccessibility($$.item,$$.groupEpoch ?? '0') }
@@ -3395,20 +3458,35 @@ export struct GameControls {
   @Builder
   EditorOverlay() {
     if (this.editorMode==='choose') {
+      Scroll() {
       Column({space:12}) {
-        Text('操控').fontSize(20).fontColor('#FFFFFF')
-        Button('编辑按键布局').height(48).width('100%').onClick((): void => { this.editorMode='layout' })
-        Button('触控与输入设置').height(48).width('100%').onClick((): void => { this.editorMode='settings' })
-        Button('关闭').height(48).width('100%').onClick((): void => { this.closeEditorChoice_() })
-      }.padding(20).width(Math.min(360,this.compWidth-24)).backgroundColor('#14201F').borderRadius(16).enabled(!this.editorChoiceBusy)
+        Text('操控').fontSize(20).fontColor(this.palette.text)
+        Button('编辑按键布局').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='layout' })
+        Button('手感与输入').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='settings' })
+        // 新分辨率入口保留会话与暂停链，仅给普通操作传入当前工具palette。
+        Button('游戏分辨率').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='resolution' }).id('open-game-resolution')
+        Button('关闭').fontColor(this.palette.text).backgroundColor(this.palette.surface).height(48).width('100%').onClick((): void => { this.closeEditorChoice_() })
+      }.padding(20).width('100%')
+      }.width(Math.min(360,this.compWidth-24)).constraintSize({maxHeight:this.compHeight*0.9})
+        .backgroundColor(this.palette.panel).borderRadius(16).enabled(!this.editorChoiceBusy)
+    } else if (this.editorMode==='resolution') {
+      GameResolutionPanel({ palette: this.palette, screenWidth: this.compWidth, screenHeight: this.compHeight,
+        onDone: (): void => { this.editorMode='choose' } })
     } else if (this.editorMode==='settings') {
-      InputSettingsEditor({targetProfileName:this.profile.name,screenWidth:this.compWidth,screenHeight:this.compHeight,
+      InputSettingsEditor({palette:this.palette,targetProfileName:this.editorSettingsProfile || this.profile.name,screenWidth:this.compWidth,screenHeight:this.compHeight,
+        initialSection:this.editorSettingsSection,
         resolvedActionKeys:this.touchSession.actionKeys(),gyroscopeStatus:this.touchSession.gyroscopeStatus(),
         onDone:(result: LayoutProfile | null): void => { this.finishEditor_(result) },
         onInitializationFailed:(message: string): void => { this.editorInitializationFailed_(message) }})
     } else {
-      LayoutEditor({targetProfileName:this.profile.name,canRestoreGroups:true,
+      LayoutEditor({palette:this.palette,targetProfileName:this.profile.name,canRestoreGroups:true,
         screenWidth:this.compWidth,screenHeight:this.compHeight,gameGui:this.guiState,
+        onOpenSettings:(result: LayoutProfile | null,section: string): void => {
+          // 原布局已确认结束，宿主模态继续持有；新检查点只覆盖接下来的设置任务。
+          const store=getLayoutStore(); store.beginEditorTransaction()
+          this.editorSettingsProfile=(result ?? store.getActiveProfile()).name
+          this.editorSettingsSection=section; this.editorMode='settings'
+        },
         onRestoreGroups:(): void => {
           // 这是用户新发起的恢复意图，必须舍弃上次未知回执的序号；维护循环仍重试自己的原身份。
           this.groupRestoreRequested=true

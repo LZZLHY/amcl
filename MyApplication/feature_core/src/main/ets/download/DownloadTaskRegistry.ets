@@ -19,6 +19,7 @@
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 import { ProcessActivityCoordinator } from './ProcessActivityCoordinator';
+import { getTaskActivityOwner, reserveTaskActivityId } from './TaskActivityOwner';
 import {
   UnifiedDownloadAdapter, UnifiedTaskView, UnifiedTaskState,
   isInProgressState, isTerminalState, aggregateProgress, TaskCategory, TaskRetryStrategy,
@@ -64,8 +65,9 @@ export class DownloadTaskRegistry {
   private waitingIds_: string[] = [];
   private runningIds_: string[] = [];
   private pendingStarts_: Map<string, PendingStart> = new Map();
-  /** 同一队列同时出队的任务也必须有不同的毫秒活动主键。 */
-  private lastActivityAt_: number = 0;
+  /** 开账期间仍持有运行槽；取消必须阻止尚未调用的producer，不能被start中的复位覆盖。 */
+  private openingIds_: Set<string> = new Set<string>();
+  private cancelledOpenings_: Set<string> = new Set<string>();
   /** 重试准入反馈属于原请求代次；迟到拒绝不能覆盖同 adapter 后来一次尝试的提示。 */
   private retryFeedback_: Map<string, number> = new Map();
   private nextRetryFeedback_: number = 0;
@@ -107,8 +109,7 @@ export class DownloadTaskRegistry {
 
   /** 更新父活动与其下载子任务共用单调主键分配器，避免同毫秒与并行 JDK/游戏包下载撞账。 */
   reserveActivityId(minimum: number = 0): number {
-    this.lastActivityAt_ = Math.max(Date.now(), this.lastActivityAt_ + 1, minimum);
-    return this.lastActivityAt_;
+    return reserveTaskActivityId(minimum);
   }
 
   // ============================================================
@@ -283,6 +284,12 @@ export class DownloadTaskRegistry {
       AppLogger.warn(TAG, `cancel: id=${id} not found`, null, LOG_DOMAIN_DOWNLOAD);
       return Promise.resolve();
     }
+    if (this.openingIds_.has(id)) {
+      // 此时producer尚未执行，只登记取消意图；开账完成后由同一执行finally封ABORTED。
+      this.cancelledOpenings_.add(id);
+      a.view.canCancel = false;
+      return Promise.resolve();
+    }
     let waitingIndex = this.waitingIds_.indexOf(id);
     if (waitingIndex >= 0) {
       this.waitingIds_.splice(waitingIndex, 1);
@@ -300,9 +307,17 @@ export class DownloadTaskRegistry {
       a.view.canRetry = false;
       let adapter: UnifiedDownloadAdapter = a;
       // 先登记取消 owner，再调用可能同步通知的 adapter，避免重入启动下一轮。
-      let completion = Promise.resolve().then((): Promise<void> => adapter.cancel(cleanupFiles))
+      if (pending?.newAttempt === true || adapter.view.startedAtMs <= 0) adapter.view.startedAtMs = this.reserveActivityId();
+      let completion = (async (): Promise<void> => {
+        // 排队取消仍是一条真实用户结果。先建立身份，再等待适配器清理，最后持久封账。
+        try { await getTaskActivityOwner().beginTask(adapter.view); }
+        catch (error) { AppLogger.warn(TAG, '排队取消活动开账失败，取消仍继续', error, LOG_DOMAIN_DOWNLOAD); }
+        await adapter.cancel(cleanupFiles);
+      })()
         .catch((e: Error): void => { adapter.view.errorMessage = e.message; })
-        .finally((): void => {
+        .finally(async (): Promise<void> => {
+          adapter.view.state = UnifiedTaskState.ABORTED;
+          await getTaskActivityOwner().finishTask(adapter.view);
           this.queuedCancellations_.delete(id);
           this.enableRecovery_(adapter);
           this.notify();
@@ -495,87 +510,56 @@ export class DownloadTaskRegistry {
       adapter.view.canRetry = false; adapter.view.canRecoverExternally = false;
       this.updateQueuePositions_();
       this.notify();
-      let actionPromise: Promise<void>;
-      let fileLease = 0;
-      let completionError: Error | undefined = undefined;
-      let completionSucceeded = false;
-      AppLogger.info(TAG, `drainQueue_: invoking action for id=${id} startState=${pending.startState}`,
-        LOG_DOMAIN_DOWNLOAD);
-      try {
-        if (this.acquireFileLease_ !== undefined) {
-          fileLease = this.acquireFileLease_();
-          if (fileLease <= 0) throw new Error('应用安装尚未核实或游戏文件正在更新，暂不可开始文件任务');
-        }
-        actionPromise = pending.action();
-      } catch (e) {
-        let syncError = e as Error;
-        let runningIndex = this.runningIds_.indexOf(id);
-        if (runningIndex >= 0) this.runningIds_.splice(runningIndex, 1);
-        // 同步抛出时下载流程从未运行，没有 native complete 回调会把 view 推到终态。
-        // 必须在此显式落终态，否则 view 永久停留在 PREPARING：isInProgressState 恒真、
-        // remove() 因非终态被拒，形成无法清理的僵尸任务。
-        adapter.view.state = UnifiedTaskState.ERROR;
-        adapter.view.errorMessage = syncError.message;
-        adapter.view.queuePosition = 0;
-        // 2026-08-04：与下面的异步 reject 分支保持一致 —— 必须给出可重试/可清理的出口，
-        // 否则卡片上既没有重试按钮也删不掉（remove() 只放行终态，而 canRetry 仍是 false）。
-        adapter.view.canCancel = false;
-        adapter.view.canPause = false;
-        adapter.view.canResume = false;
-        this.enableRecovery_(adapter);
-        if (fileLease > 0) this.releaseFileLease_?.(fileLease);
-        pending.reject(syncError);
-        AppLogger.warn(TAG, `task id=${id} threw before returning Promise`, syncError, LOG_DOMAIN_DOWNLOAD);
-        this.notify();
-        continue;
-      }
-      actionPromise.then((): void => {
-        completionSucceeded = true;
-      }).catch((e: Error): void => {
-        AppLogger.warn(TAG, `task id=${id} rejected`, e, LOG_DOMAIN_DOWNLOAD);
-        // ⚠️ 2026-08-04：异步 reject 必须和上面的同步 throw 分支**对称**地兜住终态。
-        //
-        //   原实现这里只打日志 + reject，不写任何 view 字段。绝大多数 adapter 会在自己的
-        //   catch 里落 ERROR，但有若干 reject 点位于 adapter 的「写 view / notify」之外，
-        //   比如：
-        //     · DownloadTask 的「版本 X 已存在」（抛在 phase try 之外，一次 notify 都不发）
-        //     · DownloadTask 的「旧下载任务仍在收敛，请稍后重试」
-        //     · RepairTask / ForgeRepairTask / ResourceInstallTask / ModpackInstallTask 的
-        //       「旧…任务仍在收敛」（retry 里直接 Promise.reject，从不碰 view）
-        //   这些路径走完之后 view 永久停在 Registry 写的 PREPARING：
-        //   isInProgressState 恒真 → remove() 拒绝清理；enqueue 同 id 又被
-        //   「已在进行中」顶掉；canRetry 还是构造默认的 false，连按钮都没有。
-        //   结果就是这个资源在杀进程之前**再也下载不了**。
-        //
-        //   这里做最后一道兜底：只要 adapter 没把自己收敛到终态，就替它落 ERROR 并
-        //   保证「可重试 + 可清理」。已经是终态的（adapter 自己处理过）一律不覆盖。
-        if (!isTerminalState(adapter.view.state)) {
-          adapter.view.state = UnifiedTaskState.ERROR;
-          if (adapter.view.errorMessage.length === 0) {
-            adapter.view.errorMessage = e.message !== undefined ? e.message : String(e);
-          }
-          adapter.view.queuePosition = 0;
-          adapter.view.canCancel = false;
-          adapter.view.canPause = false;
-          adapter.view.canResume = false;
-          this.enableRecovery_(adapter);
-          AppLogger.warn(TAG,
-            `task id=${id} rejected without a terminal state; forced to ERROR so it stays `
-            + 'retryable and removable', null, LOG_DOMAIN_DOWNLOAD);
-        }
-        completionError = e;
-      }).finally((): void => {
-        if (fileLease > 0) this.releaseFileLease_?.(fileLease);
-        let runningIndex = this.runningIds_.indexOf(id);
-        if (runningIndex >= 0) this.runningIds_.splice(runningIndex, 1);
-        this.notify();
-        this.drainQueue_();
-        // 调用方的await只能在实际执行/Native租约收尾之后返回，避免抢到假空闲安装窗口。
-        if (completionError !== undefined) pending.reject(completionError);
-        else if (completionSucceeded) pending.resolve();
-      });
+      // 执行所有者负责开账与收尾，listener仅投影UI。同步抛出、异步拒绝、暂停和取消
+      // 都经过同一finally，页面离开或没有listener也不会丢失活动事实。
+      this.executeAttempt_(id, adapter, pending);
     }
     this.updateQueuePositions_();
+  }
+
+  /**
+   * 运行槽覆盖开账、实际action及终态提交。开账失败不调用producer；开账期间的取消
+   * 在action之前消费，避免适配器start重置自己的cancelled字段后意外继续下载。
+   */
+  private async executeAttempt_(id: string, adapter: UnifiedDownloadAdapter, pending: PendingStart): Promise<void> {
+    let fileLease: number = 0;
+    let failure: Error | undefined = undefined;
+    try {
+      this.openingIds_.add(id);
+      if (this.acquireFileLease_ !== undefined) {
+        fileLease = this.acquireFileLease_();
+        if (fileLease <= 0) throw new Error('应用安装尚未核实或游戏文件正在更新，暂不可开始文件任务');
+      }
+      await getTaskActivityOwner().beginTask(adapter.view);
+      this.openingIds_.delete(id);
+      if (this.cancelledOpenings_.has(id)) {
+        adapter.view.state = UnifiedTaskState.ABORTED;
+        adapter.view.errorMessage = '开始前已取消';
+        throw new Error('已取消');
+      }
+      await pending.action();
+    } catch (error) {
+      failure = error as Error;
+      // 适配器已经给出的ABORTED/ERROR保持原结局；仅为未收口的异常兜底ERROR。
+      if (!isTerminalState(adapter.view.state)) {
+        adapter.view.state = this.cancelledOpenings_.has(id) ? UnifiedTaskState.ABORTED : UnifiedTaskState.ERROR;
+        if (adapter.view.errorMessage.length === 0) adapter.view.errorMessage = failure.message;
+      }
+      adapter.view.queuePosition = 0;
+      adapter.view.canCancel = false; adapter.view.canPause = false; adapter.view.canResume = false;
+      this.enableRecovery_(adapter);
+      AppLogger.warn(TAG, '任务执行结束：' + id, failure, LOG_DOMAIN_DOWNLOAD);
+    } finally {
+      this.openingIds_.delete(id); this.cancelledOpenings_.delete(id);
+      try { await getTaskActivityOwner().finishTask(adapter.view); }
+      catch (error) { AppLogger.warn(TAG, '活动终态仍待保存：' + id, error, LOG_DOMAIN_DOWNLOAD); }
+      if (fileLease > 0) this.releaseFileLease_?.(fileLease);
+      const runningIndex = this.runningIds_.indexOf(id);
+      if (runningIndex >= 0) this.runningIds_.splice(runningIndex, 1);
+      this.notify(); this.drainQueue_();
+      // action的真实业务结果只在执行资源与记录义务交接完成后交给调用方。
+      if (failure !== undefined) pending.reject(failure); else pending.resolve();
+    }
   }
 
   private updateQueuePositions_(): void {
@@ -588,7 +572,7 @@ export class DownloadTaskRegistry {
   /** 主动把已 finalize 的任务从清单移除（用户点"清理"） */
   remove(id: string): void {
     if (this.replacementHeld_) return;
-    if (this.queuedCancellations_.has(id) || this.admissions_.has(id)) return;
+    if (this.queuedCancellations_.has(id) || this.admissions_.has(id) || this.runningIds_.indexOf(id) >= 0) return;
     let a = this.adapters_.get(id);
     if (!a) return;
     if (!isTerminalState(a.view.state)) {

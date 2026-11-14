@@ -162,8 +162,9 @@ function editor(store) {
   ], ['persistenceBusy', 'editorMounted', 'editorReady', 'editorClosed', 'editorGeneration', 'editorLeaseHeld',
     'editorTransactionOwned', 'persistenceTask', 'editorCleanupTask', 'restorationTask', 'profileName', 'statusMsg', 'baselineSig',
     'sessionCatalogChanged'], shared.values);
-  Object.assign(instance, { targetProfileName:'',editSession:new LayoutEditSession(),screenWidth: 720, screenHeight: 360, draft: copy(store.active), undoCount: 0,
-    panelWidth: () => 300, panelMaxTop: () => 300,
+  Object.assign(instance, { targetProfileName:'',nextSettingsSection:'',positionDraftDirty:false,selectedItem:()=>null,
+    editSession:new LayoutEditSession(),screenWidth: 720, screenHeight: 360, draft: copy(store.active), undoCount: 0,
+    panelWidth: () => 300, panelMaxTop: () => 300, currentDeviceModel: () => 'host fixture',
     loadProfile(profile) { instance.draft = copy(profile); instance.profileName = profile.name; },
     contentSignature: () => JSON.stringify(instance.draft), buildProfile: () => instance.invalidDraft ? null : copy(instance.draft),
     pushUndo() { instance.undoCount++; }, onDone: value => done.push(value), onInitializationFailed: message => failed.push(message),
@@ -190,7 +191,9 @@ function editorPage(store) {
         setWindowSystemBarEnable: async () => { await windowOperation('bars'); } };
     } },
   });
-  Object.assign(instance, { getAbilityContext: () => ({}), getUIContext: () => ({ getRouter: () => ({
+  // 本夹具仅提取事务/窗口生命周期方法；新增主题初始化是显示边界，不参与输入租约、
+  // Store 快照或窗口恢复。仅在这个手动提取的 Subject 上补显示 stub，保留真实业务方法与全部断言。
+  Object.assign(instance, { applyToolTheme_: () => {}, getAbilityContext: () => ({}), getUIContext: () => ({ getRouter: () => ({
     getParams: () => ({ profileName: store.active.name }), back: () => navigations.push('back'),
   }) }) });
   return { instance, windowCalls, navigations, windowFault, errors: shared.errors };

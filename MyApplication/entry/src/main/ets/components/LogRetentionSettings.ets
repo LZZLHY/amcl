@@ -98,7 +98,7 @@ export struct LogRetentionSettings {
           title: '调整日志保留数量？',
           message: '将清理 ' + victims.length + ' 条已结束的本地记录，释放约 ' + formatLogBytes(bytes)
             + '。在线分享不受影响。',
-          buttons: [{ text: '取消', color: this.theme.primary as string }, { text: '应用并清理', color: this.theme.error as string }],
+          buttons: [{ text: '取消', color: this.theme.actionText as string }, { text: '应用并清理', color: this.theme.errorText as string }],
         });
         if (result.index !== 1 || cancelled()) return;
         const current: number[] = await ledgerRetentionVictimsAsync(context.filesDir, Math.round(value));
@@ -122,37 +122,57 @@ export struct LogRetentionSettings {
     }
   }
 
+  /**
+   * 本组件只提供保留策略的组内正文，外层白色分组由设置页承担，避免多层卡片嵌套。
+   * 未知占用继续明确显示不可读，读取或保存期间禁用原滑块；减少数量仍走原真实集合确认，
+   * 展示层既不把估算写成实际占用，也不改变正在运行、pin或分享记录的保留边界。
+   */
   build() {
-    Column({ space: 8 }) {
+    Column({ space: 12 }) {
       Row() {
-        Text('游戏日志保留').fontSize(16).fontColor(this.theme.textPrimary).layoutWeight(1);
-        Text(this.retained + ' 局 / 版本').fontSize(15).fontWeight(600).fontColor(this.theme.primary);
-      }.width('100%').height(40);
+        Text('每个版本保留').fontSize(16).fontColor(this.theme.textPrimary).layoutWeight(1);
+        Text(this.retained + ' 局').fontSize(16).fontWeight(600).fontColor(this.theme.actionPrimary);
+      }.width('100%').constraintSize({ minHeight: 32 }).alignItems(VerticalAlign.Center);
       Slider({ value: this.retained, min: 5, max: 100, step: 1 })
         .enabled(!this.saving && !this.loading_)
-        .id('log-retention-slider').width('100%').height(40)
-        .trackColor(this.theme.bgInput).selectedColor(this.theme.primary)
+        .id('log-retention-slider').width('100%').height(48)
+        .trackColor(this.theme.bgInput).selectedColor(this.theme.actionText)
         .onChange((value: number, mode: SliderChangeMode) => {
           this.retained = Math.round(value);
           if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) this.save(value);
         });
       Row() {
-        Text('5 局 · 默认').fontSize(12).fontColor(this.theme.textHint);
+        Text('5 局 · 默认').fontSize(14).fontColor(this.theme.textSecondary);
         Blank();
-        Text('100 局').fontSize(12).fontColor(this.theme.textHint);
+        Text('100 局').fontSize(14).fontColor(this.theme.textSecondary);
       }.width('100%');
       Text('每个版本保留最近的完整游戏日志；另保留最近 ' + EARLY_SESSION_RETENTION
         + ' 次早期启动记录。减少数量时先确认清理范围。')
-        .fontSize(12).lineHeight(18).fontColor(this.theme.textSecondary).width('100%');
-      Text((this.actualBytes < 0 ? '日志占用暂不可读' : '日志实际占用 ' + formatLogBytes(this.actualBytes)) + ' · 已归档 ' + this.sessionCount + ' 局')
-        .fontSize(12).fontColor(this.theme.textSecondary).width('100%');
-      Text(this.estimatedPerSlot < 0 ? '空间预估需先取得完整可信的日志占用。' : this.sessionCount === 0 ? '游玩并归档后，可根据日志大小估算空间。'
-        : this.versionCount + ' 个版本各保留 ' + this.retained + ' 局，预计游戏日志占用 '
-          + formatLogBytes(this.estimatedPerSlot * this.retained) + '；实际随游玩时长变化。')
-        .fontSize(12).lineHeight(18).fontColor(this.theme.textHint).width('100%');
-      if (this.errorText.length > 0) {
-        Text(this.errorText).fontSize(12).fontColor(this.theme.error).width('100%');
+        .fontSize(14).lineHeight(22).fontColor(this.theme.textSecondary).width('100%');
+      Divider().color(this.theme.divider).strokeWidth(0.5);
+      Row({ space: 12 }) {
+        Text('日志实际占用').fontSize(16).fontColor(this.theme.textPrimary).layoutWeight(1);
+        Text(this.loading_ ? '读取中…' : this.actualBytes < 0 ? '暂不可读' : formatLogBytes(this.actualBytes))
+          .fontSize(14).fontColor(this.theme.textSecondary).textAlign(TextAlign.End)
+          .constraintSize({ maxWidth: 150 });
+      }.width('100%').constraintSize({ minHeight: 32 }).alignItems(VerticalAlign.Center);
+      Text('已归档 ' + this.sessionCount + ' 局').fontSize(14).lineHeight(22)
+        .fontColor(this.theme.textSecondary).width('100%');
+      if (this.loading_) {
+        Text('正在读取日志占用与空间预估…').fontSize(14).lineHeight(22)
+          .fontColor(this.theme.textSecondary).width('100%');
+      } else {
+        Text(this.estimatedPerSlot < 0 ? '空间预估需先取得完整可信的日志占用。' : this.sessionCount === 0 ? '游玩并归档后，可根据日志大小估算空间。'
+          : this.versionCount + ' 个版本各保留 ' + this.retained + ' 局，预计游戏日志占用 '
+            + formatLogBytes(this.estimatedPerSlot * this.retained) + '；实际随游玩时长变化。')
+          .fontSize(14).lineHeight(22).fontColor(this.theme.textSecondary).width('100%');
       }
-    }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 8, bottom: 16 });
+      if (this.saving) {
+        Text('正在保存…').fontSize(14).lineHeight(22).fontColor(this.theme.actionPrimary).width('100%');
+      }
+      if (this.errorText.length > 0) {
+        Text(this.errorText).fontSize(14).lineHeight(22).fontColor(this.theme.errorText).width('100%');
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start).padding(20);
   }
 }

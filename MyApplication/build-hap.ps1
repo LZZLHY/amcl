@@ -292,10 +292,11 @@ Invoke-AmclPython -B "$ProjectRoot\scripts\test-input-latency-parser.py"
 if ($LASTEXITCODE -ne 0) { throw 'Offline input latency parser contract failed' }
 # 停源结果须来自原scope/Host/gyro实际资源；诊断阶段观察不能决定输入准入或完成。
 foreach ($InputStopTest in @('test-touch-input-maintenance.mjs', 'test-game-session-host.mjs',
-    'test-gyro-lease.mjs', 'test-gyro-policy-activation.mjs', 'test-entry-ime-stage-observation.mjs')) {
+    'test-gyro-lease.mjs', 'test-landscape-rotation.mjs', 'test-gyro-policy-activation.mjs', 'test-entry-ime-stage-observation.mjs')) {
     Invoke-AmclNode (Join-Path $ProjectRoot "scripts/$InputStopTest")
     if ($LASTEXITCODE -ne 0) { throw "Input stop/IME production regression failed: $InputStopTest" }
 }
+# 旋转回归沿用当前主线已登记的foreach位置；组合分支不再重复执行同一门禁。
 # 保必要Source/GUI几何的观察关闭与回入围栏；执行真实组件/Port/Want正文及编译行为撤回。
 Invoke-AmclNode "$ProjectRoot\scripts\test-input-observation-control.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Input observer/source lifecycle regression failed' }
@@ -342,9 +343,12 @@ foreach ($TouchArchitectureTest in @('test-touch-deadline-transaction.py', 'test
 # owned包领取/释放、原scope退休及成功编译后的撤回反控，不能由UI停止发错域消息掩盖消费端回归。
 Invoke-AmclPython "$ProjectRoot\scripts\test-glfw-document-selection.py"
 if ($LASTEXITCODE -ne 0) { throw 'GLFW document selection/preedit domain regression failed' }
-# 普通Windows构建完整执行真实SDL组合：精确LF checkout、全新锁定SDK原控制正反与恢复、
-# owned文本实际Poll/回收正反与恢复。源码来自明确AMCL_SDL_TEST_REPO，缺依赖直接拒绝，不隐式clone。
-Invoke-AmclPython -B "$ProjectRoot\scripts\test-sdl-host-consumer.py"
+# 完整验证仍覆盖真实 SDL checkout、SDK 控制正反/恢复与 owned 文本消费；组合入口仅在
+# 源码、工具和实际头依赖均匹配时明确复用既有成功证据。Fresh 必须透传，不能借旧缓存
+# 冒充重新执行；源码仓仍由 AMCL_SDL_TEST_REPO 指定，缺依赖直接拒绝、不隐式 clone。
+$SdlHostArguments = @()
+if ($Fresh) { $SdlHostArguments += '--fresh' }
+Invoke-AmclPython -B "$ProjectRoot\scripts\test-sdl-host-consumer.py" @SdlHostArguments
 if ($LASTEXITCODE -ne 0) { throw 'SDL locked host SDK/control/owned text combination regression failed' }
 # 真实启动阶段以冻结slot/window绑定菜单consumer与64位gameSession，不能按GLFW图形provider误判L2。
 Invoke-AmclPython "$ProjectRoot\scripts\test-menu-cursor-startup.py"
@@ -698,7 +702,7 @@ if ($Product -eq 'default' -and $BuildMode -eq 'debug') {
     $SdkUiRoot = Join-Path $ProjectRoot 'entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets'
     $SdkUiFixture = Get-AmclWorkspacePath -Kind run -Id 'update-dialog-sdk-runtime' -ProjectRoot $ProjectRoot
     New-Item -ItemType Directory -Force -Path $SdkUiFixture | Out-Null
-    foreach ($relative in @('components/UpdateDialog.ts','components/UpdateDialogLayout.ts','pages/SideloadUpdatePage.ts')) {
+    foreach ($relative in @('components/UpdateDialog.ts','components/UpdateDialogLayout.ts','components/UpdateReminderPolicy.ts','pages/SideloadUpdatePage.ts')) {
         Copy-Item -LiteralPath (Join-Path $SdkUiRoot $relative) -Destination (Join-Path $SdkUiFixture ([IO.Path]::GetFileName($relative))) -ErrorAction Stop
     }
     Invoke-AmclNode "$ProjectRoot\scripts\test-update-dialog-sdk-runtime.mjs" $SdkUiFixture
@@ -774,6 +778,13 @@ Invoke-AmclNode "$ProjectRoot\scripts\check-input-runtime-boundary.mjs" --hap $H
 if ($LASTEXITCODE -ne 0) { throw 'Input runtime DSO/HAP ownership contract failed' }
 Invoke-AmclNode "$ProjectRoot\scripts\check-lwjgl-target-manifest.mjs" --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "LWJGL target manifest HAP check failed" }
+# 外部C provider不与Maven Linux natives共用SHA1；在实际符号门后独立核本产品完整字节链。
+Invoke-AmclNode "$ProjectRoot\scripts\test-hap-native-providers.mjs"
+if ($LASTEXITCODE -ne 0) { throw 'External native provider checker negative controls failed' }
+$NativeProviderEvidence = Join-Path $GraphicsRuntimeEvidenceDir 'external-native-providers.json'
+Invoke-AmclNode "$ProjectRoot\scripts\check-hap-native-providers.mjs" --root $ProjectRoot `
+    --product $Product --mode $BuildMode --hap $Hap --out $NativeProviderEvidence
+if ($LASTEXITCODE -ne 0) { throw 'External native provider final HAP delivery failed' }
 Invoke-AmclPython "$ProjectRoot\scripts\check-game-runtime-compat.py" --hap $Hap
 if ($LASTEXITCODE -ne 0) { throw "Game runtime compatibility final HAP check failed" }
 if ($LASTEXITCODE -ne 0) { throw "HAP-embedded LWJGL target coverage check failed (exit $LASTEXITCODE)" }

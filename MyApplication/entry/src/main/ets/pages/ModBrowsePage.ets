@@ -1,3 +1,7 @@
+/**
+ * 浏览页的普通错误文字与图标使用错误前景色，原生缺失清单按钮使用主题操作文字色；
+ * 只调整显示角色，不改变搜索、安装恢复、排序和复制清单的原有判断及回调。
+ */
 import { DiagnosticPolicy, DistributionPolicy } from 'commons';
 /**
  * ModBrowsePage.ets — 模组、光影、资源包与整合包的共享下载浏览页。
@@ -22,13 +26,8 @@ import { APP_NAME, APP_VERSION } from 'commons';
 import { DownloadManager } from 'feature_core';
 import { UnifiedTaskView } from 'feature_core';
 import { ModInstallTask, ModInstallRequest, dependencyPlanErrors, isModVersionCompatible } from 'mods';
-import { getDownloadHistoryStore, DownloadHistoryRecord } from 'feature_core';
-import { ActivityCategory } from 'feature_core';
-// 活动账本：模组/资源安装也要有自己的日志（2026-08-01 自审补漏）
-import { ledgerBeginAsync, ledgerEndAsync, ledgerManifestAsync, ledgerDirOf, writeEvidenceTextAtomicAsync,
-  LedgerBeginMeta, LedgerOutcome, LedgerState } from 'commons';
 import { getMetadataCacheStore } from 'feature_core';
-// 加速下载开启时强制官方源（见 resolveModrinthMode）
+// 来源约束优先于网关自动排序（见 resolveModrinthMode）。
 import { getRelayClient } from 'feature_core';
 import { ModrinthRepository } from 'mods';
 import { CurseForgeRepository } from 'mods';
@@ -54,7 +53,7 @@ import {
   isMcimAvailable,
 } from 'mods';
 import {
-  ModSource, ResourceKind, RemoteProject, RemoteVersion, DependencyType,
+  ModSource, ResourceKind, RemoteProject, RemoteVersion, DependencyType, makeEmptyRemoteProject,
   pickPrimaryFile, RemoteFile, LocalMod,
 } from 'mods';
 import { buildCurseForgeFileDownloadUrls } from 'mods';
@@ -69,9 +68,11 @@ import { loadModTranslationStores, ModTranslationStores,
 import { ModDetailSheet, ModDetailDepRow } from '../components/ModDetailSheet';
 import { getDownloadTaskRegistry } from 'feature_core';
 import { ResourceInstallTask } from 'mods';
-import { ModpackInstallTask, sanitizeVersionName, validateModpackVersionName, displayTitleOf } from 'mods';
+import { ModpackInstallTask, abandonModpackRecovery, readModpackRecoveryKind,
+  sanitizeVersionName, validateModpackVersionName, displayTitleOf } from 'mods';
 import { ModpackNameInput } from '../components/ModpackNameInput';
-import { createModpackFileResolver, listModpackRecovery, ModpackRecoveryItem } from 'mods';
+import { createModpackFileResolver, scanModpackRecovery, LocalModScanControl, ModpackRecoveryItem, CurseForgeFileSourceMode,
+  resolveModrinthSourcePreference, resolveCurseForgeFileSourcePreference } from 'mods';
 import { isIsolatedModpackInstance } from 'commons';
 import { UnifiedTaskState, newVersionInstallOwner } from 'feature_core';
 import { ModpackMissingItem } from 'mods';
@@ -87,14 +88,15 @@ import { AppLogger } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 import { AppIcon } from '../components/AppIcon';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
-import { AppRoundIconButton } from '../components/AppRoundIconButton';
+import { DownloadSearchField } from '../components/DownloadSearchField';
+import { LayerRetreatPolicy, RetreatFrame, retreatLayerHeight, retreatLayerOffset,
+  retreatStableInset, retreatLeadItemHeight, retreatNeedsTopRestore } from '../components/LayerRetreatPolicy';
+import { UiMotion } from '../components/UiMotion';
+import { pickAndStartModFileSave, supportsCustomResourceSave } from '../services/ModFileSave';
 
 const TAG = 'ModBrowsePage';
 /** 单局真实业务终态原件；nonce绑定原manifest，冷启只能消费匹配的安装活动。 */
-interface ModInstallTerminal {
-  schema: number; activityId: number; category: string; runNonce: string;
-  outcome: LedgerOutcome; record: DownloadHistoryRecord;
-}
+
 
 const SEARCH_DEBOUNCE_MS = 300;
 const USER_AGENT = APP_NAME + '/' + APP_VERSION + ' (https://github.com/axecraft/amcl)';
@@ -114,14 +116,18 @@ interface InstalledPrimaryRef {
 
 @Component
 export struct ModBrowsePage {
+  /** 由偏好所有者发布的确认比例；改变后重新计算手机资源详情和导入面板高度。 */
+  @StorageProp('phoneSheetHeightPercent') private phoneSheetHeightPercent_: number = 80;
   @Prop theme: ThemeColors = {} as ThemeColors;
+  /** 原生Tabs保留隐藏内容，显式可见性阻止离页后的动画续体继续消费旧手势。 */
+  @Prop @Watch('onRetreatHostVisible_') hostVisible: boolean = true;
   /** .minecraft 根目录绝对路径（不带尾部 /） */
-  @Prop mcDir: string = '';
+  @Prop @Watch('onResourceTargetPropsChanged_') mcDir: string = '';
   /** 当前选中的已装 MC 版本 id（用于目标目录计算 + 默认筛选） */
-  @Prop currentMcVersion: string = '';
+  @Prop @Watch('onResourceTargetPropsChanged_') currentMcVersion: string = '';
   @Prop versionIsolation: boolean = true;
   /** P0 修复 #4：用于校验 currentMcVersion 是否真的存在（防止凭空创建版本目录） */
-  @Prop availableVersions: string[] = [];
+  @Prop @Watch('onResourceTargetPropsChanged_') availableVersions: string[] = [];
   /** 顶/底部安全区高度（来自 Index 透传，详情 sheet 70% 高度计算用） */
   @Prop topSafeHeight: number = 0;
   @Prop bottomSafeHeight: number = 0;
@@ -143,12 +149,10 @@ export struct ModBrowsePage {
    */
   @Prop cacheRemoteMeta: boolean = true;
   /**
-   * Phase R-1 新增：外部 DownloadTab 顶级横向 Tabs 切换时传入的默认资源类别。
-   * 0 = MOD / 1 = RESOURCE_PACK / 2 = SHADER。aboutToAppear 时同步到内部 kindIdx_。
-   * 注：组件挂载后再修改此 prop 不会重新触发 aboutToAppear（ArkUI @Prop 单向语义）；
-   *     R-3 后由外部完全受控时再做 controlled 化重构。
+   * 外部下载胶囊控制资源类别：0=模组、1=资源包、2=光影、3=整合包。
+   * 首次挂载读取初值，之后由Watch同步；不再以销毁页面来切换资源类别。
    */
-  @Prop defaultKindIdx: number = 0;
+  @Prop @Watch('externalKindChanged_') defaultKindIdx: number = 0;
 
   /** 给 Index 做 toast/log 的回调（可选） */
   onStatusMessage: (msg: string) => void = () => {};
@@ -165,10 +169,21 @@ export struct ModBrowsePage {
   @State private queryInput_: string = '';
   @State private gameVersionInput_: string = '';
   @State private loaderInput_: string = 'fabric';
+  /** 另存不使用安装实例的自动筛选。用户在该模式手动选的加载器单独保留。 */
+  @State private customModLoaderInput_: string = '';
   @State private sortInput_: SortBy = SortBy.DOWNLOADS;
   private sortExplicit_: boolean = false;
   @State private modpackRecovery_: ModpackRecoveryItem[] = [];
   @State private showModpackRecovery_: boolean = false;
+  @State private modpackRecoveryLoading_: boolean = false;
+  @State private modpackRecoveryFailed_: boolean = false;
+  /** 一次只确认一条放弃操作；同一记录在处理期间不能从此面板重复恢复。 */
+  @State private modpackDismissId_: string = '';
+  /** 只保留当前可见恢复面板的扫描；运行中有新请求时至多补扫一次。 */
+  private modpackRecoveryScan_: LocalModScanControl | undefined = undefined;
+  private modpackRecoveryPending_: boolean = false;
+  /** 面板退场后，尚未弹出的确认框和未处理的确认结果随该轮会话失效。 */
+  private modpackRecoveryEpoch_: number = 0;
 
   /** ctrl.getState() 的快照，UI 渲染用 */
   @State private view_: ModSearchState = makeInitialSearchState();
@@ -188,11 +203,15 @@ export struct ModBrowsePage {
   @State private detailInstallError_: string = '';
   /** 仅在当前选版、依赖计划和目标快照全部准备完成时为 true。 */
   @State private detailInstallReady_: boolean = false;
+  /** 系统保存窗口返回前禁止重复唤起；它不代表已建立下载任务。 */
+  @State private detailSavePickerPending_: boolean = false;
   /** false 时依赖卡仅展示远端直接声明，不能当作已解析且可勾选的安装计划。 */
   @State private detailDependenciesResolved_: boolean = false;
   /** 准备成功时绑定的真实安装目标，防止相同 MC/loader 的另一个实例误用旧计划。 */
   private detailPreparedMcDir_: string = '';
   private detailPreparedVersionId_: string = '';
+  /** 只在当前文件通过另存准备后置位，安装计划的旧 ready 不得打开保存窗口。 */
+  private detailPreparedForResourceSave_: boolean = false;
   /** 下载详情中的名称草稿；选版只刷新文件元数据，不能覆盖用户正在编辑的名称。 */
   @State private detailModpackName_: string = '';
   @State private detailModpackNameError_: string = '';
@@ -204,8 +223,8 @@ export struct ModBrowsePage {
   private localModpackRoot_: string = '';
   private localModpackFilesDir_: string = '';
   private detailOptionalIds_: string[] = [];
-  /** 当前打开详情的 project；空对象 → 占位 */
-  @State private detailProject_: RemoteProject = {} as RemoteProject;
+  /** 当前详情的展示快照；关闭请求保留它，真实退场后才回收为字段完整的空态。 */
+  @State private detailProject_: RemoteProject = makeEmptyRemoteProject();
   /** 当前浏览版本：优先推荐适配目标的文件，无推荐时仍展示项目的最新客户端文件。 */
   @State private detailSelectedVersion_: RemoteVersion | null = null;
   /** 该项目全部版本列表（picker step 用） */
@@ -226,6 +245,15 @@ export struct ModBrowsePage {
    * 每次 openDetail 自增；resolve 回写前比较，不一致则丢弃。
    */
   private detailFetchEpoch_: number = 0;
+  /** Sheet 实例身份独立于请求代次；显示期间切源/换文件不更换实例身份。 */
+  private detailSessionCounter_: number = 0;
+  private detailSession_: number = 0;
+  /** Native 已开始呈现的实例；同帧开关尚未呈现时不会依赖不存在的退出回调。 */
+  private detailPresentedSession_: number = 0;
+  /** 从请求关闭到真实退场结束的屏障，防止迟到点击重新建立有效请求。 */
+  private detailClosing_: boolean = false;
+  /** 页面析构后只取消普通字段工作，不再经任何迟到回调写入视图状态。 */
+  private detailDisposed_: boolean = false;
 
   /** 缓存解析得到的全量 ResolvedDependency（含失败 / OPTIONAL 全集），install 时按勾选过滤 */
   private detailResolvedDeps_: ResolvedDependency[] = [];
@@ -254,6 +282,10 @@ export struct ModBrowsePage {
   @State private targetLocation_: string = 'sandbox';
   /** 目标版本是否真实存在（picker 选中的天然为真；初始按 availableVersions 校验） */
   @State private targetValid_: boolean = false;
+  /** 三类资源各自记住明确的另存选择；切换类别不会替用户改写另一类别的保存模式。 */
+  @State private customSaveKindIndices_: number[] = [];
+  /** 手动选择的实例可在另一存储根；首页扫描结果只更新自动跟随的实例。 */
+  private instanceTargetPicked_: boolean = false;
 
   /** 版本选择 Sheet 显隐 */
   @State private showVersionPicker_: boolean = false;
@@ -278,6 +310,36 @@ export struct ModBrowsePage {
   /** 当前内容区宽度（vp）；使用实际可用空间，避免平板侧栏或分屏使卡片过窄。 */
   @State private browseWidth_: number = 0;
 
+  /** 四类资源共用自动退让端点，分类切换由几何复位移除不存在的辅助层。 */
+  @State private retreatHidden_: number = 0;
+  /** 负值表示新结果/尺寸上下文尚未开始浏览；冻结后不随辅助区收展或手动开关改变。 */
+  @State private retreatAnchorInset_: number = -1;
+  /** 逻辑端点先更新、视觉动画后完成，独立门控防止恢复动画中误接收受限测量。 */
+  @State private retreatAnimating_: boolean = false;
+  /** 动画期间保留起止覆盖范围，避免内容尚在滑出时点击穿透到下面的列表。 */
+  @State private retreatHitHeight_: number = 0;
+  private retreatAnimationEpoch_: number = 0;
+  @State private retreatTargetHeight_: number = 0;
+  @State private retreatLoaderHeight_: number = 0;
+  @State private retreatSortHeight_: number = 0;
+  /** 仅在完全展开时按实际可见索引评估长内容，收展本身不反复改变资格。 */
+  private retreatScrollable_: boolean = false;
+  /** 缓存各原生容器最后一次可见范围；同尺寸复位后索引不变时框架不会再发回调。 */
+  private retreatListFirst_: number = -1;
+  private retreatListLast_: number = -1;
+  private retreatGridFirst_: number = -1;
+  private retreatGridLast_: number = -1;
+  private retreatSearchFocused_: boolean = false;
+  private retreatViewportHeight_: number = 0;
+  private retreatPolicy_: LayerRetreatPolicy = new LayerRetreatPolicy();
+  /** 当前结果List独占控制器，只读真实总偏移，不向它发送补偿/定位滚动。 */
+  private retreatScroller_: Scroller = new Scroller();
+  /** 整合包Grid独占控制器，避免类别切换时与List复用同一原生绑定。 */
+  private retreatGridScroller_: Scroller = new Scroller();
+  private retreatReturning_: boolean = false;
+  private retreatTouchActive_: boolean = false;
+  private retreatHostActive_: boolean = false;
+
   // ===================== 运行时服务（aboutToAppear 注入） =====================
 
   private ctrl_: ModSearchController | null = null;
@@ -300,6 +362,9 @@ export struct ModBrowsePage {
   private initialSearchDone_: boolean = false;
 
   aboutToAppear() {
+    this.detailDisposed_ = false;
+    this.retreatHostActive_ = this.hostVisible;
+    this.resetRetreat_();
     // Phase R-1：外部 DownloadTab 顶级 Tab 切换决定的默认资源类别
     if (this.defaultKindIdx >= 0 && this.defaultKindIdx <= 3) {
       this.kindIdx_ = this.defaultKindIdx;
@@ -321,7 +386,7 @@ export struct ModBrowsePage {
     // mcim 挂掉时 isAvailable() 返回 false，ModSourceRouter 跳过本源，
     // 避免每次搜索都等 30s 超时（CurseForge 没 API Key，mcim 是唯一通路）。
     let curseforge = new CurseForgeRepository(dm, cache, USER_AGENT,
-      () => isMcimAvailable(), cacheEnabled);
+      () => isMcimAvailable(), cacheEnabled, (): CurseForgeFileSourceMode => this.resolveCurseForgeFileMode());
     this.router_ = new ModSourceRouter([modrinth, curseforge]);
     this.resolver_ = makeResolverFromRouter(this.router_);
     // v6.5：installer_ 已下台。
@@ -355,30 +420,52 @@ export struct ModBrowsePage {
     this.externalAvailable_ = GameStorage.isExternalAvailable();
     let extRoot = GameStorage.externalMcDir();
     this.targetLocation_ = (extRoot.length > 0 && this.mcDir === extRoot) ? 'external' : 'sandbox';
-    this.targetValid_ = this.currentMcVersion.length > 0
+    this.targetValid_ = this.targetMcDir_.length > 0 && this.currentMcVersion.length > 0
       && this.availableVersions.indexOf(this.currentMcVersion) >= 0;
 
     // 2. P0 修复 #2/#7：从目标版本提取 game version + 推断 loader（整合包/重命名版本名
     //    无版本号/无 loader 关键字，走快照/内容解析，避免拿到整合包名当 MC 版本）
-    this.gameVersionInput_ = resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_);
-    let detectedLoader = resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_);
+    const saveFileOnly = this.usesCustomResourceSave_();
+    this.gameVersionInput_ = saveFileOnly ? '' : resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_);
+    let detectedLoader = saveFileOnly ? '' : resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_);
     // 原版（detected===''）保留 'fabric' 默认（搜模组最常见）
     this.loaderInput_ = this.kindIdx_ === 3 ? '' : (detectedLoader.length > 0 ? detectedLoader : 'fabric');
-    this.refreshModpackRecovery_();
 
     // 3. 应用到控制器
     this.applyFiltersToController();
 
-    // 4. 异步触发源探测（不阻塞）
-    ensureModrinthRanking().catch((e: Error) => {
-      AppLogger.warn(TAG, 'probe failed (non-fatal)', e, LOG_DOMAIN_DOWNLOAD);
-    });
+    // 4. 仅关闭网关且未明确官方时复用原可达性顺序提示。网关/官方档不得为选源
+    // 额外访问MCIM；这不是正文吞吐测速，也不会给每个内容文件增加一组探测。
+    if (!getRelayClient().isEnabled() && this.modSource !== 'official') {
+      ensureModrinthRanking().catch((e: Error) => {
+        AppLogger.warn(TAG, 'probe failed (non-fatal)', e, LOG_DOMAIN_DOWNLOAD);
+      });
+    }
 
     // 5. 首次搜索由译名库就绪回调触发（见上方 doInitialSearch_）。
     //    兜底：本地译名加载极快，但万一 loadModTranslationStores 异常/未按预期触发，
     //    600ms 后仍强制搜一次，保证列表一定会加载。
     setTimeout(() => { this.doInitialSearch_(); }, 600);
     this.inited_ = true;
+  }
+
+  /**
+   * 外部资源胶囊复用同一个浏览器。只切换控制器类别，原查询、安装目标、排序、折叠和
+   * TextInput节点继续存在；未初始化时由aboutToAppear读取最新Prop，不重复构造仓库或首搜。
+   * 丢弃旧的输入去抖计时，当前查询同步应用到新类别；控制器epoch负责拒绝旧网络结果。
+   */
+  private externalKindChanged_(): void {
+    const next: number = this.defaultKindIdx;
+    if (!this.inited_ || !Number.isInteger(next) || next < 0 || next > 3 || next === this.kindIdx_) return;
+    if (this.debounceTimer_ !== 0) { clearTimeout(this.debounceTimer_); this.debounceTimer_ = 0; }
+    this.closeDetail();
+    this.kindIdx_ = next;
+    this.syncDefaultResourceTarget_();
+    if (next !== 3) this.closeModpackRecovery_();
+    // 同一个浏览器跨类别复用，不能将模组的Loader/目标高度带到没有这些层的资源页。
+    this.resetRetreatGeometry_();
+    this.applyFiltersToController();
+    if (this.initialSearchDone_) this.triggerSearch(true);
   }
 
   /** 首屏搜索仅触发一次（本地译名就绪 or 兜底超时，取先到者）。 */
@@ -389,8 +476,19 @@ export struct ModBrowsePage {
   }
 
   aboutToDisappear() {
-    // 页面退出后废弃所有详情代次，避免来源请求/依赖解析回写已卸载的页面。
-    this.closeDetail();
+    this.retreatHostActive_ = false;
+    this.retreatReturning_ = false;
+    this.retreatTouchActive_ = false;
+    // 退休旧动画完成回调，避免页面离开后解除新页面的测量锁。
+    this.retreatAnimationEpoch_++;
+    this.retreatPolicy_.reset();
+    // 析构中禁止修改 @State。仅退休会话和异步身份，视图快照随组件销毁自然释放。
+    this.detailDisposed_ = true;
+    this.retireModpackRecoveryScan_();
+    this.invalidateDetailWork_();
+    this.detailSession_ = 0;
+    this.detailPresentedSession_ = 0;
+    this.detailClosing_ = false;
     if (this.debounceTimer_ !== 0) {
       clearTimeout(this.debounceTimer_);
       this.debounceTimer_ = 0;
@@ -422,19 +520,23 @@ export struct ModBrowsePage {
    * 根据用户偏好 `modSource` 解析最终的 ModrinthSourceMode。
    * 与 ModSourceProber.getModrinthSourceMode 形成两层决策：
    *   - 'auto'     → 走 prober 的自动探测结果（首次进入时尚未 probe 完成会回退 MCIM_FIRST）
-   *   - 'mcim'     → 强制 MCIM_FIRST
-   *   - 'official' → 强制 OFFICIAL_FIRST
+   *   - 'mcim'     → 网关关闭时 MCIM_FIRST
+   *   - 'official' → OFFICIAL_ONLY，仅官方 API/文件，自家网关照常可用
    */
   private resolveModrinthMode(): ModrinthSourceMode {
-    // 加速下载开启时**强制官方源**，忽略上面三档偏好：
-    // 网关到 cdn.modrinth.com 实测 5.36MB/s 且不会被地域重定向甩到慢节点；
-    // 此时再走 mcim 镜像只会多一跳转发，还可能撞上镜像自身缓存未命中回源。
-    // 注意判据是"加速真的可用"（握手成功且票据有效），不是"用户打开了开关"——
-    // 握手失败时必须退回原偏好，否则会把用户按在一条没有加速的官方源上。
-    if (getRelayClient().status().active) return ModrinthSourceMode.OFFICIAL_FIRST;
-    if (this.modSource === 'mcim') return ModrinthSourceMode.MCIM_FIRST;
-    if (this.modSource === 'official') return ModrinthSourceMode.OFFICIAL_FIRST;
-    return getModrinthSourceMode();
+    // 网关开关意图决定候选约束；usable只决定Native路由，不授予镜像回退。关闭后
+    // 仍读取原保存偏好，不通过改写modSource伪造“恢复”。
+    return resolveModrinthSourcePreference(this.modSource, getModrinthSourceMode(), getRelayClient().isEnabled());
+  }
+
+  /** CF 文件 CDN 无须 API Key；仅对正文应用偏好，列表元数据继续现有 MCIM 通道。 */
+  private resolveCurseForgeFileMode(): CurseForgeFileSourceMode {
+    return resolveCurseForgeFileSourcePreference(this.modSource, getRelayClient().isEnabled());
+  }
+
+  /** 入队时冻结正文约束；首包、清单与冷恢复都使用同一纯策略，持久计划只可收紧。 */
+  private onlyOfficialModpackFiles_(): boolean {
+    return this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_ONLY;
   }
 
   // ===================== 构建 UI（v2 重构）=====================
@@ -446,94 +548,17 @@ export struct ModBrowsePage {
       // 包括其 header（搜索框），TextInput 重挂载会触发 onChange 形成无限循环。
       this.PinnedSearchHeader()
 
-      // 目标版本选择沿用原卡片与原位置；二级展开收起只管理筛选，不改变安装目标入口。
-      if (this.kindIdx_ !== 3) {
-        Column() { this.ContextCard() }
-          .width('100%').padding({ left: 16, right: 16, bottom: 8 })
-      }
-
-      // 二级面板与其他下载资源共享相同的筛选组件；显隐不依赖网络结果。
-      if (!this.headerCollapsed_) {
-        this.BrowseFilterPanel()
-      }
-
       // 导入与恢复为浏览操作，收起筛选或离线时仍可达；没有持久任务时不展示恢复入口。
       if (this.kindIdx_ === 3) {
         this.ModpackImportRow()
       }
 
-      // 结果容器可按加载/错误/空态替换；上方操作区的身份和可达性保持不变。
-      Stack({ alignContent: Alignment.TopStart }) {
-        if (this.view_.loading && this.view_.hits.length === 0) {
-          this.LoadingBlock('正在搜索...')
-        } else if (this.view_.errorMessage !== null && this.view_.hits.length === 0) {
-          this.ErrorBlock(describeSearchFailureForUser(
-            this.view_.errorKind, this.view_.httpStatus, this.view_.errorMessage))
-        } else if (this.view_.hits.length === 0) {
-          this.EmptyBlock()
-        } else if (this.kindIdx_ === 3) {
-          this.ModpackResultsGrid()
-        } else {
-          List({ space: 8 }) {
-            ForEach(this.view_.hits, (p: RemoteProject) => {
-              ListItem() {
-                Row() {
-                  ModCard({
-                    theme: this.theme,
-                    project: p,
-                    onTap: (project: RemoteProject) => {
-                      this.openDetail(project);
-                    },
-                  })
-                }
-                .width('100%')
-              }
-            }, (p: RemoteProject) => p.source + ':' + p.id)
-
-            // 底部"加载更多"
-            if (this.view_.hasMore) {
-              ListItem() {
-                Row() {
-                  if (this.view_.loading) {
-                    LoadingProgress().width(20).height(20).color(this.theme.primary)
-                    Text('加载中...').fontSize(12).fontColor(this.theme.textHint).margin({ left: 8 })
-                  } else {
-                    Text('上滑加载更多').fontSize(12).fontColor(this.theme.textHint)
-                  }
-                }
-                .width('100%').height(40).justifyContent(FlexAlign.Center)
-              }
-            }
-
-            // 底部"全部展示完"
-            if (!this.view_.hasMore && this.view_.hits.length > 0) {
-              ListItem() {
-                Text('—— 已展示 ' + this.view_.hits.length + ' / ' + this.view_.totalHits + ' ——')
-                  .fontSize(11)
-                  .fontColor(this.theme.textHint)
-                  .width('100%')
-                  .textAlign(TextAlign.Center)
-                  .padding({ top: 8, bottom: 16 })
-              }
-            }
-          }
-          .width('100%')
-          .height('100%')
-          .padding({ left: 16, right: 16, bottom: 16 })
-          .onReachEnd(() => {
-            if (this.view_.hasMore && !this.view_.loading) {
-              this.loadNextPage();
-            }
-          })
-        }
-      }
-      .width('100%')
-      .layoutWeight(1)
+      this.BrowseResults_()
 
       // ============== ModDetailSheet 锚点 ==============
       Column().width(0).height(0)
         .bindSheet($$this.showDetailSheet_, this.ModDetailSheetBuilder(), {
-          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
+          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_),
           // 一多：仅平板/PC 宽屏限宽（手机返回 undefined，绝不给底部抽屉加宽度）
           width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
           // 平板/PC 居中卡片不再显示系统关闭按钮（会与 sheet 内功能按钮重叠）；底部抽屉用拖拽条
@@ -542,18 +567,23 @@ export struct ModBrowsePage {
           backgroundColor: this.theme.bgPrimary,
           blurStyle: BlurStyle.NONE,
           preferType: centerSheetForLayout(this.deviceForm, this.appBreakpoint) ? SheetType.CENTER : SheetType.BOTTOM,
-          onDisappear: () => { this.closeDetail() },
+          onWillAppear: this.detailWillAppearCallback_(),
+          onWillDisappear: this.detailWillDisappearCallback_(),
+          onDisappear: this.detailDidDisappearCallback_(),
         })
 
       // ============== VersionPickerSheet 锚点（选安装目标版本） ==============
       Column().width(0).height(0)
         .bindSheet($$this.showModpackRecovery_, this.ModpackRecoveryPanel(), {
-          height: '70%', showClose: false, backgroundColor: this.theme.bgPrimary,
+          height: this.deviceForm === DeviceForm.PHONE
+            ? detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_)
+            : '70%', showClose: false, backgroundColor: this.theme.bgPrimary,
+          onWillDisappear: (): void => { this.retireModpackRecoveryScan_(); },
         })
 
       Column().width(0).height(0)
         .bindSheet($$this.showVersionPicker_, this.VersionPickerBuilder(), {
-          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
+          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_),
           width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
           dragBar: !centerSheetForLayout(this.deviceForm, this.appBreakpoint),
           showClose: false,
@@ -564,7 +594,7 @@ export struct ModBrowsePage {
         })
       Column().width(0).height(0)
         .bindSheet($$this.showLocalModpackDetail_, this.LocalModpackDetailBuilder_(), {
-          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight),
+          height: detailSheetHeightForLayout(this.deviceForm, this.appBreakpoint, this.bottomSafeHeight, this.topSafeHeight, this.phoneSheetHeightPercent_),
           width: sheetWidthForLayout(this.deviceForm, this.appBreakpoint),
           showClose: false, backgroundColor: this.theme.bgPrimary,
           preferType: centerSheetForLayout(this.deviceForm, this.appBreakpoint) ? SheetType.CENTER : SheetType.BOTTOM,
@@ -575,8 +605,428 @@ export struct ModBrowsePage {
     .onAreaChange((_, area) => {
       // ArkUI 返回 vp 布局宽度。仅在宽度真正改变时刷新，避免滚动触发重复布局。
       const nextWidth = area.width as number;
-      if (nextWidth > 0 && Math.abs(nextWidth - this.browseWidth_) > 1) this.browseWidth_ = nextWidth;
+      const nextHeight = area.height as number;
+      if (Math.abs(nextHeight - this.retreatViewportHeight_) > 1) {
+        this.resetRetreatGeometry_();
+        this.retreatViewportHeight_ = nextHeight;
+      }
+      if (nextWidth > 0 && Math.abs(nextWidth - this.browseWidth_) > 1) {
+        this.browseWidth_ = nextWidth;
+        this.resetRetreatGeometry_();
+      }
     })
+  }
+
+  /** 固定几何的结果视口，辅助层在其顶部覆盖，不参与List父级的纵向占位。 */
+  @Builder
+  private BrowseResults_() {
+    // 结果容器可按加载/错误/空态替换；上方操作区的身份和可达性保持不变。
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.view_.hits.length === 0) {
+        // 空态仍在辅助区下方提供可操作空间，避免覆盖层挡住重试/清筛选入口。
+        Column() {
+          if (this.view_.loading) this.LoadingBlock('正在搜索...')
+          else if (this.view_.errorMessage !== null) {
+            this.ErrorBlock(describeSearchFailureForUser(this.view_.errorKind, this.view_.httpStatus, this.view_.errorMessage))
+          } else this.EmptyBlock()
+        }.id('mod-empty-state-viewport').width('100%').height('100%').padding({ top: this.retreatListInset_() })
+      } else if (this.kindIdx_ === 3) {
+        this.ModpackResultsGrid()
+      } else {
+        List({ space: 8, scroller: this.retreatScroller_ }) {
+          // 三类资源均使用真正参与内容滚动的固定首项；收展不能改它的高度。
+          ListItem() { Column().width('100%').height('100%') }
+              .height(retreatLeadItemHeight(this.retreatListInset_(), 8))
+              .id('mod-retreat-content-inset').focusable(false)
+              .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+          ForEach(this.view_.hits, (p: RemoteProject) => {
+            ListItem() {
+              Row() {
+                ModCard({
+                  theme: this.theme,
+                  project: p,
+                  onTap: (project: RemoteProject) => {
+                    this.openDetail(project);
+                  },
+                })
+              }
+              .width('100%')
+            }
+          }, (p: RemoteProject) => p.source + ':' + p.id)
+
+          // 底部"加载更多"
+          if (this.view_.hasMore) {
+            ListItem() {
+              Row() {
+                if (this.view_.loading) {
+                  LoadingProgress().width(20).height(20).color(this.theme.actionText)
+                  Text('加载中...').fontSize(12).fontColor(this.theme.textHint).margin({ left: 8 })
+                } else {
+                  Text('上滑加载更多').fontSize(12).fontColor(this.theme.textHint)
+                }
+              }
+              .width('100%').height(40).justifyContent(FlexAlign.Center)
+            }
+          }
+
+          // 底部"全部展示完"
+          if (!this.view_.hasMore && this.view_.hits.length > 0) {
+            ListItem() {
+              Text('—— 已展示 ' + this.view_.hits.length + ' / ' + this.view_.totalHits + ' ——')
+                .fontSize(11)
+                .fontColor(this.theme.textHint)
+                .width('100%')
+                .textAlign(TextAlign.Center)
+                .padding({ top: 8, bottom: 16 })
+            }
+          }
+        }
+        .width('100%')
+        .height('100%')
+        .id('resource-browser-results')
+        // 扩大视口后即使内容恰好装满，也保留反向输入；短内容仍由退让资格禁止收起。
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .padding({ left: 16, right: 16, bottom: 16 })
+        .onScrollStart(() => {
+          // 新滚动开始不应在上一层动画中提前解除同向锁；动画完成会自行重新接收位移。
+          if (!this.retreatAnimating_) this.retreatPolicy_.reset();
+        })
+        .onScrollFrameBegin((offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult => {
+          return this.consumeRetreatFrame_(offset, state);
+        })
+        .onTouch((event: TouchEvent) => { this.observeRetreatTouch_(event); })
+        .onReachStart(() => { this.restoreRetreatAtStart_(); })
+        .onDidScroll((offset: number, state: ScrollState) => { this.observeRetreatPosition_(offset, state); })
+        .onScrollStop(() => { this.observeRetreatStop_(); })
+        .onScrollIndex((first: number, last: number) => {
+          // 辅助区展开时的视口作为资格基准；完全收起后仍允许反向恢复。
+          if (this.retreatHidden_ === 0) {
+            this.retreatListFirst_ = first;
+            this.retreatListLast_ = last;
+            // 三类List均有固定首占位，真实资源索引从1开始；不能把占位算作资源。
+            this.retreatScrollable_ = first > 1 || last < this.view_.hits.length;
+          }
+        })
+        .onReachEnd(() => {
+          if (this.view_.hasMore && !this.view_.loading) {
+            this.loadNextPage();
+          }
+        })
+      }
+        // 四类资源的辅助层均覆盖在稳定结果视口上，正文尺寸不再随收展改变。
+        Stack({ alignContent: Alignment.TopStart }) {
+          Column() {
+            if (this.kindIdx_ !== 3) this.RetreatTarget_()
+            if (!this.headerCollapsed_) this.ModRetreatFilters_()
+          }.width('100%').backgroundColor(this.theme.bgPrimary).clip(true)
+          if (this.retreatAnimating_ && this.retreatHitHeight_ > 0) {
+            // 仅无子控件的透明保护层使用Block，不能阻断正常辅助控件的子节点命中。
+            Column().width('100%').height(this.retreatHitHeight_).hitTestBehavior(HitTestMode.Block)
+          }
+        }.id('mod-retreat-overlay').width('100%')
+        .height(this.retreatAnimating_ ? this.retreatHitHeight_
+          : (this.retreatListInset_() > 0 ? this.retreatOverlayHeight_() : LayoutPolicy.fixAtIdealSize))
+        .clip(true)
+        .hitTestBehavior(this.retreatAnimating_ || this.retreatOverlayHeight_() > 0 ? HitTestMode.Default : HitTestMode.None)
+    }.id('resource-browser-viewport').width('100%')
+    .layoutWeight(1)
+    .clip(true)
+  }
+
+  /** 模组、光影与资源包复用完整目标层；整合包创建独立实例，不显示安装目标。 */
+  @Builder
+  private RetreatTarget_() {
+    Column() {
+      Column() { this.ContextCard() }
+        .width('100%').padding({ left: 16, right: 16, bottom: 8 }).flexShrink(0)
+        .height((this.retreatAnimating_ || this.retreatHidden_ > 0)
+          && this.retreatTargetHeight_ > 0 ? this.retreatTargetHeight_ : LayoutPolicy.fixAtIdealSize)
+        .constraintSize({ minHeight: (this.retreatAnimating_ || this.retreatHidden_ > 0)
+          ? this.retreatTargetHeight_ : 0 })
+        .translate({ y: retreatLayerOffset(this.retreatTargetHeight_, this.retreatHidden_,
+            this.headerCollapsed_ ? 0 : this.retreatSortHeight_ + this.retreatLoaderHeight_) })
+        .renderFit(RenderFit.TOP_LEFT)
+        .onAreaChange((_, area) => { this.measureRetreatHeight_(0, area); })
+    }
+    .id('mod-retreat-target')
+    .width('100%').justifyContent(FlexAlign.Start)
+    .height(this.retreatTargetHeight_ > 0
+      ? this.retreatTargetVisible_() : LayoutPolicy.fixAtIdealSize)
+    .clip(true)
+    .enabled(this.retreatTargetHeight_ <= 0
+      || (!this.retreatAnimating_ && this.retreatTargetVisible_() >= this.retreatTargetHeight_))
+    .accessibilityLevel((this.retreatAnimating_ || this.retreatTargetVisible_() <= 0)
+      ? 'no-hide-descendants' : 'auto')
+  }
+
+  /** 新查询、显式操作或尺寸变化恢复原手动布局，不改变筛选、目标或结果身份。 */
+  private resetRetreat_(): void {
+    this.retreatReturning_ = false;
+    this.retreatTouchActive_ = false;
+    this.retreatAnimationEpoch_++;
+    this.retreatAnimating_ = false;
+    this.retreatHitHeight_ = 0;
+    this.retreatHidden_ = 0;
+    this.retreatPolicy_.reset();
+  }
+
+  /**
+   * 类别/尺寸变化释放冻结坐标，并抹掉本类别不存在的层。仍挂载的自然高保持到下一次
+   * 真实测量：相同大小的节点未必再次发onAreaChange，不能清零后永远等不到测量。
+   */
+  private resetRetreatGeometry_(): void {
+    this.resetRetreat_();
+    this.retreatAnchorInset_ = -1;
+    this.retreatScrollable_ = false;
+    if (this.kindIdx_ === 3) this.retreatTargetHeight_ = 0;
+    if (this.kindIdx_ === 1 || this.kindIdx_ === 2 || (this.kindIdx_ === 3 && this.browseWidth_ >= 600)) {
+      this.retreatLoaderHeight_ = 0;
+    }
+  }
+
+  /** 离开下载主Tab或宿主页隐藏时使旧完成回调失效，不改变查询、筛选或正文位置。 */
+  private onRetreatHostVisible_(): void {
+    this.retreatHostActive_ = this.hostVisible;
+    this.resetRetreat_();
+    if (!this.inited_) return;
+    if (this.hostVisible) {
+      this.refreshModpackRecovery_();
+    } else {
+      this.retireModpackRecoveryScan_();
+    }
+  }
+
+  /** 只观察List自己的触点生命周期，不拦截或竞争原滚动手势。 */
+  private observeRetreatTouch_(event: TouchEvent): void {
+    if (event.type === TouchType.Down) {
+      this.retreatPolicy_.cancelQueuedContinuation();
+      this.retreatTouchActive_ = true;
+    }
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      this.retreatTouchActive_ = false;
+      this.retreatPolicy_.cancelQueuedContinuation();
+    }
+  }
+
+  /** 原生stop可能先于新手势结束，只有没有活动触点时才取消剩余位移预算。 */
+  private observeRetreatStop_(): void {
+    if (!this.retreatTouchActive_) this.retreatPolicy_.cancelQueuedContinuation();
+    this.restoreRetreatAtStart_(!this.retreatTouchActive_);
+  }
+
+  /** 完成实际位移后再核对位置，覆盖惯性、回弹及不经过frameBegin的滚动条回顶。 */
+  private observeRetreatPosition_(offset: number, state: ScrollState): void {
+    if (!this.retreatHostActive_) return;
+    if (offset < -0.01) this.retreatReturning_ = true;
+    else if (state === ScrollState.Scroll && offset > 0.01) this.retreatReturning_ = false;
+    this.restoreRetreatAtStart_();
+  }
+
+  /**
+   * 到真实起点时直接恢复全部自动层，不再等反向阈值或下一次有效Scroll帧。
+   * 首占位部分可见不等于到顶，读取独占Scroller的实际总偏移；未绑定/退休/空态不推定0。
+   * 只更新覆盖层端点，不改手动筛选、冻结inset、数据源或列表位置。模型目标已0时幂等。
+   */
+  private restoreRetreatAtStart_(settled: boolean = false): boolean {
+    if (!this.retreatHostActive_ || this.view_.hits.length === 0
+      || this.retreatHidden_ <= 0) return false;
+    try {
+      const position: OffsetResult = this.kindIdx_ === 3
+        ? this.retreatGridScroller_.currentOffset() : this.retreatScroller_.currentOffset();
+      if (!position || !retreatNeedsTopRestore(this.retreatHidden_, position.yOffset,
+        this.retreatReturning_, settled && !this.retreatTouchActive_)) return false;
+    } catch (_) { return false; }
+    this.retreatPolicy_.reset();
+    this.animateRetreatTo_(0);
+    return true;
+  }
+
+  /** 初始排布使用完整辅助区自然高度；开始浏览后该内容坐标基准固定。 */
+  private retreatListInset_(): number {
+    const expanded: number = this.retreatTargetHeight_
+      + (this.headerCollapsed_ ? 0 : this.retreatLoaderHeight_ + this.retreatSortHeight_);
+    return retreatStableInset(this.retreatAnchorInset_, expanded);
+  }
+
+  /** 在首个用户帧或显式辅助操作前冻结，防止手动恢复也改变条目的内容坐标。 */
+  private freezeRetreatAnchor_(): void {
+    if (this.retreatAnchorInset_ >= 0) return;
+    if (this.kindIdx_ !== 3 && this.retreatTargetHeight_ <= 0) return;
+    if (!this.headerCollapsed_ && (this.retreatSortHeight_ <= 0
+      || ((this.kindIdx_ === 0 || (this.kindIdx_ === 3 && this.browseWidth_ < 600))
+        && this.retreatLoaderHeight_ <= 0))) return;
+    this.retreatAnchorInset_ = this.retreatListInset_();
+  }
+
+  /** 只让可见覆盖区域阻挡命中；完整退场后不留下透明的触摸屏障。 */
+  private retreatOverlayHeight_(hidden: number = this.retreatHidden_): number {
+    const preceding: number = this.headerCollapsed_ ? 0 : this.retreatSortHeight_ + this.retreatLoaderHeight_;
+    return retreatLayerHeight(this.retreatTargetHeight_, hidden, preceding) + (this.headerCollapsed_ ? 0
+      : retreatLayerHeight(this.retreatLoaderHeight_, hidden, this.retreatSortHeight_)
+        + retreatLayerHeight(this.retreatSortHeight_, hidden, 0));
+  }
+
+  /** 每次取下一层时重新读取实际层集合，避免缓存手动偏好或已失效目标。 */
+  private retreatLayers_(): number[] {
+    const layers: number[] = this.headerCollapsed_ ? [] : [this.retreatSortHeight_, this.retreatLoaderHeight_];
+    // 自定义位置与已选实例同为可提交的资源目标，均随结果退让。整合包没有目标层。
+    if (this.kindIdx_ !== 3 && (this.hasValidCurrentVersion() || this.usesCustomResourceSave_())) layers.push(this.retreatTargetHeight_);
+    return layers;
+  }
+
+  private retreatInputEnabled_(): boolean {
+    return this.retreatHostActive_ && !this.retreatSearchFocused_
+      && !this.showDetailSheet_ && !this.showVersionPicker_ && !this.showModpackRecovery_
+      && !this.showLocalModpackDetail_ && this.retreatAnchorInset_ >= 0
+      && this.view_.hits.length > 0 && (this.retreatContentOverflows_() || this.retreatHidden_ > 0);
+  }
+
+  /** 当前结果数与最近实际可见范围共同判断长度；复位不能要求一个不会重发的索引事件。 */
+  private retreatContentOverflows_(): boolean {
+    const first: number = this.kindIdx_ === 3 ? this.retreatGridFirst_ : this.retreatListFirst_;
+    const last: number = this.kindIdx_ === 3 ? this.retreatGridLast_ : this.retreatListLast_;
+    if (!Number.isFinite(first) || !Number.isFinite(last) || first < 0 || last < 0) return this.retreatScrollable_;
+    const lead: number = this.kindIdx_ === 3 && this.retreatListInset_() <= 0 ? 0 : 1;
+    return this.view_.hits.length > 0 && (first > lead || last < this.view_.hits.length + lead - 1);
+  }
+
+  /**
+   * 只在全展开时接受自然高度。父裁剪高度会成为子层的测量约束，收起期间的0或
+   * padding底线不是自然高度；若回写容量，会发生残留一行、恢复失败及反复重布局。
+   */
+  private measureRetreatHeight_(layer: number, area: Area): void {
+    const height: number = Number(area.height);
+    if (this.retreatHidden_ > 0 || this.retreatAnimating_
+      || !Number.isFinite(height) || height <= 0) return;
+    // 退役节点可能仍有已投递的测量通知；不能重新创建当前类别不存在的层。
+    if (layer === 0 && this.kindIdx_ === 3) return;
+    if (layer === 1 && this.kindIdx_ !== 0 && !(this.kindIdx_ === 3 && this.browseWidth_ < 600)) return;
+    if (layer === 0 && Math.abs(this.retreatTargetHeight_ - height) > 0.5) this.retreatTargetHeight_ = height;
+    if (layer === 1 && Math.abs(this.retreatLoaderHeight_ - height) > 0.5) this.retreatLoaderHeight_ = height;
+    if (layer === 2 && Math.abs(this.retreatSortHeight_ - height) > 0.5) this.retreatSortHeight_ = height;
+  }
+
+  /** 已有目标可完全退让；目标缺失时保留用户下一步需要的选择入口。 */
+  private retreatTargetVisible_(): number {
+    return retreatLayerHeight(this.retreatTargetHeight_, this.retreatHidden_,
+      this.headerCollapsed_ ? 0 : this.retreatSortHeight_ + this.retreatLoaderHeight_);
+  }
+
+  /**
+   * 结果List只提供方向段，达到阈值后整层滑出；正文获得完整原始位移。
+   * 一次状态闭包只更新整层端点，不刷新数据或定位列表。反向时由框架从当前视觉位置
+   * 重定向，完成回调只解除其自身世代的测量锁，不排队补播旧目标。
+   */
+  private consumeRetreatFrame_(offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult {
+    if (state === ScrollState.Scroll) {
+      if (offset < -0.01) this.retreatReturning_ = true;
+      else if (offset > 0.01) this.retreatReturning_ = false;
+      // 负向帧只核对当前事实，不用offset推算“马上到顶”；正向从0出发不触发此分支。
+      if (offset < -0.01 && this.restoreRetreatAtStart_()) return { offsetRemain: offset };
+    }
+    if (state === ScrollState.Scroll) this.freezeRetreatAnchor_();
+    const frame: RetreatFrame = this.retreatPolicy_.step(offset, this.retreatHidden_, this.retreatLayers_(),
+      this.retreatInputEnabled_(), state === ScrollState.Scroll);
+    this.animateRetreatTo_(frame.hidden);
+    return { offsetRemain: frame.offsetRemain };
+  }
+
+  /** 整层端点变化的唯一动画入口；滚动与显式展开按钮复用同一测量/世代保护。 */
+  private animateRetreatTo_(next: number): void {
+    if (next === this.retreatHidden_) return;
+    const epoch: number = ++this.retreatAnimationEpoch_;
+    this.retreatHitHeight_ = Math.max(this.retreatHitHeight_, this.retreatOverlayHeight_(), this.retreatOverlayHeight_(next));
+    this.retreatAnimating_ = true;
+    this.getUIContext().animateTo({ duration: UiMotion.reduced() ? 0 : 180, curve: Curve.EaseOut,
+      onFinish: (): void => {
+        if (epoch !== this.retreatAnimationEpoch_) return;
+        this.retreatAnimating_ = false;
+        this.retreatHitHeight_ = 0;
+        // 到顶完整恢复优先；否则只按当前活动手势已有预算串接一层，不制造滚动输入。
+        if (this.restoreRetreatAtStart_()) return;
+        const continuation: RetreatFrame = this.retreatPolicy_.finishTransition(this.retreatHidden_,
+          this.retreatLayers_(), this.retreatInputEnabled_(), this.retreatTouchActive_);
+        this.animateRetreatTo_(continuation.hidden);
+      } }, (): void => { this.retreatHidden_ = next; });
+  }
+
+  /**
+   * 箭头表示筛选区当前显示端点，不仅表示手动偏好。排序单独退场时Loader仍在，
+   * 继续表示可收起；Loader与排序均退场后表示可展开。自动状态不回写手动偏好，
+   * 避免卸载筛选节点并改变目标层的高度分配。
+   */
+  private filtersCollapsedForDisplay_(): boolean {
+    if (this.headerCollapsed_) return true;
+    const height: number = this.retreatSortHeight_ + this.retreatLoaderHeight_;
+    return height > 0 && this.retreatHidden_ >= height - 0.5;
+  }
+
+  /** 自动退让后的“展开”直接恢复可见筛选；再次点击才明确改变用户的手动收起偏好。 */
+  private toggleBrowseFilters_(): void {
+    this.freezeRetreatAnchor_();
+    if (!this.headerCollapsed_ && this.filtersCollapsedForDisplay_()) {
+      this.retreatPolicy_.reset();
+      this.animateRetreatTo_(0);
+      return;
+    }
+    this.setHeaderCollapsed(!this.filtersCollapsedForDisplay_());
+  }
+
+  /**
+   * 四类资源按实际控件形成完整层：光影/资源包只有排序，模组另有Loader；
+   * 整合包窄屏分两层，宽屏沿用一行工具栏并整体退让，避免破坏原来的多列浏览布局。
+   */
+  @Builder
+  private ModRetreatFilters_() {
+    if (this.kindIdx_ === 0 || (this.kindIdx_ === 3 && this.browseWidth_ < 600)) {
+    Column() {
+      Column() {
+        Scroll() { this.LoaderChipsRow() }
+          .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+      }
+      .width('100%').padding({ bottom: 8 }).flexShrink(0)
+      .height((this.retreatAnimating_ || this.retreatHidden_ > 0) && this.retreatLoaderHeight_ > 0
+        ? this.retreatLoaderHeight_ : LayoutPolicy.fixAtIdealSize)
+      .constraintSize({ minHeight: this.retreatAnimating_ || this.retreatHidden_ > 0 ? this.retreatLoaderHeight_ : 0 })
+      .translate({ y: retreatLayerOffset(this.retreatLoaderHeight_, this.retreatHidden_, this.retreatSortHeight_) })
+      .renderFit(RenderFit.TOP_LEFT)
+      .onAreaChange((_, area) => { this.measureRetreatHeight_(1, area); })
+    }
+    .id('mod-retreat-loader').width('100%').justifyContent(FlexAlign.Start)
+    .padding({ left: 16, right: 16 })
+    .height(this.retreatLoaderHeight_ > 0
+      ? retreatLayerHeight(this.retreatLoaderHeight_, this.retreatHidden_, this.retreatSortHeight_) : LayoutPolicy.fixAtIdealSize)
+    .clip(true)
+    .enabled(!this.retreatAnimating_ && this.retreatHidden_ <= this.retreatSortHeight_)
+    .accessibilityLevel(this.retreatAnimating_ || retreatLayerHeight(this.retreatLoaderHeight_, this.retreatHidden_, this.retreatSortHeight_) <= 0
+      ? 'no-hide-descendants' : 'auto')
+    }
+    Column() {
+      Column() {
+        if (this.kindIdx_ === 3 && this.browseWidth_ >= 600) {
+          Row({ space: 16 }) {
+            Scroll() { this.LoaderChipsRow() }
+              .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+            this.SortButton()
+          }.width('100%').alignItems(VerticalAlign.Center)
+        } else this.SortRow()
+      }
+        .width('100%').padding({ bottom: 8 }).flexShrink(0)
+        .height((this.retreatAnimating_ || this.retreatHidden_ > 0) && this.retreatSortHeight_ > 0
+          ? this.retreatSortHeight_ : LayoutPolicy.fixAtIdealSize)
+        .constraintSize({ minHeight: this.retreatAnimating_ || this.retreatHidden_ > 0 ? this.retreatSortHeight_ : 0 })
+        .translate({ y: retreatLayerOffset(this.retreatSortHeight_, this.retreatHidden_, 0) })
+        .renderFit(RenderFit.TOP_LEFT)
+        .onAreaChange((_, area) => { this.measureRetreatHeight_(2, area); })
+    }
+    .id('mod-retreat-sort').width('100%').justifyContent(FlexAlign.Start)
+    .padding({ left: 16, right: 16 })
+    .height(this.retreatSortHeight_ > 0
+      ? retreatLayerHeight(this.retreatSortHeight_, this.retreatHidden_, 0) : LayoutPolicy.fixAtIdealSize)
+    .clip(true)
+    .enabled(!this.retreatAnimating_ && this.retreatHidden_ <= 0)
+    .accessibilityLevel(this.retreatAnimating_ || retreatLayerHeight(this.retreatSortHeight_, this.retreatHidden_, 0) <= 0
+      ? 'no-hide-descendants' : 'auto')
   }
 
   /**
@@ -621,7 +1071,15 @@ export struct ModBrowsePage {
    */
   @Builder
   ModpackResultsGrid() {
-    Grid() {
+    // GridLayoutOptions明确首占位与尾状态跨完整一行；各列不会重复制造辅助区占位。
+    Grid(this.retreatGridScroller_, { regularSize: [1, 1],
+      irregularIndexes: this.retreatListInset_() > 0 ? [0, this.view_.hits.length + 1] : [this.view_.hits.length] }) {
+      if (this.retreatListInset_() > 0) {
+        GridItem() { Column().width('100%').height('100%') }
+          .height(retreatLeadItemHeight(this.retreatListInset_(), 12))
+          .id('modpack-retreat-content-inset').focusable(false)
+          .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+      }
       ForEach(this.view_.hits, (project: RemoteProject) => {
         GridItem() {
           ModpackCard({ theme: this.theme, project: project,
@@ -632,7 +1090,7 @@ export struct ModBrowsePage {
         Column() {
           Row({ space: 8 }) {
             if (this.view_.loading) {
-              LoadingProgress().width(20).height(20).color(this.theme.primary)
+              LoadingProgress().width(20).height(20).color(this.theme.actionText)
             }
             Text(this.view_.hasMore ? (this.view_.loading ? '加载中…' : '上滑加载更多') : '已展示全部结果')
               .fontSize(12).fontColor(this.theme.textSecondary)
@@ -640,11 +1098,28 @@ export struct ModBrowsePage {
         }
         .width('100%').height(44 + floatingDockReserveHeight(this.bottomSafeHeight))
         .alignItems(HorizontalAlign.Center)
-      }.columnStart(0).columnEnd(this.modpackColumnCount_() - 1)
-    }
-    .columnsTemplate(this.modpackColumnsTemplate_()).columnsGap(12).rowsGap(12)
+      }
+    }.columnsTemplate(this.modpackColumnsTemplate_()).columnsGap(12).rowsGap(12)
     .width('100%').height('100%').padding({ left: 16, right: 16 })
+    .id('modpack-browser-results')
     .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .onScrollStart(() => { if (!this.retreatAnimating_) this.retreatPolicy_.reset(); })
+    .onScrollFrameBegin((offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult => {
+      return this.consumeRetreatFrame_(offset, state);
+    })
+    .onTouch((event: TouchEvent) => { this.observeRetreatTouch_(event); })
+    .onReachStart(() => { this.restoreRetreatAtStart_(); })
+    .onDidScroll((offset: number, state: ScrollState) => { this.observeRetreatPosition_(offset, state); })
+    .onScrollStop(() => { this.observeRetreatStop_(); })
+    .onScrollIndex((first: number, last: number) => {
+      if (this.retreatHidden_ !== 0) return;
+      this.retreatGridFirst_ = first;
+      this.retreatGridLast_ = last;
+      // 与List一样只统计真实结果是否超出视口，跨列占位和尾部状态不充当长列表证据。
+      const lead: number = this.retreatListInset_() > 0 ? 1 : 0;
+      this.retreatScrollable_ = first > lead || last < this.view_.hits.length + lead - 1;
+    })
     .onReachEnd(() => {
       if (this.view_.hasMore && !this.view_.loading) this.loadNextPage();
     })
@@ -661,8 +1136,11 @@ export struct ModBrowsePage {
       externalMcDir: this.externalRoot_,
       externalAvailable: this.externalAvailable_,
       selectedLocation: this.targetLocation_,
-      selectedVersionId: this.targetVersionId_,
+      selectedVersionId: this.usesCustomResourceSave_() ? '' : this.targetVersionId_,
       initialTab: this.targetLocation_ === 'external' ? 1 : 0,
+      allowCustomResourceSave: supportsCustomResourceSave(this.currentBrowseKind_()),
+      customResourceSaveSelected: this.usesCustomResourceSave_(),
+      onPickCustomResourceSave: (): void => { this.onPickCustomResourceSave_(); },
       onPick: (location: string, versionId: string) => { this.onPickVersion(location, versionId) },
       onClose: () => { this.showVersionPicker_ = false },
     })
@@ -684,11 +1162,16 @@ export struct ModBrowsePage {
       preparingInstall: this.detailPreparingInstall_,
       installBlockReason: this.detailInstallError_,
       installReady: this.detailInstallReady_,
+      saveFileOnly: this.usesCustomResourceSave_(this.detailProject_.kind),
+      savePickerPending: this.detailSavePickerPending_,
       dependenciesResolved: this.detailDependenciesResolved_,
       modpackName: this.detailModpackName_,
       modpackNameError: this.detailModpackNameError_,
       onModpackNameChange: (value: string): void => { this.updateDetailModpackName_(value); },
       scanInfo: this.detailScanInfo_,
+      // 浏览时目标卡允许退让，实际安装动作旁继续显示同一父页校验的目标身份。
+      installTargetLabel: this.kindIdx_ !== 3 ? (this.targetVersionId_ || '未选择版本') : '',
+      installTargetLocation: this.targetLocation_ === 'external' ? '外部' : '沙箱',
       onInstall: () => { this.confirmInstallFromSheet() },
       onOpenWebsite: () => { this.openWebsiteFromSheet() },
       onOpenUrl: (url: string) => { this.openExternalUrl_(url) },
@@ -724,6 +1207,7 @@ export struct ModBrowsePage {
 
   /** 在线草稿只在当前下载详情中编辑，开始安装时以值传入任务。 */
   private updateDetailModpackName_(value: string): void {
+    if (!this.detailInteractionActive_()) return;
     this.detailModpackName_ = value;
     this.detailModpackNameError_ = validateModpackVersionName(value);
   }
@@ -737,42 +1221,146 @@ export struct ModBrowsePage {
       versionName: this.localModpackName_.trim(), archivePath: this.localModpackArchive_,
       mcDir: this.localModpackRoot_, filesDir: this.localModpackFilesDir_,
       existingVersions: this.availableVersions, requireConfirmation: true,
-      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta),
+      officialFilesOnly: this.onlyOfficialModpackFiles_(),
+      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, this.onlyOfficialModpackFiles_(),
+        this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_FIRST),
     });
     this.showLocalModpackDetail_ = false;
     this.localModpackArchive_ = '';
     this.runModpackInstall_(task);
   }
 
-  /** 恢复入口每次打开现读计划；无需搜索成功或已选 MC 版本。 */
+  /** 只有恢复面板可见才读取候选。分类浏览和后台安装终态不为预先统计名单做扫描。 */
   private refreshModpackRecovery_(): void {
-    let ctx = this.uiCtx();
-    this.modpackRecovery_ = ctx !== undefined ? listModpackRecovery(ctx.filesDir) : [];
+    if (this.detailDisposed_ || !this.hostVisible || this.kindIdx_ !== 3 || !this.showModpackRecovery_) return;
+    const ctx = this.uiCtx();
+    if (ctx === undefined) return;
+    this.modpackRecoveryPending_ = true;
+    if (this.modpackRecoveryScan_ !== undefined) return;
+    const scan = new LocalModScanControl();
+    this.modpackRecoveryScan_ = scan;
+    this.modpackRecoveryLoading_ = true;
+    this.modpackRecoveryFailed_ = false;
+    void this.readModpackRecovery_(ctx.filesDir, scan);
+  }
+
+  /** 安装终态若与扫描重叠，丢弃可能早于终态的结果并补读；已退休的扫描不能写入新分类。 */
+  private async readModpackRecovery_(filesDir: string, scan: LocalModScanControl): Promise<void> {
+    try {
+      while (!scan.isCancelled() && this.modpackRecoveryPending_) {
+        this.modpackRecoveryPending_ = false;
+        try {
+          const items = await scanModpackRecovery(filesDir, scan);
+          if (!scan.isCancelled() && !this.modpackRecoveryPending_) this.modpackRecovery_ = items;
+        } catch (e) {
+          if (!scan.isCancelled() && !this.modpackRecoveryPending_) {
+            AppLogger.warn(TAG, '读取整合包恢复记录失败', e as Error, LOG_DOMAIN_DOWNLOAD);
+            this.modpackRecoveryFailed_ = true;
+          }
+        }
+      }
+    } finally {
+      if (this.modpackRecoveryScan_ === scan) {
+        this.modpackRecoveryScan_ = undefined;
+        this.modpackRecoveryLoading_ = false;
+      }
+    }
+  }
+
+  /** 离开可见范围时撤销提交资格；销毁阶段只操作普通字段，避免修改 ArkUI 状态。 */
+  private retireModpackRecoveryScan_(): void {
+    this.modpackRecoveryEpoch_++;
+    this.modpackRecoveryPending_ = false;
+    this.modpackRecoveryScan_?.cancel();
+    this.modpackRecoveryScan_ = undefined;
+  }
+
+  /** 先展示恢复面板，再发起只读扫描。 */
+  private openModpackRecovery_(): void {
+    this.showModpackRecovery_ = true;
+    this.refreshModpackRecovery_();
+  }
+
+  /** 主动关闭面板或选择恢复时撤销这一轮尚未返回的结果。 */
+  private closeModpackRecovery_(): void {
+    this.showModpackRecovery_ = false;
+    this.retireModpackRecoveryScan_();
   }
 
   private resumeModpack_(item: ModpackRecoveryItem): void {
+    if (this.modpackDismissId_ === item.id) return;
     let ctx = this.uiCtx();
     if (ctx === undefined) return;
-    this.showModpackRecovery_ = false;
+    this.closeModpackRecovery_();
     let id = 'modpack:' + item.id;
     if (getDownloadTaskRegistry().getAdapter(id) !== null) {
       this.onOpenDownloadTask(id); return;
     }
     let task = new ModpackInstallTask({ title: item.title, sessionId: item.id,
       filesDir: ctx.filesDir, mcDir: item.mcDir, existingVersions: this.availableVersions,
-      requireConfirmation: true, resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta) });
+      requireConfirmation: true, officialFilesOnly: this.onlyOfficialModpackFiles_(),
+      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, this.onlyOfficialModpackFiles_(),
+        this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_FIRST) });
     this.runModpackInstall_(task);
+  }
+
+  /** 同一面板关闭或切出分类后，迟到结果不能弹窗或刷新离屏列表。 */
+  private modpackRecoveryVisible_(): boolean {
+    return !this.detailDisposed_ && this.hostVisible && this.kindIdx_ === 3 && this.showModpackRecovery_;
+  }
+
+  /** 只为选中的会话读取提交状态。确认后交给任务层重验并持久化，UI 不直接操作文件。 */
+  private async confirmDismissModpack_(item: ModpackRecoveryItem): Promise<void> {
+    if (!this.modpackRecoveryVisible_() || this.modpackDismissId_.length > 0) return;
+    const ctx = this.uiCtx();
+    if (ctx === undefined) return;
+    const epoch = this.modpackRecoveryEpoch_;
+    const name = item.versionName.length > 0 ? item.versionName : item.title;
+    this.modpackDismissId_ = item.id;
+    try {
+      const kind = await readModpackRecoveryKind(ctx.filesDir, item.id);
+      if (epoch !== this.modpackRecoveryEpoch_ || !this.modpackRecoveryVisible_()) return;
+      const repair = kind === 'repair';
+      const action = repair ? '不再补齐' : '放弃安装';
+      const choice = await this.getUIContext().getPromptAction().showDialog({
+        title: action + '「' + name + '」？',
+        message: repair ? '此版本将从继续安装列表移除。已安装的实例、存档和配置会保留。'
+          : '本次安装将停止并从列表移除。以后仍可从整合包详情重新安装。',
+        buttons: [
+          { text: '返回', color: this.theme.textSecondary as string },
+          { text: action, color: this.theme.errorText as string },
+        ],
+      }).catch((): undefined => undefined);
+      if (choice?.index !== 1 || epoch !== this.modpackRecoveryEpoch_ || !this.modpackRecoveryVisible_()) return;
+      const cleaned = await abandonModpackRecovery(ctx.filesDir, item.id, kind);
+      if (!this.modpackRecoveryVisible_()) return;
+      // 持久标记已经写入。先移除该条，再废弃可能早于放弃动作的扫描结果并重读。
+      this.modpackRecovery_ = this.modpackRecovery_.filter((candidate: ModpackRecoveryItem): boolean => candidate.id !== item.id);
+      this.refreshModpackRecovery_();
+      if (epoch === this.modpackRecoveryEpoch_) {
+        this.toast((repair ? '已停止补齐' : '已放弃安装') + (cleaned ? '' : '，部分临时文件已保留'));
+      }
+    } catch (e) {
+      const error = e as Error;
+      AppLogger.warn(TAG, '放弃整合包恢复失败', error, LOG_DOMAIN_DOWNLOAD);
+      if (this.modpackRecoveryVisible_()) {
+        this.refreshModpackRecovery_();
+        if (epoch === this.modpackRecoveryEpoch_) this.toast('处理安装记录失败：' + error.message);
+      }
+    } finally {
+      if (!this.detailDisposed_) this.modpackDismissId_ = '';
+    }
   }
 
   @Builder
   ModpackRecoveryRow() {
-    // 调用方只在存在持久计划时显示；点击会现读列表，已有 Registry 任务复用原详情。
-    Button('继续安装 · ' + this.modpackRecovery_.length)
-      .height(28).fontSize(12).fontColor(this.theme.primary)
+    // 固定入口无需为显示数量或判断显隐提前读取磁盘。
+    Button('继续安装')
+      .height(28).fontSize(12).fontColor(this.theme.actionText)
       .backgroundColor(this.theme.primaryLight)
       .padding({ left: 12, right: 12 })
       .responseRegion({ x: 0, y: -8, width: '100%', height: 44 })
-      .onClick(() => { this.refreshModpackRecovery_(); this.showModpackRecovery_ = true; })
+      .onClick(() => { this.openModpackRecovery_(); })
   }
 
   @Builder
@@ -781,7 +1369,7 @@ export struct ModBrowsePage {
     // 复用完整模态标题，系统showClose关闭以避免两个叉号；原恢复入口保持原动作。
     ImmersiveTitleScaffold({ title: '继续安装与补齐', theme: this.theme, modal: true,
       closeLabel: '关闭安装恢复列表', surfaceColor: this.theme.bgPrimary,
-      onClose: (): void => { this.showModpackRecovery_ = false },
+      onClose: (): void => { this.closeModpackRecovery_(); },
       content: (): void => { this.ImmersiveTitleContent2_(); }
     })
     }.width('100%').height('100%')
@@ -798,7 +1386,8 @@ export struct ModBrowsePage {
   private chooseSort_(): void {
     // ActionMenu 的颜色类型比普通组件的 ResourceColor 更窄，只接受 string/Resource。
     let textColor = this.theme.textPrimary;
-    let menuColor: string = typeof textColor === 'string' ? textColor : '#3478F6';
+    // 当前主题色板提供字面量颜色；窄类型菜单的降级值也跟随主题，不额外固定蓝色。
+    let menuColor: string = typeof textColor === 'string' ? textColor : this.theme.actionText as string;
     this.getUIContext().getPromptAction().showActionMenu({
       title: '排序方式', buttons: [
         { text: '相关度', color: menuColor }, { text: '下载量', color: menuColor },
@@ -829,8 +1418,8 @@ export struct ModBrowsePage {
   // ===================== @Builder 辅助 =====================
 
   /**
-   * Context Card —— "安装到：<目标版本> [沙箱/外部]"，副行显示匹配的 MC 版本 + loader。
-   * "切换"按钮弹出 VersionPickerSheet：左右页签切沙箱 / 外部，选真实已装版本。
+   * 目标卡两种模式共用原安装卡的三行测量结构：标题和角标、目标名、说明。
+   * 另存只替换文字与语义，保持卡片和退让层的自然高度。切换入口仍打开版本选择面板。
    */
   @Builder
   ContextCard() {
@@ -838,40 +1427,45 @@ export struct ModBrowsePage {
       AppIcon({ name: AppIconName.Folder, iconSize: 16, color: this.theme.textSecondary })
       Column({ space: 3 }) {
         Row({ space: 6 }) {
-          Text('安装到')
+          Text(this.usesCustomResourceSave_() ? '下载到' : '安装到')
             .fontSize(11)
             .fontWeight(500)
             .fontColor(this.theme.textHint)
-          // 沙箱 / 外部 角标
-          Text(this.targetLocation_ === 'external' ? '外部' : '沙箱')
+          Text(this.usesCustomResourceSave_() ? '另存' : (this.targetLocation_ === 'external' ? '外部' : '沙箱'))
             .fontSize(10)
             .fontWeight(600)
-            .fontColor(this.targetLocation_ === 'external' ? this.theme.primary : this.theme.textSecondary)
+            .fontColor(!this.usesCustomResourceSave_() && this.targetLocation_ === 'external'
+              ? this.theme.actionText : this.theme.textSecondary)
             .padding({ left: 6, right: 6, top: 1, bottom: 1 })
             .borderRadius(6)
-            .backgroundColor(this.targetLocation_ === 'external' ? this.theme.primaryLight : this.theme.bgInput)
+            .backgroundColor(!this.usesCustomResourceSave_() && this.targetLocation_ === 'external'
+              ? this.theme.primaryLight : this.theme.bgInput)
         }
         .alignItems(VerticalAlign.Center)
 
-        Text(this.targetVersionId_.length > 0 ? this.targetVersionId_ : '未选择版本')
+        Text(this.usesCustomResourceSave_() ? '自定义位置' : (this.targetVersionId_.length > 0 ? this.targetVersionId_ : '未选择版本'))
+          .id(this.usesCustomResourceSave_() ? 'mod-custom-save-target' : 'mod-instance-target')
           .fontSize(14)
           .fontWeight(600)
-          .fontColor(this.hasValidCurrentVersion() ? this.theme.textPrimary : this.theme.error)
+          .fontColor(this.usesCustomResourceSave_() || this.hasValidCurrentVersion() ? this.theme.textPrimary : this.theme.errorText)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
         Row({ space: 4 }) {
-          Text(this.gameVersionInput_.length > 0 ? 'MC ' + this.gameVersionInput_ : '全部 MC 版本')
+          Text(this.usesCustomResourceSave_() ? '下载时选择保存位置'
+            : (this.gameVersionInput_.length > 0 ? 'MC ' + this.gameVersionInput_ : '全部 MC 版本'))
             .fontSize(11)
             .fontColor(this.theme.textSecondary)
-          if (this.kindIdx_ === 0 && this.loaderInput_.length > 0) {
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (!this.usesCustomResourceSave_() && this.kindIdx_ === 0 && this.loaderInput_.length > 0) {
             Text('·')
               .fontSize(11)
               .fontColor(this.theme.textHint)
             Text(this.capitalize(this.loaderInput_))
               .fontSize(11)
               .fontWeight(500)
-              .fontColor(this.theme.primary)
+              .fontColor(this.theme.actionText)
           }
         }
         .alignItems(VerticalAlign.Center)
@@ -881,11 +1475,11 @@ export struct ModBrowsePage {
 
       // "切换" 按钮 —— 弹出 VersionPickerSheet
       Row({ space: 4 }) {
-        AppIcon({ name: AppIconName.Game, iconSize: 12, color: this.theme.primary })
+        AppIcon({ name: AppIconName.Game, iconSize: 12, color: this.theme.actionText })
         Text('切换')
           .fontSize(12)
           .fontWeight(600)
-          .fontColor(this.theme.primary)
+          .fontColor(this.theme.actionText)
       }
       .height(28)
       .padding({ left: 12, right: 12 })
@@ -903,59 +1497,31 @@ export struct ModBrowsePage {
     .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
   }
 
-  /** 搜索栏固定在下载内容区顶部，与筛选和结果共用 16vp 对齐；状态切换不重挂 TextInput。 */
+  /** 搜索栏身份保持稳定；固定外壳与版本页共用DownloadSearchField。 */
   @Builder
-  PinnedSearchHeader() {
-    Column() {
-      this.SearchBox()
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    .backgroundColor(this.theme.bgPrimary)
-  }
+  PinnedSearchHeader() { this.SearchBox() }
 
-  /** 搜索附属操作共用44vp命中区、28vp视觉圆；它们是输入操作，保持普通材质。 */
+  /** 查询仍归资源浏览器，保持输入去抖、清除后立即搜索及实际筛选箭头的原语义。 */
   @Builder
   SearchBox() {
-    Row() {
-      AppIcon({ name: AppIconName.Search, iconSize: 15, color: this.theme.textHint })
-      TextInput({ placeholder: this.searchPlaceholder(), text: this.queryInput_ })
-        .height(36)
-        .fontSize(14)
-        .layoutWeight(1)
-        .margin({ left: 8 })
-        .backgroundColor(Color.Transparent)
-        .borderRadius(0)
-        .onChange((val: string) => {
-          this.queryInput_ = val;
-          this.debouncedSearch();
-        })
-      if (this.queryInput_.length > 0) {
-        AppRoundIconButton({ name: AppIconName.Close, theme: this.theme, visualDiameter: 28, iconSize: 14,
-          color: this.theme.textHint, containerBg: Color.Transparent, accessibilityLabel: '清除搜索',
-          onAction: (): void => {
-          this.queryInput_ = '';
-          this.applyFiltersToController();
-          this.triggerSearch(true);
-        } })
-      }
-
-      // 箭头只表示二级筛选面板状态；不再借列表滚动模拟收起。
-      AppRoundIconButton({
-          name: this.headerCollapsed_ ? AppIconName.ChevronDown : AppIconName.ChevronUp,
-          theme: this.theme, visualDiameter: 28, iconSize: 13,
-          color: this.headerCollapsed_ ? this.theme.textSecondary : this.theme.primary,
-          containerBg: this.headerCollapsed_ ? this.theme.bgInput : this.theme.primaryLight,
-          accessibilityLabel: this.headerCollapsed_ ? '展开筛选' : '收起筛选',
-          onAction: (): void => { this.setHeaderCollapsed(!this.headerCollapsed_) } })
-      .margin({ left: 6 })
-    }
-    .width('100%')
-    .height(44)
-    .padding({ left: 12, right: 6 })
-    .backgroundColor(this.theme.bgCard)
-    .borderRadius(20)
-    .alignItems(VerticalAlign.Center)
+    DownloadSearchField({
+      theme: this.theme, text: this.queryInput_, placeholder: this.searchPlaceholder(),
+      controlId: 'resource-browser-search', showFilterToggle: true,
+      filtersCollapsed: this.filtersCollapsedForDisplay_(),
+      onTextChange: (value: string): void => {
+        this.resetRetreat_();
+        this.queryInput_ = value;
+        this.debouncedSearch();
+      },
+      onInputFocus: (): void => { this.retreatSearchFocused_ = true; this.resetRetreat_(); },
+      onInputBlur: (): void => { this.retreatSearchFocused_ = false; },
+      onClear: (): void => {
+        this.queryInput_ = '';
+        this.applyFiltersToController();
+        this.triggerSearch(true);
+      },
+      onToggleFilters: (): void => { this.toggleBrowseFilters_(); },
+    })
   }
 
   /** Loader chips 行（与设计稿 Screen B 一致：Fabric / Forge / NeoForge / Quilt） */
@@ -984,6 +1550,8 @@ export struct ModBrowsePage {
           .fontWeight(500)
           .fontColor(this.theme.textSecondary)
           .layoutWeight(1)
+      } else if (this.usesCustomResourceSave_()) {
+        Text('下载时选择保存位置').fontSize(11).fontColor(this.theme.textHint).layoutWeight(1)
       } else if (this.hasValidCurrentVersion()) {
         Text(this.computeInstallDirShortcut())
           .fontSize(11)
@@ -993,7 +1561,7 @@ export struct ModBrowsePage {
       } else {
         Text('请先在首页选择 / 下载一个 MC 版本')
           .fontSize(11)
-          .fontColor(this.theme.error)
+          .fontColor(this.theme.errorText)
           .layoutWeight(1)
       }
 
@@ -1078,6 +1646,11 @@ export struct ModBrowsePage {
     this.targetMcDir_ = root;
     this.targetVersionId_ = versionId;
     this.targetValid_ = true;
+    this.instanceTargetPicked_ = true;
+    // 真实实例仍是三类资源共用的安装目标；另存偏好只退出当前类别。
+    if (this.customSaveKindIndices_.indexOf(this.kindIdx_) >= 0) {
+      this.customSaveKindIndices_ = this.customSaveKindIndices_.filter((kind: number): boolean => kind !== this.kindIdx_);
+    }
     // 必须先废弃旧缓存再开始新准备，否则切回实例时可能同步取到已失效的扫描结果。
     this.invalidateLocalScanCache();
     // 完整版本目录与目标无关；改选实例只重新准备当前文件的安装计划，不重拉/缩窄目录。
@@ -1094,6 +1667,55 @@ export struct ModBrowsePage {
     this.toast('安装目标：' + (location === 'external' ? '外部' : '沙箱') + ' · ' + versionId);
   }
 
+  /** 明确切到单文件保存，不读取实例或依赖；原实例身份保留给其他资源分类。 */
+  private onPickCustomResourceSave_(): void {
+    if (!this.showVersionPicker_ || !supportsCustomResourceSave(this.currentBrowseKind_())) return;
+    this.showVersionPicker_ = false;
+    const alreadySaving = this.usesCustomResourceSave_();
+    if (this.customSaveKindIndices_.indexOf(this.kindIdx_) < 0) {
+      this.customSaveKindIndices_ = [...this.customSaveKindIndices_, this.kindIdx_];
+    }
+    // 已经因没有有效实例而默认另存时，记住显式选择即可，不重复发起搜索或准备。
+    if (!alreadySaving) this.refreshResourceTargetProjection_();
+  }
+
+  /** 首页版本扫描可能晚于页面挂载；更新可另存类别的默认目标，尊重明确的实例或另存选择。 */
+  private syncDefaultResourceTarget_(): boolean {
+    if (!supportsCustomResourceSave(this.currentBrowseKind_()) || this.instanceTargetPicked_
+      || this.customSaveKindIndices_.indexOf(this.kindIdx_) >= 0) return false;
+    const valid = this.mcDir.length > 0 && this.currentMcVersion.length > 0
+      && this.availableVersions.indexOf(this.currentMcVersion) >= 0;
+    if (!valid && !this.targetValid_) return false;
+    if (valid === this.targetValid_ && this.targetMcDir_ === this.mcDir
+      && this.targetVersionId_ === this.currentMcVersion) return false;
+    this.targetMcDir_ = this.mcDir;
+    this.targetVersionId_ = this.currentMcVersion;
+    this.targetValid_ = valid;
+    const external = GameStorage.externalMcDir();
+    this.targetLocation_ = external.length > 0 && this.mcDir === external ? 'external' : 'sandbox';
+    this.gameVersionInput_ = valid ? resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_) : '';
+    const detectedLoader = valid ? resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_) : '';
+    this.loaderInput_ = detectedLoader.length > 0 ? detectedLoader : 'fabric';
+    this.invalidateLocalScanCache();
+    return true;
+  }
+
+  /** 默认目标变化仅重准备当前文件。旧选版请求由同一详情代次退休。 */
+  private onResourceTargetPropsChanged_(): void {
+    if (!this.inited_ || this.detailDisposed_ || !this.syncDefaultResourceTarget_()) return;
+    this.refreshResourceTargetProjection_();
+  }
+
+  /** 目标投影变化时重建退让测量并重新准备所选文件；详情请求代次使旧计划失效。 */
+  private refreshResourceTargetProjection_(): void {
+    this.resetRetreatGeometry_();
+    this.applyFiltersToController();
+    if (this.initialSearchDone_) this.triggerSearch(true);
+    if (this.detailInteractionActive_() && this.detailSelectedVersion_ !== null) {
+      void this.pickDetailVersion(this.detailSelectedVersion_);
+    }
+  }
+
   // ============================================================
   //  二级筛选面板显隐
   // ============================================================
@@ -1103,6 +1725,8 @@ export struct ModBrowsePage {
    * 不滚走结果来冒充收起，也不重建搜索输入；筛选选择由页面状态保存，重新展开仍保留。
    */
   private setHeaderCollapsed(collapsed: boolean): void {
+    this.freezeRetreatAnchor_();
+    this.resetRetreat_();
     this.getUIContext().animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
       this.headerCollapsed_ = collapsed;
     });
@@ -1120,6 +1744,12 @@ export struct ModBrowsePage {
    * 每次打开废弃上一轮异步回写；真实提交仍由 confirmInstallFromSheet 和安装服务复验。
    */
   private openDetail(project: RemoteProject): void {
+    // 原生 Sheet 退场不可被新打开打断；保持当前实例直到 onDisappear，避免显隐状态失配。
+    if (this.detailDisposed_ || this.detailClosing_) return;
+    if (!this.showDetailSheet_) {
+      this.detailSession_ = ++this.detailSessionCounter_;
+      this.detailPresentedSession_ = 0;
+    }
     this.invalidateLocalScanCache();
 
     // 1. 重置 detail 状态 + 显式打开 sheet（先弹后等）
@@ -1135,6 +1765,7 @@ export struct ModBrowsePage {
     this.detailDependenciesResolved_ = false;
     this.detailPreparedMcDir_ = '';
     this.detailPreparedVersionId_ = '';
+    this.detailPreparedForResourceSave_ = false;
     this.detailOptionalIds_ = [];
     this.detailSelectedVersion_ = null;
     this.detailPrimaryFile_ = null;
@@ -1173,7 +1804,7 @@ export struct ModBrowsePage {
     if (this.detailFetchEpoch_ !== epoch) return;
     this.detailAllVersions_ = versions.slice();
     this.detailLoading_ = false;
-    const useTarget = project.kind === ResourceKind.MOD && this.hasValidCurrentVersion();
+    const useTarget = project.kind === ResourceKind.MOD && !this.usesCustomResourceSave_(project.kind) && this.hasValidCurrentVersion();
     const loader = useTarget ? resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_) : '';
     const game = useTarget ? resolveInstalledMcVersion(this.targetMcDir_, this.targetVersionId_) : '';
     const picked = pickBestVersion(versions, loader, game) ?? pickBestVersion(versions, '', '');
@@ -1186,6 +1817,7 @@ export struct ModBrowsePage {
 
   /** 手选只切换浏览文件；先同步展示元数据，再独立准备当前目标的安装计划。 */
   private async pickDetailVersion(v: RemoteVersion): Promise<void> {
+    if (!this.detailInteractionActive_()) return;
     const epoch = ++this.detailFetchEpoch_;
     // 可选前置属于具体发布文件；切换文件清空旧勾选，重算同一文件时保留用户选择。
     if (this.detailSelectedVersion_ === null || this.detailSelectedVersion_.id !== v.id
@@ -1221,7 +1853,8 @@ export struct ModBrowsePage {
    */
   private detailInstallIssue(v: RemoteVersion): string {
     if (v.isServerPack === true) return '服务端整合包不能安装到客户端';
-    if (this.detailProject_.kind !== ResourceKind.MODPACK) {
+    const saveResourceFile = this.usesCustomResourceSave_(this.detailProject_.kind);
+    if (this.detailProject_.kind !== ResourceKind.MODPACK && !saveResourceFile) {
       if (!this.hasValidCurrentVersion() || this.targetMcDir_.length === 0) return '请先选择已安装的 MC 实例；仍可浏览全部版本';
       if (this.detailProject_.kind === ResourceKind.MOD) {
         const loader = resolveInstalledLoader(this.targetMcDir_, this.targetVersionId_);
@@ -1257,6 +1890,7 @@ export struct ModBrowsePage {
   }
 
   private toggleDetailDep(key: string): void {
+    if (!this.detailInteractionActive_()) return;
     if (this.detailPreparingInstall_ || !this.detailDependenciesResolved_) return;
     const row = this.detailDeps_.find((r: ModDetailDepRow): boolean => r.key === key);
     if (row === undefined || row.dependencyType !== DependencyType.OPTIONAL) return;
@@ -1266,17 +1900,82 @@ export struct ModBrowsePage {
   }
 
   private selectAllDetailDeps(): void {
+    if (!this.detailInteractionActive_()) return;
     if (this.detailPreparingInstall_ || !this.detailDependenciesResolved_) return;
     this.detailOptionalIds_ = this.detailDeps_.filter((r: ModDetailDepRow): boolean => r.dependencyType === DependencyType.OPTIONAL)
       .map((r: ModDetailDepRow): string => r.key);
     if (this.detailSelectedVersion_ !== null) this.pickDetailVersion(this.detailSelectedVersion_);
   }
 
-  /** sheet 关闭 → 复位状态 */
-  private closeDetail(): void {
+  /** 详情操作共用准入；退出期间排队的选版/依赖/安装回调不得重启已退休的工作。 */
+  private detailInteractionActive_(): boolean {
+    return !this.detailDisposed_ && !this.detailClosing_ && this.detailSession_ !== 0 && this.showDetailSheet_;
+  }
+
+  /** 只退休请求和扫描缓存，允许在 onWillDisappear/aboutToDisappear 中安全执行。 */
+  private invalidateDetailWork_(): void {
+    this.detailFetchEpoch_ += 1;
     this.invalidateLocalScanCache();
+  }
+
+  /** 请求关闭：立即挡住后续交互与异步回写，退出动画仍使用原展示快照。 */
+  private closeDetail(): void {
+    if (this.detailDisposed_ || this.detailClosing_ || !this.showDetailSheet_) return;
+    this.detailClosing_ = true;
+    this.invalidateDetailWork_();
     this.showDetailSheet_ = false;
-    this.detailFetchEpoch_ += 1; // 失效任何在飞的 prefetch
+    // 尚未进入 Native 呈现的同帧开关可能没有 onDisappear。此时只退休普通身份，
+    // 仍保留安全快照，不抢先清空可能已排队的正文；下一次打开会完整覆盖旧数据。
+    if (this.detailPresentedSession_ !== this.detailSession_) {
+      this.detailSession_ = 0;
+      this.detailClosing_ = false;
+    }
+  }
+
+  /** Native 真正开始呈现时才建立退场等待义务；回调本身不写入视图状态。 */
+  private detailWillAppearCallback_(): () => void {
+    const session: number = this.detailSession_;
+    return (): void => {
+      if (!this.detailDisposed_ && session !== 0 && session === this.detailSession_) {
+        this.detailPresentedSession_ = session;
+      }
+    };
+  }
+
+  /** options 注册时捕获实例，不能在回调执行时才读取可能已经更换的当前身份。 */
+  private detailWillDisappearCallback_(): () => void {
+    const session: number = this.detailSession_;
+    return (): void => { this.onDetailWillDisappear_(session); };
+  }
+
+  /** 退出完成回调也绑定同一实例，旧 Sheet 的迟到通知不能清空新详情。 */
+  private detailDidDisappearCallback_(): () => void {
+    const session: number = this.detailSession_;
+    return (): void => { this.onDetailDidDisappear_(session); };
+  }
+
+  /** 遮罩/返回键/拖动等系统关闭也在动画开始前失效工作；此回调不修改 @State。 */
+  private onDetailWillDisappear_(session: number): void {
+    if (this.detailDisposed_ || session === 0 || session !== this.detailSession_) return;
+    if (!this.detailClosing_) {
+      this.detailClosing_ = true;
+      this.invalidateDetailWork_();
+    }
+  }
+
+  /** 真实退场结束后释放当前实例的数据；重复、旧会话与页面销毁后的回调均无副作用。 */
+  private onDetailDidDisappear_(session: number): void {
+    if (this.detailDisposed_ || session === 0 || session !== this.detailSession_) return;
+    this.onDetailWillDisappear_(session);
+    this.detailSession_ = 0;
+    this.detailPresentedSession_ = 0;
+    this.showDetailSheet_ = false;
+    this.resetDetailState_();
+    this.detailClosing_ = false;
+  }
+
+  /** 只由当前 Sheet 的退场完成调用；完整空态也能承受框架剩余的渲染回调。 */
+  private resetDetailState_(): void {
     this.detailLoading_ = false;
     this.detailPreparingInstall_ = false;
     this.detailInstallReady_ = false;
@@ -1285,7 +1984,8 @@ export struct ModBrowsePage {
     this.detailDependenciesResolved_ = false;
     this.detailPreparedMcDir_ = '';
     this.detailPreparedVersionId_ = '';
-    this.detailProject_ = {} as RemoteProject;
+    this.detailPreparedForResourceSave_ = false;
+    this.detailProject_ = makeEmptyRemoteProject();
     this.detailSelectedVersion_ = null;
     this.detailPrimaryFile_ = null;
     this.detailAllVersions_ = [];
@@ -1294,6 +1994,9 @@ export struct ModBrowsePage {
     this.detailInstalledVersionIds_ = [];
     this.detailInstalledPrimary_ = null;
     this.detailScanInfo_ = '';
+    this.detailOptionalIds_ = [];
+    this.detailModpackName_ = '';
+    this.detailModpackNameError_ = '';
   }
 
 
@@ -1302,6 +2005,7 @@ export struct ModBrowsePage {
   private openWebsiteFromSheet(): void {
     // 商店不暴露资源网页，旧 Sheet 回调也不能恢复此动作；API 资源解析/下载不受影响。
     if (DistributionPolicy.isStore()) return;
+    if (!this.detailInteractionActive_()) return;
     let url = this.detailProject_.websiteUrl;
     if (!url || url.length === 0) {
       this.toast('该项目无可用网址');
@@ -1313,6 +2017,7 @@ export struct ModBrowsePage {
   /** 经系统 Want 拉起浏览器打开外部 URL。 */
   private openExternalUrl_(url: string): void {
     if (DistributionPolicy.isStore()) return;
+    if (!this.detailInteractionActive_()) return;
     if (!url || url.length === 0) {
       this.toast('网址为空');
       return;
@@ -1384,6 +2089,7 @@ export struct ModBrowsePage {
    * 用户随后点"一键安装"即从该源下载。
    */
   private async switchDetailSource(source: ModSource): Promise<void> {
+    if (!this.detailInteractionActive_()) return;
     let p = this.detailProject_;
     const epoch = this.detailFetchEpoch_;
     if (p.source === source) return;
@@ -1411,6 +2117,8 @@ export struct ModBrowsePage {
   private async openCrossSourceWeb(source: ModSource): Promise<void> {
     // 在任何“解析另一网站”网络请求之前拒绝商店的一般网页操作。
     if (DistributionPolicy.isStore()) return;
+    if (!this.detailInteractionActive_()) return;
+    const epoch: number = this.detailFetchEpoch_;
     let p = this.detailProject_;
     this.toast('正在解析' + (source === ModSource.CURSEFORGE ? ' CurseForge ' : ' Modrinth ') + '页面…');
     let resolved: RemoteProject | null = null;
@@ -1419,6 +2127,8 @@ export struct ModBrowsePage {
     } catch (e) {
       AppLogger.warn(TAG, 'openCrossSourceWeb resolve failed', e as Object, LOG_DOMAIN_DOWNLOAD);
     }
+    // 网页解析与详情请求共享代次，旧菜单的迟到结果不能在新详情打开后拉起旧网页。
+    if (epoch !== this.detailFetchEpoch_ || !this.detailInteractionActive_()) return;
     if (resolved === null || resolved.websiteUrl.length === 0) {
       this.toast((source === ModSource.CURSEFORGE ? 'CurseForge' : 'Modrinth') + ' 上未找到该资源');
       return;
@@ -1427,6 +2137,7 @@ export struct ModBrowsePage {
   }
 
   private confirmInstallFromSheet(): void {
+    if (!this.detailInteractionActive_()) return;
     if (this.detailLoading_ || this.detailPreparingInstall_) { this.toast('正在准备安装，请等待完成'); return; }
     if (this.detailError_.length > 0) { this.toast(this.detailError_); return; }
     const project = this.detailProject_;
@@ -1440,6 +2151,13 @@ export struct ModBrowsePage {
     if (!this.detailInstallReady_ || this.detailInstallError_.length > 0) {
       this.toast(this.detailInstallError_ || '安装计划尚未准备完成'); return;
     }
+    if (this.usesCustomResourceSave_(project.kind)) {
+      if (!this.detailPreparedForResourceSave_) {
+        this.toast('下载目标已变化，请重新选择文件'); return;
+      }
+      void this.saveResourceFileFromSheet_(project, picked, primary);
+      return;
+    }
     if (project.kind !== ResourceKind.MODPACK && (this.detailPreparedMcDir_ !== this.targetMcDir_
       || this.detailPreparedVersionId_ !== this.targetVersionId_)) {
       this.toast('安装目标已变化，请重新选择版本'); return;
@@ -1450,7 +2168,7 @@ export struct ModBrowsePage {
       if (this.detailModpackNameError_.length > 0) return;
       // sheet 的 onDisappear 会清空详情状态，必须在关闭前捕获名称，与来源/文件一起入队。
       const name = this.detailModpackName_.trim();
-      this.showDetailSheet_ = false; this.installModpackFromSheet(project, picked, primary, name); return;
+      this.closeDetail(); this.installModpackFromSheet(project, picked, primary, name); return;
     }
     if (!this.hasValidCurrentVersion()) { this.toast('安装目标已失效'); return; }
     if (project.kind === ResourceKind.MOD && !isModVersionCompatible(picked,
@@ -1458,7 +2176,7 @@ export struct ModBrowsePage {
       this.toast('所选文件与目标游戏版本或加载器不匹配'); return;
     }
     const deps = this.detailResolvedDeps_.slice();
-    this.showDetailSheet_ = false;
+    this.closeDetail();
     this.executeInstall(project, picked, primary, deps).catch((e: Error): void => { this.toast(e.message); });
   }
 
@@ -1492,7 +2210,9 @@ export struct ModBrowsePage {
       filesDir: filesDir,
       existingVersions: this.availableVersions,
       projectId: project.id,
-      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta),
+      officialFilesOnly: this.onlyOfficialModpackFiles_(),
+      resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, this.onlyOfficialModpackFiles_(),
+        this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_FIRST),
     });
     this.runModpackInstall_(task, project.id);
   }
@@ -1518,11 +2238,36 @@ export struct ModBrowsePage {
       }
     }).catch((e: Error) => {
       if (lockId !== undefined) this.downloadingProjectIds_.delete(lockId);
+      // 等待取消收敛时，原入队 Promise 可以拒绝；主动取消由任务终态和放弃面板反馈。
+      if (task.view.state === UnifiedTaskState.ABORTED) return;
       let msg = e.message !== undefined ? e.message : String(e);
       AppLogger.error(TAG, 'modpack install failed', e, LOG_DOMAIN_DOWNLOAD);
       this.toast('整合包安装失败：' + msg);
     });
     this.onOpenDownloadTask(task.view.id);
+  }
+
+  /** 绑定本次另存的详情会话和选中文件；系统窗口暂时隐藏宿主页时仍允许正常返回。 */
+  private async saveResourceFileFromSheet_(project: RemoteProject, version: RemoteVersion, file: RemoteFile): Promise<void> {
+    if (this.detailSavePickerPending_) return;
+    const context = this.uiCtx();
+    if (context === undefined) { this.toast('环境未就绪，无法选择保存位置'); return; }
+    const session = this.detailSession_;
+    const epoch = this.detailFetchEpoch_;
+    const isCurrent = (): boolean => this.detailInteractionActive_() && this.usesCustomResourceSave_(project.kind)
+      && this.detailSession_ === session && this.detailFetchEpoch_ === epoch;
+    this.detailSavePickerPending_ = true;
+    try {
+      const id = await pickAndStartModFileSave(context, project, version, file, isCurrent);
+      // 取消和过期均保留详情；已入队的任务交给 Registry，不依赖页面继续存活。
+      if (id.length === 0 || !isCurrent()) return;
+      this.closeDetail();
+      this.onOpenDownloadTask(id);
+    } catch (error) {
+      if (isCurrent()) this.toast((error as Error).message || '无法开始下载，请重试');
+    } finally {
+      if (!this.detailDisposed_) this.detailSavePickerPending_ = false;
+    }
   }
 
   /** 缺失清单对话框（决策4：明确告知整合包不完整 + 列出缺失项 + 可复制手动补齐清单）。 */
@@ -1546,8 +2291,8 @@ export struct ModBrowsePage {
         title: '整合包部分内容缺失',
         message: msg,
         buttons: [
-          { text: '复制清单', color: '#3478F6' },
-          { text: '知道了', color: '#666666' },
+          { text: '复制清单', color: this.theme.actionText as string },
+          { text: '知道了', color: this.theme.textSecondary as string },
         ],
       }).then((res: promptAction.ShowDialogSuccessResponse) => {
         if (res.index === 0) this.copyMissingList_(versionName, missing);
@@ -1609,43 +2354,24 @@ export struct ModBrowsePage {
     const mcDir = this.targetMcDir_;
     const versionId = this.targetVersionId_;
     const isolation = this.versionIsolation;
-    const historyGame = resolveInstalledMcVersion(mcDir, versionId);
-    const historyLoader = resolveInstalledLoader(mcDir, versionId);
     const optionalIds = this.detailOptionalIds_.slice();
     const old = this.detailInstalledPrimary_;
-    const started = Date.now();
-    const kindLabel = this.kindLabelOf(project.kind);
     this.downloadingProjectIds_.add(project.id);
-    const context = this.uiCtx();
     try {
-      if (context !== undefined) {
-        const meta: LedgerBeginMeta = {
-          category: ActivityCategory.MOD_INSTALL, title: project.title + '（' + kindLabel + '）',
-          gameVersionId: versionId, mcDir: mcDir,
-          appFilesDir: context.getApplicationContext().filesDir,
-        };
-        // 基线和scope必须先于producer，开账异常仍进入下方finally释放页面下载中标记。
-        if (!await ledgerBeginAsync(context.filesDir, started, meta)) throw new Error('安装活动日志尚未建立，请稍后重试');
-      }
-      let view: UnifiedTaskView;
+      // Registry在producer前建立固定attempt；页面不另造startedAt或打开另一条scope。
       if (project.kind === ResourceKind.MOD) {
         const request: ModInstallRequest = { mcDir: mcDir, versionId: versionId, versionIsolation: isolation, root: picked,
           title: project.title, router: router, optionalIds: optionalIds, oldPath: old?.filePath, wasEnabled: old?.enabled };
         const task = new ModInstallTask(request);
-        view = task.view;
         await getDownloadTaskRegistry().enqueue(task);
       } else {
         const task = new ResourceInstallTask({ projectTitle: project.title, iconUrl: project.iconUrl,
           request: { kind: project.kind, mcDir: mcDir, versionId: versionId, versionIsolation: isolation, primary: primary, dependencies: [] } });
-        view = task.view;
         await getDownloadTaskRegistry().enqueue(task);
       }
-      // 安装结果已经确定；记录函数自行保留IO失败义务，不将已安装SUCCESS改成业务FAILED。
-      await this.recordHistory(project, kindLabel, started, view.filesDone, view.bytesDone, 'success', '', historyGame, historyLoader, context?.filesDir ?? '');
       this.onStatusMessage(project.title + ' 安装完成');
       this.toast(project.title + ' 安装完成');
     } catch (e) {
-      await this.recordHistory(project, kindLabel, started, 0, 0, 'failed', (e as Error).message, historyGame, historyLoader, context?.filesDir ?? '');
       throw e as Error;
     } finally { this.downloadingProjectIds_.delete(project.id); this.invalidateLocalScanCache(); }
   }
@@ -1711,6 +2437,7 @@ export struct ModBrowsePage {
     .onClick(() => {
       if (this.kindIdx_ === idx) return;
       this.kindIdx_ = idx;
+      this.resetRetreatGeometry_();
       this.applyFiltersToController();
       this.triggerSearch(true);
     })
@@ -1725,8 +2452,8 @@ export struct ModBrowsePage {
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       Button() {
         Row({ space: 4 }) {
-          AppIcon({ name: AppIconName.Import, iconSize: 14, color: this.theme.primary })
-          Text('本地导入').fontSize(12).fontColor(this.theme.primary)
+          AppIcon({ name: AppIconName.Import, iconSize: 14, color: this.theme.actionText })
+          Text('本地导入').fontSize(12).fontColor(this.theme.actionText)
         }.alignItems(VerticalAlign.Center)
       }
       .height(28).type(ButtonType.Normal).borderRadius(14)
@@ -1739,9 +2466,7 @@ export struct ModBrowsePage {
           this.toast('导入失败：' + (e.message !== undefined ? e.message : String(e)));
         });
       })
-      if (this.modpackRecovery_.length > 0) {
-        this.ModpackRecoveryRow()
-      }
+      this.ModpackRecoveryRow()
     }
     .width('100%').alignItems(VerticalAlign.Center)
     .padding({ left: 16, right: 16, bottom: 8 })
@@ -1753,14 +2478,14 @@ export struct ModBrowsePage {
     // 扩展触摸热区而不设置 minHeight，避免将紧凑筛选视觉膨胀为44vp的大按钮。
     Text(loader === 'neoforge' ? 'NeoForge' : (loader.length > 0 ? this.capitalize(loader) : '全部'))
       .fontSize(12)
-      .fontColor(this.loaderInput_ === loader ? this.theme.textOnPrimary : this.theme.textSecondary)
+      .fontColor(this.activeLoaderFilter_() === loader ? this.theme.textOnPrimary : this.theme.textSecondary)
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(14)
-      .backgroundColor(this.loaderInput_ === loader ? this.theme.primary : this.theme.bgCard)
+      .backgroundColor(this.activeLoaderFilter_() === loader ? this.theme.primary : this.theme.bgCard)
       .responseRegion({ x: 0, y: -9, width: '100%', height: 44 })
       .onClick(() => {
-        if (this.loaderInput_ === loader) return;
-        this.loaderInput_ = loader;
+        if (this.activeLoaderFilter_() === loader) return;
+        this.setActiveLoaderFilter_(loader);
         this.applyFiltersToController();
         this.triggerSearch(true);
       })
@@ -1769,7 +2494,7 @@ export struct ModBrowsePage {
   @Builder
   LoadingBlock(text: string) {
     Column() {
-      LoadingProgress().width(40).height(40).color(this.theme.primary)
+      LoadingProgress().width(40).height(40).color(this.theme.actionText)
       Text(text)
         .fontSize(13).fontColor(this.theme.textHint).margin({ top: 12 })
     }
@@ -1779,9 +2504,9 @@ export struct ModBrowsePage {
   @Builder
   ErrorBlock(msg: string) {
     Column({ space: 8 }) {
-      AppIcon({ name: AppIconName.Error, iconSize: 28, color: this.theme.error })
+      AppIcon({ name: AppIconName.Error, iconSize: 28, color: this.theme.errorText })
       Text('搜索失败')
-        .fontSize(15).fontWeight(500).fontColor(this.theme.error)
+        .fontSize(15).fontWeight(500).fontColor(this.theme.errorText)
       Text(msg)
         .fontSize(12)
         .fontColor(this.theme.textHint)
@@ -1812,7 +2537,7 @@ export struct ModBrowsePage {
         .fontSize(12).fontColor(this.theme.textHint).margin({ top: 6 })
       Button('清除搜索与加载器筛选').height(44)
         .onClick(() => {
-          this.queryInput_ = ''; this.loaderInput_ = '';
+          this.queryInput_ = ''; this.setActiveLoaderFilter_('');
           this.applyFiltersToController(); this.triggerSearch(true);
         })
     }
@@ -1835,17 +2560,13 @@ export struct ModBrowsePage {
   private applyFiltersToController(): void {
     let ctrl = this.ctrl_;
     if (ctrl === null) return;
-    let kind: ResourceKind;
-    if (this.kindIdx_ === 1) kind = ResourceKind.RESOURCE_PACK;
-    else if (this.kindIdx_ === 2) kind = ResourceKind.SHADER;
-    else if (this.kindIdx_ === 3) kind = ResourceKind.MODPACK;
-    else kind = ResourceKind.MOD;
+    const kind = this.currentBrowseKind_();
     ctrl.setKind(kind);
     ctrl.setQuery(this.queryInput_);
-    // 整合包自带 MC 版本，不按当前已装版本过滤（否则会过滤掉其它 MC 版本的整合包）
-    ctrl.setGameVersion(kind === ResourceKind.MODPACK ? '' : this.gameVersionInput_);
+    // 另存没有目标实例，整合包自带 MC 版本，两者均不套用当前实例的 MC 版本筛选。
+    ctrl.setGameVersion(kind === ResourceKind.MODPACK || this.usesCustomResourceSave_() ? '' : this.gameVersionInput_);
     if (kind === ResourceKind.MOD || kind === ResourceKind.MODPACK) {
-      ctrl.setLoader(this.loaderInput_);
+      ctrl.setLoader(this.activeLoaderFilter_());
     } else {
       ctrl.setLoader('');
     }
@@ -1855,6 +2576,7 @@ export struct ModBrowsePage {
   }
 
   private triggerSearch(first: boolean): void {
+    if (first) { this.resetRetreat_(); this.retreatScrollable_ = false; this.retreatAnchorInset_ = -1; }
     let ctrl = this.ctrl_;
     if (ctrl === null) return;
     let p = first ? ctrl.loadFirstPage() : ctrl.loadNextPage();
@@ -1875,6 +2597,7 @@ export struct ModBrowsePage {
     let ctrl = this.ctrl_;
     if (ctrl === null) return;
     this.view_ = ctrl.getState();
+    if (this.view_.hits.length === 0) this.resetRetreat_();
   }
 
   /**
@@ -1904,6 +2627,31 @@ export struct ModBrowsePage {
     return this.targetValid_ && this.targetVersionId_.length > 0;
   }
 
+  /** 模组、资源包、光影、整合包胶囊和搜索、详情共用这一份类别映射。 */
+  private currentBrowseKind_(): ResourceKind {
+    if (this.kindIdx_ === 1) return ResourceKind.RESOURCE_PACK;
+    if (this.kindIdx_ === 2) return ResourceKind.SHADER;
+    if (this.kindIdx_ === 3) return ResourceKind.MODPACK;
+    return ResourceKind.MOD;
+  }
+
+  /** 没有有效安装目标时默认另存；详情必须属于当前类别，旧详情不能借切换后的目标获得资格。 */
+  private usesCustomResourceSave_(kind?: ResourceKind): boolean {
+    const current = this.currentBrowseKind_();
+    return (kind === undefined || kind === current) && supportsCustomResourceSave(current)
+      && (this.customSaveKindIndices_.indexOf(this.kindIdx_) >= 0 || !this.hasValidCurrentVersion());
+  }
+
+  /** 另存模式保留用户明确选的加载器；实例模式继续使用原筛选。 */
+  private activeLoaderFilter_(): string {
+    return this.usesCustomResourceSave_(ResourceKind.MOD) ? this.customModLoaderInput_ : this.loaderInput_;
+  }
+
+  private setActiveLoaderFilter_(loader: string): void {
+    if (this.usesCustomResourceSave_(ResourceKind.MOD)) this.customModLoaderInput_ = loader;
+    else this.loaderInput_ = loader;
+  }
+
   // ===================== 快速安装（已退役 — Phase R-3 之后由详情 sheet 流转替代） =====================
   // 旧 handleQuickInstall / fetchAndInstallLatest / askOptionalDeps 已合并进
   // openDetail / prefetchDetail / confirmInstallFromSheet / executeInstall。
@@ -1916,106 +2664,6 @@ export struct ModBrowsePage {
     if (kind === ResourceKind.MODPACK) return '整合包';
     return '模组';
   }
-
-  /**
-   * 防重入：同一次安装的 startedAt 时间戳只能写入历史一次。
-   * 已写入的 startedAt 进集合；下次同 startedAt 写入直接 short-circuit。
-   * 长会话用户可能装 ≥几十个 mod，集合大小可控（每次成功/失败一条记录）。
-   */
-  private recordedHistoryKeys_: Set<number> = new Set<number>();
-  /** 同ID收尾串行且冻结首次实际结果；失败保留原事实供同进程重试，原件供冷启恢复。 */
-  private historyFinalizationJobs_: Map<number, Promise<void>> = new Map<number, Promise<void>>();
-  private historyTerminalFacts_: Map<number, ModInstallTerminal> = new Map<number, ModInstallTerminal>();
-  /** 历史成功与canonical成功独立；只补未完成阶段，不能因关闭重试追加同一历史。 */
-  private historySavedKeys_: Set<number> = new Set<number>();
-
-  /**
-   * v2: 把单次模组安装写入 DownloadHistory，跟 MC 整版下载共用一套历史表。
-   * loaderType 用 "mod-modrinth" / "mod-curseforge"，便于 DownloadHistoryPage UI 区分。
-   *
-   * 防重入：使用 startedAtMs 作 dedup key，避免成功路径 + catch 路径双触发导致两份历史。
-   */
-  private async recordHistory(
-    project: RemoteProject,
-    kindLabel: string,
-    startedAtMs: number,
-    fileCount: number,
-    totalBytes: number,
-    status: string,
-    errorMessage: string,
-    gameVersion: string,
-    loaderVersion: string,
-    filesDir: string = '',
-  ): Promise<void> {
-    if (this.recordedHistoryKeys_.has(startedAtMs)) {
-      if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'recordHistory skipped (already recorded for startedAt=%{public}d)',
-        startedAtMs);
-      return;
-    }
-    const runningJob = this.historyFinalizationJobs_.get(startedAtMs);
-    if (runningJob !== undefined) { await runningJob; return; }
-    let loaderType = project.source === ModSource.MODRINTH ? 'mod-modrinth' : 'mod-curseforge';
-    let nowMs = Date.now();
-    let record: DownloadHistoryRecord = {
-      versionName: project.title + '（' + kindLabel + '）',
-      gameVersion: gameVersion.length > 0 ? gameVersion : '-',
-      loaderType: loaderType,
-      loaderVersion: loaderVersion.length > 0 ? loaderVersion : undefined,
-      startedAt: startedAtMs,
-      durationMs: nowMs - startedAtMs,
-      totalBytes: totalBytes,
-      fileCount: fileCount,
-      status: status,
-      errorMessage: errorMessage.length > 0 ? errorMessage : undefined,
-      category: ActivityCategory.MOD_INSTALL,
-      endedAt: nowMs,
-      title: project.title,
-      subtitle: kindLabel,
-    };
-    const original = this.historyTerminalFacts_.get(startedAtMs);
-    const fact: ModInstallTerminal = original ?? { schema: 1, activityId: startedAtMs,
-      category: ActivityCategory.MOD_INSTALL, runNonce: '', record: record,
-      outcome: {
-        state: status === 'success' ? LedgerState.SUCCESS : LedgerState.FAILED,
-        source: 'modInstall.terminal',
-        summary: errorMessage.length > 0 ? errorMessage
-          : (fileCount + ' 个文件安装完成'), endedAt: nowMs,
-      } };
-    this.historyTerminalFacts_.set(startedAtMs, fact);
-    const job: Promise<void> = (async (): Promise<void> => {
-      const manifest = filesDir.length > 0 ? await ledgerManifestAsync(filesDir, startedAtMs) : null;
-      if (manifest !== null) {
-        if (manifest.category !== ActivityCategory.MOD_INSTALL || (manifest.runNonce ?? '').length === 0
-          || fact.runNonce.length > 0 && fact.runNonce !== manifest.runNonce) {
-          throw new Error('安装活动身份无法核实，原业务结果保留');
-        }
-        fact.runNonce = manifest.runNonce ?? '';
-        // 在任何耗时关闭前保存固定终态。冷启只按category/id/nonce严格消费该单局原件。
-        await writeEvidenceTextAtomicAsync(ledgerDirOf(filesDir, startedAtMs) + '/task-terminal.json', JSON.stringify(fact));
-      }
-      // 历史先保存真实业务结果；账本关闭失败不能让下一层catch把SUCCESS重写成FAILED。
-      const store = getDownloadHistoryStore();
-      await store.waitReady();
-      if (!this.historySavedKeys_.has(startedAtMs)) {
-        const saved: boolean = store.listStored().some((row: DownloadHistoryRecord): boolean =>
-          row.category === fact.category && row.startedAt === startedAtMs
-            && row.endedAt === fact.record.endedAt && row.status === fact.record.status);
-        if (!saved) await store.add(fact.record);
-        this.historySavedKeys_.add(startedAtMs);
-      }
-      if (manifest !== null) await ledgerEndAsync(filesDir, startedAtMs, fact.outcome);
-      this.recordedHistoryKeys_.add(startedAtMs);
-      this.historyTerminalFacts_.delete(startedAtMs);
-    })().catch((error: Error): void => {
-      AppLogger.warn(TAG, '安装结果记录尚未完成，原终态保留等待重试', error, LOG_DOMAIN_DOWNLOAD);
-    });
-    this.historyFinalizationJobs_.set(startedAtMs, job);
-    try { await job; } finally { this.historyFinalizationJobs_.delete(startedAtMs); }
-  }
-
-
-
-
 
   private toast(msg: string): void {
     try {
@@ -2035,6 +2683,7 @@ export struct ModBrowsePage {
   private async loadChosenDetail(v: RemoteVersion, epoch: number): Promise<void> {
     if (this.detailFetchEpoch_ !== epoch) return;
     const project = this.detailProject_;
+    const saveFileOnly = this.usesCustomResourceSave_(project.kind);
     const mcDir = this.targetMcDir_;
     const versionId = this.targetVersionId_;
     let primary = pickPrimaryFile(v.files);
@@ -2051,6 +2700,7 @@ export struct ModBrowsePage {
     this.detailInstallReady_ = false;
     this.detailPreparedMcDir_ = '';
     this.detailPreparedVersionId_ = '';
+    this.detailPreparedForResourceSave_ = false;
     this.detailInstallError_ = this.detailInstallIssue(v);
     if (this.detailInstallError_.length > 0 || primary === null) return;
 
@@ -2061,12 +2711,21 @@ export struct ModBrowsePage {
       // 地址获取属于安装准备；即使 CF 的补地址请求失败，也保留原文件名/大小供浏览。
       if (primary.url.length === 0 && v.source === ModSource.CURSEFORGE) {
         const repo = router.repoFor(v.source) as CurseForgeRepository;
-        const info = await repo.resolveFileDownloadInfo(v.projectId, v.id);
+        const info = project.kind === ResourceKind.MODPACK
+          ? await repo.resolveArchiveDownloadInfo(v.projectId, v.id)
+          : await repo.resolveFileDownloadInfo(v.projectId, v.id);
         if (this.detailFetchEpoch_ !== epoch) return;
         primary = { url: info.urls[0] ?? '', mirrors: info.urls.slice(1), filename: info.filename,
           size: info.size, sha1: info.sha1, isPrimary: true };
       }
       if (primary.url.length === 0) throw new Error('此版本的下载地址暂不可用，仍可查看详情');
+      if (saveFileOnly) {
+        // 另存只准备真实分发文件；依赖继续展示声明，不扫描本地实例或运行安装解析器。
+        this.detailPrimaryFile_ = primary;
+        this.detailPreparedForResourceSave_ = true;
+        this.detailInstallReady_ = true;
+        return;
+      }
       const installed = project.kind === ResourceKind.MOD ? await this.getOrScanInstalled() : [];
       if (this.detailFetchEpoch_ !== epoch) return;
       if (mcDir !== this.targetMcDir_ || versionId !== this.targetVersionId_) throw new Error('安装目标已变化，请重新选择版本');
@@ -2131,20 +2790,43 @@ export struct ModBrowsePage {
   @Builder
   private ImmersiveTitleContent2_() {
     Column({ space: 12 }) {
-      if (this.modpackRecovery_.length === 0) {
+      if (this.modpackRecoveryLoading_) {
+        Text('正在读取恢复记录…').fontColor(this.theme.textSecondary)
+      } else if (this.modpackRecoveryFailed_) {
+        Text('读取恢复记录失败').fontColor(this.theme.textSecondary)
+        Button('重试').onClick(() => this.refreshModpackRecovery_())
+      } else if (this.modpackRecovery_.length === 0) {
         Text('没有需要继续的安装').fontColor(this.theme.textSecondary)
       } else {
         List({ space: 8 }) {
           ForEach(this.modpackRecovery_, (item: ModpackRecoveryItem) => {
             ListItem() {
-              Column({ space: 4 }) {
-                Text(item.versionName.length > 0 ? item.versionName : item.title)
-                  .fontSize(15).fontColor(this.theme.textPrimary)
-                Text(item.confirmed ? ('继续原实例 · ' + item.missingCount + ' 项待处理') : '清单已保存 · 待确认安装')
-                  .fontSize(12).fontColor(this.theme.textSecondary)
+              Row({ space: 4 }) {
+                Column({ space: 4 }) {
+                  Text(item.versionName.length > 0 ? item.versionName : item.title)
+                    .fontSize(15).fontColor(this.theme.textPrimary).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(item.confirmed ? ('继续原实例 · ' + item.missingCount + ' 项待处理') : '清单已保存 · 待确认安装')
+                    .fontSize(12).fontColor(this.theme.textSecondary)
+                }
+                .layoutWeight(1).padding({ left: 14, top: 10, bottom: 10 }).alignItems(HorizontalAlign.Start)
+                .enabled(this.modpackDismissId_ !== item.id).focusable(true)
+                .onClick(() => { this.resumeModpack_(item); })
+
+                // 恢复区与叉号是兄弟节点，点击叉号不会触发恢复。
+                Button({ type: ButtonType.Circle }) {
+                  if (this.modpackDismissId_ === item.id) {
+                    LoadingProgress().width(16).height(16).color(this.theme.textSecondary)
+                  } else {
+                    AppIcon({ name: AppIconName.Close, iconSize: 16, color: this.theme.textSecondary })
+                  }
+                }
+                .width(44).height(44).backgroundColor(Color.Transparent)
+                .accessibilityText(this.modpackDismissId_ === item.id ? '正在处理安装记录'
+                  : '放弃「' + (item.versionName.length > 0 ? item.versionName : item.title) + '」的继续安装')
+                .enabled(this.modpackDismissId_.length === 0)
+                .onClick(() => { void this.confirmDismissModpack_(item); })
               }
-              .width('100%').padding(14).backgroundColor(this.theme.bgCard).borderRadius(12)
-              .onClick(() => { this.resumeModpack_(item); })
+              .width('100%').padding({ right: 6 }).backgroundColor(this.theme.bgCard).borderRadius(12)
             }
           }, (item: ModpackRecoveryItem): string => item.id)
         }.layoutWeight(1).width('100%')

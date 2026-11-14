@@ -8,26 +8,30 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import testNapi from 'libentry.so';
 import { ProductLauncherWindowChrome } from 'entry/ProductLauncherWindowChrome';
 import { DownloadManager } from 'feature_core';
+import { ValidationTransportPort } from '../devtools/RuntimeDownloadValidation';
 import {
   setDownloadNativeEngine, DownloadNativeEngine,
-  NativeFetchTextResult, NativeTaskInfo,
+  NativeFetchTextResult, NativeTaskInfo, TransferProbeResult,
   DownloadTaskSpec, DownloadProgressEvent, DownloadCompleteEvent,
+  copyDownloadFileSpec,
   setForgeNativeBridge, ForgeNativeBridge,
 } from 'feature_core';
 import { removeDirRecursive } from 'commons';
 import { AppLogger } from 'commons';
 import { NativeLogSink } from 'commons';
-import { LedgerScopeSink, setLedgerScopeSink, ledgerBegin, LedgerBeginMeta, configureLedgerMaintenanceOwner } from 'commons';
+import { LedgerScopeSink, setLedgerScopeSink, ledgerBeginAsync, LedgerBeginMeta, configureLedgerMaintenanceOwner } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 import { SessionMarker, McSessionInfo } from 'launch';
 import { setLaunchNativeBridge, LaunchNativeBridge } from 'launch';
 import { setRuntimeSlotNativeOps, RuntimeSlotNativeOps } from 'launch';
+import { setJdkInstallNativeOps, JdkInstallNativeOps } from 'launch';
 import { getInputDeviceMonitor } from 'gamecontrol';
 import { setControlNativeSink, ControlNativeSink, LookConfiguration, LookPolicySource } from 'gamecontrol';
 import { getInputSourceRegistry } from 'gamecontrol';
 import { setSystemNativeBridge, SystemNativeBridge } from 'feature_system';
 import { GameStorage, PreferenceManager } from 'feature_system';
+import { ModAudioRuntime } from './ModAudioRuntime';
 import { NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, NATIVE_GAMEPAD_CAPTURE_READY_KEY } from './NativeGamepadRoutePolicy';
 
 class EntryRelayNativeBridge implements RelayNativeBridge {
@@ -58,6 +62,10 @@ class EntryRelayNativeBridge implements RelayNativeBridge {
 export class EntryLedgerScopeSink implements LedgerScopeSink {
   begin(activityId: number, dir: string): boolean {
     try { return testNapi.amclLedgerBegin(activityId, dir); } catch (e) { return false; }
+  }
+  /** 工作线程确认文件和 scope 已准备；错误继续交给业务 owner 保留未准入与重试状态。 */
+  async beginAsync(activityId: number, dir: string): Promise<boolean> {
+    return await testNapi.amclLedgerBeginAsync(activityId, dir);
   }
   end(activityId: number): void {
     try { testNapi.amclLedgerEnd(activityId); } catch (e) { AppLogger.warn('DesktopGame', 'Ledger end failed', e, LOG_DOMAIN_LAUNCH); }
@@ -106,7 +114,18 @@ class EntryControlNativeSink implements ControlNativeSink {
  * 同上（D1=方案 a）：download 域的 DownloadManager 不直接依赖 libentry.so，
  * 由本 HAP 注入下载引擎实现（testNapi.download* 适配）。详见 DownloadManager.DownloadNativeEngine。
  */
-export class EntryDownloadEngine implements DownloadNativeEngine {
+export class EntryDownloadEngine implements DownloadNativeEngine, ValidationTransportPort {
+  private validationTransport_: ((url: string) => string) | null = null;
+  private transportUsed_: boolean = false;
+  /** 只在default进程第一次网络操作前安装传输夹具；生产HAR业务完全不感知该入口。 */
+  installValidationTransport(resolver: (url: string) => string): void {
+    if (!DiagnosticPolicy.hasTestHooks() || this.transportUsed_ || this.validationTransport_ !== null) throw new Error('运行时验收传输不允许在此进程阶段启用');
+    this.validationTransport_=resolver;
+  }
+  private transportUrl_(url: string): string {
+    this.transportUsed_=true;
+    return this.validationTransport_ === null ? url : this.validationTransport_(url);
+  }
   setCaBundle(path: string): void {
     testNapi.downloadSetCaBundle(path);
   }
@@ -117,11 +136,35 @@ export class EntryDownloadEngine implements DownloadNativeEngine {
     return testNapi.downloadPublishNoReplace(sourcePath, destinationPath);
   }
   fetchText(primaryUrl: string, mirrors: string[], timeoutSeconds: number,
-            requestHeaders?: Record<string, string>, maxResponseBytes?: number): Promise<NativeFetchTextResult> {
-    return testNapi.downloadFetchText(primaryUrl, mirrors, timeoutSeconds, requestHeaders, maxResponseBytes);
+            requestHeaders?: Record<string, string>, maxResponseBytes?: number,
+            allowRelay: boolean = false): Promise<NativeFetchTextResult> {
+    // 第六参显式透传到Native；只在JS包装器新增选项却漏掉本桥会令真机仍然直连。
+    // 缺省false使现有metadata消费者不受本次JDK目录路由修复影响。
+    const primary=this.transportUrl_(primaryUrl), mapped=mirrors.map((url: string): string => this.transportUrl_(url));
+    const changed=primary !== primaryUrl || mapped.some((url: string,index: number): boolean => url !== mirrors[index]);
+    if (changed && requestHeaders !== undefined && Object.keys(requestHeaders).some((key: string): boolean => ['authorization','cookie'].indexOf(key.toLowerCase()) >= 0)) {
+      throw new Error('授权请求不能进入运行时验收回环');
+    }
+    return testNapi.downloadFetchText(primary, mapped, timeoutSeconds, requestHeaders, maxResponseBytes, changed ? false : allowRelay);
   }
   createTask(spec: DownloadTaskSpec): number {
-    return testNapi.downloadCreateTask(spec);
+    this.transportUsed_=true;
+    if (this.validationTransport_ === null) return testNapi.downloadCreateTask(spec);
+    const copy: DownloadTaskSpec={name:spec.name,files:spec.files.map(file=>{
+      const cloned=copyDownloadFileSpec(file);
+      cloned.urls=file.urls.map((url: string): string => this.transportUrl_(url));
+      if (cloned.urls.some((url: string,index: number): boolean => url !== file.urls[index]) && (file.bearerToken !== undefined || file.authorizedPolicy !== undefined)) {
+        throw new Error('授权下载不能进入运行时验收回环');
+      }
+      return cloned;
+    })};
+    if (spec.activityId !== undefined) copy.activityId=spec.activityId;
+    return testNapi.downloadCreateTask(copy);
+  }
+  /** 测量入口逐参交给Native，不能误用fetchText的字符串体积错误作为下载成功。 */
+  probeTransfer(url: string, expectedSize: number, sampleBytes: number, timeoutSeconds: number,
+    userAgent: string): Promise<TransferProbeResult> {
+    return testNapi.downloadProbeTransfer(this.transportUrl_(url), expectedSize, sampleBytes, timeoutSeconds, userAgent);
   }
   bindActivity(taskId: number, activityId: number): void {
     testNapi.amclLedgerBindTask(taskId, activityId);
@@ -180,9 +223,12 @@ class EntryForgeNativeBridge implements ForgeNativeBridge {
   }
   runJavaProcessor(filesDir: string, jdkVersion: string, xmxMb: number,
                    classpath: string, mainClass: string, args: string[],
-                   workDir: string, logFile: string): Promise<number> {
-    return testNapi.runJavaProcessor(filesDir, jdkVersion, xmxMb, classpath, mainClass, args, workDir, logFile);
+                   workDir: string, logFile: string, requestId?: string, timeoutMs?: number): Promise<number> {
+    return testNapi.runJavaProcessor(filesDir, jdkVersion, xmxMb, classpath, mainClass, args, workDir, logFile,
+      requestId, timeoutMs);
   }
+  /** 只提交意图，Native Promise 在精确 wait 回收后才完成。 */
+  cancelJavaProcessor(requestId: string): boolean { return testNapi.cancelJavaProcessor(requestId); }
 }
 
 /**
@@ -228,6 +274,19 @@ class EntryRuntimeSlotStore implements RuntimeSlotNativeOps {
   collect(activeDirectory: string): number { return testNapi.runtimeSlotCollect(activeDirectory); }
 }
 
+/** JDK 安装只经当前进程的原生边界执行，异步 I/O 不持有 Context/NAPI 对象到 worker。 */
+class EntryJdkInstallStore implements JdkInstallNativeOps {
+  operation(action: string, filesDir: string, major: string, path: string, writerFd: number, useFd: number): string {
+    return testNapi.jdkInstallOperation(action, filesDir, major, path, writerFd, useFd);
+  }
+  extract(archive: string, stage: string, archiveSha256: string, timeoutMs: number): Promise<boolean> {
+    return testNapi.jdkInstallExtract(archive, stage, archiveSha256, timeoutMs);
+  }
+  seal(root: string, major: string, archiveSha256: string): Promise<boolean> {
+    return testNapi.jdkInstallSeal(root, major, archiveSha256);
+  }
+}
+
 /** 每个应用进程必须在消费者运行前安装自己的 HAR 端口；不复用另一个进程的函数对象。 */
 export function installProcessNativeBridges(): EntryDownloadEngine {
   // 输入来源的 Native 端口归进程装配；前端重建不再替换持有这份函数表的权威。
@@ -236,6 +295,7 @@ export function installProcessNativeBridges(): EntryDownloadEngine {
     noteSourceReset: (source: number): void => { testNapi.noteSourceReset(source); }
   });
   setRuntimeSlotNativeOps(new EntryRuntimeSlotStore());
+  setJdkInstallNativeOps(new EntryJdkInstallStore());
   const engine: EntryDownloadEngine = new EntryDownloadEngine();
   setControlNativeSink(new EntryControlNativeSink());
   setDownloadNativeEngine(engine);
@@ -263,22 +323,44 @@ export function initializeGameProcessLogging(context: common.UIAbilityContext): 
 /**
  * 仅在私有启动快照验证并安装后读取游戏偏好、注册HAR端口和初始化输入。
  * 持久日志已由GameAbility更早开启，此处不重复初始化writer，避免旋转/覆盖启动失败证据。
+ * 本局scope真实异步开账结果兑现后才安装运行时；日志失败按游戏既有契约明确降级继续，
+ * 不能把诊断故障升级为游戏不可用。isCurrent由Ability世代提供，
+ * 销毁后的异步开账可以留下可恢复原件，但不得继续挂接音频、输入或发布页面所需状态。
  */
-export function initializeGameProcess(context: common.UIAbilityContext,
-  activityId: number = 0, launchMeta?: LedgerBeginMeta): void {
+export async function initializeGameProcess(context: common.UIAbilityContext,
+  activityId: number = 0, launchMeta?: LedgerBeginMeta, isCurrent?: () => boolean): Promise<void> {
   configureLedgerMaintenanceOwner(false);
   DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics, testNapi.getDiagnosticCapabilities());
   DistributionPolicy.configure(ProductBuildProfile.storeChannel ? DistributionChannel.Store : DistributionChannel.Sideload);
-  ProductInputProfile.initialize(context);
-  AppStorage.setOrCreate<common.UIAbilityContext>('uiAbilityContext', context);
-  AppStorage.setOrCreate<ConfigurationConstant.ColorMode>('currentColorMode', context.config.colorMode);
+  if (isCurrent !== undefined && !isCurrent()) throw new Error('游戏进程初始化已取消');
   setLedgerScopeSink(new EntryLedgerScopeSink());
   // 快照通过后才有可承认的本局身份，此处打开会话scope。更早的进程创建/快照失败
   // 已由游戏进程独立日志留存，不在未验证的activityId下提前建立账本。
   // activityId=0 保留给独立诊断/旧调用方，不创建虚假游戏活动。
   if (activityId > 0 && launchMeta !== undefined) {
-    ledgerBegin(context.filesDir, activityId, launchMeta);
+    let captureIssue: string = '';
+    try {
+      if (!await ledgerBeginAsync(context.filesDir, activityId, launchMeta)) captureIssue = '本局活动日志基线未能建立';
+    } catch (error) {
+      captureIssue = '本局活动日志开账失败：' + ((error as Error).message ?? '未知存储错误');
+    }
+    // 取消属于生命周期失效，不能被上方诊断故障降级catch吞掉，也不能继续装配任何producer。
+    if (isCurrent !== undefined && !isCurrent()) throw new Error('游戏进程初始化已取消');
+    AppStorage.setOrCreate<number>('gameLedgerCaptureIssueActivityId', activityId);
+    AppStorage.setOrCreate<string>('gameLedgerCaptureIssue', captureIssue);
+    if (captureIssue.length > 0) {
+      // 游戏既有契约允许诊断降级；保留全局writer和现有原件，明确记录本局缺口，不冒称完整。
+      // 日志端口本身失效也不能把捕获故障升级成新的游戏启动失败。
+      try { AppLogger.warn('DesktopGame', captureIssue + '；继续启动，捕获完整性降级', undefined, LOG_DOMAIN_LAUNCH, activityId); }
+      catch (_) { /* 现有全局/平台原件仍由原恢复链收集，不覆盖或删除。 */ }
+    }
   }
+  if (isCurrent !== undefined && !isCurrent()) throw new Error('游戏进程初始化已取消');
+  ProductInputProfile.initialize(context);
+  AppStorage.setOrCreate<common.UIAbilityContext>('uiAbilityContext', context);
+  // 独立进程只在快照和异步scope基线确认后装配音频；迟到续体不能复活已销毁Ability。
+  ModAudioRuntime.attach(context);
+  AppStorage.setOrCreate<ConfigurationConstant.ColorMode>('currentColorMode', context.config.colorMode);
   installProcessNativeBridges();
   DownloadManager.instance().initializeCaBundle(context);
   const preferences: PreferenceManager = new PreferenceManager(context);

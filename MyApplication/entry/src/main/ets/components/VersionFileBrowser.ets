@@ -1,3 +1,7 @@
+/**
+ * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
+ * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
+ */
 import { AppRoundIconButton } from './AppRoundIconButton';
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { DeviceProfile } from 'commons';
@@ -121,7 +125,7 @@ export struct VersionFileBrowser {
     if (this.embedded) {
       this.PanelBody_();
     } else {
-      ImmersiveTitleScaffold({ title: '版本文件夹', theme: this.theme, modal: true,
+      ImmersiveTitleScaffold({ title: '版本文件夹', contextLabel: this.versionId, contextTitle: '当前实例', theme: this.theme, modal: true,
         surfaceColor: this.theme.bgPrimary, closeLabel: '关闭管理面板',
         closeId: 'versionfilebrowser-close', closeEnabled: !this.navigationBlocked_(),
         onClose: (): void => { if (!this.navigationBlocked_()) this.onClose(); },
@@ -172,7 +176,8 @@ export struct VersionFileBrowser {
   Header() {
     Row() {
       Column({ space: 2 }) {
-        Text(this.headerSubtitle())
+        // 路径只在面包屑出现，工具行仅保留当前目录的列表统计。
+        Text(this.loaded ? this.rows.length + ' 项' : '正在读取…')
           .fontSize(11).fontColor(this.theme.textHint)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
@@ -195,7 +200,7 @@ export struct VersionFileBrowser {
           Text('导入').fontSize(12).fontWeight(600).fontColor(this.theme.textOnPrimary)
         }
         .height(32).padding({ left: 12, right: 12 }).borderRadius(16)
-        .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
+        .backgroundColor(this.theme.actionPrimary).alignItems(VerticalAlign.Center)
         .onClick(() => { this.doImport() })
       }
     }
@@ -204,14 +209,14 @@ export struct VersionFileBrowser {
     .alignItems(VerticalAlign.Center)
   }
 
-  /** 面包屑：根 / a / b，可点任意段跳转；非根时左侧「上级」按钮。 */
+  /** 根节点明确共享/隔离目录；实例名由页头负责，其余路径只在这一条面包屑出现。 */
   @Builder
   Breadcrumb() {
     Row({ space: 6 }) {
       if (this.rel.length > 0) {
         Row({ space: 3 }) {
-          AppIcon({ name: AppIconName.ChevronUp, iconSize: 12, color: this.theme.primary })
-          Text('上级').fontSize(11).fontWeight(600).fontColor(this.theme.primary)
+          AppIcon({ name: AppIconName.ChevronUp, iconSize: 12, color: this.theme.actionText })
+          Text('上级').fontSize(11).fontWeight(600).fontColor(this.theme.actionText)
         }
         .height(26).padding({ left: 8, right: 10 }).borderRadius(13)
         .backgroundColor(this.theme.primaryLight).alignItems(VerticalAlign.Center)
@@ -219,7 +224,7 @@ export struct VersionFileBrowser {
       }
       Scroll() {
         Row({ space: 2 }) {
-          this.CrumbSeg('根目录', '')
+          this.CrumbSeg(this.rootDir() === this.mcDir ? '.minecraft（共享）' : '实例目录（隔离）', '')
           ForEach(this.crumbSegments(), (seg: string, idx: number) => {
             AppIcon({ name: AppIconName.ChevronRight, iconSize: 10, color: this.theme.textHint })
             this.CrumbSeg(seg, this.crumbPathAt(idx))
@@ -255,12 +260,6 @@ export struct VersionFileBrowser {
         }
       }, (row: FileEntry) => (row.isDir ? 'd:' : 'f:') + row.name + '|' + row.mtimeMs + '|' + row.size)
 
-      ListItem() {
-        Text('共 ' + this.rows.length + ' 项 · 导入文件到当前目录 · 长按导出/重命名/删除')
-          .fontSize(11).fontColor(this.theme.textHint)
-          .width('100%').textAlign(TextAlign.Center)
-          .padding({ top: 12, bottom: 30 })
-      }
     }
     .layoutWeight(1).width('100%')
     .padding({ left: 20, right: 20 })
@@ -276,7 +275,7 @@ export struct VersionFileBrowser {
         AppIcon({
           name: row.isDir ? AppIconName.Folder : AppIconName.Document,
           iconSize: 20,
-          color: row.isDir ? this.theme.primary : this.theme.textSecondary,
+          color: row.isDir ? this.theme.actionText : this.theme.textSecondary,
         })
       }
       .width(40).height(40)
@@ -303,7 +302,7 @@ export struct VersionFileBrowser {
         AppIcon({ name: AppIconName.ChevronRight, iconSize: 14, color: this.theme.textHint })
       } else {
         Row() {
-          AppIcon({ name: AppIconName.Export, iconSize: 15, color: this.theme.primary })
+          AppIcon({ name: AppIconName.Export, iconSize: 15, color: this.theme.actionText })
         }
         .width(34).height(34).borderRadius(9)
         .backgroundColor(this.theme.bgInput).justifyContent(FlexAlign.Center)
@@ -359,7 +358,7 @@ export struct VersionFileBrowser {
           Text('导入文件').fontSize(13).fontWeight(600).fontColor(this.theme.textOnPrimary)
         }
         .height(36).padding({ left: 18, right: 18 }).borderRadius(18)
-        .backgroundColor(this.theme.primary).alignItems(VerticalAlign.Center)
+        .backgroundColor(this.theme.actionPrimary).alignItems(VerticalAlign.Center)
         .margin({ top: 8 })
         .onClick(() => { this.doImport() })
       }
@@ -372,7 +371,7 @@ export struct VersionFileBrowser {
   @Builder
   LoadingState() {
     Column({ space: 10 }) {
-      LoadingProgress().width(36).height(36).color(this.theme.primary)
+      LoadingProgress().width(36).height(36).color(this.theme.actionText)
       Text('读取目录中…').fontSize(12).fontColor(this.theme.textHint)
     }
     .width('100%').layoutWeight(1)
@@ -382,12 +381,12 @@ export struct VersionFileBrowser {
   @Builder
   BusyOverlay() {
     Column({ space: 12 }) {
-      LoadingProgress().width(40).height(40).color(this.theme.primary)
+      LoadingProgress().width(40).height(40).color(this.theme.actionText)
       Text(this.busyLabel).fontSize(13).fontColor(this.theme.textPrimary)
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
   }
 
@@ -418,11 +417,11 @@ export struct VersionFileBrowser {
       }
       .width('90%').padding(20)
       .backgroundColor(this.theme.bgCard).borderRadius(16)
-      .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 4 })
+      .shadow({ radius: 16, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 4 })
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
     .onClick(() => { this.pendingDelete = '' })
   }
@@ -439,7 +438,7 @@ export struct VersionFileBrowser {
           .fontColor(this.theme.textPrimary).borderRadius(10)
           .onChange((v: string) => { this.renameInput = v; this.renameError = '' })
         if (this.renameError.length > 0) {
-          Text(this.renameError).fontSize(11).fontColor(this.theme.error)
+          Text(this.renameError).fontSize(11).fontColor(this.theme.errorText)
             .width('100%').margin({ top: 6 })
         }
         Row({ space: 12 }) {
@@ -449,18 +448,18 @@ export struct VersionFileBrowser {
             .onClick(() => { this.renameTarget = '' })
           Button('确定')
             .type(ButtonType.Capsule).height(36).fontSize(14).layoutWeight(1)
-            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.primary)
+            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.actionPrimary)
             .onClick(() => { this.executeRename() })
         }
         .width('100%').margin({ top: 16 })
       }
       .width('90%').padding(20)
       .backgroundColor(this.theme.bgCard).borderRadius(16)
-      .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 4 })
+      .shadow({ radius: 16, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 4 })
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
   }
 
@@ -476,7 +475,7 @@ export struct VersionFileBrowser {
           .fontColor(this.theme.textPrimary).borderRadius(10)
           .onChange((v: string) => { this.newFolderInput = v; this.newFolderError = '' })
         if (this.newFolderError.length > 0) {
-          Text(this.newFolderError).fontSize(11).fontColor(this.theme.error)
+          Text(this.newFolderError).fontSize(11).fontColor(this.theme.errorText)
             .width('100%').margin({ top: 6 })
         }
         Row({ space: 12 }) {
@@ -486,18 +485,18 @@ export struct VersionFileBrowser {
             .onClick(() => { this.showNewFolder = false })
           Button('创建')
             .type(ButtonType.Capsule).height(36).fontSize(14).layoutWeight(1)
-            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.primary)
+            .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.actionPrimary)
             .onClick(() => { this.executeNewFolder() })
         }
         .width('100%').margin({ top: 16 })
       }
       .width('90%').padding(20)
       .backgroundColor(this.theme.bgCard).borderRadius(16)
-      .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 4 })
+      .shadow({ radius: 16, color: this.theme.cardShadowColor, offsetX: 0, offsetY: 4 })
     }
     .width('100%').height('100%')
     .position({ x: 0, y: 0 })
-    .backgroundColor('#80000000')
+    .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
   }
 
@@ -528,12 +527,6 @@ export struct VersionFileBrowser {
   private crumbPathAt(idx: number): string {
     let segs = this.crumbSegments()
     return segs.slice(0, idx + 1).join('/')
-  }
-
-  private headerSubtitle(): string {
-    if (this.versionId.length === 0 && this.versionIsolation) return '未选择版本'
-    let loc = this.rel.length === 0 ? (this.rootDir() !== this.mcDir ? this.versionId : '.minecraft') : this.rel
-    return loc + ' · ' + this.rows.length + ' 项'
   }
 
   private subInfo(row: FileEntry): string {

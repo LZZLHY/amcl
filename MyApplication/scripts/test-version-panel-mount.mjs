@@ -8,7 +8,8 @@ const ast = compiler.createSourceFile('VersionManagerSheet.ets', source, compile
 const component = ast.statements.find(node => node.name?.text === 'VersionManagerSheet');
 // 除原导航方法外，同样执行生产任务投影及销毁逻辑；不能用空方法规避新增订阅依赖。
 const names = ['aboutToAppear', 'aboutToDisappear', 'refreshDetailExportTask_', 'openGameExport_',
-  'mountStep_', 'gotoDetail', 'backToList', 'gotoResources', 'backToDetail', 'gotoSaves', 'gotoFiles'];
+  'mountStep_', 'gotoDetail', 'backToList', 'gotoResources', 'backToDetail', 'gotoSaves', 'gotoFiles',
+  'managerNavigationBlocked_', 'requestManagerBack_', 'requestManagerClose_'];
 const snippets = names.map(name => { const node = component.members.find(node => node.name?.text === name);
   assert.ok(node?.body, name); return source.slice(node.getStart(ast), node.end); }).join('\n');
 const code = compiler.transpileModule('class VersionManagerSheet {' + snippets + '}\nmodule.exports=VersionManagerSheet;',
@@ -27,11 +28,13 @@ const {SheetPageMotion} = motionExports;
  * 实际mountStep/导航方法决定已访问状态，统计读取与Animator仅为系统替身，animateTo同步调用其生产回调。
  * 本用例不加载磁盘、版本管理器或UI组件树，不能把挂载字段断言当真机动画/构建耗时证据。
  * 每次新实例隔离挂载标志与协调器订阅集合；协调器只提供内存任务和通知，不扫描或写文件。
- * 取消定时器也是可控系统边界，便于断言生产销毁方法确实释放资源，避免宿主真实计时器悬挂。
+ * 宿主只保存组件当前注册的关闭分发器；系统事件从该边界进入真实 requestManager 方法，
+ * 不在夹具中重写导出、JVM 或普通子页的保护规则。组件注销后，宿主不再派发旧处理器。
  */
 function fixture(initialStep = 'list', initialTask = null) {
   const listeners = new Set();
-  const probe = { task: initialTask, subscriptions: 0, unsubscriptions: 0, cancelledTimers: [], dismissRegistrations: [] };
+  const probe = { task: initialTask, subscriptions: 0, unsubscriptions: 0, dismissRegistrations: [],
+    activeDismiss: undefined, closeRequests: 0 };
   const coordinator = {
     getTask() { return probe.task; },
     subscribe(listener) {
@@ -42,16 +45,21 @@ function fixture(initialStep = 'list', initialTask = null) {
   };
   // 发布走真实订阅回调，再进入生产 refreshDetailExportTask_，不在测试里复制匹配算法。
   probe.publish = (task) => { probe.task = task; for (const listener of listeners) listener(); };
+  // 当前宿主回调属于外部事件边界；每次事件重读注册值，注销后不能保留旧闭包继续派发。
+  probe.dismiss = back => { if (probe.activeDismiss !== undefined) probe.activeDismiss(back); };
   const module = { exports: {} };
-  new Function('module', 'Curve', 'getGameExportCoordinator', 'clearTimeout', code)(module,
-    { FastOutSlowIn: 0 }, () => coordinator, (timer) => { probe.cancelledTimers.push(timer); });
+  new Function('module', 'Curve', 'getGameExportCoordinator', code)(module,
+    { FastOutSlowIn: 0 }, () => coordinator);
   const subject = new module.exports();
   Object.assign(subject, { initialStep, initialResourceVersion: 'fixture-ver', initialResourceKind: 'mod', currentVersion: 'current',
     mcDir: '/fixture/.minecraft', versionIsolation: true, detailVersion: '',
-    detailExportActive_: false, detailExportMessage_: '', exportTaskUnsubscribe_: null, switchedHintTimer: 0,
+    detailExportActive_: false, detailExportMessage_: '', exportTaskUnsubscribe_: null,
     storeRuntimeExpanded_: false, storeManagementExpanded_: false,
     pageMotion_: new SheetPageMotion(), exportMounted_: false,
-    onRegisterExportDismiss(handler) { probe.dismissRegistrations.push(handler); },
+    editorNavigationBlocked_: false, resourcesNavigationBlocked_: false, savesNavigationBlocked_: false,
+    filesNavigationBlocked_: false, editorDismissHandler_: undefined, exportDismissHandler_: undefined,
+    onRegisterExportDismiss(handler) { probe.dismissRegistrations.push(handler); probe.activeDismiss = handler; },
+    onClose() { probe.closeRequests++; },
     availableVersions: ['a', 'b'], listMounted_: false, detailMounted_: false, resourcesMounted_: false, savesMounted_: false,
     filesMounted_: false, refreshVersionRows_() {}, resetDetailCounts() {}, refreshDetailResStat() {},
     loadVersionJvmArgsState() {}, loadModpackSnapshot_() {}, getUIContext: () => ({ postFrameCallback(frame) { frame.onIdle(2000000); },
@@ -119,23 +127,29 @@ test('详情任务条按真实根目录和详情版本匹配，活动切换与�
   subject.aboutToDisappear();
 });
 
-test('销毁执行真实unsubscribe、解除宿主dismiss并清理提示计时器，之后发布不再回调已离开的面板', () => {
+test('销毁执行真实unsubscribe并注销宿主分发器，之后发布或关闭事件不再回调已离开的面板', () => {
   const subject = fixture('detail', exportTask('/fixture/.minecraft', 'fixture-ver'));
   const probe = subject.exportProbe_;
   assert.equal(subject.detailExportActive_, true);
-  subject.switchedHintTimer = 42;
+  const dispatcher = probe.activeDismiss;
+  assert.equal(typeof dispatcher, 'function');
+  assert.deepEqual(probe.dismissRegistrations, [dispatcher], '挂载时只注册唯一宿主分发器');
   subject.aboutToDisappear();
   assert.equal(probe.unsubscriptions, 1); assert.equal(subject.exportTaskUnsubscribe_, null);
-  assert.deepEqual(probe.dismissRegistrations, [undefined]);
-  assert.deepEqual(probe.cancelledTimers, [42]); assert.equal(subject.switchedHintTimer, 0);
+  assert.deepEqual(probe.dismissRegistrations, [dispatcher, undefined]);
+  assert.equal(probe.activeDismiss, undefined);
   probe.publish(null);
   assert.equal(subject.detailExportActive_, true, '销毁后不应继续改写旧面板投影');
+  const step = subject.currentStep;
+  probe.dismiss(true); probe.dismiss(false);
+  assert.equal(subject.currentStep, step); assert.equal(probe.closeRequests, 0, '注销后宿主不再派发旧关闭处理器');
   subject.aboutToDisappear();
-  assert.equal(probe.unsubscriptions, 1); assert.deepEqual(probe.cancelledTimers, [42]);
+  assert.equal(probe.unsubscriptions, 1); assert.equal(probe.activeDismiss, undefined);
 });
 
-test('同Sheet导出冻结入口三元组，返回详情解除dismiss且不切换首页当前版本', () => {
+test('同Sheet导出冻结入口三元组，返回详情保留唯一宿主分发器且不切换首页当前版本', () => {
   const subject = fixture('detail'); const probe = subject.exportProbe_;
+  const dispatcher = probe.activeDismiss;
   subject.versionIsolation = false;
   subject.openGameExport_();
   assert.equal(subject.currentStep, 'export'); assert.equal(subject.currentVersion, 'current');
@@ -146,8 +160,43 @@ test('同Sheet导出冻结入口三元组，返回详情解除dismiss且不切�
   subject.backToDetail();
   assert.equal(subject.currentStep, 'detail'); assert.equal(subject.pageMotion_.position, 1);
   assert.equal(subject.detailVersion, 'fixture-ver'); assert.equal(subject.currentVersion, 'current');
-  assert.deepEqual(probe.dismissRegistrations, [undefined]);
+  assert.deepEqual(probe.dismissRegistrations, [dispatcher]);
+  assert.equal(probe.activeDismiss, dispatcher, '返回详情不撤销其他子编辑器仍需要的宿主保护入口');
   subject.aboutToDisappear();
+  assert.deepEqual(probe.dismissRegistrations, [dispatcher, undefined]);
+});
+
+test('同一宿主分发器按当前步骤调用导出/JVM保护，忙态、未就绪及注销后不旁路退出', () => {
+  const subject = fixture('detail'); const probe = subject.exportProbe_, requests = [];
+  const dispatcher = probe.activeDismiss;
+  for (const [step, field] of [['export', 'exportDismissHandler_'], ['jvm', 'editorDismissHandler_']]) {
+    subject.currentStep = step;
+    subject[field] = undefined;
+    const before = requests.length;
+    probe.dismiss(true); probe.dismiss(false);
+    assert.equal(requests.length, before); assert.equal(probe.closeRequests, 0, '子处理器未就绪不能直接关闭');
+    subject[field] = back => requests.push([step, back]);
+    subject.pageMotion_.moving = true;
+    probe.dismiss(true); probe.dismiss(false);
+    assert.equal(requests.length, before, '入场/离场动画中不能越过保护');
+    subject.pageMotion_.moving = false;
+    if (step === 'jvm') {
+      subject.editorNavigationBlocked_ = true;
+      probe.dismiss(true); probe.dismiss(false);
+      assert.equal(requests.length, before, 'JVM保存或确认中的忙态不能绕过');
+      subject.editorNavigationBlocked_ = false;
+    }
+    probe.dismiss(true); probe.dismiss(false);
+    assert.deepEqual(requests.slice(before), [[step, true], [step, false]]);
+    subject[field] = undefined;
+    probe.dismiss(false);
+    assert.equal(requests.length, before + 2, '子层注销后不能派发已退出的旧handler');
+    assert.equal(probe.activeDismiss, dispatcher); assert.deepEqual(probe.dismissRegistrations, [dispatcher]);
+  }
+  subject.aboutToDisappear();
+  const before = requests.length;
+  probe.dismiss(true); probe.dismiss(false);
+  assert.equal(requests.length, before); assert.equal(probe.closeRequests, 0);
 });
 
 

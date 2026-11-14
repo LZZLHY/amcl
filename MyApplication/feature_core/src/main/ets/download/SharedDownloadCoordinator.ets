@@ -63,7 +63,9 @@ function contentIdentity(file: DownloadFileSpec): string {
     + (digest.length > 0 ? 'sha1:' + digest : 'urls:' + file.urls.slice().sort().join('\n'))
     // 显式连接数是调用方的硬约束。已有批次的权限不能因内容相同而扩给另一消费者；
     // 缺省也不等于显式1，二者可能选择不同Range/传输模式，必须分别核对。
-    + '\nconnections:' + (file.maxConnections === undefined ? 'default' : file.maxConnections.toString());
+    + '\nconnections:' + (file.maxConnections === undefined ? 'default' : file.maxConnections.toString())
+    // 有序版本正文的同内容订阅也必须尊重候选顺序；普通共享下载仍按原内容身份复用。
+    + (file.orderedVersionDownload === true ? '\nordered:' + file.urls.join('\n') : '');
 }
 
 export class SharedDownloadCoordinator {

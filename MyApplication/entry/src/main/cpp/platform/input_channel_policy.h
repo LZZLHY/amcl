@@ -74,6 +74,11 @@ bool amcl_input_policy_left_held(void);
 AmclInputChannel amcl_input_policy_left_owner(void);
 /** 完整生命周期取消后清全部按钮配对，保留各按钮的已观测通道能力。 */
 void amcl_input_policy_reset_pairing(void);
+/** 呈现surface结束才忘记该入口全部历史能力；保留在途DOWN/UP配对用于后续精确清理，
+ * 但这些旧配对不证明下一surface的能力。拔设备的独立入口只保留仍活跃兄弟的通道事实。
+ * 普通失焦/几何重发布不调用，不按静默时长猜失效。
+ * 无共同deviceId的wheel/native镜像仍属一个兼容域，不能虚构跨通道设备关联。 */
+void amcl_input_policy_retire_channels(void);
 /** 只读诊断，不参与准入，不生成输入。 */
 void amcl_input_policy_log_state(void);
 

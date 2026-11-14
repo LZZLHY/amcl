@@ -482,8 +482,10 @@ export function recordArchivedSessionSource(filesDir: string, activityId: number
 
 /** 启动产生的旧 latest 轮转与当前会话分片区分；归属确认前不会默认上传。 */
 export async function verifySessionCaptureRotations(filesDir: string, activityId: number): Promise<void> {
-  const plan = readSessionCapture(filesDir, activityId);
+  const plan = await readSessionCaptureAsync(filesDir, activityId);
   if (plan === undefined) return;
+  // 阅读刷新只在归属裁决真正变化时提交；相同计划不重新fsync，也不制造账本dirty维护。
+  const previousText: string = JSON.stringify(plan);
   const baseline = plan.sources.find((item: CaptureSource): boolean => item.destination === 'game/logs/latest.log');
   for (const item of plan.sources) {
     if (!item.destination.endsWith('.gz') || item.captured.length === 0 || item.attribution !== 'ambiguous') continue;
@@ -491,7 +493,7 @@ export async function verifySessionCaptureRotations(filesDir: string, activityId
     if ((baseline?.baseline ?? '').length > 0 && !(baseline?.baselineDigest ?? '').length) continue;
     const path: string = filesDir + '/logs/ledger/' + activityId + '/' + item.destination;
     try {
-      const issue: string = verifyCapturedSource(item, path);
+      const issue: string = await verifyCapturedSourceAsync(item, path);
       if (issue.length > 0) { item.state = 'partial'; item.reason = issue; continue; }
       const digest: string = await hashGzipEvidenceContent(path);
       if (digest === baseline?.baselineDigest) {
@@ -501,5 +503,6 @@ export async function verifySessionCaptureRotations(filesDir: string, activityId
       }
     } catch (e) { item.state = 'partial'; item.reason = 'gzip 会话边界校验失败：' + (e as Error).message; }
   }
-  writeEvidenceTextAtomic(planPath(filesDir, activityId), JSON.stringify(plan));
+  const text: string = JSON.stringify(plan);
+  if (text !== previousText) await writeEvidenceTextAtomicAsync(planPath(filesDir, activityId), text);
 }

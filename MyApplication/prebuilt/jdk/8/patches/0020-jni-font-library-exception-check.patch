@@ -1,0 +1,189 @@
+--- a/jdk/src/solaris/native/sun/awt/awt_LoadLibrary.c
++++ b/jdk/src/solaris/native/sun/awt/awt_LoadLibrary.c
+@@ -51,35 +51,73 @@
+    first loaded */
+ JavaVM *jvm;
+ 
++/* AMCL：只缓存完整成功的布尔结果，绝不缓存线程私有JNIEnv或半初始化状态。
++ * 原子load是成功后的唯一开销；冷初始化可并发，各自使用当前线程env，不持锁跨Java。
++ */
++static jint awtHeadlessState = -1;
++
++static jboolean AWTHeadlessFailure(JNIEnv *env, const char *message) {
++    if (env != NULL && !(*env)->ExceptionCheck(env)) {
++        JNU_ThrowInternalError(env, message);
++    }
++    return JNI_FALSE;
++}
++
++/* 返回值表示查询是否完整成功；value才是headless值，合法false不能和失败混淆。 */
++static jboolean AWTGetHeadless(JNIEnv *env, jboolean *value) {
++    jint cached = __atomic_load_n(&awtHeadlessState, __ATOMIC_ACQUIRE);
++    jclass graphicsEnvClass;
++    jmethodID headlessFn;
++    jboolean result;
++    jint expected;
++    if (cached >= 0) {
++        *value = (jboolean)cached;
++        return JNI_TRUE;
++    }
++    if (env == NULL) {
++        if (jvm == NULL) return JNI_FALSE;
++        env = (JNIEnv *)JNU_GetEnv(jvm, JNI_VERSION_1_2);
++    }
++    if (env == NULL || (*env)->ExceptionCheck(env)) return JNI_FALSE;
++    graphicsEnvClass = (*env)->FindClass(env, "java/awt/GraphicsEnvironment");
++    if (graphicsEnvClass == NULL || (*env)->ExceptionCheck(env)) {
++        if (graphicsEnvClass != NULL) (*env)->DeleteLocalRef(env, graphicsEnvClass);
++        return AWTHeadlessFailure(env, "GraphicsEnvironment lookup returned no usable class");
++    }
++    headlessFn = (*env)->GetStaticMethodID(env, graphicsEnvClass, "isHeadless", "()Z");
++    if (headlessFn == NULL || (*env)->ExceptionCheck(env)) {
++        (*env)->DeleteLocalRef(env, graphicsEnvClass);
++        return AWTHeadlessFailure(env, "GraphicsEnvironment.isHeadless lookup failed");
++    }
++    result = (*env)->CallStaticBooleanMethod(env, graphicsEnvClass, headlessFn);
++    if ((*env)->ExceptionCheck(env)) {
++        (*env)->DeleteLocalRef(env, graphicsEnvClass);
++        return JNI_FALSE;
++    }
++    (*env)->DeleteLocalRef(env, graphicsEnvClass);
++    expected = -1;
++    /* Java自身拥有headless决策；并发成功者只发布第一个完整结果，不覆盖失败或半成品。 */
++    __atomic_compare_exchange_n(&awtHeadlessState, &expected, result ? 1 : 0,
++                                0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++    *value = (jboolean)__atomic_load_n(&awtHeadlessState, __ATOMIC_ACQUIRE);
++    return JNI_TRUE;
++}
++
+ JNIEXPORT jboolean JNICALL AWTIsHeadless() {
+-    static JNIEnv *env = NULL;
+-    static jboolean isHeadless;
+-    jmethodID headlessFn;
+-    jclass graphicsEnvClass;
+-
+-    if (env == NULL) {
+-        env = (JNIEnv *)JNU_GetEnv(jvm, JNI_VERSION_1_2);
+-        graphicsEnvClass = (*env)->FindClass(env,
+-                                             "java/awt/GraphicsEnvironment");
+-        if (graphicsEnvClass == NULL) {
+-            return JNI_TRUE;
+-        }
+-        headlessFn = (*env)->GetStaticMethodID(env,
+-                                               graphicsEnvClass, "isHeadless", "()Z");
+-        if (headlessFn == NULL) {
+-            return JNI_TRUE;
+-        }
+-        isHeadless = (*env)->CallStaticBooleanMethod(env, graphicsEnvClass,
+-                                                     headlessFn);
+-    }
+-    return isHeadless;
+-}
+-
+-#define CHECK_EXCEPTION_FATAL(env, message) \
+-    if ((*env)->ExceptionCheck(env)) { \
+-        (*env)->ExceptionClear(env); \
+-        (*env)->FatalError(env, message); \
+-    }
++    jboolean value = JNI_TRUE;
++    /* 普通旧调用者的保守失败值仍为true，pending异常不清除，绝不因默认false误入X11。 */
++    if (!AWTGetHeadless(NULL, &value)) return JNI_TRUE;
++    return value;
++}
++
++/* AMCL：OnLoad失败返回JNI_ERR并保留首个Java异常；NULL-only是明确协议错误，不能报成功。 */
++#define CHECK_AWT_LOAD(env, condition, message) \
++    do { \
++        if ((*env)->ExceptionCheck(env) || !(condition)) { \
++            if (!(*env)->ExceptionCheck(env)) JNU_ThrowInternalError(env, message); \
++            goto cleanup; \
++        } \
++    } while (0)
+ 
+ /*
+  * Pathnames to the various awt toolkits
+@@ -107,6 +145,12 @@
+     void *v;
+     jstring fmanager = NULL;
+     jstring fmProp = NULL;
++    jstring jbuf = NULL;
++    jvalue previousProperty;
++    jboolean headless = JNI_TRUE;
++    jint status = JNI_ERR;
++
++    if (env == NULL || (*env)->ExceptionCheck(env)) return JNI_ERR;
+ 
+     if (awtHandle != NULL) {
+         /* Avoid several loading attempts */
+@@ -128,7 +172,7 @@
+      */
+ 
+     fmProp = (*env)->NewStringUTF(env, "sun.font.fontmanager");
+-    CHECK_EXCEPTION_FATAL(env, "Could not allocate font manager property");
++    CHECK_AWT_LOAD(env, fmProp != NULL, "Could not allocate font manager property");
+ 
+ #ifdef MACOSX
+         fmanager = (*env)->NewStringUTF(env, "sun.font.CFontManager");
+@@ -137,17 +181,19 @@
+         fmanager = (*env)->NewStringUTF(env, "sun.awt.X11FontManager");
+         tk = XAWT_PATH;
+ #endif
+-    CHECK_EXCEPTION_FATAL(env, "Could not allocate font manager name");
++    CHECK_AWT_LOAD(env, fmanager != NULL, "Could not allocate font manager name");
+ 
+     if (fmanager && fmProp) {
+-        JNU_CallStaticMethodByName(env, NULL, "java/lang/System", "setProperty",
++        previousProperty = JNU_CallStaticMethodByName(env, NULL, "java/lang/System", "setProperty",
+                                    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                                    fmProp, fmanager);
+-        CHECK_EXCEPTION_FATAL(env, "Could not allocate set properties");
++        CHECK_AWT_LOAD(env, JNI_TRUE, "Could not set font manager property");
++        if (previousProperty.l != NULL) (*env)->DeleteLocalRef(env, previousProperty.l);
+     }
+ 
+ #ifndef MACOSX
+-    if (AWTIsHeadless()) {
++    if (!AWTGetHeadless(env, &headless)) goto cleanup;
++    if (headless) {
+         tk = HEADLESS_PATH;
+     }
+ #endif
+@@ -155,22 +201,27 @@
+     /* Calculate library name to load */
+     strncpy(p, tk, MAXPATHLEN-len-1);
+ 
+-    if (fmProp) {
+-        (*env)->DeleteLocalRef(env, fmProp);
+-    }
+-    if (fmanager) {
+-        (*env)->DeleteLocalRef(env, fmanager);
+-    }
+-
+-    jstring jbuf = JNU_NewStringPlatform(env, buf);
+-    CHECK_EXCEPTION_FATAL(env, "Could not allocate library name");
++    jbuf = JNU_NewStringPlatform(env, buf);
++    CHECK_AWT_LOAD(env, jbuf != NULL, "Could not allocate library name");
+     JNU_CallStaticMethodByName(env, NULL, "java/lang/System", "load",
+                                "(Ljava/lang/String;)V",
+                                jbuf);
++    CHECK_AWT_LOAD(env, JNI_TRUE, "Could not load AWT backend");
+ 
+     awtHandle = dlopen(buf, RTLD_LAZY | RTLD_GLOBAL);
+-
+-    return JNI_VERSION_1_2;
++    if (awtHandle == NULL) {
++        const char *detail = dlerror();
++        JNU_ThrowByName(env, "java/lang/UnsatisfiedLinkError",
++                       detail == NULL ? "Could not retain AWT backend" : detail);
++        goto cleanup;
++    }
++    status = JNI_VERSION_1_2;
++cleanup:
++    /* DeleteLocalRef在pending异常下合法；除此之外失败后不再调用普通JNI或再次加载后端。 */
++    if (jbuf != NULL) (*env)->DeleteLocalRef(env, jbuf);
++    if (fmanager != NULL) (*env)->DeleteLocalRef(env, fmanager);
++    if (fmProp != NULL) (*env)->DeleteLocalRef(env, fmProp);
++    return status;
+ }
+ 
+ JNIEXPORT jint JNICALL

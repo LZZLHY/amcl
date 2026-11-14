@@ -82,6 +82,8 @@ struct Runtime {
     // （XComponent 门禁锁内，UI 线程），读者是 broker 尾部的无锁 peek；单个 32 位原子量，
     // release/acquire 配对即可让读者看到写入前的门禁状态，不需要额外的锁或代次。
     std::atomic<uint32_t> inputForeground{0u};
+    // 注册表来自常驻entry映像，只允许首次注册或同表幂等重放；旧PID Runtime不复用它。
+    std::atomic<const AmclWindowGeometryClientV1*> geometryClient{nullptr};
     WindowHostCore core{NativeReferenceDriver{nativeReference, nativeUnreference, nullptr}};
 };
 Runtime& runtime() {
@@ -124,11 +126,43 @@ int localSetInputForeground(int foreground) {
     runtime().inputForeground.store(foreground != 0 ? 1u : 0u, std::memory_order_release);
     return 1;
 }
+int localRegisterGeometry(const AmclWindowGeometryClientV1* client) {
+    if (!client || client->structSize < sizeof(*client) || client->abiVersion != 1 ||
+        !client->workFlags || !client->checkpoint || !client->observe) return 0;
+    const AmclWindowGeometryClientV1* expected = nullptr;
+    return runtime().geometryClient.compare_exchange_strong(expected, client, std::memory_order_acq_rel)
+        || expected == client ? 1 : 0;
+}
+uint32_t localGeometryFlags() {
+    const auto* client = runtime().geometryClient.load(std::memory_order_acquire);
+    return client ? client->workFlags() : 0;
+}
+int localGeometryCheckpoint(void* window, uint64_t generation, uint64_t token) {
+    auto& state = runtime();
+    const auto* client = state.geometryClient.load(std::memory_order_acquire);
+    if (!client || !(client->workFlags() & 1u)) return 0;
+    const uint64_t current = state.core.geometryCheckpointGeneration(window, generation, token);
+    if (!current) return 0;
+    // core只核验、不持锁进入entry；entry还须在自己的surface gate内复核当前资源身份。
+    return client->checkpoint(window, current, token);
+}
+void localObserveDrawable(void* window, uint64_t generation, uint64_t token, int width, int height, uint32_t source) {
+    auto& state = runtime();
+    const auto* client = state.geometryClient.load(std::memory_order_acquire);
+    if (!client || !(client->workFlags() & 2u) ||
+        !((source == 0u && width == 0 && height == 0) || ((source == 1u || source == 2u) && width > 0 && height > 0)) ||
+        !state.core.matchesPresentation(window, generation, token)) return;
+    client->observe(window, generation, token, width, height, source);
+}
+int localMatchesPresentationIdentity(void* window,uint64_t generation,uint64_t token,uint64_t resourceEpoch) {
+    return runtime().core.matchesPresentationIdentity(window,generation,token,resourceEpoch)?1:0;
+}
 const AmclNativeWindowLeaseBrokerV2 kLocalBroker{
     AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION, sizeof(AmclNativeWindowLeaseBrokerV2),
     localAcquire, localRelease, localBeginInput, localEndInput, localPeekGeneration, localPeekState,
     localClaim, localMove, localReleasePresentation, localAcquireIdentity, localMoveGeometry,
-    localPeekInputForeground
+    localPeekInputForeground, localGeometryFlags, localGeometryCheckpoint, localObserveDrawable,
+    localMatchesPresentationIdentity
 };
 
 uint64_t localPublish(void*, int, int, AmclWindowHostCommitFn, void*);
@@ -160,6 +194,7 @@ struct OwnerApi {
     decltype(&localBroker) broker;
     // 前台位写入口：非 owner 映像经此转发，保证 broker 尾部读到的是唯一一份门禁状态。
     decltype(&localSetInputForeground) setInputForeground;
+    decltype(&localRegisterGeometry) registerGeometry;
 #if defined(AMCL_WINDOW_HOST_TESTING)
     decltype(&localSetDriver) setDriver;
 #endif
@@ -167,7 +202,7 @@ struct OwnerApi {
 OwnerApi& localOwnerApi() {
     static std::atomic<OwnerApi*> slot{new OwnerApi{1, sizeof(OwnerApi), processId(),
         localPublish, localUpdate, localClear, localRead, localStats, localRetry, localBroker,
-        localSetInputForeground
+        localSetInputForeground, localRegisterGeometry
 #if defined(AMCL_WINDOW_HOST_TESTING)
         , localSetDriver
 #endif
@@ -209,7 +244,7 @@ OwnerResolution parseOwner(uint64_t currentPid) {
     const auto* api = static_cast<const OwnerApi*>(address);
     if (api->version != 1 || api->size < sizeof(OwnerApi) || api->pid != currentPid ||
         !api->publish || !api->update || !api->clear || !api->read || !api->stats || !api->retry || !api->broker ||
-        !api->setInputForeground)
+        !api->setInputForeground || !api->registerGeometry)
         return {nullptr, OwnerStatus::kMalformed};
     return {api, api == &localOwnerApi() ? OwnerStatus::kLocal : OwnerStatus::kRemote};
 }
@@ -385,6 +420,12 @@ int amclWindowHostPublishOwner(void) { return publishOwner() ? 1 : 0; }
 int amclWindowHostSetInputForeground(int foreground) {
     const auto resolved = owner();
     return resolved.api ? resolved.api->setInputForeground(foreground) : 0;
+}
+int amclWindowHostRegisterGeometryClient(const AmclWindowGeometryClientV1* client) {
+    const auto resolved = owner();
+    // 只登记到NAPI早期已发布的进程owner，不在游戏线程补写环境或形成尚未归属的私有表。
+    return resolved.api && (resolved.status == OwnerStatus::kLocal || resolved.status == OwnerStatus::kRemote)
+        ? resolved.api->registerGeometry(client) : 0;
 }
 #if defined(AMCL_WINDOW_HOST_TESTING)
 int amclWindowHostSetReferenceDriver(AmclWindowHostReferenceFn reference, AmclWindowHostReferenceFn unreference, void* context) {

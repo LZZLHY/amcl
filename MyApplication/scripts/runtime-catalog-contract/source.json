@@ -1,0 +1,22 @@
+{
+  "note": "Versioned validator copies; trust anchors remain the reviewed website public keys. No signed catalog activation.",
+  "schemaVersion": 1,
+  "sourceRepository": "https://github.com/LZZLHY/mc-ohos-resources",
+  "sourceCommit": "b9ac0bf2916fae1b96f4dac6fb4ff3a320c840b1",
+  "hashBasis": "git-blob-lf",
+  "files": {
+    "tools/protocol.mjs": "866d363b043b846e559d29501698f5ca2ac6640a916ea359a444226fe26ee5bd",
+    "lib/catalog-validation.mjs": "03420a529784f118b4081d9b51155e2e223aaf6ef621c19e7f755950ba7d9ab6",
+    "lib/catalog-v2.mjs": "844519d540bb584965c2723e2a91f4cda3af117ca26e5ab49336743ef528daee",
+    "catalog/host-history.json": "a3d76c770f0d5e281319c4254f8ad4ffa9fbf406fd39bc7cf74eac6e3dbc08e5"
+  },
+  "normalizationEvidence": {
+    "normalizedFiles": [],
+    "gitStatus": "",
+    "canonicalBytesMatchCommit": true
+  },
+  "trustedKeys": {
+    "path": "catalog/trusted-keys.json",
+    "sha256": "1c5142ef65243040b280532b0338db9dc483143d23db6e35c044387e79ddcfd6"
+  }
+}

@@ -1,0 +1,8 @@
+[
+  {
+    "match": "java/util/concurrent/CompletableFuture.*",
+    "CompilerDirectivesIgnoreCompileCommands": true,
+    "c1": { "Exclude": false },
+    "c2": { "Exclude": true }
+  }
+]
