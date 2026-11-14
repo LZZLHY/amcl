@@ -10,6 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { verifyPublicOpenalSource } from './lib/public-openal-source.mjs';
+import { resolveWorkspacePath } from './lib/workspace-paths.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // MobileGL 的 LFS 内容仅供可选 trace_replay 工具使用；普通 HAP 不消费这些
 // 大型回放夹具。保留 LFS 指针，避免源码 checkout 隐式下载与构建无关的文件。
@@ -90,21 +92,13 @@ const alc = fs.readFileSync(path.join(root, 'entry/src/main/cpp/openal/openal-so
 if (!alc.includes('#include "ohaudio.h"') || !alc.includes('OHAudioBackendFactory::getFactory')) {
   throw new Error('OpenAL OHAudio wiring missing; preserve the existing directory and rerun setup in a clean checkout');
 }
-// 只允许受版本控制的 OHAudio 补丁；发现其他本地补丁时明确失败，不能
-// 因为 HEAD 正确且出现两个标识符，就把任意 OpenAL 工作树称作锁定源码。
+// 由受版本控制的完整 series 重建预期源码，包含后端注册和输出限幅等累计适配。
+// 未列入配方的修改仍拒绝；不因合法新增 patch 而沿用过时的单文件白名单。
 const openal = path.join(root, 'entry/src/main/cpp/openal/openal-soft');
-const lf = text => text.replace(/\r\n/g, '\n');
-const upstreamFile = relative => execFileSync('git', ['-C', openal, 'show', `HEAD:${relative}`], { encoding: 'utf8' });
-const expectedAlc = lf(upstreamFile('alc/alc.cpp'))
-  .replace('#include "backends/null.h"\n', '#include "backends/null.h"\n#if HAVE_OHAUDIO\n#include "ohaudio.h"\n#endif\n')
-  .replace(/^(.*BackendInfo\{"null", NullBackendFactory::getFactory\}.*)$/m,
-    '#if HAVE_OHAUDIO\n    BackendInfo{"ohaudio", OHAudioBackendFactory::getFactory},\n#endif\n$1');
-const expectedConfig = lf(upstreamFile('config_backends.h.in'));
-const changedOpenal = git(openal, 'diff', 'HEAD', '--name-only').split('\n').filter(Boolean);
-if (lf(alc) !== expectedAlc || lf(fs.readFileSync(path.join(openal, 'config_backends.h.in'), 'utf8')) !== expectedConfig
-    || changedOpenal.some(relative => relative !== 'alc/alc.cpp')) {
-  throw new Error('OpenAL worktree differs from the exact OHAudio recipe in setup_deps.sh');
-}
+const openalProof = verifyPublicOpenalSource({ openal, expectedCommit: lock['openal-soft'].commit,
+  patchDirectory: path.join(root, 'prebuilt/openal-soft/patches'),
+  temporaryRoot: resolveWorkspacePath('run', 'public-openal-check', { root }) });
+console.log(`[public-deps] OpenAL exact series verified: ${openalProof.patches.length} patches, ${openalProof.changedFiles.length} source files`);
 assertPin('prebuilt/sdl3/sdl3_src', lock['sdl3-native'].commit);
 const mg = path.join(root, 'prebuilt/mobileglues/mg_src');
 for (const relative of ['MobileGlues-cpp/3rdparty/glslang', 'MobileGlues-cpp/3rdparty/SPIRV-Cross',

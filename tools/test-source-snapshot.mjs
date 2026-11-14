@@ -73,7 +73,7 @@ commit(source, 'frozen version source');
 initialize(target);
 fs.cpSync(path.join(repository, 'tools'), path.join(target, 'tools'), { recursive: true });
 write(target, 'README.md', 'PUBLIC GUIDE\n'); write(target, 'MyApplication/README.md', 'PUBLIC APP GUIDE\n');
-for (const relative of ['build-profile.json5.template', 'scripts/prepare-public-deps.mjs', 'docs/BUILD_SNAPSHOT.md']) write(target, `MyApplication/${relative}`, 'Public-owned build input\n');
+for (const relative of ['build-profile.json5.template', 'scripts/prepare-public-deps.mjs', 'scripts/lib/public-openal-source.mjs', 'docs/BUILD_SNAPSHOT.md']) write(target, `MyApplication/${relative}`, 'Public-owned build input\n');
 for (const relative of ['scripts/check-public-snapshot.mjs', 'scripts/product-contract.mjs']) {
   fs.mkdirSync(path.dirname(path.join(target, 'MyApplication', relative)), { recursive: true });
   fs.copyFileSync(path.join(repository, 'MyApplication', relative), path.join(target, 'MyApplication', relative));
