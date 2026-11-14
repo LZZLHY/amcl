@@ -1,4 +1,31 @@
-# 公开快照构建核验（2026-09-24）
+# 公开快照构建核验
+
+## 1.0.7 独立公开检出核验（2026-11-14）
+
+本节仅记录公开源码的复建资格。下方 1.0.4 的历史实测保留原始身份，不能作为本版的验证依据。
+
+- 实际构建公开提交：`79106ba8be75f4cb7277abbd18429e7ba7cb8c30`。
+- 对应主工程来源：`1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6`；来源清单和依赖输入见 [SOURCE_SNAPSHOT.json](../SOURCE_SNAPSHOT.json) 及 [DEPENDENCY_INPUTS.json](../DEPENDENCY_INPUTS.json)。
+- 版本 `1.0.7 / 1000911`，产品 `sideload`，模式 `release`，产物 `unsigned`。
+- 在独立公开克隆中准备依赖，完成公开 OpenAL 检查器修复后切到上述精确提交；第一次 HAP 构建前工作树洁净。未复制维护者的签名材料或旧 HAP 构建输出。
+- 2026-11-14 17:45:37 至 17:48:07（Asia/Shanghai），按 [BUILD_SNAPSHOT.md](BUILD_SNAPSHOT.md) 生成本机无签名配置，执行 `ohpm install --all` 和 `hvigorw assembleHap --mode module -p product=sideload -p buildMode=release --no-daemon`；结果为 **112 个任务全部执行、0 个 up-to-date，BUILD SUCCESSFUL**。
+
+| 检查 | 本次结果 |
+|---|---|
+| 公开源码与依赖身份 | 精确公开提交和来源快照核对通过；Windows Git 操作显式启用 `core.longpaths` |
+| LWJGL 新鲜重建 | 16 个 JAR 全部从公开输入恢复，逐文件 SHA-256 与锁定输入一致 |
+| TinyFD 后处理 | Java 布尔接口回填先完成 ZIP 改写，最后写 Native 指纹；新鲜获取和增量准备采用相同顺序 |
+| OpenAL 源码 | 钉版 HEAD 上应用实际补丁序列，再逐文件核对完整内容；5 项真实 Git 正反例通过 |
+| 源码导出 | 22 项实际 Git 回归通过 |
+| HAP 内部身份 | 产品、版本、Native provider、SDL 和 LWJGL 包内检查通过 |
+
+公开复建 HAP 位于 `entry/build/sideload/outputs/sideload/entry-sideload-unsigned.hap`，大小 **122,906,020 字节**，SHA-256 为 `a83c6621ad40c99affc95bd0110fba0707c28c64529819c7a5b357090d4542ae`。
+
+维护者通过完整正式构建门禁保留的 unsigned 发布原件大小为 **122,905,956 字节**，SHA-256 为 `4cc219cd47937e8f882fd2792733f31053ff2b75725fede864dbac271517bf4d`。两者身份分别记录：本节证明公开源码可构建和包内契约通过，**没有证明两个 HAP 逐字节相同，也不授予公开复建包真机或生产签名资格**。
+
+构建后生成了产品配置、两份 zstd JNI 库、音频/CPU agent JAR 和侧载签名工具附件；“构建前洁净”不等于“构建后没有生成文件”。本轮继续使用已锁定的部分 Native 制品，没有完成所有第三方 Native 的源码重建，也没有将已登记的依赖限制自动改为已解决。设备 JDK 正式包、签名测试包与公开 unsigned 包各自保留独立的资格和验收记录。
+
+## 历史核验：1.0.4（2026-09-24）
 
 公开工程已按 [BUILD_SNAPSHOT.md](BUILD_SNAPSHOT.md) 恢复公开依赖，并完成 **1.0.4 / 1000671、sideload / release / unsigned** HAP 构建。本文记录实际交付边界，不把编译通过写成真机验收或全部第三方二进制的逐字节复现。
 
