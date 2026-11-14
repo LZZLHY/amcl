@@ -11,6 +11,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { safeRelative } from './lib/source-export.mjs';
+import { checkPublicRelease } from './check-public-release.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const parent = process.env.AMCL_RUN_DIR || os.tmpdir();
@@ -201,6 +202,23 @@ record('Git write failure restores replaced files and preserves the original ind
   assert(fs.readFileSync(path.join(target, 'MyApplication/SOURCE_SNAPSHOT.json')).equals(before));
   assert(fs.readFileSync(indexFile).equals(indexBytes)); assert.equal(publicStatus(), '');
   assert.equal(fs.existsSync(path.join(target, 'MyApplication/entry/src/main/ets/New.ets')), false);
+});
+
+record('source candidate checks do not require an unpublished feed, while final release still does',()=>{
+  const candidate=path.join(fixture,'candidate-contract');
+  const current={versionName:'1.0.7',versionCode:107,tag:'v1.0.7'};
+  const old={versionName:'1.0.6',versionCode:106,tag:'v1.0.6',url:'https://github.com/LZZLHY/amcl/releases/tag/v1.0.6'};
+  write(candidate,'MyApplication/AppScope/app.json5',JSON.stringify({app:current}));
+  write(candidate,'MyApplication/commons/src/main/ets/common/Constants.ets',"export const APP_VERSION = '1.0.7'\n");
+  write(candidate,'MyApplication/SOURCE_SNAPSHOT.json',JSON.stringify({sourceDirty:false,sourceCommit:'b'.repeat(40),dependencyWorktrees:[]}));
+  write(candidate,'MyApplication/entry/src/main/resources/rawfile/changelog.json',JSON.stringify({latest:current,releases:[current]}));
+  write(candidate,'LICENSE','fixture license');write(candidate,'MyApplication/LICENSE','fixture license');
+  write(candidate,'MyApplication/third-party-notices/manifest.json',JSON.stringify({files:[]}));
+  write(candidate,'update.json',JSON.stringify(old));write(candidate,'changelog.json',JSON.stringify({latest:old,releases:[old]}));
+  const proof=checkPublicRelease(candidate,{sourceOnly:true});assert.equal(proof.mode,'source-candidate');assert.equal(proof.hapBuildVerified,false);
+  assert.throws(()=>checkPublicRelease(candidate),/source version/);
+  write(candidate,'MyApplication/entry/src/main/resources/rawfile/changelog.json',JSON.stringify({latest:old,releases:[old]}));
+  assert.throws(()=>checkPublicRelease(candidate,{sourceOnly:true}),/bundled changelog/);
 });
 
 const receipt = { test: 'manual-source-export', result: 'passed', completedAt: new Date().toISOString(), tests,

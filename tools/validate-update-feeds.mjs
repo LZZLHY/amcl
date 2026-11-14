@@ -33,7 +33,7 @@ function readJson(root, relative, limit) {
  * 验证一个准确推荐，而不是从日志或文件时间推断最新。历史兼容清单允许没有 delivery；
  * 一旦有 delivery，就完整核对所有资产与推荐身份，不让损坏的新字段被旧兼容分支吞掉。
  */
-function validateManifest(manifest, product, channel, label, { legacy = false } = {}) {
+function validateManifest(manifest, product, channel, label, { legacy = false, protocol = 1 } = {}) {
   requireValue(object(manifest), `${label}: manifest object required`);
   requireValue(Number.isSafeInteger(manifest.versionCode) && manifest.versionCode > 0, `${label}: invalid code`);
   requireValue(typeof manifest.versionName === 'string' && VERSION.test(manifest.versionName), `${label}: invalid version`);
@@ -49,6 +49,7 @@ function validateManifest(manifest, product, channel, label, { legacy = false } 
   }
   requireValue(manifest.delivery.schema === 1 && manifest.delivery.ready === true && Array.isArray(manifest.delivery.assets) && manifest.delivery.assets.length > 0,
     `${label}: delivery is not ready`);
+  requireValue((manifest.delivery.protocol??1)===protocol,`${label}: delivery protocol/path mismatch`);
   requireValue(legacy || manifest.delivery.assets.length === 1, `${label}: product feed must contain exactly one asset`);
   requireValue(typeof manifest.publicationId === 'string' &&
     (legacy ? /^[A-Za-z0-9._:-]{1,128}$/.test(manifest.publicationId) : HASH.test(manifest.publicationId)), `${label}: publication identity missing or invalid`);
@@ -63,9 +64,9 @@ function validateManifest(manifest, product, channel, label, { legacy = false } 
     const old = `amcl-v${manifest.versionName}-unsigned.hap`;
     requireValue(asset.name === named || (asset.product === 'sideload' && asset.legacyUniversal === true && asset.name === old), `${label}: wrong asset name`);
     requireValue(asset.url === `https://github.com/LZZLHY/amcl/releases/download/${manifest.tag}/${asset.name}`, `${label}: wrong GitHub original`);
-    if (asset.websiteUrl !== undefined) requireValue(asset.websiteUrl === `https://amcl.lovedhy.cn/api/packages/files/${asset.sha256}/${encodeURIComponent(asset.name)}`,
+    if (protocol===2 || asset.websiteUrl !== undefined) requireValue(asset.websiteUrl === `https://amcl.lovedhy.cn/api/packages/files/${asset.sha256}/${encodeURIComponent(asset.name)}`,
       `${label}: wrong website content identity`);
-    requireValue(Array.isArray(asset.mirrors) && asset.mirrors.some(mirror => object(mirror) && mirror.ready === true), `${label}: no historical ready mirror receipt`);
+    requireValue(Array.isArray(asset.mirrors) && (protocol===2 || asset.mirrors.some(mirror => object(mirror) && mirror.ready === true)), `${label}: no historical ready mirror receipt`);
     if (asset.product === product) Object.assign(projection, {
       publicationId: manifest.publicationId, sha256: asset.sha256, sizeBytes: asset.sizeBytes,
       name: asset.name, url: asset.url, websiteUrl: asset.websiteUrl ?? '', legacyUniversal: asset.legacyUniversal === true,
@@ -91,17 +92,25 @@ export function validateUpdateFeeds(root) {
   const updates = path.join(root, 'updates');
   if (fs.existsSync(updates)) {
     requireValue(fs.lstatSync(updates).isDirectory() && !fs.lstatSync(updates).isSymbolicLink(), 'updates: invalid directory');
-    for (const entry of fs.readdirSync(updates, { withFileTypes: true })) {
+    // v2与旧入口各自绑定自己的真实头；兼容入口可以停留在此前有镜像的发行。
+    const roots=[{directory:updates,prefix:'updates',protocol:1}];
+    const modern=path.join(updates,'v2');
+    if(fs.existsSync(modern)){
+      requireValue(fs.lstatSync(modern).isDirectory()&&!fs.lstatSync(modern).isSymbolicLink(),'updates/v2: invalid directory');
+      roots.push({directory:modern,prefix:'updates/v2',protocol:2});
+    }
+    for(const scope of roots)for (const entry of fs.readdirSync(scope.directory, { withFileTypes: true })) {
+      if(scope.protocol===1&&entry.name==='v2')continue;
       requireValue(entry.isDirectory() && !entry.isSymbolicLink() && PRODUCTS.includes(entry.name), 'updates: unknown product');
-      const directory = path.join(updates, entry.name);
+      const directory = path.join(scope.directory, entry.name);
       for (const file of fs.readdirSync(directory, { withFileTypes: true })) {
         const channel = file.name.replace(/\.json$/, '');
         requireValue(file.isFile() && !file.isSymbolicLink() && file.name === channel + '.json' && CHANNELS.includes(channel), 'updates: unknown channel or entry');
-        const relative = `updates/${entry.name}/${file.name}`;
+        const relative = `${scope.prefix}/${entry.name}/${file.name}`;
         const candidate = readJson(root, relative, 256 * 1024);
-        const identity = validateManifest(candidate, entry.name, channel, relative);
+        const identity = validateManifest(candidate, entry.name, channel, relative,{protocol:scope.protocol});
         requireValue(hasRelease(identity), `${relative}: published release missing from changelog`);
-        if (entry.name === 'sideload' && channel === 'stable') {
+        if (scope.protocol===1 && entry.name === 'sideload' && channel === 'stable') {
           // 旧入口只有在同一正式原件时才可继续服务；notes/date 的兼容展示投影允许不同。
           for (const key of Object.keys(identity)) requireValue(legacy[key] === identity[key], `update.json: differs from sideload stable (${key})`);
         }

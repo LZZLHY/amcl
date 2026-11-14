@@ -131,6 +131,22 @@ try {
     write(arbitrary, 'updates/sideload/stable.json', unknown);
     assert.throws(() => validateUpdateFeeds(arbitrary), /publication identity/);
   });
+  run('protocol2 origins-only head coexists with an unchanged mirrored legacy head',()=>{
+    const root=fixture('origins-only'),next=manifest('sideload','stable','1.0.7',1000911);
+    next.delivery.protocol=2;next.delivery.assets[0].mirrors=[];
+    const prior=JSON.parse(fs.readFileSync(path.join(root,'update.json')));
+    write(root,'updates/v2/sideload/stable.json',next);
+    write(root,'changelog.json',{latest:identity(next),releases:[identity(next),identity(prior)]});
+    const proof=stageUpdatePages(root,path.join(owned,'staged-origins-only'));
+    assert(proof.checked.includes('updates/v2/sideload/stable.json'));
+    assert.equal(proof.legacyStableVersion,'1.0.6');
+    validatePublishedSourceVersion({versionName:'1.0.7',versionCode:1000911},{latest:identity(next),releases:[identity(next)]},
+      {releases:[identity(next),identity(prior)]},proof);
+    next.delivery.protocol=1;write(root,'updates/v2/sideload/stable.json',next);
+    assert.throws(()=>validateUpdateFeeds(root),/protocol/);
+    next.delivery.protocol=2;delete next.delivery.assets[0].websiteUrl;write(root,'updates/v2/sideload/stable.json',next);
+    assert.throws(()=>validateUpdateFeeds(root),/website/);
+  });
   const receipt = path.join(parent, path.basename(owned) + '.json');
   fs.writeFileSync(receipt, JSON.stringify({ schemaVersion: 1, ok: true, observedAt: new Date().toISOString(), checks,
     scope: 'production Pages validation and staging; no GitHub upload/deploy' }, null, 2) + '\n', { flag: 'wx' });

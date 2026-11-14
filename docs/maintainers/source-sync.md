@@ -4,6 +4,10 @@
 
 应用源码继续在私有主工程开发。只有维护者手动发版时执行本文的导出流程；日常提交、PR 检查和 CI 通过不会自动同步源码。公开仓自身的工具、说明和模板可以独立维护。
 
+## 维护者审查与流程权威
+
+发行顺序以维护者的 `amcl-release` 技能为主。完整版本说明先经维护者审查，再公开本批源码分支、说明或安装包。App Release面向用户只附安装包；公开源码、配方及必要复建资料由开发者入口提供，不要求把构建日志或provenance附在普通下载区。
+
 ## 输入与交付边界
 
 同步工具是 [`tools/sync-source-snapshot.mjs`](../../tools/sync-source-snapshot.mjs)，边界策略是 [`tools/source-export-policy.json`](../../tools/source-export-policy.json)。工具只生成或应用本地候选，不提交、不推送、不创建 Release，也不修改或发布应用更新 feed。
@@ -39,7 +43,7 @@ git switch -c release/source-vNEXT origin/main
 git status --short
 ```
 
-源工程和公开候选均须没有待提交或未跟踪的独有修改。原有材料先保存、提交或交接，不能用强制清理换取“干净”。AMCL 维护者工作区的新增候选与运行材料按当前工作区路由落盘；候选在 E 盘时，计划及其恢复目录也放在 E 盘。
+源工程和公开候选均须没有待提交或未跟踪的独有修改。原有材料先保存、提交或交接，不能用强制清理换取“干净”。AMCL 维护者工作区的新增候选与运行材料按当前工作区路由落盘；计划与候选保持同盘；不要用示例路径覆盖当前工作区存储路由。
 
 外部计划不能放在源仓或公开仓内部；工具会核对真实物理路径，拒绝通过 junction 或链接回流仓内。计划父目录与公开候选必须同一文件系统，以支持原子替换；跨盘应准备同盘候选与计划，不修改全局 TEMP/TMP。
 
@@ -48,9 +52,9 @@ git status --short
 下面变量是格式示例，应换成实际绝对路径和构建收据中的提交。命令在公开候选的仓库根目录执行：
 
 ```powershell
-$Source = 'E:/release-work/MyApplication-frozen'
+$Source = 'D:/dhao1/desktop/AMCL/.workspace/run/<task>/MyApplication-frozen'
 $SourceCommit = '<实际构建使用的完整40位源码commit>'
-$Plan = 'E:/release-work/records/source-plan-01.json'
+$Plan = 'D:/dhao1/desktop/AMCL/.workspace/run/<task>/records/source-plan-01.json'
 
 node tools/sync-source-snapshot.mjs --source $Source --expected-commit $SourceCommit --plan $Plan
 if ($LASTEXITCODE -ne 0) { throw '源码同步预检失败；保留材料并处理原因' }
@@ -120,11 +124,11 @@ $PublicSourceCommit = git rev-parse HEAD
 
 ## 6. 与 Release、更新 feed 的顺序衔接
 
-源码同步 commit 可以先留在公开候选分支。新源码版本与当前已发布 feed 可能暂时不同，不要为了让一致性检查变绿，提前改写或发布更新 feed。
+经维护者批准后，源码同步commit先推到 `release/source-v<version>` 公开候选分支。该精确提交必须完成干净公开克隆的目标产品真实HAP构建，并通过 `source-candidate`、`workflow-tools` CI，之后才能公开安装包。候选CI使用 `check-public-release.mjs --source-only`，不要求旧feed提前前进；它也不替代真实SDK编译。新源码版本与当前已发布 feed 可能暂时不同，不要为了让一致性检查变绿，提前改写或发布更新 feed。
 
 新 Release 的 tag 应显式指向经审阅的**公开源码 candidate commit**，不能误指私有 source commit 或未核对的公开 `main`。这一步仍须按本次实际授权和既有发布流程执行，导出工具不代办。
 
-按既有资产、官网、镜像和通道流程确认实际发行就绪后，才把本次源码与真正导出的 feed 一起合入或推进公开 `main`。当前 `tools/check-public-release.mjs` 要求源码版本与 feed 一致，应在该交付组合成立后执行；独立源码候选阶段先跑快照、依赖和构建验证，不把尚未 ready 的 feed 写成已发布。
+官网/GitHub准确原件齐备后，可选镜像默认最多等待10分钟；最终先放行官网头，再把本次源码与真实导出的新旧feed一起合入或推进公开 `main`，完成GitHub备份和Pages回读。镜像缺席时旧兼容头可暂留上一版；官网成功但备份失败保持部分完成并恢复，不倒退官网头。当前 `tools/check-public-release.mjs` 要求源码版本与 feed 一致，应在该交付组合成立后执行；独立源码候选阶段先跑快照、依赖和构建验证，不把尚未 ready 的 feed 写成已发布。
 
 仅维护旧版本 feed、补通道推荐或恢复已有发布时，不重新导出应用源码。执行任何合入前重新核对公开主干基线；发生他人修改时先整合并重验，不强行覆盖。
 
