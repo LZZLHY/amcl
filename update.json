@@ -3,55 +3,102 @@
   "versionName": "1.0.7",
   "tag": "v1.0.7",
   "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.7",
-  "notes": "1.0.7\n- 修复：旧 JDK 不兼容时的强提醒与稳定通道修复\n- 更新：JDK 8、17、21、25 的正式运行时支持\n- 修复：部分原生库、字体及纹理更新兼容问题\n- 优化：运行时安装、恢复与应用更新的兼容校验\n- 注意：部分大型整合包仍有已知限制，详见完整日志",
+  "notes": "1.0.7\n- 新增：主题配色、离线皮肤与披风库、游戏分辨率缩放\n- 升级：设置页、触控编辑器、下载浏览与日志分享\n- 改进：整合包导入、资源另存与模组运行兼容\n- 更新：JDK 8、17、21、25 正式运行时与必要修复提醒\n- 提醒：升级后如有 JDK 修复提示，请先完成修复再启动游戏",
   "mandatory": false,
-  "updateChannel": "stable",
-  "prerelease": false,
   "schema": 1,
   "date": "2026-11-14",
-  "changelogUrl": "https://amcl.lovedhy.cn/changelog",
+  "prerelease": false,
+  "changelogUrl": "https://amcl.lovedhy.cn/changelog/v1.0.7",
   "notesEntries": [
     {
       "type": "highlight",
-      "text": "升级后可在 JDK 稳定通道内获取兼容的 JDK 8、17、21、25。"
+      "text": "更完整的个性化体验：新增主题配色、离线皮肤与披风库，重做设置页和触控编辑器。"
     },
     {
       "type": "highlight",
-      "text": "补齐运行时与应用的联合发布校验。"
+      "text": "更灵活的游戏与下载管理：新增分辨率缩放、二级触控组和资源另存为，完善整合包导入与任务恢复。"
+    },
+    {
+      "type": "highlight",
+      "text": "四套正式 JDK 配套更新：稳定通道提供兼容的 JDK 8、17、21、25，升级后需要修复运行环境时会明确提醒。"
+    },
+    {
+      "type": "added",
+      "text": "主题配色与离线外观库。"
+    },
+    {
+      "type": "added",
+      "text": "游戏分辨率缩放。"
+    },
+    {
+      "type": "added",
+      "text": "二级触控组与更多控件样式。"
+    },
+    {
+      "type": "added",
+      "text": "资源另存与整合包任务管理。"
     },
     {
       "type": "improved",
-      "text": "更新弹窗区分普通更新与必需修复，明确显示原因、影响及操作入口。"
+      "text": "设置页与版本详情。"
+    },
+    {
+      "type": "improved",
+      "text": "账号、主题与弹层体验。"
+    },
+    {
+      "type": "improved",
+      "text": "下载浏览与传输。"
+    },
+    {
+      "type": "improved",
+      "text": "整合包导入与恢复。"
+    },
+    {
+      "type": "improved",
+      "text": "活动详情、日志阅读与分享。"
+    },
+    {
+      "type": "improved",
+      "text": "触控编辑与操作反馈。"
+    },
+    {
+      "type": "improved",
+      "text": "模组音频与本地语音。"
     },
     {
       "type": "fixed",
-      "text": "修复 ZIP/JAR 文件系统事务写回与原件保留问题，改善依赖处理和运行时工具兼容性。"
+      "text": "应用更新与 JDK 安装。"
     },
     {
       "type": "fixed",
-      "text": "补充 zstd-JNI 的 OHOS 原生适配，改进对应字体、装载和原生依赖检查。"
+      "text": "图形渲染与内存使用。"
     },
     {
       "type": "fixed",
-      "text": "修复 MobileGL 部分纹理更新次序、CPU/GPU 数据同步及首次局部写入的内存开销问题。"
+      "text": "游戏信息与模组运行兼容。"
+    },
+    {
+      "type": "fixed",
+      "text": "下载状态、页面与触控细节。"
     },
     {
       "type": "notice",
-      "text": "已在 MRDI-W10/API26 平板验证原版 1.12.2、1.16.5、1.20.1、1.21.4、26.3 的运行、保存、退出和冷启动读档；其他设备和全部游戏版本不作全面认证。"
+      "text": "升级后如出现 JDK 修复提示，请先完成对应运行环境的更新再启动游戏；保持 JDK 稳定通道即可获取本版配套的正式运行时。"
     },
     {
       "type": "notice",
-      "text": "部分大型整合包仍有渲染、辅助线程或内存相关问题。Prominence 尚未通过完整生命周期验收，Distant Horizons 暂不列入适配清单。"
-    },
-    {
-      "type": "notice",
-      "text": "已知的重负载系统异常退出或重启问题仍保留调查，不能据本次原版验收视为全部解决；联机、外设音频及长期性能需按实际环境分别验证。"
+      "text": "部分整合包和模组的兼容性仍在持续完善。如遇启动、画面或运行异常，请通过应用内“问题反馈”提交日志，便于继续定位和适配。"
     }
   ],
+  "updateChannel": "stable",
+  "publicationId": "f6f98e3682e86b5a8c639ec10c601b79f38dd36f9cf455a3e0742e8cf65825c3",
   "sizeBytes": 122905956,
   "delivery": {
     "schema": 1,
+    "protocol": 1,
     "ready": true,
+    "publicationReady": false,
     "assets": [
       {
         "tag": "v1.0.7",
@@ -118,8 +165,8 @@
             "filePath": "amcl/v1.0.7/amcl-v1.0.7-sideload-unsigned.hap",
             "ready": true,
             "firstVerifiedAt": 1794661234331,
-            "lastVerifiedAt": 1794665778551,
-            "lastCheckedAt": 1794665778551,
+            "lastVerifiedAt": 1794686550725,
+            "lastCheckedAt": 1794686550725,
             "health": "available"
           },
           {
@@ -128,14 +175,13 @@
             "assetId": "amcl:445296551:747494427",
             "ready": true,
             "firstVerifiedAt": 1794662152451,
-            "lastVerifiedAt": 1794665778551,
-            "lastCheckedAt": 1794665778551,
+            "lastVerifiedAt": 1794686550725,
+            "lastCheckedAt": 1794686550725,
             "health": "available"
           }
         ],
         "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/4cc219cd47937e8f882fd2792733f31053ff2b75725fede864dbac271517bf4d/amcl-v1.0.7-sideload-unsigned.hap"
       }
     ]
-  },
-  "publicationId": "f6f98e3682e86b5a8c639ec10c601b79f38dd36f9cf455a3e0742e8cf65825c3"
+  }
 }
