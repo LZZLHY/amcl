@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-14T05:56:35Z",
+  "generatedAt": "2026-11-14T15:21:27Z",
   "categories": [
     "highlight",
     "added",
@@ -23,114 +23,384 @@
       "date": "2026-11-14",
       "prerelease": false,
       "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.7",
-      "title": "稳定 JDK 修复与游戏运行兼容更新",
-      "titleEn": "Stable JDK repair and game runtime compatibility",
+      "title": "界面、操控与游戏运行体验更新",
+      "titleEn": "Interface, controls and game runtime improvements",
       "zh": {
         "entries": [
           {
             "type": "highlight",
-            "text": "升级后可在 JDK 稳定通道内获取兼容的 JDK 8、17、21、25。",
-            "details": [
-              "新运行时保留真实的宿主协议要求；旧版启动器不会被强制推荐不兼容的新包。",
-              "识别既有官方运行时的身份和兼容状态，通过正常修复流程更新；目录请求或安装失败不直接删除可用旧槽。"
-            ]
+            "text": "更完整的个性化体验：新增主题配色、离线皮肤与披风库，重做设置页和触控编辑器。",
+            "markdown": "**更完整的个性化体验**：新增主题配色、离线皮肤与披风库，重做设置页和触控编辑器。"
           },
           {
             "type": "highlight",
-            "text": "补齐运行时与应用的联合发布校验。",
+            "text": "更灵活的游戏与下载管理：新增分辨率缩放、二级触控组和资源另存为，完善整合包导入与任务恢复。",
+            "markdown": "**更灵活的游戏与下载管理**：新增分辨率缩放、二级触控组和资源另存为，完善整合包导入与任务恢复。"
+          },
+          {
+            "type": "highlight",
+            "text": "四套正式 JDK 配套更新：稳定通道提供兼容的 JDK 8、17、21、25，升级后需要修复运行环境时会明确提醒。",
+            "markdown": "**四套正式 JDK 配套更新**：稳定通道提供兼容的 JDK 8、17、21、25，升级后需要修复运行环境时会明确提醒。"
+          },
+          {
+            "type": "added",
+            "text": "主题配色与离线外观库。",
+            "markdown": "**主题配色与离线外观库。**",
             "details": [
-              "应用公开前核对稳定运行时供给和包内初始化目录，避免只更新启动器后没有可用正式 JDK 的情况。"
+              "提供玫晶、原生蓝、松石青、鸢尾紫四套主题配色，深浅模式与主题色可分别选择。",
+              "离线账号可从共享库选择皮肤与披风，支持 PNG 导入、Classic／Slim 模型、默认皮肤和不佩戴披风。",
+              "每个账号独立保存外观选择，同一资源可供多个账号使用；所选外观用于首页、账号列表、详情和本地游戏显示。",
+              "兼容旧皮肤格式，账号改名保留原有身份与外观关联，并保护仍被账号使用的资源。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "游戏分辨率缩放。",
+            "markdown": "**游戏分辨率缩放。**",
+            "details": [
+              "支持在全局设置、单个版本详情和游戏内调整渲染分辨率比例，游戏显示区域继续保持全屏。",
+              "单个版本可跟随全局设置，也可保存独立比例或使用原生分辨率；游戏内调整作用于当前游戏。",
+              "提供快捷档位、滑杆和微调，修复调整后画面、触控坐标及返回游戏时的同步问题。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "二级触控组与更多控件样式。",
+            "markdown": "**二级触控组与更多控件样式。**",
+            "details": [
+              "一级展开键可展开或收起二级按键组，组内成员可自由摆放，并可选择展开时是否隐藏其他一级按键。",
+              "支持为二级组添加返回键，完善组绑定、解绑、删除以及成员保留选择。",
+              "按键背景、文字、边框可分别设置颜色，支持透明背景、无边框、HSV／HEX 选色。",
+              "展开键提供方形、竖向和横向比例，默认尺寸与普通按键一致，并随整体和单键缩放设置变化。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "资源另存与整合包任务管理。",
+            "markdown": "**资源另存与整合包任务管理。**",
+            "details": [
+              "模组、光影和资源包可安装到游戏实例，也可通过系统文件选择器另存到自选位置。",
+              "只有确认保存位置后才开始下载对应文件，取消选择不会留下正文下载任务。",
+              "整合包的待完成安装和补齐任务可逐条放弃或停止；已交付实例保留，之后仍可主动补齐缺失内容。"
             ]
           },
           {
             "type": "improved",
-            "text": "更新弹窗区分普通更新与必需修复，明确显示原因、影响及操作入口。",
+            "text": "设置页与版本详情。",
+            "markdown": "**设置页与版本详情。**",
             "details": [
-              "旧官方 JDK 不兼容时，首次启动主动检查当前通道修复包，不受普通自动检查开关和检查间隔影响；选择暂不游戏后，再次启动受影响版本仍会提醒。",
-              "长说明和多项运行时在正文内滚动，主要操作保持可见；普通兼容更新继续允许稍后处理。"
+              "重做设置页，按常用设置、游戏与性能、显示与操控、外观与光感、下载与存储、日志与支持等分区组织功能。",
+              "支持搜索具体设置并定位，改善手机、平板、宽屏和短窗口下的布局与操作可达性。",
+              "版本详情集中展示并管理启动配置，完善 Java、内存、分辨率和 JVM 参数编辑入口。",
+              "JVM 参数采用明确保存，取消、返回或切换页面不会自动提交尚未确认的修改。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "账号、主题与弹层体验。",
+            "markdown": "**账号、主题与弹层体验。**",
+            "details": [
+              "重新整理账号管理和外观编辑页面，区分当前账号、其他账号与外观资源管理。",
+              "改善外观预览、编辑草稿、账号切换及取消操作，修复旧披风记录显示和异步保存状态问题。",
+              "主题选中后即时应用并保存，统一常用页面和弹窗的深浅色适配。",
+              "手机弹层高度支持在 50%–100% 之间调整并保存，方便不同屏幕和操作习惯。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "下载浏览与传输。",
+            "markdown": "**下载浏览与传输。**",
+            "details": [
+              "下载六分类采用一致的搜索和滚动交互，搜索、筛选等辅助区域随滚动收起或恢复，减少列表跳动。",
+              "统一模组、光影、资源包和整合包详情，以及版本选择和文件列表的顶部布局。",
+              "改进游戏、加载器和依赖文件的自动选源、超时与重试策略；JDK 下载可按实际传输表现选择可用路线。",
+              "完善加速开关与下载源偏好的关系，关闭加速后恢复保存的来源选择，并保留原件校验。",
+              "简化游戏版本下载页；重新发起相同配置的安装时，仍可复用已有暂存。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "整合包导入与恢复。",
+            "markdown": "**整合包导入与恢复。**",
+            "details": [
+              "改进带 PCL、HMCL 启动器外壳及多层目录的整合包识别，提取其中实际的游戏内容。",
+              "完善 Modrinth、CurseForge、MCBBS、旧 HMCL、MultiMC 及完整游戏实例等来源的处理；存在多个内包时按所选内容导入。",
+              "改善实例重命名后的继续安装、缺失文件补齐及覆盖目录合并，保护已有配置与存档。",
+              "整合包恢复记录按需后台读取，减少切换下载分类时的停顿。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "活动详情、日志阅读与分享。",
+            "markdown": "**活动详情、日志阅读与分享。**",
+            "details": [
+              "重新整理活动详情、退出结果和故障线索入口，优化日志筛选、搜索、阅读与文件切换。",
+              "精简游戏结果弹窗，保留直接进入对应活动日志分析的入口。",
+              "优化分享文件选择、预览、提交结果和历史管理，适配更新后的日志分享服务。",
+              "停用已下线的在线 AI 分析入口，保留本地故障线索、规则分析及历史报告阅读。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "触控编辑与操作反馈。",
+            "markdown": "**触控编辑与操作反馈。**",
+            "details": [
+              "触控编辑器改为更紧凑的原生浮窗，提供按键／组入口、逐层返回及面板内编辑。",
+              "游戏内普通操作反馈改为轻提示，减少大面积遮挡；完善手感与输入设置的点击和滑杆操作。",
+              "减少连续触控和视角操作中的重复状态处理，改进摇杆、陀螺仪及多来源输入的按住与释放关系。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "模组音频与本地语音。",
+            "markdown": "**模组音频与本地语音。**",
+            "details": [
+              "增加模组音频设置及按需麦克风授权入口，补齐 Java Sound 录放音与音频设备处理。",
+              "改善 Simple Voice Chat、Verity 等模组所需的音频和本地语音能力。"
             ]
           },
           {
             "type": "fixed",
-            "text": "修复 ZIP/JAR 文件系统事务写回与原件保留问题，改善依赖处理和运行时工具兼容性。"
-          },
-          {
-            "type": "fixed",
-            "text": "补充 zstd-JNI 的 OHOS 原生适配，改进对应字体、装载和原生依赖检查。"
-          },
-          {
-            "type": "fixed",
-            "text": "修复 MobileGL 部分纹理更新次序、CPU/GPU 数据同步及首次局部写入的内存开销问题。",
+            "text": "应用更新与 JDK 安装。",
+            "markdown": "**应用更新与 JDK 安装。**",
             "details": [
-              "对尚未写入的纹理存储按需准备数据，保留已更新区域；具体收益取决于游戏和纹理负载。"
+              "修复升级后旧官方 JDK 识别不准确、无法取得兼容正式运行时，以及部分旧正式包被误拒绝的问题。",
+              "必要 JDK 修复使用强提醒，显示原因、影响和操作入口；关闭普通自动检查或检查间隔未到，也会检查必要修复。",
+              "选择暂不启动游戏后，再次启动受影响版本仍会提示；仍兼容的可选更新继续使用普通提醒。",
+              "完善应用和 JDK 的独立通道设置、兼容检查及安装中断后的继续处理，避免旧任务状态错误阻止后续下载。",
+              "补充开发版的人工安装与退出处理，开发版与稳定／预览更新推荐分开管理。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "图形渲染与内存使用。",
+            "markdown": "**图形渲染与内存使用。**",
+            "details": [
+              "修复 MobileGL 部分纹理更新次序、CPU／GPU 数据同步及局部更新范围处理问题。",
+              "减少大纹理首次局部写入时的内存开销，改善相关渲染场景的资源使用。",
+              "完善光标对象与图形资源的创建、绑定和释放，改善部分模组界面及退出兼容。",
+              "支持遵守系统旋转锁定的双向横屏，完善方向变化后的画面与输入坐标处理。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "游戏信息与模组运行兼容。",
+            "markdown": "**游戏信息与模组运行兼容。**",
+            "details": [
+              "修复部分游戏版本在 F3 等系统信息界面中将 CPU 显示为 unknown 的问题。",
+              "增加 zstd-JNI 的鸿蒙适配，改进部分模组的原生库加载与运行环境检查。",
+              "改善 Java 字体、临时目录和 ZIP／JAR 文件写回处理，并保留真实错误信息，便于定位失败原因。",
+              "将部分模组的消息与确认对话框接入系统界面，改善依赖辅助 SDL 线程的模组初始化和退出处理。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "下载状态、页面与触控细节。",
+            "markdown": "**下载状态、页面与触控细节。**",
+            "details": [
+              "修复部分下载重定向反复退回原地址、续传收到整文件时处理不当，以及切换下载阶段后速度和剩余时间残留的问题。",
+              "修复版本完整性检查把已由鸿蒙运行库替代的电脑端依赖误报为缺失的问题。",
+              "修复部分资源详情关闭、首页 Java 信息刷新及下载任务取消状态显示问题。",
+              "修复聊天按键误报未绑定、控件删除或解绑后状态残留，以及批量操作对隐藏或锁定控件处理不正确的问题。"
             ]
           },
           {
             "type": "notice",
-            "text": "已在 MRDI-W10/API26 平板验证原版 1.12.2、1.16.5、1.20.1、1.21.4、26.3 的运行、保存、退出和冷启动读档；其他设备和全部游戏版本不作全面认证。"
+            "text": "升级后如出现 JDK 修复提示，请先完成对应运行环境的更新再启动游戏；保持 JDK 稳定通道即可获取本版配套的正式运行时。"
           },
           {
             "type": "notice",
-            "text": "部分大型整合包仍有渲染、辅助线程或内存相关问题。Prominence 尚未通过完整生命周期验收，Distant Horizons 暂不列入适配清单。"
-          },
-          {
-            "type": "notice",
-            "text": "已知的重负载系统异常退出或重启问题仍保留调查，不能据本次原版验收视为全部解决；联机、外设音频及长期性能需按实际环境分别验证。"
+            "text": "部分整合包和模组的兼容性仍在持续完善。如遇启动、画面或运行异常，请通过应用内“问题反馈”提交日志，便于继续定位和适配。"
           }
         ],
-        "summary": "本版侧载包配合四套稳定 JDK，完善升级后的运行时识别、修复与兼容检查。JDK 需单独下载，应用通道与 JDK 通道继续独立保存。"
+        "summary": "1.0.7 集中更新了界面、账号外观、触控操控、游戏显示、下载与整合包管理，并完善了四套正式 JDK 和模组运行兼容。以下为相对 1.0.6 的主要变化。"
       },
       "en": {
         "entries": [
           {
             "type": "highlight",
-            "text": "Compatible JDK 8, 17, 21 and 25 runtimes are available through the stable JDK channel.",
-            "details": [
-              "Runtime catalogs retain the actual host protocol requirements, so older launchers reject incompatible new packages.",
-              "Existing official installations are identified before repair. Catalog or installation failures do not directly delete a usable installed runtime."
-            ]
+            "text": "More personalization: new accent palettes and a shared offline skin/cape library, with redesigned settings and touch editing.",
+            "markdown": "**More personalization**: new accent palettes and a shared offline skin/cape library, with redesigned settings and touch editing."
           },
           {
             "type": "highlight",
-            "text": "App publication now checks stable runtime availability and the bundled initialization catalog.",
+            "text": "More flexible game and download management: resolution scaling, secondary control groups, saving resources to a chosen location, and improved modpack import and recovery.",
+            "markdown": "**More flexible game and download management**: resolution scaling, secondary control groups, saving resources to a chosen location, and improved modpack import and recovery."
+          },
+          {
+            "type": "highlight",
+            "text": "Four updated stable JDK runtimes: compatible JDK 8, 17, 21 and 25 downloads, with clear prompts when an installed runtime needs repair after updating the app.",
+            "markdown": "**Four updated stable JDK runtimes**: compatible JDK 8, 17, 21 and 25 downloads, with clear prompts when an installed runtime needs repair after updating the app."
+          },
+          {
+            "type": "added",
+            "text": "Accent palettes and offline appearance library.",
+            "markdown": "**Accent palettes and offline appearance library.**",
             "details": [
-              "This prevents publishing an app that requires new runtimes before compatible stable JDK downloads are ready."
+              "Choose Rose Crystal, Native Blue, Turquoise or Iris, independently of light/dark mode.",
+              "Offline accounts can share a PNG skin/cape library while keeping independent selections, including Classic/Slim models, default skins and no cape.",
+              "Selected appearances are used by the home screen, account views and local game rendering. Legacy skin formats are supported, and renaming an account retains its identity and appearance links."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Game resolution scaling.",
+            "markdown": "**Game resolution scaling.**",
+            "details": [
+              "Adjust rendering scale globally, for an individual game version, or during the current session while keeping the display area full screen.",
+              "Per-version settings can inherit the global scale, use a saved override or select native resolution, with presets, a slider and fine adjustments.",
+              "Improved synchronization between rendered geometry, touch coordinates and returning to the game."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Secondary touch groups and additional control styling.",
+            "markdown": "**Secondary touch groups and additional control styling.**",
+            "details": [
+              "Open and close secondary groups from a primary control, freely position members, and choose whether other primary controls remain visible.",
+              "Add optional return controls and manage group bindings, removal and member retention.",
+              "Configure background, text and border colors independently, including transparency, no border and HSV/HEX selection.",
+              "Group openers support square, vertical and horizontal proportions and follow global/per-control scaling."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Resource saving and modpack task management.",
+            "markdown": "**Resource saving and modpack task management.**",
+            "details": [
+              "Install mods, shaders and resource packs into an instance or save them to a location chosen through the system picker.",
+              "File transfer starts after the destination is confirmed; cancelling the picker does not start a payload download.",
+              "Dismiss individual pending modpack installations or stop missing-file recovery, while retaining already delivered instances for later repair."
             ]
           },
           {
             "type": "improved",
-            "text": "Update dialogs now distinguish optional updates from required runtime repairs, with explicit reasons, impact and actions.",
+            "text": "Settings and version details.",
+            "markdown": "**Settings and version details.**",
             "details": [
-              "Incompatible managed JDKs trigger a repair check on startup regardless of the optional auto-check setting or interval. Choosing not to play does not bypass the repair check on the next affected launch.",
-              "Long descriptions and runtime selections scroll inside the content area while primary actions remain visible. Compatible optional updates can still be deferred."
+              "Redesigned settings sections, searchable options and layouts for phones, tablets, wide and short windows.",
+              "Consolidated per-version launch settings, including Java, memory, rendering scale and JVM arguments.",
+              "JVM argument changes require an explicit save; cancelling or leaving the page does not commit an unfinished edit."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Accounts, themes and sheets.",
+            "markdown": "**Accounts, themes and sheets.**",
+            "details": [
+              "Reorganized account management, appearance previews and the shared library, with improved drafts, switching and cancellation.",
+              "Apply and save theme selections immediately, with more consistent light/dark styling.",
+              "Phone sheet height can be adjusted and saved from 50% to 100%."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Download browsing and transfers.",
+            "markdown": "**Download browsing and transfers.**",
+            "details": [
+              "Consistent search and scrolling across the six download categories, with collapsible supporting controls and less list movement.",
+              "Unified headers for resource details, version selection and file lists.",
+              "Improved source selection, timeouts and retries for games, loaders and dependencies; JDK routes can be selected using observed transfer performance.",
+              "Clarified acceleration and saved source preferences while retaining file verification.",
+              "Simplified the game download page while retaining staging reuse when the same installation configuration is started again."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Modpack import and recovery.",
+            "markdown": "**Modpack import and recovery.**",
+            "details": [
+              "Improved discovery of game content inside PCL/HMCL launcher wrappers and nested directories.",
+              "Improved handling of Modrinth, CurseForge, MCBBS, legacy HMCL, MultiMC and complete game instances, including selection among multiple embedded packs.",
+              "Improved renamed-instance recovery, missing-file completion and directory merging, while protecting existing configuration and saves.",
+              "Read recovery records in the background when requested to reduce pauses during category navigation."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Activity details, log reading and sharing.",
+            "markdown": "**Activity details, log reading and sharing.**",
+            "details": [
+              "Reorganized exit results and diagnostic entry points, with improved log filtering, search, reading and file switching.",
+              "Simplified the game-result dialog and kept direct access to the associated activity's local log analysis.",
+              "Improved share selection, preview, results and history, and updated compatibility with the log-sharing service.",
+              "Removed entry points for the retired online AI analysis service; local diagnostics, rule-based analysis and historical reports remain available."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Touch editing and control feedback.",
+            "markdown": "**Touch editing and control feedback.**",
+            "details": [
+              "A more compact native touch editor with separate key/group entry points and in-panel editing.",
+              "Lightweight in-game feedback and more reliable input-setting buttons and sliders.",
+              "Reduced repeated work in common input handling and improved ownership of held controls across touch, joysticks, gyro and other sources."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Mod audio and local speech.",
+            "markdown": "**Mod audio and local speech.**",
+            "details": [
+              "Added mod-audio settings and an on-demand microphone permission entry point, with Java Sound playback/capture and audio device handling.",
+              "Improved audio and relevant local speech compatibility for mods such as Simple Voice Chat and Verity."
             ]
           },
           {
             "type": "fixed",
-            "text": "Fixed transactional ZIP/JAR filesystem writes and preservation of the original archive."
+            "text": "App updates and JDK installation.",
+            "markdown": "**App updates and JDK installation.**",
+            "details": [
+              "Improved recognition of older official runtimes, compatible stable downloads and acceptance of supported historical packages.",
+              "Required JDK repairs now display a prominent explanation and remain eligible for checks when optional automatic checks are disabled or their interval has not elapsed.",
+              "Choosing not to launch does not bypass a required repair on the next affected launch; compatible optional updates retain their normal reminder.",
+              "Improved independent app/JDK channel handling, compatibility checks and interrupted-install recovery, including stale task states that blocked later downloads.",
+              "Added separate manual developer-package installation and exit handling, without treating those packages as stable or preview recommendations."
+            ]
           },
           {
             "type": "fixed",
-            "text": "Added an OHOS adaptation for zstd-JNI and improved relevant font, loading and native dependency handling."
+            "text": "Graphics and memory use.",
+            "markdown": "**Graphics and memory use.**",
+            "details": [
+              "Fixed parts of MobileGL texture update ordering, CPU/GPU synchronization and partial-update bounds.",
+              "Reduced the memory cost of the first partial write to large texture storage.",
+              "Improved cursor and graphics-resource lifetime handling for relevant mod interfaces and shutdown paths.",
+              "Support both landscape orientations while respecting the system rotation lock, with corresponding input-coordinate handling."
+            ]
           },
           {
             "type": "fixed",
-            "text": "Fixed parts of MobileGL texture update ordering, CPU/GPU synchronization and the memory cost of the first partial texture write."
+            "text": "Game information and mod runtime compatibility.",
+            "markdown": "**Game information and mod runtime compatibility.**",
+            "details": [
+              "Fixed CPU information appearing as unknown in some game versions, including F3 displays.",
+              "Added OHOS zstd-JNI support and improved native dependency loading and runtime checks.",
+              "Improved Java font, temporary-directory and ZIP/JAR write handling, preserving relevant errors for diagnosis.",
+              "Connected relevant mod message/confirmation dialogs to the system UI and improved initialization and shutdown for mods using auxiliary SDL threads."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Download state, pages and touch details.",
+            "markdown": "**Download state, pages and touch details.**",
+            "details": [
+              "Fixed repeated redirect fallback, incorrect handling of full-file responses during resume, and stale speed/ETA across download phases.",
+              "Fixed integrity checks reporting desktop dependencies that are intentionally replaced by OHOS runtime libraries as missing.",
+              "Fixed resource-detail closing, stale Java information on the home screen and cancellation-state display.",
+              "Fixed incorrect unbound-chat warnings, stale state after control removal/unbinding, and handling of hidden or locked controls during bulk edits."
+            ]
           },
           {
             "type": "notice",
-            "text": "Vanilla Minecraft 1.12.2, 1.16.5, 1.20.1, 1.21.4 and 26.3 completed run, save, exit and cold reload checks on an MRDI-W10/API26 tablet. This does not certify all devices or game versions."
+            "text": "If a JDK repair prompt appears after updating, complete the corresponding runtime update before launching the affected game. The stable JDK channel provides the official runtimes for this release."
           },
           {
             "type": "notice",
-            "text": "Some large modpacks still have rendering, auxiliary thread or memory issues. Prominence has not passed the complete lifecycle checks, and Distant Horizons is currently outside the supported adaptation scope."
-          },
-          {
-            "type": "notice",
-            "text": "Heavy workload crashes or system restarts remain under investigation. Multiplayer, audio peripherals and long term performance require separate environment-specific validation."
+            "text": "Compatibility with some modpacks and mods is still being improved. If a game fails to start, renders incorrectly or encounters a runtime problem, submit the logs through the app's issue-reporting entry point."
           }
         ],
-        "summary": "This sideload release works with four stable JDK runtimes and improves runtime identification, repair and compatibility checks after an app update. JDKs remain separate downloads, and the app and JDK channels remain independent."
+        "summary": "Version 1.0.7 updates the interface, account appearance, touch controls, rendering resolution, downloads and modpack management, alongside four stable JDK runtimes and further mod compatibility work. These are the main changes since 1.0.6."
       }
     },
     {
