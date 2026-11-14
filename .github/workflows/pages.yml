@@ -7,6 +7,9 @@ on:
       - changelog.json
       - updates/**
       - assets/**
+      - tools/validate-update-feeds.mjs
+      - tools/stage-update-pages.mjs
+      - tools/test-update-feeds.mjs
       - .github/workflows/pages.yml
   workflow_dispatch:
 permissions:
@@ -34,26 +37,16 @@ jobs:
             /changelog.json
             /updates/
             /assets/
+            /tools/validate-update-feeds.mjs
+            /tools/stage-update-pages.mjs
+            /tools/test-update-feeds.mjs
       # Pages 是应用更新数据入口；源码通过 GitHub 获取，无需在此下载或部署第三方工作树。
       - name: Validate and stage public update data
+        env:
+          AMCL_RUN_DIR: ${{ runner.temp }}/amcl-update-feeds
         run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import assert from 'node:assert/strict';
-          const update = JSON.parse(fs.readFileSync('update.json', 'utf8'));
-          const changelog = JSON.parse(fs.readFileSync('changelog.json', 'utf8'));
-          assert.equal(update.versionCode, changelog.latest.versionCode);
-          assert.equal(update.versionName, changelog.latest.versionName);
-          assert.equal(update.tag, changelog.latest.tag);
-          NODE
-          mkdir _site
-          cp update.json changelog.json _site/
-          cp -R assets _site/assets
-          if [ -d updates ]; then
-            cp -R updates _site/updates
-          fi
-          printf '%s\n' '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://amcl.lovedhy.cn/"><title>AMCL</title><a href="https://amcl.lovedhy.cn/">AMCL 官网</a></html>' > _site/index.html
-          printf '%s\n' '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=https://amcl.lovedhy.cn/privacy-policy.html"><title>AMCL 隐私政策</title><a href="https://amcl.lovedhy.cn/privacy-policy.html">隐私政策</a></html>' > _site/privacy-policy.html
+          node tools/test-update-feeds.mjs
+          node tools/stage-update-pages.mjs --root . --out _site
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: _site
