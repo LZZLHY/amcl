@@ -1,180 +1,76 @@
 {
-  "versionCode": 1000910,
-  "versionName": "1.0.6",
-  "tag": "v1.0.6",
-  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.6",
-  "notes": "1.0.6\n- 新增：应用内更新、通道选择和官方安装包手动导入\n- 新增：完整游戏包及标准整合包导出\n- 新增：悬浮虚拟鼠标，优化触控、下载与启动界面\n- 修复：输入释放、部分加载器和渲染兼容问题\n- 注意：自更新需授权；导出及设备兼容范围详见完整日志",
+  "versionCode": 1000911,
+  "versionName": "1.0.7",
+  "tag": "v1.0.7",
+  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.7",
+  "notes": "1.0.7\n- 修复：旧 JDK 不兼容时的强提醒与稳定通道修复\n- 更新：JDK 8、17、21、25 的正式运行时支持\n- 修复：部分原生库、字体及纹理更新兼容问题\n- 优化：运行时安装、恢复与应用更新的兼容校验\n- 注意：部分大型整合包仍有已知限制，详见完整日志",
   "mandatory": false,
   "updateChannel": "stable",
   "prerelease": false,
   "schema": 1,
-  "date": "2026-10-24",
+  "date": "2026-11-14",
   "changelogUrl": "https://amcl.lovedhy.cn/changelog",
   "notesEntries": [
     {
       "type": "highlight",
-      "text": "新增应用内自更新，串联下载、校验、授权、手机签名与覆盖安装。"
+      "text": "升级后可在 JDK 稳定通道内获取兼容的 JDK 8、17、21、25。"
     },
     {
       "type": "highlight",
-      "text": "新增游戏包导出，支持完整 ZIP 与 Modrinth、CurseForge 标准格式。"
-    },
-    {
-      "type": "highlight",
-      "text": "新增可保存的悬浮虚拟鼠标，支持按住拖动、滚轮和 Shift。"
-    },
-    {
-      "type": "added",
-      "text": "软件更新支持稳定、预览通道与官方未签名 HAP 手动导入。"
-    },
-    {
-      "type": "added",
-      "text": "导出内容支持逐层勾选，完整包与标准包分别保留选择草稿。"
-    },
-    {
-      "type": "added",
-      "text": "触控布局新增持久控件组及部分第三方布局导入。"
-    },
-    {
-      "type": "added",
-      "text": "补充菜单触摸板、浮动摇杆、陀螺仪配置与按需操作引导。"
-    },
-    {
-      "type": "added",
-      "text": "JDK 管理接入签名目录与独立稳定、预览通道。"
-    },
-    {
-      "type": "added",
-      "text": "新增跟随深浅主题的体素聚斧开屏与首页归位动画。"
-    },
-    {
-      "type": "added",
-      "text": "新增沉浸光感设置，统一返回、关闭等圆形操作按钮。"
+      "text": "补齐运行时与应用的联合发布校验。"
     },
     {
       "type": "improved",
-      "text": "导出面板集中展示选择、检查、进度和结果，支持收起后继续。"
-    },
-    {
-      "type": "improved",
-      "text": "整合包浏览保留搜索和筛选，安装前可填写实例名称。"
-    },
-    {
-      "type": "improved",
-      "text": "统一下载任务策略，改善取消、重试、换源与共享任务生命周期。"
-    },
-    {
-      "type": "improved",
-      "text": "模组详情开放完整版本浏览，本地列表支持完整多关键词搜索。"
-    },
-    {
-      "type": "improved",
-      "text": "精简触控编辑器，分离布局编辑与输入设置。"
-    },
-    {
-      "type": "improved",
-      "text": "改进多来源视角、手柄死区、捕获和前后台恢复。"
-    },
-    {
-      "type": "improved",
-      "text": "减少冷启动、亮屏恢复、空闲下载和日志维护中的重复工作。"
+      "text": "更新弹窗区分普通更新与必需修复，明确显示原因、影响及操作入口。"
     },
     {
       "type": "fixed",
-      "text": "修复更新推荐漏更、缓存目标错配和旧任务结果干扰。"
+      "text": "修复 ZIP/JAR 文件系统事务写回与原件保留问题，改善依赖处理和运行时工具兼容性。"
     },
     {
       "type": "fixed",
-      "text": "修复整合包恢复和外部存储发布，保护已有配置与存档。"
+      "text": "补充 zstd-JNI 的 OHOS 原生适配，改进对应字体、装载和原生依赖检查。"
     },
     {
       "type": "fixed",
-      "text": "修复 Forge 身份解析、内嵌库重复下载及批量失败误报。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复未知大小断点续传、并发目录创建与下载清理边界。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复导出检查重入崩溃及旧资源、草稿和目标读取异常。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复多来源卡键、拖动释放及恢复后游戏输入失效。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复菜单、容器和快捷栏对齐，补齐末段移动与滚动。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复 IME 会话恢复、选区混淆和 LWJGL2 补充字符截断。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复旧加载器扫描现代 LWJGL 失败，补齐相关模块和 EGL 信息。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复部分图形状态、地形透明及上下文生命周期问题。"
-    },
-    {
-      "type": "fixed",
-      "text": "改进 OHAudio 格式协商、中断、暂停恢复、限幅和释放。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复限定旧 Create Fly 组合的列车网络包线程归属。"
-    },
-    {
-      "type": "fixed",
-      "text": "修复 JDK 列表消失、旧目录覆盖，以及下载子页末项不可达。"
+      "text": "修复 MobileGL 部分纹理更新次序、CPU/GPU 数据同步及首次局部写入的内存开销问题。"
     },
     {
       "type": "notice",
-      "text": "自更新需要兼容签名材料、开发者授权、无线调试和系统信任。"
+      "text": "已在 MRDI-W10/API26 平板验证原版 1.12.2、1.16.5、1.20.1、1.21.4、26.3 的运行、保存、退出和冷启动读档；其他设备和全部游戏版本不作全面认证。"
     },
     {
       "type": "notice",
-      "text": "导出的完整游戏包面向 Windows x64 使用，不包含启动器和 Java。"
+      "text": "部分大型整合包仍有渲染、辅助线程或内存相关问题。Prominence 尚未通过完整生命周期验收，Distant Horizons 暂不列入适配清单。"
     },
     {
       "type": "notice",
-      "text": "游戏包导出仍存在部分问题，部分整合包及大体积内容可能出现异常。"
-    },
-    {
-      "type": "notice",
-      "text": "JDK 测试通道需手动选择，测试版本可能存在较多问题，且最新运行包暂不支持本版。"
-    },
-    {
-      "type": "notice",
-      "text": "通用侧载包支持手机、平板和鸿蒙电脑，部分模组与设备仍可能存在兼容问题。"
+      "text": "已知的重负载系统异常退出或重启问题仍保留调查，不能据本次原版验收视为全部解决；联机、外设音频及长期性能需按实际环境分别验证。"
     }
   ],
-  "sizeBytes": 102802182,
+  "sizeBytes": 122905956,
   "delivery": {
     "schema": 1,
     "ready": true,
     "assets": [
       {
-        "tag": "v1.0.6",
-        "versionCode": 1000910,
-        "versionName": "1.0.6",
+        "tag": "v1.0.7",
+        "versionCode": 1000911,
+        "versionName": "1.0.7",
         "product": "sideload",
-        "name": "amcl-v1.0.6-sideload-unsigned.hap",
-        "sha256": "f6b597c49a5abf2f143bba955dab7facfba52039204b6bb264aac8def7979796",
-        "sizeBytes": 102802182,
-        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.6/amcl-v1.0.6-sideload-unsigned.hap",
+        "name": "amcl-v1.0.7-sideload-unsigned.hap",
+        "sha256": "4cc219cd47937e8f882fd2792733f31053ff2b75725fede864dbac271517bf4d",
+        "sizeBytes": 122905956,
+        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.7/amcl-v1.0.7-sideload-unsigned.hap",
         "legacyUniversal": false,
-        "githubAssetId": 669749132,
+        "githubAssetId": 747494427,
         "audit": {
           "bundleName": "com.amcl.launcher",
-          "versionCode": 1000910,
-          "versionName": "1.0.6",
+          "versionCode": 1000911,
+          "versionName": "1.0.7",
           "product": "sideload",
           "packagedProduct": "sideload",
-          "sourceRevision": "fb1b299f87c7bbac069cac24cfe65df303ebb381",
+          "sourceRevision": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6",
           "auditLevel": "package-profile",
           "minApi": 20,
           "targetApi": 23,
@@ -183,33 +79,63 @@
             "phone",
             "tablet",
             "2in1"
+          ],
+          "runtimeHostProtocols": [
+            1,
+            2
+          ],
+          "runtimePlanProtocol": 2,
+          "runtimeCatalogProtocol": 2,
+          "runtimeRequiredCapabilities": [
+            "zipfs-transaction-v1"
+          ],
+          "runtimeRequiredMajors": [
+            8,
+            17,
+            21,
+            25
           ]
         },
+        "runtimeHostProtocols": [
+          1,
+          2
+        ],
+        "runtimePlanProtocol": 2,
+        "sourceRevision": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6",
+        "runtimeRequiredCapabilities": [
+          "zipfs-transaction-v1"
+        ],
+        "runtimeRequiredMajors": [
+          8,
+          17,
+          21,
+          25
+        ],
         "mirrors": [
-          {
-            "provider": "fyhub",
-            "projectId": "amcl",
-            "assetId": "amcl:422088095:669749132",
-            "ready": true,
-            "firstVerifiedAt": 1792774444511,
-            "lastVerifiedAt": 1792778047827,
-            "lastCheckedAt": 1792778047827,
-            "health": "available"
-          },
           {
             "provider": "miawa",
             "projectId": "amcl",
-            "filePath": "amcl/v1.0.6/amcl-v1.0.6-sideload-unsigned.hap",
+            "filePath": "amcl/v1.0.7/amcl-v1.0.7-sideload-unsigned.hap",
             "ready": true,
-            "firstVerifiedAt": 1792775345282,
-            "lastVerifiedAt": 1792778047827,
-            "lastCheckedAt": 1792778047827,
+            "firstVerifiedAt": 1794661234331,
+            "lastVerifiedAt": 1794665778551,
+            "lastCheckedAt": 1794665778551,
+            "health": "available"
+          },
+          {
+            "provider": "fyhub",
+            "projectId": "amcl",
+            "assetId": "amcl:445296551:747494427",
+            "ready": true,
+            "firstVerifiedAt": 1794662152451,
+            "lastVerifiedAt": 1794665778551,
+            "lastCheckedAt": 1794665778551,
             "health": "available"
           }
         ],
-        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/f6b597c49a5abf2f143bba955dab7facfba52039204b6bb264aac8def7979796/amcl-v1.0.6-sideload-unsigned.hap"
+        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/4cc219cd47937e8f882fd2792733f31053ff2b75725fede864dbac271517bf4d/amcl-v1.0.7-sideload-unsigned.hap"
       }
     ]
   },
-  "publicationId": "c4670803b8c11b8200a1c499ec63eaaebf206909d8959934a99c629dc8b63f84"
+  "publicationId": "f6f98e3682e86b5a8c639ec10c601b79f38dd36f9cf455a3e0742e8cf65825c3"
 }

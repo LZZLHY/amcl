@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-10-23T16:21:19Z",
+  "generatedAt": "2026-11-14T05:56:35Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,129 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.6",
-    "versionCode": 1000910,
-    "tag": "v1.0.6",
-    "date": "2026-10-24"
+    "versionName": "1.0.7",
+    "versionCode": 1000911,
+    "tag": "v1.0.7",
+    "date": "2026-11-14"
   },
   "releases": [
+    {
+      "versionName": "1.0.7",
+      "versionCode": 1000911,
+      "tag": "v1.0.7",
+      "date": "2026-11-14",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.7",
+      "title": "稳定 JDK 修复与游戏运行兼容更新",
+      "titleEn": "Stable JDK repair and game runtime compatibility",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "升级后可在 JDK 稳定通道内获取兼容的 JDK 8、17、21、25。",
+            "details": [
+              "新运行时保留真实的宿主协议要求；旧版启动器不会被强制推荐不兼容的新包。",
+              "识别既有官方运行时的身份和兼容状态，通过正常修复流程更新；目录请求或安装失败不直接删除可用旧槽。"
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "补齐运行时与应用的联合发布校验。",
+            "details": [
+              "应用公开前核对稳定运行时供给和包内初始化目录，避免只更新启动器后没有可用正式 JDK 的情况。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "更新弹窗区分普通更新与必需修复，明确显示原因、影响及操作入口。",
+            "details": [
+              "旧官方 JDK 不兼容时，首次启动主动检查当前通道修复包，不受普通自动检查开关和检查间隔影响；选择暂不游戏后，再次启动受影响版本仍会提醒。",
+              "长说明和多项运行时在正文内滚动，主要操作保持可见；普通兼容更新继续允许稍后处理。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复 ZIP/JAR 文件系统事务写回与原件保留问题，改善依赖处理和运行时工具兼容性。"
+          },
+          {
+            "type": "fixed",
+            "text": "补充 zstd-JNI 的 OHOS 原生适配，改进对应字体、装载和原生依赖检查。"
+          },
+          {
+            "type": "fixed",
+            "text": "修复 MobileGL 部分纹理更新次序、CPU/GPU 数据同步及首次局部写入的内存开销问题。",
+            "details": [
+              "对尚未写入的纹理存储按需准备数据，保留已更新区域；具体收益取决于游戏和纹理负载。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "已在 MRDI-W10/API26 平板验证原版 1.12.2、1.16.5、1.20.1、1.21.4、26.3 的运行、保存、退出和冷启动读档；其他设备和全部游戏版本不作全面认证。"
+          },
+          {
+            "type": "notice",
+            "text": "部分大型整合包仍有渲染、辅助线程或内存相关问题。Prominence 尚未通过完整生命周期验收，Distant Horizons 暂不列入适配清单。"
+          },
+          {
+            "type": "notice",
+            "text": "已知的重负载系统异常退出或重启问题仍保留调查，不能据本次原版验收视为全部解决；联机、外设音频及长期性能需按实际环境分别验证。"
+          }
+        ],
+        "summary": "本版侧载包配合四套稳定 JDK，完善升级后的运行时识别、修复与兼容检查。JDK 需单独下载，应用通道与 JDK 通道继续独立保存。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Compatible JDK 8, 17, 21 and 25 runtimes are available through the stable JDK channel.",
+            "details": [
+              "Runtime catalogs retain the actual host protocol requirements, so older launchers reject incompatible new packages.",
+              "Existing official installations are identified before repair. Catalog or installation failures do not directly delete a usable installed runtime."
+            ]
+          },
+          {
+            "type": "highlight",
+            "text": "App publication now checks stable runtime availability and the bundled initialization catalog.",
+            "details": [
+              "This prevents publishing an app that requires new runtimes before compatible stable JDK downloads are ready."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Update dialogs now distinguish optional updates from required runtime repairs, with explicit reasons, impact and actions.",
+            "details": [
+              "Incompatible managed JDKs trigger a repair check on startup regardless of the optional auto-check setting or interval. Choosing not to play does not bypass the repair check on the next affected launch.",
+              "Long descriptions and runtime selections scroll inside the content area while primary actions remain visible. Compatible optional updates can still be deferred."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed transactional ZIP/JAR filesystem writes and preservation of the original archive."
+          },
+          {
+            "type": "fixed",
+            "text": "Added an OHOS adaptation for zstd-JNI and improved relevant font, loading and native dependency handling."
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed parts of MobileGL texture update ordering, CPU/GPU synchronization and the memory cost of the first partial texture write."
+          },
+          {
+            "type": "notice",
+            "text": "Vanilla Minecraft 1.12.2, 1.16.5, 1.20.1, 1.21.4 and 26.3 completed run, save, exit and cold reload checks on an MRDI-W10/API26 tablet. This does not certify all devices or game versions."
+          },
+          {
+            "type": "notice",
+            "text": "Some large modpacks still have rendering, auxiliary thread or memory issues. Prominence has not passed the complete lifecycle checks, and Distant Horizons is currently outside the supported adaptation scope."
+          },
+          {
+            "type": "notice",
+            "text": "Heavy workload crashes or system restarts remain under investigation. Multiplayer, audio peripherals and long term performance require separate environment-specific validation."
+          }
+        ],
+        "summary": "This sideload release works with four stable JDK runtimes and improves runtime identification, repair and compatibility checks after an app update. JDKs remain separate downloads, and the app and JDK channels remain independent."
+      }
+    },
     {
       "versionName": "1.0.6",
       "versionCode": 1000910,
