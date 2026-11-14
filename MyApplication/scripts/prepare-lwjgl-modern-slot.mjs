@@ -67,8 +67,10 @@ if (!checkQuietly()) {
   run(process.execPath, [join(SCRIPT_DIR, 'lwjgl-stack-backfill', 'apply.mjs'), PREBUILT]);
   run(process.execPath, [join(SCRIPT_DIR, 'build-prebuilt-jars.mjs'), '--force']);
   run(python.command, [...python.prefix, join(SCRIPT_DIR, 'lwjgl-stb-compat', 'prepare.py'), '--module', 'stb']);
-  run(python.command, [...python.prefix, join(SCRIPT_DIR, 'finalize-lwjgl-native-hashes.py')]);
   run(python.command, [...python.prefix, join(SCRIPT_DIR, 'lwjgl-stb-compat', 'prepare.py'), '--module', 'tinyfd']);
+  // 与公开下载入口保持同一字节流水线：TinyFD 的 Java ZIP 重写先完成，
+  // 再绑定最终 OHOS Native 指纹，避免本地补处理得到另一个容器摘要。
+  run(python.command, [...python.prefix, join(SCRIPT_DIR, 'finalize-lwjgl-native-hashes.py')]);
   syncExact();
 }
 

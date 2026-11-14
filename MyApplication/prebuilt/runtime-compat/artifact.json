@@ -407,7 +407,7 @@
     },
     {
       "path": "prebuilt/lwjgl3/modern-slot.manifest.json",
-      "sha256": "4379fc0718a0d825e27f206c92ba4558993c27abd13dcb44a2e8d74cdbeebea9"
+      "sha256": "e8ea20fc78b9092f3c9e2fee4aeb293a635a01e6e1d86a40b0f31eb46f590838"
     },
     {
       "path": "scripts/lwjgl-stack-backfill/lib/sources.json",

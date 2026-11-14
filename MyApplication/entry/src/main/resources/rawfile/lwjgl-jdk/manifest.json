@@ -6,7 +6,7 @@
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90",
+      "sourceManifestSha256": "8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00",
       "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
       "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 17,
@@ -173,13 +173,13 @@
           "maxClassMajor": 55
         }
       ],
-      "manifestSha256": "749abfdbf733c1614d1d4a433ee5d1680709484a67626e16df188e3d1545554a"
+      "manifestSha256": "9dc48cf61fdba03dcfcf6c459d54d215a2f84be94e2fd8808a33d79af732bdbb"
     },
     {
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90",
+      "sourceManifestSha256": "8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00",
       "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
       "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 21,
@@ -346,13 +346,13 @@
           "maxClassMajor": 55
         }
       ],
-      "manifestSha256": "3bc8bd214f957bb2e7290f5224299d30163eba2f76bfeade31a250f8af2727c4"
+      "manifestSha256": "263e21b3bd00d5c02bef4ee97e61f4d5a6d594ac14dc50caafde2857bfae5929"
     },
     {
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90",
+      "sourceManifestSha256": "8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00",
       "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
       "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 25,
@@ -520,7 +520,7 @@
           "maxClassMajor": 69
         }
       ],
-      "manifestSha256": "9067ceb6867f5a81a9f5f91a695d27124d45853e311ea8be1e3a0b24b8e43dd9"
+      "manifestSha256": "a96c41feafab57074da96de90c399aeee503bcdade22942d6c594c2183adf1f7"
     }
   ]
 }

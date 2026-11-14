@@ -78,8 +78,10 @@ def update_lock():
     manifest = json.loads(MANIFEST.read_text())
     manifest["jars"] = [record(JARS / item["name"]) for item in manifest["jars"]]
     manifest["natives"] = [record(NATIVES / item["name"]) for item in manifest["natives"]]
+    # 记录与全新下载相同的流水线：TinyFD 先补 Java API，再绑定最终 Native 指纹；
+    # 两种 ZIP writer 的容器字节不同，顺序也属于可重建的锁定原件身份。
     manifest["postprocess"] = ["root-module-info", "complete-module-packages", "stack-api-backfill",
-                               "inject-ohos-glfw-bridge", "stb-resize-v1-api", "ohos-final-native-fingerprints", "tinyfd-boolean-api"]
+                               "inject-ohos-glfw-bridge", "stb-resize-v1-api", "tinyfd-boolean-api", "ohos-final-native-fingerprints"]
     manifest["nativePostprocess"] = "llvm-strip --strip-all; no subsequent byte changes"
     manifest["stbCompatibilitySourceSha256"] = digest((ROOT / "prebuilt/lwjgl3/compat/stb-v1/sources.json").read_bytes())
     payload = "".join(f"{x['name']}|{x['size']}|{x['sha256']}\n" for x in sorted(manifest["jars"], key=lambda x: x["name"]))

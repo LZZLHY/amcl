@@ -2944,7 +2944,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/lwjgl3/jdk-views/manifest.json",
-        "sha256": "2e19a3e1299e31e8dba4cacf190966bd49a7d3ce1d36a29ae82a5030a77cd8dc"
+        "sha256": "81ff314ccc575f4fad1468ef3a563191359e1da8b1eba8ff9818e21cd35dc54e"
       },
       "declarations": {},
       "files": [],
@@ -3618,5 +3618,5 @@
   },
   "schemaVersion": 1,
   "scope": "declared-public-dependency-inputs",
-  "sourceCommit": "9c21c7216d91ab074c2b8d6522b90a38fd9d3899"
+  "sourceCommit": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6"
 }

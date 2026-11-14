@@ -14,8 +14,8 @@
     "stack-api-backfill",
     "inject-ohos-glfw-bridge",
     "stb-resize-v1-api",
-    "ohos-final-native-fingerprints",
-    "tinyfd-boolean-api"
+    "tinyfd-boolean-api",
+    "ohos-final-native-fingerprints"
   ],
   "jars": [
     {

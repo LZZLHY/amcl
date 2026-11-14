@@ -151,8 +151,11 @@ try {
   // Order is part of the locked ZIP identity, including bridge and TinyFD metadata.
   run(process.execPath, [join(scriptDir, 'build-prebuilt-jars.mjs'), '--force', '--lwjgl-dir', stage]);
   run(python.file, [...python.prefix, join(scriptDir, 'lwjgl-stb-compat/prepare.py'), '--jar-dir', stage, '--module', 'stb']);
-  run(python.file, [...python.prefix, join(scriptDir, 'finalize-lwjgl-native-hashes.py'), '--jar-dir', stage]);
   run(python.file, [...python.prefix, join(scriptDir, 'lwjgl-stb-compat/prepare.py'), '--jar-dir', stage, '--module', 'tinyfd']);
+  // TinyFD 的布尔重载补全会用 Java ZIP writer 重写容器；最终 native 指纹绑定
+  // 必须随后执行，才能重现锁定的 OHOS TinyFD JAR 字节。不能把摘要门放宽成
+  // 只比较 class 内容，也不能用本机既有 JAR 掩盖全新下载无法重建的问题。
+  run(python.file, [...python.prefix, join(scriptDir, 'finalize-lwjgl-native-hashes.py'), '--jar-dir', stage]);
   if (inspectFinal) {
     const report = readdirSync(stage).filter((name) => name.endsWith('.jar')).sort().map((name) => ({
       name,

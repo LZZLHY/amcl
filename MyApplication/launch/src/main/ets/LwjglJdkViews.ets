@@ -16,8 +16,8 @@ export interface LwjglJdkView {
 }
 export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
   { javaFeature: 17, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
-    manifestSha256: '749abfdbf733c1614d1d4a433ee5d1680709484a67626e16df188e3d1545554a',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=17\npolicy=cap-future-mr-v1\nsource=97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90\nmanifest=749abfdbf733c1614d1d4a433ee5d1680709484a67626e16df188e3d1545554a\n", jars: [
+    manifestSha256: '9dc48cf61fdba03dcfcf6c459d54d215a2f84be94e2fd8808a33d79af732bdbb',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=17\npolicy=cap-future-mr-v1\nsource=8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00\nmanifest=9dc48cf61fdba03dcfcf6c459d54d215a2f84be94e2fd8808a33d79af732bdbb\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
@@ -52,8 +52,8 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
         resourcePath: 'lwjgl-jdk/b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd.jar' },
     ] },
   { javaFeature: 21, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
-    manifestSha256: '3bc8bd214f957bb2e7290f5224299d30163eba2f76bfeade31a250f8af2727c4',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=21\npolicy=cap-future-mr-v1\nsource=97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90\nmanifest=3bc8bd214f957bb2e7290f5224299d30163eba2f76bfeade31a250f8af2727c4\n", jars: [
+    manifestSha256: '263e21b3bd00d5c02bef4ee97e61f4d5a6d594ac14dc50caafde2857bfae5929',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=21\npolicy=cap-future-mr-v1\nsource=8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00\nmanifest=263e21b3bd00d5c02bef4ee97e61f4d5a6d594ac14dc50caafde2857bfae5929\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
@@ -88,8 +88,8 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
         resourcePath: 'lwjgl-jdk/b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd.jar' },
     ] },
   { javaFeature: 25, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
-    manifestSha256: '9067ceb6867f5a81a9f5f91a695d27124d45853e311ea8be1e3a0b24b8e43dd9',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=25\npolicy=cap-future-mr-v1\nsource=97c51728508e00c67fb024320c1dec077d480f503e574ca3dd7b70c887d21b90\nmanifest=9067ceb6867f5a81a9f5f91a695d27124d45853e311ea8be1e3a0b24b8e43dd9\n", jars: [
+    manifestSha256: 'a96c41feafab57074da96de90c399aeee503bcdade22942d6c594c2183adf1f7',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=25\npolicy=cap-future-mr-v1\nsource=8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00\nmanifest=a96c41feafab57074da96de90c399aeee503bcdade22942d6c594c2183adf1f7\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',

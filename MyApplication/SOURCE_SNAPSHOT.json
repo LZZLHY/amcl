@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sourceCommit": "9c21c7216d91ab074c2b8d6522b90a38fd9d3899",
+  "sourceCommit": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
@@ -817,7 +817,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "d160f5d009e2221405d11ae5bf3a21bcf1c7bebb92edd2e4fce3289f51ddc1bd",
+      "sha256": "ae29d973e13eac3d7c36dc21c21bb32af943aac1f20c14d9b0390d34324db9f7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -9329,7 +9329,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/lwjgl-jdk/manifest.json",
-      "sha256": "2e19a3e1299e31e8dba4cacf190966bd49a7d3ce1d36a29ae82a5030a77cd8dc",
+      "sha256": "81ff314ccc575f4fad1468ef3a563191359e1da8b1eba8ff9818e21cd35dc54e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11919,7 +11919,7 @@
     },
     {
       "path": "launch/src/main/ets/LwjglJdkViews.ets",
-      "sha256": "600d8853c048741700d1476b12aca5d3ef98b6232fdf9cdd65a1679e8f37d8b6",
+      "sha256": "976801922ef0d9d83ea536e967c1eb10929907cceb51f297ce06ce993511e7e0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -13886,7 +13886,7 @@
     },
     {
       "path": "prebuilt/lwjgl3/jdk-views/manifest.json",
-      "sha256": "2e19a3e1299e31e8dba4cacf190966bd49a7d3ce1d36a29ae82a5030a77cd8dc",
+      "sha256": "81ff314ccc575f4fad1468ef3a563191359e1da8b1eba8ff9818e21cd35dc54e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -13907,7 +13907,7 @@
     },
     {
       "path": "prebuilt/lwjgl3/modern-slot.manifest.json",
-      "sha256": "4379fc0718a0d825e27f206c92ba4558993c27abd13dcb44a2e8d74cdbeebea9",
+      "sha256": "e8ea20fc78b9092f3c9e2fee4aeb293a635a01e6e1d86a40b0f31eb46f590838",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -15699,7 +15699,7 @@
     },
     {
       "path": "prebuilt/runtime-compat/artifact.json",
-      "sha256": "e7789b2abe6ca502e637fba34e23bb3ab510d0a9524a55b67e9050e445a15877",
+      "sha256": "e2198d87d8ac7eef876e908ea353d16c32d2a6c1875eff064f4da8388681fb83",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17449,7 +17449,7 @@
     },
     {
       "path": "scripts/download-lwjgl-modern-slot.mjs",
-      "sha256": "838358d8e05acd6cc581e8066c91b59509bfb66398324029d84905556ddad8cc",
+      "sha256": "6731c9144e7da742fc17cfe0e6283203fcdc21d6111bbb6b500f273941b627d7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17484,7 +17484,7 @@
     },
     {
       "path": "scripts/finalize-lwjgl-native-hashes.py",
-      "sha256": "c1016687a0b108d8953d0dec27660c0d04ffae5c978dedda6e35a019d0993b09",
+      "sha256": "839587194e01c8a88142f96b644fb7c83b5157d92625331da27ce68c50bbab63",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18625,7 +18625,7 @@
     },
     {
       "path": "scripts/prepare-lwjgl-modern-slot.mjs",
-      "sha256": "df3de60ff8ea89f8ce216479d9c5dec4d5e7a932cf4fd16ae355628fbef855a8",
+      "sha256": "2231140e54a09cbe256ca1256bbfc1f0cf24f5ef4b8f23ab86494e3c1c7264e2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
