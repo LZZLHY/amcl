@@ -7,7 +7,7 @@ import ts from './lib/ets-compiler.mjs';
 import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** CommonJS临时加载保持原实现，SDK类型检查仍由正常HarmonyOS构建执行。 */
-function load(path, modules = {}) {
+function load(path, modules = {}, platform = {}) {
   const text = readFileSync(resolve(root, path), 'utf8');
   const js = ts.transpileModule(text, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
   const exports = {};
@@ -16,10 +16,11 @@ function load(path, modules = {}) {
     return modules[name];
   }, console, Uint8Array, Object, Number, RegExp, Date, JSON, Observed: value => value,
   // 自动复检使用真实定时器，但未清理的失败用例不能让宿主进程永久驻留。
-  setTimeout: (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; }, clearTimeout });
+  setTimeout: (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; }, clearTimeout, ...platform });
   return exports;
 }
 const models = load('update/src/main/ets/SideloadUpdateModels.ets');
+const signingErrors = load('entry/src/main/ets/sideload/SigningPreparationError.ets');
 // 更新资产与事务已共用运行时要求校验；加载真实纯业务实现，平台替身不能把声明校验变成恒真。
 const runtimeRequirements = load('commons/src/main/ets/common/RuntimeRequirementPolicy.ets');
 // 模拟真机重复mkdir的EEXIST：保险库与事务服务共用目录时只能创建一次。
@@ -133,11 +134,11 @@ const testSession = load('entry/src/main/ets/sideload/SideloadUpdateTestSession.
 
 /** 执行真实登录服务，HTTP与HUKS存储只提供固定响应；不会把本地JWT存在当作服务端认证。 */
 function authSession(saved, responses) {
-  const data = { saved, writes: 0, calls: [] };
+  const data = { saved, writes: 0, calls: [], delays: [] };
   const auth = load('entry/src/main/ets/sideload/DeveloperAuthSession.ets', {
     '@kit.NetworkKit': { http: { RequestMethod: { GET: 'GET' }, HttpDataType: { STRING: 1 },
-      createHttp: () => ({ destroy() {}, async request(url) {
-        data.calls.push(url); const next = responses.shift();
+      createHttp: () => ({ destroy() {}, async request(url, options) {
+        data.calls.push({ url, options }); const next = responses.shift();
         if (next instanceof Error) throw next;
         if (!next) throw new Error('Unexpected HTTP request');
         return await next;
@@ -148,41 +149,50 @@ function authSession(saved, responses) {
       async read() { if (data.saved instanceof Error) throw data.saved; return data.saved; }
       async save(value, current) { if (current()) { data.saved = value; data.writes++; } }
     } },
+    './SigningPreparationError': signingErrors,
+  }, {
+    // 有界重试仍由生产服务决定。宿主调度记录请求的延时，无需实际等待。
+    setTimeout(callback, delay) { data.delays.push(delay); return setImmediate(callback); }, clearTimeout: clearImmediate,
   });
   const session = new auth.DeveloperAuthSession(); session.initialize({ filesDir: '/private/app' });
-  return { session, data, states: auth.DeveloperAuthState };
+  return { session, data, states: auth.DeveloperAuthState, auth };
 }
 const jwt = 'header.' + Buffer.from(JSON.stringify({ userId: 'test-user', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.signature';
 const credential = { schema: 1, jwt, expiresAt: Date.now() + 3600000, savedAt: Date.now() };
-const tokenResponse = { responseCode: 200, result: JSON.stringify({ status: true, userInfo: { accessToken: 'test-only-access' } }) };
+const tokenResponse = { responseCode: 200, result: JSON.stringify({ status: true, userInfo: { userId: 'test-user', accessToken: 'test-only-access' } }) };
 const teamResponse = { responseCode: 200, result: JSON.stringify({ teams: [{ id: 'test-team' }] }) };
 {
   const f = authSession(undefined, []); assert.equal(await f.session.restore(), f.states.Missing); assert.equal(f.data.calls.length, 0);
 }
 {
-  const f = authSession({ ...credential, expiresAt: 1 }, []);
+  const f = authSession({ ...credential, jwt: '' }, []);
   assert.equal(await f.session.restore(), f.states.Expired); assert.equal(f.session.signedIn(), false); assert.equal(f.data.calls.length, 0);
 }
 {
-  const f = authSession(credential, [tokenResponse, teamResponse]);
+  // 旧本地期限不会否决官方刷新成功的现有授权。
+  const f = authSession({ ...credential, expiresAt: 1 }, [tokenResponse, teamResponse]);
   assert.equal(await f.session.restore(), f.states.Valid); assert.equal(f.session.signedIn(), true); assert.equal(f.data.calls.length, 2);
+  assert.equal(f.data.calls[0].options.header.refresh, 'true');
+  assert.equal(f.data.calls[1].options.header.uid, 'test-user');
   f.session.close(); assert.equal(f.session.signedIn(), false); assert.equal(f.data.saved.jwt, jwt);
 }
 for (const response of [{ responseCode: 401, result: '' }, { responseCode: 200, result: '{"status":false}' }]) {
   const f = authSession(credential, [response]);
   assert.equal(await f.session.restore(), f.states.Expired); assert.equal(f.session.signedIn(), false);
-  assert.equal(f.data.saved.jwt, ''); assert.equal(f.data.writes, 1);
+  assert.equal(f.data.saved.jwt, jwt); assert.equal(f.data.writes, 0);
+  assert.equal(f.data.calls.length, 1); assert.deepEqual(f.data.delays, []);
 }
 {
-  const f = authSession(credential, [new Error('network offline')]);
+  const f = authSession(credential, Array.from({ length: 3 }, () => new Error('network offline')));
   assert.equal(await f.session.restore(), f.states.Unavailable); assert.equal(f.data.saved.jwt, jwt); assert.equal(f.data.writes, 0);
+  assert.equal(f.data.calls.length, 3); assert.deepEqual(f.data.delays, [1000, 1000]);
 }
 {
   const response = deferred(); const f = authSession(credential, [response.promise]);
   const checking = f.session.restore(); await settle(); f.session.close(); response.resolve(tokenResponse);
   assert.equal(await checking, f.states.Cancelled); assert.equal(f.session.signedIn(), false); assert.equal(f.data.writes, 0);
 }
-console.log('sideload-update: real login restore, local/server expiration, network distinction and cancelled validation passed');
+console.log('sideload-update: official login refresh, empty/rejected credentials, bounded network retry and cancelled validation passed');
 
 // 存储边界故障保留Unavailable；不能自动冒充登录过期而拉起新的授权。
 {
@@ -190,24 +200,30 @@ console.log('sideload-update: real login restore, local/server expiration, netwo
   assert.equal(await f.session.restore(), f.states.Unavailable); assert.equal(f.data.writes, 0); assert.equal(f.data.calls.length, 0);
 }
 
-// 未拥有当前应用身份时只能读取账号信息，不能创建一个同包名的新身份或先创建证书。
+// 合格调试 Profile 可承接可选查询未匹配的情况。查询确认授权已失效时仍不得继续写入。
 {
   const requests = [];
-  const { DeveloperSigningService: signing } = load('entry/src/main/ets/sideload/DeveloperSigningService.ets', {
+  const modules = {
     '@kit.AbilityKit': { bundleManager: { BundleFlag: {}, getBundleInfoForSelfSync: () =>
-      ({ name: 'com.amcl.launcher', signatureInfo: { appIdentifier: 'installed-app' } }) } },
+      ({ name: 'com.amcl.launcher', signatureInfo: { appId: 'installed-key', appIdentifier: 'installed-app' } }) } },
     '@kit.NetworkKit': { http: { RequestMethod: { GET: 'GET' } } }, '@kit.ArkTS': {}, '@kit.CoreFileKit': {},
-    '@kit.CryptoArchitectureKit': {}, 'libentry.so': {}, './DeveloperAuthSession': {}, './SigningVault': {}, './SideloadFiles': {},
-  });
-  const auth = { teamIds: () => ['team'], async request(path, method) {
-    requests.push({ path, method }); return { appInfos: [{ appId: 'different-app' }] };
+    '@kit.CryptoArchitectureKit': {}, 'libentry.so': {}, './DeveloperAuthSession': authSession(undefined, []).auth,
+    './SigningVault': {}, './SideloadFiles': {}, './SigningPreparationError': signingErrors, commons: {},
+  };
+  modules['./OriginalSigningRecovery'] = load('entry/src/main/ets/sideload/OriginalSigningRecovery.ets', modules);
+  const { DeveloperSigningService: signing } = load('entry/src/main/ets/sideload/DeveloperSigningService.ets', modules);
+  const auth = { teamIds: () => ['team'], preferredTeamId: () => 'team', async request(path, method) {
+    requests.push({ path, method }); throw new Error('华为登录已过期，请重新登录');
   } };
-  await assert.rejects(signing.prepare({}, auth, {}, 'A'.repeat(64), '', '', '', () => {}), /未找到与当前安装匹配/);
+  const vault = { readDraft: async () => ({ appIdentifier: 'installed-app', teamId: 'team', originalAppId: 'different-key' }),
+    saveDraft: async () => { assert.fail('过期授权不能保存签名草稿'); } };
+  await assert.rejects(signing.prepare({}, auth, vault, 'A'.repeat(64), '', '', '', () => {}), /华为登录已过期/);
   assert.equal(requests.length, 1); assert.equal(requests[0].method, 'GET');
+  assert.match(requests[0].path, /\/manage\/app\/brief-info\/list\?packageNames=com\.amcl\.launcher$/);
   assert.throws(() => signing.find([{ id: 'same' }, { id: 'same' }], 'id', 'same'), /重复记录/);
   assert.equal(signing.find([], 'id', 'absent'), undefined);
 }
-console.log('sideload-update: unmatched cloud identity makes no signing mutations; duplicate material records rejected');
+console.log('sideload-update: expired authorization blocks signing mutations; duplicate material records rejected');
 
 // 测试源只能进入default，本域外URL、跨任务资产和清单身份不匹配均失败；清理恢复正式源。
 {

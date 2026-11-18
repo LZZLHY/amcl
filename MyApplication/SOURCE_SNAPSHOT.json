@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sourceCommit": "25cf6b84bcb66ea2b145e5f7803dd4b2e1e15430",
+  "sourceCommit": "2642bf193c23a74e9bd5027c380dbbcadbcba0a0",
   "sourceBranch": "main",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
@@ -817,7 +817,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "29bb3672d9ccc7b61d8c05d25ed701e8063a37d0fe7dde0308d362022c0cd3d6",
+      "sha256": "dee5b3f54b74a23c752b1947842ae9091bea7973ecc414e974f7adf02b81d26e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -21887,7 +21887,7 @@
     },
     {
       "path": "scripts/test-sideload-update.mjs",
-      "sha256": "812824b329d107df1800d994eb94aa2bb552534c4b899339659ef1b264f467b3",
+      "sha256": "096f2d27adbbe9d49310f18d382abe34772152e8d7845db9077759f286ccba2b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
