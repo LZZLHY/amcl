@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-14T15:21:27Z",
+  "generatedAt": "2026-11-18T12:53:41Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,158 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.7",
+    "versionName": "1.0.8-pre1",
     "versionCode": 1000911,
-    "tag": "v1.0.7",
-    "date": "2026-11-14"
+    "tag": "v1.0.8-pre1",
+    "date": "2026-11-18"
   },
   "releases": [
+    {
+      "versionName": "1.0.8-pre1",
+      "versionCode": 1000911,
+      "tag": "v1.0.8-pre1",
+      "date": "2026-11-18",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8-pre1",
+      "title": "侧载自更新改进与实体鼠标修复",
+      "titleEn": "Sideload updates and a physical mouse fix",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "侧载自更新减少手工操作。 在支持的签名环境下，登录华为开发者账号后，应用可自动准备签名授权并尝试保留现有安装的签名身份。设置页和更新流程共用登录状态。",
+            "markdown": "**侧载自更新减少手工操作。** 在支持的签名环境下，登录华为开发者账号后，应用可自动准备签名授权并尝试保留现有安装的签名身份。设置页和更新流程共用登录状态。"
+          },
+          {
+            "type": "highlight",
+            "text": "恢复实体鼠标转视角。 修复启动游戏或调整本局分辨率后，已连接鼠标移动却无法带动视角的问题。画面尺寸确认后，游戏可重新申请鼠标捕获。",
+            "markdown": "**恢复实体鼠标转视角。** 修复启动游戏或调整本局分辨率后，已连接鼠标移动却无法带动视角的问题。画面尺寸确认后，游戏可重新申请鼠标捕获。"
+          },
+          {
+            "type": "added",
+            "text": "在设置中管理华为开发者账号。 可从设置进入账号登录，查看已保存的授权状态，或退出开发者登录。",
+            "markdown": "**在设置中管理华为开发者账号。** 可从设置进入账号登录，查看已保存的授权状态，或退出开发者登录。",
+            "details": [
+              "更新流程与设置复用同一个登录界面和已保存的授权。关闭页面或取消登录后，迟到的登录结果不会继续影响该次操作。",
+              "软件更新页可从设置总览、侧栏和搜索进入。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "更新提示和进度页。 手机与平板采用一致的更新用语。检查到更新时突出目标版本、摘要与主要操作。更新中显示当前进度、详情和可执行的操作。",
+            "markdown": "**更新提示和进度页。** 手机与平板采用一致的更新用语。检查到更新时突出目标版本、摘要与主要操作。更新中显示当前进度、详情和可执行的操作。",
+            "details": [
+              "减少重复标签、重复登录状态提示以及提前出现的手工操作。自动调试连接遇到问题，或用户主动选择手工连接时，仍可使用端口输入。",
+              "更新提示中的 JDK 修复原因和操作入口更易查看，长版本标识可按需展开。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "自动准备侧载签名。 优先续用已保存的签名密钥，并按需复用或申请开发证书与设备测试授权。",
+            "markdown": "**自动准备侧载签名。** 优先续用已保存的签名密钥，并按需复用或申请开发证书与设备测试授权。",
+            "details": [
+              "针对已识别的默认签名来源，可尝试恢复其原有签名身份。应用内更新流程移除了手动选择签名文件的步骤。",
+              "已下载的官方 HAP 仍可导入，应用会核对其发行身份和文件摘要。",
+              "签名授权过期或服务暂时不可用时，在同一次更新中按相应原因恢复或重试，避免重复下载或重复发起系统安装。网络短时异常可继续检查原有登录授权。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "优化更新下载来源。 新版更新器优先使用官网的更新推荐，官网请求不可用时可使用 GitHub 或 Pages 的备份。在原件通过完整性校验后，可以从官网或 GitHub 下载，镜像可用时也可使用镜像。",
+            "markdown": "**优化更新下载来源。** 新版更新器优先使用官网的更新推荐，官网请求不可用时可使用 GitHub 或 Pages 的备份。在原件通过完整性校验后，可以从官网或 GitHub 下载，镜像可用时也可使用镜像。"
+          },
+          {
+            "type": "fixed",
+            "text": "侧载更新中的登录、签名请求和错误提示。 改善冷启动后复用账号授权及令牌刷新，修复部分证书请求、授权文件下载和设备注册失败。",
+            "markdown": "**侧载更新中的登录、签名请求和错误提示。** 改善冷启动后复用账号授权及令牌刷新，修复部分证书请求、授权文件下载和设备注册失败。",
+            "details": [
+              "登录失效、现装签名不兼容、网络问题和签名服务暂不可用会给出各自的原因与重试入口。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "本版通过通用侧载测试通道交付。下载的 unsigned HAP 需要签名后侧载。"
+          },
+          {
+            "type": "notice",
+            "text": "应用内覆盖更新需要保留现装包的签名身份。使用自定义证书或密钥的安装，可能需要用原签名材料手动更新。登录同一个开发者账号也可能对应不同的签名密钥。"
+          },
+          {
+            "type": "notice",
+            "text": "部分旧版本的应用内检查需要兼容的镜像推荐。如果暂时看不到本预览，可从官方预览发布页手动取得安装包。"
+          }
+        ],
+        "summary": "这是相对 1.0.7 的第一个 1.0.8 通用侧载预览版。主要改进软件更新、华为开发者账号和侧载签名流程，并修复实体鼠标转视角的问题。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Fewer manual steps for sideload updates. With a supported signing setup, the app can prepare signing authorization after HUAWEI developer sign-in and attempt to preserve the installed app's signing identity. Settings and the updater share the same sign-in.",
+            "markdown": "**Fewer manual steps for sideload updates.** With a supported signing setup, the app can prepare signing authorization after HUAWEI developer sign-in and attempt to preserve the installed app's signing identity. Settings and the updater share the same sign-in."
+          },
+          {
+            "type": "highlight",
+            "text": "Restored physical mouse look. Fixed a case where moving a connected mouse could stop turning the camera after launching a game or changing its resolution. The game can request mouse capture again when the drawable size is confirmed.",
+            "markdown": "**Restored physical mouse look.** Fixed a case where moving a connected mouse could stop turning the camera after launching a game or changing its resolution. The game can request mouse capture again when the drawable size is confirmed."
+          },
+          {
+            "type": "added",
+            "text": "HUAWEI developer account in Settings. Sign in, check saved authorization or sign out from Settings.",
+            "markdown": "**HUAWEI developer account in Settings.** Sign in, check saved authorization or sign out from Settings.",
+            "details": [
+              "Settings and the updater share the same sign-in screen and saved authorization. A late sign-in response is ignored after closing the screen or cancelling.",
+              "Software Update is also reachable from the Settings overview, sidebar and search."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Update prompts and progress. Phone and tablet now use consistent update wording. The prompt emphasizes the target version, summary and available actions. During an update, the page shows the current progress, details and available actions.",
+            "markdown": "**Update prompts and progress.** Phone and tablet now use consistent update wording. The prompt emphasizes the target version, summary and available actions. During an update, the page shows the current progress, details and available actions.",
+            "details": [
+              "Removed repeated labels, duplicate sign-in status messages and premature manual prompts. Manual port entry remains available when automatic debugging connection fails or the user chooses manual connection.",
+              "JDK repair reasons and actions are easier to find in update prompts, and long version identifiers can be expanded as needed."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Automatic sideload signing preparation. The app prioritizes the saved signing key and reuses or requests developer certificates and device test authorization as needed.",
+            "markdown": "**Automatic sideload signing preparation.** The app prioritizes the saved signing key and reuses or requests developer certificates and device test authorization as needed.",
+            "details": [
+              "The updater can attempt to recover the original signing identity for recognized default setups. Manual signing file selection has been removed from the in-app update flow.",
+              "Downloaded official HAPs can still be imported. The app checks the release identity and file digest.",
+              "Expired signing authorization and temporary service failures can be handled within the same update attempt, avoiding repeated downloads or duplicate system install requests. A temporary network problem can be retried with the existing sign-in."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Improved update sources. The updater checks the official website first and can fall back to GitHub or Pages for update information. Once the package passes integrity checks, it can be downloaded from the official website or GitHub, with mirrors used when available.",
+            "markdown": "**Improved update sources.** The updater checks the official website first and can fall back to GitHub or Pages for update information. Once the package passes integrity checks, it can be downloaded from the official website or GitHub, with mirrors used when available."
+          },
+          {
+            "type": "fixed",
+            "text": "Sideload update sign-in, signing requests and error messages. Improved saved authorization and token refresh after restart, and fixed some failures in certificate requests, authorization downloads and device registration.",
+            "markdown": "**Sideload update sign-in, signing requests and error messages.** Improved saved authorization and token refresh after restart, and fixed some failures in certificate requests, authorization downloads and device registration.",
+            "details": [
+              "The updater now provides distinct messages and retry paths for expired sign-in, incompatible signing identity, network problems and temporary signing service failures."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "This build is delivered through the universal sideload preview channel. The unsigned HAP requires signing before sideloading."
+          },
+          {
+            "type": "notice",
+            "text": "An in-app update requires the signing identity of the installed app. A custom certificate or key may require a manual update signed with the original material. The same developer account can use different signing keys."
+          },
+          {
+            "type": "notice",
+            "text": "Some older app versions require a compatible mirror recommendation. If the preview is temporarily unavailable inside the app, it can be downloaded from the official preview release page."
+          }
+        ],
+        "summary": "This is the first universal sideload preview of 1.0.8, based on 1.0.7. It improves software updates, HUAWEI developer account access and sideload signing, and fixes physical mouse look controls."
+      }
+    },
     {
       "versionName": "1.0.7",
       "versionCode": 1000911,
