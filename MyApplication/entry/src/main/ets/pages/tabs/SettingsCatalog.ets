@@ -90,7 +90,7 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
     items.push({ id: 'java', section: 'performance', title: 'Java 版本', description: '按游戏版本自动匹配或固定 JDK', keywords: 'java jdk 运行环境 版本' });
     items.push({ id: 'jvm', section: 'performance', title: '自定义 JVM 参数', description: '编辑全局启动参数', keywords: 'jvm java 参数 启动 自定义' });
     items.push({ id: 'mod-audio', section: 'performance', title: '模组麦克风', description: '前台语音聊天与 AI 交互', keywords: '麦克风 录音 语音 verity ai voice' });
-    items.push({ id: 'frame-rate', section: 'controls', title: '系统调度帧率上限', description: '调整 HarmonyOS 渲染调度提示', keywords: '显示 帧率 刷新 hz fps 自动' });
+    items.push({ id: 'frame-rate', section: 'controls', title: '系统调度帧率', description: '固定屏幕刷新率或交回系统自动调节', keywords: '显示 帧率 刷新 屏幕 hz fps 自动 固定 ltpo 档位' });
     items.push({ id: 'language', section: 'controls', title: '游戏语言', description: 'Minecraft 界面的默认语言', keywords: '语言 中文 english lang' });
     items.push({ id: 'graphics', section: 'controls', title: '图形后端', description: '按设备、游戏与运行库检查可用性', keywords: '渲染 mobilegl mobileglues vulkan opengl gl4es zink' });
     // 与分辨率组件使用同一运行能力门；管理态不暴露游戏缩放入口，搜索只导航不写设置。

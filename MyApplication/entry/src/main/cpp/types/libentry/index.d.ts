@@ -56,7 +56,8 @@ export const getRecommendedXmx: () => number;
 // HarmonyOS XComponent scheduler hint. sourceBit must be one caller-owned bit;
 // EntryAbility=1 and GameAbility=2. This does not create a render/VSync loop.
 export const setOhosFrameRateForeground: (sourceBit: number, foreground: boolean) => boolean;
-// Explicit known game FPS cap. 0 clears it; valid positive values are 30..240.
+// User-selected scheduler frame rate. 0 = auto (max follows the display rate);
+// 30..240 pins min/max/expected to that rate so LTPO cannot slide it down.
 export const setOhosFrameRateCap: (fpsCap: number) => boolean;
 // Re-query the current default-display refresh rate and force the XComponent
 // scheduler hint to be recalculated. False means no live surface was available.

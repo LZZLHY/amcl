@@ -6,6 +6,7 @@
  * 手机使用单列，840 vp 起展示分类侧栏；1120 vp 起性能正文按可用宽度分成两列。
  */
 import { promptAction } from '@kit.ArkUI';
+import display from '@ohos.display';
 import { ThemeColors, ThemeMode, ThemeSelection, themeAccentLabel, ImmersiveLightPreferences, dockLightModeLabel,
   APP_VERSION, DOCS_INSTALL_URL, DOCS_INSTALL_FALLBACK_URL, DOCS_NO_JIT_URL,
   DOCS_NO_JIT_FALLBACK_URL, DeviceProfile, DeviceForm, Breakpoint, detailSheetHeightForLayout,
@@ -100,7 +101,7 @@ export struct SettingsTab {
   @Prop customJvmArgs: string = ''
   /** 全局游戏语言（options.txt lang code，如 'zh_cn'）。默认简体中文；单版本可覆盖。 */
   @Prop gameLanguage: string = 'zh_cn'
-  /** OHOS XComponent 调度帧率上限。0 = 自动跟随显示刷新率；不修改游戏内 FPS 设置。 */
+  /** OHOS XComponent 调度帧率。0 = 自动跟随显示刷新率；正值将 min/max/expected 固定为该值，防止 LTPO 下滑；不修改游戏内 FPS 设置。 */
   @Prop ohosFrameRateCap: number = 0
   /** 是否有可用更新（驱动「检查更新」行红点）。 */
   @Prop hasUpdate: boolean = false
@@ -145,7 +146,7 @@ export struct SettingsTab {
   onCustomJvmArgsChange: (args: string) => Promise<void> = async (): Promise<void> => {}
   /** 用户切换全局游戏语言；父组件持久化到 prefs（PreferenceManager.gameLanguage）。 */
   onGameLanguageChange: (code: string) => void = () => {}
-  /** 用户切换 OHOS 调度帧率上限；父组件持久化并同步到 native policy。 */
+  /** 用户切换 OHOS 调度帧率（0=自动，正值固定 min/max/expected）；父组件持久化并同步到 native policy。 */
   onOhosFrameRateCapChange: (fpsCap: number) => void = () => {}
   /** 用户点击「检查更新」；父组件拉 update.json 比对 versionCode 并提示结果。 */
   onCheckUpdate: () => void = () => {}
@@ -171,6 +172,8 @@ export struct SettingsTab {
   private focusGeneration_: number = 0;
   private pendingStorage_: string = '';
   private pendingMigration_: boolean = false;
+  /** 面板支持档位的懒查询结果；undefined 表示尚未查询。 */
+  private panelRates_: number[] | undefined = undefined;
 
   /** 返回资格只在本 Tab 真实可见时有效；优先退出局部草稿，再清搜索，最后回到概览。 */
   private sectionBackHandler_: () => boolean = (): boolean => {
@@ -381,6 +384,30 @@ export struct SettingsTab {
     return '';
   }
 
+  /**
+   * 帧率候选 = 固定候选表 ∩ 面板上报的支持档位，并始终保留「自动」与当前确认值
+   * （旧值可能来自别的屏幕，不能因过滤把它变成"已不可用"）。面板不上报档位
+   * （虚拟屏或查询失败）时回落到完整候选表。档位在会话内不变，只查一次。
+   */
+  private frameRateChoices_(): number[] {
+    let supported: number[] = this.panelRates_ ?? [];
+    if (this.panelRates_ === undefined) {
+      let rates: number[] = [];
+      try {
+        const current: display.Display = display.getDefaultDisplaySync();
+        const reported: number[] | undefined = current.supportedRefreshRates;
+        if (reported !== undefined) rates = reported;
+      } catch (_) { rates = []; }
+      supported = rates.filter((rate: number): boolean => rate >= 30 && rate <= 240);
+      this.panelRates_ = supported;
+    }
+    const candidates: number[] = [0, 30, 60, 90, 120, 144, 165, 240];
+    const choices: number[] = supported.length === 0 ? candidates
+      : candidates.filter((value: number): boolean => value === 0 || supported.indexOf(value) >= 0);
+    if (choices.indexOf(this.ohosFrameRateCap) < 0) choices.push(this.ohosFrameRateCap);
+    return choices.sort((left: number, right: number): number => left - right);
+  }
+
   /** Java 动态目录与产品能力在每次渲染/确认时重新消费，不硬编码设计稿中的示例版本。 */
   private choiceOptions_(): SettingsChoice[] {
     if (this.sheetKind === 'java') {
@@ -389,8 +416,8 @@ export struct SettingsTab {
         description: jdk.version === '8' ? '实验性 · 旧版游戏与调试' : '固定使用 JDK ' + jdk.version + (jdk.updateAvailable ? ' · 有可用更新' : ''), enabled: true });
       return options;
     }
-    if (this.sheetKind === 'frame') return [0, 30, 60, 90, 120, 144, 165, 240].map((value: number): SettingsChoice =>
-      ({ value: String(value), title: value === 0 ? '自动' : value + ' Hz', description: value === 0 ? '跟随当前显示刷新率' : '系统渲染调度提示上限', enabled: true }));
+    if (this.sheetKind === 'frame') return this.frameRateChoices_().map((value: number): SettingsChoice =>
+      ({ value: String(value), title: value === 0 ? '自动' : value + ' Hz', description: value === 0 ? '跟随当前屏幕刷新率' : '屏幕保持该刷新率，不随内容降到更低档', enabled: true }));
     if (this.sheetKind === 'language') return GAME_LANGUAGES.map((language: GameLanguageOption): SettingsChoice =>
       ({ value: language.code, title: language.label, description: language.code, enabled: true }));
     if (this.sheetKind === 'mc-source') return [
@@ -420,7 +447,7 @@ export struct SettingsTab {
   }
 
   private sheetTitle_(): string {
-    if (this.sheetKind === 'frame') return '系统调度帧率上限';
+    if (this.sheetKind === 'frame') return '系统调度帧率';
     if (this.sheetKind === 'jdk-channel') return 'JDK 更新通道';
     return this.availableItems_().find((item: SettingsItem): boolean => item.id === this.sheetKind)?.title ?? '设置';
   }
@@ -869,7 +896,7 @@ export struct SettingsTab {
   private Controls_() {
     Column({ space: 24 }) {
       SettingsGroup({ title: '显示', theme: this.theme, content: (): void => { this.DisplayContent_(); } });
-      SettingsHint({ text: '调度帧率只影响 HarmonyOS 渲染调度提示，不更改 Minecraft 的最大帧率。', theme: this.theme });
+      SettingsHint({ text: '固定档位让屏幕保持该刷新率，避免设备未满足帧率提升条件时自动降低刷新率；只影响屏幕刷新，不更改 Minecraft 的最大帧率。候选档位来自当前屏幕支持的刷新率。', theme: this.theme });
       MobileglRendererSettings({ theme: this.theme, mcDir: this.mcDir, mcVersion: this.mcVersion, compact: true,
         onOpen: (): void => { this.selectSection_('graphics'); } })
         .onAreaChange((): void => { this.locateItem_('graphics'); });
@@ -900,7 +927,7 @@ export struct SettingsTab {
   }
   @Builder
   private DisplayContent_() {
-    SettingsValueRow({ title: '系统调度帧率上限', value: this.ohosFrameRateCap === 0 ? '自动' : this.ohosFrameRateCap + ' Hz',
+    SettingsValueRow({ title: '系统调度帧率', value: this.ohosFrameRateCap === 0 ? '自动' : '固定 ' + this.ohosFrameRateCap + ' Hz',
       theme: this.theme, controlId: 'settings-item-frame-rate', highlighted: this.highlightedItem === 'frame-rate',
       onLayout: (): void => { this.locateItem_('frame-rate'); }, onAction: (): void => { this.openSheet_('frame'); } });
     SettingsDivider({ theme: this.theme });
@@ -1143,7 +1170,7 @@ export struct SettingsTab {
             SettingsHint({ text: '多个参数用空格分隔。保存后，下次启动游戏时生效。', theme: this.theme });
             if (this.jvmSaving) SettingsHint({ text: '正在保存。关闭面板不会撤销已提交的保存。', theme: this.theme, isAccent: true });
           } else {
-            if (this.sheetKind === 'frame') SettingsHint({ text: '仅调整系统渲染调度提示，不更改游戏内的最大帧率。', theme: this.theme });
+            if (this.sheetKind === 'frame') SettingsHint({ text: '固定档位让屏幕保持该刷新率，避免设备未满足帧率提升条件时自动降低刷新率；不更改游戏内的最大帧率。', theme: this.theme });
             if (this.sheetKind === 'language') SettingsHint({ text: '设置游戏内的默认语言，单个版本可单独覆盖。', theme: this.theme });
             if (this.sheetKind === 'java') SettingsHint({ text: '自动按 Minecraft 版本匹配，推荐日常使用。下次启动游戏时生效。', theme: this.theme });
             Column() {

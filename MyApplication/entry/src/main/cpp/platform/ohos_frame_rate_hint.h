@@ -69,11 +69,11 @@ constexpr int32_t SanitizeDisplayFrameRate(int32_t displayRate) {
                             : ClampFrameRate(displayRate);
 }
 
-// Overrides and fpsCap use zero to mean "not specified". The effective cap is
-// always a hard ceiling: if min exceeds it, min is lowered instead of silently
-// raising the cap. Inactive components use one conservative 30 Hz hint.
-// This function deliberately has no OHOS dependencies so policy edge cases can
-// be compile-time tested and reused by host-side tests.
+// Overrides and fpsCap use zero to mean "not specified". A positive fpsCap is
+// the user-selected rate: min/max/expected all pin to it and it wins over the
+// environment overrides, so an LTPO panel cannot drift below it. Otherwise max
+// follows the display rate, min stays conservative, inactive means one 30 Hz
+// hint. No OHOS dependencies, so edge cases stay compile-time testable.
 constexpr FrameRatePolicy MakeFrameRatePolicy(int32_t displayRate,
                                               int32_t overrideMin = 0,
                                               int32_t overrideMax = 0,
@@ -86,15 +86,16 @@ constexpr FrameRatePolicy MakeFrameRatePolicy(int32_t displayRate,
     }
 
     const int32_t display = SanitizeDisplayFrameRate(displayRate);
+    if (fpsCap > 0) {
+        // User-pinned rate: all three values equal so the scheduler holds a
+        // fixed rate instead of drifting down under an LTPO policy.
+        const int32_t pinned = ClampFrameRate(fpsCap);
+        return {pinned, pinned, pinned};
+    }
+
     int32_t min =
         overrideMin > 0 ? ClampFrameRate(overrideMin) : kMinimumUsefulFrameRate;
     int32_t max = overrideMax > 0 ? ClampFrameRate(overrideMax) : display;
-    if (fpsCap > 0) {
-        const int32_t cap = ClampFrameRate(fpsCap);
-        if (max > cap) {
-            max = cap;
-        }
-    }
     if (min > max) {
         min = max;
     }
@@ -115,9 +116,10 @@ constexpr bool FrameRatePolicyEqual(const FrameRatePolicy &lhs,
            lhs.expected == rhs.expected;
 }
 
-// The lifecycle controller stores only the XComponent handle. It never owns a
-// render callback or a VSync source. Surface/focus/Ability events merely update
-// the scheduler hint used by Minecraft's existing loop.
+// The lifecycle controller owns the XComponent handle plus, while a rate is
+// pinned, one dedicated VSync source. It never owns a render callback:
+// Surface/focus/Ability events only update the scheduler hint, and Minecraft's
+// existing loop stays the only producer of frames.
 void RegisterFrameRateComponent(OH_NativeXComponent *component);
 void SetFrameRateSurfaceReady(OH_NativeXComponent *component, bool ready,
                               const char *lifecycleStage);
@@ -130,9 +132,11 @@ void SetFrameRateFocused(OH_NativeXComponent *component, bool focused,
 bool SetFrameRateForegroundSource(uint32_t sourceBit, bool foreground,
                                   const char *lifecycleStage);
 
-// Zero clears the runtime cap. Positive values must be in the supported range.
-// This is an explicit input for a cap known by the launcher/game; AMCL never
-// guesses a cap from short-term measured FPS.
+// Zero clears the pinned rate (auto: max follows the display refresh rate).
+// Positive values must be in the supported range and pin min/max/expected plus
+// a dedicated VSync vote to that exact rate. This is an explicit input for a
+// rate chosen by the user in the launcher settings; AMCL never guesses one from
+// short-term measured FPS.
 bool SetRuntimeFrameRateCap(int32_t fpsCap, const char *lifecycleStage);
 
 // Re-applies the current state, for example after a size change. This remains a
@@ -146,10 +150,10 @@ bool ApplyExpectedFrameRateHint(OH_NativeXComponent *component,
 // Returns false while no live surface is registered.
 bool RefreshExpectedFrameRateHint(const char *lifecycleStage);
 
-// 使用ArkTS当前Window display采得的Hz重新计算既有owner政策，避免窗口跨屏时
-// 把default display误当game display。成功且相同的政策只读返回，不重复SDK或日志；
-// 上次失败仍重试，真正component/surface强制边界由原显式入口处理。
-// 非正值保留Native default-display兼容查询；此函数不增加时钟或呈现通知。
+// Recomputes the owner policy from the Hz sampled on the current ArkTS Window
+// display, so a window crossing screens no longer reads the default display.
+// Equal successful policies return without SDK calls or logs; a failure still
+// retries. Non-positive values keep the native default-display query.
 bool RefreshExpectedFrameRateHintForDisplayRate(
     int32_t displayRate, const char *lifecycleStage);
 

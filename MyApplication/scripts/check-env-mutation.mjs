@@ -174,6 +174,8 @@ export const ALLOWLIST = [
     phase: 'pre-thread', why: 'called only from module Init (napi_entry.cpp) before any AMCL thread; value is process constant' },
   { file: 'entry/src/main/cpp/platform/mg_config.cpp', function: 'prepareMobileGluesRuntime', call: 'setenv', name: '"MG_ANGLE_DIR"',
     phase: 'pre-thread', why: 'called only from module Init (napi_entry.cpp) before any AMCL thread; value is process constant' },
+  { file: 'entry/src/main/cpp/platform/mg_config.cpp', function: 'prepareMobileGluesRuntime', call: 'setenv', name: 'kFramesInFlightEnv',
+    phase: 'pre-thread', why: 'same module-Init path as MG_DIR_PATH (kFramesInFlightEnv is MOBILEGL_MAGMA_FRAMESINFLIGHT), before MobileGL loads and before any AMCL thread; process constant 5 unless the host already set it' },
   { file: 'entry/src/main/cpp/napi/napi_input.cpp', function: 'PublishGrabChangeTrampolineOnce', call: 'setenv', name: '"AMCL_GRAB_CB"',
     phase: 'pre-thread', why: 'std::call_once from registerInputNapi (module Init); onGrabChange only swaps the tsfn under g_grabMutex' },
   { file: 'entry/src/main/cpp/platform/touch_input.cpp', function: 'publishReverseTrampolinesOnce', call: 'setenv', name: '"AMCL_TOUCH_GRAB_CB"',

@@ -288,7 +288,7 @@ struct Index {
   @State gameLanguage: string = 'zh_cn'
   /** 仅发布已确认的全局 JVM 参数；编辑草稿留在设置页，持久提交成功后才更新此值。 */
   @State private customJvmArgs: string = ''
-  /** OHOS XComponent 调度帧率上限：0 = 自动跟随当前显示刷新率。 */
+  /** OHOS XComponent 调度帧率：0 = 自动跟随当前显示刷新率；正值固定 min/max/expected 为该值。 */
   @State ohosFrameRateCap: number = 0
   // P1-MODS §6.4: 模组下载偏好
   @State modSource: string = 'auto'
