@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sourceCommit": "2b31852888416bdd380770df560ba9294dc082a3",
+  "sourceCommit": "25cf6b84bcb66ea2b145e5f7803dd4b2e1e15430",
   "sourceBranch": "main",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
@@ -761,7 +761,7 @@
     },
     {
       "path": "config/build-gate-baseline.json",
-      "sha256": "3bb03614481ae10030b2a80584e83adc425ed104a3c68c9136f21373f840cc66",
+      "sha256": "fac14ffd8110f872c64a7209994909c6f9ac8a39469d62ec69aedda036664d33",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -817,7 +817,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "9a026d834235cb85cfceb5a31667f0a0b943b93975c64c6079b01f2f2f462ddd",
+      "sha256": "29bb3672d9ccc7b61d8c05d25ed701e8063a37d0fe7dde0308d362022c0cd3d6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -19108,7 +19108,7 @@
     },
     {
       "path": "scripts/test-build-gate-inventory.mjs",
-      "sha256": "5de878d19ec29ad7e0db2261f2cd65f7ad3f4ded862ff661b2c6093df7349c91",
+      "sha256": "c3df17555740fdc412bd68371d7c7fba93ba3f57eb089c06193525eae948f28e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"

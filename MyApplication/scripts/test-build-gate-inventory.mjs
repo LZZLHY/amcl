@@ -73,10 +73,11 @@ function inventoryIssues({ currentCatalog = catalog, currentSources = sources } 
     const actual = normalizePowerShellWitness(currentSources[row.source]);
     let expected = normalizePowerShellWitness(row.text);
     const adapter = baseline.approvedWitnessAdapters.find(item => item.callsite === row.id);
-    if (adapter && actual.includes(normalizePowerShellWitness(adapter.invocation))) {
+    // 已退休的入口仍保留历史见证，但当前源码必须使用经过审核的替代调用。
+    if (adapter && (adapter.requiredInCurrentSource || actual.includes(normalizePowerShellWitness(adapter.invocation)))) {
       expected = normalizePowerShellWitness(adapter.invocation);
       for (const fragment of adapter.required) {
-        if (!actual.includes(normalizePowerShellWitness(fragment))) issues.push(`验证档透传改变原参数：${row.id}`);
+        if (!actual.includes(normalizePowerShellWitness(fragment))) issues.push(`批准的调用约束缺失：${row.id} ${adapter.adapter}`);
       }
     }
     const cursor = cursors.get(row.source) ?? 0;
@@ -178,6 +179,26 @@ test('交换旧调用、删除命令或只留墓碑注释均不能覆盖原门�
   assert(inventoryIssues({ currentSources: { ...sources, 'build-hap.ps1': switched } }).some(issue => issue.includes('遗漏或调序')));
   const commented = input.replace(currentFirst, '# ' + currentFirst);
   assert(inventoryIssues({ currentSources: { ...sources, 'build-hap.ps1': commented } }).some(issue => issue.includes('遗漏或调序')));
+});
+
+test('更新界面回归绑定本轮 SDK 转换目录，失败会阻止构建', () => {
+  const input = sources['build-hap.ps1'];
+  const callsite = 'build-hap.ps1:call-135';
+  const adapter = baseline.approvedWitnessAdapters.find(item => item.callsite === callsite);
+  const invocation = adapter.invocation.replace('& node', 'Invoke-AmclNode');
+  const failures = [
+    ['其它目录', '$SdkUiRoot = Join-Path $ProjectRoot', '$SdkUiRoot = Join-Path $env:TEMP'],
+    ['其它实参', invocation, invocation.replace('$SdkUiRoot', '$OtherSdkRoot')],
+    ['退休夹具', invocation, invocation.replace('$SdkUiRoot', '$SdkUiFixture')],
+    ['只剩注释', invocation, '# ' + invocation],
+    ['只告警不阻断', "throw 'SDK update dialog runtime regression failed'", "Write-Warning 'SDK update dialog runtime regression failed'"],
+  ];
+  for (const [name, before, after] of failures) {
+    const changed = input.replace(before, after);
+    assert.notEqual(changed, input, name);
+    const issues = inventoryIssues({ currentSources: { ...sources, 'build-hap.ps1': changed } });
+    assert(issues.some(issue => issue.includes(callsite)), name);
+  }
 });
 
 test('最终HAP/动态provenance不能退化为可缓存或可延期检查', () => {

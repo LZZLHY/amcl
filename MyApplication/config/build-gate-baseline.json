@@ -5956,6 +5956,17 @@
   ],
   "approvedWitnessAdapters": [
     {
+      "surface": "build-hap.ps1",
+      "callsite": "build-hap.ps1:call-135",
+      "adapter": "sdk-ui-current-output",
+      "requiredInCurrentSource": true,
+      "invocation": "& node \"$ProjectRoot\\scripts\\test-update-dialog-sdk-runtime.mjs\" $SdkUiRoot",
+      "required": [
+        "if ($AssembleExit -ne 0) { throw \"hvigor assembleHap failed (exit $AssembleExit)\" } if ($Product -eq 'default' -and $BuildMode -eq 'debug') { $SdkUiRoot = Join-Path $ProjectRoot 'entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets' & node \"$ProjectRoot\\scripts\\test-update-dialog-sdk-runtime.mjs\" $SdkUiRoot if ($LASTEXITCODE -ne 0) { throw 'SDK update dialog runtime regression failed' } }"
+      ],
+      "reason": "更新界面回归直接读取本轮 SDK 转换目录，保留原构建阶段、产品范围和失败阻断"
+    },
+    {
       "surface": "scripts/invoke-build-menu.ps1",
       "callsite": "scripts:invoke-build-menu.ps1:call-172",
       "adapter": "validation-profile-forwarding",
