@@ -68,7 +68,7 @@ function fixture({ installed = '1.0.5', currentCode = 100, channel = 'stable', p
   official = ready('1.0.6', 101, channel, product), staticHead = ready('1.0.5', 100, channel, product),
   hooks = false, allowed = true, responses = {}, expectedMirrors = [] } = {}) {
   const calls = [], leases = { acquired: 0, released: 0 };
-  const officialUrl = 'https://amcl.lovedhy.cn/api/packages/manifest?product=' + product + '&channel=' + channel;
+  const officialUrl = 'https://amcl.lovedhy.cn/api/packages/manifest?product=' + product + '&channel=' + channel + '&deliveryProtocol=2';
   const exports = {};
   const native = { fetchText: async (url, mirrors, timeout, headers, limit) => {
     calls.push({ url, mirrors, timeout, limit });
@@ -196,7 +196,8 @@ await test('预览回退不追加旧稳定update.json', async () => {
   const f = fixture({ channel: 'preview', official: { failure: true }, staticHead: '<html>invalid</html>' });
   const actual = await f.checker.checkForUpdate(undefined, f.product, f.channel);
   assert.equal(actual.hasUpdate, false); assert.equal(actual.manifest, null);
-  assert.equal(f.calls.length, 3); assert(f.calls.slice(1).every(call => call.url.endsWith('/sideload/preview.json')));
+  assert.equal(f.calls.length, 5); assert(f.calls.slice(1).every(call => call.url.endsWith('/sideload/preview.json')));
+  assert(f.calls[1].url.includes('/updates/v2/'),'先回退协议2备份，再兼容旧产品入口');
 });
 
 await test('显式注入源顺序及错误JSON回退保持隔离', async () => {

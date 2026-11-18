@@ -8,19 +8,16 @@ import { applyNativeTheme } from './AppTheme';
  * 登录回调、调试准备、下载、签名和安装仍由唯一 Coordinator 连续推进，ViewModel 仅投影。
  * 本组件只改变显示层级和命令入口，不产生第二份下载进度、安装许可或更新尝试。
  */
-import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
+import { DeveloperLoginContent, developerLoginSheetOptions } from './DeveloperLoginContent';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { webview } from '@kit.ArkWeb';
 import { window } from '@kit.ArkUI';
-import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
-import { DeviceProfile, DeviceForm, Breakpoint, detailSheetHeightForLayout } from 'commons';
+import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark, APP_VERSION } from 'commons';
 import { PreferenceManager } from 'feature_system';
-import { UpdateNoteEntry, noteTypeLabel } from 'update';
 import { SideloadUpdateViewModel, SideloadUpdatePageParams } from '../sideload/SideloadUpdateViewModel';
 
 @Component
 export struct SideloadUpdateContent {
-  /** 手机登录层沿用全局面板比例；非手机继续保留原来的 92% 登录高度。 */
+  /** 与账号登录共用全局高度、宽度和居中规则；宽度读取主窗口，不能使用弹窗内部宽度。 */
   @StorageProp('phoneSheetHeightPercent') private phoneSheetHeightPercent_: number = 80;
   params: SideloadUpdatePageParams = {};
   /** 以下字段仅展示发行身份；不参与候选校验，也不覆盖 Coordinator 的真实目标版本。 */
@@ -29,9 +26,6 @@ export struct SideloadUpdateContent {
   releaseDate: string = '';
   /** 小窗口由父级几何统一决定紧凑排版，阶段切换不能自行改变外框或页脚基线。 */
   @Prop compact: boolean = false;
-  /** 原发行说明只在本模态中段展开；打开说明不能关闭更新或撤销当前许可。 */
-  entries: UpdateNoteEntry[] = [];
-  showChangelogEntry: boolean = true;
   onDismiss: () => void = (): void => {};
   /** 兼容路由和父controller复用本组件的显式退出协议，系统Back不能仅卸载观察者。 */
   onExitGuardReady: (exit: () => boolean) => void = (): void => {};
@@ -39,14 +33,13 @@ export struct SideloadUpdateContent {
   @State theme: ThemeColors = resolveTheme(ThemeMode.SYSTEM, false);
   @State manualPort: boolean = false;
   @State detailsVisible: boolean = false;
-  @State releaseNotesVisible: boolean = false;
   @StorageProp('screenHeightVp') screenHeight: number = 800;
+  @StorageProp('screenWidthVp') screenWidth: number = 360;
   @StorageProp('topRectHeight') topSafe: number = 0;
   @StorageProp('bottomRectHeight') bottomSafe: number = 0;
   @StorageProp('currentColorMode') @Watch('applyTheme') colorMode: number = 0;
   /** 同进程主题确认后重建本页快照；不触发业务重载、偏好写入或新的窗口订阅。 */
   @StorageProp('appThemeRevision') @Watch('applyTheme') private appThemeRevision: number = 0;
-  private webController: webview.WebviewController = new webview.WebviewController();
   private stage: window.WindowStage | undefined = undefined;
   private appWindow: window.Window | undefined = undefined;
   private previousKeepScreenOn: boolean = false;
@@ -202,9 +195,9 @@ export struct SideloadUpdateContent {
     if (phase === 'idle' || phase === 'resolving') return '正在准备更新';
     if (this.viewModel.needsLogin) return '登录后继续';
     if (this.viewModel.accountRetry) return '登录状态待核实';
-    if (this.viewModel.needsImport) return '需要原安装签名配置';
+    if (this.viewModel.signingIssue.length > 0) return '签名准备暂未完成';
     if (phase === 'signing') return '正在为本机签名';
-    if (phase === 'preparing-material') return '正在准备签名配置';
+    if (phase === 'preparing-material') return '正在准备更新';
     if (phase === 'transferring') return '正在传送安装包';
     if (!this.viewModel.connectionReady && !this.viewModel.checking) return '调试连接待确认';
     if (this.viewModel.checking) return '正在检查调试连接';
@@ -226,13 +219,13 @@ export struct SideloadUpdateContent {
     if (phase === 'cancelled') return '已下载的数据会按原校验规则复用';
     if (this.viewModel.needsLogin) return '下载会继续，登录成功后自动返回';
     if (this.viewModel.accountRetry) return this.viewModel.accountMessage;
-    if (this.viewModel.needsImport) return '请选择首次安装时使用的配置';
+    if (this.viewModel.signingIssue.length > 0) return this.viewModel.message;
     if (!this.viewModel.connectionReady) return this.viewModel.checking ? '正在自动发现本机端口' : '返回后自动检查并继续';
-    if (this.viewModel.accountReady) return '账号与调试连接已就绪';
+    if (this.viewModel.accountReady) return '完成后会自动安装并重新打开 AMCL';
     return '准备完成后自动继续';
   }
 
-  /** 双按钮的右侧只承担当前可执行命令；自动阶段保留禁用状态，页脚位置不变。 */
+  /** 右侧仅在当前存在可执行命令时出现，自动阶段不显示禁用的占位按钮。 */
   private primaryLabel(): string {
     const phase = this.viewModel.phase;
     if (this.viewModel.runtimeRetired) return '关闭界面';
@@ -247,7 +240,7 @@ export struct SideloadUpdateContent {
     if (this.viewModel.recoveryAction === 'package') return '重新检查';
     if (this.viewModel.working && this.viewModel.needsLogin) return '登录华为账号';
     if (this.viewModel.working && this.viewModel.accountRetry) return '重新检查登录';
-    if (this.viewModel.needsImport) return this.viewModel.materialReady ? '重新获取配置' : '导入签名配置';
+    if (this.viewModel.signingIssue.length > 0 && !this.viewModel.working) return '重试更新';
     if (!this.viewModel.working) return '重试更新';
     if (!this.viewModel.connectionReady && !this.viewModel.checking) return this.manualPort ? '连接并继续' : '打开设置';
     if (this.viewModel.checking && this.manualPort) return '检查连接中';
@@ -262,7 +255,7 @@ export struct SideloadUpdateContent {
     if (this.viewModel.phase === 'confirmation-pending' || this.viewModel.phase === 'storage-blocked') return true;
     if (this.installationPending()) return false;
     if (!this.viewModel.working || this.viewModel.recoveryAction === 'runtime' || this.viewModel.recoveryAction === 'package' ||
-      this.viewModel.needsImport || this.viewModel.needsLogin || this.viewModel.accountRetry) return true;
+      this.viewModel.needsLogin || this.viewModel.accountRetry) return true;
     return !this.viewModel.connectionReady && !this.viewModel.checking;
   }
 
@@ -277,17 +270,24 @@ export struct SideloadUpdateContent {
       this.close(); AppStorage.setOrCreate<number>(key, Date.now());
       this.getUIContext().getRouter().back({ url: 'pages/Index' }); return;
     }
-    // 当前尝试的授权优先于材料恢复；登录成功仍由原推进器决定是否复用、重新获取或导入材料。
+    // 当前尝试的授权优先于材料恢复；登录成功后由原推进器自动复用私钥或刷新证书/Profile。
     if (this.viewModel.working && this.viewModel.needsLogin) { this.viewModel.login(); return; }
     if (this.viewModel.working && this.viewModel.accountRetry) { this.viewModel.checkAccount(); return; }
-    if (this.viewModel.needsImport) {
-      if (this.viewModel.materialReady) this.viewModel.renewMaterial(); else this.viewModel.importMaterial();
-      return;
-    }
     if (!this.viewModel.working) { this.viewModel.start(); return; }
     if (!this.viewModel.connectionReady) {
       if (this.manualPort) this.retryConnection(); else this.viewModel.openDebugSettings();
     }
+  }
+
+  /** 登录承载在真实主窗口，复用统一登录Sheet尺寸；自更新的固定小弹窗不是尺寸参考系。 */
+  private loginSheetOptions(): SheetOptions {
+    return developerLoginSheetOptions({ theme: this.theme,
+      uiContext: this.appWindow?.getUIContext() ?? this.getUIContext(),
+      width: this.screenWidth, height: this.screenHeight, topSafe: this.topSafe, bottomSafe: this.bottomSafe,
+      phoneHeightPercent: this.phoneSheetHeightPercent_,
+      onDisappear: (): void => { this.refreshWindowFacts(); },
+      onClose: (): void => { this.viewModel.closeLogin(); }
+    });
   }
 
   /** 记录仅在原流程允许的非忙态打开，先完成原取消/关闭协议，再使用已有活动记录页面。 */
@@ -302,36 +302,25 @@ export struct SideloadUpdateContent {
   /** 标题只说明更新状态；容量归下载正文，日期归已有详情区，固定高度同步收紧为一行。 */
   @Builder
   private header() {
-    Row({ space: 12 }) {
-      Row() {
-        SymbolGlyph($r('sys.symbol.cloud_and_arrow_down')).fontSize(22).fontColor([this.theme.actionText])
-      }.width(this.compact ? 40 : 44).height(this.compact ? 40 : 44).justifyContent(FlexAlign.Center)
-        .backgroundColor(this.theme.primaryLight).borderRadius(16)
-      Text(this.viewModel.phase === 'superseded' ? '原安装已结束' : this.viewModel.phase === 'verified' ? '更新完成' : '正在更新 AMCL')
-        .fontSize(this.compact ? 17 : 18).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary)
+    Row() {
+      Text(this.viewModel.phase === 'superseded' ? '原安装已结束' : this.viewModel.phase === 'verified' ? '更新完成' :
+        this.viewModel.working || this.viewModel.finishing ? '正在更新 AMCL' : '更新 AMCL')
+        .fontSize(this.compact ? 18 : 20).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-    }.width('100%').height(44).alignItems(VerticalAlign.Center).flexShrink(0)
+    }.width('100%').height(28).alignItems(VerticalAlign.Center).flexShrink(0)
   }
 
   /** 同一双列版本条贯穿各阶段，目标来自 VM，当前版本由父级读取已安装应用信息。 */
   @Builder
   private versionComparison() {
-    Row() {
-      Column({ space: 1 }) {
-        Text('当前版本').fontSize(12).fontColor(this.theme.textSecondary)
-        Text(this.currentVersion.length > 0 ? this.versionLabel(this.currentVersion) : '当前安装')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(15).fontColor([this.theme.textSecondary]).margin({ left: 8, right: 8 })
-      Column({ space: 1 }) {
-        Text('新版本').fontSize(12).fontColor(this.theme.actionPrimary)
-        Text(this.versionLabel(this.viewModel.version || this.params.manifest?.versionName || ''))
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.theme.actionPrimary)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      }.layoutWeight(1).alignItems(HorizontalAlign.End)
-    }.width('100%').height(this.compact ? 36 : 44).padding({ left: 12, right: 12 })
-      .backgroundColor(this.theme.bgInput).borderRadius(12).flexShrink(0)
+    Row({ space: 8 }) {
+      Text(this.versionLabel(this.currentVersion || APP_VERSION))
+        .fontSize(14).fontColor(this.theme.textSecondary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(14).fontColor([this.theme.textSecondary])
+      Text(this.versionLabel(this.viewModel.version || this.params.manifest?.versionName || ''))
+        .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.theme.actionText)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+    }.width('100%').height(28).flexShrink(0)
   }
 
   /** 下载采用突出数字和细进度条；容量、速率和百分比均消费同一真实投影。 */
@@ -362,32 +351,26 @@ export struct SideloadUpdateContent {
   /** 文件校验后显示完成摘要与真实准备阶段；未知结果保留核实语义，不显示成功勾。 */
   @Builder
   private stageStatus() {
-    Column({ space: this.compact ? 12 : 18 }) {
-      if (this.viewModel.downloadState === 'done' && !this.installationPending() && this.viewModel.phase !== 'verified' && this.viewModel.phase !== 'superseded') {
-        Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.checkmark_circle')).fontSize(15).fontColor([this.theme.successText])
-          Text('安装包已校验').fontSize(13).fontColor(this.theme.textSecondary)
-        }.width('100%').padding(12).backgroundColor(this.theme.bgInput).borderRadius(12)
-      }
-      Row({ space: 12 }) {
+    Column({ space: this.compact ? 12 : 16 }) {
+      Column({ space: 16 }) {
         if (this.viewModel.phase === 'verified') {
           SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(32).fontColor([this.theme.successText])
         } else if (this.viewModel.phase === 'failed' || this.viewModel.phase === 'storage-blocked') {
           SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(28).fontColor([this.theme.errorText])
         } else if (this.viewModel.phase === 'confirmation-pending' || this.viewModel.phase === 'cancelled' || this.viewModel.runtimeRetired) {
           SymbolGlyph($r('sys.symbol.clock')).fontSize(28).fontColor([this.theme.textSecondary])
-        } else if (this.viewModel.needsLogin || this.viewModel.accountRetry || this.viewModel.needsImport ||
+        } else if (this.viewModel.needsLogin || this.viewModel.accountRetry ||
           (!this.viewModel.connectionReady && !this.viewModel.checking)) {
           SymbolGlyph($r('sys.symbol.info_circle')).fontSize(28).fontColor([this.theme.actionText])
         } else {
-          LoadingProgress().width(28).height(28).color(this.theme.actionText)
+          LoadingProgress().width(40).height(40).color(this.theme.actionText)
         }
-        Text(this.statusTitle()).fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
-          .layoutWeight(1)
-      }.width('100%')
+        Text(this.statusTitle()).fontSize(this.compact ? 18 : 20).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
+          .width('100%').textAlign(TextAlign.Center)
+      }.width('100%').alignItems(HorizontalAlign.Center)
       Text(this.statusHint()).fontSize(13).lineHeight(20).fontColor(this.theme.textSecondary)
-        .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-    }.width('100%').padding({ top: this.compact ? 4 : 12, bottom: 8 })
+        .width('100%').textAlign(TextAlign.Center).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }.width('100%').padding({ top: 16, bottom: 16 })
   }
 
   /** 恢复入口和手填端口只在需要时展开，均留在唯一中段，不另弹任务或帮助 Sheet。 */
@@ -395,12 +378,7 @@ export struct SideloadUpdateContent {
   private recoveryDetails() {
     Column({ space: 8 }) {
       if (!this.installationPending() && !this.viewModel.finishing && !this.viewModel.runtimeRetired) {
-        if (this.viewModel.accountRetry && this.viewModel.working) {
-          Button('重新登录华为账号').height(40).width('100%').fontSize(13)
-            .backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
-            .onClick((): void => { this.viewModel.login(); })
-        }
-        if (!this.viewModel.connectionReady && this.viewModel.working) {
+        if (!this.viewModel.connectionReady && this.viewModel.working && (this.viewModel.connectionRetry || this.manualPort)) {
           Row() {
             Button(this.manualPort ? '收起手动端口' : '手动端口').height(40).fontSize(13)
               .backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
@@ -422,11 +400,6 @@ export struct SideloadUpdateContent {
               .backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText).enabled(!this.viewModel.checking)
               .onClick((): void => { this.retryConnection(); })
           }
-        }
-        if (this.viewModel.needsImport && this.viewModel.materialReady) {
-          Button('导入原安装签名配置').height(40).width('100%').fontSize(13)
-            .backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
-            .onClick((): void => { this.viewModel.importMaterial(); })
         }
       }
       if (this.detailsVisible) {
@@ -455,24 +428,6 @@ export struct SideloadUpdateContent {
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
-  /** 发行说明占用同一滚动中段；仅切换局部显示状态，VM、下载与登录会话持续挂载。 */
-  @Builder
-  private releaseNotes() {
-    Column({ space: 12 }) {
-      Text('本版本更新日志').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary).width('100%')
-      if (this.entries.length > 0) {
-        ForEach(this.entries, (entry: UpdateNoteEntry) => {
-          Column({ space: 4 }) {
-            Text(noteTypeLabel(entry.type)).fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.theme.actionText)
-            Text(entry.text).fontSize(13).lineHeight(21).fontColor(this.theme.textSecondary).width('100%')
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        }, (entry: UpdateNoteEntry, index: number): string => index.toString() + ':' + entry.text)
-      } else {
-        Text('本次更新未提供详细说明。').fontSize(13).fontColor(this.theme.textSecondary).width('100%')
-      }
-    }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 4, bottom: 8 })
-  }
-
   /** 单一滚动中段吸收长错误、端口输入及大字体；标题、版本与页脚始终保持父容器确定的基线。 */
   build() {
     Column({ space: this.compact ? 8 : 14 }) {
@@ -480,95 +435,48 @@ export struct SideloadUpdateContent {
       this.versionComparison()
       Scroll() {
         Column() {
-          if (this.releaseNotesVisible) {
-            this.releaseNotes()
-          } else {
-            if (this.showDownload()) { this.downloadProgress() } else { this.stageStatus() }
-            this.recoveryDetails()
-          }
+          if (this.showDownload()) { this.downloadProgress() } else { this.stageStatus() }
+          this.recoveryDetails()
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.Center).scrollBar(BarState.Auto)
+      // 进行态只提供当前过程详情；发行说明保留在更新开始前的发现界面。
       Row() {
-        if (this.showChangelogEntry) {
-          Button(this.releaseNotesVisible ? '返回更新进度' : '查看完整更新日志').height(32).fontSize(12)
-            .padding({ left: 0, right: 4 }).backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
-            .layoutWeight(1).onClick((): void => { this.releaseNotesVisible = !this.releaseNotesVisible; })
-        } else {
-          Blank().layoutWeight(1)
-        }
-        Button(this.detailsVisible && !this.releaseNotesVisible ? '收起详情' : '查看详情').height(32).fontSize(12)
-          .padding({ left: 4, right: 0 }).backgroundColor(Color.Transparent).fontColor(this.theme.textSecondary)
-          .onClick((): void => {
-            this.detailsVisible = this.releaseNotesVisible || !this.detailsVisible; this.releaseNotesVisible = false;
-          })
-      }.width('100%').flexShrink(0).border({ width: { top: 0.5 }, color: this.theme.divider })
+        Blank().layoutWeight(1)
+        Button(this.detailsVisible ? '收起详情' : '查看详情').height(44).fontSize(13)
+          .padding({ left: 8, right: 0 }).backgroundColor(Color.Transparent).fontColor(this.theme.textSecondary)
+          .id('sideload-update-details').onClick((): void => { this.detailsVisible = !this.detailsVisible; })
+      }.width('100%').flexShrink(0)
       Row({ space: 10 }) {
         Button(this.installationPending() ? '关闭界面' : this.viewModel.working || this.viewModel.finishing ? '取消更新' : '关闭')
-          .layoutWeight(1).height(this.compact ? 44 : 46).fontSize(14).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.theme.bgInput).fontColor(this.theme.textSecondary).borderRadius(12)
+          .layoutWeight(1).height(this.compact ? 44 : 48).fontSize(14).fontWeight(FontWeight.Medium)
+          .backgroundColor(this.theme.bgInput).fontColor(this.theme.textSecondary).borderRadius(16)
           .onClick((): void => { this.close(); })
-        Button(this.primaryLabel()).layoutWeight(1).height(this.compact ? 44 : 46).fontSize(14).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary).borderRadius(12)
+        // 自动阶段只显示真实进度和取消，不把“准备中”画成第二个不可操作的主按钮。
+        if (this.primaryEnabled()) {
+        Button(this.primaryLabel()).layoutWeight(1).height(this.compact ? 44 : 48).fontSize(14).fontWeight(FontWeight.Medium)
+          .backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary).borderRadius(16)
           .enabled(this.primaryEnabled()).opacity(this.primaryEnabled() ? 1 : 0.5)
           .onClick((): void => { this.runPrimary(); })
+        }
       }.width('100%').flexShrink(0)
     }.width('100%').height('100%')
-      .padding({ left: this.compact ? 12 : 20, right: this.compact ? 12 : 20, top: this.compact ? 12 : 20, bottom: this.compact ? 12 : 16 })
+      .padding({ left: this.compact ? 16 : 24, right: this.compact ? 16 : 24, top: this.compact ? 16 : 24, bottom: this.compact ? 16 : 24 })
       .backgroundColor(this.theme.bgCard).borderRadius(20)
       .onAppear((): void => {
         if (!this.initialized) { this.initialized = true; this.viewModel.onShown(); }
       })
       // 绑定稳定根节点，不额外插入零尺寸子项产生 Column gap；保证页脚与发现态基线一致。
       // 成功回调由 Coordinator 将 loginVisible 置 false；收起回调只采样窗口，不撤销成功授权。
-      .bindSheet(this.viewModel.loginVisible, this.loginSheet(), {
-        height: DeviceProfile.form() === DeviceForm.PHONE
-          ? detailSheetHeightForLayout(DeviceForm.PHONE, Breakpoint.SM, this.bottomSafe, this.topSafe, this.phoneSheetHeightPercent_)
-          : Math.max(1, (this.screenHeight - this.topSafe - this.bottomSafe) * 0.92),
-        preferType: SheetType.BOTTOM, showClose: false, dragBar: true,
-        backgroundColor: this.theme.bgCard, enableOutsideInteractive: false,
-        onDisappear: (): void => { this.refreshWindowFacts(); },
-        onWillDismiss: (action: DismissSheetAction): void => { this.viewModel.closeLogin(); action.dismiss(); }
-      })
+      .bindSheet(this.viewModel.loginVisible, this.loginSheet(), this.loginSheetOptions())
   }
 
-  /**
-   * 登录采用固定标题与剩余空间 Web；手机跟随用户高度，非手机保留原 92% 安全高度。
-   * 不重画官方账号表单，不重复下载卡；关闭只结束授权会话，成功自动收起并保留同一背后模态。
-   */
+  /** 设置与更新复用同一官方登录内容；上下文说明仍由当前更新状态提供。 */
   @Builder
   private loginSheet() {
-    Column({ space: 12 }) {
-      // 一个完整标题宿主接管导航按钮；正文、任务订阅和原回调保持在当前组件。
-      ImmersiveTitleScaffold({ title: '登录华为账号', theme: this.theme, modal: true, surfaceColor: this.theme.bgCard, closeLabel: '关闭授权', closeId: 'sideload-login-close', onClose: (): void => { this.viewModel.closeLogin(); },
-        content: (): void => { this.ImmersiveTitleContent1_(); }
-      })
-    }.width('100%').height('100%').padding({ left: 20, right: 20, top: 8, bottom: Math.max(16, this.bottomSafe) })
-      .backgroundColor(this.theme.bgCard)
+    DeveloperLoginContent({ theme: this.theme, url: this.viewModel.loginUrl, message: this.viewModel.loginMessage,
+      busy: this.viewModel.loginBusy, bottomSafe: this.bottomSafe, closeId: 'sideload-login-close',
+      footer: this.viewModel.loginUrl.length > 0 ? (this.viewModel.loginMessage || '登录成功后自动继续更新') : '关闭授权后，下载仍会继续',
+      onClose: (): void => { this.viewModel.closeLogin(); }, onRetry: (): void => { this.viewModel.login(); },
+      onFailure: (message: string): void => { this.viewModel.loginFailed(message); } })
   }
-
-  /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */
-  @Builder
-  private ImmersiveTitleContent1_() {
-      if (this.viewModel.loginUrl.length > 0) {
-        Web({ src: this.viewModel.loginUrl, controller: this.webController, incognitoMode: true })
-          .javaScriptAccess(true).domStorageAccess(true).fileAccess(false).width('100%').layoutWeight(1)
-          .onErrorReceive((event): void => {
-            if (event.request.isMainFrame()) this.viewModel.loginFailed('登录页面加载失败，请检查网络后重试');
-          })
-      } else {
-        Column({ space: 16 }) {
-          if (this.viewModel.loginBusy) { LoadingProgress().width(40).height(40).color(this.theme.actionText) }
-          Text(this.viewModel.loginMessage).fontSize(16).lineHeight(24).fontColor(this.theme.textPrimary)
-          if (!this.viewModel.loginBusy) {
-            Button('重新登录').height(48).width('100%').backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary)
-              .onClick((): void => { this.viewModel.login(); })
-          }
-        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      }
-      // 登录流程解释归已有底部状态，不再在标题下重复；保留真实账号状态与关闭后果。
-      Text(this.viewModel.loginUrl.length > 0 ? (this.viewModel.loginMessage.length > 0 ? this.viewModel.loginMessage + ' · ' : '')
-        + '成功后自动返回并继续更新' : '关闭授权后，下载仍会继续')
-        .fontSize(12).lineHeight(19).fontColor(this.theme.textSecondary).width('100%').flexShrink(0)
-
-      }
 }

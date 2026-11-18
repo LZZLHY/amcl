@@ -22,6 +22,12 @@ const checker=load('update/src/main/ets/UpdateChecker.ets',{commons:{UPDATE_MANI
   feature_core:{DownloadManager:{instance:()=>({fetchText:async(url,mirrors,timeout,limit)=>{calls.push({url,mirrors,limit});return url.includes('bad')?'<html>not a manifest</html>':JSON.stringify(manifest);}})}}}).UpdateChecker;
 assert.equal(checker.parseManifest(JSON.stringify(manifest)).notesEntries[0].type,'notice');
 assert.equal(checker.parseManifest(JSON.stringify({...manifest,versionCode:2.5})),null);
+// 协议2的双原站交付可没有镜像，但旧协议、未知协议或错误官网字节地址均不能借此放宽。
+const originsOnly={...manifest,delivery:{schema:1,protocol:2,ready:true,assets:[{...asset,mirrors:[]}]}};
+assert.equal(resolver.GitHubUpdateAssetResolver.fromDelivery(originsOnly,'sideload').mirrors.length,0);
+assert.throws(()=>resolver.GitHubUpdateAssetResolver.fromDelivery({...originsOnly,delivery:{...originsOnly.delivery,protocol:1}},'sideload'),/主镜像/);
+assert.throws(()=>resolver.GitHubUpdateAssetResolver.fromDelivery({...originsOnly,delivery:{...originsOnly.delivery,protocol:3}},'sideload'),/交付协议/);
+assert.throws(()=>resolver.GitHubUpdateAssetResolver.fromDelivery({...originsOnly,delivery:{...originsOnly.delivery,assets:[{...asset,mirrors:[],websiteUrl:'https://example.invalid/wrong.hap'}]}},'sideload'),/身份/);
 const checked=await checker.checkForUpdate(['https://official.test/bad','https://official.test/good']);
 assert.equal(checked.hasUpdate,true);assert.equal(calls.length,2);assert.equal(calls[0].limit,8191);
 console.log('PASS actual manifest core/display isolation and invalid 200 source fallback');

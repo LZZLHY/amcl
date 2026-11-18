@@ -7,7 +7,7 @@
 // compiles them with the real HarmonyOS aarch64 clang and the pinned SDL headers.
 
 // 临时夹具及其清理边界统一使用外部宿主测试区，不修改系统 TEMP，也不回退到源码目录。
-import { workspacePath, workspaceTempRoot } from './lib/workspace-paths.mjs';
+import { sharedWorkspacePath, workspaceTempRoot } from './lib/workspace-paths.mjs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -116,7 +116,7 @@ async function ensureHostNativeJar() {
   const descriptor = hostNatives[process.platform];
   if (!descriptor) fail(`unsupported host for LWJGL layout reflection: ${process.platform}`);
   // 已锁哈希的宿主探针 JAR 可复用，但其下载缓存不属于 Docker 配方或工程输入。
-  const cache = workspacePath('build', 'sdl-layout-cache');
+  const cache = sharedWorkspacePath('build', 'sdl-layout-cache');
   mkdirSync(cache, { recursive: true });
   const name = `lwjgl-${lwjglVersion}-${descriptor.classifier}.jar`;
   const target = join(cache, name);

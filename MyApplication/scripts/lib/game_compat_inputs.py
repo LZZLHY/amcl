@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import urllib.request
 import zipfile
-from lib.workspace_paths import external_output_path, workspace_path
+from lib.workspace_paths import external_output_path, shared_workspace_path
 from lib.build_dependencies import dependency_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +30,7 @@ def digest(data, algorithm="sha256"):
 def input_directory(value=None):
     """显参、专用环境、本机共用配置依次选择；均须仓外，无配置才沿用原默认。"""
     supplied = value or os.environ.get("AMCL_GAME_COMPAT_INPUTS") or dependency_path("gameCompatInputs")
-    return external_output_path(supplied) if supplied else workspace_path("build", "game-compat-inputs")
+    return external_output_path(supplied) if supplied else shared_workspace_path("build", "game-compat-inputs")
 
 
 def verified_file(directory, entry, download=False, algorithm="sha256"):

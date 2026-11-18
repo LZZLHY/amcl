@@ -274,12 +274,11 @@ extern "C" void ohos_surface_input_gate_log_focus_edge(
 
 extern "C" uint64_t ohos_surface_input_gate_begin_current_transaction(void) {
     s_surfaceInputGateMutex.lock();
-    if (s_surfaceInputGate.geometryPending || !s_surfaceInputGate.active || !s_surfaceInputGate.component ||
-        !s_surfaceInputGate.window || s_surfaceInputGate.publicationGeneration == 0) {
+    const auto generation = amcl::input::surface_gate::CurrentInputGeneration(s_surfaceInputGate);
+    if (generation == 0) {
         s_surfaceInputGateMutex.unlock();
-        return 0;
     }
-    return s_surfaceInputGate.publicationGeneration;
+    return generation;
 }
 
 extern "C" void ohos_surface_input_gate_end_current_transaction(uint64_t token) {
@@ -4774,7 +4773,7 @@ extern "C" void ohos_cancel_all_input(int reason) {
     // 状态会继续挡住迟到心跳，普通reset则允许下一次有效对账重新授权。
     if (reason == AMCL_INPUT_CANCEL_FOCUS_LOST) {
         amcl_cursor_lock_set_focus(false);
-    } else if (reason == AMCL_INPUT_CANCEL_SURFACE_LOST || reason == AMCL_INPUT_CANCEL_PAGE_DISPOSE) {
+    } else if (amcl::input::InputCancelRetiresCaptureSurface(reason)) {
         amcl_cursor_lock_set_surface(false);
     }
     // BACKGROUND只撤销实际锁；foreground准入由现有Ability OR-mask发布器关闭/恢复，
@@ -4786,6 +4785,7 @@ extern "C" void ohos_cancel_all_input(int reason) {
             resetReason = AMCL_INPUT_RESET_APPLICATION_BACKGROUND;
             break;
         case AMCL_INPUT_CANCEL_SURFACE_LOST:
+        case AMCL_INPUT_CANCEL_GEOMETRY_CHANGED:
             resetReason = AMCL_INPUT_RESET_SURFACE_CHANGED;
             break;
         case AMCL_INPUT_CANCEL_WINDOW_RECREATE:
@@ -4808,7 +4808,7 @@ extern "C" void ohos_cancel_all_input(int reason) {
     amcl::input::PlatformInputCapturePlatformChanged(false,
         reason == AMCL_INPUT_CANCEL_FOCUS_LOST || reason == AMCL_INPUT_CANCEL_BACKGROUND
             ? AMCL_INPUT_CAPTURE_REASON_FOCUS_LOST
-            : reason == AMCL_INPUT_CANCEL_SURFACE_LOST || reason == AMCL_INPUT_CANCEL_PAGE_DISPOSE
+            : amcl::input::InputCancelRetiresCaptureSurface(reason)
                 ? AMCL_INPUT_CAPTURE_REASON_SURFACE_LOST : AMCL_INPUT_CAPTURE_REASON_PLATFORM_LOST);
     resolveBridge();
 

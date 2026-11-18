@@ -10,6 +10,7 @@
 #include <string>
 #endif
 #include "control_schema_abi.h"
+#include "input_cancel_reason.h"
 #include "touch_interaction.h"
 
 #include "../input/legacy_physical_outcome.h"
@@ -268,17 +269,6 @@ void ohos_set_touch_paused(bool paused);
  */
 void ohos_release_physical_pointer_device(uint64_t deviceId, bool releaseUnknown);
 
-// 生命周期统一取消原因。数值只用于低频诊断，不影响释放策略；所有原因都必须让 ledger 归零。
-typedef enum {
-    AMCL_INPUT_CANCEL_PAUSE = 1,
-    AMCL_INPUT_CANCEL_BACKGROUND = 2,
-    AMCL_INPUT_CANCEL_SURFACE_LOST = 3,
-    AMCL_INPUT_CANCEL_PAGE_DISPOSE = 4,
-    AMCL_INPUT_CANCEL_WINDOW_RECREATE = 5,
-    // Blur can suppress future UP events without destroying the surface, so it
-    // needs its own diagnostic reason while sharing the release-all policy.
-    AMCL_INPUT_CANCEL_FOCUS_LOST = 6
-} AmclInputCancelReason;
 void ohos_cancel_all_input(int reason);
 void ohos_set_look_sensitivity(float v);  // 阶段 1.3：视角灵敏度（0.1..5.0，默认 1.0）
 void ohos_set_invert_y(bool b);           // 阶段 1.3：Y 轴倒置

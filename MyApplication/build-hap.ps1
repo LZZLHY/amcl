@@ -696,16 +696,11 @@ Add-AmclValidationEvent -Id 'sdk-assemble-hap' -State $(if ($AssembleExit -eq 0)
 if ($AssembleExit -ne 0) { throw "hvigor assembleHap failed (exit $AssembleExit)" }
 
 # SDK会转换ArkUI struct，纯TypeScript宿主测试不能证明访问器在实际产物中保留。
-# 日常default/debug构建执行本轮转换出的更新弹窗与路由容器，缺产物或首帧异常立即失败；
-# 这里只替代绘制边界，不触发登录、下载或安装，也不代替真实设备的视觉/业务验收。
+# 本段属于 full。直接读取本轮 SDK 输出的组件和页面，避免复制清单漏项或沿用旧夹具。
+# quick 对更新界面的专项验证也可以在编译后对同一目录单独运行。
 if ($Product -eq 'default' -and $BuildMode -eq 'debug') {
     $SdkUiRoot = Join-Path $ProjectRoot 'entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets'
-    $SdkUiFixture = Get-AmclWorkspacePath -Kind run -Id 'update-dialog-sdk-runtime' -ProjectRoot $ProjectRoot
-    New-Item -ItemType Directory -Force -Path $SdkUiFixture | Out-Null
-    foreach ($relative in @('components/UpdateDialog.ts','components/UpdateDialogLayout.ts','components/UpdateReminderPolicy.ts','pages/SideloadUpdatePage.ts')) {
-        Copy-Item -LiteralPath (Join-Path $SdkUiRoot $relative) -Destination (Join-Path $SdkUiFixture ([IO.Path]::GetFileName($relative))) -ErrorAction Stop
-    }
-    Invoke-AmclNode "$ProjectRoot\scripts\test-update-dialog-sdk-runtime.mjs" $SdkUiFixture
+    Invoke-AmclNode "$ProjectRoot\scripts\test-update-dialog-sdk-runtime.mjs" $SdkUiRoot
     if ($LASTEXITCODE -ne 0) { throw 'SDK update dialog runtime regression failed' }
 }
 

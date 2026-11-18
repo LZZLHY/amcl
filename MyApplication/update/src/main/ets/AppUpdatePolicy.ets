@@ -95,11 +95,13 @@ export class AppUpdatePolicy {
     return false;
   }
 
-  /** 每产品静态回退清单；官网当前头的优先级由调用方安排，preview 不追加旧 update.json。 */
+  /** 优先使用允许原站独立交付的新备份；旧入口保留迁移兼容，preview不混入stable。 */
   static urls(product: string, channel: string): string[] {
     const name = product === 'desktop' ? 'desktop' : 'sideload';
     const file = 'updates/' + name + '/' + AppUpdatePolicy.channel(channel) + '.json';
-    return ['https://raw.githubusercontent.com/LZZLHY/amcl/main/' + file, 'https://lzzlhy.github.io/amcl/' + file];
+    const modern = 'updates/v2/' + name + '/' + AppUpdatePolicy.channel(channel) + '.json';
+    return ['https://raw.githubusercontent.com/LZZLHY/amcl/main/' + modern, 'https://lzzlhy.github.io/amcl/' + modern,
+      'https://raw.githubusercontent.com/LZZLHY/amcl/main/' + file, 'https://lzzlhy.github.io/amcl/' + file];
   }
   /** 偏好隔离键包含产品和通道；目标延后由调用方再绑定实际 tag/code/hash。 */
   static preferenceKey(product: string, channel: string, field: string): string {

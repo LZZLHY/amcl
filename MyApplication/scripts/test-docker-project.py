@@ -28,7 +28,8 @@ class ProjectContract(unittest.TestCase):
             path=self.sdk/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(name)
         self.calls=[]; self.busy=False; self.foreign=False; self.volume_busy=False
         self.patches=[patch.object(project,'docker',self.docker),
-                      patch.dict(os.environ,{'AMCL_WORKSPACE_ROOT':str(self.root)})]
+                      patch.dict(os.environ,{'AMCL_WORKSPACE_ROOT':str(self.root),
+                          'AMCL_TASK_ROOT':'','AMCL_RUN_DIR':'','AMCL_BUILD_DIR':''})]
         for item in self.patches: item.start()
     def tearDown(self):
         for item in reversed(self.patches): item.stop()
@@ -136,6 +137,23 @@ class ProjectContract(unittest.TestCase):
         a,b=json.loads(one),json.loads(two)
         self.assertEqual(a['workVolume'],b['workVolume']); self.assertEqual(a['workspaceMode'],'reuse')
         self.assertEqual(a['service'],b['service']); self.assertNotEqual(a['output'],b['output'])
+    def test_default_control_state_survives_task_output_changes(self):
+        """真实状态读取跨任务保持同一已登记卷，只有本次输出进入各自任务目录。"""
+        directory=project.shared_workspace_path('build','docker-project')
+        state={'schema':1,'checkout':str(ROOT),'workspaces':{'smoke':{
+            'volume':'known-volume','buildId':'known-build','inputs':project.input_identity('smoke',IMAGE,self.sdk)}}}
+        project.write_json(directory/'state.json',state)
+        plans=[]
+        for name in ('task-a','task-b'):
+            task=self.root/name
+            with patch.dict(os.environ,{'AMCL_TASK_ROOT':str(task),'AMCL_RUN_DIR':str(task/'runs'),
+                                        'AMCL_BUILD_DIR':str(task/'build')}):
+                _,text=self.execute(state_dir=None,plan_only=True);plan=json.loads(text);plans.append(plan)
+                self.assertEqual(plan['workVolume'],'known-volume')
+                self.assertEqual(plan['workspaceMode'],'reuse')
+                self.assertTrue(Path(plan['output']).is_relative_to(task))
+                self.assertFalse(Path(plan['output']).exists())
+        self.assertEqual(plans[0]['workVolume'],plans[1]['workVolume'])
     def test_changed_sdk_requires_explicit_fresh(self):
         self.seed_workspace(); (self.sdk/project.SENTINELS[0]).write_text('changed')
         with self.assertRaisesRegex(ValueError,'identity changed'): self.execute(plan_only=True)

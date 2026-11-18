@@ -87,7 +87,7 @@ def _route_new_output(value, workspace):
         raise ValueError('Invalid storage routing (' + str(filename) + '): ' + str(error)) from error
 
 
-def workspace_path(kind, task_id, *parts):
+def workspace_path(kind, task_id, *parts, _task_scoped=True):
     """返回外部输出位置，不创建目录；配置优先、标记发现其次，独立克隆退回仓外系统临时目录。"""
     if kind not in ("run", "build", "wt"):
         raise ValueError("Invalid workspace kind: " + kind)
@@ -108,15 +108,48 @@ def workspace_path(kind, task_id, *parts):
     identity = str(PROJECT_ROOT).lower() if os.name == "nt" else str(PROJECT_ROOT)
     checkout = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
     container = workspace / ".workspace" if workspace else Path(tempfile.gettempdir()) / "amcl-workspace"
-    run = os.environ.get("AMCL_RUN_DIR") if kind == "run" else None
+    # 与Node入口一致：本轮输出集中到任务容器，未声明任务时保持旧路径和CI退路。
+    task_root = os.environ.get('AMCL_TASK_ROOT') if _task_scoped else None
+    if task_root and not Path(task_root).is_absolute():
+        raise ValueError('AMCL_TASK_ROOT must be absolute')
+    build_root = (os.environ.get('AMCL_BUILD_DIR') if _task_scoped else None) or (str(Path(task_root) / 'build') if task_root else None)
+    if not _task_scoped and workspace:
+        # 与Node一致：按真实源码所属容器定位，不因换一次调用环境而换控制状态或缓存。
+        try:
+            relative = PROJECT_ROOT.relative_to(Path(workspace) / '.workspace' / 'tasks')
+        except ValueError:
+            relative = None
+        if relative and relative.parts:
+            group = relative.parts[0]
+            if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9-]{0,47}', group) or re.fullmatch(r'con|prn|aux|nul|com[1-9]|lpt[1-9]', group, re.I):
+                raise ValueError('Invalid source task container')
+            task_root = str(Path(workspace) / '.workspace' / 'tasks' / group)
+            build_root = str(Path(task_root) / 'build' / 'shared')
+    if build_root and not Path(build_root).is_absolute():
+        raise ValueError('AMCL_BUILD_DIR must be absolute')
+    run = os.environ.get("AMCL_RUN_DIR") if kind == "run" and _task_scoped else None
     if run:
         if not Path(run).is_absolute():
             raise ValueError("AMCL_RUN_DIR must be absolute")
         result = Path(run) / task_id
+    elif kind == 'build' and build_root:
+        result = Path(build_root) / (task_id + '-' + checkout)
+    elif task_root:
+        result = Path(task_root) / ('worktrees' if kind == 'wt' else 'runs') / (
+            task_id + '-' + checkout + ('-' + RUN_STAMP if kind == 'run' else ''))
     else:
         result = container / kind / (task_id + "-" + checkout + ("-" + RUN_STAMP if kind == "run" else ""))
+    if task_root and not result.joinpath(*parts).resolve().is_relative_to(Path(task_root).resolve()):
+        raise ValueError('Task output escapes AMCL_TASK_ROOT')
     routed = _route_new_output(result.joinpath(*parts), discovered or workspace)
     return external_output_path(routed)
+
+
+def shared_workspace_path(kind, task_id, *parts):
+    """共享状态按源码位置稳定归属：固定槽保留原路径，临时源码缓存留所属任务。"""
+    if kind != 'build':
+        raise ValueError('Shared workspace paths are only for fixed build/control caches')
+    return workspace_path(kind, task_id, *parts, _task_scoped=False)
 
 
 def temporary_directory(*args, **kwargs):

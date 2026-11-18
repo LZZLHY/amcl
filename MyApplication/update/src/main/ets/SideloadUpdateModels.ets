@@ -70,6 +70,8 @@ export interface SideloadMirror {
 
 export interface SideloadDelivery {
   schema: number;
+  /** 缺省/1要求已有镜像；2由官网与GitHub准确原件保证就绪，镜像只作为可选加速。 */
+  protocol?: number;
   ready: boolean;
   assets: SideloadUpdateAsset[];
 }

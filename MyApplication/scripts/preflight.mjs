@@ -1,72 +1,12 @@
 #!/usr/bin/env node
-// scripts/preflight.mjs
+// 跨平台预检入口。检查项、依赖和执行顺序只由下方 add(...) 注册项维护；
+// 用 --plan --json 获取当前计划，文档和CI不再手抄另一份完整清单。
+// 每项判据和限制写在对应检查实现附近，宿主/静态通过不冒充SDK、产物或设备通过。
+// 普通 default quick 不调用本入口全跑；按本次风险用 --only 选择必要检查。
 //
-// 跨平台预检脚本 — 提交前一键验收。
-//
-// 检查清单与实际数量以本文件 add(...) 注册项为准；下方保留每项的完整理由：
-//   1. line-refs:      文档/代码中 `@path:N` 引用漂移。**只有 OOR 是硬错**。
-//   2. java-build:     编译 JavaApp/src + JavaApp/test。
-//   3. java-tests:     运行下方 suites 清单中的测试套件，totalFail 必须为 0。
-//   4. bash-syntax:    对 .sh 跑 `bash -n`；缺 bash 明确记 SKIPPED 并阻断所选集合通过。
-//   5. json5-parse:    6 个 json5 可解析。
-//   6. lf-eol:         .sh 必须 LF（CRLF 会让 bash 报 syntax error）。
-//   7. glfw-surface:   GLFW native 必需/可选符号缺失均须为 0。
-//   8. napi-obfuscation: 全部跨语言固定 ABI 名受 Release 混淆 keep-list 保护。
-//   9. comment-ids:    注释里以现在时提到的标识符必须真的存在（类型 A）。
-//  10. comment-layering: 棘轮 —— 任何文件的最长连续注释块不得变长。
-//  11. hvigor-testlog: "ArkTS 断言失败必须让构建失败"那条判定逻辑**自身**的自测。
-//  12. wire-json-obfuscation: 属性名混淆与"用接口读外部 JSON"不能同时成立（含自测）。
-//  13. nav-param-keys: 导航传参的写侧键名与读侧取值口径必须一致（含自测）。
-//  14. obfuscation-rules: 混淆指令白名单 + 反射入口名必须 keep（含自测）。
-//  15. cpp-assert: 首方 C++ 不得出现运行期 assert(（release 的 NDEBUG 会删掉它，含自测）。
-//  16. empty-catch-napi: 棘轮 —— 空 catch 不得包住 testNapi.* 调用（含自测）。
-//  17. keymap-parity: 物理键盘映射表的 ArkTS 与 C++ 两份实现必须逐条一致（含自测）。
-//  18. typed-sink-wiring: typed 事件的消费端不得静默缺席（含自测 + 声明式例外清单）。
-//  19. backend-keymap-parity: 新的一步后端映射必须等于旧的两步复合（含自测）。
-//  20. renderer-registry: canonical 图形注册表、派生兼容入口与 native 生成镜像必须一致（含自测）。
-//  21. jdk-release-pin: 冻结旧版下载资产身份，校验目录 builtin 的 legacy 投影（含自测）。
-//  22. renderer-naming: 禁止后端缩写及第二条决策通道（含共享词法自测）。
-//  23. sdl3-multiwindow: SDL3 混合多窗口 + 宿主激活源码/patch 契约
-//      （含逐规则负向 fixture）。
-//  24. gamecontrol-scope: HAR 仅由 entry 消费；桌面私有进程须独立初始化（含自测）。
-//  25. input-build-profile: debug/release 与各产品的 native 输入平面闭包（含自测）。
-//      input-runtime: 生产配置/IME/生命周期装配、L2/SDL来源语义正反例及中立输入DSO边界。
-//  26. sdl3-text-session: SDL3 typed TextInputSession patch 顺序、ABI 与 read/release 契约（含自测）。
-//  27. gate-f-readiness: menu absolute 证据/产品启用前，原子 owner、三后端与 legacy 退役必须闭包（含自测）。
-//  28. device-automation: P0 宿主编排器的判定工具正反向自测（解析器 / 五值判决 / 脱敏；
-//      真实样本组在 CI 上显式 SKIP，原始日志不入库）。
-//  29. product-identity: 产品身份 banner 的字段覆盖、解析后能力位来源、以及
-//      **必须排在 setNativeLogSink 之后**（含自测）。
-//      runtime-compat: 冻结 Minecraft 消费者 API、AWT/GLFW 接线与最终 native 指纹（含负向自测和真实 Mixin 变换）。
-//  30. graphics-profile-inventory: 图形请求/候选隔离、失败快照、GLES/GLFW 生命周期、WSI 诊断、SDL presentation、静态盘点与产物门禁自测；明确不把
-//      源码引用或工作树 ELF 当作运行时/真机成功证据。
-//  32. logging-evidence: 日志域、关键故障持久化、分享/UI失败恢复与 host/game writer 回归。
-//      runtime-foundation: JDK 元数据/区间、选定 LWJGL 槽与部署、平板持久进程策略/布局保存、ELF 输入边界；仅宿主证据。
-//      runtime-ownership: JVM 前属性冻结/参数适配、真实JNA协议与独立native槽、精确槽名单、真实 JNI 加载器归属、SDL 消费者初始化与 processor 精确等待；不替代设备矩阵。
-//      runtime-exit: 独立游戏退出身份/有界记录、真实宿主 JNI exit/halt 回调与活动恢复；不替代平板 OS/前台验收。
-//      workspace-layout: 最后检查物理目录与链接；Agent 配置、自建临时/运行资料不得回流主项目，含负向自测。
-//      docker-project: 无引擎测试固定 Compose 服务、身份复用、忙状态/归属拒绝、独占锁和失败证据。
-//      download-system: 真实Manager/Registry/共享、规格编译、来源代次和Maven结果；
-//      Linux Native/libcurl真实HTTP另走CI独立download-native job，不把宿主替身当Native验证。
-//      app-update: 软件三类发行、手动原件、来源/缓存隔离、事务恢复、fence与BMS双证明；仅宿主。
-//      sideload-native-terminal: app-update依赖的真实ArkTS事务→POSIX Native SH/fence准入，不进入SDK quick。
-//
-// ⚠️ 本注释块自己曾经过期过（只列到第 8 项、写"4 个套件、断言总数 ≥101"），
-// 而 `docs/release-checklist.md` §0 同时写着"预期 6 项全绿"+ 一个不存在的 `--strict`。
-// **新增检查项时必须同时改三处**：这里、`docs/release-checklist.md` §0、
-// `.github/workflows/ci.yml` 的 preflight job 注释。
-// ⚠️ 这句话此前只点了前两处、漏了 ci.yml —— 一份"提醒别人别漏"的清单自己漏了一项，
-// 于是那处项数腐烂了一整轮（2026-08-24 补齐）。三处都是"看起来权威的过期清单"，
-// 而这个项目已经因为读了自己文档里的过期结论付过多次学费。
-//
-// 退出码：0 = 所选依赖闭包通过（或仅生成计划）；非 0 = 配置、执行或必要覆盖失败。
-//
-// 用法:
-//   node scripts/preflight.mjs               # 完整跑
-//   node scripts/preflight.mjs --skip=java-tests # 显式递延 java tests，不能称为完整通过
-//   node scripts/preflight.mjs --only=lf-eol # 只跑指定项
-//   node scripts/preflight.mjs --plan --json # 只读依赖计划，不执行检查
-//   --report=<绝对仓外路径> 输出不覆盖的逐门 JSON 收据；本机日志路径按工作区路由选择。
+// 用法：node scripts/preflight.mjs [--only=检查名 | --skip=检查名] [--plan] [--json]
+// --report=<绝对仓外路径> 保存本轮逐项收据；0表示所选闭包通过或仅生成计划，
+// 非0表示配置、执行或必要覆盖失败。计划、跳过、阻断均不能当作实际测试通过。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,6 +35,16 @@ const yellow = (s) => color(s, 33);
 const dim = (s) => color(s, 90);
 
 // ─────────────────────────────────────────────
+// 开发日志规则只读执行；同时运行真实检查器的反例，避免新增规则成为永绿检查。
+add('dev-changelog', () => {
+  for (const script of ['scripts/test-dev-changelog.mjs', 'scripts/check-dev-changelog.mjs']) {
+    const result = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8' });
+    if (result.status !== 0) return { ok: false, summary: `${script} failed`,
+      detail: (result.stdout || '') + (result.stderr || '') + (result.error?.message || '') };
+  }
+  return { ok: true, summary: '开发日志单标签、历史身份、精确引用及真实正反例通过' };
+});
+
 // 1. line-refs
 add('line-refs', () => {
   const r = spawnSync('node', ['scripts/check-line-refs.mjs'], { cwd: ROOT, encoding: 'utf8' });

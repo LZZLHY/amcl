@@ -1,12 +1,14 @@
 import { applyNativeTheme } from '../components/AppTheme';
 /**
  * 软件更新的持久入口：选择 App 通道、检查推荐、下载与导入官方原始 HAP。
- * 本页仅持展示与文件选择生命周期；授权、签名、安装和恢复由既有 Coordinator 执行。
+ * 本页持展示、文件选择和常驻账号入口的可见性；更新任务仍由既有Coordinator执行。
  */
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
 import { picker } from '@kit.CoreFileKit';
-import { APP_VERSION, DistributionPolicy, ThemeColors, ThemeMode, resolveTheme, resolveIsDark, formatBytes } from 'commons';
+import { APP_VERSION, AppIconName, DistributionPolicy, ThemeColors, ThemeMode, resolveTheme, resolveIsDark, formatBytes } from 'commons';
+import { SettingsGroup, SettingsValueRow, SettingsDivider, SettingsHint } from '../components/SettingsPrimitives';
+import { DeveloperAccountPanel } from '../components/DeveloperAccountPanel';
 import { PreferenceManager } from 'feature_system';
 import { UpdateChecker, UpdateManifest } from 'update';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
@@ -41,7 +43,8 @@ struct SoftwareUpdatePage {
   private generation: number = 0;
   /** 用户选择次序独立于路由/网络代次；隐藏只取消网络投影，不撤销已提交的明确通道选择。 */
   private channelSelectionGeneration: number = 0;
-  private visible: boolean = true;
+  /** 路由可见性同时交给独立账号入口，页面隐藏时撤销其网页登录和迟到检查。 */
+  @State private visible: boolean = true;
 
   aboutToAppear(): void {
     this.channel=this.preferences.appUpdateChannel;this.applyTheme();
@@ -170,28 +173,10 @@ struct SoftwareUpdatePage {
   @Builder
   private ImmersiveTitleContent1_() {
       Scroll() {
-        Column({space:20}) {
-          Column({space:12}) {
-            Image($r('app.media.amcl_axe')).width(64).height(64).borderRadius(16).draggable(false)
-            // 短状态与版本同排；较长的错误和操作结果仍完整显示，避免省略故障原因。
-            Row({space:12}) {
-              Button({type:ButtonType.Normal}) {
-                Text('AMCL v'+(UpdateChecker.currentVersionName() || APP_VERSION)).fontSize(20).fontWeight(600)
-                  .fontColor(this.theme.textPrimary).maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis})
-                  .ellipsisMode(EllipsisMode.CENTER)
-              }.layoutWeight(1).height(44).padding(0).backgroundColor(Color.Transparent)
-                .accessibilityText('查看当前应用的完整版本号').onClick((): void=>{this.showCurrentVersion_();})
-              if(this.status.length>0 && this.status.length<=10) {
-                Text(this.status).fontSize(13).fontColor(this.theme.textSecondary).constraintSize({maxWidth:144})
-              }
-            }.width('100%').alignItems(VerticalAlign.Center)
-            if(this.status.length>10) {
-              Text(this.status).fontSize(14).fontColor(this.theme.textSecondary).width('100%')
-            }
-          }.width('100%').padding(24).backgroundColor(this.theme.bgCard).borderRadius(20)
-          if(DistributionPolicy.isStore()) {
-            Text('此版本通过应用市场更新。').fontSize(14).fontColor(this.theme.textSecondary)
-          } else {
+        Column({space:24}) {
+          this.versionOverview_()
+          if(!DistributionPolicy.isStore()) {
+            DeveloperAccountPanel({ theme: this.theme, active: this.visible })
             if(this.developerInstalled) {
               Column({space:12}) {
                 Text('当前为开发者版，应用自动检查已暂停。原订阅保持不变，JDK 更新独立工作。')
@@ -202,23 +187,9 @@ struct SoftwareUpdatePage {
                   .onClick((): void=>{this.exitDeveloper('preview');})
               }.width('100%').padding(20).backgroundColor(this.theme.bgCard).borderRadius(20)
             }
-            Column({space:12}) {
-              Text('更新通道').fontSize(18).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
-              Row({space:8}) {
-                Button(this.channel==='stable'?'稳定版 ✓':'稳定版').layoutWeight(1).height(44)
-                  .backgroundColor(this.channel==='stable'?this.theme.primary:this.theme.bgInput)
-                  .fontColor(this.channel==='stable'?this.theme.textOnPrimary:this.theme.textPrimary)
-                  .enabled(!this.importing).onClick((): void=>{this.chooseChannel('stable');})
-                Button(this.channel==='preview'?'预览版 ✓':'预览版').layoutWeight(1).height(44)
-                  .backgroundColor(this.channel==='preview'?this.theme.primary:this.theme.bgInput)
-                  .fontColor(this.channel==='preview'?this.theme.textOnPrimary:this.theme.textPrimary)
-                  .enabled(!this.importing).onClick((): void=>{this.chooseChannel('preview');})
-              }.width('100%')
-              Text(this.channel==='preview'?'接收预览版和后续正式版。预览版可能存在尚未解决的问题，可切回稳定通道查看可返回的正式版。':'接收正式版本。预览版沿用相同安装编号时，可在此选择返回正式版；切换通道不会立即安装。')
-                .fontSize(12).fontColor(this.theme.textHint).width('100%')
-              Button(this.checking?'正在检查…':'检查更新').height(44).width('100%').enabled(!this.checking && !this.importing && !this.developerInstalled)
-                .backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText).onClick((): void=>{this.check();})
-            }.width('100%').padding(20).backgroundColor(this.theme.bgCard).borderRadius(20)
+            SettingsGroup({ title: '更新通道', theme: this.theme, content: (): void => { this.channelRows_(); } })
+            Text('切换通道不会立即安装更新。').fontSize(13).fontColor(this.theme.textSecondary)
+              .width('100%').padding({ left: 16, right: 16 })
             if(this.candidate!==undefined && UpdateChecker.canInstall(this.candidate,this.channel)) {
               Column({space:12}) {
                 Text((UpdateChecker.isStableReturn(this.candidate)?'返回正式版 v':'新版本 v')+this.candidate.versionName).fontSize(18).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
@@ -228,16 +199,7 @@ struct SoftwareUpdatePage {
                   .enabled(!this.importing && !this.checking).onClick((): void=>{this.startUpdate();})
               }.width('100%').padding(20).backgroundColor(this.theme.bgCard).borderRadius(20)
             }
-            Column({space:12}) {
-              Text('手动更新').fontSize(18).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
-              Text('自行下载 GitHub 正式/预览原件，或官网开发者原件后，在这里选择未签名 HAP。核对通过后继续授权、签名和安装。')
-                .fontSize(14).fontColor(this.theme.textSecondary).width('100%')
-              Button('前往 GitHub 下载').height(44).width('100%').backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText)
-                .enabled(!this.importing).onClick((): void=>{this.openGithub();})
-              Button(this.importing?'正在核对安装包…':'选择本地安装包').height(44).width('100%')
-                .backgroundColor(this.theme.bgInput).fontColor(this.theme.actionText).enabled(!this.importing && !this.checking)
-                .onClick((): void=>{this.importPackage();})
-            }.width('100%').padding(20).backgroundColor(this.theme.bgCard).borderRadius(20)
+            SettingsGroup({ title: '其他更新方式', theme: this.theme, content: (): void => { this.manualRows_(); } })
             if(this.pending) {
               Button('查看上次更新').height(44).width('100%').backgroundColor(this.theme.bgCard).fontColor(this.theme.actionText)
                 .onClick((): void=>{this.getUIContext().getRouter().pushUrl({url:'pages/SideloadUpdatePage',params:{autoStart:false}});})
@@ -246,4 +208,54 @@ struct SoftwareUpdatePage {
         }.width('100%').constraintSize({maxWidth:680}).padding({left:20,right:20,top:8,bottom:this.bottomSafe+24})
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
       }
+  /** 品牌与版本收紧为信息行，主要操作直接可见；不再用大块卡片拉高手机和平板首屏。 */
+  @Builder
+  private versionOverview_() {
+    Column({ space: 16 }) {
+      Row({ space: 16 }) {
+        Image($r('app.media.amcl_axe')).width(52).height(52).objectFit(ImageFit.Contain).draggable(false)
+        Column({ space: 4 }) {
+          Text('AMCL').fontSize(20).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
+          Button({ type: ButtonType.Normal }) {
+            Text('当前版本 ' + (UpdateChecker.currentVersionName() || APP_VERSION)).fontSize(14)
+              .fontColor(this.theme.textSecondary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.height(44).padding(0).backgroundColor(Color.Transparent).id('software-current-version')
+            .accessibilityText('查看当前应用的完整版本号').onClick((): void => { this.showCurrentVersion_(); })
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%').alignItems(VerticalAlign.Center)
+      if (DistributionPolicy.isStore()) {
+        SettingsHint({ text: '此版本通过应用市场更新。', theme: this.theme })
+      } else {
+        Button(this.checking ? '正在检查…' : '检查更新').height(48).width('100%').borderRadius(16)
+          .backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary).id('software-check-update')
+          .enabled(!this.checking && !this.importing && !this.developerInstalled)
+          .onClick((): void => { this.check(); })
+      }
+      if (this.status.length > 0) { SettingsHint({ text: this.status, theme: this.theme }) }
+    }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 4, bottom: 4 })
+  }
+
+  /** 两个真实订阅选项复用设置行，不把安装码或签名实现细节放进日常选择文案。 */
+  @Builder
+  private channelRows_() {
+    SettingsValueRow({ title: '稳定版', description: '接收正式版本', value: this.channel === 'stable' ? '当前通道' : '',
+      theme: this.theme, actionValue: true, showTrailing: this.channel === 'stable', trailingIcon: AppIconName.Check,
+      actionEnabled: !this.importing, controlId: 'software-channel-stable', onAction: (): void => { this.chooseChannel('stable'); } })
+    SettingsDivider({ theme: this.theme })
+    SettingsValueRow({ title: '预览版', description: '提前体验新功能，可能存在尚未解决的问题', value: this.channel === 'preview' ? '当前通道' : '',
+      theme: this.theme, actionValue: true, showTrailing: this.channel === 'preview', trailingIcon: AppIconName.Check,
+      actionEnabled: !this.importing, controlId: 'software-channel-preview', onAction: (): void => { this.chooseChannel('preview'); } })
+  }
+
+  /** 本地安装包选择仍走原官方身份核对；仅调整入口层级，不增加签名文件选择或额外确认。 */
+  @Builder
+  private manualRows_() {
+    SettingsValueRow({ title: this.importing ? '正在核对安装包…' : '选择本地安装包', description: '核对官方原始 HAP 后继续安装',
+      theme: this.theme, actionEnabled: !this.importing && !this.checking, controlId: 'software-import-package',
+      onAction: (): void => { this.importPackage(); } })
+    SettingsDivider({ theme: this.theme })
+    SettingsValueRow({ title: '前往 GitHub', theme: this.theme, trailingIcon: AppIconName.ArrowUpRight,
+      actionEnabled: !this.importing, controlId: 'software-open-github', onAction: (): void => { this.openGithub(); } })
+  }
+
 }

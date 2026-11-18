@@ -53,6 +53,8 @@ export struct SettingsValueRow {
   @Prop showTrailing: boolean = true;
   @Prop trailingIcon: AppIconName = AppIconName.ChevronRight;
   @Prop actionValue: boolean = false;
+  /** 已验证的成功状态使用统一语义色；默认不改变已有设置行。 */
+  @Prop positiveValue: boolean = false;
   @Prop interactive: boolean = true;
   @Prop actionEnabled: boolean = true;
   @Prop controlId: string = '';
@@ -78,11 +80,11 @@ export struct SettingsValueRow {
       }.layoutWeight(1).alignItems(HorizontalAlign.Start);
       if (this.value.length > 0) {
         Text(this.value).fontSize(14)
-          .fontColor(this.actionValue ? this.theme.actionText : this.theme.textSecondary)
+          .fontColor(this.positiveValue ? this.theme.successText : this.actionValue ? this.theme.actionText : this.theme.textSecondary)
           .constraintSize({ maxWidth: 150 }).textAlign(TextAlign.End);
       }
       if (this.showTrailing && this.interactive) {
-        AppIcon({ name: this.trailingIcon, iconSize: 16, color: this.theme.textSecondary });
+        AppIcon({ name: this.trailingIcon, iconSize: 16, color: this.positiveValue ? this.theme.successText : this.theme.textSecondary });
       }
     }.width('100%').constraintSize({ minHeight: this.description.length > 0 ? 76 : 64 })
       .padding({ left: 16, right: 16, top: 12, bottom: 12 })

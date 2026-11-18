@@ -15,7 +15,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 from lib.sdl_host_cache import (STAGES, cleanup_owned_build, content_key, exclusive_lock,
-    controlled_environment, external_dependencies, file_identity, publish_manifest, routed_path, validate_cached,
+    controlled_environment, semantic_environment, external_dependencies, file_identity, publish_manifest, routed_path, validate_cached,
     validate_execution, write_json)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +24,14 @@ TEST_ROOT = None
 
 class CachePolicyTests(unittest.TestCase):
     """按会造成假命中或误删的具体风险分组，不为每个 helper 机械补测试。"""
+
+    def test_task_output_context_is_not_a_compiler_input(self):
+        """不同任务复用同一已审输入；真实构建选择变化仍使环境身份不同。"""
+        one={'PATH':'fixed','AMCL_TASK_ID':'one','AMCL_TASK_ROOT':'D:/one','AMCL_BUILD_DIR':'D:/one/build'}
+        two={**one,'AMCL_TASK_ID':'two','AMCL_TASK_ROOT':'D:/two','AMCL_BUILD_DIR':'D:/two/build'}
+        self.assertEqual(semantic_environment(one),semantic_environment(two))
+        self.assertNotEqual(semantic_environment(one),semantic_environment({**two,'PATH':'changed'}))
+        self.assertNotEqual(semantic_environment(one),semantic_environment({**two,'AMCL_RUNTIME_FEATURE':'changed'}))
 
     def setUp(self):
         """每例独占仓外夹具，退出只回收 TemporaryDirectory 自己的新内容。"""

@@ -41,7 +41,7 @@ def main():
     task='sdl-host-'+str(os.getpid())+'-'+uuid.uuid4().hex[:6]
     out=external_output_path(args.out) if args.out else routed_path(ROOT,'run',task)
     build=external_output_path(args.build_out) if args.build_out else routed_path(ROOT,'build',task)
-    cache=external_output_path(args.cache_root) if args.cache_root else routed_path(ROOT,'build','sdl-host-cache')
+    cache=external_output_path(args.cache_root) if args.cache_root else routed_path(ROOT,'build','sdl-host-cache',shared=True)
     for first,second in ((out,build),(out,cache),(build,cache)):
         if first.is_relative_to(second) or second.is_relative_to(first):
             raise ValueError('SDL evidence, build and cache roots must be disjoint')

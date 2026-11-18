@@ -711,8 +711,11 @@ napi_value SetCursorLocked(napi_env env, napi_callback_info info) {
     if (argc >= 1) napi_get_value_int32(env, args[0], &windowId);
     if (argc >= 2) napi_get_value_bool(env, args[1], &locked);
     SurfaceLifecycleLock lifecycleLock;
-    const AmclCursorLockResult result =
-        amcl_cursor_lock_set(windowId, locked);
+    // 用现有输入门等待当前 drawable 确认；解锁是清理操作，几何暂停或销毁后仍执行。
+    amcl::input::SurfaceInputGateTransaction inputGate;
+    const AmclCursorLockResult result = locked && !inputGate
+        ? AMCL_CURSOR_LOCK_CONTEXT_INACTIVE
+        : amcl_cursor_lock_set(windowId, locked);
     const amcl::input::CursorCapturePublication publication =
         amcl::input::CursorCapturePublicationForResult(locked, result);
     // locked是本次平台操作，不是游戏requested intent。例如最后鼠标拔除时执行

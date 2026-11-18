@@ -289,7 +289,8 @@ export class UpdateChecker {
     // 调用方保留自己的来源/通道代次快照；本方法只返回结果，不触碰偏好、红点、
     // 弹窗或安装执行权。各次 await 返回后，是否仍消费结果继续由原调用方判定。
     channel = AppUpdatePolicy.channel(channel);
-    const officialUrl = 'https://amcl.lovedhy.cn/api/packages/manifest?product=' + GitHubUpdateAssetResolver.assetProduct(product) + '&channel=' + channel;
+    // 新交付入口独立于旧App的镜像硬条件；官网仍是当前推荐头，GitHub只在网络故障时回退。
+    const officialUrl = 'https://amcl.lovedhy.cn/api/packages/manifest?product=' + GitHubUpdateAssetResolver.assetProduct(product) + '&channel=' + channel + '&deliveryProtocol=2';
     const production = urls.length === UPDATE_MANIFEST_URLS.length && urls.every((url: string, index: number): boolean => url === UPDATE_MANIFEST_URLS[index]);
     const candidates: string[] = production ? [officialUrl].concat(AppUpdatePolicy.urls(product,channel)) : urls.slice();
     // 老 update.json 只作稳定通道的末级兼容入口，预览检查不能退回稳定推荐。
@@ -355,7 +356,7 @@ export class UpdateChecker {
   static async publishedVersion(tag: string, product: string, channel: string): Promise<UpdateManifest> {
     if(!tag.startsWith('v') || !AppUpdatePolicy.validVersion(tag.substring(1))) throw new Error('安装包版本格式不受支持');
     const name=GitHubUpdateAssetResolver.assetProduct(product);
-    const body=await DownloadManager.instance().fetchText('https://amcl.lovedhy.cn/api/packages/manifest?product='+name+'&channel='+AppUpdatePolicy.channel(channel)+'&tag='+encodeURIComponent(tag),[],15,8191);
+    const body=await DownloadManager.instance().fetchText('https://amcl.lovedhy.cn/api/packages/manifest?product='+name+'&channel='+AppUpdatePolicy.channel(channel)+'&tag='+encodeURIComponent(tag)+'&deliveryProtocol=2',[],15,8191);
     const manifest=UpdateChecker.parseManifest(body);
     if(manifest===null || manifest.tag!==tag || !AppUpdatePolicy.accepts(tag,manifest.updateChannel,manifest.prerelease,channel)) throw new Error('此版本不属于当前通道，或尚无官方发布记录');
     GitHubUpdateAssetResolver.fromDelivery(manifest,product);

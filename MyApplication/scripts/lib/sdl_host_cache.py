@@ -21,7 +21,7 @@ import time
 import uuid
 
 from .host_cpp import find_host_cmake
-from .workspace_paths import external_output_path, workspace_path
+from .workspace_paths import external_output_path, workspace_path, shared_workspace_path
 
 SCHEMA = 'sdl-host-combination-cache/v1'
 STAGES = ('test-sdl-control-header-checkout.py', 'test-sdl-control-delivery.py',
@@ -84,13 +84,13 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def routed_path(root, kind, task):
+def routed_path(root, kind, task, *, shared=False):
     """沿用公开克隆的仓外退路；维护工作区新增文件遵循当前 storage-routing。
 
     不改全局临时目录，不搬历史文件。显式 AMCL_WORKSPACE_ROOT/AMCL_RUN_DIR 仍由
     既有 helper 解释；只有返回路径确在 canonicalStorageRoot 中时才应用物理路由。
     """
-    result = workspace_path(kind, task)
+    result = shared_workspace_path(kind, task) if shared else workspace_path(kind, task)
     for parent in Path(root).parents:
         routing = parent / '.workspace/storage-routing.json'
         if not routing.is_file():
@@ -144,6 +144,22 @@ def exclusive_lock(path, timeout=600):
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def semantic_environment(values=None):
+    """构建选择按值摘要绑定；只排除明确的任务身份/输出字段，不通配忽略AMCL配置。"""
+    values = os.environ if values is None else values
+    # SDL/AMCL 的运行选择也会影响行为；只存值的 SHA，避免把令牌或密码写入收据。
+    # 输出路由和 Fresh 本身不改变被测行为，不应令相同源码在每个任务都失效。
+    names = ('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS',
+        'CMAKE_PREFIX_PATH', 'CMAKE_GENERATOR_INSTANCE', 'VCToolsInstallDir', 'WindowsSdkDir',
+        'WindowsSDKVersion', 'SDKROOT', 'MACOSX_DEPLOYMENT_TARGET')
+    excluded = {'AMCL_RUN_DIR', 'AMCL_WORKSPACE_ROOT', 'AMCL_GATE_FRESH', 'AMCL_SDL_TEST_REPO',
+                'AMCL_TASK_ID', 'AMCL_TASK_ROOT', 'AMCL_BUILD_DIR'}
+    relevant = (set(names) - set(CLEARED_BUILD_ENV)) | {name for name in values
+        if name.startswith(('SDL_', 'AMCL_')) and name not in excluded}
+    return {name: hashlib.sha256(values[name].encode('utf-8')).hexdigest()
+        if name in values else None for name in sorted(relevant)}
 
 
 def input_identity(root, pin, cmake=None):
@@ -215,16 +231,7 @@ def input_identity(root, pin, cmake=None):
             if value:
                 path = Path(value).resolve()
                 tools[name] = {'path': str(path), **file_identity(path)}
-    # SDL/AMCL 的运行选择也会影响行为；只存值的 SHA，避免把令牌或密码写入收据。
-    # 输出路由和 Fresh 本身不改变被测行为，不应令相同源码在每个任务都失效。
-    names = ('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS',
-        'CMAKE_PREFIX_PATH', 'CMAKE_GENERATOR_INSTANCE', 'VCToolsInstallDir', 'WindowsSdkDir',
-        'WindowsSDKVersion', 'SDKROOT', 'MACOSX_DEPLOYMENT_TARGET')
-    excluded = {'AMCL_RUN_DIR', 'AMCL_WORKSPACE_ROOT', 'AMCL_GATE_FRESH', 'AMCL_SDL_TEST_REPO'}
-    relevant = (set(names) - set(CLEARED_BUILD_ENV)) | {name for name in os.environ
-        if name.startswith(('SDL_', 'AMCL_')) and name not in excluded}
-    environment = {name: hashlib.sha256(os.environ[name].encode('utf-8')).hexdigest()
-        if name in os.environ else None for name in sorted(relevant)}
+    environment = semantic_environment()
     return {'schema': SCHEMA, 'root': str(root), 'pin': pin, 'platform': sys.platform,
         'machine': platform.machine(), 'hostVersion': platform.version(), 'pythonVersion': sys.version, 'tools': tools,
         'clearedChildEnvironment': list(CLEARED_BUILD_ENV),

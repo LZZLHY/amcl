@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync, copyF
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { assertExternalOutputPath, resolveWorkspacePath } from './lib/workspace-paths.mjs';
+import { assertExternalOutputPath, resolveSharedWorkspacePath } from './lib/workspace-paths.mjs';
+import { prepareSigningTemplates } from './prepare-signing-templates.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = join(root, 'entry/src/main/sideload/AmclSigningRunner.java');
 const sdk = process.env.DEVECO_SDK_HOME;
@@ -12,7 +13,8 @@ const sdk = process.env.DEVECO_SDK_HOME;
 const explicitDependency=process.env.AMCL_SIGNER_COMPILER_JAR;
 if (!sdk&&!explicitDependency) throw new Error('DEVECO_SDK_HOME or AMCL_SIGNER_COMPILER_JAR is required');
 const dependency = explicitDependency ? resolve(explicitDependency) : join(sdk, 'default/openharmony/toolchains/lib/hap-sign-tool.jar');
-const build = process.env.AMCL_SIGNER_BUILD_DIR ? assertExternalOutputPath(process.env.AMCL_SIGNER_BUILD_DIR) : resolveWorkspacePath('build','sideload-signer');
+// 签名runner的编译缓存属于固定checkout，任务切换不复制或迁移该输入。
+const build = process.env.AMCL_SIGNER_BUILD_DIR ? assertExternalOutputPath(process.env.AMCL_SIGNER_BUILD_DIR) : resolveSharedWorkspacePath('build','sideload-signer');
 const classes = join(build, 'classes');
 const output = join(root, 'entry/src/main/resources/rawfile/sideload/amcl-signing-runner.jar');
 // DevEco 会把 JAVA_HOME 指向自带 JBR；它可能有 javac/java，却没有封包所需的 jar。
@@ -74,11 +76,16 @@ execFileSync(tool('javac'), ['--release', '17', '-encoding', 'UTF-8', '-cp', dep
 execFileSync(tool('javac'), ['--release', '17', '-encoding', 'UTF-8', '-cp', classes + (process.platform === 'win32' ? ';' : ':') + dependency,
   '-d', classes, join(root, 'entry/src/main/sideload/tests/SigningIdentityTest.java')], { stdio: 'inherit' });
 execFileSync(tool('java'), ['-cp', classes + (process.platform === 'win32' ? ';' : ':') + dependency, 'SigningIdentityTest'], { stdio: 'inherit' });
+// 证书续期允许旧叶指纹变化；真实密码学回归验证公钥连续、空证书列表和错误密钥拒绝。
+execFileSync(tool('javac'), ['--release', '17', '-encoding', 'UTF-8', '-cp', classes + (process.platform === 'win32' ? ';' : ':') + dependency,
+  '-d', classes, join(root, 'entry/src/main/sideload/tests/OriginalSigningRecoveryTest.java')], { stdio: 'inherit' });
+execFileSync(tool('java'), ['-Damcl.test.output='+build, '-cp', classes + (process.platform === 'win32' ? ';' : ':') + dependency, 'OriginalSigningRecoveryTest'], { stdio: 'inherit' });
 // 手动包的真实ZIP边界也必须通过；数据与测试class留外置树，不能进入发布JAR。
 execFileSync(tool('javac'), ['--release','17','-encoding','UTF-8','-cp',classes + (process.platform === 'win32' ? ';' : ':') + dependency,
   '-d',classes,join(root,'entry/src/main/sideload/tests/ManualPackageInspectionTest.java')],{stdio:'inherit'});
 execFileSync(tool('java'), ['-cp',classes + (process.platform === 'win32' ? ';' : ':') + dependency,'ManualPackageInspectionTest',join(build,'manual-package-tests')],{stdio:'inherit'});
 // 固定ZIP日期，不因本机当前时间而制造另一个JAR身份。
+await prepareSigningTemplates({root,build,java:tool('java'),classpath:classes+(process.platform==='win32'?';':':')+dependency});
 execFileSync(tool('jar'), ['--create', '--date=2026-01-01T00:00:00Z', '--file', output, '-C', classes, 'AmclSigningRunner.class'], { stdio: 'inherit' });
 writeFileSync(join(build, 'provenance.json'), JSON.stringify({ schema: 1, sourceSha256: hash(source),
   compilerDependencySha256: hash(dependency), runtimeSignerSha256:hash(pinned), jarSha256: hash(output), targetJava: 17 }, null, 2));

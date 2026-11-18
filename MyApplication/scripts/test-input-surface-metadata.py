@@ -2,7 +2,8 @@
 
 小型宿主探针直接链接现役ingress/shadow/trace/core/公共order生产TU，只把进程输入与输出做CLI接缝。
 页面方法由现役ETS AST提取，Native接受态与late-consumer当前context来自实际生产API；旧页面
-仅按generation跳过元数据的负控先通过转译，再由实际行为断言失败。所有构建/证据逐次外置隔离。
+仅按generation跳过元数据的负控先通过转译，再由实际行为断言失败。构建/证据外置隔离；
+成功回收本轮构建树并保留小型证据，失败或显式调试保留现场。
 """
 from pathlib import Path
 import argparse
@@ -11,8 +12,8 @@ import json
 import os
 import shutil
 import subprocess
-import uuid
 from lib.host_cpp import find_host_cmake, configure_host_cmake
+from lib.host_test_lifecycle import HostTestScope
 from lib.workspace_paths import external_output_path, workspace_path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -21,10 +22,27 @@ def main():
     """只编独立生产探针；不执行SDK或重复NativeBuild全目标，也不接受编译失败冒充负控成功。"""
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cmake');parser.add_argument('--build-dir');parser.add_argument('--output')
-    args=parser.parse_args();leaf='run-'+str(os.getpid())+'-'+uuid.uuid4().hex[:8]
+    args=parser.parse_args()
     build_base=external_output_path(args.build_dir) if args.build_dir else workspace_path('build','input-surface-metadata')
     output_base=external_output_path(args.output) if args.output else workspace_path('run','input-surface-metadata')
-    build=build_base/leaf;output=output_base/leaf;project=build/'source';project.mkdir(parents=True,exist_ok=False);output.mkdir(parents=True,exist_ok=False)
+    lifecycle=HostTestScope('run-',parent=build_base)
+    output=output_base/lifecycle.directory.name
+    # 异常原样向上抛出并保留当前构建，成功才回收；不能清理调用者指定的共享父目录。
+    try:
+        output.mkdir(parents=True,exist_ok=False)
+        run_checks(args,lifecycle.directory,output)
+    except BaseException:
+        lifecycle.close(success=False)
+        raise
+    else:
+        removed=lifecycle.close(success=True)
+        evidence=output/'evidence.json';receipt=json.loads(evidence.read_text(encoding='utf-8'))
+        receipt['buildRetained']=not removed
+        evidence.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+
+def run_checks(args,build,output):
+    """执行真实页面与Native生产逻辑；保留必要源码样本/日志，构建缓存由调用者收口。"""
+    project=build/'source';project.mkdir(parents=True,exist_ok=False)
     fixture=ROOT/'entry/src/main/cpp/tests/host/input_surface_metadata.cpp.in'
     (project/'metadata.cpp').write_bytes(fixture.read_bytes())
     native_names=['platform_input_ingress.cpp','input_shadow_consumer.cpp','input_trace.cpp','input_state_core.cpp','input_interaction_order.cpp']
@@ -84,7 +102,8 @@ endif()
     receipt={'scope':'host actual page/native metadata; no SDK/device claim','positiveExit':positive.returncode,'negativeExit':negative.returncode,
         'diagnosticNegativeExit':noisy_result.returncode,'diagnosticNegativeSourceSHA256':hashlib.sha256(noisy_text.encode()).hexdigest(),
         'sources':{n:hashlib.sha256((ROOT/n).read_bytes()).hexdigest() for n in names},
-        'negativeSourceSHA256':hashlib.sha256(changed.encode()).hexdigest(),'binary':str(binary)}
+        'negativeSourceSHA256':hashlib.sha256(changed.encode()).hexdigest(),'binary':str(binary),
+        'buildDirectory':str(build),'buildRetained':True}
     (output/'evidence.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print(positive.stdout,end='');print('PASS generation-only negative executes native mirror failure; evidence='+str(output))
 

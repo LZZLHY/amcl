@@ -73,6 +73,8 @@ export struct UpdateDialog {
   /** 应用自更新在原弹窗切换内容；JDK/商店等其他用途仍走原回调。 */
   selfUpdateParams?: SideloadUpdatePageParams
   @State private selfUpdating: boolean = false
+  /** 次要元数据和运行时长说明在本弹窗内展开，不叠加新的信息弹窗。 */
+  @State private detailsExpanded: boolean = false
   /** 系统Back/ESC和按钮共用显式退出，框架卸载本身不再取消业务。 */
   private exitSelfUpdate: () => boolean = (): boolean => false
   @StorageProp('screenHeightVp') private windowHeight: number = 800
@@ -114,16 +116,11 @@ export struct UpdateDialog {
   @Builder
   private RequiredNotice_() {
     Column({ space: 6 }) {
-      Row({ space: 6 }) {
-        AppIcon({ name: AppIconName.Warning, iconSize: 16, color: this.theme.warningText })
-        Text('必须处理').fontSize(13).fontWeight(600).fontColor(this.theme.warningText)
-      }.width('100%')
       Text(this.requiredNotice.reason || '此更新是继续相关操作所必需的。')
         .fontSize(13).lineHeight(19).fontColor(this.theme.textPrimary).width('100%')
       Text(this.requiredNotice.consequence || '请阅读更新说明，并选择更新或暂不继续。')
-        .fontSize(12).lineHeight(18).fontColor(this.theme.warningText).width('100%')
-    }.width('100%').alignItems(HorizontalAlign.Start).padding(12)
-      .backgroundColor(this.theme.warningBg).borderRadius(12).id('update-required-notice')
+        .fontSize(12).lineHeight(18).fontColor(this.theme.textSecondary).width('100%')
+    }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 4, bottom: 4 }).id('update-required-notice')
       .accessibilityGroup(true)
   }
 
@@ -164,13 +161,7 @@ export struct UpdateDialog {
    * 缺失字段不补示例值；此入口只展示已有发行事实，不触发下载、授权或安装流程。
    */
   private showReleaseDetails_(): void {
-    const lines: string[] = [];
-    if (this.newVersion.length > 0) lines.push('目标版本：' + this.newVersion);
-    if (this.sizeLabel.length > 0) lines.push('下载大小：' + this.sizeLabel);
-    if (this.releaseDate.length > 0) lines.push('发布日期：' + this.releaseDate);
-    if (this.sourceLabel.length > 0) lines.push('来源：' + this.sourceLabel);
-    this.getUIContext().showAlertDialog({ title: '发行信息', message: lines.join('\n') || '暂无发行信息',
-      confirm: { value: '知道了', action: (): void => {} } });
+    this.detailsExpanded = !this.detailsExpanded;
   }
 
   /** 发行详情使用同一行的独立触点，标题宽度不足时省略标题，不生成另一行说明。 */
@@ -189,7 +180,6 @@ export struct UpdateDialog {
         if (this.selfUpdating && this.selfUpdateParams !== undefined) {
           SideloadUpdateContent({ params: this.selfUpdateParams, currentVersion: this.currentVersion,
             sizeLabel: this.sizeLabel, releaseDate: this.releaseDate, compact: this.appFrame().compact,
-            entries: this.entries, showChangelogEntry: this.showChangelogEntry,
             onDismiss: (): void => { this.onLater(); },
             onExitGuardReady: (exit: () => boolean): void => { this.exitSelfUpdate = exit; } })
             .width('100%').height('100%')
@@ -225,36 +215,29 @@ export struct UpdateDialog {
           .maxLines(this.isRequired_() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         this.ReleaseDetailsButton_()
       }.width('100%').height(44).alignItems(VerticalAlign.Center).flexShrink(0)
-      Row({ space: 12 }) {
-        Column({ space: 1 }) {
-          Text('当前版本').fontSize(12).fontColor(this.theme.textSecondary)
-          Text(this.appVersionLabel(this.currentVersion)).fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        AppIcon({ name: AppIconName.ArrowRight, iconSize: 16, color: this.theme.textSecondary })
-        Column({ space: 1 }) {
-          Text('新版本' + (this.sizeLabel.length > 0 ? ' · ' + this.sizeLabel : '')).fontSize(12).fontColor(this.theme.actionText)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.appVersionLabel(this.newVersion)).fontSize(14).fontWeight(600).fontColor(this.theme.actionText)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.layoutWeight(1).alignItems(HorizontalAlign.End)
-      }.width('100%').height(this.appFrame().compact ? 36 : 44).padding({ left: 12, right: 12 })
-        .backgroundColor(this.theme.bgInput).borderRadius(12).flexShrink(0)
+      Column({ space: 4 }) {
+        Text(this.appVersionLabel(this.newVersion)).fontSize(24).fontWeight(FontWeight.Medium).fontColor(this.theme.textPrimary)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+        Text('当前 ' + this.appVersionLabel(this.currentVersion) + (this.sizeLabel.length > 0 ? ' · ' + this.sizeLabel : ''))
+          .fontSize(12).fontColor(this.theme.textSecondary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').height(52).alignItems(HorizontalAlign.Start).flexShrink(0)
       Scroll() {
         Column({ space: 10 }) {
           if (this.isRequired_()) { this.RequiredNotice_(); }
           Row() {
-            Text('更新亮点').fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1)
+            Text('本次更新').fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary).layoutWeight(1)
             Text('共 ' + this.entries.length + ' 项').fontSize(12).fontColor(this.theme.textSecondary)
           }.width('100%')
           if (this.entries.length > 0) {
-            ForEach(this.entries, (entry: UpdateNoteEntry) => {
+            ForEach(this.detailsExpanded ? this.entries : this.entries.slice(0, 3), (entry: UpdateNoteEntry) => {
               Row({ space: 10 }) {
                 Stack() {
                   AppIcon({ name: this.noteIcon(entry.type), iconSize: 16, color: changelogTone(entry.type, this.theme).color })
-                }.width(30).height(30).backgroundColor(changelogTone(entry.type, this.theme).bg).borderRadius(9)
+                }.width(24).height(24)
                 Column({ space: 1 }) {
-                  Text(noteTypeLabel(entry.type)).fontSize(12).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
+                  if (this.detailsExpanded) {
+                    Text(noteTypeLabel(entry.type)).fontSize(12).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
+                  }
                   Text(entry.text).fontSize(12).lineHeight(18).fontColor(this.theme.textSecondary).width('100%')
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               }.width('100%').alignItems(VerticalAlign.Top)
@@ -264,6 +247,10 @@ export struct UpdateDialog {
           }
         }.width('100%')
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      if (this.detailsExpanded) {
+        Text([this.releaseDate, this.sourceLabel].filter((value: string): boolean => value.length > 0).join(' · '))
+          .fontSize(12).fontColor(this.theme.textSecondary).width('100%').maxLines(2)
+      }
       Divider().color(this.theme.divider).strokeWidth(0.5).flexShrink(0)
       Row() {
         if (this.showChangelogEntry) {
@@ -343,8 +330,11 @@ export struct UpdateDialog {
               Column({ space: 4 }) {
                 Text(item.title + (item.sizeLabel.length > 0 ? ' · ' + item.sizeLabel : ''))
                   .fontSize(14).fontWeight(600).fontColor(this.theme.textPrimary).width('100%')
-                Text(item.current + ' → ' + item.target).fontSize(12).fontColor(this.theme.textHint).width('100%')
+                if (this.detailsExpanded) {
+                  Text(item.current + ' → ' + item.target).fontSize(12).fontColor(this.theme.textHint).width('100%')
+                }
                 Text(item.description).fontSize(12).lineHeight(18).fontColor(this.theme.textSecondary).width('100%')
+                  .maxLines(this.detailsExpanded ? 50 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             }.width('100%').alignItems(VerticalAlign.Top)
           }, (item: UpdateDialogItem): string => item.id)
@@ -362,7 +352,16 @@ export struct UpdateDialog {
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).id('update-reminder-content')
+      if (this.detailsExpanded) {
+        Text([this.releaseDate, this.sourceLabel].filter((value: string): boolean => value.length > 0).join(' · '))
+          .fontSize(12).fontColor(this.theme.textSecondary).width('100%').maxLines(2)
+      }
       Divider().color(this.theme.divider).strokeWidth(0.5).flexShrink(0)
+      if (this.items.length > 0) {
+        Button(this.detailsExpanded ? '收起详细说明' : '查看详细说明').height(40).fontSize(12)
+          .padding({ left: 0, right: 0 }).backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
+          .onClick((): void => { this.showReleaseDetails_(); }).alignSelf(ItemAlign.Start).flexShrink(0)
+      }
       if (this.showChangelogEntry || this.showManualDownload) {
         Row() {
           if (this.showChangelogEntry) {

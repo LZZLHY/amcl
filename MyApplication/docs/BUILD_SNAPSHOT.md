@@ -1,8 +1,8 @@
 # 公开快照构建说明
 
-1.0.7 / 1000911 的公开输入对应干净源提交 `1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6`，完整文件身份见 `SOURCE_SNAPSHOT.json`。本版包含新版运行时宿主、稳定通道内的旧 JDK 修复、共用的普通／强提醒更新组件以及图形、输入和模组原生库适配。仅不兼容且必须修复的受管 JDK 使用强提醒；App 预留同一展示能力，当前发行不启用 App 强制更新策略。升级后受影响的游戏须先修复运行时，JDK 通道可一直保持稳定。
+1.0.8-pre1 / 1000911 的公开输入对应干净源提交 `2b31852888416bdd380770df560ba9294dc082a3`，完整文件身份见 `SOURCE_SNAPSHOT.json`。这是沿用 1.0.7 安装码的预览快照，包含分辨率确认后的实体鼠标捕获修复、更新界面和开发者授权复用、自动签名及新版原站交付协议。
 
-四代正式 JDK 独立发布；App、目录读取协议、恢复读取协议与 JDK 装载协议分别按实际包内声明核对。公开快照固定已公开的 MobileGL 源码与锁定制品，普通 HAP 重建仍按下述公开依赖流程执行。源码导出、公开克隆构建、正式侧载包和真机验收各自记录证据；本页保留后文 1.0.4 的历史验证，不将其当作本次结果。
+四代正式 JDK 独立发布；App、目录读取协议、恢复读取协议与 JDK 装载协议分别按实际包内声明核对。公开快照固定已公开的 MobileGL 源码与锁定制品，普通 HAP 重建按下述公开依赖流程执行。1.0.7 的 [公开复建记录](public-reproduction-audit.md) 对应干净源提交 `1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6`。源码导出、公开克隆构建、正式侧载包和真机验收各自记录证据。
 
 2026-09-24 已按此流程完成 **1.0.4 / 1000671、sideload / release / unsigned** HAP 构建及包内关键输入校验；环境、产物 SHA-256 和剩余限制见 [本轮核验记录](public-reproduction-audit.md)。
 
@@ -105,6 +105,8 @@ python scripts/prepare-game-compat-inputs.py --download --output $env:AMCL_GAME_
 ```
 
 准备入口自动设置 `GIT_LFS_SKIP_SMUDGE=1`，跳过 MobileGL 可选 trace_replay 工具使用的大型 LFS 回放夹具，保留其指针文件。普通 HAP 构建不消费这些夹具，不需要另行运行 `git lfs pull`；只有独立使用对应工具时才需要准备其额外数据。
+
+从 1.0.8-pre1 起，Hvigor 的资源准备自动核对 [侧载签名兼容输入](../scripts/prepare-signing-templates.mjs)，从小白固定公开提交和 HoKit 公开 Android 1.2.2 安装包生成随包模板。构建只运行 AMCL 的模板解析与密码学检查。生成文件不提交 Git，也不读取维护者或设备的个人签名材料。若 HoKit 默认下载地址返回的文件与固定版本不符，可将 `AMCL_HOKIT_TEMPLATE_INPUT` 指向已取得的公开原件。脚本按固定大小和 SHA-256 校验，来源见 [CREDITS.md](CREDITS.md)。
 
 依赖分工如下：
 

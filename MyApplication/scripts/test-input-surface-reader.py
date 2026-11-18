@@ -1,7 +1,8 @@
 """实际owner整表/reader与GLFW getter/resolve caller，连接真实Native当前context。
 
 消费cache必须只合并同identity的显示元数据，不越过排队的新geometry；缺cache仅真实legacy
-或textOnly可借owner基线。独占外置构建保留完整生产TU和行为收据，撤回负控必须实编后CHECK失败。
+或textOnly可借owner基线。撤回负控必须实编后CHECK失败；成功只保留源码摘要、必要样本和行为收据，
+亲建的Native构建树通过既有生命周期工具回收，失败或显式调试保留现场。
 """
 from pathlib import Path
 import argparse
@@ -10,18 +11,34 @@ import importlib.util
 import json
 import os
 import subprocess
-import uuid
 from lib.host_cpp import find_host_cmake, configure_host_cmake
+from lib.host_test_lifecycle import HostTestScope
 from lib.workspace_paths import external_output_path, workspace_path
 ROOT=Path(__file__).resolve().parents[1];CPP=ROOT/'entry/src/main/cpp'
 
 def main():
     """SDK仅替换resolver/adapter等端口；table、caller、getter、Core全来自现役源码。"""
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--cmake');parser.add_argument('--output');parser.add_argument('--build-dir');args=parser.parse_args()
-    leaf='run-'+str(os.getpid())+'-'+uuid.uuid4().hex[:8]
-    build=(external_output_path(args.build_dir) if args.build_dir else workspace_path('build','input-surface-reader'))/leaf
-    output=(external_output_path(args.output) if args.output else workspace_path('run','input-surface-reader'))/leaf
-    project=build/'source';project.mkdir(parents=True,exist_ok=False);output.mkdir(parents=True,exist_ok=False)
+    build_base=external_output_path(args.build_dir) if args.build_dir else workspace_path('build','input-surface-reader')
+    output_base=external_output_path(args.output) if args.output else workspace_path('run','input-surface-reader')
+    lifecycle=HostTestScope('run-',parent=build_base)
+    output=output_base/lifecycle.directory.name
+    # 构建与证据分开：只把本轮亲建的构建子目录交给生命周期工具，父目录和收据不删除。
+    try:
+        output.mkdir(parents=True,exist_ok=False)
+        run_checks(args,lifecycle.directory,output)
+    except BaseException:
+        lifecycle.close(success=False)
+        raise
+    else:
+        removed=lifecycle.close(success=True)
+        evidence=output/'evidence.json';receipt=json.loads(evidence.read_text(encoding='utf-8'))
+        receipt['buildRetained']=not removed
+        evidence.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+
+def run_checks(args,build,output):
+    """完整执行既有正反例；返回前子进程均已结束，构建是否保留由外层统一收口。"""
+    project=build/'source';project.mkdir(parents=True,exist_ok=False)
     spec=importlib.util.spec_from_file_location('surface_reader_extract',ROOT/'scripts/generate-desktop-review-tests.py')
     recipe=importlib.util.module_from_spec(spec);spec.loader.exec_module(recipe)
     bridge=(CPP/'glfw/input_bridge_ohos.c').read_text(encoding='utf-8');compat=(CPP/'glfw/glfw_compat.cpp').read_text(encoding='utf-8')
@@ -80,6 +97,7 @@ endif()
     tracked=['glfw/input_bridge_ohos.c','glfw/glfw_compat.cpp','input/input_surface_context_snapshot.h','input/input_surface_context_semantics.h',
       'input/input_state_core.h','input/delivery/look_transport.h','input/delivery/look_execution.h','input/adapters/backend_keymaps.cpp','input/adapters/glfw_typed_input_resolve_guard.h','input/adapters/glfw_input_adapter.h',*['input/'+n for n in names]]
     receipt={'scope':'host actual owner/Core/GLFW reader/caller; no SDK/device claim',
+      'buildDirectory':str(build),'buildRetained':True,
       'sources':{n:hashlib.sha256((CPP/n).read_bytes()).hexdigest() for n in tracked},'negatives':[n for n,_,_ in mutations]}
     (output/'evidence.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print('PASS input surface reader source-bound evidence='+str(output))

@@ -20,6 +20,26 @@ import java.security.SecureRandom;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.Signature;
+import java.math.BigInteger;
+import java.util.Date;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import javax.crypto.spec.IvParameterSpec;
+import org.bouncycastle.pkcs.PKCS10CertificationRequest;
+import org.bouncycastle.operator.jcajce.JcaContentVerifierProviderBuilder;
 import java.util.zip.ZipFile;
 import java.nio.file.attribute.PosixFilePermissions;
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
@@ -200,6 +220,278 @@ public final class AmclSigningRunner {
             System.setOut(out); System.setErr(err); quiet.close();
         }
     }
+
+    /** 固定 PEM 边界解析；只返回 DER，不在异常、日志或普通结果中回显签名材料。 */
+    private static byte[] pemDer(String pem, String kind) {
+        String begin = "-----BEGIN " + kind + "-----", end = "-----END " + kind + "-----";
+        String value = pem.trim();
+        // Keytool使用PKCS#10的标准NEW标签别名；只接受这一明确别名，不剥任意PEM头放宽格式。
+        if (kind.equals("CERTIFICATE REQUEST") && value.startsWith("-----BEGIN NEW CERTIFICATE REQUEST-----")) {
+            begin = "-----BEGIN NEW CERTIFICATE REQUEST-----"; end = "-----END NEW CERTIFICATE REQUEST-----";
+        }
+        if (value.length() > 16384 || !value.startsWith(begin) || !value.endsWith(end)) {
+            throw new SecurityException("Original key encoding invalid");
+        }
+        return Base64.getMimeDecoder().decode(value.substring(begin.length(), value.length() - end.length()));
+    }
+
+    /** 固定公开包内的小型条目：长度和摘要同时核实，不加载/执行第三方native代码。 */
+    private static byte[] pinnedEntry(ZipFile zip, String name, int size, String expected) throws Exception {
+        java.util.zip.ZipEntry entry = zip.getEntry(name);
+        if (entry == null || entry.getSize() != size) throw new SecurityException("Recovery source entry changed");
+        byte[] bytes;
+        try (java.io.InputStream stream = zip.getInputStream(entry)) { bytes = stream.readNBytes(size + 1); }
+        if (bytes.length != size || !hexDigest(bytes).equals(expected)) throw new SecurityException("Recovery source entry changed");
+        return bytes;
+    }
+
+    private static String hexDigest(byte[] bytes) throws Exception {
+        StringBuilder result = new StringBuilder();
+        for (byte b : MessageDigest.getInstance("SHA-256").digest(bytes)) result.append(String.format("%02x", b & 255));
+        return result.toString();
+    }
+
+    /** 只解固定原件三个常量函数的MOVN/MOVZ/MOVK字；不包含跳转、调用或通用机器码执行器。 */
+    private static long moveWide(byte[] binary, int... offsets) {
+        long value = 0;
+        for (int offset : offsets) {
+            long word = Integer.toUnsignedLong(ByteBuffer.wrap(binary, offset, 4).order(ByteOrder.LITTLE_ENDIAN).getInt());
+            if ((word & 0x1f800000L) != 0x12800000L) throw new SecurityException("Recovery source instruction changed");
+            int operation = (int)((word >>> 29) & 3), shift = (int)((word >>> 21) & 3) * 16;
+            long immediate = (word >>> 5) & 0xffff;
+            if (operation == 0) value = ~(immediate << shift);
+            else if (operation == 2) value = immediate << shift;
+            else if (operation == 3) value = (value & ~(0xffffL << shift)) | (immediate << shift);
+            else throw new SecurityException("Recovery source instruction changed");
+            if ((word >>> 31) == 0) value &= 0xffffffffL;
+        }
+        return value;
+    }
+
+    /** 参数只描述已锁定公开原件的位置；解封常量来自原件，在内存使用后清零，不随AMCL分发。 */
+    private static byte[] sourceConstant(byte[] binary, byte[] encoded, int maskOffset, int maskSize, int factorOffset) {
+        byte[] value = new byte[encoded.length]; long factor = moveWide(binary, factorOffset);
+        for (int i = 0; i < value.length; i++) value[i] = (byte)(encoded[i] ^ binary[maskOffset + i % maskSize] ^ ((i * factor) & 255));
+        return value;
+    }
+
+    /**
+     * HoKit公开Android 1.2.2默认模板的窄解封配方。只接受精确APK/SO/条目pin；未知版本拒绝。
+     * .enc及native常量属于同一公开模板，不读取个人账号目录，不执行APK或SO。
+     * 本方法只还原公开默认材料；运行时仍核原appId、当前账号授权以及实际证书/Profile。
+     */
+    static JsonObject restoreHokitPackage(Path source) throws Exception {
+        if (Files.size(source) != 10647922 || !sha256(source).equals("04f0556a9e2a819cbbea89283f7a9e610811183daef948579895846b53936ad1")) {
+            throw new SecurityException("Pinned recovery package changed");
+        }
+        try (ZipFile zip = new ZipFile(source.toFile())) {
+            byte[] binary = pinnedEntry(zip, "lib/arm64-v8a/libhdc_jni.so", 5466560,
+                "42c05bd5c90bba2920807f0e392768e4898369beae6d950184af836d92c84162");
+            byte[] encryptedCsr = pinnedEntry(zip, "assets/store/ho-kit.csr.enc", 592,
+                "7accf529c5901b3385e205eb4a1c2fdf8c7697ab6f6867e720242f58d0cfd3b3");
+            byte[] encryptedStore = pinnedEntry(zip, "assets/store/ho-kit.p12.enc", 1200,
+                "edee1d25bbfc820ab272b5b106fee2fc6af409cc5cb0c250360500e1b132108c");
+            int[][] offsets = {{1433252,1433264,1433272,1433300},{1433292,1433296,1433308,1433320},
+                {1433332,1433340,1433348,1433356},{1433336,1433344,1433352,1433360}};
+            ByteBuffer encoded = ByteBuffer.allocate(32).order(ByteOrder.LITTLE_ENDIAN);
+            for (int[] word : offsets) encoded.putLong(moveWide(binary, word));
+            byte[] aesKey = sourceConstant(binary, encoded.array(), 636984, 8, 1433312);
+            byte[] iv = sourceConstant(binary, Arrays.copyOfRange(binary, 859776, 859792), 863444, 4, 1433732);
+            byte[] password = sourceConstant(binary, Arrays.copyOfRange(binary, 863448, 863457), 863457, 5, 1434056);
+            byte[] decodedStore = null;
+            try {
+                Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+                cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(aesKey, "AES"), new IvParameterSpec(iv));
+                String csr = new String(cipher.doFinal(encryptedCsr), StandardCharsets.UTF_8);
+                cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(aesKey, "AES"), new IvParameterSpec(iv));
+                decodedStore = cipher.doFinal(encryptedStore);
+                char[] pass = new String(password, StandardCharsets.UTF_8).toCharArray();
+                try {
+                    KeyStore store = KeyStore.getInstance("PKCS12"); store.load(new ByteArrayInputStream(decodedStore), pass);
+                    String alias = null; java.util.Enumeration<String> aliases = store.aliases();
+                    while (aliases.hasMoreElements()) { String current = aliases.nextElement(); if (store.isKeyEntry(current)) {
+                        if (alias != null) throw new SecurityException("Recovery key ambiguous"); alias = current;
+                    } }
+                    if (alias == null) throw new SecurityException("Recovery key unavailable");
+                    byte[] key = store.getKey(alias, pass).getEncoded();
+                    JsonObject result = new JsonObject(); result.addProperty("csr", csr);
+                    result.addProperty("privatePem", "-----BEGIN PRIVATE KEY-----\n" + Base64.getEncoder().encodeToString(key) + "\n-----END PRIVATE KEY-----");
+                    Arrays.fill(key, (byte)0); return result;
+                } finally { Arrays.fill(pass, '\0'); }
+            } finally {
+                Arrays.fill(aesKey, (byte)0); Arrays.fill(iv, (byte)0); Arrays.fill(password, (byte)0);
+                if (decodedStore != null) Arrays.fill(decodedStore, (byte)0);
+            }
+        }
+    }
+
+    /** 固定HAP只作为构建输入静态读取，不执行第三方库，也不读取该应用的账号或安装签名块。 */
+    static JsonObject restoreHokitHap(Path source) throws Exception {
+        if (Files.size(source) != 23299388 || !sha256(source).equals("788cb81a52970839f552c5c31eed2ff890c62e310c2b280df9aa6ea694331041")) {
+            throw new SecurityException("Pinned HoKit HAP changed");
+        }
+        try (ZipFile zip = new ZipFile(source.toFile())) {
+            byte[] library = pinnedEntry(zip, "libs/arm64-v8a/libcrypto_util.so", 8616,
+                "118fbdb51b3193bdc5e3a366857ef148c358c9dccb07620df60cbdfec115e01a");
+            byte[] encrypted = pinnedEntry(zip, "resources/rawfile/store/ho-kit.p12.enc", 1216,
+                "fd9a8a2ed91315f38f957eac72827965c918f79172631a1c984808210de56408");
+            byte[] csr = pinnedEntry(zip, "resources/rawfile/store/ho-kit.csr", 588,
+                "c9717a918628cf7c773945b8d148fe2eb990a954f2fa304c424a48b7a6d20aea");
+            byte[] key = Arrays.copyOfRange(library, 3472, 3504);
+            byte[] password = Arrays.copyOfRange(library, 3504, 3514);
+            long tail = moveWide(library, 5280); password[8] = (byte)tail; password[9] = (byte)(tail >>> 8);
+            int length = 0; while (length < password.length && password[length] != 0) length++;
+            char[] pass = new String(password, 0, length, StandardCharsets.UTF_8).toCharArray();
+            byte[] decoded = null;
+            try {
+                Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+                cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(encrypted, 0, 16));
+                decoded = cipher.doFinal(encrypted, 16, encrypted.length - 16);
+                if (!hexDigest(decoded).equals("8121347aa6a8686d2186cd795dbf14ad9387e6b54d54f4c2f8353c8d7c0ea92c")) throw new SecurityException("Public template changed");
+                KeyStore store = KeyStore.getInstance("PKCS12"); store.load(new ByteArrayInputStream(decoded), pass);
+                String alias = onlyKeyAlias(store);
+                JsonObject result = new JsonObject(); result.addProperty("csr", new String(csr, StandardCharsets.UTF_8));
+                result.addProperty("privatePem", privatePem(store.getKey(alias, pass).getEncoded())); return result;
+            } finally { Arrays.fill(key, (byte)0); Arrays.fill(password, (byte)0); Arrays.fill(pass, '\0'); if (decoded != null) Arrays.fill(decoded, (byte)0); }
+        }
+    }
+
+    private static String onlyKeyAlias(KeyStore store) throws Exception {
+        String alias = null; java.util.Enumeration<String> entries = store.aliases();
+        while (entries.hasMoreElements()) { String name = entries.nextElement(); if (store.isKeyEntry(name)) {
+            if (alias != null) throw new SecurityException("Ambiguous signing key"); alias = name;
+        } }
+        if (alias == null) throw new SecurityException("Signing key unavailable"); return alias;
+    }
+
+    private static String privatePem(byte[] bytes) {
+        try { return "-----BEGIN PRIVATE KEY-----\n" + Base64.getEncoder().encodeToString(bytes) + "\n-----END PRIVATE KEY-----\n"; }
+        finally { Arrays.fill(bytes, (byte)0); }
+    }
+
+    /** 证书续期保留保险库中的私钥；只重新生成CSR，不把证书过期解释为需要另一把密钥。 */
+    private static JsonObject savedKeyMaterial(Path directory) throws Exception {
+        JsonObject config = new Gson().fromJson(Files.readString(directory.resolve("config.json")), JsonObject.class);
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        char[] password = config.get("storePassword").getAsString().toCharArray();
+        char[] keyPassword = config.get("keyPassword").getAsString().toCharArray();
+        try (java.io.InputStream stream = Files.newInputStream(directory.resolve("material.p12"))) {
+            store.load(stream, password); String alias = config.get("keyAlias").getAsString();
+            PrivateKey key = (PrivateKey)store.getKey(alias, keyPassword);
+            PublicKey publicKey = store.getCertificate(alias).getPublicKey();
+            String algorithm = publicKey.getAlgorithm().equals("RSA") ? "SHA256withRSA" : "SHA256withECDSA";
+            byte[] csr = new JcaPKCS10CertificationRequestBuilder(new X500Name("CN=AMCL Update"), publicKey)
+                .build(new JcaContentSignerBuilder(algorithm).build(key)).getEncoded();
+            JsonObject result = new JsonObject(); result.addProperty("privatePem", privatePem(key.getEncoded()));
+            result.addProperty("csr", "-----BEGIN CERTIFICATE REQUEST-----\n" + Base64.getEncoder().encodeToString(csr) + "\n-----END CERTIFICATE REQUEST-----\n");
+            return result;
+        } finally { Arrays.fill(password, '\0'); Arrays.fill(keyPassword, '\0'); }
+    }
+
+    /**
+     * 恢复当前安装的密钥连续性。旧证书指纹不是系统覆盖条件：当前账号可用同一公钥重新申请证书。
+     * 先核私钥/CSR和appId，再从本轮授权团队中复用有效的同公钥证书；没有证书也能创建草稿。
+     * 自签占位证书只用于P12容器，真正HAP签名仍必须使用华为签发证书/Profile并经过系统安装验证。
+     */
+    static JsonObject restoreOriginalKey(JsonObject input) throws Exception {
+        if (!"com.amcl.launcher".equals(optionalString(input, "bundleName"))) throw new SecurityException("Invalid signing bundle");
+        JsonObject material = input;
+        if (optionalString(input, "provider").equals("cached-key")) material = savedKeyMaterial(Path.of(input.get("materialDirectory").getAsString()));
+        else if (optionalString(input, "provider").equals("hokit-default")) material = restoreHokitPackage(Path.of(input.get("packagePath").getAsString()));
+        PKCS10CertificationRequest csr = new PKCS10CertificationRequest(pemDer(optionalString(material, "csr"), "CERTIFICATE REQUEST"));
+        String oid = csr.getSubjectPublicKeyInfo().getAlgorithm().getAlgorithm().getId();
+        String keyAlgorithm = oid.equals("1.2.840.10045.2.1") ? "EC" : oid.equals("1.2.840.113549.1.1.1") ? "RSA" : "";
+        if (keyAlgorithm.isEmpty()) throw new SecurityException("Unsupported signing key");
+        PublicKey publicKey = KeyFactory.getInstance(keyAlgorithm).generatePublic(new X509EncodedKeySpec(csr.getSubjectPublicKeyInfo().getEncoded()));
+        String actualAppId = platformAppId("com.amcl.launcher", publicKey);
+        if (!actualAppId.equals(optionalString(input, "appId")) && !(input.has("allowProfileContinuation") && input.get("allowProfileContinuation").getAsBoolean())) {
+            throw new SecurityException("Signing identity mismatch");
+        }
+        if (!csr.isSignatureValid(new JcaContentVerifierProviderBuilder().build(publicKey))) throw new SecurityException("CSR invalid");
+        PrivateKey key = KeyFactory.getInstance(keyAlgorithm).generatePrivate(new PKCS8EncodedKeySpec(pemDer(optionalString(material, "privatePem"), "PRIVATE KEY")));
+        String signAlgorithm = keyAlgorithm.equals("RSA") ? "SHA256withRSA" : "SHA256withECDSA";
+        byte[] challenge = new byte[32]; new SecureRandom().nextBytes(challenge);
+        Signature proof = Signature.getInstance(signAlgorithm); proof.initSign(key); proof.update(challenge);
+        byte[] signed = proof.sign(); proof.initVerify(publicKey); proof.update(challenge);
+        if (!proof.verify(signed)) throw new SecurityException("Private key mismatch");
+        X509Certificate selected = null; String team = optionalString(input, "defaultTeamId"), certificateId = "", objectId = "";
+        if (team.isEmpty()) throw new SecurityException("No authorized signing team");
+        if (input.has("certificates")) {
+            if (!input.get("certificates").isJsonArray() || input.getAsJsonArray("certificates").size() > 64) throw new SecurityException("Invalid certificate list");
+            CertificateFactory factory = CertificateFactory.getInstance("X.509");
+            for (com.google.gson.JsonElement value : input.getAsJsonArray("certificates")) {
+                JsonObject candidate = value.getAsJsonObject();
+                java.util.Collection<? extends java.security.cert.Certificate> parsed;
+                try {
+                    byte[] chain = Base64.getDecoder().decode(candidate.get("certificateBase64").getAsString());
+                    if (chain.length > 128 * 1024) continue;
+                    parsed = factory.generateCertificates(new ByteArrayInputStream(chain));
+                } catch (java.security.cert.CertificateException | IllegalArgumentException invalid) { continue; }
+                // 无关的坏证书不影响同公钥续期；私钥与CSR的密码学证明已独立验证。
+                for (java.security.cert.Certificate item : parsed) {
+                    X509Certificate cert = (X509Certificate)item;
+                    if (!Arrays.equals(cert.getPublicKey().getEncoded(), publicKey.getEncoded())) continue;
+                    try { cert.checkValidity(); } catch (java.security.cert.CertificateException expired) { continue; }
+                    if (selected == null || cert.getNotBefore().after(selected.getNotBefore())) {
+                        selected = cert; team = optionalString(candidate, "teamId");
+                        certificateId = optionalString(candidate, "id"); objectId = optionalString(candidate, "objectId");
+                    }
+                }
+            }
+        }
+        if (team.isEmpty()) throw new SecurityException("No authorized signing team");
+        X509Certificate holder = selected;
+        if (holder == null) {
+            X500Name name = new X500Name("CN=AMCL Temporary Key Holder");
+            holder = new JcaX509CertificateConverter().getCertificate(new JcaX509v3CertificateBuilder(name,
+                new BigInteger(160, new SecureRandom()).add(BigInteger.ONE), new Date(0), new Date(System.currentTimeMillis() + 86400000), name, publicKey)
+                .build(new JcaContentSignerBuilder(signAlgorithm).build(key)));
+        }
+        byte[] random = new byte[32]; new SecureRandom().nextBytes(random);
+        String password = Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+        KeyStore store = KeyStore.getInstance("PKCS12"); store.load(null, password.toCharArray());
+        store.setKeyEntry("amclRestored", key, password.toCharArray(), new java.security.cert.Certificate[]{holder});
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream(); store.store(encoded, password.toCharArray());
+        JsonObject result = new JsonObject(); result.addProperty("teamId", team); result.addProperty("originalAppId", actualAppId);
+        if (selected != null) {
+            result.addProperty("originalCertificateId", certificateId); result.addProperty("originalCertificateObjectId", objectId);
+            result.addProperty("originalCertificateValidFrom", selected.getNotBefore().getTime()); result.addProperty("originalCertificateValidUntil", selected.getNotAfter().getTime());
+        }
+        result.addProperty("keyAlias", "amclRestored"); result.addProperty("keyPassword", password); result.addProperty("storePassword", password);
+        result.addProperty("signAlg", signAlgorithm); result.addProperty("csr", optionalString(material, "csr"));
+        result.addProperty("p12Base64", Base64.getEncoder().encodeToString(encoded.toByteArray())); return result;
+    }
+
+    /** 构建期准备公开默认模板，运行时无需下载第三方安装包；不接受任何个人签名配置作为输入。 */
+    static void prepareTemplateCatalog(JsonObject input, Path output) throws Exception {
+        byte[] key = Files.readAllBytes(Path.of(input.get("xiaobaiKey").getAsString()));
+        byte[] csr = Files.readAllBytes(Path.of(input.get("xiaobaiCsr").getAsString()));
+        if (!hexDigest(key).equals("615e57b759b49848c0538725f3e5add7b7165537e4f02edb62897528f2070aef") ||
+            !hexDigest(csr).equals("6af37d3ed893f096d9e82b2e12f700726bad5104f0f3c3c5ccd210a1a20c6f42")) throw new SecurityException("Public template pin mismatch");
+        // 上游固定文件带OpenSSL Bag Attributes；核实整件摘要后，仅保留明确的PKCS8区块。
+        String exported = new String(key, StandardCharsets.UTF_8);
+        int begin = exported.indexOf("-----BEGIN PRIVATE KEY-----"), end = exported.indexOf("-----END PRIVATE KEY-----");
+        if (begin < 0 || end < begin) throw new SecurityException("Public template key format changed");
+        JsonObject xiao = new JsonObject(); xiao.addProperty("privatePem", exported.substring(begin, end + "-----END PRIVATE KEY-----".length())); xiao.addProperty("csr", new String(csr, StandardCharsets.UTF_8));
+        Path hokit = Path.of(input.get("hokitPackage").getAsString());
+        JsonObject ho = Files.size(hokit) == 23299388 ? restoreHokitHap(hokit) : restoreHokitPackage(hokit);
+        com.google.gson.JsonArray templates = new com.google.gson.JsonArray();
+        JsonObject[] materials = {xiao, ho}; String[] names = {"xiaobai-default", "hokit-default"};
+        String[] expected = {"174a3c531c5496ec2c67036c0fb1767d1205ae1b1d5b1a6d563a329cf494aa95", "840d4d336a14729207d481bce6be35cb842a616fb62d726d3f552ab127b1f48d"};
+        for (int i = 0; i < materials.length; i++) {
+            JsonObject material = materials[i];
+            PKCS10CertificationRequest request = new PKCS10CertificationRequest(pemDer(material.get("csr").getAsString(), "CERTIFICATE REQUEST"));
+            PublicKey publicKey = KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(request.getSubjectPublicKeyInfo().getEncoded()));
+            String appId = platformAppId("com.amcl.launcher", publicKey);
+            if (!textSha256(appId).equals(expected[i])) throw new SecurityException("Public template identity mismatch");
+            JsonObject check = material.deepCopy(); check.addProperty("bundleName", "com.amcl.launcher"); check.addProperty("appId", appId); check.addProperty("defaultTeamId", "build-template-verification");
+            restoreOriginalKey(check); // 实际CSR验签和私钥挑战；临时P12不进入输出，也不记录密码。
+            material.addProperty("provider", names[i]); material.addProperty("appIdSha256", expected[i]); templates.add(material);
+        }
+        JsonObject catalog = new JsonObject(); catalog.addProperty("schema", 1); catalog.add("templates", templates);
+        Files.writeString(output, catalog.toString(), StandardCharsets.UTF_8);
+    }
+
     /** 流式计算真实输出SHA-256，避免把文件存在误写为签名验收通过。 */
     private static String sha256(Path path) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -214,6 +506,24 @@ public final class AmclSigningRunner {
 
     /** 固定私有材料文件名，不允许配置把输出引到任意目录或把秘密用于日志内容。 */
     public static void main(String[] args) throws Exception {
+        if (args.length == 3 && args[0].equals("--prepare-default-templates")) {
+            try { prepareTemplateCatalog(new Gson().fromJson(Files.readString(Path.of(args[1])), JsonObject.class), Path.of(args[2])); }
+            catch (Throwable error) { throw new IllegalStateException("Public signing template preparation failed"); }
+            return;
+        }
+        if (args.length == 3 && args[0].equals("--inspect-profile-identity")) {
+            JsonObject result = new JsonObject();
+            try {
+                byte[] bytes = Files.readAllBytes(Path.of(args[1]));
+                if (bytes.length > 128 * 1024) throw new SecurityException("Profile too large");
+                org.bouncycastle.cms.CMSSignedData cms = new org.bouncycastle.cms.CMSSignedData(bytes);
+                JsonObject profile = new Gson().fromJson(new String((byte[])cms.getSignedContent().getContent(), StandardCharsets.UTF_8), JsonObject.class);
+                JsonObject bundle = profile.getAsJsonObject("bundle-info");
+                result.addProperty("bundleName", bundle.get("bundle-name").getAsString());
+                result.addProperty("appIdentifier", optionalString(bundle, "app-identifier"));
+            } catch (Throwable error) { result.addProperty("error", "PROFILE_IDENTITY_UNAVAILABLE"); }
+            Files.writeString(Path.of(args[2]), result.toString(), StandardCharsets.UTF_8); return;
+        }
         // 手动导入只读元数据，不接触私钥。限制每个条目的解压字节数，避免恶意 ZIP
         // 占满内存；官方原始包 SHA-256 由调用方验证，元数据本身不构成发布证明。
         if (args.length == 3 && args[0].equals("--inspect-hap")) {
@@ -253,6 +563,29 @@ public final class AmclSigningRunner {
                 inspected = new JsonObject(); inspected.addProperty("inspected", false);
             }
             Files.writeString(Path.of(args[2]), inspected.toString(), StandardCharsets.UTF_8);
+            return;
+        }
+        if (args.length == 3 && args[0].equals("--restore-original-key")) {
+            try {
+                Path input = Path.of(args[1]), output = Path.of(args[2]);
+                Files.setPosixFilePermissions(input.getParent(), PosixFilePermissions.fromString("rwx------"));
+                Files.setPosixFilePermissions(input, PosixFilePermissions.fromString("rw-------"));
+                if (Files.size(input) > 3 * 1024 * 1024) throw new SecurityException("Recovery input too large");
+                JsonObject request = new Gson().fromJson(Files.readString(input), JsonObject.class);
+                if (optionalString(request, "provider").equals("cached-key") &&
+                    !Path.of(request.get("materialDirectory").getAsString()).toAbsolutePath().normalize().equals(input.toAbsolutePath().normalize().getParent())) {
+                    throw new SecurityException("Saved key outside private job");
+                }
+                if (optionalString(request, "provider").equals("hokit-default") &&
+                    !Path.of(request.get("packagePath").getAsString()).toAbsolutePath().normalize().getParent().equals(input.toAbsolutePath().normalize().getParent())) {
+                    throw new SecurityException("Recovery package outside private job");
+                }
+                JsonObject restored = restoreOriginalKey(request);
+                Files.writeString(output, restored.toString(), StandardCharsets.UTF_8);
+                Files.setPosixFilePermissions(output, PosixFilePermissions.fromString("rw-------"));
+            } catch (Throwable error) {
+                Files.writeString(Path.of(args[2]), "{\"error\":\"KEY_RECOVERY_FAILED\"}", StandardCharsets.UTF_8);
+            }
             return;
         }
         if (args.length == 3 && args[0].equals("--generate-key")) {
@@ -460,6 +793,10 @@ public final class AmclSigningRunner {
             }
         } catch (Throwable error) {
             result.addProperty("errorClass", error.getClass().getName());
+            // 有效期异常采用固定原因，手机可保留原密钥自动续期，不回显第三方异常正文。
+            if (error instanceof java.security.cert.CertificateExpiredException || error instanceof java.security.cert.CertificateNotYetValidException) {
+                result.addProperty("failureReason", "Signing certificate expired");
+            }
             // 仅允许我们定义的固定原因码进入结果，第三方原始消息可能含秘密或命令参数。
             for (String reason : new String[]{"Signing alias unavailable", "Ambiguous signing certificate",
                     "Signing certificate missing from chain", "Signing public key encoding unsupported", "Existing certificate required", "Profile verification failed",

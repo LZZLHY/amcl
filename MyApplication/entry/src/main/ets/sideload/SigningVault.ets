@@ -36,6 +36,17 @@ interface StoredSigningMaterial { schema: number; material: SigningMaterialBundl
 export interface SigningDraft {
   schema: number; id: string; teamId: string; appIdentifier: string; keyAlias: string;
   keyPassword: string; storePassword: string; signAlg: string; p12Base64: string; csr: string;
+  /** 只由官方原证书归属核实和公私钥配对建立；恢复原公钥不冒充注册应用 identifier 换钥。 */
+  originalAppId?: string;
+  originalCertificateId?: string;
+  originalCertificateObjectId?: string;
+  originalCertificateValidFrom?: number;
+  originalCertificateValidUntil?: number;
+  /** Test Profile的官方对象绑定随草稿加密，下载失败重试不反复创建相同授权。 */
+  profileObjectId?: string;
+  profileCertificateId?: string;
+  profileDeviceId?: string;
+  profileMode?: string;
 }
 
 /** JVM一次性配置；来源由Vault解密得到，不能从用户导入JSON复制origin声明。 */
@@ -146,6 +157,17 @@ export class SigningVault {
 
   /** 文件存在只代表有待校验记录；实际解密、来源和身份仍在签名前检查。 */
   available(): boolean { return fs.accessSync(this.root + '/signing-vault.json'); }
+  /** 未完成草稿让重启/网络重试继续准备；完整材料提交后才清除此标记。 */
+  preparationPending(): boolean { return fs.accessSync(this.root + '/signing-draft.json'); }
+  retireDraft(): void {
+    const path = this.root + '/signing-draft.json';
+    if (fs.accessSync(path)) { this.retainEncrypted(path); fs.unlinkSync(path); }
+  }
+  finishDraft(beforeCommit?: () => void): void {
+    beforeCommit?.();
+    const path = this.root + '/signing-draft.json';
+    if (fs.accessSync(path)) fs.unlinkSync(path);
+  }
 
   /** 用户明确更新材料时将旧文件移到唯一备份，不覆盖上一次退役记录。 */
   invalidate(): void {
@@ -169,14 +191,14 @@ export class SigningVault {
     SideloadFiles.write(this.root + '/signing-draft.json', JSON.stringify(encrypted));
   }
 
-  /** 解密旧草稿只能使用已存在key；丢失密钥时给恢复原配置的出口，不创建替代key。 */
+  /** 解密旧草稿只使用已有key；存储故障进入重试，不把它解释为登录账号错误。 */
   async readDraft(): Promise<SigningDraft | undefined> {
     const path = this.root + '/signing-draft.json';
     if (!fs.accessSync(path)) return undefined;
     if (!fs.statSync(path).isFile() || fs.statSync(path).size > 160 * 1024) throw new Error('签名准备记录过大');
     const value = JSON.parse(await this.cipher.decrypt(JSON.parse(fs.readTextSync(path)) as EncryptedBlob)) as SigningDraft;
     if (value.schema !== 1 || !new RegExp('^[0-9a-f]{32}$').test(value.id) || !value.p12Base64 || !value.csr) {
-      throw new Error('签名准备记录无法读取，请导入原签名配置');
+      throw new Error('本机签名准备记录无法读取，请重新打开 AMCL 后重试');
     }
     return value;
   }

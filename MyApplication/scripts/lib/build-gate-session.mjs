@@ -8,7 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {resolveWorkspacePath, assertExternalOutputPath} from './workspace-paths.mjs';
+import {resolveWorkspacePath, resolveSharedWorkspacePath, assertExternalOutputPath} from './workspace-paths.mjs';
 import {findUnregisteredHapScripts} from './build-gate-inventory.mjs';
 import {fingerprintSdk} from './sdk-build-inputs.mjs';
 
@@ -39,7 +39,16 @@ function writeJson(name, data) {
   fs.mkdirSync(path.dirname(name), {recursive:true});
   const pending = name + '.pending-' + crypto.randomUUID();
   fs.writeFileSync(pending, JSON.stringify(data, null, 2) + '\n', {flag:'wx'});
-  fs.renameSync(pending, name);
+  // Windows短暂读共享冲突允许有界重试，始终保留原子rename；真实权限错误仍失败，
+  // 不降级为原地覆盖，也不删除原收据来换取成功。
+  const deadline=performance.now()+2000;
+  for(;;) {
+    try {fs.renameSync(pending,name);return;}
+    catch(error) {
+      if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(error.code)||performance.now()>=deadline)throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+    }
+  }
 }
 
 function git(root, args) {
@@ -194,7 +203,8 @@ export function windowsHostToolchainIdentity(options = {}) {
 
 /** 输出路径和已核实的宿主调用遥测不影响构建语义；其余环境仍以摘要参与身份。 */
 function environmentFields(env) {
-  const outputOnly = new Set(['TEMP','TMP','AMCL_RUN_DIR','AMCL_HOST_TEST_BUILD_DIR']);
+  const outputOnly = new Set(['TEMP','TMP','AMCL_RUN_DIR','AMCL_HOST_TEST_BUILD_DIR',
+    'AMCL_TASK_ID','AMCL_TASK_ROOT','AMCL_BUILD_DIR']);
   // 实际 quick 仅因 Codex 工具调用 nonce 变化而误回 full；只排除这个确切已知字段，
   // 不通配 CODEX_*。先统一分类键大小写，Linux 上实际语义键仍保持原来的大小写身份。
   const hostTelemetry = new Set(['CODEX_TOOL_CALL_ID']);
@@ -291,7 +301,8 @@ export function chooseProfile({requested, mode, deepAudit=false}) {
 /** 在实际目录外持有独占租约，避免同一 checkout 的两个构建混写 SDK 中间物和基线。 */
 export function start(args, options = {}) {
   const startedAt=new Date().toISOString();
-  const root = path.resolve(args.root), stateRoot = resolveWorkspacePath('build','validation-state',{root});
+  // 验证锁和成功缓存属于checkout，runRoot才属于本轮任务；不能按任务分裂互斥状态。
+  const root = path.resolve(args.root), stateRoot = resolveSharedWorkspacePath('build','validation-state',{root});
   const runRoot = resolveWorkspacePath('run','build-validation',{root});
   fs.mkdirSync(stateRoot,{recursive:true}); fs.mkdirSync(runRoot,{recursive:true});
   const lock = path.join(stateRoot,'checkout.lock');
@@ -318,7 +329,7 @@ export function start(args, options = {}) {
       notRun:args.profile==='quick'?['full-regression-suite','sdk-arkts-unit-tests','standalone-tu-audit','deep-input-audit','full-provenance-audit']:deepAudit?[]:['deep-input-audit'],
       startedAt,snapshotDurationMs,snapshotStages,...(deepAudit?{environmentInputs:environmentFields(process.env),snapshot:current,unknownHapScripts:unknown}:{}),state:'RUNNING',events:[]};
     writeJson(filename,session);
-    const context={filename,runRoot,deepAudit,cacheRoot:resolveWorkspacePath('build','gate-results',{root}),...choice};
+    const context={filename,runRoot,deepAudit,cacheRoot:resolveSharedWorkspacePath('build','gate-results',{root}),...choice};
     if(args['context-report']) {
       const report=assertExternalOutputPath(path.resolve(args['context-report']),{root});
       if(fs.existsSync(report)) throw new Error('Context report must be a new external file');
@@ -361,7 +372,7 @@ function plan(args) {
   }
   const specPath = path.join(session.runRoot,crypto.randomUUID()+'.spec.json'); writeJson(specPath,spec);
   return {...selected,gateId:gate.id,specPath,runRoot:path.join(session.runRoot,'gate-'+crypto.randomUUID()),
-    cacheRoot:resolveWorkspacePath('build','gate-results',{root:session.root}),report:path.join(session.runRoot,crypto.randomUUID()+'.cache.json')};
+    cacheRoot:resolveSharedWorkspacePath('build','gate-results',{root:session.root}),report:path.join(session.runRoot,crypto.randomUUID()+'.cache.json')};
 }
 
 export function event(args) {

@@ -23,7 +23,7 @@ function presentation(values = {}) {
   }, values);
   const commands = [];
   for (const method of ['cancel', 'closeLogin', 'reconcile', 'start', 'login', 'checkAccount',
-    'renewMaterial', 'importMaterial', 'openDebugSettings', 'retryConnection']) {
+    'openDebugSettings', 'retryConnection']) {
     component.viewModel[method] = (...args) => { commands.push({ method, args }); };
   }
   component.onDismiss = () => { commands.push({ method: 'dismiss', args: [] }); };
@@ -107,10 +107,8 @@ for (const phase of [Phase.DispatchIntent, Phase.Installing, Phase.ConfirmationP
 for (const [values, label, method] of [
   [{ needsLogin: true }, '登录华为账号', 'login'],
   [{ accountRetry: true }, '重新检查登录', 'checkAccount'],
-  [{ needsImport: true, materialReady: false }, '导入签名配置', 'importMaterial'],
-  [{ needsImport: true, materialReady: true }, '重新获取配置', 'renewMaterial'],
-  [{ needsLogin: true, needsImport: true }, '登录华为账号', 'login'],
-  [{ accountRetry: true, needsImport: true }, '重新检查登录', 'checkAccount'],
+  [{ needsLogin: true, signingIssue: 'identity' }, '登录华为账号', 'login'],
+  [{ accountRetry: true, signingIssue: 'identity' }, '重新检查登录', 'checkAccount'],
   [{ connectionReady: false }, '打开设置', 'openDebugSettings'],
 ]) {
   const { component, commands } = presentation(values);
@@ -131,7 +129,7 @@ for (const [values, label, method] of [
 
 /** 存储/安装核实优先于快照残留的恢复标签，不能误跳设置或启动新安装。 */
 for (const phase of [Phase.StorageBlocked, Phase.ConfirmationPending]) {
-  const { component, commands } = presentation({ phase, working: false, recoveryAction: 'runtime', needsImport: true });
+  const { component, commands } = presentation({ phase, working: false, recoveryAction: 'runtime', signingIssue: 'identity' });
   component.runPrimary();
   assert.deepEqual(commands.map(value => value.method), ['reconcile']);
 }
@@ -156,4 +154,32 @@ for (const phase of [Phase.DispatchIntent, Phase.Installing, Phase.ConfirmationP
   const { component } = presentation({ phase });
   assert.equal(component.showDownload(), false, phase + ' 不显示遗留下载进度作为主状态');
 }
-console.log('PASS R3 presentation: all '+cases.length+' phases, auth-only dismissal, protected installation close, recovery commands and real download projection.');
+/** 签名网络失败给重试，身份缺口解释同账号边界；两者都保留已验证登录，不伪造账号故障。 */
+for(const issue of ['service','permission','response','preparation']){
+ const {component,commands}=presentation({phase:Phase.Downloaded,working:false,signingIssue:issue,
+  message:'签名服务暂不可用，请重试获取签名'});
+ assert.equal(component.statusTitle(),'签名准备暂未完成');
+ assert.equal(component.statusHint(),'签名服务暂不可用，请重试获取签名');
+ assert.equal(component.primaryLabel(),'重试更新');component.runPrimary();
+ assert.deepEqual(commands.map(value=>value.method),['start']);
+}
+{
+ const {component,commands}=presentation({phase:Phase.Downloaded,working:false,signingIssue:'identity',
+  message:'自动签名与当前安装身份不一致，覆盖安装尚未执行，请重试更新'});
+ assert.equal(component.statusTitle(),'签名准备暂未完成');assert.match(component.statusHint(),/自动签名/);
+ assert.equal(component.primaryLabel(),'重试更新');component.runPrimary();
+ assert.deepEqual(commands.map(value=>value.method),['start']);
+}
+
+/** 登录层必须与统一Sheet函数一致，参考主窗口和用户手机比例；平板宽屏居中且限宽。 */
+for(const [form,width,percent,type,height,expectedWidth] of [
+ ['phone',360,50,'bottom',360,undefined],['phone',900,100,'bottom',720,undefined],
+ ['tablet',900,50,'center',662.4,600],['tablet',500,50,'bottom',662.4,undefined]]){
+ environment.environment.deviceForm=form;environment.storage.set('screenHeightVp',800);
+ environment.load('commons/src/main/ets/common/device/DeviceProfile.ets').DeviceProfile.resetCache();
+ const {component}=presentation();component.screenWidth=width;component.topSafe=40;component.bottomSafe=40;component.phoneSheetHeightPercent_=percent;
+ const mainContext={window:'main'};component.appWindow={getUIContext:()=>mainContext};
+ const options=component.loginSheetOptions();assert.equal(options.preferType,type);assert.equal(options.height,Math.round(height));
+ assert.equal(options.width,expectedWidth);assert.equal(options.dragBar,type==='bottom');assert.equal(options.uiContext,mainContext);
+}
+console.log('PASS update presentation: all '+cases.length+' phases, shared login sheet options, auth-only dismissal and protected installation close.');

@@ -20,6 +20,7 @@
 /entry/src/main/resources/rawfile/lwjgl/*.jar
 /entry/src/main/resources/rawfile/amcl-launcher.jar
 /entry/src/main/resources/rawfile/forge-install-bootstrapper.jar
+/entry/src/main/resources/rawfile/sideload/public-signing-templates.json
 **/BuildProfile.ets
 **/build/
 **/.cxx/

@@ -81,6 +81,7 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
     { id: 'network', section: 'logs', title: '网络检测', description: '检查网络环境与下载源可达性', keywords: '网络 下载 搜索 失败 超时 检测' },
     { id: 'ledger', section: 'ledger', title: '活动账本', description: '游戏、下载与文件管理记录', keywords: '活动 历史 记录 日志 ai 分析' },
     { id: 'about', section: 'about', title: '关于 AMCL', description: '版本信息、联系方式与更新日志', keywords: '关于 版本 联系 邮箱 qq 更新 许可 隐私 调试' },
+    { id: 'software-update', section: 'software-update', title: '软件更新', description: c.store ? '应用版本与应用市场更新' : '更新通道、华为开发者账号与本地安装', keywords: c.store ? '软件 更新 市场 版本' : '软件 更新 华为 开发者 账号 登录 状态 授权 稳定 预览 本地 安装' },
   ];
   items.push({ id: 'isolation', section: c.run ? 'performance' : 'files', title: '版本隔离',
     description: '每个版本独立保存存档、模组与资源包', keywords: '隔离 文件 归属 存档 资源包' });

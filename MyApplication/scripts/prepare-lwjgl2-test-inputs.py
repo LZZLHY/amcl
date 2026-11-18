@@ -17,7 +17,7 @@ import tempfile
 import urllib.request
 import zipfile
 
-from lib.workspace_paths import external_output_path, workspace_path
+from lib.workspace_paths import external_output_path, workspace_path, shared_workspace_path
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'prebuilt/lwjgl2/build-inputs.json'
@@ -157,7 +157,7 @@ def main(options):
     if not jdk:
         raise FileNotFoundError('Pass --jdk8 or AMCL_LWJGL2_JDK8 with a real JDK8; default JDK21 is retained')
     java = verify_jdk8(jdk, receipt.parent / 'temp')
-    source = prepare_source(options.inputs_dir or workspace_path('build', 'lwjgl2-test-inputs'), options.offline)
+    source = prepare_source(options.inputs_dir or shared_workspace_path('build', 'lwjgl2-test-inputs'), options.offline)
     result = {'schema': 1, 'recordedAt': datetime.now(timezone.utc).isoformat(),
               'manifestSha256': digest(MANIFEST), **source, **java}
     receipt.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

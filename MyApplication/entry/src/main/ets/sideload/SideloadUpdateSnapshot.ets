@@ -27,7 +27,8 @@ export class SideloadUpdateSnapshot {
   loginBusy: boolean = false;
   loginReason: string = '';
   needsLogin: boolean = false;
-  needsImport: boolean = false;
+  /** 签名故障与已验证登录状态独立，只传递分类，不暴露材料或服务响应。 */
+  signingIssue: string = '';
   port: string = '10178';
   progress: number = 0;
   transfer: string = '';

@@ -17,6 +17,7 @@
 | 模组 Native 依赖 | [prebuilt/mod-natives/](../prebuilt/mod-natives/) | manifest.json 及 imgui-java 等组件的来源和编译材料 |
 | Fabric 兼容层构建输入 | [prebuilt/runtime-compat/](../prebuilt/runtime-compat/) | AMCL 兼容源码及 lib/sources.json 中锁定的 Mixin、ASM 构建依赖；运行时 Mixin 由 Fabric Loader 提供 |
 | Khronos EGL 头文件 | [prebuilt/khronos-egl-headers/](../prebuilt/khronos-egl-headers/) | 对应 README 与 LICENSE.txt |
+| 侧载工具默认签名兼容 | [固定输入与生成入口](../scripts/prepare-signing-templates.mjs) | [小白调试助手](https://github.com/likuai2010/auto-installer)的固定公开提交与 [HoKit](https://www.sydxky.cn/) 的公开 Android 1.2.2 安装包。构建期核对原件摘要并准备兼容模板，运行时仍需官方账号授权和当前设备的有效授权文件 |
 
 源码子模块的 URL 在公开仓库根目录的 [.gitmodules](../../.gitmodules) 中声明。精确版本由 Git 的 160000 gitlink 和锁文件共同确定，不能只按分支名获取最新代码。首次准备方式见 [BUILD_SNAPSHOT.md](BUILD_SNAPSHOT.md)。
 

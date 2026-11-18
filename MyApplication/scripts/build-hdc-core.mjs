@@ -1,7 +1,7 @@
 /** 完整HDC交叉编译入口。缓存显式外置，源码/Cargo.lock固定；store不调用此脚本。 */
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertExternalOutputPath, resolveWorkspacePath } from './lib/workspace-paths.mjs';
+import { assertExternalOutputPath, resolveSharedWorkspacePath } from './lib/workspace-paths.mjs';
 import { existsSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -9,7 +9,8 @@ const core = join(root, 'entry/src/main/cpp/hdc/core');
 const sdk = process.env.DEVECO_SDK_HOME;
 if (!sdk) throw new Error('DEVECO_SDK_HOME is required for HDC build');
 const native = join(sdk, 'default/openharmony/native');
-const targetDir = process.env.AMCL_HDC_TARGET_DIR ? assertExternalOutputPath(process.env.AMCL_HDC_TARGET_DIR) : resolveWorkspacePath('build','hdc-core');
+// HDC产物是固定checkout可复用输入；任务上下文只改变本轮输出，不使Cargo缓存每次换位置。
+const targetDir = process.env.AMCL_HDC_TARGET_DIR ? assertExternalOutputPath(process.env.AMCL_HDC_TARGET_DIR) : resolveSharedWorkspacePath('build','hdc-core');
 mkdirSync(targetDir, { recursive: true });
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const result = spawnSync(process.env.CARGO ?? 'cargo', ['build', '--manifest-path', join(core, 'Cargo.toml'),

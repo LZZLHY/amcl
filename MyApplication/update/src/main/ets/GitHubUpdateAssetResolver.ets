@@ -72,6 +72,9 @@ export class GitHubUpdateAssetResolver {
     if (delivery === undefined || delivery.schema !== 1 || delivery.ready !== true || !Array.isArray(delivery.assets)) {
       throw new Error('更新资源尚未同步完成');
     }
+    // 只显式接受发布端的两代交付协议；不能把任意未知值或损坏旧收据当作镜像豁免。
+    const protocol = delivery.protocol === undefined ? 1 : delivery.protocol;
+    if (protocol !== 1 && protocol !== 2) throw new Error('更新交付协议不受支持');
     const matches = delivery.assets.filter((asset: SideloadUpdateAsset): boolean => asset.product === wanted);
     if (matches.length !== 1) throw new Error('本产品更新包尚未同步完成');
     const asset = matches[0];
@@ -87,7 +90,7 @@ export class GitHubUpdateAssetResolver {
     const mirrors = asset.mirrors.filter((mirror: SideloadMirror): boolean => mirror.ready === true && mirror.projectId === 'amcl' &&
       ((mirror.provider === 'miawa' && mirror.filePath === 'amcl/' + manifest.tag + '/' + asset.name) ||
        (mirror.provider === 'fyhub' && typeof mirror.assetId === 'string' && new RegExp('^[A-Za-z0-9_:-]{1,128}$').test(mirror.assetId))));
-    if (mirrors.length === 0 || mirrors.length > 2 || (mirrors.length === 2 && mirrors[0].provider === mirrors[1].provider)) {
+    if ((protocol === 1 && mirrors.length === 0) || mirrors.length > 2 || (mirrors.length === 2 && mirrors[0].provider === mirrors[1].provider)) {
       throw new Error('尚无已就绪的主镜像');
     }
     // 新推荐携带同一原件的实际宿主声明；历史未声明只按协议1解释，不猜测新版能力。

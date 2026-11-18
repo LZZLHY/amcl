@@ -213,7 +213,7 @@ async function main() {
       const sections = catalog.settingsSections(c), items = catalog.settingsItems(c);
       const ids = new Set(items.map(item => item.id));
       assert.equal(ids.size, items.length); assert.equal(new Set(sections.map(section => section.id)).size, sections.length);
-      const sectionsAllowed = new Set([...sections.map(section => section.id), 'ledger', 'about']);
+      const sectionsAllowed = new Set([...sections.map(section => section.id), 'ledger', 'about', 'software-update']);
       assert.ok(items.every(item => sectionsAllowed.has(item.section)));
       for (const id of ['memory', 'virtual-memory', 'java', 'jvm', 'frame-rate', 'language', 'graphics', 'resolution', 'jdk-source', 'jdk-update']) assert.equal(ids.has(id), c.run, id);
       for (const id of ['input', 'layouts', 'touch-help']) assert.equal(ids.has(id), c.run && c.touch, id);
@@ -241,6 +241,15 @@ async function main() {
     assert.equal(f.calls.jvm.length + f.calls.choices.length + f.calls.storage.length, 0);
     const before = f.view.activeSection; f.view.openSearchItem_('java'); assert.equal(f.view.activeSection, before);
     f.view.openSearchItem_('about'); assert.equal(f.calls.routes.at(-1).url, 'pages/AboutPage');
+  });
+
+  await group('软件更新常驻入口与华为账号搜索直达，商店不宣传不可用登录', () => {
+    const f = make(), v = f.view;
+    assert(catalog.searchSettings(catalog.settingsItems(f.capability), '华为').some(item => item.id === 'software-update'));
+    v.openSearchItem_('software-update'); assert.equal(f.calls.routes.at(-1).url, 'pages/SoftwareUpdatePage');
+    componentEvent(v, source, 'OverviewSupport_', 'SettingsValueRow', 'onAction', 'settings-software-update')();
+    assert.equal(f.calls.routes.at(-1).url, 'pages/SoftwareUpdatePage');
+    assert.equal(catalog.searchSettings(catalog.settingsItems({ ...f.capability, store: true }), '华为').length, 0);
   });
 
   await group('分辨率搜索和入口直达同一详情，返回操控且管理态不可绕过能力门', () => {

@@ -218,7 +218,7 @@ await test('production await across a new matching-version test session never re
   const response = deferred(); fetchBoundary = () => response.promise;
   // 正式检查先读官网当前推荐头；仍须保留请求前捕获的正式来源身份，不能受后来
   // 激活的诊断会话影响。来源快照的 legacy URL 列表继续由 Session 原样核实。
-  const p = page(); const checking = p.instance.checkForUpdate(); assert.equal(requests[0].url, 'https://amcl.lovedhy.cn/api/packages/manifest?product=sideload&channel=stable');
+  const p = page(); const checking = p.instance.checkForUpdate(); assert.equal(requests[0].url, 'https://amcl.lovedhy.cn/api/packages/manifest?product=sideload&channel=stable&deliveryProtocol=2');
   Session.configure(testA.url, testA.asset, true); response.resolve(JSON.stringify(productionManifest)); await checking;
   assert.equal(p.dialogs.length, 1); const shown = p.dialogs[0].options.builder;
   assert.equal(shown.sourceLabel, 'GitHub 发布'); assert.equal(shown.selfUpdateParams.testAsset, undefined);
@@ -228,7 +228,7 @@ await test('production await across a new matching-version test session never re
 
 await test('automatic production and deferred production keep formal origin while test session is active', async () => {
   Session.configure(testA.url, testA.asset, false); const p = page(true); p.instance.initUpdateCheck(); await settle();
-  assert.equal(requests[0].url, 'https://amcl.lovedhy.cn/api/packages/manifest?product=sideload&channel=stable'); assert.equal(p.instance.pendingAppUpdate_.source.testSource, false);
+  assert.equal(requests[0].url, 'https://amcl.lovedhy.cn/api/packages/manifest?product=sideload&channel=stable&deliveryProtocol=2'); assert.equal(p.instance.pendingAppUpdate_.source.testSource, false);
   p.instance.updateDialogCtrl_ = null; p.instance.drainUpdateDialogs_();
   assert.equal(p.dialogs[0].options.builder.sourceLabel, 'GitHub 发布');
   assert.equal(p.dialogs[0].options.builder.selfUpdateParams.testAsset, undefined);

@@ -413,6 +413,25 @@ enum class SurfaceRefreshCause { kSurfaceChanged, kLaunchReplay };
 // I27-04：身份与尺寸都未变的真实 OnSurfaceChanged 次数。只在 UI 线程、gate 锁内读写。
 static uint64_t g_idempotentSurfaceChanges = 0u;
 
+// 调用方持有 surface gate。先关闭新输入与重锁，再释放已持有的输入。
+// 当前 drawable 确认后，同一 surface 和组件焦点仍可用于捕获。
+static void SuspendInputForGeometry() {
+    ohos_surface_input_gate_set_geometry_pending(true);
+    ohos_cancel_all_input(AMCL_INPUT_CANCEL_GEOMETRY_CHANGED);
+}
+
+// 旧图像仍对应同一物理区域时可以恢复输入；终局退休捕获资格，等待新 surface。
+static void RejectGeometryConfiguration(int displayWidth, int displayHeight) {
+    g_resolution.rejected("geometry-configure-failed");
+    if (g_realWidth != displayWidth || g_realHeight != displayHeight || !g_resolution.hasConfirmedDrawable()) {
+        g_resolution.requireRestart("physical-geometry-unconfirmed");
+    }
+    const bool restartRequired = g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired;
+    if (restartRequired) amcl_cursor_lock_set_surface(false);
+    ohos_surface_input_gate_set_geometry_pending(restartRequired);
+    PublishResolutionWork();
+}
+
 // OnSurfaceChanged 与启动时机重放（amclRenderScaleReapplyForLaunch）共用的核心。
 // 调用方必须持有surface gate且accept已通过；expectedGeneration绑定无变更确认和错误。
 // ownerCheckpoint仅使用已采样P；alreadyConfigured只能由同一revision完成SET后再次CAS的owner传入。
@@ -434,8 +453,7 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
     g_surfaceHeight = newHeight;
     g_resolution.displayChanged(newWidth, newHeight);
     if (newWidth <= 0 || newHeight <= 0) {
-        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
-        ohos_surface_input_gate_set_geometry_pending(true);
+        SuspendInputForGeometry();
         g_haveDrawableObservation = false;
     }
     if (newWidth > 0 && newHeight > 0 && !(g_resolution.flags() & 1u)) {
@@ -452,8 +470,7 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
         g_runtimeResolutionRequest = g_resolution.hasConfirmedDuringLaunch();
         // 物理区域已变时先退休旧held并暂停新输入；producer在下一安全点配置和发布。
         if (g_realWidth != newWidth || g_realHeight != newHeight) {
-            ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
-            ohos_surface_input_gate_set_geometry_pending(true);
+            SuspendInputForGeometry();
         }
         // 零面积时owner可能已经停车，单纯等待swap会互等。先发布最后一次已配置的
         // 非零逻辑尺寸唤醒前端，保持输入暂停；不在UI线程改NativeWindow，也不宣称
@@ -480,8 +497,7 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
     if (newWidth > 0 && newHeight > 0) {
         // prelaunch 重放和无 producer 的初始化也遵守“确认后恢复”规则。这里仍持 gate，
         // 先退休 held，再配置/发布；SET 失败分支只在旧 actual 仍有效时允许继续输入。
-        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
-        ohos_surface_input_gate_set_geometry_pending(true);
+        SuspendInputForGeometry();
     }
     int publishWidth = newWidth;
     int publishHeight = newHeight;
@@ -500,11 +516,7 @@ static void RefreshPublishedSurfaceGeometry(OH_NativeXComponent* component,
         geometryConfigured = ApplyRenderScaleGeometry(window, g_resolution.target(), g_resolution.revision());
     }
     if (!geometryConfigured) {
-        g_resolution.rejected("geometry-configure-failed");
-        if (g_realWidth != newWidth || g_realHeight != newHeight || !g_resolution.hasConfirmedDrawable())
-            g_resolution.requireRestart("physical-geometry-unconfirmed");
-        ohos_surface_input_gate_set_geometry_pending(g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired);
-        PublishResolutionWork();
+        RejectGeometryConfiguration(newWidth, newHeight);
         return;
     }
 
@@ -618,8 +630,7 @@ static int ResolutionCheckpoint(void* window, uint64_t generation, uint64_t toke
             ohos_surface_input_gate_accept(g_component, window) != generation || !(g_resolution.flags() & 1u)) return 0;
         candidate = g_resolution.target();
         revision = g_resolution.revision();
-        ohos_cancel_all_input(AMCL_INPUT_CANCEL_SURFACE_LOST);
-        ohos_surface_input_gate_set_geometry_pending(true);
+        SuspendInputForGeometry();
     }
     // 调用方仍持强引用和当前呈现资格。驱动操作不占surface/input gate，UI不会因
     // producer配置等待而被锁住。期间UI可合并新请求/退休窗口；下面必须重新CAS。
@@ -631,11 +642,7 @@ static int ResolutionCheckpoint(void* window, uint64_t generation, uint64_t toke
         ohos_surface_input_gate_accept(g_component, window) != generation ||
         revision != g_resolution.revision() || !(g_resolution.flags() & 1u)) return 0;
     if (!configured) {
-        g_resolution.rejected("geometry-configure-failed");
-        if (g_realWidth != candidate.displayWidth || g_realHeight != candidate.displayHeight || !g_resolution.hasConfirmedDrawable())
-            g_resolution.requireRestart("physical-geometry-unconfirmed");
-        ohos_surface_input_gate_set_geometry_pending(g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired);
-        PublishResolutionWork();
+        RejectGeometryConfiguration(candidate.displayWidth, candidate.displayHeight);
         return -1;
     }
     RefreshPublishedSurfaceGeometry(g_component, window, generation, SurfaceRefreshCause::kSurfaceChanged,

@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "sourceCommit": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6",
-  "sourceBranch": "",
+  "sourceCommit": "2b31852888416bdd380770df560ba9294dc082a3",
+  "sourceBranch": "main",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
-    "versionName": "1.0.7",
+    "versionName": "1.0.8-pre1",
     "versionCode": 1000911
   },
   "exporter": {
     "schemaVersion": 2,
-    "policySha256": "a16a4671ba8ca6dbb0fbc6977b6d8a4a864c1acf321f4127c265a8d6acfaab1b"
+    "policySha256": "138b015134403f7924b7d92ae842b86c8578dae8d3111a64e8b63e04d38652b6"
   },
   "dependencyWorktrees": [
     {
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "63592f1aca0f26f8e4e2f10a5f9d32414a3ec7b82a825629ff386147dfc53cfa",
+      "sha256": "4645ac21e7b6abd8ef5b660e9a40e873b1396fbc616a1f14afc3f48382fd0599",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -299,7 +299,7 @@
     },
     {
       "path": "build-hap.ps1",
-      "sha256": "018af1c55bbc7fac531e81fe084df7224bd7f3aa2a109b806c9576510fbd565e",
+      "sha256": "e281a1450ae609db5bd479a485c7c78b04c716622c0a8927f822539873d788b7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -362,7 +362,7 @@
     },
     {
       "path": "commons/src/main/ets/common/Constants.ets",
-      "sha256": "39abeb64c183dfcb253ecf5d7281e231c73c23d55147d2088a87ce15bcb5360d",
+      "sha256": "6f8451df6095c7e34f201c248d6289628aa599da5223c747f13186f028c4e0a0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -768,7 +768,7 @@
     },
     {
       "path": "config/build-gates.json",
-      "sha256": "94045f939c5dcb06661a8c15ee3b78595f9e9a87255853abe67410f5dcacff37",
+      "sha256": "717edc80e1451e9df9222cb59e15914efb4521840ad4321350337f5608f81829",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -817,7 +817,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "ae29d973e13eac3d7c36dc21c21bb32af943aac1f20c14d9b0390d34324db9f7",
+      "sha256": "9a026d834235cb85cfceb5a31667f0a0b943b93975c64c6079b01f2f2f462ddd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -1083,7 +1083,7 @@
     },
     {
       "path": "docker/project.py",
-      "sha256": "582927fb18ce2a75ce8eab21a2694c992fe4065bc37b6c55d3f0fd86c5f1c440",
+      "sha256": "a1e37299e403f26e0b29eea61f1da1f1ae81ebfcafb9dea2d79b1b2cd08baac7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4016,7 +4016,7 @@
     },
     {
       "path": "entry/src/main/cpp/napi/napi_input.cpp",
-      "sha256": "66e2736db1a92c428066f7b24c6315414855a049708fd06aa63d6c632a8b0a41",
+      "sha256": "2075c104d84c254b57d948cfa08496f851f45ec79bbeb5249f333df93cbba4b6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4624,6 +4624,13 @@
       "owner": "source"
     },
     {
+      "path": "entry/src/main/cpp/platform/input_cancel_reason.h",
+      "sha256": "faaebf70fa3614a3de7e109cd94e355616090b50b29fab1fb68534e9272e811c",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "entry/src/main/cpp/platform/input_channel_census.h",
       "sha256": "5b8c8bcd69e7ec31f9c1691e443f4f23955f5fcad770347d8029ebdb7dd05bd3",
       "normalization": "lf",
@@ -5171,7 +5178,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/surface_input_gate_state.h",
-      "sha256": "9a1f6addd8dace79eaa35fa83e37006a27be94b5b3f302c6b09562825539c484",
+      "sha256": "a5e696cd6acd955b7380b33173734fb94c0bdb712c6e66c0d8997d39edb535be",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5206,14 +5213,14 @@
     },
     {
       "path": "entry/src/main/cpp/platform/touch_input.cpp",
-      "sha256": "1586a027d4878acd0c92c0ab2a3c92dbb19be6d2672e37ef21a98edea19ed5c9",
+      "sha256": "07ba4e57461f3d3f813e47f89c53ab8e9d4c82037bcd490b5073da61638c7ae2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/cpp/platform/touch_input.h",
-      "sha256": "1d3ff81c578a92b7a596336ec9113a3e59392dd873292cf4e078ecb4e85b3fee",
+      "sha256": "f0172e19742256b3131e1cd8b4f40c0dd64b8cd9db00d10c10737680a599d666",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5353,7 +5360,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/xcomponent.cpp",
-      "sha256": "9c47a17a2af7d30e0011c469740e2dcdf5e02fca20a811af93616b17bf0ecc56",
+      "sha256": "3fbea4cfe79ae93f7d9b7772a34869e5692ba50551c49b89d49885eb17b76cd3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5549,7 +5556,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/cursor_capture_context_test.cpp",
-      "sha256": "201419efcbc358219ad0225ebe207b03759a91865a7a606050671a2daeb0deb1",
+      "sha256": "bd7608e5886ea81e5370877e627078d457a7e00c86c7bead214d6d9c6f0df2b2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6487,7 +6494,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/platform_pointer_lifecycle_integration_test.cpp",
-      "sha256": "b909632db96db614c84dc861a94d947ea2dc44ba24301b8741c2eef734a73727",
+      "sha256": "ed10d3207b2cd3f693b95d7ca488f39dd8c41346c6120f9bd05678863946281f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7396,6 +7403,20 @@
       "owner": "source"
     },
     {
+      "path": "entry/src/main/ets/components/DeveloperAccountPanel.ets",
+      "sha256": "6054f508eeb873df65c927cb702dc8bb60825e5634acd875baafe25d545d8eb1",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/ets/components/DeveloperLoginContent.ets",
+      "sha256": "17c5eca6d46da870e362d74d2dd75e36742736c6dc33c4f353fce8d438e74ee1",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "entry/src/main/ets/components/DockLightMaterial.ets",
       "sha256": "57cdfec6c0fb7f7025f18ad847ba62f26fcd3bda03863569edf26f477c850b85",
       "normalization": "lf",
@@ -7929,7 +7950,7 @@
     },
     {
       "path": "entry/src/main/ets/components/SettingsPrimitives.ets",
-      "sha256": "b1a473e524211a913ad9df229b39c2b93576c0619efaca871342d5b13eed7c04",
+      "sha256": "f01dad2e19f2c1d3631e7a0c48cb9dd165269cbf3160223646e5e66711ecfa1a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7943,7 +7964,7 @@
     },
     {
       "path": "entry/src/main/ets/components/SideloadUpdateContent.ets",
-      "sha256": "5f1b90dc83e1a40418c1a31d9c7773e0f437772780455e0591afa56a7d673442",
+      "sha256": "6fe6006801277133a711780faad06c63276a70776239becdba19ff0d4f8635cf",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8090,7 +8111,7 @@
     },
     {
       "path": "entry/src/main/ets/components/UpdateDialog.ets",
-      "sha256": "ae6368263685fd5db257e96fdd0852c76258b25a2670761d3bff25993a3df77e",
+      "sha256": "a091048d7ad684e9a9696f742fb09c60c55649898fbb3eb2ee2ea260cfd2124c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8440,7 +8461,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/SoftwareUpdatePage.ets",
-      "sha256": "12c32a76e7387cf01deb7dc628fa3606b47dcc7230055977209a03ca1cd3cf9a",
+      "sha256": "37db7eb7d8225405ceb627395501c2e8202afb5e4d2cf65eb768bca682ef8fd9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8468,14 +8489,14 @@
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsCatalog.ets",
-      "sha256": "251c543d156e2a865745f4c6fb732f17ad19bd0e54c57bbc3b89c0fb1323c1ad",
+      "sha256": "ea64fd9eed4765664ef290977764d43e0c29f5ce10057877d60e99a02ec61502",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsTab.ets",
-      "sha256": "c8c5271f98bfe90e59733eafeb6c594b93bee8a5bf40b7f4db7150a20f30d583",
+      "sha256": "92d40b4ed8a6ffafcbda548959812a79865045f009996e8d8ddd467d6af6cb81",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8747,22 +8768,29 @@
       "owner": "source"
     },
     {
+      "path": "entry/src/main/ets/sideload/DeveloperAccountViewModel.ets",
+      "sha256": "3a468d1d69eeeb1e334d29c403d4a59cddbe03fcc8b709e17782064533f22c01",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "entry/src/main/ets/sideload/DeveloperAuthSession.ets",
-      "sha256": "08edc18e3a85e610aadba882e0c486a3cf43596da1687d160fd5a95f79a6d147",
+      "sha256": "c099319b70036ba3a10266f9ccd1a8d8881fb7ed72e59329f44badc9c08dfbbd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/sideload/DeveloperAuthVault.ets",
-      "sha256": "393031c326662418d5b3791b76bfa78f08010396c9f12a39fc532bc927705a58",
+      "sha256": "9cea0bed8b47690ccc8983efae2ba67dfc012832beb69b58920173c4b94174ab",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/sideload/DeveloperSigningService.ets",
-      "sha256": "da19d73ca212ab13c2a035d06cf908c06ad90686ff1b1de6e6921745aac6ff71",
+      "sha256": "a7a7a43c92f1902b4159c2c4b785703021f55d1adc421c1a2dc735c3bb836846",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8770,6 +8798,13 @@
     {
       "path": "entry/src/main/ets/sideload/InstallFence.ets",
       "sha256": "35d8ff17e1deb35a2daa2c4b1b429d0476f9e77cb80801c954597d220427e701",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/ets/sideload/OriginalSigningRecovery.ets",
+      "sha256": "ed11429be8358950256d356c15438c8299a06b79d715909f64324bcb3fa6b02a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8853,7 +8888,7 @@
     },
     {
       "path": "entry/src/main/ets/sideload/SideloadUpdateCoordinator.ets",
-      "sha256": "42772d11e9b795a8e8192175e98b0f941d580b6b0062b21390a00b3061616a1c",
+      "sha256": "acb7299ce77bf693cb72aafd82ff86ef86eb9a24bdfc9de0e002d490bf21e254",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8867,7 +8902,7 @@
     },
     {
       "path": "entry/src/main/ets/sideload/SideloadUpdateSnapshot.ets",
-      "sha256": "f4b59ad86d501e463faec62eb94e231e4266592f8df3bb1beb637dd888fa9250",
+      "sha256": "07daa9592d1aa99c22ab62bbd90a955637dbb63aba021206ddb0deca9ca46294",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8888,14 +8923,21 @@
     },
     {
       "path": "entry/src/main/ets/sideload/SideloadUpdateViewModel.ets",
-      "sha256": "4f86a22edbc9b76ea6863f34c7c9b3a9df2d07a672b6f135f864733fc0a9dbe3",
+      "sha256": "70ddd37b80c0cbf6d746b6c57d50f0838fab05c32d2af4b2c1f759ca3106e377",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/ets/sideload/SigningPreparationError.ets",
+      "sha256": "6deeba6390b613ef460da8e90f7bc8989533fdfac2f8432237bbe64333ad4c78",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/sideload/SigningVault.ets",
-      "sha256": "f93d3ebfd2e1335082da9249c26ea6e087a6f81f57dcb74b1c4e6e11b3a417aa",
+      "sha256": "444e8a9e01c5b26cc119130201e618e33dffd0dc1070af3557ba96e1ab11ba2c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9245,7 +9287,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "d16f6dd3a890d28b1546179db0e55db25f867b4799afba8d6892711196ea8de0",
+      "sha256": "fb96f0bcc8ca7581cc5e52dfb9a3a3b11eb1c7a31d0ebf329fe2a617275ffcea",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9378,7 +9420,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/sideload/amcl-signing-runner.jar",
-      "sha256": "092e6a5ff7ec868c309c574674607c7053beaac8f05058595a23f331d42fe097",
+      "sha256": "659ce82d85c87f1d437d26c52f9b33821d4d28d0ebf295cf1f587c26d6300b86",
       "normalization": "none",
       "mode": "100644",
       "owner": "source"
@@ -9441,7 +9483,7 @@
     },
     {
       "path": "entry/src/main/sideload/AmclSigningRunner.java",
-      "sha256": "44a781646954a2eca4d1b551c6f04f7d4c0da3d82aa7a6f5304b6b8324ef368e",
+      "sha256": "67e2da50cf9284352e376a2eec3476861534d12cd6e7f954b4d93d91ed7366ac",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9449,6 +9491,13 @@
     {
       "path": "entry/src/main/sideload/tests/ManualPackageInspectionTest.java",
       "sha256": "3ee62db58a78a2ac7c1d6bb0c9fa43b2344e1079b29c5319b51e6d93d54e9c88",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/sideload/tests/OriginalSigningRecoveryTest.java",
+      "sha256": "833a1449f4a609178e7626c8231aeee0189b3f8c1cf82827564d5d02a18b4190",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -15699,7 +15748,7 @@
     },
     {
       "path": "prebuilt/runtime-compat/artifact.json",
-      "sha256": "e2198d87d8ac7eef876e908ea353d16c32d2a6c1875eff064f4da8388681fb83",
+      "sha256": "c9ae526b4772583e9cad0e5aad43f93dad677067d7a60adce0e5d27b3bdc3fa2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -16567,7 +16616,7 @@
     },
     {
       "path": "scripts/build-hdc-core.mjs",
-      "sha256": "76c985c356554c761b75face932cb24ac9ab2018b4e2c3a48370ebf4b82d6244",
+      "sha256": "d6d140f142331cc3de9666166affb474aa5e3a04e5ebdf3781fc5439f4731b9c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -16644,7 +16693,7 @@
     },
     {
       "path": "scripts/build-sideload-signer.mjs",
-      "sha256": "8bc30ac16928e62f31668de50707f90b8390acbbebd5e00c733d3a86222a396d",
+      "sha256": "3d5d93bb1f3bf6bbf44063f159d5c9a1f00579bfbc01219166aaec78c3cdc07d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -16771,6 +16820,13 @@
     {
       "path": "scripts/check-desktop-runtime.mjs",
       "sha256": "82f502de4b67986622834a88277142ea3a948120cdf363ac6d0378126ab6140c",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/check-dev-changelog.mjs",
+      "sha256": "121871d2cc71cd504ca5f2ca71a2997564cbfac33d37d11055258b6485a075d0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17218,7 +17274,7 @@
     },
     {
       "path": "scripts/check-sdl3-layout.mjs",
-      "sha256": "64033d8738fa973538618f2936beb4a6168b7bfed734c0679612081e8028ffae",
+      "sha256": "e68b57a0ffbdad56415a9cfdae6716c4381efaacb45126839ac4e81582b851b2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18233,7 +18289,7 @@
     },
     {
       "path": "scripts/lib/build-gate-session.mjs",
-      "sha256": "dab915a42704c49417784af6107fe43d8fc54da741a128b61c173e47a1e4be43",
+      "sha256": "8b7c4842c6ae0149a3b63574ab60ea0e672bf55ac320c272dc2b907bcacee2bd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18289,7 +18345,7 @@
     },
     {
       "path": "scripts/lib/game_compat_inputs.py",
-      "sha256": "b033032626fabe090e4d40524e732bcf3fbf4de2fe3a21afc8a535b791ef237f",
+      "sha256": "185b696019ce622ce1cd6ec9a5076b0251333e82defbdb5cd5c65896dcdee433",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18366,7 +18422,7 @@
     },
     {
       "path": "scripts/lib/host-test-lifecycle.mjs",
-      "sha256": "48eaa4aee5a668b3e2387b20bc5edbf1b3eacc936ff390717ffc268f982f08b1",
+      "sha256": "e203f1f97683f4d2c6b248cc87c5954e465d4a607d43e0768dede2468f5ced1e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18422,7 +18478,7 @@
     },
     {
       "path": "scripts/lib/sdl_host_cache.py",
-      "sha256": "274481f40efc9505e85127e491f3adb185bbd43ad496621ef9f727ac3decc8ba",
+      "sha256": "b9d39f6f4b04c3f4be0b70ec4a7dfa35c720791bc060eb0f992ae5c9a20d29bd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18436,7 +18492,7 @@
     },
     {
       "path": "scripts/lib/sideload-coordinator-fixture.mjs",
-      "sha256": "49c48a6443508039440f6b1991d09be2077c45225bee4674280bcb8a49ef5a7f",
+      "sha256": "2d3126259cf8be6092ebedf7923a4753fa4b000569fd2dceed2c14128af3e84a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18471,14 +18527,14 @@
     },
     {
       "path": "scripts/lib/workspace_paths.py",
-      "sha256": "2f0078c2e49d398e063e5a6a462cdf9fc454e6eda214e8e5e3d065e246705c86",
+      "sha256": "b451e97e0f367d5e17dc1ea68c62eae87718d6b8da20e2d55d1cff43c483492f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/lib/workspace-paths.mjs",
-      "sha256": "6ab72a2385a9cce3897156187f23553e035fbaddc455e716114e33f73343d302",
+      "sha256": "60f6feeb1b9114a7b6656462bdfa32db191004c94eb1d991c1eecadfca01b308",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18541,7 +18597,7 @@
     },
     {
       "path": "scripts/lwjgl-stb-compat/prepare.py",
-      "sha256": "35e4c002616a8deb9a7823b470c08e119e9caaf776c4f7c93e8ad3985c0a6ff2",
+      "sha256": "38ee49604b0e50a575cfe1c1ee61cd5fdeeb44584367f0f9334fdd895d55c3f6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18611,7 +18667,7 @@
     },
     {
       "path": "scripts/preflight.mjs",
-      "sha256": "35d549d40a3362b52ad3f8a538cb0874c8970444596374b86f8f5a26d6b6ce37",
+      "sha256": "227466ee65475d15539647b7c4efe699f01a9d45f99ad7ac6cf8cfce1a474d85",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18632,7 +18688,7 @@
     },
     {
       "path": "scripts/prepare-lwjgl2-test-inputs.py",
-      "sha256": "df7f0ca64c13cbaa4cc816c3e491edd2fc1989745a268a4d34adc46ab6ba0d3f",
+      "sha256": "f188d3053a5562205d4747d8dfd6a4e4b87502f23d08b8aeb6e9986edf57a5b1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18661,6 +18717,13 @@
     {
       "path": "scripts/prepare-sideload-host-inputs.mjs",
       "sha256": "21b61e36b5561f7a06c46e5ddacc9eb67b91c934d5fd6237c8257b838ee265d0",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/prepare-signing-templates.mjs",
+      "sha256": "a13e4cd0990f6082018ece5430f7f2448587da535d6f0d87738295afbed7a130",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18975,7 +19038,7 @@
     },
     {
       "path": "scripts/test-app-update-source-freshness.mjs",
-      "sha256": "1c2d215aff28def7b14efc131d42ca7fa07483ecc4228b425a667dfa138e71d2",
+      "sha256": "c5c8bf6f5c7f484f8fd0a99f9f66d55a0cde2e949bc2d357b333738d0039dc6d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19059,7 +19122,7 @@
     },
     {
       "path": "scripts/test-build-gate-session.mjs",
-      "sha256": "4440302ea1a779f7c62370a4c677504fc94fbda3b3a6189d21c0bff44e66362e",
+      "sha256": "ae93688999b8105804a704ee71877b9d18865177f2b10567680d0f1dfe97dcc5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19632,6 +19695,13 @@
       "owner": "source"
     },
     {
+      "path": "scripts/test-dev-changelog.mjs",
+      "sha256": "0cfdeb4d7c9b77c16596cc7e8475d532699674bb773b824d3951fed15d6b4961",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "scripts/test-device-automation.mjs",
       "sha256": "4c0e7cbec64166a1f9f5aab3c66aec82e2db18b01ffce35c11b740cf0a5a86d8",
       "normalization": "lf",
@@ -19682,7 +19752,7 @@
     },
     {
       "path": "scripts/test-docker-project.py",
-      "sha256": "30d6ec518d992ac0e17daf62ad8ba1f7282fc0d1944b91bb7399d03bad33df79",
+      "sha256": "ab7aa3638416d165a4850edad8cca22c2a4be780b8442b6cfd920bdb126c1c7f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20354,7 +20424,7 @@
     },
     {
       "path": "scripts/test-host-test-lifecycle.mjs",
-      "sha256": "9bebbd89a93c344e22bdead67938105a48c9d411b0f9819b7120119f5df2cfe1",
+      "sha256": "548b7fe015bb5d08713b8cef332db5ad3dc40807560d32e61c3663204491f111",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20466,14 +20536,14 @@
     },
     {
       "path": "scripts/test-input-surface-metadata.py",
-      "sha256": "0c74a7df2e4dc6ac4b0172597fe66ebd49cbbb62cc7c363ad258aed7f97f28cb",
+      "sha256": "a75691a7428eb351c780ecee2beceb6c7154fead334d17ab890bf49fc7a40028",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-input-surface-reader.py",
-      "sha256": "a1f5f6ea9ec3e33ab2138d5c6a66f722f2b91cd193b76063149df087ba87309f",
+      "sha256": "b0c4bd52675264657ade61b9f0d4e3f7c3cb1014ed92c58734cc591cf5053c26",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21523,14 +21593,14 @@
     },
     {
       "path": "scripts/test-sdl-host-cache.py",
-      "sha256": "0a71f4ff941ce2ca7a598aa18dab71d055e1e1e7f3b9985e39b5ebd411efae27",
+      "sha256": "d4fca6df1d5120fdc2180dbf007809e5d424774c1fbd8856f907e9abb44cf3c5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-sdl-host-consumer.py",
-      "sha256": "40e60f7440ca49a1290967e4deb6cea8e74fb4ab3ffec761673d4d59d4e36ac8",
+      "sha256": "f3032d1f62b4cef6e70cb260b839f4abb03ef9a5c55d25016ff28f6e41daa518",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21698,7 +21768,7 @@
     },
     {
       "path": "scripts/test-settings-ui.mjs",
-      "sha256": "e1e1fc39c37658668357dc4598fefc83d01ffea1d93e16ed3fbb2e8fae32ee5c",
+      "sha256": "d38abe57e8b3759af995393811bdf56d5c51fbb5468b37d7ac3411c4c3917618",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21733,7 +21803,7 @@
     },
     {
       "path": "scripts/test-sideload-coordinator.mjs",
-      "sha256": "d53f9982f34a1bc6e80eec5b65617fe073287318aadaa5d5d6eeebe26c0f5e43",
+      "sha256": "78fb9123113a72def4a0527f55a3db53341809f9e7c714b2a3290f084af52ebf",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21768,7 +21838,7 @@
     },
     {
       "path": "scripts/test-sideload-prompt-source.mjs",
-      "sha256": "f5a12f941b42e378c73216e7dbd39a6b1d339ee931122742c7c7ddfd9a53f16e",
+      "sha256": "34e99ea16546e608b4a8b22230b1fe28e3be4d200667cebfc3c1aa6acf6ef9bf",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21788,6 +21858,20 @@
       "owner": "source"
     },
     {
+      "path": "scripts/test-sideload-signing-recovery.mjs",
+      "sha256": "beeee4bdd337717e73d61eba2c447502c4258ead5795ff9f10a865b0f0c28cd2",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/test-sideload-signing-service.mjs",
+      "sha256": "bc40bb0b8061a2bbdd62d899c44c63aef577c20e7988206a9c229ed981ba421e",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "scripts/test-sideload-storage.mjs",
       "sha256": "212c73bd118c1bf8b63397f43556de2a18501134b8d65a49ed25c3ac6da56f37",
       "normalization": "lf",
@@ -21796,14 +21880,14 @@
     },
     {
       "path": "scripts/test-sideload-update-presentation.mjs",
-      "sha256": "d9eca310635aaf5320790344a43c619f7e9882998b276b41cd83fb305ceacaa5",
+      "sha256": "44a42abc934c6eb7b6e1ba6e26193834f2e055de145ab936e4555fd85bc8fba0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-sideload-update.mjs",
-      "sha256": "ac503d245c3e534f657762d7ff81c850e96ef2fc923515cba157721320a4cf0b",
+      "sha256": "812824b329d107df1800d994eb94aa2bb552534c4b899339659ef1b264f467b3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22090,7 +22174,7 @@
     },
     {
       "path": "scripts/test-update-delivery.mjs",
-      "sha256": "8605c6503c012663fcc98c5f31aeb8c0f3e19c78b78d3d3c9ebf8d31dc66d788",
+      "sha256": "f472ff8edd661d5d4492fb082d2fc4bf565a7f18140fb55946fbc0d79535e1cc",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22104,7 +22188,7 @@
     },
     {
       "path": "scripts/test-update-dialog-sdk-runtime.mjs",
-      "sha256": "f84948aa8059b41a270b3502e5d96f5dc189b0c7717e42f512ae55eb129012d2",
+      "sha256": "9a7019f7d1a209d04815dd5239db4ba97e5b1605676189f56a4d552f4c94e4fa",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22230,7 +22314,7 @@
     },
     {
       "path": "scripts/test-workspace-paths.mjs",
-      "sha256": "9a7bdf5ac8480c6bc4aad8dd2cd45d18f5dc3fed8167bcc6687eb597cdb5a42b",
+      "sha256": "c614d81753c2710ce77f78118adcb9edc7eeb424c747c6ea715445f6e2c751e9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -25989,7 +26073,7 @@
     },
     {
       "path": "update/src/main/ets/AppUpdatePolicy.ets",
-      "sha256": "f1d7550a22a773a8a7eef0510544778d1c2baf6a964c68e7be9ca6452b194cbf",
+      "sha256": "a599d4d710c6eb019894732c6cce4ba7b6d554e532489e3fd8612d29ddd7ef62",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -26010,7 +26094,7 @@
     },
     {
       "path": "update/src/main/ets/GitHubUpdateAssetResolver.ets",
-      "sha256": "d79f77185b5e5f54b98927e9c088b7c846ec67e5c6cefa5382354c3309dab24d",
+      "sha256": "52da2c16cc41f16c2c08361d3456a654c2b420962b8f1c47885b46b32cb230b2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -26024,14 +26108,14 @@
     },
     {
       "path": "update/src/main/ets/SideloadUpdateModels.ets",
-      "sha256": "7bea6ccb03d28697e8ac6512d38e77b14df401fca1dee577fe4a7940259453f7",
+      "sha256": "30fd823d2de366f2a5d753b76b41849623df1a2c4d1ac59633a80b4e5311ea0e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "update/src/main/ets/UpdateChecker.ets",
-      "sha256": "78a1a920efcf48c5e292c9ea54d237c99e7cc3ae76f6f725c9a77be28ec33428",
+      "sha256": "fa5663b545a01c9e3b5b655ae9030019b41fb81f4b4a04ff4db125fba8ebc014",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -26055,8 +26139,8 @@
     "derived": 1,
     "excluded": 79,
     "generated": 1,
-    "private": 792,
+    "private": 805,
     "public-owned": 39,
-    "source": 3714
+    "source": 3726
   }
 }

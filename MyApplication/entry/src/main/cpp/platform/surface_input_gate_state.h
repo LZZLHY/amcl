@@ -122,6 +122,12 @@ inline void Invalidate(State& state) {
     RetireCurrent(state);
 }
 
+// 输入采样与正向捕获使用同一代次；待确认的几何仍可通过 Accept 处理生命周期事件。
+inline uint64_t CurrentInputGeneration(const State& state) {
+    return state.active && !state.geometryPending && state.component && state.window
+        ? state.publicationGeneration : 0u;
+}
+
 inline bool AcceptEventTimestamp(const State& state,
                                  uint64_t acceptedGeneration,
                                  int64_t eventTimestampNs) {

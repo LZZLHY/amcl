@@ -3,7 +3,6 @@
  * 每次订阅有自己的解除函数；框架卸载只detach，用户明确退出通过cancel撤销指定Attempt。
  */
 import { common } from '@kit.AbilityKit';
-import { picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { SideloadUpdateCoordinator } from './SideloadUpdateCoordinator';
 import { SideloadUpdateSnapshot } from './SideloadUpdateSnapshot';
@@ -32,7 +31,7 @@ export class SideloadUpdateViewModel {
   loginBusy: boolean = false;
   loginReason: string = '';
   needsLogin: boolean = false;
-  needsImport: boolean = false;
+  signingIssue: string = '';
   port: string = '10178';
   progress: number = 0;
   transfer: string = '';
@@ -44,7 +43,6 @@ export class SideloadUpdateViewModel {
   /** 真正Ability换代使本投影退役。它是展示状态，不能从新快照无条件继承许可或窗口事实。 */
   runtimeRetired: boolean = false;
   private coordinator: SideloadUpdateCoordinator | undefined = undefined;
-  private context: common.UIAbilityContext | undefined = undefined;
   private params: SideloadUpdatePageParams = {};
   private subscription: (() => void) | undefined = undefined;
   private surfaceId: string = '';
@@ -55,7 +53,7 @@ export class SideloadUpdateViewModel {
 
   /** 挂载只绑定和订阅，不创建任务、不执行恢复或账号检查。 */
   initialize(context: common.UIAbilityContext, params: SideloadUpdatePageParams): void {
-    this.context = context; this.params = params; this.autoStart = params.autoStart === true;
+    this.params = params; this.autoStart = params.autoStart === true;
     // 将原UI Context交给唯一工厂先验证files域，再使用权威Entry Context规范化，不能在此跳过调用方校验。
     this.surfaceId = util.generateRandomUUID(); this.coordinator = SideloadUpdateCoordinator.get(context);
     this.runtimeGeneration = this.coordinator.runtime();
@@ -89,7 +87,7 @@ export class SideloadUpdateViewModel {
     this.loginBusy = value.loginBusy;
     this.loginReason = value.loginReason;
     this.needsLogin = value.needsLogin;
-    this.needsImport = value.needsImport;
+    this.signingIssue = value.signingIssue;
     this.port = value.port;
     this.progress = value.progress;
     this.transfer = value.transfer;
@@ -114,18 +112,7 @@ export class SideloadUpdateViewModel {
   login(): void { this.ownedCoordinator()?.login(); }
   closeLogin(): void { this.ownedCoordinator()?.closeLogin(); }
   loginFailed(message: string): void { this.ownedCoordinator()?.loginFailed(message); }
-  renewMaterial(): void { this.ownedCoordinator()?.renewAndContinue(); }
   reconcile(): void { this.ownedCoordinator()?.reconcile(); }
-  /** 系统picker由当前UIContext打开；私有读取/加密和后续更新仍由域所有者执行。 */
-  async importMaterial(): Promise<void> {
-    const owner = this.ownedCoordinator();
-    if (this.context === undefined || owner === undefined || this.finishing) return;
-    try {
-      const document = new picker.DocumentViewPicker(this.context);
-      const uris = await document.select({ maxSelectNumber: 1, fileSuffixFilters: ['签名配置|.json'] });
-      if (uris.length > 0 && this.ownedCoordinator() === owner) await owner.importPickedMaterial(uris[0]);
-    } catch (_) { if (this.ownedCoordinator() === owner) this.message = '签名配置选择失败，请重新选择原安装工具导出的配置'; }
-  }
   /** 用户命令绑定当前Attempt，过时视图没有取消新轮的权限。 */
   cancel(): void { this.ownedCoordinator()?.requestCancel(this.attemptId); }
   /** 一处守卫覆盖全部写命令，包括迟到Web错误、picker结果与旧面板退出，不只保护foreground。 */
@@ -141,7 +128,7 @@ export class SideloadUpdateViewModel {
     this.coordinator?.detachPresentation(this.surfaceId);
     this.working = false; this.finishing = false; this.checking = false; this.checkingAccount = false;
     this.loginVisible = false; this.loginBusy = false; this.loginUrl = ''; this.accountReady = false; this.connectionReady = false;
-    this.needsLogin = false; this.needsImport = false; this.accountRetry = false; this.connectionRetry = false;
+    this.needsLogin = false; this.accountRetry = false; this.connectionRetry = false;
     this.message = '此更新界面已失效，请关闭后重新打开更新';
     this.accountMessage = '请在当前更新界面重新核实登录'; this.connectionMessage = '请在当前更新界面重新核实调试连接';
   }

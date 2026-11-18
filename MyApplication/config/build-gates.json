@@ -8,6 +8,32 @@
   },
   "gates": [
     {
+      "id": "check-dev-changelog",
+      "script": "scripts/check-dev-changelog.mjs",
+      "tool": "node",
+      "kind": "static",
+      "domain": "documentation",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
+      "id": "test-dev-changelog",
+      "script": "scripts/test-dev-changelog.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "documentation",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        "scripts/preflight.mjs"
+      ]
+    },
+    {
       "id": "check-hap-native-providers",
       "script": "scripts/check-hap-native-providers.mjs",
       "tool": "node",

@@ -391,7 +391,7 @@
     },
     {
       "path": "scripts/lib/game_compat_inputs.py",
-      "sha256": "b033032626fabe090e4d40524e732bcf3fbf4de2fe3a21afc8a535b791ef237f"
+      "sha256": "185b696019ce622ce1cd6ec9a5076b0251333e82defbdb5cd5c65896dcdee433"
     },
     {
       "path": "scripts/lib/game_compat_sessions.py",

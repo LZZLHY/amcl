@@ -41,13 +41,13 @@ function snapshotReached(coordinator,predicate){
  assert.equal(b.phase,'downloaded');assert.equal(f.counters.download,1);assert.equal(f.counters.dispatch,0);
  b.cancel();b.dispose();console.log('coordinator: owned subscriptions, detach and background separated');
 }
-// 后台签名真失败仍Failed，提供材料恢复动作，不会永久working。
+// 后台签名真失败仍Failed，提供自动重试动作，不会永久working。
 {
  const f=await fixture({delaySign:true,signFailure:true}),entered=counterReached(f.counters,'sign',1),ui=f.render();
  await boundedBoundary(entered,f,'Native签名入口');assert.equal(f.counters.sign,1);
- const failed=snapshotReached(f.coordinator,value=>value.phase==='failed'&&!value.working&&value.needsImport);
+ const failed=snapshotReached(f.coordinator,value=>value.phase==='failed'&&!value.working&&value.signingIssue==='material');
  f.coordinator.setAbilityForeground(false);f.signGate.resolve();await boundedBoundary(failed,f,'后台签名失败收尾');
- assert.equal(ui.phase,'failed');assert.equal(ui.working,false);assert.equal(ui.needsImport,true);
+ assert.equal(ui.phase,'failed');assert.equal(ui.working,false);assert.equal(ui.signingIssue,'material');
  assert.match(ui.message,/签名/);assert.equal(f.counters.dispatch,0);ui.dispose();
  console.log('coordinator: background real signing failure remains recoverable Failed');
 }
@@ -106,7 +106,10 @@ function snapshotReached(coordinator,predicate){
 // 未登录/已过期与网络不可用区分，关闭登录不取消原件，整轮取消挡晚成功。
 for(const account of ['missing','expired','unavailable']){
  const f=await fixture({account,delayDownload:true}),ui=f.render();await settle();
- if(account==='unavailable'){assert.equal(ui.loginVisible,false);assert.equal(ui.accountRetry,true);}
+ if(account==='unavailable'){
+  assert.equal(ui.loginVisible,false);assert.equal(ui.needsLogin,false);assert.equal(ui.accountRetry,true);
+  assert.doesNotMatch(ui.accountMessage,/重新登录/,'暂时无法核实应保留现有授权并重试检查');
+ }
  else {assert.equal(ui.loginVisible,true);assert.match(ui.loginReason,account==='expired'?/过期/:/尚未/);ui.closeLogin();}
  f.fetchGate.resolve();await settle();assert.equal(f.counters.download,1);assert.equal(f.counters.sign,0);
  ui.cancel();f.authorize();await settle();assert.equal(f.counters.dispatch,0);ui.dispose();
@@ -135,14 +138,13 @@ console.log('coordinator: missing/expired/unavailable, login close and late canc
  assert.equal(ui.phase,'storage-blocked');assert.equal(f.coordinator.isBusy(),false);assert.equal(f.counters.sign,0);ui.dispose();
  console.log('coordinator: signing checkpoint failure always releases busy');
 }
-// 用户选择导入正在加密时取消：beforeCommit阻止写入，不能覆写新轮材料。
+// 内部诊断材料写入正在加密时取消：beforeCommit阻止写入，不能覆写新轮材料。
 {
  const f=await fixture({delayDownload:true}),ui=f.render();await settle();f.coordinator.setAbilityForeground(false);f.fetchGate.resolve();await settle();
  const original=f.kitfs.readTextSync('/sandbox/sideload-update/signing-vault.json'),gate=deferred();f.setEncryptionGate(gate);
  const material=JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'old-operation',storePassword:'test-only',signAlg:'SHA256withECDSA',
   p12Base64:Buffer.from('other p12').toString('base64'),certificateBase64:Buffer.from('cert fixture').toString('base64'),profileBase64:Buffer.from('profile fixture').toString('base64')});
- fs.writeFileSync(f.mapped('/sandbox/picked-material.json'),material);
- const importing=f.coordinator.importPickedMaterial('/sandbox/picked-material.json');await settle();assert.equal(f.coordinator.isBusy(),true);
+ const importing=f.coordinator.importMaterial(material).catch(error=>error);await settle();assert.equal(f.coordinator.isBusy(),true);
  ui.cancel();gate.resolve();await importing;assert.equal(f.kitfs.readTextSync('/sandbox/sideload-update/signing-vault.json'),original);ui.dispose();
  console.log('coordinator: material encryption operation owns busy and late commit is rejected');
 }
@@ -229,7 +231,7 @@ console.log('coordinator: missing/expired/unavailable, login close and late canc
  assert.equal(old.runtimeRetired,true);assert.equal(old.accountReady,false);assert.doesNotMatch(f.coordinator.snapshot().connectionMessage,/已通过/);
  const before=f.coordinator.state(),material=f.kitfs.readTextSync('/sandbox/sideload-update/signing-vault.json'),calls={...f.counters},authCount=f.authSessions.length;
  old.onForeground();old.onBackground();old.start();old.checkAccount();old.checkConnection();old.retryConnection(true);old.openDebugSettings();
- old.login();old.closeLogin();old.loginFailed('旧网页错误');old.renewMaterial();old.reconcile();old.cancel();await old.importMaterial();await settle();
+ old.login();old.closeLogin();old.loginFailed('旧网页错误');old.reconcile();old.cancel();await settle();
  assert.deepEqual(f.coordinator.state(),before);assert.deepEqual(f.counters,calls);assert.equal(f.authSessions.length,authCount);
  assert.equal(f.kitfs.readTextSync('/sandbox/sideload-update/signing-vault.json'),material);
  const {SideloadUpdateViewModel:VM}=f.load('entry/src/main/ets/sideload/SideloadUpdateViewModel.ets'),current=new VM();
@@ -380,4 +382,64 @@ function aaProof(task,kind,safeToRelease){return{kind,safeToRelease,bmSubmitted:
  assert.equal(unconfirmed.counters.complete,0);assert.equal(unconfirmed.counters.dispatch,0);
  console.log('recover: repair 1000687 closes original 1000686 only with persisted genuine identity and original BMS proof; no identity rewrite or second dispatch');
 }
-console.log('sideload-coordinator: complete real implementation timing regressions passed');
+/** 可选应用查询失败/空列表不再阻止调试Profile；实际签发返回的身份才决定能否继续。 */
+for(const options of [{applicationResponse:{appInfos:[]}}, {applicationResponse:{}},
+ {applicationResponse:{appInfos:[{appId:6918724721415458464}]}}, {signingLookupFailure:'service'}, {signingLookupFailure:'permission'}]){
+ const f=await fixture(options),ui=f.render();
+ await boundedBoundary(snapshotReached(f.coordinator,value=>value.phase==='installing'&&!value.finishing),f,'自动签名回退');
+ assert.equal(ui.accountReady,true);assert.equal(ui.needsLogin,false);assert.equal(f.counters.dispatch,1);
+ assert.equal(f.counters.profileCreates,1);assert.equal(f.vault.preparationPending(),false);ui.dispose();
+}
+/** 真正证书服务故障及签发身份冲突保留登录状态，重试更新不引导选择文件或更换账号。 */
+for(const [options,issue] of [[{signingRequestFailure:'service'},'service'],[{signingRequestFailure:'permission'},'permission'],
+ [{signingRequestFailure:'response'},'response'],[{applicationResponse:{appInfos:[]},profileIdentifier:'different'},'identity']]){
+ const f=await fixture(options),ui=f.render();
+ await boundedBoundary(snapshotReached(f.coordinator,value=>!value.working&&value.signingIssue!==''),f,'签名实际错误分类');
+ assert.equal(ui.signingIssue,issue);assert.equal(ui.accountReady,true);assert.equal(ui.needsLogin,false);
+ assert.equal(ui.accountMessage,'华为登录已验证');assert.equal(f.counters.dispatch,0);
+ assert.doesNotMatch(ui.message,/原安装账号|导入签名|选择文件/);ui.dispose();
+}
+/** 证书失效后的重试必须保留现装私钥，只申请新证书/Profile，不生成替代私钥。 */
+{
+ const f=await fixture({delaySign:true,signFailure:true}),ui=f.render();
+ await boundedBoundary(counterReached(f.counters,'sign',1),f,'首次签名');f.signGate.resolve();
+ await boundedBoundary(snapshotReached(f.coordinator,value=>!value.working&&value.signingIssue==='material'),f,'签名失败');
+ const before=await f.vault.materialRevision();assert(f.vault.available());ui.start();
+ await boundedBoundary(counterReached(f.counters,'keyRestores',1),f,'续用保险库私钥');
+ await boundedBoundary(snapshotReached(f.coordinator,value=>!value.working&&value.signingIssue==='material'),f,'重试签名结束');
+ assert.equal(f.counters.keygen,0);assert(f.vault.available());assert.notEqual(await f.vault.materialRevision(),before);
+ assert.equal(f.counters.profileCreates,1);ui.dispose();
+}
+/** 原公钥草稿已由独立来源/Java测试证明；这里观察真实服务的证书/Profile复用与来源分类。 */
+for(const mode of ['valid-original','cached-profile','expired-original']){
+ const f=await fixture({applicationResponse:{appInfos:[]}});
+ const draft={schema:1,id:'d'.repeat(32),teamId:'fixture-team',appIdentifier:'installed-app',keyAlias:'fixture',
+  keyPassword:'fixture-only',storePassword:'fixture-only',signAlg:'SHA256withECDSA',p12Base64:Buffer.from('fixture key').toString('base64'),csr:'fixture CSR',
+  originalAppId:'installed-app',originalCertificateId:'cert',originalCertificateObjectId:'cert-object',
+  originalCertificateValidFrom:0,originalCertificateValidUntil:Date.now()+(mode==='expired-original'?-60000:60000)};
+ if(mode!=='valid-original')Object.assign(draft,{profileObjectId:'profile-object',profileCertificateId:'cert',profileDeviceId:'device'});
+ await f.vault.saveDraft(draft);const ui=f.render();
+ await boundedBoundary(snapshotReached(f.coordinator,value=>value.phase==='installing'&&!value.finishing),f,'原公钥材料准备 '+mode);
+ assert.equal(f.counters.keygen,0);assert.equal(f.counters.materialOrigin,'imported');
+ assert.equal(f.counters.certificateCreates??0,mode==='expired-original'?1:0);
+ assert.equal(f.counters.profileCreates??0,mode==='cached-profile'?0:1);
+ assert.equal(await f.vault.readDraft(),undefined);
+ assert.equal(f.counters.dispatch,1);ui.dispose();
+}
+/** 一次服务抖动/旧授权过期应在原尝试内自动恢复，无失败面、人工续期或第二次下载。 */
+for(const options of [{transientSigningFailures:1},{materialFailureCount:1}]){
+ const f=await fixture(options),seen=[];const remove=f.coordinator.subscribe(s=>seen.push({phase:s.phase,issue:s.signingIssue}));const ui=f.render();
+ await boundedBoundary(snapshotReached(f.coordinator,s=>s.phase==='installing'&&!s.finishing),f,'自动恢复派发');
+ assert.equal(f.counters.download,1);assert.equal(f.counters.dispatch,1);assert.equal(f.counters.sign,options.materialFailureCount?2:1);
+ assert(!seen.some(s=>s.phase==='failed'||s.issue));
+ if(options.materialFailureCount){assert.equal(f.counters.keyRestores,1);assert.equal(f.counters.keygen,0);}
+ assert(![...f.rows.values()].some(row=>row.category==='app_update'&&row.state===2));remove();ui.dispose();
+}
+/** 永久授权故障有界结束，不能把签名重试扩成重复系统安装。 */
+{
+ const f=await fixture({materialFailureCount:99}),ui=f.render();
+ await boundedBoundary(snapshotReached(f.coordinator,s=>!s.working&&s.signingIssue==='material'),f,'自动续期上限');
+ assert.equal(f.counters.sign,2);assert.equal(f.counters.dispatch,0);assert.equal(f.counters.keyRestores,1);
+ assert.doesNotMatch(ui.message,/导入|文件|原安装账号/);ui.dispose();
+}
+console.log('sideload-coordinator: automatic service retry, bounded same-key renewal, no transient failure UI and single install dispatch passed');

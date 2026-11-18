@@ -284,3 +284,5 @@ console.log('sideload-update: remote file digest blocks truncation, bounded retr
 
 // 完整候选绑定与 Runtime 中途换代走真实 Coordinator 回归，随自更新聚合入口长期执行。
 await import('./test-app-update-cache-identity.mjs');
+await import('./test-sideload-signing-service.mjs');
+await import('./test-sideload-signing-recovery.mjs');

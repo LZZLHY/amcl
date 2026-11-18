@@ -29,13 +29,26 @@ function assertOwnedDirectory(directory, identity) {
  * lstat 检查每个目录项：符号链接/junction 只删除链接本身，不进入目标。
  * 不接受任何调用方传入的删除路径；入口只能来自本模块捕获的 mkdtemp 返回值。
  */
-function removeTreeNoFollow(directory) {
+function removeTreeNoFollow(directory, verifyOwner) {
+  /** 仅重试本轮已核目录上的短暂Windows共享冲突；持续占用仍失败保留，不扩大删除范围。 */
+  const remove = action => {
+    const deadline=performance.now()+2000;let retried=false;
+    for(;;) {
+      if(retried)verifyOwner();
+      try {action();return;}
+      catch(error) {
+        if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY','ENOTEMPTY'].includes(error.code)||performance.now()>=deadline)throw error;
+        retried=true;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+      }
+    }
+  };
   for (const name of fs.readdirSync(directory)) {
     const entry = path.join(directory, name), stat = fs.lstatSync(entry);
-    if (stat.isDirectory() && !stat.isSymbolicLink()) removeTreeNoFollow(entry);
-    else fs.rmSync(entry, { force: true });
+    if (stat.isDirectory() && !stat.isSymbolicLink()) removeTreeNoFollow(entry, verifyOwner);
+    else remove(()=>fs.rmSync(entry, { force: true }));
   }
-  fs.rmdirSync(directory);
+  remove(()=>fs.rmdirSync(directory));
 }
 
 /**
@@ -96,7 +109,7 @@ export function createHostTestScope(prefix, {
           clearTimeout(deadline);
         }
         assertOwnedDirectory(directory, identity);
-        removeTreeNoFollow(directory);
+        removeTreeNoFollow(directory,()=>assertOwnedDirectory(directory,identity));
         scopes.delete(scope);
       })();
       return closing;

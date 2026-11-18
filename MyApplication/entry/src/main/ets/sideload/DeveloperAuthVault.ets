@@ -11,6 +11,7 @@ import { SideloadFiles } from './SideloadFiles';
 export interface DeveloperCredential {
   schema: number;
   jwt: string;
+  /** 兼容旧记录字段；新版写0，由官方refresh响应判断授权是否有效，不按旧JWT期限清缓存。 */
   expiresAt: number;
   savedAt: number;
 }
@@ -58,7 +59,7 @@ export class DeveloperAuthVault {
 
   /**
    * 加密完成后再次核对会话代次，取消或退出不能让迟到登录覆盖新一轮凭据。
-   * freshLogin只由已完成官方JWT/团队验证的新登录传入；自动失效标记没有重新建key的权限。
+   * freshLogin只由已完成官方JWT/团队验证的新登录传入；普通缓存维护没有重新建key的权限。
    * 原key明确丢失时，新登录可新建此登录域key，但先保留旧密文，签名域密钥不受影响。
    * @throws 密钥查询/加密、旧记录备份或可靠提交失败，调用方不能宣告登录已保存。
    */

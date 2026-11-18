@@ -24,12 +24,12 @@ const target={tag:'v2.0.0',versionCode:2,versionName:'2.0.0',product:'sideload',
  mirrors:[{provider:'miawa',projectId:'amcl',ready:true,filePath:'amcl/v2.0.0/amcl-v2.0.0-sideload-unsigned.hap'}]};
 const manifest={...target,delivery:{schema:1,ready:true,assets:[target]}};
 /** 各case使用独立模块单例与虚拟Kit文件域；真实Writer仍循环写真实宿主文件。 */
-async function fixture({journal,account='valid',delayDownload=false,delaySign=false,signFailure=false,delayConnect=false,delayClose=false,connectFailOnce=false,signCommitFailure=false,expireMaterialFirst=false,delayLoginBegin=false,child=0,candidate=manifest,usableSigningJdks=['17'],runtimePlanPending=false,runtimePlanUnreadable=false,signingJdkNeedsPlanRecovery=false,runtimeRestoreFailure='',revokeProofKind='',initialEnvironment,initialIntent,initialFence,preferenceFactory,actualRuntimePlanProtocol=0}={}){
+async function fixture({journal,account='valid',applicationResponse,signingLookupFailure='',signingRequestFailure='',transientSigningFailures=0,profileIdentifier='installed-app',delayDownload=false,delaySign=false,signFailure=false,materialFailureCount=0,delayConnect=false,delayClose=false,connectFailOnce=false,signCommitFailure=false,expireMaterialFirst=false,delayLoginBegin=false,child=0,candidate=manifest,usableSigningJdks=['17'],runtimePlanPending=false,runtimePlanUnreadable=false,signingJdkNeedsPlanRecovery=false,runtimeRestoreFailure='',revokeProofKind='',initialEnvironment,initialIntent,initialFence,preferenceFactory,actualRuntimePlanProtocol=0}={}){
  // 每个用例可提供独立公开清单，用同一真实流水线覆盖同 code 的预览/返回场景。
  // 实际HAP字节及其包内元数据不随外部manifest对象变化；用于验证迟到输入不能重定向原件。
  const selectedAsset=structuredClone(candidate.delivery.assets[0]);
  let runtimePlanExists=runtimePlanPending,restoreAttempted=false;
- const physical=fs.mkdtempSync(path.join(output,'case-')),rows=new Map(),storage=new Map(),locks=new Set(),handles=new Map();
+ const physical=fs.mkdtempSync(path.join(output,'case-')),rows=new Map(),storage=new Map(),locks=new Set(),handles=new Map(),selectedUris=new Map();
  const pending=new Set(),timers=new Set(),mounted=new Set();let closing=false,coordinator;
  /**
   * 只观察实际异步方法的返回 Promise，不改变业务分支、文件隔离或断言顺序。
@@ -62,7 +62,8 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   renameSync:(a,b)=>{if(signCommitFailure&&String(b).endsWith('/transaction.json')&&fs.readFileSync(mapped(a),'utf8').includes('\"phase\":\"signing\"'))throw Error('ENOSPC signing fixture');if(faults.rename&&String(b).endsWith('/transaction.json'))throw Error('ENOSPC fixture');fs.renameSync(mapped(a),mapped(b));},
   unlinkSync:p=>fs.unlinkSync(mapped(p)),rmdirSync:p=>fs.rmdirSync(mapped(p)),
   openSync(p,mode=1){
-   const name=mapped(p);if((mode&16)&&fs.existsSync(name)&&fs.lstatSync(name).isSymbolicLink())throw Error('NOFOLLOW fixture');
+   // 文档提供者只把 URI 授给 open；路径式 readTextSync 仍会失败，重现手机的 API 边界。
+   const name=mapped(selectedUris.get(p)??p);if((mode&16)&&fs.existsSync(name)&&fs.lstatSync(name).isSymbolicLink())throw Error('NOFOLLOW fixture');
    const directory=fs.existsSync(name)&&fs.statSync(name).isDirectory();
    const fd=directory?++synthetic:fs.openSync(name,(mode&2)?'a+':(mode&8)?'w':(mode&4)?'r+':'r');
    const item={fd,path:name,directory,owned:false,tryLock(){if(locks.has(name))throw Error('EWOULDBLOCK fixture');locks.add(name);item.owned=true;}};
@@ -70,7 +71,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   },
   closeSync(file){const fd=typeof file==='number'?file:file.fd,h=handles.get(fd);if(h?.owned)locks.delete(h.path);if(!h?.directory)fs.closeSync(fd);handles.delete(fd);},
   writeSync(fd,bytes){const b=Buffer.from(bytes);return fs.writeSync(fd,b,0,faults.shortWrite?Math.min(4,b.length):b.length);},
-  readSync:(fd,buffer,options)=>fs.readSync(fd,Buffer.from(buffer),0,options.length,null),
+  readSync:(fd,buffer,options)=>fs.readSync(fd,Buffer.from(buffer),0,Math.min(options.length,faults.readChunk??Infinity),null),
   read:async(fd,buffer,options)=>fs.readSync(fd,Buffer.from(buffer),0,options.length,null),
   write:async(fd,buffer)=>fs.writeSync(fd,Buffer.from(buffer)),
   fsyncSync:fd=>{if(!handles.get(fd)?.directory)fs.fsyncSync(fd);}
@@ -88,6 +89,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
  const environment={version:journal?.phase==='verified'?journal.asset.versionCode:1,versionName:journal?.phase==='verified'?journal.asset.versionName:'1.0.0',payload:journal?.phase==='verified'?payload:'old',uid:42};
  if(initialEnvironment)Object.assign(environment,initialEnvironment);
  const context={filesDir:'/sandbox',preferencesDir:'/sandbox/preferences',resourceManager:{getRawFileContentSync(name){
+  if(name==='sideload/public-signing-templates.json')return new TextEncoder().encode(JSON.stringify({schema:1,templates:[]}));
   if(name==='product-profile.json')return new TextEncoder().encode(JSON.stringify({sourceRevision:environment.payload,name:environment.product??'sideload',runtimeHostProtocols:environment.hostProtocols??[1,2]}));
   assert(['sideload/hap-sign-tool.jar','sideload/amcl-signing-runner.jar'].includes(name));
   // 轻量源码任务树不复制已锁定的12MiB签名工具；可显式借只读工具输入目录，
@@ -105,11 +107,21 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
     counters.keygen++;generatedId=args[1].split('/').at(-1).slice(4);
     fs.writeFileSync(mapped(args[2]),JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',p12Base64:Buffer.from('p12 fixture').toString('base64'),csr:'fixture CSR'}));return 0;
    }
+   if(args[0]==='--inspect-profile-identity'){
+    fs.writeFileSync(mapped(args[2]),JSON.stringify({bundleName:'com.amcl.launcher',appIdentifier:profileIdentifier}));return 0;
+   }
+   if(args[0]==='--restore-original-key'){
+    const input=JSON.parse(kitfs.readTextSync(args[1]));assert.equal(input.provider,'cached-key');counters.keyRestores=(counters.keyRestores??0)+1;
+    assert(kitfs.accessSync(input.materialDirectory+'/material.p12'));
+    fs.writeFileSync(mapped(args[2]),JSON.stringify({teamId:'fixture-team',originalAppId:input.appId,
+     keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',p12Base64:Buffer.from('p12 fixture').toString('base64'),csr:'fixture CSR'}));return 0;
+   }
    if(args[0]==='--inspect-hap'){
     fs.writeFileSync(mapped(args[2]),JSON.stringify({inspected:true,bundleName:'com.amcl.launcher',versionName:selectedAsset.versionName,versionCode:selectedAsset.versionCode,product:'sideload',minApi:20,deviceTypes:['phone'],sourceRevision:payload,runtimeHostProtocols:[1],runtimePlanProtocol:actualRuntimePlanProtocol}));return 0;
    }
    counters.sign++;if(delaySign)await signGate.promise;if(signFailure)return 1;
-   const config=JSON.parse(kitfs.readTextSync(args[0]));fs.writeFileSync(mapped(args[2]),'signed fixture');
+   if(counters.sign<=materialFailureCount){fs.writeFileSync(mapped(args[3]),JSON.stringify({signed:false,verified:false,failureReason:'Profile expired'}));return 0;}
+   const config=JSON.parse(kitfs.readTextSync(args[0]));counters.materialOrigin=config.materialOrigin;fs.writeFileSync(mapped(args[2]),'signed fixture');
    fs.writeFileSync(mapped(args[3]),JSON.stringify({signed:true,verified:true,payloadIdentity:payload,
     signatureValidFrom:Date.now()-60000,signatureValidUntil:Date.now()+3600000,signatureVerifiedAt:Date.now(),
     materialRevision:config.materialRevision,identityMode:'public-key',profileTrust:'installed-key'}));return 0;
@@ -122,10 +134,25 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   async decrypt(blob){const d=crypto.createDecipheriv('aes-256-gcm',key,Buffer.from(blob.iv,'base64'));d.setAuthTag(Buffer.from(blob.tag,'base64'));return Buffer.concat([d.update(Buffer.from(blob.ciphertext,'base64')),d.final()]).toString('utf8');}
  }
  // 授权平台边界逐次记录真实对象与begin。gate可控制URL返回/异常晚于关闭、重登及Runtime换代。
- let authObject,expiredCloud=false;const authBegins=[],authSessions=[];
+ let authObject,expiredCloud=false,createdCertificateName='';const authBegins=[],authSessions=[];
  class Auth{
   teamIds(){return['fixture-team'];}
-  async request(url,_method,_team,body){counters.authRequests++;if(expireMaterialFirst&&!expiredCloud){expiredCloud=true;this.valid=false;account='expired';throw Error('华为登录已过期，请重新登录');}if(!this.valid)throw Error('华为登录已过期，请重新登录');if(url.includes('brief-info'))return{appInfos:[{appId:'installed-app'}]};if(url.includes('/cert/list'))return{certList:[{certName:'amcl_update_'+generatedId,id:'cert',certObjectId:'cert-object'}]};if(url.includes('/device/list'))return{list:[{udid:'A'.repeat(64),id:'device'}]};if(url.includes('/provision/list'))return{list:[{provisionName:'amcl_update_'+generatedId,provisionFileUrl:'profile-object'}]};if(url.includes('/url/reapply'))return{urlsInfo:[{newUrl:'https://fixture.huawei.com/'+body.sourceUrls}]};throw Error('unexpected fixture RPC');}
+  preferredTeamId(){return'fixture-team';}
+  async request(url,_method,_team,body){counters.authRequests++;if(expireMaterialFirst&&!expiredCloud){expiredCloud=true;this.valid=false;account='expired';throw Error('华为登录已过期，请重新登录');}if(!this.valid)throw Error('华为登录已过期，请重新登录');
+   // 只注入远端边界结果；应用响应校验、异常分类和 UI 状态均执行真实生产实现。
+   if(url.includes('brief-info')){
+    if(signingLookupFailure){const {SigningPreparationError}=load('entry/src/main/ets/sideload/SigningPreparationError.ets');throw new SigningPreparationError(signingLookupFailure,'签名服务暂不可用，请重试获取签名');}
+    return applicationResponse??{appInfos:[{appId:'installed-app'}]};
+   }
+   if(signingRequestFailure||transientSigningFailures>0){transientSigningFailures--;const {SigningPreparationError}=load('entry/src/main/ets/sideload/SigningPreparationError.ets');throw new SigningPreparationError(signingRequestFailure||'service','签名服务暂不可用，请重试更新');}
+   if(url.includes('/cert/list'))return{certList:[{certName:'amcl_update_'+generatedId,id:'cert',certObjectId:'cert-object'},
+    ...(createdCertificateName?[{certName:createdCertificateName,id:'new-cert',certObjectId:'new-cert-object'}]:[])]};
+   if(url.endsWith('/cert/add')){createdCertificateName=body.certName;counters.certificateCreates=(counters.certificateCreates??0)+1;return{};}
+   if(url.includes('/device/list'))return{list:[{udid:'A'.repeat(64),id:'device'}]};
+   if(url.includes('/provision/list'))return{list:[{provisionName:'amcl_update_'+generatedId,provisionFileUrl:'profile-object'}]};
+   if(url.includes('/ide/test/provision/add')){assert.equal(body.appId,undefined,'original appId path must not claim a registered identifier');counters.profileCreates=(counters.profileCreates??0)+1;return{id:'profile',provisionFileUrl:'profile-object'};}
+   if(url.endsWith('/v1/provision/add')){assert.equal(body.appId,'installed-app');counters.profileCreates=(counters.profileCreates??0)+1;return{provisionInfo:{provisionObjectId:'profile-object'}};}
+   if(url.includes('/url/reapply'))return{urlsInfo:[{newUrl:'https://fixture.huawei.com/'+body.sourceUrls}]};throw Error('unexpected fixture RPC');}
   initialize(context){authObject=this;this.context=context;this.closeCount=0;authSessions.push(this);}
   async restore(){this.valid=account==='valid';return account;}
   signedIn(){return this.valid===true;}
@@ -160,13 +187,19 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   // 执行实际Content生命周期/窗口查询/连接方法；ArkUI声明式布局留给正常SDK检查与真实设备。
   // 仅去除首个@Builder之后的DSL并将struct作宿主class，窗口事件与业务方法正文不复制/改写。
   if(file==='entry/src/main/ets/components/SideloadUpdateContent.ets')source=source.slice(0,source.indexOf('  @Builder'))+'\n}\n';
+  // 共用登录文件前段是生产几何函数；宿主只执行该原函数，后段ArkUI内容交给真实SDK和设备。
+  if(file==='entry/src/main/ets/components/DeveloperLoginContent.ets')source=source.slice(0,source.indexOf('@Component'));
   source=source.replace('export struct SideloadUpdateContent','export class SideloadUpdateContent');
   const js=compiler.transpileModule(source,{compilerOptions:{module:compiler.ModuleKind.CommonJS,target:compiler.ScriptTarget.ES2020,experimentalDecorators:true}}).outputText;
   vm.runInNewContext(js,{exports,require(name){
    if(name==='commons')return common;if(name==='feature_core')return core;if(name==='update')return update;
    if(name==='account')return{HuksAesGcm256Provider:HardwareCipher};if(name==='entry/ProductBuildProfile')return{ProductBuildProfile:{product:'sideload',storeChannel:false}};
    if(name==='libentry.so')return{default:native};if(name==='@kit.CoreFileKit')return{fileIo:kitfs,picker:{}};
-   if(name==='@kit.ArkTS')return{util:kitUtil};if(name==='@kit.CryptoArchitectureKit')return{cryptoFramework:hashKit};
+   // 用宿主标准 URL 实现 Kit 的解析入口；材料地址的准入规则仍执行生产签名服务原文。
+   if(name==='@kit.ArkTS')return{util:kitUtil,url:{URL:{parseURL:value=>new URL(value)}}};
+   if(name==='@kit.CryptoArchitectureKit')return{cryptoFramework:hashKit};
+   if(name==='@ohos.deviceInfo')return{default:{get deviceType(){return environment.deviceForm??'phone';}}};
+   if(name==='@ohos.display')return{default:{getDefaultDisplaySync:()=>({width:environment.deviceForm==='tablet'?2560:1216,height:2688,densityPixels:environment.deviceForm==='tablet'?2:3.5})}};
    // 仅测试中按App进程世代提供真实宿主声明边界，不能把fixture结果当实际JDK运行资格。
    if(name==='./RuntimeHostProtocol')return{runtimeHostProtocols:()=>environment.hostProtocols??[1,2],runtimeRequiredCapabilities:()=>environment.runtimeRequiredCapabilities??[]};
    if(name==='@kit.ArkUI')return{window:windowKit};if(name==='@kit.ArkWeb')return{webview:{WebviewController:class{}}};
@@ -212,7 +245,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
    if(name.startsWith('.'))return load(path.posix.normalize(path.posix.join(path.posix.dirname(file),name))+'.ets');
    throw Error('Unmocked '+name);
   // 装饰器仅是宿主平台边缘：现有组件的Prop布局参数与State一样保留原字段初始化，不替业务赋值。
-  },Observed:x=>x,Component:x=>x,State(){},Prop(){},Watch:()=>()=>{},StorageProp:()=>()=>{},AppStorage:{get:k=>storage.get(k),setOrCreate:(k,v)=>storage.set(k,v)},Uint8Array,ArrayBuffer,TextEncoder,TextDecoder,console,
+  },Observed:x=>x,Component:x=>x,State(){},Prop(){},Watch:()=>()=>{},StorageProp:()=>()=>{},SheetType:{CENTER:'center',BOTTOM:'bottom'},BlurStyle:{NONE:'none'},AppStorage:{get:k=>storage.get(k),setOrCreate:(k,v)=>storage.set(k,v)},Uint8Array,ArrayBuffer,TextEncoder,TextDecoder,console,
    // unref 只允许进程退出，不会停止旧回调；记录真实 timer，并在本轮收尾先阻止新增与旧回调。
    setTimeout:(callback,delay,...args)=>{const t=setTimeout(()=>{timers.delete(t);if(!closing)callback(...args);},delay);t.unref();if(closing)clearTimeout(t);else timers.add(t);return t;},
    clearTimeout:t=>{timers.delete(t);clearTimeout(t);}});
@@ -223,7 +256,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   return exports;
  }
  const windowKit={WindowStageLifecycleEventType:{SHOWN:1,RESUMED:2,PAUSED:3,HIDDEN:4},WindowEventType:{WINDOW_SHOWN:1,WINDOW_ACTIVE:2,WINDOW_INACTIVE:3,WINDOW_HIDDEN:4}};
- common={...load('commons/src/main/ets/utils/Base64Util.ets'),DiagnosticPolicy:{hasTestHooks:()=>false},formatBytes:String,UPDATE_MANIFEST_URLS:[],formatError:String,DistributionPolicy:{allowSideloadUpdates:()=>true},
+ common={...load('commons/src/main/ets/utils/Base64Util.ets'),...load('commons/src/main/ets/common/SheetSizes.ets'),...load('commons/src/main/ets/common/device/DeviceProfile.ets'),DiagnosticPolicy:{hasTestHooks:()=>false},formatBytes:String,UPDATE_MANIFEST_URLS:[],formatError:String,DistributionPolicy:{allowSideloadUpdates:()=>true},
   ThemeMode:{SYSTEM:0},resolveTheme:()=>({}),resolveIsDark:()=>false,
   LedgerState:{RUNNING:0,SUCCESS:1,FAILED:2,ABORTED:3,INTERRUPTED:5},AppLogger:{info(){},warn(){},error(){}},
   ledgerHas:(_d,id)=>rows.has(id),ledgerManifest:(_d,id)=>rows.get(id)||null,
@@ -250,7 +283,7 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
  },async createAndWait(spec,progress){counters.download++;if(delayDownload)await fetchGate.promise;fs.writeFileSync(mapped(spec.files[0].localPath),data);progress({taskId:1,bytesDone:data.length,bytesTotal:data.length,speedBps:5,finished:true});},cancel(){},purgeTask:()=>true,async awaitTaskReleased(){}})};
  update=load('update/src/main/ets/SideloadUpdateModels.ets');Object.assign(update,load('update/src/main/ets/SideloadTransactionPolicy.ets'),load('update/src/main/ets/GitHubUpdateAssetResolver.ets'),load('update/src/main/ets/AppUpdatePolicy.ets'),load('update/src/main/ets/UpdateChecker.ets'),load('update/src/main/ets/AppArtifactReceiptResolver.ets'));
  const {SigningVault}=load('entry/src/main/ets/sideload/SigningVault.ets'),vault=new SigningVault(context);
- if(!expireMaterialFirst)await vault.importBundle(JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',
+ if(!expireMaterialFirst&&applicationResponse===undefined&&!signingLookupFailure&&!signingRequestFailure&&!transientSigningFailures)await vault.importBundle(JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',
   p12Base64:Buffer.from('p12 fixture').toString('base64'),certificateBase64:Buffer.from('cert fixture').toString('base64'),profileBase64:Buffer.from('profile fixture').toString('base64')}));
  const {SideloadUpdateCoordinator:Coordinator}=load('entry/src/main/ets/sideload/SideloadUpdateCoordinator.ets');coordinator=Coordinator.get(context);
  const {SideloadUpdateViewModel:ViewModel}=load('entry/src/main/ets/sideload/SideloadUpdateViewModel.ets');
@@ -281,7 +314,9 @@ async function fixture({journal,account='valid',delayDownload=false,delaySign=fa
   for(const handle of [...handles.values()])kitfs.closeSync(handle);
   assert.equal(handles.size,0);assert.equal(timers.size,0);assert.equal(pending.size,0);
  });
- return{coordinator,core,load,rows,counters,faults,fetchGate,signGate,connectionGate,closeGate,authBegins,authSessions,render,mountContent,context,environment,mapped,kitfs,vault,storage,runtimePlanApi,setObservation(v){observation=v;},authorize(index=authBegins.length-1){account='valid';const operation=authBegins[index];if(operation){operation.auth.valid=true;operation.callback(true,'fixture success');}else authObject.valid=true;},expireAccount(){account='expired';authObject.valid=false;},setEncryptionGate(g){encryptionGate=g;}};
+ return{coordinator,core,load,rows,counters,faults,fetchGate,signGate,connectionGate,closeGate,authBegins,authSessions,render,mountContent,context,environment,mapped,kitfs,vault,storage,runtimePlanApi,
+  selectUri(uri,virtual){mapped(virtual);selectedUris.set(uri,virtual);},
+  setObservation(v){observation=v;},authorize(index=authBegins.length-1){account='valid';const operation=authBegins[index];if(operation){operation.auth.valid=true;operation.callback(true,'fixture success');}else authObject.valid=true;},expireAccount(){account='expired';authObject.valid=false;},setEncryptionGate(g){encryptionGate=g;}};
 }
 /** 完整旧持久记录由真实Repository加载；不靠修改Coordinator private字段构造结果。 */
 const record=(phase='verified')=>({schema:1,id:oldId,phase,asset:{...target,tag:'v1.5.0',versionCode:phase==='verified'?1:2,versionName:'1.5.0'},

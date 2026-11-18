@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createHostTestScope } from './lib/host-test-lifecycle.mjs';
 import { PROJECT_ROOT } from './lib/workspace-paths.mjs';
@@ -13,6 +13,7 @@ import { PROJECT_ROOT } from './lib/workspace-paths.mjs';
 const scope = createHostTestScope('lifecycle-regression-');
 const helper = new URL('./lib/host-test-lifecycle.mjs', import.meta.url).href;
 const fixture = new URL('./lib/sideload-coordinator-fixture.mjs', import.meta.url).href;
+const coreOnly = process.argv.includes('--lifecycle-core-only');
 
 /** 子进程自然退出必须经过 beforeExit；父进程检查实际目录，而非只断言清理函数被调用。 */
 function runChild(name, source, extraEnv = {}) {
@@ -95,6 +96,42 @@ await linkScope.close();
 assert.equal(fs.existsSync(linkScope.directory), false);
 assert.equal(fs.readFileSync(path.join(external, 'keep.txt'), 'utf8'), 'outside guarded scope', '内部链接仅删除链接本身');
 
+if(process.platform==='win32') {
+  // 用真实不共享DELETE的目录句柄制造瞬时EBUSY；首次真实失败后才通知读者交回。
+  const target=createHostTestScope('directory-reader-',{parent:scope.directory,automatic:false});
+  const observed=path.join(target.directory,'observed'),opened=path.join(scope.directory,'directory-open'),release=path.join(scope.directory,'directory-release');
+  fs.mkdirSync(observed);
+  const code=`import ctypes,time
+from pathlib import Path
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.CreateFileW.argtypes=[ctypes.c_wchar_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p]
+k.CreateFileW.restype=ctypes.c_void_p;k.CloseHandle.argtypes=[ctypes.c_void_p]
+h=k.CreateFileW(${JSON.stringify(observed)},0x80000000,3,None,3,0x02000000,None)
+assert h not in (None,ctypes.c_void_p(-1).value)
+try:
+ Path(${JSON.stringify(opened)}).write_text('open');deadline=time.monotonic()+5
+ while not Path(${JSON.stringify(release)}).exists() and time.monotonic()<deadline:time.sleep(.01)
+finally:k.CloseHandle(h)`;
+  const reader=spawn(process.env.PYTHON||'python',['-B','-c',code],{stdio:'ignore'});
+  const ended=new Promise((resolve,reject)=>{reader.once('exit',resolve);reader.once('error',reject);});
+  const remove=fs.rmdirSync;let denials=0;
+  try {
+    const deadline=Date.now()+5000;
+    while(!fs.existsSync(opened)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+    assert(fs.existsSync(opened));
+    fs.rmdirSync=name=>{
+      try{return remove(name);}
+      catch(error){if(name===observed){denials++;fs.writeFileSync(release,'release');}throw error;}
+    };
+    await target.close();assert(denials>0);assert(!fs.existsSync(target.directory));
+  } finally {
+    fs.rmdirSync=remove;fs.writeFileSync(release,'release');
+    if(reader.exitCode===null)reader.kill();await ended;
+  }
+}
+
+// 只修改通用文件系统收尾时可选核心组；默认仍包含真实签名fixture，不能混称覆盖。
+if(!coreOnly) {
 // 运行真实 sideload fixture：JAR 已独占提取、签名 Promise 仍在 gate 等待，且有真实打开句柄。
 // 子进程不显式放行 gate 或关闭 fd；共享 fixture 的收尾必须负责完成真实 finally 后删除整轮目录。
 const actual = runChild('actual-fixture', `
@@ -121,4 +158,5 @@ const failedCase = fs.readdirSync(path.join(failedFixture.parent, failedRun)).fi
 const journal = fs.readFileSync(path.join(failedFixture.parent, failedRun, failedCase, 'sideload-update/transaction.json'));
 assert.equal(createHash('sha256').update(journal).digest('hex'),
   fs.readFileSync(path.join(failedFixture.parent, 'journal-sha.txt'), 'utf8'), '失败退出不能先取消 owner 改写原事务');
-console.log('PASS host test lifecycle: real process success cleanup, failure/debug/teardown-fault retention, ref deadline rejects stalled teardown, async write/fd join, ownership/junction rejection and no-follow removal, real sideload pending-sign teardown');
+}
+console.log('PASS host test lifecycle: real process success cleanup, failure/debug/teardown-fault retention, ref deadline rejects stalled teardown, async write/fd join, ownership/junction rejection and no-follow removal; scope='+(coreOnly?'core filesystem/process including Windows directory reader':'full including real sideload pending-sign teardown'));

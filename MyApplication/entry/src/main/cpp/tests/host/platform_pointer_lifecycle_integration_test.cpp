@@ -198,6 +198,20 @@ int main() {
     PlatformInputCapturePlatformChanged(true, AMCL_INPUT_CAPTURE_REASON_GRANTED);
     fixture.Drain();
     CHECK(fixture.Snapshot().captureActive == 1u);
+    // 同代几何重放只复位输入。旧游戏请求仍然有效，无需再进入一次抓取模式。
+    const auto beforeGeometry = fixture.Snapshot();
+    PlatformInputRequestReset(AMCL_INPUT_RESET_SURFACE_CHANGED);
+    PlatformInputCapturePlatformChanged(false, AMCL_INPUT_CAPTURE_REASON_PLATFORM_LOST);
+    fixture.Drain();
+    const auto duringGeometry = fixture.Snapshot();
+    CHECK(duringGeometry.captureRequested == 1u && duringGeometry.captureActive == 0u);
+    CHECK(duringGeometry.surfaceEpoch == beforeGeometry.surfaceEpoch);
+    CHECK(duringGeometry.focusEpoch == beforeGeometry.focusEpoch);
+    PlatformInputCapturePlatformChanged(true, AMCL_INPUT_CAPTURE_REASON_GRANTED);
+    fixture.Drain();
+    const auto afterGeometry = fixture.Snapshot();
+    CHECK(afterGeometry.captureRequested == 1u && afterGeometry.captureActive == 1u);
+    CHECK(afterGeometry.captureReason == AMCL_INPUT_CAPTURE_REASON_GRANTED);
     VerifyCaptureResetPolicy(fixture, true);
     VerifyCaptureResetPolicy(fixture, false);
     std::puts("platform_pointer_lifecycle_integration_test: all checks passed");

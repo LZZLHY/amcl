@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {spawnSync} from 'node:child_process';
+import {spawnSync,spawn} from 'node:child_process';
 import {chooseProfile,decision,environmentIdentity,snapshot,start,event,finish} from './lib/build-gate-session.mjs';
 import {assertExternalOutputPath,resolveWorkspacePath} from './lib/workspace-paths.mjs';
 import {createHostTestScope} from './lib/host-test-lifecycle.mjs';
@@ -28,7 +28,7 @@ const scope=createHostTestScope('fixtures-',{parent:reportRoot,automatic:false})
 const output=scope.directory;
 const originalEnvironment={...process.env};
 // 外部真实 SDK/JDK 不属于本测试输入；微型 fixture 通过专门案例验证外部目录内容。
-for(const name of ['JAVA_HOME','AMCL_JVM_TEST_JAVA_HOME','AMCL_LWJGL2_INPUTS','AMCL_LWJGL2_JDK8','AMCL_NAPI_SDK_INCLUDE','OHOS_SDK_ROOT','AMCL_GATE_SESSION_SDK_ROOT','AMCL_SDL_TEST_REPO']) delete process.env[name];
+for(const name of ['JAVA_HOME','AMCL_JVM_TEST_JAVA_HOME','AMCL_LWJGL2_INPUTS','AMCL_LWJGL2_JDK8','AMCL_NAPI_SDK_INCLUDE','OHOS_SDK_ROOT','AMCL_GATE_SESSION_SDK_ROOT','AMCL_SDL_TEST_REPO','AMCL_TASK_ROOT','AMCL_BUILD_DIR','AMCL_RUN_DIR']) delete process.env[name];
 process.env.AMCL_WORKSPACE_ROOT=path.join(output,'workspace');
 const results=[];const digest=value=>crypto.createHash('sha256').update(value).digest('hex');
 // 仅 JS 单元夹具显式注入宿主身份；生产 CLI 没有此参数，不能跳过真实 VS/SDK 扫描。
@@ -91,6 +91,59 @@ async function check(name,body) {
 }
 
 try {
+  await check('task identity and private output location do not invalidate semantic environment',()=>{
+    const one={PATH:'fixed',AMCL_TASK_ID:'one',AMCL_TASK_ROOT:'D:/one',AMCL_BUILD_DIR:'D:/one/build'};
+    const two={...one,AMCL_TASK_ID:'two',AMCL_TASK_ROOT:'D:/two',AMCL_BUILD_DIR:'D:/two/build'};
+    assert.equal(environmentIdentity(one),environmentIdentity(two));
+    assert.notEqual(environmentIdentity(one),environmentIdentity({...two,PATH:'changed'}));
+    assert.notEqual(environmentIdentity(one),environmentIdentity({...two,AMCL_RUNTIME_NEW_FEATURE:'changed'}));
+  });
+  if(process.platform==='win32')await check('real Windows reader sharing conflict preserves atomic session updates',async()=>{
+    const item=fixture('atomic-reader'),context=item.beginLight();
+    const opened=path.join(output,'reader-opened'),release=path.join(output,'reader-release');
+    const code=`import ctypes,time
+from pathlib import Path
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.CreateFileW.argtypes=[ctypes.c_wchar_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p]
+k.CreateFileW.restype=ctypes.c_void_p;k.CloseHandle.argtypes=[ctypes.c_void_p]
+h=k.CreateFileW(${JSON.stringify(context.filename)},0x80000000,3,None,3,0,None)
+assert h not in (None,ctypes.c_void_p(-1).value)
+try:
+ Path(${JSON.stringify(opened)}).write_text('open');deadline=time.monotonic()+5
+ while not Path(${JSON.stringify(release)}).exists() and time.monotonic()<deadline:time.sleep(.01)
+finally:k.CloseHandle(h)`;
+    const reader=spawn(process.env.PYTHON||'python',['-B','-c',code],{stdio:'ignore'});
+    const ended=new Promise((resolve,reject)=>{reader.once('exit',resolve);reader.once('error',reject);});
+    const rename=fs.renameSync;let denials=0;
+    try {
+      const deadline=Date.now()+5000;
+      while(!fs.existsSync(opened)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+      assert(fs.existsSync(opened),'真实拒绝DELETE共享的读句柄必须先建立');
+      fs.renameSync=(from,to)=>{
+        try{return rename(from,to);}
+        catch(error){if(to===context.filename){denials++;fs.writeFileSync(release,'release');}throw error;}
+      };
+      add(context,'sdk-assemble-hap');
+      assert(denials>0,'必须实际命中共享冲突，不能只等待后绕过');
+      assert.equal(JSON.parse(fs.readFileSync(context.filename)).events.at(-1).state,'PASS');
+    } finally {
+      fs.renameSync=rename;fs.writeFileSync(release,'release');
+      if(reader.exitCode===null)reader.kill();await ended;
+      item.complete(context,false);
+    }
+  });
+  await check('different task output roots still share one checkout validation lock',()=>{
+    const item=fixture('shared-lock');let first;
+    process.env.AMCL_TASK_ROOT=output;process.env.AMCL_BUILD_DIR=path.join(output,'task-a-build');
+    try {
+      first=item.beginLight();
+      process.env.AMCL_BUILD_DIR=path.join(output,'task-b-build');
+      assert.throws(()=>item.beginLight(),error=>error.code==='EEXIST','任务切换不能绕过同checkout的验证锁');
+    } finally {
+      if(first)item.complete(first,false);
+      delete process.env.AMCL_TASK_ROOT;delete process.env.AMCL_BUILD_DIR;
+    }
+  });
   await check('ordinary quick and full require neither Git/catalog/baseline nor snapshot/host/SDK providers',()=>{
     for(const profile of ['quick','full']) {
       const item=fixture('ordinary-no-git-'+profile,{gitRepository:false,catalog:false});let calls=0;

@@ -298,6 +298,8 @@ export struct SettingsTab {
     if (item === undefined) return;
     if (item.section === 'about') { this.openPage_('pages/AboutPage'); return; }
     if (item.section === 'ledger') { this.openLedger_(); return; }
+    // 设置搜索与总览共用常驻更新入口，允许在更新任务以外查看并完成开发者登录。
+    if (item.section === 'software-update') { this.openPage_('pages/SoftwareUpdatePage'); return; }
     // 分辨率包含自身的作用域、保存与继承操作，搜索直接进入同一个详情页，避免跨分区
     // 首次布局/键盘收起时对尚未稳定的长卡片坐标重复补偿而滚过目标。
     if (id === 'resolution') { this.selectSection_('resolution'); return; }
@@ -612,6 +614,8 @@ export struct SettingsTab {
               .backgroundColor(this.activeSection === section.id ? this.theme.primaryLight : Color.Transparent)
               .onClick((): void => { this.selectSection_(section.id); });
           }, (section: SettingsSection): string => section.id);
+          SettingsValueRow({ title: '软件更新', showIcon: true, icon: AppIconName.Refresh, theme: this.theme,
+            controlId: 'settings-sidebar-software-update', onAction: (): void => { this.openPage_('pages/SoftwareUpdatePage'); } });
           SettingsValueRow({ title: '关于 AMCL', showIcon: true, icon: AppIconName.Info, theme: this.theme,
             value: this.hasUpdate && !DistributionPolicy.isStore() ? '有更新' : '', actionValue: true,
             onAction: (): void => { this.openPage_('pages/AboutPage'); } });
@@ -742,6 +746,11 @@ export struct SettingsTab {
   }
   @Builder
   private OverviewSupport_() {
+    SettingsValueRow({ title: '软件更新', description: DistributionPolicy.isStore() ? '应用版本与应用市场更新' : '更新通道与华为开发者账号',
+      showIcon: true, icon: AppIconName.Refresh, value: this.hasUpdate && !DistributionPolicy.isStore() ? '有新版本' : '',
+      actionValue: true, theme: this.theme, controlId: 'settings-software-update',
+      onAction: (): void => { this.openPage_('pages/SoftwareUpdatePage'); } });
+    SettingsDivider({ theme: this.theme });
     SettingsValueRow({ title: '活动账本', description: '查看游戏、下载与文件管理记录', showIcon: true, icon: AppIconName.History,
       theme: this.theme, onAction: (): void => { this.openLedger_(); } });
     SettingsDivider({ theme: this.theme });

@@ -20,7 +20,7 @@ import uuid
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/lib'))
-from workspace_paths import external_output_path, workspace_path
+from workspace_paths import external_output_path, workspace_path, shared_workspace_path
 
 RECIPES = {'smoke': 'build_sysroot_probe.sh', **{name: f'build_{name}_ohos.sh'
            for name in ('curl','fontconfig','gl4es','jdk8','jdk17','jdk21','jdk25','lwjgl','sdl3','shaderc')}}
@@ -324,7 +324,8 @@ def daudio_test_inputs(args):
 
 def run(args):
     """解析请求后先完成只读预检；计划模式无目录/卷/容器副作用。"""
-    directory = external_output_path(args.state_dir) if args.state_dir else workspace_path('build','docker-project')
+    # Compose的控制状态和卷登记必须跨任务复用，不能跟随本轮AMCL_BUILD_DIR迁移。
+    directory = external_output_path(args.state_dir) if args.state_dir else shared_workspace_path('build','docker-project')
     state = load_state(directory)
     daudio_sources = daudio_test_inputs(args)
     fontconfig_sources = None

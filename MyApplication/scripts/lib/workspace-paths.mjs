@@ -141,13 +141,25 @@ function resolveOutputWithSuffix(kind, id, { root = PROJECT_ROOT, env = process.
   const discovered = discoveredWorkspaceRoot(root);
   const workspace = workspaceRoot(discovered, env);
   const container = workspace ? path.join(workspace, '.workspace') : path.join(os.tmpdir(), 'amcl-workspace');
+  // 租约只给本次子进程注入任务容器。固定SDK缓存使用显式固定路径，不复制进任务目录。
+  const taskRoot = env.AMCL_TASK_ROOT ? env.AMCL_TASK_ROOT : null;
+  if (taskRoot && !path.isAbsolute(taskRoot)) throw new Error('AMCL_TASK_ROOT must be absolute');
+  const buildRoot = env.AMCL_BUILD_DIR || (taskRoot ? path.join(taskRoot, 'build') : null);
+  if (buildRoot && !path.isAbsolute(buildRoot)) throw new Error('AMCL_BUILD_DIR must be absolute');
   let output;
   if (kind === 'run' && env.AMCL_RUN_DIR) {
     if (!path.isAbsolute(env.AMCL_RUN_DIR)) throw new Error('AMCL_RUN_DIR must be absolute');
     output = path.join(env.AMCL_RUN_DIR, id);
+  } else if (kind === 'build' && buildRoot) {
+    output = path.join(buildRoot, `${id}-${checkout}`);
+  } else if (taskRoot) {
+    output = path.join(taskRoot, kind === 'wt' ? 'worktrees' : 'runs',
+      `${id}-${checkout}${kind === 'run' ? `-${RUN_STAMP}` : ''}`);
   } else {
     output = path.join(container, kind, `${id}-${checkout}${kind === 'run' ? `-${RUN_STAMP}` : ''}`);
   }
+  if (taskRoot && !inside(physicalPath(taskRoot), physicalPath(path.join(output, ...parts))))
+    throw new Error('Task output escapes AMCL_TASK_ROOT');
   // 必须先拼接最终子路径再检查物理路由边界。若只检查任务目录，后续 suffix 中的
   // junction 可把仓外输出重新导回 canonical；普通仓外检查无法识别这种旧盘回流。
   return assertExternalOutputPath(routeNewOutput(path.join(output, ...parts), discovered ?? workspace, root), { root });
@@ -156,6 +168,37 @@ function resolveOutputWithSuffix(kind, id, { root = PROJECT_ROOT, env = process.
 /** 只解析任务根目录；与追加 suffix 的入口共用同一次最终物理边界检查。 */
 export function resolveWorkspacePath(kind, id, options) {
   return resolveOutputWithSuffix(kind, id, options);
+}
+
+/** 共享状态按实际源码位置稳定归属；临时源码的缓存仍属于其任务，固定槽沿用原路径。 */
+function sharedEnvironment(root, env) {
+  const source = physicalPath(root);
+  const workspace = workspaceRoot(discoveredWorkspaceRoot(source), env);
+  const stable = { ...env, AMCL_TASK_ROOT: '', AMCL_RUN_DIR: '', AMCL_BUILD_DIR: '' };
+  if (!workspace) return stable;
+  const tasks = path.join(workspace, '.workspace', 'tasks');
+  const relative = path.relative(tasks, source);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return stable;
+  const group = relative.split(path.sep)[0];
+  checkedId(group);
+  // 归属来自源码目录，不取调用者的task/run/build变量，避免同一源码的锁和缓存分叉。
+  const owner = path.join(tasks, group);
+  return { ...stable, AMCL_TASK_ROOT: owner, AMCL_BUILD_DIR: path.join(owner, 'build', 'shared') };
+}
+
+/** 固定控制状态、输入和可复用缓存显式使用稳定共享路径；不受本轮运行目录影响。 */
+export function resolveSharedWorkspacePath(kind, id, { root = PROJECT_ROOT, env = process.env } = {}) {
+  if (kind !== 'build') throw new Error('Shared workspace paths are only for fixed build/control caches');
+  return resolveOutputWithSuffix(kind, id, { root, env: sharedEnvironment(root, env) });
+}
+
+/** 共享缓存的后缀仍经过物理边界检查，不能把固定状态入口当作任意目录写入许可。 */
+export function sharedWorkspacePath(kind, id, ...parts) {
+  if (kind !== 'build') throw new Error('Shared workspace paths are only for fixed build/control caches');
+  for (const part of parts) {
+    if (path.isAbsolute(part) || part.split(/[\\/]/).includes('..')) throw new Error(`Invalid output suffix: ${part}`);
+  }
+  return resolveOutputWithSuffix(kind, id, { env: sharedEnvironment(PROJECT_ROOT, process.env) }, parts);
 }
 
 /** 各调用者只追加受控相对文件名；不允许通过绝对路径或 .. 绕过上述边界。 */

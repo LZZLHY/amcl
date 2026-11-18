@@ -28,6 +28,7 @@ import { AppJdkUpdatePlanRuntime, AppJdkUpdateTarget } from '../runtime/AppJdkUp
 import { formatBytes } from 'commons';
 import { parseAppRuntimeRequirements } from 'commons';
 import { DeveloperSigningService } from './DeveloperSigningService';
+import { SigningPreparationError, SigningPreparationIssue } from './SigningPreparationError';
 import { UpdateInstallGate } from './UpdateInstallGate';
 import { InstallFence } from './InstallFence';
 import { SideloadInstallExecutor, InstallExecutionIdentity, InstallExecutionObservation, InstallExecutionGuards, InstallExecutionError } from './SideloadInstallExecutor';
@@ -68,7 +69,9 @@ export class SideloadUpdateCoordinator {
   private loginBusy: boolean = false;
   private loginReason: string = '';
   private needsLogin: boolean = false;
-  private needsImport: boolean = false;
+  /** 续期只刷新证书/Profile，保险库中的现装私钥必须保留。 */
+  private refreshSigningMaterial: boolean = false;
+  private signingIssue: SigningPreparationIssue = SigningPreparationIssue.None;
   private port: string = '10178';
   private progress: number = 0;
   private transfer: string = '';
@@ -205,7 +208,7 @@ export class SideloadUpdateCoordinator {
   state(): SideloadUpdateTransaction | undefined {
     return this.transaction === undefined ? undefined : JSON.parse(JSON.stringify(this.transaction)) as SideloadUpdateTransaction;
   }
-  materialAvailable(): boolean { try { return this.vault?.available() ?? false; } catch (_) { return false; } }
+  materialAvailable(): boolean { try { return !this.refreshSigningMaterial && (this.vault?.available() ?? false) && !(this.vault?.preparationPending() ?? false); } catch (_) { return false; } }
   isBusy(): boolean { return this.busy || this.downloadEnqueued; }
   downloadView(): UnifiedTaskView | undefined { return this.downloadAdapter?.view; }
   activityId(): number { return this.activity.activityId(); }
@@ -274,8 +277,6 @@ export class SideloadUpdateCoordinator {
       this.advance();
     }
   }
-  /** 用户明确选择更新配置后才退役加密材料，失败不会悄悄删除原配置。 */
-  renewMaterial(): void { if (this.busy) return; this.signingVault().invalidate(); this.publish(); }
   /** 显式材料导入独占当前操作，Runtime/新轮变化会阻止迟到的加密提交。 */
   async importMaterial(body: string): Promise<void> {
     if (this.busy || this.finishing || this.installationPending()) throw new Error('更新操作正在进行，暂不可替换签名配置');
@@ -284,6 +285,10 @@ export class SideloadUpdateCoordinator {
       await this.signingVault().importBundle(body, (): void => {
         if (epoch !== this.epoch || owner !== this.attemptId) throw new InstallExecutionError('stale-effect', '材料导入所属尝试已改变');
       });
+      // 所有显式导入入口共用同一恢复状态，不能材料已保存仍显示上一轮“缺原签名”。
+      if (epoch === this.epoch && owner === this.attemptId) {
+        this.refreshSigningMaterial = false; this.signingVault().finishDraft(); this.signingIssue = SigningPreparationIssue.None; this.failure = '';
+      }
     } finally { this.busy = false; this.publish(); }
   }
 
@@ -440,13 +445,23 @@ export class SideloadUpdateCoordinator {
     if (this.busy) throw new Error('已有更新任务正在进行');
     if (this.transaction === undefined || (this.transaction.phase !== SideloadUpdatePhase.Downloaded &&
       this.transaction.phase !== SideloadUpdatePhase.AwaitingRestart)) throw new Error('请先完成更新包下载');
-    if (!this.signingVault().available()) throw new Error('请完成华为授权或导入兼容的签名配置');
+    if (!this.signingVault().available()) throw new Error('更新授权尚未准备完成，请重试更新');
     if (testNapi.mcIsRunning()) throw new Error('请先保存并退出游戏');
     this.busy = true; this.cancelled = false;
     const epoch = this.epoch; const owner = this.attemptId;
     try {
       const draft = this.state()!; draft.error = ''; draft.failedPhase = undefined; draft.recoveryAction = ''; this.save(draft);
-      await this.sign(epoch, owner);
+      try { await this.sign(epoch, owner); }
+      catch (error) {
+        // 有效更新许可内仅自动换证一次；失败前不落终态、不另建活动，也不重新下载原件。
+        // 只有明确的材料问题可走这里，包损坏、运行时异常和已派发安装不允许自动重试。
+        if (!this.automatic || !(error instanceof SigningPreparationError) || error.issue !== SigningPreparationIssue.Material ||
+          !this.active(epoch) || this.storageBlocked || this.installationPending()) throw error as Error;
+        this.operation = '正在自动刷新更新授权'; this.refreshSigningMaterial = true;
+        this.transition(SideloadUpdatePhase.Downloaded); this.busy = false;
+        await this.prepareMaterial(this.auth, this.udid); this.assertEffect(epoch, owner);
+        this.busy = true; await this.sign(epoch, owner);
+      }
     } catch (error) {
       if (epoch === this.epoch && owner === this.attemptId) this.fail(error as Error);
       throw error as Error;
@@ -506,15 +521,32 @@ export class SideloadUpdateCoordinator {
     if (this.busy) throw new Error('请等待当前更新步骤完成');
     this.busy = true; this.cancelled = false;
     const epoch = this.epoch; const owner = this.attemptId;
+    let prepared = false;
     try {
       const signer = await this.ensureSigner(); this.assertEffect(epoch, owner);
       const runner = this.root + '/amcl-signing-runner.jar';
       SideloadFiles.write(runner, this.context.resourceManager.getRawFileContentSync('sideload/amcl-signing-runner.jar'));
       this.operation = '正在获取华为签名证书'; this.publish();
-      await DeveloperSigningService.prepare(this.context, auth, this.signingVault(), udid, signer, runner, this.jdk(),
-        (): void => { this.assertEffect(epoch, owner); });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await DeveloperSigningService.prepare(this.context, auth, this.signingVault(), udid, signer, runner, this.jdk(),
+            (): void => { this.assertEffect(epoch, owner); }, attempt === 0 && this.refreshSigningMaterial);
+          break;
+        } catch (error) {
+          this.assertEffect(epoch, owner);
+          // 仅服务暂不可用自动重试一次；权限/身份/认证失效仍保留各自真实处理路径。
+          if (attempt !== 0 || !(error instanceof SigningPreparationError) || error.issue !== SigningPreparationIssue.Service) throw error as Error;
+          this.operation = '正在重新连接更新服务'; this.publish();
+          await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 800); });
+          this.assertEffect(epoch, owner);
+        }
+      }
       this.assertEffect(epoch, owner);
-    } finally { this.busy = false; this.downloadTaskId = 0; this.publish(); }
+      prepared = true;
+    } finally {
+      if (prepared || this.signingVault().preparationPending()) this.refreshSigningMaterial = false;
+      this.busy = false; this.downloadTaskId = 0; this.publish();
+    }
   }
 
   /** 固定开源签名器随包携带，每次提取核对摘要；主镜像可用时不再被 GitHub 工具下载拖住。 */
@@ -659,7 +691,7 @@ export class SideloadUpdateCoordinator {
     SideloadFiles.write(job, JSON.stringify(jobData));
     const privateRoot = directory + '/private';
     try {
-      // 先标记阶段再解密，损坏的缓存材料也会提供更新/导入入口。
+      // 先标记阶段再解密；可恢复的旧证书/Profile由同一更新尝试自动刷新。
       this.operation = '正在为本机准备安装包';
       this.transition(SideloadUpdatePhase.Signing);
       // materialize中途失败也必须进入finally，清除可能已写出的部分明文材料。
@@ -677,21 +709,25 @@ export class SideloadUpdateCoordinator {
       const result = JSON.parse(fs.readTextSync(directory + '/signer-result.json')) as Record<string, Object>;
       if (result['signed'] !== true || result['verified'] !== true || typeof result['payloadIdentity'] !== 'string') {
         const reasons: Record<string, string> = {
-          'Profile identifier mismatch': '签名配置与当前安装身份不一致，请使用原安装账号或导入原配置',
-          'Profile certificate mismatch': '证书与调试配置不匹配，请重新导入完整配置',
-          'Profile expired': '调试配置已过期，请导入有效的签名配置',
-          'Profile device missing': '调试配置未包含当前设备，请更新设备授权',
-          'Profile JIT permission missing': '调试配置缺少应用运行所需的 JIT 权限',
-          'Signing certificate missing from chain': '签名私钥与证书不匹配，请导入同一份完整配置'
-          , 'Profile identifier trust unavailable': '导入配置的公钥发生变化，请核实原账号的云端身份或导入原安装配置'
-          , 'Signature material proof mismatch': '签名材料来源证明与实际材料不一致，请重新获取或导入'
+          'Profile identifier mismatch': '更新授权与当前安装身份不一致，请稍后重试更新',
+          'Profile certificate mismatch': '更新证书与授权文件暂不匹配，请稍后重试更新',
+          'Profile expired': '更新授权已过期，自动续期暂未完成，请稍后重试',
+          'Signing certificate expired': '更新证书已过期，自动续期暂未完成，请稍后重试',
+          'Profile device missing': '本机的更新授权暂未完成，请稍后重试',
+          'Profile JIT permission missing': '更新授权缺少应用运行所需的权限，请稍后重试',
+          'Signing certificate missing from chain': '更新证书暂未匹配当前密钥，请稍后重试'
+          , 'Profile identifier trust unavailable': '当前安装身份暂未完成更新授权，请稍后重试'
+          , 'Signature material proof mismatch': '本机更新授权校验未完成，请稍后重试'
           , 'HAP device incompatible': '更新包不支持当前设备类型，请重新检查本产品更新'
         };
         const message = reasons[String(result['failureReason'] ?? '')];
         if (result['failureReason'] === 'HAP device incompatible') {
           const next = this.state()!; next.recoveryAction = 'package'; this.save(next);
         }
-        if (message) throw new Error(message);
+        if (message) {
+          if (result['failureReason'] === 'HAP device incompatible') throw new Error(message);
+          throw new SigningPreparationError(SigningPreparationIssue.Material, message);
+        }
         throw new Error('更新包签名或身份核验未通过');
       }
       transaction.signedSha256 = await SideloadFiles.sha256(transaction.signedPath); this.assertEffect(epoch, owner); this.assertTargetBinding(transaction);
@@ -956,7 +992,8 @@ export class SideloadUpdateCoordinator {
           continue;
         }
         if (!new RegExp('^key-[0-9a-f]{32}$').test(name)) continue;
-        for (const file of ['result.json', 'new.p12', 'new.csr']) {
+        this.signingVault().clearTemporary(this.root + '/' + name);
+        for (const file of ['result.json', 'new.p12', 'new.csr', 'restore-input.json', 'source.apk', 'profile-check.p7b', 'profile-check.json']) {
           const path = this.root + '/' + name + '/' + file;
           if (fs.accessSync(path)) fs.unlinkSync(path);
         }
@@ -1269,10 +1306,13 @@ export class SideloadUpdateCoordinator {
       if (this.phase === SideloadUpdatePhase.Verified && this.testAsset === undefined &&
         (this.manifest === undefined || (!UpdateChecker.canInstall(this.manifest,this.manifest.updateChannel ?? 'stable') && this.importSource === undefined))) return;
       // 先撤下上一轮内存候选。异步解析完成前 advance 不得凭旧 Ready/Downloaded 事务推进。
+      const refreshSigning = this.signingIssue === SigningPreparationIssue.Material || this.recoveryAction === 'material';
       this.attemptTarget = undefined;
       try { this.beginAttempt(this.version, true, retryOf); }
       catch (error) { this.message = (error as Error).message; return; }
-      this.epoch++; this.automatic = true; this.working = true; this.needsImport = false;
+      if (refreshSigning) this.refreshSigningMaterial = true;
+      this.epoch++; this.automatic = true; this.working = true;
+      this.signingIssue = SigningPreparationIssue.None;
       this.message = '正在核实更新版本'; this.failure = ''; this.connectionReady = false;
       this.connectionRetry = false; this.connectionAttempts = 0;
       this.accountReady = false; this.accountRetry = false; this.loginCancelled = false;
@@ -1289,6 +1329,8 @@ export class SideloadUpdateCoordinator {
       if (!this.automatic || this.checkingAccount || this.finishing || this.loginVisible || this.loginCancelled) return;
       const epoch = this.epoch;
       this.checkingAccount = true; this.accountReady = false; this.accountRetry = false;
+      // 本次核验决定是否需要交互登录；网络暂态不得沿用上一次的登录请求。
+      this.needsLogin = false;
       this.accountMessage = '正在检查华为登录状态'; this.publish();
       try {
         const status = await this.auth.restore();
@@ -1301,7 +1343,7 @@ export class SideloadUpdateCoordinator {
             '尚未登录华为账号，请登录后继续更新';
           this.accountMessage = this.loginReason; this.needsLogin = true;
         } else if (status !== DeveloperAuthState.Cancelled) {
-          this.accountMessage = '暂时无法核实登录状态，请稍后重试或重新登录'; this.accountRetry = true;
+          this.accountMessage = '暂时无法核实登录状态，请稍后重试'; this.accountRetry = true;
         }
       } catch (_) {
         if (this.active(epoch)) { this.accountMessage = '暂时无法核实华为登录状态，请重试'; this.accountRetry = true; }
@@ -1542,9 +1584,15 @@ export class SideloadUpdateCoordinator {
           } else {
             this.failure = (error as Error).message; this.message = this.failure;
             service.finishAttempt(this.failure);
-            this.needsImport = service.state()?.recoveryAction !== 'runtime' &&
-              (!service.materialAvailable() || service.state()?.recoveryAction === 'material');
-            this.accountMessage = this.needsImport ? this.message : this.accountMessage;
+            // 没有材料只是准备前的正常状态，不能作为“必须导入”的错误依据。
+            // 登录仍有效时保留账号成功事实；签名准备统一自动处理，失败只提供重新检查/重试。
+            const materialRecovery = service.state()?.recoveryAction === 'material';
+            this.signingIssue = error instanceof SigningPreparationError ? error.issue :
+              materialRecovery ? SigningPreparationIssue.Material : SigningPreparationIssue.Preparation;
+            if (service.state()?.recoveryAction === 'runtime' || service.state()?.recoveryAction === 'package') {
+              this.signingIssue = SigningPreparationIssue.None;
+            }
+            if (this.accountReady) this.accountMessage = '华为登录已验证';
           }
         }
       } finally {
@@ -1558,13 +1606,6 @@ export class SideloadUpdateCoordinator {
       }
       this.publish();
       if (waitForLogin && this.active(epoch)) await this.login();
-    }
-
-  /** 用户明确换材才退役加密旧材料，并通过完整账号/连接/候选流程重试。 */
-  renewAndContinue(): void {
-      if (this.finishing || this.isBusy() || this.storageBlocked) return;
-      try { this.renewMaterial(); this.startWorkflow(this.activity.activityId()); }
-      catch (_) { this.message = '无法更新签名配置，请尝试导入原配置'; }
     }
 
   /** UI核实命令只观察/撤销旧执行权，不调用第二次安装；失败继续保留保护。 */
@@ -1721,7 +1762,8 @@ export class SideloadUpdateCoordinator {
     value.loginBusy = this.loginBusy;
     value.loginReason = this.loginReason;
     value.needsLogin = this.needsLogin;
-    value.needsImport = this.needsImport;
+
+    value.signingIssue = this.signingIssue;
     value.port = this.port;
     value.progress = this.progress;
     value.transfer = this.transfer;
@@ -1767,30 +1809,6 @@ export class SideloadUpdateCoordinator {
     if (!this.storageBlocked && !this.installEffectActive && transaction !== undefined && transaction.phase !== SideloadUpdatePhase.Installing && transaction.phase !== SideloadUpdatePhase.DispatchIntent && transaction.phase !== SideloadUpdatePhase.ConfirmationPending && this.fenceBlocked()) { this.phase = SideloadUpdatePhase.ConfirmationPending; this.message = transaction.error || '安装执行权仍待核实，请查看更新状态'; }
     if (download?.state === 'waiting') this.message = '更新包排队中 · 前方还有 ' + Math.max(0, download.queuePosition - 1) + ' 个任务';
     if(this.completionPending()){this.phase=SideloadUpdatePhase.ConfirmationPending;this.message=this.failure||'原安装终态已保留，正在完成交接；可重新核实';}
-  }
-
-  /** 只消费当前picker选择的URI，文件大小限制和加密在域层，正文不出现在UI/日志。 */
-  async importPickedMaterial(uri: string): Promise<void> {
-    if (this.finishing || this.isBusy() || this.installationPending()) return;
-    const epoch = this.epoch; const owner = this.attemptId; this.busy = true;
-    let file: fs.File | undefined = undefined; let imported = false;
-    try {
-      file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-      if (fs.statSync(file.fd).size > 64 * 1024) throw new Error('签名配置文件过大');
-      await this.signingVault().importBundle(fs.readTextSync(uri), (): void => { this.assertEffect(epoch, owner); });
-      this.assertEffect(epoch, owner); this.needsImport = false; imported = true;
-    } catch (_) {
-      if (epoch === this.epoch && owner === this.attemptId) this.message = '签名配置导入失败，请检查原安装工具导出的配置';
-    } finally {
-      if (file !== undefined) fs.closeSync(file);
-      this.busy = false;
-      const current = this.state();
-      if (this.cancelled && !this.storageBlocked && current?.ownerAttemptId === owner && owner === this.attemptId) this.transition(SideloadUpdatePhase.Cancelled, current);
-      this.publish();
-    }
-    if (imported && epoch === this.epoch && owner === this.attemptId) {
-      if (this.automatic) await this.advance(); else this.startWorkflow(this.activity.activityId());
-    }
   }
 
   /** 仅由可信已提交事务构造Executor输入，不使用UI、网页或用户材料的任意字段。 */
