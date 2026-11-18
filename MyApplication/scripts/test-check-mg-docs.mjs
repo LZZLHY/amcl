@@ -33,11 +33,13 @@ try {
     `${fixtureForkHead}\n`;
   const evidence = '不是第二份 MG 基线权威文档；见 mobileglues-2.0-ohos-governance.md。\n' +
     '设备证据见 mobileglues-ohos-device-validation-runbook.md。\n' +
-    '`--hap-kind` 始终必需，`--hap` 只指定文件；toolchain.lock 固定工具链。\n';
+    '`--hap-kind` 始终必需，`--hap` 只指定文件；toolchain.lock 固定工具链。\n' +
+    '本机 `build-profile.json5` 只用于签名配置。\n';
   const performance = '不得写“性能等同 Android”；未执行项标为 NOT VERIFIED。\n' +
     '见 mobileglues-ohos-device-validation-runbook.md。\n';
   const deviceValidation = 'NOT_VERIFIED / NO-GO。型号不能代替能力；查询 default display。\n' +
     'IMG-01 CFG-04 FR-01 FR-06 SURF-01 PERF-01。\n' +
+    'mg-device-validation/<candidate-id>/\n' +
     'mobileglues-ohos-device-capability-matrix.csv\n' +
     'mobileglues-ohos-validation-results.csv\n';
   const capabilityTemplate =
@@ -47,6 +49,17 @@ try {
   const templatesReadme = '不包含任何预设 PASS；缺失写 NOT_VERIFIED，失败写 QUERY_FAILED。\n';
   const stub = '# MOVED — ARCHIVED\n\n../archive/mobileglues/report.md\n';
   const archive = '> [!CAUTION]\n> **ARCHIVED** historical evidence.\n';
+  const releaseProcessPath = 'docs/release-process.md';
+  const releaseChecklistPath = 'docs/release-checklist.md';
+  const releaseProcess = '# 发行流程\n\n`amcl-release`。[发布清单](release-checklist.md)\n' +
+    '从干净的精确生产提交执行 full/-Release。[构建证据](guides/mobileglues-release-evidence.md)\n' +
+    '## AGC 上架\n\n`build-app.ps1 -Release` 生成 `signed.app` 和 `app-product-provenance.json`。\n' +
+    'APP 内 HAP 与审计产物逐文件绑定，并验证 APP 签名。构建证据不代替商店资格。\n';
+  const releaseChecklist = '# 发行清单\n\n`amcl-release`。[发布流程](release-process.md)\n';
+  const index = 'guides/mobileglues-2.0-ohos-governance.md\n' +
+    'guides/mobileglues-ohos-device-validation-runbook.md\n' +
+    'testing/templates/README.md\n';
+  const rootSigningIgnore = '/build-profile.json5\n';
   const lock = `[mobileglues]\n${[
     'source_tree', 'android_renderer_commit',
     'android_plugin_commit', 'release_tag', 'release_commit', 'fork_release_tag',
@@ -62,16 +75,10 @@ try {
   write(root, 'docs/testing/templates/mobileglues-ohos-validation-results.csv',
     resultsTemplate);
   write(root, 'docs/testing/templates/README.md', templatesReadme);
-  write(root, 'docs/release-process.md',
-    '# 先形成不可变源码提交，再构建\n\n当前硬阻塞\n\nbuild-app.ps1 app-product-provenance.json 商店发布资格仍需核对\n' +
-    'mg-device-validation mobileglues-ohos-device-validation-runbook.md\n');
-  write(root, 'docs/release-checklist.md',
-    'fork_release_tag toolchain.lock 根目录 `@build-profile.json5` ' +
-    'mobileglues-ohos-device-validation-runbook.md docs/testing/templates/\n');
-  write(root, 'docs/README.md',
-    'guides/mobileglues-2.0-ohos-governance.md\n' +
-    'guides/mobileglues-ohos-device-validation-runbook.md\n' +
-    'testing/templates/README.md\n');
+  write(root, releaseProcessPath, releaseProcess);
+  write(root, releaseChecklistPath, releaseChecklist);
+  write(root, 'docs/README.md', index);
+  write(root, '.gitignore', rootSigningIgnore);
   write(root, 'docs/self-inspection/2026-08-02_MG_Maleoon渲染性能排查.md', stub);
   write(root, 'docs/archive/mobileglues/2026-08-02_MG_Maleoon渲染性能排查.md', archive);
   write(root, 'docs/guides/mc-launch-fbo-crash-2026-05-16.md',
@@ -119,11 +126,32 @@ try {
     hapSignTool: { sha256: 'b'.repeat(64) },
   }));
 
-  write(root, 'docs/release-checklist.md', 'android_release_commit = stale\n');
+  write(root, releaseChecklistPath, releaseChecklist + 'android_release_commit = stale\n');
   expectIssue(root, /retired MobileGlues lock field/, 'retired lock field is rejected');
-  write(root, 'docs/release-checklist.md',
-    'fork_release_tag toolchain.lock 根目录 `@build-profile.json5` ' +
-    'mobileglues-ohos-device-validation-runbook.md docs/testing/templates/\n');
+  write(root, releaseChecklistPath, releaseChecklist);
+
+  write(root, 'docs/README.md', index.replace('testing/templates/README.md\n', ''));
+  expectIssue(root, /does not index the MG device-validation runbook\/templates/, 'device evidence index remains required');
+  write(root, 'docs/README.md', index);
+
+  for (const [missing, pattern] of [
+    ['`amcl-release`', /amcl-release authority/],
+    ['干净的精确生产提交', /clean production source/],
+    ['逐文件绑定', /bind the audited APP/],
+    ['app-product-provenance.json', /bind the audited APP/],
+    ['不代替商店资格', /market eligibility separate/],
+  ]) {
+    write(root, releaseProcessPath, releaseProcess.replace(missing, ''));
+    expectIssue(root, pattern, `missing release contract ${missing}`);
+    write(root, releaseProcessPath, releaseProcess);
+  }
+  write(root, '.gitignore', '/entry/build-profile.json5\n');
+  expectIssue(root, /root signing profile must stay ignored/, 'module ignore does not protect the root signing profile');
+  write(root, '.gitignore', rootSigningIgnore);
+
+  write(root, 'deps.lock', lock.replace('fork_release_tag = fixture\n', '') + '[other]\nfork_release_tag = fixture\n');
+  expectIssue(root, /\[mobileglues\] is missing current field fork_release_tag/, 'fork tag must be locked in the MobileGlues section');
+  write(root, 'deps.lock', lock);
 
   write(root, 'docs/guides/mobileglues-release-evidence.md',
     '不是第二份 MG 基线权威文档；mobileglues-2.0-ohos-governance.md；' +

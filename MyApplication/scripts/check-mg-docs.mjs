@@ -64,6 +64,7 @@ export function validateMgDocs(root = DEFAULT_ROOT) {
     root, 'docs/guides/mc-launch-fbo-crash-2026-05-16.md', issues);
   const lock = requireFile(root, 'deps.lock', issues);
   const toolchainLock = requireFile(root, 'toolchain.lock', issues);
+  const gitignore = requireFile(root, '.gitignore', issues);
   const codeowners = requireFile(root, '.github/CODEOWNERS', issues);
   requireFile(root, 'scripts/check-mg-docs.mjs', issues);
   requireFile(root, 'scripts/test-check-mg-docs.mjs', issues);
@@ -112,7 +113,7 @@ export function validateMgDocs(root = DEFAULT_ROOT) {
       !/IMG-01/.test(deviceValidation) || !/CFG-04/.test(deviceValidation) ||
       !/SURF-01/.test(deviceValidation) || !/PERF-01/.test(deviceValidation) ||
       !/default display/.test(deviceValidation) || !/型号.*能力/.test(deviceValidation) ||
-      !/NO-GO/.test(deviceValidation) ||
+      !/NO-GO/.test(deviceValidation) || !deviceValidation.includes('mg-device-validation/<candidate-id>') ||
       !deviceValidation.includes('mobileglues-ohos-device-capability-matrix.csv') ||
       !deviceValidation.includes('mobileglues-ohos-validation-results.csv')) {
     issues.push(`${deviceValidationPath} is missing capability/status/test/evidence contracts`);
@@ -149,25 +150,30 @@ export function validateMgDocs(root = DEFAULT_ROOT) {
       !historicalFbo.includes('mobileglues-2.0-ohos-governance.md')) {
     issues.push('dated MG FBO incident guide lacks a leading historical-only warning');
   }
-  if (!releaseProcess.includes('先形成不可变源码提交，再构建') ||
-      !releaseProcess.includes('当前硬阻塞') ||
-      !releaseProcess.includes('build-app.ps1') ||
-      !releaseProcess.includes('app-product-provenance.json') ||
-      !releaseProcess.includes('商店发布资格仍需核对') ||
-      !releaseProcess.includes('mg-device-validation') ||
-      !releaseProcess.includes('mobileglues-ohos-device-validation-runbook.md')) {
-    issues.push('release-process.md must require clean source, audited APP binding and separate market eligibility');
+  // 发布顺序由 skill 维护；这里核对技术入口及可验证约束，避免清单复写旧流程。
+  if (!releaseProcess.includes('`amcl-release`') || !releaseChecklist.includes('`amcl-release`') ||
+      !releaseProcess.includes('](release-checklist.md)') ||
+      !releaseChecklist.includes('](release-process.md)') ||
+      !releaseProcess.includes('](guides/mobileglues-release-evidence.md)')) {
+    issues.push('release documentation must link the amcl-release authority and current build evidence');
   }
-  if (!releaseChecklist.includes('fork_release_tag') ||
-      !releaseChecklist.includes('toolchain.lock') ||
-      !releaseChecklist.includes('根目录 `@build-profile.json5`') ||
-      !releaseChecklist.includes('mobileglues-ohos-device-validation-runbook.md') ||
-      !releaseChecklist.includes('docs/testing/templates/')) {
-    issues.push('release-checklist.md omits the MG release tag, toolchain lock or root signing profile');
+  if (!/(?:干净|clean)[^\n]*(?:生产提交|源码)[^\n]*full\/-Release/i.test(releaseProcess)) {
+    issues.push('release-process.md must require clean production source for the full release build');
   }
-  if (/git check-ignore\s+entry\/build-profile\.json5/.test(releaseChecklist) ||
-      /obfuscation\.enable:\s*false/.test(releaseChecklist)) {
-    issues.push('release-checklist.md contains retired signing-profile or obfuscation guidance');
+  const market = releaseProcess.split(/^## /m).find(section => /上架|AGC/.test(section.split('\n', 1)[0])) ?? '';
+  if (!market.includes('build-app.ps1 -Release') || !market.includes('signed.app') ||
+      !market.includes('app-product-provenance.json') ||
+      !/APP[^\n]*HAP[^\n]*逐文件绑定/i.test(market) || !/验证\s*APP\s*签名/i.test(market) ||
+      !/不(?:授予|代替)[^\n]*(?:商店发布批准|商店资格)/.test(market)) {
+    issues.push('release-process.md must bind the audited APP and keep market eligibility separate');
+  }
+  if (!/^\/build-profile\.json5[ \t]*$/m.test(gitignore) || !evidence.includes('`build-profile.json5`')) {
+    issues.push('the root signing profile must stay ignored and documented in the MG build evidence');
+  }
+  const releaseDocs = releaseProcess + '\n' + releaseChecklist;
+  if (/git check-ignore\s+entry\/build-profile\.json5/.test(releaseDocs) ||
+      /obfuscation\.enable:\s*false/.test(releaseDocs)) {
+    issues.push('release documentation contains retired signing-profile or obfuscation guidance');
   }
   for (const ownedPath of [
     '/docs/guides/mobileglues-ohos-device-validation-runbook.md',
@@ -208,7 +214,7 @@ export function validateMgDocs(root = DEFAULT_ROOT) {
 
   for (const field of ['source_main_commit', 'source_tree', 'android_renderer_commit',
     'android_plugin_commit', 'release_tag', 'release_commit', 'fork_release_tag']) {
-    if (!new RegExp(`^${field}\\s*=`, 'm').test(lock)) {
+    if (!new RegExp(`^${field}\\s*=`, 'm').test(mgSection)) {
       issues.push(`deps.lock [mobileglues] is missing current field ${field}`);
     }
   }

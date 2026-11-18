@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "sourceCommit": "2642bf193c23a74e9bd5027c380dbbcadbcba0a0",
-  "sourceBranch": "main",
+  "sourceCommit": "9b8b6f8a510292d65564d07aaf3bb3dcc17ff559",
+  "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
@@ -817,7 +817,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "dee5b3f54b74a23c752b1947842ae9091bea7973ecc414e974f7adf02b81d26e",
+      "sha256": "221298061874f103e6ccfdf506109fc90a15b1f15cbf3efd93ceb9e3e3612b4d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -17085,7 +17085,7 @@
     },
     {
       "path": "scripts/check-mg-docs.mjs",
-      "sha256": "53932feb903ab5b8410d3b1438311308138904aa032a745c9670122f4a8fabaf",
+      "sha256": "e222e4d2a674283add7d272fc2c1a140193681ab3f6c500c89fb1c1ee7c0b9c7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19409,7 +19409,7 @@
     },
     {
       "path": "scripts/test-check-mg-docs.mjs",
-      "sha256": "f1b05511b2f61d1a294cd6757a4810ee680958d5eaa0e59ea8d82cdb80009d8b",
+      "sha256": "b7a1635b656afed4146f27aeaf7716d4bd2a1f897f672f5500f7aa78f958f68d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
