@@ -16,10 +16,12 @@ const flush = async () => { for (let index = 0; index < 15; index++) await Promi
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
 /** 只替换宿主依赖的系统/子系统边缘；所有生命周期决策由实际Host类执行。 */
-function fixture({ isolated = false, realSources = false, hostSource = undefined, sharedLook = undefined, timerFaults = false, touchApi = undefined } = {}) {
+function fixture({ isolated = false, realSources = false, hostSource = undefined, sharedLook = undefined,
+  timerFaults = false, touchApi = undefined, keepScreenOn = true, initialKeepScreenOn = false } = {}) {
 
   const calls = [];
-  const state = { running: true, grab: false, now: 0, throwOn: new Set(), deferredEnter: undefined, deferredRestore: undefined };
+  const state = { running: true, grab: false, now: 0, throwOn: new Set(), deferredEnter: undefined, deferredRestore: undefined,
+    keepScreenOn, deferredKeepScreenOn: undefined };
   const record = (name, ...values) => { calls.push([name, ...values]); if (state.throwOn.has(name)) throw new Error('fault:' + name); };
   const windows = [];
   class Window {
@@ -83,7 +85,30 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
     setOhosFrameRateForeground: (...values) => record('ability-foreground', ...values) };
   if (sharedLook !== undefined) native.sharedLookExecutionSupported = () => { record('look-cold-contract'); return sharedLook; };
   class Logger { constructor(activityId) { this.activityId = activityId; } info(_tag, text) { record('log', text); } }
-  const context = { startAbility: async want => { record('return-ability', want.parameters.gameExitActivityId);
+  const windowEvents = { WINDOW_SHOWN: 1, WINDOW_ACTIVE: 2, WINDOW_INACTIVE: 3, WINDOW_HIDDEN: 4 };
+  const mainWindow = {
+    showing: true,
+    keepScreenOn: initialKeepScreenOn,
+    listeners: new Set(),
+    getWindowProperties() { return { isKeepScreenOn: this.keepScreenOn }; },
+    isWindowShowing() { return this.showing; },
+    on(event, listener) { assert.equal(event, 'windowEvent'); this.listeners.add(listener); },
+    off(event, listener) { assert.equal(event, 'windowEvent'); this.listeners.delete(listener); },
+    emit(event) {
+      if (event === windowEvents.WINDOW_SHOWN) this.showing = true;
+      if (event === windowEvents.WINDOW_HIDDEN) this.showing = false;
+      for (const listener of this.listeners) listener(event);
+    },
+    async setWindowKeepScreenOn(value) {
+      record('window-keep-screen-on', value);
+      const pending = state.deferredKeepScreenOn;
+      state.deferredKeepScreenOn = undefined;
+      if (pending !== undefined) await pending.promise;
+      this.keepScreenOn = value;
+    },
+  };
+  const context = { windowStage: { getMainWindowSync: () => mainWindow },
+    startAbility: async want => { record('return-ability', want.parameters.gameExitActivityId);
     if (state.handoffCallback !== undefined) state.handoffCallback();
     if (state.handoff !== undefined) await state.handoff.promise; } };
   const gamecontrol = { GamepadManager: Gamepad, GameInputRuntime: Runtime, InputConfigurationRuntime: Configuration,
@@ -112,6 +137,8 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
     imports: {
       '@kit.AbilityKit': { appRecovery: { restartApp: () => record('restart-app') } },
       '@kit.BasicServicesKit': { systemDateTime: { TimeType: { ACTIVE: 1 }, getUptime: () => { if(state.clockThrows)throw Error('controlled clock failure'); return state.now; } } },
+      '@kit.ArkUI': { window: { WindowEventType: windowEvents } },
+      'feature_system': { PreferenceManager: class { get gameKeepScreenOn() { return state.keepScreenOn; } } },
 
       'gamecontrol': gamecontrol,
       'launch': plan, 'libentry.so': { default: native },
@@ -170,7 +197,7 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
     removeInputConfigurationListener: noop, reconcileInputConfiguration: noop } : {};
   const prepare = () => { host.configureProduct(); host.prepare(store); host.bindPlan(wire); };
   return { host, env, calls, state, windows, context, count, run, attach, prepare, module, ends, registry, native, store,
-    deviceConnections, deviceMonitor, connectionListeners, publishConnection };
+    deviceConnections, deviceMonitor, connectionListeners, publishConnection, mainWindow, windowEvents };
 }
 
 // 新连接接口须走真实Manager/Runtime/Client，不允许通过补一个恒true reader使旧夹具“通过”。
@@ -294,6 +321,72 @@ for (const failure of ['release-rejected', 'acquire-uncertain']) {
   assert.ok(f.calls.some(call => call[0] === 'window-restore' && call[1] === coordinator.id));
   console.log('PASS host stop: pending window enter cannot reopen ended session');
 }
+
+// 使用真实Host和常亮控制器，只模拟系统窗口事件、窗口属性及异步调用回执。
+for (const isolated of [false, true]) {
+  const f = fixture({ isolated });
+  const lease = f.attach();
+  f.prepare();
+  await f.host.enterWindow(lease, f.context);
+  assert.equal(f.count('window-keep-screen-on'), 0, '尚未启动成功的游戏窗口不持有常亮');
+  f.host.markRunning(); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, true);
+  assert.equal(f.mainWindow.listeners.size, 1);
+  f.mainWindow.emit(f.windowEvents.WINDOW_INACTIVE); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, true, '窗口失焦不等同于切到后台');
+  f.mainWindow.emit(f.windowEvents.WINDOW_HIDDEN); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, false);
+  f.mainWindow.emit(f.windowEvents.WINDOW_SHOWN); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, true);
+  await f.host.restoreWindow(f.host.windowCoordinator);
+  assert.equal(f.mainWindow.keepScreenOn, false);
+  assert.equal(f.mainWindow.listeners.size, 0);
+  f.state.keepScreenOn = false;
+  await f.host.enterWindow(lease, f.context); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, true, '同一局重新进入时沿用启动时的选择');
+  f.host.stop('test-keep-screen-on'); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, false);
+  assert.equal(f.mainWindow.listeners.size, 0);
+  assert.deepEqual(f.calls.filter(row => row[0] === 'window-keep-screen-on').map(row => row[1]),
+    [true, false, true, false, true, false]);
+}
+console.log('PASS game keep screen on: embedded/isolated, foreground/background, focus, re-entry and exit');
+
+for (const options of [{ keepScreenOn: false }, { initialKeepScreenOn: true }]) {
+  const f = fixture(options);
+  const lease = f.attach();
+  f.prepare();
+  f.host.markRunning();
+  await f.host.enterWindow(lease, f.context); await flush();
+  f.mainWindow.emit(f.windowEvents.WINDOW_HIDDEN);
+  f.mainWindow.emit(f.windowEvents.WINDOW_SHOWN);
+  f.host.stop('test-keep-screen-on-policy'); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, options.initialKeepScreenOn ?? false);
+  assert.equal(f.count('window-keep-screen-on'), 0, '关闭开关或窗口已有常亮请求时不改窗口属性');
+  assert.equal(f.mainWindow.listeners.size, 0);
+}
+console.log('PASS game keep screen on: disabled and prior window setting preserved');
+
+{
+  const f = fixture();
+  const lease = f.attach();
+  f.prepare();
+  f.host.markRunning();
+  const pending = deferred();
+  f.state.deferredKeepScreenOn = pending;
+  await f.host.enterWindow(lease, f.context); await flush();
+  assert.equal(f.count('window-keep-screen-on'), 1);
+  const lateWindowEvent = [...f.mainWindow.listeners][0];
+  f.host.stop('test-pending-keep-screen-on'); await flush();
+  assert.equal(f.mainWindow.listeners.size, 0);
+  assert.equal(f.host.cleanupSnapshot().find(step => step.name === 'window-restore').completed, false);
+  lateWindowEvent(f.windowEvents.WINDOW_SHOWN);
+  pending.resolve(); await flush();
+  assert.equal(f.mainWindow.keepScreenOn, false, '退出后迟到的原常亮请求必须被恢复请求覆盖');
+  assert.equal(f.host.cleanupSnapshot().find(step => step.name === 'window-restore').completed, true);
+  assert.deepEqual(f.calls.filter(row => row[0] === 'window-keep-screen-on').map(row => row[1]), [true, false]);
+}
+console.log('PASS game keep screen on: stop waits for in-flight enable and ignores stale window events');
 
 {
   const f = fixture({ isolated: true }); let observed = 0;

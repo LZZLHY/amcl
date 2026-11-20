@@ -255,10 +255,10 @@ await group('真实±1%按钮可精确到67%，边界不越界且不隐式保存
 await group('游戏内apply只提交当局NAPI请求，不修改持久比例', async () => {
   const f = await fixture(), tree = ast('entry/src/main/ets/components/GameResolutionPanel.ets');
   const owner = tree.statements.find(n => n.name?.text === 'GameResolutionPanel');
-  const method = owner.members.find(n => n.name?.text === 'apply');
-  const code = compiler.transpileModule('return class PanelProbe {' + method.getText(tree) + '}', { compilerOptions: { target: compiler.ScriptTarget.ES2022 } }).outputText;
+  const methods = owner.members.filter(n => ['apply', 'requiresRestart'].includes(n.name?.text));
+  const code = compiler.transpileModule('return class PanelProbe {' + methods.map(method => method.getText(tree)).join('\n') + '}', { compilerOptions: { target: compiler.ScriptTarget.ES2022 } }).outputText;
   const calls = []; const Type = new Function('testNapi', code)({ mcRequestResolutionScale: percent => { calls.push(percent); return true; } });
-  const panel = Object.assign(new Type(), { draft: 50, refresh() {}, error: '' });
+  const panel = Object.assign(new Type(), { draft: 50, refresh() {}, error: '', snapshot: { phase: 'confirmed' } });
   const before = plain([...f.store.values]); panel.apply();
   assert.deepEqual(calls, [50]); assert.deepEqual(plain([...f.store.values]), before);
 });

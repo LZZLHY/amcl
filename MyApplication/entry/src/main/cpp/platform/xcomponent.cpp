@@ -20,6 +20,7 @@
 #include "gate0_input_telemetry.h"
 #endif
 #include <ace/xcomponent/native_interface_xcomponent.h>
+#include <deviceinfo.h>
 #include <native_window/external_window.h>
 #include <hilog/log.h>
 #include <climits>
@@ -676,7 +677,17 @@ static void ResolutionDrawableObserved(void* window, uint64_t generation, uint64
         source, width, height, static_cast<int>(phase), g_resolution.reason());
 }
 
+/** 电脑的比例在启动时冻结。只限制手动请求，窗口调整和 Surface 恢复仍走原事务。 */
+static bool AllowsManualResolutionChange() {
+    static const bool desktop = [] {
+        const char* type = OH_GetDeviceType();
+        return type != nullptr && std::strcmp(type, "2in1") == 0;
+    }();
+    return !desktop;
+}
+
 extern "C" bool amclResolutionRequestPercent(double percent) {
+    if (!AllowsManualResolutionChange()) return false;
     SurfaceInputGateTransaction transaction;
     if (!g_geometryClientRegistered || !g_haveDrawableObservation || !g_component || !g_window ||
         g_resolution.phase() == amcl::renderscale::ResolutionPhase::kRestartRequired ||
@@ -712,7 +723,8 @@ extern "C" const char* amclResolutionStatusJson(void) {
          << ",\"logicalWidth\":" << applied.width << ",\"logicalHeight\":" << applied.height
          << ",\"actualWidth\":" << g_resolution.actualWidth() << ",\"actualHeight\":" << g_resolution.actualHeight()
          << ",\"actualSource\":" << g_resolution.observationSource()
-         << ",\"canRequest\":" << (g_geometryClientRegistered && g_haveDrawableObservation ? "true" : "false")
+         << ",\"canRequest\":" << (AllowsManualResolutionChange() && g_geometryClientRegistered &&
+                                     g_haveDrawableObservation ? "true" : "false")
          << ",\"virtualWindowManaged\":" << (g_resolution.virtualWindowManaged() ? "true" : "false")
          << ",\"reason\":\"" << g_resolution.reason() << "\"}";
     result = json.str();

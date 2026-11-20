@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "sourceCommit": "9b8b6f8a510292d65564d07aaf3bb3dcc17ff559",
-  "sourceBranch": "",
+  "sourceCommit": "da25a1c48592c59e7240b262521a7ca17713d83a",
+  "sourceBranch": "main",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
-    "versionName": "1.0.8-pre1",
+    "versionName": "1.0.8-pre2",
     "versionCode": 1000911
   },
   "exporter": {
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "4645ac21e7b6abd8ef5b660e9a40e873b1396fbc616a1f14afc3f48382fd0599",
+      "sha256": "6480f0639d9f8d5e6e9f87a5ce74729cdc84f06e137a63724a89d3a6d38ca613",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -362,7 +362,7 @@
     },
     {
       "path": "commons/src/main/ets/common/Constants.ets",
-      "sha256": "6f8451df6095c7e34f201c248d6289628aa599da5223c747f13186f028c4e0a0",
+      "sha256": "426321834739efeaf40e2749c5ff51836da55ae336b62cc1567d445363b5335f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -817,7 +817,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "221298061874f103e6ccfdf506109fc90a15b1f15cbf3efd93ceb9e3e3612b4d",
+      "sha256": "d53353b6629cf2ef4fe7549920c7af15afeacfbcfe9217def99ecd6dea598603",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -1909,7 +1909,7 @@
     },
     {
       "path": "entry/src/desktop/ProductGameControlSurface.ets",
-      "sha256": "c65738e63a001e43f70bc4d9af6efe659da9f8245fed71efce419b87fe56b573",
+      "sha256": "b87f0ad677dd6175b436049ecfe426351e08c1169ff52ac53f25e310e2701d10",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5360,7 +5360,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/xcomponent.cpp",
-      "sha256": "3fbea4cfe79ae93f7d9b7772a34869e5692ba50551c49b89d49885eb17b76cd3",
+      "sha256": "b63b2ed471c85ea17680a409aeee38d72742ba168b3f01e443f2860a6d37223c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7376,7 +7376,7 @@
     },
     {
       "path": "entry/src/main/ets/components/DesktopGameControlSurface.ets",
-      "sha256": "c927bf1bf8d2b7ec113627b79cf6a9a7b21428ccb05ab943f3b7db3fbf32e62f",
+      "sha256": "703e70bbd782d49773a3aabbe55d65d7768d6d7d5d6c4d8e36303be11d44726d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7572,7 +7572,7 @@
     },
     {
       "path": "entry/src/main/ets/components/GameControls.ets",
-      "sha256": "36105355b37df8e3b2d96725225de749f3366d03ba0f8b6f5b80eb94067fce89",
+      "sha256": "c0887395cf6ff06c091340c4549a8df0f7dce6a74d4a05cc6449f6c9dec4bf48",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7586,21 +7586,21 @@
     },
     {
       "path": "entry/src/main/ets/components/GameResolutionGuard.ets",
-      "sha256": "e03608a5bee1e2255286be8e7d1369ce3dd22d441f179f307d77b219249b901f",
+      "sha256": "dcd8e88759fc82fa60dd5c2313d7827129ce04300847e36fd6a6a8b36303c112",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/components/GameResolutionPanel.ets",
-      "sha256": "ffac57f53714a2b1692a4ce7fb48622b8b5b403be7fe07081fa3c1d19ea0c743",
+      "sha256": "dfc8e631e55a8066530743292e33ea6529f2a99f0cba6adaafd09228120b3f05",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/components/GameResolutionSettings.ets",
-      "sha256": "89581c412f5cd76ec496044da9813967d3d4895cecec73540a470f9865363f49",
+      "sha256": "4039b33c38d351076604610c7f3c200382708b4e28eb5c424b551619ad8af65d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8384,7 +8384,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/Index.ets",
-      "sha256": "6ca691f0e323d601c5f6af5c3ae58cb456b5c30605935c72c4aca19f6ccd2fca",
+      "sha256": "649c4b4484c5633188735eefc613d6536e5ba3d1ccd72fcaf2377e8890e7b2ff",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8489,14 +8489,14 @@
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsCatalog.ets",
-      "sha256": "ea64fd9eed4765664ef290977764d43e0c29f5ce10057877d60e99a02ec61502",
+      "sha256": "5cc30825b6ee4de38a2db0a1401ff94bc9c665d98c4fe50a1034e88b44df5ed3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsTab.ets",
-      "sha256": "92d40b4ed8a6ffafcbda548959812a79865045f009996e8d8ddd467d6af6cb81",
+      "sha256": "7faa63518eb9c55012d16b19cb3614d4937ff05ea40ffb22b2b0116159487d72",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8615,7 +8615,14 @@
     },
     {
       "path": "entry/src/main/ets/runtime/GameSessionHost.ets",
-      "sha256": "b0cbf911f8bea718bb6b24df9d5f961a56704ae792195955fcb7df97d818c401",
+      "sha256": "f5d39bdfdb9643972119993d2220f2fd330aa3159955810f46bbba88b48baa70",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/ets/runtime/GameWindowKeepScreenOn.ets",
+      "sha256": "5435c0b2bc52af9ef6635f1c4e127744d68c8f2b49d430bc367bc13240049582",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9014,7 +9021,7 @@
     },
     {
       "path": "entry/src/main/ProductGameControlSurface.ets",
-      "sha256": "2048d4e324cb7cbb4d45b39321951aca4fc0c134bed7db15e89a86800700a974",
+      "sha256": "aa39345916f10a078748e45a1aabda10fb0fda73e9c1a91544acc6f1534bc578",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9287,7 +9294,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "fb96f0bcc8ca7581cc5e52dfb9a3a3b11eb1c7a31d0ebf329fe2a617275ffcea",
+      "sha256": "56288100bae5b814075c88a79cb5f1c65e51321d5c202883f8e496f3700b34c1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10582,7 +10589,7 @@
     },
     {
       "path": "feature_system/src/main/ets/PreferenceManager.ets",
-      "sha256": "24e6a35f52dfefe2482ad78e78c36e3fae4263d9a3fd4c739e677b74b568f861",
+      "sha256": "3a10b065bed19e09885c1e2f5c88894b4db9d3cd181e2749497cb6f482f75ddd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20081,7 +20088,7 @@
     },
     {
       "path": "scripts/test-game-page-session-facts.mjs",
-      "sha256": "74e29f764a6d405bb38c1d89007bcc32a976ead5b1b32148bd7a3d709cbb6d90",
+      "sha256": "73f94b78e389e1cbf6af9c0dcf8b8c477ca120651a1ddca97e9277cf6f502cbd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20095,7 +20102,7 @@
     },
     {
       "path": "scripts/test-game-resolution-editor.mjs",
-      "sha256": "d2769037d1175554e6151d8879311aa8ba1e78125342ebaef3b6e3087a80c824",
+      "sha256": "86f1046a3f2843666d6eb1bad33f80a2147a2fbc08abc39cc5e6a153dc05455f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20109,7 +20116,7 @@
     },
     {
       "path": "scripts/test-game-resolution-state.mjs",
-      "sha256": "c96b4fad194b6e5fc5c223d67555225450d79109cede573cd261d8ccb941064f",
+      "sha256": "3c4308f98f4fabb7e8e95b0643fc0a277d1002f76dd653922bbc2d1108114957",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20123,7 +20130,7 @@
     },
     {
       "path": "scripts/test-game-session-host.mjs",
-      "sha256": "1befb42331d3ec25e5d7ef2e870e6ac35f3a6ffef2f737a661d533238ce20825",
+      "sha256": "ea4974c82000e1e76a7d5e590574328cc493f60b9dd5915e34c269765f9c17a5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20746,7 +20753,7 @@
     },
     {
       "path": "scripts/test-layout-editor-failures.mjs",
-      "sha256": "b2215b1ec56e85bbc907fb70bc4baebfad52a88c3c7bda79b8dfebf63f1c7d42",
+      "sha256": "38888a001709541e3c152bc9f7d0731b05d620168f241fb1714b3e42fe08a251",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22013,7 +22020,7 @@
     },
     {
       "path": "scripts/test-touch-basics.mjs",
-      "sha256": "d1e3623a696622365dc351d7ee4852e8dacff6c644fac2e0cc61883ba9c5c1d6",
+      "sha256": "02ffdb8ea2bb62054334900d244ed27b3757e61bd0cf22beecc325c15df3498e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -26141,6 +26148,6 @@
     "generated": 1,
     "private": 805,
     "public-owned": 39,
-    "source": 3726
+    "source": 3727
   }
 }

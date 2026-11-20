@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-18T12:53:41Z",
+  "generatedAt": "2026-11-19T14:52:13Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,58 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.8-pre1",
+    "versionName": "1.0.8-pre2",
     "versionCode": 1000911,
-    "tag": "v1.0.8-pre1",
-    "date": "2026-11-18"
+    "tag": "v1.0.8-pre2",
+    "date": "2026-11-19"
   },
   "releases": [
+    {
+      "versionName": "1.0.8-pre2",
+      "versionCode": 1000911,
+      "tag": "v1.0.8-pre2",
+      "date": "2026-11-19",
+      "prerelease": true,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8-pre2",
+      "title": "游戏前台常亮与电脑分辨率入口修复",
+      "titleEn": "Keep the screen on during gameplay and fix desktop resolution controls",
+      "zh": {
+        "entries": [
+          {
+            "type": "added",
+            "text": "游戏前台常亮。 默认开启，可在「设置 → 游戏与性能」关闭，修改后在下次启动游戏时生效。",
+            "markdown": "**游戏前台常亮。** 默认开启，可在「设置 → 游戏与性能」关闭，修改后在下次启动游戏时生效。"
+          },
+          {
+            "type": "fixed",
+            "text": "电脑端分辨率按钮遮挡游戏界面。 移除电脑键鼠和触屏模式的局内分辨率入口。分辨率可在启动器的全局设置或版本详情调整，下次启动游戏时生效。(#42)",
+            "markdown": "**电脑端分辨率按钮遮挡游戏界面。** 移除电脑键鼠和触屏模式的局内分辨率入口。分辨率可在启动器的全局设置或版本详情调整，下次启动游戏时生效。([#42](https://github.com/LZZLHY/amcl/issues/42))"
+          },
+          {
+            "type": "notice",
+            "text": "这是用于提前体验和反馈的预览版，可能出现异常，不承诺稳定性。"
+          }
+        ]
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "added",
+            "text": "Keep the screen on during gameplay. On by default. You can turn it off under Settings → Game & Performance. Changes take effect the next time you launch a game.",
+            "markdown": "**Keep the screen on during gameplay.** On by default. You can turn it off under Settings → Game & Performance. Changes take effect the next time you launch a game."
+          },
+          {
+            "type": "fixed",
+            "text": "The desktop resolution button could cover the game UI. The in-game control has been removed for keyboard-and-mouse and touch play on desktop. Set the rendering scale in the launcher’s global settings or game version details. Changes apply the next time you launch a game. (#42)",
+            "markdown": "**The desktop resolution button could cover the game UI.** The in-game control has been removed for keyboard-and-mouse and touch play on desktop. Set the rendering scale in the launcher’s global settings or game version details. Changes apply the next time you launch a game. ([#42](https://github.com/LZZLHY/amcl/issues/42))"
+          },
+          {
+            "type": "notice",
+            "text": "This preview is for early testing and feedback. You may encounter bugs, and stability is not guaranteed."
+          }
+        ]
+      }
+    },
     {
       "versionName": "1.0.8-pre1",
       "versionCode": 1000911,

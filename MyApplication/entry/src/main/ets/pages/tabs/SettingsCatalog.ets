@@ -86,6 +86,8 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
   items.push({ id: 'isolation', section: c.run ? 'performance' : 'files', title: '版本隔离',
     description: '每个版本独立保存存档、模组与资源包', keywords: '隔离 文件 归属 存档 资源包' });
   if (c.run) {
+    items.push({ id: 'game-keep-screen-on', section: 'performance', title: '游戏中保持屏幕常亮',
+      description: '游戏在前台时防止自动息屏', keywords: '常亮 息屏 熄屏 亮屏 休眠 锁屏 显示 挂机' });
     items.push({ id: 'memory', section: 'performance', title: 'JVM 最大内存', description: '游戏内存、快捷档位与精确输入', keywords: '内存 堆 xmx mb gb 性能' });
     items.push({ id: 'virtual-memory', section: 'performance', title: '虚拟内存（堆文件）', description: '把 Java 堆放到存储上', keywords: '内存 堆文件 低内存 大型整合包' });
     items.push({ id: 'java', section: 'performance', title: 'Java 版本', description: '按游戏版本自动匹配或固定 JDK', keywords: 'java jdk 运行环境 版本' });

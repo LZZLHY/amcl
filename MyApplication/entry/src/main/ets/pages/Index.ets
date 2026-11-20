@@ -256,6 +256,8 @@ struct Index {
   @State tabletIndependentGameProcess: boolean = true
   @State tabletProcessSaving: boolean = false
   @State tabletProcessMessage: string = ''
+  @State gameKeepScreenOn: boolean = true
+  @State gameKeepScreenOnSaving: boolean = false
   @State versionIsolation: boolean = true
   @State virtualMemoryMode: boolean = false
   // 游戏数据(.minecraft)存储位置：沙箱(默认) / 外部 Download/com.amcl.launcher（文件管理器显示为 AMCL，卸载不丢）。
@@ -1438,6 +1440,7 @@ struct Index {
     this.useNewWindow = false
     this.tabletIndependentGameProcess = ProductInputProfile.canChooseTabletProcess()
       ? this.getPrefManager_().tabletIndependentGameProcess : false
+    if (!this.gameKeepScreenOnSaving) this.gameKeepScreenOn = this.getPrefManager_().gameKeepScreenOn
     this.versionIsolation = snap.versionIsolation
     this.selectedJdkVersion = snap.jdkVersion
     if (snap.mcXmx > 0) this.mcXmx = snap.mcXmx
@@ -2467,6 +2470,21 @@ struct Index {
       AppLogger.warn(TAG, 'Tablet process preference save failed', error, LOG_DOMAIN_LAUNCH)
     } finally {
       this.tabletProcessSaving = false
+    }
+  }
+
+  /** 开关显示已落盘的选择，独立游戏在下次启动时随快照读取该值。 */
+  private async changeGameKeepScreenOn_(enabled: boolean): Promise<void> {
+    if (this.gameKeepScreenOnSaving || this.gameKeepScreenOn === enabled) return
+    this.gameKeepScreenOnSaving = true
+    try {
+      await this.getPrefManager_().saveGameKeepScreenOn(enabled)
+      this.gameKeepScreenOn = enabled
+    } catch (error) {
+      AppLogger.warn(TAG, 'Game keep screen on preference save failed', error, LOG_DOMAIN_LAUNCH)
+      this.showToast_('常亮设置保存失败，请重试')
+    } finally {
+      this.gameKeepScreenOnSaving = false
     }
   }
 
@@ -3922,6 +3940,9 @@ struct Index {
                   AppLogger.warn(TAG, 'Tablet process setting unavailable', error, LOG_DOMAIN_LAUNCH)
                 })
               },
+              gameKeepScreenOn: this.gameKeepScreenOn,
+              gameKeepScreenOnSaving: this.gameKeepScreenOnSaving,
+              onGameKeepScreenOnChange: (enabled: boolean): void => { this.changeGameKeepScreenOn_(enabled) },
               storageLocation: this.storageLocation,
               externalAvailable: GameStorage.isExternalSupported(),
               externalPathHint: GameStorage.externalMcDir(),

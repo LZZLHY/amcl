@@ -51,7 +51,8 @@ export struct GameResolutionGuard {
   build() {
     Stack() {
       if (this.fatal) {
-        GameResolutionPanel({ palette: this.palette, screenWidth: this.widthVp, screenHeight: this.heightVp })
+        // 守卫已锁存不可恢复状态，退出入口不依赖面板再次读取 Native 快照。
+        GameResolutionPanel({ palette: this.palette, screenWidth: this.widthVp, screenHeight: this.heightVp, exitOnly: true })
       }
     }.width('100%').height('100%')
       .backgroundColor(this.fatal ? '#CC000000' : Color.Transparent)

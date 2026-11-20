@@ -15,6 +15,7 @@ import { GamepadManager, GamepadEmitter, GameInputRuntime, SourceControlClient,
 import { parseInputPlan } from 'launch'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
 import { ProductGameWindowCoordinator, ProductGameWindowSnapshot } from 'entry/ProductGameWindowCoordinator'
+import { PreferenceManager } from 'feature_system'
 import testNapi from 'libentry.so'
 import { createEntrySourceControlClient } from '../components/EntrySourceControlClient'
 import { reconcileEntryInputSession } from '../components/EntryInputSessionCoordinator'
@@ -24,6 +25,7 @@ import { EntryTouchInputMaintenanceLease, startEntryTouchInputMaintenance,
   EntryTouchInputMaintenanceStopReceipt, stopEntryTouchInputMaintenance } from '../components/EntryTouchInputMaintenance'
 import { GameLaunchGate } from './GameLaunchGate'
 import { GameDialogRuntime } from './GameDialogRuntime'
+import { GameWindowKeepScreenOn } from './GameWindowKeepScreenOn'
 import { GamepadOutputRoute, NativeGamepadRouteDecision, resolveNativeGamepadRoute,
   NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, NATIVE_GAMEPAD_CAPTURE_READY_KEY } from './NativeGamepadRoutePolicy'
 
@@ -148,6 +150,9 @@ export class GameSessionHost {
   private gamepadRouteDescription: string = ''
   private coordinator: ProductGameWindowCoordinator = new ProductGameWindowCoordinator()
   private windowEntered: boolean = false
+  // 首次实际运行时锁存用户偏好。同一局切前后台或重建页面仍使用同一个值。
+  private keepScreenOnForGame: boolean | undefined = undefined
+  private windowKeepScreenOn: GameWindowKeepScreenOn | undefined = undefined
   private enteringWindow: Promise<ProductGameWindowSnapshot> | undefined = undefined
   private restoringWindow: Promise<void> | undefined = undefined
   /** 同局重建前端的只读显示基线，不重新解析运行库或再次调用 JVM。 */
@@ -292,6 +297,7 @@ export class GameSessionHost {
       if (!this.accepts(lease)) throw new Error('Frontend retired during window acquisition')
       this.windowEntered = true
       this.windowId = snapshot.windowId
+      this.startWindowKeepScreenOn()
       return snapshot
     } catch (error) {
       try { await coordinator.restore() } catch (restoreError) { this.noteFault('window-prepare-restore', restoreError) }
@@ -303,10 +309,39 @@ export class GameSessionHost {
   async restoreWindow(coordinator: ProductGameWindowCoordinator): Promise<void> {
     if (this.coordinator !== coordinator) { await coordinator.restore(); return }
     this.windowEntered = false
-    const restoring: Promise<void> = coordinator.restore()
+    // 重复退出共用同一恢复屏障，后来的游戏窗口必须等原常亮写入和释放都结束。
+    if (this.restoringWindow !== undefined) { await this.restoringWindow; return }
+    const keepScreenOn: GameWindowKeepScreenOn | undefined = this.windowKeepScreenOn
+    this.windowKeepScreenOn = undefined
+    const restoring: Promise<void> = this.restoreWindowResources(coordinator, keepScreenOn)
     this.restoringWindow = restoring
     try { await restoring }
     finally { if (this.restoringWindow === restoring) this.restoringWindow = undefined }
+  }
+
+  private async restoreWindowResources(coordinator: ProductGameWindowCoordinator,
+    keepScreenOn: GameWindowKeepScreenOn | undefined): Promise<void> {
+    const release: Promise<void> | undefined = keepScreenOn?.close()
+    try { await coordinator.restore() }
+    finally { if (release !== undefined) await release }
+  }
+
+  /** 仅为启动成功且已取得窗口的游戏申请常亮。加载失败页恢复到前台也不会申请。 */
+  private startWindowKeepScreenOn(): void {
+    const context: common.UIAbilityContext | undefined = this.context
+    if (!this.windowEntered || !this.isRunning() || context === undefined || this.windowKeepScreenOn !== undefined) return
+    try {
+      if (this.keepScreenOnForGame === undefined) {
+        this.keepScreenOnForGame = new PreferenceManager(context).gameKeepScreenOn
+      }
+      if (!this.keepScreenOnForGame) return
+      // 主窗口承载游戏页面。取当前进程的最后一个窗口可能选中游戏的子窗口。
+      this.windowKeepScreenOn = new GameWindowKeepScreenOn(context.windowStage.getMainWindowSync(),
+        (error: Error): void => { this.noteFault('game-window-keep-screen-on', error) })
+      this.windowKeepScreenOn.start()
+    } catch (error) {
+      this.noteFault('game-window-keep-screen-on', error as Error)
+    }
   }
 
   /** 已解析路径随本局保留，只为重建前端恢复控制布局/日志展示。 */
@@ -519,6 +554,7 @@ export class GameSessionHost {
     if (!this.inputPrepared) throw new Error('Input baseline not prepared')
     this.launched = true
     this.state = 'Running'
+    this.startWindowKeepScreenOn()
     if (!this.grabSubscribed) {
       this.grabSubscribed = true
       try {

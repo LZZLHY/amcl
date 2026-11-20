@@ -19,7 +19,7 @@ const controlGeometry=load('gamecontrol/src/main/ets/TouchControlGeometry.ets');
 const guideGeometry=load('gamecontrol/src/main/ets/TouchGuideLayout.ets');
 const runtimeGeometry=load('gamecontrol/src/main/ets/RuntimeTouchLayout.ets');
 const surfaceModel=load('gamecontrol/src/main/ets/InputSurfaceContext.ets');
-// 桌面控制面新增独立工具主题；装配真实palette类/映射，不以空对象绕过其字段与Watch生命周期。
+// 撤回旧分辨率入口的行为验证仍可执行旧主题字段和 Watch。
 const editorTheme=makePureEtsLoader({commons:{}})('entry/src/main/ets/components/TouchEditorTheme.ets');
 let cases=0;
 function check(name,body){body();cases++;console.log('PASS '+name);}
@@ -75,7 +75,7 @@ function desktopSchemaExitContract(sourceOverrides={}) {
     {compilerOptions:{target:compiler.ScriptTarget.ES2020,module:compiler.ModuleKind.CommonJS},reportDiagnostics:true});
   assert.equal((compiled.diagnostics??[]).filter(d=>d.category===compiler.DiagnosticCategory.Error).length,0,
     '桌面原实现及完整撤回对照必须先转译成功，不能把语法/装配失败写成行为反控');
-  const effects=[],ime=[];let registering=[];
+  const effects=[],ime=[],buttons=[],resolutionPanels=[];let registering=[];
   const chain=new Proxy({}, {get:(_target,name)=>(...args)=>{
     if(typeof name==='string'&&/^on[A-Z]/.test(name)) registering.push({name,callback:args[0]});
     return chain;
@@ -86,10 +86,10 @@ function desktopSchemaExitContract(sourceOverrides={}) {
     Object.assign(candidate,{windowId,displayId:1,widthPx:width,heightPx:height,density,transform:0,provisional:false});
     const context=store.publish(lease,candidate);assert.ok(context);return {lease,context};
   };
-  const dependencies={...editorTheme,Stack:()=>chain,Button:()=>chain,width:()=>chain,
+  const dependencies={...editorTheme,Stack:()=>chain,Button:label=>{buttons.push(label);return chain;},width:()=>chain,
     HitTestMode:{Transparent:1},Alignment:{TopEnd:'top-end'},
-    // 分辨率工具和原生Button只隔离绘制边界；原父组件仍生成palette、回调与IME资格。
-    GameResolutionPanel:()=>{},
+    // 只记录桌面控制面实际创建的组件，因此重新加入旧按钮或直接打开面板都会使测试失败。
+    GameResolutionPanel:props=>resolutionPanels.push(props),
     DesktopPhysicalTextInput:value=>ime.push({...value}),
     testNapi:{setControlSchema:schema=>{effects.push(structuredClone(schema));return 1;}},
     getInputSurfaceContextStore:()=>store,INPUT_SURFACE_FIELD_DENSITY:surfaceModel.INPUT_SURFACE_FIELD_DENSITY,
@@ -128,6 +128,8 @@ function desktopSchemaExitContract(sourceOverrides={}) {
   for(const callback of oldWatches)callback();
   // 这是正例和完整旧组件撤回对照共用的行为断言；恢复旧 writer 会产生实际 NAPI 候选。
   assert.equal(effects.length,0,'DESKTOP_SCHEMA_NO_WRITES 生命周期/旧实例事件不得安装 Native 控件表');
+  assert.deepEqual(buttons,[],'桌面键鼠控制面在释放指针时也不能生成游戏内按钮');
+  assert.deepEqual(resolutionPanels,[],'桌面键鼠控制面不能创建本局分辨率面板');
 }
 
 check('桌面原生命周期和旧实例事件没有schema写入，保留原IME意图及窗口事实围栏',()=>desktopSchemaExitContract());

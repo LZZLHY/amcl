@@ -92,6 +92,8 @@ function fixture(observe) {
     'libentry.so': { default: native },
     '@kit.BasicServicesKit': { systemDateTime: { TimeType: { ACTIVE: 1 }, getUptime: () => 0 } },
     '@kit.AbilityKit': { appRecovery: { restartApp: noop } },
+    // 该夹具只验证输入事实，常亮策略由会话宿主的定向用例承接。
+    'feature_system': { PreferenceManager: class { get gameKeepScreenOn() { return false; } } },
     'entry/ProductInputProfile': { ProductInputProfile: { freeze: noop, current: () => ({ productKind: 0, runtimeApi: 26, supportsCursorLock: true }),
       selection: () => ({ desktopWindow: true }) } },
     'entry/ProductGameWindowCoordinator': { ProductGameWindowCoordinator: Window },

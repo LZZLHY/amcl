@@ -22,6 +22,7 @@ const TAG = 'PreferenceManager'
 const PREF_NAME = 'amcl_settings'
 const OHOS_FRAME_RATE_CAP_MIN: number = 30
 const OHOS_FRAME_RATE_CAP_MAX: number = 240
+const GAME_KEEP_SCREEN_ON_KEY: string = 'gameKeepScreenOn';
 const IMMERSIVE_LIGHT_KEY: string = 'immersiveLightPreferences';
 const IMMERSIVE_LIGHT_ABSENT: string = '__amcl_immersive_light_absent__';
 /** 用非数字哨兵区分“从未设置”与默认 80；失败时能恢复原来的键缺失状态。 */
@@ -100,6 +101,8 @@ class AppUpdateChannelWriteState {
 }
 
 export class PreferenceManager {
+  // 同一启动器目录的读者共享在途保存前的值，避免游戏拿到尚未确认的缓存。
+  private static gameKeepScreenOnBeforeSave: Map<string, boolean> = new Map<string, boolean>();
   private static appUpdateChannelOwners: Map<string,AppUpdateChannelWriteState> = new Map<string,AppUpdateChannelWriteState>();
   private appUpdateChannelWrites: AppUpdateChannelWriteState | undefined = undefined;
   private static microphoneOwners: Map<string, ModMicrophoneWriteState> = new Map<string, ModMicrophoneWriteState>();
@@ -123,6 +126,7 @@ export class PreferenceManager {
   get desktopNativeGamepad(): boolean { return this.readFrozenSetting_('desktopNativeGamepad', false) as boolean; }
 
   private pref: LaunchPreferenceStore;
+  private readonly preferencesDirectory: string;
   /** 档位 put 后到 flush 确认前的读取屏障，防止 onPageShow 发布 Preferences 在途缓存。 */
   private dockLightConfirmedDuringSave: DockLightMode | undefined = undefined;
   private frozenSettings: FrozenSettingsWriteState | undefined = undefined;
@@ -132,6 +136,7 @@ export class PreferenceManager {
     // 游戏快照只读，不与启动器写事务共享读屏障。缺真实目录的旧只读调用方仍可读原store，
     // 但两项新保存入口明确拒绝，不能把undefined或组件实例名拼成虚假的Preferences owner。
     const directory: string = context.preferencesDir;
+    this.preferencesDirectory = directory;
     if (!ProcessPreferences.isGameProcess() && typeof directory === 'string' && directory.length > 0) {
       let channelState=PreferenceManager.appUpdateChannelOwners.get(directory);
       if(channelState===undefined){channelState=new AppUpdateChannelWriteState();PreferenceManager.appUpdateChannelOwners.set(directory,channelState);}
@@ -374,7 +379,9 @@ export class PreferenceManager {
     if (state === undefined || ProcessPreferences.isGameProcess()) return Promise.reject(new Error('无法捕获启动器确认设置'));
     const task: Promise<LaunchPreferenceSnapshot> = state.tail.then(async (): Promise<LaunchPreferenceSnapshot> => {
       if (state.original !== undefined) throw new Error('麦克风设置回滚尚未确认，请重试');
-      return await ProcessPreferences.captureOwner(context, PREF_NAME);
+      const snapshot: LaunchPreferenceSnapshot = await ProcessPreferences.captureOwner(context, PREF_NAME);
+      snapshot.values[GAME_KEEP_SCREEN_ON_KEY] = owner.gameKeepScreenOn;
+      return snapshot;
     });
     state.tail = task.then((): void => {}, (): void => {});
     return task;
@@ -414,6 +421,36 @@ export class PreferenceManager {
         hilog.warn(0x0000, TAG, 'Tablet process preference rollback failed: %{public}s', formatError(rollbackError));
       }
       throw e as Error;
+    }
+  }
+
+  /** 老数据与缺失快照字段默认开启，只有明确保存的 false 才关闭游戏保亮。 */
+  get gameKeepScreenOn(): boolean {
+    const confirmed: boolean | undefined = PreferenceManager.gameKeepScreenOnBeforeSave.get(this.preferencesDirectory);
+    if (confirmed !== undefined) return confirmed;
+    return this.getBool(GAME_KEEP_SCREEN_ON_KEY, true) !== false;
+  }
+
+  /** 启动器确认落盘后再更新开关；隔离游戏从本局只读启动快照取值。 */
+  async saveGameKeepScreenOn(enabled: boolean): Promise<void> {
+    if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器设置中修改游戏常亮');
+    const pending: Map<string, boolean> = PreferenceManager.gameKeepScreenOnBeforeSave;
+    if (pending.has(this.preferencesDirectory)) throw new Error('游戏常亮设置正在保存');
+    const previous: boolean = this.gameKeepScreenOn;
+    pending.set(this.preferencesDirectory, previous);
+    try {
+      this.pref.putSync(GAME_KEEP_SCREEN_ON_KEY, enabled);
+      await this.pref.flush();
+    } catch (error) {
+      try {
+        this.pref.putSync(GAME_KEEP_SCREEN_ON_KEY, previous);
+        await this.pref.flush();
+      } catch (rollbackError) {
+        hilog.warn(0x0000, TAG, 'Game keep screen on rollback failed: %{public}s', formatError(rollbackError));
+      }
+      throw error as Error;
+    } finally {
+      pending.delete(this.preferencesDirectory);
     }
   }
 

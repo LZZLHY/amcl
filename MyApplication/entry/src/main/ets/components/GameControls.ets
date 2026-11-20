@@ -576,6 +576,8 @@ export struct GameControls {
   }
   @Prop @Watch('onGrabChanged') isGrabbed: boolean = false
   @Prop @Watch('onPageActiveChanged') pageActive: boolean = true
+  /** 由产品包装根据设备决定，电脑即使使用触控布局也只在启动器调节分辨率。 */
+  @Prop allowLiveResolution: boolean = false
   /** 编辑覆盖层只发布准入事实；页面runtime统一停止其它输入端和capture。 */
   onInputPause: (paused: boolean) => void = (_paused: boolean): void => {}
   @Prop @Watch('onSurfaceContextChanged') surfaceContextGeneration: number = 0
@@ -3463,15 +3465,18 @@ export struct GameControls {
         Text('操控').fontSize(20).fontColor(this.palette.text)
         Button('编辑按键布局').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='layout' })
         Button('手感与输入').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='settings' })
-        // 新分辨率入口保留会话与暂停链，仅给普通操作传入当前工具palette。
-        Button('游戏分辨率').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='resolution' }).id('open-game-resolution')
+        if (this.allowLiveResolution) {
+          Button('游戏分辨率').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='resolution' }).id('open-game-resolution')
+        }
         Button('关闭').fontColor(this.palette.text).backgroundColor(this.palette.surface).height(48).width('100%').onClick((): void => { this.closeEditorChoice_() })
       }.padding(20).width('100%')
       }.width(Math.min(360,this.compWidth-24)).constraintSize({maxHeight:this.compHeight*0.9})
         .backgroundColor(this.palette.panel).borderRadius(16).enabled(!this.editorChoiceBusy)
     } else if (this.editorMode==='resolution') {
-      GameResolutionPanel({ palette: this.palette, screenWidth: this.compWidth, screenHeight: this.compHeight,
-        onDone: (): void => { this.editorMode='choose' } })
+      if (this.allowLiveResolution) {
+        GameResolutionPanel({ palette: this.palette, screenWidth: this.compWidth, screenHeight: this.compHeight,
+          onDone: (): void => { this.editorMode='choose' } })
+      }
     } else if (this.editorMode==='settings') {
       InputSettingsEditor({palette:this.palette,targetProfileName:this.editorSettingsProfile || this.profile.name,screenWidth:this.compWidth,screenHeight:this.compHeight,
         initialSection:this.editorSettingsSection,

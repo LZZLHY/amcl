@@ -23,12 +23,12 @@ export struct ProductGameControlSurface {
       GameControls({ palette: this.palette, isGrabbed: this.isGrabbed, surfaceContextGeneration: this.surfaceContextGeneration,
         // 页面投影与编辑暂停是正常输入生命周期端口；删除试用资格不能切断物理键鼠/手柄的暂停链。
         pageActive: this.pageActive, onInputPause: this.onInputPause,
+        // 电脑的触屏模式同样只在启动器设置分辨率，不能用能否直触来判断设备。
+        allowLiveResolution: !ProductInputProfile.selection().desktopWindow,
         gameDirectory: this.gameDirectory,
         realGameVersion: this.realGameVersion })
     } else {
-      DesktopGameControlSurface({ toolTheme: this.toolTheme, isGrabbed: this.isGrabbed,
-        surfaceContextGeneration: this.surfaceContextGeneration, pageActive: this.pageActive,
-        onInputPause: this.onInputPause })
+      DesktopGameControlSurface({ isGrabbed: this.isGrabbed, pageActive: this.pageActive })
     }
   }
 }

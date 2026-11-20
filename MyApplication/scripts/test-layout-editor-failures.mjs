@@ -12,6 +12,7 @@ import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 import { environment } from './lib/ets-runtime-fixture.mjs';
 const {LayoutEditSession}=makePureEtsLoader()('gamecontrol/src/main/ets/LayoutEditSession.ets');
 const {TouchGuide}=makePureEtsLoader()('gamecontrol/src/main/ets/TouchGuide.ets');
+const {ProductRuntimePolicy}=makePureEtsLoader()('gamecontrol/src/main/ets/ProductRuntimePolicy.ets');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const copy = value => JSON.parse(JSON.stringify(value));
@@ -457,7 +458,8 @@ function pageSurfaceProps() {
 }
 
 /** 执行真实产品包装build。平台绘制只作为边界，收到的props直接交给现有真实GameControls方法夹具。 */
-async function exerciseProductSurface(source, loseFocus = false) {
+async function exerciseProductSurface(source, loseFocus = false,
+  selection = ProductRuntimePolicy.resolve('universal','phone',26,'auto',true)) {
   const store = makeStore(), controls = gameControls(store), frontendStates = [];
   const page = subject('entry/src/main/ets/pages/McGamePage.ets', ['updatePageInputActive', 'syncCursorLock'], [], {});
   Object.assign(page, {pageVisible:true, surfaceFocused:true, gameWindowReady:true, inputOverlayPaused:false,
@@ -472,7 +474,7 @@ async function exerciseProductSurface(source, loseFocus = false) {
   assert.equal((compiled.diagnostics ?? []).filter(item => item.category === compiler.DiagnosticCategory.Error).length, 0);
   const module = {exports:{}}, received = [];
   new Function('module','ProductInputProfile','GameControls','DesktopGameControlSurface',compiled.outputText)(module,
-    {current:()=>({acceptDirectTouchInGame:true})}, value => { received.push(value); Object.assign(controls.instance,value); },
+    {current:()=>selection.input,selection:()=>selection}, value => { received.push(value); Object.assign(controls.instance,value); },
     () => { throw Error('手机产品不能走桌面控制面'); });
   const surface = new module.exports();
   // 前端投影为false也必须穿过真实两层组件，不能被子组件默认true掩盖。
@@ -487,6 +489,7 @@ async function exerciseProductSurface(source, loseFocus = false) {
   assert.deepEqual(frontendStates,[false,!loseFocus],'取消必须沿真实页面事实恢复资格');
   assert.equal(page.inputOverlayPaused,false); assert.equal(store.leases,0);
   assert.deepEqual(controls.pause,[true,false],'页面暂停和Native touch模态分别成对收口');
+  return controls.instance;
 }
 
 const productSurfaceSource = fs.readFileSync(path.join(root,'entry/src/main/ProductGameControlSurface.ets'),'utf8');
@@ -503,6 +506,58 @@ for (const [pattern,message] of [
   assert.notEqual(withdrawn,productSurfaceSource,'负控必须真实撤掉包装端口');
   await assert.rejects(exerciseProductSurface(withdrawn), error => error.code==='ERR_ASSERTION' && error.message.includes(message));
   check('产品包装端口撤回反控：'+message);
+}
+
+/** 执行真实工具菜单 Builder。只记录按钮的事件和面板挂载，判断逻辑保留在 ArkUI 生产源码。 */
+function renderEditorOverlay(controls) {
+  const file='entry/src/main/ets/components/GameControls.ets';
+  const source=fs.readFileSync(path.join(root,file),'utf8');
+  const tree=compiler.createSourceFile(file,source,compiler.ScriptTarget.Latest,true);
+  const owner=tree.statements.find(node=>node.name?.getText(tree)==='GameControls');
+  const overlay=owner.members.find(node=>node.name?.getText(tree)==='EditorOverlay');
+  const body=compiler.createPrinter().printNode(compiler.EmitHint.Unspecified,overlay,tree).replace(/@Builder\b\s*/,'');
+  const compiled=compiler.transpileModule('class Overlay {\n'+body+'\n}\nmodule.exports=Overlay;',
+    {compilerOptions:{target:compiler.ScriptTarget.ES2020},reportDiagnostics:true});
+  assert.equal((compiled.diagnostics??[]).filter(item=>item.category===compiler.DiagnosticCategory.Error).length,0,
+    '生产工具菜单必须先转译成功');
+  const module={exports:{}}, buttons=new Map(), panels=[];
+  const chain=(attributes={})=>new Proxy(attributes,{get:(target,name,receiver)=>
+    Reflect.has(target,name)?Reflect.get(target,name,receiver):()=>receiver});
+  const draw=()=>chain();
+  const button=()=>chain({
+    onClick(action) { this.action=action; return this; },
+    id(id) { buttons.set(id,this.action); return this; },
+  });
+  // SDK 打印出的容器块尾部属性以独立 padding/width 调用开头。
+  new Function('module','Scroll','Column','Text','Button','padding','width','GameResolutionPanel','LayoutEditor',
+    compiled.outputText)(module,draw,draw,draw,button,draw,draw,value=>panels.push(value),()=>{});
+  module.exports.prototype.EditorOverlay.call(controls);
+  return {buttons,panels};
+}
+
+for (const [device,api,interaction,allowLiveResolution] of [
+  ['phone',26,'auto',true],
+  ['tablet',26,'auto',true],
+  ['2in1',26,'touch',false],
+  ['2in1',20,'auto',false],
+]) {
+  const selection=ProductRuntimePolicy.resolve('universal',device,api,interaction,true);
+  assert.equal(selection.input.acceptDirectTouchInGame,true);
+  const controls=await exerciseProductSurface(productSurfaceSource,false,selection);
+  assert.equal(controls.allowLiveResolution,allowLiveResolution,'真实包装必须按设备传递本局分辨率资格');
+  controls.palette={}; controls.editorMode='choose'; controls.compWidth=800; controls.compHeight=500;
+  const entry=renderEditorOverlay(controls).buttons.get('open-game-resolution');
+  assert.equal(typeof entry==='function',allowLiveResolution,'触控工具菜单的分辨率入口必须匹配设备资格');
+  // 电脑也从旧编辑状态进入一次，防止只删按钮却留下可以挂载的面板。
+  if (entry) entry(); else controls.editorMode='resolution';
+  const {panels}=renderEditorOverlay(controls);
+  assert.equal(panels.length,allowLiveResolution?1:0,'只有移动触控能挂载本局分辨率面板');
+  if (allowLiveResolution) {
+    assert.equal(controls.editorMode,'resolution');
+    panels[0].onDone();
+    assert.equal(controls.editorMode,'choose');
+  }
+  check('真实触控工具菜单遵循本局分辨率资格：'+device+' API '+api+' '+interaction);
 }
 
 // 模板接线也是契约：所有存储按钮落到被执行测试的方法，busy期间禁止草稿继续变化。

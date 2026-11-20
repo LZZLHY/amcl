@@ -79,4 +79,54 @@ assert.deepEqual([width, height], [1000, 700], 'unknown policy cannot reinterpre
   unavailable = false;tick();tick();assert.equal(guard.fatal, true);assert.equal(failures, 1);
   guard.aboutToDisappear();
 }
-console.log('game-resolution-state: protocol negatives, physical restoration and bounded guard failure/recovery passed');
+
+// 守卫已经确认终局时，即使下一次读取失败，取消/确认仍能分别保留/结束本局。
+{
+  const file = 'entry/src/main/ets/components/GameResolutionPanel.ets';
+  const text = fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
+  const tree = compiler.createSourceFile(file, text, compiler.ScriptTarget.Latest, true);
+  const owner = tree.statements.find(node => node.name?.text === 'GameResolutionPanel');
+  const names = ['aboutToAppear', 'aboutToDisappear', 'requiresRestart', 'apply', 'confirmEndGame'];
+  const methods = names.map(name => {
+    const member = owner.members.find(node => node.name?.text === name);
+    assert.ok(member, name);
+    return member.getText(tree);
+  });
+  const output = compiler.transpileModule('return class Panel {' + methods.join('\n') + '}',
+    { compilerOptions: { target: compiler.ScriptTarget.ES2022 } }).outputText;
+  let resolveDialog, exits = 0;
+  const ports = {
+    testNapi: {
+      mcForceExit: () => exits++,
+      mcRequestResolutionScale: () => assert.fail('故障面板不得提交比例'),
+    },
+    setInterval: () => assert.fail('故障面板无需再次轮询'),
+    clearInterval: () => assert.fail('故障面板没有轮询定时器'),
+  };
+  const Type = new Function(...Object.keys(ports), output)(...Object.values(ports));
+  const panel = Object.assign(new Type(), {
+    exitOnly: true, timer: -1, snapshot: resolution.unavailableGameResolution(), palette: {},
+    refresh: () => assert.fail('故障面板无需重新读取已锁存的终局'),
+    getUIContext: () => ({ getPromptAction: () => ({
+      showDialog: () => new Promise(resolve => { resolveDialog = resolve; }),
+    }) }),
+  });
+  panel.aboutToAppear();
+  assert.equal(panel.requiresRestart(), true);
+  panel.apply();
+  assert.equal(panel.error, undefined, '故障模式拒绝请求而非显示可重试的应用错误');
+  panel.confirmEndGame();
+  resolveDialog({ index: 0 });
+  await Promise.resolve();
+  assert.equal(exits, 0);
+  panel.confirmEndGame();
+  resolveDialog({ index: 1 });
+  await Promise.resolve();
+  assert.equal(exits, 1);
+  panel.confirmEndGame();
+  panel.aboutToDisappear();
+  resolveDialog({ index: 1 });
+  await Promise.resolve();
+  assert.equal(exits, 1, '旧面板离开后不再终止当前游戏');
+}
+console.log('game-resolution-state: protocol negatives, physical restoration and failure-only exit passed');

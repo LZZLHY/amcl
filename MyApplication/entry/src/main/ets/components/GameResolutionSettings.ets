@@ -217,7 +217,7 @@ export struct GameResolutionSettings {
         Text(this.error).fontSize(14).fontColor(this.theme.errorText).width('100%').id('resolution-preference-error');
       }
       Text(this.message).fontSize(14).fontColor(this.theme.textSecondary).width('100%').id('resolution-preference-status');
-      SettingsHint({ text: '降低比例会减少游戏图像像素，画面保持全屏；游戏内文字也会随之缩放。保存后下次启动生效，游戏内调整仍只影响当局。', theme: this.theme });
+      SettingsHint({ text: '降低比例会减少游戏图像像素，画面保持全屏；游戏内文字也会随之缩放。保存后下次启动生效。', theme: this.theme });
     }.width('100%').alignItems(HorizontalAlign.Start);
   }
 

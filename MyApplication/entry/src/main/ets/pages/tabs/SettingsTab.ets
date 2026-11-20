@@ -69,6 +69,8 @@ export struct SettingsTab {
   @Prop tabletProcessActive: boolean = false
   @Prop tabletProcessSaving: boolean = false
   @Prop tabletProcessMessage: string = ''
+  @Prop gameKeepScreenOn: boolean = true
+  @Prop gameKeepScreenOnSaving: boolean = false
   /** 游戏数据存储位置：'sandbox' | 'external' */
   @Prop storageLocation: string = 'sandbox'
   /** 父层的 isExternalSupported 能力；手机目录准备和平板授权仍由父层切换流程完成。 */
@@ -120,6 +122,8 @@ export struct SettingsTab {
   onNewWindowChange: (isOn: boolean) => void = () => {}
   /** 父页面负责等待保存/错误回滚；此组件不修改当前进程路线或正在运行的游戏。 */
   onTabletProcessChange: (enabled: boolean) => void = () => {}
+  /** 与其他运行设置一样由启动器保存，界面只展示父页面确认的值。 */
+  onGameKeepScreenOnChange: (enabled: boolean) => void = () => {}
   /** 用户切换游戏数据存储位置（'sandbox'|'external'）；父组件负责权限/迁移/落盘。 */
   onStorageLocationChange: (loc: string, migrate?: boolean) => void = () => {}
   onOpenLog: () => void = () => {}
@@ -766,6 +770,7 @@ export struct SettingsTab {
   @Builder
   private Performance_() {
     Column({ space: 24 }) {
+      SettingsGroup({ theme: this.theme, content: (): void => { this.GameKeepScreenOn_(); } });
       SettingsHint({ text: '作为全局默认值；单个版本可在版本详情中覆盖。', theme: this.theme });
       if (this.viewportWidth >= 1120) {
         Row({ space: 24 }) {
@@ -774,6 +779,14 @@ export struct SettingsTab {
         }.width('100%').alignItems(VerticalAlign.Top);
       } else { this.Memory_(); this.Runtime_(); this.Process_(); this.Isolation_(); }
     }.width('100%');
+  }
+  @Builder
+  private GameKeepScreenOn_() {
+    SettingsToggleRow({ title: '游戏中保持屏幕常亮', description: '游戏在前台时防止自动息屏。修改后在下次启动游戏时生效。',
+      value: this.gameKeepScreenOn, saving: this.gameKeepScreenOnSaving, theme: this.theme,
+      controlId: 'settings-item-game-keep-screen-on', highlighted: this.highlightedItem === 'game-keep-screen-on',
+      onLayout: (): void => { this.locateItem_('game-keep-screen-on'); },
+      onChange: (value: boolean): void => { this.onGameKeepScreenOnChange(value); } });
   }
   @Builder
   private Memory_() {
