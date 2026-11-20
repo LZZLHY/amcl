@@ -1,59 +1,31 @@
 {
   "versionCode": 1000911,
-  "versionName": "1.0.8-pre1",
-  "tag": "v1.0.8-pre1",
-  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8-pre1",
-  "notes": "1.0.8-pre1\n- 优化侧载自更新和软件更新界面\n- 设置新增华为开发者账号入口，与自更新共用登录\n- 自动准备签名授权，改善授权过期和网络异常后的重试\n- 修复部分设备上实体鼠标进游戏后无法转动视角的问题",
+  "versionName": "1.0.8-pre2",
+  "tag": "v1.0.8-pre2",
+  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8-pre2",
+  "notes": "1.0.8-pre2\n- 新增游戏前台常亮，默认开启\n- 修复电脑端分辨率按钮遮挡游戏界面（#42）\n- 预览版可能出现异常，不承诺稳定性",
   "mandatory": false,
   "schema": 1,
-  "date": "2026-11-18",
+  "date": "2026-11-19",
   "prerelease": true,
-  "changelogUrl": "https://amcl.lovedhy.cn/changelog/v1.0.8-pre1",
+  "changelogUrl": "https://amcl.lovedhy.cn/changelog/v1.0.8-pre2",
   "notesEntries": [
     {
-      "type": "highlight",
-      "text": "侧载自更新减少手工操作。 在支持的签名环境下，登录华为开发者账号后，应用可自动准备签名授权并尝试保留现有安装的签名身份。设置页和更新流程共用登录状态。"
-    },
-    {
-      "type": "highlight",
-      "text": "恢复实体鼠标转视角。 修复启动游戏或调整本局分辨率后，已连接鼠标移动却无法带动视角的问题。画面尺寸确认后，游戏可重新申请鼠标捕获。"
-    },
-    {
       "type": "added",
-      "text": "在设置中管理华为开发者账号。 可从设置进入账号登录，查看已保存的授权状态，或退出开发者登录。"
-    },
-    {
-      "type": "improved",
-      "text": "更新提示和进度页。 手机与平板采用一致的更新用语。检查到更新时突出目标版本、摘要与主要操作。更新中显示当前进度、详情和可执行的操作。"
-    },
-    {
-      "type": "improved",
-      "text": "自动准备侧载签名。 优先续用已保存的签名密钥，并按需复用或申请开发证书与设备测试授权。"
-    },
-    {
-      "type": "improved",
-      "text": "优化更新下载来源。 新版更新器优先使用官网的更新推荐，官网请求不可用时可使用 GitHub 或 Pages 的备份。在原件通过完整性校验后，可以从官网或 GitHub 下载，镜像可用时也可使用镜像。"
+      "text": "游戏前台常亮。 默认开启，可在「设置 → 游戏与性能」关闭，修改后在下次启动游戏时生效。"
     },
     {
       "type": "fixed",
-      "text": "侧载更新中的登录、签名请求和错误提示。 改善冷启动后复用账号授权及令牌刷新，修复部分证书请求、授权文件下载和设备注册失败。"
+      "text": "电脑端分辨率按钮遮挡游戏界面。 移除电脑键鼠和触屏模式的局内分辨率入口。分辨率可在启动器的全局设置或版本详情调整，下次启动游戏时生效。(#42)"
     },
     {
       "type": "notice",
-      "text": "本版通过通用侧载测试通道交付。下载的 unsigned HAP 需要签名后侧载。"
-    },
-    {
-      "type": "notice",
-      "text": "应用内覆盖更新需要保留现装包的签名身份。使用自定义证书或密钥的安装，可能需要用原签名材料手动更新。登录同一个开发者账号也可能对应不同的签名密钥。"
-    },
-    {
-      "type": "notice",
-      "text": "部分旧版本的应用内检查需要兼容的镜像推荐。如果暂时看不到本预览，可从官方预览发布页手动取得安装包。"
+      "text": "这是用于提前体验和反馈的预览版，可能出现异常，不承诺稳定性。"
     }
   ],
   "updateChannel": "preview",
-  "publicationId": "085a569c9a2823afbbe568fc3d64e376c72e9b11e6308f70cd87afb65917e1e1",
-  "sizeBytes": 122998255,
+  "publicationId": "d96f021117db35467acfa47601bcec012fb8d64cbae411441c3fedb8d2015526",
+  "sizeBytes": 123008032,
   "delivery": {
     "schema": 1,
     "protocol": 2,
@@ -61,23 +33,23 @@
     "publicationReady": false,
     "assets": [
       {
-        "tag": "v1.0.8-pre1",
+        "tag": "v1.0.8-pre2",
         "versionCode": 1000911,
-        "versionName": "1.0.8-pre1",
+        "versionName": "1.0.8-pre2",
         "product": "sideload",
-        "name": "amcl-v1.0.8-pre1-sideload-unsigned.hap",
-        "sha256": "8d6d40b5807977abf82a58f7ccf6148c7628608f76ac703226edb83442d38365",
-        "sizeBytes": 122998255,
-        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.8-pre1/amcl-v1.0.8-pre1-sideload-unsigned.hap",
+        "name": "amcl-v1.0.8-pre2-sideload-unsigned.hap",
+        "sha256": "04cef954a07810830355ec6e75ae1f82b8e43b92994c14180b162fbdb2811177",
+        "sizeBytes": 123008032,
+        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.8-pre2/amcl-v1.0.8-pre2-sideload-unsigned.hap",
         "legacyUniversal": false,
-        "githubAssetId": 764057485,
+        "githubAssetId": 770582032,
         "audit": {
           "bundleName": "com.amcl.launcher",
           "versionCode": 1000911,
-          "versionName": "1.0.8-pre1",
+          "versionName": "1.0.8-pre2",
           "product": "sideload",
           "packagedProduct": "sideload",
-          "sourceRevision": "9b8b6f8a510292d65564d07aaf3bb3dcc17ff559",
+          "sourceRevision": "da25a1c48592c59e7240b262521a7ca17713d83a",
           "auditLevel": "package-profile",
           "minApi": 20,
           "targetApi": 23,
@@ -108,7 +80,7 @@
           2
         ],
         "runtimePlanProtocol": 2,
-        "sourceRevision": "9b8b6f8a510292d65564d07aaf3bb3dcc17ff559",
+        "sourceRevision": "da25a1c48592c59e7240b262521a7ca17713d83a",
         "runtimeRequiredCapabilities": [
           "zipfs-transaction-v1"
         ],
@@ -119,7 +91,7 @@
           25
         ],
         "mirrors": [],
-        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/8d6d40b5807977abf82a58f7ccf6148c7628608f76ac703226edb83442d38365/amcl-v1.0.8-pre1-sideload-unsigned.hap"
+        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/04cef954a07810830355ec6e75ae1f82b8e43b92994c14180b162fbdb2811177/amcl-v1.0.8-pre2-sideload-unsigned.hap"
       }
     ]
   }
