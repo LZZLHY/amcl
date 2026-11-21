@@ -65,6 +65,7 @@ import {
 import inputDevice from '@ohos.multimodalInput.inputDevice';
 import { getPointerVisibility } from 'gamecontrol';
 import { common } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { GraphicsProfileInput, GraphicsGameApi, LaunchProfileBuilder, LaunchProfile } from 'launch';
 import { MinecraftGraphicsPreferenceInput, MinecraftGraphicsRequest, resolveMinecraftGraphicsRequest,
@@ -170,6 +171,8 @@ struct McGamePage {
   private pageVisible: boolean = true
   private surfaceFocused: boolean = true
   private gameWindowReady: boolean = false
+  /** 只用于声明 Surface 是否不透明；不接管任何 surface 生命周期回调。 */
+  private mcSurfaceController: XComponentController = new XComponentController()
   private mcDir: string = ''
   /** 完成实例隔离校验后发布，只供触控专用动作读取当前游戏改键。 */
   @State touchGameDirectory: string = ''
@@ -409,7 +412,7 @@ struct McGamePage {
     try {
       const accepted: boolean = testNapi.setOhosFrameRateCap(fpsCap)
       this.launchLogger_().info(TAG,
-        `OHOS scheduler cap injected: ${fpsCap === 0 ? 'auto' : fpsCap + ' Hz'} accepted=${accepted}`,
+        `OHOS scheduler rate injected: ${fpsCap === 0 ? 'auto' : fpsCap + ' Hz pinned'} accepted=${accepted}`,
         LOG_DOMAIN_LAUNCH)
     } catch (e) {
       this.launchLogger_().warn(TAG, 'OHOS frame-rate cap injection failed', e, LOG_DOMAIN_LAUNCH)
@@ -460,7 +463,27 @@ struct McGamePage {
     }
   }
 
+  /**
+   * 把 MC 的 Surface 声明为"渲染时不透明"：RS 会按无需与下层混合处理该自渲染图层。
+   * 官方开关是 API 22 起的 `setXComponentSurfaceConfig`，配置挂在 controller 上，
+   * 组件重建时会自行补发，所以只需在这里声明一次。
+   * 只作用于 MC 全屏自绘（内容整帧覆盖），不会给带透明区域的 Surface 用。
+   */
+  private applyOpaqueSurfaceConfig_(): void {
+    // compatibleSdkVersion 是 20，运行期低于 22 时接口不存在，保持原默认行为。
+    if (deviceInfo.sdkApiVersion < 22) return
+    try {
+      this.mcSurfaceController.setXComponentSurfaceConfig({ isOpaque: true })
+      this.launchLogger_().info(TAG,
+        `MC surface declared opaque (api=${deviceInfo.sdkApiVersion})`, LOG_DOMAIN_LAUNCH)
+    } catch (e) {
+      this.launchLogger_().warn(TAG, 'XComponent opaque surface config unavailable', e, LOG_DOMAIN_LAUNCH)
+    }
+  }
+
   async aboutToAppear(): Promise<void> {
+    // 必须在 XComponent 创建前声明：配置随 controller 带到 Surface，晚设会先按混合走一轮。
+    this.applyOpaqueSurfaceConfig_()
     this.applyToolTheme_()
     let activityId: number = AppStorage.get<number>('mcLaunchActivityId') ?? 0
     try { activityId = (this.getUIContext().getRouter().getParams() as McGameRouteParams).activityId ?? activityId }
@@ -1030,10 +1053,15 @@ struct McGamePage {
       XComponent({
         id: 'mc_game_surface',
         type: XComponentType.SURFACE,
-        libraryname: 'entry'
+        libraryname: 'entry',
+        controller: this.mcSurfaceController
       })
         .width('100%')
         .height('100%')
+        // 显式钉住不透光纯黑底色：SURFACE 类型默认就是它，但底色一旦变成半透明，RS 会
+        // 直接禁用该层的硬件合成（官方《高效利用HWC的低功耗设计》"避免自渲染图层设置
+        // 透明度"）。MC 整屏自绘、画面全不透明，与底色没有叠加需求。
+        .backgroundColor('#FF000000')
         // ⚠️ 这里曾用 `responseRegionList` 把鼠标从本组件的命中链剔除（FINGER/PEN 全区、
         // MOUSE 推到组件外），想借 `xcomponentAndWebOnly` 那条"按组件类型判定转换"的能力
         // 让左键回到 onMouse。**真机已否证，不要再加回来。**

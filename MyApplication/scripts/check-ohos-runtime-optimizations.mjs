@@ -300,6 +300,39 @@ requireFunctionBodyMatch(glfwCompat,
 
 requireMatch(frameHeader, /fpsCap[\s\S]*active/, 'cap-aware pure policy');
 requireMatch(frame, /foregroundSources/, 'Ability foreground source mask');
+// 面板帧率 pinner：只在"已激活且用户选定固定速率"时存在，停用后延迟到锁外销毁；
+// 回调线程只续请求帧，不碰 XComponent，因此不构成第二个渲染/呈现循环。
+requireFunctionBodyMatch(frame, /\bvoid\s+EnsureFrameRatePinnerLocked\s*\([^)]*\)/,
+  /OH_NativeVSync_SetExpectedFrameRateRange[\s\S]*OH_NativeVSync_RequestFrame/,
+  'pinned-rate vote before the first panel frame request');
+requireFunctionBodyMatch(frame, /\bvoid\s+StopFrameRatePinnerLocked\s*\([^)]*\)/,
+  /OH_NativeVSync_SetExpectedFrameRateRange[\s\S]*RetireFrameRatePinnerLocked/,
+  'vote reset before the retired panel instance is parked');
+requireFunctionBodyMatch(frame, /\bvoid\s+ReapFrameRatePinner\s*\(\s*\)/,
+  /pinnerRetired[\s\S]*OH_NativeVSync_Destroy/,
+  'retired panel instances destroyed outside the frame lock');
+requireFunctionBodyMatch(frame, /\bvoid\s+OnFrameRatePinnerFrame\s*\([^)]*\)/,
+  /OH_NativeVSync_RequestFrame/,
+  'panel frame callback only rearms the next request');
+forbidMatch(functionBody(frame, /\bvoid\s+OnFrameRatePinnerFrame\s*\([^)]*\)/,
+  'panel frame callback') || '',
+  /OH_NativeXComponent_|Draw|RequestBuffer/,
+  'XComponent use from the panel frame callback');
+requireFunctionBodyMatch(frame, /\bbool\s+ApplyControllerLocked\s*\([^)]*\)/,
+  /active\s*&&\s*effectiveCap\s*>\s*0[\s\S]*EnsureFrameRatePinnerLocked[\s\S]*else[\s\S]*StopFrameRatePinnerLocked\s*\(/,
+  'panel pinner gated on the active lifecycle and a user-selected rate');
+requireMatch(cmake, /libnative_vsync\.so/, 'native VSync link for the panel-rate pinner');
+// XComponent 的不透明声明依赖 API 22 接口，低版本必须保持默认行为。
+requireMatch(gamePage, /setXComponentSurfaceConfig\(\{\s*isOpaque:\s*true\s*\}\)/,
+  'opaque XComponent surface declaration');
+requireMatch(gamePage, /sdkApiVersion\s*<\s*22/,
+  'API-22 runtime guard for the opaque surface declaration');
+// Vulkan 路径的队列深度由交换链 minImageCount 决定，这里把在飞张数提到 5。
+requireMatch(mgConfig, /MOBILEGL_MAGMA_FRAMESINFLIGHT/,
+  'swapchain-driven BufferQueue depth');
+// 帧率候选必须来自面板上报的支持档位。
+requireMatch(settingsPage, /supportedRefreshRates/,
+  'panel-supported refresh-rate candidates');
 requireMatch(frameHeader,
   /return state\.surfaceReady && state\.focused &&\s*state\.foregroundSources != 0;/,
   'surface, foreground and focus activation gate');
@@ -345,8 +378,8 @@ requireMatch(preferences,
   'persistent normalized OHOS frame-rate cap');
 // 界面已由即时 chip 改为确认式单选：仍需自动值、完整候选和同一 native 交付回调，
 // 不把旧 Builder 名称保留为门禁替身，也不因新布局削弱下面的真实持久化/即时交付检查。
-requireMatch(settingsPage, /系统调度帧率上限[\s\S]*this\.openSheet_\('frame'\)/,
-  'explicit scheduler-cap settings entry');
+requireMatch(settingsPage, /系统调度帧率[\s\S]*this\.openSheet_\('frame'\)/,
+  'explicit scheduler-rate settings entry');
 requireMatch(settingsPage, /\[0, 30, 60, 90, 120, 144, 165, 240\]/,
   'scheduler-cap automatic and explicit choices');
 requireMatch(settingsPage, /kind === 'frame'\) this\.onOhosFrameRateCapChange\(Number\(value\)\)/,
@@ -416,7 +449,7 @@ if (!process.exitCode) {
   console.log('[check-ohos-runtime-optimizations] PASS');
   console.log('  benchmark: explicit + disposable-context gated, identity cache, no auto selection');
   console.log('  image probe: producer + consumer DSO paths log address/path/dev/inode + content identity');
-  console.log('  frame hint: persisted cap + display-change refresh + lifecycle policy; no second frame loop');
+  console.log('  frame hint: persisted rate + display-change refresh + lifecycle policy + panel pinner; no second render loop');
   console.log('  NativeWindow: API-20-safe GET telemetry only; no prealloc/usage mutation');
   console.log('  MG config: current schema preserved; legacy/malformed backed up and normalized');
 }

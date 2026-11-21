@@ -314,6 +314,11 @@ export default class GameAbility extends UIAbility {
 
   onBackground(): void {
     this.abilityForeground = false;
+    // 帧率前台位必须在隔离判断之前撤销：非隔离形态下面板与 XComponent 仍在，
+    // 漏掉会让选定的固定帧率在后台继续投票。
+    try {
+      testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, false)
+    } catch (e) { /* 老 native 兼容 */ }
     if (!this.isolated) return;
     ModAudioRuntime.setForeground(false);
     // 同 onDestroy：焦点撤销失败只记录，下面的三端释放与 native 兜底必须照常执行。
@@ -326,9 +331,6 @@ export default class GameAbility extends UIAbility {
     // 同 onDestroy：先对三端各说一次，再 native 兜底。
     getInputSourceRegistry().releaseAllEnds('game-ability-background')
     try { testNapi.cancelAllInput(2) } catch (e) { /* 老 native 兼容 */ }
-    try {
-      testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, false)
-    } catch (e) { /* 老 native 兼容 */ }
     AppLogger.info(TAG, 'onBackground', LOG_DOMAIN_LAUNCH);
   }
 }

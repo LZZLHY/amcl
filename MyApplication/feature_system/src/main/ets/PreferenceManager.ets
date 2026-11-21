@@ -728,8 +728,9 @@ export class PreferenceManager {
   set devRendererOverride(v: string) { this.put('devRendererOverride', v); }
 
   /**
-   * HarmonyOS 给游戏 XComponent 的调度帧率上限。0 = 自动跟随当前显示刷新率；
-   * 30..240 = 用户明确设置的硬上限。它不读写 Minecraft options.txt，也不冒充
+   * HarmonyOS 给游戏 XComponent 的调度帧率。0 = 自动跟随当前显示刷新率；
+   * 30..240 = 用户明确设置的帧率，native 侧把 min/max/expected 全部固定为该值，
+   * 防止 LTPO 动态降频。它不读写 Minecraft options.txt，也不冒充
    * 游戏自身的 FPS limiter。非法/旧脏值在读取和写入时都归一化为 Auto。
    */
   get ohosFrameRateCap(): number {

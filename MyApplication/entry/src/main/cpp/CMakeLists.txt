@@ -1124,9 +1124,10 @@ if(AMCL_NATIVE_DESKTOP_ONLY)
     target_link_libraries(entry PUBLIC libEGL.so)
 endif()
 
-# XComponent 帧率 hint 使用真实显示刷新率；不向其他 target 传播此 OHOS 依赖。
+# XComponent 帧率 hint 使用真实显示刷新率；面板固定帧率 pinner 用 native_vsync。
+# 不向其他 target 传播此 OHOS 依赖。
 if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
-    target_link_libraries(entry PRIVATE libnative_display_manager.so)
+    target_link_libraries(entry PRIVATE libnative_display_manager.so libnative_vsync.so)
 endif()
 
 # ============================================================

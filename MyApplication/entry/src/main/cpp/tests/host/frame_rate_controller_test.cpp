@@ -5,7 +5,9 @@
  */
 #include "ohos_frame_rate_hint.h"
 #include <ace/xcomponent/native_interface_xcomponent.h>
+#include <native_vsync/native_vsync.h>
 #include <window_manager/oh_display_manager.h>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +23,29 @@ static std::vector<int> graphicsForeground;
 static uint32_t displayRate = 60;
 static unsigned displayQueries = 0;
 static int nextSdkResult = 0;
+
+/** VSync pinner 外部SDK真实声明接缝：记录创建/销毁/请求与每次range下发。 */
+static unsigned vsyncCreates = 0, vsyncDestroys = 0, vsyncRequests = 0;
+static std::vector<std::array<int, 3>> vsyncRanges;
+static OH_NativeVSync fakeVsync{77};
+extern "C" OH_NativeVSync* OH_NativeVSync_Create(const char*, size_t) {
+    ++vsyncCreates; return &fakeVsync;
+}
+extern "C" void OH_NativeVSync_Destroy(OH_NativeVSync* vsync) {
+    if (vsync == &fakeVsync) ++vsyncDestroys;
+}
+extern "C" int32_t OH_NativeVSync_SetExpectedFrameRateRange(
+    OH_NativeVSync*, OH_NativeVSync_ExpectedRateRange* range) {
+    vsyncRanges.push_back({range->min, range->max, range->expected}); return 0;
+}
+extern "C" int32_t OH_NativeVSync_RequestFrame(
+    OH_NativeVSync*, OH_NativeVSync_FrameCallback, void*) {
+    ++vsyncRequests; return 0;
+}
+/** pinner 最后一次下发未复位的range（nullptr=当前无pinner会话）。 */
+static bool lastPinnerRangePinned() {
+    return !vsyncRanges.empty() && vsyncRanges.back()[0] != 0;
+}
 
 /** 外部SDK真实声明接缝：仅记录调用及事先指定的一次结果，不实现生产去重算法。 */
 extern "C" int32_t OH_NativeXComponent_SetExpectedFrameRateRange(
@@ -76,6 +101,7 @@ int main() {
     check(applications.empty() && !RefreshExpectedFrameRateHintForDisplayRate(60, "cold"), "COLD_NO_SDK");
     RegisterFrameRateComponent(&first); SetFrameRateSurfaceReady(&first, true, "surface-created");
     check(applications.size() == 1, "FIRST_READY_APPLIED"); expectRange(&first, 30, 60, 60);
+    check(vsyncCreates == 0 && vsyncRequests == 0, "AUTO_MODE_NO_PINNER");
     for (unsigned i = 0; i < 100; ++i) check(RefreshExpectedFrameRateHintForDisplayRate(60, "display-change"), "REFRESH_ACCEPTED");
     check(applications.size() == 1, "STABLE_REFRESH_SINGLE_SDK");
     check(logCount("frame-rate-hint-unchanged") == 0, "STABLE_REFRESH_DIAGNOSTIC_QUIET");
@@ -90,30 +116,45 @@ int main() {
     displayRate = 90;
     check(RefreshExpectedFrameRateHint("compat-default-display"), "COMPAT_QUERY_ACCEPTED");
     check(displayQueries > 0 && applications.size() == 4, "COMPAT_QUERY_STILL_RUNS");
-    check(SetRuntimeFrameRateCap(60, "runtime-cap"), "CAP_CHANGE"); expectRange(&first, 30, 60, 60);
+    check(SetRuntimeFrameRateCap(60, "runtime-cap"), "CAP_CHANGE"); expectRange(&first, 60, 60, 60);
+    check(vsyncCreates == 1 && vsyncRequests == 1, "PINNER_STARTED_ON_USER_RATE");
+    check(vsyncRanges.back()[0] == 60 && vsyncRanges.back()[1] == 60 &&
+        vsyncRanges.back()[2] == 60, "PINNER_RANGE_ALL_60");
     const auto afterCap = applications.size();
     check(SetRuntimeFrameRateCap(60, "runtime-cap"), "SAME_CAP"); check(applications.size() == afterCap, "SAME_CAP_QUIET");
     SetFrameRateFocused(&first, false, "blur"); expectRange(&first, 30, 30, 30);
+    check(vsyncRanges.back()[0] == 0 && vsyncRanges.back()[1] == 0 &&
+        vsyncRanges.back()[2] == 0, "PINNER_RESET_ON_BLUR");
+    check(vsyncDestroys == 1, "PINNER_DESTROYED_OUTSIDE_LOCK_AFTER_BLUR");
     const auto afterBlur = applications.size(); SetFrameRateFocused(&first, false, "blur");
     check(applications.size() == afterBlur, "SAME_BLUR_QUIET");
-    SetFrameRateFocused(&first, true, "focus"); expectRange(&first, 30, 60, 60);
+    SetFrameRateFocused(&first, true, "focus"); expectRange(&first, 60, 60, 60);
+    check(vsyncCreates == 2 && vsyncRequests == 2 && lastPinnerRangePinned(),
+        "PINNER_RESTARTED_ON_FOCUS");
     check(SetFrameRateForegroundSource(2, false, "ability-background"), "BACKGROUND_ACCEPTED"); expectRange(&first, 30, 30, 30);
+    check(vsyncDestroys == 2, "PINNER_STOPPED_ON_BACKGROUND");
     check(inputForeground.back() == 0 && graphicsForeground.back() == 0, "BACKGROUND_NOTIFICATIONS_RETAINED");
     const auto afterBackground = applications.size(); check(SetFrameRateForegroundSource(2, false, "ability-background"), "SAME_BACKGROUND");
     check(applications.size() == afterBackground && inputForeground.back() == 0 && graphicsForeground.back() == 0,
         "SAME_BACKGROUND_ONLY_NOTIFICATIONS");
-    check(SetFrameRateForegroundSource(2, true, "ability-foreground"), "RESTORE_FOREGROUND"); expectRange(&first, 30, 60, 60);
+    check(SetFrameRateForegroundSource(2, true, "ability-foreground"), "RESTORE_FOREGROUND"); expectRange(&first, 60, 60, 60);
+    check(vsyncCreates == 3 && vsyncRequests == 3 && lastPinnerRangePinned(),
+        "PINNER_RESTARTED_ON_FOREGROUND");
     const auto beforeReplacement = applications.size(); RegisterFrameRateComponent(&second);
     check(applications.size() == beforeReplacement + 1, "OLD_COMPONENT_INACTIVE_BEFORE_REPLACE"); expectRange(&first, 30, 30, 30);
-    SetFrameRateSurfaceReady(&second, true, "new-surface"); expectRange(&second, 30, 60, 60);
+    check(vsyncDestroys == 3, "PINNER_STOPPED_ON_COMPONENT_REPLACE");
+    SetFrameRateSurfaceReady(&second, true, "new-surface"); expectRange(&second, 60, 60, 60);
+    check(vsyncCreates == 4 && vsyncRequests == 4, "PINNER_FOLLOWS_NEW_COMPONENT");
     check(applications.size() == beforeReplacement + 2, "NEW_COMPONENT_SAME_POLICY_APPLIED");
     const auto beforeStale = applications.size();
     SetFrameRateFocused(&first, false, "stale-focus"); SetFrameRateSurfaceReady(&first, false, "stale-destroy");
     check(!ApplyExpectedFrameRateHint(&first, "stale-apply") && applications.size() == beforeStale, "STALE_COMPONENT_REJECTED");
     SetFrameRateSurfaceReady(&second, false, "surface-destroyed"); expectRange(&second, 30, 30, 30);
+    check(vsyncDestroys == 4, "PINNER_STOPPED_ON_SURFACE_DESTROYED");
     const auto beforeReopen = applications.size();
     check(!RefreshExpectedFrameRateHintForDisplayRate(60, "surface-absent") && applications.size() == beforeReopen, "DETACHED_NO_REFRESH");
-    SetFrameRateSurfaceReady(&second, true, "surface-recreated"); expectRange(&second, 30, 60, 60);
+    SetFrameRateSurfaceReady(&second, true, "surface-recreated"); expectRange(&second, 60, 60, 60);
+    check(vsyncCreates == 5 && vsyncRequests == 5, "PINNER_RESTARTED_ON_SURFACE_RECREATED");
     check(applications.size() == beforeReopen + 1, "REOPEN_SAME_POLICY_FORCED");
     const auto beforeExplicit = applications.size(); check(ApplyExpectedFrameRateHint(&second, "surface-changed-idempotent"), "EXPLICIT_LIFECYCLE_APPLY");
     check(applications.size() == beforeExplicit + 1, "EXPLICIT_SAME_POLICY_STILL_FORCED");
