@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-22T14:56:05Z",
+  "generatedAt": "2026-11-22T15:20:28Z",
   "categories": [
     "highlight",
     "added",
@@ -730,7 +730,8 @@
             "text": "模组详情开放完整版本浏览，本地列表支持完整多关键词搜索。",
             "details": [
               "无合适实例或加载器时仍可阅读其他文件的版本、大小、支持范围和依赖；当前实例用于默认推荐，实际安装另行校验。",
-              "本地模组按需构建、有界扫描，按文件名和显示名进行大小写无关的多关键词搜索，包含禁用和未知来源项；补齐 Quilt 下 Fabric 前置查询。"
+              "本地模组按需构建、有界扫描，按文件名和显示名进行大小写无关的多关键词搜索，包含禁用和未知来源项；补齐 Quilt 下 Fabric 前置查询。",
+              "改善模组较多时打开已安装模组列表的稳定性，列表项按需加载，文件在后台分批扫描。 ([#29](https://github.com/LZZLHY/amcl/issues/29))"
             ]
           },
           {
@@ -1002,7 +1003,8 @@
             "type": "improved",
             "text": "Restore complete mod release browsing and full local multi-keyword search.",
             "details": [
-              "Browse release details without a matching instance or loader. Keep recommendations separate from installation checks; search disabled and unknown-source mods as well. Improve Fabric dependency candidates under Quilt."
+              "Browse release details without a matching instance or loader. Keep recommendations separate from installation checks; search disabled and unknown-source mods as well. Improve Fabric dependency candidates under Quilt.",
+              "Improved stability when opening the installed mods list for large modpacks. Rows load on demand, and files are scanned in bounded background batches. ([#29](https://github.com/LZZLHY/amcl/issues/29))"
             ]
           },
           {
