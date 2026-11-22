@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-19T14:52:13Z",
+  "generatedAt": "2026-11-22T14:56:05Z",
   "categories": [
     "highlight",
     "added",
@@ -30,7 +30,10 @@
           {
             "type": "added",
             "text": "游戏前台常亮。 默认开启，可在「设置 → 游戏与性能」关闭，修改后在下次启动游戏时生效。",
-            "markdown": "**游戏前台常亮。** 默认开启，可在「设置 → 游戏与性能」关闭，修改后在下次启动游戏时生效。"
+            "markdown": "**游戏前台常亮。** 默认开启，可在「设置 → 游戏与性能」关闭，修改后在下次启动游戏时生效。",
+            "details": [
+              "[#24](https://github.com/LZZLHY/amcl/issues/24), [#40](https://github.com/LZZLHY/amcl/issues/40)"
+            ]
           },
           {
             "type": "fixed",
@@ -48,7 +51,10 @@
           {
             "type": "added",
             "text": "Keep the screen on during gameplay. On by default. You can turn it off under Settings → Game & Performance. Changes take effect the next time you launch a game.",
-            "markdown": "**Keep the screen on during gameplay.** On by default. You can turn it off under Settings → Game & Performance. Changes take effect the next time you launch a game."
+            "markdown": "**Keep the screen on during gameplay.** On by default. You can turn it off under Settings → Game & Performance. Changes take effect the next time you launch a game.",
+            "details": [
+              "[#24](https://github.com/LZZLHY/amcl/issues/24), [#40](https://github.com/LZZLHY/amcl/issues/40)"
+            ]
           },
           {
             "type": "fixed",
@@ -81,7 +87,10 @@
           {
             "type": "highlight",
             "text": "恢复实体鼠标转视角。 修复启动游戏或调整本局分辨率后，已连接鼠标移动却无法带动视角的问题。画面尺寸确认后，游戏可重新申请鼠标捕获。",
-            "markdown": "**恢复实体鼠标转视角。** 修复启动游戏或调整本局分辨率后，已连接鼠标移动却无法带动视角的问题。画面尺寸确认后，游戏可重新申请鼠标捕获。"
+            "markdown": "**恢复实体鼠标转视角。** 修复启动游戏或调整本局分辨率后，已连接鼠标移动却无法带动视角的问题。画面尺寸确认后，游戏可重新申请鼠标捕获。",
+            "details": [
+              "[#35](https://github.com/LZZLHY/amcl/issues/35)"
+            ]
           },
           {
             "type": "added",
@@ -149,7 +158,10 @@
           {
             "type": "highlight",
             "text": "Restored physical mouse look. Fixed a case where moving a connected mouse could stop turning the camera after launching a game or changing its resolution. The game can request mouse capture again when the drawable size is confirmed.",
-            "markdown": "**Restored physical mouse look.** Fixed a case where moving a connected mouse could stop turning the camera after launching a game or changing its resolution. The game can request mouse capture again when the drawable size is confirmed."
+            "markdown": "**Restored physical mouse look.** Fixed a case where moving a connected mouse could stop turning the camera after launching a game or changing its resolution. The game can request mouse capture again when the drawable size is confirmed.",
+            "details": [
+              "[#35](https://github.com/LZZLHY/amcl/issues/35)"
+            ]
           },
           {
             "type": "added",
@@ -250,6 +262,7 @@
             "text": "游戏分辨率缩放。",
             "markdown": "**游戏分辨率缩放。**",
             "details": [
+              "[#30](https://github.com/LZZLHY/amcl/issues/30)",
               "支持在全局设置、单个版本详情和游戏内调整渲染分辨率比例，游戏显示区域继续保持全屏。",
               "单个版本可跟随全局设置，也可保存独立比例或使用原生分辨率；游戏内调整作用于当前游戏。",
               "提供快捷档位、滑杆和微调，修复调整后画面、触控坐标及返回游戏时的同步问题。"
@@ -439,6 +452,7 @@
             "text": "Game resolution scaling.",
             "markdown": "**Game resolution scaling.**",
             "details": [
+              "[#30](https://github.com/LZZLHY/amcl/issues/30)",
               "Adjust rendering scale globally, for an individual game version, or during the current session while keeping the display area full screen.",
               "Per-version settings can inherit the global scale, use a saved override or select native resolution, with presets, a slider and fine adjustments.",
               "Improved synchronization between rendered geometry, touch coordinates and returning to the game."
@@ -627,6 +641,7 @@
             "type": "highlight",
             "text": "新增可保存的悬浮虚拟鼠标，支持按住拖动、滚轮和 Shift。",
             "details": [
+              "[#25](https://github.com/LZZLHY/amcl/issues/25)",
               "支持单指随动、双指接力和屏幕边缘摆位；入口作为系统控件保存，可移动、缩放、调整外观及显隐。",
               "旧方案缺少入口时补在右下方，保留已有用户定位和设置。"
             ]
@@ -652,13 +667,14 @@
             "text": "触控布局新增持久控件组及部分第三方布局导入。",
             "details": [
               "支持组的初始显隐、成员和分阶段显示、隐藏、切换动作；运行中切组保留其他来源的合法按住状态。",
-              "可转换 Pojav/Amethyst、FCL 和 Zalith 2 的部分常规布局，并在导入前展示差异；补齐 FCL 21 组适配和 AMCL v5 组关系保存、导出。"
+              "可转换 Pojav/Amethyst、FCL 和 Zalith 2 的部分常规布局，并在导入前展示差异；补齐 FCL 21 组适配和 AMCL v5 组关系保存、导出。 ([#26](https://github.com/LZZLHY/amcl/issues/26))"
             ]
           },
           {
             "type": "added",
             "text": "补充菜单触摸板、浮动摇杆、陀螺仪配置与按需操作引导。",
             "details": [
+              "[#24](https://github.com/LZZLHY/amcl/issues/24)",
               "提供推远疾跑、双指滚动和独立快捷栏双击、长按动作；五步引导在用户明确请求后进入，可关闭并从设置重新开启。"
             ]
           },
@@ -805,7 +821,7 @@
             "type": "fixed",
             "text": "修复旧加载器扫描现代 LWJGL 失败，补齐相关模块和 EGL 信息。",
             "details": [
-              "为 JDK 17/21/25 提供匹配的多版本类视图，改善 Wing 等旧 Fabric/TinyRemapper 组合；补全 NanoVG、OpenGLES、shaderc 及 GLFW NativeEGL。"
+              "为 JDK 17/21/25 提供匹配的多版本类视图，改善 Wing 等旧 Fabric/TinyRemapper 组合；补全 NanoVG、OpenGLES、shaderc 及 GLFW NativeEGL。 ([#28](https://github.com/LZZLHY/amcl/issues/28))"
             ]
           },
           {
@@ -901,6 +917,7 @@
             "type": "highlight",
             "text": "Add a persistent floating virtual mouse with dragging, wheel and Shift controls.",
             "details": [
+              "[#25](https://github.com/LZZLHY/amcl/issues/25)",
               "Improve single-finger following, two-finger handoff and edge placement. Move, resize and customize its saved system control; preserve existing placement in older layouts."
             ]
           },
@@ -925,13 +942,14 @@
             "text": "Add persistent touch groups and conversion of selected third-party layouts.",
             "details": [
               "Configure initial visibility, members and staged show, hide and toggle actions without clearing other input sources.",
-              "Support selected Pojav/Amethyst, FCL and Zalith 2 layouts with a conversion report, FCL 21 group adaptation and AMCL v5 group persistence and export."
+              "Support selected Pojav/Amethyst, FCL and Zalith 2 layouts with a conversion report, FCL 21 group adaptation and AMCL v5 group persistence and export. ([#26](https://github.com/LZZLHY/amcl/issues/26))"
             ]
           },
           {
             "type": "added",
             "text": "Add optional menu trackpad, floating joystick, gyro settings and an on-demand tutorial.",
             "details": [
+              "[#24](https://github.com/LZZLHY/amcl/issues/24)",
               "Provide distance-based sprint, two-finger scrolling and separate hotbar double-tap and long-press actions. The five-step tutorial starts only on request and can be reopened from settings."
             ]
           },
@@ -1072,7 +1090,7 @@
             "type": "fixed",
             "text": "Fix old loaders scanning modern LWJGL and complete related modules and EGL information.",
             "details": [
-              "Provide Java 17/21/25-appropriate multi-release views for combinations such as Wing with older Fabric/TinyRemapper; complete NanoVG, OpenGLES, shaderc and GLFW NativeEGL integration."
+              "Provide Java 17/21/25-appropriate multi-release views for combinations such as Wing with older Fabric/TinyRemapper; complete NanoVG, OpenGLES, shaderc and GLFW NativeEGL integration. ([#28](https://github.com/LZZLHY/amcl/issues/28))"
             ]
           },
           {
@@ -1159,7 +1177,10 @@
         "entries": [
           {
             "type": "highlight",
-            "text": "修复部分游戏无论选择哪种渲染器，都因 JNA 临时目录参数冲突而无法启动的问题。"
+            "text": "修复部分游戏无论选择哪种渲染器，都因 JNA 临时目录参数冲突而无法启动的问题。",
+            "details": [
+              "[#21](https://github.com/LZZLHY/amcl/issues/21)"
+            ]
           },
           {
             "type": "highlight",
@@ -1219,7 +1240,10 @@
         "entries": [
           {
             "type": "highlight",
-            "text": "Fix games failing to start with any renderer because of conflicting JNA temporary-directory arguments."
+            "text": "Fix games failing to start with any renderer because of conflicting JNA temporary-directory arguments.",
+            "details": [
+              "[#21](https://github.com/LZZLHY/amcl/issues/21)"
+            ]
           },
           {
             "type": "highlight",
@@ -1714,7 +1738,10 @@
           },
           {
             "type": "fixed",
-            "text": "修复加入 IPv6 服务器失败，并更新 JDK 8、17、21、25 的 IPv6 沙箱兼容组件。"
+            "text": "修复加入 IPv6 服务器失败，并更新 JDK 8、17、21、25 的 IPv6 沙箱兼容组件。",
+            "details": [
+              "[#16](https://github.com/LZZLHY/amcl/issues/16)"
+            ]
           },
           {
             "type": "fixed",
@@ -1817,7 +1844,10 @@
           },
           {
             "type": "fixed",
-            "text": "Failure to join IPv6 servers, with updated sandbox compatibility components for JDK 8, 17, 21 and 25."
+            "text": "Failure to join IPv6 servers, with updated sandbox compatibility components for JDK 8, 17, 21 and 25.",
+            "details": [
+              "[#16](https://github.com/LZZLHY/amcl/issues/16)"
+            ]
           },
           {
             "type": "fixed",
@@ -1890,7 +1920,7 @@
             "text": "AI 崩溃日志分析：崩溃后可一键分析，给出结论与技术详情（可展开查看完整日志），结果支持 Markdown 渲染。",
             "markdown": "**AI 崩溃日志分析**：崩溃后可一键分析，给出结论与技术详情（可展开查看完整日志），结果支持 Markdown 渲染。",
             "details": [
-              "分析与日志分享由 [logshare.cn](https://logshare.cn) 提供：同一处可把日志上传生成分享链接，反馈问题时直接附上即可。"
+              "分析与日志分享由 [logshare.cn](https://logshare.cn) 提供：同一处可把日志上传生成分享链接，反馈问题时直接附上即可。 ([#12](https://github.com/LZZLHY/amcl/issues/12))"
             ]
           },
           {
@@ -1931,7 +1961,10 @@
           {
             "type": "fixed",
             "text": "旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上：安装器内部路径带前导斜杠被过严校验拦下。",
-            "markdown": "**旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上**：安装器内部路径带前导斜杠被过严校验拦下。"
+            "markdown": "**旧版 Forge（1.12.2 / 1.11.2 等）100% 装不上**：安装器内部路径带前导斜杠被过严校验拦下。",
+            "details": [
+              "[#14](https://github.com/LZZLHY/amcl/issues/14)"
+            ]
           },
           {
             "type": "fixed",
@@ -2003,7 +2036,7 @@
             "text": "AI crash log analysis: after a crash, analyse the log with one tap to get a verdict plus technical details (expandable to the full log), rendered as Markdown.",
             "markdown": "**AI crash log analysis**: after a crash, analyse the log with one tap to get a verdict plus technical details (expandable to the full log), rendered as Markdown.",
             "details": [
-              "Analysis and log sharing are powered by [logshare.cn](https://logshare.cn): the same place uploads a log and returns a shareable link to attach to your report."
+              "Analysis and log sharing are powered by [logshare.cn](https://logshare.cn): the same place uploads a log and returns a shareable link to attach to your report. ([#12](https://github.com/LZZLHY/amcl/issues/12))"
             ]
           },
           {
@@ -2044,7 +2077,10 @@
           {
             "type": "fixed",
             "text": "Legacy Forge (1.12.2 / 1.11.2 …) failed to install every time: the installer's internal path carried a leading slash and was rejected by an over-strict safety check.",
-            "markdown": "**Legacy Forge (1.12.2 / 1.11.2 …) failed to install every time**: the installer's internal path carried a leading slash and was rejected by an over-strict safety check."
+            "markdown": "**Legacy Forge (1.12.2 / 1.11.2 …) failed to install every time**: the installer's internal path carried a leading slash and was rejected by an over-strict safety check.",
+            "details": [
+              "[#14](https://github.com/LZZLHY/amcl/issues/14)"
+            ]
           },
           {
             "type": "fixed",
@@ -2376,6 +2412,11 @@
           },
           {
             "type": "fixed",
+            "text": "修复整合包版本名称过长时，选中行的 NeoForge 标签被挤出的问题。 (#8)",
+            "markdown": "修复整合包版本名称过长时，选中行的 NeoForge 标签被挤出的问题。 ([#8](https://github.com/LZZLHY/amcl/issues/8))"
+          },
+          {
+            "type": "fixed",
             "text": "各处「去下载页」跳转只切大 Tab、不定位到模组 / 资源包 / 光影二级子页。"
           },
           {
@@ -2453,6 +2494,11 @@
           {
             "type": "improved",
             "text": "Removed the double-search race where the mod list flashed \"no results\" after the spinner finished."
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed the NeoForge badge being pushed out of the selected modpack version row by a long version name. (#8)",
+            "markdown": "Fixed the NeoForge badge being pushed out of the selected modpack version row by a long version name. ([#8](https://github.com/LZZLHY/amcl/issues/8))"
           },
           {
             "type": "fixed",
@@ -2820,6 +2866,11 @@
           },
           {
             "type": "fixed",
+            "text": "修复游戏内软键盘和外置键盘无法输入的问题，原报告者在此版确认恢复。 (#2)",
+            "markdown": "修复游戏内软键盘和外置键盘无法输入的问题，原报告者在此版确认恢复。 ([#2](https://github.com/LZZLHY/amcl/issues/2))"
+          },
+          {
+            "type": "fixed",
             "text": "Forge：多版本及 MC 26.1 启动崩溃；新增损坏深度修复（保护存档与模组）。"
           },
           {
@@ -2828,7 +2879,10 @@
           },
           {
             "type": "fixed",
-            "text": "Sodium / LWJGL 校验错误。"
+            "text": "Sodium / LWJGL 校验错误。",
+            "details": [
+              "[#3](https://github.com/LZZLHY/amcl/issues/3)"
+            ]
           },
           {
             "type": "fixed",
@@ -2880,6 +2934,11 @@
           },
           {
             "type": "fixed",
+            "text": "Fixed in-game input from the on-screen and external keyboards, as confirmed by the reporter in this release. (#2)",
+            "markdown": "Fixed in-game input from the on-screen and external keyboards, as confirmed by the reporter in this release. ([#2](https://github.com/LZZLHY/amcl/issues/2))"
+          },
+          {
+            "type": "fixed",
             "text": "Forge: launch crashes on several versions and on MC 26.1; added deep repair for damaged installs that preserves worlds and mods."
           },
           {
@@ -2888,7 +2947,10 @@
           },
           {
             "type": "fixed",
-            "text": "Sodium / LWJGL verification errors."
+            "text": "Sodium / LWJGL verification errors.",
+            "details": [
+              "[#3](https://github.com/LZZLHY/amcl/issues/3)"
+            ]
           },
           {
             "type": "fixed",
