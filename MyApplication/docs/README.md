@@ -1,11 +1,11 @@
 # 公开文档索引
 
-首次接触工程建议先看构建说明，再按架构和依赖索引定位源码。
+首次安装游戏可从[项目首页](../../README.md)开始，遇到运行问题可查[兼容性与故障反馈指南](../../docs/compatibility-and-feedback.md)。准备阅读或构建应用源码时，使用下列工程文档。
 
 | 文档 | 用途 |
 |---|---|
 | [BUILD_SNAPSHOT.md](BUILD_SNAPSHOT.md) | 工具链基线、克隆和依赖准备、DevEco/Hvigor 构建、结果检查、常见错误与第三方重建范围 |
-| [public-reproduction-audit.md](public-reproduction-audit.md) | 2026-09-24 实际构建结果、HAP 哈希、Git 导出校验与尚未解决的复现边界 |
+| [public-reproduction-audit.md](public-reproduction-audit.md) | 按版本与公开提交记录独立构建的工具环境、HAP 哈希、包内检查和复现范围 |
 | [architecture.md](architecture.md) | 应用模块、游戏进程、Native/JVM 运行链路和产品配置 |
 | [CREDITS.md](CREDITS.md) | 第三方组件来源、适配补丁、配方及许可证入口 |
 | [../SOURCE_SNAPSHOT.json](../SOURCE_SNAPSHOT.json) | 同步来源、工作区状态和文件身份 |

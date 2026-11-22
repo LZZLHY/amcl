@@ -1,6 +1,8 @@
 # OpenJDK 21 for HarmonyOS NEXT (aarch64)
 
-> **状态（2026-05-19 v6）：双版本上线，"⚠️ 实验性"**
+JDK 21 已有稳定运行包，启动器按通道和宿主能力选择兼容构建。下文保留早期版本的实现和验证背景。[运行时目录](https://amcl.lovedhy.cn/runtimes) · [现行构建源码输入](../build-inputs.json)
+
+> **历史记录 · 2026-05-19 的 v6 实验性发行和后续 v7 资产**
 >
 > - 用户在 SettingsTab 中可手动切换 17 / 21；MC ≥ 1.20.5 时 JdkManager.autoSelectVersion 会推荐 21。
 > - GitHub Release：`LZZLHY/mc-ohos-resources` tag `v21.0.5-ohos-7` 资产 `jdk21-ohos-full-v7.zip`（sha256 `21556d0d4fc5eea0…`，114267146 B）。
@@ -65,7 +67,7 @@ docker exec ohos-debug bash -c "cd /build/jdk21u && make images"
 
 ## 编译方式
 
-JDK 21 上线后唯一受支持的编译路径：
+早期发行使用以下容器布局编译。现行构建和发布入口见[运行时仓库](https://github.com/LZZLHY/mc-ohos-resources)。
 
 ```bash
 docker run -it --name ohos-debug \

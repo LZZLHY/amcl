@@ -4,7 +4,7 @@ AMCL 在 HarmonyOS NEXT 上管理并启动 Minecraft Java Edition。工程同时
 
 ## 应用和游戏进程
 
-[entry/src/main/ets/](../entry/src/main/ets/) 提供入口、页面、组件、系统窗口和运行时服务。EntryAbility 承载启动器界面；GameAbility 在 [entry/src/main/module.json5](../entry/src/main/module.json5) 中声明为 :game 私有进程内的单实例 Ability。游戏启动准备通过运行时快照把配置交给游戏进程，避免把两个进程的内存状态视为同一份状态。
+`EntryAbility` 承载启动器界面。手机在游戏页面运行，电脑使用独立游戏进程，支持该模式的平板可在设置里选择。独立进程的入口是单实例 `GameAbility`，启动器通过运行时快照把配置交给 `:game` 进程。[页面与运行时服务](../entry/src/main/ets/) · [Ability 声明](../entry/src/main/module.json5)
 
 | 模块 | 主要职责 |
 |---|---|
@@ -34,7 +34,7 @@ AMCL 在 HarmonyOS NEXT 上管理并启动 Minecraft Java Edition。工程同时
 
 [entry/src/main/cpp/CMakeLists.txt](../entry/src/main/cpp/CMakeLists.txt) 决定实际的源文件、编译选项和链接目标。MobileGlues 从 prebuilt/mobileglues/mg_src/MobileGlues-cpp/ 接入编译图；MobileGL 是独立的 DSO，普通 HAP 使用 prebuilt/mobilegl/dist/ 中随快照保留并经校验的锁定输入，也保留独立源码重建配方。
 
-[JavaApp/src/](../JavaApp/src/) 的 AmclLauncher、AmclClassLoader、LaunchConfig 和 ForgeHelper 等类在 JVM 内完成启动配置、类加载与兼容处理。[scripts/build-amcl-launcher.mjs](../scripts/build-amcl-launcher.mjs) 生成 amcl-launcher.jar，启动器主体采用 Java 8 目标字节码；同一构建入口还调用 [scripts/build-game-compat.py](../scripts/build-game-compat.py) 生成独立的 Fabric 兼容 JAR，该部分采用 Java 21 目标字节码。因此构建主机需要 JDK 21 或更高版本，不能从启动器的 Java 8 字节码目标推断主机只需要 JDK 8。
+JVM 内的 AmclLauncher、AmclClassLoader、LaunchConfig 和 ForgeHelper 负责启动配置、类加载与兼容处理。构建脚本将启动器主体编译为 Java 8 字节码。独立的 Fabric 兼容 JAR 面向 Java 21，但编译时要读取 Java 25 的输入类，因此该步骤需要 JDK 25 或更高版本的编译器。[Java 源码](../JavaApp/src/) · [启动器构建入口](../scripts/build-amcl-launcher.mjs) · [兼容层构建入口](../scripts/build-game-compat.py)
 
 ## 图形、音频与运行时输入
 

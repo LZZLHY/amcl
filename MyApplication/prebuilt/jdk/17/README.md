@@ -1,15 +1,12 @@
 # OpenJDK 17 for HarmonyOS NEXT (aarch64)
 
-## 状态
-
-✅ **生产运行时**。当前 release: `v17.0.13-ohos-5`（commit `jdk-17.0.13+11`）。
+JDK 17 的稳定和预览运行包由启动器按通道及宿主能力选择。下文记录基于 `jdk-17.0.13+11` 的历史发行和适配。现行配方锁定的源码提交另有清单。[运行时目录](https://amcl.lovedhy.cn/runtimes) · [现行构建源码输入](../build-inputs.json)
 
 License: **GPL-2.0 with Classpath Exception**（OpenJDK 上游许可证不变）。
 
-## 完整产物
+## 历史发行包
 
-`jdk17-ohos-full-v4.zip`（109 MB）**不再入主仓 git**。由 `mc-ohos-resources` Release
-通道下发：https://github.com/LZZLHY/mc-ohos-resources/releases/tag/v17.0.13-ohos-5
+`v17.0.13-ohos-5` 的附件是 `jdk17-ohos-full-v5.zip`，旧版启动器按下方摘要校验。[v5 发行页](https://github.com/LZZLHY/mc-ohos-resources/releases/tag/v17.0.13-ohos-5)
 
 > ⚠️ **v5（2026-08-29）相对 v4 只替换了 `lib/libnet.so`**（IPv6 沙箱回落 patch，
 > `patches/0010-ipv6-supported-sandbox-fallback.patch`），包内其余 71 个文件逐字节相同、
@@ -28,9 +25,9 @@ zip 内容：
 - `conf/`：JDK 配置
 - `release`：安装标记 + 版本元数据
 
-## SoT (Single Source of Truth)
+## 旧版启动器使用的包身份
 
-`deps.lock` 的 `[mc-ohos-resources]` 段是版本元数据 SoT：
+`deps.lock` 的 `[mc-ohos-resources]` 段保留该历史资产的数据。
 
 ```ini
 [mc-ohos-resources]
@@ -41,9 +38,7 @@ sizeBytes = 113762513
 sha256    = 0e26b0dece38156838456cfb12058d863aa9856cdd8fd648f06f9bc5e91f8ecd
 ```
 
-ArkTS 端三处必须一致（CI 自动校验）：
-- `commons/src/main/ets/common/Constants.ets`：`SUPPORTED_RELEASE_TAG / ASSET`
-- `launch/src/main/ets/JdkManager.ets`：`JDK_VERSIONS['17'].{tag,dataFile,sha256,sizeBytes}`
+旧版客户端用固定标签和文件名查找这个包。源码保留了对应别名，目录化客户端从可信运行时目录选取兼容的包。
 
 ## 编译方式（仅 release engineer 需要）
 
@@ -92,15 +87,9 @@ prebuilt/jdk/17/
 跨依赖共享的 ABI shim 在另一处 — `prebuilt/stubs/src/`：
 - `cxxabi_shim.cpp` + `eh_stubs.c`：JDK / LWJGL / OpenAL 都链接它编出来的 `libcxxabi_shim.so`
 
-### 升级到 JDK 17 新 LTS patch
+### 更新运行时
 
-1. `git ls-remote --tags https://github.com/openjdk/jdk17u.git` 看新 tag
-2. 改 `deps.lock` 的 `[openjdk].tag` + `commit`
-3. `bash docker/build_jdk17_ohos.sh`（会自动 `apply_patches.sh --patch-dir prebuilt/jdk/17/patches/`）
-4. 验证产物：`du -sh /output/`、`file /output/lib/server/libjvm.so`、加载 + JNI 创建 + 运行 MC
-5. 上传新 zip 到 `mc-ohos-resources` Release，tag 命名 `v<jdk-version>-ohos-<rev>`
-6. 更新 `deps.lock` 的 `[mc-ohos-resources]`（tag/asset/sha256/sizeBytes）+ ArkTS 三处
-7. CI 校验三处一致 → PR
+新配方按源码输入清单固定上游提交。构建后的运行包、校验摘要和对应的宿主兼容要求由资源仓登记。[源码输入](../build-inputs.json) · [运行时发布规范](https://github.com/LZZLHY/mc-ohos-resources/blob/main/docs/publishing.md)
 
 ## HotSpot Patches 简要
 

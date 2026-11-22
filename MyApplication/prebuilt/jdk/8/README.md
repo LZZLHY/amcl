@@ -1,6 +1,8 @@
 # OpenJDK 8u452 for HarmonyOS NEXT — 老版本 MC 的 Java 8 运行时
 
-## 状态
+JDK 8 的稳定和预览运行包由启动器按通道及宿主能力选择。下文记录 8u452 的早期移植和旧包身份。[运行时目录](https://amcl.lovedhy.cn/runtimes) · [现行构建源码输入](../build-inputs.json)
+
+## 早期设备验证
 
 ✅ **可用（2026-06-12 真机跑通）**。`jdk8-ohos-full.zip` 在 OHOS aarch64/musl 交叉编译成功，
 MC **1.16.1** vanilla 用 JDK 8 + LWJGL 3.2.2 套 + gl4es **真机成功出图、入游戏**。
@@ -26,10 +28,10 @@ jdk8u（OpenJDK 8u452，老森林：`hotspot/` `jdk/` `langtools/` …）。boot
 ## 发布物（GitHub Release）
 
 - 仓库：`LZZLHY/mc-ohos-resources`
-- **当前**：tag `v8u452-ohos-4`，资产 `jdk8-ohos-full-v4.zip`
+- 旧版 HAP 使用的 tag 为 `v8u452-ohos-4`，资产为 `jdk8-ohos-full-v4.zip`。
   - size = `39555296` B，sha256 = `02c2cedb3539682de3df3d7870b855bfefaac1f4cfe53951cfe90b0dea3d3a63`
   - Gitee 分卷：`jdk8-ohos-full-v4.zip.part01of02` / `part02of02`，各 `19777648` B（2 等分）
-  - 校验和 / 字节数已回填 `launch/src/main/ets/JdkManager.ets` 的 `JDK_VERSIONS['8']` 与 `deps.lock [mc-ohos-resources-8]`。
+  - 旧版启动器按固定字节数和 SHA-256 校验该资产。历史身份保存在 `deps.lock` 的 `[mc-ohos-resources-8]` 段。
 - 历史（**旧 tag 与附件一律保持在线不动**：旧版 HAP 把 size/sha256 硬编码，原地换资产会让那批用户装不上且不自愈）：
   - `v8u452-ohos-3`（2026-06-13，补回 ManifestEntryVerifier 单参构造器，size 39570295 / sha256 478fa9a5a0dfe80bbfcd8d980b2978d4f878d69a38b17f57703daf9a3bff8f6f）。
   - `v8u452-ohos-2`（2026-06-12，修好 4 类 clang UB，size 39689841 / sha256 a1c2632974630c86482648bfbe615855913e6b172dea561df50118aa7e794640）。
@@ -43,7 +45,7 @@ jdk8u（OpenJDK 8u452，老森林：`hotspot/` `jdk/` `langtools/` …）。boot
   ⇒ JDK 8 的构建位级可复现，本包与 v3 的唯一差异就是该 patch。导出符号 93 → 93 逐个相同，
   `DT_NEEDED` 一致。
 
-> ⚠️ 改 libjvm.so 后必须：重打包 zip → 重算 sha256/size → 同步 JdkManager → 传新 tag 的 Release。
+新的运行包按资源仓的发行流程登记独立版本、包摘要和兼容要求。[运行时发布规范](https://github.com/LZZLHY/mc-ohos-resources/blob/main/docs/publishing.md)
 
 ## 补丁（`patches/`，经 `series` 顺序应用）
 
@@ -145,6 +147,6 @@ workaround」层）：
 
 - C2（server JIT）已启用并真机验证可用（null-this UB 修复后）；仅对 `CompletableFuture.*` 做 C2
   exclude（已知误编译）。若后续发现其他热点方法被 C2 误编译，可按同法 `CompileCommand=exclude` 规避。
-- auto 路由仍不主动选 JDK 8（仅手动选择，给老 Forge/整合包用）；≤1.16.5 走 gl4es + LWJGL 3.2.2 套。
+- 此次早期验证手动选择了 JDK 8。目前启动器按游戏清单和加载器约束匹配已安装的 Java。
 - signal/safepoint 适配沿用 JDK8 旧全局 polling-page 机制，已随真机出图间接验证；如遇运行期偶发崩溃
   再针对性排查。

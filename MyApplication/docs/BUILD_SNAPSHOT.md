@@ -1,12 +1,8 @@
 # 公开快照构建说明
 
-1.0.8-pre1 / 1000911 的公开输入对应干净源提交 `9b8b6f8a510292d65564d07aaf3bb3dcc17ff559`，完整文件身份见 `SOURCE_SNAPSHOT.json`。这是沿用 1.0.7 安装码的预览快照，包含分辨率确认后的实体鼠标捕获修复、更新界面和开发者授权复用、自动签名及新版原站交付协议。
+从公开仓库完整克隆后，在 `MyApplication/` 目录准备依赖并使用 DevEco/Hvigor 编译 HAP。要核对手上这份源码，请打开同一提交下的快照清单。`release.versionName` 和 `release.versionCode` 是应用版本和安装码，`sourceCommit` 是对应的主工程提交。[源码快照清单](../SOURCE_SNAPSHOT.json)
 
-四代正式 JDK 独立发布；App、目录读取协议、恢复读取协议与 JDK 装载协议分别按实际包内声明核对。公开快照固定已公开的 MobileGL 源码与锁定制品，普通 HAP 重建按下述公开依赖流程执行。1.0.7 的 [公开复建记录](public-reproduction-audit.md) 对应干净源提交 `1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6`。源码导出、公开克隆构建、正式侧载包和真机验收各自记录证据。
-
-2026-09-24 已按此流程完成 **1.0.4 / 1000671、sideload / release / unsigned** HAP 构建及包内关键输入校验；环境、产物 SHA-256 和剩余限制见 [本轮核验记录](public-reproduction-audit.md)。
-
-本文从公开仓库的全新 Git 克隆开始，说明怎样准备依赖并编译 HarmonyOS HAP。工程目录为 MyApplication/，以下命令除克隆外均在该目录执行。
+要查某一版是否实际构建过，请按版本和公开提交查阅复建记录。报告分别记录了 1.0.7 和 1.0.4 的侧载构建、工具环境、产物摘要和验证范围。[公开复建记录](public-reproduction-audit.md)
 
 先明确验证范围：普通 HAP 构建会编译应用 ArkTS、Java 启动层、MobileGlues 和 OpenAL 等 Native 源码，同时使用快照保留的 MobileGL、SDL3、LWJGL Native、curl 等第三方二进制输入。MobileGL 的两份库和构建来源记录随快照提供，正常构建无需先重编它。把这些输入也全部从源码重新编译，是范围更大的第三方重建工作；逐字节重现官方签名 Release 还涉及工具链、路径、构建元数据和签名，不能由一次 HAP 编译成功推断。
 
@@ -22,7 +18,7 @@
 | Hvigor 基线 | 锁文件记录 6.26.4；过旧插件可能在读取 26.0.0 SDK 配置时失败 |
 | Native 基线 | BiSheng clang 15.0.4、CMake 3.28.2；具体工具身份还记录在 toolchain.lock 的 SHA-256 中 |
 | Node.js | 使用与所装 Hvigor 配套的 Node，并确保 node 命令在 PATH 中可用 |
-| JDK | HAP 构建使用完整 JDK 21 或更高，含 javac、java、jar；兼容层输入可单独配置完整 JDK 25，见 build-dependencies.local.json.example，不提交本机配置 |
+| 构建用 JDK | 通用 Java 工具使用完整 JDK 21 或更高版本。游戏兼容层编译器需要 JDK 25 或更高版本，以读取 Java 25 的输入类。可用 `AMCL_COMPAT_JAVA_HOME` 单独指定，或使用本机配置中的 `compatJavaHome`。[配置示例](../build-dependencies.local.json.example) |
 | Rust | 非 store 产品的手机 HDC 使用 Cargo 与 aarch64-unknown-linux-ohos target，按 Cargo.lock 的 --locked 模式构建；没有对应工具链时会明确失败 |
 | Python | Python 3；python 命令应在 PATH 可用。Java 构建和 LWJGL 后处理均会调用 Python；AMCL_PYTHON 可指定部分 Node 入口使用的解释器 |
 | PowerShell | 本文示例采用 PowerShell；可选的独立 Native 重建配方通过 pwsh 调用 PowerShell 7 |
@@ -96,7 +92,7 @@ node scripts/prepare-public-deps.mjs --check
 
 无参数命令准备依赖；--check 只检查已准备内容。首次运行需要下载较大的源码树，耗时取决于网络。按脚本报出的仓库、路径和命令判断进展，不要把某一次大型 Git 下载耗时直接视为编译卡死。
 
-1.0.7 的游戏兼容层还需要 [threading-inputs.json](../prebuilt/runtime-compat/threading-inputs.json) 中固定的编译输入。选择一个仓库外目录并显式下载；下载器会校验实际长度和摘要，游戏／模组本体不进入兼容层 JAR。把下面路径换成本机目录，并将 `AMCL_COMPAT_JAVA_HOME` 指向完整 JDK 25：
+游戏兼容层需要锁定的编译依赖。选择一个仓库外的下载目录，并将 `AMCL_COMPAT_JAVA_HOME` 指向完整 JDK 25。下载器会校验文件长度和摘要，兼容层 JAR 只打包适配代码。[编译输入清单](../prebuilt/runtime-compat/threading-inputs.json)
 
 ```powershell
 $env:AMCL_GAME_COMPAT_INPUTS = 'C:/AMCL-cache/game-compat-inputs'
@@ -200,7 +196,7 @@ Get-ChildItem entry/build/default/outputs -Recurse -Filter *.hap
 | Windows 提示 Filename too long | 准备入口已为所有 Git 写入（包括 External）启用 longpaths；仍建议短路径克隆，SDK/Native 工具也可能有自己的路径限制。旧版入口留下的半成品目录不要当作完整依赖，先保存自己的修改再恢复锁定文件 |
 | 下载停在 Git LFS / trace_replay 大型数据 | 使用 prepare-public-deps.mjs 入口；它自动跳过普通 HAP 不需要的可选 LFS 回放夹具，不必额外执行 git lfs pull |
 | 缺少 glslang External/spirv-tools | 重新运行 prepare-public-deps.mjs；这些依赖不由常规递归子模块初始化取得 |
-| javac 不支持 release 21 | JAVA_HOME 和实际 javac 是否为 JDK 21+；DevEco 终端可能继承旧环境变量 |
+| `javac` 不支持 `release 21` 或提示 `Compatibility input requires JDK 25+` | 检查当前终端的 `javac -version`。兼容层优先使用 `AMCL_COMPAT_JAVA_HOME`，其次使用本机配置的 `compatJavaHome`，最后回退到 `JAVA_HOME` 或 PATH。确认实际选中的 `bin/javac` 为 25 或更高版本。 |
 | Python 找不到或兼容 JAR 生成失败 | 检查 python、AMCL_PYTHON、LWJGL JAR 是否已准备及来源清单校验输出 |
 | SDK 版本字符串无效或缺少 API | 检查 Hvigor/插件与 SDK 是否匹配，不要仅修改 compatibleSdkVersion 来掩盖编译 SDK 不匹配 |
 | check-lwjgl-native-surface 找不到 llvm-readelf | 按第 3 节设置 OHOS_LLVM_READELF，并确认 Test-Path 为 True |
