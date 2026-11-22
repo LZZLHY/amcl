@@ -1,5 +1,7 @@
 # AMCL 应用架构概览
 
+**简体中文** · [English](../../docs/en/architecture.md)
+
 AMCL 在 HarmonyOS NEXT 上管理并启动 Minecraft Java Edition。工程同时包含 ArkTS/ArkUI、Native C/C++、Java 启动层和第三方运行时输入；单独编译其中一层不能得到可运行的 HAP。
 
 ## 应用和游戏进程

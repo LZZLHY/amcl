@@ -1,5 +1,7 @@
 # 公开文档索引
 
+**简体中文** · [English](../../docs/en/README.md)
+
 首次安装游戏可从[项目首页](../../README.md)开始，遇到运行问题可查[兼容性与故障反馈指南](../../docs/compatibility-and-feedback.md)。准备阅读或构建应用源码时，使用下列工程文档。
 
 | 文档 | 用途 |

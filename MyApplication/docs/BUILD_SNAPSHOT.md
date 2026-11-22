@@ -1,5 +1,7 @@
 # 公开快照构建说明
 
+**简体中文** · [English](../../docs/en/build.md)
+
 从公开仓库完整克隆后，在 `MyApplication/` 目录准备依赖并使用 DevEco/Hvigor 编译 HAP。要核对手上这份源码，请打开同一提交下的快照清单。`release.versionName` 和 `release.versionCode` 是应用版本和安装码，`sourceCommit` 是对应的主工程提交。[源码快照清单](../SOURCE_SNAPSHOT.json)
 
 要查某一版是否实际构建过，请按版本和公开提交查阅复建记录。报告分别记录了 1.0.7 和 1.0.4 的侧载构建、工具环境、产物摘要和验证范围。[公开复建记录](public-reproduction-audit.md)

@@ -2,7 +2,8 @@
   <img src="./assets/agc-icon-216.png" width="112" height="112" alt="AMCL 图标">
   <h1>AMCL · Axe Minecraft Launcher</h1>
   <p>在 HarmonyOS NEXT 设备上运行 Minecraft Java Edition</p>
-  <p><a href="https://amcl.lovedhy.cn/download">官网下载</a> · <a href="https://github.com/LZZLHY/amcl/releases/latest">GitHub 稳定版</a> · <a href="docs/compatibility-and-feedback.md">兼容性与故障反馈</a></p>
+  <p><strong>简体中文</strong> · <a href="README.en.md" lang="en">English</a></p>
+  <p><a href="https://amcl.lovedhy.cn/download">官网下载</a> · <a href="https://github.com/LZZLHY/amcl/releases/latest">GitHub 稳定版</a> · <a href="https://amcl.lovedhy.cn/docs/getting-started">快速开始</a> · <a href="docs/compatibility-and-feedback.md">兼容性与故障反馈</a></p>
 </div>
 
 AMCL 是面向鸿蒙手机、平板和电脑的 Minecraft Java 版启动器。你可以在设备上下载游戏、安装模组、管理不同版本的存档和配置，再用触控布局或实体键鼠进入世界。游戏在设备本机的 OpenJDK 中运行。
