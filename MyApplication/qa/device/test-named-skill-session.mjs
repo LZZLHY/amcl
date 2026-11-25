@@ -59,8 +59,8 @@ bus.bind('accounts',owner,async (_name, args) => {
   return {state, reason:'fromOwner', readback:args.playerName.length};
 });
 for (const [business,transport] of Object.entries({ready:'ok', draft:'ok', accepted:'accepted', needsUser:'needsUser',
-    failed:'rejected', unavailable:'rejected', busy:'rejected', initializing:'rejected', cancelled:'rejected',
-    partial:'unknown', unknown:'unknown', waiting:'unknown'})) {
+    failed:'rejected', unavailable:'rejected', busy:'rejected', cancelled:'rejected',
+    initializing:'unknown', partial:'unknown', unknown:'unknown', waiting:'unknown'})) {
   state = business;
   const r = await call(action,{playerName:'demo'});
   assert.equal(r.status,transport); assert.deepEqual(r.data,{state,reason:'fromOwner',readback:4}); assert.equal(r.reason,'fromOwner');

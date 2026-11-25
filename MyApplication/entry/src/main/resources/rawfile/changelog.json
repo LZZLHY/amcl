@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-25T14:39:49Z",
+  "generatedAt": "2026-11-25T14:47:41Z",
   "categories": [
     "highlight",
     "added",
@@ -11,14 +11,14 @@
   ],
   "latest": {
     "versionName": "1.0.8",
-    "versionCode": 1001105,
+    "versionCode": 1001106,
     "tag": "v1.0.8",
     "date": "2026-11-25"
   },
   "releases": [
     {
       "versionName": "1.0.8",
-      "versionCode": 1001105,
+      "versionCode": 1001106,
       "tag": "v1.0.8",
       "date": "2026-11-25",
       "prerelease": false,
@@ -102,8 +102,8 @@
           },
           {
             "type": "improved",
-            "text": "版本下载页先显示缓存，再按当前来源后台校验。",
-            "markdown": "**版本下载页先显示缓存，再按当前来源后台校验。**",
+            "text": "版本下载页先显示缓存并后台校验，切换类别时已有版本平滑移位。",
+            "markdown": "**版本下载页先显示缓存并后台校验，切换类别时已有版本平滑移位。**",
             "details": [
               "每次进入都会检查更新。校验失败仍可浏览缓存并重试。上方插入新版本时，会保留当前阅读位置。",
               "首屏可见的版本依次出现。切换快照等类别时，已有版本平滑移到新位置，新匹配的版本依次显示。向下浏览时，每一行只在第一次滚入屏幕时淡入。关闭系统动画后，列表直接显示。"
@@ -123,8 +123,7 @@
             "text": "首次安装优先使用可读写的外部游戏目录。",
             "markdown": "**首次安装优先使用可读写的外部游戏目录。**",
             "details": [
-              "AMCL 先尝试系统下载目录，获准且确认可读写后才使用，否则使用应用私有目录。升级沿用原有位置。已选外部目录但临时失去访问权限时会保留原位置偏好。",
-              "使用「迁移数据并切换」后，即使提示完成，也请先保留原目录并核对目标目录中的存档。复制出错时可能漏掉文件。原目录只有共享存档、没有已装版本时，也可能只切换位置，存档仍留在原处。"
+              "AMCL 先尝试系统下载目录，获准且确认可读写后才使用，否则使用应用私有目录。升级沿用原有位置。已选外部目录但临时失去访问权限时会保留原位置偏好。"
             ]
           },
           {
@@ -243,10 +242,18 @@
           },
           {
             "type": "notice",
-            "text": "放弃已开始的本地整合包任务，可能留下临时副本。",
+            "text": "迁移游戏目录即使提示完成，也请保留原目录，核对目标存档。",
             "details": [
-              "补齐整合包缺件后请核对模组启用状态。此前手动禁用的模组可能被重新启用。"
+              "复制出错时可能漏掉文件。原目录只有共享存档、没有已装版本时，也可能只切换位置，存档仍留在原处。"
             ]
+          },
+          {
+            "type": "notice",
+            "text": "放弃已开始的本地整合包任务，可能留下临时副本。"
+          },
+          {
+            "type": "notice",
+            "text": "整合包补件可能重新启用已禁用的模组，修复后请核对。"
           }
         ],
         "summary": "本版汇总了自 1.0.7 以来的改动，包含 1.0.8-pre1、pre2 的功能及后续修复。"
@@ -327,8 +334,8 @@
           },
           {
             "type": "improved",
-            "text": "The version download page shows the cached list first, then checks the selected source in the background.",
-            "markdown": "**The version download page shows the cached list first, then checks the selected source in the background.**",
+            "text": "The version download page shows the cached list first, checks for updates in the background and moves existing rows smoothly when you change filters.",
+            "markdown": "**The version download page shows the cached list first, checks for updates in the background and moves existing rows smoothly when you change filters.**",
             "details": [
               "Each visit checks for changes. If the check fails, you can keep browsing the cached list and retry. When a new version appears above the one you’re reading, the list keeps your place.",
               "The versions that fit on screen appear in sequence. When you change a filter, such as snapshots, existing rows slide into place and new matches appear in order. As you scroll, each row fades in only the first time you see it. With system animations turned off, rows appear immediately."
@@ -348,8 +355,7 @@
             "text": "Fresh installs prefer a writable external game folder.",
             "markdown": "**Fresh installs prefer a writable external game folder.**",
             "details": [
-              "AMCL tries the system Downloads location and checks permission and read/write access. If that fails, it uses private storage. Upgrades keep the existing location. Temporary loss of access does not discard an existing external-folder preference.",
-              "After using “Migrate data and switch”, keep the original folder until you have checked your worlds in the destination, even if AMCL says the migration is complete. A copy error can leave files behind. If the original folder has shared worlds but no installed versions, AMCL may also switch folders without copying those worlds."
+              "AMCL tries the system Downloads location and checks permission and read/write access. If that fails, it uses private storage. Upgrades keep the existing location. Temporary loss of access does not discard an existing external-folder preference."
             ]
           },
           {
@@ -465,10 +471,18 @@
           },
           {
             "type": "notice",
-            "text": "Abandoning a local modpack from the recovery list after installation starts can still leave a copy of its archive in private app storage.",
+            "text": "After migrating your game folder, keep the original until you have checked your worlds in the destination, even if AMCL says the migration is complete.",
             "details": [
-              "Check enabled mods after repairing missing pack files. A mod you previously disabled may be enabled again."
+              "A copy error can leave files behind. If the original folder has shared worlds but no installed versions, AMCL may also switch folders without copying those worlds."
             ]
+          },
+          {
+            "type": "notice",
+            "text": "Abandoning a local modpack from the recovery list after installation starts can still leave a copy of its archive in private app storage."
+          },
+          {
+            "type": "notice",
+            "text": "Check which mods are enabled after repairing missing pack files. A mod you previously disabled may be enabled again."
           }
         ],
         "summary": "This release includes 1.0.8-pre1, pre2 and the subsequent changes since 1.0.7."

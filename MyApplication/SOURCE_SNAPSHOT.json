@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "sourceCommit": "bb8eface1eaffb4c57a6b74e0421cb0c63461afa",
+  "sourceCommit": "42a65c0e5c14dfe38cbd661291207b542c38526d",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
     "versionName": "1.0.8",
-    "versionCode": 1001105
+    "versionCode": 1001106
   },
   "exporter": {
     "schemaVersion": 2,
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "33eb5df3d1c7dbb15e56167f8b1087706d1aa80b9cfa58eb0905116f6dd3933b",
+      "sha256": "61ab487d0207469e8fefd106b85ae965fe7dad229ade6d33816232f78ae81952",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -852,7 +852,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "c10b2779c8cf77c83d97b73461f6d24ac842977f6beb3d3e46d451713b14dd68",
+      "sha256": "c4ed43976261176d496f2f98e4b8a01836f069029318068554e5733b58adce54",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -10015,7 +10015,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "58bf9cd4201ecc074c35c2ced3737a1d3eb2ee7fc6e103dd88f6fad251d64fd4",
+      "sha256": "9b257b033af00163958b59177e584737ec85e94424fb887ee1119bc6da81034f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17554,7 +17554,7 @@
     },
     {
       "path": "qa/device/test-named-skill-session.mjs",
-      "sha256": "58b3d990aff9e15e666f6f007e4d953f62f2a2d4fac9337efa6794a47b15faf8",
+      "sha256": "d9e37158da27bec494251e859b965b64d0668cb923c3a4930034e1fe1a399835",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
