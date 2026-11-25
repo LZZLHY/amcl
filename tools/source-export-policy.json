@@ -8,9 +8,14 @@
     "hvigorfile.ts", "oh-package.json5", "oh-package-lock.json5", "setup_deps.sh", "toolchain.lock",
     "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_core.cpp",
     "docs/testing/evidence/nativegl-admission-audit-20260921/openharmony/egl_wrapper_custom.cpp",
-    "docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md"
+    "docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md",
+    "qa/contracts/actions.json",
+    "qa/device/draft-leave-session-cases.mjs", "qa/device/picker-session-cases.mjs", "qa/device/session-fixture.mjs",
+    "qa/device/test-accounts.mjs", "qa/device/test-game.mjs", "qa/device/test-launcher-library-skill.mjs",
+    "qa/device/test-launcher-skill-surfaces.mjs", "qa/device/test-management.mjs", "qa/device/test-named-skill-session.mjs",
+    "qa/device/test-resources.mjs", "qa/device/test-session.mjs", "qa/device/test-skill-task-ownership.mjs"
   ],
-  "privateRoots": [".github", ".idea", ".vscode", ".codex", ".cursor", ".claude", ".kiro", ".aoci", "docs"],
+  "privateRoots": [".github", ".idea", ".vscode", ".codex", ".cursor", ".claude", ".kiro", ".aoci", "docs", "qa"],
   "privateFiles": ["AGENTS.md", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "build-dependencies.local.json", "local.properties", "build-profile.json5"],
   "publicOwnedFiles": [
     ".gitignore", ".gitmodules", ".clang-tidy", "LICENSE", "NOTICE", "README.md", "build-profile.json5.template",

@@ -61,6 +61,12 @@ write(source, 'config/products.json', '{"products":{}}\n'); write(source, 'deps.
 write(source, 'gate0-evidence.lock', '{"capabilities":{}}\n');
 write(source, 'docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md', 'Reviewed public build/test input\n');
 write(source, 'docs/private-diagnostic.md', 'PRIVATE-NOT-EXPORTED\n');
+write(source, 'qa/contracts/actions.json', '{"schema":1}\n');
+write(source, 'qa/device/session-fixture.mjs', 'export const fixture = {};\n');
+write(source, 'qa/device/test-named-skill-session.mjs', "import './session-fixture.mjs';\n");
+write(source, 'qa/host/device.py', 'PRIVATE-NOT-EXPORTED\n');
+write(source, 'qa/scenarios/version-journey.json', 'PRIVATE-NOT-EXPORTED\n');
+write(source, 'qa/device/device-receipt.json', 'PRIVATE-NOT-EXPORTED\n');
 write(source, 'entry/src/main/ets/PublicCode.ets', 'export const value = 1;\n');
 write(source, 'entry/src/main/ets/Old.ets', 'export const old = 1;\n');
 write(source, 'JavaCpuAgent/src/CpuAgent.java', 'class CpuAgent {}\n');
@@ -102,6 +108,11 @@ record('initial export includes complete first-party roots and protects private 
   apply(initial.plan);
   for (const relative of ['JavaCpuAgent/src/CpuAgent.java', 'JavaAudioServiceAgent/src/AudioAgent.java', 'docs/adaptation/MOBILEGL_ADAPTATION_PLAN.md', 'DEPENDENCY_INPUTS.json']) assert(fs.existsSync(path.join(target, 'MyApplication', relative)));
   for (const relative of ['entry/src/main/private.p12', 'entry/.secrets/token.txt', 'docs/private-diagnostic.md']) assert.equal(fs.existsSync(path.join(target, 'MyApplication', relative)), false);
+  for (const row of initial.value.inventory.filter(row => row.path.startsWith('qa/'))) {
+    const share = ['qa/contracts/actions.json', 'qa/device/session-fixture.mjs', 'qa/device/test-named-skill-session.mjs'].includes(row.path);
+    assert.equal(row.owner, share ? 'source' : 'private', row.path);
+    assert.equal(fs.existsSync(path.join(target, 'MyApplication', row.path)), share, row.path);
+  }
   assert.equal(fs.readFileSync(path.join(target, 'MyApplication/README.md'), 'utf8'), 'PUBLIC APP GUIDE\n');
   const snapshot = JSON.parse(fs.readFileSync(path.join(target, 'MyApplication/SOURCE_SNAPSHOT.json')));
   assert.equal(snapshot.sourceDirty, false); assert.equal(snapshot.exporter.schemaVersion, 2); assert.equal(snapshot.dependencyWorktrees.length, 4);
